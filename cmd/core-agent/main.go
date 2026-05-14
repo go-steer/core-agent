@@ -42,6 +42,7 @@ import (
 	"github.com/go-steer/core-agent/session"
 	"github.com/go-steer/core-agent/skills"
 	"github.com/go-steer/core-agent/telemetry"
+	"github.com/go-steer/core-agent/tools"
 	"github.com/go-steer/core-agent/usage"
 )
 
@@ -50,13 +51,14 @@ func main() {
 	cfgPath := flag.String("c", "", "config file path (default: discover .agents/config.json)")
 	modelOverride := flag.String("m", "", "override model name from config")
 	providerOverride := flag.String("provider", "", "override model.provider (gemini|vertex|anthropic|anthropic-vertex)")
+	noBuiltinTools := flag.Bool("no-builtin-tools", false, "disable the built-in tool suite (read_file, write_file, edit_file, list_dir, bash, todo)")
 	flag.Parse()
 
-	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride)
+	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools)
 	os.Exit(code)
 }
 
-func run(prompt, cfgPath, modelOverride, providerOverride string) int {
+func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -126,10 +128,23 @@ func run(prompt, cfgPath, modelOverride, providerOverride string) int {
 		allToolsets = append(allToolsets, loadedSkills.Toolset)
 	}
 
+	// Built-in tools (read_file, write_file, edit_file, list_dir,
+	// bash, todo) ship on by default. --no-builtin-tools disables.
+	var builtinTools []adktool.Tool
+	if !noBuiltinTools {
+		reg, err := tools.Build(cfg, gate, tools.Default())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: built-in tools: %v\n", err)
+			return runner.ExitConfigError
+		}
+		builtinTools = reg.Tools
+	}
+
 	tracker := usage.NewTracker()
 	pricing := usage.PriceFor(cfg.Model.Name, cfg)
 
 	opts := []agent.Option{
+		agent.WithTools(builtinTools),
 		agent.WithToolsets(allToolsets),
 		agent.WithSystemInstructionPrefix(loaded.Instruction),
 	}

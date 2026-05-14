@@ -138,7 +138,7 @@ Runtime tuning for the agent loop.
 
 ## `tool_output`
 
-Caps tool result size before it enters model context. Prevents a runaway `cat /huge.log` from blowing through your token budget.
+Caps tool result size before it enters model context. Prevents a runaway `cat /huge.log` from blowing through your token budget. The built-in tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `bash`, `todo`) honor these caps; consumer-provided tools should call `tools.Truncate(...)` to do the same.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
@@ -146,7 +146,7 @@ Caps tool result size before it enters model context. Prevents a runaway `cat /h
 | `max_lines` | int | `500` | Per-tool-result line cap. |
 | `per_tool` | object | see below | Per-tool overrides keyed by tool name. |
 
-Default `per_tool` overrides:
+Default `per_tool` overrides (apply to the built-in tools that ship with core-agent):
 
 ```json
 {
@@ -154,13 +154,13 @@ Default `per_tool` overrides:
     "per_tool": {
       "bash":      { "max_bytes": 65536,  "max_lines": 2000 },
       "read_file": { "max_bytes": 262144, "max_lines": 5000 },
-      "grep":      { "max_bytes": 16384,  "max_lines": 200 }
+      "list_dir":  { "max_bytes": 32768,  "max_lines": 500 }
     }
   }
 }
 ```
 
-`core-agent` doesn't ship these built-in tools (consumers add them), but the limits are honored when consumers register tools with these names.
+core-agent ships these tools by default in the bundled CLI; library callers opt in with `tools.Default(cfg, gate)`. Override per-tool caps with the per-tool block above; add an entry under `per_tool` for any consumer-provided tool that should follow a non-default cap.
 
 ---
 

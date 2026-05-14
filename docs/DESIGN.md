@@ -10,15 +10,15 @@ It's intentionally opinionated and intentionally honest about what's unresolved.
 
 ### Goals
 
-- **Be the substrate for Go agents, not an agent itself.** Provide the wiring — model providers, MCP, skills, instructions, permissions, telemetry — so consuming projects only have to write their domain-specific tools and product logic.
+- **Be the substrate for Go agents, not an agent itself.** Provide the wiring — model providers, MCP, skills, instructions, permissions, telemetry, and a baseline tool suite — so consuming projects only have to write their domain-specific tools and product logic.
 - **Match cogo's conventions.** A future maintainer who knows cogo should recognize the package layout, the dev tooling, the AGENTS.md / `.agents/` convention, and the milestone discipline. The two projects are intended to coexist; copy-pasting fixes between them should be a one-line port.
-- **Stay narrow.** Resist adding features that belong in the consumer (tools, UI, slash commands beyond `/exit`). Each addition is a maintenance liability for everyone who imports the library.
+- **Stay narrow but useful.** Resist adding features that genuinely belong in the consumer (TUI, slash commands beyond `/exit`, product-specific tools). Built-in tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `bash`, `todo`) ship by default — they're the universal floor for any tool-using agent — but everything beyond that is a consumer concern. (See "Built-in tools" section below for the rationale on this line.)
 - **Make extension obvious.** The `Provider` interface, the `Option` pattern on `agent.New`, the `tools.GateToolset` wrapper — these are the shapes you want a consumer to be able to extend without reading half the codebase first.
 - **Provide first-class Claude support.** ADK Go ships only Gemini and Apigee; we add Anthropic + Vertex Anthropic as the substantive new code.
 
 ### Non-goals
 
-- **Not a finished agent.** No bash / file / grep tools shipped. No TUI. No CLA / no rich slash-command framework. Those belong in the consumer.
+- **Not a finished agent.** No TUI. No rich slash-command framework. No domain-specific tools beyond the generic file/shell/todo set. Those belong in the consumer.
 - **Not a multi-language polyglot.** Go only. We don't try to mirror the Python ADK or the TypeScript ADK behavior.
 - **Not a competitor to ADK.** We wrap ADK; we don't replace it. When ADK's `runner.Runner`, `llmagent.LlmAgent`, or `model.LLM` change shape, our adapter packages change too.
 - **Not a benchmarking surface.** No micro-bench infrastructure, no eval harness. Consumers wire those up.
@@ -271,6 +271,54 @@ Both are decisions the consumer should make explicitly, not inherit silently fro
 2. **Locality.** The injection logic is entirely in `builtins.go`, not spread across the construction path. Future maintainers grep for "Config.Tools" and find one place that touches it.
 
 The cost is one extra layer of indirection per call. For a streaming agent loop, that's noise.
+
+---
+
+## Built-in tools
+
+`tools/` ships six general-purpose tools — `read_file`, `write_file`, `edit_file`, `list_dir`, `bash`, `todo` — lifted from cogo's `internal/tools/`. The bundled CLI enables them all by default; library callers opt in via `tools.Default(cfg, gate)` (or `tools.Build(cfg, gate, custom BuiltinTools)` for fine-grained control). `--no-builtin-tools` on the CLI disables the lot.
+
+### Why we ship them (reversing M1's "narrow base" decision)
+
+When we shipped M1, the rationale was "consumers add their own tools." That argument was weaker than it sounded. Three things forced a rethink:
+
+1. **Inconsistency.** core-agent already ships a lot of opinionated machinery — the permission gate, MCP integration, skills loading, the Anthropic adapter, AGENTS.md loading. Drawing the line *just* before tools was inconsistent — it forced consumers to either copy a thousand lines of non-trivial code from cogo (with output capping, atomic writes, gate integration, the bash denylist) or write fresh.
+2. **Universality.** Every coding agent, task-execution agent, or workspace-aware agent needs at minimum `read_file` + `write_file` + `bash`. The friction of "core-agent talks but can't act" is real and ships per-consumer.
+3. **Cleaner downstream stories.** The Scion adapter (the next thing built on core-agent) would otherwise re-lift the same tools into `extras/scion-agent/internal/tools/`. Now it's a thin Scion-shaped wrapper around `tools.Default(cfg, gate)`.
+
+### What's in scope vs. not
+
+In scope (lifted from cogo):
+- File ops: `read_file` (with offset/limit), `write_file` (atomic), `edit_file` (single-occurrence string replace), `list_dir` (sorted).
+- Shell: `bash` (`/bin/sh -c` with timeout, `bash` denylist enforced via `permissions.Gate.CheckBash`).
+- Plan tracking: `todo` (in-process store; `TodoStore.Items()` exposes a defensive copy for hosts that want to render plan progress).
+
+Out of scope:
+- **Web tools** (`web_fetch`, `web_search`) — Gemini's built-in `URLContext` and `GoogleSearch` cover this for Gemini-backed agents. For Anthropic-backed agents, Anthropic's `web_search` server-side tool is a future addition to `models/anthropic/`.
+- **Glob / grep** — cogo doesn't have them; not needed for the immediate downstream consumers. Adding them is straightforward when one shows up.
+- **Subagent tool** — deferred to M3.
+
+### Why default-on at the CLI but explicit at the library
+
+The bundled `cmd/core-agent` is the "out of the box" experience and needs to be useful. It calls `tools.Default(cfg, gate)` unconditionally (unless `--no-builtin-tools`).
+
+The library (`agent.New`) does *not* auto-include tools. Two reasons:
+- The agent layer doesn't have the gate or config dependency. Adding it would force every `agent.New` call to know about both, which would couple the agent to the permissions package even for consumers who don't want tools.
+- Library callers know whether they want tools or not. One extra line — `agent.New(m, agent.WithTools(reg.Tools))` — is fine. The convenience matters more for the CLI, where users don't write code.
+
+This differs from the Gemini built-ins pattern (which is default-on at the Provider layer) because the Provider already has its credentials; the agent doesn't have the gate.
+
+### Why ungated tools aren't a thing
+
+`tools.Build` rejects a nil gate. We don't ship "no-permission" tools because:
+- The bash denylist needs the gate for the non-overridable `rm -rf /` refusal.
+- File tools need the gate for the path-scope check (which is what makes "agent only operates inside the project root" actually true).
+
+Skipping the gate would mean the security model falls apart silently. If a consumer genuinely wants ungated tools, they can construct them by calling `bashFunc`, `readFileFunc`, etc. with a permissive `permissions.New(permissions.Options{Mode: permissions.ModeYolo})` — but there's no shorter path.
+
+### Why `Registry.Todo` is exposed
+
+Cogo's pattern: the registry returns a `*TodoStore` alongside the tool list. This lets a host render plan progress (e.g. a `/todo` slash command) without round-tripping through the model. Cheap to keep; useful when a TUI is built on core-agent later.
 
 ---
 

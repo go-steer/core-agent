@@ -26,6 +26,7 @@ A reusable Go base agent built on the [Google Agent Development Kit](https://pkg
 - **AGENTS.md instruction loading** — system prompt prefix is assembled from `~/.core-agent/AGENTS.md` and the project's `AGENTS.md` (with `CLAUDE.md` / `GEMINI.md` fallbacks), preserving the [agent.md](https://agent.md/) convention plus the fallback names other agent tools have adopted.
 - **MCP servers** — declarative `.agents/mcp.json`; stdio and Streamable HTTP transports; tools are namespaced (`<server>_<tool>`) and pass through the permission gate.
 - **Claude-compatible skills** — drop a `SKILL.md` bundle into `.agents/skills/<name>/` and the agent can invoke it on demand via ADK's `skilltoolset`.
+- **Built-in tool suite** — `read_file`, `write_file`, `edit_file`, `list_dir`, `bash`, `todo`. Wired up by default in the bundled CLI; opt-out via `--no-builtin-tools`. All tools route through the permission gate.
 - **Permission gate** — ask / allow / yolo modes, per-tool allow- and deny-list patterns, path-scope checks for file tools, and a built-in bash denylist that's non-overridable.
 - **Telemetry** — opt-in OpenTelemetry export (console / OTLP); off by default so a fresh invocation makes zero outbound calls.
 - **Headless CLI** — `core-agent -p "prompt"` for one-shot use; bare `core-agent` drops into a stdin REPL with conversation history preserved across turns.
@@ -101,6 +102,8 @@ CLI flags:
 -c, --config string     Config file path (default: discover .agents/config.json).
 -m, --model string      Override model name from config.
     --provider string   Override model.provider (gemini|vertex|anthropic|anthropic-vertex).
+    --no-builtin-tools  Disable the built-in tool suite (read_file, write_file,
+                        edit_file, list_dir, bash, todo).
 ```
 
 ---
@@ -160,7 +163,8 @@ core-agent/
 ├── instruction/     # AGENTS.md / CLAUDE.md / GEMINI.md fallback loader
 ├── config/          # .agents/config.json schema, discovery, atomic persist
 ├── permissions/     # ask/allow/yolo gate + bash denylist + path scope
-├── tools/           # GateToolset wrapper (bridges permissions ↔ ADK toolsets)
+├── tools/           # Built-in tools (read/write/edit/list/bash/todo) +
+│                    # GateToolset wrapper (bridges permissions ↔ ADK)
 ├── mcp/             # mcp.json schema, stdio/HTTP server lifecycle
 ├── skills/          # SKILL.md discovery → ADK skilltoolset
 ├── models/

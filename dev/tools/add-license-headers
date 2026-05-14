@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Bulk-add Apache 2.0 license headers to core-agent's source files.
+
+Idempotent: detects any existing copyright/license block at the top of
+each file (including the older SPDX-shorthand variant) and replaces it
+with the canonical full Apache 2.0 boilerplate. Files without any
+header get one inserted.
+
+Run after creating new source files. Re-run safely after changing the
+header template — the script normalizes whatever's there to the
+current canonical form.
+
+Scope:
+- Go source under cmd/, examples/, agent/, instruction/, config/,
+  permissions/, tools/, mcp/, skills/, models/, telemetry/, usage/,
+  session/, runner/
+- Shell scripts under dev/tools/ and dev/ci/presubmits/
+- YAML: .github/workflows/*.yml, dev/tools/.golangci.yml,
+  docs/site/hugo.yaml
+- Python: dev/tools/add-license-headers (this file)
+
+For Go files, golangci-lint's `goheader` linter enforces the full
+header on every CI run; this script is the bulk-add helper for the
+file types that aren't lint-checked (shell + yaml + python).
+"""
+import os
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+# Body of the canonical header — used verbatim, just re-prefixed for
+# each comment style. Keep in sync with dev/tools/.golangci.yml
+# (goheader template) and LICENSE appendix.
+HEADER_BODY = """\
+Copyright 2026 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License."""
+
+
+def comment_block(prefix: str) -> str:
+    """Render the header with `prefix` (e.g. `// ` or `# `) on each line.
+
+    Blank lines in the body get a bare comment marker so the block
+    is a contiguous run of comment lines (matters for goheader and
+    for keeping the visual grouping).
+    """
+    out = []
+    bare = prefix.rstrip()
+    for line in HEADER_BODY.split("\n"):
+        if line:
+            out.append(f"{prefix}{line}")
+        else:
+            out.append(bare)
+    return "\n".join(out) + "\n"
+
+
+GO_HEADER = comment_block("// ")
+HASH_HEADER = comment_block("# ")
+
+
+def strip_existing_header(text: str, comment_prefix: str, has_shebang: bool):
+    """Return (shebang, rest) where shebang is the optional first line and
+    rest has any leading copyright/license comment block removed.
+
+    Detects "any" leading comment block whose lines start with the
+    comment prefix and contains the word `Copyright` somewhere — that
+    catches both the SPDX 2-liner and the full Apache header. Stops at
+    the first non-comment line.
+    """
+    lines = text.split("\n")
+
+    shebang = ""
+    start = 0
+    if has_shebang and lines and lines[0].startswith("#!"):
+        shebang = lines[0] + "\n"
+        start = 1
+
+    bare = comment_prefix.rstrip()
+
+    # Walk a contiguous block of comment lines starting at `start`.
+    end = start
+    saw_copyright = False
+    while end < len(lines):
+        line = lines[end]
+        if line.startswith(comment_prefix) or line == bare:
+            if "Copyright" in line or "Licensed under" in line or "SPDX-License-Identifier" in line:
+                saw_copyright = True
+            end += 1
+            continue
+        break
+
+    if not saw_copyright:
+        # No existing header — keep everything after the shebang as-is.
+        return shebang, "\n".join(lines[start:])
+
+    # Skip a single trailing blank line if present (the standard
+    # separator between header and code).
+    if end < len(lines) and lines[end] == "":
+        end += 1
+
+    return shebang, "\n".join(lines[end:])
+
+
+def apply_header(path: Path, header: str, comment_prefix: str, has_shebang: bool) -> bool:
+    text = path.read_text()
+    shebang, body = strip_existing_header(text, comment_prefix, has_shebang)
+    # Compose: shebang (if any) + header + blank + body
+    new_text = shebang + header + "\n" + body.lstrip("\n")
+    if new_text == text:
+        return False
+    path.write_text(new_text)
+    return True
+
+
+def is_executable_or_sh(p: Path) -> bool:
+    return p.suffix == ".sh" or os.access(p, os.X_OK)
+
+
+GO_DIRS = (
+    "cmd", "examples",
+    "agent", "instruction", "config", "permissions", "tools",
+    "mcp", "skills", "models", "telemetry", "usage", "session", "runner",
+)
+
+
+def main() -> None:
+    counts = {"go": 0, "sh": 0, "yaml": 0, "py": 0}
+
+    # Go: every .go under the package roots (skip vendored paths).
+    for top in GO_DIRS:
+        d = REPO_ROOT / top
+        if not d.exists():
+            continue
+        for path in d.rglob("*.go"):
+            if "/vendor/" in str(path):
+                continue
+            if apply_header(path, GO_HEADER, "// ", has_shebang=False):
+                counts["go"] += 1
+                print(f"go:   {path.relative_to(REPO_ROOT)}")
+
+    # Shell: dev/tools + dev/ci/presubmits. Skip helper data files.
+    for d in (REPO_ROOT / "dev/tools", REPO_ROOT / "dev/ci/presubmits"):
+        if not d.exists():
+            continue
+        for path in d.iterdir():
+            if not path.is_file():
+                continue
+            if path.suffix in (".yml", ".yaml", ".md"):
+                continue
+            if path.suffix == ".py":
+                continue
+            if path.name == "common.sh" or is_executable_or_sh(path):
+                if apply_header(path, HASH_HEADER, "# ", has_shebang=True):
+                    counts["sh"] += 1
+                    print(f"sh:   {path.relative_to(REPO_ROOT)}")
+
+    # YAML: workflows, golangci-lint config, hugo config.
+    yaml_files = [
+        *list((REPO_ROOT / ".github/workflows").glob("*.yml")),
+        REPO_ROOT / "dev/tools/.golangci.yml",
+        REPO_ROOT / "docs/site/hugo.yaml",
+    ]
+    for path in yaml_files:
+        if not path.exists():
+            continue
+        if apply_header(path, HASH_HEADER, "# ", has_shebang=False):
+            counts["yaml"] += 1
+            print(f"yaml: {path.relative_to(REPO_ROOT)}")
+
+    # Python: scripts under dev/tools/ that have a shebang.
+    py_files = [REPO_ROOT / "dev/tools/add-license-headers"]
+    for path in py_files:
+        if not path.exists():
+            continue
+        if apply_header(path, HASH_HEADER, "# ", has_shebang=True):
+            counts["py"] += 1
+            print(f"py:   {path.relative_to(REPO_ROOT)}")
+
+    total = sum(counts.values())
+    if total == 0:
+        print("All files already carry the canonical header — nothing to do.")
+    else:
+        print()
+        print(
+            f"Updated headers — go: {counts['go']}, sh: {counts['sh']}, "
+            f"yaml: {counts['yaml']}, py: {counts['py']}"
+        )
+
+
+if __name__ == "__main__":
+    main()

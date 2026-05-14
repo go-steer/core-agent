@@ -1,0 +1,83 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package permissions
+
+import (
+	"context"
+	"errors"
+)
+
+// Decision is the user's choice in an interactive permission prompt.
+type Decision int
+
+const (
+	DecisionDeny             Decision = iota // reject this call
+	DecisionAllowOnce                        // allow this call, ask again next time
+	DecisionAllowSession                     // allow this exact request for the rest of the session
+	DecisionAllowSessionTool                 // allow EVERY call to this tool for the rest of the session, regardless of args
+	DecisionAllowAlways                      // persist a permanent allowlist entry, then allow
+)
+
+// String renders Decision for diagnostics.
+func (d Decision) String() string {
+	switch d {
+	case DecisionDeny:
+		return "deny"
+	case DecisionAllowOnce:
+		return "allow-once"
+	case DecisionAllowSession:
+		return "allow-session"
+	case DecisionAllowSessionTool:
+		return "allow-session-tool"
+	case DecisionAllowAlways:
+		return "allow-always"
+	default:
+		return "?"
+	}
+}
+
+// PromptKind classifies what the gate is asking the user about.
+type PromptKind int
+
+const (
+	PromptKindBash      PromptKind = iota // mutating shell command
+	PromptKindFileWrite                   // file write/edit/create
+	PromptKindPathScope                   // file access outside the in-scope roots
+	PromptKindGeneric                     // anything else
+)
+
+// PromptRequest carries everything the host needs to render a prompt.
+//
+// The persistence target — what would be written to .agents/config.json
+// if the user picks DecisionAllowAlways — is held in PersistKey/PersistTool
+// so the prompter doesn't have to re-derive it from Detail.
+type PromptRequest struct {
+	Kind        PromptKind
+	ToolName    string
+	Detail      string // user-facing description (the bash command, the file path, etc.)
+	PersistTool string // tool name to use when adding to allowlist (e.g. "bash")
+	PersistKey  string // pattern to add to allowlist
+}
+
+// Prompter is implemented by hosts that can interact with the user.
+// Headless callers may pass nil; the gate treats a nil prompter as
+// "no interactive path available".
+type Prompter interface {
+	AskApproval(ctx context.Context, req PromptRequest) (Decision, error)
+}
+
+// ErrNoPrompter is returned when the gate would prompt but no prompter
+// is configured (e.g. headless mode without an explicit allowlist).
+var ErrNoPrompter = errors.New("permissions: interactive approval required but no prompter is configured")

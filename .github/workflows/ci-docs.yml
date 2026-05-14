@@ -1,0 +1,65 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: CI (docs-only)
+
+# Companion no-op to ci.yml. ci.yml uses `paths-ignore: ['**/*.md']`, so a
+# docs-only change wouldn't produce the test/lint/tidy/vuln status checks
+# that branch protection on `main` requires. This workflow runs on the same
+# triggers but matches the inverse paths and emits four trivially-green jobs
+# with the same names. Net effect: docs-only PRs satisfy required checks in
+# ~10s instead of running the full Go pipeline.
+#
+# For mixed PRs (code + docs) both workflows run; the real ci.yml's results
+# are what gates the merge — the latest run of each named check wins.
+
+on:
+  push:
+    branches: [main]
+    paths: ['**/*.md']
+  pull_request:
+    branches: [main]
+    paths: ['**/*.md']
+
+concurrency:
+  group: ${{ github.workflow }}-docs-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "docs-only change — no Go to test"
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "docs-only change — no Go to lint"
+
+  tidy:
+    name: go mod tidy is clean
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "docs-only change — go.mod unaffected"
+
+  vuln:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "docs-only change — no Go to scan"

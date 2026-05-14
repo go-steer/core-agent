@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Local CI runner — executes every check the GitHub Actions workflow runs,
+# in fast-fail order. Mirrors dev/ci/presubmits/* so a green run here
+# means a green run there.
+#
+# Usage:
+#   dev/tools/ci              # run everything, stop on first failure
+#   dev/tools/ci --keep-going # report all failures (don't stop early)
+set -euo pipefail
+. "$(dirname "$0")/common.sh"
+
+cd "$(repo_root)"
+
+KEEP_GOING=0
+for arg in "$@"; do
+  case "$arg" in
+    --keep-going) KEEP_GOING=1 ;;
+    -h|--help)
+      echo "Usage: dev/tools/ci [--keep-going]"
+      exit 0
+      ;;
+    *)
+      echo "Unknown flag: $arg" >&2
+      exit 2
+      ;;
+  esac
+done
+
+# Order matters: cheap, format-style checks first; the slow scanners last.
+STEPS=(
+  "format          dev/tools/verify-go-format"
+  "vet             dev/tools/vet"
+  "build           dev/tools/build"
+  "lint            dev/tools/lint-go"
+  "mod-tidy        dev/tools/verify-mod-tidy"
+  "test            dev/tools/test-unit"
+  "vuln            dev/tools/verify-vuln"
+)
+
+failures=()
+for entry in "${STEPS[@]}"; do
+  label="${entry%% *}"
+  cmd="${entry#* }"
+  cmd="${cmd##* }"
+  if run_step "$label" "$cmd"; then
+    continue
+  fi
+  failures+=("$label")
+  if [[ "$KEEP_GOING" -eq 0 ]]; then
+    echo
+    echo "✗ $label failed — aborting (pass --keep-going to run all checks)" >&2
+    exit 1
+  fi
+done
+
+echo
+if [[ "${#failures[@]}" -eq 0 ]]; then
+  echo "✓ all CI checks passed"
+else
+  printf '✗ failures: %s\n' "${failures[*]}" >&2
+  exit 1
+fi

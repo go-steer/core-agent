@@ -1,0 +1,195 @@
+---
+title: Configuration
+weight: 4
+---
+
+# Configuration
+
+## The `.agents/` directory
+
+`core-agent` walks up from the working directory looking for a folder named `.agents/`, analogous to how `git` looks for `.git`. The first match wins. Everything `core-agent` reads or writes lives there:
+
+```
+.agents/
+├── config.json          # this file — provider, model, permissions, scope, telemetry, etc.
+├── mcp.json             # MCP server declarations (see MCP page)
+├── skills/              # SKILL.md bundles (see Skills page)
+└── sessions/            # one-shot transcripts; auto-written, safe to .gitignore
+```
+
+You don't have to create `.agents/` — without it, `core-agent` runs with built-in defaults and skips the project-specific bits (no transcripts, no MCP, no skills). It's required only when you want to customize.
+
+---
+
+## `config.json` schema
+
+Top-level shape, with all fields optional except `version` and `model.name`:
+
+```json
+{
+  "version": 1,
+  "model": { ... },
+  "permissions": { ... },
+  "path_scope": { ... },
+  "agent": { ... },
+  "tool_output": { ... },
+  "otel": { ... }
+}
+```
+
+`version` must be `1`. Other versions are rejected with a clear upgrade message — the schema is bumped only on breaking changes.
+
+A minimal viable config:
+
+```json
+{
+  "version": 1,
+  "model": {
+    "provider": "anthropic",
+    "name": "claude-opus-4-7"
+  }
+}
+```
+
+---
+
+## `model`
+
+Selects the LLM backend.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `provider` | string | `""` (auto-detect) | One of `gemini`, `vertex`, `anthropic`, `anthropic-vertex`. Empty = auto-detect from env. |
+| `name` | string | `gemini-3.1-pro-preview` | Model ID. **Required.** |
+| `api_key` | string | `""` | Inline key for `provider: gemini`. Usually unset; read from `GOOGLE_API_KEY` / `GEMINI_API_KEY` at runtime. |
+| `vertex` | object | `null` | GCP project + region. Required when `provider: vertex`. |
+| `vertex.project` | string | — | GCP project ID. |
+| `vertex.location` | string | — | GCP region (e.g. `us-central1`). |
+| `anthropic` | object | `null` | Claude-specific settings. |
+| `anthropic.api_key` | string | `""` | Inline Anthropic key. Usually read from `ANTHROPIC_API_KEY`. |
+| `anthropic.vertex` | object | `null` | When `provider: anthropic-vertex`, holds project + region. |
+| `anthropic.vertex.project` | string | — | GCP project ID for Vertex Anthropic. Falls back to `ANTHROPIC_VERTEX_PROJECT_ID` then `GOOGLE_CLOUD_PROJECT`. |
+| `anthropic.vertex.location` | string | — | Region (e.g. `us-east5`). Falls back to `CLOUD_ML_REGION` then `GOOGLE_CLOUD_LOCATION`. |
+| `pricing` | object | `null` | Per-model price override for `usage.Tracker`. |
+| `pricing.input_per_mtok` | float | — | USD per 1M input tokens. |
+| `pricing.output_per_mtok` | float | — | USD per 1M output tokens. |
+
+See [Providers]({{< relref "providers.md" >}}) for full details on each backend.
+
+---
+
+## `permissions`
+
+Configures the permission gate that consults every tool call. See [Permissions]({{< relref "permissions.md" >}}) for the full pattern grammar.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `mode` | string | `ask` | One of `ask`, `allow`, `yolo`. |
+| `allow` | string[] | `[]` | Allowlist patterns. Format: `<tool>:<glob>` or `<glob>`. |
+| `deny` | string[] | `[]` | Denylist patterns. Always wins over allow. |
+
+Example:
+
+```json
+{
+  "permissions": {
+    "mode": "ask",
+    "allow": ["bash:git status", "bash:git log*", "read_file:internal/**"],
+    "deny":  ["bash:sudo *"]
+  }
+}
+```
+
+---
+
+## `path_scope`
+
+Extra paths file tools may touch outside the default project root + user home.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `allow` | string[] | `[]` | Patterns. Exact paths, directory trees ending in `/...`, or `path/filepath.Match` globs. |
+
+Example:
+
+```json
+{
+  "path_scope": {
+    "allow": [
+      "/etc/myapp/...",
+      "/var/log/myapp.log",
+      "~/scratch/*.json"
+    ]
+  }
+}
+```
+
+---
+
+## `agent`
+
+Runtime tuning for the agent loop.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `max_steps` | int | `50` | Max tool-call cycles within a single turn before the agent gives up. |
+
+---
+
+## `tool_output`
+
+Caps tool result size before it enters model context. Prevents a runaway `cat /huge.log` from blowing through your token budget.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `max_bytes` | int | `32768` | Per-tool-result byte cap. |
+| `max_lines` | int | `500` | Per-tool-result line cap. |
+| `per_tool` | object | see below | Per-tool overrides keyed by tool name. |
+
+Default `per_tool` overrides:
+
+```json
+{
+  "tool_output": {
+    "per_tool": {
+      "bash":      { "max_bytes": 65536,  "max_lines": 2000 },
+      "read_file": { "max_bytes": 262144, "max_lines": 5000 },
+      "grep":      { "max_bytes": 16384,  "max_lines": 200 }
+    }
+  }
+}
+```
+
+`core-agent` doesn't ship these built-in tools (consumers add them), but the limits are honored when consumers register tools with these names.
+
+---
+
+## `otel`
+
+OpenTelemetry exporter config. Off by default — a fresh invocation makes zero outbound spans.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `exporter` | string | `none` | One of `none`, `console`, `otlp`. |
+| `endpoint` | string | `""` | OTLP endpoint when `exporter: otlp` (or set via standard `OTEL_EXPORTER_OTLP_ENDPOINT` env). |
+
+Console mode prints span JSON to stderr — useful for local debugging. OTLP mode honors all the standard `OTEL_*` env vars.
+
+---
+
+## Discovery and merge
+
+`core-agent` finds your config like this:
+
+1. **Walk up** from the current working directory looking for a folder named `.agents/`. First match wins.
+2. **Read** `<found>/config.json` if present. Missing file → use built-in defaults.
+3. **Merge** the loaded JSON over `config.DefaultConfig()` — unspecified fields keep their defaults. Unknown fields are tolerated for forward compatibility.
+4. **Validate** the merged result. Bad provider name, missing required field, or wrong schema version → fail fast at startup.
+
+Override discovery with the CLI's `-c <path>` flag, which reads the file directly and treats its parent directory as the agentsDir for MCP / skills resolution.
+
+---
+
+## Atomic writes
+
+`config.Save(path, cfg)` writes via temp file + `rename` so a partial write can never leave a corrupt `config.json` on disk. Use it when you build tooling that mutates config (e.g. an `init`-style command, or a `/permissions` slash command in a downstream consumer).

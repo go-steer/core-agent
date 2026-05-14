@@ -1,0 +1,87 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/site/**'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+# Cancel superseded runs so we don't deploy a stale build over a fresh one.
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+# GitHub Pages deployment needs `pages: write` + `id-token: write`.
+# `contents: read` is enough to checkout.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+env:
+  GO_VERSION: '1.26'
+  HUGO_VERSION: '0.158.0'
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # needed for enableGitInfo (lastmod from git history)
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      - name: Install Hugo
+        run: |
+          curl -sSLf -o /tmp/hugo.tar.gz \
+            "https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}/hugo_extended_${HUGO_VERSION}_linux-amd64.tar.gz"
+          tar -C /tmp -xzf /tmp/hugo.tar.gz hugo
+          sudo install /tmp/hugo /usr/local/bin/hugo
+          hugo version
+
+      - id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Build
+        working-directory: docs/site
+        run: |
+          hugo mod get -u
+          hugo --minify --baseURL "${{ steps.pages.outputs.base_url }}/"
+        env:
+          HUGO_ENVIRONMENT: production
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/site/public
+
+  deploy:
+    name: deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

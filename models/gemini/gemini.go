@@ -1,0 +1,129 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Package gemini implements models.Provider for the Gemini family,
+// covering both the public Gemini API (API-key auth) and Vertex AI
+// (Application Default Credentials + GCP project).
+//
+// The two are exposed as distinct provider names ("gemini" and "vertex")
+// so users and automation can pin to a backend explicitly. Both delegate
+// to google.golang.org/adk/model/gemini under the hood.
+package gemini
+
+import (
+	"context"
+	"fmt"
+	"os"
+
+	adkmodel "google.golang.org/adk/model"
+	adkgemini "google.golang.org/adk/model/gemini"
+	"google.golang.org/genai"
+
+	"github.com/go-steer/core-agent/config"
+	"github.com/go-steer/core-agent/models"
+)
+
+func init() {
+	models.Register(config.ProviderGemini, newGeminiAPI)
+	models.Register(config.ProviderVertex, newVertexAI)
+}
+
+// Provider is the Gemini-family implementation of models.Provider.
+type Provider struct {
+	name   string
+	cfg    *genai.ClientConfig
+	prefix string
+}
+
+// Name reports the provider identity (e.g. "gemini" or "vertex").
+func (p *Provider) Name() string { return p.name }
+
+// Model constructs a model.LLM for the given model ID.
+func (p *Provider) Model(ctx context.Context, modelID string) (adkmodel.LLM, error) {
+	if modelID == "" {
+		return nil, fmt.Errorf("%s: model id is required", p.prefix)
+	}
+	llm, err := adkgemini.NewModel(ctx, modelID, p.cfg)
+	if err != nil {
+		return nil, fmt.Errorf("%s: new model %q: %w", p.prefix, modelID, err)
+	}
+	return llm, nil
+}
+
+// NewAPIKey returns a Provider authenticated against the public Gemini API
+// using key. Empty key is rejected so the failure mode is clear at startup.
+func NewAPIKey(key string) (*Provider, error) {
+	if key == "" {
+		return nil, fmt.Errorf("gemini: api key is required (set GOOGLE_API_KEY or GEMINI_API_KEY, or model.api_key in .agents/config.json)")
+	}
+	return &Provider{
+		name:   config.ProviderGemini,
+		prefix: "gemini",
+		cfg: &genai.ClientConfig{
+			APIKey:  key,
+			Backend: genai.BackendGeminiAPI,
+		},
+	}, nil
+}
+
+// NewVertex returns a Provider authenticated against Vertex AI for the
+// given GCP project and location, using Application Default Credentials.
+func NewVertex(project, location string) (*Provider, error) {
+	if project == "" || location == "" {
+		return nil, fmt.Errorf("vertex: project and location are required (set model.vertex.{project,location} in .agents/config.json or GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION env vars)")
+	}
+	return &Provider{
+		name:   config.ProviderVertex,
+		prefix: "vertex",
+		cfg: &genai.ClientConfig{
+			Backend:  genai.BackendVertexAI,
+			Project:  project,
+			Location: location,
+		},
+	}, nil
+}
+
+func newGeminiAPI(cfg *config.Config) (models.Provider, error) {
+	key := cfg.Model.APIKey
+	if key == "" {
+		// GOOGLE_API_KEY is the umbrella name; GEMINI_API_KEY is the
+		// one Gemini's own docs and tutorials use. Accept either.
+		key = firstNonEmpty(os.Getenv("GOOGLE_API_KEY"), os.Getenv("GEMINI_API_KEY"))
+	}
+	return NewAPIKey(key)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func newVertexAI(cfg *config.Config) (models.Provider, error) {
+	project, location := "", ""
+	if cfg.Model.Vertex != nil {
+		project = cfg.Model.Vertex.Project
+		location = cfg.Model.Vertex.Location
+	}
+	if project == "" {
+		project = os.Getenv("GOOGLE_CLOUD_PROJECT")
+	}
+	if location == "" {
+		location = os.Getenv("GOOGLE_CLOUD_LOCATION")
+	}
+	return NewVertex(project, location)
+}

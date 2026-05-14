@@ -238,6 +238,42 @@ Per the rationale above, `anthropic-vertex` is **not** part of `models.autoDetec
 
 ---
 
+## Gemini built-in tools
+
+The Gemini Provider injects a small, opinionated set of Gemini's server-side built-in tools into every request, alongside any user-defined function declarations. The shape:
+
+- **Default on** (no setup, universally useful): `GoogleSearch`, `URLContext`.
+- **Default off** (useful but a real action surface): `CodeExecution`.
+- **Not surfaced**: `FileSearch`, `GoogleMaps`, `ComputerUse`, `EnterpriseWebSearch`, `GoogleSearchRetrieval`, `Retrieval`.
+
+### Why these three and not the others
+
+Each non-surfaced built-in requires upstream setup that's outside the Gemini API itself — a configured `fileSearchStore`, a Maps Platform API key, a hosted desktop environment, a Vertex AI Search corpus. Flipping one of those on without the upstream resource yields an API error, not a working tool. Adding a public toggle for each would be a footgun: the natural reading of "I set `WithFileSearch(true)` and it didn't work" is that the library is broken, not that the user forgot to provision a corpus.
+
+`GoogleSearchRetrieval` is functionally redundant with `GoogleSearch` on modern models — keeping both as exposed toggles invites confusion.
+
+The escape hatch for consumers who do need one of the skipped tools is straightforward: write a small wrapper around `gemini.Provider` that adds the right `*genai.Tool` entry. The conversion code is a half-dozen lines.
+
+### Why CodeExecution defaults off
+
+It's a real action surface. Other built-ins are passive — search returns text, URL context returns text. CodeExecution runs Python on Google's servers. That's:
+
+- **A security consideration** for some deployment contexts. Even sandboxed code execution may be off-limits under certain compliance regimes.
+- **A cost consideration** that scales differently from inference (per-second compute on top of per-token).
+
+Both are decisions the consumer should make explicitly, not inherit silently from the default. So the rule of thumb: passive built-ins default on, active ones default off. CodeExecution is the only "active" one in this set; others can be added later under the same rule.
+
+### Why a wrapper LLM rather than modifying the request directly
+
+`models/gemini` builds the model via `adkgemini.NewModel(...)` and could in principle inject the built-in tools by mutating `Config.Tools` somewhere upstream. We chose to wrap with a thin `builtinsLLM` instead. Two reasons:
+
+1. **Composability.** The wrapper is a `model.LLM` — same interface as the inner. If a future change adds a second wrapping concern (logging, retry, cost tracking), they stack cleanly: each is a wrapping layer, none of them know about each other.
+2. **Locality.** The injection logic is entirely in `builtins.go`, not spread across the construction path. Future maintainers grep for "Config.Tools" and find one place that touches it.
+
+The cost is one extra layer of indirection per call. For a streaming agent loop, that's noise.
+
+---
+
 ## Permission gate
 
 ### Three modes (`ask` / `allow` / `yolo`)

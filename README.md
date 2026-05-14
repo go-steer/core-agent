@@ -19,8 +19,8 @@ A reusable Go base agent built on the [Google Agent Development Kit](https://pkg
 
 - **Multi-turn conversation** — backed by ADK's `runner.Runner` with an in-memory session service that automatically replays history across turns.
 - **Multiple model providers**, picked by config or auto-detected from environment:
-  - **Gemini API** via `GOOGLE_API_KEY` or `GEMINI_API_KEY` (either is accepted; `GEMINI_API_KEY` is the one Gemini's own docs and tutorials use)
-  - **Vertex AI** (Gemini) via `GOOGLE_GENAI_USE_VERTEXAI=true` + ADC + `GOOGLE_CLOUD_PROJECT`
+  - **Gemini API** via `GOOGLE_API_KEY` or `GEMINI_API_KEY` (either is accepted; `GEMINI_API_KEY` is the one Gemini's own docs and tutorials use). Gemini's built-in **Google Search** and **URL Context** tools are wired up by default; **Code Execution** is one option flip away.
+  - **Vertex AI** (Gemini) via `GOOGLE_GENAI_USE_VERTEXAI=true` + ADC + `GOOGLE_CLOUD_PROJECT` — same built-in tools as Gemini API.
   - **Anthropic / Claude** via `ANTHROPIC_API_KEY` — implemented as a native ADK `model.LLM` adapter (ADK Go ships only Gemini + Apigee out of the box)
   - **Anthropic / Claude via Vertex AI** via ADC + `ANTHROPIC_VERTEX_PROJECT_ID` + `CLOUD_ML_REGION` — same adapter, GCP-authed and GCP-billed, no separate Anthropic API key required
 - **AGENTS.md instruction loading** — system prompt prefix is assembled from `~/.core-agent/AGENTS.md` and the project's `AGENTS.md` (with `CLAUDE.md` / `GEMINI.md` fallbacks), preserving the [agent.md](https://agent.md/) convention plus the fallback names other agent tools have adopted.

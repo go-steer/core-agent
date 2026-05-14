@@ -78,6 +78,8 @@ The "key" of a request is tool-specific:
 - For file tools (`read_file`, `write_file`, `edit_file`, `list_dir`): the resolved absolute path.
 - For MCP / skill calls: `<tool_name> <json-args>` (truncated at 200 chars).
 
+The `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`, and `todo` tool names refer to the [built-in tools]({{< relref "library-api.md" >}}#built-in-tools) that ship with core-agent and are enabled by default in the bundled CLI. Use the same names in allow/deny patterns whether you keep the defaults or supply your own implementations under those names.
+
 ---
 
 ## Path scope

@@ -122,6 +122,43 @@ Options are applied in the order they're passed. Tools and toolsets accumulate a
 
 ---
 
+## Built-in tools
+
+The `tools/` package ships a six-tool baseline suitable for any agent that acts on its workspace: `read_file`, `write_file`, `edit_file`, `list_dir`, `bash`, `todo`. All six route through `permissions.Gate` (so the bash denylist and path-scope checks apply), and all honor the per-tool output caps from `cfg.ToolOutput`.
+
+Wire them up in your binary:
+
+```go
+import "github.com/go-steer/core-agent/tools"
+
+reg, err := tools.Build(cfg, gate, tools.Default())
+if err != nil { /* ... */ }
+
+a, _ := agent.New(m, agent.WithTools(reg.Tools))
+```
+
+`reg.Todo` exposes the underlying `*TodoStore` so a host can render plan progress (e.g. for a `/todo` slash command in a TUI) without round-tripping through the model.
+
+To turn one off:
+
+```go
+b := tools.Default()
+b.Bash = false
+reg, _ := tools.Build(cfg, gate, b)
+```
+
+Or replace wholesale:
+
+```go
+reg, _ := tools.Build(cfg, gate, tools.BuiltinTools{ReadFile: true, ListDir: true})
+```
+
+`tools.Build` requires both `cfg` and `gate` — passing nil returns an error. We deliberately don't ship ungated tools (the bash denylist + path scope would silently stop applying).
+
+The bundled `cmd/core-agent` enables the full set by default; `--no-builtin-tools` disables.
+
+---
+
 ## Adding custom tools
 
 Use ADK's `functiontool.New` to wrap a Go function as a tool the agent can call. Schema is generated from the input/output struct types via `jsonschema` tags.

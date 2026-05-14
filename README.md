@@ -45,6 +45,7 @@ hugo server   # http://localhost:1313/core-agent/
 
 Internal design docs live in [`docs/`](./docs) directly:
 
+- [`DESIGN.md`](./docs/DESIGN.md) — architectural rationale, the *why* behind the package layout, the Anthropic adapter, and the deliberate non-goals
 - [`acceptance-m1.md`](./docs/acceptance-m1.md), [`acceptance-m2.md`](./docs/acceptance-m2.md) — per-milestone acceptance test plans
 
 ## Install
@@ -68,8 +69,16 @@ Requires Go 1.26 or newer.
 ## Quick start — CLI
 
 ```bash
-# One-shot (Gemini accepts either GEMINI_API_KEY or GOOGLE_API_KEY)
+# Gemini API key (accepts either GEMINI_API_KEY or GOOGLE_API_KEY)
 GEMINI_API_KEY=...     core-agent -p "what's 2+2?"
+
+# Vertex AI for Gemini (uses Application Default Credentials)
+GOOGLE_GENAI_USE_VERTEXAI=true \
+  GOOGLE_CLOUD_PROJECT=my-gcp-project \
+  GOOGLE_CLOUD_LOCATION=us-central1 \
+  core-agent -p "what's 2+2?"
+
+# Anthropic API key
 ANTHROPIC_API_KEY=...  core-agent --provider anthropic -p "what's 2+2?"
 
 # Anthropic via Vertex AI (uses Application Default Credentials)

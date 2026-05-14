@@ -67,7 +67,7 @@ func REPL(ctx context.Context, m adkmodel.LLM, stdin io.Reader, stdout, stderr i
 		if prompt == "/exit" || prompt == "/quit" {
 			return ExitOK, nil
 		}
-		code, _, err := streamTurn(ctx, a, m, prompt, stdout, stderr, tracker, pricing)
+		code, err := streamTurn(ctx, a, m, prompt, stdout, stderr, tracker, pricing)
 		if err != nil {
 			fmt.Fprintf(stderr, "core-agent: %v\n", err)
 			// Don't exit on a single turn error — let the user retry.

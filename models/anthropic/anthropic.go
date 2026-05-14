@@ -50,7 +50,7 @@ const DefaultMaxTokens = 16_384
 
 // EnvAPIKey is the environment variable consulted when no key is
 // supplied via config.
-const EnvAPIKey = "ANTHROPIC_API_KEY"
+const EnvAPIKey = "ANTHROPIC_API_KEY" // #nosec G101 -- env var name, not a credential
 
 func init() {
 	models.Register(config.ProviderAnthropic, newProvider)

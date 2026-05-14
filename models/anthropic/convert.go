@@ -34,7 +34,7 @@ func buildParams(modelID string, contents []*genai.Content, cfg *genai.GenerateC
 	}
 
 	params := anthropic.MessageNewParams{
-		Model:     anthropic.Model(modelID),
+		Model:     modelID,
 		MaxTokens: int64(maxTokens(cfg)),
 	}
 

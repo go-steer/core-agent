@@ -61,17 +61,14 @@ func Headless(ctx context.Context, m adkmodel.LLM, prompt string, stdout, stderr
 		return ExitAgentError, err
 	}
 
-	code, _, err := streamTurn(ctx, a, m, prompt, stdout, stderr, tracker, pricing)
-	return code, err
+	return streamTurn(ctx, a, m, prompt, stdout, stderr, tracker, pricing)
 }
 
 // streamTurn is the shared one-turn driver used by Headless and REPL.
-// Returns (exit code, captured assistant text, error). Captured text
-// is what was written to stdout this turn — useful when the caller
-// wants to log the response into a transcript.
-func streamTurn(ctx context.Context, a *agent.Agent, m adkmodel.LLM, prompt string, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing) (int, string, error) {
+// Returns (exit code, error). Tool-call summaries flow to stderr,
+// partial assistant text streams to stdout as it arrives.
+func streamTurn(ctx context.Context, a *agent.Agent, m adkmodel.LLM, prompt string, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing) (int, error) {
 	wroteAnything := false
-	var captured []byte
 	var lastUsageInput, lastUsageOutput int
 
 	for event, err := range a.Run(ctx, prompt) {
@@ -79,7 +76,7 @@ func streamTurn(ctx context.Context, a *agent.Agent, m adkmodel.LLM, prompt stri
 			if wroteAnything {
 				_, _ = fmt.Fprintln(stdout)
 			}
-			return ExitAgentError, string(captured), fmt.Errorf("runner: agent run: %w", err)
+			return ExitAgentError, fmt.Errorf("runner: agent run: %w", err)
 		}
 		if event.UsageMetadata != nil {
 			lastUsageInput = int(event.UsageMetadata.PromptTokenCount)
@@ -98,9 +95,8 @@ func streamTurn(ctx context.Context, a *agent.Agent, m adkmodel.LLM, prompt stri
 				fmt.Fprintf(stderr, "← %s\n", p.FunctionResponse.Name)
 			case p.Text != "" && event.Partial:
 				if _, err := io.WriteString(stdout, p.Text); err != nil {
-					return ExitAgentError, string(captured), fmt.Errorf("runner: write stdout: %w", err)
+					return ExitAgentError, fmt.Errorf("runner: write stdout: %w", err)
 				}
-				captured = append(captured, p.Text...)
 				wroteAnything = true
 			}
 		}
@@ -110,10 +106,10 @@ func streamTurn(ctx context.Context, a *agent.Agent, m adkmodel.LLM, prompt stri
 	}
 	if wroteAnything {
 		if _, err := fmt.Fprintln(stdout); err != nil {
-			return ExitAgentError, string(captured), fmt.Errorf("runner: write final newline: %w", err)
+			return ExitAgentError, fmt.Errorf("runner: write final newline: %w", err)
 		}
 	}
-	return ExitOK, string(captured), nil
+	return ExitOK, nil
 }
 
 // WriteSummary emits a one-line usage tally suitable for shell

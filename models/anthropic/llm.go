@@ -51,7 +51,7 @@ func (l *llm) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, _ b
 		// Use the Provider-bound model when LLMRequest didn't carry
 		// one; the Provider's modelID came from cfg.Model.Name.
 		if req.Model == "" {
-			params.Model = anthropic.Model(l.modelID)
+			params.Model = l.modelID
 		}
 
 		stream := l.client.Messages.NewStreaming(ctx, params)

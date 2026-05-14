@@ -31,7 +31,7 @@ func TestBuildParams_TextOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildParams: %v", err)
 	}
-	if string(p.Model) != "claude-opus-4-7" {
+	if p.Model != "claude-opus-4-7" {
 		t.Errorf("model = %q", p.Model)
 	}
 	if p.MaxTokens != int64(DefaultMaxTokens) {

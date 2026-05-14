@@ -45,10 +45,13 @@ func finalResponseFromMessage(msg *anthropic.Message) (*genai.Content, genai.Fin
 		}
 	}
 
+	// Token counts come from the SDK as int64; genai's metadata type
+	// uses int32. Realistic token counts (under ~2B) fit comfortably,
+	// so the narrowing is safe.
 	return content, mapStopReason(msg.StopReason), &genai.GenerateContentResponseUsageMetadata{
-		PromptTokenCount:     int32(msg.Usage.InputTokens),
-		CandidatesTokenCount: int32(msg.Usage.OutputTokens),
-		TotalTokenCount:      int32(msg.Usage.InputTokens + msg.Usage.OutputTokens),
+		PromptTokenCount:     int32(msg.Usage.InputTokens),                          // #nosec G115 -- token counts won't overflow int32
+		CandidatesTokenCount: int32(msg.Usage.OutputTokens),                         // #nosec G115 -- token counts won't overflow int32
+		TotalTokenCount:      int32(msg.Usage.InputTokens + msg.Usage.OutputTokens), // #nosec G115 -- token counts won't overflow int32
 	}
 }
 

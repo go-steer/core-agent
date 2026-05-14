@@ -41,15 +41,18 @@ func init() {
 
 // Provider is the Gemini-family implementation of models.Provider.
 type Provider struct {
-	name   string
-	cfg    *genai.ClientConfig
-	prefix string
+	name     string
+	cfg      *genai.ClientConfig
+	prefix   string
+	builtins BuiltinTools
 }
 
 // Name reports the provider identity (e.g. "gemini" or "vertex").
 func (p *Provider) Name() string { return p.name }
 
-// Model constructs a model.LLM for the given model ID.
+// Model constructs a model.LLM for the given model ID. When the
+// Provider has any built-in tools enabled, the returned LLM is
+// wrapped to inject them into Config.Tools on every request.
 func (p *Provider) Model(ctx context.Context, modelID string) (adkmodel.LLM, error) {
 	if modelID == "" {
 		return nil, fmt.Errorf("%s: model id is required", p.prefix)
@@ -58,32 +61,46 @@ func (p *Provider) Model(ctx context.Context, modelID string) (adkmodel.LLM, err
 	if err != nil {
 		return nil, fmt.Errorf("%s: new model %q: %w", p.prefix, modelID, err)
 	}
+	if tools := p.builtins.asTools(); len(tools) > 0 {
+		return &builtinsLLM{inner: llm, builtins: tools}, nil
+	}
 	return llm, nil
 }
 
 // NewAPIKey returns a Provider authenticated against the public Gemini API
 // using key. Empty key is rejected so the failure mode is clear at startup.
-func NewAPIKey(key string) (*Provider, error) {
+//
+// Built-in tools (Google Search + URL Context) are enabled by default;
+// pass WithBuiltinTools / WithGoogleSearch / WithURLContext to override.
+func NewAPIKey(key string, opts ...Option) (*Provider, error) {
 	if key == "" {
 		return nil, fmt.Errorf("gemini: api key is required (set GOOGLE_API_KEY or GEMINI_API_KEY, or model.api_key in .agents/config.json)")
 	}
-	return &Provider{
+	p := &Provider{
 		name:   config.ProviderGemini,
 		prefix: "gemini",
 		cfg: &genai.ClientConfig{
 			APIKey:  key,
 			Backend: genai.BackendGeminiAPI,
 		},
-	}, nil
+		builtins: DefaultBuiltinTools(),
+	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p, nil
 }
 
 // NewVertex returns a Provider authenticated against Vertex AI for the
 // given GCP project and location, using Application Default Credentials.
-func NewVertex(project, location string) (*Provider, error) {
+//
+// Built-in tools (Google Search + URL Context) are enabled by default;
+// pass WithBuiltinTools / WithGoogleSearch / WithURLContext to override.
+func NewVertex(project, location string, opts ...Option) (*Provider, error) {
 	if project == "" || location == "" {
 		return nil, fmt.Errorf("vertex: project and location are required (set model.vertex.{project,location} in .agents/config.json or GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION env vars)")
 	}
-	return &Provider{
+	p := &Provider{
 		name:   config.ProviderVertex,
 		prefix: "vertex",
 		cfg: &genai.ClientConfig{
@@ -91,7 +108,12 @@ func NewVertex(project, location string) (*Provider, error) {
 			Project:  project,
 			Location: location,
 		},
-	}, nil
+		builtins: DefaultBuiltinTools(),
+	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p, nil
 }
 
 func newGeminiAPI(cfg *config.Config) (models.Provider, error) {

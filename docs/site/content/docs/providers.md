@@ -54,6 +54,36 @@ GEMINI_API_KEY=... core-agent --provider gemini -m gemini-3-flash-preview -p "pi
 - Both `GEMINI_API_KEY` and `GOOGLE_API_KEY` work; `GEMINI_API_KEY` is the name Gemini's own docs and tutorials use, `GOOGLE_API_KEY` is the umbrella name. Precedence: explicit config → `GOOGLE_API_KEY` → `GEMINI_API_KEY`.
 - Get a key at [aistudio.google.com](https://aistudio.google.com).
 
+### Built-in tools
+
+The Gemini Provider injects a small set of Gemini's server-side built-in tools into every request, alongside any user-defined function declarations.
+
+| Tool | Default | Notes |
+|---|---|---|
+| **GoogleSearch** | on | Public web search grounding. No setup. |
+| **URLContext** | on | Fetch + ground on URLs the model decides to visit. No setup. |
+| **CodeExecution** | off | Sandboxed Python on Google's servers. Useful for math, data analysis, file processing. Off by default — opt in once you've decided server-side code execution fits your security and cost posture. |
+
+To override:
+
+```go
+import "github.com/go-steer/core-agent/models/gemini"
+
+// Turn one off:
+provider, _ := gemini.NewAPIKey(key, gemini.WithURLContext(false))
+
+// Turn CodeExecution on:
+provider, _ := gemini.NewAPIKey(key, gemini.WithCodeExecution(true))
+
+// Replace the whole set:
+provider, _ := gemini.NewAPIKey(key, gemini.WithBuiltinTools(gemini.BuiltinTools{
+    GoogleSearch: true,
+    // URLContext + CodeExecution off
+}))
+```
+
+The same options apply to `gemini.NewVertex(...)`. Other genai built-ins (`FileSearch`, `GoogleMaps`, `ComputerUse`, `EnterpriseWebSearch`, `GoogleSearchRetrieval`, `Retrieval`) aren't surfaced today — they require upstream setup and would yield API errors rather than working tools if flipped on without it.
+
 ---
 
 ## Vertex AI (Gemini)

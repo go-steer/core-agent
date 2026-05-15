@@ -46,10 +46,22 @@ const transcript = `{"request":{"Contents":[{"parts":[{"text":"q1"}],"role":"use
 `
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// run is the program body extracted from main so deferred cleanups
+// (the temp-file removal below) actually run when an error short-
+// circuits — log.Fatal calls os.Exit, which skips defers.
+func run() error {
 	// Materialize the inlined transcript to a temp file because the
 	// scripted provider takes a file path. (Library callers writing
 	// real tests typically point this at a checked-in fixture file.)
-	scriptPath := writeTempScript()
+	scriptPath, err := writeTempScript()
+	if err != nil {
+		return err
+	}
 	defer os.Remove(scriptPath)
 
 	// strict=false (lenient) — replay regardless of the incoming
@@ -58,17 +70,17 @@ func main() {
 	// regressions in tests.
 	provider, err := mock.NewScripted(scriptPath, false)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	ctx := context.Background()
 	m, err := provider.Model(ctx, "")
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	a, err := agent.New(m)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	// Two prompts that deliberately don't match the recorded ones.
@@ -78,7 +90,7 @@ func main() {
 		fmt.Printf("user: %s\nmodel: ", prompt)
 		for event, err := range a.Run(ctx, prompt) {
 			if err != nil {
-				log.Fatal(err)
+				return err
 			}
 			if event.Content == nil {
 				continue
@@ -91,18 +103,22 @@ func main() {
 		}
 		fmt.Println()
 	}
+	return nil
 }
 
-func writeTempScript() string {
+func writeTempScript() (string, error) {
 	f, err := os.CreateTemp("", "replay-*.jsonl")
 	if err != nil {
-		log.Fatal(err)
+		return "", err
 	}
 	if _, err := f.WriteString(transcript); err != nil {
-		log.Fatal(err)
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return "", err
 	}
 	if err := f.Close(); err != nil {
-		log.Fatal(err)
+		_ = os.Remove(f.Name())
+		return "", err
 	}
-	return f.Name()
+	return f.Name(), nil
 }

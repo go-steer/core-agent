@@ -18,8 +18,11 @@
 // from a one-shot CLI, a REPL, or an HTTP handler.
 //
 // Multi-turn conversation history is preserved automatically when
-// Run() is called repeatedly with the same userID + sessionID — the
-// ADK's session.InMemoryService accumulates events.
+// Run() is called repeatedly with the same userID + sessionID — by
+// default ADK's session.InMemoryService accumulates events. Pass
+// WithSessionService to plug in a durable backend (e.g. an
+// eventlog-backed Service for SQLite/Postgres persistence + audit
+// log + crash-resume).
 package agent
 
 import (
@@ -50,26 +53,28 @@ const (
 // Agent is the wrapper around an ADK llmagent + runner. One Agent
 // represents one configured LLM-driven role.
 type Agent struct {
-	inner     adkagent.Agent
-	runner    *runner.Runner
-	streaming adkagent.StreamingMode
-	userID    string
-	sessionID string
+	inner          adkagent.Agent
+	runner         *runner.Runner
+	sessionService session.Service
+	streaming      adkagent.StreamingMode
+	userID         string
+	sessionID      string
 }
 
 // Option mutates Agent construction. Use the With* helpers below.
 type Option func(*options)
 
 type options struct {
-	appName     string
-	name        string
-	description string
-	instruction string
-	streaming   adkagent.StreamingMode
-	userID      string
-	sessionID   string
-	tools       []tool.Tool
-	toolsets    []tool.Toolset
+	appName        string
+	name           string
+	description    string
+	instruction    string
+	streaming      adkagent.StreamingMode
+	userID         string
+	sessionID      string
+	tools          []tool.Tool
+	toolsets       []tool.Toolset
+	sessionService session.Service
 
 	// TODO(subagents): a future WithSubagents([]*Agent) Option will
 	// register each subagent as a synthetic tool whose handler invokes
@@ -127,6 +132,19 @@ func WithToolsets(ts []tool.Toolset) Option {
 	return func(o *options) { o.toolsets = append(o.toolsets, ts...) }
 }
 
+// WithSessionService overrides the session.Service handed to the ADK
+// runner. The default is session.InMemoryService(), which loses all
+// state when the process exits. Pass a durable Service (typically the
+// one returned by eventlog.Open(...).Service when wiring the audit
+// log + crash-resume substrate) to persist sessions across runs.
+//
+// The supplied Service is also exposed via Agent.SessionService() so
+// callers can query session state directly without keeping their own
+// reference. Passing nil restores the default.
+func WithSessionService(s session.Service) Option {
+	return func(o *options) { o.sessionService = s }
+}
+
 // WithSystemInstructionPrefix prepends prefix to the agent's default
 // instruction. Used for memory loading: AGENTS.md / CLAUDE.md /
 // GEMINI.md project memory becomes part of the system prompt rather
@@ -167,10 +185,14 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		return nil, fmt.Errorf("agent: build llmagent: %w", err)
 	}
 
+	svc := o.sessionService
+	if svc == nil {
+		svc = session.InMemoryService()
+	}
 	r, err := runner.New(runner.Config{
 		AppName:           o.appName,
 		Agent:             inner,
-		SessionService:    session.InMemoryService(),
+		SessionService:    svc,
 		AutoCreateSession: true,
 	})
 	if err != nil {
@@ -178,13 +200,21 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 	}
 
 	return &Agent{
-		inner:     inner,
-		runner:    r,
-		streaming: o.streaming,
-		userID:    o.userID,
-		sessionID: o.sessionID,
+		inner:          inner,
+		runner:         r,
+		sessionService: svc,
+		streaming:      o.streaming,
+		userID:         o.userID,
+		sessionID:      o.sessionID,
 	}, nil
 }
+
+// SessionService returns the session.Service backing this agent. When
+// no WithSessionService option was passed at construction this is the
+// default in-memory service. Useful for callers that want to query
+// session state directly (e.g. listing prior events) without keeping
+// their own reference to the Service they passed in.
+func (a *Agent) SessionService() session.Service { return a.sessionService }
 
 // Run executes one turn of the agent against prompt and returns the event
 // iterator straight from ADK's runner. Callers are expected to range over

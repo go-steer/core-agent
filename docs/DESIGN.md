@@ -322,6 +322,39 @@ Cogo's pattern: the registry returns a `*TodoStore` alongside the tool list. Thi
 
 ---
 
+## Adapters (`extras/`)
+
+The library is the foundation; the bundled CLI is a reference. *Adapters* are the third layer: opt-in binaries that embed core-agent and translate it to a specific runtime's lifecycle contract. They live under `extras/` so the core packages stay free of runtime-specific concerns.
+
+### Why a separate directory rather than a separate repo
+
+A separate repo would be more honest about the dependency direction (the adapter depends on core-agent, not the other way around). We picked `extras/` for v1 because:
+
+- **Tight feedback loop.** Adapters exercise core-agent's public API the way real consumers will. Keeping them in-tree means a breaking API change shows up immediately in the adapter's CI rather than weeks later when someone bumps a tag.
+- **One-PR workflow.** A change that requires a small core-agent API tweak plus the adapter that needs it can land in one PR. With separate repos, you're juggling tag bumps and replace directives.
+- **Discoverability.** A user reading the README sees "core-agent has an adapter for Scion" without going hunting.
+
+The cost is the appearance of bloat — `go install ./...` builds the adapter too. We accept that. Adapters that grow large enough to deserve their own repo can be moved out without API change (the public surface stays in `agent/`, `tools/`, etc.).
+
+### What goes in an adapter
+
+An adapter owns:
+
+- The **binary** (`main.go`) that wires core-agent's library together with runtime-specific glue.
+- The **lifecycle plumbing** for that runtime — Scion's `agent-info.json` writer, k8s's pod-status emitter, A2A's message envelope, etc.
+- The **packaging** (Dockerfile, manifest templates, k8s YAML) needed to deploy the binary.
+- Its own **README** explaining build + deploy.
+
+An adapter does *not* fold runtime-specific knowledge back into the core packages. If an adapter wants a hook that core-agent doesn't expose (e.g. ADK callbacks for control-flow interception), the adapter either inspects the existing `agent.Run()` event stream or that hook gets promoted to core-agent's public API only when a second adapter needs it. We avoid speculative API surface.
+
+### First adapter: scion-agent
+
+[`extras/scion-agent/`](../extras/scion-agent/) runs core-agent inside [Scion](https://github.com/GoogleCloudPlatform/scion)'s container runtime. Mirrors the Python `adk_scion_agent` example but built on core-agent.
+
+Lifecycle hook strategy: the adapter's `streamTurn` ranges over `agent.Run()`'s event stream and emits transient activity (`thinking` / `executing` / `working`) on agent and tool boundaries. Sticky transitions (`ask_user`, `task_completed`, etc.) flow through a `sciontool_status` ADK tool the model invokes intentionally. No changes to core-agent's public API for this — if a future adapter needs *control-flow* callbacks (abort tool calls, substitute responses), we'll add `WithBeforeToolCallbacks` etc. on `agent.New` then.
+
+---
+
 ## Permission gate
 
 ### Three modes (`ask` / `allow` / `yolo`)

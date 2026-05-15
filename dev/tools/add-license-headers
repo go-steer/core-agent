@@ -25,9 +25,9 @@ header template — the script normalizes whatever's there to the
 current canonical form.
 
 Scope:
-- Go source under cmd/, examples/, agent/, instruction/, config/,
-  permissions/, tools/, mcp/, skills/, models/, telemetry/, usage/,
-  session/, runner/
+- Go source under cmd/, examples/, extras/, agent/, instruction/,
+  config/, permissions/, tools/, mcp/, skills/, models/, telemetry/,
+  usage/, session/, runner/
 - Shell scripts under dev/tools/ and dev/ci/presubmits/
 - YAML: .github/workflows/*.yml, dev/tools/.golangci.yml,
   docs/site/hugo.yaml
@@ -141,7 +141,7 @@ def is_executable_or_sh(p: Path) -> bool:
 
 
 GO_DIRS = (
-    "cmd", "examples",
+    "cmd", "examples", "extras",
     "agent", "instruction", "config", "permissions", "tools",
     "mcp", "skills", "models", "telemetry", "usage", "session", "runner",
 )

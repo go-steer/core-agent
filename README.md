@@ -30,6 +30,7 @@ A reusable Go base agent built on the [Google Agent Development Kit](https://pkg
 - **Permission gate** — ask / allow / yolo modes, per-tool allow- and deny-list patterns, path-scope checks for file tools, and a built-in bash denylist that's non-overridable.
 - **Telemetry** — opt-in OpenTelemetry export (console / OTLP); off by default so a fresh invocation makes zero outbound calls.
 - **Headless CLI** — `core-agent -p "prompt"` for one-shot use; bare `core-agent` drops into a stdin REPL with conversation history preserved across turns.
+- **Optional Scion adapter** — [`extras/scion-agent/`](./extras/scion-agent/) packages core-agent for [Scion](https://github.com/GoogleCloudPlatform/scion)'s container runtime: lifecycle status emission, `--input` task delivery, and a `sciontool_status` tool the model uses to declare sticky states.
 
 ---
 
@@ -178,6 +179,8 @@ core-agent/
 ├── runner/          # Headless (one-shot) + REPL (multi-turn) drivers
 ├── cmd/core-agent/  # CLI binary
 ├── examples/
+├── extras/             # opt-in adapters that embed core-agent
+│   └── scion-agent/    # runs core-agent inside Scion's container runtime
 ├── dev/             # build/test/lint tooling — see dev/README.md
 │   ├── tools/           # ci aggregator + per-check scripts (build, vet, lint-go, ...)
 │   └── ci/presubmits/   # delegators called by .github/workflows/ci.yml

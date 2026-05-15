@@ -59,8 +59,10 @@ type Agent struct {
 	runner         *runner.Runner
 	sessionService session.Service
 	eventLog       *eventlog.Handle
+	tools          []tool.Tool
 	streaming      adkagent.StreamingMode
 	appName        string
+	agentName      string
 	userID         string
 	sessionID      string
 }
@@ -80,10 +82,7 @@ type options struct {
 	toolsets       []tool.Toolset
 	sessionService session.Service
 	eventLog       *eventlog.Handle
-
-	// TODO(subagents): a future WithSubagents([]*Agent) Option will
-	// register each subagent as a synthetic tool whose handler invokes
-	// the subagent's runner. Plumb through here when that lands.
+	subagents      []*Agent
 }
 
 func defaultOptions() options {
@@ -168,6 +167,26 @@ func WithEventLog(h *eventlog.Handle) Option {
 	}
 }
 
+// WithSubagents registers each agent as a callable tool the parent's
+// model can invoke by name. The subagent runs through ADK's runner
+// using the parent's session.Service (so its events stream live into
+// the same audit log) with session.Event.Branch set to
+// "<parent_branch>.<subagent_name>" — ADK's contents-processor
+// branch filter then keeps the subagent's events from leaking back
+// into the parent's next-turn LLM request, which preserves context
+// isolation while keeping the audit log unified.
+//
+// Each subagent's tool name comes from its own WithName value. Use
+// NewSubagentTool directly for per-subagent overrides (custom name,
+// description, depth cap, branch label).
+//
+// Resolved at the end of New() so that the parent's session.Service
+// and session triple — set by other With* options — are captured
+// at the point the subagent tools are constructed.
+func WithSubagents(agents []*Agent) Option {
+	return func(o *options) { o.subagents = append(o.subagents, agents...) }
+}
+
 // WithSystemInstructionPrefix prepends prefix to the agent's default
 // instruction. Used for memory loading: AGENTS.md / CLAUDE.md /
 // GEMINI.md project memory becomes part of the system prompt rather
@@ -196,6 +215,34 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		opt(&o)
 	}
 
+	// Resolve subagents into tools. Done after all options are
+	// applied so each subagent tool captures the parent's final
+	// session.Service + (app, user, session) triple — the values
+	// the parent will be constructed with on the next line. The
+	// subagent's events then land in the parent's session row,
+	// branch-isolated.
+	parentSvc := o.sessionService
+	if parentSvc == nil {
+		parentSvc = session.InMemoryService()
+		o.sessionService = parentSvc
+	}
+	for _, sa := range o.subagents {
+		if sa == nil {
+			continue
+		}
+		st, err := NewSubagentTool(SubagentOptions{
+			Inner:           sa,
+			ParentService:   parentSvc,
+			ParentAppName:   o.appName,
+			ParentUserID:    o.userID,
+			ParentSessionID: o.sessionID,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("agent: WithSubagents: %w", err)
+		}
+		o.tools = append(o.tools, st)
+	}
+
 	inner, err := llmagent.New(llmagent.Config{
 		Name:        o.name,
 		Model:       model,
@@ -208,10 +255,10 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		return nil, fmt.Errorf("agent: build llmagent: %w", err)
 	}
 
+	// o.sessionService was guaranteed non-nil by the subagent
+	// resolution block above (which materializes the default
+	// in-memory service when no other was wired).
 	svc := o.sessionService
-	if svc == nil {
-		svc = session.InMemoryService()
-	}
 	r, err := runner.New(runner.Config{
 		AppName:           o.appName,
 		Agent:             inner,
@@ -227,11 +274,26 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		runner:         r,
 		sessionService: svc,
 		eventLog:       o.eventLog,
+		tools:          o.tools,
 		streaming:      o.streaming,
 		appName:        o.appName,
+		agentName:      o.name,
 		userID:         o.userID,
 		sessionID:      o.sessionID,
 	}, nil
+}
+
+// Tools returns the resolved tool list the agent was constructed
+// with — including any subagent tools materialized by WithSubagents.
+// Useful for diagnostics ("does my parent know about the research
+// subagent?") without introspecting ADK internals.
+func (a *Agent) Tools() []tool.Tool {
+	if a == nil {
+		return nil
+	}
+	out := make([]tool.Tool, len(a.tools))
+	copy(out, a.tools)
+	return out
 }
 
 // AppName returns the AppName the agent was constructed with (the

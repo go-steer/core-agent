@@ -55,6 +55,8 @@ type BuiltinTools struct {
 	WriteFile bool // Atomic write/create
 	EditFile  bool // Single-occurrence string replacement
 	ListDir   bool // Sorted directory listing
+	Glob      bool // Walk + filepath.Match by basename
+	Grep      bool // Walk + RE2 regex per line
 	Todo      bool // In-process plan tracker
 }
 
@@ -67,6 +69,8 @@ var builtinToolNames = []string{
 	"write_file",
 	"edit_file",
 	"list_dir",
+	"glob",
+	"grep",
 	"todo",
 }
 
@@ -95,6 +99,10 @@ func (b *BuiltinTools) Disable(name string) error {
 		b.EditFile = false
 	case "list_dir":
 		b.ListDir = false
+	case "glob":
+		b.Glob = false
+	case "grep":
+		b.Grep = false
 	case "todo":
 		b.Todo = false
 	default:
@@ -113,6 +121,8 @@ func Default() BuiltinTools {
 		WriteFile: true,
 		EditFile:  true,
 		ListDir:   true,
+		Glob:      true,
+		Grep:      true,
 		Todo:      true,
 	}
 }
@@ -175,6 +185,16 @@ func Build(cfg *config.Config, gate *permissions.Gate, b BuiltinTools) (*Registr
 			return functiontool.New(functiontool.Config{
 				Name: "bash", Description: "Execute a shell command via /bin/sh -c with a timeout.",
 			}, bashFunc(gate, cfg))
+		}},
+		{b.Glob, "glob", "Find files by basename pattern.", func() (tool.Tool, error) {
+			return functiontool.New(functiontool.Config{
+				Name: "glob", Description: "Walk path (default '.') and return file paths whose basename matches the supplied filepath.Match pattern (e.g. *.go). Skips hidden / vendored directories.",
+			}, globFunc(gate, cfg))
+		}},
+		{b.Grep, "grep", "Search file contents for a regex.", func() (tool.Tool, error) {
+			return functiontool.New(functiontool.Config{
+				Name: "grep", Description: "Walk path (default '.') and return matching lines for the supplied RE2 regex. Recursive on directories; single-file mode when path points at a file. Skips hidden / vendored directories.",
+			}, grepFunc(gate, cfg))
 		}},
 		{b.Todo, "todo", "Maintain an agent-facing todo list (list/add/set_status/clear).", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{

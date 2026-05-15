@@ -25,12 +25,12 @@ import (
 func TestDefault_AllOn(t *testing.T) {
 	t.Parallel()
 	d := Default()
-	if !d.Bash || !d.ReadFile || !d.WriteFile || !d.EditFile || !d.ListDir || !d.Todo {
+	if !d.Bash || !d.ReadFile || !d.WriteFile || !d.EditFile || !d.ListDir || !d.Glob || !d.Grep || !d.Todo {
 		t.Errorf("Default() should enable everything; got %+v", d)
 	}
 }
 
-func TestBuild_DefaultProducesSixTools(t *testing.T) {
+func TestBuild_DefaultProducesEightTools(t *testing.T) {
 	t.Parallel()
 	cfg := config.DefaultConfig()
 	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
@@ -38,13 +38,13 @@ func TestBuild_DefaultProducesSixTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if len(reg.Tools) != 6 {
-		t.Fatalf("expected 6 tools, got %d", len(reg.Tools))
+	if len(reg.Tools) != 8 {
+		t.Fatalf("expected 8 tools, got %d", len(reg.Tools))
 	}
 	if reg.Todo == nil {
 		t.Errorf("Registry.Todo should always be non-nil")
 	}
-	wantNames := []string{"read_file", "write_file", "edit_file", "list_dir", "bash", "todo"}
+	wantNames := []string{"read_file", "write_file", "edit_file", "list_dir", "bash", "glob", "grep", "todo"}
 	got := make(map[string]bool, len(reg.Tools))
 	for _, tl := range reg.Tools {
 		got[tl.Name()] = true
@@ -118,6 +118,8 @@ func TestBuiltinTools_Disable_KnownNames(t *testing.T) {
 		"write_file": func(b BuiltinTools) bool { return b.WriteFile },
 		"edit_file":  func(b BuiltinTools) bool { return b.EditFile },
 		"list_dir":   func(b BuiltinTools) bool { return b.ListDir },
+		"glob":       func(b BuiltinTools) bool { return b.Glob },
+		"grep":       func(b BuiltinTools) bool { return b.Grep },
 		"todo":       func(b BuiltinTools) bool { return b.Todo },
 	}
 	names := BuiltinToolNames()
@@ -147,14 +149,14 @@ func TestBuiltinTools_Disable_KnownNames(t *testing.T) {
 func TestBuiltinTools_Disable_UnknownName(t *testing.T) {
 	t.Parallel()
 	b := Default()
-	err := b.Disable("grep")
+	err := b.Disable("not_a_real_tool")
 	if err == nil {
 		t.Fatal("expected error for unknown tool name")
 	}
 	if !strings.Contains(err.Error(), "unknown built-in tool") {
 		t.Errorf("error %q missing 'unknown built-in tool'", err.Error())
 	}
-	if !strings.Contains(err.Error(), `"grep"`) {
+	if !strings.Contains(err.Error(), `"not_a_real_tool"`) {
 		t.Errorf("error %q should quote the bad name", err.Error())
 	}
 	// Default fields stay untouched on rejection.

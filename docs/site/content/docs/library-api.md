@@ -124,7 +124,9 @@ Options are applied in the order they're passed. Tools and toolsets accumulate a
 
 ## Built-in tools
 
-The `tools/` package ships a six-tool baseline suitable for any agent that acts on its workspace: `read_file`, `write_file`, `edit_file`, `list_dir`, `bash`, `todo`. All six route through `permissions.Gate` (so the bash denylist and path-scope checks apply), and all honor the per-tool output caps from `cfg.ToolOutput`.
+The `tools/` package ships an eight-tool baseline suitable for any agent that acts on its workspace: `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `bash`, `todo`. All eight route through `permissions.Gate` (so the bash denylist and path-scope checks apply), and all honor the per-tool output caps from `cfg.ToolOutput`.
+
+`glob` walks a directory and returns paths whose basename matches a `filepath.Match` pattern (e.g. `*.go`); `grep` walks a directory (or a single file) and returns matching lines for an RE2 regex with file path + 1-based line number + the matching line text. Both use stdlib only — no `bmatcuk/doublestar`, so `**` recursive-glob is not supported (use an explicit walk root instead). Both skip `.git`, `.svn`, `.hg`, `node_modules`, `vendor` and don't follow symlinks.
 
 Wire them up in your binary:
 
@@ -472,14 +474,16 @@ The parent's model now sees a `research` tool it can invoke with a `request` str
 
 ### Audit log and isolation
 
-Each subagent runs in a derived session row (`<parent>:sub:<branch>`), not the parent's own session row — needed because ADK's database session service uses optimistic concurrency on `last_update_time` and would reject the parent's resumed write after the subagent's writes advanced the timestamp. The events still land in the same database; query by branch prefix to find them across sessions:
+Each subagent runs in a derived session row (`<parent>:sub:<branch>`), not the parent's own session row — needed because ADK's database session service uses optimistic concurrency on `last_update_time` and would reject the parent's resumed write after the subagent's writes advanced the timestamp. The events still land in the same database; the easiest way to query the full audit trail of one logical "run" is `WithSessionTree`:
 
 ```go
 for entry, err := range handle.Stream.Since(ctx, 0,
-    eventlog.WithBranchPrefix("research")) {
-    // ... entries from any subagent named "research" ...
+    eventlog.WithSessionTree("my-app", "alice", "task-1")) {
+    // ... parent's events + every subagent's events under task-1 ...
 }
 ```
+
+`WithSessionTree(app, user, parent)` matches the parent session ID exactly plus every `<parent>:sub:%` descendant in one query — the one-query equivalent of running `ForSession(parent)` and `WithBranchPrefix(branch)` separately. For "every subagent of a given name across sessions" use `WithBranchPrefix` instead.
 
 The derived-session shape gives strong context isolation by construction — the subagent's runner sees only its own session, not the parent's history. If the model needs context, the parent passes it via the `request` argument when calling the subagent.
 
@@ -509,7 +513,6 @@ parent, _ := agent.New(model,
 
 - **Default research-safe tool subset.** The inner agent's tool list is whatever you construct it with; we don't auto-restrict to read-only tools. Add per-subagent gates if your subagent shouldn't have write access.
 - **Token / cost rollup** from subagent runs into the parent's `usage.Tracker`. Defer until a consumer asks.
-- **`WithSessionTree(parentID)` query option** that returns events from the parent session plus all derived sub-sessions in one go. Workaround today: two queries (`ForSession` + `WithBranchPrefix`).
 - **`--enable-subagent` CLI flag.** Library-only feature for v1.
 
 ---

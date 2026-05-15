@@ -12,7 +12,7 @@ It's intentionally opinionated and intentionally honest about what's unresolved.
 
 - **Be the substrate for Go agents, not an agent itself.** Provide the wiring — model providers, MCP, skills, instructions, permissions, telemetry, and a baseline tool suite — so consuming projects only have to write their domain-specific tools and product logic.
 - **Match cogo's conventions.** A future maintainer who knows cogo should recognize the package layout, the dev tooling, the AGENTS.md / `.agents/` convention, and the milestone discipline. The two projects are intended to coexist; copy-pasting fixes between them should be a one-line port.
-- **Stay narrow but useful.** Resist adding features that genuinely belong in the consumer (TUI, slash commands beyond `/exit`, product-specific tools). Built-in tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `bash`, `todo`) ship by default — they're the universal floor for any tool-using agent — but everything beyond that is a consumer concern. (See "Built-in tools" section below for the rationale on this line.)
+- **Stay narrow but useful.** Resist adding features that genuinely belong in the consumer (TUI, slash commands beyond `/exit`, product-specific tools). Built-in tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `bash`, `todo`) ship by default — they're the universal floor for any tool-using agent — but everything beyond that is a consumer concern. (See "Built-in tools" section below for the rationale on this line.)
 - **Make extension obvious.** The `Provider` interface, the `Option` pattern on `agent.New`, the `tools.GateToolset` wrapper — these are the shapes you want a consumer to be able to extend without reading half the codebase first.
 - **Provide first-class Claude support.** ADK Go ships only Gemini and Apigee; we add Anthropic + Vertex Anthropic as the substantive new code.
 
@@ -299,7 +299,7 @@ Replay reproduces the LLM side faithfully. Tool execution at replay time uses th
 
 ## Built-in tools
 
-`tools/` ships six general-purpose tools — `read_file`, `write_file`, `edit_file`, `list_dir`, `bash`, `todo` — lifted from cogo's `internal/tools/`. The bundled CLI enables them all by default; library callers opt in via `tools.Build(cfg, gate, tools.Default())` (or pass a custom `BuiltinTools` instead of `Default()` for fine-grained control). `--no-builtin-tools` on the CLI disables the lot.
+`tools/` ships eight general-purpose tools — `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `bash`, `todo` — six lifted from cogo's `internal/tools/` plus `glob` and `grep` added later. The bundled CLI enables them all by default; library callers opt in via `tools.Build(cfg, gate, tools.Default())` (or pass a custom `BuiltinTools` instead of `Default()` for fine-grained control). `--no-builtin-tools` on the CLI disables the lot.
 
 ### Why we ship them (reversing M1's "narrow base" decision)
 
@@ -318,7 +318,7 @@ In scope (lifted from cogo):
 
 Out of scope:
 - **Web tools** (`web_fetch`, `web_search`) — Gemini's built-in `URLContext` and `GoogleSearch` cover this for Gemini-backed agents. For Anthropic-backed agents, Anthropic's `web_search` server-side tool is surfaced via `models/anthropic.WithWebSearch(true)` (off by default — per-search billing, treated as an active surface). `web_fetch` and other Anthropic server-side tools (code_execution, text_editor, memory, bash) aren't surfaced today; add them under the same `BuiltinTools` struct when a consumer needs one.
-- **Glob / grep** — cogo doesn't have them; not needed for the immediate downstream consumers. Adding them is straightforward when one shows up.
+- **Glob / grep** — shipped (`tools/glob.go`, `tools/grep.go`). Stdlib-only implementations: `filepath.WalkDir` + `filepath.Match` for glob; `regexp` (RE2) + `bufio.Scanner` for grep. Hidden-dir skip set (`.git`, `.svn`, `.hg`, `node_modules`, `vendor`) and no symlink follow. Both default-on in `tools.Default()`. The `**` recursive-glob shorthand is not supported — pass an explicit `path` for the walk root, or use grep's recursive walk for "find me all .go files mentioning X." Adding `bmatcuk/doublestar` for `**` was rejected to keep the dep graph stdlib-only.
 - **Subagent tool** — deferred to M3.
 
 ### Why default-on at the CLI but explicit at the library

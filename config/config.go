@@ -193,7 +193,8 @@ func DefaultConfig() *Config {
 			PerTool: map[string]ToolOutputPerToolCaps{
 				"bash":      {MaxBytes: 64 * 1024, MaxLines: 2000},
 				"read_file": {MaxBytes: 256 * 1024, MaxLines: 5000},
-				"grep":      {MaxBytes: 16 * 1024, MaxLines: 200},
+				"glob":      {MaxBytes: 32 * 1024, MaxLines: 500},
+				"grep":      {MaxBytes: 256 * 1024, MaxLines: 5000},
 			},
 		},
 		OTEL: OTELConfig{

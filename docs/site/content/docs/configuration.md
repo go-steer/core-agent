@@ -138,7 +138,7 @@ Runtime tuning for the agent loop.
 
 ## `tool_output`
 
-Caps tool result size before it enters model context. Prevents a runaway `cat /huge.log` from blowing through your token budget. The built-in tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `bash`, `todo`) honor these caps; consumer-provided tools should call `tools.Truncate(...)` to do the same.
+Caps tool result size before it enters model context. Prevents a runaway `cat /huge.log` from blowing through your token budget. The built-in tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `bash`, `todo`) honor these caps; consumer-provided tools should call `tools.Truncate(...)` to do the same.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
@@ -154,11 +154,14 @@ Default `per_tool` overrides (apply to the built-in tools that ship with core-ag
     "per_tool": {
       "bash":      { "max_bytes": 65536,  "max_lines": 2000 },
       "read_file": { "max_bytes": 262144, "max_lines": 5000 },
-      "list_dir":  { "max_bytes": 32768,  "max_lines": 500 }
+      "glob":      { "max_bytes": 32768,  "max_lines": 500 },
+      "grep":      { "max_bytes": 262144, "max_lines": 5000 }
     }
   }
 }
 ```
+
+(`list_dir` falls back to its compile-time default of 32 KB / 500 lines when no override is set; the same for any other unlisted tool.)
 
 core-agent ships these tools by default in the bundled CLI; library callers opt in with `tools.Build(cfg, gate, tools.Default())`. Override per-tool caps with the per-tool block above; add an entry under `per_tool` for any consumer-provided tool that should follow a non-default cap.
 
@@ -170,7 +173,7 @@ Controls which built-in tools are wired into the bundled CLI. Defaults to the fu
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `disable` | string[] | `[]` | Built-in tool names to turn off. Valid: `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`, `todo`. Unknown names cause a startup error. |
+| `disable` | string[] | `[]` | Built-in tool names to turn off. Valid: `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `todo`. Unknown names cause a startup error. |
 
 Example — keep everything except shell access:
 

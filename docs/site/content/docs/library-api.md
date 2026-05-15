@@ -192,6 +192,17 @@ Routing:
 
 Pass the same writer for both `out` and `info` (e.g., `os.Stdout`) when you want one combined stream — useful for tmux capture (`tmux pipe-pane`) or piping to a file.
 
+### Color
+
+Pass `runner.WithColor(true)` to wrap tool calls in cyan and partial assistant text in green. Off by default — colored output looks like garbage when piped, so opt in (typically gated on `runner.IsTerminal(out)` so the same code does the right thing in both cases):
+
+```go
+runner.WriteEvents(events, os.Stdout, os.Stderr,
+    runner.WithColor(runner.IsTerminal(os.Stdout)))
+```
+
+`IsTerminal` returns false for `bytes.Buffer`, pipes, and any non-`*os.File` writer, so test code (which usually captures into a buffer) gets uncolored output by default.
+
 ---
 
 ## Recording LLM turns

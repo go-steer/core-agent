@@ -19,12 +19,29 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
 
 	"google.golang.org/adk/session"
 )
+
+// EventsOption configures WriteEvents. Use the With* helpers below.
+type EventsOption func(*eventsConfig)
+
+type eventsConfig struct {
+	color bool
+}
+
+// WithColor enables ANSI color codes in WriteEvents output. Tool
+// calls and responses render in cyan; partial assistant text in
+// green. Off by default — colored output looks like garbage when
+// piped to a file, so callers must opt in (typically guarded by
+// IsTerminal(out)).
+func WithColor(on bool) EventsOption {
+	return func(c *eventsConfig) { c.color = on }
+}
 
 // WriteEvents formats events from agent.Run(...) for human-readable
 // streaming display. It's the library-friendly counterpart to the
@@ -47,9 +64,16 @@ import (
 // keep tool chatter on stderr away from the assistant's reply on
 // stdout.
 //
+// Pass WithColor(true) to enable ANSI styling — typically gated on
+// IsTerminal(out) so piped output stays clean.
+//
 // Returns the first iterator error, or nil on clean completion. A
 // trailing newline is written to out if any text was streamed.
-func WriteEvents(events iter.Seq2[*session.Event, error], out, info io.Writer) error {
+func WriteEvents(events iter.Seq2[*session.Event, error], out, info io.Writer, opts ...EventsOption) error {
+	cfg := eventsConfig{}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	wroteText := false
 	for event, err := range events {
 		if err != nil {
@@ -67,11 +91,14 @@ func WriteEvents(events iter.Seq2[*session.Event, error], out, info io.Writer) e
 			}
 			switch {
 			case p.FunctionCall != nil:
-				_, _ = fmt.Fprintln(info, formatCall("→", p.FunctionCall.Name, p.FunctionCall.Args))
+				line := formatCall("→", p.FunctionCall.Name, p.FunctionCall.Args)
+				_, _ = fmt.Fprintln(info, paint(line, ansiCyan, cfg.color))
 			case p.FunctionResponse != nil:
-				_, _ = fmt.Fprintln(info, formatCall("←", p.FunctionResponse.Name, p.FunctionResponse.Response))
+				line := formatCall("←", p.FunctionResponse.Name, p.FunctionResponse.Response)
+				_, _ = fmt.Fprintln(info, paint(line, ansiCyan, cfg.color))
 			case p.Text != "" && event.Partial:
-				if _, err := io.WriteString(out, p.Text); err != nil {
+				text := paint(p.Text, ansiGreen, cfg.color)
+				if _, err := io.WriteString(out, text); err != nil {
 					return fmt.Errorf("runner: write text: %w", err)
 				}
 				wroteText = true
@@ -82,6 +109,45 @@ func WriteEvents(events iter.Seq2[*session.Event, error], out, info io.Writer) e
 		_, _ = fmt.Fprintln(out)
 	}
 	return nil
+}
+
+// IsTerminal reports whether w is connected to a terminal (TTY).
+// Use to gate WithColor: pass WithColor(IsTerminal(os.Stdout)) so
+// color renders interactively but not when output is captured to a
+// file or piped to another process.
+//
+// Returns false for any writer that isn't a *os.File (buffers,
+// pipes, network connections). On Unix and modern Windows, character
+// devices report ModeCharDevice; that's the signal we trust.
+func IsTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}
+
+// ANSI escape codes. Kept minimal on purpose — three colors cover
+// the chat-like display (tool calls cyan, agent text green, plain
+// for everything else).
+const (
+	ansiReset = "\033[0m"
+	ansiCyan  = "\033[36m"
+	ansiGreen = "\033[32m"
+)
+
+// paint wraps s in the given ANSI color when on is true. When off
+// (the default), returns s unchanged so non-TTY consumers don't see
+// escape codes.
+func paint(s, code string, on bool) string {
+	if !on || code == "" {
+		return s
+	}
+	return code + s + ansiReset
 }
 
 // formatCall renders one tool call or response as

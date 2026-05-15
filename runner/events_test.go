@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"errors"
 	"iter"
+	"os"
 	"strings"
 	"testing"
 
@@ -198,5 +199,74 @@ func TestWriteEvents_NoArgsCallShowsParens(t *testing.T) {
 	}, nil), &out, &info)
 	if got := info.String(); got != "→ ping()\n" {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestWriteEvents_NoColorByDefault(t *testing.T) {
+	t.Parallel()
+	var out, info bytes.Buffer
+	_ = WriteEvents(eventSeq([]*session.Event{
+		toolCall("ping", nil),
+		partialText("hi"),
+	}, nil), &out, &info)
+	combined := out.String() + info.String()
+	if strings.Contains(combined, "\033[") {
+		t.Errorf("default output should have no ANSI codes, got %q", combined)
+	}
+}
+
+func TestWriteEvents_WithColor_WrapsCallsAndText(t *testing.T) {
+	t.Parallel()
+	var out, info bytes.Buffer
+	_ = WriteEvents(eventSeq([]*session.Event{
+		toolCall("ping", nil),
+		partialText("hi"),
+	}, nil), &out, &info, WithColor(true))
+
+	if !strings.Contains(info.String(), "\033[36m→ ping()\033[0m") {
+		t.Errorf("tool call should be wrapped in cyan, got %q", info.String())
+	}
+	if !strings.Contains(out.String(), "\033[32mhi\033[0m") {
+		t.Errorf("text should be wrapped in green, got %q", out.String())
+	}
+}
+
+func TestWriteEvents_WithColorOff_SameAsDefault(t *testing.T) {
+	t.Parallel()
+	var outA, infoA, outB, infoB bytes.Buffer
+	events := []*session.Event{
+		toolCall("t", map[string]any{"k": "v"}),
+		toolResult("t", map[string]any{"r": "v"}),
+		partialText("done"),
+	}
+	_ = WriteEvents(eventSeq(events, nil), &outA, &infoA)
+	_ = WriteEvents(eventSeq(events, nil), &outB, &infoB, WithColor(false))
+	if outA.String() != outB.String() || infoA.String() != infoB.String() {
+		t.Errorf("WithColor(false) should match default — got out:%q,%q info:%q,%q",
+			outA.String(), outB.String(), infoA.String(), infoB.String())
+	}
+}
+
+func TestIsTerminal_FalseForBuffer(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	if IsTerminal(&buf) {
+		t.Errorf("bytes.Buffer is not a terminal")
+	}
+}
+
+func TestIsTerminal_FalseForPipe(t *testing.T) {
+	t.Parallel()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer r.Close()
+	defer w.Close()
+	if IsTerminal(r) {
+		t.Errorf("pipe read-end is not a terminal")
+	}
+	if IsTerminal(w) {
+		t.Errorf("pipe write-end is not a terminal")
 	}
 }

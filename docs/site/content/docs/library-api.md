@@ -228,6 +228,102 @@ The recorder lives in `recording/` (not `models/mock/`) because it's production 
 
 ---
 
+## Autonomous runs
+
+`agent.RunAutonomous` is a multi-turn driver for unattended workers — batch jobs, CI tasks, scheduled scripts. It loops `agent.Run` against a goal, enforces run-level budgets, and stops when the model signals "done" via an internal lifecycle tool.
+
+```go
+import (
+    adktool "google.golang.org/adk/tool"
+    "github.com/go-steer/core-agent/agent"
+)
+
+build := func(extras []adktool.Tool) (*agent.Agent, error) {
+    return agent.New(m,
+        agent.WithInstruction(
+            "You are an autonomous worker. Complete the user's goal end-to-end "+
+                "without asking clarifying questions. When finished, call "+
+                "report_done with state=\"done\" and a one-sentence detail.",
+        ),
+        agent.WithTools(append(extras, myTools...)),
+    )
+}
+
+res, err := agent.RunAutonomous(ctx, build,
+    "find every TODO comment and write a tracking doc",
+    agent.WithMaxTurns(20),
+    agent.WithMaxWallclock(10*time.Minute),
+    agent.WithPerTurnTimeout(2*time.Minute),
+    agent.WithPricing(usage.PriceFor(cfg.Model.Name, cfg)),
+    agent.WithMaxCost(2.50),
+)
+fmt.Printf("%s after %d turns ($%.4f): %s\n",
+    res.Reason, res.Turns, res.CostUSD, res.DoneDetail)
+```
+
+### Constructor pattern
+
+`build` is a constructor, not an `*Agent` instance. The driver passes it the internal `report_done` tool so the consumer can compose it with their own tools. This avoids mutating a caller-supplied agent across runs and keeps `agent.New`'s surface free of "extra tools" plumbing that only matters here.
+
+### Termination signal
+
+The driver registers a single-purpose `tools.LifecycleTool` (state="done") under the name `report_done`. The model calls it to end the run. Override the name with `WithDoneToolName` if it collides; override the description with `WithDoneToolDescription` to teach the model when "done" actually means done (e.g. "only after writing a summary file").
+
+Marker-phrase detection ("look for TASK_COMPLETE in the text") is not supported and not recommended — the model can hallucinate the marker. Tool-based termination is unambiguous.
+
+### Budgets
+
+| Option | Caps |
+|---|---|
+| `WithMaxTurns(n)` | Number of `agent.Run` invocations. Default 50. |
+| `WithMaxTokens(in, out)` | Cumulative input / output token totals across all turns. |
+| `WithMaxCost(usd)` | Cumulative dollar cost (requires `WithPricing` or `WithTracker`). |
+| `WithMaxWallclock(d)` | Total wall-clock duration of the run. |
+| `WithPerTurnTimeout(d)` | Per-turn `context.WithTimeout`; one rogue turn can't stall the run. |
+
+Budgets are checked between turns. A turn already in flight when the cap fires runs to completion (or to per-turn timeout) before the driver stops.
+
+### Failure policy
+
+By default any turn-level error aborts the run. Install `WithRetryPolicy` for transient-error recovery:
+
+```go
+agent.WithRetryPolicy(func(err error, attempt int) agent.RetryDecision {
+    if attempt > 3 { return agent.AbortRun }
+    if isTransient(err) { return agent.RetryTurn }
+    return agent.SkipTurn // continue with the configured continuation prompt
+})
+```
+
+`AbortRun` returns `RunResult{Reason: StopReasonRetryAborted}` plus the underlying error. `RetryTurn` re-runs the same prompt. `SkipTurn` advances to `WithContinuationPrompt` (default `"continue"`) and treats the failed turn as if it had completed without a done signal.
+
+### Permission modes
+
+For unattended runs, use `permissions.ModeYolo` (or `ModeAllow` with an explicit allowlist) — `ModeAsk` would deadlock on the first tool call waiting for a human nobody's there to be. If you do use `ModeAsk`, wire a `permissions.Prompter` that fails fast (e.g. `tools.RefusePrompter` plus a custom prompter that just denies).
+
+When your `build` function constructs gated tools, pass the gate to `RunAutonomous` via `WithPermissionsGate(g)`. The driver does a single startup check — `Mode==ask && !HasPrompter` errors out before invoking `build`, so you don't burn an LLM round-trip discovering the misconfiguration. Runtime gating is still enforced by the tools themselves; `WithPermissionsGate` only enables the deadlock guard.
+
+### Composition with recording and mock providers
+
+Both layers compose transparently. To record an autonomous run for offline replay, wrap the model before passing it into `build`:
+
+```go
+m = recording.NewRecorder(m, recordFile)
+build := func(extras []adktool.Tool) (*agent.Agent, error) {
+    return agent.New(m, agent.WithTools(extras))
+}
+```
+
+To test the loop without burning quota, drive `RunAutonomous` against a `mock.NewScripted(...)` model. `examples/autonomous/` runs end-to-end this way with no credentials.
+
+### What's deferred
+
+- **Pause / resume mid-run** — the orchestrator-driven pattern (Scion, AX) covers this naturally; standalone needs more design.
+- **Crash-resume** — depends on file-backed sessions.
+- **Streaming structured results** — pass a `WithProgress` callback if you need per-event observation; richer shapes will land when a consumer asks.
+
+---
+
 ## Adding custom tools
 
 Use ADK's `functiontool.New` to wrap a Go function as a tool the agent can call. Schema is generated from the input/output struct types via `jsonschema` tags.

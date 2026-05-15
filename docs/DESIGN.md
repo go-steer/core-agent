@@ -345,6 +345,38 @@ Cogo's pattern: the registry returns a `*TodoStore` alongside the tool list. Thi
 
 ---
 
+## Autonomous runs
+
+`agent.RunAutonomous` is the multi-turn driver for unattended use (batch jobs, CI tasks, scheduled workers). `tools.NewLifecycleTool` is the generic status emitter the model uses to signal state ("thinking", "blocked", "done", custom). Both ship as a unit because they share a model: the driver registers a single-state lifecycle tool internally as its termination signal.
+
+### Why a driver in the library, not "10 lines of consumer code"
+
+The parked autonomous doc claimed across-turn looping was ~10 lines a consumer could write themselves. It's not — once you actually ship it, you find yourself wanting:
+
+- Run-level budgets (turns / tokens / cost / wallclock — `MaxSteps` in the agent config is per-turn, not per-run).
+- Per-turn timeout that's distinct from total wallclock so a single rogue turn can't stall the whole run.
+- A failure policy hook so retries land on transient transport errors but permanent errors still abort.
+- Usage rollup that keeps the run-level totals separate from the per-turn `usage.Tracker` rows.
+- A clean termination gesture from the model that's not "watch for a marker phrase in the text" (brittle; the model can hallucinate the marker).
+
+Putting these in the library means there's one correct implementation and one place to change when budget semantics need to shift. Consumers who want a different loop shape (orchestrator-driven turns instead of an internal loop) can still call `agent.Run` directly; the driver doesn't preclude that.
+
+### Constructor pattern, not `*Agent` instance
+
+`RunAutonomous(ctx, build func(extraTools []tool.Tool) (*Agent, error), goal, opts...)` takes a constructor rather than an `*Agent`. The driver injects the internal `report_done` tool through `extras` so it composes with the consumer's tools without mutating a shared agent. The alternative — `agent.WithExtraTools(...)` plumbing on `agent.New` — pollutes the agent's surface for a feature only the driver needs. The constructor approach also makes it natural to construct a fresh agent per run when a consumer wants no shared session state across runs.
+
+### Lifecycle tool is separate from the driver
+
+`tools.NewLifecycleTool` ships as its own building block — orchestrator adapters (Scion, the AX adapter on the private `axplore` branch) wire it for "I'm thinking / blocked / done" emission back to their UI even though they don't use `RunAutonomous` (they have their own loop). The driver uses it internally as its "done" signal but the tool isn't autonomous-only.
+
+### What's deferred (and why)
+
+- **Pause / resume mid-run.** The right shape isn't obvious without a real consumer ask. Pause-between-turns is doable today (consumer cancels context, then re-runs with stored history); pause-mid-turn would need ADK to expose recoverable interruption points it doesn't today.
+- **Crash-resume.** Blocked on M3's file-backed sessions. The serialization of `RunResult` and goal/continuation state is straightforward; the hard part is session resurrection, which depends on M3.
+- **`--autonomous` CLI flag.** Bundled `cmd/core-agent` is REPL / one-shot. Long-running autonomous use is a library / script concern. Add the flag if a consumer asks; until then it's just a wrapper with no value-add.
+
+---
+
 ## Adapters (`extras/`)
 
 The library is the foundation; the bundled CLI is a reference. *Adapters* are the third layer: opt-in binaries that embed core-agent and translate it to a specific runtime's lifecycle contract. They live under `extras/` so the core packages stay free of runtime-specific concerns.

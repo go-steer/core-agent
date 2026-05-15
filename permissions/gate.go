@@ -126,6 +126,12 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 // Mode reports the active permission mode.
 func (g *Gate) Mode() Mode { return g.mode }
 
+// HasPrompter reports whether an interactive Prompter is wired. False
+// means an ask-mode call would fail with ErrNoPrompter rather than
+// reach a human — useful for callers (e.g. autonomous drivers) that
+// want to fail fast at startup instead of on the first tool call.
+func (g *Gate) HasPrompter() bool { return g.prompter != nil }
+
 // Scope exposes the path scope. Callers that mutate the scope should
 // also persist the change via the config layer.
 func (g *Gate) Scope() *PathScope { return g.scope }

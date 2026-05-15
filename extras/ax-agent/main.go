@@ -51,8 +51,9 @@ import (
 	"github.com/go-steer/core-agent/models"
 	_ "github.com/go-steer/core-agent/models/anthropic"
 	_ "github.com/go-steer/core-agent/models/gemini"
-	"github.com/go-steer/core-agent/models/mock"
+	_ "github.com/go-steer/core-agent/models/mock"
 	"github.com/go-steer/core-agent/permissions"
+	"github.com/go-steer/core-agent/recording"
 	"github.com/go-steer/core-agent/runner"
 	"github.com/go-steer/core-agent/skills"
 	"github.com/go-steer/core-agent/telemetry"
@@ -123,7 +124,7 @@ func run(listen, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 			return runner.ExitConfigError
 		}
 		defer f.Close()
-		m = mock.NewRecorder(m, f)
+		m = recording.NewRecorder(m, f)
 	}
 
 	userHome, _ := os.UserHomeDir()

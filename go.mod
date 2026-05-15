@@ -1,6 +1,6 @@
 module github.com/go-steer/core-agent
 
-go 1.26.2
+go 1.26.3
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.43.0

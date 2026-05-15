@@ -217,6 +217,68 @@ ANTHROPIC_VERTEX_PROJECT_ID=my-gcp-project \
 
 ---
 
+## Echo (mock)
+
+Returns the user's last message verbatim as the model response. No credentials, no streaming, no tool calls. Useful for credential-free smoke tests of the binary.
+
+| Provider name | `echo` |
+| Default model | (ignored) |
+| Auth | none |
+| Env vars | none |
+| Config block | none |
+
+### CLI
+
+```bash
+core-agent --provider=echo -p "ping"
+# model response: "ping"
+```
+
+Auto-detection is intentionally off — opt in via `--provider=echo` or `model.provider: "echo"`.
+
+---
+
+## Scripted (mock)
+
+Replays a JSONL transcript turn-by-turn. Pair with `--record-to` against a real provider to capture the transcript first; then run with `--provider=scripted` to replay it offline.
+
+| Provider name | `scripted` |
+| Default model | (ignored) |
+| Auth | none |
+| Env vars | none |
+| Config block | `mock.script` (required), `mock.strict` (optional) |
+
+### Config
+
+```json
+{
+  "model": { "provider": "scripted" },
+  "mock":  { "script": "fixtures/session.jsonl", "strict": false }
+}
+```
+
+### CLI
+
+```bash
+# Capture a real session:
+GEMINI_API_KEY=... core-agent --record-to=/tmp/session.jsonl -p "summarize main.go"
+
+# Replay it without credentials:
+core-agent --provider=scripted --script=/tmp/session.jsonl -p "anything"
+
+# Strict mode — fail on prompt drift:
+core-agent --provider=scripted --script=/tmp/session.jsonl --script-strict -p "summarize main.go"
+```
+
+### Notes
+
+- Lenient mode (default): yields the next recorded responses regardless of the incoming request. Good for "drive the loop without an API key."
+- Strict mode: the incoming request's `Contents` must JSON-equal the recorded request. Catches regressions in prompt construction. `Config` is intentionally not compared — tool decls legitimately drift.
+- Replay reproduces the LLM side faithfully, but tool execution at replay time uses the live environment. If files have changed, the agent feeds different outputs back to the scripted LLM, which still returns the next canned response. See [DESIGN.md → Mock providers and recording](https://github.com/go-steer/core-agent/blob/main/docs/DESIGN.md) for the full caveat.
+- The script must contain at least one turn; an empty file is rejected at startup.
+
+---
+
 ## Roadmap
 
 Likely additions in future milestones, ordered by approximate effort:

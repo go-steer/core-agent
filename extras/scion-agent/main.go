@@ -56,6 +56,7 @@ import (
 	"github.com/go-steer/core-agent/models"
 	_ "github.com/go-steer/core-agent/models/anthropic"
 	_ "github.com/go-steer/core-agent/models/gemini"
+	"github.com/go-steer/core-agent/models/mock"
 	"github.com/go-steer/core-agent/permissions"
 	"github.com/go-steer/core-agent/runner"
 	"github.com/go-steer/core-agent/skills"
@@ -67,9 +68,12 @@ func main() {
 	initialInput := flag.String("input", "", "initial task message; the agent processes this before reading stdin")
 	cfgPath := flag.String("c", "", "config file path (default: discover .agents/config.json)")
 	modelOverride := flag.String("m", "", "override model name from config")
-	providerOverride := flag.String("provider", "", "override model.provider (gemini|vertex|anthropic|anthropic-vertex)")
+	providerOverride := flag.String("provider", "", "override model.provider (gemini|vertex|anthropic|anthropic-vertex|echo|scripted)")
 	noBuiltinTools := flag.Bool("no-builtin-tools", false, "disable the built-in tool suite ("+strings.Join(tools.BuiltinToolNames(), ", ")+")")
 	disableTools := flag.String("disable-tools", "", "comma-separated list of built-in tools to disable (e.g. bash,write_file). Composes with cfg.tools.disable; ignored when --no-builtin-tools is set.")
+	scriptPath := flag.String("script", "", "JSONL transcript for --provider=scripted (overrides cfg.mock.script)")
+	scriptStrict := flag.Bool("script-strict", false, "scripted: assert each incoming request matches the recorded one (overrides cfg.mock.strict)")
+	recordTo := flag.String("record-to", "", "write a JSONL recording of all LLM turns to this path (overrides cfg.mock.record)")
 	flag.Parse()
 
 	// Scion's Gemini harness sets GEMINI_API_KEY; core-agent's gemini
@@ -82,10 +86,10 @@ func main() {
 		}
 	}
 
-	os.Exit(run(*initialInput, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools))
+	os.Exit(run(*initialInput, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo))
 }
 
-func run(initialInput, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string) int {
+func run(initialInput, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -100,6 +104,15 @@ func run(initialInput, cfgPath, modelOverride, providerOverride string, noBuilti
 	}
 	if providerOverride != "" {
 		cfg.Model.Provider = providerOverride
+	}
+	if scriptPath != "" {
+		cfg.Mock.Script = scriptPath
+	}
+	if scriptStrict {
+		cfg.Mock.Strict = true
+	}
+	if recordTo != "" {
+		cfg.Mock.Record = recordTo
 	}
 
 	otelShutdown, err := telemetry.Setup(ctx, cfg.OTEL.Exporter)
@@ -117,6 +130,15 @@ func run(initialInput, cfgPath, modelOverride, providerOverride string, noBuilti
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "scion-agent: %v\n", err)
 		return runner.ExitConfigError
+	}
+	if cfg.Mock.Record != "" {
+		f, err := os.Create(cfg.Mock.Record)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "scion-agent: --record-to: %v\n", err)
+			return runner.ExitConfigError
+		}
+		defer f.Close()
+		m = mock.NewRecorder(m, f)
 	}
 
 	userHome, _ := os.UserHomeDir()

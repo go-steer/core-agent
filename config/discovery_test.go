@@ -277,6 +277,54 @@ func equalStringSlice(a, b []string) bool {
 	return true
 }
 
+func TestLoad_MockBlockRoundtrips(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	agents := filepath.Join(root, AgentsDirName)
+	if err := os.MkdirAll(agents, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"version":1,"model":{"name":"gemini-3.1-pro-preview"},"mock":{"script":"/tmp/s.jsonl","strict":true,"record":"/tmp/r.jsonl"}}`
+	if err := os.WriteFile(filepath.Join(agents, ConfigFileName), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(agents)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Mock.Script != "/tmp/s.jsonl" {
+		t.Errorf("mock.script: got %q", cfg.Mock.Script)
+	}
+	if !cfg.Mock.Strict {
+		t.Errorf("mock.strict: expected true")
+	}
+	if cfg.Mock.Record != "/tmp/r.jsonl" {
+		t.Errorf("mock.record: got %q", cfg.Mock.Record)
+	}
+}
+
+func TestValidate_ScriptedRequiresScript(t *testing.T) {
+	t.Parallel()
+	cfg := DefaultConfig()
+	cfg.Model.Provider = ProviderScripted
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "mock.script is required") {
+		t.Errorf("expected mock.script-required error for scripted provider, got %v", err)
+	}
+	cfg.Mock.Script = "/tmp/x.jsonl"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("with mock.script set, scripted should validate; got %v", err)
+	}
+}
+
+func TestValidate_EchoNeedsNoScript(t *testing.T) {
+	t.Parallel()
+	cfg := DefaultConfig()
+	cfg.Model.Provider = ProviderEcho
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("echo should validate without mock.script; got %v", err)
+	}
+}
+
 func TestLoadOrDefault_NoAgentsDir(t *testing.T) {
 	t.Parallel()
 	cfg, agents, err := LoadOrDefault(t.TempDir())

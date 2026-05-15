@@ -160,6 +160,27 @@ The bundled `cmd/core-agent` enables the full set by default. `--no-builtin-tool
 
 ---
 
+## Recording LLM turns
+
+`models/mock` ships a `NewRecorder(inner, w io.Writer)` that wraps any `model.LLM` and appends each turn (request + response stream) to `w` as a single JSONL line in the shared `RecordedTurn` shape. The wrapper is transparent — callers see the inner LLM's responses unchanged — and the writer's lifecycle is the caller's responsibility.
+
+```go
+import "github.com/go-steer/core-agent/models/mock"
+
+f, err := os.Create("session.jsonl")
+if err != nil { /* ... */ }
+defer f.Close()
+
+m, _ := provider.Model(ctx, cfg.Model.Name)
+m = mock.NewRecorder(m, f)
+
+a, _ := agent.New(m, agent.WithTools(reg.Tools))
+```
+
+Replay the captured file with `mock.NewScripted(path, strict)` (or `--provider=scripted --script=path` from the CLI). See [Providers → Scripted]({{< relref "providers.md#scripted-mock" >}}) for the lenient/strict tradeoff and the "tool environment isn't recorded" caveat.
+
+---
+
 ## Adding custom tools
 
 Use ADK's `functiontool.New` to wrap a Go function as a tool the agent can call. Schema is generated from the input/output struct types via `jsonschema` tags.

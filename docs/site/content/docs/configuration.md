@@ -186,6 +186,38 @@ The `--disable-tools=bash,write_file` CLI flag composes with this list by union 
 
 ---
 
+## `mock`
+
+Configures the `echo` and `scripted` mock providers, plus the orthogonal recording wrapper. See [Providers → Echo](#echo-mock) and [Providers → Scripted](#scripted-mock) for the full story; this section is the schema.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `script` | string | `""` | Path to a JSONL transcript. **Required** when `model.provider: scripted`. |
+| `strict` | bool | `false` | Scripted: assert each incoming request's `Contents` JSON-equal the recorded request. Catches prompt-construction regressions. |
+| `record` | string | `""` | Write a JSONL recording of every LLM turn to this path. Works with **any** provider, not just the mocks. |
+
+Example — record a real Gemini session for later replay:
+
+```json
+{
+  "model": { "provider": "gemini" },
+  "mock":  { "record": "fixtures/last-session.jsonl" }
+}
+```
+
+Example — replay it under tests:
+
+```json
+{
+  "model": { "provider": "scripted" },
+  "mock":  { "script": "fixtures/last-session.jsonl", "strict": true }
+}
+```
+
+CLI flags `--script`, `--script-strict`, and `--record-to` override the corresponding fields. `--record-to` is the orthogonal one — it's safe to combine with any provider.
+
+---
+
 ## `otel`
 
 OpenTelemetry exporter config. Off by default — a fresh invocation makes zero outbound spans.

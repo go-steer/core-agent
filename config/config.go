@@ -40,6 +40,7 @@ type Config struct {
 	Agent       AgentConfig       `json:"agent,omitempty"`
 	ToolOutput  ToolOutputConfig  `json:"tool_output,omitempty"`
 	Tools       ToolsConfig       `json:"tools,omitempty"`
+	Mock        MockConfig        `json:"mock,omitempty"`
 	OTEL        OTELConfig        `json:"otel,omitempty"`
 }
 
@@ -129,6 +130,25 @@ type ToolsConfig struct {
 	Disable []string `json:"disable,omitempty"`
 }
 
+// MockConfig configures the mock providers (echo, scripted) and the
+// orthogonal recording wrapper.
+//
+// Script is the path to a JSONL transcript consumed by the scripted
+// provider; it's required when model.provider is "scripted".
+//
+// Strict makes the scripted provider assert that each incoming
+// request's Contents JSON-equal the recorded request. Off by default
+// — the typical use is replaying without caring about prompt drift.
+//
+// Record is a path to write a JSONL recording of every LLM turn.
+// Works with any provider, not just the mocks; lives in MockConfig
+// because it shares the file format the scripted provider consumes.
+type MockConfig struct {
+	Script string `json:"script,omitempty"`
+	Strict bool   `json:"strict,omitempty"`
+	Record string `json:"record,omitempty"`
+}
+
 // OTELConfig configures the OpenTelemetry exporter.
 type OTELConfig struct {
 	Exporter string `json:"exporter,omitempty"` // "none" | "console" | "otlp"
@@ -148,6 +168,8 @@ const (
 	ProviderVertex          = "vertex"
 	ProviderAnthropic       = "anthropic"
 	ProviderAnthropicVertex = "anthropic-vertex"
+	ProviderEcho            = "echo"
+	ProviderScripted        = "scripted"
 )
 
 // DefaultConfig returns a Config with all fields populated by sensible
@@ -192,10 +214,13 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("config: model.name is required")
 	}
 	switch c.Model.Provider {
-	case "", ProviderGemini, ProviderVertex, ProviderAnthropic, ProviderAnthropicVertex:
+	case "", ProviderGemini, ProviderVertex, ProviderAnthropic, ProviderAnthropicVertex, ProviderEcho, ProviderScripted:
 		// ok; "" means auto-detect at resolve time.
 	default:
-		return fmt.Errorf("config: unknown model.provider %q (want %q, %q, %q, or %q)", c.Model.Provider, ProviderGemini, ProviderVertex, ProviderAnthropic, ProviderAnthropicVertex)
+		return fmt.Errorf("config: unknown model.provider %q (want one of %q, %q, %q, %q, %q, %q)", c.Model.Provider, ProviderGemini, ProviderVertex, ProviderAnthropic, ProviderAnthropicVertex, ProviderEcho, ProviderScripted)
+	}
+	if c.Model.Provider == ProviderScripted && c.Mock.Script == "" {
+		return fmt.Errorf("config: mock.script is required when provider is %q (or pass --script PATH)", ProviderScripted)
 	}
 	if c.Model.Provider == ProviderVertex && c.Model.Vertex != nil {
 		if c.Model.Vertex.Project == "" || c.Model.Vertex.Location == "" {

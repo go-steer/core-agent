@@ -277,6 +277,26 @@ The cost is one extra layer of indirection per call. For a streaming agent loop,
 
 ---
 
+## Mock providers and recording
+
+`models/mock/` ships two `models.Provider` implementations and a recording wrapper, all credential-free:
+
+- **`echo`** returns the user's last message as the model response. Zero config; for "does the binary boot?" sanity tests.
+- **`scripted`** plays back a JSONL transcript turn-by-turn. For exercising the full agent loop (tool calls, prompt construction, the disable surface) without burning API quota.
+- **`mock.NewRecorder(inner, w)`** wraps any `model.LLM` and appends each turn (request + response stream) to an `io.Writer` as JSONL. Enabled in the bundled CLI via `--record-to=path` or `cfg.mock.record`; works against `gemini`, `anthropic`, `echo`, or `scripted`.
+
+The three pieces share one `RecordedTurn` JSON shape (`format.go`). Recording produces it; scripted consumes it.
+
+### Strict vs lenient
+
+By default, the scripted provider replays in **lenient** mode — it ignores incoming requests and yields the next recorded responses in order. That's the right default for "I want to drive the loop without an API key." Opt into **strict** mode (`cfg.mock.strict` or `--script-strict`) and each incoming request's `Contents` must JSON-equal the recorded request, surfacing prompt-construction regressions as test failures. Strict deliberately skips `Config` — tool declarations legitimately drift as the agent's tool registry evolves, and we don't want every tool addition to invalidate every recording.
+
+### Caveat: tool environment isn't recorded
+
+Replay reproduces the LLM side faithfully. Tool execution at replay time uses the **live environment** — actual `bash` against the actual filesystem. If the environment has changed since recording, the agent feeds different tool outputs back to the scripted LLM, which still returns the next canned response regardless. This is great for testing loop shape and prompt construction; less great for bit-exact session reproduction. Recording tool outputs alongside LLM turns would close the gap, but adds a much larger surface (which tools? all of them? what about side effects?) and is deferred until a concrete test scenario asks for it.
+
+---
+
 ## Built-in tools
 
 `tools/` ships six general-purpose tools — `read_file`, `write_file`, `edit_file`, `list_dir`, `bash`, `todo` — lifted from cogo's `internal/tools/`. The bundled CLI enables them all by default; library callers opt in via `tools.Build(cfg, gate, tools.Default())` (or pass a custom `BuiltinTools` instead of `Default()` for fine-grained control). `--no-builtin-tools` on the CLI disables the lot.

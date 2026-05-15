@@ -23,6 +23,7 @@ A reusable Go base agent built on the [Google Agent Development Kit](https://pkg
   - **Vertex AI** (Gemini) via `GOOGLE_GENAI_USE_VERTEXAI=true` + ADC + `GOOGLE_CLOUD_PROJECT` — same built-in tools as Gemini API.
   - **Anthropic / Claude** via `ANTHROPIC_API_KEY` — implemented as a native ADK `model.LLM` adapter (ADK Go ships only Gemini + Apigee out of the box)
   - **Anthropic / Claude via Vertex AI** via ADC + `ANTHROPIC_VERTEX_PROJECT_ID` + `CLOUD_ML_REGION` — same adapter, GCP-authed and GCP-billed, no separate Anthropic API key required
+  - **Mock providers** for credential-free testing — `--provider=echo` returns the user prompt verbatim; `--provider=scripted --script=transcript.jsonl` replays a recorded session. Pair with `--record-to=path.jsonl` against any provider to capture a transcript for later replay.
 - **AGENTS.md instruction loading** — system prompt prefix is assembled from `~/.core-agent/AGENTS.md` and the project's `AGENTS.md` (with `CLAUDE.md` / `GEMINI.md` fallbacks), preserving the [agent.md](https://agent.md/) convention plus the fallback names other agent tools have adopted.
 - **MCP servers** — declarative `.agents/mcp.json`; stdio and Streamable HTTP transports; tools are namespaced (`<server>_<tool>`) and pass through the permission gate.
 - **Claude-compatible skills** — drop a `SKILL.md` bundle into `.agents/skills/<name>/` and the agent can invoke it on demand via ADK's `skilltoolset`.
@@ -102,13 +103,18 @@ CLI flags:
 -p, --prompt string     Single prompt; runs one turn and exits.
 -c, --config string     Config file path (default: discover .agents/config.json).
 -m, --model string      Override model name from config.
-    --provider string   Override model.provider (gemini|vertex|anthropic|anthropic-vertex).
+    --provider string   Override model.provider
+                        (gemini|vertex|anthropic|anthropic-vertex|echo|scripted).
     --no-builtin-tools  Disable the built-in tool suite (read_file, write_file,
                         edit_file, list_dir, bash, todo).
     --disable-tools     Comma-separated list of built-in tools to disable
                         (e.g. bash,write_file). Composes by union with
                         cfg.tools.disable; ignored when --no-builtin-tools
                         is set.
+    --script string     JSONL transcript for --provider=scripted.
+    --script-strict     Scripted: assert each request matches the recorded one.
+    --record-to string  Write a JSONL recording of all LLM turns to this path.
+                        Works with any provider.
 ```
 
 ---

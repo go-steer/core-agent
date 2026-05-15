@@ -197,12 +197,17 @@ core-agent/
 │                        # (api.anthropic.com + Vertex AI backends)
 ├── telemetry/       # OTEL exporter setup
 ├── usage/           # Per-turn token + cost tracker
-├── session/         # Transcript persistence (.agents/sessions/)
+├── session/         # JSON transcript persistence (.agents/sessions/)
+├── eventlog/        # Durable session.Service + audit/replay event log
+│                    # (SQLite/Postgres/MySQL via GORM, monotonic seq,
+│                    # Since/Watch, session lock)
+├── recording/       # LLM-wire recorder for offline replay through mock providers
 ├── runner/          # Headless (one-shot) + REPL (multi-turn) drivers
 ├── cmd/core-agent/  # CLI binary
 ├── examples/
 ├── extras/             # opt-in adapters that embed core-agent
 │   └── scion-agent/    # runs core-agent inside Scion's container runtime
+│   # (extras/ax-agent/ lives on the axplore branch — see docs/ax-plan.md)
 ├── dev/             # build/test/lint tooling — see dev/README.md
 │   ├── tools/           # ci aggregator + per-check scripts (build, vet, lint-go, ...)
 │   └── ci/presubmits/   # delegators called by .github/workflows/ci.yml
@@ -221,7 +226,8 @@ The `Provider` interface is the extension point — register your own model back
   - `config.json` — schema in [`config/config.go`](./config/config.go)
   - `mcp.json` — MCP server declarations
   - `skills/<name>/SKILL.md` — Claude-compatible skill bundles
-  - `sessions/<timestamp>.json` — transcript per one-shot invocation
+  - `sessions/<timestamp>.json` — JSON transcript per one-shot invocation
+- **`~/.<binary>/sessions.db`** — when `--session-db` is set, durable session storage + audit log lives here (binary name from `os.Executable()` so `core-agent`, `scion-agent`, and forks each get their own directory). Override with `--session-db-path`. See [`eventlog/`](./eventlog/) and the [Sessions and event log](https://go-steer.github.io/core-agent/docs/sessions/) site doc.
 - **`AGENTS.md`** — project-level system instruction prefix, picked up from the discovered project root. `CLAUDE.md` and `GEMINI.md` are checked as fallbacks for repos that already have one.
 
 ---
@@ -230,11 +236,12 @@ The `Provider` interface is the extension point — register your own model back
 
 What's intentionally **not** in v1, with notes on where each lands:
 
-- **Subagents** — a `WithSubagents([]*Agent)` option that registers each subagent as a synthetic tool. Marker is in [`agent/agent.go`](./agent/agent.go) where the option will plug in.
 - **Bubble Tea TUI** — interactive multi-turn UI with rendering, slash commands, and modal permission prompts.
-- **File-backed session service** — today the ADK in-memory store is used, so REPL history dies with the process.
 - **Slash-command framework** — REPL ships with only `/exit` and `/quit`.
 - **Anthropic pricing entries** in [`usage/pricing.go`](./usage/pricing.go) — Claude models currently return zero pricing; consumers can override via `cfg.Model.Pricing`.
+- **Glob/grep built-in tools** — bash is the workaround today; plan in [`docs/tools-plan.md`](./docs/tools-plan.md).
+- **Pause/resume mid-run** for `agent.RunAutonomous` — across-turn crash-resume shipped in M3; mid-turn pause is harder and waits for a real consumer use case.
+- **Cost rollup from subagents into the parent's `usage.Tracker`** — subagent runs track usage internally; surfacing it to the parent is a follow-up.
 
 ---
 
@@ -254,7 +261,7 @@ Shipped:
 - `examples/basic`, `examples/with-tools`
 - `~6,000` LOC including tests; `go build ./...` and `go test ./...` clean
 
-What v1 deliberately leaves behind from cogo: the Bubble Tea TUI, the bash/read_file/grep/write_file built-in tools (consumers add their own), the slash-command machinery, and the cogo-specific branding.
+What v1 deliberately left behind from cogo: the Bubble Tea TUI, the slash-command machinery, and the cogo-specific branding. (The bash / read_file / write_file / edit_file / list_dir / todo built-in tool suite landed in unnumbered work later — see [`tools/`](./tools/) and the Features section above.)
 
 ### M2 — Anthropic via Vertex AI *(shipped)*
 
@@ -271,20 +278,41 @@ Shipped:
 - CLI `--provider` help text updated to list `anthropic-vertex`
 - [`docs/acceptance-m2.md`](./docs/acceptance-m2.md) with end-to-end gates for the new path
 
-Out of scope (deferred to M3): auto-detection of `anthropic-vertex` from generic GCP env vars — too overlapping with Vertex Gemini to disambiguate safely. Users explicitly opt in via `--provider anthropic-vertex` or config.
+Out of scope (still deferred): auto-detection of `anthropic-vertex` from generic GCP env vars — too overlapping with Vertex Gemini to disambiguate safely. Users explicitly opt in via `--provider anthropic-vertex` or config. Listed under M4 candidates.
 
-### M3 — TBD
+### M3 — Autonomy + durable sessions + subagents *(shipped)*
 
-Candidates, ordered roughly by likely value to downstream consumers:
+A single-themed milestone that brought core-agent from "library you can call from a REPL" to "library you can run as an unattended worker with audit logs, crash recovery, and in-process delegation." Each piece shipped behind its own opt-in option so the v1 surface stays clean.
 
-- **Subagents** — `WithSubagents([]*Agent)` option that registers each subagent as a synthetic tool. Marker is in [`agent/agent.go`](./agent/agent.go).
-- **Amazon Bedrock + Claude Platform on AWS** as additional Anthropic backends — direct extension of M2's pattern (same conversion code, different client construction via the SDK's `bedrock/` and `aws/` subpackages).
-- **File-backed session service** — REPL conversation history that survives process restart.
-- **Slash-command framework** — extend the REPL beyond `/exit` and `/quit` (e.g. `/model`, `/permissions`, `/memory`).
-- **Anthropic feature coverage** — extended/adaptive thinking, structured outputs, server-side tools (web_search, code_execution), vision.
+Shipped:
+
+- **`tools.NewLifecycleTool`** — generic state-emission primitive the model uses to signal "thinking", "blocked", "done", or any custom label. Consumer-supplied handler decides where the events go (stdout, status file, websocket, orchestrator's event log). Used internally by the autonomous driver as its termination signal; exported for direct use by orchestrator adapters.
+- **`tools.NewAskUserTool`** + three built-in `Prompter`s (`StdinPrompter`, `RefusePrompter`, `StaticPrompter`) — in-turn human consultation pattern. CLI flag `--ask=stdin|auto|off`.
+- **`agent.RunAutonomous`** — multi-turn driver for unattended runs (batch jobs, CI tasks, scheduled scripts). Budgets (turns / tokens / cost / wallclock / per-turn timeout), failure policy, model-driven termination via the lifecycle tool, optional permissions deadlock guard via `WithPermissionsGate`.
+- **`agent.WithSessionService` + `eventlog.Open`** — durable session backend wrapping ADK's GORM-backed `database.SessionService`. Multi-driver via SQLite (pure-Go, no CGO) / Postgres / MySQL. Adds an `agent_eventlog` overlay table with monotonic `seq INTEGER PRIMARY KEY AUTOINCREMENT` for AX-style "everything since seq N" replay. `Stream.Since(seq)` for replay, `Stream.Watch(seq)` for live tail, `Handle.AcquireLock` for cross-process exclusion. CLI flags `--session-db` and `--session-db-path`.
+- **`agent.ResumeAutonomous`** — crash-resume for autonomous runs. Per-turn checkpoint events land in the durable log; resume reads the latest checkpoint, re-derives totals, continues from the next turn. Cross-binary resume works via `Author="<binary>/autonomous"` suffix matching. Terminal-state short-circuit only on `Completed` so budget-exhausted runs can be resumed with a higher cap.
+- **`agent.WithSubagents([]*Agent)`** + `agent.NewSubagentTool` — in-process delegation. The parent's model invokes each subagent as a tool; the subagent runs in a derived session row (same database, distinct row to satisfy ADK's optimistic-concurrency check) with `Branch="<parent>.<sub>"` for branch-scoped audit queries.
+- **Mock providers** + **`recording/`** — `--provider=echo` and `--provider=scripted --script=path.jsonl` for credential-free testing; `recording.NewRecorder(m, w)` captures any real session for offline replay.
+- **`runner.WriteEvents`** with `WithColor` — chat-style event streaming for library consumers; the bundled CLI uses it.
+- **Two new optional adapters in `extras/`** — `extras/ax-agent/` packages core-agent as an AX (Agent eXecutor) gRPC remote agent (lives on the `axplore` branch since `github.com/google/ax` is currently private).
+- **Five new published doc pages**: [Autonomous runs](https://go-steer.github.io/core-agent/docs/autonomous/), [Sessions and event log](https://go-steer.github.io/core-agent/docs/sessions/), plus expanded Library API / Permissions / Configuration / Getting Started cross-references.
+- **Five new examples**: `examples/streaming/`, `examples/autonomous/`, `examples/autonomous-resume/`, `examples/with-subagent/`, plus a stable `examples/replay/`.
+- Roughly **+8,000 LOC** including tests; all 7 presubmits green throughout.
+
+Out of scope for M3 (deferred — see Roadmap above): Bubble Tea TUI, slash-command framework, glob/grep built-ins, mid-run pause/resume, subagent cost rollup, Bedrock backend, automatic provider auto-detection.
+
+### M4 — TBD
+
+Candidates, ordered roughly by likely value:
+
+- **Glob/grep built-in tools** ([`docs/tools-plan.md`](./docs/tools-plan.md)) — fills a real day-to-day-ergonomics gap; bash is the workaround today.
+- **Amazon Bedrock + Claude Platform on AWS** as additional Anthropic backends — direct extension of M2's pattern.
+- **Slash-command framework** — extend the REPL beyond `/exit` and `/quit`.
+- **Anthropic feature coverage** — extended/adaptive thinking, structured outputs, server-side tools, vision.
+- **Cost rollup from subagents** into the parent's `usage.Tracker`.
 - **Auto-detection for `anthropic-vertex`** — currently explicit-only; could fire on `ANTHROPIC_VERTEX_PROJECT_ID` set without `GOOGLE_API_KEY`, but the env semantics need careful design first.
 
-Final M3 scope will be picked based on what downstream consumers ask for first.
+Final M4 scope will be picked based on what downstream consumers ask for first.
 
 ---
 

@@ -158,20 +158,11 @@ func run() error {
 	// Inspect the audit log. The subagent runs in its own session
 	// row (derived from the parent's: "parent-session:sub:research")
 	// so two concurrent runners don't trip ADK's stale-session
-	// optimistic-concurrency check. Audit queries find subagent
-	// events by branch prefix across sessions.
-	fmt.Println("\n== parent session events ==")
+	// optimistic-concurrency check. WithSessionTree returns parent
+	// + every "<parent>:sub:%" descendant in one query.
+	fmt.Println("\n== full session tree (parent + every subagent) ==")
 	for entry, err := range handle.Stream.Since(ctx, 0,
-		eventlog.ForSession("core-agent", "u", "parent-session")) {
-		if err != nil {
-			return err
-		}
-		printEntry(entry)
-	}
-
-	fmt.Println("\n== research subagent events (by branch) ==")
-	for entry, err := range handle.Stream.Since(ctx, 0,
-		eventlog.WithBranchPrefix("research")) {
+		eventlog.WithSessionTree("core-agent", "u", "parent-session")) {
 		if err != nil {
 			return err
 		}

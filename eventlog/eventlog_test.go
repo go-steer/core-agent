@@ -413,6 +413,124 @@ func TestAppend_DuplicateEventIDRejected(t *testing.T) {
 	}
 }
 
+func TestWithSessionTree_ReturnsParentAndSubagent(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestHandle(t)
+	defer cleanup()
+	parent := mustCreateSession(t, h, "app", "u", "task-1")
+	research := mustCreateSession(t, h, "app", "u", "task-1:sub:research")
+	ctx := context.Background()
+
+	if err := h.Service.AppendEvent(ctx, parent, makeEvent("p-1", "user", "", "go")); err != nil {
+		t.Fatalf("AppendEvent parent: %v", err)
+	}
+	if err := h.Service.AppendEvent(ctx, research, makeEvent("r-1", "research", "research", "results")); err != nil {
+		t.Fatalf("AppendEvent research: %v", err)
+	}
+
+	got := drain(t, h.Stream.Since(ctx, 0, WithSessionTree("app", "u", "task-1")))
+	if len(got) != 2 {
+		t.Fatalf("WithSessionTree returned %d entries, want 2: %+v", len(got), got)
+	}
+	ids := map[string]bool{}
+	for _, e := range got {
+		ids[e.Event.ID] = true
+	}
+	for _, want := range []string{"p-1", "r-1"} {
+		if !ids[want] {
+			t.Errorf("missing %q in tree result; got %v", want, ids)
+		}
+	}
+}
+
+func TestWithSessionTree_IgnoresUnrelatedSessions(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestHandle(t)
+	defer cleanup()
+	a := mustCreateSession(t, h, "app", "u", "task-A")
+	aResearch := mustCreateSession(t, h, "app", "u", "task-A:sub:research")
+	b := mustCreateSession(t, h, "app", "u", "task-B")
+	ctx := context.Background()
+
+	for sess, id := range map[session.Session]string{a: "a-1", aResearch: "ar-1", b: "b-1"} {
+		if err := h.Service.AppendEvent(ctx, sess, makeEvent(id, "x", "", "")); err != nil {
+			t.Fatalf("AppendEvent %s: %v", id, err)
+		}
+	}
+
+	got := drain(t, h.Stream.Since(ctx, 0, WithSessionTree("app", "u", "task-A")))
+	ids := map[string]bool{}
+	for _, e := range got {
+		ids[e.Event.ID] = true
+	}
+	for _, want := range []string{"a-1", "ar-1"} {
+		if !ids[want] {
+			t.Errorf("WithSessionTree missed %q; got %v", want, ids)
+		}
+	}
+	if ids["b-1"] {
+		t.Errorf("WithSessionTree leaked unrelated session: %v", ids)
+	}
+}
+
+func TestWithSessionTree_DepthAgnostic(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestHandle(t)
+	defer cleanup()
+	// The current naming convention is "<parent>:sub:<branch>" so
+	// nesting becomes "task:sub:a:sub:b". The LIKE clause matches
+	// the prefix once and recursive descent works because every
+	// descendant carries the parent prefix in its name.
+	p := mustCreateSession(t, h, "app", "u", "task")
+	a := mustCreateSession(t, h, "app", "u", "task:sub:a")
+	b := mustCreateSession(t, h, "app", "u", "task:sub:a:sub:b")
+	ctx := context.Background()
+	for sess, id := range map[session.Session]string{p: "p", a: "a", b: "b"} {
+		if err := h.Service.AppendEvent(ctx, sess, makeEvent(id, "x", "", "")); err != nil {
+			t.Fatalf("AppendEvent %s: %v", id, err)
+		}
+	}
+	got := drain(t, h.Stream.Since(ctx, 0, WithSessionTree("app", "u", "task")))
+	if len(got) != 3 {
+		t.Errorf("got %d entries, want 3 (parent + child + grandchild): %+v", len(got), got)
+	}
+}
+
+func TestWithSessionTree_ComposesWithAuthor(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestHandle(t)
+	defer cleanup()
+	parent := mustCreateSession(t, h, "app", "u", "task")
+	research := mustCreateSession(t, h, "app", "u", "task:sub:research")
+	ctx := context.Background()
+
+	if err := h.Service.AppendEvent(ctx, parent, makeEvent("p-user", "user", "", "")); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	if err := h.Service.AppendEvent(ctx, parent, makeEvent("p-asst", "assistant", "", "")); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	if err := h.Service.AppendEvent(ctx, research, makeEvent("r-asst", "assistant", "research", "")); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+
+	// All assistant events under the tree.
+	got := drain(t, h.Stream.Since(ctx, 0,
+		WithSessionTree("app", "u", "task"),
+		WithAuthor("assistant"),
+	))
+	ids := map[string]bool{}
+	for _, e := range got {
+		ids[e.Event.ID] = true
+	}
+	if !ids["p-asst"] || !ids["r-asst"] {
+		t.Errorf("expected p-asst + r-asst, got %v", ids)
+	}
+	if ids["p-user"] {
+		t.Errorf("user-author event leaked through assistant filter: %v", ids)
+	}
+}
+
 func TestStream_ClosedRejectsOps(t *testing.T) {
 	t.Parallel()
 	h, _ := openTestHandle(t)

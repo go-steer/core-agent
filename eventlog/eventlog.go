@@ -168,6 +168,8 @@ type QueryOption func(*queryOpts)
 
 type queryOpts struct {
 	appName, userID, sessionID string
+	treeAppName, treeUserID    string
+	treeParentID               string
 	branchPrefix               string
 	author                     string
 	authorSuffix               string
@@ -182,6 +184,25 @@ func ForSession(appName, userID, sessionID string) QueryOption {
 		q.appName = appName
 		q.userID = userID
 		q.sessionID = sessionID
+	}
+}
+
+// WithSessionTree restricts results to the parent session ID and any
+// derived sub-session IDs. The subagent runner names its session
+// "<parent>:sub:<branch>" by convention; this option's underlying SQL
+// matches the parent + every "<parent>:sub:%" descendant in one query
+// so an audit can pull the whole tree without a follow-up join.
+//
+// When set, takes precedence over the (App, User, Session) triple
+// from ForSession — the two are mutually exclusive in practice
+// because WithSessionTree implies the (app, user) pair already.
+// Mutually composable with the other QueryOptions (WithBranchPrefix,
+// WithAuthor, WithAuthorSuffix, WithLimit).
+func WithSessionTree(appName, userID, parentSessionID string) QueryOption {
+	return func(q *queryOpts) {
+		q.treeAppName = appName
+		q.treeUserID = userID
+		q.treeParentID = parentSessionID
 	}
 }
 

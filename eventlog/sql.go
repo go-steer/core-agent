@@ -283,14 +283,21 @@ func (s *gormStream) iterateOnceFunc(ctx context.Context, fromSeq int64, q query
 // applied. Returns rows in seq order.
 func (s *gormStream) queryRows(ctx context.Context, fromSeq int64, q queryOpts) ([]agentEventRow, error) {
 	tx := s.db.WithContext(ctx).Model(&agentEventRow{}).Where("seq > ?", fromSeq)
-	if q.appName != "" {
-		tx = tx.Where("app_name = ?", q.appName)
-	}
-	if q.userID != "" {
-		tx = tx.Where("user_id = ?", q.userID)
-	}
-	if q.sessionID != "" {
-		tx = tx.Where("session_id = ?", q.sessionID)
+	// WithSessionTree wins over ForSession when both are set —
+	// the tree query already implies the (app, user) pair.
+	if q.treeParentID != "" {
+		tx = tx.Where("app_name = ? AND user_id = ?", q.treeAppName, q.treeUserID).
+			Where("session_id = ? OR session_id LIKE ?", q.treeParentID, q.treeParentID+":sub:%")
+	} else {
+		if q.appName != "" {
+			tx = tx.Where("app_name = ?", q.appName)
+		}
+		if q.userID != "" {
+			tx = tx.Where("user_id = ?", q.userID)
+		}
+		if q.sessionID != "" {
+			tx = tx.Where("session_id = ?", q.sessionID)
+		}
 	}
 	if q.branchPrefix != "" {
 		// Match exact prefix or prefix followed by separator. ADK

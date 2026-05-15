@@ -164,6 +164,28 @@ core-agent ships these tools by default in the bundled CLI; library callers opt 
 
 ---
 
+## `tools`
+
+Controls which built-in tools are wired into the bundled CLI. Defaults to the full set; list entries here to turn specific tools off without disabling the whole suite.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `disable` | string[] | `[]` | Built-in tool names to turn off. Valid: `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`, `todo`. Unknown names cause a startup error. |
+
+Example — keep everything except shell access:
+
+```json
+{
+  "tools": {
+    "disable": ["bash"]
+  }
+}
+```
+
+The `--disable-tools=bash,write_file` CLI flag composes with this list by union — anything disabled in either path is off. To turn the entire suite off, use `--no-builtin-tools` (which makes `tools.disable` and `--disable-tools` moot).
+
+---
+
 ## `otel`
 
 OpenTelemetry exporter config. Off by default — a fresh invocation makes zero outbound spans.

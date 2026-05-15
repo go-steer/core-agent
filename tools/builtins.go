@@ -43,10 +43,11 @@ import (
 //	    Todo: true,
 //	})
 //
-// Or use Default() and override fields:
+// Or use Default() and override fields directly or via Disable:
 //
 //	b := tools.Default()
-//	b.Bash = false
+//	b.Disable("bash")               // by canonical name; errors on typos
+//	b.WriteFile = false             // or set the field directly
 //	reg, _ := tools.Build(cfg, gate, b)
 type BuiltinTools struct {
 	Bash      bool // /bin/sh -c with timeout + denylist + gate
@@ -55,6 +56,42 @@ type BuiltinTools struct {
 	EditFile  bool // Single-occurrence string replacement
 	ListDir   bool // Sorted directory listing
 	Todo      bool // In-process plan tracker
+}
+
+// BuiltinToolNames lists the canonical name of every built-in tool.
+// Order matches the field order in BuiltinTools so callers can iterate
+// deterministically. The slice is read-only; callers must not mutate it.
+var BuiltinToolNames = []string{
+	"bash",
+	"read_file",
+	"write_file",
+	"edit_file",
+	"list_dir",
+	"todo",
+}
+
+// Disable turns off the named tool. Returns an error for unknown names
+// so typos in --disable-tools or .agents/config.json fail loudly at
+// startup rather than silently leaving the tool on. Calling Disable
+// twice with the same name is a no-op.
+func (b *BuiltinTools) Disable(name string) error {
+	switch name {
+	case "bash":
+		b.Bash = false
+	case "read_file":
+		b.ReadFile = false
+	case "write_file":
+		b.WriteFile = false
+	case "edit_file":
+		b.EditFile = false
+	case "list_dir":
+		b.ListDir = false
+	case "todo":
+		b.Todo = false
+	default:
+		return fmt.Errorf("tools: unknown built-in tool %q (valid: %v)", name, BuiltinToolNames)
+	}
+	return nil
 }
 
 // Default returns a BuiltinTools with every tool enabled. This is the

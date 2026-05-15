@@ -229,6 +229,54 @@ func TestLoad_RejectsBadProvider(t *testing.T) {
 	}
 }
 
+func TestLoad_ToolsDisableRoundtrips(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	agents := filepath.Join(root, AgentsDirName)
+	if err := os.MkdirAll(agents, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"version":1,"model":{"name":"gemini-3.1-pro-preview"},"tools":{"disable":["bash","write_file"]}}`
+	if err := os.WriteFile(filepath.Join(agents, ConfigFileName), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(agents)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got, want := cfg.Tools.Disable, []string{"bash", "write_file"}; !equalStringSlice(got, want) {
+		t.Errorf("tools.disable: got %v, want %v", got, want)
+	}
+}
+
+func TestLoad_ToolsDefaultEmpty(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	agents := filepath.Join(root, AgentsDirName)
+	if err := os.MkdirAll(agents, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(agents)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Tools.Disable) != 0 {
+		t.Errorf("expected empty Tools.Disable by default, got %v", cfg.Tools.Disable)
+	}
+}
+
+func equalStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestLoadOrDefault_NoAgentsDir(t *testing.T) {
 	t.Parallel()
 	cfg, agents, err := LoadOrDefault(t.TempDir())

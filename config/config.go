@@ -39,6 +39,7 @@ type Config struct {
 	PathScope   PathScopeConfig   `json:"path_scope,omitempty"`
 	Agent       AgentConfig       `json:"agent,omitempty"`
 	ToolOutput  ToolOutputConfig  `json:"tool_output,omitempty"`
+	Tools       ToolsConfig       `json:"tools,omitempty"`
 	OTEL        OTELConfig        `json:"otel,omitempty"`
 }
 
@@ -113,6 +114,19 @@ type ToolOutputConfig struct {
 type ToolOutputPerToolCaps struct {
 	MaxBytes int `json:"max_bytes,omitempty"`
 	MaxLines int `json:"max_lines,omitempty"`
+}
+
+// ToolsConfig configures the bundled CLI's built-in tool suite.
+//
+// Disable lists tools to turn off. Names must match the canonical
+// built-in names (see tools.BuiltinToolNames). Unknown names cause
+// a startup error from tools.BuiltinTools.Disable, so typos fail
+// loudly rather than silently leaving a tool on.
+//
+// The CLI's --disable-tools flag composes with this list by union;
+// --no-builtin-tools disables the entire suite and makes Disable moot.
+type ToolsConfig struct {
+	Disable []string `json:"disable,omitempty"`
 }
 
 // OTELConfig configures the OpenTelemetry exporter.

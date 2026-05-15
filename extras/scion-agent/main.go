@@ -44,6 +44,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	adktool "google.golang.org/adk/tool"
@@ -68,6 +69,7 @@ func main() {
 	modelOverride := flag.String("m", "", "override model name from config")
 	providerOverride := flag.String("provider", "", "override model.provider (gemini|vertex|anthropic|anthropic-vertex)")
 	noBuiltinTools := flag.Bool("no-builtin-tools", false, "disable the built-in tool suite (read_file, write_file, edit_file, list_dir, bash, todo)")
+	disableTools := flag.String("disable-tools", "", "comma-separated list of built-in tools to disable (e.g. bash,write_file). Composes with cfg.tools.disable; ignored when --no-builtin-tools is set.")
 	flag.Parse()
 
 	// Scion's Gemini harness sets GEMINI_API_KEY; core-agent's gemini
@@ -80,10 +82,10 @@ func main() {
 		}
 	}
 
-	os.Exit(run(*initialInput, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools))
+	os.Exit(run(*initialInput, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools))
 }
 
-func run(initialInput, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool) int {
+func run(initialInput, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -155,7 +157,24 @@ func run(initialInput, cfgPath, modelOverride, providerOverride string, noBuilti
 
 	var allTools []adktool.Tool
 	if !noBuiltinTools {
-		reg, err := tools.Build(cfg, gate, tools.Default())
+		b := tools.Default()
+		for _, name := range cfg.Tools.Disable {
+			if err := b.Disable(name); err != nil {
+				fmt.Fprintf(os.Stderr, "scion-agent: config tools.disable: %v\n", err)
+				return runner.ExitConfigError
+			}
+		}
+		for _, name := range strings.Split(disableTools, ",") {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			if err := b.Disable(name); err != nil {
+				fmt.Fprintf(os.Stderr, "scion-agent: --disable-tools: %v\n", err)
+				return runner.ExitConfigError
+			}
+		}
+		reg, err := tools.Build(cfg, gate, b)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "scion-agent: built-in tools: %v\n", err)
 			return runner.ExitConfigError

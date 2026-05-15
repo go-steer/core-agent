@@ -106,3 +106,72 @@ func TestBuild_NilCfgRejected(t *testing.T) {
 		t.Errorf("expected cfg-required error, got %v", err)
 	}
 }
+
+func TestBuiltinTools_Disable_KnownNames(t *testing.T) {
+	t.Parallel()
+	// Each canonical name must flip the matching field to false. The
+	// table mirrors BuiltinToolNames so a future rename or addition
+	// fails this test until the helper learns about it.
+	cases := map[string]func(BuiltinTools) bool{
+		"bash":       func(b BuiltinTools) bool { return b.Bash },
+		"read_file":  func(b BuiltinTools) bool { return b.ReadFile },
+		"write_file": func(b BuiltinTools) bool { return b.WriteFile },
+		"edit_file":  func(b BuiltinTools) bool { return b.EditFile },
+		"list_dir":   func(b BuiltinTools) bool { return b.ListDir },
+		"todo":       func(b BuiltinTools) bool { return b.Todo },
+	}
+	if len(cases) != len(BuiltinToolNames) {
+		t.Fatalf("test table size %d != BuiltinToolNames size %d — update both", len(cases), len(BuiltinToolNames))
+	}
+	for _, name := range BuiltinToolNames {
+		field, ok := cases[name]
+		if !ok {
+			t.Errorf("BuiltinToolNames entry %q has no test-table entry", name)
+			continue
+		}
+		b := Default()
+		if !field(b) {
+			t.Fatalf("Default() should have %q on before Disable", name)
+		}
+		if err := b.Disable(name); err != nil {
+			t.Errorf("Disable(%q): %v", name, err)
+			continue
+		}
+		if field(b) {
+			t.Errorf("Disable(%q) did not flip the field off", name)
+		}
+	}
+}
+
+func TestBuiltinTools_Disable_UnknownName(t *testing.T) {
+	t.Parallel()
+	b := Default()
+	err := b.Disable("grep")
+	if err == nil {
+		t.Fatal("expected error for unknown tool name")
+	}
+	if !strings.Contains(err.Error(), "unknown built-in tool") {
+		t.Errorf("error %q missing 'unknown built-in tool'", err.Error())
+	}
+	if !strings.Contains(err.Error(), `"grep"`) {
+		t.Errorf("error %q should quote the bad name", err.Error())
+	}
+	// Default fields stay untouched on rejection.
+	if !b.Bash || !b.ReadFile {
+		t.Errorf("rejection should not mutate fields; got %+v", b)
+	}
+}
+
+func TestBuiltinTools_Disable_Idempotent(t *testing.T) {
+	t.Parallel()
+	b := Default()
+	if err := b.Disable("bash"); err != nil {
+		t.Fatalf("first Disable: %v", err)
+	}
+	if err := b.Disable("bash"); err != nil {
+		t.Fatalf("second Disable should be a no-op, got %v", err)
+	}
+	if b.Bash {
+		t.Errorf("Bash should still be off after double-disable")
+	}
+}

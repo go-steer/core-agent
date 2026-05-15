@@ -139,11 +139,12 @@ a, _ := agent.New(m, agent.WithTools(reg.Tools))
 
 `reg.Todo` exposes the underlying `*TodoStore` so a host can render plan progress (e.g. for a `/todo` slash command in a TUI) without round-tripping through the model.
 
-To turn one off:
+To turn one off, set the field directly or use `Disable` (handy when you're applying a list of names from config or a CLI flag):
 
 ```go
 b := tools.Default()
-b.Bash = false
+b.Bash = false             // by field
+_ = b.Disable("write_file") // by canonical name; errors on typos
 reg, _ := tools.Build(cfg, gate, b)
 ```
 
@@ -155,7 +156,7 @@ reg, _ := tools.Build(cfg, gate, tools.BuiltinTools{ReadFile: true, ListDir: tru
 
 `tools.Build` requires both `cfg` and `gate` — passing nil returns an error. We deliberately don't ship ungated tools (the bash denylist + path scope would silently stop applying).
 
-The bundled `cmd/core-agent` enables the full set by default; `--no-builtin-tools` disables.
+The bundled `cmd/core-agent` enables the full set by default. `--no-builtin-tools` disables the whole suite; `--disable-tools=bash,write_file` (or `tools.disable` in config) turn off specific entries.
 
 ---
 

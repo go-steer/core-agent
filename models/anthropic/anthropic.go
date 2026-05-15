@@ -64,6 +64,7 @@ type Provider struct {
 	name        string
 	client      anthropic.Client
 	cacheSystem bool
+	builtins    BuiltinTools
 }
 
 // Option configures a Provider at construction.
@@ -86,8 +87,9 @@ func New(apiKey string, opts ...Option) (*Provider, error) {
 		return nil, fmt.Errorf("anthropic: api key is required (set ANTHROPIC_API_KEY or model.anthropic.api_key in .agents/config.json)")
 	}
 	p := &Provider{
-		name:   config.ProviderAnthropic,
-		client: anthropic.NewClient(option.WithAPIKey(apiKey)),
+		name:     config.ProviderAnthropic,
+		client:   anthropic.NewClient(option.WithAPIKey(apiKey)),
+		builtins: DefaultBuiltinTools(),
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -113,6 +115,7 @@ func (p *Provider) Model(_ context.Context, modelID string) (adkmodel.LLM, error
 		client:      p.client,
 		modelID:     modelID,
 		cacheSystem: p.cacheSystem,
+		builtins:    p.builtins,
 	}, nil
 }
 

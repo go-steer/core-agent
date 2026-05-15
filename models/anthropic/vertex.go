@@ -65,8 +65,9 @@ func NewVertex(ctx context.Context, project, region string, opts ...Option) (*Pr
 		return nil, fmt.Errorf("anthropic-vertex: load default credentials: %w (run `gcloud auth application-default login`)", err)
 	}
 	p := &Provider{
-		name:   config.ProviderAnthropicVertex,
-		client: anthropic.NewClient(vertex.WithCredentials(ctx, region, project, creds)),
+		name:     config.ProviderAnthropicVertex,
+		client:   anthropic.NewClient(vertex.WithCredentials(ctx, region, project, creds)),
+		builtins: DefaultBuiltinTools(),
 	}
 	for _, opt := range opts {
 		opt(p)

@@ -317,7 +317,7 @@ In scope (lifted from cogo):
 - Plan tracking: `todo` (in-process store; `TodoStore.Items()` exposes a defensive copy for hosts that want to render plan progress).
 
 Out of scope:
-- **Web tools** (`web_fetch`, `web_search`) — Gemini's built-in `URLContext` and `GoogleSearch` cover this for Gemini-backed agents. For Anthropic-backed agents, Anthropic's `web_search` server-side tool is a future addition to `models/anthropic/`.
+- **Web tools** (`web_fetch`, `web_search`) — Gemini's built-in `URLContext` and `GoogleSearch` cover this for Gemini-backed agents. For Anthropic-backed agents, Anthropic's `web_search` server-side tool is surfaced via `models/anthropic.WithWebSearch(true)` (off by default — per-search billing, treated as an active surface). `web_fetch` and other Anthropic server-side tools (code_execution, text_editor, memory, bash) aren't surfaced today; add them under the same `BuiltinTools` struct when a consumer needs one.
 - **Glob / grep** — cogo doesn't have them; not needed for the immediate downstream consumers. Adding them is straightforward when one shows up.
 - **Subagent tool** — deferred to M3.
 

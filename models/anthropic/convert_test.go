@@ -27,7 +27,7 @@ func TestBuildParams_TextOnly(t *testing.T) {
 	t.Parallel()
 	p, err := buildParams("claude-opus-4-7", []*genai.Content{
 		{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "hi"}}},
-	}, nil, false)
+	}, nil, false, BuiltinTools{})
 	if err != nil {
 		t.Fatalf("buildParams: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestBuildParams_SystemExtractedAndCached(t *testing.T) {
 	cfg := &genai.GenerateContentConfig{
 		SystemInstruction: &genai.Content{Parts: []*genai.Part{{Text: "be terse"}}},
 	}
-	p, err := buildParams("claude-opus-4-7", nil, cfg, true)
+	p, err := buildParams("claude-opus-4-7", nil, cfg, true, BuiltinTools{})
 	if err != nil {
 		t.Fatalf("buildParams: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestBuildParams_RoleMapping(t *testing.T) {
 	p, err := buildParams("claude-opus-4-7", []*genai.Content{
 		{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "q"}}},
 		{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "a"}}},
-	}, nil, false)
+	}, nil, false, BuiltinTools{})
 	if err != nil {
 		t.Fatalf("buildParams: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestBuildParams_ToolRoundTrip(t *testing.T) {
 			}},
 		}},
 	}
-	p, err := buildParams("claude-opus-4-7", contents, nil, false)
+	p, err := buildParams("claude-opus-4-7", contents, nil, false, BuiltinTools{})
 	if err != nil {
 		t.Fatalf("buildParams: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestBuildParams_ToolDeclarations(t *testing.T) {
 			}},
 		}},
 	}
-	p, err := buildParams("claude-opus-4-7", nil, cfg, false)
+	p, err := buildParams("claude-opus-4-7", nil, cfg, false, BuiltinTools{})
 	if err != nil {
 		t.Fatalf("buildParams: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestBuildParams_ToolDeclarations(t *testing.T) {
 func TestBuildParams_MaxTokensOverride(t *testing.T) {
 	t.Parallel()
 	cfg := &genai.GenerateContentConfig{MaxOutputTokens: 2048}
-	p, _ := buildParams("claude-opus-4-7", nil, cfg, false)
+	p, _ := buildParams("claude-opus-4-7", nil, cfg, false, BuiltinTools{})
 	if p.MaxTokens != 2048 {
 		t.Errorf("MaxTokens = %d, want 2048", p.MaxTokens)
 	}

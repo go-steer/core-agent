@@ -164,6 +164,29 @@ ANTHROPIC_API_KEY=... core-agent --provider anthropic --model claude-opus-4-7 -p
 - **Stop reasons** map to genai `FinishReason` as: `end_turn`/`stop_sequence`/`tool_use` → `STOP`, `max_tokens` → `MAX_TOKENS`, `refusal` → `SAFETY`.
 - **Prompt caching** is opt-in. Construct the provider with `anthropic.WithCacheSystem(true)` and the last system block carries an ephemeral `cache_control`. Off by default — only enable once you've confirmed the system prompt is stable across turns, otherwise you pay the cache write premium for nothing.
 
+### Built-in tools
+
+The Anthropic provider can inject Claude's server-side built-in tools alongside any user-defined function declarations.
+
+| Tool | Default | Notes |
+|---|---|---|
+| **WebSearch** | off | Server-side web search. Per-search billing on top of token cost. Off by default — opt in once you've decided the cost and external-call posture are acceptable. |
+
+To enable:
+
+```go
+import "github.com/go-steer/core-agent/models/anthropic"
+
+provider, _ := anthropic.New(key, anthropic.WithWebSearch(true))
+
+// Or replace the whole set:
+provider, _ := anthropic.New(key, anthropic.WithBuiltinTools(anthropic.BuiltinTools{
+    WebSearch: true,
+}))
+```
+
+The same options apply to `anthropic.NewVertex(...)`. Other Anthropic server-side tools (`web_fetch`, `code_execution`, `text_editor`, `memory`, `bash`) aren't surfaced today — add them to `BuiltinTools` when a concrete consumer needs one.
+
 ### Notes
 
 - Get a key at [console.anthropic.com](https://console.anthropic.com).

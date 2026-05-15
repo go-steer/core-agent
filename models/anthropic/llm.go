@@ -31,6 +31,7 @@ type llm struct {
 	client      anthropic.Client
 	modelID     string
 	cacheSystem bool
+	builtins    BuiltinTools
 }
 
 // Name reports the model ID — used by ADK telemetry and the runner.
@@ -43,7 +44,7 @@ func (l *llm) Name() string { return l.modelID }
 // the iteration.
 func (l *llm) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
-		params, err := buildParams(req.Model, req.Contents, req.Config, l.cacheSystem)
+		params, err := buildParams(req.Model, req.Contents, req.Config, l.cacheSystem, l.builtins)
 		if err != nil {
 			yield(nil, fmt.Errorf("anthropic: build request: %w", err))
 			return

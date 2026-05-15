@@ -28,7 +28,9 @@ import (
 // the Gemini backend ignores it too, real tool decls live on Config).
 //
 // cacheSystem opts in to prompt caching on the last system block.
-func buildParams(modelID string, contents []*genai.Content, cfg *genai.GenerateContentConfig, cacheSystem bool) (anthropic.MessageNewParams, error) {
+// builtins enables Anthropic's server-side tools (e.g. web_search) by
+// appending them to the request's Tools slice after the function decls.
+func buildParams(modelID string, contents []*genai.Content, cfg *genai.GenerateContentConfig, cacheSystem bool, builtins BuiltinTools) (anthropic.MessageNewParams, error) {
 	if modelID == "" {
 		modelID = DefaultModel
 	}
@@ -53,6 +55,9 @@ func buildParams(modelID string, contents []*genai.Content, cfg *genai.GenerateC
 	if err != nil {
 		return anthropic.MessageNewParams{}, err
 	}
+	// Append server-side built-ins (e.g. web_search) after function
+	// decls so a request with both shapes carries both.
+	tools = append(tools, builtins.asAnthropicTools()...)
 	if len(tools) > 0 {
 		params.Tools = tools
 	}

@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -59,13 +60,14 @@ func main() {
 	scriptPath := flag.String("script", "", "JSONL transcript for --provider=scripted (overrides cfg.mock.script)")
 	scriptStrict := flag.Bool("script-strict", false, "scripted: assert each incoming request matches the recorded one (overrides cfg.mock.strict)")
 	recordTo := flag.String("record-to", "", "write a JSONL recording of all LLM turns to this path (overrides cfg.mock.record)")
+	color := flag.String("color", "auto", "ANSI color in streamed output: auto|always|never (auto = TTY-detect on stdout)")
 	flag.Parse()
 
-	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo)
+	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color)
 	os.Exit(code)
 }
 
-func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string) int {
+func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -193,9 +195,16 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		agent.WithSystemInstructionPrefix(loaded.Instruction),
 	}
 
+	colorOn, err := resolveColor(color, os.Stdout)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+		return runner.ExitConfigError
+	}
+	eventsOpts := []runner.EventsOption{runner.WithColor(colorOn)}
+
 	var code int
 	if prompt != "" {
-		code, err = runner.Headless(ctx, m, prompt, os.Stdout, os.Stderr, tracker, pricing, opts...)
+		code, err = runner.Headless(ctx, m, prompt, os.Stdout, os.Stderr, tracker, pricing, opts, eventsOpts...)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 		}
@@ -206,7 +215,7 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		return code
 	}
 
-	code, err = runner.REPL(ctx, m, os.Stdin, os.Stdout, os.Stderr, tracker, pricing, opts...)
+	code, err = runner.REPL(ctx, m, os.Stdin, os.Stdout, os.Stderr, tracker, pricing, opts, eventsOpts...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 	}
@@ -237,6 +246,22 @@ func loadConfig(cfgPath, cwd string) (*config.Config, string, error) {
 		return cfg, filepath.Dir(cfgPath), nil
 	}
 	return config.LoadOrDefault(cwd)
+}
+
+// resolveColor parses the --color flag value into a bool. "auto"
+// detects whether w is a TTY via runner.IsTerminal; "always" forces
+// on; "never" forces off. Anything else is a config error.
+func resolveColor(mode string, w io.Writer) (bool, error) {
+	switch mode {
+	case "auto", "":
+		return runner.IsTerminal(w), nil
+	case "always":
+		return true, nil
+	case "never":
+		return false, nil
+	default:
+		return false, fmt.Errorf("--color: unknown value %q (want auto|always|never)", mode)
+	}
 }
 
 func persistTranscript(agentsDir, model, prompt string, tracker *usage.Tracker) {

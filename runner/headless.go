@@ -22,8 +22,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"iter"
 
 	adkmodel "google.golang.org/adk/model"
+	"google.golang.org/adk/session"
 
 	"github.com/go-steer/core-agent/agent"
 	"github.com/go-steer/core-agent/usage"
@@ -42,16 +44,20 @@ const (
 // os.Exit.
 //
 // agentOpts lets the caller pass extra agent.Options (typically
-// WithTools, WithToolsets, WithSystemInstructionPrefix). When nil, the
-// agent runs with no tools and the default instruction.
+// WithTools, WithToolsets, WithSystemInstructionPrefix). Pass nil for
+// no tools and the default instruction.
 //
 // tracker (optional) records per-turn usage; when supplied, the caller
 // can write a summary using its totals after Headless returns. Pass
 // nil to skip accounting.
 //
+// eventsOpts forwards through to WriteEvents (e.g. WithColor) so
+// callers can opt into ANSI styling without reaching into the
+// formatter directly.
+//
 // A trailing newline is always added to stdout when at least one chunk
 // was written, so shell pipelines see a clean terminator.
-func Headless(ctx context.Context, m adkmodel.LLM, prompt string, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing, agentOpts ...agent.Option) (int, error) {
+func Headless(ctx context.Context, m adkmodel.LLM, prompt string, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing, agentOpts []agent.Option, eventsOpts ...EventsOption) (int, error) {
 	if prompt == "" {
 		return ExitConfigError, fmt.Errorf("runner: prompt is required")
 	}
@@ -61,55 +67,42 @@ func Headless(ctx context.Context, m adkmodel.LLM, prompt string, stdout, stderr
 		return ExitAgentError, err
 	}
 
-	return streamTurn(ctx, a, m, prompt, stdout, stderr, tracker, pricing)
+	return streamTurn(ctx, a, m, prompt, stdout, stderr, tracker, pricing, eventsOpts)
 }
 
 // streamTurn is the shared one-turn driver used by Headless and REPL.
-// Returns (exit code, error). Tool-call summaries flow to stderr,
-// partial assistant text streams to stdout as it arrives.
-func streamTurn(ctx context.Context, a *agent.Agent, m adkmodel.LLM, prompt string, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing) (int, error) {
-	wroteAnything := false
+// Wraps the agent's event iterator with tapUsage to record token
+// counts as they fly by, then hands the wrapped iterator to
+// WriteEvents for formatting.
+func streamTurn(ctx context.Context, a *agent.Agent, m adkmodel.LLM, prompt string, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing, eventsOpts []EventsOption) (int, error) {
 	var lastUsageInput, lastUsageOutput int
-
-	for event, err := range a.Run(ctx, prompt) {
-		if err != nil {
-			if wroteAnything {
-				_, _ = fmt.Fprintln(stdout)
-			}
-			return ExitAgentError, fmt.Errorf("runner: agent run: %w", err)
-		}
-		if event.UsageMetadata != nil {
-			lastUsageInput = int(event.UsageMetadata.PromptTokenCount)
-			lastUsageOutput = int(event.UsageMetadata.CandidatesTokenCount)
-		}
-		if event.Content == nil {
-			continue
-		}
-		// Tool-call summaries → stderr; partial assistant text → stdout.
-		// Final TurnComplete repeats the full text and is skipped.
-		for _, p := range event.Content.Parts {
-			switch {
-			case p.FunctionCall != nil:
-				fmt.Fprintf(stderr, "→ %s\n", p.FunctionCall.Name)
-			case p.FunctionResponse != nil:
-				fmt.Fprintf(stderr, "← %s\n", p.FunctionResponse.Name)
-			case p.Text != "" && event.Partial:
-				if _, err := io.WriteString(stdout, p.Text); err != nil {
-					return ExitAgentError, fmt.Errorf("runner: write stdout: %w", err)
-				}
-				wroteAnything = true
-			}
-		}
+	events := tapUsage(a.Run(ctx, prompt), func(in, out int) {
+		lastUsageInput, lastUsageOutput = in, out
+	})
+	if err := WriteEvents(events, stdout, stderr, eventsOpts...); err != nil {
+		return ExitAgentError, fmt.Errorf("runner: agent run: %w", err)
 	}
 	if tracker != nil && (lastUsageInput > 0 || lastUsageOutput > 0) {
 		tracker.Append(m.Name(), lastUsageInput, lastUsageOutput, pricing)
 	}
-	if wroteAnything {
-		if _, err := fmt.Fprintln(stdout); err != nil {
-			return ExitAgentError, fmt.Errorf("runner: write final newline: %w", err)
+	return ExitOK, nil
+}
+
+// tapUsage wraps an event iterator and invokes track for every event
+// that carries UsageMetadata. The event itself passes through to the
+// next consumer unchanged. Used so streamTurn can delegate formatting
+// to WriteEvents while still maintaining its per-turn token totals.
+func tapUsage(events iter.Seq2[*session.Event, error], track func(input, output int)) iter.Seq2[*session.Event, error] {
+	return func(yield func(*session.Event, error) bool) {
+		for ev, err := range events {
+			if ev != nil && ev.UsageMetadata != nil {
+				track(int(ev.UsageMetadata.PromptTokenCount), int(ev.UsageMetadata.CandidatesTokenCount))
+			}
+			if !yield(ev, err) {
+				return
+			}
 		}
 	}
-	return ExitOK, nil
 }
 
 // WriteSummary emits a one-line usage tally suitable for shell

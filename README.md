@@ -115,6 +115,10 @@ CLI flags:
     --script-strict     Scripted: assert each request matches the recorded one.
     --record-to string  Write a JSONL recording of all LLM turns to this path.
                         Works with any provider.
+    --color string      ANSI color in streamed output: auto|always|never
+                        (default: auto = on when stdout is a terminal,
+                        off when piped). Tool calls render in cyan,
+                        partial assistant text in green.
 ```
 
 ---

@@ -37,8 +37,9 @@ import (
 // Headless. Built-in commands: `/exit`, `/quit`, EOF (Ctrl-D).
 //
 // agentOpts mirrors Headless. The same tracker/pricing pair is used
-// across every turn so the final summary is meaningful.
-func REPL(ctx context.Context, m adkmodel.LLM, stdin io.Reader, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing, agentOpts ...agent.Option) (int, error) {
+// across every turn so the final summary is meaningful. eventsOpts
+// (e.g. WithColor) forward through to WriteEvents for every turn.
+func REPL(ctx context.Context, m adkmodel.LLM, stdin io.Reader, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing, agentOpts []agent.Option, eventsOpts ...EventsOption) (int, error) {
 	a, err := agent.New(m, agentOpts...)
 	if err != nil {
 		return ExitAgentError, err
@@ -67,7 +68,7 @@ func REPL(ctx context.Context, m adkmodel.LLM, stdin io.Reader, stdout, stderr i
 		if prompt == "/exit" || prompt == "/quit" {
 			return ExitOK, nil
 		}
-		code, err := streamTurn(ctx, a, m, prompt, stdout, stderr, tracker, pricing)
+		code, err := streamTurn(ctx, a, m, prompt, stdout, stderr, tracker, pricing, eventsOpts)
 		if err != nil {
 			fmt.Fprintf(stderr, "core-agent: %v\n", err)
 			// Don't exit on a single turn error — let the user retry.

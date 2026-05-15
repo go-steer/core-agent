@@ -190,6 +190,31 @@ func run(listen, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		builtinTools = reg.Tools
 	}
 
+	// LifecycleTool is registered unconditionally — it doesn't touch
+	// the workspace, it just gives the model a clean tool to signal
+	// state ("thinking", "blocked", custom). The handler logs every
+	// emit to stderr so operators can trace lifecycle traffic without
+	// turning on --record-to. Wire emission to AX is automatic: the
+	// FunctionCall + FunctionResponse events are converted to
+	// AgentOutputs with InternalOnly:true by genaiEventToAXOutputs,
+	// so the AX UI sees the state but the user-facing transcript
+	// stays clean.
+	lifecycleTool, err := tools.NewLifecycleTool(tools.LifecycleOptions{
+		Handler: func(_ context.Context, ev tools.LifecycleEvent) error {
+			if ev.Detail == "" {
+				fmt.Fprintf(os.Stderr, "ax-agent: status: %s\n", ev.State)
+			} else {
+				fmt.Fprintf(os.Stderr, "ax-agent: status: %s — %s\n", ev.State, ev.Detail)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ax-agent: lifecycle tool: %v\n", err)
+		return runner.ExitConfigError
+	}
+	builtinTools = append(builtinTools, lifecycleTool)
+
 	// One agent factory shared by every Connect call. Each call
 	// constructs its own *agent.Agent so RunWithContents can use a
 	// fresh session per turn.

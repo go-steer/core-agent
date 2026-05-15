@@ -364,3 +364,7 @@ For the multi-agent example, run two `ax-agent` instances on `:50051` and `:5005
 - Introduce a long-running session in the adapter (stateless per turn matches AX's model)
 - Modify `cmd/core-agent` or any other binary
 - Change the existing `extras/scion-agent` adapter (separate concern; gets a "see also" doc link)
+
+## Status updates
+
+- **Lifecycle integration shipped.** The adapter registers `tools.NewLifecycleTool` (default name `set_status`) on every agent it builds. The existing `genaiEventToAXOutputs` conversion in `extras/ax-agent/convert.go` already flags FunctionCall / FunctionResponse messages with `InternalOnly: true`, so the model's status emissions arrive on AX's wire as internal-only ToolCall + ToolResult pairs — exactly the "AX UI sees the state but the conversation history stays clean" shape the autonomous-plan called for. The handler additionally logs each emit to stderr for operator tracing. Covered by `TestConnect_LifecycleToolEmitsInternalOnly` in `extras/ax-agent/main_test.go`.

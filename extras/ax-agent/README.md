@@ -25,6 +25,17 @@ delivers the full conversation history on every turn, so the adapter
 reconstructs context from that history each time. This matches AX's
 resumability model.
 
+**`set_status` tool** — every agent gets a bundled lifecycle tool (from
+`tools.NewLifecycleTool`) the model calls to signal state ("thinking",
+"blocked", "ask_user", or any custom label). Calls and acks are flagged
+`InternalOnly: true` on the wire, so the AX UI / event log can render
+them as a status track without polluting the user-facing conversation
+transcript. The handler also logs each emit to stderr (`ax-agent:
+status: <state> — <detail>`) so operators can trace lifecycle traffic
+without `--record-to`. Consumers tighten the state vocabulary by
+constraining it in their agent's system instruction (e.g. "only emit
+states from {thinking, blocked, done}").
+
 ## Quickstart
 
 ```bash

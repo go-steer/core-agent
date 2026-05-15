@@ -58,16 +58,25 @@ type BuiltinTools struct {
 	Todo      bool // In-process plan tracker
 }
 
-// BuiltinToolNames lists the canonical name of every built-in tool.
-// Order matches the field order in BuiltinTools so callers can iterate
-// deterministically. The slice is read-only; callers must not mutate it.
-var BuiltinToolNames = []string{
+// builtinToolNames is the canonical name of every built-in tool, in
+// the same order as the BuiltinTools struct fields. Kept private so
+// callers can't accidentally mutate it; access via BuiltinToolNames().
+var builtinToolNames = []string{
 	"bash",
 	"read_file",
 	"write_file",
 	"edit_file",
 	"list_dir",
 	"todo",
+}
+
+// BuiltinToolNames returns a fresh copy of the canonical built-in tool
+// names. Order matches the field order in BuiltinTools so callers can
+// iterate deterministically.
+func BuiltinToolNames() []string {
+	out := make([]string, len(builtinToolNames))
+	copy(out, builtinToolNames)
+	return out
 }
 
 // Disable turns off the named tool. Returns an error for unknown names
@@ -89,7 +98,7 @@ func (b *BuiltinTools) Disable(name string) error {
 	case "todo":
 		b.Todo = false
 	default:
-		return fmt.Errorf("tools: unknown built-in tool %q (valid: %v)", name, BuiltinToolNames)
+		return fmt.Errorf("tools: unknown built-in tool %q (valid: %v)", name, builtinToolNames)
 	}
 	return nil
 }

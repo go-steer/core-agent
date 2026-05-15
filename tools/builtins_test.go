@@ -120,10 +120,11 @@ func TestBuiltinTools_Disable_KnownNames(t *testing.T) {
 		"list_dir":   func(b BuiltinTools) bool { return b.ListDir },
 		"todo":       func(b BuiltinTools) bool { return b.Todo },
 	}
-	if len(cases) != len(BuiltinToolNames) {
-		t.Fatalf("test table size %d != BuiltinToolNames size %d — update both", len(cases), len(BuiltinToolNames))
+	names := BuiltinToolNames()
+	if len(cases) != len(names) {
+		t.Fatalf("test table size %d != BuiltinToolNames size %d — update both", len(cases), len(names))
 	}
-	for _, name := range BuiltinToolNames {
+	for _, name := range names {
 		field, ok := cases[name]
 		if !ok {
 			t.Errorf("BuiltinToolNames entry %q has no test-table entry", name)

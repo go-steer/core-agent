@@ -303,7 +303,7 @@ Out of scope:
 
 ### Why default-on at the CLI but explicit at the library
 
-The bundled `cmd/core-agent` is the "out of the box" experience and needs to be useful. It calls `tools.Default(cfg, gate)` unconditionally (unless `--no-builtin-tools`). Granular per-tool disable is exposed two ways: `--disable-tools=bash,write_file` on the CLI, and `tools.disable: ["bash"]` in `.agents/config.json`. The two compose by union — anything disabled in either path is off — and both validate names against `tools.BuiltinToolNames` so typos fail at startup rather than silently leaving a tool on.
+The bundled `cmd/core-agent` is the "out of the box" experience and needs to be useful. It calls `tools.Build(cfg, gate, tools.Default())` unconditionally (unless `--no-builtin-tools`). Granular per-tool disable is exposed two ways: `--disable-tools=bash,write_file` on the CLI, and `tools.disable: ["bash"]` in `.agents/config.json`. The two compose by union — anything disabled in either path is off — and both validate names against `tools.BuiltinToolNames()` so typos fail at startup rather than silently leaving a tool on.
 
 The library (`agent.New`) does *not* auto-include tools. Two reasons:
 - The agent layer doesn't have the gate or config dependency. Adding it would force every `agent.New` call to know about both, which would couple the agent to the permissions package even for consumers who don't want tools.

@@ -68,7 +68,7 @@ func main() {
 	cfgPath := flag.String("c", "", "config file path (default: discover .agents/config.json)")
 	modelOverride := flag.String("m", "", "override model name from config")
 	providerOverride := flag.String("provider", "", "override model.provider (gemini|vertex|anthropic|anthropic-vertex)")
-	noBuiltinTools := flag.Bool("no-builtin-tools", false, "disable the built-in tool suite (read_file, write_file, edit_file, list_dir, bash, todo)")
+	noBuiltinTools := flag.Bool("no-builtin-tools", false, "disable the built-in tool suite ("+strings.Join(tools.BuiltinToolNames(), ", ")+")")
 	disableTools := flag.String("disable-tools", "", "comma-separated list of built-in tools to disable (e.g. bash,write_file). Composes with cfg.tools.disable; ignored when --no-builtin-tools is set.")
 	flag.Parse()
 

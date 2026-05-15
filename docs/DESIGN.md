@@ -277,6 +277,16 @@ The cost is one extra layer of indirection per call. For a streaming agent loop,
 
 ---
 
+## Optional AX adapter (`axplore` branch)
+
+`extras/ax-agent/` (lives only on the `axplore` branch — see `docs/ax-plan.md`) packages core-agent as a remote [AX](https://github.com/google/ax) agent. Mirrors `cmd/core-agent`'s wiring (config, gate, model, tools, MCP, skills, instruction load) but binds a gRPC `AgentService` server instead of running a REPL. Each AX execution arrives as one `AgentStart` carrying full conversation history; the adapter rebuilds genai contents, runs `agent.RunWithContents` (the only library change this branch makes), streams events back as `AgentOutputs`, sends `AgentEnd`. Stateless per turn — AX delivers full history every call, so we never carry session state across Connect streams.
+
+Multi-agent conversations are brokered by AX's planner: each `core-agent` instance registered in `ax.yaml` becomes a callable tool, the planner picks who to invoke per turn, and conversation history flows through AX's event log. There's no direct agent-to-agent wire — the planner is the orchestrator. The `examples/ax-multi-agent/` worked example shows a devil's-advocate + angel's-advocate pair driven by a single `ax exec --input` decision question.
+
+The branch lives off `main` because (a) `github.com/google/ax` is currently a private repo and (b) AX is slated for a rewrite. Vendored snapshot at `extras/ax-agent/internal/axproto/` (just the proto package, not the full ax module — sidesteps `ai-on-gke/SubstrATE` and other transitive private deps). When AX goes public, drop the snapshot and merge the branch.
+
+---
+
 ## Mock providers and recording
 
 `models/mock/` ships two credential-free `models.Provider` implementations; the recording wrapper that pairs with them lives in its own top-level `recording/` package because it's production observability, not a test fixture:

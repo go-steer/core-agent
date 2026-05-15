@@ -160,6 +160,40 @@ The bundled `cmd/core-agent` enables the full set by default. `--no-builtin-tool
 
 ---
 
+## Streaming events to a chat-like UI
+
+`runner.WriteEvents(events, out, info)` formats an `agent.Run(...)` event iterator for human-readable streaming display — the chat-style output that the bundled CLI's REPL uses, exposed for library callers so you don't have to copy the loop.
+
+```go
+import (
+    "os"
+    "github.com/go-steer/core-agent/agent"
+    "github.com/go-steer/core-agent/runner"
+)
+
+a, _ := agent.New(m)
+events := a.Run(ctx, "what's in main.go?")
+if err := runner.WriteEvents(events, os.Stdout, os.Stderr); err != nil {
+    log.Fatal(err)
+}
+```
+
+Output looks like:
+
+```
+→ read_file(path="main.go")          ← stderr
+← read_file(content="package main…") ← stderr
+This file is a small HTTP server…    ← stdout (streams as the model emits partials)
+```
+
+Routing:
+- **Partial text** streams to `out` with no prefix, so a model's reply renders character-by-character.
+- **Tool calls / responses** render as `→ name(key=value, ...)` / `← name(key=value, ...)` to `info`. Args are JSON-encoded and truncated at 80 chars per value so a single big payload doesn't dominate the display.
+
+Pass the same writer for both `out` and `info` (e.g., `os.Stdout`) when you want one combined stream — useful for tmux capture (`tmux pipe-pane`) or piping to a file.
+
+---
+
 ## Recording LLM turns
 
 `recording.NewRecorder(inner, w io.Writer)` wraps any `model.LLM` and appends each turn (request + response stream) to `w` as a single JSONL line in the shared `recording.RecordedTurn` shape. The wrapper is transparent — callers see the inner LLM's responses unchanged — and the writer's lifecycle is the caller's responsibility.

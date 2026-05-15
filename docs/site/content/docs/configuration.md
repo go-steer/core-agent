@@ -160,7 +160,7 @@ Default `per_tool` overrides (apply to the built-in tools that ship with core-ag
 }
 ```
 
-core-agent ships these tools by default in the bundled CLI; library callers opt in with `tools.Default(cfg, gate)`. Override per-tool caps with the per-tool block above; add an entry under `per_tool` for any consumer-provided tool that should follow a non-default cap.
+core-agent ships these tools by default in the bundled CLI; library callers opt in with `tools.Build(cfg, gate, tools.Default())`. Override per-tool caps with the per-tool block above; add an entry under `per_tool` for any consumer-provided tool that should follow a non-default cap.
 
 ---
 

@@ -279,7 +279,7 @@ The cost is one extra layer of indirection per call. For a streaming agent loop,
 
 ## Built-in tools
 
-`tools/` ships six general-purpose tools — `read_file`, `write_file`, `edit_file`, `list_dir`, `bash`, `todo` — lifted from cogo's `internal/tools/`. The bundled CLI enables them all by default; library callers opt in via `tools.Default(cfg, gate)` (or `tools.Build(cfg, gate, custom BuiltinTools)` for fine-grained control). `--no-builtin-tools` on the CLI disables the lot.
+`tools/` ships six general-purpose tools — `read_file`, `write_file`, `edit_file`, `list_dir`, `bash`, `todo` — lifted from cogo's `internal/tools/`. The bundled CLI enables them all by default; library callers opt in via `tools.Build(cfg, gate, tools.Default())` (or pass a custom `BuiltinTools` instead of `Default()` for fine-grained control). `--no-builtin-tools` on the CLI disables the lot.
 
 ### Why we ship them (reversing M1's "narrow base" decision)
 
@@ -287,7 +287,7 @@ When we shipped M1, the rationale was "consumers add their own tools." That argu
 
 1. **Inconsistency.** core-agent already ships a lot of opinionated machinery — the permission gate, MCP integration, skills loading, the Anthropic adapter, AGENTS.md loading. Drawing the line *just* before tools was inconsistent — it forced consumers to either copy a thousand lines of non-trivial code from cogo (with output capping, atomic writes, gate integration, the bash denylist) or write fresh.
 2. **Universality.** Every coding agent, task-execution agent, or workspace-aware agent needs at minimum `read_file` + `write_file` + `bash`. The friction of "core-agent talks but can't act" is real and ships per-consumer.
-3. **Cleaner downstream stories.** The Scion adapter (the next thing built on core-agent) would otherwise re-lift the same tools into `extras/scion-agent/internal/tools/`. Now it's a thin Scion-shaped wrapper around `tools.Default(cfg, gate)`.
+3. **Cleaner downstream stories.** The Scion adapter (the next thing built on core-agent) would otherwise re-lift the same tools into `extras/scion-agent/internal/tools/`. Now it's a thin Scion-shaped wrapper around `tools.Build(cfg, gate, tools.Default())`.
 
 ### What's in scope vs. not
 

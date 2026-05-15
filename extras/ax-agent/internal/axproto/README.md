@@ -29,6 +29,9 @@ us), refresh by:
 ```bash
 cp ../ax/proto/{ax.pb.go,ax_grpc.pb.go,content.pb.go,ax.proto,content.proto} \
    extras/ax-agent/internal/axproto/
+dev/tools/fix-go-format          # protoc-gen-go's import grouping doesn't
+                                 # match goimports defaults; the format
+                                 # script normalizes (idempotent).
 go test ./extras/ax-agent/...
 ```
 

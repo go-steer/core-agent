@@ -1,5 +1,21 @@
 # Autonomous-runtime plan
 
+## Status (2026-05-15): shipped
+
+This plan was the design intent before the autonomous-run driver
+shipped. Most decisions in the plan landed as written; a few were
+adjusted during implementation. Use this doc as **historical
+context** — design alternatives, why-this-not-that — not as a
+description of the current API.
+
+**Canonical references for what shipped:**
+- README's M3 milestone entry — high-level summary
+- [`docs/site/content/docs/autonomous.md`](./site/content/docs/autonomous.md) — user-facing reference
+- [`docs/site/content/docs/library-api.md`](./site/content/docs/library-api.md) Autonomous + Crash-resume sections — API surface
+- [`docs/eventlog-decisions.md`](./eventlog-decisions.md) Phase 3 — `ResumeAutonomous` design + the discovery that only `Completed` should short-circuit resume
+
+---
+
 ## Recommendation summary
 
 Ship two related but distinct pieces, in this order:

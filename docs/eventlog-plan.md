@@ -1,5 +1,34 @@
 # Durable sessions + audit/replay event log — M3 plan
 
+## Status (2026-05-15): shipped
+
+All four phases of this plan landed:
+
+- **Phase 1** — `agent.WithSessionService` seam (commit `d9914f5`)
+- **Phase 2** — `eventlog/` package + GORM-backed Service + CLI flags (`58706c8`, `5973d38`)
+- **Phase 3** — `eventlog.SessionLock` + `agent.ResumeAutonomous` + checkpoint events (`c3cd4da`, `62ab3b4`)
+- **Phase 4** — `agent.WithSubagents` + `NewSubagentTool` (`9e6920e`, `de9b64e`)
+
+The Phase 4 implementation deliberately deviated from the plan
+(derived session IDs `<parent>:sub:<branch>` instead of the
+shared-parent-session shape originally proposed) — ADK's database
+session service has optimistic-concurrency checking that would have
+broken the shared-session approach. See **`docs/eventlog-decisions.md`
+Phase 4** for the full discovery story and trade-offs.
+
+Use this doc as **historical context** — milestone breakdown,
+design alternatives, deferred items — not as a description of the
+current API.
+
+**Canonical references for what shipped:**
+- README's M3 milestone entry
+- [`docs/site/content/docs/sessions.md`](./site/content/docs/sessions.md) — user-facing reference for the eventlog
+- [`docs/site/content/docs/autonomous.md`](./site/content/docs/autonomous.md) — RunAutonomous + ResumeAutonomous
+- [`docs/site/content/docs/library-api.md`](./site/content/docs/library-api.md) — Subagents + Sessions API surface
+- [`docs/eventlog-decisions.md`](./eventlog-decisions.md) — implementation record for all four phases
+
+---
+
 ## Recommendation summary
 
 Ship a new `eventlog/` package that pairs an append-only event log primitive (monotonic `seq`, `Since(seq)` replay, `Watch(seq)` live-tail) with a `session.Service` implementation backed by ADK's existing GORM-backed `database` package (multi-driver: SQLite, MySQL, Postgres). Wire it into `agent.Agent` via a new `WithSessionService` option (which replaces the hardcoded `session.InMemoryService()` at `agent/agent.go:173`) plus a higher-level `WithEventLog` convenience. Extend `agent.RunAutonomous` with checkpoint events and a `ResumeAutonomous` API so a crashed run can pick up at the next turn from the event log alone. Refresh `docs/subagents-plan.md` to drop the `tool/agenttool` wrapping in favor of a custom subagent runner that participates in the parent's event log under a branch-scoped path — so subagent events stream live into the audit log instead of being dropped.

@@ -26,13 +26,15 @@ import (
 	"sync"
 
 	adkmodel "google.golang.org/adk/model"
+
+	"github.com/go-steer/core-agent/recording"
 )
 
-// scriptedLLM replays a sequence of RecordedTurns. Each call to
-// GenerateContent advances a cursor and yields the responses that
-// were captured for that turn. The script is exhausted when more
-// calls arrive than there are recorded turns, and the next yield
-// surfaces a clear error rather than a silent empty stream.
+// scriptedLLM replays a sequence of recording.RecordedTurns. Each
+// call to GenerateContent advances a cursor and yields the responses
+// that were captured for that turn. The script is exhausted when
+// more calls arrive than there are recorded turns, and the next
+// yield surfaces a clear error rather than a silent empty stream.
 //
 // In strict mode, each incoming request's Contents must JSON-equal
 // the recorded request's Contents — that catches regressions in how
@@ -40,7 +42,7 @@ import (
 // other Config drift.
 type scriptedLLM struct {
 	mu     sync.Mutex
-	turns  []RecordedTurn
+	turns  []recording.RecordedTurn
 	cursor int
 	strict bool
 }
@@ -76,9 +78,9 @@ func (l *scriptedLLM) GenerateContent(_ context.Context, req *adkmodel.LLMReques
 }
 
 // loadScript parses a JSONL file where each non-blank line is a
-// single RecordedTurn. Comment lines starting with "#" are tolerated
-// so consumers can hand-edit fixtures.
-func loadScript(path string) ([]RecordedTurn, error) {
+// single recording.RecordedTurn. Comment lines starting with "#" are
+// tolerated so consumers can hand-edit fixtures.
+func loadScript(path string) ([]recording.RecordedTurn, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open: %w", err)
@@ -87,8 +89,8 @@ func loadScript(path string) ([]RecordedTurn, error) {
 	return decodeScript(f, path)
 }
 
-func decodeScript(r io.Reader, source string) ([]RecordedTurn, error) {
-	var out []RecordedTurn
+func decodeScript(r io.Reader, source string) ([]recording.RecordedTurn, error) {
+	var out []recording.RecordedTurn
 	sc := bufio.NewScanner(r)
 	// Allow long lines — recorded turns can be large.
 	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
@@ -97,7 +99,7 @@ func decodeScript(r io.Reader, source string) ([]RecordedTurn, error) {
 		if len(raw) == 0 || raw[0] == '#' {
 			continue
 		}
-		var t RecordedTurn
+		var t recording.RecordedTurn
 		if err := json.Unmarshal(raw, &t); err != nil {
 			return nil, fmt.Errorf("%s: line %d: %w", source, line, err)
 		}

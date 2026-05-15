@@ -12,11 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package mock
+package recording
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"iter"
 	"strings"
@@ -76,12 +78,7 @@ func TestRecorder_RoundTrip(t *testing.T) {
 		t.Errorf("Name() should delegate to inner, got %q", rec.Name())
 	}
 
-	// Round-trip: parse the buffer back via decodeScript and assert we
-	// see one turn with the same three responses.
-	turns, err := decodeScript(&buf, "buf")
-	if err != nil {
-		t.Fatalf("decodeScript: %v", err)
-	}
+	turns := decodeJSONL(t, &buf)
 	if len(turns) != 1 {
 		t.Fatalf("expected 1 recorded turn, got %d", len(turns))
 	}
@@ -128,10 +125,7 @@ func TestRecorder_PassesThroughErrors(t *testing.T) {
 	// Even with a final error, the partial we did receive should be
 	// recorded so a debugger can see what the model produced before
 	// things went sideways.
-	turns, err := decodeScript(&buf, "buf")
-	if err != nil {
-		t.Fatalf("decodeScript: %v", err)
-	}
+	turns := decodeJSONL(t, &buf)
 	if len(turns) != 1 || len(turns[0].Responses) != 1 {
 		t.Fatalf("expected 1 turn with 1 partial recorded, got %+v", turns)
 	}
@@ -140,30 +134,43 @@ func TestRecorder_PassesThroughErrors(t *testing.T) {
 	}
 }
 
-func TestRecorder_RecordThenReplayWithScripted(t *testing.T) {
-	t.Parallel()
-	inner := &fakeLLM{
-		name: "fake",
-		responses: []*adkmodel.LLMResponse{
-			{Content: textContent(genai.RoleModel, "first"), TurnComplete: true},
-		},
+// decodeJSONL parses a JSONL buffer into RecordedTurns. Test helper
+// kept local so the recording package has zero dep on models/mock's
+// scripted decoder.
+func decodeJSONL(t *testing.T, buf *bytes.Buffer) []RecordedTurn {
+	t.Helper()
+	var out []RecordedTurn
+	sc := bufio.NewScanner(buf)
+	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	for sc.Scan() {
+		raw := bytes.TrimSpace(sc.Bytes())
+		if len(raw) == 0 {
+			continue
+		}
+		var turn RecordedTurn
+		if err := json.Unmarshal(raw, &turn); err != nil {
+			t.Fatalf("decodeJSONL: %v", err)
+		}
+		out = append(out, turn)
 	}
-	var buf bytes.Buffer
-	rec := NewRecorder(inner, &buf)
+	if err := sc.Err(); err != nil {
+		t.Fatalf("decodeJSONL scan: %v", err)
+	}
+	return out
+}
 
-	req := &adkmodel.LLMRequest{Contents: []*genai.Content{
-		{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "go"}}},
-	}}
-	_ = drain(t, rec, req)
+func textContent(role, s string) *genai.Content {
+	return &genai.Content{Role: role, Parts: []*genai.Part{{Text: s}}}
+}
 
-	// Feed the recording into a scripted LLM and verify it replays.
-	turns, err := decodeScript(&buf, "buf")
-	if err != nil {
-		t.Fatal(err)
+func drain(t *testing.T, llm adkmodel.LLM, req *adkmodel.LLMRequest) []*adkmodel.LLMResponse {
+	t.Helper()
+	var out []*adkmodel.LLMResponse
+	for resp, err := range llm.GenerateContent(context.Background(), req, false) {
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		out = append(out, resp)
 	}
-	scripted := &scriptedLLM{turns: turns}
-	got := drain(t, scripted, req)
-	if len(got) != 1 || got[0].Content.Parts[0].Text != "first" {
-		t.Errorf("scripted replay didn't reproduce recorded response, got %+v", got)
-	}
+	return out
 }

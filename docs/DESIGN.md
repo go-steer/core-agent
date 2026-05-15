@@ -279,13 +279,13 @@ The cost is one extra layer of indirection per call. For a streaming agent loop,
 
 ## Mock providers and recording
 
-`models/mock/` ships two `models.Provider` implementations and a recording wrapper, all credential-free:
+`models/mock/` ships two credential-free `models.Provider` implementations; the recording wrapper that pairs with them lives in its own top-level `recording/` package because it's production observability, not a test fixture:
 
-- **`echo`** returns the user's last message as the model response. Zero config; for "does the binary boot?" sanity tests.
-- **`scripted`** plays back a JSONL transcript turn-by-turn. For exercising the full agent loop (tool calls, prompt construction, the disable surface) without burning API quota.
-- **`mock.NewRecorder(inner, w)`** wraps any `model.LLM` and appends each turn (request + response stream) to an `io.Writer` as JSONL. Enabled in the bundled CLI via `--record-to=path` or `cfg.mock.record`; works against `gemini`, `anthropic`, `echo`, or `scripted`.
+- **`echo`** (in `models/mock/`) returns the user's last message as the model response. Zero config; for "does the binary boot?" sanity tests.
+- **`scripted`** (in `models/mock/`) plays back a JSONL transcript turn-by-turn. For exercising the full agent loop (tool calls, prompt construction, the disable surface) without burning API quota.
+- **`recording.NewRecorder(inner, w)`** wraps any `model.LLM` and appends each turn (request + response stream) to an `io.Writer` as JSONL. Enabled in the bundled CLI via `--record-to=path` or `cfg.mock.record`; works against `gemini`, `anthropic`, `echo`, or `scripted`.
 
-The three pieces share one `RecordedTurn` JSON shape (`format.go`). Recording produces it; scripted consumes it.
+All three share the `recording.RecordedTurn` JSON shape — recording produces it; scripted consumes it. The split (`recording/` vs. `models/mock/`) keeps "real observability" out of a "mock" namespace; library callers reaching for the recorder shouldn't have to import a package called mock to record real production turns.
 
 ### Strict vs lenient
 

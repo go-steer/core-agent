@@ -12,7 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package mock
+// Package recording wraps an adkmodel.LLM with a JSONL transcript
+// recorder for offline observability and scripted-replay testing.
+//
+// The recording wrapper (NewRecorder) is transparent: callers see the
+// inner LLM's responses unchanged, and one RecordedTurn is appended to
+// the writer per GenerateContent call. The same RecordedTurn type is
+// consumed by models/mock's scripted provider for deterministic replay.
+package recording
 
 import (
 	adkmodel "google.golang.org/adk/model"

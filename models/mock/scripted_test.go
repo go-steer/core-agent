@@ -15,7 +15,9 @@
 package mock
 
 import (
+	"bytes"
 	"context"
+	"iter"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,11 +25,13 @@ import (
 
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/genai"
+
+	"github.com/go-steer/core-agent/recording"
 )
 
 func TestScripted_PlaysTurnsInOrder(t *testing.T) {
 	t.Parallel()
-	turns := []RecordedTurn{
+	turns := []recording.RecordedTurn{
 		{
 			Request: &adkmodel.LLMRequest{Model: "m"},
 			Responses: []*adkmodel.LLMResponse{
@@ -55,7 +59,7 @@ func TestScripted_PlaysTurnsInOrder(t *testing.T) {
 
 func TestScripted_ExhaustionIsAnError(t *testing.T) {
 	t.Parallel()
-	llm := &scriptedLLM{turns: []RecordedTurn{
+	llm := &scriptedLLM{turns: []recording.RecordedTurn{
 		{Responses: []*adkmodel.LLMResponse{{TurnComplete: true}}},
 	}}
 	_ = drain(t, llm, &adkmodel.LLMRequest{})
@@ -78,7 +82,7 @@ func TestScripted_StrictMatch(t *testing.T) {
 	contents := []*genai.Content{{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "hello"}}}}
 	llm := &scriptedLLM{
 		strict: true,
-		turns: []RecordedTurn{{
+		turns: []recording.RecordedTurn{{
 			Request:   &adkmodel.LLMRequest{Contents: contents},
 			Responses: []*adkmodel.LLMResponse{{TurnComplete: true}},
 		}},
@@ -93,7 +97,7 @@ func TestScripted_StrictMismatch(t *testing.T) {
 	t.Parallel()
 	llm := &scriptedLLM{
 		strict: true,
-		turns: []RecordedTurn{{
+		turns: []recording.RecordedTurn{{
 			Request: &adkmodel.LLMRequest{Contents: []*genai.Content{
 				{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "recorded"}}},
 			}},
@@ -164,4 +168,57 @@ func TestLoadScript_EmptyFile(t *testing.T) {
 
 func textContent(role, s string) *genai.Content {
 	return &genai.Content{Role: role, Parts: []*genai.Part{{Text: s}}}
+}
+
+// TestScripted_PlaysFromRecording is the cross-package integration
+// check: writes a session through recording.NewRecorder, loads the
+// JSONL via this package's decodeScript, and replays it. Pins the
+// wire-format contract between the two packages.
+func TestScripted_PlaysFromRecording(t *testing.T) {
+	t.Parallel()
+	inner := &recordingInnerLLM{
+		responses: []*adkmodel.LLMResponse{
+			{Content: textContent(genai.RoleModel, "first"), TurnComplete: true},
+		},
+	}
+	var buf bytes.Buffer
+	rec := recording.NewRecorder(inner, &buf)
+
+	req := &adkmodel.LLMRequest{Contents: []*genai.Content{
+		{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "go"}}},
+	}}
+	for _, err := range rec.GenerateContent(context.Background(), req, false) {
+		if err != nil {
+			t.Fatalf("recorder: %v", err)
+		}
+	}
+
+	turns, err := decodeScript(&buf, "buf")
+	if err != nil {
+		t.Fatalf("decodeScript: %v", err)
+	}
+	scripted := &scriptedLLM{turns: turns}
+	got := drain(t, scripted, req)
+	if len(got) != 1 || got[0].Content.Parts[0].Text != "first" {
+		t.Errorf("scripted replay didn't reproduce recorded response, got %+v", got)
+	}
+}
+
+// recordingInnerLLM is a tiny stand-in inner LLM for the cross-package
+// test above; mirrors recorder_test.go's fakeLLM but local to this
+// package so we don't have to export it.
+type recordingInnerLLM struct {
+	responses []*adkmodel.LLMResponse
+}
+
+func (r *recordingInnerLLM) Name() string { return "fake" }
+
+func (r *recordingInnerLLM) GenerateContent(_ context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		for _, resp := range r.responses {
+			if !yield(resp, nil) {
+				return
+			}
+		}
+	}
 }

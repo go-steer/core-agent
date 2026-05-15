@@ -170,6 +170,7 @@ type queryOpts struct {
 	appName, userID, sessionID string
 	branchPrefix               string
 	author                     string
+	authorSuffix               string
 	limit                      int
 }
 
@@ -196,6 +197,16 @@ func WithBranchPrefix(prefix string) QueryOption {
 // events; consumer-supplied authors work the same way.
 func WithAuthor(name string) QueryOption {
 	return func(q *queryOpts) { q.author = name }
+}
+
+// WithAuthorSuffix matches events whose Author ends with the supplied
+// suffix. Used by ResumeAutonomous to find checkpoint events
+// regardless of which binary emitted them — checkpoints land with
+// Author="<binary>/autonomous", so suffix "/autonomous" matches
+// checkpoints from any core-agent-family process. Empty suffix is a
+// no-op (matches everything).
+func WithAuthorSuffix(suffix string) QueryOption {
+	return func(q *queryOpts) { q.authorSuffix = suffix }
 }
 
 // WithLimit caps the number of entries returned. Zero or negative is

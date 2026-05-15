@@ -308,6 +308,9 @@ func (s *gormStream) queryRows(ctx context.Context, fromSeq int64, q queryOpts) 
 	if q.author != "" {
 		tx = tx.Where("author = ?", q.author)
 	}
+	if q.authorSuffix != "" {
+		tx = tx.Where("author LIKE ?", "%"+q.authorSuffix)
+	}
 	tx = tx.Order("seq ASC")
 	if q.limit > 0 {
 		tx = tx.Limit(q.limit)

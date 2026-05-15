@@ -82,7 +82,7 @@ provider, _ := gemini.NewAPIKey(key, gemini.WithBuiltinTools(gemini.BuiltinTools
 }))
 ```
 
-The same options apply to `gemini.NewVertex(...)`. Other genai built-ins (`FileSearch`, `GoogleMaps`, `ComputerUse`, `EnterpriseWebSearch`, `GoogleSearchRetrieval`, `Retrieval`) aren't surfaced today — they require upstream setup and would yield API errors rather than working tools if flipped on without it.
+The same options apply to `gemini.NewVertex(...)`. Other genai built-ins aren't surfaced today: `FileSearch`, `GoogleMaps`, `ComputerUse`, `Retrieval`, and `GoogleSearchRetrieval` all need upstream setup (a corpus, a Maps key, a hosted environment) and would yield API errors rather than working tools if flipped on without it. `EnterpriseWebSearch` is Vertex-only but otherwise zero-setup — it stays unsurfaced only because no consumer has asked.
 
 ---
 

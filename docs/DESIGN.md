@@ -244,11 +244,14 @@ The Gemini Provider injects a small, opinionated set of Gemini's server-side bui
 
 - **Default on** (no setup, universally useful): `GoogleSearch`, `URLContext`.
 - **Default off** (useful but a real action surface): `CodeExecution`.
-- **Not surfaced**: `FileSearch`, `GoogleMaps`, `ComputerUse`, `EnterpriseWebSearch`, `GoogleSearchRetrieval`, `Retrieval`.
+- **Not surfaced — needs upstream setup**: `FileSearch` (a `fileSearchStore` corpus), `GoogleMaps` (a Maps Platform API key), `ComputerUse` (a hosted desktop environment), `Retrieval` / `GoogleSearchRetrieval` (legacy; the latter overlaps `GoogleSearch` on modern models).
+- **Not surfaced — backend-specific, no consumer yet**: `EnterpriseWebSearch` (Vertex-only, otherwise zero-setup).
 
 ### Why these three and not the others
 
-Each non-surfaced built-in requires upstream setup that's outside the Gemini API itself — a configured `fileSearchStore`, a Maps Platform API key, a hosted desktop environment, a Vertex AI Search corpus. Flipping one of those on without the upstream resource yields an API error, not a working tool. Adding a public toggle for each would be a footgun: the natural reading of "I set `WithFileSearch(true)` and it didn't work" is that the library is broken, not that the user forgot to provision a corpus.
+The upstream-setup group is a footgun risk: flipping one on without provisioning the resource yields an opaque API error, not a working tool. The natural reading of "I set `WithFileSearch(true)` and it didn't work" is that the library is broken, not that the user forgot to provision a corpus. We surface these only when a consumer concretely needs them — and the toggle then has to take the resource handle as input, not just a bool.
+
+`EnterpriseWebSearch` is the exception in that list — no corpus, no extra credentials beyond what `NewVertex` already requires. It stays off the surface because no consumer has asked, not because of a setup footgun.
 
 `GoogleSearchRetrieval` is functionally redundant with `GoogleSearch` on modern models — keeping both as exposed toggles invites confusion.
 

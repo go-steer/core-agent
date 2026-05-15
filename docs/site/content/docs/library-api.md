@@ -290,9 +290,11 @@ Either flag enables. The default path is derived from `os.Executable()` so `core
 
 WAL mode is enabled by default for SQLite (`PRAGMA journal_mode=WAL`) so concurrent readers can run alongside the single writer. For workloads that need true concurrent writers across processes, Postgres is the answer — same `eventlog.Open` API, swap the dialector.
 
-### Crash-resume (Phase 3, in flight)
+### Session lock
 
-`agent.RunAutonomous` will land checkpoint events to the same log so a `ResumeAutonomous(...)` call can continue the run after a process crash. Tracked in `docs/eventlog-plan.md`.
+Both `RunAutonomous` (when its agent is wired with `WithEventLog`) and `ResumeAutonomous` acquire an exclusive lease on `(AppName, UserID, SessionID)` via `Handle.AcquireLock`. A heartbeat goroutine refreshes the lease every 5 seconds; a lease is considered stale after 30 seconds without a heartbeat and is automatically stolen by the next acquirer (recovers from crashed processes). Concurrent attempts on a fresh lease return `eventlog.ErrSessionLocked` with the holder identifier in the error message for diagnostics.
+
+The lock lives in its own `agent_run_lock` table in the same database; callers don't manage it directly.
 
 ---
 
@@ -384,10 +386,62 @@ build := func(extras []adktool.Tool) (*agent.Agent, error) {
 
 To test the loop without burning quota, drive `RunAutonomous` against a `mock.NewScripted(...)` model. `examples/autonomous/` runs end-to-end this way with no credentials.
 
+### Crash-resume
+
+When the agent is wired with `WithEventLog`, `RunAutonomous` emits a checkpoint event after every turn (and a final checkpoint with `stop_reason` on loop exit). A later `ResumeAutonomous` call against the same session walks the event log, re-derives the run totals from the latest checkpoint, and continues from the next turn.
+
+```go
+import (
+    "github.com/glebarez/sqlite"
+    "github.com/go-steer/core-agent/agent"
+    "github.com/go-steer/core-agent/eventlog"
+)
+
+handle, _ := eventlog.Open(ctx, sqlite.Open("/path/to/sessions.db"))
+defer handle.Close()
+
+// Phase 1: original run, capped at 5 turns.
+res1, _ := agent.RunAutonomous(ctx, build, "the goal",
+    agent.WithMaxTurns(5))
+// ... process exits, machine reboots, whatever ...
+
+// Phase 2: pick up where Phase 1 left off.
+res2, _ := agent.ResumeAutonomous(ctx, resumeBuild,
+    agent.SessionRef{
+        Handle:    handle,
+        AppName:   "my-app",
+        UserID:    "alice",
+        SessionID: "long-running-task",
+    },
+    agent.WithMaxTurns(20)) // bigger budget; carries forward Phase 1's totals
+```
+
+`ResumeBuildFunc` differs from `RunAutonomous`'s `BuildFunc` in one detail — it receives the resumed session ID so the constructed agent rejoins the same session via `agent.WithSession`:
+
+```go
+resumeBuild := func(extras []adktool.Tool, sess string) (*agent.Agent, error) {
+    return agent.New(m,
+        agent.WithAppName("my-app"),
+        agent.WithSession("alice", sess),
+        agent.WithEventLog(handle),
+        agent.WithTools(extras),
+    )
+}
+```
+
+Behavior:
+
+- **Terminal-state short-circuit** — if the latest checkpoint has `stop_reason == "completed"` (the model called `report_done`), `ResumeAutonomous` returns the stored `RunResult` immediately without running any new turns. Other stop reasons (`max_turns_exceeded`, `wallclock_exceeded`, `context_cancelled`, etc.) are interruptions, not terminations — those resume normally with the carried-forward totals.
+- **No-checkpoint case** — a session with no `/autonomous`-suffix checkpoint events is treated as a fresh start (turn 0). Useful for taking over an existing conversation: "make this session autonomous from here."
+- **Cross-binary resume** — the checkpoint author is `<binary>/autonomous` (e.g. `core-agent/autonomous`, `scion-agent/autonomous`). Discovery filters by the `/autonomous` suffix so a run started from one binary can be resumed from another.
+- **Budgets carry forward** — if the prior run accumulated 3 turns and the resume passes `WithMaxTurns(3)`, the pre-turn budget check fires immediately and `ResumeAutonomous` returns without running any new turns. Pass a higher budget to extend.
+- **Session lock** — `ResumeAutonomous` acquires the session lock (see "Durable sessions and audit log → Session lock"); concurrent attempts return `eventlog.ErrSessionLocked`.
+
+`examples/autonomous-resume/` runs end-to-end with no credentials — uses the scripted mock provider, drives a Phase 1 run capped at 2 turns, then a Phase 2 resume that completes the task.
+
 ### What's deferred
 
 - **Pause / resume mid-run** — the orchestrator-driven pattern (Scion, AX) covers this naturally; standalone needs more design.
-- **Crash-resume** — depends on file-backed sessions.
 - **Streaming structured results** — pass a `WithProgress` callback if you need per-event observation; richer shapes will land when a consumer asks.
 
 ---

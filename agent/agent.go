@@ -60,6 +60,7 @@ type Agent struct {
 	sessionService session.Service
 	eventLog       *eventlog.Handle
 	streaming      adkagent.StreamingMode
+	appName        string
 	userID         string
 	sessionID      string
 }
@@ -227,10 +228,25 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		sessionService: svc,
 		eventLog:       o.eventLog,
 		streaming:      o.streaming,
+		appName:        o.appName,
 		userID:         o.userID,
 		sessionID:      o.sessionID,
 	}, nil
 }
+
+// AppName returns the AppName the agent was constructed with (the
+// value passed to runner.Config). Used by callers that need to
+// identify the session triple (app, user, session) for queries
+// against the event log or session.Service.
+func (a *Agent) AppName() string { return a.appName }
+
+// UserID returns the user identifier the agent was constructed with.
+func (a *Agent) UserID() string { return a.userID }
+
+// SessionID returns the session identifier the agent was constructed
+// with. Combined with AppName + UserID this is the key the event log
+// uses to scope ForSession queries.
+func (a *Agent) SessionID() string { return a.sessionID }
 
 // SessionService returns the session.Service backing this agent. When
 // no WithSessionService option was passed at construction this is the

@@ -124,6 +124,75 @@ go run ./cmd/core-agent --provider=echo --session-db --session-db-path="$DB" -p 
 # are populated with the user input + model response.
 ```
 
-## Phase 3 — RunAutonomous resume (not started)
+## Phase 3 — RunAutonomous resume
+
+Status: shipped on `main` (commit pending).
+
+### What landed
+
+- **`eventlog.WithAuthorSuffix(suffix)`** QueryOption — suffix-match on the events table's author column. Used by ResumeAutonomous so checkpoints emitted by one binary (`core-agent/autonomous`) can be discovered by another (`scion-agent/autonomous`). Implementation is `LIKE '%suffix'`.
+- **`eventlog.SessionLock`** primitive — `eventlog/lock.go`. New `agent_run_lock` table with composite primary key `(app_name, user_id, session_id)` plus holder identifier (`<host>/<pid>/<rand>`), `acquired_at`, `heartbeat_at`. `Handle.AcquireLock(ctx, app, user, session)` returns a `*SessionLock` whose background heartbeat goroutine refreshes `heartbeat_at` every 5 seconds. Stale-after-30-seconds steal logic recovers from crashed processes; `Release` is idempotent and uses a `WHERE holder = ourID` predicate so a race-stolen successor isn't accidentally deleted. Seven tests in `eventlog/lock_test.go` (acquire-twice-blocks, different-sessions-don't-block, release-allows-reacquire, release-idempotent, stale-gets-stolen, heartbeat-keeps-fresh, release-doesn't-delete-successor).
+- **Checkpoint events** (`agent/checkpoint.go`): `checkpointPayload` struct + `emitCheckpoint(ctx, agent, payload)` helper. Author is `<binary>/autonomous` (from `os.Executable()`); ID is hex-encoded crypto/rand prefixed with `checkpoint-`. CustomMetadata holds `{turn, input_tokens, output_tokens, cost_usd, goal, continuation_prompt, stop_reason, done_detail, final_text}`. No-op when the agent has no event log wired (in-memory sessions can't survive a process restart, so the checkpoint would be lost anyway).
+- **Per-turn checkpoint emission** added to `RunAutonomous`'s loop: fires after every clean turn (non-done, non-error). Final checkpoint emitted on every loop-exit path — completed, max_turns, wallclock, retry_aborted, context_cancelled — with `stop_reason` set.
+- **`agent.UserID()`, `agent.SessionID()`, `agent.AppName()`** accessors — needed so the checkpoint emitter can call `session.Service.Get(...)` to fetch the live `session.Session` for AppendEvent. Stored on the `Agent` struct via the constructor.
+- **`agent.ResumeAutonomous(ctx, build, ref, opts...)`** in `agent/resume.go` — the consumer-facing entry. New types `ResumeBuildFunc`, `SessionRef`. Acquires the session lock; reads the latest `/autonomous`-suffix checkpoint; short-circuits with the terminal state when `stop_reason == "completed"`; otherwise rebuilds RunResult totals and continues from the next turn. Releases the lock on exit (deferred).
+- **Tests** in `agent/resume_test.go`: requires-build / requires-handle / requires-session-id, terminal-completed-returns-immediately (asserts LLM is never invoked), continues-from-mid-run (turns + tokens carry forward), budgets-carry-forward (max_turns already hit → no new turns), no-checkpoint-starts-at-zero, lock-blocks-concurrent. Plus `TestRunAutonomous_EmitsCheckpointPerTurn` against the agent test stubLLM.
+- **Example** `examples/autonomous-resume/main.go` — Phase 1 runs 2 turns capped at MaxTurns(2); Phase 2 resumes against the same SQLite event log and completes the task on the next turn. End-to-end with no credentials via scripted mock provider.
+- **Docs**: `docs/site/content/docs/library-api.md` extended with a "Crash-resume" subsection under "Autonomous runs" + a "Session lock" subsection under "Durable sessions and audit log".
+
+### Decisions made (with reasoning)
+
+**Only `StopReasonCompleted` triggers the resume short-circuit.**
+The first draft short-circuited on any non-empty stop_reason. Caught in test: a Phase-1 run hitting `MaxTurns` would emit a final checkpoint with `stop_reason="max_turns_exceeded"`, and the resume would return that immediately rather than continuing. That's wrong — budget-exhausted runs are interruptions, not terminations; the consumer is supposed to be able to pass a bigger budget on resume. The fix scopes the short-circuit to `Completed` (model called done). Other stop reasons (`max_turns`, `max_tokens`, `max_cost`, `wallclock`, `retry_aborted`, `context_cancelled`) just provide carryover totals.
+
+**`ResumeBuildFunc` is a separate type, not a unification with `BuildFunc`.**
+Per the user's choice (option b in the open-questions discussion). Resume needs the session ID at construction time so the agent rejoins the right session via `agent.WithSession`. A separate type keeps RunAutonomous's existing signature unchanged. Cost: consumers writing both have two near-identical build functions; we accept that.
+
+**Plain `RunAutonomous` does NOT acquire the session lock.**
+The plan was ambiguous; I made a call. Locks are mainly to prevent concurrent ResumeAutonomous-vs-ResumeAutonomous (and ResumeAutonomous-vs-anything) races. Plain RunAutonomous starting fresh on a new session ID has no race partner. If a consumer concretely wants RunAutonomous to also acquire locks (e.g., to detect "did I already start this run from another process"), we'll add it as an option. Document the constraint.
+
+**Cross-binary resume via `WithAuthorSuffix("/autonomous")`.**
+Per the user's choice. The author is `<binary>/autonomous` derived from `os.Executable()`. Suffix matching means a run started under `core-agent` can be resumed under `scion-agent` or `ax-agent` without losing its checkpoint trail. SQL `LIKE '%suffix'` works across SQLite/MySQL/Postgres.
+
+**No-checkpoint resume = turn-0 start.**
+Per the user's choice. Useful for "take over this existing session and make it autonomous" scenarios. Not an error.
+
+**Heartbeat: 5s interval, 30s staleness window.**
+Standard ratio (6× cushion). Tunable in code; not exposed as an option in v1 because nobody has a use case yet. The conditional UPDATE (`WHERE holder = ourID`) means a long-paused process whose lease was stolen silently loses subsequent heartbeat updates — graceful degradation rather than confusing "ghost lease" behavior.
+
+**Holder ID format: `<host>/<pid>/<rand>`.**
+Hostname + PID identifies the process for diagnostics; 4 random bytes guard against reused PIDs (process A exits, process B starts with the same PID). Surfaces in `ErrSessionLocked` error messages so operators can find the holding process.
+
+**Checkpoint-id prefix `checkpoint-`.**
+ADK's events table uses the event's `ID` field as the storage primary key, so manually-constructed checkpoint events need explicit IDs. The `checkpoint-<hex>` format makes them visually distinct from runner-emitted event IDs (which are typically timestamp-based per ADK conventions). Hex of 16 random bytes for collision avoidance.
+
+**`emitCheckpoint` is a no-op when the agent has no event log.**
+Avoids spamming the InMemoryService with checkpoints that get dropped on process exit anyway. The downside: a consumer that uses `agent.WithSessionService(customDurableService)` instead of `agent.WithEventLog(handle)` won't get checkpoints — they'd need to wire the eventlog Handle explicitly. Acceptable for v1; document if it surprises someone.
+
+**ADK logs "Event from an unknown agent: <binary>/autonomous" for each checkpoint.**
+Cosmetic noise — ADK's runner sees our checkpoint events with an Author it doesn't recognize as a registered agent. Not an error; we don't try to suppress it. Future: investigate whether ADK exposes a way to register synthetic authors so the log goes away.
+
+### What did NOT land in Phase 3 (deliberately)
+
+- **Pause / resume mid-run.** The orchestrator-driven pattern (Scion, AX) covers it naturally — standalone semantics need more design.
+- **Streaming subscriber for live tail of a running RunAutonomous.** `Handle.Stream.Watch(fromSeq)` already exists; consumers can wire their own subscribers without core-agent changes.
+- **Lock acquisition for plain RunAutonomous.** See "decisions" above.
+- **Non-default heartbeat / staleness intervals as Options.** No consumer asked.
+- **Reconciliation tool for sessions whose ADK events succeeded but whose overlay rows failed.** Same eventual-consistency caveat as Phase 2; revisit if a consumer reports drift.
+
+### Verification
+
+```bash
+go test ./agent/... ./eventlog/...    # 7 lock tests + 7 resume tests + carried-forward Phase 1/2 tests, all pass
+go vet ./...                          # clean
+go build ./...                        # clean
+for s in dev/ci/presubmits/*; do bash "$s"; done   # all green
+
+# End-to-end smoke (no creds, real SQLite):
+go run ./examples/autonomous-resume
+# Expected: Phase 1 hits max_turns_exceeded after 2 turns;
+# Phase 2 resumes, runs 1 more turn, completes with reason=completed
+# done_detail="resumed and finished".
+```
 
 ## Phase 4 — Subagent runner refresh (not started)

@@ -161,40 +161,97 @@ Implementation notes:
 
 ### Phase 3 — RunAutonomous crash-resume
 
-**~2–3 days.**
+**~3–4 days** (small revision upward to cover the session-lock primitive).
 
-Two new pieces:
+Three new pieces:
 
-1. **Checkpoint events.** Each turn boundary, the autonomous driver appends a synthetic `session.Event` of type "checkpoint" (`Author: "core-agent/autonomous"`, custom metadata holds `{turn, input_tokens, output_tokens, cost_usd, goal, prompt}`). These are first-class events in the log — visible to audit, replayable.
+#### 1. Checkpoint events
 
-2. **Resume API.**
-   ```go
-   // ResumeAutonomous reads the most recent checkpoint event from the
-   // session's event log, reconstructs RunResult totals, and continues
-   // RunAutonomous from the next turn. The supplied build function
-   // receives the resumed session and the checkpoint state via
-   // ResumeContext so the constructed agent can re-establish anything
-   // not derivable from session state alone.
-   func ResumeAutonomous(ctx context.Context, build BuildFunc, sessionRef SessionRef, opts ...AutonomousOption) (RunResult, error)
+Each turn boundary, the autonomous driver appends a synthetic `session.Event` to the event log as a checkpoint:
 
-   type SessionRef struct {
-       AppName, UserID, SessionID string
-       Stream                     eventlog.Stream
-       Service                    session.Service
-   }
-   ```
+- `Author = "<binary>/autonomous"` where `<binary>` comes from `os.Executable()` (matches the convention used elsewhere — `core-agent/autonomous`, `scion-agent/autonomous`, etc.)
+- `CustomMetadata` carries the structured payload: `{turn int, input_tokens int, output_tokens int, cost_usd float64, goal string, continuation_prompt string, stop_reason string}`
+- `stop_reason` is empty for per-turn checkpoints, set to one of the `StopReason` values for the final checkpoint emitted when the loop exits (completed / max_turns / max_tokens / max_cost / wallclock / context_cancelled / retry_aborted)
 
-3. **Behavior on resume:**
-   - Read `Since(0, ForSession(...))` to find the latest checkpoint event.
-   - Re-derive run totals from checkpoint metadata.
-   - If checkpoint is "done" or "abort," return that final state immediately (no new turns).
-   - Otherwise, continue from `prompt = checkpoint.continuationPrompt`.
-   - Honor all the same budget options; budgets are evaluated against the resumed totals.
+Per-turn checkpoints fire *after* each turn completes. The final checkpoint fires on loop exit regardless of cause. ResumeAutonomous reads the latest checkpoint and either returns the terminal state immediately (if `stop_reason` is set) or continues from `turn + 1`.
 
-Tests:
-- Crash mid-run (cancel ctx after N turns), then `ResumeAutonomous`. Assert next turn picks up correctly.
-- Resume from a "completed" run returns the stored final state without re-running.
-- Budget caps that were hit before crash are still respected on resume.
+#### 2. Resume API
+
+```go
+// ResumeAutonomous reads the most recent checkpoint event from the
+// session's event log, reconstructs RunResult totals, and continues
+// from the next turn. The build function receives the original
+// sessionID so it can construct an agent that resumes the same
+// session via agent.WithSession.
+//
+// If no checkpoint events exist for the session, the run starts from
+// turn 0 with whatever event history the session already has loaded —
+// "make this existing session autonomous from here" is a valid use.
+//
+// If the latest checkpoint has stop_reason set (terminal state),
+// ResumeAutonomous returns that state immediately without
+// constructing the agent or running any turns.
+func ResumeAutonomous(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...AutonomousOption) (RunResult, error)
+
+// ResumeBuildFunc is RunAutonomous's BuildFunc with sessionID added.
+// The consumer's build implementation is expected to call
+// agent.WithSession(ref.UserID, sessionID) so the constructed agent
+// reuses the resumed session.
+type ResumeBuildFunc func(extras []tool.Tool, sessionID string) (*Agent, error)
+
+// SessionRef identifies the session to resume. Handle provides both
+// the session.Service and the eventlog.Stream needed to look up
+// checkpoints; the (AppName, UserID, SessionID) triple identifies
+// which session within the database.
+type SessionRef struct {
+    Handle    *eventlog.Handle
+    AppName   string
+    UserID    string
+    SessionID string
+}
+```
+
+Checkpoint discovery filters by author **suffix** `/autonomous` rather than an exact author match, so a run started from `core-agent` can be resumed by `scion-agent` (or vice versa) without losing its checkpoint history. Hand-offs across processes are a real use case.
+
+#### 3. Session lock
+
+To prevent two concurrent ResumeAutonomous calls from clobbering each other's writes, eventlog ships a tiny lock primitive that uses the same database:
+
+```go
+// SessionLock holds an exclusive lease on (app, user, session) for
+// the lifetime of the autonomous run. The lease is heartbeated every
+// 5s; a lock is considered stale if its last heartbeat is older than
+// 30s, allowing recovery from crashed processes.
+type SessionLock struct{ /* ... */ }
+
+func (h *Handle) AcquireLock(ctx context.Context, app, user, session string) (*SessionLock, error)
+func (l *SessionLock) Release() error
+```
+
+Implementation: a tiny `agent_run_lock` table with primary key `(app_name, user_id, session_id)` plus `holder` (process identifier — pid + hostname), `acquired_at`, `heartbeat_at`. AcquireLock attempts an INSERT; on unique-constraint violation it checks `heartbeat_at` — if stale, steals the lock; otherwise returns a clear "session locked by <holder>" error. A background goroutine refreshes `heartbeat_at` while the run executes.
+
+Both `RunAutonomous` (when called against a SessionRef) and `ResumeAutonomous` acquire the lock. Plain `RunAutonomous` calls without a SessionRef are unchanged — no lock taken (no shared session to protect).
+
+#### Behavior summary
+
+On resume:
+- Acquire SessionLock; abort if held by another live process.
+- Read `Stream.Since(0, ForSession(...))` and find the last event whose Author has suffix `/autonomous`.
+- If found and `stop_reason != ""`: return reconstructed RunResult immediately, release the lock.
+- If found with empty `stop_reason`: re-derive turn counter + token/cost totals; continue with `prompt = continuation_prompt`.
+- If no checkpoint event at all: start from turn 0 with the session's existing history loaded.
+- Honor all `AutonomousOption` budgets; they're evaluated against the cumulative resumed totals.
+- Release the lock on exit (deferred).
+
+#### Files
+
+- `eventlog/lock.go` — `agentRunLockRow` GORM model + `AcquireLock`/`Release`/heartbeat goroutine
+- `eventlog/lock_test.go` — acquire-twice-fails, stale-steal, heartbeat-refresh, release-clears
+- `agent/autonomous.go` — checkpoint emission per turn + final checkpoint, `ResumeAutonomous`, `ResumeBuildFunc`, `SessionRef`
+- `agent/autonomous_test.go` — resume-from-mid-run, resume-from-terminal-returns-final-state, no-checkpoint-starts-at-zero, cross-binary-author-match, lock-blocks-concurrent-resume, budgets-carry-forward
+- `examples/autonomous-resume/main.go` — drives a small RunAutonomous against `--provider=scripted` with a tight turn cap, then ResumeAutonomous picks up where it left off (no actual process crash needed; the budget cap simulates the interruption)
+- `docs/site/content/docs/library-api.md` — extend the autonomous section with a "Crash-resume" subsection
+- `docs/eventlog-decisions.md` — Phase 3 implementation record
 
 ### Phase 4 — Subagent integration via custom runner (replaces existing subagents-plan)
 

@@ -103,6 +103,24 @@ func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*Age
 	prompt := goal
 	result := RunResult{}
 
+	// Convenience: emit a final checkpoint with the configured
+	// stop reason regardless of which exit path the loop takes.
+	// Skipped when the agent has no event log; checkpoints are only
+	// useful for durable sessions.
+	emitFinalCheckpoint := func(reason StopReason) {
+		_ = emitCheckpoint(ctx, a, checkpointPayload{
+			Turn:               result.Turns,
+			InputTokens:        result.InputTokens,
+			OutputTokens:       result.OutputTokens,
+			CostUSD:            result.CostUSD,
+			Goal:               goal,
+			ContinuationPrompt: cfg.continuationPrompt,
+			StopReason:         string(reason),
+			DoneDetail:         result.DoneDetail,
+			FinalText:          result.FinalText,
+		})
+	}
+
 	for {
 		// Pre-turn budget checks.
 		if cfg.maxWallclock > 0 && time.Since(startedAt) >= cfg.maxWallclock {
@@ -128,6 +146,7 @@ func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*Age
 		if err := ctx.Err(); err != nil {
 			result.Reason = StopReasonContextCancelled
 			result.Duration = time.Since(startedAt)
+			emitFinalCheckpoint(StopReasonContextCancelled)
 			return result, err
 		}
 
@@ -158,6 +177,7 @@ func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*Age
 			if errors.Is(turnErr, context.Canceled) && ctx.Err() != nil {
 				result.Reason = StopReasonContextCancelled
 				result.Duration = time.Since(startedAt)
+				emitFinalCheckpoint(StopReasonContextCancelled)
 				return result, turnErr
 			}
 			decision := AbortRun
@@ -176,10 +196,12 @@ func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*Age
 				// Move on to the continuation prompt as if the turn
 				// had completed without producing a done signal.
 				prompt = cfg.continuationPrompt
+				_ = emitCheckpoint(ctx, a, perTurnCheckpoint(result, goal, cfg.continuationPrompt))
 				continue
 			default:
 				result.Reason = StopReasonRetryAborted
 				result.Duration = time.Since(startedAt)
+				emitFinalCheckpoint(StopReasonRetryAborted)
 				return result, turnErr
 			}
 		}
@@ -190,11 +212,34 @@ func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*Age
 			break
 		}
 
+		// Per-turn checkpoint after a clean (non-done, non-error)
+		// turn. Per-turn emission is the cursor ResumeAutonomous
+		// continues from; a no-checkpoint run can still resume from
+		// turn 0 if its session has events but no checkpoints.
+		_ = emitCheckpoint(ctx, a, perTurnCheckpoint(result, goal, cfg.continuationPrompt))
+
 		prompt = cfg.continuationPrompt
 	}
 
 	result.Duration = time.Since(startedAt)
+	emitFinalCheckpoint(result.Reason)
 	return result, nil
+}
+
+// perTurnCheckpoint builds the payload for the checkpoint emitted
+// after a successful (non-done, non-error) turn. Shared between the
+// SkipTurn retry path and the normal continuation path so emissions
+// stay consistent.
+func perTurnCheckpoint(result RunResult, goal, continuation string) checkpointPayload {
+	return checkpointPayload{
+		Turn:               result.Turns,
+		InputTokens:        result.InputTokens,
+		OutputTokens:       result.OutputTokens,
+		CostUSD:            result.CostUSD,
+		Goal:               goal,
+		ContinuationPrompt: continuation,
+		FinalText:          result.FinalText,
+	}
 }
 
 // turnResult captures everything one turn produced that the driver

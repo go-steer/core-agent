@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "model": {
+    "name": "gemini-3.1-pro-preview"
+  },
+  "permissions": {
+    "mode": "yolo"
+  },
+  "tools": {
+    "disable": ["bash", "write_file", "edit_file"]
+  }
+}

@@ -1,0 +1,43 @@
+server:
+  address: ":8494"
+
+eventlog:
+  sqlite:
+    filename: "eventlog.sqlite"
+
+planner:
+  gemini:
+    model: "gemini-3-flash-preview"
+    timeout: "60s"
+
+# Two core-agent instances expose opposing perspectives. Each runs as a
+# remote AX agent (axp protocol) on its own port. The Gemini planner
+# turns each into a callable tool and routes user questions to whichever
+# (or both) makes sense for the question. Their outputs come back as
+# tool results; the planner synthesizes a final answer for the user.
+#
+# Run order:
+#   Terminal 1: cd devil && core-agent ax-agent --listen=:50051
+#   Terminal 2: cd angel && core-agent ax-agent --listen=:50052
+#   Terminal 3: ax serve --config ax.yaml
+#   Terminal 4: ax exec --input "should we drop Python 3.10 support?"
+registry:
+  remote_agents:
+    - id: "devil"
+      name: "Devil's Advocate"
+      description: |
+        Argues against any proposal: surfaces risks, hidden costs, failure
+        modes, and load-bearing assumptions. Use whenever a question
+        involves a decision, plan, or change worth scrutinizing — even
+        seemingly obvious ones. Often paired with the Angel's Advocate.
+      address: "localhost:50051"
+      protocol: "axp"
+    - id: "angel"
+      name: "Angel's Advocate"
+      description: |
+        Argues for any proposal: surfaces benefits, costs avoided, and
+        opportunities unlocked. Use whenever a question involves a
+        decision, plan, or change worth defending — even seemingly bad
+        ones. Often paired with the Devil's Advocate.
+      address: "localhost:50052"
+      protocol: "axp"

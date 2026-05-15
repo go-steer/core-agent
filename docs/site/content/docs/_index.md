@@ -16,3 +16,6 @@ Reference documentation for `core-agent`.
 | [Skills](skills/) | Claude-compatible `SKILL.md` bundles — format, discovery, gating. |
 | [Permissions](permissions/) | Modes (ask / allow / yolo), pattern grammar, path scope, the bash denylist. |
 | [Library API](library-api/) | Embedding `core-agent` from your own Go code; extension points. |
+| [Autonomous runs](autonomous/) | `agent.RunAutonomous` for unattended workers; budgets, termination, crash-resume, the lifecycle tool. |
+| [Sessions and event log](sessions/) | Durable sessions + audit log via the `eventlog` package; SQLite/Postgres/MySQL, replay, live tail, session lock. |
+| [Scion adapter](scion-adapter/) | Optional packaging for Scion's container runtime. |

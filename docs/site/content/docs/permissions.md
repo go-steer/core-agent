@@ -200,6 +200,13 @@ For non-interactive runs (CI, batch jobs), use:
 
 `mode: allow` rejects anything not on the allowlist, which is what you want when there's no human in the loop.
 
+### Autonomous runs and the gate
+
+`agent.RunAutonomous` would deadlock under `mode: ask` if your tools route through a gate without a `Prompter` — the model's first gated tool call would block waiting for human approval that's never going to arrive. Two options:
+
+- Use `mode: yolo` (or `mode: allow` with an explicit allowlist) for unattended runs.
+- Wire `permissions.RefusePrompter` so the agent gets a clean refusal instead of blocking, and pass `agent.WithPermissionsGate(g)` to enable the driver's startup deadlock guard. See [Autonomous runs → Permission modes]({{< relref "autonomous.md#permission-modes" >}}).
+
 ---
 
 ## Bridging to ADK toolsets

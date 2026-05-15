@@ -140,6 +140,26 @@ Fallback chain: `AGENTS.md` → `CLAUDE.md` → `GEMINI.md` (first match wins). 
 
 ---
 
+## Useful flags
+
+Beyond `--provider` / `-m` / `-p`, three flags come up often:
+
+```
+--ask=stdin|auto|off            register an ask_user tool the model can call
+                                (auto = stdin if interactive, refuse otherwise)
+--session-db                    persist sessions + audit log to a durable database
+                                (default off; in-memory)
+--session-db-path=PATH          override the database path (default: ~/.<binary>/sessions.db)
+```
+
+Use `--ask=auto` when your `AGENTS.md` instructs the model to ask before some action — the agent gets a clean refusal in headless contexts instead of blocking forever. See [Library API → Prompter]({{< relref "library-api.md#prompter" >}}).
+
+Use `--session-db` to persist conversation history across restarts and unlock the audit-log + crash-resume flows. See [Sessions and event log]({{< relref "sessions.md" >}}).
+
+For long-running unattended work, see [Autonomous runs]({{< relref "autonomous.md" >}}).
+
+---
+
 ## What to read next
 
 - [Providers]({{< relref "providers.md" >}}) — full reference for each model backend, env vars, and gotchas
@@ -148,3 +168,5 @@ Fallback chain: `AGENTS.md` → `CLAUDE.md` → `GEMINI.md` (first match wins). 
 - [Skills]({{< relref "skills.md" >}}) — Claude-compatible `SKILL.md` bundles
 - [Permissions]({{< relref "permissions.md" >}}) — gating tool calls
 - [Library API]({{< relref "library-api.md" >}}) — using `core-agent` from your own Go code
+- [Autonomous runs]({{< relref "autonomous.md" >}}) — `agent.RunAutonomous` for unattended workers
+- [Sessions and event log]({{< relref "sessions.md" >}}) — durable sessions, audit log, replay, crash-resume

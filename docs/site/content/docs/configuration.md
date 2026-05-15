@@ -247,3 +247,16 @@ Override discovery with the CLI's `-c <path>` flag, which reads the file directl
 ## Atomic writes
 
 `config.Save(path, cfg)` writes via temp file + `rename` so a partial write can never leave a corrupt `config.json` on disk. Use it when you build tooling that mutates config (e.g. an `init`-style command, or a `/permissions` slash command in a downstream consumer).
+
+---
+
+## Not in `config.json` — runtime-only flags
+
+A handful of features are CLI-flag-only, with no `config.json` field today (consumers that want them per-project typically wrap the CLI in a script):
+
+| Flag | Documented at |
+|---|---|
+| `--ask=stdin\|auto\|off` | [Library API → Prompter]({{< relref "library-api.md#prompter" >}}) |
+| `--session-db`, `--session-db-path` | [Sessions and event log]({{< relref "sessions.md#cli-flags" >}}) |
+| `--color=auto\|always\|never` | [Library API → Color]({{< relref "library-api.md#color" >}}) |
+| `--record-to`, `--script`, `--script-strict` | [Providers → Mock providers]({{< relref "providers.md" >}}) |

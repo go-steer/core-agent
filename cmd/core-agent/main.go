@@ -61,13 +61,14 @@ func main() {
 	scriptStrict := flag.Bool("script-strict", false, "scripted: assert each incoming request matches the recorded one (overrides cfg.mock.strict)")
 	recordTo := flag.String("record-to", "", "write a JSONL recording of all LLM turns to this path (overrides cfg.mock.record)")
 	color := flag.String("color", "auto", "ANSI color in streamed output: auto|always|never (auto = TTY-detect on stdout)")
+	ask := flag.String("ask", "off", "register an ask_user tool the model can call when its instructions tell it to ask: off|stdin|auto (auto = stdin if interactive, refuse otherwise)")
 	flag.Parse()
 
-	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color)
+	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask)
 	os.Exit(code)
 }
 
-func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string) int {
+func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -186,6 +187,15 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		builtinTools = reg.Tools
 	}
 
+	askTool, err := resolveAskUserTool(ask, os.Stdin, os.Stderr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+		return runner.ExitConfigError
+	}
+	if askTool != nil {
+		builtinTools = append(builtinTools, askTool)
+	}
+
 	tracker := usage.NewTracker()
 	pricing := usage.PriceFor(cfg.Model.Name, cfg)
 
@@ -262,6 +272,31 @@ func resolveColor(mode string, w io.Writer) (bool, error) {
 	default:
 		return false, fmt.Errorf("--color: unknown value %q (want auto|always|never)", mode)
 	}
+}
+
+// resolveAskUserTool turns the --ask flag value into a registered
+// ask_user tool (or nil to skip). "off" returns nil. "stdin" wires
+// tools.StdinPrompter unconditionally. "auto" picks stdin when the
+// agent's stdin is a TTY (interactive REPL or pty-backed run) and
+// tools.RefusePrompter otherwise — so the model gets a clear "no
+// user available" tool result and adapts in headless/piped runs.
+func resolveAskUserTool(mode string, in io.Reader, out io.Writer) (adktool.Tool, error) {
+	var prompter tools.Prompter
+	switch mode {
+	case "off", "":
+		return nil, nil
+	case "stdin":
+		prompter = tools.StdinPrompter(in, out)
+	case "auto":
+		if f, ok := in.(*os.File); ok && runner.IsTerminal(f) {
+			prompter = tools.StdinPrompter(in, out)
+		} else {
+			prompter = tools.RefusePrompter("running unattended; proceed with reasonable defaults and explain in your final response")
+		}
+	default:
+		return nil, fmt.Errorf("--ask: unknown value %q (want off|stdin|auto)", mode)
+	}
+	return tools.NewAskUserTool(tools.AskUserOptions{Prompter: prompter})
 }
 
 func persistTranscript(agentsDir, model, prompt string, tracker *usage.Tracker) {

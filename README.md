@@ -119,6 +119,11 @@ CLI flags:
                         (default: auto = on when stdout is a terminal,
                         off when piped). Tool calls render in cyan,
                         partial assistant text in green.
+    --ask string        Register an ask_user tool the model can call:
+                        off|stdin|auto (default: off). stdin reads from
+                        os.Stdin; auto picks stdin when interactive,
+                        else returns "(no user available)" so the model
+                        adapts instead of blocking.
 ```
 
 ---

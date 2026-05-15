@@ -104,7 +104,7 @@ Filters available:
 | Filter | Effect |
 |---|---|
 | `ForSession(app, user, session)` | Restrict to one session triple. Queries without it scan across every session in the database — useful for audit dashboards, slow on a busy database |
-| `WithBranchPrefix(prefix)` | Match events whose `Branch` field begins with `prefix`. Accepts both `.` and `/` separators; future subagent runners will set this |
+| `WithBranchPrefix(prefix)` | Match events whose `Branch` field begins with `prefix`. Subagent runners set `Branch="<parent>.<sub>"` so e.g. `WithBranchPrefix("research")` returns every research subagent's events across sessions. See [Library API → Subagents]({{< relref "library-api.md#subagents" >}}) |
 | `WithAuthor(name)` | Exact-match on the event's `Author` |
 | `WithAuthorSuffix(suffix)` | Suffix-match on `Author`. Used internally by `ResumeAutonomous` to find checkpoints regardless of which binary emitted them (`/autonomous`) |
 | `WithLimit(n)` | Cap the result set |

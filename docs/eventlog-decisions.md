@@ -195,4 +195,66 @@ go run ./examples/autonomous-resume
 # done_detail="resumed and finished".
 ```
 
-## Phase 4 — Subagent runner refresh (not started)
+## Phase 4 — Subagent runner refresh
+
+Status: shipped on `main` (commit pending).
+
+### What landed
+
+- **`agent.NewSubagentTool(opts SubagentOptions) (tool.Tool, error)`** in `agent/subagent.go` — wraps an `*agent.Agent` as a tool the parent's model can call. Does NOT use ADK's `tool/agenttool`; runs the inner agent through its own ADK runner against a session.Service that injects `Branch` on every appended event.
+- **`agent.WithSubagents([]*Agent) Option`** — convenience that registers each agent as a subagent tool. Resolved at the end of `New()` so it captures the parent's final session.Service + (app, user, session) triple.
+- **`branchInjectingService`** — internal `session.Service` wrapper. CRUD pass-through; `AppendEvent` stamps `Branch` on events whose Branch is empty, preserves any pre-set branch (so nested subagents keep their deeper labels).
+- **`agent.Agent.AgentName()`, `agent.Agent.Tools()`** accessors — needed for tool-name derivation and test introspection.
+- **Depth context value** — `subagentDepthKey{}` carries recursion depth through `context.Context`. `CurrentSubagentDepth(ctx)` reads it; the tool handler refuses with a clear error message at depth >= MaxDepth (default 2).
+- **Tests** in `agent/subagent_test.go` cover requires-Inner, requires-ADK-agent, defaults-name-to-Inner, name+description overrides, branch wrapper stamps + preserves, CRUD delegation, composeBranch matrix, depth context, WithSubagents registers tools / nil entries / order independence.
+- **`examples/with-subagent/`** — end-to-end demo with two scripted-mock providers: parent calls `research`, subagent answers, parent emits a final summary. Inspects the audit log to show the branch-tagged events.
+
+### Decisions made (with reasoning) — including a real architectural pivot from the plan
+
+**Subagent runs in a derived session row, not the parent's.**
+The plan said "the subagent runs through ADK's runner with the parent's session.Service and the parent's session ID, but with session.Event.Branch set to <parent>.<this>." Implementation surfaced a real bug: ADK's database session service has optimistic-concurrency checking via `last_update_time`. When the parent's outer runner is mid-stream and dispatches a subagent tool call, the subagent's runner writes to the session row — advancing `last_update_time`. When the parent's outer runner resumes and tries to AppendEvent, ADK rejects with `"stale session error: last update time from request (T0) is older than in database (T1)"`. The fix: subagent uses a derived session ID (`<parent>:sub:<branch>`) so the two runners write to different session rows. The events still land in the same database; audit queries find the subagent via `WithBranchPrefix("research")` across sessions.
+
+The trade-off: queries scoped to `ForSession("parent-session")` no longer return subagent events. Consumers run two queries (parent session + branch-prefix across sessions) or omit ForSession. The decisions doc documents this; the example demonstrates both query shapes.
+
+**Subagent code lives in `agent/`, not `tools/`.**
+The plan said `tools/subagent.go` to match the existing tool wrapping pattern (LifecycleTool, ask_user). But subagent semantics are inherently agent-shaped — the `Inner *agent.Agent` reference is core to the API, and putting it in `tools/` would force either a circular import (agent → tools → agent) or splitting types across packages. `agent/subagent.go` keeps everything coherent; the `agent.WithSubagents` convenience is the natural shape.
+
+**Branch separator: `.` (dot), matching ADK's docstring convention.**
+ADK's `session.Event.Branch` docstring says `agent_1.agent_2.agent_3`. Confirmed by reading `internal/llminternal/contents_processor.go` which uses `strings.HasPrefix(invocationBranch, event.Branch+".")` for the LLM-request branch filter. The earlier eventlog `WithBranchPrefix` accepts both `.` and `/` (defensive — we hadn't pinned the separator yet). Phase 4 standardizes on `.`.
+
+**ParentService / ParentAppName / ParentUserID / ParentSessionID on `SubagentOptions`.**
+Public fields rather than internal — exposes the override points so consumers who construct subagent tools directly (not via WithSubagents) can wire shared session storage themselves. WithSubagents fills these in automatically; callers using NewSubagentTool standalone leave them empty and the subagent's own session.Service / triple is used.
+
+**Subagent `AppendEvent` only stamps Branch when it's empty.**
+A nested subagent invoked from inside another subagent will have a deeper branch label set by the inner-most wrapper. The outer wrapper must not overwrite it. The "stamp empty only" rule preserves the hierarchy.
+
+**Depth cap default: 2.**
+Same as the original subagent plan. A subagent calling another subagent calling another is the maximum nesting before things get hard to reason about. Override via `MaxDepth`.
+
+**No filtering of subagent's input contents.**
+Per ADK's contents-processor branch filter, when the subagent's runner builds its first LLM request, it includes events from the parent's session row whose Branch matches `subagent_branch` or is a prefix of it. Because we use a separate session row entirely, the subagent sees only its own session — fresh per call, no parent history bleeding in. This actually delivers context isolation more strongly than the plan's "shared session with branch filter" would have.
+
+### What did NOT land in Phase 4 (deliberately)
+
+- **Default research-safe tools** (read_file, list_dir, todo) for the subagent. The original plan suggested this — Claude Code's pattern. We didn't add it; the inner agent's tool list is whatever the consumer constructs it with. Easy to add in a follow-up if a CLI wants it.
+- **`--enable-subagent` CLI flag.** Library-only feature for v1. The CLI doesn't auto-construct subagents.
+- **Cross-session audit queries** that span parent + derived sub-sessions in one go. `WithBranchPrefix` across sessions is the workaround; a `WithSessionTree(parentID)` option could land in a follow-up.
+- **Token / cost rollup** from subagent runs into the parent's `usage.Tracker`. The subagent's runner has its own internal tracking; surfacing it back through the tool result is non-trivial. Defer.
+- **`agent.NewSubagentTool` in `tools/`** package per the original plan. See "decisions" for why agent/.
+- **Refresh of `docs/subagents-plan.md`.** The old plan documented an `agenttool`-wrapped design; now superseded. Worth a follow-up to either delete or rewrite that doc to reflect the shipped design — the design has fundamentally changed.
+
+### Verification
+
+```bash
+go test ./agent/... ./eventlog/...   # all pass (existing + new subagent tests)
+go vet ./...                         # clean
+go build ./...                       # clean
+for s in dev/ci/presubmits/*; do bash "$s"; done   # all green
+
+# End-to-end smoke (no creds):
+go run ./examples/with-subagent
+# Expected: parent calls research, subagent returns its answer,
+# parent emits final summary, audit log shows parent events under
+# session "parent-session" and subagent events under branch="research"
+# (in derived session "parent-session:sub:research").
+```

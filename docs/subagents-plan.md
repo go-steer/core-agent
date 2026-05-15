@@ -1,6 +1,26 @@
 # Subagent tool — M3 plan
 
-## Recommendation summary
+## Status (2026-05-15): superseded
+
+This plan documented an `agenttool`-wrapped design. The shipped Phase 4
+implementation in [`docs/eventlog-plan.md`](./eventlog-plan.md#phase-4--subagent-integration-via-custom-runner-replaces-existing-subagents-plan)
+replaces it with a custom runner that participates in the parent's
+durable event log via `session.Event.Branch` — needed once durable
+sessions + audit logs landed in Phases 1-3 of the eventlog plan.
+
+**See [`docs/eventlog-decisions.md`](./eventlog-decisions.md) Phase 4
+section for the shipped design**, including the discovery-during-impl
+pivot from "shared parent session" to "derived session row" because
+ADK's database session service has optimistic-concurrency checking
+that rejects two concurrent runners writing to the same session.
+
+The rest of this doc is preserved as historical context — the design
+constraints (depth cap, gate inheritance, parallel-call safety, tool
+naming) all carried into the shipped version.
+
+---
+
+## Recommendation summary (historical)
 
 **Wrap, don't build.** ADK Go ships `google.golang.org/adk/tool/agenttool` (`/home/user/go/pkg/mod/google.golang.org/adk@v1.2.0/tool/agenttool/agent_tool.go`), which already implements agent-as-tool with: fresh per-call `session.InMemoryService()`, parent-state pass-through (filtering `_adk*` keys), JSON output extraction, and parallel-call safety. We add a thin `tools.NewSubagentTool(...)` constructor in `core-agent/tools/subagent.go` that builds an inner `agent.New(...)` (reusing all our existing options) and returns `agenttool.New(adk-inner, &agenttool.Config{SkipSummarization: false})` wrapped in our usual gate + truncation + recursion-depth checks. Library-only, opt-in (NOT in `tools.Default()`); CLI gets a single `--enable-subagent` flag for the smoke path. Same model and same gate as the parent by default; tools default to "research-safe" subset (no `bash`, no `write_file`, no `edit_file`) with a `WithTools([]tool.Tool)` override; depth cap of 2 enforced via a context value.
 

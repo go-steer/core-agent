@@ -197,6 +197,29 @@ statusTool, _ := tools.NewLifecycleTool(tools.LifecycleOptions{
 
 ---
 
+## Subagents
+
+For tasks where the model should delegate focused work to a specialized agent (research, planning, summarizing), wire one or more subagents via `agent.WithSubagents([]*Agent)`:
+
+```go
+research, _ := agent.New(researchModel,
+    agent.WithName("research"),
+    agent.WithEventLog(handle),
+    agent.WithInstruction("you are a researcher; answer concisely"),
+)
+parent, _ := agent.New(parentModel,
+    agent.WithEventLog(handle),
+    agent.WithSubagents([]*agent.Agent{research}),
+    agent.WithInstruction("delegate fact-finding to the research subagent"),
+)
+```
+
+The parent's model sees a `research` tool it can call with a `request` string. The handler dispatches the inner agent's runner; the joined final text comes back as the tool result. Subagent events stream live into the parent's audit log under `Branch="<parent_branch>.research"`.
+
+See [Library API → Subagents]({{< relref "library-api.md#subagents" >}}) for the full API surface — depth caps, custom branch labels, per-subagent options. `examples/with-subagent/` runs end-to-end with no credentials.
+
+---
+
 ## Composition with recording and mock providers
 
 Both layers compose transparently. To record a run for offline replay, wrap the model before passing it into `build`:

@@ -446,6 +446,74 @@ Behavior:
 
 ---
 
+## Subagents
+
+`agent.WithSubagents([]*Agent)` registers each agent as a callable tool the parent's model can invoke by name. The subagent runs through ADK's runner using the parent's session.Service (so its events stream live into the same audit log) with `session.Event.Branch` set to `"<parent_branch>.<subagent_name>"`.
+
+```go
+research, _ := agent.New(researchModel,
+    agent.WithName("research"),
+    agent.WithDescription("a focused research subagent"),
+    agent.WithEventLog(handle),
+    agent.WithSession("u", "research"),
+    agent.WithInstruction("you are a researcher; answer concisely"),
+)
+
+parent, _ := agent.New(parentModel,
+    agent.WithName("parent"),
+    agent.WithEventLog(handle),
+    agent.WithSession("u", "parent"),
+    agent.WithSubagents([]*agent.Agent{research}),
+    agent.WithInstruction("you summarize; delegate fact-finding to research"),
+)
+```
+
+The parent's model now sees a `research` tool it can invoke with a `request` string argument. The handler dispatches the inner agent's runner; the joined final text comes back as the tool result.
+
+### Audit log and isolation
+
+Each subagent runs in a derived session row (`<parent>:sub:<branch>`), not the parent's own session row — needed because ADK's database session service uses optimistic concurrency on `last_update_time` and would reject the parent's resumed write after the subagent's writes advanced the timestamp. The events still land in the same database; query by branch prefix to find them across sessions:
+
+```go
+for entry, err := range handle.Stream.Since(ctx, 0,
+    eventlog.WithBranchPrefix("research")) {
+    // ... entries from any subagent named "research" ...
+}
+```
+
+The derived-session shape gives strong context isolation by construction — the subagent's runner sees only its own session, not the parent's history. If the model needs context, the parent passes it via the `request` argument when calling the subagent.
+
+### Per-subagent options
+
+For finer control (custom name, description, depth cap, branch label) call `agent.NewSubagentTool` directly:
+
+```go
+researchTool, _ := agent.NewSubagentTool(agent.SubagentOptions{
+    Inner:       research,
+    Name:        "lookup",        // override the tool name
+    Description: "look something up",
+    MaxDepth:    3,               // depth cap (default 2)
+    Branch:      "lookup",        // branch label (default = tool name)
+})
+parent, _ := agent.New(model,
+    agent.WithEventLog(handle),
+    agent.WithTools([]adktool.Tool{researchTool}),
+)
+```
+
+`MaxDepth` prevents infinite recursion if a subagent registers itself (or another subagent) as a tool. The depth is tracked in the call's `context.Context`; `agent.CurrentSubagentDepth(ctx)` reads it.
+
+`examples/with-subagent/` runs end-to-end with no credentials — uses two scripted-mock providers (one per agent) to demonstrate the full parent→subagent→parent dispatch and inspects the resulting audit log.
+
+### What's deferred
+
+- **Default research-safe tool subset.** The inner agent's tool list is whatever you construct it with; we don't auto-restrict to read-only tools. Add per-subagent gates if your subagent shouldn't have write access.
+- **Token / cost rollup** from subagent runs into the parent's `usage.Tracker`. Defer until a consumer asks.
+- **`WithSessionTree(parentID)` query option** that returns events from the parent session plus all derived sub-sessions in one go. Workaround today: two queries (`ForSession` + `WithBranchPrefix`).
+- **`--enable-subagent` CLI flag.** Library-only feature for v1.
+
+---
+
 ## Adding custom tools
 
 Use ADK's `functiontool.New` to wrap a Go function as a tool the agent can call. Schema is generated from the input/output struct types via `jsonschema` tags.

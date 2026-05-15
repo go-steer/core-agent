@@ -38,6 +38,8 @@ import (
 	"google.golang.org/adk/runner"
 	"google.golang.org/adk/session"
 	"google.golang.org/adk/tool"
+
+	"github.com/go-steer/core-agent/eventlog"
 )
 
 // DefaultAppName tags this process in the ADK runner. Telemetry and
@@ -56,6 +58,7 @@ type Agent struct {
 	inner          adkagent.Agent
 	runner         *runner.Runner
 	sessionService session.Service
+	eventLog       *eventlog.Handle
 	streaming      adkagent.StreamingMode
 	userID         string
 	sessionID      string
@@ -75,6 +78,7 @@ type options struct {
 	tools          []tool.Tool
 	toolsets       []tool.Toolset
 	sessionService session.Service
+	eventLog       *eventlog.Handle
 
 	// TODO(subagents): a future WithSubagents([]*Agent) Option will
 	// register each subagent as a synthetic tool whose handler invokes
@@ -145,6 +149,24 @@ func WithSessionService(s session.Service) Option {
 	return func(o *options) { o.sessionService = s }
 }
 
+// WithEventLog wires an eventlog.Handle into the agent — the Handle's
+// Service becomes the agent's session.Service (so every event lands
+// in the durable log), and the Handle is stored on the agent so
+// callers can reach back to it for replay/watch via
+// Agent.EventLog().
+//
+// Equivalent to WithSessionService(h.Service) plus a stash of the
+// Handle for later access; passing nil is a no-op.
+func WithEventLog(h *eventlog.Handle) Option {
+	return func(o *options) {
+		if h == nil {
+			return
+		}
+		o.sessionService = h.Service
+		o.eventLog = h
+	}
+}
+
 // WithSystemInstructionPrefix prepends prefix to the agent's default
 // instruction. Used for memory loading: AGENTS.md / CLAUDE.md /
 // GEMINI.md project memory becomes part of the system prompt rather
@@ -203,6 +225,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		inner:          inner,
 		runner:         r,
 		sessionService: svc,
+		eventLog:       o.eventLog,
 		streaming:      o.streaming,
 		userID:         o.userID,
 		sessionID:      o.sessionID,
@@ -215,6 +238,12 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 // session state directly (e.g. listing prior events) without keeping
 // their own reference to the Service they passed in.
 func (a *Agent) SessionService() session.Service { return a.sessionService }
+
+// EventLog returns the *eventlog.Handle the agent was constructed
+// with via WithEventLog, or nil when no event log was wired. Use to
+// reach back to Stream.Since / Stream.Watch for replay or live tail
+// without keeping a separate reference.
+func (a *Agent) EventLog() *eventlog.Handle { return a.eventLog }
 
 // Run executes one turn of the agent against prompt and returns the event
 // iterator straight from ADK's runner. Callers are expected to range over

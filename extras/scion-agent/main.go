@@ -47,10 +47,12 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/glebarez/sqlite"
 	adktool "google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/agent"
 	"github.com/go-steer/core-agent/config"
+	"github.com/go-steer/core-agent/eventlog"
 	"github.com/go-steer/core-agent/instruction"
 	"github.com/go-steer/core-agent/mcp"
 	"github.com/go-steer/core-agent/models"
@@ -75,6 +77,8 @@ func main() {
 	scriptPath := flag.String("script", "", "JSONL transcript for --provider=scripted (overrides cfg.mock.script)")
 	scriptStrict := flag.Bool("script-strict", false, "scripted: assert each incoming request matches the recorded one (overrides cfg.mock.strict)")
 	recordTo := flag.String("record-to", "", "write a JSONL recording of all LLM turns to this path (overrides cfg.mock.record)")
+	sessionDB := flag.Bool("session-db", false, "persist sessions + audit log to a durable database (default off; in-memory)")
+	sessionDBPath := flag.String("session-db-path", "", "override the database path used when --session-db is set (default: ~/.<binary>/sessions.db)")
 	flag.Parse()
 
 	// Scion's Gemini harness sets GEMINI_API_KEY; core-agent's gemini
@@ -87,10 +91,10 @@ func main() {
 		}
 	}
 
-	os.Exit(run(*initialInput, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo))
+	os.Exit(run(*initialInput, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *sessionDB, *sessionDBPath))
 }
 
-func run(initialInput, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string) int {
+func run(initialInput, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, sessionDB bool, sessionDBPath string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -212,11 +216,35 @@ func run(initialInput, cfgPath, modelOverride, providerOverride string, noBuilti
 	}
 	allTools = append(allTools, statusTool)
 
-	a, err := agent.New(m,
+	agentOpts := []agent.Option{
 		agent.WithTools(allTools),
 		agent.WithToolsets(allToolsets),
 		agent.WithSystemInstructionPrefix(loaded.Instruction),
-	)
+	}
+
+	// Durable sessions + audit log (off by default; matches
+	// cmd/core-agent's flag shape so adapter behavior is uniform).
+	if sessionDB || sessionDBPath != "" {
+		path, err := resolveSessionDBPath(sessionDBPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "scion-agent: --session-db-path: %v\n", err)
+			return runner.ExitConfigError
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "scion-agent: session db dir: %v\n", err)
+			return runner.ExitConfigError
+		}
+		handle, err := eventlog.Open(ctx, sqlite.Open(path))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "scion-agent: open session db %s: %v\n", path, err)
+			return runner.ExitConfigError
+		}
+		defer func() { _ = handle.Close() }()
+		agentOpts = append(agentOpts, agent.WithEventLog(handle))
+		fmt.Fprintf(os.Stderr, "scion-agent: session db: %s\n", path)
+	}
+
+	a, err := agent.New(m, agentOpts...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "scion-agent: %v\n", err)
 		return runner.ExitAgentError
@@ -293,6 +321,30 @@ func streamTurn(ctx context.Context, a *agent.Agent, prompt string, stdout, stde
 		fmt.Fprintln(stdout)
 	}
 	return nil
+}
+
+// resolveSessionDBPath returns the database path for --session-db.
+// Override wins; default is ~/.<binary>/sessions.db so each adapter
+// gets its own directory automatically.
+func resolveSessionDBPath(override string) (string, error) {
+	if override != "" {
+		return override, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("user home: %w", err)
+	}
+	return filepath.Join(home, "."+binaryName(), "sessions.db"), nil
+}
+
+// binaryName returns the running executable's basename (sans .exe)
+// so default paths sort by binary identity. Falls back to
+// "scion-agent" if os.Executable fails.
+func binaryName() string {
+	if exe, err := os.Executable(); err == nil {
+		return strings.TrimSuffix(filepath.Base(exe), ".exe")
+	}
+	return "scion-agent"
 }
 
 // loadConfig resolves the config from cfgPath (when set) or by walking

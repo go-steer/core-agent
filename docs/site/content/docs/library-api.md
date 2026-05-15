@@ -228,6 +228,74 @@ The recorder lives in `recording/` (not `models/mock/`) because it's production 
 
 ---
 
+## Durable sessions and audit log
+
+`eventlog.Open(...)` returns a `*Handle` bundling a SQLite/Postgres/MySQL-backed `session.Service` (so every event the agent emits is persisted) and a `Stream` with monotonic seq numbers, `Since(fromSeq)` replay, and `Watch(fromSeq)` live-tail. Wire both into an agent in one option call:
+
+```go
+import (
+    "github.com/glebarez/sqlite"
+    "github.com/go-steer/core-agent/agent"
+    "github.com/go-steer/core-agent/eventlog"
+)
+
+handle, err := eventlog.Open(ctx, sqlite.Open("sessions.db"))
+if err != nil { /* ... */ }
+defer handle.Close()
+
+a, _ := agent.New(m,
+    agent.WithEventLog(handle),
+    agent.WithTools(reg.Tools),
+)
+```
+
+The same database holds ADK's standard `events`, `sessions`, `app_states`, `user_states` tables plus an `agent_eventlog` overlay table whose `seq INTEGER PRIMARY KEY AUTOINCREMENT` column gives every event a stable monotonic ordering for replay. ADK ships the GORM-backed session service we wrap; we only own the overlay.
+
+### Replay and live tail
+
+```go
+// Replay a session from the start.
+for entry, err := range handle.Stream.Since(ctx, 0,
+    eventlog.ForSession("core-agent", "local", "default")) {
+    if err != nil { /* ... */ }
+    fmt.Printf("seq=%d author=%s\n", entry.Seq, entry.Event.Author)
+}
+
+// Watch for new events as they arrive (blocks until ctx is cancelled).
+for entry, err := range handle.Stream.Watch(ctx, lastSeq,
+    eventlog.ForSession("core-agent", "local", "default")) {
+    if err != nil { /* ... */ }
+    handleLive(entry)
+}
+```
+
+Filter with `WithBranchPrefix(prefix)` to scope to a subagent subtree (subagent runners set `Branch`), `WithAuthor(name)` to find checkpoint events from `RunAutonomous`, or `WithLimit(n)` to cap the result set.
+
+### Multi-driver
+
+Pass any GORM dialector — SQLite, MySQL, Postgres. The CLI wires SQLite by default for the zero-config case; library callers swap in `postgres.Open(dsn)` or `mysql.Open(dsn)` and everything else is the same.
+
+### CLI flags
+
+```
+--session-db                    persist sessions + audit log to a durable database (default off)
+--session-db-path=PATH          override the database path (default: ~/.<binary>/sessions.db)
+```
+
+Either flag enables. The default path is derived from `os.Executable()` so `core-agent`, `scion-agent`, and forks each get their own directory automatically.
+
+### Consistency model
+
+`AppendEvent` writes to ADK's events table first (so the event has its assigned ID), then to the overlay so it picks up a seq. The overlay has a unique index on `event_id`, so a retry of the same event is a no-op rather than a duplicate. Spanning a single transaction across both layers is not done in v1; surfaced overlay-write errors let callers retry safely.
+
+WAL mode is enabled by default for SQLite (`PRAGMA journal_mode=WAL`) so concurrent readers can run alongside the single writer. For workloads that need true concurrent writers across processes, Postgres is the answer — same `eventlog.Open` API, swap the dialector.
+
+### Crash-resume (Phase 3, in flight)
+
+`agent.RunAutonomous` will land checkpoint events to the same log so a `ResumeAutonomous(...)` call can continue the run after a process crash. Tracked in `docs/eventlog-plan.md`.
+
+---
+
 ## Autonomous runs
 
 `agent.RunAutonomous` is a multi-turn driver for unattended workers — batch jobs, CI tasks, scheduled scripts. It loops `agent.Run` against a goal, enforces run-level budgets, and stops when the model signals "done" via an internal lifecycle tool.

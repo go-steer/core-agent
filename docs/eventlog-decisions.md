@@ -50,9 +50,79 @@ for s in dev/ci/presubmits/*; do bash "$s"; done   # all 7 green
 
 ---
 
-## Phase 2 — Event log substrate (in flight, not started)
+## Phase 2 — Event log substrate
 
-(Decisions will land here as work proceeds.)
+Status: shipped on `main` (commit pending).
+
+### What landed
+
+- New `eventlog/` package (`eventlog/eventlog.go`, `eventlog/sql.go`, `eventlog/service.go`).
+- **`eventlog.Open(ctx, dialector, opts...) (*Handle, error)`** — multi-driver via GORM. SQLite tested in-tree; Postgres/MySQL work the same way (caller supplies their dialector). Default WAL mode for SQLite, configurable via `WithSkipWAL`.
+- **`Stream` interface**: `Append`, `Since(fromSeq, opts...)`, `Watch(fromSeq, opts...)`, `Close`. Iterators are `iter.Seq2[Entry, error]`. Watch polls at 200ms by default (configurable via `WithWatchInterval`).
+- **`QueryOption` filters**: `ForSession(app, user, sess)`, `WithBranchPrefix(prefix)`, `WithAuthor(name)`, `WithLimit(n)`. Branch prefix accepts both `.` and `/` separators (ADK uses `.` in its docstring; we match either since we don't yet know which the eventual subagent runner will pick).
+- **`Handle` bundles** the `Stream` and `session.Service` with a `Close()` that releases both. `Service` is a wrapper around ADK's `database.SessionService` that delegates Create/Get/List/Delete unchanged and intercepts AppendEvent to also write the overlay row.
+- **`agent.WithEventLog(*eventlog.Handle)`** convenience option: wires `Handle.Service` as the agent's session service and stores the Handle on the agent (accessible via `Agent.EventLog()` for callers that want replay/watch without holding a separate reference). `WithEventLog(nil)` is a no-op.
+- **CLI flags** `--session-db` (bool) and `--session-db-path` (string) on `cmd/core-agent` and `extras/scion-agent`. Default path `~/.<binary>/sessions.db` derived from `os.Executable()` so forks/adapters get their own directory automatically. Either flag enables.
+- **Tests**: 10 in `eventlog/eventlog_test.go` + 2 new in `agent/agent_test.go`. Cover Append seq monotonicity, Since tail / filters / limits, Watch block-then-yield, ForSession isolation, branch-prefix matching across separators, ADK CRUD pass-through, duplicate-event-ID rejection, closed-stream rejection, agent.WithEventLog wiring.
+- **Docs**: `README.md` feature bullet, `docs/DESIGN.md` new section ("Durable sessions and audit/replay event log"), `docs/site/content/docs/library-api.md` new section ("Durable sessions and audit log"), `docs/eventlog-plan.md` updated with shipped status (decisions log = this file).
+
+### Decisions made (with reasoning)
+
+**Pure-Go SQLite via `glebarez/sqlite` (wrapping `modernc.org/sqlite`).**
+Per the user's earlier choice. Keeps `CGO_ENABLED=0` builds working; ~10MB binary growth is acceptable for the value (durable sessions out of the box). For workloads where SQLite throughput matters more than CGO cleanliness, callers swap the dialector — the API doesn't change.
+
+**Wrap ADK's `database.SessionService` rather than implement `session.Service` from scratch.**
+ADK already handles the events / sessions / app_states / user_states tables with multi-driver `AutoMigrate`. Reimplementing would duplicate ~500 lines of state-management plumbing for no gain. Cost: we open a second `*gorm.DB` connection for our overlay table since ADK doesn't expose its connection. SQLite handles concurrent connections cleanly with WAL; other drivers similarly tolerate it.
+
+**Two-write consistency, not single-transaction atomicity.**
+Spanning a transaction across ADK's connection and ours would require reflection into ADK's private `*gorm.DB` or rebuilding the entire service. We accept eventual consistency: ADK writes first; if the overlay write fails after, the caller sees an error and can retry. The overlay's unique index on `event_id` makes the retry safe (idempotent insert). A reconciliation helper that finds events without overlay rows is a follow-up if a consumer reports drift.
+
+**WAL mode by default for SQLite (`PRAGMA journal_mode=WAL`).**
+Enables concurrent readers alongside the single writer. `WithSkipWAL()` disables for in-memory and read-only setups. Best-effort: a PRAGMA failure is silent because some SQLite distributions reject WAL on `:memory:`.
+
+**Polling-based `Watch` at 200ms default.**
+Native push (PostgreSQL LISTEN/NOTIFY, SQLite update_hook) would be lower-latency but adds driver-specific code. Polling is portable and the interval is tunable. Document the trade-off; revisit when a consumer reports actual latency pain.
+
+**Default `--session-db` to off; opt-in.**
+Per the user's earlier choice. Auto-defaulting durability would change existing CLI behavior and create files users may not expect. The flag is a single character (`--session-db`) so the friction is low.
+
+**Default path `~/.<binary>/sessions.db` from `os.Executable()`.**
+Per the user's earlier choice. Detects the running binary at runtime so forks (`scion-agent`, `ax-agent`, custom builds) each land in their own directory without per-binary configuration. Falls back to a hardcoded name if `os.Executable()` fails.
+
+**Single DB file holding all sessions, not per-session DBs.**
+Per the user's confirmation. The audit-log story (cross-session app/user state, branch-prefix queries spanning subagent hierarchies) practically forces this. SQLite's single-writer constraint is mitigated by WAL; the rare workload that genuinely needs concurrent writers points to Postgres, same `eventlog.Open` API.
+
+**Branch prefix matches both `.` and `/` separators.**
+ADK's docstring uses `agent_1.agent_2.agent_3`; the autonomous-plan's subagent description used `parent/child`. Until Phase 4 ships and pins the actual separator, the prefix matcher accepts either to avoid having to refactor the query API later. Cost: a slightly more permissive match. Acceptable.
+
+**`Stream.Append` is on the public interface even though most callers go through `Service.AppendEvent`.**
+The Stream wrapper handles overlay rows; the Service handles ADK delegation + overlay. Exposing Append directly lets advanced consumers write events into the log without going through ADK's session machinery — useful for testing and for the future subagent runner that may want to replay events into a child branch.
+
+**No `eventlog.OpenSQLite(path)` helper.**
+The CLI binaries import `glebarez/sqlite` and call `eventlog.Open(ctx, sqlite.Open(path))` directly. Adding an `OpenSQLite` helper would tie the eventlog package to a specific driver, complicating the multi-driver story. The two-line import is fine.
+
+### What did NOT land in Phase 2 (deliberately)
+
+- **`extras/ax-agent` flag wiring.** ax-agent lives only on the `axplore` branch, not `main`. Will land when axplore is rebased onto current main (Phase 2 included). Tracked as a follow-up.
+- **`RunAutonomous` checkpoint events + `ResumeAutonomous`** — Phase 3.
+- **Subagent integration** — Phase 4.
+- **Native push for Watch** — deferred per the plan.
+- **Compaction / pruning of the event log** — deferred per the plan.
+
+### Verification
+
+```bash
+go test ./eventlog/... ./agent/...   # 10 + 7 tests pass
+go vet ./...                         # clean
+go build ./...                       # clean
+for s in dev/ci/presubmits/*; do bash "$s"; done   # all green
+
+# End-to-end smoke (real SQLite, echo provider, no creds):
+DB=$(mktemp -u --suffix=.db)
+go run ./cmd/core-agent --provider=echo --session-db --session-db-path="$DB" -p "hello"
+# Then inspect the DB to confirm both ADK tables and agent_eventlog
+# are populated with the user input + model response.
+```
 
 ## Phase 3 — RunAutonomous resume (not started)
 

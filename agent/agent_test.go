@@ -18,10 +18,14 @@ import (
 	"context"
 	"errors"
 	"iter"
+	"path/filepath"
 	"testing"
 
+	"github.com/glebarez/sqlite"
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/session"
+
+	"github.com/go-steer/core-agent/eventlog"
 )
 
 // minimalLLM satisfies adkmodel.LLM with the smallest possible
@@ -131,5 +135,40 @@ func TestNew_OptionOrderIndependent(t *testing.T) {
 	}
 	if a.SessionService() != session.Service(svc) {
 		t.Errorf("SessionService not preserved across other options")
+	}
+}
+
+func TestNew_WithEventLog_WiresServiceAndExposesHandle(t *testing.T) {
+	t.Parallel()
+	dsn := filepath.Join(t.TempDir(), "session.db")
+	h, err := eventlog.Open(context.Background(), sqlite.Open(dsn))
+	if err != nil {
+		t.Fatalf("eventlog.Open: %v", err)
+	}
+	defer h.Close()
+
+	a, err := New(minimalLLM{}, WithEventLog(h))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if a.SessionService() != h.Service {
+		t.Errorf("WithEventLog should install Handle.Service as the session.Service")
+	}
+	if a.EventLog() != h {
+		t.Errorf("EventLog() should return the Handle that was passed")
+	}
+}
+
+func TestNew_WithEventLog_NilIsNoop(t *testing.T) {
+	t.Parallel()
+	a, err := New(minimalLLM{}, WithEventLog(nil))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if a.SessionService() == nil {
+		t.Errorf("WithEventLog(nil) should leave the default session service in place")
+	}
+	if a.EventLog() != nil {
+		t.Errorf("WithEventLog(nil) should not stash a Handle")
 	}
 }

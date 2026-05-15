@@ -372,8 +372,35 @@ Putting these in the library means there's one correct implementation and one pl
 ### What's deferred (and why)
 
 - **Pause / resume mid-run.** The right shape isn't obvious without a real consumer ask. Pause-between-turns is doable today (consumer cancels context, then re-runs with stored history); pause-mid-turn would need ADK to expose recoverable interruption points it doesn't today.
-- **Crash-resume.** Blocked on M3's file-backed sessions. The serialization of `RunResult` and goal/continuation state is straightforward; the hard part is session resurrection, which depends on M3.
+- **Crash-resume.** Tracked under the eventlog plan (`docs/eventlog-plan.md`) Phase 3. Phase 1 (plug-in `session.Service`) and Phase 2 (`eventlog/` package + durable backend) have shipped; Phase 3 wires `RunAutonomous` to checkpoint events and adds `ResumeAutonomous`.
 - **`--autonomous` CLI flag.** Bundled `cmd/core-agent` is REPL / one-shot. Long-running autonomous use is a library / script concern. Add the flag if a consumer asks; until then it's just a wrapper with no value-add.
+
+---
+
+## Durable sessions and audit/replay event log
+
+`eventlog.Open(ctx, dialector)` returns a `*Handle` bundling an ADK `session.Service` with a `Stream` over the `agent_eventlog` overlay table. Wire into an agent via `agent.WithEventLog(handle)`; every event the runner emits is persisted with a monotonic seq, queryable via `Stream.Since(fromSeq)` and live-tailable via `Stream.Watch(fromSeq)`.
+
+### Why we wrap ADK's database service rather than rebuild
+
+ADK ships `google.golang.org/adk/session/database` — a full GORM-backed `session.Service` that handles `events`, `sessions`, `app_states`, `user_states` tables across SQLite/MySQL/Postgres dialectors with `AutoMigrate`. Rebuilding this from scratch would duplicate ~500 lines of state-management plumbing (cross-session app/user state, `_adk*` prefix filtering, cascade deletes) for no gain. We let ADK own the heavy schema and add a thin `agent_eventlog` overlay table whose `seq INTEGER PRIMARY KEY AUTOINCREMENT` column gives the AX-style "everything since seq N" semantics ADK doesn't expose.
+
+### Two tables, eventually consistent
+
+`AppendEvent` writes to ADK's events table first (so the event has its assigned ID), then to our overlay so it picks up a seq. The overlay has a unique index on `event_id`, so a retry after a transient overlay-write failure is a no-op rather than a duplicate. Spanning a single transaction across both layers is not done in v1 — it would require either reflection into ADK's private `*gorm.DB` or rebuilding the wrapping service. The unique-index + retry pattern handles the realistic failure modes.
+
+### Why pure-Go SQLite (`glebarez/sqlite`)
+
+CGO-free builds matter for the bundled CLI and the adapters: cross-compilation, smaller release artifacts, no libc divergence between build and run hosts. `glebarez/sqlite` wraps `modernc.org/sqlite` (a faithful Go port of SQLite) so we keep `CGO_ENABLED=0` builds working. The performance trade-off vs. `mattn/go-sqlite3` is real but not load-bearing for agent workloads (per-event writes are bounded by LLM round-trip latency, not DB throughput).
+
+### Why polling for `Watch`, not native push
+
+PostgreSQL `LISTEN/NOTIFY` and SQLite's `update_hook` would give push-based subscribers with lower latency, but each adds either driver-specific code (and CGO for SQLite) or a separate notification channel to maintain. A 200ms polling default keeps Watch portable across dialectors and adds a knob (`WithWatchInterval`) callers can tune. If a consumer concretely needs sub-100ms tail latency we add native push; until then, polling is the right floor.
+
+### What's deferred to Phase 3
+
+- **Crash-resume for `RunAutonomous`.** Checkpoint events emitted per turn boundary, plus a `ResumeAutonomous(...)` API that reads the latest checkpoint and continues from the next turn. The durable foundation is shipped; this is the consumer-facing endpoint.
+- **Subagent runner refresh (Phase 4).** Replaces the current subagent plan's `tool/agenttool` wrapping with a custom branch-scoped runner so subagent events stream live into the parent's event log instead of being dropped on the floor.
 
 ---
 

@@ -30,10 +30,12 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/glebarez/sqlite"
 	adktool "google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/agent"
 	"github.com/go-steer/core-agent/config"
+	"github.com/go-steer/core-agent/eventlog"
 	"github.com/go-steer/core-agent/instruction"
 	"github.com/go-steer/core-agent/mcp"
 	"github.com/go-steer/core-agent/models"
@@ -62,13 +64,15 @@ func main() {
 	recordTo := flag.String("record-to", "", "write a JSONL recording of all LLM turns to this path (overrides cfg.mock.record)")
 	color := flag.String("color", "auto", "ANSI color in streamed output: auto|always|never (auto = TTY-detect on stdout)")
 	ask := flag.String("ask", "off", "register an ask_user tool the model can call when its instructions tell it to ask: off|stdin|auto (auto = stdin if interactive, refuse otherwise)")
+	sessionDB := flag.Bool("session-db", false, "persist sessions + audit log to a durable database (default off; in-memory)")
+	sessionDBPath := flag.String("session-db-path", "", "override the database path used when --session-db is set (default: ~/.<binary>/sessions.db)")
 	flag.Parse()
 
-	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask)
+	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath)
 	os.Exit(code)
 }
 
-func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string) int {
+func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -205,6 +209,30 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		agent.WithSystemInstructionPrefix(loaded.Instruction),
 	}
 
+	// Durable sessions + audit log. Either flag enables: --session-db
+	// alone uses the default path (~/.<binary>/sessions.db);
+	// --session-db-path enables and overrides the path. Off by default
+	// to preserve historical CLI behavior (in-memory, ephemeral).
+	if sessionDB || sessionDBPath != "" {
+		path, err := resolveSessionDBPath(sessionDBPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: --session-db-path: %v\n", err)
+			return runner.ExitConfigError
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: session db dir: %v\n", err)
+			return runner.ExitConfigError
+		}
+		handle, err := eventlog.Open(ctx, sqlite.Open(path))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: open session db %s: %v\n", path, err)
+			return runner.ExitConfigError
+		}
+		defer func() { _ = handle.Close() }()
+		opts = append(opts, agent.WithEventLog(handle))
+		fmt.Fprintf(os.Stderr, "core-agent: session db: %s\n", path)
+	}
+
 	colorOn, err := resolveColor(color, os.Stdout)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
@@ -256,6 +284,31 @@ func loadConfig(cfgPath, cwd string) (*config.Config, string, error) {
 		return cfg, filepath.Dir(cfgPath), nil
 	}
 	return config.LoadOrDefault(cwd)
+}
+
+// resolveSessionDBPath returns the path to use for the session
+// database. An explicit override wins; otherwise the default is
+// ~/.<binary>/sessions.db where <binary> is derived from
+// os.Executable() so forks and adapters land in their own directory.
+func resolveSessionDBPath(override string) (string, error) {
+	if override != "" {
+		return override, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("user home: %w", err)
+	}
+	return filepath.Join(home, "."+binaryName(), "sessions.db"), nil
+}
+
+// binaryName returns the name of the running executable (without
+// directory or .exe suffix) so default paths sort by binary identity.
+// Falls back to "core-agent" if os.Executable fails for some reason.
+func binaryName() string {
+	if exe, err := os.Executable(); err == nil {
+		return strings.TrimSuffix(filepath.Base(exe), ".exe")
+	}
+	return "core-agent"
 }
 
 // resolveColor parses the --color flag value into a bool. "auto"

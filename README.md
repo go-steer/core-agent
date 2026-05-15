@@ -32,6 +32,7 @@ A reusable Go base agent built on the [Google Agent Development Kit](https://pkg
 - **Telemetry** — opt-in OpenTelemetry export (console / OTLP); off by default so a fresh invocation makes zero outbound calls.
 - **Headless CLI** — `core-agent -p "prompt"` for one-shot use; bare `core-agent` drops into a stdin REPL with conversation history preserved across turns.
 - **Autonomous-run driver** — `agent.RunAutonomous` for unattended multi-turn workers (batch jobs, CI tasks, scheduled scripts) with budget caps (turns / tokens / cost / wallclock) and a model-driven termination signal via the bundled `tools.NewLifecycleTool`. Pair with `--ask=auto` so instructions like "ask before doing X" get a clean refusal in headless contexts instead of blocking.
+- **Durable sessions + audit log** — `eventlog.Open(...)` returns a SQLite/Postgres/MySQL-backed `session.Service` plus a `Stream` with monotonic `seq` numbers, `Since(seq)` replay, and `Watch(seq)` live-tail. CLI flags `--session-db` / `--session-db-path` enable persistence; the default path `~/.<binary>/sessions.db` is derived from `os.Executable()` so adapters and forks each get their own directory.
 - **Optional Scion adapter** — [`extras/scion-agent/`](./extras/scion-agent/) packages core-agent for [Scion](https://github.com/GoogleCloudPlatform/scion)'s container runtime: lifecycle status emission, `--input` task delivery, and a `sciontool_status` tool the model uses to declare sticky states.
 
 ---

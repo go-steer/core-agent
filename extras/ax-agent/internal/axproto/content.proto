@@ -1,0 +1,225 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package ax;
+
+import "google/protobuf/struct.proto";
+
+option go_package = "github.com/google/ax/proto";
+
+// TextContent represents a text content.
+message TextContent {
+  reserved 1, 2;
+  reserved "type";
+  string text = 3;
+}
+
+message ApprovalDecision {
+  bool approved = 1;
+}
+
+message DeclineDecision {
+  reserved 2;
+  reserved "reason";
+  bool declined = 1;
+}
+
+message ConfirmationContent {
+  reserved 1, 2;
+  reserved "type";
+  string id = 3;
+  string question = 4;
+  oneof decision {
+    ApprovalDecision approval = 5;
+    DeclineDecision decline = 6;
+  }
+}
+
+message ThoughtSummaryContent {
+  reserved 2;
+
+  oneof type {
+    TextContent text = 1;
+  }
+}
+
+message ThoughtContent {
+  reserved 1, 2, 3, 4, 5, 8;
+  reserved "type";
+
+  bytes signature = 7;
+  repeated ThoughtSummaryContent summary = 9;
+}
+
+message ToolCallContent {
+  string id = 1;       // A unique ID for this specific tool call.
+  bytes signature = 9; // A signature hash for backend validation.
+  oneof type {
+    FunctionCallContent function_call = 2;
+  }
+}
+
+message ToolResultContent {
+  reserved 1;
+
+  string call_id = 8;  // ID to match the ID from the function call block.
+  bytes signature = 9; // A signature hash for backend validation.
+
+  oneof type {
+    FunctionResultContent function_result = 2;
+  }
+}
+
+message FunctionCallContent {
+  reserved 1, 2;
+
+  string name = 3;
+  google.protobuf.Struct arguments = 4;
+}
+
+message FunctionResultContent {
+  reserved 1, 4;
+  reserved "type";
+
+  string name = 8;
+  oneof result {
+    google.protobuf.Struct response = 3;
+  }
+}
+
+// Resolution for input media (images/video).
+enum MediaResolution {
+  MEDIA_RESOLUTION_UNSPECIFIED = 0;
+  LOW = 1;
+  MEDIUM = 2;
+  HIGH = 3;
+  ULTRA_HIGH = 4;
+}
+
+// An image content block.
+message ImageContent {
+  reserved 3;
+  reserved "type";
+
+  enum MimeType {
+    reserved 6;
+    TYPE_UNSPECIFIED = 0;
+    TYPE_PNG = 1;  // image/png
+    TYPE_JPEG = 2; // image/jpeg
+    TYPE_WEBP = 3; // image/webp
+    TYPE_HEIC = 4; // image/heic
+    TYPE_HEIF = 5; // image/heif
+    TYPE_GIF = 7;  // image/gif
+    TYPE_BMP = 8;  // image/bmp
+    TYPE_TIFF = 9; // image/tiff
+  }
+  MimeType mime_type = 1;
+  oneof data_or_uri {
+    bytes data = 2;
+    string uri = 6;
+  }
+  MediaResolution resolution = 5;
+}
+
+// An audio content block.
+message AudioContent {
+  reserved 3, 6;
+  reserved "type", "rate";
+
+  enum MimeType {
+    TYPE_UNSPECIFIED = 0;
+    TYPE_WAV = 1;    // audio/wav
+    TYPE_MP3 = 2;    // audio/mp3
+    TYPE_AIFF = 3;   // audio/aiff
+    TYPE_AAC = 4;    // audio/aac
+    TYPE_OGG = 5;    // audio/ogg
+    TYPE_FLAC = 6;   // audio/flac
+    TYPE_MPEG = 7;   // audio/mpeg
+    TYPE_M4A = 8;    // audio/m4a
+    TYPE_L16 = 9;    // audio/l16
+    TYPE_S16LE = 10; // audio/s16le
+    TYPE_OPUS = 11;  // audio/opus
+    TYPE_ALAW = 12;  // audio/alaw
+    TYPE_MULAW = 13; // audio/mulaw
+  }
+  MimeType mime_type = 1;
+  oneof data_or_uri {
+    bytes data = 2;
+    string uri = 5;
+  }
+  int32 channels = 7;
+  int32 sample_rate = 8;
+}
+
+// A document content block.
+message DocumentContent {
+  reserved 3;
+  reserved "type";
+
+  enum MimeType {
+    TYPE_UNSPECIFIED = 0;
+    TYPE_PDF = 1;    // application/pdf
+    TYPE_JSON = 2;   // application/json
+    TYPE_PYTHON = 3; // text/x-python
+  }
+  MimeType mime_type = 1;
+  oneof data_or_uri {
+    bytes data = 2;
+    string uri = 5;
+  }
+}
+
+// A video content block.
+message VideoContent {
+  reserved 3;
+  reserved "type";
+
+  enum MimeType {
+    TYPE_UNSPECIFIED = 0;
+    TYPE_MP4 = 1;   // video/mp4
+    TYPE_MPEG = 2;  // video/mpeg
+    TYPE_MPG = 3;   // video/mpg
+    TYPE_MOV = 4;   // video/mov
+    TYPE_AVI = 5;   // video/avi
+    TYPE_X_FLV = 6; // video/x-flv
+    TYPE_WEBM = 7;  // video/webm
+    TYPE_WMV = 8;   // video/wmv
+    TYPE_3GPP = 9;  // video/3gpp
+  }
+  MimeType mime_type = 1;
+  oneof data_or_uri {
+    bytes data = 2;
+    string uri = 6;
+  }
+  MediaResolution resolution = 5;
+}
+
+// Content represents a content input or output.
+message Content {
+  reserved 1 to 4, 6 to 9, 15 to 23;
+
+  oneof type {
+    ThoughtContent thought = 5;
+    TextContent text = 10;
+    ImageContent image = 11;
+    AudioContent audio = 12;
+    DocumentContent document = 13;
+    VideoContent video = 14;
+    ConfirmationContent confirmation = 26; // TODO(jbd): Remove out of the Content.
+    ToolCallContent tool_call = 24;
+    ToolResultContent tool_result = 25;
+  }
+}

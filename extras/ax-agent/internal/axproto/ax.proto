@@ -1,0 +1,168 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package ax;
+
+import "google/protobuf/timestamp.proto";
+import "proto/content.proto";
+
+option go_package = "github.com/google/ax/proto";
+
+// WARNING: This file is in active development and
+// significant changes can be made with breaking changes.
+
+message AgentStart {
+  string agent_id = 1;
+  bytes agent_config = 2;
+  repeated Message messages = 3;
+}
+
+message AgentOutputs {
+  repeated Message messages = 1;
+}
+
+message AgentEnd {}
+
+message AgentMessage {
+  string conversation_id = 1;
+  string exec_id = 2;
+  oneof type {
+    AgentStart start = 3;
+    AgentOutputs outputs = 4;
+    AgentEnd end = 5;
+  }
+}
+
+// Message is a message in the history.
+message Message {
+  string role = 1;     // user, assistant, or model
+  Content content = 2; // content of the message
+  // If true, the message is stored only in the execution log
+  // (for resumption) but not in the conversation history,
+  // and not emitted to the client or any agent.
+  bool internal_only = 3;
+}
+
+// A conversation is the historical session that consist of
+// a number of execution. A conversation cannot be continued
+// before the last execution is completed or failed.
+message ConversationEvent {
+  string conversation_id = 1;
+  int32 seq = 2;
+  string exec_id = 3;
+  repeated Message messages = 4;
+  State state = 5;
+}
+
+// ExecutionEvent is the entry in the event log. ExecutionEvents are used
+// to record the actions taken place in the executor.
+// The executor can replay the events for resumability.
+message ExecutionEvent {
+  string exec_id = 1;
+  string agent_id = 2;
+  bytes agent_config = 3;
+  repeated Message inputs = 4;
+  repeated Message outputs = 5;
+  State state = 6;
+  google.protobuf.Timestamp timestamp = 7;
+}
+
+// HealthCheckRequest for agent health checks
+message HealthCheckRequest {}
+
+// HealthCheckResponse contains agent health status
+message HealthCheckResponse {
+  bool healthy = 1;
+  string message = 2;
+}
+
+// AgentService defines the gRPC service for agent communication.
+// This protocol enables a bidirectional communication between the
+// controller and the agent. Agents can start new agentic calls via
+// the controller within the same execution boundary by using the channel.
+//
+// WARNING: There will be significant changes to this protocol as
+// we are solidifying resumption on the wire.
+service AgentService {
+  // Connect is used by agents to connect to the controller.
+  rpc Connect(stream AgentMessage) returns (stream AgentMessage);
+
+  // HealthCheck checks if the agent is healthy and responsive
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// State represents the state of an execution
+enum State {
+  STATE_UNSPECIFIED = 0;  // Unspecified state
+  STATE_PENDING = 1;
+  STATE_FAILED = 2;
+  STATE_COMPLETED = 3;
+}
+
+// ExecRequest for executing.
+message ExecRequest {
+  string conversation_id = 1;            // Unique conversation identifier
+  repeated Message inputs = 2;           // New inputs
+  int32 last_seq = 3;                    // Last sequence number seen by the client
+
+  string agent_id = 4;                   // Agent ID, if empty planner is used
+  bytes agent_config = 5;                // Agent configuration if any
+}
+
+// ExecResponse contains the result of an execution.
+message ExecResponse {
+  repeated Message outputs = 1; // Output content
+  int32 seq = 2;                // Seq of the outputs
+}
+
+service ControllerService {
+  // Exec executes an agentic task or resumes an existing one with streaming responses
+  // If the conversation_id already exists, it will be resumed.
+  rpc Exec(ExecRequest) returns (stream ExecResponse);
+}
+
+message DeleteConversationRequest {
+  string conversation_id = 1;
+}
+
+message DeleteConversationResponse {}
+
+message ForkConversationRequest {
+  // Required: The source conversation ID to fork from.
+  string src_conversation_id = 1;
+  // Optional: The sequence number to fork from.
+  // Defaults to the latest sequence if not set or set to 0.
+  int32 src_seq = 2; // TODO(jbd): Replace this with snapshot_id.
+  // Optional: The destination conversation ID.
+  // Generates a new UUID if not provided.
+  string dest_conversation_id = 3;
+}
+
+message ForkConversationResponse {
+  string conversation_id = 1; // The ID of the new conversation
+
+  // TODO(jbd): Remove conversation_id, and return error if
+  // dest_conversation_id already exists.
+}
+
+service ConversationService {
+  // Deletes conversational events and all event log resources
+  // for its children executions.
+  rpc DeleteConversation(DeleteConversationRequest) returns (DeleteConversationResponse);
+
+  // Fork forks an event log from a specific conversation.
+  rpc ForkConversation(ForkConversationRequest) returns (ForkConversationResponse);
+}

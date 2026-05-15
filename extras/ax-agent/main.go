@@ -40,11 +40,13 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/glebarez/sqlite"
 	"google.golang.org/adk/tool"
 	"google.golang.org/grpc"
 
 	"github.com/go-steer/core-agent/agent"
 	"github.com/go-steer/core-agent/config"
+	"github.com/go-steer/core-agent/eventlog"
 	axproto "github.com/go-steer/core-agent/extras/ax-agent/internal/axproto"
 	"github.com/go-steer/core-agent/instruction"
 	"github.com/go-steer/core-agent/mcp"
@@ -70,12 +72,14 @@ func main() {
 	scriptPath := flag.String("script", "", "JSONL transcript for --provider=scripted (overrides cfg.mock.script)")
 	scriptStrict := flag.Bool("script-strict", false, "scripted: assert each incoming request matches the recorded one (overrides cfg.mock.strict)")
 	recordTo := flag.String("record-to", "", "write a JSONL recording of all LLM turns to this path (overrides cfg.mock.record)")
+	sessionDB := flag.Bool("session-db", false, "persist sessions + audit log to a durable database (default off; in-memory)")
+	sessionDBPath := flag.String("session-db-path", "", "override the database path used when --session-db is set (default: ~/.<binary>/sessions.db)")
 	flag.Parse()
 
-	os.Exit(run(*listen, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo))
+	os.Exit(run(*listen, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *sessionDB, *sessionDBPath))
 }
 
-func run(listen, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools, scriptPath string, scriptStrict bool, recordTo string) int {
+func run(listen, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools, scriptPath string, scriptStrict bool, recordTo string, sessionDB bool, sessionDBPath string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -215,15 +219,47 @@ func run(listen, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 	}
 	builtinTools = append(builtinTools, lifecycleTool)
 
+	// Durable sessions + audit log. Opened once at startup and shared
+	// across every Connect call so the audit log holds the full
+	// cross-conversation history. Off by default; matches the flag
+	// shape on cmd/core-agent and extras/scion-agent for uniform
+	// adapter behavior.
+	var eventLogHandle *eventlog.Handle
+	if sessionDB || sessionDBPath != "" {
+		path, err := resolveSessionDBPath(sessionDBPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ax-agent: --session-db-path: %v\n", err)
+			return runner.ExitConfigError
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "ax-agent: session db dir: %v\n", err)
+			return runner.ExitConfigError
+		}
+		eventLogHandle, err = eventlog.Open(ctx, sqlite.Open(path))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ax-agent: open session db %s: %v\n", path, err)
+			return runner.ExitConfigError
+		}
+		defer func() { _ = eventLogHandle.Close() }()
+		fmt.Fprintf(os.Stderr, "ax-agent: session db: %s\n", path)
+	}
+
 	// One agent factory shared by every Connect call. Each call
 	// constructs its own *agent.Agent so RunWithContents can use a
-	// fresh session per turn.
+	// fresh session per turn. When eventLogHandle is set, every
+	// per-Connect agent shares the same Handle (and therefore the
+	// same DB connection pool + audit log) — the per-call freshness
+	// is at the session level, not the database level.
 	agentFactory := func() (*agent.Agent, error) {
-		return agent.New(m,
+		opts := []agent.Option{
 			agent.WithTools(builtinTools),
 			agent.WithToolsets(allToolsets),
 			agent.WithSystemInstructionPrefix(loaded.Instruction),
-		)
+		}
+		if eventLogHandle != nil {
+			opts = append(opts, agent.WithEventLog(eventLogHandle))
+		}
+		return agent.New(m, opts...)
 	}
 
 	srv := &axServer{agentFactory: agentFactory}
@@ -246,6 +282,30 @@ func run(listen, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		return runner.ExitAgentError
 	}
 	return runner.ExitOK
+}
+
+// resolveSessionDBPath returns the database path for --session-db.
+// Override wins; default is ~/.<binary>/sessions.db so each adapter
+// gets its own directory automatically.
+func resolveSessionDBPath(override string) (string, error) {
+	if override != "" {
+		return override, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("user home: %w", err)
+	}
+	return filepath.Join(home, "."+binaryName(), "sessions.db"), nil
+}
+
+// binaryName returns the running executable's basename (sans .exe)
+// so default paths sort by binary identity. Falls back to "ax-agent"
+// if os.Executable fails.
+func binaryName() string {
+	if exe, err := os.Executable(); err == nil {
+		return strings.TrimSuffix(filepath.Base(exe), ".exe")
+	}
+	return "ax-agent"
 }
 
 // loadConfig resolves the config from cfgPath (when set) or by walking

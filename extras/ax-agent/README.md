@@ -70,7 +70,15 @@ angel's advocate), see [`../../examples/ax-multi-agent/`](../../examples/ax-mult
 --script=PATH           JSONL transcript for --provider=scripted
 --script-strict         scripted: require request shape to match recorded
 --record-to=PATH        record every LLM turn to a JSONL file
+--session-db            persist sessions + audit log to a durable database (default off)
+--session-db-path=PATH  override the database path (default: ~/.<binary>/sessions.db)
 ```
+
+When `--session-db` is set, every Connect call's events land in the durable
+[eventlog](../../docs/eventlog-plan.md) — useful for audit, replay across
+restarts, or feeding an external consumer that wants "everything since seq N."
+The Handle is opened once at startup and shared across all Connect calls so
+the same DB file holds the full cross-conversation history.
 
 The `--script`/`--record-to` flags compose with the mock providers shipped in
 [`models/mock/`](../../models/mock/), so you can record a real session against

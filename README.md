@@ -42,10 +42,10 @@ A reusable Go base agent built on the [Google Agent Development Kit](https://pkg
 
 Tagged releases follow [SemVer](https://semver.org). See [`CHANGELOG.md`](./CHANGELOG.md) for the per-version history and the stability promise. Pre-1.0, breaking changes are possible at minor-version boundaries (`v0.X`); patches (`v0.X.Y`) are bug fixes only.
 
-Current release: **v0.1.0** — first tagged release covering M1 (extraction + Anthropic adapter), M2 (Vertex Anthropic), and M3 (autonomy + durable sessions + subagents).
+Current release: **v1.0.0** — first stable release. Consolidates M1 (extraction + Anthropic adapter), M2 (Vertex Anthropic), and M3 (autonomy + durable sessions + subagents). Public API is under SemVer; breaking changes go through `v1.X.0` minor bumps with a one-version deprecation period when feasible.
 
 ```bash
-go get github.com/go-steer/core-agent@v0.1.0
+go get github.com/go-steer/core-agent@v1.0.0
 ```
 
 ## Documentation

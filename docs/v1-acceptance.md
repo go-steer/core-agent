@@ -392,29 +392,35 @@ rm -f /tmp/ca
 
 ## Section 9 — Sign-off transcript
 
-### v1.0.0 sign-off attempt — 2026-05-16
+### v1.0.0 sign-off — 2026-05-16
 
 Tester: maintainer + assistant
-Branch: `main` @ `10d4b54` (pre-fix) → patched + re-tested
+Branch: `main` @ `d92ac98` (post-fix, post-doc-updates)
 
 **Sections 1-3 (regression + credential-free smoke):** all green.
   - V1-T1.1 ✓ V1-T1.2 ✓
   - V1-T2.2 ✓ V1-T2.3 ✓ V1-T2.4 ✓
 
-**Section 4 (Gemini, real-LLM):** initial fail surfaced a real
-defect; fix shipped same session; re-test green at full defaults.
-  - V1-T4.1 ✗ → fix → ✓ at `gemini-3.1-pro-preview` with full
-    default config (built-in tools + 8-tool function suite).
-  - V1-T4.2 ✓ `list_dir` fired against Gemini 3.1; count matched
-    actual directory contents.
-  - V1-T4.3 ✓ `RunAutonomous` completed in 1 turn with
-    `report_done`.
+**Section 4 (Gemini, real-LLM):** initial fail at `gemini-2.5-flash`
+surfaced a real defect; fix shipped (`9a1fc6a`); re-verified at full
+defaults across three Gemini 3.x models:
+  - V1-T4.1 ✓ pong at `gemini-3.1-pro-preview` (full default config:
+    built-in tools + 8-tool function suite, no flag overrides).
+  - V1-T4.1 ✓ pong at `gemini-3.1-flash-lite` (cheap-default variant
+    the v1 smoke plan now points at).
+  - V1-T4.1 ✓ pong at `gemini-3-flash-preview` (3.0-generation flash).
+  - V1-T4.2 ✓ `list_dir` fired and returned correct count against
+    `gemini-3.1-pro-preview` and `gemini-3.1-flash-lite`.
+  - V1-T4.3 ✓ `RunAutonomous` completed cleanly with `report_done`
+    against `gemini-3.1-pro-preview` and `gemini-3.1-flash-lite`.
 
 **Sections 5-7 (Anthropic, Vertex Gemini, Anthropic Vertex):** not
-exercised in this pass — single-provider sign-off acceptable per
-the plan's bar ("at least one provider's full 🔵 suite passes").
+exercised in this pass — single-provider sign-off accepted per the
+plan's bar ("at least one provider's full 🔵 suite passes"). A
+follow-up smoke against Anthropic / Vertex can land as `v1.0.1` or
+`v1.1.0` work without retracting this release.
 
-**Real defect found and fixed:**
+**Real defect found and fixed during the smoke:**
 The Gemini provider's `builtinsLLM` wrapper was injecting
 `google_search` + `url_context` server-side tools alongside any
 function-calling tools but not setting
@@ -427,6 +433,17 @@ that flag, so the library now requires Gemini 3.0+ when using
 built-in tools alongside `tools.Default()`. Fix in
 `models/gemini/builtins.go`; the smoke pass earned its keep on
 its first execution.
+
+**Pricing-table gap also surfaced:** the released-name keys for
+`gemini-3.1-flash-lite` and `gemini-3-pro-preview` / `gemini-3-pro`
+were missing from `usage/pricing.go` — only the `-preview`-suffixed
+keys existed, so runs against released models reported `$0.0000`.
+Filled in at the same rates (`d92ac98`).
+
+**Result: cleared for `v1.0.0` tag.** No outstanding defects. The
+library passes its full credential-free smoke, exercises real
+Gemini end-to-end at default invocation across three 3.x models,
+and the docs match the shipped behavior.
 
 **Result:** cleared for `v1.0.0` tag against Gemini 3.1.
 Sections 5-7 remain available for any downstream consumer who

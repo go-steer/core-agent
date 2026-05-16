@@ -16,13 +16,25 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+---
+
+## [1.0.0] — 2026-05-16
+
+First stable release. Same surface as `v0.1.0` with one bug fix and one documented requirement that emerged from running `docs/v1-acceptance.md` against real Gemini.
+
 ### Fixed
 
 - **`models/gemini`** — set `Config.ToolConfig.IncludeServerSideToolInvocations = true` whenever the `builtinsLLM` wrapper injects server-side built-ins (`google_search` / `url_context` / `code_execution`) alongside any function-calling tools. Without this flag, Gemini 3+ rejects the combined request with `Please enable tool_config.include_server_side_tool_invocations to use Built-in tools with Function calling`, blocking `--provider=gemini` for any consumer using `tools.Default()`. Surfaced by the v1.0.0 smoke pass (`docs/v1-acceptance.md`). Fix in `models/gemini/builtins.go`.
+- **`usage/pricing.go`** — add `gemini-3.1-flash-lite` and `gemini-3-pro-preview` / `gemini-3-pro` entries to the built-in pricing table. The released-name keys were missing for both, so `core-agent`'s cost tracker reported `$0.0000` for runs against those models even though the corresponding `-preview` keys were present. Same rates as their preview counterparts.
 
 ### Documentation
 
 - **Gemini 3.0+ requirement** added to `docs/site/content/docs/providers.md` and `docs/site/content/docs/configuration.md`. When combining `core-agent`'s default tool suite with the Gemini provider's built-in tools (both default-on), the Gemini API requires a 3.0-or-later model — Gemini 2.5 rejects the combination outright. Workarounds for consumers who must use Gemini 2.5: `--no-builtin-tools` (drops the function-calling suite) or library-level `gemini.WithGoogleSearch(false)` + `gemini.WithURLContext(false)` (drops the server-side built-ins). Default model already pins `gemini-3.1-pro-preview`, so consumers who don't override never hit this.
+- **`docs/v1-acceptance.md` switched smoke commands** from `gemini-2.5-flash` (which can't combine built-ins with function tools — see above) to `gemini-3.1-flash-lite` (the cheapest 3.x model, exercises the same code paths as `gemini-3.1-pro-preview`). Section 9 records the actual sign-off transcript from cutting this release.
+
+### Stability promise (effective with this release)
+
+The public API surface listed in this file's preamble is now under SemVer. Breaking changes go through a minor-version bump (`v1.X.0`) with a one-version deprecation period when feasible. Patch versions (`v1.0.X`) are bug fixes only.
 
 ---
 
@@ -89,4 +101,5 @@ First tagged release. Three milestones of work landed on `main` before this tag;
 - **Mid-run pause/resume** for `RunAutonomous` — across-turn crash-resume shipped; mid-turn is a different design.
 - **Native push for `Stream.Watch`** (Postgres `LISTEN/NOTIFY`, SQLite `update_hook`) — polling at 200ms today.
 
+[1.0.0]: https://github.com/go-steer/core-agent/releases/tag/v1.0.0
 [0.1.0]: https://github.com/go-steer/core-agent/releases/tag/v0.1.0

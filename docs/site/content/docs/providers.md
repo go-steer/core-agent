@@ -83,6 +83,31 @@ provider, _ := gemini.NewAPIKey(key, gemini.WithBuiltinTools(gemini.BuiltinTools
 
 The same options apply to `gemini.NewVertex(...)`. Other genai built-ins aren't surfaced today: `FileSearch`, `GoogleMaps`, `ComputerUse`, `Retrieval`, and `GoogleSearchRetrieval` all need upstream setup (a corpus, a Maps key, a hosted environment) and would yield API errors rather than working tools if flipped on without it. `EnterpriseWebSearch` is Vertex-only but otherwise zero-setup — it stays unsurfaced only because no consumer has asked.
 
+### Gemini 3.0+ required when combining built-ins with function tools
+
+When `GoogleSearch` / `URLContext` / `CodeExecution` are enabled (the default for the first two) **alongside** any function-calling tools — including `core-agent`'s default tool suite (`tools.Default()`) — you must use a **Gemini 3.0-or-later** model. Gemini 2.5 and older reject the combined request with `Built-in tools ({google_search}) and Function Calling cannot be combined in the same request`.
+
+`core-agent` sets `Config.ToolConfig.IncludeServerSideToolInvocations = true` whenever it injects server-side built-ins, which is the flag Gemini 3+ requires to permit the combination. The library's default model `gemini-3.1-pro-preview` satisfies this requirement out of the box, so consumers who don't override don't need to think about it.
+
+If you must use a Gemini 2.5 model, two workarounds:
+
+```bash
+# CLI: drop the function-calling suite entirely, keep server-side built-ins.
+core-agent --provider=gemini -m gemini-2.5-flash --no-builtin-tools -p "..."
+```
+
+```go
+// Library: drop server-side built-ins, keep function calling.
+provider, _ := gemini.NewAPIKey(key,
+    gemini.WithGoogleSearch(false),
+    gemini.WithURLContext(false),
+)
+m, _ := provider.Model(ctx, "gemini-2.5-flash")
+a, _ := agent.New(m, agent.WithTools(myTools))
+```
+
+Same constraint applies to `gemini.NewVertex(...)` — it's a Gemini-API restriction, not provider-specific.
+
 ---
 
 ## Vertex AI (Gemini)

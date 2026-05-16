@@ -3,7 +3,6 @@ title: Skills
 weight: 6
 ---
 
-# Skills
 
 `core-agent` loads `SKILL.md` bundles from `.agents/skills/<name>/`. The schema mirrors [Anthropic's published skills format](https://docs.claude.com/en/docs/agent-skills/overview) so existing skill bundles drop in directly.
 

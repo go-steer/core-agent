@@ -3,7 +3,6 @@ title: Permissions
 weight: 7
 ---
 
-# Permissions
 
 The permission gate is the central chokepoint consulted before every tool call. It enforces three things in order:
 

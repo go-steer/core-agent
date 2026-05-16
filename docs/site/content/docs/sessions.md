@@ -3,7 +3,6 @@ title: Sessions and event log
 weight: 10
 ---
 
-# Sessions and event log
 
 By default, every `agent.Agent` uses ADK's in-memory session service: conversation history is alive only for the process lifetime, and a crash loses everything. For audit logs, replay, crash-resume, or any cross-restart workflow, wire a durable backend via the `eventlog` package.
 

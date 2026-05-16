@@ -3,7 +3,6 @@ title: Scion adapter
 weight: 11
 ---
 
-# Scion adapter
 
 [`extras/scion-agent/`](https://github.com/go-steer/core-agent/tree/main/extras/scion-agent) packages core-agent for [Scion](https://github.com/GoogleCloudPlatform/scion)'s container runtime. It is the Go counterpart of Scion's Python `adk_scion_agent` example — same lifecycle contract, built on the core-agent library.
 

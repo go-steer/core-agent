@@ -3,7 +3,6 @@ title: Providers
 weight: 3
 ---
 
-# Providers
 
 `core-agent` ships four model backends, all behind the same `models.Provider` interface. Pick one explicitly via `model.provider` in `.agents/config.json` or with the `--provider` CLI flag, or let env-based auto-detection pick.
 

@@ -3,7 +3,6 @@ title: Library API
 weight: 8
 ---
 
-# Library API
 
 `core-agent` is designed to be embedded as a Go library. The bundled `cmd/core-agent` is a thin reference wrapper; production consumers will typically write their own binary that composes these packages.
 

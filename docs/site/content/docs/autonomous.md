@@ -3,7 +3,6 @@ title: Autonomous runs
 weight: 9
 ---
 
-# Autonomous runs
 
 `agent.RunAutonomous` is the multi-turn driver for unattended workers — batch jobs, CI tasks, scheduled scripts, anything that needs to keep working after a single `agent.Run` turn would have ended. It loops `agent.Run` against a goal, enforces run-level budgets, and stops when the model signals "done" via an internal lifecycle tool.
 

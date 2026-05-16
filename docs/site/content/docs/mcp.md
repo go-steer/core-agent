@@ -3,7 +3,6 @@ title: MCP servers
 weight: 5
 ---
 
-# MCP servers
 
 `core-agent` integrates with [Model Context Protocol](https://modelcontextprotocol.io) servers via ADK's `mcptoolset`. Declare servers in `.agents/mcp.json`; `core-agent` spawns or connects to them at startup, namespaces their tools, and routes every tool call through the [permission gate]({{< relref "permissions.md" >}}).
 

@@ -3,7 +3,6 @@ title: Configuration
 weight: 4
 ---
 
-# Configuration
 
 ## The `.agents/` directory
 

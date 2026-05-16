@@ -84,6 +84,12 @@ params:
     navbar_logo: false
     navbar_translucent_over_cover_disable: true
     footer_about_disable: false
+    # Three-state toggle in the navbar: light / dark / auto. The
+    # "auto" state follows the user's OS preference via
+    # window.matchMedia('(prefers-color-scheme: dark)'); explicit
+    # picks persist in localStorage. Implementation lives in
+    # Docsy's assets/js/dark-mode.js.
+    showLightDarkModeMenu: true
     feedback:
       enable: false
 

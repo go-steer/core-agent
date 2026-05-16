@@ -42,9 +42,12 @@ func (p Pricing) IsZero() bool { return p.InputPerMTok == 0 && p.OutputPerMTok =
 var builtinPricing = map[string]Pricing{
 	"gemini-3.1-pro-preview":         {InputPerMTok: 1.25, OutputPerMTok: 5.00},
 	"gemini-3.1-pro":                 {InputPerMTok: 1.25, OutputPerMTok: 5.00},
+	"gemini-3-pro-preview":           {InputPerMTok: 1.25, OutputPerMTok: 5.00},
+	"gemini-3-pro":                   {InputPerMTok: 1.25, OutputPerMTok: 5.00},
 	"gemini-3-flash-preview":         {InputPerMTok: 0.075, OutputPerMTok: 0.30},
 	"gemini-3-flash":                 {InputPerMTok: 0.075, OutputPerMTok: 0.30},
 	"gemini-3.1-flash-lite-preview":  {InputPerMTok: 0.04, OutputPerMTok: 0.15},
+	"gemini-3.1-flash-lite":          {InputPerMTok: 0.04, OutputPerMTok: 0.15},
 	"gemini-3.1-flash-image-preview": {InputPerMTok: 0.10, OutputPerMTok: 0.40},
 }
 

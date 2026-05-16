@@ -221,7 +221,7 @@ rm -f /tmp/ax-agent
 ```bash
 go build -o /tmp/ca ./cmd/core-agent
 GEMINI_API_KEY=$GEMINI_API_KEY /tmp/ca \
-    --provider=gemini -m gemini-2.5-flash \
+    --provider=gemini -m gemini-3.1-flash-lite \
     -p "Reply with exactly: pong" 2>&1
 rm -f /tmp/ca
 ```
@@ -235,7 +235,7 @@ rm -f /tmp/ca
 ```bash
 go build -o /tmp/ca ./cmd/core-agent
 GEMINI_API_KEY=$GEMINI_API_KEY /tmp/ca \
-    --provider=gemini -m gemini-2.5-flash \
+    --provider=gemini -m gemini-3.1-flash-lite \
     -p "List the names of every file in this directory using list_dir, then tell me how many you found."
 rm -f /tmp/ca
 ```
@@ -260,7 +260,7 @@ import (
 func main() {
   cfg := config.DefaultConfig()
   cfg.Model.Provider = "gemini"
-  cfg.Model.Name = "gemini-2.5-flash"
+  cfg.Model.Name = "gemini-3.1-flash-lite"
   p, err := models.Resolve(cfg); if err != nil { log.Fatal(err) }
   m, err := p.Model(context.Background(), cfg.Model.Name); if err != nil { log.Fatal(err) }
   build := func(extras []adktool.Tool) (*agent.Agent, error) {
@@ -332,7 +332,7 @@ Same as V1-T4.3 but swap the provider/model in the inline driver to `anthropic` 
 
 ```bash
 go build -o /tmp/ca ./cmd/core-agent
-/tmp/ca --provider=vertex -m gemini-2.5-flash \
+/tmp/ca --provider=vertex -m gemini-3.1-flash-lite \
     -p "Reply with exactly: pong" 2>&1
 rm -f /tmp/ca
 ```

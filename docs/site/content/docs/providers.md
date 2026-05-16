@@ -83,6 +83,10 @@ provider, _ := gemini.NewAPIKey(key, gemini.WithBuiltinTools(gemini.BuiltinTools
 
 The same options apply to `gemini.NewVertex(...)`. Other genai built-ins aren't surfaced today: `FileSearch`, `GoogleMaps`, `ComputerUse`, `Retrieval`, and `GoogleSearchRetrieval` all need upstream setup (a corpus, a Maps key, a hosted environment) and would yield API errors rather than working tools if flipped on without it. `EnterpriseWebSearch` is Vertex-only but otherwise zero-setup — it stays unsurfaced only because no consumer has asked.
 
+### Server-side built-ins on Vertex AI
+
+`GoogleSearch` and `URLContext` work on both the direct Gemini API and Vertex AI from v1.0.1 onward. Vertex's streaming search-grounding API emits a small number of heartbeat SSE frames (no `Candidates[]`, just `UsageMetadata` and a response ID); ADK's stream aggregator treats any empty-candidates chunk as a fatal `empty response` error, which previously killed Vertex grounded responses 30–60% of the time. The Gemini provider's `builtinsLLM` wrapper now drops those heartbeat-error chunks on Vertex only — the direct Gemini API path is untouched. Function-calling tools (`bash`, `read_file`, consumer-supplied tools) were already unaffected.
+
 ### Gemini 3.0+ required when combining built-ins with function tools
 
 When `GoogleSearch` / `URLContext` / `CodeExecution` are enabled (the default for the first two) **alongside** any function-calling tools — including `core-agent`'s default tool suite (`tools.Default()`) — you must use a **Gemini 3.0-or-later** model. Gemini 2.5 and older reject the combined request with `Built-in tools ({google_search}) and Function Calling cannot be combined in the same request`.

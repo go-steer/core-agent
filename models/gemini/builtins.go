@@ -111,11 +111,29 @@ func WithCodeExecution(on bool) Option {
 }
 
 // builtinsLLM wraps an upstream model.LLM, injecting the configured
-// built-in tools into Config.Tools on every request. Stateless: the
-// same wrapper handles concurrent calls.
+// built-in tools into Config.Tools on every request and smoothing
+// over a small set of backend quirks. Stateless: the same wrapper
+// handles concurrent calls.
+//
+// isDirectGeminiAPI controls whether we also set
+// Config.ToolConfig.IncludeServerSideToolInvocations on the request.
+// The direct Gemini API requires this flag when built-ins ride
+// alongside function tools; Vertex AI rejects it outright. The
+// wrapper learns which backend it's fronting at construction time
+// in Provider.Model — see Provider.Model in gemini.go.
+//
+// tolerateEmptyChunks swallows the "empty response" mid-stream error
+// ADK raises when an SSE chunk carries no Candidates[]. Vertex's
+// streaming search-grounding path emits such heartbeat chunks
+// (UsageMetadata + ResponseID only); ADK treats them as fatal, which
+// poisons the stream before the grounded chunks arrive. The direct
+// Gemini API doesn't exhibit this in practice, so the toggle stays
+// off there to preserve real "no content" failure signaling.
 type builtinsLLM struct {
-	inner    adkmodel.LLM
-	builtins []*genai.Tool
+	inner               adkmodel.LLM
+	builtins            []*genai.Tool
+	isDirectGeminiAPI   bool
+	tolerateEmptyChunks bool
 }
 
 func (l *builtinsLLM) Name() string { return l.inner.Name() }
@@ -129,24 +147,55 @@ func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequ
 		// the agent's tool registry already contributed.
 		req.Config.Tools = append(req.Config.Tools, l.builtins...)
 
-		// Gemini 3+ requires this flag whenever server-side built-ins
-		// (google_search / url_context / code_execution) coexist with
-		// client-side function calling in the same request. Without
-		// it the API rejects with "Please enable
-		// tool_config.include_server_side_tool_invocations to use
-		// Built-in tools with Function calling." We set it
-		// unconditionally because (a) we're injecting built-ins, so
-		// the consumer asked for them, and (b) it's a no-op when
-		// there are no function tools to combine with.
+		// Gemini 3+ on the direct Gemini API requires this flag
+		// whenever server-side built-ins (google_search / url_context
+		// / code_execution) coexist with client-side function calling
+		// in the same request. Without it the API rejects with
+		// "Please enable tool_config.include_server_side_tool_invocations
+		// to use Built-in tools with Function calling."
+		//
+		// Vertex AI for Gemini does NOT accept this parameter — it
+		// rejects with "includeServerSideToolInvocations parameter
+		// is not supported in Gemini Enterprise Agent Platform
+		// (previously known as Vertex AI)" — but it allows the
+		// combination unconditionally instead. So we set the flag
+		// only when fronting the direct API.
 		//
 		// Gemini 2.5 and older reject the combination outright with
-		// a different error; core-agent requires Gemini 3.0+ when
-		// using built-in tools alongside the agent's tool registry.
-		if req.Config.ToolConfig == nil {
-			req.Config.ToolConfig = &genai.ToolConfig{}
+		// a different error regardless of this flag; core-agent
+		// requires Gemini 3.0+ when using built-in tools alongside
+		// the agent's tool registry.
+		if l.isDirectGeminiAPI {
+			if req.Config.ToolConfig == nil {
+				req.Config.ToolConfig = &genai.ToolConfig{}
+			}
+			t := true
+			req.Config.ToolConfig.IncludeServerSideToolInvocations = &t
 		}
-		t := true
-		req.Config.ToolConfig.IncludeServerSideToolInvocations = &t
 	}
-	return l.inner.GenerateContent(ctx, req, stream)
+
+	inner := l.inner.GenerateContent(ctx, req, stream)
+	if !l.tolerateEmptyChunks || !stream {
+		return inner
+	}
+	// Stream + Vertex: drop ADK's "empty response" chunks so the
+	// stream survives Vertex's heartbeat SSE frames. Caller still
+	// receives every real chunk, and any non-heartbeat error
+	// (network, auth, model failure) propagates untouched.
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		for resp, err := range inner {
+			if err != nil && err.Error() == adkEmptyResponseError {
+				continue
+			}
+			if !yield(resp, err) {
+				return
+			}
+		}
+	}
 }
+
+// adkEmptyResponseError is the literal error text ADK's streaming
+// aggregator (google.golang.org/adk/internal/llminternal) and
+// non-streaming gemini model raise when a response carries no
+// Candidates[]. We string-match because the error isn't exported.
+const adkEmptyResponseError = "empty response"

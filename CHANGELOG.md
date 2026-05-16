@@ -18,6 +18,21 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ---
 
+## [1.0.1] — 2026-05-16
+
+Critical bug fixes for `--provider=vertex`. Two regressions surfaced after v1.0.0 shipped; both are fixed here, and Vertex search-grounding now delivers real results.
+
+### Fixed
+
+- **`models/gemini`** — only set `Config.ToolConfig.IncludeServerSideToolInvocations` when fronting the direct Gemini API (`genai.BackendGeminiAPI`), not when fronting Vertex AI. v1.0.0 set this flag unconditionally to satisfy the direct Gemini API's requirement when built-ins ride alongside function tools, but Vertex AI rejects the flag with `includeServerSideToolInvocations parameter is not supported in Gemini Enterprise Agent Platform (previously known as Vertex AI)`. `--provider=vertex` was completely broken at default invocation for any consumer using `tools.Default()` between v1.0.0 and this fix; `--provider=gemini` is unaffected. The `builtinsLLM` wrapper now learns which backend it's fronting at construction time. Tests pin both branches.
+- **`models/gemini`** — tolerate Vertex's streaming SSE heartbeat chunks. Vertex's streaming search-grounding API intermittently emits frames carrying only `UsageMetadata` + `ResponseID` and an empty `Candidates[]`. ADK's stream aggregator (`internal/llminternal/stream_aggregator.go`) treats these as fatal and aborts the stream with `empty response`, poisoning the call before the real grounded chunks land. Observed failure rate against `gemini-3.1-pro-preview` on Vertex with the default tool suite + GoogleSearch was 30–60% before the fix, 0% across 10 consecutive runs after. The `builtinsLLM` wrapper now drops `empty response` errors mid-stream on Vertex only — the direct Gemini API path is untouched, so a genuine "no content" failure there still surfaces normally. Non-streaming Vertex calls are also untouched: an empty non-streaming response is a real failure and should propagate.
+
+### Process
+
+- `docs/v1-acceptance.md` Section 6 (Vertex Gemini smoke) was not exercised when cutting v1.0.0 — single-provider sign-off met the plan's bar at the time. The regression slipped through as a result. Going forward, when a fix is added in one provider's request path, run the equivalent smoke against every sibling backend before tagging. The Vertex heartbeat-chunk bug above was found by following through on this discipline after the first Vertex regression report and is what most of the v1.0.1 investigation actually uncovered — the ADK-level `empty response` was masquerading as a clean Vertex failure, not a known protocol quirk.
+
+---
+
 ## [1.0.0] — 2026-05-16
 
 First stable release. Same surface as `v0.1.0` with one bug fix and one documented requirement that emerged from running `docs/v1-acceptance.md` against real Gemini.
@@ -101,5 +116,6 @@ First tagged release. Three milestones of work landed on `main` before this tag;
 - **Mid-run pause/resume** for `RunAutonomous` — across-turn crash-resume shipped; mid-turn is a different design.
 - **Native push for `Stream.Watch`** (Postgres `LISTEN/NOTIFY`, SQLite `update_hook`) — polling at 200ms today.
 
+[1.0.1]: https://github.com/go-steer/core-agent/releases/tag/v1.0.1
 [1.0.0]: https://github.com/go-steer/core-agent/releases/tag/v1.0.0
 [0.1.0]: https://github.com/go-steer/core-agent/releases/tag/v0.1.0

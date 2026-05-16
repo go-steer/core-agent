@@ -16,6 +16,7 @@ package gemini
 
 import (
 	"context"
+	"errors"
 	"iter"
 	"testing"
 
@@ -125,16 +126,30 @@ func TestNewAPIKey_WithBuiltinTools_ReplacesWholesale(t *testing.T) {
 }
 
 // fakeLLM records the most recent request it was asked to handle so
-// tests can assert how the wrapper mutates Config.
+// tests can assert how the wrapper mutates Config. If `events` is
+// non-nil it is replayed as the streaming response — used to exercise
+// the wrapper's "empty response" heartbeat filter.
 type fakeLLM struct {
-	last *adkmodel.LLMRequest
+	last   *adkmodel.LLMRequest
+	events []fakeEvent
+}
+
+type fakeEvent struct {
+	resp *adkmodel.LLMResponse
+	err  error
 }
 
 func (f *fakeLLM) Name() string { return "fake" }
 
 func (f *fakeLLM) GenerateContent(_ context.Context, req *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
 	f.last = req
-	return func(yield func(*adkmodel.LLMResponse, error) bool) {}
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		for _, e := range f.events {
+			if !yield(e.resp, e.err) {
+				return
+			}
+		}
+	}
 }
 
 func TestBuiltinsLLM_InjectsIntoConfigTools(t *testing.T) {
@@ -189,5 +204,141 @@ func TestBuiltinsLLM_NameDelegates(t *testing.T) {
 	wrapped := &builtinsLLM{inner: &fakeLLM{}}
 	if wrapped.Name() != "fake" {
 		t.Errorf("Name should delegate to inner LLM")
+	}
+}
+
+func TestBuiltinsLLM_SetsIncludeServerSideToolInvocations_OnDirectAPI(t *testing.T) {
+	t.Parallel()
+	fake := &fakeLLM{}
+	wrapped := &builtinsLLM{
+		inner:             fake,
+		builtins:          DefaultBuiltinTools().asTools(),
+		isDirectGeminiAPI: true,
+	}
+	for range wrapped.GenerateContent(context.Background(), &adkmodel.LLMRequest{}, false) {
+	}
+	if fake.last.Config.ToolConfig == nil {
+		t.Fatalf("ToolConfig should be set on direct Gemini API")
+	}
+	got := fake.last.Config.ToolConfig.IncludeServerSideToolInvocations
+	if got == nil || *got != true {
+		t.Errorf("IncludeServerSideToolInvocations = %v, want true on direct Gemini API", got)
+	}
+}
+
+func TestBuiltinsLLM_OmitsIncludeServerSideToolInvocations_OnVertex(t *testing.T) {
+	t.Parallel()
+	// Vertex AI rejects the parameter with
+	// "includeServerSideToolInvocations parameter is not supported
+	// in Gemini Enterprise Agent Platform (previously known as
+	// Vertex AI)". The wrapper must not set it for Vertex.
+	fake := &fakeLLM{}
+	wrapped := &builtinsLLM{
+		inner:             fake,
+		builtins:          DefaultBuiltinTools().asTools(),
+		isDirectGeminiAPI: false, // Vertex backend
+	}
+	for range wrapped.GenerateContent(context.Background(), &adkmodel.LLMRequest{}, false) {
+	}
+	if fake.last.Config.ToolConfig != nil &&
+		fake.last.Config.ToolConfig.IncludeServerSideToolInvocations != nil {
+		t.Errorf("IncludeServerSideToolInvocations should remain unset on Vertex; got %v",
+			fake.last.Config.ToolConfig.IncludeServerSideToolInvocations)
+	}
+}
+
+func TestBuiltinsLLM_SwallowsEmptyResponseHeartbeats_OnVertexStream(t *testing.T) {
+	t.Parallel()
+	// Vertex's streaming search-grounding path emits SSE chunks with
+	// empty Candidates[] (heartbeat-like), which ADK surfaces as
+	// "empty response" errors mid-stream. The wrapper must drop
+	// those frames so the surrounding real chunks reach the caller.
+	r1 := &adkmodel.LLMResponse{}
+	r2 := &adkmodel.LLMResponse{}
+	fake := &fakeLLM{
+		events: []fakeEvent{
+			{resp: r1},
+			{err: errors.New("empty response")}, // heartbeat
+			{resp: r2},
+		},
+	}
+	wrapped := &builtinsLLM{
+		inner:               fake,
+		builtins:            DefaultBuiltinTools().asTools(),
+		tolerateEmptyChunks: true,
+	}
+	var got []*adkmodel.LLMResponse
+	for resp, err := range wrapped.GenerateContent(context.Background(), &adkmodel.LLMRequest{}, true) {
+		if err != nil {
+			t.Fatalf("did not expect error to propagate; got %v", err)
+		}
+		got = append(got, resp)
+	}
+	if len(got) != 2 || got[0] != r1 || got[1] != r2 {
+		t.Fatalf("expected r1, r2; got %v", got)
+	}
+}
+
+func TestBuiltinsLLM_DoesNotSwallowEmptyResponseInNonStreamingMode(t *testing.T) {
+	t.Parallel()
+	// Non-streaming "empty response" means the model genuinely
+	// returned no content — that's a real failure, not a heartbeat.
+	// Surface it.
+	fake := &fakeLLM{events: []fakeEvent{{err: errors.New("empty response")}}}
+	wrapped := &builtinsLLM{
+		inner:               fake,
+		builtins:            DefaultBuiltinTools().asTools(),
+		tolerateEmptyChunks: true,
+	}
+	saw := false
+	for _, err := range wrapped.GenerateContent(context.Background(), &adkmodel.LLMRequest{}, false) {
+		if err != nil && err.Error() == "empty response" {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Errorf("non-streaming empty response should propagate, not be swallowed")
+	}
+}
+
+func TestBuiltinsLLM_DoesNotSwallowOtherErrors(t *testing.T) {
+	t.Parallel()
+	// Auth / network / quota / etc. must still bubble up — only the
+	// literal "empty response" heartbeat string is filtered.
+	fake := &fakeLLM{events: []fakeEvent{{err: errors.New("rate limited")}}}
+	wrapped := &builtinsLLM{
+		inner:               fake,
+		builtins:            DefaultBuiltinTools().asTools(),
+		tolerateEmptyChunks: true,
+	}
+	got := ""
+	for _, err := range wrapped.GenerateContent(context.Background(), &adkmodel.LLMRequest{}, true) {
+		if err != nil {
+			got = err.Error()
+		}
+	}
+	if got != "rate limited" {
+		t.Errorf("expected the upstream error to propagate; got %q", got)
+	}
+}
+
+func TestBuiltinsLLM_DoesNotSwallowEmptyResponseWhenToleranceOff(t *testing.T) {
+	t.Parallel()
+	// Direct Gemini API path (tolerateEmptyChunks=false) must surface
+	// the error normally so a real "no content" failure isn't hidden.
+	fake := &fakeLLM{events: []fakeEvent{{err: errors.New("empty response")}}}
+	wrapped := &builtinsLLM{
+		inner:               fake,
+		builtins:            DefaultBuiltinTools().asTools(),
+		tolerateEmptyChunks: false,
+	}
+	saw := false
+	for _, err := range wrapped.GenerateContent(context.Background(), &adkmodel.LLMRequest{}, true) {
+		if err != nil && err.Error() == "empty response" {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Errorf("with tolerance off the error should propagate; nothing was yielded")
 	}
 }

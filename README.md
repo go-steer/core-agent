@@ -42,10 +42,10 @@ A reusable Go base agent built on the [Google Agent Development Kit](https://pkg
 
 Tagged releases follow [SemVer](https://semver.org). See [`CHANGELOG.md`](./CHANGELOG.md) for the per-version history and the stability promise. Pre-1.0, breaking changes are possible at minor-version boundaries (`v0.X`); patches (`v0.X.Y`) are bug fixes only.
 
-Current release: **v1.0.0** — first stable release. Consolidates M1 (extraction + Anthropic adapter), M2 (Vertex Anthropic), and M3 (autonomy + durable sessions + subagents). Public API is under SemVer; breaking changes go through `v1.X.0` minor bumps with a one-version deprecation period when feasible.
+Current release: **v1.0.1** — patches two `--provider=vertex` bugs: the v1.0.0 regression that broke Vertex outright (an unconditional `IncludeServerSideToolInvocations` flag that Vertex rejects), and a long-standing intermittent `empty response` failure on Vertex search-grounding caused by ADK treating Vertex's heartbeat SSE frames as fatal. v1.0.0 was the first stable release, consolidating M1 (extraction + Anthropic adapter), M2 (Vertex Anthropic), and M3 (autonomy + durable sessions + subagents). Public API is under SemVer; breaking changes go through `v1.X.0` minor bumps with a one-version deprecation period when feasible.
 
 ```bash
-go get github.com/go-steer/core-agent@v1.0.0
+go get github.com/go-steer/core-agent@v1.0.1
 ```
 
 ## Documentation

@@ -61,8 +61,33 @@ func (p *Provider) Model(ctx context.Context, modelID string) (adkmodel.LLM, err
 	if err != nil {
 		return nil, fmt.Errorf("%s: new model %q: %w", p.prefix, modelID, err)
 	}
+	isVertex := p.cfg != nil && p.cfg.Backend == genai.BackendVertexAI
 	if tools := p.builtins.asTools(); len(tools) > 0 {
-		return &builtinsLLM{inner: llm, builtins: tools}, nil
+		return &builtinsLLM{
+			inner:    llm,
+			builtins: tools,
+			// Direct Gemini API (BackendGeminiAPI) requires the
+			// IncludeServerSideToolInvocations flag when combining
+			// built-ins with function tools. Vertex AI rejects the
+			// flag with "includeServerSideToolInvocations parameter
+			// is not supported in Gemini Enterprise Agent Platform
+			// (previously known as Vertex AI)" — it permits the
+			// combination unconditionally instead.
+			isDirectGeminiAPI: p.cfg != nil && p.cfg.Backend == genai.BackendGeminiAPI,
+			// Vertex's streaming search-grounding path intermittently
+			// emits chunks with empty Candidates[] (heartbeat-like,
+			// carrying only UsageMetadata/ResponseID). ADK's stream
+			// aggregator surfaces these as "empty response" errors
+			// and aborts the stream. Tolerate the heartbeats so the
+			// remaining grounded chunks can come through.
+			tolerateEmptyChunks: isVertex,
+		}, nil
+	}
+	if isVertex {
+		return &builtinsLLM{
+			inner:               llm,
+			tolerateEmptyChunks: true,
+		}, nil
 	}
 	return llm, nil
 }

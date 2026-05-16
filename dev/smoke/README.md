@@ -38,6 +38,7 @@ missing, so a partial-credential setup doesn't punish you.
 | `03-vertex-grounding.sh` | Vertex + `GoogleSearch` + `--session-db`: `↪ google_search:` lines in stdout + `gemini/google_search`-authored rows in eventlog | `GOOGLE_CLOUD_PROJECT` + ADC |
 | `04-background-spawn.sh` | Dynamic background subagents end-to-end (parent spawns two, both complete, `check_agent` returns terminal status) | `GOOGLE_CLOUD_PROJECT` + ADC |
 | `05-headless-gate.sh` | Headless (no TTY) without `--yolo` produces the helpful `ErrNoPrompter` message pointing at `--yolo` and config | `GOOGLE_CLOUD_PROJECT` + ADC |
+| `06-inject-autonomous.sh` | `examples/autonomous-handle` runs end-to-end; verifies `StartAutonomous` → `Pause` → `Inject` → `Resume` → `Wait` lifecycle (v1.3.0) | none (uses echo mock) |
 
 ## Exit codes
 

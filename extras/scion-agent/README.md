@@ -8,6 +8,7 @@
 - Adds a `sciontool_status` ADK tool so the model can declare sticky lifecycle states (`ask_user`, `blocked`, `task_completed`, `limits_exceeded`) to Scion's hub.
 - Emits transient activity (`thinking`, `executing`, `working`) to `$HOME/agent-info.json` automatically on each agent / tool boundary, so Scion's UI can render live progress.
 - Accepts `--input <task>` to seed the first turn (Scion's harness appends this when starting an agent with a task) and then reads stdin for follow-up messages — `scion message <agent>` delivers them via tmux send-keys.
+- **v1.3.0+: non-blocking message delivery.** Stdin is read in a background goroutine that pushes each line onto the agent's inbox via `Agent.Inject`. Messages arriving while a turn is in flight no longer block — they queue and land on the next turn's prompt as a `[Inbox]` block prepended above `"continue"`. Previously a 30-second tool call would delay every message by 30 seconds; now they queue immediately and get drained pre-turn.
 
 Outside a Scion container the lifecycle hooks degrade to no-ops, so the same binary is usable for local development with no Scion runtime.
 

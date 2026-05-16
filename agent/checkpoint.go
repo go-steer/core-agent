@@ -27,6 +27,7 @@ import (
 
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/session"
+	"google.golang.org/genai"
 )
 
 // checkpointAuthorSuffix is what every checkpoint event's Author
@@ -167,6 +168,65 @@ func emitCheckpoint(ctx context.Context, a *Agent, payload checkpointPayload) er
 	}
 	if err := svc.AppendEvent(ctx, resp.Session, ev); err != nil {
 		return fmt.Errorf("checkpoint: append: %w", err)
+	}
+	return nil
+}
+
+// emitNoteEvent writes a short text event to the agent's session
+// service, authored by the autonomous binary, with a `kind` field on
+// CustomMetadata for filtering. Used by AutonomousHandle to record
+// Pause and Resume events for audit. Same no-op-on-no-eventlog +
+// session-create-on-first-write semantics as emitCheckpoint.
+//
+// Content.Role is left empty so ADK's content processor skips this
+// from the LLM context — these are audit-only annotations.
+func emitNoteEvent(ctx context.Context, a *Agent, kind, text string) error {
+	if a == nil || a.eventLog == nil {
+		return nil
+	}
+	svc := a.SessionService()
+	if svc == nil {
+		return nil
+	}
+	resp, err := svc.Get(ctx, &session.GetRequest{
+		AppName:   a.AppName(),
+		UserID:    a.UserID(),
+		SessionID: a.SessionID(),
+	})
+	if err != nil {
+		return fmt.Errorf("note: load session: %w", err)
+	}
+	if resp == nil || resp.Session == nil {
+		_, cerr := svc.Create(ctx, &session.CreateRequest{
+			AppName:   a.AppName(),
+			UserID:    a.UserID(),
+			SessionID: a.SessionID(),
+		})
+		if cerr != nil {
+			return fmt.Errorf("note: create session: %w", cerr)
+		}
+		resp, err = svc.Get(ctx, &session.GetRequest{
+			AppName:   a.AppName(),
+			UserID:    a.UserID(),
+			SessionID: a.SessionID(),
+		})
+		if err != nil || resp == nil || resp.Session == nil {
+			return errors.New("note: session unavailable after create")
+		}
+	}
+	ev := &session.Event{
+		ID:        newEventID(),
+		Author:    binaryAuthor(),
+		Timestamp: time.Now(),
+		LLMResponse: adkmodel.LLMResponse{
+			Content: &genai.Content{
+				Parts: []*genai.Part{{Text: text}},
+			},
+			CustomMetadata: map[string]any{"kind": kind},
+		},
+	}
+	if err := svc.AppendEvent(ctx, resp.Session, ev); err != nil {
+		return fmt.Errorf("note: append: %w", err)
 	}
 	return nil
 }

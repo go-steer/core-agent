@@ -250,33 +250,66 @@ func run(initialInput, cfgPath, modelOverride, providerOverride string, noBuilti
 		return runner.ExitAgentError
 	}
 
-	stdin := bufio.NewScanner(os.Stdin)
-	stdin.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-
-	first := initialInput
-	for {
-		var prompt string
-		if first != "" {
-			prompt = first
-			first = ""
-			fmt.Fprintf(os.Stdout, "[user]: %s\n", prompt)
-		} else {
-			fmt.Fprint(os.Stdout, "[user]: ")
-			if !stdin.Scan() {
-				// EOF or signal — exit cleanly. We deliberately do NOT
-				// emit task_completed here; the model is responsible for
-				// declaring its own task state via sciontool_status.
-				return runner.ExitOK
-			}
-			prompt = stdin.Text()
-			if prompt == "" {
+	// Stdin → inbox goroutine. Each line `scion message <agent>`
+	// delivers via tmux send-keys becomes a queued message. The
+	// main loop drains the inbox pre-turn (via Agent.Run's built-in
+	// drain), so messages arriving while a turn is in flight no
+	// longer block — they land on the next turn's prompt as part of
+	// the "[Inbox]" block. SIGINT/SIGTERM still cancels via the
+	// ctx wired earlier.
+	stdinDone := make(chan struct{})
+	go func() {
+		defer close(stdinDone)
+		sc := bufio.NewScanner(os.Stdin)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for sc.Scan() {
+			line := sc.Text()
+			if line == "" {
 				continue
 			}
+			fmt.Fprintf(os.Stdout, "[user]: %s\n", line)
+			if err := a.Inject(line); err != nil {
+				fmt.Fprintf(os.Stderr, "scion-agent: inject: %v\n", err)
+			}
 		}
+	}()
 
-		if err := streamTurn(ctx, a, prompt, os.Stdout, os.Stderr); err != nil {
-			fmt.Fprintf(os.Stderr, "scion-agent: %v\n", err)
-			return runner.ExitAgentError
+	// Seed the first turn. --input is treated as "the first inbox
+	// message"; if absent, we wait for stdin to deliver one before
+	// the first agent turn fires.
+	if initialInput != "" {
+		fmt.Fprintf(os.Stdout, "[user]: %s\n", initialInput)
+		if err := a.Inject(initialInput); err != nil {
+			fmt.Fprintf(os.Stderr, "scion-agent: inject --input: %v\n", err)
+		}
+	}
+
+	// Main loop: each iteration waits for at least one inbox
+	// message, then runs a turn. Turn prompts are always
+	// "continue" — the actual user input rides into the prompt via
+	// Agent.Run's pre-turn inbox drain (which prepends the
+	// "[Inbox]" block to "continue" on each turn).
+	for {
+		select {
+		case <-ctx.Done():
+			return runner.ExitOK
+		case <-stdinDone:
+			// Stdin closed. Drain any final pending inbox before
+			// exiting so the last message isn't lost.
+			select {
+			case <-a.InboxArrived():
+				if err := streamTurn(ctx, a, "continue", os.Stdout, os.Stderr); err != nil {
+					fmt.Fprintf(os.Stderr, "scion-agent: %v\n", err)
+					return runner.ExitAgentError
+				}
+			default:
+			}
+			return runner.ExitOK
+		case <-a.InboxArrived():
+			if err := streamTurn(ctx, a, "continue", os.Stdout, os.Stderr); err != nil {
+				fmt.Fprintf(os.Stderr, "scion-agent: %v\n", err)
+				return runner.ExitAgentError
+			}
 		}
 	}
 }

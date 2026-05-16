@@ -19,11 +19,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -75,8 +77,23 @@ func main() {
 }
 
 func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool) int {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// SIGTERM still cancels the whole process via ctx. SIGINT
+	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
+	// SIGINT for its own double-Ctrl+C-exits state machine, and
+	// the per-turn turnInterrupter handles Ctrl+C as a raw byte
+	// while a turn is in flight (raw mode disables ISIG). For
+	// headless (-p) mode, an uncaught SIGINT terminates the
+	// process at exit code 130 — standard one-shot-CLI behavior.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stop()
+
+	// Filter "Error context canceled" out of the default log
+	// output. genai's SSE scanner unconditionally log.Printfs
+	// every stream error (api_client.go:484), including
+	// context.Canceled when the user hits ESC mid-turn. We can't
+	// suppress at the source, so we drop the line at the
+	// process-wide log writer here.
+	installLogFilter(os.Stderr)
 
 	cwd, _ := os.Getwd()
 	cfg, agentsDir, err := loadConfig(cfgPath, cwd)
@@ -325,6 +342,47 @@ func loadConfig(cfgPath, cwd string) (*config.Config, string, error) {
 		return cfg, filepath.Dir(cfgPath), nil
 	}
 	return config.LoadOrDefault(cwd)
+}
+
+// installLogFilter replaces log.Default()'s output with a writer
+// that drops lines matching known-noisy patterns the bundled CLI
+// doesn't want surfaced to users. Today the only filtered line is
+// `Error context canceled` from genai's SSE scanner, which fires
+// every time the user hits ESC mid-turn (genai/api_client.go:484
+// log.Printf's it unconditionally).
+//
+// Anything that isn't filtered passes through to fallback (typically
+// os.Stderr) unchanged, so consumer-supplied log lines still appear.
+func installLogFilter(fallback io.Writer) {
+	log.SetOutput(&filteredLogWriter{w: fallback})
+	// Strip the default date/time prefix so any line that DOES make
+	// it through reads like a normal stderr message rather than a
+	// log entry. Genai's own log.Printf will pick up our flags;
+	// fortunately the line we're filtering is the noisy one.
+	log.SetFlags(0)
+}
+
+// filteredLogWriter drops noisy log lines from genai/ADK that the
+// bundled CLI doesn't want to expose.
+type filteredLogWriter struct{ w io.Writer }
+
+// drop is the set of substrings that mark a line for filtering.
+// Kept small + literal so we don't accidentally suppress something
+// users need to see.
+var droppedLogPatterns = [][]byte{
+	[]byte("Error context canceled"),
+	[]byte("Error context deadline exceeded"),
+}
+
+func (f *filteredLogWriter) Write(p []byte) (int, error) {
+	for _, pat := range droppedLogPatterns {
+		if bytes.Contains(p, pat) {
+			// Return the full length so log.Output() doesn't see a
+			// short write and retry. The semantic is "consumed".
+			return len(p), nil
+		}
+	}
+	return f.w.Write(p)
 }
 
 // resolveSessionDBPath returns the path to use for the session

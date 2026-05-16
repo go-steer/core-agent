@@ -150,6 +150,27 @@ func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*Age
 			return result, err
 		}
 
+		// BeforeTurn hook (used by AutonomousHandle to implement
+		// Pause). Runs after budget + ctx checks; may block (e.g.
+		// pause waits for resume) and may return an error to abort.
+		if cfg.beforeTurn != nil {
+			if err := cfg.beforeTurn(ctx, result.Turns+1); err != nil {
+				// Treat hook-returned errors as a stop signal. If the
+				// ctx itself was cancelled while the hook was blocked,
+				// classify as ContextCancelled to match the rest of the
+				// loop; otherwise the hook's error becomes the run
+				// error and we use the RetryAborted reason.
+				if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+					result.Reason = StopReasonContextCancelled
+				} else {
+					result.Reason = StopReasonRetryAborted
+				}
+				result.Duration = time.Since(startedAt)
+				emitFinalCheckpoint(result.Reason)
+				return result, err
+			}
+		}
+
 		// Per-turn context (timeout is optional).
 		turnCtx := ctx
 		var cancel context.CancelFunc
@@ -340,6 +361,7 @@ type autoConfig struct {
 	progress            func(turn int, ev *session.Event)
 	retryPolicy         RetryPolicy
 	permissionsGate     *permissions.Gate
+	beforeTurn          func(ctx context.Context, turnNo int) error
 }
 
 // Sensible defaults used when no With* options override them. MaxTurns
@@ -459,6 +481,20 @@ func WithProgress(cb func(turn int, ev *session.Event)) AutonomousOption {
 // SkipTurn. Without a policy, the driver aborts on the first error.
 func WithRetryPolicy(p RetryPolicy) AutonomousOption {
 	return func(c *autoConfig) { c.retryPolicy = p }
+}
+
+// WithBeforeTurn installs a callback invoked at the top of each
+// iteration of the autonomous loop, after budget checks and before
+// the turn's runOneTurn call. The callback receives the upcoming
+// turn number (1-based). Returning a non-nil error aborts the run
+// with that error.
+//
+// This is the seam AutonomousHandle uses to implement Pause: the
+// callback blocks while paused, returning when Resume fires or the
+// run context is cancelled. Library callers can wire arbitrary
+// gating logic (rate limits, external approvals, etc.) on top.
+func WithBeforeTurn(cb func(ctx context.Context, turnNo int) error) AutonomousOption {
+	return func(c *autoConfig) { c.beforeTurn = cb }
 }
 
 // WithPermissionsGate hands the driver a reference to the permissions

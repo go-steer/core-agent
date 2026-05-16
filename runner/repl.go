@@ -17,9 +17,13 @@ package runner
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
 	"strings"
+	"sync"
 
 	adkmodel "google.golang.org/adk/model"
 
@@ -39,6 +43,14 @@ import (
 // agentOpts mirrors Headless. The same tracker/pricing pair is used
 // across every turn so the final summary is meaningful. eventsOpts
 // (e.g. WithColor) forward through to WriteEvents for every turn.
+//
+// SIGINT (Ctrl+C) is owned by the REPL when stdin is a TTY: the
+// double-press-within-1s exits gesture works both during a turn
+// (the per-turn turnInterrupter handles raw-mode bytes) and between
+// turns (this function's signal handler manages the SIGINT state
+// machine). The bundled CLI's main.go does NOT include SIGINT in
+// its signal.NotifyContext for that reason; passing a ctx whose
+// parent cancels on SIGINT would defeat the gesture.
 func REPL(ctx context.Context, m adkmodel.LLM, stdin io.Reader, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing, agentOpts []agent.Option, eventsOpts ...EventsOption) (int, error) {
 	a, err := agent.New(m, agentOpts...)
 	if err != nil {
@@ -59,14 +71,55 @@ func REPL(ctx context.Context, m adkmodel.LLM, stdin io.Reader, stdout, stderr i
 	}
 
 	br := bufio.NewReader(stdin)
-	fmt.Fprintln(stderr, "core-agent REPL — /exit or Ctrl-D to quit")
+	// Detect whether stdin is a real terminal — we need *os.File for
+	// the interrupter's raw-mode setup AND for the between-turn
+	// SIGINT handler to make sense. If stdin is piped (Scanner,
+	// pipe, bytes.Reader, etc.) or not a TTY, both fall back: no
+	// mid-turn ESC, no double-Ctrl+C state machine. Single SIGINT
+	// then ends the process via the existing default Go behavior
+	// (or via the caller's own ctx if they wired one).
+	stdinFile, _ := stdin.(*os.File)
+	hasInterrupter := false
+	if stdinFile != nil {
+		probe, _ := newTurnInterrupter(stdinFile, stderr)
+		if probe != nil {
+			hasInterrupter = true
+		}
+	}
+
+	banner := "core-agent REPL — /exit or Ctrl-D to quit"
+	if hasInterrupter {
+		banner = "core-agent REPL — ESC interrupts a turn, Ctrl+C twice exits, /exit or Ctrl-D quits"
+	}
+	fmt.Fprintln(stderr, banner)
+
+	// REPL-scoped ctx so the between-turn SIGINT handler can cancel
+	// independently of the parent.
+	replCtx, replCancel := context.WithCancel(ctx)
+	defer replCancel()
+
+	// Between-turn SIGINT state machine. Only installed when we
+	// have a real terminal; otherwise leave SIGINT to default Go
+	// behavior (terminate at exit code 130) which is fine for
+	// piped / scripted use.
+	var sigState *betweenTurnSigState
+	if hasInterrupter {
+		sigState = newBetweenTurnSigState(stderr, replCancel)
+		defer sigState.stop()
+	}
 
 	for {
-		if err := ctx.Err(); err != nil {
+		if err := replCtx.Err(); err != nil {
 			return ExitOK, nil
 		}
 		fmt.Fprint(stdout, "> ")
-		line, err := br.ReadString('\n')
+		line, err := readLineCtx(replCtx, br)
+		// SIGINT exit fired between turns. Cleanly exit; the
+		// stdin-read goroutine in readLineCtx leaks for the
+		// remaining microseconds before process exit (fine).
+		if err != nil && errors.Is(err, context.Canceled) {
+			return ExitOK, nil
+		}
 		if err == io.EOF {
 			fmt.Fprintln(stdout)
 			return ExitOK, nil
@@ -81,14 +134,179 @@ func REPL(ctx context.Context, m adkmodel.LLM, stdin io.Reader, stdout, stderr i
 		if prompt == "/exit" || prompt == "/quit" {
 			return ExitOK, nil
 		}
-		code, err := streamTurn(ctx, a, m, prompt, stdout, stderr, tracker, pricing, eventsOpts)
+		// User has typed something useful — reset the between-turn
+		// Ctrl+C window so a stale first-press from earlier doesn't
+		// haunt them.
+		if sigState != nil {
+			sigState.reset()
+		}
+		exit, err := runREPLTurn(replCtx, a, m, stdinFile, prompt, stdout, stderr, tracker, pricing, eventsOpts)
 		if err != nil {
 			fmt.Fprintf(stderr, "core-agent: %v\n", err)
 			// Don't exit on a single turn error — let the user retry.
 			continue
 		}
-		if code != ExitOK {
-			return code, nil
+		if exit {
+			return ExitOK, nil
 		}
 	}
+}
+
+// runREPLTurn drives one REPL turn with optional mid-turn interrupt
+// support. When stdinFile is non-nil and is a terminal, the turn is
+// wrapped in a turnInterrupter; pressing ESC or single-Ctrl+C
+// cancels the turn (preserving session history), and double-Ctrl+C
+// within ctrlCExitWindow returns exit=true so REPL breaks out.
+//
+// When stdinFile is nil or not a terminal, behaves identically to
+// the pre-v1.3.0 path: streamTurn against ctx, no per-turn cancel,
+// caller-supplied ctx cancellation still works.
+//
+// A turn error from streamTurn is surfaced as the returned error;
+// the REPL loop prints it and continues. Interrupter setup errors
+// are NOT fatal — we fall back to legacy on any setup failure so a
+// transient termios glitch doesn't break the REPL.
+func runREPLTurn(ctx context.Context, a *agent.Agent, m adkmodel.LLM, stdinFile *os.File, prompt string, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing, eventsOpts []EventsOption) (exit bool, err error) {
+	if stdinFile == nil {
+		_, err := streamTurn(ctx, a, m, prompt, stdout, stderr, tracker, pricing, eventsOpts)
+		return false, err
+	}
+	interrupter, ierr := newTurnInterrupter(stdinFile, stderr)
+	if ierr != nil {
+		// Non-TTY or other setup failure — silently fall back.
+		_, err := streamTurn(ctx, a, m, prompt, stdout, stderr, tracker, pricing, eventsOpts)
+		return false, err
+	}
+	turnCtx, cancel, serr := interrupter.Start(ctx)
+	if serr != nil {
+		_ = interrupter.Close()
+		_, err := streamTurn(ctx, a, m, prompt, stdout, stderr, tracker, pricing, eventsOpts)
+		return false, err
+	}
+	defer func() {
+		cancel()
+		_ = interrupter.Close()
+		// Raw mode disables OPOST, so any "\n" the model's streaming
+		// text wrote during the turn moved the cursor down but
+		// didn't return to column 0. After we've restored cooked
+		// mode (interrupter.Close above), reset the cursor to
+		// column 0 + clear-to-end-of-line so the next "> " prompt
+		// lands at the left margin. Cheap and idempotent: if the
+		// cursor was already at column 0, the \r is a no-op.
+		_, _ = io.WriteString(stdout, "\r\x1b[K")
+	}()
+	_, terr := streamTurn(turnCtx, a, m, prompt, stdout, stderr, tracker, pricing, eventsOpts)
+	// A ctx.Canceled coming back from streamTurn is the expected
+	// shape of a user-initiated interrupt — don't propagate it as a
+	// turn error. Everything else (real LLM/tool errors) flows
+	// through.
+	if terr != nil && errors.Is(terr, context.Canceled) && interrupter.Interrupted() {
+		terr = nil
+	}
+	return interrupter.ExitRequested(), terr
+}
+
+// readLineCtx reads a line from br but respects ctx cancellation.
+// Under the hood it spawns a one-shot goroutine that blocks on
+// br.ReadString('\n'); when ctx fires, we return immediately with
+// ctx.Err() and let the goroutine leak (it'll wake up on the next
+// stdin byte, push to its channel, find no receiver, and exit). The
+// leak is bounded — at most one goroutine per cancelled read —
+// and short-lived since this only fires when the REPL is exiting.
+func readLineCtx(ctx context.Context, br *bufio.Reader) (string, error) {
+	type result struct {
+		line string
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		line, err := br.ReadString('\n')
+		ch <- result{line, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.line, r.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+// betweenTurnSigState manages SIGINT handling between turns. During
+// a turn, the per-turn turnInterrupter puts stdin in raw mode (ISIG
+// off) so Ctrl+C arrives as byte 0x03 and never reaches this
+// handler — by design. Between turns, stdin is in cooked mode (ISIG
+// on) and Ctrl+C does generate SIGINT; this state machine catches
+// it and implements the same double-press-to-exit semantic.
+//
+// Semantics: first Ctrl+C arms an "exit primed" flag and prints a
+// hint. Any subsequent Ctrl+C without intervening user input exits
+// cleanly. Typing a new line (any prompt) clears the flag via
+// reset(), so a stale arming from minutes ago doesn't escalate the
+// next time the user hits Ctrl+C. Deliberately no time window —
+// at human keystroke speed a 1-second window forced unnatural
+// double-tapping; the typing-resets-the-arming model is more
+// forgiving without losing the "you really meant it" property.
+type betweenTurnSigState struct {
+	stderr     io.Writer
+	cancelREPL context.CancelFunc
+
+	mu    sync.Mutex
+	armed bool
+
+	sigCh    chan os.Signal
+	doneCh   chan struct{}
+	stopOnce sync.Once
+}
+
+func newBetweenTurnSigState(stderr io.Writer, cancelREPL context.CancelFunc) *betweenTurnSigState {
+	s := &betweenTurnSigState{
+		stderr:     stderr,
+		cancelREPL: cancelREPL,
+		sigCh:      make(chan os.Signal, 1),
+		doneCh:     make(chan struct{}),
+	}
+	signal.Notify(s.sigCh, os.Interrupt)
+	go s.loop()
+	return s
+}
+
+func (s *betweenTurnSigState) loop() {
+	defer close(s.doneCh)
+	for sig := range s.sigCh {
+		_ = sig // we only listen for one signal type
+		s.mu.Lock()
+		wasArmed := s.armed
+		s.armed = true
+		s.mu.Unlock()
+		if wasArmed {
+			// Second press without typing → exit cleanly. Newline
+			// first so the shell prompt lands on its own line.
+			_, _ = fmt.Fprintln(s.stderr)
+			s.cancelREPL()
+			return
+		}
+		// First press: print the hint. The leading "\n" gets us
+		// onto a fresh line since the terminal usually echoed "^C"
+		// in-line.
+		_, _ = fmt.Fprintln(s.stderr, "\n\x1b[33m✕\x1b[0m \x1b[2m(press Ctrl+C again to exit, or /exit / Ctrl-D)\x1b[0m")
+	}
+}
+
+// reset clears the armed flag so a stale first-press from earlier
+// doesn't escalate when the user types and the next Ctrl+C lands.
+// Called by the REPL whenever fresh user input arrives.
+func (s *betweenTurnSigState) reset() {
+	s.mu.Lock()
+	s.armed = false
+	s.mu.Unlock()
+}
+
+// stop removes the signal handler and waits for the goroutine to
+// exit. Idempotent.
+func (s *betweenTurnSigState) stop() {
+	s.stopOnce.Do(func() {
+		signal.Stop(s.sigCh)
+		close(s.sigCh)
+		<-s.doneCh
+	})
 }

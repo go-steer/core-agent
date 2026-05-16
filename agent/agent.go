@@ -66,6 +66,7 @@ type Agent struct {
 	userID         string
 	sessionID      string
 	bgMgr          *BackgroundAgentManager
+	inbox          *inbox
 }
 
 // Option mutates Agent construction. Use the With* helpers below.
@@ -298,6 +299,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		userID:         o.userID,
 		sessionID:      o.sessionID,
 		bgMgr:          o.bgMgr,
+		inbox:          newInbox(),
 	}
 	if a.bgMgr != nil {
 		a.bgMgr.attachParent(a)
@@ -358,9 +360,18 @@ func (a *Agent) EventLog() *eventlog.Handle { return a.eventLog }
 // any alerts background subagents have emitted since the last turn
 // are drained (non-blocking) and prepended to the prompt so the
 // parent's model sees them before deciding what to do next.
+//
+// Inbox messages queued via Agent.Inject from external callers
+// (harness, orchestrator, HTTP handler) are also drained and
+// prepended, sibling to the alerts block. Ordering: alerts go
+// first (internal state changes); inbox goes second (external
+// input, closer to the prompt logically); then the original prompt.
 func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event, error] {
 	if a.bgMgr != nil {
 		prompt = a.bgMgr.PrependPendingAlerts(prompt)
+	}
+	if a.inbox != nil {
+		prompt = prependInboxMessages(prompt, a.inbox.drain())
 	}
 	msg := genai.NewContentFromText(prompt, genai.RoleUser)
 	return a.runner.Run(ctx, a.userID, a.sessionID, msg, adkagent.RunConfig{

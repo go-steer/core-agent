@@ -18,6 +18,42 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ---
 
+## [1.3.0] — 2026-05-16
+
+Interrupt machinery — both **programmatic** (for harness embedding
+like Scion) and **interactive** (Claude Code-style ESC mid-turn in
+the bundled CLI's REPL). Two new public library surfaces, a Scion
+adapter rewrite that uses one of them, and a raw-mode terminal
+handler that gives the bundled REPL ESC-cancels-turn /
+double-Ctrl+C-exits gestures the way every interactive agent CLI on
+the market does.
+
+### Added
+
+- **`Agent.Inject(message)` + `Agent.InboxArrived()`** — per-agent queue any caller (harness goroutine, HTTP handler, orchestrator gRPC stream, test fixture) pushes messages onto. The pre-turn drain inside `Agent.Run` prepends queued messages as an `[Inbox]` block above the prompt the model sees, sibling to the v1.2.0 `[Background reports]` block. Drop-oldest backpressure at the soft cap (256) so a stuck consumer can't deadlock the agent. `InboxArrived()` returns a 1-buffer notify channel so harnesses can wait for new input instead of polling.
+- **`agent.StartAutonomous(ctx, build, goal, opts...)`** — fire-and-return constructor that runs the autonomous loop in a goroutine and returns an `*AutonomousHandle`. `RunAutonomous` keeps working unchanged (synchronous convenience that wraps `StartAutonomous(...).Wait()`).
+- **`AutonomousHandle`** — programmatic control over a running autonomous loop. `Pause()` blocks at the next pre-turn checkpoint (current turn finishes normally); `Resume()` unblocks. `Stop()` cancels via ctx (idempotent; tears down even when paused). `Inject(message)` delegates to the underlying `Agent.Inject` so harnesses can push messages to a running loop. `Status()` reports `Running` / `Paused` / `Stopped` / `Completed` / `Failed`. `Wait()` blocks until terminal and returns the same `RunResult` shape `RunAutonomous` returns. `Done()` exposes the goroutine-exit channel for select-style integration.
+- **`agent.WithBeforeTurn(cb)` AutonomousOption** — the hook `AutonomousHandle` uses internally to implement Pause. Library callers can use it directly for rate limits, external approvals, or other gating logic that runs at the per-turn checkpoint cadence.
+- **Pause/Resume audit events** — `Pause()` / `Resume()` emit synthetic events to the eventlog (`Author="<binary>/autonomous"`, `CustomMetadata.kind="paused"|"resumed"`) when one is wired. Empty `Content.Role` so ADK's content processor skips them from LLM context. New helper `emitNoteEvent` in `agent/checkpoint.go` for this pattern.
+- **`extras/scion-agent` Scion adapter rewrite** — replaces the between-turns stdin scan with a background goroutine that reads stdin and calls `Agent.Inject` for each line. Main loop waits on `Agent.InboxArrived()` and runs a turn with prompt `"continue"`; the pre-turn drain produces the `[Inbox]` block from queued messages. Messages arriving during an in-flight turn no longer block — they queue and land on the next turn. `--input` still seeds the first turn (now via `Inject` before the loop starts).
+- **`examples/autonomous-handle/`** — credential-free demo of the handle API. Uses a thin slow-LLM wrapper around the echo mock so the Pause window is visible. Demonstrates `StartAutonomous` → `Pause` → `Inject` → `Resume` → `Wait`.
+- **`dev/smoke/06-inject-autonomous.sh`** — smoke wrapping `examples/autonomous-handle`. No credentials required; safe to run anywhere.
+- **Mid-turn interrupt in the bundled REPL** — pressing **ESC** during an in-flight turn cancels just that turn's context; the model's LLM call returns `Canceled`, conversation history is preserved (ADK streams events into the session as they arrive, so partial state survives), and the user gets the `> ` prompt back to type a new direction. Pressing **Ctrl+C** does the same; a second Ctrl+C within 1 second exits the REPL cleanly (Claude Code / gemini-cli convention). The bundled CLI's REPL auto-enables this when stdin is a TTY; piped or non-TTY use falls back silently to the legacy single-Ctrl+C-exits behavior. Implementation lives in `runner/interrupt.go` (package-private `turnInterrupter`); uses `golang.org/x/term`'s `MakeRaw` for cross-platform raw mode. Tool calls in flight when the cancel fires are best-effort: `bash` (which uses `exec.CommandContext`) cancels promptly; tools that ignore ctx finish their in-flight work before the loop unwinds. Tested with 11 state-machine unit cases including the double-Ctrl+C window, hint deduplication, and non-TTY fallback.
+
+### New direct dependency
+
+- `golang.org/x/term` — needed for `MakeRaw`/`Restore` to gate the REPL into raw input mode during a turn. Well-maintained Go-team package; was already transitively available through other dependencies.
+
+### Deferred (out of scope for v1.3.0)
+
+- **`AutonomousHandle.Redirect(newGoal)`** — hard interrupt + restart with a new goal while preserving conversation context. Workaround in v1.3.0: `handle.Stop()` then `StartAutonomous(newGoal)` with the same agent (the eventlog carries history; the new run sees it). Promote to a first-class method when a consumer hits the seam.
+- **`extras/scion-remote-agent/` reference `RemoteAgentSpawner`** for sibling-container spawning via Scion's Hub HTTP API or CLI shell-out. The v1.2.0 `agent.RemoteAgentSpawner` interface is the seam; the implementation choice (HTTP vs CLI) depends on the deployment model and should be made with Scion-side input.
+- **Concurrent task multiplexing per container** — today one Scion container = one logical agent. If Scion ever wants to multiplex (cost optimization), session multiplexing would be needed.
+- **Lifecycle status taxonomy enrichment** — `sciontool_status` currently emits four sticky states. A richer taxonomy (progress %, ETA, blocking-on-what) is worth doing but should be designed against what Scion's UI actually wants to display.
+- **REPL `/inject` slash command** — interactive UX; library-only for v1.3.0.
+
+---
+
 ## [1.2.0] — 2026-05-16
 
 Dynamic in-process background subagents (the parent agent's model spawns them at runtime via a tool call, providing system prompt + goal + tools) plus a consumer-pluggable remote-spawner seam for out-of-process subagents (gRPC, K8s Jobs, Cloud Run, …). Subagent reports flow back to the parent through both a synchronous OnAlert hook (for inline display) and a pre-turn drain that prepends alerts to the parent's next prompt.
@@ -165,6 +201,7 @@ First tagged release. Three milestones of work landed on `main` before this tag;
 - **Mid-run pause/resume** for `RunAutonomous` — across-turn crash-resume shipped; mid-turn is a different design.
 - **Native push for `Stream.Watch`** (Postgres `LISTEN/NOTIFY`, SQLite `update_hook`) — polling at 200ms today.
 
+[1.3.0]: https://github.com/go-steer/core-agent/releases/tag/v1.3.0
 [1.2.0]: https://github.com/go-steer/core-agent/releases/tag/v1.2.0
 [1.1.0]: https://github.com/go-steer/core-agent/releases/tag/v1.1.0
 [1.0.1]: https://github.com/go-steer/core-agent/releases/tag/v1.0.1

@@ -460,8 +460,101 @@ Behavior:
 
 ### What's deferred
 
-- **Pause / resume mid-run** — the orchestrator-driven pattern (Scion, AX) covers this naturally; standalone needs more design.
+- **Mid-turn Pause** — `AutonomousHandle.Pause` waits for the current turn to finish before honoring the pause. Mid-turn (cancel current LLM call and wait) needs more design and will ship with `Redirect` when a consumer hits the seam.
 - **Streaming structured results** — pass a `WithProgress` callback if you need per-event observation; richer shapes will land when a consumer asks.
+
+---
+
+## Soft interrupt and programmatic control (v1.3.0+)
+
+`agent.RunAutonomous` is synchronous and fire-and-forget. For harness embedding (Scion, custom orchestrators, anything that needs to push instructions to a running loop) v1.3.0 ships two new surfaces.
+
+### `Agent.Inject(message)` — queue a message for the next turn
+
+Any caller can queue a message on an agent's inbox. The next `Agent.Run` call drains the queue and prepends the messages as a `[Inbox]` block to the prompt the model sees:
+
+```go
+go func() {
+    sc := bufio.NewScanner(os.Stdin)
+    for sc.Scan() {
+        _ = a.Inject(sc.Text())   // safe to call from any goroutine
+    }
+}()
+
+// Each turn the model sees:
+//   [Inbox]
+//   - <queued message 1>
+//   - <queued message 2>
+//
+//   ---
+//
+//   <prompt argument from Run()>
+```
+
+The inbox is per-agent (not per-manager) so consumers without a `BackgroundAgentManager` get it for free. Drop-oldest backpressure at 256 messages keeps a stuck consumer from deadlocking the agent. `Agent.InboxArrived() <-chan struct{}` exposes a 1-buffer notify channel for harnesses that want to wake on input instead of polling:
+
+```go
+for {
+    select {
+    case <-ctx.Done():
+        return
+    case <-a.InboxArrived():
+        runOneTurn(a, "continue")   // inbox drained automatically
+    }
+}
+```
+
+The bundled Scion adapter uses exactly this pattern — see `extras/scion-agent/main.go`.
+
+### `agent.StartAutonomous` + `AutonomousHandle`
+
+Programmatic control over an autonomous run. `StartAutonomous` launches the loop in a goroutine and returns a handle:
+
+```go
+h, err := agent.StartAutonomous(ctx, build, "monitor cluster X",
+    agent.WithMaxTurns(0),                // no cap; we'll Stop manually
+    agent.WithMaxWallclock(1*time.Hour),  // safety net
+)
+if err != nil { /* ... */ }
+defer h.Stop()
+
+// Push instructions as they arrive from outside:
+h.Inject("priority changed: focus on Q4 review")
+
+// Pause briefly:
+h.Pause()
+// ... do something synchronous ...
+h.Resume()
+
+// Block until terminal:
+result, err := h.Wait()
+```
+
+| Method | Effect |
+|---|---|
+| `Pause()` | Set a flag the loop checks at the next pre-turn checkpoint. Current turn finishes normally; subsequent turns block until `Resume()` fires. Synthetic `paused` event emitted to eventlog. |
+| `Resume()` | Unblock the BeforeTurn hook. Synthetic `resumed` event emitted. |
+| `Stop()` | Hard cancel via the run's `ctx.Cancel`. Current LLM call returns `Canceled`; loop exits. Idempotent; unblocks Pause too. |
+| `Inject(msg)` | Thin wrapper around the underlying `Agent.Inject`. |
+| `Status()` | `Running` / `Paused` / `Stopped` / `Completed` / `Failed`. |
+| `Wait()` | Block until the goroutine exits; returns the same `RunResult` + error pair `RunAutonomous` does. |
+| `Done()` | Channel that closes when the goroutine exits, for select-style integration. |
+
+`RunAutonomous` keeps working unchanged — it's now a synchronous convenience that wraps `StartAutonomous(...).Wait()`.
+
+### Custom BeforeTurn hook
+
+`agent.WithBeforeTurn(func(ctx, turnNo) error)` lets library callers gate the loop at the per-turn checkpoint. The hook runs after budget checks and before `runOneTurn`. Returning a non-nil error aborts the run. `AutonomousHandle.Pause` uses this internally; library callers can wire arbitrary gating (rate limits, external approvals) on top.
+
+Heads-up: `StartAutonomous` appends its own BeforeTurn hook after the caller's options, so a user-supplied hook gets replaced. If you need both, chain them in your callback yourself for now.
+
+### Pause semantics
+
+The currently-running turn finishes before `Pause` takes effect — clean checkpoint cadence matching the eventlog. If you need immediate mid-turn cancellation, use `Stop()` (which cancels via ctx); a future `Redirect(newGoal)` will combine cancel + restart with a new goal.
+
+### Example
+
+`examples/autonomous-handle/` runs end-to-end with no credentials. Uses a thin slow-LLM wrapper around the echo mock so the Pause window is observable. Demonstrates the full lifecycle: `StartAutonomous` → `Pause` → `Inject` → `Resume` → `Wait`.
 
 ---
 
@@ -915,6 +1008,24 @@ runner.WriteSummary(stderr, tracker, m.Name())
 ```
 
 They share a one-turn streamer that consumes the agent's event iterator, splits partial text → stdout / tool-call summaries → stderr, and updates the usage tracker. Reach for them when you want the same I/O conventions in your own binary; replace them when you need different rendering (e.g. JSON-stream output, Slack formatting, Bubble Tea TUI).
+
+### REPL keybindings (v1.3.0+)
+
+When `runner.REPL` is called with a real TTY for stdin (the bundled CLI's default; not the case when stdin is piped or redirected), each turn runs inside a `turnInterrupter` that puts stdin in raw input mode and reads single bytes:
+
+| Key | Effect |
+|---|---|
+| **ESC** | Cancel the current turn. Conversation history is preserved (ADK streams events into the session as they happen, so partial state survives). REPL returns to the `> ` prompt; the next user input is the next turn. |
+| **Ctrl+C** (single) | Same as ESC, plus prints a hint: `(press Ctrl+C again within 1s to exit)`. |
+| **Ctrl+C** (twice within 1s) | Exit the REPL cleanly. Terminal is restored before the process exits. |
+| **Ctrl+D** | EOF — exit the REPL (existing behavior). |
+| `/exit`, `/quit` | Same. |
+
+Tools that are in flight when the cancel fires: `bash` (which uses `exec.CommandContext`) cancels its subprocess promptly. Tools that ignore ctx finish their in-flight work before the loop unwinds — best-effort.
+
+When stdin **isn't** a TTY (piped input, redirected file, CI), the interrupter is silently disabled and Ctrl+C falls back to its pre-v1.3.0 behavior (process-level SIGINT → exit). The REPL's startup banner reflects which mode is active.
+
+The interrupter is package-private inside `runner/`. Library callers building custom REPLs can copy the pattern from `runner/interrupt.go` directly, or wait for it to be promoted to a public package when a real third-party consumer asks.
 
 ---
 

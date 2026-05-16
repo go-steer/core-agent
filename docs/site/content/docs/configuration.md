@@ -133,6 +133,19 @@ The subagent inherits the parent's gate wholesale: the same allow/deny lists, th
 
 **Teaching the model to use the spawn tools.** Just registering the tools isn't always enough — most models default to doing things synchronously. Drop a short paragraph into your project's `AGENTS.md` (or pass via `agent.WithInstruction`) describing when background subagents are appropriate (monitoring, fan-out, long bounded delegations). See [Library API → Background subagents → Prompting patterns]({{< relref "library-api.md#prompting-patterns" >}}) for a ready-to-paste system instruction.
 
+### REPL keybindings (v1.3.0+)
+
+The bundled CLI's REPL recognizes Claude Code-style mid-turn interrupts:
+
+| Key | Effect |
+|---|---|
+| **ESC** | Cancel the current turn. Conversation context is preserved; you can type a redirect. |
+| **Ctrl+C** (single) | Same as ESC. Prints a hint that pressing again exits. |
+| **Ctrl+C** twice within 1 s | Exit the REPL cleanly. |
+| **Ctrl+D** | EOF — exit the REPL. |
+
+Auto-enabled when stdin is a TTY. Disabled silently for piped / non-TTY use (Ctrl+C falls back to the legacy process-level exit). The REPL's startup banner reflects which mode is active. See [Library API → REPL keybindings]({{< relref "library-api.md#repl-keybindings-v130" >}}) for the underlying mechanism.
+
 ### Library callers
 
 The `permissions.Prompter` interface is public:

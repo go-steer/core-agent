@@ -46,11 +46,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "open %s: %v\n", os.Args[1], err)
 		os.Exit(2)
 	}
-	defer func() { _ = h.Close() }()
-
+	// No defer h.Close() — we os.Exit on error paths, which skips
+	// defers. Close explicitly when we reach a clean exit instead.
 	count := 0
 	for entry, err := range h.Stream.Since(ctx, 0) {
 		if err != nil {
+			_ = h.Close()
 			fmt.Fprintf(os.Stderr, "stream: %v\n", err)
 			os.Exit(2)
 		}
@@ -65,4 +66,5 @@ func main() {
 		count++
 	}
 	fmt.Fprintf(os.Stderr, "matched %d gemini/* rows\n", count)
+	_ = h.Close()
 }

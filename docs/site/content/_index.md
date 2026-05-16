@@ -40,7 +40,7 @@ A reusable Go base agent built on the Google Agent Development Kit. Embed it in 
 ## Install
 
 ```bash
-go get github.com/go-steer/core-agent@v1.2.0
+go get github.com/go-steer/core-agent@v1.3.0
 ```
 
 See [Getting started](docs/getting-started/) for the first turn, or jump to [Library API](docs/library-api/) if you want the full surface.

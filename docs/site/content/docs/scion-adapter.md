@@ -12,8 +12,8 @@ The adapter is opt-in. The core library and bundled CLI work standalone; you onl
 
 ## What it adds on top of `core-agent`
 
-- **`--input <task>` flag.** Scion's harness appends this when starting an agent with an initial task. Without it, the binary reads its first prompt from stdin.
-- **Stdin loop for follow-up turns.** `scion message <agent>` delivers user input via tmux send-keys, so the binary just keeps scanning stdin between turns.
+- **`--input <task>` flag.** Scion's harness appends this when starting an agent with an initial task. From v1.3.0 the value is pushed onto the agent's inbox via `Agent.Inject` before the main loop starts; the first turn then drains it as the first `[Inbox]` block.
+- **Non-blocking inbox loop (v1.3.0+).** A background goroutine reads stdin and pushes each line onto the agent's inbox via `Agent.Inject`. The main loop waits on `Agent.InboxArrived()` and runs a turn with prompt `"continue"`; the per-turn drain prepends queued messages as an `[Inbox]` block. Messages arriving while a turn is in flight no longer block — they queue immediately and land on the next turn's prompt. (Previously the binary scanned stdin between turns, so a 30-second tool call delayed every message by 30 seconds.)
 - **Transient activity emission.** On every agent / tool boundary the adapter writes `thinking`, `executing`, or `working` to `$HOME/agent-info.json` so Scion's UI can render what's happening live.
 - **Sticky lifecycle states via a `sciontool_status` tool.** The model invokes this tool to declare `ask_user`, `blocked`, `task_completed`, or `limits_exceeded`. The tool shells out to Scion's `sciontool` binary so the hub gets notified.
 

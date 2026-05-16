@@ -392,6 +392,51 @@ rm -f /tmp/ca
 
 ## Section 9 — Sign-off transcript
 
+### v1.0.0 sign-off attempt — 2026-05-16
+
+Tester: maintainer + assistant
+Branch: `main` @ `10d4b54` (pre-fix) → patched + re-tested
+
+**Sections 1-3 (regression + credential-free smoke):** all green.
+  - V1-T1.1 ✓ V1-T1.2 ✓
+  - V1-T2.2 ✓ V1-T2.3 ✓ V1-T2.4 ✓
+
+**Section 4 (Gemini, real-LLM):** initial fail surfaced a real
+defect; fix shipped same session; re-test green at full defaults.
+  - V1-T4.1 ✗ → fix → ✓ at `gemini-3.1-pro-preview` with full
+    default config (built-in tools + 8-tool function suite).
+  - V1-T4.2 ✓ `list_dir` fired against Gemini 3.1; count matched
+    actual directory contents.
+  - V1-T4.3 ✓ `RunAutonomous` completed in 1 turn with
+    `report_done`.
+
+**Sections 5-7 (Anthropic, Vertex Gemini, Anthropic Vertex):** not
+exercised in this pass — single-provider sign-off acceptable per
+the plan's bar ("at least one provider's full 🔵 suite passes").
+
+**Real defect found and fixed:**
+The Gemini provider's `builtinsLLM` wrapper was injecting
+`google_search` + `url_context` server-side tools alongside any
+function-calling tools but not setting
+`Config.ToolConfig.IncludeServerSideToolInvocations = true` — a
+flag Gemini 3+ requires for this combination. Without it the API
+rejected the first turn at any default invocation, blocking
+`--provider=gemini` for any consumer using the default tool suite.
+Gemini 2.5 doesn't support the combination at all regardless of
+that flag, so the library now requires Gemini 3.0+ when using
+built-in tools alongside `tools.Default()`. Fix in
+`models/gemini/builtins.go`; the smoke pass earned its keep on
+its first execution.
+
+**Result:** cleared for `v1.0.0` tag against Gemini 3.1.
+Sections 5-7 remain available for any downstream consumer who
+wants to add 🔵 coverage for their provider before pinning a
+v1.X release that claims it.
+
+---
+
+
+
 Append the result of each provider-gated run below as a dated block when v1.0.0 is being cut. This gives future maintainers proof that the bar was actually cleared.
 
 ```

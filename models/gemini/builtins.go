@@ -128,6 +128,25 @@ func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequ
 		// Append, don't replace — preserves any function declarations
 		// the agent's tool registry already contributed.
 		req.Config.Tools = append(req.Config.Tools, l.builtins...)
+
+		// Gemini 3+ requires this flag whenever server-side built-ins
+		// (google_search / url_context / code_execution) coexist with
+		// client-side function calling in the same request. Without
+		// it the API rejects with "Please enable
+		// tool_config.include_server_side_tool_invocations to use
+		// Built-in tools with Function calling." We set it
+		// unconditionally because (a) we're injecting built-ins, so
+		// the consumer asked for them, and (b) it's a no-op when
+		// there are no function tools to combine with.
+		//
+		// Gemini 2.5 and older reject the combination outright with
+		// a different error; core-agent requires Gemini 3.0+ when
+		// using built-in tools alongside the agent's tool registry.
+		if req.Config.ToolConfig == nil {
+			req.Config.ToolConfig = &genai.ToolConfig{}
+		}
+		t := true
+		req.Config.ToolConfig.IncludeServerSideToolInvocations = &t
 	}
 	return l.inner.GenerateContent(ctx, req, stream)
 }

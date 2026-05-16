@@ -34,7 +34,9 @@ enableRobotsTXT: true
 enableGitInfo: true
 enableEmoji: true
 
-# Docsy + its bundled Bootstrap/FontAwesome/KaTeX dependencies.
+# Docsy theme module. Docsy itself pulls Bootstrap + FontAwesome as
+# Hugo modules transitively via its own go.mod — no separate
+# `dependencies` module to import.
 module:
   proxy: direct
   hugoVersion:
@@ -42,7 +44,6 @@ module:
     min: "0.146.0"
   imports:
     - path: github.com/google/docsy
-    - path: github.com/google/docsy/dependencies
 
 markup:
   goldmark:

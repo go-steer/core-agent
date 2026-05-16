@@ -1,0 +1,39 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Docsy / Bootstrap project-level style overrides. This file is
+// auto-included by Docsy's SCSS pipeline when present at this path.
+
+// Inline `code` styling — GitHub / Stripe / Vercel / Linear style.
+//
+// Bootstrap 5.3's default --bs-code-color (#d63384 magenta) is loud
+// against most page content and reads as alarming rather than as
+// "this is a code identifier." Replace the color treatment with a
+// subtle background tint and inherit the body text color — the
+// pattern every major dev-doc site uses today.
+//
+// The :not(pre) > code selector scopes this to inline code only;
+// fenced code blocks (which render inside <pre>) keep their own
+// syntax-highlighted styling untouched.
+:not(pre) > code {
+  color: var(--bs-body-color);
+  background-color: rgba(175, 184, 193, 0.2);
+  padding: 0.15em 0.35em;
+  border-radius: 6px;
+  font-size: 87.5%;
+}
+
+[data-bs-theme="dark"] :not(pre) > code {
+  background-color: rgba(110, 118, 129, 0.4);
+}

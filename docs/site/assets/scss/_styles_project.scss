@@ -26,9 +26,17 @@
 // The :not(pre) > code selector scopes this to inline code only;
 // fenced code blocks (which render inside <pre>) keep their own
 // syntax-highlighted styling untouched.
+//
+// Light mode uses near-black-at-low-opacity rather than light-gray-
+// at-low-opacity. Against Docsy's white page background the latter
+// approach nearly disappears; "darken what's behind it" produces a
+// visible tint without looking heavy. (This is the Stripe / Vercel /
+// Linear pattern; GitHub uses a similar approach on their docs.)
+// Dark mode keeps the lighter-on-dark tint since the page
+// background already does the work of providing contrast.
 :not(pre) > code {
   color: var(--bs-body-color);
-  background-color: rgba(175, 184, 193, 0.2);
+  background-color: rgba(27, 31, 35, 0.07);
   padding: 0.15em 0.35em;
   border-radius: 6px;
   font-size: 87.5%;

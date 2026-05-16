@@ -38,6 +38,16 @@ A reusable Go base agent built on the [Google Agent Development Kit](https://pkg
 
 ---
 
+## Releases
+
+Tagged releases follow [SemVer](https://semver.org). See [`CHANGELOG.md`](./CHANGELOG.md) for the per-version history and the stability promise. Pre-1.0, breaking changes are possible at minor-version boundaries (`v0.X`); patches (`v0.X.Y`) are bug fixes only.
+
+Current release: **v0.1.0** — first tagged release covering M1 (extraction + Anthropic adapter), M2 (Vertex Anthropic), and M3 (autonomy + durable sessions + subagents).
+
+```bash
+go get github.com/go-steer/core-agent@v0.1.0
+```
+
 ## Documentation
 
 Full reference docs live at **<https://go-steer.github.io/core-agent/>** — getting started, every provider with env-var details, `.agents/config.json` schema, MCP setup, skills, permissions, and library API.

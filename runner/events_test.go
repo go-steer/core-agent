@@ -247,6 +247,98 @@ func TestWriteEvents_WithColorOff_SameAsDefault(t *testing.T) {
 	}
 }
 
+func groundedEvent(text string, queries []string, sources [][2]string) *session.Event {
+	parts := []*genai.Part{}
+	if text != "" {
+		parts = append(parts, &genai.Part{Text: text})
+	}
+	ev := &session.Event{LLMResponse: adkmodel.LLMResponse{
+		Content:      &genai.Content{Role: genai.RoleModel, Parts: parts},
+		TurnComplete: true,
+		GroundingMetadata: &genai.GroundingMetadata{
+			WebSearchQueries: queries,
+		},
+	}}
+	for _, s := range sources {
+		ev.GroundingMetadata.GroundingChunks = append(ev.GroundingMetadata.GroundingChunks,
+			&genai.GroundingChunk{Web: &genai.GroundingChunkWeb{Title: s[0], URI: s[1]}})
+	}
+	return ev
+}
+
+func TestWriteEvents_RendersGroundingEvidence(t *testing.T) {
+	t.Parallel()
+	var out, info bytes.Buffer
+	err := WriteEvents(eventSeq([]*session.Event{
+		partialText("Some news today: "),
+		groundedEvent("", []string{"SF news 2026-05-16"},
+			[][2]string{{"Example", "https://example.com/news"}}),
+	}, nil), &out, &info)
+	if err != nil {
+		t.Fatalf("WriteEvents: %v", err)
+	}
+	got := info.String()
+	if !strings.Contains(got, "↪ google_search: query: SF news 2026-05-16") {
+		t.Errorf("expected query line; got %q", got)
+	}
+	if !strings.Contains(got, "↪ google_search: Example — https://example.com/news") {
+		t.Errorf("expected source line; got %q", got)
+	}
+}
+
+func TestWriteEvents_GroundingSkippedOnPartial(t *testing.T) {
+	t.Parallel()
+	// Grounding metadata can appear on both a partial event and the
+	// final aggregate — rendering both would double-print. Render
+	// only when Partial=false.
+	var out, info bytes.Buffer
+	partial := groundedEvent("partial text", []string{"q"}, nil)
+	partial.Partial = true
+	_ = WriteEvents(eventSeq([]*session.Event{partial}, nil), &out, &info)
+	if strings.Contains(info.String(), "↪") {
+		t.Errorf("partial events should not render grounding; got %q", info.String())
+	}
+}
+
+func TestWriteEvents_GroundingSkipsEmptyQueryStrings(t *testing.T) {
+	t.Parallel()
+	// Vertex sometimes returns an empty string in WebSearchQueries;
+	// don't render "query: " with a trailing blank.
+	var out, info bytes.Buffer
+	_ = WriteEvents(eventSeq([]*session.Event{
+		groundedEvent("", []string{"", "real"}, nil),
+	}, nil), &out, &info)
+	got := info.String()
+	if strings.Contains(got, "query: \n") {
+		t.Errorf("empty query should be skipped; got %q", got)
+	}
+	if !strings.Contains(got, "query: real") {
+		t.Errorf("real query missing; got %q", got)
+	}
+}
+
+func TestWriteEvents_SkipsGroundingWhenAbsent(t *testing.T) {
+	t.Parallel()
+	var out, info bytes.Buffer
+	_ = WriteEvents(eventSeq([]*session.Event{
+		partialText("plain"),
+	}, nil), &out, &info)
+	if strings.Contains(info.String(), "↪") {
+		t.Errorf("no grounding metadata = no ↪ output; got %q", info.String())
+	}
+}
+
+func TestWriteEvents_GroundingHonorsColor(t *testing.T) {
+	t.Parallel()
+	var out, info bytes.Buffer
+	_ = WriteEvents(eventSeq([]*session.Event{
+		groundedEvent("", []string{"q"}, nil),
+	}, nil), &out, &info, WithColor(true))
+	if !strings.Contains(info.String(), "\033[35m↪ google_search: query: q\033[0m") {
+		t.Errorf("grounding line should be wrapped in magenta; got %q", info.String())
+	}
+}
+
 func TestIsTerminal_FalseForBuffer(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer

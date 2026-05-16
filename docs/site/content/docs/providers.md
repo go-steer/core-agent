@@ -87,6 +87,40 @@ The same options apply to `gemini.NewVertex(...)`. Other genai built-ins aren't 
 
 `GoogleSearch` and `URLContext` work on both the direct Gemini API and Vertex AI from v1.0.1 onward. Vertex's streaming search-grounding API emits a small number of heartbeat SSE frames (no `Candidates[]`, just `UsageMetadata` and a response ID); ADK's stream aggregator treats any empty-candidates chunk as a fatal `empty response` error, which previously killed Vertex grounded responses 30–60% of the time. The Gemini provider's `builtinsLLM` wrapper now drops those heartbeat-error chunks on Vertex only — the direct Gemini API path is untouched. Function-calling tools (`bash`, `read_file`, consumer-supplied tools) were already unaffected.
 
+### Surfacing grounded search activity (v1.1.0+)
+
+`GoogleSearch` runs entirely inside Google's infrastructure — there's no client-side request/result round-trip the way there is for `bash` or `read_file`. But the **evidence trail** (the queries the model issued, the URLs it grounded on) is in the response payload, and from v1.1.0 onward `core-agent` surfaces it in two places:
+
+**In `runner.WriteEvents` output** — alongside the standard `→ tool(...)` / `← tool(...)` chat-style lines, you'll see:
+
+```text
+↪ google_search: query: "San Francisco news May 16 2026"
+↪ google_search: sfgate.com — https://vertexaisearch.cloud.google.com/grounding-api-redirect/...
+```
+
+The `↪` sigil (magenta when colored) distinguishes "Google did this on the server" from your own `→` / `←` tool dispatch. Deduplicated within a turn so repeated metadata in the stream doesn't double-print. **Tradeoff to know:** the grounding metadata only lands on the model's aggregated response, so these lines appear *after* the model's text rather than interleaved with it.
+
+**In the eventlog** — when `--session-db` is enabled, the same activity is projected as queryable rows authored `gemini/google_search`, branch-preserved alongside the original model event:
+
+```sql
+SELECT seq, author FROM agent_eventlog
+WHERE author = 'gemini/google_search'
+  AND app_name = 'core-agent' AND user_id = 'me' AND session_id = '<id>'
+ORDER BY seq;
+```
+
+The `cmd/core-agent` CLI wires the projection automatically when `--session-db` is used with `--provider=gemini` / `vertex`. Library callers opt in explicitly:
+
+```go
+handle, _ := eventlog.Open(ctx, sqlite.Open("sessions.db"))
+handle.Service = gemini.GroundingProjection(handle.Service)
+a, _ := agent.New(m, agent.WithEventLog(handle))
+```
+
+The synthetic events leave `Content.Role` empty so ADK's content processor skips them when building the next turn's LLM context — they're audit + display only, never re-injected as conversation history.
+
+**Known gap:** `URLContext` evidence isn't projected today. ADK's gemini converter drops `URLContextMetadata` before the wrapper can see it; surfacing it requires intercepting raw genai responses below ADK and is deferred until a consumer needs it.
+
 ### Gemini 3.0+ required when combining built-ins with function tools
 
 When `GoogleSearch` / `URLContext` / `CodeExecution` are enabled (the default for the first two) **alongside** any function-calling tools — including `core-agent`'s default tool suite (`tools.Default()`) — you must use a **Gemini 3.0-or-later** model. Gemini 2.5 and older reject the combined request with `Built-in tools ({google_search}) and Function Calling cannot be combined in the same request`.

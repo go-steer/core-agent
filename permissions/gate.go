@@ -240,7 +240,7 @@ func (g *Gate) promptForPath(ctx context.Context, toolName, path, op string) err
 
 func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
 	if g.prompter == nil {
-		return fmt.Errorf("%w (tool=%s detail=%q); set permissions.mode=\"allow\" with explicit allowlist entries for headless use", ErrNoPrompter, req.ToolName, req.Detail)
+		return fmt.Errorf("%w (tool=%s detail=%q); run with --yolo to bypass the gate, set permissions.mode=\"allow\" with an explicit allowlist for headless use, or attach an interactive stdin", ErrNoPrompter, req.ToolName, req.Detail)
 	}
 	d, err := g.prompter.AskApproval(ctx, req)
 	if err != nil {

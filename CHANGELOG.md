@@ -18,6 +18,26 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ---
 
+## [1.1.0] — 2026-05-16
+
+Interactive permissions for the bundled CLI, plus first-class visibility into Gemini's server-side built-in tool activity (search-grounding) — both in stdout and the eventlog audit trail.
+
+### Added
+
+- **`permissions.StdinPrompter(in, out)`** — new public `Prompter` implementation that renders permission requests to `out` and reads one of `y` / `s` / `t` / `a` / `n` from `in`, mapping cleanly to the existing `Decision` enum. Reprompts on invalid input, denies on bare enter, surfaces EOF / context cancellation as errors. Replaces the placeholder `nil` the bundled CLI passed for the gate prompter in v1.0.x.
+- **`--yolo` flag on `cmd/core-agent`** — equivalent to `permissions.mode = "yolo"` in config: bypasses the gate so every tool call runs without approval. Use for headless / scripted invocations where pre-staging an allowlist is impractical.
+- **Interactive permissions in `cmd/core-agent`** — when stdin is a TTY and `--yolo` isn't set, the CLI wires `permissions.StdinPrompter(os.Stdin, os.Stderr)` automatically. Tool calls in `ask` mode now prompt the user instead of erroring out immediately. Non-TTY callers still get the same `ErrNoPrompter` failure, but the error message now points at `--yolo` and the `permissions.mode` config knob.
+- **`gemini.GroundingProjection(svc)`** — new public `session.Service` wrapper. For every event carrying `GroundingMetadata`, it appends one synthetic event per `WebSearchQueries` entry and per `GroundingChunks[i].Web` source to the same session. Authored `gemini/google_search`, branch-preserved, deduplicated. Synthetic events have an empty `Content.Role` so ADK's content processor skips them when building the next turn's LLM context — they're audit + display, not conversation history. URI-less sources and empty queries are filtered. `cmd/core-agent` wires the projection automatically when `--session-db` is used with `--provider=gemini` / `vertex`.
+- **`↪ google_search:` lines in `runner.WriteEvents`** — search queries and grounded sources now render alongside client-side `→` / `←` tool calls in the chat-style output, using a `↪` sigil and a new magenta color (added `ansiMagenta` to the minimal palette). Deduplicated per `WriteEvents` call so repeated metadata in the stream doesn't double-print. Format mirrors the projection's eventlog rows so stdout and `agent_eventlog` describe the same activity.
+
+### Known limitations
+
+- **`URLContext` evidence is not projected today.** ADK's gemini converter (`internal/llminternal/converters`) only lifts `GroundingMetadata` into `model.LLMResponse`; `URLContextMetadata` is dropped before our `session.Service` wrapper can see it. Surfacing it would require intercepting raw genai responses below ADK; deferred until a consumer needs it.
+- **Anthropic server-side tools (`web_search`, `web_fetch`)** aren't projected — those built-ins aren't surfaced in the Anthropic adapter yet (carried forward from v1.0.x `Known gaps`). When they land, the same `↪` namespace under `anthropic/*` is reserved for them.
+- **Grounding evidence appears *after* the model's text** in the chat stream rather than during. Grounding metadata only lands on the aggregated response event, not on partial streaming chunks — acceptable trade for keeping the synchronous text flow uninterrupted; flagged so consumers building richer UIs over `WriteEvents` know not to expect interleaving.
+
+---
+
 ## [1.0.1] — 2026-05-16
 
 Critical bug fixes for `--provider=vertex`. Two regressions surfaced after v1.0.0 shipped; both are fixed here, and Vertex search-grounding now delivers real results.
@@ -116,6 +136,7 @@ First tagged release. Three milestones of work landed on `main` before this tag;
 - **Mid-run pause/resume** for `RunAutonomous` — across-turn crash-resume shipped; mid-turn is a different design.
 - **Native push for `Stream.Watch`** (Postgres `LISTEN/NOTIFY`, SQLite `update_hook`) — polling at 200ms today.
 
+[1.1.0]: https://github.com/go-steer/core-agent/releases/tag/v1.1.0
 [1.0.1]: https://github.com/go-steer/core-agent/releases/tag/v1.0.1
 [1.0.0]: https://github.com/go-steer/core-agent/releases/tag/v1.0.0
 [0.1.0]: https://github.com/go-steer/core-agent/releases/tag/v0.1.0

@@ -195,7 +195,7 @@ Pass the same writer for both `out` and `info` (e.g., `os.Stdout`) when you want
 
 ### Color
 
-Pass `runner.WithColor(true)` to wrap tool calls in cyan and partial assistant text in green. Off by default — colored output looks like garbage when piped, so opt in (typically gated on `runner.IsTerminal(out)` so the same code does the right thing in both cases):
+Pass `runner.WithColor(true)` to wrap tool calls in cyan and partial assistant text in green. Server-side built-in evidence (Gemini grounding) renders in magenta with a `↪` sigil. Off by default — colored output looks like garbage when piped, so opt in (typically gated on `runner.IsTerminal(out)` so the same code does the right thing in both cases):
 
 ```go
 runner.WriteEvents(events, os.Stdout, os.Stderr,
@@ -203,6 +203,10 @@ runner.WriteEvents(events, os.Stdout, os.Stderr,
 ```
 
 `IsTerminal` returns false for `bytes.Buffer`, pipes, and any non-`*os.File` writer, so test code (which usually captures into a buffer) gets uncolored output by default.
+
+### Server-side built-in lines
+
+When events carry Gemini `GroundingMetadata` (set by `GoogleSearch` / `URLContext`), `WriteEvents` renders one `↪ google_search:` line per distinct query and grounded source after the model's text. No opt-in required — if the metadata's there, you see it. See [Providers → Surfacing grounded search activity]({{< relref "providers.md" >}}) for the full data flow and the audit-trail counterpart.
 
 ---
 
@@ -290,6 +294,20 @@ Either flag enables. The default path is derived from `os.Executable()` so `core
 `AppendEvent` writes to ADK's events table first (so the event has its assigned ID), then to the overlay so it picks up a seq. The overlay has a unique index on `event_id`, so a retry of the same event is a no-op rather than a duplicate. Spanning a single transaction across both layers is not done in v1; surfaced overlay-write errors let callers retry safely.
 
 WAL mode is enabled by default for SQLite (`PRAGMA journal_mode=WAL`) so concurrent readers can run alongside the single writer. For workloads that need true concurrent writers across processes, Postgres is the answer — same `eventlog.Open` API, swap the dialector.
+
+### Projecting server-side built-in evidence
+
+Wrap the handle's `Service` with `gemini.GroundingProjection(...)` to project Gemini `GoogleSearch` activity (queries + grounded URLs) into the eventlog as queryable `gemini/google_search`-authored rows. Synthetic events inherit the parent event's branch + invocation ID and are deduplicated; their `Content.Role` is empty so ADK's content processor doesn't reinject them as conversation history on subsequent turns.
+
+```go
+import "github.com/go-steer/core-agent/models/gemini"
+
+handle, _ := eventlog.Open(ctx, sqlite.Open("sessions.db"))
+handle.Service = gemini.GroundingProjection(handle.Service)
+a, _ := agent.New(m, agent.WithEventLog(handle))
+```
+
+The bundled CLI wires this automatically when `--session-db` is combined with `--provider=gemini` / `vertex`. Library callers using Anthropic or non-Gemini providers don't need to wrap. See [Providers → Surfacing grounded search activity]({{< relref "providers.md" >}}) for the data flow and the runner-side display story.
 
 ### Session lock
 
@@ -628,7 +646,7 @@ Each step is independent — skip the ones you don't need (e.g. no MCP, no skill
 
 ## Prompter
 
-The permission gate's `Prompter` is the seam for interactive consent in `ask` mode. The bundled CLI doesn't ship one, so REPL-with-tools effectively requires `mode: yolo` or pre-baked allowlists. To plug in your own:
+The permission gate's `Prompter` is the seam for interactive consent in `ask` mode. From v1.1.0 the package ships `permissions.StdinPrompter(in, out)` for terminal use, and the bundled CLI auto-wires it when stdin is a TTY (`--yolo` bypasses the gate entirely for headless runs). To plug in your own custom UI:
 
 ```go
 type myPrompter struct{ /* UI handle */ }
@@ -647,7 +665,7 @@ func (p *myPrompter) AskApproval(ctx context.Context, req permissions.PromptRequ
 gate, _ := permissions.FromConfig(cfg, cwd, userHome, &myPrompter{})
 ```
 
-When picking `DecisionAllowAlways`, the caller is responsible for persisting `req.PersistTool` + `req.PersistKey` into `cfg.Permissions.Allow` (or `cfg.PathScope.Allow` for path-scope prompts) and writing it back via `config.Save`.
+`permissions.StdinPrompter` is the reference implementation; for chat / Slack / web-based approval flows, write your own. When picking `DecisionAllowAlways`, the caller is responsible for persisting `req.PersistTool` + `req.PersistKey` into `cfg.Permissions.Allow` (or `cfg.PathScope.Allow` for path-scope prompts) and writing it back via `config.Save`.
 
 ---
 

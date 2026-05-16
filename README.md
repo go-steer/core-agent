@@ -28,7 +28,8 @@ A reusable Go base agent built on the [Google Agent Development Kit](https://pkg
 - **MCP servers** — declarative `.agents/mcp.json`; stdio and Streamable HTTP transports; tools are namespaced (`<server>_<tool>`) and pass through the permission gate.
 - **Claude-compatible skills** — drop a `SKILL.md` bundle into `.agents/skills/<name>/` and the agent can invoke it on demand via ADK's `skilltoolset`.
 - **Built-in tool suite** — `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `bash`, `todo`. Wired up by default in the bundled CLI; opt-out via `--no-builtin-tools` for the whole suite, or `--disable-tools=bash,write_file` (or `tools.disable` in config) for specific entries. All tools route through the permission gate.
-- **Permission gate** — ask / allow / yolo modes, per-tool allow- and deny-list patterns, path-scope checks for file tools, and a built-in bash denylist that's non-overridable.
+- **Permission gate** — ask / allow / yolo modes, per-tool allow- and deny-list patterns, path-scope checks for file tools, and a built-in bash denylist that's non-overridable. In the bundled CLI, `ask` mode prompts the user interactively (y/s/t/a/N) when stdin is a TTY; `--yolo` bypasses the gate entirely for headless use.
+- **Server-side built-in observability** — Gemini's `GoogleSearch` activity surfaces in the chat-style stdout (`↪ google_search: query: ...`, `↪ google_search: <title> — <uri>`) and as queryable `gemini/google_search`-authored rows in the eventlog when `--session-db` is enabled. Same `↪` namespace reserved for Anthropic's server-side tools when they land.
 - **Telemetry** — opt-in OpenTelemetry export (console / OTLP); off by default so a fresh invocation makes zero outbound calls.
 - **Headless CLI** — `core-agent -p "prompt"` for one-shot use; bare `core-agent` drops into a stdin REPL with conversation history preserved across turns.
 - **Autonomous-run driver** — `agent.RunAutonomous` for unattended multi-turn workers (batch jobs, CI tasks, scheduled scripts) with budget caps (turns / tokens / cost / wallclock) and a model-driven termination signal via the bundled `tools.NewLifecycleTool`. Pair with `--ask=auto` so instructions like "ask before doing X" get a clean refusal in headless contexts instead of blocking.
@@ -42,10 +43,10 @@ A reusable Go base agent built on the [Google Agent Development Kit](https://pkg
 
 Tagged releases follow [SemVer](https://semver.org). See [`CHANGELOG.md`](./CHANGELOG.md) for the per-version history and the stability promise. Pre-1.0, breaking changes are possible at minor-version boundaries (`v0.X`); patches (`v0.X.Y`) are bug fixes only.
 
-Current release: **v1.0.1** — patches two `--provider=vertex` bugs: the v1.0.0 regression that broke Vertex outright (an unconditional `IncludeServerSideToolInvocations` flag that Vertex rejects), and a long-standing intermittent `empty response` failure on Vertex search-grounding caused by ADK treating Vertex's heartbeat SSE frames as fatal. v1.0.0 was the first stable release, consolidating M1 (extraction + Anthropic adapter), M2 (Vertex Anthropic), and M3 (autonomy + durable sessions + subagents). Public API is under SemVer; breaking changes go through `v1.X.0` minor bumps with a one-version deprecation period when feasible.
+Current release: **v1.1.0** — adds interactive permissions to the bundled CLI (the `ask` mode actually prompts now via the new `permissions.StdinPrompter`; new `--yolo` flag bypasses the gate for headless use) and first-class visibility into Gemini's server-side search-grounding via the new `gemini.GroundingProjection` `session.Service` wrapper and `↪ google_search:` lines in `runner.WriteEvents`. v1.0.1 patched two `--provider=vertex` regressions. v1.0.0 was the first stable release, consolidating M1 (extraction + Anthropic adapter), M2 (Vertex Anthropic), and M3 (autonomy + durable sessions + subagents). Public API is under SemVer; breaking changes go through `v1.X.0` minor bumps with a one-version deprecation period when feasible.
 
 ```bash
-go get github.com/go-steer/core-agent@v1.0.1
+go get github.com/go-steer/core-agent@v1.1.0
 ```
 
 ## Documentation

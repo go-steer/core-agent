@@ -99,6 +99,44 @@ Example:
 }
 ```
 
+### Interactive prompts
+
+In `ask` mode the bundled CLI (`core-agent`) prompts on stderr whenever a tool call needs approval. The prompt looks like:
+
+```text
+core-agent (permissions): bash wants to run:
+  rm -rf /tmp/foo
+[y]es once · [s]ession · session-[t]ool · [a]lways · [N]o (default): 
+```
+
+Decision keys (case-insensitive, single character + enter):
+
+| Key | Effect |
+|---|---|
+| `y` | Allow once. Next identical call asks again. |
+| `s` | Allow this exact request for the rest of the session. |
+| `t` | Allow every call to this tool for the rest of the session. |
+| `a` | Allow always. Persists an entry to `.agents/config.json`'s `permissions.allow`. |
+| `n` or bare enter | Deny. |
+
+The prompter is auto-wired when stdin is a TTY. Non-TTY callers (piped stdin, CI, `nohup`) get `ErrNoPrompter`-wrapped errors that point at the bypass options below — they don't hang waiting for a non-existent user.
+
+### `--yolo` (CLI flag)
+
+`--yolo` forces the gate into `yolo` mode regardless of `config.permissions.mode`. Equivalent to setting `permissions.mode: "yolo"` in config; takes precedence at the call site so you don't have to edit config to unblock a one-off scripted run. Library callers achieve the same with `permissions.Options{Mode: permissions.ModeYolo}`.
+
+### Library callers
+
+The `permissions.Prompter` interface is public:
+
+```go
+type Prompter interface {
+    AskApproval(ctx context.Context, req PromptRequest) (Decision, error)
+}
+```
+
+`permissions.StdinPrompter(in, out)` is the implementation the CLI uses; wire your own if you have a different UI (a TUI, a web prompt, a chat-based approver, etc.). Pass it via `permissions.FromConfig(cfg, projectRoot, userRoot, prompter)` when constructing the gate.
+
 ---
 
 ## `path_scope`

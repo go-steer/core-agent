@@ -40,7 +40,7 @@ import (
 	"github.com/go-steer/core-agent/mcp"
 	"github.com/go-steer/core-agent/models"
 	_ "github.com/go-steer/core-agent/models/anthropic"
-	_ "github.com/go-steer/core-agent/models/gemini"
+	"github.com/go-steer/core-agent/models/gemini"
 	_ "github.com/go-steer/core-agent/models/mock"
 	"github.com/go-steer/core-agent/permissions"
 	"github.com/go-steer/core-agent/recording"
@@ -66,13 +66,14 @@ func main() {
 	ask := flag.String("ask", "off", "register an ask_user tool the model can call when its instructions tell it to ask: off|stdin|auto (auto = stdin if interactive, refuse otherwise)")
 	sessionDB := flag.Bool("session-db", false, "persist sessions + audit log to a durable database (default off; in-memory)")
 	sessionDBPath := flag.String("session-db-path", "", "override the database path used when --session-db is set (default: ~/.<binary>/sessions.db)")
+	yolo := flag.Bool("yolo", false, "bypass the permissions gate entirely (every tool call runs without approval). Equivalent to permissions.mode=\"yolo\" in config.")
 	flag.Parse()
 
-	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath)
+	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo)
 	os.Exit(code)
 }
 
-func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string) int {
+func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo bool) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -130,7 +131,13 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		coreHome = filepath.Join(userHome, ".core-agent")
 	}
 
-	gate, err := permissions.FromConfig(cfg, cwd, coreHome, nil /* no prompter in v1 */)
+	if yolo {
+		// --yolo overrides the configured mode unconditionally. Done
+		// before FromConfig so the mode is consistent with the
+		// constructed Gate (and any future code that reads it back).
+		cfg.Permissions.Mode = string(permissions.ModeYolo)
+	}
+	gate, err := permissions.FromConfig(cfg, cwd, coreHome, resolveGatePrompter(yolo, os.Stdin, os.Stderr))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 		return runner.ExitConfigError
@@ -229,6 +236,15 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 			return runner.ExitConfigError
 		}
 		defer func() { _ = handle.Close() }()
+		// On Gemini/Vertex, wrap the session.Service with the
+		// GoogleSearch grounding projection so queries + grounded
+		// sources land as queryable rows in the eventlog
+		// (Author="gemini/google_search") alongside the original
+		// model event that carried the grounding metadata.
+		switch cfg.Model.Provider {
+		case config.ProviderGemini, config.ProviderVertex:
+			handle.Service = gemini.GroundingProjection(handle.Service)
+		}
 		opts = append(opts, agent.WithEventLog(handle))
 		fmt.Fprintf(os.Stderr, "core-agent: session db: %s\n", path)
 	}
@@ -350,6 +366,24 @@ func resolveAskUserTool(mode string, in io.Reader, out io.Writer) (adktool.Tool,
 		return nil, fmt.Errorf("--ask: unknown value %q (want off|stdin|auto)", mode)
 	}
 	return tools.NewAskUserTool(tools.AskUserOptions{Prompter: prompter})
+}
+
+// resolveGatePrompter returns the Prompter wired into the
+// permissions gate. When --yolo is set the gate runs in yolo mode
+// and prompting never happens, so we skip the prompter. When stdin
+// isn't a TTY (piped input, daemon, CI) we also skip — the gate's
+// ErrNoPrompter message points at --yolo and the config knobs so
+// the failure mode is recoverable. Otherwise we wire a stdin
+// prompter that renders requests to stderr (keeping stdout clean
+// for the model's reply).
+func resolveGatePrompter(yolo bool, in *os.File, out io.Writer) permissions.Prompter {
+	if yolo {
+		return nil
+	}
+	if !runner.IsTerminal(in) {
+		return nil
+	}
+	return permissions.StdinPrompter(in, out)
 }
 
 func persistTranscript(agentsDir, model, prompt string, tracker *usage.Tracker) {

@@ -34,14 +34,20 @@
 // Linear pattern; GitHub uses a similar approach on their docs.)
 // Dark mode keeps the lighter-on-dark tint since the page
 // background already does the work of providing contrast.
+// Use solid background colors rather than rgba transparency. The
+// transparency approach varies in visibility depending on what's
+// behind it (white page vs. a card / hero with its own
+// background), which made the light mode look fine in some places
+// and nearly invisible in others. Solid colors render the same
+// regardless of context.
 :not(pre) > code {
   color: var(--bs-body-color);
-  background-color: rgba(27, 31, 35, 0.07);
-  padding: 0.15em 0.35em;
+  background-color: #eef1f5;  // slate-100, clearly visible on white
+  padding: 0.15em 0.4em;
   border-radius: 6px;
   font-size: 87.5%;
 }
 
 [data-bs-theme="dark"] :not(pre) > code {
-  background-color: rgba(110, 118, 129, 0.4);
+  background-color: #2d333b;  // slate-800-ish, clearly visible on dark
 }

@@ -534,6 +534,189 @@ parent, _ := agent.New(model,
 
 ---
 
+## Dynamic background subagents (v1.2.0+)
+
+`WithSubagents` is **static** — you wire the subagent population at build time and the parent's model invokes registered subagents *synchronously* (parent blocks until the subagent returns). For long-running monitors, parallel fan-out work, and any case where the parent's model decides at runtime what kind of subagent it needs, use the `BackgroundAgentManager` + `spawn_agent` family instead.
+
+```go
+import (
+    "github.com/go-steer/core-agent/agent"
+    "github.com/go-steer/core-agent/models/gemini"
+    "github.com/go-steer/core-agent/permissions"
+    "github.com/go-steer/core-agent/tools"
+)
+
+provider, _ := gemini.NewVertex(project, location)
+m, _ := provider.Model(ctx, "gemini-3.1-pro-preview")
+gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
+
+builtins := tools.Default()
+reg, _ := tools.Build(cfg, gate, builtins)
+
+mgr, _ := agent.NewBackgroundAgentManager(
+    agent.WithBackgroundProvider(provider, "gemini-3.1-pro-preview"),
+    agent.WithBackgroundGate(gate),
+    agent.WithBackgroundCatalog(reg.Tools),
+    agent.WithBackgroundMaxDepth(2),
+    agent.WithBackgroundMaxConcurrent(8),
+    agent.WithBackgroundDefaultBudgets(agent.BackgroundBudgets{
+        MaxTurns: 50, MaxCost: 1.0, MaxWallclock: 10*time.Minute,
+    }),
+)
+defer mgr.Close()
+
+a, _ := agent.New(m,
+    agent.WithTools(append(reg.Tools, agent.NewBackgroundSpawnTools(mgr)...)),
+    agent.WithBackgroundManager(mgr),
+)
+```
+
+The parent's model now sees four extra tools:
+
+| Tool | Use |
+|---|---|
+| `spawn_agent` | Launch a new in-process background subagent (name, system prompt, goal, tools, optional budgets). |
+| `list_agents` | See every subagent the model has spawned and their current status. |
+| `check_agent` | Get detailed status + final result for one named subagent. |
+| `stop_agent` | Cancel a running subagent. |
+
+Each spawned subagent gets:
+
+- A **fresh `model.LLM`** built from the same provider + modelID (sidesteps any unknowns around concurrent streaming on a shared SDK client).
+- A **derived session row** (`<parent>:sub:bg.<name>`) so concurrent goroutines don't race ADK's optimistic-concurrency check.
+- A **branch label** (`bg.<name>` at the root, `<parent_branch>.bg.<name>` when nested) so eventlog queries by `WithBranchPrefix("bg.")` find them.
+- A **`report_alert` and `report_completed`** tool injected automatically — the subagent's model calls these to signal back to the parent.
+- The **parent's permission gate**, inherited by reference. Subagent prompts include `[<subagent-name>]` source attribution; concurrent prompts serialize through a mutex.
+
+### Reports flowing back to the parent
+
+When a subagent calls `report_alert(text)`, the manager pushes an `Alert` onto a buffered channel (default 256, drop-oldest backpressure). Two consumers see it:
+
+1. **Synchronous `OnAlert` hook** — for inline display in the parent's UI. The bundled CLI's REPL installs one that writes `↪ <from> alert: <text>` in magenta to stderr.
+2. **Pre-turn drain** — `Agent.Run` calls `mgr.PrependPendingAlerts(prompt)` before each turn, which drains every pending alert (non-blocking) and prepends them as a `[Background reports]` block to the prompt the model sees.
+
+Both consumers see every alert (the hook runs synchronously before the channel push). One-shot headless (`core-agent -p ...`) has no next turn so alerts arrive only in the eventlog and via the hook; REPL and `RunAutonomous` see them through both paths.
+
+### Custom UI sinks
+
+Wire your own alert display by setting an `OnAlert` hook:
+
+```go
+mgr.OnAlert(func(a agent.Alert) {
+    // Slack / webhook / TUI / etc.
+    fmt.Printf("[bg] %s says %s: %s\n", a.From, a.Kind, a.Text)
+})
+```
+
+The bundled formatter `runner.FormatAlertLine(from, kind, text)` produces the same `↪ ...` shape the CLI uses; pair with `runner.AnsiMagenta()` for matching color.
+
+### Remote (out-of-process) subagents
+
+For subagents that should run elsewhere — gRPC to a remote agent server, K8s Jobs, Cloud Run, NATS-dispatched workers — implement `agent.RemoteAgentSpawner` and pass it to `agent.NewSpawnRemoteAgentTool`. The model gets a `spawn_remote_agent` tool with the same shape as `spawn_agent`; your spawner is responsible for transport + lifecycle. Events the consumer puts on the handle's `Events()` channel are mapped onto the same alert pipeline as in-process subagents, so `list_agents` / `check_agent` / `stop_agent` work uniformly.
+
+```go
+type myK8sSpawner struct{ kubeconfig string }
+
+func (s *myK8sSpawner) Spawn(ctx context.Context, spec agent.RemoteAgentSpec) (agent.RemoteAgentHandle, error) {
+    // create a K8s Job; return a handle whose Events() channel
+    // is populated from the Job's pod logs or a sidecar gRPC stream
+}
+
+remoteTool, _ := agent.NewSpawnRemoteAgentTool(&myK8sSpawner{...}, mgr)
+a, _ := agent.New(m, agent.WithTools([]tool.Tool{remoteTool, ...}))
+```
+
+When you don't want to wire a real spawner (headless / unattended / CI), use `agent.RefuseRemoteAgentSpawner(reason)` — analog of `tools.RefusePrompter`. The model sees a clean error result it can adapt to.
+
+### Bundled CLI
+
+`core-agent` ships with all four spawn-related tools enabled by default. `--no-background-agents` disables them. The manager uses `provider` + `cfg.Model.Name` from your config, the same permissions gate as the rest of the CLI, and `tools.Default()` (minus `--disable-tools`) as the catalog of tools subagents may request.
+
+`examples/background-monitor/` runs end-to-end with no credentials and exercises the full Spawn → terminal alert → pre-turn drain path against the echo mock provider.
+
+### Prompting patterns
+
+Just registering the tools isn't enough — the model needs to know that background subagents *exist* and when they're the right move. Without a hint in the system instruction or the user prompt, most models will try to do everything synchronously. A few patterns that work:
+
+**System instruction nudge (the most reliable lever):**
+
+```text
+You have access to four background-agent tools: spawn_agent,
+list_agents, check_agent, stop_agent. Use them when:
+
+- You're asked to monitor something continuously (a cluster, a queue,
+  a log stream). Spawn one subagent per thing to monitor; they should
+  call report_alert when they find something noteworthy and
+  report_done when their goal is satisfied.
+- You're asked to fan out independent work that can run in parallel
+  (e.g. "research these 5 topics"). Spawn one subagent per topic
+  with a focused system prompt; each reports its findings via
+  report_alert; you synthesize after they finish.
+- A task would take many turns of your own time but is bounded and
+  delegate-able (e.g. "summarize this 200-file directory"). Spawn
+  one subagent with a tight scope; check_agent for results.
+
+When you spawn a subagent, give it:
+- a clear, narrow system_prompt so it stays focused
+- a single-sentence goal
+- the minimum tools it needs (read_file, list_dir, glob, grep, bash, etc.)
+- a budget appropriate to the task (max_turns, max_cost_usd,
+  max_wallclock_seconds) — defaults are conservative.
+
+Subagent reports arrive automatically as a "[Background reports]"
+block prepended to your next turn. React to them or use check_agent
+to poll explicitly.
+
+Don't spawn a subagent for trivial work you can do in one or two
+turns yourself.
+```
+
+Drop that block into your `AGENTS.md` (or pass via `agent.WithInstruction` / `agent.WithSystemInstructionPrefix`) and the model will use the tools when the situation matches.
+
+**User prompt patterns that imply background work:**
+
+- *"Keep an eye on the prod cluster for the next hour and let me know if any pod restarts more than 3 times."* — implies a long-running monitor; the model spawns one subagent and uses `report_alert` for findings.
+- *"For each of these 5 repos, summarize the recent commits. You can do them in parallel."* — implies fan-out; the model spawns 5 subagents and synthesizes when they all return.
+- *"Run `npm test` in the background while you read through the README and propose changes."* — implies parallel mixed work; one subagent for the test run, parent handles the README.
+
+**A complete minimal example:**
+
+```bash
+core-agent --provider=vertex -p "
+You're an orchestrator. Use spawn_agent to launch two background
+subagents: one named 'count-up' that counts from 1 to 5 then calls
+report_alert with the final number, and one named 'count-down' that
+counts from 10 to 6 then calls report_alert. Each should also call
+report_done when finished. Then call check_agent for both and tell
+me what they reported.
+"
+```
+
+The first time you wire background subagents into a new deployment, give the model an explicit nudge like this — once you've watched it use them correctly a few times, you can pare the instruction down.
+
+### Audit log queries
+
+Background subagent activity is visible in the eventlog under branches starting with `bg.`:
+
+```sql
+SELECT seq, branch, author FROM agent_eventlog
+WHERE branch LIKE 'bg.%'
+  AND app_name = 'core-agent' AND user_id = 'me'
+ORDER BY seq;
+```
+
+Use `eventlog.WithBranchPrefix("bg.")` for the Go API equivalent, or `WithBranchPrefix("bg.<name>")` for one specific subagent's activity.
+
+### What's deferred
+
+- **Bounded permission subsets + parent-as-arbiter** (subagent gets a subset of parent's grants, out-of-subset requests bubble up to the parent's model). Worth doing; v1.3+.
+- **Persistence across main-agent restarts.** Subagents die with the parent process; cross-restart resume needs registry-in-eventlog work.
+- **Subagent → subagent messaging.** Only parent ↔ subagent today.
+- **MCP / skill tools in the default catalog.** The bundled CLI's catalog is the built-in tool suite only. Library callers pass additional tools via `WithBackgroundCatalog`.
+- **Budget pooling across siblings.** Each subagent has its own budget; no global cap across the tree.
+
+---
+
 ## Adding custom tools
 
 Use ADK's `functiontool.New` to wrap a Go function as a tool the agent can call. Schema is generated from the input/output struct types via `jsonschema` tags.
@@ -666,6 +849,12 @@ gate, _ := permissions.FromConfig(cfg, cwd, userHome, &myPrompter{})
 ```
 
 `permissions.StdinPrompter` is the reference implementation; for chat / Slack / web-based approval flows, write your own. When picking `DecisionAllowAlways`, the caller is responsible for persisting `req.PersistTool` + `req.PersistKey` into `cfg.Permissions.Allow` (or `cfg.PathScope.Allow` for path-scope prompts) and writing it back via `config.Save`.
+
+### Source attribution and serialization (v1.2.0+)
+
+`PromptRequest.Source` carries the originating agent name when the request comes from a background subagent. `StdinPrompter` renders it as `[<source>] tool wants to ...` in the heading so the human knows which agent is asking. The gate populates `Source` from a context value (`permissions.WithSubagentSource(ctx, name)`) stamped by the spawn machinery; custom prompters that ignore the field still work.
+
+When the gate is shared across goroutines (any setup with background subagents), wrap the prompter in `permissions.Serialize(...)` so concurrent `AskApproval` calls run one at a time. Without this, multiple subagents racing for `os.Stdin` deadlock or interleave garbage. The bundled CLI does this automatically when a `BackgroundAgentManager` is wired; library callers using their own gate construction should do the same.
 
 ---
 

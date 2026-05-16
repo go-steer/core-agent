@@ -217,6 +217,7 @@ func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, 
 			Detail:      key,
 			PersistTool: persistTool,
 			PersistKey:  persistKey,
+			Source:      SubagentSourceFromContext(ctx),
 		})
 	}
 	return fmt.Errorf("%s denied: unknown permission mode %q", toolName, g.mode)
@@ -235,6 +236,7 @@ func (g *Gate) promptForPath(ctx context.Context, toolName, path, op string) err
 		Detail:      fmt.Sprintf("%s %s (out of scope)", op, path),
 		PersistTool: "path_scope",
 		PersistKey:  path,
+		Source:      SubagentSourceFromContext(ctx),
 	})
 }
 

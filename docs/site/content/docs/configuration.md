@@ -125,6 +125,14 @@ The prompter is auto-wired when stdin is a TTY. Non-TTY callers (piped stdin, CI
 
 `--yolo` forces the gate into `yolo` mode regardless of `config.permissions.mode`. Equivalent to setting `permissions.mode: "yolo"` in config; takes precedence at the call site so you don't have to edit config to unblock a one-off scripted run. Library callers achieve the same with `permissions.Options{Mode: permissions.ModeYolo}`.
 
+### Background subagent prompts (v1.2.0+)
+
+When background subagents are enabled (default; `--no-background-agents` disables them) and one of them triggers a permission prompt in `ask` mode, the heading is prefixed with `[<subagent-name>]` so you know which agent is asking. Concurrent prompts from different subagents are serialized through a mutex — they queue rather than race for stdin.
+
+The subagent inherits the parent's gate wholesale: the same allow/deny lists, the same mode, the same session-level approvals. If you approve `session-tool: bash` while a subagent is asking, every subagent gets the grant for the rest of the session (sibling included). Bounded-subset grants where the parent's model arbitrates out-of-subset requests is deferred to v1.3+.
+
+**Teaching the model to use the spawn tools.** Just registering the tools isn't always enough — most models default to doing things synchronously. Drop a short paragraph into your project's `AGENTS.md` (or pass via `agent.WithInstruction`) describing when background subagents are appropriate (monitoring, fan-out, long bounded delegations). See [Library API → Background subagents → Prompting patterns]({{< relref "library-api.md#prompting-patterns" >}}) for a ready-to-paste system instruction.
+
 ### Library callers
 
 The `permissions.Prompter` interface is public:

@@ -86,19 +86,27 @@ func (p *stdinPrompter) AskApproval(ctx context.Context, req PromptRequest) (Dec
 // promptHeading describes what the gate is asking about in a single
 // sentence. Tool name is included even for bash so the prompt is
 // self-contained when readers see only one line in their backscroll.
+// When req.Source is non-empty (background-subagent originated), the
+// heading is prefixed with "[<source>] " so the human knows which
+// agent is asking.
 func promptHeading(req PromptRequest) string {
 	tool := req.ToolName
 	if tool == "" {
 		tool = "tool"
 	}
+	var verb string
 	switch req.Kind {
 	case PromptKindBash:
-		return tool + " wants to run:"
+		verb = "wants to run:"
 	case PromptKindFileWrite:
-		return tool + " wants to write to:"
+		verb = "wants to write to:"
 	case PromptKindPathScope:
-		return tool + " wants to access an out-of-scope path:"
+		verb = "wants to access an out-of-scope path:"
 	default:
-		return tool + " needs approval:"
+		verb = "needs approval:"
 	}
+	if req.Source != "" {
+		return "[" + req.Source + "] " + tool + " " + verb
+	}
+	return tool + " " + verb
 }

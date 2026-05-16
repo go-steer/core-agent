@@ -67,13 +67,14 @@ func main() {
 	sessionDB := flag.Bool("session-db", false, "persist sessions + audit log to a durable database (default off; in-memory)")
 	sessionDBPath := flag.String("session-db-path", "", "override the database path used when --session-db is set (default: ~/.<binary>/sessions.db)")
 	yolo := flag.Bool("yolo", false, "bypass the permissions gate entirely (every tool call runs without approval). Equivalent to permissions.mode=\"yolo\" in config.")
+	noBackgroundAgents := flag.Bool("no-background-agents", false, "disable the spawn_agent / list_agents / check_agent / stop_agent tools (model can't spawn background subagents). Default: enabled.")
 	flag.Parse()
 
-	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo)
+	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents)
 	os.Exit(code)
 }
 
-func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo bool) int {
+func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -210,10 +211,34 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 	tracker := usage.NewTracker()
 	pricing := usage.PriceFor(cfg.Model.Name, cfg)
 
+	// Background subagent spawning. Constructed before agent.New so
+	// the spawn tools can be registered alongside the built-in tools.
+	// Manager is attached to the parent agent inside agent.New via
+	// WithBackgroundManager; the agent's pre-turn alert drain
+	// surfaces background reports to the parent's model.
+	var bgMgr *agent.BackgroundAgentManager
+	if !noBackgroundAgents {
+		var err error
+		bgMgr, err = agent.NewBackgroundAgentManager(
+			agent.WithBackgroundProvider(provider, cfg.Model.Name),
+			agent.WithBackgroundGate(gate),
+			agent.WithBackgroundCatalog(builtinTools),
+		)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: background agents: %v\n", err)
+			return runner.ExitConfigError
+		}
+		defer func() { _ = bgMgr.Close() }()
+		builtinTools = append(builtinTools, agent.NewBackgroundSpawnTools(bgMgr)...)
+	}
+
 	opts := []agent.Option{
 		agent.WithTools(builtinTools),
 		agent.WithToolsets(allToolsets),
 		agent.WithSystemInstructionPrefix(loaded.Instruction),
+	}
+	if bgMgr != nil {
+		opts = append(opts, agent.WithBackgroundManager(bgMgr))
 	}
 
 	// Durable sessions + audit log. Either flag enables: --session-db

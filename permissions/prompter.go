@@ -69,6 +69,41 @@ type PromptRequest struct {
 	Detail      string // user-facing description (the bash command, the file path, etc.)
 	PersistTool string // tool name to use when adding to allowlist (e.g. "bash")
 	PersistKey  string // pattern to add to allowlist
+
+	// Source identifies the agent context the request originated
+	// from when it isn't the top-level parent agent. Empty for the
+	// parent's own tool calls; populated (e.g. "watch-prod-cluster")
+	// when a background subagent's tool call triggered the prompt.
+	// Prompters that surface it to the user help the human know which
+	// agent they're approving for — the gate populates this from the
+	// SubagentSourceFromContext context value the spawn machinery
+	// stamps on each subagent's ctx.
+	Source string
+}
+
+// subagentSourceKey is the unexported context-value type used to
+// carry a subagent's source label through to the permission gate
+// without coupling the agent package to permissions internals.
+type subagentSourceKey struct{}
+
+// WithSubagentSource returns ctx tagged with name as the originating
+// subagent's identifier. Called by the BackgroundAgentManager when a
+// subagent runs; read by the gate when constructing PromptRequest
+// values so the prompter can show "[name] tool wants to ..." in its
+// heading.
+func WithSubagentSource(ctx context.Context, name string) context.Context {
+	if name == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, subagentSourceKey{}, name)
+}
+
+// SubagentSourceFromContext returns the subagent source name a prior
+// WithSubagentSource call stamped onto ctx. Empty when none was set
+// (the parent agent's own tool calls).
+func SubagentSourceFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(subagentSourceKey{}).(string)
+	return v
 }
 
 // Prompter is implemented by hosts that can interact with the user.

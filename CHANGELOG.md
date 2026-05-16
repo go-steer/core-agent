@@ -18,6 +18,35 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ---
 
+## [1.2.0] — 2026-05-16
+
+Dynamic in-process background subagents (the parent agent's model spawns them at runtime via a tool call, providing system prompt + goal + tools) plus a consumer-pluggable remote-spawner seam for out-of-process subagents (gRPC, K8s Jobs, Cloud Run, …). Subagent reports flow back to the parent through both a synchronous OnAlert hook (for inline display) and a pre-turn drain that prepends alerts to the parent's next prompt.
+
+Subagent permissions inherit the parent's `*permissions.Gate` wholesale; ask-mode prompts include a `[<subagent-name>]` source attribution so the human approving the call knows which agent is asking; concurrent prompt access is serialized through a mutex so background subagents can't race for `os.Stdin`. Bounded permission subsets with parent-as-arbiter is deferred to v1.3+.
+
+### Added
+
+- **`agent.BackgroundAgentManager`** — per-parent registry that owns spawned subagent lifecycles. Constructor `agent.NewBackgroundAgentManager(opts...)` requires `WithBackgroundProvider(provider, modelID)`; optional knobs cover the permissions gate (`WithBackgroundGate`), the catalog of tools subagents may request (`WithBackgroundCatalog`), depth cap (`WithBackgroundMaxDepth`, default 2), concurrency cap (`WithBackgroundMaxConcurrent`, default 8), default per-subagent budgets (`WithBackgroundDefaultBudgets`, default 50 turns / $1.00 / 10 min), and alert channel buffer (`WithBackgroundAlertBuffer`, default 256). Lifecycle methods: `Spawn / List / Get / Stop / Alerts / OnAlert / PrependPendingAlerts / Close`. Drop-oldest backpressure on the alert channel.
+- **`agent.WithBackgroundManager(mgr)` Option** — attaches the manager to the parent. Inside `agent.New`, the manager's `attachParent` is called so subsequent `Spawn` calls can read the parent's session triple and session.Service.
+- **`agent.Agent.Run` pre-turn alert drain** — when a manager is wired, pending background alerts are drained (non-blocking) and prepended to the prompt the underlying ADK runner sees, so the parent's model always sees what its subagents reported before deciding what to do next. New helper `Agent.BackgroundManager()` returns the wired manager.
+- **`agent.NewSpawnAgentTool` + companions** — the four model-facing tools the parent's model uses: `spawn_agent` (launch), `list_agents` (introspect), `check_agent` (detailed status + final result), `stop_agent` (cancel). `agent.NewBackgroundSpawnTools(mgr)` returns all four for one-line CLI wiring.
+- **`agent.RemoteAgentSpawner` interface** — consumer-pluggable seam for out-of-process spawning, mirroring the `tools.Prompter` shape. Implement `Spawn(ctx, spec) (RemoteAgentHandle, error)` against your substrate; core-agent stays transport-agnostic. The handle's `Events()` channel feeds into the same alert pipeline as in-process subagents via `agent.NewSpawnRemoteAgentTool(spawner, mgr)`. `agent.RefuseRemoteAgentSpawner(reason)` is the analog of `tools.RefusePrompter` for headless / unconfigured runs.
+- **`permissions.StdinPrompter` source attribution** — new `Source string` field on `permissions.PromptRequest`. When non-empty, `StdinPrompter`'s heading reads `[<source>] <tool> wants to ...` so the human knows which subagent triggered the prompt. The gate populates `Source` from a `permissions.WithSubagentSource(ctx, name)` context value the spawn machinery stamps on every subagent's ctx. `permissions.SubagentSourceFromContext(ctx)` is the public reader.
+- **`permissions.Serialize(p Prompter) Prompter`** — wraps any `Prompter` in a mutex so concurrent `AskApproval` calls run one at a time. Necessary when the gate is shared across background subagents that might prompt the same underlying medium (`os.Stdin`) at the same time. `permissions.PrompterFunc` adapter added for one-off prompters.
+- **`runner.FormatAlertLine(from, kind, text)`** — exposed formatter so consumers wiring their own alert sinks render lines identically to the bundled CLI's REPL. `runner.AnsiMagenta()` exposes the matching color. REPL auto-installs an `OnAlert` hook that writes `↪ <from> <kind>: <text>` to stderr in magenta when a `BackgroundAgentManager` is wired.
+- **`cmd/core-agent --no-background-agents`** — opt-out flag for the bundled CLI. Default is enabled — `spawn_agent` / `list_agents` / `check_agent` / `stop_agent` ship by default and the model can decide when to use them.
+- **`examples/background-monitor/`** — credential-free end-to-end demo of the manager API using the echo mock provider. Spawns two stub subagents, exercises the OnAlert hook + pre-turn drain.
+
+### Deferred (out of scope for v1.2.0)
+
+- **Bounded permission subsets + parent-as-arbiter.** v1.2.0 inherits the parent gate wholesale. The richer model (subagent gets a subset, out-of-subset requests bubble up to the parent's model for a decision) is a v1.3+ feature. Per-subagent gate construction + a cross-agent permission-request message type are the design pieces.
+- **Persistence across main-agent restarts.** Background subagent state is process-local. Cross-restart resume needs the manager to persist its registry to eventlog and reconstruct on `ResumeAutonomous`.
+- **Subagent → subagent communication.** Subagents only `report_alert` to their parent; cross-tree messaging isn't supported.
+- **MCP / skill tools in the spawn catalog.** v1.2.0's catalog defaults to the built-in tool suite. Library callers can pass additional tools via `WithBackgroundCatalog`; the CLI doesn't enumerate MCP/skill toolsets into the catalog automatically. Add later if a real consumer hits the gap.
+- **Budget pooling across siblings.** Each subagent has its own budget; no global cap. Add a pool-level cap later if runaway spawning becomes a real cost concern.
+
+---
+
 ## [1.1.0] — 2026-05-16
 
 Interactive permissions for the bundled CLI, plus first-class visibility into Gemini's server-side built-in tool activity (search-grounding) — both in stdout and the eventlog audit trail.
@@ -136,6 +165,7 @@ First tagged release. Three milestones of work landed on `main` before this tag;
 - **Mid-run pause/resume** for `RunAutonomous` — across-turn crash-resume shipped; mid-turn is a different design.
 - **Native push for `Stream.Watch`** (Postgres `LISTEN/NOTIFY`, SQLite `update_hook`) — polling at 200ms today.
 
+[1.2.0]: https://github.com/go-steer/core-agent/releases/tag/v1.2.0
 [1.1.0]: https://github.com/go-steer/core-agent/releases/tag/v1.1.0
 [1.0.1]: https://github.com/go-steer/core-agent/releases/tag/v1.0.1
 [1.0.0]: https://github.com/go-steer/core-agent/releases/tag/v1.0.0

@@ -65,6 +65,7 @@ type Agent struct {
 	agentName      string
 	userID         string
 	sessionID      string
+	bgMgr          *BackgroundAgentManager
 }
 
 // Option mutates Agent construction. Use the With* helpers below.
@@ -83,6 +84,7 @@ type options struct {
 	sessionService session.Service
 	eventLog       *eventlog.Handle
 	subagents      []*Agent
+	bgMgr          *BackgroundAgentManager
 }
 
 func defaultOptions() options {
@@ -187,6 +189,21 @@ func WithSubagents(agents []*Agent) Option {
 	return func(o *options) { o.subagents = append(o.subagents, agents...) }
 }
 
+// WithBackgroundManager attaches a BackgroundAgentManager to the
+// agent. The manager's parent back-reference is set during
+// construction so its Spawn calls can read the agent's session
+// triple + session.Service without the consumer plumbing them twice.
+//
+// Each turn of Agent.Run drains pending alerts from the manager's
+// channel (non-blocking) and prepends them to the prompt the
+// underlying ADK runner sees, so the parent's model is aware of
+// what its background subagents have reported since the last turn.
+//
+// Pass nil to clear (e.g. for tests that re-construct an agent).
+func WithBackgroundManager(mgr *BackgroundAgentManager) Option {
+	return func(o *options) { o.bgMgr = mgr }
+}
+
 // WithSystemInstructionPrefix prepends prefix to the agent's default
 // instruction. Used for memory loading: AGENTS.md / CLAUDE.md /
 // GEMINI.md project memory becomes part of the system prompt rather
@@ -269,7 +286,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		return nil, fmt.Errorf("agent: build runner: %w", err)
 	}
 
-	return &Agent{
+	a := &Agent{
 		inner:          inner,
 		runner:         r,
 		sessionService: svc,
@@ -280,7 +297,12 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		agentName:      o.name,
 		userID:         o.userID,
 		sessionID:      o.sessionID,
-	}, nil
+		bgMgr:          o.bgMgr,
+	}
+	if a.bgMgr != nil {
+		a.bgMgr.attachParent(a)
+	}
+	return a, nil
 }
 
 // Tools returns the resolved tool list the agent was constructed
@@ -331,9 +353,28 @@ func (a *Agent) EventLog() *eventlog.Handle { return a.eventLog }
 // Multi-turn use: call Run() repeatedly on the same Agent. The configured
 // session ID is reused across calls, so the ADK accumulates conversation
 // history automatically.
+//
+// When a BackgroundAgentManager is wired via WithBackgroundManager,
+// any alerts background subagents have emitted since the last turn
+// are drained (non-blocking) and prepended to the prompt so the
+// parent's model sees them before deciding what to do next.
 func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event, error] {
+	if a.bgMgr != nil {
+		prompt = a.bgMgr.PrependPendingAlerts(prompt)
+	}
 	msg := genai.NewContentFromText(prompt, genai.RoleUser)
 	return a.runner.Run(ctx, a.userID, a.sessionID, msg, adkagent.RunConfig{
 		StreamingMode: a.streaming,
 	})
+}
+
+// BackgroundManager returns the BackgroundAgentManager the agent was
+// constructed with via WithBackgroundManager, or nil when none was
+// wired. Used by spawn tools + the runner's REPL alert display to
+// reach the manager without keeping a separate reference.
+func (a *Agent) BackgroundManager() *BackgroundAgentManager {
+	if a == nil {
+		return nil
+	}
+	return a.bgMgr
 }

@@ -339,6 +339,24 @@ func TestWriteEvents_GroundingHonorsColor(t *testing.T) {
 	}
 }
 
+func TestFormatAlertLine_FormatsAndDefaults(t *testing.T) {
+	t.Parallel()
+	got := FormatAlertLine("watch-prod", "alert", "pod restarted")
+	if got != "↪ watch-prod alert: pod restarted" {
+		t.Errorf("unexpected line: %q", got)
+	}
+	// Empty kind defaults to "alert".
+	got = FormatAlertLine("x", "", "msg")
+	if got != "↪ x alert: msg" {
+		t.Errorf("empty kind not defaulted: %q", got)
+	}
+	// Empty from defaults to "?".
+	got = FormatAlertLine("", "completed", "done")
+	if got != "↪ ? completed: done" {
+		t.Errorf("empty from not defaulted: %q", got)
+	}
+}
+
 func TestIsTerminal_FalseForBuffer(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer

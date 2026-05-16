@@ -105,6 +105,22 @@ func TestStdinPrompter_CancelledContextErrors(t *testing.T) {
 	}
 }
 
+func TestStdinPrompter_HeadingIncludesSourceWhenSet(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	p := StdinPrompter(strings.NewReader("n\n"), &out)
+	_, _ = p.AskApproval(context.Background(), PromptRequest{
+		Kind:     PromptKindBash,
+		ToolName: "bash",
+		Detail:   "kubectl get pods",
+		Source:   "watch-prod-cluster",
+	})
+	rendered := out.String()
+	if !strings.Contains(rendered, "[watch-prod-cluster] bash wants to run:") {
+		t.Errorf("expected '[watch-prod-cluster] bash wants to run:' heading; got %q", rendered)
+	}
+}
+
 func TestStdinPrompter_HeadingPerKind(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

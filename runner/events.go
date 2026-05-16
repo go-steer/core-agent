@@ -34,6 +34,18 @@ type eventsConfig struct {
 	color bool
 }
 
+// eventsConfigFromOpts resolves the eventsConfig from a slice of
+// options. Exposed (lowercase, same package) so the REPL's alert
+// display path can know whether to render colored ↪ lines without
+// re-parsing the opts itself.
+func eventsConfigFromOpts(opts []EventsOption) eventsConfig {
+	cfg := eventsConfig{}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	return cfg
+}
+
 // WithColor enables ANSI color codes in WriteEvents output. Tool
 // calls and responses render in cyan; partial assistant text in
 // green. Off by default — colored output looks like garbage when
@@ -143,6 +155,31 @@ func WriteEvents(events iter.Seq2[*session.Event, error], out, info io.Writer, o
 	}
 	return nil
 }
+
+// FormatAlertLine renders one background-agent Alert as a single
+// "↪ <from> <kind>: <text>" line in the same shape as the
+// ↪ google_search lines from v1.1.0. Reuses the magenta sigil so
+// consumers see a consistent "server-side / out-of-band activity"
+// signal regardless of source.
+//
+// Exposed so consumers wiring their own alert sinks (a Slack adapter,
+// a web UI, a logger) format alerts consistently with what the CLI
+// shows. Use with paint(line, runner.AnsiMagenta(), color) when you
+// want ANSI styling; raw string otherwise.
+func FormatAlertLine(from, kind, text string) string {
+	if kind == "" {
+		kind = "alert"
+	}
+	if from == "" {
+		from = "?"
+	}
+	return "↪ " + from + " " + kind + ": " + text
+}
+
+// AnsiMagenta returns the ANSI escape used for ↪-prefixed lines so
+// downstream alert sinks can match the runner's color choice without
+// duplicating the constant.
+func AnsiMagenta() string { return ansiMagenta }
 
 // serverSideBuiltinLines returns "↪ <tool>: <detail>" lines for any
 // server-side built-in evidence carried on event. Today: Gemini

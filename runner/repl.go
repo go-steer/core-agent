@@ -45,6 +45,19 @@ func REPL(ctx context.Context, m adkmodel.LLM, stdin io.Reader, stdout, stderr i
 		return ExitAgentError, err
 	}
 
+	// If a BackgroundAgentManager is wired, install an alert hook so
+	// the human running the REPL sees subagent reports inline as
+	// they arrive — same ↪ magenta sigil used for Gemini grounding
+	// in WriteEvents. The hook is purely a side channel; the model
+	// still receives the same alerts via Agent.Run's pre-turn drain.
+	colorOn := eventsConfigFromOpts(eventsOpts).color
+	if mgr := a.BackgroundManager(); mgr != nil {
+		mgr.OnAlert(func(al agent.Alert) {
+			line := FormatAlertLine(al.From, al.Kind, al.Text)
+			_, _ = fmt.Fprintln(stderr, paint(line, ansiMagenta, colorOn))
+		})
+	}
+
 	br := bufio.NewReader(stdin)
 	fmt.Fprintln(stderr, "core-agent REPL — /exit or Ctrl-D to quit")
 

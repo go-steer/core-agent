@@ -141,6 +141,27 @@ When `ask` mode prompts the user, the `Prompter` returns one of:
 
 ---
 
+## Background subagents and the gate (v1.2.0+)
+
+When `agent.WithBackgroundManager` is wired, every spawned background subagent **inherits the parent's gate by reference**. That has three consequences worth knowing:
+
+1. **Session-level approvals apply tree-wide.** If you approve `DecisionAllowSessionTool` for `bash` while a subagent is asking, every subagent (including future siblings) gets the same grant for the rest of the session. The gate has no per-subagent allow-state today; the whole tree shares one map.
+
+2. **Prompts include source attribution.** `permissions.PromptRequest` carries a `Source` field that `StdinPrompter` renders in the heading: `[<subagent-name>] bash wants to run: ...`. So when a subagent triggers a prompt, you know which one is asking. Empty `Source` (the parent's own tool calls) renders unchanged. The gate populates `Source` from a context value `permissions.WithSubagentSource(ctx, name)` that the spawn machinery stamps on every subagent's ctx.
+
+3. **Concurrent prompts serialize.** Multiple background subagents racing for `os.Stdin` would deadlock or interleave garbage. Wrap any interactive prompter in `permissions.Serialize(...)` before handing it to the gate:
+
+   ```go
+   prompter := permissions.Serialize(permissions.StdinPrompter(os.Stdin, os.Stderr))
+   gate := permissions.New(permissions.Options{Prompter: prompter, Mode: permissions.ModeAsk})
+   ```
+
+   The bundled CLI does this automatically. Library callers using their own gate construction with background subagents should too.
+
+**Deferred (v1.3+):** bounded permission subsets where the spawner grants the subagent only part of its own permissions and the spawner's *model* arbitrates out-of-subset requests via an injected synthetic prompt. Today, "inherit the parent's gate" is the only mode.
+
+---
+
 ## Recommendations
 
 After a session in `ask` mode, the gate exposes an audit log of every approval. `permissions.Recommend(approvals)` turns that log into a prioritized list of suggested permanent allowlist entries:

@@ -1,36 +1,48 @@
 ---
 title: core-agent
-toc: false
 ---
 
-# core-agent
+{{< blocks/cover title="core-agent" image_anchor="top" height="med" >}}
 
-A reusable Go base agent built on the [Google Agent Development Kit](https://pkg.go.dev/google.golang.org/adk).
+<p class="lead mt-5">
+A reusable Go base agent built on the Google Agent Development Kit. Embed it in your binary, pick the providers and tools you need, ship.
+</p>
 
-`core-agent` is the bottom layer for any project that needs a multi-turn LLM agent in Go. It ships the wiring — model providers, MCP servers, skills, instruction loading, permission gating, telemetry, transcript persistence — so consuming projects can focus on their own tools and product logic.
+<a class="btn btn-lg btn-primary me-3 mb-4" href="docs/">Read the docs <i class="fa-solid fa-arrow-right ms-2"></i></a>
+<a class="btn btn-lg btn-secondary me-3 mb-4" href="https://github.com/go-steer/core-agent">Source on GitHub <i class="fa-brands fa-github ms-2"></i></a>
 
-It deliberately is **not** a finished agent. There are no built-in bash / file / grep tools, no UI, no slash commands beyond `/exit`. What you get is the substrate.
+{{< /blocks/cover >}}
 
-[Get started →](docs/getting-started/) &nbsp; [View on GitHub →](https://github.com/go-steer/core-agent)
+{{% blocks/lead color="primary" %}}
 
----
+`core-agent` ships first-class **Gemini** and **Claude** (first-party + Vertex) backends, **MCP** server integration, Claude-style **skills**, an **autonomous-run driver** with budgets + crash-resume, **durable sessions** with audit/replay event log, **in-process subagents**, and a **permission gate** — all behind a small Option-pattern API designed to be embedded in your own Go program.
 
-## What it gives you
+{{% /blocks/lead %}}
 
-- **Multiple model providers** — Gemini API, Vertex AI (Gemini), Anthropic / Claude (first-party + Vertex AI). Auto-detected from environment.
-- **AGENTS.md instruction loading** — system prompt prefix from `AGENTS.md` (with `CLAUDE.md` / `GEMINI.md` fallbacks).
-- **MCP servers** — declarative `.agents/mcp.json`; stdio and Streamable HTTP; namespaced and gated.
-- **Claude-compatible skills** — `SKILL.md` bundles in `.agents/skills/<name>/`.
-- **Permission gate** — ask / allow / yolo modes; built-in bash denylist; per-tool allowlists; path scope.
-- **Telemetry** — opt-in OpenTelemetry export (console / OTLP); off by default.
-- **Headless CLI** — one-shot via `-p`; multi-turn REPL by default.
+{{% blocks/section color="dark" type="row" %}}
 
-## When to use it
+{{% blocks/feature icon="fa-solid fa-bolt" title="Autonomous runs" url="docs/autonomous/" %}}
+`agent.RunAutonomous` loops the model toward a goal with budgets (turns / tokens / cost / wallclock). `ResumeAutonomous` picks up after a crash from the durable event log.
+{{% /blocks/feature %}}
 
-Use `core-agent` when you're building **a Go agent** and you want a choice of model backends, the standard `AGENTS.md` / MCP / skills / permissions infrastructure without writing it yourself, and clean extension points for your own tools.
+{{% blocks/feature icon="fa-solid fa-database" title="Durable sessions + audit log" url="docs/sessions/" %}}
+`eventlog.Open` returns a SQLite/Postgres/MySQL-backed `session.Service` plus a `Stream` with monotonic `seq`, `Since(seq)` replay, and `Watch(seq)` live tail.
+{{% /blocks/feature %}}
 
-If you want a polished interactive coding agent out of the box (like `cogo`), this is the wrong layer — it's the foundation those things would be built on, not a replacement for them.
+{{% blocks/feature icon="fa-solid fa-sitemap" title="In-process subagents" url="docs/library-api/#subagents" %}}
+`agent.WithSubagents([]*Agent)` registers each as a callable tool. Subagent events stream into the parent's audit log under a branch-scoped path.
+{{% /blocks/feature %}}
 
-## Status
+{{% /blocks/section %}}
 
-Early. APIs may change. Track milestones in the [README's milestone log](https://github.com/go-steer/core-agent#milestones).
+{{% blocks/section %}}
+
+## Install
+
+```bash
+go get github.com/go-steer/core-agent@v0.1.0
+```
+
+See [Getting started](docs/getting-started/) for the first turn, or jump to [Library API](docs/library-api/) if you want the full surface.
+
+{{% /blocks/section %}}

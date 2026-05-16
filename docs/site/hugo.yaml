@@ -14,13 +14,17 @@
 
 # Hugo configuration for the core-agent documentation site.
 #
-# Theme is the Hextra Hugo module — pulled in via go.mod. Build with:
+# Theme is Docsy (github.com/google/docsy) pulled in as a Hugo module
+# via go.mod. The companion dependencies module supplies Bootstrap +
+# FontAwesome + KaTeX so we don't need an npm install step at build
+# time.
 #
 #   cd docs/site
 #   hugo server   # local preview at http://localhost:1313/core-agent/
 #   hugo          # production build into ./public
 #
-# Deployed to https://go-steer.github.io/core-agent/ via .github/workflows/docs.yml.
+# Deployed to https://go-steer.github.io/core-agent/ via
+# .github/workflows/docs.yml.
 
 baseURL: "https://go-steer.github.io/core-agent/"
 title: "core-agent"
@@ -30,71 +34,82 @@ enableRobotsTXT: true
 enableGitInfo: true
 enableEmoji: true
 
+# Docsy + its bundled Bootstrap/FontAwesome/KaTeX dependencies.
 module:
+  proxy: direct
+  hugoVersion:
+    extended: true
+    min: "0.146.0"
   imports:
-    - path: github.com/imfing/hextra
+    - path: github.com/google/docsy
+    - path: github.com/google/docsy/dependencies
 
 markup:
   goldmark:
+    parser:
+      attribute:
+        block: true
     renderer:
       unsafe: true
   highlight:
     noClasses: false
     style: github-dark
 
+# Top navbar links beyond the content-driven ones. The Documentation
+# entry comes from docs/_index.md's frontmatter `menu.main` directive
+# (Docsy's preferred pattern for content pages). External links go
+# here.
 menu:
   main:
-    - name: Documentation
-      pageRef: /docs
-      weight: 1
     - name: GitHub
       url: https://github.com/go-steer/core-agent
-      weight: 99
-      params:
-        icon: github
-
-  sidebar:
-    - identifier: more
-      name: More
-      params:
-        type: separator
-      weight: 1
-    - name: "Releases ↗"
-      url: "https://github.com/go-steer/core-agent/releases"
-      weight: 2
-    - name: "Issues ↗"
-      url: "https://github.com/go-steer/core-agent/issues"
-      weight: 3
+      weight: 50
+    - name: Releases
+      url: https://github.com/go-steer/core-agent/releases
+      weight: 60
 
 params:
-  description: "A reusable Go base agent built on the Google Agent Development Kit — Gemini, Vertex, and Claude (first-party + Vertex) backends, MCP servers, Claude-style skills, AGENTS.md instruction loading."
+  copyright:
+    authors: "core-agent contributors"
+    from_year: 2026
 
-  navbar:
-    displayTitle: true
-    displayLogo: false
+  # Default-on UI elements. Sidebar is on; breadcrumb is on
+  # (Docsy's default behavior — listed explicitly here for clarity).
+  ui:
+    breadcrumb_disable: false
+    sidebar_menu_compact: false
+    sidebar_menu_foldable: true
+    sidebar_search_disable: false
+    navbar_logo: false
+    navbar_translucent_over_cover_disable: true
+    footer_about_disable: false
+    feedback:
+      enable: false
 
-  theme:
-    default: system
-    displayToggle: true
+  # GitHub edit links per page ("Edit this page" at the top right).
+  github_repo: "https://github.com/go-steer/core-agent"
+  github_branch: "main"
+  github_subdir: "docs/site"
 
-  footer:
-    enable: true
-    displayCopyright: true
-    displayPoweredBy: false
-
-  page:
-    width: normal
-
+  # Right-side "On this page" TOC built from H2/H3 headings.
   toc:
-    displayTags: true
+    enabled: true
 
-  editURL:
-    enable: true
-    base: "https://github.com/go-steer/core-agent/edit/main/docs/site/content"
+  # Built-in search via offline Lunr index (no external service).
+  offlineSearch: true
 
-  search:
-    enable: true
-    type: flexsearch
-    flexsearch:
-      index: content
-      tokenize: forward
+  links:
+    user:
+      - name: "GitHub Discussions"
+        url: "https://github.com/go-steer/core-agent/discussions"
+        icon: "fa-brands fa-github"
+        desc: "Ask questions, share what you're building."
+    developer:
+      - name: "GitHub"
+        url: "https://github.com/go-steer/core-agent"
+        icon: "fa-brands fa-github"
+        desc: "Source code, issue tracker, releases."
+
+  taxonomy:
+    taxonomyCloud: []
+    taxonomyPageHeader: []

@@ -37,6 +37,7 @@ permissions:
 env:
   GO_VERSION: '1.26'
   HUGO_VERSION: '0.158.0'
+  NODE_VERSION: '20'
 
 jobs:
   build:
@@ -51,6 +52,20 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           check-latest: true
+
+      # Docsy compiles Bootstrap SCSS through Hugo's bundled pipeline
+      # and pipes the result through PostCSS for autoprefixing. The
+      # SCSS itself ships in the docsy/dependencies Hugo module so
+      # we don't need to npm-install Bootstrap — but PostCSS + the
+      # autoprefixer plugin are Node-side and have to be available
+      # on PATH at hugo-build time.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install PostCSS + autoprefixer (Docsy CSS pipeline)
+        working-directory: docs/site
+        run: npm install
 
       - name: Install Hugo
         run: |

@@ -52,12 +52,15 @@ go get github.com/go-steer/core-agent@v0.1.0
 
 Full reference docs live at **<https://go-steer.github.io/core-agent/>** — getting started, every provider with env-var details, `.agents/config.json` schema, MCP setup, skills, permissions, and library API.
 
-The site is built with [Hugo](https://gohugo.io) using the [Hextra](https://github.com/imfing/hextra) theme; sources are in [`docs/site/`](./docs/site). To preview locally:
+The site is built with [Hugo](https://gohugo.io) using the [Docsy](https://www.docsy.dev/) theme; sources are in [`docs/site/`](./docs/site). To preview locally:
 
 ```bash
 cd docs/site
-hugo server   # http://localhost:1313/core-agent/
+npm install              # one-time: postcss + autoprefixer (Docsy CSS pipeline)
+hugo server              # http://localhost:1313/core-agent/
 ```
+
+Hugo Extended (≥ 0.146.0) is required — Docsy uses Hugo's SCSS pipeline.
 
 Internal design docs live in [`docs/`](./docs) directly:
 
@@ -222,7 +225,7 @@ core-agent/
 │   ├── tools/           # ci aggregator + per-check scripts (build, vet, lint-go, ...)
 │   └── ci/presubmits/   # delegators called by .github/workflows/ci.yml
 ├── docs/            # internal docs (acceptance-m1.md, acceptance-m2.md, ...)
-│   └── site/            # published Hugo site (Hextra theme)
+│   └── site/            # published Hugo site (Docsy theme)
 └── .github/workflows/   # ci.yml, ci-docs.yml, docs.yml
 ```
 

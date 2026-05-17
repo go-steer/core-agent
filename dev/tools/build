@@ -14,7 +14,24 @@
 # limitations under the License.
 
 # Compile every package. Catches packages that don't build but have no tests.
+#
+# Walks the main core-agent module + every extras/ module whose
+# local-replace targets exist on disk. CI without the optional deps
+# (e.g. Scion) silently skips those modules.
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 cd "$(repo_root)"
-exec go build ./...
+
+# GOWORK=off ensures main-module behavior is identical with or
+# without a per-dev go.work file. Each extras module is built
+# inside its own dir so its go.mod is the resolved source of truth.
+GOWORK=off go build ./...
+
+while IFS= read -r mod; do
+  [[ -n "$mod" ]] || continue
+  if extras_buildable "$mod"; then
+    run_step "build $mod" bash -c "cd '$mod' && GOWORK=off go build ./..."
+  else
+    echo "▸ skip $mod (local-replace targets unavailable)" >&2
+  fi
+done < <(extras_modules)

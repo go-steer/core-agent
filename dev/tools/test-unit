@@ -22,6 +22,21 @@ set -euo pipefail
 . "$(dirname "$0")/common.sh"
 cd "$(repo_root)"
 
-exec go test -race -timeout 5m \
+# Main module: full coverage profile lands at the repo root for the
+# CI summary step.
+GOWORK=off go test -race -timeout 5m \
   -coverprofile=coverage.out -covermode=atomic \
   ./...
+
+# Extras modules each carry their own dep graph. Run their tests
+# without coverage aggregation (the main module's coverage.out is
+# what the summary consumes); CI without their optional deps skips
+# them quietly.
+while IFS= read -r mod; do
+  [[ -n "$mod" ]] || continue
+  if extras_buildable "$mod"; then
+    run_step "test $mod" bash -c "cd '$mod' && GOWORK=off go test -race -timeout 5m ./..."
+  else
+    echo "▸ skip $mod tests (local-replace targets unavailable)" >&2
+  fi
+done < <(extras_modules)

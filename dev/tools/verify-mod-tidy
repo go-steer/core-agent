@@ -13,14 +13,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Fail when go.mod / go.sum are not in `go mod tidy` form.
+# Fail when go.mod / go.sum are not in `go mod tidy` form. Runs in
+# the main module and in every extras/ module whose local-replace
+# targets exist on disk.
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 cd "$(repo_root)"
 
-go mod tidy
+GOWORK=off go mod tidy
 if ! git diff --quiet -- go.mod go.sum; then
   echo "go.mod / go.sum are not tidy. Run 'go mod tidy' locally and commit the result." >&2
   git diff -- go.mod go.sum >&2
   exit 1
 fi
+
+while IFS= read -r mod; do
+  [[ -n "$mod" ]] || continue
+  if ! extras_buildable "$mod"; then
+    echo "▸ skip $mod tidy (local-replace targets unavailable)" >&2
+    continue
+  fi
+  run_step "tidy $mod" bash -c "cd '$mod' && GOWORK=off go mod tidy"
+  if ! git diff --quiet -- "$mod/go.mod" "$mod/go.sum"; then
+    echo "$mod/go.mod or go.sum is not tidy. Run 'go mod tidy' in $mod and commit." >&2
+    git diff -- "$mod/go.mod" "$mod/go.sum" >&2
+    exit 1
+  fi
+done < <(extras_modules)

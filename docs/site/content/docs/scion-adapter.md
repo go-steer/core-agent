@@ -83,8 +83,34 @@ The adapter inherits all of core-agent's other env-var conventions (Vertex Gemin
 
 ---
 
+## Spawning sibling agents from inside Scion
+
+A core-agent running inside one Scion container can spawn **sibling** Scion containers using the v1.5.0 [`extras/scion-remote-agent/`](https://github.com/go-steer/core-agent/tree/main/extras/scion-remote-agent) module — a reference implementation of `agent.RemoteAgentSpawner` against Scion's Hub HTTP API. The parent's model calls `spawn_remote_agent` and a new Scion container appears (provisioned from whatever template you pass), with its log stream classified into events on the parent's alert pipeline.
+
+The module lives in its own Go module so Scion's heavy transitive deps stay out of the main core-agent library. Wiring sketch:
+
+```go
+import (
+    "github.com/go-steer/core-agent/agent"
+    scionremote "github.com/go-steer/core-agent/extras/scion-remote-agent"
+)
+
+spawner, err := scionremote.New(
+    scionremote.WithTemplate("research-investigator"),
+)
+// errors.Is(err, scionremote.ErrNotInsideScion) → fall back to
+// agent.RefuseRemoteAgentSpawner so local development still works.
+remoteTool, _ := agent.NewSpawnRemoteAgentTool(spawner, bgMgr)
+```
+
+See the [Remote (out-of-process) subagents]({{< relref "library-api.md#remote-out-of-process-subagents" >}}) section in the library-API guide for the full surface, and [`examples/scion-research-demo/`](https://github.com/go-steer/core-agent/tree/main/examples/scion-research-demo) for an orchestrator-spawns-investigator scenario built on this spawner.
+
+---
+
 ## See also
 
 - [`extras/scion-agent/README.md`](https://github.com/go-steer/core-agent/blob/main/extras/scion-agent/README.md) — fuller README with env-var table and design notes.
+- [`extras/scion-remote-agent/`](https://github.com/go-steer/core-agent/tree/main/extras/scion-remote-agent) — reference `RemoteAgentSpawner` for spawning sibling Scion containers.
+- [`examples/scion-research-demo/`](https://github.com/go-steer/core-agent/tree/main/examples/scion-research-demo) — orchestrator + investigator end-to-end demo.
 - [`docs/DESIGN.md`](https://github.com/go-steer/core-agent/blob/main/docs/DESIGN.md) — the **Adapters** section explains why `extras/` exists and what a future adapter would look like.
 - [Scion `adk_scion_agent` example](https://github.com/GoogleCloudPlatform/scion/tree/main/examples/adk_scion_agent) — the Python adapter we modeled this on.

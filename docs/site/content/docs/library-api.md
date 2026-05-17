@@ -731,6 +731,42 @@ a, _ := agent.New(m, agent.WithTools([]tool.Tool{remoteTool, ...}))
 
 When you don't want to wire a real spawner (headless / unattended / CI), use `agent.RefuseRemoteAgentSpawner(reason)` — analog of `tools.RefusePrompter`. The model sees a clean error result it can adapt to.
 
+#### Reference implementation: Scion
+
+`extras/scion-remote-agent/` is a working `RemoteAgentSpawner` against [Scion](https://github.com/GoogleCloudPlatform/scion)'s Hub HTTP API. It ships as a **separate Go module** so Scion's heavy transitive deps (cloud.google.com/go, ent ORM, etc.) stay out of consumers who don't use Scion.
+
+```go
+import (
+    "github.com/go-steer/core-agent/agent"
+    scionremote "github.com/go-steer/core-agent/extras/scion-remote-agent"
+)
+
+// Auto-detects SCION_HUB_ENDPOINT / SCION_AGENT_TOKEN /
+// SCION_PROJECT_ID / SCION_DEFAULT_TEMPLATE from the env.
+// Returns scionremote.ErrNotInsideScion when config is incomplete
+// so the caller can fall back to agent.RefuseRemoteAgentSpawner.
+spawner, err := scionremote.New(
+    scionremote.WithTemplate("research-investigator"),
+)
+if errors.Is(err, scionremote.ErrNotInsideScion) {
+    // Local dev: refuse cleanly instead of crashing.
+    spawner = agent.RefuseRemoteAgentSpawner("scion not configured")
+} else if err != nil {
+    return err
+}
+
+remoteTool, _ := agent.NewSpawnRemoteAgentTool(spawner, bgMgr)
+a, _ := agent.New(m, agent.WithTools([]tool.Tool{remoteTool, ...}))
+```
+
+Each `Spawn` provisions a sibling Scion container via the Hub's Create API; the returned handle drains Scion's SSE cloud-logs stream and classifies each entry into an `agent.RemoteAgentEvent`. Three classification strategies are bundled:
+
+- **`scionremote.PreferStructuredPayload`** (default) — looks at `jsonPayload.kind` / `text` first (clean if the spawned agent emits structured log entries), falls back to `StringPrefix`.
+- **`scionremote.StringPrefix`** — recognises `[REPORT_ALERT] <text>`, `[REPORT_COMPLETED] <text>`, `[REPORT_FAILED] <text>` at the start of a line. Easy convention for any agent that follows the format.
+- **`scionremote.Verbose`** — every log entry becomes a `Kind="log"` event. Use during development to see the raw stream.
+
+Override the default via `scionremote.WithClassifier(...)`. See [`examples/scion-research-demo/`](https://github.com/go-steer/core-agent/tree/main/examples/scion-research-demo) for a full orchestrator-escalates-to-investigator scenario built on this spawner.
+
 ### Bundled CLI
 
 `core-agent` ships with all four spawn-related tools enabled by default. `--no-background-agents` disables them. The manager uses `provider` + `cfg.Model.Name` from your config, the same permissions gate as the rest of the CLI, and `tools.Default()` (minus `--disable-tools`) as the catalog of tools subagents may request.

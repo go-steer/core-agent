@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 # Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,19 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Run `go vet ./...` from the repo root, plus each extras/ module
-# whose local-replace targets exist on disk.
-set -euo pipefail
-. "$(dirname "$0")/common.sh"
-cd "$(repo_root)"
-
-GOWORK=off go vet ./...
-
-while IFS= read -r mod; do
-  [[ -n "$mod" ]] || continue
-  if extras_buildable "$mod"; then
-    run_step "vet $mod" bash -c "cd '$mod' && GOWORK=off go vet ./..."
-  else
-    echo "▸ skip $mod (local-replace targets unavailable)" >&2
-  fi
-done < <(extras_modules)
+harness: generic
+image: scion-research-demo:latest
+user: scion
+task_flag: "--input"
+args:
+  - research-orchestrator

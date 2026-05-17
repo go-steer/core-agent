@@ -39,3 +39,10 @@ profile.cov
 
 # Personal working notes — kept on disk but not in version control.
 TODO.md
+
+# Go workspace files — per-dev local config. The extras/ modules
+# (e.g. scion-remote-agent) need a workspace + local replace
+# pointing at the Scion checkout for development. See
+# extras/scion-remote-agent/README.md for setup.
+go.work
+go.work.sum

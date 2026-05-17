@@ -66,3 +66,48 @@ run_step() {
   printf '\n\033[1m▸ %s\033[0m\n' "$label"
   "$@"
 }
+
+# extras_modules
+#
+# Prints the relative paths of the optional extras/ Go modules, one
+# per line. Each is a separate Go module with its own go.mod so its
+# heavy dep tree (e.g. Scion) stays out of consumers of the core
+# library. Presubmits walk these modules when they are buildable in
+# the current environment (see extras_buildable).
+extras_modules() {
+  cat <<'EOF'
+extras/scion-remote-agent
+EOF
+}
+
+# extras_buildable <module-relpath>
+#
+# Returns 0 (true) when the given extras module can be built in the
+# current environment, 1 (false) otherwise. The check inspects the
+# module's go.mod for "replace ... => <path>" directives and confirms
+# each filesystem target exists. This lets CI skip extras whose
+# source-of-truth dep (e.g. Scion) isn't checked out, while local
+# devs with the dep on disk get the full build/test cycle.
+extras_buildable() {
+  local mod="$1"
+  local gomod="$(repo_root)/$mod/go.mod"
+  [[ -f "$gomod" ]] || return 1
+  # Parse `replace <name> => <path>` lines and verify each path exists.
+  local line target
+  while IFS= read -r line; do
+    target="$(echo "$line" | sed -E 's/^replace[[:space:]]+[^[:space:]]+[[:space:]]+=>[[:space:]]+([^[:space:]]+).*$/\1/')"
+    # Skip module-version replaces (target starts with a version-like
+    # token, e.g. v1.2.3) — those resolve via the module proxy, not
+    # the filesystem.
+    case "$target" in
+      v[0-9]*) continue ;;
+    esac
+    # Absolute paths must exist; relative paths are interpreted from
+    # the module dir.
+    if [[ "$target" == /* ]]; then
+      [[ -d "$target" ]] || return 1
+    else
+      [[ -d "$(repo_root)/$mod/$target" ]] || return 1
+    fi
+  done < <(grep -E '^replace[[:space:]]' "$gomod" || true)
+}

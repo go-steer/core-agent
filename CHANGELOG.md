@@ -16,6 +16,27 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+Reference `RemoteAgentSpawner` for Scion. v1.2.0 shipped the consumer-pluggable seam (`agent.RemoteAgentSpawner`, `RemoteAgentHandle`); v1.3.0 shipped the interrupt machinery that makes harness embedding viable; this release fills in the missing piece — a working Scion implementation plus a demo that exercises in-process subagents (`spawn_agent`), remote subagents (`spawn_remote_agent`), the alert pipeline, and the mid-turn interrupt all together.
+
+### Added
+
+- **`extras/scion-remote-agent/`** — new Go module implementing `agent.RemoteAgentSpawner` against Scion's Hub HTTP API (`github.com/GoogleCloudPlatform/scion/pkg/hubclient`). One `Spawner` serves many `Spawn` calls; each handle drains Scion's SSE cloud-logs stream and classifies each entry into an `agent.RemoteAgentEvent`. Three classification strategies are bundled (`PreferStructuredPayload` is the default — `jsonPayload.kind`/`text` with a `[REPORT_*]` string-prefix fallback; `StringPrefix` alone; `Verbose` emits every entry). Auto-detects `SCION_HUB_ENDPOINT` / `SCION_AGENT_TOKEN` / `SCION_PROJECT_ID` / `SCION_DEFAULT_TEMPLATE` from the env; explicit options (`WithAgentToken`, `WithHubEndpoint`, `WithProjectID`, `WithTemplate`, `WithClient`, `WithAgentService`, `WithClassifier`) win when supplied. Returns `ErrNotInsideScion` when config is incomplete so the caller can cleanly fall back to `agent.RefuseRemoteAgentSpawner`. Lives in its own module so Scion's heavy transitive deps (cloud.google.com/go, ent, etc.) stay out of consumers of the core library.
+- **`extras/scion-remote-agent/cmd/research-orchestrator/`** — orchestrator binary that mirrors `extras/scion-agent` but additionally wires `BackgroundAgentManager` + `scionremote.Spawner`. When Scion env is unset it falls back to `RefuseRemoteAgentSpawner` so the same binary runs locally for development.
+- **`examples/scion-research-demo/`** — full demo: templates for the orchestrator + investigator, a shared `Dockerfile` (one image, two binaries), `build.sh` (uses BuildKit's `--build-context` to stage the Scion source), `register-templates.sh`, and a comprehensive README walking from "Build the image" through "Mid-run interrupt".
+- **`dev/smoke/09-scion-research-orchestrator.sh`** — verifies the orchestrator boots cleanly with no Scion env, drives an in-process subagent through `spawn_agent`, and gracefully refuses `spawn_remote_agent` via the fallback `RefuseRemoteAgentSpawner`. Full Scion-Hub-end-to-end exercise stays manual (needs docker + scion-base + scion CLI).
+
+### Changed
+
+- **`dev/tools/{build,vet,test-unit,verify-mod-tidy}`** — now walk the main core-agent module + every extras module whose local-replace targets exist on disk. `GOWORK=off` is set explicitly for main-module checks so behavior is identical with or without a per-dev `go.work`. CI without optional deps (e.g. Scion source) silently skips the extras step.
+- **`.gitignore`** — adds `go.work` and `go.work.sum` (per-dev local config; the extras modules need a workspace with a local replace pointing at the Scion checkout, which differs per machine).
+
+### Deferred (out of scope for this release)
+
+- **Lifecycle taxonomy enrichment** — richer `sciontool_status` states beyond `ask_user` / `blocked` / `task_completed` / `limits_exceeded`. Designed-with-Scion-folks problem; defer until their UI surfaces the new states.
+- **Multi-cluster K8s monitoring demo** — the bigger realistic variant. Wait for this small demo to validate the integration shape, then promote.
+- **Investigator pause/resume across Scion suspend/restart** — needs coordination with Scion's suspend/resume story and core-agent's `ResumeAutonomous`.
+- **Federation across Scion Hubs** — single-Hub only.
+
 ---
 
 ## [1.7.0] — 2026-05-21

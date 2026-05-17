@@ -41,6 +41,7 @@ missing, so a partial-credential setup doesn't punish you.
 | `06-inject-autonomous.sh` | `examples/autonomous-handle` runs end-to-end; verifies `StartAutonomous` → `Pause` → `Inject` → `Resume` → `Wait` lifecycle (v1.3.0) | none (uses echo mock) |
 | `07-mcp-google-oauth.sh` | Google OAuth (ADC access-token) wiring for remote MCP HTTP servers — uses the GKE remote MCP server as the real round-trip target | `GEMINI_API_KEY`/`GOOGLE_API_KEY` + `MCP_GOOGLE_OAUTH_SMOKE_PROJECT` + ADC |
 | `08-scheduled-monitor-gke.sh` | scheduled-monitoring end-to-end against a real GKE cluster: spawns the supervisor + a sandbox deployment, watches the child monitor run multiple wake cycles, optionally injects a scale anomaly to exercise the alert flow. Required flags: `--context`, `--namespace`. Optional: `--ksa`/`--gsa` for Workload Identity, `--anomaly`, `--duration`, `--no-deploy`, `--keep` | `GOOGLE_CLOUD_PROJECT` + ADC + a kubectl context for the target GKE cluster |
+| `09-scion-research-orchestrator.sh` | `examples/scion-research-demo` orchestrator binary boots, drives an in-process subagent via `spawn_agent`, and gracefully refuses `spawn_remote_agent` when Scion env is unset | `GOOGLE_CLOUD_PROJECT` + ADC |
 
 ## Exit codes
 

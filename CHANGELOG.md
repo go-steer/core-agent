@@ -16,8 +16,13 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+### Added
+
+- **`agent.DefaultInstruction`** — exported constant holding the system instruction the agent applies when `WithInstruction` is not used. Comprises the baseline helpfulness/concision directive plus a parallelism mandate adapted from `google-gemini/gemini-cli` (`packages/core/src/prompts/snippets.ts`). Consumers who want to layer their own guidance on top of the default can compose: `agent.WithInstruction(agent.DefaultInstruction + "\n\n" + extra)`.
+
 ### Changed
 
+- **Default agent instruction now mandates parallel tool calls** for independent operations (searching, reading several files, running independent shell commands). The new text is in `agent.DefaultInstruction`. Probe data (`dev/parallel-probe/`): vanilla `gemini-3.1-pro-preview` never batched tool calls across 65 search turns with no instruction prompt; the parallelism mandate is the load-bearing nudge for Gemini-customtools to start batching on open-ended workflows. Claude is less affected (already batches ~1.76 calls/turn natively) but still benefits marginally.
 - **Default Gemini model is now `gemini-3.1-pro-preview-customtools`** (was `gemini-3.1-pro-preview`). The `-customtools` Vertex variant is fine-tuned to prefer developer-defined tools over raw shell — same price, same 1M context window, same reasoning quality, but it no longer routes around our structured `grep` / `read_file` / `edit_file` to shell out via `bash`. Direct measurement on a known-set multiread task: the vanilla model never batched (0 parallel `read_file` calls across 65 turns), the variant emits 5 parallel `read_file` calls in a single turn (mean batch 3.0 vs 1.0). Behavior on open-ended search is unchanged — that needs a parallelism mandate in the system prompt and richer tool descriptions, tracked in `TODO.md`. Bypass with `cfg.Model.Name = "gemini-3.1-pro-preview"` if you need the un-tuned behavior for baseline comparisons. Variant is documented in `google-gemini/gemini-cli` at `packages/core/src/config/models.ts`.
 
 ---

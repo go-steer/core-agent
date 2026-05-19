@@ -47,6 +47,25 @@ import (
 // in a host that wants its own identity.
 const DefaultAppName = "core-agent"
 
+// DefaultInstruction is the system instruction applied to every agent
+// that doesn't override it via WithInstruction. Comprises a baseline
+// helpfulness/concision directive plus a parallelism mandate adapted
+// from google-gemini/gemini-cli's prompt patterns
+// (packages/core/src/prompts/snippets.ts).
+//
+// The parallelism mandate is load-bearing for Gemini, which otherwise
+// emits one tool call per assistant turn even when independent
+// operations are obviously batchable. Direct measurement
+// (dev/parallel-probe/) shows Gemini-3.1-pro-preview-customtools
+// without this instruction never batched across 65 search turns;
+// Claude is less affected but still benefits marginally.
+//
+// Exported so consumers building on WithInstruction can reuse the
+// baseline + mandate verbatim: `agent.WithInstruction(agent.DefaultInstruction + "\n\n" + extra)`.
+const DefaultInstruction = `You are a helpful assistant. Be concise and accurate.
+
+Tools execute in parallel by default. Execute multiple independent tool calls in parallel when feasible — searching, reading files, independent shell commands, or editing different files. When investigating code, if you need to read multiple files or grep multiple directories, issue all the tool calls in a single response; do not execute them one by one.`
+
 const (
 	defaultUserID    = "local"
 	defaultSessionID = "default"
@@ -93,7 +112,7 @@ func defaultOptions() options {
 		appName:     DefaultAppName,
 		name:        "core_agent",
 		description: "core-agent conversational agent",
-		instruction: "You are a helpful assistant. Be concise and accurate.",
+		instruction: DefaultInstruction,
 		streaming:   adkagent.StreamingModeSSE,
 		userID:      defaultUserID,
 		sessionID:   defaultSessionID,

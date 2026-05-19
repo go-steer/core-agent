@@ -109,7 +109,7 @@ a2, _ := agent.New(m, agent.WithSession("bob",   "session-2"))
 agent.WithAppName(s string)            // identity used by ADK runner; default "core-agent"
 agent.WithName(s string)               // agent display name (visible in OTEL spans)
 agent.WithDescription(s string)        // agent description
-agent.WithInstruction(s string)        // base system instruction
+agent.WithInstruction(s string)        // base system instruction; default is agent.DefaultInstruction
 agent.WithSystemInstructionPrefix(s)   // prepends s to the instruction
 agent.WithStreaming(m StreamingMode)   // override; default is StreamingModeSSE
 agent.WithSession(userID, sessionID)   // override session identity
@@ -118,6 +118,14 @@ agent.WithToolsets(ts []tool.Toolset)  // register groups (MCP, skills, ...)
 ```
 
 Options are applied in the order they're passed. Tools and toolsets accumulate across multiple calls.
+
+### Default instruction
+
+When `WithInstruction` is not used, agents get `agent.DefaultInstruction` — a baseline helpfulness directive plus a parallelism mandate adapted from `google-gemini/gemini-cli`. The mandate tells the model to batch independent tool calls in a single response; it's load-bearing for Gemini, which otherwise emits one tool call per turn even when batching is obvious. To layer your own guidance on top of the default rather than replacing it:
+
+```go
+agent.WithInstruction(agent.DefaultInstruction + "\n\n" + extraGuidance)
+```
 
 ---
 

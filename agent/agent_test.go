@@ -19,6 +19,7 @@ import (
 	"errors"
 	"iter"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/glebarez/sqlite"
@@ -170,5 +171,26 @@ func TestNew_WithEventLog_NilIsNoop(t *testing.T) {
 	}
 	if a.EventLog() != nil {
 		t.Errorf("WithEventLog(nil) should not stash a Handle")
+	}
+}
+
+func TestDefaultInstruction_IncludesParallelismMandate(t *testing.T) {
+	t.Parallel()
+	// The mandate is load-bearing for Gemini — see DefaultInstruction
+	// godoc. Keep these substrings in sync if the constant is reworded.
+	for _, want := range []string{
+		"in parallel",
+		"do not execute them one by one",
+	} {
+		if !strings.Contains(DefaultInstruction, want) {
+			t.Errorf("DefaultInstruction missing required substring %q", want)
+		}
+	}
+}
+
+func TestDefaultOptions_UsesDefaultInstruction(t *testing.T) {
+	t.Parallel()
+	if got := defaultOptions().instruction; got != DefaultInstruction {
+		t.Errorf("defaultOptions().instruction = %q, want DefaultInstruction", got)
 	}
 }

@@ -56,7 +56,7 @@ type PathScopeConfig struct {
 //
 // Provider: one of "gemini", "vertex", "anthropic". When empty, the resolver
 // auto-detects from the environment (see models.Resolve).
-// Name: a model ID, e.g. "gemini-3.1-pro-preview" or "claude-opus-4-7".
+// Name: a model ID, e.g. "gemini-3.1-pro-preview-customtools" or "claude-opus-4-7".
 // APIKey: optional inline key for Provider="gemini"; usually unset and
 // read from GOOGLE_API_KEY at runtime.
 // Vertex: required when Provider="vertex"; project + location.
@@ -179,7 +179,15 @@ func DefaultConfig() *Config {
 		Version: SchemaVersion,
 		Model: ModelConfig{
 			// Provider intentionally empty — resolver auto-detects from env.
-			Name: "gemini-3.1-pro-preview",
+			// `-customtools` is a Vertex behavioral variant of
+			// gemini-3.1-pro-preview fine-tuned to prefer developer-defined
+			// tools over raw shell — without it the model bypasses our
+			// structured grep / read_file / edit_file and shells out via
+			// bash, breaking the permission gate's coverage and never
+			// batching tool calls. Same pricing, same context window, same
+			// reasoning behavior. Override via Model.Name when a consumer
+			// wants the un-tuned variant for behavior-baseline comparisons.
+			Name: "gemini-3.1-pro-preview-customtools",
 		},
 		Permissions: PermissionsConfig{
 			Mode: PermissionModeAsk,

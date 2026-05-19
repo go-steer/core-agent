@@ -59,7 +59,7 @@ Selects the LLM backend.
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `provider` | string | `""` (auto-detect) | One of `gemini`, `vertex`, `anthropic`, `anthropic-vertex`. Empty = auto-detect from env. |
-| `name` | string | `gemini-3.1-pro-preview` | Model ID. **Required.** For Gemini, version 3.0 or later is required when using the default tool suite — see [Providers → Gemini 3.0+ required]({{< relref "providers.md#gemini-30-required-when-combining-built-ins-with-function-tools" >}}). |
+| `name` | string | `gemini-3.1-pro-preview-customtools` | Model ID. **Required.** For Gemini, version 3.0 or later is required when using the default tool suite — see [Providers → Gemini 3.0+ required]({{< relref "providers.md#gemini-30-required-when-combining-built-ins-with-function-tools" >}}). The default uses the `-customtools` variant, which is fine-tuned to prefer developer-defined tools over raw bash; same price, same context window. Override with the un-tuned `gemini-3.1-pro-preview` if you need behavior-baseline comparisons. |
 | `api_key` | string | `""` | Inline key for `provider: gemini`. Usually unset; read from `GOOGLE_API_KEY` / `GEMINI_API_KEY` at runtime. |
 | `vertex` | object | `null` | GCP project + region. Required when `provider: vertex`. |
 | `vertex.project` | string | — | GCP project ID. |

@@ -25,7 +25,7 @@ If none match, you get a clear error listing the env vars to set. **Anthropic-vi
 The simplest backend — talks directly to `generativelanguage.googleapis.com` with an API key.
 
 | Provider name | `gemini` |
-| Default model | `gemini-3.1-pro-preview` |
+| Default model | `gemini-3.1-pro-preview-customtools` |
 | Auth | API key |
 | Env vars | `GEMINI_API_KEY` (preferred), `GOOGLE_API_KEY` (also accepted) |
 | Config block | `model.api_key` (overrides env) |
@@ -36,7 +36,7 @@ The simplest backend — talks directly to `generativelanguage.googleapis.com` w
 {
   "model": {
     "provider": "gemini",
-    "name": "gemini-3.1-pro-preview"
+    "name": "gemini-3.1-pro-preview-customtools"
   }
 }
 ```
@@ -125,7 +125,7 @@ The synthetic events leave `Content.Role` empty so ADK's content processor skips
 
 When `GoogleSearch` / `URLContext` / `CodeExecution` are enabled (the default for the first two) **alongside** any function-calling tools — including `core-agent`'s default tool suite (`tools.Default()`) — you must use a **Gemini 3.0-or-later** model. Gemini 2.5 and older reject the combined request with `Built-in tools ({google_search}) and Function Calling cannot be combined in the same request`.
 
-`core-agent` sets `Config.ToolConfig.IncludeServerSideToolInvocations = true` whenever it injects server-side built-ins, which is the flag Gemini 3+ requires to permit the combination. The library's default model `gemini-3.1-pro-preview` satisfies this requirement out of the box, so consumers who don't override don't need to think about it.
+`core-agent` sets `Config.ToolConfig.IncludeServerSideToolInvocations = true` whenever it injects server-side built-ins, which is the flag Gemini 3+ requires to permit the combination. The library's default model `gemini-3.1-pro-preview-customtools` satisfies this requirement out of the box, so consumers who don't override don't need to think about it.
 
 If you must use a Gemini 2.5 model, two workarounds:
 
@@ -153,7 +153,7 @@ Same constraint applies to `gemini.NewVertex(...)` — it's a Gemini-API restric
 Same Gemini models, but routed through Google Vertex AI with Application Default Credentials.
 
 | Provider name | `vertex` |
-| Default model | `gemini-3.1-pro-preview` |
+| Default model | `gemini-3.1-pro-preview-customtools` |
 | Auth | ADC (Application Default Credentials) |
 | Env vars | `GOOGLE_GENAI_USE_VERTEXAI=true`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` |
 | Config block | `model.vertex.{project,location}` |
@@ -164,7 +164,7 @@ Same Gemini models, but routed through Google Vertex AI with Application Default
 {
   "model": {
     "provider": "vertex",
-    "name": "gemini-3.1-pro-preview",
+    "name": "gemini-3.1-pro-preview-customtools",
     "vertex": {
       "project": "my-gcp-project",
       "location": "us-central1"

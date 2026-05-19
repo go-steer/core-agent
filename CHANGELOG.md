@@ -16,6 +16,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+### Changed
+
+- **Default Gemini model is now `gemini-3.1-pro-preview-customtools`** (was `gemini-3.1-pro-preview`). The `-customtools` Vertex variant is fine-tuned to prefer developer-defined tools over raw shell — same price, same 1M context window, same reasoning quality, but it no longer routes around our structured `grep` / `read_file` / `edit_file` to shell out via `bash`. Direct measurement on a known-set multiread task: the vanilla model never batched (0 parallel `read_file` calls across 65 turns), the variant emits 5 parallel `read_file` calls in a single turn (mean batch 3.0 vs 1.0). Behavior on open-ended search is unchanged — that needs a parallelism mandate in the system prompt and richer tool descriptions, tracked in `TODO.md`. Bypass with `cfg.Model.Name = "gemini-3.1-pro-preview"` if you need the un-tuned behavior for baseline comparisons. Variant is documented in `google-gemini/gemini-cli` at `packages/core/src/config/models.ts`.
+
 ---
 
 ## [1.3.0] — 2026-05-16

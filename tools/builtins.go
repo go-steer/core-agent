@@ -163,7 +163,7 @@ func Build(cfg *config.Config, gate *permissions.Gate, b BuiltinTools) (*Registr
 	specs := []spec{
 		{b.ReadFile, "read_file", "Read a file from disk and return its contents.", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{
-				Name: "read_file", Description: "Read a file from disk. Honors offset/limit for large files.",
+				Name: "read_file", Description: "Read a file from disk. Honors offset/limit for large files. PREFERRED over `bash cat`/`bash head`/`bash tail` for reading source files — honors output truncation and the permission gate.",
 			}, readFileFunc(gate, cfg))
 		}},
 		{b.WriteFile, "write_file", "Write or overwrite a file with the given content.", func() (tool.Tool, error) {
@@ -183,7 +183,7 @@ func Build(cfg *config.Config, gate *permissions.Gate, b BuiltinTools) (*Registr
 		}},
 		{b.Bash, "bash", "Run a shell command and return its output.", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{
-				Name: "bash", Description: "Execute a shell command via /bin/sh -c with a timeout.",
+				Name: "bash", Description: "Execute a shell command via /bin/sh -c with a timeout. For code investigation (reading files, searching source, listing directories), prefer the structured `read_file`, `grep`, `glob`, `list_dir` tools — they honor the permission gate and per-tool output caps. Use this tool for actions those tools cannot perform: builds, tests, git, formatters, package managers, and other shell-native workflows.",
 			}, bashFunc(gate, cfg))
 		}},
 		{b.Glob, "glob", "Find files by basename pattern.", func() (tool.Tool, error) {
@@ -193,7 +193,7 @@ func Build(cfg *config.Config, gate *permissions.Gate, b BuiltinTools) (*Registr
 		}},
 		{b.Grep, "grep", "Search file contents for a regex.", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{
-				Name: "grep", Description: "Walk path (default '.') and return matching lines for the supplied RE2 regex. Recursive on directories; single-file mode when path points at a file. Skips hidden / vendored directories.",
+				Name: "grep", Description: "Walk path (default '.') and return matching lines for the supplied RE2 regex. Recursive on directories; single-file mode when path points at a file. Skips hidden / vendored directories. PREFERRED over `bash grep`/`bash rg`/`bash find` for code search — honors the permission gate, per-tool output caps, and returns structured `{path, line, text}` matches the model can pipe into follow-up tool calls without re-parsing.",
 			}, grepFunc(gate, cfg))
 		}},
 		{b.Todo, "todo", "Maintain an agent-facing todo list (list/add/set_status/clear).", func() (tool.Tool, error) {

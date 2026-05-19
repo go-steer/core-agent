@@ -25,6 +25,8 @@ import (
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/mcptoolset"
 
@@ -144,7 +146,7 @@ func Build(ctx context.Context, agentsDir string, send func(string), gate *permi
 func startOne(ctx context.Context, name string, spec ServerSpec, send func(string), gate *permissions.Gate, elicitor ElicitorFn) *Server {
 	srv := &Server{Name: name}
 
-	transport, cmd, err := transportFor(spec)
+	transport, cmd, err := transportFor(ctx, name, spec)
 	if err != nil {
 		srv.Status = StatusError
 		srv.Err = err
@@ -189,8 +191,11 @@ func startOne(ctx context.Context, name string, spec ServerSpec, send func(strin
 
 // transportFor builds the appropriate mcp.Transport for the spec.
 // For stdio it also returns the *exec.Cmd so the Server can hold a
-// reference for shutdown; for http the cmd is nil.
-func transportFor(spec ServerSpec) (mcpsdk.Transport, *exec.Cmd, error) {
+// reference for shutdown; for http the cmd is nil. ctx is used by
+// auth strategies that resolve credentials at construction time
+// (e.g. google.FindDefaultCredentials); name is used to scope error
+// messages back to the misconfigured server.
+func transportFor(ctx context.Context, name string, spec ServerSpec) (mcpsdk.Transport, *exec.Cmd, error) {
 	switch spec.Transport {
 	case "stdio":
 		// Spec is sourced from the user's own .agents/mcp.json; spawning
@@ -205,16 +210,38 @@ func transportFor(spec ServerSpec) (mcpsdk.Transport, *exec.Cmd, error) {
 		}
 		return &mcpsdk.CommandTransport{Command: cmd}, cmd, nil
 	case "http":
-		headers := InterpolateMap(spec.Headers)
-		client := &http.Client{}
 		rt := http.DefaultTransport
+
+		// Auth wraps innermost (closest to the wire) so the static
+		// header layer above can't accidentally overwrite Authorization
+		// via misconfiguration. Net effect: auth-set Authorization
+		// always wins over a header-set one.
+		if spec.Auth != nil && spec.Auth.GoogleOAuth != nil {
+			creds, err := google.FindDefaultCredentials(ctx, spec.Auth.GoogleOAuth.Scopes...)
+			if err != nil {
+				return nil, nil, fmt.Errorf(
+					"mcp: %q: load Google default credentials: %w "+
+						"(run `gcloud auth application-default login` or "+
+						"ensure metadata server is reachable)", name, err)
+			}
+			// Fail-fast: pre-fetch a token so misconfig (no ADC,
+			// missing scopes grant, etc.) surfaces at server-init
+			// time instead of on the first tool call.
+			if _, err := creds.TokenSource.Token(); err != nil {
+				return nil, nil, fmt.Errorf(
+					"mcp: %q: initial Google OAuth token fetch: %w", name, err)
+			}
+			rt = &googleAuthTransport{base: rt, source: creds.TokenSource}
+		}
+
+		headers := InterpolateMap(spec.Headers)
 		if len(headers) > 0 {
 			rt = &headerTransport{base: rt, headers: headers}
 		}
-		client.Transport = rt
+
 		return &mcpsdk.StreamableClientTransport{
 			Endpoint:   spec.URL,
-			HTTPClient: client,
+			HTTPClient: &http.Client{Transport: rt},
 		}, nil, nil
 	default:
 		return nil, nil, fmt.Errorf("unknown transport %q", spec.Transport)
@@ -235,6 +262,26 @@ func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			clone.Header.Set(k, v)
 		}
 	}
+	return t.base.RoundTrip(clone)
+}
+
+// googleAuthTransport injects "Authorization: Bearer <token>" from an
+// oauth2.TokenSource on every request. Generic over the source so the
+// type can later back both OAuth access tokens
+// (google.FindDefaultCredentials) and OIDC ID tokens
+// (idtoken.NewTokenSource) — both return oauth2.TokenSource.
+type googleAuthTransport struct {
+	base   http.RoundTripper
+	source oauth2.TokenSource
+}
+
+func (t *googleAuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	tok, err := t.source.Token()
+	if err != nil {
+		return nil, fmt.Errorf("mcp: fetch Google auth token: %w", err)
+	}
+	clone := req.Clone(req.Context())
+	clone.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 	return t.base.RoundTrip(clone)
 }
 

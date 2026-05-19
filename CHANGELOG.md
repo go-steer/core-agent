@@ -16,6 +16,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+### Added
+
+- **Google OAuth (access-token) auth for remote MCP HTTP servers** — `.agents/mcp.json` now supports `auth.google_oauth.scopes` on HTTP servers. core-agent sets `Authorization: Bearer <access-token>` on every outbound MCP request using `google.FindDefaultCredentials(ctx, scopes...)` from Application Default Credentials. The `oauth2.TokenSource` caches and refreshes internally; an init-time pre-fetch surfaces ADC misconfig at startup instead of on the first tool call. Suitable for Google-hosted API endpoints that accept scoped access tokens — the GKE remote MCP server at `https://container.googleapis.com/mcp` is the canonical first target (caller needs `roles/mcp.toolUser` plus the relevant resource-viewer role, e.g. `roles/container.clusterViewer`). The auth layer wraps innermost so a misconfigured static `Authorization` header in `Headers` cannot overwrite the IAM token; non-conflicting static headers (e.g. `X-Custom`) still pass through. Audience-scoped ID-token auth for Cloud Run / IAP / custom-OIDC endpoints is not yet supported; the new `AuthSpec` shape leaves room for a sibling `google_id_token` field once a consumer needs it. Smoke at `dev/smoke/07-mcp-google-oauth.sh` (requires `MCP_GOOGLE_OAUTH_SMOKE_PROJECT` + ADC).
+
 ---
 
 ## [1.4.0] — 2026-05-19

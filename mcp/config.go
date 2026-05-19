@@ -57,6 +57,66 @@ type ServerSpec struct {
 	Env       map[string]string `json:"env,omitempty"`     // stdio
 	URL       string            `json:"url,omitempty"`     // http
 	Headers   map[string]string `json:"headers,omitempty"` // http
+	Auth      *AuthSpec         `json:"auth,omitempty"`    // http
+}
+
+// AuthSpec selects an authentication strategy for an HTTP MCP server.
+// Exactly one inner field may be set. Future strategies (audience-
+// scoped ID tokens for Cloud Run / IAP, mTLS, etc.) slot in as
+// sibling pointers.
+type AuthSpec struct {
+	GoogleOAuth *GoogleOAuthAuth `json:"google_oauth,omitempty"`
+}
+
+// GoogleOAuthAuth authenticates outbound MCP requests with a Google
+// OAuth 2.0 access token sourced from Application Default Credentials.
+// Suitable for Google-hosted API endpoints that accept scoped access
+// tokens (e.g. the GKE MCP server at container.googleapis.com/mcp).
+//
+// For audience-scoped ID-token auth (Cloud Run / IAP / custom OIDC),
+// add a sibling GoogleIDToken field when a consumer needs it.
+type GoogleOAuthAuth struct {
+	// Scopes is the OAuth 2.0 scopes requested on the access token.
+	// No default — each server documents its own scope requirements,
+	// and an implicit broad default (e.g. cloud-platform) would grant
+	// more privilege than necessary. Explicit is safer.
+	//
+	// For the GKE MCP server, typical values:
+	//   https://www.googleapis.com/auth/container.read-only
+	//   https://www.googleapis.com/auth/container
+	Scopes []string `json:"scopes"`
+}
+
+// Validate reports whether the AuthSpec is internally consistent and
+// at least one strategy is set.
+func (a *AuthSpec) Validate(name string) error {
+	if a == nil {
+		return nil
+	}
+	count := 0
+	if a.GoogleOAuth != nil {
+		count++
+		if err := a.GoogleOAuth.Validate(name); err != nil {
+			return err
+		}
+	}
+	if count == 0 {
+		return fmt.Errorf("mcp: server %q: auth is set but no strategy is configured", name)
+	}
+	return nil
+}
+
+// Validate reports whether the GoogleOAuthAuth is usable.
+func (g *GoogleOAuthAuth) Validate(name string) error {
+	if len(g.Scopes) == 0 {
+		return fmt.Errorf("mcp: server %q: auth.google_oauth.scopes must list at least one scope", name)
+	}
+	for i, s := range g.Scopes {
+		if s == "" {
+			return fmt.Errorf("mcp: server %q: auth.google_oauth.scopes[%d] is empty", name, i)
+		}
+	}
+	return nil
 }
 
 // Validate checks that the spec describes a single, complete transport.
@@ -69,12 +129,18 @@ func (s ServerSpec) Validate(name string) error {
 		if s.URL != "" {
 			return fmt.Errorf("mcp: server %q: stdio transport must not set url", name)
 		}
+		if s.Auth != nil {
+			return fmt.Errorf("mcp: server %q: auth is only valid for http transport", name)
+		}
 	case "http":
 		if s.URL == "" {
 			return fmt.Errorf("mcp: server %q: http transport requires url", name)
 		}
 		if s.Command != "" {
 			return fmt.Errorf("mcp: server %q: http transport must not set command", name)
+		}
+		if err := s.Auth.Validate(name); err != nil {
+			return err
 		}
 	case "":
 		return fmt.Errorf("mcp: server %q: transport is required (\"stdio\" or \"http\")", name)

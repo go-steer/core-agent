@@ -95,6 +95,81 @@ func TestInterpolateEnv(t *testing.T) {
 	}
 }
 
+func TestLoad_HTTPWithGoogleOAuth_Parse(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	body := `{"version":1,"servers":{"gke":{"transport":"http","url":"https://container.googleapis.com/mcp","auth":{"google_oauth":{"scopes":["https://www.googleapis.com/auth/container.read-only"]}}}}}`
+	if err := os.WriteFile(filepath.Join(dir, MCPFileName), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, ok := got.Servers["gke"]
+	if !ok {
+		t.Fatalf("missing gke server: %+v", got)
+	}
+	if spec.Auth == nil || spec.Auth.GoogleOAuth == nil {
+		t.Fatalf("auth.google_oauth not parsed: %+v", spec)
+	}
+	if got, want := spec.Auth.GoogleOAuth.Scopes, []string{"https://www.googleapis.com/auth/container.read-only"}; len(got) != 1 || got[0] != want[0] {
+		t.Errorf("scopes wrong: got %v want %v", got, want)
+	}
+}
+
+func TestLoad_RejectsAuthOnStdio(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	body := `{"version":1,"servers":{"x":{"transport":"stdio","command":"a","auth":{"google_oauth":{"scopes":["s"]}}}}}`
+	if err := os.WriteFile(filepath.Join(dir, MCPFileName), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(dir)
+	if err == nil || !strings.Contains(err.Error(), "auth is only valid for http transport") {
+		t.Fatalf("expected stdio-with-auth error, got %v", err)
+	}
+}
+
+func TestLoad_RejectsGoogleOAuthEmptyScopes(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	body := `{"version":1,"servers":{"gke":{"transport":"http","url":"https://x","auth":{"google_oauth":{"scopes":[]}}}}}`
+	if err := os.WriteFile(filepath.Join(dir, MCPFileName), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(dir)
+	if err == nil || !strings.Contains(err.Error(), "must list at least one scope") {
+		t.Fatalf("expected empty-scopes error, got %v", err)
+	}
+}
+
+func TestLoad_RejectsGoogleOAuthEmptyScopeString(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	body := `{"version":1,"servers":{"gke":{"transport":"http","url":"https://x","auth":{"google_oauth":{"scopes":["valid",""]}}}}}`
+	if err := os.WriteFile(filepath.Join(dir, MCPFileName), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(dir)
+	if err == nil || !strings.Contains(err.Error(), "scopes[1] is empty") {
+		t.Fatalf("expected empty-scope-string error, got %v", err)
+	}
+}
+
+func TestLoad_RejectsAuthWithoutStrategy(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	body := `{"version":1,"servers":{"x":{"transport":"http","url":"https://x","auth":{}}}}`
+	if err := os.WriteFile(filepath.Join(dir, MCPFileName), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(dir)
+	if err == nil || !strings.Contains(err.Error(), "no strategy is configured") {
+		t.Fatalf("expected empty-AuthSpec error, got %v", err)
+	}
+}
+
 func TestInterpolateMap(t *testing.T) {
 	t.Setenv("TOKEN", "secret")
 	got := InterpolateMap(map[string]string{

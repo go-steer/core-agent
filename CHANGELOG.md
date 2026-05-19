@@ -19,6 +19,7 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 ### Added
 
 - **`agent.DefaultInstruction`** — exported constant holding the system instruction the agent applies when `WithInstruction` is not used. Comprises the baseline helpfulness/concision directive plus a parallelism mandate adapted from `google-gemini/gemini-cli` (`packages/core/src/prompts/snippets.ts`). Consumers who want to layer their own guidance on top of the default can compose: `agent.WithInstruction(agent.DefaultInstruction + "\n\n" + extra)`.
+- **`read_many_files` built-in tool** — reads multiple files in a single tool call via `paths` (explicit list), `pattern` (basename glob walked from `path`, default `.`), or both together. Honors the permission gate per file; gate denials, missing files, and directories surface as entries with a `skipped: "<reason>"` field so the batch never aborts on one bad path. Per-file content cap is 64KB; whole-response cap defaults to 256KB / 5000 lines (overridable via `cfg.ToolOutput.PerTool["read_many_files"]`). Tool description explicitly says "PREFERRED over multiple parallel `read_file` calls when you already know the set of files you need" — Gemini handles one tool call taking a list better than N parallel `read_file` calls. Default-on; opt out via `tools.disable: ["read_many_files"]` in config or `--disable-tools=read_many_files` on the CLI. Mirrors `google-gemini/gemini-cli`'s `read_many_files` tool at `packages/core/src/tools/definitions/read_many_files.ts`.
 
 ### Changed
 

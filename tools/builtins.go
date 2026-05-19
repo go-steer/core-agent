@@ -50,14 +50,15 @@ import (
 //	b.WriteFile = false             // or set the field directly
 //	reg, _ := tools.Build(cfg, gate, b)
 type BuiltinTools struct {
-	Bash      bool // /bin/sh -c with timeout + denylist + gate
-	ReadFile  bool // Read a file with offset/limit
-	WriteFile bool // Atomic write/create
-	EditFile  bool // Single-occurrence string replacement
-	ListDir   bool // Sorted directory listing
-	Glob      bool // Walk + filepath.Match by basename
-	Grep      bool // Walk + RE2 regex per line
-	Todo      bool // In-process plan tracker
+	Bash          bool // /bin/sh -c with timeout + denylist + gate
+	ReadFile      bool // Read a file with offset/limit
+	ReadManyFiles bool // Read a batch of files (paths + pattern) in one call
+	WriteFile     bool // Atomic write/create
+	EditFile      bool // Single-occurrence string replacement
+	ListDir       bool // Sorted directory listing
+	Glob          bool // Walk + filepath.Match by basename
+	Grep          bool // Walk + RE2 regex per line
+	Todo          bool // In-process plan tracker
 }
 
 // builtinToolNames is the canonical name of every built-in tool, in
@@ -66,6 +67,7 @@ type BuiltinTools struct {
 var builtinToolNames = []string{
 	"bash",
 	"read_file",
+	"read_many_files",
 	"write_file",
 	"edit_file",
 	"list_dir",
@@ -93,6 +95,8 @@ func (b *BuiltinTools) Disable(name string) error {
 		b.Bash = false
 	case "read_file":
 		b.ReadFile = false
+	case "read_many_files":
+		b.ReadManyFiles = false
 	case "write_file":
 		b.WriteFile = false
 	case "edit_file":
@@ -116,14 +120,15 @@ func (b *BuiltinTools) Disable(name string) error {
 // workspace.
 func Default() BuiltinTools {
 	return BuiltinTools{
-		Bash:      true,
-		ReadFile:  true,
-		WriteFile: true,
-		EditFile:  true,
-		ListDir:   true,
-		Glob:      true,
-		Grep:      true,
-		Todo:      true,
+		Bash:          true,
+		ReadFile:      true,
+		ReadManyFiles: true,
+		WriteFile:     true,
+		EditFile:      true,
+		ListDir:       true,
+		Glob:          true,
+		Grep:          true,
+		Todo:          true,
 	}
 }
 
@@ -165,6 +170,11 @@ func Build(cfg *config.Config, gate *permissions.Gate, b BuiltinTools) (*Registr
 			return functiontool.New(functiontool.Config{
 				Name: "read_file", Description: "Read a file from disk. Honors offset/limit for large files. PREFERRED over `bash cat`/`bash head`/`bash tail` for reading source files — honors output truncation and the permission gate.",
 			}, readFileFunc(gate, cfg))
+		}},
+		{b.ReadManyFiles, "read_many_files", "Read multiple files in a single call (explicit paths and/or glob pattern).", func() (tool.Tool, error) {
+			return functiontool.New(functiontool.Config{
+				Name: "read_many_files", Description: "Read multiple files in a single call. Pass `paths` (explicit list) and/or `pattern` (basename glob, walked from `path` root; defaults to '.'). PREFERRED over multiple parallel `read_file` calls when you already know the set of files you need — saves turns and is the canonical way to fan-out reads. Useful when investigating a feature spread across several files, comparing implementations, or pulling context for an edit. Gate denials, missing files, and directories surface as entries with `skipped: \"<reason>\"` so the batch never aborts on one bad path.",
+			}, readManyFilesFunc(gate, cfg))
 		}},
 		{b.WriteFile, "write_file", "Write or overwrite a file with the given content.", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{

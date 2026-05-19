@@ -131,9 +131,11 @@ agent.WithInstruction(agent.DefaultInstruction + "\n\n" + extraGuidance)
 
 ## Built-in tools
 
-The `tools/` package ships an eight-tool baseline suitable for any agent that acts on its workspace: `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `bash`, `todo`. All eight route through `permissions.Gate` (so the bash denylist and path-scope checks apply), and all honor the per-tool output caps from `cfg.ToolOutput`.
+The `tools/` package ships a nine-tool baseline suitable for any agent that acts on its workspace: `read_file`, `read_many_files`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `bash`, `todo`. All nine route through `permissions.Gate` (so the bash denylist and path-scope checks apply), and all honor the per-tool output caps from `cfg.ToolOutput`.
 
 `glob` walks a directory and returns paths whose basename matches a `filepath.Match` pattern (e.g. `*.go`); `grep` walks a directory (or a single file) and returns matching lines for an RE2 regex with file path + 1-based line number + the matching line text. Both use stdlib only — no `bmatcuk/doublestar`, so `**` recursive-glob is not supported (use an explicit walk root instead). Both skip `.git`, `.svn`, `.hg`, `node_modules`, `vendor` and don't follow symlinks.
+
+`read_many_files` reads multiple files in a single call. Accepts `paths` (an explicit list), `pattern` (a basename glob walked from `path`, default `.`), or both together — results are deduplicated and explicit paths come first. Each entry carries `path`, `content`, an optional `truncated` flag (per-file content cap is 64KB), and an optional `skipped` reason when the file was denied by the gate, missing, or a directory. Strictly preferred over multiple parallel `read_file` calls when you already know which files you need — Gemini in particular handles one tool call taking a list better than N parallel calls.
 
 Wire them up in your binary:
 

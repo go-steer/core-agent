@@ -25,12 +25,12 @@ import (
 func TestDefault_AllOn(t *testing.T) {
 	t.Parallel()
 	d := Default()
-	if !d.Bash || !d.ReadFile || !d.WriteFile || !d.EditFile || !d.ListDir || !d.Glob || !d.Grep || !d.Todo {
+	if !d.Bash || !d.ReadFile || !d.ReadManyFiles || !d.WriteFile || !d.EditFile || !d.ListDir || !d.Glob || !d.Grep || !d.Todo {
 		t.Errorf("Default() should enable everything; got %+v", d)
 	}
 }
 
-func TestBuild_DefaultProducesEightTools(t *testing.T) {
+func TestBuild_DefaultProducesNineTools(t *testing.T) {
 	t.Parallel()
 	cfg := config.DefaultConfig()
 	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
@@ -38,13 +38,13 @@ func TestBuild_DefaultProducesEightTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if len(reg.Tools) != 8 {
-		t.Fatalf("expected 8 tools, got %d", len(reg.Tools))
+	if len(reg.Tools) != 9 {
+		t.Fatalf("expected 9 tools, got %d", len(reg.Tools))
 	}
 	if reg.Todo == nil {
 		t.Errorf("Registry.Todo should always be non-nil")
 	}
-	wantNames := []string{"read_file", "write_file", "edit_file", "list_dir", "bash", "glob", "grep", "todo"}
+	wantNames := []string{"read_file", "read_many_files", "write_file", "edit_file", "list_dir", "bash", "glob", "grep", "todo"}
 	got := make(map[string]bool, len(reg.Tools))
 	for _, tl := range reg.Tools {
 		got[tl.Name()] = true
@@ -113,14 +113,15 @@ func TestBuiltinTools_Disable_KnownNames(t *testing.T) {
 	// table mirrors BuiltinToolNames so a future rename or addition
 	// fails this test until the helper learns about it.
 	cases := map[string]func(BuiltinTools) bool{
-		"bash":       func(b BuiltinTools) bool { return b.Bash },
-		"read_file":  func(b BuiltinTools) bool { return b.ReadFile },
-		"write_file": func(b BuiltinTools) bool { return b.WriteFile },
-		"edit_file":  func(b BuiltinTools) bool { return b.EditFile },
-		"list_dir":   func(b BuiltinTools) bool { return b.ListDir },
-		"glob":       func(b BuiltinTools) bool { return b.Glob },
-		"grep":       func(b BuiltinTools) bool { return b.Grep },
-		"todo":       func(b BuiltinTools) bool { return b.Todo },
+		"bash":            func(b BuiltinTools) bool { return b.Bash },
+		"read_file":       func(b BuiltinTools) bool { return b.ReadFile },
+		"read_many_files": func(b BuiltinTools) bool { return b.ReadManyFiles },
+		"write_file":      func(b BuiltinTools) bool { return b.WriteFile },
+		"edit_file":       func(b BuiltinTools) bool { return b.EditFile },
+		"list_dir":        func(b BuiltinTools) bool { return b.ListDir },
+		"glob":            func(b BuiltinTools) bool { return b.Glob },
+		"grep":            func(b BuiltinTools) bool { return b.Grep },
+		"todo":            func(b BuiltinTools) bool { return b.Todo },
 	}
 	names := BuiltinToolNames()
 	if len(cases) != len(names) {

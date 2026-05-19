@@ -176,11 +176,14 @@ func TestNew_WithEventLog_NilIsNoop(t *testing.T) {
 
 func TestDefaultInstruction_IncludesParallelismMandate(t *testing.T) {
 	t.Parallel()
-	// The mandate is load-bearing for Gemini — see DefaultInstruction
-	// godoc. Keep these substrings in sync if the constant is reworded.
+	// Each substring guards a load-bearing piece of DefaultInstruction.
+	// If a reword removes one, this test fails so the change surfaces
+	// in review rather than silently dropping behavior we depend on.
 	for _, want := range []string{
-		"in parallel",
-		"do not execute them one by one",
+		"in parallel",                      // parallelism mandate
+		"do not execute them one by one",   // anti-serial instruction
+		"parallel writes to the same file", // edit-collision guard
+		"Efficiency is secondary",          // quality caveat
 	} {
 		if !strings.Contains(DefaultInstruction, want) {
 			t.Errorf("DefaultInstruction missing required substring %q", want)

@@ -11,9 +11,13 @@ You're in the `core-agent` reference docs. The site root has the marketing pitch
 
 ## Start here
 
+**Evaluating `core-agent` against raw ADK?** → [Why core-agent](why-core-agent/) is the long-form pitch with a side-by-side capability comparison.
+
 **Brand new?** → [Getting started](getting-started/) walks you from `go install` through `core-agent -p "hello"` against your first provider, plus the `.agents/` project layout.
 
-**Embedding `core-agent` in your own Go binary?** → [Library API](library-api/) is the full reference — every `agent.Option`, every extension point, with worked code samples. The [Minimal example](library-api/#minimal-example) is the shortest possible program.
+**Running the CLI for your team or project?** → [User guide](user-guide/) — narrative walkthrough of giving the agent a personality (provider, `AGENTS.md`, skills, MCP servers, permissions).
+
+**Embedding `core-agent` in your own Go binary?** → [Library guide](library-guide/) is the narrative tour of the extension points (custom Prompter, custom tools, custom providers, RemoteAgentSpawner). [Library API](library-api/) is the exhaustive reference behind it.
 
 **Picking a model backend?** → [Providers](providers/) covers Gemini API, Vertex Gemini, Anthropic, and Anthropic via Vertex — env vars, model IDs, auto-detection rules, gotchas.
 
@@ -22,6 +26,11 @@ You're in the `core-agent` reference docs. The site root has the marketing pitch
 **Need an audit log or crash-resume?** → [Sessions and event log](sessions/) covers `eventlog.Open`, the `Stream` API (`Since`, `Watch`, `WithSessionTree`), and the session lock that makes concurrent resume safe.
 
 ## Reference index
+
+### Narrative
+- **[Why core-agent](why-core-agent/)** — long-form pitch + Harvey-balls comparison vs raw ADK Go.
+- **[User guide](user-guide/)** — end-user walkthrough for the CLI: providers, `AGENTS.md`, skills, MCP servers, permission modes, sessions.
+- **[Library guide](library-guide/)** — narrative tour of the Go-library extension points, with worked examples.
 
 ### Core API
 - **[Library API](library-api/)** — `agent` package, options, tools, prompters, MCP, skills, recording, telemetry. The largest page; use the right-hand TOC.

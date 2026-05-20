@@ -89,6 +89,14 @@ func (s seenLines) add(line string) (newLine bool) {
 //   - Final TurnComplete events are skipped (they repeat the text
 //     already streamed via Partial events).
 //
+// Identical → / ← / ↪ lines are deduplicated within one WriteEvents
+// call. ADK's streaming response aggregator can yield the same
+// FunctionCall part across more than one event (an intermediate
+// aggregate plus a final); Vertex's grounding metadata had the same
+// shape of multi-emission. Two genuinely different tool calls (same
+// name, different args) render separately because the formatted
+// line differs.
+//
 // out and info may point at the same writer (e.g. both os.Stdout) when
 // you want a single combined stream — useful for tmux capture or
 // piping. They're separate parameters so the default CLI path can
@@ -124,10 +132,28 @@ func WriteEvents(events iter.Seq2[*session.Event, error], out, info io.Writer, o
 				}
 				switch {
 				case p.FunctionCall != nil:
+					// Dedup: ADK's streaming response aggregator can yield
+					// the same FunctionCall part across more than one event
+					// (an intermediate aggregate plus a final). Persistence
+					// only writes the final, but WriteEvents sees both. The
+					// same `seenLines` set used for grounding metadata below
+					// suppresses the visual duplicate without dropping a
+					// legitimate second call with different args.
 					line := formatCall("→", p.FunctionCall.Name, p.FunctionCall.Args)
+					if !seen.add(line) {
+						continue
+					}
 					_, _ = fmt.Fprintln(info, paint(line, ansiCyan, cfg.color))
 				case p.FunctionResponse != nil:
+					// FunctionResponse is emitted exactly once today (by
+					// handleFunctionCalls, not via the streaming aggregator),
+					// but apply the same dedup symmetrically so a future ADK
+					// change can't re-introduce the asymmetry that surfaced
+					// the FunctionCall bug in the first place.
 					line := formatCall("←", p.FunctionResponse.Name, p.FunctionResponse.Response)
+					if !seen.add(line) {
+						continue
+					}
 					_, _ = fmt.Fprintln(info, paint(line, ansiCyan, cfg.color))
 				case p.Text != "" && event.Partial:
 					text := paint(p.Text, ansiGreen, cfg.color)

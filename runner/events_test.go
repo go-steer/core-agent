@@ -129,6 +129,85 @@ func TestWriteEvents_FormatsToolCallsToInfo(t *testing.T) {
 	}
 }
 
+// partialToolCall builds a Partial=true event carrying a FunctionCall
+// part. This is the shape ADK's streamingResponseAggregator yields as
+// an intermediate before the final non-Partial event with the same
+// call — and the renderer was double-printing both before the fix.
+func partialToolCall(name string, args map[string]any) *session.Event {
+	ev := toolCall(name, args)
+	ev.Partial = true
+	return ev
+}
+
+func TestWriteEvents_DedupsRepeatedFunctionCall(t *testing.T) {
+	t.Parallel()
+	// Regression for the visual duplicate the GKE MCP smoke surfaced
+	// (dev/smoke/07-mcp-google-oauth.sh): the eventlog showed exactly
+	// one FunctionCall persisted but stdout printed two `→` lines.
+	// Root cause was ADK's streaming aggregator yielding the same
+	// FunctionCall on both a Partial and a non-Partial event; the
+	// renderer rendered both. After the dedup it renders one.
+	var out, info bytes.Buffer
+	args := map[string]any{"parent": "projects/x/locations/-"}
+	err := WriteEvents(eventSeq([]*session.Event{
+		partialToolCall("gke_list_clusters", args), // ADK intermediate
+		toolCall("gke_list_clusters", args),        // ADK final
+		toolResult("gke_list_clusters", map[string]any{"output": "{}"}),
+	}, nil), &out, &info)
+	if err != nil {
+		t.Fatalf("WriteEvents: %v", err)
+	}
+	got := info.String()
+	if n := strings.Count(got, "→ gke_list_clusters("); n != 1 {
+		t.Errorf("expected exactly one `→ gke_list_clusters(` line, got %d:\n%s", n, got)
+	}
+	if n := strings.Count(got, "← gke_list_clusters("); n != 1 {
+		t.Errorf("expected exactly one `← gke_list_clusters(` line, got %d:\n%s", n, got)
+	}
+}
+
+func TestWriteEvents_DifferentArgsBothRender(t *testing.T) {
+	t.Parallel()
+	// Dedup must NOT swallow a legitimate second call that happens
+	// to share a name but has different args (e.g. two read_file
+	// calls in one parallel batch). Same name + different formatted
+	// line text = different `seen` keys = both render.
+	var out, info bytes.Buffer
+	err := WriteEvents(eventSeq([]*session.Event{
+		toolCall("read_file", map[string]any{"path": "a.go"}),
+		toolCall("read_file", map[string]any{"path": "b.go"}),
+	}, nil), &out, &info)
+	if err != nil {
+		t.Fatalf("WriteEvents: %v", err)
+	}
+	got := info.String()
+	if n := strings.Count(got, "→ read_file("); n != 2 {
+		t.Errorf("expected two `→ read_file(` lines for distinct args, got %d:\n%s", n, got)
+	}
+	if !strings.Contains(got, `"a.go"`) || !strings.Contains(got, `"b.go"`) {
+		t.Errorf("both arg values should appear: %s", got)
+	}
+}
+
+func TestWriteEvents_DedupIsPerInvocation(t *testing.T) {
+	t.Parallel()
+	// The seen set is per-WriteEvents invocation (per-turn in the
+	// REPL). Two separate WriteEvents calls with the same line must
+	// each render — otherwise a tool called identically across
+	// consecutive turns would silently vanish from the second turn.
+	var info1, info2 bytes.Buffer
+	var out bytes.Buffer
+	args := map[string]any{"k": "v"}
+	_ = WriteEvents(eventSeq([]*session.Event{toolCall("t", args)}, nil), &out, &info1)
+	_ = WriteEvents(eventSeq([]*session.Event{toolCall("t", args)}, nil), &out, &info2)
+	if !strings.Contains(info1.String(), "→ t(") {
+		t.Errorf("turn 1 should render the call: %q", info1.String())
+	}
+	if !strings.Contains(info2.String(), "→ t(") {
+		t.Errorf("turn 2 should also render the same call (per-turn scope): %q", info2.String())
+	}
+}
+
 func TestWriteEvents_KeyOrderingIsStable(t *testing.T) {
 	t.Parallel()
 	var out, info bytes.Buffer

@@ -19,8 +19,11 @@ import (
 	"strings"
 
 	"google.golang.org/adk/agent"
+	"google.golang.org/adk/model"
 	"google.golang.org/adk/tool"
 	"google.golang.org/genai"
+
+	coretools "github.com/go-steer/core-agent/tools"
 )
 
 // runnable is the unexported interface ADK's runner expects from
@@ -104,6 +107,22 @@ func (r renamedTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 		return nil, errNotRunnable
 	}
 	return rn.Run(ctx, args)
+}
+
+// ProcessRequest satisfies ADK's internal toolinternal.RequestProcessor
+// interface. ADK's `internal/llminternal/base_flow.go` requires every
+// tool in `f.Tools` to implement it; without this method, every MCP
+// tool would fail preprocess with `tool %q does not implement
+// RequestProcessor()`. We pack `r` (the wrapper) — not `r.inner` —
+// so the model sees the prefixed name and ADK's call-back dispatch
+// routes through this wrapper's Run, preserving the namespace.
+//
+// This wrapper is the outermost when a permission gate is NOT
+// configured. With a gate, gatedTool wraps this in turn and supplies
+// its own ProcessRequest; only the outermost wrapper's
+// ProcessRequest runs during preprocess.
+func (r renamedTool) ProcessRequest(ctx tool.Context, req *model.LLMRequest) error {
+	return coretools.PackTool(req, r)
 }
 
 // sanitizePrefix normalizes a server name into a Gemini-friendly

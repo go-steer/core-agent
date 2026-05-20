@@ -24,6 +24,7 @@ import (
 	"fmt"
 
 	"google.golang.org/adk/agent"
+	"google.golang.org/adk/model"
 	adktool "google.golang.org/adk/tool"
 	"google.golang.org/genai"
 
@@ -92,6 +93,16 @@ func (gt *gatedTool) Declaration() *genai.FunctionDeclaration {
 		return rn.Declaration()
 	}
 	return nil
+}
+
+// ProcessRequest satisfies ADK's internal toolinternal.RequestProcessor
+// interface so this wrapper survives ADK's request-preprocess pass
+// (`internal/llminternal/base_flow.go` requires every tool in
+// `f.Tools` to implement it). We pack `gt` (the wrapper) — not
+// `gt.inner` — so ADK's call-back dispatch routes through the gate
+// instead of bypassing it.
+func (gt *gatedTool) ProcessRequest(ctx adktool.Context, req *model.LLMRequest) error {
+	return PackTool(req, gt)
 }
 
 // Run consults the gate before delegating to the underlying tool.

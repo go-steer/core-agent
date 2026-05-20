@@ -21,6 +21,7 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/adk/agent"
+	"google.golang.org/adk/model"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/mcptoolset"
 )
@@ -117,6 +118,73 @@ func TestRenamedTool_DeclarationFromInner(t *testing.T) {
 			if d.Name != tl.Name() {
 				t.Errorf("declaration.Name = %q, want %q", d.Name, tl.Name())
 			}
+		}
+	}
+}
+
+func TestRenamedTool_ProcessRequest_PacksWrapper(t *testing.T) {
+	t.Parallel()
+	// This is the regression test for the latent bug surfaced when
+	// the first real MCP smoke (07-mcp-google-oauth.sh) hit the GKE
+	// MCP server: ADK's base_flow.go:280 requires every tool in
+	// f.Tools to implement RequestProcessor. Our renamedTool wrapper
+	// must satisfy that contract by packing itself (the wrapper)
+	// rather than letting the inner mcpTool pack itself — otherwise
+	// the model would see the un-namespaced declaration AND ADK's
+	// call-back dispatch would bypass the namespace prefix.
+	inner := newInMemoryToolset(t)
+	wrapped := withNamespace(inner, "demo")
+	tools, err := wrapped.Tools(asReadonly(context.Background()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) == 0 {
+		t.Fatal("expected at least one wrapped tool")
+	}
+
+	req := &model.LLMRequest{}
+	for _, tl := range tools {
+		rp, ok := tl.(interface {
+			ProcessRequest(ctx tool.Context, req *model.LLMRequest) error
+		})
+		if !ok {
+			t.Fatalf("renamedTool %q does not implement ProcessRequest — regression of the GKE MCP bug", tl.Name())
+		}
+		if err := rp.ProcessRequest(nil, req); err != nil {
+			t.Fatalf("ProcessRequest(%q): %v", tl.Name(), err)
+		}
+
+		// Packed entry must be the WRAPPER (with prefixed name),
+		// not the inner mcpTool.
+		got, ok := req.Tools[tl.Name()]
+		if !ok {
+			t.Errorf("req.Tools missing wrapper entry for %q", tl.Name())
+			continue
+		}
+		if _, isInner := got.(interface {
+			ProcessRequest(ctx tool.Context, req *model.LLMRequest) error
+		}); !isInner {
+			t.Errorf("packed entry for %q must itself implement ProcessRequest", tl.Name())
+		}
+		// And the un-prefixed inner name must NOT appear — otherwise
+		// the model would see two tools (raw + prefixed) and call-back
+		// dispatch could hit either.
+		if tl.Name() != "echo" {
+			if _, leaked := req.Tools["echo"]; leaked {
+				t.Errorf("inner tool name %q leaked into req.Tools alongside wrapper %q", "echo", tl.Name())
+			}
+		}
+	}
+
+	// The declared name in req.Config.Tools must use the prefix the
+	// LLM sees, not the inner name.
+	if req.Config == nil || len(req.Config.Tools) == 0 {
+		t.Fatal("declarations not added to req.Config.Tools")
+	}
+	decls := req.Config.Tools[0].FunctionDeclarations
+	for _, d := range decls {
+		if d.Name == "echo" {
+			t.Errorf("declaration name %q must be the prefixed form (demo_echo), not the raw inner name", d.Name)
 		}
 	}
 }

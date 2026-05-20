@@ -16,9 +16,21 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+---
+
+## [1.5.0] — 2026-05-20
+
+Remote MCP servers, batteries included. Google OAuth (access-token) auth for `.agents/mcp.json` HTTP servers so core-agent can call Google-hosted endpoints like the GKE remote MCP server using only Application Default Credentials; plus two latent bugs both surfaced the first time we drove a real remote MCP server end-to-end — tool wrappers were silently stripping ADK's `RequestProcessor` interface (every MCP tool call failed preprocess), and the event renderer was double-rendering `→ function_call` lines via ADK's stream aggregator. Smoke at `dev/smoke/07-mcp-google-oauth.sh`.
+
 ### Added
 
 - **Google OAuth (access-token) auth for remote MCP HTTP servers** — `.agents/mcp.json` now supports `auth.google_oauth.scopes` on HTTP servers. core-agent sets `Authorization: Bearer <access-token>` on every outbound MCP request using `google.FindDefaultCredentials(ctx, scopes...)` from Application Default Credentials. The `oauth2.TokenSource` caches and refreshes internally; an init-time pre-fetch surfaces ADC misconfig at startup instead of on the first tool call. Suitable for Google-hosted API endpoints that accept scoped access tokens — the GKE remote MCP server at `https://container.googleapis.com/mcp` is the canonical first target (caller needs `roles/mcp.toolUser` plus the relevant resource-viewer role, e.g. `roles/container.clusterViewer`). The auth layer wraps innermost so a misconfigured static `Authorization` header in `Headers` cannot overwrite the IAM token; non-conflicting static headers (e.g. `X-Custom`) still pass through. Audience-scoped ID-token auth for Cloud Run / IAP / custom-OIDC endpoints is not yet supported; the new `AuthSpec` shape leaves room for a sibling `google_id_token` field once a consumer needs it. Smoke at `dev/smoke/07-mcp-google-oauth.sh` (requires `MCP_GOOGLE_OAUTH_SMOKE_PROJECT` + ADC).
+
+### Fixed
+
+- **MCP tool wrappers were stripping ADK's `RequestProcessor` interface.** `renamedTool` (`mcp/namespace.go`) and `gatedTool` (`tools/gate.go`) forwarded `Name` / `Description` / `IsLongRunning` / `Declaration` / `Run` but silently dropped `RequestProcessor`. Every wrapped MCP tool then failed ADK's preprocess step with `tool "X" does not implement RequestProcessor() method`. No user-visible breakage shipped earlier only because no end-to-end MCP smoke existed before this release. Both wrappers now implement `ProcessRequest` and pack themselves (not the inner tool), so the model sees the prefixed / renamed `Declaration` and ADK's call-back dispatch hits the wrapper's `Run` instead of bypassing the namespace + gate. New public `tools.PackTool` reimplements ADK's internal `toolutils.PackTool` algorithm (~30 lines of public `model.LLMRequest` field manipulation). Regression tests in `tools/pack_test.go`, `tools/gate_test.go`, `mcp/namespace_test.go` — the mcp test carries an explicit comment tying it to this bug so a future refactor doesn't strip the method again.
+
+- **`runner.WriteEvents` double-rendered `→ function_call` lines.** ADK's stream aggregator (`internal/llminternal/stream_aggregator.go:58-78`) can yield the same `FunctionCall` part on multiple events (intermediate + final). The intermediate isn't persisted, but `runner.WriteEvents` saw both and rendered each, producing an asymmetric `→ → ←` pattern even when the model emitted exactly one call (verified against the eventlog: one persisted `FunctionCall` row, one `FunctionResponse` row). Fix: dedup `→` and `←` lines within one `WriteEvents` invocation using the existing `seenLines` set in `runner/events.go` (same dedup shape Vertex grounding got earlier). Per-invocation scope: two consecutive turns with legitimately identical calls each render normally; two calls with different args within one turn render separately. Regression tests in `runner/events_test.go`.
 
 ---
 

@@ -82,6 +82,40 @@ Recorded here so the implementation phase doesn't reopen them.
   who run a long-lived process pick `tools.SleepScheduler`. Operators
   who run under k8s CronJob pick `tools.ExitOnDeferScheduler`. The
   agent's instructions don't change between deployment shapes.
+- **Recommended default: `SleepScheduler` + supervisor topology.**
+  A single long-lived pod hosting one parent agent that fans out N
+  background subagents (one per cluster / namespace / target) covers
+  the canonical monitoring shape with one deployable, no external
+  scheduler, and warm prompt caches across cycles. `ExitOnDeferScheduler`
+  stays viable as an escape hatch for operators who already run cron
+  infrastructure and don't want a long-lived daemon, but it isn't the
+  recommended path. The user-facing docs lead with `SleepScheduler`.
+- **Driver-level `WithMaxDefer` ships alongside the tool-level cap,**
+  matching the existing `WithMaxTurns` / `WithMaxWallclock` budget-option
+  pattern. **Zero means no cap** at both layers — same convention as
+  the other budget options. A model calling `wake_in_sec: 86400` against
+  a daemon with `WithMaxDefer(time.Hour)` gets clamped to one hour with
+  a tool error explaining the cap.
+- **Cadence stays prompt-driven; richer hints land in the tool
+  description.** The parent agent communicates cadence intent in the
+  child's spawn prompt; the child calls `schedule_next_turn` with
+  whatever `wake_in_sec` it chooses on each turn. No structural
+  `cadence_seconds` arg on the spawn tool. To compensate for the
+  flexibility, the tool's default description carries a cadence ladder
+  (30s fast-changing state, 5-15m steady-state monitoring, 1h+
+  slow-changing infra), a good-vs-bad `next_prompt` example, and the
+  state-persistence reminder up front — see the "Steering the model"
+  subsection below. Structural cadence can still land later as an
+  additive opt-in if a consumer hits a case where model drift is
+  actually a problem; not designed for now.
+- **Operator "wake any deferred subagent" lives in attach mode,
+  not here.** That verb is operationally an attach-mode action (an
+  operator outside the running process nudging a sleeping child back
+  awake), so the endpoint, auth, and registry lookup ride the existing
+  attach-mode surface. See `docs/attach-mode-design.md` for the
+  `POST /sessions/<id>/wake` (or `POST /sessions/<id>/subagents/<name>/wake`)
+  shape and how it composes with `Agent.Inject` to interrupt
+  `SleepScheduler.BeforeNextTurn`.
 
 ## Goals and non-goals
 
@@ -290,13 +324,30 @@ it's the right home for trap-avoidance ("don't confuse with
 > `schedule_next_turn` — Pause the autonomous loop and resume later
 > with a new prompt. **Use this instead of `report_done` when there
 > is more periodic work to do** — `report_done` exits the loop
-> permanently and the loop will not resume. Keep `next_prompt` short
-> and action-oriented; the original goal and instructions are
-> already in the system prompt and will be re-presented on the next
-> turn. Prefer longer waits over shorter ones — cost scales linearly
-> with wake frequency. Don't call this in the same turn as
-> `report_done`; if both are called, `report_done` wins and the loop
-> exits.
+> permanently and will not resume.
+>
+> **Cadence ladder (pick the largest interval that meets the goal,
+> cost scales linearly with wake frequency):**
+> - **30s** — fast-changing state: pod restarts, queue depths, in-flight
+>   error counts during an active investigation.
+> - **5-15m** — steady-state monitoring: deployment drift, error-rate
+>   baselines, namespace inventory.
+> - **1h+** — slow-changing infra: cluster autoscaling, IAM, quota.
+>
+> **`next_prompt` should be short and action-oriented.** The original
+> goal and system instructions are re-presented on the next turn, so
+> don't restate them. Good: *"rescan and diff vs baseline.json"*. Bad:
+> *"continue your task"* (too vague) or restating the whole monitoring
+> brief (wasteful).
+>
+> **State doesn't survive the defer.** The conversation context resets
+> between turns — only files you wrote and todo entries you created
+> persist. If you need a baseline ("deployments I saw last scan", "error
+> counts at last poll") on the next turn, write it to a file or todo
+> *now*, then read it back after wake.
+>
+> Don't call this in the same turn as `report_done`; if both are called,
+> `report_done` wins and the loop exits.
 
 Overridable via `ScheduleOptions.Description` for consumers with
 domain-specific shape (e.g. *"always wake by the top of the
@@ -656,54 +707,17 @@ Files touched / added:
 
 ## Open questions
 
-1. **Schedule emission from the `report_done` tool's slot?** The
-   done tool currently uses `tools.NewLifecycleTool` under the hood
-   with `AllowedStates=["done"]`. We could extend that to
-   `["done", "deferred"]` and have the driver route on state.
-   *Argument for:* one tool, less surface. *Argument against:*
-   muddies the "I'm finished" semantic the done tool was designed
-   for; bumps the AllowedStates contract; consumers who customize
-   the done tool name expecting it means "terminal" get surprised.
-   Lean: separate tool. Calling out for confirmation.
+All five M4-era open questions were resolved in the 2026-05-20
+design review. The decisions live in the **Settled design
+decisions** section above (separate tool, driver-level `MaxDefer`
+with zero=infinity, prompt-driven cadence with richer tool
+description, `SleepScheduler` as recommended default). The operator
+"wake any deferred subagent" verb was ported to
+`docs/attach-mode-design.md` as the natural home for an
+out-of-process operator API.
 
-2. **Should `MaxDefer` be enforced driver-side too?** A model could
-   call `wake_in_sec: 86400` and tie up an in-process daemon for a
-   day. The tool-level `MaxDefer` is one defense; a driver-level
-   `WithMaxDefer` matching the wallclock-budget pattern is another.
-   Probably yes — same shape as the existing budget options.
-
-3. **Does `BackgroundAgentManager` need a "wake any deferred"
-   admin API?** For the daemon case: operator decides ad-hoc to
-   trigger an immediate rescan of cluster-A. Could ride the
-   existing `Agent.Inject` machinery (the deferred goroutine wakes
-   on a new injection). Probably yes, but worth implementing the
-   simple case first and letting attach mode
-   (`docs/attach-mode-design.md`) provide the operator surface.
-
-4. **Does this obsolete the CronJob deployment pattern for v1?**
-   With `SleepScheduler` + supervisor topology, a single long-lived
-   pod can monitor a hundred clusters. The CronJob shape stops being
-   the obvious answer except where the operator already has cron
-   infra and doesn't want a daemon. `ExitOnDeferScheduler` exists
-   anyway for that case; documenting the trade-off in the
-   user-facing docs once shipped.
-
-5. **Cadence: prompt-driven or structural spawn arg?** Current
-   design: the parent tells each child *"use 10m cadence"* in the
-   spawn prompt; the child calls `schedule_next_turn` with whatever
-   `wake_in_sec` it chooses on each turn. Alternative: the spawn
-   tool grows a `cadence_seconds` arg; the framework auto-injects a
-   `schedule_next_turn` call after every turn at that fixed cadence;
-   the model can't drift but also can't adapt (e.g. *"errors spiked,
-   poll faster for the next hour"*). *Lean:* prompt-driven —
-   matches the agentic posture of the rest of the framework, mirrors
-   how `report_done` works today (model decides when), and the
-   adaptive-cadence story is genuinely valuable for monitoring use
-   cases. Structural cadence can land later as an additive opt-in
-   if a consumer asks. Calling out for confirmation; this is the
-   one question where the user's K8s monitoring use case might
-   actually pull toward the structural option (predictable cadence
-   = simpler operator mental model).
+New open questions discovered during implementation should be added
+here.
 
 ## Acceptance
 

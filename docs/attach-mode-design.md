@@ -44,6 +44,11 @@ This is the analog of `tmux attach` for a headless agent.
   - `GET /sessions/<id>/events` — SSE stream; supports `?since=N`
     for replay before live-tail
   - `POST /sessions/<id>/inject` — call `Agent.Inject`
+  - `POST /sessions/<id>/wake` — wake any subagent of this session
+    that's currently deferred via `schedule_next_turn` (see
+    [scheduled-monitoring integration](#scheduled-monitoring-integration-waking-deferred-subagents)
+    below). Optional body field `target: "<subagent-name>"` narrows
+    to one child; otherwise all deferred children wake.
 - **Auth: mTLS primary, bearer token fallback.** Cert / key / CA
   files mounted from disk by the operator; no in-process cert
   generation. v1: if mTLS validates, both read and write are
@@ -557,6 +562,89 @@ The HTTP body cap on `/inject` is 8 KiB (configurable via
 `attach.WithInjectMaxBytes`). Larger payloads return 413. Rationale:
 inject messages are human-typed nudges, not RAG documents; we want
 to fail fast on obvious misuse.
+
+## Scheduled-monitoring integration: waking deferred subagents
+
+When an agent (or a background subagent under a parent's
+`BackgroundAgentManager`) is paused via the `Scheduler` primitive
+from `docs/scheduled-monitoring-design.md`, its goroutine sits inside
+`Scheduler.BeforeNextTurn` waiting for its wake-time. Operators often
+want to bypass that wait — *"forget the 10-minute cadence, rescan
+cluster-A right now because PagerDuty just woke me up."* That verb
+belongs in attach mode: it's an action taken from outside the running
+process, gated by the same auth and registry-lookup machinery that
+governs `/inject`.
+
+### Endpoint shape
+
+`POST /sessions/<id>/wake` with optional JSON body:
+
+```jsonc
+{
+  "target":  "monitor-cluster-A",         // optional: specific subagent
+  "prompt":  "rescan cluster-A now"       // optional: override next_prompt
+}
+```
+
+Semantics:
+
+- **No `target`** — every subagent in the session that's currently
+  deferred wakes immediately with its original `next_prompt`. The
+  session's parent agent, if also deferred, wakes too.
+- **`target: "<name>"`** — only the named subagent wakes. 404 if no
+  subagent by that name; 409 if the named subagent exists but isn't
+  currently deferred (already running, completed, or never scheduled).
+- **`prompt`** — when supplied, overrides the deferred subagent's
+  stored `next_prompt`. Useful for *"wake and give them new
+  instructions"* (operator triage flow); equivalent to the operator
+  manually constructing a wake + inject pair.
+
+Response: `200 OK` with a body listing the woken subagents:
+
+```jsonc
+{
+  "woken": [
+    {"name": "monitor-cluster-A", "previous_wake_at": "2026-05-20T15:30:00Z"},
+    {"name": "monitor-cluster-B", "previous_wake_at": "2026-05-20T15:32:00Z"}
+  ]
+}
+```
+
+### How the wake actually happens
+
+Under the hood, `/wake` calls `Agent.Inject` against the target
+subagent's inbox with a special **wake sentinel** message. The
+deferred goroutine is sitting in `SleepScheduler.BeforeNextTurn`'s
+`select { case <-time.After(wait): case <-ctx.Done(): }`. We add a
+third case: `case <-agent.WakeRequested():`, returning nil from the
+scheduler so the loop continues at the next iteration (with either
+the stored `next_prompt` or the operator-supplied override).
+
+The wake sentinel never reaches the model — it's an internal
+control-plane signal consumed by the scheduler. Operator-supplied
+`prompt`, when present, is what reaches the model as the next turn's
+input.
+
+`ExitOnDeferScheduler` deployments aren't reachable via `/wake` —
+the process has already exited, so there's no in-memory subagent to
+wake. Operators in that deployment shape trigger the next scan by
+invoking their CronJob out-of-band. This is consistent with
+`/wake` being an in-process operator action; if a consumer needs
+cross-process wake, they're effectively asking for AX-style
+distributed scheduling and should look at the
+`docs/ax-integration-audit.md` thesis.
+
+### Body cap
+
+Same 8 KiB cap as `/inject` (`attach.WithInjectMaxBytes` covers both
+endpoints). Wake bodies are tiny; the cap exists for the same
+fail-fast reason.
+
+### Authorization
+
+`--attach-readonly` disables `POST /wake` alongside `POST /inject` —
+both are write actions on a running agent. mTLS / bearer-token rules
+are identical.
 
 ## Security model
 

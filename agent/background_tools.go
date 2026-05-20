@@ -36,6 +36,7 @@ type spawnAgentArgs struct {
 	MaxTurns            int      `json:"max_turns,omitempty" jsonschema:"override the default per-subagent turn cap (default: manager's WithBackgroundDefaultBudgets)"`
 	MaxCostUSD          float64  `json:"max_cost_usd,omitempty" jsonschema:"override the default per-subagent dollar cap"`
 	MaxWallclockSeconds int      `json:"max_wallclock_seconds,omitempty" jsonschema:"override the default per-subagent wall-clock cap"`
+	Scheduler           string   `json:"scheduler,omitempty" jsonschema:"between-turn scheduler for this subagent. Values: 'default' (use the manager's default — typical), 'sleep' (in-process goroutine sleep — long-lived daemon shape), 'exit_on_defer' (exit cleanly so an orchestrator like k8s CronJob restarts at the wake-time), 'none' (no scheduler — schedule_next_turn unavailable, useful for one-shot triage subagents). Default: 'default'."`
 }
 
 type spawnAgentResult struct {
@@ -70,6 +71,7 @@ func NewSpawnAgentTool(mgr *BackgroundAgentManager) tool.Tool {
 				MaxCost:      args.MaxCostUSD,
 				MaxWallclock: time.Duration(args.MaxWallclockSeconds) * time.Second,
 			},
+			Scheduler: args.Scheduler,
 		}
 		h, err := mgr.Spawn(toolCtx, parentBranch, spec)
 		if err != nil {

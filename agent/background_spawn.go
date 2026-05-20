@@ -95,6 +95,18 @@ func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string,
 		return nil, err
 	}
 
+	// Resolve the per-spawn scheduler choice. A nil scheduler is a
+	// valid outcome — it means "no between-turn pacing for this
+	// subagent" and the schedule_next_turn tool simply isn't
+	// registered.
+	sched, err := m.resolveScheduler(spec.Scheduler)
+	if err != nil {
+		m.mu.Lock()
+		delete(m.agents, spec.Name)
+		m.mu.Unlock()
+		return nil, err
+	}
+
 	// Build a fresh LLM per subagent — see docs/background-subagents-design.md
 	// "LLM instance per subagent" for the rationale. Each call goes to the
 	// provider's Model factory, which caches auth handles and HTTP transport
@@ -182,6 +194,9 @@ func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string,
 		}
 		if m.gate != nil {
 			opts = append(opts, WithPermissionsGate(m.gate))
+		}
+		if sched != nil {
+			opts = append(opts, WithScheduler(sched))
 		}
 
 		result, runErr := RunAutonomous(goCtx, build, subagentGoal, opts...)

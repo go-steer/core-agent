@@ -16,6 +16,28 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+### Added
+
+- **Scheduler primitive for paced autonomous loops** — long-running monitoring deployments can now have the model emit a "wake me at T+N with prompt X" intent that the autonomous driver honors between turns, without burning the prompt cache by sleeping inside a turn. New surface area in package `tools`:
+  - **`tools.NewScheduleTool`** registers the `schedule_next_turn` tool the model calls to defer; returns the tool plus a buffered channel the driver consumes after each turn. Tool description carries a cadence ladder (30s fast-changing state, 5-15m steady-state, 1h+ slow-changing infra), good-vs-bad `next_prompt` examples, the state-persistence reminder, and the report_done-wins-on-collision rule. `ScheduleOptions.MaxDefer` clamps at the tool layer (rejection visible to the model so it can adapt); `ScheduleOptions.Name` / `Description` allow per-deployment customization.
+  - **`tools.Scheduler`** interface + **`tools.SchedulerFunc`** adapter. Consumers ship their own implementations for distributed shapes (NATS queue, AX dispatch, custom orchestrator). Two bundled impls:
+    - **`tools.SleepScheduler()`** — long-lived daemon: sleeps the goroutine until `WakeAt`, respects context cancellation. The recommended default for the canonical supervision-tree topology.
+    - **`tools.ExitOnDeferScheduler()`** — orchestrator-managed (k8s CronJob, etc.): returns `tools.ErrSchedulerDefer` so the loop exits with `StopReasonDeferred` + `RunResult.NextWakeAt` populated; `ResumeAutonomous` picks up at the persisted wake-time on the next process start.
+- **New `agent.RunAutonomous` options for scheduler wiring:**
+  - **`agent.WithScheduler(s)`** — installs the scheduler; without it, the schedule tool isn't registered at all (model can't emit intent the driver has no way to honor).
+  - **`agent.WithMaxDefer(d)`** — driver-level ceiling on how far the scheduler can wait. Zero means no cap (matching `WithMaxTurns` / `WithMaxWallclock` convention). Acts as an operator safety net; the model-facing cap is configured via `WithScheduleToolMaxDefer`.
+  - **`agent.WithScheduleToolName(name)`** / **`agent.WithScheduleToolDescription(desc)`** / **`agent.WithScheduleToolMaxDefer(d)`** — per-tool overrides mirroring the existing `WithDoneToolName` family.
+  - **`agent.StopReasonDeferred`** + **`agent.RunResult.NextWakeAt`** — the loop-exit reason and the orchestrator-restart-time emitted when the scheduler returns `ErrSchedulerDefer`.
+- **`agent.ResumeAutonomous` honors deferred checkpoints** — when the latest checkpoint carries a `next_wake_at`, the resume call sleeps the remaining time before re-entering the loop (daemon-mode resume after `kill -9` mid-sleep). A wake-time already in the past proceeds immediately (the CronJob-fired-late case).
+- **`agent.BackgroundAgentManager` scheduler integration:**
+  - **`agent.WithBackgroundDefaultScheduler(s)`** — every spawned subagent's `RunAutonomous` inherits this scheduler unless its per-spawn spec overrides.
+  - **`agent.BackgroundSpec.Scheduler`** — per-spawn string-enum override: `""` / `"default"` (manager default), `"sleep"` (in-process daemon shape), `"exit_on_defer"` (orchestrator-managed shape), `"none"` (no scheduler — `schedule_next_turn` unavailable for that child, useful for one-shot triage subagents). Unknown values return `agent.ErrUnknownScheduler` at spawn time.
+  - **`spawn_agent` tool JSON schema** gains a matching `scheduler` field so the parent's model can pick per-child cadence shape at runtime.
+- **`agent.DefaultSchedulingInstruction`** — composable system-instruction constant covering the cross-cutting cadence policy (slow-by-default, adapt on anomaly, state via files/todos, don't call schedule + done in the same turn). Mirrors `agent.DefaultInstruction`'s opt-in shape; consumers concat into their system prompt via `agent.WithInstruction(agent.DefaultInstruction + "\n\n" + agent.DefaultSchedulingInstruction + "\n\n" + ...)`. The driver does NOT auto-inject — consumers stay in explicit control of what their model is told.
+- **`examples/scheduled-monitor/`** — hermetic end-to-end example exercising the Scheduler primitives, the schedule tool's channel-emit behavior, and the `BackgroundAgentManager` supervisor topology with `WithBackgroundDefaultScheduler`. Runs against the echo mock provider so it works in CI without credentials.
+
+See `docs/scheduled-monitoring-design.md` for the design rationale, the canonical GKE fleet-monitoring topology, the three-tier acceptance plan (hermetic smoketest / UAT against real K8s / nightly real-LLM steering eval), and the open question on operator-driven wake (deferred to attach mode per `docs/attach-mode-design.md`).
+
 ---
 
 ## [1.5.0] — 2026-05-20

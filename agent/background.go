@@ -27,6 +27,7 @@ import (
 
 	"github.com/go-steer/core-agent/models"
 	"github.com/go-steer/core-agent/permissions"
+	coretools "github.com/go-steer/core-agent/tools"
 )
 
 // BackgroundAgentManager owns the lifecycle of in-process background
@@ -79,9 +80,10 @@ type BackgroundAgentManager struct {
 	// model requested.
 	catalog map[string]tool.Tool
 
-	maxDepth       int
-	maxConcurrent  int
-	defaultBudgets BackgroundBudgets
+	maxDepth         int
+	maxConcurrent    int
+	defaultBudgets   BackgroundBudgets
+	defaultScheduler coretools.Scheduler
 
 	agents  map[string]*BackgroundHandle
 	alerts  chan Alert
@@ -214,20 +216,28 @@ type BackgroundSpec struct {
 	Tools        []string
 	Extras       []string
 	Budgets      BackgroundBudgets
+	// Scheduler selects the between-turn scheduler the subagent's
+	// RunAutonomous loop honors. Valid values: "" or "default" (use
+	// the manager's WithBackgroundDefaultScheduler — may itself be
+	// nil), "sleep" (in-process goroutine sleep), "exit_on_defer"
+	// (orchestrator-managed exit), "none" (no scheduler — the
+	// schedule_next_turn tool won't be registered for this subagent).
+	Scheduler string
 }
 
 // BackgroundManagerOption configures NewBackgroundAgentManager.
 type BackgroundManagerOption func(*bgMgrConfig)
 
 type bgMgrConfig struct {
-	provider       models.Provider
-	modelID        string
-	gate           *permissions.Gate
-	catalog        []tool.Tool
-	maxDepth       int
-	maxConcurrent  int
-	defaultBudgets BackgroundBudgets
-	alertBuffer    int
+	provider         models.Provider
+	modelID          string
+	gate             *permissions.Gate
+	catalog          []tool.Tool
+	maxDepth         int
+	maxConcurrent    int
+	defaultBudgets   BackgroundBudgets
+	defaultScheduler coretools.Scheduler
+	alertBuffer      int
 }
 
 // WithBackgroundProvider wires the model provider + model ID used to
@@ -275,6 +285,21 @@ func WithBackgroundDefaultBudgets(b BackgroundBudgets) BackgroundManagerOption {
 	return func(c *bgMgrConfig) { c.defaultBudgets = b }
 }
 
+// WithBackgroundDefaultScheduler sets the tools.Scheduler that spawned
+// subagents inherit when the per-spawn BackgroundSpec.Scheduler is
+// empty or "default". Pass tools.SleepScheduler() for the canonical
+// in-process supervisor topology where the parent runs as a long-lived
+// daemon and children sleep between scans. Pass tools.ExitOnDeferScheduler()
+// for orchestrator-managed deployments. Pass nil (or leave unset) to
+// run subagents without between-turn pacing — the schedule_next_turn
+// tool is then unavailable to those subagents.
+//
+// Per-spawn overrides via BackgroundSpec.Scheduler win when supplied;
+// see Spawn / NewSpawnAgentTool.
+func WithBackgroundDefaultScheduler(s coretools.Scheduler) BackgroundManagerOption {
+	return func(c *bgMgrConfig) { c.defaultScheduler = s }
+}
+
 // WithBackgroundAlertBuffer sets the alert channel buffer. When full,
 // the oldest pending alert is dropped to make room (with a warning
 // logged). Default 256.
@@ -315,16 +340,40 @@ func NewBackgroundAgentManager(opts ...BackgroundManagerOption) (*BackgroundAgen
 		catalog[t.Name()] = t
 	}
 	return &BackgroundAgentManager{
-		provider:       cfg.provider,
-		modelID:        cfg.modelID,
-		gate:           cfg.gate,
-		catalog:        catalog,
-		maxDepth:       cfg.maxDepth,
-		maxConcurrent:  cfg.maxConcurrent,
-		defaultBudgets: cfg.defaultBudgets,
-		agents:         make(map[string]*BackgroundHandle),
-		alerts:         make(chan Alert, cfg.alertBuffer),
+		provider:         cfg.provider,
+		modelID:          cfg.modelID,
+		gate:             cfg.gate,
+		catalog:          catalog,
+		maxDepth:         cfg.maxDepth,
+		maxConcurrent:    cfg.maxConcurrent,
+		defaultBudgets:   cfg.defaultBudgets,
+		defaultScheduler: cfg.defaultScheduler,
+		agents:           make(map[string]*BackgroundHandle),
+		alerts:           make(chan Alert, cfg.alertBuffer),
 	}, nil
+}
+
+// ErrUnknownScheduler is wrapped and returned by Spawn when a
+// spec.Scheduler value isn't one of the recognized choices.
+var ErrUnknownScheduler = errors.New("agent: BackgroundAgentManager: unknown scheduler choice")
+
+// resolveScheduler maps a BackgroundSpec.Scheduler string to a
+// tools.Scheduler instance. Recognized values: "" / "default" / "sleep"
+// / "exit_on_defer" / "none". Returns ErrUnknownScheduler for
+// anything else.
+func (m *BackgroundAgentManager) resolveScheduler(choice string) (coretools.Scheduler, error) {
+	switch choice {
+	case "", "default":
+		return m.defaultScheduler, nil
+	case "sleep":
+		return coretools.SleepScheduler(), nil
+	case "exit_on_defer":
+		return coretools.ExitOnDeferScheduler(), nil
+	case "none":
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("%w: %q (allowed: default, sleep, exit_on_defer, none)", ErrUnknownScheduler, choice)
+	}
 }
 
 // ErrNoParent is returned by Spawn when the manager hasn't been

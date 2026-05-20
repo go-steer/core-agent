@@ -44,6 +44,7 @@ handover notes.
 - [`bidirectional-mcp-design.md`](bidirectional-mcp-design.md) — core-agent exposes itself as an MCP server (agent-as-tool default; tool-palette opt-in)
 - [`code-mode-design.md`](code-mode-design.md) — Phase 1 in-process Go execution via Yaegi; project-symbol-injection as the differentiator
 - [`ax-integration-audit.md`](ax-integration-audit.md) — gap audit for `extras/ax-agent/` on the `axplore` branch; don't build a parallel coordinator
+- [`scheduled-monitoring-design.md`](scheduled-monitoring-design.md) — `Scheduler` primitive for paced autonomous loops; combines with `BackgroundAgentManager` for the canonical K8s fleet-monitor topology
 
 ## Cross-cutting handover notes
 

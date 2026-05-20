@@ -141,12 +141,55 @@ func ResumeAutonomous(ctx context.Context, build ResumeBuildFunc, ref SessionRef
 		return RunResult{}, fmt.Errorf("agent: ResumeAutonomous: build done tool: %w", err)
 	}
 
-	a, err := build([]tool.Tool{doneTool}, ref.SessionID)
+	extras := []tool.Tool{doneTool}
+	var scheduleCh <-chan coretools.ScheduleEvent
+	if cfg.scheduler != nil {
+		schTool, ch, err := coretools.NewScheduleTool(coretools.ScheduleOptions{
+			Name:        cfg.scheduleToolName,
+			Description: cfg.scheduleToolDescription,
+			MaxDefer:    cfg.scheduleToolMaxDefer,
+		})
+		if err != nil {
+			return RunResult{}, fmt.Errorf("agent: ResumeAutonomous: build schedule tool: %w", err)
+		}
+		extras = append(extras, schTool)
+		scheduleCh = ch
+	}
+
+	a, err := build(extras, ref.SessionID)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("agent: ResumeAutonomous: build agent: %w", err)
 	}
 	if a == nil {
 		return RunResult{}, errors.New("agent: ResumeAutonomous: build returned nil agent")
+	}
+
+	// If the latest checkpoint is a deferred-state checkpoint, honor
+	// the wake-time at startup so daemon-mode resume picks up at the
+	// scheduled wake rather than firing immediately. ExitOnDefer-mode
+	// resume reaches this code path when the orchestrator fires after
+	// the wake-time, in which case time.Until returns <=0 and we
+	// proceed without delay. A cancelled context unblocks promptly.
+	if found && !latest.NextWakeAt.IsZero() {
+		wait := time.Until(latest.NextWakeAt)
+		if wait > 0 {
+			t := time.NewTimer(wait)
+			select {
+			case <-t.C:
+			case <-ctx.Done():
+				t.Stop()
+				result := RunResult{
+					Reason:       StopReasonContextCancelled,
+					Turns:        latest.Turn,
+					InputTokens:  latest.InputTokens,
+					OutputTokens: latest.OutputTokens,
+					CostUSD:      latest.CostUSD,
+					FinalText:    latest.FinalText,
+				}
+				result.Duration = time.Since(time.Now())
+				return result, ctx.Err()
+			}
+		}
 	}
 
 	startedAt := time.Now()
@@ -213,7 +256,7 @@ func ResumeAutonomous(ctx context.Context, build ResumeBuildFunc, ref SessionRef
 		if cfg.perTurnTimeout > 0 {
 			turnCtx, cancel = context.WithTimeout(ctx, cfg.perTurnTimeout)
 		}
-		turnRes, turnErr := runOneTurn(turnCtx, a, prompt, doneCh, &cfg, result.Turns+1)
+		turnRes, turnErr := runOneTurn(turnCtx, a, prompt, doneCh, scheduleCh, &cfg, result.Turns+1)
 		if cancel != nil {
 			cancel()
 		}
@@ -258,10 +301,49 @@ func ResumeAutonomous(ctx context.Context, build ResumeBuildFunc, ref SessionRef
 			break
 		}
 
+		// Schedule emission — same wiring as RunAutonomous so a
+		// resumed daemon continues honoring schedule_next_turn calls
+		// across restarts.
+		if turnRes.scheduleSignaled && cfg.scheduler != nil {
+			ev := turnRes.scheduleEvent
+			if cfg.maxDefer > 0 {
+				ceiling := time.Now().Add(cfg.maxDefer)
+				if ev.WakeAt.After(ceiling) {
+					ev.WakeAt = ceiling
+				}
+			}
+			_ = emitCheckpoint(ctx, a, scheduleCheckpoint(result, goal, cfg.continuationPrompt, ev))
+			serr := cfg.scheduler.BeforeNextTurn(ctx, ev)
+			switch {
+			case serr == nil:
+				if ev.NextPrompt != "" {
+					prompt = ev.NextPrompt
+				} else {
+					prompt = cfg.continuationPrompt
+				}
+				continue
+			case errors.Is(serr, coretools.ErrSchedulerDefer):
+				result.Reason = StopReasonDeferred
+				result.NextWakeAt = ev.WakeAt
+				goto deferredExit
+			case errors.Is(serr, context.Canceled) && ctx.Err() != nil:
+				result.Reason = StopReasonContextCancelled
+				result.Duration = time.Since(startedAt)
+				emitFinalCheckpoint(StopReasonContextCancelled)
+				return result, serr
+			default:
+				result.Reason = StopReasonRetryAborted
+				result.Duration = time.Since(startedAt)
+				emitFinalCheckpoint(StopReasonRetryAborted)
+				return result, fmt.Errorf("agent: ResumeAutonomous: scheduler: %w", serr)
+			}
+		}
+
 		_ = emitCheckpoint(ctx, a, perTurnCheckpoint(result, goal, cfg.continuationPrompt))
 		prompt = cfg.continuationPrompt
 	}
 
+deferredExit:
 	result.Duration = time.Since(startedAt)
 	emitFinalCheckpoint(result.Reason)
 	return result, nil

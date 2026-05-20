@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -91,7 +92,26 @@ func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*Age
 		return RunResult{}, fmt.Errorf("agent: RunAutonomous: build done tool: %w", err)
 	}
 
-	a, err := build([]tool.Tool{doneTool})
+	// Optional schedule tool: only wired when a Scheduler is installed
+	// via WithScheduler. Loops without a scheduler never see the tool,
+	// so the model can't emit schedule intent the driver doesn't know
+	// how to honor.
+	extras := []tool.Tool{doneTool}
+	var scheduleCh <-chan coretools.ScheduleEvent
+	if cfg.scheduler != nil {
+		schTool, ch, err := coretools.NewScheduleTool(coretools.ScheduleOptions{
+			Name:        cfg.scheduleToolName,
+			Description: cfg.scheduleToolDescription,
+			MaxDefer:    cfg.scheduleToolMaxDefer,
+		})
+		if err != nil {
+			return RunResult{}, fmt.Errorf("agent: RunAutonomous: build schedule tool: %w", err)
+		}
+		extras = append(extras, schTool)
+		scheduleCh = ch
+	}
+
+	a, err := build(extras)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("agent: RunAutonomous: build agent: %w", err)
 	}
@@ -178,7 +198,7 @@ func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*Age
 			turnCtx, cancel = context.WithTimeout(ctx, cfg.perTurnTimeout)
 		}
 
-		turnRes, turnErr := runOneTurn(turnCtx, a, prompt, doneCh, &cfg, result.Turns+1)
+		turnRes, turnErr := runOneTurn(turnCtx, a, prompt, doneCh, scheduleCh, &cfg, result.Turns+1)
 		if cancel != nil {
 			cancel()
 		}
@@ -233,6 +253,63 @@ func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*Age
 			break
 		}
 
+		// Schedule emission: if the model called schedule_next_turn
+		// AND a scheduler is wired, hand the event off to the
+		// scheduler between turns. report_done already won above if
+		// both were emitted in the same turn.
+		if turnRes.scheduleSignaled && cfg.scheduler != nil {
+			ev := turnRes.scheduleEvent
+			// Driver-level MaxDefer is a silent ceiling — the tool-
+			// level cap (ScheduleOptions.MaxDefer) is the model-facing
+			// surface. If the model somehow exceeds the driver cap
+			// anyway, clamp and log so an operator can spot the drift.
+			if cfg.maxDefer > 0 {
+				ceiling := time.Now().Add(cfg.maxDefer)
+				if ev.WakeAt.After(ceiling) {
+					log.Printf("agent: RunAutonomous: clamping scheduler wake-time from %s to driver MaxDefer ceiling %s (max_defer=%s)",
+						ev.WakeAt.Format(time.RFC3339), ceiling.Format(time.RFC3339), cfg.maxDefer)
+					ev.WakeAt = ceiling
+				}
+			}
+
+			// Per-turn checkpoint with next_wake_at populated so a
+			// crash mid-defer can resume to the right wake-time.
+			_ = emitCheckpoint(ctx, a, scheduleCheckpoint(result, goal, cfg.continuationPrompt, ev))
+
+			serr := cfg.scheduler.BeforeNextTurn(ctx, ev)
+			switch {
+			case serr == nil:
+				// Scheduler honored the wait (or no wait was needed).
+				// Continue the loop with the model-supplied prompt, or
+				// fall back to the default continuation prompt.
+				if ev.NextPrompt != "" {
+					prompt = ev.NextPrompt
+				} else {
+					prompt = cfg.continuationPrompt
+				}
+				continue
+			case errors.Is(serr, coretools.ErrSchedulerDefer):
+				// Orchestrator-managed exit: the process should end
+				// cleanly with the wake-time persisted to the eventlog
+				// for ResumeAutonomous to pick up. break out of the
+				// for-select via the labeled break below.
+				result.Reason = StopReasonDeferred
+				result.NextWakeAt = ev.WakeAt
+				goto deferredExit // break out of the outer for loop
+			case errors.Is(serr, context.Canceled) && ctx.Err() != nil:
+				result.Reason = StopReasonContextCancelled
+				result.Duration = time.Since(startedAt)
+				emitFinalCheckpoint(StopReasonContextCancelled)
+				return result, serr
+			default:
+				// Treat any other scheduler error as a hard abort.
+				result.Reason = StopReasonRetryAborted
+				result.Duration = time.Since(startedAt)
+				emitFinalCheckpoint(StopReasonRetryAborted)
+				return result, fmt.Errorf("agent: RunAutonomous: scheduler: %w", serr)
+			}
+		}
+
 		// Per-turn checkpoint after a clean (non-done, non-error)
 		// turn. Per-turn emission is the cursor ResumeAutonomous
 		// continues from; a no-checkpoint run can still resume from
@@ -242,6 +319,7 @@ func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*Age
 		prompt = cfg.continuationPrompt
 	}
 
+deferredExit:
 	result.Duration = time.Since(startedAt)
 	emitFinalCheckpoint(result.Reason)
 	return result, nil
@@ -263,18 +341,43 @@ func perTurnCheckpoint(result RunResult, goal, continuation string) checkpointPa
 	}
 }
 
+// scheduleCheckpoint extends perTurnCheckpoint with the pending
+// wake-time. Emitted before the scheduler is consulted so a crash
+// mid-defer can be resumed to the correct wake-time. The continuation
+// prompt is intentionally the scheduler-supplied NextPrompt when
+// present so resume picks the same prompt the scheduler-honored run
+// would have used.
+func scheduleCheckpoint(result RunResult, goal, fallbackContinuation string, ev coretools.ScheduleEvent) checkpointPayload {
+	continuation := ev.NextPrompt
+	if continuation == "" {
+		continuation = fallbackContinuation
+	}
+	return checkpointPayload{
+		Turn:               result.Turns,
+		InputTokens:        result.InputTokens,
+		OutputTokens:       result.OutputTokens,
+		CostUSD:            result.CostUSD,
+		Goal:               goal,
+		ContinuationPrompt: continuation,
+		FinalText:          result.FinalText,
+		NextWakeAt:         ev.WakeAt,
+	}
+}
+
 // turnResult captures everything one turn produced that the driver
 // cares about. Kept private — callers see RunResult.
 type turnResult struct {
-	inputTokens  int
-	outputTokens int
-	costUSD      float64
-	text         string
-	doneSignaled bool
-	doneDetail   string
+	inputTokens      int
+	outputTokens     int
+	costUSD          float64
+	text             string
+	doneSignaled     bool
+	doneDetail       string
+	scheduleSignaled bool
+	scheduleEvent    coretools.ScheduleEvent
 }
 
-func runOneTurn(ctx context.Context, a *Agent, prompt string, doneCh chan string, cfg *autoConfig, turnNo int) (turnResult, error) {
+func runOneTurn(ctx context.Context, a *Agent, prompt string, doneCh chan string, scheduleCh <-chan coretools.ScheduleEvent, cfg *autoConfig, turnNo int) (turnResult, error) {
 	var (
 		out turnResult
 		buf strings.Builder
@@ -287,6 +390,13 @@ func runOneTurn(ctx context.Context, a *Agent, prompt string, doneCh chan string
 	select {
 	case <-doneCh:
 	default:
+	}
+	// Same defensive drain on the schedule channel.
+	if scheduleCh != nil {
+		select {
+		case <-scheduleCh:
+		default:
+		}
 	}
 
 	for ev, err := range a.Run(ctx, prompt) {
@@ -338,6 +448,19 @@ func runOneTurn(ctx context.Context, a *Agent, prompt string, doneCh chan string
 	default:
 	}
 
+	// Same idea for schedule emission. Done wins over schedule when
+	// both are emitted in the same turn (the loop check above happens
+	// first); we still drain here so a per-turn schedule call doesn't
+	// leak forward into the next turn's stale-drain.
+	if scheduleCh != nil {
+		select {
+		case ev := <-scheduleCh:
+			out.scheduleSignaled = true
+			out.scheduleEvent = ev
+		default:
+		}
+	}
+
 	out.text = buf.String()
 	return out, nil
 }
@@ -347,21 +470,26 @@ func runOneTurn(ctx context.Context, a *Agent, prompt string, doneCh chan string
 type AutonomousOption func(*autoConfig)
 
 type autoConfig struct {
-	maxTurns            int
-	maxInputTokens      int
-	maxOutputTokens     int
-	maxCostUSD          float64
-	maxWallclock        time.Duration
-	perTurnTimeout      time.Duration
-	doneToolName        string
-	doneToolDescription string
-	continuationPrompt  string
-	tracker             *usage.Tracker
-	pricing             usage.Pricing
-	progress            func(turn int, ev *session.Event)
-	retryPolicy         RetryPolicy
-	permissionsGate     *permissions.Gate
-	beforeTurn          func(ctx context.Context, turnNo int) error
+	maxTurns                int
+	maxInputTokens          int
+	maxOutputTokens         int
+	maxCostUSD              float64
+	maxWallclock            time.Duration
+	perTurnTimeout          time.Duration
+	doneToolName            string
+	doneToolDescription     string
+	continuationPrompt      string
+	tracker                 *usage.Tracker
+	pricing                 usage.Pricing
+	progress                func(turn int, ev *session.Event)
+	retryPolicy             RetryPolicy
+	permissionsGate         *permissions.Gate
+	beforeTurn              func(ctx context.Context, turnNo int) error
+	scheduler               coretools.Scheduler
+	maxDefer                time.Duration
+	scheduleToolName        string
+	scheduleToolDescription string
+	scheduleToolMaxDefer    time.Duration
 }
 
 // Sensible defaults used when no With* options override them. MaxTurns
@@ -511,6 +639,67 @@ func WithPermissionsGate(g *permissions.Gate) AutonomousOption {
 	return func(c *autoConfig) { c.permissionsGate = g }
 }
 
+// WithScheduler installs a tools.Scheduler that's consulted between
+// turns when the prior turn emitted a schedule intent via the
+// schedule_next_turn tool. Loops without a scheduler don't get the
+// tool registered at all, so the model can't emit intent the driver
+// has no way to honor.
+//
+// Bundled schedulers: tools.SleepScheduler() for long-lived daemons
+// (sleeps the goroutine between turns), tools.ExitOnDeferScheduler()
+// for orchestrator-managed deployments (exits with
+// StopReasonDeferred + RunResult.NextWakeAt populated, ResumeAutonomous
+// picks up at the wake-time). See docs/scheduled-monitoring-design.md.
+func WithScheduler(s coretools.Scheduler) AutonomousOption {
+	return func(c *autoConfig) { c.scheduler = s }
+}
+
+// WithMaxDefer is a driver-level ceiling on how far in the future the
+// scheduler can wait. Zero means no cap, matching the existing
+// WithMaxTurns / WithMaxWallclock convention. Acts as an operator
+// safety net: if a turn emits a schedule intent past this ceiling,
+// the driver clamps the wake-time and logs a warning, then proceeds
+// with the clamped value. The model-facing cap is configured via
+// WithScheduleToolMaxDefer.
+func WithMaxDefer(d time.Duration) AutonomousOption {
+	return func(c *autoConfig) { c.maxDefer = d }
+}
+
+// WithScheduleToolName overrides the function name of the internal
+// schedule tool. Useful when the default "schedule_next_turn" collides
+// with a consumer-registered tool. Only takes effect when WithScheduler
+// is also set.
+func WithScheduleToolName(name string) AutonomousOption {
+	return func(c *autoConfig) {
+		if name = strings.TrimSpace(name); name != "" {
+			c.scheduleToolName = name
+		}
+	}
+}
+
+// WithScheduleToolDescription overrides the description shown to the
+// model for the internal schedule tool. The default includes a cadence
+// ladder, good-vs-bad next_prompt examples, and the state-persistence
+// reminder; override when domain-specific guidance is needed (e.g.
+// "always wake by the top of the hour"). Only takes effect when
+// WithScheduler is also set.
+func WithScheduleToolDescription(desc string) AutonomousOption {
+	return func(c *autoConfig) {
+		if desc = strings.TrimSpace(desc); desc != "" {
+			c.scheduleToolDescription = desc
+		}
+	}
+}
+
+// WithScheduleToolMaxDefer sets the tool-level cap on how far the
+// model may schedule a wake. Calls past the cap return a tool-result
+// error to the model so it can adapt. Zero means no cap. Distinct
+// from WithMaxDefer, which is the driver's silent safety net. Only
+// takes effect when WithScheduler is also set.
+func WithScheduleToolMaxDefer(d time.Duration) AutonomousOption {
+	return func(c *autoConfig) { c.scheduleToolMaxDefer = d }
+}
+
 // RetryPolicy decides what RunAutonomous does when a turn errors.
 // The callback receives the error and the 1-indexed attempt count
 // (the first failure is attempt=1, second is attempt=2, etc.).
@@ -552,6 +741,12 @@ type RunResult struct {
 	// DoneDetail is the detail string the model passed to the done
 	// tool when Reason==StopReasonCompleted.
 	DoneDetail string
+	// NextWakeAt is set when Reason==StopReasonDeferred — the
+	// scheduler returned ErrSchedulerDefer and the loop exited
+	// cleanly with a wake-time persisted to the eventlog. Whatever
+	// orchestrator wraps the process restarts at or after this time
+	// and ResumeAutonomous picks up the deferred checkpoint.
+	NextWakeAt time.Time
 }
 
 // StopReason explains why RunAutonomous returned.
@@ -574,4 +769,10 @@ const (
 	// StopReasonRetryAborted means the configured RetryPolicy
 	// returned AbortRun for a turn error.
 	StopReasonRetryAborted StopReason = "retry_policy_aborted"
+	// StopReasonDeferred means the configured Scheduler returned
+	// ErrSchedulerDefer in response to a schedule emission. The loop
+	// exited cleanly with RunResult.NextWakeAt populated; whatever
+	// orchestrator wraps the process restarts at or after the
+	// wake-time and ResumeAutonomous picks up.
+	StopReasonDeferred StopReason = "deferred"
 )

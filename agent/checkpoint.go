@@ -42,21 +42,22 @@ const checkpointAuthorSuffix = "/autonomous"
 // final checkpoint emitted on loop exit sets it to one of the
 // StopReason values.
 type checkpointPayload struct {
-	Turn               int     `json:"turn"`
-	InputTokens        int     `json:"input_tokens"`
-	OutputTokens       int     `json:"output_tokens"`
-	CostUSD            float64 `json:"cost_usd"`
-	Goal               string  `json:"goal"`
-	ContinuationPrompt string  `json:"continuation_prompt"`
-	StopReason         string  `json:"stop_reason,omitempty"`
-	DoneDetail         string  `json:"done_detail,omitempty"`
-	FinalText          string  `json:"final_text,omitempty"`
+	Turn               int       `json:"turn"`
+	InputTokens        int       `json:"input_tokens"`
+	OutputTokens       int       `json:"output_tokens"`
+	CostUSD            float64   `json:"cost_usd"`
+	Goal               string    `json:"goal"`
+	ContinuationPrompt string    `json:"continuation_prompt"`
+	StopReason         string    `json:"stop_reason,omitempty"`
+	DoneDetail         string    `json:"done_detail,omitempty"`
+	FinalText          string    `json:"final_text,omitempty"`
+	NextWakeAt         time.Time `json:"next_wake_at,omitempty"`
 }
 
 // toMap projects the typed payload into the untyped map[string]any
 // shape ADK's session.Event.CustomMetadata uses on the wire.
 func (p checkpointPayload) toMap() map[string]any {
-	return map[string]any{
+	m := map[string]any{
 		"turn":                p.Turn,
 		"input_tokens":        p.InputTokens,
 		"output_tokens":       p.OutputTokens,
@@ -67,6 +68,10 @@ func (p checkpointPayload) toMap() map[string]any {
 		"done_detail":         p.DoneDetail,
 		"final_text":          p.FinalText,
 	}
+	if !p.NextWakeAt.IsZero() {
+		m["next_wake_at"] = p.NextWakeAt.UTC().Format(time.RFC3339)
+	}
+	return m
 }
 
 // checkpointFromMap is the inverse — used by ResumeAutonomous to
@@ -100,6 +105,22 @@ func checkpointFromMap(m map[string]any) checkpointPayload {
 		s, _ := m[k].(string)
 		return s
 	}
+	getTime := func(k string) time.Time {
+		switch v := m[k].(type) {
+		case string:
+			if v == "" {
+				return time.Time{}
+			}
+			t, err := time.Parse(time.RFC3339, v)
+			if err != nil {
+				return time.Time{}
+			}
+			return t
+		case time.Time:
+			return v
+		}
+		return time.Time{}
+	}
 	return checkpointPayload{
 		Turn:               getInt("turn"),
 		InputTokens:        getInt("input_tokens"),
@@ -110,6 +131,7 @@ func checkpointFromMap(m map[string]any) checkpointPayload {
 		StopReason:         getStr("stop_reason"),
 		DoneDetail:         getStr("done_detail"),
 		FinalText:          getStr("final_text"),
+		NextWakeAt:         getTime("next_wake_at"),
 	}
 }
 

@@ -68,6 +68,40 @@ Tools execute in parallel by default. Execute multiple independent tool calls in
 
 Do not issue multiple ` + "`edit_file`" + ` or ` + "`write_file`" + ` calls targeting the same path in one response — those must run sequentially across turns so each edit sees the prior result; parallel writes to the same file race and corrupt state. Efficiency is secondary to correctness: if you are unsure whether two operations are independent, run them sequentially.`
 
+// DefaultSchedulingInstruction is the composable system-instruction
+// constant for autonomous loops that have a tools.Scheduler installed
+// (via RunAutonomous's WithScheduler option, or per-subagent via
+// BackgroundAgentManager). It covers the cross-cutting cadence and
+// state-persistence guidance that doesn't fit in the schedule_next_turn
+// tool's per-call description.
+//
+// Opt-in by composition — the autonomous driver does NOT inject this
+// automatically. Recommended consumer usage:
+//
+//	agent.New(m,
+//	    agent.WithInstruction(
+//	        agent.DefaultInstruction + "\n\n" +
+//	        agent.DefaultSchedulingInstruction + "\n\n" +
+//	        myConsumerInstruction,
+//	    ),
+//	    agent.WithTools(...),
+//	)
+//
+// See docs/scheduled-monitoring-design.md for the design rationale
+// and the matching tool-description text (Layer 1 of the steering
+// pattern).
+const DefaultSchedulingInstruction = `When running a paced loop with schedule_next_turn:
+
+1. Default to slow cadences. Most monitoring tasks tolerate 5-15 minute gaps; some tolerate hours. Cost scales linearly with wake frequency — start slow and tighten only when you observe active anomalies.
+
+2. Adaptive cadence is encouraged. When you see anomalies in flight, shorten the cadence for the next few turns to track resolution. When the system has been quiet for several cycles, lengthen the cadence again.
+
+3. State does not survive a defer except in the eventlog. The conversation context resets between turns; only files you wrote and todo entries you created persist. To carry a baseline ("deployments I saw last scan", "error counts at last poll") across turns, write it to a file or todo entry on this turn and read it back on the next.
+
+4. The next_prompt is a hook, not a full restatement. Keep it short and action-oriented ("rescan and diff vs baseline.json"). The original goal and your system instructions are already in the next turn's context.
+
+5. Don't call schedule_next_turn and report_done in the same turn. If you do, report_done wins and the loop exits.`
+
 const (
 	defaultUserID    = "local"
 	defaultSessionID = "default"

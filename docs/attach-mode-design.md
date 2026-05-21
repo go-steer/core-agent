@@ -39,8 +39,9 @@ This is the analog of `tmux attach` for a headless agent.
 - **Unix socket as a local-dev convenience.** Same SSE protocol
   over both transports. The `attach` client picks based on URL
   scheme — `unix://`, `http://`, `https://`.
-- **Endpoints**:
-  - `GET /sessions` — list active sessions
+- **Endpoints** (`<id>` resolves to `<appName>/<sessionID>` —
+  see "URL form" below):
+  - `GET /sessions` — list active sessions; returns `{app, user, sessionID}` triples
   - `GET /sessions/<id>/events` — SSE stream; supports `?since=N`
     for replay before live-tail
   - `POST /sessions/<id>/inject` — call `Agent.Inject`
@@ -49,6 +50,31 @@ This is the analog of `tmux attach` for a headless agent.
     [scheduled-monitoring integration](#scheduled-monitoring-integration-waking-deferred-subagents)
     below). Optional body field `target: "<subagent-name>"` narrows
     to one child; otherwise all deferred children wake.
+- **URL form: `/sessions/<appName>/<sessionID>`**, with a
+  `/sessions/<sessionID>` shortcut when `appName` is unambiguous
+  on the listener (single-app deployment — the common case). ADK's
+  session key is the full triple `(AppName, UserID, SessionID)`;
+  `userID` is omitted from the v1 URL because it's overwhelmingly
+  a per-process constant today (no CLI flag, no env-var fallback —
+  see `agent.WithSession` + `defaultUserID = "local"`). The
+  registry keys internally by the full triple to leave room to
+  grow; multi-user-per-process gets full-triple URLs when a
+  consumer asks. Server returns a clear 404 with "ambiguous;
+  multiple apps registered, use the qualified form" when the
+  single-segment shortcut hits a collision.
+- **Transport alternative considered: A2A.** Google's Agent2Agent
+  protocol (JSON-RPC over HTTP, streaming via SSE) is technically
+  capable of serving these endpoints — wrap each as an A2A task.
+  Deferred for v1 because (a) the operator-observability use case
+  is the urgent one and A2A optimizes for agent-to-agent traffic;
+  (b) A2A's task-with-terminal-state model is an awkward fit for
+  `GET /events`'s open-ended subscription shape; (c) "another agent
+  drives this agent" is already covered for our two concrete cases
+  by the Scion (`extras/scion-agent/`) and AX (`extras/ax-agent/`)
+  adapters. If a concrete A2A consumer surfaces later, the right
+  shape is a thin `attach/a2a.go` transport adapter over the same
+  registry + Inject + RequestWake primitives — both transports
+  share one backend.
 - **Auth: mTLS primary, bearer token fallback.** Cert / key / CA
   files mounted from disk by the operator; no in-process cert
   generation. v1: if mTLS validates, both read and write are
@@ -68,7 +94,20 @@ This is the analog of `tmux attach` for a headless agent.
   --attach-client-ca=path
   --attach-token=$ENV
   --attach-readonly
+  --attach-unix-socket=/var/run/core-agent.sock
   ```
+- **Peer registration** (one agent acts as a hub, others register
+  with it for discovery) — useful for multi-agent K8s deployments
+  where the operator wants one address to hit and enumerate
+  everyone from there. **Deferred to a fast-follow-on PR** (PR #2)
+  rather than bundled into attach-mode v1, because (a) it's a
+  separate design space (TTL / heartbeat cadence / hub-failure /
+  pruning / auth-on-register / label conventions), (b) reviewers
+  evaluate attach-mode in isolation, (c) k8s Services + label
+  selectors handle the simple case for now. See
+  [`peer-registration-design.md`](peer-registration-design.md) for
+  the PR #2 design. Both PRs share the same `attach/` package,
+  auth, server, handlers — registration is additive.
 
 ## Goals and non-goals
 

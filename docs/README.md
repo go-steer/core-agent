@@ -45,6 +45,7 @@ handover notes.
 - [`code-mode-design.md`](code-mode-design.md) — Phase 1 in-process Go execution via Yaegi; project-symbol-injection as the differentiator
 - [`ax-integration-audit.md`](ax-integration-audit.md) — gap audit for `extras/ax-agent/` on the `axplore` branch; don't build a parallel coordinator
 - [`scheduled-monitoring-design.md`](scheduled-monitoring-design.md) — `Scheduler` primitive for paced autonomous loops; combines with `BackgroundAgentManager` for the canonical K8s fleet-monitor topology
+- [`peer-registration-design.md`](peer-registration-design.md) — fast-follow-on PR after attach-mode; hub-and-spoke peer discovery (`POST /peers` / heartbeat / `GET /peers`) for multi-agent K8s deployments
 
 ## Cross-cutting handover notes
 

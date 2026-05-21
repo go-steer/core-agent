@@ -132,6 +132,43 @@ type attachOpts struct {
 	RegisterEndpoint string
 }
 
+// mergeAttachOpts overlays cfg onto opts where the CLI flag wasn't
+// explicitly set. CLI > config > zero-value. String fields then pass
+// through os.ExpandEnv so per-pod values like "https://${POD_IP}:7777"
+// can live in a shared ConfigMap.
+//
+// flagSet is the parsed FlagSet used to register the --attach-* flags;
+// production passes flag.CommandLine, tests pass their own.
+func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.FlagSet) attachOpts {
+	setOnCLI := map[string]bool{}
+	flagSet.Visit(func(f *flag.Flag) { setOnCLI[f.Name] = true })
+
+	overlayStr := func(name string, dst *string, cfgVal string) {
+		if !setOnCLI[name] && *dst == "" {
+			*dst = cfgVal
+		}
+		*dst = os.ExpandEnv(*dst)
+	}
+	overlayBool := func(name string, dst *bool, cfgVal bool) {
+		if !setOnCLI[name] {
+			*dst = cfgVal
+		}
+	}
+
+	overlayStr("attach-listen", &opts.Listen, cfg.Listen)
+	overlayStr("attach-unix-socket", &opts.UnixSocket, cfg.UnixSocket)
+	overlayStr("attach-tls-cert", &opts.TLSCert, cfg.TLSCert)
+	overlayStr("attach-tls-key", &opts.TLSKey, cfg.TLSKey)
+	overlayStr("attach-client-ca", &opts.ClientCA, cfg.ClientCA)
+	overlayStr("attach-token", &opts.TokenEnv, cfg.TokenEnv)
+	overlayBool("attach-readonly", &opts.ReadOnly, cfg.ReadOnly)
+	overlayBool("attach-peer-hub", &opts.PeerHub, cfg.PeerHub)
+	overlayStr("attach-register-to", &opts.RegisterTo, cfg.RegisterTo)
+	overlayStr("attach-register-endpoint", &opts.RegisterEndpoint, cfg.RegisterEndpoint)
+	overlayStr("attach-register-name", &opts.RegisterName, cfg.RegisterName)
+	return opts
+}
+
 func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, attachCfg attachOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
@@ -157,6 +194,7 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 		return runner.ExitConfigError
 	}
+	attachCfg = mergeAttachOpts(attachCfg, cfg.Attach, flag.CommandLine)
 	if modelOverride != "" {
 		cfg.Model.Name = modelOverride
 	}

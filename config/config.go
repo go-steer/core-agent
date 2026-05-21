@@ -43,6 +43,7 @@ type Config struct {
 	Mock        MockConfig        `json:"mock,omitempty"`
 	OTEL        OTELConfig        `json:"otel,omitempty"`
 	URLScope    URLScopeConfig    `json:"url_scope,omitempty"`
+	Attach      AttachConfig      `json:"attach,omitempty"`
 }
 
 // PathScopeConfig holds extra paths that file tools may read/write
@@ -183,6 +184,46 @@ type URLScopeConfig struct {
 	MaxBodyBytes   int                          `json:"max_body_bytes,omitempty"`
 	TimeoutSeconds int                          `json:"timeout_seconds,omitempty"`
 	Headers        map[string]map[string]string `json:"headers,omitempty"`
+}
+
+// AttachConfig holds defaults for the attach-mode listener and the
+// peer-registration client. Every field is also exposed as a CLI flag
+// (--attach-*); the CLI flag wins when set, otherwise the config value
+// supplies the default. Fields holding URLs / addresses pass through
+// os.ExpandEnv so per-pod values like "https://${POD_IP}:7777" can live
+// in a shared ConfigMap.
+//
+// BearerToken is intentionally NOT a field here. The CLI flag form is
+// --attach-token=ENVVAR (the name of the env var holding the secret),
+// not the secret itself, and that env-var indirection should not be
+// duplicated in a config file. Configure the env var via your secret
+// manager (K8s Secret, sealed-secret, etc.) and set TokenEnv if you
+// want to nail the env-var name down per-deployment.
+type AttachConfig struct {
+	// Server-side: where the attach listener binds. Set at most one.
+	Listen     string `json:"listen,omitempty"`      // e.g. "0.0.0.0:7777"
+	UnixSocket string `json:"unix_socket,omitempty"` // e.g. "/var/run/core-agent.sock"
+
+	// TLS material. TLSCert + TLSKey enable HTTPS; ClientCA additionally
+	// enables mTLS (client cert required). Paths only — keys live on disk.
+	TLSCert  string `json:"tls_cert,omitempty"`
+	TLSKey   string `json:"tls_key,omitempty"`
+	ClientCA string `json:"client_ca,omitempty"`
+
+	// TokenEnv is the name of the env var that holds the bearer token
+	// clients must present. The secret itself never lives in config.
+	TokenEnv string `json:"token_env,omitempty"`
+
+	// ReadOnly disables POST /inject and /wake; read endpoints stay open.
+	ReadOnly bool `json:"readonly,omitempty"`
+
+	// PeerHub turns on the peer-registration endpoints on this listener.
+	PeerHub bool `json:"peer_hub,omitempty"`
+
+	// Peer-side: this agent registers with a remote hub.
+	RegisterTo       string `json:"register_to,omitempty"`       // hub URL
+	RegisterEndpoint string `json:"register_endpoint,omitempty"` // expanded via os.ExpandEnv
+	RegisterName     string `json:"register_name,omitempty"`     // defaults to hostname when empty
 }
 
 // Permission modes.

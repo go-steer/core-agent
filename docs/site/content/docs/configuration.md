@@ -33,7 +33,8 @@ Top-level shape, with all fields optional except `version` and `model.name`:
   "agent": { ... },
   "tool_output": { ... },
   "otel": { ... },
-  "url_scope": { ... }
+  "url_scope": { ... },
+  "attach": { ... }
 }
 ```
 
@@ -345,6 +346,51 @@ CLI conveniences (no config edit needed):
 - `--disable-tools=fetch_url` — turns the tool off even if an allowlist is configured.
 
 See [`fetch-url-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/fetch-url-design.md) for the full decision record.
+
+---
+
+## `attach`
+
+Default values for the attach-mode listener and the peer-registration client. Every field below is also exposed as a `--attach-*` CLI flag; the flag wins when explicitly set, otherwise the config value applies, otherwise the zero value. This section exists for K8s-style deployments where the same settings would otherwise be repeated on every invocation.
+
+String fields are passed through `os.ExpandEnv` so per-pod values like `"https://${POD_IP}:7777"` can live in a shared ConfigMap and resolve to the right address at startup.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `listen` | string | `""` | Address the attach HTTP server binds to (e.g. `"0.0.0.0:7777"`). Empty → server off. Mutually exclusive with `unix_socket`. Requires `--session-db` at runtime (the broadcaster pumps from the event log). |
+| `unix_socket` | string | `""` | Bind path for the Unix-socket transport (e.g. `"/var/run/core-agent.sock"`). Same SSE protocol; useful for local dev and Cloud Run sidecar shapes. |
+| `tls_cert` | string | `""` | TLS server certificate (PEM path). Pair with `tls_key` to enable HTTPS. |
+| `tls_key` | string | `""` | TLS server key (PEM path). |
+| `client_ca` | string | `""` | CA bundle (PEM path) for client-certificate verification (mTLS). When set, clients must present a cert signed by this CA. |
+| `token_env` | string | `""` | **Env var *name*** (not the secret) holding the bearer token clients must present in `Authorization: Bearer <token>`. The secret itself never lives in this file — mount it via your secret manager. |
+| `readonly` | bool | `false` | Disable `POST /inject` and `POST /wake`. Read endpoints (`GET /sessions`, `GET .../events`) stay open. |
+| `peer_hub` | bool | `false` | Enable peer-registration endpoints (`POST /peers`, `GET /peers`, `POST /peers/<id>/heartbeat`, `DELETE /peers/<id>`) on the listener — this agent becomes a discovery hub. |
+| `register_to` | string | `""` | Hub URL this agent registers with on startup (e.g. `"https://hub.default.svc:7777"`). Empty → no registration. Heartbeats automatically until shutdown. |
+| `register_endpoint` | string | `""` | Reachable URL the hub records for this agent. Required when `register_to` is set, since the agent's own `listen` value is commonly `0.0.0.0` and not directly reachable. Typically `"https://${POD_IP}:7777"`. |
+| `register_name` | string | hostname | Name to register under. Defaults to `os.Hostname()` when empty. Name-based upsert: a restart re-uses the slot rather than orphaning the old entry. |
+
+Worked example for a K8s deployment ConfigMap:
+
+```json
+{
+  "version": 1,
+  "model": { "provider": "vertex", "name": "gemini-3.1-pro-preview-customtools",
+             "vertex": { "project": "my-proj", "location": "us-central1" } },
+  "attach": {
+    "listen":            "0.0.0.0:7777",
+    "tls_cert":          "/etc/attach/tls.crt",
+    "tls_key":           "/etc/attach/tls.key",
+    "client_ca":         "/etc/attach/ca.crt",
+    "token_env":         "ATTACH_TOKEN",
+
+    "register_to":       "https://core-agent-hub.default.svc:7777",
+    "register_endpoint": "https://${POD_IP}:7777",
+    "register_name":     "monitor-${HOSTNAME}"
+  }
+}
+```
+
+See [Attach mode]({{< relref "user-guide.md" >}}) for the protocol and CLI overview, including the `--attach-token=<envvar>` flag that pairs with `token_env`.
 
 ---
 

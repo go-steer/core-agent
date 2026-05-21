@@ -55,9 +55,12 @@ type BuiltinTools struct {
 	ReadManyFiles bool // Read a batch of files (paths + pattern) in one call
 	WriteFile     bool // Atomic write/create
 	EditFile      bool // Single-occurrence string replacement
+	DeleteFile    bool // Remove a regular file (refuses directories)
+	Stat          bool // Metadata (size / mtime / mode / is_dir) for a single path
 	ListDir       bool // Sorted directory listing
 	Glob          bool // Walk + filepath.Match by basename
 	Grep          bool // Walk + RE2 regex per line
+	JSONQuery     bool // jq expression over JSON loaded from file or inline string
 	Todo          bool // In-process plan tracker
 }
 
@@ -70,9 +73,12 @@ var builtinToolNames = []string{
 	"read_many_files",
 	"write_file",
 	"edit_file",
+	"delete_file",
+	"stat",
 	"list_dir",
 	"glob",
 	"grep",
+	"json_query",
 	"todo",
 }
 
@@ -101,12 +107,18 @@ func (b *BuiltinTools) Disable(name string) error {
 		b.WriteFile = false
 	case "edit_file":
 		b.EditFile = false
+	case "delete_file":
+		b.DeleteFile = false
+	case "stat":
+		b.Stat = false
 	case "list_dir":
 		b.ListDir = false
 	case "glob":
 		b.Glob = false
 	case "grep":
 		b.Grep = false
+	case "json_query":
+		b.JSONQuery = false
 	case "todo":
 		b.Todo = false
 	default:
@@ -125,9 +137,12 @@ func Default() BuiltinTools {
 		ReadManyFiles: true,
 		WriteFile:     true,
 		EditFile:      true,
+		DeleteFile:    true,
+		Stat:          true,
 		ListDir:       true,
 		Glob:          true,
 		Grep:          true,
+		JSONQuery:     true,
 		Todo:          true,
 	}
 }
@@ -186,6 +201,16 @@ func Build(cfg *config.Config, gate *permissions.Gate, b BuiltinTools) (*Registr
 				Name: "edit_file", Description: "Replace exactly one occurrence of old_string with new_string in path.",
 			}, editFileFunc(gate))
 		}},
+		{b.DeleteFile, "delete_file", "Remove a regular file.", func() (tool.Tool, error) {
+			return functiontool.New(functiontool.Config{
+				Name: "delete_file", Description: "Remove a regular file. Idempotent — deleting a missing file is a no-op success. Refuses to delete directories. PREFERRED over `bash rm` — honors the permission gate (CheckFileWrite) and the path scope. Useful for cleaning up baseline / scratch files between scheduled-monitor cycles, log rotation, etc.",
+			}, deleteFileFunc(gate))
+		}},
+		{b.Stat, "stat", "Get metadata (size, mtime, mode, is_dir) for a single path.", func() (tool.Tool, error) {
+			return functiontool.New(functiontool.Config{
+				Name: "stat", Description: "Return metadata for a single file or directory: size, mtime (RFC3339 UTC), mode, is_dir. A missing path returns {exists: false} rather than an error — use for \"has this been written yet?\" checks without exception handling. PREFERRED over `bash stat`/`bash ls -l` — honors the permission gate and doesn't spawn a subprocess.",
+			}, statFunc(gate))
+		}},
 		{b.ListDir, "list_dir", "List entries of a directory.", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{
 				Name: "list_dir", Description: "List the entries (files and subdirectories) of a directory.",
@@ -205,6 +230,9 @@ func Build(cfg *config.Config, gate *permissions.Gate, b BuiltinTools) (*Registr
 			return functiontool.New(functiontool.Config{
 				Name: "grep", Description: "Walk path (default '.') and return matching lines for the supplied RE2 regex. Recursive on directories; single-file mode when path points at a file. Skips hidden / vendored directories. PREFERRED over `bash grep`/`bash rg`/`bash find` for code search — honors the permission gate, per-tool output caps, and returns structured `{path, line, text}` matches the model can pipe into follow-up tool calls without re-parsing.",
 			}, grepFunc(gate, cfg))
+		}},
+		{b.JSONQuery, "json_query", "Run a jq expression against JSON loaded from a file or supplied inline.", func() (tool.Tool, error) {
+			return NewJSONQueryTool(gate, cfg), nil
 		}},
 		{b.Todo, "todo", "Maintain an agent-facing todo list (list/add/set_status/clear).", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{

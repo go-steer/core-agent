@@ -38,13 +38,13 @@ func TestBuild_DefaultProducesNineTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if len(reg.Tools) != 9 {
-		t.Fatalf("expected 9 tools, got %d", len(reg.Tools))
+	if len(reg.Tools) != 12 {
+		t.Fatalf("expected 12 tools, got %d", len(reg.Tools))
 	}
 	if reg.Todo == nil {
 		t.Errorf("Registry.Todo should always be non-nil")
 	}
-	wantNames := []string{"read_file", "read_many_files", "write_file", "edit_file", "list_dir", "bash", "glob", "grep", "todo"}
+	wantNames := []string{"read_file", "read_many_files", "write_file", "edit_file", "delete_file", "stat", "list_dir", "bash", "glob", "grep", "json_query", "todo"}
 	got := make(map[string]bool, len(reg.Tools))
 	for _, tl := range reg.Tools {
 		got[tl.Name()] = true
@@ -118,9 +118,12 @@ func TestBuiltinTools_Disable_KnownNames(t *testing.T) {
 		"read_many_files": func(b BuiltinTools) bool { return b.ReadManyFiles },
 		"write_file":      func(b BuiltinTools) bool { return b.WriteFile },
 		"edit_file":       func(b BuiltinTools) bool { return b.EditFile },
+		"delete_file":     func(b BuiltinTools) bool { return b.DeleteFile },
+		"stat":            func(b BuiltinTools) bool { return b.Stat },
 		"list_dir":        func(b BuiltinTools) bool { return b.ListDir },
 		"glob":            func(b BuiltinTools) bool { return b.Glob },
 		"grep":            func(b BuiltinTools) bool { return b.Grep },
+		"json_query":      func(b BuiltinTools) bool { return b.JSONQuery },
 		"todo":            func(b BuiltinTools) bool { return b.Todo },
 	}
 	names := BuiltinToolNames()

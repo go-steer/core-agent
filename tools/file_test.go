@@ -158,3 +158,134 @@ func TestListDir_SortedEntries(t *testing.T) {
 		t.Errorf("entries = %+v", res.Entries)
 	}
 }
+
+func TestDeleteFile_RemovesRegularFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "scratch.txt")
+	if err := os.WriteFile(path, []byte("baseline"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fn := deleteFileFunc(gateFor(t, dir))
+	res, err := fn(tool.Context(nil), deleteFileArgs{Path: path})
+	if err != nil {
+		t.Fatalf("delete_file: %v", err)
+	}
+	if !strings.HasPrefix(res.Status, "deleted ") {
+		t.Errorf("status = %q, want 'deleted ...'", res.Status)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("file should be gone, got err=%v", err)
+	}
+}
+
+func TestDeleteFile_MissingIsIdempotent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fn := deleteFileFunc(gateFor(t, dir))
+	res, err := fn(tool.Context(nil), deleteFileArgs{Path: filepath.Join(dir, "never-existed")})
+	if err != nil {
+		t.Fatalf("delete_file: %v", err)
+	}
+	if !strings.Contains(res.Status, "no-op") {
+		t.Errorf("status = %q, want a no-op message", res.Status)
+	}
+}
+
+func TestDeleteFile_RefusesDirectory(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "subdir")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fn := deleteFileFunc(gateFor(t, dir))
+	_, err := fn(tool.Context(nil), deleteFileArgs{Path: sub})
+	if err == nil || !strings.Contains(err.Error(), "directory") {
+		t.Errorf("expected directory-refusal error, got %v", err)
+	}
+	if _, statErr := os.Stat(sub); statErr != nil {
+		t.Errorf("directory should still exist after refusal: %v", statErr)
+	}
+}
+
+func TestDeleteFile_OutOfScope_Denied(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	other := t.TempDir()
+	outside := filepath.Join(other, "x.txt")
+	if err := os.WriteFile(outside, []byte("private"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scope, _ := permissions.NewPathScope(dir, "", nil)
+	gate := permissions.New(permissions.Options{
+		Mode:  permissions.ModeAllow, // no allowlist → deny on write
+		Scope: scope,
+	})
+	fn := deleteFileFunc(gate)
+	_, err := fn(tool.Context(nil), deleteFileArgs{Path: outside})
+	if err == nil {
+		t.Fatalf("expected denial for out-of-scope delete")
+	}
+	if _, statErr := os.Stat(outside); statErr != nil {
+		t.Errorf("file should still exist after denial: %v", statErr)
+	}
+}
+
+func TestStat_ReturnsMetadata(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "thing.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fn := statFunc(gateFor(t, dir))
+	res, err := fn(tool.Context(nil), statArgs{Path: path})
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if !res.Exists {
+		t.Errorf("Exists = false, want true")
+	}
+	if res.IsDir {
+		t.Errorf("IsDir = true, want false (regular file)")
+	}
+	if res.Size != 5 {
+		t.Errorf("Size = %d, want 5", res.Size)
+	}
+	if res.ModTime == "" {
+		t.Errorf("ModTime should be set")
+	}
+	if res.Mode == "" {
+		t.Errorf("Mode should be set")
+	}
+}
+
+func TestStat_MissingPathExistsFalse(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fn := statFunc(gateFor(t, dir))
+	res, err := fn(tool.Context(nil), statArgs{Path: filepath.Join(dir, "never-existed")})
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if res.Exists {
+		t.Errorf("Exists = true, want false for missing path")
+	}
+	if res.Size != 0 || res.ModTime != "" || res.Mode != "" {
+		t.Errorf("missing path should have zero metadata, got %+v", res)
+	}
+}
+
+func TestStat_DirReportsIsDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fn := statFunc(gateFor(t, dir))
+	res, err := fn(tool.Context(nil), statArgs{Path: dir})
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if !res.IsDir {
+		t.Errorf("IsDir = false, want true for directory")
+	}
+}

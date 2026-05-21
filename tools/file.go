@@ -16,12 +16,14 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
@@ -76,6 +78,27 @@ type dirEntry struct {
 	Name  string `json:"name"`
 	IsDir bool   `json:"is_dir"`
 	Size  int64  `json:"size"`
+}
+
+type deleteFileArgs struct {
+	Path string `json:"path" jsonschema:"absolute or relative file path to remove. Must be a regular file — refuses to delete directories (use a future delete_dir if that's ever wanted)."`
+}
+
+type deleteFileResult struct {
+	Status string `json:"status"`
+}
+
+type statArgs struct {
+	Path string `json:"path" jsonschema:"absolute or relative file or directory path to inspect"`
+}
+
+type statResult struct {
+	Path    string `json:"path"`
+	Exists  bool   `json:"exists"`
+	IsDir   bool   `json:"is_dir,omitempty"`
+	Size    int64  `json:"size,omitempty"`
+	ModTime string `json:"mod_time,omitempty"` // RFC3339, UTC
+	Mode    string `json:"mode,omitempty"`     // os.FileMode.String(), e.g. "-rw-r--r--"
 }
 
 // readFileFunc returns the ADK functiontool handler for read_file. The
@@ -247,6 +270,72 @@ func atomicWrite(path string, data []byte, mode fs.FileMode) error {
 		return err
 	}
 	return os.Rename(tmpName, path)
+}
+
+// deleteFileFunc returns the handler for delete_file. Refuses to
+// delete directories — keeps the blast radius bounded and surfaces an
+// explicit error the model can adapt to. The permissions gate
+// (CheckFileWrite, because delete is a destructive write-class op)
+// covers path-scope and per-tool denylists.
+func deleteFileFunc(gate *permissions.Gate) functiontool.Func[deleteFileArgs, deleteFileResult] {
+	return func(_ tool.Context, in deleteFileArgs) (deleteFileResult, error) {
+		path, err := absolutize(in.Path)
+		if err != nil {
+			return deleteFileResult{}, err
+		}
+		if err := gate.CheckFileWrite(context.Background(), "delete_file", path); err != nil {
+			return deleteFileResult{}, err
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				// Idempotent: deleting a missing file is a no-op
+				// success so the model can drive cleanup without
+				// pre-existence checks.
+				return deleteFileResult{Status: "no-op (not found): " + path}, nil
+			}
+			return deleteFileResult{}, fmt.Errorf("delete_file: lstat: %w", err)
+		}
+		if info.IsDir() {
+			return deleteFileResult{}, fmt.Errorf("delete_file: %q is a directory; this tool only removes regular files", path)
+		}
+		if err := os.Remove(path); err != nil {
+			return deleteFileResult{}, fmt.Errorf("delete_file: %w", err)
+		}
+		return deleteFileResult{Status: "deleted " + path}, nil
+	}
+}
+
+// statFunc returns the handler for stat. Metadata-only (size, mtime,
+// mode, is_dir); does not read file contents. Treated as a read for
+// gate purposes since no state is mutated. A missing path returns a
+// success result with Exists=false rather than an error — lets the
+// model do "does X exist yet?" checks without exception handling.
+func statFunc(gate *permissions.Gate) functiontool.Func[statArgs, statResult] {
+	return func(_ tool.Context, in statArgs) (statResult, error) {
+		path, err := absolutize(in.Path)
+		if err != nil {
+			return statResult{}, err
+		}
+		if err := gate.CheckFileRead(context.Background(), "stat", path); err != nil {
+			return statResult{}, err
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return statResult{Path: path, Exists: false}, nil
+			}
+			return statResult{}, fmt.Errorf("stat: %w", err)
+		}
+		return statResult{
+			Path:    path,
+			Exists:  true,
+			IsDir:   info.IsDir(),
+			Size:    info.Size(),
+			ModTime: info.ModTime().UTC().Format(time.RFC3339),
+			Mode:    info.Mode().String(),
+		}, nil
+	}
 }
 
 type outputCaps struct {

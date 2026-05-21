@@ -27,6 +27,8 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"iter"
 
@@ -445,4 +447,94 @@ func (a *Agent) BackgroundManager() *BackgroundAgentManager {
 		return nil
 	}
 	return a.bgMgr
+}
+
+// RunWithContents drives one agent turn from a pre-built conversation
+// history (genai.Contents) instead of a single prompt string. The
+// trailing message is treated as the new user input; everything before
+// it is pre-populated into a fresh session as history events.
+//
+// Each call uses a fresh sessionID so prior calls don't accumulate
+// state — the caller-supplied history is authoritative. Use this when
+// integrating with a runtime (the AX adapter is the motivating
+// example) that supplies the full conversation history per turn
+// rather than relying on a session-managed prompt.
+//
+// The last content's Role must be genai.RoleUser; non-user trailing
+// messages return an error. Empty contents return an error.
+func (a *Agent) RunWithContents(ctx context.Context, contents []*genai.Content) iter.Seq2[*session.Event, error] {
+	return func(yield func(*session.Event, error) bool) {
+		if len(contents) == 0 {
+			yield(nil, fmt.Errorf("agent: RunWithContents: contents is empty"))
+			return
+		}
+		last := contents[len(contents)-1]
+		if last == nil || last.Role != genai.RoleUser {
+			role := ""
+			if last != nil {
+				role = last.Role
+			}
+			yield(nil, fmt.Errorf("agent: RunWithContents: last content must be a user message, got role=%q", role))
+			return
+		}
+		history := contents[:len(contents)-1]
+
+		sessionID, err := freshSessionID()
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+
+		createResp, err := a.sessionService.Create(ctx, &session.CreateRequest{
+			AppName:   a.appName,
+			UserID:    a.userID,
+			SessionID: sessionID,
+		})
+		if err != nil {
+			yield(nil, fmt.Errorf("agent: RunWithContents: create session: %w", err))
+			return
+		}
+		sess := createResp.Session
+
+		for i, c := range history {
+			if c == nil {
+				continue
+			}
+			ev := session.NewEvent(fmt.Sprintf("rwc-history-%d", i))
+			ev.Author = authorFor(c.Role, a.agentName)
+			ev.LLMResponse = adkmodel.LLMResponse{Content: c}
+			if err := a.sessionService.AppendEvent(ctx, sess, ev); err != nil {
+				yield(nil, fmt.Errorf("agent: RunWithContents: append history event %d: %w", i, err))
+				return
+			}
+		}
+
+		for ev, err := range a.runner.Run(ctx, a.userID, sessionID, last, adkagent.RunConfig{
+			StreamingMode: a.streaming,
+		}) {
+			if !yield(ev, err) {
+				return
+			}
+		}
+	}
+}
+
+// authorFor maps a genai role to the ADK Event.Author convention used
+// by the runner: user messages → "user"; everything else (model, tool
+// responses) → the agent's name.
+func authorFor(role string, agentName string) string {
+	if role == genai.RoleUser {
+		return "user"
+	}
+	return agentName
+}
+
+// freshSessionID generates a unique session ID for one RunWithContents
+// call. Uses crypto/rand so concurrent callers don't collide.
+func freshSessionID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("agent: generate session id: %w", err)
+	}
+	return "rwc-" + hex.EncodeToString(b[:]), nil
 }

@@ -20,11 +20,13 @@ import (
 	"iter"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/glebarez/sqlite"
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/session"
+	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/eventlog"
 )
@@ -60,6 +62,40 @@ func (*recordingService) Delete(context.Context, *session.DeleteRequest) error {
 }
 func (*recordingService) AppendEvent(context.Context, session.Session, *session.Event) error {
 	return errors.New("not implemented")
+}
+
+// recordingLLM captures each LLMRequest it sees so tests can assert
+// what the runner constructed from session state. Returns a canned
+// "ok" TurnComplete event.
+type recordingLLM struct {
+	mu       sync.Mutex
+	requests []*adkmodel.LLMRequest
+}
+
+func (r *recordingLLM) Name() string { return "recording" }
+
+func (r *recordingLLM) GenerateContent(_ context.Context, req *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	r.mu.Lock()
+	r.requests = append(r.requests, req)
+	r.mu.Unlock()
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		yield(&adkmodel.LLMResponse{
+			Content: &genai.Content{
+				Role:  genai.RoleModel,
+				Parts: []*genai.Part{{Text: "ok"}},
+			},
+			TurnComplete: true,
+		}, nil)
+	}
+}
+
+func (r *recordingLLM) lastRequest() *adkmodel.LLMRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.requests) == 0 {
+		return nil
+	}
+	return r.requests[len(r.requests)-1]
 }
 
 func TestNew_RejectsNilModel(t *testing.T) {
@@ -191,9 +227,136 @@ func TestDefaultInstruction_IncludesParallelismMandate(t *testing.T) {
 	}
 }
 
+func TestRunWithContents_FeedsHistoryToLLM(t *testing.T) {
+	t.Parallel()
+	rec := &recordingLLM{}
+	a, err := New(rec)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	contents := []*genai.Content{
+		{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "first user message"}}},
+		{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "first model reply"}}},
+		{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "follow-up question"}}},
+	}
+	for _, err := range a.RunWithContents(context.Background(), contents) {
+		if err != nil {
+			t.Fatalf("RunWithContents: %v", err)
+		}
+	}
+
+	req := rec.lastRequest()
+	if req == nil {
+		t.Fatal("LLM was never invoked")
+	}
+	// The runner should have built the LLMRequest from session events
+	// (pre-populated history) plus the new user message. We expect to
+	// see all three contents in some form.
+	got := flattenText(req.Contents)
+	for _, want := range []string{"first user message", "first model reply", "follow-up question"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("LLM request missing %q. Full request text: %q", want, got)
+		}
+	}
+}
+
 func TestDefaultOptions_UsesDefaultInstruction(t *testing.T) {
 	t.Parallel()
 	if got := defaultOptions().instruction; got != DefaultInstruction {
 		t.Errorf("defaultOptions().instruction = %q, want DefaultInstruction", got)
 	}
+}
+
+func TestRunWithContents_FreshSessionPerCall(t *testing.T) {
+	t.Parallel()
+	rec := &recordingLLM{}
+	a, err := New(rec)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// First call with one history item.
+	first := []*genai.Content{
+		{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "session A"}}},
+	}
+	for _, err := range a.RunWithContents(context.Background(), first) {
+		if err != nil {
+			t.Fatalf("first RunWithContents: %v", err)
+		}
+	}
+
+	// Second call with completely different history. If sessions were
+	// shared, the second call's LLM request would still reference
+	// "session A" content from the first call.
+	second := []*genai.Content{
+		{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "session B"}}},
+	}
+	for _, err := range a.RunWithContents(context.Background(), second) {
+		if err != nil {
+			t.Fatalf("second RunWithContents: %v", err)
+		}
+	}
+
+	got := flattenText(rec.lastRequest().Contents)
+	if strings.Contains(got, "session A") {
+		t.Errorf("second call leaked content from first call's session: %q", got)
+	}
+	if !strings.Contains(got, "session B") {
+		t.Errorf("second call missing its own content: %q", got)
+	}
+}
+
+func TestRunWithContents_RejectsEmpty(t *testing.T) {
+	t.Parallel()
+	rec := &recordingLLM{}
+	a, err := New(rec)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, err := range a.RunWithContents(context.Background(), nil) {
+		if err == nil || !strings.Contains(err.Error(), "contents is empty") {
+			t.Errorf("expected empty-contents error, got %v", err)
+		}
+		return
+	}
+	t.Fatal("expected an iteration with an error")
+}
+
+func TestRunWithContents_RejectsNonUserTrailing(t *testing.T) {
+	t.Parallel()
+	rec := &recordingLLM{}
+	a, err := New(rec)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	contents := []*genai.Content{
+		{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "q"}}},
+		{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "a"}}},
+	}
+	for _, err := range a.RunWithContents(context.Background(), contents) {
+		if err == nil || !strings.Contains(err.Error(), "last content must be a user message") {
+			t.Errorf("expected non-user-trailing error, got %v", err)
+		}
+		return
+	}
+	t.Fatal("expected an iteration with an error")
+}
+
+// flattenText concatenates all text parts across contents into one
+// string for substring assertions.
+func flattenText(contents []*genai.Content) string {
+	var b strings.Builder
+	for _, c := range contents {
+		if c == nil {
+			continue
+		}
+		for _, p := range c.Parts {
+			if p != nil && p.Text != "" {
+				b.WriteString(p.Text)
+				b.WriteByte('\n')
+			}
+		}
+	}
+	return b.String()
 }

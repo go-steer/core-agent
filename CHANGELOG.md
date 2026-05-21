@@ -16,6 +16,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+### Added
+
+- **`Agent.RunWithContents(ctx, []*genai.Content)`** — drives one agent turn from a caller-supplied conversation history instead of the session-managed prompt that `Agent.Run` uses. The trailing message is the new user input; everything before it is pre-populated into a fresh session as history events. Each call mints a fresh sessionID (`crypto/rand`) so prior calls don't bleed state — caller-supplied history is authoritative. Errors clearly when the trailing message isn't a user role, or when contents is empty. Motivating consumer is the AX adapter (runtimes that own the conversation log and resend it per turn); the primitive itself is general-purpose. The `Agent` struct grows three new exported accessors' worth of fields (`sessionService`, `appName`, `agentName`) to support the `Create + AppendEvent` round-trip.
+
 ---
 
 ## [1.6.0] — 2026-05-21

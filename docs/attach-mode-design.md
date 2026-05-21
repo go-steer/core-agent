@@ -612,18 +612,26 @@ Response: `200 OK` with a body listing the woken subagents:
 
 ### How the wake actually happens
 
-Under the hood, `/wake` calls `Agent.Inject` against the target
-subagent's inbox with a special **wake sentinel** message. The
-deferred goroutine is sitting in `SleepScheduler.BeforeNextTurn`'s
-`select { case <-time.After(wait): case <-ctx.Done(): }`. We add a
-third case: `case <-agent.WakeRequested():`, returning nil from the
-scheduler so the loop continues at the next iteration (with either
-the stored `next_prompt` or the operator-supplied override).
+The in-process primitive shipped with the scheduled-monitoring PR
+(see `docs/scheduled-monitoring-design.md` § "Settled design
+decisions"). Concretely on the agent side:
 
-The wake sentinel never reaches the model — it's an internal
-control-plane signal consumed by the scheduler. Operator-supplied
-`prompt`, when present, is what reaches the model as the next turn's
-input.
+- `Agent.RequestWake()` fires a coalesced buffered(1) channel.
+- `Agent.WakeRequested() <-chan struct{}` exposes the receive end.
+- `Agent.Inject` calls `RequestWake` internally so operator input
+  pierces sleep automatically.
+- `tools.ContextWithWake` plumbs the channel into the scheduler
+  context; `SleepScheduler.BeforeNextTurn`'s select carries a
+  third case `case <-wakeCh:` that returns nil so the loop
+  continues at the next iteration (with either the stored
+  `next_prompt` or the operator-supplied override).
+
+What attach mode adds is just the HTTP transport: the `POST /wake`
+handler resolves the target session, optionally calls `Agent.Inject`
+with the operator-supplied `prompt` (which also fires wake), then
+calls `Agent.RequestWake` on the session's agent. No new wake
+mechanism — purely the remote-operator surface over the existing
+primitive.
 
 `ExitOnDeferScheduler` deployments aren't reachable via `/wake` —
 the process has already exited, so there's no in-memory subagent to

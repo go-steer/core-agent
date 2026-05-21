@@ -108,14 +108,24 @@ Recorded here so the implementation phase doesn't reopen them.
   subsection below. Structural cadence can still land later as an
   additive opt-in if a consumer hits a case where model drift is
   actually a problem; not designed for now.
-- **Operator "wake any deferred subagent" lives in attach mode,
-  not here.** That verb is operationally an attach-mode action (an
-  operator outside the running process nudging a sleeping child back
-  awake), so the endpoint, auth, and registry lookup ride the existing
-  attach-mode surface. See `docs/attach-mode-design.md` for the
-  `POST /sessions/<id>/wake` (or `POST /sessions/<id>/subagents/<name>/wake`)
-  shape and how it composes with `Agent.Inject` to interrupt
-  `SleepScheduler.BeforeNextTurn`.
+- **In-process wake seam shipped here; the HTTP `/wake` endpoint
+  stays deferred to attach mode.** The original plan was to defer
+  the entire wake story to attach mode, but a UAT requirement for
+  reactive supervisor behavior pulled the in-process primitive
+  forward into the implementation commit. Concretely:
+  - **Shipped (this design):** `Agent.WakeRequested()` returns a
+    coalesced channel; `Agent.RequestWake()` fires it;
+    `tools.ContextWithWake` plumbs the channel to the scheduler;
+    `SleepScheduler` selects on it alongside its timer and
+    `ctx.Done`. `Agent.Inject` calls `RequestWake` internally so
+    operator input pierces sleep automatically.
+  - **Still deferred to attach mode:** the `POST /sessions/<id>/wake`
+    HTTP endpoint, auth, and remote-operator semantics. When attach
+    mode lands its handler just calls `Agent.RequestWake()` on the
+    looked-up session — the in-process plumbing is already in place.
+  - See `docs/attach-mode-design.md` § "How the wake actually
+    happens" for the endpoint shape; it now describes the
+    HTTP-only piece that's missing.
 
 ## Goals and non-goals
 

@@ -122,6 +122,7 @@ type Agent struct {
 	sessionID      string
 	bgMgr          *BackgroundAgentManager
 	inbox          *inbox
+	wake           *wakeSignal
 }
 
 // Option mutates Agent construction. Use the With* helpers below.
@@ -355,6 +356,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		sessionID:      o.sessionID,
 		bgMgr:          o.bgMgr,
 		inbox:          newInbox(),
+		wake:           newWakeSignal(),
 	}
 	if a.bgMgr != nil {
 		a.bgMgr.attachParent(a)

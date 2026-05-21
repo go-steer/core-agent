@@ -172,7 +172,14 @@ func (a *Agent) Inject(message string) error {
 		// do, for example) we don't want to panic.
 		return errors.New("agent: inbox not initialised (construct via agent.New)")
 	}
-	return a.inbox.push(message)
+	if err := a.inbox.push(message); err != nil {
+		return err
+	}
+	// Operator input should also pierce any active sleep — the
+	// scheduler selects on WakeRequested() alongside its sleep
+	// timer, so this lands as an immediate wake.
+	a.RequestWake()
+	return nil
 }
 
 // InboxArrived returns a channel that fires when a new message has

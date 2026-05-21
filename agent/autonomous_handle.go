@@ -293,6 +293,22 @@ func (h *AutonomousHandle) Inject(message string) error {
 	return a.Inject(message)
 }
 
+// RequestWake fires the underlying agent's wake signal, interrupting
+// any active scheduler sleep. Pairs with Inject for "operator nudged
+// the loop, wake now" semantics; Inject already calls RequestWake
+// internally, so this is for the alert-arrival case (or any other
+// signal that doesn't carry a message). No-op when the agent hasn't
+// been constructed yet.
+func (h *AutonomousHandle) RequestWake() {
+	h.mu.Lock()
+	a := h.agent
+	h.mu.Unlock()
+	if a == nil {
+		return
+	}
+	a.RequestWake()
+}
+
 // Status returns the current lifecycle state. Safe to call any time;
 // the goroutine's terminal handoff is mutex-coordinated.
 func (h *AutonomousHandle) Status() AutonomousStatus {

@@ -69,6 +69,54 @@ func TestSleepScheduler_ContextCancellation(t *testing.T) {
 	}
 }
 
+func TestSleepScheduler_ExternalWakeUnblocks(t *testing.T) {
+	t.Parallel()
+	s := SleepScheduler()
+	wake := make(chan struct{}, 1)
+	ctx := ContextWithWake(context.Background(), wake)
+	// Fire wake after a short delay; SleepScheduler should return
+	// nil promptly (not ctx.Err()) and not wait out the hour.
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		wake <- struct{}{}
+	}()
+	start := time.Now()
+	err := s.BeforeNextTurn(ctx, ScheduleEvent{
+		WakeAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Errorf("expected nil (external wake), got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Errorf("should have unblocked on external wake quickly, took %v", elapsed)
+	}
+}
+
+func TestSleepScheduler_NilWakeChannelBlocksOnTimerOnly(t *testing.T) {
+	t.Parallel()
+	// No wake channel attached — scheduler should behave exactly as
+	// before (wait for the timer, respect ctx).
+	s := SleepScheduler()
+	start := time.Now()
+	if err := s.BeforeNextTurn(context.Background(), ScheduleEvent{
+		WakeAt: time.Now().Add(40 * time.Millisecond),
+	}); err != nil {
+		t.Fatalf("BeforeNextTurn: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 30*time.Millisecond {
+		t.Errorf("returned too early (nil wakeCh should not fire): %v", elapsed)
+	}
+}
+
+func TestContextWithWake_NilChannelIsNoOp(t *testing.T) {
+	t.Parallel()
+	parent := context.Background()
+	got := ContextWithWake(parent, nil)
+	if got != parent {
+		t.Errorf("ContextWithWake(_, nil) should return the parent ctx unchanged")
+	}
+}
+
 func TestExitOnDeferScheduler_AlwaysReturnsDeferSentinel(t *testing.T) {
 	t.Parallel()
 	s := ExitOnDeferScheduler()

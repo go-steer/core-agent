@@ -63,9 +63,45 @@ func (f SchedulerFunc) BeforeNextTurn(ctx context.Context, ev ScheduleEvent) err
 	return f(ctx, ev)
 }
 
+// wakeKey carries an external wake channel through the scheduler
+// context. The autonomous driver attaches the agent's WakeRequested
+// channel before calling Scheduler.BeforeNextTurn so SleepScheduler
+// can interrupt its sleep on an out-of-band signal (alert arrival,
+// operator inject, future attach-mode /wake).
+type wakeKey struct{}
+
+// ContextWithWake attaches a wake channel to ctx. SleepScheduler
+// selects on it alongside its sleep timer and ctx.Done. Nil channels
+// are safe (select on nil blocks forever, so the case never fires).
+//
+// Exported so the autonomous driver (in package agent) can plumb the
+// agent's wake channel through to SleepScheduler without scheduler
+// callers learning about the agent type.
+func ContextWithWake(ctx context.Context, wake <-chan struct{}) context.Context {
+	if wake == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, wakeKey{}, wake)
+}
+
+// wakeFromContext returns the wake channel attached via ContextWithWake,
+// or nil if none.
+func wakeFromContext(ctx context.Context) <-chan struct{} {
+	if ctx == nil {
+		return nil
+	}
+	ch, _ := ctx.Value(wakeKey{}).(<-chan struct{})
+	return ch
+}
+
 // SleepScheduler returns a Scheduler that sleeps the calling goroutine
 // until ev.WakeAt, respecting context cancellation. Returns nil on
 // wake; returns ctx.Err() when the context is cancelled mid-sleep.
+//
+// Also returns nil immediately when an external wake signal fires on
+// the channel attached via ContextWithWake — this is how a child
+// alert arrival or an operator Inject pierces an active sleep so the
+// agent reacts without waiting out the full scheduled interval.
 //
 // Use when the agent runs as a long-lived daemon that should retain
 // in-memory state between scan cycles (warm prompt cache, supervisor
@@ -81,11 +117,16 @@ func SleepScheduler() Scheduler {
 		}
 		t := time.NewTimer(wait)
 		defer t.Stop()
+		// A nil wakeCh in the select blocks forever, which is the
+		// right behavior when no wake source is attached.
+		wakeCh := wakeFromContext(ctx)
 		select {
 		case <-t.C:
 			return nil
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-wakeCh:
+			return nil
 		}
 	})
 }

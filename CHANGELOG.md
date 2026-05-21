@@ -16,6 +16,12 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+---
+
+## [1.6.0] — 2026-05-21
+
+Scheduled monitoring — the missing primitive for long-running autonomous workloads. New `tools.Scheduler` interface + `tools.SleepScheduler` / `tools.ExitOnDeferScheduler` impls + `schedule_next_turn` tool let the model emit *"wake me at T+N with prompt X"* intent that the autonomous driver honors between turns, without burning the prompt cache by sleeping inside a turn. Composes with `agent.BackgroundAgentManager` (via `WithBackgroundDefaultScheduler`) for the canonical supervisor-fans-out-to-N-monitors topology — validated end-to-end against a real GKE cluster with Vertex/Gemini in the new `dev/uat/scheduled-monitor` driver, including three-layer reactive fan-out (supervisor → long-running monitor → on-demand triage subagent spawned via `scheduler="none"`). Plus the `Agent.WakeRequested` / `Agent.RequestWake` seam so out-of-band signals (operator inject, child-alert arrival) pierce active sleeps; an eventlog write-serialization mutex that lets concurrent agents share a SQLite session DB without `SQLITE_BUSY` races; and a `spawn_agent` fix that tolerates the model listing auto-wired tool names (`schedule_next_turn`, `report_done`, `report_alert`, `report_completed`) by silently skipping them.
+
 ### Added
 
 - **Scheduler primitive for paced autonomous loops** — long-running monitoring deployments can now have the model emit a "wake me at T+N with prompt X" intent that the autonomous driver honors between turns, without burning the prompt cache by sleeping inside a turn. New surface area in package `tools`:

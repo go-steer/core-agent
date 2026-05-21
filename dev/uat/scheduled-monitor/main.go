@@ -75,16 +75,20 @@ Each monitor should:
 - Call schedule_next_turn with wake_in_sec set per the cadence ladder in your system prompt (default to 600 seconds = 10 minutes for cluster scans, 30 seconds for hot anomaly investigation).
 - Call report_alert when it finds something genuinely odd. Avoid noise.
 
-You (the supervisor) only spawn and supervise. Use list_agents to see what's running, check_agent to inspect a specific monitor's status, and stop_agent if a target is decommissioned. Once your monitors are launched and reporting in a steady state, call report_done with state="done" and a one-sentence summary of what you set up.`
+After spawning your monitors, stay alive by calling schedule_next_turn yourself (wake_in_sec=3600 — one hour is a fine default for supervisor check-ins; child alerts will arrive in your inbox on your next wake regardless of when you scheduled it). On each supervisor wake, drain any alerts that arrived, call list_agents to confirm everyone's still running, and either react (spawn triage, adjust cadence, stop decommissioned monitors) or schedule the next check-in. Do NOT call report_done — that exits the run permanently and kills all your children. The operator's wallclock budget (or Ctrl+C) ends the run when the test session is over.`
 
-const supervisorBrief = `You are the supervisor of a fleet of Kubernetes cluster/namespace monitors. The user gave you a Kubernetes monitoring goal; your job is to translate that into spawn_agent calls that launch one focused background subagent per monitoring target, then stand by.
+const supervisorBrief = `You are the supervisor of a fleet of Kubernetes cluster/namespace monitors. The user gave you a Kubernetes monitoring goal; your job is to:
 
-When children alert you via the [Background reports] inbox prepended to your turns, decide:
-- Investigate further: spawn a one-shot triage subagent with scheduler="none" to dig into a specific incident.
-- Adjust cadence: stop a monitor and respawn it with a different prompt if its cadence is wrong for what you're seeing.
-- Decommission: stop_agent when a target is no longer in scope.
+1. On your first turn, translate the goal into spawn_agent calls that launch one focused background subagent per monitoring target.
+2. After spawning, call schedule_next_turn(wake_in_sec=3600) so you stay alive without burning tokens. Alerts from your children arrive in the [Background reports] inbox prepended to your next turn — even if they arrive during your sleep, you'll see them on wake.
+3. On each subsequent wake:
+   - Drain alerts: if children reported anomalies, decide whether to spawn a one-shot triage subagent (use scheduler="none" for triage — it shouldn't outlive its investigation), adjust a misconfigured monitor's cadence by stopping + respawning it, or stop_agent a decommissioned target.
+   - Sanity check: call list_agents to confirm all expected monitors are still running.
+   - Schedule next check-in: schedule_next_turn(wake_in_sec=3600) again.
 
-Do not poll yourself. Do not call schedule_next_turn at the supervisor level — that's for the children.`
+DO NOT call report_done at any point. report_done exits the autonomous loop and kills all your background children (their HTTP requests get context-cancelled mid-flight). The operator's wallclock budget (or Ctrl+C) is what ends the run; you just supervise until then.
+
+DO NOT poll children yourself between scheduled wakes — that's what schedule_next_turn is for. You're reactive at supervisor check-ins, not pollee.`
 
 func main() {
 	provider := flag.String("provider", "vertex", "model provider: vertex | anthropic-vertex | anthropic | gemini")
@@ -235,9 +239,7 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 	// === Chat-style streaming via the bundled CLI's renderer ===
 	eventCh := make(chan *session.Event, 1024)
 	var chatWG sync.WaitGroup
-	chatWG.Add(1)
-	go func() {
-		defer chatWG.Done()
+	chatWG.Go(func() {
 		seq := func(yield func(*session.Event, error) bool) {
 			for ev := range eventCh {
 				if !yield(ev, nil) {
@@ -246,7 +248,7 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 			}
 		}
 		_ = runner.WriteEvents(seq, os.Stdout, os.Stderr)
-	}()
+	})
 	defer func() { close(eventCh); chatWG.Wait() }()
 
 	// === Banner + go ===

@@ -22,10 +22,27 @@ import (
 	"time"
 
 	"google.golang.org/adk/tool"
+	"google.golang.org/adk/tool/functiontool"
 
 	"github.com/go-steer/core-agent/models"
 	"github.com/go-steer/core-agent/models/mock"
 )
+
+// newNamedStubTool returns a no-op tool whose Name() is `name`. Used
+// by catalog-lookup tests that need a tool with a controlled name
+// outside the auto-wired set (schedule_next_turn, report_done, etc.).
+func newNamedStubTool(t *testing.T, name string) tool.Tool {
+	t.Helper()
+	type empty struct{}
+	tl, err := functiontool.New(
+		functiontool.Config{Name: name, Description: "stub"},
+		func(_ tool.Context, _ empty) (empty, error) { return empty{}, nil },
+	)
+	if err != nil {
+		t.Fatalf("functiontool.New(%q): %v", name, err)
+	}
+	return tl
+}
 
 func newFakeManager(t *testing.T) (*BackgroundAgentManager, models.Provider) {
 	t.Helper()
@@ -325,8 +342,10 @@ func TestSpawn_TerminalAlertIsPushed(t *testing.T) {
 
 func TestResolveTools_LooksUpByName(t *testing.T) {
 	t.Parallel()
-	// Use a real tool to make name lookup meaningful.
-	dummy := newReportAlertTool(&BackgroundAgentManager{alerts: make(chan Alert, 1)}, "test")
+	// Use a name outside the auto-wired set so the catalog lookup
+	// path is exercised (auto-wired names are silently skipped — see
+	// TestResolveTools_SkipsAutoWiredNames below).
+	dummy := newNamedStubTool(t, "custom_inspector")
 	mgr, err := NewBackgroundAgentManager(
 		WithBackgroundProvider(mock.NewEcho(), "echo"),
 		WithBackgroundCatalog([]tool.Tool{dummy}),
@@ -334,7 +353,7 @@ func TestResolveTools_LooksUpByName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("manager: %v", err)
 	}
-	got, err := mgr.resolveTools([]string{"report_alert"})
+	got, err := mgr.resolveTools([]string{"custom_inspector"})
 	if err != nil {
 		t.Fatalf("resolveTools: %v", err)
 	}
@@ -343,5 +362,35 @@ func TestResolveTools_LooksUpByName(t *testing.T) {
 	}
 	if _, err := mgr.resolveTools([]string{"unknown"}); !errors.Is(err, ErrUnknownTool) {
 		t.Errorf("expected ErrUnknownTool; got %v", err)
+	}
+}
+
+func TestResolveTools_SkipsAutoWiredNames(t *testing.T) {
+	t.Parallel()
+	// The runtime auto-wires schedule_next_turn / report_done /
+	// report_alert / report_completed into every subagent, so a model
+	// listing them in spec.Tools must NOT fail (and must not duplicate
+	// either). Asserts:
+	//   - auto-wired names are accepted (no ErrUnknownTool)
+	//   - they're dropped from the returned slice (auto-wired instance
+	//     is what actually runs)
+	//   - catalog tools alongside them still resolve normally
+	custom := newNamedStubTool(t, "custom_inspector")
+	mgr, err := NewBackgroundAgentManager(
+		WithBackgroundProvider(mock.NewEcho(), "echo"),
+		WithBackgroundCatalog([]tool.Tool{custom}),
+	)
+	if err != nil {
+		t.Fatalf("manager: %v", err)
+	}
+	got, err := mgr.resolveTools([]string{
+		"schedule_next_turn", "report_done", "report_alert",
+		"report_completed", "custom_inspector",
+	})
+	if err != nil {
+		t.Fatalf("resolveTools: %v", err)
+	}
+	if len(got) != 1 || got[0] != custom {
+		t.Errorf("expected only the catalog custom_inspector after auto-wired skipping; got %v", got)
 	}
 }

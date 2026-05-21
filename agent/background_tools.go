@@ -93,7 +93,7 @@ func NewSpawnAgentTool(mgr *BackgroundAgentManager) tool.Tool {
 	}
 	t, err := functiontool.New(functiontool.Config{
 		Name:        "spawn_agent",
-		Description: "Spawn an in-process background subagent that runs in parallel with you. You provide its name, system prompt, goal, and the tools it may use. The subagent runs autonomously; you'll receive its updates as '[Background reports]' lines prepended to your next turn when it calls report_alert or finishes. Use this for tasks that should run continuously (monitoring) or in parallel (independent fan-out work).",
+		Description: "Spawn an in-process background subagent that runs in parallel with you. You provide its name, system prompt, goal, and the tools it may use. The subagent runs autonomously; you'll receive its updates as '[Background reports]' lines prepended to your next turn when it calls report_alert or finishes. Use this for tasks that should run continuously (monitoring) or in parallel (independent fan-out work). Do NOT list 'schedule_next_turn', 'report_done', 'report_alert', or 'report_completed' in the tools field — those are auto-wired into every subagent by the runtime; listing them is a no-op (silently skipped).",
 	}, handler)
 	if err != nil {
 		panic("agent: NewSpawnAgentTool: " + err.Error())

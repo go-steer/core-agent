@@ -326,7 +326,16 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 		// rather than waiting for its next scheduled wake. The
 		// goroutine exits on EOF; we don't block on it at shutdown
 		// (handle.Wait below is the canonical run-end signal).
+		//
+		// Waits on handle.Ready() before printing the prompt so any
+		// line the operator types lands in an existing agent's
+		// inbox instead of failing with "agent not yet constructed".
 		go func() {
+			select {
+			case <-handle.Ready():
+			case <-ctx.Done():
+				return
+			}
 			scanner := bufio.NewScanner(os.Stdin)
 			scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 			fmt.Println("[input] type a message + Enter to inject into the supervisor's inbox; Ctrl+D to stop reading stdin (the run continues either way).")

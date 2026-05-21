@@ -31,6 +31,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	adktool "google.golang.org/adk/tool"
@@ -92,31 +93,43 @@ func main() {
 	attachClientCA := flag.String("attach-client-ca", "", "CA PEM for client-cert verification (mTLS). When set, clients must present a cert signed by this CA.")
 	attachTokenEnv := flag.String("attach-token", "", "env var name holding the bearer token clients must present in Authorization: Bearer <token>. Empty disables bearer-token auth.")
 	attachReadonly := flag.Bool("attach-readonly", false, "attach-mode: disable POST /inject and /wake. Read endpoints (GET /sessions, GET /events) remain open.")
+	attachPeerHub := flag.Bool("attach-peer-hub", false, "enable peer-registration endpoints (POST/GET /peers + heartbeat) on the attach listener — this agent becomes a discovery hub for other peers.")
+	attachRegisterTo := flag.String("attach-register-to", "", "register this agent with a remote attach hub at this URL (e.g. https://hub.default.svc:7777). Heartbeats automatically. Requires --attach-listen so the hub records a reachable endpoint.")
+	attachRegisterName := flag.String("attach-register-name", "", "name to register with the hub. Defaults to hostname.")
+	attachRegisterEndpoint := flag.String("attach-register-endpoint", "", "endpoint to publish to the hub (e.g. https://${POD_IP}:7777). Required when --attach-register-to is set; this agent's own --attach-listen value is NOT used since it may bind 0.0.0.0 and the hub can't reach that.")
 	flag.Parse()
 
 	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost,
 		attachOpts{
-			Listen:     *attachListen,
-			UnixSocket: *attachUnixSocket,
-			TLSCert:    *attachTLSCert,
-			TLSKey:     *attachTLSKey,
-			ClientCA:   *attachClientCA,
-			TokenEnv:   *attachTokenEnv,
-			ReadOnly:   *attachReadonly,
+			Listen:           *attachListen,
+			UnixSocket:       *attachUnixSocket,
+			TLSCert:          *attachTLSCert,
+			TLSKey:           *attachTLSKey,
+			ClientCA:         *attachClientCA,
+			TokenEnv:         *attachTokenEnv,
+			ReadOnly:         *attachReadonly,
+			PeerHub:          *attachPeerHub,
+			RegisterTo:       *attachRegisterTo,
+			RegisterName:     *attachRegisterName,
+			RegisterEndpoint: *attachRegisterEndpoint,
 		})
 	os.Exit(code)
 }
 
 // attachOpts bundles the attach-mode CLI flags so run()'s signature
-// doesn't grow by 7 more positional args.
+// doesn't grow by 11 more positional args.
 type attachOpts struct {
-	Listen     string
-	UnixSocket string
-	TLSCert    string
-	TLSKey     string
-	ClientCA   string
-	TokenEnv   string
-	ReadOnly   bool
+	Listen           string
+	UnixSocket       string
+	TLSCert          string
+	TLSKey           string
+	ClientCA         string
+	TokenEnv         string
+	ReadOnly         bool
+	PeerHub          bool
+	RegisterTo       string
+	RegisterName     string
+	RegisterEndpoint string
 }
 
 func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, attachCfg attachOpts) int {
@@ -361,10 +374,16 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 				return runner.ExitConfigError
 			}
 		}
+		var peerReg *attach.PeerRegistry
+		if attachCfg.PeerHub {
+			peerReg = attach.NewPeerRegistry()
+			defer func() { _ = peerReg.Close() }()
+		}
 		attachSrv, err := attach.NewServer(attach.Options{
-			Registry:   attachReg,
-			Addr:       attachCfg.Listen,
-			UnixSocket: attachCfg.UnixSocket,
+			Registry:     attachReg,
+			PeerRegistry: peerReg,
+			Addr:         attachCfg.Listen,
+			UnixSocket:   attachCfg.UnixSocket,
 			Auth: attach.AuthConfig{
 				TLSCertFile:  attachCfg.TLSCert,
 				TLSKeyFile:   attachCfg.TLSKey,
@@ -382,12 +401,58 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 			if endpoint == "" {
 				endpoint = "unix://" + attachCfg.UnixSocket
 			}
-			fmt.Fprintf(os.Stderr, "core-agent: attach listener on %s\n", endpoint)
+			extras := ""
+			if peerReg != nil {
+				extras = " (peer-hub enabled)"
+			}
+			fmt.Fprintf(os.Stderr, "core-agent: attach listener on %s%s\n", endpoint, extras)
 			if err := attachSrv.ListenAndServe(); err != nil {
 				fmt.Fprintf(os.Stderr, "core-agent: attach server: %v\n", err)
 			}
 		}()
 		defer func() { _ = attachSrv.Close() }()
+	}
+
+	// Peer registration: this agent registers with a remote hub. Lives
+	// alongside the local listener (the agent CAN be both a hub and a
+	// peer of another hub, though that's unusual). The hub records
+	// RegisterEndpoint as the reachable address, not Listen — operators
+	// commonly bind 0.0.0.0 for Listen but need to publish a specific
+	// pod IP to the hub.
+	if attachCfg.RegisterTo != "" {
+		if attachCfg.RegisterEndpoint == "" {
+			fmt.Fprintln(os.Stderr, "core-agent: --attach-register-to requires --attach-register-endpoint (the URL the hub should record for this agent)")
+			return runner.ExitConfigError
+		}
+		regName := attachCfg.RegisterName
+		if regName == "" {
+			if h, herr := os.Hostname(); herr == nil {
+				regName = h
+			} else {
+				regName = "core-agent"
+			}
+		}
+		peerClientOpts := []attach.PeerClientOption{}
+		if attachCfg.TokenEnv != "" {
+			if tok := os.Getenv(attachCfg.TokenEnv); tok != "" {
+				peerClientOpts = append(peerClientOpts, attach.WithPeerBearerToken(tok))
+			}
+		}
+		peerClient := attach.NewPeerClient(attachCfg.RegisterTo, peerClientOpts...)
+		regCtx, regCancel := context.WithTimeout(ctx, 10*time.Second)
+		stopPeer, err := peerClient.RegisterAndHeartbeat(regCtx, attach.RegisterRequest{
+			Name:     regName,
+			Endpoint: attachCfg.RegisterEndpoint,
+			Labels:   map[string]string{"core-agent-version": "dev"},
+		})
+		regCancel()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: register with hub %s: %v\n", attachCfg.RegisterTo, err)
+			return runner.ExitConfigError
+		}
+		fmt.Fprintf(os.Stderr, "core-agent: registered with hub %s as %q (endpoint=%s)\n",
+			attachCfg.RegisterTo, regName, attachCfg.RegisterEndpoint)
+		defer stopPeer()
 	}
 
 	colorOn, err := resolveColor(color, os.Stdout)

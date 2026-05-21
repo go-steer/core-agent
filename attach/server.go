@@ -33,6 +33,13 @@ type Options struct {
 	// URL session IDs to live agents. Required.
 	Registry *SessionRegistry
 
+	// PeerRegistry, when non-nil, enables peer-registration endpoints
+	// (POST /peers, GET /peers, etc.) — turning this listener into a
+	// discovery hub for other agents. Nil means the peer endpoints
+	// are not registered and POST /peers returns 404. See
+	// docs/peer-registration-design.md.
+	PeerRegistry *PeerRegistry
+
 	// Auth controls TLS + bearer + read-only enforcement. Zero value
 	// accepts everything (safe only over a Unix socket or other
 	// already-trusted transport).
@@ -91,6 +98,10 @@ func NewServer(opts Options) (*Server, error) {
 	mux := http.NewServeMux()
 	h := newHandlers(opts.Registry, pool)
 	h.register(mux)
+	if opts.PeerRegistry != nil {
+		ph := newPeerHandlers(opts.PeerRegistry)
+		ph.register(mux)
+	}
 
 	return &Server{
 		opts: opts,

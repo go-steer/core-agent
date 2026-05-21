@@ -13,46 +13,33 @@
 // limitations under the License.
 
 // UAT driver for the scheduled-monitoring feature
-// (docs/scheduled-monitoring-design.md). Drives a real LLM against a
-// real K8s cluster so the operator can walk the UAT scenarios
-// (U1–U10) before sign-off.
+// (docs/scheduled-monitoring-design.md). Stands up the full
+// supervisor topology — BackgroundAgentManager +
+// WithBackgroundDefaultScheduler(SleepScheduler()) + the spawn-tool
+// family + DefaultSchedulingInstruction + bash gated to read-only
+// kubectl — so the operator can walk the design doc's UAT scenarios
+// against a real K8s cluster + real LLM.
 //
-// What this binary wires that the bundled CLI doesn't:
+// In-memory only. No persistence; chat output is the live observation
+// surface (same renderer the bundled CLI uses). Crash-resume (U5/U6)
+// is intentionally deferred — add eventlog wiring back when needed.
 //
-//   - BackgroundAgentManager with WithBackgroundDefaultScheduler(SleepScheduler()).
-//   - The parent agent's system prompt composes agent.DefaultInstruction +
-//     agent.DefaultSchedulingInstruction + a GKE-supervisor brief.
-//   - The full spawn-tool family (spawn_agent / list_agents /
-//     check_agent / stop_agent) so the parent's model can manage the
-//     child monitors at runtime.
-//   - bash with a read-only kubectl allowlist by default so the
-//     children can poll cluster state.
-//   - --session-db enabled by default (required for U5/U6 resume).
+// Usage:
 //
-// Usage (from the repo root):
+//	go run ./dev/uat/scheduled-monitor --provider=vertex
+//	go run ./dev/uat/scheduled-monitor --provider=vertex --goal="<custom prompt>"
 //
-//	# Fresh run against Vertex+Claude, 2-hour budget, default goal:
-//	go run ./dev/uat/scheduled-monitor \
-//	    --provider=anthropic-vertex \
-//	    --max-wallclock=2h
-//
-//	# Override the goal:
-//	go run ./dev/uat/scheduled-monitor \
-//	    --goal="Watch namespace ingress-system. Alert on pod restarts."
-//
-//	# Resume after kill -9 (U5/U6):
-//	go run ./dev/uat/scheduled-monitor --resume --session-id=run-2026-05-20
-//
-// Env required (depending on provider): GOOGLE_GENAI_USE_VERTEXAI=true
-// + GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION for Vertex/Gemini;
-// ANTHROPIC_VERTEX_PROJECT_ID + CLOUD_ML_REGION for anthropic-vertex;
-// ANTHROPIC_API_KEY for anthropic; GEMINI_API_KEY/GOOGLE_API_KEY for
-// gemini API. KUBECONFIG (or default ~/.kube/config) must point at the
-// cluster the bash tool will run kubectl against.
+// Env: see the bundled CLI's provider docs — Vertex+Gemini needs
+// GOOGLE_GENAI_USE_VERTEXAI=true + GOOGLE_CLOUD_PROJECT +
+// GOOGLE_CLOUD_LOCATION + ADC; Anthropic/Vertex needs
+// ANTHROPIC_VERTEX_PROJECT_ID + CLOUD_ML_REGION + ADC. KUBECONFIG (or
+// ~/.kube/config) must point at the cluster the bash tool will run
+// kubectl against.
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -80,17 +67,15 @@ import (
 	coretools "github.com/go-steer/core-agent/tools"
 )
 
-const defaultGoal = `Watch this Kubernetes project. Your job is to spawn one background monitor per target the operator specifies (cluster names or namespaces — discover them via kubectl get if not told explicitly), and have each monitor scan periodically for anything odd: error-rate spikes in logs, new deployments, deployments that disappeared, pods in CrashLoopBackOff, image-pull failures.
+const defaultGoal = `Watch this Kubernetes project. Spawn one background monitor per target the operator specifies (cluster names or namespaces — discover them via kubectl get if not told explicitly), and have each monitor scan periodically for anything odd: error-rate spikes in logs, new deployments, deployments that disappeared, pods in CrashLoopBackOff, image-pull failures.
 
 Each monitor should:
 - Use the bash tool with kubectl to inspect state on every wake.
 - Write its prior-scan baseline to a small file in /tmp so it can diff on the next wake (state does NOT survive schedule_next_turn — write what you need to remember to disk).
 - Call schedule_next_turn with wake_in_sec set per the cadence ladder in your system prompt (default to 600 seconds = 10 minutes for cluster scans, 30 seconds for hot anomaly investigation).
-- Call report_alert when it finds something genuinely odd. Avoid noise: a single error spike isn't worth alerting; a sustained pattern is.
+- Call report_alert when it finds something genuinely odd. Avoid noise.
 
-You (the supervisor) only spawn and supervise. Use list_agents to see what's running, check_agent to inspect a specific monitor's status, and stop_agent if a target is decommissioned.
-
-Once your monitors are launched and reporting in a steady state, call report_done with state="done" and a one-sentence summary of what you set up.`
+You (the supervisor) only spawn and supervise. Use list_agents to see what's running, check_agent to inspect a specific monitor's status, and stop_agent if a target is decommissioned. Once your monitors are launched and reporting in a steady state, call report_done with state="done" and a one-sentence summary of what you set up.`
 
 const supervisorBrief = `You are the supervisor of a fleet of Kubernetes cluster/namespace monitors. The user gave you a Kubernetes monitoring goal; your job is to translate that into spawn_agent calls that launch one focused background subagent per monitoring target, then stand by.
 
@@ -99,63 +84,51 @@ When children alert you via the [Background reports] inbox prepended to your tur
 - Adjust cadence: stop a monitor and respawn it with a different prompt if its cadence is wrong for what you're seeing.
 - Decommission: stop_agent when a target is no longer in scope.
 
-Do not poll yourself. Do not call schedule_next_turn at the supervisor level — that's for the children. You're reactive: you act when children alert.`
+Do not poll yourself. Do not call schedule_next_turn at the supervisor level — that's for the children.`
 
 func main() {
-	providerFlag := flag.String("provider", "anthropic-vertex", "model provider: anthropic-vertex | vertex | anthropic | gemini")
-	modelFlag := flag.String("model", "", "model name (default chosen per provider — claude-opus-4-7 for anthropic-vertex)")
-	goalFlag := flag.String("goal", defaultGoal, "the operator's prompt — what the supervisor should accomplish")
+	provider := flag.String("provider", "vertex", "model provider: vertex | anthropic-vertex | anthropic | gemini")
+	model := flag.String("model", "", "model name (default chosen per provider — gemini-3.1-pro-preview-customtools for vertex, claude-opus-4-7 for anthropic-vertex)")
+	goal := flag.String("goal", defaultGoal, "the operator's prompt — what the supervisor should accomplish")
 	maxWallclock := flag.Duration("max-wallclock", 2*time.Hour, "hard cap on the supervisor's total wallclock")
 	maxTurns := flag.Int("max-turns", 200, "hard cap on the supervisor's turn count")
 	maxDefer := flag.Duration("max-defer", 1*time.Hour, "driver-level ceiling on child schedule_next_turn delays")
-	sessionDB := flag.String("session-db", defaultSessionDBPath(), "SQLite path for the durable event log (required for resume)")
-	sessionID := flag.String("session-id", fmt.Sprintf("uat-%s", time.Now().UTC().Format("2006-01-02-150405")), "session ID — set explicitly to enable --resume against the same session")
-	resume := flag.Bool("resume", false, "resume from a deferred or interrupted run on this session-id instead of starting fresh")
-	kubectlAllowAll := flag.Bool("kubectl-allow-all", false, "DANGER: allow bash to run any kubectl command (default: only get/logs/describe/version/cluster-info)")
 	maxConcurrent := flag.Int("max-concurrent", 8, "max concurrent background subagents")
-	quiet := flag.Bool("quiet", false, "suppress chat-style streaming output (alerts and heartbeats still print)")
+	kubectlAllowAll := flag.Bool("kubectl-allow-all", false, "DANGER: allow bash to run any kubectl command (default: only get/logs/describe/version/cluster-info)")
+	sessionDB := flag.String("session-db", "", "SQLite path for the durable event log. Empty (default) = in-memory only — fast and simple. Set to e.g. /tmp/scheduled-monitor-uat/sessions.db to enable --resume across runs (writes are serialized through the eventlog service so concurrent subagents don't race).")
+	sessionID := flag.String("session-id", "", "session ID. Empty defaults to a timestamp. Set explicitly when using --session-db so --resume can find the prior run.")
+	resumeFlag := flag.Bool("resume", false, "resume from the latest checkpoint on --session-id instead of starting fresh. Requires --session-db.")
 	flag.Parse()
 
-	if err := run(*providerFlag, *modelFlag, *goalFlag, *maxWallclock, *maxTurns, *maxDefer,
-		*sessionDB, *sessionID, *resume, *kubectlAllowAll, *maxConcurrent, *quiet); err != nil {
+	if err := run(*provider, *model, *goal, *maxWallclock, *maxTurns, *maxDefer, *maxConcurrent, *kubectlAllowAll,
+		*sessionDB, *sessionID, *resumeFlag); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, maxDef time.Duration,
-	dbPath, sessID string, resumeFlag, kubectlAllowAll bool, maxConc int, quiet bool,
-) error {
-	// Graceful shutdown on SIGINT/SIGTERM so background goroutines
-	// drain cleanly and the final checkpoint lands.
+func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, maxDef time.Duration, maxConc int, kubectlAllowAll bool,
+	dbPath, sessID string, resumeFlag bool) error {
+	if resumeFlag && dbPath == "" {
+		return errors.New("--resume requires --session-db")
+	}
+	if sessID == "" {
+		sessID = "uat-" + time.Now().UTC().Format("2006-01-02-150405")
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	// === Provider + model ===
 	cfg := config.DefaultConfig()
 	cfg.Model.Provider = providerName
-	if modelName == "" {
-		switch providerName {
-		case "anthropic-vertex", "anthropic":
-			modelName = "claude-opus-4-7"
-		}
+	if modelName == "" && (providerName == "anthropic-vertex" || providerName == "anthropic") {
+		modelName = "claude-opus-4-7"
 	}
 	if modelName != "" {
 		cfg.Model.Name = modelName
 	}
 	cfg.Permissions.Mode = config.PermissionModeAllow
-	provider, err := models.Resolve(cfg)
-	if err != nil {
-		return fmt.Errorf("resolve provider: %w", err)
-	}
-	parentModel, err := provider.Model(ctx, cfg.Model.Name)
-	if err != nil {
-		return fmt.Errorf("build model: %w", err)
-	}
 
-	// === Permission gate ===
-	// Default: read-only kubectl. Use --kubectl-allow-all only if you
-	// trust the model to mutate state in your test cluster.
-	// Pattern grammar (see permissions/policy.go): "<tool>:<glob>".
+	// Pattern grammar (permissions/policy.go): "<tool>:<glob>".
 	bashAllow := []string{
 		"bash:kubectl get *",
 		"bash:kubectl logs *",
@@ -170,6 +143,15 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 		bashAllow = append(bashAllow, "bash:kubectl *")
 	}
 	cfg.Permissions.Allow = append(cfg.Permissions.Allow, bashAllow...)
+
+	prov, err := models.Resolve(cfg)
+	if err != nil {
+		return fmt.Errorf("resolve provider: %w", err)
+	}
+	parentModel, err := prov.Model(ctx, cfg.Model.Name)
+	if err != nil {
+		return fmt.Errorf("build model: %w", err)
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -178,31 +160,31 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 	if err != nil {
 		return fmt.Errorf("permissions: %w", err)
 	}
-
-	// === Built-in tools ===
 	reg, err := coretools.Build(cfg, gate, coretools.Default())
 	if err != nil {
 		return fmt.Errorf("tools.Build: %w", err)
 	}
 
-	// === Eventlog (required for U5/U6 resume) ===
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
-		return fmt.Errorf("mkdir session-db dir: %w", err)
-	}
-	handle, err := eventlog.Open(ctx, sqlite.Open(dbPath))
-	if err != nil {
-		return fmt.Errorf("eventlog.Open: %w", err)
-	}
-	defer func() { _ = handle.Close() }()
-
+	// === Optional eventlog (enables --resume) ===
 	const (
 		appName = "scheduled-monitor-uat"
 		userID  = "uat"
 	)
+	var handle *eventlog.Handle
+	if dbPath != "" {
+		if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+			return fmt.Errorf("mkdir session-db dir: %w", err)
+		}
+		handle, err = eventlog.Open(ctx, sqlite.Open(dbPath))
+		if err != nil {
+			return fmt.Errorf("eventlog.Open: %w", err)
+		}
+		defer func() { _ = handle.Close() }()
+	}
 
 	// === BackgroundAgentManager with the new default scheduler ===
 	mgr, err := agent.NewBackgroundAgentManager(
-		agent.WithBackgroundProvider(provider, cfg.Model.Name),
+		agent.WithBackgroundProvider(prov, cfg.Model.Name),
 		agent.WithBackgroundGate(gate),
 		agent.WithBackgroundCatalog(reg.Tools),
 		agent.WithBackgroundMaxConcurrent(maxConc),
@@ -216,112 +198,92 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 		return fmt.Errorf("BackgroundAgentManager: %w", err)
 	}
 	defer func() { _ = mgr.Close() }()
-
-	// Inline alert display so the operator sees children reporting
-	// in real time even without attach mode.
 	mgr.OnAlert(func(a agent.Alert) {
 		fmt.Printf("[alert] %s %s: %s\n", a.From, a.Kind, a.Text)
 	})
 
-	// === Parent agent build function ===
-	// Composes the three steering layers per the design doc.
+	// === Parent agent build ===
 	instruction := agent.DefaultInstruction + "\n\n" +
 		agent.DefaultSchedulingInstruction + "\n\n" +
 		supervisorBrief
-
 	spawnTools := agent.NewBackgroundSpawnTools(mgr)
-
-	build := func(extras []adktool.Tool) (*agent.Agent, error) {
+	mkAgent := func(extras []adktool.Tool, sid string) (*agent.Agent, error) {
 		all := make([]adktool.Tool, 0, len(reg.Tools)+len(spawnTools)+len(extras))
 		all = append(all, reg.Tools...)
 		all = append(all, spawnTools...)
 		all = append(all, extras...)
-		return agent.New(parentModel,
-			agent.WithAppName(appName),
-			agent.WithName("scheduled-monitor-supervisor"),
-			agent.WithSession(userID, sessID),
-			agent.WithInstruction(instruction),
-			agent.WithTools(all),
-			agent.WithEventLog(handle),
-			agent.WithBackgroundManager(mgr),
-		)
-	}
-	resumeBuild := func(extras []adktool.Tool, sid string) (*agent.Agent, error) {
-		all := make([]adktool.Tool, 0, len(reg.Tools)+len(spawnTools)+len(extras))
-		all = append(all, reg.Tools...)
-		all = append(all, spawnTools...)
-		all = append(all, extras...)
-		return agent.New(parentModel,
+		opts := []agent.Option{
 			agent.WithAppName(appName),
 			agent.WithName("scheduled-monitor-supervisor"),
 			agent.WithSession(userID, sid),
 			agent.WithInstruction(instruction),
 			agent.WithTools(all),
-			agent.WithEventLog(handle),
 			agent.WithBackgroundManager(mgr),
-		)
+		}
+		if handle != nil {
+			opts = append(opts, agent.WithEventLog(handle))
+		}
+		return agent.New(parentModel, opts...)
 	}
+	build := func(extras []adktool.Tool) (*agent.Agent, error) {
+		return mkAgent(extras, sessID)
+	}
+	resumeBuild := func(extras []adktool.Tool, sid string) (*agent.Agent, error) {
+		return mkAgent(extras, sid)
+	}
+
+	// === Chat-style streaming via the bundled CLI's renderer ===
+	eventCh := make(chan *session.Event, 1024)
+	var chatWG sync.WaitGroup
+	chatWG.Add(1)
+	go func() {
+		defer chatWG.Done()
+		seq := func(yield func(*session.Event, error) bool) {
+			for ev := range eventCh {
+				if !yield(ev, nil) {
+					return
+				}
+			}
+		}
+		_ = runner.WriteEvents(seq, os.Stdout, os.Stderr)
+	}()
+	defer func() { close(eventCh); chatWG.Wait() }()
 
 	// === Banner + go ===
 	fmt.Printf("== scheduled-monitor UAT driver ==\n")
 	fmt.Printf("provider:       %s\n", providerName)
 	fmt.Printf("model:          %s\n", cfg.Model.Name)
-	fmt.Printf("session-db:     %s\n", dbPath)
-	fmt.Printf("session-id:     %s\n", sessID)
 	fmt.Printf("max-wallclock:  %s\n", maxWC)
 	fmt.Printf("max-turns:      %d\n", maxT)
 	fmt.Printf("max-defer:      %s\n", maxDef)
 	fmt.Printf("max-concurrent: %d\n", maxConc)
 	fmt.Printf("bash allowlist: %s\n", strings.Join(bashAllow, ", "))
-	fmt.Printf("mode:           %s\n", modeLabel(resumeFlag))
+	if dbPath != "" {
+		fmt.Printf("session-db:     %s\n", dbPath)
+		fmt.Printf("session-id:     %s\n", sessID)
+		fmt.Printf("mode:           %s\n", modeLabel(resumeFlag))
+	} else {
+		fmt.Printf("session-db:     (none — in-memory; --session-db enables resume)\n")
+	}
 	fmt.Println()
 
 	go logHeartbeat(ctx, mgr)
 
-	opts := []agent.AutonomousOption{
+	autoOpts := []agent.AutonomousOption{
 		agent.WithMaxWallclock(maxWC),
 		agent.WithMaxTurns(maxT),
 		agent.WithMaxDefer(maxDef),
 		agent.WithScheduler(coretools.SleepScheduler()),
 		agent.WithPermissionsGate(gate),
-	}
-
-	// Chat-style streaming output — same renderer the bundled CLI
-	// uses, just driven from the WithProgress hook instead of from
-	// agent.Run directly (RunAutonomous owns the per-turn iterator).
-	// Events flow into a buffered channel a goroutine drains via
-	// runner.WriteEvents so dedup + formatting come for free.
-	var chatWG sync.WaitGroup
-	if !quiet {
-		eventCh := make(chan *session.Event, 1024)
-		chatWG.Add(1)
-		go func() {
-			defer chatWG.Done()
-			seq := func(yield func(*session.Event, error) bool) {
-				for ev := range eventCh {
-					if !yield(ev, nil) {
-						return
-					}
-				}
-			}
-			_ = runner.WriteEvents(seq, os.Stdout, os.Stderr)
-		}()
-		opts = append(opts, agent.WithProgress(func(_ int, ev *session.Event) {
+		agent.WithProgress(func(_ int, ev *session.Event) {
 			if ev == nil {
 				return
 			}
 			select {
 			case eventCh <- ev:
 			default:
-				// Drop on overflow so a chat-render hiccup doesn't
-				// stall the agent loop. Heartbeat + alerts surface
-				// the loop's health independently.
 			}
-		}))
-		defer func() {
-			close(eventCh)
-			chatWG.Wait()
-		}()
+		}),
 	}
 
 	var (
@@ -330,11 +292,10 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 	)
 	if resumeFlag {
 		result, runErr = agent.ResumeAutonomous(ctx, resumeBuild,
-			agent.SessionRef{
-				Handle: handle, AppName: appName, UserID: userID, SessionID: sessID,
-			}, opts...)
+			agent.SessionRef{Handle: handle, AppName: appName, UserID: userID, SessionID: sessID},
+			autoOpts...)
 	} else {
-		result, runErr = agent.RunAutonomous(ctx, build, goal, opts...)
+		result, runErr = agent.RunAutonomous(ctx, build, goal, autoOpts...)
 	}
 
 	fmt.Println()
@@ -346,28 +307,26 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 	fmt.Printf("output tokens: %d\n", result.OutputTokens)
 	fmt.Printf("cost (USD):    %.4f\n", result.CostUSD)
 	if !result.NextWakeAt.IsZero() {
-		fmt.Printf("next-wake-at:  %s (re-run with --resume --session-id=%s after this time)\n",
-			result.NextWakeAt.Format(time.RFC3339), sessID)
+		fmt.Printf("next-wake-at:  %s\n", result.NextWakeAt.Format(time.RFC3339))
 	}
 	if result.DoneDetail != "" {
 		fmt.Printf("done detail:   %s\n", result.DoneDetail)
 	}
-	if result.FinalText != "" {
-		fmt.Println()
-		fmt.Println("== final text ==")
-		fmt.Println(result.FinalText)
-	}
 	fmt.Println()
-	fmt.Printf("background subagents (terminal status):\n")
+	fmt.Println("background subagents (terminal status):")
 	for _, h := range mgr.List() {
 		fmt.Printf("  %s -> %s\n", h.Name, h.Status())
 	}
 	return runErr
 }
 
-// logHeartbeat prints a periodic snapshot of running children +
-// goroutine count, so the operator can spot leaks during a long run
-// without running pprof.
+func modeLabel(resumeFlag bool) string {
+	if resumeFlag {
+		return "RESUME"
+	}
+	return "FRESH"
+}
+
 func logHeartbeat(ctx context.Context, mgr *agent.BackgroundAgentManager) {
 	t := time.NewTicker(5 * time.Minute)
 	defer t.Stop()
@@ -386,18 +345,4 @@ func logHeartbeat(ctx context.Context, mgr *agent.BackgroundAgentManager) {
 				running, runtime.NumGoroutine())
 		}
 	}
-}
-
-func defaultSessionDBPath() string {
-	// UAT scratch state lives under /tmp by convention — never in
-	// $HOME. The path is stable (no timestamp) so --resume against
-	// the same --session-id finds the prior run's checkpoints.
-	return filepath.Join(os.TempDir(), "scheduled-monitor-uat", "sessions.db")
-}
-
-func modeLabel(resumeFlag bool) string {
-	if resumeFlag {
-		return "RESUME"
-	}
-	return "FRESH"
 }

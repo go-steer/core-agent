@@ -104,21 +104,40 @@ func main() {
 	sessionDB := flag.String("session-db", "", "SQLite path for the durable event log. Empty (default) = in-memory only — fast and simple. Set to e.g. /tmp/scheduled-monitor-uat/sessions.db to enable --resume across runs (writes are serialized through the eventlog service so concurrent subagents don't race).")
 	sessionID := flag.String("session-id", "", "session ID. Empty defaults to a timestamp. Set explicitly when using --session-db so --resume can find the prior run.")
 	resumeFlag := flag.Bool("resume", false, "resume from the latest checkpoint on --session-id instead of starting fresh. Requires --session-db.")
+	kubeContext := flag.String("context", "", "kubectl context the supervisor + children should target. When set, the goal is augmented to tell the model it MUST pass --context=<value> on every kubectl call (default: empty = model uses your shell's current-context — a footgun if your default is prod).")
+	kubeNamespace := flag.String("namespace", "", "kubectl namespace the supervisor + children should target. When set, the goal is augmented to tell the model it MUST pass --namespace=<value> on every kubectl call.")
 	flag.Parse()
 
 	if err := run(*provider, *model, *goal, *maxWallclock, *maxTurns, *maxDefer, *maxConcurrent, *kubectlAllowAll,
-		*sessionDB, *sessionID, *resumeFlag); err != nil {
+		*sessionDB, *sessionID, *resumeFlag, *kubeContext, *kubeNamespace); err != nil {
 		log.Fatal(err)
 	}
 }
 
 func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, maxDef time.Duration, maxConc int, kubectlAllowAll bool,
-	dbPath, sessID string, resumeFlag bool) error {
+	dbPath, sessID string, resumeFlag bool, kubeContext, kubeNamespace string) error {
 	if resumeFlag && dbPath == "" {
 		return errors.New("--resume requires --session-db")
 	}
 	if sessID == "" {
 		sessID = "uat-" + time.Now().UTC().Format("2006-01-02-150405")
+	}
+	// When the operator pins context / namespace, prepend an explicit
+	// kubectl-target constraint to the goal so the model can't drift
+	// to its shell's default context. This is the bare-driver
+	// equivalent of the pinning the smoke script
+	// (08-scheduled-monitor-gke.sh) bakes into its generated goal.
+	if kubeContext != "" || kubeNamespace != "" {
+		var flags []string
+		if kubeContext != "" {
+			flags = append(flags, fmt.Sprintf("--context=%s", kubeContext))
+		}
+		if kubeNamespace != "" {
+			flags = append(flags, fmt.Sprintf("--namespace=%s", kubeNamespace))
+		}
+		flagStr := strings.Join(flags, " ")
+		goal = fmt.Sprintf("KUBECTL TARGETING CONSTRAINT (non-negotiable): you and every subagent you spawn MUST pass %s on every kubectl invocation — never run bare kubectl. Tell every spawned monitor the same in its system_prompt and goal.\n\n%s",
+			flagStr, goal)
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -269,6 +288,11 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 	fmt.Printf("max-defer:      %s\n", maxDef)
 	fmt.Printf("max-concurrent: %d\n", maxConc)
 	fmt.Printf("bash allowlist: %s\n", strings.Join(bashAllow, ", "))
+	if kubeContext != "" || kubeNamespace != "" {
+		fmt.Printf("kubectl pin:    --context=%q --namespace=%q (goal augmented to require these on every kubectl call)\n", kubeContext, kubeNamespace)
+	} else {
+		fmt.Printf("kubectl pin:    (none — model uses your shell's current-context; set --context/--namespace to pin)\n")
+	}
 	if dbPath != "" {
 		fmt.Printf("session-db:     %s\n", dbPath)
 		fmt.Printf("session-id:     %s\n", sessID)

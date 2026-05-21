@@ -16,6 +16,12 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+---
+
+## [1.7.0] — 2026-05-21
+
+Distroless-prep + runtime-supplied history. Three new built-in tools (`delete_file`, `stat`, `json_query`) close the capability gaps that an upcoming K8s deployment using `gcr.io/distroless/static` (no shell, no `bash`, no external CLIs) would otherwise hit — the agent's effective surface becomes the built-in suite plus configured MCP tools. Plus a new `Agent.RunWithContents(ctx, []*genai.Content)` method for integrations (the AX adapter on the `axplore` branch is the motivating consumer) that supply the full conversation history per turn rather than relying on the session-managed prompt. Both additive — no breaking changes.
+
 ### Added
 
 - **Three new built-in tools for distroless / static-binary deployments:** `delete_file`, `stat`, `json_query`. Motivated by an upcoming K8s deployment using `gcr.io/distroless/static` images for Scion + AX — no shell, no `bash`, no external CLIs, so the agent's effective capability surface is the built-in suite plus configured MCP tools.

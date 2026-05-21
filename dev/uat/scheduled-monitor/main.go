@@ -61,10 +61,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/glebarez/sqlite"
+	"google.golang.org/adk/session"
 	adktool "google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/agent"
@@ -74,6 +76,7 @@ import (
 	_ "github.com/go-steer/core-agent/models/anthropic"
 	_ "github.com/go-steer/core-agent/models/gemini"
 	"github.com/go-steer/core-agent/permissions"
+	"github.com/go-steer/core-agent/runner"
 	coretools "github.com/go-steer/core-agent/tools"
 )
 
@@ -110,16 +113,17 @@ func main() {
 	resume := flag.Bool("resume", false, "resume from a deferred or interrupted run on this session-id instead of starting fresh")
 	kubectlAllowAll := flag.Bool("kubectl-allow-all", false, "DANGER: allow bash to run any kubectl command (default: only get/logs/describe/version/cluster-info)")
 	maxConcurrent := flag.Int("max-concurrent", 8, "max concurrent background subagents")
+	quiet := flag.Bool("quiet", false, "suppress chat-style streaming output (alerts and heartbeats still print)")
 	flag.Parse()
 
 	if err := run(*providerFlag, *modelFlag, *goalFlag, *maxWallclock, *maxTurns, *maxDefer,
-		*sessionDB, *sessionID, *resume, *kubectlAllowAll, *maxConcurrent); err != nil {
+		*sessionDB, *sessionID, *resume, *kubectlAllowAll, *maxConcurrent, *quiet); err != nil {
 		log.Fatal(err)
 	}
 }
 
 func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, maxDef time.Duration,
-	dbPath, sessID string, resumeFlag, kubectlAllowAll bool, maxConc int,
+	dbPath, sessID string, resumeFlag, kubectlAllowAll bool, maxConc int, quiet bool,
 ) error {
 	// Graceful shutdown on SIGINT/SIGTERM so background goroutines
 	// drain cleanly and the final checkpoint lands.
@@ -282,6 +286,44 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 		agent.WithPermissionsGate(gate),
 	}
 
+	// Chat-style streaming output — same renderer the bundled CLI
+	// uses, just driven from the WithProgress hook instead of from
+	// agent.Run directly (RunAutonomous owns the per-turn iterator).
+	// Events flow into a buffered channel a goroutine drains via
+	// runner.WriteEvents so dedup + formatting come for free.
+	var chatWG sync.WaitGroup
+	if !quiet {
+		eventCh := make(chan *session.Event, 1024)
+		chatWG.Add(1)
+		go func() {
+			defer chatWG.Done()
+			seq := func(yield func(*session.Event, error) bool) {
+				for ev := range eventCh {
+					if !yield(ev, nil) {
+						return
+					}
+				}
+			}
+			_ = runner.WriteEvents(seq, os.Stdout, os.Stderr)
+		}()
+		opts = append(opts, agent.WithProgress(func(_ int, ev *session.Event) {
+			if ev == nil {
+				return
+			}
+			select {
+			case eventCh <- ev:
+			default:
+				// Drop on overflow so a chat-render hiccup doesn't
+				// stall the agent loop. Heartbeat + alerts surface
+				// the loop's health independently.
+			}
+		}))
+		defer func() {
+			close(eventCh)
+			chatWG.Wait()
+		}()
+	}
+
 	var (
 		result agent.RunResult
 		runErr error
@@ -347,11 +389,10 @@ func logHeartbeat(ctx context.Context, mgr *agent.BackgroundAgentManager) {
 }
 
 func defaultSessionDBPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "scheduled-monitor-uat.db"
-	}
-	return filepath.Join(home, ".scheduled-monitor-uat", "sessions.db")
+	// UAT scratch state lives under /tmp by convention — never in
+	// $HOME. The path is stable (no timestamp) so --resume against
+	// the same --session-id finds the prior run's checkpoints.
+	return filepath.Join(os.TempDir(), "scheduled-monitor-uat", "sessions.db")
 }
 
 func modeLabel(resumeFlag bool) string {

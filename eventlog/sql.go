@@ -19,6 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"reflect"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -27,6 +29,13 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
+
+// sqliteBusyTimeoutMs is how long every new SQLite connection waits
+// for the write lock before returning SQLITE_BUSY. Five seconds is
+// long enough to ride out a parent's checkpoint write while a child
+// subagent tries to create its session row, and short enough that a
+// genuinely deadlocked DB surfaces visibly rather than hanging.
+const sqliteBusyTimeoutMs = 5000
 
 // agentEventRow is the overlay table that gives every event a
 // monotonic seq alongside ADK's events table. event_id is a logical
@@ -66,6 +75,18 @@ func Open(ctx context.Context, dialector gorm.Dialector, opts ...Option) (*Handl
 	o := defaultOpenOpts()
 	for _, opt := range opts {
 		opt(&o)
+	}
+
+	// 0) For SQLite, inject `_pragma=busy_timeout(N)` into the DSN
+	// before any connection is opened. This applies to every
+	// connection in both the ADK and the overlay pools (they each
+	// open their own gorm.DB against this dialector), so concurrent
+	// writers — e.g. a parent's checkpoint and a background
+	// subagent's session create — wait on the write lock instead of
+	// failing immediately with SQLITE_BUSY. No-op for non-SQLite
+	// drivers, which carry their own timeout semantics.
+	if isSQLite(dialector) {
+		injectSQLitePragma(dialector, fmt.Sprintf("busy_timeout(%d)", sqliteBusyTimeoutMs))
 	}
 
 	// 1) ADK's session service does the heavy schema lifting (events,
@@ -140,6 +161,52 @@ func isSQLite(d gorm.Dialector) bool {
 		return false
 	}
 	return d.Name() == "sqlite" || d.Name() == "sqlite3"
+}
+
+// injectSQLitePragma appends `_pragma=<spec>` (e.g. "busy_timeout(5000)")
+// to the SQLite dialector's DSN so every subsequent connection picks
+// up the pragma at open time. Both `github.com/glebarez/sqlite` and
+// `gorm.io/driver/sqlite` expose an exported `DSN` field on the
+// dialector struct, so reflection works without us hard-coding either
+// driver here. No-op when the field isn't present (unknown SQLite
+// driver shape — caller can still set the pragma manually) or when
+// the pragma is already in the DSN.
+func injectSQLitePragma(d gorm.Dialector, spec string) {
+	if d == nil {
+		return
+	}
+	v := reflect.ValueOf(d)
+	if v.Kind() == reflect.Pointer {
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return
+	}
+	f := v.FieldByName("DSN")
+	if !f.IsValid() || f.Kind() != reflect.String || !f.CanSet() {
+		return
+	}
+	dsn := f.String()
+	// Don't double-inject — caller may have set this in their DSN.
+	if strings.Contains(dsn, "_pragma="+pragmaName(spec)) {
+		return
+	}
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	f.SetString(dsn + sep + "_pragma=" + spec)
+}
+
+// pragmaName extracts the pragma name from a spec like
+// "busy_timeout(5000)" → "busy_timeout". Used to detect "already set"
+// in injectSQLitePragma so a caller-supplied value (different timeout)
+// isn't overwritten.
+func pragmaName(spec string) string {
+	if i := strings.Index(spec, "("); i > 0 {
+		return spec[:i]
+	}
+	return spec
 }
 
 // gormStream implements Stream backed by the agent_eventlog table.

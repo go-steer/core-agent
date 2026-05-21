@@ -106,7 +106,8 @@ type AutonomousHandle struct {
 	// runCtx.Done.
 	pauseCh chan struct{}
 
-	done chan struct{} // closed when the run goroutine exits
+	done  chan struct{} // closed when the run goroutine exits
+	ready chan struct{} // closed when h.agent has been captured (see wrappedBuild in StartAutonomous)
 }
 
 // StartAutonomous launches a new autonomous run in a goroutine and
@@ -128,11 +129,15 @@ func StartAutonomous(ctx context.Context, build BuildFunc, goal string, opts ...
 		runCancel: cancel,
 		status:    AutonomousRunning,
 		done:      make(chan struct{}),
+		ready:     make(chan struct{}),
 	}
 
 	// Capture the constructed agent so Inject and emitNoteEvent can
 	// reach it. Wrap the caller's build in a closure that records
-	// the agent before returning it.
+	// the agent before returning it and signals readiness so an
+	// out-of-band consumer (e.g. a stdin reader calling Inject) can
+	// wait for the agent to be available before sending input that
+	// would otherwise fail with "agent not yet constructed".
 	wrappedBuild := func(extras []tool.Tool) (*Agent, error) {
 		a, err := build(extras)
 		if err != nil {
@@ -141,6 +146,7 @@ func StartAutonomous(ctx context.Context, build BuildFunc, goal string, opts ...
 		h.mu.Lock()
 		h.agent = a
 		h.mu.Unlock()
+		close(h.ready)
 		return a, nil
 	}
 
@@ -336,3 +342,13 @@ func (h *AutonomousHandle) Wait() (RunResult, error) {
 // goroutine exits. Useful when a caller wants to combine the wait
 // with other selects (e.g. ctx + Done).
 func (h *AutonomousHandle) Done() <-chan struct{} { return h.done }
+
+// Ready returns a channel that closes once the underlying agent has
+// been constructed (i.e. the wrappedBuild closure inside the
+// autonomous loop has run and captured the agent). Inject and
+// RequestWake fail with "agent not yet constructed" when called
+// before this fires; out-of-band consumers (stdin readers, alert
+// watchers) should wait on Ready before issuing those calls. May
+// already be closed by the time Ready returns — the select-on-Ready
+// pattern handles both cases naturally.
+func (h *AutonomousHandle) Ready() <-chan struct{} { return h.ready }

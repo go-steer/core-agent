@@ -552,13 +552,40 @@ func (m *BackgroundAgentManager) runningCount() int {
 	return n
 }
 
+// autoWiredSubagentTools are tool names the autonomous driver and the
+// background manager wire automatically into every spawned subagent
+// when applicable — the model sometimes lists them in spec.Tools
+// anyway because it doesn't know they're auto-wired. Silently skipping
+// them in resolveTools means a well-intentioned-but-confused request
+// doesn't fail spawn with ErrUnknownTool.
+//
+//   - schedule_next_turn: registered by RunAutonomous whenever
+//     WithScheduler is set on the child (which it is, by default,
+//     when WithBackgroundDefaultScheduler is configured).
+//   - report_done: registered by RunAutonomous always (the loop's
+//     termination signal).
+//   - report_alert / report_completed: registered by the manager in
+//     background_spawn.go so the child can push back to the parent.
+var autoWiredSubagentTools = map[string]struct{}{
+	"schedule_next_turn": {},
+	"report_done":        {},
+	"report_alert":       {},
+	"report_completed":   {},
+}
+
 // resolveTools maps spec.Tools + spec.Extras to actual tool.Tool
 // instances by Name() lookup in the catalog. Unknown names return
 // ErrUnknownTool. The two slices are concatenated; duplicates are
 // preserved by lookup result (i.e. same instance returned twice).
+// Names in autoWiredSubagentTools are silently dropped from the
+// returned slice — the manager / autonomous driver register their
+// real implementations elsewhere.
 func (m *BackgroundAgentManager) resolveTools(names []string) ([]tool.Tool, error) {
 	out := make([]tool.Tool, 0, len(names))
 	for _, n := range names {
+		if _, autoWired := autoWiredSubagentTools[n]; autoWired {
+			continue
+		}
 		t, ok := m.catalog[n]
 		if !ok {
 			return nil, fmt.Errorf("%w: %q", ErrUnknownTool, n)

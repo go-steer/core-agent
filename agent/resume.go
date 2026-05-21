@@ -313,7 +313,8 @@ func ResumeAutonomous(ctx context.Context, build ResumeBuildFunc, ref SessionRef
 				}
 			}
 			_ = emitCheckpoint(ctx, a, scheduleCheckpoint(result, goal, cfg.continuationPrompt, ev))
-			serr := cfg.scheduler.BeforeNextTurn(ctx, ev)
+			schedCtx := coretools.ContextWithWake(ctx, a.WakeRequested())
+			serr := cfg.scheduler.BeforeNextTurn(schedCtx, ev)
 			switch {
 			case serr == nil:
 				if ev.NextPrompt != "" {

@@ -276,7 +276,12 @@ func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*Age
 			// crash mid-defer can resume to the right wake-time.
 			_ = emitCheckpoint(ctx, a, scheduleCheckpoint(result, goal, cfg.continuationPrompt, ev))
 
-			serr := cfg.scheduler.BeforeNextTurn(ctx, ev)
+			// Plumb the agent's wake channel through to the scheduler
+			// so SleepScheduler interrupts its sleep on an external
+			// wake (alert arrival, operator Inject, future attach-
+			// mode /wake).
+			schedCtx := coretools.ContextWithWake(ctx, a.WakeRequested())
+			serr := cfg.scheduler.BeforeNextTurn(schedCtx, ev)
 			switch {
 			case serr == nil:
 				// Scheduler honored the wait (or no wait was needed).

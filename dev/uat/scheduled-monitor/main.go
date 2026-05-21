@@ -38,6 +38,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -80,15 +81,16 @@ After spawning your monitors, stay alive by calling schedule_next_turn yourself 
 const supervisorBrief = `You are the supervisor of a fleet of Kubernetes cluster/namespace monitors. The user gave you a Kubernetes monitoring goal; your job is to:
 
 1. On your first turn, translate the goal into spawn_agent calls that launch one focused background subagent per monitoring target.
-2. After spawning, call schedule_next_turn(wake_in_sec=3600) so you stay alive without burning tokens. Alerts from your children arrive in the [Background reports] inbox prepended to your next turn — even if they arrive during your sleep, you'll see them on wake.
-3. On each subsequent wake:
-   - Drain alerts: if children reported anomalies, decide whether to spawn a one-shot triage subagent (use scheduler="none" for triage — it shouldn't outlive its investigation), adjust a misconfigured monitor's cadence by stopping + respawning it, or stop_agent a decommissioned target.
+2. After spawning, call schedule_next_turn(wake_in_sec=3600) so you stay alive without burning tokens. You will wake earlier if either (a) a child alert arrives or (b) the operator types a command into the inbox — both signals interrupt your scheduled sleep automatically. So 1-hour is fine as a baseline.
+3. On each wake (scheduled OR signalled):
+   - Drain alerts: child anomalies arrive in the [Background reports] block prepended to your turn. Operator commands arrive in the [Inbox] block. Read both blocks before deciding what to do.
+   - Decide: spawn a one-shot triage subagent (use scheduler="none" for triage — it shouldn't outlive its investigation), adjust a misconfigured monitor's cadence by stopping + respawning, stop_agent a decommissioned target, or just acknowledge in your reply if there's nothing to act on.
    - Sanity check: call list_agents to confirm all expected monitors are still running.
-   - Schedule next check-in: schedule_next_turn(wake_in_sec=3600) again.
+   - Schedule the next check-in: schedule_next_turn(wake_in_sec=3600).
 
 DO NOT call report_done at any point. report_done exits the autonomous loop and kills all your background children (their HTTP requests get context-cancelled mid-flight). The operator's wallclock budget (or Ctrl+C) is what ends the run; you just supervise until then.
 
-DO NOT poll children yourself between scheduled wakes — that's what schedule_next_turn is for. You're reactive at supervisor check-ins, not pollee.`
+DO NOT poll children yourself between scheduled wakes — that's what schedule_next_turn is for. You're reactive at supervisor wakes, not pollee.`
 
 func main() {
 	provider := flag.String("provider", "vertex", "model provider: vertex | anthropic-vertex | anthropic | gemini")
@@ -202,8 +204,15 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 		return fmt.Errorf("BackgroundAgentManager: %w", err)
 	}
 	defer func() { _ = mgr.Close() }()
+	// onAlertWake fires after each alert; rebound below once the
+	// AutonomousHandle exists so we can call handle.RequestWake() to
+	// pierce the supervisor's active sleep.
+	var onAlertWake func(agent.Alert)
 	mgr.OnAlert(func(a agent.Alert) {
 		fmt.Printf("[alert] %s %s: %s\n", a.From, a.Kind, a.Text)
+		if onAlertWake != nil {
+			onAlertWake(a)
+		}
 	})
 
 	// === Parent agent build ===
@@ -288,6 +297,10 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 		}),
 	}
 
+	// Resume currently uses the blocking ResumeAutonomous path —
+	// AutonomousHandle covers the fresh-run case where we need
+	// out-of-band Inject + RequestWake from the alert-watcher and
+	// stdin-reader goroutines below.
 	var (
 		result agent.RunResult
 		runErr error
@@ -297,7 +310,43 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 			agent.SessionRef{Handle: handle, AppName: appName, UserID: userID, SessionID: sessID},
 			autoOpts...)
 	} else {
-		result, runErr = agent.RunAutonomous(ctx, build, goal, autoOpts...)
+		handle, err := agent.StartAutonomous(ctx, build, goal, autoOpts...)
+		if err != nil {
+			return fmt.Errorf("StartAutonomous: %w", err)
+		}
+
+		// Wake the supervisor on every alert. mgr.OnAlert runs
+		// synchronously in the alert-pushing goroutine; we only need
+		// to call handle.RequestWake (non-blocking, coalesced).
+		onAlertWake = func(_ agent.Alert) { handle.RequestWake() }
+
+		// Operator stdin reader. Each non-empty line is injected as
+		// a message into the supervisor's inbox; Inject internally
+		// fires the wake so the supervisor reacts immediately
+		// rather than waiting for its next scheduled wake. The
+		// goroutine exits on EOF; we don't block on it at shutdown
+		// (handle.Wait below is the canonical run-end signal).
+		go func() {
+			scanner := bufio.NewScanner(os.Stdin)
+			scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+			fmt.Println("[input] type a message + Enter to inject into the supervisor's inbox; Ctrl+D to stop reading stdin (the run continues either way).")
+			for scanner.Scan() {
+				line := strings.TrimSpace(scanner.Text())
+				if line == "" {
+					continue
+				}
+				if err := handle.Inject(line); err != nil {
+					fmt.Fprintf(os.Stderr, "[input] inject failed: %v\n", err)
+					continue
+				}
+				fmt.Printf("[input] queued: %s\n", line)
+			}
+			if err := scanner.Err(); err != nil {
+				fmt.Fprintf(os.Stderr, "[input] stdin scanner: %v\n", err)
+			}
+		}()
+
+		result, runErr = handle.Wait()
 	}
 
 	fmt.Println()

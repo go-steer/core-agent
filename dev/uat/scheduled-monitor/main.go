@@ -72,7 +72,7 @@ const defaultGoal = `Watch this Kubernetes project. Spawn one background monitor
 
 Each monitor should:
 - Use the bash tool with kubectl to inspect state on every wake.
-- Write its prior-scan baseline to a small file in /tmp so it can diff on the next wake (state does NOT survive schedule_next_turn — write what you need to remember to disk).
+- Write its prior-scan baseline to an ABSOLUTE PATH under /tmp/ (e.g. /tmp/scheduled-monitor-uat/<monitor-name>-baseline.json — NOT just "baseline.json" in cwd) so it can diff on the next wake. State does NOT survive schedule_next_turn — write what you need to remember to disk. NEVER write baselines into the working directory; cwd is the operator's repo and we don't want to pollute it.
 - Call schedule_next_turn with wake_in_sec set per the cadence ladder in your system prompt (default to 600 seconds = 10 minutes for cluster scans, 30 seconds for hot anomaly investigation).
 - Call report_alert when it finds something genuinely odd. Avoid noise.
 

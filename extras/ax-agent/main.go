@@ -44,10 +44,11 @@ import (
 	"google.golang.org/adk/tool"
 	"google.golang.org/grpc"
 
+	axproto "github.com/google/ax/proto"
+
 	"github.com/go-steer/core-agent/agent"
 	"github.com/go-steer/core-agent/config"
 	"github.com/go-steer/core-agent/eventlog"
-	axproto "github.com/go-steer/core-agent/extras/ax-agent/internal/axproto"
 	"github.com/go-steer/core-agent/instruction"
 	"github.com/go-steer/core-agent/mcp"
 	"github.com/go-steer/core-agent/models"

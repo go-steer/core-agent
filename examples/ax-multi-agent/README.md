@@ -28,7 +28,7 @@ agents are vanilla `core-agent` builds — the only thing that makes them
 ## What you'll need
 
 - `core-agent` binary built from the `axplore` branch (`go build -o core-agent ./extras/ax-agent`)
-- `ax` binary built from `github.com/google/ax` (private repo at the time of writing — see the branch plan for vendoring rationale)
+- `ax` binary built from [`github.com/google/ax`](https://github.com/google/ax) (the adapter imports the upstream proto directly now that the repo is public)
 - A Gemini API key in `GEMINI_API_KEY` (or `GOOGLE_API_KEY`); the planner *and* both core-agent instances use it. To run credential-free, change both `config.json` files to `"provider": "echo"` — you'll see structural responses, not real arguments.
 
 ## Run it

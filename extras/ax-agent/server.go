@@ -20,8 +20,9 @@ import (
 
 	"google.golang.org/grpc"
 
+	axproto "github.com/google/ax/proto"
+
 	"github.com/go-steer/core-agent/agent"
-	axproto "github.com/go-steer/core-agent/extras/ax-agent/internal/axproto"
 )
 
 // axServer implements axproto.AgentServiceServer. One server handles

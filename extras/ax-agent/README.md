@@ -5,9 +5,11 @@ agent. AX is a distributed agent runtime — a controller dials remote agents
 via gRPC, fans tasks out to them, and persists conversation state in an
 event log. This binary is what AX dials.
 
-> This adapter ships only on the **`axplore` branch**. AX is currently a
-> private repo and slated for a rewrite; until it's public + stable, the
-> integration lives off `main`. See [`docs/ax-plan.md`](../../docs/ax-plan.md)
+> This adapter ships only on the **`axplore` branch** while AX is in
+> flux (slated for a rewrite). The repo is now public at
+> [`github.com/google/ax`](https://github.com/google/ax) and the
+> adapter imports the upstream proto directly; merging to `main`
+> waits on AX stabilizing. See [`docs/ax-plan.md`](../../docs/ax-plan.md)
 > for the rationale.
 
 ## What it does
@@ -106,12 +108,13 @@ one place to enforce policy.
   a real session with `--record-to` and replay against `--provider=scripted`,
   the LLM side is faithful but `bash`/`read_file` runs against whatever the
   current filesystem looks like.
-- **Vendored proto snapshot.** [`internal/axproto/`](internal/axproto/) is a
-  copy of `github.com/google/ax/proto` — refresh when the wire schema changes.
-  See that directory's README for instructions.
+- **Imports `github.com/google/ax/proto` directly.** Previously this
+  adapter vendored a snapshot under `internal/axproto/` because AX was
+  a private repo; that vendor was removed once AX went public and the
+  module-proxy resolution started working from CI.
 
 ## See also
 
-- [`docs/ax-plan.md`](../../docs/ax-plan.md) — full design rationale, branching strategy, vendoring choice
+- [`docs/ax-plan.md`](../../docs/ax-plan.md) — full design rationale + branching strategy (the vendoring-choice section is now historical context)
 - [`extras/scion-agent/`](../scion-agent/) — analogous adapter for Scion's container runtime
 - [`examples/ax-multi-agent/`](../../examples/ax-multi-agent/) — devil + angel worked example

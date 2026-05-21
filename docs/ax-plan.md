@@ -286,6 +286,10 @@ The implementation requires looking at ADK Go's `runner.Runner` to confirm it ac
 
 ## Branching + vendoring strategy
 
+> **Update (2026-05):** AX is now public at [`github.com/google/ax`](https://github.com/google/ax) and the module proxy resolves it. The adapter de-vendored — `internal/axproto/` was removed and the adapter now imports `github.com/google/ax/proto` directly. The "vendoring" content in this section is retained as historical context for why the snapshot existed in the first place; only Exit Condition #1 was actually triggered. The branch still lives off `main` because AX is slated for a rewrite (Exit Condition #2 has not yet fired).
+
+---
+
 `github.com/google/ax` is currently a private GitHub repo, which breaks vanilla `go mod download` in CI. AX is also slated for a rewrite, so anything we ship today is provisional. Combined: this work doesn't belong on `main` yet.
 
 **Plan:** ship the AX adapter on a dedicated long-lived branch (`axplore`), with `vendor/github.com/google/ax/` checked in. Vendoring sidesteps the private-module auth problem entirely (no GOPRIVATE wiring, no PATs, no secrets), keeps CI green out of the box, and gives anyone who wants to try the integration a single `git checkout <branch>` step.

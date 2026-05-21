@@ -19,7 +19,7 @@ import (
 	"google.golang.org/genai"
 	"google.golang.org/protobuf/types/known/structpb"
 
-	axproto "github.com/go-steer/core-agent/extras/ax-agent/internal/axproto"
+	axproto "github.com/google/ax/proto"
 )
 
 // axMessagesToGenai turns AX's wire conversation history into the

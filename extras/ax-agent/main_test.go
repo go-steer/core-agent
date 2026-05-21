@@ -33,8 +33,9 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
+	axproto "github.com/google/ax/proto"
+
 	"github.com/go-steer/core-agent/agent"
-	axproto "github.com/go-steer/core-agent/extras/ax-agent/internal/axproto"
 	"github.com/go-steer/core-agent/models/mock"
 	"github.com/go-steer/core-agent/tools"
 )

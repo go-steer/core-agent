@@ -32,7 +32,8 @@ Top-level shape, with all fields optional except `version` and `model.name`:
   "path_scope": { ... },
   "agent": { ... },
   "tool_output": { ... },
-  "otel": { ... }
+  "otel": { ... },
+  "url_scope": { ... }
 }
 ```
 
@@ -290,6 +291,60 @@ OpenTelemetry exporter config. Off by default — a fresh invocation makes zero 
 | `endpoint` | string | `""` | OTLP endpoint when `exporter: otlp` (or set via standard `OTEL_EXPORTER_OTLP_ENDPOINT` env). |
 
 Console mode prints span JSON to stderr — useful for local debugging. OTLP mode honors all the standard `OTEL_*` env vars.
+
+---
+
+## `url_scope`
+
+Governs which URLs the `fetch_url` built-in is allowed to reach. Same Allow/Deny grammar as [`path_scope`]({{< relref "#path_scope" >}}) but for HTTP hosts instead of filesystem paths. `Deny` always wins over `Allow`. An **empty `allow` is default-deny** — `fetch_url` is not registered as a tool at all when no allowlist is configured, so the model can't even attempt a network call without an operator-declared scope.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `allow` | string[] | `[]` | Host patterns. `github.com` (exact), `*.googleapis.com` (subdomain wildcard), `*` (any host), `http://localhost:*` (HTTP + any-port opt-in). HTTPS by default — prefix with `http://` to allow plain HTTP for that pattern only. |
+| `deny` | string[] | `[]` | Patterns that override `allow` on overlap (same grammar). |
+| `max_body_bytes` | int | `65536` | Cap on the response body returned to the model. Per-call `max_bytes` argument can lower this, never raise it. |
+| `timeout_seconds` | int | `30` | HTTP timeout per call. |
+| `headers` | object | `{}` | Per-host header bundles. Map of host-pattern → header-name → value template. Values pass through `os.ExpandEnv` at request time, so rotated env vars take effect on the next fetch without a restart. Most-specific pattern wins (longer wins; exact match beats wildcard). The model **never** sets headers directly — keeps credential exfiltration off the tool-argument surface. |
+
+Worked example:
+
+```json
+{
+  "url_scope": {
+    "allow": [
+      "api.github.com",
+      "*.googleapis.com",
+      "*.svc.cluster.local",
+      "http://localhost:*"
+    ],
+    "deny": ["*.internal.evil.com"],
+    "max_body_bytes":  131072,
+    "timeout_seconds": 30,
+    "headers": {
+      "api.github.com": {
+        "Authorization": "Bearer ${GITHUB_TOKEN}",
+        "Accept":        "application/vnd.github+json"
+      }
+    }
+  }
+}
+```
+
+Each fetch emits a `tool/fetch_url` event into the eventlog with structured metadata (`url`, `final_url`, `status`, `content_type`, `bytes`, `truncated`), so an audit query can answer "what URLs did this agent touch, when, and what came back" without parsing tool output. Composes with the [permissions gate]({{< relref "#permissions" >}}) — write `permissions.allow: ["fetch_url:github.com/*"]` to gate per-host even within the URL allowlist.
+
+What's **not** in `fetch_url` (by design):
+
+- **No POST / forms / uploads** — GET only. Use a dedicated MCP server for structured POSTs where the operation can be schema-typed.
+- **No JavaScript execution** — use the playwright MCP for dynamic pages.
+- **No cookie persistence** — each call is stateless.
+- **No model-set auth headers** — headers come from `url_scope.headers` + env expansion only. The model picks the host; the operator picks what auth ships with the request.
+
+CLI conveniences (no config edit needed):
+
+- `--allow-url-host="github.com,*.googleapis.com"` — appends to `url_scope.allow` for the current invocation.
+- `--disable-tools=fetch_url` — turns the tool off even if an allowlist is configured.
+
+See [`fetch-url-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/fetch-url-design.md) for the full decision record.
 
 ---
 

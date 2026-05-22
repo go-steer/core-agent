@@ -42,6 +42,7 @@ type Config struct {
 	Tools       ToolsConfig       `json:"tools,omitempty"`
 	Mock        MockConfig        `json:"mock,omitempty"`
 	OTEL        OTELConfig        `json:"otel,omitempty"`
+	URLScope    URLScopeConfig    `json:"url_scope,omitempty"`
 }
 
 // PathScopeConfig holds extra paths that file tools may read/write
@@ -153,6 +154,35 @@ type MockConfig struct {
 type OTELConfig struct {
 	Exporter string `json:"exporter,omitempty"` // "none" | "console" | "otlp"
 	Endpoint string `json:"endpoint,omitempty"`
+}
+
+// URLScopeConfig governs which URLs the fetch_url built-in is allowed
+// to reach. Same Allow/Deny grammar + precedence as PathScopeConfig:
+// Deny wins on overlap; an empty Allow list with the tool registered
+// is treated as default-deny (the tool refuses every fetch and returns
+// a clear error pointing at this config field).
+//
+// Patterns are host-only globs (e.g. "github.com", "*.googleapis.com",
+// "*.svc.cluster.local"). HTTPS is assumed unless the pattern is
+// prefixed with "http://", in which case plain HTTP is allowed for
+// that pattern only (intentionally awkward — operators have to type
+// the prefix to opt out of TLS).
+//
+// MaxBodyBytes caps the response body the tool returns to the model;
+// zero means use the built-in default (64 KiB).
+// TimeoutSeconds caps the HTTP timeout; zero means 30s.
+//
+// Headers maps host patterns to header bundles. Header values pass
+// through os.ExpandEnv at request time, so values like
+// "Bearer ${GITHUB_TOKEN}" pick up rotated env vars without a
+// restart. The model never sets headers directly — keeps credential
+// exfiltration off the tool argument surface.
+type URLScopeConfig struct {
+	Allow          []string                     `json:"allow,omitempty"`
+	Deny           []string                     `json:"deny,omitempty"`
+	MaxBodyBytes   int                          `json:"max_body_bytes,omitempty"`
+	TimeoutSeconds int                          `json:"timeout_seconds,omitempty"`
+	Headers        map[string]map[string]string `json:"headers,omitempty"`
 }
 
 // Permission modes.

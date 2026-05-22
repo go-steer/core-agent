@@ -124,6 +124,7 @@ func TestBuiltinTools_Disable_KnownNames(t *testing.T) {
 		"glob":            func(b BuiltinTools) bool { return b.Glob },
 		"grep":            func(b BuiltinTools) bool { return b.Grep },
 		"json_query":      func(b BuiltinTools) bool { return b.JSONQuery },
+		"fetch_url":       func(b BuiltinTools) bool { return b.FetchURL },
 		"todo":            func(b BuiltinTools) bool { return b.Todo },
 	}
 	names := BuiltinToolNames()

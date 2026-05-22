@@ -46,6 +46,7 @@ handover notes.
 - [`ax-integration-audit.md`](ax-integration-audit.md) — gap audit for `extras/ax-agent/` on the `axplore` branch; don't build a parallel coordinator
 - [`scheduled-monitoring-design.md`](scheduled-monitoring-design.md) — `Scheduler` primitive for paced autonomous loops; combines with `BackgroundAgentManager` for the canonical K8s fleet-monitor topology
 - [`peer-registration-design.md`](peer-registration-design.md) — fast-follow-on PR after attach-mode; hub-and-spoke peer discovery (`POST /peers` / heartbeat / `GET /peers`) for multi-agent K8s deployments
+- [`fetch-url-design.md`](fetch-url-design.md) — `fetch_url` built-in (HTTP GET, no JS, no POST) + `URLScopeConfig` allow/deny grammar mirroring `PathScopeConfig`; agent-level egress control without an outer sandbox
 
 ## Cross-cutting handover notes
 

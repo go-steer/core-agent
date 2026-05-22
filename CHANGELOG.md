@@ -16,6 +16,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+### Added
+
+- **`fetch_url` built-in + `url_scope` config — HTTP GET as a first-class tool, with an operator-controlled allowlist.** New `tools/fetch.go` (~280 LoC) registers a `fetch_url(url, max_bytes=64KB)` tool returning `{url, final_url, status, content_type, bytes, truncated, body}` — replaces `bash curl` so the URL + status land structured in the eventlog rather than as opaque shell output. New `config.URLScopeConfig` (Allow/Deny grammar mirroring `PathScopeConfig`; HTTPS-only by default unless the pattern carries an `http://` prefix; default-deny when `Allow` is empty — the tool isn't even registered without an allowlist). Per-host `headers` block injects `Authorization: Bearer ${ENV_VAR}` at request time so credentials never live on the tool-argument surface; most-specific pattern wins (longest pattern + exact-beats-wildcard). Each redirect target is re-checked against the allowlist; a redirect to a denied host is an error, not a silent follow (max 5 hops). Non-text content (binary, `application/octet-stream`, images) returns `truncated=true, body=""` so the model gets metadata without bytes. CLI: `--allow-url-host="github.com,*.googleapis.com"` for one-shot allowlist additions; `--disable-tools=fetch_url` to turn off. Composes with the permissions gate (`permissions.allow: ["fetch_url:github.com/*"]` for per-host gating on top of the allowlist) and the eventlog (every fetch is a structured audit row). Implements `docs/fetch-url-design.md`; the one tool we picked up from Hermes's ~80-file `tools/` catalog.
+
 ---
 
 ## [1.7.0] — 2026-05-21

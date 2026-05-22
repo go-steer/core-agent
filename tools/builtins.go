@@ -61,6 +61,7 @@ type BuiltinTools struct {
 	Glob          bool // Walk + filepath.Match by basename
 	Grep          bool // Walk + RE2 regex per line
 	JSONQuery     bool // jq expression over JSON loaded from file or inline string
+	FetchURL      bool // HTTP GET against url_scope.allow; URL-allowlist enforced
 	Todo          bool // In-process plan tracker
 }
 
@@ -79,6 +80,7 @@ var builtinToolNames = []string{
 	"glob",
 	"grep",
 	"json_query",
+	"fetch_url",
 	"todo",
 }
 
@@ -119,6 +121,8 @@ func (b *BuiltinTools) Disable(name string) error {
 		b.Grep = false
 	case "json_query":
 		b.JSONQuery = false
+	case "fetch_url":
+		b.FetchURL = false
 	case "todo":
 		b.Todo = false
 	default:
@@ -143,7 +147,12 @@ func Default() BuiltinTools {
 		Glob:          true,
 		Grep:          true,
 		JSONQuery:     true,
-		Todo:          true,
+		// FetchURL is enabled in the Default struct, but Build only
+		// registers it when cfg.URLScope.Allow is non-empty — a binary
+		// with no allowlist gets no network-reaching tool, matching
+		// the default-deny posture in URLScopeConfig.
+		FetchURL: true,
+		Todo:     true,
 	}
 }
 
@@ -233,6 +242,14 @@ func Build(cfg *config.Config, gate *permissions.Gate, b BuiltinTools) (*Registr
 		}},
 		{b.JSONQuery, "json_query", "Run a jq expression against JSON loaded from a file or supplied inline.", func() (tool.Tool, error) {
 			return NewJSONQueryTool(gate, cfg), nil
+		}},
+		// fetch_url is gated twice: the BuiltinTools toggle (b.FetchURL)
+		// and the URL allowlist (len(cfg.URLScope.Allow) > 0). With no
+		// allowlist the tool isn't registered at all — matches
+		// URLScopeConfig's default-deny posture and keeps the model
+		// from seeing a tool that would refuse every call.
+		{b.FetchURL && len(cfg.URLScope.Allow) > 0, "fetch_url", "HTTP GET against an operator-configured URL allowlist.", func() (tool.Tool, error) {
+			return NewFetchURLTool(gate, cfg), nil
 		}},
 		{b.Todo, "todo", "Maintain an agent-facing todo list (list/add/set_status/clear).", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{

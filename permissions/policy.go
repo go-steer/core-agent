@@ -98,6 +98,36 @@ func (p *Policy) Match(tool, key string) Outcome {
 	return OutcomeUnmatched
 }
 
+// RawPatterns returns the original "tool:pattern" strings the Policy
+// was built from, as two slices (allow, deny). The patterns are
+// reconstituted (tool prefix re-added when present) so the output
+// round-trips with the JSON config form. Used by Gate.Snapshot() to
+// surface configured policy without leaking the parsed rule struct.
+func (p *Policy) RawPatterns() (allow, deny []string) {
+	return formatRules(p.allow), formatRules(p.deny)
+}
+
+func formatRules(rs []rule) []string {
+	if len(rs) == 0 {
+		return nil
+	}
+	out := make([]string, len(rs))
+	for i, r := range rs {
+		if r.tool == "" {
+			out[i] = r.pat
+		} else {
+			out[i] = r.tool + ":" + r.pat
+		}
+	}
+	return out
+}
+
+// allowRules / denyRules give package-internal access to the parsed
+// rule slices so the gate can compute pre-flight tool-state without
+// the public Match() shape (which requires a candidate key).
+func (p *Policy) allowRules() []rule { return p.allow }
+func (p *Policy) denyRules() []rule  { return p.deny }
+
 func matchAny(rules []rule, tool, key string) bool {
 	for _, r := range rules {
 		if r.tool != "" && r.tool != tool {

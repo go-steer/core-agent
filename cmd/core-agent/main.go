@@ -356,6 +356,7 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		agent.WithTools(builtinTools),
 		agent.WithToolsets(allToolsets),
 		agent.WithSystemInstructionPrefix(loaded.Instruction),
+		agent.WithGate(gate),
 	}
 	if bgMgr != nil {
 		opts = append(opts, agent.WithBackgroundManager(bgMgr))

@@ -205,14 +205,11 @@ func (m welcomeModel) View() string {
 		out.WriteString("\n" + m.hint + "\n")
 	}
 
-	// Input region (anchored just above the footer). Hidden
-	// during spawn so the operator can't type into a dead prompt
-	// — the spinner above is the focal point during that brief
-	// window.
-	var inputBlock string
-	if m.stage != welcomeSpawning {
-		inputBlock = "  " + m.input.View() + "\n"
-	}
+	// Input region (anchored just above the footer). Always
+	// rendered so the operator's eye lands on it consistently —
+	// during spawn we just don't expect them to type, but the
+	// box stays put.
+	inputBlock := "  " + m.input.View() + "\n"
 
 	// Pad between output and input so the input box sits at the
 	// bottom regardless of how short the output is.

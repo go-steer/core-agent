@@ -131,32 +131,38 @@ func spawnLocalAgent(ctx context.Context, extraArgs []string) (*localSpawn, erro
 
 	// Watch for early process exit in parallel with the socket
 	// poll so we surface "agent crashed" immediately rather than
-	// waiting the full 5s.
-	exited := make(chan error, 1)
+	// waiting the full timeout. We expose `alive` (closed when
+	// Wait returns) plus a pointer to the error — NOT a channel
+	// of error. With a channel, waitForSocketOrExit and the
+	// caller would race to drain it, and the loser blocks forever.
+	alive := make(chan struct{})
+	var waitErr error
 	go func() {
-		exited <- cmd.Wait()
+		waitErr = cmd.Wait()
 		if logFile != nil {
 			_ = logFile.Close()
 		}
+		close(alive)
 	}()
 
 	// 15s is generous on purpose: a cold-start agent reads config,
 	// opens the session DB, initializes tools/MCP, then starts the
 	// attach listener in a goroutine. On a loaded laptop or in CI,
 	// 5s is too tight and the operator gets a misleading timeout.
-	if err := waitForSocketOrExit(ctx, socketPath, 15*time.Second, exited); err != nil {
-		// If the process is still alive, kill it so it doesn't
-		// linger past the failed spawn attempt.
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-			<-exited
+	if err := waitForSocketOrExit(ctx, socketPath, 15*time.Second, alive, &waitErr); err != nil {
+		// Kill only if still alive; otherwise the Wait goroutine
+		// is already done and an extra Kill+wait would deadlock.
+		select {
+		case <-alive:
+			// Already exited.
+		default:
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+				<-alive
+			}
 		}
 		return nil, decorateSpawnErr(err, bin, args, tail.String(), logPath)
 	}
-
-	// Detach the wait goroutine: it's still running; shutdown()
-	// will SIGTERM + reap when the operator exits.
-	go func() { <-exited }()
 
 	return &localSpawn{
 		cmd:        cmd,
@@ -283,18 +289,24 @@ func locateAgentBinary() (string, error) {
 }
 
 // waitForSocketOrExit polls the unix socket at path until it
-// accepts a connection, OR the agent process exits early (in
-// which case we surface "agent crashed" with the wait status),
-// OR the timeout fires. ctx cancellation aborts early.
-func waitForSocketOrExit(ctx context.Context, path string, timeout time.Duration, exited <-chan error) error {
+// accepts a connection, OR the agent process exits early (the
+// `alive` channel is closed by the caller's Wait goroutine when
+// cmd.Wait returns, and `waitErrPtr` is read at that point so
+// we can surface the exit error), OR the timeout fires. ctx
+// cancellation aborts early.
+//
+// Note: waitErrPtr is read only after `alive` is closed, which
+// guarantees the Wait goroutine has fully written the error
+// before we observe it (close is a happens-before).
+func waitForSocketOrExit(ctx context.Context, path string, timeout time.Duration, alive <-chan struct{}, waitErrPtr *error) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case err := <-exited:
-			if err != nil {
-				return fmt.Errorf("agent exited before binding socket: %w", err)
+		case <-alive:
+			if waitErrPtr != nil && *waitErrPtr != nil {
+				return fmt.Errorf("agent exited before binding socket: %w", *waitErrPtr)
 			}
 			return fmt.Errorf("agent exited cleanly before binding socket — did it need a --prompt or interactive stdin?")
 		default:

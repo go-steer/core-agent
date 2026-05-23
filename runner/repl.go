@@ -56,7 +56,15 @@ func REPL(ctx context.Context, m adkmodel.LLM, stdin io.Reader, stdout, stderr i
 	if err != nil {
 		return ExitAgentError, err
 	}
+	return REPLWithAgent(ctx, a, m, stdin, stdout, stderr, tracker, pricing, eventsOpts...)
+}
 
+// REPLWithAgent runs the REPL against a pre-constructed Agent. Useful
+// for tests that need a reference to the agent (to call Inject from
+// outside the loop, for example) and for library consumers that
+// construct the Agent themselves. Equivalent to REPL minus the
+// agent.New() call at the top.
+func REPLWithAgent(ctx context.Context, a *agent.Agent, m adkmodel.LLM, stdin io.Reader, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing, eventsOpts ...EventsOption) (int, error) {
 	// If a BackgroundAgentManager is wired, install an alert hook so
 	// the human running the REPL sees subagent reports inline as
 	// they arrive — same ↪ magenta sigil used for Gemini grounding
@@ -108,36 +116,76 @@ func REPL(ctx context.Context, m adkmodel.LLM, stdin io.Reader, stdout, stderr i
 		defer sigState.stop()
 	}
 
+	// Persistent stdin reader. Lives for the whole REPL session and
+	// feeds one line per ReadString into stdinLines. Selecting on
+	// this channel (instead of calling readLineCtx synchronously)
+	// lets the main loop also react to Agent.WakeRequested() —
+	// which fires whenever an external Inject lands while the REPL
+	// is waiting between turns. Without this, a POST /inject
+	// against a REPL-mode agent would queue silently and only get
+	// processed when the local user happened to type something.
+	stdinLines := make(chan stdinLine, 4)
+	go func() {
+		for {
+			line, err := br.ReadString('\n')
+			select {
+			case stdinLines <- stdinLine{line: line, err: err}:
+			case <-replCtx.Done():
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
 	for {
 		if err := replCtx.Err(); err != nil {
 			return ExitOK, nil
 		}
 		fmt.Fprint(stdout, "> ")
-		line, err := readLineCtx(replCtx, br)
-		// SIGINT exit fired between turns. Cleanly exit; the
-		// stdin-read goroutine in readLineCtx leaks for the
-		// remaining microseconds before process exit (fine).
-		if err != nil && errors.Is(err, context.Canceled) {
+
+		var prompt string
+		var isWake bool
+		select {
+		case <-replCtx.Done():
 			return ExitOK, nil
+		case r := <-stdinLines:
+			if r.err == io.EOF {
+				fmt.Fprintln(stdout)
+				return ExitOK, nil
+			}
+			if r.err != nil {
+				return ExitAgentError, fmt.Errorf("runner: read stdin: %w", r.err)
+			}
+			prompt = strings.TrimSpace(r.line)
+			if prompt == "" {
+				continue
+			}
+			if prompt == "/exit" || prompt == "/quit" {
+				return ExitOK, nil
+			}
+		case <-a.WakeRequested():
+			// An external Inject (typically via attach-mode's
+			// POST /inject) queued a message in the agent's inbox
+			// AND fired wake. Run a turn with an empty prompt;
+			// Agent.Run's pre-turn drain prepends every queued
+			// inbox message via formatInboxForPrompt, so the
+			// model sees them as a "[Inbox]" block. The local
+			// "> " prompt we just printed is left in place — the
+			// model output renders below it, then the next loop
+			// iteration writes a fresh "> ".
+			prompt = ""
+			isWake = true
+			fmt.Fprintln(stderr, "")
+			fmt.Fprintln(stderr, paint("[wake] inbox arrived — processing", ansiCyan, colorOn))
 		}
-		if err == io.EOF {
-			fmt.Fprintln(stdout)
-			return ExitOK, nil
-		}
-		if err != nil {
-			return ExitAgentError, fmt.Errorf("runner: read stdin: %w", err)
-		}
-		prompt := strings.TrimSpace(line)
-		if prompt == "" {
-			continue
-		}
-		if prompt == "/exit" || prompt == "/quit" {
-			return ExitOK, nil
-		}
+
 		// User has typed something useful — reset the between-turn
 		// Ctrl+C window so a stale first-press from earlier doesn't
-		// haunt them.
-		if sigState != nil {
+		// haunt them. Wake-driven turns don't count as user input
+		// so we leave the arming intact.
+		if !isWake && sigState != nil {
 			sigState.reset()
 		}
 		exit, err := runREPLTurn(replCtx, a, m, stdinFile, prompt, stdout, stderr, tracker, pricing, eventsOpts)
@@ -150,6 +198,14 @@ func REPL(ctx context.Context, m adkmodel.LLM, stdin io.Reader, stdout, stderr i
 			return ExitOK, nil
 		}
 	}
+}
+
+// stdinLine is one ReadString result. Pulled out so the stdin-reader
+// goroutine and the main loop's select can share a single channel
+// element type without an anonymous struct.
+type stdinLine struct {
+	line string
+	err  error
 }
 
 // runREPLTurn drives one REPL turn with optional mid-turn interrupt
@@ -204,31 +260,6 @@ func runREPLTurn(ctx context.Context, a *agent.Agent, m adkmodel.LLM, stdinFile 
 		terr = nil
 	}
 	return interrupter.ExitRequested(), terr
-}
-
-// readLineCtx reads a line from br but respects ctx cancellation.
-// Under the hood it spawns a one-shot goroutine that blocks on
-// br.ReadString('\n'); when ctx fires, we return immediately with
-// ctx.Err() and let the goroutine leak (it'll wake up on the next
-// stdin byte, push to its channel, find no receiver, and exit). The
-// leak is bounded — at most one goroutine per cancelled read —
-// and short-lived since this only fires when the REPL is exiting.
-func readLineCtx(ctx context.Context, br *bufio.Reader) (string, error) {
-	type result struct {
-		line string
-		err  error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		line, err := br.ReadString('\n')
-		ch <- result{line, err}
-	}()
-	select {
-	case r := <-ch:
-		return r.line, r.err
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
 }
 
 // betweenTurnSigState manages SIGINT handling between turns. During

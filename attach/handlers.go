@@ -54,6 +54,13 @@ func (h *handlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /sessions/{app}/{sid}/inject", h.injectQualified)
 	mux.HandleFunc("POST /sessions/{app}/{sid}/wake", h.wakeQualified)
 
+	// Read-only state endpoints — feed the TUI's /tools, /subagents,
+	// /status slash commands. Pure projections over in-memory state;
+	// safe for ReadOnly mode (the read-only flag gates POSTs only).
+	mux.HandleFunc("GET /sessions/{app}/{sid}/tools", h.toolsQualified)
+	mux.HandleFunc("GET /sessions/{app}/{sid}/agents", h.agentsQualified)
+	mux.HandleFunc("GET /sessions/{app}/{sid}/status", h.statusQualified)
+
 	// Single-segment shortcut: /sessions/<sid>/... — resolves when
 	// SessionID is unambiguous across registered apps; 409 otherwise.
 	// Registered after the qualified patterns so Go's routing prefers
@@ -61,6 +68,9 @@ func (h *handlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /sessions/{sid}/events", h.eventsShortcut)
 	mux.HandleFunc("POST /sessions/{sid}/inject", h.injectShortcut)
 	mux.HandleFunc("POST /sessions/{sid}/wake", h.wakeShortcut)
+	mux.HandleFunc("GET /sessions/{sid}/tools", h.toolsShortcut)
+	mux.HandleFunc("GET /sessions/{sid}/agents", h.agentsShortcut)
+	mux.HandleFunc("GET /sessions/{sid}/status", h.statusShortcut)
 }
 
 // sessionDescriptor is one row in the GET /sessions response.
@@ -313,4 +323,109 @@ func parseSince(s string) int64 {
 		return 0
 	}
 	return n
+}
+
+// --- /tools, /agents, /status — read-only state projections --------------
+//
+// Each handler looks up the Entry, then type-asserts against the
+// matching optional provider interface (ToolsProvider /
+// AgentsProvider / StatusProvider). When the agent doesn't implement
+// the provider, the response is the zero shape (empty list / zero
+// struct) — never 501, so a TUI that fans these out at startup
+// against mixed-vintage agents doesn't have to special-case errors.
+
+func (h *handlers) toolsQualified(w http.ResponseWriter, r *http.Request) {
+	app := r.PathValue("app")
+	sid := r.PathValue("sid")
+	entry, err := h.reg.Lookup(app, sid)
+	if err != nil {
+		writeLookupError(w, err)
+		return
+	}
+	h.doTools(w, entry)
+}
+
+func (h *handlers) toolsShortcut(w http.ResponseWriter, r *http.Request) {
+	sid := r.PathValue("sid")
+	entry, err := h.reg.LookupSingle(sid)
+	if err != nil {
+		writeLookupError(w, err)
+		return
+	}
+	h.doTools(w, entry)
+}
+
+func (h *handlers) doTools(w http.ResponseWriter, entry *Entry) {
+	out := []ToolInfo{}
+	if p, ok := entry.Agent.(ToolsProvider); ok {
+		if list := p.AttachTools(); list != nil {
+			out = list
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tools": out})
+}
+
+func (h *handlers) agentsQualified(w http.ResponseWriter, r *http.Request) {
+	app := r.PathValue("app")
+	sid := r.PathValue("sid")
+	entry, err := h.reg.Lookup(app, sid)
+	if err != nil {
+		writeLookupError(w, err)
+		return
+	}
+	h.doAgents(w, entry)
+}
+
+func (h *handlers) agentsShortcut(w http.ResponseWriter, r *http.Request) {
+	sid := r.PathValue("sid")
+	entry, err := h.reg.LookupSingle(sid)
+	if err != nil {
+		writeLookupError(w, err)
+		return
+	}
+	h.doAgents(w, entry)
+}
+
+func (h *handlers) doAgents(w http.ResponseWriter, entry *Entry) {
+	out := []AgentInfo{}
+	if p, ok := entry.Agent.(AgentsProvider); ok {
+		if list := p.AttachAgents(); list != nil {
+			out = list
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agents": out})
+}
+
+func (h *handlers) statusQualified(w http.ResponseWriter, r *http.Request) {
+	app := r.PathValue("app")
+	sid := r.PathValue("sid")
+	entry, err := h.reg.Lookup(app, sid)
+	if err != nil {
+		writeLookupError(w, err)
+		return
+	}
+	h.doStatus(w, entry)
+}
+
+func (h *handlers) statusShortcut(w http.ResponseWriter, r *http.Request) {
+	sid := r.PathValue("sid")
+	entry, err := h.reg.LookupSingle(sid)
+	if err != nil {
+		writeLookupError(w, err)
+		return
+	}
+	h.doStatus(w, entry)
+}
+
+func (h *handlers) doStatus(w http.ResponseWriter, entry *Entry) {
+	var out StatusInfo
+	if p, ok := entry.Agent.(StatusProvider); ok {
+		out = p.AttachStatus()
+	}
+	// Ensure State is always populated so consumers don't have to
+	// special-case "missing" vs "idle".
+	if out.State == "" {
+		out.State = AgentStateIdle
+	}
+	writeJSON(w, http.StatusOK, out)
 }

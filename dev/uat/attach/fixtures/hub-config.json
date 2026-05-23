@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "model": {
+    "provider": "echo",
+    "name": "echo"
+  },
+  "permissions": {
+    "mode": "yolo"
+  },
+  "attach": {
+    "listen":            "0.0.0.0:7777",
+    "token_env":         "ATTACH_TOKEN",
+    "readonly":          false,
+    "peer_hub":          true,
+    "register_to":       "",
+    "register_endpoint": "",
+    "register_name":     ""
+  }
+}

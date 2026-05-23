@@ -319,3 +319,71 @@ func (g *Gate) Approvals() []ApprovalLog {
 	copy(out, g.approvals)
 	return out
 }
+
+// Snapshot is a read-only view of the gate's configured policy + mode,
+// suitable for surfacing to operators (attach-mode /tools endpoint, the
+// TUI's tool catalog) without exposing the gate's internal state. The
+// returned slices are defensive copies. Does not include session-level
+// approvals (those are inherently fleeting and per-request); use
+// Approvals() for the per-session audit log.
+type Snapshot struct {
+	Mode  Mode     `json:"mode"`
+	Allow []string `json:"allow,omitempty"`
+	Deny  []string `json:"deny,omitempty"`
+}
+
+// Snapshot returns the current gate configuration.
+func (g *Gate) Snapshot() Snapshot {
+	allow, deny := g.policy.RawPatterns()
+	return Snapshot{
+		Mode:  g.mode,
+		Allow: allow,
+		Deny:  deny,
+	}
+}
+
+// ToolGateState classifies a tool name against the configured policy
+// without actually requesting permission. Used by the attach-mode
+// /tools endpoint so the TUI / WebUI / operator can see whether a tool
+// would be allowed, denied, or prompted before the model tries it.
+//
+// Semantics:
+//   - "denied"   — a deny pattern matches the bare tool name (no key).
+//     Denials with key globs (e.g. "bash:sudo *") cannot be
+//     pre-computed without a candidate key and are reported
+//     as "prompted".
+//   - "allowed"  — mode is "yolo" (gate is bypassed), OR an allow
+//     pattern matches the bare tool name + no deny does.
+//   - "prompted" — mode is "ask" and no preempting allow/deny applies.
+//   - "denied-allow-mode" — mode is "allow" and no allowlist entry covers
+//     the tool (so it would be refused with a
+//     "requires an allowlist entry" error).
+//
+// This is a pre-flight projection, not a guarantee — interactive
+// approvals at runtime can grant access that's not in the snapshot.
+func (g *Gate) ToolGateState(toolName string) string {
+	if matchAny(g.policy.denyRules(), toolName, "") {
+		return ToolGateDenied
+	}
+	if g.mode == ModeYolo {
+		return ToolGateAllowed
+	}
+	if matchAny(g.policy.allowRules(), toolName, "") {
+		return ToolGateAllowed
+	}
+	if g.mode == ModeAllow {
+		return ToolGateDeniedInAllowMode
+	}
+	return ToolGatePrompted
+}
+
+// Tool-gate state strings exposed via the attach-mode /tools endpoint.
+// Kept as bare strings (not a typed enum) so JSON consumers downstream
+// (TUI, WebUI, operator scripts) don't have to import a Go package to
+// reason about them.
+const (
+	ToolGateAllowed           = "allowed"
+	ToolGateDenied            = "denied"
+	ToolGatePrompted          = "prompted"
+	ToolGateDeniedInAllowMode = "denied-allow-mode"
+)

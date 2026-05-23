@@ -41,7 +41,10 @@ import (
 	"google.golang.org/adk/session"
 	"google.golang.org/adk/tool"
 
+	"github.com/go-steer/core-agent/attach"
 	"github.com/go-steer/core-agent/eventlog"
+	"github.com/go-steer/core-agent/permissions"
+	corebuiltins "github.com/go-steer/core-agent/tools"
 )
 
 // DefaultAppName tags this process in the ADK runner. Telemetry and
@@ -122,6 +125,8 @@ type Agent struct {
 	agentName       string
 	userID          string
 	sessionID       string
+	modelName       string
+	gate            *permissions.Gate
 	bgMgr           *BackgroundAgentManager
 	inbox           *inbox
 	wake            *wakeSignal
@@ -156,6 +161,7 @@ type options struct {
 	eventLog        *eventlog.Handle
 	subagents       []*Agent
 	bgMgr           *BackgroundAgentManager
+	gate            *permissions.Gate
 	attachRegistrar attachRegistrar
 }
 
@@ -298,6 +304,21 @@ func WithSessionRegistry(r attachRegistrar) Option {
 	return func(o *options) { o.attachRegistrar = r }
 }
 
+// WithGate wires the permissions gate that gates every tool call into
+// the agent's metadata, so it can be surfaced over the attach-mode
+// /tools endpoint (each tool gets a pre-flight `gate_state` field —
+// "allowed" / "denied" / "prompted" / "denied-allow-mode" — without
+// actually consulting the gate at request time). Optional; without
+// it, the /tools endpoint reports an empty gate_state per tool and
+// the TUI's auditing column is blank.
+//
+// This is metadata-only — the gate that actually mediates tool calls
+// is still the one wired into the tool constructors themselves. The
+// agent does not call this gate; it just exposes a read-only view.
+func WithGate(g *permissions.Gate) Option {
+	return func(o *options) { o.gate = g }
+}
+
 // WithSystemInstructionPrefix prepends prefix to the agent's default
 // instruction. Used for memory loading: AGENTS.md / CLAUDE.md /
 // GEMINI.md project memory becomes part of the system prompt rather
@@ -391,6 +412,8 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		agentName:       o.name,
 		userID:          o.userID,
 		sessionID:       o.sessionID,
+		modelName:       model.Name(),
+		gate:            o.gate,
 		bgMgr:           o.bgMgr,
 		inbox:           newInbox(),
 		wake:            newWakeSignal(),
@@ -446,6 +469,17 @@ func (a *Agent) SessionService() session.Service { return a.sessionService }
 // reach back to Stream.Since / Stream.Watch for replay or live tail
 // without keeping a separate reference.
 func (a *Agent) EventLog() *eventlog.Handle { return a.eventLog }
+
+// ModelName returns the name of the LLM the agent was constructed
+// with (sourced from model.Name() at New() time). Used by the
+// attach-mode /status endpoint so the TUI usage panel can label the
+// in/out/cost figures with the model in use.
+func (a *Agent) ModelName() string {
+	if a == nil {
+		return ""
+	}
+	return a.modelName
+}
 
 // Run executes one turn of the agent against prompt and returns the event
 // iterator straight from ADK's runner. Callers are expected to range over
@@ -578,4 +612,84 @@ func freshSessionID() (string, error) {
 		return "", fmt.Errorf("agent: generate session id: %w", err)
 	}
 	return "rwc-" + hex.EncodeToString(b[:]), nil
+}
+
+// builtinToolNameSet caches the canonical built-in names for source
+// classification in AttachTools. Recomputing per call would be cheap
+// but the set is static for the process lifetime.
+var builtinToolNameSet = func() map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, n := range corebuiltins.BuiltinToolNames() {
+		out[n] = struct{}{}
+	}
+	return out
+}()
+
+// AttachTools implements attach.ToolsProvider. Returns the agent's
+// full tool catalog as ToolInfo entries with source classification
+// (builtin vs other) and the gate's pre-flight state per tool when
+// a gate was wired via WithGate. MCP / skill attribution is "other"
+// in v1 — distinguishing them at the slice level needs an upstream
+// metadata pass we haven't done yet.
+func (a *Agent) AttachTools() []attach.ToolInfo {
+	if a == nil {
+		return nil
+	}
+	out := make([]attach.ToolInfo, 0, len(a.tools))
+	for _, t := range a.tools {
+		name := t.Name()
+		info := attach.ToolInfo{
+			Name:        name,
+			Description: t.Description(),
+			Source:      attach.ToolSourceOther,
+		}
+		if _, ok := builtinToolNameSet[name]; ok {
+			info.Source = attach.ToolSourceBuiltin
+		}
+		if a.gate != nil {
+			info.GateState = a.gate.ToolGateState(name)
+		}
+		out = append(out, info)
+	}
+	return out
+}
+
+// AttachAgents implements attach.AgentsProvider. Returns the live
+// background subagents from this agent's BackgroundAgentManager, or
+// an empty slice when no manager was wired.
+func (a *Agent) AttachAgents() []attach.AgentInfo {
+	if a == nil || a.bgMgr == nil {
+		return nil
+	}
+	handles := a.bgMgr.List()
+	out := make([]attach.AgentInfo, 0, len(handles))
+	for _, h := range handles {
+		ai := attach.AgentInfo{
+			ID:              h.Name, // BackgroundHandle keys by name
+			Name:            h.Name,
+			Status:          h.Status().String(),
+			StartedAt:       h.StartedAt,
+			ParentSessionID: a.sessionID,
+		}
+		if r := h.Result(); r != nil && r.FinalText != "" {
+			ai.LastReport = r.FinalText
+		}
+		out = append(out, ai)
+	}
+	return out
+}
+
+// AttachStatus implements attach.StatusProvider. V1 returns the agent's
+// model name + a coarse "idle" state — finer-grained state (running /
+// deferred / paused) would require run-loop instrumentation that
+// hasn't been wired yet; the design doc captures pause/resume + state
+// mutation as v3 work.
+func (a *Agent) AttachStatus() attach.StatusInfo {
+	if a == nil {
+		return attach.StatusInfo{}
+	}
+	return attach.StatusInfo{
+		State:     attach.AgentStateIdle,
+		ModelName: a.modelName,
+	}
 }

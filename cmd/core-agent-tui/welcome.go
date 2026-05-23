@@ -64,9 +64,10 @@ type welcomeChoiceMsg struct {
 
 func newWelcomeModel() welcomeModel {
 	ti := textinput.New()
-	ti.Placeholder = "/spawn   or   /attach http://localhost:7777   or   /help"
+	ti.Placeholder = "type a command, e.g. /spawn or /attach <url>"
 	ti.CharLimit = 512
 	ti.Width = 60
+	ti.Prompt = "> "
 	ti.Focus()
 	return welcomeModel{
 		stage: welcomeInput,
@@ -187,14 +188,17 @@ func (m welcomeModel) View() string {
 	body.WriteString(welcomeCheatSheet)
 	body.WriteString("\n")
 
-	body.WriteString("  " + m.input.View() + "\n")
-
+	// During spawn the input box would just confuse — replace it
+	// with the spinner so the operator's eye lands on "something
+	// is happening" rather than re-typing into a dead prompt.
 	if m.stage == welcomeSpawning {
-		body.WriteString("\n  " + styleHint.Render("⏳ spawning local agent…") + "\n")
+		body.WriteString("  " + styleHint.Render("⏳ spawning local agent…") + "\n")
+	} else {
+		body.WriteString("  " + m.input.View() + "\n")
 	}
 
 	if m.error != "" {
-		body.WriteString("\n  " + styleBubbleErr.Render("✗ "+m.error) + "\n")
+		body.WriteString("\n" + renderMultilineError(m.error) + "\n")
 	}
 	if m.hint != "" {
 		body.WriteString("\n" + m.hint + "\n")
@@ -257,4 +261,22 @@ func isURLish(s string) bool {
 	return strings.HasPrefix(s, "http://") ||
 		strings.HasPrefix(s, "https://") ||
 		strings.HasPrefix(s, "unix://")
+}
+
+// renderMultilineError prefixes the first line of s with "  ✗ " and
+// continuation lines with "    " so a multi-line error (e.g. one
+// decorated by decorateSpawnErr with binary/args/stderr-tail) stays
+// visually grouped under the ✗ marker. The error style is applied
+// per-line so lipgloss doesn't strip newlines.
+func renderMultilineError(s string) string {
+	lines := strings.Split(s, "\n")
+	var b strings.Builder
+	for i, line := range lines {
+		if i == 0 {
+			b.WriteString("  " + styleBubbleErr.Render("✗ "+line))
+		} else {
+			b.WriteString("\n    " + styleBubbleErr.Render(line))
+		}
+	}
+	return b.String()
 }

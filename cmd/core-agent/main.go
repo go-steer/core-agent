@@ -36,6 +36,7 @@ import (
 	adktool "google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/agent"
+	"github.com/go-steer/core-agent/attach"
 	"github.com/go-steer/core-agent/config"
 	"github.com/go-steer/core-agent/eventlog"
 	"github.com/go-steer/core-agent/instruction"
@@ -55,6 +56,19 @@ import (
 )
 
 func main() {
+	// Subcommand dispatch: `core-agent attach <url>` and
+	// `core-agent ls <url>` are entirely separate from the agent-run
+	// flow. Peel them off before flag.Parse so their own flag sets
+	// don't collide with the main flag set's --p / --c / etc.
+	if len(os.Args) >= 2 {
+		switch os.Args[1] {
+		case "attach":
+			os.Exit(runAttachSubcommand(os.Args[2:]))
+		case "ls":
+			os.Exit(runLsSubcommand(os.Args[2:]))
+		}
+	}
+
 	prompt := flag.String("p", "", "single prompt; runs one turn and exits (REPL otherwise)")
 	cfgPath := flag.String("c", "", "config file path (default: discover .agents/config.json)")
 	modelOverride := flag.String("m", "", "override model name from config")
@@ -71,13 +85,41 @@ func main() {
 	yolo := flag.Bool("yolo", false, "bypass the permissions gate entirely (every tool call runs without approval). Equivalent to permissions.mode=\"yolo\" in config.")
 	noBackgroundAgents := flag.Bool("no-background-agents", false, "disable the spawn_agent / list_agents / check_agent / stop_agent tools (model can't spawn background subagents). Default: enabled.")
 	allowURLHost := flag.String("allow-url-host", "", "comma-separated host patterns appended to url_scope.allow for the fetch_url tool (e.g. \"github.com,*.googleapis.com\"). HTTPS only unless the pattern carries an http:// prefix. Disable the tool entirely with --disable-tools=fetch_url.")
+	attachListen := flag.String("attach-listen", "", "enable attach-mode HTTP listener on this address (e.g. :7777). Requires --session-db.")
+	attachUnixSocket := flag.String("attach-unix-socket", "", "enable attach-mode on a Unix socket at this path. Mutually exclusive with --attach-listen.")
+	attachTLSCert := flag.String("attach-tls-cert", "", "TLS server certificate (PEM) for --attach-listen. Pair with --attach-tls-key.")
+	attachTLSKey := flag.String("attach-tls-key", "", "TLS server key (PEM) for --attach-listen.")
+	attachClientCA := flag.String("attach-client-ca", "", "CA PEM for client-cert verification (mTLS). When set, clients must present a cert signed by this CA.")
+	attachTokenEnv := flag.String("attach-token", "", "env var name holding the bearer token clients must present in Authorization: Bearer <token>. Empty disables bearer-token auth.")
+	attachReadonly := flag.Bool("attach-readonly", false, "attach-mode: disable POST /inject and /wake. Read endpoints (GET /sessions, GET /events) remain open.")
 	flag.Parse()
 
-	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost)
+	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost,
+		attachOpts{
+			Listen:     *attachListen,
+			UnixSocket: *attachUnixSocket,
+			TLSCert:    *attachTLSCert,
+			TLSKey:     *attachTLSKey,
+			ClientCA:   *attachClientCA,
+			TokenEnv:   *attachTokenEnv,
+			ReadOnly:   *attachReadonly,
+		})
 	os.Exit(code)
 }
 
-func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string) int {
+// attachOpts bundles the attach-mode CLI flags so run()'s signature
+// doesn't grow by 7 more positional args.
+type attachOpts struct {
+	Listen     string
+	UnixSocket string
+	TLSCert    string
+	TLSKey     string
+	ClientCA   string
+	TokenEnv   string
+	ReadOnly   bool
+}
+
+func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, attachCfg attachOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -299,6 +341,53 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		}
 		opts = append(opts, agent.WithEventLog(handle))
 		fmt.Fprintf(os.Stderr, "core-agent: session db: %s\n", path)
+	}
+
+	// Attach-mode wiring. Must come after the eventlog is set up
+	// (broadcaster requires a Stream) and before the agent is
+	// constructed (so the registry is in opts).
+	if attachCfg.Listen != "" || attachCfg.UnixSocket != "" {
+		if !sessionDB && sessionDBPath == "" {
+			fmt.Fprintln(os.Stderr, "core-agent: --attach-listen / --attach-unix-socket requires --session-db (broadcaster pumps from the event log)")
+			return runner.ExitConfigError
+		}
+		attachReg := attach.NewSessionRegistry()
+		opts = append(opts, agent.WithSessionRegistry(attach.NewAgentRegistrarAdapter(attachReg)))
+		token := ""
+		if attachCfg.TokenEnv != "" {
+			token = os.Getenv(attachCfg.TokenEnv)
+			if token == "" {
+				fmt.Fprintf(os.Stderr, "core-agent: --attach-token=%s is empty in the environment\n", attachCfg.TokenEnv)
+				return runner.ExitConfigError
+			}
+		}
+		attachSrv, err := attach.NewServer(attach.Options{
+			Registry:   attachReg,
+			Addr:       attachCfg.Listen,
+			UnixSocket: attachCfg.UnixSocket,
+			Auth: attach.AuthConfig{
+				TLSCertFile:  attachCfg.TLSCert,
+				TLSKeyFile:   attachCfg.TLSKey,
+				ClientCAFile: attachCfg.ClientCA,
+				BearerToken:  token,
+				ReadOnly:     attachCfg.ReadOnly,
+			},
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: attach server: %v\n", err)
+			return runner.ExitConfigError
+		}
+		go func() {
+			endpoint := attachCfg.Listen
+			if endpoint == "" {
+				endpoint = "unix://" + attachCfg.UnixSocket
+			}
+			fmt.Fprintf(os.Stderr, "core-agent: attach listener on %s\n", endpoint)
+			if err := attachSrv.ListenAndServe(); err != nil {
+				fmt.Fprintf(os.Stderr, "core-agent: attach server: %v\n", err)
+			}
+		}()
+		defer func() { _ = attachSrv.Close() }()
 	}
 
 	colorOn, err := resolveColor(color, os.Stdout)

@@ -112,38 +112,51 @@ const (
 // Agent is the wrapper around an ADK llmagent + runner. One Agent
 // represents one configured LLM-driven role.
 type Agent struct {
-	inner          adkagent.Agent
-	runner         *runner.Runner
-	sessionService session.Service
-	eventLog       *eventlog.Handle
-	tools          []tool.Tool
-	streaming      adkagent.StreamingMode
-	appName        string
-	agentName      string
-	userID         string
-	sessionID      string
-	bgMgr          *BackgroundAgentManager
-	inbox          *inbox
-	wake           *wakeSignal
+	inner           adkagent.Agent
+	runner          *runner.Runner
+	sessionService  session.Service
+	eventLog        *eventlog.Handle
+	tools           []tool.Tool
+	streaming       adkagent.StreamingMode
+	appName         string
+	agentName       string
+	userID          string
+	sessionID       string
+	bgMgr           *BackgroundAgentManager
+	inbox           *inbox
+	wake            *wakeSignal
+	attachRegistrar attachRegistrar
+}
+
+// attachRegistrar is the subset of *attach.SessionRegistry the agent
+// package consumes. Uses `any` instead of a typed Registrant
+// interface because Go doesn't unify identically-shaped interfaces
+// across packages (attach.Registrant and agent.Registrant would be
+// distinct types even with the same method set). The attach package's
+// AgentRegistrarAdapter type-asserts internally.
+type attachRegistrar interface {
+	Register(ag any) (any, error)
+	Unregister(appName, userID, sessionID string)
 }
 
 // Option mutates Agent construction. Use the With* helpers below.
 type Option func(*options)
 
 type options struct {
-	appName        string
-	name           string
-	description    string
-	instruction    string
-	streaming      adkagent.StreamingMode
-	userID         string
-	sessionID      string
-	tools          []tool.Tool
-	toolsets       []tool.Toolset
-	sessionService session.Service
-	eventLog       *eventlog.Handle
-	subagents      []*Agent
-	bgMgr          *BackgroundAgentManager
+	appName         string
+	name            string
+	description     string
+	instruction     string
+	streaming       adkagent.StreamingMode
+	userID          string
+	sessionID       string
+	tools           []tool.Tool
+	toolsets        []tool.Toolset
+	sessionService  session.Service
+	eventLog        *eventlog.Handle
+	subagents       []*Agent
+	bgMgr           *BackgroundAgentManager
+	attachRegistrar attachRegistrar
 }
 
 func defaultOptions() options {
@@ -263,6 +276,28 @@ func WithBackgroundManager(mgr *BackgroundAgentManager) Option {
 	return func(o *options) { o.bgMgr = mgr }
 }
 
+// WithSessionRegistry opts the constructed agent into attach-mode by
+// auto-registering it with the supplied registry. Once registered the
+// agent is reachable over HTTP/SSE via attach.NewServer for
+// observability (GET /sessions/<app>/<sid>/events) and control
+// (POST /inject, /wake).
+//
+// The registry's Register is called from agent.New; if it returns an
+// error (typically attach.ErrSessionExists from a double-register),
+// agent.New surfaces it. Pass nil to skip registration (default).
+//
+// Lifetime: the agent stays registered until the operator calls
+// registry.Unregister explicitly, or the listener that owns the
+// registry shuts down. In typical deployments (one agent per process,
+// long-lived) the agent IS the process and lives until shutdown.
+//
+// The registrar argument is typed as an interface so this package
+// doesn't import attach/ (avoids cycle). Pass
+// attach.NewAgentRegistrarAdapter(reg) to wire a *attach.SessionRegistry.
+func WithSessionRegistry(r attachRegistrar) Option {
+	return func(o *options) { o.attachRegistrar = r }
+}
+
 // WithSystemInstructionPrefix prepends prefix to the agent's default
 // instruction. Used for memory loading: AGENTS.md / CLAUDE.md /
 // GEMINI.md project memory becomes part of the system prompt rather
@@ -346,22 +381,28 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 	}
 
 	a := &Agent{
-		inner:          inner,
-		runner:         r,
-		sessionService: svc,
-		eventLog:       o.eventLog,
-		tools:          o.tools,
-		streaming:      o.streaming,
-		appName:        o.appName,
-		agentName:      o.name,
-		userID:         o.userID,
-		sessionID:      o.sessionID,
-		bgMgr:          o.bgMgr,
-		inbox:          newInbox(),
-		wake:           newWakeSignal(),
+		inner:           inner,
+		runner:          r,
+		sessionService:  svc,
+		eventLog:        o.eventLog,
+		tools:           o.tools,
+		streaming:       o.streaming,
+		appName:         o.appName,
+		agentName:       o.name,
+		userID:          o.userID,
+		sessionID:       o.sessionID,
+		bgMgr:           o.bgMgr,
+		inbox:           newInbox(),
+		wake:            newWakeSignal(),
+		attachRegistrar: o.attachRegistrar,
 	}
 	if a.bgMgr != nil {
 		a.bgMgr.attachParent(a)
+	}
+	if a.attachRegistrar != nil {
+		if _, err := a.attachRegistrar.Register(a); err != nil {
+			return nil, fmt.Errorf("agent: attach registry: %w", err)
+		}
 	}
 	return a, nil
 }

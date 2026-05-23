@@ -20,13 +20,20 @@ If you have Go installed: `go install github.com/go-steer/core-agent/cmd/core-ag
 
 ## Quick start
 
+Three ways to start:
+
 ```bash
-# In one shell: run an agent with the attach listener
+# 1. Bare invocation — TUI opens the welcome screen so you can pick local or remote.
+core-agent-tui
+
+# 2. --local — TUI spawns a fresh core-agent on a Unix socket and attaches.
+core-agent-tui --local
+
+# 3. Remote — point at a running agent's --attach-listen.
 ATTACH_TOKEN=$(openssl rand -hex 32) \
   core-agent -p "watch the date forever" --session-db --attach-listen=:7777 \
   --attach-token=ATTACH_TOKEN
 
-# In another shell: open the TUI
 core-agent-tui http://localhost:7777 --token=ATTACH_TOKEN
 ```
 
@@ -44,9 +51,30 @@ URL forms (same grammar as `core-agent attach`):
 
 | Flag | Purpose |
 |---|---|
+| `--local` | Spawn a sibling `core-agent` process on a private Unix socket under `os.TempDir()/core-agent-tui/` and attach to it. The TUI sends `SIGTERM` to the spawned agent on exit and removes the socket. Forwards any args after `--` to the spawned agent (e.g. `core-agent-tui --local -- --model=gemini-3.1-pro`). |
+| `--no-cleanup` | With `--local`: leave the spawned agent + socket in place on TUI exit. Default is to terminate + clean up. Useful when you want the agent to keep running headlessly after detaching. |
 | `--token=<ENVVAR>` | Name of the env var holding the bearer token (same indirection as `--attach-token` on the listener side). The secret never appears on the command line. |
 | `--theme=auto\|dark\|light\|notty` | Glamour theme for markdown rendering. `auto` detects from the terminal background. Override with `/theme` at runtime. |
 | `--alias=<label>` | Display label for the agent identity in the status bar. Defaults to `<appName>/<sessionID>` (or just `<sessionID>` for the unqualified case). |
+
+## Welcome screen
+
+Invoking `core-agent-tui` with no URL and no `--local` opens a landing screen:
+
+```
+core-agent-tui  ●  no endpoint selected
+────────────────────────────────────────
+  How would you like to start?
+
+  ▸ Spawn a local agent          (--local equivalent)
+    Attach to a remote endpoint  (enter URL)
+
+  ↑/↓ navigate · Enter select · q quit
+```
+
+Picking "Spawn a local agent" runs the same code path as `--local`. Picking "Attach to a remote endpoint" prompts for a URL (any of the forms above), validates the scheme, and flows into the session picker or direct-jump.
+
+You can also return to the welcome screen at any time with `/welcome`, switch endpoints with `/attach <url>`, or spawn another local agent with `/spawn [args...]`.
 
 ## Layout
 
@@ -63,12 +91,30 @@ URL forms (same grammar as `core-agent attach`):
 │   ⚙ kubectl get pods (12.4 KB, 200 OK)                          │  tool call
 │                                                                 │
 ├─────────────────────────────────────────────────────────────────┤
+│   ↑ "redeploy the canary"   (sending)                           │  queue panel
+│   ✓ "check the rollout log" (acked)                             │  (only when non-empty)
+├─────────────────────────────────────────────────────────────────┤
 │ > _                                                             │  input box
 └─────────────────────────────────────────────────────────────────┘
   /help · gemini-3.1-pro · in 12.4K · out 1.9K · $—                   footer
 ```
 
 Tool calls collapse to a single icon-prefixed line by default; the design captures expand-on-focus as v1.1 polish.
+
+### Queue panel
+
+The strip between the scrollback and the input box renders one row per inject the operator submitted, each labeled with a lifecycle glyph:
+
+| Glyph | State | Meaning |
+|---|---|---|
+| ⏳ | queued | submitted; POST `/inject` hasn't fired yet |
+| ↑ | sending | POST in flight |
+| ✓ | acked | server returned 200; in the agent's inbox |
+| … | processing | matching `user` event observed in the SSE stream |
+| · | done | model emitted a response; fades from the panel after ~2s |
+| ✗ | failed | POST returned non-2xx or network error |
+
+The panel is empty (and consumes zero rows) when no entries are in flight. Failed rows include the error message and stick around until you focus the panel and press **Esc** to dismiss.
 
 ## Slash commands
 
@@ -80,6 +126,10 @@ Type `/` followed by a command name in the input box and press Enter.
 | `/quit`, `/exit` | Leave the TUI cleanly. |
 | `/clear` | Clear the local scrollback (server log is untouched). |
 | `/sessions` | Pop back to the session picker. |
+| `/welcome` | Pop all the way back to the welcome landing screen (lets you switch between local-spawn and remote without restarting). |
+| `/attach <url>` | Disconnect from the current endpoint and attach to a new one. Accepts the same URL forms as the CLI. |
+| `/spawn [args...]` | Spawn a fresh local agent (same as `--local`); any trailing args forward to it. The spawned agent is cleaned up on TUI exit unless `--no-cleanup` is set. |
+| `/interrupt` | `POST /interrupt` — cancel the in-flight model turn. Server returns `interrupted: false` when nothing was running (you'll see "no in-flight turn" in the log). |
 | `/reconnect` | Force-reconnect the SSE stream (resumes from `?since=<lastSeq>` — lossless). |
 | `/wake` | `POST /wake` — pierce a scheduler sleep. |
 | `/inject <msg>` | Same as typing + Enter; useful for `/inject ` + paste of multi-line text. |
@@ -95,9 +145,10 @@ Type `/` followed by a command name in the input box and press Enter.
 | Key | Effect |
 |---|---|
 | **Enter** | Submit input (or run slash command) |
+| **Shift+Enter** | Insert a newline in the input |
 | **Ctrl+E** | Open `$EDITOR` with the current input as a buffer (fallback chain: `$VISUAL` → `$EDITOR` → `vi`) |
 | **PgUp / PgDn** | Scroll the scrollback |
-| **Esc** | Chat: back to the picker. Picker: quit. |
+| **Esc** | Contextual: clears the input box if it has text; otherwise sends `/interrupt` to cancel the in-flight model turn. From the welcome or picker screens it quits. |
 | **Ctrl+C** | Quit |
 | **r** (in picker) | Refresh the session list |
 
@@ -106,7 +157,7 @@ Type `/` followed by a command name in the input box and press Enter.
 When connected to a listener started with `--attach-readonly`, the TUI still works for everything except writes:
 
 - ✅ Session enumeration, live tail, `/tools`, `/status`, `/agents`, `/peers`, `/transcript`
-- ❌ Sending messages (typing + Enter), `/wake`, `/inject`
+- ❌ Sending messages (typing + Enter), `/wake`, `/inject`, `/interrupt`
 
 Writes surface as red `✗` error lines in the scrollback (the server returns 403; the TUI shows the error rather than failing silently).
 

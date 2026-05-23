@@ -15,11 +15,15 @@
 // Command core-agent-tui is the operator-facing TUI consumer of
 // attach-mode. Ships as a separate binary so the default core-agent
 // stays bubble-tea-free (and distroless-clean). See
-// docs/attach-tui-design.md for the full design.
+// docs/attach-tui-design.md + docs/embedded-tui-design.md for the
+// full design.
 //
 // Usage:
 //
-//	core-agent-tui <url> [--token=ENVVAR] [--theme=auto|dark|light] [--alias=NAME]
+//	core-agent-tui                       # welcome screen → pick local or remote
+//	core-agent-tui --local               # spawn a local agent, attach
+//	core-agent-tui --local -- <args>     # forward args after `--` to the spawned agent
+//	core-agent-tui <url> [--token=ENV]   # remote attach (v1.8.0 behavior)
 //
 // URL forms (same as core-agent attach):
 //
@@ -31,6 +35,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -45,33 +50,78 @@ func main() {
 	tokenEnv := fs.String("token", "", "env var holding the bearer token (e.g. ATTACH_TOKEN)")
 	theme := fs.String("theme", "auto", "glamour theme: auto | dark | light | notty")
 	alias := fs.String("alias", "", "display label override for the agent identity (default: agent name → sessionID)")
+	local := fs.Bool("local", false, "spawn a core-agent process locally on a unix socket and attach to it (alternative to passing a URL)")
+	noCleanup := fs.Bool("no-cleanup", false, "with --local: leave the spawned agent + socket in place on TUI exit (default: SIGTERM the agent + remove socket)")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return
 	}
-	if fs.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "core-agent-tui: URL is required")
-		fmt.Fprintln(os.Stderr, "usage: core-agent-tui <url> [--token=ENVVAR] [--theme=auto|dark|light] [--alias=NAME]")
-		os.Exit(2)
+	args := fs.Args()
+	rawURL := ""
+	extraArgs := []string(nil)
+	if *local {
+		// With --local, any trailing positional args after a `--`
+		// separator forward to the spawned agent. The flag
+		// package already strips `--` from the head of args.
+		extraArgs = args
+	} else if len(args) > 0 {
+		rawURL = args[0]
 	}
-	rawURL := fs.Arg(0)
+
 	token := ""
 	if *tokenEnv != "" {
 		token = os.Getenv(*tokenEnv)
 	}
 
-	parsed, err := attachclient.ParseURL(rawURL)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "core-agent-tui: %v\n", err)
-		os.Exit(2)
+	var root rootModel
+	switch {
+	case *local:
+		// Spawn synchronously so we can fail-fast before opening
+		// the TUI. The spawn handle stays on the rootModel for
+		// cleanup on exit.
+		spawn, err := spawnLocalAgent(context.Background(), extraArgs)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent-tui --local: %v\n", err)
+			os.Exit(2)
+		}
+		spawn.keep = *noCleanup
+		parsed, perr := attachclient.ParseURL(spawn.url())
+		if perr != nil {
+			spawn.shutdown()
+			fmt.Fprintf(os.Stderr, "core-agent-tui --local: %v\n", perr)
+			os.Exit(2)
+		}
+		client := attachclient.New(parsed, spawn.token, 0)
+		root = newRootModel(client, *theme, *alias)
+		root.spawn = spawn
+		root.noCleanup = *noCleanup
+		// No defer here — the post-Run cleanup below handles spawn shutdown.
+		// (defer + later os.Exit on the rawURL parse path would trip
+		//  gocritic's exitAfterDefer warning.)
+	case rawURL != "":
+		parsed, err := attachclient.ParseURL(rawURL)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent-tui: %v\n", err)
+			os.Exit(2)
+		}
+		client := attachclient.New(parsed, token, 0)
+		root = newRootModel(client, *theme, *alias)
+	default:
+		// Bare invocation: welcome screen.
+		root = newRootModel(nil, *theme, *alias)
+		root.noCleanup = *noCleanup
 	}
-	client := attachclient.New(parsed, token, 0)
 
-	root := newRootModel(client, *theme, *alias)
 	prog := tea.NewProgram(root,
 		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(), // limited mouse for viewport scrolling
+		tea.WithMouseCellMotion(),
 	)
-	if _, err := prog.Run(); err != nil {
+	final, err := prog.Run()
+	// Final model may carry a spawn handle from welcome-driven or
+	// /spawn-driven spawns; clean those up too.
+	if rm, ok := final.(rootModel); ok && rm.spawn != nil {
+		rm.spawn.shutdown()
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent-tui: %v\n", err)
 		os.Exit(1)
 	}

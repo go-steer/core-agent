@@ -95,11 +95,38 @@ func TestWriteEvents_StreamsPartialTextOnlyToOut(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WriteEvents: %v", err)
 	}
-	if got := out.String(); got != "hello\n" {
-		t.Errorf("out = %q, want %q (streamed text + trailing newline)", got, "hello\n")
+	// The `asst › ` sigil prefixes the first partial chunk of each
+	// assistant speaking block so model text is visually distinct
+	// from the user prompt (especially under the echo provider).
+	if got := out.String(); got != "asst › hello\n" {
+		t.Errorf("out = %q, want %q (sigil + streamed text + trailing newline)", got, "asst › hello\n")
 	}
 	if info.Len() != 0 {
 		t.Errorf("info should be empty for text-only events, got %q", info.String())
+	}
+}
+
+// TestWriteEvents_SigilResetsAcrossToolCall verifies the chevron is
+// emitted twice when a tool call interrupts a streaming response —
+// one block before the call, one after — so the conversation reads
+// as discrete asst speaking segments rather than one run-on stream.
+func TestWriteEvents_SigilResetsAcrossToolCall(t *testing.T) {
+	t.Parallel()
+	var out, info bytes.Buffer
+	err := WriteEvents(eventSeq([]*session.Event{
+		partialText("before "),
+		partialText("the call"),
+		toolCall("kubectl_get", map[string]any{"resource": "pods"}),
+		toolResult("kubectl_get", map[string]any{"ok": true}),
+		partialText("after the call"),
+	}, nil), &out, &info)
+	if err != nil {
+		t.Fatalf("WriteEvents: %v", err)
+	}
+	got := out.String()
+	want := "asst › before the call\nasst › after the call\n"
+	if got != want {
+		t.Errorf("out = %q\n  want %q", got, want)
 	}
 }
 

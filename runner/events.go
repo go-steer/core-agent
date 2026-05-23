@@ -114,6 +114,19 @@ func WriteEvents(events iter.Seq2[*session.Event, error], out, info io.Writer, o
 		opt(&cfg)
 	}
 	wroteText := false
+	// asstStarted tracks whether we've written the `asst › ` sigil
+	// for the current assistant response. We reset it when a
+	// non-partial event arrives (tool call, tool response, etc.)
+	// so multi-segment turns get a fresh prefix on each model
+	// "speaking" block — i.e. the chat reads as:
+	//   asst › I'll check the canary deployment.
+	//   → kubectl(...)
+	//   ← kubectl(... 3 pods Ready)
+	//   asst › The canary is healthy.
+	// The sigil is the same `›` chevron the TUI uses for its
+	// `asst │` chat bubbles, kept consistent across surfaces so
+	// operators don't have to context-switch between CLI and TUI.
+	asstStarted := false
 	seen := make(seenLines)
 	for event, err := range events {
 		if err != nil {
@@ -143,6 +156,13 @@ func WriteEvents(events iter.Seq2[*session.Event, error], out, info io.Writer, o
 					if !seen.add(line) {
 						continue
 					}
+					// Close the current asst speaking block so the next
+					// partial text after this tool call gets a fresh
+					// `asst › ` prefix.
+					if asstStarted {
+						_, _ = fmt.Fprintln(out)
+						asstStarted = false
+					}
 					_, _ = fmt.Fprintln(info, paint(line, ansiCyan, cfg.color))
 				case p.FunctionResponse != nil:
 					// FunctionResponse is emitted exactly once today (by
@@ -154,8 +174,25 @@ func WriteEvents(events iter.Seq2[*session.Event, error], out, info io.Writer, o
 					if !seen.add(line) {
 						continue
 					}
+					if asstStarted {
+						_, _ = fmt.Fprintln(out)
+						asstStarted = false
+					}
 					_, _ = fmt.Fprintln(info, paint(line, ansiCyan, cfg.color))
 				case p.Text != "" && event.Partial:
+					if !asstStarted {
+						// Emit the speaker sigil before the first chunk
+						// of this assistant block. Bold cyan so it
+						// stands out from the green model text without
+						// burning a whole line. Keeps the visual
+						// boundary between user input and model reply
+						// obvious, which the previous (no-prefix)
+						// rendering blurred — particularly under the
+						// echo provider where the reply text equals
+						// the prompt.
+						_, _ = io.WriteString(out, paint("asst › ", ansiCyan, cfg.color))
+						asstStarted = true
+					}
 					text := paint(p.Text, ansiGreen, cfg.color)
 					if _, err := io.WriteString(out, text); err != nil {
 						return fmt.Errorf("runner: write text: %w", err)

@@ -182,6 +182,28 @@ func (c *Client) Wake(ctx context.Context, sessionPath string) error {
 		map[string]string{}, nil)
 }
 
+// InterruptResponse is the parsed body of POST /sessions/<sid>/interrupt.
+// Interrupted reports whether there was an in-flight turn to cancel
+// (server-side); false means the agent was idle and the call was a
+// no-op. The TUI distinguishes these for its "nothing to interrupt"
+// toast vs. "turn cancelled" rendering.
+type InterruptResponse struct {
+	Interrupted bool   `json:"interrupted"`
+	Session     string `json:"session"`
+}
+
+// Interrupt calls POST <base>/sessions/<sid>/interrupt to cancel the
+// in-flight turn on that session. The returned InterruptResponse
+// reports whether something was actually cancelled.
+func (c *Client) Interrupt(ctx context.Context, sessionPath string) (InterruptResponse, error) {
+	var out InterruptResponse
+	if err := c.doJSON(ctx, http.MethodPost, sessionPath+"/interrupt",
+		map[string]string{}, &out); err != nil {
+		return InterruptResponse{}, err
+	}
+	return out, nil
+}
+
 // ---- SSE stream ----
 
 // Stream connects to <base><sessionPath>/events?since=<since> and

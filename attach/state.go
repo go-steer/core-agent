@@ -101,3 +101,14 @@ type AgentsProvider interface {
 type StatusProvider interface {
 	AttachStatus() StatusInfo
 }
+
+// InterruptProvider is the optional capability for
+// POST /sessions/.../interrupt. Returns true if there was an
+// in-flight turn to cancel, false if the agent was idle (no-op).
+// Agents that don't implement it get an HTTP 412 from the
+// /interrupt handler — interrupt is a write to agent state, and
+// silently no-op'ing would mislead operators about whether their
+// intent took effect.
+type InterruptProvider interface {
+	AttachInterrupt() bool
+}

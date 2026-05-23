@@ -15,6 +15,7 @@
 package attach
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"google.golang.org/adk/session"
 )
 
 // injectMaxBytes caps the size of the POST /inject body. 8 KiB is
@@ -53,6 +56,7 @@ func (h *handlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /sessions/{app}/{sid}/events", h.eventsQualified)
 	mux.HandleFunc("POST /sessions/{app}/{sid}/inject", h.injectQualified)
 	mux.HandleFunc("POST /sessions/{app}/{sid}/wake", h.wakeQualified)
+	mux.HandleFunc("POST /sessions/{app}/{sid}/interrupt", h.interruptQualified)
 
 	// Read-only state endpoints — feed the TUI's /tools, /subagents,
 	// /status slash commands. Pure projections over in-memory state;
@@ -68,6 +72,7 @@ func (h *handlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /sessions/{sid}/events", h.eventsShortcut)
 	mux.HandleFunc("POST /sessions/{sid}/inject", h.injectShortcut)
 	mux.HandleFunc("POST /sessions/{sid}/wake", h.wakeShortcut)
+	mux.HandleFunc("POST /sessions/{sid}/interrupt", h.interruptShortcut)
 	mux.HandleFunc("GET /sessions/{sid}/tools", h.toolsShortcut)
 	mux.HandleFunc("GET /sessions/{sid}/agents", h.agentsShortcut)
 	mux.HandleFunc("GET /sessions/{sid}/status", h.statusShortcut)
@@ -266,6 +271,97 @@ func (h *handlers) doWake(w http.ResponseWriter, r *http.Request, entry *Entry) 
 		"woken":  entry.SessionID,
 		"prompt": req.Prompt,
 	})
+}
+
+// --- /interrupt — cancel the in-flight turn -----------------------------
+//
+// Operator-driven cancel of whatever the agent is doing right now.
+// Used by the TUI's ESC keybinding (when input is empty + a turn is
+// in flight) and by scripted operators via curl. The agent's session,
+// event log, registered subagents, and attach registration all
+// survive the cancel — only the in-flight model call is interrupted.
+//
+// Response:
+//   - 200 OK with `{interrupted: true, session: <sid>}` — there was
+//     something in flight and the cancel fired.
+//   - 200 OK with `{interrupted: false, session: <sid>}` + header
+//     `X-Interrupted: nothing-in-flight` — agent is idle; no-op.
+//   - 412 Precondition Failed — agent doesn't implement
+//     InterruptProvider (older runtime; nothing to cancel from
+//     the server's perspective).
+//   - 403 Forbidden — when --attach-readonly is set; gated at the
+//     middleware layer along with /inject and /wake.
+//
+// Audit: each successful cancel (interrupted=true) emits an
+// eventlog row with Author="attach/interrupt" and
+// CustomMetadata={source:"operator"} so the operator's intent is
+// captured in the audit trail alongside the agent's own
+// ctx.Canceled response.
+
+func (h *handlers) interruptQualified(w http.ResponseWriter, r *http.Request) {
+	app := r.PathValue("app")
+	sid := r.PathValue("sid")
+	entry, err := h.reg.Lookup(app, sid)
+	if err != nil {
+		writeLookupError(w, err)
+		return
+	}
+	h.doInterrupt(w, r, entry)
+}
+
+func (h *handlers) interruptShortcut(w http.ResponseWriter, r *http.Request) {
+	sid := r.PathValue("sid")
+	entry, err := h.reg.LookupSingle(sid)
+	if err != nil {
+		writeLookupError(w, err)
+		return
+	}
+	h.doInterrupt(w, r, entry)
+}
+
+func (h *handlers) doInterrupt(w http.ResponseWriter, r *http.Request, entry *Entry) {
+	ip, ok := entry.Agent.(InterruptProvider)
+	if !ok {
+		http.Error(w, "interrupt: this agent does not implement InterruptProvider (older runtime?)", http.StatusPreconditionFailed)
+		return
+	}
+	canceled := ip.AttachInterrupt()
+	if canceled {
+		// Best-effort audit row. Don't fail the request if the
+		// emission errors — the cancel already fired.
+		appendInterruptAudit(r.Context(), entry)
+	} else {
+		w.Header().Set("X-Interrupted", "nothing-in-flight")
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"interrupted": canceled,
+		"session":     entry.SessionID,
+	})
+}
+
+// appendInterruptAudit writes one event row recording the operator's
+// interrupt intent. Author + CustomMetadata identify the source so a
+// later audit query (or attach /events tail) can distinguish
+// operator-initiated cancels from any other ctx.Canceled flowing
+// through the agent loop. Best-effort: an eventlog write failure
+// is logged-only — never fails the HTTP request.
+func appendInterruptAudit(ctx context.Context, entry *Entry) {
+	log := entry.Agent.EventLog()
+	if log == nil {
+		return
+	}
+	getResp, err := log.Service.Get(ctx, &session.GetRequest{
+		AppName:   entry.AppName,
+		UserID:    entry.UserID,
+		SessionID: entry.SessionID,
+	})
+	if err != nil {
+		return
+	}
+	ev := session.NewEvent("attach-interrupt")
+	ev.Author = "attach/interrupt"
+	ev.CustomMetadata = map[string]any{"source": "operator"}
+	_ = log.Service.AppendEvent(ctx, getResp.Session, ev)
 }
 
 // readJSON decodes JSON into v with a size cap. Returns an error

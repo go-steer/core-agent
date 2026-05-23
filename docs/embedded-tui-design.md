@@ -90,6 +90,27 @@ Three things change with this design:
   what they want yet still land somewhere useful instead of an
   error message. Same bubble-tea Model state, third mode
   alongside picker + chat.
+- **Switch / spawn from inside a session via slash commands.**
+  Once attached, the operator can change endpoints or stand up
+  another local agent without leaving the TUI:
+  - `/attach <url>` — disconnect the current SSE stream, attach
+    to `<url>`, enter that endpoint's session picker. URL
+    grammar is identical to argv (`http://`, `https://`,
+    `unix://`).
+  - `/spawn [args...]` — spawn a new local agent in the
+    background (same machinery as `--local`), attach to it.
+    Arguments after `/spawn` forward to the spawned agent
+    (e.g. `/spawn --provider=anthropic --model=claude-opus-4-7`).
+    Replaces the current attachment; if the prior attachment
+    was also a `--local` agent, its cleanup policy applies
+    (terminate by default, persist if `--no-cleanup` was active).
+  - `/welcome` — bail back to the landing screen.
+
+  v1 is serial — one active attachment at a time. **Multi-pane
+  / multi-attach with tabs is v1.x polish** (already listed in
+  Out of scope below). The slash commands above are the
+  serial-switching primitives; tabs would build on the same
+  attachment-tracking state.
 
 ## `--local` mode + bare invocation
 
@@ -347,6 +368,10 @@ About **400 LoC + tests** across both PRs.
   (or by `request_id` once PR A ships that).
 - `cmd/core-agent-tui/chat.go` — wire queue between viewport
   and textarea; ESC keymap on textarea / chat (clear vs interrupt).
+- `cmd/core-agent-tui/slash.go` — new slash handlers `/attach`,
+  `/spawn`, `/welcome`. Each tears down the current SSE stream +
+  releases the current attachment cleanly before transitioning.
+  `/spawn` reuses the `--local` spawn helper from main.go.
 - `cmd/core-agent-tui/queue_test.go` + `welcome_test.go` —
   state transitions, failure handling, pause/resume; welcome
   navigation + transitions.

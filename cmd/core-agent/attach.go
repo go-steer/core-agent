@@ -149,15 +149,52 @@ func runLsSubcommand(args []string) int {
 	}
 	if len(out.Sessions) == 0 {
 		fmt.Println("(no sessions)")
-		return runner.ExitOK
-	}
-	fmt.Printf("%-30s %-20s %-30s %s\n", "APP", "USER", "SESSION", "EVENTLOG")
-	for _, s := range out.Sessions {
-		eventlogMark := "-"
-		if s.HasEventLog {
-			eventlogMark = "yes"
+	} else {
+		fmt.Println("SESSIONS:")
+		fmt.Printf("  %-30s %-20s %-30s %s\n", "APP", "USER", "SESSION", "EVENTLOG")
+		for _, s := range out.Sessions {
+			eventlogMark := "-"
+			if s.HasEventLog {
+				eventlogMark = "yes"
+			}
+			fmt.Printf("  %-30s %-20s %-30s %s\n", s.App, s.User, s.SessionID, eventlogMark)
 		}
-		fmt.Printf("%-30s %-20s %-30s %s\n", s.App, s.User, s.SessionID, eventlogMark)
+	}
+
+	// Peer listing — best-effort, suppress 404s (the hub may not have
+	// peer-registration enabled). Show as a second section under the
+	// session list so the operator sees both at a glance.
+	peerReq, _ := http.NewRequest(http.MethodGet, parsed.baseURL+"/peers", nil)
+	if token != "" {
+		peerReq.Header.Set("Authorization", "Bearer "+token)
+	}
+	peerResp, perr := client.Do(peerReq)
+	if perr == nil {
+		defer func() { _ = peerResp.Body.Close() }()
+		if peerResp.StatusCode == http.StatusOK {
+			var peerOut struct {
+				Peers []struct {
+					Name     string            `json:"name"`
+					Endpoint string            `json:"endpoint"`
+					Labels   map[string]string `json:"labels,omitempty"`
+				} `json:"peers"`
+			}
+			if derr := json.NewDecoder(peerResp.Body).Decode(&peerOut); derr == nil && len(peerOut.Peers) > 0 {
+				fmt.Println()
+				fmt.Println("PEERS:")
+				fmt.Printf("  %-30s %-40s %s\n", "NAME", "ENDPOINT", "LABELS")
+				for _, p := range peerOut.Peers {
+					labels := ""
+					for k, v := range p.Labels {
+						if labels != "" {
+							labels += ","
+						}
+						labels += k + "=" + v
+					}
+					fmt.Printf("  %-30s %-40s %s\n", p.Name, p.Endpoint, labels)
+				}
+			}
+		}
 	}
 	return runner.ExitOK
 }

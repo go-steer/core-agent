@@ -31,6 +31,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"iter"
+	"reflect"
+	"sync"
 
 	"google.golang.org/genai"
 
@@ -131,6 +133,12 @@ type Agent struct {
 	inbox           *inbox
 	wake            *wakeSignal
 	attachRegistrar attachRegistrar
+
+	// mu guards cancelInFlight + any other per-run mutable state we
+	// add later. Held only across the store-and-clear of the cancel
+	// pointer; never across an LLM call.
+	mu             sync.Mutex
+	cancelInFlight context.CancelFunc
 }
 
 // attachRegistrar is the subset of *attach.SessionRegistry the agent
@@ -508,8 +516,20 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		prompt = prependInboxMessages(prompt, a.inbox.drain())
 	}
 	msg := genai.NewContentFromText(prompt, genai.RoleUser)
-	return a.runner.Run(ctx, a.userID, a.sessionID, msg, adkagent.RunConfig{
+
+	// Track the cancel func so Interrupt() can fire it during the
+	// turn. Wrap the iterator so the cancel is cleared when the
+	// consumer is done draining events (cleanly or via early
+	// return) — otherwise a second Interrupt() call after the
+	// turn ended would invoke a no-op cancel against the wrong
+	// context.
+	runCtx, cancel := context.WithCancel(ctx)
+	a.setCancelInFlight(cancel)
+	inner := a.runner.Run(runCtx, a.userID, a.sessionID, msg, adkagent.RunConfig{
 		StreamingMode: a.streaming,
+	})
+	return wrapWithCleanup(inner, func() {
+		a.clearCancelInFlight(cancel)
 	})
 }
 
@@ -584,7 +604,13 @@ func (a *Agent) RunWithContents(ctx context.Context, contents []*genai.Content) 
 			}
 		}
 
-		for ev, err := range a.runner.Run(ctx, a.userID, sessionID, last, adkagent.RunConfig{
+		// Track the cancel func so Interrupt() can fire it during the
+		// turn — mirrors Run(). Clearing happens via defer here
+		// since we're already inside the closure.
+		runCtx, cancel := context.WithCancel(ctx)
+		a.setCancelInFlight(cancel)
+		defer a.clearCancelInFlight(cancel)
+		for ev, err := range a.runner.Run(runCtx, a.userID, sessionID, last, adkagent.RunConfig{
 			StreamingMode: a.streaming,
 		}) {
 			if !yield(ev, err) {
@@ -691,5 +717,103 @@ func (a *Agent) AttachStatus() attach.StatusInfo {
 	return attach.StatusInfo{
 		State:     attach.AgentStateIdle,
 		ModelName: a.modelName,
+	}
+}
+
+// Interrupt cancels the in-flight turn (if any) by invoking the
+// stored cancel func. Returns true if there was something to cancel
+// (a turn was in flight when called), false if the agent was idle
+// (no-op). Safe for concurrent callers; the cancel is single-shot
+// per turn — a second Interrupt during the same turn is a no-op.
+//
+// Cancellation propagates through context.Canceled to the in-flight
+// model call. The agent's tools (bash, fetch_url, etc.) cancel
+// their I/O when they see the cancel; the model call returns
+// immediately with a partial response; the run loop emits any
+// already-accumulated content and exits. Sessions, the event log,
+// background subagents, and the attach registry all survive
+// untouched.
+func (a *Agent) Interrupt() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	cancel := a.cancelInFlight
+	a.cancelInFlight = nil
+	a.mu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel()
+	return true
+}
+
+// AttachInterrupt implements attach.InterruptProvider so the
+// attach-mode POST /sessions/<sid>/interrupt handler can dispatch
+// cancel intents from a remote operator without importing this
+// package directly.
+func (a *Agent) AttachInterrupt() bool {
+	return a.Interrupt()
+}
+
+// setCancelInFlight stores the cancel func for the current turn.
+// Replaces any prior value — concurrent Run() calls on the same
+// Agent are not supported (the agent's session ID is per-Agent, so
+// a parallel Run would interleave events on the same session
+// anyway). Same convention as the existing single-runner model.
+func (a *Agent) setCancelInFlight(cancel context.CancelFunc) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.cancelInFlight = cancel
+	a.mu.Unlock()
+}
+
+// clearCancelInFlight clears the stored cancel func only when the
+// passed-in cancel matches the stored one. Avoids clobbering a
+// newer turn's cancel when an older turn's cleanup runs late (the
+// iter.Seq2 wrapper's defer might fire after the consumer has
+// already started a follow-up turn — though see the
+// no-concurrent-Run-per-Agent rule).
+func (a *Agent) clearCancelInFlight(cancel context.CancelFunc) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// Pointer-equality comparison via function value. context.CancelFunc
+	// is a func type so direct == doesn't compile; use reflect-free
+	// trick: store pointer addresses. We just compare via cancel()
+	// idempotency — if the stored one is the one we set, clear it.
+	if cancelFuncEqual(a.cancelInFlight, cancel) {
+		a.cancelInFlight = nil
+	}
+}
+
+// cancelFuncEqual compares two context.CancelFunc values for
+// identity. Direct == comparison is illegal in Go for func types,
+// so we wrap via reflect.ValueOf().Pointer() to get the underlying
+// function pointer. Used only for the "was this cleanup mine?"
+// check in clearCancelInFlight; not a general utility.
+func cancelFuncEqual(a, b context.CancelFunc) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return reflect.ValueOf(a).Pointer() == reflect.ValueOf(b).Pointer()
+}
+
+// wrapWithCleanup wraps a session.Event iterator so cleanup runs
+// when the consumer is done draining (cleanly or via early return).
+// Used by Run() / RunWithContents to clear cancelInFlight when a
+// turn ends.
+func wrapWithCleanup(seq iter.Seq2[*session.Event, error], cleanup func()) iter.Seq2[*session.Event, error] {
+	return func(yield func(*session.Event, error) bool) {
+		defer cleanup()
+		for ev, err := range seq {
+			if !yield(ev, err) {
+				return
+			}
+		}
 	}
 }

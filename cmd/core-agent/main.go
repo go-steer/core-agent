@@ -516,7 +516,9 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 	}
 
 	if noREPL {
-		// Attach-only daemon mode: no REPL, just block on ctx
+		// Attach-only daemon mode: construct the agent (which
+		// registers it with the attach session registry so the
+		// picker shows a session to attach to) and block on ctx
 		// cancellation. Required for `core-agent-tui --local`
 		// spawns (and any other "headless server, attach is the
 		// only surface" deployment), since the default REPL
@@ -527,9 +529,34 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 			fmt.Fprintln(os.Stderr, "core-agent: --no-repl requires --attach-listen or --attach-unix-socket")
 			return runner.ExitConfigError
 		}
-		fmt.Fprintln(os.Stderr, "core-agent: --no-repl: attach-only mode (Ctrl-C or SIGTERM to exit)")
-		<-ctx.Done()
-		return runner.ExitOK
+		a, err := agent.New(m, opts...)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+			return runner.ExitAgentError
+		}
+		fmt.Fprintf(os.Stderr,
+			"core-agent: --no-repl: attach-only mode, session %s (Ctrl-C or SIGTERM to exit)\n",
+			a.SessionID())
+		// Wake-driven inbox loop: when an attach client POSTs
+		// /inject, agent.Inject appends to the inbox + fires
+		// WakeRequested. We consume the event iterator from
+		// a.Run so the turn actually completes; the events also
+		// hit the eventlog → attach broadcaster, which is what
+		// the operator's TUI is rendering. Empty prompt means
+		// "no user text this turn, just drain the inbox" — same
+		// path REPL uses for the same case.
+		for {
+			select {
+			case <-ctx.Done():
+				return runner.ExitOK
+			case <-a.WakeRequested():
+				for _, runErr := range a.Run(ctx, "") {
+					if runErr != nil {
+						fmt.Fprintf(os.Stderr, "core-agent: turn: %v\n", runErr)
+					}
+				}
+			}
+		}
 	}
 
 	code, err = runner.REPL(ctx, m, os.Stdin, os.Stdout, os.Stderr, tracker, pricing, opts, eventsOpts...)

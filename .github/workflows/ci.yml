@@ -49,14 +49,11 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           check-latest: true
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: ${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-${{ env.GO_VERSION }}-
+          # setup-go@v5 caches ~/go/pkg/mod + ~/.cache/go-build using a
+          # key derived from go.sum. Letting it own those paths avoids
+          # the `tar: File exists` collision an explicit actions/cache@v4
+          # caused when both tried to restore the same directories.
+          cache-dependency-path: '**/go.sum'
       - run: go mod download
       - name: Vet
         run: dev/ci/presubmits/vet
@@ -88,15 +85,17 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           check-latest: true
+          # setup-go@v5 owns the Go module + build caches (see note in
+          # the test job above). Only the golangci-lint cache needs an
+          # explicit actions/cache entry — different path, no overlap
+          # with what setup-go restores.
+          cache-dependency-path: '**/go.sum'
       - uses: actions/cache@v4
         with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-            ~/.cache/golangci-lint
-          key: ${{ runner.os }}-lint-${{ env.GO_VERSION }}-${{ hashFiles('**/go.sum', 'dev/tools/.golangci.yml') }}
+          path: ~/.cache/golangci-lint
+          key: ${{ runner.os }}-golangci-${{ env.GO_VERSION }}-${{ hashFiles('**/go.sum', 'dev/tools/.golangci.yml') }}
           restore-keys: |
-            ${{ runner.os }}-lint-${{ env.GO_VERSION }}-
+            ${{ runner.os }}-golangci-${{ env.GO_VERSION }}-
       - name: Format
         run: dev/ci/presubmits/verify-go-format
       - name: golangci-lint

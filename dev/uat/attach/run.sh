@@ -15,6 +15,7 @@
 #   ./run.sh fleet [N]           # Session B: hub + N peers (default 2)
 #   ./run.sh config-hub          # Session C: hub from fixtures/ config
 #   ./run.sh tail [URL]          # core-agent attach against URL (or hub)
+#   ./run.sh tui  [URL]          # core-agent-tui against URL (or hub)
 #   ./run.sh ls   [URL]          # core-agent ls against URL (or hub)
 #   ./run.sh status              # what's running under tmux
 #   ./run.sh clean               # kill tmux session + remove /tmp dir
@@ -28,6 +29,7 @@ set -euo pipefail
 
 UAT_ROOT="/tmp/core-agent-uat"
 BIN="${UAT_ROOT}/bin/core-agent"
+TUI_BIN="${UAT_ROOT}/bin/core-agent-tui"
 SESS="core-agent-uat"
 HUB_PORT="${HUB_PORT:-7777}"
 PEER_PORT_BASE="${PEER_PORT_BASE:-7780}"
@@ -57,6 +59,14 @@ ensure_built() {
     if [[ ! -x "${BIN}" ]] || [[ "${REPO_ROOT}/cmd/core-agent/main.go" -nt "${BIN}" ]]; then
         log "building ${BIN} from ${REPO_ROOT}"
         (cd "${REPO_ROOT}" && go build -o "${BIN}" ./cmd/core-agent)
+    fi
+}
+
+ensure_tui_built() {
+    ensure_dirs
+    if [[ ! -x "${TUI_BIN}" ]] || [[ "${REPO_ROOT}/cmd/core-agent-tui/main.go" -nt "${TUI_BIN}" ]]; then
+        log "building ${TUI_BIN} from ${REPO_ROOT}"
+        (cd "${REPO_ROOT}" && go build -o "${TUI_BIN}" ./cmd/core-agent-tui)
     fi
 }
 
@@ -169,6 +179,13 @@ cmd_tail() {
     ATTACH_TOKEN="${ATTACH_TOKEN}" "${BIN}" attach --token=ATTACH_TOKEN "${url}"
 }
 
+cmd_tui() {
+    ensure_tui_built
+    local url="${1:-http://localhost:${HUB_PORT}}"
+    log "core-agent-tui ${url}"
+    ATTACH_TOKEN="${ATTACH_TOKEN}" "${TUI_BIN}" --token=ATTACH_TOKEN "${url}"
+}
+
 cmd_ls() {
     ensure_built
     local url="${1:-http://localhost:${HUB_PORT}}"
@@ -225,6 +242,7 @@ main() {
         fleet)        cmd_fleet "$@" ;;
         config-hub)   cmd_config_hub "$@" ;;
         tail)         cmd_tail "$@" ;;
+        tui)          cmd_tui "$@" ;;
         ls)           cmd_ls "$@" ;;
         inject)       cmd_inject "$@" ;;
         status)       cmd_status "$@" ;;

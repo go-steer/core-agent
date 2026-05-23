@@ -177,44 +177,54 @@ func (m welcomeModel) submit() (welcomeModel, tea.Cmd) {
 	}
 }
 
-// View renders the welcome screen.
+// View renders the welcome screen. Layout matches chat: status bar
+// on top, output area (cheat sheet + errors + hints + spinner) in
+// the middle, input box pinned just above the footer. Output flows
+// upward; the operator's eye always lands on the input at the same
+// position regardless of how much output is above it.
 func (m welcomeModel) View() string {
 	header := styleStatusBar.Width(m.width).Render(
 		"core-agent-tui  ●  no endpoint selected",
 	)
-
-	var body strings.Builder
-	body.WriteString("\n  Type a command to get started:\n\n")
-	body.WriteString(welcomeCheatSheet)
-	body.WriteString("\n")
-
-	// During spawn the input box would just confuse — replace it
-	// with the spinner so the operator's eye lands on "something
-	// is happening" rather than re-typing into a dead prompt.
-	if m.stage == welcomeSpawning {
-		body.WriteString("  " + styleHint.Render("⏳ spawning local agent…") + "\n")
-	} else {
-		body.WriteString("  " + m.input.View() + "\n")
-	}
-
-	if m.error != "" {
-		body.WriteString("\n" + renderMultilineError(m.error) + "\n")
-	}
-	if m.hint != "" {
-		body.WriteString("\n" + m.hint + "\n")
-	}
-
 	footer := styleFooter.Width(m.width).Render(
 		"  Enter run · Esc clear/quit · Ctrl+C quit",
 	)
 
-	bodyStr := body.String()
-	bodyLines := strings.Count(bodyStr, "\n")
-	pad := m.height - bodyLines - 2 // header + footer
-	if pad > 0 {
-		bodyStr += strings.Repeat("\n", pad)
+	// Output region (above the input). Everything the operator
+	// might want to read goes here so the input stays anchored.
+	var out strings.Builder
+	out.WriteString("\n  Type a command to get started:\n\n")
+	out.WriteString(welcomeCheatSheet)
+	if m.stage == welcomeSpawning {
+		out.WriteString("\n  " + styleHint.Render("⏳ spawning local agent…") + "\n")
 	}
-	return fmt.Sprintf("%s\n%s%s", header, bodyStr, footer)
+	if m.error != "" {
+		out.WriteString("\n" + renderMultilineError(m.error) + "\n")
+	}
+	if m.hint != "" {
+		out.WriteString("\n" + m.hint + "\n")
+	}
+
+	// Input region (anchored just above the footer). Hidden
+	// during spawn so the operator can't type into a dead prompt
+	// — the spinner above is the focal point during that brief
+	// window.
+	var inputBlock string
+	if m.stage != welcomeSpawning {
+		inputBlock = "  " + m.input.View() + "\n"
+	}
+
+	// Pad between output and input so the input box sits at the
+	// bottom regardless of how short the output is.
+	outStr := out.String()
+	outLines := strings.Count(outStr, "\n")
+	inputLines := strings.Count(inputBlock, "\n")
+	used := 1 + outLines + inputLines + 1 // header + output + input + footer
+	pad := m.height - used
+	if pad > 0 {
+		outStr += strings.Repeat("\n", pad)
+	}
+	return fmt.Sprintf("%s%s%s%s", header+"\n", outStr, inputBlock, footer)
 }
 
 // welcomeCheatSheet is the static command list shown above the

@@ -168,12 +168,14 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = modePicker
 		return m, m.picker.Init()
 	case spawnFailedMsg:
-		// Surface the error on the welcome screen.
+		// Surface the error on the welcome screen, re-focus the
+		// input so the operator can immediately retry / type a
+		// different command.
 		m.welcome.error = msg.err.Error()
-		m.welcome.stage = welcomeChoice
+		m.welcome.stage = welcomeInput
 		m.welcome.chosen = nil
 		m.mode = modeWelcome
-		return m, nil
+		return m, m.welcome.input.Focus()
 	}
 
 	switch m.mode {
@@ -184,13 +186,13 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			choice := *m.welcome.chosen
 			m.welcome.chosen = nil
 			if choice.LocalSpawn {
-				return m, m.spawnLocalCmd(nil)
+				return m, m.spawnLocalCmd(choice.SpawnArgs)
 			}
 			// Remote URL: parse + build client + flip into picker.
 			parsed, err := attachclient.ParseURL(choice.RemoteURL)
 			if err != nil {
 				m.welcome.error = err.Error()
-				m.welcome.stage = welcomeChoice
+				m.welcome.stage = welcomeInput
 				return m, nil
 			}
 			m.client = attachclient.New(parsed, "", 0)

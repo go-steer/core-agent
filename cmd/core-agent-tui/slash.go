@@ -97,8 +97,11 @@ func (m chatModel) handleSubmit(text string) (chatModel, tea.Cmd) {
 		return m, nil
 	case "/spawn":
 		// Pass through any trailing args verbatim to the spawned
-		// agent. A bare /spawn is fine — spawns with defaults.
-		m.wantsSpawn = args
+		// agent. A bare /spawn is fine — spawns with defaults. A
+		// leading "--" separator is stripped so `/spawn -- --model=mock`
+		// works the same as `/spawn --model=mock` (the `--` is just
+		// an optional visual marker for "what follows is for the agent").
+		m.wantsSpawn = stripDoubleDash(args)
 		if m.wantsSpawn == nil {
 			m.wantsSpawn = []string{}
 		}

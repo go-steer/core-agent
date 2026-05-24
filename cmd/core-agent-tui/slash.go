@@ -30,7 +30,11 @@ const helpText = `slash commands:
   /quit, /exit             leave the TUI
   /clear                   clear the local scrollback (server log unchanged)
   /sessions                back to the session picker
+  /welcome                 back to the welcome landing screen
+  /attach <url>            disconnect current, attach to a new endpoint
+  /spawn [args...]         spawn a new local agent; args forward to it
   /reconnect               force-reconnect the SSE stream
+  /interrupt               POST /interrupt — cancel the in-flight turn
   /wake                    POST /wake — pierce a scheduler sleep
   /inject <msg>            same as Enter; useful for paste-via-/inject
   /theme auto|dark|light   switch glamour theme (re-renders existing log)
@@ -45,7 +49,7 @@ keybindings:
   Shift+Enter   newline in input
   Ctrl+E        open $EDITOR with the current input as a buffer
   PgUp/PgDn     scroll scrollback
-  Esc           back to picker (chat) / quit (picker)
+  Esc           clear input if typing; otherwise /interrupt the turn
   Ctrl+C        quit`
 
 // handleSubmit reacts to Enter in the input box. Branches on whether
@@ -72,6 +76,35 @@ func (m chatModel) handleSubmit(text string) (chatModel, tea.Cmd) {
 	case "/sessions":
 		m.wantsPicker = true
 		return m, nil
+	case "/welcome":
+		m.wantsWelcome = true
+		return m, nil
+	case "/attach":
+		if len(args) == 0 {
+			m.appendErr("/attach: usage: /attach <url>")
+			m.refreshViewport()
+			return m, nil
+		}
+		raw := args[0]
+		if !strings.HasPrefix(raw, "http://") &&
+			!strings.HasPrefix(raw, "https://") &&
+			!strings.HasPrefix(raw, "unix://") {
+			m.appendErr("/attach: URL must start with http://, https://, or unix://")
+			m.refreshViewport()
+			return m, nil
+		}
+		m.wantsAttachURL = raw
+		return m, nil
+	case "/spawn":
+		// Pass through any trailing args verbatim to the spawned
+		// agent. A bare /spawn is fine — spawns with defaults.
+		m.wantsSpawn = args
+		if m.wantsSpawn == nil {
+			m.wantsSpawn = []string{}
+		}
+		return m, nil
+	case "/interrupt":
+		return m, m.interruptCmd()
 	case "/reconnect":
 		m.appendSystem(fmt.Sprintf("reconnecting from seq=%d…", m.lastSeq))
 		m.refreshViewport()

@@ -61,6 +61,19 @@ type chatModel struct {
 	reconnecting  bool
 
 	wantsPicker bool // set true by Esc; root reads + clears
+
+	// Slash-driven transition flags. Root model reads these after
+	// each Update and acts on them (clearing each on read).
+	wantsWelcome   bool     // /welcome — back to landing
+	wantsAttachURL string   // /attach <url> — re-attach to a new endpoint
+	wantsSpawn     []string // /spawn [args] — local-spawn a new agent (nil = no spawn requested; empty slice = spawn w/ no args)
+
+	// Inject queue: lifecycle entries shown between viewport
+	// and input box. Mutated by Enter on the textarea (queued
+	// → sending → acked → processing → done) and by the SSE
+	// stream (matches incoming user events by text to advance
+	// processing → done).
+	queue queueModel
 }
 
 // chatEvent is one rendered entry in the scrollback. Each frame from
@@ -100,6 +113,7 @@ func newChatModel(client *attachclient.Client, entry pickerEntry, theme, alias s
 		input:    ta,
 		renderer: renderer,
 		usage:    usagePanel{},
+		queue:    newQueueModel(),
 	}
 }
 
@@ -228,13 +242,16 @@ func (m chatModel) fetchStatusCmd() tea.Cmd {
 }
 
 func (m chatModel) injectCmd(message string) tea.Cmd {
+	// Enqueue immediately so the operator sees the entry land in
+	// the queue panel before the POST round-trip completes.
+	id := m.queue.enqueue(message)
 	client := m.client
 	sessionPath := m.entry.sessionPath()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		err := client.Inject(ctx, sessionPath, message)
-		return chatInjectAckMsg{message: message, err: err}
+		return chatInjectAckMsg{message: message, err: err, queueID: id}
 	}
 }
 
@@ -246,6 +263,21 @@ func (m chatModel) wakeCmd() tea.Cmd {
 		defer cancel()
 		err := client.Wake(ctx, sessionPath)
 		return chatWakeAckMsg{err: err}
+	}
+}
+
+// interruptCmd fires POST /interrupt and emits a chatInterruptAckMsg
+// describing the outcome (cancelled vs no-op). Used by the ESC
+// keymap (when input is empty + something might be in flight) and
+// by the /interrupt slash command for explicit invocation.
+func (m chatModel) interruptCmd() tea.Cmd {
+	client := m.client
+	sessionPath := m.entry.sessionPath()
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		resp, err := client.Interrupt(ctx, sessionPath)
+		return chatInterruptAckMsg{interrupted: resp.Interrupted, err: err}
 	}
 }
 
@@ -299,10 +331,17 @@ func (m chatModel) fetchPeersCmd() tea.Cmd {
 func (m chatModel) UpdateInner(msg tea.Msg) (chatModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// Esc returns to the picker (only when input isn't capturing).
 		if msg.Type == tea.KeyEsc {
-			m.wantsPicker = true
-			return m, nil
+			// Contextual ESC per the embedded-tui design:
+			//  - input has text → clear the input buffer
+			//  - input is empty → interrupt the in-flight turn
+			//    (server returns 204 X-Interrupted on no-op,
+			//    we render either way)
+			if strings.TrimSpace(m.input.Value()) != "" {
+				m.input.Reset()
+				return m, nil
+			}
+			return m, m.interruptCmd()
 		}
 		if msg.Type == tea.KeyEnter && !msg.Alt {
 			text := strings.TrimSpace(m.input.Value())
@@ -328,9 +367,10 @@ func (m chatModel) UpdateInner(msg tea.Msg) (chatModel, tea.Cmd) {
 		return m, nil
 	case chatInjectAckMsg:
 		if msg.err != nil {
+			m.queue.markFailed(msg.queueID, msg.err.Error())
 			m.appendErr(fmt.Sprintf("inject failed: %v", msg.err))
 		} else {
-			m.appendUser(msg.message)
+			m.queue.markAcked(msg.queueID)
 		}
 		m.refreshViewport()
 		return m, nil
@@ -339,6 +379,17 @@ func (m chatModel) UpdateInner(msg tea.Msg) (chatModel, tea.Cmd) {
 			m.appendErr(fmt.Sprintf("wake failed: %v", msg.err))
 		} else {
 			m.appendSystem("wake sent")
+		}
+		m.refreshViewport()
+		return m, nil
+	case chatInterruptAckMsg:
+		switch {
+		case msg.err != nil:
+			m.appendErr(fmt.Sprintf("interrupt failed: %v", msg.err))
+		case msg.interrupted:
+			m.appendSystem("turn interrupted")
+		default:
+			m.appendSystem("interrupt: nothing in flight")
 		}
 		m.refreshViewport()
 		return m, nil
@@ -388,6 +439,21 @@ func (m chatModel) View() string {
 			m.entry.displayLabel(m.alias), m.entry.Endpoint),
 	)
 	footer := styleFooter.Width(m.width).Render(m.usage.render(m.width, m.reconnecting, m.connectionMsg))
+
+	// Queue panel renders between the viewport and the input
+	// box. Empty queue → empty string (no chrome). Cull faded
+	// Done entries every render so the panel naturally clears.
+	m.queue.cullExpired()
+	queuePanel := m.queue.render(m.width, 5)
+	if queuePanel != "" {
+		return lipgloss.JoinVertical(lipgloss.Top,
+			statusBar,
+			m.viewport.View(),
+			queuePanel,
+			m.input.View(),
+			footer,
+		)
+	}
 	return lipgloss.JoinVertical(lipgloss.Top,
 		statusBar,
 		m.viewport.View(),
@@ -418,6 +484,11 @@ func (m *chatModel) applyFrame(f attach.Frame) {
 		text := assembleText(ev)
 		if text != "" {
 			m.appendUser(text)
+			// Queue: advance any acked entry whose text matches
+			// this user event from acked → processing. Best-
+			// effort text matching in v1; request_id matching
+			// when the server-side ID work lands.
+			m.queue.noteUserEvent(text)
 		}
 	default:
 		// Treat anything else as asst output (model name varies by provider).
@@ -433,6 +504,9 @@ func (m *chatModel) applyFrame(f attach.Frame) {
 				m.appendOrExtendPartial(text)
 			} else {
 				m.appendOrFinalizePartial(text)
+				// Queue: model finished a response → advance
+				// any processing entries to done.
+				m.queue.noteModelResponse()
 			}
 		}
 	}

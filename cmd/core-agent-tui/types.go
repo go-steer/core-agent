@@ -47,10 +47,19 @@ type chatStatusLoadedMsg struct {
 type chatInjectAckMsg struct {
 	message string
 	err     error
+	queueID uint64 // identifies the queue entry to advance / fail
 }
 
 type chatWakeAckMsg struct {
 	err error
+}
+
+// chatInterruptAckMsg carries the result of POST /interrupt back
+// to the chat model so it can render a system-line confirming
+// the cancel (or the "nothing-in-flight" no-op).
+type chatInterruptAckMsg struct {
+	interrupted bool
+	err         error
 }
 
 type chatToolsLoadedMsg struct {

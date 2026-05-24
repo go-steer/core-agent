@@ -292,8 +292,9 @@ func (m *Model) renderHeader() string {
 	tryAppend(" · " + provider)
 	if m.usage != nil {
 		tot := m.usage.Totals()
-		tryAppend(fmt.Sprintf(" · σ ↑%d/↓%d/$%s",
-			tot.InputTokens, tot.OutputTokens, formatCost(tot.CostUSD)))
+		tryAppend(fmt.Sprintf(" · σ ↑%d/↓%d/%s",
+			tot.InputTokens, tot.OutputTokens,
+			formatCost(tot.CostUSD, tot.InputTokens+tot.OutputTokens)))
 	}
 	gap := m.width - 2*gutter - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {

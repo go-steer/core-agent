@@ -450,7 +450,9 @@ func (m *Model) lastTurnUsageFooter() string {
 	if !ok {
 		return ""
 	}
-	line := fmt.Sprintf("↑%d in · ↓%d out · $%s", last.InputTokens, last.OutputTokens, formatCost(last.CostUSD))
+	line := fmt.Sprintf("↑%d in · ↓%d out · %s",
+		last.InputTokens, last.OutputTokens,
+		formatCost(last.CostUSD, last.InputTokens+last.OutputTokens))
 	return m.styles.Footer.Render(line)
 }
 
@@ -633,8 +635,8 @@ func (m *Model) renderStatsInfo() string {
 	b.WriteString("  Output:   ")
 	b.WriteString(strconv.Itoa(tot.OutputTokens))
 	b.WriteString(" tokens\n")
-	b.WriteString("  Cost:     $")
-	b.WriteString(formatCost(tot.CostUSD))
+	b.WriteString("  Cost:     ")
+	b.WriteString(formatCost(tot.CostUSD, tot.InputTokens+tot.OutputTokens))
 	b.WriteByte('\n')
 	b.WriteString("  Duration: ")
 	b.WriteString(m.usage.Duration().Round(0).String())
@@ -652,9 +654,18 @@ func formatBytes(n int) string {
 }
 
 // formatCost renders c with 4 decimals, trimming trailing zeros so
-// "$0.0019" stays compact and "$0.1500" becomes "$0.15".
-func formatCost(c float64) string {
-	s := fmt.Sprintf("%.4f", c)
+// "$0.0019" stays compact and "$0.1500" becomes "$0.15". When the
+// model used during the turn has no resolved pricing (custom /
+// fine-tuned variants not in the built-in rate table and without a
+// cfg.Model.Pricing override), c is 0 but tokens > 0 — surface "$—"
+// rather than "$0" so the operator knows the rate is unknown rather
+// than zero. Tokens == 0 (no turns yet) still renders "$0" so the
+// /stats panel doesn't lie about an empty session.
+func formatCost(c float64, tokens int) string {
+	if c == 0 && tokens > 0 {
+		return "$—"
+	}
+	s := fmt.Sprintf("$%.4f", c)
 	s = strings.TrimRight(s, "0")
 	return strings.TrimRight(s, ".")
 }

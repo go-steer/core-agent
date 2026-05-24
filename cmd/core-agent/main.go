@@ -42,6 +42,7 @@ import (
 	"github.com/go-steer/core-agent/config"
 	"github.com/go-steer/core-agent/eventlog"
 	"github.com/go-steer/core-agent/instruction"
+	"github.com/go-steer/core-agent/internal/pricing"
 	"github.com/go-steer/core-agent/internal/tui"
 	"github.com/go-steer/core-agent/mcp"
 	"github.com/go-steer/core-agent/models"
@@ -339,8 +340,27 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		builtinTools = append(builtinTools, askTool)
 	}
 
+	// Install the layered pricing catalog before any cost lookups
+	// happen. Per docs/pricing-design.md:
+	//   cfg.Model.Pricing override → .agents/pricing.json
+	//   → ~/.core-agent/pricing.json (manual + external)
+	//   → compiled-in builtin → longest-prefix → unknown.
+	// PR B adds the daily LiteLLM refresh on top of this; PR C
+	// adds /pricing refresh + /pricing set slash commands.
+	if catalog, perr := pricing.NewCatalog(pricing.Options{
+		CfgOverride: cfgToCatalogOverride(cfg.Model.Pricing),
+		AgentsDir:   agentsDir,
+		UserHome:    coreHome,
+	}); perr != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: pricing: %v\n", perr)
+		// Non-fatal: missing/corrupt files fall back to builtin via
+		// usage.PriceFor's no-catalog path. Just continue.
+	} else {
+		usage.SetCatalog(catalog)
+	}
+
 	tracker := usage.NewTracker()
-	pricing := usage.PriceFor(cfg.Model.Name, cfg)
+	pricingRate := usage.PriceFor(cfg.Model.Name, cfg)
 
 	// Background subagent spawning. Constructed before agent.New so
 	// the spawn tools can be registered alongside the built-in tools.
@@ -514,7 +534,7 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 
 	var code int
 	if prompt != "" {
-		code, err = runner.Headless(ctx, m, prompt, os.Stdout, os.Stderr, tracker, pricing, opts, eventsOpts...)
+		code, err = runner.Headless(ctx, m, prompt, os.Stdout, os.Stderr, tracker, pricingRate, opts, eventsOpts...)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 		}
@@ -658,7 +678,7 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		return code
 	}
 
-	code, err = runner.REPL(ctx, m, os.Stdin, os.Stdout, os.Stderr, tracker, pricing, opts, eventsOpts...)
+	code, err = runner.REPL(ctx, m, os.Stdin, os.Stdout, os.Stderr, tracker, pricingRate, opts, eventsOpts...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 	}

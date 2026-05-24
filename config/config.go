@@ -70,8 +70,21 @@ type ModelConfig struct {
 	APIKey    string           `json:"api_key,omitempty"`
 	Vertex    *VertexConfig    `json:"vertex,omitempty"`
 	Anthropic *AnthropicConfig `json:"anthropic,omitempty"`
-	Pricing   *PricingConfig   `json:"pricing,omitempty"`
+	// Pricing is a per-model rate override keyed by model name
+	// (case-insensitive). Survives /model switches mid-session —
+	// every model the operator routes to can carry its own rates.
+	// Layered with .agents/pricing.json + ~/.core-agent/pricing.json
+	// + the compiled-in fallback; see internal/pricing for the
+	// lookup chain. Previously a single *PricingConfig that matched
+	// only Model.Name; PR core-agent/#NN renamed the JSON key
+	// `pricing` from "{input_per_mtok, output_per_mtok}" to a map.
+	Pricing PricingMap `json:"pricing,omitempty"`
 }
+
+// PricingMap is the model-keyed override map used by ModelConfig.
+// Aliased so future expansions (per-context rates, cached vs
+// uncached, etc.) localize to one type.
+type PricingMap map[string]PricingConfig
 
 // VertexConfig holds GCP-specific settings for the vertex provider.
 type VertexConfig struct {

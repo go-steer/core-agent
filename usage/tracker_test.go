@@ -51,10 +51,37 @@ func TestPriceFor_ConfigOverrideWins(t *testing.T) {
 	t.Parallel()
 	cfg := config.DefaultConfig()
 	cfg.Model.Name = "gemini-3.1-pro-preview"
-	cfg.Model.Pricing = &config.PricingConfig{InputPerMTok: 99, OutputPerMTok: 999}
+	cfg.Model.Pricing = config.PricingMap{
+		"gemini-3.1-pro-preview": {InputPerMTok: 99, OutputPerMTok: 999},
+	}
 	p := PriceFor("gemini-3.1-pro-preview", cfg)
 	if p.InputPerMTok != 99 || p.OutputPerMTok != 999 {
 		t.Errorf("config override ignored: got %+v", p)
+	}
+}
+
+// TestPriceFor_ConfigOverrideAppliesToMultipleModels exercises the
+// map-shaped Pricing — operators who route across several models
+// (via /model switches mid-session) need rates for each. The pre-
+// PR-A shape only matched cfg.Model.Name; this regression test
+// catches an accidental revert to single-model matching.
+func TestPriceFor_ConfigOverrideAppliesToMultipleModels(t *testing.T) {
+	t.Parallel()
+	cfg := config.DefaultConfig()
+	cfg.Model.Name = "primary-model"
+	cfg.Model.Pricing = config.PricingMap{
+		"primary-model":   {InputPerMTok: 1.0, OutputPerMTok: 2.0},
+		"secondary-model": {InputPerMTok: 3.0, OutputPerMTok: 4.0},
+	}
+	primary := PriceFor("primary-model", cfg)
+	if primary.InputPerMTok != 1.0 || primary.OutputPerMTok != 2.0 {
+		t.Errorf("primary override missing: got %+v", primary)
+	}
+	// The point: the secondary entry should ALSO resolve even
+	// though cfg.Model.Name doesn't match its key.
+	secondary := PriceFor("secondary-model", cfg)
+	if secondary.InputPerMTok != 3.0 || secondary.OutputPerMTok != 4.0 {
+		t.Errorf("secondary override missing: got %+v", secondary)
 	}
 }
 

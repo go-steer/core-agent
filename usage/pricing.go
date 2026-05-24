@@ -15,71 +15,85 @@
 package usage
 
 import (
-	"strings"
+	"sync/atomic"
 
 	"github.com/go-steer/core-agent/config"
+	"github.com/go-steer/core-agent/internal/pricing"
 )
 
 // Pricing is the per-million-token rate for one model. Both fields are
-// in USD and apply to a single direction (input or output).
+// USD per million tokens (the same unit upstream providers publish
+// public list rates in). A zero Pricing carries no useful pricing —
+// callers should distinguish "rate unknown" from "free" (e.g. echo
+// models). See pricing.Rates / pricing.Catalog for the layered
+// resolution behind PriceFor.
 type Pricing struct {
-	InputPerMTok  float64 // USD per 1,000,000 input tokens
-	OutputPerMTok float64 // USD per 1,000,000 output tokens
+	InputPerMTok  float64
+	OutputPerMTok float64
 }
 
-// IsZero reports whether neither rate is set (we don't know how to
-// price this model).
+// IsZero reports whether the rates carry no useful pricing.
 func (p Pricing) IsZero() bool { return p.InputPerMTok == 0 && p.OutputPerMTok == 0 }
 
-// builtinPricing holds default Gemini 3.x preview rates. Numbers are
-// placeholders modeled on Gemini 2.5 list prices; refine when Google
-// publishes 3.x rates. Anthropic and other providers are intentionally
-// omitted — consumers override via cfg.Model.Pricing.
+// globalCatalog is the package-level pricing catalog consulted by
+// PriceFor. main.go installs this once at startup via SetCatalog
+// after assembling the file-based layers (.agents/pricing.json +
+// ~/.core-agent/pricing.json + builtin). Tests + library consumers
+// that don't call SetCatalog get a builtin-only catalog the first
+// time PriceFor is called.
 //
-// Keys are matched case-insensitively. A prefix match (modelID starts
-// with key) is also accepted so date-suffixed variants like
-// "gemini-3.1-pro-preview-05-15" still get reasonable rates.
-var builtinPricing = map[string]Pricing{
-	"gemini-3.1-pro-preview":         {InputPerMTok: 1.25, OutputPerMTok: 5.00},
-	"gemini-3.1-pro":                 {InputPerMTok: 1.25, OutputPerMTok: 5.00},
-	"gemini-3-pro-preview":           {InputPerMTok: 1.25, OutputPerMTok: 5.00},
-	"gemini-3-pro":                   {InputPerMTok: 1.25, OutputPerMTok: 5.00},
-	"gemini-3-flash-preview":         {InputPerMTok: 0.075, OutputPerMTok: 0.30},
-	"gemini-3-flash":                 {InputPerMTok: 0.075, OutputPerMTok: 0.30},
-	"gemini-3.1-flash-lite-preview":  {InputPerMTok: 0.04, OutputPerMTok: 0.15},
-	"gemini-3.1-flash-lite":          {InputPerMTok: 0.04, OutputPerMTok: 0.15},
-	"gemini-3.1-flash-image-preview": {InputPerMTok: 0.10, OutputPerMTok: 0.40},
+// Stored as atomic.Pointer so PR B's daily refresh can swap the
+// catalog atomically without locking every per-turn cost lookup.
+var globalCatalog atomic.Pointer[pricing.Catalog]
+
+// SetCatalog installs the catalog PriceFor consults. Safe to call
+// from any goroutine; lookups in flight see either the old or new
+// catalog atomically, never a torn read.
+func SetCatalog(c *pricing.Catalog) { globalCatalog.Store(c) }
+
+// PriceFor returns the Pricing for modelID. Resolution chain (first
+// exact match wins; longest-prefix fallback at the end):
+//
+//  1. cfg.Model.Pricing[modelID]                — operator override
+//  2. .agents/pricing.json models[modelID]      — project file
+//  3. ~/.core-agent/pricing.json                — user file (manual + external)
+//  4. compiled-in builtin                       — fallback
+//  5. longest-prefix match across (1)..(4)      — suffix variants
+//  6. Pricing{}                                  — rate unknown
+//
+// cfg is consulted via the catalog (if installed via SetCatalog) or
+// via an on-the-fly lookup when no catalog is installed. The
+// no-catalog path covers tests + library use that doesn't go
+// through cmd/core-agent's startup.
+func PriceFor(modelID string, cfg *config.Config) Pricing {
+	if c := globalCatalog.Load(); c != nil {
+		r, _ := c.Lookup(modelID)
+		return Pricing{InputPerMTok: r.InputPerMTok, OutputPerMTok: r.OutputPerMTok}
+	}
+	// Catalog not installed (test / library). Build a one-shot
+	// catalog from cfg + builtin so the answer is consistent with
+	// what SetCatalog'd consumers would get.
+	c, _ := pricing.NewCatalog(pricing.Options{
+		CfgOverride: cfgToOverride(cfg),
+	})
+	r, _ := c.Lookup(modelID)
+	return Pricing{InputPerMTok: r.InputPerMTok, OutputPerMTok: r.OutputPerMTok}
 }
 
-// PriceFor returns the Pricing for modelID. Resolution order:
-//  1. Explicit cfg override (cfg.Model.Pricing) when modelID matches
-//     cfg.Model.Name (case-insensitively).
-//  2. Exact match in the built-in table.
-//  3. Longest-prefix match in the built-in table.
-//  4. Zero pricing — caller should treat cost as unknown.
-func PriceFor(modelID string, cfg *config.Config) Pricing {
-	low := strings.ToLower(strings.TrimSpace(modelID))
-	if cfg != nil && cfg.Model.Pricing != nil &&
-		strings.EqualFold(cfg.Model.Name, modelID) &&
-		(cfg.Model.Pricing.InputPerMTok > 0 || cfg.Model.Pricing.OutputPerMTok > 0) {
-		return Pricing{
-			InputPerMTok:  cfg.Model.Pricing.InputPerMTok,
-			OutputPerMTok: cfg.Model.Pricing.OutputPerMTok,
+// cfgToOverride extracts the cfg.Model.Pricing map into the
+// internal/pricing wire shape. nil-safe.
+func cfgToOverride(cfg *config.Config) map[string]pricing.ModelRates {
+	if cfg == nil || len(cfg.Model.Pricing) == 0 {
+		return nil
+	}
+	out := make(map[string]pricing.ModelRates, len(cfg.Model.Pricing))
+	for k, v := range cfg.Model.Pricing {
+		out[k] = pricing.ModelRates{
+			InputPerMTok:  v.InputPerMTok,
+			OutputPerMTok: v.OutputPerMTok,
 		}
 	}
-	if p, ok := builtinPricing[low]; ok {
-		return p
-	}
-	var best string
-	for k := range builtinPricing {
-		if strings.HasPrefix(low, k) && len(k) > len(best) {
-			best = k
-		}
-	}
-	if best != "" {
-		return builtinPricing[best]
-	}
-	return Pricing{}
+	return out
 }
 
 // CostUSD returns the dollar cost of (input, output) tokens at p.

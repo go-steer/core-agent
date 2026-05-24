@@ -33,24 +33,34 @@ import (
 // the parsed URL, bearer token (empty for no auth), and a configured
 // http.Client (Unix-socket-aware when the URL scheme is unix://).
 // Safe for concurrent use.
+//
+// Two HTTP clients live inside: `http` for short-lived RPC calls
+// with a request timeout, and `streamHTTP` for SSE — no timeout,
+// because the stream body stays open for as long as the agent runs
+// and minutes can pass between frames. A single client with a Timeout
+// would cut the SSE body mid-response on long model turns; the
+// symptom is "stream ended: <nil>" reconnect-loops in the UI.
 type Client struct {
 	URL   *ParsedURL
 	Token string
 
-	http *http.Client
+	http       *http.Client
+	streamHTTP *http.Client
 }
 
 // New builds a Client. ParseURL the rawURL first; Token may be empty.
-// timeout governs all HTTP calls except Stream (which uses ctx cancel
-// instead). Zero timeout falls back to 30 s.
+// timeout governs short-lived RPC calls. SSE streams ignore it
+// (caller's ctx is the cancel signal). Zero timeout falls back to 30 s
+// for RPCs.
 func New(parsed *ParsedURL, token string, timeout time.Duration) *Client {
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
 	return &Client{
-		URL:   parsed,
-		Token: token,
-		http:  newHTTPClient(parsed, timeout),
+		URL:        parsed,
+		Token:      token,
+		http:       newHTTPClient(parsed, timeout),
+		streamHTTP: newHTTPClient(parsed, 0), // no timeout — SSE is long-lived
 	}
 }
 
@@ -226,7 +236,7 @@ func (c *Client) Stream(ctx context.Context, sessionPath string, since int64) (<
 		return nil, err
 	}
 	c.auth(req)
-	resp, err := c.http.Do(req)
+	resp, err := c.streamHTTP.Do(req)
 	if err != nil {
 		return nil, err
 	}

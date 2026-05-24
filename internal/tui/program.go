@@ -56,6 +56,15 @@ type Options struct {
 	Skills     skills.Skills
 	AgentsDir  string
 
+	// Elicitor is the MCP elicitation bridge the host built BEFORE
+	// constructing MCP servers (so each server can hold the .Elicit
+	// method as its ElicitorFn during connect). tui.Run attaches the
+	// running bubble-tea program to the elicitor post-NewProgram so
+	// elicit requests can render modals. Nil = build a fresh one
+	// internally; MCP servers that arrived without a connected
+	// elicitor will then have a non-functional Elicit and decline.
+	Elicitor *Elicitor
+
 	// RebuildAgent constructs a fresh agent bound to modelID while
 	// preserving tools/toolsets/instruction. Lets /model swap the
 	// model mid-session without the TUI knowing about provider /
@@ -145,7 +154,14 @@ func Run(ctx context.Context, opts Options) (int, error) {
 	prompter := NewPrompter(nil)
 	opts.Gate.SetPrompter(prompter)
 
-	elicitor := newTUIElicitor()
+	// Use the caller's elicitor if they constructed one (typical:
+	// main.go built it pre-MCP so each server's connect could hold
+	// the .Elicit closure). Otherwise build a fresh one — useful
+	// for tests that don't exercise MCP elicitation.
+	elicitor := opts.Elicitor
+	if elicitor == nil {
+		elicitor = NewElicitor()
+	}
 
 	m.agent = opts.Agent
 	m.scope = opts.Gate.Scope()

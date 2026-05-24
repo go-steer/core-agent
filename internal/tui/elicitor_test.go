@@ -22,7 +22,7 @@ func (f *fakeSender) Send(m tea.Msg) { f.got <- m }
 
 func TestTUIElicitor_NoProgramAttached(t *testing.T) {
 	t.Parallel()
-	e := newTUIElicitor()
+	e := NewElicitor()
 	_, err := e.Elicit(context.Background(), "x", &mcpsdk.ElicitRequest{})
 	if err == nil {
 		t.Fatalf("expected error when no program attached")
@@ -31,7 +31,7 @@ func TestTUIElicitor_NoProgramAttached(t *testing.T) {
 
 func TestTUIElicitor_RoundTripsResult(t *testing.T) {
 	t.Parallel()
-	e := newTUIElicitor()
+	e := NewElicitor()
 	fs := &fakeSender{got: make(chan tea.Msg, 1)}
 	e.attach(fs)
 
@@ -80,7 +80,7 @@ func TestTUIElicitor_RoundTripsResult(t *testing.T) {
 
 func TestTUIElicitor_NilResultBecomesDecline(t *testing.T) {
 	t.Parallel()
-	e := newTUIElicitor()
+	e := NewElicitor()
 	fs := &fakeSender{got: make(chan tea.Msg, 1)}
 	e.attach(fs)
 
@@ -104,7 +104,7 @@ func TestTUIElicitor_NilResultBecomesDecline(t *testing.T) {
 
 func TestTUIElicitor_ContextCanceled(t *testing.T) {
 	t.Parallel()
-	e := newTUIElicitor()
+	e := NewElicitor()
 	fs := &fakeSender{got: make(chan tea.Msg, 1)}
 	e.attach(fs)
 

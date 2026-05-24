@@ -278,7 +278,14 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 	}
 
 	send := func(s string) { fmt.Fprintln(os.Stderr, "core-agent: "+s) }
-	_, mcpToolsets, mcpErr := mcp.Build(ctx, agentsDir, send, gate, nil)
+	// Build the TUI elicitor BEFORE mcp.Build so each spawned MCP
+	// server can hold the .Elicit closure during connect (the
+	// elicitor's program reference is wired later inside tui.Run).
+	// REPL / headless paths don't use the elicitor; the closure
+	// just returns "no program attached" which the SDK translates
+	// to server-side decline — same effect as passing nil.
+	tuiElicitor := tui.NewElicitor()
+	mcpServers, mcpToolsets, mcpErr := mcp.Build(ctx, agentsDir, send, gate, tuiElicitor.Elicit)
 	if mcpErr != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: mcp: %v\n", mcpErr)
 	}
@@ -576,12 +583,15 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 			return runner.ExitAgentError
 		}
 		tuiOpts := tui.Options{
-			Agent:     a,
-			Cfg:       cfg,
-			Gate:      gate,
-			Tracker:   tracker,
-			Memory:    loaded,
-			AgentsDir: agentsDir,
+			Agent:      a,
+			Cfg:        cfg,
+			Gate:       gate,
+			Tracker:    tracker,
+			Memory:     loaded,
+			MCPServers: mcpServers,
+			Skills:     loadedSkills,
+			AgentsDir:  agentsDir,
+			Elicitor:   tuiElicitor,
 			// /model swaps the model mid-session, preserving tools +
 			// toolsets + instruction. We re-resolve the provider for
 			// the new model name through the same path startup uses.

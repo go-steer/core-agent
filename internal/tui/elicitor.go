@@ -13,25 +13,28 @@ import (
 	"github.com/go-steer/core-agent/mcp"
 )
 
-// tuiElicitor is the host-side bridge that turns an MCP server's
+// Elicitor is the host-side bridge that turns an MCP server's
 // elicitation request into a Bubble Tea modal, blocks on the user's
 // answer, and hands the ElicitResult back to the SDK.
 //
-// Mirrors tuiPrompter: built before tea.NewProgram so MCP servers can
-// reference it during connect, and rewired with the program sender
-// after construction.
-type tuiElicitor struct {
+// Mirrors the prompter pattern: built before tea.NewProgram so MCP
+// servers (constructed pre-TUI in cmd/core-agent/main.go) can hold
+// the Elicit method pointer at connect time, and rewired with the
+// program sender after tui.Run constructs the program. Exposed so
+// callers in cmd/ can plumb the elicitor through tui.Options
+// instead of the TUI having to own MCP construction.
+type Elicitor struct {
 	mu   sync.Mutex
 	send programSender
 }
 
-// newTUIElicitor returns an elicitor that initially has no program
-// attached. attach() must be called once the program exists; until
-// then the elicitor returns an error (the SDK will translate that
-// into a server-side decline).
-func newTUIElicitor() *tuiElicitor { return &tuiElicitor{} }
+// NewElicitor returns an Elicitor that initially has no program
+// attached. tui.Run attaches the running program internally; until
+// then Elicit returns an error (the SDK translates that into a
+// server-side decline).
+func NewElicitor() *Elicitor { return &Elicitor{} }
 
-func (e *tuiElicitor) attach(p programSender) {
+func (e *Elicitor) attach(p programSender) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.send = p
@@ -41,7 +44,7 @@ func (e *tuiElicitor) attach(p programSender) {
 // running tea.Program (with a buffered reply chan) and blocks on the
 // chan. ctx cancellation returns ctx.Err — the SDK will surface that
 // as a protocol-level cancel.
-func (e *tuiElicitor) Elicit(ctx context.Context, serverName string, req *mcpsdk.ElicitRequest) (*mcpsdk.ElicitResult, error) {
+func (e *Elicitor) Elicit(ctx context.Context, serverName string, req *mcpsdk.ElicitRequest) (*mcpsdk.ElicitResult, error) {
 	e.mu.Lock()
 	send := e.send
 	e.mu.Unlock()
@@ -67,4 +70,4 @@ func (e *tuiElicitor) Elicit(ctx context.Context, serverName string, req *mcpsdk
 }
 
 // Compile-time check that the bridge satisfies the mcp.ElicitorFn shape.
-var _ mcp.ElicitorFn = (*tuiElicitor)(nil).Elicit
+var _ mcp.ElicitorFn = (*Elicitor)(nil).Elicit

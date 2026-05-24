@@ -22,21 +22,19 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// welcomeStage tracks whether the welcome screen is awaiting input
-// (the default) or showing a spawn-in-progress indicator. There's
-// no separate "URL stage" — operators type `/attach <url>` directly
-// into the single input box, mirroring how slash commands work in
-// the chat view.
+// welcomeStage tracks the welcome screen state. v2 dropped the
+// `welcomeSpawning` stage because spawn-and-attach moved to
+// `core-agent` itself; the remote-only TUI only ever sits in
+// `welcomeInput` waiting for an `/attach <url>` (or bare URL).
 type welcomeStage int
 
 const (
 	welcomeInput welcomeStage = iota
-	welcomeSpawning
 )
 
 // welcomeModel is the landing screen the TUI shows when invoked
-// with no URL and no --local. Input-driven: one textinput at the
-// bottom accepts `/spawn`, `/attach <url>`, `/help`, `/quit`. A
+// with no URL. Input-driven: one textinput at the bottom accepts
+// `/attach <url>`, bare URLs (auto-coerced), `/help`, `/quit`. A
 // hint table above shows the available commands so first-time
 // operators don't have to know them upfront.
 type welcomeModel struct {
@@ -53,18 +51,16 @@ type welcomeModel struct {
 }
 
 // welcomeChoiceMsg carries the operator's decision out of the
-// welcome screen back to the root model. Exactly one of LocalSpawn
-// or RemoteURL is set per choice; SpawnArgs forwards trailing args
-// from `/spawn -- ...` to the spawned agent.
+// welcome screen back to the root model. Only RemoteURL is set
+// in v2 (LocalSpawn was removed when spawn-and-attach moved to
+// `core-agent` itself).
 type welcomeChoiceMsg struct {
-	LocalSpawn bool
-	SpawnArgs  []string
-	RemoteURL  string
+	RemoteURL string
 }
 
 func newWelcomeModel() welcomeModel {
 	ti := textinput.New()
-	ti.Placeholder = "type a command, e.g. /spawn or /attach <url>"
+	ti.Placeholder = "type a command, e.g. /attach <url> (or just <url>)"
 	ti.CharLimit = 512
 	ti.Width = 60
 	ti.Prompt = "> "
@@ -122,7 +118,7 @@ func (m welcomeModel) UpdateInner(msg tea.Msg) (welcomeModel, tea.Cmd) {
 func (m welcomeModel) submit() (welcomeModel, tea.Cmd) {
 	raw := strings.TrimSpace(m.input.Value())
 	if raw == "" {
-		m.error = "type a command — e.g. /spawn or /attach <url> (or /help)"
+		m.error = "type a command — e.g. /attach <url> (or just <url>; or /help)"
 		return m, nil
 	}
 	// Bare URL with no /attach prefix is a common slip — accept it
@@ -131,7 +127,7 @@ func (m welcomeModel) submit() (welcomeModel, tea.Cmd) {
 		if isURLish(raw) {
 			raw = "/attach " + raw
 		} else {
-			m.error = fmt.Sprintf("not a slash command: %q — try /spawn or /attach <url>", raw)
+			m.error = fmt.Sprintf("not a URL or slash command: %q — try /attach <url>", raw)
 			return m, nil
 		}
 	}
@@ -147,13 +143,7 @@ func (m welcomeModel) submit() (welcomeModel, tea.Cmd) {
 	case "/quit", "/exit":
 		return m, tea.Quit
 	case "/spawn":
-		// /spawn [-- args...] — trailing args forward verbatim to
-		// the spawned agent (e.g. /spawn -- --model=mock).
-		spawnArgs := stripDoubleDash(args)
-		choice := welcomeChoiceMsg{LocalSpawn: true, SpawnArgs: spawnArgs}
-		m.chosen = &choice
-		m.stage = welcomeSpawning
-		m.input.Reset()
+		m.error = "/spawn was removed from core-agent-tui in v2. Run `core-agent` directly for local interactive use — its TUI is in-process now."
 		return m, nil
 	case "/attach":
 		if len(args) == 0 {
@@ -195,9 +185,6 @@ func (m welcomeModel) View() string {
 	var out strings.Builder
 	out.WriteString("\n  Type a command to get started:\n\n")
 	out.WriteString(welcomeCheatSheet)
-	if m.stage == welcomeSpawning {
-		out.WriteString("\n  " + styleHint.Render("⏳ spawning local agent…") + "\n")
-	}
 	if m.error != "" {
 		out.WriteString("\n" + renderMultilineError(m.error) + "\n")
 	}
@@ -227,10 +214,13 @@ func (m welcomeModel) View() string {
 // welcomeCheatSheet is the static command list shown above the
 // input. Two columns: command form + one-line description. Kept
 // short — `/help` (handled inline) prints the full list.
-const welcomeCheatSheet = `    /spawn [-- args...]      spawn a local agent (forward args to it)
-    /attach <url>            attach to a remote endpoint
+const welcomeCheatSheet = `    /attach <url>            attach to a remote endpoint
+    <url>                    bare URL is auto-coerced to /attach
     /help                    show all commands
     /quit                    exit
+
+  For local interactive use, run ` + "`core-agent`" + ` instead — v2 ships
+  with the TUI in-process; no separate spawn-and-attach needed.
 `
 
 // welcomeHelpText is what /help dumps below the input box. Includes
@@ -250,16 +240,6 @@ const welcomeHelpText = `  /help text:
       /welcome                 return to this screen
       /interrupt               cancel the in-flight model turn
       /sessions                pop to the session picker`
-
-// stripDoubleDash drops the leading "--" separator from spawn args
-// so `/spawn -- --model=mock` forwards as ["--model=mock"] (the
-// `--` is just there to mark "what follows is for the agent").
-func stripDoubleDash(args []string) []string {
-	if len(args) > 0 && args[0] == "--" {
-		return args[1:]
-	}
-	return args
-}
 
 // isURLish is a permissive check — anything that looks like one of
 // our accepted schemes counts. Lets operators paste a URL without

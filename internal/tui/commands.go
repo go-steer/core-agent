@@ -18,6 +18,7 @@ const (
 	SlashMCP         SlashAction = "mcp"
 	SlashSkills      SlashAction = "skills"
 	SlashTools       SlashAction = "tools"
+	SlashInterrupt   SlashAction = "interrupt"
 	SlashPricing     SlashAction = "pricing"
 	SlashReload      SlashAction = "reload"
 	SlashMouse       SlashAction = "mouse"
@@ -41,6 +42,8 @@ var slashAliases = map[string]SlashAction{
 	"mcp":         SlashMCP,
 	"skills":      SlashSkills,
 	"tools":       SlashTools,
+	"interrupt":   SlashInterrupt,
+	"int":         SlashInterrupt,
 	"pricing":     SlashPricing,
 	"reload":      SlashReload,
 	"mouse":       SlashMouse,
@@ -104,6 +107,7 @@ func HelpText() string {
 		"  /mcp        show configured MCP servers and their status",
 		"  /skills     show discovered skills",
 		"  /tools      list every tool the agent can call (built-in + MCP + skills)",
+		"  /interrupt  cancel the in-flight model turn (alias: /int; also bound to Esc on empty input)",
 		"  /pricing refresh        force-refresh the pricing catalog from LiteLLM",
 		"  /pricing set <model> <input/M> <output/M>   set rates for one model (writes to ~/.core-agent/pricing.json manual section)",
 		"  /reload     re-read .agents/ from disk (mcp.json, skills/, AGENTS.md, config.json)",

@@ -64,9 +64,8 @@ type chatModel struct {
 
 	// Slash-driven transition flags. Root model reads these after
 	// each Update and acts on them (clearing each on read).
-	wantsWelcome   bool     // /welcome — back to landing
-	wantsAttachURL string   // /attach <url> — re-attach to a new endpoint
-	wantsSpawn     []string // /spawn [args] — local-spawn a new agent (nil = no spawn requested; empty slice = spawn w/ no args)
+	wantsWelcome   bool   // /welcome — back to landing
+	wantsAttachURL string // /attach <url> — re-attach to a new endpoint
 
 	// Inject queue: lifecycle entries shown between viewport
 	// and input box. Mutated by Enter on the textarea (queued

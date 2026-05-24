@@ -708,6 +708,8 @@ func (m *Model) handleSlash(action SlashAction, cmd, args string) (tea.Model, te
 		m.history.Append(Message{Role: RoleSystem, Text: m.renderToolsInfo()})
 		m.refreshViewport()
 		return m, nil
+	case SlashInterrupt:
+		return m.handleInterruptCommand()
 	case SlashPricing:
 		return m.handlePricingCommand(args)
 	case SlashReload:
@@ -910,6 +912,27 @@ func (m *Model) handlePermissionsCommand(args string) (tea.Model, tea.Cmd) {
 // handleAllowCommand handles `/allow <pattern>` and `/allow bundle:<name>`.
 // Both paths validate first so the user gets a clear error before
 // anything touches cogo.json or the live gate.
+// handleInterruptCommand cancels the in-flight model turn via the
+// agent's Interrupt() — same path attach-mode's POST /interrupt
+// drives over HTTP, just called directly here since the agent is
+// in-process. Reports the outcome inline so operators see whether
+// anything was actually cancelled (rather than guessing). No-op
+// when no turn is running.
+func (m *Model) handleInterruptCommand() (tea.Model, tea.Cmd) {
+	if m.agent == nil {
+		m.history.Append(Message{Role: RoleError, Text: "Interrupt unavailable: no agent constructed."})
+		m.refreshViewport()
+		return m, nil
+	}
+	if interrupted := m.agent.Interrupt(); interrupted {
+		m.history.Append(Message{Role: RoleSystem, Text: "Interrupted in-flight turn."})
+	} else {
+		m.history.Append(Message{Role: RoleSystem, Text: "No in-flight turn to interrupt."})
+	}
+	m.refreshViewport()
+	return m, nil
+}
+
 // handlePricingCommand dispatches /pricing <subcommand>. Two
 // subcommands today:
 //   - /pricing refresh                          force a fetch from upstream

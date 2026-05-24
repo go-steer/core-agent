@@ -132,6 +132,14 @@ func (g *Gate) Mode() Mode { return g.mode }
 // want to fail fast at startup instead of on the first tool call.
 func (g *Gate) HasPrompter() bool { return g.prompter != nil }
 
+// SetPrompter swaps the gate's interactive prompter. Used when the
+// process changes UI mode mid-startup — e.g. core-agent's main.go
+// constructs the gate with a stdin prompter for the headless path,
+// then the TUI replaces it with one that sends messages into the
+// bubble-tea program. Set to nil to disable interactive prompting
+// (ask-mode calls then fail with ErrNoPrompter).
+func (g *Gate) SetPrompter(p Prompter) { g.prompter = p }
+
 // Scope exposes the path scope. Callers that mutate the scope should
 // also persist the change via the config layer.
 func (g *Gate) Scope() *PathScope { return g.scope }

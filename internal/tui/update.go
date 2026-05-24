@@ -589,6 +589,16 @@ func (m *Model) handleSubmit() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Any user submission (prompt OR slash command) returns the
+	// viewport to the live-tail position. The "preserve scroll if
+	// user scrolled up" rule in refreshViewport is correct for
+	// background streaming, but a user pressing Enter explicitly
+	// is signaling "I'm done reading history — show me what
+	// happens next." Without this pin, /tools output (or a long
+	// /help) leaves the operator scrolled up, and the next prompt's
+	// response renders off-screen.
+	m.viewport.GotoBottom()
+
 	// Confirmation flow for /clear.
 	if m.confirmingClear {
 		m.confirmingClear = false
@@ -975,6 +985,11 @@ func (m *Model) applyAllowBundle(name string) (tea.Model, tea.Cmd) {
 // current permissions config as a multi-line string. Mirrors the
 // /memory and /stats info-style commands so the output lands in the
 // chat history rather than a modal.
+//
+// Layout: section headers with blank-line separators so the snapshot
+// reads as scannable blocks rather than a wall of text. Mode +
+// built-in toggle sit together at the top; allow + deny each get
+// their own block.
 func (m *Model) renderPermissionsListInfo() string {
 	pc := m.cfg.Permissions
 	useBuiltin := true
@@ -986,13 +1001,15 @@ func (m *Model) renderPermissionsListInfo() string {
 		mode = "ask"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "Permission mode: %s\n", mode)
-	fmt.Fprintf(&b, "Built-in allow: %s\n", boolOnOff(useBuiltin))
+	b.WriteString("Permissions:\n\n")
+	fmt.Fprintf(&b, "  Mode:           %s\n", mode)
+	fmt.Fprintf(&b, "  Built-in allow: %s\n", boolOnOff(useBuiltin))
 	if len(pc.BuiltinAllowExtras) > 0 {
-		fmt.Fprintf(&b, "  extra bundles: %s\n", strings.Join(pc.BuiltinAllowExtras, ", "))
+		fmt.Fprintf(&b, "  Extra bundles:  %s\n", strings.Join(pc.BuiltinAllowExtras, ", "))
 	}
 	if useBuiltin {
-		fmt.Fprintf(&b, "  (read_only baseline always active; known bundles: %s)\n", strings.Join(permissions.KnownBundles(), ", "))
+		fmt.Fprintf(&b, "                  (read_only baseline always active)\n")
+		fmt.Fprintf(&b, "                  known bundles: %s\n", strings.Join(permissions.KnownBundles(), ", "))
 	}
 	b.WriteString("\n")
 	writePatternList(&b, "permissions.allow", pc.Allow)
@@ -1012,12 +1029,12 @@ func boolOnOff(b bool) string {
 
 func writePatternList(b *strings.Builder, label string, patterns []string) {
 	if len(patterns) == 0 {
-		fmt.Fprintf(b, "%s: (empty)\n", label)
+		fmt.Fprintf(b, "  %s: (empty)\n", label)
 		return
 	}
-	fmt.Fprintf(b, "%s (%d):\n", label, len(patterns))
+	fmt.Fprintf(b, "  %s (%d):\n", label, len(patterns))
 	for _, p := range patterns {
-		fmt.Fprintf(b, "  %s\n", p)
+		fmt.Fprintf(b, "    ▸ %s\n", p)
 	}
 }
 

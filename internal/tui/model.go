@@ -570,6 +570,11 @@ func (m *Model) brandIdentity() string {
 // (read_file, bash, etc.), MCP-provided, and skill-materialized —
 // alongside its description. Surfaces in /tools so operators don't
 // have to guess at the catalog.
+//
+// Layout: each tool gets its own block — name on its own line with
+// a ▸ marker for visual anchoring, description indented on the next
+// line with a blank separator. Tighter formats packed the catalog
+// into an unreadable wall; the indent buys back scannability.
 func (m *Model) renderToolsInfo() string {
 	if m.agent == nil {
 		return "No agent constructed yet — tool catalog unavailable."
@@ -579,18 +584,20 @@ func (m *Model) renderToolsInfo() string {
 		return "Agent has no tools registered."
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "Tools (%d):\n", len(tools))
-	for _, t := range tools {
-		fmt.Fprintf(&b, "  %s", t.Name())
+	fmt.Fprintf(&b, "Tools (%d):\n\n", len(tools))
+	for i, t := range tools {
+		fmt.Fprintf(&b, "  ▸ %s\n", t.Name())
 		if desc := t.Description(); desc != "" {
-			// Single-line: collapse internal newlines so the catalog
-			// stays scannable. The detail page is the description
-			// docstring on the tool itself.
-			fmt.Fprintf(&b, " — %s", strings.ReplaceAll(desc, "\n", " "))
+			// Collapse internal newlines so the description sits on
+			// a single visually-indented line. The wrap layer in
+			// renderMessage handles terminal-width wrapping.
+			fmt.Fprintf(&b, "      %s\n", strings.ReplaceAll(desc, "\n", " "))
 		}
-		b.WriteByte('\n')
+		if i < len(tools)-1 {
+			b.WriteByte('\n')
+		}
 	}
-	return b.String()
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // renderStatsInfo formats the per-turn + total usage for /stats.

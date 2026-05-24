@@ -8,18 +8,26 @@ import "github.com/charmbracelet/lipgloss"
 // Brand colors. Fixed hex (not AdaptiveColor) because the wordmark is
 // brand identity and shouldn't shift between light/dark terminals.
 //
-// Palette is a Dracula-inspired duotone with a green liveness cursor:
-//   - brandViolet — the primary name color, calm and distinct from
-//     terminal text. Reads well on both dark and light backgrounds.
-//   - brandCyan   — accent separator, picks up subtle highlights.
-//   - brandSlate  — muted prefix/suffix that doesn't compete with the
-//     agent name for attention.
-//   - brandGreen  — the cursor glyph; signals "alive, accepting input".
+// Palette is a magenta-family monochromatic — wordmark + identity +
+// cursor all sit in the violet→pink range so the brand line reads as
+// one coherent visual rather than three competing colors:
+//
+//   - brandViolet — the wordmark ("core-agent"). Saturated purple
+//     with a magenta lean; reads as "magenta" on most terminals.
+//   - brandPink   — the agent identity (DisplayName / AppName). Sister
+//     hue, sits next to violet on the color wheel for a calm gradient.
+//   - brandPinkBright — the cursor glyph. Brighter pink "pings"
+//     attention without breaking the family. Still signals "alive,
+//     accepting input" without the previous green's discord.
+//   - brandSlate  — muted separator/prefix that doesn't compete.
+//   - brandCyan   — retained for tests and spinner/accent fallbacks
+//     elsewhere in the TUI; no longer in the brand line itself.
 var (
-	brandViolet = lipgloss.Color("#BD93F9")
-	brandCyan   = lipgloss.Color("#5FD7FF")
-	brandSlate  = lipgloss.Color("#6272A4")
-	brandGreen  = lipgloss.Color("#50FA7B")
+	brandViolet     = lipgloss.Color("#BD93F9")
+	brandPink       = lipgloss.Color("#FF79C6")
+	brandPinkBright = lipgloss.Color("#FFB6E1")
+	brandSlate      = lipgloss.Color("#6272A4")
+	brandCyan       = lipgloss.Color("#5FD7FF")
 )
 
 // headerBrand renders the persistent brand line shown on the left of
@@ -37,12 +45,12 @@ var (
 // to" in multi-window setups.
 func headerBrand(identity string) string {
 	wordmark := lipgloss.NewStyle().Foreground(brandViolet).Bold(true).Render("core-agent")
-	cursor := lipgloss.NewStyle().Foreground(brandGreen).Bold(true).Render("█")
+	cursor := lipgloss.NewStyle().Foreground(brandPinkBright).Bold(true).Render("█")
 	if identity == "" || identity == "core-agent" {
 		return wordmark + " " + cursor
 	}
 	sep := lipgloss.NewStyle().Foreground(brandSlate).Render(" · ")
-	name := lipgloss.NewStyle().Foreground(brandCyan).Bold(true).Render(identity)
+	name := lipgloss.NewStyle().Foreground(brandPink).Bold(true).Render(identity)
 	return wordmark + sep + name + " " + cursor
 }
 

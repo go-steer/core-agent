@@ -147,9 +147,9 @@ func TestHandlePermissionsList(t *testing.T) {
 	out := lastSystemMessage(t, m)
 
 	wantSubs := []string{
-		"Permission mode: ask",
+		"Mode:           ask",
 		"Built-in allow: disabled",
-		"extra bundles: dev_tools",
+		"Extra bundles:  dev_tools",
 		"permissions.allow (2):",
 		"bash:make build",
 		"read_file:internal/**",

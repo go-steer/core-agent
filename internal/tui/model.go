@@ -551,6 +551,48 @@ func (m *Model) renderSkillsInfo() string {
 	return b.String()
 }
 
+// brandIdentity resolves what to render after the "core-agent ·"
+// prefix in the header: cfg.Agent.DisplayName when the operator
+// configured a human-friendly name; otherwise the agent's AppName.
+// Empty when neither source has anything useful — the brand line
+// then degrades to just the wordmark + cursor.
+func (m *Model) brandIdentity() string {
+	if m.cfg != nil && m.cfg.Agent.DisplayName != "" {
+		return m.cfg.Agent.DisplayName
+	}
+	if m.agent != nil {
+		return m.agent.AppName()
+	}
+	return ""
+}
+
+// renderToolsInfo lists every tool the agent can call — built-in
+// (read_file, bash, etc.), MCP-provided, and skill-materialized —
+// alongside its description. Surfaces in /tools so operators don't
+// have to guess at the catalog.
+func (m *Model) renderToolsInfo() string {
+	if m.agent == nil {
+		return "No agent constructed yet — tool catalog unavailable."
+	}
+	tools := m.agent.Tools()
+	if len(tools) == 0 {
+		return "Agent has no tools registered."
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Tools (%d):\n", len(tools))
+	for _, t := range tools {
+		fmt.Fprintf(&b, "  %s", t.Name())
+		if desc := t.Description(); desc != "" {
+			// Single-line: collapse internal newlines so the catalog
+			// stays scannable. The detail page is the description
+			// docstring on the tool itself.
+			fmt.Fprintf(&b, " — %s", strings.ReplaceAll(desc, "\n", " "))
+		}
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
 // renderStatsInfo formats the per-turn + total usage for /stats.
 func (m *Model) renderStatsInfo() string {
 	if m.usage == nil {

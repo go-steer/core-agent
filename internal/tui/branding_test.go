@@ -48,7 +48,7 @@ func TestView_HeaderAlwaysShowsBrandAndStatus(t *testing.T) {
 			}
 			head := lines[0]
 			// Brand wordmark must show.
-			if !strings.Contains(head, "go-steer / c[o]go") {
+			if !strings.Contains(head, "core-agent") {
 				t.Errorf("first row missing brand wordmark; got %q", head)
 			}
 			// Model name must show on the same row. At very-narrow
@@ -103,13 +103,26 @@ func TestSpinner_UsesBrandStyle(t *testing.T) {
 // renderHeader and the whole status line collapses.
 func TestHeaderBrand_NoControlCharLeaks(t *testing.T) {
 	t.Parallel()
-	out := headerBrand()
-	if regexp.MustCompile(`\r|\n`).MatchString(out) {
-		t.Errorf("headerBrand() contains a newline; would break renderHeader layout. Raw bytes: %q", out)
-	}
-	stripped := stripANSI(out)
-	if !strings.Contains(stripped, "go-steer / c[o]go") {
-		t.Errorf("headerBrand() missing wordmark after ANSI strip: %q", stripped)
+	for _, identity := range []string{"", "core-agent", "Triage Bot"} {
+		identity := identity
+		t.Run(identity, func(t *testing.T) {
+			t.Parallel()
+			out := headerBrand(identity)
+			if regexp.MustCompile(`\r|\n`).MatchString(out) {
+				t.Errorf("headerBrand(%q) contains a newline; would break renderHeader layout. Raw bytes: %q", identity, out)
+			}
+			stripped := stripANSI(out)
+			if !strings.Contains(stripped, "core-agent") {
+				t.Errorf("headerBrand(%q) missing wordmark after ANSI strip: %q", identity, stripped)
+			}
+			// When identity is set + distinct, it must appear in the
+			// rendered output (otherwise operators in multi-agent
+			// setups have no visual cue which agent they're typing
+			// into).
+			if identity != "" && identity != "core-agent" && !strings.Contains(stripped, identity) {
+				t.Errorf("headerBrand(%q) didn't render identity in output: %q", identity, stripped)
+			}
+		})
 	}
 }
 

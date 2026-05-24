@@ -238,12 +238,10 @@ func (m *Model) renderConfirmModal() string {
 	if kindLabel == "" {
 		kindLabel = "Tool"
 	}
-	// NOTE(PR 1): the verb-scoped option (`[v] <verb> * · session`) is
-	// omitted because core-agent's permissions.PromptRequest doesn't
-	// carry a Verb field yet. PR 2 restores when the upstream type is
-	// extended; the keybinding is still registered so muscle memory
-	// holds across the cogo→core-agent flip.
 	footer := "[y] once  [s] this call · session  "
+	if req.Verb != "" {
+		footer += "[v] `" + req.Verb + " *` · session  "
+	}
 	footer += "[t] this tool · session  [a] always (persist)  [n/esc] deny"
 	body := m.styles.Confirm.Render(kindLabel+": "+req.Detail) + "\n" +
 		m.styles.Footer.Render(footer)
@@ -269,7 +267,7 @@ func (m *Model) renderHeader() string {
 	// off the top of the alt-screen and the user opens the TUI to a
 	// missing header. The Header style has no Padding for the same
 	// reason: it would invisibly add 2 cols on top of our budget.
-	left := headerBrand()
+	left := headerBrand(m.brandIdentity())
 	// Build the right side incrementally, appending each segment only
 	// if it still fits. Mode badge is the floor (security-critical: a
 	// user must always see whether they're in yolo); the model name is

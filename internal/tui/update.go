@@ -175,13 +175,15 @@ func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		d = permissions.DecisionAllowOnce
 	case key.Matches(msg, m.keys.ConfirmAllowSession):
 		d = permissions.DecisionAllowSession
-	// NOTE(PR 1): cogo's DecisionAllowSessionVerb + PromptRequest.Verb
-	// (verb-scoped permission grant, e.g. "allow git *") aren't in
-	// core-agent's permissions package yet. The keybinding is still
-	// registered for muscle-memory consistency but a press is a no-op
-	// in PR 1. See cleanup.md / PR 2.
 	case key.Matches(msg, m.keys.ConfirmAllowSessionVerb):
-		return m, nil
+		// Only honor "v" when the gate populated a verb; otherwise
+		// the modal didn't show this option and the keystroke is a
+		// no-op (prevents an accidental tap from broadening
+		// permissions to nothing useful).
+		if m.pendingConfirm.Req.Verb == "" {
+			return m, nil
+		}
+		d = permissions.DecisionAllowSessionVerb
 	case key.Matches(msg, m.keys.ConfirmAllowSessionTool):
 		d = permissions.DecisionAllowSessionTool
 	case key.Matches(msg, m.keys.ConfirmAllowAlways):
@@ -690,6 +692,10 @@ func (m *Model) handleSlash(action SlashAction, cmd, args string) (tea.Model, te
 		m.history.Append(Message{Role: RoleSystem, Text: m.renderSkillsInfo()})
 		m.refreshViewport()
 		return m, nil
+	case SlashTools:
+		m.history.Append(Message{Role: RoleSystem, Text: m.renderToolsInfo()})
+		m.refreshViewport()
+		return m, nil
 	case SlashReload:
 		return m.handleReload()
 	case SlashMouse:
@@ -946,10 +952,7 @@ func (m *Model) applyAllowPattern(pattern string) (tea.Model, tea.Cmd) {
 
 func (m *Model) applyAllowBundle(name string) (tea.Model, tea.Cmd) {
 	if name == "" {
-		// NOTE(PR 1): core-agent's permissions package doesn't expose
-		// KnownBundles() yet; we just give usage. PR 2 restores the
-		// "known bundles: ..." hint when the upstream type lands.
-		m.history.Append(Message{Role: RoleSystem, Text: "Usage: /allow bundle:<name>"})
+		m.history.Append(Message{Role: RoleSystem, Text: "Usage: /allow bundle:<name>   known bundles: " + strings.Join(permissions.KnownBundles(), ", ")})
 		m.refreshViewport()
 		return m, nil
 	}
@@ -972,24 +975,39 @@ func (m *Model) applyAllowBundle(name string) (tea.Model, tea.Cmd) {
 // current permissions config as a multi-line string. Mirrors the
 // /memory and /stats info-style commands so the output lands in the
 // chat history rather than a modal.
-//
-// NOTE(PR 1): the built-in-allow-bundle display (pc.UseBuiltinAllow /
-// pc.BuiltinAllowExtras / permissions.KnownBundles) is omitted
-// because core-agent's permissions package doesn't model bundles yet.
-// PR 2 port restores it.
 func (m *Model) renderPermissionsListInfo() string {
 	pc := m.cfg.Permissions
+	useBuiltin := true
+	if pc.UseBuiltinAllow != nil {
+		useBuiltin = *pc.UseBuiltinAllow
+	}
 	mode := pc.Mode
 	if mode == "" {
 		mode = "ask"
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Permission mode: %s\n", mode)
+	fmt.Fprintf(&b, "Built-in allow: %s\n", boolOnOff(useBuiltin))
+	if len(pc.BuiltinAllowExtras) > 0 {
+		fmt.Fprintf(&b, "  extra bundles: %s\n", strings.Join(pc.BuiltinAllowExtras, ", "))
+	}
+	if useBuiltin {
+		fmt.Fprintf(&b, "  (read_only baseline always active; known bundles: %s)\n", strings.Join(permissions.KnownBundles(), ", "))
+	}
 	b.WriteString("\n")
 	writePatternList(&b, "permissions.allow", pc.Allow)
 	b.WriteString("\n")
 	writePatternList(&b, "permissions.deny", pc.Deny)
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// boolOnOff renders true→"enabled" / false→"disabled" for the
+// permissions snapshot display.
+func boolOnOff(b bool) string {
+	if b {
+		return "enabled"
+	}
+	return "disabled"
 }
 
 func writePatternList(b *strings.Builder, label string, patterns []string) {

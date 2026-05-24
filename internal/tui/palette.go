@@ -59,6 +59,7 @@ func allSlashItems() []paletteItem {
 		{Display: "/model", Value: "/model", Hint: "open the model picker"},
 		{Display: "/mcp", Value: "/mcp", Hint: "configured MCP servers + status"},
 		{Display: "/skills", Value: "/skills", Hint: "discovered skill bundles"},
+		{Display: "/tools", Value: "/tools", Hint: "list every tool the agent can call"},
 		{Display: "/reload", Value: "/reload", Hint: "re-read .agents/ from disk"},
 		{Display: "/mouse", Value: "/mouse", Hint: "toggle mouse-wheel scrolling"},
 		{Display: "/permissions", Value: "/permissions", Hint: "review approvals + persist recommended allowlist"},
@@ -66,7 +67,7 @@ func allSlashItems() []paletteItem {
 		{Display: "/allow", Value: "/allow ", Hint: "add a pattern (e.g. /allow bash:git *) or bundle (/allow bundle:dev_tools)"},
 		{Display: "/deny", Value: "/deny ", Hint: "add a deny pattern (e.g. /deny bash:curl *)"},
 		{Display: "/clear", Value: "/clear", Hint: "clear chat history"},
-		{Display: "/quit", Value: "/quit", Hint: "exit Cogo"},
+		{Display: "/quit", Value: "/quit", Hint: "exit core-agent"},
 	}
 }
 

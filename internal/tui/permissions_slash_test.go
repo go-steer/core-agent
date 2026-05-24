@@ -133,16 +133,14 @@ func TestHandleDeny_Pattern(t *testing.T) {
 // TestHandlePermissionsList prints a read-only snapshot. The output
 // shape (labels and the "(empty)" placeholder) is exercised so a
 // future refactor doesn't accidentally swallow categories.
-//
-// NOTE(PR 1): the "Built-in allow" + "extra bundles" lines are
-// excluded because core-agent's config.PermissionsConfig doesn't
-// model bundles yet (cogo's UseBuiltinAllow + BuiltinAllowExtras).
-// PR 2 restores when the upstream config grows those fields.
 func TestHandlePermissionsList(t *testing.T) {
 	t.Parallel()
 	m := newSlashTestModel(t)
 	m.cfg.Permissions.Allow = []string{"bash:make build", "read_file:internal/**"}
 	m.cfg.Permissions.Deny = []string{"bash:curl *"}
+	off := false
+	m.cfg.Permissions.UseBuiltinAllow = &off
+	m.cfg.Permissions.BuiltinAllowExtras = []string{"dev_tools"}
 	m.cfg.Permissions.Mode = "ask"
 
 	m.handlePermissionsCommand("list")
@@ -150,6 +148,8 @@ func TestHandlePermissionsList(t *testing.T) {
 
 	wantSubs := []string{
 		"Permission mode: ask",
+		"Built-in allow: disabled",
+		"extra bundles: dev_tools",
 		"permissions.allow (2):",
 		"bash:make build",
 		"read_file:internal/**",

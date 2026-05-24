@@ -490,14 +490,72 @@ func TestProgram_PermissionModalApprovesAndDenies(t *testing.T) {
 	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
 }
 
-// TestProgram_PermissionModal_VerbOptionVisibility was lifted from
-// cogo to pin the verb-scoped middle option's gating, but
-// core-agent's permissions.PromptRequest doesn't yet carry the Verb
-// field nor does the package define DecisionAllowSessionVerb. The
-// test is parked here as a documented gap to restore in PR 2 (or
-// when the cogo→core-agent flip lands the extended types). DO NOT
-// re-introduce the test against a stub `Verb` field — wait for the
-// real type to land upstream.
+// TestProgram_PermissionModal_VerbOptionVisibility pins the
+// verb-scoped middle option's gating: the `[v]` row must appear when
+// the gate populated PromptRequest.Verb and stay hidden otherwise.
+// If you render `[v]` unconditionally, users see "allow `' *`" for
+// path scripts and quoted commands — confusing at best, a footgun at
+// worst. DO NOT delete this test to silence a compile failure; fix
+// the modal rendering or the verb extractor instead.
+func TestProgram_PermissionModal_VerbOptionVisibility(t *testing.T) {
+	t.Parallel()
+	_, tm := newTestModelExposed(t, nil)
+
+	// First prompt: has a verb → option must render.
+	out := make(chan permissions.Decision, 1)
+	tm.Send(confirmReqMsg{
+		Req: permissions.PromptRequest{
+			Kind:     permissions.PromptKindBash,
+			ToolName: "bash",
+			Detail:   "git push origin main",
+			Verb:     "git",
+		},
+		Out: out,
+	})
+	teatest.WaitFor(t, tm.Output(), func(o []byte) bool {
+		return bytes.Contains(o, []byte("[v] `git *` · session"))
+	}, teatest.WithDuration(2*time.Second))
+
+	// Pressing `v` resolves the request with the verb decision.
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
+	if got := <-out; got != permissions.DecisionAllowSessionVerb {
+		t.Errorf("decision = %v, want allow-session-verb", got)
+	}
+
+	// Second prompt: no verb → `v` must be a no-op, leaving the
+	// request unresolved until the user picks something else. (We
+	// assert behavioral absence rather than scraping the render: if
+	// the modal were offering `[v]` and the handler honored it, the
+	// keystroke below would resolve the channel.)
+	out2 := make(chan permissions.Decision, 1)
+	tm.Send(confirmReqMsg{
+		Req: permissions.PromptRequest{
+			Kind:     permissions.PromptKindBash,
+			ToolName: "bash",
+			Detail:   "./script.sh",
+			Verb:     "",
+		},
+		Out: out2,
+	})
+	teatest.WaitFor(t, tm.Output(), func(o []byte) bool {
+		return bytes.Contains(o, []byte("./script.sh"))
+	}, teatest.WithDuration(2*time.Second))
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
+	select {
+	case d := <-out2:
+		t.Fatalf("`v` should be a no-op with empty Verb; got decision %v", d)
+	case <-time.After(150 * time.Millisecond):
+		// expected: no decision sent
+	}
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if got := <-out2; got != permissions.DecisionDeny {
+		t.Errorf("fallback decision = %v, want deny", got)
+	}
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlC})
+	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlC})
+	tm.WaitFinished(t, teatest.WithFinalTimeout(2*time.Second))
+}
 
 func TestProgram_PermissionModalAlwaysCallsHook(t *testing.T) {
 	t.Parallel()

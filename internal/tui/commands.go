@@ -17,6 +17,7 @@ const (
 	SlashModel       SlashAction = "model"
 	SlashMCP         SlashAction = "mcp"
 	SlashSkills      SlashAction = "skills"
+	SlashTools       SlashAction = "tools"
 	SlashReload      SlashAction = "reload"
 	SlashMouse       SlashAction = "mouse"
 	SlashPermissions SlashAction = "permissions"
@@ -25,8 +26,6 @@ const (
 	SlashUnknown     SlashAction = "unknown"
 )
 
-// Slash command names accepted in V1. /mcp + /skills + /init join in
-// Slice 4b alongside MCP, skills, and the init wizard.
 var slashAliases = map[string]SlashAction{
 	"help":        SlashHelp,
 	"?":           SlashHelp,
@@ -40,6 +39,7 @@ var slashAliases = map[string]SlashAction{
 	"models":      SlashModel,
 	"mcp":         SlashMCP,
 	"skills":      SlashSkills,
+	"tools":       SlashTools,
 	"reload":      SlashReload,
 	"mouse":       SlashMouse,
 	"permissions": SlashPermissions,
@@ -82,14 +82,14 @@ func ParseSlash(input string) (action SlashAction, command, args string, isSlash
 // HelpText returns the multi-line help message printed by /help.
 func HelpText() string {
 	return strings.Join([]string{
-		"Cogo — interactive mode",
+		"core-agent — interactive mode",
 		"",
 		"Type a message and press Enter to send.",
 		"Shift+Enter inserts a newline (multi-line input).",
 		"",
 		"Type / at the start of an empty prompt to open the slash-command palette.",
 		"Type @ to open the file picker — selecting a file inserts @path/to/file,",
-		"and Cogo inlines the file's contents when you send the message.",
+		"and core-agent inlines the file's contents when you send the message.",
 		"",
 		"Slash commands:",
 		"  /help       show this help",
@@ -101,12 +101,13 @@ func HelpText() string {
 		"  /model <id> switch to <id> directly without the picker",
 		"  /mcp        show configured MCP servers and their status",
 		"  /skills     show discovered skills",
+		"  /tools      list every tool the agent can call (built-in + MCP + skills)",
 		"  /reload     re-read .agents/ from disk (mcp.json, skills/, AGENTS.md, config.json)",
 		"  /mouse      toggle mouse-wheel scrolling (or /mouse on|off)",
 		"  /permissions  review session approvals + add recommended allowlist entries (alias: /perms)",
 		"  /permissions list  show current allow/deny patterns and enabled built-in bundles",
 		"  /allow <pattern>   append a pattern to permissions.allow and apply now (e.g. /allow bash:git *)",
-		"  /allow bundle:<name>  enable a built-in bundle (dev_tools, cogo_tools)",
+		"  /allow bundle:<name>  enable a built-in bundle (dev_tools, core_agent_tools)",
 		"  /deny  <pattern>   append a pattern to permissions.deny and apply now",
 		"",
 		"Keys:",

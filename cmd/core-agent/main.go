@@ -575,14 +575,70 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 			return runner.ExitAgentError
 		}
-		code, err = tui.Run(ctx, tui.Options{
+		tuiOpts := tui.Options{
 			Agent:     a,
 			Cfg:       cfg,
 			Gate:      gate,
 			Tracker:   tracker,
 			Memory:    loaded,
 			AgentsDir: agentsDir,
-		})
+			// /model swaps the model mid-session, preserving tools +
+			// toolsets + instruction. We re-resolve the provider for
+			// the new model name through the same path startup uses.
+			RebuildAgent: func(modelID string) (*agent.Agent, error) {
+				newLLM, lerr := provider.Model(ctx, modelID)
+				if lerr != nil {
+					return nil, lerr
+				}
+				return agent.New(newLLM, opts...)
+			},
+			// Always-allow + session approvals don't need agentsDir.
+			AlwaysAllow: func(req permissions.PromptRequest) error {
+				if req.PersistTool != "path_scope" || agentsDir == "" {
+					return nil
+				}
+				return appendPathScope(agentsDir, req.PersistKey)
+			},
+			SessionApprovals: gate.Approvals,
+		}
+		// Disk-persistence callbacks only wire when there's a project
+		// root to write into. Without .agents/ the slash commands
+		// degrade to a clean "no project root" message rather than
+		// scribbling files into cwd.
+		if agentsDir != "" {
+			tuiOpts.PersistModelChoice = func(modelID string) error {
+				return persistModelChoice(agentsDir, modelID)
+			}
+			tuiOpts.AddAllowPatterns = func(patterns []string) error {
+				if err := gate.AddAllowPatterns(patterns); err != nil {
+					return err
+				}
+				return appendPermissionsAllow(agentsDir, patterns)
+			}
+			tuiOpts.AddDenyPatterns = func(patterns []string) error {
+				if err := gate.AddDenyPatterns(patterns); err != nil {
+					return err
+				}
+				return appendPermissionsDeny(agentsDir, patterns)
+			}
+			tuiOpts.AddBuiltinAllowExtra = func(name string) error {
+				entries, ok := permissions.Bundles[name]
+				if !ok {
+					return fmt.Errorf("unknown bundle %q (want one of %v)", name, permissions.KnownBundles())
+				}
+				// Patch the live gate with the bundle's expanded entries.
+				// We feed them through AddAllowPatterns rather than
+				// storing the bundle name on the gate so the policy
+				// actually changes; the persisted form in config.json
+				// is still the bundle name, not the expansion
+				// (intent-preserving).
+				if err := gate.AddAllowPatterns(entries); err != nil {
+					return err
+				}
+				return appendBuiltinAllowExtra(agentsDir, name)
+			}
+		}
+		code, err = tui.Run(ctx, tuiOpts)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 		}

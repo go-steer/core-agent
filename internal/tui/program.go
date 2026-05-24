@@ -37,16 +37,15 @@ const (
 //
 // Required: Agent, Cfg, Gate, Tracker.
 // Optional: Memory, MCPServers, Skills (display-only), AgentsDir
-// (for transcript-on-exit).
+// (for transcript-on-exit and slash-command persistence callbacks).
 //
-// What's deliberately NOT in this struct (cogo had them; we drop for v2):
-//   - RebuildAgent / ReloadFromDisk / PersistModelChoice — runtime
-//     /model + /reload features. Re-add in PR 2 if needed.
-//   - AddAllowPatterns / AddDenyPatterns / AddBuiltinAllowExtra —
-//     /allow + /deny + bundle slash commands. Re-add in PR 2.
-//   - AlwaysAllow path-scope persistence — same. Always-allow
-//     decisions are still respected for the session; just not
-//     persisted to disk in PR 1.
+// The callback fields (RebuildAgent, ReloadFromDisk, PersistModelChoice,
+// AlwaysAllow, AddAllowPatterns, AddDenyPatterns, AddBuiltinAllowExtra,
+// SessionApprovals) plug runtime features into the TUI without the TUI
+// having to know about provider, gate, tools, or config layout. All are
+// nil-safe — slash commands that need them print "not available" when
+// the host didn't wire one. Typically populated by cmd/core-agent's
+// run() since that's where the construction context lives.
 type Options struct {
 	Agent      *agent.Agent
 	Cfg        *config.Config
@@ -56,7 +55,53 @@ type Options struct {
 	MCPServers []*mcp.Server
 	Skills     skills.Skills
 	AgentsDir  string
+
+	// RebuildAgent constructs a fresh agent bound to modelID while
+	// preserving tools/toolsets/instruction. Lets /model swap the
+	// model mid-session without the TUI knowing about provider /
+	// gate / tools wiring.
+	RebuildAgent func(modelID string) (*agent.Agent, error)
+
+	// ReloadFromDisk re-reads .agents/ (mcp.json, skills/, AGENTS.md,
+	// config.json) and rebuilds the agent in place. Only wired when
+	// AgentsDir is non-empty.
+	ReloadFromDisk func() (ReloadResult, error)
+
+	// PersistModelChoice writes modelID to .agents/config.json so the
+	// switch survives across runs. Only wired when AgentsDir is
+	// non-empty; in-session-only switches when nil.
+	PersistModelChoice func(modelID string) error
+
+	// AlwaysAllow is invoked when the user picks "always allow" in the
+	// permission modal. The host persists the pattern to
+	// .agents/config.json. Nil-safe.
+	AlwaysAllow func(req permissions.PromptRequest) error
+
+	// SessionApprovals returns the gate's chronological approval log
+	// for the current session. Used by /permissions to drive the
+	// recommendation picker. Nil-safe.
+	SessionApprovals func() []permissions.ApprovalLog
+
+	// AddAllowPatterns appends one or more allowlist patterns to
+	// .agents/config.json's permissions.allow block AND patches the
+	// live gate so the additions take effect for the rest of the
+	// session (no /reload needed). Driven by /permissions and /allow.
+	AddAllowPatterns func(patterns []string) error
+
+	// AddDenyPatterns is the symmetric extension for permissions.deny
+	// driven by /deny.
+	AddDenyPatterns func(patterns []string) error
+
+	// AddBuiltinAllowExtra appends a bundle name to
+	// permissions.builtin_allow_extras AND injects that bundle's
+	// patterns into the live gate. Used by /allow bundle:<name>.
+	AddBuiltinAllowExtra func(name string) error
 }
+
+// ReloadResult is what ReloadFromDisk returns on success. Mirrors the
+// state the program builds at startup; the model swaps these into
+// place atomically after the callback returns.
+type ReloadResult = reloadResult
 
 // Run launches the in-process TUI bound to opts.Agent. Blocks until
 // the operator quits. Config failures (no auth, bad gate) return
@@ -108,6 +153,18 @@ func Run(ctx context.Context, opts Options) (int, error) {
 	m.usage = opts.Tracker
 	m.mcpServers = opts.MCPServers
 	m.skills = opts.Skills
+
+	// Plumb runtime callbacks from the host. All nil-safe; slash
+	// commands that need them surface "not available" when the
+	// host didn't wire one (e.g. /model with no rebuilder).
+	m.rebuildAgent = opts.RebuildAgent
+	m.reloadFromDisk = opts.ReloadFromDisk
+	m.persistModelChoice = opts.PersistModelChoice
+	m.AlwaysAllow = opts.AlwaysAllow
+	m.SessionApprovals = opts.SessionApprovals
+	m.AddAllowPatterns = opts.AddAllowPatterns
+	m.AddDenyPatterns = opts.AddDenyPatterns
+	m.AddBuiltinAllowExtra = opts.AddBuiltinAllowExtra
 
 	// Mouse capture wires the wheel to viewport scrolling. Capturing
 	// mouse events also takes plain click-drag away from the terminal's

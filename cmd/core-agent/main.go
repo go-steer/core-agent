@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/glebarez/sqlite"
+	"golang.org/x/term"
 	adktool "google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/agent"
@@ -41,6 +42,7 @@ import (
 	"github.com/go-steer/core-agent/config"
 	"github.com/go-steer/core-agent/eventlog"
 	"github.com/go-steer/core-agent/instruction"
+	"github.com/go-steer/core-agent/internal/tui"
 	"github.com/go-steer/core-agent/mcp"
 	"github.com/go-steer/core-agent/models"
 	_ "github.com/go-steer/core-agent/models/anthropic"
@@ -98,9 +100,10 @@ func main() {
 	attachRegisterName := flag.String("attach-register-name", "", "name to register with the hub. Defaults to hostname.")
 	attachRegisterEndpoint := flag.String("attach-register-endpoint", "", "endpoint to publish to the hub (e.g. https://${POD_IP}:7777). Required when --attach-register-to is set; this agent's own --attach-listen value is NOT used since it may bind 0.0.0.0 and the hub can't reach that.")
 	noREPL := flag.Bool("no-repl", false, "skip the stdin REPL — run until ctx cancellation (SIGTERM / SIGINT). Useful for attach-only daemons (e.g. spawned by core-agent-tui --local) where the operator drives the agent over attach-mode and stdin is /dev/null. Requires --attach-listen or --attach-unix-socket.")
+	noTUI := flag.Bool("no-tui", false, "skip the in-process bubble-tea TUI even when stdin is a terminal — falls back to the line-mode REPL (or whatever else --no-repl / -p select). Use for scripts or shells where the TUI's raw-mode takeover is disruptive. Equivalent to forcing the pre-v2 default behavior.")
 	flag.Parse()
 
-	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, *noREPL,
+	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, *noREPL, *noTUI,
 		attachOpts{
 			Listen:           *attachListen,
 			UnixSocket:       *attachUnixSocket,
@@ -170,7 +173,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	return opts
 }
 
-func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, noREPL bool, attachCfg attachOpts) int {
+func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, noREPL, noTUI bool, attachCfg attachOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -557,6 +560,36 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 				}
 			}
 		}
+	}
+
+	// TUI launch branch: when stdin is a real terminal and --no-tui
+	// wasn't passed, take over the terminal with the in-process
+	// bubble-tea TUI lifted from cogo (docs/embedded-tui-design-v2.md).
+	// The REPL stays as the fallback for non-TTY (piped/CI), explicit
+	// --no-tui, or any --tags no_tui slim build that excludes the
+	// TUI package. Defaults follow Claude Code: bare `core-agent` in
+	// a terminal lands in the TUI.
+	if !noTUI && term.IsTerminal(int(os.Stdin.Fd())) {
+		a, err := agent.New(m, opts...)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+			return runner.ExitAgentError
+		}
+		code, err = tui.Run(ctx, tui.Options{
+			Agent:     a,
+			Cfg:       cfg,
+			Gate:      gate,
+			Tracker:   tracker,
+			Memory:    loaded,
+			AgentsDir: agentsDir,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+		}
+		if code == runner.ExitOK {
+			runner.WriteSummary(os.Stderr, tracker, m.Name())
+		}
+		return code
 	}
 
 	code, err = runner.REPL(ctx, m, os.Stdin, os.Stdout, os.Stderr, tracker, pricing, opts, eventsOpts...)

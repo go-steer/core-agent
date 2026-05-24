@@ -102,9 +102,10 @@ func main() {
 	attachRegisterEndpoint := flag.String("attach-register-endpoint", "", "endpoint to publish to the hub (e.g. https://${POD_IP}:7777). Required when --attach-register-to is set; this agent's own --attach-listen value is NOT used since it may bind 0.0.0.0 and the hub can't reach that.")
 	noREPL := flag.Bool("no-repl", false, "skip the stdin REPL — run until ctx cancellation (SIGTERM / SIGINT). Useful for attach-only daemons (e.g. spawned by core-agent-tui --local) where the operator drives the agent over attach-mode and stdin is /dev/null. Requires --attach-listen or --attach-unix-socket.")
 	noTUI := flag.Bool("no-tui", false, "skip the in-process bubble-tea TUI even when stdin is a terminal — falls back to the line-mode REPL (or whatever else --no-repl / -p select). Use for scripts or shells where the TUI's raw-mode takeover is disruptive. Equivalent to forcing the pre-v2 default behavior.")
+	noPricingRefresh := flag.Bool("no-pricing-refresh", false, "skip the daily pricing-catalog refresh from LiteLLM at startup. Use for air-gapped pods, CI runs, or any environment without outbound network. Overrides cfg.pricing.refresh.")
 	flag.Parse()
 
-	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, *noREPL, *noTUI,
+	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, *noREPL, *noTUI, *noPricingRefresh,
 		attachOpts{
 			Listen:           *attachListen,
 			UnixSocket:       *attachUnixSocket,
@@ -174,7 +175,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	return opts
 }
 
-func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, noREPL, noTUI bool, attachCfg attachOpts) int {
+func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, noREPL, noTUI, noPricingRefresh bool, attachCfg attachOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -340,13 +341,34 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		builtinTools = append(builtinTools, askTool)
 	}
 
+	// Daily pricing refresh (PR B): pull LiteLLM's pricing JSON
+	// into ~/.core-agent/pricing.json's external section. Skipped
+	// when --no-pricing-refresh is set, when cfg.pricing.refresh is
+	// false, or when coreHome is empty (no place to cache). Network
+	// failures are non-fatal — existing cache stays in place; the
+	// refresher's stderr line tells the operator the rates may be
+	// stale ("using N-day-old cache; network: …").
+	refreshPricing := !noPricingRefresh && coreHome != ""
+	if cfg.Pricing.Refresh != nil && !*cfg.Pricing.Refresh {
+		refreshPricing = false
+	}
+	if refreshPricing {
+		outcome, perr := pricing.Refresh(ctx, coreHome, pricing.RefreshOptions{
+			Source: cfg.Pricing.Source,
+		})
+		if perr != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: pricing refresh: %v\n", perr)
+		} else {
+			describeRefresh(os.Stderr, outcome)
+		}
+	}
+
 	// Install the layered pricing catalog before any cost lookups
 	// happen. Per docs/pricing-design.md:
 	//   cfg.Model.Pricing override → .agents/pricing.json
 	//   → ~/.core-agent/pricing.json (manual + external)
 	//   → compiled-in builtin → longest-prefix → unknown.
-	// PR B adds the daily LiteLLM refresh on top of this; PR C
-	// adds /pricing refresh + /pricing set slash commands.
+	// PR C adds /pricing refresh + /pricing set slash commands.
 	if catalog, perr := pricing.NewCatalog(pricing.Options{
 		CfgOverride: cfgToCatalogOverride(cfg.Model.Pricing),
 		AgentsDir:   agentsDir,

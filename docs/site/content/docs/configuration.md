@@ -312,6 +312,19 @@ Console mode prints span JSON to stderr — useful for local debugging. OTLP mod
 
 ---
 
+## `pricing` (top-level)
+
+Governs the pricing-catalog refresh — distinct from `model.pricing` above (per-model rate overrides). Defaults: refresh enabled, daily cadence, LiteLLM upstream.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `refresh` | bool | `true` | Pull the upstream pricing JSON into `~/.core-agent/pricing.json`'s external section once per day on startup. Set to `false` for air-gapped pods or any environment where outbound network is blocked / undesirable. CLI flag `--no-pricing-refresh` always wins. |
+| `source` | string | `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json` | Upstream URL to fetch. Override for mirrors or internal pricing services. The fetched JSON must match LiteLLM's schema (per-token costs + mode field). |
+
+The refresher uses `If-None-Match` against a stored ETag so re-fetches transfer zero bytes when upstream hasn't changed. Network failures are non-fatal: the existing cache stays in place, a one-line warning ("using N-day-old cache; network: …") goes to stderr, and the session continues.
+
+`PR C` (queued) adds a `/pricing refresh` slash command for manual force-refresh and `/pricing set <model> <in> <out>` for writing to the user file's manual section without leaving the TUI.
+
 ## `url_scope`
 
 Governs which URLs the `fetch_url` built-in is allowed to reach. Same Allow/Deny grammar as [`path_scope`]({{< relref "#path_scope" >}}) but for HTTP hosts instead of filesystem paths. `Deny` always wins over `Allow`. An **empty `allow` is default-deny** — `fetch_url` is not registered as a tool at all when no allowlist is configured, so the model can't even attempt a network call without an operator-declared scope.

@@ -44,6 +44,30 @@ type Config struct {
 	OTEL        OTELConfig        `json:"otel,omitempty"`
 	URLScope    URLScopeConfig    `json:"url_scope,omitempty"`
 	Attach      AttachConfig      `json:"attach,omitempty"`
+	Pricing     PricingFileConfig `json:"pricing,omitempty"`
+}
+
+// PricingFileConfig governs the pricing-catalog refresh behavior —
+// distinct from ModelConfig.Pricing (which is the per-model rate
+// override map). Defaults: refresh enabled, daily cadence, LiteLLM
+// upstream. See internal/pricing and docs/pricing-design.md.
+type PricingFileConfig struct {
+	// Refresh enables the daily background fetch from Source into
+	// ~/.core-agent/pricing.json's external section. Defaults to
+	// true (most operators want fresh rates). Disable for
+	// air-gapped pods or CI where outbound network is blocked or
+	// undesirable.
+	//
+	// Pointer so the JSON unmarshaler can distinguish "unset
+	// (default true)" from "explicit false". A bare `null` or
+	// missing field yields the default.
+	Refresh *bool `json:"refresh,omitempty"`
+
+	// Source overrides the upstream URL the refresher fetches from.
+	// Empty defaults to pricing.DefaultRefreshSource (LiteLLM's
+	// model_prices_and_context_window.json). Override for mirrors
+	// or internal pricing services.
+	Source string `json:"source,omitempty"`
 }
 
 // PathScopeConfig holds extra paths that file tools may read/write

@@ -43,7 +43,6 @@ import (
 	"github.com/go-steer/core-agent/eventlog"
 	"github.com/go-steer/core-agent/instruction"
 	"github.com/go-steer/core-agent/internal/pricing"
-	"github.com/go-steer/core-agent/internal/tui"
 	"github.com/go-steer/core-agent/mcp"
 	"github.com/go-steer/core-agent/models"
 	_ "github.com/go-steer/core-agent/models/anthropic"
@@ -280,14 +279,11 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 	}
 
 	send := func(s string) { fmt.Fprintln(os.Stderr, "core-agent: "+s) }
-	// Build the TUI elicitor BEFORE mcp.Build so each spawned MCP
-	// server can hold the .Elicit closure during connect (the
-	// elicitor's program reference is wired later inside tui.Run).
-	// REPL / headless paths don't use the elicitor; the closure
-	// just returns "no program attached" which the SDK translates
-	// to server-side decline — same effect as passing nil.
-	tuiElicitor := tui.NewElicitor()
-	mcpServers, mcpToolsets, mcpErr := mcp.Build(ctx, agentsDir, send, gate, tuiElicitor.Elicit)
+	// makeMCPElicitor is build-tagged: in the default build it
+	// constructs a tui.Elicitor (and stashes the handle for
+	// launchTUI to attach later); in the slim `-tags no_tui` build
+	// it returns nil so MCP elicit requests decline server-side.
+	mcpServers, mcpToolsets, mcpErr := mcp.Build(ctx, agentsDir, send, gate, makeMCPElicitor())
 	if mcpErr != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: mcp: %v\n", mcpErr)
 	}
@@ -619,97 +615,33 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 	// TUI package. Defaults follow Claude Code: bare `core-agent` in
 	// a terminal lands in the TUI.
 	if !noTUI && term.IsTerminal(int(os.Stdin.Fd())) {
-		a, err := agent.New(m, opts...)
+		didRun, code, err := launchTUI(ctx, tuiDeps{
+			Cfg:          cfg,
+			Model:        m,
+			AgentOpts:    opts,
+			Provider:     provider,
+			Gate:         gate,
+			Tracker:      tracker,
+			Memory:       loaded,
+			MCPServers:   mcpServers,
+			LoadedSkills: loadedSkills,
+			AgentsDir:    agentsDir,
+			CoreHome:     coreHome,
+		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
-			return runner.ExitAgentError
-		}
-		tuiOpts := tui.Options{
-			Agent:      a,
-			Cfg:        cfg,
-			Gate:       gate,
-			Tracker:    tracker,
-			Memory:     loaded,
-			MCPServers: mcpServers,
-			Skills:     loadedSkills,
-			AgentsDir:  agentsDir,
-			Elicitor:   tuiElicitor,
-			// /model swaps the model mid-session, preserving tools +
-			// toolsets + instruction. We re-resolve the provider for
-			// the new model name through the same path startup uses.
-			RebuildAgent: func(modelID string) (*agent.Agent, error) {
-				newLLM, lerr := provider.Model(ctx, modelID)
-				if lerr != nil {
-					return nil, lerr
-				}
-				return agent.New(newLLM, opts...)
-			},
-			// Always-allow + session approvals don't need agentsDir.
-			AlwaysAllow: func(req permissions.PromptRequest) error {
-				if req.PersistTool != "path_scope" || agentsDir == "" {
-					return nil
-				}
-				return appendPathScope(agentsDir, req.PersistKey)
-			},
-			SessionApprovals: gate.Approvals,
-		}
-		// Disk-persistence callbacks only wire when there's a project
-		// root to write into. Without .agents/ the slash commands
-		// degrade to a clean "no project root" message rather than
-		// scribbling files into cwd.
-		if agentsDir != "" {
-			tuiOpts.PersistModelChoice = func(modelID string) error {
-				return persistModelChoice(agentsDir, modelID)
-			}
-			tuiOpts.AddAllowPatterns = func(patterns []string) error {
-				if err := gate.AddAllowPatterns(patterns); err != nil {
-					return err
-				}
-				return appendPermissionsAllow(agentsDir, patterns)
-			}
-			tuiOpts.AddDenyPatterns = func(patterns []string) error {
-				if err := gate.AddDenyPatterns(patterns); err != nil {
-					return err
-				}
-				return appendPermissionsDeny(agentsDir, patterns)
-			}
-			tuiOpts.AddBuiltinAllowExtra = func(name string) error {
-				entries, ok := permissions.Bundles[name]
-				if !ok {
-					return fmt.Errorf("unknown bundle %q (want one of %v)", name, permissions.KnownBundles())
-				}
-				// Patch the live gate with the bundle's expanded entries.
-				// We feed them through AddAllowPatterns rather than
-				// storing the bundle name on the gate so the policy
-				// actually changes; the persisted form in config.json
-				// is still the bundle name, not the expansion
-				// (intent-preserving).
-				if err := gate.AddAllowPatterns(entries); err != nil {
-					return err
-				}
-				return appendBuiltinAllowExtra(agentsDir, name)
+			if !didRun {
+				return runner.ExitAgentError
 			}
 		}
-		// /pricing refresh + /pricing set callbacks. Both require a
-		// user-home directory to write the cache; without one we
-		// leave them nil and the slash handlers degrade with a
-		// clean "not available" message.
-		if coreHome != "" {
-			tuiOpts.RefreshPricing = func(rctx context.Context) (string, error) {
-				return refreshPricingForTUI(rctx, cfg, agentsDir, coreHome)
+		if didRun {
+			if code == runner.ExitOK {
+				runner.WriteSummary(os.Stderr, tracker, m.Name())
 			}
-			tuiOpts.SetPricing = func(model string, in, out float64) (string, error) {
-				return setPricingForTUI(cfg, agentsDir, coreHome, model, in, out)
-			}
+			return code
 		}
-		code, err = tui.Run(ctx, tuiOpts)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
-		}
-		if code == runner.ExitOK {
-			runner.WriteSummary(os.Stderr, tracker, m.Name())
-		}
-		return code
+		// didRun=false in the slim build (-tags no_tui) — fall
+		// through to the REPL fallback below.
 	}
 
 	code, err = runner.REPL(ctx, m, os.Stdin, os.Stdout, os.Stderr, tracker, pricingRate, opts, eventsOpts...)

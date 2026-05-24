@@ -20,22 +20,21 @@ If you have Go installed: `go install github.com/go-steer/core-agent/cmd/core-ag
 
 ## Quick start
 
-Three ways to start:
+Two ways to start (v2 removed the local-spawn path — use `core-agent` directly for local interactive use; its bare TTY invocation now lands in the in-process TUI):
 
 ```bash
-# 1. Bare invocation — TUI opens the welcome screen so you can pick local or remote.
+# 1. Bare invocation — welcome screen prompts for a URL.
 core-agent-tui
 
-# 2. --local — TUI spawns a fresh core-agent on a Unix socket and attaches.
-core-agent-tui --local
-
-# 3. Remote — point at a running agent's --attach-listen.
+# 2. Remote — point at a running agent's --attach-listen.
 ATTACH_TOKEN=$(openssl rand -hex 32) \
   core-agent -p "watch the date forever" --session-db --attach-listen=:7777 \
   --attach-token=ATTACH_TOKEN
 
 core-agent-tui http://localhost:7777 --token=ATTACH_TOKEN
 ```
+
+For local interactive use, run `core-agent` directly — the bubble-tea TUI lifted from cogo (see [`embedded-tui-design-v2.md`](https://github.com/go-steer/core-agent/blob/main/docs/embedded-tui-design-v2.md)) is in-process now. `core-agent-tui` is the remote client only.
 
 URL forms (same grammar as `core-agent attach`):
 
@@ -51,11 +50,11 @@ URL forms (same grammar as `core-agent attach`):
 
 | Flag | Purpose |
 |---|---|
-| `--local` | Spawn a sibling `core-agent` process on a private Unix socket under `os.TempDir()/core-agent-tui/` and attach to it. The TUI sends `SIGTERM` to the spawned agent on exit and removes the socket. Forwards any args after `--` to the spawned agent (e.g. `core-agent-tui --local -- --model=gemini-3.1-pro`). |
-| `--no-cleanup` | With `--local`: leave the spawned agent + socket in place on TUI exit. Default is to terminate + clean up. Useful when you want the agent to keep running headlessly after detaching. |
 | `--token=<ENVVAR>` | Name of the env var holding the bearer token (same indirection as `--attach-token` on the listener side). The secret never appears on the command line. |
 | `--theme=auto\|dark\|light\|notty` | Glamour theme for markdown rendering. `auto` detects from the terminal background. Override with `/theme` at runtime. |
 | `--alias=<label>` | Display label for the agent identity in the status bar. Defaults to `<appName>/<sessionID>` (or just `<sessionID>` for the unqualified case). |
+
+`--local` and `--no-cleanup` were removed in v2. For local interactive use, run `core-agent` directly — the TUI is in-process now.
 
 ## Welcome screen
 

@@ -96,15 +96,13 @@ func (m chatModel) handleSubmit(text string) (chatModel, tea.Cmd) {
 		m.wantsAttachURL = raw
 		return m, nil
 	case "/spawn":
-		// Pass through any trailing args verbatim to the spawned
-		// agent. A bare /spawn is fine — spawns with defaults. A
-		// leading "--" separator is stripped so `/spawn -- --model=mock`
-		// works the same as `/spawn --model=mock` (the `--` is just
-		// an optional visual marker for "what follows is for the agent").
-		m.wantsSpawn = stripDoubleDash(args)
-		if m.wantsSpawn == nil {
-			m.wantsSpawn = []string{}
-		}
+		// /spawn was removed from core-agent-tui in v2 — for local
+		// spawn-and-attach, run `core-agent` directly (its bare TTY
+		// invocation lands in the in-process TUI). Keeping the
+		// command name registered so the unknown-command path
+		// surfaces a useful pointer rather than a generic error.
+		m.appendErr("/spawn was removed from core-agent-tui in v2. Run `core-agent` directly for local interactive use — its TUI is in-process now. See docs/embedded-tui-design-v2.md.")
+		m.refreshViewport()
 		return m, nil
 	case "/interrupt":
 		return m, m.interruptCmd()

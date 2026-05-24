@@ -15,7 +15,6 @@
 package main
 
 import (
-	"context"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -53,40 +52,12 @@ type rootModel struct {
 	welcome welcomeModel
 	picker  pickerModel
 	chat    chatModel
-
-	// spawn tracks the --local agent child process when the
-	// current attachment was created by a local spawn (either
-	// via --local flag or via the welcome screen / /spawn).
-	// Cleared on transitions away from that spawned agent so
-	// shutdown() fires at the right moment.
-	spawn *localSpawn
-
-	// noCleanup mirrors the --no-cleanup CLI flag — passed to
-	// spawn.shutdown() so the operator can keep the spawned
-	// agent running on TUI exit.
-	noCleanup bool
-}
-
-// spawnedMsg is dispatched after a successful local-spawn
-// (welcome-screen choice or /spawn slash command). Carries the
-// spawn handle + a ready-to-use client; root model uses both to
-// switch into chat mode against the new agent.
-type spawnedMsg struct {
-	spawn  *localSpawn
-	client *attachclient.Client
-}
-
-// spawnFailedMsg is dispatched when the local-spawn flow fails
-// (binary not found, socket bind timeout, etc.). Root model
-// surfaces the error inline rather than crashing the TUI.
-type spawnFailedMsg struct {
-	err error
 }
 
 func newRootModel(client *attachclient.Client, theme, alias string) rootModel {
 	// Welcome path: no client means the operator invoked
-	// `core-agent-tui` with no URL and no --local. Land on the
-	// welcome screen so they pick local vs remote inside the TUI.
+	// `core-agent-tui` with no URL. Land on the welcome screen
+	// so they enter an attach URL inside the TUI.
 	if client == nil {
 		return rootModel{
 			theme:   theme,
@@ -158,35 +129,6 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Type == tea.KeyCtrlC {
 			return m, tea.Quit
 		}
-	case spawnedMsg:
-		// Local spawn finished. Adopt the new client + spawn
-		// handle and jump directly into the agent's default
-		// session — `core-agent --no-repl` always registers
-		// (appName="core-agent", sessionID="default"), so
-		// routing through the picker for a single known
-		// session would be pure friction.
-		m.spawn = msg.spawn
-		m.client = msg.client
-		m.picker = newPickerModel(msg.client)
-		entry := pickerEntry{
-			App:       "core-agent",
-			SessionID: "default",
-			Endpoint:  msg.client.URL.BaseURL,
-			Origin:    "local",
-		}
-		m.chat = newChatModel(msg.client, entry, m.theme, m.alias)
-		m.chat.SetSize(m.width, m.height)
-		m.mode = modeChat
-		return m, m.chat.Init()
-	case spawnFailedMsg:
-		// Surface the error on the welcome screen, re-focus the
-		// input so the operator can immediately retry / type a
-		// different command.
-		m.welcome.error = msg.err.Error()
-		m.welcome.stage = welcomeInput
-		m.welcome.chosen = nil
-		m.mode = modeWelcome
-		return m, m.welcome.input.Focus()
 	}
 
 	switch m.mode {
@@ -196,9 +138,6 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.welcome.chosen != nil {
 			choice := *m.welcome.chosen
 			m.welcome.chosen = nil
-			if choice.LocalSpawn {
-				return m, m.spawnLocalCmd(choice.SpawnArgs)
-			}
 			// Remote URL: parse + build client + flip into picker.
 			parsed, err := attachclient.ParseURL(choice.RemoteURL)
 			if err != nil {
@@ -233,7 +172,6 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.chat.wantsWelcome {
 			m.chat.wantsWelcome = false
-			m.cleanupSpawn()
 			m.welcome = newWelcomeModel()
 			m.welcome.SetSize(m.width, m.height)
 			m.client = nil
@@ -243,7 +181,6 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.chat.wantsAttachURL != "" {
 			target := m.chat.wantsAttachURL
 			m.chat.wantsAttachURL = ""
-			m.cleanupSpawn()
 			parsed, err := attachclient.ParseURL(target)
 			if err != nil {
 				// Bounce back to welcome with the error so the
@@ -262,12 +199,6 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.mode = modePicker
 			return m, m.picker.Init()
 		}
-		if m.chat.wantsSpawn != nil {
-			args := m.chat.wantsSpawn
-			m.chat.wantsSpawn = nil
-			m.cleanupSpawn()
-			return m, m.spawnLocalCmd(args)
-		}
 		return m, cmd
 	}
 }
@@ -280,39 +211,6 @@ func (m rootModel) View() string {
 		return m.picker.View()
 	default:
 		return m.chat.View()
-	}
-}
-
-// spawnLocalCmd kicks the agent-spawn flow on a background goroutine
-// and emits either spawnedMsg or spawnFailedMsg on completion. Used
-// by both the welcome-screen "spawn local" choice and the in-chat
-// /spawn slash command.
-func (m rootModel) spawnLocalCmd(extraArgs []string) tea.Cmd {
-	return func() tea.Msg {
-		spawn, err := spawnLocalAgent(context.Background(), extraArgs)
-		if err != nil {
-			return spawnFailedMsg{err: err}
-		}
-		spawn.keep = m.noCleanup
-		parsed, perr := attachclient.ParseURL(spawn.url())
-		if perr != nil {
-			spawn.shutdown()
-			return spawnFailedMsg{err: perr}
-		}
-		return spawnedMsg{
-			spawn:  spawn,
-			client: attachclient.New(parsed, spawn.token, 0),
-		}
-	}
-}
-
-// cleanupSpawn shuts down the currently-tracked --local spawn, if
-// any, and clears the handle. Called before transitions that
-// replace the current attachment (welcome, /attach, /spawn).
-func (m *rootModel) cleanupSpawn() {
-	if m.spawn != nil {
-		m.spawn.shutdown()
-		m.spawn = nil
 	}
 }
 

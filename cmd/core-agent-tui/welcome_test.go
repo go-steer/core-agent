@@ -41,41 +41,21 @@ func typeString(m welcomeModel, s string) welcomeModel {
 	return m
 }
 
-func TestWelcome_SpawnCommandSetsChosen(t *testing.T) {
+// TestWelcome_SpawnCommandHelpfullyRejects pins the v2 transition
+// behavior: typing /spawn should no longer trigger a spawn (the
+// machinery was removed; use `core-agent` directly). The TUI
+// surfaces a "removed in v2" hint rather than just an "unknown
+// command" so operators with muscle memory know where to go.
+func TestWelcome_SpawnCommandHelpfullyRejects(t *testing.T) {
 	t.Parallel()
 	m := newWelcomeModel()
 	m = typeString(m, "/spawn")
 	m, _ = m.UpdateInner(keyType(tea.KeyEnter))
-	if m.chosen == nil {
-		t.Fatal("chosen not set after /spawn + Enter")
+	if m.chosen != nil {
+		t.Fatalf("/spawn should NOT set chosen in v2; got %+v", m.chosen)
 	}
-	if !m.chosen.LocalSpawn {
-		t.Errorf("LocalSpawn = false, want true")
-	}
-	if m.chosen.RemoteURL != "" {
-		t.Errorf("RemoteURL = %q, want empty", m.chosen.RemoteURL)
-	}
-	if m.stage != welcomeSpawning {
-		t.Errorf("stage = %v, want welcomeSpawning", m.stage)
-	}
-}
-
-func TestWelcome_SpawnForwardsArgs(t *testing.T) {
-	t.Parallel()
-	m := newWelcomeModel()
-	m = typeString(m, "/spawn -- --model=mock --skill=foo")
-	m, _ = m.UpdateInner(keyType(tea.KeyEnter))
-	if m.chosen == nil {
-		t.Fatal("chosen nil after /spawn args + Enter")
-	}
-	wantArgs := []string{"--model=mock", "--skill=foo"}
-	if len(m.chosen.SpawnArgs) != len(wantArgs) {
-		t.Fatalf("SpawnArgs = %v, want %v", m.chosen.SpawnArgs, wantArgs)
-	}
-	for i, a := range wantArgs {
-		if m.chosen.SpawnArgs[i] != a {
-			t.Errorf("SpawnArgs[%d] = %q, want %q", i, m.chosen.SpawnArgs[i], a)
-		}
+	if !strings.Contains(m.error, "removed") || !strings.Contains(m.error, "core-agent") {
+		t.Errorf("expected migration hint mentioning 'removed' + 'core-agent'; got %q", m.error)
 	}
 }
 
@@ -89,9 +69,6 @@ func TestWelcome_AttachCommandSubmitsURL(t *testing.T) {
 	}
 	if m.chosen.RemoteURL != "http://localhost:7777" {
 		t.Errorf("RemoteURL = %q", m.chosen.RemoteURL)
-	}
-	if m.chosen.LocalSpawn {
-		t.Errorf("LocalSpawn = true, want false")
 	}
 }
 
@@ -142,8 +119,8 @@ func TestWelcome_EmptyEnterReportsHint(t *testing.T) {
 	if m.chosen != nil {
 		t.Errorf("chosen set on empty Enter: %+v", m.chosen)
 	}
-	if !strings.Contains(m.error, "/spawn") {
-		t.Errorf("empty-Enter error should mention /spawn: %q", m.error)
+	if !strings.Contains(m.error, "/attach") {
+		t.Errorf("empty-Enter error should mention /attach: %q", m.error)
 	}
 }
 
@@ -188,7 +165,6 @@ func TestWelcome_View_RendersErrorAndCheatSheet(t *testing.T) {
 	out := m.View()
 	for _, want := range []string{
 		"no endpoint selected",
-		"/spawn",
 		"/attach",
 		"/help",
 		"core-agent binary not found",

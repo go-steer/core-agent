@@ -32,33 +32,22 @@ func keyType(t tea.KeyType) tea.KeyMsg {
 	return tea.KeyMsg{Type: t}
 }
 
-func TestWelcome_DownArrowMovesCursor(t *testing.T) {
-	t.Parallel()
-	m := newWelcomeModel()
-	if m.cursor != 0 {
-		t.Fatalf("initial cursor = %d, want 0", m.cursor)
+// typeString sends each rune of s through UpdateInner so the
+// textinput accumulates the value.
+func typeString(m welcomeModel, s string) welcomeModel {
+	for _, r := range s {
+		m, _ = m.UpdateInner(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	m, _ = m.UpdateInner(keyMsg('j'))
-	if m.cursor != 1 {
-		t.Errorf("after j: cursor = %d, want 1", m.cursor)
-	}
-	m, _ = m.UpdateInner(keyMsg('j'))
-	if m.cursor != 1 {
-		t.Errorf("at bottom: cursor = %d, want 1 (clamped)", m.cursor)
-	}
-	m, _ = m.UpdateInner(keyMsg('k'))
-	if m.cursor != 0 {
-		t.Errorf("after k: cursor = %d, want 0", m.cursor)
-	}
+	return m
 }
 
-func TestWelcome_EnterLocalSetsChosen(t *testing.T) {
+func TestWelcome_SpawnCommandSetsChosen(t *testing.T) {
 	t.Parallel()
 	m := newWelcomeModel()
-	// cursor starts at 0 = local spawn
+	m = typeString(m, "/spawn")
 	m, _ = m.UpdateInner(keyType(tea.KeyEnter))
 	if m.chosen == nil {
-		t.Fatal("chosen not set after Enter on local")
+		t.Fatal("chosen not set after /spawn + Enter")
 	}
 	if !m.chosen.LocalSpawn {
 		t.Errorf("LocalSpawn = false, want true")
@@ -71,48 +60,45 @@ func TestWelcome_EnterLocalSetsChosen(t *testing.T) {
 	}
 }
 
-func TestWelcome_EnterRemoteEntersURLStage(t *testing.T) {
+func TestWelcome_SpawnForwardsArgs(t *testing.T) {
 	t.Parallel()
 	m := newWelcomeModel()
-	m, _ = m.UpdateInner(keyMsg('j'))           // cursor → 1 (remote)
-	m, _ = m.UpdateInner(keyType(tea.KeyEnter)) // pick remote
-	if m.stage != welcomeURL {
-		t.Errorf("stage = %v, want welcomeURL", m.stage)
+	m = typeString(m, "/spawn -- --model=mock --skill=foo")
+	m, _ = m.UpdateInner(keyType(tea.KeyEnter))
+	if m.chosen == nil {
+		t.Fatal("chosen nil after /spawn args + Enter")
 	}
-	if m.chosen != nil {
-		t.Errorf("chosen set prematurely: %+v", m.chosen)
+	wantArgs := []string{"--model=mock", "--skill=foo"}
+	if len(m.chosen.SpawnArgs) != len(wantArgs) {
+		t.Fatalf("SpawnArgs = %v, want %v", m.chosen.SpawnArgs, wantArgs)
+	}
+	for i, a := range wantArgs {
+		if m.chosen.SpawnArgs[i] != a {
+			t.Errorf("SpawnArgs[%d] = %q, want %q", i, m.chosen.SpawnArgs[i], a)
+		}
 	}
 }
 
-func TestWelcome_URLStageSubmitsValidURL(t *testing.T) {
+func TestWelcome_AttachCommandSubmitsURL(t *testing.T) {
 	t.Parallel()
 	m := newWelcomeModel()
-	m, _ = m.UpdateInner(keyMsg('j'))
-	m, _ = m.UpdateInner(keyType(tea.KeyEnter))
-	if m.stage != welcomeURL {
-		t.Fatalf("not in welcomeURL stage")
-	}
-	// Type "http://localhost:7777" + Enter
-	for _, r := range "http://localhost:7777" {
-		m, _ = m.UpdateInner(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-	}
+	m = typeString(m, "/attach http://localhost:7777")
 	m, _ = m.UpdateInner(keyType(tea.KeyEnter))
 	if m.chosen == nil {
-		t.Fatal("chosen not set after Enter on valid URL")
+		t.Fatal("chosen not set after /attach + Enter")
 	}
 	if m.chosen.RemoteURL != "http://localhost:7777" {
 		t.Errorf("RemoteURL = %q", m.chosen.RemoteURL)
 	}
+	if m.chosen.LocalSpawn {
+		t.Errorf("LocalSpawn = true, want false")
+	}
 }
 
-func TestWelcome_URLStageRejectsBadScheme(t *testing.T) {
+func TestWelcome_AttachRejectsBadScheme(t *testing.T) {
 	t.Parallel()
 	m := newWelcomeModel()
-	m, _ = m.UpdateInner(keyMsg('j'))
-	m, _ = m.UpdateInner(keyType(tea.KeyEnter))
-	for _, r := range "ftp://nope" {
-		m, _ = m.UpdateInner(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-	}
+	m = typeString(m, "/attach ftp://nope")
 	m, _ = m.UpdateInner(keyType(tea.KeyEnter))
 	if m.chosen != nil {
 		t.Errorf("chosen set despite bad scheme: %+v", m.chosen)
@@ -122,28 +108,103 @@ func TestWelcome_URLStageRejectsBadScheme(t *testing.T) {
 	}
 }
 
-func TestWelcome_URLStageEscReturnsToChoice(t *testing.T) {
+func TestWelcome_BareURLAcceptedAsAttach(t *testing.T) {
 	t.Parallel()
 	m := newWelcomeModel()
-	m, _ = m.UpdateInner(keyMsg('j'))
+	// No /attach prefix — bare URL should be coerced.
+	m = typeString(m, "http://localhost:8080")
 	m, _ = m.UpdateInner(keyType(tea.KeyEnter))
-	if m.stage != welcomeURL {
-		t.Fatal("not in welcomeURL stage")
+	if m.chosen == nil {
+		t.Fatal("chosen not set for bare URL")
 	}
-	m, _ = m.UpdateInner(keyType(tea.KeyEsc))
-	if m.stage != welcomeChoice {
-		t.Errorf("Esc from URL stage: stage = %v, want welcomeChoice", m.stage)
+	if m.chosen.RemoteURL != "http://localhost:8080" {
+		t.Errorf("RemoteURL = %q", m.chosen.RemoteURL)
 	}
 }
 
-func TestWelcome_View_RendersChoices(t *testing.T) {
+func TestWelcome_UnknownCommandReportsError(t *testing.T) {
+	t.Parallel()
+	m := newWelcomeModel()
+	m = typeString(m, "/wat")
+	m, _ = m.UpdateInner(keyType(tea.KeyEnter))
+	if m.chosen != nil {
+		t.Errorf("chosen set for unknown command: %+v", m.chosen)
+	}
+	if !strings.Contains(m.error, "unknown command") {
+		t.Errorf("error doesn't mention 'unknown command': %q", m.error)
+	}
+}
+
+func TestWelcome_EmptyEnterReportsHint(t *testing.T) {
+	t.Parallel()
+	m := newWelcomeModel()
+	m, _ = m.UpdateInner(keyType(tea.KeyEnter))
+	if m.chosen != nil {
+		t.Errorf("chosen set on empty Enter: %+v", m.chosen)
+	}
+	if !strings.Contains(m.error, "/spawn") {
+		t.Errorf("empty-Enter error should mention /spawn: %q", m.error)
+	}
+}
+
+func TestWelcome_HelpShowsHint(t *testing.T) {
+	t.Parallel()
+	m := newWelcomeModel()
+	m = typeString(m, "/help")
+	m, _ = m.UpdateInner(keyType(tea.KeyEnter))
+	if m.chosen != nil {
+		t.Errorf("/help set chosen unexpectedly: %+v", m.chosen)
+	}
+	if m.hint == "" {
+		t.Errorf("/help should populate m.hint")
+	}
+}
+
+func TestWelcome_EscClearsInputThenQuits(t *testing.T) {
+	t.Parallel()
+	m := newWelcomeModel()
+	m = typeString(m, "/spawn")
+	// First Esc should clear the input, not quit.
+	m, cmd := m.UpdateInner(keyType(tea.KeyEsc))
+	if m.input.Value() != "" {
+		t.Errorf("first Esc didn't clear input: %q", m.input.Value())
+	}
+	if cmd != nil {
+		// tea.Quit returns a non-nil cmd; first Esc shouldn't.
+		t.Errorf("first Esc returned a cmd; want nil (cmd=%T)", cmd)
+	}
+	// Second Esc on empty input should quit.
+	_, cmd = m.UpdateInner(keyType(tea.KeyEsc))
+	if cmd == nil {
+		t.Errorf("second Esc on empty input didn't return a quit cmd")
+	}
+}
+
+func TestWelcome_View_RendersErrorAndCheatSheet(t *testing.T) {
 	t.Parallel()
 	m := newWelcomeModel()
 	m.SetSize(80, 24)
+	m.error = "core-agent binary not found"
 	out := m.View()
-	for _, want := range []string{"Spawn a local agent", "Attach to a remote endpoint", "navigate"} {
+	for _, want := range []string{
+		"no endpoint selected",
+		"/spawn",
+		"/attach",
+		"/help",
+		"core-agent binary not found",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("view missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestWelcome_KeystrokeClearsStaleError(t *testing.T) {
+	t.Parallel()
+	m := newWelcomeModel()
+	m.error = "old error"
+	m, _ = m.UpdateInner(keyMsg('a'))
+	if m.error != "" {
+		t.Errorf("keystroke didn't clear stale error: %q", m.error)
 	}
 }

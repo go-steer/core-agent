@@ -48,7 +48,7 @@ import (
 func main() {
 	fs := flag.NewFlagSet("core-agent-tui", flag.ContinueOnError)
 	tokenEnv := fs.String("token", "", "env var holding the bearer token (e.g. ATTACH_TOKEN)")
-	theme := fs.String("theme", "auto", "glamour theme: auto | dark | light | notty")
+	theme := fs.String("theme", "dark", "glamour theme: auto | dark | light | notty. 'auto' queries the terminal for its background color via OSC 11 — under bubble tea's raw mode this response leaks into the input box ('\\033]11;rgb:...'), so 'dark' is the safe default. Set --theme=auto when running outside an interactive TUI or if you're confident your terminal doesn't echo OSC responses.")
 	alias := fs.String("alias", "", "display label override for the agent identity (default: agent name → sessionID)")
 	local := fs.Bool("local", false, "spawn a core-agent process locally on a unix socket and attach to it (alternative to passing a URL)")
 	noCleanup := fs.Bool("no-cleanup", false, "with --local: leave the spawned agent + socket in place on TUI exit (default: SIGTERM the agent + remove socket)")

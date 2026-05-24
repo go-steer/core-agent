@@ -59,22 +59,30 @@ URL forms (same grammar as `core-agent attach`):
 
 ## Welcome screen
 
-Invoking `core-agent-tui` with no URL and no `--local` opens a landing screen:
+Invoking `core-agent-tui` with no URL and no `--local` opens a landing screen with a single input box that accepts slash commands:
 
 ```
 core-agent-tui  ●  no endpoint selected
 ────────────────────────────────────────
-  How would you like to start?
+  Type a command to get started:
 
-  ▸ Spawn a local agent          (--local equivalent)
-    Attach to a remote endpoint  (enter URL)
+    /spawn [-- args...]      spawn a local agent (forward args to it)
+    /attach <url>            attach to a remote endpoint
+    /help                    show all commands
+    /quit                    exit
 
-  ↑/↓ navigate · Enter select · q quit
+  > /spawn -- --model=mock_
+
+  Enter run · Esc clear/quit · Ctrl+C quit
 ```
 
-Picking "Spawn a local agent" runs the same code path as `--local`. Picking "Attach to a remote endpoint" prompts for a URL (any of the forms above), validates the scheme, and flows into the session picker or direct-jump.
+- `/spawn` is the `--local` equivalent. Anything after `--` (optional separator) forwards to the spawned agent: `/spawn -- --model=gemini-3.1-pro --skill=git-bisect`.
+- `/attach <url>` accepts any of the URL forms above. A bare URL with no `/attach` prefix is also accepted as a convenience: `http://localhost:7777` is treated as `/attach http://localhost:7777`.
+- `/help` expands an extra hint pane below the input showing the URL grammar and chat-mode commands.
 
-You can also return to the welcome screen at any time with `/welcome`, switch endpoints with `/attach <url>`, or spawn another local agent with `/spawn [args...]`.
+Errors surface inline under the input box (e.g. "core-agent binary not found alongside core-agent-tui or on PATH" when `/spawn` can't locate the agent binary).
+
+You can also return to this screen at any time from a chat session with `/welcome`, switch endpoints directly with `/attach <url>`, or spawn another local agent with `/spawn [args...]`.
 
 ## Layout
 

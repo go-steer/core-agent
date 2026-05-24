@@ -15,14 +15,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -85,6 +89,14 @@ func spawnLocalAgent(ctx context.Context, extraArgs []string) (*localSpawn, erro
 		"--session-db-path=" + dbPath,
 		"--attach-unix-socket=" + socketPath,
 		"--attach-token=CORE_AGENT_TUI_LOCAL_TOKEN",
+		// --no-repl prevents the spawned agent from reading our
+		// /dev/null stdin and exiting on EOF. Without this the
+		// REPL scanner.Scan() returns false immediately, the
+		// agent process dies, and we race between socket-bind
+		// and process-exit (usually losing). With --no-repl, the
+		// agent blocks on ctx.Done() and the only surface is
+		// attach-mode — exactly what the TUI drives.
+		"--no-repl",
 	}
 	args = append(args, extraArgs...)
 
@@ -92,22 +104,64 @@ func spawnLocalAgent(ctx context.Context, extraArgs []string) (*localSpawn, erro
 	cmd.Env = append(os.Environ(),
 		"CORE_AGENT_TUI_LOCAL_TOKEN="+token,
 	)
-	// Capture the agent's stderr so we can surface bind failures
-	// to the operator. Stdout is the agent's REPL output; we
-	// don't drive it here — attach-mode SSE is the channel.
-	cmd.Stdout = os.Stderr // out of band: agent's REPL banner lands here
-	cmd.Stderr = os.Stderr
+	// Capture stdout + stderr so bind/config failures surface
+	// in the TUI error path. Bubble tea's alt-screen hides
+	// anything written directly to os.Stderr while the TUI is
+	// running, which makes a silent crash look like a "didn't
+	// bind in time" timeout. We hold the last 8KB and tee live
+	// to /tmp/<sock>.log for post-mortem.
+	tail := newTailBuf(8 * 1024)
+	logPath := socketPath + ".log"
+	logFile, _ := os.Create(logPath)
+	var sinks []io.Writer
+	sinks = append(sinks, tail)
+	if logFile != nil {
+		sinks = append(sinks, logFile)
+	}
+	mw := io.MultiWriter(sinks...)
+	cmd.Stdout = mw
+	cmd.Stderr = mw
 
 	if err := cmd.Start(); err != nil {
+		if logFile != nil {
+			_ = logFile.Close()
+		}
 		return nil, fmt.Errorf("spawn agent: %w", err)
 	}
 
-	// Poll the socket until it accepts connections (or we time out).
-	if err := waitForSocket(ctx, socketPath, 5*time.Second); err != nil {
-		// Kill the child; otherwise it lingers as a zombie.
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
-		return nil, fmt.Errorf("agent did not bind %s within 5s: %w", socketPath, err)
+	// Watch for early process exit in parallel with the socket
+	// poll so we surface "agent crashed" immediately rather than
+	// waiting the full timeout. We expose `alive` (closed when
+	// Wait returns) plus a pointer to the error — NOT a channel
+	// of error. With a channel, waitForSocketOrExit and the
+	// caller would race to drain it, and the loser blocks forever.
+	alive := make(chan struct{})
+	var waitErr error
+	go func() {
+		waitErr = cmd.Wait()
+		if logFile != nil {
+			_ = logFile.Close()
+		}
+		close(alive)
+	}()
+
+	// 15s is generous on purpose: a cold-start agent reads config,
+	// opens the session DB, initializes tools/MCP, then starts the
+	// attach listener in a goroutine. On a loaded laptop or in CI,
+	// 5s is too tight and the operator gets a misleading timeout.
+	if err := waitForSocketOrExit(ctx, socketPath, 15*time.Second, alive, &waitErr); err != nil {
+		// Kill only if still alive; otherwise the Wait goroutine
+		// is already done and an extra Kill+wait would deadlock.
+		select {
+		case <-alive:
+			// Already exited.
+		default:
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+				<-alive
+			}
+		}
+		return nil, decorateSpawnErr(err, bin, args, tail.String(), logPath)
 	}
 
 	return &localSpawn{
@@ -115,6 +169,34 @@ func spawnLocalAgent(ctx context.Context, extraArgs []string) (*localSpawn, erro
 		socketPath: socketPath,
 		token:      token,
 	}, nil
+}
+
+// decorateSpawnErr builds a multi-line error string that includes
+// the binary path, the args passed, the captured tail of the
+// agent's stderr/stdout, and the path to the full log file. The
+// goal: when /spawn fails, the operator has every signal needed
+// to diagnose without re-running outside the TUI.
+func decorateSpawnErr(cause error, bin string, args []string, tail, logPath string) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "agent failed to start: %v", cause)
+	fmt.Fprintf(&b, "\n  binary: %s", bin)
+	fmt.Fprintf(&b, "\n  args:   %s", strings.Join(args, " "))
+	if tail = strings.TrimSpace(tail); tail != "" {
+		fmt.Fprintf(&b, "\n  agent stderr/stdout (last %d bytes):\n%s",
+			len(tail), indentLines(tail, "    "))
+	} else {
+		fmt.Fprintf(&b, "\n  agent produced no stderr/stdout before exit")
+	}
+	fmt.Fprintf(&b, "\n  full log: %s", logPath)
+	return fmt.Errorf("%s", b.String())
+}
+
+func indentLines(s, prefix string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = prefix + l
+	}
+	return strings.Join(lines, "\n")
 }
 
 // shutdown terminates the spawned agent + cleans up the socket
@@ -157,35 +239,76 @@ func (s *localSpawn) url() string {
 	return "unix://" + s.socketPath
 }
 
-// locateAgentBinary picks the core-agent binary to spawn. Prefers
-// one in the same directory as core-agent-tui (works when both ship
-// from the same release artifact); falls back to PATH.
+// locateAgentBinary picks the core-agent binary to spawn. Resolution
+// order:
+//  1. $CORE_AGENT_BIN if set — explicit operator override
+//  2. ./core-agent in the current working directory — convenient
+//     when running out of a freshly-built project tree
+//  3. sibling next to our own executable — release-tarball case
+//  4. PATH
+//
+// Returns a clear error listing every location we tried when none
+// match, so /spawn failures don't degrade to "binary not found"
+// with no further detail.
 func locateAgentBinary() (string, error) {
-	// Sibling next to our own executable.
-	self, err := os.Executable()
-	if err == nil {
+	var tried []string
+
+	if override := os.Getenv("CORE_AGENT_BIN"); override != "" {
+		// gosec G304: the operator explicitly opted in via env var
+		// to point us at this binary. It's the same trust boundary
+		// as a CLI flag.
+		if _, err := os.Stat(override); err == nil { //nolint:gosec // operator-supplied override
+			return override, nil
+		}
+		tried = append(tried, "$CORE_AGENT_BIN="+override+" (not found)")
+	}
+
+	if cwd, err := os.Getwd(); err == nil {
+		candidate := filepath.Join(cwd, "core-agent")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+		tried = append(tried, candidate)
+	}
+
+	if self, err := os.Executable(); err == nil {
 		sibling := filepath.Join(filepath.Dir(self), "core-agent")
-		if _, statErr := os.Stat(sibling); statErr == nil {
+		if _, err := os.Stat(sibling); err == nil {
 			return sibling, nil
 		}
+		tried = append(tried, sibling+" (sibling)")
 	}
-	// PATH.
+
 	if path, err := exec.LookPath("core-agent"); err == nil {
 		return path, nil
 	}
-	return "", fmt.Errorf("core-agent binary not found alongside core-agent-tui or on PATH; install it from the same release artifact pair")
+	tried = append(tried, "$PATH")
+
+	return "", fmt.Errorf("core-agent binary not found — tried:\n  - %s\nset $CORE_AGENT_BIN to override, or `go install ./cmd/core-agent`",
+		strings.Join(tried, "\n  - "))
 }
 
-// waitForSocket polls until a unix socket at path accepts a
-// connection or the timeout expires. ctx cancellation aborts
-// early. Uses a short Dial timeout per attempt so the poll
-// loop reacts quickly when the socket appears.
-func waitForSocket(ctx context.Context, path string, timeout time.Duration) error {
+// waitForSocketOrExit polls the unix socket at path until it
+// accepts a connection, OR the agent process exits early (the
+// `alive` channel is closed by the caller's Wait goroutine when
+// cmd.Wait returns, and `waitErrPtr` is read at that point so
+// we can surface the exit error), OR the timeout fires. ctx
+// cancellation aborts early.
+//
+// Note: waitErrPtr is read only after `alive` is closed, which
+// guarantees the Wait goroutine has fully written the error
+// before we observe it (close is a happens-before).
+func waitForSocketOrExit(ctx context.Context, path string, timeout time.Duration, alive <-chan struct{}, waitErrPtr *error) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-alive:
+			if waitErrPtr != nil && *waitErrPtr != nil {
+				return fmt.Errorf("agent exited before binding socket: %w", *waitErrPtr)
+			}
+			return fmt.Errorf("agent exited cleanly before binding socket — did it need a --prompt or interactive stdin?")
 		default:
 		}
 		conn, err := net.DialTimeout("unix", path, 100*time.Millisecond)
@@ -195,7 +318,41 @@ func waitForSocket(ctx context.Context, path string, timeout time.Duration) erro
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return fmt.Errorf("timeout")
+	return fmt.Errorf("timed out after %s waiting for %s", timeout, path)
+}
+
+// tailBuf is a fixed-size rolling buffer used to capture the
+// tail of the spawned agent's combined stdout/stderr — old
+// bytes drop off the front as new bytes arrive. The buffer is
+// thread-safe so the exec.Cmd writer goroutine can write while
+// the main goroutine reads on timeout.
+type tailBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+	max int
+}
+
+func newTailBuf(max int) *tailBuf {
+	return &tailBuf{max: max}
+}
+
+func (t *tailBuf) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.buf.Write(p)
+	if extra := t.buf.Len() - t.max; extra > 0 {
+		// Drop from the front.
+		b := t.buf.Bytes()
+		t.buf.Reset()
+		t.buf.Write(b[extra:])
+	}
+	return len(p), nil
+}
+
+func (t *tailBuf) String() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.buf.String()
 }
 
 // generateToken returns a hex-encoded 32-byte random bearer token.

@@ -160,20 +160,33 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case spawnedMsg:
 		// Local spawn finished. Adopt the new client + spawn
-		// handle, switch into chat against the (single) session
-		// the agent will report from /sessions.
+		// handle and jump directly into the agent's default
+		// session — `core-agent --no-repl` always registers
+		// (appName="core-agent", sessionID="default"), so
+		// routing through the picker for a single known
+		// session would be pure friction.
 		m.spawn = msg.spawn
 		m.client = msg.client
 		m.picker = newPickerModel(msg.client)
-		m.mode = modePicker
-		return m, m.picker.Init()
+		entry := pickerEntry{
+			App:       "core-agent",
+			SessionID: "default",
+			Endpoint:  msg.client.URL.BaseURL,
+			Origin:    "local",
+		}
+		m.chat = newChatModel(msg.client, entry, m.theme, m.alias)
+		m.chat.SetSize(m.width, m.height)
+		m.mode = modeChat
+		return m, m.chat.Init()
 	case spawnFailedMsg:
-		// Surface the error on the welcome screen.
+		// Surface the error on the welcome screen, re-focus the
+		// input so the operator can immediately retry / type a
+		// different command.
 		m.welcome.error = msg.err.Error()
-		m.welcome.stage = welcomeChoice
+		m.welcome.stage = welcomeInput
 		m.welcome.chosen = nil
 		m.mode = modeWelcome
-		return m, nil
+		return m, m.welcome.input.Focus()
 	}
 
 	switch m.mode {
@@ -184,13 +197,13 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			choice := *m.welcome.chosen
 			m.welcome.chosen = nil
 			if choice.LocalSpawn {
-				return m, m.spawnLocalCmd(nil)
+				return m, m.spawnLocalCmd(choice.SpawnArgs)
 			}
 			// Remote URL: parse + build client + flip into picker.
 			parsed, err := attachclient.ParseURL(choice.RemoteURL)
 			if err != nil {
 				m.welcome.error = err.Error()
-				m.welcome.stage = welcomeChoice
+				m.welcome.stage = welcomeInput
 				return m, nil
 			}
 			m.client = attachclient.New(parsed, "", 0)

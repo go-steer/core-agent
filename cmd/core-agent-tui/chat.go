@@ -360,10 +360,17 @@ func (m chatModel) UpdateInner(msg tea.Msg) (chatModel, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 	case chatStatusLoadedMsg:
-		if msg.err == nil {
-			m.statusInfo = msg.status
-			m.usage.modelName = msg.status.ModelName
+		if msg.err != nil {
+			// Surface the failure as a system hint rather than
+			// silently dropping it — operators need to know when
+			// the status panel is stale. Old agents that don't
+			// expose /status will surface a 404 once on init.
+			m.appendSystem(fmt.Sprintf("status fetch: %v", msg.err))
+			m.refreshViewport()
+			return m, nil
 		}
+		m.statusInfo = msg.status
+		m.usage.modelName = msg.status.ModelName
 		return m, nil
 	case chatInjectAckMsg:
 		if msg.err != nil {

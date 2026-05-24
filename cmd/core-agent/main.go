@@ -97,9 +97,10 @@ func main() {
 	attachRegisterTo := flag.String("attach-register-to", "", "register this agent with a remote attach hub at this URL (e.g. https://hub.default.svc:7777). Heartbeats automatically. Requires --attach-listen so the hub records a reachable endpoint.")
 	attachRegisterName := flag.String("attach-register-name", "", "name to register with the hub. Defaults to hostname.")
 	attachRegisterEndpoint := flag.String("attach-register-endpoint", "", "endpoint to publish to the hub (e.g. https://${POD_IP}:7777). Required when --attach-register-to is set; this agent's own --attach-listen value is NOT used since it may bind 0.0.0.0 and the hub can't reach that.")
+	noREPL := flag.Bool("no-repl", false, "skip the stdin REPL — run until ctx cancellation (SIGTERM / SIGINT). Useful for attach-only daemons (e.g. spawned by core-agent-tui --local) where the operator drives the agent over attach-mode and stdin is /dev/null. Requires --attach-listen or --attach-unix-socket.")
 	flag.Parse()
 
-	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost,
+	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, *noREPL,
 		attachOpts{
 			Listen:           *attachListen,
 			UnixSocket:       *attachUnixSocket,
@@ -169,7 +170,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	return opts
 }
 
-func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, attachCfg attachOpts) int {
+func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, noREPL bool, attachCfg attachOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -512,6 +513,50 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 			persistTranscript(agentsDir, m.Name(), prompt, tracker)
 		}
 		return code
+	}
+
+	if noREPL {
+		// Attach-only daemon mode: construct the agent (which
+		// registers it with the attach session registry so the
+		// picker shows a session to attach to) and block on ctx
+		// cancellation. Required for `core-agent-tui --local`
+		// spawns (and any other "headless server, attach is the
+		// only surface" deployment), since the default REPL
+		// reads stdin which is /dev/null for spawned children —
+		// scanner.Scan() returns false immediately, REPL exits,
+		// and the agent dies before the operator can attach.
+		if attachCfg.Listen == "" && attachCfg.UnixSocket == "" {
+			fmt.Fprintln(os.Stderr, "core-agent: --no-repl requires --attach-listen or --attach-unix-socket")
+			return runner.ExitConfigError
+		}
+		a, err := agent.New(m, opts...)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+			return runner.ExitAgentError
+		}
+		fmt.Fprintf(os.Stderr,
+			"core-agent: --no-repl: attach-only mode, session %s (Ctrl-C or SIGTERM to exit)\n",
+			a.SessionID())
+		// Wake-driven inbox loop: when an attach client POSTs
+		// /inject, agent.Inject appends to the inbox + fires
+		// WakeRequested. We consume the event iterator from
+		// a.Run so the turn actually completes; the events also
+		// hit the eventlog → attach broadcaster, which is what
+		// the operator's TUI is rendering. Empty prompt means
+		// "no user text this turn, just drain the inbox" — same
+		// path REPL uses for the same case.
+		for {
+			select {
+			case <-ctx.Done():
+				return runner.ExitOK
+			case <-a.WakeRequested():
+				for _, runErr := range a.Run(ctx, "") {
+					if runErr != nil {
+						fmt.Fprintf(os.Stderr, "core-agent: turn: %v\n", runErr)
+					}
+				}
+			}
+		}
 	}
 
 	code, err = runner.REPL(ctx, m, os.Stdin, os.Stdout, os.Stderr, tracker, pricing, opts, eventsOpts...)

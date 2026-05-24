@@ -501,40 +501,54 @@ func (m *Model) renderMemoryInfo() string {
 	return b.String()
 }
 
-// renderMCPInfo formats the configured MCP servers for /mcp.
-// Each server is followed by an indented list of the tools it
-// exposes (the namespaced names the agent actually sees).
+// renderMCPInfo formats the configured MCP servers for /mcp. Each
+// server header (bold violet, matching /permissions' label color)
+// is followed by an indented list of the tools it exposes, formatted
+// the same way as /tools: bold pink name + indented description +
+// blank line between entries. Failed servers show the error inline
+// and skip their (empty) tool list.
 func (m *Model) renderMCPInfo() string {
 	if len(m.mcpServers) == 0 {
 		return "No MCP servers configured. Drop a .agents/mcp.json describing servers (stdio or HTTP transport) to expose external tools to the agent."
 	}
+	serverStyle := lipgloss.NewStyle().Foreground(brandViolet).Bold(true)
+	toolStyle := lipgloss.NewStyle().Foreground(brandPink).Bold(true)
 	var b strings.Builder
-	b.WriteString("MCP servers:\n")
-	for _, s := range m.mcpServers {
-		b.WriteString("  ")
-		b.WriteString(s.Name)
-		b.WriteString(" — ")
-		b.WriteString(s.Status)
+	b.WriteString("MCP servers:\n\n")
+	for si, s := range m.mcpServers {
+		fmt.Fprintf(&b, "  %s — %s", serverStyle.Render(s.Name), s.Status)
 		if s.Err != nil {
-			b.WriteString(" (")
-			b.WriteString(s.Err.Error())
-			b.WriteString(")")
+			fmt.Fprintf(&b, " (%s)", s.Err.Error())
 		}
 		b.WriteByte('\n')
 		switch {
 		case s.Status != "ok":
 			// Skip tool list for failed servers.
-		case len(s.Tools) == 0:
+		case len(s.ToolInfos) == 0 && len(s.Tools) == 0:
 			b.WriteString("      (server exposes no tools, or enumeration failed)\n")
+		case len(s.ToolInfos) > 0:
+			b.WriteByte('\n')
+			for i, info := range s.ToolInfos {
+				fmt.Fprintf(&b, "    ▸ %s\n", toolStyle.Render(info.Name))
+				if info.Description != "" {
+					fmt.Fprintf(&b, "        %s\n", strings.ReplaceAll(info.Description, "\n", " "))
+				}
+				if i < len(s.ToolInfos)-1 {
+					b.WriteByte('\n')
+				}
+			}
 		default:
+			// Fallback: server populated Tools (names) but not
+			// ToolInfos. Old MCP shim or post-Build mutation.
 			for _, t := range s.Tools {
-				b.WriteString("      • ")
-				b.WriteString(t)
-				b.WriteByte('\n')
+				fmt.Fprintf(&b, "    ▸ %s\n", toolStyle.Render(t))
 			}
 		}
+		if si < len(m.mcpServers)-1 {
+			b.WriteByte('\n')
+		}
 	}
-	return b.String()
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // renderSkillsInfo formats the discovered skills for /skills.

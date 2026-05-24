@@ -323,7 +323,10 @@ Governs the pricing-catalog refresh — distinct from `model.pricing` above (per
 
 The refresher uses `If-None-Match` against a stored ETag so re-fetches transfer zero bytes when upstream hasn't changed. Network failures are non-fatal: the existing cache stays in place, a one-line warning ("using N-day-old cache; network: …") goes to stderr, and the session continues.
 
-`PR C` (queued) adds a `/pricing refresh` slash command for manual force-refresh and `/pricing set <model> <in> <out>` for writing to the user file's manual section without leaving the TUI.
+From the in-process TUI, two slash commands give operators direct control without leaving the chat:
+
+- `/pricing refresh` — force an out-of-cycle fetch from `pricing.source` (ignores the 24h cadence). Useful right after a provider price change. Result lands in the chat scrollback: "Refresh: updated 247 models from upstream" / "Refresh: upstream unchanged" / "Refresh failed; using N-day-old cache".
+- `/pricing set <model> <input_per_mtok> <output_per_mtok>` — write a per-model rate to `~/.core-agent/pricing.json`'s `manual` section atomically + rebuild the live catalog so it takes effect immediately. Example: `/pricing set gemini-3.5-flash 0.075 0.30`. The manual section round-trips intact across the daily refresh (the auto-fetcher only rewrites `external`).
 
 ## `url_scope`
 

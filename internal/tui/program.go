@@ -105,6 +105,23 @@ type Options struct {
 	// permissions.builtin_allow_extras AND injects that bundle's
 	// patterns into the live gate. Used by /allow bundle:<name>.
 	AddBuiltinAllowExtra func(name string) error
+
+	// RefreshPricing forces an out-of-cycle pricing-catalog refresh
+	// from upstream (typically LiteLLM via internal/pricing.Refresh
+	// with MinInterval: -1s) AND reinstalls the freshly-built
+	// catalog into usage.SetCatalog so cost lookups for the rest
+	// of the session see the new rates. Called by /pricing refresh.
+	// Returns a human-readable summary line for the chat scrollback.
+	// Nil-safe.
+	RefreshPricing func(ctx context.Context) (string, error)
+
+	// SetPricing writes a per-model rate to the manual section of
+	// the user pricing file AND rebuilds the live catalog so the
+	// new rate takes effect immediately. Called by
+	// /pricing set <model> <in> <out>. modelID is the model name
+	// (case-insensitive); rates are USD per million tokens.
+	// Returns a human-readable summary line. Nil-safe.
+	SetPricing func(modelID string, inputPerMTok, outputPerMTok float64) (string, error)
 }
 
 // ReloadResult is what ReloadFromDisk returns on success. Mirrors the
@@ -181,6 +198,8 @@ func Run(ctx context.Context, opts Options) (int, error) {
 	m.AddAllowPatterns = opts.AddAllowPatterns
 	m.AddDenyPatterns = opts.AddDenyPatterns
 	m.AddBuiltinAllowExtra = opts.AddBuiltinAllowExtra
+	m.refreshPricing = opts.RefreshPricing
+	m.setPricing = opts.SetPricing
 
 	// Mouse capture wires the wheel to viewport scrolling. Capturing
 	// mouse events also takes plain click-drag away from the terminal's

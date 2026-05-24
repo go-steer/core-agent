@@ -6,6 +6,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -707,6 +708,8 @@ func (m *Model) handleSlash(action SlashAction, cmd, args string) (tea.Model, te
 		m.history.Append(Message{Role: RoleSystem, Text: m.renderToolsInfo()})
 		m.refreshViewport()
 		return m, nil
+	case SlashPricing:
+		return m.handlePricingCommand(args)
 	case SlashReload:
 		return m.handleReload()
 	case SlashMouse:
@@ -907,6 +910,96 @@ func (m *Model) handlePermissionsCommand(args string) (tea.Model, tea.Cmd) {
 // handleAllowCommand handles `/allow <pattern>` and `/allow bundle:<name>`.
 // Both paths validate first so the user gets a clear error before
 // anything touches cogo.json or the live gate.
+// handlePricingCommand dispatches /pricing <subcommand>. Two
+// subcommands today:
+//   - /pricing refresh                          force a fetch from upstream
+//   - /pricing set <model> <input/M> <output/M> write a manual rate
+//
+// More subcommands (list, etc.) are easy to add. Bare /pricing prints
+// usage so the operator discovers what's available.
+func (m *Model) handlePricingCommand(args string) (tea.Model, tea.Cmd) {
+	fields := strings.Fields(strings.TrimSpace(args))
+	if len(fields) == 0 {
+		m.history.Append(Message{Role: RoleSystem, Text: "Usage:\n  /pricing refresh\n  /pricing set <model> <input_per_mtok> <output_per_mtok>"})
+		m.refreshViewport()
+		return m, nil
+	}
+	switch strings.ToLower(fields[0]) {
+	case "refresh":
+		return m.handlePricingRefresh()
+	case "set":
+		return m.handlePricingSet(fields[1:])
+	default:
+		m.history.Append(Message{Role: RoleError, Text: fmt.Sprintf("Unknown /pricing subcommand: %q. Try /pricing refresh  or  /pricing set <model> <in> <out>", fields[0])})
+		m.refreshViewport()
+		return m, nil
+	}
+}
+
+// handlePricingRefresh kicks off an out-of-cycle pricing refresh
+// via the host-supplied callback. The callback owns network +
+// catalog-rebuild + SetCatalog wiring; the slash command just
+// surfaces its summary line. Synchronous — the fetch is typically
+// fast (304 cache-hit) and blocking the UI for a few hundred ms
+// is preferable to a "fire and forget" UX where the operator
+// doesn't know whether anything happened.
+func (m *Model) handlePricingRefresh() (tea.Model, tea.Cmd) {
+	if m.refreshPricing == nil {
+		m.history.Append(Message{Role: RoleError, Text: "Pricing refresh not available: no user-home directory configured."})
+		m.refreshViewport()
+		return m, nil
+	}
+	summary, err := m.refreshPricing(context.Background())
+	if err != nil {
+		m.history.Append(Message{Role: RoleError, Text: "Pricing refresh failed: " + err.Error()})
+		m.refreshViewport()
+		return m, nil
+	}
+	m.history.Append(Message{Role: RoleSystem, Text: summary})
+	m.refreshViewport()
+	return m, nil
+}
+
+// handlePricingSet writes a per-model rate to the user pricing
+// file's manual section. Strict parsing: three positional args
+// (model, input, output) with non-negative numeric rates. Negative
+// rates are almost certainly typos and would silently produce
+// negative costs — refuse with a clear error.
+func (m *Model) handlePricingSet(args []string) (tea.Model, tea.Cmd) {
+	if m.setPricing == nil {
+		m.history.Append(Message{Role: RoleError, Text: "Pricing set not available: no user-home directory configured."})
+		m.refreshViewport()
+		return m, nil
+	}
+	if len(args) != 3 {
+		m.history.Append(Message{Role: RoleError, Text: "Usage: /pricing set <model> <input_per_mtok> <output_per_mtok>   e.g. /pricing set gemini-3.5-flash 0.075 0.30"})
+		m.refreshViewport()
+		return m, nil
+	}
+	model := args[0]
+	input, ierr := strconv.ParseFloat(args[1], 64)
+	output, oerr := strconv.ParseFloat(args[2], 64)
+	if ierr != nil || oerr != nil {
+		m.history.Append(Message{Role: RoleError, Text: "Rates must be numbers (USD per million tokens): e.g. 0.075 0.30"})
+		m.refreshViewport()
+		return m, nil
+	}
+	if input < 0 || output < 0 {
+		m.history.Append(Message{Role: RoleError, Text: "Rates must be non-negative."})
+		m.refreshViewport()
+		return m, nil
+	}
+	summary, err := m.setPricing(model, input, output)
+	if err != nil {
+		m.history.Append(Message{Role: RoleError, Text: "Pricing set failed: " + err.Error()})
+		m.refreshViewport()
+		return m, nil
+	}
+	m.history.Append(Message{Role: RoleSystem, Text: summary})
+	m.refreshViewport()
+	return m, nil
+}
+
 func (m *Model) handleAllowCommand(args string) (tea.Model, tea.Cmd) {
 	arg := strings.TrimSpace(args)
 	if arg == "" {

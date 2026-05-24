@@ -690,6 +690,18 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 				return appendBuiltinAllowExtra(agentsDir, name)
 			}
 		}
+		// /pricing refresh + /pricing set callbacks. Both require a
+		// user-home directory to write the cache; without one we
+		// leave them nil and the slash handlers degrade with a
+		// clean "not available" message.
+		if coreHome != "" {
+			tuiOpts.RefreshPricing = func(rctx context.Context) (string, error) {
+				return refreshPricingForTUI(rctx, cfg, agentsDir, coreHome)
+			}
+			tuiOpts.SetPricing = func(model string, in, out float64) (string, error) {
+				return setPricingForTUI(cfg, agentsDir, coreHome, model, in, out)
+			}
+		}
 		code, err = tui.Run(ctx, tuiOpts)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)

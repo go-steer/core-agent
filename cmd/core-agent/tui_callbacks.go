@@ -18,7 +18,26 @@ import (
 	"path/filepath"
 
 	"github.com/go-steer/core-agent/config"
+	"github.com/go-steer/core-agent/internal/pricing"
 )
+
+// cfgToCatalogOverride translates config.PricingMap (the JSON-tagged
+// per-model rate map operators put under model.pricing) into the
+// internal/pricing wire shape. nil-safe; an empty map means "no
+// cfg override, fall through to the file + builtin layers".
+func cfgToCatalogOverride(m config.PricingMap) map[string]pricing.ModelRates {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]pricing.ModelRates, len(m))
+	for k, v := range m {
+		out[k] = pricing.ModelRates{
+			InputPerMTok:  v.InputPerMTok,
+			OutputPerMTok: v.OutputPerMTok,
+		}
+	}
+	return out
+}
 
 // .agents/config.json persistence helpers used by the TUI's
 // /permissions, /allow, /deny, /model, and "always allow"

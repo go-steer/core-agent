@@ -15,11 +15,40 @@
 package main
 
 import (
+	"fmt"
+	"io"
 	"path/filepath"
+	"time"
 
 	"github.com/go-steer/core-agent/config"
 	"github.com/go-steer/core-agent/internal/pricing"
 )
+
+// describeRefresh renders a one-line summary of a pricing-refresh
+// outcome to w. Surfaces the four distinct shapes operators care
+// about: fresh write (model count), 304-not-modified, skipped
+// (cache still within MinInterval), network failure (cache age +
+// error so the operator knows to expect stale rates).
+func describeRefresh(w io.Writer, out pricing.RefreshOutcome) {
+	switch {
+	case out.NetworkFailed:
+		if out.StaleAge > 0 {
+			fmt.Fprintf(w, "core-agent: pricing refresh: using %s-old cache; network: %v\n",
+				out.StaleAge.Round(time.Hour), out.NetworkError)
+			return
+		}
+		fmt.Fprintf(w, "core-agent: pricing refresh: %v (no cache; rates will fall back to built-in table)\n", out.NetworkError)
+	case out.Skipped:
+		// Quiet path — the refresh was a no-op because the cache
+		// is still within MinInterval. Don't bother the operator.
+		return
+	case out.NotModified:
+		// Server confirmed cache is current. Also quiet.
+		return
+	default:
+		fmt.Fprintf(w, "core-agent: pricing refresh: updated %d models from upstream\n", out.ModelCount)
+	}
+}
 
 // cfgToCatalogOverride translates config.PricingMap (the JSON-tagged
 // per-model rate map operators put under model.pricing) into the

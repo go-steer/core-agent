@@ -18,6 +18,7 @@ const (
 	SlashMCP         SlashAction = "mcp"
 	SlashSkills      SlashAction = "skills"
 	SlashTools       SlashAction = "tools"
+	SlashPricing     SlashAction = "pricing"
 	SlashReload      SlashAction = "reload"
 	SlashMouse       SlashAction = "mouse"
 	SlashPermissions SlashAction = "permissions"
@@ -40,6 +41,7 @@ var slashAliases = map[string]SlashAction{
 	"mcp":         SlashMCP,
 	"skills":      SlashSkills,
 	"tools":       SlashTools,
+	"pricing":     SlashPricing,
 	"reload":      SlashReload,
 	"mouse":       SlashMouse,
 	"permissions": SlashPermissions,
@@ -102,6 +104,8 @@ func HelpText() string {
 		"  /mcp        show configured MCP servers and their status",
 		"  /skills     show discovered skills",
 		"  /tools      list every tool the agent can call (built-in + MCP + skills)",
+		"  /pricing refresh        force-refresh the pricing catalog from LiteLLM",
+		"  /pricing set <model> <input/M> <output/M>   set rates for one model (writes to ~/.core-agent/pricing.json manual section)",
 		"  /reload     re-read .agents/ from disk (mcp.json, skills/, AGENTS.md, config.json)",
 		"  /mouse      toggle mouse-wheel scrolling (or /mouse on|off)",
 		"  /permissions  review session approvals + add recommended allowlist entries (alias: /perms)",

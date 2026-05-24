@@ -60,6 +60,8 @@ func allSlashItems() []paletteItem {
 		{Display: "/mcp", Value: "/mcp", Hint: "configured MCP servers + status"},
 		{Display: "/skills", Value: "/skills", Hint: "discovered skill bundles"},
 		{Display: "/tools", Value: "/tools", Hint: "list every tool the agent can call"},
+		{Display: "/pricing refresh", Value: "/pricing refresh", Hint: "force-refresh pricing catalog from LiteLLM"},
+		{Display: "/pricing set", Value: "/pricing set ", Hint: "set rates for one model (e.g. /pricing set gemini-3.5-flash 0.075 0.30)"},
 		{Display: "/reload", Value: "/reload", Hint: "re-read .agents/ from disk"},
 		{Display: "/mouse", Value: "/mouse", Hint: "toggle mouse-wheel scrolling"},
 		{Display: "/permissions", Value: "/permissions", Hint: "review approvals + persist recommended allowlist"},

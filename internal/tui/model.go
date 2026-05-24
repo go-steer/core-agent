@@ -185,6 +185,16 @@ type Model struct {
 	// patterns into the live gate. Used by /allow bundle:<name>.
 	// May be nil when running without a project root.
 	AddBuiltinAllowExtra func(name string) error
+
+	// refreshPricing forces an out-of-cycle pricing-catalog refresh
+	// + reinstalls the catalog. Wired from tui.Options.RefreshPricing
+	// by program.Run; nil when the host didn't supply one.
+	refreshPricing func(ctx context.Context) (string, error)
+
+	// setPricing writes a per-model rate to the user pricing file's
+	// manual section + rebuilds the live catalog. Wired from
+	// tui.Options.SetPricing. nil-safe.
+	setPricing func(modelID string, inputPerMTok, outputPerMTok float64) (string, error)
 }
 
 // NewModel constructs a fresh chat session bound to a configured agent.

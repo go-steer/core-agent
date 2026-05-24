@@ -56,12 +56,23 @@ func SetImplementationName(name string) {
 
 // Server is one configured MCP server's runtime state.
 type Server struct {
-	Name    string
-	Status  string
-	Tools   []string // tool names exposed; populated lazily by Toolset
-	Err     error    // non-nil when Status == StatusError
-	toolset tool.Toolset
-	cmd     *exec.Cmd // stdio child; nil for http transports
+	Name      string
+	Status    string
+	Tools     []string   // tool names exposed; populated lazily by Toolset
+	ToolInfos []ToolInfo // name + description pairs, parallel to Tools
+	Err       error      // non-nil when Status == StatusError
+	toolset   tool.Toolset
+	cmd       *exec.Cmd // stdio child; nil for http transports
+}
+
+// ToolInfo is a name + description pair for one exposed MCP tool.
+// Surfaced so the TUI's /mcp command can render the same rich
+// "name + description" format /tools uses, without each consumer
+// re-enumerating the toolset (which requires constructing a stub
+// ReadonlyContext). Sorted by Name to match Tools' ordering.
+type ToolInfo struct {
+	Name        string
+	Description string
 }
 
 // Toolset returns the MCP toolset, or nil for failed servers.
@@ -179,12 +190,24 @@ func startOne(ctx context.Context, name string, spec ServerSpec, send func(strin
 	srv.toolset = wrapped
 	srv.Status = StatusOK
 	if tools, err := wrapped.Tools(asReadonly(ctx)); err == nil {
-		names := make([]string, 0, len(tools))
+		infos := make([]ToolInfo, 0, len(tools))
 		for _, t := range tools {
-			names = append(names, t.Name())
+			infos = append(infos, ToolInfo{
+				Name:        t.Name(),
+				Description: t.Description(),
+			})
 		}
-		sort.Strings(names)
+		sort.Slice(infos, func(i, j int) bool {
+			return infos[i].Name < infos[j].Name
+		})
+		// Materialize the names-only slice in lockstep so existing
+		// consumers (Server.Tools) keep working.
+		names := make([]string, len(infos))
+		for i, info := range infos {
+			names[i] = info.Name
+		}
 		srv.Tools = names
+		srv.ToolInfos = infos
 	}
 	return srv
 }

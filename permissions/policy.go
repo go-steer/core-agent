@@ -17,6 +17,7 @@ package permissions
 import (
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // Policy interprets the allow/deny pattern lists from
@@ -31,7 +32,13 @@ import (
 // `?`, and character classes. The "key" of a request depends on the
 // tool: for bash it is the command string, for file tools it is the
 // resolved absolute path. Wildcards work the same for both.
+//
+// The mutex guards live policy extension via AddAllow/AddDeny so the
+// TUI's /allow and /deny slash commands can patch the policy from one
+// goroutine while Match is consulting it from another (typically the
+// agent's tool-call goroutine).
 type Policy struct {
+	mu    sync.RWMutex
 	allow []rule
 	deny  []rule
 }
@@ -89,6 +96,8 @@ const (
 // OutcomeAllow if any allow rule matches and no deny rule matches,
 // otherwise OutcomeUnmatched. Deny always wins.
 func (p *Policy) Match(tool, key string) Outcome {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	if matchAny(p.deny, tool, key) {
 		return OutcomeDeny
 	}
@@ -98,12 +107,63 @@ func (p *Policy) Match(tool, key string) Outcome {
 	return OutcomeUnmatched
 }
 
+// AddAllow validates and appends patterns to the allow set. Existing
+// patterns are skipped (idempotent — the /allow slash command can be
+// retried without growing the policy). Bad patterns abort the whole
+// call without partial mutation so the on-disk config and the live
+// policy stay in sync after a failed parse.
+func (p *Policy) AddAllow(patterns []string) error {
+	added, err := parseRules(patterns)
+	if err != nil {
+		return err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, r := range added {
+		if containsRule(p.allow, r) {
+			continue
+		}
+		p.allow = append(p.allow, r)
+	}
+	return nil
+}
+
+// AddDeny is the symmetric extension for deny rules. Deny always
+// wins in Match, so adding a deny pattern mid-session can override a
+// previously-allowed rule without restart.
+func (p *Policy) AddDeny(patterns []string) error {
+	added, err := parseRules(patterns)
+	if err != nil {
+		return err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, r := range added {
+		if containsRule(p.deny, r) {
+			continue
+		}
+		p.deny = append(p.deny, r)
+	}
+	return nil
+}
+
+func containsRule(rs []rule, r rule) bool {
+	for _, existing := range rs {
+		if existing.tool == r.tool && existing.pat == r.pat {
+			return true
+		}
+	}
+	return false
+}
+
 // RawPatterns returns the original "tool:pattern" strings the Policy
 // was built from, as two slices (allow, deny). The patterns are
 // reconstituted (tool prefix re-added when present) so the output
 // round-trips with the JSON config form. Used by Gate.Snapshot() to
 // surface configured policy without leaking the parsed rule struct.
 func (p *Policy) RawPatterns() (allow, deny []string) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	return formatRules(p.allow), formatRules(p.deny)
 }
 

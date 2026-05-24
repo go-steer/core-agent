@@ -107,6 +107,13 @@ func tapUsage(events iter.Seq2[*session.Event, error], track func(input, output 
 
 // WriteSummary emits a one-line usage tally suitable for shell
 // pipelines / CI logs. No-op when no turns were recorded.
+//
+// When the resolved pricing for the model used during the session
+// is zero (e.g. a custom / fine-tuned variant not in the built-in
+// rate table and without a cfg.Model.Pricing override), we surface
+// "$—" rather than "$0.0000" — the latter implied "free", which is
+// misleading and historically confusing for operators who actually
+// spent money.
 func WriteSummary(w io.Writer, t *usage.Tracker, modelID string) {
 	if t == nil {
 		return
@@ -115,6 +122,10 @@ func WriteSummary(w io.Writer, t *usage.Tracker, modelID string) {
 	if tot.Turns == 0 {
 		return
 	}
-	fmt.Fprintf(w, "core-agent: %d turn(s) · ↑%d ↓%d tokens · $%.4f (%s)\n",
-		tot.Turns, tot.InputTokens, tot.OutputTokens, tot.CostUSD, modelID)
+	cost := fmt.Sprintf("$%.4f", tot.CostUSD)
+	if tot.CostUSD == 0 && (tot.InputTokens > 0 || tot.OutputTokens > 0) {
+		cost = "$— (pricing not configured for this model)"
+	}
+	fmt.Fprintf(w, "core-agent: %d turn(s) · ↑%d ↓%d tokens · %s (%s)\n",
+		tot.Turns, tot.InputTokens, tot.OutputTokens, cost, modelID)
 }

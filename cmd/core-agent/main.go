@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/glebarez/sqlite"
+	"golang.org/x/term"
 	adktool "google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/agent"
@@ -41,6 +42,7 @@ import (
 	"github.com/go-steer/core-agent/config"
 	"github.com/go-steer/core-agent/eventlog"
 	"github.com/go-steer/core-agent/instruction"
+	"github.com/go-steer/core-agent/internal/tui"
 	"github.com/go-steer/core-agent/mcp"
 	"github.com/go-steer/core-agent/models"
 	_ "github.com/go-steer/core-agent/models/anthropic"
@@ -98,9 +100,10 @@ func main() {
 	attachRegisterName := flag.String("attach-register-name", "", "name to register with the hub. Defaults to hostname.")
 	attachRegisterEndpoint := flag.String("attach-register-endpoint", "", "endpoint to publish to the hub (e.g. https://${POD_IP}:7777). Required when --attach-register-to is set; this agent's own --attach-listen value is NOT used since it may bind 0.0.0.0 and the hub can't reach that.")
 	noREPL := flag.Bool("no-repl", false, "skip the stdin REPL — run until ctx cancellation (SIGTERM / SIGINT). Useful for attach-only daemons (e.g. spawned by core-agent-tui --local) where the operator drives the agent over attach-mode and stdin is /dev/null. Requires --attach-listen or --attach-unix-socket.")
+	noTUI := flag.Bool("no-tui", false, "skip the in-process bubble-tea TUI even when stdin is a terminal — falls back to the line-mode REPL (or whatever else --no-repl / -p select). Use for scripts or shells where the TUI's raw-mode takeover is disruptive. Equivalent to forcing the pre-v2 default behavior.")
 	flag.Parse()
 
-	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, *noREPL,
+	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, *noREPL, *noTUI,
 		attachOpts{
 			Listen:           *attachListen,
 			UnixSocket:       *attachUnixSocket,
@@ -170,7 +173,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	return opts
 }
 
-func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, noREPL bool, attachCfg attachOpts) int {
+func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, noREPL, noTUI bool, attachCfg attachOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -275,7 +278,14 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 	}
 
 	send := func(s string) { fmt.Fprintln(os.Stderr, "core-agent: "+s) }
-	_, mcpToolsets, mcpErr := mcp.Build(ctx, agentsDir, send, gate, nil)
+	// Build the TUI elicitor BEFORE mcp.Build so each spawned MCP
+	// server can hold the .Elicit closure during connect (the
+	// elicitor's program reference is wired later inside tui.Run).
+	// REPL / headless paths don't use the elicitor; the closure
+	// just returns "no program attached" which the SDK translates
+	// to server-side decline — same effect as passing nil.
+	tuiElicitor := tui.NewElicitor()
+	mcpServers, mcpToolsets, mcpErr := mcp.Build(ctx, agentsDir, send, gate, tuiElicitor.Elicit)
 	if mcpErr != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: mcp: %v\n", mcpErr)
 	}
@@ -557,6 +567,95 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 				}
 			}
 		}
+	}
+
+	// TUI launch branch: when stdin is a real terminal and --no-tui
+	// wasn't passed, take over the terminal with the in-process
+	// bubble-tea TUI lifted from cogo (docs/embedded-tui-design-v2.md).
+	// The REPL stays as the fallback for non-TTY (piped/CI), explicit
+	// --no-tui, or any --tags no_tui slim build that excludes the
+	// TUI package. Defaults follow Claude Code: bare `core-agent` in
+	// a terminal lands in the TUI.
+	if !noTUI && term.IsTerminal(int(os.Stdin.Fd())) {
+		a, err := agent.New(m, opts...)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+			return runner.ExitAgentError
+		}
+		tuiOpts := tui.Options{
+			Agent:      a,
+			Cfg:        cfg,
+			Gate:       gate,
+			Tracker:    tracker,
+			Memory:     loaded,
+			MCPServers: mcpServers,
+			Skills:     loadedSkills,
+			AgentsDir:  agentsDir,
+			Elicitor:   tuiElicitor,
+			// /model swaps the model mid-session, preserving tools +
+			// toolsets + instruction. We re-resolve the provider for
+			// the new model name through the same path startup uses.
+			RebuildAgent: func(modelID string) (*agent.Agent, error) {
+				newLLM, lerr := provider.Model(ctx, modelID)
+				if lerr != nil {
+					return nil, lerr
+				}
+				return agent.New(newLLM, opts...)
+			},
+			// Always-allow + session approvals don't need agentsDir.
+			AlwaysAllow: func(req permissions.PromptRequest) error {
+				if req.PersistTool != "path_scope" || agentsDir == "" {
+					return nil
+				}
+				return appendPathScope(agentsDir, req.PersistKey)
+			},
+			SessionApprovals: gate.Approvals,
+		}
+		// Disk-persistence callbacks only wire when there's a project
+		// root to write into. Without .agents/ the slash commands
+		// degrade to a clean "no project root" message rather than
+		// scribbling files into cwd.
+		if agentsDir != "" {
+			tuiOpts.PersistModelChoice = func(modelID string) error {
+				return persistModelChoice(agentsDir, modelID)
+			}
+			tuiOpts.AddAllowPatterns = func(patterns []string) error {
+				if err := gate.AddAllowPatterns(patterns); err != nil {
+					return err
+				}
+				return appendPermissionsAllow(agentsDir, patterns)
+			}
+			tuiOpts.AddDenyPatterns = func(patterns []string) error {
+				if err := gate.AddDenyPatterns(patterns); err != nil {
+					return err
+				}
+				return appendPermissionsDeny(agentsDir, patterns)
+			}
+			tuiOpts.AddBuiltinAllowExtra = func(name string) error {
+				entries, ok := permissions.Bundles[name]
+				if !ok {
+					return fmt.Errorf("unknown bundle %q (want one of %v)", name, permissions.KnownBundles())
+				}
+				// Patch the live gate with the bundle's expanded entries.
+				// We feed them through AddAllowPatterns rather than
+				// storing the bundle name on the gate so the policy
+				// actually changes; the persisted form in config.json
+				// is still the bundle name, not the expansion
+				// (intent-preserving).
+				if err := gate.AddAllowPatterns(entries); err != nil {
+					return err
+				}
+				return appendBuiltinAllowExtra(agentsDir, name)
+			}
+		}
+		code, err = tui.Run(ctx, tuiOpts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+		}
+		if code == runner.ExitOK {
+			runner.WriteSummary(os.Stderr, tracker, m.Name())
+		}
+		return code
 	}
 
 	code, err = runner.REPL(ctx, m, os.Stdin, os.Stdout, os.Stderr, tracker, pricing, opts, eventsOpts...)

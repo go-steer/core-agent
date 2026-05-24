@@ -69,6 +69,13 @@ type Gate struct {
 	// applies — that pre-check runs before the gate ever sees the request.
 	sessionAllowTools map[string]struct{}
 
+	// Verb-scoped in-session allow set, keyed by "<tool>|<verb>".
+	// Populated by DecisionAllowSessionVerb so the user can broaden
+	// trust to "every `git *` command" without persisting an allowlist
+	// entry. Bash denylist still applies (denylist pre-check runs
+	// before the gate request).
+	sessionAllowVerbs map[string]struct{}
+
 	// Chronological log of every non-deny interactive approval.
 	approvals []ApprovalLog
 }
@@ -101,14 +108,32 @@ func New(opts Options) *Gate {
 		prompter:          opts.Prompter,
 		sessionAllow:      make(map[string]struct{}),
 		sessionAllowTools: make(map[string]struct{}),
+		sessionAllowVerbs: make(map[string]struct{}),
 	}
 }
 
 // FromConfig builds a Gate from a Config plus the resolved project root
 // and user-global root. The Prompter is wired separately since it
 // depends on whether we're running interactively or headless.
+//
+// Built-in allow bundles are merged on top of the configured Allow
+// patterns: the read_only bundle is on by default and can be turned
+// off with permissions.use_builtin_allow=false; additional bundles
+// listed in permissions.builtin_allow_extras add to the merge. See
+// builtin_allow.go for the bundle catalog.
 func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Prompter) (*Gate, error) {
-	policy, err := NewPolicy(cfg.Permissions.Allow, cfg.Permissions.Deny)
+	useBuiltin := true
+	if cfg.Permissions.UseBuiltinAllow != nil {
+		useBuiltin = *cfg.Permissions.UseBuiltinAllow
+	}
+	builtin, err := ResolveBuiltinAllow(useBuiltin, cfg.Permissions.BuiltinAllowExtras)
+	if err != nil {
+		return nil, fmt.Errorf("permissions: %w", err)
+	}
+	merged := make([]string, 0, len(builtin)+len(cfg.Permissions.Allow))
+	merged = append(merged, builtin...)
+	merged = append(merged, cfg.Permissions.Allow...)
+	policy, err := NewPolicy(merged, cfg.Permissions.Deny)
 	if err != nil {
 		return nil, fmt.Errorf("permissions policy: %w", err)
 	}
@@ -139,6 +164,23 @@ func (g *Gate) HasPrompter() bool { return g.prompter != nil }
 // bubble-tea program. Set to nil to disable interactive prompting
 // (ask-mode calls then fail with ErrNoPrompter).
 func (g *Gate) SetPrompter(p Prompter) { g.prompter = p }
+
+// AddAllowPatterns extends the live policy with additional allow
+// patterns and is safe to call concurrently with in-flight Match
+// calls. Used by the TUI's /allow slash command to make new
+// permissions take effect immediately rather than only after a
+// restart. Returns the same error shape as NewPolicy when a pattern
+// is malformed.
+func (g *Gate) AddAllowPatterns(patterns []string) error {
+	return g.policy.AddAllow(patterns)
+}
+
+// AddDenyPatterns is the symmetric extension for deny entries, used
+// by /deny. Deny always wins in Match so adding here can override a
+// previously-allowed pattern mid-session.
+func (g *Gate) AddDenyPatterns(patterns []string) error {
+	return g.policy.AddDeny(patterns)
+}
 
 // Scope exposes the path scope. Callers that mutate the scope should
 // also persist the change via the config layer.
@@ -213,6 +255,17 @@ func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, 
 	if g.sessionAllowed(toolName, key) {
 		return nil
 	}
+	// Verb-scoped session allow (bash only today). Sits between the
+	// per-call session allow and the prompt: if the user previously
+	// chose DecisionAllowSessionVerb for "<verb>", every subsequent
+	// command starting with that verb is approved without re-prompting.
+	var verb string
+	if kind == PromptKindBash {
+		verb = extractBashVerb(key)
+		if verb != "" && g.sessionVerbAllowed(toolName, verb) {
+			return nil
+		}
+	}
 	switch g.mode {
 	case ModeYolo:
 		return nil
@@ -225,6 +278,7 @@ func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, 
 			Detail:      key,
 			PersistTool: persistTool,
 			PersistKey:  persistKey,
+			Verb:        verb,
 			Source:      SubagentSourceFromContext(ctx),
 		})
 	}
@@ -263,6 +317,25 @@ func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
 	case DecisionAllowSession:
 		g.rememberSession(req.ToolName, req.Detail)
 		g.recordApproval(req.ToolName, req.Detail, d)
+		return nil
+	case DecisionAllowSessionVerb:
+		// Verb-scoped trust covers every subsequent command with the
+		// same leading verb for the rest of this session. We also
+		// remember the *current* exact request so a repeat of this
+		// (or an empty-Verb fallback) doesn't re-prompt before the
+		// next call's verb match.
+		if req.Verb != "" {
+			g.rememberSessionVerb(req.ToolName, req.Verb)
+		}
+		g.rememberSession(req.ToolName, req.Detail)
+		// Record under a synthetic key so the approval log surfaces
+		// the verb-pattern intent (e.g. "git *") rather than the
+		// specific Detail string that triggered the prompt.
+		key := req.Detail
+		if req.Verb != "" {
+			key = req.Verb + " *"
+		}
+		g.recordApproval(req.ToolName, key, d)
 		return nil
 	case DecisionAllowSessionTool:
 		g.rememberSessionTool(req.ToolName)
@@ -305,6 +378,22 @@ func (g *Gate) rememberSessionTool(toolName string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.sessionAllowTools[toolName] = struct{}{}
+}
+
+// sessionVerbAllowed reports whether the user has trusted toolName for
+// every command starting with verb for the rest of this session via
+// DecisionAllowSessionVerb.
+func (g *Gate) sessionVerbAllowed(toolName, verb string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	_, ok := g.sessionAllowVerbs[toolName+"|"+verb]
+	return ok
+}
+
+func (g *Gate) rememberSessionVerb(toolName, verb string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.sessionAllowVerbs[toolName+"|"+verb] = struct{}{}
 }
 
 func (g *Gate) recordApproval(toolName, key string, d Decision) {

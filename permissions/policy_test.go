@@ -58,3 +58,56 @@ func TestPolicy_AnyToolPattern(t *testing.T) {
 		t.Errorf("any-tool wildcard did not match bash command")
 	}
 }
+
+// --- Live-extension tests (AddAllow / AddDeny) ---
+
+func TestPolicy_AddAllow_LiveExtension(t *testing.T) {
+	t.Parallel()
+	p, _ := NewPolicy(nil, nil)
+	if got := p.Match("bash", "git status"); got != OutcomeUnmatched {
+		t.Fatalf("baseline Match = %v, want unmatched", got)
+	}
+	if err := p.AddAllow([]string{"bash:git *"}); err != nil {
+		t.Fatalf("AddAllow: %v", err)
+	}
+	if got := p.Match("bash", "git status"); got != OutcomeAllow {
+		t.Errorf("after AddAllow, Match = %v, want allow", got)
+	}
+}
+
+func TestPolicy_AddDeny_LiveExtension(t *testing.T) {
+	t.Parallel()
+	p, _ := NewPolicy([]string{"bash:curl *"}, nil)
+	if got := p.Match("bash", "curl example.com"); got != OutcomeAllow {
+		t.Fatalf("baseline = %v, want allow", got)
+	}
+	if err := p.AddDeny([]string{"bash:curl *"}); err != nil {
+		t.Fatalf("AddDeny: %v", err)
+	}
+	if got := p.Match("bash", "curl example.com"); got != OutcomeDeny {
+		t.Errorf("after AddDeny, Match = %v, want deny (deny wins)", got)
+	}
+}
+
+func TestPolicy_AddAllow_Idempotent(t *testing.T) {
+	t.Parallel()
+	p, _ := NewPolicy([]string{"bash:git *"}, nil)
+	if err := p.AddAllow([]string{"bash:git *", "bash:git *"}); err != nil {
+		t.Fatalf("AddAllow: %v", err)
+	}
+	// One allow rule from constructor + dedup of the two added.
+	if got := len(p.allow); got != 1 {
+		t.Errorf("expected dedup, got %d rules", got)
+	}
+}
+
+func TestPolicy_AddAllow_BadPatternErrors(t *testing.T) {
+	t.Parallel()
+	p, _ := NewPolicy(nil, nil)
+	if err := p.AddAllow([]string{"bash:foo[bar"}); err == nil {
+		t.Fatal("expected error for malformed glob")
+	}
+	if len(p.allow) != 0 {
+		t.Errorf("failed AddAllow must not partially mutate; got %d rules", len(p.allow))
+	}
+}

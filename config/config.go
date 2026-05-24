@@ -99,11 +99,31 @@ type PermissionsConfig struct {
 	Mode  string   `json:"mode,omitempty"`  // "ask" | "allow" | "yolo"
 	Allow []string `json:"allow,omitempty"` // pattern allowlist
 	Deny  []string `json:"deny,omitempty"`  // pattern denylist
+
+	// UseBuiltinAllow toggles core-agent's built-in conservative
+	// read-only allowlist bundle. Defaults to true when nil (the
+	// pointer carries an explicit "off" signal vs "unset"). false
+	// drops the entire built-in bundle including any opt-ins in
+	// BuiltinAllowExtras. See permissions/builtin_allow.go for the
+	// bundle catalog.
+	UseBuiltinAllow *bool `json:"use_builtin_allow,omitempty"`
+
+	// BuiltinAllowExtras names additional built-in bundles to merge
+	// on top of read_only when UseBuiltinAllow is on. Unknown names
+	// fail at config-validation time rather than silently dropping
+	// permissions. Known bundles: see permissions.KnownBundles().
+	BuiltinAllowExtras []string `json:"builtin_allow_extras,omitempty"`
 }
 
 // AgentConfig tunes runtime agent behavior.
 type AgentConfig struct {
 	MaxSteps int `json:"max_steps,omitempty"`
+
+	// DisplayName overrides the brand line at the top of the TUI. By
+	// default the TUI shows the AppName (e.g. "core-agent"); set this
+	// to give the agent a human-friendly identity ("Triage Bot",
+	// "Code Reviewer", etc.). Empty falls back to AppName.
+	DisplayName string `json:"display_name,omitempty"`
 }
 
 // ToolOutputConfig caps tool result size before it enters model context.

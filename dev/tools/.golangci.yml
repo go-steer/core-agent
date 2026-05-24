@@ -67,6 +67,18 @@ linters:
       # silence "always returns nil" style noise inside our wrapper.
       - path: mcp/
         text: "(unparam|S1009)"
+      # Lifted from go-steer/cogo's internal/tui package per
+      # docs/embedded-tui-design-v2.md (PR 1 implementation). The
+      # cogo attribution is preserved as explicit provenance — both
+      # projects are go-steer org with the same Apache-2 license; the
+      # lift is honest about its source rather than relicensing on
+      # arrival. Same applies to internal/testutil/fake_model.go
+      # lifted alongside it. Remove this exclusion when path C
+      # (cogo flips to depend on core-agent's TUI) lands and the
+      # extracted package gets re-headered.
+      - path: (internal/tui|internal/testutil)/
+        linters:
+          - goheader
 
   settings:
     errcheck:

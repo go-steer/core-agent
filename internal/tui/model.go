@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -14,8 +15,10 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/muesli/reflow/wrap"
+	"google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/agent"
 	"github.com/go-steer/core-agent/config"
@@ -573,20 +576,30 @@ func (m *Model) brandIdentity() string {
 //
 // Layout: each tool gets its own block — name on its own line with
 // a ▸ marker for visual anchoring, description indented on the next
-// line with a blank separator. Tighter formats packed the catalog
-// into an unreadable wall; the indent buys back scannability.
+// line with a blank separator. Names render in bold magenta so they
+// pop out of the system-italic body and the eye can scan straight
+// down the list. Tools sort alphabetically (deterministic + matches
+// operator expectation for a catalog).
 func (m *Model) renderToolsInfo() string {
 	if m.agent == nil {
 		return "No agent constructed yet — tool catalog unavailable."
 	}
-	tools := m.agent.Tools()
-	if len(tools) == 0 {
+	src := m.agent.Tools()
+	if len(src) == 0 {
 		return "Agent has no tools registered."
 	}
+	// Copy so we don't mutate the agent's slice ordering.
+	tools := make([]tool.Tool, len(src))
+	copy(tools, src)
+	sort.Slice(tools, func(i, j int) bool {
+		return tools[i].Name() < tools[j].Name()
+	})
+
+	nameStyle := lipgloss.NewStyle().Foreground(brandPink).Bold(true)
 	var b strings.Builder
 	fmt.Fprintf(&b, "Tools (%d):\n\n", len(tools))
 	for i, t := range tools {
-		fmt.Fprintf(&b, "  ▸ %s\n", t.Name())
+		fmt.Fprintf(&b, "  ▸ %s\n", nameStyle.Render(t.Name()))
 		if desc := t.Description(); desc != "" {
 			// Collapse internal newlines so the description sits on
 			// a single visually-indented line. The wrap layer in

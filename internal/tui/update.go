@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/go-steer/core-agent/permissions"
@@ -1000,12 +1001,16 @@ func (m *Model) renderPermissionsListInfo() string {
 	if mode == "" {
 		mode = "ask"
 	}
+	// Section labels render in bold violet so the eye anchors to
+	// them when scanning. Matches the visual treatment in /tools
+	// (bold accent on identifiers) so the operator builds a habit.
+	label := lipgloss.NewStyle().Foreground(brandViolet).Bold(true)
 	var b strings.Builder
-	b.WriteString("Permissions:\n\n")
-	fmt.Fprintf(&b, "  Mode:           %s\n", mode)
-	fmt.Fprintf(&b, "  Built-in allow: %s\n", boolOnOff(useBuiltin))
+	b.WriteString(label.Render("Permissions") + ":\n\n")
+	fmt.Fprintf(&b, "  %s %s\n", label.Render("Mode:          "), mode)
+	fmt.Fprintf(&b, "  %s %s\n", label.Render("Built-in allow:"), boolOnOff(useBuiltin))
 	if len(pc.BuiltinAllowExtras) > 0 {
-		fmt.Fprintf(&b, "  Extra bundles:  %s\n", strings.Join(pc.BuiltinAllowExtras, ", "))
+		fmt.Fprintf(&b, "  %s %s\n", label.Render("Extra bundles: "), strings.Join(pc.BuiltinAllowExtras, ", "))
 	}
 	if useBuiltin {
 		fmt.Fprintf(&b, "                  (read_only baseline always active)\n")
@@ -1028,11 +1033,12 @@ func boolOnOff(b bool) string {
 }
 
 func writePatternList(b *strings.Builder, label string, patterns []string) {
+	style := lipgloss.NewStyle().Foreground(brandViolet).Bold(true)
 	if len(patterns) == 0 {
-		fmt.Fprintf(b, "  %s: (empty)\n", label)
+		fmt.Fprintf(b, "  %s: (empty)\n", style.Render(label))
 		return
 	}
-	fmt.Fprintf(b, "  %s (%d):\n", label, len(patterns))
+	fmt.Fprintf(b, "  %s (%d):\n", style.Render(label), len(patterns))
 	for _, p := range patterns {
 		fmt.Fprintf(b, "    ▸ %s\n", p)
 	}

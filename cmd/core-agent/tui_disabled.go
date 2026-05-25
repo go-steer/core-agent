@@ -56,3 +56,11 @@ func launchTUI(_ context.Context, _ tuiDeps) (didRun bool, exitCode int, err err
 		"core-agent: built with -tags no_tui; the bubble-tea TUI is excluded from this binary. Using the line-mode REPL. Install the default-tag binary for the full TUI.")
 	return false, 0, nil
 }
+
+// launchTUIv2 mirrors launchTUI's no-op behavior in the slim build.
+// Same stderr note, same fall-through to REPL — the env-var picker
+// in main.go references both symbols at compile time so they both
+// need a slim-build counterpart.
+func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, err error) {
+	return launchTUI(ctx, deps)
+}

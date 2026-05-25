@@ -615,7 +615,15 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 	// TUI package. Defaults follow Claude Code: bare `core-agent` in
 	// a terminal lands in the TUI.
 	if !noTUI && term.IsTerminal(int(os.Stdin.Fd())) {
-		didRun, code, err := launchTUI(ctx, tuiDeps{
+		// CORE_AGENT_TUI=core-tui picks the in-progress core-tui-
+		// backed launcher (docs/core-tui-adapter-design.md). Default
+		// stays on the existing internal/tui code path until PR 8
+		// flips it.
+		launcher := launchTUI
+		if os.Getenv("CORE_AGENT_TUI") == "core-tui" {
+			launcher = launchTUIv2
+		}
+		didRun, code, err := launcher(ctx, tuiDeps{
 			Cfg:          cfg,
 			Model:        m,
 			AgentOpts:    opts,

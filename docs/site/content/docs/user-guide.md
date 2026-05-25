@@ -287,6 +287,8 @@ core-agent REPL — /exit or Ctrl-D to quit
 
 When stdin is a real terminal, `core-agent` launches an in-process bubble-tea TUI by default; the line-mode REPL is the fallback used for non-TTY environments or when you pass `--no-tui`. In the TUI you can keep typing while the agent is working: hit Enter to add a follow-up note to the agent's inbox without interrupting the current turn. A small queue panel between the chat and your input box mirrors what's pending. When the turn finishes, the agent auto-continues with the queued notes prefixed by a `↻` user message; the model decides whether to adapt the current task or capture each note with the `todo` tool. A soft cap (10) on consecutive auto-continues keeps things from chaining indefinitely when you type faster than the model can answer. Press Esc to dismiss any queued entries that failed to inject.
 
+For one-off context-grounded questions that you don't want in the conversation, type `/btw <question>` (alias `/by-the-way`). The TUI spawns a parallel one-shot model call that sees the full session history but has no tools, and the answer appears in a dismissible overlay that never enters history. Press Space, Enter, or Esc to dismiss. The main turn keeps running.
+
 **One-shot.** Pass `-p "..."` for a single turn that exits when complete. Useful for shell pipelines and shell-completion-style queries.
 
 ```bash

@@ -1,4 +1,4 @@
-// Copyright 2026 The go-steer team
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -445,7 +445,7 @@ func (a *coreAgentAdapter) Status() coretui.Status {
 	s := a.inner.AttachStatus()
 	return coretui.Status{
 		ModelName: a.inner.ModelName(),
-		State:     string(s.State),
+		State:     s.State,
 	}
 }
 
@@ -601,12 +601,12 @@ func translateDecision(d coretui.PermissionDecision) permissions.Decision {
 //
 // Mappings:
 //
-//   ask    ↔ default
-//   allow  ↔ acceptEdits  (closest semantic — gate auto-allows
-//                          everything not explicitly denied; core-
-//                          tui's acceptEdits is "edit tools auto-
-//                          allow, everything else still asks")
-//   yolo   ↔ bypass       (one-to-one)
+//	ask    ↔ default
+//	allow  ↔ acceptEdits  (closest semantic — gate auto-allows
+//	                       everything not explicitly denied; core-
+//	                       tui's acceptEdits is "edit tools auto-
+//	                       allow, everything else still asks")
+//	yolo   ↔ bypass       (one-to-one)
 //
 // core-tui's `plan` has no core-agent equivalent — the chip can
 // display it, but flipping to plan leaves the gate on `ask`. A

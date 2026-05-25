@@ -255,15 +255,37 @@ func memoryToCoreTui(m instruction.Loaded) []coretui.MemoryFile {
 // MCPServerInfo. Transport / URL aren't surfaced on mcp.Server
 // directly (the connection state lives behind the scenes), so we
 // leave Transport empty and rely on Connected (Status == "ready")
-// + ToolCount for the /mcp display.
+// + ToolCount for the /mcp display. ToolInfos (name + description
+// per tool) propagate through Tools so /mcp can render the nested
+// catalog instead of just a per-server count.
 func mcpServersToCoreTui(servers []*mcp.Server) []coretui.MCPServerInfo {
 	out := make([]coretui.MCPServerInfo, 0, len(servers))
 	for _, s := range servers {
-		out = append(out, coretui.MCPServerInfo{
+		entry := coretui.MCPServerInfo{
 			Name:      s.Name,
 			Connected: s.Status == mcp.StatusOK,
 			ToolCount: len(s.Tools),
-		})
+		}
+		// Prefer the rich ToolInfos (name+description) when the MCP
+		// shim populated them; fall back to raw tool names so the
+		// /mcp render still nests something instead of degrading to
+		// a bare count.
+		switch {
+		case len(s.ToolInfos) > 0:
+			entry.Tools = make([]coretui.MCPToolInfo, 0, len(s.ToolInfos))
+			for _, ti := range s.ToolInfos {
+				entry.Tools = append(entry.Tools, coretui.MCPToolInfo{
+					Name:        ti.Name,
+					Description: ti.Description,
+				})
+			}
+		case len(s.Tools) > 0:
+			entry.Tools = make([]coretui.MCPToolInfo, 0, len(s.Tools))
+			for _, t := range s.Tools {
+				entry.Tools = append(entry.Tools, coretui.MCPToolInfo{Name: t})
+			}
+		}
+		out = append(out, entry)
 	}
 	return out
 }
@@ -314,19 +336,35 @@ type coreAgentAdapter struct {
 }
 
 // Run satisfies coretui.Agent. Translates each *session.Event from
-// the ADK iterator into a coretui.Event.
+// the ADK iterator into a coretui.Event, and feeds the host's
+// usage.Tracker so /stats + the status sidebar see per-turn data.
+// The model name is stamped onto every event so the TUI's per-turn
+// footer and live status reflect the current model from the first
+// chunk onward.
 func (a *coreAgentAdapter) Run(ctx context.Context, prompt string) iter.Seq2[coretui.Event, error] {
 	return func(yield func(coretui.Event, error) bool) {
+		modelName := a.inner.ModelName()
 		for ev, err := range a.inner.Run(ctx, prompt) {
 			if err != nil {
 				yield(coretui.Event{}, err)
 				return
 			}
-			te := coretui.Event{Partial: ev.Partial}
+			te := coretui.Event{Partial: ev.Partial, Model: modelName}
 			if ev.UsageMetadata != nil {
+				in := int(ev.UsageMetadata.PromptTokenCount)
+				out := int(ev.UsageMetadata.CandidatesTokenCount)
 				te.Usage = &coretui.Usage{
-					InputTokens:  int(ev.UsageMetadata.PromptTokenCount),
-					OutputTokens: int(ev.UsageMetadata.CandidatesTokenCount),
+					InputTokens:  in,
+					OutputTokens: out,
+				}
+				// Mirror internal/tui:161 — compute pricing from the
+				// host config + feed the tracker. Without this the
+				// status sidebar's session totals + /stats stay at
+				// zero even though per-turn token counts arrive.
+				if a.deps.Tracker != nil && a.deps.Cfg != nil {
+					pricing := usage.PriceFor(modelName, a.deps.Cfg)
+					turn := a.deps.Tracker.Append(modelName, in, out, pricing)
+					te.CostUSD = turn.CostUSD
 				}
 			}
 			if ev.Content != nil {

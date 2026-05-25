@@ -848,6 +848,8 @@ func (m *Model) handleSlash(action SlashAction, cmd, args string) (tea.Model, te
 		return m.handleDenyCommand(args)
 	case SlashBTW:
 		return m.handleBTWCommand(args)
+	case SlashSubagent:
+		return m.handleSubagentCommand(args)
 	case SlashModel:
 		return m.handleModelCommand(args)
 	case SlashQuit:

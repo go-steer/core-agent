@@ -26,6 +26,7 @@ const (
 	SlashAllow       SlashAction = "allow"
 	SlashDeny        SlashAction = "deny"
 	SlashBTW         SlashAction = "btw"
+	SlashSubagent    SlashAction = "subagent"
 	SlashUnknown     SlashAction = "unknown"
 )
 
@@ -54,6 +55,8 @@ var slashAliases = map[string]SlashAction{
 	"deny":        SlashDeny,
 	"btw":         SlashBTW,
 	"by-the-way":  SlashBTW,
+	"subagent":    SlashSubagent,
+	"sub":         SlashSubagent,
 }
 
 // ParseSlash inspects input. If it looks like a slash command (leading
@@ -113,6 +116,10 @@ func HelpText() string {
 		"  /interrupt  cancel the in-flight model turn (alias: /int; also bound to Esc on empty input)",
 		"  /btw <question>  ask a quick side question — sees full history, runs in parallel,",
 		"              no tools, dismissible overlay (alias: /by-the-way; never enters history)",
+		"  /subagent <goal>  spawn a background subagent directly without going through the main agent",
+		"              (alias: /sub). Optional flags: --name=<id>, --prompt=<system_prompt>,",
+		"              --tools=<csv>, --extras=<csv>, --max-turns=<n>, --max-cost=<usd>,",
+		"              --max-wallclock=<duration>, --scheduler=<default|sleep|exit_on_defer|none>",
 		"  /pricing refresh        force-refresh the pricing catalog from LiteLLM",
 		"  /pricing set <model> <input/M> <output/M>   set rates for one model (writes to ~/.core-agent/pricing.json manual section)",
 		"  /reload     re-read .agents/ from disk (mcp.json, skills/, AGENTS.md, config.json)",

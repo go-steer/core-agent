@@ -25,10 +25,18 @@ const (
 // markdown streamed token-by-token; for everything else it is plain
 // text. Rendered is optional and populated for assistant messages once
 // the turn completes (see internal/tui/markdown.go).
+//
+// AutoContinue marks a RoleUser message that was machine-initiated
+// from queued operator input (see docs/operator-input-design.md
+// layer B). The renderer swaps the ❯ prefix for ↻ + muted color so
+// operators can tell at a glance which turns they typed explicitly
+// versus which were drained from the inbox after the previous turn
+// completed.
 type Message struct {
-	Role     Role
-	Text     string
-	Rendered string // optional pre-rendered (Glamour) form for assistants
+	Role         Role
+	Text         string
+	Rendered     string // optional pre-rendered (Glamour) form for assistants
+	AutoContinue bool   // RoleUser only: turn was auto-continued from inbox
 }
 
 // Display returns the form of the message that should be shown in the

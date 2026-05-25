@@ -289,6 +289,8 @@ When stdin is a real terminal, `core-agent` launches an in-process bubble-tea TU
 
 For one-off context-grounded questions that you don't want in the conversation, type `/btw <question>` (alias `/by-the-way`). The TUI spawns a parallel one-shot model call that sees the full session history but has no tools, and the answer appears in a dismissible overlay that never enters history. Press Space, Enter, or Esc to dismiss. The main turn keeps running.
 
+To spawn a background subagent directly without asking the main agent, use `/subagent <goal>` (alias `/sub`). Optional flags: `--name=<id>` (auto-generated otherwise), `--prompt=<system_prompt>` (override the default), `--tools=<csv>` (restrict to specific built-ins), `--extras=<csv>` (MCP/skill tools; alias `--skill`), `--max-turns=<n>`, `--max-cost=<usd>`, `--max-wallclock=<duration>` (e.g. `10m`), `--scheduler=<default|sleep|exit_on_defer|none>`. The subagent's `report_alert` and completion land as alerts in the chat just like manager-spawned subagents.
+
 **One-shot.** Pass `-p "..."` for a single turn that exits when complete. Useful for shell pipelines and shell-completion-style queries.
 
 ```bash

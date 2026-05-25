@@ -127,6 +127,7 @@ type Agent struct {
 	agentName       string
 	userID          string
 	sessionID       string
+	model           adkmodel.LLM
 	modelName       string
 	gate            *permissions.Gate
 	bgMgr           *BackgroundAgentManager
@@ -420,6 +421,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		agentName:       o.name,
 		userID:          o.userID,
 		sessionID:       o.sessionID,
+		model:           model,
 		modelName:       model.Name(),
 		gate:            o.gate,
 		bgMgr:           o.bgMgr,

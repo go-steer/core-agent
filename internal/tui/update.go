@@ -90,6 +90,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.permissionsPicker != nil {
 			return m.handlePermissionsPickerKey(msg)
 		}
+		// /btw side-question overlay: intercepts every key while up
+		// (operator must dismiss before resuming typing). Lower
+		// precedence than the modals above because it's read-only
+		// and a stray modal arrival shouldn't be blocked by it.
+		if m.btwOverlay != nil {
+			return m.handleBTWKey(msg)
+		}
 		return m.handleKey(msg)
 	case confirmReqMsg:
 		// Show modal; remember the request so handleConfirmKey can
@@ -184,6 +191,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, queueCullCmd()
 		}
 		return m, nil
+	case btwResultMsg:
+		return m.handleBTWResult(msg)
 	}
 	// Unhandled — forward typing/etc. to the textarea.
 	var cmd tea.Cmd
@@ -837,6 +846,8 @@ func (m *Model) handleSlash(action SlashAction, cmd, args string) (tea.Model, te
 		return m.handleAllowCommand(args)
 	case SlashDeny:
 		return m.handleDenyCommand(args)
+	case SlashBTW:
+		return m.handleBTWCommand(args)
 	case SlashModel:
 		return m.handleModelCommand(args)
 	case SlashQuit:

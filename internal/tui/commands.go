@@ -25,6 +25,7 @@ const (
 	SlashPermissions SlashAction = "permissions"
 	SlashAllow       SlashAction = "allow"
 	SlashDeny        SlashAction = "deny"
+	SlashBTW         SlashAction = "btw"
 	SlashUnknown     SlashAction = "unknown"
 )
 
@@ -51,6 +52,8 @@ var slashAliases = map[string]SlashAction{
 	"perms":       SlashPermissions,
 	"allow":       SlashAllow,
 	"deny":        SlashDeny,
+	"btw":         SlashBTW,
+	"by-the-way":  SlashBTW,
 }
 
 // ParseSlash inspects input. If it looks like a slash command (leading
@@ -108,6 +111,8 @@ func HelpText() string {
 		"  /skills     show discovered skills",
 		"  /tools      list every tool the agent can call (built-in + MCP + skills)",
 		"  /interrupt  cancel the in-flight model turn (alias: /int; also bound to Esc on empty input)",
+		"  /btw <question>  ask a quick side question — sees full history, runs in parallel,",
+		"              no tools, dismissible overlay (alias: /by-the-way; never enters history)",
 		"  /pricing refresh        force-refresh the pricing catalog from LiteLLM",
 		"  /pricing set <model> <input/M> <output/M>   set rates for one model (writes to ~/.core-agent/pricing.json manual section)",
 		"  /reload     re-read .agents/ from disk (mcp.json, skills/, AGENTS.md, config.json)",

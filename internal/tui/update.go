@@ -17,9 +17,29 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/go-steer/core-agent/agent"
 	"github.com/go-steer/core-agent/permissions"
 	"github.com/go-steer/core-agent/usage"
 )
+
+// queueCullMsg fires periodically while the queue panel has
+// fadeable (done/failed-but-just-cleared) entries so the panel
+// re-renders and cullExpired drops entries past their fade window
+// without requiring an unrelated keystroke.
+type queueCullMsg struct{}
+
+// queueCullInterval is the cadence for queueCullCmd ticks. Half a
+// second is responsive enough that the 2-second fade feels prompt
+// without burning CPU when the queue panel sits idle.
+const queueCullInterval = 500 * time.Millisecond
+
+// queueCullCmd schedules a queueCullMsg after queueCullInterval.
+// Re-armed by the handler while the queue still has Done entries.
+func queueCullCmd() tea.Cmd {
+	return tea.Tick(queueCullInterval, func(time.Time) tea.Msg {
+		return queueCullMsg{}
+	})
+}
 
 // thinkingTickMsg fires on a timer while a turn is in flight so the
 // in-chat "Thinking…" indicator can rotate to the next phrase. The
@@ -157,6 +177,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.thinkingIdx++
 		m.refreshViewport()
 		return m, thinkingTickCmd()
+	case queueCullMsg:
+		m.queue.cullExpired()
+		m.refreshViewport()
+		if m.queue.hasFadeable() {
+			return m, queueCullCmd()
+		}
+		return m, nil
 	}
 	// Unhandled — forward typing/etc. to the textarea.
 	var cmd tea.Cmd
@@ -413,14 +440,34 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case key.Matches(msg, m.keys.Submit):
-		// Submit Enter only fires a turn when idle. While streaming we
-		// swallow it so users don't accidentally enqueue a half-composed
-		// prompt; typed text continues to land in the textarea below so
-		// they can compose their next message in the background.
+		// /clear's "y/no" confirmation takes precedence over
+		// streaming-state queuing so the operator can still cancel
+		// the clear without their "n" getting injected into the
+		// agent's inbox.
+		if m.confirmingClear {
+			return m.handleSubmit()
+		}
+		// While streaming, Enter routes the input into the agent's
+		// inbox + a TUI-local queue panel rather than starting a
+		// new turn. handleTurnDone's auto-continue pulls those
+		// queued entries when the current turn finishes and starts
+		// a follow-up turn with system-note framing — the model
+		// decides relevance via the todo tool.
+		// (Docs: docs/operator-input-design.md, layers A + B.)
 		if m.state == StateStreaming {
-			return m, nil
+			return m.handleSubmitDuringStreaming()
 		}
 		return m.handleSubmit()
+	case msg.String() == "esc":
+		// Esc dismisses any failed queue entries (the "operator has
+		// seen the error" gesture). Modals/pickers handle Esc
+		// earlier in Update so this only fires for the bare chat
+		// view. No-op when there's nothing failed to dismiss.
+		if m.queue.hasFailed() {
+			m.queue.clearFailed()
+			m.refreshViewport()
+			return m, nil
+		}
 	}
 	// Reset pendingExit on any other key so a stray Ctrl+C doesn't linger.
 	m.pendingExit = false
@@ -669,12 +716,80 @@ func (m *Model) handleSubmit() (tea.Model, tea.Cmd) {
 	// anchor phrase ("Thinking…") and the cycle is predictable.
 	m.thinkingIdx = 0
 
+	// Operator-initiated turn — clear any pending auto-continue depth
+	// so a fresh prompt doesn't count toward the consecutive-auto-
+	// continue cap.
+	m.autoContinueDepth = 0
+	cmd := m.launchTurn(expanded)
+	m.refreshViewport()
+	return m, cmd
+}
+
+// launchTurn resets the per-turn state (assistant idx, thinking
+// rotator) and fires startAgentTurn. Returns the batched tea.Cmd
+// that animates the spinner + thinking-phrase rotator. Shared by
+// handleSubmit and handleTurnDone's auto-continue path so the
+// turn-start mechanics live in exactly one place.
+func (m *Model) launchTurn(prompt string) tea.Cmd {
+	m.currentAssistantIdx = -1
+	m.state = StateStreaming
+	m.thinkingIdx = 0
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancelTurn = cancel
-	startAgentTurn(ctx, m.program, m.agent, expanded)
+	startAgentTurn(ctx, m.program, m.agent, prompt)
+	return tea.Batch(m.spinner.Tick, thinkingTickCmd())
+}
 
+// handleSubmitDuringStreaming routes a mid-turn Enter into the
+// agent's inbox (and the TUI's mirror queue) instead of starting a
+// new turn on top of the in-flight one. Slash commands still
+// dispatch normally — /interrupt during streaming is the canonical
+// use case. See docs/operator-input-design.md layer A.
+func (m *Model) handleSubmitDuringStreaming() (tea.Model, tea.Cmd) {
+	input := m.textarea.Value()
+	if strings.TrimSpace(input) == "" {
+		return m, nil
+	}
+	// Submitting from history-recall: reset the cursor so up-arrow
+	// browsing starts fresh next time.
+	m.historyCursor = -1
+
+	// Slash commands take effect immediately on the in-flight turn
+	// (e.g. /interrupt). The operator's intent is "execute this
+	// command now," not "queue it for later."
+	if action, cmd, args, isSlash := ParseSlash(input); isSlash {
+		m.textarea.Reset()
+		m.palette = nil
+		return m.handleSlash(action, cmd, args)
+	}
+
+	// Expand @<path> references so the queued message carries inline
+	// file content the same way an operator-initiated prompt does.
+	// Diagnostics surface as system messages just like handleSubmit.
+	expanded, refs, diags := expandAtRefs(input, readFileSafe(64*1024))
+	for _, d := range diags {
+		m.history.Append(Message{Role: RoleSystem, Text: d})
+	}
+	if len(refs) > 0 {
+		m.history.Append(Message{Role: RoleSystem, Text: "Queued with inlined files: " + strings.Join(refs, ", ")})
+	}
+	m.promptHistory = append(m.promptHistory, input)
+
+	// Inject into the agent's inbox first — that's the source of
+	// truth for what the auto-continue turn drains. The TUI queue
+	// is just a mirror so the operator can see what's pending.
+	if err := m.agent.Inject(expanded); err != nil {
+		m.queue.markFailed(input, err.Error())
+	} else {
+		m.queue.enqueue(input)
+	}
+	m.textarea.Reset()
+	m.palette = nil
 	m.refreshViewport()
-	return m, tea.Batch(m.spinner.Tick, thinkingTickCmd())
+	// Kick the cull ticker so done/fading entries from prior
+	// auto-continues don't sit forever while the operator types
+	// new ones.
+	return m, queueCullCmd()
 }
 
 func (m *Model) handleSlash(action SlashAction, cmd, args string) (tea.Model, tea.Cmd) {
@@ -1238,9 +1353,73 @@ func (m *Model) handleTurnDone() (tea.Model, tea.Cmd) {
 		raw := m.history.Snapshot()[m.currentAssistantIdx].Text
 		m.history.SetRendered(m.currentAssistantIdx, strings.TrimRight(m.md.Render(raw), "\n"))
 	}
-	m.endTurn()
+	// Advance any in-flight queue entries to done. The previous turn
+	// (whether operator-initiated or auto-continue) consumed them; the
+	// done state fades in the panel after queueModel.removeDoneAfter.
+	m.queue.markAllInFlightDone()
+
+	// Auto-continue from queued operator input (see
+	// docs/operator-input-design.md layer B). Peek first so we
+	// don't burn the queue when we're going to refuse anyway.
+	pending := m.agent.PendingInboxCount()
+	if pending == 0 {
+		m.autoContinueDepth = 0
+		m.endTurn()
+		m.refreshViewport()
+		// Kick a cull tick so the just-done queue entries fade.
+		return m, queueCullCmd()
+	}
+	if m.autoContinueDepth >= m.autoContinueLimit {
+		m.autoContinueDepth = 0
+		m.history.Append(Message{Role: RoleSystem, Text: fmt.Sprintf(
+			"Auto-continue limit reached (%d turns). %d queued note(s) will be picked up on your next prompt — consider batching them or sending an Enter when ready.",
+			m.autoContinueLimit, pending)})
+		m.endTurn()
+		m.refreshViewport()
+		return m, queueCullCmd()
+	}
+
+	drained := m.agent.DrainInbox()
+	if len(drained) == 0 {
+		// Race: another consumer drained between the peek and the
+		// drain. Treat the same as "no inbox" — fall back to idle.
+		m.autoContinueDepth = 0
+		m.endTurn()
+		m.refreshViewport()
+		return m, queueCullCmd()
+	}
+
+	// Record the operator-visible side of the auto-continue turn:
+	// a user message with AutoContinue=true so renderMessage swaps
+	// the ❯ glyph for ↻. Multiple drained entries render as a
+	// bullet list; single entries render as-is.
+	display := drained[0]
+	if len(drained) > 1 {
+		var b strings.Builder
+		for i, msg := range drained {
+			if i > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString("- ")
+			b.WriteString(msg)
+		}
+		display = b.String()
+	}
+	m.history.Append(Message{Role: RoleUser, Text: display, AutoContinue: true})
+
+	// Mirror the drain in the queue panel: the first N queued
+	// entries advance to in-flight (FIFO matches the inbox order).
+	m.queue.markInFlight(len(drained))
+	m.autoContinueDepth++
+
+	// The prompt the model sees carries the system-note framing
+	// from FormatAutoContinueInbox, not the bare bullets, so the
+	// model knows the input arrived mid-turn and can choose to
+	// adapt or capture-and-continue via the todo tool.
+	prompt := agent.FormatAutoContinueInbox(drained)
+	cmd := m.launchTurn(prompt)
 	m.refreshViewport()
-	return m, nil
+	return m, cmd
 }
 
 func (m *Model) handleTurnErr(msg turnErrMsg) (tea.Model, tea.Cmd) {

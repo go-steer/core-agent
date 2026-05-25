@@ -149,6 +149,35 @@ func formatInboxForPrompt(messages []string) string {
 	return b.String()
 }
 
+// FormatAutoContinueInbox renders messages with the system-note
+// framing used by the TUI's "auto-continue from queued input"
+// flow (see docs/operator-input-design.md). The framing tells the
+// model these notes arrived while it was working and instructs
+// it to either adapt the current task or capture them via the
+// `todo` tool — letting the model decide relevance rather than
+// guessing in code.
+//
+// Returns "" when messages is empty (caller should not auto-
+// continue in that case). Format intentionally differs from
+// formatInboxForPrompt (which prepends to an operator-typed prompt)
+// because auto-continue turns have no operator prompt to prepend
+// to — the formatted block IS the user message for the new turn.
+func FormatAutoContinueInbox(messages []string) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("[Operator notes added during the previous task]\n")
+	for _, m := range messages {
+		b.WriteString("- ")
+		b.WriteString(m)
+		b.WriteByte('\n')
+	}
+	b.WriteByte('\n')
+	b.WriteString("If any of these change the current task, adapt your next step. If they're separate requests, use the `todo` tool to capture them and continue what you were doing.")
+	return b.String()
+}
+
 // Inject queues message on the agent's inbox. The next call to
 // Agent.Run will drain pending messages, format them as an "[Inbox]"
 // block, and prepend the block to the prompt the model sees.
@@ -180,6 +209,41 @@ func (a *Agent) Inject(message string) error {
 	// timer, so this lands as an immediate wake.
 	a.RequestWake()
 	return nil
+}
+
+// DrainInbox pulls every currently-queued message off the inbox and
+// returns them in arrival order. The queue is emptied as a side
+// effect — repeat calls return nil until new messages arrive.
+//
+// Exposed so harnesses that want to format inbox messages
+// differently from the built-in `[Inbox]` block (e.g. the TUI's
+// auto-continue flow uses FormatAutoContinueInbox to add system-note
+// framing) can pull the messages themselves and pass the formatted
+// result to Run as a regular prompt. Run's internal drain then
+// finds an empty inbox and is a no-op, so there's no
+// double-injection.
+//
+// Returns nil when no agent or no inbox is wired — both are
+// defensive cases for hand-constructed Agent structs in tests.
+func (a *Agent) DrainInbox() []string {
+	if a == nil || a.inbox == nil {
+		return nil
+	}
+	return a.inbox.drain()
+}
+
+// PendingInboxCount peeks at the inbox without draining it. Useful
+// for UI surfaces (TUI queue panel) that need to render the current
+// queue length without claiming the messages.
+//
+// Returns 0 for nil agent / inbox.
+func (a *Agent) PendingInboxCount() int {
+	if a == nil || a.inbox == nil {
+		return 0
+	}
+	a.inbox.mu.Lock()
+	defer a.inbox.mu.Unlock()
+	return len(a.inbox.messages)
 }
 
 // InboxArrived returns a channel that fires when a new message has

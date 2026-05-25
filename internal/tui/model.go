@@ -195,6 +195,22 @@ type Model struct {
 	// manual section + rebuilds the live catalog. Wired from
 	// tui.Options.SetPricing. nil-safe.
 	setPricing func(modelID string, inputPerMTok, outputPerMTok float64) (string, error)
+
+	// queue is the operator-typed-during-streaming mirror of the
+	// agent's inbox. Each entry the operator submits while a turn is
+	// in flight goes here (queued) AND into agent.Inject(); when the
+	// turn completes, handleTurnDone drains the inbox and starts an
+	// auto-continue turn, advancing the queue entries through
+	// in-flight → done. See docs/operator-input-design.md layers A+B.
+	queue queueModel
+
+	// autoContinueDepth counts how many consecutive auto-continue
+	// turns we've fired since the last operator-initiated turn. Reset
+	// to 0 on handleSubmit and when handleTurnDone finds an empty
+	// inbox. Capped at autoContinueLimit so an operator typing faster
+	// than the model can answer doesn't chain indefinitely.
+	autoContinueDepth int
+	autoContinueLimit int
 }
 
 // NewModel constructs a fresh chat session bound to a configured agent.
@@ -241,6 +257,8 @@ func NewModel(cfg *config.Config, a *agent.Agent, mdStyle string) *Model {
 		projectRoot:         cwd,
 		historyCursor:       -1,
 		usage:               usage.NewTracker(),
+		queue:               newQueueModel(),
+		autoContinueLimit:   10, // soft cap; see docs/operator-input-design.md open Q #3
 	}
 	return m
 }
@@ -286,12 +304,26 @@ func (m *Model) renderHistory() string {
 func (m *Model) renderMessage(msg Message) string {
 	switch msg.Role {
 	case RoleUser:
-		prefix := m.styles.UserPrefix.Render("❯")
+		// Auto-continued turns (drained from the inbox after the
+		// previous turn finished) get a ↻ prefix in a muted slate
+		// tone so operators can tell at a glance whether they
+		// pressed Enter or whether the TUI did. See
+		// docs/operator-input-design.md layer B.
+		glyph := "❯"
+		style := m.styles.UserPrefix
+		body := m.styles.UserText
+		if msg.AutoContinue {
+			glyph = "↻"
+			autoStyle := lipgloss.NewStyle().Foreground(brandSlate).Bold(true)
+			style = autoStyle
+			body = lipgloss.NewStyle().Foreground(brandSlate).Italic(true)
+		}
+		prefix := style.Render(glyph)
 		// Wrap the prompt at the viewport width so long messages
 		// don't run off the right edge. Continuation lines are
-		// indented to align with the text after the "❯ " prefix.
+		// indented to align with the text after the glyph + space.
 		wrapped := wrapForChat(msg.Display(), m.viewport.Width-2, "  ")
-		return prefix + " " + m.styles.UserText.Render(wrapped)
+		return prefix + " " + body.Render(wrapped)
 	case RoleAssistant:
 		// Display() prefers the Glamour-rendered form when available;
 		// during streaming it falls back to raw text. The thinking

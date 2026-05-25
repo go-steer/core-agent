@@ -59,6 +59,14 @@ func (m *Model) View() string {
 	if m.palette != nil {
 		parts = append(parts, m.renderPalette())
 	}
+	// Queue panel sits between the viewport and the input box so
+	// the operator's "stuff I added during streaming" is visible
+	// at a glance without scrolling history. Empty render returns
+	// "" which we skip to avoid blank rows. Cap rows so a long
+	// queue can't push the input off-screen.
+	if qp := m.queue.render(m.width); qp != "" {
+		parts = append(parts, qp)
+	}
 	parts = append(parts, input, footer)
 	// Append bottomPad EMPTY-STRING parts (not a newline string).
 	// JoinVertical splits each part on "\n" — feeding it "\n" yields

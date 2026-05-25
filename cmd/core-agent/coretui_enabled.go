@@ -27,7 +27,12 @@ import (
 	coretui "github.com/go-steer/core-tui/tui"
 
 	"github.com/go-steer/core-agent/agent"
+	"github.com/go-steer/core-agent/config"
+	"github.com/go-steer/core-agent/instruction"
+	"github.com/go-steer/core-agent/mcp"
 	"github.com/go-steer/core-agent/permissions"
+	"github.com/go-steer/core-agent/skills"
+	"github.com/go-steer/core-agent/usage"
 )
 
 // pkgCoreElicitor mirrors pkgElicitor (the internal/tui variant) for
@@ -88,9 +93,15 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 	}
 
 	opts := coretui.Options{
-		Agent:    wrapped,
-		Prompter: prompter,
-		Elicitor: elicitor,
+		Agent:        wrapped,
+		Prompter:     prompter,
+		Elicitor:     elicitor,
+		UsageTracker: &coreUsageBridge{inner: deps.Tracker},
+		AgentsDir:    deps.AgentsDir,
+		Memory:       memoryToCoreTui(deps.Memory),
+		MCPServers:   mcpServersToCoreTui(deps.MCPServers),
+		Skills:       skillsToCoreTui(deps.LoadedSkills),
+		PathScope:    pathScopeToCoreTui(deps.Cfg),
 		PermissionMode: coretui.PermissionModeWiring{
 			Initial: translateMode(deps.Gate.Mode()),
 			Set: func(m coretui.PermissionMode) error {
@@ -102,13 +113,112 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 		// operator types during streaming, inbox auto-continues at
 		// turn end. Flip to QueueForNext for the buffer-only flow.
 		MidTurnInjectionMode: coretui.InjectIntoCurrent,
+		// AllowAlways persists the entry through the gate when
+		// the host's AgentsDir is writable (path_scope or generic
+		// allow); falls back to allow-session otherwise.
+		AlwaysAllow: func(req coretui.PermissionRequest) error {
+			if req.PersistTool == "path_scope" && deps.AgentsDir != "" {
+				return appendPathScope(deps.AgentsDir, req.PersistKey)
+			}
+			return nil
+		},
+		PersistModelChoice: func(id string) error {
+			if deps.AgentsDir == "" {
+				return nil
+			}
+			return persistModelChoice(deps.AgentsDir, id)
+		},
 	}
+
+	// Wire the Reloader + PricingController bindings on the
+	// wrapped adapter so they read the same callback closures
+	// launchTUI uses.
+	wrapped.reload = makeReloadCallback(ctx, deps)
+	wrapped.refreshPricing = makeRefreshPricingCallback(ctx, deps)
+	wrapped.setPricing = makeSetPricingCallback(deps)
 
 	if err := coretui.Run(ctx, opts); err != nil {
 		return true, 1, err
 	}
 	return true, 0, nil
 }
+
+// Reload satisfies coretui.Reloader. Delegates to the closure
+// constructed in launchTUIv2 (which holds the deps + ctx the host
+// wired). On success the new agent + memory / MCP / skills are
+// surfaced through coretui.ReloadResult so the TUI atomically
+// swaps state.
+func (a *coreAgentAdapter) Reload(_ context.Context) (coretui.ReloadResult, error) {
+	if a.reload == nil {
+		return coretui.ReloadResult{}, fmt.Errorf("reload not wired")
+	}
+	return a.reload()
+}
+
+// Refresh satisfies coretui.PricingController.
+func (a *coreAgentAdapter) Refresh(ctx context.Context) (string, error) {
+	if a.refreshPricing == nil {
+		return "", fmt.Errorf("pricing refresh not wired")
+	}
+	return a.refreshPricing(ctx)
+}
+
+// Set satisfies coretui.PricingController.
+func (a *coreAgentAdapter) Set(modelID string, in, out float64) (string, error) {
+	if a.setPricing == nil {
+		return "", fmt.Errorf("pricing set not wired")
+	}
+	return a.setPricing(modelID, in, out)
+}
+
+// makeReloadCallback returns the closure /reload dispatches
+// through. Stubbed for the first wiring slice: the existing
+// reloadFromDisk helper lives inside launchTUI's scope (it's not
+// a top-level function), so we'd need to lift it. Until then,
+// /reload degrades to a "not yet wired" system message.
+func makeReloadCallback(_ context.Context, _ tuiDeps) func() (coretui.ReloadResult, error) {
+	return func() (coretui.ReloadResult, error) {
+		return coretui.ReloadResult{}, fmt.Errorf("/reload not yet lifted into the core-tui adapter; use CORE_AGENT_TUI=internal for reload")
+	}
+}
+
+func makeRefreshPricingCallback(_ context.Context, deps tuiDeps) func(context.Context) (string, error) {
+	if deps.CoreHome == "" {
+		return nil
+	}
+	return func(ctx context.Context) (string, error) {
+		return refreshPricingForTUI(ctx, deps.Cfg, deps.AgentsDir, deps.CoreHome)
+	}
+}
+
+func makeSetPricingCallback(deps tuiDeps) func(string, float64, float64) (string, error) {
+	if deps.CoreHome == "" {
+		return nil
+	}
+	return func(model string, in, out float64) (string, error) {
+		return setPricingForTUI(deps.Cfg, deps.AgentsDir, deps.CoreHome, model, in, out)
+	}
+}
+
+// memoryToCoreTui / mcpServersToCoreTui / skillsToCoreTui /
+// pathScopeToCoreTui translate the host's native shapes into the
+// neutral coretui Info structs. Each adapter loses some
+// host-specific detail (e.g. MCP server credentials) — that's the
+// design: the TUI only needs display data.
+
+// memoryToCoreTui / mcpServersToCoreTui / skillsToCoreTui /
+// pathScopeToCoreTui are stubbed for the first wiring slice — the
+// host types (instruction.Loaded, []*mcp.Server, skills.Skills,
+// config.Config) don't expose the field-by-field accessors the
+// coretui Info structs want yet. The /memory, /mcp, /skills slash
+// commands will render an empty list with a hint until these
+// translators are filled in by a follow-up commit (or until the
+// host types grow the accessors).
+
+func memoryToCoreTui(_ instruction.Loaded) []coretui.MemoryFile { return nil }
+func mcpServersToCoreTui(_ []*mcp.Server) []coretui.MCPServerInfo { return nil }
+func skillsToCoreTui(_ skills.Skills) []coretui.SkillInfo         { return nil }
+func pathScopeToCoreTui(_ *config.Config) coretui.PathScope        { return coretui.PathScope{} }
 
 // coreAgentAdapter wraps *agent.Agent so it satisfies core-tui's
 // tui.Agent plus every optional capability interface core-agent can
@@ -118,6 +228,13 @@ type coreAgentAdapter struct {
 	inner    *agent.Agent
 	deps     tuiDeps
 	ctxBuild context.Context
+
+	// Closures populated by launchTUIv2 so the capability methods
+	// below can dispatch to the host's existing /reload + /pricing
+	// implementations without each method needing the full deps.
+	reload         func() (coretui.ReloadResult, error)
+	refreshPricing func(context.Context) (string, error)
+	setPricing     func(modelID string, in, out float64) (string, error)
 }
 
 // Run satisfies coretui.Agent. Translates each *session.Event from
@@ -229,6 +346,81 @@ func (a *coreAgentAdapter) AddBuiltinAllowExtra(bundleName string) error {
 	}
 	return a.deps.Gate.AddAllowPatterns(entries)
 }
+
+// Tools satisfies coretui.ToolLister. Translates the agent's
+// runtime tool list into the UI's ToolInfo shape; the GateState
+// field reflects the gate's current disposition for each tool.
+func (a *coreAgentAdapter) Tools() []coretui.ToolInfo {
+	raw := a.inner.Tools()
+	out := make([]coretui.ToolInfo, 0, len(raw))
+	for _, t := range raw {
+		out = append(out, coretui.ToolInfo{
+			Name:        t.Name(),
+			Description: t.Description(),
+			Source:      "builtin", // a richer source tag lands when the agent surfaces provenance
+			GateState:   a.deps.Gate.ToolGateState(t.Name()),
+		})
+	}
+	return out
+}
+
+// Subagents satisfies coretui.SubagentLister (R-SUB-1). Reads the
+// BackgroundAgentManager's live handles; empty when no background
+// agents are running.
+func (a *coreAgentAdapter) Subagents() []coretui.SubagentInfo {
+	mgr := a.inner.BackgroundManager()
+	if mgr == nil {
+		return nil
+	}
+	handles := mgr.List()
+	out := make([]coretui.SubagentInfo, 0, len(handles))
+	for _, h := range handles {
+		out = append(out, coretui.SubagentInfo{
+			Name:      h.Name,
+			Status:    "running", // BackgroundHandle doesn't expose Status as a single field today
+			StartedAt: h.StartedAt,
+		})
+	}
+	return out
+}
+
+// Status satisfies coretui.StatusReporter. Wraps the agent's
+// AttachStatus snapshot so the status surface reflects deferred /
+// waiting / etc. state.
+func (a *coreAgentAdapter) Status() coretui.Status {
+	s := a.inner.AttachStatus()
+	return coretui.Status{
+		ModelName: a.inner.ModelName(),
+		State:     string(s.State),
+	}
+}
+
+// coreUsageBridge wraps *usage.Tracker so it satisfies
+// coretui.UsageTracker. Per-turn + session totals + context-window
+// fill (R-USE-1 / R-USE-2 / R-USE-3). ContextWindowSize/Used stay
+// zero — core-agent's Tracker doesn't surface them today; a follow-
+// up exposes ModelConfig context limits.
+type coreUsageBridge struct{ inner *coreUsageInner }
+
+// coreUsageInner is just usage.Tracker (avoids importing the
+// usage package into the coretui_enabled file twice when other
+// adapters grow).
+type coreUsageInner = usage.Tracker
+
+func (b *coreUsageBridge) SessionTotals() coretui.Usage {
+	t := b.inner.Totals()
+	return coretui.Usage{InputTokens: t.InputTokens, OutputTokens: t.OutputTokens}
+}
+func (b *coreUsageBridge) SessionCostUSD() float64 { return b.inner.Totals().CostUSD }
+func (b *coreUsageBridge) LastTurn() (coretui.Usage, float64) {
+	turn, ok := b.inner.Last()
+	if !ok {
+		return coretui.Usage{}, 0
+	}
+	return coretui.Usage{InputTokens: turn.InputTokens, OutputTokens: turn.OutputTokens}, turn.CostUSD
+}
+func (b *coreUsageBridge) ContextWindowSize() int { return 0 }
+func (b *coreUsageBridge) ContextWindowUsed() int { return 0 }
 
 // SlashCommands satisfies coretui.SlashProvider. Surfaces /btw and
 // /subagent to the palette + /help.

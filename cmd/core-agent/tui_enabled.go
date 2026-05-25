@@ -19,6 +19,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+
+	coretui "github.com/go-steer/core-tui/tui"
 
 	"github.com/go-steer/core-agent/agent"
 	"github.com/go-steer/core-agent/internal/tui"
@@ -38,13 +41,25 @@ import (
 var pkgElicitor *tui.Elicitor
 
 // makeMCPElicitor constructs the TUI elicitor and returns its
-// ElicitorFn binding for mcp.Build. The same elicitor instance is
-// later attached to the bubble-tea program inside launchTUI.
+// ElicitorFn binding for mcp.Build. Two backends:
+//
+//   - default — internal/tui.Elicitor lifted from cogo.
+//   - CORE_AGENT_TUI=core-tui — core-tui.Elicitor + coreMCPElicitor
+//     wrapper so MCP elicits route through the new modal.
+//
+// The chosen instance is stashed in the matching package-level
+// variable (pkgElicitor or pkgCoreElicitor) so launchTUI /
+// launchTUIv2 can attach the same handle to the bubble-tea program.
 //
 // In the no_tui build (tui_disabled.go) this returns nil — MCP
 // elicit requests then fail with the standard "no elicitor"
 // decline, which the SDK surfaces as a server-side cancel.
 func makeMCPElicitor() mcp.ElicitorFn {
+	if os.Getenv("CORE_AGENT_TUI") == "core-tui" {
+		pkgCoreElicitor = coretui.NewElicitor()
+		w := &coreMCPElicitor{inner: pkgCoreElicitor}
+		return w.elicit
+	}
 	pkgElicitor = tui.NewElicitor()
 	return pkgElicitor.Elicit
 }

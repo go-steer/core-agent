@@ -106,6 +106,8 @@ github.com/go-steer/core-tui v0.0.0-20260525185001-bba788e41611 h1:O0/QyeaPZlKv3
 github.com/go-steer/core-tui v0.0.0-20260525185001-bba788e41611/go.mod h1:YfdzaeqQCyZ+MLOnw2x+BdaUYcOhteqK0eZ6cU+nReg=
 github.com/go-steer/core-tui v0.0.0-20260525185948-164ad3c7159d h1:Jh3viTNAJx2UhnAkFILPt8o3Y3Q8htusp3/D1NPAk8o=
 github.com/go-steer/core-tui v0.0.0-20260525185948-164ad3c7159d/go.mod h1:YfdzaeqQCyZ+MLOnw2x+BdaUYcOhteqK0eZ6cU+nReg=
+github.com/go-steer/core-tui v0.0.0-20260525192930-41e2e51d11e7 h1:vEDA6AP+0XbRfrE9SQ3kPSVMd0/S6FzQ9W2Gl/j91Ng=
+github.com/go-steer/core-tui v0.0.0-20260525192930-41e2e51d11e7/go.mod h1:YfdzaeqQCyZ+MLOnw2x+BdaUYcOhteqK0eZ6cU+nReg=
 github.com/golang-jwt/jwt/v5 v5.3.0 h1:pv4AsKCKKZuqlgs5sUmn4x8UlGa0kEVt/puTpKx9vvo=
 github.com/golang-jwt/jwt/v5 v5.3.0/go.mod h1:fxCRLWMO43lRc8nhHWY6LGqRcf+1gQWArsqaEUEa5bE=
 github.com/golang/protobuf v1.5.4 h1:i7eJL8qZTpSEXOPTxNKhASYpMn+8e5Q6AdndVa1dWek=

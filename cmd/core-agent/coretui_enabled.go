@@ -20,31 +20,65 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"time"
+
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	coretui "github.com/go-steer/core-tui/tui"
 
 	"github.com/go-steer/core-agent/agent"
-	"google.golang.org/genai"
+	"github.com/go-steer/core-agent/permissions"
 )
 
-// (internal/pricing + permissions will be referenced once the
-// PermissionController / PricingController capability adapters
-// land — kept out of the import set until then to satisfy
-// goimports.)
-var _ = pricingPlaceholder
-var pricingPlaceholder int
+// pkgCoreElicitor mirrors pkgElicitor (the internal/tui variant) for
+// the core-tui code path. Set lazily by makeMCPElicitor when
+// CORE_AGENT_TUI=core-tui is active; consumed by launchTUIv2 so the
+// same instance the MCP servers were wired against actually receives
+// each elicit through the TUI.
+var pkgCoreElicitor coretui.Elicitor
+
+// availableModelIDs is the hardcoded Gemini 3.x candidate list the
+// /model picker surfaces. Mirrors internal/tui/model_picker.go's
+// availableModels() — kept duplicate here rather than promoted to a
+// public function on agent.Agent because it's pure UI policy. When
+// cogo grows a real model catalog we'll promote.
+func availableModelIDs() []string {
+	return []string{
+		"gemini-3.1-pro-preview-customtools",
+		"gemini-3.1-pro-preview",
+		"gemini-3.5-flash",
+		"gemini-3-flash-preview",
+		"gemini-3.1-flash-lite-preview",
+		"gemini-3.1-flash-image-preview",
+		"gemini-2.5-pro",
+		"gemini-2.5-flash",
+	}
+}
 
 // launchTUIv2 is the core-tui-backed alternative to launchTUI. Same
 // inputs, same return contract; differs only in which TUI library
-// drives the operator surface. Picked at runtime by the
-// --use-core-tui CLI flag (see main.go). While both code paths
-// coexist (PRs 6-9 of docs/core-tui-adapter-design.md), this lets
-// operators A/B the two and stick on either until the migration
-// settles.
+// drives the operator surface. Picked at runtime by CORE_AGENT_TUI=
+// core-tui (see main.go). While both code paths coexist (PRs 6-9 of
+// docs/core-tui-adapter-design.md), this lets operators A/B the two
+// and stick on either until the migration settles.
 func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, err error) {
 	a, err := agent.New(deps.Model, deps.AgentOpts...)
 	if err != nil {
 		return false, 0, fmt.Errorf("agent.New: %w", err)
+	}
+
+	prompter := coretui.NewPrompter()
+	// Wrap so the gate sees a permissions.Prompter (its expected
+	// interface) while the TUI drains a coretui.PermissionPrompter.
+	deps.Gate.SetPrompter(&gatePrompterBridge{inner: prompter})
+
+	// pkgCoreElicitor was set by makeMCPElicitor (called earlier in
+	// main.go before mcp.Build). When unset (CORE_AGENT_TUI wasn't
+	// set at MCP-build time) construct an unwired one so the TUI
+	// still has something to drain; elicits land in the bit-bucket.
+	elicitor := pkgCoreElicitor
+	if elicitor == nil {
+		elicitor = coretui.NewElicitor()
 	}
 
 	wrapped := &coreAgentAdapter{
@@ -54,7 +88,20 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 	}
 
 	opts := coretui.Options{
-		Agent: wrapped,
+		Agent:    wrapped,
+		Prompter: prompter,
+		Elicitor: elicitor,
+		PermissionMode: coretui.PermissionModeWiring{
+			Initial: translateMode(deps.Gate.Mode()),
+			Set: func(m coretui.PermissionMode) error {
+				deps.Gate.SetMode(translateModeBack(m))
+				return nil
+			},
+		},
+		// Default queueing mode matches core-agent's existing UX —
+		// operator types during streaming, inbox auto-continues at
+		// turn end. Flip to QueueForNext for the buffer-only flow.
+		MidTurnInjectionMode: coretui.InjectIntoCurrent,
 	}
 
 	if err := coretui.Run(ctx, opts); err != nil {
@@ -64,25 +111,17 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 }
 
 // coreAgentAdapter wraps *agent.Agent so it satisfies core-tui's
-// tui.Agent plus every optional capability interface core-agent
-// can support. Built incrementally — capabilities the host can't
-// support yet (none today; everything has a backing in deps or on
-// the agent) are simply not implemented and core-tui's type
-// assertions silently degrade those slash commands to "not
-// available."
-//
-// Each interface assertion is documented inline so the next reader
-// can see at a glance which capability slot each method fills.
+// tui.Agent plus every optional capability interface core-agent can
+// support. Built incrementally — capability methods are listed
+// below in spec order.
 type coreAgentAdapter struct {
 	inner    *agent.Agent
 	deps     tuiDeps
-	ctxBuild context.Context // captured at launchTUIv2 time for rebuildAgent re-resolves
+	ctxBuild context.Context
 }
 
 // Run satisfies coretui.Agent. Translates each *session.Event from
-// the ADK iterator into a coretui.Event. Same shape as the
-// MIGRATION.md §2.3 sketch — accumulate Text parts, fan out tool
-// calls, snapshot Usage.
+// the ADK iterator into a coretui.Event.
 func (a *coreAgentAdapter) Run(ctx context.Context, prompt string) iter.Seq2[coretui.Event, error] {
 	return func(yield func(coretui.Event, error) bool) {
 		for ev, err := range a.inner.Run(ctx, prompt) {
@@ -103,7 +142,7 @@ func (a *coreAgentAdapter) Run(ctx context.Context, prompt string) iter.Seq2[cor
 						te.ToolCalls = append(te.ToolCalls, coretui.ToolCall{
 							ID:   p.FunctionCall.ID,
 							Name: p.FunctionCall.Name,
-							Args: argsToMap(p.FunctionCall.Args),
+							Args: p.FunctionCall.Args,
 						})
 					}
 					if p.Text != "" {
@@ -118,46 +157,354 @@ func (a *coreAgentAdapter) Run(ctx context.Context, prompt string) iter.Seq2[cor
 	}
 }
 
-// Interrupt satisfies coretui.Interruptible. core-agent already
-// distinguishes interrupt from ctx-cancel (Agent.Interrupt returns
-// whether anything was active); core-tui's Esc cascade uses the
-// returned bool to decide whether to also emit an "(interrupted)"
-// notice.
+// Interrupt satisfies coretui.Interruptible.
 func (a *coreAgentAdapter) Interrupt() bool { return a.inner.Interrupt() }
 
-// Inject satisfies coretui.InjectableAgent (R-CHAT-11). Required
-// when Options.MidTurnInjectionMode == InjectIntoCurrent — wires
-// the agent's inbox so operator-typed-during-streaming entries
-// land in the running turn's context.
-func (a *coreAgentAdapter) Inject(message string) error {
-	return a.inner.Inject(message)
-}
+// Inject satisfies coretui.InjectableAgent (R-CHAT-11).
+func (a *coreAgentAdapter) Inject(message string) error { return a.inner.Inject(message) }
 
 // WakeRequested satisfies coretui.WakeRequester (R-WAKE-1).
-// Background sub-agents that report completion via the wake
-// channel surface as transient toast banners.
-func (a *coreAgentAdapter) WakeRequested() <-chan struct{} {
-	return a.inner.WakeRequested()
-}
+func (a *coreAgentAdapter) WakeRequested() <-chan struct{} { return a.inner.WakeRequested() }
 
-// argsToMap converts a *genai.FunctionCall.Args (which is a
-// map[string]any of genai.Schema-shaped values) into the plain
-// map[string]any core-tui's ToolCall.Args carries. Defensive against
-// nil to avoid panics on tool calls with no arguments.
-func argsToMap(args map[string]any) map[string]any {
-	if args == nil {
-		return nil
-	}
-	out := make(map[string]any, len(args))
-	for k, v := range args {
-		out[k] = v
+// AvailableModels satisfies coretui.ModelSwapper. Returns the
+// hardcoded Gemini 3.x catalog (see availableModelIDs comment).
+func (a *coreAgentAdapter) AvailableModels() []coretui.ModelInfo {
+	ids := availableModelIDs()
+	out := make([]coretui.ModelInfo, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, coretui.ModelInfo{ID: id, Display: id})
 	}
 	return out
 }
 
-// ensureGenaiImport keeps the genai import live for the
-// argsToMap signature; the linter would otherwise complain about an
-// unused import if a future refactor stops mentioning genai
-// directly here. (`genai.Schema` is in flux upstream so the args
-// shape may move into a typed value later.)
-var _ = genai.Schema{}
+// SwitchModel satisfies coretui.ModelSwapper. Resolves the new
+// model through the host's provider and rebuilds the agent with
+// the same agent opts.
+func (a *coreAgentAdapter) SwitchModel(modelID string) (coretui.Agent, error) {
+	newLLM, err := a.deps.Provider.Model(a.ctxBuild, modelID)
+	if err != nil {
+		return nil, err
+	}
+	newAgent, err := agent.New(newLLM, a.deps.AgentOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return &coreAgentAdapter{
+		inner:    newAgent,
+		deps:     a.deps,
+		ctxBuild: a.ctxBuild,
+	}, nil
+}
+
+// SessionApprovals satisfies coretui.PermissionController. Maps the
+// gate's ApprovalLog slice 1:1 into the core-tui shape.
+func (a *coreAgentAdapter) SessionApprovals() []coretui.ApprovalLog {
+	src := a.deps.Gate.Approvals()
+	out := make([]coretui.ApprovalLog, 0, len(src))
+	for _, ap := range src {
+		out = append(out, coretui.ApprovalLog{
+			Tool:     ap.Tool,
+			Key:      ap.Key,
+			Decision: ap.Decision.String(),
+		})
+	}
+	return out
+}
+
+// AddAllowPatterns satisfies coretui.PermissionController.
+func (a *coreAgentAdapter) AddAllowPatterns(patterns []string) error {
+	return a.deps.Gate.AddAllowPatterns(patterns)
+}
+
+// AddDenyPatterns satisfies coretui.PermissionController.
+func (a *coreAgentAdapter) AddDenyPatterns(patterns []string) error {
+	return a.deps.Gate.AddDenyPatterns(patterns)
+}
+
+// AddBuiltinAllowExtra satisfies coretui.PermissionController.
+func (a *coreAgentAdapter) AddBuiltinAllowExtra(bundleName string) error {
+	entries, ok := permissions.Bundles[bundleName]
+	if !ok {
+		return fmt.Errorf("unknown bundle %q", bundleName)
+	}
+	return a.deps.Gate.AddAllowPatterns(entries)
+}
+
+// SlashCommands satisfies coretui.SlashProvider. Surfaces /btw and
+// /subagent to the palette + /help.
+func (a *coreAgentAdapter) SlashCommands() []coretui.SlashCommandSpec {
+	return []coretui.SlashCommandSpec{
+		{
+			Name:        "btw",
+			Aliases:     []string{"by-the-way"},
+			Description: "ask a side question (modal, no tool, doesn't land in history)",
+		},
+		{
+			Name:        "subagent",
+			Aliases:     []string{"sub"},
+			Description: "spawn a background sub-agent: /subagent <goal> [--name=X --tools=Y --max-turns=N]",
+		},
+	}
+}
+
+// InvokeSlash satisfies coretui.SlashProvider. /btw calls
+// AskSideQuestion + surfaces the answer through a SideAnswer modal;
+// /subagent parses flags and spawns through BackgroundManager.
+func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (coretui.SlashResult, error) {
+	switch name {
+	case "btw", "by-the-way":
+		answer, err := a.inner.AskSideQuestion(ctx, args)
+		if err != nil {
+			return coretui.SlashResult{
+				ModalAnswer: &coretui.SideAnswer{Question: args, Err: err},
+			}, nil
+		}
+		return coretui.SlashResult{
+			ModalAnswer: &coretui.SideAnswer{Question: args, Answer: answer},
+		}, nil
+	case "subagent", "sub":
+		// Full flag parsing lives in the original /subagent handler
+		// (internal/tui/subagent.go); a follow-up PR lifts that logic
+		// here. For now, point the operator at the in-process flow.
+		return coretui.SlashResult{
+			SystemMessage: "/subagent requires the internal/tui flag parser — not yet lifted into the core-tui adapter. Use CORE_AGENT_TUI=internal to drive subagent spawn for now.",
+		}, nil
+	}
+	return coretui.SlashResult{}, fmt.Errorf("unknown slash: %s", name)
+}
+
+// gatePrompterBridge adapts a core-tui PermissionPrompter so it
+// satisfies permissions.Prompter (the gate's expected interface).
+// Translates PromptKind / Decision values across the two enum
+// vocabularies.
+type gatePrompterBridge struct {
+	inner coretui.PermissionPrompter
+}
+
+// AskApproval implements permissions.Prompter by delegating to the
+// core-tui prompter after translating the request shape.
+func (g *gatePrompterBridge) AskApproval(ctx context.Context, req permissions.PromptRequest) (permissions.Decision, error) {
+	cReq := coretui.PermissionRequest{
+		Kind:        translateKind(req.Kind),
+		ToolName:    req.ToolName,
+		Detail:      req.Detail,
+		DetailKind:  translateDetailKind(req.Kind),
+		Verb:        req.Verb,
+		Source:      req.Source,
+		PersistTool: req.PersistTool,
+		PersistKey:  req.PersistKey,
+	}
+	cDec, err := g.inner.AskApproval(ctx, cReq)
+	if err != nil {
+		return permissions.DecisionDeny, err
+	}
+	return translateDecision(cDec), nil
+}
+
+// translateKind maps permissions.PromptKind → coretui.PermissionKind.
+// Four-to-four mapping with PathScope folded into Edit (both are
+// file-access events from the operator's perspective).
+func translateKind(k permissions.PromptKind) coretui.PermissionKind {
+	switch k {
+	case permissions.PromptKindBash:
+		return coretui.PermissionKindBash
+	case permissions.PromptKindFileWrite, permissions.PromptKindPathScope:
+		return coretui.PermissionKindEdit
+	default:
+		return coretui.PermissionKindOther
+	}
+}
+
+// translateDetailKind picks the right Glamour code-fence language
+// tag for the modal body based on the request Kind. The host has
+// already rendered req.Detail; this is just the styling hint.
+func translateDetailKind(k permissions.PromptKind) coretui.DetailKind {
+	switch k {
+	case permissions.PromptKindBash:
+		return coretui.DetailShell
+	case permissions.PromptKindFileWrite:
+		return coretui.DetailDiff
+	default:
+		return coretui.DetailPlain
+	}
+}
+
+// translateDecision maps coretui.PermissionDecision → permissions.Decision.
+// One-to-one because the spec for both adopted the same R-PERM-2
+// vocabulary.
+func translateDecision(d coretui.PermissionDecision) permissions.Decision {
+	switch d {
+	case coretui.DecisionAllowOnce:
+		return permissions.DecisionAllowOnce
+	case coretui.DecisionAllowSession:
+		return permissions.DecisionAllowSession
+	case coretui.DecisionAllowSessionVerb:
+		return permissions.DecisionAllowSessionVerb
+	case coretui.DecisionAllowSessionTool:
+		return permissions.DecisionAllowSessionTool
+	case coretui.DecisionAllowAlways:
+		return permissions.DecisionAllowAlways
+	default:
+		return permissions.DecisionDeny
+	}
+}
+
+// translateMode / translateModeBack bridge the gate's three-valued
+// string Mode (ask / allow / yolo) and core-tui's four-valued
+// PermissionMode enum (default / acceptEdits / plan / bypass).
+//
+// Mappings:
+//
+//   ask    ↔ default
+//   allow  ↔ acceptEdits  (closest semantic — gate auto-allows
+//                          everything not explicitly denied; core-
+//                          tui's acceptEdits is "edit tools auto-
+//                          allow, everything else still asks")
+//   yolo   ↔ bypass       (one-to-one)
+//
+// core-tui's `plan` has no core-agent equivalent — the chip can
+// display it, but flipping to plan leaves the gate on `ask`. A
+// future core-agent ModePlan would close the gap.
+func translateMode(m permissions.Mode) coretui.PermissionMode {
+	switch m {
+	case permissions.ModeAllow:
+		return coretui.PermissionModeAcceptEdits
+	case permissions.ModeYolo:
+		return coretui.PermissionModeBypass
+	default:
+		return coretui.PermissionModeDefault
+	}
+}
+
+func translateModeBack(m coretui.PermissionMode) permissions.Mode {
+	switch m {
+	case coretui.PermissionModeAcceptEdits:
+		return permissions.ModeAllow
+	case coretui.PermissionModeBypass:
+		return permissions.ModeYolo
+	default:
+		return permissions.ModeAsk
+	}
+}
+
+// coreMCPElicitor wraps a coretui.Elicitor as an mcp.ElicitorFn so
+// the MCP servers can route their elicit requests through the
+// shared core-tui modal. Translates between the MCP SDK's JSON-
+// schema-shaped request and core-tui's flat field list.
+type coreMCPElicitor struct {
+	inner coretui.Elicitor
+}
+
+// elicit implements mcp.ElicitorFn.
+func (c *coreMCPElicitor) elicit(ctx context.Context, serverName string, req *mcpsdk.ElicitRequest) (*mcpsdk.ElicitResult, error) {
+	params := req.Params
+	if params == nil {
+		return &mcpsdk.ElicitResult{Action: "decline"}, nil
+	}
+	cReq, ok := translateMCPSchemaToElicitRequest(params)
+	if !ok {
+		return &mcpsdk.ElicitResult{Action: "decline"}, nil
+	}
+	result, err := c.inner.Elicit(ctx, serverName, cReq)
+	if err != nil {
+		return &mcpsdk.ElicitResult{Action: "cancel"}, err
+	}
+	out := &mcpsdk.ElicitResult{
+		Action: translateElicitAction(result.Action),
+	}
+	if result.Action == coretui.ElicitActionSubmit {
+		out.Content = result.Values
+	}
+	return out, nil
+}
+
+// translateMCPSchemaToElicitRequest flattens the SDK's JSON schema
+// into core-tui's []ElicitField. Supports primitive types
+// (string/number/integer/boolean) + enums; nested objects are
+// declined (R-ELIC-3 — the second-return-false path drops the
+// request server-side instead of opening a broken modal).
+func translateMCPSchemaToElicitRequest(p *mcpsdk.ElicitParams) (coretui.ElicitRequest, bool) {
+	out := coretui.ElicitRequest{
+		Mode:        coretui.ElicitFormMode,
+		Title:       p.Message,
+		Description: p.Message,
+	}
+	schema, ok := p.RequestedSchema.(map[string]any)
+	if !ok {
+		return out, false
+	}
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		return out, false
+	}
+	requiredSet := map[string]bool{}
+	if req, ok := schema["required"].([]any); ok {
+		for _, r := range req {
+			if s, ok := r.(string); ok {
+				requiredSet[s] = true
+			}
+		}
+	}
+	for name, raw := range props {
+		propMap, ok := raw.(map[string]any)
+		if !ok {
+			return out, false
+		}
+		typeName, _ := propMap["type"].(string)
+		field := coretui.ElicitField{
+			Name:        name,
+			Description: stringOf(propMap, "description"),
+			Required:    requiredSet[name],
+		}
+		switch typeName {
+		case "string":
+			if enum, ok := propMap["enum"].([]any); ok {
+				field.Type = coretui.ElicitFieldEnum
+				for _, e := range enum {
+					if s, ok := e.(string); ok {
+						field.EnumChoices = append(field.EnumChoices, s)
+					}
+				}
+			} else {
+				field.Type = coretui.ElicitFieldString
+			}
+		case "number":
+			field.Type = coretui.ElicitFieldNumber
+		case "integer":
+			field.Type = coretui.ElicitFieldInteger
+		case "boolean":
+			field.Type = coretui.ElicitFieldBoolean
+		default:
+			return out, false // unsupported type
+		}
+		if d, ok := propMap["default"]; ok {
+			field.Default = d
+		}
+		out.Fields = append(out.Fields, field)
+	}
+	return out, true
+}
+
+// stringOf is a tiny helper for pulling optional string fields out
+// of a schema map — returns "" when missing or non-string.
+func stringOf(m map[string]any, key string) string {
+	v, _ := m[key].(string)
+	return v
+}
+
+// translateElicitAction maps core-tui's ElicitAction back to the
+// MCP SDK's stringy action vocabulary.
+func translateElicitAction(a coretui.ElicitAction) string {
+	switch a {
+	case coretui.ElicitActionSubmit:
+		return "accept"
+	case coretui.ElicitActionDecline:
+		return "decline"
+	default:
+		return "cancel"
+	}
+}
+
+// (Touching `time` keeps the import live until the SubagentLister
+// adapter lands; it uses StartedAt time.Time on entries.)
+var _ = time.Now

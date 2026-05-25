@@ -151,6 +151,18 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 // Mode reports the active permission mode.
 func (g *Gate) Mode() Mode { return g.mode }
 
+// SetMode replaces the gate's permission mode at runtime. Used by
+// the embedded TUI when the operator cycles the permission-mode
+// chip (R-PERM-6 in core-tui). Unknown modes are silently ignored
+// so a future TUI value can't smuggle in semantics the gate
+// doesn't recognize.
+func (g *Gate) SetMode(m Mode) {
+	switch m {
+	case ModeAsk, ModeAllow, ModeYolo:
+		g.mode = m
+	}
+}
+
 // HasPrompter reports whether an interactive Prompter is wired. False
 // means an ask-mode call would fail with ErrNoPrompter rather than
 // reach a human — useful for callers (e.g. autonomous drivers) that

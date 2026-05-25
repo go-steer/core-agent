@@ -20,7 +20,8 @@ import (
 	"context"
 	"fmt"
 	"iter"
-	"time"
+	"os"
+	"sort"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -77,12 +78,17 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 	// interface) while the TUI drains a coretui.PermissionPrompter.
 	deps.Gate.SetPrompter(&gatePrompterBridge{inner: prompter})
 
-	// pkgCoreElicitor was set by makeMCPElicitor (called earlier in
-	// main.go before mcp.Build). When unset (CORE_AGENT_TUI wasn't
-	// set at MCP-build time) construct an unwired one so the TUI
-	// still has something to drain; elicits land in the bit-bucket.
+	// pkgCoreElicitor should have been set by makeMCPElicitor
+	// (called earlier in main.go before mcp.Build) under the same
+	// CORE_AGENT_TUI=core-tui gate that picked this launcher. If
+	// it's nil we either flipped the env-var mid-startup or
+	// someone refactored the wiring — warn loudly and fall through
+	// with a fresh elicitor so the TUI still starts; MCP-originated
+	// elicits will be declined server-side rather than reach a
+	// silent dead channel.
 	elicitor := pkgCoreElicitor
 	if elicitor == nil {
+		fmt.Fprintln(os.Stderr, "core-agent: warning — pkgCoreElicitor was nil at launchTUIv2; MCP elicit requests will be declined (check makeMCPElicitor wiring)")
 		elicitor = coretui.NewElicitor()
 	}
 
@@ -113,14 +119,30 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 		// operator types during streaming, inbox auto-continues at
 		// turn end. Flip to QueueForNext for the buffer-only flow.
 		MidTurnInjectionMode: coretui.InjectIntoCurrent,
-		// AllowAlways persists the entry through the gate when
-		// the host's AgentsDir is writable (path_scope or generic
-		// allow); falls back to allow-session otherwise.
+		// AllowAlways persists the entry to disk when the host's
+		// AgentsDir is writable. Path-scope entries land in
+		// .agents/config.json's path_scope.allow; everything else
+		// becomes a permissions.allow pattern of the form
+		// "<tool>:<key>" (matches Policy.Match's grammar) and is
+		// added to both the live gate (so subsequent calls this
+		// session don't re-prompt) and the on-disk config (so it
+		// survives a restart). Without AgentsDir the callback is a
+		// no-op and the TUI falls back to allow-session.
 		AlwaysAllow: func(req coretui.PermissionRequest) error {
-			if req.PersistTool == "path_scope" && deps.AgentsDir != "" {
+			if deps.AgentsDir == "" {
+				return nil
+			}
+			if req.PersistTool == "path_scope" {
 				return appendPathScope(deps.AgentsDir, req.PersistKey)
 			}
-			return nil
+			if req.PersistTool == "" || req.PersistKey == "" {
+				return nil
+			}
+			pattern := req.PersistTool + ":" + req.PersistKey
+			if err := deps.Gate.AddAllowPatterns([]string{pattern}); err != nil {
+				return err
+			}
+			return appendPermissionsAllow(deps.AgentsDir, []string{pattern})
 		},
 		PersistModelChoice: func(id string) error {
 			if deps.AgentsDir == "" {
@@ -351,8 +373,19 @@ func (a *coreAgentAdapter) AvailableModels() []coretui.ModelInfo {
 // SwitchModel satisfies coretui.ModelSwapper. Resolves the new
 // model through the host's provider and rebuilds the agent with
 // the same agent opts.
+//
+// Uses context.Background() for the Provider.Model call so an
+// in-flight shutdown of the launch context doesn't poison the
+// operator-initiated model swap. The new agent gets the same
+// ctxBuild as the old one (used only by future SwitchModel calls
+// — same lifetime semantics).
+//
+// Also propagates the reload / pricing closures so /reload + /
+// pricing keep working after the swap (without this, every
+// /model swap silently downgrades those slash commands to "not
+// wired").
 func (a *coreAgentAdapter) SwitchModel(modelID string) (coretui.Agent, error) {
-	newLLM, err := a.deps.Provider.Model(a.ctxBuild, modelID)
+	newLLM, err := a.deps.Provider.Model(context.Background(), modelID)
 	if err != nil {
 		return nil, err
 	}
@@ -361,9 +394,12 @@ func (a *coreAgentAdapter) SwitchModel(modelID string) (coretui.Agent, error) {
 		return nil, err
 	}
 	return &coreAgentAdapter{
-		inner:    newAgent,
-		deps:     a.deps,
-		ctxBuild: a.ctxBuild,
+		inner:          newAgent,
+		deps:           a.deps,
+		ctxBuild:       a.ctxBuild,
+		reload:         a.reload,
+		refreshPricing: a.refreshPricing,
+		setPricing:     a.setPricing,
 	}, nil
 }
 
@@ -383,44 +419,77 @@ func (a *coreAgentAdapter) SessionApprovals() []coretui.ApprovalLog {
 }
 
 // AddAllowPatterns satisfies coretui.PermissionController.
+// Updates the live gate AND (when AgentsDir is writable) persists
+// the entries to .agents/config.json so they survive restart —
+// mirrors launchTUI's existing behavior.
 func (a *coreAgentAdapter) AddAllowPatterns(patterns []string) error {
-	return a.deps.Gate.AddAllowPatterns(patterns)
+	if err := a.deps.Gate.AddAllowPatterns(patterns); err != nil {
+		return err
+	}
+	if a.deps.AgentsDir == "" {
+		return nil
+	}
+	return appendPermissionsAllow(a.deps.AgentsDir, patterns)
 }
 
 // AddDenyPatterns satisfies coretui.PermissionController.
+// Symmetric persistence to AddAllowPatterns.
 func (a *coreAgentAdapter) AddDenyPatterns(patterns []string) error {
-	return a.deps.Gate.AddDenyPatterns(patterns)
+	if err := a.deps.Gate.AddDenyPatterns(patterns); err != nil {
+		return err
+	}
+	if a.deps.AgentsDir == "" {
+		return nil
+	}
+	return appendPermissionsDeny(a.deps.AgentsDir, patterns)
 }
 
 // AddBuiltinAllowExtra satisfies coretui.PermissionController.
+// Resolves the bundle to its allow entries, extends the live gate,
+// and persists the bundle name (not the resolved entries) to the
+// config's builtin_allow_extras list — matches launchTUI's pattern
+// so the same bundle re-resolves correctly on next startup.
 func (a *coreAgentAdapter) AddBuiltinAllowExtra(bundleName string) error {
 	entries, ok := permissions.Bundles[bundleName]
 	if !ok {
-		return fmt.Errorf("unknown bundle %q", bundleName)
+		return fmt.Errorf("unknown bundle %q (want one of %v)", bundleName, permissions.KnownBundles())
 	}
-	return a.deps.Gate.AddAllowPatterns(entries)
+	if err := a.deps.Gate.AddAllowPatterns(entries); err != nil {
+		return err
+	}
+	if a.deps.AgentsDir == "" {
+		return nil
+	}
+	return appendBuiltinAllowExtra(a.deps.AgentsDir, bundleName)
 }
 
-// Tools satisfies coretui.ToolLister. Translates the agent's
-// runtime tool list into the UI's ToolInfo shape; the GateState
-// field reflects the gate's current disposition for each tool.
+// Tools satisfies coretui.ToolLister. Routes through the agent's
+// AttachTools accessor so the Source field reflects the agent's
+// own classification (builtin vs other — MCP/skill differentiation
+// lands in attach when the agent grows per-tool provenance). The
+// GateState field is computed by AttachTools using the same gate
+// the live calls consult, so /tools and the actual approval
+// behavior stay consistent.
 func (a *coreAgentAdapter) Tools() []coretui.ToolInfo {
-	raw := a.inner.Tools()
+	raw := a.inner.AttachTools()
 	out := make([]coretui.ToolInfo, 0, len(raw))
 	for _, t := range raw {
 		out = append(out, coretui.ToolInfo{
-			Name:        t.Name(),
-			Description: t.Description(),
-			Source:      "builtin", // a richer source tag lands when the agent surfaces provenance
-			GateState:   a.deps.Gate.ToolGateState(t.Name()),
+			Name:        t.Name,
+			Description: t.Description,
+			Source:      t.Source,
+			GateState:   t.GateState,
 		})
 	}
 	return out
 }
 
 // Subagents satisfies coretui.SubagentLister (R-SUB-1). Reads the
-// BackgroundAgentManager's live handles; empty when no background
-// agents are running.
+// BackgroundAgentManager's live handles and reports each one's
+// real status (running / completed / failed / stopped) via
+// BackgroundHandle.Status — the manager keeps terminal handles in
+// the list until reaped, so the /subagents display reflects
+// post-completion state instead of always reading "running."
 func (a *coreAgentAdapter) Subagents() []coretui.SubagentInfo {
 	mgr := a.inner.BackgroundManager()
 	if mgr == nil {
@@ -429,11 +498,15 @@ func (a *coreAgentAdapter) Subagents() []coretui.SubagentInfo {
 	handles := mgr.List()
 	out := make([]coretui.SubagentInfo, 0, len(handles))
 	for _, h := range handles {
-		out = append(out, coretui.SubagentInfo{
+		entry := coretui.SubagentInfo{
 			Name:      h.Name,
-			Status:    "running", // BackgroundHandle doesn't expose Status as a single field today
+			Status:    h.Status().String(),
 			StartedAt: h.StartedAt,
-		})
+		}
+		if errVal := h.Err(); errVal != nil {
+			entry.LastReport = errVal.Error()
+		}
+		out = append(out, entry)
 	}
 	return out
 }
@@ -595,26 +668,23 @@ func translateDecision(d coretui.PermissionDecision) permissions.Decision {
 	}
 }
 
-// translateMode / translateModeBack bridge the gate's three-valued
-// string Mode (ask / allow / yolo) and core-tui's four-valued
-// PermissionMode enum (default / acceptEdits / plan / bypass).
+// translateMode / translateModeBack bridge the gate's Mode values
+// and core-tui's PermissionMode enum. Both sides now carry the
+// same four modes (default / acceptEdits / plan / bypass) since
+// the gate grew ModePlan + ModeAcceptEdits — see
+// permissions/gate.go.
 //
-// Mappings:
-//
-//	ask    ↔ default
-//	allow  ↔ acceptEdits  (closest semantic — gate auto-allows
-//	                       everything not explicitly denied; core-
-//	                       tui's acceptEdits is "edit tools auto-
-//	                       allow, everything else still asks")
-//	yolo   ↔ bypass       (one-to-one)
-//
-// core-tui's `plan` has no core-agent equivalent — the chip can
-// display it, but flipping to plan leaves the gate on `ask`. A
-// future core-agent ModePlan would close the gap.
+// permissions.ModeAllow (config-side "auto-allow if in allowlist
+// else fail") has no chip equivalent and is intentionally collapsed
+// to default-on-the-chip; cycling out of default lands on
+// acceptEdits / plan / bypass rather than re-entering ModeAllow.
+// Operators who want ModeAllow set it via .agents/config.json.
 func translateMode(m permissions.Mode) coretui.PermissionMode {
 	switch m {
-	case permissions.ModeAllow:
+	case permissions.ModeAcceptEdits:
 		return coretui.PermissionModeAcceptEdits
+	case permissions.ModePlan:
+		return coretui.PermissionModePlan
 	case permissions.ModeYolo:
 		return coretui.PermissionModeBypass
 	default:
@@ -625,7 +695,9 @@ func translateMode(m permissions.Mode) coretui.PermissionMode {
 func translateModeBack(m coretui.PermissionMode) permissions.Mode {
 	switch m {
 	case coretui.PermissionModeAcceptEdits:
-		return permissions.ModeAllow
+		return permissions.ModeAcceptEdits
+	case coretui.PermissionModePlan:
+		return permissions.ModePlan
 	case coretui.PermissionModeBypass:
 		return permissions.ModeYolo
 	default:
@@ -684,15 +756,33 @@ func translateMCPSchemaToElicitRequest(p *mcpsdk.ElicitParams) (coretui.ElicitRe
 		return out, false
 	}
 	requiredSet := map[string]bool{}
-	if req, ok := schema["required"].([]any); ok {
+	// MCP SDK may unmarshal `required` as either []any (when the
+	// schema came in as raw JSON) or []string (when it was decoded
+	// through a typed struct). Accept both so a SDK-shape change
+	// can't silently drop the required-field annotations.
+	switch req := schema["required"].(type) {
+	case []any:
 		for _, r := range req {
 			if s, ok := r.(string); ok {
 				requiredSet[s] = true
 			}
 		}
+	case []string:
+		for _, s := range req {
+			requiredSet[s] = true
+		}
 	}
-	for name, raw := range props {
-		propMap, ok := raw.(map[string]any)
+	// Sort the property names so the rendered form has a stable
+	// field order across calls — iterating `props` directly would
+	// shuffle the modal between runs of the same elicit (Go map
+	// iteration is randomized).
+	names := make([]string, 0, len(props))
+	for name := range props {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		propMap, ok := props[name].(map[string]any)
 		if !ok {
 			return out, false
 		}
@@ -751,6 +841,3 @@ func translateElicitAction(a coretui.ElicitAction) string {
 	}
 }
 
-// (Touching `time` keeps the import live until the SubagentLister
-// adapter lands; it uses StartedAt time.Time on entries.)
-var _ = time.Now

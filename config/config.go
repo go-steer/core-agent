@@ -133,7 +133,7 @@ type PricingConfig struct {
 
 // PermissionsConfig configures the permission gate.
 type PermissionsConfig struct {
-	Mode  string   `json:"mode,omitempty"`  // "ask" | "allow" | "yolo"
+	Mode  string   `json:"mode,omitempty"`  // "ask" | "allow" | "yolo" | "plan" | "acceptEdits"
 	Allow []string `json:"allow,omitempty"` // pattern allowlist
 	Deny  []string `json:"deny,omitempty"`  // pattern denylist
 
@@ -285,9 +285,11 @@ type AttachConfig struct {
 
 // Permission modes.
 const (
-	PermissionModeAsk   = "ask"
-	PermissionModeAllow = "allow"
-	PermissionModeYolo  = "yolo"
+	PermissionModeAsk         = "ask"
+	PermissionModeAllow       = "allow"
+	PermissionModeYolo        = "yolo"
+	PermissionModePlan        = "plan"
+	PermissionModeAcceptEdits = "acceptEdits"
 )
 
 // Provider names recognized by the resolver.
@@ -371,7 +373,7 @@ func (c *Config) Validate() error {
 		}
 	}
 	switch c.Permissions.Mode {
-	case "", PermissionModeAsk, PermissionModeAllow, PermissionModeYolo:
+	case "", PermissionModeAsk, PermissionModeAllow, PermissionModeYolo, PermissionModePlan, PermissionModeAcceptEdits:
 		// ok
 	default:
 		return fmt.Errorf("config: unknown permissions.mode %q", c.Permissions.Mode)

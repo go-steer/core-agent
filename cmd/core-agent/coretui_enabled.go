@@ -215,10 +215,64 @@ func makeSetPricingCallback(deps tuiDeps) func(string, float64, float64) (string
 // translators are filled in by a follow-up commit (or until the
 // host types grow the accessors).
 
-func memoryToCoreTui(_ instruction.Loaded) []coretui.MemoryFile { return nil }
-func mcpServersToCoreTui(_ []*mcp.Server) []coretui.MCPServerInfo { return nil }
-func skillsToCoreTui(_ skills.Skills) []coretui.SkillInfo         { return nil }
-func pathScopeToCoreTui(_ *config.Config) coretui.PathScope        { return coretui.PathScope{} }
+// memoryToCoreTui maps the instruction loader's Sources slice into
+// the TUI's MemoryFile rows. Sources carry scope + path + size;
+// the TUI shows path only for now.
+func memoryToCoreTui(m instruction.Loaded) []coretui.MemoryFile {
+	if m.Empty() {
+		return nil
+	}
+	out := make([]coretui.MemoryFile, 0, len(m.Sources))
+	for _, s := range m.Sources {
+		out = append(out, coretui.MemoryFile{Path: s.Path})
+	}
+	return out
+}
+
+// mcpServersToCoreTui maps each *mcp.Server into a flat
+// MCPServerInfo. Transport / URL aren't surfaced on mcp.Server
+// directly (the connection state lives behind the scenes), so we
+// leave Transport empty and rely on Connected (Status == "ready")
+// + ToolCount for the /mcp display.
+func mcpServersToCoreTui(servers []*mcp.Server) []coretui.MCPServerInfo {
+	out := make([]coretui.MCPServerInfo, 0, len(servers))
+	for _, s := range servers {
+		out = append(out, coretui.MCPServerInfo{
+			Name:      s.Name,
+			Connected: s.Status == mcp.StatusOK,
+			ToolCount: len(s.Tools),
+		})
+	}
+	return out
+}
+
+// skillsToCoreTui maps the skills loader's Infos slice into
+// SkillInfo rows. Source stays "local" — skills only load from
+// ~/.core-agent/skills today.
+func skillsToCoreTui(s skills.Skills) []coretui.SkillInfo {
+	if s.Empty() {
+		return nil
+	}
+	out := make([]coretui.SkillInfo, 0, len(s.Infos))
+	for _, info := range s.Infos {
+		out = append(out, coretui.SkillInfo{
+			Name:        info.Name,
+			Description: info.Description,
+			Source:      "local",
+		})
+	}
+	return out
+}
+
+// pathScopeToCoreTui maps Config.PathScope.Allow into the TUI's
+// PathScope roots. Empty when the host hasn't configured any
+// extras (the TUI then treats every path as in-scope).
+func pathScopeToCoreTui(cfg *config.Config) coretui.PathScope {
+	if cfg == nil {
+		return coretui.PathScope{}
+	}
+	return coretui.PathScope{Roots: cfg.PathScope.Allow}
+}
 
 // coreAgentAdapter wraps *agent.Agent so it satisfies core-tui's
 // tui.Agent plus every optional capability interface core-agent can

@@ -42,6 +42,19 @@ const (
 	ModeAsk   Mode = "ask"
 	ModeAllow Mode = "allow"
 	ModeYolo  Mode = "yolo"
+
+	// ModePlan disables all tool execution — every gate call returns
+	// an error. Used by core-tui's "plan" chip (R-PERM-7) for
+	// read-and-think sessions that shouldn't touch the world. The
+	// operator cycles out via Shift+Tab when ready to act.
+	ModePlan Mode = "plan"
+
+	// ModeAcceptEdits auto-allows file-write tool calls (and
+	// out-of-scope write paths) without prompting; every other tool
+	// kind still flows through the normal Ask path. Used by core-
+	// tui's "acceptEdits" chip so the operator can stream a
+	// refactor without clicking through every diff modal.
+	ModeAcceptEdits Mode = "acceptEdits"
 )
 
 // Gate is the central permission chokepoint consulted before each tool
@@ -148,8 +161,15 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 	return New(Options{Mode: mode, Policy: policy, Scope: scope, Prompter: prompter}), nil
 }
 
-// Mode reports the active permission mode.
-func (g *Gate) Mode() Mode { return g.mode }
+// Mode reports the active permission mode. Acquires g.mu to pair
+// with SetMode's writer — without the read lock, SetMode would race
+// with every other mode reader (gateRequest, promptForPath,
+// ToolGateState).
+func (g *Gate) Mode() Mode {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.mode
+}
 
 // SetMode replaces the gate's permission mode at runtime. Used by
 // the embedded TUI when the operator cycles the permission-mode
@@ -158,8 +178,10 @@ func (g *Gate) Mode() Mode { return g.mode }
 // doesn't recognize.
 func (g *Gate) SetMode(m Mode) {
 	switch m {
-	case ModeAsk, ModeAllow, ModeYolo:
+	case ModeAsk, ModeAllow, ModeYolo, ModePlan, ModeAcceptEdits:
+		g.mu.Lock()
 		g.mode = m
+		g.mu.Unlock()
 	}
 }
 
@@ -278,11 +300,23 @@ func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, 
 			return nil
 		}
 	}
-	switch g.mode {
+	mode := g.Mode()
+	switch mode {
 	case ModeYolo:
 		return nil
 	case ModeAllow:
 		return fmt.Errorf("%s requires an allowlist entry in 'allow' mode: %q", toolName, key)
+	case ModePlan:
+		return fmt.Errorf("%s denied: tool execution disabled in 'plan' mode — cycle the permission chip (Shift+Tab) to leave plan mode", toolName)
+	case ModeAcceptEdits:
+		// AcceptEdits auto-approves file-write tool calls (R-PERM-7
+		// "accept all edits" semantics). Everything else still goes
+		// through the ask path so the operator stays in control of
+		// shell / generic tool calls.
+		if kind == PromptKindFileWrite {
+			return nil
+		}
+		fallthrough
 	case ModeAsk:
 		return g.prompt(ctx, PromptRequest{
 			Kind:        kind,
@@ -294,15 +328,26 @@ func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, 
 			Source:      SubagentSourceFromContext(ctx),
 		})
 	}
-	return fmt.Errorf("%s denied: unknown permission mode %q", toolName, g.mode)
+	return fmt.Errorf("%s denied: unknown permission mode %q", toolName, mode)
 }
 
 func (g *Gate) promptForPath(ctx context.Context, toolName, path, op string) error {
-	if g.mode == ModeYolo {
+	mode := g.Mode()
+	if mode == ModeYolo {
 		return nil
 	}
-	if g.mode == ModeAllow {
+	if mode == ModeAllow {
 		return fmt.Errorf("%s denied: path %q is outside scope and 'allow' mode does not prompt", toolName, path)
+	}
+	if mode == ModePlan {
+		return fmt.Errorf("%s denied: tool execution disabled in 'plan' mode (path %q)", toolName, path)
+	}
+	// AcceptEdits auto-allows out-of-scope writes so a refactor can
+	// touch sibling repos without re-prompting every file. Reads
+	// still ask — the operator explicitly opted into "accept edits"
+	// not "expose new paths."
+	if mode == ModeAcceptEdits && op == "write" {
+		return nil
 	}
 	return g.prompt(ctx, PromptRequest{
 		Kind:        PromptKindPathScope,
@@ -445,7 +490,7 @@ type Snapshot struct {
 func (g *Gate) Snapshot() Snapshot {
 	allow, deny := g.policy.RawPatterns()
 	return Snapshot{
-		Mode:  g.mode,
+		Mode:  g.Mode(),
 		Allow: allow,
 		Deny:  deny,
 	}
@@ -474,15 +519,23 @@ func (g *Gate) ToolGateState(toolName string) string {
 	if matchAny(g.policy.denyRules(), toolName, "") {
 		return ToolGateDenied
 	}
-	if g.mode == ModeYolo {
+	mode := g.Mode()
+	if mode == ModeYolo {
 		return ToolGateAllowed
+	}
+	if mode == ModePlan {
+		// Plan mode disables every tool call regardless of policy.
+		return ToolGateDenied
 	}
 	if matchAny(g.policy.allowRules(), toolName, "") {
 		return ToolGateAllowed
 	}
-	if g.mode == ModeAllow {
+	if mode == ModeAllow {
 		return ToolGateDeniedInAllowMode
 	}
+	// AcceptEdits would auto-allow file-write tools, but ToolGateState
+	// runs without the call's Kind so it can't distinguish edit
+	// tools from other tools — degrades to "prompted".
 	return ToolGatePrompted
 }
 

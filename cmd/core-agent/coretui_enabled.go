@@ -22,6 +22,7 @@ import (
 	"iter"
 	"os"
 	"sort"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -238,15 +239,21 @@ func makeSetPricingCallback(deps tuiDeps) func(string, float64, float64) (string
 // host types grow the accessors).
 
 // memoryToCoreTui maps the instruction loader's Sources slice into
-// the TUI's MemoryFile rows. Sources carry scope + path + size;
-// the TUI shows path only for now.
+// the TUI's MemoryFile rows. Sources carry scope + path + size +
+// truncated bit; we propagate all four so /memory can render the
+// rich annotation (bytes + truncated marker) that internal/tui
+// surfaces.
 func memoryToCoreTui(m instruction.Loaded) []coretui.MemoryFile {
 	if m.Empty() {
 		return nil
 	}
 	out := make([]coretui.MemoryFile, 0, len(m.Sources))
 	for _, s := range m.Sources {
-		out = append(out, coretui.MemoryFile{Path: s.Path})
+		out = append(out, coretui.MemoryFile{
+			Path:      s.Path,
+			Bytes:     int64(s.Bytes),
+			Truncated: s.Truncated,
+		})
 	}
 	return out
 }
@@ -551,12 +558,20 @@ func (a *coreAgentAdapter) Subagents() []coretui.SubagentInfo {
 
 // Status satisfies coretui.StatusReporter. Wraps the agent's
 // AttachStatus snapshot so the status surface reflects deferred /
-// waiting / etc. state.
+// waiting / etc. state. Provider is sourced from the host config
+// when known (auto-detect via the resolver leaves it as the empty
+// string, in which case the chip is suppressed rather than showing
+// a bogus tag).
 func (a *coreAgentAdapter) Status() coretui.Status {
 	s := a.inner.AttachStatus()
+	provider := ""
+	if a.deps.Cfg != nil {
+		provider = a.deps.Cfg.Model.Provider
+	}
 	return coretui.Status{
 		ModelName: a.inner.ModelName(),
 		State:     s.State,
+		Provider:  provider,
 	}
 }
 
@@ -584,8 +599,10 @@ func (b *coreUsageBridge) LastTurn() (coretui.Usage, float64) {
 	}
 	return coretui.Usage{InputTokens: turn.InputTokens, OutputTokens: turn.OutputTokens}, turn.CostUSD
 }
-func (b *coreUsageBridge) ContextWindowSize() int { return 0 }
-func (b *coreUsageBridge) ContextWindowUsed() int { return 0 }
+func (b *coreUsageBridge) ContextWindowSize() int            { return 0 }
+func (b *coreUsageBridge) ContextWindowUsed() int            { return 0 }
+func (b *coreUsageBridge) SessionTurns() int                 { return b.inner.Totals().Turns }
+func (b *coreUsageBridge) SessionDuration() time.Duration    { return b.inner.Duration() }
 
 // SlashCommands satisfies coretui.SlashProvider. Surfaces /btw and
 // /subagent to the palette + /help.

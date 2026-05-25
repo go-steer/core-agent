@@ -50,6 +50,8 @@ func (m *Model) View() string {
 		input = m.renderModelPicker()
 	case m.permissionsPicker != nil:
 		input = m.renderPermissionsPicker()
+	case m.btwOverlay != nil:
+		input = m.renderBTWOverlay()
 	default:
 		input = m.renderInput()
 	}

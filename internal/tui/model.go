@@ -204,6 +204,13 @@ type Model struct {
 	// in-flight → done. See docs/operator-input-design.md layers A+B.
 	queue queueModel
 
+	// btwOverlay is the read-only side-question overlay shown for
+	// /btw (docs/operator-input-design.md layer C). Non-nil while a
+	// side call is in flight or the operator hasn't dismissed the
+	// result yet; dispatched separately from the elicit/confirm/
+	// picker modals so it can coexist with a streaming main turn.
+	btwOverlay *btwState
+
 	// autoContinueDepth counts how many consecutive auto-continue
 	// turns we've fired since the last operator-initiated turn. Reset
 	// to 0 on handleSubmit and when handleTurnDone finds an empty

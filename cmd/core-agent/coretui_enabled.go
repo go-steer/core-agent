@@ -617,6 +617,7 @@ func (b *coreUsageBridge) LastTurn() (coretui.Usage, float64) {
 	}
 	return coretui.Usage{InputTokens: turn.InputTokens, OutputTokens: turn.OutputTokens}, turn.CostUSD
 }
+
 // ContextWindowSize returns the model's known max tokens from a
 // hardcoded table. The model is read from the most recent turn in
 // the tracker (each turn records the model name in use). Returns 0
@@ -978,4 +979,3 @@ func translateElicitAction(a coretui.ElicitAction) string {
 		return "cancel"
 	}
 }
-

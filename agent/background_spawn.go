@@ -212,6 +212,12 @@ func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string,
 				handle.status = StatusFailed
 			case result.Reason == StopReasonCompleted:
 				handle.status = StatusCompleted
+			case result.Reason == StopReasonDeferred,
+				result.Reason == StopReasonWallclockExceeded,
+				result.Reason == StopReasonMaxTurns,
+				result.Reason == StopReasonMaxTokens,
+				result.Reason == StopReasonMaxCost:
+				handle.status = StatusDeferred
 			default:
 				handle.status = StatusFailed
 			}
@@ -229,6 +235,9 @@ func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string,
 		case StatusStopped:
 			kind = "stopped"
 			text = "stopped by parent"
+		case StatusDeferred:
+			kind = "deferred"
+			text = "stopped: " + string(result.Reason)
 		case StatusFailed:
 			kind = "failed"
 			if runErr != nil {

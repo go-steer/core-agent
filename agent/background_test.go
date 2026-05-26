@@ -394,3 +394,47 @@ func TestResolveTools_SkipsAutoWiredNames(t *testing.T) {
 		t.Errorf("expected only the catalog custom_inspector after auto-wired skipping; got %v", got)
 	}
 }
+
+func TestSpawn_BudgetExceedanceClassifiedAsDeferred(t *testing.T) {
+	t.Parallel()
+	mgr, _ := newFakeManager(t)
+	parent := newTestParent(t, mgr)
+	_ = parent
+	h, err := mgr.Spawn(context.Background(), "", BackgroundSpec{
+		Name:         "budget-exceeder",
+		SystemPrompt: "say hi",
+		Goal:         "say hi",
+		Budgets: BackgroundBudgets{
+			MaxWallclock: 1 * time.Nanosecond,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	defer mgr.Close()
+
+	select {
+	case <-h.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("subagent goroutine didn't finish")
+	}
+
+	if h.Status() != StatusDeferred {
+		t.Errorf("status = %v, want StatusDeferred", h.Status())
+	}
+
+	select {
+	case a := <-mgr.Alerts():
+		if a.From != "budget-exceeder" {
+			t.Errorf("alert.From = %q, want budget-exceeder", a.From)
+		}
+		if a.Kind != "deferred" {
+			t.Errorf("alert.Kind = %q, want deferred", a.Kind)
+		}
+		if !strings.Contains(a.Text, "stopped: wallclock_exceeded") {
+			t.Errorf("alert.Text = %q, want containing 'stopped: wallclock_exceeded'", a.Text)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("no terminal alert was pushed after subagent finished")
+	}
+}

@@ -22,6 +22,7 @@ import (
 	"iter"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -599,10 +600,75 @@ func (b *coreUsageBridge) LastTurn() (coretui.Usage, float64) {
 	}
 	return coretui.Usage{InputTokens: turn.InputTokens, OutputTokens: turn.OutputTokens}, turn.CostUSD
 }
-func (b *coreUsageBridge) ContextWindowSize() int            { return 0 }
-func (b *coreUsageBridge) ContextWindowUsed() int            { return 0 }
-func (b *coreUsageBridge) SessionTurns() int                 { return b.inner.Totals().Turns }
-func (b *coreUsageBridge) SessionDuration() time.Duration    { return b.inner.Duration() }
+// ContextWindowSize returns the model's known max tokens from a
+// hardcoded table. The model is read from the most recent turn in
+// the tracker (each turn records the model name in use). Returns 0
+// (unknown) for models not in the table or before any turn has
+// landed; the TUI suppresses the context segment rather than
+// rendering a misleading "0 / 0" line.
+func (b *coreUsageBridge) ContextWindowSize() int {
+	last, ok := b.inner.Last()
+	if !ok {
+		return 0
+	}
+	return contextWindowSizeFor(last.Model)
+}
+
+// ContextWindowUsed approximates current context fill as the most
+// recent turn's input-token count — each turn re-sends the full
+// conversation, so the input count is the rolling context size.
+// Returns 0 before any turn has landed (matches "unknown" semantics
+// in core-tui — the segment is suppressed until there's real data).
+func (b *coreUsageBridge) ContextWindowUsed() int {
+	last, ok := b.inner.Last()
+	if !ok {
+		return 0
+	}
+	return last.InputTokens
+}
+
+func (b *coreUsageBridge) SessionTurns() int              { return b.inner.Totals().Turns }
+func (b *coreUsageBridge) SessionDuration() time.Duration { return b.inner.Duration() }
+
+// contextWindowSizeFor returns the configured max input window for
+// model. Hardcoded table; bumps when new models land. Unknown
+// models return 0 (which the TUI treats as "don't render the
+// segment"). Mirrors the publishable docs for each provider.
+func contextWindowSizeFor(model string) int {
+	// Substring match — model IDs come in many flavors (
+	// "gemini-3.1-pro-preview-customtools", "claude-sonnet-4-6-1m",
+	// etc.) and we want the limit to land regardless of suffix.
+	switch {
+	case containsAny(model, "gemini-3.1-pro", "gemini-3.5-pro", "gemini-3-pro"):
+		return 1_000_000
+	case containsAny(model, "gemini-3.5-flash", "gemini-3-flash", "gemini-3.1-flash"):
+		return 1_000_000
+	case containsAny(model, "gemini-2.5-pro"):
+		return 2_000_000
+	case containsAny(model, "gemini-2.5-flash", "gemini-2.0-flash"):
+		return 1_000_000
+	case containsAny(model, "claude-opus-4", "claude-sonnet-4", "claude-haiku-4"):
+		// Claude 4.x family: 200K base, 1M tier exists when the
+		// "-1m" suffix is set. Honor the suffix when present.
+		if containsAny(model, "-1m") {
+			return 1_000_000
+		}
+		return 200_000
+	case containsAny(model, "claude"):
+		return 200_000
+	}
+	return 0
+}
+
+// containsAny reports whether s contains any of the substrings.
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}
 
 // SlashCommands satisfies coretui.SlashProvider. Surfaces /btw and
 // /subagent to the palette + /help.

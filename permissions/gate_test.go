@@ -17,6 +17,7 @@ package permissions
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -412,5 +413,108 @@ func TestGate_PathScopeAlways_PersistsOnlyRequestedAccess(t *testing.T) {
 	}
 	if len(prompter.calls) != 1 {
 		t.Errorf("expected fresh prompt for write after read-only AllowAlways, got %d", len(prompter.calls))
+	}
+}
+
+func TestExpandAlwaysAllowPattern_DirBecomesSubtree(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	got := expandAlwaysAllowPattern(dir)
+	want := dir + "/..."
+	if got != want {
+		t.Errorf("expandAlwaysAllowPattern(dir): got %q, want %q", got, want)
+	}
+}
+
+func TestExpandAlwaysAllowPattern_DirWithTrailingSlash(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	got := expandAlwaysAllowPattern(dir + "/")
+	want := dir + "/..."
+	if got != want {
+		t.Errorf("trailing slash: got %q, want %q", got, want)
+	}
+}
+
+func TestExpandAlwaysAllowPattern_FileBecomesParentSubtree(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	file := filepath.Join(dir, "x.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := expandAlwaysAllowPattern(file)
+	want := dir + "/..."
+	if got != want {
+		t.Errorf("file → parent subtree: got %q, want %q", got, want)
+	}
+}
+
+func TestExpandAlwaysAllowPattern_NonExistentTreatedAsFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// File hasn't been written yet (write_file's create case). Expansion
+	// should treat the path as a file → allow the parent subtree so
+	// further writes in the same dir don't re-prompt.
+	target := filepath.Join(dir, "future.txt")
+	got := expandAlwaysAllowPattern(target)
+	want := dir + "/..."
+	if got != want {
+		t.Errorf("non-existent → parent subtree: got %q, want %q", got, want)
+	}
+}
+
+func TestGate_AlwaysAllow_DirectoryGrant_CoversSiblingFiles(t *testing.T) {
+	t.Parallel()
+	tree := t.TempDir()
+	scope, _ := NewPathScopeFromEntries("", "", nil)
+	prompter := &fakePrompter{decision: DecisionAllowAlways}
+	g := New(Options{Mode: ModeAsk, Scope: scope, Prompter: prompter})
+
+	// First call: list_dir on the tree itself — prompts, user picks
+	// "always", we expand to "<tree>/..." so sibling files don't
+	// re-prompt.
+	if err := g.CheckFileRead(context.Background(), "list_dir", tree); err != nil {
+		t.Fatalf("first list_dir: %v", err)
+	}
+	// Second call: read_file on a sibling INSIDE the tree. Must NOT
+	// trigger a second prompt.
+	prompter.calls = nil
+	sibling := filepath.Join(tree, "README.md")
+	if err := g.CheckFileRead(context.Background(), "read_file", sibling); err != nil {
+		t.Errorf("sibling read after always-allow: %v", err)
+	}
+	if len(prompter.calls) != 0 {
+		t.Errorf("expected zero re-prompts after directory always-allow, got %d", len(prompter.calls))
+	}
+}
+
+func TestGate_AlwaysAllow_FileGrant_CoversSiblingsInSameDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.txt")
+	b := filepath.Join(dir, "b.txt")
+	if err := os.WriteFile(a, []byte("a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(b, []byte("b"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	scope, _ := NewPathScopeFromEntries("", "", nil)
+	prompter := &fakePrompter{decision: DecisionAllowAlways}
+	g := New(Options{Mode: ModeAsk, Scope: scope, Prompter: prompter})
+
+	// User picks always-allow on a.txt → expand to "<dir>/..." so
+	// b.txt and friends don't re-prompt.
+	if err := g.CheckFileRead(context.Background(), "read_file", a); err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	prompter.calls = nil
+	if err := g.CheckFileRead(context.Background(), "read_file", b); err != nil {
+		t.Errorf("sibling read: %v", err)
+	}
+	if len(prompter.calls) != 0 {
+		t.Errorf("expected zero re-prompts for sibling file, got %d", len(prompter.calls))
 	}
 }

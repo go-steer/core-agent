@@ -17,6 +17,8 @@ package permissions
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -440,7 +442,7 @@ func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
 			if access == AccessNone {
 				access = AccessRead
 			}
-			g.scope.AddAlwaysAllow(req.PersistKey, access)
+			g.scope.AddAlwaysAllow(expandAlwaysAllowPattern(req.PersistKey), access)
 		}
 		g.recordApproval(req.ToolName, req.Detail, d)
 		return nil
@@ -587,3 +589,25 @@ const (
 	ToolGatePrompted          = "prompted"
 	ToolGateDeniedInAllowMode = "denied-allow-mode"
 )
+
+// expandAlwaysAllowPattern broadens a path argument from a
+// DecisionAllowAlways prompt into a subtree pattern so a single
+// approval covers sibling files / nested subdirectories — what
+// the operator almost certainly wants. Matches the conventions
+// in Cursor / VS Code / Claude Code's prompt UX.
+//
+// Rules:
+//   - Path is an existing directory → "<path>/...".
+//   - Path is anything else (existing file, or a not-yet-created
+//     write_file target) → "<parent>/..." so siblings in the same
+//     directory don't re-prompt.
+//
+// One os.Stat per always-allow decision is cheap; we trade one
+// syscall on grant-time for not asking the same question N times
+// over the rest of the session.
+func expandAlwaysAllowPattern(path string) string {
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		return strings.TrimRight(path, string(filepath.Separator)) + "/..."
+	}
+	return filepath.Dir(path) + "/..."
+}

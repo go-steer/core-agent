@@ -308,3 +308,109 @@ func TestGate_FromConfig_UserAllowMergedWithBuiltin(t *testing.T) {
 		t.Errorf("user-supplied make * should pass: %v", err)
 	}
 }
+
+func TestGate_AccessFor_ReadAllowedSkipsPrompt(t *testing.T) {
+	t.Parallel()
+	tree := t.TempDir()
+	scope, err := NewPathScopeFromEntries("", "", []pathEntry{
+		{Pattern: tree + "/...", Access: AccessRead},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompter := &fakePrompter{decision: DecisionDeny}
+	g := New(Options{Mode: ModeAsk, Scope: scope, Prompter: prompter})
+
+	if err := g.CheckFileRead(context.Background(), "read_file", filepath.Join(tree, "x.txt")); err != nil {
+		t.Errorf("read on read-allowed path: expected nil, got %v", err)
+	}
+	if len(prompter.calls) != 0 {
+		t.Errorf("expected zero prompts for read-allowed path, got %d: %+v", len(prompter.calls), prompter.calls)
+	}
+}
+
+func TestGate_AccessFor_WriteOnReadOnlyPath_Prompts(t *testing.T) {
+	t.Parallel()
+	tree := t.TempDir()
+	scope, err := NewPathScopeFromEntries("", "", []pathEntry{
+		{Pattern: tree + "/...", Access: AccessRead},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompter := &fakePrompter{decision: DecisionAllowOnce}
+	g := New(Options{Mode: ModeAsk, Scope: scope, Prompter: prompter})
+
+	if err := g.CheckFileWrite(context.Background(), "write_file", filepath.Join(tree, "x.txt")); err != nil {
+		t.Errorf("write on read-only path with allow-once: expected nil (one-shot allow), got %v", err)
+	}
+	if len(prompter.calls) != 1 {
+		t.Fatalf("expected one prompt for write on read-only path, got %d", len(prompter.calls))
+	}
+	got := prompter.calls[0]
+	if got.Kind != PromptKindPathScope {
+		t.Errorf("expected PromptKindPathScope, got %v", got.Kind)
+	}
+	if got.Access != AccessWrite {
+		t.Errorf("expected Access=AccessWrite on prompt, got %v", got.Access)
+	}
+}
+
+func TestGate_AccessFor_WriteAllowedRoutesToGateRequest(t *testing.T) {
+	t.Parallel()
+	tree := t.TempDir()
+	scope, err := NewPathScopeFromEntries("", "", []pathEntry{
+		{Pattern: tree + "/...", Access: AccessReadWrite},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompter := &fakePrompter{decision: DecisionAllowOnce}
+	g := New(Options{Mode: ModeAsk, Scope: scope, Prompter: prompter})
+
+	if err := g.CheckFileWrite(context.Background(), "write_file", filepath.Join(tree, "x.txt")); err != nil {
+		t.Errorf("write on rw path: expected nil, got %v", err)
+	}
+	// rw still triggers the FileWrite prompt under ModeAsk — policy
+	// has the final say. One prompt is expected; PromptKindFileWrite.
+	if len(prompter.calls) != 1 {
+		t.Fatalf("expected one FileWrite prompt, got %d", len(prompter.calls))
+	}
+	if prompter.calls[0].Kind != PromptKindFileWrite {
+		t.Errorf("expected PromptKindFileWrite, got %v", prompter.calls[0].Kind)
+	}
+}
+
+func TestGate_PathScopeAlways_PersistsOnlyRequestedAccess(t *testing.T) {
+	t.Parallel()
+	tree := t.TempDir()
+	scope, err := NewPathScopeFromEntries("", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompter := &fakePrompter{decision: DecisionAllowAlways}
+	g := New(Options{Mode: ModeAsk, Scope: scope, Prompter: prompter})
+
+	// First read prompt -> persists AccessRead, NOT rw.
+	target := filepath.Join(tree, "x.txt")
+	if err := g.CheckFileRead(context.Background(), "read_file", target); err != nil {
+		t.Fatalf("first read should pass via DecisionAllowAlways: %v", err)
+	}
+	// Subsequent read should now skip the prompt entirely.
+	prompter.calls = nil
+	if err := g.CheckFileRead(context.Background(), "read_file", target); err != nil {
+		t.Errorf("follow-up read should be silent after AllowAlways: %v", err)
+	}
+	if len(prompter.calls) != 0 {
+		t.Errorf("expected 0 prompts for follow-up read, got %d", len(prompter.calls))
+	}
+	// But a WRITE on the same path should still prompt — DecisionAllowAlways
+	// persisted only the read bit. Reset prompter state first.
+	prompter.calls = nil
+	if err := g.CheckFileWrite(context.Background(), "write_file", target); err != nil {
+		t.Fatalf("write after read-always should pass via fresh prompt: %v", err)
+	}
+	if len(prompter.calls) != 1 {
+		t.Errorf("expected fresh prompt for write after read-only AllowAlways, got %d", len(prompter.calls))
+	}
+}

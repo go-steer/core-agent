@@ -91,6 +91,15 @@ type PromptRequest struct {
 	// SubagentSourceFromContext context value the spawn machinery
 	// stamps on each subagent's ctx.
 	Source string
+
+	// Access is the file operation being requested when Kind ==
+	// PromptKindPathScope (AccessRead or AccessWrite). The
+	// DecisionAllowAlways branch uses it to persist the matching
+	// access bit on the new PathScope entry — granting rw via the
+	// prompt requires two approvals (one for each op) instead of a
+	// blanket grant the operator didn't explicitly choose. Zero
+	// (AccessNone) for non-path-scope prompts.
+	Access Access
 }
 
 // subagentSourceKey is the unexported context-value type used to

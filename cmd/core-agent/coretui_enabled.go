@@ -26,6 +26,7 @@ import (
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"google.golang.org/genai"
 
 	coretui "github.com/go-steer/core-tui/tui"
 
@@ -399,6 +400,15 @@ func (a *coreAgentAdapter) Run(ctx context.Context, prompt string) iter.Seq2[cor
 							ID:   p.FunctionCall.ID,
 							Name: p.FunctionCall.Name,
 							Args: p.FunctionCall.Args,
+						})
+					}
+					if p.FunctionResponse != nil {
+						response, errStr := splitFunctionResponse(p.FunctionResponse)
+						te.ToolResults = append(te.ToolResults, coretui.ToolResult{
+							ID:       p.FunctionResponse.ID,
+							Name:     p.FunctionResponse.Name,
+							Response: response,
+							Error:    errStr,
 						})
 					}
 					if p.Text != "" {
@@ -978,4 +988,30 @@ func translateElicitAction(a coretui.ElicitAction) string {
 	default:
 		return "cancel"
 	}
+}
+
+// splitFunctionResponse separates the structured success response
+// from a possible error string carried in a genai.FunctionResponse.
+// The ADK convention (per google.golang.org/adk base_flow.go) is to
+// place tool errors under the reserved "error" key inside Response;
+// successful calls put whatever shape the tool returned into the
+// same map. Splitting at the adapter boundary keeps the TUI's
+// rendering path uniform — it only ever needs to check Error.
+//
+// Returns the response map unchanged plus the extracted error
+// string when "error" is present and string-typed. Nil resp /
+// nil Response yields (nil, "").
+func splitFunctionResponse(resp *genai.FunctionResponse) (map[string]any, string) {
+	if resp == nil || resp.Response == nil {
+		return nil, ""
+	}
+	if v, ok := resp.Response["error"]; ok {
+		switch e := v.(type) {
+		case string:
+			return resp.Response, e
+		case error:
+			return resp.Response, e.Error()
+		}
+	}
+	return resp.Response, ""
 }

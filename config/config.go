@@ -21,6 +21,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 )
 
 // SchemaVersion is the current major version of the on-disk config format.
@@ -71,11 +72,33 @@ type PricingFileConfig struct {
 }
 
 // PathScopeConfig holds extra paths that file tools may read/write
-// outside the default project + user-home scope. Patterns may be exact
-// paths or directory globs (terminating "/...") and are typically
-// appended via the "Always allow this path/tree" prompt path.
+// outside the default project + user-home scope. Patterns may be
+// exact paths or directory globs (terminating "/...") and are
+// typically appended via the "Always allow this path/tree" prompt
+// path.
+//
+// Two shapes coexist:
+//   - Allow: legacy untyped list; each entry implicitly grants
+//     both read and write so behavior matches what existed before
+//     the access-level work landed.
+//   - AllowPaths: typed entries with per-path access spec
+//     ("r" / "w" / "rw"). New configurations should prefer this
+//     form — it lets the operator say "agent may read this tree
+//     but writes still prompt", which the legacy list can't
+//     express.
 type PathScopeConfig struct {
-	Allow []string `json:"allow,omitempty"`
+	Allow      []string              `json:"allow,omitempty"`
+	AllowPaths []PathScopeAllowEntry `json:"allow_paths,omitempty"`
+}
+
+// PathScopeAllowEntry is one typed allow-list entry. Access is one
+// of "r" / "w" / "rw" (long forms "read" / "write" / "readwrite"
+// also accepted); empty Access fails validation rather than
+// silently broadening to rw. Path uses the same matching rules as
+// Allow: exact path, "/.../" subtree, or filepath.Match glob.
+type PathScopeAllowEntry struct {
+	Path   string `json:"path"`
+	Access string `json:"access"`
 }
 
 // ModelConfig selects the LLM provider and model.
@@ -378,5 +401,26 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("config: unknown permissions.mode %q", c.Permissions.Mode)
 	}
+	for i, e := range c.PathScope.AllowPaths {
+		if e.Path == "" {
+			return fmt.Errorf("config: path_scope.allow_paths[%d].path is required", i)
+		}
+		if !validAccessSpec(e.Access) {
+			return fmt.Errorf("config: path_scope.allow_paths[%d].access=%q must be r, w, or rw (read / write / readwrite accepted)", i, e.Access)
+		}
+	}
 	return nil
+}
+
+// validAccessSpec mirrors permissions.ParseAccess's accept set
+// without importing permissions (which would create a config →
+// permissions dependency cycle: permissions already imports
+// config). Keep this in sync with ParseAccess.
+func validAccessSpec(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "r", "w", "rw", "wr", "read", "write", "readwrite", "read+write":
+		return true
+	default:
+		return false
+	}
 }

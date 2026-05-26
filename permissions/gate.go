@@ -150,7 +150,18 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 	if err != nil {
 		return nil, fmt.Errorf("permissions policy: %w", err)
 	}
-	scope, err := NewPathScope(projectRoot, userRoot, cfg.PathScope.Allow)
+	entries := make([]pathEntry, 0, len(cfg.PathScope.Allow)+len(cfg.PathScope.AllowPaths))
+	for _, p := range cfg.PathScope.Allow {
+		entries = append(entries, pathEntry{Pattern: p, Access: AccessReadWrite})
+	}
+	for _, e := range cfg.PathScope.AllowPaths {
+		access, err := ParseAccess(e.Access)
+		if err != nil {
+			return nil, fmt.Errorf("permissions: path_scope.allow_paths[%s]: %w", e.Path, err)
+		}
+		entries = append(entries, pathEntry{Pattern: e.Path, Access: access})
+	}
+	scope, err := NewPathScopeFromEntries(projectRoot, userRoot, entries)
 	if err != nil {
 		return nil, err
 	}
@@ -242,36 +253,39 @@ func (g *Gate) CheckBash(ctx context.Context, command string) error {
 	return g.gateRequest(ctx, PromptKindBash, "bash", command, "bash", command)
 }
 
-// CheckFileRead gates a read-only file operation. Read access only
-// fails if the path is out of scope (and the user can't or won't
-// extend scope).
+// CheckFileRead gates a read-only file operation. An allow-list
+// entry that grants read (r or rw) short-circuits the prompt;
+// write-only entries (w) for the same path still escalate via
+// promptForPath.
 func (g *Gate) CheckFileRead(ctx context.Context, toolName, path string) error {
 	if g.sessionToolAllowed(toolName) {
 		return nil
 	}
-	in, err := g.scope.Contains(path)
+	access, err := g.scope.AccessFor(path)
 	if err != nil {
 		return err
 	}
-	if in {
+	if access.Allows(AccessRead) {
 		return nil
 	}
-	return g.promptForPath(ctx, toolName, path, "read")
+	return g.promptForPath(ctx, toolName, path, AccessRead)
 }
 
-// CheckFileWrite gates a mutating file operation. Out-of-scope paths
-// are escalated via prompt; in-scope paths still go through mode-aware
-// approval (ask mode prompts; allow/yolo proceed unless deny rule hits).
+// CheckFileWrite gates a mutating file operation. Paths the scope
+// grants write to (w or rw) still go through mode-aware approval
+// (ask mode prompts; allow/yolo proceed unless deny rule hits).
+// Paths not covered for writes — even if the same scope entry
+// permits reads — escalate via the path-scope prompt.
 func (g *Gate) CheckFileWrite(ctx context.Context, toolName, path string) error {
 	if g.sessionToolAllowed(toolName) {
 		return nil
 	}
-	in, err := g.scope.Contains(path)
+	access, err := g.scope.AccessFor(path)
 	if err != nil {
 		return err
 	}
-	if !in {
-		return g.promptForPath(ctx, toolName, path, "write")
+	if !access.Allows(AccessWrite) {
+		return g.promptForPath(ctx, toolName, path, AccessWrite)
 	}
 	return g.gateRequest(ctx, PromptKindFileWrite, toolName, path, toolName, path)
 }
@@ -331,7 +345,7 @@ func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, 
 	return fmt.Errorf("%s denied: unknown permission mode %q", toolName, mode)
 }
 
-func (g *Gate) promptForPath(ctx context.Context, toolName, path, op string) error {
+func (g *Gate) promptForPath(ctx context.Context, toolName, path string, op Access) error {
 	mode := g.Mode()
 	if mode == ModeYolo {
 		return nil
@@ -346,17 +360,32 @@ func (g *Gate) promptForPath(ctx context.Context, toolName, path, op string) err
 	// touch sibling repos without re-prompting every file. Reads
 	// still ask — the operator explicitly opted into "accept edits"
 	// not "expose new paths."
-	if mode == ModeAcceptEdits && op == "write" {
+	if mode == ModeAcceptEdits && op == AccessWrite {
 		return nil
 	}
 	return g.prompt(ctx, PromptRequest{
 		Kind:        PromptKindPathScope,
 		ToolName:    toolName,
-		Detail:      fmt.Sprintf("%s %s (out of scope)", op, path),
+		Detail:      fmt.Sprintf("%s %s (out of scope)", opLabel(op), path),
 		PersistTool: "path_scope",
 		PersistKey:  path,
 		Source:      SubagentSourceFromContext(ctx),
+		Access:      op,
 	})
+}
+
+// opLabel renders an Access op as the verb the prompt UI shows in
+// the Detail line ("read /path" / "write /path"). Kept tight so the
+// path stays visible inside the modal width budget.
+func opLabel(a Access) string {
+	switch a {
+	case AccessRead:
+		return "read"
+	case AccessWrite:
+		return "write"
+	default:
+		return a.String()
+	}
 }
 
 func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
@@ -402,7 +431,16 @@ func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
 	case DecisionAllowAlways:
 		g.rememberSession(req.ToolName, req.Detail)
 		if req.Kind == PromptKindPathScope {
-			g.scope.AddAlwaysAllow(req.PersistKey)
+			// Persist only the op the prompt was for — granting rw
+			// from one prompt would surprise the operator who said
+			// "always allow this read" and inadvertently authorized
+			// future writes too. The next write to the same path
+			// re-prompts and they can grant write separately.
+			access := req.Access
+			if access == AccessNone {
+				access = AccessRead
+			}
+			g.scope.AddAlwaysAllow(req.PersistKey, access)
 		}
 		g.recordApproval(req.ToolName, req.Detail, d)
 		return nil

@@ -88,6 +88,15 @@ func main() {
 	yolo := flag.Bool("yolo", false, "bypass the permissions gate entirely (every tool call runs without approval). Equivalent to permissions.mode=\"yolo\" in config.")
 	noBackgroundAgents := flag.Bool("no-background-agents", false, "disable the spawn_agent / list_agents / check_agent / stop_agent tools (model can't spawn background subagents). Default: enabled.")
 	allowURLHost := flag.String("allow-url-host", "", "comma-separated host patterns appended to url_scope.allow for the fetch_url tool (e.g. \"github.com,*.googleapis.com\"). HTTPS only unless the pattern carries an http:// prefix. Disable the tool entirely with --disable-tools=fetch_url.")
+	var allowPathEntries []config.PathScopeAllowEntry
+	flag.Func("allow-path", "grant file access to a path tree outside the project + user-home roots, e.g. --allow-path /home/me/sibling-repo:rw (repeatable). Explicit access is required: r, w, or rw (long forms read/write/readwrite accepted). Skip the permission prompt for matching paths; unmatched paths still prompt.", func(s string) error {
+		e, err := parseAllowPathSpec(s)
+		if err != nil {
+			return err
+		}
+		allowPathEntries = append(allowPathEntries, e)
+		return nil
+	})
 	attachListen := flag.String("attach-listen", "", "enable attach-mode HTTP listener on this address (e.g. :7777). Requires --session-db.")
 	attachUnixSocket := flag.String("attach-unix-socket", "", "enable attach-mode on a Unix socket at this path. Mutually exclusive with --attach-listen.")
 	attachTLSCert := flag.String("attach-tls-cert", "", "TLS server certificate (PEM) for --attach-listen. Pair with --attach-tls-key.")
@@ -104,7 +113,7 @@ func main() {
 	noPricingRefresh := flag.Bool("no-pricing-refresh", false, "skip the daily pricing-catalog refresh from LiteLLM at startup. Use for air-gapped pods, CI runs, or any environment without outbound network. Overrides cfg.pricing.refresh.")
 	flag.Parse()
 
-	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, *noREPL, *noTUI, *noPricingRefresh,
+	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh,
 		attachOpts{
 			Listen:           *attachListen,
 			UnixSocket:       *attachUnixSocket,
@@ -174,7 +183,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	return opts
 }
 
-func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, noREPL, noTUI, noPricingRefresh bool, attachCfg attachOpts) int {
+func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh bool, attachCfg attachOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -262,6 +271,14 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		// before FromConfig so the mode is consistent with the
 		// constructed Gate (and any future code that reads it back).
 		cfg.Permissions.Mode = string(permissions.ModeYolo)
+	}
+	// CLI --allow-path entries layer on top of whatever the config
+	// file already lists; CLI > config > nothing. Validated in two
+	// places: parseAllowPathSpec rejects malformed flag values at
+	// parse time, FromConfig's ParseAccess call rejects bad entries
+	// from either source as a defense-in-depth.
+	if len(allowPathEntries) > 0 {
+		cfg.PathScope.AllowPaths = append(cfg.PathScope.AllowPaths, allowPathEntries...)
 	}
 	gate, err := permissions.FromConfig(cfg, cwd, coreHome, resolveGatePrompter(yolo, os.Stdin, os.Stderr))
 	if err != nil {

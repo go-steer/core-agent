@@ -136,6 +136,8 @@ const (
 	StatusFailed
 	// StatusStopped — explicit Stop() canceled the run.
 	StatusStopped
+	// StatusDeferred — RunAutonomous cleanly deferred or hit a budget cap.
+	StatusDeferred
 )
 
 // String renders the status for tool results and diagnostics.
@@ -149,6 +151,8 @@ func (s BackgroundStatus) String() string {
 		return "failed"
 	case StatusStopped:
 		return "stopped"
+	case StatusDeferred:
+		return "deferred"
 	default:
 		return "?"
 	}

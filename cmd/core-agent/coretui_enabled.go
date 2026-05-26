@@ -45,21 +45,38 @@ import (
 // each elicit through the TUI.
 var pkgCoreElicitor coretui.Elicitor
 
-// availableModelIDs is the hardcoded Gemini 3.x candidate list the
-// /model picker surfaces. Mirrors internal/tui/model_picker.go's
-// availableModels() — kept duplicate here rather than promoted to a
-// public function on agent.Agent because it's pure UI policy. When
-// cogo grows a real model catalog we'll promote.
+// availableModelIDs is the hardcoded candidate list the /model
+// picker surfaces — both Gemini and Anthropic families since
+// core-agent supports both providers. Kept here rather than
+// promoted to a public function on agent.Agent because it's pure
+// UI policy. When the host grows a real model catalog this can
+// move to a Provider-driven enumeration.
 func availableModelIDs() []string {
 	return []string{
+		// Gemini 3.x — Google's flagship + supporting variants.
+		// -customtools variant is the DefaultConfig pick; prefers
+		// registered tools over raw bash. Same price/context as
+		// the bare variant; better behavior for coding-assistant.
 		"gemini-3.1-pro-preview-customtools",
 		"gemini-3.1-pro-preview",
 		"gemini-3.5-flash",
 		"gemini-3-flash-preview",
 		"gemini-3.1-flash-lite-preview",
 		"gemini-3.1-flash-image-preview",
+		// Gemini 2.5 — kept around for accounts still on prior
+		// generation.
 		"gemini-2.5-pro",
 		"gemini-2.5-flash",
+		// Anthropic Claude 4.x — opus / sonnet / haiku across the
+		// 200K and 1M context tiers. Resolved through the
+		// "anthropic" or "anthropic-vertex" provider in the host
+		// config; the adapter routes the swap through the
+		// configured provider.
+		"claude-opus-4-7",
+		"claude-opus-4-7-1m",
+		"claude-sonnet-4-6",
+		"claude-sonnet-4-6-1m",
+		"claude-haiku-4-5",
 	}
 }
 

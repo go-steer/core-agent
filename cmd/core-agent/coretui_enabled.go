@@ -129,6 +129,15 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 		MCPServers:   mcpServersToCoreTui(deps.MCPServers),
 		Skills:       skillsToCoreTui(deps.LoadedSkills),
 		PathScope:    pathScopeToCoreTui(deps.Cfg),
+		// Branding.AgentIdentity surfaces cfg.Agent.DisplayName in
+		// the status-line banner ("core-agent · scion · ◇ model")
+		// so operators can tell which agent deployment they're
+		// talking to across multiple windows. Matches the
+		// internal/tui headerBrand affordance. Empty DisplayName
+		// falls back to the bare wordmark per core-tui's dedup.
+		Branding: coretui.Branding{
+			AgentIdentity: agentDisplayName(deps.Cfg),
+		},
 		// UI overrides from cfg.UI (config.UIConfig). ForceTheme
 		// short-circuits the OSC-11 query when the operator
 		// explicitly picks dark/light; Mouse threads the *bool
@@ -1111,4 +1120,17 @@ func uiMouseToCoreTui(cfg *config.Config) *bool {
 	}
 	v := *cfg.UI.Mouse
 	return &v
+}
+
+// agentDisplayName returns cfg.Agent.DisplayName as the operator
+// label for the status-line banner. Nil cfg / empty DisplayName
+// yields "" — core-tui's Branding.AgentIdentity treats empty as
+// "skip the identity segment" so the banner stays as the bare
+// wordmark + model. Defensive against nil cfg so headless test
+// paths don't panic.
+func agentDisplayName(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	return cfg.Agent.DisplayName
 }

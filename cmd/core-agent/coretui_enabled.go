@@ -128,6 +128,13 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 		MCPServers:   mcpServersToCoreTui(deps.MCPServers),
 		Skills:       skillsToCoreTui(deps.LoadedSkills),
 		PathScope:    pathScopeToCoreTui(deps.Cfg),
+		// UI overrides from cfg.UI (config.UIConfig). ForceTheme
+		// short-circuits the OSC-11 query when the operator
+		// explicitly picks dark/light; Mouse threads the *bool
+		// pointer through (nil = on, false = off) — see
+		// core-tui Options docs for the semantics.
+		ForceTheme: uiThemeToCoreTui(deps.Cfg),
+		Mouse:      uiMouseToCoreTui(deps.Cfg),
 		PermissionMode: coretui.PermissionModeWiring{
 			Initial: translateMode(deps.Gate.Mode()),
 			Set: func(m coretui.PermissionMode) error {
@@ -1014,4 +1021,37 @@ func splitFunctionResponse(resp *genai.FunctionResponse) (map[string]any, string
 		}
 	}
 	return resp.Response, ""
+}
+
+// uiThemeToCoreTui maps cfg.UI.Theme (the "auto"/"dark"/"light"
+// strings the operator writes in .agents/config.json) to the
+// matching coretui.ForceTheme value. Unknown / empty / "auto"
+// leave the field at "" so core-tui keeps its OSC-11 auto-detect
+// behavior. config.Validate already rejects junk values upstream,
+// so this is a thin pass-through with a defensive whitelist.
+func uiThemeToCoreTui(cfg *config.Config) string {
+	if cfg == nil {
+		return coretui.ThemeAuto
+	}
+	switch cfg.UI.Theme {
+	case config.ThemeDark:
+		return coretui.ThemeDark
+	case config.ThemeLight:
+		return coretui.ThemeLight
+	default:
+		return coretui.ThemeAuto
+	}
+}
+
+// uiMouseToCoreTui surfaces cfg.UI.Mouse (a *bool — unset means
+// "default on") as the *bool coretui.Options expects. Returning
+// nil when the operator hasn't set the field preserves core-tui's
+// default-enabled behavior; an explicit false threads the
+// opt-out through to View()'s MouseMode selection.
+func uiMouseToCoreTui(cfg *config.Config) *bool {
+	if cfg == nil || cfg.UI.Mouse == nil {
+		return nil
+	}
+	v := *cfg.UI.Mouse
+	return &v
 }

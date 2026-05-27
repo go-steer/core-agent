@@ -11,7 +11,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/charmbracelet/x/exp/teatest v0.0.0-20260524005558-961435f30453
 	github.com/glebarez/sqlite v1.11.0
-	github.com/go-steer/core-tui v0.4.1
+	github.com/go-steer/core-tui v0.5.0
 	github.com/itchyny/gojq v0.12.19
 	github.com/modelcontextprotocol/go-sdk v1.4.1
 	github.com/muesli/reflow v0.3.0

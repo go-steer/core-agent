@@ -143,28 +143,21 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 				return nil
 			},
 		},
-		// Operator-typed-during-streaming routes through QueueForNext
-		// so core-tui's maybeDrainQueue fires the queued prompt as a
-		// fresh turn on turn-end. Switching from InjectIntoCurrent
-		// (the previous default) avoids a silent failure mode unique
-		// to ADK-backed hosts: ADK's runner is opaque between tool
-		// calls, so Agent.Inject sends to the inbox but the in-flight
-		// Run never re-reads it. The queued message ends up stranded
-		// until the next operator-initiated prompt — and core-tui
-		// marks the queue entry Done immediately, so the operator
-		// sees no indication anything went wrong.
-		//
-		// QueueForNext gives partial PR-α parity:
-		//   - each queued entry → its own follow-up turn (auto)
-		//   - queue panel ⏳ → ↻ → · lifecycle visible
-		// Still missing vs internal/tui's PR α (until core-tui#9
-		// ships AutoContinueFromInbox):
-		//   - bundled framing for multiple queued entries
-		//   - [Operator notes added during the previous task] system
-		//     prompt wrapper
-		//   - ↻ marker on the synthetic user message
-		// When core-tui#9 lands, flip this to AutoContinueFromInbox.
-		MidTurnInjectionMode: coretui.QueueForNext,
+		// AutoContinueFromInbox (core-tui v0.6, issue #9) — full PR-α
+		// parity for the ADK-opaque-runner case. On turn-end, core-tui
+		// calls InboxDrainer.DrainInbox to pull all queued operator
+		// messages, formats them via AutoContinueFormatter (we wire
+		// our PR-α framing), and submits the result as a synthetic
+		// follow-up turn with a ↻ marker. Replaces the v0.5 stopgap
+		// (QueueForNext) that fired one separate turn per queued
+		// entry.
+		MidTurnInjectionMode: coretui.AutoContinueFromInbox,
+		// PR-α's "[Operator notes added during the previous task]"
+		// system-prompt wrapper. Tells the model these notes arrived
+		// mid-task so it can adapt the current step or capture them
+		// via `todo`. agent.FormatAutoContinueInbox is exported for
+		// exactly this use case.
+		AutoContinueFormatter: agent.FormatAutoContinueInbox,
 		// AllowAlways persists the entry to disk when the host's
 		// AgentsDir is writable. Path-scope entries land in
 		// .agents/config.json's path_scope.allow; everything else
@@ -455,6 +448,17 @@ func (a *coreAgentAdapter) Interrupt() bool { return a.inner.Interrupt() }
 // Inject satisfies coretui.InjectableAgent (R-CHAT-11).
 func (a *coreAgentAdapter) Inject(message string) error { return a.inner.Inject(message) }
 
+// DrainInbox + PendingInboxCount satisfy coretui.InboxDrainer
+// (core-tui v0.6, issue #9). Combined with InjectableAgent (above)
+// and MidTurnInjectionMode: AutoContinueFromInbox (in Options),
+// core-tui drives the auto-continue loop end-to-end against our
+// opaque ADK runner: operator types during streaming → Inject,
+// turn ends → DrainInbox returns everything queued → core-tui
+// formats it via AutoContinueFormatter and fires a synthetic
+// follow-up turn with the ↻ marker.
+func (a *coreAgentAdapter) DrainInbox() []string   { return a.inner.DrainInbox() }
+func (a *coreAgentAdapter) PendingInboxCount() int { return a.inner.PendingInboxCount() }
+
 // WakeRequested satisfies coretui.WakeRequester (R-WAKE-1).
 func (a *coreAgentAdapter) WakeRequested() <-chan struct{} { return a.inner.WakeRequested() }
 
@@ -740,6 +744,29 @@ func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (
 		}
 	}
 	return coretui.SlashResult{}, fmt.Errorf("unknown slash: %s", name)
+}
+
+// InvokeSlashAsync satisfies coretui.AsyncSlashProvider (core-tui
+// v0.6, issue #10). The synchronous InvokeSlash above runs inside
+// core-tui's Update loop and freezes the TUI for the duration of
+// any slash that does network I/O (/btw, /compact, /subagent all
+// take 1-10s on a real model). The async variant runs the same
+// work in a goroutine and posts the result on a channel core-tui
+// selects on — TUI stays responsive throughout.
+//
+// We implement this as a thin goroutine wrapper around the sync
+// path so the slash logic itself stays in one place. Buffered
+// channel of size 1 so the goroutine can send-and-exit cleanly
+// even if core-tui's receiver hasn't started yet (it does start
+// promptly, but defense against future scheduling changes).
+func (a *coreAgentAdapter) InvokeSlashAsync(ctx context.Context, name, args string) <-chan coretui.SlashResultOrErr {
+	ch := make(chan coretui.SlashResultOrErr, 1)
+	go func() {
+		defer close(ch)
+		res, err := a.InvokeSlash(ctx, name, args)
+		ch <- coretui.SlashResultOrErr{Res: res, Err: err}
+	}()
+	return ch
 }
 
 // gatePrompterBridge adapts a core-tui PermissionPrompter so it

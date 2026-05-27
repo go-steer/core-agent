@@ -47,6 +47,7 @@ import (
 	"github.com/go-steer/core-agent/eventlog"
 	"github.com/go-steer/core-agent/permissions"
 	corebuiltins "github.com/go-steer/core-agent/tools"
+	"github.com/go-steer/core-agent/usage"
 )
 
 // DefaultAppName tags this process in the ADK runner. Telemetry and
@@ -134,12 +135,15 @@ type Agent struct {
 	inbox           *inbox
 	wake            *wakeSignal
 	attachRegistrar attachRegistrar
+	tracker         *usage.Tracker
+	compactor       Compactor
 
-	// mu guards cancelInFlight + any other per-run mutable state we
-	// add later. Held only across the store-and-clear of the cancel
-	// pointer; never across an LLM call.
-	mu             sync.Mutex
-	cancelInFlight context.CancelFunc
+	// mu guards cancelInFlight + compactionPending and any other
+	// per-run mutable state we add later. Held only across short
+	// store-and-clear operations; never across an LLM call.
+	mu                sync.Mutex
+	cancelInFlight    context.CancelFunc
+	compactionPending bool
 }
 
 // attachRegistrar is the subset of *attach.SessionRegistry the agent
@@ -172,6 +176,8 @@ type options struct {
 	bgMgr           *BackgroundAgentManager
 	gate            *permissions.Gate
 	attachRegistrar attachRegistrar
+	tracker         *usage.Tracker
+	compactor       Compactor
 }
 
 func defaultOptions() options {
@@ -345,6 +351,39 @@ func WithSystemInstructionPrefix(prefix string) Option {
 	}
 }
 
+// WithUsageTracker wires a shared *usage.Tracker into the agent so
+// agent-level code (the compactor's threshold check, future per-turn
+// rollups) can read context-window state without the consumer
+// reaching in. The same tracker can be shared with a TUI host that
+// already keeps one for /stats — both populate via usage.Append and
+// read the same totals.
+//
+// Optional. Nil-safe: components that read the tracker check first
+// and degrade gracefully ("don't trigger threshold-based compaction
+// if we don't know how full the window is").
+func WithUsageTracker(t *usage.Tracker) Option {
+	return func(o *options) { o.tracker = t }
+}
+
+// WithCompactor wires a Compactor implementation that drives
+// context-window compaction (Mechanism A of
+// docs/context-management-design.md). When wired, the post-turn
+// hook in Run checks Compactor.ShouldCompact(); if true, the next
+// Run call fires Compact() before its actual work, replacing the
+// pre-summary history with a single summary event.
+//
+// Pass agent.NewDefaultCompactor() for the package default
+// (threshold 0.85, five-section handover prompt). Custom Compactor
+// implementations let consumers swap in a different prompt or
+// trigger logic.
+//
+// Optional. When nil, Agent.Compact returns ErrNoCompactor and the
+// post-turn hook is a no-op — compaction has to be wired in
+// explicitly.
+func WithCompactor(c Compactor) Option {
+	return func(o *options) { o.compactor = c }
+}
+
 // New constructs an Agent backed by model. Returns a clear error if the
 // underlying ADK constructors reject the configuration.
 func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
@@ -400,10 +439,22 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 	// resolution block above (which materializes the default
 	// in-memory service when no other was wired).
 	svc := o.sessionService
+
+	// Wrap the runner's view of the session.Service so the compactor
+	// can slice history at the latest summary event before ADK builds
+	// the LLM request. Other callers (direct Compact, AskSideQuestion,
+	// subagent path) keep using the unwrapped svc on the Agent so
+	// they see the full audit log. When no compactor is wired, the
+	// wrapping is a no-op pass-through.
+	runnerSvc := svc
+	if o.compactor != nil {
+		runnerSvc = &compactingService{inner: svc}
+	}
+
 	r, err := runner.New(runner.Config{
 		AppName:           o.appName,
 		Agent:             inner,
-		SessionService:    svc,
+		SessionService:    runnerSvc,
 		AutoCreateSession: true,
 	})
 	if err != nil {
@@ -428,6 +479,8 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		inbox:           newInbox(),
 		wake:            newWakeSignal(),
 		attachRegistrar: o.attachRegistrar,
+		tracker:         o.tracker,
+		compactor:       o.compactor,
 	}
 	if a.bgMgr != nil {
 		a.bgMgr.attachParent(a)
@@ -511,6 +564,13 @@ func (a *Agent) ModelName() string {
 // first (internal state changes); inbox goes second (external
 // input, closer to the prompt logically); then the original prompt.
 func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event, error] {
+	// Pre-turn: if the prior turn's post-hook flagged the session as
+	// over the compaction threshold, run the summarizer LLM call now
+	// so the runner builds its request against the slimmed history.
+	// Errors are swallowed inside (the operator can /compact manually
+	// if it persistently fails); the pending flag is always cleared
+	// to prevent retry loops.
+	a.runPendingCompaction(ctx)
 	if a.bgMgr != nil {
 		prompt = a.bgMgr.PrependPendingAlerts(prompt)
 	}
@@ -532,6 +592,9 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	})
 	return wrapWithCleanup(inner, func() {
 		a.clearCancelInFlight(cancel)
+		// Post-turn compaction-threshold check. Sets the pending
+		// flag if we're over threshold; next Run call drains it.
+		a.maybeMarkCompactionPending()
 	})
 }
 

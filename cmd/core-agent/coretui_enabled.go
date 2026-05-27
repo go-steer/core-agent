@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"os"
@@ -142,28 +143,21 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 				return nil
 			},
 		},
-		// Operator-typed-during-streaming routes through QueueForNext
-		// so core-tui's maybeDrainQueue fires the queued prompt as a
-		// fresh turn on turn-end. Switching from InjectIntoCurrent
-		// (the previous default) avoids a silent failure mode unique
-		// to ADK-backed hosts: ADK's runner is opaque between tool
-		// calls, so Agent.Inject sends to the inbox but the in-flight
-		// Run never re-reads it. The queued message ends up stranded
-		// until the next operator-initiated prompt — and core-tui
-		// marks the queue entry Done immediately, so the operator
-		// sees no indication anything went wrong.
-		//
-		// QueueForNext gives partial PR-α parity:
-		//   - each queued entry → its own follow-up turn (auto)
-		//   - queue panel ⏳ → ↻ → · lifecycle visible
-		// Still missing vs internal/tui's PR α (until core-tui#9
-		// ships AutoContinueFromInbox):
-		//   - bundled framing for multiple queued entries
-		//   - [Operator notes added during the previous task] system
-		//     prompt wrapper
-		//   - ↻ marker on the synthetic user message
-		// When core-tui#9 lands, flip this to AutoContinueFromInbox.
-		MidTurnInjectionMode: coretui.QueueForNext,
+		// AutoContinueFromInbox (core-tui v0.6, issue #9) — full PR-α
+		// parity for the ADK-opaque-runner case. On turn-end, core-tui
+		// calls InboxDrainer.DrainInbox to pull all queued operator
+		// messages, formats them via AutoContinueFormatter (we wire
+		// our PR-α framing), and submits the result as a synthetic
+		// follow-up turn with a ↻ marker. Replaces the v0.5 stopgap
+		// (QueueForNext) that fired one separate turn per queued
+		// entry.
+		MidTurnInjectionMode: coretui.AutoContinueFromInbox,
+		// PR-α's "[Operator notes added during the previous task]"
+		// system-prompt wrapper. Tells the model these notes arrived
+		// mid-task so it can adapt the current step or capture them
+		// via `todo`. agent.FormatAutoContinueInbox is exported for
+		// exactly this use case.
+		AutoContinueFormatter: agent.FormatAutoContinueInbox,
 		// AllowAlways persists the entry to disk when the host's
 		// AgentsDir is writable. Path-scope entries land in
 		// .agents/config.json's path_scope.allow; everything else
@@ -454,6 +448,17 @@ func (a *coreAgentAdapter) Interrupt() bool { return a.inner.Interrupt() }
 // Inject satisfies coretui.InjectableAgent (R-CHAT-11).
 func (a *coreAgentAdapter) Inject(message string) error { return a.inner.Inject(message) }
 
+// DrainInbox + PendingInboxCount satisfy coretui.InboxDrainer
+// (core-tui v0.6, issue #9). Combined with InjectableAgent (above)
+// and MidTurnInjectionMode: AutoContinueFromInbox (in Options),
+// core-tui drives the auto-continue loop end-to-end against our
+// opaque ADK runner: operator types during streaming → Inject,
+// turn ends → DrainInbox returns everything queued → core-tui
+// formats it via AutoContinueFormatter and fires a synthetic
+// follow-up turn with the ↻ marker.
+func (a *coreAgentAdapter) DrainInbox() []string   { return a.inner.DrainInbox() }
+func (a *coreAgentAdapter) PendingInboxCount() int { return a.inner.PendingInboxCount() }
+
 // WakeRequested satisfies coretui.WakeRequester (R-WAKE-1).
 func (a *coreAgentAdapter) WakeRequested() <-chan struct{} { return a.inner.WakeRequested() }
 
@@ -653,78 +658,19 @@ func (b *coreUsageBridge) LastTurn() (coretui.Usage, float64) {
 	return coretui.Usage{InputTokens: turn.InputTokens, OutputTokens: turn.OutputTokens}, turn.CostUSD
 }
 
-// ContextWindowSize returns the model's known max tokens from a
-// hardcoded table. The model is read from the most recent turn in
-// the tracker (each turn records the model name in use). Returns 0
-// (unknown) for models not in the table or before any turn has
-// landed; the TUI suppresses the context segment rather than
-// rendering a misleading "0 / 0" line.
-func (b *coreUsageBridge) ContextWindowSize() int {
-	last, ok := b.inner.Last()
-	if !ok {
-		return 0
-	}
-	return contextWindowSizeFor(last.Model)
-}
-
-// ContextWindowUsed approximates current context fill as the most
-// recent turn's input-token count — each turn re-sends the full
-// conversation, so the input count is the rolling context size.
-// Returns 0 before any turn has landed (matches "unknown" semantics
-// in core-tui — the segment is suppressed until there's real data).
-func (b *coreUsageBridge) ContextWindowUsed() int {
-	last, ok := b.inner.Last()
-	if !ok {
-		return 0
-	}
-	return last.InputTokens
-}
+// ContextWindowSize / ContextWindowUsed delegate to usage.Tracker —
+// the lookup table + per-turn approximation moved to substrate
+// (usage/context_window.go) so agent-level callers (compaction
+// trigger, micro-subagents) share the same accessor instead of
+// re-deriving from the bridge.
+func (b *coreUsageBridge) ContextWindowSize() int { return b.inner.ContextWindowSize() }
+func (b *coreUsageBridge) ContextWindowUsed() int { return b.inner.ContextWindowUsed() }
 
 func (b *coreUsageBridge) SessionTurns() int              { return b.inner.Totals().Turns }
 func (b *coreUsageBridge) SessionDuration() time.Duration { return b.inner.Duration() }
 
-// contextWindowSizeFor returns the configured max input window for
-// model. Hardcoded table; bumps when new models land. Unknown
-// models return 0 (which the TUI treats as "don't render the
-// segment"). Mirrors the publishable docs for each provider.
-func contextWindowSizeFor(model string) int {
-	// Substring match — model IDs come in many flavors (
-	// "gemini-3.1-pro-preview-customtools", "claude-sonnet-4-6-1m",
-	// etc.) and we want the limit to land regardless of suffix.
-	switch {
-	case containsAny(model, "gemini-3.1-pro", "gemini-3.5-pro", "gemini-3-pro"):
-		return 1_000_000
-	case containsAny(model, "gemini-3.5-flash", "gemini-3-flash", "gemini-3.1-flash"):
-		return 1_000_000
-	case containsAny(model, "gemini-2.5-pro"):
-		return 2_000_000
-	case containsAny(model, "gemini-2.5-flash", "gemini-2.0-flash"):
-		return 1_000_000
-	case containsAny(model, "claude-opus-4", "claude-sonnet-4", "claude-haiku-4"):
-		// Claude 4.x family: 200K base, 1M tier exists when the
-		// "-1m" suffix is set. Honor the suffix when present.
-		if containsAny(model, "-1m") {
-			return 1_000_000
-		}
-		return 200_000
-	case containsAny(model, "claude"):
-		return 200_000
-	}
-	return 0
-}
-
-// containsAny reports whether s contains any of the substrings.
-func containsAny(s string, subs ...string) bool {
-	for _, sub := range subs {
-		if strings.Contains(s, sub) {
-			return true
-		}
-	}
-	return false
-}
-
-// SlashCommands satisfies coretui.SlashProvider. Surfaces /btw and
-// /subagent to the palette + /help.
+// SlashCommands satisfies coretui.SlashProvider. Surfaces /btw,
+// /subagent, and /compact to the palette + /help.
 func (a *coreAgentAdapter) SlashCommands() []coretui.SlashCommandSpec {
 	return []coretui.SlashCommandSpec{
 		{
@@ -737,12 +683,18 @@ func (a *coreAgentAdapter) SlashCommands() []coretui.SlashCommandSpec {
 			Aliases:     []string{"sub"},
 			Description: "spawn a background sub-agent: /subagent <goal> [--name=X --tools=Y --max-turns=N]",
 		},
+		{
+			Name:        "compact",
+			Aliases:     []string{"summarize"},
+			Description: "summarize the conversation so far and slice prior events from future turns: /compact [focus]",
+		},
 	}
 }
 
 // InvokeSlash satisfies coretui.SlashProvider. /btw calls
 // AskSideQuestion + surfaces the answer through a SideAnswer modal;
-// /subagent parses flags and spawns through BackgroundManager.
+// /subagent parses flags and spawns through BackgroundManager;
+// /compact runs Agent.Compact and reports the outcome inline.
 func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (coretui.SlashResult, error) {
 	switch name {
 	case "btw", "by-the-way":
@@ -762,8 +714,59 @@ func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (
 		return coretui.SlashResult{
 			SystemMessage: "/subagent requires the internal/tui flag parser — not yet lifted into the core-tui adapter. Use CORE_AGENT_TUI=internal to drive subagent spawn for now.",
 		}, nil
+	case "compact", "summarize":
+		// NOTE: core-tui v0.5 calls InvokeSlash synchronously from
+		// its Update loop (see core-tui#10). The compactor's LLM call
+		// will freeze the TUI for its duration — consistent with how
+		// /btw behaves today; both get unfrozen when core-tui#10
+		// ships an async dispatch path.
+		focus := strings.TrimSpace(args)
+		res, err := a.inner.Compact(ctx, focus)
+		switch {
+		case errors.Is(err, agent.ErrNoCompactor):
+			return coretui.SlashResult{
+				SystemMessage: "/compact unavailable: this agent was constructed without WithCompactor. Relaunch without --no-compact, or wire agent.WithCompactor(agent.NewDefaultCompactor()) on the agent.",
+			}, nil
+		case err != nil:
+			return coretui.SlashResult{
+				SystemMessage: "/compact failed: " + err.Error(),
+			}, nil
+		case res.Skipped:
+			return coretui.SlashResult{
+				SystemMessage: "/compact: nothing to summarize yet (empty session). Run at least one turn first.",
+			}, nil
+		default:
+			return coretui.SlashResult{
+				SystemMessage: fmt.Sprintf(
+					"Compacted. Summary written (%d chars, %s). Prior events will be sliced from the next turn's context; the full audit log is preserved in the session.",
+					len(res.SummaryText), res.Duration.Round(0).String()),
+			}, nil
+		}
 	}
 	return coretui.SlashResult{}, fmt.Errorf("unknown slash: %s", name)
+}
+
+// InvokeSlashAsync satisfies coretui.AsyncSlashProvider (core-tui
+// v0.6, issue #10). The synchronous InvokeSlash above runs inside
+// core-tui's Update loop and freezes the TUI for the duration of
+// any slash that does network I/O (/btw, /compact, /subagent all
+// take 1-10s on a real model). The async variant runs the same
+// work in a goroutine and posts the result on a channel core-tui
+// selects on — TUI stays responsive throughout.
+//
+// We implement this as a thin goroutine wrapper around the sync
+// path so the slash logic itself stays in one place. Buffered
+// channel of size 1 so the goroutine can send-and-exit cleanly
+// even if core-tui's receiver hasn't started yet (it does start
+// promptly, but defense against future scheduling changes).
+func (a *coreAgentAdapter) InvokeSlashAsync(ctx context.Context, name, args string) <-chan coretui.SlashResultOrErr {
+	ch := make(chan coretui.SlashResultOrErr, 1)
+	go func() {
+		defer close(ch)
+		res, err := a.InvokeSlash(ctx, name, args)
+		ch <- coretui.SlashResultOrErr{Res: res, Err: err}
+	}()
+	return ch
 }
 
 // gatePrompterBridge adapts a core-tui PermissionPrompter so it

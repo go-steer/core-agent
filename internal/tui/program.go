@@ -152,15 +152,26 @@ func Run(ctx context.Context, opts Options) (int, error) {
 
 	startedAt := time.Now()
 
-	// Detect terminal background BEFORE tea.NewProgram takes over
+	// Resolve the Glamour style BEFORE tea.NewProgram takes over
 	// stdin. Glamour's WithAutoStyle sends an OSC-11 query whose
 	// response would otherwise race into the textarea as input.
-	// Resolving the style name once up front and threading it
-	// through NewModel keeps every Glamour rebuild (resize, etc.)
-	// silent.
+	// Resolving once up front and threading the result through
+	// NewModel keeps every Glamour rebuild (resize, etc.) silent.
+	//
+	// Operator override via cfg.UI.Theme ("dark"/"light") wins —
+	// some terminals (SSH stacks, tmux passthrough) answer the
+	// OSC-11 query unreliably and forcing a theme is the escape
+	// hatch. "auto" or empty falls through to detection.
 	mdStyle := "dark"
-	if !lipgloss.HasDarkBackground() {
+	switch opts.Cfg.UI.Theme {
+	case config.ThemeDark:
+		mdStyle = "dark"
+	case config.ThemeLight:
 		mdStyle = "light"
+	default: // "", ThemeAuto
+		if !lipgloss.HasDarkBackground() {
+			mdStyle = "light"
+		}
 	}
 
 	m := NewModel(opts.Cfg, nil, mdStyle)
@@ -204,9 +215,12 @@ func Run(ctx context.Context, opts Options) (int, error) {
 	// Mouse capture wires the wheel to viewport scrolling. Capturing
 	// mouse events also takes plain click-drag away from the terminal's
 	// native text selection, so users hold Shift to select. Default
-	// on for v2; a config option follows in PR 2 if needed.
-	m.mouseEnabled = true
-	teaOpts := []tea.ProgramOption{tea.WithAltScreen(), tea.WithMouseCellMotion()}
+	// on; override via cfg.UI.Mouse = false (or runtime /mouse off).
+	m.mouseEnabled = opts.Cfg.UI.MouseEnabled()
+	teaOpts := []tea.ProgramOption{tea.WithAltScreen()}
+	if m.mouseEnabled {
+		teaOpts = append(teaOpts, tea.WithMouseCellMotion())
+	}
 	p := tea.NewProgram(m, teaOpts...)
 	m.SetProgram(p)
 	prompter.(*tuiPrompter).send = p

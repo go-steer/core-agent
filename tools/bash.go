@@ -41,6 +41,26 @@ type bashResult struct {
 
 const defaultBashTimeout = 30 * time.Second
 
+// bashWaitDelay is the grace period after the immediate child exits
+// (or the context cancels) before Go's exec package force-closes any
+// inherited stdout/stderr and kills subprocesses still holding the
+// pipes open. Required because shell commands often spawn background
+// processes that inherit those file descriptors:
+//
+//	node server.js & SERVER_PID=$! && sleep 1.5 && client && kill $SERVER_PID
+//
+// Here `kill $SERVER_PID` actually kills the backgrounded subshell
+// (the `&` binds at the subshell level), not the orphaned node
+// server. Node keeps holding the stdout/stderr write-ends, so
+// cmd.Wait blocks on the internal pipe-copy goroutine — defeating
+// the timeout entirely. WaitDelay's job is exactly this: SIGKILL
+// any subprocess still holding the pipes after the grace window.
+//
+// 5s is long enough that benign shell trailers (a wait, a final
+// print) finish naturally; short enough that real hangs surface
+// quickly. Added in Go 1.20; we're on a newer toolchain.
+const bashWaitDelay = 5 * time.Second
+
 func bashFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[bashArgs, bashResult] {
 	return func(_ tool.Context, in bashArgs) (bashResult, error) {
 		if in.Command == "" {
@@ -60,6 +80,9 @@ func bashFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[bash
 		// of the bash tool; gating happens via the permission gate, not
 		// at the exec call site.
 		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", in.Command) // #nosec G204
+		// Bound how long we wait on inherited stdout/stderr after the
+		// shell exits or the context cancels. See bashWaitDelay docs.
+		cmd.WaitDelay = bashWaitDelay
 		var stdout, stderr capBuffer
 		caps := capsFor(cfg, "bash", 64*1024, 2000)
 		stdout.maxBytes = caps.bytes

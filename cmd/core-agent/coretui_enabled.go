@@ -142,10 +142,28 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 				return nil
 			},
 		},
-		// Default queueing mode matches core-agent's existing UX —
-		// operator types during streaming, inbox auto-continues at
-		// turn end. Flip to QueueForNext for the buffer-only flow.
-		MidTurnInjectionMode: coretui.InjectIntoCurrent,
+		// Operator-typed-during-streaming routes through QueueForNext
+		// so core-tui's maybeDrainQueue fires the queued prompt as a
+		// fresh turn on turn-end. Switching from InjectIntoCurrent
+		// (the previous default) avoids a silent failure mode unique
+		// to ADK-backed hosts: ADK's runner is opaque between tool
+		// calls, so Agent.Inject sends to the inbox but the in-flight
+		// Run never re-reads it. The queued message ends up stranded
+		// until the next operator-initiated prompt — and core-tui
+		// marks the queue entry Done immediately, so the operator
+		// sees no indication anything went wrong.
+		//
+		// QueueForNext gives partial PR-α parity:
+		//   - each queued entry → its own follow-up turn (auto)
+		//   - queue panel ⏳ → ↻ → · lifecycle visible
+		// Still missing vs internal/tui's PR α (until core-tui#9
+		// ships AutoContinueFromInbox):
+		//   - bundled framing for multiple queued entries
+		//   - [Operator notes added during the previous task] system
+		//     prompt wrapper
+		//   - ↻ marker on the synthetic user message
+		// When core-tui#9 lands, flip this to AutoContinueFromInbox.
+		MidTurnInjectionMode: coretui.QueueForNext,
 		// AllowAlways persists the entry to disk when the host's
 		// AgentsDir is writable. Path-scope entries land in
 		// .agents/config.json's path_scope.allow; everything else

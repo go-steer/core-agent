@@ -29,8 +29,8 @@ CORE_AGENT_TUI=core-tui /tmp/core-agent-smoke --no-compact
 
 ## 1 — Surface visibility
 
-- [ ] `/help` lists `/compact [focus]` with alias `/summarize`
-- [ ] `/tools` does NOT show `compact` (it's a slash, not a model-callable tool)
+- [✓] `/help` lists `/compact [focus]` with alias `/summarize`
+- [✓] `/tools` does NOT show `compact` (it's a slash, not a model-callable tool)
 
 Notes:
 
@@ -38,9 +38,9 @@ Notes:
 
 Launch a fresh binary. Without typing any prompts:
 
-- [ ] `/compact` → shows "Compacting…" running notice
-- [ ] Then shows: `/compact: nothing to summarize yet (empty session). Run at least one turn first.`
-- [ ] No error in the chat; no LLM call attributed in `/stats`
+- [✓] `/compact` → shows "Compacting…" running notice
+- [✓] Then shows: `/compact: nothing to summarize yet (empty session). Run at least one turn first.`
+- [✓] No error in the chat; no LLM call attributed in `/stats`
 
 Notes:
 
@@ -60,9 +60,12 @@ there's something to summarize:
 
 Then:
 
-- [ ] `/compact` (no focus) → running notice appears immediately
-- [ ] After 1–10s, success message: `Compacted. Summary written (N chars, Xs). Prior events will be sliced from the next turn's context; the full audit log is preserved in the session.`
-- [ ] `/stats` shows one extra turn's worth of cost (the compactor LLM call), attributed to whatever model is currently active
+- [⚠] `/compact` (no focus) → running notice appears immediately
+
+    Note:  looks like it's being called sync from the tui so "hangs" until displaying the compacted notice in the next step
+
+- [✓] After 1–10s, success message: `Compacted. Summary written (N chars, Xs). Prior events will be sliced from the next turn's context; the full audit log is preserved in the session.`
+- [✓] `/stats` shows one extra turn's worth of cost (the compactor LLM call), attributed to whatever model is currently active
 
 Notes:
 
@@ -75,8 +78,12 @@ about something from **early** in the pre-compact conversation:
 > recap what we discussed about <topic from turn 1>
 ```
 
-- [ ] The agent's answer references the summary's content, not the
+- [✗] The agent's answer references the summary's content, not the
   original turn-1 detail (because the original was sliced)
+  
+  Response was:
+  ⚠  failed to append event to sessionService: unexpected session type *agent.slicedSession for session ID default
+
 - [ ] The next `/stats` reading shows a MUCH smaller input-token count
   than before the compact (proves slicing is engaged on the wire,
   not just visually). Compare with what input-tokens were trending at

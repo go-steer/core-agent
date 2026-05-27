@@ -28,6 +28,7 @@ const (
 	SlashBTW         SlashAction = "btw"
 	SlashSubagent    SlashAction = "subagent"
 	SlashCompact     SlashAction = "compact"
+	SlashDone        SlashAction = "done"
 	SlashUnknown     SlashAction = "unknown"
 )
 
@@ -60,6 +61,8 @@ var slashAliases = map[string]SlashAction{
 	"sub":         SlashSubagent,
 	"compact":     SlashCompact,
 	"summarize":   SlashCompact,
+	"done":        SlashDone,
+	"checkpoint":  SlashDone,
 }
 
 // ParseSlash inspects input. If it looks like a slash command (leading
@@ -126,6 +129,10 @@ func HelpText() string {
 		"  /compact [focus]  summarize the conversation so far into a single dense handover and",
 		"              slice prior events from future turns (alias: /summarize). Optional focus",
 		"              hint biases the summarizer; auto-fires at 85% context-window utilization.",
+		"  /done [note]  write a task-boundary checkpoint and slice prior events from future",
+		"              turns (alias: /checkpoint). Use at natural task boundaries — finished",
+		"              a feature, completed a review, etc. The model can also self-trigger via",
+		"              its mark_task_done tool when it judges a task complete.",
 		"  /pricing refresh        force-refresh the pricing catalog from LiteLLM",
 		"  /pricing set <model> <input/M> <output/M>   set rates for one model (writes to ~/.core-agent/pricing.json manual section)",
 		"  /reload     re-read .agents/ from disk (mcp.json, skills/, AGENTS.md, config.json)",

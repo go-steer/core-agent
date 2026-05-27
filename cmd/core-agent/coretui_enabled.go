@@ -688,6 +688,11 @@ func (a *coreAgentAdapter) SlashCommands() []coretui.SlashCommandSpec {
 			Aliases:     []string{"summarize"},
 			Description: "summarize the conversation so far and slice prior events from future turns: /compact [focus]",
 		},
+		{
+			Name:        "done",
+			Aliases:     []string{"checkpoint"},
+			Description: "write a task-boundary checkpoint and slice prior events from future turns: /done [note]",
+		},
 	}
 }
 
@@ -714,6 +719,37 @@ func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (
 		return coretui.SlashResult{
 			SystemMessage: "/subagent requires the internal/tui flag parser — not yet lifted into the core-tui adapter. Use CORE_AGENT_TUI=internal to drive subagent spawn for now.",
 		}, nil
+	case "done", "checkpoint":
+		// Mirrors /compact's structure — Agent.Checkpoint runs the
+		// same summarizer machinery; differences are the tag value
+		// ("checkpoint" vs "summary") and the prompt's completion-
+		// record framing.
+		note := strings.TrimSpace(args)
+		res, err := a.inner.Checkpoint(ctx, note)
+		switch {
+		case errors.Is(err, agent.ErrNoCheckpointer):
+			return coretui.SlashResult{
+				SystemMessage: "/done unavailable: this agent was constructed without WithCheckpointer. Relaunch without --no-checkpoint, or wire agent.WithCheckpointer(agent.NewDefaultCheckpointer()) on the agent.",
+			}, nil
+		case err != nil:
+			return coretui.SlashResult{
+				SystemMessage: "/done failed: " + err.Error(),
+			}, nil
+		case res.Skipped:
+			return coretui.SlashResult{
+				SystemMessage: "/done: nothing to checkpoint yet (empty session). Run at least one turn first.",
+			}, nil
+		default:
+			noteFragment := ""
+			if res.TaskNote != "" {
+				noteFragment = " (note: " + res.TaskNote + ")"
+			}
+			return coretui.SlashResult{
+				SystemMessage: fmt.Sprintf(
+					"Checkpoint written%s. Summary captured (%d chars, %s). Prior task events will be sliced from the next turn's context; the full audit log is preserved in the session.",
+					noteFragment, len(res.SummaryText), res.Duration.Round(0).String()),
+			}, nil
+		}
 	case "compact", "summarize":
 		// NOTE: core-tui v0.5 calls InvokeSlash synchronously from
 		// its Update loop (see core-tui#10). The compactor's LLM call

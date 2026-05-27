@@ -74,7 +74,9 @@ const DefaultInstruction = `You are a helpful assistant. Be concise and accurate
 
 Tools execute in parallel by default. Execute multiple independent tool calls in parallel when feasible — searching, reading files, independent shell commands, or editing different files. When investigating code, if you need to read multiple files or grep multiple directories, issue all the tool calls in a single response; do not execute them one by one.
 
-Do not issue multiple ` + "`edit_file`" + ` or ` + "`write_file`" + ` calls targeting the same path in one response — those must run sequentially across turns so each edit sees the prior result; parallel writes to the same file race and corrupt state. Efficiency is secondary to correctness: if you are unsure whether two operations are independent, run them sequentially.`
+Do not issue multiple ` + "`edit_file`" + ` or ` + "`write_file`" + ` calls targeting the same path in one response — those must run sequentially across turns so each edit sees the prior result; parallel writes to the same file race and corrupt state. Efficiency is secondary to correctness: if you are unsure whether two operations are independent, run them sequentially.
+
+If earlier conversation has been summarized into context for you (it will arrive wrapped in "[Conversation compacted…]" framing), treat that summary as authoritative shared history — read from it directly when the user references prior discussion, rather than re-running tools to rediscover what's already there.`
 
 // DefaultSchedulingInstruction is the composable system-instruction
 // constant for autonomous loops that have a tools.Scheduler installed
@@ -137,13 +139,18 @@ type Agent struct {
 	attachRegistrar attachRegistrar
 	tracker         *usage.Tracker
 	compactor       Compactor
+	checkpointer    Checkpointer
 
-	// mu guards cancelInFlight + compactionPending and any other
-	// per-run mutable state we add later. Held only across short
-	// store-and-clear operations; never across an LLM call.
-	mu                sync.Mutex
-	cancelInFlight    context.CancelFunc
-	compactionPending bool
+	// mu guards cancelInFlight + compactionPending + checkpoint
+	// flags and any other per-run mutable state we add later. Held
+	// only across short store-and-clear operations; never across
+	// an LLM call.
+	mu                    sync.Mutex
+	cancelInFlight        context.CancelFunc
+	compactionPending     bool
+	checkpointRequested   bool   // flipped by mark_task_done tool handler during a turn
+	checkpointPending     bool   // promoted from checkpointRequested by post-turn hook
+	pendingCheckpointNote string // detail from the mark_task_done call (or /done arg)
 }
 
 // attachRegistrar is the subset of *attach.SessionRegistry the agent
@@ -178,6 +185,7 @@ type options struct {
 	attachRegistrar attachRegistrar
 	tracker         *usage.Tracker
 	compactor       Compactor
+	checkpointer    Checkpointer
 }
 
 func defaultOptions() options {
@@ -384,6 +392,27 @@ func WithCompactor(c Compactor) Option {
 	return func(o *options) { o.compactor = c }
 }
 
+// WithCheckpointer wires a Checkpointer implementation that drives
+// task-boundary checkpoints (Mechanism C of
+// docs/context-management-design.md). When wired, the agent
+// automatically registers the mark_task_done built-in tool — the
+// model can call it to signal task completion, and the post-turn
+// hook in Run promotes that into a pending checkpoint the next
+// Run drains by writing a richer handover record. The TUI's
+// /done slash drives the same path manually.
+//
+// Pass agent.NewDefaultCheckpointer() for the package default
+// (heuristic off; mark_task_done + /done are the trigger paths;
+// six-section completion-record prompt). Custom Checkpointer
+// implementations let consumers swap in a different prompt or
+// heuristic.
+//
+// Optional. When nil, Agent.Checkpoint returns ErrNoCheckpointer
+// and the mark_task_done tool is not registered.
+func WithCheckpointer(c Checkpointer) Option {
+	return func(o *options) { o.checkpointer = c }
+}
+
 // New constructs an Agent backed by model. Returns a clear error if the
 // underlying ADK constructors reject the configuration.
 func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
@@ -421,6 +450,19 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 			return nil, fmt.Errorf("agent: WithSubagents: %w", err)
 		}
 		o.tools = append(o.tools, st)
+	}
+
+	// Register the mark_task_done built-in BEFORE llmagent.New —
+	// llmagent snapshots its tool list at construction time, so
+	// adding the tool after would mean the model never sees it.
+	// The handler needs to mutate the constructed Agent's
+	// checkpoint flags; we resolve the agent pointer via late
+	// binding (declared here, populated after the struct is
+	// built below). See NewMarkTaskDoneTool docs for the
+	// late-binding contract.
+	var agentRef *Agent
+	if o.checkpointer != nil {
+		o.tools = append(o.tools, NewMarkTaskDoneTool(func() *Agent { return agentRef }))
 	}
 
 	inner, err := llmagent.New(llmagent.Config{
@@ -481,10 +523,15 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		attachRegistrar: o.attachRegistrar,
 		tracker:         o.tracker,
 		compactor:       o.compactor,
+		checkpointer:    o.checkpointer,
 	}
 	if a.bgMgr != nil {
 		a.bgMgr.attachParent(a)
 	}
+	// Late-bind the agent pointer so the mark_task_done tool
+	// (registered above before llmagent.New) can resolve *Agent
+	// when the model calls it. See NewMarkTaskDoneTool docs.
+	agentRef = a
 	if a.attachRegistrar != nil {
 		if _, err := a.attachRegistrar.Register(a); err != nil {
 			return nil, fmt.Errorf("agent: attach registry: %w", err)
@@ -564,12 +611,15 @@ func (a *Agent) ModelName() string {
 // first (internal state changes); inbox goes second (external
 // input, closer to the prompt logically); then the original prompt.
 func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event, error] {
-	// Pre-turn: if the prior turn's post-hook flagged the session as
-	// over the compaction threshold, run the summarizer LLM call now
-	// so the runner builds its request against the slimmed history.
-	// Errors are swallowed inside (the operator can /compact manually
-	// if it persistently fails); the pending flag is always cleared
-	// to prevent retry loops.
+	// Pre-turn: drain any pending cleanups from the prior turn's
+	// post-hook so the runner builds its request against a slimmed
+	// history. Checkpoint runs before compaction — a checkpoint
+	// subsumes the slicing baseline, making any pending compaction
+	// redundant for the same span. Errors are swallowed inside
+	// (the operator can /done or /compact manually if it
+	// persistently fails); pending flags are always cleared to
+	// prevent retry loops.
+	a.runPendingCheckpoint(ctx)
 	a.runPendingCompaction(ctx)
 	if a.bgMgr != nil {
 		prompt = a.bgMgr.PrependPendingAlerts(prompt)
@@ -592,8 +642,11 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	})
 	return wrapWithCleanup(inner, func() {
 		a.clearCancelInFlight(cancel)
-		// Post-turn compaction-threshold check. Sets the pending
-		// flag if we're over threshold; next Run call drains it.
+		// Post-turn hooks. Order matters: mark_task_done flag
+		// promotion first (it's the operator-visible signal); then
+		// the threshold check. Either can flag a pending cleanup
+		// that the next Run call drains before its own work.
+		a.maybeMarkCheckpointPending()
 		a.maybeMarkCompactionPending()
 	})
 }

@@ -18,10 +18,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -663,8 +665,8 @@ func (b *coreUsageBridge) ContextWindowUsed() int { return b.inner.ContextWindow
 func (b *coreUsageBridge) SessionTurns() int              { return b.inner.Totals().Turns }
 func (b *coreUsageBridge) SessionDuration() time.Duration { return b.inner.Duration() }
 
-// SlashCommands satisfies coretui.SlashProvider. Surfaces /btw and
-// /subagent to the palette + /help.
+// SlashCommands satisfies coretui.SlashProvider. Surfaces /btw,
+// /subagent, and /compact to the palette + /help.
 func (a *coreAgentAdapter) SlashCommands() []coretui.SlashCommandSpec {
 	return []coretui.SlashCommandSpec{
 		{
@@ -677,12 +679,18 @@ func (a *coreAgentAdapter) SlashCommands() []coretui.SlashCommandSpec {
 			Aliases:     []string{"sub"},
 			Description: "spawn a background sub-agent: /subagent <goal> [--name=X --tools=Y --max-turns=N]",
 		},
+		{
+			Name:        "compact",
+			Aliases:     []string{"summarize"},
+			Description: "summarize the conversation so far and slice prior events from future turns: /compact [focus]",
+		},
 	}
 }
 
 // InvokeSlash satisfies coretui.SlashProvider. /btw calls
 // AskSideQuestion + surfaces the answer through a SideAnswer modal;
-// /subagent parses flags and spawns through BackgroundManager.
+// /subagent parses flags and spawns through BackgroundManager;
+// /compact runs Agent.Compact and reports the outcome inline.
 func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (coretui.SlashResult, error) {
 	switch name {
 	case "btw", "by-the-way":
@@ -702,6 +710,34 @@ func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (
 		return coretui.SlashResult{
 			SystemMessage: "/subagent requires the internal/tui flag parser — not yet lifted into the core-tui adapter. Use CORE_AGENT_TUI=internal to drive subagent spawn for now.",
 		}, nil
+	case "compact", "summarize":
+		// NOTE: core-tui v0.5 calls InvokeSlash synchronously from
+		// its Update loop (see core-tui#10). The compactor's LLM call
+		// will freeze the TUI for its duration — consistent with how
+		// /btw behaves today; both get unfrozen when core-tui#10
+		// ships an async dispatch path.
+		focus := strings.TrimSpace(args)
+		res, err := a.inner.Compact(ctx, focus)
+		switch {
+		case errors.Is(err, agent.ErrNoCompactor):
+			return coretui.SlashResult{
+				SystemMessage: "/compact unavailable: this agent was constructed without WithCompactor. Relaunch without --no-compact, or wire agent.WithCompactor(agent.NewDefaultCompactor()) on the agent.",
+			}, nil
+		case err != nil:
+			return coretui.SlashResult{
+				SystemMessage: "/compact failed: " + err.Error(),
+			}, nil
+		case res.Skipped:
+			return coretui.SlashResult{
+				SystemMessage: "/compact: nothing to summarize yet (empty session). Run at least one turn first.",
+			}, nil
+		default:
+			return coretui.SlashResult{
+				SystemMessage: fmt.Sprintf(
+					"Compacted. Summary written (%d chars, %s). Prior events will be sliced from the next turn's context; the full audit log is preserved in the session.",
+					len(res.SummaryText), res.Duration.Round(0).String()),
+			}, nil
+		}
 	}
 	return coretui.SlashResult{}, fmt.Errorf("unknown slash: %s", name)
 }

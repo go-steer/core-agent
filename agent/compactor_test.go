@@ -215,6 +215,76 @@ func TestCompactIfNeeded_SkipsWhenUnderThreshold(t *testing.T) {
 	}
 }
 
+// TestCompactingService_AppendEvent_UnwrapsSlicedSession is the
+// regression test for the smoke-§4 bug ("unexpected session type
+// *agent.slicedSession for session ID default"). The runner calls
+// our compactingService.Get to load history, gets back a
+// *slicedSession wrapper, then later calls AppendEvent with that
+// wrapped session as the second argument. The inner service
+// type-asserts the session and rejects anything that isn't its
+// own concrete type — so AppendEvent has to unwrap first.
+//
+// Without the fix, this test fails with the same error operators
+// see in the chat.
+func TestCompactingService_AppendEvent_UnwrapsSlicedSession(t *testing.T) {
+	t.Parallel()
+	inner := session.InMemoryService()
+	ctx := context.Background()
+
+	// Create + seed the session through the inner service, then
+	// plant a summary event so Get() returns a *slicedSession.
+	const appName, userID, sessionID = "test-app", "test-user", "test-session"
+	if _, err := inner.Create(ctx, &session.CreateRequest{AppName: appName, UserID: userID, SessionID: sessionID}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	getResp, err := inner.Get(ctx, &session.GetRequest{AppName: appName, UserID: userID, SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("Get pre-seed: %v", err)
+	}
+	if err := inner.AppendEvent(ctx, getResp.Session, mkEvent(genai.RoleUser, "old prompt")); err != nil {
+		t.Fatalf("AppendEvent pre-seed: %v", err)
+	}
+	if err := inner.AppendEvent(ctx, getResp.Session, mkSummaryEvent("compacted state")); err != nil {
+		t.Fatalf("AppendEvent summary: %v", err)
+	}
+
+	// Now exercise the wrapper exactly as the runner would.
+	wrapped := &compactingService{inner: inner}
+	wResp, err := wrapped.Get(ctx, &session.GetRequest{AppName: appName, UserID: userID, SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("wrapped.Get: %v", err)
+	}
+	if _, isSliced := wResp.Session.(*slicedSession); !isSliced {
+		t.Fatalf("wrapped.Get returned %T, want *slicedSession (summary was present so it should be wrapped)", wResp.Session)
+	}
+
+	// THIS is the call the runner makes that previously failed
+	// with "unexpected session type *agent.slicedSession". After
+	// the fix, AppendEvent unwraps before delegating.
+	ev := mkEvent(genai.RoleUser, "fresh prompt post-compact")
+	if err := wrapped.AppendEvent(ctx, wResp.Session, ev); err != nil {
+		t.Fatalf("AppendEvent with sliced session must unwrap and succeed; got %v", err)
+	}
+
+	// The new event landed in the REAL underlying session, not
+	// just in the sliced view (which is read-only from the
+	// wrapper's perspective). Verify by reading back through the
+	// inner service directly.
+	rawResp, err := inner.Get(ctx, &session.GetRequest{AppName: appName, UserID: userID, SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("inner.Get post-append: %v", err)
+	}
+	var found bool
+	for raw := range rawResp.Session.Events().All() {
+		if raw != nil && contentText(raw.Content) == "fresh prompt post-compact" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("fresh event didn't land in underlying session storage; sliced-session unwrap must pass through to inner")
+	}
+}
+
 // --- test helpers ---
 
 // plantEvent writes a synthetic event to the agent's session so

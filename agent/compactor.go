@@ -463,6 +463,15 @@ func (s *compactingService) Delete(ctx context.Context, req *session.DeleteReque
 }
 
 func (s *compactingService) AppendEvent(ctx context.Context, sess session.Session, ev *session.Event) error {
+	// Unwrap if this is one of our sliced views — the inner
+	// session.Service type-asserts the session to its own
+	// concrete type (e.g. ADK's InMemoryService rejects
+	// *slicedSession with "unexpected session type"). Reads went
+	// through the wrapper to get a sliced Events() view; writes
+	// must go straight back to the real backing storage.
+	if sliced, ok := sess.(*slicedSession); ok {
+		sess = sliced.inner
+	}
 	return s.inner.AppendEvent(ctx, sess, ev)
 }
 

@@ -85,9 +85,12 @@ func TestCompact_WritesSummaryEvent(t *testing.T) {
 	// The summary event should be findable in the session with the
 	// correct CustomMetadata markers + focus.
 	events := loadAllSessionEvents(t, a)
-	idx, ev := findLatestCompactionSummary(events)
+	idx, ev, tag := findLatestBoundary(events)
 	if idx < 0 || ev == nil {
 		t.Fatalf("compaction summary event not found in session; events=%d", len(events))
+	}
+	if tag != CompactionEventTag {
+		t.Errorf("tag = %q, want %q (compaction summary)", tag, CompactionEventTag)
 	}
 	if got := ev.CustomMetadata[CompactionFocusKey]; got != "focus on the auth module" {
 		t.Errorf("CompactionFocusKey = %v, want focus on the auth module", got)
@@ -121,7 +124,7 @@ func TestSliceFromSummary_NoSummaryIsIdentity(t *testing.T) {
 		mkEvent(genai.RoleModel, "b"),
 		mkEvent(genai.RoleUser, "c"),
 	}
-	out := sliceFromSummary(events)
+	out := sliceFromBoundary(events)
 	if len(out) != len(events) {
 		t.Errorf("expected pass-through when no summary present; got len=%d", len(out))
 	}
@@ -135,7 +138,7 @@ func TestSliceFromSummary_DropsPreSummaryEvents(t *testing.T) {
 	post1 := mkEvent(genai.RoleUser, "fresh prompt after compaction")
 	events := []*session.Event{pre1, pre2, summary, post1}
 
-	out := sliceFromSummary(events)
+	out := sliceFromBoundary(events)
 
 	if len(out) != 2 {
 		t.Fatalf("sliced len = %d, want 2 (summary + post1)", len(out))

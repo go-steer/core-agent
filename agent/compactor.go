@@ -177,9 +177,11 @@ type CompactionResult struct {
 var ErrNoCompactor = errors.New("agent: no compactor wired (pass WithCompactor at agent.New)")
 
 // Compact runs an out-of-band summarizer LLM call against the
-// current session's history and writes the result as a marker
-// event the history-slicing path in Run picks up on the next turn.
-// Used both programmatically and by the TUI's /compact slash.
+// current session's history and writes the result as a "summary"
+// marker event the history-slicing path in Run picks up on the
+// next turn. Used both programmatically and by the TUI's /compact
+// slash. See Agent.Checkpoint for the task-boundary variant that
+// shares this machinery.
 //
 // focus is an optional hint for the summarizer ("focus on the
 // auth-rewrite thread"). Empty is fine — the default prompt
@@ -197,48 +199,99 @@ func (a *Agent) Compact(ctx context.Context, focus string) (CompactionResult, er
 	if a.compactor == nil {
 		return CompactionResult{}, ErrNoCompactor
 	}
+	out, err := a.runSummarizer(ctx, summarizerSpec{
+		operation:         "Compact",
+		systemInstruction: a.compactor.SummarizerInstruction(focus),
+		tag:               CompactionEventTag,
+		noteKey:           CompactionFocusKey,
+		note:              focus,
+	})
+	if err != nil {
+		return CompactionResult{}, err
+	}
+	if out.Skipped {
+		return CompactionResult{Skipped: true}, nil
+	}
+	a.mu.Lock()
+	a.compactionPending = false
+	a.mu.Unlock()
+	return CompactionResult{
+		SummaryEventID: out.SummaryEventID,
+		SummaryText:    out.SummaryText,
+		Duration:       out.Duration,
+	}, nil
+}
+
+// summarizerSpec carries the per-call configuration runSummarizer
+// needs to write either a "summary" (compaction) or "checkpoint"
+// (task-boundary) marker event. Internal contract — not exported.
+type summarizerSpec struct {
+	operation         string         // "Compact" | "Checkpoint" — for error messages
+	systemInstruction string         // model-facing prompt
+	tag               string         // CompactionEventTag | CheckpointEventTag
+	noteKey           string         // CompactionFocusKey | CheckpointNoteKey
+	note              string         // operator hint or task note (empty OK)
+	extraMetadata     map[string]any // optional additional CustomMetadata to merge
+}
+
+// summarizerOutcome bundles the per-call result fields the public
+// Compact / Checkpoint methods map into their respective result
+// types. Internal contract — not exported.
+type summarizerOutcome struct {
+	SummaryEventID string
+	SummaryText    string
+	Duration       time.Duration
+	Skipped        bool
+}
+
+// runSummarizer is the shared body for Compact and Checkpoint. It
+// loads the unsliced session history, runs a tool-less LLM call
+// with the supplied system instruction, and persists the result
+// as a marker event with the spec's tag + metadata. Returns
+// Skipped=true (no error) when there's no history to summarize.
+//
+// Callers (Compact / Checkpoint) are responsible for the wired-
+// implementation precondition checks (ErrNoCompactor / ErrNoCheckpointer)
+// before calling this — runSummarizer assumes the agent has a
+// model and session.Service.
+func (a *Agent) runSummarizer(ctx context.Context, spec summarizerSpec) (summarizerOutcome, error) {
 	if a.model == nil {
-		return CompactionResult{}, errors.New("agent: Compact: no model wired (construct via agent.New)")
+		return summarizerOutcome{}, fmt.Errorf("agent: %s: no model wired (construct via agent.New)", spec.operation)
 	}
 	if a.sessionService == nil {
-		return CompactionResult{}, errors.New("agent: Compact: no session.Service wired")
+		return summarizerOutcome{}, fmt.Errorf("agent: %s: no session.Service wired", spec.operation)
 	}
 
-	// Load the full session history — unsliced. Compact is the one
-	// place that wants to see EVERYTHING (so the summary can capture
-	// the early-conversation context that's about to be dropped from
-	// future turns).
+	// Load the full session history — unsliced. The summarizer is
+	// the one place that wants to see EVERYTHING (so the summary
+	// can capture the early-conversation context that's about to
+	// be dropped from future turns).
 	history, err := a.sessionHistory(ctx)
 	if err != nil {
-		return CompactionResult{}, fmt.Errorf("agent: Compact: load history: %w", err)
+		return summarizerOutcome{}, fmt.Errorf("agent: %s: load history: %w", spec.operation, err)
 	}
 	if len(history) == 0 {
 		// Nothing to summarize. Don't write an empty marker — that
 		// would cause the next turn to start with a useless "[no
 		// history]" prefix.
-		return CompactionResult{Skipped: true}, nil
+		return summarizerOutcome{Skipped: true}, nil
 	}
 
-	systemInstruction := a.compactor.SummarizerInstruction(focus)
 	req := &adkmodel.LLMRequest{
 		Contents: history,
 		Config: &genai.GenerateContentConfig{
-			SystemInstruction: genai.NewContentFromText(systemInstruction, genai.RoleUser),
+			SystemInstruction: genai.NewContentFromText(spec.systemInstruction, genai.RoleUser),
 		},
-		// Tools intentionally nil — compaction is a tool-less
-		// summarization, like AskSideQuestion.
+		// Tools intentionally nil — summarization is tool-less.
 	}
 
 	start := time.Now()
 	var b strings.Builder
 	for resp, err := range a.model.GenerateContent(ctx, req, false) {
 		if err != nil {
-			return CompactionResult{}, fmt.Errorf("agent: Compact: generate: %w", err)
+			return summarizerOutcome{}, fmt.Errorf("agent: %s: generate: %w", spec.operation, err)
 		}
-		if resp == nil || resp.Content == nil {
-			continue
-		}
-		if resp.Partial {
+		if resp == nil || resp.Content == nil || resp.Partial {
 			continue
 		}
 		for _, p := range resp.Content.Parts {
@@ -250,26 +303,14 @@ func (a *Agent) Compact(ctx context.Context, focus string) (CompactionResult, er
 	elapsed := time.Since(start)
 	summary := strings.TrimSpace(b.String())
 	if summary == "" {
-		return CompactionResult{}, errors.New("agent: Compact: model returned no summary text")
+		return summarizerOutcome{}, fmt.Errorf("agent: %s: model returned no summary text", spec.operation)
 	}
 
-	// Persist the summary as a session event with the compaction
-	// marker. The history-slicing path in Run scans for this marker
-	// on the next turn and uses it as the new history baseline.
-	id, err := a.appendCompactionEvent(ctx, summary, focus)
+	id, err := a.appendBoundaryEvent(ctx, summary, spec)
 	if err != nil {
-		return CompactionResult{}, fmt.Errorf("agent: Compact: persist: %w", err)
+		return summarizerOutcome{}, fmt.Errorf("agent: %s: persist: %w", spec.operation, err)
 	}
-
-	if a.compactor != nil {
-		// Clear any pending flag — we just compacted, no need to
-		// re-fire on the next turn.
-		a.mu.Lock()
-		a.compactionPending = false
-		a.mu.Unlock()
-	}
-
-	return CompactionResult{
+	return summarizerOutcome{
 		SummaryEventID: id,
 		SummaryText:    summary,
 		Duration:       elapsed,
@@ -338,11 +379,14 @@ func (a *Agent) runPendingCompaction(ctx context.Context) {
 	}
 }
 
-// appendCompactionEvent writes a marker event carrying the summary
-// text to the session. The event's CustomMetadata carries
-// CompactionMetadataKey: CompactionEventTag so the history-slicing
-// scanner finds it cheaply.
-func (a *Agent) appendCompactionEvent(ctx context.Context, summary, focus string) (string, error) {
+// appendBoundaryEvent writes a marker event (either summary or
+// checkpoint, per spec.tag) carrying the summary text to the
+// session. The event's CustomMetadata carries
+// CompactionMetadataKey: spec.tag so the history-slicing scanner
+// in sliceFromBoundary finds it cheaply, plus the spec.noteKey
+// holding the operator/model note, plus any extra metadata the
+// caller wants to attach (e.g. CheckpointStartedKey).
+func (a *Agent) appendBoundaryEvent(ctx context.Context, summary string, spec summarizerSpec) (string, error) {
 	resp, err := a.sessionService.Get(ctx, &session.GetRequest{
 		AppName:   a.appName,
 		UserID:    a.userID,
@@ -354,16 +398,22 @@ func (a *Agent) appendCompactionEvent(ctx context.Context, summary, focus string
 	if resp == nil || resp.Session == nil {
 		return "", errors.New("session not found")
 	}
+	md := map[string]any{
+		CompactionMetadataKey: spec.tag,
+	}
+	if spec.noteKey != "" {
+		md[spec.noteKey] = spec.note
+	}
+	for k, v := range spec.extraMetadata {
+		md[k] = v
+	}
 	ev := &session.Event{
-		ID:        newCompactionEventID(),
+		ID:        newBoundaryEventID(spec.tag),
 		Author:    a.agentName,
 		Timestamp: time.Now(),
 		LLMResponse: adkmodel.LLMResponse{
-			Content: genai.NewContentFromText(summary, genai.RoleModel),
-			CustomMetadata: map[string]any{
-				CompactionMetadataKey: CompactionEventTag,
-				CompactionFocusKey:    focus,
-			},
+			Content:        genai.NewContentFromText(summary, genai.RoleModel),
+			CustomMetadata: md,
 		},
 	}
 	if err := a.sessionService.AppendEvent(ctx, resp.Session, ev); err != nil {
@@ -372,79 +422,94 @@ func (a *Agent) appendCompactionEvent(ctx context.Context, summary, focus string
 	return ev.ID, nil
 }
 
-// newCompactionEventID returns a unique-enough event ID. Format
-// mirrors what ADK and our checkpoint events do — a stable prefix
-// for log filtering plus a time-ordered nanos suffix.
-func newCompactionEventID() string {
-	return fmt.Sprintf("compaction-%d", time.Now().UnixNano())
+// newBoundaryEventID returns a unique-enough event ID, prefixed
+// with the boundary tag so audit-log greps can filter cheaply.
+// Format: "<tag>-<unix-nanos>".
+func newBoundaryEventID(tag string) string {
+	return fmt.Sprintf("%s-%d", tag, time.Now().UnixNano())
 }
 
-// findLatestCompactionSummary scans events newest-first for one
-// carrying the CompactionMetadataKey marker. Returns the matching
-// index and event, or (-1, nil) when none found.
+// findLatestBoundary scans events newest-first for one carrying
+// the CompactionMetadataKey marker with EITHER recognized value
+// (CompactionEventTag for compaction summaries, CheckpointEventTag
+// for task-boundary checkpoints). Both kinds act as history-
+// slicing boundaries — the latest one wins.
 //
-// Exported (lowercase) for internal use by the history-slicing path
-// in Run and for unit tests in the package.
-func findLatestCompactionSummary(events []*session.Event) (int, *session.Event) {
+// Returns the matching index, event, and the tag value found
+// (caller may want to distinguish for telemetry). Returns
+// (-1, nil, "") when no boundary marker is present.
+func findLatestBoundary(events []*session.Event) (int, *session.Event, string) {
 	for i := len(events) - 1; i >= 0; i-- {
 		ev := events[i]
 		if ev == nil || ev.CustomMetadata == nil {
 			continue
 		}
-		if v, ok := ev.CustomMetadata[CompactionMetadataKey]; ok {
-			if s, ok := v.(string); ok && s == CompactionEventTag {
-				return i, ev
-			}
+		v, ok := ev.CustomMetadata[CompactionMetadataKey]
+		if !ok {
+			continue
+		}
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		if s == CompactionEventTag || s == CheckpointEventTag {
+			return i, ev, s
 		}
 	}
-	return -1, nil
+	return -1, nil, ""
 }
 
 // compactionPrefix wraps the summary text on the user-side so the
 // resuming model treats it as prior-conversation context rather
-// than as a fresh task description. Without this, models tend to
-// read the structured "# Current state / # Files & changes / …"
-// handover document as instructions for a new task and start
-// exploring the filesystem — observed during the v2.0 smoke
-// sweep when the operator asked "recap what we discussed" after
-// /compact and the model fired list_dir 7 times instead of using
-// the summary that was right there in its context.
+// than as a fresh task description. The wording is deliberately
+// imperative about what to do when the user asks about prior
+// discussion — without that, models read the structured handover
+// as opaque "latent state" they need to verify by running tools.
 //
-// Claude Code dodges this by stripping the handover sections and
-// relying on `CLAUDE.md` to tell the model "always treat the
-// first user message as prior-conversation context." We don't
-// have that contract, so we frame the summary explicitly.
-const compactionPrefix = "[Conversation compacted — what follows is a structured handover summary of our prior discussion. Treat it as conversational context (NOT as a fresh task description) and continue from where it left off when you respond to my next message.]\n\n"
+// Iteration history:
+//   - v1 (PR I): "Treat it as conversational context (NOT as a
+//     fresh task description)." Fixed slicing-engaged-but-empty
+//     symptom (model ran list_dir 7 times after /compact). But
+//     Gemini Flash still interpreted "recap" requests as
+//     "acknowledge you have context" rather than "list what was
+//     discussed" — it understood the summary was THERE but didn't
+//     understand it was QUOTABLE.
+//   - v2 (PR III): names the recap-class failure mode directly +
+//     forbids tool-based rediscovery. Paired with the new
+//     DefaultInstruction sentence below for belt-and-suspenders
+//     coverage on instruction-following-weak models.
+const compactionPrefix = "[Conversation compacted. Below is the handover summary of everything we discussed. When the user asks what we discussed, recapped, covered, or worked on, read FROM the summary and answer with its contents — do not run tools to rediscover what's already written here.]\n\n"
 
 const compactionSuffix = "\n\n[End of summary. The actual user message follows below.]"
 
-// sliceFromSummary returns events from the summary forward, with
-// the summary itself rewritten to RoleUser and wrapped with
-// framing so the resuming model treats it as "the user told me
-// this is where we are" rather than as an opaque structured
-// document.
+// sliceFromBoundary returns events from the latest boundary
+// (summary OR checkpoint) forward, with the boundary event itself
+// rewritten to RoleUser and wrapped with framing so the resuming
+// model treats it as "the user told me this is where we are"
+// rather than as an opaque structured document.
 //
 // The original events slice is not mutated; a new slice is
-// returned containing a shallow copy of the summary event with
+// returned containing a shallow copy of the boundary event with
 // the rewritten role + prefix/suffix framing parts.
 //
-// When no summary is present (no matching index), returns the
-// original slice unchanged.
-func sliceFromSummary(events []*session.Event) []*session.Event {
-	idx, summary := findLatestCompactionSummary(events)
-	if idx < 0 || summary == nil {
+// When no boundary is present, returns the original slice
+// unchanged.
+func sliceFromBoundary(events []*session.Event) []*session.Event {
+	idx, boundary, _ := findLatestBoundary(events)
+	if idx < 0 || boundary == nil {
 		return events
 	}
-	// Shallow-copy the summary event so we can rewrite its role
+	// Shallow-copy the boundary event so we can rewrite its role
 	// and wrap its parts without mutating the audit log.
-	rewritten := *summary
-	if summary.Content != nil {
-		c := *summary.Content
+	rewritten := *boundary
+	if boundary.Content != nil {
+		c := *boundary.Content
 		c.Role = genai.RoleUser
 		// Frame the summary text so the model understands it's
 		// prior-conversation context. Prefix tells it what's
 		// coming; suffix marks the boundary back to the operator's
-		// actual question.
+		// actual question. Same framing for both summary and
+		// checkpoint kinds — the model treats both the same way.
 		framed := make([]*genai.Part, 0, len(c.Parts)+2)
 		framed = append(framed, &genai.Part{Text: compactionPrefix})
 		framed = append(framed, c.Parts...)
@@ -518,9 +583,9 @@ func (s *compactingService) Get(ctx context.Context, req *session.GetRequest) (*
 	for ev := range resp.Session.Events().All() {
 		all = append(all, ev)
 	}
-	sliced := sliceFromSummary(all)
+	sliced := sliceFromBoundary(all)
 	if len(sliced) == len(all) {
-		// No summary; pass through unchanged.
+		// No boundary marker; pass through unchanged.
 		return resp, nil
 	}
 	resp.Session = &slicedSession{inner: resp.Session, events: sliced}

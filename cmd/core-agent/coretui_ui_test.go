@@ -89,3 +89,23 @@ func TestUIMouseToCoreTui_NilCfg(t *testing.T) {
 		t.Errorf("nil cfg: got non-nil pointer, want nil")
 	}
 }
+
+func TestAgentDisplayName_Set(t *testing.T) {
+	cfg := &config.Config{Agent: config.AgentConfig{DisplayName: "scion"}}
+	if got := agentDisplayName(cfg); got != "scion" {
+		t.Errorf("got %q, want %q", got, "scion")
+	}
+}
+
+func TestAgentDisplayName_Empty(t *testing.T) {
+	cfg := &config.Config{}
+	if got := agentDisplayName(cfg); got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
+func TestAgentDisplayName_NilCfg(t *testing.T) {
+	if got := agentDisplayName(nil); got != "" {
+		t.Errorf("nil cfg: got %q, want empty", got)
+	}
+}

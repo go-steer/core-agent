@@ -26,13 +26,17 @@ import (
 )
 
 // captureLLM is a tiny adkmodel.LLM that records every request it's
-// asked to generate, so the /btw tests can assert what conversation
-// history reached the model and that no tools were attached.
+// asked to generate, so tests can assert what conversation history
+// reached the model. Optionally emits UsageMetadata (inputTokens /
+// outputTokens) so cost-rollup tests can verify the parent's
+// tracker picks up subtask usage.
 type captureLLM struct {
-	mu       sync.Mutex
-	reqs     []*adkmodel.LLMRequest
-	response string
-	err      error
+	mu           sync.Mutex
+	reqs         []*adkmodel.LLMRequest
+	response     string
+	err          error
+	inputTokens  int32 // optional: include in UsageMetadata on the response
+	outputTokens int32 // optional: include in UsageMetadata on the response
 }
 
 func (l *captureLLM) Name() string { return "capture" }
@@ -42,16 +46,26 @@ func (l *captureLLM) GenerateContent(_ context.Context, req *adkmodel.LLMRequest
 	l.reqs = append(l.reqs, req)
 	resp := l.response
 	err := l.err
+	in := l.inputTokens
+	out := l.outputTokens
 	l.mu.Unlock()
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
 		if err != nil {
 			yield(nil, err)
 			return
 		}
-		yield(&adkmodel.LLMResponse{
+		r := &adkmodel.LLMResponse{
 			Content:      &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: resp}}},
 			TurnComplete: true,
-		}, nil)
+		}
+		if in > 0 || out > 0 {
+			r.UsageMetadata = &genai.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:     in,
+				CandidatesTokenCount: out,
+				TotalTokenCount:      in + out,
+			}
+		}
+		yield(r, nil)
 	}
 }
 

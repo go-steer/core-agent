@@ -113,9 +113,11 @@ func main() {
 	noPricingRefresh := flag.Bool("no-pricing-refresh", false, "skip the daily pricing-catalog refresh from LiteLLM at startup. Use for air-gapped pods, CI runs, or any environment without outbound network. Overrides cfg.pricing.refresh.")
 	noCompact := flag.Bool("no-compact", false, "disable automatic context-window compaction. /compact slash still works for manual summarization, but the post-turn threshold trigger is off. Use when running headless against a model whose window is huge enough that compaction would never fire anyway, or when debugging an issue where you don't want history rewrites in play.")
 	noCheckpoint := flag.Bool("no-checkpoint", false, "disable task-boundary checkpoints. /done slash + the model-facing mark_task_done tool are both removed. Use when running headless where the model shouldn't self-signal task completion, or when debugging an issue where you don't want auto-slicing in play.")
+	agenticTools := flag.Bool("agentic-tools", false, "register the agentic tool wrappers (agentic_read_file, agentic_fetch_url, agentic_grep, agentic_research) that route through a subtask so only the digest enters the parent's context (docs/context-management-design.md Mechanism B). Opt-in for v2.0; may flip to default-on in v2.1 once dogfooded.")
+	agenticSmallModel := flag.String("agentic-small-model", "", "small/cheap model ID the agentic_* wrappers should route subtasks to (e.g. gemini-2.5-flash). When empty, subtasks inherit the parent's model (still works — just doesn't realize the cost-efficiency win). Requires --agentic-tools.")
 	flag.Parse()
 
-	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint,
+	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *agenticTools, *agenticSmallModel,
 		attachOpts{
 			Listen:           *attachListen,
 			UnixSocket:       *attachUnixSocket,
@@ -185,7 +187,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	return opts
 }
 
-func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, attachCfg attachOpts) int {
+func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint, agenticTools bool, agenticSmallModel string, attachCfg attachOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -420,6 +422,25 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		builtinTools = append(builtinTools, agent.NewBackgroundSpawnTools(bgMgr)...)
 	}
 
+	// Agentic tool wrappers (docs/context-management-design.md
+	// Mechanism B). Opt-in via --agentic-tools. Each wrapper
+	// routes its operation through Agent.RunSubtask so only the
+	// digest reaches the parent's context — raw tool output stays
+	// in the subtask. Late-bound *Agent via agentRef closure;
+	// agentRef is populated after agent.New returns. The inner
+	// tools the subtask runs are pulled from builtinTools by
+	// canonical name, so the subtask shares the parent's gate +
+	// output caps.
+	var agentRef *agent.Agent
+	if agenticTools {
+		agTools, err := buildAgenticTools(builtinTools, func() *agent.Agent { return agentRef }, provider, agenticSmallModel)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: agentic tools: %v\n", err)
+			return runner.ExitConfigError
+		}
+		builtinTools = append(builtinTools, agTools...)
+	}
+
 	opts := []agent.Option{
 		agent.WithTools(builtinTools),
 		agent.WithToolsets(allToolsets),
@@ -453,6 +474,14 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 	if !noCheckpoint {
 		opts = append(opts, agent.WithCheckpointer(agent.NewDefaultCheckpointer()))
 	}
+	// Late-bind agentRef for the agentic tool wrappers (Mechanism
+	// B). The wrappers were registered above with an AgentGetter
+	// closure that captures &agentRef; once agent.New finishes
+	// constructing the *Agent, this hook fires so the closure
+	// resolves to a non-nil pointer on the model's first call. No-
+	// op when --agentic-tools was off (agentRef is unused but
+	// captured into a closure that nothing ever invokes).
+	opts = append(opts, agent.WithPostConstruct(func(a *agent.Agent) { agentRef = a }))
 
 	// Durable sessions + audit log. Either flag enables: --session-db
 	// alone uses the default path (~/.<binary>/sessions.db);

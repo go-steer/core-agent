@@ -46,7 +46,50 @@ type Config struct {
 	URLScope    URLScopeConfig    `json:"url_scope,omitempty"`
 	Attach      AttachConfig      `json:"attach,omitempty"`
 	Pricing     PricingFileConfig `json:"pricing,omitempty"`
+	UI          UIConfig          `json:"ui,omitempty"`
 }
+
+// UIConfig holds presentation choices for the in-process TUI
+// (both internal/tui and the core-tui adapter). Both fields are
+// optional with sensible defaults — operators only need to set
+// what they want to override.
+type UIConfig struct {
+	// Theme picks the Glamour rendering style for assistant
+	// markdown. One of:
+	//   - "auto"  (default) — detect via terminal background query.
+	//   - "dark"            — force dark theme; skips the OSC-11 query.
+	//   - "light"           — force light theme; skips the OSC-11 query.
+	//
+	// Explicit "dark"/"light" is preferred on terminals where the
+	// background query is unreliable (some SSH stacks, tmux
+	// passthrough quirks). Empty string is equivalent to "auto".
+	Theme string `json:"theme,omitempty"`
+
+	// Mouse enables terminal mouse capture so the wheel scrolls the
+	// chat viewport. When enabled, plain click-drag no longer selects
+	// text — terminals route around the capture when Shift is held
+	// (Shift-drag to select, copy as usual). Pointer so unset means
+	// "use the default" (true). Toggle at runtime with /mouse.
+	Mouse *bool `json:"mouse,omitempty"`
+}
+
+// MouseEnabled reports whether mouse capture should be on at
+// startup. Defaults to true when the field is unset.
+func (u UIConfig) MouseEnabled() bool {
+	if u.Mouse == nil {
+		return true
+	}
+	return *u.Mouse
+}
+
+// Theme constants for UIConfig.Theme. Validation in validateUI
+// rejects any other non-empty value so a typo doesn't silently
+// fall through to the default.
+const (
+	ThemeAuto  = "auto"
+	ThemeDark  = "dark"
+	ThemeLight = "light"
+)
 
 // PricingFileConfig governs the pricing-catalog refresh behavior —
 // distinct from ModelConfig.Pricing (which is the per-model rate
@@ -362,6 +405,11 @@ func DefaultConfig() *Config {
 		OTEL: OTELConfig{
 			Exporter: "none",
 		},
+		UI: UIConfig{
+			Theme: ThemeAuto,
+			// Mouse left nil so MouseEnabled() returns the default
+			// (true). Explicit override via config or /mouse.
+		},
 	}
 }
 
@@ -408,6 +456,12 @@ func (c *Config) Validate() error {
 		if !validAccessSpec(e.Access) {
 			return fmt.Errorf("config: path_scope.allow_paths[%d].access=%q must be r, w, or rw (read / write / readwrite accepted)", i, e.Access)
 		}
+	}
+	switch c.UI.Theme {
+	case "", ThemeAuto, ThemeDark, ThemeLight:
+		// ok; "" is equivalent to "auto".
+	default:
+		return fmt.Errorf("config: unknown ui.theme %q (want one of %q, %q, %q)", c.UI.Theme, ThemeAuto, ThemeDark, ThemeLight)
 	}
 	return nil
 }

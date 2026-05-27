@@ -75,6 +75,46 @@ When asked about the weather, reply with a witty observation about the sky.`
 	}
 }
 
+func TestLoad_SanitizesExtendedFrontmatter(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	skill := filepath.Join(dir, SkillDirName, "extended-skill")
+	if err := os.MkdirAll(skill, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `---
+name: extended-skill
+description: A skill that uses Claude Skills 2.0 extension features
+user-invocable: true
+disable-model-invocation: false
+compatibility:
+  go: ">=1.20"
+  charm.land/bubbletea: ">=v2.0"
+metadata:
+  origin: reference-implementation
+  scope: testing-scopes
+references:
+  - references/example1.md
+  - references/example2.md
+---
+
+Some instruction body content.`
+	if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Load(context.Background(), dir, nil)
+	if err != nil {
+		t.Fatalf("Load should have succeeded after sanitizing, but got: %v", err)
+	}
+	if got.Empty() {
+		t.Fatal("expected skills loaded")
+	}
+	if len(got.Infos) != 1 || got.Infos[0].Name != "extended-skill" {
+		t.Errorf("infos = %+v", got.Infos)
+	}
+}
+
 func TestLoad_EmptySkillsDir(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

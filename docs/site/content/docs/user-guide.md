@@ -313,6 +313,16 @@ This creates `~/.core-agent/sessions.db` (SQLite). Every turn — every prompt, 
 
 For team-shared sessions or higher-throughput workloads, point at Postgres or MySQL via `--session-db-path=postgres://...`. See [Sessions and event log](../sessions/) for the full Stream API (`Since(seq)`, `Watch(seq)`) and the audit-log shape.
 
+## Keeping long sessions alive — context management
+
+Long-running sessions hit two failure modes the model can't recover from on its own. First, the conversation eventually outgrows the context window and the next turn errors out. Second, raw tool output — a 5,000-line file read, a 200KB URL fetch, a grep with hundreds of hits — bloats the parent's context window even while it's still working. `core-agent` ships three mechanisms (see [`docs/context-management-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/context-management-design.md) for the full design):
+
+- **Compaction** (default-on, disable with `--no-compact`) — automatic post-turn check at ~85% context utilization. When over threshold, the next turn fires a tool-less summarizer call that writes a "teammate handover" recap into the session and slices history at that boundary. Manual: `/compact [focus]` slash (alias `/summarize`).
+- **Task-boundary checkpoints** (default-on, disable with `--no-checkpoint`) — at natural task boundaries the model can call `mark_task_done(detail)` (or the operator types `/done [note]`, alias `/checkpoint`) and a richer six-section completion record gets written; history is sliced at that boundary so the next task starts fresh.
+- **Agentic tool wrappers** (opt-in, enable with `--agentic-tools`) — registers `agentic_read_file`, `agentic_fetch_url`, `agentic_grep`, and `agentic_research` alongside the bare tools. The wrappers route the operation through a single-purpose subtask on a cheaper model (set via `--agentic-small-model <id>`, e.g. `gemini-2.5-flash`) and return only the digest to the parent. Raw tool output never enters the parent's context. The model picks the wrapper over the bare tool based on tool descriptions ("Use INSTEAD OF read_file when the file might be large...").
+
+The three layer cleanly: compaction is the reactive backstop, checkpoints carve the session into focused chunks, and agentic wrappers prevent the bloat from landing in the first place. Disable any of them with the flags above when you specifically don't want them — e.g. `--no-compact` for short headless one-shots where compaction would never fire anyway, or skip `--agentic-tools` while the wrappers are still being dogfooded.
+
 ## Cost and observability
 
 `core-agent` tracks token usage and cost per turn against a built-in price table. The chat-style output surfaces a usage summary at the end of every one-shot run:

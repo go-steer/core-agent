@@ -186,6 +186,7 @@ type options struct {
 	tracker         *usage.Tracker
 	compactor       Compactor
 	checkpointer    Checkpointer
+	postConstruct   func(*Agent)
 }
 
 func defaultOptions() options {
@@ -413,6 +414,21 @@ func WithCheckpointer(c Checkpointer) Option {
 	return func(o *options) { o.checkpointer = c }
 }
 
+// WithPostConstruct registers a callback invoked once the *Agent
+// is fully built (right before New returns). Useful for late-
+// binding patterns where the caller needs the agent pointer to
+// wire something they registered earlier — e.g., an externally-
+// constructed tool whose handler closure captured a *Agent
+// placeholder. The hook fires on the happy path only; if New
+// returns an error the hook is not called.
+//
+// One hook per agent. Calling WithPostConstruct twice keeps the
+// last one (Option-pattern overwrite semantics, same as other
+// scalar With* options).
+func WithPostConstruct(f func(*Agent)) Option {
+	return func(o *options) { o.postConstruct = f }
+}
+
 // New constructs an Agent backed by model. Returns a clear error if the
 // underlying ADK constructors reject the configuration.
 func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
@@ -536,6 +552,9 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		if _, err := a.attachRegistrar.Register(a); err != nil {
 			return nil, fmt.Errorf("agent: attach registry: %w", err)
 		}
+	}
+	if o.postConstruct != nil {
+		o.postConstruct(a)
 	}
 	return a, nil
 }

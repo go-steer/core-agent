@@ -433,14 +433,30 @@ func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
 	case DecisionAllowAlways:
 		g.rememberSession(req.ToolName, req.Detail)
 		if req.Kind == PromptKindPathScope {
-			// Persist only the op the prompt was for — granting rw
-			// from one prompt would surprise the operator who said
-			// "always allow this read" and inadvertently authorized
-			// future writes too. The next write to the same path
-			// re-prompts and they can grant write separately.
+			// Asymmetric op promotion from the interactive prompt:
+			//   write-always → install ReadWrite
+			//   read-always  → install Read (writes still gate)
+			//
+			// Rationale: every realistic workflow that writes a
+			// file also reads it back (verify, then edit, then
+			// re-read). The reverse is NOT true — granting write
+			// from a read prompt would surprise the operator who
+			// said "always allow this read" and silently broaden
+			// their grant.
+			//
+			// Write-only paths are a deliberate security posture
+			// (append-only logs, credential-drop dirs, one-way
+			// exports) and are still expressible directly in
+			// .agents/config.json with `"path:w"` syntax. We just
+			// don't reach that state through an interactive
+			// always-allow click — operators who want it
+			// configure it explicitly.
 			access := req.Access
-			if access == AccessNone {
+			switch access {
+			case AccessNone:
 				access = AccessRead
+			case AccessWrite:
+				access = AccessReadWrite
 			}
 			g.scope.AddAlwaysAllow(expandAlwaysAllowPattern(req.PersistKey), access)
 		}

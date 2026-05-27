@@ -416,6 +416,38 @@ func TestGate_PathScopeAlways_PersistsOnlyRequestedAccess(t *testing.T) {
 	}
 }
 
+func TestGate_PathScopeAlways_WritePromotesToReadWrite(t *testing.T) {
+	t.Parallel()
+	tree := t.TempDir()
+	scope, err := NewPathScopeFromEntries("", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompter := &fakePrompter{decision: DecisionAllowAlways}
+	g := New(Options{Mode: ModeAsk, Scope: scope, Prompter: prompter})
+
+	// First write prompt → persists ReadWrite (write implies read).
+	target := filepath.Join(tree, "x.txt")
+	if err := g.CheckFileWrite(context.Background(), "write_file", target); err != nil {
+		t.Fatalf("first write should pass via DecisionAllowAlways: %v", err)
+	}
+	// Subsequent read on the same path (and any sibling) should now
+	// skip the prompt entirely — that's the whole point of the
+	// asymmetric promotion: write workflows always need read-after-
+	// write, and re-prompting for read is operator friction.
+	prompter.calls = nil
+	if err := g.CheckFileRead(context.Background(), "read_file", target); err != nil {
+		t.Errorf("read after write-always should be silent: %v", err)
+	}
+	sibling := filepath.Join(tree, "sibling.txt")
+	if err := g.CheckFileRead(context.Background(), "read_file", sibling); err != nil {
+		t.Errorf("sibling read after write-always should be silent (subtree grant): %v", err)
+	}
+	if len(prompter.calls) != 0 {
+		t.Errorf("expected 0 prompts for reads after write-always, got %d", len(prompter.calls))
+	}
+}
+
 func TestExpandAlwaysAllowPattern_DirBecomesSubtree(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

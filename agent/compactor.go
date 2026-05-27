@@ -400,14 +400,33 @@ func findLatestCompactionSummary(events []*session.Event) (int, *session.Event) 
 	return -1, nil
 }
 
-// sliceFromSummary returns events from the summary forward, with
-// the summary itself rewritten to RoleUser so the resuming model
-// treats it as "the user told me this is where we are" rather than
-// as an opaque assistant statement.
+// compactionPrefix wraps the summary text on the user-side so the
+// resuming model treats it as prior-conversation context rather
+// than as a fresh task description. Without this, models tend to
+// read the structured "# Current state / # Files & changes / …"
+// handover document as instructions for a new task and start
+// exploring the filesystem — observed during the v2.0 smoke
+// sweep when the operator asked "recap what we discussed" after
+// /compact and the model fired list_dir 7 times instead of using
+// the summary that was right there in its context.
 //
-// The original events slice is not mutated; a new slice is returned
-// containing a shallow copy of the summary event with the rewritten
-// role.
+// Claude Code dodges this by stripping the handover sections and
+// relying on `CLAUDE.md` to tell the model "always treat the
+// first user message as prior-conversation context." We don't
+// have that contract, so we frame the summary explicitly.
+const compactionPrefix = "[Conversation compacted — what follows is a structured handover summary of our prior discussion. Treat it as conversational context (NOT as a fresh task description) and continue from where it left off when you respond to my next message.]\n\n"
+
+const compactionSuffix = "\n\n[End of summary. The actual user message follows below.]"
+
+// sliceFromSummary returns events from the summary forward, with
+// the summary itself rewritten to RoleUser and wrapped with
+// framing so the resuming model treats it as "the user told me
+// this is where we are" rather than as an opaque structured
+// document.
+//
+// The original events slice is not mutated; a new slice is
+// returned containing a shallow copy of the summary event with
+// the rewritten role + prefix/suffix framing parts.
 //
 // When no summary is present (no matching index), returns the
 // original slice unchanged.
@@ -417,11 +436,20 @@ func sliceFromSummary(events []*session.Event) []*session.Event {
 		return events
 	}
 	// Shallow-copy the summary event so we can rewrite its role
-	// without mutating the audit log.
+	// and wrap its parts without mutating the audit log.
 	rewritten := *summary
 	if summary.Content != nil {
 		c := *summary.Content
 		c.Role = genai.RoleUser
+		// Frame the summary text so the model understands it's
+		// prior-conversation context. Prefix tells it what's
+		// coming; suffix marks the boundary back to the operator's
+		// actual question.
+		framed := make([]*genai.Part, 0, len(c.Parts)+2)
+		framed = append(framed, &genai.Part{Text: compactionPrefix})
+		framed = append(framed, c.Parts...)
+		framed = append(framed, &genai.Part{Text: compactionSuffix})
+		c.Parts = framed
 		rewritten.Content = &c
 	}
 	out := make([]*session.Event, 0, len(events)-idx)

@@ -147,6 +147,16 @@ func TestSliceFromSummary_DropsPreSummaryEvents(t *testing.T) {
 	if !strings.Contains(contentText(out[0].Content), "session compacted") {
 		t.Errorf("summary text not preserved: %q", contentText(out[0].Content))
 	}
+	// Framing wraps the summary so the model reads it as prior-
+	// conversation context, not as a fresh task spec. Smoke
+	// observation: without the prefix, models tend to ignore the
+	// summary and start exploring the filesystem.
+	if !strings.Contains(contentText(out[0].Content), "Conversation compacted") {
+		t.Errorf("summary missing compactionPrefix framing: %q", contentText(out[0].Content))
+	}
+	if !strings.Contains(contentText(out[0].Content), "[End of summary") {
+		t.Errorf("summary missing compactionSuffix framing: %q", contentText(out[0].Content))
+	}
 	// Second entry is the post-summary event, unchanged.
 	if !strings.Contains(contentText(out[1].Content), "fresh prompt") {
 		t.Errorf("post-summary event missing: %q", contentText(out[1].Content))
@@ -154,6 +164,9 @@ func TestSliceFromSummary_DropsPreSummaryEvents(t *testing.T) {
 	// Original event must NOT be mutated.
 	if summary.Content.Role != genai.RoleModel {
 		t.Errorf("original summary event mutated! role now %q", summary.Content.Role)
+	}
+	if len(summary.Content.Parts) != 1 {
+		t.Errorf("original summary parts mutated! len now %d (should still be 1, the raw summary text)", len(summary.Content.Parts))
 	}
 }
 
@@ -212,6 +225,91 @@ func TestCompactIfNeeded_SkipsWhenUnderThreshold(t *testing.T) {
 	}
 	if len(llm.reqs) != 0 {
 		t.Errorf("LLM called under threshold; want skipped")
+	}
+}
+
+// TestRun_PostCompactRequestContainsSummary is the end-to-end
+// regression test for the user-reported bug "model has no context
+// after /compact." Simulates the exact scenario:
+//
+//  1. Three prior turns (user prompts + model responses) land in
+//     the session via the runner.
+//  2. /compact runs (Agent.Compact writes a summary event).
+//  3. A new user prompt arrives via Agent.Run.
+//  4. Assert the LLMRequest the model receives on step 3 includes
+//     the summary text.
+//
+// Without slicing working correctly, step 4 fails — either the
+// summary is missing (slicing dropped it) or the full history
+// reaches the model (slicing isn't engaging at all). Both are
+// real bugs we hit during the smoke sweep.
+func TestRun_PostCompactRequestContainsSummary(t *testing.T) {
+	t.Parallel()
+	llm := &captureLLM{response: "ack"}
+	a, err := New(llm, WithCompactor(NewDefaultCompactor()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Three rounds of synthetic prior conversation to mirror the
+	// smoke sweep's "what are the main subsystems / pick one / what
+	// would a v3 look like" pattern.
+	plantEvent(t, a, genai.RoleUser, "what are the main subsystems in this repo?")
+	plantEvent(t, a, genai.RoleModel, "agent, models, tools, mcp, skills, permissions, …")
+	plantEvent(t, a, genai.RoleUser, "pick one and walk me through its package layout")
+	plantEvent(t, a, genai.RoleModel, "Permissions has gate.go, policy.go, scope.go, …")
+	plantEvent(t, a, genai.RoleUser, "what would a v3 look like? two paragraphs")
+	plantEvent(t, a, genai.RoleModel, "v3 would add hierarchical bounded delegation + semantic gating, …")
+
+	// Step 2 — compact. Use a distinctive summary string so the
+	// final assertion can find it.
+	llm.response = "[COMPACT-MARKER]\n# Current state\nWe walked through permissions and sketched v3."
+	res, err := a.Compact(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if res.Skipped {
+		t.Fatalf("Compact reported Skipped; want a real summary write")
+	}
+
+	// Step 3 — new turn via the real runner. Drain the iterator so
+	// the runner actually fires the LLM call (lazy iter).
+	llm.reqs = nil // reset capture buffer
+	llm.response = "got it, drawn from the summary"
+	for ev, err := range a.Run(context.Background(), "recap what we discussed about this repo") {
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		_ = ev
+	}
+
+	// Step 4 — assert. The LAST request the LLM saw on this turn
+	// should include the summary's distinctive marker somewhere in
+	// its Contents. Without slicing, the Contents would also include
+	// the 6 pre-compact events; with broken slicing, it might omit
+	// the summary entirely.
+	req := llm.lastRequest()
+	if req == nil {
+		t.Fatalf("model wasn't called on Run; iterator drain didn't fire ADK's LLM call")
+	}
+	var allText strings.Builder
+	for _, c := range req.Contents {
+		if c == nil {
+			continue
+		}
+		for _, p := range c.Parts {
+			if p != nil && p.Text != "" {
+				allText.WriteString(p.Text)
+				allText.WriteByte('\n')
+			}
+		}
+	}
+	combined := allText.String()
+	if !strings.Contains(combined, "[COMPACT-MARKER]") {
+		t.Errorf("LLMRequest.Contents missing the summary marker after /compact + Run; the slicing wrapper is either not engaging or dropping the summary event.\n\nCombined Contents text:\n%s", combined)
+	}
+	if strings.Contains(combined, "what are the main subsystems in this repo?") {
+		t.Errorf("LLMRequest.Contents includes pre-compact event text; slicing should have dropped it.\n\nCombined Contents text:\n%s", combined)
 	}
 }
 

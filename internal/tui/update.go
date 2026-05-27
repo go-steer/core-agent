@@ -193,6 +193,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case btwResultMsg:
 		return m.handleBTWResult(msg)
+	case compactResultMsg:
+		return m.handleCompactResult(msg)
 	}
 	// Unhandled — forward typing/etc. to the textarea.
 	var cmd tea.Cmd
@@ -850,6 +852,8 @@ func (m *Model) handleSlash(action SlashAction, cmd, args string) (tea.Model, te
 		return m.handleBTWCommand(args)
 	case SlashSubagent:
 		return m.handleSubagentCommand(args)
+	case SlashCompact:
+		return m.handleCompactCommand(args)
 	case SlashModel:
 		return m.handleModelCommand(args)
 	case SlashQuit:

@@ -817,27 +817,77 @@ func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (
 	return coretui.SlashResult{}, fmt.Errorf("unknown slash: %s", name)
 }
 
-// InvokeSlashAsync satisfies coretui.AsyncSlashProvider (core-tui
-// v0.6, issue #10). The synchronous InvokeSlash above runs inside
-// core-tui's Update loop and freezes the TUI for the duration of
-// any slash that does network I/O (/btw, /compact, /subagent all
-// take 1-10s on a real model). The async variant runs the same
-// work in a goroutine and posts the result on a channel core-tui
-// selects on — TUI stays responsive throughout.
+// InvokeSlashAsync satisfies coretui.AsyncSlashProviderWithPreamble
+// (core-tui v0.6.3, issue #16 / our #55). The synchronous
+// InvokeSlash above runs inside core-tui's Update loop and freezes
+// the TUI for the duration of any slash that does network I/O
+// (/btw, /compact, /subagent all take 1-10s on a real model). The
+// async variant runs the same work in a goroutine and posts the
+// result on a channel core-tui selects on — TUI stays responsive
+// throughout.
 //
-// We implement this as a thin goroutine wrapper around the sync
-// path so the slash logic itself stays in one place. Buffered
-// channel of size 1 so the goroutine can send-and-exit cleanly
-// even if core-tui's receiver hasn't started yet (it does start
-// promptly, but defense against future scheduling changes).
-func (a *coreAgentAdapter) InvokeSlashAsync(ctx context.Context, name, args string) <-chan coretui.SlashResultOrErr {
+// The preamble (first return value) is appended to chat as a
+// RoleSystem row at dispatch time, BEFORE the result channel is
+// drained. Empty preamble = no row (back to bare-async behavior).
+// The bottom-bar toast (▸ /<name> running…) fires regardless;
+// the preamble is the in-chat reinforcement for slashes whose
+// wall-clock is long enough that the toast alone is easy to miss
+// (~5s+). Per-command wording in preambleFor below.
+//
+// Buffered channel of size 1 so the goroutine can send-and-exit
+// cleanly even if core-tui's receiver hasn't started yet (it does
+// start promptly, but defense against future scheduling changes).
+func (a *coreAgentAdapter) InvokeSlashAsync(ctx context.Context, name, args string) (string, <-chan coretui.SlashResultOrErr) {
+	preamble := preambleFor(name, args)
 	ch := make(chan coretui.SlashResultOrErr, 1)
 	go func() {
 		defer close(ch)
 		res, err := a.InvokeSlash(ctx, name, args)
 		ch <- coretui.SlashResultOrErr{Res: res, Err: err}
 	}()
-	return ch
+	return preamble, ch
+}
+
+// preambleFor returns the chat-visible "this is running" row for
+// async slashes whose wall-clock makes the bottom toast easy to
+// miss. Returning "" skips the row entirely — that's the right
+// answer for fast slashes (/context, /stats — though those go
+// through the sync path) and for slashes we haven't classified
+// yet. New long-running slashes should add a case here when they
+// land.
+//
+// Wording rule: present tense ("Capturing…", "Summarizing…"),
+// echo the operator's arg when it would be useful to confirm the
+// command was parsed correctly (the /done note, the /compact
+// focus). The completion message — the SystemMessage in the slash
+// handler's return — lands BELOW this row when the work finishes,
+// so the two together read as "started X / finished X with Y."
+func preambleFor(name, args string) string {
+	args = strings.TrimSpace(args)
+	switch name {
+	case "done", "checkpoint":
+		if args == "" {
+			return "Capturing checkpoint summary…"
+		}
+		return "Capturing checkpoint summary (note: " + args + ")…"
+	case "compact", "summarize":
+		if args == "" {
+			return "Summarizing session for context compaction…"
+		}
+		return "Summarizing session for context compaction (focus: " + args + ")…"
+	case "btw", "by-the-way":
+		// /btw runs AskSideQuestion — one tool-less LLM call, 1-5s
+		// on a real model. The result lands in a modal so the
+		// SystemMessage path isn't used; the preamble is the only
+		// in-chat feedback the operator gets that the side
+		// question is in flight.
+		if args == "" {
+			return "Asking the model a side question…"
+		}
+		return "Asking the model: " + args
+	default:
+		return ""
+	}
 }
 
 // gatePrompterBridge adapts a core-tui PermissionPrompter so it

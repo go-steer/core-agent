@@ -16,6 +16,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -178,6 +179,29 @@ func renderContextStats(s agent.ContextStats) string {
 	} else {
 		fmt.Fprintf(&b, "  Subtasks:     %d (%d in / %d out tokens, $%.4f rolled up to /stats total)\n",
 			s.SubtaskCount, s.SubtaskInputTokens, s.SubtaskOutputTokens, s.SubtaskCostUSD)
+	}
+
+	// Per-model breakdown — only populated when >1 model was
+	// used (typically parent on Pro/Opus + subtasks on Flash/
+	// Haiku via --agentic-small-model). Sorted by descending
+	// cost so the priciest model leads the row.
+	if len(s.ModelBreakdown) > 0 {
+		models := make([]string, 0, len(s.ModelBreakdown))
+		for m := range s.ModelBreakdown {
+			models = append(models, m)
+		}
+		sort.Slice(models, func(i, j int) bool {
+			return s.ModelBreakdown[models[i]].CostUSD > s.ModelBreakdown[models[j]].CostUSD
+		})
+		b.WriteString("  Models:       ")
+		for i, m := range models {
+			t := s.ModelBreakdown[m]
+			if i > 0 {
+				b.WriteString(" + ")
+			}
+			fmt.Fprintf(&b, "%s (%d turns, %d in / %d out, $%.4f)", m, t.Turns, t.InputTokens, t.OutputTokens, t.CostUSD)
+		}
+		b.WriteByte('\n')
 	}
 
 	return strings.TrimRight(b.String(), "\n")

@@ -312,6 +312,18 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 		turnComplete bool
 		runErr       error
 	)
+	// Per-turn cumulative usage tracking. Gemini's UsageMetadata is
+	// CUMULATIVE across streaming chunks within one model turn — the
+	// last chunk carries the final count, all earlier chunks carry
+	// running totals. If we Append on every chunk we'd both inflate
+	// the tracker's turn count (one Append per chunk) AND
+	// double-count tokens (summing cumulative running totals). The
+	// fix mirrors runner/headless.go's tapUsage pattern: overwrite
+	// last-seen per event, commit ONCE per TurnComplete. The reset-
+	// to-zero after Append keeps multi-turn subtasks accurate (a
+	// subtask that does read_file + summarize fires two TurnComplete
+	// events, each with its own per-turn usage to commit).
+	var lastTurnIn, lastTurnOut int
 
 	// ADK's runner.Run iterates events for ONE turn-as-the-runner-
 	// sees-it. Multi-turn = call Run multiple times with each new
@@ -330,21 +342,12 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 		if ev == nil {
 			continue
 		}
-		// Accumulate usage from any event that carries metadata.
+		// Track usage cumulatively per turn (overwrite, don't
+		// sum — see comment above). The final per-turn values
+		// commit to the tracker on TurnComplete below.
 		if ev.UsageMetadata != nil {
-			turnIn := int(ev.UsageMetadata.PromptTokenCount)
-			turnOut := int(ev.UsageMetadata.CandidatesTokenCount)
-			totalIn += turnIn
-			totalOut += turnOut
-			// Roll cost up to parent tracker so /stats shows it.
-			// Pricing comes from the subtask's model name. When
-			// the parent has no tracker wired, this is a no-op.
-			if a.tracker != nil {
-				modelName := subModel.Name()
-				pricing := usage.PriceFor(modelName, nil)
-				turn := a.tracker.Append(modelName, turnIn, turnOut, pricing)
-				totalCostUSD += turn.CostUSD
-			}
+			lastTurnIn = int(ev.UsageMetadata.PromptTokenCount)
+			lastTurnOut = int(ev.UsageMetadata.CandidatesTokenCount)
 		}
 		// Capture final text. collectFinalText filters out
 		// partials so we don't double-count streaming chunks.
@@ -354,6 +357,22 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 		// any tool-call loops inside the turn).
 		if ev.TurnComplete {
 			turnsUsed++
+			// Commit this turn's usage exactly once. Roll cost
+			// up to the parent tracker so /stats shows it;
+			// pricing comes from the subtask's model name. When
+			// the parent has no tracker wired, the local totals
+			// still flow into SubtaskResult/ContextStats.
+			if lastTurnIn > 0 || lastTurnOut > 0 {
+				totalIn += lastTurnIn
+				totalOut += lastTurnOut
+				if a.tracker != nil {
+					modelName := subModel.Name()
+					pricing := usage.PriceFor(modelName, nil)
+					turn := a.tracker.Append(modelName, lastTurnIn, lastTurnOut, pricing)
+					totalCostUSD += turn.CostUSD
+				}
+				lastTurnIn, lastTurnOut = 0, 0
+			}
 			if turnsUsed >= maxTurns {
 				turnComplete = true
 				break

@@ -127,3 +127,56 @@ func TestTracker_LastEmpty(t *testing.T) {
 		t.Errorf("expected !ok on empty tracker")
 	}
 }
+
+func TestTracker_TotalsByModel(t *testing.T) {
+	t.Parallel()
+	tr := NewTracker()
+	pro := Pricing{InputPerMTok: 3.0, OutputPerMTok: 12.0}
+	flash := Pricing{InputPerMTok: 0.15, OutputPerMTok: 0.60}
+
+	// 2 parent turns on pro + 3 subtask turns on flash.
+	tr.Append("gemini-3.1-pro", 10_000, 500, pro)
+	tr.Append("gemini-2.5-flash", 5_000, 200, flash)
+	tr.Append("gemini-3.1-pro", 8_000, 300, pro)
+	tr.Append("gemini-2.5-flash", 3_000, 100, flash)
+	tr.Append("gemini-2.5-flash", 4_000, 150, flash)
+
+	byModel := tr.TotalsByModel()
+	if len(byModel) != 2 {
+		t.Fatalf("TotalsByModel returned %d models, want 2", len(byModel))
+	}
+	pt, ok := byModel["gemini-3.1-pro"]
+	if !ok {
+		t.Fatalf("pro model missing from TotalsByModel")
+	}
+	if pt.Turns != 2 || pt.InputTokens != 18_000 || pt.OutputTokens != 800 {
+		t.Errorf("pro totals = %+v, want Turns=2 In=18000 Out=800", pt)
+	}
+	ft, ok := byModel["gemini-2.5-flash"]
+	if !ok {
+		t.Fatalf("flash model missing from TotalsByModel")
+	}
+	if ft.Turns != 3 || ft.InputTokens != 12_000 || ft.OutputTokens != 450 {
+		t.Errorf("flash totals = %+v, want Turns=3 In=12000 Out=450", ft)
+	}
+	// Grand total should match plain Totals().
+	all := tr.Totals()
+	if pt.Turns+ft.Turns != all.Turns {
+		t.Errorf("per-model turns (%d+%d) != Totals().Turns (%d)", pt.Turns, ft.Turns, all.Turns)
+	}
+	if pt.InputTokens+ft.InputTokens != all.InputTokens {
+		t.Errorf("per-model input (%d+%d) != Totals().InputTokens (%d)", pt.InputTokens, ft.InputTokens, all.InputTokens)
+	}
+}
+
+func TestTracker_TotalsByModelEmpty(t *testing.T) {
+	t.Parallel()
+	tr := NewTracker()
+	got := tr.TotalsByModel()
+	if got == nil {
+		t.Errorf("TotalsByModel should return non-nil empty map for empty tracker")
+	}
+	if len(got) != 0 {
+		t.Errorf("TotalsByModel on empty tracker = %v, want empty", got)
+	}
+}

@@ -87,3 +87,50 @@ func TestSplitFunctionResponse_NonStringError(t *testing.T) {
 		t.Errorf("expected empty errStr for non-string error value, got %q", errStr)
 	}
 }
+
+// TestPreambleFor pins the chat-visible "running…" rows that
+// AsyncSlashProviderWithPreamble surfaces at dispatch (core-tui
+// v0.6.3, issue #55). Unknown slashes return "" so they fall
+// through to bare-async behavior; classified slashes echo the
+// arg when supplied so the row confirms the command parsed
+// correctly.
+func TestPreambleFor(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		args   string
+		expect string // exact match; "" means no preamble (row skipped)
+	}{
+		// /done — with and without a note
+		{"done", "", "Capturing checkpoint summary…"},
+		{"done", "finished surveying messageKinds", "Capturing checkpoint summary (note: finished surveying messageKinds)…"},
+		{"checkpoint", "alias works too", "Capturing checkpoint summary (note: alias works too)…"},
+		{"done", "   trimmed   ", "Capturing checkpoint summary (note: trimmed)…"},
+
+		// /compact — with and without focus
+		{"compact", "", "Summarizing session for context compaction…"},
+		{"compact", "auth module", "Summarizing session for context compaction (focus: auth module)…"},
+		{"summarize", "alias works too", "Summarizing session for context compaction (focus: alias works too)…"},
+
+		// /btw — with and without a question
+		{"btw", "", "Asking the model a side question…"},
+		{"btw", "what was that file again?", "Asking the model: what was that file again?"},
+		{"by-the-way", "alias works", "Asking the model: alias works"},
+
+		// Unknown slash — no preamble (falls through to bare-async)
+		{"unknown", "", ""},
+		{"unknown", "with args", ""},
+		{"context", "", ""},         // /context is fast (sync handler), no preamble needed
+		{"subagent", "spawn x", ""}, // /subagent is a TODO stub today, no preamble until it does real work
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name+"_"+tc.args, func(t *testing.T) {
+			t.Parallel()
+			got := preambleFor(tc.name, tc.args)
+			if got != tc.expect {
+				t.Errorf("preambleFor(%q, %q) = %q, want %q", tc.name, tc.args, got, tc.expect)
+			}
+		})
+	}
+}

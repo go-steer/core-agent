@@ -142,15 +142,24 @@ type Agent struct {
 	checkpointer    Checkpointer
 
 	// mu guards cancelInFlight + compactionPending + checkpoint
-	// flags and any other per-run mutable state we add later. Held
-	// only across short store-and-clear operations; never across
-	// an LLM call.
+	// flags + subtask counters. Held only across short store-and-
+	// clear operations; never across an LLM call.
 	mu                    sync.Mutex
 	cancelInFlight        context.CancelFunc
 	compactionPending     bool
 	checkpointRequested   bool   // flipped by mark_task_done tool handler during a turn
 	checkpointPending     bool   // promoted from checkpointRequested by post-turn hook
 	pendingCheckpointNote string // detail from the mark_task_done call (or /done arg)
+	// Subtask counters surface through ContextStats so /context can
+	// show how much of the parent's reported cost came from
+	// Mechanism-B subtasks vs parent turns. usage.Tracker bundles
+	// both into one totals view because pricing per-turn doesn't
+	// know whether the turn came from a subtask; these counters
+	// give us the breakdown without touching the tracker.
+	subtaskCount        int
+	subtaskInputTokens  int
+	subtaskOutputTokens int
+	subtaskCostUSD      float64
 }
 
 // attachRegistrar is the subset of *attach.SessionRegistry the agent

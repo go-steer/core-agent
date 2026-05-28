@@ -372,6 +372,8 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 	// natural-finish case; we use turnsUsed to distinguish.)
 	truncated := !turnComplete || (turnsUsed >= maxTurns && !lastEventWasTurnComplete(turnsUsed, maxTurns))
 
+	a.recordSubtaskUsage(totalIn, totalOut, totalCostUSD)
+
 	return SubtaskResult{
 		Name:         spec.Name,
 		Digest:       strings.TrimSpace(digest.String()),
@@ -382,6 +384,23 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 		Duration:     elapsed,
 		TurnsUsed:    turnsUsed,
 	}, nil
+}
+
+// recordSubtaskUsage bumps the Agent's subtask counters that
+// ContextStats surfaces. Called once per RunSubtask after the
+// per-event totals are summed. Safe to call with zeros — the
+// subtask still happened (caller can show it in /context as a
+// count even when usage tracking was off).
+func (a *Agent) recordSubtaskUsage(inputTokens, outputTokens int, costUSD float64) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.subtaskCount++
+	a.subtaskInputTokens += inputTokens
+	a.subtaskOutputTokens += outputTokens
+	a.subtaskCostUSD += costUSD
+	a.mu.Unlock()
 }
 
 // lastEventWasTurnComplete is a stub for the "did we naturally

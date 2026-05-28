@@ -714,6 +714,11 @@ func (a *coreAgentAdapter) SlashCommands() []coretui.SlashCommandSpec {
 			Description: "write a task-boundary checkpoint and slice prior events from future turns: /done [note]",
 		})
 	}
+	cmds = append(cmds, coretui.SlashCommandSpec{
+		Name:        "context",
+		Aliases:     []string{"boundaries"},
+		Description: "show context-management activity for this session (compactions, checkpoints, subtask usage)",
+	})
 	return cmds
 }
 
@@ -771,6 +776,15 @@ func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (
 					noteFragment, len(res.SummaryText), res.Duration.Round(0).String()),
 			}, nil
 		}
+	case "context", "boundaries":
+		// /context renders Agent.ContextStats — boundary counts,
+		// total summary chars, subtask cost rollup. Companion to
+		// /stats: /stats shows token totals + cost, /context shows
+		// the SHAPE of the conversation (what's been compressed,
+		// what came from subtasks).
+		return coretui.SlashResult{
+			SystemMessage: renderContextStats(a.inner.ContextStats()),
+		}, nil
 	case "compact", "summarize":
 		// NOTE: core-tui v0.5 calls InvokeSlash synchronously from
 		// its Update loop (see core-tui#10). The compactor's LLM call

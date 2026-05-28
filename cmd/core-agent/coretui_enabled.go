@@ -679,9 +679,16 @@ func (b *coreUsageBridge) SessionTurns() int              { return b.inner.Total
 func (b *coreUsageBridge) SessionDuration() time.Duration { return b.inner.Duration() }
 
 // SlashCommands satisfies coretui.SlashProvider. Surfaces /btw,
-// /subagent, and /compact to the palette + /help.
+// /subagent, /compact, and /done to the palette + /help. The
+// context-management commands (/compact, /done) are gated on
+// whether their respective machinery was wired — relaunching with
+// --no-compact / --no-checkpoint removes them from /help and the
+// palette so operators don't see commands that would only error
+// out. Same gate the InvokeSlash handlers below use; the gate is
+// surface-level only, the agent's HasCompactor / HasCheckpointer
+// is the single source of truth.
 func (a *coreAgentAdapter) SlashCommands() []coretui.SlashCommandSpec {
-	return []coretui.SlashCommandSpec{
+	cmds := []coretui.SlashCommandSpec{
 		{
 			Name:        "btw",
 			Aliases:     []string{"by-the-way"},
@@ -692,17 +699,27 @@ func (a *coreAgentAdapter) SlashCommands() []coretui.SlashCommandSpec {
 			Aliases:     []string{"sub"},
 			Description: "spawn a background sub-agent: /subagent <goal> [--name=X --tools=Y --max-turns=N]",
 		},
-		{
+	}
+	if a.inner.HasCompactor() {
+		cmds = append(cmds, coretui.SlashCommandSpec{
 			Name:        "compact",
 			Aliases:     []string{"summarize"},
 			Description: "summarize the conversation so far and slice prior events from future turns: /compact [focus]",
-		},
-		{
+		})
+	}
+	if a.inner.HasCheckpointer() {
+		cmds = append(cmds, coretui.SlashCommandSpec{
 			Name:        "done",
 			Aliases:     []string{"checkpoint"},
 			Description: "write a task-boundary checkpoint and slice prior events from future turns: /done [note]",
-		},
+		})
 	}
+	cmds = append(cmds, coretui.SlashCommandSpec{
+		Name:        "context",
+		Aliases:     []string{"boundaries"},
+		Description: "show context-management activity for this session (compactions, checkpoints, subtask usage)",
+	})
+	return cmds
 }
 
 // InvokeSlash satisfies coretui.SlashProvider. /btw calls
@@ -759,6 +776,15 @@ func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (
 					noteFragment, len(res.SummaryText), res.Duration.Round(0).String()),
 			}, nil
 		}
+	case "context", "boundaries":
+		// /context renders Agent.ContextStats — boundary counts,
+		// total summary chars, subtask cost rollup. Companion to
+		// /stats: /stats shows token totals + cost, /context shows
+		// the SHAPE of the conversation (what's been compressed,
+		// what came from subtasks).
+		return coretui.SlashResult{
+			SystemMessage: renderContextStats(a.inner.ContextStats()),
+		}, nil
 	case "compact", "summarize":
 		// NOTE: core-tui v0.5 calls InvokeSlash synchronously from
 		// its Update loop (see core-tui#10). The compactor's LLM call

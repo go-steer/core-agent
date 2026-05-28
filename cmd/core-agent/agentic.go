@@ -16,6 +16,8 @@ package main
 
 import (
 	"fmt"
+	"strings"
+	"time"
 
 	adktool "google.golang.org/adk/tool"
 
@@ -117,4 +119,66 @@ func toolNames(ts []adktool.Tool) []string {
 		out[i] = t.Name()
 	}
 	return out
+}
+
+// renderContextStats formats Agent.ContextStats as a multi-line
+// SystemMessage for the /context (alias /boundaries) slash. Empty
+// sections collapse to a one-line "no X yet" so a fresh session
+// still gets a meaningful response. Format intentionally mirrors
+// /stats' two-column key-value layout for visual parity.
+func renderContextStats(s agent.ContextStats) string {
+	var b strings.Builder
+	b.WriteString("Context-management activity:\n")
+
+	// Compactions section.
+	if s.CompactionCount == 0 {
+		b.WriteString("  Compactions:  none yet (fires when context utilization crosses the threshold; manual via /compact)\n")
+	} else {
+		fmt.Fprintf(&b, "  Compactions:  %d", s.CompactionCount)
+		if !s.LastCompactionTime.IsZero() {
+			fmt.Fprintf(&b, " (last %s ago", time.Since(s.LastCompactionTime).Round(time.Second).String())
+			if s.LastCompactionFocus != "" {
+				fmt.Fprintf(&b, ", focus: %s", s.LastCompactionFocus)
+			}
+			b.WriteString(")")
+		}
+		b.WriteByte('\n')
+	}
+
+	// Checkpoints section.
+	if s.CheckpointCount == 0 {
+		b.WriteString("  Checkpoints:  none yet (fired by /done or the model calling mark_task_done)\n")
+	} else {
+		fmt.Fprintf(&b, "  Checkpoints:  %d", s.CheckpointCount)
+		if !s.LastCheckpointTime.IsZero() {
+			fmt.Fprintf(&b, " (last %s ago", time.Since(s.LastCheckpointTime).Round(time.Second).String())
+			if s.LastCheckpointNote != "" {
+				note := s.LastCheckpointNote
+				if len(note) > 80 {
+					note = note[:77] + "..."
+				}
+				fmt.Fprintf(&b, ", note: %s", note)
+			}
+			b.WriteString(")")
+		}
+		b.WriteByte('\n')
+	}
+
+	// Total chars summarized — the "how much got compressed"
+	// proxy. Hidden when nothing's compressed yet.
+	if s.TotalSummaryChars > 0 {
+		fmt.Fprintf(&b, "  Summarized:   %d chars across all boundaries\n", s.TotalSummaryChars)
+	}
+
+	// Subtask rollup. Only show when subtasks actually ran —
+	// most sessions won't use agentic_* wrappers and this row
+	// would just be noise.
+	if s.SubtaskCount == 0 {
+		b.WriteString("  Subtasks:     none yet (fires when the model calls agentic_read_file/grep/fetch_url/research — opt-in via --agentic-tools)\n")
+	} else {
+		fmt.Fprintf(&b, "  Subtasks:     %d (%d in / %d out tokens, $%.4f rolled up to /stats total)\n",
+			s.SubtaskCount, s.SubtaskInputTokens, s.SubtaskOutputTokens, s.SubtaskCostUSD)
+	}
+
+	return strings.TrimRight(b.String(), "\n")
 }

@@ -480,7 +480,37 @@ func findLatestBoundary(events []*session.Event) (int, *session.Event, string) {
 //     coverage on instruction-following-weak models.
 const compactionPrefix = "[Conversation compacted. Below is the handover summary of everything we discussed. When the user asks what we discussed, recapped, covered, or worked on, read FROM the summary and answer with its contents — do not run tools to rediscover what's already written here.]\n\n"
 
+// checkpointPrefix is the kind-specific framing for task-boundary
+// checkpoint events. Compaction's prefix above works for the
+// "we hit the context wall mid-task" case but failed in the
+// 2026-05-27 smoke for the checkpoint case: the checkpoint
+// summary starts with a "# Task" section that flash-tier models
+// read as "everything's done, fresh start" — and then they treat
+// the next prompt as a NEW task and re-run tools the summary
+// already records. This prefix names the conversation-continues
+// invariant explicitly + addresses the recap case for prior-task
+// questions specifically, since "what we discussed" framing
+// doesn't quite cover "what files did we touch last task." Same
+// suffix as compaction.
+const checkpointPrefix = "[The prior task is complete and its conversation history has been sliced from your context. A completion record of that task is below — read it as authoritative shared knowledge of what was done. The conversation CONTINUES from here; the next user message is part of the SAME ongoing session, not a fresh start. When the user asks anything about the prior task — what was done, what files were touched, what was learned, recap, summary, status — read FROM the record below and answer with its contents. Do not re-run tools to rediscover what's already recorded here.]\n\n"
+
 const compactionSuffix = "\n\n[End of summary. The actual user message follows below.]"
+
+// prefixForTag picks the right user-side framing for a boundary
+// event based on its CompactionMetadataKey value. Defaults to the
+// compaction prefix for unknown tags so a forward-compat scenario
+// (newer agent writes a new boundary kind, older code reads it)
+// degrades to the safer wording.
+func prefixForTag(tag string) string {
+	switch tag {
+	case CheckpointEventTag:
+		return checkpointPrefix
+	case CompactionEventTag:
+		return compactionPrefix
+	default:
+		return compactionPrefix
+	}
+}
 
 // sliceFromBoundary returns events from the latest boundary
 // (summary OR checkpoint) forward, with the boundary event itself
@@ -495,7 +525,7 @@ const compactionSuffix = "\n\n[End of summary. The actual user message follows b
 // When no boundary is present, returns the original slice
 // unchanged.
 func sliceFromBoundary(events []*session.Event) []*session.Event {
-	idx, boundary, _ := findLatestBoundary(events)
+	idx, boundary, tag := findLatestBoundary(events)
 	if idx < 0 || boundary == nil {
 		return events
 	}
@@ -508,10 +538,12 @@ func sliceFromBoundary(events []*session.Event) []*session.Event {
 		// Frame the summary text so the model understands it's
 		// prior-conversation context. Prefix tells it what's
 		// coming; suffix marks the boundary back to the operator's
-		// actual question. Same framing for both summary and
-		// checkpoint kinds — the model treats both the same way.
+		// actual question. Prefix is kind-aware (compaction vs
+		// checkpoint) because the model interprets the two
+		// summary shapes differently — see prefixForTag for
+		// the why.
 		framed := make([]*genai.Part, 0, len(c.Parts)+2)
-		framed = append(framed, &genai.Part{Text: compactionPrefix})
+		framed = append(framed, &genai.Part{Text: prefixForTag(tag)})
 		framed = append(framed, c.Parts...)
 		framed = append(framed, &genai.Part{Text: compactionSuffix})
 		c.Parts = framed

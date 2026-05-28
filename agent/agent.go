@@ -76,7 +76,7 @@ Tools execute in parallel by default. Execute multiple independent tool calls in
 
 Do not issue multiple ` + "`edit_file`" + ` or ` + "`write_file`" + ` calls targeting the same path in one response — those must run sequentially across turns so each edit sees the prior result; parallel writes to the same file race and corrupt state. Efficiency is secondary to correctness: if you are unsure whether two operations are independent, run them sequentially.
 
-If earlier conversation has been summarized into context for you (it will arrive wrapped in "[Conversation compacted…]" framing), treat that summary as authoritative shared history — read from it directly when the user references prior discussion, rather than re-running tools to rediscover what's already there.`
+Earlier conversation may have been summarized into context for you in one of two shapes: "[Conversation compacted…]" framing (we hit the context wall mid-task and the prior turns were condensed), or "[The prior task is complete…]" framing (the prior task closed cleanly and a handover record replaces its history). Both arrive wrapped at the start of your context, both are authoritative shared history. Read FROM them when the user references prior work — what was discussed, what files were touched, what was decided, recap, summary, status — rather than re-running tools to rediscover what's already recorded there. The conversation continues in both cases; treat the framing as picking up an in-progress session, not as a fresh start.`
 
 // DefaultSchedulingInstruction is the composable system-instruction
 // constant for autonomous loops that have a tools.Scheduler installed
@@ -142,15 +142,24 @@ type Agent struct {
 	checkpointer    Checkpointer
 
 	// mu guards cancelInFlight + compactionPending + checkpoint
-	// flags and any other per-run mutable state we add later. Held
-	// only across short store-and-clear operations; never across
-	// an LLM call.
+	// flags + subtask counters. Held only across short store-and-
+	// clear operations; never across an LLM call.
 	mu                    sync.Mutex
 	cancelInFlight        context.CancelFunc
 	compactionPending     bool
 	checkpointRequested   bool   // flipped by mark_task_done tool handler during a turn
 	checkpointPending     bool   // promoted from checkpointRequested by post-turn hook
 	pendingCheckpointNote string // detail from the mark_task_done call (or /done arg)
+	// Subtask counters surface through ContextStats so /context can
+	// show how much of the parent's reported cost came from
+	// Mechanism-B subtasks vs parent turns. usage.Tracker bundles
+	// both into one totals view because pricing per-turn doesn't
+	// know whether the turn came from a subtask; these counters
+	// give us the breakdown without touching the tracker.
+	subtaskCount        int
+	subtaskInputTokens  int
+	subtaskOutputTokens int
+	subtaskCostUSD      float64
 }
 
 // attachRegistrar is the subset of *attach.SessionRegistry the agent
@@ -598,6 +607,30 @@ func (a *Agent) SessionService() session.Service { return a.sessionService }
 // reach back to Stream.Since / Stream.Watch for replay or live tail
 // without keeping a separate reference.
 func (a *Agent) EventLog() *eventlog.Handle { return a.eventLog }
+
+// HasCompactor reports whether a Compactor was wired via
+// WithCompactor. Hosts use this to gate operator-facing surfaces:
+// don't list `/compact` in `/help` when there's nothing to invoke.
+// Same idea as nil-checking a.compactor directly, but exported so
+// adapters living outside the agent package don't need a
+// reflection trick.
+func (a *Agent) HasCompactor() bool {
+	if a == nil {
+		return false
+	}
+	return a.compactor != nil
+}
+
+// HasCheckpointer reports whether a Checkpointer was wired via
+// WithCheckpointer. Hosts use this to gate `/done` (and the
+// `/checkpoint` alias) out of `/help` and the slash palette when
+// --no-checkpoint was passed. Same shape as HasCompactor.
+func (a *Agent) HasCheckpointer() bool {
+	if a == nil {
+		return false
+	}
+	return a.checkpointer != nil
+}
 
 // ModelName returns the name of the LLM the agent was constructed
 // with (sourced from model.Name() at New() time). Used by the

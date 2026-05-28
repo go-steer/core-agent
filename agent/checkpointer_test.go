@@ -106,7 +106,7 @@ func TestCheckpoint_WritesCheckpointEventWithNoteAndTag(t *testing.T) {
 		t.Fatalf("LLMRequest.Config.SystemInstruction nil")
 	}
 	sysText := contentText(req.Config.SystemInstruction)
-	if !strings.Contains(sysText, "Task complete") || !strings.Contains(sysText, "Verification & next steps") {
+	if !strings.Contains(sysText, "# Task") || !strings.Contains(sysText, "Verification & next steps") {
 		t.Errorf("system instruction missing checkpoint sections: %q", sysText)
 	}
 	if !strings.Contains(sysText, "rewrote middleware, tests green") {
@@ -134,9 +134,10 @@ func TestFindLatestBoundary_PrefersNewest(t *testing.T) {
 
 func TestSliceFromBoundary_FindsCheckpoints(t *testing.T) {
 	t.Parallel()
-	// A checkpoint slices the same way a summary does — the
-	// shared framing makes the resuming model treat both
-	// identically.
+	// A checkpoint slices the same way a summary does — but the
+	// framing is kind-aware. Checkpoints get the prior-task-
+	// complete-conversation-continues prefix (see checkpointPrefix
+	// for why we differentiate from compaction's wording).
 	pre := mkEvent(genai.RoleUser, "old prompt before checkpoint")
 	cp := mkCheckpointEvent("task complete: auth middleware shipped")
 	post := mkEvent(genai.RoleUser, "now what?")
@@ -146,11 +147,15 @@ func TestSliceFromBoundary_FindsCheckpoints(t *testing.T) {
 	if len(out) != 2 {
 		t.Fatalf("sliced len = %d, want 2 (checkpoint + post)", len(out))
 	}
-	if !strings.Contains(contentText(out[0].Content), "Conversation compacted") {
-		t.Errorf("checkpoint should receive same framing as summary: %q", contentText(out[0].Content))
+	framed := contentText(out[0].Content)
+	if !strings.Contains(framed, "prior task is complete") {
+		t.Errorf("checkpoint should receive checkpoint-specific framing: %q", framed)
 	}
-	if !strings.Contains(contentText(out[0].Content), "task complete: auth middleware") {
-		t.Errorf("checkpoint text not preserved: %q", contentText(out[0].Content))
+	if strings.Contains(framed, "Conversation compacted") {
+		t.Errorf("checkpoint should NOT receive compaction-specific framing: %q", framed)
+	}
+	if !strings.Contains(framed, "task complete: auth middleware") {
+		t.Errorf("checkpoint text not preserved: %q", framed)
 	}
 }
 
@@ -175,6 +180,96 @@ func TestMarkTaskDoneTool_NotRegisteredWithoutCheckpointer(t *testing.T) {
 	}
 	if toolNameRegistered(a, "mark_task_done") {
 		t.Errorf("mark_task_done registered without WithCheckpointer; want opt-in only")
+	}
+}
+
+// TestHasCompactorAndCheckpointer pins the surface-gating predicates
+// hosts use to decide whether to list /compact and /done in
+// /help. Stale predicate values would surface dead slashes to
+// operators who passed --no-compact / --no-checkpoint.
+func TestHasCompactorAndCheckpointer(t *testing.T) {
+	t.Parallel()
+	llm := &captureLLM{response: "ack"}
+
+	t.Run("neither", func(t *testing.T) {
+		t.Parallel()
+		a, err := New(llm)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if a.HasCompactor() || a.HasCheckpointer() {
+			t.Errorf("HasCompactor=%v HasCheckpointer=%v; want both false", a.HasCompactor(), a.HasCheckpointer())
+		}
+	})
+	t.Run("compactor_only", func(t *testing.T) {
+		t.Parallel()
+		a, err := New(llm, WithCompactor(NewDefaultCompactor()))
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if !a.HasCompactor() || a.HasCheckpointer() {
+			t.Errorf("HasCompactor=%v HasCheckpointer=%v; want true,false", a.HasCompactor(), a.HasCheckpointer())
+		}
+	})
+	t.Run("checkpointer_only", func(t *testing.T) {
+		t.Parallel()
+		a, err := New(llm, WithCheckpointer(NewDefaultCheckpointer()))
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if a.HasCompactor() || !a.HasCheckpointer() {
+			t.Errorf("HasCompactor=%v HasCheckpointer=%v; want false,true", a.HasCompactor(), a.HasCheckpointer())
+		}
+	})
+	t.Run("both", func(t *testing.T) {
+		t.Parallel()
+		a, err := New(llm, WithCompactor(NewDefaultCompactor()), WithCheckpointer(NewDefaultCheckpointer()))
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if !a.HasCompactor() || !a.HasCheckpointer() {
+			t.Errorf("HasCompactor=%v HasCheckpointer=%v; want both true", a.HasCompactor(), a.HasCheckpointer())
+		}
+	})
+	t.Run("nil_receiver", func(t *testing.T) {
+		t.Parallel()
+		var a *Agent
+		if a.HasCompactor() || a.HasCheckpointer() {
+			t.Errorf("nil receiver should report false for both")
+		}
+	})
+}
+
+// TestPrefixForTag pins the kind-aware framing decision. Bug
+// surfaced 2026-05-27 smoke: when checkpoint events were wrapped
+// with the compaction prefix, gemini-3.5-flash interpreted the
+// "# Task" leading section as "fresh start" and re-ran tools the
+// summary already recorded. Each tag must map to its purpose-
+// specific prefix; unknown tags fall back to compaction (safer
+// default).
+func TestPrefixForTag(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		tag         string
+		wantPrefix  string
+		mustNotHave string
+	}{
+		{CompactionEventTag, compactionPrefix, checkpointPrefix},
+		{CheckpointEventTag, checkpointPrefix, compactionPrefix},
+		{"", compactionPrefix, ""},       // unknown → compaction default
+		{"future", compactionPrefix, ""}, // forward-compat fallback
+	}
+	for _, tc := range cases {
+		t.Run(tc.tag, func(t *testing.T) {
+			t.Parallel()
+			got := prefixForTag(tc.tag)
+			if got != tc.wantPrefix {
+				t.Errorf("prefixForTag(%q) = %q, want %q", tc.tag, got, tc.wantPrefix)
+			}
+			if tc.mustNotHave != "" && got == tc.mustNotHave {
+				t.Errorf("prefixForTag(%q) returned the wrong prefix (it's the kind we explicitly differentiated from)", tc.tag)
+			}
+		})
 	}
 }
 

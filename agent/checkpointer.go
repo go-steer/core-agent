@@ -119,12 +119,12 @@ func (c *DefaultCheckpointer) CheckpointInstruction(taskNote string) string {
 	return b.String()
 }
 
-const defaultCheckpointHeader = `You are writing a completion record for a task that just finished. The conversation will continue but should pick up cleanly from this point — the prior task's exploration, tool output, and back-and-forth are about to be sliced from the next turn's context.
+const defaultCheckpointHeader = `You are writing a handover record for a task the conversation just finished. The conversation will CONTINUE from this point — the operator may follow up with related questions, refinements, or a new task — but the prior task's exploration, tool output, and back-and-forth are about to be sliced from the next turn's context. Your job is to make sure nothing important is lost when that slicing happens.
 
-Produce a teammate-style handover with these SIX sections in order, using these exact headings:
+Produce a dense teammate-style record with these SIX sections in order, using these exact headings:
 
-# Task complete
-What was the task? What's the headline outcome? One paragraph max.
+# Task
+What was the task? What's the headline outcome? One paragraph max. Do NOT lead with "task complete" or similar terminal language — the conversation continues and the next prompt may still be about this work.
 
 # Files & changes
 Files modified (one-line per file describing the change). Files read or analyzed during the task. Files that were considered and explicitly NOT changed (with why).
@@ -138,10 +138,10 @@ The strategy chosen. Alternatives considered and rejected. Gotchas surfaced. Les
 # Verification & next steps
 What's been verified (tests pass, manual UAT done). What's known-good but unverified. What follow-up work is queued (if any).
 
-# Boundary
-What's now done and out of scope, vs. what's open. This is the line the next turn picks up from.
+# Where we are
+A one-paragraph status framed as "what the operator and I both know right now" — the working context the next prompt picks up from. NOT a closing statement; the next turn may revisit this task, extend it, or ask "recap what we did about X" expecting you to answer from this record.
 
-Be dense and concrete. This handover REPLACES the task's conversation history for future turns — anything you omit is effectively gone. Skip social niceties; capture facts.`
+Be dense and concrete. This record REPLACES the task's conversation history for future turns — anything you omit is effectively gone, and anything you record here is what you (and the operator) will have to work from when they ask a follow-up. Skip social niceties; capture facts.`
 
 // CheckpointResult reports what happened on a Checkpoint call.
 // Same fields as CompactionResult plus TaskNote (the detail that

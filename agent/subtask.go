@@ -233,6 +233,22 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 	if subModel == nil {
 		return SubtaskResult{}, errors.New("agent: RunSubtask: no model wired (construct parent via agent.New)")
 	}
+	// Strip provider-level auto-injected tools (Gemini's
+	// GoogleSearch + URLContext, etc.) when the wrapped model
+	// supports it. Subtasks pass their own tool set as the WHOLE
+	// point — auto-injection from the parent's provider wrapper
+	// either bloats the subtask's tool surface (Gemini 3, where
+	// the API tolerates the mix) or rejects the request outright
+	// (Gemini 2.5 Flash: "Multiple tools are supported only when
+	// they are all search tools."). Duck-typed via a tiny
+	// interface so this stays import-cycle-free; the gemini
+	// provider's builtinsLLM satisfies it, anything else passes
+	// through unchanged.
+	if u, ok := subModel.(interface {
+		WithoutBuiltins() adkmodel.LLM
+	}); ok {
+		subModel = u.WithoutBuiltins()
+	}
 
 	// Build an isolated llmagent for the subtask. We DON'T go
 	// through agent.New — that would re-register the

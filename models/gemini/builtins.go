@@ -138,6 +138,27 @@ type builtinsLLM struct {
 
 func (l *builtinsLLM) Name() string { return l.inner.Name() }
 
+// WithoutBuiltins returns the inner adkmodel.LLM without the
+// server-side built-in tool injection (GoogleSearch / URLContext /
+// CodeExecution). Use this when the caller wants to drive the
+// model with EXACTLY the tools they pass, no auto-injection on
+// top — chiefly the agent package's RunSubtask path, where the
+// subtask's tool set is the whole point and Gemini 2.5 Flash
+// errors out ("Multiple tools are supported only when they are
+// all search tools") if function tools coexist with the
+// search-side built-ins.
+//
+// The "tolerate empty chunks" backend quirk (Vertex's streaming
+// heartbeat workaround) is also dropped — subtasks run short
+// focused requests where heartbeat tolerance isn't load-bearing.
+// If a subtask use case ever needs it, route through a tiny
+// wrapper that preserves only that field.
+//
+// Recognized via a duck-typed interface in the agent package
+// (no import dep on this package); see RunSubtask for the
+// type-assertion site.
+func (l *builtinsLLM) WithoutBuiltins() adkmodel.LLM { return l.inner }
+
 func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
 	if len(l.builtins) > 0 {
 		if req.Config == nil {

@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/usage"
@@ -184,6 +185,98 @@ func TestRunSubtask_FallsBackToParentModelWhenNil(t *testing.T) {
 	if len(parentLLM.reqs) == 0 {
 		t.Errorf("parent LLM not called; nil override should route to it")
 	}
+}
+
+// unwrappableLLM wraps captureLLM with a WithoutBuiltins method
+// so TestRunSubtask_StripsProviderBuiltinsViaInterface can verify
+// the duck-typed unwrap fires on the subtask path. Models that
+// don't satisfy this interface go through unchanged (verified by
+// the third subtest below).
+type unwrappableLLM struct {
+	*captureLLM
+	unwrapCalls int
+}
+
+func (u *unwrappableLLM) WithoutBuiltins() adkmodel.LLM {
+	u.unwrapCalls++
+	return u.captureLLM
+}
+
+func TestRunSubtask_StripsProviderBuiltinsViaInterface(t *testing.T) {
+	t.Parallel()
+	// The agentic_* wrappers hit "Multiple tools are supported
+	// only when they are all search tools" on Gemini 2.5 Flash
+	// when the provider's builtinsLLM auto-injects GoogleSearch
+	// alongside the subtask's function tools. RunSubtask
+	// duck-types on a WithoutBuiltins() method to strip that
+	// wrapper; this test verifies the type-assertion fires when
+	// the subtask's model satisfies the interface (whether via
+	// spec.Model override OR by inheriting the parent's model).
+	t.Run("override_model_implements_unwrap", func(t *testing.T) {
+		t.Parallel()
+		sub := &unwrappableLLM{captureLLM: &captureLLM{response: "subtask"}}
+		parent := &captureLLM{response: "parent"}
+		a, err := New(parent)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if _, err := a.RunSubtask(context.Background(), SubtaskSpec{
+			Name:         "unwrap_check",
+			SystemPrompt: "x",
+			UserMessage:  "y",
+			Model:        sub,
+		}); err != nil {
+			t.Fatalf("RunSubtask: %v", err)
+		}
+		if sub.unwrapCalls != 1 {
+			t.Errorf("WithoutBuiltins called %d times on subtask model; want 1", sub.unwrapCalls)
+		}
+		// The captureLLM inside the wrapper should have served
+		// the request (proving we routed to the inner, not the
+		// wrapper).
+		if len(sub.reqs) == 0 {
+			t.Errorf("inner captureLLM never called; unwrap didn't route correctly")
+		}
+	})
+
+	t.Run("inherited_parent_model_implements_unwrap", func(t *testing.T) {
+		t.Parallel()
+		parent := &unwrappableLLM{captureLLM: &captureLLM{response: "parent"}}
+		a, err := New(parent)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if _, err := a.RunSubtask(context.Background(), SubtaskSpec{
+			Name:         "unwrap_inherit_check",
+			SystemPrompt: "x",
+			UserMessage:  "y",
+			// Model nil → inherits parent
+		}); err != nil {
+			t.Fatalf("RunSubtask: %v", err)
+		}
+		if parent.unwrapCalls != 1 {
+			t.Errorf("WithoutBuiltins called %d times on inherited parent; want 1", parent.unwrapCalls)
+		}
+	})
+
+	t.Run("plain_model_without_unwrap_passes_through", func(t *testing.T) {
+		t.Parallel()
+		// A model that doesn't implement WithoutBuiltins should
+		// still work — the type assertion fails silently and we
+		// use the LLM as-is. (captureLLM has no WithoutBuiltins.)
+		plain := &captureLLM{response: "plain"}
+		a, err := New(plain)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if _, err := a.RunSubtask(context.Background(), SubtaskSpec{
+			Name:         "plain_model_check",
+			SystemPrompt: "x",
+			UserMessage:  "y",
+		}); err != nil {
+			t.Fatalf("RunSubtask with plain model: %v", err)
+		}
+	})
 }
 
 func TestRunSubtask_PropagatesCostToParentTracker(t *testing.T) {

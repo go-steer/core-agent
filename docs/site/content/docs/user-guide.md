@@ -273,19 +273,21 @@ A user clones the repo, runs `core-agent`, and gets exactly your code-reviewer �
 
 Three ways to run the same agent:
 
-**Interactive (REPL).** Bare `core-agent` drops you into a stdin REPL. Conversation history is preserved across turns. ESC mid-turn cancels just the current turn; double-Ctrl-C exits cleanly.
+**Interactive (TUI).** Bare `core-agent` launches an in-process bubble-tea TUI when stdin is a real terminal. Conversation history is preserved across turns. ESC mid-turn cancels just the current turn; double-Ctrl-C exits cleanly. The line-mode REPL is the fallback for non-TTY environments (pipes, CI) or when you pass `--no-tui`.
 
 ```text
 $ core-agent
-core-agent REPL — /exit or Ctrl-D to quit
+[bubble-tea TUI takes over the terminal]
 > review the diff in pending.diff
 [agent reads the file, runs the skill, returns the structured review]
 > address the first issue
 [agent proposes an edit, asks before writing]
-> /exit
+> /quit
 ```
 
-When stdin is a real terminal, `core-agent` launches an in-process bubble-tea TUI by default; the line-mode REPL is the fallback used for non-TTY environments or when you pass `--no-tui`. In the TUI you can keep typing while the agent is working: hit Enter to add a follow-up note to the agent's inbox without interrupting the current turn. A small queue panel between the chat and your input box mirrors what's pending. When the turn finishes, the agent auto-continues with the queued notes prefixed by a `↻` user message; the model decides whether to adapt the current task or capture each note with the `todo` tool. A soft cap (10) on consecutive auto-continues keeps things from chaining indefinitely when you type faster than the model can answer. Press Esc to dismiss any queued entries that failed to inject.
+In the TUI you can keep typing while the agent is working: hit Enter to add a follow-up note to the agent's inbox without interrupting the current turn. A small queue panel between the chat and your input box mirrors what's pending. When the turn finishes, the agent auto-continues with the queued notes prefixed by a `↻` user message; the model decides whether to adapt the current task or capture each note with the `todo` tool. A soft cap (10) on consecutive auto-continues keeps things from chaining indefinitely when you type faster than the model can answer. Press Esc to dismiss any queued entries that failed to inject.
+
+The TUI is core-tui-backed in v2.0 by default. `CORE_AGENT_TUI=internal core-agent` selects the legacy `internal/tui` code path as a one-release escape hatch — scheduled for removal in v2.1.
 
 For one-off context-grounded questions that you don't want in the conversation, type `/btw <question>` (alias `/by-the-way`). The TUI spawns a parallel one-shot model call that sees the full session history but has no tools, and the answer appears in a dismissible overlay that never enters history. Press Space, Enter, or Esc to dismiss. The main turn keeps running.
 
@@ -315,13 +317,15 @@ For team-shared sessions or higher-throughput workloads, point at Postgres or My
 
 ## Keeping long sessions alive — context management
 
-Long-running sessions hit two failure modes the model can't recover from on its own. First, the conversation eventually outgrows the context window and the next turn errors out. Second, raw tool output — a 5,000-line file read, a 200KB URL fetch, a grep with hundreds of hits — bloats the parent's context window even while it's still working. `core-agent` ships three mechanisms (see [`docs/context-management-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/context-management-design.md) for the full design):
+Long-running sessions hit two failure modes the model can't recover from on its own. First, the conversation eventually outgrows the context window and the next turn errors out. Second, raw tool output — a 5,000-line file read, a 200KB URL fetch, a grep with hundreds of hits — bloats the parent's context window even while it's still working. `core-agent` ships three mechanisms:
 
 - **Compaction** (default-on, disable with `--no-compact`) — automatic post-turn check at ~85% context utilization. When over threshold, the next turn fires a tool-less summarizer call that writes a "teammate handover" recap into the session and slices history at that boundary. Manual: `/compact [focus]` slash (alias `/summarize`).
 - **Task-boundary checkpoints** (default-on, disable with `--no-checkpoint`) — at natural task boundaries the model can call `mark_task_done(detail)` (or the operator types `/done [note]`, alias `/checkpoint`) and a richer six-section completion record gets written; history is sliced at that boundary so the next task starts fresh.
 - **Agentic tool wrappers** (opt-in, enable with `--agentic-tools`) — registers `agentic_read_file`, `agentic_fetch_url`, `agentic_grep`, and `agentic_research` alongside the bare tools. The wrappers route the operation through a single-purpose subtask on a cheaper model (set via `--agentic-small-model <id>`, e.g. `gemini-2.5-flash`) and return only the digest to the parent. Raw tool output never enters the parent's context. The model picks the wrapper over the bare tool based on tool descriptions ("Use INSTEAD OF read_file when the file might be large...").
 
-The three layer cleanly: compaction is the reactive backstop, checkpoints carve the session into focused chunks, and agentic wrappers prevent the bloat from landing in the first place. Disable any of them with the flags above when you specifically don't want them — e.g. `--no-compact` for short headless one-shots where compaction would never fire anyway, or skip `--agentic-tools` while the wrappers are still being dogfooded.
+The three layer cleanly: compaction is the reactive backstop, checkpoints carve the session into focused chunks, and agentic wrappers prevent the bloat from landing in the first place. Disable any of them with the flags above when you specifically don't want them — e.g. `--no-compact` for short headless one-shots where compaction would never fire anyway. Use `/context` (alias `/boundaries`) to observe what the mechanisms have done in this session: boundary counts, summarized chars, subtask cost rollup, per-model breakdown.
+
+See [Context management]({{< relref "context-management.md" >}}) for the full design, when to enable/disable each, and library usage.
 
 ## Cost and observability
 

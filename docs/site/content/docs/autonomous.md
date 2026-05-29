@@ -76,6 +76,12 @@ Marker-phrase detection ("look for TASK_COMPLETE in the text") is **not** suppor
 
 Budgets are evaluated between turns. A turn already in flight when the cap fires runs to completion (or to per-turn timeout) before the driver stops.
 
+### Surviving the context wall on long runs
+
+A long autonomous run that doesn't manage its context will eventually outgrow the model's window. The autonomous driver respects the same context-management mechanisms documented in [Context management]({{< relref "context-management.md" >}}) — if the agent was constructed with `WithCompactor(NewDefaultCompactor())` the post-turn threshold check fires between autonomous turns and the next turn drains a pending compaction before its actual work. Same for `WithCheckpointer` when the model calls `mark_task_done` between subgoals.
+
+For runs that do heavy file reads or web fetches, also wire the agentic wrappers (`tools/agentic.AgenticReadFile`, `AgenticGrep`, etc.) so the bulk of tool output never lands in the parent's context to begin with. The combination keeps prompt-cache hit rates high and bounds per-turn cost on runs that otherwise grow unboundedly.
+
 ---
 
 ## Failure policy

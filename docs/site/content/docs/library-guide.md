@@ -82,8 +82,11 @@ Every customization happens through one of these interfaces or option functions.
 | Background workers | `agent.BackgroundAgentManager` | Async tasks the parent's model spawns at runtime |
 | Inbound messages | `agent.Inject(msg)` | Push input to a running agent from another goroutine |
 | Tool inspection | `agent.WithBeforeTurn` | Rate limits, external approvals, custom budgets |
+| Context management | `agent.Compactor` / `agent.Checkpointer` (v2.0+) | Custom summarizer prompts / thresholds; default `NewDefaultCompactor` + `NewDefaultCheckpointer` cover the common case |
+| Agentic subtasks | `agent.RunSubtask` + `tools/agentic` wrappers (v2.0+) | Route specific tool calls through a cheap-model subtask so raw output doesn't bloat the parent's context |
+| Late-binding hooks | `agent.WithPostConstruct` (v2.0+) | External tools whose handler needs the constructed `*Agent` (same pattern the in-tree `mark_task_done` uses) |
 
-The rest of this page walks through the first six in order of how often you'd use them. The last two are covered in passing; [Library API](../library-api/) has the full reference.
+The rest of this page walks through the first six in order of how often you'd use them. The last four are covered in [Library API](../library-api/) and [Context management]({{< relref "context-management.md" >}}).
 
 ## Custom `Prompter` — bring your own approval UX
 

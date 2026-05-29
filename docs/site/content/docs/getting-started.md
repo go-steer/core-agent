@@ -79,21 +79,25 @@ See the [Providers reference]({{< relref "providers.md" >}}) for full details on
 
 ---
 
-## Multi-turn REPL
+## Multi-turn TUI
 
-Drop the `-p` flag to enter the stdin REPL. Conversation history is preserved across turns automatically.
+Drop the `-p` flag and `core-agent` lands in its bubble-tea TUI (the default when stdin is a real terminal). Conversation history is preserved across turns automatically.
 
 ```text
 $ core-agent
-core-agent REPL — /exit or Ctrl-D to quit
+[bubble-tea TUI takes over the terminal]
 > Remember the number 73.
 Got it — I'll remember 73.
 > What number did I just give you?
 73.
-> /exit
+> /quit
 ```
 
-Built-in commands: `/exit`, `/quit`, EOF (Ctrl-D).
+The TUI ships a rich slash-command surface — try `/help` to enumerate the catalog (`/stats`, `/context`, `/compact`, `/done`, `/btw`, `/tools`, `/memory`, and more). See the [User guide]({{< relref "user-guide.md" >}}) for the operator workflow.
+
+**Headless and slim-build fallbacks:** `core-agent --no-tui` (or non-TTY stdin like a pipe / CI run) falls through to a line-mode REPL with `/exit`, `/quit`, EOF (Ctrl-D). The slim build (`go build -tags no_tui`, ~5 MB smaller, no bubble-tea deps) excludes the TUI entirely and always uses the REPL.
+
+**Legacy TUI escape hatch:** `CORE_AGENT_TUI=internal core-agent` selects the pre-v2 `internal/tui` code path. Useful if you hit a regression in the new core-tui-backed default; scheduled for removal in v2.1.
 
 ---
 
@@ -141,7 +145,7 @@ Fallback chain: `AGENTS.md` → `CLAUDE.md` → `GEMINI.md` (first match wins). 
 
 ## Useful flags
 
-Beyond `--provider` / `-m` / `-p`, three flags come up often:
+Beyond `--provider` / `-m` / `-p`, the flags that come up most often:
 
 ```
 --ask=stdin|auto|off            register an ask_user tool the model can call
@@ -149,11 +153,23 @@ Beyond `--provider` / `-m` / `-p`, three flags come up often:
 --session-db                    persist sessions + audit log to a durable database
                                 (default off; in-memory)
 --session-db-path=PATH          override the database path (default: ~/.<binary>/sessions.db)
+--no-tui                        skip the bubble-tea TUI even on a TTY — fall through
+                                to the line-mode REPL (scripts, weird terminals, etc.)
+--no-compact                    disable automatic context-window compaction
+                                (manual /compact still works)
+--no-checkpoint                 disable task-boundary checkpoints (removes /done +
+                                the model-facing mark_task_done tool)
+--agentic-tools                 register the agentic_* tool wrappers (read_file /
+                                fetch_url / grep / research) — see Context management
+--agentic-small-model=ID        route agentic_* subtasks to a cheaper model
+                                (e.g. gemini-2.5-flash) for the cost-efficiency win
 ```
 
 Use `--ask=auto` when your `AGENTS.md` instructs the model to ask before some action — the agent gets a clean refusal in headless contexts instead of blocking forever. See [Library API → Prompter]({{< relref "library-api.md#prompter" >}}).
 
 Use `--session-db` to persist conversation history across restarts and unlock the audit-log + crash-resume flows. See [Sessions and event log]({{< relref "sessions.md" >}}).
+
+The `--no-compact` / `--no-checkpoint` / `--agentic-tools` family controls how `core-agent` keeps long sessions alive past the context wall — see [Context management]({{< relref "context-management.md" >}}) for the design.
 
 For long-running unattended work, see [Autonomous runs]({{< relref "autonomous.md" >}}).
 
@@ -161,8 +177,10 @@ For long-running unattended work, see [Autonomous runs]({{< relref "autonomous.m
 
 ## What to read next
 
+- [User guide]({{< relref "user-guide.md" >}}) — operator workflow, slash commands, AGENTS.md, skills, MCP
 - [Providers]({{< relref "providers.md" >}}) — full reference for each model backend, env vars, and gotchas
 - [Configuration]({{< relref "configuration.md" >}}) — every field of `.agents/config.json`
+- [Context management]({{< relref "context-management.md" >}}) — compaction, task-boundary checkpoints, agentic tool wrappers
 - [MCP servers]({{< relref "mcp.md" >}}) — declarative third-party tool integration
 - [Skills]({{< relref "skills.md" >}}) — Claude-compatible `SKILL.md` bundles
 - [Permissions]({{< relref "permissions.md" >}}) — gating tool calls

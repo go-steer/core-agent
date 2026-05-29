@@ -58,30 +58,30 @@ URL forms (same grammar as `core-agent attach`):
 
 ## Welcome screen
 
-Invoking `core-agent-tui` with no URL and no `--local` opens a landing screen with a single input box that accepts slash commands:
+Invoking `core-agent-tui` with no URL opens a landing screen with a single input box that accepts slash commands:
 
 ```
 core-agent-tui  ●  no endpoint selected
 ────────────────────────────────────────
   Type a command to get started:
 
-    /spawn [-- args...]      spawn a local agent (forward args to it)
     /attach <url>            attach to a remote endpoint
     /help                    show all commands
     /quit                    exit
 
-  > /spawn -- --model=mock_
+  > /attach http://localhost:7777_
 
   Enter run · Esc clear/quit · Ctrl+C quit
 ```
 
-- `/spawn` is the `--local` equivalent. Anything after `--` (optional separator) forwards to the spawned agent: `/spawn -- --model=gemini-3.1-pro --skill=git-bisect`.
 - `/attach <url>` accepts any of the URL forms above. A bare URL with no `/attach` prefix is also accepted as a convenience: `http://localhost:7777` is treated as `/attach http://localhost:7777`.
 - `/help` expands an extra hint pane below the input showing the URL grammar and chat-mode commands.
 
-Errors surface inline under the input box (e.g. "core-agent binary not found alongside core-agent-tui or on PATH" when `/spawn` can't locate the agent binary).
+Errors surface inline under the input box (e.g. connection errors when `/attach` can't reach the endpoint).
 
-You can also return to this screen at any time from a chat session with `/welcome`, switch endpoints directly with `/attach <url>`, or spawn another local agent with `/spawn [args...]`.
+You can also return to this screen at any time from a chat session with `/welcome` or switch endpoints directly with `/attach <url>`.
+
+**`/spawn` was removed in v2.** Earlier versions could spawn a local `core-agent` subprocess; v2 removed that path because `core-agent` now ships its own in-process TUI. For local interactive use, run `core-agent` directly. Typing `/spawn` in core-agent-tui surfaces an error pointing you at the new path.
 
 ## Layout
 
@@ -135,7 +135,6 @@ Type `/` followed by a command name in the input box and press Enter.
 | `/sessions` | Pop back to the session picker. |
 | `/welcome` | Pop all the way back to the welcome landing screen (lets you switch between local-spawn and remote without restarting). |
 | `/attach <url>` | Disconnect from the current endpoint and attach to a new one. Accepts the same URL forms as the CLI. |
-| `/spawn [args...]` | Spawn a fresh local agent (same as `--local`); any trailing args forward to it. The spawned agent is cleaned up on TUI exit unless `--no-cleanup` is set. |
 | `/interrupt` | `POST /interrupt` — cancel the in-flight model turn. Server returns `interrupted: false` when nothing was running (you'll see "no in-flight turn" in the log). |
 | `/reconnect` | Force-reconnect the SSE stream (resumes from `?since=<lastSeq>` — lossless). |
 | `/wake` | `POST /wake` — pierce a scheduler sleep. |

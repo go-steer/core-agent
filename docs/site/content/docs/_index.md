@@ -7,10 +7,6 @@ menu:
     weight: 10
 ---
 
-<p style="text-align: center; margin: 1.5rem 0 2rem;">
-  <img src="core_agent_logo_5.jpeg" alt="core-agent" style="max-width: 720px; width: 100%; height: auto; border-radius: 8px;" />
-</p>
-
 You're in the `core-agent` reference docs. The site root has the marketing pitch; this section is the reference.
 
 ## Start here

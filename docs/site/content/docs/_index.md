@@ -7,6 +7,10 @@ menu:
     weight: 10
 ---
 
+<p style="text-align: center; margin: 1.5rem 0 2rem;">
+  <img src="core_agent_logo_5.jpeg" alt="core-agent" style="max-width: 720px; width: 100%; height: auto; border-radius: 8px;" />
+</p>
+
 You're in the `core-agent` reference docs. The site root has the marketing pitch; this section is the reference.
 
 ## Start here
@@ -50,6 +54,7 @@ You're in the `core-agent` reference docs. The site root has the marketing pitch
 - **[Configuration]({{< relref "/docs/reference/configuration.md" >}})** — `.agents/config.json` schema
 - **[Providers]({{< relref "/docs/reference/providers.md" >}})** — Gemini, Vertex, Anthropic, mock
 - **[Permissions]({{< relref "/docs/reference/permissions.md" >}})** — ask/accept-edits/plan/yolo, patterns, scope
+- **[Built-in tools]({{< relref "/docs/reference/tools.md" >}})** — the 13-tool model-facing catalog (file / search / shell / network / planning) + lifecycle tools
 - **[MCP servers]({{< relref "/docs/reference/mcp.md" >}})** — declarative third-party tool integration
 - **[Skills]({{< relref "/docs/reference/skills.md" >}})** — Claude-compatible `SKILL.md` bundles
 - **[Context management]({{< relref "/docs/reference/context-management.md" >}})** — compaction, checkpoints, agentic tool wrappers

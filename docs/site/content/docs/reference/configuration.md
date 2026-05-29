@@ -150,7 +150,7 @@ When background subagents are enabled (default; `--no-background-agents` disable
 
 The subagent inherits the parent's gate wholesale: the same allow/deny lists, the same mode, the same session-level approvals. If you approve `session-tool: bash` while a subagent is asking, every subagent gets the grant for the rest of the session (sibling included). Bounded-subset grants where the parent's model arbitrates out-of-subset requests is deferred to v1.3+.
 
-**Teaching the model to use the spawn tools.** Just registering the tools isn't always enough — most models default to doing things synchronously. Drop a short paragraph into your project's `AGENTS.md` (or pass via `agent.WithInstruction`) describing when background subagents are appropriate (monitoring, fan-out, long bounded delegations). See [Library API → Background subagents → Prompting patterns]({{< relref "library-api.md#prompting-patterns" >}}) for a ready-to-paste system instruction.
+**Teaching the model to use the spawn tools.** Just registering the tools isn't always enough — most models default to doing things synchronously. Drop a short paragraph into your project's `AGENTS.md` (or pass via `agent.WithInstruction`) describing when background subagents are appropriate (monitoring, fan-out, long bounded delegations). See [Library API → Background subagents → Prompting patterns]({{< relref "library/api.md#prompting-patterns" >}}) for a ready-to-paste system instruction.
 
 ### REPL keybindings (v1.3.0+)
 
@@ -163,7 +163,7 @@ The bundled CLI's REPL recognizes Claude Code-style mid-turn interrupts:
 | **Ctrl+C** twice within 1 s | Exit the REPL cleanly. |
 | **Ctrl+D** | EOF — exit the REPL. |
 
-Auto-enabled when stdin is a TTY. Disabled silently for piped / non-TTY use (Ctrl+C falls back to the legacy process-level exit). The REPL's startup banner reflects which mode is active. See [Library API → REPL keybindings]({{< relref "library-api.md#repl-keybindings-v130" >}}) for the underlying mechanism.
+Auto-enabled when stdin is a TTY. Disabled silently for piped / non-TTY use (Ctrl+C falls back to the legacy process-level exit). The REPL's startup banner reflects which mode is active. See [Library API → REPL keybindings]({{< relref "library/api.md#repl-keybindings-v130" >}}) for the underlying mechanism.
 
 ### Library callers
 
@@ -452,9 +452,9 @@ A handful of features are CLI-flag-only, with no `config.json` field today (cons
 
 | Flag | Documented at |
 |---|---|
-| `--ask=stdin\|auto\|off` | [Library API → Prompter]({{< relref "library-api.md#prompter" >}}) |
+| `--ask=stdin\|auto\|off` | [Library API → Prompter]({{< relref "library/api.md#prompter" >}}) |
 | `--session-db`, `--session-db-path` | [Sessions and event log]({{< relref "sessions.md#cli-flags" >}}) |
-| `--color=auto\|always\|never` | [Library API → Color]({{< relref "library-api.md#color" >}}) |
+| `--color=auto\|always\|never` | [Library API → Color]({{< relref "library/api.md#color" >}}) |
 | `--record-to`, `--script`, `--script-strict` | [Providers → Mock providers]({{< relref "providers.md" >}}) |
 | `--no-tui` | [Getting started → Multi-turn TUI]({{< relref "getting-started.md" >}}) — skip the bubble-tea TUI even on a TTY (slim build / scripts / unusual terminals) |
 | `--no-compact` | [Context management → Compaction]({{< relref "context-management.md" >}}) — disable automatic compaction (`/compact` slash still works) |

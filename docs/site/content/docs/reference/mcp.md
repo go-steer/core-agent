@@ -168,7 +168,7 @@ The permission detail string surfaced in prompts is `<tool_name> <json-args>` (t
 - **Per-server tool listing** — at startup, `core-agent` calls `Tools(ctx)` on each server's toolset to build the list of available tools. This catches non-cooperative servers early.
 - **Graceful shutdown** — stdio child processes get `SIGTERM`, then `SIGKILL` after 3 seconds if they haven't exited. HTTP transports have no process to kill.
 
-The host (your binary or the bundled `cmd/core-agent`) is responsible for surfacing per-server status to the user — see [Library API]({{< relref "library-api.md" >}}#mcp-status) for how.
+The host (your binary or the bundled `cmd/core-agent`) is responsible for surfacing per-server status to the user — see [Library API]({{< relref "library/api.md" >}}#mcp-status) for how.
 
 ---
 
@@ -177,7 +177,7 @@ The host (your binary or the bundled `cmd/core-agent`) is responsible for surfac
 If an MCP server tries to elicit input from the user (the protocol's `elicit` request), `core-agent` needs an `ElicitorFn` to bridge that into your UI. The bundled CLI doesn't currently wire one up, so:
 
 - **Headless mode (default)** — every elicitation request is automatically declined with a one-line notice on stderr. Calls that depend on elicitation will fail gracefully rather than hang forever.
-- **Custom hosts** — pass an `ElicitorFn` to `mcp.Build()` that opens a prompt and blocks on user input. See [Library API]({{< relref "library-api.md" >}}#mcp-elicitation).
+- **Custom hosts** — pass an `ElicitorFn` to `mcp.Build()` that opens a prompt and blocks on user input. See [Library API]({{< relref "library/api.md" >}}#mcp-elicitation).
 
 ---
 

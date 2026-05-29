@@ -410,4 +410,4 @@ Then in your binary:
 import _ "your.org/myprovider"
 ```
 
-`models.Resolve(cfg)` will pick it up when `cfg.Model.Provider == "my-provider"`. See [Library API]({{< relref "library-api.md" >}}) for more.
+`models.Resolve(cfg)` will pick it up when `cfg.Model.Provider == "my-provider"`. See [Library API]({{< relref "library/api.md" >}}) for more.

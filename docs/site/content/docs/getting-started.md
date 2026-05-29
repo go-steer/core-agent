@@ -93,7 +93,7 @@ Got it — I'll remember 73.
 > /quit
 ```
 
-The TUI ships a rich slash-command surface — try `/help` to enumerate the catalog (`/stats`, `/context`, `/compact`, `/done`, `/btw`, `/tools`, `/memory`, and more). See the [User guide]({{< relref "user-guide.md" >}}) for the operator workflow.
+The TUI ships a rich slash-command surface — try `/help` to enumerate the catalog (`/stats`, `/context`, `/compact`, `/done`, `/btw`, `/tools`, `/memory`, and more). See the [Slash reference]({{< relref "cli/interactive/slash-reference.md" >}}) for the full catalog and the [Interactive quickstart]({{< relref "cli/interactive/quickstart.md" >}}) for the operator workflow.
 
 **Headless and slim-build fallbacks:** `core-agent --no-tui` (or non-TTY stdin like a pipe / CI run) falls through to a line-mode REPL with `/exit`, `/quit`, EOF (Ctrl-D). The slim build (`go build -tags no_tui`, ~5 MB smaller, no bubble-tea deps) excludes the TUI entirely and always uses the REPL.
 
@@ -177,7 +177,7 @@ For long-running unattended work, see [Autonomous runs]({{< relref "cli/autonomo
 
 ## What to read next
 
-- [User guide]({{< relref "user-guide.md" >}}) — operator workflow, slash commands, AGENTS.md, skills, MCP
+- [Interactive quickstart]({{< relref "cli/interactive/quickstart.md" >}}) — operator workflow, slash commands, AGENTS.md, skills, MCP, in 15 minutes
 - [Providers]({{< relref "providers.md" >}}) — full reference for each model backend, env vars, and gotchas
 - [Configuration]({{< relref "configuration.md" >}}) — every field of `.agents/config.json`
 - [Context management]({{< relref "context-management.md" >}}) — compaction, task-boundary checkpoints, agentic tool wrappers

@@ -423,7 +423,7 @@ Worked example for a K8s deployment ConfigMap:
 }
 ```
 
-See [Attach mode]({{< relref "user-guide.md" >}}) for the protocol and CLI overview, including the `--attach-token=<envvar>` flag that pairs with `token_env`.
+See [Attach mode TUI]({{< relref "reference/attach-tui.md" >}}) for the protocol and CLI overview, including the `--attach-token=<envvar>` flag that pairs with `token_env`.
 
 ---
 

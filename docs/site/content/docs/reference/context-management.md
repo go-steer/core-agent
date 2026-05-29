@@ -202,7 +202,7 @@ Direct programmatic access:
 
 ## Where to go next
 
-- [User guide → Keeping long sessions alive]({{< relref "user-guide.md" >}}) — operator-side workflow context
+- [Interactive workflows]({{< relref "cli/interactive/workflows.md" >}}) — operator-side workflow context
 - [Library API]({{< relref "library/api.md" >}}) — full signatures + extension points
 - [Autonomous runs]({{< relref "cli/autonomous/operations.md" >}}) — compaction makes long unattended runs viable
 - [Sessions and event log]({{< relref "sessions.md" >}}) — how boundary events show up in the audit log

@@ -3,7 +3,7 @@ title: Attach TUI
 weight: 8
 ---
 
-`core-agent-tui` is the operator-facing terminal UI for attach-mode. It ships as a separate binary so the default `core-agent` stays distroless-clean (no terminal-rendering deps land in production K8s images). See [attach-mode]({{< relref "user-guide.md" >}}) for the HTTP/SSE protocol it consumes.
+`core-agent-tui` is the operator-facing terminal UI for attach-mode. It ships as a separate binary so the default `core-agent` stays distroless-clean (no terminal-rendering deps land in production K8s images). See [Configuration → attach]({{< relref "reference/configuration.md" >}}) for the listener-side config and the HTTP/SSE protocol it consumes.
 
 ## Why a separate binary
 

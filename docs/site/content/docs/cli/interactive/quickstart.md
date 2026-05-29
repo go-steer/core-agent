@@ -5,7 +5,7 @@ weight: 1
 
 15 minutes from `core-agent` installed → a tailored agent your whole team can use.
 
-> **Prefer to have an agent walk you through this?** The [`cli-setup` skill]({{< relref "skills-library/cli-setup.md" >}}) covers the same material in workflow form. Install once, then say "help me set up core-agent for my project" and the agent walks the four layers with you, writing files as you go.
+> **Prefer to have an agent walk you through this?** The [`cli-setup` skill]({{< relref "/docs/skills-library/cli-setup.md" >}}) covers the same material in workflow form. Install once, then say "help me set up core-agent for my project" and the agent walks the four layers with you, writing files as you go.
 
 ## What you'll have at the end
 
@@ -20,7 +20,7 @@ The running example is a "Go code-reviewer" for a hypothetical project. Adapt as
 
 ## Before you start
 
-You should have completed [Getting started]({{< relref "getting-started.md" >}}) — `go install`, environment credentials for a provider, and `core-agent -p "hello"` returning a response.
+You should have completed [Getting started]({{< relref "/docs/getting-started.md" >}}) — `go install`, environment credentials for a provider, and `core-agent -p "hello"` returning a response.
 
 This page works in your project directory (anywhere `core-agent` can find a `.agents/` folder by walking up from your CWD).
 
@@ -64,7 +64,7 @@ You are a Go code-reviewer for the Acme platform monorepo.
 
 `AGENTS.md` is checked into the repo. Every teammate who clones gets the same agent. The fallback chain (`AGENTS.md` → `CLAUDE.md` → `GEMINI.md`, plus user-global at `~/.core-agent/AGENTS.md`) matches what Claude Code and other coding agents settled on, so one file works across tools.
 
-For deeper prompt-engineering patterns see [Agent design → System instructions]({{< relref "agent-design/system-instructions.md" >}}).
+For deeper prompt-engineering patterns see [Agent design → System instructions]({{< relref "/docs/agent-design/system-instructions.md" >}}).
 
 ---
 
@@ -80,7 +80,7 @@ $ core-agent
 
 The TUI is the default when stdin is a real terminal. Conversation history persists across turns. While the agent is working you can keep typing — your follow-up notes queue up and the model picks them up when the current turn finishes.
 
-For the slash command catalog see [Slash reference]({{< relref "cli/interactive/slash-reference.md" >}}). For the line-mode REPL fallback (non-TTY environments, scripts, slim builds) pass `--no-tui`.
+For the slash command catalog see [Slash reference]({{< relref "/docs/cli/interactive/slash-reference.md" >}}). For the line-mode REPL fallback (non-TTY environments, scripts, slim builds) pass `--no-tui`.
 
 ---
 
@@ -125,7 +125,7 @@ The agent invokes the skill when the description matches the user's request. The
 
 `AGENTS.md` sets persistent personality; skills are pulled in on demand. Same agent can have a dozen skills loaded and only fire the one relevant to the current task. Format mirrors [Anthropic's published spec](https://docs.claude.com/en/docs/agent-skills/overview) so anything you write here also works in Claude Code.
 
-See the [Skills reference]({{< relref "reference/skills.md" >}}) for the full `SKILL.md` schema, and [Agent design → Skills]({{< relref "agent-design/skills.md" >}}) for patterns on when to write a skill vs. an `AGENTS.md` rule.
+See the [Skills reference]({{< relref "/docs/reference/skills.md" >}}) for the full `SKILL.md` schema, and [Agent design → Skills]({{< relref "/docs/agent-design/skills.md" >}}) for patterns on when to write a skill vs. an `AGENTS.md` rule.
 
 ---
 
@@ -154,7 +154,7 @@ The two common adjustments:
 }
 ```
 
-With this, common workflows run without prompting; anything outside the allow-list still prompts. The pattern grammar (`*` = one segment, `**` = recursive) is documented in [Permissions]({{< relref "reference/permissions.md" >}}).
+With this, common workflows run without prompting; anything outside the allow-list still prompts. The pattern grammar (`*` = one segment, `**` = recursive) is documented in [Permissions]({{< relref "/docs/reference/permissions.md" >}}).
 
 **Approve interactively, persist on the fly.** In `ask` mode, when the agent requests a gated call you can choose "always allow this tool" or "always allow this exact call" and the entry lands in `.agents/config.json` automatically. No need to draft the allow-list up front.
 
@@ -182,10 +182,10 @@ your-repo/
 
 ## Where to go next
 
-- **[Workflows]({{< relref "cli/interactive/workflows.md" >}})** — the full worked example with MCP servers wired in, plus alternative agent shapes
-- **[Slash reference]({{< relref "cli/interactive/slash-reference.md" >}})** — every slash command + keybinding
-- **[Agent design]({{< relref "agent-design/_index.md" >}})** — prescriptive patterns: when to use skills vs. `AGENTS.md` rules, how to get the model to use subagents efficiently, cost-efficiency tips
-- **[Context management]({{< relref "reference/context-management.md" >}})** — compaction, checkpoints, agentic tool wrappers for long sessions
-- **[Configuration reference]({{< relref "reference/configuration.md" >}})** — every field of `.agents/config.json`
-- **[MCP servers]({{< relref "reference/mcp.md" >}})** — wire in third-party tools (web search, GitHub, databases)
-- **[Autonomous quickstart]({{< relref "cli/autonomous/quickstart.md" >}})** — running unattended against a goal
+- **[Workflows]({{< relref "/docs/cli/interactive/workflows.md" >}})** — the full worked example with MCP servers wired in, plus alternative agent shapes
+- **[Slash reference]({{< relref "/docs/cli/interactive/slash-reference.md" >}})** — every slash command + keybinding
+- **[Agent design]({{< relref "/docs/agent-design/_index.md" >}})** — prescriptive patterns: when to use skills vs. `AGENTS.md` rules, how to get the model to use subagents efficiently, cost-efficiency tips
+- **[Context management]({{< relref "/docs/reference/context-management.md" >}})** — compaction, checkpoints, agentic tool wrappers for long sessions
+- **[Configuration reference]({{< relref "/docs/reference/configuration.md" >}})** — every field of `.agents/config.json`
+- **[MCP servers]({{< relref "/docs/reference/mcp.md" >}})** — wire in third-party tools (web search, GitHub, databases)
+- **[Autonomous quickstart]({{< relref "/docs/cli/autonomous/quickstart.md" >}})** — running unattended against a goal

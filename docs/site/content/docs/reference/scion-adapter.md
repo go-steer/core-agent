@@ -79,7 +79,7 @@ This keeps every Scion-shaped concept in `extras/scion-agent/`. core-agent's pub
 | `ANTHROPIC_API_KEY` | user | Anthropic API key (when `model.provider: anthropic`). |
 | `HOME` | container | Where `agent-info.json` lives. Falls back to `/home/scion`. |
 
-The adapter inherits all of core-agent's other env-var conventions (Vertex Gemini, Vertex Anthropic, etc.) — see [Providers]({{< relref "providers.md" >}}).
+The adapter inherits all of core-agent's other env-var conventions (Vertex Gemini, Vertex Anthropic, etc.) — see [Providers]({{< relref "/docs/reference/providers.md" >}}).
 
 ---
 

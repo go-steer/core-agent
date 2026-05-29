@@ -187,7 +187,7 @@ a, err := agent.New(model,
 )
 ```
 
-For the agentic wrappers, use `tools/agentic.AgenticReadFile`, `AgenticFetchURL`, `AgenticGrep`, `AgenticResearch`. They take an `AgenticToolOpts` with `AgentGetter` (a late-binding closure — see `agent.WithPostConstruct`), `Provider`, `SmallModelID`, and `InnerTools` (the bare tools the subtask is allowed to call). See [Library API → Context management]({{< relref "library/api.md" >}}) for full signatures.
+For the agentic wrappers, use `tools/agentic.AgenticReadFile`, `AgenticFetchURL`, `AgenticGrep`, `AgenticResearch`. They take an `AgenticToolOpts` with `AgentGetter` (a late-binding closure — see `agent.WithPostConstruct`), `Provider`, `SmallModelID`, and `InnerTools` (the bare tools the subtask is allowed to call). See [Library API → Context management]({{< relref "/docs/library/api.md" >}}) for full signatures.
 
 Direct programmatic access:
 
@@ -202,8 +202,8 @@ Direct programmatic access:
 
 ## Where to go next
 
-- [Interactive workflows]({{< relref "cli/interactive/workflows.md" >}}) — operator-side workflow context
-- [Library API]({{< relref "library/api.md" >}}) — full signatures + extension points
-- [Autonomous runs]({{< relref "cli/autonomous/operations.md" >}}) — compaction makes long unattended runs viable
-- [Sessions and event log]({{< relref "sessions.md" >}}) — how boundary events show up in the audit log
+- [Interactive workflows]({{< relref "/docs/cli/interactive/workflows.md" >}}) — operator-side workflow context
+- [Library API]({{< relref "/docs/library/api.md" >}}) — full signatures + extension points
+- [Autonomous runs]({{< relref "/docs/cli/autonomous/operations.md" >}}) — compaction makes long unattended runs viable
+- [Sessions and event log]({{< relref "/docs/reference/sessions.md" >}}) — how boundary events show up in the audit log
 - [`docs/context-management-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/context-management-design.md) — full design rationale, alternatives considered, future roadmap (memory tools)

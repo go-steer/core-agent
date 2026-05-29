@@ -4,7 +4,7 @@ weight: 5
 ---
 
 
-`core-agent` integrates with [Model Context Protocol](https://modelcontextprotocol.io) servers via ADK's `mcptoolset`. Declare servers in `.agents/mcp.json`; `core-agent` spawns or connects to them at startup, namespaces their tools, and routes every tool call through the [permission gate]({{< relref "permissions.md" >}}).
+`core-agent` integrates with [Model Context Protocol](https://modelcontextprotocol.io) servers via ADK's `mcptoolset`. Declare servers in `.agents/mcp.json`; `core-agent` spawns or connects to them at startup, namespaces their tools, and routes every tool call through the [permission gate]({{< relref "/docs/reference/permissions.md" >}}).
 
 ---
 
@@ -145,7 +145,7 @@ Sanitization rule: keep `[A-Za-z0-9_]`, replace everything else with `_`. So `my
 
 ## Permission gating
 
-If you've configured a [permission gate]({{< relref "permissions.md" >}}), every MCP tool call goes through it under the `mcp` namespace. So an allowlist entry like:
+If you've configured a [permission gate]({{< relref "/docs/reference/permissions.md" >}}), every MCP tool call goes through it under the `mcp` namespace. So an allowlist entry like:
 
 ```json
 {
@@ -155,7 +155,7 @@ If you've configured a [permission gate]({{< relref "permissions.md" >}}), every
 }
 ```
 
-…would whitelist the namespaced filesystem-server read_file specifically, without granting any other MCP tool. Pattern matching is the same as for built-in tools — see the [Permissions page]({{< relref "permissions.md" >}}#pattern-grammar).
+…would whitelist the namespaced filesystem-server read_file specifically, without granting any other MCP tool. Pattern matching is the same as for built-in tools — see the [Permissions page]({{< relref "/docs/reference/permissions.md" >}}#pattern-grammar).
 
 The permission detail string surfaced in prompts is `<tool_name> <json-args>` (truncated at 200 chars), so users get context about what's being asked. Skip gating entirely by configuring `permissions.mode: yolo` (the bash denylist is still applied for any `bash` tool, but MCP tools are not subject to it).
 
@@ -168,7 +168,7 @@ The permission detail string surfaced in prompts is `<tool_name> <json-args>` (t
 - **Per-server tool listing** — at startup, `core-agent` calls `Tools(ctx)` on each server's toolset to build the list of available tools. This catches non-cooperative servers early.
 - **Graceful shutdown** — stdio child processes get `SIGTERM`, then `SIGKILL` after 3 seconds if they haven't exited. HTTP transports have no process to kill.
 
-The host (your binary or the bundled `cmd/core-agent`) is responsible for surfacing per-server status to the user — see [Library API]({{< relref "library/api.md" >}}#mcp-status) for how.
+The host (your binary or the bundled `cmd/core-agent`) is responsible for surfacing per-server status to the user — see [Library API]({{< relref "/docs/library/api.md" >}}#mcp-status) for how.
 
 ---
 
@@ -177,7 +177,7 @@ The host (your binary or the bundled `cmd/core-agent`) is responsible for surfac
 If an MCP server tries to elicit input from the user (the protocol's `elicit` request), `core-agent` needs an `ElicitorFn` to bridge that into your UI. The bundled CLI doesn't currently wire one up, so:
 
 - **Headless mode (default)** — every elicitation request is automatically declined with a one-line notice on stderr. Calls that depend on elicitation will fail gracefully rather than hang forever.
-- **Custom hosts** — pass an `ElicitorFn` to `mcp.Build()` that opens a prompt and blocks on user input. See [Library API]({{< relref "library/api.md" >}}#mcp-elicitation).
+- **Custom hosts** — pass an `ElicitorFn` to `mcp.Build()` that opens a prompt and blocks on user input. See [Library API]({{< relref "/docs/library/api.md" >}}#mcp-elicitation).
 
 ---
 

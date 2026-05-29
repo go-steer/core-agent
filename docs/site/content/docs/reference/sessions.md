@@ -98,7 +98,7 @@ for entry, err := range handle.Stream.Since(ctx, 0,
 
 Each `Entry` carries the assigned `Seq` plus the rehydrated `*session.Event`. `Since` returns when caught up to the current end of log.
 
-Context-management boundary events (v2.0+) are regular events with `CustomMetadata["compaction"]` set: `"summary"` for compaction summaries, `"checkpoint"` for task-boundary checkpoints. They appear in the audit log inline with the rest of the conversation; the slicing that hides earlier history from future model requests is applied at request-construction time, not by mutating the event log. Filter for them with a custom predicate on `entry.Event.CustomMetadata`, or use `WithAuthor` if your agent name is the only one writing them in this session. See [Context management]({{< relref "context-management.md" >}}) for the design.
+Context-management boundary events (v2.0+) are regular events with `CustomMetadata["compaction"]` set: `"summary"` for compaction summaries, `"checkpoint"` for task-boundary checkpoints. They appear in the audit log inline with the rest of the conversation; the slicing that hides earlier history from future model requests is applied at request-construction time, not by mutating the event log. Filter for them with a custom predicate on `entry.Event.CustomMetadata`, or use `WithAuthor` if your agent name is the only one writing them in this session. See [Context management]({{< relref "/docs/reference/context-management.md" >}}) for the design.
 
 Filters available:
 
@@ -106,7 +106,7 @@ Filters available:
 |---|---|
 | `ForSession(app, user, session)` | Restrict to one session triple. Queries without it scan across every session in the database — useful for audit dashboards, slow on a busy database |
 | `WithSessionTree(app, user, parent)` | Returns events for `parent` and every derived sub-session (`<parent>:sub:%`). The one-query alternative to running `ForSession(parent)` plus `WithBranchPrefix(branch)` separately. Use this when you want the full audit trail of one logical "run." |
-| `WithBranchPrefix(prefix)` | Match events whose `Branch` field begins with `prefix`. Subagent runners set `Branch="<parent>.<sub>"` so e.g. `WithBranchPrefix("research")` returns every research subagent's events across sessions. See [Library API → Subagents]({{< relref "library/api.md#subagents" >}}) |
+| `WithBranchPrefix(prefix)` | Match events whose `Branch` field begins with `prefix`. Subagent runners set `Branch="<parent>.<sub>"` so e.g. `WithBranchPrefix("research")` returns every research subagent's events across sessions. See [Library API → Subagents]({{< relref "/docs/library/api.md#subagents" >}}) |
 | `WithAuthor(name)` | Exact-match on the event's `Author` |
 | `WithAuthorSuffix(suffix)` | Suffix-match on `Author`. Used internally by `ResumeAutonomous` to find checkpoints regardless of which binary emitted them (`/autonomous`) |
 | `WithLimit(n)` | Cap the result set |
@@ -151,7 +151,7 @@ A background heartbeat goroutine refreshes the lease every 5 seconds. A lease is
 
 The session lock and the seq-numbered event log together support `agent.ResumeAutonomous`: a process that died mid-run can be restarted, and the new process picks up at the next turn from the same audit-log position.
 
-See [Autonomous runs → Crash-resume]({{< relref "cli/autonomous/operations.md#crash-resume" >}}) for the full pattern.
+See [Autonomous runs → Crash-resume]({{< relref "/docs/cli/autonomous/operations.md#crash-resume" >}}) for the full pattern.
 
 ---
 

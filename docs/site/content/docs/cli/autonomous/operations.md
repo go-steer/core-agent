@@ -13,7 +13,7 @@ Two senses of "autonomous" matter here:
 | **Within one turn** | `agent.Run` already loops the model through tool-call cycles until a final response | Single self-contained tasks: "find every TODO in the repo and write a list" |
 | **Across turns** | `agent.RunAutonomous` loops `agent.Run` against a goal | Long-running work the model decomposes into multiple turns |
 
-This page covers across-turn autonomy. For the within-turn case, see [Library API → Streaming events]({{< relref "library/api.md#streaming-events-to-a-chat-like-ui" >}}).
+This page covers across-turn autonomy. For the within-turn case, see [Library API → Streaming events]({{< relref "/docs/library/api.md#streaming-events-to-a-chat-like-ui" >}}).
 
 ---
 
@@ -78,7 +78,7 @@ Budgets are evaluated between turns. A turn already in flight when the cap fires
 
 ### Surviving the context wall on long runs
 
-A long autonomous run that doesn't manage its context will eventually outgrow the model's window. The autonomous driver respects the same context-management mechanisms documented in [Context management]({{< relref "context-management.md" >}}) — if the agent was constructed with `WithCompactor(NewDefaultCompactor())` the post-turn threshold check fires between autonomous turns and the next turn drains a pending compaction before its actual work. Same for `WithCheckpointer` when the model calls `mark_task_done` between subgoals.
+A long autonomous run that doesn't manage its context will eventually outgrow the model's window. The autonomous driver respects the same context-management mechanisms documented in [Context management]({{< relref "/docs/reference/context-management.md" >}}) — if the agent was constructed with `WithCompactor(NewDefaultCompactor())` the post-turn threshold check fires between autonomous turns and the next turn drains a pending compaction before its actual work. Same for `WithCheckpointer` when the model calls `mark_task_done` between subgoals.
 
 For runs that do heavy file reads or web fetches, also wire the agentic wrappers (`tools/agentic.AgenticReadFile`, `AgenticGrep`, etc.) so the bulk of tool output never lands in the parent's context to begin with. The combination keeps prompt-cache hit rates high and bounds per-turn cost on runs that otherwise grow unboundedly.
 
@@ -106,7 +106,7 @@ For unattended runs, use `permissions.ModeYolo` (or `ModeAllow` with an explicit
 
 When your `build` function constructs gated tools, pass the gate to the driver via `WithPermissionsGate(g)`. The driver does a single startup check — `Mode==ask && !HasPrompter` errors out before invoking `build`, so you don't burn an LLM round-trip discovering the misconfiguration. Runtime gating is still enforced by the tools themselves; `WithPermissionsGate` only enables the deadlock guard.
 
-See [Permissions]({{< relref "permissions.md" >}}) for the underlying gate semantics.
+See [Permissions]({{< relref "/docs/reference/permissions.md" >}}) for the underlying gate semantics.
 
 ---
 
@@ -177,7 +177,7 @@ Behavior worth knowing:
 - **No-checkpoint = turn-0 start.** A session with no `/autonomous`-suffix checkpoints is treated as a fresh start. "Take this existing conversation and make it autonomous from here" is a valid use.
 - **Cross-binary resume.** Checkpoints carry `Author = "<binary>/autonomous"` (from `os.Executable()`). Discovery filters by the `/autonomous` suffix so a run started under `core-agent` can be resumed under `scion-agent` or `ax-agent` without losing its trail.
 - **Budgets carry forward.** `WithMaxTurns(3)` on resume against a session that already used 3 turns fires the pre-turn budget check immediately. Pass a higher budget to extend.
-- **Session lock.** `ResumeAutonomous` takes an exclusive lease on `(AppName, UserID, SessionID)` for its lifetime; concurrent attempts return `eventlog.ErrSessionLocked` with the holder identifier in the error message. See [Sessions → Session lock]({{< relref "sessions.md#session-lock" >}}).
+- **Session lock.** `ResumeAutonomous` takes an exclusive lease on `(AppName, UserID, SessionID)` for its lifetime; concurrent attempts return `eventlog.ErrSessionLocked` with the holder identifier in the error message. See [Sessions → Session lock]({{< relref "/docs/reference/sessions.md#session-lock" >}}).
 
 `examples/autonomous-resume/` runs end-to-end with no credentials — uses the scripted mock provider, drives a Phase 1 run capped at 2 turns, then a Phase 2 resume that completes the task.
 
@@ -221,7 +221,7 @@ parent, _ := agent.New(parentModel,
 
 The parent's model sees a `research` tool it can call with a `request` string. The handler dispatches the inner agent's runner; the joined final text comes back as the tool result. Subagent events stream live into the parent's audit log under `Branch="<parent_branch>.research"`.
 
-See [Library API → Subagents]({{< relref "library/api.md#subagents" >}}) for the full API surface — depth caps, custom branch labels, per-subagent options. `examples/with-subagent/` runs end-to-end with no credentials.
+See [Library API → Subagents]({{< relref "/docs/library/api.md#subagents" >}}) for the full API surface — depth caps, custom branch labels, per-subagent options. `examples/with-subagent/` runs end-to-end with no credentials.
 
 ---
 

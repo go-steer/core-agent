@@ -5,7 +5,7 @@ weight: 4
 
 What actually moves the cost needle on `core-agent` sessions, in rough order of impact. Built-in price tracking and per-model breakdowns make the tradeoffs measurable rather than guesswork; this page covers how to read those signals and the patterns that consistently reduce cost without sacrificing capability.
 
-For the mechanism details see [Context management]({{< relref "reference/context-management.md" >}}) and [Configuration → pricing]({{< relref "reference/configuration.md" >}}).
+For the mechanism details see [Context management]({{< relref "/docs/reference/context-management.md" >}}) and [Configuration → pricing]({{< relref "/docs/reference/configuration.md" >}}).
 
 ---
 
@@ -175,7 +175,7 @@ Context-management activity:
 
 **Things to look for:**
 
-- **Models row shows the Pro+Flash split is working** if Flash has a meaningful turn share. If Flash is 0 turns but you passed `--agentic-tools`, the model isn't routing through the wrappers — strengthen the `AGENTS.md` framing (see [Subagents and wrappers]({{< relref "agent-design/subagents-and-wrappers.md" >}})).
+- **Models row shows the Pro+Flash split is working** if Flash has a meaningful turn share. If Flash is 0 turns but you passed `--agentic-tools`, the model isn't routing through the wrappers — strengthen the `AGENTS.md` framing (see [Subagents and wrappers]({{< relref "/docs/agent-design/subagents-and-wrappers.md" >}})).
 - **Subtasks row vs. Models row Flash entry should match** — both come from the same accounting; they're cross-checks on each other.
 - **Compactions count vs. session length:** if you've been running for an hour with no compactions, either your context isn't large enough to need one (good) or compaction isn't wired (`--no-compact` was passed).
 - **Summarized chars total** tells you how much history-collapse is in play. Low number on a long session = either no compactions or no checkpoints fired.
@@ -224,8 +224,8 @@ Context-management activity:
 
 ## Where to go next
 
-- **[Context management]({{< relref "reference/context-management.md" >}})** — the underlying mechanisms; library API for `WithCompactor` / `WithCheckpointer`
-- **[Subagents and wrappers]({{< relref "agent-design/subagents-and-wrappers.md" >}})** — design patterns for `agentic_*` + background subagents
-- **[System instructions]({{< relref "agent-design/system-instructions.md" >}})** — `AGENTS.md` patterns including output-style rules
-- **[Configuration → pricing]({{< relref "reference/configuration.md" >}})** — `pricing.refresh`, `pricing.source`, per-model override; the layered catalog
-- **[Providers]({{< relref "reference/providers.md" >}})** — model IDs, per-backend pricing notes
+- **[Context management]({{< relref "/docs/reference/context-management.md" >}})** — the underlying mechanisms; library API for `WithCompactor` / `WithCheckpointer`
+- **[Subagents and wrappers]({{< relref "/docs/agent-design/subagents-and-wrappers.md" >}})** — design patterns for `agentic_*` + background subagents
+- **[System instructions]({{< relref "/docs/agent-design/system-instructions.md" >}})** — `AGENTS.md` patterns including output-style rules
+- **[Configuration → pricing]({{< relref "/docs/reference/configuration.md" >}})** — `pricing.refresh`, `pricing.source`, per-model override; the layered catalog
+- **[Providers]({{< relref "/docs/reference/providers.md" >}})** — model IDs, per-backend pricing notes

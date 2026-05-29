@@ -61,7 +61,7 @@ Selects the LLM backend.
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `provider` | string | `""` (auto-detect) | One of `gemini`, `vertex`, `anthropic`, `anthropic-vertex`. Empty = auto-detect from env. |
-| `name` | string | `gemini-3.1-pro-preview-customtools` | Model ID. **Required.** For Gemini, version 3.0 or later is required when using the default tool suite — see [Providers → Gemini 3.0+ required]({{< relref "providers.md#gemini-30-required-when-combining-built-ins-with-function-tools" >}}). The default uses the `-customtools` variant, which is fine-tuned to prefer developer-defined tools over raw bash; same price, same context window. Override with the un-tuned `gemini-3.1-pro-preview` if you need behavior-baseline comparisons. |
+| `name` | string | `gemini-3.1-pro-preview-customtools` | Model ID. **Required.** For Gemini, version 3.0 or later is required when using the default tool suite — see [Providers → Gemini 3.0+ required]({{< relref "/docs/reference/providers.md#gemini-30-required-when-combining-built-ins-with-function-tools" >}}). The default uses the `-customtools` variant, which is fine-tuned to prefer developer-defined tools over raw bash; same price, same context window. Override with the un-tuned `gemini-3.1-pro-preview` if you need behavior-baseline comparisons. |
 | `api_key` | string | `""` | Inline key for `provider: gemini`. Usually unset; read from `GOOGLE_API_KEY` / `GEMINI_API_KEY` at runtime. |
 | `vertex` | object | `null` | GCP project + region. Required when `provider: vertex`. |
 | `vertex.project` | string | — | GCP project ID. |
@@ -92,13 +92,13 @@ Example:
 }
 ```
 
-See [Providers]({{< relref "providers.md" >}}) for full details on each backend.
+See [Providers]({{< relref "/docs/reference/providers.md" >}}) for full details on each backend.
 
 ---
 
 ## `permissions`
 
-Configures the permission gate that consults every tool call. See [Permissions]({{< relref "permissions.md" >}}) for the full pattern grammar.
+Configures the permission gate that consults every tool call. See [Permissions]({{< relref "/docs/reference/permissions.md" >}}) for the full pattern grammar.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
@@ -150,7 +150,7 @@ When background subagents are enabled (default; `--no-background-agents` disable
 
 The subagent inherits the parent's gate wholesale: the same allow/deny lists, the same mode, the same session-level approvals. If you approve `session-tool: bash` while a subagent is asking, every subagent gets the grant for the rest of the session (sibling included). Bounded-subset grants where the parent's model arbitrates out-of-subset requests is deferred to v1.3+.
 
-**Teaching the model to use the spawn tools.** Just registering the tools isn't always enough — most models default to doing things synchronously. Drop a short paragraph into your project's `AGENTS.md` (or pass via `agent.WithInstruction`) describing when background subagents are appropriate (monitoring, fan-out, long bounded delegations). See [Library API → Background subagents → Prompting patterns]({{< relref "library/api.md#prompting-patterns" >}}) for a ready-to-paste system instruction.
+**Teaching the model to use the spawn tools.** Just registering the tools isn't always enough — most models default to doing things synchronously. Drop a short paragraph into your project's `AGENTS.md` (or pass via `agent.WithInstruction`) describing when background subagents are appropriate (monitoring, fan-out, long bounded delegations). See [Library API → Background subagents → Prompting patterns]({{< relref "/docs/library/api.md#prompting-patterns" >}}) for a ready-to-paste system instruction.
 
 ### REPL keybindings (v1.3.0+)
 
@@ -163,7 +163,7 @@ The bundled CLI's REPL recognizes Claude Code-style mid-turn interrupts:
 | **Ctrl+C** twice within 1 s | Exit the REPL cleanly. |
 | **Ctrl+D** | EOF — exit the REPL. |
 
-Auto-enabled when stdin is a TTY. Disabled silently for piped / non-TTY use (Ctrl+C falls back to the legacy process-level exit). The REPL's startup banner reflects which mode is active. See [Library API → REPL keybindings]({{< relref "library/api.md#repl-keybindings-v130" >}}) for the underlying mechanism.
+Auto-enabled when stdin is a TTY. Disabled silently for piped / non-TTY use (Ctrl+C falls back to the legacy process-level exit). The REPL's startup banner reflects which mode is active. See [Library API → REPL keybindings]({{< relref "/docs/library/api.md#repl-keybindings-v130" >}}) for the underlying mechanism.
 
 ### Library callers
 
@@ -423,7 +423,7 @@ Worked example for a K8s deployment ConfigMap:
 }
 ```
 
-See [Attach mode TUI]({{< relref "reference/attach-tui.md" >}}) for the protocol and CLI overview, including the `--attach-token=<envvar>` flag that pairs with `token_env`.
+See [Attach mode TUI]({{< relref "/docs/reference/attach-tui.md" >}}) for the protocol and CLI overview, including the `--attach-token=<envvar>` flag that pairs with `token_env`.
 
 ---
 
@@ -452,14 +452,14 @@ A handful of features are CLI-flag-only, with no `config.json` field today (cons
 
 | Flag | Documented at |
 |---|---|
-| `--ask=stdin\|auto\|off` | [Library API → Prompter]({{< relref "library/api.md#prompter" >}}) |
-| `--session-db`, `--session-db-path` | [Sessions and event log]({{< relref "sessions.md#cli-flags" >}}) |
-| `--color=auto\|always\|never` | [Library API → Color]({{< relref "library/api.md#color" >}}) |
-| `--record-to`, `--script`, `--script-strict` | [Providers → Mock providers]({{< relref "providers.md" >}}) |
-| `--no-tui` | [Getting started → Multi-turn TUI]({{< relref "getting-started.md" >}}) — skip the bubble-tea TUI even on a TTY (slim build / scripts / unusual terminals) |
-| `--no-compact` | [Context management → Compaction]({{< relref "context-management.md" >}}) — disable automatic compaction (`/compact` slash still works) |
-| `--no-checkpoint` | [Context management → Task-boundary checkpoints]({{< relref "context-management.md" >}}) — disable `/done` slash + `mark_task_done` tool |
-| `--agentic-tools` | [Context management → Agentic tool wrappers]({{< relref "context-management.md" >}}) — register the `agentic_*` tool family |
-| `--agentic-small-model=ID` | [Context management → Agentic tool wrappers]({{< relref "context-management.md" >}}) — route agentic subtasks to a cheaper model |
+| `--ask=stdin\|auto\|off` | [Library API → Prompter]({{< relref "/docs/library/api.md#prompter" >}}) |
+| `--session-db`, `--session-db-path` | [Sessions and event log]({{< relref "/docs/reference/sessions.md#cli-flags" >}}) |
+| `--color=auto\|always\|never` | [Library API → Color]({{< relref "/docs/library/api.md#color" >}}) |
+| `--record-to`, `--script`, `--script-strict` | [Providers → Mock providers]({{< relref "/docs/reference/providers.md" >}}) |
+| `--no-tui` | [Getting started → Multi-turn TUI]({{< relref "/docs/getting-started.md" >}}) — skip the bubble-tea TUI even on a TTY (slim build / scripts / unusual terminals) |
+| `--no-compact` | [Context management → Compaction]({{< relref "/docs/reference/context-management.md" >}}) — disable automatic compaction (`/compact` slash still works) |
+| `--no-checkpoint` | [Context management → Task-boundary checkpoints]({{< relref "/docs/reference/context-management.md" >}}) — disable `/done` slash + `mark_task_done` tool |
+| `--agentic-tools` | [Context management → Agentic tool wrappers]({{< relref "/docs/reference/context-management.md" >}}) — register the `agentic_*` tool family |
+| `--agentic-small-model=ID` | [Context management → Agentic tool wrappers]({{< relref "/docs/reference/context-management.md" >}}) — route agentic subtasks to a cheaper model |
 
 The `CORE_AGENT_TUI=internal` environment variable picks the legacy `internal/tui` code path in place of the v2 default (core-tui). One-release escape hatch for operators who hit a regression; scheduled for removal in v2.1.

@@ -123,7 +123,7 @@ agent.WithPostConstruct(f)             // late-binding callback for tools that n
 
 Options are applied in the order they're passed. Tools and toolsets accumulate across multiple calls.
 
-`WithCompactor`, `WithCheckpointer`, and the `tools/agentic` wrapper family are documented in detail under [Context management]({{< relref "context-management.md" >}}). `WithPostConstruct` is the late-binding hook external tools use when their handler needs to call back into the constructed agent — same pattern the in-tree `mark_task_done` tool uses, exposed publicly so consumers can build similar agent-aware tools without forking the agent package.
+`WithCompactor`, `WithCheckpointer`, and the `tools/agentic` wrapper family are documented in detail under [Context management]({{< relref "/docs/reference/context-management.md" >}}). `WithPostConstruct` is the late-binding hook external tools use when their handler needs to call back into the constructed agent — same pattern the in-tree `mark_task_done` tool uses, exposed publicly so consumers can build similar agent-aware tools without forking the agent package.
 
 ### Default instruction
 
@@ -222,7 +222,7 @@ runner.WriteEvents(events, os.Stdout, os.Stderr,
 
 ### Server-side built-in lines
 
-When events carry Gemini `GroundingMetadata` (set by `GoogleSearch` / `URLContext`), `WriteEvents` renders one `↪ google_search:` line per distinct query and grounded source after the model's text. No opt-in required — if the metadata's there, you see it. See [Providers → Surfacing grounded search activity]({{< relref "providers.md" >}}) for the full data flow and the audit-trail counterpart.
+When events carry Gemini `GroundingMetadata` (set by `GoogleSearch` / `URLContext`), `WriteEvents` renders one `↪ google_search:` line per distinct query and grounded source after the model's text. No opt-in required — if the metadata's there, you see it. See [Providers → Surfacing grounded search activity]({{< relref "/docs/reference/providers.md" >}}) for the full data flow and the audit-trail counterpart.
 
 ---
 
@@ -243,7 +243,7 @@ m = recording.NewRecorder(m, f)
 a, _ := agent.New(m, agent.WithTools(reg.Tools))
 ```
 
-Replay the captured file with `mock.NewScripted(path, strict)` (or `--provider=scripted --script=path` from the CLI). See [Providers → Scripted]({{< relref "providers.md#scripted-mock" >}}) for the lenient/strict tradeoff and the "tool environment isn't recorded" caveat.
+Replay the captured file with `mock.NewScripted(path, strict)` (or `--provider=scripted --script=path` from the CLI). See [Providers → Scripted]({{< relref "/docs/reference/providers.md#scripted-mock" >}}) for the lenient/strict tradeoff and the "tool environment isn't recorded" caveat.
 
 The recorder lives in `recording/` (not `models/mock/`) because it's production observability, not a test fixture — the package name shouldn't suggest you're only allowed to use it in tests.
 
@@ -323,7 +323,7 @@ handle.Service = gemini.GroundingProjection(handle.Service)
 a, _ := agent.New(m, agent.WithEventLog(handle))
 ```
 
-The bundled CLI wires this automatically when `--session-db` is combined with `--provider=gemini` / `vertex`. Library callers using Anthropic or non-Gemini providers don't need to wrap. See [Providers → Surfacing grounded search activity]({{< relref "providers.md" >}}) for the data flow and the runner-side display story.
+The bundled CLI wires this automatically when `--session-db` is combined with `--provider=gemini` / `vertex`. Library callers using Anthropic or non-Gemini providers don't need to wrap. See [Providers → Surfacing grounded search activity]({{< relref "/docs/reference/providers.md" >}}) for the data flow and the runner-side display story.
 
 ### Session lock
 

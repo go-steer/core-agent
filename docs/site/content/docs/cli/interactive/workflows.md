@@ -5,7 +5,7 @@ weight: 2
 
 Worked examples of using `core-agent` interactively. Each one shows a full `.agents/` configuration you can adapt and a walkthrough of running it.
 
-If you haven't done the [Interactive quickstart]({{< relref "cli/interactive/quickstart.md" >}}) yet, do that first — these examples assume you know how `AGENTS.md`, skills, and permission posture fit together.
+If you haven't done the [Interactive quickstart]({{< relref "/docs/cli/interactive/quickstart.md" >}}) yet, do that first — these examples assume you know how `AGENTS.md`, skills, and permission posture fit together.
 
 ---
 
@@ -252,10 +252,10 @@ $ core-agent
 
 ## Where to go next
 
-- **[Slash reference]({{< relref "cli/interactive/slash-reference.md" >}})** — every slash command + keybinding for the TUI
-- **[Agent design]({{< relref "agent-design/_index.md" >}})** — prescriptive section: prompt patterns, when skills vs. `AGENTS.md`, getting the model to use subagents, cost efficiency
-- **[Context management]({{< relref "reference/context-management.md" >}})** — make long sessions survivable
-- **[Configuration]({{< relref "reference/configuration.md" >}})** — full `.agents/config.json` schema
-- **[Permissions]({{< relref "reference/permissions.md" >}})** — pattern grammar, path scope, bash denylist
-- **[Skills]({{< relref "reference/skills.md" >}})** — `SKILL.md` schema, discovery, allow/deny
-- **[MCP servers]({{< relref "reference/mcp.md" >}})** — full schema, transports, lifecycle
+- **[Slash reference]({{< relref "/docs/cli/interactive/slash-reference.md" >}})** — every slash command + keybinding for the TUI
+- **[Agent design]({{< relref "/docs/agent-design/_index.md" >}})** — prescriptive section: prompt patterns, when skills vs. `AGENTS.md`, getting the model to use subagents, cost efficiency
+- **[Context management]({{< relref "/docs/reference/context-management.md" >}})** — make long sessions survivable
+- **[Configuration]({{< relref "/docs/reference/configuration.md" >}})** — full `.agents/config.json` schema
+- **[Permissions]({{< relref "/docs/reference/permissions.md" >}})** — pattern grammar, path scope, bash denylist
+- **[Skills]({{< relref "/docs/reference/skills.md" >}})** — `SKILL.md` schema, discovery, allow/deny
+- **[MCP servers]({{< relref "/docs/reference/mcp.md" >}})** — full schema, transports, lifecycle

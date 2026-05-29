@@ -41,14 +41,14 @@ The skill body is short (a runbook). It fetches deeper content on demand from th
 | You want | Use |
 |---|---|
 | The agent to walk you through configuration interactively | Install + invoke the `cli-setup` skill |
-| To read the patterns yourself first | [Agent design]({{< relref "agent-design/_index.md" >}}) (prescriptive) + [Reference]({{< relref "reference/_index.md" >}}) (schemas) |
-| The 15-minute first-time walkthrough | [Interactive quickstart]({{< relref "cli/interactive/quickstart.md" >}}) |
+| To read the patterns yourself first | [Agent design]({{< relref "/docs/agent-design/_index.md" >}}) (prescriptive) + [Reference]({{< relref "/docs/reference/_index.md" >}}) (schemas) |
+| The 15-minute first-time walkthrough | [Interactive quickstart]({{< relref "/docs/cli/interactive/quickstart.md" >}}) |
 
 The skill IS the docs in workflow form. Pick the surface that matches your read intent.
 
 ## Installing
 
-See [Skills library → Installing]({{< relref "skills-library/_index.md" >}}).
+See [Skills library → Installing]({{< relref "/docs/skills-library/_index.md" >}}).
 
 Quick version:
 
@@ -71,6 +71,6 @@ The agent will now invoke `cli-setup-acme` instead of the generic version (assum
 
 ## Where to go next
 
-- **[Interactive quickstart]({{< relref "cli/interactive/quickstart.md" >}})** — the static-docs version of the same walkthrough
-- **[System instructions]({{< relref "agent-design/system-instructions.md" >}})** — the prescriptive content the skill's `agents-md-patterns.md` reference is built from
-- **[Reference → Skills]({{< relref "reference/skills.md" >}})** — `SKILL.md` schema, discovery, allow/deny lists
+- **[Interactive quickstart]({{< relref "/docs/cli/interactive/quickstart.md" >}})** — the static-docs version of the same walkthrough
+- **[System instructions]({{< relref "/docs/agent-design/system-instructions.md" >}})** — the prescriptive content the skill's `agents-md-patterns.md` reference is built from
+- **[Reference → Skills]({{< relref "/docs/reference/skills.md" >}})** — `SKILL.md` schema, discovery, allow/deny lists

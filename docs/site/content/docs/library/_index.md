@@ -5,6 +5,8 @@ weight: 4
 
 Embedding `core-agent` in your own Go binary. Use cases include: custom coding assistants with domain tools, HTTP-served agents, web-app prompt UX, alternative LLM backends, integrations into existing orchestration frameworks.
 
+> **Prefer to have an agent walk you through this?** The [`library-embedding` skill]({{< relref "skills-library/library-embedding.md" >}}) covers the same material in workflow form. Install once, then say "help me embed core-agent in my service" and the agent walks the 5-step runbook with you.
+
 > **The `quickstart` page is landing in Phase 2 of the v2.0 docs redesign.** Until then, [Guide]({{< relref "library/guide.md" >}}) covers the extension points and [API]({{< relref "library/api.md" >}}) is the full reference.
 
 ## In this section

@@ -5,6 +5,8 @@ weight: 1
 
 15 minutes from `core-agent` installed → a working unattended agent that watches a real thing and reports back.
 
+> **Prefer to have an agent walk you through this?** The [`autonomous-setup` skill]({{< relref "skills-library/autonomous-setup.md" >}}) covers the same material in workflow form, including the multi-agent decomposition path. Install once, then say "set up an autonomous monitor for me" and the agent walks the 9-step runbook with you.
+
 ## What "autonomous" means here
 
 The interactive TUI assumes an operator at the keyboard reacting to model output. Autonomous mode flips that: you describe a goal up front, hand the agent a set of tools and a budget, then walk away. The agent works until it decides it's done, hits a budget cap, or you cancel it. The session log is the audit trail.

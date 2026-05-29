@@ -81,11 +81,11 @@ See the [Providers reference]({{< relref "/docs/reference/providers.md" >}}) for
 
 ## Multi-turn TUI
 
-Drop the `-p` flag and `core-agent` lands in its bubble-tea TUI (the default when stdin is a real terminal). Conversation history is preserved across turns automatically.
+Drop the `-p` flag and `core-agent` lands in its Bubble Tea TUI (the default when stdin is a real terminal). Conversation history is preserved across turns automatically.
 
 ```text
 $ core-agent
-[bubble-tea TUI takes over the terminal]
+[Bubble Tea TUI takes over the terminal]
 > Remember the number 73.
 Got it — I'll remember 73.
 > What number did I just give you?
@@ -95,7 +95,7 @@ Got it — I'll remember 73.
 
 The TUI ships a rich slash-command surface — try `/help` to enumerate the catalog (`/stats`, `/context`, `/compact`, `/done`, `/btw`, `/tools`, `/memory`, and more). See the [Slash reference]({{< relref "/docs/cli/interactive/slash-reference.md" >}}) for the full catalog and the [Interactive quickstart]({{< relref "/docs/cli/interactive/quickstart.md" >}}) for the operator workflow.
 
-**Headless and slim-build fallbacks:** `core-agent --no-tui` (or non-TTY stdin like a pipe / CI run) falls through to a line-mode REPL with `/exit`, `/quit`, EOF (Ctrl-D). The slim build (`go build -tags no_tui`, ~5 MB smaller, no bubble-tea deps) excludes the TUI entirely and always uses the REPL.
+**Headless and slim-build fallbacks:** `core-agent --no-tui` (or non-TTY stdin like a pipe / CI run) falls through to a line-mode REPL with `/exit`, `/quit`, EOF (Ctrl-D). The slim build (`go build -tags no_tui`, ~5 MB smaller, no Bubble Tea deps) excludes the TUI entirely and always uses the REPL.
 
 **Legacy TUI escape hatch:** `CORE_AGENT_TUI=internal core-agent` selects the pre-v2 `internal/tui` code path. Useful if you hit a regression in the new core-tui-backed default; scheduled for removal in v2.1.
 
@@ -153,7 +153,7 @@ Beyond `--provider` / `-m` / `-p`, the flags that come up most often:
 --session-db                    persist sessions + audit log to a durable database
                                 (default off; in-memory)
 --session-db-path=PATH          override the database path (default: ~/.<binary>/sessions.db)
---no-tui                        skip the bubble-tea TUI even on a TTY — fall through
+--no-tui                        skip the Bubble Tea TUI even on a TTY — fall through
                                 to the line-mode REPL (scripts, weird terminals, etc.)
 --no-compact                    disable automatic context-window compaction
                                 (manual /compact still works)

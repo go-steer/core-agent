@@ -7,7 +7,7 @@ The `core-agent` binary supports two interaction modes. Pick the one that matche
 
 ## [Interactive]({{< relref "/docs/cli/interactive/_index.md" >}})
 
-You're driving the agent yourself from a terminal. The bubble-tea TUI takes over, conversation history is preserved across turns, slash commands surface session controls. Best for code review, exploration, ad-hoc tasks, anything where you want to see the model's response and react.
+You're driving the agent yourself from a terminal. The Bubble Tea TUI takes over, conversation history is preserved across turns, slash commands surface session controls. Best for code review, exploration, ad-hoc tasks, anything where you want to see the model's response and react.
 
 Start with the [interactive quickstart]({{< relref "/docs/cli/interactive/quickstart.md" >}}) for the first-15-minutes path.
 

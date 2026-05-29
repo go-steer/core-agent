@@ -155,7 +155,7 @@ If you've configured a [permission gate]({{< relref "/docs/reference/permissions
 }
 ```
 
-…would whitelist the namespaced filesystem-server read_file specifically, without granting any other MCP tool. Pattern matching is the same as for built-in tools — see the [Permissions page]({{< relref "/docs/reference/permissions.md" >}}#pattern-grammar).
+…would allowlist the namespaced filesystem-server read_file specifically, without granting any other MCP tool. Pattern matching is the same as for built-in tools — see the [Permissions page]({{< relref "/docs/reference/permissions.md" >}}#pattern-grammar).
 
 The permission detail string surfaced in prompts is `<tool_name> <json-args>` (truncated at 200 chars), so users get context about what's being asked. Skip gating entirely by configuring `permissions.mode: yolo` (the bash denylist is still applied for any `bash` tool, but MCP tools are not subject to it).
 

@@ -456,7 +456,7 @@ A handful of features are CLI-flag-only, with no `config.json` field today (cons
 | `--session-db`, `--session-db-path` | [Sessions and event log]({{< relref "/docs/reference/sessions.md#cli-flags" >}}) |
 | `--color=auto\|always\|never` | [Library API → Color]({{< relref "/docs/library/api.md#color" >}}) |
 | `--record-to`, `--script`, `--script-strict` | [Providers → Mock providers]({{< relref "/docs/reference/providers.md" >}}) |
-| `--no-tui` | [Getting started → Multi-turn TUI]({{< relref "/docs/getting-started.md" >}}) — skip the bubble-tea TUI even on a TTY (slim build / scripts / unusual terminals) |
+| `--no-tui` | [Getting started → Multi-turn TUI]({{< relref "/docs/getting-started.md" >}}) — skip the Bubble Tea TUI even on a TTY (slim build / scripts / unusual terminals) |
 | `--no-compact` | [Context management → Compaction]({{< relref "/docs/reference/context-management.md" >}}) — disable automatic compaction (`/compact` slash still works) |
 | `--no-checkpoint` | [Context management → Task-boundary checkpoints]({{< relref "/docs/reference/context-management.md" >}}) — disable `/done` slash + `mark_task_done` tool |
 | `--agentic-tools` | [Context management → Agentic tool wrappers]({{< relref "/docs/reference/context-management.md" >}}) — register the `agentic_*` tool family |

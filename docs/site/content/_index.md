@@ -8,7 +8,7 @@ title: core-agent
 
 <div class="text-center pt-4 pb-2">
   <p class="lead">
-  A reusable Go base agent built on the Google Agent Development Kit. Embed it in your binary, pick the providers and tools you need, ship.
+  A reusable Go-based agent built on the Google Agent Development Kit. Embed it in your binary, pick the providers and tools you need, ship.
   </p>
 </div>
 

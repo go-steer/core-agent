@@ -1,6 +1,6 @@
 # core-agent
 
-A reusable Go base agent built on the [Google Agent Development Kit](https://pkg.go.dev/google.golang.org/adk).
+A reusable Go-based agent built on the [Google Agent Development Kit](https://pkg.go.dev/google.golang.org/adk).
 
 **📚 Full documentation: [go-steer.github.io/core-agent](https://go-steer.github.io/core-agent/)**
 

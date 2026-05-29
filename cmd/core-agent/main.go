@@ -308,7 +308,7 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 	if mcpErr != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: mcp: %v\n", mcpErr)
 	}
-	loadedSkills, skillsErr := skills.Load(ctx, agentsDir, gate)
+	loadedSkills, skillsErr := skills.LoadAll(ctx, agentsDir, coreHome, gate)
 	if skillsErr != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: skills: %v\n", skillsErr)
 	}

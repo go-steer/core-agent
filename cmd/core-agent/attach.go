@@ -32,8 +32,8 @@ import (
 
 	"google.golang.org/adk/session"
 
-	"github.com/go-steer/core-agent/attach"
-	"github.com/go-steer/core-agent/runner"
+	"github.com/go-steer/core-agent/pkg/attach"
+	"github.com/go-steer/core-agent/pkg/runner"
 )
 
 // runAttachSubcommand handles `core-agent attach <url> [flags]`.

@@ -23,10 +23,10 @@ import (
 
 	coretui "github.com/go-steer/core-tui/tui"
 
-	"github.com/go-steer/core-agent/agent"
 	"github.com/go-steer/core-agent/internal/tui"
-	"github.com/go-steer/core-agent/mcp"
-	"github.com/go-steer/core-agent/permissions"
+	"github.com/go-steer/core-agent/pkg/agent"
+	"github.com/go-steer/core-agent/pkg/mcp"
+	"github.com/go-steer/core-agent/pkg/permissions"
 )
 
 // pkgElicitor is the TUI elicitor instance shared between main.go's

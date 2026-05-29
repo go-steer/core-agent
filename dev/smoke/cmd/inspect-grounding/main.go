@@ -32,7 +32,7 @@ import (
 
 	"github.com/glebarez/sqlite"
 
-	"github.com/go-steer/core-agent/eventlog"
+	"github.com/go-steer/core-agent/pkg/eventlog"
 )
 
 func main() {

@@ -9,7 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/go-steer/core-agent/config"
+	"github.com/go-steer/core-agent/pkg/config"
 )
 
 // TestThinkingPhrase_WrapsAndAnchors pins two contracts at once:

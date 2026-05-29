@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/go-steer/core-agent/permissions"
+	"github.com/go-steer/core-agent/pkg/permissions"
 )
 
 // permissionsPicker is the overlay state for the /permissions slash

@@ -30,8 +30,8 @@ import (
 	"google.golang.org/adk/session"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/attach"
 	"github.com/go-steer/core-agent/internal/attachclient"
+	"github.com/go-steer/core-agent/pkg/attach"
 )
 
 // chatModel is the active-session view. Top: scrollback (viewport

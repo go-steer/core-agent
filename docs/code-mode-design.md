@@ -944,8 +944,8 @@ import (
 
     "google.golang.org/adk/tool"
 
-    "github.com/go-steer/core-agent/permissions"
-    "github.com/go-steer/core-agent/tools/gocode/symbols"
+    "github.com/go-steer/core-agent/pkg/permissions"
+    "github.com/go-steer/core-agent/pkg/tools/gocode/symbols"
 )
 
 // NewGoExecutor returns an ADK tool that runs Go snippets through

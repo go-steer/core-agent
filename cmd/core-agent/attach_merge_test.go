@@ -18,7 +18,7 @@ import (
 	"flag"
 	"testing"
 
-	"github.com/go-steer/core-agent/config"
+	"github.com/go-steer/core-agent/pkg/config"
 )
 
 // registerAttachFlags wires the --attach-* flags onto fs, mirroring

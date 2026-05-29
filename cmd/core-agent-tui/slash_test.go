@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/attach"
+	"github.com/go-steer/core-agent/pkg/attach"
 )
 
 func TestUsagePanel_Render(t *testing.T) {

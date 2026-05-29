@@ -31,13 +31,13 @@ import (
 
 	coretui "github.com/go-steer/core-tui/tui"
 
-	"github.com/go-steer/core-agent/agent"
-	"github.com/go-steer/core-agent/config"
-	"github.com/go-steer/core-agent/instruction"
-	"github.com/go-steer/core-agent/mcp"
-	"github.com/go-steer/core-agent/permissions"
-	"github.com/go-steer/core-agent/skills"
-	"github.com/go-steer/core-agent/usage"
+	"github.com/go-steer/core-agent/pkg/agent"
+	"github.com/go-steer/core-agent/pkg/config"
+	"github.com/go-steer/core-agent/pkg/instruction"
+	"github.com/go-steer/core-agent/pkg/mcp"
+	"github.com/go-steer/core-agent/pkg/permissions"
+	"github.com/go-steer/core-agent/pkg/skills"
+	"github.com/go-steer/core-agent/pkg/usage"
 )
 
 // pkgCoreElicitor mirrors pkgElicitor (the internal/tui variant) for

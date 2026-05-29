@@ -9,7 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/go-steer/core-agent/config"
+	"github.com/go-steer/core-agent/pkg/config"
 )
 
 // TestFormatToolCall covers the per-tool arg-hint logic. The hint is

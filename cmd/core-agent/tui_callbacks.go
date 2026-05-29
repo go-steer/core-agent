@@ -22,9 +22,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-steer/core-agent/config"
 	"github.com/go-steer/core-agent/internal/pricing"
-	"github.com/go-steer/core-agent/usage"
+	"github.com/go-steer/core-agent/pkg/config"
+	"github.com/go-steer/core-agent/pkg/usage"
 )
 
 // describeRefresh renders a one-line summary of a pricing-refresh

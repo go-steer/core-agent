@@ -86,8 +86,8 @@ cat > /tmp/smoke.go <<'EOF'
 package main
 import (
   "fmt"
-  "github.com/go-steer/core-agent/agent"
-  "github.com/go-steer/core-agent/models/mock"
+  "github.com/go-steer/core-agent/pkg/agent"
+  "github.com/go-steer/core-agent/pkg/models/mock"
 )
 func main() {
   m, _ := mock.NewEcho().Model(nil, "")
@@ -252,10 +252,10 @@ package main
 import (
   "context"; "fmt"; "log"
   adktool "google.golang.org/adk/tool"
-  "github.com/go-steer/core-agent/agent"
-  "github.com/go-steer/core-agent/models"
-  _ "github.com/go-steer/core-agent/models/gemini"
-  "github.com/go-steer/core-agent/config"
+  "github.com/go-steer/core-agent/pkg/agent"
+  "github.com/go-steer/core-agent/pkg/models"
+  _ "github.com/go-steer/core-agent/pkg/models/gemini"
+  "github.com/go-steer/core-agent/pkg/config"
 )
 func main() {
   cfg := config.DefaultConfig()

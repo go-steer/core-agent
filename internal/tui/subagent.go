@@ -23,7 +23,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/go-steer/core-agent/agent"
+	"github.com/go-steer/core-agent/pkg/agent"
 )
 
 // defaultSubagentPrompt is the system prompt grafted onto a /subagent

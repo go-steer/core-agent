@@ -17,12 +17,12 @@ import (
 	"github.com/charmbracelet/x/exp/teatest"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/go-steer/core-agent/agent"
-	"github.com/go-steer/core-agent/config"
-	"github.com/go-steer/core-agent/instruction"
 	"github.com/go-steer/core-agent/internal/testutil"
-	"github.com/go-steer/core-agent/mcp"
-	"github.com/go-steer/core-agent/permissions"
+	"github.com/go-steer/core-agent/pkg/agent"
+	"github.com/go-steer/core-agent/pkg/config"
+	"github.com/go-steer/core-agent/pkg/instruction"
+	"github.com/go-steer/core-agent/pkg/mcp"
+	"github.com/go-steer/core-agent/pkg/permissions"
 )
 
 // newTestModel constructs a TUI model wired to a FakeModel-backed agent

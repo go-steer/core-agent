@@ -36,9 +36,9 @@ import (
 
 	"github.com/glebarez/sqlite"
 
-	"github.com/go-steer/core-agent/agent"
-	"github.com/go-steer/core-agent/eventlog"
-	"github.com/go-steer/core-agent/models/mock"
+	"github.com/go-steer/core-agent/pkg/agent"
+	"github.com/go-steer/core-agent/pkg/eventlog"
+	"github.com/go-steer/core-agent/pkg/models/mock"
 )
 
 // parentScript: the parent emits a function call to the research

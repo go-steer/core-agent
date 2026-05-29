@@ -20,7 +20,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/go-steer/core-agent/attach"
+	"github.com/go-steer/core-agent/pkg/attach"
 )
 
 // helpText is what /help dumps into the chat scrollback. Kept short

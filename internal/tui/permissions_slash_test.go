@@ -9,8 +9,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/go-steer/core-agent/config"
-	"github.com/go-steer/core-agent/permissions"
+	"github.com/go-steer/core-agent/pkg/config"
+	"github.com/go-steer/core-agent/pkg/permissions"
 )
 
 // TestHandleAllow_Pattern pins the happy path for `/allow <pattern>`:

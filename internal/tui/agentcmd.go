@@ -8,7 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/go-steer/core-agent/agent"
+	"github.com/go-steer/core-agent/pkg/agent"
 )
 
 // programSender is the subset of *tea.Program the goroutine uses. We

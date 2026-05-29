@@ -11,7 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/go-steer/core-agent/config"
+	"github.com/go-steer/core-agent/pkg/config"
 )
 
 // TestView_HeaderAlwaysShowsBrandAndStatus pins the persistent header

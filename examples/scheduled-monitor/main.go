@@ -46,9 +46,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/go-steer/core-agent/agent"
-	"github.com/go-steer/core-agent/models/mock"
-	coretools "github.com/go-steer/core-agent/tools"
+	"github.com/go-steer/core-agent/pkg/agent"
+	"github.com/go-steer/core-agent/pkg/models/mock"
+	coretools "github.com/go-steer/core-agent/pkg/tools"
 )
 
 func main() {

@@ -68,8 +68,8 @@ import (
     "google.golang.org/adk/tool"
     "google.golang.org/adk/tool/functiontool"
 
-    "github.com/go-steer/core-agent/config"
-    "github.com/go-steer/core-agent/permissions"
+    "github.com/go-steer/core-agent/pkg/config"
+    "github.com/go-steer/core-agent/pkg/permissions"
 )
 
 type globArgs struct {
@@ -173,8 +173,8 @@ import (
     "google.golang.org/adk/tool"
     "google.golang.org/adk/tool/functiontool"
 
-    "github.com/go-steer/core-agent/config"
-    "github.com/go-steer/core-agent/permissions"
+    "github.com/go-steer/core-agent/pkg/config"
+    "github.com/go-steer/core-agent/pkg/permissions"
 )
 
 type grepArgs struct {

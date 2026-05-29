@@ -5,6 +5,8 @@ weight: 1
 
 15 minutes from `core-agent` installed → a tailored agent your whole team can use.
 
+> **Prefer to have an agent walk you through this?** The [`cli-setup` skill]({{< relref "skills-library/cli-setup.md" >}}) covers the same material in workflow form. Install once, then say "help me set up core-agent for my project" and the agent walks the four layers with you, writing files as you go.
+
 ## What you'll have at the end
 
 A project-scoped agent that:

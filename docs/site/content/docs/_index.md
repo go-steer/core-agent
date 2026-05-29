@@ -21,6 +21,8 @@ You're in the `core-agent` reference docs. The site root has the marketing pitch
 
 **Tuning prompts, skills, and tool descriptions?** → [Agent design]({{< relref "agent-design/_index.md" >}}) is the prescriptive section — what patterns work, what failure modes to watch for, how to get the model to use subagents and `agentic_*` wrappers.
 
+**Want an agent to walk you through configuration?** → [Skills library]({{< relref "skills-library/_index.md" >}}) ships three Claude-Skills bundles covering CLI setup, autonomous setup, and library embedding. Install one and ask your agent for help — same content as the static docs, in workflow form.
+
 **Configuring a specific surface?** → [Reference]({{< relref "reference/_index.md" >}}) is the cross-cutting index — providers, config, permissions, MCP, skills, sessions, context management, attach mode.
 
 ## Reference index
@@ -38,6 +40,10 @@ You're in the `core-agent` reference docs. The site root has the marketing pitch
 ### Agent design
 
 - **[Agent design]({{< relref "agent-design/_index.md" >}})** — prompt + skill + tool-description patterns for efficient, well-behaved agents
+
+### Skills library
+
+- **[Skills library]({{< relref "skills-library/_index.md" >}})** — three bundled Claude-Skills (cli-setup, autonomous-setup, library-embedding) so an agent can walk a user through configuration
 
 ### Reference
 

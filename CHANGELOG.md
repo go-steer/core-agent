@@ -16,6 +16,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+### Changed
+
+- **Default TUI is now core-tui-backed** (`launchTUIv2`). The legacy `internal/tui` path is still available via `CORE_AGENT_TUI=internal` as a one-release escape hatch for operators who hit a regression, but new sessions land in core-tui by default. core-tui has been the source of truth for status-line composition, mid-turn injection, async-slash dispatch, and per-model `/stats` for several minor versions now (currently v0.6.5); `internal/tui` has stayed pinned to its v1 shape. Slated for removal in v2.1 once core-tui has soaked. Slim-build (`-tags no_tui`) behavior unchanged — both launchers are no-ops there and fall through to the line-mode REPL.
+
 ### Fixed
 
 - **Subtask token + turn double-counting in `usage.Tracker`.** Smoke caught it: after 2 subtask calls, `/stats` showed 31 turns and inflated input tokens (subtask `/context` rolled up to $0.0085, but the cost was already over-attributed to the parent's tracker totals). Root cause: `RunSubtask` called `tracker.Append` on every event with `UsageMetadata`, but Gemini's metadata is CUMULATIVE across streaming chunks within one model turn — summing those values double-counts tokens, and each `Append` inflates the tracker's turn count by one. Fix mirrors `runner/headless.go`'s `tapUsage`: track last-seen `(in, out)` overwriting per event, commit ONCE per `TurnComplete`, reset the per-turn accumulator afterwards so multi-turn subtasks still record one tracker entry per turn (not per chunk). New test covers the pattern via a multi-event subtask through the existing `captureLLM`.

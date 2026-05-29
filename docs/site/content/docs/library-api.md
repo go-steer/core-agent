@@ -115,9 +115,15 @@ agent.WithStreaming(m StreamingMode)   // override; default is StreamingModeSSE
 agent.WithSession(userID, sessionID)   // override session identity
 agent.WithTools(ts []tool.Tool)        // register individual tools
 agent.WithToolsets(ts []tool.Toolset)  // register groups (MCP, skills, ...)
+agent.WithUsageTracker(t)              // share a usage.Tracker so /stats sees per-turn cost (v2.0+)
+agent.WithCompactor(c Compactor)       // automatic context-window compaction (v2.0+)
+agent.WithCheckpointer(c Checkpointer) // task-boundary checkpoints + mark_task_done tool (v2.0+)
+agent.WithPostConstruct(f)             // late-binding callback for tools that need the *Agent (v2.0+)
 ```
 
 Options are applied in the order they're passed. Tools and toolsets accumulate across multiple calls.
+
+`WithCompactor`, `WithCheckpointer`, and the `tools/agentic` wrapper family are documented in detail under [Context management]({{< relref "context-management.md" >}}). `WithPostConstruct` is the late-binding hook external tools use when their handler needs to call back into the constructed agent — same pattern the in-tree `mark_task_done` tool uses, exposed publicly so consumers can build similar agent-aware tools without forking the agent package.
 
 ### Default instruction
 

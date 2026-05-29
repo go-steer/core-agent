@@ -98,6 +98,8 @@ for entry, err := range handle.Stream.Since(ctx, 0,
 
 Each `Entry` carries the assigned `Seq` plus the rehydrated `*session.Event`. `Since` returns when caught up to the current end of log.
 
+Context-management boundary events (v2.0+) are regular events with `CustomMetadata["compaction"]` set: `"summary"` for compaction summaries, `"checkpoint"` for task-boundary checkpoints. They appear in the audit log inline with the rest of the conversation; the slicing that hides earlier history from future model requests is applied at request-construction time, not by mutating the event log. Filter for them with a custom predicate on `entry.Event.CustomMetadata`, or use `WithAuthor` if your agent name is the only one writing them in this session. See [Context management]({{< relref "context-management.md" >}}) for the design.
+
 Filters available:
 
 | Filter | Effect |

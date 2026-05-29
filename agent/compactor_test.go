@@ -472,3 +472,68 @@ func contentText(c *genai.Content) string {
 	}
 	return b.String()
 }
+
+func TestCompact_RollsCostUpToParentTracker(t *testing.T) {
+	t.Parallel()
+	// Issue #61: the summarizer's own LLM call must reach the
+	// parent's usage.Tracker so /stats + /context don't under-
+	// report cost in proportion to how often compaction or
+	// checkpoints fire. Single-turn call (no tool round-trips,
+	// no multi-turn), so we expect exactly ONE Append per Compact
+	// invocation.
+	llm := &captureLLM{
+		response:     "compaction summary text",
+		inputTokens:  int32(2_000),
+		outputTokens: int32(300),
+	}
+	tracker := usage.NewTracker()
+	a, err := New(llm, WithCompactor(NewDefaultCompactor()), WithUsageTracker(tracker))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	plantEvent(t, a, genai.RoleUser, "some prior context to summarize")
+
+	preTurns := tracker.Totals().Turns
+	if _, err := a.Compact(context.Background(), ""); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	post := tracker.Totals()
+	if post.Turns != preTurns+1 {
+		t.Errorf("tracker.Turns = %d, want %d (one Append per Compact)", post.Turns, preTurns+1)
+	}
+	if post.InputTokens < 2_000 || post.OutputTokens < 300 {
+		t.Errorf("tracker totals didn't pick up summarizer usage: %+v (want >= 2000 in / 300 out)", post)
+	}
+}
+
+func TestCheckpoint_RollsCostUpToParentTracker(t *testing.T) {
+	t.Parallel()
+	// Same as TestCompact_RollsCostUpToParentTracker but via
+	// /done's Checkpoint path. Both go through runSummarizer, so
+	// the fix benefits both — this test pins the checkpoint side
+	// so a future refactor that breaks one but not the other gets
+	// caught.
+	llm := &captureLLM{
+		response:     "checkpoint completion record",
+		inputTokens:  int32(1_500),
+		outputTokens: int32(250),
+	}
+	tracker := usage.NewTracker()
+	a, err := New(llm, WithCheckpointer(NewDefaultCheckpointer()), WithUsageTracker(tracker))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	plantEvent(t, a, genai.RoleUser, "task setup turn")
+
+	preTurns := tracker.Totals().Turns
+	if _, err := a.Checkpoint(context.Background(), "finished task"); err != nil {
+		t.Fatalf("Checkpoint: %v", err)
+	}
+	post := tracker.Totals()
+	if post.Turns != preTurns+1 {
+		t.Errorf("tracker.Turns = %d, want %d (one Append per Checkpoint)", post.Turns, preTurns+1)
+	}
+	if post.InputTokens < 1_500 || post.OutputTokens < 250 {
+		t.Errorf("tracker totals didn't pick up summarizer usage: %+v (want >= 1500 in / 250 out)", post)
+	}
+}

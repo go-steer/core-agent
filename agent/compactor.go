@@ -26,6 +26,8 @@ import (
 
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/session"
+
+	"github.com/go-steer/core-agent/usage"
 )
 
 // CompactionEventTag is the value stored under
@@ -287,11 +289,24 @@ func (a *Agent) runSummarizer(ctx context.Context, spec summarizerSpec) (summari
 
 	start := time.Now()
 	var b strings.Builder
+	// Track cumulative usage from streaming chunks. Gemini's
+	// UsageMetadata is cumulative within one turn — overwrite per
+	// chunk, commit ONCE after the stream finishes. The summarizer
+	// is a single GenerateContent call (no tool round-trips, no
+	// multi-turn), so one Append per invocation is correct.
+	var lastIn, lastOut int
 	for resp, err := range a.model.GenerateContent(ctx, req, false) {
 		if err != nil {
 			return summarizerOutcome{}, fmt.Errorf("agent: %s: generate: %w", spec.operation, err)
 		}
-		if resp == nil || resp.Content == nil || resp.Partial {
+		if resp == nil {
+			continue
+		}
+		if resp.UsageMetadata != nil {
+			lastIn = int(resp.UsageMetadata.PromptTokenCount)
+			lastOut = int(resp.UsageMetadata.CandidatesTokenCount)
+		}
+		if resp.Content == nil || resp.Partial {
 			continue
 		}
 		for _, p := range resp.Content.Parts {
@@ -304,6 +319,18 @@ func (a *Agent) runSummarizer(ctx context.Context, spec summarizerSpec) (summari
 	summary := strings.TrimSpace(b.String())
 	if summary == "" {
 		return summarizerOutcome{}, fmt.Errorf("agent: %s: model returned no summary text", spec.operation)
+	}
+
+	// Roll the summarizer's own LLM call cost up to the parent's
+	// tracker so /stats + /context reflect the boundary write.
+	// Without this, /stats under-reports cost in proportion to
+	// how often compaction or checkpoints fire — a heavy
+	// autonomous run with many auto-compactions can hide
+	// significant spend. Issue #61.
+	if a.tracker != nil && (lastIn > 0 || lastOut > 0) {
+		modelName := a.model.Name()
+		pricing := usage.PriceFor(modelName, nil)
+		a.tracker.Append(modelName, lastIn, lastOut, pricing)
 	}
 
 	id, err := a.appendBoundaryEvent(ctx, summary, spec)

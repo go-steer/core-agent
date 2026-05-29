@@ -398,6 +398,19 @@ type coreAgentAdapter struct {
 func (a *coreAgentAdapter) Run(ctx context.Context, prompt string) iter.Seq2[coretui.Event, error] {
 	return func(yield func(coretui.Event, error) bool) {
 		modelName := a.inner.ModelName()
+		// Per-turn cumulative usage tracking. Gemini's UsageMetadata
+		// is CUMULATIVE across streaming chunks within one model turn
+		// — the last chunk carries the final count, all earlier
+		// chunks carry running totals. If we Append on every chunk
+		// we both inflate the tracker's turn count (one Append per
+		// chunk) AND double-count tokens (summing running cumulative
+		// values). Mirror runner/headless.go's tapUsage pattern AND
+		// the subtask path's fix: overwrite last-seen per event,
+		// commit ONCE per TurnComplete, reset for the next turn.
+		// Reset is what makes multi-turn Runs (tool-call round trips
+		// within a single user prompt) record one tracker entry per
+		// real turn instead of one per chunk.
+		var lastTurnIn, lastTurnOut int
 		for ev, err := range a.inner.Run(ctx, prompt) {
 			if err != nil {
 				yield(coretui.Event{}, err)
@@ -407,19 +420,26 @@ func (a *coreAgentAdapter) Run(ctx context.Context, prompt string) iter.Seq2[cor
 			if ev.UsageMetadata != nil {
 				in := int(ev.UsageMetadata.PromptTokenCount)
 				out := int(ev.UsageMetadata.CandidatesTokenCount)
+				lastTurnIn, lastTurnOut = in, out
+				// Surface the per-event cumulative on the wire event
+				// so the live TUI footer can show progress within
+				// the turn. The tracker.Append below commits ONCE
+				// per turn on TurnComplete.
 				te.Usage = &coretui.Usage{
 					InputTokens:  in,
 					OutputTokens: out,
 				}
-				// Mirror internal/tui:161 — compute pricing from the
-				// host config + feed the tracker. Without this the
-				// status sidebar's session totals + /stats stay at
-				// zero even though per-turn token counts arrive.
+			}
+			if ev.TurnComplete && (lastTurnIn > 0 || lastTurnOut > 0) {
+				// Commit this turn's usage exactly once. Roll cost
+				// into the tracker so /stats + status sidebar see
+				// per-turn data. Pricing from host config.
 				if a.deps.Tracker != nil && a.deps.Cfg != nil {
 					pricing := usage.PriceFor(modelName, a.deps.Cfg)
-					turn := a.deps.Tracker.Append(modelName, in, out, pricing)
+					turn := a.deps.Tracker.Append(modelName, lastTurnIn, lastTurnOut, pricing)
 					te.CostUSD = turn.CostUSD
 				}
+				lastTurnIn, lastTurnOut = 0, 0
 			}
 			if ev.Content != nil {
 				for _, p := range ev.Content.Parts {

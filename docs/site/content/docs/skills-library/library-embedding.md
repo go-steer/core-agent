@@ -44,9 +44,9 @@ Three reference files; the agent fetches based on the user's needs:
 | You want | Use |
 |---|---|
 | Agent to walk you through embedding | Install + invoke `library-embedding` |
-| Reference for every option function + public type | [Library API]({{< relref "library/api.md" >}}) |
-| Narrative tour of extension points | [Library guide]({{< relref "library/guide.md" >}}) |
-| Quickstart for the first 15 minutes | [Library quickstart]({{< relref "library/_index.md" >}}) (in progress) |
+| Reference for every option function + public type | [Library API]({{< relref "/docs/library/api.md" >}}) |
+| Narrative tour of extension points | [Library guide]({{< relref "/docs/library/guide.md" >}}) |
+| Quickstart for the first 15 minutes | [Library quickstart]({{< relref "/docs/library/_index.md" >}}) (in progress) |
 
 The skill IS the docs in workflow form. Same content, different surface.
 
@@ -56,7 +56,7 @@ The skill IS the docs in workflow form. Same content, different surface.
 cp -r /path/to/core-agent/SKILLS/library-embedding .agents/skills/
 ```
 
-See [Skills library → Installing]({{< relref "skills-library/_index.md" >}}) for global install options.
+See [Skills library → Installing]({{< relref "/docs/skills-library/_index.md" >}}) for global install options.
 
 ## Adapting
 
@@ -87,7 +87,7 @@ Then walk steps 2-5 against that scaffold.
 
 ## Where to go next
 
-- **[Library quickstart]({{< relref "library/_index.md" >}})** — 15-minute hello-world (in progress)
-- **[Library guide]({{< relref "library/guide.md" >}})** — narrative tour of the extension points
-- **[Library API]({{< relref "library/api.md" >}})** — exhaustive type + option reference
-- **[Agent design]({{< relref "agent-design/_index.md" >}})** — prescriptive patterns that apply equally to embedded use
+- **[Library quickstart]({{< relref "/docs/library/_index.md" >}})** — 15-minute hello-world (in progress)
+- **[Library guide]({{< relref "/docs/library/guide.md" >}})** — narrative tour of the extension points
+- **[Library API]({{< relref "/docs/library/api.md" >}})** — exhaustive type + option reference
+- **[Agent design]({{< relref "/docs/agent-design/_index.md" >}})** — prescriptive patterns that apply equally to embedded use

@@ -10,7 +10,7 @@ Two ways to push work off the parent agent:
 
 This page covers when to use each, how to actually get the model to use them (the model-side adoption story is non-trivial), and the failure modes worth designing around.
 
-For the mechanisms themselves see [Context management → Agentic tool wrappers]({{< relref "reference/context-management.md" >}}) and the [Reference → Background subagents]({{< relref "reference/configuration.md" >}}) section.
+For the mechanisms themselves see [Context management → Agentic tool wrappers]({{< relref "/docs/reference/context-management.md" >}}) and the [Reference → Background subagents]({{< relref "/docs/reference/configuration.md" >}}) section.
 
 ---
 
@@ -116,7 +116,7 @@ Session stats:
 
 The savings compound on long sessions. A 50-turn debugging session that does 20 file reads via `agentic_read_file` instead of bare `read_file` saves significantly more — the parent's context stays smaller, prompt-cache hit rate stays higher, and the per-read cost is on Flash, not Pro.
 
-See [Cost efficiency]({{< relref "agent-design/cost-efficiency.md" >}}) for more detailed cost-model breakdowns.
+See [Cost efficiency]({{< relref "/docs/agent-design/cost-efficiency.md" >}}) for more detailed cost-model breakdowns.
 
 ---
 
@@ -180,7 +180,7 @@ A subagent that wakes periodically to check something, posts an alert if it sees
 - Each wake produces a brief turn that checks the thing and decides whether to alert.
 - Alerts come through `report_alert` to the parent's inbox.
 
-See the [Autonomous quickstart]({{< relref "cli/autonomous/quickstart.md" >}}) for a worked example.
+See the [Autonomous quickstart]({{< relref "/docs/cli/autonomous/quickstart.md" >}}) for a worked example.
 
 ---
 
@@ -210,9 +210,9 @@ The composition keeps the parent's context tiny (it just sees "spawned subagent,
 
 ## Where to go next
 
-- **[Cost efficiency]({{< relref "agent-design/cost-efficiency.md" >}})** — the per-turn cost models for wrappers + subagents; when the savings pay off
-- **[Context management → Agentic wrappers]({{< relref "reference/context-management.md" >}})** — the mechanism + the four built-in wrappers
-- **[Autonomous quickstart]({{< relref "cli/autonomous/quickstart.md" >}})** — background subagents + scheduling in unattended runs
-- **[Autonomous → Operations]({{< relref "cli/autonomous/operations.md" >}})** — `RunAutonomous`, budgets, lifecycle tool, the spawn tools
+- **[Cost efficiency]({{< relref "/docs/agent-design/cost-efficiency.md" >}})** — the per-turn cost models for wrappers + subagents; when the savings pay off
+- **[Context management → Agentic wrappers]({{< relref "/docs/reference/context-management.md" >}})** — the mechanism + the four built-in wrappers
+- **[Autonomous quickstart]({{< relref "/docs/cli/autonomous/quickstart.md" >}})** — background subagents + scheduling in unattended runs
+- **[Autonomous → Operations]({{< relref "/docs/cli/autonomous/operations.md" >}})** — `RunAutonomous`, budgets, lifecycle tool, the spawn tools
 - **[Issue #59](https://github.com/go-steer/core-agent/issues/59)** — agentic_* description tightening (v2.1 polish)
 - **[Issue #60](https://github.com/go-steer/core-agent/issues/60)** — Flash hallucination on agentic_grep (v2.1 polish)

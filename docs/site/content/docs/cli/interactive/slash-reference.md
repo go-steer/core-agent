@@ -5,7 +5,7 @@ weight: 3
 
 Reference for every slash command and keybinding available in the interactive TUI. Type `/help` in any session for the operator-side version of this catalog.
 
-For attach-mode (`core-agent-tui` remote client) commands, see [Attach mode TUI]({{< relref "reference/attach-tui.md" >}}).
+For attach-mode (`core-agent-tui` remote client) commands, see [Attach mode TUI]({{< relref "/docs/reference/attach-tui.md" >}}).
 
 ---
 
@@ -41,7 +41,7 @@ For attach-mode (`core-agent-tui` remote client) commands, see [Attach mode TUI]
 | `/compact [focus]` | `/summarize` | Manually compact the session; optional `focus` biases what the summary preserves |
 | `/done [note]` | `/checkpoint` | Write a task-boundary checkpoint; optional `note` becomes part of the handover record |
 
-Both run a summarizer LLM call (5-15s); the next turn picks up from the summary with prior history sliced. See [Context management]({{< relref "reference/context-management.md" >}}) for the design.
+Both run a summarizer LLM call (5-15s); the next turn picks up from the summary with prior history sliced. See [Context management]({{< relref "/docs/reference/context-management.md" >}}) for the design.
 
 ### Permissions
 
@@ -52,7 +52,7 @@ Both run a summarizer LLM call (5-15s); the next turn picks up from the summary 
 | `/deny <pattern>` | | Add a deny pattern (deny wins over allow) |
 | `/allow bundle:<name>` | | Apply a pre-defined allow bundle (e.g., `dev_tools`) |
 
-Pattern grammar: `<tool>:<glob>` (e.g., `bash:git diff*`, `read_file:internal/**`). See [Permissions]({{< relref "reference/permissions.md" >}}).
+Pattern grammar: `<tool>:<glob>` (e.g., `bash:git diff*`, `read_file:internal/**`). See [Permissions]({{< relref "/docs/reference/permissions.md" >}}).
 
 ### Model + pricing
 
@@ -116,8 +116,8 @@ You can keep typing during a turn. Each Enter queues your input to the agent's i
 
 ## Where to go next
 
-- **[Workflows]({{< relref "cli/interactive/workflows.md" >}})** — worked examples (code-reviewer, doc writer)
-- **[Context management]({{< relref "reference/context-management.md" >}})** — `/compact`, `/done`, `/context` in depth
-- **[Permissions]({{< relref "reference/permissions.md" >}})** — `/allow` + `/deny` pattern grammar
-- **[Configuration]({{< relref "reference/configuration.md" >}})** — pin the pieces above into `.agents/config.json`
-- **[Attach mode TUI]({{< relref "reference/attach-tui.md" >}})** — operator client for remote (attach-mode) agents has its own slash catalog
+- **[Workflows]({{< relref "/docs/cli/interactive/workflows.md" >}})** — worked examples (code-reviewer, doc writer)
+- **[Context management]({{< relref "/docs/reference/context-management.md" >}})** — `/compact`, `/done`, `/context` in depth
+- **[Permissions]({{< relref "/docs/reference/permissions.md" >}})** — `/allow` + `/deny` pattern grammar
+- **[Configuration]({{< relref "/docs/reference/configuration.md" >}})** — pin the pieces above into `.agents/config.json`
+- **[Attach mode TUI]({{< relref "/docs/reference/attach-tui.md" >}})** — operator client for remote (attach-mode) agents has its own slash catalog

@@ -77,7 +77,7 @@ The "key" of a request is tool-specific:
 - For file tools (`read_file`, `write_file`, `edit_file`, `list_dir`): the resolved absolute path.
 - For MCP / skill calls: `<tool_name> <json-args>` (truncated at 200 chars).
 
-The `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`, and `todo` tool names refer to the [built-in tools]({{< relref "library/api.md" >}}#built-in-tools) that ship with core-agent and are enabled by default in the bundled CLI. Use the same names in allow/deny patterns whether you keep the defaults or supply your own implementations under those names.
+The `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`, and `todo` tool names refer to the [built-in tools]({{< relref "/docs/library/api.md" >}}#built-in-tools) that ship with core-agent and are enabled by default in the bundled CLI. Use the same names in allow/deny patterns whether you keep the defaults or supply your own implementations under those names.
 
 ---
 
@@ -197,7 +197,7 @@ type Prompter interface {
 
 `PromptRequest` carries everything needed to render a prompt — kind (bash / file write / path scope / generic), tool name, detail string, and the persistence keys to write back if the user picks `DecisionAllowAlways`.
 
-The bundled `cmd/core-agent` does not currently ship a Prompter — `ask` mode in the REPL fails closed. To use `ask` mode interactively, embed the library in your own host and supply a Prompter. See [Library API → Prompter]({{< relref "library/api.md" >}}#prompter).
+The bundled `cmd/core-agent` does not currently ship a Prompter — `ask` mode in the REPL fails closed. To use `ask` mode interactively, embed the library in your own host and supply a Prompter. See [Library API → Prompter]({{< relref "/docs/library/api.md" >}}#prompter).
 
 ---
 
@@ -225,7 +225,7 @@ For non-interactive runs (CI, batch jobs), use:
 `agent.RunAutonomous` would deadlock under `mode: ask` if your tools route through a gate without a `Prompter` — the model's first gated tool call would block waiting for human approval that's never going to arrive. Two options:
 
 - Use `mode: yolo` (or `mode: allow` with an explicit allowlist) for unattended runs.
-- Wire `permissions.RefusePrompter` so the agent gets a clean refusal instead of blocking, and pass `agent.WithPermissionsGate(g)` to enable the driver's startup deadlock guard. See [Autonomous runs → Permission modes]({{< relref "cli/autonomous/operations.md#permission-modes" >}}).
+- Wire `permissions.RefusePrompter` so the agent gets a clean refusal instead of blocking, and pass `agent.WithPermissionsGate(g)` to enable the driver's startup deadlock guard. See [Autonomous runs → Permission modes]({{< relref "/docs/cli/autonomous/operations.md#permission-modes" >}}).
 
 ---
 

@@ -75,7 +75,7 @@ core-agent --provider anthropic-vertex --model claude-opus-4-7 -p "what's 2+2?"
 
 Note: Vertex's Claude model IDs sometimes carry a `@version` suffix (e.g. `claude-opus-4-5@20251101`). If the bare alias doesn't resolve, check the [Vertex Model Garden](https://console.cloud.google.com/vertex-ai/model-garden) for the current ID.
 
-See the [Providers reference]({{< relref "providers.md" >}}) for full details on each backend.
+See the [Providers reference]({{< relref "/docs/reference/providers.md" >}}) for full details on each backend.
 
 ---
 
@@ -93,7 +93,7 @@ Got it — I'll remember 73.
 > /quit
 ```
 
-The TUI ships a rich slash-command surface — try `/help` to enumerate the catalog (`/stats`, `/context`, `/compact`, `/done`, `/btw`, `/tools`, `/memory`, and more). See the [Slash reference]({{< relref "cli/interactive/slash-reference.md" >}}) for the full catalog and the [Interactive quickstart]({{< relref "cli/interactive/quickstart.md" >}}) for the operator workflow.
+The TUI ships a rich slash-command surface — try `/help` to enumerate the catalog (`/stats`, `/context`, `/compact`, `/done`, `/btw`, `/tools`, `/memory`, and more). See the [Slash reference]({{< relref "/docs/cli/interactive/slash-reference.md" >}}) for the full catalog and the [Interactive quickstart]({{< relref "/docs/cli/interactive/quickstart.md" >}}) for the operator workflow.
 
 **Headless and slim-build fallbacks:** `core-agent --no-tui` (or non-TTY stdin like a pipe / CI run) falls through to a line-mode REPL with `/exit`, `/quit`, EOF (Ctrl-D). The slim build (`go build -tags no_tui`, ~5 MB smaller, no bubble-tea deps) excludes the TUI entirely and always uses the REPL.
 
@@ -128,7 +128,7 @@ A minimal `config.json`:
 }
 ```
 
-`core-agent` will pick up everything in `.agents/` automatically — no flags needed. See the [Configuration reference]({{< relref "configuration.md" >}}) for the full schema.
+`core-agent` will pick up everything in `.agents/` automatically — no flags needed. See the [Configuration reference]({{< relref "/docs/reference/configuration.md" >}}) for the full schema.
 
 ### Pin a system prompt with `AGENTS.md`
 
@@ -165,25 +165,25 @@ Beyond `--provider` / `-m` / `-p`, the flags that come up most often:
                                 (e.g. gemini-2.5-flash) for the cost-efficiency win
 ```
 
-Use `--ask=auto` when your `AGENTS.md` instructs the model to ask before some action — the agent gets a clean refusal in headless contexts instead of blocking forever. See [Library API → Prompter]({{< relref "library/api.md#prompter" >}}).
+Use `--ask=auto` when your `AGENTS.md` instructs the model to ask before some action — the agent gets a clean refusal in headless contexts instead of blocking forever. See [Library API → Prompter]({{< relref "/docs/library/api.md#prompter" >}}).
 
-Use `--session-db` to persist conversation history across restarts and unlock the audit-log + crash-resume flows. See [Sessions and event log]({{< relref "sessions.md" >}}).
+Use `--session-db` to persist conversation history across restarts and unlock the audit-log + crash-resume flows. See [Sessions and event log]({{< relref "/docs/reference/sessions.md" >}}).
 
-The `--no-compact` / `--no-checkpoint` / `--agentic-tools` family controls how `core-agent` keeps long sessions alive past the context wall — see [Context management]({{< relref "context-management.md" >}}) for the design.
+The `--no-compact` / `--no-checkpoint` / `--agentic-tools` family controls how `core-agent` keeps long sessions alive past the context wall — see [Context management]({{< relref "/docs/reference/context-management.md" >}}) for the design.
 
-For long-running unattended work, see [Autonomous runs]({{< relref "cli/autonomous/operations.md" >}}).
+For long-running unattended work, see [Autonomous runs]({{< relref "/docs/cli/autonomous/operations.md" >}}).
 
 ---
 
 ## What to read next
 
-- [Interactive quickstart]({{< relref "cli/interactive/quickstart.md" >}}) — operator workflow, slash commands, AGENTS.md, skills, MCP, in 15 minutes
-- [Providers]({{< relref "providers.md" >}}) — full reference for each model backend, env vars, and gotchas
-- [Configuration]({{< relref "configuration.md" >}}) — every field of `.agents/config.json`
-- [Context management]({{< relref "context-management.md" >}}) — compaction, task-boundary checkpoints, agentic tool wrappers
-- [MCP servers]({{< relref "mcp.md" >}}) — declarative third-party tool integration
-- [Skills]({{< relref "skills.md" >}}) — Claude-compatible `SKILL.md` bundles
-- [Permissions]({{< relref "permissions.md" >}}) — gating tool calls
-- [Library API]({{< relref "library/api.md" >}}) — using `core-agent` from your own Go code
-- [Autonomous runs]({{< relref "cli/autonomous/operations.md" >}}) — `agent.RunAutonomous` for unattended workers
-- [Sessions and event log]({{< relref "sessions.md" >}}) — durable sessions, audit log, replay, crash-resume
+- [Interactive quickstart]({{< relref "/docs/cli/interactive/quickstart.md" >}}) — operator workflow, slash commands, AGENTS.md, skills, MCP, in 15 minutes
+- [Providers]({{< relref "/docs/reference/providers.md" >}}) — full reference for each model backend, env vars, and gotchas
+- [Configuration]({{< relref "/docs/reference/configuration.md" >}}) — every field of `.agents/config.json`
+- [Context management]({{< relref "/docs/reference/context-management.md" >}}) — compaction, task-boundary checkpoints, agentic tool wrappers
+- [MCP servers]({{< relref "/docs/reference/mcp.md" >}}) — declarative third-party tool integration
+- [Skills]({{< relref "/docs/reference/skills.md" >}}) — Claude-compatible `SKILL.md` bundles
+- [Permissions]({{< relref "/docs/reference/permissions.md" >}}) — gating tool calls
+- [Library API]({{< relref "/docs/library/api.md" >}}) — using `core-agent` from your own Go code
+- [Autonomous runs]({{< relref "/docs/cli/autonomous/operations.md" >}}) — `agent.RunAutonomous` for unattended workers
+- [Sessions and event log]({{< relref "/docs/reference/sessions.md" >}}) — durable sessions, audit log, replay, crash-resume

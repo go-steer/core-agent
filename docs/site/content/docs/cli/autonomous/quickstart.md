@@ -5,7 +5,7 @@ weight: 1
 
 15 minutes from `core-agent` installed → a working unattended agent that watches a real thing and reports back.
 
-> **Prefer to have an agent walk you through this?** The [`autonomous-setup` skill]({{< relref "skills-library/autonomous-setup.md" >}}) covers the same material in workflow form, including the multi-agent decomposition path. Install once, then say "set up an autonomous monitor for me" and the agent walks the 9-step runbook with you.
+> **Prefer to have an agent walk you through this?** The [`autonomous-setup` skill]({{< relref "/docs/skills-library/autonomous-setup.md" >}}) covers the same material in workflow form, including the multi-agent decomposition path. Install once, then say "set up an autonomous monitor for me" and the agent walks the 9-step runbook with you.
 
 ## What "autonomous" means here
 
@@ -17,12 +17,12 @@ Concrete examples of what fits:
 - Running through a backlog of code-review requests overnight against a queue
 - Periodically scanning a fleet for drift and proposing remediations
 
-What doesn't fit autonomous mode: anything that needs real-time operator judgment in the loop. Use interactive mode for those, or use autonomous mode with [attach]({{< relref "reference/attach-tui.md" >}}) so an operator can drop in when needed.
+What doesn't fit autonomous mode: anything that needs real-time operator judgment in the loop. Use interactive mode for those, or use autonomous mode with [attach]({{< relref "/docs/reference/attach-tui.md" >}}) so an operator can drop in when needed.
 
 ## Before you start
 
-- Completed [Getting started]({{< relref "getting-started.md" >}}) — provider credentials work, `core-agent -p "hello"` returns a response.
-- Understand the four customization layers from [Interactive quickstart]({{< relref "cli/interactive/quickstart.md" >}}) — `config.json`, `AGENTS.md`, skills, MCP. Autonomous mode uses the same files.
+- Completed [Getting started]({{< relref "/docs/getting-started.md" >}}) — provider credentials work, `core-agent -p "hello"` returns a response.
+- Understand the four customization layers from [Interactive quickstart]({{< relref "/docs/cli/interactive/quickstart.md" >}}) — `config.json`, `AGENTS.md`, skills, MCP. Autonomous mode uses the same files.
 
 This page works in a Go project (you'll write a small `main.go` to drive the agent). For autonomous use you call `agent.RunAutonomous` from your own code — it's not a CLI subcommand of `core-agent`.
 
@@ -114,7 +114,7 @@ func main() {
 | `WithMaxCost` | Cumulative dollar cost across all turns. Requires pricing to be wired (auto-detected from the model name). |
 | `WithPerTurnTimeout` | Per-turn `context.WithTimeout`. One rogue turn can't stall the run. |
 
-See [Operations]({{< relref "cli/autonomous/operations.md" >}}) for the full budget reference, the lifecycle tool, failure policy, and crash-resume.
+See [Operations]({{< relref "/docs/cli/autonomous/operations.md" >}}) for the full budget reference, the lifecycle tool, failure policy, and crash-resume.
 
 ---
 
@@ -169,7 +169,7 @@ The autonomous driver is strict about goal-following because there's no operator
 - **Explicit don't-do list.** A monitor that decides to scale a deployment because "that would fix it" is exactly the failure mode unattended runs are notorious for.
 - **Bounded tool surface.** Keep `kubectl` to read operations; if you need writes, gate them through a separate skill with explicit triggers.
 
-For deeper prompt patterns see [Agent design → System instructions]({{< relref "agent-design/system-instructions.md" >}}).
+For deeper prompt patterns see [Agent design → System instructions]({{< relref "/docs/agent-design/system-instructions.md" >}}).
 
 ---
 
@@ -213,15 +213,15 @@ core-agent --session-db --session-db-path=/tmp/watch-deploy.db &
 sqlite3 /tmp/watch-deploy.db "SELECT seq, author, json_extract(payload,'$.text') FROM agent_eventlog ORDER BY seq DESC LIMIT 20;"
 ```
 
-Every turn, every tool call, and every model response is appended to the durable event log. If the process crashes mid-turn, you can resume the same session via `ResumeAutonomous` and the agent picks up where it left off. See [Sessions and event log]({{< relref "reference/sessions.md" >}}).
+Every turn, every tool call, and every model response is appended to the durable event log. If the process crashes mid-turn, you can resume the same session via `ResumeAutonomous` and the agent picks up where it left off. See [Sessions and event log]({{< relref "/docs/reference/sessions.md" >}}).
 
 ---
 
 ## Where to go next
 
-- **[Operations]({{< relref "cli/autonomous/operations.md" >}})** — the depth reference: budgets, lifecycle tool, crash-resume, failure policy, audit-log queries, subagent composition
-- **[GKE team scenario]({{< relref "cli/autonomous/gke-team-scenario.md" >}})** — multi-agent worked example: a platform parent + operator + devteam working together against real GKE workloads
-- **[Context management]({{< relref "reference/context-management.md" >}})** — compaction + checkpoints make long unattended runs viable
-- **[Sessions and event log]({{< relref "reference/sessions.md" >}})** — durable storage, replay, live tail, crash-resume
-- **[Attach mode TUI]({{< relref "reference/attach-tui.md" >}})** — let an operator drop into an unattended agent mid-run
-- **[Library API → Autonomous runs]({{< relref "library/api.md#autonomous-runs" >}})** — full `RunAutonomous` reference + every option function
+- **[Operations]({{< relref "/docs/cli/autonomous/operations.md" >}})** — the depth reference: budgets, lifecycle tool, crash-resume, failure policy, audit-log queries, subagent composition
+- **[GKE team scenario]({{< relref "/docs/cli/autonomous/gke-team-scenario.md" >}})** — multi-agent worked example: a platform parent + operator + devteam working together against real GKE workloads
+- **[Context management]({{< relref "/docs/reference/context-management.md" >}})** — compaction + checkpoints make long unattended runs viable
+- **[Sessions and event log]({{< relref "/docs/reference/sessions.md" >}})** — durable storage, replay, live tail, crash-resume
+- **[Attach mode TUI]({{< relref "/docs/reference/attach-tui.md" >}})** — let an operator drop into an unattended agent mid-run
+- **[Library API → Autonomous runs]({{< relref "/docs/library/api.md#autonomous-runs" >}})** — full `RunAutonomous` reference + every option function

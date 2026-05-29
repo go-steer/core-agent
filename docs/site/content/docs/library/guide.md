@@ -86,7 +86,7 @@ Every customization happens through one of these interfaces or option functions.
 | Agentic subtasks | `agent.RunSubtask` + `tools/agentic` wrappers (v2.0+) | Route specific tool calls through a cheap-model subtask so raw output doesn't bloat the parent's context |
 | Late-binding hooks | `agent.WithPostConstruct` (v2.0+) | External tools whose handler needs the constructed `*Agent` (same pattern the in-tree `mark_task_done` uses) |
 
-The rest of this page walks through the first six in order of how often you'd use them. The last four are covered in [Library API](../library-api/) and [Context management]({{< relref "context-management.md" >}}).
+The rest of this page walks through the first six in order of how often you'd use them. The last four are covered in [Library API](../library-api/) and [Context management]({{< relref "/docs/reference/context-management.md" >}}).
 
 ## Custom `Prompter` — bring your own approval UX
 

@@ -7,7 +7,7 @@ A worked multi-agent example for running unattended `core-agent` agents against 
 
 The team shape mirrors [gke-labs/kube-agents](https://github.com/gke-labs/kube-agents). The MCP wiring, skills, and scenario are concrete to `core-agent`'s capabilities — you can adapt them to your fleet.
 
-If you haven't done the [Autonomous quickstart]({{< relref "cli/autonomous/quickstart.md" >}}) yet, do that first. This page assumes you understand how a single autonomous agent runs; the new shape here is multi-agent coordination.
+If you haven't done the [Autonomous quickstart]({{< relref "/docs/cli/autonomous/quickstart.md" >}}) yet, do that first. This page assumes you understand how a single autonomous agent runs; the new shape here is multi-agent coordination.
 
 ---
 
@@ -611,19 +611,19 @@ A human (or the CI/CD pipeline) detects the push failure separately, re-pushes t
 
 - **Multi-tenancy isolation between devteams.** Each devteam in this setup sees only its namespace via the MCP server's `--namespace` filter (set in the MCP server config, not shown). For stronger isolation, run separate GKE MCP server instances per-tenant.
 - **State coordination across the team.** Devteam doesn't know what other devteams are doing. For workflows that need cross-tenant awareness (e.g., "all devteams are seeing higher error rates simultaneously — likely infra issue"), you'd add a `coordinator` agent that aggregates devteam alerts and emits cross-tenant signals.
-- **Persistent memory across agent restarts.** When a subagent restarts (budget exhaustion, crash), it starts fresh — the prior agent's session data is in the event log but the new instance doesn't auto-load it. v2.1's [memory tools]({{< relref "reference/context-management.md" >}}) (PR IV) will close this gap.
+- **Persistent memory across agent restarts.** When a subagent restarts (budget exhaustion, crash), it starts fresh — the prior agent's session data is in the event log but the new instance doesn't auto-load it. v2.1's [memory tools]({{< relref "/docs/reference/context-management.md" >}}) (PR IV) will close this gap.
 - **Real alert delivery.** This example uses `report_alert` for in-team flow. To actually wake a human, wire a custom MCP tool for PagerDuty / Slack / your incident system; the `platform` agent's alert routing should call it.
 
 ---
 
 ## Where to go next
 
-- **[Autonomous quickstart]({{< relref "cli/autonomous/quickstart.md" >}})** — single-agent version with budgets + headless permission posture
-- **[Operations]({{< relref "cli/autonomous/operations.md" >}})** — the depth reference: budgets, lifecycle, crash-resume, failure policy
-- **[Subagents and wrappers]({{< relref "agent-design/subagents-and-wrappers.md" >}})** — choreography patterns for the parent + child agent relationship
-- **[System instructions]({{< relref "agent-design/system-instructions.md" >}})** — `AGENTS.md` patterns for autonomous use (crisp success criteria, explicit don't-do lists)
-- **[Cost efficiency]({{< relref "agent-design/cost-efficiency.md" >}})** — Pro+Flash split economics, decision tree for cost-bounded fleet operations
-- **[MCP servers]({{< relref "reference/mcp.md" >}})** — the schema for the `mcp.json` files shown above
+- **[Autonomous quickstart]({{< relref "/docs/cli/autonomous/quickstart.md" >}})** — single-agent version with budgets + headless permission posture
+- **[Operations]({{< relref "/docs/cli/autonomous/operations.md" >}})** — the depth reference: budgets, lifecycle, crash-resume, failure policy
+- **[Subagents and wrappers]({{< relref "/docs/agent-design/subagents-and-wrappers.md" >}})** — choreography patterns for the parent + child agent relationship
+- **[System instructions]({{< relref "/docs/agent-design/system-instructions.md" >}})** — `AGENTS.md` patterns for autonomous use (crisp success criteria, explicit don't-do lists)
+- **[Cost efficiency]({{< relref "/docs/agent-design/cost-efficiency.md" >}})** — Pro+Flash split economics, decision tree for cost-bounded fleet operations
+- **[MCP servers]({{< relref "/docs/reference/mcp.md" >}})** — the schema for the `mcp.json` files shown above
 - **[GKE MCP server reference](https://docs.cloud.google.com/kubernetes-engine/docs/reference/mcp)** — the upstream API: cluster ops, node-pool ops, k8s resource ops; read-only / full / delete-tools endpoints
 - **[gke-labs/kube-agents](https://github.com/gke-labs/kube-agents)** — the upstream project this example mirrors; SOUL.md persona pattern + workspace integration
 - **[google/skills GKE basics](https://github.com/google/skills/tree/main/skills/cloud/gke-basics)** — general GKE skill library

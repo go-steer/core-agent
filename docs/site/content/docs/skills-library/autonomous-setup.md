@@ -47,9 +47,9 @@ Three reference files; the agent fetches based on the user's path:
 | You want | Use |
 |---|---|
 | Agent to walk you through autonomous setup | Install + invoke `autonomous-setup` |
-| First-time 15-minute autonomous walkthrough | [Autonomous quickstart]({{< relref "cli/autonomous/quickstart.md" >}}) |
-| Multi-agent reference (GKE team-shaped) | [GKE multi-agent scenario]({{< relref "cli/autonomous/gke-team-scenario.md" >}}) |
-| Budget / lifecycle reference | [Autonomous → Operations]({{< relref "cli/autonomous/operations.md" >}}) |
+| First-time 15-minute autonomous walkthrough | [Autonomous quickstart]({{< relref "/docs/cli/autonomous/quickstart.md" >}}) |
+| Multi-agent reference (GKE team-shaped) | [GKE multi-agent scenario]({{< relref "/docs/cli/autonomous/gke-team-scenario.md" >}}) |
+| Budget / lifecycle reference | [Autonomous → Operations]({{< relref "/docs/cli/autonomous/operations.md" >}}) |
 
 The skill IS the docs in workflow form.
 
@@ -59,7 +59,7 @@ The skill IS the docs in workflow form.
 cp -r /path/to/core-agent/SKILLS/autonomous-setup .agents/skills/
 ```
 
-See [Skills library → Installing]({{< relref "skills-library/_index.md" >}}) for global install options.
+See [Skills library → Installing]({{< relref "/docs/skills-library/_index.md" >}}) for global install options.
 
 ## Adapting
 
@@ -87,7 +87,7 @@ Then customize cmd/main.go's goal string.
 
 ## Where to go next
 
-- **[Autonomous quickstart]({{< relref "cli/autonomous/quickstart.md" >}})** — single-agent worked example
-- **[GKE multi-agent scenario]({{< relref "cli/autonomous/gke-team-scenario.md" >}})** — multi-agent worked example
-- **[Subagents and wrappers]({{< relref "agent-design/subagents-and-wrappers.md" >}})** — choreography patterns the skill references
-- **[Cost efficiency]({{< relref "agent-design/cost-efficiency.md" >}})** — model-selection decisions for autonomous runs
+- **[Autonomous quickstart]({{< relref "/docs/cli/autonomous/quickstart.md" >}})** — single-agent worked example
+- **[GKE multi-agent scenario]({{< relref "/docs/cli/autonomous/gke-team-scenario.md" >}})** — multi-agent worked example
+- **[Subagents and wrappers]({{< relref "/docs/agent-design/subagents-and-wrappers.md" >}})** — choreography patterns the skill references
+- **[Cost efficiency]({{< relref "/docs/agent-design/cost-efficiency.md" >}})** — model-selection decisions for autonomous runs

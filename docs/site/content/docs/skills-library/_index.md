@@ -7,24 +7,24 @@ weight: 7
 
 ## Why ship these as skills
 
-The reference docs (the [Reference]({{< relref "reference/_index.md" >}}) section) and the prescriptive guides (the [Agent design]({{< relref "agent-design/_index.md" >}}) section) cover the same material in static form. The skills cover the *workflow* form: when an agent is invoked with "help me set up `core-agent` for my project" or "configure an autonomous monitor for me," the skill body is the runbook the agent walks through.
+The reference docs (the [Reference]({{< relref "/docs/reference/_index.md" >}}) section) and the prescriptive guides (the [Agent design]({{< relref "/docs/agent-design/_index.md" >}}) section) cover the same material in static form. The skills cover the *workflow* form: when an agent is invoked with "help me set up `core-agent` for my project" or "configure an autonomous monitor for me," the skill body is the runbook the agent walks through.
 
 Same material, different surface. Pick what matches your read intent:
 
-- **Reading first time, want depth?** → [Agent design]({{< relref "agent-design/_index.md" >}}) (prescriptive) + [Reference]({{< relref "reference/_index.md" >}}) (schemas)
+- **Reading first time, want depth?** → [Agent design]({{< relref "/docs/agent-design/_index.md" >}}) (prescriptive) + [Reference]({{< relref "/docs/reference/_index.md" >}}) (schemas)
 - **Already running an agent, want it to walk you through configuration?** → install the skill below, ask the agent for help
 
 ## The three bundles
 
-### [`cli-setup`]({{< relref "skills-library/cli-setup.md" >}})
+### [`cli-setup`]({{< relref "/docs/skills-library/cli-setup.md" >}})
 
 Walks a user through configuring `core-agent` for interactive (TUI / REPL) use. Triggers on phrases like "set up core-agent", "help me configure core-agent for my repo", "what should my AGENTS.md look like". Walks the four customization layers (provider → AGENTS.md → skills → tools) plus permission posture.
 
-### [`autonomous-setup`]({{< relref "skills-library/autonomous-setup.md" >}})
+### [`autonomous-setup`]({{< relref "/docs/skills-library/autonomous-setup.md" >}})
 
 Walks a user through configuring an unattended `core-agent` — single-agent monitor or multi-agent team. Triggers on "set up an autonomous agent", "run core-agent unattended", "build a multi-agent team". Includes patterns for single-agent monitors, multi-agent decomposition (parent + specialists), budget tuning, crash-resume.
 
-### [`library-embedding`]({{< relref "skills-library/library-embedding.md" >}})
+### [`library-embedding`]({{< relref "/docs/skills-library/library-embedding.md" >}})
 
 Walks a Go developer through embedding `core-agent` in their own binary. Triggers on "how do I embed core-agent", "use core-agent as a library", "custom prompter", "HTTP-served agent". Covers the minimal embed, the seven extension points, and a full HTTP-served agent worked example.
 
@@ -78,12 +78,12 @@ To verify a skill triggered (or diagnose why it didn't):
 
 ## Adapting
 
-These bundles teach `core-agent`'s defaults and the patterns from the [Agent design]({{< relref "agent-design/_index.md" >}}) docs. If your organization has stricter standards (e.g., "every project must use anthropic-vertex with mode=ask"), fork the bundle and modify the body or references accordingly. The skill format is just markdown + YAML frontmatter; everything is editable.
+These bundles teach `core-agent`'s defaults and the patterns from the [Agent design]({{< relref "/docs/agent-design/_index.md" >}}) docs. If your organization has stricter standards (e.g., "every project must use anthropic-vertex with mode=ask"), fork the bundle and modify the body or references accordingly. The skill format is just markdown + YAML frontmatter; everything is editable.
 
 For writing your own skills from scratch (not derived from these bundles), see:
 
-- [Agent design → Skills]({{< relref "agent-design/skills.md" >}}) — design patterns
-- [Reference → Skills]({{< relref "reference/skills.md" >}}) — `SKILL.md` schema, discovery, permission gating
+- [Agent design → Skills]({{< relref "/docs/agent-design/skills.md" >}}) — design patterns
+- [Reference → Skills]({{< relref "/docs/reference/skills.md" >}}) — `SKILL.md` schema, discovery, permission gating
 - [Claude Skills spec](https://docs.claude.com/en/docs/agent-skills/overview) — upstream format spec we mirror
 
 ## Roadmap

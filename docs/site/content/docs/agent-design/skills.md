@@ -5,7 +5,7 @@ weight: 2
 
 Skills are named, reusable procedures the agent invokes when the task matches the skill's description. This page covers the design patterns: when to write a skill vs. an `AGENTS.md` rule, how to write a description that actually triggers, what belongs in the body vs. a `references/` file, and how to test that a skill fires when you expect it to.
 
-For the schema and discovery details (file locations, YAML frontmatter, allow/deny lists), see [Reference → Skills]({{< relref "reference/skills.md" >}}). This page is the prescriptive companion.
+For the schema and discovery details (file locations, YAML frontmatter, allow/deny lists), see [Reference → Skills]({{< relref "/docs/reference/skills.md" >}}). This page is the prescriptive companion.
 
 ---
 
@@ -247,8 +247,8 @@ Output a single message with:
 
 ## Where to go next
 
-- **[System instructions]({{< relref "agent-design/system-instructions.md" >}})** — patterns for `AGENTS.md` (the other half of the customization)
-- **[Subagents and wrappers]({{< relref "agent-design/subagents-and-wrappers.md" >}})** — when to push a task into a subtask vs. handling it in the parent
-- **[Cost efficiency]({{< relref "agent-design/cost-efficiency.md" >}})** — model selection considerations for skill-heavy workflows
-- **[Reference → Skills]({{< relref "reference/skills.md" >}})** — schema, discovery, allow/deny lists, permission gating
-- **[Interactive workflows]({{< relref "cli/interactive/workflows.md" >}})** — full worked examples with skills wired in
+- **[System instructions]({{< relref "/docs/agent-design/system-instructions.md" >}})** — patterns for `AGENTS.md` (the other half of the customization)
+- **[Subagents and wrappers]({{< relref "/docs/agent-design/subagents-and-wrappers.md" >}})** — when to push a task into a subtask vs. handling it in the parent
+- **[Cost efficiency]({{< relref "/docs/agent-design/cost-efficiency.md" >}})** — model selection considerations for skill-heavy workflows
+- **[Reference → Skills]({{< relref "/docs/reference/skills.md" >}})** — schema, discovery, allow/deny lists, permission gating
+- **[Interactive workflows]({{< relref "/docs/cli/interactive/workflows.md" >}})** — full worked examples with skills wired in

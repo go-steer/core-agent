@@ -74,7 +74,7 @@ At startup, `core-agent`:
 1. Stats `<agentsDir>/skills/`. Missing directory → no-op (most projects don't use skills).
 2. Lists frontmatters via ADK's `skill.NewFileSystemSource`.
 3. If at least one valid frontmatter is found, builds a `skilltoolset` and registers it as a single ADK Toolset.
-4. If a [permission gate]({{< relref "permissions.md" >}}) is configured, wraps the toolset with the gate under the `skill` namespace.
+4. If a [permission gate]({{< relref "/docs/reference/permissions.md" >}}) is configured, wraps the toolset with the gate under the `skill` namespace.
 
 The `Skills` returned by `skills.Load` carries:
 

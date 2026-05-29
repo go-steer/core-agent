@@ -7,7 +7,7 @@ weight: 1
 
 This page covers the patterns that work, the failure modes to watch for, and how to iterate on an `AGENTS.md` instead of writing it once and hoping.
 
-For the basic mechanics (file location, fallback chain, schema) see [Interactive quickstart → Step 1]({{< relref "cli/interactive/quickstart.md" >}}). This page is the prescriptive how-do-I-write-a-good-one companion.
+For the basic mechanics (file location, fallback chain, schema) see [Interactive quickstart → Step 1]({{< relref "/docs/cli/interactive/quickstart.md" >}}). This page is the prescriptive how-do-I-write-a-good-one companion.
 
 ---
 
@@ -21,7 +21,7 @@ A core-agent agent sees three layers of system instruction stacked together, in 
 
 The model concatenates all three for every turn. `core-agent` doesn't let you skip the default — it's load-bearing for behavior on a half-dozen specific failure modes (Gemini batching tool calls; post-summary recap behavior). Layer your own guidance ON TOP of it.
 
-If you're building a library binary and need to override the default entirely, see [Library API → `agent.WithInstruction`]({{< relref "library/api.md" >}}).
+If you're building a library binary and need to override the default entirely, see [Library API → `agent.WithInstruction`]({{< relref "/docs/library/api.md" >}}).
 
 ---
 
@@ -29,7 +29,7 @@ If you're building a library binary and need to override the default entirely, s
 
 **Goes in:** role framing, voice, style preferences, cross-cutting do/don't lists, project-specific constraints, fact references the agent needs every turn.
 
-**Does NOT go in:** multi-step procedures, large reference content, per-task playbooks. Those go in [skills]({{< relref "agent-design/skills.md" >}}).
+**Does NOT go in:** multi-step procedures, large reference content, per-task playbooks. Those go in [skills]({{< relref "/docs/agent-design/skills.md" >}}).
 
 **Heuristic:** if the content applies to *every turn*, it's `AGENTS.md`. If it applies to *specific tasks*, it's a skill. "Always wrap errors with `fmt.Errorf`" is `AGENTS.md`. "Here's how to run our deploy checklist" is a skill.
 
@@ -233,8 +233,8 @@ The fix is usually 1-2 sentences, not a rewrite. But the iteration loop — obse
 
 ## Where to go next
 
-- **[Skills]({{< relref "agent-design/skills.md" >}})** — when to write a skill vs. an `AGENTS.md` rule
-- **[Subagents and wrappers]({{< relref "agent-design/subagents-and-wrappers.md" >}})** — getting the model to use `agentic_*` tools + spawn background subagents
-- **[Cost efficiency]({{< relref "agent-design/cost-efficiency.md" >}})** — model selection, the Pro+Flash split, `/context` observability
-- **[Interactive workflows]({{< relref "cli/interactive/workflows.md" >}})** — worked examples with full `AGENTS.md` files
-- **[Reference → Skills]({{< relref "reference/skills.md" >}})** — `SKILL.md` schema details
+- **[Skills]({{< relref "/docs/agent-design/skills.md" >}})** — when to write a skill vs. an `AGENTS.md` rule
+- **[Subagents and wrappers]({{< relref "/docs/agent-design/subagents-and-wrappers.md" >}})** — getting the model to use `agentic_*` tools + spawn background subagents
+- **[Cost efficiency]({{< relref "/docs/agent-design/cost-efficiency.md" >}})** — model selection, the Pro+Flash split, `/context` observability
+- **[Interactive workflows]({{< relref "/docs/cli/interactive/workflows.md" >}})** — worked examples with full `AGENTS.md` files
+- **[Reference → Skills]({{< relref "/docs/reference/skills.md" >}})** — `SKILL.md` schema details

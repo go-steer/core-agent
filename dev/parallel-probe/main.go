@@ -41,13 +41,13 @@ import (
 	"sort"
 	"time"
 
-	"github.com/go-steer/core-agent/agent"
-	"github.com/go-steer/core-agent/config"
-	"github.com/go-steer/core-agent/models"
-	_ "github.com/go-steer/core-agent/models/anthropic"
-	_ "github.com/go-steer/core-agent/models/gemini"
-	"github.com/go-steer/core-agent/permissions"
-	"github.com/go-steer/core-agent/tools"
+	"github.com/go-steer/core-agent/pkg/agent"
+	"github.com/go-steer/core-agent/pkg/config"
+	"github.com/go-steer/core-agent/pkg/models"
+	_ "github.com/go-steer/core-agent/pkg/models/anthropic"
+	_ "github.com/go-steer/core-agent/pkg/models/gemini"
+	"github.com/go-steer/core-agent/pkg/permissions"
+	"github.com/go-steer/core-agent/pkg/tools"
 )
 
 const nudgeText = " When you need to perform multiple independent operations (e.g. reading several files, running multiple greps on different paths), emit ALL the tool calls in a single assistant message so they run in parallel. Do not issue them one at a time when you already know the set you need."

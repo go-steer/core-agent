@@ -36,8 +36,8 @@ import (
 
 	adktool "google.golang.org/adk/tool"
 
-	"github.com/go-steer/core-agent/agent"
-	"github.com/go-steer/core-agent/models/mock"
+	"github.com/go-steer/core-agent/pkg/agent"
+	"github.com/go-steer/core-agent/pkg/models/mock"
 )
 
 // transcript scripts two LLM round-trips inside a single

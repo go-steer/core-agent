@@ -122,7 +122,7 @@ import (
     "iter"
 
     adkmodel "google.golang.org/adk/model"
-    "github.com/go-steer/core-agent/models"
+    "github.com/go-steer/core-agent/pkg/models"
 )
 
 type Provider struct {

@@ -10,7 +10,7 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/go-steer/core-agent/mcp"
+	"github.com/go-steer/core-agent/pkg/mcp"
 )
 
 // Elicitor is the host-side bridge that turns an MCP server's

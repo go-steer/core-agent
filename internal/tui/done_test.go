@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/core-agent/agent"
+	"github.com/go-steer/core-agent/pkg/agent"
 )
 
 func TestParseSlash_DoneAndAlias(t *testing.T) {

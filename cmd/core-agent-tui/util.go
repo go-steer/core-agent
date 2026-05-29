@@ -20,7 +20,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/go-steer/core-agent/attach"
+	"github.com/go-steer/core-agent/pkg/attach"
 )
 
 // streamRegistry is a process-global map of session-path → live SSE

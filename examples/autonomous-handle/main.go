@@ -35,8 +35,8 @@ import (
 	adkmodel "google.golang.org/adk/model"
 	adktool "google.golang.org/adk/tool"
 
-	"github.com/go-steer/core-agent/agent"
-	"github.com/go-steer/core-agent/models/mock"
+	"github.com/go-steer/core-agent/pkg/agent"
+	"github.com/go-steer/core-agent/pkg/models/mock"
 )
 
 // slowLLM wraps an inner LLM and adds a fixed delay before each

@@ -17,9 +17,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/go-steer/core-agent/agent"
-	"github.com/go-steer/core-agent/permissions"
-	"github.com/go-steer/core-agent/usage"
+	"github.com/go-steer/core-agent/pkg/agent"
+	"github.com/go-steer/core-agent/pkg/permissions"
+	"github.com/go-steer/core-agent/pkg/usage"
 )
 
 // queueCullMsg fires periodically while the queue panel has

@@ -20,8 +20,8 @@ weight: 8
 | `github.com/go-steer/core-agent/mcp` | MCP server lifecycle from `.agents/mcp.json`. |
 | `github.com/go-steer/core-agent/skills` | `SKILL.md` discovery → ADK `skilltoolset`. |
 | `github.com/go-steer/core-agent/models` | `Provider` interface + registry / `Resolve()`. |
-| `github.com/go-steer/core-agent/models/gemini` | Gemini API + Vertex AI provider. |
-| `github.com/go-steer/core-agent/models/anthropic` | Anthropic / Claude provider (first-party + Vertex). |
+| `github.com/go-steer/core-agent/pkg/models/gemini` | Gemini API + Vertex AI provider. |
+| `github.com/go-steer/core-agent/pkg/models/anthropic` | Anthropic / Claude provider (first-party + Vertex). |
 | `github.com/go-steer/core-agent/telemetry` | OpenTelemetry exporter setup. |
 | `github.com/go-steer/core-agent/usage` | Per-turn token + cost tracker. |
 | `github.com/go-steer/core-agent/session` | Transcript persistence (`.agents/sessions/`). |
@@ -41,10 +41,10 @@ import (
     "fmt"
     "log"
 
-    "github.com/go-steer/core-agent/agent"
-    "github.com/go-steer/core-agent/config"
-    "github.com/go-steer/core-agent/models"
-    _ "github.com/go-steer/core-agent/models/gemini"
+    "github.com/go-steer/core-agent/pkg/agent"
+    "github.com/go-steer/core-agent/pkg/config"
+    "github.com/go-steer/core-agent/pkg/models"
+    _ "github.com/go-steer/core-agent/pkg/models/gemini"
 )
 
 func main() {
@@ -146,7 +146,7 @@ The `tools/` package ships a nine-tool baseline suitable for any agent that acts
 Wire them up in your binary:
 
 ```go
-import "github.com/go-steer/core-agent/tools"
+import "github.com/go-steer/core-agent/pkg/tools"
 
 reg, err := tools.Build(cfg, gate, tools.Default())
 if err != nil { /* ... */ }
@@ -184,8 +184,8 @@ The bundled `cmd/core-agent` enables the full set by default. `--no-builtin-tool
 ```go
 import (
     "os"
-    "github.com/go-steer/core-agent/agent"
-    "github.com/go-steer/core-agent/runner"
+    "github.com/go-steer/core-agent/pkg/agent"
+    "github.com/go-steer/core-agent/pkg/runner"
 )
 
 a, _ := agent.New(m)
@@ -231,7 +231,7 @@ When events carry Gemini `GroundingMetadata` (set by `GoogleSearch` / `URLContex
 `recording.NewRecorder(inner, w io.Writer)` wraps any `model.LLM` and appends each turn (request + response stream) to `w` as a single JSONL line in the shared `recording.RecordedTurn` shape. The wrapper is transparent — callers see the inner LLM's responses unchanged — and the writer's lifecycle is the caller's responsibility.
 
 ```go
-import "github.com/go-steer/core-agent/recording"
+import "github.com/go-steer/core-agent/pkg/recording"
 
 f, err := os.Create("session.jsonl")
 if err != nil { /* ... */ }
@@ -256,8 +256,8 @@ The recorder lives in `recording/` (not `models/mock/`) because it's production 
 ```go
 import (
     "github.com/glebarez/sqlite"
-    "github.com/go-steer/core-agent/agent"
-    "github.com/go-steer/core-agent/eventlog"
+    "github.com/go-steer/core-agent/pkg/agent"
+    "github.com/go-steer/core-agent/pkg/eventlog"
 )
 
 handle, err := eventlog.Open(ctx, sqlite.Open("sessions.db"))
@@ -316,7 +316,7 @@ WAL mode is enabled by default for SQLite (`PRAGMA journal_mode=WAL`) so concurr
 Wrap the handle's `Service` with `gemini.GroundingProjection(...)` to project Gemini `GoogleSearch` activity (queries + grounded URLs) into the eventlog as queryable `gemini/google_search`-authored rows. Synthetic events inherit the parent event's branch + invocation ID and are deduplicated; their `Content.Role` is empty so ADK's content processor doesn't reinject them as conversation history on subsequent turns.
 
 ```go
-import "github.com/go-steer/core-agent/models/gemini"
+import "github.com/go-steer/core-agent/pkg/models/gemini"
 
 handle, _ := eventlog.Open(ctx, sqlite.Open("sessions.db"))
 handle.Service = gemini.GroundingProjection(handle.Service)
@@ -340,7 +340,7 @@ The lock lives in its own `agent_run_lock` table in the same database; callers d
 ```go
 import (
     adktool "google.golang.org/adk/tool"
-    "github.com/go-steer/core-agent/agent"
+    "github.com/go-steer/core-agent/pkg/agent"
 )
 
 build := func(extras []adktool.Tool) (*agent.Agent, error) {
@@ -428,8 +428,8 @@ When the agent is wired with `WithEventLog`, `RunAutonomous` emits a checkpoint 
 ```go
 import (
     "github.com/glebarez/sqlite"
-    "github.com/go-steer/core-agent/agent"
-    "github.com/go-steer/core-agent/eventlog"
+    "github.com/go-steer/core-agent/pkg/agent"
+    "github.com/go-steer/core-agent/pkg/eventlog"
 )
 
 handle, _ := eventlog.Open(ctx, sqlite.Open("/path/to/sessions.db"))
@@ -649,10 +649,10 @@ parent, _ := agent.New(model,
 
 ```go
 import (
-    "github.com/go-steer/core-agent/agent"
-    "github.com/go-steer/core-agent/models/gemini"
-    "github.com/go-steer/core-agent/permissions"
-    "github.com/go-steer/core-agent/tools"
+    "github.com/go-steer/core-agent/pkg/agent"
+    "github.com/go-steer/core-agent/pkg/models/gemini"
+    "github.com/go-steer/core-agent/pkg/permissions"
+    "github.com/go-steer/core-agent/pkg/tools"
 )
 
 provider, _ := gemini.NewVertex(project, location)
@@ -877,8 +877,8 @@ import (
     "context"
 
     adkmodel "google.golang.org/adk/model"
-    "github.com/go-steer/core-agent/config"
-    "github.com/go-steer/core-agent/models"
+    "github.com/go-steer/core-agent/pkg/config"
+    "github.com/go-steer/core-agent/pkg/models"
 )
 
 func init() {

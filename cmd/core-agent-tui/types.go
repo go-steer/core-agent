@@ -15,7 +15,7 @@
 package main
 
 import (
-	"github.com/go-steer/core-agent/attach"
+	"github.com/go-steer/core-agent/pkg/attach"
 )
 
 // Bubble tea message types live here so each model file can stay

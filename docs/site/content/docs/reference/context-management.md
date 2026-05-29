@@ -176,8 +176,8 @@ From your own Go code:
 
 ```go
 import (
-    "github.com/go-steer/core-agent/agent"
-    "github.com/go-steer/core-agent/tools/agentic"
+    "github.com/go-steer/core-agent/pkg/agent"
+    "github.com/go-steer/core-agent/pkg/tools/agentic"
 )
 
 a, err := agent.New(model,

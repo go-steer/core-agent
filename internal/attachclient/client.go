@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-steer/core-agent/attach"
+	"github.com/go-steer/core-agent/pkg/attach"
 )
 
 // Client is a thin HTTP client for one attach-mode endpoint. Holds

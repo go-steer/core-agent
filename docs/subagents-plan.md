@@ -113,7 +113,7 @@ Add the option (do this in a new file `agent/subagents.go` to keep `agent.go` fr
 // agent/subagents.go
 package agent
 
-import "github.com/go-steer/core-agent/tools"
+import "github.com/go-steer/core-agent/pkg/tools"
 
 // WithSubagents registers each agent as a callable tool. The model
 // invokes the subagent by name (the wrapped agent's Name()) with a
@@ -158,10 +158,10 @@ import (
     "google.golang.org/adk/tool/agenttool"
     "google.golang.org/genai"
 
-    "github.com/go-steer/core-agent/agent"
-    "github.com/go-steer/core-agent/config"
-    "github.com/go-steer/core-agent/permissions"
-    "github.com/go-steer/core-agent/usage"
+    "github.com/go-steer/core-agent/pkg/agent"
+    "github.com/go-steer/core-agent/pkg/config"
+    "github.com/go-steer/core-agent/pkg/permissions"
+    "github.com/go-steer/core-agent/pkg/usage"
 )
 
 // SubagentOptions configures a subagent tool. Inner is required; everything

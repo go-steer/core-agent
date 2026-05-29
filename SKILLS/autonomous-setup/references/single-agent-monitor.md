@@ -122,9 +122,9 @@ import (
     "syscall"
     "time"
 
-    "github.com/go-steer/core-agent/agent"
-    "github.com/go-steer/core-agent/models"
-    _ "github.com/go-steer/core-agent/models/gemini"
+    "github.com/go-steer/core-agent/pkg/agent"
+    "github.com/go-steer/core-agent/pkg/models"
+    _ "github.com/go-steer/core-agent/pkg/models/gemini"
 )
 
 func main() {

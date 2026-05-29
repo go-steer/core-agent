@@ -22,7 +22,7 @@ The binary lands in `$(go env GOBIN)` (or `$GOPATH/bin` if `GOBIN` is unset). Ma
 go get github.com/go-steer/core-agent
 ```
 
-Then `import "github.com/go-steer/core-agent/agent"` (and the relevant submodules).
+Then `import "github.com/go-steer/core-agent/pkg/agent"` (and the relevant submodules).
 
 ---
 

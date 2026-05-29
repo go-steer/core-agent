@@ -9,7 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/go-steer/core-agent/permissions"
+	"github.com/go-steer/core-agent/pkg/permissions"
 )
 
 // confirmReqMsg is sent into the Bubble Tea program from a tool

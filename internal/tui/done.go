@@ -22,7 +22,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/go-steer/core-agent/agent"
+	"github.com/go-steer/core-agent/pkg/agent"
 )
 
 // doneResultMsg carries the outcome of an asynchronous /done

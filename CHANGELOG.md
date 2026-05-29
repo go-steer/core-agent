@@ -16,6 +16,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **All public packages moved under `pkg/`.** `agent`, `attach`, `config`, `eventlog`, `instruction`, `mcp`, `models`, `permissions`, `recording`, `runner`, `session`, `skills`, `telemetry`, `tools`, `usage` are now imported as `github.com/go-steer/core-agent/pkg/<name>`. `cmd/`, `internal/`, `examples/`, `extras/scion-agent`, `dev/`, `docs/`, `SKILLS/` stay at the repo root. The CLI binaries (`core-agent`, `core-agent-tui`) keep their install paths and behavior — only library consumers see the change. Folded into the v2.0 retag (no separate v3.0 cycle) because the v2.0.0 tag had not been announced yet. Downstream sed snippet: `find . -name "*.go" -exec sed -i -E 's|github.com/go-steer/core-agent/(agent\|attach\|config\|eventlog\|instruction\|mcp\|models\|permissions\|recording\|runner\|session\|skills\|telemetry\|tools\|usage)|github.com/go-steer/core-agent/pkg/\1|g' {} +` then `go mod tidy`. See `docs/pkg-reorg-option-1.md` for rationale.
+
 ### Added
 
 - **Global skill auto-discovery from `~/.core-agent/skills/`.** `skills.LoadAll(ctx, projectAgentsDir, userCoreHome, gate)` discovers skills from both project-scoped (`.agents/skills/`) and user-global (`~/.core-agent/skills/`) sources and merges them into a single toolset. On name collision, project-scoped skills win — useful for forking a generic bundle and shipping a project-specific variant under the same name. `cmd/core-agent` wires the user-global path from the existing `coreHome` resolution; no new flag needed. Closes the v2.0 caveat in the SKILLS bundle install path: `cp -r SKILLS/cli-setup ~/.core-agent/skills/` now Just Works across every project. Implementation: small `overlayFS` (in `skills/overlay.go`) composes the two `fs.FS` roots; `sanitizingFS` grows a `ReadDir` delegate so `fs.ReadDir` walks the merged view. `Load` stays as a backward-compat one-source wrapper around `LoadAll`. Tests cover both-sources-merge, project-shadows-user-global, only-user-global, only-project, neither-source, project-exists-userhome-missing.

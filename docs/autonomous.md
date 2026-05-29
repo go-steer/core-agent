@@ -40,7 +40,7 @@ When one turn isn't enough — for example a long-running research-and-write tas
 ```go
 import (
     adktool "google.golang.org/adk/tool"
-    "github.com/go-steer/core-agent/agent"
+    "github.com/go-steer/core-agent/pkg/agent"
 )
 
 build := func(extras []adktool.Tool) (*agent.Agent, error) {
@@ -80,7 +80,7 @@ The agent calls an `ask_user` tool whose handler blocks until the answer arrives
 `tools.NewAskUserTool` ships this:
 
 ```go
-import "github.com/go-steer/core-agent/tools"
+import "github.com/go-steer/core-agent/pkg/tools"
 
 ask, _ := tools.NewAskUserTool(tools.AskUserOptions{
     Prompter: tools.StdinPrompter(os.Stdin, os.Stderr),

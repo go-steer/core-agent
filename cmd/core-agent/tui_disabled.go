@@ -34,7 +34,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/go-steer/core-agent/mcp"
+	"github.com/go-steer/core-agent/pkg/mcp"
 )
 
 // makeMCPElicitor returns nil in the slim build — there's no TUI

@@ -13,7 +13,8 @@ Cross-cutting reference material that both CLI users and library consumers need.
 
 ## Capabilities
 
-- **[Built-in tools and MCP servers]({{< relref "/docs/reference/mcp.md" >}})** — declarative third-party tool integration via MCP.
+- **[Built-in tools]({{< relref "/docs/reference/tools.md" >}})** — the model-facing tool catalog: file, search, shell, network, planning, plus the optional lifecycle tools (`mark_task_done`, `ask_user`, `schedule_next_turn`).
+- **[MCP servers]({{< relref "/docs/reference/mcp.md" >}})** — declarative third-party tool integration via MCP.
 - **[Skills]({{< relref "/docs/reference/skills.md" >}})** — Claude-compatible `SKILL.md` bundles.
 - **[Context management]({{< relref "/docs/reference/context-management.md" >}})** — compaction, task-boundary checkpoints, agentic tool wrappers.
 

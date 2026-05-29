@@ -11,40 +11,45 @@ You're in the `core-agent` reference docs. The site root has the marketing pitch
 
 ## Start here
 
-**Evaluating `core-agent` against raw ADK?** → [Why core-agent](why-core-agent/) is the long-form pitch with a side-by-side capability comparison.
+**Evaluating `core-agent` against raw ADK?** → [Why core-agent]({{< relref "why-core-agent.md" >}}) is the long-form pitch with a side-by-side capability comparison.
 
-**Brand new?** → [Getting started](getting-started/) walks you from `go install` through `core-agent -p "hello"` against your first provider, plus the `.agents/` project layout.
+**Brand new?** → [Getting started]({{< relref "getting-started.md" >}}) walks you from `go install` through `core-agent -p "hello"` against your first provider, plus the `.agents/` project layout.
 
-**Running the CLI for your team or project?** → [User guide](user-guide/) — narrative walkthrough of giving the agent a personality (provider, `AGENTS.md`, skills, MCP servers, permissions).
+**Running the bundled binary?** → [Using the CLI]({{< relref "cli/_index.md" >}}) splits into [Interactive (TUI)]({{< relref "cli/interactive/_index.md" >}}) — drive the agent yourself from a terminal — and [Autonomous (headless)]({{< relref "cli/autonomous/_index.md" >}}) — unattended workers with budgets + crash-resume.
 
-**Embedding `core-agent` in your own Go binary?** → [Library guide](library-guide/) is the narrative tour of the extension points (custom Prompter, custom tools, custom providers, RemoteAgentSpawner). [Library API](library-api/) is the exhaustive reference behind it.
+**Embedding `core-agent` in your own Go binary?** → [Using the library]({{< relref "library/_index.md" >}}) covers the extension points; [API]({{< relref "library/api.md" >}}) is the exhaustive reference.
 
-**Picking a model backend?** → [Providers](providers/) covers Gemini API, Vertex Gemini, Anthropic, and Anthropic via Vertex — env vars, model IDs, auto-detection rules, gotchas.
+**Tuning prompts, skills, and tool descriptions?** → [Agent design]({{< relref "agent-design/_index.md" >}}) is the prescriptive section — what patterns work, what failure modes to watch for, how to get the model to use subagents and `agentic_*` wrappers.
 
-**Building an unattended worker?** → [Autonomous runs](autonomous/) covers `agent.RunAutonomous` (budgets, lifecycle tool, termination), `ResumeAutonomous` (crash-resume), and `WithSubagents` (in-process delegation).
-
-**Need an audit log or crash-resume?** → [Sessions and event log](sessions/) covers `eventlog.Open`, the `Stream` API (`Since`, `Watch`, `WithSessionTree`), and the session lock that makes concurrent resume safe.
+**Configuring a specific surface?** → [Reference]({{< relref "reference/_index.md" >}}) is the cross-cutting index — providers, config, permissions, MCP, skills, sessions, context management, attach mode.
 
 ## Reference index
 
-### Narrative
-- **[Why core-agent](why-core-agent/)** — long-form pitch + Harvey-balls comparison vs raw ADK Go.
-- **[User guide](user-guide/)** — end-user walkthrough for the CLI: providers, `AGENTS.md`, skills, MCP servers, permission modes, sessions.
-- **[Library guide](library-guide/)** — narrative tour of the Go-library extension points, with worked examples.
+### CLI
 
-### Core API
-- **[Library API](library-api/)** — `agent` package, options, tools, prompters, MCP, skills, recording, telemetry. The largest page; use the right-hand TOC.
-- **[Autonomous runs](autonomous/)** — `RunAutonomous`, `ResumeAutonomous`, lifecycle tool, ask-user patterns.
-- **[Sessions and event log](sessions/)** — `eventlog.Open`, replay, live tail, session lock, crash-resume.
+- **[Using the CLI]({{< relref "cli/_index.md" >}})** — interactive vs autonomous landing
+  - **[Interactive (TUI)]({{< relref "cli/interactive/_index.md" >}})** — quickstart, workflows, slash reference
+  - **[Autonomous (headless)]({{< relref "cli/autonomous/_index.md" >}})** — quickstart, operations, multi-agent GKE scenario
 
-### Configuration & integration
-- **[Configuration](configuration/)** — `.agents/config.json` schema, field by field. Permissions, path scope, tool output caps, mock providers, OTEL exporter, runtime-only CLI flags.
-- **[Permissions](permissions/)** — ask / allow / yolo modes, pattern grammar, path scope, the bash denylist, prompters, autonomous-run interaction.
-- **[MCP servers](mcp/)** — `mcp.json` schema, stdio + Streamable HTTP transports, env-var interpolation, tool namespacing, gating.
-- **[Skills](skills/)** — Claude-compatible `SKILL.md` bundles. Format, discovery, allow/deny, MCP composition.
+### Library
 
-### Adapters
-- **[Scion adapter](scion-adapter/)** — `extras/scion-agent/` packaging for Scion's container runtime: lifecycle status, `--input` task delivery, sticky-state tool, `--session-db` flag.
+- **[Using the library]({{< relref "library/_index.md" >}})** — quickstart, guide (narrative tour of extension points), API (exhaustive reference)
+
+### Agent design
+
+- **[Agent design]({{< relref "agent-design/_index.md" >}})** — prompt + skill + tool-description patterns for efficient, well-behaved agents
+
+### Reference
+
+- **[Configuration]({{< relref "reference/configuration.md" >}})** — `.agents/config.json` schema
+- **[Providers]({{< relref "reference/providers.md" >}})** — Gemini, Vertex, Anthropic, mock
+- **[Permissions]({{< relref "reference/permissions.md" >}})** — ask/accept-edits/plan/yolo, patterns, scope
+- **[MCP servers]({{< relref "reference/mcp.md" >}})** — declarative third-party tool integration
+- **[Skills]({{< relref "reference/skills.md" >}})** — Claude-compatible `SKILL.md` bundles
+- **[Context management]({{< relref "reference/context-management.md" >}})** — compaction, checkpoints, agentic tool wrappers
+- **[Sessions and event log]({{< relref "reference/sessions.md" >}})** — durable storage, audit log, replay, crash-resume
+- **[Attach mode TUI]({{< relref "reference/attach-tui.md" >}})** — `core-agent-tui` remote operator client
+- **[Scion adapter]({{< relref "reference/scion-adapter.md" >}})** — embedding under Scion's distributed runtime
 
 ## Help and community
 

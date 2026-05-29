@@ -13,7 +13,7 @@ Two senses of "autonomous" matter here:
 | **Within one turn** | `agent.Run` already loops the model through tool-call cycles until a final response | Single self-contained tasks: "find every TODO in the repo and write a list" |
 | **Across turns** | `agent.RunAutonomous` loops `agent.Run` against a goal | Long-running work the model decomposes into multiple turns |
 
-This page covers across-turn autonomy. For the within-turn case, see [Library API → Streaming events]({{< relref "library-api.md#streaming-events-to-a-chat-like-ui" >}}).
+This page covers across-turn autonomy. For the within-turn case, see [Library API → Streaming events]({{< relref "library/api.md#streaming-events-to-a-chat-like-ui" >}}).
 
 ---
 
@@ -221,7 +221,7 @@ parent, _ := agent.New(parentModel,
 
 The parent's model sees a `research` tool it can call with a `request` string. The handler dispatches the inner agent's runner; the joined final text comes back as the tool result. Subagent events stream live into the parent's audit log under `Branch="<parent_branch>.research"`.
 
-See [Library API → Subagents]({{< relref "library-api.md#subagents" >}}) for the full API surface — depth caps, custom branch labels, per-subagent options. `examples/with-subagent/` runs end-to-end with no credentials.
+See [Library API → Subagents]({{< relref "library/api.md#subagents" >}}) for the full API surface — depth caps, custom branch labels, per-subagent options. `examples/with-subagent/` runs end-to-end with no credentials.
 
 ---
 

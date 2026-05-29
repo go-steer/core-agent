@@ -165,13 +165,13 @@ Beyond `--provider` / `-m` / `-p`, the flags that come up most often:
                                 (e.g. gemini-2.5-flash) for the cost-efficiency win
 ```
 
-Use `--ask=auto` when your `AGENTS.md` instructs the model to ask before some action — the agent gets a clean refusal in headless contexts instead of blocking forever. See [Library API → Prompter]({{< relref "library-api.md#prompter" >}}).
+Use `--ask=auto` when your `AGENTS.md` instructs the model to ask before some action — the agent gets a clean refusal in headless contexts instead of blocking forever. See [Library API → Prompter]({{< relref "library/api.md#prompter" >}}).
 
 Use `--session-db` to persist conversation history across restarts and unlock the audit-log + crash-resume flows. See [Sessions and event log]({{< relref "sessions.md" >}}).
 
 The `--no-compact` / `--no-checkpoint` / `--agentic-tools` family controls how `core-agent` keeps long sessions alive past the context wall — see [Context management]({{< relref "context-management.md" >}}) for the design.
 
-For long-running unattended work, see [Autonomous runs]({{< relref "autonomous.md" >}}).
+For long-running unattended work, see [Autonomous runs]({{< relref "cli/autonomous/operations.md" >}}).
 
 ---
 
@@ -184,6 +184,6 @@ For long-running unattended work, see [Autonomous runs]({{< relref "autonomous.m
 - [MCP servers]({{< relref "mcp.md" >}}) — declarative third-party tool integration
 - [Skills]({{< relref "skills.md" >}}) — Claude-compatible `SKILL.md` bundles
 - [Permissions]({{< relref "permissions.md" >}}) — gating tool calls
-- [Library API]({{< relref "library-api.md" >}}) — using `core-agent` from your own Go code
-- [Autonomous runs]({{< relref "autonomous.md" >}}) — `agent.RunAutonomous` for unattended workers
+- [Library API]({{< relref "library/api.md" >}}) — using `core-agent` from your own Go code
+- [Autonomous runs]({{< relref "cli/autonomous/operations.md" >}}) — `agent.RunAutonomous` for unattended workers
 - [Sessions and event log]({{< relref "sessions.md" >}}) — durable sessions, audit log, replay, crash-resume

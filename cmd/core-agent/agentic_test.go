@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/go-steer/core-agent/agent"
+	"github.com/go-steer/core-agent/usage"
 )
 
 func TestRenderContextStats_FreshSession(t *testing.T) {
@@ -88,5 +89,51 @@ func TestRenderContextStats_TruncatesLongCheckpointNote(t *testing.T) {
 	}
 	if strings.Contains(out, longNote) {
 		t.Errorf("expected long note to be truncated, but full string appeared")
+	}
+}
+
+func TestRenderContextStats_ModelBreakdownSortsByCost(t *testing.T) {
+	t.Parallel()
+	// Multi-model breakdown should appear, sorted by descending
+	// cost so the priciest model leads the row.
+	s := agent.ContextStats{
+		ModelBreakdown: map[string]usage.Totals{
+			"gemini-2.5-flash":              {Turns: 3, InputTokens: 12000, OutputTokens: 450, CostUSD: 0.0085},
+			"gemini-3.1-pro-preview":        {Turns: 2, InputTokens: 18000, OutputTokens: 800, CostUSD: 0.101},
+			"unused-model-zero-cost-tiebrk": {Turns: 1, InputTokens: 100, OutputTokens: 10, CostUSD: 0.0001},
+		},
+	}
+	out := renderContextStats(s)
+	if !strings.Contains(out, "Models:") {
+		t.Errorf("expected Models row in output:\n%s", out)
+	}
+	// Pro should appear before flash (higher cost).
+	proIdx := strings.Index(out, "gemini-3.1-pro-preview")
+	flashIdx := strings.Index(out, "gemini-2.5-flash")
+	if proIdx < 0 || flashIdx < 0 {
+		t.Fatalf("both model names should appear: %s", out)
+	}
+	if proIdx > flashIdx {
+		t.Errorf("expected pro (higher cost) before flash, got order pro@%d flash@%d:\n%s", proIdx, flashIdx, out)
+	}
+	// Cost figures must appear verbatim.
+	for _, want := range []string{"$0.1010", "$0.0085", "2 turns", "3 turns"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderContextStats_ModelBreakdownHiddenWhenEmpty(t *testing.T) {
+	t.Parallel()
+	// Single-model session (or no tracker wired): ModelBreakdown
+	// is empty/nil → no Models row → /context stays clean.
+	s := agent.ContextStats{
+		SubtaskCount: 1,
+		// ModelBreakdown nil
+	}
+	out := renderContextStats(s)
+	if strings.Contains(out, "Models:") {
+		t.Errorf("Models row should be hidden when breakdown is empty:\n%s", out)
 	}
 }

@@ -342,3 +342,45 @@ func TestBuiltinsLLM_DoesNotSwallowEmptyResponseWhenToleranceOff(t *testing.T) {
 		t.Errorf("with tolerance off the error should propagate; nothing was yielded")
 	}
 }
+
+// TestBuiltinsLLM_WithoutBuiltinsReturnsInner pins the duck-typed
+// hook the agent package's RunSubtask path uses to strip auto-
+// injected built-ins (so subtasks pass EXACTLY their own tool set
+// — Gemini 2.5 Flash rejects mixing function tools with search-
+// side built-ins). Smoking-gun test: after WithoutBuiltins, a
+// request that previously had GoogleSearch + URLContext appended
+// now has no extra tools touched.
+func TestBuiltinsLLM_WithoutBuiltinsReturnsInner(t *testing.T) {
+	t.Parallel()
+	fake := &fakeLLM{events: []fakeEvent{{resp: &adkmodel.LLMResponse{}}}}
+	wrapped := &builtinsLLM{
+		inner:    fake,
+		builtins: DefaultBuiltinTools().asTools(),
+	}
+
+	stripped := wrapped.WithoutBuiltins()
+	if stripped == nil {
+		t.Fatalf("WithoutBuiltins returned nil")
+	}
+	if stripped == adkmodel.LLM(wrapped) {
+		t.Fatalf("WithoutBuiltins returned the wrapper itself; want the inner LLM")
+	}
+
+	// Drive a request through the stripped LLM and verify the
+	// fake saw NO tools injected — proving the builtins layer
+	// is bypassed.
+	req := &adkmodel.LLMRequest{}
+	for range stripped.GenerateContent(context.Background(), req, false) {
+	}
+	if req.Config != nil && len(req.Config.Tools) > 0 {
+		t.Errorf("stripped LLM still injected tools: %d entries", len(req.Config.Tools))
+	}
+
+	// Sanity: the wrapper still injects on its own path.
+	req2 := &adkmodel.LLMRequest{}
+	for range wrapped.GenerateContent(context.Background(), req2, false) {
+	}
+	if req2.Config == nil || len(req2.Config.Tools) == 0 {
+		t.Errorf("wrapper should still inject builtins; got %v", req2.Config)
+	}
+}

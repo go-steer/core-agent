@@ -22,6 +22,8 @@ import (
 
 	"google.golang.org/adk/session"
 	"google.golang.org/genai"
+
+	"github.com/go-steer/core-agent/usage"
 )
 
 func TestContextStats_FreshSessionIsZero(t *testing.T) {
@@ -41,7 +43,12 @@ func TestContextStats_NilReceiverIsZero(t *testing.T) {
 	t.Parallel()
 	var a *Agent
 	stats := a.ContextStats()
-	if stats != (ContextStats{}) {
+	// ContextStats now contains a map (ModelBreakdown), so we
+	// can't compare with == against the zero value. Check each
+	// scalar field for the nil-receiver zero shape.
+	if stats.CompactionCount != 0 || stats.CheckpointCount != 0 ||
+		stats.SubtaskCount != 0 || stats.TotalSummaryChars != 0 ||
+		stats.ModelBreakdown != nil {
 		t.Errorf("nil receiver should return zero ContextStats, got %+v", stats)
 	}
 }
@@ -154,5 +161,66 @@ func TestContextStats_TracksSubtasks(t *testing.T) {
 	}
 	if stats.SubtaskOutputTokens != 140 {
 		t.Errorf("SubtaskOutputTokens = %d, want 140 (70 * 2)", stats.SubtaskOutputTokens)
+	}
+}
+
+func TestContextStats_ModelBreakdownPopulatedForMultiModel(t *testing.T) {
+	t.Parallel()
+	// Parent on one model, subtask on another. After at least
+	// one parent turn (via the tracker directly) plus one
+	// subtask turn, ContextStats.ModelBreakdown should carry
+	// both. ModelBreakdown stays nil for single-model sessions
+	// to avoid re-stating /stats totals.
+	parentLLM := &captureLLM{response: "parent ok"}
+	subLLM := &captureLLM{response: "sub ok", inputTokens: 500, outputTokens: 50}
+	tracker := usage.NewTracker()
+	a, err := New(parentLLM, WithUsageTracker(tracker))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Plant a fake parent-model turn directly on the tracker so
+	// the breakdown has something to surface for "parent" too.
+	tracker.Append("parent-model", 1000, 100, usage.Pricing{})
+
+	// Run a subtask on a different model.
+	if _, err := a.RunSubtask(context.Background(), SubtaskSpec{
+		Name:         "breakdown_check",
+		SystemPrompt: "x",
+		UserMessage:  "y",
+		Model:        subLLM,
+	}); err != nil {
+		t.Fatalf("RunSubtask: %v", err)
+	}
+
+	stats := a.ContextStats()
+	if len(stats.ModelBreakdown) < 2 {
+		t.Errorf("ModelBreakdown len = %d, want >= 2 (one per model)", len(stats.ModelBreakdown))
+	}
+	if _, ok := stats.ModelBreakdown["parent-model"]; !ok {
+		t.Errorf("ModelBreakdown missing parent-model: %v", stats.ModelBreakdown)
+	}
+	// Subtask llm's Name() is "capture" per captureLLM.Name().
+	if _, ok := stats.ModelBreakdown["capture"]; !ok {
+		t.Errorf("ModelBreakdown missing subtask model: %v", stats.ModelBreakdown)
+	}
+}
+
+func TestContextStats_ModelBreakdownEmptyForSingleModel(t *testing.T) {
+	t.Parallel()
+	// Single-model session: ModelBreakdown should stay nil
+	// because the breakdown would just restate /stats' total.
+	llm := &captureLLM{response: "ok"}
+	tracker := usage.NewTracker()
+	a, err := New(llm, WithUsageTracker(tracker))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	tracker.Append("only-model", 100, 10, usage.Pricing{})
+	tracker.Append("only-model", 200, 20, usage.Pricing{})
+
+	stats := a.ContextStats()
+	if stats.ModelBreakdown != nil {
+		t.Errorf("ModelBreakdown should be nil for single-model session, got %v", stats.ModelBreakdown)
 	}
 }

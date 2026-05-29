@@ -41,6 +41,8 @@ import (
 	"time"
 
 	"google.golang.org/adk/session"
+
+	"github.com/go-steer/core-agent/usage"
 )
 
 // ContextStats is a snapshot view of the three context-management
@@ -76,6 +78,16 @@ type ContextStats struct {
 	SubtaskInputTokens  int
 	SubtaskOutputTokens int
 	SubtaskCostUSD      float64
+
+	// ModelBreakdown surfaces /stats-style per-model totals when
+	// multiple models were used in the session (typically: parent
+	// on a frontier model, subtasks on a cheap flash/haiku-tier
+	// model via --agentic-small-model). Pulled from
+	// usage.Tracker.TotalsByModel; empty when no tracker is wired
+	// or only one model has been used (in which case the
+	// breakdown wouldn't tell the operator anything new beyond
+	// /stats' grand total).
+	ModelBreakdown map[string]usage.Totals
 }
 
 // ContextStats returns a snapshot of compaction/checkpoint/subtask
@@ -102,6 +114,16 @@ func (a *Agent) ContextStats() ContextStats {
 		SubtaskCostUSD:      a.subtaskCostUSD,
 	}
 	a.mu.Unlock()
+
+	// Per-model breakdown from the tracker. Only populated when
+	// more than one model has been used — for a single-model
+	// session the breakdown just restates /stats' totals.
+	if a.tracker != nil {
+		byModel := a.tracker.TotalsByModel()
+		if len(byModel) > 1 {
+			stats.ModelBreakdown = byModel
+		}
+	}
 
 	// Boundary scan. When the session.Service isn't available,
 	// the boundary fields stay zero; subtask fields above are

@@ -95,6 +95,30 @@ func (t *Tracker) Totals() Totals {
 	return out
 }
 
+// TotalsByModel groups the session's turns by model name and
+// returns the per-model totals. Useful for surfaces that want to
+// break down "$X.YY total" into "$A.BB parent model + $C.DD
+// subtask model" so the cost-efficiency win of routing subtasks
+// to a cheaper model is directly visible. Empty map when no
+// turns recorded.
+func (t *Tracker) TotalsByModel() map[string]Totals {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.turns) == 0 {
+		return map[string]Totals{}
+	}
+	out := make(map[string]Totals)
+	for _, x := range t.turns {
+		cur := out[x.Model]
+		cur.Turns++
+		cur.InputTokens += x.InputTokens
+		cur.OutputTokens += x.OutputTokens
+		cur.CostUSD += x.CostUSD
+		out[x.Model] = cur
+	}
+	return out
+}
+
 // All returns a copy of every recorded turn.
 func (t *Tracker) All() []Turn {
 	t.mu.Lock()

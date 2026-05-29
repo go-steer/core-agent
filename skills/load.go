@@ -25,7 +25,6 @@ package skills
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -63,29 +62,58 @@ type Skills struct {
 // Empty reports whether no skills were discovered.
 func (s Skills) Empty() bool { return s.Toolset == nil }
 
-// Load discovers skills under agentsDir/skills/. A missing directory
-// (or empty agentsDir) yields a zero Skills with no error — most
-// projects don't use skills.
+// Load discovers skills under agentsDir/skills/ only. A missing
+// directory (or empty agentsDir) yields a zero Skills with no error.
+//
+// Deprecated since v2.1: use LoadAll to also pick up user-global
+// skills from userCoreHome/skills/. Load remains as a one-source
+// wrapper around LoadAll for callers that explicitly don't want the
+// global path.
 //
 // gate (optional) wraps the resulting toolset so skill invocations go
 // through the permission system. Pass nil to skip gating.
 func Load(ctx context.Context, agentsDir string, gate *permissions.Gate) (Skills, error) {
-	if agentsDir == "" {
+	return LoadAll(ctx, agentsDir, "", gate)
+}
+
+// LoadAll discovers skills from up to two sources and merges them
+// into a single toolset:
+//
+//  1. projectAgentsDir/skills/ — project-scoped skills, checked in
+//     to the repo (or wherever .agents/ lives). Takes precedence on
+//     name collision.
+//  2. userCoreHome/skills/ — user-global skills (typically
+//     ~/.core-agent/skills/). Falls back when no project-scoped
+//     skill by the same name exists.
+//
+// Either path may be "" to skip that source. Missing directories
+// (vs missing parent) are silently treated as empty — most operators
+// won't have either populated.
+//
+// The two sources are merged via an overlayFS so the underlying
+// skilltoolset sees a single virtual root; primary entries win on
+// name collision. Both sources share the same sanitizingFS wrapper
+// so extended-frontmatter properties get filtered the same way.
+//
+// gate (optional) wraps the resulting toolset so skill invocations
+// go through the permission system. Pass nil to skip gating.
+func LoadAll(ctx context.Context, projectAgentsDir, userCoreHome string, gate *permissions.Gate) (Skills, error) {
+	primary, primaryOK := openSkillsDir(projectAgentsDir)
+	fallback, fallbackOK := openSkillsDir(userCoreHome)
+
+	var rootFS fs.FS
+	switch {
+	case primaryOK && fallbackOK:
+		rootFS = newSanitizingFS(&overlayFS{primary: primary, fallback: fallback})
+	case primaryOK:
+		rootFS = newSanitizingFS(primary)
+	case fallbackOK:
+		rootFS = newSanitizingFS(fallback)
+	default:
 		return Skills{}, nil
 	}
-	skillsDir := filepath.Join(agentsDir, SkillDirName)
-	info, err := os.Stat(skillsDir)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return Skills{}, nil
-		}
-		return Skills{}, fmt.Errorf("skills: stat %s: %w", skillsDir, err)
-	}
-	if !info.IsDir() {
-		return Skills{}, fmt.Errorf("skills: %s is not a directory", skillsDir)
-	}
 
-	source := skill.NewFileSystemSource(newSanitizingFS(os.DirFS(skillsDir)))
+	source := skill.NewFileSystemSource(rootFS)
 	frontmatters, err := source.ListFrontmatters(ctx)
 	if err != nil {
 		return Skills{}, fmt.Errorf("skills: list: %w", err)
@@ -112,6 +140,23 @@ func Load(ctx context.Context, agentsDir string, gate *permissions.Gate) (Skills
 	return Skills{Toolset: ts, Infos: infos}, nil
 }
 
+// openSkillsDir returns an fs.FS rooted at dir/skills/, plus a bool
+// reporting whether the directory exists and is a directory. Empty
+// dir or missing dir/skills returns (nil, false); any other error
+// (e.g., permission denied) also returns (nil, false) — the caller
+// silently skips that source.
+func openSkillsDir(dir string) (fs.FS, bool) {
+	if dir == "" {
+		return nil, false
+	}
+	skillsDir := filepath.Join(dir, SkillDirName)
+	info, err := os.Stat(skillsDir)
+	if err != nil || !info.IsDir() {
+		return nil, false
+	}
+	return os.DirFS(skillsDir), true
+}
+
 // newSanitizingFS wraps an fs.FS and intercepts files named "SKILL.md",
 // stripping out unsupported/extended frontmatter properties before
 // they are passed to the underlying ADK parser.
@@ -121,6 +166,15 @@ func newSanitizingFS(filesystem fs.FS) fs.FS {
 
 type sanitizingFS struct {
 	fs fs.FS
+}
+
+// ReadDir delegates to the wrapped filesystem so fs.ReadDir(sanitizingFS,
+// ".") sees merged entries when wrapping an overlayFS (project + user-
+// global skill discovery). Without this method, fs.ReadDir falls back
+// to Open(".") + iterate, which only sees the primary FS's entries
+// in the overlay case.
+func (s *sanitizingFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	return fs.ReadDir(s.fs, name)
 }
 
 func (s *sanitizingFS) Open(name string) (fs.File, error) {

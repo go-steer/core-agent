@@ -28,7 +28,7 @@ mkdir -p ~/.core-agent/skills
 cp -r /path/to/core-agent/SKILLS/cli-setup ~/.core-agent/skills/
 ```
 
-> **v2.0 caveat:** `core-agent` v2.0 only auto-discovers project-scoped skills from `.agents/skills/`. User-global discovery (`~/.core-agent/skills/`) lands in v2.1 — until then the user-global install works only if your `--agents-dir` points at `~/.core-agent`.
+`core-agent` (v2.1+) auto-discovers both `~/.core-agent/skills/` (user-global) and `.agents/skills/` (project-scoped) and merges them. On name collision, the project-scoped skill wins — handy for forking the generic bundle and shipping a project-specific variant under the same name.
 
 ## Why ship these as skills, not just docs
 

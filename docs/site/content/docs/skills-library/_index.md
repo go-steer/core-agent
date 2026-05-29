@@ -48,7 +48,7 @@ mkdir -p ~/.core-agent/skills
 cp -r /path/to/core-agent/SKILLS/cli-setup ~/.core-agent/skills/
 ```
 
-> **v2.0 caveat:** `core-agent` v2.0 only auto-discovers project-scoped skills from `.agents/skills/`. User-global discovery (`~/.core-agent/skills/`) lands in v2.1 — until then the user-global install works only if your `--agents-dir` points at `~/.core-agent`.
+`core-agent` (v2.1+) auto-discovers both `~/.core-agent/skills/` (user-global) and `.agents/skills/` (project-scoped) and merges them at load time. On name collision, the project-scoped skill wins — useful for forking the generic bundle and shipping a project-specific variant under the same name.
 
 ## Using a skill once installed
 
@@ -88,6 +88,6 @@ For writing your own skills from scratch (not derived from these bundles), see:
 
 ## Roadmap
 
-- **v2.1: `~/.core-agent/skills/` auto-discovery.** Today the user-global install requires pointing `--agents-dir` at `~/.core-agent`. v2.1 adds automatic discovery so a bare `cp -r SKILLS/* ~/.core-agent/skills/` makes the bundles available across every project.
+- **Done in v2.1:** `~/.core-agent/skills/` auto-discovery. The merge picks project-scoped skills over user-global ones on name collision, so you can fork a bundled skill into your project and the project version takes effect transparently.
 - **v2.1+: First-run bundle install.** A `core-agent --install-skills` (or auto-install on first run if `~/.core-agent/skills/` is empty) so operators don't have to know about the `cp` step at all.
 - **Future: more bundles.** Specific role-shaped skills (code-reviewer-setup, devops-monitor-setup, etc.) once the three above prove out.

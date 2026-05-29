@@ -137,3 +137,36 @@ func TestRenderContextStats_ModelBreakdownHiddenWhenEmpty(t *testing.T) {
 		t.Errorf("Models row should be hidden when breakdown is empty:\n%s", out)
 	}
 }
+
+func TestCoreUsageBridge_SessionByModel(t *testing.T) {
+	t.Parallel()
+	// Wires the per-model breakdown into core-tui's optional
+	// SessionByModelTracker capability (core-tui#18 / v0.6.4).
+	// Round-trips usage.Tracker → coreUsageBridge → coretui.ModelTotals
+	// to make sure the bridge translates the Totals shape correctly
+	// and doesn't drop entries.
+	tr := usage.NewTracker()
+	pro := usage.Pricing{InputPerMTok: 3.0, OutputPerMTok: 12.0}
+	flash := usage.Pricing{InputPerMTok: 0.15, OutputPerMTok: 0.60}
+	tr.Append("gemini-3.1-pro", 10_000, 500, pro)
+	tr.Append("gemini-2.5-flash", 5_000, 200, flash)
+	tr.Append("gemini-3.1-pro", 8_000, 300, pro)
+
+	b := &coreUsageBridge{inner: tr}
+	got := b.SessionByModel()
+	if len(got) != 2 {
+		t.Fatalf("SessionByModel returned %d entries, want 2", len(got))
+	}
+	if pt := got["gemini-3.1-pro"]; pt.Turns != 2 || pt.InputTokens != 18_000 || pt.OutputTokens != 800 {
+		t.Errorf("pro totals = %+v, want Turns=2 In=18000 Out=800", pt)
+	}
+	if ft := got["gemini-2.5-flash"]; ft.Turns != 1 || ft.InputTokens != 5_000 || ft.OutputTokens != 200 {
+		t.Errorf("flash totals = %+v, want Turns=1 In=5000 Out=200", ft)
+	}
+
+	// Empty tracker → nil so /stats skips the row entirely.
+	empty := &coreUsageBridge{inner: usage.NewTracker()}
+	if empty.SessionByModel() != nil {
+		t.Errorf("empty tracker should return nil; got %v", empty.SessionByModel())
+	}
+}

@@ -678,6 +678,31 @@ func (b *coreUsageBridge) ContextWindowUsed() int { return b.inner.ContextWindow
 func (b *coreUsageBridge) SessionTurns() int              { return b.inner.Totals().Turns }
 func (b *coreUsageBridge) SessionDuration() time.Duration { return b.inner.Duration() }
 
+// SessionByModel satisfies core-tui's optional SessionByModelTracker
+// capability (core-tui v0.6.4, issue #18). Translates the per-model
+// totals our usage.Tracker already exposes (via TotalsByModel,
+// added alongside the /context Models row) into the coretui.ModelTotals
+// shape the TUI surfaces under /stats. Returns the bare per-model
+// totals; core-tui decides whether to render the breakdown (skips
+// when empty or only one model has been used so the row doesn't
+// just restate SessionTotals).
+func (b *coreUsageBridge) SessionByModel() map[string]coretui.ModelTotals {
+	in := b.inner.TotalsByModel()
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]coretui.ModelTotals, len(in))
+	for model, t := range in {
+		out[model] = coretui.ModelTotals{
+			Turns:        t.Turns,
+			InputTokens:  t.InputTokens,
+			OutputTokens: t.OutputTokens,
+			CostUSD:      t.CostUSD,
+		}
+	}
+	return out
+}
+
 // SlashCommands satisfies coretui.SlashProvider. Surfaces /btw,
 // /subagent, /compact, and /done to the palette + /help. The
 // context-management commands (/compact, /done) are gated on

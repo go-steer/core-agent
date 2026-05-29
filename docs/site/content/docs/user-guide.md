@@ -3,9 +3,11 @@ title: User guide
 weight: 4
 ---
 
+> **Mid-redesign notice.** This page is being carved up across [Using the CLI]({{< relref "cli/_index.md" >}}), [Agent design]({{< relref "agent-design/_index.md" >}}), and the [Reference]({{< relref "reference/_index.md" >}}) section. Until Phase 2 of the v2.0 docs redesign lands, this page stays intact as the operator landing. New readers should also see the new section structure (linked above) for the eventual canonical homes.
+
 This guide walks you through giving `core-agent` a personality — system prompt, skills, tools, permissions — using the CLI. By the end, your `.agents/` directory will describe a specific assistant tailored to your project, and the same configuration will work for any teammate who clones the repo.
 
-If you haven't yet run the binary against a provider, do [Getting started](../getting-started/) first. This guide picks up where that page leaves off.
+If you haven't yet run the binary against a provider, do [Getting started]({{< relref "getting-started.md" >}}) first. This guide picks up where that page leaves off.
 
 ## What "personality" means here
 

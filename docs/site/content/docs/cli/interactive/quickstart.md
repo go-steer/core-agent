@@ -187,5 +187,6 @@ your-repo/
 - **[Agent design]({{< relref "/docs/agent-design/_index.md" >}})** — prescriptive patterns: when to use skills vs. `AGENTS.md` rules, how to get the model to use subagents efficiently, cost-efficiency tips
 - **[Context management]({{< relref "/docs/reference/context-management.md" >}})** — compaction, checkpoints, agentic tool wrappers for long sessions
 - **[Configuration reference]({{< relref "/docs/reference/configuration.md" >}})** — every field of `.agents/config.json`
+- **[Built-in tools]({{< relref "/docs/reference/tools.md" >}})** — the model-facing tool catalog (file / search / shell / network / planning) and how to disable individual tools
 - **[MCP servers]({{< relref "/docs/reference/mcp.md" >}})** — wire in third-party tools (web search, GitHub, databases)
 - **[Autonomous quickstart]({{< relref "/docs/cli/autonomous/quickstart.md" >}})** — running unattended against a goal

@@ -211,6 +211,7 @@ The composition keeps the parent's context tiny (it just sees "spawned subagent,
 ## Where to go next
 
 - **[Cost efficiency]({{< relref "/docs/agent-design/cost-efficiency.md" >}})** — the per-turn cost models for wrappers + subagents; when the savings pay off
+- **[Built-in tools]({{< relref "/docs/reference/tools.md" >}})** — the bare tools the wrappers are wrapping; description-text patterns you can mirror in your own tools
 - **[Context management → Agentic wrappers]({{< relref "/docs/reference/context-management.md" >}})** — the mechanism + the four built-in wrappers
 - **[Autonomous quickstart]({{< relref "/docs/cli/autonomous/quickstart.md" >}})** — background subagents + scheduling in unattended runs
 - **[Autonomous → Operations]({{< relref "/docs/cli/autonomous/operations.md" >}})** — `RunAutonomous`, budgets, lifecycle tool, the spawn tools

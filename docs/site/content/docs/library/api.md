@@ -137,11 +137,15 @@ agent.WithInstruction(agent.DefaultInstruction + "\n\n" + extraGuidance)
 
 ## Built-in tools
 
-The `tools/` package ships a nine-tool baseline suitable for any agent that acts on its workspace: `read_file`, `read_many_files`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `bash`, `todo`. All nine route through `permissions.Gate` (so the bash denylist and path-scope checks apply), and all honor the per-tool output caps from `cfg.ToolOutput`.
+The `pkg/tools` package ships a 13-tool baseline suitable for any agent that acts on its workspace: file (`read_file`, `read_many_files`, `write_file`, `edit_file`, `delete_file`, `stat`, `list_dir`), search (`glob`, `grep`), data + network (`json_query`, `fetch_url`), shell (`bash`), planning (`todo`). All route through `permissions.Gate` (so the bash denylist and path-scope checks apply), and all honor the per-tool output caps from `cfg.ToolOutput`.
 
-`glob` walks a directory and returns paths whose basename matches a `filepath.Match` pattern (e.g. `*.go`); `grep` walks a directory (or a single file) and returns matching lines for an RE2 regex with file path + 1-based line number + the matching line text. Both use stdlib only — no `bmatcuk/doublestar`, so `**` recursive-glob is not supported (use an explicit walk root instead). Both skip `.git`, `.svn`, `.hg`, `node_modules`, `vendor` and don't follow symlinks.
+See [Built-in tools]({{< relref "/docs/reference/tools.md" >}}) for the full catalog with per-tool parameters, permission interactions, and the optional lifecycle tools (`mark_task_done`, `ask_user`, `schedule_next_turn`).
 
-`read_many_files` reads multiple files in a single call. Accepts `paths` (an explicit list), `pattern` (a basename glob walked from `path`, default `.`), or both together — results are deduplicated and explicit paths come first. Each entry carries `path`, `content`, an optional `truncated` flag (per-file content cap is 64KB), and an optional `skipped` reason when the file was denied by the gate, missing, or a directory. Strictly preferred over multiple parallel `read_file` calls when you already know which files you need — Gemini in particular handles one tool call taking a list better than N parallel calls.
+A few API-relevant specifics:
+
+- `glob` walks a directory and returns paths whose basename matches a `filepath.Match` pattern (e.g. `*.go`); `grep` walks a directory (or a single file) and returns matching lines for an RE2 regex with file path + 1-based line number + the matching line text. Both use stdlib only — no `bmatcuk/doublestar`, so `**` recursive-glob is not supported (use an explicit walk root instead). Both skip `.git`, `.svn`, `.hg`, `node_modules`, `vendor` and don't follow symlinks.
+- `read_many_files` reads multiple files in a single call. Accepts `paths` (an explicit list), `pattern` (a basename glob walked from `path`, default `.`), or both together — results are deduplicated and explicit paths come first. Each entry carries `path`, `content`, an optional `truncated` flag (per-file content cap is 64KB), and an optional `skipped` reason when the file was denied by the gate, missing, or a directory. Strictly preferred over multiple parallel `read_file` calls when you already know which files you need — Gemini in particular handles one tool call taking a list better than N parallel calls.
+- `fetch_url` is **default-deny**: not registered at all when `cfg.URLScope.Allow` is empty, so the model never sees a tool that would refuse every call.
 
 Wire them up in your binary:
 

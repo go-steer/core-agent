@@ -181,6 +181,7 @@ For long-running unattended work, see [Autonomous runs]({{< relref "/docs/cli/au
 - [Providers]({{< relref "/docs/reference/providers.md" >}}) — full reference for each model backend, env vars, and gotchas
 - [Configuration]({{< relref "/docs/reference/configuration.md" >}}) — every field of `.agents/config.json`
 - [Context management]({{< relref "/docs/reference/context-management.md" >}}) — compaction, task-boundary checkpoints, agentic tool wrappers
+- [Built-in tools]({{< relref "/docs/reference/tools.md" >}}) — the model-facing tool catalog (file / search / shell / network / planning) + lifecycle tools
 - [MCP servers]({{< relref "/docs/reference/mcp.md" >}}) — declarative third-party tool integration
 - [Skills]({{< relref "/docs/reference/skills.md" >}}) — Claude-compatible `SKILL.md` bundles
 - [Permissions]({{< relref "/docs/reference/permissions.md" >}}) — gating tool calls

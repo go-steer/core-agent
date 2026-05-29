@@ -9,7 +9,7 @@ The agent runs unattended against a goal you defined up front. Typically long-li
 
 - **[Quickstart]({{< relref "cli/autonomous/quickstart.md" >}})** — first 15 minutes: a working monitor with budgets, headless permission posture, durable session log.
 - **[Operations]({{< relref "cli/autonomous/operations.md" >}})** — the depth reference: budgets, lifecycle tool, crash-resume, failure policy, audit log, subagent composition. *(Was `autonomous.md` pre-v2.)*
-- **[GKE team scenario]({{< relref "cli/autonomous/gke-team-scenario.md" >}})** *(coming Phase 4)* — multi-agent worked example based on [gke-labs/kube-agents](https://github.com/gke-labs/kube-agents): a parent platform agent plus operator + devteam specialists, each with their own MCP servers and skills, interacting around a real GKE workflow.
+- **[GKE multi-agent scenario]({{< relref "cli/autonomous/gke-team-scenario.md" >}})** — multi-agent worked example based on [gke-labs/kube-agents](https://github.com/gke-labs/kube-agents): a parent platform agent plus operator + devteam specialists, each with their own MCP servers and skills, interacting around a real GKE rollout/SLO scenario.
 
 ## Common references
 

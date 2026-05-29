@@ -72,7 +72,7 @@ For deeper prompt-engineering patterns see [Agent design → System instructions
 
 ```text
 $ core-agent
-[bubble-tea TUI takes over the terminal]
+[Bubble Tea TUI takes over the terminal]
 > what files are in this repo?
 [agent runs list_dir + read_many_files, returns a summary]
 > /quit

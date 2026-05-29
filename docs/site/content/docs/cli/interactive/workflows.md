@@ -246,7 +246,7 @@ $ core-agent
 
 **Skills are for procedures, not facts.** A skill should describe a workflow the agent follows. Facts (your house style, your library list) go in `AGENTS.md` or in a skill's reference file linked from the skill body.
 
-**MCP servers are the integration point.** Anything outside the built-in nine tools (`read_file`, `read_many_files`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `bash`, `todo`) goes through MCP. Don't write custom Go tools unless you're embedding the library; for CLI use, MCP is the right surface.
+**MCP servers are the integration point.** Anything outside the built-in 13 tools (`read_file`, `read_many_files`, `write_file`, `edit_file`, `delete_file`, `stat`, `list_dir`, `glob`, `grep`, `json_query`, `fetch_url`, `bash`, `todo`) goes through MCP. Don't write custom Go tools unless you're embedding the library; for CLI use, MCP is the right surface.
 
 ---
 

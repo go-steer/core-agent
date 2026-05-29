@@ -3,7 +3,7 @@ title: Interactive (TUI)
 weight: 1
 ---
 
-You're at a terminal, driving the agent yourself. `core-agent` (no flags, stdin is a TTY) lands in the bubble-tea TUI. Conversation history is preserved across turns. Slash commands surface session controls.
+You're at a terminal, driving the agent yourself. `core-agent` (no flags, stdin is a TTY) lands in the Bubble Tea TUI. Conversation history is preserved across turns. Slash commands surface session controls.
 
 ## In this section
 

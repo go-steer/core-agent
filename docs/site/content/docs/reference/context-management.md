@@ -56,6 +56,43 @@ Pass `--no-compact` for short headless one-shots where compaction would never fi
 
 ---
 
+## Agentic tool wrappers (Mechanism B)
+
+**The proactive bloat prevention.** Compaction and checkpoints are *reactive* — they clean up after raw tool output has already landed in the parent's context. Agentic wrappers are *proactive* — they route the underlying tool call through a single-purpose subtask on a (typically cheaper) model so only the digest reaches the parent. The raw 5,000-line read never enters the parent's context.
+
+Opt-in for v2.0; may flip default-on in a later release once dogfooded.
+
+### Enabling
+
+```bash
+# Wrappers register; subtasks inherit the parent's model
+core-agent --agentic-tools
+
+# Recommended: route subtasks to a cheaper model for the cost-efficiency win
+core-agent --agentic-tools --agentic-small-model gemini-2.5-flash
+```
+
+### The four wrappers
+
+| Wrapper | Inner tools | Replaces |
+|---|---|---|
+| `agentic_read_file` | `read_file` | bare `read_file` for large files |
+| `agentic_fetch_url` | `fetch_url` | bare `fetch_url` for long pages |
+| `agentic_grep` | `grep` + `read_file` | bare `grep` when matches will be many |
+| `agentic_research` | `read_file` + `grep` + `list_dir` + `glob` | open-ended investigation |
+
+Tool descriptions tell the model when to prefer the wrapper ("Use INSTEAD OF read_file when the file might be large and you only need a specific section..."). The wrappers share the parent's permission gate and per-tool output caps — the subtask isn't a security boundary, it's a *context isolation* boundary.
+
+### Cost efficiency
+
+The wrappers' point is the model-selection asymmetry: parent on a frontier model (Pro, Opus) does the reasoning; subtasks on a cheap tier (Flash, Haiku) do the *content digestion*. A subtask reading a 5,000-line file is ~95% prompt-context cost; offloading that to a model ~10x cheaper per-token routinely cuts session cost by 30-50% on long sessions.
+
+### Fresh-context invariant
+
+Each subtask sees ONLY its `SystemPrompt` + `UserMessage`. The parent's history never reaches it. This is load-bearing: the subtask gets the full attention budget for one narrow question, and the parent's prior turns can't leak into a subtask's work. The subtask's events land in a parent-prefixed session row (`<parent>:sub:<branch>`) so the audit log stays correlated without polluting the parent's session.
+
+---
+
 ## Task-boundary checkpoints (Mechanism C)
 
 **The proactive task-slicing.** Where compaction triggers on context pressure, checkpoints trigger on *task completion* — the model self-signals "this task is done" and a richer six-section completion record gets written, slicing the prior task's exploration out of future requests so the next task starts with a clean working set.
@@ -96,43 +133,6 @@ Compaction triggers on token pressure — it might fire mid-task and the summary
 ### When to disable
 
 Pass `--no-checkpoint` for runs where the model shouldn't self-signal task completion, or when debugging where auto-slicing complicates reproduction. Both `/done` and the `mark_task_done` model-facing tool are removed when this flag is set; `/help` and `/tools` reflect that.
-
----
-
-## Agentic tool wrappers (Mechanism B)
-
-**The proactive bloat prevention.** Compaction and checkpoints are *reactive* — they clean up after raw tool output has already landed in the parent's context. Agentic wrappers are *proactive* — they route the underlying tool call through a single-purpose subtask on a (typically cheaper) model so only the digest reaches the parent. The raw 5,000-line read never enters the parent's context.
-
-Opt-in for v2.0; may flip default-on in a later release once dogfooded.
-
-### Enabling
-
-```bash
-# Wrappers register; subtasks inherit the parent's model
-core-agent --agentic-tools
-
-# Recommended: route subtasks to a cheaper model for the cost-efficiency win
-core-agent --agentic-tools --agentic-small-model gemini-2.5-flash
-```
-
-### The four wrappers
-
-| Wrapper | Inner tools | Replaces |
-|---|---|---|
-| `agentic_read_file` | `read_file` | bare `read_file` for large files |
-| `agentic_fetch_url` | `fetch_url` | bare `fetch_url` for long pages |
-| `agentic_grep` | `grep` + `read_file` | bare `grep` when matches will be many |
-| `agentic_research` | `read_file` + `grep` + `list_dir` + `glob` | open-ended investigation |
-
-Tool descriptions tell the model when to prefer the wrapper ("Use INSTEAD OF read_file when the file might be large and you only need a specific section..."). The wrappers share the parent's permission gate and per-tool output caps — the subtask isn't a security boundary, it's a *context isolation* boundary.
-
-### Cost efficiency
-
-The wrappers' point is the model-selection asymmetry: parent on a frontier model (Pro, Opus) does the reasoning; subtasks on a cheap tier (Flash, Haiku) do the *content digestion*. A subtask reading a 5,000-line file is ~95% prompt-context cost; offloading that to a model ~10x cheaper per-token routinely cuts session cost by 30-50% on long sessions.
-
-### Fresh-context invariant
-
-Each subtask sees ONLY its `SystemPrompt` + `UserMessage`. The parent's history never reaches it. This is load-bearing: the subtask gets the full attention budget for one narrow question, and the parent's prior turns can't leak into a subtask's work. The subtask's events land in a parent-prefixed session row (`<parent>:sub:<branch>`) so the audit log stays correlated without polluting the parent's session.
 
 ---
 

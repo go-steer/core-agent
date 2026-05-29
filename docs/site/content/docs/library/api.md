@@ -408,7 +408,7 @@ agent.WithRetryPolicy(func(err error, attempt int) agent.RetryDecision {
 
 ### Permission modes
 
-For unattended runs, use `permissions.ModeYolo` (or `ModeAllow` with an explicit allowlist) — `ModeAsk` would deadlock on the first tool call waiting for a human nobody's there to be. If you do use `ModeAsk`, wire a `permissions.Prompter` that fails fast (e.g. `tools.RefusePrompter` plus a custom prompter that just denies).
+For unattended runs, use `permissions.ModeYolo` (or `ModeAllow` with an explicit allowlist) — `ModeAsk` would deadlock on the first tool call waiting for a human who isn't there. If you do use `ModeAsk`, wire a `permissions.Prompter` that fails fast (e.g. `tools.RefusePrompter` plus a custom prompter that just denies).
 
 When your `build` function constructs gated tools, pass the gate to `RunAutonomous` via `WithPermissionsGate(g)`. The driver does a single startup check — `Mode==ask && !HasPrompter` errors out before invoking `build`, so you don't burn an LLM round-trip discovering the misconfiguration. Runtime gating is still enforced by the tools themselves; `WithPermissionsGate` only enables the deadlock guard.
 

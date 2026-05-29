@@ -7,7 +7,7 @@ weight: 8
 
 ## Why a separate binary
 
-The TUI pulls in [bubble tea](https://github.com/charmbracelet/bubbletea), [bubbles](https://github.com/charmbracelet/bubbles), [lipgloss](https://github.com/charmbracelet/lipgloss), and [glamour](https://github.com/charmbracelet/glamour) (plus their transitive deps). For the K8s use case — a long-running headless agent with `--attach-listen` — those deps are pure bloat. Splitting into `cmd/core-agent` and `cmd/core-agent-tui` keeps the agent binary bubble-tea-free (verifiable with `go list -deps ./cmd/core-agent`) while still shipping a polished operator surface for laptop use.
+The TUI pulls in [Bubble Tea](https://github.com/charmbracelet/bubbletea), [bubbles](https://github.com/charmbracelet/bubbles), [lipgloss](https://github.com/charmbracelet/lipgloss), and [glamour](https://github.com/charmbracelet/glamour) (plus their transitive deps). For the K8s use case — a long-running headless agent with `--attach-listen` — those deps are pure bloat. Splitting into `cmd/core-agent` and `cmd/core-agent-tui` keeps the agent binary Bubble Tea-free (verifiable with `go list -deps ./cmd/core-agent`) while still shipping a polished operator surface for laptop use.
 
 Two release artifacts:
 
@@ -34,7 +34,7 @@ ATTACH_TOKEN=$(openssl rand -hex 32) \
 core-agent-tui http://localhost:7777 --token=ATTACH_TOKEN
 ```
 
-For local interactive use, run `core-agent` directly — the bubble-tea TUI lifted from cogo (see [`embedded-tui-design-v2.md`](https://github.com/go-steer/core-agent/blob/main/docs/embedded-tui-design-v2.md)) is in-process now. `core-agent-tui` is the remote client only.
+For local interactive use, run `core-agent` directly — the Bubble Tea TUI lifted from cogo (see [`embedded-tui-design-v2.md`](https://github.com/go-steer/core-agent/blob/main/docs/embedded-tui-design-v2.md)) is in-process now. `core-agent-tui` is the remote client only.
 
 URL forms (same grammar as `core-agent attach`):
 

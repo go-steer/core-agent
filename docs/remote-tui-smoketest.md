@@ -139,11 +139,11 @@ branch.
 
 ### Connection + chat
 
-- [ ] Picker displays the registered session with the right
+- [x] Picker displays the registered session with the right
       `app/sid` label.
-- [ ] After picker → chat, the scrollback is empty (no prior
+- [x] After picker → chat, the scrollback is empty (no prior
       history because the daemon started fresh).
-- [ ] Typing a seed prompt and pressing Enter submits it; the
+- [x] Typing a seed prompt and pressing Enter submits it; the
       model's response streams back in real time (chunk-by-chunk,
       not a single final blob).
 - [ ] The status header shows the model name and "idle" → "running"
@@ -225,6 +225,21 @@ branch.
       preserved session history from the eventlog.
 
 ## Failure modes worth verifying
+
+- **Status banner stuck at `0 in · 0 out · $0.0000`** (observed
+  during the v2.1 smoke). The banner pulls from
+  `UsageTracker.SessionTotals / SessionCostUSD`, which the
+  adapter projects from the `/usage` attach endpoint, which
+  returns `agent.AttachUsage()` from a wired `*usage.Tracker`.
+  Zeros suggest either (a) `--no-repl + --attach-listen` mode
+  doesn't wire the tracker into the agent, or (b) the tracker
+  isn't being appended for inject-driven turns (only `Run`-driven
+  ones). Diagnose by querying the `/usage` endpoint directly
+  (`curl http://localhost:7777/sessions/<sid>/usage`) — non-zero
+  means the adapter is dropping it; zero means the tracker is the
+  source of truth and isn't getting writes. Per-turn footer in
+  the chat (`in · out · Xs`) is unaffected — that comes from
+  per-event `UsageMetadata`, not the cumulative tracker.
 
 - **Stuck on "Compacting context…" preamble**: `/compact` started
   but the response never came back. Check terminal 1 for a

@@ -76,6 +76,29 @@ registered session core-agent/<sid>
 You'll need `<sid>` for the direct-jump form in terminal 2 (the
 picker form discovers it automatically).
 
+### What's the daemon actually doing?
+
+Nothing yet. `--no-repl` with no `-p` means the agent is **idle**
+— registered with the attach server, waiting for someone to
+inject a prompt. Terminal 1 will look silent (only stderr lines
+on startup + errors); the eventlog is empty until you drive a
+turn from the remote TUI in terminal 2.
+
+This is the intended shape for headless daemons (K8s pods,
+background workers). The remote TUI **is** the operator surface
+— without it you'd be reduced to `sqlite3 <session-db>` queries
+or `core-agent attach <url>` for a CLI live-tail.
+
+Two other shapes worth knowing about (not what the smoke covers):
+
+- **Local TUI + attach in parallel**: drop `--no-repl`. On a TTY
+  the binary lands in the in-process TUI; attach still works
+  alongside so remote observers can watch.
+- **Autonomous goal-pursuing worker**: uses the library API
+  `agent.RunAutonomous` from a small Go binary (no CLI form).
+  Combine with `--attach-listen` and the remote TUI to watch the
+  autonomous loop progress. See `examples/autonomous/`.
+
 ## Attach (terminal 2)
 
 `core-agent-tui` doesn't walk for `.agents/` — cwd doesn't matter.

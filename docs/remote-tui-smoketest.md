@@ -47,7 +47,8 @@ Then start the agent:
 ```bash
 core-agent \
   --attach-listen=:7777 \
-  --session-db=/tmp/coreagent-smoketest.db \
+  --session-db \
+  --session-db-path=/tmp/coreagent-smoketest.db \
   --agentic-tools \
   --agentic-small-model=gemini-2.5-flash \
   -p "ready"
@@ -57,7 +58,8 @@ Notes:
 - `--attach-listen=:7777` opens the HTTP+SSE attach server on
   localhost port 7777.
 - `--session-db` is **required** for attach mode (live-tail needs
-  the eventlog).
+  the eventlog); `--session-db-path` overrides the default
+  `~/.core-agent/sessions.db` so the smoke uses a throwaway file.
 - `--agentic-tools` lets the smoke exercise `/context`'s subtask
   reporting; drop if you don't need it.
 - `-p "ready"` runs a single bootstrap prompt so the session is

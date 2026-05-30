@@ -177,6 +177,71 @@ func (c *Client) Status(ctx context.Context, sessionPath string) (attach.StatusI
 	return out, nil
 }
 
+// Usage calls GET <base>/sessions/<sid>/usage. Backs the remote
+// TUI's /stats slash. Returns zero UsageInfo if the agent doesn't
+// implement the capability (server returns 501).
+func (c *Client) Usage(ctx context.Context, sessionPath string) (attach.UsageInfo, error) {
+	var out attach.UsageInfo
+	if err := c.doJSON(ctx, http.MethodGet, sessionPath+"/usage", nil, &out); err != nil {
+		return attach.UsageInfo{}, err
+	}
+	return out, nil
+}
+
+// Context calls GET <base>/sessions/<sid>/context. Backs the remote
+// TUI's /context slash. Returns zero ContextInfo on 501.
+func (c *Client) Context(ctx context.Context, sessionPath string) (attach.ContextInfo, error) {
+	var out attach.ContextInfo
+	if err := c.doJSON(ctx, http.MethodGet, sessionPath+"/context", nil, &out); err != nil {
+		return attach.ContextInfo{}, err
+	}
+	return out, nil
+}
+
+// Memory calls GET <base>/sessions/<sid>/memory. Backs the remote
+// TUI's /memory slash. Returns empty slice (not nil) on 501.
+func (c *Client) Memory(ctx context.Context, sessionPath string) ([]attach.MemorySource, error) {
+	var out struct {
+		Sources []attach.MemorySource `json:"sources"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, sessionPath+"/memory", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Sources, nil
+}
+
+// Skills calls GET <base>/sessions/<sid>/skills. Backs the remote
+// TUI's /skills slash.
+func (c *Client) Skills(ctx context.Context, sessionPath string) ([]attach.SkillInfo, error) {
+	var out struct {
+		Skills []attach.SkillInfo `json:"skills"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, sessionPath+"/skills", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Skills, nil
+}
+
+// MCP calls GET <base>/sessions/<sid>/mcp. Backs the remote TUI's
+// /mcp slash. Returns zero MCPInfo on 501.
+func (c *Client) MCP(ctx context.Context, sessionPath string) (attach.MCPInfo, error) {
+	var out attach.MCPInfo
+	if err := c.doJSON(ctx, http.MethodGet, sessionPath+"/mcp", nil, &out); err != nil {
+		return attach.MCPInfo{}, err
+	}
+	return out, nil
+}
+
+// Pricing calls GET <base>/sessions/<sid>/pricing. Backs the remote
+// TUI's /pricing slash. Returns zero PricingInfo on 501.
+func (c *Client) Pricing(ctx context.Context, sessionPath string) (attach.PricingInfo, error) {
+	var out attach.PricingInfo
+	if err := c.doJSON(ctx, http.MethodGet, sessionPath+"/pricing", nil, &out); err != nil {
+		return attach.PricingInfo{}, err
+	}
+	return out, nil
+}
+
 // ---- POSTs (/inject, /wake) ----
 
 // Inject calls POST <base>/sessions/<sid>/inject with the given message.

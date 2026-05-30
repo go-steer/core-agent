@@ -112,3 +112,194 @@ type StatusProvider interface {
 type InterruptProvider interface {
 	AttachInterrupt() bool
 }
+
+// UsageInfo is the response shape of GET /sessions/.../usage. Backs
+// the remote TUI's /stats slash. PerModel is empty when only one
+// model has been used (no breakdown needed).
+type UsageInfo struct {
+	Overall  UsageTotals            `json:"overall"`
+	PerModel map[string]UsageTotals `json:"per_model,omitempty"`
+}
+
+// UsageTotals mirrors usage.Totals in a JSON-friendly shape. Cached
+// input tokens omitted when zero (most providers don't break them out).
+type UsageTotals struct {
+	InputTokens       int64   `json:"input_tokens"`
+	OutputTokens      int64   `json:"output_tokens"`
+	CachedInputTokens int64   `json:"cached_input_tokens,omitempty"`
+	Turns             int     `json:"turns"`
+	CostUSD           float64 `json:"cost_usd"`
+}
+
+// ContextInfo is the response shape of GET /sessions/.../context.
+// Backs the remote TUI's /context slash. Mirrors agent.ContextStats
+// but with json tags + a fixed scalar shape so the wire format is
+// stable across agent-package refactors.
+type ContextInfo struct {
+	Compactions          int     `json:"compactions"`
+	Checkpoints          int     `json:"checkpoints"`
+	LastTaskNote         string  `json:"last_task_note,omitempty"`
+	TotalCharsSummarized int     `json:"total_chars_summarized"`
+	SubtaskTurns         int     `json:"subtask_turns"`
+	SubtaskInputTokens   int64   `json:"subtask_input_tokens"`
+	SubtaskOutputTokens  int64   `json:"subtask_output_tokens"`
+	SubtaskCostUSD       float64 `json:"subtask_cost_usd"`
+}
+
+// MemorySource is one row in GET /sessions/.../memory — backs the
+// remote TUI's /memory slash. Mirrors instruction.Source.
+type MemorySource struct {
+	Scope string `json:"scope"` // "user-global" | "project"
+	Path  string `json:"path"`
+	Size  int    `json:"size"`
+}
+
+// SkillInfo is one row in GET /sessions/.../skills — backs the
+// remote TUI's /skills slash. Description is what the model sees;
+// the operator uses it to verify why a skill did or didn't trigger.
+type SkillInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// MCPInfo is the response shape of GET /sessions/.../mcp — backs
+// the remote TUI's /mcp slash. Each Server carries its lifecycle
+// status plus the tools it exposes.
+type MCPInfo struct {
+	Servers []MCPServerInfo `json:"servers"`
+}
+
+// MCPServerInfo describes one declared MCP server.
+type MCPServerInfo struct {
+	Name      string        `json:"name"`
+	Status    string        `json:"status"`    // "running" | "starting" | "failed" | "stopped"
+	Transport string        `json:"transport"` // "stdio" | "http"
+	Tools     []MCPToolInfo `json:"tools,omitempty"`
+}
+
+// MCPToolInfo describes one tool exposed by an MCP server.
+type MCPToolInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// PricingInfo is the response shape of GET /sessions/.../pricing —
+// backs the remote TUI's /pricing slash. Reports the layered-lookup
+// state at request time: how many models have rates, which layer the
+// current model resolved against, and the current model's rate
+// breakdown.
+type PricingInfo struct {
+	Source       string        `json:"source"` // "config" | "project-file" | "user-file" | "compiled-in" | "litellm-cache" | "fallback"
+	LastRefresh  time.Time     `json:"last_refresh,omitempty"`
+	KnownModels  int           `json:"known_models"`
+	CurrentModel string        `json:"current_model,omitempty"`
+	Current      *ModelPricing `json:"current,omitempty"`
+}
+
+// ModelPricing describes one model's rate breakdown.
+type ModelPricing struct {
+	InputUSDPerMTok  float64 `json:"input_usd_per_mtok"`
+	OutputUSDPerMTok float64 `json:"output_usd_per_mtok"`
+	CachedUSDPerMTok float64 `json:"cached_usd_per_mtok,omitempty"`
+	Source           string  `json:"source,omitempty"`
+}
+
+// UsageProvider is the optional capability for GET /sessions/.../usage.
+type UsageProvider interface {
+	AttachUsage() UsageInfo
+}
+
+// ContextProvider is the optional capability for GET /sessions/.../context.
+type ContextProvider interface {
+	AttachContext() ContextInfo
+}
+
+// MemoryProvider is the optional capability for GET /sessions/.../memory.
+type MemoryProvider interface {
+	AttachMemory() []MemorySource
+}
+
+// SkillsProvider is the optional capability for GET /sessions/.../skills.
+type SkillsProvider interface {
+	AttachSkills() []SkillInfo
+}
+
+// MCPProvider is the optional capability for GET /sessions/.../mcp.
+type MCPProvider interface {
+	AttachMCP() MCPInfo
+}
+
+// PricingProvider is the optional capability for GET /sessions/.../pricing.
+type PricingProvider interface {
+	AttachPricing() PricingInfo
+}
+
+// OperatorView wraps a base Registrant (typically *agent.Agent) with
+// the caller-held operator-display state — instruction memory, skill
+// bundles, MCP servers, pricing snapshot. Library callers construct
+// one and register THAT instead of the bare agent, so the operator
+// TUI sees /memory, /skills, /mcp, /pricing alongside /tools and
+// /status.
+//
+// Each func field is optional. A nil func means the corresponding
+// /sessions/.../<endpoint> returns 404 (capability not registered).
+// Pass populated snapshot funcs only for the surfaces you want
+// exposed.
+//
+// The funcs are called per-request so callers can return fresh
+// snapshots (e.g., after /pricing refresh updates the in-memory
+// rate table). The funcs should be cheap — they typically just
+// project an existing in-memory snapshot into the wire shape.
+//
+// Typical wiring:
+//
+//	view := &attach.OperatorView{
+//	    Registrant: ag,
+//	    Memory:     func() []attach.MemorySource { return attach.SnapshotMemory(loadedMemory) },
+//	    Skills:     func() []attach.SkillInfo    { return skillsToAttachInfos(loadedSkills) },
+//	    MCP:        func() attach.MCPInfo        { return mcpToAttachInfo(mcpServers) },
+//	    Pricing:    func() attach.PricingInfo    { return pricingSnapshot(cfg) },
+//	}
+//	reg.Register(view)
+type OperatorView struct {
+	Registrant
+
+	Memory  func() []MemorySource
+	Skills  func() []SkillInfo
+	MCP     func() MCPInfo
+	Pricing func() PricingInfo
+}
+
+// AttachMemory satisfies MemoryProvider when Memory is non-nil.
+// Returns nil otherwise; the handler treats nil-result as "capability
+// not registered" and returns 404.
+func (o *OperatorView) AttachMemory() []MemorySource {
+	if o.Memory == nil {
+		return nil
+	}
+	return o.Memory()
+}
+
+// AttachSkills satisfies SkillsProvider when Skills is non-nil.
+func (o *OperatorView) AttachSkills() []SkillInfo {
+	if o.Skills == nil {
+		return nil
+	}
+	return o.Skills()
+}
+
+// AttachMCP satisfies MCPProvider when MCP is non-nil.
+func (o *OperatorView) AttachMCP() MCPInfo {
+	if o.MCP == nil {
+		return MCPInfo{}
+	}
+	return o.MCP()
+}
+
+// AttachPricing satisfies PricingProvider when Pricing is non-nil.
+func (o *OperatorView) AttachPricing() PricingInfo {
+	if o.Pricing == nil {
+		return PricingInfo{}
+	}
+	return o.Pricing()
+}

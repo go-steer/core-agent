@@ -244,6 +244,38 @@ func (a *Adapter) FetchMCPServers(ctx context.Context) []coretui.MCPServerInfo {
 	return out
 }
 
+// ===== Pricing controller (coretui built-in /pricing slash) =====
+//
+// coretui's built-in /pricing slash type-asserts on
+// coretui.PricingController (different interface from the adapter's
+// own /pricing SlashProvider entry). When the built-in fires, our
+// own SlashProvider is bypassed, so we satisfy the built-in to
+// keep the slash working. Returns a summary string that coretui
+// renders as a system message.
+
+// Refresh satisfies coretui.PricingController. Calls the attach
+// endpoint /pricing/refresh and projects the response.
+func (a *Adapter) Refresh(ctx context.Context) (string, error) {
+	resp, err := a.client.RefreshPricing(ctx, a.sessionPath)
+	if err != nil {
+		return "", err
+	}
+	return renderRefreshResp(resp), nil
+}
+
+// Set satisfies coretui.PricingController. Calls the attach
+// endpoint /pricing/set.
+func (a *Adapter) Set(modelID string, in, out float64) (string, error) {
+	if err := a.client.SetManualPricing(context.TODO(), a.sessionPath, attach.PricingSetRequest{
+		Model:            modelID,
+		InputUSDPerMTok:  in,
+		OutputUSDPerMTok: out,
+	}); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Applied %s @ $%.2f in / $%.2f out per Mtok.", modelID, in, out), nil
+}
+
 // ===== Slash dispatch =====
 //
 // coretui's SlashProvider / AsyncSlashProviderWithPreamble hooks

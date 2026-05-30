@@ -452,6 +452,40 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		// window state from this same tracker so there's one source
 		// of truth.
 		agent.WithUsageTracker(tracker),
+		// Attach-extras snapshot funcs. The agent itself satisfies the
+		// MemoryProvider / SkillsProvider / MCPProvider interfaces via
+		// these closures, so the remote /memory /skills /mcp endpoints
+		// return the same state the in-process TUI sees.
+		agent.WithAttachMemoryProvider(func() []attach.MemorySource {
+			out := make([]attach.MemorySource, 0, len(loaded.Sources))
+			for _, s := range loaded.Sources {
+				out = append(out, attach.MemorySource{Scope: s.Scope, Path: s.Path, Size: s.Bytes})
+			}
+			return out
+		}),
+		agent.WithAttachSkillsProvider(func() []attach.SkillInfo {
+			out := make([]attach.SkillInfo, 0, len(loadedSkills.Infos))
+			for _, s := range loadedSkills.Infos {
+				out = append(out, attach.SkillInfo{Name: s.Name, Description: s.Description})
+			}
+			return out
+		}),
+		agent.WithAttachMCPProvider(func() attach.MCPInfo {
+			servers := make([]attach.MCPServerInfo, 0, len(mcpServers))
+			for _, s := range mcpServers {
+				tools := make([]attach.MCPToolInfo, 0, len(s.ToolInfos))
+				for _, t := range s.ToolInfos {
+					tools = append(tools, attach.MCPToolInfo{Name: t.Name, Description: t.Description})
+				}
+				servers = append(servers, attach.MCPServerInfo{
+					Name:      s.Name,
+					Status:    s.Status,
+					Transport: "", // not surfaced on mcp.Server today
+					Tools:     tools,
+				})
+			}
+			return attach.MCPInfo{Servers: servers}
+		}),
 	}
 	if bgMgr != nil {
 		opts = append(opts, agent.WithBackgroundManager(bgMgr))

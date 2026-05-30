@@ -143,6 +143,12 @@ type Agent struct {
 	compactor       Compactor
 	checkpointer    Checkpointer
 
+	// Attach-extras snapshot funcs (set via WithAttachMemoryProvider
+	// etc.). See the corresponding fields on `options` for docs.
+	attachMemoryFn func() []attach.MemorySource
+	attachSkillsFn func() []attach.SkillInfo
+	attachMCPFn    func() attach.MCPInfo
+
 	// mu guards cancelInFlight + compactionPending + checkpoint
 	// flags + subtask counters. Held only across short store-and-
 	// clear operations; never across an LLM call.
@@ -198,6 +204,15 @@ type options struct {
 	compactor       Compactor
 	checkpointer    Checkpointer
 	postConstruct   func(*Agent)
+
+	// Attach-extras snapshot funcs — set via WithAttachMemoryProvider /
+	// WithAttachSkillsProvider / WithAttachMCPProvider. Each returns
+	// the current state at call time so the attach handlers see fresh
+	// data after, e.g., a /reload. nil funcs make the corresponding
+	// AttachX method return an empty value (handler 200s with empty).
+	attachMemoryFn func() []attach.MemorySource
+	attachSkillsFn func() []attach.SkillInfo
+	attachMCPFn    func() attach.MCPInfo
 }
 
 func defaultOptions() options {
@@ -550,6 +565,9 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		attachRegistrar: o.attachRegistrar,
 		tracker:         o.tracker,
 		compactor:       o.compactor,
+		attachMemoryFn:  o.attachMemoryFn,
+		attachSkillsFn:  o.attachSkillsFn,
+		attachMCPFn:     o.attachMCPFn,
 		checkpointer:    o.checkpointer,
 	}
 	if a.bgMgr != nil {
@@ -982,6 +1000,54 @@ func (a *Agent) AttachAddDeny(patterns []string) error {
 		return nil
 	}
 	return a.gate.AddDenyPatterns(patterns)
+}
+
+// WithAttachMemoryProvider wires a snapshot func that returns the
+// agent's loaded instruction sources for the remote-attach
+// /sessions/<sid>/memory endpoint (backs the remote TUI's /memory
+// slash). The caller usually projects an `instruction.Loaded`'s
+// Sources list into []attach.MemorySource; nil = endpoint returns
+// empty.
+func WithAttachMemoryProvider(fn func() []attach.MemorySource) Option {
+	return func(o *options) { o.attachMemoryFn = fn }
+}
+
+// WithAttachSkillsProvider wires a snapshot func for
+// /sessions/<sid>/skills (backs /skills).
+func WithAttachSkillsProvider(fn func() []attach.SkillInfo) Option {
+	return func(o *options) { o.attachSkillsFn = fn }
+}
+
+// WithAttachMCPProvider wires a snapshot func for
+// /sessions/<sid>/mcp (backs /mcp).
+func WithAttachMCPProvider(fn func() attach.MCPInfo) Option {
+	return func(o *options) { o.attachMCPFn = fn }
+}
+
+// AttachMemory implements attach.MemoryProvider. Returns nil when
+// no provider was wired — the handler emits 200 with an empty
+// `{"sources": []}`.
+func (a *Agent) AttachMemory() []attach.MemorySource {
+	if a == nil || a.attachMemoryFn == nil {
+		return nil
+	}
+	return a.attachMemoryFn()
+}
+
+// AttachSkills implements attach.SkillsProvider.
+func (a *Agent) AttachSkills() []attach.SkillInfo {
+	if a == nil || a.attachSkillsFn == nil {
+		return nil
+	}
+	return a.attachSkillsFn()
+}
+
+// AttachMCP implements attach.MCPProvider.
+func (a *Agent) AttachMCP() attach.MCPInfo {
+	if a == nil || a.attachMCPFn == nil {
+		return attach.MCPInfo{}
+	}
+	return a.attachMCPFn()
 }
 
 // AttachCompact implements attach.CompactSlashProvider. Wraps

@@ -890,6 +890,61 @@ func (a *Agent) AttachStatus() attach.StatusInfo {
 	}
 }
 
+// AttachUsage implements attach.UsageProvider. Returns the agent's
+// usage tracker totals plus a per-model breakdown when more than one
+// model has been used in this session (typical pattern: parent on a
+// frontier model, subtasks on a cheap flash-tier model via
+// --agentic-small-model). Returns a zero UsageInfo if no usage
+// tracker was wired (WithUsageTracker).
+func (a *Agent) AttachUsage() attach.UsageInfo {
+	if a == nil || a.tracker == nil {
+		return attach.UsageInfo{}
+	}
+	out := attach.UsageInfo{Overall: usageTotalsToAttach(a.tracker.Totals())}
+	byModel := a.tracker.TotalsByModel()
+	if len(byModel) > 1 {
+		out.PerModel = make(map[string]attach.UsageTotals, len(byModel))
+		for name, t := range byModel {
+			out.PerModel[name] = usageTotalsToAttach(t)
+		}
+	}
+	return out
+}
+
+// AttachContext implements attach.ContextProvider. Projects the
+// agent's ContextStats (compaction / checkpoint / subtask shape) into
+// the attach wire format. Same cost as ContextStats (one
+// session.Service.Get() + O(events) scan) — operator-driven,
+// infrequent.
+func (a *Agent) AttachContext() attach.ContextInfo {
+	if a == nil {
+		return attach.ContextInfo{}
+	}
+	s := a.ContextStats()
+	return attach.ContextInfo{
+		Compactions:          s.CompactionCount,
+		Checkpoints:          s.CheckpointCount,
+		LastTaskNote:         s.LastCheckpointNote,
+		TotalCharsSummarized: s.TotalSummaryChars,
+		SubtaskTurns:         s.SubtaskCount,
+		SubtaskInputTokens:   int64(s.SubtaskInputTokens),
+		SubtaskOutputTokens:  int64(s.SubtaskOutputTokens),
+		SubtaskCostUSD:       s.SubtaskCostUSD,
+	}
+}
+
+// usageTotalsToAttach projects usage.Totals into attach.UsageTotals.
+// Tokens widen from int to int64 since the wire format reserves the
+// larger range for forward compatibility.
+func usageTotalsToAttach(t usage.Totals) attach.UsageTotals {
+	return attach.UsageTotals{
+		InputTokens:  int64(t.InputTokens),
+		OutputTokens: int64(t.OutputTokens),
+		Turns:        t.Turns,
+		CostUSD:      t.CostUSD,
+	}
+}
+
 // Interrupt cancels the in-flight turn (if any) by invoking the
 // stored cancel func. Returns true if there was something to cancel
 // (a turn was in flight when called), false if the agent was idle

@@ -76,6 +76,10 @@ func (h *handlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /sessions/{sid}/tools", h.toolsShortcut)
 	mux.HandleFunc("GET /sessions/{sid}/agents", h.agentsShortcut)
 	mux.HandleFunc("GET /sessions/{sid}/status", h.statusShortcut)
+
+	// Operator-state read endpoints (usage / context / memory /
+	// skills / mcp / pricing); see handlers_operator.go.
+	h.registerOperatorState(mux)
 }
 
 // sessionDescriptor is one row in the GET /sessions response.

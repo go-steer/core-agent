@@ -945,6 +945,43 @@ func usageTotalsToAttach(t usage.Totals) attach.UsageTotals {
 	}
 }
 
+// AttachPerms implements attach.PermsProvider. Returns the gate's
+// current Snapshot (mode + allow + deny pattern lists) projected into
+// the attach wire format. Returns zero PermsInfo if no gate was wired
+// via WithGate.
+func (a *Agent) AttachPerms() attach.PermsInfo {
+	if a == nil || a.gate == nil {
+		return attach.PermsInfo{}
+	}
+	s := a.gate.Snapshot()
+	return attach.PermsInfo{
+		Mode:  string(s.Mode),
+		Allow: s.Allow,
+		Deny:  s.Deny,
+	}
+}
+
+// AttachAddAllow implements attach.PermsController. Delegates to
+// permissions.Gate.AddAllowPatterns. Returns nil if no gate was
+// wired (no-op rather than error — operators shouldn't see an error
+// for an absent gate). Surfaces validation errors from the gate so
+// the operator sees malformed-pattern feedback.
+func (a *Agent) AttachAddAllow(patterns []string) error {
+	if a == nil || a.gate == nil {
+		return nil
+	}
+	return a.gate.AddAllowPatterns(patterns)
+}
+
+// AttachAddDeny implements attach.PermsController. Delegates to
+// permissions.Gate.AddDenyPatterns.
+func (a *Agent) AttachAddDeny(patterns []string) error {
+	if a == nil || a.gate == nil {
+		return nil
+	}
+	return a.gate.AddDenyPatterns(patterns)
+}
+
 // Interrupt cancels the in-flight turn (if any) by invoking the
 // stored cancel func. Returns true if there was something to cancel
 // (a turn was in flight when called), false if the agent was idle

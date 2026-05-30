@@ -242,6 +242,63 @@ func (c *Client) Pricing(ctx context.Context, sessionPath string) (attach.Pricin
 	return out, nil
 }
 
+// Perms calls GET <base>/sessions/<sid>/perms. Backs the remote
+// TUI's /permissions slash. Returns zero PermsInfo on 501.
+func (c *Client) Perms(ctx context.Context, sessionPath string) (attach.PermsInfo, error) {
+	var out attach.PermsInfo
+	if err := c.doJSON(ctx, http.MethodGet, sessionPath+"/perms", nil, &out); err != nil {
+		return attach.PermsInfo{}, err
+	}
+	return out, nil
+}
+
+// AllowPatterns calls POST <base>/sessions/<sid>/perms/allow with the
+// given patterns. Backs the remote TUI's /allow slash. Returns nil
+// on success (204), an error otherwise — including 501 when the
+// agent doesn't implement PermsController and 400 when the gate
+// rejects a pattern.
+func (c *Client) AllowPatterns(ctx context.Context, sessionPath string, patterns []string) error {
+	return c.doJSON(ctx, http.MethodPost, sessionPath+"/perms/allow",
+		attach.PatternsRequest{Patterns: patterns}, nil)
+}
+
+// DenyPatterns calls POST <base>/sessions/<sid>/perms/deny. Backs
+// the remote TUI's /deny slash.
+func (c *Client) DenyPatterns(ctx context.Context, sessionPath string, patterns []string) error {
+	return c.doJSON(ctx, http.MethodPost, sessionPath+"/perms/deny",
+		attach.PatternsRequest{Patterns: patterns}, nil)
+}
+
+// RefreshPricing calls POST <base>/sessions/<sid>/pricing/refresh.
+// Backs the remote TUI's /pricing refresh subcommand. Returns the
+// outcome (whether the LiteLLM fetch actually pulled new data and
+// the post-refresh model count) so the client can update its display.
+func (c *Client) RefreshPricing(ctx context.Context, sessionPath string) (attach.PricingRefreshResponse, error) {
+	var out attach.PricingRefreshResponse
+	if err := c.doJSON(ctx, http.MethodPost, sessionPath+"/pricing/refresh", struct{}{}, &out); err != nil {
+		return attach.PricingRefreshResponse{}, err
+	}
+	return out, nil
+}
+
+// SetManualPricing calls POST <base>/sessions/<sid>/pricing/set.
+// Backs the remote TUI's /pricing set subcommand.
+func (c *Client) SetManualPricing(ctx context.Context, sessionPath string, req attach.PricingSetRequest) error {
+	return c.doJSON(ctx, http.MethodPost, sessionPath+"/pricing/set", req, nil)
+}
+
+// Reload calls POST <base>/sessions/<sid>/reload. Backs the remote
+// TUI's /reload slash. Returns the per-surface success flags +
+// any errors so the operator sees which parts (memory / skills /
+// mcp) succeeded and which failed.
+func (c *Client) Reload(ctx context.Context, sessionPath string) (attach.ReloadResponse, error) {
+	var out attach.ReloadResponse
+	if err := c.doJSON(ctx, http.MethodPost, sessionPath+"/reload", struct{}{}, &out); err != nil {
+		return attach.ReloadResponse{}, err
+	}
+	return out, nil
+}
+
 // ---- POSTs (/inject, /wake) ----
 
 // Inject calls POST <base>/sessions/<sid>/inject with the given message.

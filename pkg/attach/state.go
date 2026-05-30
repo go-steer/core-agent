@@ -14,7 +14,21 @@
 
 package attach
 
-import "time"
+import (
+	"context"
+	"errors"
+	"time"
+)
+
+// ErrCapabilityNotRegistered is returned by mutation-capability
+// methods on OperatorView when the corresponding func field is nil.
+// Handlers check for this with errors.Is and convert to HTTP 501 so
+// operators see "capability not registered" instead of a stack trace.
+//
+// Reads use the empty-result convention instead (200 with zero data
+// when the func is nil) — operators who hit a POST need to know if it
+// took effect, while readers can accept "nothing here" silently.
+var ErrCapabilityNotRegistered = errors.New("attach: capability not registered on this OperatorView")
 
 // Tool source classifications surfaced via GET /sessions/.../tools.
 // Bare strings (not a typed enum) so JSON clients downstream — the
@@ -268,6 +282,12 @@ type OperatorView struct {
 	Skills  func() []SkillInfo
 	MCP     func() MCPInfo
 	Pricing func() PricingInfo
+
+	// PR A2 (mutation endpoints) func fields. nil means the
+	// corresponding POST returns 501 (capability not registered).
+	RefreshPricing func(ctx context.Context) (PricingRefreshResponse, error)
+	SetPricing     func(req PricingSetRequest) error
+	Reload         func(ctx context.Context) ReloadResponse
 }
 
 // AttachMemory satisfies MemoryProvider when Memory is non-nil.
@@ -303,3 +323,131 @@ func (o *OperatorView) AttachPricing() PricingInfo {
 	}
 	return o.Pricing()
 }
+
+// AttachRefreshPricing satisfies PricingController. Returns
+// ErrCapabilityNotRegistered when RefreshPricing is nil so the
+// handler emits 501.
+func (o *OperatorView) AttachRefreshPricing(ctx context.Context) (PricingRefreshResponse, error) {
+	if o.RefreshPricing == nil {
+		return PricingRefreshResponse{}, ErrCapabilityNotRegistered
+	}
+	return o.RefreshPricing(ctx)
+}
+
+// AttachSetManualPricing satisfies PricingController.
+func (o *OperatorView) AttachSetManualPricing(req PricingSetRequest) error {
+	if o.SetPricing == nil {
+		return ErrCapabilityNotRegistered
+	}
+	return o.SetPricing(req)
+}
+
+// AttachReload satisfies Reloader. Returns a ReloadResponse with
+// Errors populated by the sentinel string when Reload is nil so the
+// handler emits 501.
+func (o *OperatorView) AttachReload(ctx context.Context) ReloadResponse {
+	if o.Reload == nil {
+		return ReloadResponse{Errors: []string{ErrCapabilityNotRegistered.Error()}}
+	}
+	return o.Reload(ctx)
+}
+
+// PermsInfo is the response shape of GET /sessions/.../perms — backs
+// the remote TUI's /permissions slash. Mirrors permissions.Snapshot
+// with json tags + a stable wire shape.
+type PermsInfo struct {
+	Mode  string   `json:"mode"`
+	Allow []string `json:"allow,omitempty"`
+	Deny  []string `json:"deny,omitempty"`
+}
+
+// PatternsRequest is the POST body for /perms/allow + /perms/deny.
+// Lets the operator add one or more patterns in a single call.
+type PatternsRequest struct {
+	Patterns []string `json:"patterns"`
+}
+
+// PricingSetRequest is the POST body for /pricing/set.
+type PricingSetRequest struct {
+	Model            string  `json:"model"`
+	InputUSDPerMTok  float64 `json:"input_usd_per_mtok"`
+	OutputUSDPerMTok float64 `json:"output_usd_per_mtok"`
+}
+
+// PricingRefreshResponse is the response shape of POST
+// /pricing/refresh — reports whether the upstream fetch produced new
+// data, the model count post-refresh, and the refreshed-at timestamp
+// so the client can update its display.
+type PricingRefreshResponse struct {
+	Updated     bool      `json:"updated"`
+	KnownModels int       `json:"known_models"`
+	LastRefresh time.Time `json:"last_refresh"`
+	Detail      string    `json:"detail,omitempty"` // human-readable note when Updated=false
+}
+
+// ReloadResponse is the response shape of POST /reload — reports
+// per-surface success so the operator sees which parts (memory /
+// skills / mcp) succeeded and which failed without parsing logs.
+type ReloadResponse struct {
+	Memory bool     `json:"memory"`
+	Skills bool     `json:"skills"`
+	MCP    bool     `json:"mcp"`
+	Errors []string `json:"errors,omitempty"`
+}
+
+// PermsProvider is the optional capability for GET /sessions/.../perms.
+type PermsProvider interface {
+	AttachPerms() PermsInfo
+}
+
+// PermsController is the optional capability for POST
+// /sessions/.../perms/allow + /perms/deny. Mutates the gate's
+// pattern list; the new patterns take effect for future tool calls
+// without restarting the agent. Each method returns an error so the
+// gate's own pattern-validation errors surface to the operator.
+type PermsController interface {
+	AttachAddAllow(patterns []string) error
+	AttachAddDeny(patterns []string) error
+}
+
+// PricingController is the optional capability for POST
+// /sessions/.../pricing/refresh + /pricing/set. Implementations
+// typically delegate to the binary's pricing layer (internal/pricing
+// in cmd/core-agent) rather than reimplementing it.
+type PricingController interface {
+	AttachRefreshPricing(ctx context.Context) (PricingRefreshResponse, error)
+	AttachSetManualPricing(req PricingSetRequest) error
+}
+
+// Reloader is the optional capability for POST /sessions/.../reload.
+// Re-walks the agent's project dependencies (memory / skills / MCP)
+// and reports per-surface success. The implementation decides what
+// "reload" means — e.g., re-load AGENTS.md, reload skills, restart
+// MCP servers. Hot-swap semantics are the binary's concern.
+type Reloader interface {
+	AttachReload(ctx context.Context) ReloadResponse
+}
+
+// OperatorView additions for PR A2 (mutation endpoints): three
+// func fields surface caller-held implementations of the pricing /
+// reload capabilities. PermsController is implemented directly on
+// *agent.Agent (the gate is held by the agent), so OperatorView
+// doesn't need a Perms field — embedded Registrant carries it.
+//
+// Set these only for the binary-specific operations you want
+// exposed. nil means the corresponding POST returns 501 (capability
+// not registered) — different from the read endpoints' "200 with
+// empty data" convention because operators who hit a POST expecting
+// it to take effect must know if it didn't.
+//
+// Wire-up example:
+//
+//	view := &attach.OperatorView{
+//	    Registrant:     ag,
+//	    RefreshPricing: func(ctx context.Context) (attach.PricingRefreshResponse, error) {
+//	        outcome, err := pricing.Refresh(ctx, coreHome, refreshOpts)
+//	        ...
+//	    },
+//	    SetPricing: func(req attach.PricingSetRequest) error { ... },
+//	    Reload:     func(ctx context.Context) attach.ReloadResponse { ... },
+//	}

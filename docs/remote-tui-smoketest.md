@@ -146,9 +146,9 @@ branch.
 - [x] Typing a seed prompt and pressing Enter submits it; the
       model's response streams back in real time (chunk-by-chunk,
       not a single final blob).
-- [ ] The status header shows the model name and "idle" → "running"
+- [X] The status header shows the model name and "idle" → "running"
       transitions during a turn.
-- [ ] Ctrl+C cleanly exits without leaving the listener (terminal
+- [X] Ctrl+C cleanly exits without leaving the listener (terminal
       1) in a bad state.
 
 ### Operator-state slashes (PR A1)
@@ -276,6 +276,34 @@ branch.
   Same HTTP-driven Prompter infra unblocks `ask_user` round-trips
   (PR A3's deferred `/elicit/respond`). Both share the pending-
   request map and the SSE-push delivery shape.
+
+- **Observer mode (Pattern B) isn't supported yet** (tracked as
+  PR E — coretui LiveAgent capability, v2.2 target). v2.1's
+  remote TUI is shaped for Pattern A: the operator drives turns
+  one inject at a time. If the remote agent is running
+  autonomously (`agent.RunAutonomous`, scheduled background
+  subagents, MCP-triggered activity, other clients' injects),
+  the operator won't see those events in the chat scrollback —
+  `coretui.Agent.Run`'s per-turn iterator filters them out by
+  design.
+
+  **Workarounds for observing autonomous workers in v2.1:**
+  - `core-agent attach http://host:7777/sessions/<sid>` —
+    line-mode CLI live-tail (no rich UI but shows every event)
+  - Direct sqlite queries against the session DB
+  - On-disk eventlog replay tools if you've shipped any
+
+  Design doc for the fix: `docs/remote-tui-observer-mode.md`.
+  Targets v2.2 because it requires an upstream change to
+  `go-steer/core-tui` to add a `LiveAgent` capability interface
+  next to the existing `Agent` (per-turn) interface.
+
+- **Reattach drops prior history** (related to PR E). On
+  reconnect the chat scrollback starts empty even though the
+  session has history in the eventlog. Required for clean
+  per-turn correlation in v2.1's iterator model; LiveAgent
+  (PR E) naturally fixes this since the per-turn filter
+  disappears.
 
 ## When to update this doc
 

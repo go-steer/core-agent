@@ -16,12 +16,11 @@
 
 // Slim build (`go build -tags no_tui`) — the in-process bubble-tea
 // TUI is excluded entirely so binary size drops by ~5 MB (bubble-tea
-// + glamour + lipgloss + the lifted internal/tui tree). Use for
-// K8s pods + CI runs + any deployment where the TUI is dead weight
-// and the agent only runs headless (-p) or in attach-mode listen
-// for remote clients.
+// + glamour + lipgloss + core-tui). Use for K8s pods + CI runs + any
+// deployment where the TUI is dead weight and the agent only runs
+// headless (-p) or in attach-mode listen for remote clients.
 //
-// Runtime behavior: launchTUI always returns didRun=false so the
+// Runtime behavior: launchTUIv2 always returns didRun=false so the
 // caller falls through to the REPL fallback. Operators with a TTY
 // who actually wanted a TUI get the line-mode REPL (no harm — the
 // REPL still works for everything except the rich UI). A one-line
@@ -40,27 +39,19 @@ import (
 // makeMCPElicitor returns nil in the slim build — there's no TUI
 // to attach to, so MCP elicitation requests fail with the standard
 // "no elicitor" decline (the SDK surfaces this as a server-side
-// cancel). Matches the pre-PR-1 behavior for headless deployments.
+// cancel).
 func makeMCPElicitor() mcp.ElicitorFn { return nil }
 
-// launchTUI is a no-op in the slim build: prints one stderr line
+// launchTUIv2 is a no-op in the slim build: prints one stderr line
 // explaining why no TUI launched, returns didRun=false so main.go
 // falls through to the REPL fallback exactly as if --no-tui had
 // been passed at runtime.
 //
-// The didRun=false → REPL fallback path is the intentional design:
-// a slim binary should be usable interactively for emergency
-// debugging even though it lacks the rich UI.
-func launchTUI(_ context.Context, _ tuiDeps) (didRun bool, exitCode int, err error) {
+// The didRun=false → REPL fallback is intentional: a slim binary
+// should still be usable interactively for emergency debugging
+// even though it lacks the rich UI.
+func launchTUIv2(_ context.Context, _ tuiDeps) (didRun bool, exitCode int, err error) {
 	fmt.Fprintln(os.Stderr,
 		"core-agent: built with -tags no_tui; the bubble-tea TUI is excluded from this binary. Using the line-mode REPL. Install the default-tag binary for the full TUI.")
 	return false, 0, nil
-}
-
-// launchTUIv2 mirrors launchTUI's no-op behavior in the slim build.
-// Same stderr note, same fall-through to REPL — the env-var picker
-// in main.go references both symbols at compile time so they both
-// need a slim-build counterpart.
-func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, err error) {
-	return launchTUI(ctx, deps)
 }

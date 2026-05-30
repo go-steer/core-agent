@@ -687,18 +687,11 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 	// TUI package. Defaults follow Claude Code: bare `core-agent` in
 	// a terminal lands in the TUI.
 	if !noTUI && term.IsTerminal(int(os.Stdin.Fd())) {
-		// v2.0 flip: launchTUIv2 (core-tui-backed) is the default.
-		// CORE_AGENT_TUI=internal switches back to the legacy
-		// internal/tui code path as a one-release escape hatch for
-		// operators who hit a regression and need to fall back
-		// while we investigate. Slated for removal in v2.1 once
-		// core-tui has soaked in production. See
-		// docs/core-tui-adapter-design.md for the migration story.
-		launcher := launchTUIv2
-		if os.Getenv("CORE_AGENT_TUI") == "internal" {
-			launcher = launchTUI
-		}
-		didRun, code, err := launcher(ctx, tuiDeps{
+		// core-tui is the only TUI codepath since v2.1; the
+		// CORE_AGENT_TUI=internal escape hatch and the lifted
+		// internal/tui/ tree are gone. Slim build (no_tui) still
+		// stubs launchTUIv2 to no-op + REPL fall-through.
+		didRun, code, err := launchTUIv2(ctx, tuiDeps{
 			Cfg:          cfg,
 			Model:        m,
 			AgentOpts:    opts,

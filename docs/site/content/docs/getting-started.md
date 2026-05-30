@@ -97,8 +97,6 @@ The TUI ships a rich slash-command surface — try `/help` to enumerate the cata
 
 **Headless and slim-build fallbacks:** `core-agent --no-tui` (or non-TTY stdin like a pipe / CI run) falls through to a line-mode REPL with `/exit`, `/quit`, EOF (Ctrl-D). The slim build (`go build -tags no_tui`, ~5 MB smaller, no Bubble Tea deps) excludes the TUI entirely and always uses the REPL.
 
-**Legacy TUI escape hatch:** `CORE_AGENT_TUI=internal core-agent` selects the pre-v2 `internal/tui` code path. Useful if you hit a regression in the new core-tui-backed default; scheduled for removal in v2.1.
-
 ---
 
 ## Layer in a project — the `.agents/` directory

@@ -30,6 +30,7 @@ import (
 	"iter"
 	"strings"
 	"sync"
+	"time"
 
 	"google.golang.org/adk/session"
 	"google.golang.org/genai"
@@ -51,8 +52,19 @@ type Adapter struct {
 	client      *attachclient.Client
 	sessionPath string // e.g., "/sessions/core-agent/abc123" or "/sessions/abc123"
 
+	// connectedAt is set at construction time and used to filter out
+	// the broadcaster's historical replay (since=0 streams every
+	// frame from the start of the log). Events with Timestamp older
+	// than connectedAt - replayGrace are discarded; the operator
+	// sees an empty scrollback on attach + only NEW events from
+	// that moment on. History remains queryable via sqlite or
+	// `core-agent attach`; an explicit "show history" mode can come
+	// later as a coretui option.
+	connectedAt time.Time
+
 	// lastSeq tracks the eventlog cursor across Run() invocations so
-	// reconnects after Ctrl+C don't replay history. Protected by mu.
+	// re-issuing Run() inside one Adapter doesn't re-yield earlier
+	// turns' events. Protected by mu.
 	mu      sync.Mutex
 	lastSeq int64
 
@@ -62,13 +74,26 @@ type Adapter struct {
 	usage usageCache
 }
 
+// replayGrace is the slack we allow when discarding historical
+// events by timestamp. Frames whose Timestamp is older than
+// (connectedAt - replayGrace) are considered replay; newer ones
+// pass through. The grace covers clock skew between server +
+// client and any events that happened in the last second before
+// connect (rare but plausible — a model turn was finishing as we
+// attached).
+const replayGrace = 2 * time.Second
+
 // New returns an Adapter that drives sessionPath against client.
 // sessionPath is the attach path prefix the operator picked at
 // connect time — either /sessions/<sid> (shortcut form) or
 // /sessions/<app>/<sid> (qualified). The adapter passes it verbatim
 // to every attachclient call.
 func New(client *attachclient.Client, sessionPath string) *Adapter {
-	return &Adapter{client: client, sessionPath: sessionPath}
+	return &Adapter{
+		client:      client,
+		sessionPath: sessionPath,
+		connectedAt: time.Now(),
+	}
 }
 
 // Run satisfies coretui.Agent. Sends prompt as an inject to the
@@ -121,6 +146,15 @@ func (a *Adapter) Run(ctx context.Context, prompt string) iter.Seq2[coretui.Even
 				a.mu.Unlock()
 
 				if frame.Event == nil {
+					continue
+				}
+				// Drop historical replay: when an Adapter is fresh
+				// the broadcaster streams every prior frame before
+				// switching to live tail. Events older than
+				// connectedAt - replayGrace are NOT for this turn
+				// (they were here when we attached) so they don't
+				// belong in the iterator's per-turn yield.
+				if isReplay(frame.Event.Timestamp, a.connectedAt) {
 					continue
 				}
 				ev := translateEvent(frame.Event)
@@ -341,4 +375,17 @@ func usageFromMetadata(meta map[string]any) (*coretui.Usage, float64, string) {
 // — e.g., the inject's own echo before the model starts speaking.
 func isEmptyEvent(ev coretui.Event) bool {
 	return ev.Text == "" && len(ev.ToolCalls) == 0 && len(ev.ToolResults) == 0 && ev.Usage == nil
+}
+
+// isReplay reports whether an event's timestamp marks it as part of
+// the broadcaster's historical replay rather than a live event for
+// the current Adapter session. Frames stamped before
+// (connectedAt - replayGrace) are replay. A zero ts (never set) is
+// treated as live — we'd rather show a wrongly-attributed event
+// than swallow a real one.
+func isReplay(ts, connectedAt time.Time) bool {
+	if ts.IsZero() {
+		return false
+	}
+	return ts.Before(connectedAt.Add(-replayGrace))
 }

@@ -432,6 +432,34 @@ func TestIsTurnEnd_HeuristicWhenTurnCompleteUnset(t *testing.T) {
 	}
 }
 
+func TestIsReplay(t *testing.T) {
+	t.Parallel()
+	connectedAt := time.Date(2026, 5, 30, 22, 0, 0, 0, time.UTC)
+
+	// Older than connectedAt - replayGrace → replay.
+	old := connectedAt.Add(-1 * time.Hour)
+	if !isReplay(old, connectedAt) {
+		t.Error("hour-old event should be flagged as replay")
+	}
+
+	// Within replayGrace before connect → live (don't lose it).
+	recent := connectedAt.Add(-500 * time.Millisecond)
+	if isReplay(recent, connectedAt) {
+		t.Error("event 500ms before connect should be live, not replay")
+	}
+
+	// Future / same as connect → live.
+	live := connectedAt.Add(100 * time.Millisecond)
+	if isReplay(live, connectedAt) {
+		t.Error("event after connect should be live")
+	}
+
+	// Zero timestamp → live (fail-open to avoid silently swallowing).
+	if isReplay(time.Time{}, connectedAt) {
+		t.Error("zero ts should default to live, not replay")
+	}
+}
+
 func TestParseSubagentSpec(t *testing.T) {
 	t.Parallel()
 	spec, err := parseSubagentSpec("watcher watch deployment myapp")

@@ -254,6 +254,29 @@ branch.
   that includes a server known to elicit (e.g., interactive
   approval flows) — you should see the decline, not a hang.
 
+## Known limitations
+
+- **Per-tool permission prompts don't reach the remote TUI**
+  (tracked as PR D — HTTP-driven Prompter). Without it,
+  `permissions.mode = "ask"` is effectively unusable for a
+  headless attach-driven daemon: the agent's permission gate
+  asks for approval, no operator is at the local stdin to
+  answer, the gate has no HTTP escape hatch, and the tool call
+  fails closed with `ErrNoPrompter`.
+
+  **Operator workaround for now:** pre-grant the tools the
+  daemon will need via `--allow tool.<name>` flags or via
+  `.agents/config.json`'s `permissions.allow` list, and use
+  `permissions.mode = "yolo"` for anything more permissive. The
+  `/perms`, `/allow`, `/deny` slashes (PR A2) work over attach,
+  so an operator attached to a running daemon CAN mutate the
+  gate's pattern list live — they just can't be prompted
+  per-call.
+
+  Same HTTP-driven Prompter infra unblocks `ask_user` round-trips
+  (PR A3's deferred `/elicit/respond`). Both share the pending-
+  request map and the SSE-push delivery shape.
+
 ## When to update this doc
 
 - New attach endpoints land → add a checklist row.

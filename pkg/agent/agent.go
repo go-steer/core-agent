@@ -29,10 +29,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"iter"
 	"reflect"
 	"sync"
+	"time"
 
 	"google.golang.org/genai"
 
@@ -981,6 +983,86 @@ func (a *Agent) AttachAddDeny(patterns []string) error {
 	}
 	return a.gate.AddDenyPatterns(patterns)
 }
+
+// AttachCompact implements attach.CompactSlashProvider. Wraps
+// Agent.Compact and projects the result into the JSON wire format.
+// Errors propagate; the attach handler turns them into 500s.
+func (a *Agent) AttachCompact(ctx context.Context, focus string) (attach.CompactResponse, error) {
+	if a == nil {
+		return attach.CompactResponse{}, nil
+	}
+	res, err := a.Compact(ctx, focus)
+	if err != nil {
+		return attach.CompactResponse{}, err
+	}
+	return attach.CompactResponse{
+		SummaryEventID: res.SummaryEventID,
+		SummaryText:    res.SummaryText,
+		DurationMS:     res.Duration.Milliseconds(),
+		Skipped:        res.Skipped,
+	}, nil
+}
+
+// AttachCheckpoint implements attach.CheckpointSlashProvider. Wraps
+// Agent.Checkpoint.
+func (a *Agent) AttachCheckpoint(ctx context.Context, note string) (attach.CheckpointResponse, error) {
+	if a == nil {
+		return attach.CheckpointResponse{}, nil
+	}
+	res, err := a.Checkpoint(ctx, note)
+	if err != nil {
+		return attach.CheckpointResponse{}, err
+	}
+	return attach.CheckpointResponse{
+		CheckpointEventID: res.CheckpointEventID,
+		SummaryText:       res.SummaryText,
+		TaskNote:          res.TaskNote,
+		DurationMS:        res.Duration.Milliseconds(),
+		Skipped:           res.Skipped,
+	}, nil
+}
+
+// AttachAskSideQuestion implements attach.SideQueryProvider. Wraps
+// Agent.AskSideQuestion (the /btw side-channel that doesn't persist
+// to the event log).
+func (a *Agent) AttachAskSideQuestion(ctx context.Context, question string) (string, error) {
+	if a == nil {
+		return "", nil
+	}
+	return a.AskSideQuestion(ctx, question)
+}
+
+// AttachSpawnSubagent implements attach.SubagentSpawner. Delegates
+// to the wired BackgroundAgentManager. Returns
+// ErrSubagentSpawnerUnavailable when no manager is attached.
+func (a *Agent) AttachSpawnSubagent(ctx context.Context, spec attach.SubagentSpec) (attach.SubagentSpawnResponse, error) {
+	if a == nil || a.bgMgr == nil {
+		return attach.SubagentSpawnResponse{}, ErrSubagentSpawnerUnavailable
+	}
+	handle, err := a.bgMgr.Spawn(ctx, "" /* parentBranch */, BackgroundSpec{
+		Name:         spec.Name,
+		SystemPrompt: spec.SystemPrompt,
+		Goal:         spec.Goal,
+		Tools:        spec.Tools,
+		Extras:       spec.Extras,
+		Budgets: BackgroundBudgets{
+			MaxTurns:     spec.Budgets.MaxTurns,
+			MaxCost:      spec.Budgets.MaxCostUSD,
+			MaxWallclock: time.Duration(spec.Budgets.MaxWallClockS) * time.Second,
+		},
+		Scheduler: spec.Scheduler,
+	})
+	if err != nil {
+		return attach.SubagentSpawnResponse{}, err
+	}
+	return attach.SubagentSpawnResponse{Name: handle.Name, StartedAt: handle.StartedAt}, nil
+}
+
+// ErrSubagentSpawnerUnavailable is returned by AttachSpawnSubagent
+// when the agent wasn't constructed with WithBackgroundManager. The
+// attach handler maps this to HTTP 501 so the operator sees
+// "subagent spawn not registered" instead of a 500.
+var ErrSubagentSpawnerUnavailable = errors.New("agent: subagent spawner unavailable (no BackgroundAgentManager wired)")
 
 // Interrupt cancels the in-flight turn (if any) by invoking the
 // stored cancel func. Returns true if there was something to cancel

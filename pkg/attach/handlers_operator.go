@@ -64,6 +64,21 @@ func (h *handlers) registerOperatorState(mux *http.ServeMux) {
 	mux.HandleFunc("POST /sessions/{sid}/pricing/refresh", h.pricingRefreshShortcut)
 	mux.HandleFunc("POST /sessions/{sid}/pricing/set", h.pricingSetShortcut)
 	mux.HandleFunc("POST /sessions/{sid}/reload", h.reloadShortcut)
+
+	// PR A3 async slash dispatchers. All synchronous on the wire —
+	// the operator stares at silence until the handler returns. The
+	// in-chat preamble row is the remote TUI's responsibility (it
+	// renders the same preamble at dispatch as the in-process TUI's
+	// AsyncSlashProviderWithPreamble path).
+	mux.HandleFunc("POST /sessions/{app}/{sid}/slash/compact", h.slashCompactQualified)
+	mux.HandleFunc("POST /sessions/{app}/{sid}/slash/done", h.slashDoneQualified)
+	mux.HandleFunc("POST /sessions/{app}/{sid}/slash/btw", h.slashBtwQualified)
+	mux.HandleFunc("POST /sessions/{app}/{sid}/slash/subagent", h.slashSubagentQualified)
+
+	mux.HandleFunc("POST /sessions/{sid}/slash/compact", h.slashCompactShortcut)
+	mux.HandleFunc("POST /sessions/{sid}/slash/done", h.slashDoneShortcut)
+	mux.HandleFunc("POST /sessions/{sid}/slash/btw", h.slashBtwShortcut)
+	mux.HandleFunc("POST /sessions/{sid}/slash/subagent", h.slashSubagentShortcut)
 }
 
 func (h *handlers) usageQualified(w http.ResponseWriter, r *http.Request) {

@@ -299,6 +299,56 @@ func (c *Client) Reload(ctx context.Context, sessionPath string) (attach.ReloadR
 	return out, nil
 }
 
+// SlashCompact calls POST <base>/sessions/<sid>/slash/compact.
+// Synchronous: blocks until the compaction summarizer completes
+// (5–30s typical for real model calls). The remote TUI should
+// render the in-chat preamble row at dispatch — this call does NOT
+// emit a preamble itself.
+func (c *Client) SlashCompact(ctx context.Context, sessionPath, focus string) (attach.CompactResponse, error) {
+	var out attach.CompactResponse
+	if err := c.doJSON(ctx, http.MethodPost, sessionPath+"/slash/compact",
+		attach.CompactRequest{Focus: focus}, &out); err != nil {
+		return attach.CompactResponse{}, err
+	}
+	return out, nil
+}
+
+// SlashDone calls POST <base>/sessions/<sid>/slash/done. Synchronous.
+// Backs the remote TUI's /done slash.
+func (c *Client) SlashDone(ctx context.Context, sessionPath, note string) (attach.CheckpointResponse, error) {
+	var out attach.CheckpointResponse
+	if err := c.doJSON(ctx, http.MethodPost, sessionPath+"/slash/done",
+		attach.CheckpointRequest{Note: note}, &out); err != nil {
+		return attach.CheckpointResponse{}, err
+	}
+	return out, nil
+}
+
+// SlashBtw calls POST <base>/sessions/<sid>/slash/btw. Synchronous.
+// Backs the remote TUI's /btw slash. The answer renders as a
+// dismissible overlay (no event-log persistence).
+func (c *Client) SlashBtw(ctx context.Context, sessionPath, question string) (string, error) {
+	var out attach.SideQueryResponse
+	if err := c.doJSON(ctx, http.MethodPost, sessionPath+"/slash/btw",
+		attach.SideQueryRequest{Question: question}, &out); err != nil {
+		return "", err
+	}
+	return out.Answer, nil
+}
+
+// SlashSubagent calls POST <base>/sessions/<sid>/slash/subagent.
+// Backs the remote TUI's /subagent slash. Returns the spawn
+// confirmation (name + started_at); the subagent's events flow
+// through the existing SSE stream under a branch label so the
+// operator sees its turns alongside the parent's.
+func (c *Client) SlashSubagent(ctx context.Context, sessionPath string, spec attach.SubagentSpec) (attach.SubagentSpawnResponse, error) {
+	var out attach.SubagentSpawnResponse
+	if err := c.doJSON(ctx, http.MethodPost, sessionPath+"/slash/subagent", spec, &out); err != nil {
+		return attach.SubagentSpawnResponse{}, err
+	}
+	return out, nil
+}
+
 // ---- POSTs (/inject, /wake) ----
 
 // Inject calls POST <base>/sessions/<sid>/inject with the given message.

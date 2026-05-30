@@ -428,6 +428,104 @@ type Reloader interface {
 	AttachReload(ctx context.Context) ReloadResponse
 }
 
+// CompactRequest is the POST body for /slash/compact. Focus is the
+// optional steer text the operator typed after `/compact <focus>`
+// (e.g. "preserve the test failures"). Empty for a default-focus run.
+type CompactRequest struct {
+	Focus string `json:"focus,omitempty"`
+}
+
+// CompactResponse is the response shape of POST /slash/compact.
+// Mirrors the agent.CompactionResult fields the remote TUI needs to
+// render the post-compaction confirmation row.
+type CompactResponse struct {
+	SummaryEventID string `json:"summary_event_id,omitempty"`
+	SummaryText    string `json:"summary_text,omitempty"`
+	DurationMS     int64  `json:"duration_ms"`
+	Skipped        bool   `json:"skipped,omitempty"`
+}
+
+// CheckpointRequest is the POST body for /slash/done. Note is the
+// optional task-note the operator typed after `/done <note>`. Empty
+// when the operator didn't supply one (the checkpointer can derive
+// a default).
+type CheckpointRequest struct {
+	Note string `json:"note,omitempty"`
+}
+
+// CheckpointResponse is the response shape of POST /slash/done.
+type CheckpointResponse struct {
+	CheckpointEventID string `json:"checkpoint_event_id,omitempty"`
+	SummaryText       string `json:"summary_text,omitempty"`
+	TaskNote          string `json:"task_note,omitempty"`
+	DurationMS        int64  `json:"duration_ms"`
+	Skipped           bool   `json:"skipped,omitempty"`
+}
+
+// SideQueryRequest is the POST body for /slash/btw — the operator's
+// side question. The agent answers using its session history but
+// doesn't persist the round-trip; results render as a dismissible
+// overlay rather than a turn boundary.
+type SideQueryRequest struct {
+	Question string `json:"question"`
+}
+
+// SideQueryResponse carries the agent's answer text.
+type SideQueryResponse struct {
+	Answer string `json:"answer"`
+}
+
+// SubagentSpec is the POST body for /slash/subagent. Mirrors
+// agent.BackgroundSpec in JSON-friendly form.
+type SubagentSpec struct {
+	Name         string         `json:"name"`
+	SystemPrompt string         `json:"system_prompt,omitempty"`
+	Goal         string         `json:"goal"`
+	Tools        []string       `json:"tools,omitempty"`
+	Extras       []string       `json:"extras,omitempty"`
+	Budgets      SubagentBudget `json:"budgets,omitempty"`
+	Scheduler    string         `json:"scheduler,omitempty"`
+}
+
+// SubagentBudget mirrors agent.BackgroundBudgets. Zero values mean
+// "use the manager's default for that field".
+type SubagentBudget struct {
+	MaxTurns      int     `json:"max_turns,omitempty"`
+	MaxCostUSD    float64 `json:"max_cost_usd,omitempty"`
+	MaxWallClockS int     `json:"max_wall_clock_seconds,omitempty"`
+}
+
+// SubagentSpawnResponse confirms the spawn. StartedAt is the
+// manager's record of when the subagent's first turn dispatched.
+type SubagentSpawnResponse struct {
+	Name      string    `json:"name"`
+	StartedAt time.Time `json:"started_at"`
+}
+
+// CompactSlashProvider is the optional capability for
+// POST /sessions/.../slash/compact.
+type CompactSlashProvider interface {
+	AttachCompact(ctx context.Context, focus string) (CompactResponse, error)
+}
+
+// CheckpointSlashProvider is the optional capability for
+// POST /sessions/.../slash/done.
+type CheckpointSlashProvider interface {
+	AttachCheckpoint(ctx context.Context, note string) (CheckpointResponse, error)
+}
+
+// SideQueryProvider is the optional capability for
+// POST /sessions/.../slash/btw.
+type SideQueryProvider interface {
+	AttachAskSideQuestion(ctx context.Context, question string) (string, error)
+}
+
+// SubagentSpawner is the optional capability for
+// POST /sessions/.../slash/subagent.
+type SubagentSpawner interface {
+	AttachSpawnSubagent(ctx context.Context, spec SubagentSpec) (SubagentSpawnResponse, error)
+}
+
 // OperatorView additions for PR A2 (mutation endpoints): three
 // func fields surface caller-held implementations of the pricing /
 // reload capabilities. PermsController is implemented directly on

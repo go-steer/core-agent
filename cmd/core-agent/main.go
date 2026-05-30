@@ -477,9 +477,18 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 				for _, t := range s.ToolInfos {
 					tools = append(tools, attach.MCPToolInfo{Name: t.Name, Description: t.Description})
 				}
+				// pkg/mcp uses "ok" / "error" internally; the attach
+				// wire format documents "running" / "starting" /
+				// "failed" / "stopped". Map them here so the remote
+				// TUI's coretui projection (Connected = Status ==
+				// "running") works as intended.
+				status := "running"
+				if s.Status == mcp.StatusError {
+					status = "failed"
+				}
 				servers = append(servers, attach.MCPServerInfo{
 					Name:      s.Name,
-					Status:    s.Status,
+					Status:    status,
 					Transport: "", // not surfaced on mcp.Server today
 					Tools:     tools,
 				})

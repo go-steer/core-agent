@@ -197,7 +197,14 @@ func (a *Adapter) SessionPath() string { return a.sessionPath }
 
 // translateEvent projects one session.Event into a coretui.Event.
 // Pulls text + function calls + function responses out of the
-// event's Content.Parts; pulls usage + cost from CustomMetadata.
+// event's Content.Parts; pulls usage from the embedded LLMResponse's
+// UsageMetadata (Gemini-shaped) with a CustomMetadata["usage"]
+// fallback for adapters that route usage through metadata instead.
+//
+// CostUSD and Model are NOT populated per-event for remote — the
+// remote server holds the pricing layer and the model identity;
+// they surface through the UsageTracker (/stats) and StatusReporter
+// (status header) instead of the per-turn footer.
 func translateEvent(ev *session.Event) coretui.Event {
 	out := coretui.Event{Partial: ev.Partial}
 
@@ -220,13 +227,35 @@ func translateEvent(ev *session.Event) coretui.Event {
 		out.Text = sb.String()
 	}
 
-	if usage, cost, model := usageFromMetadata(ev.CustomMetadata); usage != nil {
+	// Prefer the genai UsageMetadata on the embedded LLMResponse —
+	// that's where Gemini-provider events carry per-event token
+	// counts. Fall back to CustomMetadata["usage"] for adapters that
+	// stash usage there (the in-process tracker's pricing layer
+	// projects through this shape).
+	if u := usageFromGenai(ev.UsageMetadata); u != nil {
+		out.Usage = u
+	} else if usage, cost, model := usageFromMetadata(ev.CustomMetadata); usage != nil {
 		out.Usage = usage
 		out.CostUSD = cost
 		out.Model = model
 	}
 
 	return out
+}
+
+// usageFromGenai projects genai's per-event UsageMetadata into a
+// coretui.Usage. Returns nil when the metadata is absent or carries
+// no token counts (which it does for non-final partials).
+func usageFromGenai(meta *genai.GenerateContentResponseUsageMetadata) *coretui.Usage {
+	if meta == nil {
+		return nil
+	}
+	in := int(meta.PromptTokenCount)
+	out := int(meta.CandidatesTokenCount)
+	if in == 0 && out == 0 {
+		return nil
+	}
+	return &coretui.Usage{InputTokens: in, OutputTokens: out}
 }
 
 // toolCallFromPart projects a genai function-call into a

@@ -42,7 +42,8 @@ no `.agents/` is required for the smoke. If you want to test
 project-local config too, drop a minimal `.agents/config.json`
 in this scratch dir.
 
-Then start the agent:
+Then start the agent as an attach-only daemon (stays alive until
+SIGTERM / SIGINT):
 
 ```bash
 core-agent \
@@ -51,7 +52,7 @@ core-agent \
   --session-db-path=/tmp/coreagent-smoketest.db \
   --agentic-tools \
   --agentic-small-model=gemini-2.5-flash \
-  -p "ready"
+  --no-repl
 ```
 
 Notes:
@@ -62,14 +63,18 @@ Notes:
   `~/.core-agent/sessions.db` so the smoke uses a throwaway file.
 - `--agentic-tools` lets the smoke exercise `/context`'s subtask
   reporting; drop if you don't need it.
-- `-p "ready"` runs a single bootstrap prompt so the session is
-  registered and there's some history to view. Replace with the
-  REPL (drop `-p`) if you want to type the bootstrap prompt
-  yourself.
+- `--no-repl` runs the agent as a daemon — no stdin REPL, no
+  one-shot exit. The agent registers its session and idles
+  waiting for attach traffic. Ctrl-C / SIGTERM ends it.
 
-After the prompt completes, the binary stays alive listening on
-:7777. Note the session ID from stderr (`registered session
-core-agent/<sid>`).
+Watch stderr for the registration line — note the session ID:
+
+```
+registered session core-agent/<sid>
+```
+
+You'll need `<sid>` for the direct-jump form in terminal 2 (the
+picker form discovers it automatically).
 
 ## Attach (terminal 2)
 
@@ -82,8 +87,12 @@ core-agent-tui http://localhost:7777
 ```
 
 The picker should render the registered session (`core-agent/<sid>`).
-Press Enter to attach. The chat view should appear with the
-bootstrap prompt + agent's response already in scrollback.
+Press Enter to attach. The chat view should appear empty (no
+prior history — the agent started fresh).
+
+Type a first prompt now (e.g. "say hello and list your tools") to
+seed the session with some history; many checklist items below
+assume non-zero usage / context state.
 
 Direct-jump form (skip picker):
 
@@ -109,11 +118,11 @@ branch.
 
 - [ ] Picker displays the registered session with the right
       `app/sid` label.
-- [ ] After picker → chat, the bootstrap prompt and the agent's
-      response both render in the scrollback.
-- [ ] Typing a prompt and pressing Enter submits it; the model's
-      response streams back in real time (chunk-by-chunk, not a
-      single final blob).
+- [ ] After picker → chat, the scrollback is empty (no prior
+      history because the daemon started fresh).
+- [ ] Typing a seed prompt and pressing Enter submits it; the
+      model's response streams back in real time (chunk-by-chunk,
+      not a single final blob).
 - [ ] The status header shows the model name and "idle" → "running"
       transitions during a turn.
 - [ ] Ctrl+C cleanly exits without leaving the listener (terminal
@@ -122,7 +131,7 @@ branch.
 ### Operator-state slashes (PR A1)
 
 - [ ] `/stats` shows the session's cumulative input + output
-      tokens + cost; non-zero after the bootstrap turn.
+      tokens + cost; non-zero after the seed turn.
 - [ ] `/context` shows compaction / checkpoint / subtask counts;
       non-zero subtask turn count if `--agentic-tools` is on and
       you've issued a prompt that triggers an `agentic_*` wrapper.

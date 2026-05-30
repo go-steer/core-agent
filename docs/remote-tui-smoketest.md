@@ -28,6 +28,22 @@ regressions that unit tests (which use a fake SSE server) cannot.
 
 ## Run the agent (terminal 1)
 
+Run from a dedicated scratch directory so the agent doesn't pick
+up an unrelated project's `.agents/config.json` via the upward
+walk:
+
+```bash
+mkdir -p /tmp/coreagent-smoke && cd /tmp/coreagent-smoke
+```
+
+Provider config comes from the env var you exported in
+"Prerequisites" (`GEMINI_API_KEY` / `ANTHROPIC_API_KEY` / etc.) —
+no `.agents/` is required for the smoke. If you want to test
+project-local config too, drop a minimal `.agents/config.json`
+in this scratch dir.
+
+Then start the agent:
+
 ```bash
 core-agent \
   --attach-listen=:7777 \
@@ -54,6 +70,10 @@ After the prompt completes, the binary stays alive listening on
 core-agent/<sid>`).
 
 ## Attach (terminal 2)
+
+`core-agent-tui` doesn't walk for `.agents/` — cwd doesn't matter.
+Run from anywhere convenient (your home dir, the scratch from
+terminal 1, etc.):
 
 ```bash
 core-agent-tui http://localhost:7777

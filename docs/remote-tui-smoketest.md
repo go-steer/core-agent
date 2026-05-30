@@ -12,10 +12,15 @@ regressions that unit tests (which use a fake SSE server) cannot.
 
 ## Prerequisites
 
-- A working `core-agent` binary (build from the PR C tip:
-  `go install ./cmd/core-agent`).
-- A working `core-agent-tui` binary (build from the PR B-cmd tip:
-  `go install ./cmd/core-agent-tui`).
+- The PR C branch checked out (`feat/retire-internal-tui`). PR C
+  is stacked on PR B-cmd which is stacked on the merged #78–#81
+  chain, so this single tip carries every change in the train.
+- Build both binaries from that one checkout:
+
+  ```bash
+  go install ./cmd/core-agent ./cmd/core-agent-tui
+  ```
+
 - A model provider credential — Gemini API key, Vertex creds, or
   Anthropic key. Set the relevant env var (`GEMINI_API_KEY`,
   `ANTHROPIC_API_KEY`, etc.).

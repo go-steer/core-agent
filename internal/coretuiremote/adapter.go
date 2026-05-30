@@ -128,7 +128,7 @@ func (a *Adapter) Run(ctx context.Context, prompt string) iter.Seq2[coretui.Even
 				// echo frames for the inject itself or other no-op
 				// events that don't carry text / tool calls / usage.
 				if isEmptyEvent(ev) {
-					if frame.Event.TurnComplete {
+					if isTurnEnd(frame.Event, ev) {
 						return
 					}
 					continue
@@ -138,12 +138,39 @@ func (a *Adapter) Run(ctx context.Context, prompt string) iter.Seq2[coretui.Even
 					// or programmatic break).
 					return
 				}
-				if frame.Event.TurnComplete {
+				if isTurnEnd(frame.Event, ev) {
 					return
 				}
 			}
 		}
 	}
+}
+
+// isTurnEnd decides whether the just-yielded event should close the
+// per-turn iterator. Two signals, in order of preference:
+//
+//  1. session.Event.TurnComplete is the ADK-native end marker — used
+//     when the eventlog projection preserves it.
+//  2. Heuristic fallback: a final (Partial=false) model-authored event
+//     that's neither a tool call nor a tool result. That's the
+//     "model spoke and is done" pattern; subsequent injects start a
+//     fresh Run() in coretui so we don't need to keep the iterator
+//     open. Necessary because core-agent's eventlog projection
+//     currently drops TurnComplete on stored events (the flag lives
+//     on model.LLMResponse but isn't persisted as a session.Event
+//     column the broadcaster re-emits with value=true).
+func isTurnEnd(raw *session.Event, ev coretui.Event) bool {
+	if raw != nil && raw.TurnComplete {
+		return true
+	}
+	if ev.Partial || len(ev.ToolCalls) > 0 || len(ev.ToolResults) > 0 {
+		return false
+	}
+	if raw == nil || raw.Author == "" || raw.Author == "user" {
+		return false
+	}
+	// Final model event with no in-flight tool round-trip → turn done.
+	return ev.Text != ""
 }
 
 // Inject satisfies coretui.InjectableAgent. Operator-typed messages

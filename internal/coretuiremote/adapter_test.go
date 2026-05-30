@@ -361,6 +361,77 @@ func TestParsePricingSet(t *testing.T) {
 	}
 }
 
+func TestIsTurnEnd_HeuristicWhenTurnCompleteUnset(t *testing.T) {
+	t.Parallel()
+
+	// Final model event — Author=core_agent, Partial=false, has text,
+	// no tool calls/results, TurnComplete unset (mirrors what
+	// core-agent's eventlog actually stores). Heuristic should fire.
+	final := &session.Event{
+		Author: "core_agent",
+		LLMResponse: model.LLMResponse{
+			Content: &genai.Content{Parts: []*genai.Part{{Text: "done"}}},
+			Partial: false,
+		},
+	}
+	if !isTurnEnd(final, translateEvent(final)) {
+		t.Error("final model event should end turn under heuristic")
+	}
+
+	// Partial model event: still streaming.
+	partial := &session.Event{
+		Author: "core_agent",
+		LLMResponse: model.LLMResponse{
+			Content: &genai.Content{Parts: []*genai.Part{{Text: "still..."}}},
+			Partial: true,
+		},
+	}
+	if isTurnEnd(partial, translateEvent(partial)) {
+		t.Error("partial model event must NOT end turn")
+	}
+
+	// Model event carrying a tool call: turn continues (tool result
+	// + follow-up model speech still coming).
+	toolCall := &session.Event{
+		Author: "core_agent",
+		LLMResponse: model.LLMResponse{
+			Content: &genai.Content{Parts: []*genai.Part{
+				{FunctionCall: &genai.FunctionCall{ID: "fc-1", Name: "bash"}},
+			}},
+			Partial: false,
+		},
+	}
+	if isTurnEnd(toolCall, translateEvent(toolCall)) {
+		t.Error("tool-call event must NOT end turn")
+	}
+
+	// User echo: not an end signal.
+	userEcho := &session.Event{
+		Author: "user",
+		LLMResponse: model.LLMResponse{
+			Content: &genai.Content{Parts: []*genai.Part{{Text: "hello"}}},
+			Partial: false,
+		},
+	}
+	if isTurnEnd(userEcho, translateEvent(userEcho)) {
+		t.Error("user-authored event must NOT end turn")
+	}
+
+	// TurnComplete=true overrides everything — kept as the primary
+	// signal for environments where the eventlog DOES preserve it.
+	explicit := &session.Event{
+		Author: "core_agent",
+		LLMResponse: model.LLMResponse{
+			Content:      &genai.Content{Parts: []*genai.Part{{Text: ""}}},
+			Partial:      false,
+			TurnComplete: true,
+		},
+	}
+	if !isTurnEnd(explicit, translateEvent(explicit)) {
+		t.Error("explicit TurnComplete=true must end turn")
+	}
+}
+
 func TestParseSubagentSpec(t *testing.T) {
 	t.Parallel()
 	spec, err := parseSubagentSpec("watcher watch deployment myapp")

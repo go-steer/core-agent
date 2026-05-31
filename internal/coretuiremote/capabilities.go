@@ -572,8 +572,13 @@ func parsePricingSet(s string) (attach.PricingSetRequest, error) {
 }
 
 // parseSubagentSpec parses `/subagent <name> <goal>`. Richer specs
-// (tools / extras / budgets) wait for a follow-up; v1 takes name +
-// goal.
+// (tools / extras / budgets / explicit SystemPrompt) wait for a
+// follow-up; v1 takes name + goal and mirrors the goal into the
+// SystemPrompt slot — BackgroundAgentManager requires a non-empty
+// SystemPrompt, and using the goal text doubles as a focused
+// instruction for the subagent ("Your task: watch the disk for a
+// while"). Operators who want richer separation construct the spec
+// via the library API instead.
 func parseSubagentSpec(args string) (attach.SubagentSpec, error) {
 	args = strings.TrimSpace(args)
 	if args == "" {
@@ -583,7 +588,13 @@ func parseSubagentSpec(args string) (attach.SubagentSpec, error) {
 	if len(parts) < 2 {
 		return attach.SubagentSpec{}, fmt.Errorf("usage: /subagent <name> <goal>")
 	}
-	return attach.SubagentSpec{Name: strings.TrimSpace(parts[0]), Goal: strings.TrimSpace(parts[1])}, nil
+	name := strings.TrimSpace(parts[0])
+	goal := strings.TrimSpace(parts[1])
+	return attach.SubagentSpec{
+		Name:         name,
+		Goal:         goal,
+		SystemPrompt: "You are an autonomous background subagent. Your task: " + goal,
+	}, nil
 }
 
 func ok(b bool) string {

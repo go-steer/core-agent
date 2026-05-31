@@ -188,9 +188,13 @@ branch.
 - [x] `/done shipped the smoke test` writes a checkpoint; preamble
       row appears; post-checkpoint `/context` shows the task note +
       one additional checkpoint.
-- [ ] `/subagent watcher watch the disk for a while` spawns a
-      background subagent; subagent's events flow into the chat
-      under a branch label; `/subagents` lists the spawn.
+- [x] `/subagent watcher watch the disk for a while` spawns a
+      background subagent; `/subagents` lists the spawn and shows
+      status updates including the final report.
+      *Note: subagent events do NOT stream into the main chat
+      scrollback live — that's deferred to PR E (Pattern B
+      observer mode). Poll `/subagents` for status + the trailing
+      report.*
 
 ### Built-in slashes (core-tui)
 
@@ -392,6 +396,17 @@ connection refused
   iterator can't distinguish its own events from Turn N-1's tail.
   Fix lands with PR E (`docs/remote-tui-observer-mode.md`) when
   request_id correlation goes in alongside LiveAgent.
+
+- **Background subagent output doesn't stream into the main chat**
+  (also PR E). `/subagent` spawns successfully; `/subagents`
+  polling shows status updates including the subagent's final
+  report. But subagent events flow under a branch label in the
+  eventlog while the parent's Run iterator filters to "current
+  turn's events only" — so the subagent's mid-execution output
+  never reaches the operator's chat scrollback in real time.
+  Workaround: poll `/subagents` to see status + the trailing
+  report. Live in-chat streaming of subagent activity is a
+  Pattern B feature (LiveAgent in PR E).
 
 ## When to update this doc
 

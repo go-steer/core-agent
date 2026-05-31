@@ -143,13 +143,17 @@ func (a *Adapter) SessionCostUSD() float64 {
 	return cost
 }
 
-// LastTurn satisfies coretui.UsageTracker. The remote attach
-// protocol doesn't yet expose per-turn deltas (only cumulative
-// totals + per-model breakdown), so this returns zero — the
-// per-turn footer's "Δ" segment will be empty. Wire when an
-// attach-side /usage/last endpoint lands.
+// LastTurn satisfies coretui.UsageTracker. Returns the most recent
+// per-turn token counts captured during Run() (see adapter.go's
+// event loop). Cost stays 0 — per-event UsageMetadata doesn't carry
+// the dollar amount; cost lives in the server's pricing layer
+// projection that's surfaced via SessionCostUSD (cumulative). If a
+// per-turn cost surface becomes important, add a /usage/last endpoint
+// that returns the most recent usage.Tracker turn entry.
 func (a *Adapter) LastTurn() (coretui.Usage, float64) {
-	return coretui.Usage{}, 0
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lastTurn, 0
 }
 
 // ContextWindowSize satisfies coretui.UsageTracker. Returns 0

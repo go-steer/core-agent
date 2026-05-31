@@ -72,6 +72,13 @@ type Adapter struct {
 	// coretui.UsageTracker is queried on every TUI render; the cache
 	// keeps the network traffic bounded.
 	usage usageCache
+
+	// lastTurn snapshots the most recent turn's per-event
+	// UsageMetadata so coretui.UsageTracker.LastTurn() has something
+	// to surface in the per-turn footer's "Last turn" row. Captured
+	// in Run() when we see a non-partial event carrying usage.
+	// Protected by mu (the same one guarding lastSeq).
+	lastTurn coretui.Usage
 }
 
 // replayGrace is the slack we allow when discarding historical
@@ -158,6 +165,15 @@ func (a *Adapter) Run(ctx context.Context, prompt string) iter.Seq2[coretui.Even
 					continue
 				}
 				ev := translateEvent(frame.Event)
+				// Remember the per-event usage so LastTurn() can
+				// surface it after the iterator ends. The final
+				// non-partial event with UsageMetadata typically
+				// carries the turn's cumulative tokens for Gemini.
+				if ev.Usage != nil && !ev.Partial {
+					a.mu.Lock()
+					a.lastTurn = *ev.Usage
+					a.mu.Unlock()
+				}
 				// Only yield non-empty events so the TUI doesn't see
 				// echo frames for the inject itself or other no-op
 				// events that don't carry text / tool calls / usage.

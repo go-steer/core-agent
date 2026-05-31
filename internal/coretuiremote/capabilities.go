@@ -244,6 +244,39 @@ func (a *Adapter) FetchMCPServers(ctx context.Context) []coretui.MCPServerInfo {
 	return out
 }
 
+// ===== Permission controller (coretui built-in /permissions slash) =====
+//
+// Same pattern as PricingController below — coretui's built-in
+// /permissions, /allow, /deny slashes type-assert on
+// coretui.PermissionController. Bypasses our SlashProvider
+// registration when present, so we satisfy it directly.
+
+// SessionApprovals satisfies coretui.PermissionController. v1
+// returns nil — the attach protocol doesn't yet surface the gate's
+// per-session approval log. Operators inspect the gate state via
+// /perms (mode + allow + deny patterns) which IS wired.
+func (a *Adapter) SessionApprovals() []coretui.ApprovalLog {
+	return nil
+}
+
+// AddAllowPatterns satisfies coretui.PermissionController.
+func (a *Adapter) AddAllowPatterns(patterns []string) error {
+	return a.client.AllowPatterns(context.TODO(), a.sessionPath, patterns)
+}
+
+// AddDenyPatterns satisfies coretui.PermissionController.
+func (a *Adapter) AddDenyPatterns(patterns []string) error {
+	return a.client.DenyPatterns(context.TODO(), a.sessionPath, patterns)
+}
+
+// AddBuiltinAllowExtra satisfies coretui.PermissionController. The
+// permission "bundles" feature (named approval presets) isn't
+// surfaced over attach yet; return a stable error so the operator
+// sees "not supported" instead of a silent no-op.
+func (a *Adapter) AddBuiltinAllowExtra(bundleName string) error {
+	return fmt.Errorf("permission bundles not yet surfaced over attach (bundle: %q)", bundleName)
+}
+
 // ===== Pricing controller (coretui built-in /pricing slash) =====
 //
 // coretui's built-in /pricing slash type-asserts on

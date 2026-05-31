@@ -145,9 +145,12 @@ type Agent struct {
 
 	// Attach-extras snapshot funcs (set via WithAttachMemoryProvider
 	// etc.). See the corresponding fields on `options` for docs.
-	attachMemoryFn func() []attach.MemorySource
-	attachSkillsFn func() []attach.SkillInfo
-	attachMCPFn    func() attach.MCPInfo
+	attachMemoryFn     func() []attach.MemorySource
+	attachSkillsFn     func() []attach.SkillInfo
+	attachMCPFn        func() attach.MCPInfo
+	attachPricingFn    func() attach.PricingInfo
+	attachRefreshFn    func(ctx context.Context) (attach.PricingRefreshResponse, error)
+	attachSetPricingFn func(req attach.PricingSetRequest) error
 
 	// mu guards cancelInFlight + compactionPending + checkpoint
 	// flags + subtask counters. Held only across short store-and-
@@ -210,9 +213,12 @@ type options struct {
 	// the current state at call time so the attach handlers see fresh
 	// data after, e.g., a /reload. nil funcs make the corresponding
 	// AttachX method return an empty value (handler 200s with empty).
-	attachMemoryFn func() []attach.MemorySource
-	attachSkillsFn func() []attach.SkillInfo
-	attachMCPFn    func() attach.MCPInfo
+	attachMemoryFn     func() []attach.MemorySource
+	attachSkillsFn     func() []attach.SkillInfo
+	attachMCPFn        func() attach.MCPInfo
+	attachPricingFn    func() attach.PricingInfo
+	attachRefreshFn    func(ctx context.Context) (attach.PricingRefreshResponse, error)
+	attachSetPricingFn func(req attach.PricingSetRequest) error
 }
 
 func defaultOptions() options {
@@ -546,29 +552,32 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 	}
 
 	a := &Agent{
-		inner:           inner,
-		runner:          r,
-		sessionService:  svc,
-		eventLog:        o.eventLog,
-		tools:           o.tools,
-		streaming:       o.streaming,
-		appName:         o.appName,
-		agentName:       o.name,
-		userID:          o.userID,
-		sessionID:       o.sessionID,
-		model:           model,
-		modelName:       model.Name(),
-		gate:            o.gate,
-		bgMgr:           o.bgMgr,
-		inbox:           newInbox(),
-		wake:            newWakeSignal(),
-		attachRegistrar: o.attachRegistrar,
-		tracker:         o.tracker,
-		compactor:       o.compactor,
-		attachMemoryFn:  o.attachMemoryFn,
-		attachSkillsFn:  o.attachSkillsFn,
-		attachMCPFn:     o.attachMCPFn,
-		checkpointer:    o.checkpointer,
+		inner:              inner,
+		runner:             r,
+		sessionService:     svc,
+		eventLog:           o.eventLog,
+		tools:              o.tools,
+		streaming:          o.streaming,
+		appName:            o.appName,
+		agentName:          o.name,
+		userID:             o.userID,
+		sessionID:          o.sessionID,
+		model:              model,
+		modelName:          model.Name(),
+		gate:               o.gate,
+		bgMgr:              o.bgMgr,
+		inbox:              newInbox(),
+		wake:               newWakeSignal(),
+		attachRegistrar:    o.attachRegistrar,
+		tracker:            o.tracker,
+		compactor:          o.compactor,
+		attachMemoryFn:     o.attachMemoryFn,
+		attachSkillsFn:     o.attachSkillsFn,
+		attachMCPFn:        o.attachMCPFn,
+		attachPricingFn:    o.attachPricingFn,
+		attachRefreshFn:    o.attachRefreshFn,
+		attachSetPricingFn: o.attachSetPricingFn,
+		checkpointer:       o.checkpointer,
 	}
 	if a.bgMgr != nil {
 		a.bgMgr.attachParent(a)
@@ -1048,6 +1057,53 @@ func (a *Agent) AttachMCP() attach.MCPInfo {
 		return attach.MCPInfo{}
 	}
 	return a.attachMCPFn()
+}
+
+// WithAttachPricingProvider wires a snapshot func for
+// /sessions/<sid>/pricing (backs the remote TUI's /pricing read).
+func WithAttachPricingProvider(fn func() attach.PricingInfo) Option {
+	return func(o *options) { o.attachPricingFn = fn }
+}
+
+// WithAttachRefreshPricer wires a func that runs on
+// POST /sessions/<sid>/pricing/refresh — typically calls into
+// `internal/pricing.Refresh` and rebuilds the catalog. Returns
+// the outcome the operator sees.
+func WithAttachRefreshPricer(fn func(ctx context.Context) (attach.PricingRefreshResponse, error)) Option {
+	return func(o *options) { o.attachRefreshFn = fn }
+}
+
+// WithAttachPricingSetter wires a func that runs on
+// POST /sessions/<sid>/pricing/set — writes a manual per-model
+// rate and rebuilds the catalog.
+func WithAttachPricingSetter(fn func(req attach.PricingSetRequest) error) Option {
+	return func(o *options) { o.attachSetPricingFn = fn }
+}
+
+// AttachPricing implements attach.PricingProvider.
+func (a *Agent) AttachPricing() attach.PricingInfo {
+	if a == nil || a.attachPricingFn == nil {
+		return attach.PricingInfo{}
+	}
+	return a.attachPricingFn()
+}
+
+// AttachRefreshPricing implements attach.PricingController. Returns
+// attach.ErrCapabilityNotRegistered when no func was wired — the
+// handler maps that to HTTP 501.
+func (a *Agent) AttachRefreshPricing(ctx context.Context) (attach.PricingRefreshResponse, error) {
+	if a == nil || a.attachRefreshFn == nil {
+		return attach.PricingRefreshResponse{}, attach.ErrCapabilityNotRegistered
+	}
+	return a.attachRefreshFn(ctx)
+}
+
+// AttachSetManualPricing implements attach.PricingController.
+func (a *Agent) AttachSetManualPricing(req attach.PricingSetRequest) error {
+	if a == nil || a.attachSetPricingFn == nil {
+		return attach.ErrCapabilityNotRegistered
+	}
+	return a.attachSetPricingFn(req)
 }
 
 // AttachCompact implements attach.CompactSlashProvider. Wraps

@@ -470,6 +470,36 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 			}
 			return out
 		}),
+		agent.WithAttachPricingProvider(func() attach.PricingInfo {
+			// v1: minimal snapshot — surface the current model name +
+			// known model count from the cfg-driven catalog. Source +
+			// last-refresh fields stay empty for now; richer
+			// reporting belongs in a pricing-catalog accessor.
+			return attach.PricingInfo{
+				CurrentModel: cfg.Model.Name,
+			}
+		}),
+		agent.WithAttachRefreshPricer(func(ctx context.Context) (attach.PricingRefreshResponse, error) {
+			if coreHome == "" {
+				return attach.PricingRefreshResponse{}, fmt.Errorf("pricing refresh: $HOME unavailable, no user file to write")
+			}
+			summary, err := refreshPricingForTUI(ctx, cfg, agentsDir, coreHome)
+			if err != nil {
+				return attach.PricingRefreshResponse{}, err
+			}
+			return attach.PricingRefreshResponse{
+				Updated:     true,
+				LastRefresh: time.Now(),
+				Detail:      summary,
+			}, nil
+		}),
+		agent.WithAttachPricingSetter(func(req attach.PricingSetRequest) error {
+			if coreHome == "" {
+				return fmt.Errorf("pricing set: $HOME unavailable, no user file to write")
+			}
+			_, err := setPricingForTUI(cfg, agentsDir, coreHome, req.Model, req.InputUSDPerMTok, req.OutputUSDPerMTok)
+			return err
+		}),
 		agent.WithAttachMCPProvider(func() attach.MCPInfo {
 			servers := make([]attach.MCPServerInfo, 0, len(mcpServers))
 			for _, s := range mcpServers {
@@ -708,15 +738,31 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		// the operator's TUI is rendering. Empty prompt means
 		// "no user text this turn, just drain the inbox" — same
 		// path REPL uses for the same case.
+		//
+		// Per-turn usage tap mirrors runner/headless.go's tapUsage:
+		// the loop watches each event's UsageMetadata, remembers
+		// the latest in/out counts, and on iterator end calls
+		// tracker.Append once. Without this the /stats and status-
+		// banner cumulative totals stay at zero in --no-repl mode
+		// because the tracker is only otherwise driven by
+		// agent/autonomous.go and agent/subtask.go.
 		for {
 			select {
 			case <-ctx.Done():
 				return runner.ExitOK
 			case <-a.WakeRequested():
-				for _, runErr := range a.Run(ctx, "") {
+				var lastIn, lastOut int
+				for ev, runErr := range a.Run(ctx, "") {
+					if ev != nil && ev.UsageMetadata != nil {
+						lastIn = int(ev.UsageMetadata.PromptTokenCount)
+						lastOut = int(ev.UsageMetadata.CandidatesTokenCount)
+					}
 					if runErr != nil {
 						fmt.Fprintf(os.Stderr, "core-agent: turn: %v\n", runErr)
 					}
+				}
+				if tracker != nil && (lastIn > 0 || lastOut > 0) {
+					tracker.Append(m.Name(), lastIn, lastOut, pricingRate)
 				}
 			}
 		}

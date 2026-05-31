@@ -180,12 +180,20 @@ Cross-repo, ~400–600 LoC:
 - **History-replay UX for very long sessions.** Punt to "scrolls
   fine for now; add `?last=N` if someone complains."
 
+## Upstream tracking
+
+Filed as [go-steer/core-tui#22](https://github.com/go-steer/core-tui/issues/22)
+on 2026-05-31. The interface shape and edge-case semantics
+(ctx-cancel mid-iter, transient stream errors, Events-ends
+behavior, reconnect contract) settle there before the adapter PR
+lands here.
+
 ## Sequencing
 
 1. **Land v2.1** as Pattern A only (this train). Document the
    Pattern-B gap in the smoke doc.
-2. **Upstream core-tui PR**: add LiveAgent interface. Get review
-   + a tagged release.
+2. **Upstream core-tui PR** (tracked at #22 above): add LiveAgent
+   interface. Get review + a tagged release.
 3. **core-agent adapter PR**: implement Events(); bump core-tui
    dependency; update smoke doc to add an observer-mode section.
 4. **Optional PR**: request_id correlation + visual marking of

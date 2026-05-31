@@ -202,8 +202,9 @@ branch.
       adapter-provided ones above.
 - [x] `/tools` lists the agent's tool catalog (read_file, bash,
       etc.) with gate states.
-- [ ] `/subagents` lists running subagents (matches what you
-      spawned via `/subagent`).
+- [x] `/subagents` lists running subagents (matches what you
+      spawned via `/subagent`); shows status updates as the
+      subagent progresses + the final report.
 - [x] `/quit` cleanly exits the remote TUI without leaving the
       listener in a bad state.
 
@@ -217,12 +218,15 @@ branch.
 
 ### Mid-turn injection
 
-- [ ] Submit a prompt that triggers a multi-second response.
-      While it's streaming, press Enter on the empty input — the
-      operator inbox queue panel should show the queued state.
+- [x] Submit a prompt that triggers a multi-second response.
+      While it's streaming, type another prompt and hit Enter —
+      the operator inbox queue panel shows the queued state
+      (`○ <text>` in the queue panel).
 - [ ] After the turn completes, the queued message auto-submits
       as the next turn (with the auto-continue ↻ glyph if
       core-tui's auto-continue mode is the default).
+      *Known-broken in v2.1; see "Mid-turn queued prompts
+      auto-drain incorrectly" under Known Limitations.*
 - [ ] Esc during a streaming turn cancels it; the chat shows
       "turn cancelled".
 

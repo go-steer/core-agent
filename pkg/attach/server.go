@@ -113,7 +113,25 @@ func NewServer(opts Options) (*Server, error) {
 // ListenAndServe binds the listener and serves until Close or a fatal
 // error. Blocks until the server stops. Returns nil on clean shutdown,
 // the underlying error otherwise.
+//
+// Equivalent to Bind followed by Serve. Callers that need to surface
+// bind failures synchronously (e.g., to fail-fast on port-in-use
+// instead of degrading) should call Bind directly in the main goroutine
+// and Serve in a background goroutine.
 func (s *Server) ListenAndServe() error {
+	if err := s.Bind(); err != nil {
+		return err
+	}
+	return s.Serve()
+}
+
+// Bind binds the listener and prepares TLS / http.Server state. Returns
+// any bind error synchronously so callers can fail-fast (the original
+// ListenAndServe path lost bind errors when run inside a background
+// goroutine — operators who started a second daemon with the port
+// already held silently fell through to REPL mode talking to the wrong
+// process). Safe to call exactly once per Server.
+func (s *Server) Bind() error {
 	ln, err := s.listen()
 	if err != nil {
 		return err
@@ -126,10 +144,14 @@ func (s *Server) ListenAndServe() error {
 	}
 
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.closed {
-		s.mu.Unlock()
 		_ = ln.Close()
 		return errors.New("attach: Server: already closed")
+	}
+	if s.listener != nil {
+		_ = ln.Close()
+		return errors.New("attach: Server: already bound")
 	}
 	s.listener = ln
 	s.srv = &http.Server{
@@ -139,14 +161,30 @@ func (s *Server) ListenAndServe() error {
 		// Streaming endpoints have no useful write timeout — SSE
 		// connections live for minutes/hours. Don't set one.
 	}
+	return nil
+}
+
+// Serve serves on the already-bound listener. Bind must have been
+// called first. Blocks until the server stops. Returns nil on clean
+// shutdown, the underlying error otherwise.
+func (s *Server) Serve() error {
+	s.mu.Lock()
+	ln := s.listener
+	srv := s.srv
 	s.mu.Unlock()
 
+	if ln == nil || srv == nil {
+		return errors.New("attach: Server: Serve called before Bind")
+	}
+	tlsCfg := srv.TLSConfig
+
+	var err error
 	if tlsCfg != nil {
 		// ServeTLS with empty cert/key uses TLSConfig.Certificates
 		// already populated by LoadTLSConfig.
-		err = s.srv.ServeTLS(ln, "", "")
+		err = srv.ServeTLS(ln, "", "")
 	} else {
-		err = s.srv.Serve(ln)
+		err = srv.Serve(ln)
 	}
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil

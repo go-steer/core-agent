@@ -63,24 +63,19 @@ func TestUIMouseToCoreTui_NilWhenUnset(t *testing.T) {
 func TestUIMouseToCoreTui_PropagatesExplicitFalse(t *testing.T) {
 	off := false
 	cfg := &config.Config{UI: config.UIConfig{Mouse: &off}}
-	got := uiMouseToCoreTui(cfg)
-	if got == nil {
-		t.Fatal("explicit false: got nil, want *false")
-	}
-	if *got != false {
-		t.Errorf("explicit false: got *%v, want *false", *got)
+	// Single conditional avoids staticcheck SA5011's nil-after-check
+	// dereference complaint — short-circuit means *got is never
+	// evaluated when got is nil.
+	if got := uiMouseToCoreTui(cfg); got == nil || *got != false {
+		t.Errorf("explicit false: got %v, want *false", got)
 	}
 }
 
 func TestUIMouseToCoreTui_PropagatesExplicitTrue(t *testing.T) {
 	on := true
 	cfg := &config.Config{UI: config.UIConfig{Mouse: &on}}
-	got := uiMouseToCoreTui(cfg)
-	if got == nil {
-		t.Fatal("explicit true: got nil, want *true")
-	}
-	if *got != true {
-		t.Errorf("explicit true: got *%v, want *true", *got)
+	if got := uiMouseToCoreTui(cfg); got == nil || *got != true {
+		t.Errorf("explicit true: got %v, want *true", got)
 	}
 }
 

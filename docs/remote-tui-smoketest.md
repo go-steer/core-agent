@@ -166,7 +166,9 @@ branch.
 
 ### Mutation slashes (PR A2)
 
-- [ ] `/perms` shows the gate state (mode + allow + deny patterns).
+- [x] `/perms` shows the gate state (mode + allow + deny patterns).
+      `/permissions` (core-tui builtin) shows the per-session
+      approval log including tool + key + decision.
 - [ ] `/allow tool.bash` adds the pattern; `/perms` reflects it on
       the next call.
 - [ ] `/deny tool.delete_file` adds the deny pattern.

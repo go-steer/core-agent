@@ -38,6 +38,7 @@ import (
 	adktool "google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/internal/pricing"
+	"github.com/go-steer/core-agent/internal/version"
 	"github.com/go-steer/core-agent/pkg/agent"
 	"github.com/go-steer/core-agent/pkg/attach"
 	"github.com/go-steer/core-agent/pkg/config"
@@ -69,6 +70,17 @@ func main() {
 			os.Exit(runAttachSubcommand(os.Args[2:]))
 		case "ls":
 			os.Exit(runLsSubcommand(os.Args[2:]))
+		}
+	}
+
+	// --version short-circuits before flag.Parse so the operator
+	// doesn't have to satisfy any other required flags to read it.
+	// Matches the convention every standard CLI uses (gh, kubectl,
+	// go itself).
+	for _, a := range os.Args[1:] {
+		if a == "--version" || a == "-version" {
+			fmt.Println(version.String("core-agent"))
+			return
 		}
 	}
 

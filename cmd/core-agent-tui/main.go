@@ -55,9 +55,19 @@ import (
 
 	"github.com/go-steer/core-agent/internal/attachclient"
 	"github.com/go-steer/core-agent/internal/coretuiremote"
+	"github.com/go-steer/core-agent/internal/version"
 )
 
 func main() {
+	// --version short-circuits before flag.Parse so the operator
+	// can read it without satisfying any other flag requirements.
+	for _, a := range os.Args[1:] {
+		if a == "--version" || a == "-version" {
+			fmt.Println(version.String("core-agent-tui"))
+			return
+		}
+	}
+
 	fs := flag.NewFlagSet("core-agent-tui", flag.ContinueOnError)
 	tokenEnv := fs.String("token", "", "env var holding the bearer token (e.g. ATTACH_TOKEN)")
 	theme := fs.String("theme", "", "force a theme: 'dark', 'light', or empty for auto (queries the terminal via OSC 11)")

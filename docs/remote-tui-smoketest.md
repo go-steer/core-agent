@@ -153,9 +153,9 @@ branch.
 
 ### Operator-state slashes (PR A1)
 
-- [ ] `/stats` shows the session's cumulative input + output
+- [x] `/stats` shows the session's cumulative input + output
       tokens + cost; non-zero after the seed turn.
-- [ ] `/context` shows compaction / checkpoint / subtask counts;
+- [x] `/context` shows compaction / checkpoint / subtask counts;
       non-zero subtask turn count if `--agentic-tools` is on and
       you've issued a prompt that triggers an `agentic_*` wrapper.
 - [ ] `/memory` lists any loaded `AGENTS.md` files.
@@ -173,7 +173,7 @@ branch.
 - [ ] `/pricing refresh` triggers a LiteLLM fetch and reports the
       outcome (updated / unchanged + model count).
 - [ ] `/pricing set claude-opus-4-7 15 75` applies a manual rate;
-      subsequent `/pricing` shows the new rate
+      subsequent `/pricing` shows the new rate.te
 - [ ] `/reload` re-walks memory + skills + MCP; per-surface
       success flags surface in the result.
 
@@ -185,7 +185,7 @@ branch.
 - [x] `/compact` writes a compaction summary; a preamble row
       ("Compacting context…") appears at dispatch; the post-summary
       `/context` shows one additional compaction.
-- [ ] `/done shipped the smoke test` writes a checkpoint; preamble
+- [x] `/done shipped the smoke test` writes a checkpoint; preamble
       row appears; post-checkpoint `/context` shows the task note +
       one additional checkpoint.
 - [ ] `/subagent watcher watch the disk for a while` spawns a
@@ -276,21 +276,6 @@ connection refused
 
 ## Failure modes worth verifying
 
-- **Status banner stuck at `0 in · 0 out · $0.0000`** (observed
-  during the v2.1 smoke). The banner pulls from
-  `UsageTracker.SessionTotals / SessionCostUSD`, which the
-  adapter projects from the `/usage` attach endpoint, which
-  returns `agent.AttachUsage()` from a wired `*usage.Tracker`.
-  Zeros suggest either (a) `--no-repl + --attach-listen` mode
-  doesn't wire the tracker into the agent, or (b) the tracker
-  isn't being appended for inject-driven turns (only `Run`-driven
-  ones). Diagnose by querying the `/usage` endpoint directly
-  (`curl http://localhost:7777/sessions/<sid>/usage`) — non-zero
-  means the adapter is dropping it; zero means the tracker is the
-  source of truth and isn't getting writes. Per-turn footer in
-  the chat (`in · out · Xs`) is unaffected — that comes from
-  per-event `UsageMetadata`, not the cumulative tracker.
-
 - **Stuck on "Compacting context…" preamble**: `/compact` started
   but the response never came back. Check terminal 1 for a
   summarizer error; check the eventlog (`.db` file) for the
@@ -303,6 +288,19 @@ connection refused
   decline server-side. Verify by attaching a `--mcp-servers` set
   that includes a server known to elicit (e.g., interactive
   approval flows) — you should see the decline, not a hang.
+
+- **Multiple `core-agent` daemons accidentally running** (the
+  gotcha that caused half of the v2.1 smoke confusion). If a
+  second `core-agent --attach-listen=:7777 ...` is launched
+  while one is already bound, port-bind silently fails and the
+  second process falls through to REPL/TUI mode without
+  warning. Operator's TUI keeps talking to the ORIGINAL daemon
+  on :7777 — which may have stale session state or a pre-fix
+  binary — making the responses look like adapter bugs.
+  Diagnose: `ps aux | grep core-agent | grep -v grep`. Hard
+  reset: `pkill -f "core-agent --attach-listen"`. Tracked as
+  Task #5 (silent port-bind degradation → fix is fatal error
+  on `Listen`).
 
 ## Known limitations
 

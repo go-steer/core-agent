@@ -200,7 +200,7 @@ branch.
       etc.) with gate states.
 - [ ] `/subagents` lists running subagents (matches what you
       spawned via `/subagent`).
-- [ ] `/quit` cleanly exits the remote TUI without leaving the
+- [x] `/quit` cleanly exits the remote TUI without leaving the
       listener in a bad state.
 
   > **Not supported in this train:** `/theme` (runtime theme swap).
@@ -208,7 +208,8 @@ branch.
   > can't register one usefully since the theme is set at
   > `coretui.Options.ForceTheme` startup with no runtime swap API.
   > Pass `core-agent-tui --theme=dark|light` at launch instead.
-  > Tracked for a future core-tui upstream.
+  > Tracked upstream as
+  > [go-steer/core-tui#21](https://github.com/go-steer/core-tui/issues/21).
 
 ### Mid-turn injection
 

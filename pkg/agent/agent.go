@@ -975,19 +975,30 @@ func usageTotalsToAttach(t usage.Totals) attach.UsageTotals {
 }
 
 // AttachPerms implements attach.PermsProvider. Returns the gate's
-// current Snapshot (mode + allow + deny pattern lists) projected into
-// the attach wire format. Returns zero PermsInfo if no gate was wired
-// via WithGate.
+// current Snapshot (mode + allow + deny pattern lists) projected
+// into the attach wire format, plus the per-session approval log
+// so the remote TUI's /permissions slash can render what was
+// approved this session. Returns zero PermsInfo if no gate was
+// wired via WithGate.
 func (a *Agent) AttachPerms() attach.PermsInfo {
 	if a == nil || a.gate == nil {
 		return attach.PermsInfo{}
 	}
 	s := a.gate.Snapshot()
-	return attach.PermsInfo{
+	out := attach.PermsInfo{
 		Mode:  string(s.Mode),
 		Allow: s.Allow,
 		Deny:  s.Deny,
 	}
+	for _, ap := range a.gate.Approvals() {
+		out.Approvals = append(out.Approvals, attach.ApprovalInfo{
+			Tool:     ap.Tool,
+			Key:      ap.Key,
+			Decision: ap.Decision.String(),
+			At:       ap.At,
+		})
+	}
+	return out
 }
 
 // AttachAddAllow implements attach.PermsController. Delegates to

@@ -354,11 +354,22 @@ func (o *OperatorView) AttachReload(ctx context.Context) ReloadResponse {
 
 // PermsInfo is the response shape of GET /sessions/.../perms — backs
 // the remote TUI's /permissions slash. Mirrors permissions.Snapshot
-// with json tags + a stable wire shape.
+// plus the per-session approval log so the operator can review
+// what was approved this session.
 type PermsInfo struct {
-	Mode  string   `json:"mode"`
-	Allow []string `json:"allow,omitempty"`
-	Deny  []string `json:"deny,omitempty"`
+	Mode      string         `json:"mode"`
+	Allow     []string       `json:"allow,omitempty"`
+	Deny      []string       `json:"deny,omitempty"`
+	Approvals []ApprovalInfo `json:"approvals,omitempty"`
+}
+
+// ApprovalInfo is one row in the per-session approval log. Mirrors
+// permissions.ApprovalLog in a JSON-friendly shape.
+type ApprovalInfo struct {
+	Tool     string    `json:"tool"`
+	Key      string    `json:"key,omitempty"`
+	Decision string    `json:"decision"` // "allow-once" | "allow-session" | etc.
+	At       time.Time `json:"at"`
 }
 
 // PatternsRequest is the POST body for /perms/allow + /perms/deny.

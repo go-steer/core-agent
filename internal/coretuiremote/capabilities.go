@@ -296,12 +296,26 @@ func (a *Adapter) FetchMCPServers(ctx context.Context) []coretui.MCPServerInfo {
 // coretui.PermissionController. Bypasses our SlashProvider
 // registration when present, so we satisfy it directly.
 
-// SessionApprovals satisfies coretui.PermissionController. v1
-// returns nil — the attach protocol doesn't yet surface the gate's
-// per-session approval log. Operators inspect the gate state via
-// /perms (mode + allow + deny patterns) which IS wired.
+// SessionApprovals satisfies coretui.PermissionController. Fetches
+// the gate's per-session approval log via /perms (which carries
+// PermsInfo.Approvals since the v2.1 attach extension) and
+// projects to coretui.ApprovalLog. One round-trip per /permissions
+// slash invocation — acceptable since the slash is operator-
+// initiated, not per-render.
 func (a *Adapter) SessionApprovals() []coretui.ApprovalLog {
-	return nil
+	info, err := a.client.Perms(context.TODO(), a.sessionPath)
+	if err != nil || len(info.Approvals) == 0 {
+		return nil
+	}
+	out := make([]coretui.ApprovalLog, 0, len(info.Approvals))
+	for _, ap := range info.Approvals {
+		out = append(out, coretui.ApprovalLog{
+			Tool:     ap.Tool,
+			Key:      ap.Key,
+			Decision: ap.Decision,
+		})
+	}
+	return out
 }
 
 // AddAllowPatterns satisfies coretui.PermissionController.

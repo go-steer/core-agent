@@ -355,6 +355,20 @@ connection refused
   (PR E) naturally fixes this since the per-turn filter
   disappears.
 
+- **Mid-turn queued prompts auto-drain incorrectly** (also
+  PR E). When the operator types a second prompt while the first
+  is still streaming, coretui's queue panel correctly shows the
+  pending entry — but on turn-end, the auto-drain's new Run()
+  picks up the prior turn's tail events as if they were the new
+  turn's response. Visible symptom: prompts and responses become
+  offset by one (operator types A, sees prior-prompt's response;
+  types B, sees A's response). Workaround: **don't type a second
+  prompt until the first turn fully renders.** Root cause: the
+  v2.1 adapter has no request_id correlation, so Turn N's
+  iterator can't distinguish its own events from Turn N-1's tail.
+  Fix lands with PR E (`docs/remote-tui-observer-mode.md`) when
+  request_id correlation goes in alongside LiveAgent.
+
 ## When to update this doc
 
 - New attach endpoints land → add a checklist row.

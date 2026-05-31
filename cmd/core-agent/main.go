@@ -457,15 +457,28 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		// these closures, so the remote /memory /skills /mcp endpoints
 		// return the same state the in-process TUI sees.
 		agent.WithAttachMemoryProvider(func() []attach.MemorySource {
-			out := make([]attach.MemorySource, 0, len(loaded.Sources))
-			for _, s := range loaded.Sources {
+			// Re-walk on every call so a fresh AGENTS.md / CLAUDE.md /
+			// GEMINI.md picked up between turns (or written by the
+			// agent itself) surfaces without a daemon restart. Cheap
+			// — a few file stats + reads of small files capped at
+			// 32 KiB each.
+			fresh, _ := instruction.Load(projectRoot, coreHome)
+			out := make([]attach.MemorySource, 0, len(fresh.Sources))
+			for _, s := range fresh.Sources {
 				out = append(out, attach.MemorySource{Scope: s.Scope, Path: s.Path, Size: s.Bytes})
 			}
 			return out
 		}),
 		agent.WithAttachSkillsProvider(func() []attach.SkillInfo {
-			out := make([]attach.SkillInfo, 0, len(loadedSkills.Infos))
-			for _, s := range loadedSkills.Infos {
+			// Re-walk on every call so newly-dropped SKILL.md bundles
+			// surface without restart. The merge across project +
+			// user-global sources happens inside skills.LoadAll.
+			fresh, err := skills.LoadAll(ctx, agentsDir, coreHome, gate)
+			if err != nil {
+				return nil
+			}
+			out := make([]attach.SkillInfo, 0, len(fresh.Infos))
+			for _, s := range fresh.Infos {
 				out = append(out, attach.SkillInfo{Name: s.Name, Description: s.Description})
 			}
 			return out

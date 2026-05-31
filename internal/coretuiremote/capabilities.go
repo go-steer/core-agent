@@ -336,6 +336,26 @@ func (a *Adapter) AddBuiltinAllowExtra(bundleName string) error {
 	return fmt.Errorf("permission bundles not yet surfaced over attach (bundle: %q)", bundleName)
 }
 
+// Reload satisfies coretui.Reloader. Calls the /reload attach
+// endpoint (server re-walks AGENTS.md / skills / MCP) and re-
+// fetches the static feeds so coretui's /memory /skills /mcp
+// modals show the fresh state. Returns Agent=nil — the live agent
+// stays the same; only its loaded view changes.
+func (a *Adapter) Reload(ctx context.Context) (coretui.ReloadResult, error) {
+	resp, err := a.client.Reload(ctx, a.sessionPath)
+	if err != nil {
+		return coretui.ReloadResult{
+			Note: "/reload: " + err.Error(),
+		}, nil
+	}
+	return coretui.ReloadResult{
+		Memory:     a.FetchMemory(ctx),
+		Skills:     a.FetchSkills(ctx),
+		MCPServers: a.FetchMCPServers(ctx),
+		Note:       renderReloadResp(resp),
+	}, nil
+}
+
 // ===== Pricing controller (coretui built-in /pricing slash) =====
 //
 // coretui's built-in /pricing slash type-asserts on

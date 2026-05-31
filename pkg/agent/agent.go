@@ -151,6 +151,7 @@ type Agent struct {
 	attachPricingFn    func() attach.PricingInfo
 	attachRefreshFn    func(ctx context.Context) (attach.PricingRefreshResponse, error)
 	attachSetPricingFn func(req attach.PricingSetRequest) error
+	attachReloadFn     func(ctx context.Context) attach.ReloadResponse
 
 	// mu guards cancelInFlight + compactionPending + checkpoint
 	// flags + subtask counters. Held only across short store-and-
@@ -219,6 +220,7 @@ type options struct {
 	attachPricingFn    func() attach.PricingInfo
 	attachRefreshFn    func(ctx context.Context) (attach.PricingRefreshResponse, error)
 	attachSetPricingFn func(req attach.PricingSetRequest) error
+	attachReloadFn     func(ctx context.Context) attach.ReloadResponse
 }
 
 func defaultOptions() options {
@@ -577,6 +579,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		attachPricingFn:    o.attachPricingFn,
 		attachRefreshFn:    o.attachRefreshFn,
 		attachSetPricingFn: o.attachSetPricingFn,
+		attachReloadFn:     o.attachReloadFn,
 		checkpointer:       o.checkpointer,
 	}
 	if a.bgMgr != nil {
@@ -1115,6 +1118,29 @@ func (a *Agent) AttachSetManualPricing(req attach.PricingSetRequest) error {
 		return attach.ErrCapabilityNotRegistered
 	}
 	return a.attachSetPricingFn(req)
+}
+
+// WithAttachReloader wires a func that runs on POST
+// /sessions/<sid>/reload. The closure is expected to re-walk
+// project deps (instruction sources, skills bundles, MCP config)
+// and return per-surface success in the response so the operator
+// sees which parts succeeded and which failed. The agent doesn't
+// inspect the response shape; what "reload" means is the host's
+// concern. Without this option the operator sees 501 / capability
+// not registered.
+func WithAttachReloader(fn func(ctx context.Context) attach.ReloadResponse) Option {
+	return func(o *options) { o.attachReloadFn = fn }
+}
+
+// AttachReload implements attach.Reloader. Returns a response with
+// Errors populated by ErrCapabilityNotRegistered when no func was
+// wired so the handler emits the same 501 the other unwired
+// controllers do.
+func (a *Agent) AttachReload(ctx context.Context) attach.ReloadResponse {
+	if a == nil || a.attachReloadFn == nil {
+		return attach.ReloadResponse{Errors: []string{attach.ErrCapabilityNotRegistered.Error()}}
+	}
+	return a.attachReloadFn(ctx)
 }
 
 // AttachCompact implements attach.CompactSlashProvider. Wraps

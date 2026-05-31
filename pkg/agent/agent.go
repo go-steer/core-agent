@@ -29,10 +29,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"iter"
 	"reflect"
 	"sync"
+	"time"
 
 	"google.golang.org/genai"
 
@@ -141,6 +143,15 @@ type Agent struct {
 	compactor       Compactor
 	checkpointer    Checkpointer
 
+	// Attach-extras snapshot funcs (set via WithAttachMemoryProvider
+	// etc.). See the corresponding fields on `options` for docs.
+	attachMemoryFn     func() []attach.MemorySource
+	attachSkillsFn     func() []attach.SkillInfo
+	attachMCPFn        func() attach.MCPInfo
+	attachPricingFn    func() attach.PricingInfo
+	attachRefreshFn    func(ctx context.Context) (attach.PricingRefreshResponse, error)
+	attachSetPricingFn func(req attach.PricingSetRequest) error
+
 	// mu guards cancelInFlight + compactionPending + checkpoint
 	// flags + subtask counters. Held only across short store-and-
 	// clear operations; never across an LLM call.
@@ -196,6 +207,18 @@ type options struct {
 	compactor       Compactor
 	checkpointer    Checkpointer
 	postConstruct   func(*Agent)
+
+	// Attach-extras snapshot funcs — set via WithAttachMemoryProvider /
+	// WithAttachSkillsProvider / WithAttachMCPProvider. Each returns
+	// the current state at call time so the attach handlers see fresh
+	// data after, e.g., a /reload. nil funcs make the corresponding
+	// AttachX method return an empty value (handler 200s with empty).
+	attachMemoryFn     func() []attach.MemorySource
+	attachSkillsFn     func() []attach.SkillInfo
+	attachMCPFn        func() attach.MCPInfo
+	attachPricingFn    func() attach.PricingInfo
+	attachRefreshFn    func(ctx context.Context) (attach.PricingRefreshResponse, error)
+	attachSetPricingFn func(req attach.PricingSetRequest) error
 }
 
 func defaultOptions() options {
@@ -529,26 +552,32 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 	}
 
 	a := &Agent{
-		inner:           inner,
-		runner:          r,
-		sessionService:  svc,
-		eventLog:        o.eventLog,
-		tools:           o.tools,
-		streaming:       o.streaming,
-		appName:         o.appName,
-		agentName:       o.name,
-		userID:          o.userID,
-		sessionID:       o.sessionID,
-		model:           model,
-		modelName:       model.Name(),
-		gate:            o.gate,
-		bgMgr:           o.bgMgr,
-		inbox:           newInbox(),
-		wake:            newWakeSignal(),
-		attachRegistrar: o.attachRegistrar,
-		tracker:         o.tracker,
-		compactor:       o.compactor,
-		checkpointer:    o.checkpointer,
+		inner:              inner,
+		runner:             r,
+		sessionService:     svc,
+		eventLog:           o.eventLog,
+		tools:              o.tools,
+		streaming:          o.streaming,
+		appName:            o.appName,
+		agentName:          o.name,
+		userID:             o.userID,
+		sessionID:          o.sessionID,
+		model:              model,
+		modelName:          model.Name(),
+		gate:               o.gate,
+		bgMgr:              o.bgMgr,
+		inbox:              newInbox(),
+		wake:               newWakeSignal(),
+		attachRegistrar:    o.attachRegistrar,
+		tracker:            o.tracker,
+		compactor:          o.compactor,
+		attachMemoryFn:     o.attachMemoryFn,
+		attachSkillsFn:     o.attachSkillsFn,
+		attachMCPFn:        o.attachMCPFn,
+		attachPricingFn:    o.attachPricingFn,
+		attachRefreshFn:    o.attachRefreshFn,
+		attachSetPricingFn: o.attachSetPricingFn,
+		checkpointer:       o.checkpointer,
 	}
 	if a.bgMgr != nil {
 		a.bgMgr.attachParent(a)
@@ -944,6 +973,229 @@ func usageTotalsToAttach(t usage.Totals) attach.UsageTotals {
 		CostUSD:      t.CostUSD,
 	}
 }
+
+// AttachPerms implements attach.PermsProvider. Returns the gate's
+// current Snapshot (mode + allow + deny pattern lists) projected
+// into the attach wire format, plus the per-session approval log
+// so the remote TUI's /permissions slash can render what was
+// approved this session. Returns zero PermsInfo if no gate was
+// wired via WithGate.
+func (a *Agent) AttachPerms() attach.PermsInfo {
+	if a == nil || a.gate == nil {
+		return attach.PermsInfo{}
+	}
+	s := a.gate.Snapshot()
+	out := attach.PermsInfo{
+		Mode:  string(s.Mode),
+		Allow: s.Allow,
+		Deny:  s.Deny,
+	}
+	for _, ap := range a.gate.Approvals() {
+		out.Approvals = append(out.Approvals, attach.ApprovalInfo{
+			Tool:     ap.Tool,
+			Key:      ap.Key,
+			Decision: ap.Decision.String(),
+			At:       ap.At,
+		})
+	}
+	return out
+}
+
+// AttachAddAllow implements attach.PermsController. Delegates to
+// permissions.Gate.AddAllowPatterns. Returns nil if no gate was
+// wired (no-op rather than error — operators shouldn't see an error
+// for an absent gate). Surfaces validation errors from the gate so
+// the operator sees malformed-pattern feedback.
+func (a *Agent) AttachAddAllow(patterns []string) error {
+	if a == nil || a.gate == nil {
+		return nil
+	}
+	return a.gate.AddAllowPatterns(patterns)
+}
+
+// AttachAddDeny implements attach.PermsController. Delegates to
+// permissions.Gate.AddDenyPatterns.
+func (a *Agent) AttachAddDeny(patterns []string) error {
+	if a == nil || a.gate == nil {
+		return nil
+	}
+	return a.gate.AddDenyPatterns(patterns)
+}
+
+// WithAttachMemoryProvider wires a snapshot func that returns the
+// agent's loaded instruction sources for the remote-attach
+// /sessions/<sid>/memory endpoint (backs the remote TUI's /memory
+// slash). The caller usually projects an `instruction.Loaded`'s
+// Sources list into []attach.MemorySource; nil = endpoint returns
+// empty.
+func WithAttachMemoryProvider(fn func() []attach.MemorySource) Option {
+	return func(o *options) { o.attachMemoryFn = fn }
+}
+
+// WithAttachSkillsProvider wires a snapshot func for
+// /sessions/<sid>/skills (backs /skills).
+func WithAttachSkillsProvider(fn func() []attach.SkillInfo) Option {
+	return func(o *options) { o.attachSkillsFn = fn }
+}
+
+// WithAttachMCPProvider wires a snapshot func for
+// /sessions/<sid>/mcp (backs /mcp).
+func WithAttachMCPProvider(fn func() attach.MCPInfo) Option {
+	return func(o *options) { o.attachMCPFn = fn }
+}
+
+// AttachMemory implements attach.MemoryProvider. Returns nil when
+// no provider was wired — the handler emits 200 with an empty
+// `{"sources": []}`.
+func (a *Agent) AttachMemory() []attach.MemorySource {
+	if a == nil || a.attachMemoryFn == nil {
+		return nil
+	}
+	return a.attachMemoryFn()
+}
+
+// AttachSkills implements attach.SkillsProvider.
+func (a *Agent) AttachSkills() []attach.SkillInfo {
+	if a == nil || a.attachSkillsFn == nil {
+		return nil
+	}
+	return a.attachSkillsFn()
+}
+
+// AttachMCP implements attach.MCPProvider.
+func (a *Agent) AttachMCP() attach.MCPInfo {
+	if a == nil || a.attachMCPFn == nil {
+		return attach.MCPInfo{}
+	}
+	return a.attachMCPFn()
+}
+
+// WithAttachPricingProvider wires a snapshot func for
+// /sessions/<sid>/pricing (backs the remote TUI's /pricing read).
+func WithAttachPricingProvider(fn func() attach.PricingInfo) Option {
+	return func(o *options) { o.attachPricingFn = fn }
+}
+
+// WithAttachRefreshPricer wires a func that runs on
+// POST /sessions/<sid>/pricing/refresh — typically calls into
+// `internal/pricing.Refresh` and rebuilds the catalog. Returns
+// the outcome the operator sees.
+func WithAttachRefreshPricer(fn func(ctx context.Context) (attach.PricingRefreshResponse, error)) Option {
+	return func(o *options) { o.attachRefreshFn = fn }
+}
+
+// WithAttachPricingSetter wires a func that runs on
+// POST /sessions/<sid>/pricing/set — writes a manual per-model
+// rate and rebuilds the catalog.
+func WithAttachPricingSetter(fn func(req attach.PricingSetRequest) error) Option {
+	return func(o *options) { o.attachSetPricingFn = fn }
+}
+
+// AttachPricing implements attach.PricingProvider.
+func (a *Agent) AttachPricing() attach.PricingInfo {
+	if a == nil || a.attachPricingFn == nil {
+		return attach.PricingInfo{}
+	}
+	return a.attachPricingFn()
+}
+
+// AttachRefreshPricing implements attach.PricingController. Returns
+// attach.ErrCapabilityNotRegistered when no func was wired — the
+// handler maps that to HTTP 501.
+func (a *Agent) AttachRefreshPricing(ctx context.Context) (attach.PricingRefreshResponse, error) {
+	if a == nil || a.attachRefreshFn == nil {
+		return attach.PricingRefreshResponse{}, attach.ErrCapabilityNotRegistered
+	}
+	return a.attachRefreshFn(ctx)
+}
+
+// AttachSetManualPricing implements attach.PricingController.
+func (a *Agent) AttachSetManualPricing(req attach.PricingSetRequest) error {
+	if a == nil || a.attachSetPricingFn == nil {
+		return attach.ErrCapabilityNotRegistered
+	}
+	return a.attachSetPricingFn(req)
+}
+
+// AttachCompact implements attach.CompactSlashProvider. Wraps
+// Agent.Compact and projects the result into the JSON wire format.
+// Errors propagate; the attach handler turns them into 500s.
+func (a *Agent) AttachCompact(ctx context.Context, focus string) (attach.CompactResponse, error) {
+	if a == nil {
+		return attach.CompactResponse{}, nil
+	}
+	res, err := a.Compact(ctx, focus)
+	if err != nil {
+		return attach.CompactResponse{}, err
+	}
+	return attach.CompactResponse{
+		SummaryEventID: res.SummaryEventID,
+		SummaryText:    res.SummaryText,
+		DurationMS:     res.Duration.Milliseconds(),
+		Skipped:        res.Skipped,
+	}, nil
+}
+
+// AttachCheckpoint implements attach.CheckpointSlashProvider. Wraps
+// Agent.Checkpoint.
+func (a *Agent) AttachCheckpoint(ctx context.Context, note string) (attach.CheckpointResponse, error) {
+	if a == nil {
+		return attach.CheckpointResponse{}, nil
+	}
+	res, err := a.Checkpoint(ctx, note)
+	if err != nil {
+		return attach.CheckpointResponse{}, err
+	}
+	return attach.CheckpointResponse{
+		CheckpointEventID: res.CheckpointEventID,
+		SummaryText:       res.SummaryText,
+		TaskNote:          res.TaskNote,
+		DurationMS:        res.Duration.Milliseconds(),
+		Skipped:           res.Skipped,
+	}, nil
+}
+
+// AttachAskSideQuestion implements attach.SideQueryProvider. Wraps
+// Agent.AskSideQuestion (the /btw side-channel that doesn't persist
+// to the event log).
+func (a *Agent) AttachAskSideQuestion(ctx context.Context, question string) (string, error) {
+	if a == nil {
+		return "", nil
+	}
+	return a.AskSideQuestion(ctx, question)
+}
+
+// AttachSpawnSubagent implements attach.SubagentSpawner. Delegates
+// to the wired BackgroundAgentManager. Returns
+// ErrSubagentSpawnerUnavailable when no manager is attached.
+func (a *Agent) AttachSpawnSubagent(ctx context.Context, spec attach.SubagentSpec) (attach.SubagentSpawnResponse, error) {
+	if a == nil || a.bgMgr == nil {
+		return attach.SubagentSpawnResponse{}, ErrSubagentSpawnerUnavailable
+	}
+	handle, err := a.bgMgr.Spawn(ctx, "" /* parentBranch */, BackgroundSpec{
+		Name:         spec.Name,
+		SystemPrompt: spec.SystemPrompt,
+		Goal:         spec.Goal,
+		Tools:        spec.Tools,
+		Extras:       spec.Extras,
+		Budgets: BackgroundBudgets{
+			MaxTurns:     spec.Budgets.MaxTurns,
+			MaxCost:      spec.Budgets.MaxCostUSD,
+			MaxWallclock: time.Duration(spec.Budgets.MaxWallClockS) * time.Second,
+		},
+		Scheduler: spec.Scheduler,
+	})
+	if err != nil {
+		return attach.SubagentSpawnResponse{}, err
+	}
+	return attach.SubagentSpawnResponse{Name: handle.Name, StartedAt: handle.StartedAt}, nil
+}
+
+// ErrSubagentSpawnerUnavailable is returned by AttachSpawnSubagent
+// when the agent wasn't constructed with WithBackgroundManager. The
+// attach handler maps this to HTTP 501 so the operator sees
+// "subagent spawn not registered" instead of a 500.
+var ErrSubagentSpawnerUnavailable = errors.New("agent: subagent spawner unavailable (no BackgroundAgentManager wired)")
 
 // Interrupt cancels the in-flight turn (if any) by invoking the
 // stored cancel func. Returns true if there was something to cancel

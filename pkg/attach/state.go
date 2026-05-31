@@ -14,7 +14,21 @@
 
 package attach
 
-import "time"
+import (
+	"context"
+	"errors"
+	"time"
+)
+
+// ErrCapabilityNotRegistered is returned by mutation-capability
+// methods on OperatorView when the corresponding func field is nil.
+// Handlers check for this with errors.Is and convert to HTTP 501 so
+// operators see "capability not registered" instead of a stack trace.
+//
+// Reads use the empty-result convention instead (200 with zero data
+// when the func is nil) — operators who hit a POST need to know if it
+// took effect, while readers can accept "nothing here" silently.
+var ErrCapabilityNotRegistered = errors.New("attach: capability not registered on this OperatorView")
 
 // Tool source classifications surfaced via GET /sessions/.../tools.
 // Bare strings (not a typed enum) so JSON clients downstream — the
@@ -268,6 +282,12 @@ type OperatorView struct {
 	Skills  func() []SkillInfo
 	MCP     func() MCPInfo
 	Pricing func() PricingInfo
+
+	// PR A2 (mutation endpoints) func fields. nil means the
+	// corresponding POST returns 501 (capability not registered).
+	RefreshPricing func(ctx context.Context) (PricingRefreshResponse, error)
+	SetPricing     func(req PricingSetRequest) error
+	Reload         func(ctx context.Context) ReloadResponse
 }
 
 // AttachMemory satisfies MemoryProvider when Memory is non-nil.
@@ -303,3 +323,240 @@ func (o *OperatorView) AttachPricing() PricingInfo {
 	}
 	return o.Pricing()
 }
+
+// AttachRefreshPricing satisfies PricingController. Returns
+// ErrCapabilityNotRegistered when RefreshPricing is nil so the
+// handler emits 501.
+func (o *OperatorView) AttachRefreshPricing(ctx context.Context) (PricingRefreshResponse, error) {
+	if o.RefreshPricing == nil {
+		return PricingRefreshResponse{}, ErrCapabilityNotRegistered
+	}
+	return o.RefreshPricing(ctx)
+}
+
+// AttachSetManualPricing satisfies PricingController.
+func (o *OperatorView) AttachSetManualPricing(req PricingSetRequest) error {
+	if o.SetPricing == nil {
+		return ErrCapabilityNotRegistered
+	}
+	return o.SetPricing(req)
+}
+
+// AttachReload satisfies Reloader. Returns a ReloadResponse with
+// Errors populated by the sentinel string when Reload is nil so the
+// handler emits 501.
+func (o *OperatorView) AttachReload(ctx context.Context) ReloadResponse {
+	if o.Reload == nil {
+		return ReloadResponse{Errors: []string{ErrCapabilityNotRegistered.Error()}}
+	}
+	return o.Reload(ctx)
+}
+
+// PermsInfo is the response shape of GET /sessions/.../perms — backs
+// the remote TUI's /permissions slash. Mirrors permissions.Snapshot
+// plus the per-session approval log so the operator can review
+// what was approved this session.
+type PermsInfo struct {
+	Mode      string         `json:"mode"`
+	Allow     []string       `json:"allow,omitempty"`
+	Deny      []string       `json:"deny,omitempty"`
+	Approvals []ApprovalInfo `json:"approvals,omitempty"`
+}
+
+// ApprovalInfo is one row in the per-session approval log. Mirrors
+// permissions.ApprovalLog in a JSON-friendly shape.
+type ApprovalInfo struct {
+	Tool     string    `json:"tool"`
+	Key      string    `json:"key,omitempty"`
+	Decision string    `json:"decision"` // "allow-once" | "allow-session" | etc.
+	At       time.Time `json:"at"`
+}
+
+// PatternsRequest is the POST body for /perms/allow + /perms/deny.
+// Lets the operator add one or more patterns in a single call.
+type PatternsRequest struct {
+	Patterns []string `json:"patterns"`
+}
+
+// PricingSetRequest is the POST body for /pricing/set.
+type PricingSetRequest struct {
+	Model            string  `json:"model"`
+	InputUSDPerMTok  float64 `json:"input_usd_per_mtok"`
+	OutputUSDPerMTok float64 `json:"output_usd_per_mtok"`
+}
+
+// PricingRefreshResponse is the response shape of POST
+// /pricing/refresh — reports whether the upstream fetch produced new
+// data, the model count post-refresh, and the refreshed-at timestamp
+// so the client can update its display.
+type PricingRefreshResponse struct {
+	Updated     bool      `json:"updated"`
+	KnownModels int       `json:"known_models"`
+	LastRefresh time.Time `json:"last_refresh"`
+	Detail      string    `json:"detail,omitempty"` // human-readable note when Updated=false
+}
+
+// ReloadResponse is the response shape of POST /reload — reports
+// per-surface success so the operator sees which parts (memory /
+// skills / mcp) succeeded and which failed without parsing logs.
+type ReloadResponse struct {
+	Memory bool     `json:"memory"`
+	Skills bool     `json:"skills"`
+	MCP    bool     `json:"mcp"`
+	Errors []string `json:"errors,omitempty"`
+}
+
+// PermsProvider is the optional capability for GET /sessions/.../perms.
+type PermsProvider interface {
+	AttachPerms() PermsInfo
+}
+
+// PermsController is the optional capability for POST
+// /sessions/.../perms/allow + /perms/deny. Mutates the gate's
+// pattern list; the new patterns take effect for future tool calls
+// without restarting the agent. Each method returns an error so the
+// gate's own pattern-validation errors surface to the operator.
+type PermsController interface {
+	AttachAddAllow(patterns []string) error
+	AttachAddDeny(patterns []string) error
+}
+
+// PricingController is the optional capability for POST
+// /sessions/.../pricing/refresh + /pricing/set. Implementations
+// typically delegate to the binary's pricing layer (internal/pricing
+// in cmd/core-agent) rather than reimplementing it.
+type PricingController interface {
+	AttachRefreshPricing(ctx context.Context) (PricingRefreshResponse, error)
+	AttachSetManualPricing(req PricingSetRequest) error
+}
+
+// Reloader is the optional capability for POST /sessions/.../reload.
+// Re-walks the agent's project dependencies (memory / skills / MCP)
+// and reports per-surface success. The implementation decides what
+// "reload" means — e.g., re-load AGENTS.md, reload skills, restart
+// MCP servers. Hot-swap semantics are the binary's concern.
+type Reloader interface {
+	AttachReload(ctx context.Context) ReloadResponse
+}
+
+// CompactRequest is the POST body for /slash/compact. Focus is the
+// optional steer text the operator typed after `/compact <focus>`
+// (e.g. "preserve the test failures"). Empty for a default-focus run.
+type CompactRequest struct {
+	Focus string `json:"focus,omitempty"`
+}
+
+// CompactResponse is the response shape of POST /slash/compact.
+// Mirrors the agent.CompactionResult fields the remote TUI needs to
+// render the post-compaction confirmation row.
+type CompactResponse struct {
+	SummaryEventID string `json:"summary_event_id,omitempty"`
+	SummaryText    string `json:"summary_text,omitempty"`
+	DurationMS     int64  `json:"duration_ms"`
+	Skipped        bool   `json:"skipped,omitempty"`
+}
+
+// CheckpointRequest is the POST body for /slash/done. Note is the
+// optional task-note the operator typed after `/done <note>`. Empty
+// when the operator didn't supply one (the checkpointer can derive
+// a default).
+type CheckpointRequest struct {
+	Note string `json:"note,omitempty"`
+}
+
+// CheckpointResponse is the response shape of POST /slash/done.
+type CheckpointResponse struct {
+	CheckpointEventID string `json:"checkpoint_event_id,omitempty"`
+	SummaryText       string `json:"summary_text,omitempty"`
+	TaskNote          string `json:"task_note,omitempty"`
+	DurationMS        int64  `json:"duration_ms"`
+	Skipped           bool   `json:"skipped,omitempty"`
+}
+
+// SideQueryRequest is the POST body for /slash/btw — the operator's
+// side question. The agent answers using its session history but
+// doesn't persist the round-trip; results render as a dismissible
+// overlay rather than a turn boundary.
+type SideQueryRequest struct {
+	Question string `json:"question"`
+}
+
+// SideQueryResponse carries the agent's answer text.
+type SideQueryResponse struct {
+	Answer string `json:"answer"`
+}
+
+// SubagentSpec is the POST body for /slash/subagent. Mirrors
+// agent.BackgroundSpec in JSON-friendly form.
+type SubagentSpec struct {
+	Name         string         `json:"name"`
+	SystemPrompt string         `json:"system_prompt,omitempty"`
+	Goal         string         `json:"goal"`
+	Tools        []string       `json:"tools,omitempty"`
+	Extras       []string       `json:"extras,omitempty"`
+	Budgets      SubagentBudget `json:"budgets,omitempty"`
+	Scheduler    string         `json:"scheduler,omitempty"`
+}
+
+// SubagentBudget mirrors agent.BackgroundBudgets. Zero values mean
+// "use the manager's default for that field".
+type SubagentBudget struct {
+	MaxTurns      int     `json:"max_turns,omitempty"`
+	MaxCostUSD    float64 `json:"max_cost_usd,omitempty"`
+	MaxWallClockS int     `json:"max_wall_clock_seconds,omitempty"`
+}
+
+// SubagentSpawnResponse confirms the spawn. StartedAt is the
+// manager's record of when the subagent's first turn dispatched.
+type SubagentSpawnResponse struct {
+	Name      string    `json:"name"`
+	StartedAt time.Time `json:"started_at"`
+}
+
+// CompactSlashProvider is the optional capability for
+// POST /sessions/.../slash/compact.
+type CompactSlashProvider interface {
+	AttachCompact(ctx context.Context, focus string) (CompactResponse, error)
+}
+
+// CheckpointSlashProvider is the optional capability for
+// POST /sessions/.../slash/done.
+type CheckpointSlashProvider interface {
+	AttachCheckpoint(ctx context.Context, note string) (CheckpointResponse, error)
+}
+
+// SideQueryProvider is the optional capability for
+// POST /sessions/.../slash/btw.
+type SideQueryProvider interface {
+	AttachAskSideQuestion(ctx context.Context, question string) (string, error)
+}
+
+// SubagentSpawner is the optional capability for
+// POST /sessions/.../slash/subagent.
+type SubagentSpawner interface {
+	AttachSpawnSubagent(ctx context.Context, spec SubagentSpec) (SubagentSpawnResponse, error)
+}
+
+// OperatorView additions for PR A2 (mutation endpoints): three
+// func fields surface caller-held implementations of the pricing /
+// reload capabilities. PermsController is implemented directly on
+// *agent.Agent (the gate is held by the agent), so OperatorView
+// doesn't need a Perms field — embedded Registrant carries it.
+//
+// Set these only for the binary-specific operations you want
+// exposed. nil means the corresponding POST returns 501 (capability
+// not registered) — different from the read endpoints' "200 with
+// empty data" convention because operators who hit a POST expecting
+// it to take effect must know if it didn't.
+//
+// Wire-up example:
+//
+//	view := &attach.OperatorView{
+//	    Registrant:     ag,
+//	    RefreshPricing: func(ctx context.Context) (attach.PricingRefreshResponse, error) {
+//	        outcome, err := pricing.Refresh(ctx, coreHome, refreshOpts)
+//	        ...
+//	    },
+//	    SetPricing: func(req attach.PricingSetRequest) error { ... },
+//	    Reload:     func(ctx context.Context) attach.ReloadResponse { ... },
+//	}

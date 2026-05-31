@@ -40,11 +40,12 @@ import (
 	"github.com/go-steer/core-agent/pkg/usage"
 )
 
-// pkgCoreElicitor mirrors pkgElicitor (the internal/tui variant) for
-// the core-tui code path. Set lazily by makeMCPElicitor when
-// CORE_AGENT_TUI=core-tui is active; consumed by launchTUIv2 so the
-// same instance the MCP servers were wired against actually receives
-// each elicit through the TUI.
+// pkgCoreElicitor is the core-tui elicitor handle shared between
+// makeMCPElicitor (which constructs it before mcp.Build hands its
+// elicit binding to each server) and launchTUIv2 (which threads
+// the same handle into tui.Options so the bubble-tea program can
+// attach it after construction). Set in makeMCPElicitor; consumed
+// in launchTUIv2.
 var pkgCoreElicitor coretui.Elicitor
 
 // availableModelIDs is the hardcoded candidate list the /model
@@ -100,9 +101,7 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 	deps.Gate.SetPrompter(&gatePrompterBridge{inner: prompter})
 
 	// pkgCoreElicitor should have been set by makeMCPElicitor
-	// (called earlier in main.go before mcp.Build) under the same
-	// CORE_AGENT_TUI=core-tui gate that picked this launcher. If
-	// it's nil we either flipped the env-var mid-startup or
+	// (called earlier in main.go before mcp.Build). If it's nil
 	// someone refactored the wiring — warn loudly and fall through
 	// with a fresh elicitor so the TUI still starts; MCP-originated
 	// elicits will be declined server-side rather than reach a
@@ -248,7 +247,7 @@ func (a *coreAgentAdapter) Set(modelID string, in, out float64) (string, error) 
 // /reload degrades to a "not yet wired" system message.
 func makeReloadCallback(_ context.Context, _ tuiDeps) func() (coretui.ReloadResult, error) {
 	return func() (coretui.ReloadResult, error) {
-		return coretui.ReloadResult{}, fmt.Errorf("/reload not yet lifted into the core-tui adapter; use CORE_AGENT_TUI=internal for reload")
+		return coretui.ReloadResult{}, fmt.Errorf("/reload not yet wired into the core-tui adapter")
 	}
 }
 
@@ -739,11 +738,12 @@ func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (
 			ModalAnswer: &coretui.SideAnswer{Question: args, Answer: answer},
 		}, nil
 	case "subagent", "sub":
-		// Full flag parsing lives in the original /subagent handler
-		// (internal/tui/subagent.go); a follow-up PR lifts that logic
-		// here. For now, point the operator at the in-process flow.
+		// Full flag parsing not yet wired into the core-tui adapter.
+		// Library callers can drive subagent spawn directly via
+		// BackgroundAgentManager.Spawn while we lift the slash flag
+		// parser.
 		return coretui.SlashResult{
-			SystemMessage: "/subagent requires the internal/tui flag parser — not yet lifted into the core-tui adapter. Use CORE_AGENT_TUI=internal to drive subagent spawn for now.",
+			SystemMessage: "/subagent requires a flag parser that isn't wired into the core-tui adapter yet.",
 		}, nil
 	case "done", "checkpoint":
 		// Mirrors /compact's structure — Agent.Checkpoint runs the

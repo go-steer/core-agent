@@ -14,88 +14,38 @@
 
 package main
 
-import (
-	"github.com/go-steer/core-agent/pkg/attach"
-)
+// Bubble-tea message + entry types for the pre-coretui picker. The
+// chat-side message types (frame / inject-ack / etc.) live with the
+// adapter now (internal/coretuiremote) — this file is whatever the
+// picker.go needs to compile.
 
-// Bubble tea message types live here so each model file can stay
-// focused on its View/Update logic. All tea.Msg implementations are
-// value types so they can be cheaply dispatched across cmd boundaries.
-
-// --- Picker ---
-
+// pickerSessionsLoadedMsg is dispatched by the picker's refresh
+// command when the listener's GET /sessions response arrives.
 type pickerSessionsLoadedMsg struct {
 	sessions []pickerEntry
 	err      error
 }
 
-// --- Chat / streaming ---
-
-type chatFrameMsg struct {
-	frame attach.Frame
-}
-
-type chatStreamEndedMsg struct {
-	err error
-}
-
-type chatStatusLoadedMsg struct {
-	status attach.StatusInfo
-	err    error
-}
-
-type chatInjectAckMsg struct {
-	message string
-	err     error
-	queueID uint64 // identifies the queue entry to advance / fail
-}
-
-type chatWakeAckMsg struct {
-	err error
-}
-
-// chatInterruptAckMsg carries the result of POST /interrupt back
-// to the chat model so it can render a system-line confirming
-// the cancel (or the "nothing-in-flight" no-op).
-type chatInterruptAckMsg struct {
-	interrupted bool
-	err         error
-}
-
-type chatToolsLoadedMsg struct {
-	tools []attach.ToolInfo
-	err   error
-}
-
-type chatAgentsLoadedMsg struct {
-	agents []attach.AgentInfo
-	err    error
-}
-
-type chatPeersLoadedMsg struct {
-	// nil err + nil peers means the listener doesn't run peer-registration.
-	peers []peerEntry
-	err   error
-}
-
-// chatPeersLoadedMsg uses peerEntry; declared in this file too.
-
-// --- Picker entries ---
-
+// pickerEntry is one row in the session picker. App may be empty
+// when the listener didn't qualify the SessionID (the shortcut form
+// works either way). Endpoint is the URL of the listener that owns
+// this session — populated to disambiguate peer-registered sessions
+// from local ones.
 type pickerEntry struct {
 	App         string
 	User        string
 	SessionID   string
 	HasEventLog bool
-	Endpoint    string // URL of the listener that owns this session (peer endpoint or "")
-	Origin      string // "local" or peer name
+	Endpoint    string // listener URL (peer endpoint or "")
+	Origin      string // "local" | peer name
 }
 
-// --- Peer entries (subset of attachclient.PeerDescriptor surfaced in modals) ---
-
-type peerEntry struct {
-	Name     string
-	Endpoint string
-	Labels   map[string]string
-	RegID    string
+// sessionPath returns the relative attach path the entry corresponds
+// to. Used by main.go after the picker selects a session to construct
+// the coretuiremote adapter.
+func (e pickerEntry) sessionPath() string {
+	if e.App == "" {
+		return "/sessions/" + e.SessionID
+	}
+	return "/sessions/" + e.App + "/" + e.SessionID
 }

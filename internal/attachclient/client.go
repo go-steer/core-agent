@@ -242,6 +242,113 @@ func (c *Client) Pricing(ctx context.Context, sessionPath string) (attach.Pricin
 	return out, nil
 }
 
+// Perms calls GET <base>/sessions/<sid>/perms. Backs the remote
+// TUI's /permissions slash. Returns zero PermsInfo on 501.
+func (c *Client) Perms(ctx context.Context, sessionPath string) (attach.PermsInfo, error) {
+	var out attach.PermsInfo
+	if err := c.doJSON(ctx, http.MethodGet, sessionPath+"/perms", nil, &out); err != nil {
+		return attach.PermsInfo{}, err
+	}
+	return out, nil
+}
+
+// AllowPatterns calls POST <base>/sessions/<sid>/perms/allow with the
+// given patterns. Backs the remote TUI's /allow slash. Returns nil
+// on success (204), an error otherwise — including 501 when the
+// agent doesn't implement PermsController and 400 when the gate
+// rejects a pattern.
+func (c *Client) AllowPatterns(ctx context.Context, sessionPath string, patterns []string) error {
+	return c.doJSON(ctx, http.MethodPost, sessionPath+"/perms/allow",
+		attach.PatternsRequest{Patterns: patterns}, nil)
+}
+
+// DenyPatterns calls POST <base>/sessions/<sid>/perms/deny. Backs
+// the remote TUI's /deny slash.
+func (c *Client) DenyPatterns(ctx context.Context, sessionPath string, patterns []string) error {
+	return c.doJSON(ctx, http.MethodPost, sessionPath+"/perms/deny",
+		attach.PatternsRequest{Patterns: patterns}, nil)
+}
+
+// RefreshPricing calls POST <base>/sessions/<sid>/pricing/refresh.
+// Backs the remote TUI's /pricing refresh subcommand. Returns the
+// outcome (whether the LiteLLM fetch actually pulled new data and
+// the post-refresh model count) so the client can update its display.
+func (c *Client) RefreshPricing(ctx context.Context, sessionPath string) (attach.PricingRefreshResponse, error) {
+	var out attach.PricingRefreshResponse
+	if err := c.doJSON(ctx, http.MethodPost, sessionPath+"/pricing/refresh", struct{}{}, &out); err != nil {
+		return attach.PricingRefreshResponse{}, err
+	}
+	return out, nil
+}
+
+// SetManualPricing calls POST <base>/sessions/<sid>/pricing/set.
+// Backs the remote TUI's /pricing set subcommand.
+func (c *Client) SetManualPricing(ctx context.Context, sessionPath string, req attach.PricingSetRequest) error {
+	return c.doJSON(ctx, http.MethodPost, sessionPath+"/pricing/set", req, nil)
+}
+
+// Reload calls POST <base>/sessions/<sid>/reload. Backs the remote
+// TUI's /reload slash. Returns the per-surface success flags +
+// any errors so the operator sees which parts (memory / skills /
+// mcp) succeeded and which failed.
+func (c *Client) Reload(ctx context.Context, sessionPath string) (attach.ReloadResponse, error) {
+	var out attach.ReloadResponse
+	if err := c.doJSON(ctx, http.MethodPost, sessionPath+"/reload", struct{}{}, &out); err != nil {
+		return attach.ReloadResponse{}, err
+	}
+	return out, nil
+}
+
+// SlashCompact calls POST <base>/sessions/<sid>/slash/compact.
+// Synchronous: blocks until the compaction summarizer completes
+// (5–30s typical for real model calls). The remote TUI should
+// render the in-chat preamble row at dispatch — this call does NOT
+// emit a preamble itself.
+func (c *Client) SlashCompact(ctx context.Context, sessionPath, focus string) (attach.CompactResponse, error) {
+	var out attach.CompactResponse
+	if err := c.doJSON(ctx, http.MethodPost, sessionPath+"/slash/compact",
+		attach.CompactRequest{Focus: focus}, &out); err != nil {
+		return attach.CompactResponse{}, err
+	}
+	return out, nil
+}
+
+// SlashDone calls POST <base>/sessions/<sid>/slash/done. Synchronous.
+// Backs the remote TUI's /done slash.
+func (c *Client) SlashDone(ctx context.Context, sessionPath, note string) (attach.CheckpointResponse, error) {
+	var out attach.CheckpointResponse
+	if err := c.doJSON(ctx, http.MethodPost, sessionPath+"/slash/done",
+		attach.CheckpointRequest{Note: note}, &out); err != nil {
+		return attach.CheckpointResponse{}, err
+	}
+	return out, nil
+}
+
+// SlashBtw calls POST <base>/sessions/<sid>/slash/btw. Synchronous.
+// Backs the remote TUI's /btw slash. The answer renders as a
+// dismissible overlay (no event-log persistence).
+func (c *Client) SlashBtw(ctx context.Context, sessionPath, question string) (string, error) {
+	var out attach.SideQueryResponse
+	if err := c.doJSON(ctx, http.MethodPost, sessionPath+"/slash/btw",
+		attach.SideQueryRequest{Question: question}, &out); err != nil {
+		return "", err
+	}
+	return out.Answer, nil
+}
+
+// SlashSubagent calls POST <base>/sessions/<sid>/slash/subagent.
+// Backs the remote TUI's /subagent slash. Returns the spawn
+// confirmation (name + started_at); the subagent's events flow
+// through the existing SSE stream under a branch label so the
+// operator sees its turns alongside the parent's.
+func (c *Client) SlashSubagent(ctx context.Context, sessionPath string, spec attach.SubagentSpec) (attach.SubagentSpawnResponse, error) {
+	var out attach.SubagentSpawnResponse
+	if err := c.doJSON(ctx, http.MethodPost, sessionPath+"/slash/subagent", spec, &out); err != nil {
+		return attach.SubagentSpawnResponse{}, err
+	}
+	return out, nil
+}
+
 // ---- POSTs (/inject, /wake) ----
 
 // Inject calls POST <base>/sessions/<sid>/inject with the given message.

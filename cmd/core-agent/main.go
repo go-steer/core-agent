@@ -452,6 +452,100 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		// window state from this same tracker so there's one source
 		// of truth.
 		agent.WithUsageTracker(tracker),
+		// Attach-extras snapshot funcs. The agent itself satisfies the
+		// MemoryProvider / SkillsProvider / MCPProvider interfaces via
+		// these closures, so the remote /memory /skills /mcp endpoints
+		// return the same state the in-process TUI sees.
+		agent.WithAttachMemoryProvider(func() []attach.MemorySource {
+			// Re-walk on every call so a fresh AGENTS.md / CLAUDE.md /
+			// GEMINI.md picked up between turns (or written by the
+			// agent itself) surfaces without a daemon restart. Cheap
+			// — a few file stats + reads of small files capped at
+			// 32 KiB each.
+			fresh, _ := instruction.Load(projectRoot, coreHome)
+			out := make([]attach.MemorySource, 0, len(fresh.Sources))
+			for _, s := range fresh.Sources {
+				out = append(out, attach.MemorySource{Scope: s.Scope, Path: s.Path, Size: s.Bytes})
+			}
+			return out
+		}),
+		agent.WithAttachSkillsProvider(func() []attach.SkillInfo {
+			// Re-walk on every call so newly-dropped SKILL.md bundles
+			// surface without restart. The merge across project +
+			// user-global sources happens inside skills.LoadAll.
+			fresh, err := skills.LoadAll(ctx, agentsDir, coreHome, gate)
+			if err != nil {
+				return nil
+			}
+			out := make([]attach.SkillInfo, 0, len(fresh.Infos))
+			for _, s := range fresh.Infos {
+				out = append(out, attach.SkillInfo{Name: s.Name, Description: s.Description})
+			}
+			return out
+		}),
+		agent.WithAttachPricingProvider(func() attach.PricingInfo {
+			// v1: minimal snapshot — surface the current model name
+			// + its per-Mtok rates so the remote adapter can compute
+			// per-turn cost client-side. Source + last-refresh
+			// fields stay empty for now; richer reporting belongs in
+			// a pricing-catalog accessor.
+			info := attach.PricingInfo{
+				CurrentModel: cfg.Model.Name,
+			}
+			if !pricingRate.IsZero() {
+				info.Current = &attach.ModelPricing{
+					InputUSDPerMTok:  pricingRate.InputPerMTok,
+					OutputUSDPerMTok: pricingRate.OutputPerMTok,
+				}
+			}
+			return info
+		}),
+		agent.WithAttachRefreshPricer(func(ctx context.Context) (attach.PricingRefreshResponse, error) {
+			if coreHome == "" {
+				return attach.PricingRefreshResponse{}, fmt.Errorf("pricing refresh: $HOME unavailable, no user file to write")
+			}
+			summary, err := refreshPricingForTUI(ctx, cfg, agentsDir, coreHome)
+			if err != nil {
+				return attach.PricingRefreshResponse{}, err
+			}
+			return attach.PricingRefreshResponse{
+				Updated:     true,
+				LastRefresh: time.Now(),
+				Detail:      summary,
+			}, nil
+		}),
+		agent.WithAttachPricingSetter(func(req attach.PricingSetRequest) error {
+			if coreHome == "" {
+				return fmt.Errorf("pricing set: $HOME unavailable, no user file to write")
+			}
+			_, err := setPricingForTUI(cfg, agentsDir, coreHome, req.Model, req.InputUSDPerMTok, req.OutputUSDPerMTok)
+			return err
+		}),
+		agent.WithAttachMCPProvider(func() attach.MCPInfo {
+			servers := make([]attach.MCPServerInfo, 0, len(mcpServers))
+			for _, s := range mcpServers {
+				tools := make([]attach.MCPToolInfo, 0, len(s.ToolInfos))
+				for _, t := range s.ToolInfos {
+					tools = append(tools, attach.MCPToolInfo{Name: t.Name, Description: t.Description})
+				}
+				// pkg/mcp uses "ok" / "error" internally; the attach
+				// wire format documents "running" / "starting" /
+				// "failed" / "stopped". Map them here so the remote
+				// TUI's coretui projection (Connected = Status ==
+				// "running") works as intended.
+				status := "running"
+				if s.Status == mcp.StatusError {
+					status = "failed"
+				}
+				servers = append(servers, attach.MCPServerInfo{
+					Name:      s.Name,
+					Status:    status,
+					Transport: "", // not surfaced on mcp.Server today
+					Tools:     tools,
+				})
+			}
+			return attach.MCPInfo{Servers: servers}
+		}),
 	}
 	if bgMgr != nil {
 		opts = append(opts, agent.WithBackgroundManager(bgMgr))
@@ -665,15 +759,31 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		// the operator's TUI is rendering. Empty prompt means
 		// "no user text this turn, just drain the inbox" — same
 		// path REPL uses for the same case.
+		//
+		// Per-turn usage tap mirrors runner/headless.go's tapUsage:
+		// the loop watches each event's UsageMetadata, remembers
+		// the latest in/out counts, and on iterator end calls
+		// tracker.Append once. Without this the /stats and status-
+		// banner cumulative totals stay at zero in --no-repl mode
+		// because the tracker is only otherwise driven by
+		// agent/autonomous.go and agent/subtask.go.
 		for {
 			select {
 			case <-ctx.Done():
 				return runner.ExitOK
 			case <-a.WakeRequested():
-				for _, runErr := range a.Run(ctx, "") {
+				var lastIn, lastOut int
+				for ev, runErr := range a.Run(ctx, "") {
+					if ev != nil && ev.UsageMetadata != nil {
+						lastIn = int(ev.UsageMetadata.PromptTokenCount)
+						lastOut = int(ev.UsageMetadata.CandidatesTokenCount)
+					}
 					if runErr != nil {
 						fmt.Fprintf(os.Stderr, "core-agent: turn: %v\n", runErr)
 					}
+				}
+				if tracker != nil && (lastIn > 0 || lastOut > 0) {
+					tracker.Append(m.Name(), lastIn, lastOut, pricingRate)
 				}
 			}
 		}
@@ -687,18 +797,11 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 	// TUI package. Defaults follow Claude Code: bare `core-agent` in
 	// a terminal lands in the TUI.
 	if !noTUI && term.IsTerminal(int(os.Stdin.Fd())) {
-		// v2.0 flip: launchTUIv2 (core-tui-backed) is the default.
-		// CORE_AGENT_TUI=internal switches back to the legacy
-		// internal/tui code path as a one-release escape hatch for
-		// operators who hit a regression and need to fall back
-		// while we investigate. Slated for removal in v2.1 once
-		// core-tui has soaked in production. See
-		// docs/core-tui-adapter-design.md for the migration story.
-		launcher := launchTUIv2
-		if os.Getenv("CORE_AGENT_TUI") == "internal" {
-			launcher = launchTUI
-		}
-		didRun, code, err := launcher(ctx, tuiDeps{
+		// core-tui is the only TUI codepath since v2.1; the
+		// CORE_AGENT_TUI=internal escape hatch and the lifted
+		// internal/tui/ tree are gone. Slim build (no_tui) still
+		// stubs launchTUIv2 to no-op + REPL fall-through.
+		didRun, code, err := launchTUIv2(ctx, tuiDeps{
 			Cfg:          cfg,
 			Model:        m,
 			AgentOpts:    opts,

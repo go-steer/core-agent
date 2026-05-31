@@ -159,8 +159,8 @@ branch.
       non-zero subtask turn count if `--agentic-tools` is on and
       you've issued a prompt that triggers an `agentic_*` wrapper.
 - [ ] `/memory` lists any loaded `AGENTS.md` files.
-- [ ] `/skills` lists registered skills (empty if no `.agents/skills/`).
-- [ ] `/mcp` lists declared MCP servers (empty if no `.agents/mcp.json`).
+- [x] `/skills` lists registered skills (empty if no `.agents/skills/`).
+- [x/oer] `/mcp` lists declared MCP servers (empty if no `.agents/mcp.json`).
 - [ ] `/pricing` shows the current pricing snapshot — source,
       known model count, and the current model's rate.
 
@@ -173,16 +173,16 @@ branch.
 - [ ] `/pricing refresh` triggers a LiteLLM fetch and reports the
       outcome (updated / unchanged + model count).
 - [ ] `/pricing set claude-opus-4-7 15 75` applies a manual rate;
-      subsequent `/pricing` shows the new rate.
+      subsequent `/pricing` shows the new ra
 - [ ] `/reload` re-walks memory + skills + MCP; per-surface
       success flags surface in the result.
 
 ### Async slashes (PR A3)
 
-- [ ] `/btw what tools do you have?` opens a modal with the
+- [x] `/btw what tools do you have?` opens a modal with the
       agent's answer; the persistent chat scrollback is
       **unchanged** (no pollution).
-- [ ] `/compact` writes a compaction summary; a preamble row
+- [x] `/compact` writes a compaction summary; a preamble row
       ("Compacting context…") appears at dispatch; the post-summary
       `/context` shows one additional compaction.
 - [ ] `/done shipped the smoke test` writes a checkpoint; preamble
@@ -194,16 +194,21 @@ branch.
 
 ### Built-in slashes (core-tui)
 
-- [ ] `/help` lists every registered slash, including the eight
+- [x] `/help` lists every registered slash, including the eight
       adapter-provided ones above.
-- [ ] `/tools` lists the agent's tool catalog (read_file, bash,
+- [x] `/tools` lists the agent's tool catalog (read_file, bash,
       etc.) with gate states.
 - [ ] `/subagents` lists running subagents (matches what you
       spawned via `/subagent`).
-- [ ] `/theme dark` and `/theme light` flip the palette
-      immediately.
 - [ ] `/quit` cleanly exits the remote TUI without leaving the
       listener in a bad state.
+
+  > **Not supported in this train:** `/theme` (runtime theme swap).
+  > core-tui v0.6.3 doesn't ship a `/theme` builtin and the adapter
+  > can't register one usefully since the theme is set at
+  > `coretui.Options.ForceTheme` startup with no runtime swap API.
+  > Pass `core-agent-tui --theme=dark|light` at launch instead.
+  > Tracked for a future core-tui upstream.
 
 ### Mid-turn injection
 
@@ -221,8 +226,52 @@ branch.
 - [ ] Kill terminal 1 (`pkill -9 core-agent`); the remote TUI
       should surface a connection-lost message and let the
       operator restart.
+
+      There was no session lost; when trying to run a command it does show a connection refused.
+      Note:  the pkill command kills both process as they both match "core-agent"
+
 - [ ] Restart terminal 1's agent + re-attach; the chat shows the
       preserved session history from the eventlog.
+
+      ❯ what's kubernetes?
+
+⚠  stream: Get "http://localhost:7777/sessions/core-agent/default/events": dial tcp 127.0.0.1:7777: connect:
+connection refused
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+❯ what's kubernetes?
+
+
+  I have the context from the previous task. I know we identified 12 GKE clusters in the  gke-demos-345619  project
+  (located in  us-central1  and  us-central1-a ) and that we'll need to fetch credentials before interacting with
+  any specific cluster's workloads.
+
+  What would you like to do next?
+
+└ 3.3K in · 82 out · 4.5s
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+❯ which clsuters are autopilot?
+
+⚠  stream: Get "http://localhost:7777/sessions/core-agent/default/events?since=10": dial tcp 127.0.0.1:7777: connect:
+connection refused
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+❯ try again
+
+
+  Kubernetes is an open-source container orchestration system that automates the deployment, scaling, and
+  management of containerized applications. Originally designed by Google and now maintained by the Cloud Native
+  Computing Foundation (CNCF), it helps you manage applications that are made up of hundreds or thousands of
+  containers, ensuring they run reliably and scale efficiently across clusters of servers.
+
+  In the context of the work we just did, Google Kubernetes Engine (GKE) is Google Cloud's managed service for     
+  running Kubernetes, which handles much of the underlying infrastructure and control plane management for you.    
+
+  Let me know if you'd like to dive deeper into any specific Kubernetes concepts or start interacting with any of  
+  the clusters we found!
+
+└ 3.4K in · 141 out · 4.4s
 
 ## Failure modes worth verifying
 

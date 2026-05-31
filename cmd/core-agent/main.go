@@ -471,13 +471,21 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 			return out
 		}),
 		agent.WithAttachPricingProvider(func() attach.PricingInfo {
-			// v1: minimal snapshot — surface the current model name +
-			// known model count from the cfg-driven catalog. Source +
-			// last-refresh fields stay empty for now; richer
-			// reporting belongs in a pricing-catalog accessor.
-			return attach.PricingInfo{
+			// v1: minimal snapshot — surface the current model name
+			// + its per-Mtok rates so the remote adapter can compute
+			// per-turn cost client-side. Source + last-refresh
+			// fields stay empty for now; richer reporting belongs in
+			// a pricing-catalog accessor.
+			info := attach.PricingInfo{
 				CurrentModel: cfg.Model.Name,
 			}
+			if !pricingRate.IsZero() {
+				info.Current = &attach.ModelPricing{
+					InputUSDPerMTok:  pricingRate.InputPerMTok,
+					OutputUSDPerMTok: pricingRate.OutputPerMTok,
+				}
+			}
+			return info
 		}),
 		agent.WithAttachRefreshPricer(func(ctx context.Context) (attach.PricingRefreshResponse, error) {
 			if coreHome == "" {

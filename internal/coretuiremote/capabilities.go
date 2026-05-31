@@ -144,16 +144,57 @@ func (a *Adapter) SessionCostUSD() float64 {
 }
 
 // LastTurn satisfies coretui.UsageTracker. Returns the most recent
-// per-turn token counts captured during Run() (see adapter.go's
-// event loop). Cost stays 0 — per-event UsageMetadata doesn't carry
-// the dollar amount; cost lives in the server's pricing layer
-// projection that's surfaced via SessionCostUSD (cumulative). If a
-// per-turn cost surface becomes important, add a /usage/last endpoint
-// that returns the most recent usage.Tracker turn entry.
+// per-turn token counts captured during Run() and the matching cost
+// (computed client-side from cached per-Mtok rates). Falls back to
+// $0 cost when the pricing snapshot hasn't been fetched yet or the
+// model has no published rate.
 func (a *Adapter) LastTurn() (coretui.Usage, float64) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.lastTurn, 0
+	cost := costFromRates(a.lastTurn.InputTokens, a.lastTurn.OutputTokens, a.pricingIn, a.pricingOut)
+	return a.lastTurn, cost
+}
+
+// applyPricing populates ev.CostUSD + ev.Model when we have rates
+// cached, so the coretui per-turn footer renders "$X.XX · model"
+// alongside in/out/elapsed. Lazily fetches the pricing snapshot on
+// the first usage-carrying event we see (one round-trip per Adapter,
+// not per turn). nil-Usage events are no-ops.
+func (a *Adapter) applyPricing(ev *coretui.Event) {
+	if ev == nil || ev.Usage == nil {
+		return
+	}
+	a.mu.Lock()
+	fetched := a.pricingFetched
+	model := a.pricingModel
+	rin := a.pricingIn
+	rout := a.pricingOut
+	a.mu.Unlock()
+	if !fetched {
+		info, err := a.client.Pricing(context.TODO(), a.sessionPath)
+		a.mu.Lock()
+		a.pricingFetched = true // mark fetched even on error so we don't retry every event
+		if err == nil {
+			a.pricingModel = info.CurrentModel
+			if info.Current != nil {
+				a.pricingIn = info.Current.InputUSDPerMTok
+				a.pricingOut = info.Current.OutputUSDPerMTok
+			}
+			model = a.pricingModel
+			rin = a.pricingIn
+			rout = a.pricingOut
+		}
+		a.mu.Unlock()
+	}
+	ev.Model = model
+	ev.CostUSD = costFromRates(ev.Usage.InputTokens, ev.Usage.OutputTokens, rin, rout)
+}
+
+// costFromRates computes $cost = in*inRate/M + out*outRate/M. Zero
+// rates → zero cost (free model or unknown rate — same display).
+func costFromRates(inTok, outTok int, inRate, outRate float64) float64 {
+	const million = 1_000_000.0
+	return float64(inTok)/million*inRate + float64(outTok)/million*outRate
 }
 
 // ContextWindowSize satisfies coretui.UsageTracker. Returns 0

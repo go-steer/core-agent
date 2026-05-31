@@ -79,6 +79,18 @@ type Adapter struct {
 	// in Run() when we see a non-partial event carrying usage.
 	// Protected by mu (the same one guarding lastSeq).
 	lastTurn coretui.Usage
+
+	// pricing cache — lazily populated from the /pricing attach
+	// endpoint so we can compute per-event cost client-side. The
+	// server-side pricing layer computes the same number into the
+	// session tracker; we mirror it locally so the per-turn footer
+	// shows "$X.XX" without a round-trip per event. Refreshed on
+	// the first event with usage that arrives after a pricing
+	// fetch attempt.
+	pricingFetched bool
+	pricingModel   string
+	pricingIn      float64 // input $ per Mtok
+	pricingOut     float64 // output $ per Mtok
 }
 
 // replayGrace is the slack we allow when discarding historical
@@ -165,6 +177,7 @@ func (a *Adapter) Run(ctx context.Context, prompt string) iter.Seq2[coretui.Even
 					continue
 				}
 				ev := translateEvent(frame.Event)
+				a.applyPricing(&ev)
 				// Remember the per-event usage so LastTurn() can
 				// surface it after the iterator ends. The final
 				// non-partial event with UsageMetadata typically

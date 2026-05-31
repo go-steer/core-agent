@@ -752,8 +752,11 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 				return runner.ExitOK
 			case <-a.WakeRequested():
 				var lastIn, lastOut int
+				var evCount, evWithUsage int
 				for ev, runErr := range a.Run(ctx, "") {
+					evCount++
 					if ev != nil && ev.UsageMetadata != nil {
+						evWithUsage++
 						lastIn = int(ev.UsageMetadata.PromptTokenCount)
 						lastOut = int(ev.UsageMetadata.CandidatesTokenCount)
 					}
@@ -761,6 +764,12 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 						fmt.Fprintf(os.Stderr, "core-agent: turn: %v\n", runErr)
 					}
 				}
+				// Diagnostic: stderr line per turn so we can see whether
+				// the usage tap is firing as expected. Remove once /stats
+				// + the status banner show non-zero data end-to-end.
+				fmt.Fprintf(os.Stderr,
+					"core-agent: tap: events=%d with_usage=%d last_in=%d last_out=%d tracker=%v\n",
+					evCount, evWithUsage, lastIn, lastOut, tracker != nil)
 				if tracker != nil && (lastIn > 0 || lastOut > 0) {
 					tracker.Append(m.Name(), lastIn, lastOut, pricingRate)
 				}

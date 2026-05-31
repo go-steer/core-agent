@@ -236,6 +236,69 @@ func isTurnEnd(raw *session.Event, ev coretui.Event) bool {
 	return ev.Text != ""
 }
 
+// Events satisfies coretui.LiveAgent (issue #22). Continuously drains
+// the remote eventlog and yields every event into the TUI's chat
+// view — autonomous turns, subagent activity, MCP-server-triggered
+// events, other attached operators' injects, and our own. Unlike
+// Run (Pattern A), Events does NOT filter historical replay (the
+// operator attached because they want to see what they walked into)
+// and does NOT close on turn-end (observer mode is continuous).
+//
+// When core-tui detects LiveAgent, Run is silently skipped — Inject
+// remains the path for operator-typed prompts (already implemented
+// on the adapter). The result: same chat, populated end-to-end from
+// the remote stream regardless of whether the operator typed.
+//
+// Lifecycle: the iterator returns when the underlying stream closes
+// (network drop, server EOF, or ctx cancel). core-tui then renders a
+// "Disconnected" system row and keeps the program alive so the
+// operator can read scrollback or quit cleanly. Reconnection is the
+// caller's responsibility per the LiveAgent contract; today the
+// program restart is the simplest path. Auto-reconnect can layer in
+// later without an interface change.
+func (a *Adapter) Events(ctx context.Context) iter.Seq2[coretui.Event, error] {
+	return func(yield func(coretui.Event, error) bool) {
+		frames, err := a.client.Stream(ctx, a.sessionPath, 0)
+		if err != nil {
+			yield(coretui.Event{}, fmt.Errorf("stream: %w", err))
+			return
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case frame, ok := <-frames:
+				if !ok {
+					// Stream closed — coretui surfaces the
+					// "Disconnected" banner via liveStreamEndedMsg.
+					return
+				}
+				a.mu.Lock()
+				if frame.Seq > a.lastSeq {
+					a.lastSeq = frame.Seq
+				}
+				a.mu.Unlock()
+				if frame.Event == nil {
+					continue
+				}
+				ev := translateEvent(frame.Event)
+				a.applyPricing(&ev)
+				if ev.Usage != nil && !ev.Partial {
+					a.mu.Lock()
+					a.lastTurn = *ev.Usage
+					a.mu.Unlock()
+				}
+				if isEmptyEvent(ev) {
+					continue
+				}
+				if !yield(ev, nil) {
+					return
+				}
+			}
+		}
+	}
+}
+
 // Inject satisfies coretui.InjectableAgent. Operator-typed messages
 // during a streaming turn route through here when the host opts in
 // to MidTurnInjectionMode=InjectIntoCurrent.

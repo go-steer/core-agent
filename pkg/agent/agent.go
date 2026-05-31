@@ -152,6 +152,7 @@ type Agent struct {
 	attachRefreshFn    func(ctx context.Context) (attach.PricingRefreshResponse, error)
 	attachSetPricingFn func(req attach.PricingSetRequest) error
 	attachReloadFn     func(ctx context.Context) attach.ReloadResponse
+	attachPromptBroker *attach.PromptBroker
 
 	// mu guards cancelInFlight + compactionPending + checkpoint
 	// flags + subtask counters. Held only across short store-and-
@@ -221,6 +222,7 @@ type options struct {
 	attachRefreshFn    func(ctx context.Context) (attach.PricingRefreshResponse, error)
 	attachSetPricingFn func(req attach.PricingSetRequest) error
 	attachReloadFn     func(ctx context.Context) attach.ReloadResponse
+	attachPromptBroker *attach.PromptBroker
 }
 
 func defaultOptions() options {
@@ -580,6 +582,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		attachRefreshFn:    o.attachRefreshFn,
 		attachSetPricingFn: o.attachSetPricingFn,
 		attachReloadFn:     o.attachReloadFn,
+		attachPromptBroker: o.attachPromptBroker,
 		checkpointer:       o.checkpointer,
 	}
 	if a.bgMgr != nil {
@@ -1141,6 +1144,25 @@ func (a *Agent) AttachReload(ctx context.Context) attach.ReloadResponse {
 		return attach.ReloadResponse{Errors: []string{attach.ErrCapabilityNotRegistered.Error()}}
 	}
 	return a.attachReloadFn(ctx)
+}
+
+// WithAttachPromptBroker wires the broker that bridges the agent's
+// permissions.Gate prompts to remote operators over
+// GET /sessions/<sid>/perms/stream and POST /perms/respond. The
+// caller is also responsible for wiring this broker into the gate
+// (typically via Gate.SetPrompter(broker)) so prompts the gate
+// generates actually flow through it. Without this option the
+// /perms/stream + /perms/respond routes return 501.
+func WithAttachPromptBroker(b *attach.PromptBroker) Option {
+	return func(o *options) { o.attachPromptBroker = b }
+}
+
+// AttachPromptBroker implements attach.PromptBrokerProvider.
+func (a *Agent) AttachPromptBroker() *attach.PromptBroker {
+	if a == nil {
+		return nil
+	}
+	return a.attachPromptBroker
 }
 
 // AttachCompact implements attach.CompactSlashProvider. Wraps

@@ -661,6 +661,22 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		}
 		attachReg := attach.NewSessionRegistry()
 		opts = append(opts, agent.WithSessionRegistry(attach.NewAgentRegistrarAdapter(attachReg)))
+
+		// PR D — HTTP-driven permission prompts. Construct the
+		// broker now and register it as the gate's prompter so the
+		// remote operator's /perms/stream subscription sees prompts
+		// the daemon's tool calls trigger. The in-process TUI
+		// (launchTUIv2) overrides gate.SetPrompter with its own
+		// in-modal prompter when it starts, so this only takes
+		// effect for headless attach-only daemons (--no-repl) or
+		// when the TUI hasn't taken over yet. Defer Close so
+		// pending AskApproval calls unblock with a clean error on
+		// process shutdown.
+		promptBroker := attach.NewPromptBroker()
+		defer promptBroker.Close()
+		opts = append(opts, agent.WithAttachPromptBroker(promptBroker))
+		gate.SetPrompter(promptBroker)
+
 		token := ""
 		if attachCfg.TokenEnv != "" {
 			token = os.Getenv(attachCfg.TokenEnv)

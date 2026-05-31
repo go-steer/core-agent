@@ -121,6 +121,14 @@ func run(ctx context.Context, args []string, token, theme, alias string) error {
 	skills := a.FetchSkills(ctx)
 	mcpServers := a.FetchMCPServers(ctx)
 
+	// Remote permission prompts (PR D). The bridge subscribes to
+	// /perms/stream; if the daemon didn't wire a broker the GET
+	// returns 501 and the bridge sits idle (the prompter exists
+	// but never sees a request). Stop the bridge on shutdown so
+	// the goroutine doesn't outlive the program.
+	prompter, stopPrompter := coretuiremote.StartRemotePrompter(ctx, client, sessionPath, os.Stderr)
+	defer stopPrompter()
+
 	wordmark := "core-agent-tui"
 	identity := alias
 	if identity == "" {
@@ -130,6 +138,7 @@ func run(ctx context.Context, args []string, token, theme, alias string) error {
 	opts := coretui.Options{
 		Agent:        a,
 		UsageTracker: a,
+		Prompter:     prompter,
 		ForceTheme:   theme,
 		Memory:       memory,
 		Skills:       skills,

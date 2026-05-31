@@ -80,6 +80,10 @@ func (h *handlers) register(mux *http.ServeMux) {
 	// Operator-state read endpoints (usage / context / memory /
 	// skills / mcp / pricing); see handlers_operator.go.
 	h.registerOperatorState(mux)
+
+	// PR D — HTTP-driven permission prompts (/perms/stream SSE +
+	// /perms/respond POST); see handlers_prompts.go.
+	h.registerPrompts(mux)
 }
 
 // sessionDescriptor is one row in the GET /sessions response.

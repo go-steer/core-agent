@@ -160,7 +160,7 @@ branch.
       you've issued a prompt that triggers an `agentic_*` wrapper.
 - [ ] `/memory` lists any loaded `AGENTS.md` files.
 - [x] `/skills` lists registered skills (empty if no `.agents/skills/`).
-- [x/oer] `/mcp` lists declared MCP servers (empty if no `.agents/mcp.json`).
+- [x] `/mcp` lists declared MCP servers (empty if no `.agents/mcp.json`).
 - [ ] `/pricing` shows the current pricing snapshot — source,
       known model count, and the current model's rate.
 
@@ -173,7 +173,7 @@ branch.
 - [ ] `/pricing refresh` triggers a LiteLLM fetch and reports the
       outcome (updated / unchanged + model count).
 - [ ] `/pricing set claude-opus-4-7 15 75` applies a manual rate;
-      subsequent `/pricing` shows the new ra
+      subsequent `/pricing` shows the new rate
 - [ ] `/reload` re-walks memory + skills + MCP; per-surface
       success flags surface in the result.
 
@@ -305,6 +305,32 @@ connection refused
   approval flows) — you should see the decline, not a hang.
 
 ## Known limitations
+
+- **No operator path to reset / fork a session** (Task #4).
+  Persistent `--session-db` + the hardcoded `defaultSessionID =
+  "default"` means every daemon restart reloads the FULL prior
+  conversation as context. After many turns the model sees its
+  own last "Final Summary" as the latest message and starts
+  responding with continuation/summary text instead of fresh
+  answers to new prompts. Symptom looks like "the chat is
+  confused" or "every new prompt produces a wrap-up summary."
+  This is not a smoke-setup issue — it's a real operator gap
+  that production users will hit on long-lived daemons.
+
+  **Workarounds today**:
+  - `/compact` aggressively (lowers context pressure but keeps
+    the running summary attached)
+  - `/done <task-note>` between logical tasks (the checkpoint
+    slices prior task history out of future requests)
+  - Restart the daemon with a different session-id (CLI doesn't
+    currently expose this for `--no-repl`, so you'd hardcode in
+    `cfg` or use the library API)
+  - Last resort for smoke runs: `rm <session-db-path>` and
+    restart (NOT a production fix)
+
+  Real fix: an operator-facing `/reset` or `/new-session` slash
+  + optional `--session-id=<name>` CLI flag for `--no-repl`
+  daemons. Tracked as Task #4.
 
 - **Per-tool permission prompts don't reach the remote TUI**
   (tracked as PR D — HTTP-driven Prompter). Without it,

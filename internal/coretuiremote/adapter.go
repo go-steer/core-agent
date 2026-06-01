@@ -249,51 +249,98 @@ func isTurnEnd(raw *session.Event, ev coretui.Event) bool {
 // on the adapter). The result: same chat, populated end-to-end from
 // the remote stream regardless of whether the operator typed.
 //
-// Lifecycle: the iterator returns when the underlying stream closes
-// (network drop, server EOF, or ctx cancel). core-tui then renders a
-// "Disconnected" system row and keeps the program alive so the
-// operator can read scrollback or quit cleanly. Reconnection is the
-// caller's responsibility per the LiveAgent contract; today the
-// program restart is the simplest path. Auto-reconnect can layer in
-// later without an interface change.
+// Reconnect: implementation-internal per the LiveAgent contract.
+// When the underlying stream closes (network drop, daemon restart,
+// server EOF), Events yields a transient error frame (rendered as
+// a RoleError row by core-tui) and reconnects after exponential
+// backoff, resuming from the last-seen sequence so history isn't
+// re-replayed. The iterator only returns when ctx cancels — so the
+// TUI never shows the permanent "Disconnected — Ctrl+C to quit"
+// banner unless the operator explicitly tears down.
 func (a *Adapter) Events(ctx context.Context) iter.Seq2[coretui.Event, error] {
 	return func(yield func(coretui.Event, error) bool) {
-		frames, err := a.client.Stream(ctx, a.sessionPath, 0)
-		if err != nil {
-			yield(coretui.Event{}, fmt.Errorf("stream: %w", err))
-			return
-		}
-		for {
+		const maxBackoff = 30 * time.Second
+		backoff := time.Second
+		firstAttempt := true
+
+		for ctx.Err() == nil {
+			// First connect uses since=0 so the operator sees the
+			// existing history (per the observer-mode design — drop
+			// the Run path's replay filter). Reconnects use lastSeq
+			// so we don't re-replay everything they already saw.
+			since := int64(0)
+			if !firstAttempt {
+				a.mu.Lock()
+				since = a.lastSeq
+				a.mu.Unlock()
+			}
+			firstAttempt = false
+
+			frames, err := a.client.Stream(ctx, a.sessionPath, since)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				if !yield(coretui.Event{}, fmt.Errorf("stream disconnected: %w (reconnecting in %s)", err, backoff.Round(time.Second))) {
+					return
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(backoff):
+				}
+				if backoff < maxBackoff {
+					backoff *= 2
+				}
+				continue
+			}
+			backoff = time.Second // reset on successful connect
+
+			streamClosed := false
+			for !streamClosed {
+				select {
+				case <-ctx.Done():
+					return
+				case frame, ok := <-frames:
+					if !ok {
+						streamClosed = true
+						break
+					}
+					a.mu.Lock()
+					if frame.Seq > a.lastSeq {
+						a.lastSeq = frame.Seq
+					}
+					a.mu.Unlock()
+					if frame.Event == nil {
+						continue
+					}
+					ev := translateEvent(frame.Event)
+					a.applyPricing(&ev)
+					if ev.Usage != nil && !ev.Partial {
+						a.mu.Lock()
+						a.lastTurn = *ev.Usage
+						a.mu.Unlock()
+					}
+					if isEmptyEvent(ev) {
+						continue
+					}
+					if !yield(ev, nil) {
+						return
+					}
+				}
+			}
+			// Stream closed mid-flight. Surface as a transient error
+			// so the operator sees activity, then reconnect.
+			if !yield(coretui.Event{}, fmt.Errorf("stream disconnected (reconnecting in %s)", backoff.Round(time.Second))) {
+				return
+			}
 			select {
 			case <-ctx.Done():
 				return
-			case frame, ok := <-frames:
-				if !ok {
-					// Stream closed — coretui surfaces the
-					// "Disconnected" banner via liveStreamEndedMsg.
-					return
-				}
-				a.mu.Lock()
-				if frame.Seq > a.lastSeq {
-					a.lastSeq = frame.Seq
-				}
-				a.mu.Unlock()
-				if frame.Event == nil {
-					continue
-				}
-				ev := translateEvent(frame.Event)
-				a.applyPricing(&ev)
-				if ev.Usage != nil && !ev.Partial {
-					a.mu.Lock()
-					a.lastTurn = *ev.Usage
-					a.mu.Unlock()
-				}
-				if isEmptyEvent(ev) {
-					continue
-				}
-				if !yield(ev, nil) {
-					return
-				}
+			case <-time.After(backoff):
+			}
+			if backoff < maxBackoff {
+				backoff *= 2
 			}
 		}
 	}

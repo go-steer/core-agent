@@ -360,11 +360,17 @@ In the TUI, type:
 
 **Expected:** subagent's progress messages appear in the TUI chat rather than only being visible via the `/subagents` slash polling.
 
-#### Sub-test 4e: daemon shutdown surfaces "Disconnected"
+#### Sub-test 4e: daemon shutdown + restart, TUI auto-reconnects
 
 With the TUI still attached, kill the daemon (Ctrl-C in terminal 1).
 
-**Expected:** the TUI does NOT crash. It displays a system "Disconnected" row at the bottom of the chat and the program keeps running so the operator can read the scrollback or quit cleanly. (Auto-reconnect is deferred; today the operator restarts the binary.)
+**Expected:** the TUI does NOT crash. It surfaces a transient error row in the chat (`stream disconnected: ... (reconnecting in 1s)`) and then keeps trying with exponential backoff (1s → 2s → 4s → ... capped at 30s). No stderr noise bleeds into the rendered chat — the prompt bridge's diagnostics route to `io.Discard` while the TUI owns the alt-screen.
+
+#### Sub-test 4f: daemon restart, TUI resumes without restart
+
+While the TUI is still attached and showing the reconnect error rows, restart the daemon (re-run the command from terminal 1).
+
+**Expected:** within a few seconds the TUI reconnects automatically — the error rows stop, the chat resumes, the operator can type a new prompt and see the agent respond normally. No need to kill `core-agent-tui` and reattach. Reconnect uses the last-seen sequence so old history isn't re-streamed.
 
 ### Pass criteria
 
@@ -372,7 +378,8 @@ With the TUI still attached, kill the daemon (Ctrl-C in terminal 1).
 - [ ] 4b: foreign inject from terminal 3 visible in terminal 2's chat.
 - [ ] 4c: history-on-attach shows prior turns instead of empty scrollback.
 - [ ] 4d: subagent activity appears in chat (not just via `/subagents` poll).
-- [ ] 4e: daemon kill shows "Disconnected" rather than crashing.
+- [ ] 4e: daemon kill surfaces a transient reconnect error inline; no stderr corruption.
+- [ ] 4f: daemon restart → TUI reconnects automatically; chat resumes; no operator restart needed.
 
 ---
 
@@ -387,6 +394,5 @@ rm -f /tmp/v22-smoke-*.db
 
 - **🚫 Remote permission prompts need a keypress to render** — [core-tui#24](https://github.com/go-steer/core-tui/issues/24). Wire protocol is sound; modal paint stalls until the next external event wakes the bubble-tea v2 scheduler. **Blocks §3 from being a successful e2e.** Workaround: any keypress. Upstream fix required before v2.2 can ship.
 - **Multi-session daemon** — `+ New session` picker entry. Task #4, deferred behind a multi-session-daemon design.
-- **Auto-reconnect for `LiveAgent`** — today the operator restarts the binary. Easy to layer in later without an interface change.
 - **Request_id correlation + operator-initiated turn glyph** — small follow-up to `LiveAgent`. Tracked in the observer-mode design doc.
 - **MCP `ask_user` / elicit round-trips** — reuse the same broker pattern as PR #87. Follow-up.

@@ -155,6 +155,66 @@ func TestAdapter_Events_DoesNotStopOnTurnEnd(t *testing.T) {
 	}
 }
 
+// TestAdapter_Events_YieldsErrorOnStreamCloseAndReconnects exercises
+// the auto-reconnect path: when the SSE stream closes mid-flight
+// (daemon restart, network drop), Events yields a transient error
+// frame (rendered as a RoleError row by core-tui) and keeps the
+// iterator alive for the next attempt instead of returning.
+func TestAdapter_Events_YieldsErrorOnStreamCloseAndReconnects(t *testing.T) {
+	t.Parallel()
+	fs := startFakeServer(t)
+
+	// One frame then the fake server's handler returns — that's an
+	// EOF on the SSE body, the adapter's frames channel closes.
+	fs.streamFrames = []attach.Frame{
+		{Seq: 1, Event: &session.Event{
+			Author:      "model",
+			LLMResponse: model.LLMResponse{Content: &genai.Content{Parts: []*genai.Part{{Text: "before disconnect"}}}, Partial: false},
+		}},
+	}
+	fs.streamHoldOpen = false // close after yielding frames
+
+	parsed, _ := attachclient.ParseURL(fs.URL + "/sessions/s1")
+	client := attachclient.New(parsed, "", 0)
+	a := New(client, "/sessions/s1")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	gotEvent := false
+	gotError := false
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev, err := range a.Events(ctx) {
+			if err != nil {
+				// The reconnect-after-disconnect error frame.
+				gotError = true
+				cancel() // saw what we wanted; tear down
+				return
+			}
+			if ev.Text == "before disconnect" {
+				gotEvent = true
+			}
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("iterator did not yield the reconnect error within deadline")
+	}
+
+	if !gotEvent {
+		t.Error("did not see the pre-disconnect event")
+	}
+	if !gotError {
+		t.Error("did not see the post-disconnect transient error (reconnect path is missing)")
+	}
+}
+
 func TestAdapter_Events_CtxCancelEndsIterator(t *testing.T) {
 	t.Parallel()
 	fs := startFakeServer(t)

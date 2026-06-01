@@ -45,6 +45,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -126,7 +127,11 @@ func run(ctx context.Context, args []string, token, theme, alias string) error {
 	// returns 501 and the bridge sits idle (the prompter exists
 	// but never sees a request). Stop the bridge on shutdown so
 	// the goroutine doesn't outlive the program.
-	prompter, stopPrompter := coretuiremote.StartRemotePrompter(ctx, client, sessionPath, os.Stderr)
+	// io.Discard for the bridge's diagnostics — bubble-tea owns the
+	// alt-screen and writes to stderr while it's running corrupt the
+	// rendered chat (lines bleed into the textarea + status). If
+	// debug visibility is ever needed, plumb a logfile through here.
+	prompter, stopPrompter := coretuiremote.StartRemotePrompter(ctx, client, sessionPath, io.Discard)
 	defer stopPrompter()
 
 	wordmark := "core-agent-tui"

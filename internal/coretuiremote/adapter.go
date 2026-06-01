@@ -91,6 +91,15 @@ type Adapter struct {
 	pricingModel   string
 	pricingIn      float64 // input $ per Mtok
 	pricingOut     float64 // output $ per Mtok
+
+	// reconnectKick is a buffered-1 channel Inject sends to so that
+	// Events() can pre-empt its backoff sleep and try to reconnect
+	// immediately when the operator types. Without it, an operator
+	// who submits a prompt while Events() is in a 30s backoff sees
+	// no response until the timer expires. Buffered so Inject never
+	// blocks; if the channel is full (signal already pending) the
+	// non-blocking send drops cleanly.
+	reconnectKick chan struct{}
 }
 
 // replayGrace is the slack we allow when discarding historical
@@ -109,9 +118,10 @@ const replayGrace = 2 * time.Second
 // to every attachclient call.
 func New(client *attachclient.Client, sessionPath string) *Adapter {
 	return &Adapter{
-		client:      client,
-		sessionPath: sessionPath,
-		connectedAt: time.Now(),
+		client:        client,
+		sessionPath:   sessionPath,
+		connectedAt:   time.Now(),
+		reconnectKick: make(chan struct{}, 1),
 	}
 }
 
@@ -257,10 +267,20 @@ func isTurnEnd(raw *session.Event, ev coretui.Event) bool {
 // re-replayed. The iterator only returns when ctx cancels — so the
 // TUI never shows the permanent "Disconnected — Ctrl+C to quit"
 // banner unless the operator explicitly tears down.
+//
+// Backoff: starts at 5s, doubles up to a 30s cap. An operator
+// typing a prompt (which calls Inject) signals reconnectKick so
+// Events pre-empts its current backoff sleep and tries to
+// reconnect immediately — without this, a prompt typed while
+// Events is in the 30s sleep would sit silent for up to 30s
+// before the operator sees any response.
 func (a *Adapter) Events(ctx context.Context) iter.Seq2[coretui.Event, error] {
 	return func(yield func(coretui.Event, error) bool) {
-		const maxBackoff = 30 * time.Second
-		backoff := time.Second
+		const (
+			initialBackoff = 5 * time.Second
+			maxBackoff     = 30 * time.Second
+		)
+		backoff := initialBackoff
 		firstAttempt := true
 
 		for ctx.Err() == nil {
@@ -276,25 +296,26 @@ func (a *Adapter) Events(ctx context.Context) iter.Seq2[coretui.Event, error] {
 			}
 			firstAttempt = false
 
+			debugf("Events: connecting (since=%d)", since)
 			frames, err := a.client.Stream(ctx, a.sessionPath, since)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
 				}
-				if !yield(coretui.Event{}, fmt.Errorf("stream disconnected: %w (reconnecting in %s)", err, backoff.Round(time.Second))) {
+				debugf("Events: connect failed: %v", err)
+				if !yield(coretui.Event{}, fmt.Errorf("stream disconnected: %w — waiting to reconnect", err)) {
 					return
 				}
-				select {
-				case <-ctx.Done():
+				if !a.sleepWithKick(ctx, backoff) {
 					return
-				case <-time.After(backoff):
 				}
 				if backoff < maxBackoff {
 					backoff *= 2
 				}
 				continue
 			}
-			backoff = time.Second // reset on successful connect
+			debugf("Events: connected; reading frames")
+			backoff = initialBackoff // reset on successful connect
 
 			streamClosed := false
 			for !streamClosed {
@@ -331,13 +352,12 @@ func (a *Adapter) Events(ctx context.Context) iter.Seq2[coretui.Event, error] {
 			}
 			// Stream closed mid-flight. Surface as a transient error
 			// so the operator sees activity, then reconnect.
-			if !yield(coretui.Event{}, fmt.Errorf("stream disconnected (reconnecting in %s)", backoff.Round(time.Second))) {
+			debugf("Events: stream closed; will reconnect")
+			if !yield(coretui.Event{}, fmt.Errorf("stream disconnected — waiting to reconnect")) {
 				return
 			}
-			select {
-			case <-ctx.Done():
+			if !a.sleepWithKick(ctx, backoff) {
 				return
-			case <-time.After(backoff):
 			}
 			if backoff < maxBackoff {
 				backoff *= 2
@@ -346,14 +366,46 @@ func (a *Adapter) Events(ctx context.Context) iter.Seq2[coretui.Event, error] {
 	}
 }
 
+// sleepWithKick sleeps for d unless ctx cancels OR an Inject call
+// signals reconnectKick. Returns false if ctx cancelled (caller
+// should return); true otherwise (caller proceeds to reconnect).
+func (a *Adapter) sleepWithKick(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	case <-a.reconnectKick:
+		debugf("Events: reconnect kicked by operator activity")
+		return true
+	}
+}
+
 // Inject satisfies coretui.InjectableAgent. Operator-typed messages
 // during a streaming turn route through here when the host opts in
 // to MidTurnInjectionMode=InjectIntoCurrent.
+//
+// Also kicks the Events() reconnect loop so a prompt typed while
+// Events is in a backoff sleep doesn't sit silent until the timer
+// expires. Non-blocking send — if the channel is full (signal
+// already pending) the kick drops cleanly.
 func (a *Adapter) Inject(message string) error {
 	// coretui's InjectableAgent.Inject is sync; the network call
 	// here is short (the body is an 8 KiB cap). Use context.TODO
 	// since coretui doesn't thread a context through this surface.
-	return a.client.Inject(context.TODO(), a.sessionPath, message)
+	err := a.client.Inject(context.TODO(), a.sessionPath, message)
+	if err != nil {
+		debugf("Inject failed: %v", err)
+	} else {
+		debugf("Inject ok (%d bytes); kicking reconnect", len(message))
+	}
+	select {
+	case a.reconnectKick <- struct{}{}:
+	default:
+	}
+	return err
 }
 
 // RequestWake satisfies coretui.WakeRequester. Wired so the

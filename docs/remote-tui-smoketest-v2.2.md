@@ -392,7 +392,9 @@ rm -f /tmp/v22-smoke-*.db
 
 ## Known limitations after v2.2
 
-- **🚫 Remote permission prompts need a keypress to render** — [core-tui#24](https://github.com/go-steer/core-tui/issues/24). Wire protocol is sound; modal paint stalls until the next external event wakes the bubble-tea v2 scheduler. **Blocks §3 from being a successful e2e.** Workaround: any keypress. Upstream fix required before v2.2 can ship.
+- **🚫 Remote permission prompts need a keypress to render** — [core-tui#24](https://github.com/go-steer/core-tui/issues/24). Wire protocol is sound; modal paint stalls until the next external event wakes the bubble-tea v2 scheduler. **Blocks §3 from being a successful e2e.** Workaround: any keypress. Upstream fix required before v2.2 can ship. ✓ Partially fixed in core-tui v0.6.7 (the `liveStreamErrMsg` path now force-renders); the broader render-coalescence pattern is tracked at #26.
+
+- **🚫 LiveAgent model responses need a keypress to render after operator typed prompts** — [core-tui#26](https://github.com/go-steer/core-tui/issues/26). Same root cause as #24 but on the `streamChunkMsg` path: v0.6.7 only added `forceRenderTick()` to errors, not to actual response frames. So operator-typed prompts in §4's observer mode look like the daemon hung — the response is in the model's chat history but the view doesn't paint until the next keypress. **Blocks the §4d/4e/4f loop from being a clean e2e** for the typed-prompt case (autonomous activity still renders fine because background traffic keeps the scheduler busy). Workaround: any keypress.
 - **Multi-session daemon** — `+ New session` picker entry. Task #4, deferred behind a multi-session-daemon design.
 - **Request_id correlation + operator-initiated turn glyph** — small follow-up to `LiveAgent`. Tracked in the observer-mode design doc.
 - **MCP `ask_user` / elicit round-trips** — reuse the same broker pattern as PR #87. Follow-up.

@@ -153,19 +153,28 @@ func (b *Broadcaster) replayThenTail(ctx context.Context, sub *subscriber, since
 // attached at the time of the broadcast. Exits when no subscribers
 // remain (set by detach).
 func (b *Broadcaster) pump(ctx context.Context) {
+	debugf("broadcaster pump START %s/%s startedAt=%d", b.entry.AppName, b.entry.SessionID, b.startedAt)
+	defer debugf("broadcaster pump END %s/%s", b.entry.AppName, b.entry.SessionID)
 	for entry, err := range b.stream.Watch(ctx, b.startedAt, b.query...) {
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
 				log.Printf("attach: broadcaster %s/%s pump error: %v",
 					b.entry.AppName, b.entry.SessionID, err)
+				debugf("broadcaster pump %s/%s error: %v", b.entry.AppName, b.entry.SessionID, err)
 			}
 			return
 		}
+		author := ""
+		if entry.Event != nil {
+			author = entry.Event.Author
+		}
 		frame := Frame{Seq: entry.Seq, Event: entry.Event}
 		b.mu.Lock()
+		nSubs := len(b.subs)
 		for sub := range b.subs {
 			b.send(sub, frame)
 		}
+		debugf("broadcaster pump %s/%s seq=%d author=%q → %d subs", b.entry.AppName, b.entry.SessionID, entry.Seq, author, nSubs)
 		// If no subscribers left, shut down the pump.
 		if len(b.subs) == 0 {
 			b.cancel = nil
@@ -181,6 +190,7 @@ func (b *Broadcaster) pump(ctx context.Context) {
 // the subscriber should be considered detached.
 func (b *Broadcaster) send(sub *subscriber, f Frame) bool {
 	if sub.closed {
+		debugf("broadcaster send %s/%s seq=%d → sub already closed", b.entry.AppName, b.entry.SessionID, f.Seq)
 		return false
 	}
 	select {
@@ -190,6 +200,7 @@ func (b *Broadcaster) send(sub *subscriber, f Frame) bool {
 		// Buffer full → drop the subscriber.
 		log.Printf("attach: broadcaster %s/%s dropping slow subscriber (buffer=%d full)",
 			b.entry.AppName, b.entry.SessionID, subscriberBufferSize)
+		debugf("broadcaster send %s/%s seq=%d → buffer FULL, dropping subscriber", b.entry.AppName, b.entry.SessionID, f.Seq)
 		b.detachLocked(sub)
 		return false
 	}

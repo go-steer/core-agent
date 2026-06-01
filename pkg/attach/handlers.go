@@ -159,6 +159,7 @@ func (h *handlers) streamEvents(w http.ResponseWriter, r *http.Request, entry *E
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
+	debugf("/events subscribe %s/%s since=%d", entry.AppName, entry.SessionID, since)
 	ch := bcast.Subscribe(r.Context(), since)
 	for frame := range ch {
 		buf, jerr := json.Marshal(frame)
@@ -166,16 +167,20 @@ func (h *handlers) streamEvents(w http.ResponseWriter, r *http.Request, entry *E
 			// Skip a frame we couldn't marshal rather than killing
 			// the stream; surface in server logs but keep the wire
 			// flowing for everything else.
+			debugf("/events %s/%s seq=%d marshal error: %v", entry.AppName, entry.SessionID, frame.Seq, jerr)
 			continue
 		}
 		// SSE framing: event type + data block + blank line.
 		if _, werr := fmt.Fprintf(w, "event: agent\ndata: %s\n\n", buf); werr != nil {
 			// Client disconnected mid-write. The ctx cancel from
 			// r.Context() should already be propagating; just exit.
+			debugf("/events %s/%s write error (client gone): %v", entry.AppName, entry.SessionID, werr)
 			return
 		}
 		flusher.Flush()
+		debugf("/events %s/%s wrote seq=%d (%d bytes)", entry.AppName, entry.SessionID, frame.Seq, len(buf))
 	}
+	debugf("/events %s/%s channel closed (subscriber dropped or ctx done)", entry.AppName, entry.SessionID)
 }
 
 type injectRequest struct {

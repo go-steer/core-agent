@@ -333,6 +333,7 @@ func (a *Adapter) Events(ctx context.Context) iter.Seq2[coretui.Event, error] {
 					}
 					a.mu.Unlock()
 					if frame.Event == nil {
+						debugf("Events: frame seq=%d has nil Event (skipped)", frame.Seq)
 						continue
 					}
 					ev := translateEvent(frame.Event)
@@ -343,8 +344,10 @@ func (a *Adapter) Events(ctx context.Context) iter.Seq2[coretui.Event, error] {
 						a.mu.Unlock()
 					}
 					if isEmptyEvent(ev) {
+						debugf("Events: frame seq=%d author=%q empty after translate (skipped)", frame.Seq, frame.Event.Author)
 						continue
 					}
+					debugf("Events: yielding seq=%d author=%q text=%d tools=%d results=%d partial=%v", frame.Seq, frame.Event.Author, len(ev.Text), len(ev.ToolCalls), len(ev.ToolResults), ev.Partial)
 					if !yield(ev, nil) {
 						return
 					}

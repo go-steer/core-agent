@@ -20,7 +20,7 @@ For attach-mode (`core-agent-tui` remote client) commands, see [Attach mode TUI]
 | `/quit` | | Leave the TUI cleanly |
 | `/interrupt` | | Cancel the in-flight model turn (same as pressing Esc during a turn) |
 | `/resume` | | Resume a saved session from `<AgentsDir>/sessions/` |
-| `/reload` | | Reload `AGENTS.md`, skills, and MCP servers from disk without restarting |
+| `/reload` | | Re-walk `AGENTS.md`, skills, and MCP config on disk. Reports per-surface results inline (`Memory: ✓`, `Skills: ✓`, `MCP: ✗` with errors listed) so you can confirm an edit parsed cleanly. Live MCP server restart and system-prompt rebuild still require a daemon restart. |
 
 ### Status + observability
 

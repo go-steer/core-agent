@@ -662,17 +662,24 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 			fmt.Fprintf(os.Stderr, "core-agent: attach server: %v\n", err)
 			return runner.ExitConfigError
 		}
+		// Bind synchronously so port-in-use (or any other listener
+		// error) is fatal instead of silently degrading to REPL while
+		// the operator's TUI talks to the OLD process holding the port.
+		if err := attachSrv.Bind(); err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: attach listener: %v\n", err)
+			return runner.ExitConfigError
+		}
+		endpoint := attachCfg.Listen
+		if endpoint == "" {
+			endpoint = "unix://" + attachCfg.UnixSocket
+		}
+		extras := ""
+		if peerReg != nil {
+			extras = " (peer-hub enabled)"
+		}
+		fmt.Fprintf(os.Stderr, "core-agent: attach listener on %s%s\n", endpoint, extras)
 		go func() {
-			endpoint := attachCfg.Listen
-			if endpoint == "" {
-				endpoint = "unix://" + attachCfg.UnixSocket
-			}
-			extras := ""
-			if peerReg != nil {
-				extras = " (peer-hub enabled)"
-			}
-			fmt.Fprintf(os.Stderr, "core-agent: attach listener on %s%s\n", endpoint, extras)
-			if err := attachSrv.ListenAndServe(); err != nil {
+			if err := attachSrv.Serve(); err != nil {
 				fmt.Fprintf(os.Stderr, "core-agent: attach server: %v\n", err)
 			}
 		}()

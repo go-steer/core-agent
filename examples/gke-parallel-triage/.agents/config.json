@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "model": {
+    "provider": "gemini",
+    "name": "gemini-3.1-pro-preview-customtools"
+  },
+  "permissions": {
+    "mode": "ask",
+    "allow": [
+      "gke.list_clusters:*",
+      "gke.get_cluster:*",
+      "gke.list_node_pools:*",
+      "gke.get_node_pool:*",
+      "gke.list_operations:*",
+      "gke.get_operation:*",
+      "gke.list_k8s_api_resources:*",
+      "gke.get_k8s_resource:*",
+      "gke.describe_k8s_resource:*",
+      "gke.get_k8s_cluster_info:*",
+      "gke.get_k8s_version:*",
+      "gke.check_k8s_auth:*",
+      "gke.get_k8s_logs:*",
+      "gke.list_k8s_events:*",
+      "gke.get_k8s_rollout_status:*",
+      "spawn_agent:*",
+      "list_agents:*",
+      "check_agent:*",
+      "stop_agent:*"
+    ]
+  },
+  "agent": {
+    "max_steps": 50,
+    "display_name": "gke-triage"
+  }
+}

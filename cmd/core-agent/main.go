@@ -815,6 +815,7 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		fmt.Fprintf(os.Stderr,
 			"core-agent: --no-repl: attach-only mode, session %s (Ctrl-C or SIGTERM to exit)\n",
 			a.SessionID())
+		debugf("--no-repl: wake loop starting (session=%s model=%s)", a.SessionID(), m.Name())
 		// Wake-driven inbox loop: when an attach client POSTs
 		// /inject, agent.Inject appends to the inbox + fires
 		// WakeRequested. We consume the event iterator from
@@ -834,18 +835,23 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		for {
 			select {
 			case <-ctx.Done():
+				debugf("--no-repl: wake loop ending (ctx cancelled)")
 				return runner.ExitOK
 			case <-a.WakeRequested():
-				var lastIn, lastOut int
+				debugf("--no-repl: wake fired; calling Run")
+				var lastIn, lastOut, evCount int
 				for ev, runErr := range a.Run(ctx, "") {
+					evCount++
 					if ev != nil && ev.UsageMetadata != nil {
 						lastIn = int(ev.UsageMetadata.PromptTokenCount)
 						lastOut = int(ev.UsageMetadata.CandidatesTokenCount)
 					}
 					if runErr != nil {
 						fmt.Fprintf(os.Stderr, "core-agent: turn: %v\n", runErr)
+						debugf("--no-repl: Run yielded error: %v", runErr)
 					}
 				}
+				debugf("--no-repl: Run finished (events=%d lastIn=%d lastOut=%d)", evCount, lastIn, lastOut)
 				if tracker != nil && (lastIn > 0 || lastOut > 0) {
 					tracker.Append(m.Name(), lastIn, lastOut, pricingRate)
 				}

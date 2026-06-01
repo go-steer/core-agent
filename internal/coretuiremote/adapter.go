@@ -91,6 +91,26 @@ type Adapter struct {
 	pricingModel   string
 	pricingIn      float64 // input $ per Mtok
 	pricingOut     float64 // output $ per Mtok
+
+	// reconnectKick is a buffered-1 channel Inject sends to so that
+	// Events() can pre-empt its backoff sleep and try to reconnect
+	// immediately when the operator types. Without it, an operator
+	// who submits a prompt while Events() is in a 30s backoff sees
+	// no response until the timer expires. Buffered so Inject never
+	// blocks; if the channel is full (signal already pending) the
+	// non-blocking send drops cleanly.
+	reconnectKick chan struct{}
+
+	// injectErrs is a buffered channel for surfacing Inject failures
+	// into the chat scrollback as RoleError rows via the LiveAgent
+	// Events iterator. Without this, an inject that fails (daemon
+	// down, network drop) returns its error to coretui — which
+	// silently swallows the error today, leaving the operator
+	// staring at a textarea that accepted their prompt with no
+	// indication anything went wrong. The Events() loop drains
+	// this channel alongside frames and yields each error as a
+	// transient (zero Event, err) pair.
+	injectErrs chan error
 }
 
 // replayGrace is the slack we allow when discarding historical
@@ -109,9 +129,11 @@ const replayGrace = 2 * time.Second
 // to every attachclient call.
 func New(client *attachclient.Client, sessionPath string) *Adapter {
 	return &Adapter{
-		client:      client,
-		sessionPath: sessionPath,
-		connectedAt: time.Now(),
+		client:        client,
+		sessionPath:   sessionPath,
+		connectedAt:   time.Now(),
+		reconnectKick: make(chan struct{}, 1),
+		injectErrs:    make(chan error, 8),
 	}
 }
 
@@ -236,14 +258,241 @@ func isTurnEnd(raw *session.Event, ev coretui.Event) bool {
 	return ev.Text != ""
 }
 
+// Events satisfies coretui.LiveAgent (issue #22). Continuously drains
+// the remote eventlog and yields every event into the TUI's chat
+// view — autonomous turns, subagent activity, MCP-server-triggered
+// events, other attached operators' injects, and our own. Unlike
+// Run (Pattern A), Events does NOT filter historical replay (the
+// operator attached because they want to see what they walked into)
+// and does NOT close on turn-end (observer mode is continuous).
+//
+// When core-tui detects LiveAgent, Run is silently skipped — Inject
+// remains the path for operator-typed prompts (already implemented
+// on the adapter). The result: same chat, populated end-to-end from
+// the remote stream regardless of whether the operator typed.
+//
+// Reconnect: implementation-internal per the LiveAgent contract.
+// When the underlying stream closes (network drop, daemon restart,
+// server EOF), Events yields a transient error frame (rendered as
+// a RoleError row by core-tui) and reconnects after exponential
+// backoff, resuming from the last-seen sequence so history isn't
+// re-replayed. The iterator only returns when ctx cancels — so the
+// TUI never shows the permanent "Disconnected — Ctrl+C to quit"
+// banner unless the operator explicitly tears down.
+//
+// Backoff: starts at 5s, doubles up to a 30s cap. An operator
+// typing a prompt (which calls Inject) signals reconnectKick so
+// Events pre-empts its current backoff sleep and tries to
+// reconnect immediately — without this, a prompt typed while
+// Events is in the 30s sleep would sit silent for up to 30s
+// before the operator sees any response.
+func (a *Adapter) Events(ctx context.Context) iter.Seq2[coretui.Event, error] {
+	return func(yield func(coretui.Event, error) bool) {
+		const (
+			initialBackoff = 5 * time.Second
+			maxBackoff     = 30 * time.Second
+		)
+		backoff := initialBackoff
+		firstAttempt := true
+		everConnected := false // flips true after the first successful Stream
+
+		for ctx.Err() == nil {
+			// First connect uses since=0 so the operator sees the
+			// existing history (per the observer-mode design — drop
+			// the Run path's replay filter). Reconnects use lastSeq
+			// so we don't re-replay everything they already saw.
+			since := int64(0)
+			if !firstAttempt {
+				a.mu.Lock()
+				since = a.lastSeq
+				a.mu.Unlock()
+			}
+			firstAttempt = false
+
+			debugf("Events: connecting (since=%d)", since)
+			frames, err := a.client.Stream(ctx, a.sessionPath, since)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				debugf("Events: connect failed: %v", err)
+				if !yield(coretui.Event{}, fmt.Errorf("stream disconnected: %w — waiting to reconnect", err)) {
+					return
+				}
+				// Surface any inject errors that piled up while we
+				// were disconnected so the operator sees them
+				// before the backoff sleep, not after.
+				if !a.drainInjectErrs(yield) {
+					return
+				}
+				if !a.sleepWithKick(ctx, backoff) {
+					return
+				}
+				if backoff < maxBackoff {
+					backoff *= 2
+				}
+				continue
+			}
+			debugf("Events: connected; reading frames")
+			backoff = initialBackoff // reset on successful connect
+			// Surface positive reconnect transitions to the operator.
+			// Skip on the very first connect — the operator wasn't
+			// disconnected from anything yet, so "✓ reconnected"
+			// would be confusing. Yielded as an error frame because
+			// the Events iterator's only out-of-band channel for
+			// system messages is the error position; core-tui
+			// renders it as a system row alongside the matching
+			// "stream disconnected" message earlier.
+			if everConnected {
+				debugf("Events: yielding reconnect notice")
+				if !yield(coretui.Event{}, fmt.Errorf("stream reconnected — resuming")) {
+					return
+				}
+			} else {
+				debugf("Events: first successful connect (no reconnect notice)")
+			}
+			everConnected = true
+
+			streamClosed := false
+			for !streamClosed {
+				select {
+				case <-ctx.Done():
+					return
+				case ierr := <-a.injectErrs:
+					// Operator's Inject failed (typically because
+					// the daemon is down). Surface it in chat so
+					// the operator doesn't think their prompt was
+					// accepted silently.
+					debugf("Events: surfacing inject error: %v", ierr)
+					if !yield(coretui.Event{}, ierr) {
+						return
+					}
+				case frame, ok := <-frames:
+					if !ok {
+						streamClosed = true
+						break
+					}
+					a.mu.Lock()
+					if frame.Seq > a.lastSeq {
+						a.lastSeq = frame.Seq
+					}
+					a.mu.Unlock()
+					if frame.Event == nil {
+						debugf("Events: frame seq=%d has nil Event (skipped)", frame.Seq)
+						continue
+					}
+					ev := translateEvent(frame.Event)
+					a.applyPricing(&ev)
+					if ev.Usage != nil && !ev.Partial {
+						a.mu.Lock()
+						a.lastTurn = *ev.Usage
+						a.mu.Unlock()
+					}
+					if isEmptyEvent(ev) {
+						debugf("Events: frame seq=%d author=%q empty after translate (skipped)", frame.Seq, frame.Event.Author)
+						continue
+					}
+					debugf("Events: yielding seq=%d author=%q text=%d tools=%d results=%d partial=%v", frame.Seq, frame.Event.Author, len(ev.Text), len(ev.ToolCalls), len(ev.ToolResults), ev.Partial)
+					if !yield(ev, nil) {
+						return
+					}
+				}
+			}
+			// Stream closed mid-flight. Surface as a transient error
+			// so the operator sees activity, then reconnect.
+			debugf("Events: stream closed; will reconnect")
+			if !yield(coretui.Event{}, fmt.Errorf("stream disconnected — waiting to reconnect")) {
+				return
+			}
+			if !a.drainInjectErrs(yield) {
+				return
+			}
+			if !a.sleepWithKick(ctx, backoff) {
+				return
+			}
+			if backoff < maxBackoff {
+				backoff *= 2
+			}
+		}
+	}
+}
+
+// sleepWithKick sleeps for d unless ctx cancels OR an Inject call
+// signals reconnectKick. Returns false if ctx cancelled (caller
+// should return); true otherwise (caller proceeds to reconnect).
+// Operator activity during the sleep — a typed prompt that hit
+// reconnectKick — interrupts the sleep so we reconnect immediately.
+func (a *Adapter) sleepWithKick(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	case <-a.reconnectKick:
+		debugf("Events: reconnect kicked by operator activity")
+		return true
+	}
+}
+
+// drainInjectErrs yields any queued inject errors via yield. Called
+// from within the inner stream loop on each iteration AND during
+// reconnect backoff — without the second site, inject failures
+// queued while the stream is disconnected wait until reconnect
+// before becoming visible. Returns false if yield refused (caller
+// should return).
+func (a *Adapter) drainInjectErrs(yield func(coretui.Event, error) bool) bool {
+	for {
+		select {
+		case ierr := <-a.injectErrs:
+			debugf("Events: surfacing inject error (backoff drain): %v", ierr)
+			if !yield(coretui.Event{}, ierr) {
+				return false
+			}
+		default:
+			return true
+		}
+	}
+}
+
 // Inject satisfies coretui.InjectableAgent. Operator-typed messages
 // during a streaming turn route through here when the host opts in
 // to MidTurnInjectionMode=InjectIntoCurrent.
+//
+// Also kicks the Events() reconnect loop so a prompt typed while
+// Events is in a backoff sleep doesn't sit silent until the timer
+// expires. Non-blocking send — if the channel is full (signal
+// already pending) the kick drops cleanly.
+//
+// On failure (daemon down, network drop), the error is BOTH
+// returned to coretui (which today silently swallows it) AND
+// pushed onto a.injectErrs so the Events() loop surfaces it as a
+// visible RoleError row in the chat. Without that, an operator
+// typing into a disconnected TUI sees their textarea accept the
+// prompt with no indication anything went wrong.
 func (a *Adapter) Inject(message string) error {
 	// coretui's InjectableAgent.Inject is sync; the network call
 	// here is short (the body is an 8 KiB cap). Use context.TODO
 	// since coretui doesn't thread a context through this surface.
-	return a.client.Inject(context.TODO(), a.sessionPath, message)
+	err := a.client.Inject(context.TODO(), a.sessionPath, message)
+	if err != nil {
+		debugf("Inject failed: %v", err)
+		// Surface to Events() so the chat shows the failure. Non-
+		// blocking — if the channel is full (8 pending errors) we
+		// drop the oldest user feedback rather than block Inject.
+		select {
+		case a.injectErrs <- fmt.Errorf("inject failed: %w", err):
+		default:
+		}
+	} else {
+		debugf("Inject ok (%d bytes); kicking reconnect", len(message))
+	}
+	select {
+	case a.reconnectKick <- struct{}{}:
+	default:
+	}
+	return err
 }
 
 // RequestWake satisfies coretui.WakeRequester. Wired so the

@@ -183,13 +183,15 @@ Cross-repo, ~400–600 LoC:
 ## Sequencing
 
 1. **Land v2.1** as Pattern A only (this train). Document the
-   Pattern-B gap in the smoke doc.
+   Pattern-B gap in the smoke doc. ✓ shipped 2026-05-31.
 2. **Upstream core-tui PR**: add LiveAgent interface. Get review
-   + a tagged release.
+   + a tagged release. ✓ shipped in core-tui v0.6.6 (issue #22).
 3. **core-agent adapter PR**: implement Events(); bump core-tui
    dependency; update smoke doc to add an observer-mode section.
+   ✓ this PR — `Adapter.Events(ctx)` at
+   `internal/coretuiremote/adapter.go`, core-tui bumped to v0.6.6.
 4. **Optional PR**: request_id correlation + visual marking of
-   operator-initiated turns. Small follow-up.
+   operator-initiated turns. Small follow-up; not yet started.
 5. **Cogo flip (task #75)**: cogo migrates from internal/tui to
    coretui directly. Independent of E; both benefit from LiveAgent
    once it lands.

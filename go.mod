@@ -7,7 +7,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/glebarez/sqlite v1.11.0
-	github.com/go-steer/core-tui v0.6.3
+	github.com/go-steer/core-tui v0.6.9
 	github.com/itchyny/gojq v0.12.19
 	github.com/modelcontextprotocol/go-sdk v1.4.1
 	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.43.0

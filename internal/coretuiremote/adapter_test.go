@@ -41,10 +41,11 @@ import (
 type fakeServer struct {
 	*httptest.Server
 
-	mu           sync.Mutex
-	injects      []string
-	streamFrames []attach.Frame
-	streamDelay  time.Duration
+	mu             sync.Mutex
+	injects        []string
+	streamFrames   []attach.Frame
+	streamDelay    time.Duration
+	streamHoldOpen bool // when false, the SSE handler returns after draining frames (simulates daemon EOF)
 
 	// Response stubs (zero values = "implement this when needed").
 	usage   attach.UsageInfo
@@ -56,7 +57,7 @@ type fakeServer struct {
 // read endpoints. Add per-test scripting via fs.streamFrames etc.
 func startFakeServer(t *testing.T) *fakeServer {
 	t.Helper()
-	fs := &fakeServer{}
+	fs := &fakeServer{streamHoldOpen: true}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /sessions/{sid}/inject", func(w http.ResponseWriter, r *http.Request) {
@@ -79,6 +80,7 @@ func startFakeServer(t *testing.T) *fakeServer {
 		fs.mu.Lock()
 		frames := append([]attach.Frame(nil), fs.streamFrames...)
 		delay := fs.streamDelay
+		holdOpen := fs.streamHoldOpen
 		fs.mu.Unlock()
 
 		for _, f := range frames {
@@ -98,9 +100,15 @@ func startFakeServer(t *testing.T) *fakeServer {
 				}
 			}
 		}
-		// Hold the connection open so the adapter's range-over-channel
-		// doesn't see an EOF before the test cancels its ctx.
-		<-r.Context().Done()
+		// Hold the connection open by default so the adapter's
+		// range-over-channel doesn't see an EOF before the test
+		// cancels its ctx. Tests that want to simulate a daemon
+		// disconnect (e.g., reconnect-path coverage) set
+		// streamHoldOpen=false and let the handler return after
+		// draining frames.
+		if holdOpen {
+			<-r.Context().Done()
+		}
 	})
 
 	mux.HandleFunc("GET /sessions/{sid}/usage", func(w http.ResponseWriter, r *http.Request) {

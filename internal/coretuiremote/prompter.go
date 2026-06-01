@@ -53,33 +53,43 @@ func StartRemotePrompter(ctx context.Context, client *attachclient.Client, sessi
 }
 
 func runRemotePromptBridge(ctx context.Context, client *attachclient.Client, sessionPath string, prompter *coretui.Prompter, errOut io.Writer) {
-	backoff := time.Second
+	const (
+		initialBackoff = 5 * time.Second
+		maxBackoff     = 30 * time.Second
+	)
+	backoff := initialBackoff
 	for ctx.Err() == nil {
+		debugf("prompt bridge: connecting to %s/perms/stream", sessionPath)
 		frames, err := client.PromptStream(ctx, sessionPath)
 		if err != nil {
 			// 501 = daemon has no broker → don't reconnect-loop.
 			if strings.Contains(err.Error(), "501") || strings.Contains(err.Error(), "not registered") {
+				debugf("prompt bridge: capability not registered on daemon (%v); exiting", err)
 				logBridge(errOut, "remote prompt bridge: capability not registered on daemon (%v)", err)
 				return
 			}
+			debugf("prompt bridge: connect failed: %v; sleeping %s", err, backoff)
 			logBridge(errOut, "remote prompt stream: %v; retrying in %v", err, backoff)
 			select {
 			case <-ctx.Done():
 				return
 			case <-time.After(backoff):
 			}
-			if backoff < 30*time.Second {
+			if backoff < maxBackoff {
 				backoff *= 2
 			}
 			continue
 		}
-		backoff = time.Second
+		debugf("prompt bridge: connected; reading frames")
+		backoff = initialBackoff
 		for frame := range frames {
 			if ctx.Err() != nil {
 				return
 			}
+			debugf("prompt bridge: frame id=%s kind=%s tool=%s", frame.ID, frame.Kind, frame.ToolName)
 			handleRemotePromptFrame(ctx, client, sessionPath, prompter, frame, errOut)
 		}
+		debugf("prompt bridge: stream closed; will reconnect after %s", backoff)
 	}
 }
 

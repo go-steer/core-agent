@@ -83,9 +83,9 @@ core-agent \
 
 ### Pass criteria
 
-- [ ] Second daemon exits non-zero.
-- [ ] Error message names `attach listener` (not a generic Go bind error).
-- [ ] First daemon is unaffected (`curl http://localhost:7777/sessions` still works).
+- [x] Second daemon exits non-zero.
+- [x] Error message names `attach listener` (not a generic Go bind error).
+- [x] First daemon is unaffected (`curl http://localhost:7777/sessions` still works).
 
 Kill terminal 1's daemon before moving on.
 
@@ -173,15 +173,20 @@ Type `/reload` in the in-process TUI.
 
 ### Pass criteria
 
-- [ ] Happy path shows `memory ✓` and `skills ✓` in the system note.
-- [ ] Broken `mcp.json` surfaces the parse error inline.
-- [ ] In-process TUI's `/reload` returns the same shape as the remote TUI's.
+- [x] Happy path shows `memory ✓` and `skills ✓` in the system note.
+- [x] Broken `mcp.json` surfaces the parse error inline.
+- [x] In-process TUI's `/reload` returns the same shape as the remote TUI's.
 
 Kill the daemon before moving on.
 
 ---
 
 ## §3 — HTTP-driven permission prompts (PR #87)
+
+> 🚫 **Known issue blocking successful e2e — [core-tui#24](https://github.com/go-steer/core-tui/issues/24).**
+> The wire protocol works (decisions round-trip correctly once the modal renders), but the modal does **not paint** until the operator presses a key after the tool call is gated. The agent appears frozen on the in-chat tool-call preamble (`▶ list_dir /tmp`) until any keypress wakes the bubble-tea v2 render scheduler. Until upstream lands a fix, §3 is **not a successful e2e** — the UX is broken for any operator running a daemon in `ask` mode (the safe default).
+>
+> **Workaround during smoke:** when the agent freezes on the preamble, type any character to wake the modal, then make your decision normally.
 
 ### Why we built it
 
@@ -219,11 +224,13 @@ In the TUI, type:
 run `ls /tmp` and tell me how many entries
 ```
 
-**Expected:**
+**Expected (once [core-tui#24](https://github.com/go-steer/core-tui/issues/24) lands):**
 
 1. The agent will want to run a `bash` tool call. **The permission modal should appear in the remote TUI** with the command and the standard set of options (`y` allow once, `s` allow session, `v` allow verb, `t` allow tool, `a` allow always, `n` deny).
 2. Pick `s` (allow-session).
 3. The bash command runs; the agent's response includes the directory count.
+
+**What actually happens today** (per core-tui#24): the in-chat preamble row shows `▶ list_dir /tmp` and the TUI freezes there. Press any key — the modal pops up. Decide normally. The agent's response then streams in. The system row after the response confirms the decision round-tripped: `ℹ Permission allow-session: list_dir — read /tmp (out of scope)`.
 
 **Before this PR**, the modal would never appear — the tool call would fail with a permission error and the agent would either error out or fall back to a non-shell answer.
 
@@ -265,7 +272,7 @@ To exercise the "graceful degrade" path, start a daemon WITHOUT `--attach-listen
 
 ### Pass criteria
 
-- [ ] First bash command triggers the modal in the remote TUI.
+- [ ] First bash command triggers the modal in the remote TUI **without requiring a keypress** — blocked by [core-tui#24](https://github.com/go-steer/core-tui/issues/24); §3 is NOT a successful e2e until this lands.
 - [ ] `allow-session` round-trips; the command actually runs.
 - [ ] `deny` round-trips; the agent reports the denial cleanly.
 - [ ] Reattaching after a pending prompt drains it (sub-test 3c).
@@ -378,6 +385,7 @@ rm -f /tmp/v22-smoke-*.db
 
 ## Known limitations after v2.2
 
+- **🚫 Remote permission prompts need a keypress to render** — [core-tui#24](https://github.com/go-steer/core-tui/issues/24). Wire protocol is sound; modal paint stalls until the next external event wakes the bubble-tea v2 scheduler. **Blocks §3 from being a successful e2e.** Workaround: any keypress. Upstream fix required before v2.2 can ship.
 - **Multi-session daemon** — `+ New session` picker entry. Task #4, deferred behind a multi-session-daemon design.
 - **Auto-reconnect for `LiveAgent`** — today the operator restarts the binary. Easy to layer in later without an interface change.
 - **Request_id correlation + operator-initiated turn glyph** — small follow-up to `LiveAgent`. Tracked in the observer-mode design doc.

@@ -392,11 +392,9 @@ rm -f /tmp/v22-smoke-*.db
 
 ## Known limitations after v2.2
 
-- **🚫 Remote permission prompts need a keypress to render** — [core-tui#24](https://github.com/go-steer/core-tui/issues/24). Wire protocol is sound; modal paint stalls until the next external event wakes the bubble-tea v2 scheduler. **Blocks §3 from being a successful e2e.** Workaround: any keypress. Upstream fix required before v2.2 can ship. ✓ Partially fixed in core-tui v0.6.7 (the `liveStreamErrMsg` path now force-renders); the broader render-coalescence pattern is tracked at #26.
-
-- ✅ **LiveAgent model responses needed a keypress to render after operator typed prompts** — [core-tui#26](https://github.com/go-steer/core-tui/issues/26). Fixed in core-tui v0.6.8 — `streamChunkMsg`, `toolCallMsg`, `toolResultMsg` all now route through `liveStreamRenderCmd` which folds in the render kick when in LiveAgent mode. **But see #28 below — this fix is currently masked.**
-
-- **🚫 `liveStream{Started,Err,Ended}Msg` handlers drop the `eventListener` re-issue** — [core-tui#28](https://github.com/go-steer/core-tui/issues/28). The v0.6.7/0.6.8 fixes added `forceRenderTick()` to these three handlers but accidentally removed the `m.eventListener()` re-issue, so the LiveAgent event-drain Cmd dies after any of them fires. After "Attached as observer" or "stream disconnected", `m.eventCh` keeps buffering frames from our adapter but nothing reads them — operator sees the chat freeze for live-stream traffic. **Blocks all of §4 from being a successful e2e** in the reconnect / quiet-stream scenarios; explains why model responses never rendered even after operator typed prompts. Workaround: none short of patching coretui. Upstream fix is one line per handler (route through `liveStreamRenderCmd`).
+- ✅ **Remote permission prompts** — [core-tui#24](https://github.com/go-steer/core-tui/issues/24). Fixed in core-tui v0.6.7 + v0.6.9.
+- ✅ **LiveAgent model responses after typed prompts** — [core-tui#26](https://github.com/go-steer/core-tui/issues/26). Fixed in core-tui v0.6.8.
+- ✅ **`liveStream{Started,Err,Ended}Msg` handlers re-issue eventListener** — [core-tui#28](https://github.com/go-steer/core-tui/issues/28). Fixed in core-tui v0.6.9 — the prior render-kick fixes were masking the agentic loop behind a dead drain. With v0.6.9, every render path on the LiveAgent surface paints correctly.
 - **Multi-session daemon** — `+ New session` picker entry. Task #4, deferred behind a multi-session-daemon design.
 - **Request_id correlation + operator-initiated turn glyph** — small follow-up to `LiveAgent`. Tracked in the observer-mode design doc.
 - **MCP `ask_user` / elicit round-trips** — reuse the same broker pattern as PR #87. Follow-up.

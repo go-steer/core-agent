@@ -16,6 +16,7 @@ package coretuiremote
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -212,6 +213,63 @@ func TestAdapter_Events_YieldsErrorOnStreamCloseAndReconnects(t *testing.T) {
 	}
 	if !gotError {
 		t.Error("did not see the post-disconnect transient error (reconnect path is missing)")
+	}
+}
+
+// TestAdapter_Inject_SurfaceErrorViaEvents pins that a failed
+// Inject (typically: daemon down) doesn't silently swallow the
+// error — it shows up via the Events iterator as a transient
+// error frame, the same way reconnect failures do. Without this
+// path, an operator typing into a disconnected TUI saw their
+// textarea accept the prompt with no indication anything failed.
+func TestAdapter_Inject_SurfaceErrorViaEvents(t *testing.T) {
+	t.Parallel()
+
+	// Point the client at an address that will refuse connections
+	// — simulates "daemon is down" without spinning a fake server.
+	parsed, _ := attachclient.ParseURL("http://127.0.0.1:1") // port 1: nothing listens
+	client := attachclient.New(parsed, "", 100*time.Millisecond)
+	a := New(client, "/sessions/s1")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Drain Events in a goroutine; collect error frames.
+	var injectErrSeen bool
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for _, err := range a.Events(ctx) {
+			if err == nil {
+				continue
+			}
+			if strings.Contains(err.Error(), "inject failed") {
+				injectErrSeen = true
+				cancel()
+				return
+			}
+		}
+	}()
+
+	// Wait for Events to enter its disconnect-backoff state.
+	time.Sleep(200 * time.Millisecond)
+
+	// Trigger an Inject — daemon-is-down → injects fails →
+	// queued onto injectErrs → drained by Events into yield.
+	if err := a.Inject("hello"); err == nil {
+		t.Error("Inject against unreachable host: want error, got nil")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("Events iterator never yielded an inject-error frame")
+	}
+
+	if !injectErrSeen {
+		t.Error("inject failure was not surfaced via Events iterator")
 	}
 }
 

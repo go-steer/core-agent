@@ -265,26 +265,28 @@ func makeReloadCallback(ctx context.Context, deps tuiDeps, a *agent.Agent) func(
 	}
 }
 
-// reloadNote turns an attach.ReloadResponse into a single-line
-// system-message confirmation suitable for coretui.ReloadResult.Note.
+// reloadNote turns an attach.ReloadResponse into the multi-line
+// system-message confirmation surfaced via coretui.ReloadResult.Note.
+// Mirrors the shape internal/coretuiremote/capabilities.go uses for
+// the remote TUI's /reload output so both surfaces render identically.
 func reloadNote(r attach.ReloadResponse) string {
-	parts := []string{}
-	if r.Memory {
-		parts = append(parts, "memory ✓")
-	}
-	if r.Skills {
-		parts = append(parts, "skills ✓")
-	}
-	if !r.MCP {
-		parts = append(parts, "mcp ⚠ live restart not supported")
-	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Memory: %s\nSkills: %s\nMCP: %s",
+		reloadOK(r.Memory), reloadOK(r.Skills), reloadOK(r.MCP))
 	if len(r.Errors) > 0 {
-		parts = append(parts, fmt.Sprintf("errors: %s", strings.Join(r.Errors, "; ")))
+		sb.WriteString("\nErrors:\n  - ")
+		sb.WriteString(strings.Join(r.Errors, "\n  - "))
 	}
-	if len(parts) == 0 {
-		return "reload: no changes"
+	return sb.String()
+}
+
+// reloadOK renders a per-surface success bool as the ✓ / ✗ glyph
+// the remote TUI's renderReloadResp uses.
+func reloadOK(ok bool) string {
+	if ok {
+		return "✓"
 	}
-	return "reload: " + strings.Join(parts, " · ")
+	return "✗"
 }
 
 func makeRefreshPricingCallback(_ context.Context, deps tuiDeps) func(context.Context) (string, error) {

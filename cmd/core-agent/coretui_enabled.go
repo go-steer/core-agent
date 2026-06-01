@@ -32,6 +32,7 @@ import (
 	coretui "github.com/go-steer/core-tui/tui"
 
 	"github.com/go-steer/core-agent/pkg/agent"
+	"github.com/go-steer/core-agent/pkg/attach"
 	"github.com/go-steer/core-agent/pkg/config"
 	"github.com/go-steer/core-agent/pkg/instruction"
 	"github.com/go-steer/core-agent/pkg/mcp"
@@ -202,7 +203,7 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 	// Wire the Reloader + PricingController bindings on the
 	// wrapped adapter so they read the same callback closures
 	// launchTUI uses.
-	wrapped.reload = makeReloadCallback(ctx, deps)
+	wrapped.reload = makeReloadCallback(ctx, deps, a)
 	wrapped.refreshPricing = makeRefreshPricingCallback(ctx, deps)
 	wrapped.setPricing = makeSetPricingCallback(deps)
 
@@ -241,14 +242,49 @@ func (a *coreAgentAdapter) Set(modelID string, in, out float64) (string, error) 
 }
 
 // makeReloadCallback returns the closure /reload dispatches
-// through. Stubbed for the first wiring slice: the existing
-// reloadFromDisk helper lives inside launchTUI's scope (it's not
-// a top-level function), so we'd need to lift it. Until then,
-// /reload degrades to a "not yet wired" system message.
-func makeReloadCallback(_ context.Context, _ tuiDeps) func() (coretui.ReloadResult, error) {
+// through. Delegates to the agent's AttachReload (the same
+// best-effort re-walks the remote POST /reload uses) and projects
+// the result into coretui.ReloadResult — fresh display data from
+// the live providers + a note line summarizing per-surface
+// outcomes. Agent rebuild is out of scope; the system prompt and
+// MCP servers retain whatever state they had at startup until a
+// daemon restart.
+func makeReloadCallback(ctx context.Context, deps tuiDeps, a *agent.Agent) func() (coretui.ReloadResult, error) {
 	return func() (coretui.ReloadResult, error) {
-		return coretui.ReloadResult{}, fmt.Errorf("/reload not yet wired into the core-tui adapter")
+		resp := a.AttachReload(ctx)
+		freshMem, _ := instruction.Load(deps.ProjectRoot, deps.CoreHome)
+		freshSkills, _ := skills.LoadAll(ctx, deps.AgentsDir, deps.CoreHome, deps.Gate)
+		freshMCP := deps.MCPServers // not restarted; surfaces the same set as startup
+		out := coretui.ReloadResult{
+			Memory:     memoryToCoreTui(freshMem),
+			Skills:     skillsToCoreTui(freshSkills),
+			MCPServers: mcpServersToCoreTui(freshMCP),
+			Note:       reloadNote(resp),
+		}
+		return out, nil
 	}
+}
+
+// reloadNote turns an attach.ReloadResponse into a single-line
+// system-message confirmation suitable for coretui.ReloadResult.Note.
+func reloadNote(r attach.ReloadResponse) string {
+	parts := []string{}
+	if r.Memory {
+		parts = append(parts, "memory ✓")
+	}
+	if r.Skills {
+		parts = append(parts, "skills ✓")
+	}
+	if !r.MCP {
+		parts = append(parts, "mcp ⚠ live restart not supported")
+	}
+	if len(r.Errors) > 0 {
+		parts = append(parts, fmt.Sprintf("errors: %s", strings.Join(r.Errors, "; ")))
+	}
+	if len(parts) == 0 {
+		return "reload: no changes"
+	}
+	return "reload: " + strings.Join(parts, " · ")
 }
 
 func makeRefreshPricingCallback(_ context.Context, deps tuiDeps) func(context.Context) (string, error) {

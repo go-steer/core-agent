@@ -533,6 +533,35 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 			_, err := setPricingForTUI(cfg, agentsDir, coreHome, req.Model, req.InputUSDPerMTok, req.OutputUSDPerMTok)
 			return err
 		}),
+		agent.WithAttachReloader(func(_ context.Context) attach.ReloadResponse {
+			// Best-effort re-walks: instruction + skills snapshots
+			// are reported per-surface so the operator sees which
+			// parts parsed cleanly after a .agents/ edit. MCP server
+			// lifecycle restart + system-prompt rebuild would require
+			// reconstructing the running agent (tracked separately);
+			// for now MCP comes back as a configuration-only re-read
+			// note.
+			out := attach.ReloadResponse{}
+			if _, err := instruction.Load(projectRoot, coreHome); err != nil {
+				out.Errors = append(out.Errors, fmt.Sprintf("memory: %v", err))
+			} else {
+				out.Memory = true
+			}
+			if _, err := skills.LoadAll(ctx, agentsDir, coreHome, gate); err != nil {
+				out.Errors = append(out.Errors, fmt.Sprintf("skills: %v", err))
+			} else {
+				out.Skills = true
+			}
+			// MCP: confirm the on-disk config still parses; surface
+			// the limitation so the operator doesn't expect a live
+			// server restart.
+			if _, err := mcp.Load(agentsDir); err != nil {
+				out.Errors = append(out.Errors, fmt.Sprintf("mcp config: %v", err))
+			}
+			out.MCP = false
+			out.Errors = append(out.Errors, "mcp: live server restart requires daemon restart (tracked for v2.3)")
+			return out
+		}),
 		agent.WithAttachMCPProvider(func() attach.MCPInfo {
 			servers := make([]attach.MCPServerInfo, 0, len(mcpServers))
 			for _, s := range mcpServers {
@@ -832,6 +861,7 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 			LoadedSkills: loadedSkills,
 			AgentsDir:    agentsDir,
 			CoreHome:     coreHome,
+			ProjectRoot:  projectRoot,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)

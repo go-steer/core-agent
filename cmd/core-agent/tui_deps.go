@@ -46,4 +46,5 @@ type tuiDeps struct {
 	LoadedSkills skills.Skills
 	AgentsDir    string
 	CoreHome     string
+	ProjectRoot  string
 }

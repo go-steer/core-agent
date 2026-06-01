@@ -294,6 +294,7 @@ func (a *Adapter) Events(ctx context.Context) iter.Seq2[coretui.Event, error] {
 		)
 		backoff := initialBackoff
 		firstAttempt := true
+		everConnected := false // flips true after the first successful Stream
 
 		for ctx.Err() == nil {
 			// First connect uses since=0 so the operator sees the
@@ -334,6 +335,20 @@ func (a *Adapter) Events(ctx context.Context) iter.Seq2[coretui.Event, error] {
 			}
 			debugf("Events: connected; reading frames")
 			backoff = initialBackoff // reset on successful connect
+			// Surface positive reconnect transitions to the operator.
+			// Skip on the very first connect — the operator wasn't
+			// disconnected from anything yet, so "✓ reconnected"
+			// would be confusing. Yielded as an error frame because
+			// the Events iterator's only out-of-band channel for
+			// system messages is the error position; core-tui
+			// renders it as a system row alongside the matching
+			// "stream disconnected" message earlier.
+			if everConnected {
+				if !yield(coretui.Event{}, fmt.Errorf("stream reconnected — resuming")) {
+					return
+				}
+			}
+			everConnected = true
 
 			streamClosed := false
 			for !streamClosed {

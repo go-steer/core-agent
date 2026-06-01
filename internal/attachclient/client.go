@@ -444,6 +444,62 @@ func (c *Client) Stream(ctx context.Context, sessionPath string, since int64) (<
 	return out, nil
 }
 
+// PromptStream subscribes to <base><sessionPath>/perms/stream and
+// returns a channel of PromptFrames. Closes the channel on ctx
+// cancel, stream error, or upstream EOF. 501 (capability not
+// registered — agent wasn't constructed with WithAttachPromptBroker)
+// is returned synchronously so callers can fall back gracefully.
+func (c *Client) PromptStream(ctx context.Context, sessionPath string) (<-chan attach.PromptFrame, error) {
+	url := c.URL.BaseURL + sessionPath + "/perms/stream"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.auth(req)
+	resp, err := c.streamHTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("perms/stream: status %d: %s", resp.StatusCode, body)
+	}
+
+	out := make(chan attach.PromptFrame, 16)
+	go func() {
+		defer close(out)
+		defer func() { _ = resp.Body.Close() }()
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			raw := strings.TrimPrefix(line, "data: ")
+			var frame attach.PromptFrame
+			if err := json.Unmarshal([]byte(raw), &frame); err != nil {
+				continue
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case out <- frame:
+			}
+		}
+	}()
+	return out, nil
+}
+
+// RespondToPrompt POSTs the operator's decision to
+// <base><sessionPath>/perms/respond. decision must be one of the
+// wire-format strings (e.g. "allow-once"); see attach.DecisionFromWire
+// for the mapping.
+func (c *Client) RespondToPrompt(ctx context.Context, sessionPath, id, decision string) error {
+	return c.doJSON(ctx, http.MethodPost, sessionPath+"/perms/respond", attach.PromptResponse{ID: id, Decision: decision}, nil)
+}
+
 // ---- helpers ----
 
 // doJSON sends a request, optionally decodes a JSON body into out (nil

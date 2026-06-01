@@ -62,6 +62,26 @@ type Broadcaster struct {
 type subscriber struct {
 	ch     chan Frame
 	closed bool
+
+	// since is the operator's catch-up cursor — frames with seq <=
+	// since must not reach this subscriber. Both replayThenTail (per
+	// subscriber, knows its own since) and pump (shared across
+	// subscribers, doesn't know per-sub since) call send(); the
+	// since filter keeps pump from leaking events the operator
+	// already had.
+	since int64
+
+	// lastSent dedupes the dual-source delivery: pump and
+	// replayThenTail both race to push the same (sub.since,
+	// currentMax] range — without per-subscriber dedup, every
+	// catch-up event is broadcast twice and downstream consumers
+	// (coretui's chat view) silently drop or double-render. Both
+	// sources emit events monotonically by seq starting from
+	// sub.since, so a single high-water mark is enough — whichever
+	// goroutine wins the race for seq=N delivers it; the other's
+	// attempt for seq=N is a no-op skip.
+	dedupMu  sync.Mutex
+	lastSent int64
 }
 
 // NewBroadcaster constructs a broadcaster for one registered session.
@@ -100,7 +120,11 @@ func NewBroadcaster(entry *Entry) (*Broadcaster, error) {
 // Caller MUST drain the channel until close to release goroutine
 // resources.
 func (b *Broadcaster) Subscribe(ctx context.Context, since int64) <-chan Frame {
-	sub := &subscriber{ch: make(chan Frame, subscriberBufferSize)}
+	sub := &subscriber{
+		ch:       make(chan Frame, subscriberBufferSize),
+		since:    since,
+		lastSent: since, // dedup baseline — skip anything at or below the operator's cursor
+	}
 
 	b.mu.Lock()
 	b.subs[sub] = struct{}{}
@@ -193,6 +217,20 @@ func (b *Broadcaster) send(sub *subscriber, f Frame) bool {
 		debugf("broadcaster send %s/%s seq=%d → sub already closed", b.entry.AppName, b.entry.SessionID, f.Seq)
 		return false
 	}
+	// Dedup the pump/replay race: both goroutines push the same
+	// catch-up range to every subscriber. lastSent is the
+	// high-water mark; both goroutines deliver in monotonic order
+	// from sub.since, so the first send for any seq wins and the
+	// other's attempt is a no-op skip. Without this, every
+	// catch-up event reached downstream consumers twice.
+	sub.dedupMu.Lock()
+	if f.Seq <= sub.lastSent {
+		sub.dedupMu.Unlock()
+		return true // already delivered (or below operator's since); skip silently
+	}
+	sub.lastSent = f.Seq
+	sub.dedupMu.Unlock()
+
 	select {
 	case sub.ch <- f:
 		return true

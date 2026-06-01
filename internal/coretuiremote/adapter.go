@@ -344,9 +344,12 @@ func (a *Adapter) Events(ctx context.Context) iter.Seq2[coretui.Event, error] {
 			// renders it as a system row alongside the matching
 			// "stream disconnected" message earlier.
 			if everConnected {
+				debugf("Events: yielding reconnect notice")
 				if !yield(coretui.Event{}, fmt.Errorf("stream reconnected — resuming")) {
 					return
 				}
+			} else {
+				debugf("Events: first successful connect (no reconnect notice)")
 			}
 			everConnected = true
 

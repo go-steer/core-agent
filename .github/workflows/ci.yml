@@ -85,17 +85,16 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           check-latest: true
-          # setup-go@v5 owns the Go module + build caches (see note in
-          # the test job above). Only the golangci-lint cache needs an
-          # explicit actions/cache entry — different path, no overlap
-          # with what setup-go restores.
+          # setup-go@v5 owns the Go module + build caches.
           cache-dependency-path: '**/go.sum'
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/golangci-lint
-          key: ${{ runner.os }}-golangci-${{ env.GO_VERSION }}-${{ hashFiles('**/go.sum', 'dev/tools/.golangci.yml') }}
-          restore-keys: |
-            ${{ runner.os }}-golangci-${{ env.GO_VERSION }}-
+      # No actions/cache step for ~/.cache/golangci-lint:
+      # cached analyzer results were producing CI findings that a
+      # fresh local run (same v2.12.1, same config) couldn't
+      # reproduce — likely because the cached entries were computed
+      # by a previous run whose bundled staticcheck version differed
+      # from the one a fresh `go install` resolves. Lint runs ~45s
+      # without the cache; deterministic results are worth more than
+      # the savings.
       - name: Format
         run: dev/ci/presubmits/verify-go-format
       - name: golangci-lint

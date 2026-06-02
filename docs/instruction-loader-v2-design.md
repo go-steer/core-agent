@@ -16,8 +16,8 @@ The result is a single concatenated `Instruction` string handed to the
 agent at construction time.
 
 This is fine for monolithic agents. It scales poorly along three axes
-that consumers — particularly teams moving from Hermes Agent, Scion's
-multi-agent configs, Cursor, or Antigravity — already hit:
+that consumers — particularly teams moving from Cursor, Antigravity, or
+Scion's multi-agent configs — already hit:
 
 1. **Large instruction sets become unmaintainable in one file.**
    A real autonomous-coding-agent system prompt grows past 200 lines
@@ -28,19 +28,27 @@ multi-agent configs, Cursor, or Antigravity — already hit:
    overrides has no composition primitive; they either duplicate
    principles into each project's AGENTS.md or maintain an external
    sync script.
-3. **Migration friction.** Hermes ships with persona / memory / tools
-   as separate files referenced from a manifest. Scion uses
-   per-agent-type instruction files. Cursor's `.cursor/rules/*.mdc`
-   is a multi-file directory. Operators moving onto core-agent today
-   have to flatten everything into one AGENTS.md by hand.
+3. **Migration friction (real cases verified).** Cursor's
+   `.cursor/rules/*.mdc` is a multi-file directory. Antigravity uses
+   `@include` directives between AGENTS.md files. Scion uses per-agent-
+   type instruction files (deferred — see non-goals). Operators
+   moving onto core-agent today have to flatten everything into one
+   AGENTS.md by hand.
+
+   (Hermes Agent does *not* use a manifest+includes pattern — earlier
+   drafts of this doc claimed otherwise; see the corrected migration
+   recipe below. Hermes uses convention-named files at the project
+   root, most of which are out-of-scope for the instruction loader
+   anyway.)
 
 ## Goals
 
 - **Compose instructions from multiple files** without losing the
   single-file working baseline.
-- **Make migration trivial** — a Hermes or Scion config tree should
-  drop into a `.agents/` directory with at most renaming, no
-  flattening.
+- **Make migration trivial** — a Cursor `rules/` directory, an
+  Antigravity AGENTS.md hierarchy, or a multi-file vendored config
+  tree should drop into a `.agents/` directory with at most
+  renaming, no flattening.
 - **Stay backwards-compatible.** Existing AGENTS.md files (no
   includes, no `AGENTS.d/`) load identically to today.
 - **Keep the v1 surface tight.** Resist becoming a templating engine
@@ -220,44 +228,23 @@ Concrete recipes for the three main inbound sources:
 
 ### From Hermes Agent
 
-Hermes typically ships:
-```
-agent/
-├── persona.md
-├── memory.md
-├── tools.md
-└── workflows/
-    ├── triage.md
-    └── handoff.md
-```
+Hermes uses convention-named files at the project root (no manifest,
+no `@include`). Of those, only some are instruction-loader concerns;
+the rest are data-layer concerns covered by other features.
 
-Migrate by either:
+| Hermes file | Role | Migrate to |
+|---|---|---|
+| `AGENTS.md` | Workspace instructions | `.agents/AGENTS.md` — works 1:1, no changes |
+| `SOUL.md` | Persona | Either concatenate into `AGENTS.md`, or drop as `.agents/AGENTS.d/00-persona.md` if you prefer the multi-file layout |
+| `MEMORY.md` | Agent-maintained memory entries | **Not an instruction-loader concern** — see [`shared-memory-design.md`](shared-memory-design.md). Once the shared-memory layer ships, the FTS5-over-eventlog index replaces the static file. |
+| `USER.md` | Per-user model entries | Same — shared-memory layer with a user-scope tag. Not an instruction-loader concern. |
+| `~/.hermes/skills/` | Skill bundles | Already covered by `pkg/skills` (drop into `~/.core-agent/skills/`). |
 
-**Option A (single AGENTS.md with includes):**
-```
-.agents/
-├── AGENTS.md     # @include persona.md / @include memory.md / etc.
-├── persona.md
-├── memory.md
-├── tools.md
-└── workflows/
-    ├── triage.md
-    └── handoff.md
-```
-
-**Option B (AGENTS.d directory):**
-```
-.agents/
-└── AGENTS.d/
-    ├── 00-persona.md
-    ├── 10-memory.md
-    ├── 20-tools.md
-    ├── 30-triage.md
-    └── 40-handoff.md
-```
-
-Option B is mechanically simpler (no AGENTS.md to author); Option A
-preserves the original file layout.
+In other words, the Hermes → core-agent migration is much smaller than
+"multi-file vs. single-file" framing implies. The instruction-loader
+v2 work helps the SOUL.md split (and helps native composability), but
+the headline Hermes migration story belongs to the shared-memory
+design, not here.
 
 ### From Scion's per-agent configs
 
@@ -372,8 +359,9 @@ Estimated scope: **~400 LoC** (200 implementation + 200 tests) +
 A v1 implementation lands when:
 
 - All edge cases in the table parse + behave as documented
-- All three migration recipes (Hermes / Scion / Cursor) work end-to-end
-  on a vendored test fixture
+- The Cursor + Antigravity migration recipes work end-to-end on a
+  vendored test fixture (Hermes is mostly a 1:1 AGENTS.md rename;
+  the Scion per-agent-type case is deferred per non-goals)
 - `Loaded.Sources` correctly enumerates every loaded file across both
   scopes
 - `/memory` and `/reload` work unchanged for the new file layouts
@@ -414,7 +402,9 @@ A v1 implementation lands when:
   - GKE PE team (the `examples/gke-parallel-triage/` recipe ships
     one AGENTS.md today; with this it can ship a clean
     multi-file layout)
-  - Hermes / Scion migration evaluators
+  - Cursor / Antigravity migration evaluators (Hermes migration is
+    smaller scope than originally framed — see the corrected
+    migration table)
   - Cogo flip (Path C from `cogo-core-agent-integration.md`) —
     cogo's instructions are large enough that the multi-file
     layout would be a quality-of-life win during/after the flip
@@ -428,3 +418,4 @@ A v1 implementation lands when:
 | 2026-06-01 | Missing include = error, missing primary file = OK | Operator typos surface immediately; memory remains optional overall |
 | 2026-06-01 | Cycle detection via canonical-path visited set, depth cap = 8 | Safer than depth-cap alone; matches what most preprocessors do |
 | 2026-06-01 | Per-role overlays + frontmatter directives + templating: out of scope | Avoid spec-creep; ship a tight v1; revisit when consumers actually ask |
+| 2026-06-02 | Corrected Hermes migration framing | Earlier drafts described Hermes as "persona/memory/tools as separate files referenced from a manifest" — that was extrapolation, not citation. Hermes actually uses convention-named files at the project root with no manifest; only SOUL.md falls under the instruction loader's scope. MEMORY.md / USER.md belong to the shared-memory design. Doc rewritten to reflect this and to elevate Cursor + Antigravity (both verified) as the leading migration cases. |

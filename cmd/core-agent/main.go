@@ -353,7 +353,7 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 				return runner.ExitConfigError
 			}
 		}
-		reg, err := tools.Build(cfg, gate, b)
+		reg, err := tools.Build(cfg, gate, agentsDir, b)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: built-in tools: %v\n", err)
 			return runner.ExitConfigError
@@ -561,6 +561,32 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 			out.MCP = false
 			out.Errors = append(out.Errors, "mcp: live server restart requires daemon restart (tracked for v2.3)")
 			return out
+		}),
+		agent.WithAttachReplanner(func(_ context.Context, _ attach.ReplanRequest) (attach.ReplanResponse, error) {
+			// Wired unconditionally; the agent-side handler 501s
+			// the slash when require_plan_artifact is off
+			// (RevokeLatestPlan returns "" with no error and the
+			// gate flag was never set, so the response just says
+			// "no plan to revoke").
+			if agentsDir == "" {
+				return attach.ReplanResponse{
+					Message: "/replan unavailable: no .agents/ directory resolved (plan artifacts have nowhere to live)",
+				}, nil
+			}
+			archived, err := tools.RevokeLatestPlan(gate, agentsDir)
+			if err != nil {
+				return attach.ReplanResponse{}, err
+			}
+			resp := attach.ReplanResponse{
+				ArchivedPath:  archived,
+				PlanWasActive: archived != "",
+			}
+			if archived == "" {
+				resp.Message = "/replan: no active plan to revoke (gate flag is clear)."
+			} else {
+				resp.Message = fmt.Sprintf("Plan revoked. Archived to %s. The next mutating tool call will be denied until the agent calls record_plan again.", archived)
+			}
+			return resp, nil
 		}),
 		agent.WithAttachMCPProvider(func() attach.MCPInfo {
 			servers := make([]attach.MCPServerInfo, 0, len(mcpServers))

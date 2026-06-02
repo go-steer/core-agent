@@ -216,6 +216,16 @@ type PermissionsConfig struct {
 	// fail at config-validation time rather than silently dropping
 	// permissions. Known bundles: see permissions.KnownBundles().
 	BuiltinAllowExtras []string `json:"builtin_allow_extras,omitempty"`
+
+	// RequirePlanArtifact enables the plan-first gating pre-check:
+	// mutating tool calls (write/edit/delete/bash, spawn family,
+	// MCP tools) are denied until the model calls the record_plan
+	// tool. Read-only tools and record_plan itself remain allowed
+	// so research happens normally. Composes with every Mode —
+	// even ModeYolo denies before a plan is recorded; once
+	// recorded, the mode's usual semantics resume.
+	// See docs/plan-first-design.md.
+	RequirePlanArtifact bool `json:"require_plan_artifact,omitempty"`
 }
 
 // AgentConfig tunes runtime agent behavior.

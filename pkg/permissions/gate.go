@@ -93,6 +93,42 @@ type Gate struct {
 
 	// Chronological log of every non-deny interactive approval.
 	approvals []ApprovalLog
+
+	// requirePlanArtifact + planRecorded implement the plan-first
+	// gating pre-check. When requirePlanArtifact is true, mutating
+	// tool calls are denied until planRecorded flips to true (via
+	// MarkPlanRecorded, called by the record_plan tool's handler).
+	// See docs/plan-first-design.md.
+	requirePlanArtifact bool
+	planRecorded        bool
+}
+
+// planExemptTools is the set of tool names that bypass the plan-
+// first pre-check even when RequirePlanArtifact is set. Two
+// categories:
+//
+//   - Read-only research tools — research has to happen BEFORE the
+//     plan can be written; gating reads would deadlock the workflow.
+//   - record_plan itself — the escape valve. The tool whose call
+//     flips planRecorded can't itself be plan-gated.
+//
+// Anything not in this set (write_file/edit_file/delete_file/bash,
+// spawn_agent family, every MCP tool) is plan-gated. This matches
+// Q1's resolution ("gate everything by default; per-server
+// allowlist later if it bites") and Q3 ("subagents inherit the
+// parent's planRecorded flag — gate spawn family so subagents only
+// run under an approved plan").
+var planExemptTools = map[string]bool{
+	"read_file":       true,
+	"read_many_files": true,
+	"stat":            true,
+	"list_dir":        true,
+	"glob":            true,
+	"grep":            true,
+	"json_query":      true,
+	"fetch_url":       true,
+	"todo":            true,
+	"record_plan":     true,
 }
 
 // Options configures a Gate at construction time. All fields are
@@ -102,6 +138,18 @@ type Options struct {
 	Policy   *Policy
 	Scope    *PathScope
 	Prompter Prompter // nil = no interactive path; ask-mode unresolved → deny
+
+	// RequirePlanArtifact, when true, denies mutating tool calls
+	// (write_file/edit_file/delete_file/bash, spawn family, MCP
+	// tools, and anything else not in planExemptTools) until the
+	// model has called the record_plan tool at least once this
+	// session. Read tools and record_plan itself are exempt so
+	// research happens normally and the model has an escape valve.
+	//
+	// Composes with every existing Mode. Even ModeYolo respects
+	// the plan-first pre-check; once a plan is recorded, the mode's
+	// usual semantics resume. See docs/plan-first-design.md.
+	RequirePlanArtifact bool
 }
 
 // New builds a Gate from the supplied options. The Mode defaults to
@@ -117,13 +165,14 @@ func New(opts Options) *Gate {
 		opts.Scope, _ = NewPathScope("", "", nil)
 	}
 	return &Gate{
-		mode:              opts.Mode,
-		policy:            opts.Policy,
-		scope:             opts.Scope,
-		prompter:          opts.Prompter,
-		sessionAllow:      make(map[string]struct{}),
-		sessionAllowTools: make(map[string]struct{}),
-		sessionAllowVerbs: make(map[string]struct{}),
+		mode:                opts.Mode,
+		policy:              opts.Policy,
+		scope:               opts.Scope,
+		prompter:            opts.Prompter,
+		sessionAllow:        make(map[string]struct{}),
+		sessionAllowTools:   make(map[string]struct{}),
+		sessionAllowVerbs:   make(map[string]struct{}),
+		requirePlanArtifact: opts.RequirePlanArtifact,
 	}
 }
 
@@ -171,7 +220,13 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 	if mode == "" {
 		mode = ModeAsk
 	}
-	return New(Options{Mode: mode, Policy: policy, Scope: scope, Prompter: prompter}), nil
+	return New(Options{
+		Mode:                mode,
+		Policy:              policy,
+		Scope:               scope,
+		Prompter:            prompter,
+		RequirePlanArtifact: cfg.Permissions.RequirePlanArtifact,
+	}), nil
 }
 
 // Mode reports the active permission mode. Acquires g.mu to pair
@@ -196,6 +251,72 @@ func (g *Gate) SetMode(m Mode) {
 		g.mode = m
 		g.mu.Unlock()
 	}
+}
+
+// MarkPlanRecorded flips the per-gate planRecorded flag. Called by
+// the record_plan tool's handler after the plan artifact has been
+// written. Idempotent — calling twice is harmless.
+//
+// After this returns, subsequent mutating tool calls bypass the
+// plan-first pre-check and resume the configured Mode's normal
+// gating semantics.
+func (g *Gate) MarkPlanRecorded() {
+	g.mu.Lock()
+	g.planRecorded = true
+	g.mu.Unlock()
+}
+
+// ClearPlanRecorded resets the per-gate planRecorded flag. Called
+// by the /replan slash handler when the operator rejects the
+// current plan; the model is forced back through record_plan
+// before any further mutating tool call.
+func (g *Gate) ClearPlanRecorded() {
+	g.mu.Lock()
+	g.planRecorded = false
+	g.mu.Unlock()
+}
+
+// IsPlanRecorded reports whether a plan has been recorded this
+// session. Exposed so the TUI can render a "plan recorded" badge
+// and so /replan can short-circuit if no plan exists to revoke.
+func (g *Gate) IsPlanRecorded() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.planRecorded
+}
+
+// PlanRequired reports whether RequirePlanArtifact was set at
+// construction. Exposed so TUI / config-introspection code can tell
+// the difference between "no plan recorded but it's not required"
+// and "no plan recorded and we're gated".
+func (g *Gate) PlanRequired() bool {
+	// Read-only after construction; no lock needed.
+	return g.requirePlanArtifact
+}
+
+// planFirstDenial returns a non-nil error if the plan-first gating
+// rule blocks this tool call. Called early in gateRequest and
+// promptForPath so the pre-check runs BEFORE mode-based logic —
+// even ModeYolo denies until the plan is recorded.
+//
+// Returns nil (allow continuation) in three cases:
+//  1. RequirePlanArtifact wasn't set at construction.
+//  2. The tool is in planExemptTools (research tools + record_plan).
+//  3. A plan has already been recorded this session.
+func (g *Gate) planFirstDenial(toolName string) error {
+	if !g.requirePlanArtifact {
+		return nil
+	}
+	if planExemptTools[toolName] {
+		return nil
+	}
+	g.mu.Lock()
+	recorded := g.planRecorded
+	g.mu.Unlock()
+	if recorded {
+		return nil
+	}
+	return fmt.Errorf("%s denied: plan-first mode requires record_plan to be called before any mutating tool. Call record_plan(plan: <your-markdown-plan>) first, then retry", toolName)
 }
 
 // HasPrompter reports whether an interactive Prompter is wired. False
@@ -293,6 +414,13 @@ func (g *Gate) CheckFileWrite(ctx context.Context, toolName, path string) error 
 }
 
 func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, persistTool, persistKey string) error {
+	// Plan-first pre-check runs before mode/policy logic. Even
+	// ModeYolo respects it — the operator opted into "no actions
+	// before plan" by setting RequirePlanArtifact. Once a plan is
+	// recorded, this returns nil and normal flow resumes.
+	if err := g.planFirstDenial(toolName); err != nil {
+		return err
+	}
 	switch g.policy.Match(toolName, key) {
 	case OutcomeDeny:
 		return fmt.Errorf("%s denied by config policy: %q", toolName, key)
@@ -348,6 +476,13 @@ func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, 
 }
 
 func (g *Gate) promptForPath(ctx context.Context, toolName, path string, op Access) error {
+	// Plan-first pre-check first. Out-of-scope writes / reads under
+	// the plan-first regime go through the same denial as gated
+	// tools, so a clever bypass via "write to a path outside scope"
+	// doesn't escape the gate.
+	if err := g.planFirstDenial(toolName); err != nil {
+		return err
+	}
 	mode := g.Mode()
 	if mode == ModeYolo {
 		return nil

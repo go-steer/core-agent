@@ -185,7 +185,7 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 	if err != nil {
 		return fmt.Errorf("permissions: %w", err)
 	}
-	reg, err := coretools.Build(cfg, gate, coretools.Default())
+	reg, err := coretools.Build(cfg, gate, "", coretools.Default())
 	if err != nil {
 		return fmt.Errorf("tools.Build: %w", err)
 	}

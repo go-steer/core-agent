@@ -851,6 +851,31 @@ func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (
 					len(res.SummaryText), res.Duration.Round(0).String()),
 			}, nil
 		}
+	case "replan":
+		// /replan revokes the latest plan + clears the gate's
+		// planRecorded flag, forcing the model to call record_plan
+		// again before any mutating tool succeeds. Available only
+		// when plan-first gating is wired (the agent's
+		// AttachReplan returns 501 / "capability not registered"
+		// otherwise).
+		resp, err := a.inner.AttachReplan(ctx, attach.ReplanRequest{Reason: strings.TrimSpace(args)})
+		if err != nil {
+			if errors.Is(err, attach.ErrCapabilityNotRegistered) {
+				return coretui.SlashResult{
+					SystemMessage: "/replan unavailable: plan-first gating isn't enabled (set permissions.require_plan_artifact: true in .agents/config.json).",
+				}, nil
+			}
+			return coretui.SlashResult{SystemMessage: "/replan failed: " + err.Error()}, nil
+		}
+		msg := resp.Message
+		if msg == "" {
+			if resp.PlanWasActive {
+				msg = "Plan revoked. The model must call record_plan again before any mutating tool will be allowed."
+			} else {
+				msg = "/replan: no active plan to revoke."
+			}
+		}
+		return coretui.SlashResult{SystemMessage: msg}, nil
 	}
 	return coretui.SlashResult{}, fmt.Errorf("unknown slash: %s", name)
 }

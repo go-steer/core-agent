@@ -16,6 +16,16 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+### Added
+
+- **Multi-file instruction loader (`pkg/instruction` v2).** AGENTS.md (and CLAUDE.md / GEMINI.md fallbacks) gain two composition primitives so operators don't have to flatten everything into one file:
+  - **`@include <relative-path>` directive** — a line whose content is `@include foo.md` is replaced in-place by the referenced file's content. Relative-to-containing-file path resolution, `../` allowed up to the scope root, absolute paths + URLs rejected. Recognized only on its own line outside fenced code blocks (`` ``` `` / `~~~`). Missing target is a load error so operator typos surface immediately.
+  - **`AGENTS.d/*.md` directory** — every top-level `.md` file is loaded in lexical filename order, appended after the scope's primary file. Subdirectories, non-`.md`, and hidden files are skipped. Linux conf.d convention; works at both user-global and project scope.
+  - **Per-Load canonical-path dedup** — same file reached via any path (an `@include` plus a directory entry, a cycle, a cross-scope symlink) is read exactly once, first encounter wins. Cycles A → B → A complete without error.
+  - **YAML frontmatter stripping** — a leading `---`-delimited block is silently dropped so editor metadata doesn't leak into the system prompt. Not parsed in v1.
+  - **UTF-8 validation + 32 KiB per-file truncation** — invalid UTF-8 errors fast; oversized files truncate with a visible `[...truncated by core-agent at 32768 bytes...]` marker so both model and operator know.
+  - **Source provenance preserved** — every loaded file produces one entry in `Loaded.Sources` with canonical path + byte count + truncation flag, so `/memory` (and library callers) can trace every line back to its file. Design at `docs/instruction-loader-v2-design.md`. Backwards-compatible: an existing single-file AGENTS.md loads identically.
+
 ## [2.2.0] — 2026-06-01
 
 **Observer-mode remote TUI + the operator-surface gaps v2.1 left open.** This release closes every v2.2-tracked limitation the v2.1 smoke doc flagged: the remote `core-agent-tui` now renders autonomous agent activity continuously via `coretui.LiveAgent`, surfaces tool-approval modals over HTTP, executes `/reload` server-side with per-surface feedback, and fails loudly on `--attach-listen` bind failure instead of silently degrading. Both binaries grew a standard `--version` flag. core-tui bumped v0.6.3 → v0.6.9 to pick up three upstream render-coalescence fixes ([#24](https://github.com/go-steer/core-tui/issues/24), [#26](https://github.com/go-steer/core-tui/issues/26), [#28](https://github.com/go-steer/core-tui/issues/28)) found during smoke that together make the LiveAgent path actually paint without operator keystrokes. Deferred for follow-up: multi-session daemon for "+ New session" (task #4), MCP `ask_user` / elicit round-trips, live MCP-server restart on `/reload`, request-id correlation. Manual UAT checklist at `docs/remote-tui-smoketest-v2.2.md`; design history at `docs/remote-tui-observer-mode.md` + `docs/remote-tui-on-core-tui.md`.

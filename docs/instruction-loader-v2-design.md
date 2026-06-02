@@ -204,6 +204,64 @@ Each `@include` within a file is processed inline during that file's
 read, so a file's resolved content replaces the `@include` line where
 it appears in the chain above.
 
+## Common recipes
+
+### Recipe: explicit ordering without renaming files
+
+The `AGENTS.d/` directory uses lexical filename order, which is the
+common Linux conf.d convention (`00-foo.md`, `10-bar.md`, ...). Teams
+bringing in an existing multi-file layout often don't want to rename.
+The `@include` primitive covers this without a separate config knob:
+write your AGENTS.md as a pure manifest of includes.
+
+Existing layout (no renames needed):
+```
+.agents/
+├── AGENTS.md          # manifest only — see below
+├── persona.md
+├── principles.md
+└── workflows.md
+```
+
+`AGENTS.md` contents:
+```markdown
+@include persona.md
+@include principles.md
+@include workflows.md
+```
+
+The model never sees the `@include` lines — they're replaced in
+place by the referenced file content. The order in the manifest is
+the order the content lands in the system prompt.
+
+### Recipe: shared base + per-project overrides
+
+User scope holds the shared base; project scope adds the
+project-specific overlay. The two scopes concatenate
+automatically (user first), so nothing extra is needed.
+
+```
+~/.agents/AGENTS.md                # team's standard principles
+~/.agents/AGENTS.d/style-guide.md
+~/.agents/AGENTS.d/tool-prefs.md
+
+<project>/.agents/AGENTS.md         # project-specific behavior
+<project>/.agents/AGENTS.d/runbook.md
+```
+
+To pull in a chunk that lives outside the project (e.g., a shared
+runbook tree symlinked or vendored under the user-agents dir),
+use `@include ../some-other-file.md` from a user-scope file. (You
+can't `@include` across the scope root, so the file has to be
+inside the user-agents dir already.)
+
+### Recipe: factor a workflow out of a long AGENTS.md
+
+Pull the chunk into its own file under `AGENTS.d/` (no rename
+required if you don't care about ordering relative to other
+`AGENTS.d/` files), or `@include` it from AGENTS.md if order
+matters.
+
 ## Edge cases (the answers we commit to)
 
 | Edge case | Behavior |
@@ -419,3 +477,4 @@ A v1 implementation lands when:
 | 2026-06-01 | Cycle detection via canonical-path visited set, depth cap = 8 | Safer than depth-cap alone; matches what most preprocessors do |
 | 2026-06-01 | Per-role overlays + frontmatter directives + templating: out of scope | Avoid spec-creep; ship a tight v1; revisit when consumers actually ask |
 | 2026-06-02 | Corrected Hermes migration framing | Earlier drafts described Hermes as "persona/memory/tools as separate files referenced from a manifest" — that was extrapolation, not citation. Hermes actually uses convention-named files at the project root with no manifest; only SOUL.md falls under the instruction loader's scope. MEMORY.md / USER.md belong to the shared-memory design. Doc rewritten to reflect this and to elevate Cursor + Antigravity (both verified) as the leading migration cases. |
+| 2026-06-02 | Considered + rejected a `config.instructions.files: [...]` third primitive | Would let operators declare explicit load order without renaming files, addressing a real rename-friction concern. Rejected because the `@include` primitive already covers this: write AGENTS.md as a pure manifest of `@include` lines. Same explicit-ordering effect, same no-rename, no new schema field, no third primitive for operators to learn. The "explicit ordering without renaming" recipe in Common Recipes is the documented path. Revisit if operators push back on the manifest pattern (likely complaint: AGENTS.md as a manifest feels indirect; config-first teams prefer schema fields over markdown directives). |

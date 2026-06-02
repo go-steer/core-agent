@@ -152,6 +152,7 @@ type Agent struct {
 	attachRefreshFn    func(ctx context.Context) (attach.PricingRefreshResponse, error)
 	attachSetPricingFn func(req attach.PricingSetRequest) error
 	attachReloadFn     func(ctx context.Context) attach.ReloadResponse
+	attachReplanFn     func(ctx context.Context, req attach.ReplanRequest) (attach.ReplanResponse, error)
 	attachPromptBroker *attach.PromptBroker
 
 	// mu guards cancelInFlight + compactionPending + checkpoint
@@ -222,6 +223,7 @@ type options struct {
 	attachRefreshFn    func(ctx context.Context) (attach.PricingRefreshResponse, error)
 	attachSetPricingFn func(req attach.PricingSetRequest) error
 	attachReloadFn     func(ctx context.Context) attach.ReloadResponse
+	attachReplanFn     func(ctx context.Context, req attach.ReplanRequest) (attach.ReplanResponse, error)
 	attachPromptBroker *attach.PromptBroker
 }
 
@@ -582,6 +584,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		attachRefreshFn:    o.attachRefreshFn,
 		attachSetPricingFn: o.attachSetPricingFn,
 		attachReloadFn:     o.attachReloadFn,
+		attachReplanFn:     o.attachReplanFn,
 		attachPromptBroker: o.attachPromptBroker,
 		checkpointer:       o.checkpointer,
 	}
@@ -1144,6 +1147,30 @@ func (a *Agent) AttachReload(ctx context.Context) attach.ReloadResponse {
 		return attach.ReloadResponse{Errors: []string{attach.ErrCapabilityNotRegistered.Error()}}
 	}
 	return a.attachReloadFn(ctx)
+}
+
+// WithAttachReplanner wires a func that runs on POST
+// /sessions/<sid>/slash/replan and on the in-process TUI's
+// /replan slash dispatch. The closure is expected to clear the
+// gate's planRecorded flag and archive the latest plan artifact
+// (typically `tools.RevokeLatestPlan(gate, agentsDir)`). Without
+// this option the slash returns 501 / "capability not registered".
+//
+// Wire only when plan-first gating is active (config
+// permissions.require_plan_artifact: true). Wiring it under other
+// configs is a no-op but harmless.
+func WithAttachReplanner(fn func(ctx context.Context, req attach.ReplanRequest) (attach.ReplanResponse, error)) Option {
+	return func(o *options) { o.attachReplanFn = fn }
+}
+
+// AttachReplan implements attach.ReplanProvider. Routes to the
+// closure wired by WithAttachReplanner; returns
+// ErrCapabilityNotRegistered when no func was wired.
+func (a *Agent) AttachReplan(ctx context.Context, req attach.ReplanRequest) (attach.ReplanResponse, error) {
+	if a == nil || a.attachReplanFn == nil {
+		return attach.ReplanResponse{}, attach.ErrCapabilityNotRegistered
+	}
+	return a.attachReplanFn(ctx, req)
 }
 
 // WithAttachPromptBroker wires the broker that bridges the agent's

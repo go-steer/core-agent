@@ -103,7 +103,7 @@ func main() {
 	if *noBash {
 		builtins.Bash = false
 	}
-	reg, err := tools.Build(cfg, gate, builtins)
+	reg, err := tools.Build(cfg, gate, "", builtins)
 	if err != nil {
 		log.Fatalf("tools.Build: %v", err)
 	}

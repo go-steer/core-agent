@@ -406,6 +406,7 @@ func (a *Adapter) SlashCommands() []coretui.SlashCommandSpec {
 		{Name: "pricing", Description: "Show current pricing snapshot; sub: refresh / set"},
 		{Name: "reload", Description: "Reload memory + skills + MCP from disk"},
 		{Name: "perms", Description: "Show permission gate state"},
+		{Name: "replan", Description: "Revoke the current plan and force a redraft (plan-first mode only)"},
 	}
 }
 
@@ -463,6 +464,21 @@ func (a *Adapter) InvokeSlash(ctx context.Context, name, args string) (coretui.S
 			return coretui.SlashResult{}, err
 		}
 		return coretui.SlashResult{SystemMessage: renderPermsInfo(info)}, nil
+
+	case "replan":
+		resp, err := a.client.Replan(ctx, a.sessionPath, strings.TrimSpace(args))
+		if err != nil {
+			return coretui.SlashResult{}, err
+		}
+		msg := resp.Message
+		if msg == "" {
+			if resp.PlanWasActive {
+				msg = "Plan revoked."
+			} else {
+				msg = "/replan: no active plan."
+			}
+		}
+		return coretui.SlashResult{SystemMessage: msg}, nil
 	}
 	return coretui.SlashResult{}, fmt.Errorf("unknown slash: %s", name)
 }

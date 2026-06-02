@@ -1,0 +1,20 @@
+{
+  "_comment": "Variant: 'plan-then-stream-writes'. Same as config.json but uses acceptEdits so file writes auto-allow once the plan is recorded (bash still prompts per-call). Operator sees the plan + each shell command, but write_file/edit_file/delete_file proceed without per-call approval. To use: rename this to config.json (overwriting the default ask variant).",
+
+  "version": 1,
+  "permissions": {
+    "mode": "acceptEdits",
+    "require_plan_artifact": true,
+    "allow": [
+      "read_file",
+      "read_many_files",
+      "stat",
+      "list_dir",
+      "glob",
+      "grep",
+      "json_query",
+      "fetch_url",
+      "todo"
+    ]
+  }
+}

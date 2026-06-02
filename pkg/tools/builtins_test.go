@@ -34,7 +34,7 @@ func TestBuild_DefaultProducesNineTools(t *testing.T) {
 	t.Parallel()
 	cfg := config.DefaultConfig()
 	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
-	reg, err := Build(cfg, gate, Default())
+	reg, err := Build(cfg, gate, "", Default())
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestBuild_SelectiveSubset(t *testing.T) {
 	t.Parallel()
 	cfg := config.DefaultConfig()
 	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
-	reg, err := Build(cfg, gate, BuiltinTools{Bash: true})
+	reg, err := Build(cfg, gate, "", BuiltinTools{Bash: true})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestBuild_EmptySetProducesNoTools(t *testing.T) {
 	t.Parallel()
 	cfg := config.DefaultConfig()
 	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
-	reg, err := Build(cfg, gate, BuiltinTools{})
+	reg, err := Build(cfg, gate, "", BuiltinTools{})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestBuild_EmptySetProducesNoTools(t *testing.T) {
 
 func TestBuild_NilGateRejected(t *testing.T) {
 	t.Parallel()
-	_, err := Build(config.DefaultConfig(), nil, Default())
+	_, err := Build(config.DefaultConfig(), nil, "", Default())
 	if err == nil || !strings.Contains(err.Error(), "gate is required") {
 		t.Errorf("expected gate-required error, got %v", err)
 	}
@@ -101,7 +101,7 @@ func TestBuild_NilGateRejected(t *testing.T) {
 func TestBuild_NilCfgRejected(t *testing.T) {
 	t.Parallel()
 	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
-	_, err := Build(nil, gate, Default())
+	_, err := Build(nil, gate, "", Default())
 	if err == nil || !strings.Contains(err.Error(), "cfg is required") {
 		t.Errorf("expected cfg-required error, got %v", err)
 	}
@@ -126,6 +126,7 @@ func TestBuiltinTools_Disable_KnownNames(t *testing.T) {
 		"json_query":      func(b BuiltinTools) bool { return b.JSONQuery },
 		"fetch_url":       func(b BuiltinTools) bool { return b.FetchURL },
 		"todo":            func(b BuiltinTools) bool { return b.Todo },
+		"record_plan":     func(b BuiltinTools) bool { return b.RecordPlan },
 	}
 	names := BuiltinToolNames()
 	if len(cases) != len(names) {

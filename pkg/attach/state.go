@@ -481,6 +481,32 @@ type SideQueryRequest struct {
 	Question string `json:"question"`
 }
 
+// ReplanRequest is the POST body for /slash/replan. Today there's
+// no body — operator clicks /replan and the agent revokes the
+// latest plan, clears the gate flag, and waits for the next
+// model turn. Future versions may add an optional Reason field for
+// a system-note that primes the model's redraft.
+type ReplanRequest struct {
+	Reason string `json:"reason,omitempty"`
+}
+
+// ReplanResponse is the response shape of POST /slash/replan.
+// Mirrors what `tools.RevokeLatestPlan` returned plus a status
+// flag for the no-plan-to-revoke case (which is not an error —
+// /replan can be called defensively to ensure the gate is clear).
+type ReplanResponse struct {
+	// ArchivedPath is the full path of the file that was renamed
+	// from plan-<N>.md to plan-<N>-revoked.md. Empty if there was
+	// no active plan to revoke.
+	ArchivedPath string `json:"archived_path,omitempty"`
+	// PlanWasActive reports whether a plan was active before this
+	// call. False means the gate flag was clear and no file got
+	// renamed (still safe to call).
+	PlanWasActive bool `json:"plan_was_active"`
+	// Message is the operator-facing one-liner the TUI renders.
+	Message string `json:"message,omitempty"`
+}
+
 // SideQueryResponse carries the agent's answer text.
 type SideQueryResponse struct {
 	Answer string `json:"answer"`
@@ -535,6 +561,16 @@ type SideQueryProvider interface {
 // POST /sessions/.../slash/subagent.
 type SubagentSpawner interface {
 	AttachSpawnSubagent(ctx context.Context, spec SubagentSpec) (SubagentSpawnResponse, error)
+}
+
+// ReplanProvider is the optional capability for
+// POST /sessions/.../slash/replan. Implementations clear the gate's
+// plan-recorded flag and archive the latest plan artifact to
+// plan-<N>-revoked.md. Wired by binaries that set up plan-first
+// gating (require_plan_artifact: true); binaries without plan-first
+// support don't register this capability and the route 501s.
+type ReplanProvider interface {
+	AttachReplan(ctx context.Context, req ReplanRequest) (ReplanResponse, error)
 }
 
 // OperatorView additions for PR A2 (mutation endpoints): three

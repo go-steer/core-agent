@@ -63,6 +63,7 @@ type BuiltinTools struct {
 	JSONQuery     bool // jq expression over JSON loaded from file or inline string
 	FetchURL      bool // HTTP GET against url_scope.allow; URL-allowlist enforced
 	Todo          bool // In-process plan tracker
+	RecordPlan    bool // Plan-first artifact + gate-flag flip (record_plan)
 }
 
 // builtinToolNames is the canonical name of every built-in tool, in
@@ -82,6 +83,7 @@ var builtinToolNames = []string{
 	"json_query",
 	"fetch_url",
 	"todo",
+	"record_plan",
 }
 
 // BuiltinToolNames returns a fresh copy of the canonical built-in tool
@@ -125,6 +127,8 @@ func (b *BuiltinTools) Disable(name string) error {
 		b.FetchURL = false
 	case "todo":
 		b.Todo = false
+	case "record_plan":
+		b.RecordPlan = false
 	default:
 		return fmt.Errorf("tools: unknown built-in tool %q (valid: %v)", name, builtinToolNames)
 	}
@@ -153,6 +157,13 @@ func Default() BuiltinTools {
 		// the default-deny posture in URLScopeConfig.
 		FetchURL: true,
 		Todo:     true,
+		// RecordPlan is enabled in the Default struct but Build only
+		// registers it when an agentsDir is available AND
+		// permissions.require_plan_artifact is set — there's no point
+		// exposing record_plan to the model when the gate doesn't
+		// require it (the call would just be noise). The agentsDir
+		// requirement is structural (plans need somewhere to live).
+		RecordPlan: true,
 	}
 }
 
@@ -167,14 +178,17 @@ type Registry struct {
 }
 
 // Build constructs the registry. cfg supplies output-truncation caps;
-// gate gates every tool call. Both are required.
+// gate gates every tool call. agentsDir is the resolved .agents/
+// directory (may be empty when none was found) and is required only
+// by tools that persist artifacts to it (today: record_plan). Both
+// cfg and gate are required.
 //
 // We deliberately do NOT set ADK's functiontool.Config.RequireConfirmation
 // even when the gate is in "ask" mode. core-agent's gate handles
 // approval itself by calling its Prompter from inside each tool
 // handler — going through ADK's HITL flow would be a second approval
 // round-trip on top of ours.
-func Build(cfg *config.Config, gate *permissions.Gate, b BuiltinTools) (*Registry, error) {
+func Build(cfg *config.Config, gate *permissions.Gate, agentsDir string, b BuiltinTools) (*Registry, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("tools: cfg is required")
 	}
@@ -255,6 +269,15 @@ func Build(cfg *config.Config, gate *permissions.Gate, b BuiltinTools) (*Registr
 			return functiontool.New(functiontool.Config{
 				Name: "todo", Description: "Maintain a short todo list visible to the user. Actions: list, add, set_status, clear.",
 			}, todoFunc(store))
+		}},
+		// record_plan is registered only when (a) the operator
+		// asked for it via permissions.require_plan_artifact AND
+		// (b) we have an agentsDir to persist plans into. Otherwise
+		// the tool would either be inert (no gate flag to flip) or
+		// broken (nowhere to write). Skipping registration is
+		// cleaner than registering a no-op.
+		{b.RecordPlan && cfg.Permissions.RequirePlanArtifact && agentsDir != "", "record_plan", "Record the agent's plan and unblock plan-first gating.", func() (tool.Tool, error) {
+			return RecordPlan(gate, agentsDir)
 		}},
 	}
 

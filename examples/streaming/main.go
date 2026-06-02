@@ -83,7 +83,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	reg, err := tools.Build(cfg, gate, tools.Default())
+	reg, err := tools.Build(cfg, gate, "", tools.Default())
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -20,6 +20,99 @@ You don't have to create `.agents/` — without it, `core-agent` runs with built
 
 ---
 
+## Multi-file instructions (v2.3+)
+
+`AGENTS.md` is the single-file baseline (with `CLAUDE.md` / `GEMINI.md` as first-match-wins fallbacks at the project root). For larger instruction sets, two composition primitives let you split the prompt across multiple files without changing your model or wrapping code.
+
+Both primitives work at **project scope** (`<project-root>/AGENTS.md`, `<project-root>/AGENTS.d/`) and at **user-global scope** (`~/.agents/AGENTS.md`, `~/.agents/AGENTS.d/`). Files are loaded in this order:
+
+1. User scope: primary `AGENTS.md`, then `AGENTS.d/*.md` lexically.
+2. Project scope: primary `AGENTS.md` (or `CLAUDE.md` / `GEMINI.md`), then `AGENTS.d/*.md` lexically.
+
+A per-load canonical-path **dedup** ensures the same file reached via any path (an `@include` plus a directory entry, a cycle, a cross-scope symlink) is read exactly once — first encounter wins.
+
+### `@include <relative-path>` directive
+
+A line whose entire content is `@include <path>` (with optional leading whitespace) is replaced in-place by the referenced file's content. Useful for layering shared principles + per-project overrides:
+
+```markdown
+# Agent instructions
+
+You are a GKE on-call orchestrator for the payments team.
+
+@include base/principles.md
+@include workflows/triage.md
+
+## Project-specific overrides
+
+Default cluster: prod-us-central1.
+```
+
+Rules:
+
+- **Relative to the including file's directory.** So `AGENTS.md` `@include workflows/triage.md` resolves to `<dir-of-AGENTS.md>/workflows/triage.md`.
+- **`../` is permitted** up to the scope root (project root or user-agent dir). Escaping the scope root is an error.
+- **Absolute paths and URLs are rejected** — local files only.
+- **Cycles handled by dedup** — A → B → A loads A and B once each, no error.
+- **Max nesting depth: 8.** Beyond that errors fast (real trees rarely exceed 2–3).
+- **Missing target = load error.** Typos surface immediately rather than silently shrinking the system prompt.
+- **Inside fenced code blocks** (`` ``` `` or `~~~`) the directive is left literal so docs-about-includes don't expand.
+- **Embedded in prose** (e.g. "see @include foo for details") is NOT processed — directive lines only.
+
+### `AGENTS.d/*.md` directory
+
+Drop a directory next to your primary file:
+
+```
+.agents/
+├── AGENTS.md
+└── AGENTS.d/
+    ├── 10-principles.md
+    ├── 20-tools.md
+    └── 30-workflows.md
+```
+
+Every top-level `.md` file is loaded in **lexical filename order**, appended after the scope's primary file. Conventions:
+
+- **`.md` only.** Other extensions (`.txt`, `README`) are ignored.
+- **Top-level only.** Subdirectories are not recursed.
+- **Hidden files skipped** (`.staging.md`, `.draft.md`) — useful for staging work-in-progress entries.
+- **Absent directory is fine** — just no fan-in for that scope.
+
+### Frontmatter
+
+A leading YAML frontmatter block (between `---` lines at the very start of a file) is **stripped** before the body is added to the system prompt. The loader does not parse the metadata in v1 — this just keeps editor metadata out of the model's view.
+
+```markdown
+---
+title: Triage workflow
+tags: [oncall, gke]
+---
+
+# When an operator pages...
+```
+
+A `---` later in the file (used as a markdown horizontal rule) is **not** treated as frontmatter.
+
+### Truncation
+
+Each loaded file is capped at 32 KiB. Files larger than the cap are truncated and the assembled prompt gets a `[...truncated by core-agent at 32768 bytes...]` marker so both the model and the operator know.
+
+### Migration recipes
+
+| From | Recipe |
+|---|---|
+| Single AGENTS.md | No change. v2 loads existing files identically. |
+| **Cursor** (`.cursor/rules/*.mdc`) | Rename the `rules/` directory to `AGENTS.d/` and rename `.mdc` → `.md`. Frontmatter is stripped automatically. |
+| **Antigravity** (AGENTS.md with `@include`) | Drop in as-is — the directive syntax is identical. |
+| **Hermes** (root-level `AGENTS.md` + `SOUL.md`) | Concatenate or split. To keep both: write a project-root `AGENTS.md` that just contains `@include SOUL.md` (or move `SOUL.md` to `AGENTS.d/20-soul.md`). Note: Hermes's `MEMORY.md` / `USER.md` are runtime memory concerns, not static instructions — they belong in core-agent's shared-memory layer, not the loader. |
+
+### Provenance
+
+The `/memory` slash command (and `Loaded.Sources` from the library API) lists every file that contributed to the assembled prompt — primary, included, and `AGENTS.d/`-scanned — with their canonical paths so you can trace where any line in the prompt came from.
+
+---
+
 ## `config.json` schema
 
 Top-level shape, with all fields optional except `version` and `model.name`:

@@ -383,8 +383,59 @@ Single PR if we keep scope tight (the substrate change is small
 and self-contained); two PRs (substrate + recipe) if reviewers
 want them separated.
 
-## Out of scope (deferred to v2)
+## Resolved during review (2026-06-02)
 
+- **Q1 — MCP tools:** gate everything by default; add a server-
+  level allowlist later if it bites. Operators opted into plan-
+  first because they want no actions before plan, and an MCP
+  tool the operator configured is "an action."
+- **Q2 — plan validation:** any non-empty string after trim. Plan
+  quality is a judgment call; the operator catches bad plans in
+  chat and `/replan`s. Structure enforcement is a footgun.
+- **Q3 — subagent inheritance:** spawned subagents inherit the
+  parent's `planRecorded` flag. The parent's plan covers the
+  fan-out (matches `gke-parallel-triage` orchestration shape).
+  Per-subagent re-planning was rejected as adding indirection
+  without an operator benefit.
+- **Q4 — storage path:** `.agents/plans/<sid>-<seq>.md` always.
+  Project-scoped artifacts go in `.agents/`, regardless of
+  whether `--session-db` is set.
+- **Q5 — TUI rendering:** today's inline tool-call card for v1.
+  If long plans become annoying we add a collapsed card with
+  `c`-to-expand in v2.
+
+## Composition note (worth surfacing in the recipe)
+
+The existing modes compose with `require_plan_artifact` to give
+three useful flavors out of the box, picked by the base mode:
+
+| Composition | Behavior after plan recorded |
+|---|---|
+| `ask + require_plan_artifact` | writes prompt per call ("approve each step") |
+| `acceptEdits + require_plan_artifact` | writes auto-allow, bash still prompts |
+| `yolo + require_plan_artifact` | everything auto-allows ("just tell me the plan") |
+
+The third row is the "we just want to know the plan" case — no new
+mode needed. `yolo`'s "no prompts" semantics still hold *after*
+the plan; the only deny is the one-time gate before the plan
+exists.
+
+The recipe should ship three `config.json` variants (one per row)
+so operators pick by uncommenting.
+
+## Out of scope (deferred to v2 / follow-up tasks)
+
+- **Plan-progress tracking.** Claude Code's TodoWrite/TodoStatus
+  pattern: the plan is a checklist, the agent marks items as it
+  executes. Today's `todo` tool overlaps but is mis-scoped
+  (process-wide, ephemeral, single list); a plan-coupled
+  progress tracker wants plan-instance-scoped, persistent,
+  one-per-plan. Filed as a separate v2 design task — likely
+  combines a sibling tool (`plan_progress`) with a scope
+  adjustment to the `todo` store so the same primitive does
+  double duty (ad-hoc + plan execution). The TUI rendering
+  surface, compaction interaction, and operator-edit semantics
+  all need design work, not just code.
 - $EDITOR shell-out from the approval modal (Jetski's
   `tea.ExecProcess` pattern). The `/replan` workflow covers the
   same need adequately for v1; operators who want in-modal

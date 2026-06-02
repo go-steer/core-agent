@@ -12,8 +12,7 @@ implementation. v2.3 candidate.
 Plan-first is a well-known workflow for high-trust agentic work:
 research the goal, write a structured plan, get explicit operator
 approval, *then* execute. Claude Code, Aider, and Cursor all
-support it; Jetski CLI's "VCS-Aware Planning Mode" is the same
-shape (`docs/jetski-compare.md` § 5.A).
+support it; Antigravity has the same shape ("VCS-Aware Planning Mode").
 
 Today an operator can approximate plan-first with core-agent in
 two ways, both unsatisfying:
@@ -30,10 +29,10 @@ Neither gives the actual property an operator wants: **"I am
 guaranteed to see a plan before any file gets written or any
 command gets run."**
 
-The Jetski-comparison thread (this session, 2026-06-02) surfaced
-this as the cleanest item we don't already do — Review Card,
-multi-scope grants, ModeAcceptEdits, and ModePlan all exist;
-true plan-gating doesn't.
+An Antigravity comparison thread (2026-06-02) surfaced this as
+the cleanest item we don't already do — Review Card, multi-scope
+grants, ModeAcceptEdits, and ModePlan all exist; true plan-
+gating doesn't.
 
 ## Goals
 
@@ -179,8 +178,8 @@ command `/replan`. This:
    needed and call `record_plan` again."
 
 This avoids needing TUI primitives for "edit the plan in
-$EDITOR before approval" (which Jetski's Review Card does via
-`tea.ExecProcess`); operators who want that today can edit the
+$EDITOR before approval" (which Antigravity's Review Card does
+via `tea.ExecProcess`); operators who want that today can edit the
 plan file in another window, then `/replan` to force a redraft
 in conversation context.
 
@@ -436,7 +435,7 @@ so operators pick by uncommenting.
   double duty (ad-hoc + plan execution). The TUI rendering
   surface, compaction interaction, and operator-edit semantics
   all need design work, not just code.
-- $EDITOR shell-out from the approval modal (Jetski's
+- $EDITOR shell-out from the approval modal (Antigravity's
   `tea.ExecProcess` pattern). The `/replan` workflow covers the
   same need adequately for v1; operators who want in-modal
   editing should weigh in.

@@ -25,6 +25,8 @@ You're in the `core-agent` reference docs. The site root has the marketing pitch
 
 **Configuring a specific surface?** → [Reference]({{< relref "/docs/reference/_index.md" >}}) is the cross-cutting index — providers, config, permissions, MCP, skills, sessions, context management, attach mode.
 
+**Looking for a working example?** → [Examples]({{< relref "/docs/examples/_index.md" >}}) catalogs every recipe and library quickstart under [`examples/`](https://github.com/go-steer/core-agent/tree/main/examples) in the repo — config-only drop-ins (`gke-parallel-triage`, `plan-first`), library quickstarts, autonomous patterns, and testing helpers.
+
 ## Reference index
 
 ### CLI
@@ -44,6 +46,10 @@ You're in the `core-agent` reference docs. The site root has the marketing pitch
 ### Skills library
 
 - **[Skills library]({{< relref "/docs/skills-library/_index.md" >}})** — three bundled Claude-Skills (cli-setup, autonomous-setup, library-embedding) so an agent can walk a user through configuration
+
+### Examples
+
+- **[Examples]({{< relref "/docs/examples/_index.md" >}})** — every config-only recipe (`gke-parallel-triage`, `plan-first`) and library quickstart (`basic`, `with-tools`, `streaming`, autonomous patterns, …) with a one-line "use when" summary + link to the repo
 
 ### Reference
 

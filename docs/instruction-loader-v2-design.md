@@ -138,6 +138,22 @@ Default cluster: prod-us-central1.
   Each entry's `Path` is the canonical absolute path; `Bytes` is the
   raw size; `Truncated` is preserved.
 
+**Dedup across the whole Load call:**
+
+- The loader maintains a per-`Load` set of canonical absolute paths
+  it has already read. Whether a file is encountered via an
+  `@include` directive or via the `AGENTS.d/` lexical scan, the
+  **first encounter wins** — subsequent encounters of the same
+  canonical path are silently skipped. This prevents the surprise
+  of double-loading when an operator both `@include`s a file from
+  AGENTS.md AND has it sitting in `AGENTS.d/` for auto-scan.
+- Skipped files do NOT add a duplicate entry to `Loaded.Sources` —
+  `/memory` shows each file exactly once, at the path where it was
+  first loaded.
+- Dedup is per-Load (so a fresh attach session starts with a clean
+  visited set). Cross-Load state would only matter for incremental
+  reload, which isn't part of this design.
+
 ### Primitive 2: `.agents/AGENTS.d/*.md` directory
 
 Linux conf.d-style fan-in. If `<scope-root>/AGENTS.d/` exists and
@@ -279,6 +295,8 @@ matters.
 | File with only YAML frontmatter, no body | Loaded as empty content (frontmatter stripped) |
 | Non-UTF-8 file | Error: `instruction: invalid UTF-8 in <path>` |
 | File over 64 KiB | Truncated with `Truncated=true` (mirrors current behavior) |
+| Same file reachable via both `@include` and `AGENTS.d/` lexical scan | First encounter wins; subsequent encounters silently skipped. `Loaded.Sources` shows the file once. `/memory` reflects the same. |
+| Same file `@include`d twice from different places in the chain | First encounter wins; second `@include` is a no-op (not an error, not a cycle). |
 
 ## Migration story
 
@@ -371,46 +389,55 @@ Estimated scope: **~400 LoC** (200 implementation + 200 tests) +
   vendor those into the project tree as they would any other
   dependency.
 
-## Open questions
+## Resolved questions (2026-06-02 review)
 
 1. **Should `@include` be limited to AGENTS.md only, or work in
-   AGENTS.d/ files too?** Current proposal: works in any loaded
-   markdown file. Argument for restricting: forces a single
-   "manifest" file as the include orchestrator, simpler mental
-   model. Argument against: more rigid; AGENTS.d/ users can't
-   factor common bits out. **Recommend allowing in both;
-   simplicity comes from the depth cap + cycle detection.**
+   `AGENTS.d/` files too?** ✅ **Allow in both, with per-`Load`
+   canonical-path dedup.** The review surfaced a real footgun:
+   without dedup, a file reachable via both an `@include` directive
+   AND the `AGENTS.d/` lexical scan would load twice — bloated
+   system prompt, confusing `/memory` output. The fix is a shared
+   visited-set across the whole `Load` call: first encounter wins,
+   subsequent encounters silently skip. Dedup eliminates the
+   "should we restrict where `@include` works" question entirely
+   because the surprising case (double-load) no longer exists.
+   See the "Dedup across the whole Load call" subsection under
+   Primitive 1 + the new edge-case rows.
 
 2. **Should the directory name be `AGENTS.d` exactly, or also
-   `CLAUDE.d` / `GEMINI.d`?** Current proposal: `AGENTS.d` only.
-   Argument for: the fallback chain is for the *primary* entry,
-   not for fan-in. Argument against: parity with the chain.
-   **Recommend AGENTS.d only;** the chain exists for legacy
-   compat, the directory is a v2 addition with no legacy.
+   `CLAUDE.d` / `GEMINI.d`?** ✅ **`AGENTS.d` only.** The fallback
+   chain (`AGENTS.md → CLAUDE.md → GEMINI.md`) is legacy compat
+   for the primary-entry file. The directory primitive is a v2
+   addition with no legacy and no operator benefit from
+   three variants. Operators who picked CLAUDE.md as their
+   primary file (Claude Code muscle memory) still use `AGENTS.d/`
+   for the fan-in directory — the two are independent.
 
 3. **Should the user-global scope also support `AGENTS.d/`?**
-   Current proposal: yes, same shape at both scopes. Argument
-   for asymmetry: user scope is "small base nudges, project scope
-   is the bulk." Argument for symmetry: surprising to support at
-   one but not the other; users who maintain extensive personal
-   workflows benefit. **Recommend symmetric.**
+   ✅ **Symmetric — supported at both scopes.** ~Zero LoC cost
+   (same directory walker, called twice). Principle of least
+   surprise wins over the "user scope is for small nudges"
+   convention.
 
-4. **Should the loader emit a warning when a primary file
-   contains an `@include` line that's inside a fenced code block?**
-   Today the rule says "not processed in code blocks." But if an
-   operator pastes `@include foo.md` into a code example and
-   *expects* it to be processed, they'd be confused. **Recommend
-   no warning; document the rule clearly and let example-pasting
-   debug itself.**
+4. **Should the loader emit a warning when an `@include` line
+   appears inside a fenced code block?** ✅ **No warning.** The
+   "not processed in code blocks" rule is documentation-clear.
+   Speculatively warning would false-positive on every markdown
+   doc that shows an `@include` example. Operators who paste
+   `@include` into a code block and expect it to fire debug it
+   once and learn the rule. **Aside (asked during review):
+   yes, `/memory` will show every loaded file as a separate row
+   (it renders from `Loaded.Sources`, which the implementation
+   notes already commit to populating with one entry per loaded
+   file — including transitively-included files).**
 
-5. **Cycle-detection scope.** If user-scope AGENTS.md includes
-   `/home/user/some-file` and project-scope AGENTS.md *also* includes
-   `/home/user/some-file`, is that a cycle? Current proposal: **no.**
-   The visited-set is per-Load call but only tracks *this assembly's*
-   path. Including the same file twice in independent chains is a
-   warning at most; the resulting Instruction string just has the
-   content twice. Operators wanting strict dedup can move the shared
-   content to user-scope and not include it from project-scope.
+5. **Cycle-detection scope across user + project scopes.**
+   ✅ **Not a cycle.** Each scope is its own assembly with its
+   own visited-set. The cross-scope dedup falls out of (1)'s
+   single per-`Load` visited-set automatically: if user-scope
+   loads `/path/foo.md` first, project-scope's `@include` of
+   the same file is a silent skip. Scope ordering (user → project)
+   is preserved in the final concatenated output.
 
 ## Acceptance criteria
 
@@ -478,3 +505,4 @@ A v1 implementation lands when:
 | 2026-06-01 | Per-role overlays + frontmatter directives + templating: out of scope | Avoid spec-creep; ship a tight v1; revisit when consumers actually ask |
 | 2026-06-02 | Corrected Hermes migration framing | Earlier drafts described Hermes as "persona/memory/tools as separate files referenced from a manifest" — that was extrapolation, not citation. Hermes actually uses convention-named files at the project root with no manifest; only SOUL.md falls under the instruction loader's scope. MEMORY.md / USER.md belong to the shared-memory design. Doc rewritten to reflect this and to elevate Cursor + Antigravity (both verified) as the leading migration cases. |
 | 2026-06-02 | Considered + rejected a `config.instructions.files: [...]` third primitive | Would let operators declare explicit load order without renaming files, addressing a real rename-friction concern. Rejected because the `@include` primitive already covers this: write AGENTS.md as a pure manifest of `@include` lines. Same explicit-ordering effect, same no-rename, no new schema field, no third primitive for operators to learn. The "explicit ordering without renaming" recipe in Common Recipes is the documented path. Revisit if operators push back on the manifest pattern (likely complaint: AGENTS.md as a manifest feels indirect; config-first teams prefer schema fields over markdown directives). |
+| 2026-06-02 | All five open questions resolved during review; per-`Load` canonical-path dedup added | Resolutions: (1) allow `@include` in both AGENTS.md and AGENTS.d/ files, with per-`Load` canonical-path dedup so a file reachable via both paths loads once; (2) `AGENTS.d` only — no `CLAUDE.d` / `GEMINI.d`; (3) symmetric — both scopes get `AGENTS.d/`; (4) no warning for `@include` inside code blocks; (5) cross-scope "cycle" isn't a cycle — falls out of the dedup design automatically. The dedup addition was the only design-shape change; the other four were lock-ins of the original recommendations. |

@@ -201,7 +201,7 @@ func run(initialInput, cfgPath, modelOverride, providerOverride string, noBuilti
 				return runner.ExitConfigError
 			}
 		}
-		reg, err := tools.Build(cfg, gate, b)
+		reg, err := tools.Build(cfg, gate, agentsDir, b)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "scion-agent: built-in tools: %v\n", err)
 			return runner.ExitConfigError

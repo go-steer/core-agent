@@ -206,3 +206,45 @@ func (h *handlers) doSlashSubagent(w http.ResponseWriter, r *http.Request, entry
 func isSubagentSpawnerUnavailable(err error) bool {
 	return err != nil && err.Error() == "agent: subagent spawner unavailable (no BackgroundAgentManager wired)"
 }
+
+// slashReplanQualified / Shortcut — POST /slash/replan. Clears the
+// gate's plan-recorded flag and archives the latest plan to
+// plan-<N>-revoked.md so the agent must call record_plan again
+// before any mutating tool succeeds. Used when the operator
+// rejects an active plan and wants the agent to redraft.
+func (h *handlers) slashReplanQualified(w http.ResponseWriter, r *http.Request) {
+	entry, ok := h.resolveQualified(w, r)
+	if !ok {
+		return
+	}
+	h.doSlashReplan(w, r, entry)
+}
+
+func (h *handlers) slashReplanShortcut(w http.ResponseWriter, r *http.Request) {
+	entry, ok := h.resolveShortcut(w, r)
+	if !ok {
+		return
+	}
+	h.doSlashReplan(w, r, entry)
+}
+
+func (h *handlers) doSlashReplan(w http.ResponseWriter, r *http.Request, entry *Entry) {
+	p, ok := entry.Agent.(ReplanProvider)
+	if !ok {
+		http.Error(w, "replan capability not registered (set permissions.require_plan_artifact: true to enable plan-first gating)", http.StatusNotImplemented)
+		return
+	}
+	var req ReplanRequest
+	if r.ContentLength > 0 {
+		if err := decodePOST(r, &req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	resp, err := p.AttachReplan(r.Context(), req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}

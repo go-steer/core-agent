@@ -299,6 +299,19 @@ func (c *Client) Reload(ctx context.Context, sessionPath string) (attach.ReloadR
 	return out, nil
 }
 
+// Replan calls POST <base>/sessions/<sid>/slash/replan. Backs the
+// remote TUI's /replan slash. Reason is the optional free-text
+// the operator typed after /replan; today it's surfaced in the
+// archive's audit trail but doesn't drive any model-side behavior.
+func (c *Client) Replan(ctx context.Context, sessionPath, reason string) (attach.ReplanResponse, error) {
+	var out attach.ReplanResponse
+	if err := c.doJSON(ctx, http.MethodPost, sessionPath+"/slash/replan",
+		attach.ReplanRequest{Reason: reason}, &out); err != nil {
+		return attach.ReplanResponse{}, err
+	}
+	return out, nil
+}
+
 // SlashCompact calls POST <base>/sessions/<sid>/slash/compact.
 // Synchronous: blocks until the compaction summarizer completes
 // (5–30s typical for real model calls). The remote TUI should

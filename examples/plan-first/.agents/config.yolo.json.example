@@ -1,0 +1,9 @@
+{
+  "_comment": "Variant: 'just tell me the plan, then go'. After record_plan, everything auto-allows — no further prompts. The plan IS the approval; the operator trusts the agent end-to-end past that point. To use: rename this to config.json (overwriting the default ask variant).",
+
+  "version": 1,
+  "permissions": {
+    "mode": "yolo",
+    "require_plan_artifact": true
+  }
+}

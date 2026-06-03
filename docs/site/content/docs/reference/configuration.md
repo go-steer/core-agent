@@ -237,6 +237,69 @@ The prompter is auto-wired when stdin is a TTY. Non-TTY callers (piped stdin, CI
 
 `--yolo` forces the gate into `yolo` mode regardless of `config.permissions.mode`. Equivalent to setting `permissions.mode: "yolo"` in config; takes precedence at the call site so you don't have to edit config to unblock a one-off scripted run. Library callers achieve the same with `permissions.Options{Mode: permissions.ModeYolo}`.
 
+### Plan-first gating (v2.3+) — `require_plan_artifact`
+
+Setting `permissions.require_plan_artifact: true` turns on **substrate-enforced plan-before-action**. The gate denies mutating tool calls (`write_file`/`edit_file`/`delete_file`/`bash`, the `spawn_agent` family, and all MCP tools) until the model has called the `record_plan` built-in tool. Read tools (`read_file`/`read_many_files`/`stat`/`list_dir`/`glob`/`grep`/`json_query`/`fetch_url`/`todo`) and `record_plan` itself remain allowed so research happens normally and the model has an escape valve.
+
+Once `record_plan(plan: <markdown>)` is called, the plan is written to `.agents/plans/plan-<seq>.md` and the gate's `planRecorded` flag flips. From that point on, the configured `mode` resumes its usual semantics — see the composition table below.
+
+```json
+{
+  "version": 1,
+  "permissions": {
+    "mode": "ask",
+    "require_plan_artifact": true,
+    "allow": ["read_file", "read_many_files", "grep", "glob", "list_dir", "stat", "json_query", "fetch_url", "todo"]
+  }
+}
+```
+
+#### Composition
+
+Plan-first composes with every existing mode. Pick the post-plan friction level you want:
+
+| Composition | Behavior after `record_plan` |
+|---|---|
+| `ask` + `require_plan_artifact` | writes prompt per call ("approve each step") |
+| `acceptEdits` + `require_plan_artifact` | writes auto-allow, bash still prompts |
+| `yolo` + `require_plan_artifact` | everything auto-allows ("just tell me the plan") |
+
+The third row is the "we just want to know the plan, then go" case — no new mode value needed; `yolo`'s "no prompts" promise still holds *after* the plan; the only deny is the one-time gate before the plan exists.
+
+#### Plan artifacts
+
+Plans persist to `<project-root>/.agents/plans/plan-<seq>.md` with monotonically increasing sequence numbers. When the operator runs `/replan`, the active plan is renamed to `plan-<seq>-revoked.md` (audit trail preserved), the gate flag clears, and the model is forced back through `record_plan` before any further mutating tool will succeed. Sequence numbers continue across revocations so revisions are always identifiable.
+
+| Path | Content |
+|---|---|
+| `.agents/plans/plan-1.md` | first plan |
+| `.agents/plans/plan-2-revoked.md` | operator `/replan`'d this one |
+| `.agents/plans/plan-3.md` | currently active plan |
+
+Add `.agents/plans/` to `.gitignore` if you don't want plans checked in. Or do check them in — they make excellent PR descriptions.
+
+#### `/replan` slash command
+
+Available in both the in-process TUI (`core-agent`) and the remote TUI (`core-agent-tui`). Optional reason argument: `/replan reconsider scope`. Effects: archive latest plan → clear gate flag → next mutating call gates again. Operator typically types a follow-up prompt explaining the rejection so the next `record_plan` reflects the new direction.
+
+#### Library callers
+
+```go
+gate, err := permissions.FromConfig(cfg, projectRoot, userRoot, prompter)
+// or directly:
+gate := permissions.New(permissions.Options{
+    Mode:                permissions.ModeAsk,
+    RequirePlanArtifact: true,
+})
+// ... after record_plan tool fires its handler ...
+gate.IsPlanRecorded() // → true
+gate.ClearPlanRecorded() // /replan-like reset; pair with tools.RevokeLatestPlan to also archive
+```
+
+`tools.Build` registers the `record_plan` tool only when `permissions.require_plan_artifact: true` AND `agentsDir != ""` (an inert record_plan with nowhere to write would be confusing). Library callers wanting plan-first should pass an `agentsDir` to `tools.Build`.
+
+Full recipe: [`examples/plan-first/`](https://github.com/go-steer/core-agent/tree/main/examples/plan-first) ships three `config.json` variants (one per row of the composition table) plus an AGENTS.md priming the model on the workflow. Design: [`docs/plan-first-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/plan-first-design.md).
+
 ### Background subagent prompts (v1.2.0+)
 
 When background subagents are enabled (default; `--no-background-agents` disables them) and one of them triggers a permission prompt in `ask` mode, the heading is prefixed with `[<subagent-name>]` so you know which agent is asking. Concurrent prompts from different subagents are serialized through a mutex — they queue rather than race for stdin.

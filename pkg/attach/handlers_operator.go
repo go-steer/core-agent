@@ -74,11 +74,13 @@ func (h *handlers) registerOperatorState(mux *http.ServeMux) {
 	mux.HandleFunc("POST /sessions/{app}/{sid}/slash/done", h.slashDoneQualified)
 	mux.HandleFunc("POST /sessions/{app}/{sid}/slash/btw", h.slashBtwQualified)
 	mux.HandleFunc("POST /sessions/{app}/{sid}/slash/subagent", h.slashSubagentQualified)
+	mux.HandleFunc("POST /sessions/{app}/{sid}/slash/replan", h.slashReplanQualified)
 
 	mux.HandleFunc("POST /sessions/{sid}/slash/compact", h.slashCompactShortcut)
 	mux.HandleFunc("POST /sessions/{sid}/slash/done", h.slashDoneShortcut)
 	mux.HandleFunc("POST /sessions/{sid}/slash/btw", h.slashBtwShortcut)
 	mux.HandleFunc("POST /sessions/{sid}/slash/subagent", h.slashSubagentShortcut)
+	mux.HandleFunc("POST /sessions/{sid}/slash/replan", h.slashReplanShortcut)
 }
 
 func (h *handlers) usageQualified(w http.ResponseWriter, r *http.Request) {

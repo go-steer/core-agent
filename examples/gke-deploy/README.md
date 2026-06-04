@@ -251,8 +251,10 @@ export ATTACH_URL="http://$(kubectl get svc -n agent-system core-agent \
 export ATTACH_TOKEN="$(kubectl get secret -n agent-system core-agent \
   -o jsonpath='{.data.attach-token}' | base64 -d)"
 
-core-agent-tui "$ATTACH_URL" --token=ATTACH_TOKEN
+core-agent-tui --token=ATTACH_TOKEN "$ATTACH_URL"
 ```
+
+**Flag-first ordering matters** — Go's `flag` package stops parsing at the first non-flag arg, so any flag placed AFTER `$ATTACH_URL` is silently ignored (treated as a second positional). `--token=ATTACH_TOKEN` MUST come before the URL.
 
 (`--token=ATTACH_TOKEN` is the env var NAME holding the bearer token. The TUI reads `os.Getenv("ATTACH_TOKEN")` at startup — same env-var-name pattern as the daemon's `--attach-token`. Keeps the token off your shell history.)
 

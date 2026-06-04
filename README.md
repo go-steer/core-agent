@@ -90,7 +90,7 @@ docker pull ghcr.io/go-steer/core-agent-slim:latest   # headless variant, ~5MB s
 docker pull ghcr.io/go-steer/core-agent-tui:latest    # remote TUI client only
 ```
 
-Floating tags: `:latest` (most recent semver), `:vX.Y.Z` / `:vX.Y` / `:vX` (semver), `:main` (latest dev build), `:main-<sha>` (specific dev build). Verify signatures with `cosign verify ghcr.io/go-steer/core-agent:<tag> --certificate-identity-regexp '^https://github.com/go-steer/core-agent' --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
+Floating tags: `:latest` (most recent semver), `:X.Y.Z` / `:X.Y` / `:X` (semver, no `v` prefix — matches Docker / Helm appVersion convention), `:main` (latest dev build), `:main-<sha>` (specific dev build). Verify signatures with `cosign verify ghcr.io/go-steer/core-agent:<tag> --certificate-identity-regexp '^https://github.com/go-steer/core-agent' --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
 
 Requires Go 1.26 or newer for source builds; container images carry their own toolchain.
 

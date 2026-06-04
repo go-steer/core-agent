@@ -18,7 +18,7 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [2.3.1] — 2026-06-04
 
-**Container image release pipeline.** Patch release that ships only release-infrastructure — no code changes to the binary surface. Closes the v2.2.0 deferred "publish container images" item. Three multi-arch (amd64 + arm64) images now publish to GitHub Container Registry on every tag push, signed via Sigstore keyless. Operators deploying core-agent to K8s / Cloud Run / Nomad can `image: ghcr.io/go-steer/core-agent:v2.3.1` instead of building their own. Unblocks the `examples/gke-deploy/` recipe in the following release.
+**Container image release pipeline.** Patch release that ships only release-infrastructure — no code changes to the binary surface. Closes the v2.2.0 deferred "publish container images" item. Three multi-arch (amd64 + arm64) images now publish to GitHub Container Registry on every tag push, signed via Sigstore keyless. Operators deploying core-agent to K8s / Cloud Run / Nomad can `image: ghcr.io/go-steer/core-agent:2.3.1` (semver tag without the leading `v` — matches the Docker / Helm appVersion convention) instead of building their own. Unblocks the `examples/gke-deploy/` recipe in the following release.
 
 ### Added
 

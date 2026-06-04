@@ -63,72 +63,9 @@ prereqs are in place.
 
 ## Prerequisites
 
-1. **GCP project** with these APIs enabled:
+These are one-time-per-project setup steps. Skip individual items if you've already done them for another deployment.
 
-   ```bash
-   gcloud services enable \
-     container.googleapis.com \
-     iamcredentials.googleapis.com \
-     aiplatform.googleapis.com \
-     cloudresourcemanager.googleapis.com \
-     agentregistry.googleapis.com \
-     --project=$PROJECT_ID
-   ```
-
-   (`iamcredentials.googleapis.com` is required for the WIF token-exchange path; the others are GKE/inference/registry plumbing.)
-
-2. **GKE cluster with Workload Identity Federation for GKE enabled.**
-
-   New cluster (Standard mode; Autopilot has WIF on by default):
-
-   ```bash
-   gcloud container clusters create core-agent-host \
-     --location=$REGION \
-     --release-channel=stable \
-     --num-nodes=1 \
-     --machine-type=e2-medium \
-     --workload-pool=$PROJECT_ID.svc.id.goog
-   ```
-
-   Existing Standard cluster — enable WIF on the cluster AND make sure node pools use the GKE metadata server:
-
-   ```bash
-   gcloud container clusters update <CLUSTER_NAME> \
-     --location=$REGION \
-     --workload-pool=$PROJECT_ID.svc.id.goog
-
-   # For each existing node pool:
-   gcloud container node-pools update <POOL_NAME> \
-     --cluster=<CLUSTER_NAME> \
-     --location=$REGION \
-     --workload-metadata=GKE_METADATA
-   ```
-
-   (Autopilot has both on by default; skip for Autopilot clusters.)
-
-3. **`kubectl` credentials** for the cluster:
-
-   ```bash
-   gcloud container clusters get-credentials core-agent-host \
-     --location=$REGION \
-     --project=$PROJECT_ID
-   ```
-
-4. **Tooling on your workstation:**
-   - `gcloud` (recent)
-   - `kubectl` (matching cluster version)
-   - `core-agent-tui` for attaching:
-     ```bash
-     go install github.com/go-steer/core-agent/cmd/core-agent-tui@latest
-     ```
-     or pull the container image:
-     ```bash
-     docker pull ghcr.io/go-steer/core-agent-tui:2.3.1
-     ```
-
-## Setup
-
-### Step 1 — Resolve your project's identifiers
+### Shell environment (used in the commands below)
 
 ```bash
 export PROJECT_ID="<your-project-id>"
@@ -138,9 +75,52 @@ export REGION="us-central1"
 
 You need **both** the textual project ID (`my-project-xyz`) AND the numeric project number (`123456789012`). The WIF principal identifier uses them in different positions and getting them swapped is a common cause of bindings that look correct but never authorize.
 
-### Step 2 — Grant IAM roles directly to the KSA principal
+### 1. Enable required APIs
 
-No Google Service Account, no `iam.workloadIdentityUser` binding. The KSA principal IS the IAM member.
+```bash
+gcloud services enable \
+  container.googleapis.com \
+  iamcredentials.googleapis.com \
+  aiplatform.googleapis.com \
+  cloudresourcemanager.googleapis.com \
+  agentregistry.googleapis.com \
+  --project=$PROJECT_ID
+```
+
+(`iamcredentials.googleapis.com` is required for the WIF token-exchange path; the others are GKE/inference/registry plumbing.)
+
+### 2. GKE cluster with Workload Identity Federation for GKE enabled
+
+New cluster (Standard mode; Autopilot has WIF on by default):
+
+```bash
+gcloud container clusters create core-agent-host \
+  --location=$REGION \
+  --release-channel=stable \
+  --num-nodes=1 \
+  --machine-type=e2-medium \
+  --workload-pool=$PROJECT_ID.svc.id.goog
+```
+
+Existing Standard cluster — enable WIF on the cluster AND make sure node pools use the GKE metadata server:
+
+```bash
+gcloud container clusters update <CLUSTER_NAME> \
+  --location=$REGION \
+  --workload-pool=$PROJECT_ID.svc.id.goog
+
+# For each existing node pool:
+gcloud container node-pools update <POOL_NAME> \
+  --cluster=<CLUSTER_NAME> \
+  --location=$REGION \
+  --workload-metadata=GKE_METADATA
+```
+
+(Autopilot has both on by default; skip for Autopilot clusters.)
+
+### 3. IAM bindings for the KSA principal
+
+WIF for GKE *direct binding* — no Google Service Account, no `iam.workloadIdentityUser` binding. The KSA principal IS the IAM member.
 
 ```bash
 # WIF for GKE direct-binding member identifier:
@@ -163,7 +143,34 @@ gcloud projects add-iam-policy-binding $PROJECT_ID \
 
 That's it for IAM. The `principal://` member string is the WIF-for-GKE identifier; bind any role to it on any resource using the same `--member=...` flag.
 
-### Step 3 — Create your overlay with project + region values
+**Renaming the KSA?** If your overlay uses `namePrefix:` to rename `core-agent` to something else (e.g. `env-prod-core-agent`), or `namespace:` to deploy somewhere other than `agent-system`, the `principal://...` member string above must use the matching name + namespace. Mismatched bindings look fine to gcloud but the pod's runtime token exchange returns "permission denied."
+
+### 4. `kubectl` credentials for the cluster
+
+```bash
+gcloud container clusters get-credentials core-agent-host \
+  --location=$REGION \
+  --project=$PROJECT_ID
+```
+
+### 5. Tooling on your workstation
+
+- `gcloud` (recent)
+- `kubectl` (matching cluster version)
+- `core-agent-tui` for attaching:
+  ```bash
+  go install github.com/go-steer/core-agent/cmd/core-agent-tui@latest
+  ```
+  or pull the container image:
+  ```bash
+  docker pull ghcr.io/go-steer/core-agent-tui:2.3.1
+  ```
+
+## Setup
+
+The IAM + cluster work above happens once. The steps below run per-deployment (or per-overlay, if you're managing multiple).
+
+### Step 1 — Create your overlay with project + region values
 
 The `deploy/` tree is split into a clean `base/` (recipe defaults; not
 meant for direct apply) and an example overlay you copy + customize:
@@ -186,7 +193,7 @@ The overlay's `kustomization.yaml` has commented-out blocks for the other common
 
 See `overlays/example/README.md` for the full overlay workflow including the "advanced: customize the ConfigMap" path.
 
-### Step 4 — Create the attach-token Secret
+### Step 2 — Create the attach-token Secret
 
 ```bash
 kubectl create namespace agent-system  # if not yet applied
@@ -198,7 +205,7 @@ kubectl create secret generic core-agent \
 
 (Or use the `20-secret.yaml.example` file as a template — but `kubectl create secret` is preferred since the token never lives in a file you might accidentally commit.)
 
-### Step 5 — Apply
+### Step 3 — Apply
 
 ```bash
 # Sanity-check the rendered output first (catches edit mistakes
@@ -211,7 +218,7 @@ kubectl apply -k examples/gke-deploy/deploy/overlays/my-prod
 
 This creates the Namespace, KSA, ConfigMap (with your edited contents), PVC, Deployment, and Service in dependency order. The Deployment's annotation registers the agent with the Agent Registry on apply.
 
-### Step 6 — Verify
+### Step 4 — Verify
 
 ```bash
 # Pod up

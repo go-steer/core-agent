@@ -16,6 +16,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+## [2.3.1] — 2026-06-04
+
+**Container image release pipeline.** Patch release that ships only release-infrastructure — no code changes to the binary surface. Closes the v2.2.0 deferred "publish container images" item. Three multi-arch (amd64 + arm64) images now publish to GitHub Container Registry on every tag push, signed via Sigstore keyless. Operators deploying core-agent to K8s / Cloud Run / Nomad can `image: ghcr.io/go-steer/core-agent:v2.3.1` instead of building their own. Unblocks the `examples/gke-deploy/` recipe in the following release.
+
 ### Added
 
 - **Container image release pipeline (`Dockerfile` + `.github/workflows/release-images.yml`).** Three multi-arch images (linux/amd64 + linux/arm64) publish to GHCR on every `v*.*.*` tag push, plus a floating `:main-<sha>` on every main push:
@@ -24,7 +28,7 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
   - `ghcr.io/go-steer/core-agent-tui:<tag>` — remote TUI client only
   - All on `gcr.io/distroless/static-debian12:nonroot` (pure-Go binary; no shell; runs as UID 65532 by default).
   - Signed via Sigstore keyless (GitHub Actions OIDC → Fulcio short-lived cert → Rekor transparency log); verify with `cosign verify ghcr.io/go-steer/core-agent:<tag> --certificate-identity-regexp '^https://github.com/go-steer/core-agent' --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
-  - Builder image is `golang:${GO_VERSION}-alpine` where `GO_VERSION` is parsed from `go.mod` at build time — bumping `go.mod` automatically bumps the build toolchain, no second source of truth to drift. Closes the v2.2.0 deferred container-image item.
+  - Builder image is `golang:${GO_VERSION}-alpine` where `GO_VERSION` is parsed from `go.mod` at build time — bumping `go.mod` automatically bumps the build toolchain, no second source of truth to drift.
 
 ## [2.3.0] — 2026-06-04
 

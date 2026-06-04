@@ -145,16 +145,21 @@ authenticated caller (or anyone if no auth is configured).
 
 ```go
 type SessionACL struct {
-    Owner       string   // Caller.Identity of creator; full access
+    Owner       string   // Caller.Identity of creator; full access. May be
+                         // a "synthetic" identity like "channel:#incident-response"
+                         // when the session belongs to a group rather than a single user.
     Viewers     []string // can stream events; can't inject or grant
     Contributors []string // can inject + use existing grants;
                          // can't modify ACL or grant new perms
 }
 ```
 
-v1 ships with only `Owner` populated; the `Viewers` /
-`Contributors` fields are reserved (schema honored, behavior
-deferred to v2.5).
+**Both `Viewers` and `Contributors` ship behavior in v2.4** (not
+deferred). The shared-session use case (see "Shared sessions"
+below) requires Contributors to actually work — a Slack channel
+session has the channel as Owner and channel members as
+Contributors; if Contributors is a reserved-but-inert field,
+the chat-bot integration pattern is dead.
 
 ### Authorization rules
 
@@ -172,6 +177,131 @@ Resolved by `pkg/auth.Authorize(caller, action, session)`:
 from any authed Caller but only returns sessions the Caller is
 authorized to `SessionRead`. (Hiding the existence of unauthorized
 sessions prevents leaking activity patterns.)
+
+### Shared sessions (chat-app pattern)
+
+A single session belongs to a group; many users contribute prompts;
+each prompt's identity must thread through the audit log and the
+MCP credential resolution layer. Examples:
+
+- Slack channel `#incident-response` has a core-agent session;
+  every channel member can DM/mention the agent; replies stream
+  back to the channel thread.
+- Google Chat room with the agent; members ask questions
+  collectively.
+- A team pair-programming attach-mode session where multiple
+  ops share a TUI and take turns typing.
+
+The session itself has no single owner — the group/channel IS the
+owner. Members are Contributors. Per-prompt attribution is what
+makes the audit log + per-user MCP credentials work.
+
+**Per-turn caller attribution:**
+
+`Agent.Inject(message, caller)` takes the originating Caller. The
+agent loop drains the inbox pre-turn; the turn's context carries
+the **turn originator** Caller. Every event in the turn (tool
+calls, MCP calls, plan records) inherits this caller via
+`pkgauth.WithCaller(ctx, originator)`. So:
+
+- Audit log records `turn_originator=alice@` on every event in
+  the turn (see "Audit log shape" below).
+- MCP credential resolution sees `caller=alice@` → fetches
+  Alice's 3LO token (e.g. her GitHub token) for the outbound
+  call (see [`docs/mcp-credential-resolution-design.md`](./mcp-credential-resolution-design.md)).
+- `record_plan` records `plan_author=alice@`.
+
+If multiple injects queue between turns (typical for chat
+traffic), each turn has ONE originator — whoever's message we're
+answering this turn. Edge case: synthesized turns (autonomous
+auto-continue, scheduled triggers) get a synthetic originator
+like `caller=<channel-identity>` so audit logs aren't lying about
+who triggered them.
+
+### Proxy role (chat-bot integration pattern)
+
+A Slack/GChat/Teams bot doesn't authenticate as the human user
+— it authenticates as itself, then **asserts** the human's
+identity per request. The auth model adds a Proxy role that
+makes this safe:
+
+```http
+POST /sessions/<sid>/inject
+Authorization: Bearer <bot-token>
+X-Asserted-Caller: alice@example.com
+Content-Type: application/json
+
+{"message": "investigate the 5xx spike on checkout-svc"}
+```
+
+The auth layer:
+
+```go
+// Authenticator extension
+type AuthenticatorWithProxy interface {
+    Authenticator
+    // CanProxyAs reports whether the resolved Caller is permitted
+    // to assert OTHER callers (via X-Asserted-Caller header).
+    CanProxyAs(c Caller) bool
+}
+```
+
+If the bot's Caller has proxy capability (per config allowlist),
+`X-Asserted-Caller` is honored — the effective Caller for the
+request becomes `alice@example.com`. Without proxy capability,
+the header is ignored (or 403'd, depending on policy).
+
+Config gains a new identity kind:
+
+```json
+{
+  "attach": {
+    "multi_session": {
+      "auth": { "kind": "bearer_table", "table_file": "/etc/core-agent/users.json" },
+      "proxy_identities": ["sa:slack-bot", "sa:gchat-bot"],
+      "asserted_caller_header": "X-Asserted-Caller"
+    }
+  }
+}
+```
+
+**Security on the Proxy role** (genuinely dangerous if
+misconfigured; a compromised bot can impersonate any user):
+
+- **Allowlist, not anything-with-this-label.** Default is no
+  proxy capability; operator must explicitly list bot identities
+  in `proxy_identities`.
+- **Audit logs record BOTH identities.** Every event carries
+  `effective_caller=alice@` AND `proxy_by=sa:slack-bot`. If a
+  bot is compromised, the trail shows what it did and on whose
+  behalf.
+- **Asserted identity must exist in the user table** (for
+  `bearer_table` auth). Bot can't invent identities — only
+  assert ones the operator has provisioned.
+- **Asserted-caller header is rejected for non-proxy callers.**
+  A regular user-bearer attempting to use `X-Asserted-Caller`
+  is logged as a suspicious request and rejected (401).
+
+### Audit log shape
+
+Each eventlog event gains two metadata fields:
+
+```go
+type EventMeta struct {
+    // ... existing fields ...
+    Caller   string `json:"caller,omitempty"`    // effective caller (e.g., "alice@")
+    ProxyBy  string `json:"proxy_by,omitempty"`  // if asserted via proxy, the proxying identity (e.g., "sa:slack-bot")
+}
+```
+
+Persisted in the eventlog, visible in `/memory`-style provenance,
+queryable via the session DB. "Who did what when in this shared
+session" becomes a SQL query: `SELECT seq, caller, payload FROM
+events WHERE session_id = ? ORDER BY seq`.
+
+For audit-log retention: caller identity may itself be sensitive
+(employee identifiers, customer identifiers). Document
+retention/scrubbing considerations.
 
 ## Per-substrate isolation rules
 
@@ -443,20 +573,34 @@ single-user mode or accept that legacy sessions become
 
 ## Implementation phases
 
-### Phase 1: foundations (PR α) — auth + caller plumbing
+### Phase 1: foundations (PR α) — auth + caller plumbing + Contributors ACL + Proxy role
 
 - New `pkg/auth` package: `Caller`, `Authenticator` interface,
   `BearerTokenAuth`, `AnonymousAuth`, `Authorize`.
+- `AuthenticatorWithProxy` extension + `X-Asserted-Caller`
+  header semantics. Config: `proxy_identities` allowlist;
+  `asserted_caller_header` (default `X-Asserted-Caller`).
 - Wire `Authenticator` into `pkg/attach.ServerOptions` (default
   `AnonymousAuth` for backward compat).
-- Pass `Caller` through every session-scoped handler via
-  `resolveAuthorizedSession`.
+- Pass effective `Caller` through every session-scoped handler
+  via `resolveAuthorizedSession` (proxy header resolved here).
+- `SessionACL.Contributors` actually enforced (not deferred);
+  `Authorize(caller, SessionWrite)` checks Owner ∪ Contributors.
+- `Agent.Inject(message, caller)` signature change to carry the
+  turn originator; agent loop puts caller in turn context via
+  `pkgauth.WithCaller(ctx, originator)`.
+- Audit log shape: `EventMeta.Caller` + `EventMeta.ProxyBy`
+  fields populated on every event.
 - Config: `attach.multi_session.auth.kind: bearer_table` + a
   loader for `users.json`.
 - Tests: single-user mode unchanged; multi-user mode rejects
-  cross-session access.
+  cross-session access; shared-session Contributors can inject
+  but not modify ACL; proxy identity can assert other callers;
+  non-proxy caller's `X-Asserted-Caller` is rejected.
 
-~600 LoC + ~500 LoC tests.
+~800 LoC + ~600 LoC tests (bumped from original ~600/~500 to
+cover Contributors enforcement + Proxy role + Inject signature
+change + audit-log fields).
 
 ### Phase 2: per-session sub-gates (PR β)
 
@@ -480,25 +624,40 @@ single-user mode or accept that legacy sessions become
 - Caller context propagation through `pkg/mcp` tool calls
   (identity-only; credential resolution is a sibling design —
   see [`docs/mcp-credential-resolution-design.md`](./mcp-credential-resolution-design.md)).
+  Note: "caller" here is the **turn originator**, not the session
+  owner — works identically for owner-only and shared sessions.
 - Per-session tool registry construction (call `tools.Build`
   per session).
 - Tests: caller-specific overlay content lands only in that
   caller's session prompt; MCP servers can read caller identity
-  from context.
+  from context; in a shared session, sequential turns by
+  different callers each see their own turn-originator in MCP
+  context.
 
 ~400 LoC + ~300 LoC tests.
 
-### Phase 4: docs + examples + Hugo site update (PR δ)
+### Phase 4: docs + examples + chat-bot reference + Hugo site update (PR δ)
 
 - `docs/site/content/docs/reference/multi-session.md` —
-  operator-facing guide.
+  operator-facing guide covering single-user, multi-user, and
+  shared-session deployment shapes.
 - `examples/multi-session-bearer/` — recipe showing the
-  static-table auth + per-user instruction overlays.
+  static-table auth + per-user instruction overlays for the
+  single-tenant-per-user shape.
+- `extras/slack-bot/` — chat-bot reference integration: a
+  small Go binary that authenticates to core-agent as a proxy
+  identity, maintains a Slack-user-ID → core-agent-caller-
+  identity mapping, POSTs `/inject` with `X-Asserted-Caller`
+  per channel message, streams agent responses back to the
+  Slack thread. Demonstrates the shared-session + proxy pattern
+  end-to-end.
 - CHANGELOG v2.4.0 entry.
 
-~600 LoC of docs + recipe.
+~800 LoC of docs + recipes + reference integration (bumped from
+~600 to add the chat-bot reference).
 
-Total: ~3200 LoC across 4 PRs.
+Total: ~3700 LoC across 4 PRs (bumped from ~3200 with the
+shared-session + proxy additions).
 
 ## Open questions
 
@@ -590,7 +749,12 @@ Total: ~3200 LoC across 4 PRs.
 - OIDC / JWT / mTLS / K8s ServiceAccount authentication
   implementations (interfaces only in v2.4).
 - Per-user quotas (tokens, cost, request rate).
-- Session sharing (Viewers / Contributors ACL beyond Owner).
+- Per-platform chat-bot integrations beyond the `extras/slack-bot/`
+  reference (GChat, Teams, Discord, etc.) — the reference shows
+  the pattern; specific platforms ship as separate `extras/`
+  binaries.
+- Granular ACL beyond Owner / Viewers / Contributors (role
+  hierarchies, scoped permissions per session sub-area).
 - Cross-daemon session migration.
 - User-management CLI (`core-agent users add/remove`).
 - IDP federation across daemons (SSO).
@@ -630,11 +794,11 @@ Total: ~3200 LoC across 4 PRs.
 Phase 1 + Phase 2 are the substantive substrate work. Phase 3 +
 Phase 4 are extensions + docs. Realistic v2.4 timeline:
 
-- Phase 1: 1-2 weeks (auth + Caller plumbing; lots of test surface)
+- Phase 1: 2 weeks (auth + Caller plumbing + Contributors enforcement + Proxy role + Inject signature change + audit-log fields; lots of test surface)
 - Phase 2: 1 week (sub-gate derivation; careful threading)
 - Phase 3: 1 week (instruction overlays + MCP context)
-- Phase 4: 1 week (docs + recipe + Hugo site)
+- Phase 4: 1-2 weeks (docs + recipe + Hugo site + chat-bot reference integration)
 
-~4-5 weeks of focused work for a clean v2.4 release. Could be
+~5-6 weeks of focused work for a clean v2.4 release. Could be
 spread over a longer period if v2.4 also picks up other items
 from the backlog (plan-progress tracking, etc.).

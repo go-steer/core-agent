@@ -251,10 +251,10 @@ export ATTACH_URL="http://$(kubectl get svc -n agent-system core-agent \
 export ATTACH_TOKEN="$(kubectl get secret -n agent-system core-agent \
   -o jsonpath='{.data.attach-token}' | base64 -d)"
 
-core-agent-tui "$ATTACH_URL" --attach-token-env=ATTACH_TOKEN
+core-agent-tui "$ATTACH_URL" --token=ATTACH_TOKEN
 ```
 
-(`--attach-token-env=ATTACH_TOKEN` reads the token from the env var instead of putting it on the command line.)
+(`--token=ATTACH_TOKEN` is the env var NAME holding the bearer token. The TUI reads `os.Getenv("ATTACH_TOKEN")` at startup — same env-var-name pattern as the daemon's `--attach-token`. Keeps the token off your shell history.)
 
 ### Operator attach paths (pick one)
 

@@ -308,7 +308,14 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 	}
 	loaded, err := instruction.Load(projectRoot, coreHome)
 	if err != nil {
+		// Fatal: malformed @include / escaped path / missing target / non-UTF-8
+		// content indicates a config bug. Silently shipping a degraded prompt
+		// to the agent is worse than refusing to start — the v2 design intent
+		// is "typos surface immediately rather than silently shrinking the
+		// system prompt." Operators expecting a softer failure mode can fix
+		// their AGENTS.md / AGENTS.d/ contents and restart.
 		fmt.Fprintf(os.Stderr, "core-agent: instruction load: %v\n", err)
+		return runner.ExitConfigError
 	}
 
 	send := func(s string) { fmt.Fprintln(os.Stderr, "core-agent: "+s) }

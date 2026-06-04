@@ -15,7 +15,7 @@ LoadBalancer.
 
 ## What you CANNOT do
 
-- Mutate any cluster state (KSA principal has `container.viewer` only).
+- Mutate any cluster state (KSA principal has `container.clusterViewer` only).
 - Reach GCP services beyond Vertex AI + GKE read.
 - Be reached from outside the VPC (internal LoadBalancer).
 

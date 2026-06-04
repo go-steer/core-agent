@@ -32,8 +32,9 @@ prereqs are in place.
        │   └── KSA principal (no GSA!) — bound directly via WIF for GKE:
        │       principal://iam.googleapis.com/projects/<NUM>/locations/global/
        │         workloadIdentityPools/<PROJECT>.svc.id.goog/subject/ns/agent-system/sa/core-agent
-       │       ├── roles/aiplatform.user      → Vertex AI inference
-       │       └── roles/container.viewer     → GKE MCP read-only tools
+       │       ├── roles/aiplatform.user          → Vertex AI inference
+       │       ├── roles/mcp.toolUser             → invoke MCP server endpoints
+       │       └── roles/container.clusterViewer  → GKE read-only state (via MCP)
        │
        ├── ConfigMap mount /opt/data/.agents/
        │   ├── config.json    (model + permissions)
@@ -55,7 +56,7 @@ prereqs are in place.
 | Constraint | Rationale |
 |---|---|
 | No public exposure | Service is internal-only; operators must attach from inside the VPC. Add an IAP-protected Ingress if external access is needed. |
-| No cluster mutation | GSA has `container.viewer` only — the agent can read its own cluster but cannot mutate. Add `container.developer` if you need write capability. |
+| No cluster mutation | KSA principal has `container.clusterViewer` only — the agent can read cluster + workload state but cannot mutate. Add `roles/container.developer` (and call the non-read-only MCP endpoint) if you need write capability. |
 | No GCP project beyond Vertex + GKE | GSA roles are tight. Add specific roles (e.g. `cloudsql.client`, `monitoring.viewer`) only when a use case calls for them. |
 | One replica only | Session DB on `ReadWriteOnce` PVC — multi-replica needs `ReadWriteMany` storage + multi-session daemon (task #12, v2.4). |
 | Plan-first OFF by default | Simpler first-run; operator flips `permissions.require_plan_artifact: true` in the ConfigMap to enable. |
@@ -122,6 +123,16 @@ gcloud container node-pools update <POOL_NAME> \
 
 WIF for GKE *direct binding* — no Google Service Account, no `iam.workloadIdentityUser` binding. The KSA principal IS the IAM member.
 
+Three roles for the default recipe:
+
+| Role | Purpose |
+|---|---|
+| `roles/aiplatform.user` | Vertex AI inference (call Gemini Pro + Flash) |
+| `roles/mcp.toolUser` | Invoke the GKE remote MCP server's tool calls at all |
+| `roles/container.clusterViewer` | Actually read GKE cluster + workload state through those MCP tools |
+
+The MCP role + the cluster-viewer role are BOTH required for the GKE MCP server to work — `mcp.toolUser` is permission to call any MCP tool, `container.clusterViewer` is permission to do the underlying read against GKE. Missing either gives 403 with no specific hint about which one.
+
 ```bash
 # WIF for GKE direct-binding member identifier:
 #   principal://iam.googleapis.com/projects/<NUMBER>/locations/global/workloadIdentityPools/<ID>.svc.id.goog/subject/ns/<NS>/sa/<KSA>
@@ -130,18 +141,17 @@ WIF for GKE *direct binding* — no Google Service Account, no `iam.workloadIden
 #       <ID>     = textual project ID (in the workload pool name).
 KSA_PRINCIPAL="principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$PROJECT_ID.svc.id.goog/subject/ns/agent-system/sa/core-agent"
 
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-  --role=roles/aiplatform.user \
-  --member="$KSA_PRINCIPAL" \
-  --condition=None
-
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-  --role=roles/container.viewer \
-  --member="$KSA_PRINCIPAL" \
-  --condition=None
+for role in roles/aiplatform.user roles/mcp.toolUser roles/container.clusterViewer; do
+  gcloud projects add-iam-policy-binding $PROJECT_ID \
+    --role="$role" \
+    --member="$KSA_PRINCIPAL" \
+    --condition=None
+done
 ```
 
 That's it for IAM. The `principal://` member string is the WIF-for-GKE identifier; bind any role to it on any resource using the same `--member=...` flag.
+
+**Multi-project inspection:** if you want the agent to inspect clusters in projects OTHER than the deployment's home project, re-run the loop against each target project — the KSA principal stays the same; only the project receiving the binding changes. The `mcp.toolUser` binding is one-time on the deployment's home project (it gates calling the MCP server at all), but `container.clusterViewer` needs to be granted on every project you want to read.
 
 **Renaming the KSA?** If your overlay uses `namePrefix:` to rename `core-agent` to something else (e.g. `env-prod-core-agent`), or `namespace:` to deploy somewhere other than `agent-system`, the `principal://...` member string above must use the matching name + namespace. Mismatched bindings look fine to gcloud but the pod's runtime token exchange returns "permission denied."
 
@@ -240,6 +250,10 @@ If you see auth errors in the logs, re-check:
 - Cluster has WIF enabled (`gcloud container clusters describe <name> --format='value(workloadIdentityConfig.workloadPool)'` should print `<PROJECT_ID>.svc.id.goog`)
 - Standard cluster's node pools use the GKE metadata server (`gcloud container node-pools describe <pool> --cluster=<cluster> --location=<region> --format='value(config.workloadMetadataConfig.mode)'` should print `GKE_METADATA`)
 - `iamcredentials.googleapis.com` API is enabled on the project
+
+If GKE MCP tool calls return **403 Forbidden** (auth to the daemon works; auth from the agent to the MCP server fails), re-check:
+- Both `roles/mcp.toolUser` AND `roles/container.clusterViewer` are bound to the KSA principal. Missing either gives 403 with no specific hint about which one.
+- For inspecting clusters in projects OTHER than the deployment's home project, the target project must have its own `container.clusterViewer` binding for the same KSA principal.
 
 ## Attach
 
@@ -355,15 +369,19 @@ kubectl delete namespace agent-system
 export PROJECT_NUMBER="$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')"
 KSA_PRINCIPAL="principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$PROJECT_ID.svc.id.goog/subject/ns/agent-system/sa/core-agent"
 
-gcloud projects remove-iam-policy-binding $PROJECT_ID \
-  --role=roles/aiplatform.user \
-  --member="$KSA_PRINCIPAL" \
-  --condition=None
+for role in roles/aiplatform.user roles/mcp.toolUser roles/container.clusterViewer; do
+  gcloud projects remove-iam-policy-binding $PROJECT_ID \
+    --role="$role" \
+    --member="$KSA_PRINCIPAL" \
+    --condition=None
+done
 
-gcloud projects remove-iam-policy-binding $PROJECT_ID \
-  --role=roles/container.viewer \
-  --member="$KSA_PRINCIPAL" \
-  --condition=None
+# If you also granted container.clusterViewer on additional
+# projects for multi-project inspection, revoke those too:
+#   for proj in proj-a proj-b proj-c; do
+#     gcloud projects remove-iam-policy-binding $proj \
+#       --role=roles/container.clusterViewer --member="$KSA_PRINCIPAL" --condition=None
+#   done
 ```
 
 ## Compose with the rest of the substrate

@@ -1,0 +1,33 @@
+# kustomize entry point — `kubectl apply -k examples/gke-deploy/deploy/`
+# applies the whole set in dependency order. Or apply individual
+# files with `kubectl apply -f` if you prefer explicit operator
+# control over each resource.
+#
+# To customize for your project: write an overlay (separate
+# directory with its own kustomization.yaml referencing this one
+# as the base) that patches PROJECT_ID / region / image tag /
+# resource requests. Don't edit the files here in-place — the
+# overlay pattern keeps your customizations clean across updates.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: agent-system
+
+resources:
+  - 00-namespace.yaml
+  - 10-serviceaccount.yaml
+  - 30-configmap.yaml
+  - 40-pvc.yaml
+  - 50-deployment.yaml
+  - 60-service.yaml
+
+# Note: 20-secret.yaml.example is NOT in the resources list —
+# operators create the secret out-of-band via `kubectl create
+# secret` (see 20-secret.yaml.example for the command). Including
+# secrets in kustomize bases is a recipe for accidental
+# token commits.
+
+commonLabels:
+  app.kubernetes.io/name: core-agent
+  app.kubernetes.io/component: agent
+  app.kubernetes.io/version: "2.3.1"

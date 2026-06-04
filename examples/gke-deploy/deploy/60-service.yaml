@@ -1,0 +1,37 @@
+# Internal LoadBalancer — reachable only from inside the VPC. The
+# Service gets a 10.x.x.x IP (or your subnet's private range) that
+# operator workstations in the same VPC (Cloud Workstations, IAP
+# tunnel, VPN) can hit directly.
+#
+# The networking.gke.io/load-balancer-type: "Internal" annotation
+# is the modern (1.17+) form. Older clusters may need the legacy
+# cloud.google.com/load-balancer-type: "Internal" annotation — GKE
+# accepts both. Pick whichever your cluster's LB controller
+# recognizes; the modern annotation is the documented default.
+#
+# To expose publicly (NOT recommended for a default deployment) —
+# remove the annotation; the LoadBalancer provisions a public IP.
+# Better: keep this internal and front it with an IAP-protected
+# Ingress if external access is needed; that way auth happens at
+# the GCLB layer + the agent's bearer token both.
+apiVersion: v1
+kind: Service
+metadata:
+  name: core-agent
+  namespace: agent-system
+  annotations:
+    # Modern internal-LB annotation (GKE 1.17+).
+    networking.gke.io/load-balancer-type: "Internal"
+    # Optional: pin to a specific subnet (default: cluster's subnet).
+    # networking.gke.io/internal-load-balancer-subnet: my-subnet
+  labels:
+    app: core-agent
+spec:
+  type: LoadBalancer
+  selector:
+    app: core-agent
+  ports:
+    - name: attach
+      protocol: TCP
+      port: 7777
+      targetPort: 7777

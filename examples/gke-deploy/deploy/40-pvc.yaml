@@ -1,0 +1,25 @@
+# Persistent volume for session DB + plan artifacts + transcripts.
+# Mounted at /opt/data in the pod. Survives pod restart, image
+# upgrade, node move (via PD-SSD's dynamic remount). Dies only when
+# explicitly deleted.
+#
+# Sizing: 10Gi covers ~10k sessions with light transcripts. Heavier
+# workloads (long-running autonomous agents writing dense eventlogs)
+# may want 50Gi+. SQLite WAL grows with traffic; quarterly cleanup
+# via `core-agent` tools or kubectl exec sweep is fine.
+#
+# StorageClass: defaults to the GKE cluster's default (typically
+# pd-balanced on Standard, pd-balanced on Autopilot). Set
+# storageClassName explicitly if you want a specific tier (pd-ssd
+# for low-latency session ops; pd-standard for cost).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: core-agent-data
+  namespace: agent-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi

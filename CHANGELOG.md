@@ -16,6 +16,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+### Added
+
+- **`examples/gke-deploy/` recipe.** Drop-in GKE deployment of `core-agent` as a long-lived pod, reachable by operators over an internal HTTP LoadBalancer. Workload Identity Federation binds the KSA (`core-agent` in namespace `agent-system`) to a GCP Service Account for credential-free Vertex AI inference + GKE read-only MCP access. Ships seven YAML manifests (Namespace, ServiceAccount, Secret-example, ConfigMap, PVC, Deployment, Service) + a kustomization.yaml + a `.agents/` config bundle, no Dockerfile (uses the v2.3.1 published image). Registers with Google Cloud's Agent Registry via the `apphub.cloud.google.com/functional-type: "AGENT"` annotation. README covers prereqs, WIF setup, variant configs (Anthropic-on-Vertex, plan-first, slim image), four attach paths (Cloud Workstations / IAP / VPN / `kubectl port-forward`), tuning, teardown, and image signature verification via cosign. Plan-first OFF by default; one config flip turns it on.
+
 ## [2.3.1] — 2026-06-04
 
 **Container image release pipeline.** Patch release that ships only release-infrastructure — no code changes to the binary surface. Closes the v2.2.0 deferred "publish container images" item. Three multi-arch (amd64 + arm64) images now publish to GitHub Container Registry on every tag push, signed via Sigstore keyless. Operators deploying core-agent to K8s / Cloud Run / Nomad can `image: ghcr.io/go-steer/core-agent:2.3.1` (semver tag without the leading `v` — matches the Docker / Helm appVersion convention) instead of building their own. Unblocks the `examples/gke-deploy/` recipe in the following release.

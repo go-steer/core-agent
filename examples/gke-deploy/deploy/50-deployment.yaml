@@ -1,0 +1,151 @@
+# The core-agent pod. Headless (--no-repl) + remote-attach
+# (--attach-listen=:7777) so operators connect via core-agent-tui
+# from inside the VPC.
+#
+# Key annotations / fields:
+# - apphub.cloud.google.com/functional-type: "AGENT" — registers
+#   the workload with Google Cloud Agent Registry on apply.
+# - serviceAccountName: core-agent — links to the KSA, which in
+#   turn is annotated for Workload Identity Federation. Inside the
+#   container, ADC tokens resolve to core-agent@PROJECT.gserviceaccount.com.
+# - securityContext.fsGroup: 65532 — distroless/static-debian12:nonroot
+#   runs as UID 65532; matching fsGroup lets the pod write to the PVC.
+# - Single replica with strategy: Recreate — session DB is on a
+#   ReadWriteOnce PVC; a rolling deployment would block on PVC
+#   detach. For HA you'd switch to ReadWriteMany storage + multi-
+#   session daemon (task #12, v2.4).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: core-agent
+  namespace: agent-system
+  labels:
+    app: core-agent
+    app.kubernetes.io/name: core-agent
+    app.kubernetes.io/version: "2.3.1"
+  annotations:
+    # Identifies this workload as an AI agent to Google Cloud's
+    # Agent Registry — applying this Deployment registers it.
+    # Requires the agentregistry.googleapis.com API enabled on
+    # the project. See README's prereqs section.
+    apphub.cloud.google.com/functional-type: "AGENT"
+spec:
+  replicas: 1
+  strategy:
+    # Recreate (not RollingUpdate) because session DB is on a
+    # ReadWriteOnce PVC — only one pod can mount it at a time.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: core-agent
+  template:
+    metadata:
+      labels:
+        app: core-agent
+    spec:
+      serviceAccountName: core-agent
+
+      securityContext:
+        # Match the distroless image's nonroot user (UID 65532) so
+        # the PVC mount is writable. Without fsGroup, the agent
+        # gets EPERM when creating /opt/data/sessions.db on first
+        # boot.
+        fsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: core-agent
+          # Pinned to v2.3.1 (the first release with published images).
+          # Bump to a newer tag to upgrade; or use :latest for the
+          # most recent release; or :main-<sha> for a development
+          # build. Multi-arch (amd64 + arm64) so node-pool
+          # architecture is automatic.
+          image: ghcr.io/go-steer/core-agent:2.3.1
+          imagePullPolicy: IfNotPresent
+
+          args:
+            - --no-repl
+            - --attach-listen=:7777
+            # --attach-token VALUE is the env var NAME holding the
+            # bearer token, not the token itself — keeps the secret
+            # off the command line and out of `ps`/`kubectl describe`.
+            - --attach-token=ATTACH_TOKEN
+            - --session-db=/opt/data/sessions.db
+            - -c=/opt/data/.agents/config.json
+
+          ports:
+            - name: attach
+              containerPort: 7777
+              protocol: TCP
+
+          env:
+            # WIF resolves these via ADC when set; the agent uses
+            # them to construct the Vertex AI client without a key
+            # file.
+            - name: GOOGLE_CLOUD_PROJECT
+              value: "PROJECT_ID"
+            - name: GOOGLE_CLOUD_LOCATION
+              value: "us-central1"
+            - name: GOOGLE_GENAI_USE_VERTEXAI
+              value: "1"
+
+            # Bearer token for /attach-listen auth, sourced from
+            # the Secret (never appears in pod spec or ConfigMap).
+            - name: ATTACH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: core-agent
+                  key: attach-token
+
+          # Resource requests sized for Gemini Pro on Vertex with
+          # light-to-moderate tool use. Bump CPU if you see the
+          # agent's response-stream throttled; bump memory if you
+          # enable plan-first + retain plans across long sessions
+          # (each plan file is small but accumulates).
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+
+          volumeMounts:
+            - name: agent-data
+              mountPath: /opt/data
+            - name: agent-config
+              mountPath: /opt/data/.agents
+              readOnly: true
+
+          # Liveness + readiness: TCP probe against the attach
+          # listener. Every endpoint under /sessions requires the
+          # bearer token, so an HTTP probe without it would 401 and
+          # mark the pod unhealthy. TCP is sufficient: if the
+          # listener is accepting connections, the agent is up.
+          # Operators with stricter health requirements can wire a
+          # sidecar that does an authed HTTP probe and exposes a
+          # simple /healthz; for the default recipe TCP is the
+          # right trade-off.
+          livenessProbe:
+            tcpSocket:
+              port: attach
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: attach
+            initialDelaySeconds: 3
+            periodSeconds: 5
+
+      volumes:
+        - name: agent-data
+          persistentVolumeClaim:
+            claimName: core-agent-data
+        - name: agent-config
+          configMap:
+            name: core-agent-config

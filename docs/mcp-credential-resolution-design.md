@@ -487,6 +487,45 @@ contact point: **`pkg/auth.CallerFromContext(ctx)`**.
 - This design's `Registry.Resolve` reads the caller from
   context and uses it (for 3LO) or ignores it (for 2LO).
 
+**Crucially: "Caller" here means the TURN ORIGINATOR, not the
+session owner.** In a shared session (Slack channel, GChat room,
+team pair-programming TUI) where multiple users contribute prompts
+to the same context, each turn carries the Caller of whoever
+sent the message that triggered it. This works identically for
+owner-only and shared sessions because the credential resolution
+just reads whatever Caller is in the per-turn context — it doesn't
+know or care about session ownership semantics. See the "Shared
+sessions" subsection in
+[`docs/multi-session-design.md`](./multi-session-design.md) for
+the per-turn attribution model and the Proxy role that makes
+chat-bot integrations work.
+
+So in a shared `#incident-response` channel session:
+
+```
+Alice sends "investigate the 5xx spike"
+  → turn originator = alice@
+  → agent calls GitHub MCP
+  → Registry.Resolve(ctx, "github_3lo", scopes)
+  → reads caller from ctx → alice@
+  → Auth Manager: GenerateAccessToken(subject=alice@, provider=github)
+  → returns Alice's token
+
+Bob replies "what about the deploy logs?"
+  → turn originator = bob@
+  → agent calls same GitHub MCP
+  → Registry.Resolve(ctx, "github_3lo", scopes)
+  → reads caller from ctx → bob@
+  → Auth Manager: GenerateAccessToken(subject=bob@, provider=github)
+  → returns Bob's token (separate cache entry, Bob's
+    credentials)
+```
+
+Same session, same conversation history visible to the agent,
+but the outbound MCP call resolves per-turn-originator. The
+`(provider, caller, scopes)` cache key handles the per-user
+isolation automatically.
+
 Either side can land first. If credential resolution ships
 before multi-session Phase 1, `Caller` defaults to "anon" /
 the daemon's configured default identity; 2LO providers

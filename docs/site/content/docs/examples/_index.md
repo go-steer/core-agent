@@ -34,9 +34,9 @@ Substrate-enforced plan-before-action. The agent must call `record_plan` before 
 
 ### [`gke-deploy`](https://github.com/go-steer/core-agent/tree/main/examples/gke-deploy)
 
-Deploy `core-agent` as a long-lived pod in a GKE cluster, reachable by operators over an **internal** HTTP LoadBalancer. Workload Identity Federation binds the KSA to a GCP Service Account for credential-free Vertex AI inference + GKE read-only MCP access. Registers with Google Cloud's Agent Registry via the standard `apphub.cloud.google.com/functional-type: "AGENT"` annotation. No Dockerfile in the recipe — uses the published `ghcr.io/go-steer/core-agent:2.3.1` image. Use when you want a managed-runtime deployment of core-agent for a platform team or a long-running fleet auditor.
+Deploy `core-agent` as a long-lived pod in a GKE cluster, reachable by operators over an **internal** HTTP LoadBalancer. Uses **Workload Identity Federation for GKE direct binding** (no Google Service Account in the middle — IAM roles bind directly to the KSA's `principal://...` identifier) for credential-free Vertex AI inference + GKE read-only MCP access. Registers with Google Cloud's Agent Registry via the standard `apphub.cloud.google.com/functional-type: "AGENT"` annotation. No Dockerfile in the recipe — uses the published `ghcr.io/go-steer/core-agent:2.3.1` image. Use when you want a managed-runtime deployment of core-agent for a platform team or a long-running fleet auditor.
 
-**Highlights:** Workload Identity Federation (no key files) · internal LoadBalancer (VPC-only) · Agent Registry registration · GKE read-only MCP wired · 10Gi PVC for session DB + plans · variant configs for Anthropic-on-Vertex + plan-first + slim image · operator attach via Cloud Workstations / IAP / VPN
+**Highlights:** WIF-for-GKE direct binding (no GSA / no key files) · internal LoadBalancer (VPC-only) · Agent Registry registration · GKE read-only MCP wired · 10Gi PVC for session DB + plans · variant configs for Anthropic-on-Vertex + plan-first + slim image · operator attach via Cloud Workstations / IAP / VPN
 
 ---
 

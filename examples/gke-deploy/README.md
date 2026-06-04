@@ -2,9 +2,10 @@
 
 A complete, drop-in recipe for running `core-agent` as a long-lived
 pod in a GKE cluster, reachable by operators over an **internal**
-HTTP LoadBalancer, with Workload Identity Federation for credential-
-free auth to Vertex AI + the GKE read-only MCP server, and
-registered with Google Cloud's Agent Registry.
+HTTP LoadBalancer, with **Workload Identity Federation for GKE**
+(direct binding — no Google Service Account in the middle) for
+credential-free auth to Vertex AI + the GKE read-only MCP server,
+and registered with Google Cloud's Agent Registry.
 
 **No Dockerfile in this recipe** — uses the published
 `ghcr.io/go-steer/core-agent:2.3.1` image (multi-arch amd64+arm64,
@@ -28,7 +29,9 @@ prereqs are in place.
        ▼
 [Deployment core-agent (1 replica, Recreate strategy)]
        ├── serviceAccountName: core-agent
-       │   └── KSA annotated → GSA core-agent@PROJECT.iam.gserviceaccount.com
+       │   └── KSA principal (no GSA!) — bound directly via WIF for GKE:
+       │       principal://iam.googleapis.com/projects/<NUM>/locations/global/
+       │         workloadIdentityPools/<PROJECT>.svc.id.goog/subject/ns/agent-system/sa/core-agent
        │       ├── roles/aiplatform.user      → Vertex AI inference
        │       └── roles/container.viewer     → GKE MCP read-only tools
        │
@@ -65,14 +68,16 @@ prereqs are in place.
    ```bash
    gcloud services enable \
      container.googleapis.com \
-     artifactregistry.googleapis.com \
+     iamcredentials.googleapis.com \
      aiplatform.googleapis.com \
      cloudresourcemanager.googleapis.com \
      agentregistry.googleapis.com \
      --project=$PROJECT_ID
    ```
 
-2. **GKE cluster with Workload Identity Federation enabled.**
+   (`iamcredentials.googleapis.com` is required for the WIF token-exchange path; the others are GKE/inference/registry plumbing.)
+
+2. **GKE cluster with Workload Identity Federation for GKE enabled.**
 
    New cluster (Standard mode; Autopilot has WIF on by default):
 
@@ -85,13 +90,21 @@ prereqs are in place.
      --workload-pool=$PROJECT_ID.svc.id.goog
    ```
 
-   Existing cluster — enable WIF:
+   Existing Standard cluster — enable WIF on the cluster AND make sure node pools use the GKE metadata server:
 
    ```bash
    gcloud container clusters update <CLUSTER_NAME> \
      --location=$REGION \
      --workload-pool=$PROJECT_ID.svc.id.goog
+
+   # For each existing node pool:
+   gcloud container node-pools update <POOL_NAME> \
+     --cluster=<CLUSTER_NAME> \
+     --location=$REGION \
+     --workload-metadata=GKE_METADATA
    ```
+
+   (Autopilot has both on by default; skip for Autopilot clusters.)
 
 3. **`kubectl` credentials** for the cluster:
 
@@ -115,48 +128,54 @@ prereqs are in place.
 
 ## Setup
 
-### Step 1 — Create the Google Service Account + grant roles
+### Step 1 — Resolve your project's identifiers
 
 ```bash
 export PROJECT_ID="<your-project-id>"
+export PROJECT_NUMBER="$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')"
 export REGION="us-central1"
-
-gcloud iam service-accounts create core-agent \
-  --project=$PROJECT_ID \
-  --display-name="core-agent on GKE"
-
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-  --member="serviceAccount:core-agent@$PROJECT_ID.iam.gserviceaccount.com" \
-  --role="roles/aiplatform.user"
-
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-  --member="serviceAccount:core-agent@$PROJECT_ID.iam.gserviceaccount.com" \
-  --role="roles/container.viewer"
 ```
 
-### Step 2 — Bind the KSA → GSA via Workload Identity Federation
+You need **both** the textual project ID (`my-project-xyz`) AND the numeric project number (`123456789012`). The WIF principal identifier uses them in different positions and getting them swapped is a common cause of bindings that look correct but never authorize.
+
+### Step 2 — Grant IAM roles directly to the KSA principal
+
+No Google Service Account, no `iam.workloadIdentityUser` binding. The KSA principal IS the IAM member.
 
 ```bash
-gcloud iam service-accounts add-iam-policy-binding \
-  core-agent@$PROJECT_ID.iam.gserviceaccount.com \
-  --project=$PROJECT_ID \
-  --role="roles/iam.workloadIdentityUser" \
-  --member="serviceAccount:$PROJECT_ID.svc.id.goog[agent-system/core-agent]"
+# WIF for GKE direct-binding member identifier:
+#   principal://iam.googleapis.com/projects/<NUMBER>/locations/global/workloadIdentityPools/<ID>.svc.id.goog/subject/ns/<NS>/sa/<KSA>
+#
+# Note: <NUMBER> = numeric project NUMBER (in the projects/... path);
+#       <ID>     = textual project ID (in the workload pool name).
+KSA_PRINCIPAL="principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$PROJECT_ID.svc.id.goog/subject/ns/agent-system/sa/core-agent"
+
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --role=roles/aiplatform.user \
+  --member="$KSA_PRINCIPAL" \
+  --condition=None
+
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --role=roles/container.viewer \
+  --member="$KSA_PRINCIPAL" \
+  --condition=None
 ```
 
-The member string `serviceAccount:$PROJECT_ID.svc.id.goog[NAMESPACE/KSA_NAME]` is the WIF identifier — keep `agent-system` (namespace) and `core-agent` (KSA name) consistent with the YAMLs.
+That's it for IAM. The `principal://` member string is the WIF-for-GKE identifier; bind any role to it on any resource using the same `--member=...` flag.
 
-### Step 3 — Substitute your project ID into the manifests
+### Step 3 — Substitute your project ID + region into the manifests
 
 The YAMLs in `deploy/` ship with `PROJECT_ID` and `us-central1` as
 placeholders. Replace them with your values:
 
 ```bash
 cd examples/gke-deploy/deploy
-sed -i "s/PROJECT_ID/$PROJECT_ID/g" 10-serviceaccount.yaml 30-configmap.yaml 50-deployment.yaml
+sed -i "s/PROJECT_ID/$PROJECT_ID/g" 30-configmap.yaml 50-deployment.yaml
 # Optional: change region if you're not in us-central1
 sed -i "s/us-central1/$REGION/g" 30-configmap.yaml 50-deployment.yaml
 ```
+
+(`10-serviceaccount.yaml` doesn't need substitution — direct binding doesn't put any project-specific value in the K8s resource; the IAM binding does all the linking.)
 
 For a real production workflow, use a kustomize overlay instead of `sed` so your customizations stay separate from the base recipe.
 
@@ -196,9 +215,12 @@ kubectl logs -n agent-system -l app=core-agent --tail=50
 ```
 
 If you see auth errors in the logs, re-check:
-- KSA annotation matches the GSA exactly (`kubectl get sa -n agent-system core-agent -o yaml`)
-- WIF binding member string uses the right namespace + KSA name
-- Cluster has WIF enabled (`gcloud container clusters describe <name> --format='value(workloadIdentityConfig.workloadPool)'` should be non-empty)
+- IAM binding uses the **principal://** member format, NOT `serviceAccount:...svc.id.goog[...]` (that's the legacy GSA-impersonation format)
+- Project NUMBER vs project ID are in the right positions in the `principal://` string (`projects/<NUMBER>/.../workloadIdentityPools/<ID>.svc.id.goog/...`) — swapping them is the most common cause of bindings that authorize-as-nobody
+- Namespace + KSA name in the principal string match the YAMLs (`agent-system` / `core-agent`)
+- Cluster has WIF enabled (`gcloud container clusters describe <name> --format='value(workloadIdentityConfig.workloadPool)'` should print `<PROJECT_ID>.svc.id.goog`)
+- Standard cluster's node pools use the GKE metadata server (`gcloud container node-pools describe <pool> --cluster=<cluster> --location=<region> --format='value(config.workloadMetadataConfig.mode)'` should print `GKE_METADATA`)
+- `iamcredentials.googleapis.com` API is enabled on the project
 
 ## Attach
 
@@ -307,15 +329,20 @@ kubectl delete pvc -n agent-system core-agent-data  # explicit; kustomize doesn'
 kubectl delete secret -n agent-system core-agent
 kubectl delete namespace agent-system
 
-# Revoke GSA roles + delete GSA (if no longer used)
+# Revoke the direct IAM bindings. No GSA to delete — direct
+# binding means there was nothing intermediate to clean up.
+export PROJECT_NUMBER="$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')"
+KSA_PRINCIPAL="principal://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$PROJECT_ID.svc.id.goog/subject/ns/agent-system/sa/core-agent"
+
 gcloud projects remove-iam-policy-binding $PROJECT_ID \
-  --member="serviceAccount:core-agent@$PROJECT_ID.iam.gserviceaccount.com" \
-  --role="roles/aiplatform.user"
+  --role=roles/aiplatform.user \
+  --member="$KSA_PRINCIPAL" \
+  --condition=None
+
 gcloud projects remove-iam-policy-binding $PROJECT_ID \
-  --member="serviceAccount:core-agent@$PROJECT_ID.iam.gserviceaccount.com" \
-  --role="roles/container.viewer"
-gcloud iam service-accounts delete \
-  core-agent@$PROJECT_ID.iam.gserviceaccount.com --quiet
+  --role=roles/container.viewer \
+  --member="$KSA_PRINCIPAL" \
+  --condition=None
 ```
 
 ## Compose with the rest of the substrate

@@ -44,7 +44,7 @@ var (
 	// for in-development builds. Bump this manually on main right
 	// after cutting a release so post-release builds report the
 	// next target version.
-	Version = "v2.3.0"
+	Version = "v2.4.0-dev"
 
 	// Commit is the git SHA the binary was built from. Defaults to
 	// "none" so the debug.BuildInfo fallback can detect that nothing

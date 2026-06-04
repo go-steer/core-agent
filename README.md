@@ -82,7 +82,17 @@ As a library:
 go get github.com/go-steer/core-agent
 ```
 
-Requires Go 1.26 or newer.
+As a container image (v2.3.1+ — multi-arch amd64 + arm64; distroless static; Sigstore signed):
+
+```bash
+docker pull ghcr.io/go-steer/core-agent:latest        # full build, in-process TUI included
+docker pull ghcr.io/go-steer/core-agent-slim:latest   # headless variant, ~5MB smaller (no embedded TUI)
+docker pull ghcr.io/go-steer/core-agent-tui:latest    # remote TUI client only
+```
+
+Floating tags: `:latest` (most recent semver), `:vX.Y.Z` / `:vX.Y` / `:vX` (semver), `:main` (latest dev build), `:main-<sha>` (specific dev build). Verify signatures with `cosign verify ghcr.io/go-steer/core-agent:<tag> --certificate-identity-regexp '^https://github.com/go-steer/core-agent' --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
+
+Requires Go 1.26 or newer for source builds; container images carry their own toolchain.
 
 ---
 

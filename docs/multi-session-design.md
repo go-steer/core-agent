@@ -255,29 +255,48 @@ If `multi_session.users_dir` is unset, behavior is unchanged
 **Today:** MCP servers are constructed once at daemon start
 from `.agents/mcp.json`. The connection is shared across
 sessions. Tool calls flow through with no per-session
-attribution.
+attribution. Outbound auth is daemon-identity 2LO only (current
+`AuthSpec.GoogleOAuth` uses ADC of the daemon's service identity).
 
-**Problem:** if an MCP server enforces caller identity (e.g.,
-GKE MCP using ADC credentials of the daemon's GCP identity, not
-the user's), every user's actions are attributed to the same
-identity downstream. Audit trail outside the daemon is broken.
+**Problem (two layers):**
 
-**Fix (v1 of multi-session):** add a per-tool-call **caller
-context header** so MCP servers that want to enforce per-call
-identity can. We surface caller identity via:
+1. **Identity propagation.** If an MCP server enforces caller
+   identity (e.g., GKE MCP authorizing on the caller's IAM,
+   not the daemon's), every user's actions are attributed to
+   the same identity downstream. Audit trail outside the daemon
+   is broken.
+2. **Credential resolution.** Even if identity propagates,
+   today there's no way to fetch a per-caller credential
+   (Alice's GitHub OAuth token vs Bob's) and inject it on the
+   outbound MCP call. The current `google_oauth` strategy is
+   2LO only.
+
+**Fix (Phase 3 of multi-session):** ship the **identity
+propagation** half only. The agent loop sets the `Caller` on
+the tool-call context; `pkg/mcp` propagates it to the outbound
+call.
 
 ```go
 // pkg/mcp (extended)
 
 // When the agent loop calls an MCP tool, the gate's CallContext
-// now carries the Caller identity. MCP servers that want per-call
-// identity inspect ctx.Value(mcp.CallerKey).
+// now carries the Caller identity via pkg/auth.CallerFromContext.
+// MCP servers that want per-call identity inspect it; the pkg/mcp
+// layer just propagates.
 ```
 
 This is **opt-in for MCP server authors** — existing servers
-that don't inspect it work unchanged. The pkg/mcp layer just
-propagates the identity through; what the downstream does with
-it is the server's problem.
+that don't inspect it work unchanged.
+
+**Credential resolution is a sibling design**, not part of
+Phase 3. See
+[`docs/mcp-credential-resolution-design.md`](./mcp-credential-resolution-design.md)
+(task #13) for the pluggable `CredentialProvider` interface, 3LO
+provider implementations (Auth Manager via
+`iamconnectorcredentials`, OAuth2 direct), shared provider
+config blocks, and per-caller credential caching. That design
+depends on this one's Caller propagation but is otherwise
+independent; the two pieces can land sequentially or in parallel.
 
 A more ambitious "per-caller MCP connection pool" (separate
 gRPC/stdio session per caller) is deferred to v2.5 — most MCP
@@ -458,7 +477,9 @@ single-user mode or accept that legacy sessions become
 
 - `LoadForSession(projectRoot, userRoot, caller)` extension to
   `pkg/instruction`.
-- Caller context propagation through `pkg/mcp` tool calls.
+- Caller context propagation through `pkg/mcp` tool calls
+  (identity-only; credential resolution is a sibling design —
+  see [`docs/mcp-credential-resolution-design.md`](./mcp-credential-resolution-design.md)).
 - Per-session tool registry construction (call `tools.Build`
   per session).
 - Tests: caller-specific overlay content lands only in that
@@ -597,6 +618,12 @@ Total: ~3200 LoC across 4 PRs.
   engineers as users, fleet-management sessions as their work).
   Multi-session design here is what makes that recipe viable
   for a real shared deployment.
+- **Task #13 / `docs/mcp-credential-resolution-design.md`** —
+  sibling design for the per-MCP-server credential resolution
+  layer (CredentialProvider interface, Auth Manager integration,
+  per-caller credential caching). Composes with this design's
+  Caller propagation; covers what to actually DO with the
+  caller identity once it reaches the outbound MCP call.
 
 ## When this lands
 

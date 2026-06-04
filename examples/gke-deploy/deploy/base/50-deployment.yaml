@@ -91,7 +91,13 @@ spec:
             # bearer token, not the token itself — keeps the secret
             # off the command line and out of `ps`/`kubectl describe`.
             - --attach-token=ATTACH_TOKEN
-            - --session-db=/opt/data/sessions.db
+            # --session-db is a BOOL toggle (enables the SQLite-
+            # backed session + eventlog store); --session-db-path
+            # sets the file path. Without --session-db, sessions
+            # are in-memory only and lost on pod restart, which
+            # defeats the PVC's purpose.
+            - --session-db
+            - --session-db-path=/opt/data/sessions.db
             # Cost-efficiency: agentic tool wrappers route bulk
             # tool work (file reads, greps, fetches) through a
             # cheaper small model in a subtask, so only the digest

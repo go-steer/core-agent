@@ -16,6 +16,20 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+## [2.3.1] — 2026-06-04
+
+**Container image release pipeline.** Patch release that ships only release-infrastructure — no code changes to the binary surface. Closes the v2.2.0 deferred "publish container images" item. Three multi-arch (amd64 + arm64) images now publish to GitHub Container Registry on every tag push, signed via Sigstore keyless. Operators deploying core-agent to K8s / Cloud Run / Nomad can `image: ghcr.io/go-steer/core-agent:v2.3.1` instead of building their own. Unblocks the `examples/gke-deploy/` recipe in the following release.
+
+### Added
+
+- **Container image release pipeline (`Dockerfile` + `.github/workflows/release-images.yml`).** Three multi-arch images (linux/amd64 + linux/arm64) publish to GHCR on every `v*.*.*` tag push, plus a floating `:main-<sha>` on every main push:
+  - `ghcr.io/go-steer/core-agent:<tag>` — full build (in-process bubble-tea TUI included)
+  - `ghcr.io/go-steer/core-agent-slim:<tag>` — `-tags no_tui` slim variant (~5MB smaller; headless K8s deployments)
+  - `ghcr.io/go-steer/core-agent-tui:<tag>` — remote TUI client only
+  - All on `gcr.io/distroless/static-debian12:nonroot` (pure-Go binary; no shell; runs as UID 65532 by default).
+  - Signed via Sigstore keyless (GitHub Actions OIDC → Fulcio short-lived cert → Rekor transparency log); verify with `cosign verify ghcr.io/go-steer/core-agent:<tag> --certificate-identity-regexp '^https://github.com/go-steer/core-agent' --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
+  - Builder image is `golang:${GO_VERSION}-alpine` where `GO_VERSION` is parsed from `go.mod` at build time — bumping `go.mod` automatically bumps the build toolchain, no second source of truth to drift.
+
 ## [2.3.0] — 2026-06-04
 
 **Ecosystem migration on-ramp + substrate-enforced plan-first.** Two headline features make this release: a multi-file instruction loader (`@include` + `AGENTS.d/` overlay directory) that drops in compatibly with the AGENTS.md / SOUL.md / governance-SOPs shape every adjacent agent framework already uses (Cursor, Antigravity, Hermes), and gate-level plan-first enforcement (`record_plan` built-in + `RequirePlanArtifact` opt-in + `/replan` slash) that turns "research → approve plan → execute" from a prompt-honored convention into a substrate primitive. Together they target the same operator: someone moving a real distributed-agent workload onto core-agent who wants their existing Layer-0 markdown to load unchanged AND wants the agent to be genuinely incapable of touching the world before a written plan is approved. Plus a new Examples index page (`docs/examples/`) catalogs every shipped recipe + library quickstart so operators can pick a starting point by use case. Two recipes ship: `examples/gke-parallel-triage/` (GKE incident triage via parallel `spawn_agent` fan-out, MCP-integrated, config-only) and `examples/plan-first/` (three `config.json` variants × `ask` / `acceptEdits` / `yolo` composition with `require_plan_artifact`). Manual UAT walkthrough at `docs/v2.3-smoketest.md`; designs at `docs/instruction-loader-v2-design.md`, `docs/plan-first-design.md`, `docs/kube-agents-platform-fit.md`, `docs/scion-core-agent-architecture.md`. Deferred to v2.4: multi-session + per-user auth (task #12), per-MCP-server credential resolution with Auth Manager (task #13), plan-progress tracking (task #9).

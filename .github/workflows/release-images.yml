@@ -1,0 +1,201 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Release images
+
+# Builds + publishes three multi-arch (amd64 + arm64) container images
+# to GitHub Container Registry on every `v*.*.*` tag push, plus a
+# floating `:main-<sha>` development tag on every main push:
+#
+#   ghcr.io/go-steer/core-agent       — full build (in-process TUI included)
+#   ghcr.io/go-steer/core-agent-slim  — built `-tags no_tui` (~5MB smaller)
+#   ghcr.io/go-steer/core-agent-tui   — remote TUI client only
+#
+# Images are signed via Sigstore keyless (GitHub Actions OIDC →
+# Fulcio short-lived cert). Verify with:
+#
+#   cosign verify ghcr.io/go-steer/core-agent:vX.Y.Z \
+#     --certificate-identity-regexp '^https://github.com/go-steer/core-agent' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+#
+# Manual republish (e.g. for a tag pushed before this workflow
+# existed): use the workflow_dispatch entrypoint with the tag input.
+
+on:
+  push:
+    tags: ['v*.*.*']
+    branches: ['main']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (e.g. v2.3.0). Empty = use the current ref.'
+        required: false
+
+permissions:
+  contents: read
+  packages: write   # push to GHCR
+  id-token: write   # cosign keyless via GitHub OIDC
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_OWNER: ${{ github.repository_owner }}
+
+jobs:
+  build-and-push:
+    name: ${{ matrix.image_name }}
+    runs-on: ubuntu-24.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Full build: in-process bubble-tea TUI + remote-attach API
+          # + headless. The default deployment target.
+          - image_name: core-agent
+            variant: core-agent
+            build_tags: ""
+
+          # Slim build: same agent runtime, no embedded TUI. ~5MB
+          # smaller binary. For headless K8s deployments where the
+          # bubble-tea code is dead weight.
+          - image_name: core-agent-slim
+            variant: core-agent
+            build_tags: "no_tui"
+
+          # Remote TUI client. Separate consumer (operators on
+          # workstations attaching to a daemon). Smaller deps tree.
+          - image_name: core-agent-tui
+            variant: core-agent-tui
+            build_tags: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Extract Go version from go.mod so the build container always
+      # tracks the project's pinned version. Bumping go.mod
+      # automatically bumps the build image — no second-source-of-
+      # truth that can drift.
+      - name: Extract Go version from go.mod
+        id: go-version
+        run: |
+          GO_VERSION=$(grep -E '^go [0-9]+\.[0-9]+(\.[0-9]+)?$' go.mod | awk '{print $2}')
+          if [[ -z "$GO_VERSION" ]]; then
+            echo "::error::Could not extract Go version from go.mod" >&2
+            exit 1
+          fi
+          echo "version=${GO_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building against Go ${GO_VERSION}"
+
+      # QEMU enables building linux/arm64 images on the linux/amd64
+      # runner. Without this, buildx --platform fails for non-native
+      # architectures.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # docker/metadata-action computes the full tag matrix from a
+      # declarative spec (much cleaner than hand-rolled bash). On a
+      # `v2.3.0` push it produces:
+      #   :v2.3.0  :v2.3  :v2  :latest
+      # On a main push:
+      #   :main  :main-<short-sha>
+      # On workflow_dispatch with tag input: uses that input verbatim.
+      - name: Compute image tags + labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ matrix.image_name }}
+          tags: |
+            # Semver tag → full pyramid of floating tags
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            # Tag pushes also get :latest
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+            # Main pushes get :main + :main-<short-sha> for
+            # developers who want a moving "latest-development" tag
+            type=ref,event=branch,enable=${{ github.ref_type != 'tag' }}
+            type=sha,prefix=main-,format=short,enable=${{ github.ref_name == 'main' && github.ref_type != 'tag' }}
+            # Manual dispatch with tag input
+            type=raw,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && inputs.tag != '' }}
+          # OCI image labels populated from repo metadata
+          labels: |
+            org.opencontainers.image.title=${{ matrix.image_name }}
+            org.opencontainers.image.description=core-agent ${{ matrix.image_name }} variant
+            org.opencontainers.image.vendor=go-steer
+
+      # Compute the build version: the tag if we're on one, else
+      # main-<short-sha>. Threaded into the binary via -ldflags so
+      # `--version` reports the real identity.
+      - name: Compute build version
+        id: version
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            VERSION="${{ github.ref_name }}"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag }}" ]]; then
+            VERSION="${{ inputs.tag }}"
+          else
+            VERSION="main-$(git rev-parse --short HEAD)"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      # Build + push multi-arch image. type=gha cache speeds up
+      # iterative builds substantially — the Go module download +
+      # dependency compile is the slow part and it caches cleanly
+      # across builds with the same go.mod/go.sum.
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            GO_VERSION=${{ steps.go-version.outputs.version }}
+            VARIANT=${{ matrix.variant }}
+            BUILD_TAGS=${{ matrix.build_tags }}
+            VERSION=${{ steps.version.outputs.version }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
+          cache-from: type=gha,scope=${{ matrix.image_name }}
+          cache-to: type=gha,scope=${{ matrix.image_name }},mode=max
+
+      # Sigstore keyless signing — uses the GitHub Actions OIDC
+      # token to mint a short-lived cert from Fulcio, signs the
+      # image manifest with that, records signature in Rekor
+      # (transparency log). No long-lived signing keys to manage.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign images
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          # Sign by digest, not by tag — tags can move; digests are
+          # immutable. cosign signs once and the signature covers
+          # every tag that points at the same digest.
+          echo "$TAGS" | xargs -I {} cosign sign --yes "{}@${DIGEST}"

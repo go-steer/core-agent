@@ -18,12 +18,11 @@ Find the `model.vertex` block:
 ```json
 "vertex": {
   "project": "REPLACE_WITH_YOUR_PROJECT_ID",
-  "location": "us-central1"
+  "location": "REPLACE_WITH_YOUR_REGION"
 }
 ```
 
-Replace `REPLACE_WITH_YOUR_PROJECT_ID` with your project. Change
-`us-central1` if you're deploying elsewhere.
+Replace both placeholders. Region must be a Vertex AI–supported region (e.g. `us-central1`, `us-east5`, `europe-west4`, `asia-southeast1` — see the [Vertex AI locations table](https://docs.cloud.google.com/vertex-ai/docs/general/locations) for the full list per model). Pick one close to your GKE cluster to minimize latency and cross-region cost.
 
 ### 2. `patch-deployment.yaml` — matching env vars
 
@@ -34,7 +33,7 @@ env:
   - name: GOOGLE_CLOUD_PROJECT
     value: "REPLACE_WITH_YOUR_PROJECT_ID"
   - name: GOOGLE_CLOUD_LOCATION
-    value: "us-central1"
+    value: "REPLACE_WITH_YOUR_REGION"
 ```
 
 Same values as `config/config.json`. The agent reads both (config wins on conflict; keep them in sync to avoid confusion).

@@ -6,7 +6,7 @@
     "name": "gemini-3.1-pro-preview-customtools",
     "vertex": {
       "project": "PROJECT_ID",
-      "location": "us-central1"
+      "location": "REGION"
     }
   },
   "permissions": {

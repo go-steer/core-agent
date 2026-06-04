@@ -34,4 +34,4 @@ spec:
             - name: GOOGLE_CLOUD_PROJECT
               value: "REPLACE_WITH_YOUR_PROJECT_ID"
             - name: GOOGLE_CLOUD_LOCATION
-              value: "us-central1"
+              value: "REPLACE_WITH_YOUR_REGION"

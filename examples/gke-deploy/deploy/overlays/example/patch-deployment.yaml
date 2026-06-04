@@ -1,0 +1,37 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Strategic merge patch — overrides env vars in the Deployment by
+# name (NOT by array index, so reordering env vars in the base
+# doesn't silently break this patch). Edit the two values below to
+# match your project.
+#
+# Keep config/config.json's model.vertex.{project,location} in
+# sync with these — the agent reads both. (The Vertex client uses
+# the env vars; core-agent's config loader uses the file. If they
+# disagree, config.json wins.)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: core-agent
+spec:
+  template:
+    spec:
+      containers:
+        - name: core-agent
+          env:
+            - name: GOOGLE_CLOUD_PROJECT
+              value: "REPLACE_WITH_YOUR_PROJECT_ID"
+            - name: GOOGLE_CLOUD_LOCATION
+              value: "us-central1"

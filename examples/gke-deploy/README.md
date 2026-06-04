@@ -163,21 +163,31 @@ gcloud projects add-iam-policy-binding $PROJECT_ID \
 
 That's it for IAM. The `principal://` member string is the WIF-for-GKE identifier; bind any role to it on any resource using the same `--member=...` flag.
 
-### Step 3 — Substitute your project ID + region into the manifests
+### Step 3 — Create your overlay with project + region values
 
-The YAMLs in `deploy/` ship with `PROJECT_ID` and `us-central1` as
-placeholders. Replace them with your values:
+The `deploy/` tree is split into a clean `base/` (recipe defaults; not
+meant for direct apply) and an example overlay you copy + customize:
 
 ```bash
-cd examples/gke-deploy/deploy
-sed -i "s/PROJECT_ID/$PROJECT_ID/g" 30-configmap.yaml 50-deployment.yaml
-# Optional: change region if you're not in us-central1
-sed -i "s/us-central1/$REGION/g" 30-configmap.yaml 50-deployment.yaml
+cp -r examples/gke-deploy/deploy/overlays/example \
+      examples/gke-deploy/deploy/overlays/my-prod
 ```
 
-(`10-serviceaccount.yaml` doesn't need substitution — direct binding doesn't put any project-specific value in the K8s resource; the IAM binding does all the linking.)
+Then edit two files in your new overlay:
 
-For a real production workflow, use a kustomize overlay instead of `sed` so your customizations stay separate from the base recipe.
+```bash
+# 1. The .agents/config.json mounted into the pod
+$EDITOR examples/gke-deploy/deploy/overlays/my-prod/config/config.json
+#    → set model.vertex.project + model.vertex.location
+
+# 2. The env vars on the Deployment (same values)
+$EDITOR examples/gke-deploy/deploy/overlays/my-prod/patch-deployment.yaml
+#    → set GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION
+```
+
+The overlay's `kustomization.yaml` has commented-out blocks for the other common knobs — `namePrefix` (rename KSA + other resources), `namespace` override, image-tag pin, image pull secret for private GHCR, resource limit overrides. Uncomment what you need.
+
+See `overlays/example/README.md` for the full overlay workflow.
 
 ### Step 4 — Create the attach-token Secret
 
@@ -194,10 +204,15 @@ kubectl create secret generic core-agent \
 ### Step 5 — Apply
 
 ```bash
-kubectl apply -k examples/gke-deploy/deploy/
+# Sanity-check the rendered output first (catches edit mistakes
+# without touching the cluster)
+kubectl kustomize examples/gke-deploy/deploy/overlays/my-prod
+
+# Then apply for real
+kubectl apply -k examples/gke-deploy/deploy/overlays/my-prod
 ```
 
-This creates the Namespace, KSA (with WIF annotation), ConfigMap, PVC, Deployment, and Service in dependency order. The Deployment's annotation registers the agent with the Agent Registry on apply.
+This creates the Namespace, KSA, ConfigMap (with your edited contents), PVC, Deployment, and Service in dependency order. The Deployment's annotation registers the agent with the Agent Registry on apply.
 
 ### Step 6 — Verify
 
@@ -324,7 +339,7 @@ The agent re-reads `instruction.Load`, `skills.LoadAll`, and verifies `mcp.json`
 ## Teardown
 
 ```bash
-kubectl delete -k examples/gke-deploy/deploy/
+kubectl delete -k examples/gke-deploy/deploy/overlays/my-prod
 kubectl delete pvc -n agent-system core-agent-data  # explicit; kustomize doesn't track it
 kubectl delete secret -n agent-system core-agent
 kubectl delete namespace agent-system

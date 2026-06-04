@@ -1,0 +1,17 @@
+{
+  "_comment": "GKE read-only MCP server. Uses Application Default Credentials, which under Workload Identity Federation for GKE direct-binding resolves to whatever IAM roles you've granted to the KSA's principal:// identifier (container.viewer in the recipe's default IAM setup).",
+  "version": 1,
+  "servers": {
+    "gke": {
+      "transport": "http",
+      "url": "https://container.googleapis.com/mcp/read-only",
+      "auth": {
+        "google_oauth": {
+          "scopes": [
+            "https://www.googleapis.com/auth/container.read-only"
+          ]
+        }
+      }
+    }
+  }
+}

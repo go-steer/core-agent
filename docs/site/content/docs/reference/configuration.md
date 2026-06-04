@@ -22,14 +22,25 @@ You don't have to create `.agents/` — without it, `core-agent` runs with built
 
 ## Multi-file instructions (v2.3+)
 
-`AGENTS.md` is the single-file baseline (with `CLAUDE.md` / `GEMINI.md` as first-match-wins fallbacks at the project root). For larger instruction sets, two composition primitives let you split the prompt across multiple files without changing your model or wrapping code.
+`AGENTS.md` is the single-file baseline (with `CLAUDE.md` / `GEMINI.md` as first-match-wins fallbacks). For larger instruction sets, two composition primitives let you split the prompt across multiple files without changing your model or wrapping code.
 
-Both primitives work at **project scope** (`<project-root>/AGENTS.md`, `<project-root>/AGENTS.d/`) and at **user-global scope** (`~/.agents/AGENTS.md`, `~/.agents/AGENTS.d/`). Files are loaded in this order:
+### Where the loader looks
 
-1. User scope: primary `AGENTS.md`, then `AGENTS.d/*.md` lexically.
-2. Project scope: primary `AGENTS.md` (or `CLAUDE.md` / `GEMINI.md`), then `AGENTS.d/*.md` lexically.
+Both primitives work at **project scope** and at **user-global scope**, with two valid locations per scope:
 
-A per-load canonical-path **dedup** ensures the same file reached via any path (an `@include` plus a directory entry, a cycle, a cross-scope symlink) is read exactly once — first encounter wins.
+| Scope | Searched first | Fallback location |
+|---|---|---|
+| Project | `<project-root>/.agents/AGENTS.md` and `<project-root>/.agents/AGENTS.d/*.md` | `<project-root>/AGENTS.md` and `<project-root>/AGENTS.d/*.md` |
+| User | `~/.core-agent/.agents/AGENTS.md` and `~/.core-agent/.agents/AGENTS.d/*.md` | `~/.core-agent/AGENTS.md` and `~/.core-agent/AGENTS.d/*.md` |
+
+Both locations load **additively** when both exist — `.agents/AGENTS.md` content appears first in the prompt, followed by `<root>/AGENTS.md` content. The per-load canonical-path **dedup** ensures any single file reached from multiple paths (via `@include`, via both AGENTS.d directories, via cross-scope symlinks) loads exactly once.
+
+Why two locations? Operators following the "everything agent-related lives under `.agents/`" convention (the `core-agent` / `kube-agents` recipe pattern) drop their files there; operators following the broader-ecosystem `<project-root>/AGENTS.md` convention (Cursor, Antigravity, Hermes) keep them at root. Both work. Mixing is supported — root `AGENTS.md` as the cross-tool canonical document plus `.agents/AGENTS.md` for core-agent-specific additions is a legitimate layout.
+
+Files within each scope load in this order:
+
+1. User scope: primary `AGENTS.md` (from either location), then `AGENTS.d/*.md` lexically (from both directories, merged).
+2. Project scope: primary `AGENTS.md` (or `CLAUDE.md` / `GEMINI.md`) from either location, then `AGENTS.d/*.md` lexically (from both directories, merged).
 
 ### `@include <relative-path>` directive
 

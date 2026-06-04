@@ -111,19 +111,45 @@ func Load(projectRoot, userRoot string) (Loaded, error) {
 	visited := make(map[string]bool)
 
 	if userRoot != "" {
-		if err := loadScope(userRoot, "user", []string{userMemoryName}, &b, &loaded.Sources, visited); err != nil {
+		if err := loadScopeWithFallback(userRoot, "user", []string{userMemoryName}, &b, &loaded.Sources, visited); err != nil {
 			return loaded, err
 		}
 	}
 
 	if projectRoot != "" {
-		if err := loadScope(projectRoot, "project", projectMemoryNames, &b, &loaded.Sources, visited); err != nil {
+		if err := loadScopeWithFallback(projectRoot, "project", projectMemoryNames, &b, &loaded.Sources, visited); err != nil {
 			return loaded, err
 		}
 	}
 
 	loaded.Instruction = b.String()
 	return loaded, nil
+}
+
+// loadScopeWithFallback runs loadScope twice per scope: first against
+// `<root>/.agents/` if that directory exists (the operator's
+// preferred "everything agent stuff under .agents/" convention),
+// then against `<root>/` itself (the broader-ecosystem convention
+// where AGENTS.md lives at the project root, matching Cursor /
+// Antigravity / Hermes layouts).
+//
+// Both load when both exist — operators who legitimately use both
+// (e.g., root AGENTS.md as the cross-tool canonical document plus
+// .agents/AGENTS.md as core-agent-specific additions) get the union.
+// The canonical-path visited-set in the underlying loadFile
+// guarantees no file loads twice even if reachable from both.
+//
+// Order: .agents/ first, then root. Operators who only put files in
+// one location see no behavior difference; operators with both get
+// .agents/ content prepended.
+func loadScopeWithFallback(root, scope string, primaryNames []string, b *strings.Builder, sources *[]Source, visited map[string]bool) error {
+	subDir := filepath.Join(root, ".agents")
+	if info, err := os.Stat(subDir); err == nil && info.IsDir() {
+		if err := loadScope(subDir, scope, primaryNames, b, sources, visited); err != nil {
+			return err
+		}
+	}
+	return loadScope(root, scope, primaryNames, b, sources, visited)
 }
 
 // loadScope drives one scope's primary-file + AGENTS.d/ load. The

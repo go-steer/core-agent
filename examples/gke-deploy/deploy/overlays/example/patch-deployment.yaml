@@ -14,13 +14,18 @@
 
 # Strategic merge patch — overrides env vars in the Deployment by
 # name (NOT by array index, so reordering env vars in the base
-# doesn't silently break this patch). Edit the two values below to
-# match your project.
+# doesn't silently break this patch).
 #
-# Keep config/config.json's model.vertex.{project,location} in
-# sync with these — the agent reads both. (The Vertex client uses
-# the env vars; core-agent's config loader uses the file. If they
-# disagree, config.json wins.)
+# The two REQUIRED edits are GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION
+# below. The base's config.json deliberately OMITS the
+# model.vertex.{project,location} block — core-agent's Gemini
+# provider falls back to these env vars at runtime, so this is
+# the single source of truth for project + region. No JSON to
+# edit, no sync risk.
+#
+# AGENTIC_SMALL_MODEL is optional — the base defaults to
+# gemini-2.5-flash. Uncomment to override (e.g., a different
+# region's Flash variant, or "" to disable cost routing).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -35,3 +40,6 @@ spec:
               value: "REPLACE_WITH_YOUR_PROJECT_ID"
             - name: GOOGLE_CLOUD_LOCATION
               value: "REPLACE_WITH_YOUR_REGION"
+            # Optional — override the agentic small-model default.
+            # - name: AGENTIC_SMALL_MODEL
+            #   value: "gemini-2.5-flash"

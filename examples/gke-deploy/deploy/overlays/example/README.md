@@ -1,7 +1,7 @@
 # Example overlay — kustomize entry point
 
 Copy this directory to `overlays/<your-deployment-name>/` and edit
-two things; everything else has working defaults.
+ONE file; everything else has working defaults.
 
 ```bash
 # From the recipe root
@@ -9,24 +9,9 @@ cp -r examples/gke-deploy/deploy/overlays/example \
       examples/gke-deploy/deploy/overlays/my-prod
 ```
 
-## Required edits
+## Required edit — `patch-deployment.yaml`
 
-### 1. `config/config.json` — your GCP project + region
-
-Find the `model.vertex` block:
-
-```json
-"vertex": {
-  "project": "REPLACE_WITH_YOUR_PROJECT_ID",
-  "location": "REPLACE_WITH_YOUR_REGION"
-}
-```
-
-Replace both placeholders. Region must be a Vertex AI–supported region (e.g. `us-central1`, `us-east5`, `europe-west4`, `asia-southeast1` — see the [Vertex AI locations table](https://docs.cloud.google.com/vertex-ai/docs/general/locations) for the full list per model). Pick one close to your GKE cluster to minimize latency and cross-region cost.
-
-### 2. `patch-deployment.yaml` — matching env vars
-
-Find the `env` block:
+Find the `env` block and replace both placeholders:
 
 ```yaml
 env:
@@ -36,9 +21,49 @@ env:
     value: "REPLACE_WITH_YOUR_REGION"
 ```
 
-Same values as `config/config.json`. The agent reads both (config wins on conflict; keep them in sync to avoid confusion).
+Region must be a Vertex AI–supported region (e.g. `us-central1`, `us-east5`, `europe-west4`, `asia-southeast1` — see the [Vertex AI locations table](https://docs.cloud.google.com/vertex-ai/docs/general/locations) for the full list per model). Pick one close to your GKE cluster to minimize latency and cross-region cost.
 
-## Optional edits (commented out in `kustomization.yaml`)
+That's it for the required setup. The base's ConfigMap (`config.json`, `mcp.json`, `AGENTS.md`) is inherited as-is and is fully functional with these env vars. Core-agent's Gemini provider falls back to `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_LOCATION` env vars when `model.vertex` is omitted from config, so there's no second place to edit.
+
+## Optional — override the agentic small model
+
+The base wires `--agentic-tools` + `--agentic-small-model=gemini-2.5-flash` so bulk tool reads (file/grep/MCP fetches) route through a cheap Flash subtask rather than burning Pro tokens on raw output. This is real cost savings for an always-on agent doing dense GKE inspection — typically 5-10× cheaper per turn.
+
+To override, uncomment the `AGENTIC_SMALL_MODEL` env block in `patch-deployment.yaml`:
+
+```yaml
+- name: AGENTIC_SMALL_MODEL
+  value: "gemini-2.5-flash"   # or another small-model ID
+```
+
+Set the value to `""` to disable agentic routing entirely (subtasks then run on the parent's Pro model — simpler but more expensive).
+
+## Optional — customize the ConfigMap (advanced)
+
+If you want to change the agent's prompt, permissions, or MCP server set:
+
+1. Copy the base's config files into your overlay:
+   ```bash
+   mkdir overlays/my-prod/config
+   cp examples/gke-deploy/deploy/base/config/*.{json,md} overlays/my-prod/config/
+   ```
+2. Edit the copies in `overlays/my-prod/config/`.
+3. Add a `configMapGenerator` block to `overlays/my-prod/kustomization.yaml`:
+   ```yaml
+   configMapGenerator:
+     - name: core-agent-config
+       behavior: replace
+       files:
+         - config.json=config/config.json
+         - mcp.json=config/mcp.json
+         - AGENTS.md=config/AGENTS.md
+       options:
+         disableNameSuffixHash: true
+   ```
+
+The overlay's ConfigMap now wins; the base's defaults stay intact for the next operator who doesn't need customization.
+
+## Other optional overrides (commented out in `kustomization.yaml`)
 
 | Knob | When to flip |
 |---|---|

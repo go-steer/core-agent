@@ -1,13 +1,9 @@
 {
-  "_comment": "BASE recipe placeholder. Do not deploy this verbatim — model.vertex.project = 'PROJECT_ID' is a literal that won't resolve against any GCP project. Operators copy the example overlay and edit its own config/config.json; the overlay's configMapGenerator with behavior: replace swaps the entire ConfigMap with the operator's edited contents.",
+  "_comment": "Project + region come from the Pod's GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION env vars (set by patch-deployment.yaml in your overlay). When model.vertex is omitted here, core-agent's Gemini provider falls back to those env vars at runtime — one source of truth, no sync risk between config.json and the Deployment manifest.",
   "version": 1,
   "model": {
     "provider": "vertex",
-    "name": "gemini-3.1-pro-preview-customtools",
-    "vertex": {
-      "project": "PROJECT_ID",
-      "location": "REGION"
-    }
+    "name": "gemini-3.1-pro-preview-customtools"
   },
   "permissions": {
     "mode": "ask",

@@ -92,6 +92,18 @@ spec:
             # off the command line and out of `ps`/`kubectl describe`.
             - --attach-token=ATTACH_TOKEN
             - --session-db=/opt/data/sessions.db
+            # Cost-efficiency: agentic tool wrappers route bulk
+            # tool work (file reads, greps, fetches) through a
+            # cheaper small model in a subtask, so only the digest
+            # enters the parent's context. For a long-running GKE
+            # agent doing dense MCP read tools this is real savings
+            # ($x cheaper per turn vs running everything through
+            # Pro). Default small model: gemini-2.5-flash on Vertex.
+            # Override via the AGENTIC_SMALL_MODEL env var (e.g., a
+            # different Flash variant; or "" to disable routing and
+            # let subtasks inherit the parent model).
+            - --agentic-tools
+            - --agentic-small-model=$(AGENTIC_SMALL_MODEL)
             - -c=/opt/data/.agents/config.json
 
           ports:
@@ -111,6 +123,14 @@ spec:
               value: "REGION"
             - name: GOOGLE_GENAI_USE_VERTEXAI
               value: "1"
+
+            # Default agentic-small-model. Operators override via
+            # the overlay's patch-deployment.yaml (env var by name,
+            # strategic merge — same pattern as the project/location
+            # vars). Set to "" to disable agentic routing entirely
+            # (subtasks then run on the parent's model).
+            - name: AGENTIC_SMALL_MODEL
+              value: "gemini-2.5-flash"
 
             # Bearer token for /attach-listen auth, sourced from
             # the Secret (never appears in pod spec or ConfigMap).

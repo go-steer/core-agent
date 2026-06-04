@@ -13,16 +13,20 @@
 # limitations under the License.
 
 # Example overlay — copy this directory to overlays/<your-deployment-name>/
-# and edit two things:
-#   1. config/config.json — set model.vertex.{project,location}
-#   2. patch-deployment.yaml — set GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION
+# and edit ONE file:
+#   patch-deployment.yaml — set GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION
 #
 # Then apply:
 #   kubectl apply -k examples/gke-deploy/deploy/overlays/<your-deployment-name>
 #
+# The base's ConfigMap (with sensible defaults for permissions,
+# the GKE read-only MCP server, and the AGENTS.md priming) is
+# inherited as-is. To customize the agent's prompt or permissions,
+# see "Advanced: customize the ConfigMap" in README.md.
+#
 # The optional overrides at the bottom (namePrefix, namespace, image
-# pin, ImagePullSecret) cover the common "I want to deploy this
-# differently than the base" cases. Uncomment what you need.
+# pin, ImagePullSecret, resource limits) cover the common
+# "I want to deploy this differently than the base" cases.
 
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -34,24 +38,6 @@ kind: Kustomization
 #     - github.com/go-steer/core-agent/examples/gke-deploy/deploy/base?ref=v2.3.1
 resources:
   - ../../base
-
-# Replace the base's ConfigMap with the operator-edited content
-# from config/. behavior: replace swaps the entire ConfigMap;
-# without it kustomize would create a SECOND ConfigMap. Files
-# under config/ become data keys with the same name.
-configMapGenerator:
-  - name: core-agent-config
-    behavior: replace
-    files:
-      - config.json=config/config.json
-      - mcp.json=config/mcp.json
-      - AGENTS.md=config/AGENTS.md
-    options:
-      # Pin the configmap name (don't append the content-hash suffix
-      # kustomize would otherwise add). We want the Deployment's
-      # volume reference to keep working as 'core-agent-config'
-      # without needing to re-resolve via kustomize's name reference.
-      disableNameSuffixHash: true
 
 # Patch the env vars on the Deployment. Strategic merge by env-var
 # name (NOT array index), so reordering the base's env list doesn't

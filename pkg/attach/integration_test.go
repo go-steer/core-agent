@@ -483,6 +483,7 @@ func TestNewServer_ValidatesOptions(t *testing.T) {
 		{"no addr or socket", Options{Registry: reg}, "exactly one"},
 		{"both addr and socket", Options{Registry: reg, Addr: ":7777", UnixSocket: "/x"}, "mutually exclusive"},
 		{"tls half", Options{Registry: reg, Addr: ":7777", Auth: AuthConfig{TLSCertFile: "/x"}}, "TLSCertFile and TLSKeyFile must be set together"},
+		{"card provider half", Options{Registry: reg, Addr: ":7777", AgentCard: AgentCardConfig{Description: "x", Provider: AgentCardProvider{Organization: "x"}}}, "Provider.Organization and Provider.URL"},
 	}
 	for _, c := range cases {
 		_, err := NewServer(c.opts)
@@ -491,4 +492,115 @@ func TestNewServer_ValidatesOptions(t *testing.T) {
 		}
 	}
 	_ = fmt.Errorf // silence unused-import if fmt drops
+}
+
+// TestIntegration_AgentCard end-to-end fetches /.well-known/agent-card.json
+// through the real http.Server, validates against the vendored A2A
+// schema, and confirms the endpoint is unauthenticated even when the
+// rest of the listener requires a bearer token.
+func TestIntegration_AgentCard(t *testing.T) {
+	t.Parallel()
+	reg := NewSessionRegistry()
+	// Register a session with skills so the card has something to
+	// auto-populate from. fixtureRegistrant comes from
+	// agentcard_test.go — value type implementing Registrant +
+	// SkillsProvider.
+	if _, err := reg.Register(fixtureRegistrant{
+		app: "core-agent", user: "local", sid: "s-int",
+		skills: []SkillInfo{
+			{Name: "alpha", Description: "auto alpha"},
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	srv, err := NewServer(Options{
+		Registry: reg,
+		Addr:     "127.0.0.1:0",
+		Auth:     AuthConfig{BearerToken: "secret"},
+		AgentCard: AgentCardConfig{
+			// No ExternalURL — exercises the request-derived URL path.
+			Description: "Integration-test agent",
+			Version:     "v0.0.0-test",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.ListenAndServe() }()
+	defer func() {
+		_ = srv.Close()
+		<-errCh
+	}()
+	deadline := time.Now().Add(time.Second)
+	for srv.Addr() == "" && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	base := "http://" + srv.Addr()
+
+	// 1) Public fetch — no auth header — must succeed.
+	resp, err := http.Get(base + "/.well-known/agent-card.json")
+	if err != nil {
+		t.Fatalf("GET card: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("card: status %d, body %s", resp.StatusCode, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want application/json; charset=utf-8", ct)
+	}
+	body, _ := io.ReadAll(resp.Body)
+
+	var card map[string]any
+	if err := json.Unmarshal(body, &card); err != nil {
+		t.Fatalf("parse card: %v\n%s", err, body)
+	}
+	if card["name"] != "core-agent" {
+		t.Errorf("card name = %v, want core-agent (registrant fallback)", card["name"])
+	}
+	if want := "http://" + srv.Addr(); card["url"] != want {
+		t.Errorf("card url = %v, want %v — should be derived from the Host header on this request", card["url"], want)
+	}
+	skills, _ := card["skills"].([]any)
+	if len(skills) != 1 {
+		t.Fatalf("skills: got %d, want 1 — body=%s", len(skills), body)
+	}
+	if first, _ := skills[0].(map[string]any); first["id"] != "alpha" {
+		t.Errorf("skills[0].id = %v, want alpha", first["id"])
+	}
+
+	// 2) Other endpoints with no auth header must 401 — confirms the
+	//    card bypass doesn't accidentally disarm the middleware.
+	resp2, err := http.Get(base + "/sessions")
+	if err != nil {
+		t.Fatalf("GET /sessions: %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusUnauthorized {
+		t.Errorf("/sessions: got %d, want %d (bearer required)", resp2.StatusCode, http.StatusUnauthorized)
+	}
+
+	// 3) Disabled-by-default sanity: a fresh server with no AgentCard
+	//    returns 404 from the regular mux.
+	regBare := NewSessionRegistry()
+	srvBare, err := NewServer(Options{Registry: regBare, Addr: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatalf("NewServer bare: %v", err)
+	}
+	bareErr := make(chan error, 1)
+	go func() { bareErr <- srvBare.ListenAndServe() }()
+	defer func() { _ = srvBare.Close(); <-bareErr }()
+	for srvBare.Addr() == "" && time.Now().Before(time.Now().Add(time.Second)) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	respBare, err := http.Get("http://" + srvBare.Addr() + "/.well-known/agent-card.json")
+	if err != nil {
+		t.Fatalf("GET bare card: %v", err)
+	}
+	defer respBare.Body.Close()
+	if respBare.StatusCode != http.StatusNotFound {
+		t.Errorf("disabled card endpoint: got %d, want %d", respBare.StatusCode, http.StatusNotFound)
+	}
 }

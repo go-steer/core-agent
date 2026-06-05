@@ -1,0 +1,65 @@
+{
+  "protocolVersion": "0.3.0",
+  "name": "core-agent",
+  "description": "Production-incident response agent for the platform fleet.",
+  "url": "https://agent.prod.svc.cluster.local:7777",
+  "version": "v2.2.0",
+  "provider": {
+    "organization": "Platform Team",
+    "url": "https://example.internal/platform"
+  },
+  "documentationUrl": "https://example.internal/platform/runbooks/core-agent",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": false
+  },
+  "securitySchemes": {
+    "mtls": {
+      "type": "mutualTLS"
+    },
+    "bearer": {
+      "type": "http",
+      "scheme": "Bearer"
+    }
+  },
+  "security": [
+    {
+      "bearer": [],
+      "mtls": []
+    }
+  ],
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "migrate-db",
+      "name": "migrate-db",
+      "description": "Run zero-downtime schema migrations against a target environment.",
+      "tags": [
+        "skill"
+      ]
+    },
+    {
+      "id": "rollback-deploy",
+      "name": "Rollback a deploy",
+      "description": "Curated: revert a Cloud Deploy release to the previous revision.",
+      "tags": [
+        "curated",
+        "deploy"
+      ]
+    },
+    {
+      "id": "triage-incident",
+      "name": "triage-incident",
+      "description": "Pull on-call signals and produce a first-pass incident summary.",
+      "tags": [
+        "skill"
+      ]
+    }
+  ]
+}

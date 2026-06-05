@@ -238,6 +238,16 @@ type SkillsProvider interface {
 	AttachSkills() []SkillInfo
 }
 
+// DescriptionProvider is the optional capability the agent-card
+// handler consults when AgentCardConfig.Description is empty. Returns
+// a one-line summary of what the agent does — fed by the same source
+// as ADK's llmagent.Config.Description, so the operator writes it
+// once and it flows to both the LLM's system prompt and the public
+// discovery card.
+type DescriptionProvider interface {
+	Description() string
+}
+
 // MCPProvider is the optional capability for GET /sessions/.../mcp.
 type MCPProvider interface {
 	AttachMCP() MCPInfo

@@ -130,6 +130,7 @@ type Agent struct {
 	streaming       adkagent.StreamingMode
 	appName         string
 	agentName       string
+	description     string
 	userID          string
 	sessionID       string
 	model           adkmodel.LLM
@@ -566,6 +567,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		streaming:          o.streaming,
 		appName:            o.appName,
 		agentName:          o.name,
+		description:        o.description,
 		userID:             o.userID,
 		sessionID:          o.sessionID,
 		model:              model,
@@ -624,6 +626,17 @@ func (a *Agent) Tools() []tool.Tool {
 // identify the session triple (app, user, session) for queries
 // against the event log or session.Service.
 func (a *Agent) AppName() string { return a.appName }
+
+// Description returns the one-line description set via WithDescription.
+// Empty when unset. Satisfies attach.DescriptionProvider — the
+// /.well-known/agent-card.json handler falls back to this when no
+// explicit AgentCardConfig.Description override is supplied.
+func (a *Agent) Description() string { return a.description }
+
+// Compile-time check: *Agent satisfies attach.DescriptionProvider.
+// If this assertion ever fails, the card endpoint's automatic
+// description fallback would silently stop working in production.
+var _ attach.DescriptionProvider = (*Agent)(nil)
 
 // UserID returns the user identifier the agent was constructed with.
 func (a *Agent) UserID() string { return a.userID }

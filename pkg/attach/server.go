@@ -58,6 +58,12 @@ type Options struct {
 	// ShutdownTimeout caps how long Server.Close waits for in-flight
 	// SSE clients to drain. Default 5 seconds.
 	ShutdownTimeout time.Duration
+
+	// AgentCard, when its Description and ExternalURL are both
+	// non-empty, enables the unauthenticated discovery endpoint
+	// GET /.well-known/agent-card.json. Zero value disables the
+	// endpoint (404). See docs/agent-card-design.md.
+	AgentCard AgentCardConfig
 }
 
 // Server hosts the attach-mode HTTP endpoints. Construct via
@@ -67,6 +73,11 @@ type Server struct {
 	pool *BroadcasterPool
 	mux  *http.ServeMux
 	srv  *http.Server
+
+	// cardHandler is the always-unauthenticated handler for
+	// GET /.well-known/agent-card.json. nil when AgentCard is
+	// disabled (the path then 404s through the regular mux).
+	cardHandler http.Handler
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -94,6 +105,11 @@ func NewServer(opts Options) (*Server, error) {
 	if _, err := opts.Auth.LoadTLSConfig(); err != nil {
 		return nil, err
 	}
+	// Validate the card config early — half-populated configs are a
+	// startup error, not a silent 404 at first registry fetch.
+	if err := opts.AgentCard.Validate(); err != nil {
+		return nil, err
+	}
 	pool := NewBroadcasterPool()
 	mux := http.NewServeMux()
 	h := newHandlers(opts.Registry, pool)
@@ -102,11 +118,16 @@ func NewServer(opts Options) (*Server, error) {
 		ph := newPeerHandlers(opts.PeerRegistry)
 		ph.register(mux)
 	}
+	var cardHandler http.Handler
+	if opts.AgentCard.Enabled() {
+		cardHandler = agentCardHandler(opts.AgentCard, opts.Registry, opts.Auth)
+	}
 
 	return &Server{
-		opts: opts,
-		pool: pool,
-		mux:  mux,
+		opts:        opts,
+		pool:        pool,
+		mux:         mux,
+		cardHandler: cardHandler,
 	}, nil
 }
 
@@ -155,13 +176,34 @@ func (s *Server) Bind() error {
 	}
 	s.listener = ln
 	s.srv = &http.Server{
-		Handler:           s.opts.Auth.Middleware(s.mux),
+		Handler:           cardBypass(s.cardHandler, s.opts.Auth.Middleware(s.mux)),
 		TLSConfig:         tlsCfg,
 		ReadHeaderTimeout: 10 * time.Second,
 		// Streaming endpoints have no useful write timeout — SSE
 		// connections live for minutes/hours. Don't set one.
 	}
 	return nil
+}
+
+// cardBypass routes the well-known agent-card path directly to the
+// (unauthenticated) card handler, falling through to the auth-
+// protected mux for everything else. The card is a public discovery
+// document by A2A convention — auth on the card defeats discovery.
+//
+// When card is nil (AgentCard disabled), every request goes to the
+// protected handler and /.well-known/agent-card.json returns 404
+// from the mux as expected.
+func cardBypass(card http.Handler, protected http.Handler) http.Handler {
+	if card == nil {
+		return protected
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/agent-card.json" {
+			card.ServeHTTP(w, r)
+			return
+		}
+		protected.ServeHTTP(w, r)
+	})
 }
 
 // Serve serves on the already-bound listener. Bind must have been

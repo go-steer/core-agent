@@ -79,4 +79,4 @@ labels:
     pairs:
       app.kubernetes.io/name: core-agent
       app.kubernetes.io/component: agent
-      app.kubernetes.io/version: "2.3.1"
+      app.kubernetes.io/version: "main"

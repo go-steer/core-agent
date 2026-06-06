@@ -50,7 +50,7 @@ metadata:
   labels:
     app: core-agent
     app.kubernetes.io/name: core-agent
-    app.kubernetes.io/version: "2.3.1"
+    app.kubernetes.io/version: "main"
   annotations:
     # Identifies this workload as an AI agent to Google Cloud's
     # Agent Registry — applying this Deployment registers it.
@@ -113,12 +113,19 @@ spec:
 
       containers:
         - name: core-agent
-          # Pinned to v2.3.1 (the first release with published images).
-          # Bump to a newer tag to upgrade; or use :latest for the
-          # most recent release; or :main-<sha> for a development
-          # build. Multi-arch (amd64 + arm64) so node-pool
-          # architecture is automatic.
-          image: ghcr.io/go-steer/core-agent:2.3.1
+          # Pinned to a main-build digest until the next release tag
+          # ships. The v2.3.1 image predates the agent-card endpoint
+          # (cef0d1b), so the discovery wiring on this Deployment
+          # (a2a-protocol.org/agent-card annotation + agent.description
+          # in config.json) would be no-op against :2.3.1 — the
+          # /.well-known/agent-card.json route wouldn't register and
+          # would 404. This digest is from main HEAD with the endpoint
+          # in place. Sweep this + every other recipe back to a
+          # semver tag (:2.4.0 or whatever ships) once the next
+          # release is cut. Multi-arch (amd64 + arm64) so node-pool
+          # architecture is automatic. Verify with
+          # `cosign verify ghcr.io/go-steer/core-agent@sha256:...`.
+          image: ghcr.io/go-steer/core-agent@sha256:4a0da4d9a36dc6918b851fa48461520b474e4faefdaf16d2135a34bb60c5d7dd
           imagePullPolicy: IfNotPresent
 
           args:

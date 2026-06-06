@@ -70,12 +70,20 @@ patches:
 #
 # namespace: my-namespace
 
-# Pin a specific image tag (default in base: 2.3.1). Use this to
-# upgrade or to pin to a development build (:main-<sha>).
+# Pin a specific image tag (the base currently uses a main-build
+# digest pending the next release tag — see base/50-deployment.yaml
+# for context). Override with a semver tag once one is published, or
+# with a different digest, or with the slim variant. Prefer `digest:`
+# over `newTag:` when pinning to a hash — kustomize uses different
+# fields for the two (and `newTag: "sha256-...sig"` is a common
+# foot-gun: that tag refers to the cosign signature artifact, not the
+# image itself).
 #
 # images:
 #   - name: ghcr.io/go-steer/core-agent
-#     newTag: "2.3.1"
+#     newTag: "2.4.0"
+#     # or pin by digest:
+#     # digest: "sha256:<hash>"
 #   # To switch to the slim variant (no embedded TUI, ~5MB smaller):
 #   #   newName: ghcr.io/go-steer/core-agent-slim
 

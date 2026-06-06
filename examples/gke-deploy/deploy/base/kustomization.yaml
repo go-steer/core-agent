@@ -1,0 +1,82 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Base kustomization — NOT MEANT FOR DIRECT APPLY.
+#
+# The base ships the recipe's clean reference resources with
+# PROJECT_ID and us-central1 as placeholder values that won't
+# actually work against your project. Applying it directly will
+# spin up a pod that fails its first Vertex AI call ("project not
+# found" or similar).
+#
+# Instead: use an overlay. The recipe ships overlays/example/ as
+# a starting point — copy it, edit two files, apply:
+#
+#   cp -r examples/gke-deploy/deploy/overlays/example \
+#         examples/gke-deploy/deploy/overlays/my-prod
+#   $EDITOR examples/gke-deploy/deploy/overlays/my-prod/config/config.json
+#   $EDITOR examples/gke-deploy/deploy/overlays/my-prod/patch-deployment.yaml
+#   kubectl apply -k examples/gke-deploy/deploy/overlays/my-prod
+#
+# Overlays keep your customizations separate from the recipe's
+# base, so `git pull` stays clean and you can layer additional
+# patches (resource limits, ImagePullSecret, monitoring sidecar,
+# etc.) without forking the base.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: agent-system
+
+resources:
+  - 00-namespace.yaml
+  - 10-serviceaccount.yaml
+  - 40-pvc.yaml
+  - 50-deployment.yaml
+  - 60-service.yaml
+
+# ConfigMap is generated (not a static resource) so overlays can
+# REPLACE it via configMapGenerator with behavior: replace. A
+# static ConfigMap can't be merged by a generator — kustomize
+# treats them as different resource identifiers.
+#
+# disableNameSuffixHash keeps the ConfigMap name stable (no
+# auto-appended content hash) so the Deployment's volume reference
+# resolves to "core-agent-config" without kustomize needing to
+# rewrite the reference.
+configMapGenerator:
+  - name: core-agent-config
+    files:
+      - config.json=config/config.json
+      - mcp.json=config/mcp.json
+      - AGENTS.md=config/AGENTS.md
+    options:
+      disableNameSuffixHash: true
+
+# Note: 20-secret.yaml.example is NOT in the resources list —
+# operators create the secret out-of-band via `kubectl create
+# secret` (see 20-secret.yaml.example for the command). Including
+# secrets in kustomize bases is a recipe for accidental token
+# commits.
+
+# Modern kustomize prefers `labels:` over the deprecated
+# `commonLabels:`. The selector field is `none` because we don't
+# want these labels promoted into spec.selector / matchLabels —
+# changing match selectors after the fact requires Deployment
+# recreation.
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/name: core-agent
+      app.kubernetes.io/component: agent
+      app.kubernetes.io/version: "main"

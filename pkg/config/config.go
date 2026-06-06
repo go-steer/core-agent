@@ -237,6 +237,16 @@ type AgentConfig struct {
 	// to give the agent a human-friendly identity ("Triage Bot",
 	// "Code Reviewer", etc.). Empty falls back to AppName.
 	DisplayName string `json:"display_name,omitempty"`
+
+	// Description is a one-line summary of what this agent does.
+	// Used in two places: (1) ADK's llmagent.Config.Description, which
+	// becomes part of the system prompt ("you are an agent named X,
+	// description: ..."), and (2) the /.well-known/agent-card.json
+	// `description` field if the card endpoint is enabled. Set once,
+	// fanned out to both. Empty = no description in the system prompt
+	// and the card endpoint stays off unless --agent-card-description
+	// overrides.
+	Description string `json:"description,omitempty"`
 }
 
 // ToolOutputConfig caps tool result size before it enters model context.

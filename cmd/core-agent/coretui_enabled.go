@@ -756,6 +756,16 @@ func (a *coreAgentAdapter) SlashCommands() []coretui.SlashCommandSpec {
 		Aliases:     []string{"boundaries"},
 		Description: "show context-management activity for this session (compactions, checkpoints, subtask usage)",
 	})
+	// /replan is registered unconditionally; the InvokeSlash case
+	// returns a friendly "plan-first gating isn't enabled" message
+	// when WithAttachReplanner wasn't wired (operator's config has
+	// require_plan_artifact: false). That's a clearer operator
+	// experience than hiding the command and surfacing "unknown
+	// command" when they expect it from the recipe docs.
+	cmds = append(cmds, coretui.SlashCommandSpec{
+		Name:        "replan",
+		Description: "revoke the current plan; archive plan-N.md to plan-N-revoked.md; force the agent to record_plan again (plan-first mode only)",
+	})
 	return cmds
 }
 

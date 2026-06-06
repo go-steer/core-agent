@@ -127,6 +127,18 @@ func main() {
 	noCheckpoint := flag.Bool("no-checkpoint", false, "disable task-boundary checkpoints. /done slash + the model-facing mark_task_done tool are both removed. Use when running headless where the model shouldn't self-signal task completion, or when debugging an issue where you don't want auto-slicing in play.")
 	agenticTools := flag.Bool("agentic-tools", false, "register the agentic tool wrappers (agentic_read_file, agentic_fetch_url, agentic_grep, agentic_research) that route through a subtask so only the digest enters the parent's context (docs/context-management-design.md Mechanism B). Opt-in for v2.0; may flip to default-on in v2.1 once dogfooded.")
 	agenticSmallModel := flag.String("agentic-small-model", "", "small/cheap model ID the agentic_* wrappers should route subtasks to (e.g. gemini-2.5-flash). When empty, subtasks inherit the parent's model (still works — just doesn't realize the cost-efficiency win). Requires --agentic-tools.")
+
+	// Agent-card discovery (docs/agent-card-design.md). All optional —
+	// either the .agents/agent-card.json file or the CLI flags must
+	// supply description + external_url to enable the endpoint.
+	agentCardConfigPath := flag.String("agent-card-config", "", "path to the agent-card JSON file (default: .agents/agent-card.json under the project root). Disables the file lookup entirely when set to '-'.")
+	agentCardName := flag.String("agent-card-name", "", "override name field in /.well-known/agent-card.json")
+	agentCardDescription := flag.String("agent-card-description", "", "override description field in /.well-known/agent-card.json. Required (file or flag) to enable the endpoint.")
+	agentCardExternalURL := flag.String("agent-card-external-url", "", "override url field in /.well-known/agent-card.json with a canonical value. Optional — by default the card echoes back the URL the caller used (Host header + X-Forwarded-Proto/Host).")
+	agentCardVersion := flag.String("agent-card-version", "", "override version field in /.well-known/agent-card.json (defaults to the build version)")
+	agentCardProviderOrg := flag.String("agent-card-provider-org", "", "override provider.organization in /.well-known/agent-card.json")
+	agentCardProviderURL := flag.String("agent-card-provider-url", "", "override provider.url in /.well-known/agent-card.json")
+	agentCardDocsURL := flag.String("agent-card-docs-url", "", "override documentationUrl in /.well-known/agent-card.json")
 	flag.Parse()
 
 	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *agenticTools, *agenticSmallModel,
@@ -142,8 +154,32 @@ func main() {
 			RegisterTo:       *attachRegisterTo,
 			RegisterName:     *attachRegisterName,
 			RegisterEndpoint: *attachRegisterEndpoint,
+		},
+		agentCardOpts{
+			ConfigPath:       *agentCardConfigPath,
+			Name:             *agentCardName,
+			Description:      *agentCardDescription,
+			ExternalURL:      *agentCardExternalURL,
+			Version:          *agentCardVersion,
+			ProviderOrg:      *agentCardProviderOrg,
+			ProviderURL:      *agentCardProviderURL,
+			DocumentationURL: *agentCardDocsURL,
 		})
 	os.Exit(code)
+}
+
+// agentCardOpts bundles --agent-card-* CLI flags. Loaded into an
+// attach.AgentCardConfig inside run() by overlaying onto whatever
+// .agents/agent-card.json (or --agent-card-config=<path>) supplied.
+type agentCardOpts struct {
+	ConfigPath       string // empty → .agents/agent-card.json under the resolved agentsDir; "-" → skip file load
+	Name             string
+	Description      string
+	ExternalURL      string
+	Version          string
+	ProviderOrg      string
+	ProviderURL      string
+	DocumentationURL string
 }
 
 // attachOpts bundles the attach-mode CLI flags so run()'s signature
@@ -160,6 +196,80 @@ type attachOpts struct {
 	RegisterTo       string
 	RegisterName     string
 	RegisterEndpoint string
+}
+
+// resolveAgentCardConfig builds the attach.AgentCardConfig from
+// .agents/agent-card.json plus CLI flag overrides, with
+// defaultDescription as a final fallback. Precedence per field:
+// CLI flag (when set non-empty) > file > defaultDescription
+// (description only) > zero. Returns the zero config (endpoint
+// disabled) when no source supplies a description.
+//
+// defaultDescription comes from .agents/config.json's
+// agent.description — same value fed to agent.WithDescription so
+// ADK's system prompt and the card share one source of truth.
+//
+// agentsDir may be empty (no .agents/ discovered). cardCfg.ConfigPath
+// of "-" suppresses the file load entirely; an explicit non-empty
+// path is loaded from disk (missing file → startup error, since the
+// operator asked for it specifically).
+func resolveAgentCardConfig(agentsDir string, cardCfg agentCardOpts, defaultDescription string) (attach.AgentCardConfig, error) {
+	var fileCfg attach.AgentCardConfig
+	switch {
+	case cardCfg.ConfigPath == "-":
+		// explicit skip
+	case cardCfg.ConfigPath != "":
+		loaded, present, err := attach.LoadAgentCardFile(cardCfg.ConfigPath)
+		if err != nil {
+			return attach.AgentCardConfig{}, err
+		}
+		if !present {
+			return attach.AgentCardConfig{}, fmt.Errorf("--agent-card-config=%s: file not found", cardCfg.ConfigPath)
+		}
+		fileCfg = loaded
+	case agentsDir != "":
+		path := filepath.Join(agentsDir, attach.AgentCardFileName)
+		loaded, _, err := attach.LoadAgentCardFile(path)
+		if err != nil {
+			return attach.AgentCardConfig{}, err
+		}
+		fileCfg = loaded
+	}
+
+	// Fall back to the config.json-level agent.description before
+	// applying CLI overrides. The file's `description` field wins
+	// over config.json (file is more specific to the card surface),
+	// CLI flag wins over both.
+	if fileCfg.Description == "" {
+		fileCfg.Description = defaultDescription
+	}
+	// CLI overrides — non-empty flag wins.
+	if cardCfg.Name != "" {
+		fileCfg.Name = cardCfg.Name
+	}
+	if cardCfg.Description != "" {
+		fileCfg.Description = cardCfg.Description
+	}
+	if cardCfg.ExternalURL != "" {
+		fileCfg.ExternalURL = cardCfg.ExternalURL
+	}
+	if cardCfg.Version != "" {
+		fileCfg.Version = cardCfg.Version
+	}
+	if cardCfg.DocumentationURL != "" {
+		fileCfg.DocumentationURL = cardCfg.DocumentationURL
+	}
+	if cardCfg.ProviderOrg != "" {
+		fileCfg.Provider.Organization = cardCfg.ProviderOrg
+	}
+	if cardCfg.ProviderURL != "" {
+		fileCfg.Provider.URL = cardCfg.ProviderURL
+	}
+
+	if err := fileCfg.Validate(); err != nil {
+		return attach.AgentCardConfig{}, err
+	}
+	return fileCfg, nil
 }
 
 // mergeAttachOpts overlays cfg onto opts where the CLI flag wasn't
@@ -199,7 +309,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	return opts
 }
 
-func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint, agenticTools bool, agenticSmallModel string, attachCfg attachOpts) int {
+func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint, agenticTools bool, agenticSmallModel string, attachCfg attachOpts, cardCfg agentCardOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -308,7 +418,14 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 	}
 	loaded, err := instruction.Load(projectRoot, coreHome)
 	if err != nil {
+		// Fatal: malformed @include / escaped path / missing target / non-UTF-8
+		// content indicates a config bug. Silently shipping a degraded prompt
+		// to the agent is worse than refusing to start — the v2 design intent
+		// is "typos surface immediately rather than silently shrinking the
+		// system prompt." Operators expecting a softer failure mode can fix
+		// their AGENTS.md / AGENTS.d/ contents and restart.
 		fmt.Fprintf(os.Stderr, "core-agent: instruction load: %v\n", err)
+		return runner.ExitConfigError
 	}
 
 	send := func(s string) { fmt.Fprintln(os.Stderr, "core-agent: "+s) }
@@ -458,6 +575,13 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 		agent.WithToolsets(allToolsets),
 		agent.WithSystemInstructionPrefix(loaded.Instruction),
 		agent.WithGate(gate),
+		// One source of truth for the agent's one-line description:
+		// .agents/config.json's `agent.description`. Flows to both
+		// ADK's system prompt (this WithDescription) and the
+		// /.well-known/agent-card.json card (via resolveAgentCardConfig
+		// below, which uses cfg.Agent.Description as the default for
+		// AgentCardConfig.Description).
+		agent.WithDescription(cfg.Agent.Description),
 		// Share the usage.Tracker the host already keeps (for /stats,
 		// per-turn cost footer, status sidebar). Agent-level callers
 		// — chiefly the compactor's threshold check — read context-
@@ -716,6 +840,11 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 			peerReg = attach.NewPeerRegistry()
 			defer func() { _ = peerReg.Close() }()
 		}
+		cardConfig, err := resolveAgentCardConfig(agentsDir, cardCfg, cfg.Agent.Description)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: agent card: %v\n", err)
+			return runner.ExitConfigError
+		}
 		attachSrv, err := attach.NewServer(attach.Options{
 			Registry:     attachReg,
 			PeerRegistry: peerReg,
@@ -728,6 +857,7 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 				BearerToken:  token,
 				ReadOnly:     attachCfg.ReadOnly,
 			},
+			AgentCard: cardConfig,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: attach server: %v\n", err)

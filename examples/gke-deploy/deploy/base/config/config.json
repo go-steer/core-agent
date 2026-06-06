@@ -20,6 +20,7 @@
     ]
   },
   "agent": {
-    "display_name": "core-agent (GKE)"
+    "display_name": "GKE Platform",
+    "description": "Platform agent for managing GKE clusters"
   }
 }

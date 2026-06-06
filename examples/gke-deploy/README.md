@@ -37,7 +37,7 @@ prereqs are in place.
        │       └── roles/container.clusterViewer  → GKE read-only state (via MCP)
        │
        ├── ConfigMap mount /opt/data/.agents/
-       │   ├── config.json    (model + permissions)
+       │   ├── config.json    (model + permissions + agent.description)
        │   ├── mcp.json       (GKE read-only MCP server)
        │   └── AGENTS.md      (instruction priming)
        │
@@ -45,11 +45,46 @@ prereqs are in place.
        │   ├── sessions.db        (eventlog + session state, durable across restarts)
        │   └── .agents/plans/     (if plan-first is enabled)
        │
+       ├── CSI mount /var/run/secrets/workload-spiffe-credentials/
+       │   └── SPIFFE x509 SVID + trust bundle, auto-rotated
+       │       (GKE Managed Workload Identity → future mTLS use)
+       │
        ├── Secret env ATTACH_TOKEN  → --attach-token=ATTACH_TOKEN
        │
-       └── annotation apphub.cloud.google.com/functional-type: "AGENT"
-                     → registers with Google Cloud Agent Registry on apply
+       ├── Serves /.well-known/agent-card.json on :7777
+       │       → A2A AgentCard; opt-in via config.json's agent.description
+       │
+       └── annotations:
+           ├── apphub.cloud.google.com/functional-type: "AGENT"
+           │     → registers with Google Cloud Agent Registry on apply
+           ├── a2a-protocol.org/agent-card
+           │     → tells Registry where to fetch the discovery card
+           └── iam.gke.io/identity-type + iam.gke.io/identity
+                 → opts pod into GKE Managed WI for SPIFFE cert issuance
 ```
+
+### Discovery + agent identity
+
+Two opt-in integrations layered on top of the core deploy:
+
+- **A2A AgentCard at `/.well-known/agent-card.json`.** Always
+  unauthenticated, served from the attach listener whenever
+  `agent.description` is set in `config.json` (this recipe sets it).
+  The `a2a-protocol.org/agent-card` annotation on the Deployment
+  tells [Google Cloud Agent Registry](https://docs.cloud.google.com/agent-registry/register-agents)
+  where to fetch it. Skills auto-derive from any `.agents/skills/`
+  bundles; curated extras can be added via `.agents/agent-card.json`.
+  See `docs/agent-card-design.md` for the full design.
+- **GKE Managed Workload Identity.** The `iam.gke.io/identity*`
+  annotations + `podcertificate.gke.io` CSI volume layer SPIFFE
+  x509 SVID issuance on top of WIF for GKE. Certs land in
+  `/var/run/secrets/workload-spiffe-credentials/` and rotate
+  automatically. Useful for mTLS to other agents today; the
+  on-ramp to Google Cloud Agent Identity once it's GA. Setup:
+  see [GKE Managed Workload Identity docs](https://docs.cloud.google.com/iam/docs/create-managed-workload-identities-gke).
+  The trust-domain segment in the `iam.gke.io/identity` annotation
+  (`agents.global.org-<NUMBER>.system.id.goog`) is org-specific —
+  replace with your agent identity pool's identifier before applying.
 
 ## What this recipe does NOT do
 
@@ -241,6 +276,12 @@ kubectl get svc -n agent-system core-agent
 
 # Logs report successful startup + Vertex AI auth via WIF
 kubectl logs -n agent-system -l app=core-agent --tail=50
+
+# Discovery card is live (proves agent.description wired through
+# and Agent Registry has something to index)
+kubectl port-forward -n agent-system svc/core-agent 7777:7777 &
+curl -s http://localhost:7777/.well-known/agent-card.json | head -20
+# expect: { "protocolVersion": "0.3.0", "name": "...", "description": "Platform agent for managing GKE clusters", ... }
 ```
 
 If you see auth errors in the logs, re-check:

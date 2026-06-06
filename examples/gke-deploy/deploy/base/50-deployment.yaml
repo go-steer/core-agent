@@ -19,6 +19,17 @@
 # Key annotations / fields:
 # - apphub.cloud.google.com/functional-type: "AGENT" — registers
 #   the workload with Google Cloud Agent Registry on apply.
+# - a2a-protocol.org/agent-card — tells Agent Registry where to
+#   fetch the A2A AgentCard. core-agent serves it from the attach
+#   listener at /.well-known/agent-card.json; Registry uses it to
+#   index this agent's name, description, and skills for fleet-
+#   wide search. See docs/agent-card-design.md.
+# - iam.gke.io/identity-type + iam.gke.io/identity — opts the pod
+#   into GKE Managed Workload Identity, which layers SPIFFE x509
+#   SVID issuance on top of WIF for GKE. Certs land at
+#   /var/run/secrets/workload-spiffe-credentials/ via the
+#   mwlid-certificate CSI volume below. (Future: migrate to
+#   Google Cloud Agent Identity when GA.)
 # - serviceAccountName: core-agent — links to the KSA. With WIF
 #   for GKE direct binding (no annotation on the KSA), the GKE
 #   metadata server inside the pod exchanges the projected K8s SA
@@ -46,6 +57,32 @@ metadata:
     # Requires the agentregistry.googleapis.com API enabled on
     # the project. See README's prereqs section.
     apphub.cloud.google.com/functional-type: "AGENT"
+
+    # Tells Agent Registry where to fetch the A2A AgentCard for
+    # this agent. core-agent serves the card from the attach
+    # listener (port 7777) at /.well-known/agent-card.json when
+    # `agent.description` is set in config.json. Registry uses
+    # the card to index this agent's name, description, and
+    # skills for fleet-wide search. See docs/agent-card-design.md.
+    a2a-protocol.org/agent-card: |
+      card:
+        endpoint: "/.well-known/agent-card.json"
+        protocol: "HTTP"
+        port: "7777"
+
+    # Opts the pod into GKE Managed Workload Identity (in addition
+    # to WIF for GKE direct binding for IAM). The control plane
+    # provisions a SPIFFE x509 SVID for this workload, mounted at
+    # /var/run/secrets/workload-spiffe-credentials/ via the
+    # mwlid-certificate CSI volume below. Useful for mTLS between
+    # agents (and, in future, for Google Cloud Agent Identity).
+    # The `org-<NUMBER>` segment of the trust domain is
+    # org-specific — replace with your GKE Managed WI agent
+    # identity pool's identifier. Docs:
+    # https://docs.cloud.google.com/iam/docs/create-managed-workload-identities-gke
+    iam.gke.io/identity-type: agent-identity
+    iam.gke.io/identity: "spiffe://agents.global.org-209193599320.system.id.goog/*"
+
 spec:
   replicas: 1
   strategy:
@@ -111,6 +148,11 @@ spec:
             - --agentic-tools
             - --agentic-small-model=$(AGENTIC_SMALL_MODEL)
             - -c=/opt/data/.agents/config.json
+            # The agent-card's public-facing description comes
+            # from config.json's `agent.description` field
+            # (single-sourced with the LLM's WithDescription). Add
+            # --agent-card-description=... here only if the card's
+            # wording needs to differ from the LLM's identity.
 
           ports:
             - name: attach
@@ -165,7 +207,15 @@ spec:
             - name: agent-config
               mountPath: /opt/data/.agents
               readOnly: true
-
+            # SPIFFE x509 SVID + trust bundle from GKE Managed
+            # Workload Identity (issued because of the
+            # iam.gke.io/identity* annotations above). Files are
+            # auto-rotated by the GKE control plane. Consumers
+            # needing mTLS to other agents (or the future Google
+            # Cloud Agent Identity mesh) read these directly.
+            - name: mwlid-certificate
+              mountPath: /var/run/secrets/workload-spiffe-credentials
+              readOnly: true
           # Liveness + readiness: TCP probe against the attach
           # listener. Every endpoint under /sessions requires the
           # bearer token, so an HTTP probe without it would 401 and
@@ -186,7 +236,6 @@ spec:
               port: attach
             initialDelaySeconds: 3
             periodSeconds: 5
-
       volumes:
         - name: agent-data
           persistentVolumeClaim:
@@ -194,3 +243,13 @@ spec:
         - name: agent-config
           configMap:
             name: core-agent-config
+        # GKE Managed Workload Identity SPIFFE cert source. The
+        # podcertificate.gke.io CSI driver materializes a
+        # short-lived, auto-rotated x509 SVID + trust bundle for
+        # this pod via the spiffe.gke.io/svid signer. Requires
+        # GKE Managed WI to be enabled on the cluster.
+        - name: mwlid-certificate
+          csi:
+            driver: podcertificate.gke.io
+            volumeAttributes:
+              signerName: spiffe.gke.io/svid

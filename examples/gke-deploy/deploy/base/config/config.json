@@ -1,0 +1,26 @@
+{
+  "_comment": "Project + region come from the Pod's GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION env vars (set by patch-deployment.yaml in your overlay). When model.vertex is omitted here, core-agent's Gemini provider falls back to those env vars at runtime — one source of truth, no sync risk between config.json and the Deployment manifest.",
+  "version": 1,
+  "model": {
+    "provider": "vertex",
+    "name": "gemini-3.1-pro-preview-customtools"
+  },
+  "permissions": {
+    "mode": "ask",
+    "allow": [
+      "read_file",
+      "read_many_files",
+      "stat",
+      "list_dir",
+      "glob",
+      "grep",
+      "json_query",
+      "fetch_url",
+      "todo"
+    ]
+  },
+  "agent": {
+    "display_name": "GKE Platform",
+    "description": "Platform agent for managing GKE clusters"
+  }
+}

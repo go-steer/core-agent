@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "servers": {
+    "gke": {
+      "transport": "http",
+      "url": "https://container.googleapis.com/mcp/read-only",
+      "auth": {
+        "google_oauth": {
+          "scopes": [
+            "https://www.googleapis.com/auth/container.read-only"
+          ]
+        }
+      }
+    }
+  }
+}

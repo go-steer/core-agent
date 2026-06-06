@@ -32,6 +32,12 @@ Substrate-enforced plan-before-action. The agent must call `record_plan` before 
 
 **Highlights:** gate-level enforcement (not just AGENTS.md convention) · plan artifacts on disk under `.agents/plans/` · `/replan` slash to revoke + redraft · composes with every existing mode
 
+### [`gke-deploy`](https://github.com/go-steer/core-agent/tree/main/examples/gke-deploy)
+
+Deploy `core-agent` as a long-lived pod in a GKE cluster, reachable by operators over an **internal** HTTP LoadBalancer. Uses **Workload Identity Federation for GKE direct binding** (no Google Service Account in the middle — IAM roles bind directly to the KSA's `principal://...` identifier) for credential-free Vertex AI inference + GKE read-only MCP access. Publishes an A2A AgentCard at `/.well-known/agent-card.json` for [Google Cloud Agent Registry](https://docs.cloud.google.com/agent-registry/register-agents) discovery, and opts into [GKE Managed Workload Identity](https://docs.cloud.google.com/iam/docs/create-managed-workload-identities-gke) for auto-rotated SPIFFE certs (mTLS-ready; on-ramp to Google Cloud Agent Identity when GA). No Dockerfile in the recipe — uses the published `ghcr.io/go-steer/core-agent:2.3.1` image. Use when you want a managed-runtime deployment of core-agent for a platform team or a long-running fleet auditor.
+
+**Highlights:** WIF-for-GKE direct binding (no GSA / no key files) · internal LoadBalancer (VPC-only) · Agent Registry registration + A2A AgentCard discovery · GKE Managed Workload Identity (SPIFFE certs) · GKE read-only MCP wired · agentic small-model cost routing (Pro orchestrator + Flash tool subagents) · 10Gi PVC for session DB + plans · variant configs for Anthropic-on-Vertex + plan-first + slim image · operator attach via Cloud Workstations / IAP / VPN
+
 ---
 
 ## Library quickstarts

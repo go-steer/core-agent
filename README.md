@@ -36,6 +36,7 @@ A reusable Go-based agent built on the [Google Agent Development Kit](https://pk
 - **Durable sessions + audit log** — `eventlog.Open(...)` returns a SQLite/Postgres/MySQL-backed `session.Service` plus a `Stream` with monotonic `seq` numbers, `Since(seq)` replay, and `Watch(seq)` live-tail. CLI flags `--session-db` / `--session-db-path` enable persistence; the default path `~/.<binary>/sessions.db` is derived from `os.Executable()` so adapters and forks each get their own directory.
 - **Subagents** — `agent.WithSubagents([]*Agent)` registers each agent as a callable tool the parent's model can invoke by name (synchronous fan-out). For *background* subagents the parent's model decides to spawn at runtime, use `agent.NewBackgroundAgentManager` + the `spawn_agent` tool family (in-process) or `agent.NewSpawnRemoteAgentTool` with a consumer-supplied `RemoteAgentSpawner` (out-of-process: gRPC / K8s Jobs / Cloud Run). Subagent reports flow back through a pre-turn drain so the parent sees them on its next turn. Subagent events stream into the same audit log under `Branch="<parent>.<sub>"` (or `Branch="bg.<sub>"` for background subagents) for branch-scoped replay. See `examples/with-subagent/` and `examples/background-monitor/`.
 - **Optional Scion adapter** — [`extras/scion-agent/`](./extras/scion-agent/) packages core-agent for [Scion](https://github.com/GoogleCloudPlatform/scion)'s container runtime: lifecycle status emission, `--input` task delivery, and a `sciontool_status` tool the model uses to declare sticky states.
+- **Agent-card discovery** — opt-in `/.well-known/agent-card.json` on the attach listener describes the binary's name, description, skills, and required auth in the [A2A AgentCard](https://agent2agent.info/docs/concepts/agentcard/) shape so [Google Cloud Agent Registry](https://docs.cloud.google.com/agent-registry/register-agents) (and any other consumer of the well-known path) can index it. Configured via `.agents/agent-card.json` + `--agent-card-*` flag overrides; `.agents/skills/` bundles auto-populate the `skills` array. The endpoint stays unauthenticated by spec convention; emitting a card does not imply the binary speaks the A2A JSON-RPC transport.
 
 ---
 
@@ -82,7 +83,17 @@ As a library:
 go get github.com/go-steer/core-agent
 ```
 
-Requires Go 1.26 or newer.
+As a container image (v2.3.1+ — multi-arch amd64 + arm64; distroless static; Sigstore signed):
+
+```bash
+docker pull ghcr.io/go-steer/core-agent:latest        # full build, in-process TUI included
+docker pull ghcr.io/go-steer/core-agent-slim:latest   # headless variant, ~5MB smaller (no embedded TUI)
+docker pull ghcr.io/go-steer/core-agent-tui:latest    # remote TUI client only
+```
+
+Floating tags: `:latest` (most recent semver), `:X.Y.Z` / `:X.Y` / `:X` (semver, no `v` prefix — matches Docker / Helm appVersion convention), `:main` (latest dev build), `:main-<sha>` (specific dev build). Verify signatures with `cosign verify ghcr.io/go-steer/core-agent:<tag> --certificate-identity-regexp '^https://github.com/go-steer/core-agent' --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
+
+Requires Go 1.26 or newer for source builds; container images carry their own toolchain.
 
 ---
 

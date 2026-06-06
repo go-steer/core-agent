@@ -626,3 +626,159 @@ func TestLoad_Include_LeadingWhitespaceAllowed(t *testing.T) {
 		t.Errorf("@include with leading whitespace should work:\n%s", loaded.Instruction)
 	}
 }
+
+// --- v2.3.0: .agents/ subdir search location -------------------------------
+//
+// Operators following the "everything agent-related lives under .agents/"
+// convention put AGENTS.md at <root>/.agents/AGENTS.md. The loader searches
+// that location in addition to <root>/AGENTS.md.
+
+func TestLoad_AgentsSubdir_PrimaryFile(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, ".agents"), "AGENTS.md", "subdir primary\n")
+
+	loaded, err := Load(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(loaded.Instruction, "subdir primary") {
+		t.Errorf(".agents/AGENTS.md should load: %s", loaded.Instruction)
+	}
+	if len(loaded.Sources) != 1 {
+		t.Errorf("expected 1 source, got %d: %+v", len(loaded.Sources), loaded.Sources)
+	}
+}
+
+func TestLoad_AgentsSubdir_OverlayDir(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, ".agents", agentsDirName), "10-overlay.md", "subdir overlay\n")
+
+	loaded, err := Load(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(loaded.Instruction, "subdir overlay") {
+		t.Errorf(".agents/AGENTS.d/*.md should load: %s", loaded.Instruction)
+	}
+}
+
+func TestLoad_AgentsSubdir_AdditiveWithRootAGENTSmd(t *testing.T) {
+	t.Parallel()
+	// Operator legitimately uses BOTH locations: root AGENTS.md as the
+	// cross-tool canonical doc; .agents/AGENTS.md as core-agent-specific
+	// additions. Both should load; .agents/ first, root second.
+	root := t.TempDir()
+	writeFile(t, root, "AGENTS.md", "ROOT-PRIMARY\n")
+	writeFile(t, filepath.Join(root, ".agents"), "AGENTS.md", "SUBDIR-PRIMARY\n")
+
+	loaded, err := Load(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(loaded.Instruction, "ROOT-PRIMARY") || !strings.Contains(loaded.Instruction, "SUBDIR-PRIMARY") {
+		t.Fatalf("both should load:\n%s", loaded.Instruction)
+	}
+	// .agents/ content appears first.
+	if strings.Index(loaded.Instruction, "SUBDIR-PRIMARY") >= strings.Index(loaded.Instruction, "ROOT-PRIMARY") {
+		t.Errorf(".agents/AGENTS.md should precede root AGENTS.md:\n%s", loaded.Instruction)
+	}
+	if len(loaded.Sources) != 2 {
+		t.Errorf("expected 2 sources (both loaded), got %d: %+v", len(loaded.Sources), loaded.Sources)
+	}
+}
+
+func TestLoad_AgentsSubdir_BothOverlayDirs(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, ".agents", agentsDirName), "10-subdir.md", "SUBDIR-OVERLAY\n")
+	writeFile(t, filepath.Join(root, agentsDirName), "10-root.md", "ROOT-OVERLAY\n")
+
+	loaded, err := Load(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"SUBDIR-OVERLAY", "ROOT-OVERLAY"} {
+		if !strings.Contains(loaded.Instruction, want) {
+			t.Errorf("missing %q:\n%s", want, loaded.Instruction)
+		}
+	}
+}
+
+func TestLoad_AgentsSubdir_AbsentFallsBackToRoot(t *testing.T) {
+	t.Parallel()
+	// No .agents/ directory; loader falls back to root AGENTS.md without
+	// errors (the subdir check is a probe, not a requirement).
+	root := t.TempDir()
+	writeFile(t, root, "AGENTS.md", "ROOT-ONLY\n")
+
+	loaded, err := Load(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(loaded.Instruction, "ROOT-ONLY") {
+		t.Errorf("root AGENTS.md should load when no .agents/ exists: %s", loaded.Instruction)
+	}
+}
+
+func TestLoad_AgentsSubdir_UserScope(t *testing.T) {
+	t.Parallel()
+	// The subdir fallback works for user scope too.
+	user := t.TempDir()
+	writeFile(t, filepath.Join(user, ".agents"), "AGENTS.md", "USER-SUBDIR\n")
+
+	loaded, err := Load("", user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(loaded.Instruction, "USER-SUBDIR") {
+		t.Errorf("user .agents/AGENTS.md should load: %s", loaded.Instruction)
+	}
+	if len(loaded.Sources) != 1 || loaded.Sources[0].Scope != "user" {
+		t.Errorf("expected one user source, got %+v", loaded.Sources)
+	}
+}
+
+func TestLoad_AgentsSubdir_DedupAcrossLocations(t *testing.T) {
+	t.Parallel()
+	// Symlink the same file into both .agents/AGENTS.md and root AGENTS.md.
+	// The canonical-path visited-set should dedup so the body appears
+	// exactly once in the assembled prompt.
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".agents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "shared.md")
+	if err := os.WriteFile(target, []byte("SHARED-BODY\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "AGENTS.md")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, ".agents", "AGENTS.md")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	loaded, err := Load(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(loaded.Instruction, "SHARED-BODY"); got != 1 {
+		t.Errorf("SHARED-BODY should appear once via dedup, got %d:\n%s", got, loaded.Instruction)
+	}
+}
+
+func TestLoad_AgentsSubdir_PropagatesIncludeErrors(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, ".agents"), "AGENTS.md", "@include nonexistent.md\n")
+
+	_, err := Load(root, "")
+	if err == nil {
+		t.Fatal("expected load error for missing @include in .agents/AGENTS.md")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error should mention 'not found': %v", err)
+	}
+}

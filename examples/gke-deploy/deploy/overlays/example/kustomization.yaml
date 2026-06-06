@@ -1,0 +1,122 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Example overlay — copy this directory to overlays/<your-deployment-name>/
+# and edit ONE file:
+#   patch-deployment.yaml — set GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION
+#
+# Then apply:
+#   kubectl apply -k examples/gke-deploy/deploy/overlays/<your-deployment-name>
+#
+# The base's ConfigMap (with sensible defaults for permissions,
+# the GKE read-only MCP server, and the AGENTS.md priming) is
+# inherited as-is. To customize the agent's prompt or permissions,
+# see "Advanced: customize the ConfigMap" in README.md.
+#
+# The optional overrides at the bottom (namePrefix, namespace, image
+# pin, ImagePullSecret, resource limits) cover the common
+# "I want to deploy this differently than the base" cases.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Point at the recipe's base. Use ../../base for an in-tree overlay
+# (the typical case). For an out-of-tree overlay tracking a specific
+# core-agent version, you can reference the base via GitHub:
+#   resources:
+#     - github.com/go-steer/core-agent/examples/gke-deploy/deploy/base?ref=v2.3.1
+resources:
+  - ../../base
+
+# Patch the env vars on the Deployment. Strategic merge by env-var
+# name (NOT array index), so reordering the base's env list doesn't
+# break this overlay.
+patches:
+  - path: patch-deployment.yaml
+    target:
+      kind: Deployment
+      name: core-agent
+
+# ---- OPTIONAL OVERRIDES — uncomment what you need ----
+
+# Rename all resources with a prefix. Useful for running multiple
+# core-agent deployments side-by-side in the same cluster
+# (env-prod-core-agent vs env-staging-core-agent vs my-team-core-agent).
+#
+# CAUTION: the IAM principal binding you set during setup must
+# match the prefixed KSA name. With `namePrefix: env-prod-`, the
+# binding becomes:
+#   principal://iam.googleapis.com/projects/<NUMBER>/locations/global/
+#     workloadIdentityPools/<PROJECT>.svc.id.goog/subject/ns/agent-system/sa/env-prod-core-agent
+# (note the prefixed `env-prod-core-agent` instead of `core-agent`)
+#
+# namePrefix: env-prod-
+
+# Change the namespace target. Default (in base) is agent-system;
+# operators running multiple environments may prefer per-env
+# namespaces. CAUTION: the IAM principal binding's `ns/<namespace>`
+# segment must match.
+#
+# namespace: my-namespace
+
+# Pin a specific image tag (the base currently uses a main-build
+# digest pending the next release tag — see base/50-deployment.yaml
+# for context). Override with a semver tag once one is published, or
+# with a different digest, or with the slim variant. Prefer `digest:`
+# over `newTag:` when pinning to a hash — kustomize uses different
+# fields for the two (and `newTag: "sha256-...sig"` is a common
+# foot-gun: that tag refers to the cosign signature artifact, not the
+# image itself).
+#
+# images:
+#   - name: ghcr.io/go-steer/core-agent
+#     newTag: "2.4.0"
+#     # or pin by digest:
+#     # digest: "sha256:<hash>"
+#   # To switch to the slim variant (no embedded TUI, ~5MB smaller):
+#   #   newName: ghcr.io/go-steer/core-agent-slim
+
+# Add an ImagePullSecret if your GHCR package is private (the
+# default for new GHCR repos until explicitly published). Create
+# the secret first:
+#   kubectl create secret docker-registry ghcr-pull \
+#     --docker-server=ghcr.io \
+#     --docker-username=<github-user> \
+#     --docker-password=<PAT-with-read:packages> \
+#     -n agent-system
+#
+# patches:
+#   - target:
+#       kind: ServiceAccount
+#       name: core-agent
+#     patch: |-
+#       - op: add
+#         path: /imagePullSecrets
+#         value: [{name: ghcr-pull}]
+
+# Override resource requests/limits. The base ships
+# 500m/512Mi req → 2 CPU/2Gi lim. Bump for heavier workloads
+# (autonomous mode, dense MCP tools, multiple concurrent
+# operators when v2.4 multi-session lands).
+#
+# patches:
+#   - target:
+#       kind: Deployment
+#       name: core-agent
+#     patch: |-
+#       - op: replace
+#         path: /spec/template/spec/containers/0/resources
+#         value:
+#           requests: { cpu: "1", memory: "1Gi" }
+#           limits:   { cpu: "4", memory: "4Gi" }

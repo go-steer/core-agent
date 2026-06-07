@@ -51,13 +51,35 @@ type Tracker struct {
 	mu        sync.Mutex
 	turns     []Turn
 	startedAt time.Time
+	onAppend  func() // optional; fired after each Append, under no lock
 }
 
 // NewTracker returns a tracker with its session-start time set to now.
 func NewTracker() *Tracker { return &Tracker{startedAt: time.Now()} }
 
+// SetOnAppend registers a callback that fires after every Append call.
+// The callback runs after the lock is released, so it can safely call
+// Totals(), TotalsByModel(), or any other Tracker accessor without
+// risking a re-entrant deadlock.
+//
+// Used by the attach layer to push usage-update events on the SSE
+// stream as turn cost lands — each Append represents a turn whose
+// cumulative impact should reach connected operators.
+//
+// Pass nil to unregister. Safe to set multiple times (last wins);
+// callers wiring this from the broadcaster do so on first subscriber
+// and clear it on last detach.
+func (t *Tracker) SetOnAppend(f func()) {
+	t.mu.Lock()
+	t.onAppend = f
+	t.mu.Unlock()
+}
+
 // Append records one turn's usage. Cost is computed via the supplied
-// Pricing; pass a zero Pricing to skip cost tracking.
+// Pricing; pass a zero Pricing to skip cost tracking. If SetOnAppend
+// has been called with a non-nil callback, the callback fires after
+// the new turn is durable in the tracker and the lock has been
+// released.
 func (t *Tracker) Append(model string, inputTokens, outputTokens int, p Pricing) Turn {
 	turn := Turn{
 		Model:        model,
@@ -68,7 +90,11 @@ func (t *Tracker) Append(model string, inputTokens, outputTokens int, p Pricing)
 	}
 	t.mu.Lock()
 	t.turns = append(t.turns, turn)
+	cb := t.onAppend
 	t.mu.Unlock()
+	if cb != nil {
+		cb()
+	}
 	return turn
 }
 

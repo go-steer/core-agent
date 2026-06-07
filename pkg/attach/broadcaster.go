@@ -25,12 +25,30 @@ import (
 	"github.com/go-steer/core-agent/pkg/eventlog"
 )
 
-// Frame is one item the SSE stream emits. Carries the eventlog seq
-// (so reconnecting clients can resume via ?since=N) plus the underlying
-// ADK event. Marshaled to JSON before going out the wire.
+// Frame is one item the SSE stream emits. Two shapes carried in
+// one struct, distinguished by whether Type is set:
+//
+//   - Legacy form (Type == ""): carries an eventlog seq + ADK
+//     session.Event. The writer emits this as `event: agent` with
+//     the JSON Frame as the data block (back-compat for poll-mode
+//     clients and any consumer of the legacy stream).
+//
+//   - Typed form (Type != ""): carries a protocol event type and
+//     a payload that gets marshaled directly. The writer emits this
+//     as `event: <Type>` with JSON(TypedData) as the data block.
+//     Used for every event defined in the SSE event-stream
+//     protocol spec (capabilities, status-update, usage-update,
+//     inbox, turn-complete, turn-error).
+//
+// Type and TypedData carry the `json:"-"` tag so they never appear
+// in the legacy frame's serialized form — the writer handles them
+// out-of-band based on the Type discriminator.
 type Frame struct {
 	Seq   int64          `json:"seq"`
 	Event *session.Event `json:"event"`
+
+	Type      string `json:"-"`
+	TypedData any    `json:"-"`
 }
 
 // subscriberBufferSize is the per-subscriber channel capacity. Slow
@@ -127,9 +145,10 @@ func (b *Broadcaster) Subscribe(ctx context.Context, since int64) <-chan Frame {
 	}
 
 	b.mu.Lock()
+	firstSub := b.cancel == nil
 	b.subs[sub] = struct{}{}
 	// Lazy pump start on first subscriber.
-	if b.cancel == nil {
+	if firstSub {
 		pumpCtx, cancel := context.WithCancel(context.Background())
 		b.cancel = cancel
 		// startedAt is set to the lowest "since" we've ever seen so
@@ -142,12 +161,160 @@ func (b *Broadcaster) Subscribe(ctx context.Context, since int64) <-chan Frame {
 	}
 	b.mu.Unlock()
 
+	// First-subscriber wiring: hand the broadcaster's Emit method to
+	// the agent so it can push typed events to the SSE stream while
+	// somebody is listening. Cleared in detachLocked when the last
+	// subscriber leaves so we don't retain an emit channel that
+	// drops everything to the floor (and so a re-subscribed
+	// broadcaster re-wires cleanly).
+	if firstSub {
+		if et, ok := b.entry.Agent.(EmitTarget); ok {
+			et.SetAttachEmitter(b.Emit)
+		}
+	}
+
+	// Boot frames per the SSE event-stream protocol spec: capabilities
+	// is required as the first frame on every newly-opened stream,
+	// followed by snapshot status-update and (when usage data exists)
+	// a cumulative usage-update. Direct writes into sub.ch — the
+	// 256-slot buffer has plenty of room for these three small frames
+	// before any other producer touches the channel.
+	b.deliverBootFrames(sub)
+
 	// Replay loop runs in its own goroutine so Subscribe returns
 	// immediately. The same channel carries both replayed and live
 	// frames — the client doesn't distinguish.
 	go b.replayThenTail(ctx, sub, since)
 
 	return sub.ch
+}
+
+// Emit pushes a typed event to every current subscriber. Non-blocking
+// per-subscriber: a subscriber whose buffer is full gets dropped (its
+// channel is closed), same drop-the-subscriber policy as the legacy
+// frame path.
+//
+// Emit is the entry point for every event type defined in the SSE
+// event-stream protocol spec — agent lifecycle hooks, perm-mode
+// mutations, inbox queue/dequeue, and the usage tracker all call
+// here when something happens that needs to reach the operator.
+//
+// Safe to call concurrently from any goroutine.
+func (b *Broadcaster) Emit(eventType string, payload any) {
+	if eventType == "" {
+		return // Defensive: callers should always pass a non-empty type.
+	}
+	frame := Frame{Type: eventType, TypedData: payload}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for sub := range b.subs {
+		b.sendTyped(sub, frame)
+	}
+}
+
+// deliverBootFrames pushes the spec-required opening frames into a
+// freshly-subscribed channel. Called from Subscribe before the
+// replay/tail goroutine starts so these always land first.
+//
+// All three sends are non-blocking (sub.ch is buffered, freshly
+// created). If for any reason a send would block, the subscriber is
+// detached — the operator gets no stream, but the broadcaster is
+// not stalled.
+func (b *Broadcaster) deliverBootFrames(sub *subscriber) {
+	// 1. Capabilities — required first frame per spec section 2.1.
+	caps := Capabilities{
+		ProtocolVersion: ProtocolVersion,
+		EventTypes:      SupportedEventTypes,
+		Server:          serverBanner(),
+	}
+	if !b.sendTyped(sub, Frame{Type: EventCapabilities, TypedData: caps}) {
+		return
+	}
+
+	// 2. Status snapshot — full state so a fresh client sees the
+	// agent's current model / turn state without waiting for the
+	// next state change. Agents that don't implement StatusProvider
+	// get a minimal idle snapshot.
+	if !b.sendTyped(sub, Frame{Type: EventStatusUpdate, TypedData: b.statusSnapshot()}) {
+		return
+	}
+
+	// 3. Usage snapshot — cumulative tracker state so the consumer
+	// can render cost without polling /usage. Optional per spec;
+	// skip silently if the agent has no usage data wired.
+	if usage, ok := b.usageSnapshot(); ok {
+		if !b.sendTyped(sub, Frame{Type: EventUsageUpdate, TypedData: usage}) {
+			return
+		}
+	}
+}
+
+// statusSnapshot constructs the initial StatusUpdate from the entry's
+// agent. Falls back to a minimal idle status if the agent doesn't
+// implement StatusProvider. The mapping from the existing StatusInfo
+// (state/model_name) to the spec's StatusUpdate (turn_state/model)
+// keeps the two surfaces aligned without forcing agents to implement
+// a second snapshot method just for SSE.
+func (b *Broadcaster) statusSnapshot() StatusUpdate {
+	out := StatusUpdate{TurnState: TurnStateIdle}
+	p, ok := b.entry.Agent.(StatusProvider)
+	if !ok {
+		return out
+	}
+	info := p.AttachStatus()
+	out.Model = info.ModelName
+	switch info.State {
+	case AgentStateRunning:
+		out.TurnState = TurnStateStreaming
+	default:
+		// deferred / paused / idle / unknown all map to idle from
+		// the consumer's perspective — the agent isn't currently
+		// producing tokens. Future PRs can distinguish deferred /
+		// paused with their own turn-state values.
+		out.TurnState = TurnStateIdle
+	}
+	return out
+}
+
+// usageSnapshot builds the cumulative UsageUpdate from the entry's
+// agent. Returns ok=false when the agent doesn't implement
+// UsageProvider so the caller can omit the frame entirely (spec
+// allows usage-update to be skipped on stream open when no data
+// exists yet).
+func (b *Broadcaster) usageSnapshot() (UsageUpdate, bool) {
+	p, ok := b.entry.Agent.(UsageProvider)
+	if !ok {
+		return UsageUpdate{}, false
+	}
+	info := p.AttachUsage()
+	out := UsageUpdate{
+		TokensInTotal:  int(info.Overall.InputTokens),
+		TokensOutTotal: int(info.Overall.OutputTokens),
+		CostUSDTotal:   info.Overall.CostUSD,
+		TurnsTotal:     info.Overall.Turns,
+	}
+	if len(info.PerModel) > 0 {
+		out.ByModel = make(map[string]UsageByModel, len(info.PerModel))
+		for model, totals := range info.PerModel {
+			out.ByModel[model] = UsageByModel{
+				TokensIn:  int(totals.InputTokens),
+				TokensOut: int(totals.OutputTokens),
+				CostUSD:   totals.CostUSD,
+				Turns:     totals.Turns,
+			}
+		}
+	}
+	return out, true
+}
+
+// serverBanner returns the optional `server` field of the
+// Capabilities event. Best-effort identification of this process for
+// operator diagnostics; not used for any protocol logic.
+func serverBanner() string {
+	// TODO: populate from build-stamped version once that's wired
+	// (see cmd/core-agent's --version flag). Empty banner is valid
+	// per spec — the field is diagnostic, not required.
+	return "core-agent"
 }
 
 // replayThenTail does an eventlog.Stream.Since pull for the catch-up
@@ -212,7 +379,14 @@ func (b *Broadcaster) pump(ctx context.Context) {
 // send is non-blocking — if the subscriber's buffer is full, the
 // subscriber is closed (treated as slow / dead). Returns false when
 // the subscriber should be considered detached.
+//
+// Typed frames (Type != "") bypass the seq-based dedup and are
+// routed through sendTyped — they have no monotonic eventlog seq
+// and the dedup logic would silently drop every one of them.
 func (b *Broadcaster) send(sub *subscriber, f Frame) bool {
+	if f.Type != "" {
+		return b.sendTyped(sub, f)
+	}
 	if sub.closed {
 		debugf("broadcaster send %s/%s seq=%d → sub already closed", b.entry.AppName, b.entry.SessionID, f.Seq)
 		return false
@@ -244,6 +418,26 @@ func (b *Broadcaster) send(sub *subscriber, f Frame) bool {
 	}
 }
 
+// sendTyped delivers a typed event frame to one subscriber.
+// Bypasses send's seq-based dedup (typed events have no eventlog
+// seq) and shares the same drop-the-slow-subscriber policy.
+func (b *Broadcaster) sendTyped(sub *subscriber, f Frame) bool {
+	if sub.closed {
+		debugf("broadcaster sendTyped %s/%s type=%s → sub already closed", b.entry.AppName, b.entry.SessionID, f.Type)
+		return false
+	}
+	select {
+	case sub.ch <- f:
+		return true
+	default:
+		log.Printf("attach: broadcaster %s/%s dropping slow subscriber (typed=%s, buffer=%d full)",
+			b.entry.AppName, b.entry.SessionID, f.Type, subscriberBufferSize)
+		debugf("broadcaster sendTyped %s/%s type=%s → buffer FULL, dropping subscriber", b.entry.AppName, b.entry.SessionID, f.Type)
+		b.detachLocked(sub)
+		return false
+	}
+}
+
 // detach removes the subscriber under the broadcaster's mutex. If
 // this was the last subscriber, the pump goroutine is cancelled at
 // its next iteration.
@@ -263,6 +457,12 @@ func (b *Broadcaster) detachLocked(sub *subscriber) {
 	if len(b.subs) == 0 && b.cancel != nil {
 		b.cancel()
 		b.cancel = nil
+		// Last subscriber left — clear the agent's typed-event
+		// callback so it stops doing emit work for an audience that
+		// doesn't exist. The next Subscribe call re-wires.
+		if et, ok := b.entry.Agent.(EmitTarget); ok {
+			et.SetAttachEmitter(nil)
+		}
 	}
 }
 

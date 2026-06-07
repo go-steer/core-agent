@@ -156,6 +156,15 @@ type Agent struct {
 	attachReplanFn     func(ctx context.Context, req attach.ReplanRequest) (attach.ReplanResponse, error)
 	attachPromptBroker *attach.PromptBroker
 
+	// attachEmit is the SSE event-stream emit callback set by the
+	// broadcaster on first subscribe (see attach.Broadcaster.Subscribe).
+	// Nil when no SSE client is connected — the emit() helper drops
+	// events to the floor in that case (no consumer = no work).
+	// Guarded by emitMu so the broadcaster can swap or clear it
+	// without racing the agent's per-turn emit calls.
+	emitMu     sync.Mutex
+	attachEmit func(eventType string, payload any)
+
 	// mu guards cancelInFlight + compactionPending + checkpoint
 	// flags + subtask counters. Held only across short store-and-
 	// clear operations; never across an LLM call.
@@ -659,6 +668,87 @@ func (a *Agent) SessionService() session.Service { return a.sessionService }
 // without keeping a separate reference.
 func (a *Agent) EventLog() *eventlog.Handle { return a.eventLog }
 
+// SetAttachEmitter installs (or clears, when f is nil) the callback
+// the agent uses to push typed events onto the attach SSE event
+// stream. The attach broadcaster calls this on first subscriber
+// (wiring its Emit method) and again with nil when the last
+// subscriber disconnects.
+//
+// When a tracker is wired via WithUsageTracker, SetAttachEmitter
+// also installs (or clears) a tracker.SetOnAppend callback that
+// emits a usage-update event with cumulative + per-model totals
+// after every Append. That's what carries the "running cost" the
+// spec describes for the usage-update event type — the
+// turn-complete event reports 0 for cost because the agent itself
+// has no pricing reference (pricing lives in the harness).
+//
+// Optional. When no callback is installed, all agent-side emit calls
+// are no-ops — events are dropped to the floor since no consumer
+// can see them. This matches the protocol's design intent: typed
+// events are operator-visible signals, not audit log entries; if
+// there's no operator, there's nothing to signal.
+//
+// Safe to call concurrently with the agent's own emit path; the
+// internal mutex serializes the swap and any in-flight emit reads.
+func (a *Agent) SetAttachEmitter(f func(eventType string, payload any)) {
+	if a == nil {
+		return
+	}
+	a.emitMu.Lock()
+	a.attachEmit = f
+	a.emitMu.Unlock()
+
+	if a.tracker == nil {
+		return
+	}
+	if f == nil {
+		a.tracker.SetOnAppend(nil)
+		return
+	}
+	a.tracker.SetOnAppend(func() {
+		totals := a.tracker.Totals()
+		update := attach.UsageUpdate{
+			TokensInTotal:  totals.InputTokens,
+			TokensOutTotal: totals.OutputTokens,
+			CostUSDTotal:   totals.CostUSD,
+			TurnsTotal:     totals.Turns,
+		}
+		if byModel := a.tracker.TotalsByModel(); len(byModel) > 0 {
+			update.ByModel = make(map[string]attach.UsageByModel, len(byModel))
+			for model, t := range byModel {
+				update.ByModel[model] = attach.UsageByModel{
+					TokensIn:  t.InputTokens,
+					TokensOut: t.OutputTokens,
+					CostUSD:   t.CostUSD,
+					Turns:     t.Turns,
+				}
+			}
+		}
+		a.emit(attach.EventUsageUpdate, update)
+	})
+}
+
+// emit pushes one typed event to the attach SSE stream if a
+// broadcaster is currently wired. No-op when no SSE client is
+// connected.
+//
+// The lock is held only across the callback read, not the call
+// itself, so the broadcaster's Emit (which fans out to subscriber
+// channels) doesn't block agent progress and a SetAttachEmitter
+// swap can't race a long-running fan-out.
+func (a *Agent) emit(eventType string, payload any) {
+	if a == nil {
+		return
+	}
+	a.emitMu.Lock()
+	cb := a.attachEmit
+	a.emitMu.Unlock()
+	if cb == nil {
+		return
+	}
+	cb(eventType, payload)
+}
+
 // HasCompactor reports whether a Compactor was wired via
 // WithCompactor. Hosts use this to gate operator-facing surfaces:
 // don't list `/compact` in `/help` when there's nothing to invoke.
@@ -727,10 +817,27 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	if a.bgMgr != nil {
 		prompt = a.bgMgr.PrependPendingAlerts(prompt)
 	}
-	if a.inbox != nil {
-		prompt = prependInboxMessages(prompt, a.inbox.drain())
-	}
+	// DrainInbox (the public API) emits `inbox`/dequeued events for
+	// each message as a side effect; the legacy a.inbox.drain() does
+	// not. Routing through the public method keeps the SSE event
+	// stream consistent with what /inject produced on the way in.
+	prompt = prependInboxMessages(prompt, a.DrainInbox())
 	msg := genai.NewContentFromText(prompt, genai.RoleUser)
+
+	// Per-turn correlation handle: fresh prompt_id assigned at turn
+	// start, threaded into the terminal turn-complete / turn-error
+	// event so SSE consumers can correlate the terminal event back
+	// to whatever (operator prompt, inbox message) triggered the turn.
+	promptID := newPromptID()
+	started := time.Now()
+
+	// Announce the turn entering the streaming state. Only fields
+	// that change since the last emission need to be present
+	// (spec merge semantics); turn_state is always required.
+	a.emit(attach.EventStatusUpdate, attach.StatusUpdate{
+		Model:     a.modelName,
+		TurnState: attach.TurnStateStreaming,
+	})
 
 	// Track the cancel func so Interrupt() can fire it during the
 	// turn. Wrap the iterator so the cancel is cleared when the
@@ -743,7 +850,30 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	inner := a.runner.Run(runCtx, a.userID, a.sessionID, msg, adkagent.RunConfig{
 		StreamingMode: a.streaming,
 	})
-	return wrapWithCleanup(inner, func() {
+
+	// Tap UsageMetadata + error state as events flow so the post-turn
+	// emit can carry per-turn token totals without depending on the
+	// harness's tracker.Append timing (which happens AFTER cleanup).
+	var (
+		promptTokens, completionTokens int
+		turnErr                        error
+	)
+	tapped := func(yield func(*session.Event, error) bool) {
+		for ev, err := range inner {
+			if ev != nil && ev.UsageMetadata != nil {
+				promptTokens = int(ev.UsageMetadata.PromptTokenCount)
+				completionTokens = int(ev.UsageMetadata.CandidatesTokenCount)
+			}
+			if err != nil {
+				turnErr = err
+			}
+			if !yield(ev, err) {
+				return
+			}
+		}
+	}
+
+	return wrapWithCleanup(tapped, func() {
 		a.clearCancelInFlight(cancel)
 		// Post-turn hooks. Order matters: mark_task_done flag
 		// promotion first (it's the operator-visible signal); then
@@ -751,6 +881,34 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		// that the next Run call drains before its own work.
 		a.maybeMarkCheckpointPending()
 		a.maybeMarkCompactionPending()
+
+		// Terminal event per spec: exactly one turn-complete OR
+		// turn-error fires per turn. usage-update fires separately
+		// from the tracker.Append callback wired in SetAttachEmitter,
+		// which lands AFTER turn-complete (matching the spec's
+		// "turn-complete → status-update idle → usage-update" order
+		// because the harness calls Append after this cleanup runs).
+		if turnErr != nil {
+			a.emit(attach.EventTurnError, attach.ClassifyTurnError(turnErr))
+		} else {
+			a.emit(attach.EventTurnComplete, attach.TurnComplete{
+				PromptID:  promptID,
+				Model:     a.modelName,
+				TokensIn:  promptTokens,
+				TokensOut: completionTokens,
+				// cost_usd is 0 in turn-complete by design: the
+				// agent has no pricing reference (pricing lives in
+				// the harness's config). The accurate cost lands
+				// on the usage-update that follows, which is
+				// emitted from the tracker.Append callback where
+				// pricing has already been applied.
+				CostUSD:   0,
+				LatencyMs: time.Since(started).Milliseconds(),
+			})
+		}
+		a.emit(attach.EventStatusUpdate, attach.StatusUpdate{
+			TurnState: attach.TurnStateIdle,
+		})
 	})
 }
 

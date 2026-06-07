@@ -19,7 +19,38 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/go-steer/core-agent/pkg/attach"
 )
+
+// inboxMessage pairs an inbox message with the prompt_id assigned at
+// push time. The prompt_id is the correlation handle threaded through
+// the SSE event-stream protocol's `inbox` event (queued / dequeued)
+// so an operator-typed prompt can be linked to its downstream
+// turn-complete or turn-error. Internal-only — public DrainInbox()
+// keeps the legacy []string shape.
+type inboxMessage struct {
+	id   string
+	text string
+}
+
+// newPromptID returns a new prompt_id. UUID v7 is sortable by
+// creation time, so debugging traces stay ordered without a
+// separate timestamp.
+func newPromptID() string {
+	id, err := uuid.NewV7()
+	if err != nil {
+		// Fallback to V4 — V7 only fails when the OS clock is
+		// unrecoverably broken, which we can't do anything useful
+		// about here. A V4 still uniquely identifies the prompt;
+		// debugging just loses the time-ordering property.
+		return uuid.NewString()
+	}
+	return id.String()
+}
 
 // inbox is the per-Agent queue of external messages injected via
 // Agent.Inject. Drained pre-turn by Agent.Run and prepended to the
@@ -32,7 +63,7 @@ import (
 // asynchronously while the agent is working.
 type inbox struct {
 	mu       sync.Mutex
-	messages []string
+	messages []inboxMessage
 	notify   chan struct{} // 1-buffer signal; non-blocking send on append
 	closed   bool
 }
@@ -59,21 +90,24 @@ var ErrInboxClosed = errors.New("agent: inbox closed")
 
 // push appends msg to the queue with drop-oldest backpressure when
 // the queue grows past defaultInboxCap, and fires notify so a
-// waiting Agent.InboxArrived consumer wakes up.
-func (q *inbox) push(msg string) error {
+// waiting Agent.InboxArrived consumer wakes up. Returns the
+// prompt_id assigned to the new message so the caller can emit a
+// downstream `inbox` event carrying the correlation handle.
+func (q *inbox) push(msg string) (string, error) {
+	id := newPromptID()
 	q.mu.Lock()
 	if q.closed {
 		q.mu.Unlock()
-		return ErrInboxClosed
+		return "", ErrInboxClosed
 	}
-	q.messages = append(q.messages, msg)
+	q.messages = append(q.messages, inboxMessage{id: id, text: msg})
 	if len(q.messages) > defaultInboxCap {
 		// Drop oldest with a logged warning so a stuck producer
 		// can't deadlock the agent.
 		dropped := q.messages[0]
 		q.messages = q.messages[1:]
-		log.Printf("agent: inbox cap exceeded, dropped oldest message (head=%q)",
-			truncateForLog(dropped))
+		log.Printf("agent: inbox cap exceeded, dropped oldest message (id=%s head=%q)",
+			dropped.id, truncateForLog(dropped.text))
 	}
 	q.mu.Unlock()
 	// Non-blocking signal. If a notification is already buffered
@@ -82,12 +116,14 @@ func (q *inbox) push(msg string) error {
 	case q.notify <- struct{}{}:
 	default:
 	}
-	return nil
+	return id, nil
 }
 
-// drain returns all currently-queued messages in arrival order and
-// clears the queue. Safe to call concurrently with push.
-func (q *inbox) drain() []string {
+// drain returns all currently-queued messages (with their prompt_ids)
+// in arrival order and clears the queue. Safe to call concurrently
+// with push. Internal-only — the public Agent.DrainInbox() wraps this
+// in drainText for the legacy []string return shape.
+func (q *inbox) drain() []inboxMessage {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if len(q.messages) == 0 {
@@ -188,6 +224,12 @@ func FormatAutoContinueInbox(messages []string) string {
 // in when the queue exceeds the soft cap (256) so a stuck consumer
 // can't deadlock the agent.
 //
+// Emits an `inbox`/queued event on the attach event stream (if one
+// is wired) with the assigned prompt_id, so SSE consumers can
+// surface the queued state to operators. The same prompt_id flows
+// out as the `inbox`/dequeued event when the inbox is drained
+// inside Run.
+//
 // Returns ErrInboxClosed once the agent has been shut down; callers
 // publishing on an unrelated lifecycle should treat that as "stop."
 func (a *Agent) Inject(message string) error {
@@ -201,9 +243,15 @@ func (a *Agent) Inject(message string) error {
 		// do, for example) we don't want to panic.
 		return errors.New("agent: inbox not initialised (construct via agent.New)")
 	}
-	if err := a.inbox.push(message); err != nil {
+	id, err := a.inbox.push(message)
+	if err != nil {
 		return err
 	}
+	a.emit(attach.EventInbox, attach.InboxEvent{
+		State:    attach.InboxStateQueued,
+		PromptID: id,
+		QueuedAt: time.Now().UTC(),
+	})
 	// Operator input should also pierce any active sleep — the
 	// scheduler selects on WakeRequested() alongside its sleep
 	// timer, so this lands as an immediate wake.
@@ -225,11 +273,29 @@ func (a *Agent) Inject(message string) error {
 //
 // Returns nil when no agent or no inbox is wired — both are
 // defensive cases for hand-constructed Agent structs in tests.
+//
+// Emits an `inbox`/dequeued event for each drained message with the
+// message's prompt_id, so SSE consumers can correlate the dequeue
+// with the earlier queued event.
 func (a *Agent) DrainInbox() []string {
 	if a == nil || a.inbox == nil {
 		return nil
 	}
-	return a.inbox.drain()
+	msgs := a.inbox.drain()
+	if len(msgs) == 0 {
+		return nil
+	}
+	for _, m := range msgs {
+		a.emit(attach.EventInbox, attach.InboxEvent{
+			State:    attach.InboxStateDequeued,
+			PromptID: m.id,
+		})
+	}
+	out := make([]string, len(msgs))
+	for i, m := range msgs {
+		out[i] = m.text
+	}
+	return out
 }
 
 // PendingInboxCount peeks at the inbox without draining it. Useful

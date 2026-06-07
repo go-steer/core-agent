@@ -162,23 +162,37 @@ func (h *handlers) streamEvents(w http.ResponseWriter, r *http.Request, entry *E
 	debugf("/events subscribe %s/%s since=%d", entry.AppName, entry.SessionID, since)
 	ch := bcast.Subscribe(r.Context(), since)
 	for frame := range ch {
-		buf, jerr := json.Marshal(frame)
+		// Two frame shapes, distinguished by Type. Typed frames carry
+		// a protocol event (capabilities / status-update / etc.) and
+		// marshal TypedData directly. Legacy frames carry an eventlog
+		// seq + ADK session.Event, marshal the whole Frame, and use
+		// the back-compat `event: agent` name.
+		eventName := EventAgent
+		var payload any = frame
+		if frame.Type != "" {
+			eventName = frame.Type
+			payload = frame.TypedData
+		}
+		buf, jerr := json.Marshal(payload)
 		if jerr != nil {
 			// Skip a frame we couldn't marshal rather than killing
 			// the stream; surface in server logs but keep the wire
 			// flowing for everything else.
-			debugf("/events %s/%s seq=%d marshal error: %v", entry.AppName, entry.SessionID, frame.Seq, jerr)
+			debugf("/events %s/%s type=%s seq=%d marshal error: %v",
+				entry.AppName, entry.SessionID, eventName, frame.Seq, jerr)
 			continue
 		}
 		// SSE framing: event type + data block + blank line.
-		if _, werr := fmt.Fprintf(w, "event: agent\ndata: %s\n\n", buf); werr != nil {
+		if _, werr := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventName, buf); werr != nil {
 			// Client disconnected mid-write. The ctx cancel from
 			// r.Context() should already be propagating; just exit.
-			debugf("/events %s/%s write error (client gone): %v", entry.AppName, entry.SessionID, werr)
+			debugf("/events %s/%s write error (client gone): %v",
+				entry.AppName, entry.SessionID, werr)
 			return
 		}
 		flusher.Flush()
-		debugf("/events %s/%s wrote seq=%d (%d bytes)", entry.AppName, entry.SessionID, frame.Seq, len(buf))
+		debugf("/events %s/%s wrote type=%s seq=%d (%d bytes)",
+			entry.AppName, entry.SessionID, eventName, frame.Seq, len(buf))
 	}
 	debugf("/events %s/%s channel closed (subscriber dropped or ctx done)", entry.AppName, entry.SessionID)
 }

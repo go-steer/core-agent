@@ -896,13 +896,14 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 				Model:     a.modelName,
 				TokensIn:  promptTokens,
 				TokensOut: completionTokens,
-				// cost_usd is 0 in turn-complete by design: the
-				// agent has no pricing reference (pricing lives in
-				// the harness's config). The accurate cost lands
-				// on the usage-update that follows, which is
-				// emitted from the tracker.Append callback where
-				// pricing has already been applied.
-				CostUSD:   0,
+				// cost_usd intentionally omitted (nil *float64 +
+				// omitempty): the agent has no pricing reference
+				// (pricing lives in the harness's config). The
+				// "cost deferred" signal is explicit on the wire
+				// per spec v1.1.0 §2.5 — the immediately-following
+				// usage-update (fired from the tracker.Append
+				// callback where pricing has already been applied)
+				// carries authoritative cost.
 				LatencyMs: time.Since(started).Milliseconds(),
 			})
 		}

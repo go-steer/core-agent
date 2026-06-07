@@ -20,7 +20,13 @@ import "time"
 // server speaks. Bumped on any change to the contract per
 // go-steer/core-tui's docs/sse-event-stream-protocol.md. Clients
 // fall back to poll-only mode if their major doesn't match.
-const ProtocolVersion = "1.0.0"
+//
+// v1.1.0 (core-tui#42): turn-complete.cost_usd demoted from required
+// to optional with documented fallback semantics (the immediately-
+// following usage-update carries authoritative cost). This server
+// emits TurnComplete with CostUSD = nil so the field is omitted from
+// the wire entirely — the "cost deferred" signal is explicit.
+const ProtocolVersion = "1.1.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (
@@ -126,15 +132,20 @@ type InboxEvent struct {
 }
 
 // TurnComplete fires once per turn after the last stream-chunk for
-// that turn and before the next turn's events. All fields required
-// per spec section 2.5.
+// that turn and before the next turn's events.
+//
+// CostUSD is *float64 (optional) per spec v1.1.0 §2.5 — servers
+// whose model layer doesn't know pricing (this server, since
+// agent.* deliberately has no pricing reference) leave it nil and
+// the immediately-following usage-update carries authoritative
+// cost. Servers with in-band pricing populate it.
 type TurnComplete struct {
-	PromptID  string  `json:"prompt_id"`
-	Model     string  `json:"model"`
-	TokensIn  int     `json:"tokens_in"`
-	TokensOut int     `json:"tokens_out"`
-	CostUSD   float64 `json:"cost_usd"`
-	LatencyMs int64   `json:"latency_ms"`
+	PromptID  string   `json:"prompt_id"`
+	Model     string   `json:"model"`
+	TokensIn  int      `json:"tokens_in"`
+	TokensOut int      `json:"tokens_out"`
+	CostUSD   *float64 `json:"cost_usd,omitempty"`
+	LatencyMs int64    `json:"latency_ms"`
 }
 
 // TurnError kinds per spec section 2.6. Consumers MUST treat unknown

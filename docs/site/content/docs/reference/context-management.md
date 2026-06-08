@@ -8,13 +8,13 @@ Long agent sessions hit two failure modes the model can't recover from on its ow
 1. **The context window fills up.** Every turn appends to the prompt; eventually the next turn errors out with "context window exceeded."
 2. **Raw tool output bloats the parent.** A 5,000-line file read, a 200KB URL fetch, a grep with hundreds of matches — each dumps that volume into the parent's window even while it's still working, slowing every subsequent turn and crowding out the actual task.
 
-`core-agent` ships three mechanisms — designed together, deployed independently — to keep long sessions alive. Two are on by default; one is opt-in. See [`docs/context-management-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/context-management-design.md) for the full design rationale.
+`core-agent` ships three mechanisms — designed together, deployed independently — to keep long sessions alive. All three are on by default. See [`docs/context-management-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/context-management-design.md) for the full design rationale.
 
 | Mechanism | Default | CLI flag to disable | Slash command |
 |---|---|---|---|
 | Compaction | on | `--no-compact` | `/compact [focus]` (alias `/summarize`) |
 | Task-boundary checkpoints | on | `--no-checkpoint` | `/done [note]` (alias `/checkpoint`) |
-| Agentic tool wrappers (subtasks) | off | `--agentic-tools` enables | (model-driven via `agentic_*` tools) |
+| Agentic tool wrappers (subtasks) | on | `--agentic-tools=false` | (model-driven via `agentic_*` tools) |
 
 A fourth — `/context` (alias `/boundaries`) — is an observation surface, not a mechanism: it reports the shape of what the others have done this session.
 
@@ -60,16 +60,19 @@ Pass `--no-compact` for short headless one-shots where compaction would never fi
 
 **The proactive bloat prevention.** Compaction and checkpoints are *reactive* — they clean up after raw tool output has already landed in the parent's context. Agentic wrappers are *proactive* — they route the underlying tool call through a single-purpose subtask on a (typically cheaper) model so only the digest reaches the parent. The raw 5,000-line read never enters the parent's context.
 
-Opt-in for v2.0; may flip default-on in a later release once dogfooded.
+On by default since v2.1. Pass `--agentic-tools=false` to register only the bare tools.
 
-### Enabling
+### Configuring
 
 ```bash
-# Wrappers register; subtasks inherit the parent's model
-core-agent --agentic-tools
+# Default — wrappers register; subtasks inherit the parent's model
+core-agent
 
 # Recommended: route subtasks to a cheaper model for the cost-efficiency win
-core-agent --agentic-tools --agentic-small-model gemini-2.5-flash
+core-agent --agentic-small-model gemini-2.5-flash
+
+# Opt out — register only the bare tools
+core-agent --agentic-tools=false
 ```
 
 ### The four wrappers

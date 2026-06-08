@@ -112,7 +112,7 @@ Registered in autonomous-runner contexts. Lets the model emit a sleep / wake-at 
 
 ## Agentic wrappers (subtask-routed tools)
 
-When `--agentic-tools` is set (or `tools/agentic` is registered manually), four additional tools join the catalog:
+By default (or when `tools/agentic` is registered manually in library use), four additional tools join the catalog:
 
 - `agentic_read_file`
 - `agentic_fetch_url`

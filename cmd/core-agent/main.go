@@ -126,7 +126,7 @@ func main() {
 	noCompact := flag.Bool("no-compact", false, "disable automatic context-window compaction. /compact slash still works for manual summarization, but the post-turn threshold trigger is off. Use when running headless against a model whose window is huge enough that compaction would never fire anyway, or when debugging an issue where you don't want history rewrites in play.")
 	noCheckpoint := flag.Bool("no-checkpoint", false, "disable task-boundary checkpoints. /done slash + the model-facing mark_task_done tool are both removed. Use when running headless where the model shouldn't self-signal task completion, or when debugging an issue where you don't want auto-slicing in play.")
 	agenticTools := flag.Bool("agentic-tools", true, "register the agentic tool wrappers (agentic_read_file, agentic_fetch_url, agentic_grep, agentic_research) that route through a subtask so only the digest enters the parent's context (docs/context-management-design.md Mechanism B). On by default since v2.1; pass --agentic-tools=false to register only the bare tools.")
-	agenticSmallModel := flag.String("agentic-small-model", "", "small/cheap model ID the agentic_* wrappers should route subtasks to (e.g. gemini-2.5-flash). When empty, subtasks inherit the parent's model (still works — just doesn't realize the cost-efficiency win). Requires --agentic-tools.")
+	agenticSmallModel := flag.String("agentic-small-model", "", "small/cheap model ID the agentic_* wrappers should route subtasks to (e.g. gemini-2.5-flash, claude-haiku-4-5). When empty, the provider's cheap-tier default is used (gemini-2.5-flash for Gemini/Vertex, claude-haiku-4-5 for Anthropic); providers without a cheap tier (echo, scripted) fall through to inheriting the parent's model. Requires --agentic-tools.")
 
 	// Agent-card discovery (docs/agent-card-design.md). All optional —
 	// either the .agents/agent-card.json file or the CLI flags must
@@ -562,7 +562,16 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 	// output caps.
 	var agentRef *agent.Agent
 	if agenticTools {
-		agTools, err := buildAgenticTools(builtinTools, func() *agent.Agent { return agentRef }, provider, agenticSmallModel)
+		resolvedSmallModel := models.ResolveSmallModel(provider, agenticSmallModel)
+		switch {
+		case resolvedSmallModel == "":
+			send(fmt.Sprintf("agentic subtasks: inherit parent (%s — no cheap-tier default for provider %q)", cfg.Model.Name, provider.Name()))
+		case agenticSmallModel != "":
+			send(fmt.Sprintf("agentic subtasks: %s (operator override)", resolvedSmallModel))
+		default:
+			send(fmt.Sprintf("agentic subtasks: %s (provider default)", resolvedSmallModel))
+		}
+		agTools, err := buildAgenticTools(builtinTools, func() *agent.Agent { return agentRef }, provider, resolvedSmallModel)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: agentic tools: %v\n", err)
 			return runner.ExitConfigError

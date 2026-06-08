@@ -136,3 +136,22 @@ func TestResolve_AutoDetectGemini_GEMINI_API_KEY(t *testing.T) {
 		t.Errorf("auto-detect picked %q, want gemini", p.Name())
 	}
 }
+
+// TestProviderImplementsSmallModelDefaulter is a compile-time sanity
+// check that *Provider satisfies models.SmallModelDefaulter, so
+// ResolveSmallModel routes Gemini subtasks to the cheap-tier default
+// without requiring --agentic-small-model on the CLI.
+func TestProviderImplementsSmallModelDefaulter(t *testing.T) {
+	var _ models.SmallModelDefaulter = (*Provider)(nil)
+}
+
+func TestDefaultSmallModel(t *testing.T) {
+	// Zero-value Provider — DefaultSmallModel is state-independent.
+	p := &Provider{}
+	if got, want := p.DefaultSmallModel(), DefaultSmallModelID; got != want {
+		t.Errorf("DefaultSmallModel() = %q, want %q", got, want)
+	}
+	if DefaultSmallModelID != "gemini-2.5-flash" {
+		t.Errorf("DefaultSmallModelID = %q; expected gemini-2.5-flash (the cheap-tier alias used across the codebase)", DefaultSmallModelID)
+	}
+}

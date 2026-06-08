@@ -30,7 +30,7 @@ func TestInbox_PushDrainOrder(t *testing.T) {
 	t.Parallel()
 	q := newInbox()
 	for _, m := range []string{"one", "two", "three"} {
-		if err := q.push(m); err != nil {
+		if _, err := q.push(m); err != nil {
 			t.Fatalf("push %q: %v", m, err)
 		}
 	}
@@ -40,8 +40,11 @@ func TestInbox_PushDrainOrder(t *testing.T) {
 		t.Fatalf("drain count = %d, want %d", len(got), len(want))
 	}
 	for i, w := range want {
-		if got[i] != w {
-			t.Errorf("drain[%d] = %q, want %q", i, got[i], w)
+		if got[i].text != w {
+			t.Errorf("drain[%d].text = %q, want %q", i, got[i].text, w)
+		}
+		if got[i].id == "" {
+			t.Errorf("drain[%d].id should be non-empty (push assigns a prompt_id)", i)
 		}
 	}
 	if again := q.drain(); len(again) != 0 {
@@ -58,7 +61,7 @@ func TestInbox_NotifyFiresOnPush(t *testing.T) {
 		t.Fatal("notify channel should be empty before any push")
 	default:
 	}
-	if err := q.push("hello"); err != nil {
+	if _, err := q.push("hello"); err != nil {
 		t.Fatalf("push: %v", err)
 	}
 	select {
@@ -76,7 +79,7 @@ func TestInbox_NotifyCoalesces(t *testing.T) {
 	// notification per push" semantic would deadlock.
 	q := newInbox()
 	for i := 0; i < 5; i++ {
-		_ = q.push("x")
+		_, _ = q.push("x")
 	}
 	// First consumer drain sees one notification.
 	<-q.arrived()
@@ -97,7 +100,7 @@ func TestInbox_DropOldestWhenCapExceeded(t *testing.T) {
 	q := newInbox()
 	// Push one over the cap to trigger drop-oldest.
 	for i := 0; i < defaultInboxCap+1; i++ {
-		_ = q.push("msg")
+		_, _ = q.push("msg")
 	}
 	got := q.drain()
 	if len(got) != defaultInboxCap {
@@ -110,7 +113,7 @@ func TestInbox_PushAfterCloseErrors(t *testing.T) {
 	t.Parallel()
 	q := newInbox()
 	q.close()
-	err := q.push("hello")
+	_, err := q.push("hello")
 	if !errors.Is(err, ErrInboxClosed) {
 		t.Errorf("expected ErrInboxClosed after close; got %v", err)
 	}

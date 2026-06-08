@@ -33,11 +33,11 @@ For the mechanisms themselves see [Context management → Agentic tool wrappers]
 
 ## Agentic wrappers: getting the model to actually use them
 
-This is the non-obvious part. Registering the wrappers via `--agentic-tools` makes them visible; getting the model to consistently prefer them over the bare tool calls (which are also still registered) is a separate problem.
+This is the non-obvious part. The wrappers register by default; getting the model to consistently prefer them over the bare tool calls (which are also still registered) is a separate problem.
 
 ### The default behavior
 
-After `--agentic-tools --agentic-small-model gemini-2.5-flash`, the model sees both `read_file` and `agentic_read_file`. Their descriptions explicitly tell it when to prefer the wrapper:
+With `--agentic-small-model gemini-2.5-flash` set (the wrappers themselves are on by default), the model sees both `read_file` and `agentic_read_file`. Their descriptions explicitly tell it when to prefer the wrapper:
 
 > Read a file and return a focused excerpt or summary. **Use INSTEAD OF read_file** when the file might be large and you only need a specific section...
 
@@ -57,11 +57,15 @@ Pro/Opus-tier models will generally route to the wrapper for large files. But tw
    ```markdown
    ## When using agentic_* tools
 
-   The agentic_read_file / agentic_grep / agentic_research wrappers return
-   AUTHORITATIVE digests. Do NOT verify by reading the source with bare
-   read_file or grep. If a digest seems insufficient, call the wrapper again
-   with a more specific request.
+   The agentic_read_file / agentic_grep / agentic_research wrappers route
+   reads through a subtask so the raw content stays out of your context.
+   Don't re-read the same path/pattern with bare read_file or grep to
+   spot-check — that re-introduces the raw content you were trying to
+   avoid. If a digest is missing something specific, call the wrapper
+   again with a narrower question instead.
    ```
+
+   The tool descriptions now ship with this same guidance baked in (v2.1+), so this `AGENTS.md` rule is reinforcement rather than the primary signal.
 
 2. **Restrict the bare tool's permission:** allow `agentic_*` freely; require approval for bare `read_file` on large files.
 

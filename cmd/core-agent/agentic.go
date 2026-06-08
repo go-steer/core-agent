@@ -175,7 +175,7 @@ func renderContextStats(s agent.ContextStats) string {
 	// most sessions won't use agentic_* wrappers and this row
 	// would just be noise.
 	if s.SubtaskCount == 0 {
-		b.WriteString("  Subtasks:     none yet (fires when the model calls agentic_read_file/grep/fetch_url/research — opt-in via --agentic-tools)\n")
+		b.WriteString("  Subtasks:     none yet (fires when the model calls agentic_read_file/grep/fetch_url/research — default on; disable via --agentic-tools=false)\n")
 	} else {
 		fmt.Fprintf(&b, "  Subtasks:     %d (%d in / %d out tokens, $%.4f rolled up to /stats total)\n",
 			s.SubtaskCount, s.SubtaskInputTokens, s.SubtaskOutputTokens, s.SubtaskCostUSD)

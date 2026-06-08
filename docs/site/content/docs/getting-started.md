@@ -158,7 +158,8 @@ Beyond `--provider` / `-m` / `-p`, the flags that come up most often:
 --no-checkpoint                 disable task-boundary checkpoints (removes /done +
                                 the model-facing mark_task_done tool)
 --agentic-tools                 register the agentic_* tool wrappers (read_file /
-                                fetch_url / grep / research) — see Context management
+                                fetch_url / grep / research) — default on; pass
+                                --agentic-tools=false to disable. See Context management.
 --agentic-small-model=ID        route agentic_* subtasks to a cheaper model
                                 (e.g. gemini-2.5-flash) for the cost-efficiency win
 ```

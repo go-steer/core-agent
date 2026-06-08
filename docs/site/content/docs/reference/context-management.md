@@ -22,12 +22,39 @@ A fourth — `/context` (alias `/boundaries`) — is an observation surface, not
 
 ## Compaction (Mechanism A)
 
-**The reactive backstop.** When the context window fills past ~85% utilization, the agent automatically compacts the conversation into a "teammate handover" summary and slices the pre-summary history out of future requests. The full audit log is preserved on disk — only the live LLM request is sliced.
+**The reactive backstop.** When the context window fills past a per-model-tier threshold (default `0.85` for frontier, `0.65` for mid, `0.35` for small-tier models since v2.5), the agent automatically compacts the conversation into a "teammate handover" summary and slices the pre-summary history out of future requests. The full audit log is preserved on disk — only the live LLM request is sliced.
 
 ### How it fires
 
-- **Automatic:** post-turn hook checks utilization against the configured threshold (default `0.85`); when over, the next `Run` drains a `compactionPending` flag by writing the summary before its actual work. The operator-visible turn boundary stays clean — no surprise latency cliff after the assistant finishes.
+- **Automatic:** post-turn hook checks utilization against the configured per-tier threshold; when over, the next `Run` drains a `compactionPending` flag by writing the summary before its actual work. The operator-visible turn boundary stays clean — no surprise latency cliff after the assistant finishes.
 - **Manual:** `/compact [focus]` runs the same summarizer immediately. The optional `focus` argument biases the summary toward a particular thread when you want to preserve specific context.
+
+### Per-tier thresholds (since v2.5)
+
+A single 0.85 threshold worked for frontier-tier models (Opus, Pro) but fired far too late for small-tier models (Flash, Haiku) — reasoning quality on those tiers degrades well before they reach 85% context utilization. The per-tier defaults trigger earlier on smaller models so the session stays inside its effective working range:
+
+| Tier | Default trigger | Examples |
+|---|---|---|
+| `frontier` | `0.85` (unchanged) | `claude-opus-4-*`, `gemini-3.x-pro` |
+| `mid` | `0.65` | `claude-sonnet-4-*`, `gemini-2.5-pro` |
+| `small` | `0.35` | `claude-haiku-4-*`, `gemini-3.x-flash`, `gemini-2.5-flash` |
+
+Tier classification is by substring match against the model ID — see `pkg/modeltier`. Unknown models fall back to the single `compaction.threshold` setting (default `0.85`).
+
+Override per-tier defaults in `.agents/config.json`:
+
+```json
+{
+  "compaction": {
+    "threshold": 0.85,
+    "threshold_by_tier": {
+      "small": 0.30
+    }
+  }
+}
+```
+
+Only set tiers you want to override; the rest take their substrate defaults.
 
 ### What the summary contains
 

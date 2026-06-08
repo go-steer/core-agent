@@ -757,7 +757,7 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 	// remains available regardless of this flag — disabling only
 	// turns off the automatic trigger.
 	if !noCompact {
-		opts = append(opts, agent.WithCompactor(agent.NewDefaultCompactor()))
+		opts = append(opts, agent.WithCompactor(buildCompactor(cfg.Compaction)))
 	}
 	// Task-boundary checkpoints (docs/context-management-design.md
 	// Mechanism C). Default-on; disable via --no-checkpoint.

@@ -26,6 +26,8 @@ import (
 
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/session"
+
+	"github.com/go-steer/core-agent/pkg/modeltier"
 )
 
 // CompactionEventTag is the value stored under
@@ -68,8 +70,10 @@ type Compactor interface {
 }
 
 // DefaultCompactor is the package-default Compactor. Triggers on
-// context-window utilization ≥ Threshold (default 0.85) and produces
-// a five-section "teammate handover" summary (current state, files
+// context-window utilization ≥ a per-model threshold (default 0.85
+// for frontier, 0.65 for mid, 0.35 for small; see
+// pkg/modeltier.DefaultCompactionThresholds) and produces a
+// five-section "teammate handover" summary (current state, files
 // & changes, technical context, strategy & approach, exact next
 // steps) per docs/context-management-design.md §Mechanism A.
 //
@@ -77,30 +81,53 @@ type Compactor interface {
 // Compactor themselves; this type is a sensible default, not a
 // required base class.
 type DefaultCompactor struct {
-	// Threshold is the context-window utilization at which
-	// compaction fires. 0.85 means "compact once we've used 85% of
-	// the model's context window." Zero is treated as "use the
-	// package default."
+	// Threshold is the fallback context-window utilization at which
+	// compaction fires when no per-tier override applies (unknown
+	// model, or the tier isn't in ThresholdByTier). 0.85 means
+	// "compact once we've used 85% of the model's context window."
+	// Zero is treated as "use the package default."
 	Threshold float64
+
+	// ThresholdByTier overrides Threshold per modeltier classification.
+	// Keys are pkg/modeltier tier labels ("frontier", "mid", "small").
+	// When the current model classifies to a tier present here, that
+	// tier's threshold wins. Empty map (or zero value at a key) falls
+	// back to Threshold. Use this to keep frontier sessions at 0.85
+	// while compacting small-tier sessions much earlier.
+	ThresholdByTier map[string]float64
+
+	// TierClassifier is the function used to look up the current
+	// model's tier. Defaults to modeltier.Classify. Override in tests
+	// to inject deterministic tier resolutions without depending on
+	// the modeltier table's current state.
+	TierClassifier func(modelID string) string
 }
 
-// DefaultCompactionThreshold is the default for
-// DefaultCompactor.Threshold. 0.85 leaves headroom for one more
-// full turn before hitting the actual context wall, and is high
-// enough that we don't compact eagerly on lightly-used sessions.
+// DefaultCompactionThreshold is the fallback for
+// DefaultCompactor.Threshold when no per-tier entry matches. 0.85
+// leaves headroom for one more full turn before hitting the actual
+// context wall, and matches the historical universal default so
+// frontier sessions see no behavior change.
 const DefaultCompactionThreshold = 0.85
 
-// NewDefaultCompactor returns a DefaultCompactor at the package-
-// default threshold. Pass &DefaultCompactor{Threshold: x} for a
-// custom value (must be 0 < x < 1).
-func NewDefaultCompactor() Compactor { return &DefaultCompactor{Threshold: DefaultCompactionThreshold} }
+// NewDefaultCompactor returns a DefaultCompactor with the package-
+// default fallback threshold AND the default per-tier overrides
+// from modeltier.DefaultCompactionThresholds — so small/mid/frontier
+// each get a tier-appropriate trigger out of the box. Pass a
+// &DefaultCompactor{...} literal directly to customize either knob.
+func NewDefaultCompactor() Compactor {
+	return &DefaultCompactor{
+		Threshold:       DefaultCompactionThreshold,
+		ThresholdByTier: modeltier.DefaultCompactionThresholds(),
+	}
+}
 
 // ShouldCompact returns true when the agent's usage tracker reports
-// context-window utilization at or above Threshold. Returns false
-// when the tracker doesn't yet know the window size (no turn has
-// landed, or the model isn't in usage.ContextWindowSizeFor's table)
-// so a session with an unknown model never triggers premature
-// compaction.
+// context-window utilization at or above the resolved threshold for
+// the current model's tier. Returns false when the tracker doesn't
+// yet know the window size (no turn has landed, or the model isn't
+// in usage.ContextWindowSizeFor's table) so a session with an
+// unknown model never triggers premature compaction.
 func (c *DefaultCompactor) ShouldCompact(_ context.Context, a *Agent) bool {
 	if a == nil || a.tracker == nil {
 		return false
@@ -110,11 +137,34 @@ func (c *DefaultCompactor) ShouldCompact(_ context.Context, a *Agent) bool {
 		return false
 	}
 	used := a.tracker.ContextWindowUsed()
-	threshold := c.Threshold
-	if threshold <= 0 {
-		threshold = DefaultCompactionThreshold
-	}
+	threshold := c.resolveThreshold(a)
 	return float64(used)/float64(size) >= threshold
+}
+
+// resolveThreshold picks the compaction trigger for the current
+// session's model. Per-tier overrides win; fall through to
+// c.Threshold; final fallback is the package default. Exposed for
+// observability via the wrapping interfaces in the rest of the
+// package — kept lowercase because the resolution policy is an
+// implementation detail of this Compactor.
+func (c *DefaultCompactor) resolveThreshold(a *Agent) float64 {
+	if len(c.ThresholdByTier) > 0 {
+		classifier := c.TierClassifier
+		if classifier == nil {
+			classifier = modeltier.Classify
+		}
+		if last, ok := a.tracker.Last(); ok {
+			if tier := classifier(last.Model); tier != "" {
+				if v, present := c.ThresholdByTier[tier]; present && v > 0 {
+					return v
+				}
+			}
+		}
+	}
+	if c.Threshold > 0 {
+		return c.Threshold
+	}
+	return DefaultCompactionThreshold
 }
 
 // SummarizerInstruction returns the five-section handover prompt.

@@ -47,6 +47,32 @@ type Config struct {
 	Attach      AttachConfig      `json:"attach,omitempty"`
 	Pricing     PricingFileConfig `json:"pricing,omitempty"`
 	UI          UIConfig          `json:"ui,omitempty"`
+	Compaction  CompactionConfig  `json:"compaction,omitempty"`
+}
+
+// CompactionConfig configures the automatic context-window compaction
+// trigger. Both fields are optional — leave empty for the substrate
+// defaults (per-tier thresholds from pkg/modeltier).
+type CompactionConfig struct {
+	// Threshold overrides the fallback utilization threshold used
+	// when the current model's tier isn't classified or isn't in
+	// ThresholdByTier. Pointer so absence is distinguishable from
+	// the deliberate value 0 (which would disable compaction).
+	// Must be in (0, 1) when set.
+	Threshold *float64 `json:"threshold,omitempty"`
+
+	// ThresholdByTier overrides per-tier defaults. Keys are tier
+	// labels from pkg/modeltier ("frontier", "mid", "small"). Set
+	// only the tiers you want to override; the rest take their
+	// package defaults (0.85 / 0.65 / 0.35). Values must be in
+	// (0, 1).
+	//
+	// Example — keep frontier sessions on the historical default
+	// while compacting Flash/Haiku much earlier:
+	//   "compaction": {
+	//     "threshold_by_tier": { "small": 0.30 }
+	//   }
+	ThresholdByTier map[string]float64 `json:"threshold_by_tier,omitempty"`
 }
 
 // UIConfig holds presentation choices for the in-process TUI
@@ -475,6 +501,17 @@ func (c *Config) Validate() error {
 		}
 		if !validAccessSpec(e.Access) {
 			return fmt.Errorf("config: path_scope.allow_paths[%d].access=%q must be r, w, or rw (read / write / readwrite accepted)", i, e.Access)
+		}
+	}
+	if c.Compaction.Threshold != nil {
+		v := *c.Compaction.Threshold
+		if v <= 0 || v >= 1 {
+			return fmt.Errorf("config: compaction.threshold=%v must be in (0, 1) exclusive", v)
+		}
+	}
+	for tier, v := range c.Compaction.ThresholdByTier {
+		if v <= 0 || v >= 1 {
+			return fmt.Errorf("config: compaction.threshold_by_tier[%q]=%v must be in (0, 1) exclusive", tier, v)
 		}
 	}
 	switch c.UI.Theme {

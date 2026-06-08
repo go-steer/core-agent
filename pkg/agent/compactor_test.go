@@ -188,7 +188,8 @@ func TestDefaultCompactor_ShouldCompact_UnknownWindowSkips(t *testing.T) {
 func TestDefaultCompactor_ShouldCompact_OverThreshold(t *testing.T) {
 	t.Parallel()
 	tr := usage.NewTracker()
-	// gemini-3.5-flash → 1M context. 900K input = 90% utilization > 0.85 threshold.
+	// gemini-3.5-flash → 1M context, classified small (per-tier threshold
+	// 0.35). 900K input = 90% utilization > 0.35 → fires.
 	tr.Append("gemini-3.5-flash", 900_000, 100, usage.Pricing{})
 	a := &Agent{tracker: tr}
 	c := NewDefaultCompactor()
@@ -200,12 +201,99 @@ func TestDefaultCompactor_ShouldCompact_OverThreshold(t *testing.T) {
 func TestDefaultCompactor_ShouldCompact_UnderThreshold(t *testing.T) {
 	t.Parallel()
 	tr := usage.NewTracker()
-	// 100K of 1M = 10% utilization → under 0.85 threshold.
+	// 100K of 1M = 10% utilization on gemini-3.5-flash (small tier
+	// threshold 0.35). 10% < 35% → no fire.
 	tr.Append("gemini-3.5-flash", 100_000, 100, usage.Pricing{})
 	a := &Agent{tracker: tr}
 	c := NewDefaultCompactor()
 	if c.ShouldCompact(context.Background(), a) {
 		t.Errorf("ShouldCompact = true at 10%% utilization; want false")
+	}
+}
+
+// TestDefaultCompactor_TierAwareThreshold covers the per-tier dispatch
+// — same utilization, different model tier, different decision. The
+// 40% case is the load-bearing one: small tier fires (0.35 threshold),
+// frontier doesn't (0.85). Regression here would mean we're back to a
+// single global threshold.
+func TestDefaultCompactor_TierAwareThreshold(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		model       string
+		inputTokens int
+		windowBytes int // for reference / readability
+		want        bool
+	}{
+		{
+			name:        "small tier fires at 40% (above 0.35)",
+			model:       "gemini-3.5-flash", // 1M window, small tier
+			inputTokens: 400_000,            // 40% util
+			want:        true,
+		},
+		{
+			name:        "frontier tier does not fire at 40% (below 0.85)",
+			model:       "claude-opus-4-7", // 200K window, frontier
+			inputTokens: 80_000,            // 40% util
+			want:        false,
+		},
+		{
+			name:        "mid tier fires at 70% (above 0.65)",
+			model:       "claude-sonnet-4-6", // 200K window, mid tier
+			inputTokens: 140_000,             // 70% util
+			want:        true,
+		},
+		{
+			name:        "mid tier does not fire at 60% (below 0.65)",
+			model:       "claude-sonnet-4-6",
+			inputTokens: 120_000, // 60% util
+			want:        false,
+		},
+		{
+			name:        "small tier fires earlier than mid would at same util",
+			model:       "claude-haiku-4-5", // 200K window, small tier
+			inputTokens: 80_000,             // 40% util — over 0.35
+			want:        true,
+		},
+		{
+			name:        "frontier tier fires at 90% (above 0.85)",
+			model:       "claude-opus-4-7",
+			inputTokens: 180_000, // 90% util
+			want:        true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := usage.NewTracker()
+			tr.Append(tc.model, tc.inputTokens, 100, usage.Pricing{})
+			a := &Agent{tracker: tr}
+			c := NewDefaultCompactor()
+			if got := c.ShouldCompact(context.Background(), a); got != tc.want {
+				t.Errorf("ShouldCompact for %s (%d tokens) = %v, want %v", tc.model, tc.inputTokens, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDefaultCompactor_UnknownTierFallsBackToThreshold covers the
+// case where the current model isn't recognized by modeltier.Classify.
+// Fallback is the single Threshold value (or the package default).
+func TestDefaultCompactor_UnknownTierFallsBackToThreshold(t *testing.T) {
+	t.Parallel()
+	tr := usage.NewTracker()
+	// gemini-3.5-flash is recognized — but pin to an unknown
+	// classifier so the fallback path runs.
+	tr.Append("gemini-3.5-flash", 700_000, 100, usage.Pricing{}) // 70% util
+	a := &Agent{tracker: tr}
+	c := &DefaultCompactor{
+		Threshold:       0.85, // fallback
+		ThresholdByTier: map[string]float64{"frontier": 0.85, "mid": 0.65, "small": 0.35},
+		TierClassifier:  func(string) string { return "" }, // force unknown
+	}
+	// 70% < fallback 0.85 → no fire (even though small tier 0.35 would fire).
+	if c.ShouldCompact(context.Background(), a) {
+		t.Errorf("ShouldCompact = true on unknown tier at 70%% (fallback threshold 0.85); want false")
 	}
 }
 

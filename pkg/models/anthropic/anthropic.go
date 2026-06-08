@@ -43,6 +43,12 @@ import (
 // claude-api skill's guidance and default to the most capable Opus.
 const DefaultModel = "claude-opus-4-7"
 
+// DefaultSmallModelID is the Anthropic cheap-tier model used by default
+// for agentic subtasks when the operator hasn't pinned one with
+// --agentic-small-model. Same value for the first-party and Vertex
+// backends; the Vertex publication name resolves at call time.
+const DefaultSmallModelID = "claude-haiku-4-5"
+
 // DefaultMaxTokens caps a single response when the caller hasn't set
 // one. 16K is a comfortable middle ground: plenty for most turns,
 // well under the streaming SDK's HTTP timeouts.
@@ -99,6 +105,11 @@ func New(apiKey string, opts ...Option) (*Provider, error) {
 
 // Name reports the provider identity ("anthropic" or "anthropic-vertex").
 func (p *Provider) Name() string { return p.name }
+
+// DefaultSmallModel satisfies models.SmallModelDefaulter so core-agent
+// can route subtask digesting to a cheap-tier Claude model without
+// requiring the operator to set --agentic-small-model.
+func (p *Provider) DefaultSmallModel() string { return DefaultSmallModelID }
 
 // Model returns a model.LLM for the given model ID. modelID may be
 // empty, in which case DefaultModel is used.

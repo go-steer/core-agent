@@ -65,11 +65,16 @@ On by default since v2.1. Pass `--agentic-tools=false` to register only the bare
 ### Configuring
 
 ```bash
-# Default — wrappers register; subtasks inherit the parent's model
+# Default — wrappers register; subtasks auto-route to the provider's
+# cheap-tier model (gemini-2.5-flash on Gemini/Vertex, claude-haiku-4-5
+# on Anthropic). The cost-efficiency win activates without extra config.
 core-agent
 
-# Recommended: route subtasks to a cheaper model for the cost-efficiency win
+# Pin a specific small model (cross-provider, custom tier, etc.)
 core-agent --agentic-small-model gemini-2.5-flash
+
+# Pin subtasks to the parent's model (disable the cheap-tier default)
+core-agent --model claude-opus-4-7 --agentic-small-model claude-opus-4-7
 
 # Opt out — register only the bare tools
 core-agent --agentic-tools=false

@@ -32,8 +32,14 @@ Frontier models (Gemini Pro, Claude Opus) cost 5-15x more per token than Flash/H
 
 The intended cost model for tool-heavy work: **parent on Pro/Opus for reasoning, subtasks on Flash/Haiku for content digestion.**
 
+This now activates by default. `--agentic-tools` is on by default (since v2.1) and `--agentic-small-model` auto-defaults to the provider's cheap-tier model (`gemini-2.5-flash` on Gemini/Vertex, `claude-haiku-4-5` on Anthropic) since v2.5. So with `--model claude-opus-4-7` (or any Pro/Opus parent), the split is in effect with no extra flags:
+
 ```bash
-core-agent --agentic-tools --agentic-small-model gemini-2.5-flash
+# v2.5+: default behavior — Pro/Opus parent, Flash/Haiku subtasks
+core-agent --model claude-opus-4-7
+
+# Explicit override is still supported (cross-provider, custom small model, etc.)
+core-agent --model claude-opus-4-7 --agentic-small-model gemini-2.5-flash
 ```
 
 Real numbers from a smoke session — single user prompt, `agentic_read_file` call:

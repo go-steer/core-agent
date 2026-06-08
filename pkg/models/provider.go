@@ -48,6 +48,32 @@ type Provider interface {
 	Model(ctx context.Context, modelID string) (model.LLM, error)
 }
 
+// SmallModelDefaulter is an optional Provider extension. A Provider that
+// implements this declares its preferred cheap-tier model — used by
+// core-agent as the default for --agentic-small-model when the operator
+// hasn't pinned one explicitly. Providers without a cheap-tier concept
+// (echo, scripted) simply don't implement this; ResolveSmallModel
+// returns "" for them and callers fall back to inheriting the parent's
+// model.
+type SmallModelDefaulter interface {
+	DefaultSmallModel() string
+}
+
+// ResolveSmallModel picks the model ID that agentic subtasks should
+// run on. Operator override (a non-empty explicit --agentic-small-model
+// value) always wins. Otherwise: if p implements SmallModelDefaulter,
+// return whatever it reports; if not, return "" — agentic wrappers
+// treat empty as "inherit the parent's model."
+func ResolveSmallModel(p Provider, override string) string {
+	if override != "" {
+		return override
+	}
+	if d, ok := p.(SmallModelDefaulter); ok {
+		return d.DefaultSmallModel()
+	}
+	return ""
+}
+
 // Constructor builds a Provider from validated config. Tests register
 // alternates via Register so resolution stays decoupled from the
 // imports of any single backend.

@@ -160,8 +160,11 @@ Beyond `--provider` / `-m` / `-p`, the flags that come up most often:
 --agentic-tools                 register the agentic_* tool wrappers (read_file /
                                 fetch_url / grep / research) — default on; pass
                                 --agentic-tools=false to disable. See Context management.
---agentic-small-model=ID        route agentic_* subtasks to a cheaper model
-                                (e.g. gemini-2.5-flash) for the cost-efficiency win
+--agentic-small-model=ID        route agentic_* subtasks to a specific model.
+                                Default (when unset): provider's cheap tier
+                                (gemini-2.5-flash on Gemini, claude-haiku-4-5
+                                on Anthropic). Override for cross-provider /
+                                custom tier setups.
 ```
 
 Use `--ask=auto` when your `AGENTS.md` instructs the model to ask before some action — the agent gets a clean refusal in headless contexts instead of blocking forever. See [Library API → Prompter]({{< relref "/docs/library/api.md#prompter" >}}).

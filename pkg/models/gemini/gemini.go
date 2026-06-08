@@ -50,6 +50,16 @@ type Provider struct {
 // Name reports the provider identity (e.g. "gemini" or "vertex").
 func (p *Provider) Name() string { return p.name }
 
+// DefaultSmallModelID is the Gemini cheap-tier model used by default
+// for agentic subtasks when the operator hasn't pinned one with
+// --agentic-small-model.
+const DefaultSmallModelID = "gemini-2.5-flash"
+
+// DefaultSmallModel satisfies models.SmallModelDefaulter so core-agent
+// can route subtask digesting to a cheap-tier Gemini model without
+// requiring the operator to set --agentic-small-model.
+func (p *Provider) DefaultSmallModel() string { return DefaultSmallModelID }
+
 // Model constructs a model.LLM for the given model ID. When the
 // Provider has any built-in tools enabled, the returned LLM is
 // wrapped to inject them into Config.Tools on every request.

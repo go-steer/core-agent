@@ -28,12 +28,12 @@ config-image-separation (A).
 [Operator workstation, ADC-configured (gcloud auth application-default login)]
   core-agent-tui --auth=google-oauth --token=ATTACH_TOKEN https://my-svc-...-uc.a.run.app
        │
-       │ TUI mints a Google ID token (audience = service URL) via ADC,
-       │ stamps Authorization: Bearer <ID-token> + X-Attach-Token: <attach-token>
+       │ TUI sources a Google OAuth access token via ADC,
+       │ stamps Authorization: Bearer <access-token> + X-Attach-Token: <attach-token>
        ▼
 [Cloud Run IAM gate]
        │  validates caller has roles/run.invoker on this service
-       │  (Authorization: Bearer <ID-token>) before forwarding to the container
+       │  (Authorization: Bearer <access-token>) before forwarding to the container
        ▼
 [Cloud Run service core-agent (private, --no-allow-unauthenticated)]
        │
@@ -276,9 +276,11 @@ startup.
 ## Attach
 
 The recommended path uses `core-agent-tui --auth=google-oauth`,
-which mints a Google ID token via Application Default Credentials
-and talks to the Cloud Run service URL directly. No proxy hop, no
-per-request token mint, no 429 cascades:
+which sources a Google OAuth access token via Application Default
+Credentials and talks to the Cloud Run service URL directly. No
+proxy hop, no per-request token mint, no 429 cascades. Works with
+end-user ADC (`gcloud auth application-default login`) — the same
+credentials you already have on your workstation:
 
 ```bash
 # One-time on the operator's workstation (skip on GCE/GKE/Cloud Run/
@@ -306,7 +308,7 @@ at startup — same env-var-name-indirection pattern as the daemon's
 
 ### TUI binary version
 
-`--auth=google-oauth` shipped in PR #143 (post-v2.3.1). Until
+`--auth=google-oauth` and `--auth=google-id-token` shipped in PR #143 (post-v2.3.1). Until
 v2.4.0 cuts, build the TUI binary from main:
 
 ```bash

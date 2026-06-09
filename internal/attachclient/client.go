@@ -41,26 +41,48 @@ import (
 // would cut the SSE body mid-response on long model turns; the
 // symptom is "stream ended: <nil>" reconnect-loops in the UI.
 type Client struct {
-	URL   *ParsedURL
-	Token string
+	URL *ParsedURL
+
+	// Token is kept for source-compat with the original constructor
+	// (New stores its token here AND wraps it in a BearerCreds in
+	// Credentials below). New code should prefer Credentials directly.
+	// When both are set, Credentials wins — that's how callers opt
+	// in to the gateway-fronted path while keeping the legacy field
+	// for backward compatibility.
+	Token       string
+	Credentials Credentials
 
 	http       *http.Client
 	streamHTTP *http.Client
 }
 
-// New builds a Client. ParseURL the rawURL first; Token may be empty.
+// New builds a Client wrapped in BearerCreds. ParseURL the rawURL
+// first; Token may be empty (auth disabled — fine for Unix socket).
 // timeout governs short-lived RPC calls. SSE streams ignore it
 // (caller's ctx is the cancel signal). Zero timeout falls back to 30 s
 // for RPCs.
+//
+// Use NewWithCredentials to construct a Client with a non-Bearer auth
+// strategy (Cloud Run IAM, IAP, …).
 func New(parsed *ParsedURL, token string, timeout time.Duration) *Client {
+	c := NewWithCredentials(parsed, BearerCreds{Token: token}, timeout)
+	c.Token = token
+	return c
+}
+
+// NewWithCredentials builds a Client with an explicit Credentials
+// implementation. Used by callers that need a non-Bearer auth path
+// (e.g. cmd/core-agent-tui's --auth=google-id-token mode, which
+// supplies a GoogleIDTokenCreds backed by ADC).
+func NewWithCredentials(parsed *ParsedURL, creds Credentials, timeout time.Duration) *Client {
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
 	return &Client{
-		URL:        parsed,
-		Token:      token,
-		http:       newHTTPClient(parsed, timeout),
-		streamHTTP: newHTTPClient(parsed, 0), // no timeout — SSE is long-lived
+		URL:         parsed,
+		Credentials: creds,
+		http:        newHTTPClient(parsed, timeout),
+		streamHTTP:  newHTTPClient(parsed, 0), // no timeout — SSE is long-lived
 	}
 }
 
@@ -81,11 +103,23 @@ func newHTTPClient(p *ParsedURL, timeout time.Duration) *http.Client {
 	return &http.Client{Timeout: timeout}
 }
 
-// auth applies the bearer token (if any) to req.
-func (c *Client) auth(req *http.Request) {
+// auth stamps the wired Credentials' headers on req. Errors from
+// the underlying credential source (e.g. ADC misconfig, metadata
+// server unreachable) propagate so the caller can surface them
+// instead of sending an unauthenticated request that would 401.
+//
+// Falls back to the legacy Token-based bearer path when no
+// Credentials value was supplied — preserves the zero-value /
+// direct-field-assignment construction patterns that pre-date the
+// Credentials interface.
+func (c *Client) auth(req *http.Request) error {
+	if c.Credentials != nil {
+		return c.Credentials.Apply(req)
+	}
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
+	return nil
 }
 
 // ---- /sessions list ----
@@ -420,7 +454,9 @@ func (c *Client) Stream(ctx context.Context, sessionPath string, since int64) (<
 	if err != nil {
 		return nil, err
 	}
-	c.auth(req)
+	if err := c.auth(req); err != nil {
+		return nil, fmt.Errorf("stream: auth: %w", err)
+	}
 	resp, err := c.streamHTTP.Do(req)
 	if err != nil {
 		return nil, err
@@ -537,7 +573,9 @@ func (c *Client) PromptStream(ctx context.Context, sessionPath string) (<-chan a
 	if err != nil {
 		return nil, err
 	}
-	c.auth(req)
+	if err := c.auth(req); err != nil {
+		return nil, fmt.Errorf("perm stream: auth: %w", err)
+	}
 	resp, err := c.streamHTTP.Do(req)
 	if err != nil {
 		return nil, err
@@ -624,6 +662,8 @@ func (c *Client) do(ctx context.Context, method, suffix string, body any) (*http
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	c.auth(req)
+	if err := c.auth(req); err != nil {
+		return nil, fmt.Errorf("auth: %w", err)
+	}
 	return c.http.Do(req)
 }

@@ -437,24 +437,93 @@ func (c *Client) Stream(ctx context.Context, sessionPath string, since int64) (<
 		defer func() { _ = resp.Body.Close() }()
 		scanner := bufio.NewScanner(resp.Body)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		// SSE wire format groups an event-type line (optional, defaults
+		// to "message") with the data line(s) until a blank-line
+		// separator. We track the in-progress event name and reset on
+		// the boundary so each data line lands with its matching type.
+		var eventType string
 		for scanner.Scan() {
 			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			raw := strings.TrimPrefix(line, "data: ")
-			var frame attach.Frame
-			if err := json.Unmarshal([]byte(raw), &frame); err != nil {
-				continue
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case out <- frame:
+			switch {
+			case strings.HasPrefix(line, "event: "):
+				eventType = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				raw := strings.TrimPrefix(line, "data: ")
+				frame, ok := parseStreamFrame(eventType, raw)
+				if !ok {
+					continue
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case out <- frame:
+				}
+			case line == "":
+				eventType = ""
 			}
 		}
 	}()
 	return out, nil
+}
+
+// parseStreamFrame dispatches a single data block by SSE event type.
+// Legacy frames ("agent" or empty event) unmarshal into the full
+// attach.Frame shape (carries seq + ADK session.Event). Typed events
+// (status-update / usage-update / inbox / turn-complete / turn-error /
+// capabilities) unmarshal into the matching payload struct, which is
+// stashed on attach.Frame.TypedData with Type set so consumers can
+// dispatch downstream. Returns false for parse errors or unknown
+// event types — the consumer (coretuiremote) tolerates either as
+// no-op so unknown SSE event names don't crash the stream.
+func parseStreamFrame(eventType, raw string) (attach.Frame, bool) {
+	switch eventType {
+	case "", attach.EventAgent:
+		var frame attach.Frame
+		if err := json.Unmarshal([]byte(raw), &frame); err != nil {
+			return attach.Frame{}, false
+		}
+		return frame, true
+	case attach.EventCapabilities:
+		var p attach.Capabilities
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			return attach.Frame{}, false
+		}
+		return attach.Frame{Type: eventType, TypedData: &p}, true
+	case attach.EventStatusUpdate:
+		var p attach.StatusUpdate
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			return attach.Frame{}, false
+		}
+		return attach.Frame{Type: eventType, TypedData: &p}, true
+	case attach.EventUsageUpdate:
+		var p attach.UsageUpdate
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			return attach.Frame{}, false
+		}
+		return attach.Frame{Type: eventType, TypedData: &p}, true
+	case attach.EventInbox:
+		var p attach.InboxEvent
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			return attach.Frame{}, false
+		}
+		return attach.Frame{Type: eventType, TypedData: &p}, true
+	case attach.EventTurnComplete:
+		var p attach.TurnComplete
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			return attach.Frame{}, false
+		}
+		return attach.Frame{Type: eventType, TypedData: &p}, true
+	case attach.EventTurnError:
+		var p attach.TurnError
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			return attach.Frame{}, false
+		}
+		return attach.Frame{Type: eventType, TypedData: &p}, true
+	default:
+		// Unknown event type — tolerated per spec §3 (forward-compat
+		// with future event names). Drop on the floor.
+		return attach.Frame{}, false
+	}
 }
 
 // PromptStream subscribes to <base><sessionPath>/perms/stream and

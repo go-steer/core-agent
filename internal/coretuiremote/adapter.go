@@ -37,6 +37,8 @@ import (
 
 	coretui "github.com/go-steer/core-tui/tui"
 
+	"github.com/go-steer/core-agent/pkg/attach"
+
 	"github.com/go-steer/core-agent/internal/attachclient"
 )
 
@@ -185,6 +187,22 @@ func (a *Adapter) Run(ctx context.Context, prompt string) iter.Seq2[coretui.Even
 					a.lastSeq = frame.Seq
 				}
 				a.mu.Unlock()
+
+				// SSE protocol v1.1.0 typed events (status-update,
+				// usage-update, inbox, turn-complete, turn-error,
+				// capabilities) arrive as frames with Type set and
+				// TypedData populated by attachclient. Project them
+				// into coretui.Event's push-mode fields and emit.
+				// Capabilities is forward-compat — ignored for now,
+				// consumed by future RemoteTransport=Auto negotiation.
+				if frame.Type != "" && frame.Type != attach.EventAgent {
+					if ev, ok := translateTypedFrame(frame); ok {
+						if !yield(ev, nil) {
+							return
+						}
+					}
+					continue
+				}
 
 				if frame.Event == nil {
 					continue
@@ -377,6 +395,21 @@ func (a *Adapter) Events(ctx context.Context) iter.Seq2[coretui.Event, error] {
 						a.lastSeq = frame.Seq
 					}
 					a.mu.Unlock()
+					// SSE protocol v1.1.0 typed events (see Run for the
+					// rationale). Observer mode wants the push surface
+					// even more than per-turn Run, since it never closes
+					// — long-lived attached operators benefit from
+					// real-time status / usage / inbox / turn-error
+					// without polling.
+					if frame.Type != "" && frame.Type != attach.EventAgent {
+						if ev, ok := translateTypedFrame(frame); ok {
+							debugf("Events: yielding typed %s", frame.Type)
+							if !yield(ev, nil) {
+								return
+							}
+						}
+						continue
+					}
 					if frame.Event == nil {
 						debugf("Events: frame seq=%d has nil Event (skipped)", frame.Seq)
 						continue

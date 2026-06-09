@@ -210,7 +210,7 @@ func TestNew_WithEventLog_NilIsNoop(t *testing.T) {
 	}
 }
 
-func TestDefaultInstruction_IncludesParallelismMandate(t *testing.T) {
+func TestDefaultInstruction_GuardsLoadBearingSubstrings(t *testing.T) {
 	t.Parallel()
 	// Each substring guards a load-bearing piece of DefaultInstruction.
 	// If a reword removes one, this test fails so the change surfaces
@@ -220,6 +220,8 @@ func TestDefaultInstruction_IncludesParallelismMandate(t *testing.T) {
 		"do not execute them one by one",   // anti-serial instruction
 		"parallel writes to the same file", // edit-collision guard
 		"Efficiency is secondary",          // quality caveat
+		"sketch your plan",                 // pre-action plan nudge
+		"Skip the preamble for trivial",    // don't-narrate-trivial guard
 	} {
 		if !strings.Contains(DefaultInstruction, want) {
 			t.Errorf("DefaultInstruction missing required substring %q", want)

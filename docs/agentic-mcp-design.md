@@ -385,6 +385,135 @@ After a few weeks of real usage:
   for a summary"). Plausibly useful for operators who run many
   related queries in a row; out of scope for v1.
 
+## Addendum: Headroom-inspired extensions (post-v1)
+
+[Headroom](https://github.com/chopratejas/headroom) (Netflix, Apache 2.0)
+ships a local context-compression layer in front of any LLM. Its design
+overlaps ours in goal but differs in primitive: instead of an LLM
+subagent digester, it routes payloads to content-typed compressors
+(AST-aware for code, structural for JSON, a fine-tuned small model
+for prose) and keeps the originals locally so the model can fetch
+them back via a retrieval tool ("CCR"). Reported 60-95% token
+reduction on agentic workloads with accuracy preserved on
+GSM8K/SQuAD/BFCL.
+
+Two ideas from Headroom address known weaknesses in this design.
+Neither is v1 scope; both should land as follow-ons once the v1
+pipeline is dogfooded.
+
+### CCR-style raw retrievability
+
+Open question #4 names a real risk: the digest prompt isn't tight
+enough and load-bearing details get summarized away. Today's
+mitigation is "operator notices, calls the bare tool again" — which
+costs a second MCP round-trip and may not be reproducible (list-style
+endpoints with pagination cursors, time-sensitive queries, expensive
+calls).
+
+Proposal: when a response is wrapped, persist the raw bytes keyed by
+the parent's tool-call ID (already unique, already in the eventlog)
+and expose a new built-in tool:
+
+```
+mcp_retrieve_raw(call_id: string) -> { raw: string, bytes: int }
+```
+
+The synthetic digest map (`{digest, truncated_from_bytes, call_id}`)
+already carries the call ID — the model has everything it needs to
+ask for the original. The raw blob lives in
+`pkg/eventlog` as a new field on the subtask's tool-result row
+(already written for audit; we'd just expose it via a query).
+
+Cost is small and additive: one new tool, one eventlog read path,
+no change to the wrapping pipeline. It directly closes open question
+#4 and removes the "subtask digest is one-way" complaint as a
+blocker for shipping.
+
+Storage policy: the raw is already in the eventlog when `--session-db`
+is on. Retrievability inherits the eventlog's retention; no separate
+GC story needed.
+
+### Structural digester for shaped responses
+
+The non-goals list (line 99-103) defers deterministic structural
+digesters as "niche; useful for specific MCP tools but not a general
+solution." Headroom's existence is evidence to revisit. In practice
+most MCP responses are JSON-shaped (`gke_list_*`, GitHub API, Linear,
+filesystem tools) — exactly the shape where structural pruning
+(strip verbose description fields, collapse arrays past N elements
+with a count, preserve identifier-shaped keys) is both cheaper and
+more faithful than an LLM digest.
+
+Proposal: insert a content router in front of the LLM subagent:
+
+1. **JSON-shaped, recognizable schema** (response is a JSON object or
+   array of objects with consistent keys) → structural prune. Drop
+   long string values past M characters, summarize arrays past N
+   elements as `{first: [...], last: [...], total: K, dropped: K-2N}`,
+   preserve keys matching `*_id`, `name`, `status`, `*url*`, `error`.
+   No LLM call.
+2. **Code-shaped** (recognized by file extension hint or content
+   sniff) → AST-aware compression (Go-only for v2; tree-sitter
+   bindings for multi-language is its own scope decision).
+3. **Prose / unknown** → existing LLM subagent path.
+
+The router is dispatch logic, a few hundred LOC. The JSON pruner is
+likewise small. Both are deterministic — testable without an LLM in
+the loop, no per-call cost, no latency tail. The LLM subagent
+remains for the cases where it's actually load-bearing.
+
+Sequencing: ship v1 LLM-subagent-only first, instrument which MCP
+tools hit it most often, then add the structural path for the
+top-N tool shapes. Telemetry from the v1 rollout (see "Telemetry to
+capture") directly informs which response shapes are worth a
+dedicated pruner.
+
+**Tracking issues:**
+- [#128](https://github.com/go-steer/core-agent/issues/128) — `pkg/digest` library (umbrella).
+- [#129](https://github.com/go-steer/core-agent/issues/129) — CCR retrievability via `retrieve_raw`.
+- [#130](https://github.com/go-steer/core-agent/issues/130) — Structural JSON digester wired into both consumers.
+- [#131](https://github.com/go-steer/core-agent/issues/131) — Docs: Headroom-as-MCP-server integration.
+
+### Build vs. use vs. port (Headroom integration strategy)
+
+Three options for getting Headroom's wins into core-agent:
+
+1. **Use Headroom as-is.** Operators run the Python proxy or wire
+   the MCP server form into `.agents/mcp.json`. Zero code in
+   core-agent, but adds a Python runtime / subprocess to the
+   operator's deployment story. Worth documenting as a supported
+   integration regardless — operators who already run Headroom
+   shouldn't have to choose.
+2. **Full Go port under go-steer.** Reimplement ContentRouter,
+   SmartCrusher, CodeCompressor (multi-language), Kompress-base
+   inference, CacheAligner, CCR, image compression, `headroom
+   learn` in Go. Significant scope; Kompress-base (the fine-tuned
+   prose model) has no good Go inference path. Not recommended.
+3. **Targeted port of specific pieces** as a separate `go-steer`
+   library, consumed by core-agent and reusable by other Go agents.
+   Recommended. Scope:
+   - **In:** content router, structural JSON pruner, CCR-style local
+     store (probably backed by eventlog when present, filesystem
+     otherwise), cache-aligner-style prefix stabilizer.
+   - **Out:** Kompress-base (we keep the LLM subagent path for prose),
+     multi-language AST compression (consider Go-only as a follow-on),
+     image compression, `headroom learn` (separate problem, lives
+     closer to our shared-memory work).
+
+A separate library matters because the CCR store + JSON pruner are
+useful for non-MCP digesting too (grep output, bash output, file
+reads — exactly what the existing `agentic_*` wrappers compress
+today with an LLM). Packaging them as a library lets the same
+primitives back built-in-tool digesting and MCP digesting, and
+exposes them to anyone building Go agents on top of go-steer's
+runtime layer.
+
+Naming and home are TBD — could start as `pkg/digest/` inside
+core-agent and extract once a second consumer exists, or stand up
+the standalone library first if shared-memory or AX integration
+also wants it. Either path is consistent with the project's "land
+in-tree first, extract on second consumer" pattern.
+
 ## References
 
 - #118 — agentic-tools default on (shipped). Sets the posture this
@@ -411,3 +540,7 @@ After a few weeks of real usage:
   actual digesting work.
 - `pkg/eventlog/eventlog.go:201` — `WithSessionTree` query that
   preserves parent + subtask linkage in the audit log.
+- [Headroom](https://github.com/chopratejas/headroom) — Netflix's
+  local context-compression layer for LLM agents (Apache 2.0).
+  Source of the CCR and structural-digester ideas in the addendum
+  above.

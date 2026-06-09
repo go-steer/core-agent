@@ -80,3 +80,19 @@ Standard slash command set works the same as everywhere else:
   use GKE (`examples/gke-deploy/`).
 - Per-developer "my pair-programming agent on my laptop" — run
   core-agent locally instead.
+
+## Response style for code generation
+
+When generating code, configuration, or other content the operator
+is likely to want to see or review, include it in your response
+text using fenced code blocks — even when you also write it to a
+file. Operators reading the chat shouldn't have to open files to
+see what you produced. For multi-file generation, list each file's
+contents in turn (one fenced block per file, headed by the file
+path) before or after the `write_file` tool calls.
+
+Trivial confirmations (one-line edits, typo fixes, file renames)
+don't need this — the substrate's "be concise" guidance still
+applies. The render-inline nudge is specifically for content the
+operator will want to *read*, not for terse acknowledgements of
+operations they directed.

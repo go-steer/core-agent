@@ -83,6 +83,55 @@ Pass `--no-compact` for short headless one-shots where compaction would never fi
 
 ---
 
+## Cost ceiling (kill switch — since v2.5)
+
+Compaction and watchdog signals catch *behavioral* runaway (context fill, repeated tool calls). They don't bound the *outcome* — a model can produce many tool calls in a single turn before any post-turn check fires. The cost ceiling is the dollar-denominated guard for that case.
+
+Two bounds, both optional, both off by default:
+
+| Bound | CLI flag | Config field | What it caps |
+|---|---|---|---|
+| Per-turn | `--max-turn-cost-usd=<N>` | `agent.max_turn_cost_usd` | Cumulative spend of a single conversation turn (every model call + subtask between one operator inject and agent-done state) |
+| Per-session | `--max-session-cost-usd=<N>` | `agent.max_session_cost_usd` | Cumulative spend across all turns since the agent started |
+
+### What happens when a ceiling trips
+
+1. The post-turn hook computes session cost (from the usage tracker) and per-turn delta (against a snapshot taken at turn start).
+2. If either configured bound is met or exceeded, the agent emits a structured `turn-error` event with `kind=cost_ceiling`, message describing the spend + bound, and `retryable=false`.
+3. A flag is set; the next `Run` call returns the same error immediately without invoking the model.
+4. The host (TUI / programmatic consumer) must call `Agent.ResetCostCeiling()` to clear the flag and resume — typically wired to a slash command like `/resume-after-cost-ceiling`.
+
+### Why "stop, get attention" instead of throttle
+
+A cost-ceiling trip almost always means *something is wrong* — a tool-call loop ([#144](https://github.com/go-steer/core-agent/issues/144)), a model going off the rails, an unexpectedly expensive prompt. Auto-resume would just continue burning budget. The explicit operator reset forces a human look-in.
+
+### Defaults and posture
+
+Both bounds are **off by default** to avoid surprising existing operators with new refusals. Two recommended starting postures:
+
+```bash
+# Interactive desktop / dev — bound a single turn so a runaway can't
+# burn more than a coffee's worth before refusing
+core-agent --max-turn-cost-usd=0.50
+
+# Long-running autonomous deploy — bound the whole session so a slow
+# burn over hours doesn't quietly exceed the deploy's budget
+core-agent --no-repl --attach-listen=:7777 \
+  --max-turn-cost-usd=1.00 --max-session-cost-usd=20.00
+```
+
+Tune from your own usage — `/stats` shows current session cost; pick bounds at ~5x your normal turn / session spend so genuine work doesn't trip.
+
+### Composition with the other mechanisms
+
+- **Compaction** (above) caps context not money.
+- **Cost ceiling** caps money regardless of why.
+- **Watchdog** ([#123](https://github.com/go-steer/core-agent/issues/123) — pending) catches behavioral patterns (repeated identical tool calls, no-new-files-touched).
+
+All three are complementary; all three are off-by-default until configured.
+
+---
+
 ## Agentic tool wrappers (Mechanism B)
 
 **The proactive bloat prevention.** Compaction and checkpoints are *reactive* — they clean up after raw tool output has already landed in the parent's context. Agentic wrappers are *proactive* — they route the underlying tool call through a single-purpose subtask on a (typically cheaper) model so only the digest reaches the parent. The raw 5,000-line read never enters the parent's context.

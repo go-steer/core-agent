@@ -125,6 +125,8 @@ func main() {
 	noPricingRefresh := flag.Bool("no-pricing-refresh", false, "skip the daily pricing-catalog refresh from LiteLLM at startup. Use for air-gapped pods, CI runs, or any environment without outbound network. Overrides cfg.pricing.refresh.")
 	noCompact := flag.Bool("no-compact", false, "disable automatic context-window compaction. /compact slash still works for manual summarization, but the post-turn threshold trigger is off. Use when running headless against a model whose window is huge enough that compaction would never fire anyway, or when debugging an issue where you don't want history rewrites in play.")
 	noCheckpoint := flag.Bool("no-checkpoint", false, "disable task-boundary checkpoints. /done slash + the model-facing mark_task_done tool are both removed. Use when running headless where the model shouldn't self-signal task completion, or when debugging an issue where you don't want auto-slicing in play.")
+	maxTurnCostUSD := flag.Float64("max-turn-cost-usd", 0, "per-turn spend ceiling in USD. When a single conversation turn's cumulative cost (across all model calls + subtask costs) meets or exceeds this value, the agent emits a structured turn-error (kind=cost_ceiling) and refuses new turns until the operator runs /resume-after-cost-ceiling. 0 = disabled (default). Defense against runaway tool-loops within one turn (e.g. issue #144). Pairs with --max-session-cost-usd; either or both can be set. Overrides config.agent.max_turn_cost_usd when set.")
+	maxSessionCostUSD := flag.Float64("max-session-cost-usd", 0, "session-level spend ceiling in USD. Cumulative across every turn including subtasks; same trip + refuse behavior as --max-turn-cost-usd. 0 = disabled (default). Useful for long-running autonomous deploys where per-turn cost is reasonable but the session total adds up. Overrides config.agent.max_session_cost_usd when set.")
 	agenticTools := flag.Bool("agentic-tools", true, "register the agentic tool wrappers (agentic_read_file, agentic_fetch_url, agentic_grep, agentic_research) that route through a subtask so only the digest enters the parent's context (docs/context-management-design.md Mechanism B). On by default since v2.1; pass --agentic-tools=false to register only the bare tools.")
 	agenticSmallModel := flag.String("agentic-small-model", "", "small/cheap model ID the agentic_* wrappers should route subtasks to (e.g. gemini-2.5-flash, claude-haiku-4-5). When empty, the provider's cheap-tier default is used (gemini-2.5-flash for Gemini/Vertex, claude-haiku-4-5 for Anthropic); providers without a cheap tier (echo, scripted) fall through to inheriting the parent's model. Requires --agentic-tools.")
 
@@ -141,7 +143,7 @@ func main() {
 	agentCardDocsURL := flag.String("agent-card-docs-url", "", "override documentationUrl in /.well-known/agent-card.json")
 	flag.Parse()
 
-	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *agenticTools, *agenticSmallModel,
+	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *maxTurnCostUSD, *maxSessionCostUSD, *agenticTools, *agenticSmallModel,
 		attachOpts{
 			Listen:           *attachListen,
 			UnixSocket:       *attachUnixSocket,
@@ -309,7 +311,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	return opts
 }
 
-func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint, agenticTools bool, agenticSmallModel string, attachCfg attachOpts, cardCfg agentCardOpts) int {
+func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, maxTurnCostUSD, maxSessionCostUSD float64, agenticTools bool, agenticSmallModel string, attachCfg attachOpts, cardCfg agentCardOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -765,6 +767,26 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 	// /done slash; the model can self-signal task completion at
 	// natural boundaries, and the next Run drains the pending
 	// checkpoint by writing a richer handover record.
+	// Cost-ceiling kill switch (#145). CLI flags > config fields >
+	// config default (unset → disabled). Both bounds are independent;
+	// the agent enforces whichever is configured.
+	if maxTurnCostUSD > 0 {
+		cfg.Agent.MaxTurnCostUSD = &maxTurnCostUSD
+	}
+	if maxSessionCostUSD > 0 {
+		cfg.Agent.MaxSessionCostUSD = &maxSessionCostUSD
+	}
+	ceiling := agent.CostCeiling{}
+	if cfg.Agent.MaxTurnCostUSD != nil {
+		ceiling.MaxTurnUSD = *cfg.Agent.MaxTurnCostUSD
+	}
+	if cfg.Agent.MaxSessionCostUSD != nil {
+		ceiling.MaxSessionUSD = *cfg.Agent.MaxSessionCostUSD
+	}
+	if ceiling.MaxTurnUSD > 0 || ceiling.MaxSessionUSD > 0 {
+		opts = append(opts, agent.WithCostCeiling(ceiling))
+		send(fmt.Sprintf("cost ceiling: per-turn=$%.4f per-session=$%.4f (refuses new turns when exceeded; clear via Agent.ResetCostCeiling)", ceiling.MaxTurnUSD, ceiling.MaxSessionUSD))
+	}
 	if !noCheckpoint {
 		opts = append(opts, agent.WithCheckpointer(agent.NewDefaultCheckpointer()))
 	}

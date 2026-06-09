@@ -156,7 +156,13 @@ const (
 	TurnErrorModelNotFound = "model_not_found"
 	TurnErrorRateLimited   = "rate_limited"
 	TurnErrorTransientNet  = "transient_network"
-	TurnErrorUnknown       = "unknown"
+	// TurnErrorCostCeiling fires when a configured per-turn or
+	// per-session cost ceiling is exceeded (#145). Agent refuses new
+	// turns until the operator calls ResetCostCeiling on the agent
+	// (typically via a slash command). Retryable=false on this kind
+	// — the host should surface the message + halt automated retry.
+	TurnErrorCostCeiling = "cost_ceiling"
+	TurnErrorUnknown     = "unknown"
 )
 
 // TurnError is emitted on a pipeline failure that should reach the

@@ -186,6 +186,17 @@ type Agent struct {
 	subtaskInputTokens  int
 	subtaskOutputTokens int
 	subtaskCostUSD      float64
+
+	// Cost-ceiling enforcement (#145). costCeiling is the configured
+	// caps (zero = disabled). turnStartCost snapshots the session's
+	// cumulative cost at each turn's start so the post-turn hook can
+	// compute the delta. costCeilingExceeded blocks new Run calls
+	// until the operator calls ResetCostCeiling. See cost_ceiling.go
+	// for the full enforcement contract.
+	costCeiling         CostCeiling
+	turnStartCost       float64
+	costCeilingExceeded bool
+	costCeilingReason   string
 }
 
 // attachRegistrar is the subset of *attach.SessionRegistry the agent
@@ -221,6 +232,7 @@ type options struct {
 	tracker         *usage.Tracker
 	compactor       Compactor
 	checkpointer    Checkpointer
+	costCeiling     CostCeiling
 	postConstruct   func(*Agent)
 
 	// Attach-extras snapshot funcs — set via WithAttachMemoryProvider /
@@ -600,6 +612,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		attachReplanFn:     o.attachReplanFn,
 		attachPromptBroker: o.attachPromptBroker,
 		checkpointer:       o.checkpointer,
+		costCeiling:        o.costCeiling,
 	}
 	if a.bgMgr != nil {
 		a.bgMgr.attachParent(a)
@@ -806,6 +819,19 @@ func (a *Agent) ModelName() string {
 // first (internal state changes); inbox goes second (external
 // input, closer to the prompt logically); then the original prompt.
 func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event, error] {
+	// Cost-ceiling pre-flight (#145). If a prior turn tripped the
+	// configured per-turn / per-session spend cap, refuse this turn
+	// at the very top — before any tracker writes, model calls, or
+	// pending-cleanup work. Operator must call ResetCostCeiling to
+	// resume. Returning the error via the iterator (rather than
+	// panicking or silently no-op'ing) lets the host surface a clear
+	// failure mode that matches the structured turn-error event we
+	// emitted when the ceiling first tripped.
+	if err := a.preflightCostCeiling(); err != nil {
+		return func(yield func(*session.Event, error) bool) {
+			yield(nil, err)
+		}
+	}
 	// Pre-turn: drain any pending cleanups from the prior turn's
 	// post-hook so the runner builds its request against a slimmed
 	// history. Checkpoint runs before compaction — a checkpoint
@@ -816,6 +842,10 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// prevent retry loops.
 	a.runPendingCheckpoint(ctx)
 	a.runPendingCompaction(ctx)
+	// Snapshot the session's cumulative cost so the post-turn hook
+	// can compute the per-turn delta. No-op when no ceiling is
+	// configured.
+	a.snapshotTurnStartCost()
 	if a.bgMgr != nil {
 		prompt = a.bgMgr.PrependPendingAlerts(prompt)
 	}
@@ -883,6 +913,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		// that the next Run call drains before its own work.
 		a.maybeMarkCheckpointPending()
 		a.maybeMarkCompactionPending()
+		a.maybeEnforceCostCeiling()
 
 		// Terminal event per spec: exactly one turn-complete OR
 		// turn-error fires per turn. usage-update fires separately

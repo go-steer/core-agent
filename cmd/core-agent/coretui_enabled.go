@@ -119,10 +119,24 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 		ctxBuild: ctx,
 	}
 
+	// Notifier — host-side channel for framework-initiated chat rows
+	// (MCP transport state changes, shutdown notices, etc — see
+	// docs/site/content/docs/reference/notifications.md). Opt-in in
+	// core-tui v0.8+: when Options.Notifier is non-nil, the TUI
+	// drains the channel and renders each Notify(text) call as a
+	// distinct RoleNotice row (◇ glyph, muted color). Constructed
+	// here so launchTUIv2's local hook sites (MCP startup status
+	// below; future producers) can push notices without needing a
+	// package-level handle. Safe to call from any goroutine; no-op
+	// after the TUI tears down (the Notifier silently drops sends
+	// once its channel is closed).
+	notifier := coretui.NewNotifier()
+
 	opts := coretui.Options{
 		Agent:        wrapped,
 		Prompter:     prompter,
 		Elicitor:     elicitor,
+		Notifier:     notifier,
 		UsageTracker: &coreUsageBridge{inner: deps.Tracker},
 		AgentsDir:    deps.AgentsDir,
 		Memory:       memoryToCoreTui(deps.Memory),
@@ -207,10 +221,58 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 	wrapped.refreshPricing = makeRefreshPricingCallback(ctx, deps)
 	wrapped.setPricing = makeSetPricingCallback(deps)
 
+	// Surface MCP startup failures in chat scroll. Without this,
+	// failed MCP servers were only logged to stderr — invisible
+	// once the TUI takes over the terminal. The notice is queued
+	// via the buffered Notifier channel and drains as soon as the
+	// listener spins up inside coretui.Run.
+	if msg := mcpStartupFailureNotice(deps.MCPServers); msg != "" {
+		notifier.Notify(msg)
+	}
+
 	if err := coretui.Run(ctx, opts); err != nil {
 		return true, 1, err
 	}
 	return true, 0, nil
+}
+
+// mcpStartupFailureNotice returns the chat-row notice text for any
+// MCP servers that failed to start. Returns "" when servers is
+// empty or all are healthy (caller skips Notify). Each server's
+// error message is included so operators can act without leaving
+// the TUI to scan stderr. Pure / side-effect-free for unit testing;
+// callers do the Notify themselves.
+func mcpStartupFailureNotice(servers []*mcp.Server) string {
+	if len(servers) == 0 {
+		return ""
+	}
+	var failed []string
+	for _, s := range servers {
+		if s == nil || s.Status != mcp.StatusError {
+			continue
+		}
+		msg := s.Name
+		if s.Err != nil {
+			msg += ": " + s.Err.Error()
+		}
+		failed = append(failed, msg)
+	}
+	if len(failed) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	if len(failed) == 1 {
+		b.WriteString("MCP server failed to start — ")
+		b.WriteString(failed[0])
+		return b.String()
+	}
+	fmt.Fprintf(&b, "%d MCP servers failed to start:\n", len(failed))
+	for _, f := range failed {
+		b.WriteString("  • ")
+		b.WriteString(f)
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // Reload satisfies coretui.Reloader. Delegates to the closure

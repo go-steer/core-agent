@@ -83,6 +83,48 @@ Pass `--no-compact` for short headless one-shots where compaction would never fi
 
 ---
 
+## Task class (since v2.5)
+
+`--task=<class>` is a single flag that picks a coherent bundle of defaults tuned for the kind of work the operator is sitting down to do. Operator-declared (not LLM-inferred) — the operator knows whether they're debugging or chatting; asking them to type one flag is cheaper and more predictable than any classifier we could build.
+
+Five classes ship today:
+
+| Class | Default model tier | Compaction threshold | Ask mode | When to use |
+|---|---|---|---|---|
+| `debug` | frontier (e.g. `claude-opus-4-7`, `gemini-3.5-pro`) | `0.65` | `auto` | Bug hunts, root-cause investigations, multi-file traces |
+| `implement` | frontier | `0.70` | `auto` | Feature work, multi-file refactors |
+| `chat` | mid (e.g. `claude-sonnet-4-6`, `gemini-2.5-pro`) | `0.85` | `auto` | Q&A, pairing, lightweight design discussion |
+| `research` | mid | `0.65` | `allow` | Read-heavy codebase exploration; `allow` keeps the ask-mode noise out of the way |
+| `review` | frontier | `0.75` | `auto` | PR / diff review |
+
+Resolution per-provider:
+
+| Tier | Gemini / Vertex | Anthropic |
+|---|---|---|
+| frontier | `gemini-3.5-pro` | `claude-opus-4-7` |
+| mid | `gemini-2.5-pro` | `claude-sonnet-4-6` |
+| small | `gemini-2.5-flash` | `claude-haiku-4-5` |
+
+Explicit flags always win — pass `--task=debug --model=gemini-3.5-pro` to use debug-mode defaults but pin a specific model.
+
+Config-file equivalent:
+
+```json
+{ "session": { "task_class": "debug" } }
+```
+
+Useful for project-local defaults (an infra repo where debugging is the typical workload sets `task_class: debug` once and operators don't have to remember).
+
+### What `--task` does NOT change
+
+- **Agentic-tools** — already on by default since v2.1; every task class wants it on.
+- **`--agentic-small-model`** — per-provider default already picked by [#122](https://github.com/go-steer/core-agent/issues/122).
+- **Per-tier compaction thresholds** in `compaction.threshold_by_tier` config — those still win for their specific tier even when a task class sets the fallback `Threshold`. Operators who've carefully tuned per-tier thresholds keep them.
+
+Future: an out-of-band watchdog ([#123](https://github.com/go-steer/core-agent/issues/123) PR 2) that catches sessions going off-rails regardless of which task class was picked, with an `/escalate` slash for mid-session model swaps. Different signal (behavioral pattern detection) from this PR's task-class defaults (operator-declared posture).
+
+---
+
 ## Cost ceiling (kill switch — since v2.5)
 
 Compaction and watchdog signals catch *behavioral* runaway (context fill, repeated tool calls). They don't bound the *outcome* — a model can produce many tool calls in a single turn before any post-turn check fires. The cost ceiling is the dollar-denominated guard for that case.

@@ -51,7 +51,7 @@ URL forms (same grammar as `core-agent attach`):
 | Flag | Purpose |
 |---|---|
 | `--token=<ENVVAR>` | Name of the env var holding the bearer token (same indirection as `--attach-token` on the listener side). The secret never appears on the command line. |
-| `--auth=<strategy>` | Auth strategy for outbound attach requests. `bearer` (default) sends the attach token in `Authorization: Bearer` — the direct-attach path. `google-oauth` (recommended for Cloud Run IAM) sources a Google OAuth2 access token from Application Default Credentials and sends it in `Authorization`; the attach token rides on `X-Attach-Token`. Works with end-user ADC (`gcloud auth application-default login`) AND service-account ADC. `google-id-token` is the audience-bound variant required by IAP — does NOT work with end-user ADC. See "Behind an identity gateway" below. |
+| `--auth=<strategy>` | Auth strategy for outbound attach requests. `bearer` (default) sends the attach token in `Authorization: Bearer` — the direct-attach path. `google-id-token` (recommended for Cloud Run IAM / IAP) mints a Google ID token via Application Default Credentials, audience-bound to the connection URL, and stamps both `Authorization: Bearer <ID-token>` + `X-Attach-Token`. `google-oauth` is an alternative that uses OAuth access tokens via `google.FindDefaultCredentials` (matches MCP's pattern for Google APIs) — Cloud Run IAM rejects this in many deployments, prefer `google-id-token` unless you specifically need OAuth scope behavior. See "Behind an identity gateway" below. |
 | `--theme=auto\|dark\|light` | Force a glamour theme for markdown rendering. Empty = auto (terminal background detection via OSC 11). |
 | `--alias=<label>` | Display label for the agent identity in the status bar. Defaults to the session ID. |
 | `--version` | Print build identity (`core-agent-tui v2.2.0 (commit a1b2c3d4, built 2026-06-01T…)`) and exit. |
@@ -74,25 +74,25 @@ The fix is two-sided:
 | `Authorization: Bearer <correct>` (no `X-Attach-Token`) | 200 — the direct-attach path, unchanged |
 | Neither, or both wrong | 401 |
 
-#### Client-side: `--auth=google-oauth` (recommended for Cloud Run IAM)
+#### Client-side: `--auth=google-id-token` (recommended for Cloud Run IAM / IAP)
 
-The TUI sources a Google OAuth2 access token from Application Default Credentials and stamps both headers automatically. No manual `gcloud auth print-identity-token` invocation; no `gcloud run services proxy` hop. Mirrors MCP's `google_oauth` auth pattern (`pkg/mcp/lifecycle.go`) so the same ADC story works across attach + MCP server auth.
+The TUI mints a Google ID token via `idtoken.NewTokenSource` (Application Default Credentials), audience-bound to the connection URL, and stamps both headers automatically. No manual `gcloud auth print-identity-token` invocation; no `gcloud run services proxy` hop.
 
 ```bash
 # One-time setup on the operator's machine (skip on GCE/GKE/Cloud Run/Cloud Shell —
 # ADC picks up the runtime's service account automatically):
 gcloud auth application-default login
 
-# Attach.
-core-agent-tui --auth=google-oauth \
+# Attach. Audience derives from the connection URL automatically.
+core-agent-tui --auth=google-id-token \
   --token=ATTACH_TOKEN \
   https://my-svc-abc123-uc.a.run.app
 ```
 
 Behavior:
 
-- The TUI calls `google.FindDefaultCredentials(ctx, "https://www.googleapis.com/auth/cloud-platform")` — accepts every ADC shape (end-user creds, service-account JSON keys, metadata server, impersonation, Workload Identity).
-- Per request: `Authorization: Bearer <access-token>` (gateway validates against the service's IAM bindings — operator must have `roles/run.invoker`) + `X-Attach-Token: <attach-token>` (core-agent validates against `--attach-token`).
+- The TUI calls `idtoken.NewTokenSource(ctx, serviceURL)` — token source caches the ID token until expiry (~1 hour).
+- Per request: `Authorization: Bearer <ID-token>` (gateway validates against the service's IAM bindings — operator must have `roles/run.invoker`) + `X-Attach-Token: <attach-token>` (core-agent validates against `--attach-token`).
 - Cloud Run forwards the request to the container with the operator's identity attached as `X-Goog-Authenticated-User-Email` / `X-Goog-Authenticated-User-Id` headers. Core-agent doesn't consume these today; tracked separately under [#142](https://github.com/go-steer/core-agent/issues/142).
 
 **Common failure modes:**
@@ -100,36 +100,15 @@ Behavior:
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Application Default Credentials unavailable` at startup | ADC isn't configured | `gcloud auth application-default login` |
-| Gateway 401 from Cloud Run | Operator lacks `roles/run.invoker` on the service | `gcloud run services add-iam-policy-binding <svc> --member="user:$(gcloud config get-value account)" --role=roles/run.invoker` |
+| `unsupported credentials type: "authorized_user"` at startup | `idtoken.NewTokenSource` requires service-account-shaped ADC; end-user ADC isn't accepted. Most common on local workstations after a plain `gcloud auth application-default login`. | Re-login ADC with service-account impersonation: `gcloud auth application-default login --impersonate-service-account=SA_EMAIL` (operator needs `roles/iam.serviceAccountTokenCreator` on SA_EMAIL). Alternatively, set `GOOGLE_APPLICATION_CREDENTIALS=/path/to/sa-key.json`. |
+| Gateway 401 from Cloud Run | Operator (or impersonated SA) lacks `roles/run.invoker` on the service | `gcloud run services add-iam-policy-binding <svc> --member="user:$(gcloud config get-value account)" --role=roles/run.invoker` (or the same for the impersonated SA) |
 | Core-agent 401 after gateway passes | Wrong `ATTACH_TOKEN` or daemon running without `--attach-token` | Verify env var resolves to the right value; if daemon is in Posture B, omit `--token=` entirely (see below) |
 
-#### Client-side: `--auth=google-id-token` (audience-bound; required by IAP)
+#### Client-side: `--auth=google-oauth` (alternative; not recommended for Cloud Run IAM)
 
-The audience-bound variant. Mints a Google ID token via `idtoken.NewTokenSource` audience-scoped to the connection URL. Use when the gateway specifically requires ID tokens (IAP does; Cloud Run IAM accepts either format).
+Uses `google.FindDefaultCredentials` to source a Google OAuth2 access token, stamps it on `Authorization`. Mirrors MCP's `google_oauth` pattern (`pkg/mcp/lifecycle.go`), which is the right shape for Google APIs that take OAuth access tokens (Vertex, GKE, etc.).
 
-```bash
-core-agent-tui --auth=google-id-token \
-  --token=ATTACH_TOKEN \
-  https://my-svc-abc123-uc.a.run.app
-```
-
-**Important constraint — does NOT work with end-user ADC.** `idtoken.NewTokenSource` only accepts service-account-shaped credentials (SA JSON key via `GOOGLE_APPLICATION_CREDENTIALS`, metadata server, Workload Identity, or service-account impersonation). The default `gcloud auth application-default login` creates end-user (`authorized_user`) credentials that idtoken rejects with `unsupported credentials type: "authorized_user"`. Workarounds:
-
-```bash
-# Option 1: switch to --auth=google-oauth (recommended for Cloud Run IAM)
-
-# Option 2: re-login ADC with service-account impersonation
-gcloud iam service-accounts add-iam-policy-binding SA_EMAIL \
-  --member="user:$(gcloud config get-value account)" \
-  --role=roles/iam.serviceAccountTokenCreator
-
-gcloud auth application-default login \
-  --impersonate-service-account=SA_EMAIL
-
-# Option 3: GOOGLE_APPLICATION_CREDENTIALS=/path/to/sa-key.json
-```
-
-The TUI detects the `authorized_user` error specifically and surfaces a clear message with these options inline, so operators don't have to grep docs to find them.
+**Cloud Run IAM rejects OAuth access tokens in many deployments** (response: `error_description="The access token could not be verified"`). Use `--auth=google-id-token` for Cloud Run IAM instead. This strategy stays available for any future gateway that specifically accepts OAuth access tokens with a `cloud-platform` scope.
 
 **Two postures the daemon can run in:**
 

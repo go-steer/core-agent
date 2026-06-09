@@ -258,6 +258,23 @@ type PermissionsConfig struct {
 type AgentConfig struct {
 	MaxSteps int `json:"max_steps,omitempty"`
 
+	// MaxTurnCostUSD caps a single conversation turn's cumulative
+	// spend. When the post-turn hook detects spend ≥ this value, the
+	// agent emits a structured turn-error (kind=cost_ceiling) and
+	// refuses new turns until the operator clears the flag via
+	// Agent.ResetCostCeiling. Pointer so unset is distinguishable
+	// from the deliberate 0 (which would mean "no budget — refuse
+	// every turn", which we treat as "disabled"). 0 or negative ==
+	// disabled. Defense against the read-file-loop class of bug
+	// (#144) within a single turn.
+	MaxTurnCostUSD *float64 `json:"max_turn_cost_usd,omitempty"`
+
+	// MaxSessionCostUSD caps the session's cumulative spend across
+	// all turns (parent + subtask). Tripped → same behavior as
+	// MaxTurnCostUSD. Useful for long-running autonomous deploys
+	// where individual turns are reasonable but the session adds up.
+	MaxSessionCostUSD *float64 `json:"max_session_cost_usd,omitempty"`
+
 	// DisplayName overrides the brand line at the top of the TUI. By
 	// default the TUI shows the AppName (e.g. "core-agent"); set this
 	// to give the agent a human-friendly identity ("Triage Bot",
@@ -512,6 +529,16 @@ func (c *Config) Validate() error {
 	for tier, v := range c.Compaction.ThresholdByTier {
 		if v <= 0 || v >= 1 {
 			return fmt.Errorf("config: compaction.threshold_by_tier[%q]=%v must be in (0, 1) exclusive", tier, v)
+		}
+	}
+	if c.Agent.MaxTurnCostUSD != nil {
+		if v := *c.Agent.MaxTurnCostUSD; v < 0 {
+			return fmt.Errorf("config: agent.max_turn_cost_usd=%v must be >= 0 (0 disables, positive enforces)", v)
+		}
+	}
+	if c.Agent.MaxSessionCostUSD != nil {
+		if v := *c.Agent.MaxSessionCostUSD; v < 0 {
+			return fmt.Errorf("config: agent.max_session_cost_usd=%v must be >= 0 (0 disables, positive enforces)", v)
 		}
 	}
 	switch c.UI.Theme {

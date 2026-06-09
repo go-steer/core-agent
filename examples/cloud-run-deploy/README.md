@@ -26,14 +26,14 @@ config-image-separation (A).
 
 ```
 [Operator workstation, ADC-configured (gcloud auth application-default login)]
-  core-agent-tui --auth=google-oauth --token=ATTACH_TOKEN https://my-svc-...-uc.a.run.app
+  core-agent-tui --auth=google-id-token --token=ATTACH_TOKEN https://my-svc-...-uc.a.run.app
        │
-       │ TUI sources a Google OAuth access token via ADC,
-       │ stamps Authorization: Bearer <access-token> + X-Attach-Token: <attach-token>
+       │ TUI mints a Google ID token via ADC (audience = service URL),
+       │ stamps Authorization: Bearer <ID-token> + X-Attach-Token: <attach-token>
        ▼
 [Cloud Run IAM gate]
        │  validates caller has roles/run.invoker on this service
-       │  (Authorization: Bearer <access-token>) before forwarding to the container
+       │  (Authorization: Bearer <ID-token>) before forwarding to the container
        ▼
 [Cloud Run service core-agent (private, --no-allow-unauthenticated)]
        │
@@ -275,12 +275,14 @@ startup.
 
 ## Attach
 
-The recommended path uses `core-agent-tui --auth=google-oauth`,
-which sources a Google OAuth access token via Application Default
-Credentials and talks to the Cloud Run service URL directly. No
-proxy hop, no per-request token mint, no 429 cascades. Works with
-end-user ADC (`gcloud auth application-default login`) — the same
-credentials you already have on your workstation:
+The recommended path uses `core-agent-tui --auth=google-id-token`,
+which mints a Google ID token via Application Default Credentials
+(audience = service URL) and talks to the Cloud Run service URL
+directly. No proxy hop, no per-request token mint, no 429 cascades.
+For end-user ADC, `gcloud auth application-default login` must be
+followed up with `--impersonate-service-account=...` (see the
+failure-modes table below) — `idtoken.NewTokenSource` only accepts
+service-account-shaped credentials.
 
 ```bash
 # One-time on the operator's workstation (skip on GCE/GKE/Cloud Run/
@@ -294,7 +296,7 @@ export ATTACH_TOKEN="$(gcloud secrets versions access latest \
 # Attach. Audience derives from the URL automatically.
 SERVICE_URL="$(gcloud run services describe core-agent \
   --region=$REGION --project=$PROJECT_ID --format='value(status.url)')"
-core-agent-tui --auth=google-oauth --token=ATTACH_TOKEN "$SERVICE_URL"
+core-agent-tui --auth=google-id-token --token=ATTACH_TOKEN "$SERVICE_URL"
 ```
 
 **Flag-first ordering matters** — Go's `flag` package stops parsing
@@ -308,7 +310,7 @@ at startup — same env-var-name-indirection pattern as the daemon's
 
 ### TUI binary version
 
-`--auth=google-oauth` and `--auth=google-id-token` shipped in PR #143 (post-v2.3.1). Until
+`--auth=google-id-token` and `--auth=google-id-token` shipped in PR #143 (post-v2.3.1). Until
 v2.4.0 cuts, build the TUI binary from main:
 
 ```bash
@@ -323,14 +325,14 @@ Two daemon postures supported, pick what fits your risk tolerance:
 
 | Posture | Daemon args | Client invocation | When to use |
 |---|---|---|---|
-| **A — IAM + ATTACH_TOKEN** (this recipe's default) | `--attach-token=ATTACH_TOKEN` | `--auth=google-oauth --token=ATTACH_TOKEN <url>` | Default. Defense in depth against IAM misconfig (accidental `allAuthenticatedUsers` grant, leaked invoker SA, future org-policy changes). |
-| **B — IAM only** | drop `--attach-token=ATTACH_TOKEN` from the Cloud Run service config | `--auth=google-oauth <url>` (no `--token=`) | Simpler — one fewer managed secret. Sensible when IAM bindings are tightly scoped to a small group of named principals. |
+| **A — IAM + ATTACH_TOKEN** (this recipe's default) | `--attach-token=ATTACH_TOKEN` | `--auth=google-id-token --token=ATTACH_TOKEN <url>` | Default. Defense in depth against IAM misconfig (accidental `allAuthenticatedUsers` grant, leaked invoker SA, future org-policy changes). |
+| **B — IAM only** | drop `--attach-token=ATTACH_TOKEN` from the Cloud Run service config | `--auth=google-id-token <url>` (no `--token=`) | Simpler — one fewer managed secret. Sensible when IAM bindings are tightly scoped to a small group of named principals. |
 
 ### Operator attach paths
 
 | Path | Setup | Best for |
 |---|---|---|
-| **`core-agent-tui --auth=google-oauth`** (recommended) | ADC configured + TUI binary including PR #143 | Production-shaped operator workflow; no proxy process to manage; SSE stays stable |
+| **`core-agent-tui --auth=google-id-token`** (recommended) | ADC configured + TUI binary including PR #143 | Production-shaped operator workflow; no proxy process to manage; SSE stays stable |
 | **`gcloud run services proxy`** (legacy / convenient) | Nothing — `gcloud` SDK only. Then `core-agent-tui --token=ATTACH_TOKEN http://localhost:8080` | One-shot smoke tests, environments without a recent TUI binary. Adds 50–200ms per request and a token-mint quota; can drop SSE under chatty streams |
 | **Direct + `print-identity-token`** | Caller adds `Authorization: Bearer $(gcloud auth print-identity-token --audiences=$SERVICE_URL)` to every request | Scripting / cron; integration tests outside the TUI |
 | **Cloud Workstations** | Provision one workstation; attach from its terminal | If you already use Cloud Workstations for everything else |

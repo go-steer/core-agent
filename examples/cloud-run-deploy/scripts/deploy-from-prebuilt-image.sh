@@ -45,7 +45,7 @@ SERVICE_NAME="${SERVICE_NAME:-core-agent}"
 #   - agent-card endpoint at /.well-known/agent-card.json (cef0d1b)
 #   - X-Attach-Token side-channel header for gateway-fronted auth
 #     (#141) — required so the operator's TUI can use
-#     --auth=google-oauth without fighting Cloud Run for the
+#     --auth=google-id-token without fighting Cloud Run for the
 #     Authorization header.
 # Sweep back to a pinned semver (e.g. 2.4.0) for production
 # deploys once a release cuts including the above. IMAGE_REF
@@ -214,7 +214,7 @@ To attach (operator running locally):
     --member="user:\$(gcloud config get-value account)" \\
     --role=roles/run.invoker
 
-  # Recommended: --auth=google-oauth mints the ID token in the
+  # Recommended: --auth=google-id-token mints the ID token in the
   # TUI itself (no proxy hop, no per-request token-mint quota).
   # Requires ADC: gcloud auth application-default login
   # Requires TUI binary >= v2.4.0 (or built from main today):
@@ -223,7 +223,7 @@ To attach (operator running locally):
     --secret=core-agent-attach-token --project=$PROJECT_ID)"
   SERVICE_URL="\$(gcloud run services describe $SERVICE_NAME \\
     --region=$REGION --project=$PROJECT_ID --format='value(status.url)')"
-  core-agent-tui --auth=google-oauth --token=ATTACH_TOKEN "\$SERVICE_URL"
+  core-agent-tui --auth=google-id-token --token=ATTACH_TOKEN "\$SERVICE_URL"
 
   # Legacy / fallback (works with any TUI version):
   #   gcloud run services proxy $SERVICE_NAME --region=$REGION --project=$PROJECT_ID &

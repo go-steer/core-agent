@@ -90,11 +90,29 @@ func (a AuthConfig) LoadTLSConfig() (*tls.Config, error) {
 	return cfg, nil
 }
 
-// Middleware returns an http.Handler that wraps next with bearer-token
+// HeaderAttachToken is the side-channel header callers can use to
+// present the attach token when an identity gateway (Cloud Run IAM,
+// IAP, Cloudflare Access, etc.) owns the Authorization header for
+// its own validation. Checked before Authorization: Bearer so a
+// request carrying both gets evaluated against this header first.
+const HeaderAttachToken = "X-Attach-Token"
+
+// Middleware returns an http.Handler that wraps next with attach-token
 // validation + ReadOnly enforcement. mTLS, if configured, is enforced
 // by the TLS handshake itself (ClientAuth = RequireAndVerifyClientCert)
 // so by the time a request reaches this middleware, the cert has
 // already been validated.
+//
+// Token validation accepts the attach token from either of two
+// headers, checked in order:
+//
+//  1. X-Attach-Token — the side-channel header for gateway-fronted
+//     deploys. If present but doesn't match, returns 401 immediately
+//     (no fall-through to Authorization); this matches operator
+//     intent: "I explicitly sent this; tell me if it's wrong."
+//  2. Authorization: Bearer <token> — the default path for direct
+//     attach (local, GKE internal LB, anywhere the operator owns
+//     the Authorization header).
 //
 // Returns 401 Unauthorized on missing/wrong token; 403 Forbidden when
 // ReadOnly + the request is a write.
@@ -103,10 +121,7 @@ func (a AuthConfig) Middleware(next http.Handler) http.Handler {
 	readOnly := a.ReadOnly
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if wantToken != "" {
-			got := extractBearer(r.Header.Get("Authorization"))
-			if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(wantToken)) != 1 {
-				w.Header().Set("WWW-Authenticate", `Bearer realm="attach"`)
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			if !checkAttachToken(w, r, wantToken) {
 				return
 			}
 		}
@@ -116,6 +131,40 @@ func (a AuthConfig) Middleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// checkAttachToken validates the request's attach token against want.
+// Returns true to allow the request to proceed, false after writing
+// a 401 response (caller returns without invoking next).
+//
+// Precedence: X-Attach-Token wins when present (right or wrong) —
+// rationale documented on Middleware. Otherwise falls through to
+// Authorization: Bearer.
+func checkAttachToken(w http.ResponseWriter, r *http.Request, want string) bool {
+	wantBytes := []byte(want)
+	if side := r.Header.Get(HeaderAttachToken); side != "" {
+		if subtle.ConstantTimeCompare([]byte(side), wantBytes) == 1 {
+			return true
+		}
+		writeAttachUnauthorized(w)
+		return false
+	}
+	got := extractBearer(r.Header.Get("Authorization"))
+	if got == "" || subtle.ConstantTimeCompare([]byte(got), wantBytes) != 1 {
+		writeAttachUnauthorized(w)
+		return false
+	}
+	return true
+}
+
+// writeAttachUnauthorized centralizes the 401 response so both the
+// X-Attach-Token and Authorization branches stay in sync — same
+// status, same WWW-Authenticate hint (operators relying on the
+// Bearer-realm signal don't lose it just because the request used
+// the side-channel header).
+func writeAttachUnauthorized(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Bearer realm="attach"`)
+	http.Error(w, "unauthorized", http.StatusUnauthorized)
 }
 
 // extractBearer pulls the token out of an "Authorization: Bearer X"

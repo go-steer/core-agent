@@ -55,6 +55,21 @@ URL forms (same grammar as `core-agent attach`):
 | `--alias=<label>` | Display label for the agent identity in the status bar. Defaults to the session ID. |
 | `--version` | Print build identity (`core-agent-tui v2.2.0 (commit a1b2c3d4, built 2026-06-01T…)`) and exit. |
 
+### Behind an identity gateway (Cloud Run IAM, IAP, Cloudflare Access, …)
+
+Deployments behind an identity gateway have a single-Authorization-header problem: the gateway wants to validate the caller's identity token in `Authorization: Bearer`, and core-agent's listener wants the attach token in the same header. Both can't ride there at once.
+
+Core-agent accepts `X-Attach-Token` as a side-channel header for exactly this case. Whichever of the two headers carries the attach token is compared in constant time against the configured value:
+
+| Headers a request carries | Outcome |
+|---|---|
+| `X-Attach-Token: <correct>` | 200 — `Authorization` is left for the gateway |
+| `X-Attach-Token: <wrong>` | 401 — does **not** fall through to `Authorization`, since the operator explicitly sent it |
+| `Authorization: Bearer <correct>` (no `X-Attach-Token`) | 200 — the direct-attach path, unchanged |
+| Neither, or both wrong | 401 |
+
+The TUI's native Cloud Run / IAP auth mode (tracked in [#135](https://github.com/go-steer/core-agent/issues/135)) builds on this — once it lands, the TUI mints a Google ID token via Application Default Credentials, sends it on `Authorization`, and sends the attach token on `X-Attach-Token`. Until then, the documented attach path for IAM-gated services remains `gcloud run services proxy` (which transparently injects an ID token and forwards `Authorization` unchanged).
+
 ## Operator surface (slash parity with the in-process TUI)
 
 `core-agent-tui` shares its operator surface with the in-process TUI — all the slash commands from the [in-process slash reference]({{< relref "/docs/cli/interactive/slash-reference.md" >}}) work end-to-end against a remote agent. Highlights:

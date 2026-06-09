@@ -71,6 +71,7 @@ func main() {
 
 	fs := flag.NewFlagSet("core-agent-tui", flag.ContinueOnError)
 	tokenEnv := fs.String("token", "", "env var holding the bearer token (e.g. ATTACH_TOKEN)")
+	authMode := fs.String("auth", "bearer", "auth strategy for outbound attach requests. 'bearer' (default) sends the attach token in Authorization: Bearer — the direct-attach path. 'google-id-token' mints a Google ID token via Application Default Credentials and sends it in Authorization; the attach token rides on X-Attach-Token. Use 'google-id-token' for deployments behind Cloud Run IAM (audience is the service URL — derived from the connection URL automatically). IAP support is a future addition once an --auth-audience flag lands.")
 	theme := fs.String("theme", "", "force a theme: 'dark', 'light', or empty for auto (queries the terminal via OSC 11)")
 	alias := fs.String("alias", "", "agent identity label shown in the status banner; default uses the session ID")
 	if err := fs.Parse(os.Args[1:]); err != nil {
@@ -84,7 +85,7 @@ func main() {
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	err := run(ctx, args, token, *theme, *alias)
+	err := run(ctx, args, token, *authMode, *theme, *alias)
 	cancel()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent-tui: %v\n", err)
@@ -94,7 +95,7 @@ func main() {
 
 // run resolves a session (parse URL → optional picker), constructs
 // the coretuiremote adapter, and hands off to coretui.Run.
-func run(ctx context.Context, args []string, token, theme, alias string) error {
+func run(ctx context.Context, args []string, token, authMode, theme, alias string) error {
 	rawURL, err := chooseURL(args)
 	if err != nil {
 		return err
@@ -103,7 +104,15 @@ func run(ctx context.Context, args []string, token, theme, alias string) error {
 	if err != nil {
 		return fmt.Errorf("parse URL: %w", err)
 	}
-	client := attachclient.New(parsed, token, 0)
+	creds, err := resolveCredentials(ctx, authMode, parsed, token)
+	if err != nil {
+		return err
+	}
+	client := attachclient.NewWithCredentials(parsed, creds, 0)
+	// Token is kept on the Client too so callers (e.g. picker.go's
+	// peer enumeration) that still spin up subordinate Clients via
+	// the legacy attachclient.New(token) path remain compatible.
+	client.Token = token
 
 	sessionPath, err := resolveSessionPath(ctx, parsed, client)
 	if err != nil {

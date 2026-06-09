@@ -51,6 +51,7 @@ URL forms (same grammar as `core-agent attach`):
 | Flag | Purpose |
 |---|---|
 | `--token=<ENVVAR>` | Name of the env var holding the bearer token (same indirection as `--attach-token` on the listener side). The secret never appears on the command line. |
+| `--auth=<strategy>` | Auth strategy for outbound attach requests. `bearer` (default) sends the attach token in `Authorization: Bearer` — the direct-attach path. `google-id-token` mints a Google ID token via Application Default Credentials and sends it in `Authorization`; the attach token rides on `X-Attach-Token`. See "Behind an identity gateway" below. |
 | `--theme=auto\|dark\|light` | Force a glamour theme for markdown rendering. Empty = auto (terminal background detection via OSC 11). |
 | `--alias=<label>` | Display label for the agent identity in the status bar. Defaults to the session ID. |
 | `--version` | Print build identity (`core-agent-tui v2.2.0 (commit a1b2c3d4, built 2026-06-01T…)`) and exit. |
@@ -59,7 +60,12 @@ URL forms (same grammar as `core-agent attach`):
 
 Deployments behind an identity gateway have a single-Authorization-header problem: the gateway wants to validate the caller's identity token in `Authorization: Bearer`, and core-agent's listener wants the attach token in the same header. Both can't ride there at once.
 
-Core-agent accepts `X-Attach-Token` as a side-channel header for exactly this case. Whichever of the two headers carries the attach token is compared in constant time against the configured value:
+The fix is two-sided:
+
+- **Server side**: core-agent accepts `X-Attach-Token` as a side-channel header for the attach token, leaving `Authorization` for whatever the gateway needs. Available unconditionally — no flag to enable.
+- **Client side**: `core-agent-tui` knows how to mint the gateway-appropriate credential and stamp both headers. The strategy is selected via `--auth`.
+
+**Server-side header precedence** (whichever ride the attach token uses, compared in constant time):
 
 | Headers a request carries | Outcome |
 |---|---|
@@ -68,7 +74,48 @@ Core-agent accepts `X-Attach-Token` as a side-channel header for exactly this ca
 | `Authorization: Bearer <correct>` (no `X-Attach-Token`) | 200 — the direct-attach path, unchanged |
 | Neither, or both wrong | 401 |
 
-The TUI's native Cloud Run / IAP auth mode (tracked in [#135](https://github.com/go-steer/core-agent/issues/135)) builds on this — once it lands, the TUI mints a Google ID token via Application Default Credentials, sends it on `Authorization`, and sends the attach token on `X-Attach-Token`. Until then, the documented attach path for IAM-gated services remains `gcloud run services proxy` (which transparently injects an ID token and forwards `Authorization` unchanged).
+#### Client-side: `--auth=google-id-token` (Cloud Run IAM)
+
+The TUI mints a Google ID token via Application Default Credentials, audience-bound to the connection URL, and stamps both headers automatically. No manual `gcloud auth print-identity-token` invocation; no `gcloud run services proxy` hop.
+
+```bash
+# One-time setup on the operator's machine (skip on GCE/GKE/Cloud Run/Cloud Shell —
+# ADC picks up the runtime's service account automatically):
+gcloud auth application-default login
+
+# Attach. --auth=google-id-token derives the audience from the URL
+# (the Cloud Run service URL is the correct audience for IAM auth).
+core-agent-tui --auth=google-id-token \
+  --token=ATTACH_TOKEN \
+  https://my-svc-abc123-uc.a.run.app
+```
+
+Behavior:
+
+- The TUI calls `idtoken.NewTokenSource(ctx, serviceURL)` — the Google SDK walks ADC's resolution chain (`GOOGLE_APPLICATION_CREDENTIALS` env → user creds → metadata server) and caches the ID token until expiry (~1 hour).
+- Per request: `Authorization: Bearer <ID-token>` (gateway validates against the service's IAM bindings — operator must have `roles/run.invoker`) + `X-Attach-Token: <attach-token>` (core-agent validates against `--attach-token`).
+- Cloud Run forwards the request to the container with the operator's identity attached as `X-Goog-Authenticated-User-Email` / `X-Goog-Authenticated-User-Id` headers. Core-agent doesn't consume these today; tracked separately under [#142](https://github.com/go-steer/core-agent/issues/142).
+
+**Common failure modes:**
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Application Default Credentials unavailable` at startup | ADC isn't configured | `gcloud auth application-default login` |
+| Gateway 401 from Cloud Run | Service URL audience mismatch (wrong URL?) or operator lacks `roles/run.invoker` | Verify URL; check `gcloud run services get-iam-policy <svc>` for invoker grants |
+| Core-agent 401 after gateway passes | Wrong `ATTACH_TOKEN` or daemon running without `--attach-token` | Verify env var resolves to the right value; if daemon is in Posture B, omit `--token=` entirely (see below) |
+
+**Two postures the daemon can run in:**
+
+- **Posture A — IAM + ATTACH_TOKEN (default-recommended, belt-and-suspenders):** server launched with `--attach-token=ATTACH_TOKEN`, client passes `--token=ATTACH_TOKEN`. Defense in depth against IAM misconfig (accidental grant to `allAuthenticatedUsers`, leaked invoker service account, future org-policy changes).
+- **Posture B — IAM only (simpler, trusts IAM as the sole gate):** server launched without `--attach-token`, client omits `--token=` entirely. Removes a managed secret. Sensible when IAM bindings are tightly scoped to a small group of named principals.
+
+#### IAP / other gateways
+
+The mechanism (`--auth=google-id-token` + `X-Attach-Token`) is general-purpose, but the IAP audience rule (audience = OAuth client ID, not URL) requires an explicit `--auth-audience` override flag — a future addition once we have an IAP target to validate against. Tracked: this PR ships Cloud Run IAM as Tier 1; IAP follows when ready.
+
+For other gateways (Cloudflare Access, AWS ALB+Cognito, …), today's workaround is to mint the gateway credential out-of-band and pipe it in via a shell wrapper; first-class support depends on the same future `--auth-audience` flag plus a "generic header-cmd" escape hatch that's been floated but not scoped.
+
+Until then, the documented attach path for non-IAM gateways remains a wrapper around `gcloud run services proxy` or the equivalent.
 
 ## Operator surface (slash parity with the in-process TUI)
 

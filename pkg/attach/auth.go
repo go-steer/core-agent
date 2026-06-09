@@ -95,7 +95,7 @@ func (a AuthConfig) LoadTLSConfig() (*tls.Config, error) {
 // IAP, Cloudflare Access, etc.) owns the Authorization header for
 // its own validation. Checked before Authorization: Bearer so a
 // request carrying both gets evaluated against this header first.
-const HeaderAttachToken = "X-Attach-Token"
+const HeaderAttachToken = "X-Attach-Token" // #nosec G101 -- header name, not a credential
 
 // Middleware returns an http.Handler that wraps next with attach-token
 // validation + ReadOnly enforcement. mTLS, if configured, is enforced

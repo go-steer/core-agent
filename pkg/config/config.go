@@ -48,6 +48,26 @@ type Config struct {
 	Pricing     PricingFileConfig `json:"pricing,omitempty"`
 	UI          UIConfig          `json:"ui,omitempty"`
 	Compaction  CompactionConfig  `json:"compaction,omitempty"`
+	Session     SessionConfig     `json:"session,omitempty"`
+}
+
+// SessionConfig carries per-session presets — currently just the
+// operator-declared task class (#123). CLI flag --task overrides
+// this field; both default to unset, which leaves the substrate
+// defaults in place.
+type SessionConfig struct {
+	// TaskClass is the operator-declared task class. Must be one
+	// of pkg/taskclass.Classes() ("debug" | "implement" | "chat"
+	// | "research" | "review") or empty. When set, the CLI applies
+	// the matching Profile to whichever flags the operator left
+	// unspecified (--model, --ask, compaction threshold, etc.).
+	// Explicit CLI flags always win over the task profile.
+	//
+	// Useful for project-local defaults — e.g. an infra repo's
+	// .agents/config.json sets "debug" because debugging is what
+	// happens there; operators get the right defaults without
+	// having to remember --task=debug on every invocation.
+	TaskClass string `json:"task_class,omitempty"`
 }
 
 // CompactionConfig configures the automatic context-window compaction
@@ -539,6 +559,19 @@ func (c *Config) Validate() error {
 	if c.Agent.MaxSessionCostUSD != nil {
 		if v := *c.Agent.MaxSessionCostUSD; v < 0 {
 			return fmt.Errorf("config: agent.max_session_cost_usd=%v must be >= 0 (0 disables, positive enforces)", v)
+		}
+	}
+	if c.Session.TaskClass != "" {
+		// Validation matches pkg/taskclass.Classes() but we don't
+		// import taskclass here (would pull a new dep into a
+		// foundational config package). Keep the list in sync;
+		// pkg/taskclass has tests pinning the canonical names so
+		// a drift here would be obvious at build time.
+		switch c.Session.TaskClass {
+		case "debug", "implement", "chat", "research", "review":
+			// ok
+		default:
+			return fmt.Errorf("config: session.task_class=%q is not a known class (want one of debug, implement, chat, research, review)", c.Session.TaskClass)
 		}
 	}
 	switch c.UI.Theme {

@@ -54,6 +54,7 @@ import (
 	"github.com/go-steer/core-agent/pkg/runner"
 	"github.com/go-steer/core-agent/pkg/session"
 	"github.com/go-steer/core-agent/pkg/skills"
+	"github.com/go-steer/core-agent/pkg/taskclass"
 	"github.com/go-steer/core-agent/pkg/telemetry"
 	"github.com/go-steer/core-agent/pkg/tools"
 	"github.com/go-steer/core-agent/pkg/usage"
@@ -125,6 +126,7 @@ func main() {
 	noPricingRefresh := flag.Bool("no-pricing-refresh", false, "skip the daily pricing-catalog refresh from LiteLLM at startup. Use for air-gapped pods, CI runs, or any environment without outbound network. Overrides cfg.pricing.refresh.")
 	noCompact := flag.Bool("no-compact", false, "disable automatic context-window compaction. /compact slash still works for manual summarization, but the post-turn threshold trigger is off. Use when running headless against a model whose window is huge enough that compaction would never fire anyway, or when debugging an issue where you don't want history rewrites in play.")
 	noCheckpoint := flag.Bool("no-checkpoint", false, "disable task-boundary checkpoints. /done slash + the model-facing mark_task_done tool are both removed. Use when running headless where the model shouldn't self-signal task completion, or when debugging an issue where you don't want auto-slicing in play.")
+	taskClass := flag.String("task", "", "operator-declared task class — picks a bundle of defaults (model tier, compaction threshold, agentic-tools posture, ask mode) tuned for the kind of work being done. One of: debug, implement, chat, research, review. Empty = no task class applied (substrate defaults). Explicit flags (--model, --ask, etc.) always win over the task profile. Per docs/model-selection-design.md / issue #123. Config-file equivalent: session.task_class.")
 	maxTurnCostUSD := flag.Float64("max-turn-cost-usd", 0, "per-turn spend ceiling in USD. When a single conversation turn's cumulative cost (across all model calls + subtask costs) meets or exceeds this value, the agent emits a structured turn-error (kind=cost_ceiling) and refuses new turns until the operator runs /resume-after-cost-ceiling. 0 = disabled (default). Defense against runaway tool-loops within one turn (e.g. issue #144). Pairs with --max-session-cost-usd; either or both can be set. Overrides config.agent.max_turn_cost_usd when set.")
 	maxSessionCostUSD := flag.Float64("max-session-cost-usd", 0, "session-level spend ceiling in USD. Cumulative across every turn including subtasks; same trip + refuse behavior as --max-turn-cost-usd. 0 = disabled (default). Useful for long-running autonomous deploys where per-turn cost is reasonable but the session total adds up. Overrides config.agent.max_session_cost_usd when set.")
 	agenticTools := flag.Bool("agentic-tools", true, "register the agentic tool wrappers (agentic_read_file, agentic_fetch_url, agentic_grep, agentic_research) that route through a subtask so only the digest enters the parent's context (docs/context-management-design.md Mechanism B). On by default since v2.1; pass --agentic-tools=false to register only the bare tools.")
@@ -143,7 +145,7 @@ func main() {
 	agentCardDocsURL := flag.String("agent-card-docs-url", "", "override documentationUrl in /.well-known/agent-card.json")
 	flag.Parse()
 
-	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *maxTurnCostUSD, *maxSessionCostUSD, *agenticTools, *agenticSmallModel,
+	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *maxTurnCostUSD, *maxSessionCostUSD, *agenticTools, *agenticSmallModel,
 		attachOpts{
 			Listen:           *attachListen,
 			UnixSocket:       *attachUnixSocket,
@@ -311,7 +313,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	return opts
 }
 
-func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, maxTurnCostUSD, maxSessionCostUSD float64, agenticTools bool, agenticSmallModel string, attachCfg attachOpts, cardCfg agentCardOpts) int {
+func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, maxTurnCostUSD, maxSessionCostUSD float64, agenticTools bool, agenticSmallModel string, attachCfg attachOpts, cardCfg agentCardOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -360,6 +362,59 @@ func run(prompt, cfgPath, modelOverride, providerOverride string, noBuiltinTools
 			}
 			cfg.URLScope.Allow = append(cfg.URLScope.Allow, h)
 		}
+	}
+
+	// Task class (#123). CLI --task overrides cfg.Session.TaskClass.
+	// Apply the resolved profile to whichever flags the operator left
+	// unspecified; explicit flags always win. Done BEFORE provider
+	// resolution so the task's tier-to-model selection lands before
+	// provider.Model(cfg.Model.Name) is called.
+	if taskClass != "" {
+		cfg.Session.TaskClass = taskClass
+	}
+	if cfg.Session.TaskClass != "" {
+		profile, ok := taskclass.Resolve(cfg.Session.TaskClass)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "core-agent: --task=%q: unknown task class (want one of %v)\n",
+				cfg.Session.TaskClass, taskclass.Classes())
+			return runner.ExitConfigError
+		}
+		// Pick the provider name for tier→model mapping. cfg.Model.Provider
+		// may be empty (auto-detect); fall back to env-based auto-detect.
+		providerForTier := cfg.Model.Provider
+		if providerForTier == "" {
+			providerForTier = models.AutoDetectProvider()
+		}
+		// Model: if neither operator's --model nor cfg.Model.Name is
+		// the value the profile would pick, use the profile's tier
+		// selection. modelOverride == "" means CLI didn't specify;
+		// the existing cfg.Model.Name was either the config-file value
+		// or the substrate default — we treat the substrate default
+		// (DefaultConfig's gemini-3.1-pro-preview-customtools) as
+		// overridable by --task, but a config-file value as
+		// operator-set and respect it. Distinguishing those today
+		// requires comparing against DefaultConfig().Model.Name; for
+		// v1 we use a simpler rule: --task only fills in when the CLI
+		// --model flag is empty.
+		if modelOverride == "" {
+			if tierModel := taskclass.ModelForTier(providerForTier, profile.Tier); tierModel != "" {
+				cfg.Model.Name = tierModel
+			}
+		}
+		// Compaction threshold: only override if not already set
+		// (config-file value wins over task profile).
+		if cfg.Compaction.Threshold == nil && profile.CompactionThreshold > 0 {
+			thr := profile.CompactionThreshold
+			cfg.Compaction.Threshold = &thr
+		}
+		// Ask mode: only override if CLI --ask is empty. The "auto"
+		// the profile picks turns into the existing --ask=auto
+		// behavior (stdin TTY → ask, headless → allow).
+		if ask == "" && profile.AskMode != "" {
+			ask = profile.AskMode
+		}
+		fmt.Fprintf(os.Stderr, "core-agent: task class: %s → model=%s compaction-threshold=%.2f ask=%s (override individual knobs with --model / --compaction-threshold / --ask)\n",
+			cfg.Session.TaskClass, cfg.Model.Name, profile.CompactionThreshold, ask)
 	}
 
 	otelShutdown, err := telemetry.Setup(ctx, cfg.OTEL.Exporter)

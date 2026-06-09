@@ -165,6 +165,16 @@ Beyond `--provider` / `-m` / `-p`, the flags that come up most often:
                                 (gemini-2.5-flash on Gemini, claude-haiku-4-5
                                 on Anthropic). Override for cross-provider /
                                 custom tier setups.
+--task=<class>                  pick a bundle of defaults tuned for the kind
+                                of work being done. One of: debug, implement,
+                                chat, research, review. Empty = substrate
+                                defaults. Explicit --model / --ask / etc.
+                                always win over the task profile.
+--max-turn-cost-usd=N           cap a single turn's spend at $N. Tripped →
+                                structured turn-error + refuses new turns
+                                until Agent.ResetCostCeiling is called.
+--max-session-cost-usd=N        cap cumulative session spend at $N. Same
+                                trip + refuse behavior.
 ```
 
 Use `--ask=auto` when your `AGENTS.md` instructs the model to ask before some action — the agent gets a clean refusal in headless contexts instead of blocking forever. See [Library API → Prompter]({{< relref "/docs/library/api.md#prompter" >}}).
@@ -172,6 +182,8 @@ Use `--ask=auto` when your `AGENTS.md` instructs the model to ask before some ac
 Use `--session-db` to persist conversation history across restarts and unlock the audit-log + crash-resume flows. See [Sessions and event log]({{< relref "/docs/reference/sessions.md" >}}).
 
 The `--no-compact` / `--no-checkpoint` / `--agentic-tools` family controls how `core-agent` keeps long sessions alive past the context wall — see [Context management]({{< relref "/docs/reference/context-management.md" >}}) for the design.
+
+`--task=<class>` picks a coherent bundle of defaults (model tier, compaction threshold, agentic-tools posture, ask-mode) tuned for one of five common shapes of work — see [Task class]({{< relref "/docs/reference/context-management.md#task-class" >}}) for the table.
 
 For long-running unattended work, see [Autonomous runs]({{< relref "/docs/cli/autonomous/operations.md" >}}).
 

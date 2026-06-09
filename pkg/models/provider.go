@@ -106,6 +106,16 @@ func Resolve(cfg *config.Config) (Provider, error) {
 	return c(cfg)
 }
 
+// AutoDetectProvider walks the env to pick a default backend.
+// Exported alias of autoDetectProvider for callers that need the
+// provider name BEFORE constructing a Provider (e.g. cmd/core-agent's
+// --task flag resolution needs the provider name to pick a model for
+// a given tier without paying for full provider construction).
+//
+// Returns "" when no env-based default is detectable. Returns the
+// same canonical name strings as Resolve would route to.
+func AutoDetectProvider() string { return autoDetectProvider() }
+
 // autoDetectProvider walks the env to pick a default backend. Order:
 // Vertex (explicit opt-in) → Gemini API key → Anthropic API key.
 //

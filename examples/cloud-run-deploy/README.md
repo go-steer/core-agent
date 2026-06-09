@@ -25,14 +25,15 @@ config-image-separation (A).
 ## Architecture
 
 ```
-[Operator workstation, anywhere with `gcloud`]
-  core-agent-tui http://localhost:8080 --token=ATTACH_TOKEN
+[Operator workstation, ADC-configured (gcloud auth application-default login)]
+  core-agent-tui --auth=google-id-token --token=ATTACH_TOKEN https://my-svc-...-uc.a.run.app
        │
-       │ gcloud run services proxy injects Authorization: Bearer <ID-token>
+       │ TUI mints a Google ID token (audience = service URL) via ADC,
+       │ stamps Authorization: Bearer <ID-token> + X-Attach-Token: <attach-token>
        ▼
 [Cloud Run IAM gate]
        │  validates caller has roles/run.invoker on this service
-       │  before forwarding to the container
+       │  (Authorization: Bearer <ID-token>) before forwarding to the container
        ▼
 [Cloud Run service core-agent (private, --no-allow-unauthenticated)]
        │
@@ -210,7 +211,7 @@ The script is idempotent and shows what it's doing as it goes. It:
 
 1. Enables APIs
 2. Creates the Artifact Registry repo (if missing)
-3. Pulls `ghcr.io/go-steer/core-agent:2.3.1`, retags, pushes to AR
+3. Pulls `ghcr.io/go-steer/core-agent:main` (override via `IMAGE_REF=...` for a pinned digest), retags, pushes to AR
 4. Creates the runtime service account + grants `roles/aiplatform.user`
 5. Uploads `.agents/config.json` and `.agents/AGENTS.md` to Secret
    Manager as `core-agent-config-json` and `core-agent-agents-md`
@@ -274,9 +275,67 @@ startup.
 
 ## Attach
 
-The cleanest path uses `gcloud run services proxy`, which runs a
-local listener that injects the operator's identity token on every
-request:
+The recommended path uses `core-agent-tui --auth=google-id-token`,
+which mints a Google ID token via Application Default Credentials
+and talks to the Cloud Run service URL directly. No proxy hop, no
+per-request token mint, no 429 cascades:
+
+```bash
+# One-time on the operator's workstation (skip on GCE/GKE/Cloud Run/
+# Cloud Shell — ADC picks up the runtime's service account):
+gcloud auth application-default login
+
+# Fetch the attach token into your shell (for Posture A — see below):
+export ATTACH_TOKEN="$(gcloud secrets versions access latest \
+  --secret=core-agent-attach-token --project=$PROJECT_ID)"
+
+# Attach. Audience derives from the URL automatically.
+SERVICE_URL="$(gcloud run services describe core-agent \
+  --region=$REGION --project=$PROJECT_ID --format='value(status.url)')"
+core-agent-tui --auth=google-id-token --token=ATTACH_TOKEN "$SERVICE_URL"
+```
+
+**Flag-first ordering matters** — Go's `flag` package stops parsing
+at the first non-flag arg, so `--auth=...` and `--token=...` MUST
+come before the URL.
+
+(`--token=ATTACH_TOKEN` is the env var NAME holding the bearer
+token, not the token itself. The TUI reads `os.Getenv("ATTACH_TOKEN")`
+at startup — same env-var-name-indirection pattern as the daemon's
+`--attach-token`. Keeps the token off your shell history.)
+
+### TUI binary version
+
+`--auth=google-id-token` shipped in PR #143 (post-v2.3.1). Until
+v2.4.0 cuts, build the TUI binary from main:
+
+```bash
+go install github.com/go-steer/core-agent/cmd/core-agent-tui@main
+```
+
+Once v2.4.0 ships, the `@latest` pseudo-version works.
+
+### Posture A vs Posture B
+
+Two daemon postures supported, pick what fits your risk tolerance:
+
+| Posture | Daemon args | Client invocation | When to use |
+|---|---|---|---|
+| **A — IAM + ATTACH_TOKEN** (this recipe's default) | `--attach-token=ATTACH_TOKEN` | `--auth=google-id-token --token=ATTACH_TOKEN <url>` | Default. Defense in depth against IAM misconfig (accidental `allAuthenticatedUsers` grant, leaked invoker SA, future org-policy changes). |
+| **B — IAM only** | drop `--attach-token=ATTACH_TOKEN` from the Cloud Run service config | `--auth=google-id-token <url>` (no `--token=`) | Simpler — one fewer managed secret. Sensible when IAM bindings are tightly scoped to a small group of named principals. |
+
+### Operator attach paths
+
+| Path | Setup | Best for |
+|---|---|---|
+| **`core-agent-tui --auth=google-id-token`** (recommended) | ADC configured + TUI binary including PR #143 | Production-shaped operator workflow; no proxy process to manage; SSE stays stable |
+| **`gcloud run services proxy`** (legacy / convenient) | Nothing — `gcloud` SDK only. Then `core-agent-tui --token=ATTACH_TOKEN http://localhost:8080` | One-shot smoke tests, environments without a recent TUI binary. Adds 50–200ms per request and a token-mint quota; can drop SSE under chatty streams |
+| **Direct + `print-identity-token`** | Caller adds `Authorization: Bearer $(gcloud auth print-identity-token --audiences=$SERVICE_URL)` to every request | Scripting / cron; integration tests outside the TUI |
+| **Cloud Workstations** | Provision one workstation; attach from its terminal | If you already use Cloud Workstations for everything else |
+
+#### Legacy: `gcloud run services proxy`
+
+Still works and useful when the local TUI binary predates PR #143:
 
 ```bash
 # Proxy. Leaves a local server at http://localhost:8080
@@ -289,22 +348,10 @@ export ATTACH_TOKEN="$(gcloud secrets versions access latest \
 core-agent-tui --token=ATTACH_TOKEN http://localhost:8080
 ```
 
-**Flag-first ordering matters** — Go's `flag` package stops parsing
-at the first non-flag arg, so `--token=ATTACH_TOKEN` MUST come
-before the URL.
-
-(`--token=ATTACH_TOKEN` is the env var NAME holding the bearer
-token, not the token itself. The TUI reads `os.Getenv("ATTACH_TOKEN")`
-at startup — same env-var-name-indirection pattern as the daemon's
-`--attach-token`. Keeps the token off your shell history.)
-
-### Operator attach paths
-
-| Path | Setup | Best for |
-|---|---|---|
-| **`gcloud run services proxy`** (recommended) | Nothing — `gcloud` SDK only | Most operators; works from anywhere with `gcloud` auth |
-| **Direct + `print-identity-token`** | Caller adds `Authorization: Bearer $(gcloud auth print-identity-token --audiences=$SERVICE_URL)` to every request | Scripting / cron; situations where proxy isn't a fit |
-| **Cloud Workstations** | Provision one workstation; attach from its terminal | If you already use Cloud Workstations for everything else |
+The proxy transparently injects `Authorization: Bearer <ID-token>`
+and forwards the operator's `--token=` as-is. Compatible with any
+TUI version. Tradeoffs: per-request latency, token-mint quota
+pressure under chatty SSE (see [#135](https://github.com/go-steer/core-agent/issues/135)), one more process to manage.
 
 ## Rotating the ATTACH_TOKEN
 

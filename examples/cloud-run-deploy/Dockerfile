@@ -17,15 +17,16 @@
 # in at /etc/core-agent/.agents/. The CMD is set so a bare
 # `gcloud run deploy --source .` works without any --args plumbing.
 #
-# Pinned to a main-HEAD digest until v2.4.0 ships. The :2.3.1 tag
-# predates the agent-card endpoint (cef0d1b), so the
-# /.well-known/agent-card.json route this README verifies wouldn't
-# register and would 404 against :2.3.1. This digest is from main
-# HEAD with the endpoint in place. Sweep back to a semver tag
-# (FROM ghcr.io/go-steer/core-agent:2.4.0) once the release cuts.
-# Multi-arch (amd64 + arm64) and Sigstore-signed from the
-# go-steer/core-agent repo's release workflow.
-FROM ghcr.io/go-steer/core-agent@sha256:4a0da4d9a36dc6918b851fa48461520b474e4faefdaf16d2135a34bb60c5d7dd
+# Pinned to the :main rolling tag (latest main commit) until v2.4.0
+# ships. v2.3.1 predates several features this recipe relies on:
+#   - agent-card endpoint at /.well-known/agent-card.json (cef0d1b)
+#   - X-Attach-Token side-channel header for gateway-fronted auth (#141)
+#     — required so the TUI can use --auth=google-id-token without
+#     fighting Cloud Run for the Authorization header.
+# Sweep back to a semver tag (FROM ghcr.io/go-steer/core-agent:2.4.0)
+# once the release cuts. Multi-arch (amd64 + arm64) and Sigstore-
+# signed from the go-steer/core-agent repo's release workflow.
+FROM ghcr.io/go-steer/core-agent:main
 
 # Bake the .agents/ bundle into the image. config.json sets the
 # model provider and permissions; AGENTS.md primes the agent's

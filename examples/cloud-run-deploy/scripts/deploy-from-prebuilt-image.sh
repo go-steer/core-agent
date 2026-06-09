@@ -40,13 +40,18 @@ set -euo pipefail
 : "${REGION:?must set REGION (e.g. us-central1)}"
 
 SERVICE_NAME="${SERVICE_NAME:-core-agent}"
-# Default pin: main-HEAD digest with the agent-card endpoint
-# (cef0d1b) included. The :2.3.1 tag predates that endpoint and
-# would 404 on /.well-known/agent-card.json. Swap back to a
-# semver tag (2.4.0 or whatever ships next) once the release
-# cuts. IMAGE_REF takes precedence; IMAGE_TAG is the fallback
-# and what gets used as the destination tag in AR.
-IMAGE_REF="${IMAGE_REF:-ghcr.io/go-steer/core-agent@sha256:4a0da4d9a36dc6918b851fa48461520b474e4faefdaf16d2135a34bb60c5d7dd}"
+# Default: track the :main rolling tag until v2.4.0 ships. The
+# :2.3.1 tag predates several features this recipe relies on:
+#   - agent-card endpoint at /.well-known/agent-card.json (cef0d1b)
+#   - X-Attach-Token side-channel header for gateway-fronted auth
+#     (#141) — required so the operator's TUI can use
+#     --auth=google-id-token without fighting Cloud Run for the
+#     Authorization header.
+# Sweep back to a pinned semver (e.g. 2.4.0) for production
+# deploys once a release cuts including the above. IMAGE_REF
+# takes precedence; IMAGE_TAG is the fallback and is also what
+# gets used as the destination tag in AR.
+IMAGE_REF="${IMAGE_REF:-ghcr.io/go-steer/core-agent:main}"
 IMAGE_TAG="${IMAGE_TAG:-main}"
 AR_REPO="${AR_REPO:-core-agent}"
 AGENTS_DIR="${AGENTS_DIR:-$(cd "$(dirname "$0")/.." && pwd)/.agents}"
@@ -209,11 +214,18 @@ To attach (operator running locally):
     --member="user:\$(gcloud config get-value account)" \\
     --role=roles/run.invoker
 
-  # Recommended: proxy that injects identity tokens for you
-  gcloud run services proxy $SERVICE_NAME --region=$REGION --project=$PROJECT_ID &
-  # Then attach against http://localhost:8080 (proxy default port)
-
+  # Recommended: --auth=google-id-token mints the ID token in the
+  # TUI itself (no proxy hop, no per-request token-mint quota).
+  # Requires ADC: gcloud auth application-default login
+  # Requires TUI binary >= v2.4.0 (or built from main today):
+  #   go install github.com/go-steer/core-agent/cmd/core-agent-tui@main
   export ATTACH_TOKEN="\$(gcloud secrets versions access latest \\
     --secret=core-agent-attach-token --project=$PROJECT_ID)"
-  core-agent-tui --token=ATTACH_TOKEN http://localhost:8080
+  SERVICE_URL="\$(gcloud run services describe $SERVICE_NAME \\
+    --region=$REGION --project=$PROJECT_ID --format='value(status.url)')"
+  core-agent-tui --auth=google-id-token --token=ATTACH_TOKEN "\$SERVICE_URL"
+
+  # Legacy / fallback (works with any TUI version):
+  #   gcloud run services proxy $SERVICE_NAME --region=$REGION --project=$PROJECT_ID &
+  #   core-agent-tui --token=ATTACH_TOKEN http://localhost:8080
 EOF

@@ -77,6 +77,79 @@ func TestBearerCreds_Apply(t *testing.T) {
 	}
 }
 
+func TestGoogleOAuthCreds_Apply_StampsBothHeaders(t *testing.T) {
+	// Mirror of the GoogleIDTokenCreds test — same wire shape, same
+	// header stamping, different token-source backing. Lets us keep
+	// the access-token path and the ID-token path symmetrically
+	// covered when one or the other is refactored.
+	src := &staticTokenSource{
+		token: &oauth2.Token{
+			AccessToken: "ya29.fake-access-token",
+			Expiry:      time.Now().Add(time.Hour),
+		},
+	}
+	c := GoogleOAuthCreds{Source: src, AttachToken: "attach-secret-xyz"}
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+
+	if err := c.Apply(req); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if got, want := req.Header.Get("Authorization"), "Bearer ya29.fake-access-token"; got != want {
+		t.Errorf("Authorization = %q, want %q", got, want)
+	}
+	if got := req.Header.Get(attach.HeaderAttachToken); got != "attach-secret-xyz" {
+		t.Errorf("X-Attach-Token = %q, want %q", got, "attach-secret-xyz")
+	}
+}
+
+func TestGoogleOAuthCreds_Apply_NoAttachToken_OmitsXAttachToken(t *testing.T) {
+	// Posture B for the access-token path — same contract as the
+	// ID-token variant.
+	src := &staticTokenSource{
+		token: &oauth2.Token{AccessToken: "access", Expiry: time.Now().Add(time.Hour)},
+	}
+	c := GoogleOAuthCreds{Source: src /* AttachToken empty */}
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	if err := c.Apply(req); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer access" {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer access")
+	}
+	if got := req.Header.Get(attach.HeaderAttachToken); got != "" {
+		t.Errorf("X-Attach-Token = %q, want empty (Posture B)", got)
+	}
+}
+
+func TestGoogleOAuthCreds_Apply_NilSourceErrors(t *testing.T) {
+	c := GoogleOAuthCreds{Source: nil, AttachToken: "x"}
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	if err := c.Apply(req); err == nil {
+		t.Fatalf("Apply with nil Source: want error, got nil")
+	}
+}
+
+func TestGoogleOAuthCreds_Apply_SourceErrorPropagated(t *testing.T) {
+	wantErr := errors.New("metadata server timeout")
+	src := &staticTokenSource{err: wantErr}
+	c := GoogleOAuthCreds{Source: src, AttachToken: "x"}
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	err := c.Apply(req)
+	if err == nil {
+		t.Fatalf("Apply with failing Source: want error, got nil")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("error = %v, want wrapping %v", err, wantErr)
+	}
+	// No partial header stamping on failure.
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Errorf("Authorization stamped despite error: %q", got)
+	}
+	if got := req.Header.Get(attach.HeaderAttachToken); got != "" {
+		t.Errorf("X-Attach-Token stamped despite error: %q", got)
+	}
+}
+
 func TestGoogleIDTokenCreds_Apply_StampsBothHeaders(t *testing.T) {
 	src := &staticTokenSource{
 		token: &oauth2.Token{

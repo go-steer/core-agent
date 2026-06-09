@@ -15,6 +15,7 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -128,6 +129,75 @@ func TestResolveCredentials_GoogleIDToken_HTTPRejected(t *testing.T) {
 	// constraint), not pretend ADC failed.
 	if !strings.Contains(err.Error(), "http") {
 		t.Errorf("error %q should reference the http:// constraint", err.Error())
+	}
+}
+
+func TestResolveCredentials_GoogleOAuth_HTTPRejected(t *testing.T) {
+	// Same constraint as google-id-token — gateway-fronted auth
+	// requires https. Verified separately because the error path
+	// goes through a different branch (requireHTTPSForGateway vs
+	// audienceFromURL).
+	parsed, _ := attachclient.ParseURL("http://localhost:7777")
+	_, err := resolveCredentials(t.Context(), "google-oauth", parsed, "x")
+	if err == nil {
+		t.Fatalf("resolveCredentials(google-oauth, http://): want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "http") {
+		t.Errorf("error %q should reference the http:// constraint", err.Error())
+	}
+}
+
+func TestResolveCredentials_GoogleOAuth_UnixRejected(t *testing.T) {
+	parsed, _ := attachclient.ParseURL("unix:///tmp/sock")
+	_, err := resolveCredentials(t.Context(), "google-oauth", parsed, "x")
+	if err == nil {
+		t.Fatalf("resolveCredentials(google-oauth, unix://): want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "unix") || !strings.Contains(err.Error(), "bearer") {
+		t.Errorf("error %q should mention unix transport + suggest --auth=bearer", err.Error())
+	}
+}
+
+func TestExplainIDTokenSourceError_AuthorizedUser(t *testing.T) {
+	// The cryptic "unsupported credentials type: authorized_user"
+	// error from idtoken.NewTokenSource is the #1 operator footgun
+	// (every end-user-ADC operator hits it on first try). The
+	// rewritten error must surface BOTH workarounds so operators
+	// don't have to grep docs.
+	raw := errors.New(`idtoken: unsupported credentials type: "authorized_user"`)
+	rewritten := explainIDTokenSourceError(raw)
+	msg := rewritten.Error()
+	for _, want := range []string{
+		"--auth=google-oauth",         // primary recommendation
+		"impersonate-service-account", // alternative workaround
+		"serviceAccountTokenCreator",  // permission operator needs
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("rewritten error should contain %q; got:\n%s", want, msg)
+		}
+	}
+	// The original error must still be wrappable via errors.Is so
+	// callers (and stack traces) preserve provenance.
+	if !errors.Is(rewritten, raw) {
+		t.Errorf("rewritten error should wrap the original")
+	}
+}
+
+func TestExplainIDTokenSourceError_OtherErrorPassesThrough(t *testing.T) {
+	// Unrelated failures (network, missing ADC, etc.) shouldn't
+	// claim authorized-user is the cause. They get the generic
+	// ADC-unavailable hint instead.
+	raw := errors.New("metadata server unreachable")
+	rewritten := explainIDTokenSourceError(raw)
+	msg := rewritten.Error()
+	if strings.Contains(msg, "authorized_user") || strings.Contains(msg, "impersonate") {
+		t.Errorf("unrelated error should NOT hijack the authorized_user message:\n%s", msg)
+	}
+	if !strings.Contains(msg, "gcloud auth application-default login") {
+		t.Errorf("non-authorized-user error should still point at ADC setup; got:\n%s", msg)
+	}
+	if !errors.Is(rewritten, raw) {
+		t.Errorf("rewritten error should wrap the original")
 	}
 }
 

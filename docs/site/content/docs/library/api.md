@@ -133,6 +133,41 @@ When `WithInstruction` is not used, agents get `agent.DefaultInstruction` — a 
 agent.WithInstruction(agent.DefaultInstruction + "\n\n" + extraGuidance)
 ```
 
+### Composition layers — substrate, consumer, deploy
+
+`DefaultInstruction` stays intentionally generic. Anything that varies by *product* (a coding assistant, an ops bot, a research agent) or by *deployment* (this customer's repo conventions, that team's allow-lists) lives one layer up, not in the substrate.
+
+Three layers, increasingly specific:
+
+| Layer | Where it lives | Audience | Examples of what belongs here |
+|---|---|---|---|
+| Substrate | `agent.DefaultInstruction` (in `pkg/agent`) | Every consumer | Parallel tool batching, plan-before-acting nudge, terseness, compacted-history framing |
+| Consumer | Library that wraps `agent.New` (e.g. `cogo`'s coding assistant, a custom ops agent) | Every deploy of that product | Coding-assistant opinions: render code inline, prefer `edit_file` over `write_file` for existing files, test-after-change. Or ops opinions: never run destructive commands without confirmation. |
+| Operator / deploy | `.agents/AGENTS.md` in a project root, loaded automatically by `pkg/instruction` | One specific deploy | This repo's conventions, this team's allow-lists, this service's persona |
+
+Composition pattern (in a downstream Go library — e.g. `cogo`):
+
+```go
+const codingAgentInstruction = `When generating code, render it
+inline in fenced code blocks even when also writing to a file —
+the chat is the operator's review surface. Prefer minimal diffs;
+use edit_file over write_file for existing files. Run tests after
+changes that touch behavior.`
+
+func New(model adkmodel.LLM, opts ...agent.Option) (*agent.Agent, error) {
+    return agent.New(model, append([]agent.Option{
+        agent.WithInstruction(
+            agent.DefaultInstruction + "\n\n" + codingAgentInstruction,
+        ),
+        // ...other library-default options
+    }, opts...)...)
+}
+```
+
+`.agents/AGENTS.md` appends operator-/deploy-specific content on top of whatever the consumer wired (the `pkg/instruction` loader handles this — see [Configuration → memory loading]({{< relref "/docs/reference/configuration.md" >}}) for the full chain). A concrete example: [`examples/cloud-run-deploy/.agents/AGENTS.md`](https://github.com/go-steer/core-agent/blob/main/examples/cloud-run-deploy/.agents/AGENTS.md) carries Cloud Run operational context (what the agent can/can't reach) plus a Pro-tier-specific nudge to render code inline — none of which belongs in the substrate, all of which is correctly scoped to that one deploy.
+
+**Why keep the substrate generic.** Model-class behavior deltas (e.g. Gemini Pro defaults to silent tool use; Gemini Flash inlines code naturally) are a leaky abstraction if pushed into `DefaultInstruction` — the substrate would accrete model-specific carve-outs forever. Letting consumers and operators carry those nudges keeps the substrate stable across model changes and across product flavors.
+
 ---
 
 ## Built-in tools

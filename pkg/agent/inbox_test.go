@@ -283,3 +283,99 @@ func TestAgent_Inject_NilReceiver(t *testing.T) {
 		t.Errorf("nil Agent.Inject should error, not panic")
 	}
 }
+
+func TestFormatAutoContinueInbox_EmptyReturnsEmpty(t *testing.T) {
+	t.Parallel()
+	if got := FormatAutoContinueInbox(nil); got != "" {
+		t.Errorf("FormatAutoContinueInbox(nil) = %q, want empty", got)
+	}
+	if got := FormatAutoContinueInbox([]string{}); got != "" {
+		t.Errorf("FormatAutoContinueInbox([]) = %q, want empty", got)
+	}
+}
+
+func TestFormatAutoContinueInbox_SingleMessage(t *testing.T) {
+	t.Parallel()
+	got := FormatAutoContinueInbox([]string{"show me the diff"})
+	if !strings.Contains(got, "- show me the diff") {
+		t.Errorf("message not rendered as bullet:\n%s", got)
+	}
+	if !strings.HasPrefix(got, "[Operator notes queued while you were working]") {
+		t.Errorf("header missing or wrong:\n%s", got)
+	}
+}
+
+func TestFormatAutoContinueInbox_MultipleMessages(t *testing.T) {
+	t.Parallel()
+	got := FormatAutoContinueInbox([]string{
+		"how me the code",
+		"can I see the code?",
+		"show what you wrote",
+	})
+	for _, want := range []string{
+		"- how me the code",
+		"- can I see the code?",
+		"- show what you wrote",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected bullet %q not found in:\n%s", want, got)
+		}
+	}
+}
+
+// TestFormatAutoContinueInbox_HasDedupNudge is the load-bearing
+// regression guard for issue #144. The framing MUST tell the model
+// "variants of the same ask → treat as ONE" so a bundle of
+// semantically-similar queued asks doesn't trigger N sequential
+// tasks (the read_file loop pattern the bug filed against).
+func TestFormatAutoContinueInbox_HasDedupNudge(t *testing.T) {
+	t.Parallel()
+	got := FormatAutoContinueInbox([]string{"ask A", "ask B"})
+	for _, want := range []string{
+		"Variants of the same ask",
+		"treat as ONE",
+		"don't re-do work per note",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("dedup nudge phrase %q missing from framing:\n%s", want, got)
+		}
+	}
+}
+
+// TestFormatAutoContinueInbox_HasPostCompletionBranch covers the
+// case that motivated #144: the prior turn ended with mark_task_done,
+// so there's no "current task" to adapt or continue with `todo`. The
+// framing must give the model an explicit branch for the
+// completed-task case so it doesn't fall back to "treat each note as
+// a separate task."
+func TestFormatAutoContinueInbox_HasPostCompletionBranch(t *testing.T) {
+	t.Parallel()
+	got := FormatAutoContinueInbox([]string{"x"})
+	for _, want := range []string{
+		"After a completed task",
+		"checkpoint summary",
+		"respond once",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("post-completion branch phrase %q missing from framing:\n%s", want, got)
+		}
+	}
+}
+
+// TestFormatAutoContinueInbox_PreservesMidTaskGuidance ensures the
+// fix for #144 didn't drop the original active-task branches —
+// "adapt your next step" + `todo` capture both still need to be
+// present for the in-flight-task case.
+func TestFormatAutoContinueInbox_PreservesMidTaskGuidance(t *testing.T) {
+	t.Parallel()
+	got := FormatAutoContinueInbox([]string{"x"})
+	for _, want := range []string{
+		"Mid-task adjustments",
+		"adapt your next step",
+		"`todo`",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("mid-task guidance phrase %q missing:\n%s", want, got)
+		}
+	}
+}

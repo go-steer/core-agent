@@ -188,10 +188,26 @@ func formatInboxForPrompt(messages []string) string {
 // FormatAutoContinueInbox renders messages with the system-note
 // framing used by the TUI's "auto-continue from queued input"
 // flow (see docs/operator-input-design.md). The framing tells the
-// model these notes arrived while it was working and instructs
-// it to either adapt the current task or capture them via the
-// `todo` tool — letting the model decide relevance rather than
-// guessing in code.
+// model these notes arrived while it was working and gives it
+// explicit branches for the cases that show up in practice — most
+// importantly the dedup case (operators frequently re-phrase the
+// same ask while waiting) and the post-completion case (the prior
+// turn ended with mark_task_done, so there's no "current task" to
+// adapt).
+//
+// Iteration history:
+//
+//   - v1 (PR-α): "If any of these change the current task, adapt
+//     your next step. If they're separate requests, use the `todo`
+//     tool to capture them and continue what you were doing." Both
+//     branches assumed an active task to "continue" — false after
+//     mark_task_done. Bundle of similar asks got handled as N
+//     separate tasks (issue #144's read_file loop pattern).
+//   - v2 (#144): explicit branches for (a) variants-of-the-same-ask
+//     dedup, (b) mid-task adjustments, (c) separate asks during an
+//     active task, (d) post-completion bundles. The post-completion
+//     branch tells the model to treat the bundle as the next
+//     operator request and respond once.
 //
 // Returns "" when messages is empty (caller should not auto-
 // continue in that case). Format intentionally differs from
@@ -203,14 +219,18 @@ func FormatAutoContinueInbox(messages []string) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("[Operator notes added during the previous task]\n")
+	b.WriteString("[Operator notes queued while you were working]\n")
 	for _, m := range messages {
 		b.WriteString("- ")
 		b.WriteString(m)
 		b.WriteByte('\n')
 	}
 	b.WriteByte('\n')
-	b.WriteString("If any of these change the current task, adapt your next step. If they're separate requests, use the `todo` tool to capture them and continue what you were doing.")
+	b.WriteString("How to handle the bundle:\n")
+	b.WriteString("- Variants of the same ask → treat as ONE ask; don't re-do work per note.\n")
+	b.WriteString("- Mid-task adjustments → adapt your next step.\n")
+	b.WriteString("- Separate asks during an active task → capture with `todo`, continue what you were doing.\n")
+	b.WriteString("- After a completed task (the latest message is a checkpoint summary) → treat the bundle as the next operator request and respond once.")
 	return b.String()
 }
 

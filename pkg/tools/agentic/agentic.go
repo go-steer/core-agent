@@ -219,17 +219,23 @@ func AgenticFetchURL(opts AgenticToolOpts) tool.Tool {
 // context.
 //
 // Subtask tool requirements (InnerTools): the canonical "grep"
-// tool plus "read_file" (so the subtask can pull surrounding
-// context on the top hits). Defaults to 3 turns (grep,
-// possibly read_file for context, summarize).
+// tool. "read_file" is also supplied so a subtask can pull
+// surrounding context when the operator's question genuinely
+// demands it, but the default subtask prompt steers AWAY from
+// that — see below. Defaults to 2 turns since #60 — the earlier
+// 3-turn default invited Flash to do too many tool round trips
+// on cross-corpus searches and confabulate file:line content.
+// Two turns forces the subtask into grep → digest. Operators
+// with rich-context needs can raise via opts.Budgets — at the
+// cost of larger hallucination surface on weaker subtask models.
 func AgenticGrep(opts AgenticToolOpts) tool.Tool {
 	if opts.Budgets.MaxTurns == 0 {
-		opts.Budgets.MaxTurns = 3
+		opts.Budgets.MaxTurns = 2
 	}
 	return agenticTool(opts,
 		"agentic_grep",
 		"Search the codebase for a pattern and return the ranked, most-relevant matches with context. Use INSTEAD OF grep when the pattern is likely to hit dozens of matches and you only need the top few (function definitions, config keys, error messages). Pass the pattern AND what you're looking for as one combined request — e.g. 'grep for TODO in internal/ and tell me which ones are about auth' or 'find where http.Server is constructed and which port it binds to'. The subtask runs grep + reads surrounding context (only the digest comes back to you), so the raw match list never enters your context window. Don't re-run bare grep on the same pattern/files to spot-check the digest — that re-introduces the raw match list you were trying to avoid. If the digest is missing something specific, call agentic_grep again with a narrower question instead.",
-		"You are a focused subtask. Your job: search the codebase with grep, rank the matches by relevance to what the operator asked, and return a concise digest. Use grep first; for the top 3-5 hits, use read_file to fetch surrounding context. Quote file:line and key snippets. Stay under 500 words. If the pattern doesn't hit anything, say so plainly.",
+		"You are a focused subtask. Your job: search the codebase with grep, rank the matches by relevance to what the operator asked, and return a concise digest. Turn budget is tight (2 turns) — plan on a single grep call in turn 1 followed by the digest in turn 2; do NOT chase the matches with read_file unless the operator's question demands it (and even then prefer refusing and recommending a narrower follow-up call). Cite file:line verbatim from grep output for every match — do not paraphrase or invent paths. If you didn't read the file's surrounding lines, do NOT describe what's around the match; report only what grep actually returned. Stay under 500 words. If the pattern doesn't hit anything, say so directly.",
 	)
 }
 

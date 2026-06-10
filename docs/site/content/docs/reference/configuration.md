@@ -380,6 +380,17 @@ Runtime tuning for the agent loop.
 
 ---
 
+## `ui`
+
+Presentation choices for the in-process TUI (`core-agent`). The `/theme` and `/mouse` slash commands write back here when used.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `theme` | string | `"auto"` | One of the reserved buckets `auto` / `dark` / `light`, or any named theme from core-tui's BuiltinThemes registry (e.g. `gopher`, `google`). `auto` (or empty) lets core-tui detect the terminal background via OSC-11; explicit `dark` / `light` skips that query. Validation accepts any lowercase `[a-z0-9_-]{1,64}`; unknown names fall back to the auto path at launch. |
+| `mouse` | bool | `true` | Terminal mouse capture so the wheel scrolls the chat viewport. When enabled, plain click-drag no longer selects text — hold Shift to select as usual. Toggle at runtime with `/mouse`. |
+
+---
+
 ## `tool_output`
 
 Caps tool result size before it enters model context. Prevents a runaway `cat /huge.log` from blowing through your token budget. The built-in tools (`read_file`, `read_many_files`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `bash`, `todo`) honor these caps; consumer-provided tools should call `tools.Truncate(...)` to do the same.

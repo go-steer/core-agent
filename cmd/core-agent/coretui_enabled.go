@@ -154,11 +154,14 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 		},
 		// UI overrides from cfg.UI (config.UIConfig). ForceTheme
 		// short-circuits the OSC-11 query when the operator
-		// explicitly picks dark/light; Mouse threads the *bool
-		// pointer through (nil = on, false = off) — see
-		// core-tui Options docs for the semantics.
-		ForceTheme: uiThemeToCoreTui(deps.Cfg),
-		Mouse:      uiMouseToCoreTui(deps.Cfg),
+		// explicitly picks dark/light; InitialThemeName seeds a
+		// named theme (gopher, google, ...) previously chosen via
+		// the /theme picker. Mouse threads the *bool pointer
+		// through (nil = on, false = off) — see core-tui Options
+		// docs for the semantics.
+		ForceTheme:       uiThemeToCoreTui(deps.Cfg),
+		InitialThemeName: uiInitialThemeName(deps.Cfg),
+		Mouse:            uiMouseToCoreTui(deps.Cfg),
 		PermissionMode: coretui.PermissionModeWiring{
 			Initial: translateMode(deps.Gate.Mode()),
 			Set: func(m coretui.PermissionMode) error {
@@ -211,6 +214,12 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 				return nil
 			}
 			return persistModelChoice(deps.AgentsDir, id)
+		},
+		PersistThemeChoice: func(name string) error {
+			if deps.AgentsDir == "" {
+				return nil
+			}
+			return persistThemeChoice(deps.AgentsDir, name)
 		},
 	}
 
@@ -1300,12 +1309,11 @@ func splitFunctionResponse(resp *genai.FunctionResponse) (map[string]any, string
 	return resp.Response, ""
 }
 
-// uiThemeToCoreTui maps cfg.UI.Theme (the "auto"/"dark"/"light"
-// strings the operator writes in .agents/config.json) to the
-// matching coretui.ForceTheme value. Unknown / empty / "auto"
-// leave the field at "" so core-tui keeps its OSC-11 auto-detect
-// behavior. config.Validate already rejects junk values upstream,
-// so this is a thin pass-through with a defensive whitelist.
+// uiThemeToCoreTui maps cfg.UI.Theme to coretui.Options.ForceTheme.
+// ForceTheme is the OSC-11 override knob — it only accepts the
+// reserved buckets ("", "dark", "light"). Named themes (gopher,
+// google, ...) flow through uiInitialThemeName → InitialThemeName
+// instead, NOT through this field.
 func uiThemeToCoreTui(cfg *config.Config) string {
 	if cfg == nil {
 		return coretui.ThemeAuto
@@ -1317,6 +1325,23 @@ func uiThemeToCoreTui(cfg *config.Config) string {
 		return coretui.ThemeLight
 	default:
 		return coretui.ThemeAuto
+	}
+}
+
+// uiInitialThemeName returns the named-theme seed for
+// coretui.Options.InitialThemeName so a previously-persisted
+// /theme pick survives across launches. Empty for the reserved
+// buckets ("", "auto", "dark", "light") — those go through
+// ForceTheme. Empty for nil cfg.
+func uiInitialThemeName(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	switch cfg.UI.Theme {
+	case "", config.ThemeAuto, config.ThemeDark, config.ThemeLight:
+		return ""
+	default:
+		return cfg.UI.Theme
 	}
 }
 

@@ -63,8 +63,12 @@ func TestValidate_UITheme(t *testing.T) {
 		{ThemeAuto, false},
 		{ThemeDark, false},
 		{ThemeLight, false},
-		{"midnight", true},
-		{"DARK", true}, // case-sensitive — guard against typos
+		{"gopher", false},               // named theme from core-tui's BuiltinThemes
+		{"tokyo-night", false},          // hyphens allowed
+		{"my_theme_2", false},           // underscores + digits allowed
+		{"DARK", true},                  // uppercase rejected — typo guard
+		{"midnight!", true},             // punctuation rejected
+		{strings.Repeat("a", 65), true}, // length cap
 	}
 	for _, tc := range cases {
 		t.Run(tc.theme, func(t *testing.T) {

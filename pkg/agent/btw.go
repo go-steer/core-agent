@@ -75,10 +75,19 @@ func (a *Agent) AskSideQuestion(ctx context.Context, question string) (string, e
 		// when the answer isn't in history.
 	}
 
+	// Capture usage and commit once after the loop — see
+	// recordInternalLLMUsage's docstring for the shape. /btw was the
+	// second internal-LLM caller bypassing the tracker before #61's
+	// fix.
+	var lastIn, lastOut int
 	var b strings.Builder
 	for resp, err := range a.model.GenerateContent(ctx, req, false) {
 		if err != nil {
 			return "", fmt.Errorf("agent: AskSideQuestion: generate: %w", err)
+		}
+		if resp != nil && resp.UsageMetadata != nil {
+			lastIn = int(resp.UsageMetadata.PromptTokenCount)
+			lastOut = int(resp.UsageMetadata.CandidatesTokenCount)
 		}
 		if resp == nil || resp.Content == nil {
 			continue
@@ -97,6 +106,7 @@ func (a *Agent) AskSideQuestion(ctx context.Context, question string) (string, e
 			}
 		}
 	}
+	a.recordInternalLLMUsage(lastIn, lastOut)
 	out := strings.TrimSpace(b.String())
 	if out == "" {
 		return "", errors.New("agent: AskSideQuestion: model returned no text")

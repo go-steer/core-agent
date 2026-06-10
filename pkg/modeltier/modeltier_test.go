@@ -107,3 +107,46 @@ func TestDefaultCompactionThresholds(t *testing.T) {
 		t.Errorf("DefaultCompactionThresholds() should return a fresh map; caller mutation leaked through")
 	}
 }
+
+// Pins the small-tier-parent guard's classifier (#121). The CLI
+// uses IsSmall to decide whether to fire the warn/refuse path —
+// false-positives are operator-hostile (refuse on a frontier
+// model) and false-negatives let small-tier sessions through. Both
+// directions need explicit coverage so an accidental Classify
+// table edit (e.g. mis-tagging a new Flash variant) fails CI here
+// rather than in operator smoke.
+func TestIsSmall(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		// Small-tier — must trigger the guard.
+		{"gemini-2.5-flash", true},
+		{"gemini-3.5-flash", true},
+		{"claude-haiku-4-5", true},
+		{"claude-haiku-4-5-20251001", true},
+		{"claude-3-5-haiku-latest", true},
+
+		// Not small — must NOT trigger.
+		{"gemini-3.5-pro", false},
+		{"gemini-2.5-pro", false},
+		{"claude-opus-4-7", false},
+		{"claude-opus-4-8", false},
+		{"claude-sonnet-4-6", false},
+
+		// Unknown — must NOT trigger (false-positive risk on
+		// newly-released models the table doesn't know yet).
+		{"some-future-model-7b", false},
+		{"", false},
+		{"echo", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			t.Parallel()
+			if got := modeltier.IsSmall(tc.model); got != tc.want {
+				t.Errorf("IsSmall(%q) = %v, want %v", tc.model, got, tc.want)
+			}
+		})
+	}
+}

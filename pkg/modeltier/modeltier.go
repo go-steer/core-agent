@@ -131,3 +131,17 @@ func containsAny(s string, subs ...string) bool {
 	}
 	return false
 }
+
+// IsSmall reports whether modelID classifies as TierSmall. Unknown
+// models return false rather than guessing — "don't fire the
+// small-tier guard on something we can't classify" is the safer
+// default (the alternative would fire false-positive warnings on
+// every newly-released model the operator picks up before
+// pkg/modeltier catches up).
+//
+// Used by the small-tier-parent guard (#121) at startup; cheaper
+// than callers re-implementing the Classify == TierSmall check
+// and clearer at the call site.
+func IsSmall(modelID string) bool {
+	return Classify(modelID) == TierSmall
+}

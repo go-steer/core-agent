@@ -180,6 +180,13 @@ Beyond `--provider` / `-m` / `-p`, the flags that come up most often:
                                 alert when e.g. 5 identical tool calls fire
                                 in a row. v1 ships warn-mode + one signal;
                                 pause/auto-escalate modes deferred.
+--small-tier-parent=MODE        what to do when an interactive session
+                                resolves to a small-tier parent model
+                                (Flash/Haiku-class — these models work
+                                well as agentic_* subtask workers but
+                                loop and stall as the parent). One of
+                                warn|refuse|allow; default warn. Skipped
+                                under -p, --yolo, or unknown-tier models.
 ```
 
 Use `--ask=auto` when your `AGENTS.md` instructs the model to ask before some action — the agent gets a clean refusal in headless contexts instead of blocking forever. See [Library API → Prompter]({{< relref "/docs/library/api.md#prompter" >}}).

@@ -121,7 +121,31 @@ Useful for project-local defaults (an infra repo where debugging is the typical 
 - **`--agentic-small-model`** — per-provider default already picked by [#122](https://github.com/go-steer/core-agent/issues/122).
 - **Per-tier compaction thresholds** in `compaction.threshold_by_tier` config — those still win for their specific tier even when a task class sets the fallback `Threshold`. Operators who've carefully tuned per-tier thresholds keep them.
 
-Future: an out-of-band watchdog ([#123](https://github.com/go-steer/core-agent/issues/123) PR 2) that catches sessions going off-rails regardless of which task class was picked, with an `/escalate` slash for mid-session model swaps. Different signal (behavioral pattern detection) from this PR's task-class defaults (operator-declared posture).
+### Small-tier-parent guard (since v2.5)
+
+The `--task` flag picks a sensible model tier for each class, but explicit `--model` always wins. When the operator's explicit choice (or their config-file default) lands on a small-tier model (Flash, Haiku, etc.) for the *parent*, a startup-time guard fires by default ([#121](https://github.com/go-steer/core-agent/issues/121)):
+
+```
+core-agent: small-tier parent: gemini-3.5-flash is a small-tier model. Small-tier
+  models work well as subtask workers (--agentic-small-model) but loop and stall
+  as the parent for long interactive sessions. Consider a frontier or mid-tier
+  model for the parent — e.g. --model gemini-3.5-pro --agentic-small-model
+  gemini-3.5-flash. Pass --small-tier-parent=allow to suppress this notice.
+```
+
+Modes:
+
+| `--small-tier-parent` | Behavior |
+|---|---|
+| `warn` (default) | Logs the notice and proceeds. |
+| `refuse` | Exits with config-error code. Useful for supervised deploys. |
+| `allow` | Suppresses the check entirely. |
+
+Skipped regardless when `-p` (one-shot — operator may be scripting Flash on purpose), `--yolo` (trust-the-operator), or the resolved model's tier doesn't classify (unknown / future model).
+
+Config-file equivalent: `safety.small_tier_parent`. CLI overrides config; default is `warn`.
+
+The 2026-06-08 smoke that motivated this guard burned ~$80 across three sessions on `gemini-3.5-flash` as the parent — the same bug an Opus-tier session found in a handful of turns.
 
 ---
 

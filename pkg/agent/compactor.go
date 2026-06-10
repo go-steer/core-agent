@@ -337,9 +337,21 @@ func (a *Agent) runSummarizer(ctx context.Context, spec summarizerSpec) (summari
 
 	start := time.Now()
 	var b strings.Builder
+	// Capture usage from the streamed response. The summarizer is a
+	// single LLM call (one TurnComplete), so we just overwrite as
+	// events arrive and commit once after the loop — same shape as
+	// the subtask tracker.Append in subtask.go's Run loop. Without
+	// this, summarizer turns escape /stats accounting (issue #61) and
+	// therefore also escape the --max-turn-cost-usd / --max-session-
+	// cost-usd ceilings from #145.
+	var lastIn, lastOut int
 	for resp, err := range a.model.GenerateContent(ctx, req, false) {
 		if err != nil {
 			return summarizerOutcome{}, fmt.Errorf("agent: %s: generate: %w", spec.operation, err)
+		}
+		if resp != nil && resp.UsageMetadata != nil {
+			lastIn = int(resp.UsageMetadata.PromptTokenCount)
+			lastOut = int(resp.UsageMetadata.CandidatesTokenCount)
 		}
 		if resp == nil || resp.Content == nil || resp.Partial {
 			continue
@@ -351,6 +363,7 @@ func (a *Agent) runSummarizer(ctx context.Context, spec summarizerSpec) (summari
 		}
 	}
 	elapsed := time.Since(start)
+	a.recordInternalLLMUsage(lastIn, lastOut)
 	summary := strings.TrimSpace(b.String())
 	if summary == "" {
 		return summarizerOutcome{}, fmt.Errorf("agent: %s: model returned no summary text", spec.operation)

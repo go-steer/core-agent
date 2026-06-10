@@ -168,9 +168,59 @@ Tune from your own usage — `/stats` shows current session cost; pick bounds at
 
 - **Compaction** (above) caps context not money.
 - **Cost ceiling** caps money regardless of why.
-- **Watchdog** ([#123](https://github.com/go-steer/core-agent/issues/123) — pending) catches behavioral patterns (repeated identical tool calls, no-new-files-touched).
+- **Watchdog** (below) catches behavioral patterns (repeated identical tool calls) without waiting for the dollar count to add up.
 
-All three are complementary; all three are off-by-default until configured.
+All three are complementary; the cost ceiling is off-by-default until configured; the watchdog defaults to warn-mode.
+
+---
+
+## Watchdog (behavioral observer — since v2.5)
+
+Compaction caps the *context* dimension. The cost ceiling caps the *dollar* dimension. The watchdog catches the *behavioral* dimension — a session going off-rails (e.g. an agent stuck calling `read_file` on the same path five times in a row, the [#144](https://github.com/go-steer/core-agent/issues/144) pattern) before the dollar count gets large enough to trip the cost ceiling.
+
+### Modes
+
+| Mode | What it does |
+|---|---|
+| `--watchdog=warn` (default) | Observes the tool-call stream. When a signal trips, logs a structured alert to the operator via the normal status channel (`send()` callback for CLI; future SSE event for attach-mode). Does NOT pause the turn. |
+| `--watchdog=off` | No observation. |
+
+Future modes — `prompt` (pause turn + ask operator via the existing permissions prompter) and `auto` (call `Agent.SwapModel` to escalate to a frontier model without operator interaction) — are designed but deferred. Same for additional signals (tools-without-text, files-not-touched, context-growth-rate, cost-burn-rate) and an operator `/escalate` slash for manual model swaps.
+
+### v1 signal: repeated identical tool calls
+
+One signal ships in v1: `repeated-tool-call`, threshold 5. Trips when the same `(tool name, JSON-serialized args)` pair appears five times in a row. Catches the runaway loop pattern from [#144](https://github.com/go-steer/core-agent/issues/144) and similar shapes.
+
+- "Consecutive" is the keyword — `a → b → a → b → a` doesn't trip (no run of identical calls); `a → a → a → a → a` does.
+- Args comparison is literal-string. Calls with semantically-equivalent but textually-different args (e.g. `"main.go"` vs `"/workspace/main.go"`) aren't detected as repeats. Tool-specific canonicalization is a future enhancement.
+- One alert per stuck pattern, not one per tool call past the threshold — operators get a single notice, not flood.
+
+### Composition
+
+The watchdog is the *behavioral signal layer*. Paired with:
+
+- **Per-tier compaction thresholds** ([#119](https://github.com/go-steer/core-agent/issues/119)) — the context signal.
+- **Cost ceiling** ([#145](https://github.com/go-steer/core-agent/issues/145)) — the dollar signal. The hard backstop when behavioral signals miss.
+- **Task class** ([#123 PR 1](https://github.com/go-steer/core-agent/issues/123)) — the operator-declared posture layer (different signal, set up-front rather than detected at runtime).
+
+### Library usage
+
+```go
+import (
+    "github.com/go-steer/core-agent/pkg/agent"
+    "github.com/go-steer/core-agent/pkg/watchdog"
+)
+
+w := watchdog.NewDefaultWatchdog()
+a, err := agent.New(model,
+    agent.WithWatchdog(w, func(alert watchdog.Alert) {
+        log.Printf("watchdog: %s", alert)
+    }),
+    // ... other options
+)
+```
+
+The `Watchdog` interface lets you plug in a custom implementation (same composability pattern as `Compactor` / `Checkpointer`). For most operators the default — `NewDefaultWatchdog()` with `RepeatedToolCallSignal(threshold=5)` wired in — is sufficient.
 
 ---
 

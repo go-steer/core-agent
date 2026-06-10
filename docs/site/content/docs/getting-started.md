@@ -175,6 +175,11 @@ Beyond `--provider` / `-m` / `-p`, the flags that come up most often:
                                 until Agent.ResetCostCeiling is called.
 --max-session-cost-usd=N        cap cumulative session spend at $N. Same
                                 trip + refuse behavior.
+--watchdog=warn|off             behavioral observer for runaway tool-call
+                                patterns (default: warn). Logs a structured
+                                alert when e.g. 5 identical tool calls fire
+                                in a row. v1 ships warn-mode + one signal;
+                                pause/auto-escalate modes deferred.
 ```
 
 Use `--ask=auto` when your `AGENTS.md` instructs the model to ask before some action — the agent gets a clean refusal in headless contexts instead of blocking forever. See [Library API → Prompter]({{< relref "/docs/library/api.md#prompter" >}}).

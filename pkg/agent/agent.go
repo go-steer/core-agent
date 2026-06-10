@@ -50,6 +50,7 @@ import (
 	"github.com/go-steer/core-agent/pkg/permissions"
 	corebuiltins "github.com/go-steer/core-agent/pkg/tools"
 	"github.com/go-steer/core-agent/pkg/usage"
+	"github.com/go-steer/core-agent/pkg/watchdog"
 )
 
 // DefaultAppName tags this process in the ADK runner. Telemetry and
@@ -197,6 +198,13 @@ type Agent struct {
 	turnStartCost       float64
 	costCeilingExceeded bool
 	costCeilingReason   string
+
+	// Watchdog (#123 PR 2). Optional behavioral observer; nil when
+	// not wired. onWatchdogAlert is called for each alert returned by
+	// watchdog.Check in the post-turn hook; default nil = collect-only
+	// (alerts accumulate but never surface — useful for tests).
+	watchdog        watchdog.Watchdog
+	onWatchdogAlert func(watchdog.Alert)
 }
 
 // attachRegistrar is the subset of *attach.SessionRegistry the agent
@@ -233,6 +241,8 @@ type options struct {
 	compactor       Compactor
 	checkpointer    Checkpointer
 	costCeiling     CostCeiling
+	watchdog        watchdog.Watchdog
+	onWatchdogAlert func(watchdog.Alert)
 	postConstruct   func(*Agent)
 
 	// Attach-extras snapshot funcs — set via WithAttachMemoryProvider /
@@ -613,6 +623,8 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		attachPromptBroker: o.attachPromptBroker,
 		checkpointer:       o.checkpointer,
 		costCeiling:        o.costCeiling,
+		watchdog:           o.watchdog,
+		onWatchdogAlert:    o.onWatchdogAlert,
 	}
 	if a.bgMgr != nil {
 		a.bgMgr.attachParent(a)
@@ -899,6 +911,13 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 			if err != nil {
 				turnErr = err
 			}
+			// Watchdog observation (#123 PR 2). Extract tool calls
+			// (FunctionCall parts) from this event and feed them to
+			// the watchdog so its signals can fire on the post-turn
+			// hook. No-op when no watchdog is wired.
+			if a.watchdog != nil && ev != nil {
+				a.observeToolCallsForWatchdog(ev)
+			}
 			if !yield(ev, err) {
 				return
 			}
@@ -914,6 +933,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		a.maybeMarkCheckpointPending()
 		a.maybeMarkCompactionPending()
 		a.maybeEnforceCostCeiling()
+		a.drainWatchdogAlerts()
 
 		// Terminal event per spec: exactly one turn-complete OR
 		// turn-error fires per turn. usage-update fires separately

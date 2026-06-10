@@ -58,6 +58,7 @@ import (
 	"github.com/go-steer/core-agent/pkg/telemetry"
 	"github.com/go-steer/core-agent/pkg/tools"
 	"github.com/go-steer/core-agent/pkg/usage"
+	"github.com/go-steer/core-agent/pkg/watchdog"
 )
 
 func main() {
@@ -129,6 +130,7 @@ func main() {
 	taskClass := flag.String("task", "", "operator-declared task class — picks a bundle of defaults (model tier, compaction threshold, agentic-tools posture, ask mode) tuned for the kind of work being done. One of: debug, implement, chat, research, review. Empty = no task class applied (substrate defaults). Explicit flags (--model, --ask, etc.) always win over the task profile. Per docs/model-selection-design.md / issue #123. Config-file equivalent: session.task_class.")
 	maxTurnCostUSD := flag.Float64("max-turn-cost-usd", 0, "per-turn spend ceiling in USD. When a single conversation turn's cumulative cost (across all model calls + subtask costs) meets or exceeds this value, the agent emits a structured turn-error (kind=cost_ceiling) and refuses new turns until the operator runs /resume-after-cost-ceiling. 0 = disabled (default). Defense against runaway tool-loops within one turn (e.g. issue #144). Pairs with --max-session-cost-usd; either or both can be set. Overrides config.agent.max_turn_cost_usd when set.")
 	maxSessionCostUSD := flag.Float64("max-session-cost-usd", 0, "session-level spend ceiling in USD. Cumulative across every turn including subtasks; same trip + refuse behavior as --max-turn-cost-usd. 0 = disabled (default). Useful for long-running autonomous deploys where per-turn cost is reasonable but the session total adds up. Overrides config.agent.max_session_cost_usd when set.")
+	watchdogMode := flag.String("watchdog", "warn", "behavioral watchdog mode (#123 PR 2). 'warn' = observe tool-call stream + log structured alerts to the operator when a runaway pattern is detected (e.g. 5 consecutive identical tool calls — the read_file loop from #144). 'off' = no observation. v1 ships warn-mode + one signal (repeated-tool-call); future modes (prompt, auto) and additional signals (tools-without-text, files-not-touched) are deferred per the design doc.")
 	agenticTools := flag.Bool("agentic-tools", true, "register the agentic tool wrappers (agentic_read_file, agentic_fetch_url, agentic_grep, agentic_research) that route through a subtask so only the digest enters the parent's context (docs/context-management-design.md Mechanism B). On by default since v2.1; pass --agentic-tools=false to register only the bare tools.")
 	agenticSmallModel := flag.String("agentic-small-model", "", "small/cheap model ID the agentic_* wrappers should route subtasks to (e.g. gemini-2.5-flash, claude-haiku-4-5). When empty, the provider's cheap-tier default is used (gemini-2.5-flash for Gemini/Vertex, claude-haiku-4-5 for Anthropic); providers without a cheap tier (echo, scripted) fall through to inheriting the parent's model. Requires --agentic-tools.")
 
@@ -145,7 +147,7 @@ func main() {
 	agentCardDocsURL := flag.String("agent-card-docs-url", "", "override documentationUrl in /.well-known/agent-card.json")
 	flag.Parse()
 
-	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *maxTurnCostUSD, *maxSessionCostUSD, *agenticTools, *agenticSmallModel,
+	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *maxTurnCostUSD, *maxSessionCostUSD, *watchdogMode, *agenticTools, *agenticSmallModel,
 		attachOpts{
 			Listen:           *attachListen,
 			UnixSocket:       *attachUnixSocket,
@@ -313,7 +315,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	return opts
 }
 
-func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, maxTurnCostUSD, maxSessionCostUSD float64, agenticTools bool, agenticSmallModel string, attachCfg attachOpts, cardCfg agentCardOpts) int {
+func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, maxTurnCostUSD, maxSessionCostUSD float64, watchdogMode string, agenticTools bool, agenticSmallModel string, attachCfg attachOpts, cardCfg agentCardOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -841,6 +843,23 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 	if ceiling.MaxTurnUSD > 0 || ceiling.MaxSessionUSD > 0 {
 		opts = append(opts, agent.WithCostCeiling(ceiling))
 		send(fmt.Sprintf("cost ceiling: per-turn=$%.4f per-session=$%.4f (refuses new turns when exceeded; clear via Agent.ResetCostCeiling)", ceiling.MaxTurnUSD, ceiling.MaxSessionUSD))
+	}
+	// Behavioral watchdog (#123 PR 2). Off when --watchdog=off;
+	// observe + log when --watchdog=warn (default). Alerts go to
+	// the operator via send(); future versions can route to SSE
+	// turn-error events or prompt the operator interactively.
+	switch strings.ToLower(strings.TrimSpace(watchdogMode)) {
+	case "off":
+		// no-op
+	case "warn", "":
+		w := watchdog.NewDefaultWatchdog()
+		opts = append(opts, agent.WithWatchdog(w, func(a watchdog.Alert) {
+			send(fmt.Sprintf("watchdog %s", a.String()))
+		}))
+		send("watchdog: warn mode (observes tool-call stream; logs structured alerts on runaway patterns)")
+	default:
+		log.Printf("invalid --watchdog mode %q (want warn|off)", watchdogMode)
+		return runner.ExitConfigError
 	}
 	if !noCheckpoint {
 		opts = append(opts, agent.WithCheckpointer(agent.NewDefaultCheckpointer()))

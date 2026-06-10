@@ -49,6 +49,7 @@ import (
 	_ "github.com/go-steer/core-agent/pkg/models/anthropic"
 	"github.com/go-steer/core-agent/pkg/models/gemini"
 	_ "github.com/go-steer/core-agent/pkg/models/mock"
+	"github.com/go-steer/core-agent/pkg/modeltier"
 	"github.com/go-steer/core-agent/pkg/permissions"
 	"github.com/go-steer/core-agent/pkg/recording"
 	"github.com/go-steer/core-agent/pkg/runner"
@@ -130,6 +131,7 @@ func main() {
 	taskClass := flag.String("task", "", "operator-declared task class — picks a bundle of defaults (model tier, compaction threshold, agentic-tools posture, ask mode) tuned for the kind of work being done. One of: debug, implement, chat, research, review. Empty = no task class applied (substrate defaults). Explicit flags (--model, --ask, etc.) always win over the task profile. Per docs/model-selection-design.md / issue #123. Config-file equivalent: session.task_class.")
 	maxTurnCostUSD := flag.Float64("max-turn-cost-usd", 0, "per-turn spend ceiling in USD. When a single conversation turn's cumulative cost (across all model calls + subtask costs) meets or exceeds this value, the agent emits a structured turn-error (kind=cost_ceiling) and refuses new turns until the operator runs /resume-after-cost-ceiling. 0 = disabled (default). Defense against runaway tool-loops within one turn (e.g. issue #144). Pairs with --max-session-cost-usd; either or both can be set. Overrides config.agent.max_turn_cost_usd when set.")
 	maxSessionCostUSD := flag.Float64("max-session-cost-usd", 0, "session-level spend ceiling in USD. Cumulative across every turn including subtasks; same trip + refuse behavior as --max-turn-cost-usd. 0 = disabled (default). Useful for long-running autonomous deploys where per-turn cost is reasonable but the session total adds up. Overrides config.agent.max_session_cost_usd when set.")
+	smallTierParent := flag.String("small-tier-parent", "", "what to do when an interactive session starts on a small-tier parent model (Flash/Haiku-class). One of warn|refuse|allow. warn (default when unset) logs a one-line operator notice but proceeds; refuse exits with a config-error code; allow suppresses the check entirely. Skipped regardless when -p (one-shot), --yolo, or the model's tier doesn't classify. Per docs/model-selection-design.md / issue #121. Config-file equivalent: safety.small_tier_parent.")
 	watchdogMode := flag.String("watchdog", "warn", "behavioral watchdog mode (#123 PR 2). 'warn' = observe tool-call stream + log structured alerts to the operator when a runaway pattern is detected (e.g. 5 consecutive identical tool calls — the read_file loop from #144). 'off' = no observation. v1 ships warn-mode + one signal (repeated-tool-call); future modes (prompt, auto) and additional signals (tools-without-text, files-not-touched) are deferred per the design doc.")
 	agenticTools := flag.Bool("agentic-tools", true, "register the agentic tool wrappers (agentic_read_file, agentic_fetch_url, agentic_grep, agentic_research) that route through a subtask so only the digest enters the parent's context (docs/context-management-design.md Mechanism B). On by default since v2.1; pass --agentic-tools=false to register only the bare tools.")
 	agenticSmallModel := flag.String("agentic-small-model", "", "small/cheap model ID the agentic_* wrappers should route subtasks to (e.g. gemini-2.5-flash, claude-haiku-4-5). When empty, the provider's cheap-tier default is used (gemini-2.5-flash for Gemini/Vertex, claude-haiku-4-5 for Anthropic); providers without a cheap tier (echo, scripted) fall through to inheriting the parent's model. Requires --agentic-tools.")
@@ -147,7 +149,7 @@ func main() {
 	agentCardDocsURL := flag.String("agent-card-docs-url", "", "override documentationUrl in /.well-known/agent-card.json")
 	flag.Parse()
 
-	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *maxTurnCostUSD, *maxSessionCostUSD, *watchdogMode, *agenticTools, *agenticSmallModel,
+	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *maxTurnCostUSD, *maxSessionCostUSD, *watchdogMode, *smallTierParent, *agenticTools, *agenticSmallModel,
 		attachOpts{
 			Listen:           *attachListen,
 			UnixSocket:       *attachUnixSocket,
@@ -315,7 +317,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	return opts
 }
 
-func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, maxTurnCostUSD, maxSessionCostUSD float64, watchdogMode string, agenticTools bool, agenticSmallModel string, attachCfg attachOpts, cardCfg agentCardOpts) int {
+func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, maxTurnCostUSD, maxSessionCostUSD float64, watchdogMode, smallTierParent string, agenticTools bool, agenticSmallModel string, attachCfg attachOpts, cardCfg agentCardOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -488,6 +490,58 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 	}
 
 	send := func(s string) { fmt.Fprintln(os.Stderr, "core-agent: "+s) }
+
+	// Small-tier-parent guard (#121). When an interactive session
+	// (REPL or attach-listen — anything that isn't `-p` one-shot)
+	// resolves to a small-tier parent model (Flash/Haiku-class),
+	// surface a notice. Small-tier models work well as agentic_*
+	// subtask workers but loop and stall as the parent for long
+	// interactive sessions. The 2026-06-08 smoke that motivated this
+	// burned ~$80 across three sessions on gemini-3.5-flash as the
+	// parent — same bug an Opus-tier session found in a handful of
+	// turns.
+	//
+	// Skipped when: prompt != "" (one-shot; operator may know what
+	// they're doing — could be a script invoking Flash on purpose);
+	// yolo (trust-the-operator mode); the resolved model's tier
+	// doesn't classify (unknown / new model — false-positive risk
+	// outweighs the warning value).
+	//
+	// Mode resolution: CLI --small-tier-parent > config
+	// safety.small_tier_parent > default "warn". Place this BEFORE
+	// the rest of agent construction so "refuse" can short-circuit
+	// without leaking listeners / tracker / etc.
+	if smallTierParent != "" {
+		cfg.Safety.SmallTierParent = smallTierParent
+	}
+	stpMode := cfg.Safety.SmallTierParent
+	if stpMode == "" {
+		stpMode = config.SmallTierParentWarn
+	}
+	if prompt == "" && !yolo && modeltier.IsSmall(cfg.Model.Name) {
+		// Use the task-class per-provider tier→model table to
+		// suggest a same-provider frontier model. Falls back to a
+		// generic Opus suggestion when the provider isn't in the
+		// table (e.g. echo / scripted in tests).
+		suggested := taskclass.ModelForTier(provider.Name(), taskclass.TierFrontier)
+		if suggested == "" {
+			suggested = "claude-opus-4-7"
+		}
+		notice := fmt.Sprintf(
+			"%s is a small-tier model. Small-tier models work well as subtask workers (--agentic-small-model) but loop and stall as the parent for long interactive sessions. Consider a frontier or mid-tier model for the parent — e.g. --model %s --agentic-small-model %s.",
+			cfg.Model.Name, suggested, cfg.Model.Name,
+		)
+		switch stpMode {
+		case config.SmallTierParentRefuse:
+			fmt.Fprintf(os.Stderr, "core-agent: refuse-on-small-tier-parent: %s Pass --small-tier-parent=warn or --small-tier-parent=allow to proceed anyway.\n", notice)
+			return runner.ExitConfigError
+		case config.SmallTierParentWarn:
+			send("small-tier parent: " + notice + " Pass --small-tier-parent=allow to suppress this notice.")
+		case config.SmallTierParentAllow:
+			// no-op
+		}
+	}
+
 	// makeMCPElicitor is build-tagged: in the default build it
 	// constructs a tui.Elicitor (and stashes the handle for
 	// launchTUI to attach later); in the slim `-tags no_tui` build

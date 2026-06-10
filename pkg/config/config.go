@@ -49,6 +49,32 @@ type Config struct {
 	UI          UIConfig          `json:"ui,omitempty"`
 	Compaction  CompactionConfig  `json:"compaction,omitempty"`
 	Session     SessionConfig     `json:"session,omitempty"`
+	Safety      SafetyConfig      `json:"safety,omitempty"`
+}
+
+// SafetyConfig carries operator-facing safety guardrails — things
+// that are NOT permission gates (those live in PermissionsConfig)
+// but rather "the operator probably misconfigured something" checks.
+// Today: just the small-tier-parent guard (#121).
+type SafetyConfig struct {
+	// SmallTierParent controls what happens when an interactive
+	// session starts on a small-tier parent model (Flash/Haiku-class).
+	// These models work well as agentic_* subtask workers (#118-122)
+	// but loop and stall as the parent for long interactive sessions
+	// — see #121 for the smoke that motivated this guard.
+	//
+	// Values: "warn" (default) logs a one-line operator notice but
+	// proceeds; "refuse" exits with a config-error code; "allow"
+	// suppresses the check entirely. Empty == "warn".
+	//
+	// The check is skipped regardless when:
+	//   - `-p` one-shot mode (operator knows what they're doing;
+	//     might be a script invoking Flash on purpose)
+	//   - `--yolo` (trust-the-operator mode)
+	//   - The parent's tier doesn't classify (unknown model)
+	//
+	// CLI override: --small-tier-parent=warn|refuse|allow.
+	SmallTierParent string `json:"small_tier_parent,omitempty"`
 }
 
 // SessionConfig carries per-session presets — currently just the
@@ -580,8 +606,23 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("config: unknown ui.theme %q (want one of %q, %q, %q)", c.UI.Theme, ThemeAuto, ThemeDark, ThemeLight)
 	}
+	switch c.Safety.SmallTierParent {
+	case "", SmallTierParentWarn, SmallTierParentRefuse, SmallTierParentAllow:
+		// ok; "" defaults to warn.
+	default:
+		return fmt.Errorf("config: unknown safety.small_tier_parent %q (want one of %q, %q, %q)", c.Safety.SmallTierParent, SmallTierParentWarn, SmallTierParentRefuse, SmallTierParentAllow)
+	}
 	return nil
 }
+
+// Small-tier-parent mode constants. See SafetyConfig.SmallTierParent
+// for behavior. Exported so consumers (CLI, library) can reference
+// the canonical strings.
+const (
+	SmallTierParentWarn   = "warn"
+	SmallTierParentRefuse = "refuse"
+	SmallTierParentAllow  = "allow"
+)
 
 // validAccessSpec mirrors permissions.ParseAccess's accept set
 // without importing permissions (which would create a config →

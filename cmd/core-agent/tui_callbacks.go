@@ -173,6 +173,23 @@ func persistModelChoice(agentsDir, modelID string) error {
 	return config.Save(filepath.Join(agentsDir, config.ConfigFileName), cfg)
 }
 
+// persistThemeChoice writes the picker's selection to
+// .agents/config.json so /theme survives across runs. Validates
+// before save so a bad name surfaces as a picker error instead
+// of silently corrupting the file (config.Save itself does not
+// validate).
+func persistThemeChoice(agentsDir, themeName string) error {
+	cfg, err := config.Load(agentsDir)
+	if err != nil {
+		return err
+	}
+	cfg.UI.Theme = themeName
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	return config.Save(filepath.Join(agentsDir, config.ConfigFileName), cfg)
+}
+
 // rebuildPricingCatalog re-reads every pricing source and installs
 // the fresh catalog into usage.SetCatalog. Called after /pricing
 // refresh + /pricing set so subsequent cost lookups see the new

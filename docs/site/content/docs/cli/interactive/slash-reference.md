@@ -74,6 +74,8 @@ Pattern grammar: `<tool>:<glob>` (e.g., `bash:git diff*`, `read_file:internal/**
 
 | Command | Aliases | Effect |
 |---|---|---|
+| `/theme` | | Open the theme picker — arrows preview each theme live, Enter accepts and writes the choice to `.agents/config.json` (`ui.theme`), Esc restores the theme that was active when the picker opened |
+| `/theme <name>` | | Switch directly to a named theme without opening the picker; persists the same way. `/theme` with no argument lists choices |
 | `/mouse` | | Toggle terminal mouse capture (off = native shell selection + scroll wheel) |
 | `/keys` | | Print the keybinding cheat sheet |
 

@@ -126,15 +126,17 @@ type CompactionConfig struct {
 // optional with sensible defaults — operators only need to set
 // what they want to override.
 type UIConfig struct {
-	// Theme picks the Glamour rendering style for assistant
-	// markdown. One of:
+	// Theme picks the rendering style for the core-tui surface.
+	// Three reserved buckets:
 	//   - "auto"  (default) — detect via terminal background query.
 	//   - "dark"            — force dark theme; skips the OSC-11 query.
 	//   - "light"           — force light theme; skips the OSC-11 query.
-	//
-	// Explicit "dark"/"light" is preferred on terminals where the
-	// background query is unreliable (some SSH stacks, tmux
-	// passthrough quirks). Empty string is equivalent to "auto".
+	// Any other lowercase identifier (letters, digits, dash,
+	// underscore) is treated as a named theme from core-tui's
+	// BuiltinThemes registry (e.g. "gopher", "google"). The /theme
+	// picker writes back through PersistThemeChoice using these
+	// names, so the field round-trips picker choices. Unknown
+	// names fall back to the auto path at launch.
 	Theme string `json:"theme,omitempty"`
 
 	// Mouse enables terminal mouse capture so the wheel scrolls the
@@ -154,9 +156,9 @@ func (u UIConfig) MouseEnabled() bool {
 	return *u.Mouse
 }
 
-// Theme constants for UIConfig.Theme. Validation in validateUI
-// rejects any other non-empty value so a typo doesn't silently
-// fall through to the default.
+// Theme constants for UIConfig.Theme. Reserved buckets;
+// any other lowercase identifier accepted by validateUI is
+// passed through to core-tui as a named-theme lookup.
 const (
 	ThemeAuto  = "auto"
 	ThemeDark  = "dark"
@@ -604,7 +606,9 @@ func (c *Config) Validate() error {
 	case "", ThemeAuto, ThemeDark, ThemeLight:
 		// ok; "" is equivalent to "auto".
 	default:
-		return fmt.Errorf("config: unknown ui.theme %q (want one of %q, %q, %q)", c.UI.Theme, ThemeAuto, ThemeDark, ThemeLight)
+		if !validNamedTheme(c.UI.Theme) {
+			return fmt.Errorf("config: invalid ui.theme %q (want %q/%q/%q or a lowercase named theme [a-z0-9_-]{1,64})", c.UI.Theme, ThemeAuto, ThemeDark, ThemeLight)
+		}
 	}
 	switch c.Safety.SmallTierParent {
 	case "", SmallTierParentWarn, SmallTierParentRefuse, SmallTierParentAllow:
@@ -623,6 +627,26 @@ const (
 	SmallTierParentRefuse = "refuse"
 	SmallTierParentAllow  = "allow"
 )
+
+// validNamedTheme accepts the shape core-tui's BuiltinThemes
+// registry uses: lowercase letters, digits, dash, underscore;
+// 1-64 chars. Permissive on the set (core-tui owns the registry)
+// but strict on the shape so a typo like "DARK" still fails.
+func validNamedTheme(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
 
 // validAccessSpec mirrors permissions.ParseAccess's accept set
 // without importing permissions (which would create a config →

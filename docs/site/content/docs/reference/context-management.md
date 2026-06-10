@@ -257,7 +257,7 @@ core-agent --agentic-tools=false
 | `agentic_grep` | `grep` + `read_file` | bare `grep` when matches will be many |
 | `agentic_research` | `read_file` + `grep` + `list_dir` + `glob` | open-ended investigation |
 
-Tool descriptions tell the model when to prefer the wrapper ("Use INSTEAD OF read_file when the file might be large and you only need a specific section..."). The wrappers share the parent's permission gate and per-tool output caps — the subtask isn't a security boundary, it's a *context isolation* boundary.
+Tool descriptions tell the model when to prefer the wrapper ("Use INSTEAD OF read_file (NOT IN ADDITION TO) when the file might be large..."). They also explicitly forbid the verify-with-bare-tool fallback ("Treat the digest as authoritative; DO NOT re-read with bare read_file to spot-check"). The framing pushes a model that wants to double-check toward refining the agentic call with a narrower question rather than re-fetching the raw content — defeats of the wrapper otherwise (see [#59](https://github.com/go-steer/core-agent/issues/59) for the smoke that motivated the wording). The wrappers share the parent's permission gate and per-tool output caps — the subtask isn't a security boundary, it's a *context isolation* boundary.
 
 ### Cost efficiency
 

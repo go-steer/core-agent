@@ -136,6 +136,58 @@ func TestAgenticResearch_NameAndDescription(t *testing.T) {
 	}
 }
 
+// All four descriptions must carry the anti-verify framing from
+// #59: the "Treat the digest as authoritative" + "DO NOT re-X" +
+// "NOT IN ADDITION TO" trio. Without this, frontier models tend to
+// pair an agentic_* call with a verifying bare-tool call (read_file
+// after agentic_read_file, etc.), defeating the wrapper's
+// context-savings purpose. The smoke that produced #59 found this
+// pattern on Gemini 3 Pro; the description strengthening is the
+// fix. If you're loosening any of these phrases, surface that as
+// a deliberate design change in the PR — the wording is load-
+// bearing.
+func TestAgenticTools_DescriptionsDiscourageBareToolVerify(t *testing.T) {
+	t.Parallel()
+	opts := okOpts(t)
+	cases := []struct {
+		name string
+		tool tool.Tool
+	}{
+		{"agentic_read_file", AgenticReadFile(opts)},
+		{"agentic_fetch_url", AgenticFetchURL(AgenticToolOpts{
+			AgentGetter: opts.AgentGetter,
+			InnerTools:  []tool.Tool{stubTool{name: "fetch_url"}},
+		})},
+		{"agentic_grep", AgenticGrep(AgenticToolOpts{
+			AgentGetter: opts.AgentGetter,
+			InnerTools:  []tool.Tool{stubTool{name: "grep"}, stubTool{name: "read_file"}},
+		})},
+		{"agentic_research", AgenticResearch(AgenticToolOpts{
+			AgentGetter: opts.AgentGetter,
+			InnerTools: []tool.Tool{
+				stubTool{name: "read_file"}, stubTool{name: "grep"},
+				stubTool{name: "list_dir"}, stubTool{name: "glob"},
+			},
+		})},
+	}
+	wantPhrases := []string{
+		"authoritative",   // digest framing
+		"NOT IN ADDITION", // explicit forbiddance of pairing with bare tool
+		"DO NOT",          // capitalized warning
+		"narrower",        // recommended remedy when the digest doesn't cover something
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			desc := tc.tool.Description()
+			for _, phrase := range wantPhrases {
+				if !strings.Contains(desc, phrase) {
+					t.Errorf("description missing required phrase %q:\n%s", phrase, desc)
+				}
+			}
+		})
+	}
+}
+
 // --- panic-on-misconfiguration ---
 
 func TestAgenticReadFile_PanicsWithoutAgentGetter(t *testing.T) {

@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/go-steer/core-agent/pkg/attach"
+	"github.com/go-steer/core-agent/pkg/auth"
 )
 
 // inboxMessage pairs an inbox message with the prompt_id assigned at
@@ -32,9 +33,18 @@ import (
 // so an operator-typed prompt can be linked to its downstream
 // turn-complete or turn-error. Internal-only — public DrainInbox()
 // keeps the legacy []string shape.
+//
+// caller is the per-message turn originator stamped at Inject /
+// InjectAs time. Zero value (Identity == "") means the message
+// arrived without an attached identity (legacy Inject path,
+// single-user deployments). When the agent loop drains a batch with
+// mixed callers, the LAST message's caller becomes the turn
+// originator per docs/multi-session-design.md (the turn answers the
+// most recent ask).
 type inboxMessage struct {
-	id   string
-	text string
+	id     string
+	text   string
+	caller auth.Caller
 }
 
 // newPromptID returns a new prompt_id. UUID v7 is sortable by
@@ -93,14 +103,17 @@ var ErrInboxClosed = errors.New("agent: inbox closed")
 // waiting Agent.InboxArrived consumer wakes up. Returns the
 // prompt_id assigned to the new message so the caller can emit a
 // downstream `inbox` event carrying the correlation handle.
-func (q *inbox) push(msg string) (string, error) {
+//
+// caller is the originator stamped on the message; zero value means
+// "no attached identity" (legacy Inject path).
+func (q *inbox) push(msg string, caller auth.Caller) (string, error) {
 	id := newPromptID()
 	q.mu.Lock()
 	if q.closed {
 		q.mu.Unlock()
 		return "", ErrInboxClosed
 	}
-	q.messages = append(q.messages, inboxMessage{id: id, text: msg})
+	q.messages = append(q.messages, inboxMessage{id: id, text: msg, caller: caller})
 	if len(q.messages) > defaultInboxCap {
 		// Drop oldest with a logged warning so a stuck producer
 		// can't deadlock the agent.
@@ -252,7 +265,31 @@ func FormatAutoContinueInbox(messages []string) string {
 //
 // Returns ErrInboxClosed once the agent has been shut down; callers
 // publishing on an unrelated lifecycle should treat that as "stop."
+//
+// Inject queues without an originator identity. Callers that have a
+// per-request auth.Caller (typically attach handlers in a
+// multi-session deployment) should use InjectAs instead — the caller
+// is threaded into the turn context so the eventlog metadata sidecar
+// and per-caller MCP path see who triggered the turn.
 func (a *Agent) Inject(message string) error {
+	return a.InjectAs(message, auth.Caller{})
+}
+
+// InjectAs is Inject with a per-message originator identity. The
+// caller is stored on the queued message and used as the turn
+// originator when the inbox drains: the agent loop wraps the turn
+// context with auth.WithCaller(caller) so eventlog metadata, MCP
+// outbound context, and other caller-aware substrates see the
+// identity that triggered the turn.
+//
+// Zero-value caller (Identity == "") is equivalent to Inject — no
+// identity is threaded.
+//
+// When multiple injects queue between turns, the LAST message's
+// caller wins as the turn originator (per
+// docs/multi-session-design.md "the turn answers the most recent
+// ask"). Same prompt_id correlation, same SSE events as Inject.
+func (a *Agent) InjectAs(message string, caller auth.Caller) error {
 	if a == nil {
 		return errors.New("agent: nil receiver")
 	}
@@ -263,7 +300,7 @@ func (a *Agent) Inject(message string) error {
 		// do, for example) we don't want to panic.
 		return errors.New("agent: inbox not initialised (construct via agent.New)")
 	}
-	id, err := a.inbox.push(message)
+	id, err := a.inbox.push(message, caller)
 	if err != nil {
 		return err
 	}
@@ -297,25 +334,46 @@ func (a *Agent) Inject(message string) error {
 // Emits an `inbox`/dequeued event for each drained message with the
 // message's prompt_id, so SSE consumers can correlate the dequeue
 // with the earlier queued event.
+//
+// Callers that need the per-message originator identity (multi-session
+// turn threading) should use drainInboxFull instead (internal). The
+// public DrainInbox shape is preserved for external harnesses that
+// only care about the text payloads.
 func (a *Agent) DrainInbox() []string {
+	texts, _ := a.drainInboxFull()
+	return texts
+}
+
+// drainInboxFull is the internal drain variant used by Agent.Run to
+// pick up the turn originator alongside the message texts. Returns
+// the last non-empty caller in the drained batch (per
+// docs/multi-session-design.md, "the turn answers the most recent
+// ask"). Zero originator when no message carried an identity — the
+// caller then runs the turn without wrapping the context.
+//
+// Emits the same `inbox`/dequeued events DrainInbox emits, so the
+// public-method side effect is preserved.
+func (a *Agent) drainInboxFull() ([]string, auth.Caller) {
 	if a == nil || a.inbox == nil {
-		return nil
+		return nil, auth.Caller{}
 	}
 	msgs := a.inbox.drain()
 	if len(msgs) == 0 {
-		return nil
+		return nil, auth.Caller{}
 	}
-	for _, m := range msgs {
+	var originator auth.Caller
+	out := make([]string, len(msgs))
+	for i, m := range msgs {
 		a.emit(attach.EventInbox, attach.InboxEvent{
 			State:    attach.InboxStateDequeued,
 			PromptID: m.id,
 		})
-	}
-	out := make([]string, len(msgs))
-	for i, m := range msgs {
 		out[i] = m.text
+		if m.caller.Identity != "" {
+			originator = m.caller // last-write-wins
+		}
 	}
-	return out
+	return out, originator
 }
 
 // PendingInboxCount peeks at the inbox without draining it. Useful

@@ -77,10 +77,28 @@ type Stream interface {
 // Entry is one row from the event log: the assigned seq plus the
 // underlying ADK session.Event (loaded via the paired
 // session.Service).
+//
+// Metadata is an optional sidecar map populated by a MetadataExtractor
+// (see WithMetadataExtractor). The eventlog package itself is agnostic
+// to the keys — agent.Agent wires an extractor that pulls
+// auth.Caller.Identity (key "caller") and proxy attribution
+// (key "proxy_by") from the request context. Rows persisted before
+// the sidecar column shipped read back as a nil Metadata map.
 type Entry struct {
-	Seq   int64
-	Event *session.Event
+	Seq      int64
+	Event    *session.Event
+	Metadata map[string]string
 }
+
+// MetadataExtractor pulls the per-event sidecar metadata from the
+// context at Append time. Return nil (or empty map) to skip — empty
+// maps round-trip as nil on the read side. Callers wire an extractor
+// via WithMetadataExtractor; the default is no-op (preserves the
+// pre-sidecar shape on disk).
+//
+// The function is called inside Append's request context, so it can
+// safely fetch request-scoped values without spawning goroutines.
+type MetadataExtractor func(ctx context.Context) map[string]string
 
 // Handle bundles the Stream with the session.Service that writes to
 // the same database. agent.WithEventLog(handle) wires both into an
@@ -126,9 +144,10 @@ func (h *Handle) Close() error {
 type Option func(*openOpts)
 
 type openOpts struct {
-	watchInterval time.Duration
-	gormConfig    *gorm.Config
-	skipWAL       bool
+	watchInterval     time.Duration
+	gormConfig        *gorm.Config
+	skipWAL           bool
+	metadataExtractor MetadataExtractor
 }
 
 func defaultOpenOpts() openOpts {
@@ -161,6 +180,19 @@ func WithGORMConfig(c *gorm.Config) Option {
 // in-memory databases or read-only setups where WAL adds no value.
 func WithSkipWAL() Option {
 	return func(o *openOpts) { o.skipWAL = true }
+}
+
+// WithMetadataExtractor wires a function that produces sidecar
+// metadata for each appended event. The map (JSON-encoded) is stored
+// in the overlay row's metadata column and surfaces on Entry.Metadata
+// at read time. Nil disables the sidecar (default).
+//
+// agent.New wires an extractor that pulls the per-request caller +
+// proxy attribution from the context so multi-session audit logs
+// carry who triggered each event without coupling pkg/eventlog to
+// pkg/auth.
+func WithMetadataExtractor(fn MetadataExtractor) Option {
+	return func(o *openOpts) { o.metadataExtractor = fn }
 }
 
 // QueryOption filters Since/Watch results.

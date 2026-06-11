@@ -21,6 +21,8 @@ import (
 	"sync/atomic"
 
 	"google.golang.org/adk/tool"
+
+	"github.com/go-steer/core-agent/pkg/auth"
 )
 
 // AutonomousStatus describes the lifecycle state of a run started
@@ -290,13 +292,19 @@ func (h *AutonomousHandle) Stop() error {
 // second after StartAutonomous returns) or after the agent is
 // inaccessible.
 func (h *AutonomousHandle) Inject(message string) error {
+	return h.InjectAs(message, auth.Caller{})
+}
+
+// InjectAs is Inject with a per-message originator identity (see
+// Agent.InjectAs). Same lifecycle rules as Inject.
+func (h *AutonomousHandle) InjectAs(message string, caller auth.Caller) error {
 	h.mu.Lock()
 	a := h.agent
 	h.mu.Unlock()
 	if a == nil {
 		return errors.New("agent: AutonomousHandle.Inject: agent not yet constructed")
 	}
-	return a.Inject(message)
+	return a.InjectAs(message, caller)
 }
 
 // RequestWake fires the underlying agent's wake signal, interrupting

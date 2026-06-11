@@ -25,6 +25,8 @@ import (
 	"strings"
 
 	"google.golang.org/adk/session"
+
+	"github.com/go-steer/core-agent/pkg/auth"
 )
 
 // injectMaxBytes caps the size of the POST /inject body. 8 KiB is
@@ -38,13 +40,77 @@ const wakeMaxBytes = 8 * 1024
 
 // handlers bundles the dependencies the HTTP handlers need. Construct
 // via newHandlers; the server wires it onto a *http.ServeMux.
+//
+// enforceACL turns on per-session Authorize checks in
+// session-scoped handlers. Set by the server from
+// Options.MultiSessionEnabled; default false preserves single-user
+// behavior (every request passes the auth gate).
 type handlers struct {
-	reg  *SessionRegistry
-	pool *BroadcasterPool
+	reg        *SessionRegistry
+	pool       *BroadcasterPool
+	enforceACL bool
 }
 
 func newHandlers(reg *SessionRegistry, pool *BroadcasterPool) *handlers {
 	return &handlers{reg: reg, pool: pool}
+}
+
+// authorize checks the request's Caller against entry.ACL for the
+// given action. Returns true when allowed; returns false and writes a
+// 404 (NOT 403, intentionally — hiding session existence from
+// unauthorized callers prevents activity-pattern enumeration) on
+// deny.
+//
+// Always returns true when enforceACL is false — the no-enforcement
+// posture preserves single-user behavior.
+func (h *handlers) authorize(w http.ResponseWriter, r *http.Request, entry *Entry, action auth.Action) bool {
+	if !h.enforceACL {
+		return true
+	}
+	c, _ := auth.CallerFromContext(r.Context())
+	if auth.Authorize(c, action, entry.ACL) {
+		return true
+	}
+	// Same body the lookup-not-found path uses so a 404 from the auth
+	// gate is indistinguishable from a 404 for a session that genuinely
+	// doesn't exist. Operator-side audit logs (with caller identity)
+	// are how a denied access is investigated.
+	http.Error(w, "session not found", http.StatusNotFound)
+	return false
+}
+
+// lookupQualifiedAuth resolves a /sessions/{app}/{sid}/... handler's
+// target entry AND runs the per-action authorization check in one
+// call. Returns (entry, true) on success; writes the appropriate
+// error response and returns (nil, false) otherwise.
+func (h *handlers) lookupQualifiedAuth(w http.ResponseWriter, r *http.Request, action auth.Action) (*Entry, bool) {
+	app := r.PathValue("app")
+	sid := r.PathValue("sid")
+	entry, err := h.reg.Lookup(app, sid)
+	if err != nil {
+		writeLookupError(w, err)
+		return nil, false
+	}
+	if !h.authorize(w, r, entry, action) {
+		return nil, false
+	}
+	return entry, true
+}
+
+// lookupShortcutAuth is the single-segment counterpart to
+// lookupQualifiedAuth — used by handlers wired to the
+// /sessions/{sid}/... shortcut routes.
+func (h *handlers) lookupShortcutAuth(w http.ResponseWriter, r *http.Request, action auth.Action) (*Entry, bool) {
+	sid := r.PathValue("sid")
+	entry, err := h.reg.LookupSingle(sid)
+	if err != nil {
+		writeLookupError(w, err)
+		return nil, false
+	}
+	if !h.authorize(w, r, entry, action) {
+		return nil, false
+	}
+	return entry, true
 }
 
 // register wires the handler set onto a mux. Routes use Go 1.22+
@@ -98,9 +164,17 @@ type sessionDescriptor struct {
 	HasEventLog bool `json:"has_event_log"`
 }
 
-func (h *handlers) listSessions(w http.ResponseWriter, _ *http.Request) {
-	out := make([]sessionDescriptor, 0, h.reg.Len())
-	for _, e := range h.reg.List() {
+func (h *handlers) listSessions(w http.ResponseWriter, r *http.Request) {
+	entries := h.reg.List()
+	if h.enforceACL {
+		// Filter to sessions the caller may read; hide the others'
+		// existence per the design's "no leaking activity patterns"
+		// invariant.
+		c, _ := auth.CallerFromContext(r.Context())
+		entries = h.reg.ListAuthorized(c)
+	}
+	out := make([]sessionDescriptor, 0, len(entries))
+	for _, e := range entries {
 		out = append(out, sessionDescriptor{
 			AppName:     e.AppName,
 			UserID:      e.UserID,
@@ -112,21 +186,16 @@ func (h *handlers) listSessions(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *handlers) eventsQualified(w http.ResponseWriter, r *http.Request) {
-	app := r.PathValue("app")
-	sid := r.PathValue("sid")
-	entry, err := h.reg.Lookup(app, sid)
-	if err != nil {
-		writeLookupError(w, err)
+	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionRead)
+	if !ok {
 		return
 	}
 	h.streamEvents(w, r, entry)
 }
 
 func (h *handlers) eventsShortcut(w http.ResponseWriter, r *http.Request) {
-	sid := r.PathValue("sid")
-	entry, err := h.reg.LookupSingle(sid)
-	if err != nil {
-		writeLookupError(w, err)
+	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionRead)
+	if !ok {
 		return
 	}
 	h.streamEvents(w, r, entry)
@@ -202,21 +271,16 @@ type injectRequest struct {
 }
 
 func (h *handlers) injectQualified(w http.ResponseWriter, r *http.Request) {
-	app := r.PathValue("app")
-	sid := r.PathValue("sid")
-	entry, err := h.reg.Lookup(app, sid)
-	if err != nil {
-		writeLookupError(w, err)
+	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
+	if !ok {
 		return
 	}
 	h.doInject(w, r, entry)
 }
 
 func (h *handlers) injectShortcut(w http.ResponseWriter, r *http.Request) {
-	sid := r.PathValue("sid")
-	entry, err := h.reg.LookupSingle(sid)
-	if err != nil {
-		writeLookupError(w, err)
+	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
+	if !ok {
 		return
 	}
 	h.doInject(w, r, entry)
@@ -232,7 +296,8 @@ func (h *handlers) doInject(w http.ResponseWriter, r *http.Request, entry *Entry
 		http.Error(w, "inject: message is required", http.StatusBadRequest)
 		return
 	}
-	if err := entry.Agent.Inject(req.Message); err != nil {
+	caller, _ := auth.CallerFromContext(r.Context())
+	if err := entry.Agent.InjectAs(req.Message, caller); err != nil {
 		http.Error(w, fmt.Sprintf("inject: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -254,21 +319,16 @@ type wakeRequest struct {
 }
 
 func (h *handlers) wakeQualified(w http.ResponseWriter, r *http.Request) {
-	app := r.PathValue("app")
-	sid := r.PathValue("sid")
-	entry, err := h.reg.Lookup(app, sid)
-	if err != nil {
-		writeLookupError(w, err)
+	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
+	if !ok {
 		return
 	}
 	h.doWake(w, r, entry)
 }
 
 func (h *handlers) wakeShortcut(w http.ResponseWriter, r *http.Request) {
-	sid := r.PathValue("sid")
-	entry, err := h.reg.LookupSingle(sid)
-	if err != nil {
-		writeLookupError(w, err)
+	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
+	if !ok {
 		return
 	}
 	h.doWake(w, r, entry)
@@ -288,7 +348,8 @@ func (h *handlers) doWake(w http.ResponseWriter, r *http.Request, entry *Entry) 
 		return
 	}
 	if req.Prompt != "" {
-		if err := entry.Agent.Inject(req.Prompt); err != nil {
+		caller, _ := auth.CallerFromContext(r.Context())
+		if err := entry.Agent.InjectAs(req.Prompt, caller); err != nil {
 			http.Error(w, fmt.Sprintf("wake: inject prompt: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -326,21 +387,16 @@ func (h *handlers) doWake(w http.ResponseWriter, r *http.Request, entry *Entry) 
 // ctx.Canceled response.
 
 func (h *handlers) interruptQualified(w http.ResponseWriter, r *http.Request) {
-	app := r.PathValue("app")
-	sid := r.PathValue("sid")
-	entry, err := h.reg.Lookup(app, sid)
-	if err != nil {
-		writeLookupError(w, err)
+	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
+	if !ok {
 		return
 	}
 	h.doInterrupt(w, r, entry)
 }
 
 func (h *handlers) interruptShortcut(w http.ResponseWriter, r *http.Request) {
-	sid := r.PathValue("sid")
-	entry, err := h.reg.LookupSingle(sid)
-	if err != nil {
-		writeLookupError(w, err)
+	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
+	if !ok {
 		return
 	}
 	h.doInterrupt(w, r, entry)
@@ -458,21 +514,16 @@ func parseSince(s string) int64 {
 // against mixed-vintage agents doesn't have to special-case errors.
 
 func (h *handlers) toolsQualified(w http.ResponseWriter, r *http.Request) {
-	app := r.PathValue("app")
-	sid := r.PathValue("sid")
-	entry, err := h.reg.Lookup(app, sid)
-	if err != nil {
-		writeLookupError(w, err)
+	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionRead)
+	if !ok {
 		return
 	}
 	h.doTools(w, entry)
 }
 
 func (h *handlers) toolsShortcut(w http.ResponseWriter, r *http.Request) {
-	sid := r.PathValue("sid")
-	entry, err := h.reg.LookupSingle(sid)
-	if err != nil {
-		writeLookupError(w, err)
+	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionRead)
+	if !ok {
 		return
 	}
 	h.doTools(w, entry)
@@ -489,21 +540,16 @@ func (h *handlers) doTools(w http.ResponseWriter, entry *Entry) {
 }
 
 func (h *handlers) agentsQualified(w http.ResponseWriter, r *http.Request) {
-	app := r.PathValue("app")
-	sid := r.PathValue("sid")
-	entry, err := h.reg.Lookup(app, sid)
-	if err != nil {
-		writeLookupError(w, err)
+	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionRead)
+	if !ok {
 		return
 	}
 	h.doAgents(w, entry)
 }
 
 func (h *handlers) agentsShortcut(w http.ResponseWriter, r *http.Request) {
-	sid := r.PathValue("sid")
-	entry, err := h.reg.LookupSingle(sid)
-	if err != nil {
-		writeLookupError(w, err)
+	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionRead)
+	if !ok {
 		return
 	}
 	h.doAgents(w, entry)
@@ -520,21 +566,16 @@ func (h *handlers) doAgents(w http.ResponseWriter, entry *Entry) {
 }
 
 func (h *handlers) statusQualified(w http.ResponseWriter, r *http.Request) {
-	app := r.PathValue("app")
-	sid := r.PathValue("sid")
-	entry, err := h.reg.Lookup(app, sid)
-	if err != nil {
-		writeLookupError(w, err)
+	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionRead)
+	if !ok {
 		return
 	}
 	h.doStatus(w, entry)
 }
 
 func (h *handlers) statusShortcut(w http.ResponseWriter, r *http.Request) {
-	sid := r.PathValue("sid")
-	entry, err := h.reg.LookupSingle(sid)
-	if err != nil {
-		writeLookupError(w, err)
+	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionRead)
+	if !ok {
 		return
 	}
 	h.doStatus(w, entry)

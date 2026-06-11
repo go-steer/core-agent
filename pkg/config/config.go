@@ -458,7 +458,99 @@ type AttachConfig struct {
 	RegisterTo       string `json:"register_to,omitempty"`       // hub URL
 	RegisterEndpoint string `json:"register_endpoint,omitempty"` // expanded via os.ExpandEnv
 	RegisterName     string `json:"register_name,omitempty"`     // defaults to hostname when empty
+
+	// MultiSession enables per-caller authentication + per-session
+	// ACL on the attach listener. Zero value (disabled) keeps the
+	// daemon in single-user mode — the listener treats every request
+	// as the same anonymous Caller and TokenEnv / BearerToken still
+	// gate at the transport layer as today. See
+	// docs/multi-session-design.md.
+	MultiSession MultiSessionConfig `json:"multi_session,omitempty"`
 }
+
+// MultiSessionConfig configures the per-caller authentication +
+// per-session ACL surface introduced in v2.4. Disabled (zero value)
+// preserves single-user behavior. When enabled, the attach server
+// authenticates every request against the configured Authenticator
+// (typically a bearer table loaded from users.json) and threads the
+// resolved Caller through audit logs, per-session permission grants,
+// and outbound MCP context.
+//
+// Field-by-field detail in docs/multi-session-design.md §"Config
+// surface".
+type MultiSessionConfig struct {
+	// Enabled switches the attach listener from single-user mode
+	// (daemon-level bearer token, no per-caller threading) to
+	// multi-session mode (per-caller authentication, ACL enforcement,
+	// audit log identity threading). Default false.
+	Enabled bool `json:"enabled,omitempty"`
+
+	// UsersDir is the directory holding per-caller instruction
+	// overlays (Phase 3 / PR γ). Each subdirectory named after a
+	// Caller's Identity may contain an .agents/ tree merged on top of
+	// the daemon-wide instruction stack for sessions belonging to
+	// that Caller. Empty disables the overlay path.
+	UsersDir string `json:"users_dir,omitempty"`
+
+	// Auth selects the Authenticator implementation and its
+	// configuration. Only "bearer_table" is shipped in v2.4; OIDC /
+	// JWT / mTLS / K8s ServiceAccount kinds are designed but
+	// deferred.
+	Auth MultiSessionAuthConfig `json:"auth,omitempty"`
+
+	// AdminIdentities lists the Caller identities that bypass every
+	// per-session authorization check (Admin role). Use sparingly —
+	// these identities can read every session in the daemon.
+	AdminIdentities []string `json:"admin_identities,omitempty"`
+
+	// AllowAnonymous, when true, lets requests without a valid
+	// credential resolve to the DefaultIdentity Caller instead of
+	// returning 401. Dangerous in shared environments where every
+	// unauthenticated request becomes the same Caller. Default false.
+	AllowAnonymous bool `json:"allow_anonymous,omitempty"`
+
+	// DefaultIdentity is the Caller.Identity stamped onto the
+	// implicit anonymous Caller (when multi-session is disabled or
+	// AllowAnonymous=true). Default "anon".
+	DefaultIdentity string `json:"default_identity,omitempty"`
+
+	// ProxyIdentities lists Caller identities permitted to assert
+	// other Callers via the AssertedCallerHeader. Typical use:
+	// chat-bot service-account identities ("sa:slack-bot") that
+	// authenticate as themselves but speak on behalf of human users.
+	// Empty disables the proxy path.
+	ProxyIdentities []string `json:"proxy_identities,omitempty"`
+
+	// AssertedCallerHeader is the header name a proxy Caller uses to
+	// assert the effective identity. Default "X-Asserted-Caller".
+	AssertedCallerHeader string `json:"asserted_caller_header,omitempty"`
+}
+
+// MultiSessionAuthConfig selects which Authenticator implementation
+// the multi-session attach listener uses. Only "bearer_table" is
+// shipped in v2.4; the other kinds are designed but deferred (see
+// docs/multi-session-design.md §"Non-goals").
+type MultiSessionAuthConfig struct {
+	// Kind selects the Authenticator implementation.
+	// Recognized values:
+	//   - "" or "bearer_table" — static token → identity table loaded
+	//     from TableFile (default; v2.4)
+	// Future: "oidc" / "mtls" / "k8s_sa" (interfaces designed; not
+	// shipped in v2.4).
+	Kind string `json:"kind,omitempty"`
+
+	// TableFile is the path to users.json when Kind="bearer_table".
+	// File must be mode 0600 or stricter (the loader rejects anything
+	// laxer). Required when Kind="bearer_table" and Enabled=true.
+	TableFile string `json:"table_file,omitempty"`
+}
+
+// Recognized values for MultiSessionAuthConfig.Kind. Only the bearer
+// table is implemented in v2.4; other kinds are reserved and return
+// a validation error.
+const (
+	MultiSessionAuthKindBearerTable = "bearer_table"
+)
 
 // Permission modes.
 const (
@@ -615,6 +707,20 @@ func (c *Config) Validate() error {
 		// ok; "" defaults to warn.
 	default:
 		return fmt.Errorf("config: unknown safety.small_tier_parent %q (want one of %q, %q, %q)", c.Safety.SmallTierParent, SmallTierParentWarn, SmallTierParentRefuse, SmallTierParentAllow)
+	}
+	if c.Attach.MultiSession.Enabled {
+		// Only "bearer_table" (or empty → bearer_table default) is
+		// shipped in v2.4. Future kinds (oidc / mtls / k8s_sa) are
+		// designed in docs/multi-session-design.md but the
+		// implementations are explicitly deferred.
+		switch c.Attach.MultiSession.Auth.Kind {
+		case "", MultiSessionAuthKindBearerTable:
+			if c.Attach.MultiSession.Auth.TableFile == "" {
+				return fmt.Errorf("config: attach.multi_session.auth.table_file is required when multi_session is enabled with kind=%q", MultiSessionAuthKindBearerTable)
+			}
+		default:
+			return fmt.Errorf("config: attach.multi_session.auth.kind=%q is not shipped in this version (only %q is supported; oidc/mtls/k8s_sa are designed but deferred)", c.Attach.MultiSession.Auth.Kind, MultiSessionAuthKindBearerTable)
+		}
 	}
 	return nil
 }

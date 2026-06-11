@@ -17,6 +17,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -64,7 +65,7 @@ func TestAttachConfig_RoundTrip(t *testing.T) {
 		RegisterEndpoint: "https://${POD_IP}:7777", // unexpanded at load time
 		RegisterName:     "monitor-${HOSTNAME}",
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("AttachConfig round-trip mismatch:\n got:  %+v\n want: %+v", got, want)
 	}
 }
@@ -83,7 +84,7 @@ func TestAttachConfig_OmittedSection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if (cfg.Attach != AttachConfig{}) {
+	if !reflect.DeepEqual(cfg.Attach, AttachConfig{}) {
 		t.Errorf("Attach should be zero value when absent, got: %+v", cfg.Attach)
 	}
 }

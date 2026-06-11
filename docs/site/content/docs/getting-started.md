@@ -6,15 +6,47 @@ weight: 2
 
 ## Install
 
-Requires Go 1.26 or newer.
+### As a CLI (Go toolchain)
 
-### As a CLI
+Requires Go 1.26 or newer.
 
 ```bash
 go install github.com/go-steer/core-agent/cmd/core-agent@latest
 ```
 
 The binary lands in `$(go env GOBIN)` (or `$GOPATH/bin` if `GOBIN` is unset). Make sure that's on your `$PATH`.
+
+### As a pre-built binary (no Go toolchain needed)
+
+Cross-compiled archives for `linux/darwin × amd64/arm64` are published on the [Releases page](https://github.com/go-steer/core-agent/releases/latest), signed via Sigstore keyless.
+
+```bash
+TAG=$(gh release view --repo go-steer/core-agent --json tagName -q .tagName)
+OS=$(uname -s | tr A-Z a-z)               # linux | darwin
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+gh release download "$TAG" --repo go-steer/core-agent \
+  --pattern "core-agent_${TAG#v}_${OS}_${ARCH}.tar.gz"
+tar xzf "core-agent_${TAG#v}_${OS}_${ARCH}.tar.gz"
+./core-agent --version
+```
+
+The `core-agent-tui` remote client uses the same naming pattern (swap `core-agent` for `core-agent-tui`).
+
+Verify signatures (the checksum file signs the archives transitively):
+
+```bash
+gh release download "$TAG" --repo go-steer/core-agent --pattern 'checksums.txt*'
+cosign verify-blob \
+  --signature checksums.txt.sig --certificate checksums.txt.pem \
+  --certificate-identity-regexp '^https://github.com/go-steer/core-agent' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  checksums.txt
+sha256sum -c checksums.txt --ignore-missing
+```
+
+### As a container image
+
+See the [README's install section](https://github.com/go-steer/core-agent#install) for the three image variants (`core-agent`, `core-agent-slim`, `core-agent-tui`) and the floating-tag conventions.
 
 ### As a library
 

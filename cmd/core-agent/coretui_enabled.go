@@ -506,6 +506,17 @@ type coreAgentAdapter struct {
 func (a *coreAgentAdapter) Run(ctx context.Context, prompt string) iter.Seq2[coretui.Event, error] {
 	return func(yield func(coretui.Event, error) bool) {
 		modelName := a.inner.ModelName()
+		// Per-turn cumulative usage tracking. Gemini's UsageMetadata is
+		// cumulative across streaming chunks within one model turn — the
+		// last chunk carries the final count, earlier chunks carry
+		// running totals. Appending on every UsageMetadata-bearing event
+		// both inflates the tracker's turn count and double-counts
+		// tokens (issue surfaced as "totals exactly 2x last turn").
+		// Mirror pkg/runner/headless.go tapUsage and
+		// pkg/agent/subtask.go:315-374: overwrite per event, commit
+		// once on TurnComplete, reset so multi-turn Run loops account
+		// each model turn separately.
+		var lastTurnIn, lastTurnOut int
 		for ev, err := range a.inner.Run(ctx, prompt) {
 			if err != nil {
 				yield(coretui.Event{}, err)
@@ -519,15 +530,7 @@ func (a *coreAgentAdapter) Run(ctx context.Context, prompt string) iter.Seq2[cor
 					InputTokens:  in,
 					OutputTokens: out,
 				}
-				// Mirror internal/tui:161 — compute pricing from the
-				// host config + feed the tracker. Without this the
-				// status sidebar's session totals + /stats stay at
-				// zero even though per-turn token counts arrive.
-				if a.deps.Tracker != nil && a.deps.Cfg != nil {
-					pricing := usage.PriceFor(modelName, a.deps.Cfg)
-					turn := a.deps.Tracker.Append(modelName, in, out, pricing)
-					te.CostUSD = turn.CostUSD
-				}
+				lastTurnIn, lastTurnOut = in, out
 			}
 			if ev.Content != nil {
 				for _, p := range ev.Content.Parts {
@@ -551,6 +554,19 @@ func (a *coreAgentAdapter) Run(ctx context.Context, prompt string) iter.Seq2[cor
 						te.Text += p.Text
 					}
 				}
+			}
+			// Commit usage exactly once per completed model turn.
+			// TurnComplete fires after the model's tool-call loops
+			// settle for that turn; the lastTurnIn/Out captured from
+			// the stream's UsageMetadata events is the final per-turn
+			// total at this point.
+			if ev.TurnComplete && (lastTurnIn > 0 || lastTurnOut > 0) {
+				if a.deps.Tracker != nil && a.deps.Cfg != nil {
+					pricing := usage.PriceFor(modelName, a.deps.Cfg)
+					turn := a.deps.Tracker.Append(modelName, lastTurnIn, lastTurnOut, pricing)
+					te.CostUSD = turn.CostUSD
+				}
+				lastTurnIn, lastTurnOut = 0, 0
 			}
 			if !yield(te, nil) {
 				return

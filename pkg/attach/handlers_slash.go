@@ -14,7 +14,11 @@
 
 package attach
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/go-steer/core-agent/pkg/auth"
+)
 
 // Slash dispatchers — POST /sessions/<sid>/slash/<name>. Wire to
 // agent.Compact / agent.Checkpoint / agent.AskSideQuestion /
@@ -31,7 +35,7 @@ import "net/http"
 
 // slashCompactQualified / Shortcut — POST /slash/compact.
 func (h *handlers) slashCompactQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveQualified(w, r)
+	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
 	if !ok {
 		return
 	}
@@ -39,7 +43,7 @@ func (h *handlers) slashCompactQualified(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *handlers) slashCompactShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveShortcut(w, r)
+	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
 	if !ok {
 		return
 	}
@@ -70,7 +74,7 @@ func (h *handlers) doSlashCompact(w http.ResponseWriter, r *http.Request, entry 
 
 // slashDoneQualified / Shortcut — POST /slash/done.
 func (h *handlers) slashDoneQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveQualified(w, r)
+	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
 	if !ok {
 		return
 	}
@@ -78,7 +82,7 @@ func (h *handlers) slashDoneQualified(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) slashDoneShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveShortcut(w, r)
+	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
 	if !ok {
 		return
 	}
@@ -108,7 +112,7 @@ func (h *handlers) doSlashDone(w http.ResponseWriter, r *http.Request, entry *En
 
 // slashBtwQualified / Shortcut — POST /slash/btw.
 func (h *handlers) slashBtwQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveQualified(w, r)
+	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
 	if !ok {
 		return
 	}
@@ -116,7 +120,7 @@ func (h *handlers) slashBtwQualified(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) slashBtwShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveShortcut(w, r)
+	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
 	if !ok {
 		return
 	}
@@ -148,7 +152,7 @@ func (h *handlers) doSlashBtw(w http.ResponseWriter, r *http.Request, entry *Ent
 
 // slashSubagentQualified / Shortcut — POST /slash/subagent.
 func (h *handlers) slashSubagentQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveQualified(w, r)
+	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
 	if !ok {
 		return
 	}
@@ -156,7 +160,7 @@ func (h *handlers) slashSubagentQualified(w http.ResponseWriter, r *http.Request
 }
 
 func (h *handlers) slashSubagentShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveShortcut(w, r)
+	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
 	if !ok {
 		return
 	}
@@ -213,7 +217,7 @@ func isSubagentSpawnerUnavailable(err error) bool {
 // before any mutating tool succeeds. Used when the operator
 // rejects an active plan and wants the agent to redraft.
 func (h *handlers) slashReplanQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveQualified(w, r)
+	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
 	if !ok {
 		return
 	}
@@ -221,7 +225,7 @@ func (h *handlers) slashReplanQualified(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *handlers) slashReplanShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveShortcut(w, r)
+	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
 	if !ok {
 		return
 	}

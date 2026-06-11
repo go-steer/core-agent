@@ -26,6 +26,7 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 
+	"github.com/go-steer/core-agent/pkg/auth"
 	"github.com/go-steer/core-agent/pkg/eventlog"
 )
 
@@ -38,14 +39,15 @@ type fixtureRegistrant struct {
 	skills         []SkillInfo
 }
 
-func (f fixtureRegistrant) AppName() string            { return f.app }
-func (f fixtureRegistrant) UserID() string             { return f.user }
-func (f fixtureRegistrant) SessionID() string          { return f.sid }
-func (f fixtureRegistrant) EventLog() *eventlog.Handle { return nil }
-func (f fixtureRegistrant) Inject(string) error        { return nil }
-func (f fixtureRegistrant) RequestWake()               {}
-func (f fixtureRegistrant) AttachSkills() []SkillInfo  { return f.skills }
-func (f fixtureRegistrant) Description() string        { return f.description }
+func (f fixtureRegistrant) AppName() string                    { return f.app }
+func (f fixtureRegistrant) UserID() string                     { return f.user }
+func (f fixtureRegistrant) SessionID() string                  { return f.sid }
+func (f fixtureRegistrant) EventLog() *eventlog.Handle         { return nil }
+func (f fixtureRegistrant) Inject(string) error                { return nil }
+func (f fixtureRegistrant) InjectAs(string, auth.Caller) error { return nil }
+func (f fixtureRegistrant) RequestWake()                       {}
+func (f fixtureRegistrant) AttachSkills() []SkillInfo          { return f.skills }
+func (f fixtureRegistrant) Description() string                { return f.description }
 
 func TestAgentCardConfig_Validate(t *testing.T) {
 	t.Parallel()

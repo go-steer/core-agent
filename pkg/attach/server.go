@@ -85,6 +85,28 @@ type Options struct {
 	// ErrUnauthenticated under the α.1 no-behavior-change posture.
 	// Zero value resolves to auth.Anonymous.
 	DefaultCaller auth.Caller
+
+	// MultiSessionEnabled turns on per-session ACL enforcement in
+	// session-scoped handlers (Authorize against entry.ACL), 401 on
+	// unauthenticated requests when AllowAnonymous is false, and the
+	// X-Asserted-Caller proxy-header resolution path. Default false
+	// preserves single-user behavior end-to-end.
+	//
+	// Operators set this via config.AttachConfig.MultiSession.Enabled.
+	MultiSessionEnabled bool
+
+	// AllowAnonymous, when MultiSessionEnabled is true, lets requests
+	// without a valid credential resolve to DefaultCaller rather than
+	// returning 401. Dangerous in shared environments — every
+	// unauthenticated request becomes the same Caller. Default false
+	// (matches the config default).
+	AllowAnonymous bool
+
+	// ProxyHeader is the header name a proxy Caller uses to assert
+	// the effective identity. Empty defaults to
+	// auth.HeaderAssertedCaller ("X-Asserted-Caller"). Honored only
+	// when MultiSessionEnabled is true.
+	ProxyHeader string
 }
 
 // Server hosts the attach-mode HTTP endpoints. Construct via
@@ -134,6 +156,7 @@ func NewServer(opts Options) (*Server, error) {
 	pool := NewBroadcasterPool()
 	mux := http.NewServeMux()
 	h := newHandlers(opts.Registry, pool)
+	h.enforceACL = opts.MultiSessionEnabled
 	h.register(mux)
 	if opts.PeerRegistry != nil {
 		ph := newPeerHandlers(opts.PeerRegistry)
@@ -200,7 +223,13 @@ func (s *Server) Bind() error {
 	// token check in AuthConfig.Middleware) gates first, then the
 	// per-caller Authenticator resolves identity onto the request
 	// context for handlers to read via auth.CallerFromContext.
-	handler := callerMiddleware(s.opts.Authenticator, s.opts.DefaultCaller, s.mux)
+	mcfg := callerMiddlewareConfig{
+		authenticator:         s.opts.Authenticator,
+		fallback:              s.opts.DefaultCaller,
+		enforceAuthentication: s.opts.MultiSessionEnabled && !s.opts.AllowAnonymous,
+		proxyHeader:           s.opts.ProxyHeader,
+	}
+	handler := callerMiddlewareWithConfig(mcfg, s.mux)
 	s.srv = &http.Server{
 		Handler:           cardBypass(s.cardHandler, s.opts.Auth.Middleware(handler)),
 		TLSConfig:         tlsCfg,

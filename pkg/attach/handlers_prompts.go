@@ -19,6 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+
+	"github.com/go-steer/core-agent/pkg/auth"
 )
 
 // PR D — HTTP-driven permission prompts. Two endpoints:
@@ -104,7 +106,7 @@ func (h *handlers) doPermsStream(w http.ResponseWriter, r *http.Request, entry *
 }
 
 func (h *handlers) permsRespondQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveQualified(w, r)
+	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
 	if !ok {
 		return
 	}
@@ -112,7 +114,7 @@ func (h *handlers) permsRespondQualified(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *handlers) permsRespondShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveShortcut(w, r)
+	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
 	if !ok {
 		return
 	}

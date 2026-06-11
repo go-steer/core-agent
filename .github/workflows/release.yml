@@ -1,0 +1,142 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Release
+
+# Cuts the GitHub Release on every `v*.*.*` tag push:
+#   - cross-compiles core-agent + core-agent-tui binaries
+#     (linux/darwin × amd64/arm64) via GoReleaser
+#   - signs the SHA-256 checksum file via Sigstore keyless
+#   - publishes the Release with notes drawn from CHANGELOG.md plus a
+#     static install/verify footer (dev/release/install-verify-footer.md.tmpl)
+#
+# Container images are built by the parallel release-images.yml on
+# the same tag push — the two workflows are independent. By the time
+# anyone reads the Release notes, both have completed.
+#
+# Manual republish (e.g. for a tag pushed before this workflow
+# existed): `gh workflow run release.yml --ref vX.Y.Z`.
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag (vX.Y.Z) — required when dispatching from a non-tag ref (e.g. a feature branch for dry-run). Optional when dispatching with --ref vX.Y.Z.'
+        required: false
+      dry_run:
+        description: 'Cross-compile only; skip Sigstore signing and GitHub Release publish. Uploads dist/ as a workflow artifact for inspection. Use to smoke-test the workflow from a feature branch.'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # create / update the GitHub Release
+  id-token: write   # cosign keyless OIDC
+
+jobs:
+  goreleaser:
+    name: GoReleaser
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # GoReleaser needs full history for changelog detection
+          # and accurate {{.Date}} / {{.FullCommit}} resolution.
+          fetch-depth: 0
+
+      # Same go-version-from-go.mod pattern as release-images.yml.
+      - name: Extract Go version from go.mod
+        id: go-version
+        run: |
+          version=$(awk '/^go / { print $2; exit }' go.mod)
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.go-version.outputs.version }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      # Resolve the effective tag and build RELEASE_NOTES.md by
+      # carving the matching `## [X.Y.Z]` section out of CHANGELOG.md
+      # and appending the static install/verify footer template.
+      - name: Compose release notes
+        id: notes
+        run: |
+          set -euo pipefail
+
+          # Resolve tag: push event → GITHUB_REF_NAME; manual dispatch
+          # → inputs.tag if provided, else GITHUB_REF_NAME (operator
+          # should --ref vX.Y.Z when republishing).
+          TAG="${GITHUB_REF_NAME}"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag }}" ]]; then
+            TAG="${{ inputs.tag }}"
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "::error::expected vX.Y.Z tag, got: ${TAG}"
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}"         >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+          # Extract CHANGELOG section: enter on `## [VERSION]`, stop
+          # at the next `## [`. Fail loudly if no section matches —
+          # release notes pointing at a missing changelog entry are
+          # worse than a failed workflow.
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { in_section=1; print; next }
+            in_section && /^## \[/    { exit }
+            in_section                { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          if [[ ! -s RELEASE_NOTES.md ]]; then
+            echo "::error::no CHANGELOG.md section found for [${VERSION}] — add one before tagging"
+            exit 1
+          fi
+
+          # Append the install/verify footer with @TAG@ / @VERSION@
+          # placeholders substituted.
+          sed \
+            -e "s|@TAG@|${TAG}|g" \
+            -e "s|@VERSION@|${VERSION}|g" \
+            dev/release/install-verify-footer.md.tmpl \
+            >> RELEASE_NOTES.md
+
+      # dry_run → --snapshot (no publish, no sign, fabricated version).
+      # Normal run → publish + sign with our composed release notes.
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: >-
+            ${{ inputs.dry_run
+                && 'release --snapshot --clean --skip=sign'
+                || 'release --clean --release-notes=RELEASE_NOTES.md' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # On dry-run, surface the built artifacts so they can be
+      # downloaded + inspected without a Release ever being created.
+      - name: Upload dry-run artifacts
+        if: ${{ inputs.dry_run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-dry-run-${{ steps.notes.outputs.tag }}
+          path: dist/
+          retention-days: 7

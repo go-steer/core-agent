@@ -1,0 +1,108 @@
+# GoReleaser config — cross-compiles core-agent + core-agent-tui
+# binaries, packs them into per-binary per-platform tar.gz archives,
+# emits a SHA-256 checksum file, signs the checksum file via Sigstore
+# keyless (GitHub Actions OIDC → Fulcio → Rekor), and publishes a
+# GitHub Release with the assets attached.
+#
+# The companion .github/workflows/release.yml drives this on tag push
+# and provides the release notes (extracted from CHANGELOG.md) via
+# --release-notes.
+#
+# Local dry-run (no publish):  goreleaser release --snapshot --clean
+
+version: 2
+
+project_name: core-agent
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: core-agent
+    main: ./cmd/core-agent
+    binary: core-agent
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    # internal/version vars are documented at internal/version/version.go:21-31.
+    # {{.Tag}} is the raw git tag (e.g. v2.3.2) — matches the
+    # "vX.Y.Z" format the package's String() formatter expects.
+    ldflags:
+      - -s -w
+      - -X github.com/go-steer/core-agent/internal/version.Version={{.Tag}}
+      - -X github.com/go-steer/core-agent/internal/version.Commit={{.FullCommit}}
+      - -X github.com/go-steer/core-agent/internal/version.Date={{.Date}}
+
+  - id: core-agent-tui
+    main: ./cmd/core-agent-tui
+    binary: core-agent-tui
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X github.com/go-steer/core-agent/internal/version.Version={{.Tag}}
+      - -X github.com/go-steer/core-agent/internal/version.Commit={{.FullCommit}}
+      - -X github.com/go-steer/core-agent/internal/version.Date={{.Date}}
+
+# One archive per binary per platform. Names match the
+# `<binary>_<semver>_<os>_<arch>` shape used in the install footer
+# that release.yml appends to the release notes.
+archives:
+  - id: core-agent
+    ids: [core-agent]
+    name_template: 'core-agent_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    formats: [tar.gz]
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+  - id: core-agent-tui
+    ids: [core-agent-tui]
+    name_template: 'core-agent-tui_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    formats: [tar.gz]
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+# Sign the checksum file only. Anyone can re-derive an archive's
+# SHA-256 from checksums.txt and compare, so one signature
+# transitively attests every archive. Same Sigstore keyless setup the
+# image pipeline uses (release-images.yml).
+signs:
+  - cmd: cosign
+    artifacts: checksum
+    output: true
+    certificate: '${artifact}.pem'
+    args:
+      - sign-blob
+      - --yes
+      - --output-certificate=${certificate}
+      - --output-signature=${signature}
+      - ${artifact}
+
+snapshot:
+  version_template: '{{ incpatch .Version }}-next'
+
+# Notes are provided by release.yml via --release-notes; suppress
+# GoReleaser's git-log changelog generation.
+changelog:
+  disable: true
+
+release:
+  github:
+    owner: go-steer
+    name: core-agent
+  draft: false
+  # auto = pre-release for tags like v2.3.2-rc1, regular release for v2.3.2.
+  prerelease: auto
+  # If the workflow is re-dispatched against an existing tag, replace
+  # the Release's body + assets rather than failing.
+  mode: replace

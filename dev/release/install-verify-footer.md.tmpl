@@ -1,0 +1,55 @@
+---
+
+## Install
+
+### Pre-built binary (this Release)
+
+```bash
+TAG=@TAG@
+OS=$(uname -s | tr A-Z a-z)              # linux | darwin
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+gh release download "$TAG" \
+  --repo go-steer/core-agent \
+  --pattern "core-agent_@VERSION@_${OS}_${ARCH}.tar.gz"
+tar xzf "core-agent_@VERSION@_${OS}_${ARCH}.tar.gz"
+./core-agent --version
+```
+
+The same pattern works for `core-agent-tui_@VERSION@_${OS}_${ARCH}.tar.gz`.
+
+### `go install`
+
+```bash
+go install github.com/go-steer/core-agent/cmd/core-agent@@TAG@
+```
+
+### Container images
+
+```bash
+docker pull ghcr.io/go-steer/core-agent:@VERSION@        # full build, in-process TUI included
+docker pull ghcr.io/go-steer/core-agent-slim:@VERSION@   # headless variant, ~5MB smaller
+docker pull ghcr.io/go-steer/core-agent-tui:@VERSION@    # remote TUI client only
+```
+
+## Verify (Sigstore keyless)
+
+**Binaries** — the checksum file signs every archive transitively:
+
+```bash
+gh release download "@TAG@" --repo go-steer/core-agent \
+  --pattern checksums.txt --pattern 'checksums.txt.*'
+cosign verify-blob \
+  --signature checksums.txt.sig --certificate checksums.txt.pem \
+  --certificate-identity-regexp '^https://github.com/go-steer/core-agent' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  checksums.txt
+sha256sum -c checksums.txt --ignore-missing
+```
+
+**Container images:**
+
+```bash
+cosign verify ghcr.io/go-steer/core-agent:@VERSION@ \
+  --certificate-identity-regexp '^https://github.com/go-steer/core-agent' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```

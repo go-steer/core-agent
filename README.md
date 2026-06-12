@@ -77,6 +77,21 @@ As a CLI:
 go install github.com/go-steer/core-agent/cmd/core-agent@latest
 ```
 
+As a pre-built binary (linux/darwin × amd64/arm64; Sigstore signed):
+
+```bash
+# Pick the right archive from https://github.com/go-steer/core-agent/releases/latest
+TAG=$(gh release view --repo go-steer/core-agent --json tagName -q .tagName)
+OS=$(uname -s | tr A-Z a-z)
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+gh release download "$TAG" --repo go-steer/core-agent \
+  --pattern "core-agent_${TAG#v}_${OS}_${ARCH}.tar.gz"
+tar xzf "core-agent_${TAG#v}_${OS}_${ARCH}.tar.gz"
+./core-agent --version
+```
+
+`core-agent-tui` archives use the same naming pattern. Verify signatures with `cosign verify-blob --signature checksums.txt.sig --certificate checksums.txt.pem --certificate-identity-regexp '^https://github.com/go-steer/core-agent' --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt` after downloading the checksum files.
+
 As a library:
 
 ```bash

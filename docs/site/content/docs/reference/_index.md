@@ -22,4 +22,5 @@ Cross-cutting reference material that both CLI users and library consumers need.
 
 - **[Sessions and event log]({{< relref "/docs/reference/sessions.md" >}})** — durable session storage, audit log, replay, live tail, crash-resume.
 - **[Attach mode TUI]({{< relref "/docs/reference/attach-tui.md" >}})** — `core-agent-tui` remote operator client.
+- **[Multi-session daemon]({{< relref "/docs/reference/multi-session.md" >}})** — one daemon serving multiple concurrent sessions with per-caller auth, ACL, audit threading, and instruction overlays.
 - **[Scion adapter]({{< relref "/docs/reference/scion-adapter.md" >}})** — embedding `core-agent` under the Scion distributed-runtime layer.

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "users": [
+    {
+      "identity": "alice@example.com",
+      "token": "tok_alice_PLACEHOLDER_REGENERATE_BEFORE_USE",
+      "labels": { "team": "platform" }
+    },
+    {
+      "identity": "bob@example.com",
+      "token": "tok_bob_PLACEHOLDER_REGENERATE_BEFORE_USE",
+      "labels": { "team": "infra" }
+    },
+    {
+      "identity": "ops@example.com",
+      "token": "tok_ops_PLACEHOLDER_REGENERATE_BEFORE_USE",
+      "labels": { "kind": "admin" }
+    }
+  ]
+}

@@ -24,6 +24,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/go-steer/core-agent/pkg/auth"
 )
 
 // Options configures NewServer. Zero value is invalid — Registry is
@@ -64,6 +66,25 @@ type Options struct {
 	// GET /.well-known/agent-card.json. Zero value disables the
 	// endpoint (404). See docs/agent-card-design.md.
 	AgentCard AgentCardConfig
+
+	// Authenticator resolves the per-request Caller for the
+	// multi-session attach layer. Nil defaults to auth.AnonymousAuth
+	// with DefaultCaller as the identity — every request resolves to
+	// the same anonymous Caller and downstream code sees a
+	// Caller-on-context just like in a multi-session deployment.
+	//
+	// α.1 wiring is intentionally additive: the resolved Caller is
+	// available via auth.CallerFromContext but no handler enforces
+	// authorization yet. α.2 layers enforcement on top without
+	// changing this field's shape. See
+	// docs/multi-session-design.md and issue #162.
+	Authenticator auth.Authenticator
+
+	// DefaultCaller is the Caller stamped onto requests when
+	// Authenticator is nil, or when the Authenticator returns
+	// ErrUnauthenticated under the α.1 no-behavior-change posture.
+	// Zero value resolves to auth.Anonymous.
+	DefaultCaller auth.Caller
 }
 
 // Server hosts the attach-mode HTTP endpoints. Construct via
@@ -175,8 +196,13 @@ func (s *Server) Bind() error {
 		return errors.New("attach: Server: already bound")
 	}
 	s.listener = ln
+	// Middleware order: transport-level auth (TLS handshake + bearer
+	// token check in AuthConfig.Middleware) gates first, then the
+	// per-caller Authenticator resolves identity onto the request
+	// context for handlers to read via auth.CallerFromContext.
+	handler := callerMiddleware(s.opts.Authenticator, s.opts.DefaultCaller, s.mux)
 	s.srv = &http.Server{
-		Handler:           cardBypass(s.cardHandler, s.opts.Auth.Middleware(s.mux)),
+		Handler:           cardBypass(s.cardHandler, s.opts.Auth.Middleware(handler)),
 		TLSConfig:         tlsCfg,
 		ReadHeaderTimeout: 10 * time.Second,
 		// Streaming endpoints have no useful write timeout — SSE

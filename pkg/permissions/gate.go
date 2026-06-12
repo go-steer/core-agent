@@ -66,8 +66,22 @@ const (
 // Gate is safe for concurrent use; tool handlers run in the agent's
 // event-iteration goroutine, but the prompter call may yield while
 // waiting for the user.
+//
+// Multi-session deployments build one template Gate at daemon start
+// (typically via FromConfig) and derive a per-session sub-gate for
+// each agent via DeriveForSession. Sub-gates share the template's
+// daemon-wide configuration (policy / scope / requirePlanArtifact)
+// but carry their own per-session mutable state (sessionAllow /
+// sessionAllowTools / sessionAllowVerbs / approvals / planRecorded /
+// prompter / mode). See docs/multi-session-design.md.
 type Gate struct {
 	mu sync.Mutex
+
+	// sessionID is set when this gate was created by DeriveForSession.
+	// Empty on template gates and on gates built directly via New /
+	// FromConfig (single-session deployments). Used for diagnostics
+	// and future audit-log threading.
+	sessionID string
 
 	mode     Mode
 	policy   *Policy
@@ -251,6 +265,63 @@ func (g *Gate) SetMode(m Mode) {
 		g.mode = m
 		g.mu.Unlock()
 	}
+}
+
+// DeriveForSession returns a per-session sub-gate derived from this
+// (template) gate. The sub-gate shares the template's daemon-wide
+// configuration by reference — Policy, PathScope, requirePlanArtifact
+// — and carries its own per-session mutable state: sessionAllow /
+// sessionAllowTools / sessionAllowVerbs / approvals / planRecorded
+// start empty, and Mode is copied so per-session SetMode (e.g., a
+// TUI chip toggle) doesn't bleed into the template or sibling sessions.
+//
+// prompter is the per-session interactive handler — typically the
+// HTTP-driven broker for an attach-mode session, or stdin for a
+// local interactive run. nil disables interactive prompting on this
+// sub-gate (ask-mode calls then fail with ErrNoPrompter, same as a
+// directly-constructed Gate without a prompter).
+//
+// sessionID is stored for diagnostics; an empty string is accepted
+// for back-compat with callers that haven't threaded it through yet.
+//
+// Limitations (documented because operators read this surface):
+//   - Policy mutations via AddAllowPatterns / AddDenyPatterns mutate
+//     the shared template Policy and therefore affect every derived
+//     sub-gate. /allow + /deny are intentionally daemon-wide today
+//     per docs/multi-session-design.md §"Per-substrate isolation
+//     rules"; per-session policy carve-outs are a follow-up.
+//   - PathScope mutations via AddAlwaysAllow (triggered by
+//     DecisionAllowAlways) similarly mutate the shared scope.
+//
+// Both limitations are by design for v2.4 — the typical operator
+// model is "one config, many users" with per-user authorization on
+// top of a shared substrate. Per-session policy/scope isolation can
+// layer on later without changing this method's shape.
+func (template *Gate) DeriveForSession(sessionID string, prompter Prompter) *Gate {
+	template.mu.Lock()
+	mode := template.mode
+	template.mu.Unlock()
+	return &Gate{
+		sessionID:           sessionID,
+		mode:                mode,
+		policy:              template.policy,
+		scope:               template.scope,
+		prompter:            prompter,
+		sessionAllow:        make(map[string]struct{}),
+		sessionAllowTools:   make(map[string]struct{}),
+		sessionAllowVerbs:   make(map[string]struct{}),
+		requirePlanArtifact: template.requirePlanArtifact,
+	}
+}
+
+// SessionID returns the session identifier this gate was derived for,
+// or "" when the gate was built directly via New / FromConfig (i.e.,
+// it IS the template). Useful for diagnostics; not exposed in the
+// JSON Snapshot.
+func (g *Gate) SessionID() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.sessionID
 }
 
 // MarkPlanRecorded flips the per-gate planRecorded flag. Called by

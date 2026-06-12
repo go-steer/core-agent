@@ -467,17 +467,34 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 	if len(allowPathEntries) > 0 {
 		cfg.PathScope.AllowPaths = append(cfg.PathScope.AllowPaths, allowPathEntries...)
 	}
-	gate, err := permissions.FromConfig(cfg, cwd, coreHome, resolveGatePrompter(yolo, os.Stdin, os.Stderr))
+	prompter := resolveGatePrompter(yolo, os.Stdin, os.Stderr)
+	template, err := permissions.FromConfig(cfg, cwd, coreHome, prompter)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 		return runner.ExitConfigError
 	}
+	// Always-derive: even in single-user mode the agent runs against
+	// a per-session sub-gate so per-session state (sessionAllow,
+	// planRecorded, etc.) is naturally isolated and the multi-session
+	// path is the same code path. The template stays as the daemon-
+	// wide configuration source; only the derived gate is consulted
+	// at tool-call time. See docs/multi-session-design.md.
+	//
+	// SessionID is empty at startup because the daemon currently only
+	// constructs one agent. Future multi-session-creation flows will
+	// derive a fresh sub-gate per session with that session's ID.
+	gate := template.DeriveForSession("", prompter)
 
 	projectRoot := cwd
 	if agentsDir != "" {
 		projectRoot = filepath.Dir(agentsDir)
 	}
-	loaded, err := instruction.Load(projectRoot, coreHome)
+	// LoadForSession is the multi-session-aware loader. With an empty
+	// callerIdentity (single-user / startup-time), it behaves
+	// identically to Load. The per-caller overlay path lights up when
+	// a request-time Caller threads through — γ wires the call site;
+	// future session-creation flows pass the resolved Caller.Identity.
+	loaded, err := instruction.LoadForSession(projectRoot, coreHome, "", cfg.Attach.MultiSession.UsersDir)
 	if err != nil {
 		// Fatal: malformed @include / escaped path / missing target / non-UTF-8
 		// content indicates a config bug. Silently shipping a degraded prompt
@@ -941,7 +958,16 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 			fmt.Fprintf(os.Stderr, "core-agent: session db dir: %v\n", err)
 			return runner.ExitConfigError
 		}
-		handle, err := eventlog.Open(ctx, sqlite.Open(path))
+		// WithMetadataExtractor wires the auth-aware extractor that
+		// reads auth.Caller / proxy_by off the request context and
+		// stamps them onto each eventlog row's Metadata sidecar (see
+		// docs/multi-session-design.md). In single-user mode the
+		// extractor returns nil maps (no Caller on context) → no
+		// sidecar JSON is written; multi-session deployments get
+		// per-event identity threading in the audit log automatically.
+		handle, err := eventlog.Open(ctx, sqlite.Open(path),
+			eventlog.WithMetadataExtractor(agent.EventlogMetadataExtractor()),
+		)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: open session db %s: %v\n", path, err)
 			return runner.ExitConfigError
@@ -1004,6 +1030,18 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 			fmt.Fprintf(os.Stderr, "core-agent: agent card: %v\n", err)
 			return runner.ExitConfigError
 		}
+		// Multi-session wiring (γ of #162). When the operator enables
+		// multi_session in config, the listener resolves a per-caller
+		// Caller from the request, enforces per-session ACL on every
+		// session-scoped handler, and runs the proxy-header path for
+		// chat-bot integrations. Single-user mode (the default) leaves
+		// these fields zero — the attach server behaves as it always
+		// has end-to-end.
+		authn, defaultCaller, authErr := buildMultiSessionAuthn(cfg.Attach.MultiSession)
+		if authErr != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: multi-session auth: %v\n", authErr)
+			return runner.ExitConfigError
+		}
 		attachSrv, err := attach.NewServer(attach.Options{
 			Registry:     attachReg,
 			PeerRegistry: peerReg,
@@ -1016,7 +1054,12 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 				BearerToken:  token,
 				ReadOnly:     attachCfg.ReadOnly,
 			},
-			AgentCard: cardConfig,
+			AgentCard:           cardConfig,
+			Authenticator:       authn,
+			DefaultCaller:       defaultCaller,
+			MultiSessionEnabled: cfg.Attach.MultiSession.Enabled,
+			AllowAnonymous:      cfg.Attach.MultiSession.AllowAnonymous,
+			ProxyHeader:         cfg.Attach.MultiSession.AssertedCallerHeader,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: attach server: %v\n", err)

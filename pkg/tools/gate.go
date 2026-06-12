@@ -19,7 +19,6 @@
 package tools
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 
@@ -108,12 +107,21 @@ func (gt *gatedTool) ProcessRequest(ctx adktool.Context, req *model.LLMRequest) 
 // Run consults the gate before delegating to the underlying tool.
 // The args are JSON-marshalled into a short summary so the user-facing
 // prompt has context.
+//
+// The ADK runner's adktool.Context embeds context.Context, so we
+// thread it through to gate.CheckGeneric — that's how the per-request
+// Caller (set by Agent.Run via auth.WithCaller) reaches the
+// permission gate, the per-session prompter, the eventlog metadata
+// extractor, and the SubagentSource path. Previously this used
+// context.Background(), which silently stripped the Caller before
+// gate enforcement — a multi-session correctness bug found by γ
+// review. See docs/multi-session-design.md.
 func (gt *gatedTool) Run(ctx adktool.Context, args any) (map[string]any, error) {
 	rn, ok := gt.inner.(runnableTool)
 	if !ok {
 		return nil, fmt.Errorf("tools: gated tool %q is not runnable", gt.inner.Name())
 	}
-	if err := gt.gate.CheckGeneric(context.Background(), gt.namespace, summarizeRequest(gt.inner.Name(), args)); err != nil {
+	if err := gt.gate.CheckGeneric(ctx, gt.namespace, summarizeRequest(gt.inner.Name(), args)); err != nil {
 		return nil, err
 	}
 	return rn.Run(ctx, args)

@@ -41,6 +41,12 @@ const sqliteBusyTimeoutMs = 5000
 // monotonic seq alongside ADK's events table. event_id is a logical
 // foreign key to events.id (we do not declare a constraint to avoid
 // coupling our migration to ADK's schema evolution).
+//
+// Metadata holds the JSON-encoded sidecar map populated by the
+// MetadataExtractor (typically the per-request auth.Caller identity
+// and proxy attribution). Empty string represents "no sidecar" — rows
+// persisted before this column shipped are read back with an empty
+// string and surface as Entry.Metadata = nil.
 type agentEventRow struct {
 	Seq          int64  `gorm:"primaryKey;autoIncrement"`
 	AppName      string `gorm:"not null;index:idx_agent_eventlog_session,priority:1"`
@@ -51,6 +57,7 @@ type agentEventRow struct {
 	Author       string `gorm:"index:idx_agent_eventlog_author"`
 	Timestamp    time.Time
 	InvocationID string
+	Metadata     string `gorm:"type:text"`
 }
 
 // TableName pins the table name independent of GORM's pluralization
@@ -134,9 +141,10 @@ func Open(ctx context.Context, dialector gorm.Dialector, opts ...Option) (*Handl
 	}
 
 	stream := &gormStream{
-		db:            db,
-		adkSvc:        adkSvc,
-		watchInterval: o.watchInterval,
+		db:                db,
+		adkSvc:            adkSvc,
+		watchInterval:     o.watchInterval,
+		metadataExtractor: o.metadataExtractor,
 	}
 	svc := &service{inner: adkSvc, stream: stream}
 	return &Handle{Stream: stream, Service: svc, db: db}, nil
@@ -211,9 +219,10 @@ func pragmaName(spec string) string {
 
 // gormStream implements Stream backed by the agent_eventlog table.
 type gormStream struct {
-	db            *gorm.DB
-	adkSvc        session.Service
-	watchInterval time.Duration
+	db                *gorm.DB
+	adkSvc            session.Service
+	watchInterval     time.Duration
+	metadataExtractor MetadataExtractor
 
 	closed atomic.Bool
 }
@@ -246,6 +255,15 @@ func (s *gormStream) Append(ctx context.Context, sess session.Session, ev *sessi
 	}
 	if row.Timestamp.IsZero() {
 		row.Timestamp = time.Now()
+	}
+	if s.metadataExtractor != nil {
+		if md := s.metadataExtractor(ctx); len(md) > 0 {
+			encoded, mdErr := encodeMetadata(md)
+			if mdErr != nil {
+				return 0, fmt.Errorf("eventlog: encode metadata: %w", mdErr)
+			}
+			row.Metadata = encoded
+		}
 	}
 	if err := s.db.WithContext(ctx).Create(row).Error; err != nil {
 		return 0, fmt.Errorf("eventlog: insert overlay row: %w", err)
@@ -332,14 +350,15 @@ func (s *gormStream) iterateOnceFunc(ctx context.Context, fromSeq int64, q query
 		return yield(Entry{}, err)
 	}
 	for _, r := range rows {
+		md := decodeMetadata(r.Metadata)
 		ev, err := s.loadEvent(ctx, r)
 		if err != nil {
-			if !yield(Entry{Seq: r.Seq}, err) {
+			if !yield(Entry{Seq: r.Seq, Metadata: md}, err) {
 				return false
 			}
 			continue
 		}
-		if !yield(Entry{Seq: r.Seq, Event: ev}, nil) {
+		if !yield(Entry{Seq: r.Seq, Event: ev, Metadata: md}, nil) {
 			return false
 		}
 	}

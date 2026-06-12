@@ -18,6 +18,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/go-steer/core-agent/pkg/auth"
 	"github.com/go-steer/core-agent/pkg/eventlog"
 )
 
@@ -28,15 +29,30 @@ type stubRegistrant struct {
 	app, user, sid string
 	log            *eventlog.Handle
 	injected       []string
+	injectedAs     []injectedRecord
 	wakes          int
+}
+
+// injectedRecord captures the per-message caller for InjectAs so tests
+// can assert that the right identity threaded through the handlers.
+type injectedRecord struct {
+	message string
+	caller  auth.Caller
 }
 
 func (s *stubRegistrant) AppName() string            { return s.app }
 func (s *stubRegistrant) UserID() string             { return s.user }
 func (s *stubRegistrant) SessionID() string          { return s.sid }
 func (s *stubRegistrant) EventLog() *eventlog.Handle { return s.log }
-func (s *stubRegistrant) Inject(m string) error      { s.injected = append(s.injected, m); return nil }
-func (s *stubRegistrant) RequestWake()               { s.wakes++ }
+func (s *stubRegistrant) Inject(m string) error {
+	return s.InjectAs(m, auth.Caller{})
+}
+func (s *stubRegistrant) InjectAs(m string, c auth.Caller) error {
+	s.injected = append(s.injected, m)
+	s.injectedAs = append(s.injectedAs, injectedRecord{message: m, caller: c})
+	return nil
+}
+func (s *stubRegistrant) RequestWake() { s.wakes++ }
 
 func TestRegistry_RegisterAndLookup(t *testing.T) {
 	t.Parallel()

@@ -46,6 +46,7 @@ import (
 	"google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/pkg/attach"
+	"github.com/go-steer/core-agent/pkg/auth"
 	"github.com/go-steer/core-agent/pkg/eventlog"
 	"github.com/go-steer/core-agent/pkg/permissions"
 	corebuiltins "github.com/go-steer/core-agent/pkg/tools"
@@ -861,11 +862,14 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	if a.bgMgr != nil {
 		prompt = a.bgMgr.PrependPendingAlerts(prompt)
 	}
-	// DrainInbox (the public API) emits `inbox`/dequeued events for
-	// each message as a side effect; the legacy a.inbox.drain() does
-	// not. Routing through the public method keeps the SSE event
-	// stream consistent with what /inject produced on the way in.
-	prompt = prependInboxMessages(prompt, a.DrainInbox())
+	// drainInboxFull emits `inbox`/dequeued events for each message
+	// (same side effect as the public DrainInbox) and surfaces the
+	// turn originator from the drained batch. Routing through this
+	// helper keeps the SSE event stream consistent with what /inject
+	// produced on the way in AND lets us thread the caller identity
+	// into the turn context below.
+	inboxTexts, inboxOriginator := a.drainInboxFull()
+	prompt = prependInboxMessages(prompt, inboxTexts)
 	msg := genai.NewContentFromText(prompt, genai.RoleUser)
 
 	// Per-turn correlation handle: fresh prompt_id assigned at turn
@@ -890,6 +894,18 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// turn ended would invoke a no-op cancel against the wrong
 	// context.
 	runCtx, cancel := context.WithCancel(ctx)
+	// Thread the turn originator (most-recent caller in the drained
+	// inbox batch) onto the turn context so the eventlog metadata
+	// extractor, the MCP outbound path, and any other caller-aware
+	// substrate sees the identity that triggered this turn. Zero
+	// originator (legacy / single-user / out-of-band Run callers)
+	// leaves runCtx unwrapped: any caller already on the parent ctx
+	// propagates via context-value inheritance, so the no-inbox-
+	// originator + ctx-caller case (an attach handler calling Run
+	// directly with the request context) Just Works.
+	if inboxOriginator.Identity != "" {
+		runCtx = auth.WithCaller(runCtx, inboxOriginator)
+	}
 	a.setCancelInFlight(cancel)
 	inner := a.runner.Run(runCtx, a.userID, a.sessionID, msg, adkagent.RunConfig{
 		StreamingMode: a.streaming,

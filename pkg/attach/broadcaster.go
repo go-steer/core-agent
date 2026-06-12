@@ -349,7 +349,7 @@ func (b *Broadcaster) pump(ctx context.Context) {
 	for entry, err := range b.stream.Watch(ctx, b.startedAt, b.query...) {
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
-				log.Printf("attach: broadcaster %s/%s pump error: %v",
+				log.Printf("attach: broadcaster %s/%s pump error: %v", //nolint:gosec // AppName/SessionID are server-managed identifiers from the SessionRegistry, not request-scoped user input
 					b.entry.AppName, b.entry.SessionID, err)
 				debugf("broadcaster pump %s/%s error: %v", b.entry.AppName, b.entry.SessionID, err)
 			}
@@ -410,7 +410,7 @@ func (b *Broadcaster) send(sub *subscriber, f Frame) bool {
 		return true
 	default:
 		// Buffer full → drop the subscriber.
-		log.Printf("attach: broadcaster %s/%s dropping slow subscriber (buffer=%d full)",
+		log.Printf("attach: broadcaster %s/%s dropping slow subscriber (buffer=%d full)", //nolint:gosec // AppName/SessionID are server-managed identifiers from the SessionRegistry
 			b.entry.AppName, b.entry.SessionID, subscriberBufferSize)
 		debugf("broadcaster send %s/%s seq=%d → buffer FULL, dropping subscriber", b.entry.AppName, b.entry.SessionID, f.Seq)
 		b.detachLocked(sub)
@@ -430,7 +430,7 @@ func (b *Broadcaster) sendTyped(sub *subscriber, f Frame) bool {
 	case sub.ch <- f:
 		return true
 	default:
-		log.Printf("attach: broadcaster %s/%s dropping slow subscriber (typed=%s, buffer=%d full)",
+		log.Printf("attach: broadcaster %s/%s dropping slow subscriber (typed=%s, buffer=%d full)", //nolint:gosec // AppName/SessionID/Type are server-managed; Type is one of the typed-event protocol constants
 			b.entry.AppName, b.entry.SessionID, f.Type, subscriberBufferSize)
 		debugf("broadcaster sendTyped %s/%s type=%s → buffer FULL, dropping subscriber", b.entry.AppName, b.entry.SessionID, f.Type)
 		b.detachLocked(sub)

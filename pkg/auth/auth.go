@@ -76,6 +76,7 @@ var ErrAssertedCallerForbidden = errors.New("auth: caller is not permitted to as
 var ErrAssertedCallerUnknown = errors.New("auth: asserted identity is not provisioned")
 
 type callerKey struct{}
+type proxyByKey struct{}
 
 // WithCaller returns a new context carrying c. Use in middleware that
 // has resolved the request's Caller; downstream code reads it via
@@ -90,4 +91,27 @@ func WithCaller(ctx context.Context, c Caller) context.Context {
 func CallerFromContext(ctx context.Context) (c Caller, ok bool) {
 	c, ok = ctx.Value(callerKey{}).(Caller)
 	return c, ok
+}
+
+// WithProxyBy returns a new context carrying the proxying identity
+// alongside the effective Caller. Set when the request was routed via
+// the proxy path (X-Asserted-Caller header) so audit logs can capture
+// BOTH the effective Caller and the credential that asserted it
+// (e.g., effective="alice@", proxy_by="sa:slack-bot").
+//
+// Pair with WithCaller (which carries the effective identity);
+// downstream code reads via ProxyByFromContext.
+func WithProxyBy(ctx context.Context, by string) context.Context {
+	return context.WithValue(ctx, proxyByKey{}, by)
+}
+
+// ProxyByFromContext returns the proxying identity previously stored
+// on ctx by WithProxyBy. ok is false (and the string empty) when the
+// request did not go through the proxy path.
+func ProxyByFromContext(ctx context.Context) (by string, ok bool) {
+	by, ok = ctx.Value(proxyByKey{}).(string)
+	if !ok || by == "" {
+		return "", false
+	}
+	return by, true
 }

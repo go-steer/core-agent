@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-steer/core-agent/pkg/auth"
 	"github.com/go-steer/core-agent/pkg/models/mock"
 )
 
@@ -30,7 +31,7 @@ func TestInbox_PushDrainOrder(t *testing.T) {
 	t.Parallel()
 	q := newInbox()
 	for _, m := range []string{"one", "two", "three"} {
-		if _, err := q.push(m); err != nil {
+		if _, err := q.push(m, auth.Caller{}); err != nil {
 			t.Fatalf("push %q: %v", m, err)
 		}
 	}
@@ -61,7 +62,7 @@ func TestInbox_NotifyFiresOnPush(t *testing.T) {
 		t.Fatal("notify channel should be empty before any push")
 	default:
 	}
-	if _, err := q.push("hello"); err != nil {
+	if _, err := q.push("hello", auth.Caller{}); err != nil {
 		t.Fatalf("push: %v", err)
 	}
 	select {
@@ -79,7 +80,7 @@ func TestInbox_NotifyCoalesces(t *testing.T) {
 	// notification per push" semantic would deadlock.
 	q := newInbox()
 	for i := 0; i < 5; i++ {
-		_, _ = q.push("x")
+		_, _ = q.push("x", auth.Caller{})
 	}
 	// First consumer drain sees one notification.
 	<-q.arrived()
@@ -100,7 +101,7 @@ func TestInbox_DropOldestWhenCapExceeded(t *testing.T) {
 	q := newInbox()
 	// Push one over the cap to trigger drop-oldest.
 	for i := 0; i < defaultInboxCap+1; i++ {
-		_, _ = q.push("msg")
+		_, _ = q.push("msg", auth.Caller{})
 	}
 	got := q.drain()
 	if len(got) != defaultInboxCap {
@@ -113,7 +114,7 @@ func TestInbox_PushAfterCloseErrors(t *testing.T) {
 	t.Parallel()
 	q := newInbox()
 	q.close()
-	_, err := q.push("hello")
+	_, err := q.push("hello", auth.Caller{})
 	if !errors.Is(err, ErrInboxClosed) {
 		t.Errorf("expected ErrInboxClosed after close; got %v", err)
 	}

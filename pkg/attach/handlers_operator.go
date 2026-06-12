@@ -19,6 +19,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+
+	"github.com/go-steer/core-agent/pkg/auth"
 )
 
 // Operator-state read endpoints — feed the remote TUI's slash
@@ -235,31 +237,20 @@ func (h *handlers) doPricing(w http.ResponseWriter, entry *Entry) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// resolveQualified DRYs the {app}/{sid} lookup + error response
-// shared by all qualified-form handlers. Returns the resolved entry
-// and ok=true on success; on lookup failure, writes the error and
-// returns ok=false (caller should just return).
+// resolveQualified is a thin shim over lookupQualifiedAuth that
+// preserves the legacy 2-arg call sites. New code should use
+// lookupQualifiedAuth directly with an explicit action; this helper
+// is retained for the operator-state read handlers where the action
+// is always SessionRead and the existing call sites are dense.
 func (h *handlers) resolveQualified(w http.ResponseWriter, r *http.Request) (*Entry, bool) {
-	app := r.PathValue("app")
-	sid := r.PathValue("sid")
-	entry, err := h.reg.Lookup(app, sid)
-	if err != nil {
-		writeLookupError(w, err)
-		return nil, false
-	}
-	return entry, true
+	return h.lookupQualifiedAuth(w, r, auth.ActionSessionRead)
 }
 
 // resolveShortcut is the single-segment-shortcut counterpart of
-// resolveQualified. Returns 409 on ambiguous SessionID.
+// resolveQualified. Returns 409 on ambiguous SessionID. Same
+// SessionRead-only convention.
 func (h *handlers) resolveShortcut(w http.ResponseWriter, r *http.Request) (*Entry, bool) {
-	sid := r.PathValue("sid")
-	entry, err := h.reg.LookupSingle(sid)
-	if err != nil {
-		writeLookupError(w, err)
-		return nil, false
-	}
-	return entry, true
+	return h.lookupShortcutAuth(w, r, auth.ActionSessionRead)
 }
 
 // ===== PR A2 mutation handlers =====
@@ -299,7 +290,7 @@ func (h *handlers) doPerms(w http.ResponseWriter, entry *Entry) {
 
 // permsAllowQualified / permsAllowShortcut / doPermsAllow — POST /perms/allow.
 func (h *handlers) permsAllowQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveQualified(w, r)
+	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
 	if !ok {
 		return
 	}
@@ -307,7 +298,7 @@ func (h *handlers) permsAllowQualified(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) permsAllowShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveShortcut(w, r)
+	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
 	if !ok {
 		return
 	}
@@ -316,7 +307,7 @@ func (h *handlers) permsAllowShortcut(w http.ResponseWriter, r *http.Request) {
 
 // permsDenyQualified / permsDenyShortcut — POST /perms/deny.
 func (h *handlers) permsDenyQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveQualified(w, r)
+	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
 	if !ok {
 		return
 	}
@@ -324,7 +315,7 @@ func (h *handlers) permsDenyQualified(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) permsDenyShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveShortcut(w, r)
+	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
 	if !ok {
 		return
 	}
@@ -361,7 +352,7 @@ func (h *handlers) doPermsMutation(w http.ResponseWriter, r *http.Request, entry
 
 // pricingRefreshQualified / Shortcut / doPricingRefresh — POST /pricing/refresh.
 func (h *handlers) pricingRefreshQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveQualified(w, r)
+	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
 	if !ok {
 		return
 	}
@@ -369,7 +360,7 @@ func (h *handlers) pricingRefreshQualified(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *handlers) pricingRefreshShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveShortcut(w, r)
+	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
 	if !ok {
 		return
 	}
@@ -396,7 +387,7 @@ func (h *handlers) doPricingRefresh(w http.ResponseWriter, r *http.Request, entr
 
 // pricingSetQualified / Shortcut / doPricingSet — POST /pricing/set.
 func (h *handlers) pricingSetQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveQualified(w, r)
+	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
 	if !ok {
 		return
 	}
@@ -404,7 +395,7 @@ func (h *handlers) pricingSetQualified(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) pricingSetShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveShortcut(w, r)
+	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
 	if !ok {
 		return
 	}
@@ -444,7 +435,7 @@ func (h *handlers) doPricingSet(w http.ResponseWriter, r *http.Request, entry *E
 
 // reloadQualified / reloadShortcut / doReload — POST /reload.
 func (h *handlers) reloadQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveQualified(w, r)
+	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
 	if !ok {
 		return
 	}
@@ -452,7 +443,7 @@ func (h *handlers) reloadQualified(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) reloadShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveShortcut(w, r)
+	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
 	if !ok {
 		return
 	}

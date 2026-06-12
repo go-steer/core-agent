@@ -50,6 +50,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/go-steer/core-agent/pkg/auth"
 	"github.com/go-steer/core-agent/pkg/eventlog"
 )
 
@@ -76,6 +77,17 @@ type Registrant interface {
 	// Also fires the wake signal internally (see Agent.Inject).
 	Inject(message string) error
 
+	// InjectAs is Inject with a per-message originator identity. The
+	// caller is the auth.Caller resolved from the inbound HTTP
+	// request (see callerMiddleware). When the agent loop drains the
+	// inbox, the last non-empty caller becomes the turn originator
+	// stamped onto eventlog metadata and outbound MCP context.
+	//
+	// In single-user / pre-multi-session deployments, this method is
+	// called with a zero-value Caller and behaves identically to
+	// Inject.
+	InjectAs(message string, caller auth.Caller) error
+
 	// RequestWake fires the agent's wake signal without queuing a
 	// message. Used by POST /wake.
 	RequestWake()
@@ -100,6 +112,14 @@ type Entry struct {
 	// Agent is the live registrant. The registry holds it by
 	// reference; lifetime is the registrant's, not the registry's.
 	Agent Registrant
+
+	// ACL governs which Callers may interact with this session in a
+	// multi-session deployment. Zero value (empty Owner / nil slices)
+	// means "no owner" — only Admin Callers may access it, which is
+	// the documented behavior for legacy sessions registered via
+	// Register (vs. RegisterOwned). See
+	// docs/multi-session-design.md §"Migration story".
+	ACL auth.SessionACL
 }
 
 type tripleKey struct {
@@ -124,10 +144,35 @@ var ErrSessionNotFound = errors.New("attach: session not found")
 // apps — the caller must use the qualified two-segment form.
 var ErrAmbiguousSession = errors.New("attach: session id is ambiguous across registered apps; use the /sessions/<app>/<sessionID> form")
 
-// Register adds a session. Returns ErrSessionExists if the triple is
-// already present — the caller should not silently overwrite, since a
-// double-register usually means an Agent construction race.
+// Register adds a session with no owner — legacy single-user behavior.
+// Returns ErrSessionExists if the triple is already present (caller
+// should not silently overwrite, since a double-register usually means
+// an Agent construction race).
+//
+// In a multi-session deployment, sessions registered via Register are
+// admin-only-accessible — Authorize denies non-Admin Callers because
+// the ACL.Owner is empty. New code that knows the owning identity
+// should use RegisterOwned instead.
 func (r *SessionRegistry) Register(ag Registrant) (*Entry, error) {
+	return r.registerWithACL(ag, auth.SessionACL{})
+}
+
+// RegisterOwned adds a session and stamps the supplied caller as the
+// Owner of the ACL. Use from session creation paths that know the
+// originating Caller (the typical multi-session attach setup: the
+// daemon resolves the caller from the credential, then creates the
+// session under that identity).
+//
+// Owner must be non-empty — pass Register if you intentionally want an
+// unowned (admin-only-accessible) session.
+func (r *SessionRegistry) RegisterOwned(ag Registrant, owner string) (*Entry, error) {
+	if owner == "" {
+		return nil, errors.New("attach: RegisterOwned: owner identity is required (use Register for legacy unowned sessions)")
+	}
+	return r.registerWithACL(ag, auth.SessionACL{Owner: owner})
+}
+
+func (r *SessionRegistry) registerWithACL(ag Registrant, acl auth.SessionACL) (*Entry, error) {
 	if ag == nil {
 		return nil, errors.New("attach: Register: nil Registrant")
 	}
@@ -145,6 +190,7 @@ func (r *SessionRegistry) Register(ag Registrant) (*Entry, error) {
 		UserID:    key.User,
 		SessionID: key.SID,
 		Agent:     ag,
+		ACL:       acl,
 	}
 	r.byTriple[key] = e
 	return e, nil
@@ -230,4 +276,25 @@ func (r *SessionRegistry) Len() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.byTriple)
+}
+
+// ListAuthorized returns the subset of List() that c may
+// auth.ActionSessionRead per each Entry's ACL. Used by the GET
+// /sessions handler in multi-session mode so a Caller only sees
+// sessions they have access to — hiding unauthorized session
+// existence prevents leaking activity patterns.
+//
+// An Admin Caller sees everything (same as List); an anonymous Caller
+// (Identity == "") sees nothing unless an Entry's ACL has an empty
+// Owner AND empty Viewers/Contributors (which Authorize also rejects
+// — so practically nothing).
+func (r *SessionRegistry) ListAuthorized(c auth.Caller) []*Entry {
+	all := r.List()
+	out := make([]*Entry, 0, len(all))
+	for _, e := range all {
+		if auth.Authorize(c, auth.ActionSessionRead, e.ACL) {
+			out = append(out, e)
+		}
+	}
+	return out
 }

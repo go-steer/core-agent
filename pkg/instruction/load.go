@@ -101,13 +101,41 @@ func (l Loaded) Empty() bool { return l.Instruction == "" }
 // projectRoot may be empty; in that case only user memory is loaded.
 // userRoot may be empty in tests.
 func Load(projectRoot, userRoot string) (Loaded, error) {
+	return LoadForSession(projectRoot, userRoot, "", "")
+}
+
+// LoadForSession extends Load with an optional per-caller overlay
+// scope used by the multi-session attach layer. It walks (in order):
+//
+//  1. userRoot/.agents/ + userRoot/ — the daemon-wide user-scope
+//     memory (same as Load).
+//  2. projectRoot/.agents/ + projectRoot/ — the project-scope memory
+//     (same as Load).
+//  3. <usersDir>/<callerIdentity>/.agents/ — the per-caller overlay
+//     (NEW; multi-session only).
+//
+// Per-caller overlay rules:
+//   - usersDir == "" OR callerIdentity == "" → no overlay applied;
+//     behaves identically to Load. This is the single-user / pre-
+//     multi-session path.
+//   - callerIdentity containing path separators or ".." → returns
+//     ErrInvalidCallerIdentity. Defense against a malicious identity
+//     (e.g. "../../etc") traversing out of usersDir.
+//   - <usersDir>/<callerIdentity>/ doesn't exist → silently skip.
+//     Operators may provision overlays for some callers and not
+//     others; a missing directory is a legitimate "no overlay" signal.
+//
+// The visited-set propagates across all three scopes — a file
+// referenced by both the project layer and the caller overlay loads
+// exactly once, preserving the dedup semantics of Load.
+func LoadForSession(projectRoot, userRoot, callerIdentity, usersDir string) (Loaded, error) {
 	var loaded Loaded
 	var b strings.Builder
-	// Single visited set across both scopes — a file reached from
-	// either scope counts as the first encounter, subsequent
-	// references skip silently. This is what makes the @include-vs-
-	// AGENTS.d/ double-load case (and the cross-scope cycle case)
-	// safe by construction.
+	// Single visited set across all scopes — a file reached from
+	// any of user / project / caller-overlay counts as the first
+	// encounter, subsequent references skip silently. This is what
+	// makes the @include-vs-AGENTS.d/ double-load case (and the
+	// cross-scope cycle case) safe by construction.
 	visited := make(map[string]bool)
 
 	if userRoot != "" {
@@ -122,8 +150,50 @@ func Load(projectRoot, userRoot string) (Loaded, error) {
 		}
 	}
 
+	if usersDir != "" && callerIdentity != "" {
+		if err := validateCallerIdentity(callerIdentity); err != nil {
+			return loaded, err
+		}
+		overlayRoot := filepath.Join(usersDir, callerIdentity)
+		if info, err := os.Stat(overlayRoot); err == nil && info.IsDir() {
+			if err := loadScopeWithFallback(overlayRoot, "caller", []string{userMemoryName}, &b, &loaded.Sources, visited); err != nil {
+				return loaded, err
+			}
+		} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			// stat failed for a reason other than missing — surface so
+			// operator catches e.g. a permissions misconfig immediately
+			// instead of silently losing the overlay.
+			return loaded, fmt.Errorf("instruction: stat overlay dir %q: %w", overlayRoot, err)
+		}
+	}
+
 	loaded.Instruction = b.String()
 	return loaded, nil
+}
+
+// ErrInvalidCallerIdentity is returned by LoadForSession when the
+// callerIdentity argument contains characters that could traverse out
+// of usersDir (path separators or ".."). Operators see this as a
+// validation error at agent construction time rather than a silent
+// load from an unexpected directory.
+var ErrInvalidCallerIdentity = errors.New("instruction: caller identity contains path-traversal characters")
+
+// validateCallerIdentity rejects identities that would let a crafted
+// Caller traverse out of usersDir. Email-shaped ("alice@example.com")
+// and service-account-marker ("sa:slack-bot") identities pass;
+// anything containing /, \, or ".." (anywhere — not just leading)
+// fails loudly.
+func validateCallerIdentity(id string) error {
+	if id == "" {
+		return nil
+	}
+	if strings.ContainsAny(id, `/\`) {
+		return fmt.Errorf("%w: %q contains a path separator", ErrInvalidCallerIdentity, id)
+	}
+	if id == ".." || strings.Contains(id, "..") {
+		return fmt.Errorf("%w: %q contains %q", ErrInvalidCallerIdentity, id, "..")
+	}
+	return nil
 }
 
 // loadScopeWithFallback runs loadScope twice per scope: first against

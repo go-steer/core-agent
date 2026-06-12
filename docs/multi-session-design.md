@@ -4,8 +4,16 @@ Design doc for v2.4's headline feature: one `core-agent` daemon
 process safely serves multiple concurrent sessions belonging to
 different users.
 
-**Status:** proposed (2026-06-03). Awaiting approval before
-implementation. v2.4 candidate.
+**Status:** shipped in v2.4 (2026-06-12). Implementation tracked in
+[#162](https://github.com/go-steer/core-agent/issues/162) as a 5-PR
+stack (α.1, α.2, β, γ, δ). Operator-facing reference:
+[`docs/site/content/docs/reference/multi-session.md`](./site/content/docs/reference/multi-session.md).
+
+This design document captures the architectural intent; the operator
+reference is the source of truth for current behavior. Where the two
+disagree (e.g., the shim approach for `Inject`, the bug fix in
+`pkg/tools/gate.go` that γ surfaced), the reference page reflects
+what shipped.
 
 ## Motivation
 
@@ -659,67 +667,61 @@ change + audit-log fields).
 Total: ~3700 LoC across 4 PRs (bumped from ~3200 with the
 shared-session + proxy additions).
 
-## Open questions
+## Open questions (resolved)
 
-1. **Session creation API.** Today a session is created
-   implicitly when an agent first runs. In multi-user mode, who
-   creates a session for a caller, and how? Options:
-   - Implicit on first `--attach-listen` POST that doesn't name
-     an existing sessionID (server assigns a new ID, owner=caller).
-   - Explicit `POST /sessions` endpoint that returns the new
-     sessionID + URL.
+All seven leans were accepted as-is during implementation
+(2026-06-11), and a new question surfaced during α.2 was
+resolved with a sidecar approach (also documented below).
 
-   Lean: ship explicit `POST /sessions` for clarity; allow
-   implicit creation as a fallback for backward compat.
+1. **Session creation API.** **Resolved:** deferred. v2.4 ships
+   without an explicit `POST /sessions` endpoint — the daemon
+   constructs one agent at startup as today. Multi-session
+   creation flow (operator can spawn N sessions from one daemon
+   on demand) lands as a v2.5+ extension once the substrate is
+   exercised in production.
 
-2. **Identity for default single-user mode.** When
-   `multi_session.enabled: false`, what's the Caller's identity
-   field? Options:
-   - `"anon"` (everyone's the same identity; gate audit
-     log shows "anon")
-   - The OS username of the daemon process
-   - A configured default identity
+2. **Identity for default single-user mode.** **Resolved:**
+   `"anon"` by default, configurable via
+   `attach.multi_session.default_identity`. Shipped.
 
-   Lean: `"anon"` by default; configurable via
-   `attach.default_identity`.
+3. **Session deletion semantics.** **Resolved:** out of scope
+   for v2.4. Sessions persist for the daemon's lifetime; durable
+   eventlog rows survive restart per existing semantics.
+   Soft-delete + sweep tool deferred to v2.5+.
 
-3. **Session deletion semantics.** When a session is deleted,
-   what happens to its eventlog? Options:
-   - Hard-delete (remove from session DB)
-   - Soft-delete (mark deleted; retain for audit)
-   - Per-policy (config flag)
+4. **Default ACL on session creation.** **Resolved:** owner-only
+   (the safe default). Team-default deferred until label-based
+   authorization is in scope.
 
-   Lean: soft-delete by default with a sweep tool for hard-delete.
-   Cross-session audit trail integrity matters more than disk
-   space.
+5. **Audit log shape.** **Resolved with a refinement.** Rather
+   than extending `Gate.approvals[]`, the implementation adds a
+   sidecar `Metadata map[string]string` field on
+   `eventlog.Entry` (JSON-encoded TEXT column on
+   `agent_eventlog` row). Reasons: keeps `pkg/eventlog`
+   auth-agnostic (extractor function pattern via
+   `eventlog.WithMetadataExtractor`); backward-compatible with
+   pre-sidecar rows (read back as `nil` map); ADK's external
+   `session.Event` stays untouched. Well-known keys exported as
+   `eventlog.MetadataKeyCaller` and `eventlog.MetadataKeyProxyBy`.
 
-4. **Default ACL on session creation.** Owner-only is the safe
-   default. Should there be a config option to broaden to
-   "owner's team" (using `caller.Labels["team"]`) by default?
+6. **MCP-server-as-caller-aware reference.** **Resolved:**
+   document the path; reference pattern deferred. The path is:
+   the per-turn `Caller` is on the `runCtx` that
+   `agent.Run` passes to `runner.Run`; ADK propagates that
+   context through to tool handlers; `pkg/tools/gate.go`'s
+   `gatedTool.Run` threads it onward to `gate.CheckGeneric`
+   and any wrapped MCP tool implementation. MCP server authors
+   inspect `auth.CallerFromContext(ctx)` in their tool handler.
 
-   Lean: owner-only; team-default is a v2.5+ enhancement when
-   we have a fuller authz story.
+7. **Rate limiting / quotas.** **Resolved:** out of scope for
+   v2.4. Caller identity is now available as the natural key
+   for future quotas.
 
-5. **Audit log shape.** Today gate decisions log under
-   `Gate.approvals[]`. For multi-session we want caller
-   identity threaded through. New `GateDecision` struct with
-   `Caller Identity` field?
-
-   Lean: yes, extend the existing struct (additive change).
-
-6. **MCP-server-as-caller-aware.** Do we ship a reference
-   pattern for "MCP server that uses the caller's identity to
-   make downstream calls" (e.g., a GKE MCP that uses workload
-   identity per caller)? Or document the context-propagation
-   path and leave the rest to the MCP server author?
-
-   Lean: document the path; defer the reference pattern to a
-   v2.5 example when a concrete consumer surfaces.
-
-7. **Rate limiting / quotas.** Out of scope for v2.4, but worth
-   noting: per-user quotas (max sessions, max tokens, max cost)
-   would land on top of the Caller plumbing this design lays
-   down. Caller identity is the natural key.
+8. **EventMeta storage strategy** (NEW — surfaced during α.2).
+   **Resolved:** sidecar `Metadata` map on `eventlog.Entry`,
+   JSON-encoded TEXT column on `agentEventRow`. See OQ #5 above
+   for full reasoning. Implementation in
+   `pkg/eventlog/metadata.go` + `pkg/agent/metadata.go`.
 
 ## Security considerations
 

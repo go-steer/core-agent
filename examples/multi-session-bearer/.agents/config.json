@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "model": {
+    "name": "gemini-3.1-pro-preview-customtools"
+  },
+  "permissions": {
+    "mode": "ask"
+  },
+  "attach": {
+    "multi_session": {
+      "enabled": true,
+      "auth": {
+        "kind": "bearer_table",
+        "table_file": "/tmp/multi-session-bearer/users.json"
+      },
+      "admin_identities": ["ops@example.com"],
+      "default_identity": "anon",
+      "allow_anonymous": false
+    }
+  }
+}

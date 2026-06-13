@@ -1072,8 +1072,10 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 		var sessionFactory attach.SessionFactory
 		if cfg.Attach.MultiSession.Enabled {
 			sessionFactory = buildSessionFactory(sessionFactoryDeps{
+				daemonCtx:      ctx,
 				model:          m,
 				template:       template,
+				pricingRate:    pricingRate,
 				builtinTools:   builtinTools,
 				toolsets:       allToolsets,
 				eventlogHandle: eventlogHandle,

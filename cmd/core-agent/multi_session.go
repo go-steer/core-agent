@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/google/uuid"
 	adkmodel "google.golang.org/adk/model"
@@ -91,12 +92,18 @@ func buildMultiSessionAuthn(cfg config.MultiSessionConfig) (auth.Authenticator, 
 // see the substrate as it is, without the operator-feature
 // extensions. Document the gap in the recipe.
 type sessionFactoryDeps struct {
+	// daemonCtx is the daemon's lifetime context — every per-session
+	// wake loop spawned by the factory uses it as the cancellation
+	// signal so SIGTERM / Ctrl-C ends them cleanly. Required.
+	daemonCtx context.Context
+
 	model          adkmodel.LLM
 	template       *permissions.Gate
 	builtinTools   []adktool.Tool
 	toolsets       []adktool.Toolset
 	eventlogHandle *eventlog.Handle
 	tracker        *usage.Tracker
+	pricingRate    usage.Pricing
 	projectRoot    string
 	userRoot       string
 	usersDir       string
@@ -160,7 +167,62 @@ func buildSessionFactory(deps sessionFactoryDeps) attach.SessionFactory {
 			broker.Close()
 			return nil, fmt.Errorf("agent.New: %w", err)
 		}
+		// Operator-visible log line that mirrors the startup-time
+		// "--no-repl: attach-only mode, session <sid>" message so the
+		// daemon stderr reflects every long-lived agent it's hosting.
+		fmt.Fprintf(os.Stderr, "core-agent: session created (owner=%s, id=%s)\n", caller.Identity, sid)
+		// Spawn the per-session wake loop: until daemonCtx cancels,
+		// when an attach client POSTs /inject, agent.Inject queues
+		// the message + fires WakeRequested; this goroutine consumes
+		// the wake and calls ag.Run("") so the queued message becomes
+		// a turn (events flow through the eventlog → attach
+		// broadcaster → operator's TUI). Without this loop the agent
+		// is inert: messages queue but nothing drains them, and the
+		// TUI shows "agent runs autonomously; events stream below"
+		// with no events ever streaming.
+		//
+		// Mirrors the --no-repl wake loop in cmd/core-agent/main.go
+		// that drives the startup-time agent in attach-only mode.
+		go runSessionWakeLoop(deps.daemonCtx, ag, deps.tracker, deps.model.Name(), deps.pricingRate)
 		return ag, nil
+	}
+}
+
+// runSessionWakeLoop is the per-session driver that the SessionFactory
+// spawns for every on-demand session. Mirrors the inline --no-repl
+// wake loop in main.go: select on context cancel + WakeRequested,
+// then call ag.Run("") so the inbox drains into a real turn.
+//
+// Per-turn usage tap: every event's UsageMetadata is captured so
+// tracker.Append fires once per turn — matches what the startup
+// agent's --no-repl path does so /stats + status-banner cumulative
+// totals reflect on-demand-session activity too.
+//
+// trackerName is the model name string that gets passed to
+// tracker.Append; pricingRate may be zero (skipped Append in that
+// case — same as the startup path).
+func runSessionWakeLoop(ctx context.Context, ag *agent.Agent, tracker *usage.Tracker, trackerName string, pricingRate usage.Pricing) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ag.WakeRequested():
+			var lastIn, lastOut int
+			for ev, runErr := range ag.Run(ctx, "") {
+				if ev != nil && ev.UsageMetadata != nil {
+					lastIn = int(ev.UsageMetadata.PromptTokenCount)
+					lastOut = int(ev.UsageMetadata.CandidatesTokenCount)
+				}
+				if runErr != nil {
+					// Surface to stderr but keep the loop alive —
+					// one bad turn shouldn't kill the session.
+					fmt.Fprintf(os.Stderr, "core-agent: session %s turn: %v\n", ag.SessionID(), runErr)
+				}
+			}
+			if tracker != nil && (lastIn > 0 || lastOut > 0) {
+				tracker.Append(trackerName, lastIn, lastOut, pricingRate)
+			}
+		}
 	}
 }
 

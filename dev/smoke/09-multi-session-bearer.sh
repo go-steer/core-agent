@@ -325,6 +325,43 @@ if [[ "${code}" != "404" ]]; then
 fi
 pass "alice → bob's session inject blocked (404)"
 
+log_step "alice's session actually drives a turn when she injects (factory wake loop fires)"
+# Pre-fix regression guard: without the per-session driver, the
+# factory-created session is INERT — POST /inject queues the message
+# but nothing calls agent.Run, so no events ever land in the
+# eventlog. The fix spawns a goroutine per factory call that selects
+# on WakeRequested. This step proves the loop is alive.
+inject_resp=$(curl -s -X POST \
+    -H "Authorization: Bearer ${ALICE_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d '{"message":"hello from alice"}' \
+    "${BASE}/sessions/${ALICE_SID}/inject")
+if ! grep -q '"injected"' <<<"${inject_resp}"; then
+    fail "alice inject failed: ${inject_resp}"
+fi
+# Give the wake loop a moment to drain + the echo provider's turn to
+# complete + the eventlog metadata extractor to run.
+sleep 2
+if command -v sqlite3 >/dev/null 2>&1; then
+    rows=$(sqlite3 "${SESSION_DB}" \
+        "SELECT count(*) FROM agent_eventlog WHERE session_id = '${ALICE_SID}';")
+    if [[ "${rows}" -eq 0 ]]; then
+        cat "${LOG_FILE}" >&2
+        fail "factory-session driver did NOT fire: alice's session ${ALICE_SID} has zero eventlog rows after inject"
+    fi
+    pass "factory session drove a turn (${rows} eventlog rows for alice)"
+
+    # Bonus: the events should carry caller=alice in Metadata.
+    alice_meta=$(sqlite3 "${SESSION_DB}" \
+        "SELECT metadata FROM agent_eventlog WHERE session_id = '${ALICE_SID}' AND metadata != '' LIMIT 1;")
+    if [[ -n "${alice_meta}" ]] && ! grep -q "alice@example.com" <<<"${alice_meta}"; then
+        fail "alice's session events missing caller=alice metadata; got: ${alice_meta}"
+    fi
+    pass "alice's session events carry caller=alice in audit metadata"
+else
+    pass "skipping driver-fires-turn assertion: sqlite3 not installed"
+fi
+
 log_step "ops (admin) sees all three sessions (legacy + alice + bob)"
 ops_list_after=$(curl -s -H "Authorization: Bearer ${OPS_TOKEN}" "${BASE}/sessions")
 for needed in "${SID}" "${ALICE_SID}" "${BOB_SID}"; do

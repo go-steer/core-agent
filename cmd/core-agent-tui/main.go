@@ -75,10 +75,18 @@ func main() {
 	theme := fs.String("theme", "", "force a theme: 'dark', 'light', or empty for auto (queries the terminal via OSC 11)")
 	alias := fs.String("alias", "", "agent identity label shown in the status banner; default uses the session ID")
 	newSession := fs.Bool("new-session", false, "create a fresh session owned by the authenticated caller (POST /sessions) and attach to it in one shot. Skips the picker. Requires the daemon to have attach.multi_session.enabled with a configured SessionFactory; older daemons return 501 and the TUI exits with a clear error.")
-	if err := fs.Parse(os.Args[1:]); err != nil {
+	// permuteFlags reorders os.Args so flag order doesn't matter:
+	//   core-agent-tui --token T http://host:7777
+	//   core-agent-tui http://host:7777 --token T
+	// both work. The Go standard flag package stops at the first
+	// positional; without this permutation the second form silently
+	// drops the trailing flags, which produced a confusing
+	// "GET /sessions: 401" instead of an obvious arg-order error.
+	flagArgs, positionals := permuteFlags(fs, os.Args[1:])
+	if err := fs.Parse(flagArgs); err != nil {
 		os.Exit(2)
 	}
-	args := fs.Args()
+	args := positionals
 
 	token := ""
 	if *tokenEnv != "" {

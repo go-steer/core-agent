@@ -224,7 +224,7 @@ In single-user deployments, the metadata column is empty for every row — no be
 Three phases for an operator moving from single-user to multi-user:
 
 1. **Stay single-user** — no change. `multi_session.enabled: false` (the default).
-2. **Enable with a static user table** — generate tokens, populate `users.json` at mode `0600`, hand them to operators. Each operator's `core-agent-tui --attach-token=<their-token>` resolves to their identity. Sessions they create are owned by them; they can only see their own.
+2. **Enable with a static user table** — generate tokens (e.g. via `dev/tools/gen-users-json`), populate `users.json` at mode `0600`, hand them to operators. Each operator loads their token into an env var and runs `core-agent-tui --token ALICE_TOKEN <attach-url>` (the `--token` flag takes an env-var **name**, not the value itself). The flag order doesn't matter — both `--token NAME http://host` and `http://host --token NAME` work. Sessions they create are owned by them; they can only see their own.
 3. **Switch to OIDC / mTLS / K8s SA** (when shipped, v2.5+) — change `auth.kind` to the new value; tokens come from the IDP. Users / sessions unchanged.
 
 A `core-agent users migrate` CLI is **out of scope for v2.4** — operators with existing single-user data either keep using single-user mode or accept that legacy sessions become "unowned" (admin-only-accessible) when they enable multi-session.

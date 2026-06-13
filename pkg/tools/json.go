@@ -15,7 +15,6 @@
 package tools
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -75,7 +74,7 @@ func NewJSONQueryTool(gate *permissions.Gate, cfg *config.Config) tool.Tool {
 // jsonQueryFunc is the handler, extracted so tests can drive it
 // without going through ADK's functiontool wrapper.
 func jsonQueryFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[jsonQueryArgs, jsonQueryResult] {
-	return func(_ tool.Context, in jsonQueryArgs) (jsonQueryResult, error) {
+	return func(ctx tool.Context, in jsonQueryArgs) (jsonQueryResult, error) {
 		hasPath := in.Path != ""
 		hasJSON := in.JSON != ""
 		if hasPath == hasJSON {
@@ -91,7 +90,7 @@ func jsonQueryFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func
 			if err != nil {
 				return jsonQueryResult{}, err
 			}
-			if err := gate.CheckFileRead(context.Background(), "json_query", path); err != nil {
+			if err := gate.CheckFileRead(ctx, "json_query", path); err != nil {
 				return jsonQueryResult{}, err
 			}
 			raw, err = os.ReadFile(path)

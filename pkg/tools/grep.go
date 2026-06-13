@@ -16,7 +16,6 @@ package tools
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,7 +68,7 @@ type grepResult struct {
 // Output is capped per cfg.ToolOutput.PerTool["grep"]. Defaults are
 // 256KB / 5000 lines (ripgrep-scale).
 func grepFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[grepArgs, grepResult] {
-	return func(_ tool.Context, in grepArgs) (grepResult, error) {
+	return func(ctx tool.Context, in grepArgs) (grepResult, error) {
 		if in.Pattern == "" {
 			return grepResult{}, fmt.Errorf("grep: pattern is required")
 		}
@@ -86,7 +85,7 @@ func grepFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[grep
 		if err != nil {
 			return grepResult{}, err
 		}
-		if err := gate.CheckFileRead(context.Background(), "grep", absRoot); err != nil {
+		if err := gate.CheckFileRead(ctx, "grep", absRoot); err != nil {
 			return grepResult{}, err
 		}
 
@@ -122,7 +121,7 @@ func grepFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[grep
 			if !d.Type().IsRegular() {
 				return nil
 			}
-			if err := gate.CheckFileRead(context.Background(), "grep", path); err != nil {
+			if err := gate.CheckFileRead(ctx, "grep", path); err != nil {
 				return nil
 			}
 			fileMatches, fileTrunc, ferr := grepFile(re, path, caps.lines-len(matches))

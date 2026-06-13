@@ -15,7 +15,6 @@
 package tools
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -104,12 +103,12 @@ type statResult struct {
 // readFileFunc returns the ADK functiontool handler for read_file. The
 // returned closure consults gate.CheckFileRead before touching disk.
 func readFileFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[readFileArgs, readFileResult] {
-	return func(_ tool.Context, in readFileArgs) (readFileResult, error) {
+	return func(ctx tool.Context, in readFileArgs) (readFileResult, error) {
 		path, err := absolutize(in.Path)
 		if err != nil {
 			return readFileResult{}, err
 		}
-		if err := gate.CheckFileRead(context.Background(), "read_file", path); err != nil {
+		if err := gate.CheckFileRead(ctx, "read_file", path); err != nil {
 			return readFileResult{}, err
 		}
 		data, err := os.ReadFile(path)
@@ -126,12 +125,12 @@ func readFileFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[
 }
 
 func writeFileFunc(gate *permissions.Gate) functiontool.Func[writeFileArgs, writeFileResult] {
-	return func(_ tool.Context, in writeFileArgs) (writeFileResult, error) {
+	return func(ctx tool.Context, in writeFileArgs) (writeFileResult, error) {
 		path, err := absolutize(in.Path)
 		if err != nil {
 			return writeFileResult{}, err
 		}
-		if err := gate.CheckFileWrite(context.Background(), "write_file", path); err != nil {
+		if err := gate.CheckFileWrite(ctx, "write_file", path); err != nil {
 			return writeFileResult{}, err
 		}
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -145,12 +144,12 @@ func writeFileFunc(gate *permissions.Gate) functiontool.Func[writeFileArgs, writ
 }
 
 func editFileFunc(gate *permissions.Gate) functiontool.Func[editFileArgs, editFileResult] {
-	return func(_ tool.Context, in editFileArgs) (editFileResult, error) {
+	return func(ctx tool.Context, in editFileArgs) (editFileResult, error) {
 		path, err := absolutize(in.Path)
 		if err != nil {
 			return editFileResult{}, err
 		}
-		if err := gate.CheckFileWrite(context.Background(), "edit_file", path); err != nil {
+		if err := gate.CheckFileWrite(ctx, "edit_file", path); err != nil {
 			return editFileResult{}, err
 		}
 		if in.OldString == "" {
@@ -180,7 +179,7 @@ func editFileFunc(gate *permissions.Gate) functiontool.Func[editFileArgs, editFi
 }
 
 func listDirFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[listDirArgs, listDirResult] {
-	return func(_ tool.Context, in listDirArgs) (listDirResult, error) {
+	return func(ctx tool.Context, in listDirArgs) (listDirResult, error) {
 		path := in.Path
 		if path == "" {
 			path = "."
@@ -189,7 +188,7 @@ func listDirFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[l
 		if err != nil {
 			return listDirResult{}, err
 		}
-		if err := gate.CheckFileRead(context.Background(), "list_dir", abs); err != nil {
+		if err := gate.CheckFileRead(ctx, "list_dir", abs); err != nil {
 			return listDirResult{}, err
 		}
 		entries, err := os.ReadDir(abs)
@@ -278,12 +277,12 @@ func atomicWrite(path string, data []byte, mode fs.FileMode) error {
 // (CheckFileWrite, because delete is a destructive write-class op)
 // covers path-scope and per-tool denylists.
 func deleteFileFunc(gate *permissions.Gate) functiontool.Func[deleteFileArgs, deleteFileResult] {
-	return func(_ tool.Context, in deleteFileArgs) (deleteFileResult, error) {
+	return func(ctx tool.Context, in deleteFileArgs) (deleteFileResult, error) {
 		path, err := absolutize(in.Path)
 		if err != nil {
 			return deleteFileResult{}, err
 		}
-		if err := gate.CheckFileWrite(context.Background(), "delete_file", path); err != nil {
+		if err := gate.CheckFileWrite(ctx, "delete_file", path); err != nil {
 			return deleteFileResult{}, err
 		}
 		info, err := os.Lstat(path)
@@ -312,12 +311,12 @@ func deleteFileFunc(gate *permissions.Gate) functiontool.Func[deleteFileArgs, de
 // success result with Exists=false rather than an error — lets the
 // model do "does X exist yet?" checks without exception handling.
 func statFunc(gate *permissions.Gate) functiontool.Func[statArgs, statResult] {
-	return func(_ tool.Context, in statArgs) (statResult, error) {
+	return func(ctx tool.Context, in statArgs) (statResult, error) {
 		path, err := absolutize(in.Path)
 		if err != nil {
 			return statResult{}, err
 		}
-		if err := gate.CheckFileRead(context.Background(), "stat", path); err != nil {
+		if err := gate.CheckFileRead(ctx, "stat", path); err != nil {
 			return statResult{}, err
 		}
 		info, err := os.Stat(path)

@@ -906,6 +906,20 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	if inboxOriginator.Identity != "" {
 		runCtx = auth.WithCaller(runCtx, inboxOriginator)
 	}
+	// Thread the per-session gate onto runCtx so tool wrappers
+	// constructed against the daemon-wide template gate (every MCP
+	// toolset and the daemon-startup built-in tool registry) route
+	// their permission checks through THIS session's sub-gate
+	// instead of the template's. The receiver is pkg/tools.gatedTool
+	// which prefers permissions.SessionGateFromContext(ctx) over
+	// gt.gate when present. Without this, every multi-session tool
+	// call's prompt would go to the daemon's startup PromptBroker
+	// (no per-session subscriber → hang forever).
+	//
+	// a.gate may be nil for hand-constructed Agent values in tests;
+	// permissions.WithSessionGate(nil) is a no-op so the guard is
+	// covered by the helper.
+	runCtx = permissions.WithSessionGate(runCtx, a.gate)
 	a.setCancelInFlight(cancel)
 	inner := a.runner.Run(runCtx, a.userID, a.sessionID, msg, adkagent.RunConfig{
 		StreamingMode: a.streaming,

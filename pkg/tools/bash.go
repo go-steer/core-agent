@@ -62,24 +62,40 @@ const defaultBashTimeout = 30 * time.Second
 const bashWaitDelay = 5 * time.Second
 
 func bashFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[bashArgs, bashResult] {
-	return func(_ tool.Context, in bashArgs) (bashResult, error) {
+	return func(ctx tool.Context, in bashArgs) (bashResult, error) {
 		if in.Command == "" {
 			return bashResult{}, fmt.Errorf("bash: command is required")
 		}
-		if err := gate.CheckBash(context.Background(), in.Command); err != nil {
+		if err := gate.CheckBash(ctx, in.Command); err != nil {
 			return bashResult{}, err
 		}
 		timeout := defaultBashTimeout
 		if in.TimeoutSeconds > 0 {
 			timeout = time.Duration(in.TimeoutSeconds) * time.Second
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		// Parent the exec context to the inbound tool ctx (not
+		// context.Background) so the turn-level cancel signal — the
+		// operator hitting /interrupt, the wake loop's daemonCtx
+		// expiring on SIGTERM, agent.Run's cleanup — propagates to
+		// the shell. Without this, a hung command (gcloud waiting
+		// on auth, kubectl waiting on slow API, etc.) ignores
+		// every cancel until the bash timeout fires and the
+		// operator can't kill it via /interrupt at all.
+		//
+		// tool.Context is an interface; some tests pass nil. Fall
+		// back to Background in that case so context.WithTimeout
+		// doesn't panic on "nil parent."
+		parent := context.Context(ctx)
+		if parent == nil {
+			parent = context.Background()
+		}
+		execCtx, cancel := context.WithTimeout(parent, timeout)
 		defer cancel()
 
 		// Running an arbitrary user-supplied command is the whole point
 		// of the bash tool; gating happens via the permission gate, not
 		// at the exec call site.
-		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", in.Command) // #nosec G204
+		cmd := exec.CommandContext(execCtx, "/bin/sh", "-c", in.Command) // #nosec G204
 		// Bound how long we wait on inherited stdout/stderr after the
 		// shell exits or the context cancels. See bashWaitDelay docs.
 		cmd.WaitDelay = bashWaitDelay
@@ -91,7 +107,7 @@ func bashFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[bash
 		cmd.Stderr = &stderr
 
 		runErr := cmd.Run()
-		timedOut := ctx.Err() == context.DeadlineExceeded
+		timedOut := execCtx.Err() == context.DeadlineExceeded
 
 		exit := 0
 		if runErr != nil {

@@ -425,6 +425,26 @@ func (g *Gate) AddDenyPatterns(patterns []string) error {
 // also persist the change via the config layer.
 func (g *Gate) Scope() *PathScope { return g.scope }
 
+// resolveSessionGate returns the per-session sub-gate threaded on
+// ctx via permissions.WithSessionGate, falling back to g itself when
+// no override is present. The single-line check at the top of every
+// public Check* method is how tool wrappers constructed against the
+// daemon-wide template gate route their permission checks through
+// the per-session sub-gate's prompter (the per-session attach
+// broker) without each tool having to know about session gating.
+//
+// The sg != g guard prevents the trivial self-loop when a session
+// gate calls its own Check* method (which would recurse into
+// itself); any other "chained" override case isn't possible in our
+// architecture because WithSessionGate is only called once per turn
+// by agent.Run.
+func (g *Gate) resolveSessionGate(ctx context.Context) *Gate {
+	if sg, ok := SessionGateFromContext(ctx); ok && sg != g {
+		return sg
+	}
+	return g
+}
+
 // CheckGeneric gates an arbitrary tool call (used by MCP and skill
 // toolsets, where we don't have a dedicated Check<Tool> method).
 //
@@ -433,6 +453,7 @@ func (g *Gate) Scope() *PathScope { return g.scope }
 // shown in prompts (typically the tool's full namespaced name plus
 // a brief argument summary).
 func (g *Gate) CheckGeneric(ctx context.Context, toolName, key string) error {
+	g = g.resolveSessionGate(ctx)
 	return g.gateRequest(ctx, PromptKindGeneric, toolName, key, toolName, key)
 }
 
@@ -440,6 +461,7 @@ func (g *Gate) CheckGeneric(ctx context.Context, toolName, key string) error {
 // is non-overridable. After that, policy + mode determine whether the
 // call needs a prompt.
 func (g *Gate) CheckBash(ctx context.Context, command string) error {
+	g = g.resolveSessionGate(ctx)
 	command = strings.TrimSpace(command)
 	if denied, reason := IsBashDenied(command); denied {
 		return fmt.Errorf("bash refused: %s", reason)
@@ -452,6 +474,7 @@ func (g *Gate) CheckBash(ctx context.Context, command string) error {
 // write-only entries (w) for the same path still escalate via
 // promptForPath.
 func (g *Gate) CheckFileRead(ctx context.Context, toolName, path string) error {
+	g = g.resolveSessionGate(ctx)
 	if g.sessionToolAllowed(toolName) {
 		return nil
 	}
@@ -471,6 +494,7 @@ func (g *Gate) CheckFileRead(ctx context.Context, toolName, path string) error {
 // Paths not covered for writes — even if the same scope entry
 // permits reads — escalate via the path-scope prompt.
 func (g *Gate) CheckFileWrite(ctx context.Context, toolName, path string) error {
+	g = g.resolveSessionGate(ctx)
 	if g.sessionToolAllowed(toolName) {
 		return nil
 	}

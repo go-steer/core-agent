@@ -121,6 +121,13 @@ func (gt *gatedTool) Run(ctx adktool.Context, args any) (map[string]any, error) 
 	if !ok {
 		return nil, fmt.Errorf("tools: gated tool %q is not runnable", gt.inner.Name())
 	}
+	// gt.gate.CheckGeneric internally honors any per-session sub-gate
+	// stamped on ctx via permissions.WithSessionGate — see the
+	// resolveSessionGate helper on *Gate. This is what makes
+	// multi-session deployments route permission prompts to the
+	// right per-session attach broker: tool wrappers are
+	// constructed once at startup against the daemon-wide template
+	// gate, but every check looks at ctx for an override.
 	if err := gt.gate.CheckGeneric(ctx, gt.namespace, summarizeRequest(gt.inner.Name(), args)); err != nil {
 		return nil, err
 	}

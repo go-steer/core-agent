@@ -235,6 +235,7 @@ Total operator-visible latency cost on resume: one DB query + one `agent.New` ca
 - `Delete(ctx, app, user, sid)` — for future hard-delete.
 - `Touch(ctx, app, user, sid, when time.Time)` — bump LastTouchedAt without rewriting the rest.
 - `ListByOwner(ctx, owner string)` — for "show me all sessions I own" UX.
+- `ListVisibleTo(ctx, caller auth.Caller)` — returns every ACL row the caller can `SessionRead` (Owner / Viewer / Contributor / Admin-sees-all). Powers `GET /sessions` for the persisted-but-evicted half of the list (the in-memory half comes from `Registry.List()`; the two are unioned + deduped by the handler).
 
 ### `pkg/eventlog`
 
@@ -337,9 +338,32 @@ Estimate: ~300 LoC docs + smoketest extension.
 
 ## Open questions
 
-1. **Should the resumer ALSO fire on `GET /sessions` (the list endpoint)?** Today's listing returns the in-memory registry. With resume, do we want listing to also scan the ACL table so operators see "all sessions I own" regardless of memory state?
+1. **Should `GET /sessions` include persisted-but-evicted sessions?** **Resolved: yes.** Listing returns the UNION of in-memory registry entries AND persisted ACL rows the caller can read; resume itself only fires on `Lookup`/`LookupSingle` (specific-session access).
 
-   Lean: NO at the LookupSingle/Lookup paths only — list stays in-memory-only to avoid a full table scan on every list. Add `GET /sessions?include_idle=true` as an explicit operator opt-in if needed (separate follow-up).
+   Reasoning:
+   - Listing is metadata-only — no agent reconstruction, no I/O beyond the ACL query.
+   - The `agent_session_acl` table has an index on `Owner`; per-caller queries are O(log n). Admin's full scan at realistic scale (thousands of sessions) is sub-millisecond.
+   - The alternative (in-memory-only listing) means an operator post-restart sees "0 sessions" — actively bad UX. Right behavior: alice sees her sessions, sees they're idle, clicks in, resume fires on the lookup that follows.
+
+   Wire shape — `sessionDescriptor` gains two fields:
+
+   ```go
+   type sessionDescriptor struct {
+       AppName       string    `json:"app"`
+       UserID        string    `json:"user"`
+       SessionID     string    `json:"sessionID"`
+       HasEventLog   bool      `json:"has_event_log"`
+       Status        string    `json:"status"`         // "active" (in-memory) | "idle" (persisted-only)
+       LastTouchedAt time.Time `json:"last_touched_at"`
+   }
+   ```
+
+   `Status` lets the TUI render the distinction (e.g. `● 3 active · ◆ 7 idle`). `LastTouchedAt` is useful for ordering ("most recent first") and operator GC decisions.
+
+   `ListAuthorized(caller)` becomes a two-source union:
+   1. `Registry.List()` for in-memory entries → `Status: "active"`.
+   2. `aclStore.ListVisibleTo(ctx, caller)` for persisted rows whose triple isn't already in the in-memory set → `Status: "idle"`.
+   3. Filter each through `Authorize(caller, ActionSessionRead, ...)`.
 
 2. **What if `agent.New` fails during resume?** (Bad config, ADC revoked, MCP server down.) The Lookup returns an error; the handler surfaces 500. Operator can't recover via the TUI — they'd see "session unavailable, try again later." Alternative: a one-time "marked broken" flag in the ACL row that surfaces as 404 after N failed resume attempts (operator clean-up via DELETE).
 

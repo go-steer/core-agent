@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# gen-users-json — generate a fresh users.json for the multi-session
+# bearer-table Authenticator (see docs/site/content/docs/reference/
+# multi-session.md). Writes the file at mode 0600 (which the loader
+# requires) and prints the resolved tokens to stderr so the operator
+# can copy them into shell env vars for testing.
+#
+# Default output: /tmp/multi-session-bearer/users.json (matches the
+# UAT-files-in-/tmp convention; never lands under $HOME).
+# Default identities: alice@example.com, bob@example.com, ops@example.com.
+# Override with --output PATH and --users "id1,id2,...".
+#
+# Examples:
+#   dev/tools/gen-users-json
+#   dev/tools/gen-users-json --output /etc/core-agent/users.json
+#   dev/tools/gen-users-json --users "alice@x,bob@x,sa:slack-bot"
+#
+# Reads tokens via openssl rand -hex 32 (64 hex chars; 256 bits of
+# entropy). Refuses to overwrite an existing file unless --force is
+# passed — protects you from blowing away a populated table by typo.
+
+set -euo pipefail
+
+OUTPUT="/tmp/multi-session-bearer/users.json"
+USERS="alice@example.com,bob@example.com,ops@example.com"
+FORCE=0
+
+usage() {
+    cat <<EOF
+Usage: gen-users-json [--output PATH] [--users "id1,id2,..."] [--force]
+
+Generates a users.json file for the multi-session bearer-table Authenticator.
+
+Options:
+  --output PATH    Where to write the file (default: ${OUTPUT})
+  --users STR      Comma-separated identity list (default: ${USERS})
+  --force          Overwrite an existing file at OUTPUT
+  -h, --help       Show this help
+
+The file is written at mode 0600. Tokens are 32-byte hex strings
+(256 bits of entropy). The identities + tokens are printed to stderr
+as 'export NAME_TOKEN=...' lines so you can copy them into shell env
+vars for testing.
+EOF
+}
+
+while (( $# > 0 )); do
+    case "$1" in
+        --output)
+            OUTPUT="$2"; shift 2 ;;
+        --users)
+            USERS="$2"; shift 2 ;;
+        --force)
+            FORCE=1; shift ;;
+        -h|--help)
+            usage; exit 0 ;;
+        *)
+            echo "gen-users-json: unknown arg: $1" >&2
+            usage >&2
+            exit 2 ;;
+    esac
+done
+
+if [[ -e "${OUTPUT}" && "${FORCE}" -ne 1 ]]; then
+    echo "gen-users-json: ${OUTPUT} already exists; pass --force to overwrite" >&2
+    exit 1
+fi
+
+# Ensure the directory exists. mkdir -p is idempotent.
+mkdir -p "$(dirname "${OUTPUT}")"
+
+# Build the JSON via printf — avoids a jq dependency. Identity list
+# is iterated; tokens are minted per identity.
+IFS=',' read -ra IDENTITIES <<<"${USERS}"
+
+{
+    echo '{'
+    echo '  "version": 1,'
+    echo '  "users": ['
+    last=$(( ${#IDENTITIES[@]} - 1 ))
+    for i in "${!IDENTITIES[@]}"; do
+        id="$(echo "${IDENTITIES[i]}" | tr -d '[:space:]')"
+        token="$(openssl rand -hex 32)"
+        sep=","
+        if (( i == last )); then sep=""; fi
+        printf '    {"identity": "%s", "token": "%s"}%s\n' "${id}" "${token}" "${sep}"
+        # ALICE_TOKEN-style env name uses the identity's local part
+        # (before @ or :), uppercased, with dashes and dots replaced
+        # by underscores so the result is a valid shell identifier.
+        envname="$(echo "${id}" | sed -E 's/[@:].*//' | tr '[:lower:].-' '[:upper:]__')"
+        printf 'export %s_TOKEN=%s\n' "${envname}" "${token}" >&2
+    done
+    echo '  ]'
+    echo '}'
+} > "${OUTPUT}"
+
+chmod 0600 "${OUTPUT}"
+
+echo >&2
+echo "gen-users-json: wrote ${OUTPUT} (mode 0600, ${#IDENTITIES[@]} users)" >&2

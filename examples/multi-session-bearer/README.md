@@ -136,4 +136,10 @@ header). That's how "who did what" queries work in shared deployments.
 ## Smoketest
 
 For a scripted walk-through of the same flow (assertions and all), see
-[`dev/smoke/multi-session-bearer.sh`](../../dev/smoke/multi-session-bearer.sh).
+[`dev/smoke/09-multi-session-bearer.sh`](../../dev/smoke/09-multi-session-bearer.sh).
+
+For just the bearer-table setup (no daemon spin-up), use
+[`dev/tools/gen-users-json`](../../dev/tools/gen-users-json) — it
+writes a fresh `users.json` at mode 0600 with random tokens for
+alice / bob / ops (override identities with `--users`, override path
+with `--output`).

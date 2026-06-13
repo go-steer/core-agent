@@ -120,7 +120,45 @@ type Options struct {
 	//
 	// Nil disables the route entirely (the default).
 	UI fs.FS
+
+	// SessionFactory, when non-nil, enables the POST /sessions
+	// endpoint — operators can create owned sessions on demand
+	// instead of being limited to the single startup-time session.
+	// The factory is invoked once per POST /sessions request with
+	// the request context and the authenticated Caller; it returns
+	// a fresh Registrant that the handler then registers via
+	// RegisterOwned(ag, caller.Identity) so the session's ACL stamps
+	// the creator as Owner.
+	//
+	// Nil leaves POST /sessions returning 501 — the older
+	// single-session deployment model where the daemon constructs
+	// exactly one agent at startup.
+	//
+	// Per docs/multi-session-design.md §"Open questions" #1
+	// (resolved 2026-06-12): explicit session-creation API is the
+	// preferred pattern; the factory closure lives in cmd-level
+	// wiring so the daemon can capture model/gate-template/tools/
+	// MCP/eventlog config and synthesize fresh agents under the
+	// same configuration.
+	SessionFactory SessionFactory
 }
+
+// SessionFactory constructs a fresh Registrant for the POST /sessions
+// endpoint. Implementations capture the daemon-wide config (model,
+// tools, MCP toolsets, eventlog handle, instruction roots) in a
+// closure and synthesize a new *agent.Agent (or any other Registrant)
+// per call.
+//
+// caller is the authenticated identity that triggered the creation;
+// the handler stamps this as the new session's ACL Owner via
+// RegisterOwned, so the factory itself does NOT need to call
+// Register / RegisterOwned. (That separation keeps the auth
+// concerns in the handler and the construction concerns in the
+// factory.)
+//
+// ctx is the request context; honor cancellation if the factory does
+// any IO (e.g., loading per-caller instructions).
+type SessionFactory func(ctx context.Context, caller auth.Caller) (Registrant, error)
 
 // Server hosts the attach-mode HTTP endpoints. Construct via
 // NewServer; start via ListenAndServe; stop via Close.
@@ -170,6 +208,7 @@ func NewServer(opts Options) (*Server, error) {
 	mux := http.NewServeMux()
 	h := newHandlers(opts.Registry, pool)
 	h.enforceACL = opts.MultiSessionEnabled
+	h.factory = opts.SessionFactory
 	h.register(mux)
 	if opts.PeerRegistry != nil {
 		ph := newPeerHandlers(opts.PeerRegistry)

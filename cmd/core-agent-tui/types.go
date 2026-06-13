@@ -26,12 +26,36 @@ type pickerSessionsLoadedMsg struct {
 	err      error
 }
 
+// pickerSessionCreatedMsg is dispatched after the operator activates
+// the "+ New session" row in the picker. err is set when the daemon
+// returned 501 (no SessionFactory wired), 401 (no caller), or any
+// other failure — the picker surfaces it without crashing.
+type pickerSessionCreatedMsg struct {
+	entry pickerEntry
+	err   error
+}
+
+// entryKind tags a pickerEntry as either a real session row or the
+// "+ New session" sentinel that triggers POST /sessions when the
+// operator selects it. Default kindSession matches the historical
+// shape so call sites that don't set kind keep working unchanged.
+type entryKind int
+
+const (
+	kindSession entryKind = iota
+	kindCreate
+)
+
 // pickerEntry is one row in the session picker. App may be empty
 // when the listener didn't qualify the SessionID (the shortcut form
 // works either way). Endpoint is the URL of the listener that owns
 // this session — populated to disambiguate peer-registered sessions
 // from local ones.
+//
+// Kind == kindCreate marks the synthetic "+ New session" sentinel
+// row; the SessionID/App/User fields are ignored on creation rows.
 type pickerEntry struct {
+	Kind        entryKind
 	App         string
 	User        string
 	SessionID   string

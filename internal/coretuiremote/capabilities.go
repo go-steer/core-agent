@@ -500,6 +500,8 @@ func (a *Adapter) InvokeSlashAsync(ctx context.Context, name, args string) (stri
 		preamble = "Asking the agent…"
 	case "subagent":
 		preamble = "Spawning subagent…"
+	case "new":
+		preamble = "Creating new session…"
 	default:
 		// Sync path: delegate to InvokeSlash off the Update goroutine.
 		go func() {
@@ -559,6 +561,21 @@ func (a *Adapter) invokeAsyncSlash(ctx context.Context, name, args string) (core
 			return coretui.SlashResult{}, err
 		}
 		return coretui.SlashResult{SystemMessage: fmt.Sprintf("/subagent: spawned %q at %s", resp.Name, resp.StartedAt.Format(time.RFC3339))}, nil
+
+	case "new":
+		// /new bypasses the per-session /slash/<name> dispatch and
+		// hits the daemon-level POST /sessions endpoint directly —
+		// session creation isn't logically scoped to the current
+		// session, even though the operator typed the slash inside
+		// one. The TUI doesn't tear down + reattach mid-session
+		// (that needs coretui-side support); instead it shows the
+		// new session URL so the operator can relaunch with
+		// --new-session or paste the URL into a fresh tab.
+		resp, err := a.client.NewSession(ctx)
+		if err != nil {
+			return coretui.SlashResult{}, err
+		}
+		return coretui.SlashResult{SystemMessage: fmt.Sprintf("/new: created session %s — attach with `core-agent-tui %s` or relaunch with --new-session", resp.SessionID, resp.URL)}, nil
 	}
 	return coretui.SlashResult{}, fmt.Errorf("invokeAsyncSlash: unknown slash %s", name)
 }

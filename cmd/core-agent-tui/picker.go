@@ -67,7 +67,12 @@ func (m pickerModel) refreshCmd() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		out := []pickerEntry{}
+		// Prepend the "+ New session" sentinel — always shown, so the
+		// picker has at least one actionable row even when the
+		// authenticated caller has no sessions visible to them
+		// (typical for multi-session deployments where each user
+		// starts with zero sessions).
+		out := []pickerEntry{{Kind: kindCreate, Origin: "local", Endpoint: client.URL.BaseURL}}
 		// Local sessions on the supplied URL.
 		local, err := client.ListSessions(ctx)
 		if err != nil {
@@ -178,13 +183,54 @@ func (m pickerModel) UpdateInner(msg tea.Msg) (pickerModel, tea.Cmd) {
 		case "enter":
 			if len(m.entries) > 0 {
 				e := m.entries[m.cursor]
+				if e.Kind == kindCreate {
+					m.loading = true
+					m.error = ""
+					return m, m.createSessionCmd()
+				}
 				m.selected = &e
 			}
 		case "q", "esc":
 			return m, tea.Quit
 		}
+	case pickerSessionCreatedMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.error = msg.err.Error()
+			return m, nil
+		}
+		// Attach directly to the freshly-created session — operator
+		// already committed to "+ New session" so the extra "select
+		// the row that just appeared" step would be friction.
+		e := msg.entry
+		m.selected = &e
+		return m, nil
 	}
 	return m, nil
+}
+
+// createSessionCmd POSTs /sessions, then dispatches the returned
+// descriptor as a pickerSessionCreatedMsg. The picker treats the
+// create as a no-op on error (the error is surfaced inline; the
+// operator can press 'r' to refresh and try again).
+func (m pickerModel) createSessionCmd() tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		resp, err := client.NewSession(ctx)
+		if err != nil {
+			return pickerSessionCreatedMsg{err: err}
+		}
+		return pickerSessionCreatedMsg{entry: pickerEntry{
+			App:         resp.AppName,
+			User:        resp.UserID,
+			SessionID:   resp.SessionID,
+			HasEventLog: true, // POST /sessions always returns an event-log-backed session
+			Endpoint:    client.URL.BaseURL,
+			Origin:      "local",
+		}}
+	}
 }
 
 // View renders the picker. Two-section layout: header + row list +
@@ -204,17 +250,40 @@ func (m pickerModel) View() string {
 		body.WriteString("\n  no sessions registered.\n")
 		body.WriteString("\n  press 'r' to refresh, 'q' to quit.\n")
 	default:
+		// Entry count excludes the synthetic "+ New session" sentinel
+		// so the hint matches the operator's mental model of "real
+		// sessions visible to me."
+		realCount := 0
+		for _, e := range m.entries {
+			if e.Kind != kindCreate {
+				realCount++
+			}
+		}
 		body.WriteString("\n  ")
-		body.WriteString(styleHint.Render(fmt.Sprintf("%d session(s) — ↑/↓ to navigate · Enter to attach · r to refresh · q to quit", len(m.entries))))
+		body.WriteString(styleHint.Render(fmt.Sprintf("%d session(s) — ↑/↓ to navigate · Enter to attach (or create) · r to refresh · q to quit", realCount)))
 		body.WriteString("\n\n")
 		fmt.Fprintf(&body, "  %-30s %-30s %-20s %s\n", "SESSION", "APP", "USER", "ORIGIN")
 		fmt.Fprintf(&body, "  %s\n", strings.Repeat("─", min(m.width-4, 90)))
 		for i, e := range m.entries {
 			cursor := "  "
-			line := fmt.Sprintf("%-30s %-30s %-20s %s", e.SessionID, e.App, e.User, e.Origin)
-			if i == m.cursor {
-				cursor = "▸ "
-				line = lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render(line)
+			var line string
+			if e.Kind == kindCreate {
+				// Distinct styling so the sentinel doesn't look like
+				// a real session. Operators reading top-to-bottom see
+				// the affordance first.
+				label := "+ New session"
+				if i == m.cursor {
+					cursor = "▸ "
+					line = lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render(label)
+				} else {
+					line = lipgloss.NewStyle().Foreground(colorAccent).Render(label)
+				}
+			} else {
+				line = fmt.Sprintf("%-30s %-30s %-20s %s", e.SessionID, e.App, e.User, e.Origin)
+				if i == m.cursor {
+					cursor = "▸ "
+					line = lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render(line)
+				}
 			}
 			body.WriteString("  " + cursor + line + "\n")
 		}

@@ -143,6 +143,37 @@ func (c *Client) ListSessions(ctx context.Context) ([]SessionDescriptor, error) 
 	return out.Sessions, nil
 }
 
+// NewSessionResponse mirrors the attach server's POST /sessions
+// 201 body — the new session's triple plus the absolute URL the
+// client should attach to (events / inject / status / etc. live
+// underneath).
+type NewSessionResponse struct {
+	AppName   string `json:"app"`
+	UserID    string `json:"user"`
+	SessionID string `json:"sessionID"`
+	URL       string `json:"url"`
+}
+
+// NewSession calls POST <base>/sessions to create a fresh session
+// owned by the authenticated caller. Returns the new session's
+// descriptor on success.
+//
+// Server-side behavior:
+//   - 201: new session created, response carries the triple + URL
+//   - 401: caller couldn't be resolved (anonymous request)
+//   - 501: daemon doesn't have a SessionFactory configured
+//   - 500: factory error
+//   - 409: triple collision (factory's SessionID generator clashed)
+//
+// All non-2xx responses surface as errors.
+func (c *Client) NewSession(ctx context.Context) (NewSessionResponse, error) {
+	var out NewSessionResponse
+	if err := c.doJSON(ctx, http.MethodPost, "/sessions", nil, &out); err != nil {
+		return NewSessionResponse{}, err
+	}
+	return out, nil
+}
+
 // ---- /peers ----
 
 // PeerDescriptor mirrors the attach server's GET /peers row.

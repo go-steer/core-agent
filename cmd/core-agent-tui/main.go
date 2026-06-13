@@ -74,6 +74,7 @@ func main() {
 	authMode := fs.String("auth", "bearer", "auth strategy for outbound attach requests. 'bearer' (default): send attach token in Authorization: Bearer — the direct-attach path. 'google-id-token' (recommended for Cloud Run IAM / IAP): mint a Google ID token via Application Default Credentials, audience-bound to the connection URL, and stamp Authorization + X-Attach-Token. End-user ADC requires service-account impersonation (gcloud auth application-default login --impersonate-service-account=...). 'google-oauth': uses OAuth access tokens via google.FindDefaultCredentials (matches MCP's pattern for Google APIs) — Cloud Run IAM rejects this in many deployments, prefer 'google-id-token' for the IAM/IAP case.")
 	theme := fs.String("theme", "", "force a theme: 'dark', 'light', or empty for auto (queries the terminal via OSC 11)")
 	alias := fs.String("alias", "", "agent identity label shown in the status banner; default uses the session ID")
+	newSession := fs.Bool("new-session", false, "create a fresh session owned by the authenticated caller (POST /sessions) and attach to it in one shot. Skips the picker. Requires the daemon to have attach.multi_session.enabled with a configured SessionFactory; older daemons return 501 and the TUI exits with a clear error.")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		os.Exit(2)
 	}
@@ -85,7 +86,7 @@ func main() {
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	err := run(ctx, args, token, *authMode, *theme, *alias)
+	err := run(ctx, args, token, *authMode, *theme, *alias, *newSession)
 	cancel()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent-tui: %v\n", err)
@@ -95,7 +96,7 @@ func main() {
 
 // run resolves a session (parse URL → optional picker), constructs
 // the coretuiremote adapter, and hands off to coretui.Run.
-func run(ctx context.Context, args []string, token, authMode, theme, alias string) error {
+func run(ctx context.Context, args []string, token, authMode, theme, alias string, newSession bool) error {
 	rawURL, err := chooseURL(args)
 	if err != nil {
 		return err
@@ -114,7 +115,7 @@ func run(ctx context.Context, args []string, token, authMode, theme, alias strin
 	// the legacy attachclient.New(token) path remain compatible.
 	client.Token = token
 
-	sessionPath, err := resolveSessionPath(ctx, parsed, client)
+	sessionPath, err := resolveSessionPath(ctx, parsed, client, newSession)
 	if err != nil {
 		return err
 	}
@@ -193,7 +194,19 @@ func chooseURL(args []string) (string, error) {
 // session path. Direct-jump URLs (those carrying /sessions/<sid>
 // already) pass through; hub URLs trigger the picker so the
 // operator can select among the registered sessions.
-func resolveSessionPath(ctx context.Context, parsed *attachclient.ParsedURL, client *attachclient.Client) (string, error) {
+//
+// newSession=true short-circuits both paths: POST /sessions to
+// create a fresh caller-owned session, then attach to it. Useful
+// for scripts and for operators who don't want to navigate the
+// picker.
+func resolveSessionPath(ctx context.Context, parsed *attachclient.ParsedURL, client *attachclient.Client, newSession bool) (string, error) {
+	if newSession {
+		resp, err := client.NewSession(ctx)
+		if err != nil {
+			return "", fmt.Errorf("--new-session: %w", err)
+		}
+		return "/sessions/" + resp.AppName + "/" + resp.SessionID, nil
+	}
 	if !parsed.IsHubURL() {
 		return parsed.Session, nil
 	}

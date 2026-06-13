@@ -49,6 +49,9 @@ type handlers struct {
 	reg        *SessionRegistry
 	pool       *BroadcasterPool
 	enforceACL bool
+	// factory, when non-nil, enables the POST /sessions endpoint.
+	// Set from Options.SessionFactory by the Server constructor.
+	factory SessionFactory
 }
 
 func newHandlers(reg *SessionRegistry, pool *BroadcasterPool) *handlers {
@@ -117,6 +120,10 @@ func (h *handlers) lookupShortcutAuth(w http.ResponseWriter, r *http.Request, ac
 // pattern matching so {app}/{sid} is a clean two-segment match.
 func (h *handlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /sessions", h.listSessions)
+	// POST /sessions creates a new owned session via the
+	// SessionFactory closure (cmd-level wiring). 501 when the
+	// factory is nil, so older deployments behave as today.
+	mux.HandleFunc("POST /sessions", h.createSession)
 
 	// Qualified two-segment form: /sessions/<app>/<sid>/...
 	mux.HandleFunc("GET /sessions/{app}/{sid}/events", h.eventsQualified)

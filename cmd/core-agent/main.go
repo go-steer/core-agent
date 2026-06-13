@@ -960,6 +960,12 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 	// alone uses the default path (~/.<binary>/sessions.db);
 	// --session-db-path enables and overrides the path. Off by default
 	// to preserve historical CLI behavior (in-memory, ephemeral).
+	//
+	// handle is hoisted to the outer scope so the multi-session
+	// SessionFactory closure below (which constructs on-demand
+	// agents from POST /sessions) can reference the same eventlog
+	// without re-opening it.
+	var eventlogHandle *eventlog.Handle
 	if sessionDB || sessionDBPath != "" {
 		path, err := resolveSessionDBPath(sessionDBPath)
 		if err != nil {
@@ -995,6 +1001,7 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 			handle.Service = gemini.GroundingProjection(handle.Service)
 		}
 		opts = append(opts, agent.WithEventLog(handle))
+		eventlogHandle = handle
 		fmt.Fprintf(os.Stderr, "core-agent: session db: %s\n", path)
 	}
 
@@ -1054,6 +1061,29 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 			fmt.Fprintf(os.Stderr, "core-agent: multi-session auth: %v\n", authErr)
 			return runner.ExitConfigError
 		}
+		// SessionFactory enables POST /sessions — on-demand creation
+		// of caller-owned sessions. Only wired when multi-session is
+		// enabled, since the endpoint relies on per-caller auth to
+		// stamp the new session's ACL.Owner. v0 spike: substrate
+		// essentials only (tools, eventlog, per-session sub-gate, per-
+		// caller instruction overlay, per-session prompter). Operator
+		// features (BackgroundManager, Compactor, Watchdog, etc.) are
+		// not yet wired into on-demand sessions; document follow-up.
+		var sessionFactory attach.SessionFactory
+		if cfg.Attach.MultiSession.Enabled {
+			sessionFactory = buildSessionFactory(sessionFactoryDeps{
+				model:          m,
+				template:       template,
+				builtinTools:   builtinTools,
+				toolsets:       allToolsets,
+				eventlogHandle: eventlogHandle,
+				tracker:        tracker,
+				projectRoot:    projectRoot,
+				userRoot:       coreHome,
+				usersDir:       cfg.Attach.MultiSession.UsersDir,
+				registry:       attachReg,
+			})
+		}
 		// Resolve --ui / --ui-dir into an fs.FS. --ui-dir wins when
 		// both are set (operator passed an explicit override; that's
 		// the local-dev iteration path). --ui alone uses the embedded
@@ -1098,6 +1128,7 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 			AllowAnonymous:      cfg.Attach.MultiSession.AllowAnonymous,
 			ProxyHeader:         cfg.Attach.MultiSession.AssertedCallerHeader,
 			UI:                  uiAssets,
+			SessionFactory:      sessionFactory,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: attach server: %v\n", err)

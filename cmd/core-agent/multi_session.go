@@ -29,7 +29,9 @@ import (
 	"github.com/go-steer/core-agent/pkg/config"
 	"github.com/go-steer/core-agent/pkg/eventlog"
 	"github.com/go-steer/core-agent/pkg/instruction"
+	"github.com/go-steer/core-agent/pkg/mcp"
 	"github.com/go-steer/core-agent/pkg/permissions"
+	"github.com/go-steer/core-agent/pkg/skills"
 	"github.com/go-steer/core-agent/pkg/usage"
 )
 
@@ -106,8 +108,15 @@ type sessionFactoryDeps struct {
 	pricingRate    usage.Pricing
 	projectRoot    string
 	userRoot       string
+	agentsDir      string
 	usersDir       string
 	registry       *attach.SessionRegistry
+	// cfg + mcpServers feed the read-only AttachXProvider closures
+	// (memory / skills / mcp / pricing) so the per-session /memory,
+	// /skills, /mcp, /pricing slash commands return real data
+	// instead of "no servers configured" for on-demand sessions.
+	cfg        *config.Config
+	mcpServers []*mcp.Server
 }
 
 // buildSessionFactory returns an attach.SessionFactory closure that
@@ -161,6 +170,13 @@ func buildSessionFactory(deps sessionFactoryDeps) attach.SessionFactory {
 		if deps.tracker != nil {
 			opts = append(opts, agent.WithUsageTracker(deps.tracker))
 		}
+		// AttachXProvider closures power the operator-state slashes
+		// (/memory, /skills, /mcp, /pricing). Without these the
+		// per-session slashes report "no <thing> configured" even
+		// though the underlying state is wired correctly into the
+		// agent (toolsets include MCP, instructions are loaded,
+		// etc.) — the slashes just have nothing to look at.
+		opts = append(opts, attachProviderOpts(deps, sessionGate)...)
 
 		ag, err := agent.New(deps.model, opts...)
 		if err != nil {
@@ -224,6 +240,93 @@ func runSessionWakeLoop(ctx context.Context, ag *agent.Agent, tracker *usage.Tra
 			}
 		}
 	}
+}
+
+// attachProviderOpts builds the daemon-wide read-only AttachXProvider
+// closures (memory / skills / pricing snapshot / MCP) for on-demand
+// sessions. Mirrors the startup-agent's closures in main.go so the
+// per-session /memory, /skills, /pricing, /mcp slashes return real
+// data instead of empty placeholders.
+//
+// Mutating closures (RefreshPricer, PricingSetter, Reloader,
+// Replanner) are deferred — they need careful per-session threading
+// (Replanner uses the per-session gate; PricingSetter writes the
+// user's config file daemon-wide; Reloader's MCP-restart story is
+// itself unresolved upstream). Sessions can observe state via the
+// providers; mutation slashes 501 until wired in a follow-up.
+//
+// sessionGate is the derived sub-gate; threaded here so the
+// soon-to-arrive Replanner closure picks it up without expanding the
+// deps signature when it lands.
+func attachProviderOpts(deps sessionFactoryDeps, _ *permissions.Gate) []agent.Option {
+	var opts []agent.Option
+
+	if deps.projectRoot != "" || deps.userRoot != "" {
+		opts = append(opts, agent.WithAttachMemoryProvider(func() []attach.MemorySource {
+			fresh, _ := instruction.Load(deps.projectRoot, deps.userRoot)
+			out := make([]attach.MemorySource, 0, len(fresh.Sources))
+			for _, s := range fresh.Sources {
+				out = append(out, attach.MemorySource{Scope: s.Scope, Path: s.Path, Size: s.Bytes})
+			}
+			return out
+		}))
+	}
+
+	if deps.agentsDir != "" || deps.userRoot != "" {
+		opts = append(opts, agent.WithAttachSkillsProvider(func() []attach.SkillInfo {
+			fresh, err := skills.LoadAll(deps.daemonCtx, deps.agentsDir, deps.userRoot, deps.template)
+			if err != nil {
+				return nil
+			}
+			out := make([]attach.SkillInfo, 0, len(fresh.Infos))
+			for _, s := range fresh.Infos {
+				out = append(out, attach.SkillInfo{Name: s.Name, Description: s.Description})
+			}
+			return out
+		}))
+	}
+
+	if deps.cfg != nil {
+		opts = append(opts, agent.WithAttachPricingProvider(func() attach.PricingInfo {
+			info := attach.PricingInfo{CurrentModel: deps.cfg.Model.Name}
+			if !deps.pricingRate.IsZero() {
+				info.Current = &attach.ModelPricing{
+					InputUSDPerMTok:  deps.pricingRate.InputPerMTok,
+					OutputUSDPerMTok: deps.pricingRate.OutputPerMTok,
+				}
+			}
+			return info
+		}))
+	}
+
+	if len(deps.mcpServers) > 0 {
+		opts = append(opts, agent.WithAttachMCPProvider(func() attach.MCPInfo {
+			servers := make([]attach.MCPServerInfo, 0, len(deps.mcpServers))
+			for _, s := range deps.mcpServers {
+				tools := make([]attach.MCPToolInfo, 0, len(s.ToolInfos))
+				for _, t := range s.ToolInfos {
+					tools = append(tools, attach.MCPToolInfo{Name: t.Name, Description: t.Description})
+				}
+				// Mirror the startup-agent's status mapping
+				// (pkg/mcp internal "ok"/"error" → wire-format
+				// "running"/"failed") so the remote TUI's
+				// Connected detection works the same way.
+				status := "running"
+				if s.Status == mcp.StatusError {
+					status = "failed"
+				}
+				servers = append(servers, attach.MCPServerInfo{
+					Name:      s.Name,
+					Status:    status,
+					Transport: "",
+					Tools:     tools,
+				})
+			}
+			return attach.MCPInfo{Servers: servers}
+		}))
+	}
+
+	return opts
 }
 
 // newSessionID returns a unique session identifier suitable for the

@@ -336,67 +336,124 @@ Estimate: ~300 LoC docs + smoketest extension.
 
 **Total**: ~1,250 prod + ~800 tests across 4 PRs. Larger than the multi-session spike but smaller than the original multi-session substrate (#162).
 
-## Open questions
+## Open questions (resolved)
 
-1. **Should `GET /sessions` include persisted-but-evicted sessions?** **Resolved: yes.** Listing returns the UNION of in-memory registry entries AND persisted ACL rows the caller can read; resume itself only fires on `Lookup`/`LookupSingle` (specific-session access).
+All 8 design questions are resolved with explicit decisions below. Implementation can begin once the doc is approved.
 
-   Reasoning:
-   - Listing is metadata-only — no agent reconstruction, no I/O beyond the ACL query.
-   - The `agent_session_acl` table has an index on `Owner`; per-caller queries are O(log n). Admin's full scan at realistic scale (thousands of sessions) is sub-millisecond.
-   - The alternative (in-memory-only listing) means an operator post-restart sees "0 sessions" — actively bad UX. Right behavior: alice sees her sessions, sees they're idle, clicks in, resume fires on the lookup that follows.
+### 1. `GET /sessions` and persisted-but-evicted sessions
 
-   Wire shape — `sessionDescriptor` gains two fields:
+**Resolved: yes — listing includes idle sessions.** Returns the UNION of in-memory registry entries AND persisted ACL rows the caller can read; resume itself only fires on `Lookup`/`LookupSingle` (specific-session access).
 
-   ```go
-   type sessionDescriptor struct {
-       AppName       string    `json:"app"`
-       UserID        string    `json:"user"`
-       SessionID     string    `json:"sessionID"`
-       HasEventLog   bool      `json:"has_event_log"`
-       Status        string    `json:"status"`         // "active" (in-memory) | "idle" (persisted-only)
-       LastTouchedAt time.Time `json:"last_touched_at"`
-   }
-   ```
+Reasoning:
+- Listing is metadata-only — no agent reconstruction, no I/O beyond the indexed ACL query.
+- `agent_session_acl` has an index on `Owner`; per-caller queries are O(log n). Admin's full scan at realistic scale (thousands of sessions) is sub-millisecond.
+- The alternative (in-memory-only listing) means an operator post-restart sees "0 sessions" — actively bad UX. Right behavior: alice sees her sessions, sees they're idle, clicks in, resume fires on the lookup that follows.
 
-   `Status` lets the TUI render the distinction (e.g. `● 3 active · ◆ 7 idle`). `LastTouchedAt` is useful for ordering ("most recent first") and operator GC decisions.
+Wire shape — `sessionDescriptor` gains two fields:
 
-   `ListAuthorized(caller)` becomes a two-source union:
-   1. `Registry.List()` for in-memory entries → `Status: "active"`.
-   2. `aclStore.ListVisibleTo(ctx, caller)` for persisted rows whose triple isn't already in the in-memory set → `Status: "idle"`.
-   3. Filter each through `Authorize(caller, ActionSessionRead, ...)`.
+```go
+type sessionDescriptor struct {
+    AppName       string    `json:"app"`
+    UserID        string    `json:"user"`
+    SessionID     string    `json:"sessionID"`
+    HasEventLog   bool      `json:"has_event_log"`
+    Status        string    `json:"status"`         // "active" (in-memory) | "idle" (persisted-only)
+    LastTouchedAt time.Time `json:"last_touched_at"`
+}
+```
 
-2. **What if `agent.New` fails during resume?** (Bad config, ADC revoked, MCP server down.) The Lookup returns an error; the handler surfaces 500. Operator can't recover via the TUI — they'd see "session unavailable, try again later." Alternative: a one-time "marked broken" flag in the ACL row that surfaces as 404 after N failed resume attempts (operator clean-up via DELETE).
+`Status` lets the TUI render the distinction (e.g. `● 3 active · ◆ 7 idle`). `LastTouchedAt` is useful for ordering and operator GC decisions. `ListAuthorized(caller)` becomes a two-source union, deduped by triple, filtered through `Authorize`.
 
-   Lean: ship simple 500 first; the broken-session bookkeeping is a v2.5+ refinement.
+### 2. Resume failure (factory error) handling
 
-3. **Sidecar table OR eventlog metadata for ACL persistence?** The design doc proposes the sidecar (Option (b) from #178). Final call before we commit to the GORM model.
+**Resolved: HTTP 500 with the underlying error in the response body. No broken-session bookkeeping in v2.5.**
 
-   Lean: sidecar (proposed above). Eventlog metadata is per-event attribution, ACL is per-session config — different granularity. Sidecar gives O(1) lookup; eventlog scan is O(N). Schema can evolve independently.
+Surface format:
 
-4. **How does the per-session wake loop's lifecycle interact with eviction?**
+```
+HTTP/1.1 500 Internal Server Error
+Content-Type: application/json
 
-   The wake loop runs `for { select { <-ctx.Done(): return; <-ag.WakeRequested(): ... } }` using the daemon's lifetime context. On evict, the daemon ctx is still alive — only the per-session-ness is gone. Need a per-session sub-ctx so evict can cancel just one session's loop without killing all of them.
+{"error":"resume failed: agent.New: <underlying cause>"}
+```
 
-   Lean: pass a per-session cancel func to the registry on RegisterOwned; the registry stores it on the *Entry; evict calls it. The wake loop's outer ctx is now `cancelOnEvict(daemonCtx)`.
+Reasoning:
+- Most resume failures are transient (MCP server hiccup, ADC token refresh blip, a downstream API rate-limit). Operator retries; if the underlying issue clears, the next request succeeds.
+- A "marked broken" flag in the ACL row adds complexity without solving the underlying issue — and risks marking sessions broken that would have worked on retry.
+- The informative body lets operators diagnose without grepping daemon logs. (Daemon also logs `resume failed for session X: <err>` at WARN; pairs naturally with [#179](https://github.com/go-steer/core-agent/issues/179)'s `--log-file`.)
+- Side-channel guard: the body MUST NOT distinguish "session doesn't exist" (404) from "session exists but factory failed" (500) by content. The 404 body stays `attach: session not found`; the 500 body says `resume failed:` — different surfaces, can't be conflated by an attacker probing SessionIDs.
 
-5. **Migration tool for existing v2.4 sessions?** Operators with critical existing sessions in pre-v2.5 deployments lose them on upgrade (no ACL rows = no resume).
+If resume failures become operator pain in practice (one bad MCP server causing many 500s, daemon log floods), broken-session bookkeeping lands as a v2.6+ enhancement.
 
-   Lean: ship a `core-agent admin backfill-acl --owner=<identity>` command in Phase 1 OR Phase 4 that walks the eventlog and writes inferred ACL rows for every session, attributing them to the supplied owner. Single-tenant deployments (where everything belongs to one operator) are fixed in one command; multi-tenant operators have a harder problem (need per-session owner mapping from somewhere).
+### 3. Sidecar table vs eventlog metadata for ACL persistence
 
-6. **Package placement for the resumer code.** Three options:
-   - (a) `pkg/attach` — close to `SessionRegistry`, fits "the attach server's job is to resolve sessions"
-   - (b) `pkg/session-resume` (new) — keeps the resume concern separate
-   - (c) `cmd/core-agent` only — interface in `pkg/attach`, implementation only in cmd
+**Resolved: sidecar table (`agent_session_acl`).** Spec'd in §"Persistence primitive" above.
 
-   Lean: (c). The interface is small and lives in pkg/attach; the implementation needs cmd-level knowledge (factory closure, deps struct, eventlog handle) so it logically lives in cmd. Same shape as `buildSessionFactory` today.
+Reasoning (final):
+- Eventlog metadata is per-event attribution (`caller`, `proxy_by`); ACL is per-session config. Different granularity, different mutation cadence.
+- Resume needs `WHERE SessionID = X` to be O(1). Sidecar with composite-PK index delivers; eventlog scan is O(N) over the audit log.
+- The sidecar schema can evolve independently — ACL fields (Viewers, Contributors, future `display_name`, future `quota_class`) grow without forcing eventlog metadata migrations.
+- Composes cleanly with future `PATCH /sessions/<sid>/acl` (just `UPDATE` the row).
 
-7. **Should resume work when `multi_session.enabled: false`?** A single-user deployment that previously crashed and wants to come back to its one session — should we resume that too?
+### 4. Wake-loop lifecycle interaction with eviction
 
-   Lean: NO for v2.5. The single-user path uses `Register` (not `RegisterOwned`), no ACL row is written, no resume. Operators wanting crash-resume should set `multi_session.enabled: true` even with a single user. Simpler invariant: "ACL row exists ⟺ session is resumable."
+**Resolved: per-session cancel func on `*Entry`; eviction invokes it; the loop exits cleanly.**
 
-8. **What about Viewers / Contributors evolution during a session's lifetime?** Today ACLs are set at session creation and immutable. Future `PATCH /sessions/<sid>/acl` would mutate the ACL — needs the SessionACLStore to support partial updates without rewriting the whole row.
+Mechanism:
 
-   Lean: design the store's `Put` to accept the full row; add `UpdateACL(ctx, app, user, sid, viewers, contributors []string)` when the mutation API lands. Not in scope for v2.5 but the schema accommodates it (the JSON columns are already there).
+1. When `RegisterOwned` runs (factory OR resumer), the caller passes a `cancelOnEvict context.CancelFunc` along with the agent.
+2. The registry stores it on `*Entry.cancelOnEvict`.
+3. `Registry.Unregister` (called by eviction OR by an explicit DELETE in the future) invokes the func before removing the entry.
+4. The wake loop's outer ctx is derived: `loopCtx, cancelOnEvict := context.WithCancel(daemonCtx)`. Two cancel sources — daemon shutdown (`daemonCtx.Done`) and per-session evict (`cancelOnEvict`) — share one `<-loopCtx.Done()` branch in the wake loop's select.
+
+Code sketch (factory and resumer share this):
+
+```go
+loopCtx, cancelOnEvict := context.WithCancel(deps.daemonCtx)
+go runSessionWakeLoop(loopCtx, ag, deps.tracker, deps.model.Name(), deps.pricingRate)
+return ag, cancelOnEvict, nil  // caller hands cancelOnEvict to registerWithACL
+```
+
+The existing wake loop code is unchanged — it already selects on `<-ctx.Done()`. Cleanup is automatic.
+
+### 5. Migration tool for existing v2.4 sessions
+
+**Resolved: ship a two-mode `core-agent admin backfill-acl` command in Phase 4. Operators on fresh v2.5 don't need it; v2.4 → v2.5 upgrades use it once.**
+
+Two modes:
+
+- **`--owner=<identity>`** — single-tenant attribution. Walks the eventlog, writes ACL rows for every session triple with `Owner = <identity>`. One command for the "I'm the only operator" case.
+
+- **`--infer-from-eventlog`** — multi-tenant attribution via the existing α.2 Metadata sidecar. For each session triple in the eventlog, scan its events; the most common (or first) `Metadata["caller"]` value becomes the inferred owner. Operator runs `--dry-run` first to review the inferred mapping, then re-runs without `--dry-run` to commit.
+
+Pre-v2.4 sessions (no Metadata) infer as `--owner=unknown@local` (or whatever the operator passed as a fallback) so they're at least admin-only-accessible after migration rather than lost.
+
+The infer mode is elegant — the α.2 audit data is exactly the source of truth for "who created what session." Phase 4 land timing lets us include it in the v2.5 CHANGELOG migration notes.
+
+### 6. Package placement for the resumer code
+
+**Resolved: `SessionACLStore` lives in `pkg/attach`; `SessionResumer` interface in `pkg/attach`, implementation in `cmd/core-agent`.**
+
+Reasoning:
+- `SessionACLStore` is a thin GORM CRUD layer with no cmd-level dependencies — clean fit in `pkg/attach` alongside `SessionRegistry`. Tests for the store don't need to spin up a full daemon.
+- `SessionResumer` interface is small (`Resume(ctx, app, user, sid) (Registrant, SessionACL, error)`) — belongs in `pkg/attach` so handlers can consult it without importing `cmd/core-agent`.
+- `SessionResumer` IMPLEMENTATION needs `sessionFactoryDeps` (model, gate template, tools, eventlog handle, MCP servers, …) which are cmd-level. Moving them into `pkg/attach` would force `pkg/attach` to depend on every package the daemon depends on — bad layering. Pattern mirrors `buildSessionFactory` today.
+
+### 7. Resume in single-user mode
+
+**Resolved: no — single-user crash-resume already works via ADK's `session.Service`.**
+
+The single-user path uses `Register` (not `RegisterOwned`), writes no ACL row, has the constant "default" SessionID. On daemon restart, the new agent is constructed with the same SessionID; ADK's `session.Service` reattaches the prior conversation history from the DB automatically. No separate resume machinery needed.
+
+Simpler invariant: **"ACL row exists ⟺ session is resumable via the multi-session resumer."** Operators wanting multi-session-style resume (custom session IDs, ownership, audit threading) flip `multi_session.enabled: true` even with one user.
+
+### 8. ACL mutation evolution
+
+**Resolved: schema accommodates mutation; `PATCH /sessions/<sid>/acl` API deferred to v2.6+.**
+
+The `agent_session_acl` table's `ViewersJSON` and `ContributorsJSON` columns are mutable; the store's `Put` rewrites the row, and a future `UpdateACL(ctx, app, user, sid, viewers, contributors []string)` method writes a partial update via `UPDATE … SET viewers_json = ?, contributors_json = ? WHERE …`. No schema change needed when the mutation API lands.
+
+When mutation does land, ACL changes will write a synthetic event to the eventlog (Author=`attach/acl-mutation`, CustomMetadata={`who`, `field`, `before`, `after`}) so the audit trail of "who changed permissions when" lives alongside the conversation trail. Threading through `Authorize` for the mutating call is straightforward — `ActionSessionAdmin` already exists in the matrix and gates Owner+Admin only.
 
 ## Security considerations
 

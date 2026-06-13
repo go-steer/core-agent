@@ -19,6 +19,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -107,6 +108,18 @@ type Options struct {
 	// auth.HeaderAssertedCaller ("X-Asserted-Caller"). Honored only
 	// when MultiSessionEnabled is true.
 	ProxyHeader string
+
+	// UI, when non-nil, registers a /ui/* route that serves a SPA
+	// bundle from the supplied filesystem (typically the
+	// internal/webui embedded mast-web release, or a local checkout
+	// via os.DirFS for development).
+	//
+	// The SPA loads same-origin against this listener so the attach
+	// API and the UI share auth boundary and TLS cert — no separate
+	// listener, no CORS allowlist required.
+	//
+	// Nil disables the route entirely (the default).
+	UI fs.FS
 }
 
 // Server hosts the attach-mode HTTP endpoints. Construct via
@@ -161,6 +174,16 @@ func NewServer(opts Options) (*Server, error) {
 	if opts.PeerRegistry != nil {
 		ph := newPeerHandlers(opts.PeerRegistry)
 		ph.register(mux)
+	}
+	if opts.UI != nil {
+		// Strip the /ui prefix so the embedded SPA's relative paths
+		// resolve against the asset root rather than /ui/index.html.
+		mux.Handle("/ui/", http.StripPrefix("/ui", uiHandler(opts.UI)))
+		// Redirect /ui (no trailing slash) to /ui/ so the SPA's
+		// relative asset URLs work from either landing path.
+		mux.HandleFunc("/ui", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/ui/", http.StatusMovedPermanently)
+		})
 	}
 	var cardHandler http.Handler
 	if opts.AgentCard.Enabled() {

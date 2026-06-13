@@ -1,0 +1,4 @@
+# Populated at build time by dev/tools/fetch-mast-web, which downloads
+# the mast-web release tagged in the top-level .mast-web-version file.
+# This placeholder ensures the directory exists on a fresh clone so
+# //go:embed in webui.go succeeds before fetch-mast-web has run.

@@ -25,6 +25,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"os/signal"
@@ -39,6 +40,7 @@ import (
 
 	"github.com/go-steer/core-agent/internal/pricing"
 	"github.com/go-steer/core-agent/internal/version"
+	"github.com/go-steer/core-agent/internal/webui"
 	"github.com/go-steer/core-agent/pkg/agent"
 	"github.com/go-steer/core-agent/pkg/attach"
 	"github.com/go-steer/core-agent/pkg/config"
@@ -123,6 +125,8 @@ func main() {
 	attachRegisterTo := flag.String("attach-register-to", "", "register this agent with a remote attach hub at this URL (e.g. https://hub.default.svc:7777). Heartbeats automatically. Requires --attach-listen so the hub records a reachable endpoint.")
 	attachRegisterName := flag.String("attach-register-name", "", "name to register with the hub. Defaults to hostname.")
 	attachRegisterEndpoint := flag.String("attach-register-endpoint", "", "endpoint to publish to the hub (e.g. https://${POD_IP}:7777). Required when --attach-register-to is set; this agent's own --attach-listen value is NOT used since it may bind 0.0.0.0 and the hub can't reach that.")
+	attachUI := flag.Bool("ui", false, "serve the mast-web operator UI at /ui/* on the attach listener. Requires --attach-listen. Assets come from the pinned mast-web release embedded into this binary at build time (see .mast-web-version + dev/tools/fetch-mast-web); use --ui-dir to override with a local checkout for development.")
+	attachUIDir := flag.String("ui-dir", "", "serve mast-web assets from this filesystem directory instead of the embedded bundle. For local-dev iteration against a checked-out mast-web repo. Implies --ui.")
 	noREPL := flag.Bool("no-repl", false, "skip the stdin REPL — run until ctx cancellation (SIGTERM / SIGINT). Useful for attach-only daemons (e.g. spawned by core-agent-tui --local) where the operator drives the agent over attach-mode and stdin is /dev/null. Requires --attach-listen or --attach-unix-socket.")
 	noTUI := flag.Bool("no-tui", false, "skip the in-process bubble-tea TUI even when stdin is a terminal — falls back to the line-mode REPL (or whatever else --no-repl / -p select). Use for scripts or shells where the TUI's raw-mode takeover is disruptive. Equivalent to forcing the pre-v2 default behavior.")
 	noPricingRefresh := flag.Bool("no-pricing-refresh", false, "skip the daily pricing-catalog refresh from LiteLLM at startup. Use for air-gapped pods, CI runs, or any environment without outbound network. Overrides cfg.pricing.refresh.")
@@ -162,6 +166,8 @@ func main() {
 			RegisterTo:       *attachRegisterTo,
 			RegisterName:     *attachRegisterName,
 			RegisterEndpoint: *attachRegisterEndpoint,
+			UI:               *attachUI || *attachUIDir != "",
+			UIDir:            *attachUIDir,
 		},
 		agentCardOpts{
 			ConfigPath:       *agentCardConfigPath,
@@ -204,6 +210,12 @@ type attachOpts struct {
 	RegisterTo       string
 	RegisterName     string
 	RegisterEndpoint string
+	// UI enables the /ui/* route on the attach listener serving the
+	// mast-web operator UI. Uses the embedded bundle from
+	// internal/webui (populated by dev/tools/fetch-mast-web at build
+	// time) unless UIDir overrides with a local directory.
+	UI    bool
+	UIDir string
 }
 
 // resolveAgentCardConfig builds the attach.AgentCardConfig from
@@ -1042,6 +1054,31 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 			fmt.Fprintf(os.Stderr, "core-agent: multi-session auth: %v\n", authErr)
 			return runner.ExitConfigError
 		}
+		// Resolve --ui / --ui-dir into an fs.FS. --ui-dir wins when
+		// both are set (operator passed an explicit override; that's
+		// the local-dev iteration path). --ui alone uses the embedded
+		// bundle; if the bundle's empty (no fetch-mast-web run),
+		// refuse to start so the operator notices instead of seeing
+		// 404s in the browser.
+		var uiAssets fs.FS
+		if attachCfg.UIDir != "" {
+			uiAssets = os.DirFS(attachCfg.UIDir)
+			fmt.Fprintf(os.Stderr, "core-agent: --ui-dir: serving %s at /ui/\n", attachCfg.UIDir)
+		} else if attachCfg.UI {
+			if !webui.HasAssets() {
+				fmt.Fprintln(os.Stderr, "core-agent: --ui requested but the embedded mast-web bundle is empty.")
+				fmt.Fprintln(os.Stderr, "  Run `dev/tools/fetch-mast-web` before `go build` to populate internal/webui/dist/,")
+				fmt.Fprintln(os.Stderr, "  or pass --ui-dir <path> to serve from a local mast-web checkout instead.")
+				return runner.ExitConfigError
+			}
+			f, ferr := webui.FS()
+			if ferr != nil {
+				fmt.Fprintf(os.Stderr, "core-agent: --ui: %v\n", ferr)
+				return runner.ExitConfigError
+			}
+			uiAssets = f
+			fmt.Fprintln(os.Stderr, "core-agent: --ui: serving embedded mast-web bundle at /ui/")
+		}
 		attachSrv, err := attach.NewServer(attach.Options{
 			Registry:     attachReg,
 			PeerRegistry: peerReg,
@@ -1060,6 +1097,7 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 			MultiSessionEnabled: cfg.Attach.MultiSession.Enabled,
 			AllowAnonymous:      cfg.Attach.MultiSession.AllowAnonymous,
 			ProxyHeader:         cfg.Attach.MultiSession.AssertedCallerHeader,
+			UI:                  uiAssets,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: attach server: %v\n", err)

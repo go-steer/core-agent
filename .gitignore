@@ -23,6 +23,12 @@ profile.cov
 # GoReleaser output (`goreleaser release --snapshot --clean`).
 /dist/
 
+# Mast-web embed bundle — populated by dev/tools/fetch-mast-web at
+# build time, kept out of git so we don't carry a binary copy of
+# another repo's release.
+/internal/webui/dist/*
+!/internal/webui/dist/.gitkeep
+
 # AI assistant working state — never committed to this repo.
 .claude/
 

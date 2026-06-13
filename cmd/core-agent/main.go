@@ -1013,7 +1013,22 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 			fmt.Fprintln(os.Stderr, "core-agent: --attach-listen / --attach-unix-socket requires --session-db (broadcaster pumps from the event log)")
 			return runner.ExitConfigError
 		}
-		attachReg := attach.NewSessionRegistry()
+		// Session ACL persistence (Phase 1 of session-resume,
+		// docs/session-resume-design.md). Backed by the eventlog's
+		// GORM connection — no separate DB. When multi-session
+		// isn't enabled, the store is still wired but RegisterOwned
+		// is never called (the legacy Register path doesn't
+		// persist), so the table stays empty and there's no cost.
+		var aclStore attach.SessionACLStore
+		if eventlogHandle != nil && eventlogHandle.DB != nil {
+			s, err := attach.NewSessionACLStore(ctx, eventlogHandle.DB)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "core-agent: session ACL store: %v\n", err)
+				return runner.ExitConfigError
+			}
+			aclStore = s
+		}
+		attachReg := attach.NewSessionRegistryWithStore(aclStore)
 		opts = append(opts, agent.WithSessionRegistry(attach.NewAgentRegistrarAdapter(attachReg)))
 
 		// PR D — HTTP-driven permission prompts. Construct the

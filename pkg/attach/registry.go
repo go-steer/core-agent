@@ -45,6 +45,7 @@
 package attach
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -97,10 +98,22 @@ type Registrant interface {
 // calling agent.WithSessionRegistry at construction. Keys by the full
 // (AppName, UserID, SessionID) triple but exposes a single-segment
 // SessionID shortcut for the unambiguous case.
+//
+// Optional aclStore (set via NewSessionRegistryWithStore) persists
+// the ACL of every RegisterOwned call to disk so sessions survive
+// daemon restart. Nil store keeps the legacy in-memory-only
+// behavior — backward compatible for single-user and pre-resume
+// deployments.
 type SessionRegistry struct {
 	mu sync.RWMutex
 	// Keyed by the full triple; (app, user, sid) is the ADK identity.
 	byTriple map[tripleKey]*Entry
+	// aclStore, when non-nil, persists ACL rows on RegisterOwned
+	// and deletes them on Unregister. Phase 1 of session-resume
+	// (docs/session-resume-design.md): persistence only; lazy
+	// resume on Lookup miss lands in Phase 2 (separate field +
+	// wiring on the registry).
+	aclStore SessionACLStore
 }
 
 // Entry is one registered session as the registry sees it.
@@ -126,9 +139,28 @@ type tripleKey struct {
 	App, User, SID string
 }
 
-// NewSessionRegistry returns an empty registry.
+// NewSessionRegistry returns an empty registry. Sessions registered
+// via RegisterOwned are in-memory only — they do NOT survive
+// daemon restart. Use NewSessionRegistryWithStore to opt into
+// disk-backed ACL persistence (Phase 1 of session resume).
 func NewSessionRegistry() *SessionRegistry {
 	return &SessionRegistry{byTriple: make(map[tripleKey]*Entry)}
+}
+
+// NewSessionRegistryWithStore returns a registry wired to persist
+// every RegisterOwned ACL to the supplied store. The store
+// upserts on Register; the future Phase 2 SessionResumer reads it
+// back on Lookup miss to reconstruct evicted sessions.
+//
+// Passing nil for the store is equivalent to NewSessionRegistry
+// (no persistence). Callers wire this in their daemon startup
+// once the eventlog handle exposes its DB connection
+// (eventlog.Handle.DB).
+func NewSessionRegistryWithStore(store SessionACLStore) *SessionRegistry {
+	return &SessionRegistry{
+		byTriple: make(map[tripleKey]*Entry),
+		aclStore: store,
+	}
 }
 
 // ErrSessionExists is returned by Register when the (app, user, sid)
@@ -193,11 +225,44 @@ func (r *SessionRegistry) registerWithACL(ag Registrant, acl auth.SessionACL) (*
 		ACL:       acl,
 	}
 	r.byTriple[key] = e
+	// Persist the ACL row when a store is wired AND the ACL has
+	// an Owner (legacy Register without owner stays in-memory
+	// only — matches the "ACL row exists ⟺ session is resumable"
+	// invariant from the design doc OQ #7).
+	//
+	// The persistence happens inside the registry mutex so a
+	// concurrent Lookup that races with Register can't see an
+	// in-memory entry without its persisted ACL row. The store
+	// call is bounded — typical sub-ms against SQLite.
+	if r.aclStore != nil && acl.Owner != "" {
+		if err := r.aclStore.Put(context.Background(), SessionACLRow{
+			AppName:      key.App,
+			UserID:       key.User,
+			SessionID:    key.SID,
+			Owner:        acl.Owner,
+			Viewers:      acl.Viewers,
+			Contributors: acl.Contributors,
+		}); err != nil {
+			// Roll back the in-memory insert so we don't end up
+			// with an unresumable session that an operator
+			// thinks is durable. Surface the error so the
+			// session-creation endpoint can return 500.
+			delete(r.byTriple, key)
+			return nil, fmt.Errorf("attach: persist session ACL: %w", err)
+		}
+	}
 	return e, nil
 }
 
 // Unregister removes a session by its full triple. No-op (returns nil)
 // when the entry doesn't exist — keeps shutdown paths idempotent.
+//
+// Does NOT delete the persisted ACL row when a store is wired —
+// Unregister is about removing the in-memory entry (agent shutdown,
+// future eviction sweep). The ACL row stays on disk so the next
+// Lookup miss can lazily resume the session (Phase 2). For hard
+// removal that also clears the persisted ACL, use a future
+// DELETE /sessions endpoint (out of scope here).
 func (r *SessionRegistry) Unregister(appName, userID, sessionID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

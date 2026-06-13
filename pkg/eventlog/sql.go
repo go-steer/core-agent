@@ -147,7 +147,7 @@ func Open(ctx context.Context, dialector gorm.Dialector, opts ...Option) (*Handl
 		metadataExtractor: o.metadataExtractor,
 	}
 	svc := &service{inner: adkSvc, stream: stream}
-	return &Handle{Stream: stream, Service: svc, db: db}, nil
+	return &Handle{Stream: stream, Service: svc, db: db, DB: db}, nil
 }
 
 // defaultGormOpts returns the gorm.Option list passed to ADK's

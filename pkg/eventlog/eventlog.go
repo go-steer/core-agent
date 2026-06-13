@@ -110,7 +110,15 @@ type Handle struct {
 	// Pass to agent.WithSessionService (or use the
 	// agent.WithEventLog convenience that does both at once).
 	Service session.Service
-	// db is our overlay-table connection. Closed by Handle.Close.
+	// DB exposes the overlay-table connection so adjacent
+	// substrates (e.g., pkg/attach.SessionACLStore) can share the
+	// same database without re-opening it. Read-only access from
+	// outside pkg/eventlog — mutations happen via the typed
+	// stores. Nil before Open returns and after Close.
+	DB *gorm.DB
+	// db is the same value as DB, kept as an unexported alias for
+	// the original lifecycle code in Close (so the cleanup nil-out
+	// stays correct).
 	db *gorm.DB
 }
 

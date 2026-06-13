@@ -568,14 +568,21 @@ func (a *Adapter) invokeAsyncSlash(ctx context.Context, name, args string) (core
 		// session creation isn't logically scoped to the current
 		// session, even though the operator typed the slash inside
 		// one. The TUI doesn't tear down + reattach mid-session
-		// (that needs coretui-side support); instead it shows the
-		// new session URL so the operator can relaunch with
-		// --new-session or paste the URL into a fresh tab.
+		// (that needs coretui-side support, see core-tui#48);
+		// instead it shows the new session URL so the operator can
+		// relaunch with --new-session or paste the URL into a fresh
+		// tab.
+		//
+		// SystemMessage format: short prefix + URL on its own visual
+		// line so even when core-tui truncates long rows
+		// (core-tui#49) the URL stays readable. \n inside the
+		// SystemMessage renders as a line break in the chat
+		// scrollback.
 		resp, err := a.client.NewSession(ctx)
 		if err != nil {
 			return coretui.SlashResult{}, err
 		}
-		return coretui.SlashResult{SystemMessage: fmt.Sprintf("/new: created session %s — attach with `core-agent-tui %s` or relaunch with --new-session", resp.SessionID, resp.URL)}, nil
+		return coretui.SlashResult{SystemMessage: fmt.Sprintf("/new: created %s\n%s", resp.SessionID, resp.URL)}, nil
 	}
 	return coretui.SlashResult{}, fmt.Errorf("invokeAsyncSlash: unknown slash %s", name)
 }

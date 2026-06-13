@@ -1085,8 +1085,9 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 		// features (BackgroundManager, Compactor, Watchdog, etc.) are
 		// not yet wired into on-demand sessions; document follow-up.
 		var sessionFactory attach.SessionFactory
+		var sessionResumer attach.SessionResumer
 		if cfg.Attach.MultiSession.Enabled {
-			sessionFactory = buildSessionFactory(sessionFactoryDeps{
+			factoryDeps := sessionFactoryDeps{
 				daemonCtx:      ctx,
 				model:          m,
 				template:       template,
@@ -1102,7 +1103,17 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 				userRoot:       coreHome,
 				usersDir:       cfg.Attach.MultiSession.UsersDir,
 				registry:       attachReg,
-			})
+				aclStore:       aclStore,
+			}
+			sessionFactory = buildSessionFactory(factoryDeps)
+			// Session resume: reconstructs sessions persisted in
+			// agent_session_acl that aren't in the in-memory
+			// registry yet (post-daemon-restart, post-eviction).
+			// nil when aclStore is nil — pre-v2.5 deployments
+			// without persisted ACLs keep their legacy 404-on-miss
+			// behavior. Wired into attach.NewServer's Options.Resumer
+			// below.
+			sessionResumer = buildSessionResumer(factoryDeps)
 		}
 		// Resolve --ui / --ui-dir into an fs.FS. --ui-dir wins when
 		// both are set (operator passed an explicit override; that's
@@ -1149,6 +1160,7 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 			ProxyHeader:         cfg.Attach.MultiSession.AssertedCallerHeader,
 			UI:                  uiAssets,
 			SessionFactory:      sessionFactory,
+			Resumer:             sessionResumer,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: attach server: %v\n", err)

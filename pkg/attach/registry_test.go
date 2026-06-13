@@ -15,6 +15,7 @@
 package attach
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -64,7 +65,7 @@ func TestRegistry_RegisterAndLookup(t *testing.T) {
 	if got := reg.Len(); got != 1 {
 		t.Errorf("Len = %d, want 1", got)
 	}
-	e, err := reg.Lookup("core-agent", "s1")
+	e, err := reg.Lookup(context.Background(), "core-agent", "s1")
 	if err != nil {
 		t.Fatalf("Lookup: %v", err)
 	}
@@ -104,7 +105,7 @@ func TestRegistry_RegisterRequiresAppAndSession(t *testing.T) {
 func TestRegistry_LookupNotFound(t *testing.T) {
 	t.Parallel()
 	reg := NewSessionRegistry()
-	_, err := reg.Lookup("nope", "nope")
+	_, err := reg.Lookup(context.Background(), "nope", "nope")
 	if !errors.Is(err, ErrSessionNotFound) {
 		t.Errorf("want ErrSessionNotFound, got %v", err)
 	}
@@ -117,7 +118,7 @@ func TestRegistry_LookupSingle_Unambiguous(t *testing.T) {
 	if _, err := reg.Register(ag); err != nil {
 		t.Fatal(err)
 	}
-	e, err := reg.LookupSingle("unique")
+	e, err := reg.LookupSingle(context.Background(), "unique")
 	if err != nil {
 		t.Fatalf("LookupSingle: %v", err)
 	}
@@ -137,7 +138,7 @@ func TestRegistry_LookupSingle_Ambiguous(t *testing.T) {
 	if _, err := reg.Register(ag2); err != nil {
 		t.Fatal(err)
 	}
-	_, err := reg.LookupSingle("shared")
+	_, err := reg.LookupSingle(context.Background(), "shared")
 	if !errors.Is(err, ErrAmbiguousSession) {
 		t.Errorf("want ErrAmbiguousSession, got %v", err)
 	}

@@ -93,7 +93,7 @@ func TestRegisterOwned_RollsBackInMemoryOnStoreFailure(t *testing.T) {
 	// In-memory entry should not exist — verified via Lookup
 	// returning ErrSessionNotFound (the public surface the
 	// session-resolution handlers consult).
-	if _, lookupErr := reg.Lookup("core-agent", "sess-rollback"); !errors.Is(lookupErr, ErrSessionNotFound) {
+	if _, lookupErr := reg.Lookup(context.Background(), "core-agent", "sess-rollback"); !errors.Is(lookupErr, ErrSessionNotFound) {
 		t.Errorf("in-memory entry should be rolled back after store failure; got Lookup err = %v", lookupErr)
 	}
 }
@@ -107,6 +107,10 @@ func (*failingStore) Put(context.Context, SessionACLRow) error {
 }
 
 func (*failingStore) Get(context.Context, string, string, string) (SessionACLRow, error) {
+	return SessionACLRow{}, ErrSessionACLNotFound
+}
+
+func (*failingStore) FindByAppSID(context.Context, string, string) (SessionACLRow, error) {
 	return SessionACLRow{}, ErrSessionACLNotFound
 }
 

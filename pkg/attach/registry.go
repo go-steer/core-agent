@@ -51,6 +51,8 @@ import (
 	"sort"
 	"sync"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/go-steer/core-agent/pkg/auth"
 	"github.com/go-steer/core-agent/pkg/eventlog"
 )
@@ -110,10 +112,20 @@ type SessionRegistry struct {
 	byTriple map[tripleKey]*Entry
 	// aclStore, when non-nil, persists ACL rows on RegisterOwned
 	// and deletes them on Unregister. Phase 1 of session-resume
-	// (docs/session-resume-design.md): persistence only; lazy
-	// resume on Lookup miss lands in Phase 2 (separate field +
-	// wiring on the registry).
+	// (docs/session-resume-design.md): persistence only.
 	aclStore SessionACLStore
+	// resumer, when non-nil, reconstructs sessions on Lookup miss
+	// using the persisted ACL row + the daemon's factory shape.
+	// Phase 2 of session-resume. Set via WithResumer; nil falls
+	// back to the legacy "miss = ErrSessionNotFound" behavior.
+	resumer SessionResumer
+	// resumeFlight collapses concurrent Lookup misses for the same
+	// (app, sid) into a single resumer call — two TUIs reconnecting
+	// simultaneously after restart shouldn't race two agent
+	// constructions + double-register. Singleflight keys by
+	// "app/sid" so resumes for different sessions still run in
+	// parallel.
+	resumeFlight singleflight.Group
 }
 
 // Entry is one registered session as the registry sees it.
@@ -149,8 +161,9 @@ func NewSessionRegistry() *SessionRegistry {
 
 // NewSessionRegistryWithStore returns a registry wired to persist
 // every RegisterOwned ACL to the supplied store. The store
-// upserts on Register; the future Phase 2 SessionResumer reads it
-// back on Lookup miss to reconstruct evicted sessions.
+// upserts on Register; the Phase 2 SessionResumer reads it back
+// on Lookup miss to reconstruct evicted sessions (when wired via
+// WithResumer).
 //
 // Passing nil for the store is equivalent to NewSessionRegistry
 // (no persistence). Callers wire this in their daemon startup
@@ -161,6 +174,28 @@ func NewSessionRegistryWithStore(store SessionACLStore) *SessionRegistry {
 		byTriple: make(map[tripleKey]*Entry),
 		aclStore: store,
 	}
+}
+
+// WithResumer wires a SessionResumer onto an existing registry.
+// Subsequent Lookup / LookupSingle misses consult the resumer to
+// reconstruct sessions that exist on disk but not in memory
+// (e.g. after a daemon restart, or after Phase 3's eviction
+// sweep). Returns the same registry for chaining.
+//
+// The resumer is configured separately from the store because the
+// store is daemon-startup data (a SQL connection) while the
+// resumer is a closure capturing the full sessionFactoryDeps —
+// the two have different construction sites and lifetimes.
+// Calling WithResumer(nil) is a no-op (preserves the existing
+// resumer); to disable, construct a fresh registry.
+func (r *SessionRegistry) WithResumer(resumer SessionResumer) *SessionRegistry {
+	if resumer == nil {
+		return r
+	}
+	r.mu.Lock()
+	r.resumer = resumer
+	r.mu.Unlock()
+	return r
 }
 
 // ErrSessionExists is returned by Register when the (app, user, sid)
@@ -271,46 +306,160 @@ func (r *SessionRegistry) Unregister(appName, userID, sessionID string) {
 
 // Lookup returns the entry for the qualified (appName, sessionID) form.
 // userID is not required for lookup — the registry searches across all
-// registered userIDs for the (app, sid) pair. Returns ErrSessionNotFound
-// when there's no match. The full-triple form is what's stored
-// internally; this just searches.
-func (r *SessionRegistry) Lookup(appName, sessionID string) (*Entry, error) {
+// registered userIDs for the (app, sid) pair.
+//
+// On miss, when a SessionResumer is wired (Phase 2 of session-resume),
+// Lookup attempts to reconstruct the session from its persisted ACL
+// row and registers the resulting entry before returning it.
+// Concurrent misses for the same (app, sid) collapse via singleflight
+// to a single resumer call.
+//
+// Returns ErrSessionNotFound when the session is neither in memory
+// nor reconstructable (no persisted row, or no resumer configured).
+// Returns the resumer's error verbatim for any other failure (factory
+// error, store I/O error) so the handler can surface a 500 with the
+// underlying cause.
+func (r *SessionRegistry) Lookup(ctx context.Context, appName, sessionID string) (*Entry, error) {
 	if appName == "" || sessionID == "" {
 		return nil, fmt.Errorf("attach: Lookup: appName and sessionID are required")
 	}
+	// Fast path: check the in-memory map.
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	for k, e := range r.byTriple {
 		if k.App == appName && k.SID == sessionID {
+			r.mu.RUnlock()
 			return e, nil
 		}
 	}
-	return nil, fmt.Errorf("%w: %s/%s", ErrSessionNotFound, appName, sessionID)
+	resumer := r.resumer
+	r.mu.RUnlock()
+
+	if resumer == nil {
+		return nil, fmt.Errorf("%w: %s/%s", ErrSessionNotFound, appName, sessionID)
+	}
+	return r.resumeAndRegister(ctx, appName, sessionID, resumer)
 }
 
 // LookupSingle resolves the /sessions/<sessionID> shortcut. Returns
 // ErrAmbiguousSession if the SessionID is registered against multiple
 // apps — the caller should then use the qualified form and surface
 // the helpful error to the client.
-func (r *SessionRegistry) LookupSingle(sessionID string) (*Entry, error) {
+//
+// On miss, behaves the same as Lookup w.r.t. resume — the resumer
+// receives a fixed app name ("core-agent" by default; see
+// resumerDefaultApp) since the shortcut form can't carry it. In
+// practice every session in scope for resume comes from the
+// same single app per daemon, so this is the right behavior.
+func (r *SessionRegistry) LookupSingle(ctx context.Context, sessionID string) (*Entry, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("attach: LookupSingle: sessionID is required")
 	}
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	var found *Entry
 	for k, e := range r.byTriple {
 		if k.SID == sessionID {
 			if found != nil {
+				r.mu.RUnlock()
 				return nil, fmt.Errorf("%w: %s", ErrAmbiguousSession, sessionID)
 			}
 			found = e
 		}
 	}
-	if found == nil {
+	resumer := r.resumer
+	r.mu.RUnlock()
+	if found != nil {
+		return found, nil
+	}
+	if resumer == nil {
 		return nil, fmt.Errorf("%w: %s", ErrSessionNotFound, sessionID)
 	}
-	return found, nil
+	return r.resumeAndRegister(ctx, resumerDefaultApp, sessionID, resumer)
+}
+
+// resumerDefaultApp is the AppName passed to SessionResumer.Resume
+// when LookupSingle resolves the shortcut form (which carries no
+// app). Matches the single-app-per-daemon assumption documented in
+// docs/attach-mode-design.md — there's no production deployment
+// today with multiple apps sharing one daemon.
+const resumerDefaultApp = "core-agent"
+
+// resumeAndRegister calls the resumer (deduped via singleflight) and
+// registers the result under its own ACL. Returns the new Entry on
+// success; ErrSessionNotFound when the resumer reports no persisted
+// row; the underlying error otherwise.
+func (r *SessionRegistry) resumeAndRegister(ctx context.Context, app, sid string, resumer SessionResumer) (*Entry, error) {
+	key := app + "/" + sid
+	v, err, _ := r.resumeFlight.Do(key, func() (any, error) {
+		// Recheck the map under the lock — another goroutine may
+		// have completed a parallel resume between our RUnlock and
+		// the Singleflight entry. The singleflight gives us the
+		// "exactly one Resume call" guarantee; we still need to
+		// avoid double-registering when the racing goroutine wasn't
+		// part of our flight.
+		r.mu.RLock()
+		for k, e := range r.byTriple {
+			if k.App == app && k.SID == sid {
+				r.mu.RUnlock()
+				return e, nil
+			}
+		}
+		r.mu.RUnlock()
+
+		ag, acl, resumeErr := resumer.Resume(ctx, app, sid)
+		if resumeErr != nil {
+			// The resumer surfaces ErrSessionACLNotFound when no
+			// persisted row exists; translate to ErrSessionNotFound
+			// so handlers map it to 404 uniformly with the in-memory
+			// "no such session" case.
+			if errors.Is(resumeErr, ErrSessionACLNotFound) {
+				return nil, fmt.Errorf("%w: %s/%s", ErrSessionNotFound, app, sid)
+			}
+			return nil, resumeErr
+		}
+		entry, err := r.registerResumed(ag, acl)
+		if err != nil {
+			return nil, fmt.Errorf("attach: resume: register: %w", err)
+		}
+		return entry, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(*Entry), nil
+}
+
+// registerResumed adds a resumer-constructed Registrant to the
+// in-memory registry under its persisted ACL. Skips the aclStore
+// Put — the row is already on disk (that's how the resumer
+// learned about the session in the first place). Used only by
+// resumeAndRegister; not exported.
+//
+// If the triple races and is already registered (concurrent
+// resume + concurrent legacy Register, vanishingly unlikely),
+// returns the existing entry rather than ErrSessionExists so the
+// caller sees a successful lookup either way.
+func (r *SessionRegistry) registerResumed(ag Registrant, acl auth.SessionACL) (*Entry, error) {
+	if ag == nil {
+		return nil, errors.New("attach: registerResumed: nil Registrant")
+	}
+	key := tripleKey{App: ag.AppName(), User: ag.UserID(), SID: ag.SessionID()}
+	if key.App == "" || key.SID == "" {
+		return nil, fmt.Errorf("attach: registerResumed: AppName and SessionID are required (got app=%q sid=%q)", key.App, key.SID)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if existing, ok := r.byTriple[key]; ok {
+		return existing, nil
+	}
+	e := &Entry{
+		AppName:   key.App,
+		UserID:    key.User,
+		SessionID: key.SID,
+		Agent:     ag,
+		ACL:       acl,
+	}
+	r.byTriple[key] = e
+	return e, nil
 }
 
 // List returns a snapshot of every registered entry, sorted by

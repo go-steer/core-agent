@@ -48,6 +48,20 @@ type SessionACLStore interface {
 	// or for fresh deployments with no prior sessions).
 	Get(ctx context.Context, app, user, sid string) (SessionACLRow, error)
 
+	// FindByAppSID returns the first persisted row matching the
+	// (app, sid) pair, scanning across users. Used by the resumer:
+	// SessionRegistry.Lookup is keyed by (app, sid) (no userID;
+	// userID is per-process today, see registry doc), so the
+	// resumer must locate the matching row without knowing user.
+	// Returns ErrSessionACLNotFound when no row exists.
+	//
+	// In practice SessionIDs are unique across users, so the
+	// "first match" behavior is unambiguous. The deterministic
+	// scan-order isn't specified — callers that need stable order
+	// across multi-user-same-sid rows (shouldn't happen) sort
+	// post-fetch.
+	FindByAppSID(ctx context.Context, app, sid string) (SessionACLRow, error)
+
 	// Delete removes the ACL row for the triple. Idempotent — no
 	// error when the row doesn't exist. Used by future
 	// DELETE /sessions hard-delete; NOT called by the eviction
@@ -211,6 +225,23 @@ func (s *gormSessionACLStore) Get(ctx context.Context, app, user, sid string) (S
 	}
 	if err != nil {
 		return SessionACLRow{}, fmt.Errorf("attach: SessionACLStore.Get: %w", err)
+	}
+	return rowFromInternal(internal), nil
+}
+
+func (s *gormSessionACLStore) FindByAppSID(ctx context.Context, app, sid string) (SessionACLRow, error) {
+	if app == "" || sid == "" {
+		return SessionACLRow{}, fmt.Errorf("attach: SessionACLStore.FindByAppSID: app and sid are required (got app=%q sid=%q)", app, sid)
+	}
+	var internal sessionACLRow
+	err := s.db.WithContext(ctx).
+		Where("app_name = ? AND session_id = ?", app, sid).
+		First(&internal).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return SessionACLRow{}, ErrSessionACLNotFound
+	}
+	if err != nil {
+		return SessionACLRow{}, fmt.Errorf("attach: SessionACLStore.FindByAppSID: %w", err)
 	}
 	return rowFromInternal(internal), nil
 }

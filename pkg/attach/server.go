@@ -141,6 +141,13 @@ type Options struct {
 	// MCP/eventlog config and synthesize fresh agents under the
 	// same configuration.
 	SessionFactory SessionFactory
+
+	// Resumer, when non-nil, reconstructs sessions that exist on
+	// disk but not in the in-memory registry. Wired by the daemon
+	// from buildSessionResumer; nil leaves the legacy "miss = 404"
+	// behavior in place (pre-v2.5 deployments). See
+	// docs/session-resume-design.md.
+	Resumer SessionResumer
 }
 
 // SessionFactory constructs a fresh Registrant for the POST /sessions
@@ -209,6 +216,9 @@ func NewServer(opts Options) (*Server, error) {
 	h := newHandlers(opts.Registry, pool)
 	h.enforceACL = opts.MultiSessionEnabled
 	h.factory = opts.SessionFactory
+	if opts.Resumer != nil {
+		opts.Registry.WithResumer(opts.Resumer)
+	}
 	h.register(mux)
 	if opts.PeerRegistry != nil {
 		ph := newPeerHandlers(opts.PeerRegistry)

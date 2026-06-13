@@ -93,6 +93,39 @@ func TestSessionACLStore_Get_NotFound(t *testing.T) {
 	}
 }
 
+func TestSessionACLStore_FindByAppSID(t *testing.T) {
+	t.Parallel()
+	store := newTestACLStore(t)
+	ctx := context.Background()
+	// Two rows, distinct users, same app + sid would be a degenerate
+	// case (sid is uniquely minted per session); seed two rows with
+	// distinct sids and one matching the lookup pair.
+	for _, row := range []SessionACLRow{
+		{AppName: "core-agent", UserID: "u1", SessionID: "sess-abc", Owner: "alice@example.com"},
+		{AppName: "core-agent", UserID: "u2", SessionID: "sess-xyz", Owner: "bob@example.com"},
+	} {
+		if err := store.Put(ctx, row); err != nil {
+			t.Fatalf("seed Put: %v", err)
+		}
+	}
+	got, err := store.FindByAppSID(ctx, "core-agent", "sess-xyz")
+	if err != nil {
+		t.Fatalf("FindByAppSID: %v", err)
+	}
+	if got.UserID != "u2" || got.Owner != "bob@example.com" {
+		t.Errorf("FindByAppSID returned wrong row: got user=%q owner=%q", got.UserID, got.Owner)
+	}
+}
+
+func TestSessionACLStore_FindByAppSID_NotFound(t *testing.T) {
+	t.Parallel()
+	store := newTestACLStore(t)
+	_, err := store.FindByAppSID(context.Background(), "core-agent", "missing")
+	if !errors.Is(err, ErrSessionACLNotFound) {
+		t.Errorf("want ErrSessionACLNotFound, got %v", err)
+	}
+}
+
 func TestSessionACLStore_Put_RejectsEmptyOwner(t *testing.T) {
 	t.Parallel()
 	store := newTestACLStore(t)

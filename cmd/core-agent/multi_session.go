@@ -117,6 +117,13 @@ type sessionFactoryDeps struct {
 	// instead of "no servers configured" for on-demand sessions.
 	cfg        *config.Config
 	mcpServers []*mcp.Server
+	// aclStore is the persistent ACL backing for session-resume
+	// (Phase 2 of docs/session-resume-design.md). The factory
+	// writes through it via RegisterOwned at session-creation time
+	// (handled by the registry, not directly); the resumer reads
+	// from it on Lookup miss to reconstruct evicted sessions. Nil
+	// disables resume — the registry behaves as pre-v2.5.
+	aclStore attach.SessionACLStore
 }
 
 // buildSessionFactory returns an attach.SessionFactory closure that
@@ -133,75 +140,133 @@ type sessionFactoryDeps struct {
 // Owner stamp), losing the ACL ownership that's the whole point.
 func buildSessionFactory(deps sessionFactoryDeps) attach.SessionFactory {
 	return func(_ context.Context, caller auth.Caller) (attach.Registrant, error) {
-		sid := newSessionID()
-
-		// Per-session HTTP prompt broker. Each new session gets its
-		// own broker so prompts route to the right per-session
-		// /perms/stream subscriber.
-		broker := attach.NewPromptBroker()
-
-		// Per-session sub-gate isolates sessionAllow / planRecorded
-		// / mode / approvals from sibling sessions. Shares Policy /
-		// PathScope / requirePlanArtifact via the template (the
-		// documented limitation in docs/multi-session-design.md).
-		sessionGate := deps.template.DeriveForSession(sid, broker)
-
-		// Per-caller instruction overlay: the operator's
-		// <usersDir>/<caller.Identity>/.agents/ tree layered on
-		// top of project + user scopes. Empty usersDir or unknown
-		// caller falls through to the daemon-wide instruction stack.
-		instr, err := instruction.LoadForSession(deps.projectRoot, deps.userRoot, caller.Identity, deps.usersDir)
-		if err != nil {
-			broker.Close()
-			return nil, fmt.Errorf("load per-caller instructions: %w", err)
-		}
-
-		opts := []agent.Option{
-			agent.WithTools(deps.builtinTools),
-			agent.WithToolsets(deps.toolsets),
-			agent.WithSystemInstructionPrefix(instr.Instruction),
-			agent.WithGate(sessionGate),
-			agent.WithSession(caller.Identity, sid),
-			agent.WithAttachPromptBroker(broker),
-		}
-		if deps.eventlogHandle != nil {
-			opts = append(opts, agent.WithEventLog(deps.eventlogHandle))
-		}
-		if deps.tracker != nil {
-			opts = append(opts, agent.WithUsageTracker(deps.tracker))
-		}
-		// AttachXProvider closures power the operator-state slashes
-		// (/memory, /skills, /mcp, /pricing). Without these the
-		// per-session slashes report "no <thing> configured" even
-		// though the underlying state is wired correctly into the
-		// agent (toolsets include MCP, instructions are loaded,
-		// etc.) — the slashes just have nothing to look at.
-		opts = append(opts, attachProviderOpts(deps, sessionGate)...)
-
-		ag, err := agent.New(deps.model, opts...)
-		if err != nil {
-			broker.Close()
-			return nil, fmt.Errorf("agent.New: %w", err)
-		}
-		// Operator-visible log line that mirrors the startup-time
-		// "--no-repl: attach-only mode, session <sid>" message so the
-		// daemon stderr reflects every long-lived agent it's hosting.
-		fmt.Fprintf(os.Stderr, "core-agent: session created (owner=%s, id=%s)\n", caller.Identity, sid)
-		// Spawn the per-session wake loop: until daemonCtx cancels,
-		// when an attach client POSTs /inject, agent.Inject queues
-		// the message + fires WakeRequested; this goroutine consumes
-		// the wake and calls ag.Run("") so the queued message becomes
-		// a turn (events flow through the eventlog → attach
-		// broadcaster → operator's TUI). Without this loop the agent
-		// is inert: messages queue but nothing drains them, and the
-		// TUI shows "agent runs autonomously; events stream below"
-		// with no events ever streaming.
-		//
-		// Mirrors the --no-repl wake loop in cmd/core-agent/main.go
-		// that drives the startup-time agent in attach-only mode.
-		go runSessionWakeLoop(deps.daemonCtx, ag, deps.tracker, deps.model.Name(), deps.pricingRate)
-		return ag, nil
+		return reproduceAgent(deps, caller, newSessionID(), "created")
 	}
+}
+
+// reproduceAgent constructs an *agent.Agent under (caller, sid) using
+// the shared sessionFactoryDeps shape. Used both by the on-demand
+// session factory (sid is freshly minted) and by the resumer (sid
+// comes from the persisted ACL row — ADK's session.Service reattaches
+// the prior conversation history when the same triple opens the
+// eventlog).
+//
+// origin is "created" (factory path) or "resumed" (resumer path) and
+// flows into the operator-visible stderr log line so the daemon log
+// distinguishes the two.
+//
+// The per-session wake loop is spawned by the caller via the same
+// path as buildSessionFactory's tail — kept inside this helper so
+// the two paths share lifecycle exactly. Returns the constructed
+// Registrant; the caller (factory's closure or the resumer) hands
+// it to the registry under the appropriate ACL.
+func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, origin string) (*agent.Agent, error) {
+	// Per-session HTTP prompt broker. Each new session gets its
+	// own broker so prompts route to the right per-session
+	// /perms/stream subscriber.
+	broker := attach.NewPromptBroker()
+
+	// Per-session sub-gate isolates sessionAllow / planRecorded
+	// / mode / approvals from sibling sessions. Shares Policy /
+	// PathScope / requirePlanArtifact via the template (the
+	// documented limitation in docs/multi-session-design.md).
+	sessionGate := deps.template.DeriveForSession(sid, broker)
+
+	// Per-caller instruction overlay: the operator's
+	// <usersDir>/<caller.Identity>/.agents/ tree layered on
+	// top of project + user scopes. Empty usersDir or unknown
+	// caller falls through to the daemon-wide instruction stack.
+	instr, err := instruction.LoadForSession(deps.projectRoot, deps.userRoot, caller.Identity, deps.usersDir)
+	if err != nil {
+		broker.Close()
+		return nil, fmt.Errorf("load per-caller instructions: %w", err)
+	}
+
+	opts := []agent.Option{
+		agent.WithTools(deps.builtinTools),
+		agent.WithToolsets(deps.toolsets),
+		agent.WithSystemInstructionPrefix(instr.Instruction),
+		agent.WithGate(sessionGate),
+		agent.WithSession(caller.Identity, sid),
+		agent.WithAttachPromptBroker(broker),
+	}
+	if deps.eventlogHandle != nil {
+		opts = append(opts, agent.WithEventLog(deps.eventlogHandle))
+	}
+	if deps.tracker != nil {
+		opts = append(opts, agent.WithUsageTracker(deps.tracker))
+	}
+	// AttachXProvider closures power the operator-state slashes
+	// (/memory, /skills, /mcp, /pricing). Without these the
+	// per-session slashes report "no <thing> configured" even
+	// though the underlying state is wired correctly into the
+	// agent (toolsets include MCP, instructions are loaded,
+	// etc.) — the slashes just have nothing to look at.
+	opts = append(opts, attachProviderOpts(deps, sessionGate)...)
+
+	ag, err := agent.New(deps.model, opts...)
+	if err != nil {
+		broker.Close()
+		return nil, fmt.Errorf("agent.New: %w", err)
+	}
+	// Operator-visible log line that mirrors the startup-time
+	// "--no-repl: attach-only mode, session <sid>" message so the
+	// daemon stderr reflects every long-lived agent it's hosting.
+	fmt.Fprintf(os.Stderr, "core-agent: session %s (owner=%s, id=%s)\n", origin, caller.Identity, sid)
+	// Spawn the per-session wake loop. Same lifecycle as the
+	// factory path — without this loop the agent is inert:
+	// messages queue but nothing drains them. Mirrors the
+	// --no-repl wake loop in cmd/core-agent/main.go.
+	go runSessionWakeLoop(deps.daemonCtx, ag, deps.tracker, deps.model.Name(), deps.pricingRate)
+	return ag, nil
+}
+
+// buildSessionResumer wires the cmd-level SessionResumer for the
+// attach server. Reads the persisted ACL row from deps.aclStore;
+// materializes the original Caller from row.Owner; reconstructs the
+// agent via reproduceAgent with the EXPLICIT sessionID so ADK's
+// session.Service reattaches the prior conversation history from
+// the eventlog.
+//
+// Returns nil when deps.aclStore is nil — session-resume is opt-in.
+// The attach server's Options.Resumer being nil leaves the legacy
+// "Lookup miss = 404" behavior in place, no behavior change for
+// pre-v2.5 deployments.
+//
+// Resumer failures propagate to the registry; the registry's
+// resumeAndRegister handles ErrSessionACLNotFound → ErrSessionNotFound
+// translation. Other errors surface as 500 with the underlying
+// cause (per docs/session-resume-design.md OQ #2).
+func buildSessionResumer(deps sessionFactoryDeps) attach.SessionResumer {
+	if deps.aclStore == nil {
+		return nil
+	}
+	return &sessionResumer{deps: deps}
+}
+
+// sessionResumer implements attach.SessionResumer using the cmd-level
+// factory deps. The same store the factory writes through (via the
+// registry's RegisterOwned path) is the store this reads from on
+// miss — guaranteed-consistent because they share the eventlog DB
+// connection.
+type sessionResumer struct {
+	deps sessionFactoryDeps
+}
+
+func (r *sessionResumer) Resume(ctx context.Context, app, sid string) (attach.Registrant, auth.SessionACL, error) {
+	row, err := r.deps.aclStore.FindByAppSID(ctx, app, sid)
+	if err != nil {
+		// ErrSessionACLNotFound propagates as-is; the registry
+		// translates it to ErrSessionNotFound. Any other store
+		// error propagates to the 500 surface.
+		return nil, auth.SessionACL{}, err
+	}
+	caller := auth.Caller{Identity: row.Owner}
+	ag, err := reproduceAgent(r.deps, caller, sid, "resumed")
+	if err != nil {
+		return nil, auth.SessionACL{}, fmt.Errorf("resume: %w", err)
+	}
+	return ag, row.ACL(), nil
 }
 
 // runSessionWakeLoop is the per-session driver that the SessionFactory

@@ -89,7 +89,7 @@ func (h *handlers) authorize(w http.ResponseWriter, r *http.Request, entry *Entr
 func (h *handlers) lookupQualifiedAuth(w http.ResponseWriter, r *http.Request, action auth.Action) (*Entry, bool) {
 	app := r.PathValue("app")
 	sid := r.PathValue("sid")
-	entry, err := h.reg.Lookup(app, sid)
+	entry, err := h.reg.Lookup(r.Context(), app, sid)
 	if err != nil {
 		writeLookupError(w, err)
 		return nil, false
@@ -105,7 +105,7 @@ func (h *handlers) lookupQualifiedAuth(w http.ResponseWriter, r *http.Request, a
 // /sessions/{sid}/... shortcut routes.
 func (h *handlers) lookupShortcutAuth(w http.ResponseWriter, r *http.Request, action auth.Action) (*Entry, bool) {
 	sid := r.PathValue("sid")
-	entry, err := h.reg.LookupSingle(sid)
+	entry, err := h.reg.LookupSingle(r.Context(), sid)
 	if err != nil {
 		writeLookupError(w, err)
 		return nil, false

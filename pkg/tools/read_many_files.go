@@ -15,7 +15,6 @@
 package tools
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -78,7 +77,7 @@ type readManyFilesResult struct {
 // dropping trailing entries; the truncated flag at the top level
 // signals when this fires.
 func readManyFilesFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[readManyFilesArgs, readManyFilesResult] {
-	return func(_ tool.Context, in readManyFilesArgs) (readManyFilesResult, error) {
+	return func(ctx tool.Context, in readManyFilesArgs) (readManyFilesResult, error) {
 		if len(in.Paths) == 0 && in.Pattern == "" {
 			return readManyFilesResult{}, fmt.Errorf("read_many_files: provide paths or pattern (or both)")
 		}
@@ -119,7 +118,7 @@ func readManyFilesFunc(gate *permissions.Gate, cfg *config.Config) functiontool.
 			if err != nil {
 				return readManyFilesResult{}, err
 			}
-			if err := gate.CheckFileRead(context.Background(), "read_many_files", absRoot); err != nil {
+			if err := gate.CheckFileRead(ctx, "read_many_files", absRoot); err != nil {
 				return readManyFilesResult{}, err
 			}
 			var matched []string
@@ -162,7 +161,7 @@ func readManyFilesFunc(gate *permissions.Gate, cfg *config.Config) functiontool.
 		result := readManyFilesResult{Files: make([]readManyFile, 0, len(ordered))}
 		for _, p := range ordered {
 			entry := readManyFile{Path: p}
-			if err := gate.CheckFileRead(context.Background(), "read_many_files", p); err != nil {
+			if err := gate.CheckFileRead(ctx, "read_many_files", p); err != nil {
 				entry.Skipped = "permission denied"
 				result.Files = append(result.Files, entry)
 				continue

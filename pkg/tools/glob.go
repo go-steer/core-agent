@@ -15,7 +15,6 @@
 package tools
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -67,7 +66,7 @@ var skippedDirs = map[string]bool{
 // Output is JSON-encoded then truncated as a whole via Truncate +
 // the per-tool caps.
 func globFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[globArgs, globResult] {
-	return func(_ tool.Context, in globArgs) (globResult, error) {
+	return func(ctx tool.Context, in globArgs) (globResult, error) {
 		if in.Pattern == "" {
 			return globResult{}, fmt.Errorf("glob: pattern is required")
 		}
@@ -84,7 +83,7 @@ func globFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[glob
 		if err != nil {
 			return globResult{}, err
 		}
-		if err := gate.CheckFileRead(context.Background(), "glob", absRoot); err != nil {
+		if err := gate.CheckFileRead(ctx, "glob", absRoot); err != nil {
 			return globResult{}, err
 		}
 
@@ -110,7 +109,7 @@ func globFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[glob
 			if err != nil || !matched {
 				return nil
 			}
-			if err := gate.CheckFileRead(context.Background(), "glob", path); err != nil {
+			if err := gate.CheckFileRead(ctx, "glob", path); err != nil {
 				return nil
 			}
 			paths = append(paths, path)

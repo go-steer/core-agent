@@ -87,7 +87,7 @@ func fetchURLFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[
 	if scopeCap <= 0 {
 		scopeCap = fetchURLDefaultMaxBodyBytes
 	}
-	return func(_ tool.Context, in fetchURLArgs) (fetchURLResult, error) {
+	return func(ctx tool.Context, in fetchURLArgs) (fetchURLResult, error) {
 		if in.URL == "" {
 			return fetchURLResult{}, errors.New("fetch_url: url is required")
 		}
@@ -103,7 +103,7 @@ func fetchURLFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[
 		// permissions.allow: ["fetch_url:github.com/*"] etc.
 		// Key passes the URL as the gate sees it; pattern-matchers
 		// on the gate side do their own globbing.
-		if err := gate.CheckGeneric(context.Background(), "fetch_url", in.URL); err != nil {
+		if err := gate.CheckGeneric(ctx, "fetch_url", in.URL); err != nil {
 			return fetchURLResult{}, err
 		}
 

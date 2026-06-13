@@ -1,0 +1,8 @@
+# Pinned release tag of github.com/go-steer/mast-web that dev/tools/fetch-mast-web
+# downloads into internal/webui/dist/ before `go build`. Bumping mast-web is a
+# one-line PR + CI rebuild.
+#
+# Leave the version line below blank until mast-web ships v0.1.0; the fetch
+# script tolerates an unset version (logs a skip; --ui prints a clear error
+# at startup explaining the assets aren't populated yet).
+version=

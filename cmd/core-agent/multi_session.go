@@ -139,7 +139,7 @@ type sessionFactoryDeps struct {
 // because that would self-register via the legacy Register() (no
 // Owner stamp), losing the ACL ownership that's the whole point.
 func buildSessionFactory(deps sessionFactoryDeps) attach.SessionFactory {
-	return func(_ context.Context, caller auth.Caller) (attach.Registrant, error) {
+	return func(_ context.Context, caller auth.Caller) (attach.Registrant, context.CancelFunc, error) {
 		return reproduceAgent(deps, caller, newSessionID(), "created")
 	}
 }
@@ -155,12 +155,14 @@ func buildSessionFactory(deps sessionFactoryDeps) attach.SessionFactory {
 // flows into the operator-visible stderr log line so the daemon log
 // distinguishes the two.
 //
-// The per-session wake loop is spawned by the caller via the same
-// path as buildSessionFactory's tail — kept inside this helper so
-// the two paths share lifecycle exactly. Returns the constructed
-// Registrant; the caller (factory's closure or the resumer) hands
-// it to the registry under the appropriate ACL.
-func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, origin string) (*agent.Agent, error) {
+// Returns the constructed agent + a CancelFunc that stops the
+// per-session wake-loop goroutine. The caller hands the cancel to
+// the registry (via RegisterOwnedWithCancel / registerResumed) so
+// eviction terminates the loop cleanly instead of leaking it past
+// the session's lifetime. The wake loop's ctx is derived from
+// deps.daemonCtx — either source of cancellation (daemon shutdown
+// or per-session evict) closes ctx.Done and the loop exits.
+func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, origin string) (*agent.Agent, context.CancelFunc, error) {
 	// Per-session HTTP prompt broker. Each new session gets its
 	// own broker so prompts route to the right per-session
 	// /perms/stream subscriber.
@@ -179,7 +181,7 @@ func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, ori
 	instr, err := instruction.LoadForSession(deps.projectRoot, deps.userRoot, caller.Identity, deps.usersDir)
 	if err != nil {
 		broker.Close()
-		return nil, fmt.Errorf("load per-caller instructions: %w", err)
+		return nil, nil, fmt.Errorf("load per-caller instructions: %w", err)
 	}
 
 	opts := []agent.Option{
@@ -207,18 +209,20 @@ func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, ori
 	ag, err := agent.New(deps.model, opts...)
 	if err != nil {
 		broker.Close()
-		return nil, fmt.Errorf("agent.New: %w", err)
+		return nil, nil, fmt.Errorf("agent.New: %w", err)
 	}
 	// Operator-visible log line that mirrors the startup-time
 	// "--no-repl: attach-only mode, session <sid>" message so the
 	// daemon stderr reflects every long-lived agent it's hosting.
 	fmt.Fprintf(os.Stderr, "core-agent: session %s (owner=%s, id=%s)\n", origin, caller.Identity, sid)
-	// Spawn the per-session wake loop. Same lifecycle as the
-	// factory path — without this loop the agent is inert:
-	// messages queue but nothing drains them. Mirrors the
-	// --no-repl wake loop in cmd/core-agent/main.go.
-	go runSessionWakeLoop(deps.daemonCtx, ag, deps.tracker, deps.model.Name(), deps.pricingRate)
-	return ag, nil
+	// Derive the wake-loop ctx from daemonCtx so both daemon
+	// shutdown AND per-session eviction terminate the loop
+	// through the same <-ctx.Done() branch. cancelOnEvict is
+	// handed to the registry, which invokes it when the eviction
+	// sweep removes this session.
+	loopCtx, cancelOnEvict := context.WithCancel(deps.daemonCtx)
+	go runSessionWakeLoop(loopCtx, ag, deps.tracker, deps.model.Name(), deps.pricingRate)
+	return ag, cancelOnEvict, nil
 }
 
 // buildSessionResumer wires the cmd-level SessionResumer for the
@@ -253,20 +257,20 @@ type sessionResumer struct {
 	deps sessionFactoryDeps
 }
 
-func (r *sessionResumer) Resume(ctx context.Context, app, sid string) (attach.Registrant, auth.SessionACL, error) {
+func (r *sessionResumer) Resume(ctx context.Context, app, sid string) (attach.Registrant, auth.SessionACL, context.CancelFunc, error) {
 	row, err := r.deps.aclStore.FindByAppSID(ctx, app, sid)
 	if err != nil {
 		// ErrSessionACLNotFound propagates as-is; the registry
 		// translates it to ErrSessionNotFound. Any other store
 		// error propagates to the 500 surface.
-		return nil, auth.SessionACL{}, err
+		return nil, auth.SessionACL{}, nil, err
 	}
 	caller := auth.Caller{Identity: row.Owner}
-	ag, err := reproduceAgent(r.deps, caller, sid, "resumed")
+	ag, cancelOnEvict, err := reproduceAgent(r.deps, caller, sid, "resumed")
 	if err != nil {
-		return nil, auth.SessionACL{}, fmt.Errorf("resume: %w", err)
+		return nil, auth.SessionACL{}, nil, fmt.Errorf("resume: %w", err)
 	}
-	return ag, row.ACL(), nil
+	return ag, row.ACL(), cancelOnEvict, nil
 }
 
 // runSessionWakeLoop is the per-session driver that the SessionFactory

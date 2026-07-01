@@ -359,6 +359,11 @@ func (b *Broadcaster) pump(ctx context.Context) {
 		if entry.Event != nil {
 			author = entry.Event.Author
 		}
+		// Every event pumped counts as session activity — a
+		// busy autonomous agent (long tool call, background
+		// compaction, etc.) is not idle. Prevents the eviction
+		// sweep from killing an actively-working session.
+		b.entry.touch()
 		frame := Frame{Seq: entry.Seq, Event: entry.Event}
 		b.mu.Lock()
 		nSubs := len(b.subs)

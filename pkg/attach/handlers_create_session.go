@@ -66,18 +66,27 @@ func (h *handlers) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ag, err := h.factory(r.Context(), caller)
+	ag, cancelOnEvict, err := h.factory(r.Context(), caller)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("create session: %v", err), http.StatusInternalServerError)
 		return
 	}
 	if ag == nil {
+		if cancelOnEvict != nil {
+			cancelOnEvict()
+		}
 		http.Error(w, "create session: factory returned nil Registrant", http.StatusInternalServerError)
 		return
 	}
 
-	entry, err := h.reg.RegisterOwned(ag, caller.Identity)
+	entry, err := h.reg.RegisterOwnedWithCancel(ag, caller.Identity, cancelOnEvict)
 	if err != nil {
+		// Registration failed — cancel the factory's wake loop so
+		// it doesn't leak. Wake-loop goroutine started before this
+		// handler was reached; nobody else holds the cancel.
+		if cancelOnEvict != nil {
+			cancelOnEvict()
+		}
 		if errors.Is(err, ErrSessionExists) {
 			http.Error(w, fmt.Sprintf("create session: %v", err), http.StatusConflict)
 			return

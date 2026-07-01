@@ -148,6 +148,15 @@ type Options struct {
 	// behavior in place (pre-v2.5 deployments). See
 	// docs/session-resume-design.md.
 	Resumer SessionResumer
+
+	// SessionIdleTimeout, when > 0, enables the background sweep
+	// that evicts in-memory Entries idle longer than this duration.
+	// Evicted sessions remain resumable via the Resumer — eviction
+	// is memory-only, not delete-from-disk. Zero (the default)
+	// disables the sweep: sessions stay in memory until the daemon
+	// stops. See docs/session-resume-design.md §"Lifecycle
+	// primitive".
+	SessionIdleTimeout time.Duration
 }
 
 // SessionFactory constructs a fresh Registrant for the POST /sessions
@@ -158,14 +167,20 @@ type Options struct {
 //
 // caller is the authenticated identity that triggered the creation;
 // the handler stamps this as the new session's ACL Owner via
-// RegisterOwned, so the factory itself does NOT need to call
-// Register / RegisterOwned. (That separation keeps the auth
+// RegisterOwnedWithCancel, so the factory itself does NOT need to
+// call Register / RegisterOwned. (That separation keeps the auth
 // concerns in the handler and the construction concerns in the
 // factory.)
 //
+// The returned CancelFunc (may be nil) is stored on the resulting
+// Entry and invoked when the registry evicts the session (idle
+// sweep or explicit Unregister). Typically it cancels the ctx
+// driving the per-session wake loop so background work exits
+// cleanly instead of leaking past the session's lifetime.
+//
 // ctx is the request context; honor cancellation if the factory does
 // any IO (e.g., loading per-caller instructions).
-type SessionFactory func(ctx context.Context, caller auth.Caller) (Registrant, error)
+type SessionFactory func(ctx context.Context, caller auth.Caller) (Registrant, context.CancelFunc, error)
 
 // Server hosts the attach-mode HTTP endpoints. Construct via
 // NewServer; start via ListenAndServe; stop via Close.
@@ -183,6 +198,11 @@ type Server struct {
 	mu       sync.Mutex
 	listener net.Listener
 	closed   bool
+
+	// sweepCancel stops the SessionIdleTimeout sweep goroutine
+	// (started by Bind) when the server closes. Nil when
+	// SessionIdleTimeout <= 0 (sweep not started).
+	sweepCancel context.CancelFunc
 }
 
 // NewServer builds a Server. Validates Options; returns an error for
@@ -309,6 +329,15 @@ func (s *Server) Bind() error {
 		// Streaming endpoints have no useful write timeout — SSE
 		// connections live for minutes/hours. Don't set one.
 	}
+	// Start the idle-session sweep once the listener is bound.
+	// Zero timeout disables — matches the "0s = keep everything
+	// in memory forever" config contract. Sweep exits when
+	// sweepCancel fires (called from Close).
+	if s.opts.SessionIdleTimeout > 0 {
+		sweepCtx, cancel := context.WithCancel(context.Background())
+		s.sweepCancel = cancel
+		go s.opts.Registry.SweepIdle(sweepCtx, s.opts.SessionIdleTimeout)
+	}
 	return nil
 }
 
@@ -401,8 +430,14 @@ func (s *Server) Close() error {
 	}
 	s.closed = true
 	srv := s.srv
+	sweepCancel := s.sweepCancel
 	s.mu.Unlock()
 
+	// Stop the idle sweep before shutdown so it doesn't try to
+	// evict during teardown.
+	if sweepCancel != nil {
+		sweepCancel()
+	}
 	if srv == nil {
 		return nil
 	}

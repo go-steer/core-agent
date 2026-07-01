@@ -41,15 +41,15 @@ type factoryCall struct {
 }
 
 func (f *factoryStub) Factory() SessionFactory {
-	return func(_ context.Context, caller auth.Caller) (Registrant, error) {
+	return func(_ context.Context, caller auth.Caller) (Registrant, context.CancelFunc, error) {
 		f.calls = append(f.calls, factoryCall{caller: caller})
 		if f.err != nil {
-			return nil, f.err
+			return nil, nil, f.err
 		}
 		if f.produce == nil {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return f.produce(caller), nil
+		return f.produce(caller), nil, nil
 	}
 }
 

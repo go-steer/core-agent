@@ -50,6 +50,8 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"golang.org/x/sync/singleflight"
 
@@ -145,6 +147,49 @@ type Entry struct {
 	// Register (vs. RegisterOwned). See
 	// docs/multi-session-design.md §"Migration story".
 	ACL auth.SessionACL
+
+	// lastTouchedNs is Unix nanoseconds of the last "activity" on
+	// this entry: a memory-hit Lookup, an event pumped by the
+	// broadcaster (including autonomous agent work — a busy agent
+	// is never idle), or the entry's initial registration.
+	//
+	// Read/written via sync/atomic so the touch path is lock-free —
+	// broadcast is the hot loop and we don't want to contend with
+	// the registry's mu on every event.
+	//
+	// Consumed by the idle eviction sweep: entries whose
+	// lastTouchedNs is older than (now - idleAfter) are candidates
+	// for eviction. Not persisted on every touch (write
+	// amplification); the sweep persists it once, at evict time.
+	lastTouchedNs atomic.Int64
+
+	// cancelOnEvict is invoked by the registry just before removing
+	// the entry — from the idle sweep, from a future DELETE
+	// /sessions, or from Unregister when a cancel was supplied.
+	// Typically it cancels the ctx driving the per-session wake
+	// loop so the loop exits cleanly and doesn't leak.
+	//
+	// Nil when the caller didn't supply one (legacy Register, tests
+	// registering a bare stubRegistrant, resumer's registerResumed
+	// path when cancel wasn't threaded).
+	cancelOnEvict context.CancelFunc
+}
+
+// LastTouchedAt returns the entry's last-touched wall time. Safe for
+// concurrent access. Zero time if the entry has never been touched
+// (which shouldn't happen — registration always seeds it).
+func (e *Entry) LastTouchedAt() time.Time {
+	ns := e.lastTouchedNs.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
+
+// touch bumps the entry's last-touched timestamp to now. Called by
+// the registry and the broadcaster; lock-free.
+func (e *Entry) touch() {
+	e.lastTouchedNs.Store(time.Now().UnixNano())
 }
 
 type tripleKey struct {
@@ -221,7 +266,7 @@ var ErrAmbiguousSession = errors.New("attach: session id is ambiguous across reg
 // the ACL.Owner is empty. New code that knows the owning identity
 // should use RegisterOwned instead.
 func (r *SessionRegistry) Register(ag Registrant) (*Entry, error) {
-	return r.registerWithACL(ag, auth.SessionACL{})
+	return r.registerWithACL(ag, auth.SessionACL{}, nil)
 }
 
 // RegisterOwned adds a session and stamps the supplied caller as the
@@ -233,13 +278,28 @@ func (r *SessionRegistry) Register(ag Registrant) (*Entry, error) {
 // Owner must be non-empty — pass Register if you intentionally want an
 // unowned (admin-only-accessible) session.
 func (r *SessionRegistry) RegisterOwned(ag Registrant, owner string) (*Entry, error) {
+	return r.RegisterOwnedWithCancel(ag, owner, nil)
+}
+
+// RegisterOwnedWithCancel is RegisterOwned with a cancel func the
+// registry invokes when the entry is evicted (idle sweep, future
+// DELETE /sessions, or explicit Unregister via UnregisterAndCancel).
+// The cancel typically shuts down the session's wake-loop goroutine
+// so it exits cleanly instead of leaking past the session's
+// lifetime.
+//
+// Passing nil is equivalent to RegisterOwned — no cancel invoked on
+// evict. In-process consumers with no long-lived goroutines behind
+// the Registrant (e.g., tests, admin-only utility sessions) can
+// safely pass nil.
+func (r *SessionRegistry) RegisterOwnedWithCancel(ag Registrant, owner string, cancelOnEvict context.CancelFunc) (*Entry, error) {
 	if owner == "" {
 		return nil, errors.New("attach: RegisterOwned: owner identity is required (use Register for legacy unowned sessions)")
 	}
-	return r.registerWithACL(ag, auth.SessionACL{Owner: owner})
+	return r.registerWithACL(ag, auth.SessionACL{Owner: owner}, cancelOnEvict)
 }
 
-func (r *SessionRegistry) registerWithACL(ag Registrant, acl auth.SessionACL) (*Entry, error) {
+func (r *SessionRegistry) registerWithACL(ag Registrant, acl auth.SessionACL, cancelOnEvict context.CancelFunc) (*Entry, error) {
 	if ag == nil {
 		return nil, errors.New("attach: Register: nil Registrant")
 	}
@@ -253,12 +313,14 @@ func (r *SessionRegistry) registerWithACL(ag Registrant, acl auth.SessionACL) (*
 		return nil, fmt.Errorf("%w: %s/%s/%s", ErrSessionExists, key.App, key.User, key.SID)
 	}
 	e := &Entry{
-		AppName:   key.App,
-		UserID:    key.User,
-		SessionID: key.SID,
-		Agent:     ag,
-		ACL:       acl,
+		AppName:       key.App,
+		UserID:        key.User,
+		SessionID:     key.SID,
+		Agent:         ag,
+		ACL:           acl,
+		cancelOnEvict: cancelOnEvict,
 	}
+	e.touch() // seed lastTouchedNs so the very first sweep doesn't fire on a brand-new entry
 	r.byTriple[key] = e
 	// Persist the ACL row when a store is wired AND the ACL has
 	// an Owner (legacy Register without owner stays in-memory
@@ -300,8 +362,16 @@ func (r *SessionRegistry) registerWithACL(ag Registrant, acl auth.SessionACL) (*
 // DELETE /sessions endpoint (out of scope here).
 func (r *SessionRegistry) Unregister(appName, userID, sessionID string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.byTriple, tripleKey{App: appName, User: userID, SID: sessionID})
+	key := tripleKey{App: appName, User: userID, SID: sessionID}
+	entry := r.byTriple[key]
+	delete(r.byTriple, key)
+	r.mu.Unlock()
+	// Fire the cancel outside the lock — it typically triggers a
+	// wake-loop goroutine's exit, which may itself take other
+	// locks. Nil-safe.
+	if entry != nil && entry.cancelOnEvict != nil {
+		entry.cancelOnEvict()
+	}
 }
 
 // Lookup returns the entry for the qualified (appName, sessionID) form.
@@ -328,6 +398,7 @@ func (r *SessionRegistry) Lookup(ctx context.Context, appName, sessionID string)
 	for k, e := range r.byTriple {
 		if k.App == appName && k.SID == sessionID {
 			r.mu.RUnlock()
+			e.touch() // memory hit counts as activity — keep the sweep from evicting active sessions
 			return e, nil
 		}
 	}
@@ -368,6 +439,7 @@ func (r *SessionRegistry) LookupSingle(ctx context.Context, sessionID string) (*
 	resumer := r.resumer
 	r.mu.RUnlock()
 	if found != nil {
+		found.touch()
 		return found, nil
 	}
 	if resumer == nil {
@@ -405,7 +477,7 @@ func (r *SessionRegistry) resumeAndRegister(ctx context.Context, app, sid string
 		}
 		r.mu.RUnlock()
 
-		ag, acl, resumeErr := resumer.Resume(ctx, app, sid)
+		ag, acl, cancelOnEvict, resumeErr := resumer.Resume(ctx, app, sid)
 		if resumeErr != nil {
 			// The resumer surfaces ErrSessionACLNotFound when no
 			// persisted row exists; translate to ErrSessionNotFound
@@ -416,8 +488,16 @@ func (r *SessionRegistry) resumeAndRegister(ctx context.Context, app, sid string
 			}
 			return nil, resumeErr
 		}
-		entry, err := r.registerResumed(ag, acl)
+		entry, err := r.registerResumed(ag, acl, cancelOnEvict)
 		if err != nil {
+			// The resumer already spawned its wake loop; on
+			// registration failure we must cancel to avoid leaking
+			// the goroutine. Rare path (would need a triple
+			// collision from a racing legacy Register, which the
+			// design excludes for resumable sessions).
+			if cancelOnEvict != nil {
+				cancelOnEvict()
+			}
 			return nil, fmt.Errorf("attach: resume: register: %w", err)
 		}
 		return entry, nil
@@ -438,7 +518,7 @@ func (r *SessionRegistry) resumeAndRegister(ctx context.Context, app, sid string
 // resume + concurrent legacy Register, vanishingly unlikely),
 // returns the existing entry rather than ErrSessionExists so the
 // caller sees a successful lookup either way.
-func (r *SessionRegistry) registerResumed(ag Registrant, acl auth.SessionACL) (*Entry, error) {
+func (r *SessionRegistry) registerResumed(ag Registrant, acl auth.SessionACL, cancelOnEvict context.CancelFunc) (*Entry, error) {
 	if ag == nil {
 		return nil, errors.New("attach: registerResumed: nil Registrant")
 	}
@@ -452,13 +532,24 @@ func (r *SessionRegistry) registerResumed(ag Registrant, acl auth.SessionACL) (*
 		return existing, nil
 	}
 	e := &Entry{
-		AppName:   key.App,
-		UserID:    key.User,
-		SessionID: key.SID,
-		Agent:     ag,
-		ACL:       acl,
+		AppName:       key.App,
+		UserID:        key.User,
+		SessionID:     key.SID,
+		Agent:         ag,
+		ACL:           acl,
+		cancelOnEvict: cancelOnEvict,
 	}
+	e.touch() // seed lastTouchedNs — matches the initial-touch behavior of registerWithACL
 	r.byTriple[key] = e
+	// Persist a fresh LastTouchedAt on resume so GET /sessions
+	// ordering reflects that this session is back in memory. The
+	// aclStore row itself is unchanged (row was already written at
+	// original creation); Touch only bumps LastTouchedAt.
+	if r.aclStore != nil && acl.Owner != "" {
+		// Best-effort — a store hiccup here shouldn't fail the
+		// resume. The next sweep-time Touch will backfill.
+		_ = r.aclStore.Touch(context.Background(), key.App, key.User, key.SID, time.Now())
+	}
 	return e, nil
 }
 
@@ -511,4 +602,117 @@ func (r *SessionRegistry) ListAuthorized(c auth.Caller) []*Entry {
 		}
 	}
 	return out
+}
+
+// TouchEntry marks the entry for (app, sid) as active-right-now.
+// The broadcaster calls this on every event pumped through the
+// session so autonomous agent work (long-running tool calls,
+// background compaction, etc.) counts as activity. Silent no-op
+// on miss — the entry may have been evicted between the caller's
+// Lookup and Touch, and we don't want to error on a benign race.
+//
+// Cheap (single atomic store, no mutex on the entry itself). Safe
+// for concurrent callers.
+func (r *SessionRegistry) TouchEntry(appName, sessionID string) {
+	if appName == "" || sessionID == "" {
+		return
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for k, e := range r.byTriple {
+		if k.App == appName && k.SID == sessionID {
+			e.touch()
+			return
+		}
+	}
+}
+
+// EvictBefore removes every in-memory entry whose lastTouchedNs is
+// older than cutoff and returns how many were removed. The evicted
+// entries' cancelOnEvict funcs (if any) are invoked outside the
+// registry lock so wake-loop shutdown doesn't contend on lookups.
+//
+// When aclStore is wired, the last-touched value at eviction time
+// is persisted to the ACL row so GET /sessions and future resume
+// see an accurate "last active" timestamp. Persistence is
+// best-effort: a store error is logged upstream but doesn't block
+// eviction (the in-memory removal is the correctness-critical
+// half; the DB row is metadata).
+//
+// Callers: the sweep goroutine started by SweepIdle. Test code
+// may call directly to exercise the eviction path without the
+// ticker overhead.
+func (r *SessionRegistry) EvictBefore(cutoff time.Time) int {
+	cutoffNs := cutoff.UnixNano()
+	// Two-phase to keep the critical section short. Phase 1:
+	// snapshot candidates + remove from map under the write lock.
+	// Phase 2: fire cancels + best-effort store Touch outside the
+	// lock so slow cancels / DB writes don't block Lookup.
+	type candidate struct {
+		key           tripleKey
+		cancel        context.CancelFunc
+		lastTouchedNs int64
+	}
+	var evicted []candidate
+	r.mu.Lock()
+	for k, e := range r.byTriple {
+		if e.lastTouchedNs.Load() < cutoffNs {
+			evicted = append(evicted, candidate{key: k, cancel: e.cancelOnEvict, lastTouchedNs: e.lastTouchedNs.Load()})
+			delete(r.byTriple, k)
+		}
+	}
+	store := r.aclStore
+	r.mu.Unlock()
+
+	for _, c := range evicted {
+		if c.cancel != nil {
+			c.cancel()
+		}
+		if store != nil {
+			// Persist the last-touched time we removed. The row
+			// stays; only LastTouchedAt bumps. Silent on error —
+			// the in-memory eviction already succeeded.
+			_ = store.Touch(context.Background(), c.key.App, c.key.User, c.key.SID, time.Unix(0, c.lastTouchedNs))
+		}
+	}
+	return len(evicted)
+}
+
+// SweepIdle runs the eviction sweep on a ticker until ctx is done.
+// Every idleAfter/4 tick, evicts entries idle longer than
+// idleAfter. Blocks until ctx cancels — call as a goroutine.
+//
+// idleAfter <= 0 disables the sweep (returns immediately). Callers
+// wire the operator's session_idle_timeout config value here; the
+// "0s → disabled" contract lives at the config parser, so a caller
+// that passes 0 explicitly (rather than relying on defaults) means
+// it.
+//
+// Ticker fires at 1/4 the idle window — coarse enough that the
+// wake-up cost is negligible against the eviction budget, fine
+// enough that an evictable session isn't held for more than ~25%
+// of the idle window past its idle threshold. Under 60s tick
+// intervals are floored to 60s so tests with tiny idleAfter don't
+// spin the CPU.
+func (r *SessionRegistry) SweepIdle(ctx context.Context, idleAfter time.Duration) {
+	if idleAfter <= 0 {
+		return
+	}
+	tick := idleAfter / 4
+	if tick < time.Minute {
+		// Enforce a floor in production. Tests that want a
+		// tight loop should call EvictBefore directly rather
+		// than piggy-backing on the ticker.
+		tick = time.Minute
+	}
+	t := time.NewTicker(tick)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			r.EvictBefore(now.Add(-idleAfter))
+		}
+	}
 }

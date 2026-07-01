@@ -34,10 +34,14 @@ import (
 //     with the EXPLICIT sessionID (not a freshly minted one) so
 //     ADK's session.Service reattaches the prior conversation
 //     history from the eventlog.
-//  4. Return the new Registrant + the persisted ACL.
+//  4. Return the new Registrant, the persisted ACL, and a
+//     cancelOnEvict CancelFunc the registry invokes when the entry
+//     is later evicted (idle sweep). The cancel typically shuts
+//     down the per-session wake loop the resumer spawned.
 //
 // The caller (Registry.Lookup) registers the returned Registrant
-// under the returned ACL via the internal registerResumed path.
+// under the returned ACL via the internal registerResumed path,
+// carrying the cancel func onto *Entry.cancelOnEvict.
 //
 // Return ErrSessionACLNotFound when no ACL row exists for the
 // triple — the registry maps that to ErrSessionNotFound so the
@@ -49,6 +53,10 @@ import (
 // tools, eventlog handle, MCP servers, … all cmd-level wiring.
 // The interface stays in pkg/attach so the handlers can consult it
 // without importing cmd/core-agent.
+//
+// The cancelOnEvict return may be nil — the registry treats nil as
+// "no background work to stop." Test implementations of the
+// interface commonly return nil.
 type SessionResumer interface {
-	Resume(ctx context.Context, app, sid string) (Registrant, auth.SessionACL, error)
+	Resume(ctx context.Context, app, sid string) (Registrant, auth.SessionACL, context.CancelFunc, error)
 }

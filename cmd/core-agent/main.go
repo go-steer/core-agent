@@ -1140,6 +1140,28 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 			uiAssets = f
 			fmt.Fprintln(os.Stderr, "core-agent: --ui: serving embedded mast-web bundle at /ui/")
 		}
+		// Idle-session eviction sweep (Phase 3 of session-resume).
+		// Parse the operator's session_idle_timeout string:
+		//   omitted / empty → default 24h
+		//   explicit "0s"   → disabled (sweep never runs)
+		//   any other       → parsed as time.Duration
+		// Only active when multi-session is enabled AND the sweep
+		// value resolves > 0; single-user daemons skip it entirely.
+		var sessionIdleTimeout time.Duration
+		if cfg.Attach.MultiSession.Enabled {
+			raw := cfg.Attach.MultiSession.SessionIdleTimeout
+			switch raw {
+			case "":
+				sessionIdleTimeout = 24 * time.Hour
+			default:
+				d, perr := time.ParseDuration(raw)
+				if perr != nil {
+					fmt.Fprintf(os.Stderr, "core-agent: parse session_idle_timeout=%q: %v\n", raw, perr)
+					return runner.ExitConfigError
+				}
+				sessionIdleTimeout = d // may be 0 (disabled by design)
+			}
+		}
 		attachSrv, err := attach.NewServer(attach.Options{
 			Registry:     attachReg,
 			PeerRegistry: peerReg,
@@ -1161,6 +1183,7 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 			UI:                  uiAssets,
 			SessionFactory:      sessionFactory,
 			Resumer:             sessionResumer,
+			SessionIdleTimeout:  sessionIdleTimeout,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: attach server: %v\n", err)

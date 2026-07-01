@@ -35,7 +35,7 @@ type stubResumer struct {
 	blockCh chan struct{}            // when non-nil, Resume blocks until closed (for concurrency tests)
 }
 
-func (s *stubResumer) Resume(ctx context.Context, app, sid string) (Registrant, auth.SessionACL, error) {
+func (s *stubResumer) Resume(ctx context.Context, app, sid string) (Registrant, auth.SessionACL, context.CancelFunc, error) {
 	atomic.AddInt32(&s.calls, 1)
 	if s.blockCh != nil {
 		<-s.blockCh
@@ -45,11 +45,11 @@ func (s *stubResumer) Resume(ctx context.Context, app, sid string) (Registrant, 
 	s.mu.Unlock()
 	if !ok {
 		if s.failErr != nil {
-			return nil, auth.SessionACL{}, s.failErr
+			return nil, auth.SessionACL{}, nil, s.failErr
 		}
-		return nil, auth.SessionACL{}, ErrSessionACLNotFound
+		return nil, auth.SessionACL{}, nil, ErrSessionACLNotFound
 	}
-	return &stubRegistrant{app: row.AppName, user: row.UserID, sid: row.SessionID}, row.ACL(), nil
+	return &stubRegistrant{app: row.AppName, user: row.UserID, sid: row.SessionID}, row.ACL(), nil, nil
 }
 
 func (s *stubResumer) addRow(row SessionACLRow) {

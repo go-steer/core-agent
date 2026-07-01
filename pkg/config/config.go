@@ -524,6 +524,22 @@ type MultiSessionConfig struct {
 	// AssertedCallerHeader is the header name a proxy Caller uses to
 	// assert the effective identity. Default "X-Asserted-Caller".
 	AssertedCallerHeader string `json:"asserted_caller_header,omitempty"`
+
+	// SessionIdleTimeout bounds how long an in-memory session may
+	// sit untouched before the eviction sweep removes it. Evicted
+	// sessions remain resumable from disk (the ACL row stays);
+	// the next Lookup re-resumes them lazily via the SessionResumer.
+	//
+	// Parsed via time.ParseDuration ("24h", "30m", "7d" all work).
+	// Omitted or empty → default 24h. Explicit "0s" DISABLES the
+	// sweep entirely — sessions stay in memory until the daemon
+	// stops. Use "0s" for tiny local-dev daemons where memory
+	// isn't a concern; use a shorter value for tight-budget pods.
+	//
+	// Only meaningful when Enabled=true and the daemon has an
+	// aclStore wired (i.e., --session-db is set). See
+	// docs/session-resume-design.md §"Lifecycle primitive".
+	SessionIdleTimeout string `json:"session_idle_timeout,omitempty"`
 }
 
 // MultiSessionAuthConfig selects which Authenticator implementation

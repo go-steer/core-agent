@@ -604,6 +604,22 @@ func (r *SessionRegistry) ListAuthorized(c auth.Caller) []*Entry {
 	return out
 }
 
+// aclStoreForList exposes the store for the listSessions handler's
+// union path. Internal — the handler needs the store to include
+// evicted/post-restart sessions in GET /sessions results, but the
+// store shouldn't be a public field on the registry. Returns
+// (store, true) when a store is wired; (nil, false) otherwise so
+// the handler can skip the persisted-half query cleanly on
+// registries without one.
+func (r *SessionRegistry) aclStoreForList() (SessionACLStore, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.aclStore == nil {
+		return nil, false
+	}
+	return r.aclStore, true
+}
+
 // TouchEntry marks the entry for (app, sid) as active-right-now.
 // The broadcaster calls this on every event pumped through the
 // session so autonomous agent work (long-running tool calls,

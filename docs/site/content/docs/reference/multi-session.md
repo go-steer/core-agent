@@ -231,6 +231,83 @@ A `core-agent users migrate` CLI is **out of scope for v2.4** — operators with
 
 ---
 
+## Session resume (v2.5+)
+
+Sessions created via `POST /sessions` **survive daemon restarts**. A TUI reconnecting after `core-agent` restarts (config change, image upgrade, K8s pod replacement, crash) resumes transparently — same `SessionID`, same conversation history, same ACL. No `--new-session` fallback, no lost context.
+
+### How it works
+
+Every `RegisterOwned` call writes a row to `agent_session_acl` (a new GORM table sharing the eventlog's database). The row carries `(app, user, sid, owner, viewers, contributors, created_at, last_touched_at)`. On daemon restart the in-memory registry is empty, but the row persists. The next Lookup for that session misses the memory map, calls the resumer, reads the row, reconstructs the agent under the same triple, and installs it in the registry. ADK's `session.Service` reads the same eventlog and reattaches the prior conversation history automatically.
+
+Cost: one DB query + one `agent.New` on the first reconnect (~50 ms typically). Subsequent requests hit the memory registry directly.
+
+Concurrent resume of the same session is deduplicated — two TUIs reconnecting simultaneously trigger exactly one resumer call and share the resulting `*Entry`.
+
+### Idle eviction
+
+Once sessions persist, the registry would grow unboundedly without eviction. A background sweep evicts entries idle past `session_idle_timeout`; the ACL row stays on disk, so the next Lookup lazily re-resumes them.
+
+Configuration knob (under `attach.multi_session`):
+
+| Value | Meaning |
+|---|---|
+| omitted / `""` | default **24h** |
+| `"0s"` | **disabled** — sessions stay in memory forever (tiny local-dev daemons) |
+| `"6h"`, `"30m"`, `"7d"` | parsed via `time.ParseDuration` |
+
+Example:
+
+```json
+{
+  "attach": {
+    "multi_session": {
+      "enabled": true,
+      "session_idle_timeout": "6h"
+    }
+  }
+}
+```
+
+**What counts as activity** (keeps a session non-idle):
+- A memory-hit Lookup — every authenticated event-stream request, every inject, every wake.
+- Any event pumped by the broadcaster — including autonomous agent work (long tool calls, background compaction). A busy agent is never idle.
+
+**What doesn't count**:
+- Time spent evicted — an evicted session's disk timestamp only bumps when it's re-resumed.
+
+**Trade-off**: a session stuck in a broken retry loop keeps broadcasting events, so it stays non-idle. Kill it with `/interrupt` (v2.4+) or `DELETE /sessions/<sid>` (v2.6+ when it ships).
+
+### What resumes vs. what doesn't
+
+**Resumes:**
+- Sessions created via `POST /sessions` (and any future path that calls `RegisterOwned` with a real Owner).
+- The persisted ACL, verbatim — Owner, Viewers, Contributors all restore.
+- The conversation history from the eventlog.
+
+**Doesn't resume:**
+- Legacy `Register` sessions (no Owner, no ACL row). Consistent with "ACL row exists ⟺ session is resumable." Startup-time agents in single-user deployments use this path; they behave the same across restart as they always have.
+- In-flight tool calls if the daemon crashed mid-turn. ADK picks up at the last committed event; whatever the agent was doing at the moment of crash is lost. Turn-boundary crash recovery is a separate concern (design non-goal).
+- Sessions on a different daemon. Cross-daemon migration is out of scope.
+
+### GET /sessions after restart
+
+The list handler union-dedupes in-memory entries with persisted-only ACL rows the caller can read. Alice reconnecting after restart sees her sessions immediately — clicking in triggers the resume. `Status` field on each entry distinguishes `"active"` (in memory) from `"idle"` (persisted-only); `LastTouchedAt` supplies "last activity" ordering.
+
+### Failure modes
+
+- **404 on Lookup** — no in-memory entry AND no persisted ACL row. Either the session never existed, was created via legacy `Register`, or its row was hand-deleted. Same 404 surface as pre-v2.5, so operators reading old runbooks aren't surprised.
+- **500 on Lookup** — resume attempted but the factory failed (MCP server hiccup, ADC token refresh blip, downstream API rate-limit). Body carries the underlying cause. Retry usually succeeds. The 404 vs 500 distinction is deliberately narrow — the body never distinguishes "session doesn't exist" from "factory failed" beyond the status code, so attackers can't probe SessionIDs to learn which are persisted.
+
+### Backward compat
+
+- Existing v2.4 deployments upgrade cleanly. The `agent_session_acl` table auto-migrates on daemon start; it starts empty. Pre-upgrade sessions in the eventlog have no ACL row → they're admin-only-accessible after upgrade (matching v2.4 legacy behavior). New sessions created post-upgrade write ACL rows and resume normally.
+- Single-user deployments see zero behavior change. Resume machinery only wires when `multi_session.enabled: true`.
+- Operators who want the pre-v2.5 "in-memory only" behavior can set `session_idle_timeout: "0s"` — the sweep never runs, the ACL rows still get written for GET /sessions completeness, but nothing gets kicked out of memory.
+
+Design detail: `docs/session-resume-design.md` in the repo.
+
+---
+
 ## Recipe
 
 See `examples/multi-session-bearer/` in the repo for a minimum-viable two-user starter you can run locally in five minutes.

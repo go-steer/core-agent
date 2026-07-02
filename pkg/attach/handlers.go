@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"google.golang.org/adk/session"
 
@@ -169,25 +170,79 @@ type sessionDescriptor struct {
 	// true. Surface explicitly so a client doesn't try /events
 	// against a session that has no log.
 	HasEventLog bool `json:"has_event_log"`
+	// Status is "active" for entries live in the in-memory
+	// registry and "idle" for entries known only from the
+	// persisted ACL store (evicted or post-restart). Requesting
+	// /events on an idle session triggers a lazy resume via the
+	// SessionResumer; the operator UX should render the
+	// distinction so the click-in latency is expected.
+	Status string `json:"status"`
+	// LastTouchedAt is the last activity timestamp. For active
+	// sessions this comes from the in-memory Entry (bumped by
+	// broadcaster.pump + Lookup hits). For idle sessions it
+	// comes from the persisted ACL row. Zero when neither
+	// source has it.
+	LastTouchedAt time.Time `json:"last_touched_at,omitempty"`
 }
 
+const (
+	sessionStatusActive = "active"
+	sessionStatusIdle   = "idle"
+)
+
 func (h *handlers) listSessions(w http.ResponseWriter, r *http.Request) {
-	entries := h.reg.List()
+	// In-memory half — sessions currently registered. This is
+	// the pre-v2.5 behavior in isolation; the union with
+	// persisted rows below is what turns "list" into a full
+	// operator inventory (docs/session-resume-design.md OQ #1).
+	memEntries := h.reg.List()
+	c, _ := auth.CallerFromContext(r.Context())
 	if h.enforceACL {
 		// Filter to sessions the caller may read; hide the others'
 		// existence per the design's "no leaking activity patterns"
 		// invariant.
-		c, _ := auth.CallerFromContext(r.Context())
-		entries = h.reg.ListAuthorized(c)
+		memEntries = h.reg.ListAuthorized(c)
 	}
-	out := make([]sessionDescriptor, 0, len(entries))
-	for _, e := range entries {
+	// Build descriptors keyed by (app, sid) so the persisted-only
+	// half can dedup against them (in-memory wins).
+	seen := make(map[[2]string]struct{}, len(memEntries))
+	out := make([]sessionDescriptor, 0, len(memEntries))
+	for _, e := range memEntries {
+		key := [2]string{e.AppName, e.SessionID}
+		seen[key] = struct{}{}
 		out = append(out, sessionDescriptor{
-			AppName:     e.AppName,
-			UserID:      e.UserID,
-			SessionID:   e.SessionID,
-			HasEventLog: e.Agent.EventLog() != nil,
+			AppName:       e.AppName,
+			UserID:        e.UserID,
+			SessionID:     e.SessionID,
+			HasEventLog:   e.Agent.EventLog() != nil,
+			Status:        sessionStatusActive,
+			LastTouchedAt: e.LastTouchedAt(),
 		})
+	}
+	// Persisted-only half — sessions the caller can read that
+	// aren't in the in-memory registry (evicted, or post-restart
+	// pre-resume). Only populated when ACL enforcement is on
+	// AND the registry has a store; otherwise skip cleanly.
+	if h.enforceACL {
+		if store, ok := h.reg.aclStoreForList(); ok {
+			rows, err := store.ListVisibleTo(r.Context(), c)
+			if err == nil { // best-effort — a store hiccup mustn't zero out the list
+				for _, row := range rows {
+					key := [2]string{row.AppName, row.SessionID}
+					if _, dup := seen[key]; dup {
+						continue // already reflected as "active"
+					}
+					out = append(out, sessionDescriptor{
+						AppName:       row.AppName,
+						UserID:        row.UserID,
+						SessionID:     row.SessionID,
+						HasEventLog:   true, // sessions in the ACL store were created with eventlog wired
+						Status:        sessionStatusIdle,
+						LastTouchedAt: row.LastTouchedAt,
+					})
+				}
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
 }

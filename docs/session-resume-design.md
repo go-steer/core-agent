@@ -2,7 +2,7 @@
 
 Design doc for the v2.5 follow-up to multi-session (#162 / `docs/multi-session-design.md`): sessions created via `POST /sessions` survive daemon restarts and resume transparently on the operator's next request.
 
-**Status:** proposed (2026-06-13). Awaiting approval before implementation. v2.5 candidate. Tracking issue: [#178](https://github.com/go-steer/core-agent/issues/178).
+**Status:** shipped in v2.5 (2026-07-01). Implemented across four merged PRs: ε.1 [#182](https://github.com/go-steer/core-agent/pull/182) (SessionACLStore + persistence), ε.2 [#183](https://github.com/go-steer/core-agent/pull/183) (SessionResumer + lazy resume + singleflight), ε.3 [#184](https://github.com/go-steer/core-agent/pull/184) (idle eviction sweep + cancel-on-evict), ε.4 (docs + smoketest + status flip). Operator-facing reference: `docs/site/content/docs/reference/multi-session.md` §"Session resume (v2.5+)". Tracking issue: [#178](https://github.com/go-steer/core-agent/issues/178).
 
 ## Motivation
 

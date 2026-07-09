@@ -2,7 +2,7 @@
 
 Design doc for the v2.6 follow-up to session-resume (#178 / `docs/session-resume-design.md`): turn `core-agent` into a semi-autonomous k8s troubleshooting agent by wiring cluster events as a push-signal source, routing them into per-incident sessions, and applying structured playbooks with a fix-and-verify loop.
 
-**Status:** proposed (2026-07-02). Awaiting approval before implementation. v2.6 candidate. Tracking issue: [#186](https://github.com/go-steer/core-agent/issues/186).
+**Status:** proposed (2026-07-02); all 8 open questions resolved in review, ready for implementation. v2.6 candidate. Tracking issue: [#186](https://github.com/go-steer/core-agent/issues/186).
 
 ## Motivation
 
@@ -133,50 +133,92 @@ The sidecar POSTs a JSON message with a structured envelope so playbook instruct
 
 The `kind` field is what the agent's instructions look for; `context.labels` lets playbooks route conditionally (e.g., "if labels.env == 'prod', page immediately").
 
-### Playbook convention
+### Triage skills
 
-Playbooks are Markdown files under a scope-agnostic path — either the daemon-wide `.agents/playbooks/` or a per-caller `<users_dir>/<identity>/.agents/playbooks/`. Naming: `<reason>.md`, one file per k8s Event reason. The daemon-wide instruction loader (v2.3's `@include` + `AGENTS.d/`) picks them up automatically; no new loader primitive.
+Triage guidance ships as **Skills** — the existing v2.1 primitive (`pkg/skills`) — not as instructions loaded into the base system prompt. One skill per k8s Event reason. Each skill has a `SKILL.md` with YAML frontmatter (name, description) and a body that scripts the diagnose → fix → verify flow.
 
-Playbook shape:
+Why Skills over instruction-scope Markdown:
+
+- **Lazy loading.** With 10 triage skills, the always-in-prompt approach would burn ~100 KB of tokens per session on content the agent might not use. Skills load their body ONLY when the agent invokes them. Base prompt carries just the ~200 B tool definition per skill.
+- **Native "when to use" matching.** Skill `Description` is what the LLM sees when deciding whether to invoke — a "Handle CrashLoopBackOff events" description is exactly the matching signal we want.
+- **Discoverable.** `/skills` command in the TUI lists them first-class. Operators inspect what triage coverage exists without reading the system prompt.
+- **Composable permission scope.** Skills go through `GateToolset`; a diagnose-only skill can be tool-restricted (no `bash`, only read-only MCP calls) independently of the session's overall permission set.
+- **Overlay layering already works.** `LoadAll` merges project-scope (`<agentsDir>/skills/`) with user-global (`<coreHome>/skills/`). Operators drop custom triage skills in either scope; the standard precedence rules apply.
+- **First-class primitive; no invention.** No parallel "playbook" concept to teach operators, document, or migrate.
+
+Skill layout:
+
+```
+.agents/skills/
+├── k8s-triage-crashloopbackoff/
+│   └── SKILL.md
+├── k8s-triage-imagepullbackoff/
+│   └── SKILL.md
+├── k8s-triage-oomkilled/
+│   └── SKILL.md
+├── k8s-triage-failedmount/
+│   └── SKILL.md
+└── ...
+```
+
+Skill shape (SKILL.md for CrashLoopBackOff):
 
 ```markdown
 ---
-reason: CrashLoopBackOff
-severity: high
-budget:
-  turns: 8
-  wall_time: 10m
+name: k8s-triage-crashloopbackoff
+description: |
+  Handle a Kubernetes CrashLoopBackOff event. Use when receiving an
+  inject payload with kind="k8s-event" and reason="CrashLoopBackOff".
+  Diagnoses via container logs + pod status, applies well-known fixes
+  (memory limit bumps, init-container timeouts, ConfigMap rollback),
+  and verifies the fix stuck before closing the incident.
 ---
 
-## Playbook: CrashLoopBackOff
+# Triage: CrashLoopBackOff
 
-### Diagnose
+## Budget
 
-1. Fetch the container's last N=200 log lines (`gke-mcp: logs.tail`).
+- Max turns: 8
+- Max wall time: 10 min
+- On budget exhaustion: post structured summary to escalation channel + close incident.
+
+## Diagnose
+
+1. Fetch the container's last 200 log lines (`gke-mcp: logs.tail`).
 2. Fetch the pod's events (`gke-mcp: events.for-pod`).
-3. Check the container's exit code + reason from PodStatus.
-4. If exit code == 137: OOMKilled — jump to memory-limit playbook.
-5. If exit code == 1 and logs contain a stack trace: application-level failure.
-6. If image pull error surfaces in events: jump to ImagePullBackOff playbook.
-...
+3. Check exit code + reason from PodStatus.
+4. If exit code == 137: OOMKilled — invoke `k8s-triage-oomkilled` skill instead.
+5. If image pull error appears in events: invoke `k8s-triage-imagepullbackoff` skill.
+6. Otherwise: application-level failure. Categorize from logs.
 
-### Common fixes
+## Common fixes
 
 | Symptom | Fix | Verify |
 |---|---|---|
-| OOMKilled | Raise memory limit by 25% | Wait 90s; check no new `OOMKilled` events for this UID |
-| Startup timeout on init container | Extend `initialDelaySeconds` | Wait 2m; pod status Running |
+| Startup timeout on init container | Extend initialDelaySeconds | Wait 2m; pod status Running |
 | Bad config in ConfigMap | Roll back to prior ConfigMap revision | Watch for pod restart + steady state |
+| Application crash from bad deploy | Roll back Deployment to previous revision | Watch replicaset transitions |
 
-### Fix-and-verify
+## Fix-and-verify
 
 After applying any fix:
-1. Wait for the verify condition (per row above).
-2. Re-run the diagnostic. If green: post a summary + close.
-3. If red after 2 attempts: revert + escalate.
+1. Wait the verify interval (per row above).
+2. Re-run the diagnose step. If clean: post summary + close.
+3. If not clean after 2 attempts: revert (if possible) + escalate.
+
+## Escalation
+
+Call the configured Slack MCP with a structured summary including:
+- Incident triple (namespace, name, uid)
+- What was diagnosed
+- What was tried and its outcome
+- Current state
+- Session URL for a human to attach a TUI
 ```
 
-Playbooks are just Markdown instructions loaded on session start (see [PR γ / #162](https://github.com/go-steer/core-agent/issues/162)). The agent reads them like it reads any other AGENTS.md content — no new primitive. Custom playbooks compose additively via the `AGENTS.d/` directory pattern.
+The agent, on receiving a `k8s-event` inject, matches skill descriptions against the payload's `reason` field and invokes the matching skill. The skill's body drives the investigation. If no matching skill exists, the agent falls back to general k8s knowledge — captured in a short base instruction that ships with the recipe.
+
+Custom triage skills compose additively. Operators drop a `k8s-triage-<their-reason>/SKILL.md` into their scope; the loader picks it up on next session start. Discovery via `/skills` shows the full triage coverage matrix.
 
 ### Fix-and-verify primitive: prompt-pattern first
 
@@ -240,6 +282,10 @@ Event filtering:
 
 Dedup:
   --dedup-window DUR     Rolling window for (uid, reason) dedup. Default: 5m.
+  --dedup-persist PATH   Persist dedup cache to disk (survives restart).
+                         Optional; default is in-memory only (accept small
+                         duplicate burst on restart). Set to a mounted PVC
+                         path (or emptyDir) in the deploy manifest to opt in.
   --unhealthy-min-count N  Require this many consecutive Unhealthy events before firing.
                          Default: 3 (avoids flapping-probe noise).
 
@@ -258,69 +304,70 @@ Operational:
 
 ### Sidecar deployment
 
-Two shipping shapes:
+The architecture supports **all four topologies**:
 
-1. **Sidecar container in the same pod as `core-agent`** (recommended for GKE). Shares the pod's SA, so RBAC configuration is one binding. Pod network is `localhost:7777` — no cross-pod auth complexity.
-2. **Standalone Deployment** (for operators running `core-agent` outside a k8s pod, or watching a cluster different from where core-agent runs). Separate SA + RBAC + network path to the daemon.
+1. **1 daemon + 1 sidecar in the same pod** — single-cluster starter. Shares pod SA, localhost network path.
+2. **1 daemon + N remote sidecars** — central-daemon pattern; each sidecar in its own cluster, all posting to one daemon. Single fleet-wide audit trail.
+3. **N daemons + N co-located sidecars** — pod-per-cluster; isolated audit trails; blast radius contained per cluster.
+4. **Mixed** — tiered SLA fleets where prod clusters get dedicated daemons and dev clusters share one.
 
-Both variants ship as YAML in `examples/gke-troubleshoot-agent/` — a new recipe that layers on `examples/gke-deploy/`. The recipe includes:
+None of these need new architecture; the sidecar just points at `--daemon-url` and the daemon accepts whatever comes in through the multi-session auth surface.
 
-- RBAC: `ClusterRole` granting `list`/`watch` on `core/v1.Events` + `get` on Pods (for status enrichment).
-- Sidecar container spec.
-- Default playbooks under `.agents/playbooks/` (the ~10 reason-specific files).
-- Suggested `.agents/config.json` additions (proxy_identities, playbook loader path).
+**Recipe default: central-daemon (shape #2).** Ships as `examples/gke-troubleshoot-agent/` with:
 
-### Playbook loading
+- One `core-agent` Deployment (the "control plane" daemon).
+- Sidecar Deployment manifests operators duplicate per cluster, each with a distinct `--cluster-name` flag.
+- RBAC: `ClusterRole` for the sidecar granting `list`/`watch` on `core/v1.Events` + `get` on Pods (for status enrichment).
+- Default triage skills under `.agents/skills/k8s-triage-*/SKILL.md` (~10 skills covering the top reasons).
+- `.agents/config.json` additions: `proxy_identities: ["sa:k8s-event-watcher"]`.
+- README walking through: single-cluster starter (deploy both in one cluster) → multi-cluster fleet (deploy the daemon centrally, deploy sidecars in each watched cluster with cross-cluster network policy).
 
-Playbooks are Markdown files under `.agents/playbooks/`. The instruction loader already walks `.agents/` recursively via the `@include` + `AGENTS.d/` primitives ([v2.3 loader design](docs/instruction-loader-v2-design.md)), so the loader needs no changes.
+Why central-daemon default (vs. sidecar-in-daemon-pod as the doc originally recommended): positions operators for the fleet posture from day one. Single-cluster deployment is a special case of the fleet shape, not a different architecture. Operators who genuinely want isolated per-cluster audit trails follow the shape-#3 README section instead.
 
-Playbooks appear in the agent's system prompt in `AGENTS.md` order, after the operator's primary instructions. Convention:
+### Skills loading
 
-```
-.agents/
-├── AGENTS.md                    <-- primary operator instructions
-├── AGENTS.d/
-│   └── 01-sre-role.md           <-- role framing ("you are an on-call agent")
-└── playbooks/
-    ├── AGENTS.md                <-- @include directives for every playbook
-    ├── CrashLoopBackOff.md
-    ├── ImagePullBackOff.md
-    ├── OOMKilled.md
-    ├── FailedMount.md
-    └── ...
-```
+Triage skills live under `.agents/skills/k8s-triage-<reason>/SKILL.md`. The `pkg/skills.LoadAll` primitive already handles project + user-global layering, sanitizing frontmatter, and wiring the resulting toolset via `agent.WithToolsets`. No new loader code needed.
 
-`.agents/playbooks/AGENTS.md` is a discovery index:
+Base instructions (in `.agents/AGENTS.md` or a scope overlay) frame the agent's role in one paragraph:
 
 ```markdown
-# Playbooks
+# Role: k8s troubleshooting agent
 
-You are handed an inject with `kind: "k8s-event"`. Match `reason` against
-the playbooks below and follow the matched one. If no playbook matches,
-fall back to general k8s knowledge.
+You receive inject payloads with `kind: "k8s-event"` describing a
+Kubernetes failure. For each payload:
 
-@include CrashLoopBackOff.md
-@include ImagePullBackOff.md
-@include OOMKilled.md
-@include FailedMount.md
-@include FailedScheduling.md
-...
+1. Look at the skill list — a `k8s-triage-<reason>` skill likely matches
+   the payload's `reason` field. Invoke it. The skill's SKILL.md drives
+   the investigation.
+2. If no matching skill exists, use general k8s knowledge to diagnose,
+   propose a fix (via `record_plan` first if plan-first is enabled),
+   apply it, and verify.
+3. Always compose fix-and-verify: apply → wait → re-check → revert if
+   worse → escalate on budget exhaustion.
+
+Available skills (auto-discovered):
+- k8s-triage-crashloopbackoff
+- k8s-triage-imagepullbackoff
+- k8s-triage-oomkilled
+- ...
 ```
 
-Operators customize by dropping their own playbooks into `.agents/playbooks/` or into a per-caller overlay via the existing `users_dir` mechanism.
+Custom triage skills compose additively — operators drop `k8s-triage-<their-reason>/SKILL.md` into either scope and the loader picks it up on next session start. No index-file coordination, no operator edits to the base instructions.
 
 ### Per-incident session lifecycle
 
 1. Sidecar sees an event matching the filter.
-2. Checks its dedup cache for `(uid, reason)`. If present within window: increment count, suppress inject.
+2. Checks its dedup cache for `(uid, reason)`. If present within the rolling window: increment count, suppress inject.
 3. Cache miss → sidecar calls `POST /sessions` with `X-Asserted-Caller: <owner>`, gets back `sessionID`.
-4. Caches `(uid, reason) → sessionID` locally so follow-up events for the same incident route to the same session (via `POST /sessions/<sid>/inject`).
+4. Caches `(uid, reason) → sessionID` for the window duration so follow-up events for the same incident route to the same session (via `POST /sessions/<sid>/inject`).
 5. Sidecar POSTs the initial inject payload to the new session.
 6. Agent starts investigating; session's per-session wake loop drives turns.
-7. When agent completes (fix applied + verified, or budget-exhausted + escalated), it emits a final "incident closed" event.
-8. Sidecar drops the incident from its cache when the daemon reports the session is closed OR when the eviction sweep evicts it (session-resume v2.5).
+7. When agent completes (fix applied + verified, or budget-exhausted + escalated), it emits a final "incident closed" event to the eventlog.
+8. Sidecar's cache entry ages out after the window; the next matching event creates a new session.
 
-Recurrence handling: if the same `(uid, reason)` fires again *after* the session was closed, the sidecar creates a new session. Prior investigations are still on disk (session-resume) so an operator can review the history.
+**Incident-close is time-based (window expiry) in v2.6.** No dependency on DELETE /sessions (which doesn't ship yet) or eventlog tailing. The cost: if a persistent crashloop continues for 30 min, we get 6 sessions (one per 5-min window) instead of 1. That's acceptable — each captures a distinct investigation window, and session-resume means the agent can reference prior sessions if needed. The tradeoff of "always one session per incident" is not worth blocking on DELETE /sessions or coupling the sidecar to the eventlog.
+
+Recurrence handling: cached entries expire after the window; the same `(uid, reason)` outside the window creates a new session. Prior investigations are still on disk (session-resume) so operators can review the history. In practice, most incidents resolve within one window; persistent ones surface as recurring sessions which is a useful "hey, this thing has been broken all afternoon" signal on its own.
 
 ### Interaction with plan-first
 
@@ -458,82 +505,41 @@ Estimate: ~100 LoC infrastructure + ~50 LoC docs. ~1 day.
 
 **Total**: ~1,850 lines across 4 PRs, ~10 days. Comparable to session-resume's scope but with a larger docs/config share.
 
-## Open questions
+## Decisions (open questions resolved)
+
+All 8 design questions were reviewed and resolved on 2026-07-02. Summary:
 
 ### 1. Sidecar repo location
 
-**Options:**
-- **In `core-agent` monorepo** (`cmd/k8s-event-watcher/`) — simpler CI, one release cycle, easy shared-code path if the daemon ever grows k8s awareness.
-- **Separate `go-steer/k8s-event-watcher` repo** — clean separation, independent release cadence, easier to grow into `agent-triggers` (Cloud Monitoring, PagerDuty, etc.).
-
-**Recommendation**: in-tree for v2.6. Split when the second signal source ships or when the sidecar accumulates non-trivial k8s-specific code (>1000 LoC).
+**Resolved: in-tree in `core-agent` monorepo (`cmd/k8s-event-watcher/`).** Simpler CI, one release cycle, easy shared-code path. Split into a separate `go-steer/agent-triggers` repo when the second signal source (Cloud Monitoring, PagerDuty, etc.) ships, or when the sidecar accumulates >1000 LoC of k8s-specific code.
 
 ### 2. Default owner identity
 
-Per-incident sessions need an X-Asserted-Caller value. Options:
-- **A single configured owner** (`--owner sre-oncall@example.com`) — simplest, all incidents to one team.
-- **Label-driven routing** (`--owner-label team` → uses `pod.labels.team` as owner) — routes each incident to the affected team's session list.
-- **Namespace-driven routing** (`--owner-per-namespace default=sre,checkout=checkout-team`) — routes by k8s namespace.
+**Resolved: single configured owner** (`--owner sre-oncall@example.com`). All incidents surface in one team's session list — the "one team is the audit trail" MVP shape. Label-driven routing (`--owner-label team`) and namespace-driven routing (`--owner-per-namespace ...`) ship as v2.7+ enhancements when operators demonstrate the need.
 
-**Recommendation**: single owner for v2.6 (matches the "one team is the audit trail" MVP shape). Label + namespace routing as v2.7+ enhancements.
+### 3. Skills vs. instruction-scope playbooks
 
-### 3. Playbook overlay for custom failure modes
+**Resolved: use the Skills primitive.** Triage guidance ships as Skills (`pkg/skills.LoadAll`), not as instruction-scope Markdown. See §"Triage skills" above for details — lazy loading, native "when to use" matching via Description, `/skills` discoverability, and per-skill permission scoping via `GateToolset`. No parallel "playbook" concept exists in the codebase. This resolves what was originally asked as "playbook auto-discovery vs index file" — moot, because Skills already handle discovery via `LoadAll`.
 
-Operators will want to add their own playbooks (custom controller reasons, org-specific runbooks). The `.agents/playbooks/` + `AGENTS.d/` shape supports this via additive overlays, but the discovery-index file (`playbooks/AGENTS.md`) is a coordination point.
+### 4. Fix-and-verify: prompt-pattern or dedicated tool
 
-**Options:**
-- **Convention: operator edits the index file** to `@include` their custom playbooks.
-- **Auto-discovery**: loader picks up every `*.md` in `playbooks/` automatically (skip the index file).
+**Resolved: prompt-pattern in v2.6.** Skills' body instructs the agent through the apply → wait → re-check → revert-if-worse loop using existing tools (`bash`, MCP calls, `spawn_agent`). If operator experience shows the prompt-pattern is flaky (agent skips the verify step, mis-parses results), a `wait_and_verify(predicate, timeout, interval)` tool ships in v2.7+. Migration cost is low because the pattern is already documented in skill bodies.
 
-**Recommendation**: auto-discovery. Matches the AGENTS.d convention and removes a coordination point. Index file becomes optional documentation, not load-critical.
+### 5. Multi-cluster shape
 
-### 4. Fix-and-verify tool vs. prompt pattern
-
-Section "Fix-and-verify primitive" leans toward prompt-pattern for v2.6. **Confirm**: is that the right call for v2.6, or should a `wait_and_verify(predicate, timeout, interval)` tool ship in the same release?
-
-**Recommendation**: prompt-pattern for v2.6, tool for v2.7+ if data justifies. Keeps this PR-stack focused.
-
-### 5. Multi-cluster support
-
-One sidecar watches one cluster. For operators with N clusters:
-
-- **N sidecars, all posting to one daemon** — the daemon audit trail covers all clusters, each incident carries the `cluster` field for filtering. Works today with per-incident sessions.
-- **N daemons, one per cluster** — matches the pod-per-cluster deployment model. AX / distributed-coordinator territory. Out of scope here.
-
-**Recommendation**: document the N-sidecars-one-daemon pattern in the recipe as the multi-cluster answer for v2.6.
+**Resolved: all four topologies supported; recipe defaults to the central-daemon pattern.** Architecture doesn't constrain which shape operators pick — the sidecar just points at `--daemon-url`, the daemon accepts injects from anywhere. The recipe defaults to **1 central daemon + N remote sidecars** (each watching a different cluster) to position operators for the fleet posture from day one. Single-cluster deploys are documented as a special case (deploy both in one cluster with `--in-cluster`). Pod-per-cluster (N daemons) is documented for operators who want isolated audit trails; genuine fleet-view queries across N daemons remain [AX](reference_ax_runtime.md) territory.
 
 ### 6. Sidecar restart resilience
 
-Sidecar restart resets its dedup cache. Immediate consequences:
-- Persistent issues that fired 3 minutes before restart re-fire once each after restart.
-- Duplicate incident-session creation (same `(uid, reason)` → two sessions).
+**Resolved: both accept-duplicates and PVC-persist supported; default is accept-duplicates.** The sidecar's `--dedup-persist PATH` flag opts in to disk-backed cache that survives restart. Default (unset) keeps the cache in memory only — restart re-fires each open incident once, which is acceptable for most operators. The persist mode is a one-line YAML addition (`--dedup-persist /var/lib/watcher/dedup.db` + a mounted PVC) for operators who want zero duplicate bursts. No mandatory PVC in the default recipe.
 
-**Options:**
-- **Accept it** — a small burst of duplicates on restart is acceptable; the agent can dedup via session-list query.
-- **Persist dedup cache** — sidecar writes cache to a PVC or configmap.
-- **Query the daemon for open incident sessions** — sidecar asks GET /sessions and reconstructs the incident cache from the naming convention.
+### 7. Incident-close signal
 
-**Recommendation**: accept the small duplicate burst for v2.6. Revisit if operators report it as pain.
+**Resolved: time-based expiry only for v2.6.** Cached `(uid, reason)` entries expire after the rolling window (default 5m). Same event outside the window creates a new session. No dependency on DELETE /sessions (not shipping yet) or eventlog tailing (adds coupling). Cost: a persistent 30-min crashloop generates 6 sessions instead of 1 — acceptable because each captures a distinct investigation window, and session-resume means operators can reference prior sessions. If v2.7+ ships DELETE /sessions, we revisit the "session close = incident close" tightening.
 
-### 7. When is an incident "closed"
+### 8. Integration with existing k8s exporters
 
-Playbook budget-exhaustion is one signal. But operators might close incidents from the TUI too (e.g., "false positive, don't want the agent to re-fire on the next event"). Options:
-
-- **Session close = incident close** — operator closes the session via a future DELETE /sessions; sidecar sees the session is gone and drops the incident from its cache.
-- **Sentinel event in eventlog** — agent (or operator) writes an "incident-closed" event; sidecar tails the eventlog for it.
-
-**Recommendation**: session-close pattern (waits on future DELETE /sessions). For v2.6, sidecar caches (uid, reason) → sessionID for `dedup-window` duration; if the same event re-fires after that window, new session. Not perfect but bounded.
-
-### 8. Integration with existing k8s event exporters
-
-`kube-event-exporter`, `robusta`, and similar tools already handle the "watch + filter + forward" part. Building our own sidecar duplicates capability.
-
-**Options:**
-- **Build our own** (this design) — full control, simple deploy, no external dependency.
-- **Adapter mode**: sidecar accepts webhook POSTs from an existing exporter; forwards to core-agent. Reuses community tooling.
-- **Both** — ship the sidecar for green-field ops + an adapter shim for operators already running robusta.
-
-**Recommendation**: build our own for v2.6 (simplest). Adapter shim as v2.7+ if operators ask.
+**Resolved: build our own sidecar for v2.6.** Simplest — ~500 LoC of Go with client-go informer. Full control over payload shape, dedup semantics, session routing. Community tools (`kube-event-exporter`, `robusta`) have different mental models that would need adapting. An adapter shim (accept webhook POSTs from those tools + translate to `/inject`) is v2.7+ material if operators already running those tools ask for it.
 
 ## Security considerations
 

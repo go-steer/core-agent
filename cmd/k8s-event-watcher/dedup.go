@@ -1,0 +1,272 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"sync"
+	"time"
+)
+
+// dedupEntry holds the per-incident dedup state cached against an
+// EventKey. Bounded: the sidecar's cache is capped at maxDedupEntries
+// (LRU eviction) so a runaway cluster with tens of thousands of
+// distinct incidents doesn't OOM the sidecar.
+type dedupEntry struct {
+	// SessionID is the daemon-side session created by the first
+	// event in this window. Follow-up events for the same key
+	// route to this session via POST /sessions/<sid>/inject.
+	SessionID string `json:"session_id"`
+	// FirstSeen is when the sidecar first observed this key.
+	// Rolls forward when the window expires + a new event arrives.
+	FirstSeen time.Time `json:"first_seen"`
+	// LastSeen is when the sidecar last observed this key. Used
+	// to determine window expiry: the entry ages out when
+	// LastSeen + window < now.
+	LastSeen time.Time `json:"last_seen"`
+	// Count is how many events the sidecar has seen for this key
+	// in the current window (the first event that created the
+	// session counts as 1). Reset when the window rolls.
+	Count int `json:"count"`
+}
+
+// dedupResult tells the caller what to do with the event that just
+// came in: kind==firstInWindow means create a session + inject;
+// kind==duplicate means suppress; kind==newIncident means the prior
+// window expired and this is a fresh incident (create new session).
+type dedupResult struct {
+	Kind      dedupResultKind
+	SessionID string // only set when Kind==duplicate; the existing session
+	Count     int    // window count (1 for first, N for duplicates)
+}
+
+type dedupResultKind int
+
+const (
+	// dedupNewIncident: no prior entry (or the prior window
+	// expired). Caller must create a new session and inject.
+	dedupNewIncident dedupResultKind = iota
+	// dedupDuplicate: an entry exists within the window. Caller
+	// suppresses this event; the count is bumped and available
+	// via dedupResult.Count.
+	dedupDuplicate
+)
+
+// dedupCache is the rolling-window dedup store. Backed by a map +
+// a mutex; bounded by LRU eviction at maxDedupEntries.
+type dedupCache struct {
+	mu      sync.Mutex
+	entries map[EventKey]*dedupEntry
+	window  time.Duration
+	max     int
+	// persistPath, when non-empty, causes Snapshot+Restore calls
+	// to read/write JSON at that path so the cache survives
+	// sidecar restart. Optional (nil disables persistence).
+	persistPath string
+	// now overrides time.Now for testing. nil = real clock.
+	now func() time.Time
+}
+
+// maxDedupEntries caps the sidecar's cache size. 10k is plenty for
+// any realistic single-cluster deployment (unique events per 5-min
+// window). LRU eviction beyond this bound.
+const maxDedupEntries = 10_000
+
+// newDedupCache constructs a cache with the supplied rolling window
+// duration. window must be > 0. persistPath is optional; empty
+// disables the on-disk cache.
+func newDedupCache(window time.Duration, persistPath string) (*dedupCache, error) {
+	if window <= 0 {
+		return nil, fmt.Errorf("dedup: window must be > 0 (got %s)", window)
+	}
+	c := &dedupCache{
+		entries:     make(map[EventKey]*dedupEntry),
+		window:      window,
+		max:         maxDedupEntries,
+		persistPath: persistPath,
+	}
+	if persistPath != "" {
+		if err := c.restore(); err != nil {
+			return nil, fmt.Errorf("dedup: restore from %s: %w", persistPath, err)
+		}
+	}
+	return c, nil
+}
+
+// clock returns the current time. Overridable for tests.
+func (c *dedupCache) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+// Observe records that key was just seen. Returns a dedupResult
+// telling the caller whether this is a fresh incident (start a new
+// session) or a duplicate within the current window (suppress).
+//
+// Contract: the caller MUST call BindSession after a successful
+// createSession call to attach the SessionID to the newly-created
+// entry, so subsequent duplicates can route to the same session.
+func (c *dedupCache) Observe(key EventKey) dedupResult {
+	now := c.clock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	if !ok || now.Sub(entry.LastSeen) > c.window {
+		// New incident: either first sighting or the prior window
+		// expired. Fresh entry, count=1, LastSeen=now. SessionID
+		// is set later via BindSession once the daemon creates
+		// the session.
+		c.evictIfFull()
+		c.entries[key] = &dedupEntry{
+			FirstSeen: now,
+			LastSeen:  now,
+			Count:     1,
+		}
+		return dedupResult{Kind: dedupNewIncident, Count: 1}
+	}
+	// Duplicate within window: bump count + LastSeen; caller
+	// suppresses the inject.
+	entry.Count++
+	entry.LastSeen = now
+	return dedupResult{Kind: dedupDuplicate, SessionID: entry.SessionID, Count: entry.Count}
+}
+
+// BindSession attaches the SessionID from a successful CreateSession
+// call to the entry created by the preceding Observe. No-op if the
+// entry has since been evicted (window elapsed AND the LRU sweep
+// dropped it), which is a possible but harmless race.
+func (c *dedupCache) BindSession(key EventKey, sessionID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry, ok := c.entries[key]; ok {
+		entry.SessionID = sessionID
+	}
+}
+
+// evictIfFull is called under lock. If the cache is at capacity,
+// evicts the LRU entry (lowest LastSeen). Bounded O(N) scan; called
+// only on new-incident cache-miss paths so amortized cost is fine.
+func (c *dedupCache) evictIfFull() {
+	if len(c.entries) < c.max {
+		return
+	}
+	var oldestKey EventKey
+	var oldestTs time.Time
+	first := true
+	for k, e := range c.entries {
+		if first || e.LastSeen.Before(oldestTs) {
+			oldestKey = k
+			oldestTs = e.LastSeen
+			first = false
+		}
+	}
+	delete(c.entries, oldestKey)
+}
+
+// Len returns the current cache size. Test / metrics helper.
+func (c *dedupCache) Len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entries)
+}
+
+// Snapshot writes the current cache state to persistPath. Idempotent;
+// no-op when persistPath is empty. Callers should call this on
+// graceful shutdown (SIGTERM handler in main.go) and periodically
+// while running (e.g., every 30s ticker) so a crash doesn't lose
+// more than 30s of dedup state.
+//
+// Format: pretty-printed JSON — small enough that a human can
+// inspect it during incident debugging, and simple enough that the
+// on-disk shape doesn't need its own migration story.
+func (c *dedupCache) Snapshot() error {
+	if c.persistPath == "" {
+		return nil
+	}
+	c.mu.Lock()
+	// Copy under lock; encode outside so we don't hold the mutex
+	// during I/O.
+	snapshot := make(map[string]*dedupEntry, len(c.entries))
+	for k, v := range c.entries {
+		snapshot[serializeKey(k)] = v
+	}
+	c.mu.Unlock()
+	data, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		return fmt.Errorf("dedup: marshal snapshot: %w", err)
+	}
+	// Atomic write: temp file + rename so an interrupted write
+	// doesn't corrupt the persisted state.
+	tmp := c.persistPath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("dedup: write %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, c.persistPath); err != nil {
+		return fmt.Errorf("dedup: rename %s → %s: %w", tmp, c.persistPath, err)
+	}
+	return nil
+}
+
+// restore reads persistPath (if it exists) and hydrates the cache.
+// Missing file is not an error — first-time startup has nothing to
+// restore. Called by newDedupCache during construction.
+func (c *dedupCache) restore() error {
+	data, err := os.ReadFile(c.persistPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil // first startup; nothing to restore
+		}
+		return fmt.Errorf("dedup: read %s: %w", c.persistPath, err)
+	}
+	var snapshot map[string]*dedupEntry
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		// Corrupt persist file: log and start fresh. Better than
+		// refusing to boot the sidecar. Caller can inspect the
+		// file if they care.
+		return fmt.Errorf("dedup: unmarshal snapshot (starting fresh): %w", err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for keyStr, entry := range snapshot {
+		key, ok := deserializeKey(keyStr)
+		if !ok {
+			continue // silently skip malformed keys
+		}
+		c.entries[key] = entry
+	}
+	return nil
+}
+
+// serializeKey / deserializeKey encode an EventKey for use as a
+// JSON map key (which must be a string). Using a delimiter that
+// can't appear in a k8s UID (which is hex + hyphens) or an Event
+// reason (which is CamelCase alphanumeric).
+func serializeKey(k EventKey) string {
+	return k.UID + "|" + k.Reason
+}
+
+func deserializeKey(s string) (EventKey, bool) {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '|' {
+			return EventKey{UID: s[:i], Reason: s[i+1:]}, true
+		}
+	}
+	return EventKey{}, false
+}

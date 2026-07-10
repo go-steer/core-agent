@@ -56,6 +56,18 @@ jobs:
           # GoReleaser needs full history for changelog detection
           # and accurate {{.Date}} / {{.FullCommit}} resolution.
           fetch-depth: 0
+          # Retroactive-tag mode: when dispatched with a `tag` input
+          # (e.g., `gh workflow run release.yml --ref main -f tag=v2.4.5`),
+          # check out the tagged commit rather than the ref that
+          # triggered. This lets main's version of the workflow run
+          # (so it has all our fixes) while GoReleaser still sees
+          # HEAD == the tagged commit — GoReleaser errors otherwise
+          # with "git tag vX.Y.Z was not made against commit ...".
+          #
+          # Contemporary mode (tag push): `inputs.tag` is empty so
+          # this falls back to `github.ref` (the tag ref that fired
+          # the workflow) — same as the default checkout behavior.
+          ref: ${{ inputs.tag || github.ref }}
 
       # Same go-version-from-go.mod pattern as release-images.yml.
       - name: Extract Go version from go.mod
@@ -110,16 +122,24 @@ jobs:
             '
           }
 
-          extract_section < CHANGELOG.md > RELEASE_NOTES.md
-          if [[ ! -s RELEASE_NOTES.md ]]; then
+          # Write to $RUNNER_TEMP rather than the working tree so
+          # GoReleaser's dirty-tree check doesn't fire on an
+          # untracked file. Matters for retroactive tags where the
+          # tagged commit predates the /RELEASE_NOTES.md .gitignore
+          # entry — a file in $RUNNER_TEMP is never inside the repo.
+          NOTES="${RUNNER_TEMP}/RELEASE_NOTES.md"
+          echo "notes_path=${NOTES}" >> "$GITHUB_OUTPUT"
+
+          extract_section < CHANGELOG.md > "${NOTES}"
+          if [[ ! -s "${NOTES}" ]]; then
             echo "no [${VERSION}] section in tag's CHANGELOG.md; falling back to origin/main"
             # fetch-depth: 0 above pulled all history but not
             # necessarily the remote refs by name; fetch main
             # explicitly. --no-tags avoids re-touching our tag refs.
             git fetch --no-tags origin main
-            git show origin/main:CHANGELOG.md | extract_section > RELEASE_NOTES.md
+            git show origin/main:CHANGELOG.md | extract_section > "${NOTES}"
           fi
-          if [[ ! -s RELEASE_NOTES.md ]]; then
+          if [[ ! -s "${NOTES}" ]]; then
             echo "::error::no CHANGELOG.md section found for [${VERSION}] in tag OR in main — add one and retag"
             exit 1
           fi
@@ -130,7 +150,7 @@ jobs:
             -e "s|@TAG@|${TAG}|g" \
             -e "s|@VERSION@|${VERSION}|g" \
             dev/release/install-verify-footer.md.tmpl \
-            >> RELEASE_NOTES.md
+            >> "${NOTES}"
 
       # dry_run → --snapshot (no publish, no sign, fabricated version).
       # Normal run → publish + sign with our composed release notes.
@@ -142,7 +162,7 @@ jobs:
           args: >-
             ${{ inputs.dry_run
                 && 'release --snapshot --clean --skip=sign'
-                || 'release --clean --release-notes=RELEASE_NOTES.md' }}
+                || format('release --clean --release-notes={0}', steps.notes.outputs.notes_path) }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

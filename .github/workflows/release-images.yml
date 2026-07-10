@@ -14,13 +14,14 @@
 
 name: Release images
 
-# Builds + publishes three multi-arch (amd64 + arm64) container images
+# Builds + publishes four multi-arch (amd64 + arm64) container images
 # to GitHub Container Registry on every `v*.*.*` tag push, plus a
 # floating `:main-<sha>` development tag on every main push:
 #
-#   ghcr.io/go-steer/core-agent       — full build (in-process TUI included)
-#   ghcr.io/go-steer/core-agent-slim  — built `-tags no_tui` (~5MB smaller)
-#   ghcr.io/go-steer/core-agent-tui   — remote TUI client only
+#   ghcr.io/go-steer/core-agent          — full build (in-process TUI included)
+#   ghcr.io/go-steer/core-agent-slim     — built `-tags no_tui` (~5MB smaller)
+#   ghcr.io/go-steer/core-agent-tui      — remote TUI client only
+#   ghcr.io/go-steer/k8s-event-watcher   — v2.6 k8s-triage sidecar
 #
 # Images are signed via Sigstore keyless (GitHub Actions OIDC →
 # Fulcio short-lived cert). Verify with:
@@ -77,6 +78,15 @@ jobs:
           # workstations attaching to a daemon). Smaller deps tree.
           - image_name: core-agent-tui
             variant: core-agent-tui
+            build_tags: ""
+
+          # k8s-event-watcher sidecar (v2.6, #186). Client-go informer
+          # that watches Kubernetes Events, filters + dedupes, and
+          # POSTs matched events to a core-agent daemon's session
+          # inject endpoint. Deploys alongside core-agent in the same
+          # cluster OR remotely — see examples/gke-troubleshoot-agent/.
+          - image_name: k8s-event-watcher
+            variant: k8s-event-watcher
             build_tags: ""
 
     steps:

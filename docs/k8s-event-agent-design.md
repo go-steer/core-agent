@@ -2,7 +2,7 @@
 
 Design doc for the v2.6 follow-up to session-resume (#178 / `docs/session-resume-design.md`): turn `core-agent` into a semi-autonomous k8s troubleshooting agent by wiring cluster events as a push-signal source, routing them into per-incident sessions, and applying structured playbooks with a fix-and-verify loop.
 
-**Status:** proposed (2026-07-02); all 8 open questions resolved in review, ready for implementation. v2.6 candidate. Tracking issue: [#186](https://github.com/go-steer/core-agent/issues/186).
+**Status:** shipped in v2.6 (2026-07-10). Implemented across three merged PRs: ε.1 [#188](https://github.com/go-steer/core-agent/pull/188) (sidecar core binary), ε.2 [#189](https://github.com/go-steer/core-agent/pull/189) (triage router + references + deploy recipe + GET /sessions union), ε.4 (this PR: `k8s-event-watcher` container image published on GHCR + CHANGELOG + status flip). ε.3 (escalation MCP integration) was DROPPED from v2.6 because distroless kills `bash + curl`; native alert-tool escalation designed at `docs/alert-tool-design.md` ([#192](https://github.com/go-steer/core-agent/issues/192)) and Slack-MCP consumption at `docs/mcp-oauth-design.md` ([#190](https://github.com/go-steer/core-agent/issues/190)) both ship in v2.7. Operator-facing reference: `docs/site/content/docs/reference/troubleshooting-agent.md`. Tracking issue: [#186](https://github.com/go-steer/core-agent/issues/186).
 
 ## Motivation
 
@@ -517,23 +517,23 @@ Estimate: ~500 LoC + ~350 LoC tests. ~3 days.
 
 Estimate: ~200 LoC YAML/config + ~800 lines of playbook content + ~400 lines of docs. ~4 days (most is playbook writing + testing on a real cluster).
 
-### Phase 3 — Escalation MCP integration (PR ε.3 of #186)
+### Phase 3 — DROPPED
 
-- Wire the existing Slack MCP into the recipe with a canonical "post_summary" tool binding.
-- Playbook additions: "if budget exhausted, call `slack.postMessage` with structured summary."
-- Sample escalation payload doc.
-- Manual UAT: exhaust the agent's budget, verify Slack gets the handoff.
+Original scope: wire the Slack MCP into the recipe as the canonical escalation path.
 
-Estimate: ~200 LoC config + ~100 lines of docs. ~2 days.
+**Why dropped:** Slack's official MCP requires Streamable HTTP + OAuth 2.0 (which `pkg/mcp` doesn't support yet — designed at [#190](https://github.com/go-steer/core-agent/issues/190) for v2.7). Community MCPs with bot-token auth would work but add a moving part. The obvious fallback — `bash + curl` against a Slack Incoming Webhook — is dead on arrival because the shipped image is distroless (no shell). A first-class `alert` tool that fits distroless is the right answer, but deserves its own design cycle (rate limiting, per-target templates, audit).
 
-### Phase 4 — Container image + release (PR ε.4 of #186)
+**Replacement:** v2.6 escalation is eventlog-based — the router emits `INCIDENT SUMMARY: UNRESOLVED` blocks that operators consume via Cloud Logging sinks / `stern` / etc. A native alert tool designed at `docs/alert-tool-design.md` and tracked at [#192](https://github.com/go-steer/core-agent/issues/192) ships in v2.7 and gets wired into the recipe as a small follow-up PR.
 
-- Dockerfile.k8s-event-watcher on `gcr.io/distroless/static-debian12:nonroot`.
-- Extend `.github/workflows/release-images.yml` to build + push a third image (`k8s-event-watcher`) on tag.
-- CHANGELOG v2.6.0 entry.
-- Design doc status flip.
+### Phase 4 — Container image + release + status flip (PR ε.4 of #186)
 
-Estimate: ~100 LoC infrastructure + ~50 LoC docs. ~1 day.
+- Reuses the existing `Dockerfile` (single multi-stage build with `VARIANT` build-arg — no `Dockerfile.k8s-event-watcher` needed).
+- Extends `.github/workflows/release-images.yml` to add `k8s-event-watcher` to the image matrix — fourth image alongside `core-agent`, `core-agent-slim`, `core-agent-tui`. Same distroless base, same cosign keyless signing, same multi-arch amd64+arm64 publishing.
+- CHANGELOG v2.6.0 entry covering the whole k8s-event agent stack + the ε.3-dropped-in-favor-of-alert-tool note.
+- Design doc status flip (this update).
+- Recipe README + Hugo docs already point at future alert-tool work; no additional changes needed.
+
+Estimate: ~50 LoC infrastructure + ~150 LoC docs. ~1 day.
 
 **Total**: ~1,850 lines across 4 PRs, ~10 days. Comparable to session-resume's scope but with a larger docs/config share.
 

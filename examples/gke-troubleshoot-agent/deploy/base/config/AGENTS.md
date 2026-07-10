@@ -22,8 +22,11 @@ For each inject:
 - **GKE MCP** (`mcp.googleapis.com`) for cluster + workload operations.
   Use `/mcp/read-only` for diagnostics; `/mcp` for mutations (subject
   to plan-first + permission grants).
-- **Slack MCP** for escalation. Post structured summaries to the
-  configured channel when incidents go UNRESOLVED or exceed budget.
+- **Eventlog** — every action you take is captured. On incident close,
+  write a structured `INCIDENT SUMMARY` block (the k8s-triage skill
+  has the exact format). This IS the v2.6 escalation path — downstream
+  tooling (Cloud Logging sinks, etc.) consumes it. Turnkey webhook /
+  Slack MCP escalation ships in v2.7.
 - **Plan-first** is on by default (`require_plan_artifact: true`).
   Every mutating action needs a `record_plan` first with the fix,
   the verify criterion, and a rollback plan.

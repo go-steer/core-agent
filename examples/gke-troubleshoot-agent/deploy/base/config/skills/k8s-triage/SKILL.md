@@ -86,7 +86,8 @@ Before applying ANY mutating action:
 ## Step 4 — close the incident
 
 Post a structured summary as your final message. Use this template
-verbatim so downstream tooling (Slack MCP, ticket MCPs) can parse it:
+verbatim so downstream tooling (Cloud Logging filters, future alert
+tool, future ticket MCPs) can parse it:
 
 ```
 INCIDENT SUMMARY
@@ -101,17 +102,25 @@ Actions taken:
   1. <action>  → <outcome>
   2. <action>  → <outcome>
 Final state: <one line — pod state, deployment status, or similar>
+Session URL: <the /sessions/<sid> URL a human operator can attach to>
 ```
 
-If Status is UNRESOLVED or ESCALATED, ALSO call the escalation MCP
-(check `/mcp` for `slack`, `jira`, `pagerduty`, or `webhook`
-integrations). Attach the summary above plus:
-- Session URL — the human operator can attach a TUI to continue.
+**Escalation in v2.6 (eventlog-based):** the summary IS the escalation.
+The eventlog block above is picked up by whatever downstream consumer
+the operator has wired (Cloud Logging sink filtering for
+`INCIDENT SUMMARY: UNRESOLVED`, `stern | grep` during dev, etc.).
+No MCP call to make from the skill.
+
+For UNRESOLVED / ESCALATED incidents, include EXTRA detail in your
+final message beyond the summary block above:
 - What was tried (verbose — every command + response).
 - What you'd try next if you had more budget / permissions.
+- Any suspected root cause you couldn't confirm.
 
-If Status is RESOLVED, no escalation call is needed; the eventlog is
-the audit trail.
+A native `alert` tool for turnkey Slack/PagerDuty/webhook escalation
+ships in v2.7 (design: `docs/alert-tool-design.md`). Once available,
+this skill will grow a step calling `alert(target: ..., level: ...)`
+before the eventlog summary. For now: eventlog only.
 
 ## Meta
 

@@ -96,16 +96,31 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
           # Extract CHANGELOG section: enter on `## [VERSION]`, stop
-          # at the next `## [`. Fail loudly if no section matches —
-          # release notes pointing at a missing changelog entry are
-          # worse than a failed workflow.
-          awk -v ver="$VERSION" '
-            $0 ~ "^## \\[" ver "\\]" { in_section=1; print; next }
-            in_section && /^## \[/    { exit }
-            in_section                { print }
-          ' CHANGELOG.md > RELEASE_NOTES.md
+          # at the next `## [`. Try the tagged commit's file first;
+          # fall back to main's CHANGELOG when the tag predates the
+          # entry — that supports retroactively tagging historical
+          # commits (e.g., cutting v2.4.0 from an old commit after
+          # the CHANGELOG has been split on main). Fail loudly only
+          # when BOTH sources come up empty.
+          extract_section() {
+            awk -v ver="$VERSION" '
+              $0 ~ "^## \\[" ver "\\]" { in_section=1; print; next }
+              in_section && /^## \[/    { exit }
+              in_section                { print }
+            '
+          }
+
+          extract_section < CHANGELOG.md > RELEASE_NOTES.md
           if [[ ! -s RELEASE_NOTES.md ]]; then
-            echo "::error::no CHANGELOG.md section found for [${VERSION}] — add one before tagging"
+            echo "no [${VERSION}] section in tag's CHANGELOG.md; falling back to origin/main"
+            # fetch-depth: 0 above pulled all history but not
+            # necessarily the remote refs by name; fetch main
+            # explicitly. --no-tags avoids re-touching our tag refs.
+            git fetch --no-tags origin main
+            git show origin/main:CHANGELOG.md | extract_section > RELEASE_NOTES.md
+          fi
+          if [[ ! -s RELEASE_NOTES.md ]]; then
+            echo "::error::no CHANGELOG.md section found for [${VERSION}] in tag OR in main — add one and retag"
             exit 1
           fi
 

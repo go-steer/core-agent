@@ -1,0 +1,62 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Example overlay. Copy this directory, edit these values for your
+# environment, and `kubectl apply -k <your-overlay-dir>`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# ↳ Change to the relative path from your overlay to the base if
+#   you're not going through examples/gke-troubleshoot-agent/.
+resources:
+  - ../../base
+
+# Optional: pin image tags. Delete or edit if you want ":latest"
+# (not recommended for production — no reproducibility).
+images:
+  - name: ghcr.io/go-steer/core-agent
+    newTag: "2.6.0"
+  - name: ghcr.io/go-steer/k8s-event-watcher
+    newTag: "2.6.0"
+
+# Uncomment to add your organization's namespace prefix or
+# per-cluster labels:
+#
+# namePrefix: prod-
+# commonLabels:
+#   environment: prod
+#   team: sre
+
+# Overlay-specific config.json (replaces the base's admin identity +
+# cluster-name references). Uncomment + provide your own config.json
+# to swap in team-specific admin identities, custom idle timeout,
+# etc. The `behavior: replace` semantics require the same generator
+# name as the base ("core-agent-config").
+#
+# configMapGenerator:
+#   - name: core-agent-config
+#     behavior: replace
+#     files:
+#       - config.json=config/config.json
+#
+# generatorOptions:
+#   disableNameSuffixHash: true
+
+# Patch the watcher Deployment with your cluster's real name, so
+# every inject payload's "cluster" field identifies the source.
+patches:
+  - path: patch-watcher-cluster-name.yaml
+    target:
+      kind: Deployment
+      name: k8s-event-watcher

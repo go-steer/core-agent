@@ -1,0 +1,39 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# ClusterIP Service for the core-agent daemon. Reachable in-cluster
+# as http://core-agent.agent-triage.svc.cluster.local:7777.
+#
+# For operator attach from outside the cluster, expose this via one
+# of: internal HTTP LoadBalancer, IAP, Cloud Workstations, or
+# `kubectl port-forward svc/core-agent 7777:7777`. Recipe README
+# covers the four paths.
+apiVersion: v1
+kind: Service
+metadata:
+  name: core-agent
+  namespace: agent-triage
+  labels:
+    app.kubernetes.io/name: core-agent
+    app.kubernetes.io/component: daemon
+spec:
+  type: ClusterIP
+  ports:
+    - name: attach
+      port: 7777
+      targetPort: attach
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: core-agent
+    app.kubernetes.io/component: daemon

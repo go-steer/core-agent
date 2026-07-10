@@ -133,92 +133,125 @@ The sidecar POSTs a JSON message with a structured envelope so playbook instruct
 
 The `kind` field is what the agent's instructions look for; `context.labels` lets playbooks route conditionally (e.g., "if labels.env == 'prod', page immediately").
 
-### Triage skills
+### Triage router skill + reference bundle
 
-Triage guidance ships as **Skills** — the existing v2.1 primitive (`pkg/skills`) — not as instructions loaded into the base system prompt. One skill per k8s Event reason. Each skill has a `SKILL.md` with YAML frontmatter (name, description) and a body that scripts the diagnose → fix → verify flow.
+Triage ships as **one router skill** — the existing v2.1 Skills primitive (`pkg/skills`) — with per-reason detail files loaded on-demand via ADK's native `load_skill_resource` tool. The router owns the envelope (envelope framing, fix-and-verify loop, escalation, budget); the reference files hold the reason-specific diagnose + fix content.
 
-Why Skills over instruction-scope Markdown:
+Why router (not one skill per reason):
 
-- **Lazy loading.** With 10 triage skills, the always-in-prompt approach would burn ~100 KB of tokens per session on content the agent might not use. Skills load their body ONLY when the agent invokes them. Base prompt carries just the ~200 B tool definition per skill.
-- **Native "when to use" matching.** Skill `Description` is what the LLM sees when deciding whether to invoke — a "Handle CrashLoopBackOff events" description is exactly the matching signal we want.
-- **Discoverable.** `/skills` command in the TUI lists them first-class. Operators inspect what triage coverage exists without reading the system prompt.
-- **Composable permission scope.** Skills go through `GateToolset`; a diagnose-only skill can be tool-restricted (no `bash`, only read-only MCP calls) independently of the session's overall permission set.
-- **Overlay layering already works.** `LoadAll` merges project-scope (`<agentsDir>/skills/`) with user-global (`<coreHome>/skills/`). Operators drop custom triage skills in either scope; the standard precedence rules apply.
-- **First-class primitive; no invention.** No parallel "playbook" concept to teach operators, document, or migrate.
+- **Native fallthrough.** Router branches on `reason` in the payload; unknown reasons hit `references/_fallback.md` directly. No "unmatched skill" edge case to design around.
+- **Single `/skills` entry.** Discovery stays clean. Operators see what reasons are covered by inspecting `references/`; the recipe README lists them.
+- **Deterministic dispatch.** LLM invokes ONE skill (the router) and does a text-level `switch` on the payload's `reason` field to pick the reference. More reliable than N-way description matching, where the LLM has to reason across competing skill Descriptions.
+- **Cross-reason chaining is free.** Router in a single turn: read `CrashLoopBackOff.md` → notice exit code 137 → read `OOMKilled.md` — no skill re-invocation, no context switch.
+- **Common concerns live once.** Envelope (structured summary), budget tracking, escalation call — the router owns them. Reference files stay focused on their diagnose + fix content.
+- **Custom coverage is trivial.** Operators drop a new `references/<Reason>.md` file. No SKILL.md authoring, no frontmatter, no registration.
+- **First-class ADK primitive.** ADK's `skilltoolset` exposes three tools (`list_skills`, `load_skill`, `load_skill_resource`); the router just calls the third. No new plumbing.
 
 Skill layout:
 
 ```
-.agents/skills/
-├── k8s-triage-crashloopbackoff/
-│   └── SKILL.md
-├── k8s-triage-imagepullbackoff/
-│   └── SKILL.md
-├── k8s-triage-oomkilled/
-│   └── SKILL.md
-├── k8s-triage-failedmount/
-│   └── SKILL.md
-└── ...
+.agents/skills/k8s-triage/
+├── SKILL.md                          ← router (~50 lines)
+└── references/
+    ├── CrashLoopBackOff.md
+    ├── ImagePullBackOff.md
+    ├── ErrImagePull.md
+    ├── OOMKilled.md
+    ├── FailedMount.md
+    ├── FailedScheduling.md
+    ├── BackOff.md
+    ├── Unhealthy.md
+    ├── NetworkNotReady.md
+    ├── NodeNotReady.md
+    ├── Evicted.md
+    └── _fallback.md                  ← generic playbook for unknown reasons
 ```
 
-Skill shape (SKILL.md for CrashLoopBackOff):
+ADK's `LoadResource` implementation restricts skill-relative paths to `references/`, `assets/`, or `scripts/` subdirectories (path-traversal guard); the `references/` convention is exactly what our router uses.
+
+Router SKILL.md shape:
 
 ```markdown
 ---
-name: k8s-triage-crashloopbackoff
+name: k8s-triage
 description: |
-  Handle a Kubernetes CrashLoopBackOff event. Use when receiving an
-  inject payload with kind="k8s-event" and reason="CrashLoopBackOff".
-  Diagnoses via container logs + pod status, applies well-known fixes
-  (memory limit bumps, init-container timeouts, ConfigMap rollback),
-  and verifies the fix stuck before closing the incident.
+  Handle a Kubernetes event inject (kind="k8s-event"). Reads the
+  reason-specific reference and drives the diagnose → fix → verify
+  loop for any k8s failure mode. Falls back to a generic playbook
+  for unknown reasons.
 ---
 
-# Triage: CrashLoopBackOff
+# k8s triage router
+
+You've been invoked with a payload like:
+`{"kind": "k8s-event", "reason": "CrashLoopBackOff", "namespace": "...", ...}`.
+
+## Step 1 — load the reference
+
+Call `load_skill_resource`:
+- skill_name: `k8s-triage`
+- resource_path: `references/{reason}.md`
+
+If it returns `ErrResourceNotFound`, retry with
+`resource_path: references/_fallback.md`.
+
+## Step 2 — follow the reference
+
+The reference has diagnose / fixes / verify sections in that order.
+Execute step-by-step. If a mutating action is needed AND plan-first
+is on (`require_plan_artifact: true`), call `record_plan` before
+applying.
+
+## Step 3 — fix-and-verify
+
+After every fix:
+1. Wait the verify interval named in the reference row.
+2. Re-run the diagnose step.
+3. If green: proceed to Step 4.
+4. If red after 2 attempts: revert (when possible) + escalate.
+
+## Step 4 — close
+
+Post a structured summary to the eventlog. If unresolved past the
+reference's budget, call the escalation MCP (Slack `post_message`,
+Jira `create_issue`, or configured webhook) with:
+- Incident triple (namespace, name, uid)
+- What was diagnosed
+- What was tried and current state
+- Session URL for a human to attach a TUI
+```
+
+Reference file shape (`references/CrashLoopBackOff.md`):
+
+```markdown
+# CrashLoopBackOff
 
 ## Budget
 
 - Max turns: 8
 - Max wall time: 10 min
-- On budget exhaustion: post structured summary to escalation channel + close incident.
 
 ## Diagnose
 
 1. Fetch the container's last 200 log lines (`gke-mcp: logs.tail`).
-2. Fetch the pod's events (`gke-mcp: events.for-pod`).
+2. Fetch pod events (`gke-mcp: events.for-pod`).
 3. Check exit code + reason from PodStatus.
-4. If exit code == 137: OOMKilled — invoke `k8s-triage-oomkilled` skill instead.
-5. If image pull error appears in events: invoke `k8s-triage-imagepullbackoff` skill.
+4. If exit code == 137 → chain to `references/OOMKilled.md`.
+5. If image pull error → chain to `references/ImagePullBackOff.md`.
 6. Otherwise: application-level failure. Categorize from logs.
 
 ## Common fixes
 
-| Symptom | Fix | Verify |
+| Symptom | Fix | Verify (interval → check) |
 |---|---|---|
-| Startup timeout on init container | Extend initialDelaySeconds | Wait 2m; pod status Running |
-| Bad config in ConfigMap | Roll back to prior ConfigMap revision | Watch for pod restart + steady state |
-| Application crash from bad deploy | Roll back Deployment to previous revision | Watch replicaset transitions |
-
-## Fix-and-verify
-
-After applying any fix:
-1. Wait the verify interval (per row above).
-2. Re-run the diagnose step. If clean: post summary + close.
-3. If not clean after 2 attempts: revert (if possible) + escalate.
-
-## Escalation
-
-Call the configured Slack MCP with a structured summary including:
-- Incident triple (namespace, name, uid)
-- What was diagnosed
-- What was tried and its outcome
-- Current state
-- Session URL for a human to attach a TUI
+| Startup timeout on init container | Extend initialDelaySeconds | 2m → pod status Running |
+| Bad config in ConfigMap | Roll back to prior revision | 3m → pod restart + steady state |
+| Application crash from bad deploy | Roll back Deployment | 5m → replicaset transitions |
 ```
 
-The agent, on receiving a `k8s-event` inject, matches skill descriptions against the payload's `reason` field and invokes the matching skill. The skill's body drives the investigation. If no matching skill exists, the agent falls back to general k8s knowledge — captured in a short base instruction that ships with the recipe.
+Cross-reason chaining works via `load_skill_resource` — the router loads `CrashLoopBackOff.md`, sees a "chain to OOMKilled" instruction, loads `OOMKilled.md`, continues investigating. All in one turn stream.
 
-Custom triage skills compose additively. Operators drop a `k8s-triage-<their-reason>/SKILL.md` into their scope; the loader picks it up on next session start. Discovery via `/skills` shows the full triage coverage matrix.
+Custom coverage: operators drop `references/<Reason>.md` into the skill directory. The overlay pattern (`pkg/skills.LoadAll`) still works — a user-global skills tree at `<userCoreHome>/skills/k8s-triage/references/` overlays the project-scope references file-by-file. No index file, no coordination.
 
 ### Fix-and-verify primitive: prompt-pattern first
 
@@ -326,33 +359,32 @@ Why central-daemon default (vs. sidecar-in-daemon-pod as the doc originally reco
 
 ### Skills loading
 
-Triage skills live under `.agents/skills/k8s-triage-<reason>/SKILL.md`. The `pkg/skills.LoadAll` primitive already handles project + user-global layering, sanitizing frontmatter, and wiring the resulting toolset via `agent.WithToolsets`. No new loader code needed.
+The router skill lives at `.agents/skills/k8s-triage/SKILL.md`; reference files at `.agents/skills/k8s-triage/references/*.md`. The `pkg/skills.LoadAll` primitive handles project + user-global overlay merge and wires the resulting toolset via `agent.WithToolsets` — no code changes to the loader.
 
-Base instructions (in `.agents/AGENTS.md` or a scope overlay) frame the agent's role in one paragraph:
+The three tools ADK's `skilltoolset` exposes to the LLM after loading:
+
+| Tool | Purpose in the triage flow |
+|---|---|
+| `list_skills` | LLM sees `k8s-triage` in the catalog |
+| `load_skill` | LLM invokes the router; router body drives Steps 1–4 |
+| `load_skill_resource` | Router calls this per-reason to pull the matching reference |
+
+Base instructions (in `.agents/AGENTS.md` or a scope overlay) frame the agent's role in a few lines:
 
 ```markdown
 # Role: k8s troubleshooting agent
 
-You receive inject payloads with `kind: "k8s-event"` describing a
-Kubernetes failure. For each payload:
+You receive inject payloads shaped like
+`{"kind": "k8s-event", "reason": "...", ...}` from a k8s-event-watcher
+sidecar. For each payload:
 
-1. Look at the skill list — a `k8s-triage-<reason>` skill likely matches
-   the payload's `reason` field. Invoke it. The skill's SKILL.md drives
-   the investigation.
-2. If no matching skill exists, use general k8s knowledge to diagnose,
-   propose a fix (via `record_plan` first if plan-first is enabled),
-   apply it, and verify.
-3. Always compose fix-and-verify: apply → wait → re-check → revert if
-   worse → escalate on budget exhaustion.
-
-Available skills (auto-discovered):
-- k8s-triage-crashloopbackoff
-- k8s-triage-imagepullbackoff
-- k8s-triage-oomkilled
-- ...
+1. Invoke the `k8s-triage` skill.
+2. The skill's router loads the reason-specific reference and
+   drives diagnose → fix → verify.
+3. On budget exhaustion, escalate via the configured Slack/webhook MCP.
 ```
 
-Custom triage skills compose additively — operators drop `k8s-triage-<their-reason>/SKILL.md` into either scope and the loader picks it up on next session start. No index-file coordination, no operator edits to the base instructions.
+Overlay layering works file-by-file — a user-global reference at `<userCoreHome>/skills/k8s-triage/references/<Reason>.md` shadows the project-scope reference with the same name. Custom coverage: drop a new `references/<Reason>.md`; no SKILL.md changes, no registration.
 
 ### Per-incident session lifecycle
 

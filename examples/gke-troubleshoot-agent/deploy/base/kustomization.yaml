@@ -1,0 +1,75 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Base kustomization. Do NOT apply this directly — it uses defaults
+# (ghcr.io/go-steer/*:latest, sre-oncall@example.com) you'd want to
+# override. Instead, copy deploy/overlays/example/ to your own
+# overlay directory, edit the values you care about, and
+# `kubectl apply -k` your overlay.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - 00-namespace.yaml
+  - 10-serviceaccount-daemon.yaml
+  - 11-serviceaccount-watcher.yaml
+  - 12-clusterrole-watcher.yaml
+  - 13-clusterrolebinding-watcher.yaml
+  - 40-pvc.yaml
+  - 50-deployment-daemon.yaml
+  - 51-deployment-watcher.yaml
+  - 60-service.yaml
+  # Secrets (core-agent-users, k8s-event-watcher-token) are NOT in the
+  # kustomization — they're created out-of-band per the instructions
+  # in 20-secrets-placeholder.md.
+
+# ConfigMap for the daemon's config.json.
+configMapGenerator:
+  - name: core-agent-config
+    files:
+      - config.json=config/config.json
+
+  # ConfigMap for the .agents/ tree — a single flat ConfigMap holds
+  # every file the daemon's --agents-dir needs. The Deployment's
+  # projected volume (see 50-deployment-daemon.yaml) maps each key
+  # to its correct subpath (AGENTS.md, skills/k8s-triage/SKILL.md,
+  # skills/k8s-triage/references/*.md).
+  #
+  # k8s ConfigMap keys can't contain "/", so we flatten file paths
+  # into safe key names here and reconstitute the tree in the
+  # projected volume's items: list.
+  - name: core-agent-agents
+    files:
+      - AGENTS.md=config/AGENTS.md
+      - k8s-triage_SKILL.md=config/skills/k8s-triage/SKILL.md
+      - k8s-triage_CrashLoopBackOff.md=config/skills/k8s-triage/references/CrashLoopBackOff.md
+      - k8s-triage_ImagePullBackOff.md=config/skills/k8s-triage/references/ImagePullBackOff.md
+      - k8s-triage_ErrImagePull.md=config/skills/k8s-triage/references/ErrImagePull.md
+      - k8s-triage_OOMKilled.md=config/skills/k8s-triage/references/OOMKilled.md
+      - k8s-triage_FailedMount.md=config/skills/k8s-triage/references/FailedMount.md
+      - k8s-triage_FailedScheduling.md=config/skills/k8s-triage/references/FailedScheduling.md
+      - k8s-triage_BackOff.md=config/skills/k8s-triage/references/BackOff.md
+      - k8s-triage_Unhealthy.md=config/skills/k8s-triage/references/Unhealthy.md
+      - k8s-triage_NetworkNotReady.md=config/skills/k8s-triage/references/NetworkNotReady.md
+      - k8s-triage_NodeNotReady.md=config/skills/k8s-triage/references/NodeNotReady.md
+      - k8s-triage_Evicted.md=config/skills/k8s-triage/references/Evicted.md
+      - k8s-triage__fallback.md=config/skills/k8s-triage/references/_fallback.md
+
+# Disable the auto-appended content hash on the generated ConfigMaps
+# so overlays can reference them by stable name without knowing the
+# hash. Overlays that customize the ConfigMap content will pick up
+# the new content on `kubectl apply -k` even without the hash
+# because we `rollout restart` the Deployment in the recipe README.
+generatorOptions:
+  disableNameSuffixHash: true

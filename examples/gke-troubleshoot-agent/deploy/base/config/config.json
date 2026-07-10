@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "model": {
+    "name": "gemini-2.5-flash",
+    "provider": "vertex"
+  },
+  "permissions": {
+    "mode": "yolo",
+    "require_plan_artifact": true
+  },
+  "attach": {
+    "listen": "0.0.0.0:7777",
+    "multi_session": {
+      "enabled": true,
+      "session_idle_timeout": "6h",
+      "auth": {
+        "kind": "bearer_table",
+        "table_file": "/etc/core-agent/users.json"
+      },
+      "admin_identities": ["sre-oncall@example.com"],
+      "proxy_identities": ["sa:k8s-event-watcher"],
+      "default_identity": "anon",
+      "allow_anonymous": false
+    }
+  }
+}

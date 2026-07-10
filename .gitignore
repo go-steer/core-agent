@@ -23,6 +23,15 @@ profile.cov
 # GoReleaser output (`goreleaser release --snapshot --clean`).
 /dist/
 
+# Release notes composed by .github/workflows/release.yml's
+# "Compose release notes" step from the matching CHANGELOG.md
+# section. Written into the working tree so goreleaser's
+# --release-notes flag can read it; must be gitignored so
+# goreleaser's dirty-tree check doesn't fail on it. Also
+# suppresses spurious "untracked file" noise from local dry-runs
+# (`goreleaser release --snapshot --clean`).
+/RELEASE_NOTES.md
+
 # Mast-web embed bundle — populated by dev/tools/fetch-mast-web at
 # build time, kept out of git so we don't carry a binary copy of
 # another repo's release.

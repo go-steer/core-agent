@@ -1,0 +1,39 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Sets the k8s-event-watcher's --cluster-name flag so every inject
+# payload identifies which cluster it came from. Essential when one
+# daemon serves multiple sidecars in different clusters.
+#
+# Edit "prod-us-central1" to match your GKE cluster's name (usually
+# whatever appears in `gcloud container clusters list`).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-event-watcher
+spec:
+  template:
+    spec:
+      containers:
+        - name: watcher
+          args:
+            - "--daemon-url=http://core-agent.agent-triage.svc.cluster.local:7777"
+            - "--token-env=WATCHER_TOKEN"
+            - "--mode=per-incident"
+            - "--owner=sre-oncall@example.com"
+            - "--cluster-name=prod-us-central1"
+            - "--dedup-window=5m"
+            - "--in-cluster"
+            - "--metrics-addr=:9090"
+            - "--log-level=info"

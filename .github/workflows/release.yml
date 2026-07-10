@@ -137,7 +137,13 @@ jobs:
             # necessarily the remote refs by name; fetch main
             # explicitly. --no-tags avoids re-touching our tag refs.
             git fetch --no-tags origin main
-            git show origin/main:CHANGELOG.md | extract_section > "${NOTES}"
+            # Read git-show output into a variable first, then feed
+            # awk via herestring. Direct pipe to awk trips SIGPIPE
+            # (exit 141) because awk's `exit` closes the read side
+            # while git-show is still writing; under `set -o pipefail`
+            # (above) that fails the whole step.
+            MAIN_CHANGELOG="$(git show origin/main:CHANGELOG.md)"
+            extract_section > "${NOTES}" <<<"${MAIN_CHANGELOG}"
           fi
           if [[ ! -s "${NOTES}" ]]; then
             echo "::error::no CHANGELOG.md section found for [${VERSION}] in tag OR in main — add one and retag"

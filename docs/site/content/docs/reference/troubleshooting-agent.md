@@ -3,7 +3,7 @@ title: Kubernetes troubleshooting agent
 weight: 85
 ---
 
-Semi-autonomous Kubernetes triage running as `core-agent` inside your cluster. A `k8s-event-watcher` sidecar streams filtered Events into per-incident sessions on the daemon; a router skill (`k8s-triage`) loads reason-specific references and drives the diagnose → fix → verify loop. Escalation to Slack / webhook when the agent hits its budget.
+Semi-autonomous Kubernetes triage running as `core-agent` inside your cluster. A `k8s-event-watcher` sidecar streams filtered Events into per-incident sessions on the daemon; a router skill (`k8s-triage`) loads reason-specific references and drives the diagnose → fix → verify loop. In v2.6, incident summaries land in the eventlog for downstream consumption (turnkey Slack/webhook escalation lands in v2.7 via a native `alert` tool).
 
 Shipped in **v2.6**. Requires v2.4's multi-session substrate + v2.5's session-resume (both on by default in the recipe).
 
@@ -121,15 +121,34 @@ The recipe defaults to single-cluster (daemon + sidecar in the same cluster). To
 
 Every cluster's incidents surface in the same central daemon's session list, distinguishable by the `cluster` field.
 
-## What's not in v2.6
+## Escalation in v2.6 (eventlog-based) — turnkey escalation ships v2.7
+
+The v2.6 recipe closes every incident with a structured `INCIDENT SUMMARY: RESOLVED|UNRESOLVED|ESCALATED` block written to the eventlog. Operators consume via:
+
+- **Cloud Logging sink** filtering for `INCIDENT SUMMARY: UNRESOLVED` → Pub/Sub → Cloud Function → Slack. The GCP-native "route logs to notifications" pattern.
+- **`stern` or `kubectl logs -f`** during active development.
+- **Direct SQL** against the eventlog SQLite file for post-hoc analysis.
+
+Why not a turnkey Slack MCP or webhook call in v2.6? Two independent gaps:
+
+- The shipped image is **distroless** — no `bash`, no `curl`. The naïve "agent shells out to POST a webhook" pattern doesn't work.
+- Slack's official MCP requires **Streamable HTTP + OAuth 2.0**, which `pkg/mcp` doesn't support yet.
+
+Both gaps are designed and tracked for v2.7:
+
+- **Native `alert` tool** — config-driven webhook targets (Slack Incoming Webhook, Discord, PagerDuty Events v2, generic JSON), SSRF-safe by construction (operator pre-registers named targets), per-target rate limiting, audit through eventlog. Design: `docs/alert-tool-design.md`. Tracked: [#192](https://github.com/go-steer/core-agent/issues/192).
+- **MCP Streamable HTTP + OAuth 2.0** — enables consumption of Slack's official MCP (and other RFC 8414-compliant MCP servers as they ship). Design: `docs/mcp-oauth-design.md`. Tracked: [#190](https://github.com/go-steer/core-agent/issues/190).
+
+Once shipped, the recipe will grow an `alerts.targets[]` config section and the router will call `alert()` directly. Filed as a v2.7 recipe update.
+
+## What's not in v2.6 (other than escalation)
 
 Designed but explicitly deferred:
 
-- **Escalation MCP wiring** in the shipped recipe. The router calls `slack.post_message` / `jira.create_issue` / configured webhooks, but the recipe leaves the MCP integration for operators to set up per their own tool stack. A canonical Slack MCP integration lands as ε.3 of [#186](https://github.com/go-steer/core-agent/issues/186).
 - **`wait_and_verify(predicate, timeout, interval)` built-in tool.** For v2.6 fix-and-verify is a prompt pattern in the router. Revisit if operators report prompt-flakiness.
 - **Non-k8s signal sources** (Cloud Monitoring alerts, PagerDuty pages, generic webhooks). Same "sidecar POSTs to /inject" shape; will ship separately as parallel sidecars in v2.7+.
 - **Automatic PR generation for GitOps-flavored fixes** (Argo, Flux). The agent applies fixes directly today; a GitOps mode is v2.7+ material.
-- **Multi-cluster fleet coordinator** with unified session queries across N daemons. This is AX-integration territory (see `reference_ax_runtime.md`).
+- **Multi-cluster fleet coordinator** with unified session queries across N daemons. This is AX-integration territory.
 
 ## Recipe
 

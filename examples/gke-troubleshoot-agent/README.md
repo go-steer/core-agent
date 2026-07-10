@@ -48,9 +48,12 @@ apply here too.
                                                │
                                                ▼ resolve or escalate
                                      ┌────────────────────┐
-                                     │   Slack MCP        │  ← escalation MCPs
-                                     │   PagerDuty MCP    │    (ε.3 of #186)
-                                     │   webhook          │
+                                     │  eventlog (SQLite) │  ← v2.6 escalation
+                                     │  INCIDENT SUMMARY  │    path (tail via
+                                     │  blocks            │    Cloud Logging /
+                                     │                    │    stern for alerts;
+                                     │  Native alert tool │    turnkey escalation
+                                     │  → v2.7 (#192)     │    lands in v2.7)
                                      └────────────────────┘
 ```
 
@@ -232,16 +235,49 @@ Every cluster's incidents surface in the same central daemon's
 session list, distinguishable by the `cluster` field. One TUI,
 one audit trail, one on-call rotation.
 
-## What's not in this recipe (yet)
+## Escalation in v2.6 (eventlog-based)
 
-Deferred to later phases of [#186](https://github.com/go-steer/core-agent/issues/186):
+Turnkey escalation (Slack/PagerDuty/webhook fire-and-forget) is
+**deferred to v2.7**. The distroless image ships with no `bash`
+or `curl`, so the naïve "agent shells out to POST a webhook"
+pattern doesn't work; a native, config-driven `alert` tool that
+fits distroless is designed at
+[`docs/alert-tool-design.md`](../../docs/alert-tool-design.md)
+and tracked at [#192](https://github.com/go-steer/core-agent/issues/192).
+Slack's official MCP consumption (Streamable HTTP + OAuth 2.0)
+is designed at
+[`docs/mcp-oauth-design.md`](../../docs/mcp-oauth-design.md) and
+tracked at [#190](https://github.com/go-steer/core-agent/issues/190).
+Both ship in v2.7.
 
-- **ε.3**: Escalation MCP integration — Slack `post_message`, Jira
-  `create_issue`, or configured webhook. The skill already
-  references these; wiring them requires per-org MCP configuration.
-- **ε.4**: Signed container images (`k8s-event-watcher:2.6.0`) on
-  GHCR via the release pipeline. Until then, use `:latest` from
-  GHCR or build locally.
+**Meanwhile, in v2.6**, the router closes every incident with a
+structured `INCIDENT SUMMARY` block written to the eventlog:
+
+```
+INCIDENT SUMMARY
+================
+Status: RESOLVED | UNRESOLVED | ESCALATED
+Incident: {namespace}/{name} ({uid})
+Reason: {reason}
+Cluster: {cluster}
+Root cause: <one line>
+Actions taken: 1. ... 2. ...
+Final state: <one line>
+```
+
+Consume via any of:
+
+- **Cloud Logging sink** (GKE default: kubelet forwards pod stderr
+  to Cloud Logging). Filter for `jsonPayload.message =~ "INCIDENT
+  SUMMARY"` and route to Pub/Sub → Cloud Function → Slack.
+- **`stern` or `kubectl logs -f`** during active triage development.
+- **Direct SQL** against the eventlog SQLite file (via
+  `kubectl exec` into the daemon pod, or by SSH'ing to the PVC).
+
+Once the alert tool ships in v2.7, the recipe will grow an
+`alerts.targets[]` config section and the router will call
+`alert()` directly — no eventlog scraping required. Filed as a
+follow-up recipe update in the v2.7 milestone.
 
 ## Customizing coverage
 

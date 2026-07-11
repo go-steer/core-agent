@@ -1,15 +1,26 @@
 # Per-MCP-server credential resolution: pluggable providers + Auth Manager
 
-Design doc for v2.4's auth-wrapper layer: a pluggable
+Design doc for the pluggable auth-wrapper layer: a
 `CredentialProvider` interface that resolves outbound credentials
 per MCP server, with first-class support for caller-aware 3LO
 providers (Google's Agent Identity Auth Manager, OAuth2 direct).
 
-**Status:** proposed (2026-06-03). Awaiting approval before
-implementation. Sibling design to
-[`docs/multi-session-design.md`](./multi-session-design.md)
-(task #12); independently valuable but composes naturally with
-multi-session's Caller propagation.
+**Status:** proposed (2026-06-03) — re-scoped to v2.8+ pending
+v2.7's MCP-OAuth work (`docs/mcp-oauth-design.md`, [#190](https://github.com/go-steer/core-agent/issues/190))
+landing first. v2.7 ships a daemon-scope `oauth2_direct` provider
+(one refresh token per server, one identity for all callers).
+This design layers per-caller 3LO on top of that same
+provider kind — same JSON key (`oauth2_direct`), additional
+config fields (`caller_scoped`, per-caller token lookup) —
+plus adds Auth Manager + named-provider registry + per-caller
+credential cache. v2.7 implementers of #190 are following the
+"Forward compatibility with credential-resolution (v2.8+)"
+guardrails in the OAuth doc so this design lands as a strict
+additive extension rather than a rewrite.
+
+Sibling to [`docs/multi-session-design.md`](./multi-session-design.md);
+composes naturally with multi-session's `Caller` propagation
+(already threaded through outbound MCP requests since v2.4 α.2).
 
 ## Motivation
 

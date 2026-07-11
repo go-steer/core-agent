@@ -2,7 +2,7 @@
 
 Design doc for the v2.7 addition to `pkg/mcp`: full support for MCP-spec-compliant Streamable HTTP transport and OAuth 2.0 client authentication (RFC 8414 Authorization Server Metadata + RFC 9728 Protected Resource Metadata + RFC 7636 PKCE), enabling core-agent to consume first-party MCP servers that follow the standard auth shape (Slack, likely Notion / GitHub / Linear as they ship first-party MCPs).
 
-**Status:** proposed (2026-07-10). Awaiting approval before implementation. v2.7 candidate. Tracking issue: [#190](https://github.com/go-steer/core-agent/issues/190).
+**Status:** approved (design merged 2026-07-10). Implementation begins after PR #191 (this doc) lands, following the guardrails in §"Forward compatibility with credential-resolution (v2.8+)" so v2.7's daemon-scope OAuth doesn't box out the per-caller extension planned for v2.8+. Tracking issue: [#190](https://github.com/go-steer/core-agent/issues/190).
 
 ## Motivation
 
@@ -85,7 +85,7 @@ Rotation: operator regenerates the refresh token via the bootstrap CLI, updates 
 
 ### Config surface
 
-New transport option `"streamable_http"` and new auth block `"oauth2"`:
+New transport option `"streamable_http"` and new auth block `"oauth2_direct"`:
 
 ```jsonc
 {
@@ -95,7 +95,7 @@ New transport option `"streamable_http"` and new auth block `"oauth2"`:
       "transport": "streamable_http",
       "url": "https://mcp.slack.com/mcp",
       "auth": {
-        "oauth2": {
+        "oauth2_direct": {
           // Required — the OAuth 2.0 client identity registered with
           // the authorization server (e.g., created via Slack app
           // registration).
@@ -134,8 +134,8 @@ New transport option `"streamable_http"` and new auth block `"oauth2"`:
 
 Existing configs (`stdio` + `http` with `google_oauth` or unauth) keep working unchanged. Parser validation:
 
-- `oauth2` is valid only with `streamable_http` transport.
-- Cannot combine `oauth2` with `google_oauth` on the same server.
+- `oauth2_direct` is valid only with `streamable_http` transport.
+- Cannot combine `oauth2_direct` with `google_oauth` on the same server.
 - `client_id`, `client_secret_env`, `refresh_token_env`, `scopes` required.
 - If any of `authorization_endpoint` / `token_endpoint` are set, both must be set (partial-override rejected).
 
@@ -245,7 +245,7 @@ Caching TTL: infinity by default (metadata is treated as immutable). Add a confi
 - Add `TransportStreamableHTTP = "streamable_http"` constant.
 - Extend `MCPAuth` with `OAuth2 *OAuth2Auth` field.
 - New `OAuth2Auth` struct matching the config surface above.
-- Parser: validate mutual exclusion (`oauth2` vs `google_oauth`), transport pairing, required fields.
+- Parser: validate mutual exclusion (`oauth2_direct` vs `google_oauth`), transport pairing, required fields.
 
 ### `pkg/mcp/lifecycle.go`
 
@@ -300,7 +300,7 @@ Operator's `mcp.json` with three servers demonstrating all supported combination
       "transport": "streamable_http",
       "url": "https://mcp.slack.com/mcp",
       "auth": {
-        "oauth2": {
+        "oauth2_direct": {
           "client_id": "1234567890.abcdefgh",
           "client_secret_env": "SLACK_APP_CLIENT_SECRET",
           "refresh_token_env": "SLACK_MCP_REFRESH_TOKEN",
@@ -409,7 +409,7 @@ Auth server metadata is meant to be stable. But operators occasionally rotate en
 
 Refresh tokens can be revoked server-side (user revoked the app; Slack workspace admin unpublished the app; token expired at Slack's max lifetime).
 
-- **Fail loudly** (current design). Next MCP request returns 401 → `oauth2` package returns error → MCP client returns error → tool call fails. Operator sees a clear "MCP call failed: token refresh failed" in the daemon log.
+- **Fail loudly** (current design). Next MCP request returns 401 → `oauth2_direct` package returns error → MCP client returns error → tool call fails. Operator sees a clear "MCP call failed: token refresh failed" in the daemon log.
 - **Silent degradation** — mark the server as "disconnected", allow the daemon to keep serving other MCP servers.
 - **Proactive re-bootstrap** — the daemon exits with a specific code that a restart controller could trap to trigger a fresh bootstrap. Complex; not native to K8s.
 
@@ -423,6 +423,85 @@ Current pin: `github.com/modelcontextprotocol/go-sdk@v1.4.1`. Latest: `v1.6.1`.
 - **Defer** — separate PR to bump; ε.1 works against v1.4.1 if the primitives are there.
 
 **Recommendation**: bump as part of ε.1. The primitives ARE in v1.4.1 (verified) but the newer version has bug fixes we'd want anyway.
+
+## Forward compatibility with credential-resolution (v2.8+)
+
+v2.7's OAuth support is deliberately daemon-scope: one refresh token per MCP server, one identity for all callers, no `Caller`-awareness. That's the right MVP shape. But `docs/mcp-credential-resolution-design.md` (a deferred v2.4 design, re-scoped to v2.8+) will eventually add per-caller 3LO credentials, shared named providers, and Google Auth Manager integration — and implementers of this doc need to leave that door open.
+
+Every implementation decision in ε.1 should preserve the following eight properties so v2.8+ can extend without a rewrite. These are architectural guardrails, not new scope.
+
+### 1. Wrap HTTP client construction behind an internal `httpClientForServer` interface
+
+Don't call `oauth2.NewClient(ctx, tokenSource)` directly from `pkg/mcp/lifecycle.go`. Introduce a small unexported `httpClientForServer(cfg ServerSpec) (*http.Client, error)` — today it returns the SDK-wrapped client with one token source; tomorrow it returns a client whose `Transport` does per-caller lookup at `RoundTrip` time. The lifecycle wiring + SDK transport construction stay unchanged across the v2.8+ swap.
+
+### 2. Preserve `auth.CallerFromContext` all the way to `RoundTrip`
+
+v2.4's α.2 work already threads `Caller` via `context.Value` through outbound MCP requests. Verify the OAuth wrapper doesn't strip context values. Add a test asserting `auth.CallerFromContext(ctx).Identity` is available at the transport layer for OAuth-authenticated servers. Cheap test; blocks a subtle regression that would silently break per-caller resolution when it arrives.
+
+### 3. Keyed cache with `caller` as an ignored dimension today
+
+If we cache anything (even the single daemon-wide token source), key on an opaque struct: `{providerName, callerIdentity, scopes}`. Today `callerIdentity == ""` (or the daemon's default identity). Tomorrow it varies per request. Zero-cost extensibility.
+
+### 4. Config shape admits a named-provider variant
+
+Ship `auth.oauth2_direct` as inline per-server (this doc's design). But reserve `auth.provider: "<name>"` for v2.8+ — the field is recognized by the loader today with a clear error: `"named providers are not supported in v2.7; use inline auth.oauth2_direct"`. When the credential-resolution work lands, the loader flips to accept both shapes. No config migration for operators upgrading; new deployments can adopt named providers from day one.
+
+### 5. Bootstrap CLI records the identity it authenticated as
+
+`core-agent mcp oauth-bootstrap`'s output includes not just the refresh token but the identity that consented (extractable from the OAuth token response's `id_token` or a follow-up userinfo call). In v2.7 this metadata is documentation. In v2.8+, the bootstrap CLI keys the Secret entry by the caller identity (`SLACK_MCP_REFRESH_TOKEN_alice_at_example_com`) — that convention needs the identity captured now.
+
+### 6. Provider kind named `oauth2_direct` (matches credential-resolution taxonomy)
+
+Renamed in this design from `oauth2`. Aligns with the `oauth2_direct` provider from `docs/mcp-credential-resolution-design.md` §"Provider implementations." In v2.7, `oauth2_direct` only supports the daemon-scope case (single `refresh_token_env`). In v2.8+, additional config fields (`caller_scoped: true`, `caller_token_lookup`) unlock per-caller mode — same provider kind, extension via new fields. Config-shape stability across releases; no rename lift.
+
+Prevents the awkward "we have `oauth2` and `oauth2_direct` — what's the difference?" question when the credential-resolution work lands.
+
+### 7. Per-server state scoping in `pkg/mcp` — no package-level maps
+
+Concrete implementation rule: no package-level maps of token sources, no package-level HTTP client cache, no daemon-global OAuth handler. Every server gets its own instances, keyed by server name inside the MCP subsystem's own struct. This is table stakes for coexistence — a bug where Server A's OAuth token leaks to Server B is exactly the kind of state coupling that makes per-caller support miserable to retrofit. Cheap on day one; painful to unwind.
+
+Add a test asserting: a config with three servers, three different providers (`google_oauth`, `oauth2_direct`, and a stub `static_api_key`), sends the right credential to each. Fails immediately on cross-server state coupling.
+
+### 8. ctx-Caller propagation preserved through the provider boundary even when the provider doesn't consume it
+
+The instinct on v2.7 might be "OAuth doesn't use Caller — I don't need to worry about it." Wrong instinct: preserve `ctx` propagation through the entire request path so per-caller providers (arriving in v2.8+) find `Caller` there. The provider-boundary abstraction should always pass `ctx` through; whether the provider *uses* it is per-Kind.
+
+### Mixed-provider coexistence — the target for v2.7's tests
+
+ε.1's tests must include a config demonstrating both credential modes coexisting side-by-side, because we're going to want this working end-to-end for real deployments (GKE MCP uses daemon KSA; Slack MCP uses the OAuth-bootstrapped token):
+
+```jsonc
+{
+  "version": 1,
+  "servers": {
+    // Daemon-identity credentials — every session uses the daemon's KSA.
+    "gke": {
+      "transport": "http",
+      "url": "https://container.googleapis.com/mcp",
+      "auth": { "google_oauth": { "scopes": ["https://www.googleapis.com/auth/cloud-platform"] } }
+    },
+    // OAuth (v2.7: daemon-wide refresh token; v2.8+: per-caller when
+    // caller_scoped is set on the provider). Same server config today;
+    // one added field tomorrow.
+    "slack": {
+      "transport": "streamable_http",
+      "url": "https://mcp.slack.com/mcp",
+      "auth": {
+        "oauth2_direct": {
+          "client_id": "1234567890.abcdefgh",
+          "client_secret_env": "SLACK_APP_CLIENT_SECRET",
+          "refresh_token_env": "SLACK_MCP_REFRESH_TOKEN",
+          "scopes": ["chat:write", "channels:history"]
+        }
+      }
+    }
+  }
+}
+```
+
+GKE calls always route through the daemon's `google_oauth` provider (ignores `Caller`). Slack calls in v2.7 all route through the daemon-wide `oauth2_direct` provider (same identity for every caller). In v2.8+, the Slack entry gets one additional field enabling per-caller resolution; GKE stays as-is because it's fundamentally daemon-identity-shaped.
+
+Test invariant: a request that reaches `pkg/mcp` with `Caller.Identity = "alice@example.com"` and targets the GKE server routes to `google_oauth`'s daemon-KSA token; the same caller targeting the Slack server routes to `oauth2_direct`'s bootstrapped token. Different callers hitting the same GKE server get the same daemon token. Zero cross-server or cross-provider bleed.
 
 ## Security considerations
 
@@ -438,7 +517,7 @@ Current pin: `github.com/modelcontextprotocol/go-sdk@v1.4.1`. Latest: `v1.6.1`.
 
 - **Client-credentials grant (RFC 6749 §4.4)** for machine-to-machine flows without a user in the loop.
 - **JWT bearer grant (RFC 7523)** for signed-JWT-based authentication (used by some enterprise MCP servers).
-- **Per-caller OAuth tokens** in multi-session deployments (OQ #4).
+- **Per-caller OAuth tokens** in multi-session deployments (OQ #4). Deferred to v2.8+ via the credential-resolution design (`docs/mcp-credential-resolution-design.md`); v2.7's implementation MUST follow §"Forward compatibility with credential-resolution (v2.8+)" so the extension is additive, not a rewrite.
 - **Dynamic Client Registration (RFC 7591)** for MCP servers that support it (OQ #2).
 - **Hot rotation of refresh tokens** without daemon restart (OQ #1).
 - **Browser-open helper in the bootstrap CLI** (OQ #3 — opt-in if operators ask).

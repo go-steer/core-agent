@@ -25,6 +25,10 @@ apply here too.
    diagnose → fix → verify loop.
 4. Full RBAC + IAM guidance (least-privilege ClusterRole for the
    watcher; documented GCP IAM roles for the daemon).
+5. GKE MCP server wired into `mcp.json` at `container.googleapis.com/mcp`
+   (full-access endpoint — the agent needs write for `rollout undo`,
+   `set image`, etc. gated by plan-first). Auth is `google_oauth`
+   using the daemon's KSA with the IAM bindings from setup step 3.
 
 ## The end-to-end flow
 

@@ -125,6 +125,8 @@ spec:
             items:
               - key: AGENTS.md
                 path: AGENTS.md
+              - key: mcp.json
+                path: mcp.json
               - key: k8s-triage_SKILL.md
                 path: skills/k8s-triage/SKILL.md
               - key: k8s-triage_CrashLoopBackOff.md

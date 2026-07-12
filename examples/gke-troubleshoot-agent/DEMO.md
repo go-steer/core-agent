@@ -14,7 +14,7 @@ Step-by-step runbook for demonstrating the v2.6 k8s triage agent on a real GKE c
 
 1. [Prerequisites](#prerequisites) — checkable one-liners
 2. [One-time setup](#one-time-setup) — cluster + secrets + deploy
-3. [Pre-flight rehearsal](#pre-flight-rehearsal) — 5-min sanity check before going live
+3. [Pre-flight rehearsal](#pre-flight-rehearsal) — 6-step sanity check before going live
 4. [Live demo runbook](#live-demo-runbook) — 6 scenes with commands
 5. [Post-demo teardown](#post-demo-teardown) — clean up
 6. [Troubleshooting](#troubleshooting) — recovery from common failures
@@ -63,7 +63,17 @@ gcloud services list --enabled --project="${PROJECT_ID}" --filter="name:containe
     | grep -q "container.googleapis.com" \
     && echo "✓ Container API enabled" \
     || (echo "✗ Container API NOT enabled; run: gcloud services enable container.googleapis.com --project=${PROJECT_ID}"; false)
+
+# IAM Credentials API — required for the WIF token-exchange path.
+# Missing this gives "permission denied" at first runtime call with
+# no hint about which API is missing.
+gcloud services list --enabled --project="${PROJECT_ID}" --filter="name:iamcredentials.googleapis.com" \
+    | grep -q "iamcredentials.googleapis.com" \
+    && echo "✓ IAM Credentials API enabled" \
+    || (echo "✗ IAM Credentials API NOT enabled; run: gcloud services enable iamcredentials.googleapis.com --project=${PROJECT_ID}"; false)
 ```
+
+(All three APIs are also enabled automatically by `scripts/setup-wif.sh` in the setup phase below; this pre-flight check catches configuration drift.)
 
 ### Cluster
 
@@ -159,25 +169,23 @@ kubectl wait --for=condition=Established --timeout=30s crd/managed-fields 2>/dev
 kubectl get ns "${DEMO_NS}" && echo "✓ namespace created"
 ```
 
-### 2. Bind GCP IAM to the daemon's KSA
+### 2. Enable APIs + bind GCP IAM to the daemon's KSA
+
+Run the recipe's WIF setup script — enables `container.googleapis.com`, `aiplatform.googleapis.com`, `iamcredentials.googleapis.com`, and binds all four IAM roles the daemon needs (`aiplatform.user`, `mcp.toolUser`, `container.admin`, `iam.serviceAccountUser` on the node SA).
 
 ```bash
-KSA_PRINCIPAL="principal://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${PROJECT_ID}.svc.id.goog/subject/ns/${DEMO_NS}/sa/core-agent-daemon"
+# Uses PROJECT_ID from env; DEMO_NS matches the recipe's default namespace.
+NAMESPACE="${DEMO_NS}" ./examples/gke-troubleshoot-agent/scripts/setup-wif.sh
 
-for role in \
-    roles/aiplatform.user \
-    roles/container.viewer \
-    roles/container.developer \
-    roles/logging.viewer \
-    roles/monitoring.viewer; do
-  gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-      --member="${KSA_PRINCIPAL}" \
-      --role="${role}" \
-      --condition=None \
-      --quiet
-done
-echo "✓ IAM bound to daemon KSA"
+# Audit-first alternative — prints all seven gcloud commands without
+# executing them (safe for reviewing before running against a real project):
+#   PROJECT_ID="${PROJECT_ID}" NAMESPACE="${DEMO_NS}" DRY_RUN=true \
+#       ./examples/gke-troubleshoot-agent/scripts/setup-wif.sh
 ```
+
+**IAM propagation takes ~2 min after the bindings are applied.** If you rush to deploy the daemon before propagation completes, its first Vertex or GKE MCP call may return "permission denied"; wait 2 min then `kubectl rollout restart` recovers.
+
+**Standard clusters only** — also verify node-pool metadata mode and, in your kustomize overlay, uncomment the `nodeSelector: iam.gke.io/gke-metadata-server-enabled: "true"` block in `50-deployment-daemon.yaml`. Autopilot skips both. See the recipe README setup step 3 for the verification commands.
 
 ### 3. Generate tokens + create Secrets
 
@@ -316,6 +324,38 @@ If the TUI hangs or errors, check `kubectl -n "${DEMO_NS}" logs deployment/core-
 kubectl -n "${DEMO_NS}" logs deployment/k8s-event-watcher --tail=20
 # Expect: "starting on cluster \"<name>\" → daemon http://core-agent..."
 # Should NOT show connection errors to the daemon
+```
+
+### 5. Verify the GKE MCP server loaded
+
+```bash
+kubectl -n "${DEMO_NS}" logs deployment/core-agent --tail=200 | grep -i "mcp"
+# Expect: at least one line indicating the "gke" MCP server started
+# successfully (typical shape: "mcp: server \"gke\" ready" or "started").
+# Should NOT see "mcp server \"gke\" failed" or "no mcp.json found".
+
+# If missing, verify mcp.json is mounted:
+#   kubectl -n "${DEMO_NS}" exec deployment/core-agent -- ls /etc/core-agent/agents
+#   Expect: AGENTS.md, mcp.json, skills/
+# If mcp.json isn't there, re-run `kubectl apply -k <overlay>` — the
+# ConfigMap generator likely didn't pick it up.
+```
+
+### 6. Verify Vertex AI auth succeeded
+
+```bash
+kubectl -n "${DEMO_NS}" logs deployment/core-agent --tail=500 | grep -iE "vertex|aiplatform|gemini"
+# Expect: model-init line with success shape (e.g., "model gemini-2.5-flash ready"
+# or first-turn line without a permission error).
+# Should NOT see: "permission denied", "PERMISSION_DENIED",
+# "Request had insufficient authentication scopes".
+
+# Common failures:
+#   - "permission denied" → IAM binding hasn't propagated yet (wait 2 min);
+#      OR roles/aiplatform.user isn't bound (rerun `./scripts/setup-wif.sh`)
+#   - "no credentials found" → WIF isn't wired at cluster level (check
+#      `gcloud container clusters describe ... --format='value(workloadIdentityConfig.workloadPool)'`)
+#   - "iamcredentials API not enabled" → run `gcloud services enable iamcredentials.googleapis.com`
 ```
 
 Rehearsal complete. Ready to go live.
@@ -560,7 +600,27 @@ kubectl -n "${DEMO_NS}" get configmap core-agent-config core-agent-agents
 
 ### Daemon logs "Vertex AI: permission denied"
 
-IAM binding didn't propagate (can take ~2 min after the `add-iam-policy-binding` call). Rerun step 2 IAM commands and wait 5 min before restarting the daemon.
+IAM binding didn't propagate (can take ~2 min after `./scripts/setup-wif.sh` runs). Wait 5 min, then:
+
+```bash
+kubectl -n "${DEMO_NS}" rollout restart deployment/core-agent
+```
+
+If it's still failing after propagation, the bindings themselves may be missing or wrong. Reapply idempotently:
+
+```bash
+NAMESPACE="${DEMO_NS}" ./examples/gke-troubleshoot-agent/scripts/setup-wif.sh
+```
+
+If it's still failing after that, check `roles/aiplatform.user` is actually on the KSA principal:
+
+```bash
+gcloud projects get-iam-policy "${PROJECT_ID}" \
+    --flatten='bindings[].members' \
+    --filter="bindings.role=roles/aiplatform.user AND bindings.members ~ ${DEMO_NS}/sa/core-agent-daemon" \
+    --format='value(bindings.role)'
+# Expect: roles/aiplatform.user
+```
 
 ### `k8s-event-watcher` logs "connection refused" to daemon
 

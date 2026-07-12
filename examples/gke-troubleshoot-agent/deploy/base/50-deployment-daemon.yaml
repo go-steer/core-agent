@@ -50,6 +50,19 @@ spec:
         app.kubernetes.io/component: daemon
     spec:
       serviceAccountName: core-agent-daemon
+      # For Standard clusters only — uncomment to pin the pod onto
+      # nodes where the GKE metadata server is enabled. Required for
+      # Workload Identity Federation to work; without it the pod
+      # falls through to instance metadata and Vertex/GKE-MCP calls
+      # return "permission denied."
+      #
+      # Autopilot clusters REJECT this nodeSelector — the metadata
+      # server is universally available on Autopilot, so the selector
+      # isn't needed. Leaving it commented is the Autopilot-safe
+      # default; overlay operators on Standard clusters uncomment it.
+      #
+      # nodeSelector:
+      #   iam.gke.io/gke-metadata-server-enabled: "true"
       securityContext:
         fsGroup: 65532
         runAsNonRoot: true
@@ -125,6 +138,8 @@ spec:
             items:
               - key: AGENTS.md
                 path: AGENTS.md
+              - key: mcp.json
+                path: mcp.json
               - key: k8s-triage_SKILL.md
                 path: skills/k8s-triage/SKILL.md
               - key: k8s-triage_CrashLoopBackOff.md

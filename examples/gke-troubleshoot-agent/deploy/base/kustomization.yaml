@@ -52,6 +52,7 @@ configMapGenerator:
   - name: core-agent-agents
     files:
       - AGENTS.md=config/AGENTS.md
+      - mcp.json=config/mcp.json
       - k8s-triage_SKILL.md=config/skills/k8s-triage/SKILL.md
       - k8s-triage_CrashLoopBackOff.md=config/skills/k8s-triage/references/CrashLoopBackOff.md
       - k8s-triage_ImagePullBackOff.md=config/skills/k8s-triage/references/ImagePullBackOff.md

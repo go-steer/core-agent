@@ -125,31 +125,139 @@ chmod 0600 ~/.core-agent/sre-oncall.token
 rm /tmp/users.json
 ```
 
-### 3. Bind GCP IAM roles to the daemon's KSA
+### 3. Verify cluster + node-pool WIF (Standard clusters only)
 
-The daemon's KSA needs read/write on GKE workloads + Vertex AI +
-Cloud Logging + Cloud Monitoring. With WIF for GKE direct binding,
-no Google Service Account impersonation needed:
+**Autopilot clusters**: WIF is on by default and every node pool uses
+the GKE metadata server automatically. Skip this step.
+
+**Standard clusters**: verify the cluster-level `workload-pool` is set
+AND every node pool that will host the daemon has
+`--workload-metadata=GKE_METADATA`:
+
+```bash
+# Cluster-level WIF (workloadPool should be "<PROJECT_ID>.svc.id.goog")
+gcloud container clusters describe "${CLUSTER_NAME}" \
+    --location="${REGION}" \
+    --project="${PROJECT_ID}" \
+    --format='value(workloadIdentityConfig.workloadPool)'
+
+# Per-node-pool metadata (should be GKE_METADATA, not GCE_METADATA)
+gcloud container node-pools list --cluster="${CLUSTER_NAME}" \
+    --location="${REGION}" --project="${PROJECT_ID}" --format='value(name)' \
+| while read pool; do
+    mode=$(gcloud container node-pools describe "${pool}" \
+        --cluster="${CLUSTER_NAME}" --location="${REGION}" \
+        --project="${PROJECT_ID}" --format='value(config.workloadMetadataConfig.mode)')
+    echo "pool=${pool} mode=${mode:-<unset>}"
+  done
+```
+
+Remediation for a node pool showing `<unset>` or `GCE_METADATA`:
+
+```bash
+gcloud container node-pools update "${POOL_NAME}" \
+    --cluster="${CLUSTER_NAME}" \
+    --location="${REGION}" \
+    --project="${PROJECT_ID}" \
+    --workload-metadata=GKE_METADATA
+```
+
+Also, Standard-cluster pods need to be pinned onto WIF-enabled nodes
+via a `nodeSelector`. See `deploy/base/50-deployment-daemon.yaml` for
+the commented-out block; uncomment it in your overlay if you're on a
+Standard cluster. (Autopilot rejects that selector — leave it commented
+for Autopilot.)
+
+### 4. Enable APIs + bind IAM roles for the daemon's KSA
+
+`scripts/setup-wif.sh` automates both. It enables the three GCP APIs
+the recipe needs and binds the four IAM roles that let the daemon:
+
+- Call Gemini via Vertex AI (`roles/aiplatform.user`)
+- Call GKE MCP tools (`roles/mcp.toolUser`)
+- Administer GKE clusters + workloads via the MCP (`roles/container.admin`)
+- Impersonate the node service account, which the GKE MCP's server-side
+  chain requires (`roles/iam.serviceAccountUser` on the node SA)
+
+```bash
+# Simplest — reads PROJECT_ID from your active gcloud config, uses recipe defaults.
+./scripts/setup-wif.sh
+
+# Or explicit:
+PROJECT_ID=your-project-id \
+NAMESPACE=agent-triage \
+KSA_NAME=core-agent-daemon \
+    ./scripts/setup-wif.sh
+
+# Audit-first: print the gcloud commands without executing them.
+DRY_RUN=true ./scripts/setup-wif.sh
+```
+
+**Missing any one of the four roles gives a 403 at runtime with no
+clear indication of which is missing** — that's why the script binds
+all four together. `mcp.toolUser` alone doesn't work without
+`container.admin`; either project role alone doesn't work without the
+`iam.serviceAccountUser`-on-node-SA binding.
+
+<details>
+<summary><b>What the script does (inline gcloud commands)</b></summary>
+
+For operators who want to run the bindings manually or audit exactly
+what gets applied:
 
 ```bash
 PROJECT_ID=your-project-id
 PROJECT_NUMBER=$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')
-KSA_PRINCIPAL="principal://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${PROJECT_ID}.svc.id.goog/subject/ns/agent-triage/sa/core-agent-daemon"
+NAMESPACE=agent-triage
+KSA_NAME=core-agent-daemon
+NODE_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+KSA_PRINCIPAL="principal://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${PROJECT_ID}.svc.id.goog/subject/ns/${NAMESPACE}/sa/${KSA_NAME}"
 
-for role in \
-    roles/aiplatform.user \
-    roles/container.viewer \
-    roles/container.developer \
-    roles/logging.viewer \
-    roles/monitoring.viewer; do
+# APIs
+gcloud services enable container.googleapis.com aiplatform.googleapis.com iamcredentials.googleapis.com \
+    --project="${PROJECT_ID}"
+
+# Project-scoped role bindings
+for role in roles/aiplatform.user roles/mcp.toolUser roles/container.admin; do
   gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
       --member="${KSA_PRINCIPAL}" \
       --role="${role}" \
       --condition=None
 done
+
+# iam.serviceAccountUser on the NODE SA (not the project) — required by
+# GKE MCP's server-side impersonation chain
+gcloud iam service-accounts add-iam-policy-binding "${NODE_SA}" \
+    --member="${KSA_PRINCIPAL}" \
+    --role="roles/iam.serviceAccountUser"
 ```
 
-### 4. Apply
+`iamcredentials.googleapis.com` is specifically the API that powers
+the WIF token-exchange call the pod's metadata server makes; without
+it, ADC returns "permission denied" with no useful hint at first
+runtime call.
+
+</details>
+
+**Renaming the KSA?** If your overlay uses `namePrefix:` or `namespace:`
+to change the KSA's name or namespace, the `principal://...` member
+string must use the matching name + namespace. Update the script's
+env vars accordingly:
+`NAMESPACE=<new-ns> KSA_NAME=<new-ksa> ./scripts/setup-wif.sh`.
+Mismatched bindings look fine to gcloud but the pod's runtime token
+exchange returns "permission denied" with no clear hint about what
+mismatched.
+
+**Multi-project inspection**: if the daemon needs to introspect
+clusters in projects OTHER than the deployment's home project, re-run
+the script against each target project (KSA principal stays the same;
+only the project receiving the binding changes):
+
+```bash
+PROJECT_ID=other-project ./scripts/setup-wif.sh
+```
+
+### 5. Apply
 
 ```bash
 cd examples/gke-troubleshoot-agent/deploy/overlays/prod
@@ -158,7 +266,7 @@ kubectl -n agent-triage rollout status deployment core-agent
 kubectl -n agent-triage rollout status deployment k8s-event-watcher
 ```
 
-### 5. Attach a TUI
+### 6. Attach a TUI
 
 ```bash
 # From your laptop, port-forward the daemon (or expose via IAP /

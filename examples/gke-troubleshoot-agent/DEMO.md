@@ -102,10 +102,36 @@ done
 
 ### Local `core-agent-tui` binary
 
+Three ways to get it — pick one:
+
 ```bash
-# Either from a v2.6.0 build or from source
-which core-agent-tui || (echo "install: go install github.com/go-steer/core-agent/cmd/core-agent-tui@v2.6.0"; false)
-core-agent-tui --version | grep -q "v2.6" || echo "warning: TUI version mismatch"
+# Option 1 (recommended): build from source at the v2.6.0 tag.
+# `go install @v2.6.0` doesn't work today — the module path
+# doesn't yet carry the /v2 suffix required by Go SIVE for
+# major version ≥ 2. Tracked as a separate issue.
+git clone https://github.com/go-steer/core-agent.git /tmp/core-agent-src
+cd /tmp/core-agent-src && git checkout v2.6.0
+go install ./cmd/core-agent-tui
+cd - >/dev/null
+
+# Option 2: install from main (latest development; may include
+# post-v2.6.0 changes)
+go install github.com/go-steer/core-agent/cmd/core-agent-tui@main
+
+# Option 3: pull the published container image and extract the binary
+docker pull ghcr.io/go-steer/core-agent-tui:2.6.0
+CID=$(docker create ghcr.io/go-steer/core-agent-tui:2.6.0)
+docker cp "${CID}:/usr/local/bin/binary" "${GOPATH:-$HOME/go}/bin/core-agent-tui"
+docker rm "${CID}"
+chmod +x "${GOPATH:-$HOME/go}/bin/core-agent-tui"
+
+# Verify (any of the three)
+which core-agent-tui \
+    && echo "✓ core-agent-tui on PATH" \
+    || (echo "✗ TUI not on PATH; ensure ${GOPATH:-$HOME/go}/bin is in \$PATH"; false)
+core-agent-tui --version | grep -q "v2.6\|main-" \
+    && echo "✓ TUI version looks right" \
+    || echo "warning: version string unexpected (may still work)"
 ```
 
 ---

@@ -150,9 +150,11 @@ core-agent-tui --version | grep -q "v2.6\|main-" \
 
 Execute once per cluster. If re-running (fresh cluster after teardown), redo everything.
 
-### 1. Create namespace + service accounts + RBAC
+> **Ordering matters.** The daemon Deployment mounts a Secret (`core-agent-users`) that isn't part of the kustomize output — it's created out-of-band in step 3. If you deploy the workloads before the Secret exists, the pod schedules and hangs on `FailedMount`. Steps below create the namespace first, bind IAM, create the Secrets, THEN apply the workloads. Rehearse in that order.
 
-Copy the example overlay to a scratch dir outside the repo, patch the cluster name into the watcher-arg placeholder, and apply from the scratch dir. This keeps the repo tree clean (no post-run `git status` surprises) and matches the demo's convention of putting throwaway state under `/tmp`.
+### 1. Stage scratch deploy tree + create the namespace
+
+Copy the example overlay to a scratch dir outside the repo (patched with your cluster name), create just the namespace so downstream steps have somewhere to put the Secrets. Full workloads land in step 4 after the Secrets exist.
 
 ```bash
 # All throwaway state for this demo lives under DEMO_DIR. Rehearse,
@@ -184,11 +186,11 @@ grep -q -- "--cluster-name=${CLUSTER_NAME}" \
     && echo "✓ cluster name patched" \
     || (echo "✗ placeholder 'prod-us-central1' not found in patch file — check the source overlay"; false)
 
-# Apply base resources (namespace, SAs, ClusterRole, CRB, PVC, Deployments, Service)
-kubectl apply -k "${DEMO_OVERLAY_DIR}"
-
-# Wait for namespace to exist
-kubectl wait --for=condition=Established --timeout=30s crd/managed-fields 2>/dev/null || true
+# Create only the namespace here. Full `apply -k` (which creates the
+# Deployments that mount the Secrets) waits until step 4, AFTER
+# step 3 has created the Secrets.
+kubectl create namespace "${DEMO_NS}" --dry-run=client -o yaml \
+    | kubectl apply -f -
 kubectl get ns "${DEMO_NS}" && echo "✓ namespace created"
 ```
 
@@ -242,7 +244,7 @@ cat > "${DEMO_DIR}/users.json" <<EOF
 EOF
 chmod 0600 "${DEMO_DIR}/users.json"
 
-# Create the Secrets in the cluster
+# Create the Secrets in the (already-created) namespace
 kubectl -n "${DEMO_NS}" create secret generic core-agent-users \
     --from-file=users.json="${DEMO_DIR}/users.json"
 
@@ -257,7 +259,26 @@ rm "${DEMO_DIR}/users.json"
 echo "✓ Secrets created; tokens stashed at ${DEMO_DIR}/demo-tokens.env"
 ```
 
-### 4. Wait for pods to be Ready
+### 4. Deploy the workloads
+
+Now that the Secrets exist, apply the full recipe overlay. Kustomize creates the SAs, RBAC, PVC, ConfigMaps, Service, and both Deployments. The daemon pod schedules with the Secret already present and comes up clean.
+
+```bash
+# Applies everything except the namespace (created in step 1) — SAs,
+# ClusterRole/ClusterRoleBinding, PVC, ConfigMaps (config.json + the
+# .agents/ tree incl. mcp.json), Service, and both Deployments
+# (core-agent daemon + k8s-event-watcher).
+kubectl apply -k "${DEMO_OVERLAY_DIR}"
+
+# Sanity-check what actually landed. All three names must appear or
+# the daemon pod will hang on FailedMount.
+kubectl -n "${DEMO_NS}" get cm core-agent-config core-agent-agents \
+    && echo "✓ ConfigMaps present"
+kubectl -n "${DEMO_NS}" get secret core-agent-users k8s-event-watcher-token \
+    && echo "✓ Secrets present"
+```
+
+### 5. Wait for pods to be Ready
 
 ```bash
 kubectl -n "${DEMO_NS}" rollout status deployment/core-agent --timeout=180s
@@ -274,7 +295,7 @@ kubectl -n "${DEMO_NS}" get pods
 
 If ANY pod is not `1/1 Running`, jump to [Troubleshooting](#troubleshooting) before continuing.
 
-### 5. Verify daemon accepts your token
+### 6. Verify daemon accepts your token
 
 ```bash
 source "${DEMO_DIR:-/tmp/core-agent-demo}/demo-tokens.env"

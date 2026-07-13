@@ -38,10 +38,17 @@ func TestClassify(t *testing.T) {
 		{"claude-3-5-sonnet-20241022", modeltier.TierMid},
 		{"claude-3-5-haiku-20241022", modeltier.TierSmall},
 
-		// Gemini 3.x.
+		// Gemini 3.x. 3.5-flash is mid-tier despite the "flash" name
+		// (Google's I/O 2026 headline agentic release; beats 3.1-pro on
+		// agent + coding benchmarks per Google's own scorecards). Older
+		// 3.x flashes remain small-tier — no evidence they're
+		// agentic-strong.
 		{"gemini-3.1-pro-preview-customtools", modeltier.TierFrontier},
 		{"gemini-3.5-pro", modeltier.TierFrontier},
-		{"gemini-3.5-flash", modeltier.TierSmall},
+		{"gemini-3.5-flash", modeltier.TierMid},
+		{"gemini-3.5-flash-05-2026", modeltier.TierMid}, // dated snapshot
+		{"gemini-3.1-flash", modeltier.TierSmall},
+		{"gemini-3-flash", modeltier.TierSmall},
 
 		// Gemini 2.x.
 		{"gemini-2.5-pro", modeltier.TierMid},
@@ -123,12 +130,18 @@ func TestIsSmall(t *testing.T) {
 	}{
 		// Small-tier — must trigger the guard.
 		{"gemini-2.5-flash", true},
-		{"gemini-3.5-flash", true},
+		{"gemini-3-flash", true},
+		{"gemini-3.1-flash", true},
 		{"claude-haiku-4-5", true},
 		{"claude-haiku-4-5-20251001", true},
 		{"claude-3-5-haiku-latest", true},
 
-		// Not small — must NOT trigger.
+		// Not small — must NOT trigger. Note: gemini-3.5-flash is
+		// mid-tier (see Classify test above) so the small-tier-parent
+		// guard should NOT fire on it; recipes shipping
+		// --small-tier-parent=allow purely to suppress a false-positive
+		// warning on 3.5-flash can drop that flag once this ships.
+		{"gemini-3.5-flash", false},
 		{"gemini-3.5-pro", false},
 		{"gemini-2.5-pro", false},
 		{"claude-opus-4-7", false},

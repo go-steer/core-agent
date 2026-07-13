@@ -188,8 +188,8 @@ func TestDefaultCompactor_ShouldCompact_UnknownWindowSkips(t *testing.T) {
 func TestDefaultCompactor_ShouldCompact_OverThreshold(t *testing.T) {
 	t.Parallel()
 	tr := usage.NewTracker()
-	// gemini-3.5-flash → 1M context, classified small (per-tier threshold
-	// 0.35). 900K input = 90% utilization > 0.35 → fires.
+	// gemini-3.5-flash → 1M context, classified mid-tier (per-tier
+	// threshold 0.65). 900K input = 90% utilization > 0.65 → fires.
 	tr.Append("gemini-3.5-flash", 900_000, 100, usage.Pricing{})
 	a := &Agent{tracker: tr}
 	c := NewDefaultCompactor()
@@ -201,8 +201,8 @@ func TestDefaultCompactor_ShouldCompact_OverThreshold(t *testing.T) {
 func TestDefaultCompactor_ShouldCompact_UnderThreshold(t *testing.T) {
 	t.Parallel()
 	tr := usage.NewTracker()
-	// 100K of 1M = 10% utilization on gemini-3.5-flash (small tier
-	// threshold 0.35). 10% < 35% → no fire.
+	// 100K of 1M = 10% utilization on gemini-3.5-flash (mid tier
+	// threshold 0.65). 10% < 65% → no fire.
 	tr.Append("gemini-3.5-flash", 100_000, 100, usage.Pricing{})
 	a := &Agent{tracker: tr}
 	c := NewDefaultCompactor()
@@ -227,7 +227,7 @@ func TestDefaultCompactor_TierAwareThreshold(t *testing.T) {
 	}{
 		{
 			name:        "small tier fires at 40% (above 0.35)",
-			model:       "gemini-3.5-flash", // 1M window, small tier
+			model:       "gemini-2.5-flash", // 1M window, small tier
 			inputTokens: 400_000,            // 40% util
 			want:        true,
 		},

@@ -116,14 +116,67 @@ func (c *dedupCache) clock() time.Time {
 	return time.Now()
 }
 
+// reasonCanonical maps well-known secondary Event.Reason values to
+// their canonical primary reason for dedup-key computation. Two
+// events for the same target whose reasons are in the same family
+// collapse into one dedup entry — e.g. an ImagePullBackOff event
+// and an ErrImagePull event for the same pod count as ONE incident,
+// not two parallel sessions.
+//
+// The mapping is deliberately narrow — only well-known equivalences
+// where a single underlying failure emits multiple reason variants
+// from kubelet's retry cycle. Reasons not in this map are their
+// own canonical value.
+//
+// Rationale for each entry:
+//
+//   - ErrImagePull → ImagePullBackOff: kubelet emits ErrImagePull
+//     on the first failed pull attempt, then ImagePullBackOff once
+//     the exponential backoff kicks in. Same failure, two reason
+//     values within seconds.
+//   - BackOff → CrashLoopBackOff: BackOff accompanies both crash-
+//     loop and image-pull cycles. In practice, when it collides
+//     with an ImagePullBackOff for the same pod, that pod's
+//     ImagePullBackOff entry already exists so BackOff routes there
+//     via the CrashLoopBackOff canonical (which will be reset when
+//     the crash-loop entry expires). Yes, this is subtle. If a
+//     future variant wants to disambiguate, a `--reason-canonical`
+//     config override can drop or remap entries.
+//
+// Observed live during v2.6 GKE-troubleshoot demo drive: one
+// paymentservice ImagePullBackOff spawned 4 parallel sessions
+// (one per reason variant) at $0.28/session, 4× baseline spend
+// per incident. See go-steer/core-agent#219.
+var reasonCanonical = map[string]string{
+	"ErrImagePull": "ImagePullBackOff",
+	"BackOff":      "CrashLoopBackOff",
+}
+
+// canonicalizeReason returns the dedup-key reason for a given
+// Event.Reason value. Reasons not in reasonCanonical map to
+// themselves (no change).
+func canonicalizeReason(reason string) string {
+	if canonical, ok := reasonCanonical[reason]; ok {
+		return canonical
+	}
+	return reason
+}
+
 // Observe records that key was just seen. Returns a dedupResult
 // telling the caller whether this is a fresh incident (start a new
 // session) or a duplicate within the current window (suppress).
+//
+// The key's Reason is canonicalized (see reasonCanonical) so events
+// from the same underlying failure with different reason variants
+// (e.g. ImagePullBackOff vs ErrImagePull) collapse into one dedup
+// slot. The wire event's original Reason is preserved on the
+// inject payload — canonicalization is a dedup-only mechanism.
 //
 // Contract: the caller MUST call BindSession after a successful
 // createSession call to attach the SessionID to the newly-created
 // entry, so subsequent duplicates can route to the same session.
 func (c *dedupCache) Observe(key EventKey) dedupResult {
+	key.Reason = canonicalizeReason(key.Reason)
 	now := c.clock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -152,7 +205,13 @@ func (c *dedupCache) Observe(key EventKey) dedupResult {
 // call to the entry created by the preceding Observe. No-op if the
 // entry has since been evicted (window elapsed AND the LRU sweep
 // dropped it), which is a possible but harmless race.
+//
+// Applies the same reason canonicalization Observe does so a caller
+// that saw a `dedupNewIncident` result on one reason variant can
+// bind the session using the wire-level reason without having to
+// know about the family mapping.
 func (c *dedupCache) BindSession(key EventKey, sessionID string) {
+	key.Reason = canonicalizeReason(key.Reason)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if entry, ok := c.entries[key]; ok {

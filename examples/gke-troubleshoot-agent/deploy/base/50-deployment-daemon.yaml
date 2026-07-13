@@ -118,10 +118,14 @@ spec:
             # socket to be set (via CLI flag or config overlay).
             #
             # --small-tier-parent=allow suppresses the "gemini-3.5-flash
-            # is a small-tier model" warning. Triage sessions here are
-            # short + reference-driven; Flash handles them fine and is
-            # ~6x cheaper than Pro. Bump to gemini-3.5-pro (config.json
-            # model.name) if you see the daemon looping or stalling.
+            # is a small-tier model" warning. That warning is a hangover
+            # from the Gemini 2.x era where Flash-class parents would
+            # loop or stall on long interactive sessions; 3.5 Flash is
+            # designed as an agentic model (Google's own benchmarks put
+            # it ahead of 3.1 Pro on agent tasks) and handles triage
+            # fine. See pkg/modeltier/modeltier.go — the classifier
+            # still marks all "flash" as small-tier. Follow-up issue
+            # tracks reclassifying 3.5 Flash to mid-tier.
             - "-c"
             - "/etc/core-agent/agents/config.json"
             - "--no-repl"

@@ -20,6 +20,15 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# Default namespace for all resources — including those emitted by
+# configMapGenerator/secretGenerator. Individual resource YAMLs
+# already hardcode this, but generated ConfigMaps have no such
+# hardcoded namespace; WITHOUT this line they'd land in whatever
+# namespace kubectl defaults to (usually `default`) and the daemon
+# pod would sit in FailedMount indefinitely. Cluster-scoped
+# resources (ClusterRole, ClusterRoleBinding) ignore this field.
+namespace: agent-triage
+
 resources:
   - 00-namespace.yaml
   - 10-serviceaccount-daemon.yaml

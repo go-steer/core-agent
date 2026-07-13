@@ -98,6 +98,117 @@ func TestDedup_BindSession_NoOp_OnMissingEntry(t *testing.T) {
 	c.BindSession(EventKey{UID: "u-gone", Reason: "X"}, "sess-orphan")
 }
 
+// TestCanonicalizeReason pins the reason-family mapping (#219).
+// Reasons in the map collapse to their canonical primary; every
+// other reason maps to itself.
+func TestCanonicalizeReason(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in, want string
+	}{
+		{"ErrImagePull", "ImagePullBackOff"},
+		{"BackOff", "CrashLoopBackOff"},
+		{"ImagePullBackOff", "ImagePullBackOff"}, // canonical stays itself
+		{"CrashLoopBackOff", "CrashLoopBackOff"}, // canonical stays itself
+		{"OOMKilled", "OOMKilled"},               // not in map → identity
+		{"FailedMount", "FailedMount"},
+		{"", ""}, // edge: empty stays empty
+		{"Unknown", "Unknown"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			t.Parallel()
+			got := canonicalizeReason(tc.in)
+			if got != tc.want {
+				t.Errorf("canonicalizeReason(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDedup_ReasonFamilyCollapsesIntoOneSlot is the #219 regression
+// test. Before the fix, ImagePullBackOff and ErrImagePull for the
+// same pod produced two independent dedup entries → two parallel
+// sessions (observed live: 4 sessions per incident, 4× cost).
+// After canonicalization, both hit the same slot; second sighting
+// is a duplicate.
+func TestDedup_ReasonFamilyCollapsesIntoOneSlot(t *testing.T) {
+	t.Parallel()
+	c := newTestDedup(t, 5*time.Minute, "")
+
+	// First: ErrImagePull (the earlier event kubelet emits when a
+	// pull attempt fails). Canonicalizes to ImagePullBackOff.
+	first := c.Observe(EventKey{UID: "u-payment", Reason: "ErrImagePull"})
+	if first.Kind != dedupNewIncident {
+		t.Fatalf("ErrImagePull first: want dedupNewIncident, got %v", first.Kind)
+	}
+
+	// Second: ImagePullBackOff (the settled kubelet backoff state,
+	// same underlying failure, arrives seconds later). Must be
+	// treated as a duplicate of the first event, not a new incident.
+	second := c.Observe(EventKey{UID: "u-payment", Reason: "ImagePullBackOff"})
+	if second.Kind != dedupDuplicate {
+		t.Errorf("ImagePullBackOff after ErrImagePull for same UID: want dedupDuplicate (family collision), got %v", second.Kind)
+	}
+	if second.Count != 2 {
+		t.Errorf("family-collision count: want 2 (first + second), got %d", second.Count)
+	}
+}
+
+// TestDedup_BackOff_CanonicalizesTo_CrashLoopBackOff — the second
+// documented reason-family mapping. Locks in behavior operators
+// depend on for the crash-loop cycle.
+func TestDedup_BackOff_CanonicalizesTo_CrashLoopBackOff(t *testing.T) {
+	t.Parallel()
+	c := newTestDedup(t, 5*time.Minute, "")
+
+	c.Observe(EventKey{UID: "u-flappy", Reason: "CrashLoopBackOff"})
+	second := c.Observe(EventKey{UID: "u-flappy", Reason: "BackOff"})
+	if second.Kind != dedupDuplicate {
+		t.Errorf("BackOff after CrashLoopBackOff same UID: want dedupDuplicate, got %v", second.Kind)
+	}
+}
+
+// TestDedup_DifferentPodsDontCollide — sanity check that
+// canonicalization only collapses SAME-UID events. Different pods
+// with related reasons stay independent.
+func TestDedup_DifferentPodsDontCollide(t *testing.T) {
+	t.Parallel()
+	c := newTestDedup(t, 5*time.Minute, "")
+
+	a := c.Observe(EventKey{UID: "u-pod-a", Reason: "ImagePullBackOff"})
+	b := c.Observe(EventKey{UID: "u-pod-b", Reason: "ImagePullBackOff"})
+
+	if a.Kind != dedupNewIncident {
+		t.Errorf("pod-a: want dedupNewIncident, got %v", a.Kind)
+	}
+	if b.Kind != dedupNewIncident {
+		t.Errorf("pod-b (different UID): want dedupNewIncident, got %v", b.Kind)
+	}
+}
+
+// TestDedup_BindSession_CanonicalizesLookup verifies the caller
+// can pass the wire-level reason when binding a session and have
+// the lookup find the entry via canonicalization. Otherwise the
+// duplicate-routing SessionID would be lost.
+func TestDedup_BindSession_CanonicalizesLookup(t *testing.T) {
+	t.Parallel()
+	c := newTestDedup(t, 5*time.Minute, "")
+
+	// First event with a NON-canonical reason. Observe canonicalizes
+	// the stored key; BindSession must apply the same mapping so
+	// the same entry is found.
+	c.Observe(EventKey{UID: "u-payment", Reason: "ErrImagePull"})
+	c.BindSession(EventKey{UID: "u-payment", Reason: "ErrImagePull"}, "sess-payment")
+
+	// Follow-up ImagePullBackOff for same UID must resolve to the
+	// same session (via canonicalization).
+	got := c.Observe(EventKey{UID: "u-payment", Reason: "ImagePullBackOff"})
+	if got.SessionID != "sess-payment" {
+		t.Errorf("family follow-up should carry bound SessionID; got %q", got.SessionID)
+	}
+}
+
 func TestDedup_DifferentKeys_AreIndependent(t *testing.T) {
 	t.Parallel()
 	c := newTestDedup(t, 5*time.Minute, "")

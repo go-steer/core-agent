@@ -165,6 +165,20 @@ spec:
             - name: agents
               mountPath: /etc/core-agent/agents
               readOnly: true
+            # Writable subdir INSIDE the read-only agents mount for
+            # record_plan artifacts. The tool derives plansDir from
+            # agentsDir + "/plans" and MkdirAll's it (see
+            # pkg/tools/record_plan.go:86). Without this nested mount
+            # the ConfigMap projection makes /etc/core-agent/agents
+            # read-only and record_plan fails with:
+            #   record_plan: create plans dir: mkdir /etc/core-agent/agents/plans:
+            #   read-only file system
+            # Kubernetes handles the nested mount cleanly: the emptyDir
+            # overlays the specific /plans path while the rest of
+            # /etc/core-agent/agents/ remains projected from the
+            # configMap.
+            - name: plans
+              mountPath: /etc/core-agent/agents/plans
             # users.json is a Secret mounted as a subPath file so its
             # parent (/etc/core-agent) stays a normal kubelet-managed
             # dir — the parent isn't itself a mount, so the subPath
@@ -252,6 +266,13 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 1Mi
+        # Writable scratch dir for record_plan artifacts (mounted at
+        # /etc/core-agent/agents/plans/, inside the read-only agents
+        # tree). Emphemeral — plans are per-session and don't need to
+        # survive pod restarts. Bump sizeLimit if triage plans grow.
+        - name: plans
+          emptyDir:
+            sizeLimit: 10Mi
         - name: session-db
           persistentVolumeClaim:
             claimName: core-agent-session-db

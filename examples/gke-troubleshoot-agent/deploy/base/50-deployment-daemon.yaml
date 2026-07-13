@@ -87,6 +87,21 @@ spec:
             - "--no-repl"
             - "--session-db"
             - "--session-db-path=/var/lib/core-agent/session.db"
+          envFrom:
+            # GCP project + location for the Vertex AI client. Values live
+            # in a ConfigMap the operator creates out-of-band (see recipe
+            # README setup step 3), NOT in the kustomize output — they're
+            # per-cluster and would otherwise force every overlay to
+            # patch the base with its own values.
+            #
+            # Expected keys: GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION
+            #
+            # Without this ConfigMap the daemon exits at Vertex init with:
+            #   core-agent: vertex: project and location are required
+            #     (set model.vertex.{project,location} in .agents/config.json
+            #      or GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION env vars)
+            - configMapRef:
+                name: core-agent-gcp-env
           ports:
             - name: attach
               containerPort: 7777

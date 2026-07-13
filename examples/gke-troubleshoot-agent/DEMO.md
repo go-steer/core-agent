@@ -150,7 +150,7 @@ core-agent-tui --version | grep -q "v2.6\|main-" \
 
 Execute once per cluster. If re-running (fresh cluster after teardown), redo everything.
 
-> **Ordering matters.** The daemon Deployment mounts a Secret (`core-agent-users`) that isn't part of the kustomize output — it's created out-of-band in step 3. If you deploy the workloads before the Secret exists, the pod schedules and hangs on `FailedMount`. Steps below create the namespace first, bind IAM, create the Secrets, THEN apply the workloads. Rehearse in that order.
+> **Ordering matters.** The daemon Deployment consumes state that isn't part of the kustomize output — a Secret (`core-agent-users`) mounted at `/etc/core-agent/users.json`, and a ConfigMap (`core-agent-gcp-env`) providing `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_LOCATION` via `envFrom`. Both are created out-of-band in step 3. Deploy the workloads before either exists and the pod either hangs on `FailedMount` or crashes at Vertex init. Steps below create the namespace first, bind IAM, create the out-of-band Secret + ConfigMap, THEN apply the workloads. Rehearse in that order.
 
 ### 1. Stage scratch deploy tree + create the namespace
 
@@ -251,17 +251,26 @@ kubectl -n "${DEMO_NS}" create secret generic core-agent-users \
 kubectl -n "${DEMO_NS}" create secret generic k8s-event-watcher-token \
     --from-literal=token="${WATCHER_TOKEN}"
 
+# ConfigMap the daemon consumes via envFrom for Vertex init —
+# GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION are per-cluster values,
+# so they're created out-of-band here rather than baked into the
+# kustomize output. Without this ConfigMap the daemon exits at Vertex
+# init with "project and location are required."
+kubectl -n "${DEMO_NS}" create configmap core-agent-gcp-env \
+    --from-literal=GOOGLE_CLOUD_PROJECT="${PROJECT_ID}" \
+    --from-literal=GOOGLE_CLOUD_LOCATION="${REGION}"
+
 # users.json is checked into the cluster Secret now — the local copy
 # with plaintext tokens no longer needs to sit on disk. demo-tokens.env
 # stays under DEMO_DIR so `source` in later steps still works.
 rm "${DEMO_DIR}/users.json"
 
-echo "✓ Secrets created; tokens stashed at ${DEMO_DIR}/demo-tokens.env"
+echo "✓ Secrets + core-agent-gcp-env ConfigMap created; tokens stashed at ${DEMO_DIR}/demo-tokens.env"
 ```
 
 ### 4. Deploy the workloads
 
-Now that the Secrets exist, apply the full recipe overlay. Kustomize creates the SAs, RBAC, PVC, ConfigMaps, Service, and both Deployments. The daemon pod schedules with the Secret already present and comes up clean.
+Now that the Secrets + `core-agent-gcp-env` ConfigMap exist, apply the full recipe overlay. Kustomize creates the SAs, RBAC, PVC, the generated `core-agent-agents` ConfigMap, Service, and both Deployments. The daemon pod schedules with all its mounts + env vars already present and comes up clean.
 
 ```bash
 # Applies everything except the namespace (created in step 1) — SAs,
@@ -272,9 +281,9 @@ kubectl apply -k "${DEMO_OVERLAY_DIR}"
 
 # Sanity-check what actually landed. All expected names must appear
 # in the demo namespace (NOT in `default`) or the daemon pod will
-# hang on FailedMount.
-kubectl -n "${DEMO_NS}" get cm core-agent-agents \
-    && echo "✓ ConfigMap present"
+# hang on FailedMount / crash on Vertex init.
+kubectl -n "${DEMO_NS}" get cm core-agent-agents core-agent-gcp-env \
+    && echo "✓ ConfigMaps present"
 kubectl -n "${DEMO_NS}" get secret core-agent-users k8s-event-watcher-token \
     && echo "✓ Secrets present"
 ```

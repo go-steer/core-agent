@@ -46,7 +46,7 @@ projects/__GCP_PROJECT__/locations/__GKE_LOCATION__/clusters/__GKE_CLUSTER__
 
    The `project` / `cluster` fields are mandatory — writing them here forces you to look them up above BEFORE making any MCP call, which is how we prevent 403-from-hallucinated-project loops.
 
-   Then immediately call `write_file` to persist the same content to `/etc/core-agent/agents/plans/plan-<uid-prefix>-1.md` (use the first 8 chars of the inject payload's `uid`). The block goes in the eventlog transcript; the file persists on the pod for later inspection.
+   Then immediately call `write_file` to persist the same content to `/etc/core-agent/.agents/plans/plan-<uid-prefix>-1.md` (use the first 8 chars of the inject payload's `uid`). The block goes in the eventlog transcript; the file persists on the pod for later inspection.
 
 2. **Call `list_skills`** to discover the `k8s-triage` skill. Invoke it — it routes to the reason-specific reference for the failure.
 
@@ -58,7 +58,7 @@ projects/__GCP_PROJECT__/locations/__GKE_LOCATION__/clusters/__GKE_CLUSTER__
 
 - **GKE MCP** (`mcp.googleapis.com`) for cluster + workload operations. Use `/mcp/read-only` for diagnostics; `/mcp` for mutations.
 - **Eventlog** — every action you take is captured. On incident close, write a structured `INCIDENT SUMMARY` block (the k8s-triage skill has the exact format). This IS the v2.6 escalation path — downstream tooling (Cloud Logging sinks, etc.) consumes it. Turnkey webhook / Slack MCP escalation ships in v2.7.
-- **`write_file`** for persisting plan artifacts under `/etc/core-agent/agents/plans/` (see "Where you can write").
+- **`write_file`** for persisting plan artifacts under `/etc/core-agent/.agents/plans/` (see "Where you can write").
 
 ## What you do NOT have
 
@@ -66,7 +66,7 @@ projects/__GCP_PROJECT__/locations/__GKE_LOCATION__/clusters/__GKE_CLUSTER__
 
 ## Where you can write
 
-- **`/etc/core-agent/agents/plans/`** — writable emptyDir. Use `write_file` to persist your plan artifact here on every inject. Filename convention: `plan-<uid-prefix>-<seq>.md`, e.g. `plan-6d4c8024-1.md`.
+- **`/etc/core-agent/.agents/plans/`** — writable emptyDir. Use `write_file` to persist your plan artifact here on every inject. Filename convention: `plan-<uid-prefix>-<seq>.md`, e.g. `plan-6d4c8024-1.md`.
 - **`/var/lib/core-agent/`** — the session-DB PVC. Do NOT write here; it's owned by the daemon's session-persistence layer.
 - **Nowhere else.** The rest of `/etc/core-agent/` is a read-only ConfigMap projection.
 

@@ -222,6 +222,16 @@ func (d *dispatcher) Dispatch(ctx context.Context, ev TriageEvent) {
 	d.metrics.activeIncidents.Set(float64(d.dedup.Len()))
 	if result.Kind == dedupDuplicate {
 		d.metrics.eventsDedupSuppress.WithLabelValues(ev.Key.Reason, ev.Namespace).Inc()
+		// Info-level log: the operator asked "is the watcher seeing
+		// events?" and today the answer was "yes when things break,
+		// silent when things work" — this line makes suppressed
+		// duplicates visible so the operator can distinguish
+		// "watcher missed the event" from "watcher saw it and
+		// correctly deduped". Bound is the dedup window (set via
+		// --dedup-window, default 5m); result.Count is the running
+		// hit count for this key within the current window.
+		log.Printf("dedup %s pod=%s/%s (count=%d, window active)",
+			ev.Key.Reason, ev.Namespace, ev.Name, result.Count)
 		return
 	}
 	// New incident: create or reuse a session, then inject.
@@ -263,6 +273,8 @@ func (d *dispatcher) Dispatch(ctx context.Context, ev TriageEvent) {
 		out, _ := json.MarshalIndent(payload, "", "  ")
 		fmt.Printf("--- dry-run payload for session %q ---\n%s\n", sid, string(out))
 		d.metrics.eventsInjected.WithLabelValues(ev.Key.Reason, ev.Namespace).Inc()
+		log.Printf("would-fire %s pod=%s/%s (sid=%s, mode=%s, dry-run)",
+			ev.Key.Reason, ev.Namespace, ev.Name, sid, d.mode)
 		return
 	}
 	if err := d.injector.Inject(ctx, sid, payload); err != nil {
@@ -271,6 +283,15 @@ func (d *dispatcher) Dispatch(ctx context.Context, ev TriageEvent) {
 		return
 	}
 	d.metrics.eventsInjected.WithLabelValues(ev.Key.Reason, ev.Namespace).Inc()
+	// Info-level log: the successful-inject case was silent before
+	// #212 — operators had to correlate client-go informer warnings
+	// with daemon session-list dumps to infer whether the watcher
+	// was firing at all. Making success visible turns "is the
+	// sidecar working?" into a grep. sid is traceable in the daemon's
+	// own logs / /sessions API so cross-container reconstruction of
+	// an incident is a single traceID-style filter.
+	log.Printf("fire %s pod=%s/%s → sid=%s (mode=%s)",
+		ev.Key.Reason, ev.Namespace, ev.Name, sid, d.mode)
 }
 
 func main() {

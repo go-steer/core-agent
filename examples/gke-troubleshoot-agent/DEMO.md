@@ -155,14 +155,19 @@ Execute once per cluster. If re-running (fresh cluster after teardown), redo eve
 Copy the example overlay to a scratch dir outside the repo, patch the cluster name into the watcher-arg placeholder, and apply from the scratch dir. This keeps the repo tree clean (no post-run `git status` surprises) and matches the demo's convention of putting throwaway state under `/tmp`.
 
 ```bash
+# All throwaway state for this demo lives under DEMO_DIR. Rehearse,
+# tear down, re-rehearse — a single `rm -rf "${DEMO_DIR}"` cleans up
+# everything (scratch deploy tree, tokens, users.json).
+export DEMO_DIR="/tmp/core-agent-demo"
+export DEMO_DEPLOY_DIR="${DEMO_DIR}/deploy"
+export DEMO_OVERLAY_DIR="${DEMO_DEPLOY_DIR}/overlays/example"
+
 # Scratch deploy tree lives outside the repo — nothing here is tracked.
 # We copy the whole deploy/ tree (base + overlays) so the overlay's
 # relative `resources: [../../base]` reference still resolves. Kustomize
 # rejects absolute paths as resources for security reasons, so keeping
 # the relative layout intact is simpler than working around the restriction.
-export DEMO_DEPLOY_DIR="/tmp/core-agent-demo/deploy"
-export DEMO_OVERLAY_DIR="${DEMO_DEPLOY_DIR}/overlays/example"
-mkdir -p "$(dirname "${DEMO_DEPLOY_DIR}")"
+mkdir -p "${DEMO_DIR}"
 rm -rf "${DEMO_DEPLOY_DIR}"
 cp -r examples/gke-troubleshoot-agent/deploy "${DEMO_DEPLOY_DIR}"
 
@@ -213,17 +218,19 @@ SRE_TOKEN=$(openssl rand -hex 32)
 BOB_TOKEN=$(openssl rand -hex 32)
 WATCHER_TOKEN=$(openssl rand -hex 32)
 
-# Stash them locally for the demo (chmod 0600!)
-mkdir -p ~/.core-agent
-cat > ~/.core-agent/demo-tokens.env <<EOF
+# Stash them under DEMO_DIR (chmod 0600!). This replaces the older
+# ~/.core-agent/demo-tokens.env convention — throwaway state stays
+# under /tmp so tearing down the demo is one `rm -rf "${DEMO_DIR}"`.
+mkdir -p "${DEMO_DIR}"
+cat > "${DEMO_DIR}/demo-tokens.env" <<EOF
 export SRE_TOKEN="${SRE_TOKEN}"
 export BOB_TOKEN="${BOB_TOKEN}"
 export WATCHER_TOKEN="${WATCHER_TOKEN}"
 EOF
-chmod 0600 ~/.core-agent/demo-tokens.env
+chmod 0600 "${DEMO_DIR}/demo-tokens.env"
 
 # users.json for the daemon
-cat > /tmp/users.json <<EOF
+cat > "${DEMO_DIR}/users.json" <<EOF
 {
   "version": 1,
   "users": [
@@ -233,19 +240,21 @@ cat > /tmp/users.json <<EOF
   ]
 }
 EOF
-chmod 0600 /tmp/users.json
+chmod 0600 "${DEMO_DIR}/users.json"
 
 # Create the Secrets in the cluster
 kubectl -n "${DEMO_NS}" create secret generic core-agent-users \
-    --from-file=users.json=/tmp/users.json
+    --from-file=users.json="${DEMO_DIR}/users.json"
 
 kubectl -n "${DEMO_NS}" create secret generic k8s-event-watcher-token \
     --from-literal=token="${WATCHER_TOKEN}"
 
-# Cleanup local files
-rm /tmp/users.json
+# users.json is checked into the cluster Secret now — the local copy
+# with plaintext tokens no longer needs to sit on disk. demo-tokens.env
+# stays under DEMO_DIR so `source` in later steps still works.
+rm "${DEMO_DIR}/users.json"
 
-echo "✓ Secrets created; tokens stashed at ~/.core-agent/demo-tokens.env"
+echo "✓ Secrets created; tokens stashed at ${DEMO_DIR}/demo-tokens.env"
 ```
 
 ### 4. Wait for pods to be Ready
@@ -268,7 +277,7 @@ If ANY pod is not `1/1 Running`, jump to [Troubleshooting](#troubleshooting) bef
 ### 5. Verify daemon accepts your token
 
 ```bash
-source ~/.core-agent/demo-tokens.env
+source "${DEMO_DIR:-/tmp/core-agent-demo}/demo-tokens.env"
 
 # Port-forward the daemon in one terminal (keep this open through the demo)
 kubectl -n "${DEMO_NS}" port-forward svc/core-agent 7777:7777 &
@@ -298,7 +307,7 @@ Execute 15 min before you go live. Verifies the demo will work TODAY on THIS clu
 
 ```bash
 # In a dedicated terminal that stays open
-source ~/.core-agent/demo-tokens.env
+source "${DEMO_DIR:-/tmp/core-agent-demo}/demo-tokens.env"
 kubectl -n "${DEMO_NS}" port-forward svc/core-agent 7777:7777
 ```
 
@@ -307,7 +316,7 @@ Leave this running.
 ### 2. Sanity-check auth from a second terminal
 
 ```bash
-source ~/.core-agent/demo-tokens.env
+source "${DEMO_DIR:-/tmp/core-agent-demo}/demo-tokens.env"
 curl -sS -H "Authorization: Bearer ${SRE_TOKEN}" http://127.0.0.1:7777/sessions | jq -r '.sessions | length'
 # Expect: 0 (or small number if you rehearsed already; ideally 0 for a clean demo)
 ```
@@ -318,7 +327,7 @@ If non-zero, clean up: kill lingering sessions from prior rehearsals.
 # Nuke the eventlog for a clean start (aggressive; do only during rehearsal)
 kubectl -n "${DEMO_NS}" scale deployment/core-agent --replicas=0
 kubectl -n "${DEMO_NS}" delete pvc core-agent-session-db
-kubectl apply -k "${DEMO_OVERLAY_DIR:-/tmp/core-agent-demo/overlay}"   # recreates PVC
+kubectl apply -k "${DEMO_OVERLAY_DIR:-/tmp/core-agent-demo/deploy/overlays/example}"   # recreates PVC
 kubectl -n "${DEMO_NS}" scale deployment/core-agent --replicas=1
 kubectl -n "${DEMO_NS}" rollout status deployment/core-agent
 ```
@@ -489,7 +498,7 @@ kubectl -n "${TARGET_NS}" get deployment demo-webapp -o jsonpath='{.spec.templat
 
 ```bash
 # In a new terminal/pane
-source ~/.core-agent/demo-tokens.env
+source "${DEMO_DIR:-/tmp/core-agent-demo}/demo-tokens.env"
 core-agent-tui http://127.0.0.1:7777 --token BOB_TOKEN
 ```
 
@@ -581,14 +590,14 @@ kubectl -n "${TARGET_NS}" delete pod demo-crash --ignore-not-found
 # Optional: wipe the eventlog for a clean state
 kubectl -n "${DEMO_NS}" scale deployment/core-agent --replicas=0
 kubectl -n "${DEMO_NS}" delete pvc core-agent-session-db
-kubectl apply -k "${DEMO_OVERLAY_DIR:-/tmp/core-agent-demo/overlay}"
+kubectl apply -k "${DEMO_OVERLAY_DIR:-/tmp/core-agent-demo/deploy/overlays/example}"
 kubectl -n "${DEMO_NS}" scale deployment/core-agent --replicas=1
 ```
 
-Wipe the scratch deploy tree (safe — it's just a working copy of the tracked `deploy/` tree):
+Wipe the scratch demo dir (safe — it holds only the working copy of `deploy/` plus the rehearsal tokens):
 
 ```bash
-rm -rf "${DEMO_DEPLOY_DIR:-/tmp/core-agent-demo/deploy}"
+rm -rf "${DEMO_DIR:-/tmp/core-agent-demo}"
 ```
 
 Full cluster teardown (only if the demo cluster is single-purpose):
@@ -618,7 +627,7 @@ Common causes:
 The ConfigMap didn't materialize. Re-run:
 
 ```bash
-kubectl apply -k "${DEMO_OVERLAY_DIR:-/tmp/core-agent-demo/overlay}"
+kubectl apply -k "${DEMO_OVERLAY_DIR:-/tmp/core-agent-demo/deploy/overlays/example}"
 kubectl -n "${DEMO_NS}" get configmap core-agent-config core-agent-agents
 ```
 
@@ -663,7 +672,7 @@ If empty endpoints, the daemon isn't Ready — check its own logs.
 Token mismatch. Verify:
 
 ```bash
-source ~/.core-agent/demo-tokens.env
+source "${DEMO_DIR:-/tmp/core-agent-demo}/demo-tokens.env"
 echo "$SRE_TOKEN" | head -c 20   # first 20 chars of your token
 kubectl -n "${DEMO_NS}" get secret core-agent-users -o jsonpath='{.data.users\.json}' \
     | base64 -d \

@@ -520,6 +520,25 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 
 	send := func(s string) { fmt.Fprintln(os.Stderr, "core-agent: "+s) }
 
+	// Instruction-load visibility. Loading nothing is silently permitted
+	// (single-shot -p invocations, mock/scripted runs, freshly-cloned
+	// repos legitimately have no AGENTS.md) but operators wiring up a
+	// recipe that DOES expect AGENTS.md need a signal when the loader
+	// found nothing — otherwise the daemon runs on raw provider
+	// defaults and the operator has no visible clue why the model is
+	// ignoring their carefully-written instructions. See issue #218
+	// (surfaced live during the v2.6 GKE-troubleshoot demo drive).
+	if len(loaded.Sources) == 0 {
+		send(fmt.Sprintf("instruction: no AGENTS.md found (searched: %s). Model will run without user instructions.",
+			strings.Join(loaded.Searched, ", ")))
+	} else {
+		names := make([]string, 0, len(loaded.Sources))
+		for _, s := range loaded.Sources {
+			names = append(names, s.Path)
+		}
+		send(fmt.Sprintf("instruction: loaded %d file(s): %s", len(loaded.Sources), strings.Join(names, ", ")))
+	}
+
 	// Small-tier-parent guard (#121). When an interactive session
 	// (REPL or attach-listen — anything that isn't `-p` one-shot)
 	// resolves to a small-tier parent model (Flash/Haiku-class),

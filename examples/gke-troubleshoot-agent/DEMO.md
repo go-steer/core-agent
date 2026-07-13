@@ -270,10 +270,11 @@ Now that the Secrets exist, apply the full recipe overlay. Kustomize creates the
 # (core-agent daemon + k8s-event-watcher).
 kubectl apply -k "${DEMO_OVERLAY_DIR}"
 
-# Sanity-check what actually landed. All three names must appear or
-# the daemon pod will hang on FailedMount.
-kubectl -n "${DEMO_NS}" get cm core-agent-config core-agent-agents \
-    && echo "✓ ConfigMaps present"
+# Sanity-check what actually landed. All expected names must appear
+# in the demo namespace (NOT in `default`) or the daemon pod will
+# hang on FailedMount.
+kubectl -n "${DEMO_NS}" get cm core-agent-agents \
+    && echo "✓ ConfigMap present"
 kubectl -n "${DEMO_NS}" get secret core-agent-users k8s-event-watcher-token \
     && echo "✓ Secrets present"
 ```
@@ -649,7 +650,7 @@ The ConfigMap didn't materialize. Re-run:
 
 ```bash
 kubectl apply -k "${DEMO_OVERLAY_DIR:-/tmp/core-agent-demo/deploy/overlays/example}"
-kubectl -n "${DEMO_NS}" get configmap core-agent-config core-agent-agents
+kubectl -n "${DEMO_NS}" get configmap core-agent-agents
 ```
 
 ### Daemon logs "Vertex AI: permission denied"

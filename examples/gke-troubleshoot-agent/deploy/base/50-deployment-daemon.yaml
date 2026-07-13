@@ -72,11 +72,21 @@ spec:
           image: ghcr.io/go-steer/core-agent:latest
           imagePullPolicy: IfNotPresent
           args:
+            # -c points at the config file. The daemon derives its
+            # agentsDir (where it looks for AGENTS.md / mcp.json /
+            # skills/) from filepath.Dir(-c), so config.json MUST live
+            # in the same directory as the rest of the .agents/ tree.
+            # There is no --agents-dir flag — see cmd/core-agent/main.go
+            # loadConfig().
+            #
+            # attach.listen (0.0.0.0:7777) + session-db config live in
+            # config.json; --no-repl requires attach.listen or unix
+            # socket to be set (via CLI flag or config overlay).
+            - "-c"
+            - "/etc/core-agent/agents/config.json"
             - "--no-repl"
-            - "--config=/etc/core-agent/config.json"
             - "--session-db"
             - "--session-db-path=/var/lib/core-agent/session.db"
-            - "--agents-dir=/etc/core-agent/agents"
           ports:
             - name: attach
               containerPort: 7777
@@ -89,23 +99,17 @@ spec:
               cpu: "2"
               memory: "2Gi"
           volumeMounts:
-            # All three of config.json / agents/ / users.json live under
-            # /etc/core-agent. The config + users volumes MUST be mounted
-            # as subPath entries (single files), not whole-dir mounts, or
-            # containerd fails to bind-mount them over the tmpfs claimed
-            # by whichever volume mounts /etc/core-agent as a whole dir
-            # ("mount ... not a directory" at container init).
-            #
-            # By making config.json a subPath file mount (matching users),
-            # /etc/core-agent/ becomes an implicit kubelet-managed dir
-            # that all three files coexist in cleanly.
-            - name: config
-              mountPath: /etc/core-agent/config.json
-              subPath: config.json
-              readOnly: true
+            # The entire .agents/ tree (config.json + AGENTS.md + mcp.json
+            # + skills/) lives in one projected configMap volume at
+            # /etc/core-agent/agents. The daemon takes -c pointing into
+            # this dir, then discovers everything else relative to it.
             - name: agents
               mountPath: /etc/core-agent/agents
               readOnly: true
+            # users.json is a Secret mounted as a subPath file so its
+            # parent (/etc/core-agent) stays a normal kubelet-managed
+            # dir — the parent isn't itself a mount, so the subPath
+            # file mount here doesn't collide with anything.
             - name: users
               mountPath: /etc/core-agent/users.json
               subPath: users.json
@@ -132,21 +136,17 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 20
       volumes:
-        - name: config
-          configMap:
-            name: core-agent-config
-            items:
-              - key: config.json
-                path: config.json
-        # The .agents/ tree lives in one flat ConfigMap
-        # (core-agent-agents); items: maps each key to its subpath.
-        # This is why keys use "_" as a path separator in the
-        # kustomization — k8s ConfigMap keys can't contain "/", but
-        # items:.path can.
+        # The .agents/ tree (config.json + AGENTS.md + mcp.json + skills/)
+        # lives in one flat ConfigMap (core-agent-agents); items: maps
+        # each key to its subpath. This is why keys use "_" as a path
+        # separator in the kustomization — k8s ConfigMap keys can't
+        # contain "/", but items:.path can.
         - name: agents
           configMap:
             name: core-agent-agents
             items:
+              - key: config.json
+                path: config.json
               - key: AGENTS.md
                 path: AGENTS.md
               - key: mcp.json

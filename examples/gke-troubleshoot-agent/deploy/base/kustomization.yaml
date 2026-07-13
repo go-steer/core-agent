@@ -43,23 +43,24 @@ resources:
   # kustomization — they're created out-of-band per the instructions
   # in 20-secrets-placeholder.md.
 
-# ConfigMap for the daemon's config.json.
+# ConfigMap for the .agents/ tree — a single flat ConfigMap holds
+# every file the daemon needs (config.json + AGENTS.md + mcp.json +
+# skills/**). The Deployment's projected volume (see
+# 50-deployment-daemon.yaml) maps each key to its correct subpath.
+#
+# The daemon uses -c=<config.json> to bootstrap and derives its
+# agentsDir from filepath.Dir(that arg), so config.json MUST be a
+# sibling of AGENTS.md / mcp.json / skills/ (same projected volume,
+# same directory). See cmd/core-agent/main.go loadConfig() and the
+# recipe README's "why one configMap" note.
+#
+# k8s ConfigMap keys can't contain "/", so we flatten file paths
+# into safe key names here and reconstitute the tree in the
+# projected volume's items: list.
 configMapGenerator:
-  - name: core-agent-config
-    files:
-      - config.json=config/config.json
-
-  # ConfigMap for the .agents/ tree — a single flat ConfigMap holds
-  # every file the daemon's --agents-dir needs. The Deployment's
-  # projected volume (see 50-deployment-daemon.yaml) maps each key
-  # to its correct subpath (AGENTS.md, skills/k8s-triage/SKILL.md,
-  # skills/k8s-triage/references/*.md).
-  #
-  # k8s ConfigMap keys can't contain "/", so we flatten file paths
-  # into safe key names here and reconstitute the tree in the
-  # projected volume's items: list.
   - name: core-agent-agents
     files:
+      - config.json=config/config.json
       - AGENTS.md=config/AGENTS.md
       - mcp.json=config/mcp.json
       - k8s-triage_SKILL.md=config/skills/k8s-triage/SKILL.md

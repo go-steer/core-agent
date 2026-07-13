@@ -58,6 +58,23 @@ resources:
 # into safe key names here and reconstitute the tree in the
 # projected volume's items: list.
 configMapGenerator:
+  # GCP project + location the daemon uses when initializing the
+  # Vertex client. Consumed via envFrom on the daemon container (see
+  # 50-deployment-daemon.yaml). Defaults work out-of-the-box for the
+  # go-steer demo project; every other operator overrides these via
+  # 'behavior: merge' in their overlay:
+  #
+  #   configMapGenerator:
+  #     - name: core-agent-gcp-env
+  #       behavior: merge
+  #       literals:
+  #         - GOOGLE_CLOUD_PROJECT=my-real-project
+  #         - GOOGLE_CLOUD_LOCATION=us-central1
+  - name: core-agent-gcp-env
+    literals:
+      - GOOGLE_CLOUD_PROJECT=gke-demos-345619
+      - GOOGLE_CLOUD_LOCATION=global
+
   - name: core-agent-agents
     files:
       - config.json=config/config.json

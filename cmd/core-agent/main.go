@@ -90,7 +90,20 @@ func main() {
 	}
 
 	prompt := flag.String("p", "", "single prompt; runs one turn and exits (REPL otherwise)")
-	cfgPath := flag.String("c", "", "config file path (default: discover .agents/config.json)")
+
+	// `-c` (short) and `--config` (long) both bind to the same
+	// variable so operators can write manifests using whichever form
+	// matches their muscle memory. Every other flag on this CLI uses
+	// long form, so the historical -c-only shape was a footgun (a
+	// distroless-container Deployment with args: ["--config=..."]
+	// exits at flag-parse with "flag provided but not defined: -config"
+	// — hit live during the v2.6 GKE-troubleshoot demo drive, see
+	// go-steer/core-agent#209). If both are given, the last on argv
+	// wins (Go flag package semantics).
+	var cfgPathVal string
+	flag.StringVar(&cfgPathVal, "c", "", "config file path (default: discover .agents/config.json)")
+	flag.StringVar(&cfgPathVal, "config", "", "long-form alias for -c — same behavior")
+	cfgPath := &cfgPathVal
 	modelOverride := flag.String("m", "", "override model name from config")
 	providerOverride := flag.String("provider", "", "override model.provider (gemini|vertex|anthropic|anthropic-vertex|echo|scripted)")
 	noBuiltinTools := flag.Bool("no-builtin-tools", false, "disable the built-in tool suite ("+strings.Join(tools.BuiltinToolNames(), ", ")+")")

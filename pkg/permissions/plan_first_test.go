@@ -90,6 +90,58 @@ func TestPlanFirst_AllowsRecordPlanItself(t *testing.T) {
 	}
 }
 
+// Skill introspection is exempt at namespace level — list_skills /
+// load_skill / load_skill_resource are all registered through
+// GateToolset(ts, gate, "skill") in pkg/skills/load.go, so the gate
+// sees "skill" as the tool name for every underlying call. Read-only
+// discovery of what the agent has available is a precondition for
+// planning, not a mutating action; gating it deadlocks the workflow.
+// (Observed live during the v2.6 GKE-troubleshoot demo drive — see
+// issue #213.)
+func TestPlanFirst_AllowsSkillIntrospection(t *testing.T) {
+	t.Parallel()
+	g := New(Options{Mode: ModeYolo, RequirePlanArtifact: true})
+	if err := g.CheckGeneric(context.Background(), "skill", "list_skills"); err != nil {
+		t.Errorf("skill namespace should be exempt from plan-first gating, got: %v", err)
+	}
+	// Repeat with a load_skill-shaped key to confirm the exemption is
+	// namespace-level, not keyed on the human-readable summary.
+	if err := g.CheckGeneric(context.Background(), "skill", "load_skill(name=k8s-triage)"); err != nil {
+		t.Errorf("skill namespace should be exempt regardless of key content, got: %v", err)
+	}
+}
+
+// list_agents and check_agent are read-only subagent introspection
+// registered directly by pkg/agent/background_tools.go — not via the
+// namespace wrapper. Exempt them individually.
+func TestPlanFirst_AllowsSubagentIntrospection(t *testing.T) {
+	t.Parallel()
+	g := New(Options{Mode: ModeYolo, RequirePlanArtifact: true})
+	for _, name := range []string{"list_agents", "check_agent"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if err := g.CheckGeneric(context.Background(), name, "any"); err != nil {
+				t.Errorf("%s should be exempt from plan-first gating, got: %v", name, err)
+			}
+		})
+	}
+}
+
+// mcp (the namespace) should NOT be exempt — MCP servers can expose
+// mutating tools, so plan-first must still apply. This locks in the
+// deliberate asymmetry vs the "skill" namespace above.
+func TestPlanFirst_DoesNotExemptMCPNamespace(t *testing.T) {
+	t.Parallel()
+	g := New(Options{Mode: ModeYolo, RequirePlanArtifact: true})
+	err := g.CheckGeneric(context.Background(), "mcp", "gke_patch_k8s_resource")
+	if err == nil {
+		t.Fatal("mcp namespace must be plan-gated (may include mutating tools); got no error")
+	}
+	if !strings.Contains(err.Error(), "plan-first mode requires record_plan") {
+		t.Errorf("expected plan-first denial for mcp namespace, got: %v", err)
+	}
+}
+
 func TestPlanFirst_UnblocksAfterMarkPlanRecorded(t *testing.T) {
 	t.Parallel()
 	g := New(Options{Mode: ModeYolo, RequirePlanArtifact: true})

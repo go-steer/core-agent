@@ -118,21 +118,37 @@ type Gate struct {
 }
 
 // planExemptTools is the set of tool names that bypass the plan-
-// first pre-check even when RequirePlanArtifact is set. Two
+// first pre-check even when RequirePlanArtifact is set. Three
 // categories:
 //
 //   - Read-only research tools — research has to happen BEFORE the
 //     plan can be written; gating reads would deadlock the workflow.
 //   - record_plan itself — the escape valve. The tool whose call
 //     flips planRecorded can't itself be plan-gated.
+//   - Read-only introspection: enumerating available skills, listing
+//     background subagents, checking a subagent's status. These are
+//     the "what tools do I have?" questions the model reasonably
+//     asks before deciding what to plan.
+//
+// Note on namespaces: skill tools (list_skills / load_skill /
+// load_skill_resource) and MCP tools are registered through
+// GateToolset in pkg/tools/gate.go, which routes every underlying
+// tool through gate.CheckGeneric with the namespace as the toolName.
+// That's why the entry below is "skill" (the namespace) rather than
+// each individual skill tool name — the gate never sees the
+// underlying names for these categories. "mcp" is deliberately NOT
+// exempt: MCP servers expose arbitrary tools including mutating
+// ones, so recipes should judge case-by-case rather than blanket-
+// exempt the namespace.
 //
 // Anything not in this set (write_file/edit_file/delete_file/bash,
 // spawn_agent family, every MCP tool) is plan-gated. This matches
-// Q1's resolution ("gate everything by default; per-server
+// the original design's Q1 ("gate everything by default; per-server
 // allowlist later if it bites") and Q3 ("subagents inherit the
 // parent's planRecorded flag — gate spawn family so subagents only
 // run under an approved plan").
 var planExemptTools = map[string]bool{
+	// Read-only filesystem + research tools
 	"read_file":       true,
 	"read_many_files": true,
 	"stat":            true,
@@ -143,6 +159,18 @@ var planExemptTools = map[string]bool{
 	"fetch_url":       true,
 	"todo":            true,
 	"record_plan":     true,
+
+	// Read-only skill introspection (namespace-level exempt: covers
+	// list_skills / load_skill / load_skill_resource, all of which
+	// only READ from the skills registry). See pkg/skills/load.go
+	// where the toolset gets wrapped with GateToolset(ts, gate, "skill").
+	"skill": true,
+
+	// Read-only subagent introspection (individual tool names,
+	// registered by pkg/agent/background_tools.go — not wrapped in
+	// a namespace-level toolset).
+	"list_agents": true,
+	"check_agent": true,
 }
 
 // Options configures a Gate at construction time. All fields are

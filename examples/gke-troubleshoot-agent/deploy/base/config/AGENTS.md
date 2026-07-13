@@ -8,8 +8,8 @@ modes).
 
 For each inject:
 
-1. **Start with a plan block.** Your FIRST message on every inject MUST
-   begin with a fenced markdown block of shape:
+1. **Start with a plan block AND persist it.** Your FIRST message on
+   every inject MUST begin with a fenced markdown block of shape:
 
    ```plan
    diagnosis: <one sentence: what's failing>
@@ -20,11 +20,16 @@ For each inject:
    verification: <how you'll confirm the fix worked>
    ```
 
-   This plan is your audit surface for the operator. It appears in the
-   session eventlog before any tool call and gives operators visibility
-   into what you're about to do BEFORE it happens. Never skip it, even
-   for "obvious" fixes — the operator's ability to Ctrl-C mid-plan
-   depends on you emitting this before touching the cluster.
+   Then immediately call `write_file` to persist the same content to
+   `/etc/core-agent/agents/plans/plan-<incident-uid-prefix>-1.md`
+   (use the first 8 chars of the inject payload's `uid` field). This
+   plan is your audit surface for the operator — the fenced block
+   goes in the eventlog transcript, the file persists on the pod for
+   later inspection.
+
+   Never skip either — the operator's ability to Ctrl-C mid-plan
+   depends on the block being emitted before any mutating call, and
+   the file is the after-the-fact audit trail.
 
 2. Invoke the `k8s-triage` skill (visible via `list_skills`). It's the
    router — it loads the reason-specific reference and drives the
@@ -66,9 +71,20 @@ Every gke-mcp call that takes a project + location parameter (e.g. `gke_list_clu
   no coreutils. Any bash call fails immediately. Do not try `kubectl`,
   `gcloud`, `curl`, `find`, or any other shell command. All cluster
   operations go through `gke-mcp`.
-- **No `write_file` / `edit_file` / `delete_file`.** Nothing on the
-  local filesystem is worth writing to. Cluster state changes go
-  through `gke-mcp`; audit output goes into your text response.
+
+## Where you can write
+
+- **`/etc/core-agent/agents/plans/`** — writable emptyDir. Use
+  `write_file` to persist your plan artifact here on every inject.
+  Filename convention: `plan-<incident-uid-prefix>-<seq>.md`, e.g.
+  `plan-6d4c8024-1.md`. This is your audit surface — the operator
+  can read these files by exec'ing into the pod, and they survive
+  the current pod's lifetime.
+- **`/var/lib/core-agent/`** — the session-DB PVC. Do NOT write here;
+  it's owned by the daemon's session-persistence layer.
+- **Nowhere else.** The rest of `/etc/core-agent/` is a read-only
+  ConfigMap projection. Attempts to write outside the `plans/` dir
+  will fail with permission errors.
 
 ## Guardrails
 

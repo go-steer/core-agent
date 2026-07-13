@@ -41,6 +41,59 @@ func TestLoad_NothingFound(t *testing.T) {
 	if !loaded.Empty() {
 		t.Errorf("expected empty Loaded, got %+v", loaded)
 	}
+	if len(loaded.Sources) != 0 {
+		t.Errorf("expected zero Sources, got %d", len(loaded.Sources))
+	}
+	// Searched MUST be populated even when nothing loaded — callers
+	// depend on this to produce actionable "no AGENTS.md found —
+	// checked [...]" diagnostics (see issue #218).
+	if len(loaded.Searched) == 0 {
+		t.Errorf("expected Searched to enumerate probed paths even when no file loaded, got empty")
+	}
+}
+
+// TestLoad_SearchedPathsPopulated verifies that Searched enumerates the
+// primary-file paths the loader actually probed, not just the ones that
+// succeeded. This is the load-bearing contract for the "no AGENTS.md
+// found (searched: <paths>)" operator diagnostic added in #218.
+func TestLoad_SearchedPathsPopulated(t *testing.T) {
+	t.Parallel()
+	user := t.TempDir()
+	project := t.TempDir()
+
+	loaded, err := Load(project, user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.Empty() {
+		t.Fatalf("expected empty Loaded (no files written), got %+v", loaded)
+	}
+
+	// Expect the full primary-name fallback chain for the project
+	// scope (AGENTS.md, CLAUDE.md, GEMINI.md) + AGENTS.md for the
+	// user scope, at BOTH the root and the .agents/ subdir when the
+	// subdir exists. Here neither temp dir has a .agents/ subdir, so
+	// we should see exactly: user/AGENTS.md, project/AGENTS.md,
+	// project/CLAUDE.md, project/GEMINI.md.
+	want := []string{
+		filepath.Join(user, userMemoryName),
+		filepath.Join(project, "AGENTS.md"),
+		filepath.Join(project, "CLAUDE.md"),
+		filepath.Join(project, "GEMINI.md"),
+	}
+	if len(loaded.Searched) != len(want) {
+		t.Fatalf("Searched: want %d paths, got %d: %v", len(want), len(loaded.Searched), loaded.Searched)
+	}
+	// Order isn't guaranteed by contract; check set membership.
+	got := make(map[string]bool)
+	for _, p := range loaded.Searched {
+		got[p] = true
+	}
+	for _, p := range want {
+		if !got[p] {
+			t.Errorf("Searched missing expected path %q; got: %v", p, loaded.Searched)
+		}
+	}
 }
 
 func TestLoad_ProjectFallbackChain(t *testing.T) {

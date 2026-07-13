@@ -84,10 +84,17 @@ type Source struct {
 
 // Loaded is the result of a Load call. Instruction is the assembled
 // text suitable for prepending to the agent's system prompt; Sources
-// describes what got included (one entry per loaded file).
+// describes what got included (one entry per loaded file); Searched
+// lists the primary-file paths that were probed during resolution
+// (regardless of whether a file existed at that path). Callers can
+// use Searched to produce actionable "no AGENTS.md found — checked
+// [...]" diagnostics when Sources is empty; without this the
+// operator has no visible signal that the load found nothing (the
+// daemon happily runs with an empty system prompt).
 type Loaded struct {
 	Instruction string
 	Sources     []Source
+	Searched    []string
 }
 
 // Empty reports whether nothing was loaded.
@@ -139,13 +146,13 @@ func LoadForSession(projectRoot, userRoot, callerIdentity, usersDir string) (Loa
 	visited := make(map[string]bool)
 
 	if userRoot != "" {
-		if err := loadScopeWithFallback(userRoot, "user", []string{userMemoryName}, &b, &loaded.Sources, visited); err != nil {
+		if err := loadScopeWithFallback(userRoot, "user", []string{userMemoryName}, &b, &loaded.Sources, &loaded.Searched, visited); err != nil {
 			return loaded, err
 		}
 	}
 
 	if projectRoot != "" {
-		if err := loadScopeWithFallback(projectRoot, "project", projectMemoryNames, &b, &loaded.Sources, visited); err != nil {
+		if err := loadScopeWithFallback(projectRoot, "project", projectMemoryNames, &b, &loaded.Sources, &loaded.Searched, visited); err != nil {
 			return loaded, err
 		}
 	}
@@ -156,7 +163,7 @@ func LoadForSession(projectRoot, userRoot, callerIdentity, usersDir string) (Loa
 		}
 		overlayRoot := filepath.Join(usersDir, callerIdentity)
 		if info, err := os.Stat(overlayRoot); err == nil && info.IsDir() {
-			if err := loadScopeWithFallback(overlayRoot, "caller", []string{userMemoryName}, &b, &loaded.Sources, visited); err != nil {
+			if err := loadScopeWithFallback(overlayRoot, "caller", []string{userMemoryName}, &b, &loaded.Sources, &loaded.Searched, visited); err != nil {
 				return loaded, err
 			}
 		} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -212,23 +219,26 @@ func validateCallerIdentity(id string) error {
 // Order: .agents/ first, then root. Operators who only put files in
 // one location see no behavior difference; operators with both get
 // .agents/ content prepended.
-func loadScopeWithFallback(root, scope string, primaryNames []string, b *strings.Builder, sources *[]Source, visited map[string]bool) error {
+func loadScopeWithFallback(root, scope string, primaryNames []string, b *strings.Builder, sources *[]Source, searched *[]string, visited map[string]bool) error {
 	subDir := filepath.Join(root, ".agents")
 	if info, err := os.Stat(subDir); err == nil && info.IsDir() {
-		if err := loadScope(subDir, scope, primaryNames, b, sources, visited); err != nil {
+		if err := loadScope(subDir, scope, primaryNames, b, sources, searched, visited); err != nil {
 			return err
 		}
 	}
-	return loadScope(root, scope, primaryNames, b, sources, visited)
+	return loadScope(root, scope, primaryNames, b, sources, searched, visited)
 }
 
 // loadScope drives one scope's primary-file + AGENTS.d/ load. The
 // primary fallback chain is per-scope (just AGENTS.md for user; full
 // chain for project). The AGENTS.d/ scan is identical at both scopes.
-func loadScope(scopeRoot, scope string, primaryNames []string, b *strings.Builder, sources *[]Source, visited map[string]bool) error {
+func loadScope(scopeRoot, scope string, primaryNames []string, b *strings.Builder, sources *[]Source, searched *[]string, visited map[string]bool) error {
 	// Primary file via fallback chain. First-match-wins.
 	for _, name := range primaryNames {
 		path := filepath.Join(scopeRoot, name)
+		if searched != nil {
+			*searched = append(*searched, path)
+		}
 		if _, err := os.Stat(path); err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue

@@ -31,6 +31,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+
+	"github.com/go-steer/core-agent/pkg/telemetry"
 )
 
 // flags is the CLI-shaped config, parsed once in main and threaded
@@ -55,6 +57,7 @@ type flags struct {
 	dryRun            bool
 	metricsAddr       string
 	snapshotInterval  time.Duration
+	otelExporter      string
 }
 
 // parseFlags reads argv into flags. Returns nil on --help (main
@@ -93,6 +96,14 @@ func parseFlags(args []string) (*flags, error) {
 	fs.BoolVar(&f.dryRun, "dry-run", false, "Print inject payloads to stdout without calling the daemon.")
 	fs.StringVar(&f.metricsAddr, "metrics-addr", "", "Prometheus /metrics + /healthz listener address (host:port). Empty = disabled.")
 	fs.DurationVar(&f.snapshotInterval, "snapshot-interval", 30*time.Second, "How often to persist the dedup cache when --dedup-persist is set. 0 = only on shutdown.")
+
+	// OpenTelemetry — mirrors the daemon's config.otel.exporter shape.
+	// When "otlp", honors standard OTEL_EXPORTER_OTLP_ENDPOINT env vars.
+	// The W3C traceparent propagator is registered globally regardless
+	// of this setting so outbound POSTs carry trace context to a
+	// tracing-enabled daemon even when the watcher itself isn't
+	// exporting spans locally (rare but useful during phased rollouts).
+	fs.StringVar(&f.otelExporter, "otel-exporter", "none", "OpenTelemetry span exporter: none | console | otlp. See docs/otel.md.")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -312,6 +323,18 @@ func realMain(argv []string) error {
 	if err := f.validate(); err != nil {
 		return err
 	}
+
+	// OpenTelemetry init. Registers the W3C traceparent propagator
+	// globally (so otelhttp-wrapped outbound POSTs carry trace
+	// context to the daemon) and, when --otel-exporter=console|otlp
+	// is set, wires the exporter so this watcher's own spans (fire /
+	// dedup / metrics-server) get shipped too. See #217.
+	otelCtx := context.Background()
+	otelShutdown, err := telemetry.Setup(otelCtx, f.otelExporter)
+	if err != nil {
+		return fmt.Errorf("telemetry setup: %w", err)
+	}
+	defer func() { _ = otelShutdown(context.Background()) }()
 
 	// Resolve bearer token from env (unless dry-run).
 	var token string

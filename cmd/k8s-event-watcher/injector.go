@@ -24,6 +24,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // injectorConfig captures the daemon-side surface the sidecar posts
@@ -82,7 +84,18 @@ func newInjector(cfg injectorConfig) (*injector, error) {
 		// Real production client with a modest timeout —
 		// POST /sessions + POST /inject are both cheap. If the
 		// daemon takes >10s to accept one, something's wrong.
-		client = &http.Client{Timeout: 10 * time.Second}
+		//
+		// Wrapped with otelhttp so the outbound POST carries the
+		// current span's traceparent — that's how the daemon
+		// (which wraps its attach mux with otelhttp.NewHandler)
+		// picks the trace context up and continues the trace
+		// across the process boundary. See #217. When telemetry
+		// is off (otel.exporter=none, the default), the propagator
+		// is a no-op and the wrapper adds negligible overhead.
+		client = &http.Client{
+			Timeout:   10 * time.Second,
+			Transport: otelhttp.NewTransport(http.DefaultTransport),
+		}
 	}
 	return &injector{cfg: cfg, client: client}, nil
 }

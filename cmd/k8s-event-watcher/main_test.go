@@ -15,7 +15,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"strings"
 	"testing"
 	"time"
@@ -111,6 +113,116 @@ func TestDispatcher_EndToEnd_SharedMode(t *testing.T) {
 	// Inject URL should have carried the target SessionID.
 	if !strings.Contains((*injects)[0], "k8s-event") {
 		t.Errorf("captured body missing kind marker: %q", (*injects)[0])
+	}
+}
+
+// TestDispatcher_LogsFireOnSuccess verifies the "fire <reason>
+// pod=<ns>/<name> → sid=..." success line surfaces (#212 part 2).
+// Before this landed the successful-inject case was silent, forcing
+// operators to correlate client-go informer warnings with daemon
+// session-list dumps to infer whether the watcher fired.
+func TestDispatcher_LogsFireOnSuccess(t *testing.T) {
+	// NOT t.Parallel — captureLogOutput swaps global log.Default()
+	// writer; concurrent tests would race on it.
+	logBuf, restoreLog := captureLogOutput(t)
+	defer restoreLog()
+
+	base, injects, _ := newFakeDaemon(t)
+	inj, err := newInjector(injectorConfig{daemonURL: base, bearerToken: "tok", assertedCaller: "sre@example.com"})
+	if err != nil {
+		t.Fatalf("newInjector: %v", err)
+	}
+	dedup, _ := newDedupCache(5*time.Minute, "")
+	disp := &dispatcher{
+		filter:   newFilter(newFilterConfig(nil, nil, nil, 0)),
+		dedup:    dedup,
+		injector: inj,
+		metrics:  newMetrics(),
+		cluster:  "test-cluster",
+		mode:     "per-incident",
+	}
+	disp.Dispatch(context.Background(), TriageEvent{
+		Key:       EventKey{UID: "u42", Reason: "ImagePullBackOff"},
+		Namespace: "online-boutique",
+		Name:      "paymentservice-abc123",
+	})
+	if len(*injects) != 1 {
+		t.Fatalf("expected 1 inject; got %d", len(*injects))
+	}
+	log := logBuf.String()
+	// Every field the operator actually needs — reason, target,
+	// resulting sid, mode — must appear.
+	wantSubstrings := []string{"fire ImagePullBackOff", "pod=online-boutique/paymentservice-abc123", "sid=", "mode=per-incident"}
+	for _, s := range wantSubstrings {
+		if !strings.Contains(log, s) {
+			t.Errorf("fire log missing %q; got: %q", s, log)
+		}
+	}
+}
+
+// TestDispatcher_LogsDedupOnSuppress verifies the "dedup <reason>
+// pod=<ns>/<name> (count=N, window active)" line fires when the
+// same key repeats within the dedup window. Makes suppressed
+// events visible so operators can distinguish "watcher missed
+// the event" from "watcher saw + correctly deduped".
+func TestDispatcher_LogsDedupOnSuppress(t *testing.T) {
+	// NOT t.Parallel — see captureLogOutput note.
+	logBuf, restoreLog := captureLogOutput(t)
+	defer restoreLog()
+
+	base, injects, _ := newFakeDaemon(t)
+	inj, _ := newInjector(injectorConfig{daemonURL: base, bearerToken: "tok", assertedCaller: "sre@example.com"})
+	dedup, _ := newDedupCache(5*time.Minute, "")
+	disp := &dispatcher{
+		filter:   newFilter(newFilterConfig(nil, nil, nil, 0)),
+		dedup:    dedup,
+		injector: inj,
+		metrics:  newMetrics(),
+		cluster:  "test-cluster",
+		mode:     "per-incident",
+	}
+	ev := TriageEvent{
+		Key:       EventKey{UID: "u7", Reason: "CrashLoopBackOff"},
+		Namespace: "default",
+		Name:      "flappy-pod",
+	}
+	ctx := context.Background()
+	// First fire → dispatch → inject (no dedup log)
+	disp.Dispatch(ctx, ev)
+	// Reset log buffer so we only inspect the second-dispatch output.
+	logBuf.Reset()
+	// Second fire in the same window → dedup path
+	disp.Dispatch(ctx, ev)
+	if len(*injects) != 1 {
+		t.Fatalf("expected 1 inject (second suppressed); got %d", len(*injects))
+	}
+	log := logBuf.String()
+	wantSubstrings := []string{"dedup CrashLoopBackOff", "pod=default/flappy-pod", "count=2", "window active"}
+	for _, s := range wantSubstrings {
+		if !strings.Contains(log, s) {
+			t.Errorf("dedup log missing %q; got: %q", s, log)
+		}
+	}
+	// Fire log must NOT appear on the suppressed second dispatch.
+	if strings.Contains(log, "fire CrashLoopBackOff") {
+		t.Errorf("suppressed dispatch should not emit a fire log; got: %q", log)
+	}
+}
+
+// captureLogOutput swaps log.Default()'s writer for a bytes.Buffer
+// and returns (buffer, restore-fn). Used by dispatcher-log tests.
+func captureLogOutput(t *testing.T) (*bytes.Buffer, func()) {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	prev := log.Writer()
+	prevFlags := log.Flags()
+	log.SetOutput(buf)
+	// Drop the timestamp prefix so tests can grep for substrings
+	// without hitting date-dependent noise.
+	log.SetFlags(0)
+	return buf, func() {
+		log.SetOutput(prev)
+		log.SetFlags(prevFlags)
 	}
 }
 

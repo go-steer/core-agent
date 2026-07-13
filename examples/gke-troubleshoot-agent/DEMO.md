@@ -14,7 +14,7 @@ Step-by-step runbook for demonstrating the v2.6 k8s triage agent on a real GKE c
 
 1. [Prerequisites](#prerequisites) — checkable one-liners
 2. [One-time setup](#one-time-setup) — cluster + secrets + deploy
-3. [Pre-flight rehearsal](#pre-flight-rehearsal) — 6-step sanity check before going live
+3. [Pre-flight rehearsal](#pre-flight-rehearsal) — 5-step sanity check before going live
 4. [Live demo runbook](#live-demo-runbook) — 6 scenes with commands
 5. [Post-demo teardown](#post-demo-teardown) — clean up
 6. [Troubleshooting](#troubleshooting) — recovery from common failures
@@ -401,37 +401,38 @@ kubectl -n "${DEMO_NS}" logs deployment/k8s-event-watcher --tail=20
 # Should NOT show connection errors to the daemon
 ```
 
-### 5. Verify the GKE MCP server loaded
+### 5. Verify the daemon started clean (no MCP / Vertex init errors)
+
+The daemon logs a fixed set of startup lines and stays quiet on success. There is NO "mcp: gke server ready" or "vertex: model init ok" line to grep for — MCP and Vertex init only surface as `core-agent: mcp: <err>` or `core-agent: <err>` on failure. So the pre-flight check is "grep for known-good startup + assert no error tail."
 
 ```bash
-kubectl -n "${DEMO_NS}" logs deployment/core-agent --tail=200 | grep -i "mcp"
-# Expect: at least one line indicating the "gke" MCP server started
-# successfully (typical shape: "mcp: server \"gke\" ready" or "started").
-# Should NOT see "mcp server \"gke\" failed" or "no mcp.json found".
+kubectl -n "${DEMO_NS}" logs deployment/core-agent --tail=50 > /tmp/daemon.log
 
-# If missing, verify mcp.json is mounted:
-#   kubectl -n "${DEMO_NS}" exec deployment/core-agent -- ls /etc/core-agent/agents
-#   Expect: AGENTS.md, mcp.json, skills/
-# If mcp.json isn't there, re-run `kubectl apply -k <overlay>` — the
-# ConfigMap generator likely didn't pick it up.
+# Expected startup fingerprint (exact strings, one per line):
+grep -q "core-agent: pricing refresh:"        /tmp/daemon.log && echo "✓ pricing refresh"
+grep -q "core-agent: agentic subtasks:"       /tmp/daemon.log && echo "✓ agentic subtasks configured"
+grep -q "core-agent: watchdog:"               /tmp/daemon.log && echo "✓ watchdog running"
+grep -q "core-agent: session db:"             /tmp/daemon.log && echo "✓ session db initialized"
+grep -q "core-agent: attach listener on"      /tmp/daemon.log && echo "✓ attach listener up"
+grep -q "core-agent: --no-repl: attach-only"  /tmp/daemon.log && echo "✓ --no-repl mode confirmed"
+
+# Absence of these is success — the ONLY signal MCP or Vertex init failed:
+!  grep -q "core-agent: mcp:"                 /tmp/daemon.log && echo "✓ no MCP errors"
+!  grep -qiE "permission denied|PERMISSION_DENIED|insufficient authentication scopes" /tmp/daemon.log \
+    && echo "✓ no Vertex auth errors"
+
+rm /tmp/daemon.log
 ```
 
-### 6. Verify Vertex AI auth succeeded
+If a Vertex auth error appears, common causes:
 
-```bash
-kubectl -n "${DEMO_NS}" logs deployment/core-agent --tail=500 | grep -iE "vertex|aiplatform|gemini"
-# Expect: model-init line with success shape (e.g., "model gemini-2.5-flash ready"
-# or first-turn line without a permission error).
-# Should NOT see: "permission denied", "PERMISSION_DENIED",
-# "Request had insufficient authentication scopes".
+- IAM binding hasn't propagated (wait 2 min); OR `roles/aiplatform.user` isn't bound (rerun `./scripts/setup-wif.sh`).
+- WIF isn't wired at cluster level — check `gcloud container clusters describe ... --format='value(workloadIdentityConfig.workloadPool)'`.
+- `iamcredentials.googleapis.com` not enabled — run `gcloud services enable iamcredentials.googleapis.com`.
 
-# Common failures:
-#   - "permission denied" → IAM binding hasn't propagated yet (wait 2 min);
-#      OR roles/aiplatform.user isn't bound (rerun `./scripts/setup-wif.sh`)
-#   - "no credentials found" → WIF isn't wired at cluster level (check
-#      `gcloud container clusters describe ... --format='value(workloadIdentityConfig.workloadPool)'`)
-#   - "iamcredentials API not enabled" → run `gcloud services enable iamcredentials.googleapis.com`
-```
+If an MCP error appears (`core-agent: mcp: <details>`), the message itself names the failing server + reason (auth-scope missing, config parse error, endpoint unreachable).
+
+**True end-to-end signal**: the ONLY way to be certain MCP + Vertex both work is Scene 2 driving an actual triage — the agent's first tool call exercises Vertex, its second-or-third exercises GKE MCP. If the pre-flight above passes and Scene 2 shows the agent calling `gke-mcp: logs.tail` (or similar), everything's wired. Follow-up TODO #211 (E2E recipe smoke test in CI) will close the observability gap by making a scripted-provider deploy pass the "no errors" gate on every PR.
 
 Rehearsal complete. Ready to go live.
 

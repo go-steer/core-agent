@@ -616,6 +616,24 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 		fmt.Fprintf(os.Stderr, "core-agent: skills: %v\n", skillsErr)
 	}
 
+	// Startup config summary (#212 part 1). Emits the resolved state
+	// of every load-bearing subsystem — config source, agentsDir,
+	// model+provider, MCP servers, skills, multi-session auth — so
+	// operators can verify what the daemon actually loaded via a
+	// grep rather than `kubectl debug` + /proc/1/root inspection.
+	// Fires unconditionally at this point (both single-shot -p and
+	// attach modes), independent of the attach branch further down.
+	for _, line := range formatStartupSummary(startupSummaryInputs{
+		cfgPath:      cfgPath,
+		cfg:          cfg,
+		agentsDir:    agentsDir,
+		providerName: provider.Name(),
+		mcpServers:   mcpServers,
+		loadedSkills: loadedSkills,
+	}) {
+		send(line)
+	}
+
 	allToolsets := append([]adktool.Toolset{}, mcpToolsets...)
 	if !loadedSkills.Empty() {
 		allToolsets = append(allToolsets, loadedSkills.Toolset)

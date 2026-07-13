@@ -22,13 +22,41 @@ kind: Kustomization
 resources:
   - ../../base
 
-# Optional: pin image tags. Delete or edit if you want ":latest"
-# (not recommended for production — no reproducibility).
+# Image pinning. Three patterns; pick one per image and edit inline.
+#
+# (A) TAG PINNING — the default. Uses tags published by
+#     .github/workflows/release-images.yml (docker/metadata-action
+#     strips the leading `v`, so the GHCR tag is "2.6.0", not "v2.6.0").
+#     Dev drops publish as e.g. "2.7.0-dev.1"; RCs as "2.7.0-rc.1".
+#     For the recipe's shipped default, prefer a released semver
+#     over :latest so operators get reproducible deploys.
+#
+# (B) DIGEST PINNING — for reproducibility-critical deployments
+#     (SBOM tracking, cosign verification, immutable revs). Mutually
+#     exclusive with newTag under kustomize semantics. Look up the
+#     digest via `crane digest ghcr.io/go-steer/core-agent:2.6.0`
+#     or `docker buildx imagetools inspect ...`.
+#
+# (C) REGISTRY REMAPPING — for private mirrors or self-built images.
+#     Set newName + newTag together. Useful when your cluster can't
+#     reach ghcr.io directly (air-gapped, corporate proxy, etc.).
 images:
+  # (A) tag pinning — recipe default
   - name: ghcr.io/go-steer/core-agent
     newTag: "2.6.0"
   - name: ghcr.io/go-steer/k8s-event-watcher
     newTag: "2.6.0"
+
+  # (B) example — digest pinning (uncomment + comment out (A) above)
+  # - name: ghcr.io/go-steer/core-agent
+  #   digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  # - name: ghcr.io/go-steer/k8s-event-watcher
+  #   digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+  # (C) example — private mirror
+  # - name: ghcr.io/go-steer/core-agent
+  #   newName: my-registry.internal/mirrors/core-agent
+  #   newTag: "2.6.0"
 
 # Uncomment to add your organization's namespace prefix or
 # per-cluster labels:

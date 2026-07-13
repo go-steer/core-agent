@@ -484,13 +484,16 @@ kubectl -n "${TARGET_NS}" set image deployment/demo-webapp \
 
 **Say**: "That deploy just pointed at a nonexistent image tag. In a real environment this happens all the time — bad CI, typo in a manifest, image mirror out of sync. In ~30 seconds kubelet will emit an `ImagePullBackOff` event. My sidecar is watching that event stream."
 
-**Watch in Pane C**: within ~30s, watcher log shows the inject firing.
+**Watch in Pane A** (TUI): within ~30s, a new session appears in the picker. The watcher itself is silent on successful inject (see [#212](https://github.com/go-steer/core-agent/issues/212) — until that lands, "did the sidecar fire" is best answered by "did a new session appear in the daemon"). Alternative confirmations:
 
-```
-k8s-event-watcher: fire ImagePullBackOff (namespace=default, name=demo-webapp-...)
-```
+```bash
+# The kubernetes Event that triggered the inject (source truth)
+kubectl -n "${TARGET_NS}" get events --field-selector reason=Failed --sort-by='.lastTimestamp' | tail -3
 
-**Watch in Pane A** (TUI): new session appears in the picker.
+# Watcher counters (namespace of the DAEMON, not the target workload)
+kubectl -n "${DEMO_NS}" port-forward deployment/k8s-event-watcher 9090:9090 &
+curl -s http://localhost:9090/metrics | grep -E "watcher_events_(matched|injected)_total"
+```
 
 ### Scene 3 — Agent auto-triages (4-5 min)
 
@@ -735,7 +738,7 @@ If they differ, the Secret was created with old tokens. Rerun setup step 3.
 ### Agent doesn't fire on the injected failure
 
 Two possibilities:
-1. **Sidecar didn't see the event**. Check: `kubectl -n "${DEMO_NS}" logs deployment/k8s-event-watcher --tail=50`. Look for `fire ImagePullBackOff` or similar.
+1. **Sidecar didn't see the event**. The watcher is silent on successful inject (fixed by [#212](https://github.com/go-steer/core-agent/issues/212)), so check the metrics endpoint instead: `kubectl -n "${DEMO_NS}" port-forward deployment/k8s-event-watcher 9090:9090 & sleep 2 && curl -s http://localhost:9090/metrics | grep -E "watcher_events_(seen|matched|injected|deduped)_total"`. If `matched` incremented but `injected` didn't, the daemon POST failed (check the watcher log for the error line). If `seen` incremented but `matched` didn't, the event was filtered out. If nothing incremented, the k8s event never landed — check `kubectl -n "${TARGET_NS}" get events` directly.
 2. **Sidecar saw + injected but daemon rejected**. Check daemon logs: `kubectl -n "${DEMO_NS}" logs deployment/core-agent --tail=100 | grep -i inject`.
 
 If neither log shows the event, the failure hasn't emitted the expected `reason`. Check what reason kubelet actually used:

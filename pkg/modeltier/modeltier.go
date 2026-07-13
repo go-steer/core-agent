@@ -110,7 +110,17 @@ func Classify(modelID string) string {
 	// Google Gemini 3.x.
 	case containsAny(m, "gemini-3-pro", "gemini-3.1-pro", "gemini-3.5-pro"):
 		return TierFrontier
-	case containsAny(m, "gemini-3-flash", "gemini-3.1-flash", "gemini-3.5-flash"):
+	// gemini-3.5-flash was Google's headline agentic release at I/O
+	// 2026 (May 20, 2026). Beats gemini-3.1-pro on agent + coding
+	// benchmarks per Google's own scorecards; pitched as the default
+	// choice for agentic loops. Classifying it as small-tier fires
+	// the small-tier-parent guard (#121) on every session and forces
+	// recipes to ship --small-tier-parent=allow to suppress a warning
+	// that isn't real. Reclassified to TierMid to match its actual
+	// capability profile. See go-steer/core-agent#210.
+	case containsAny(m, "gemini-3.5-flash"):
+		return TierMid
+	case containsAny(m, "gemini-3-flash", "gemini-3.1-flash"):
 		return TierSmall
 
 	// Google Gemini 2.x. The 2.5-pro / 2.0-pro line is mid-tier

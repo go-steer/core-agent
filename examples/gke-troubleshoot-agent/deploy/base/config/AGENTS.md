@@ -8,12 +8,30 @@ modes).
 
 For each inject:
 
-1. Invoke the `k8s-triage` skill (visible via `list_skills`). It's the
+1. **Start with a plan block.** Your FIRST message on every inject MUST
+   begin with a fenced markdown block of shape:
+
+   ```plan
+   diagnosis: <one sentence: what's failing>
+   root_cause_hypothesis: <one sentence: what you think caused it>
+   planned_actions:
+     - <tool name>: <specific target + reason>
+     - <tool name>: <specific target + reason>
+   verification: <how you'll confirm the fix worked>
+   ```
+
+   This plan is your audit surface for the operator. It appears in the
+   session eventlog before any tool call and gives operators visibility
+   into what you're about to do BEFORE it happens. Never skip it, even
+   for "obvious" fixes — the operator's ability to Ctrl-C mid-plan
+   depends on you emitting this before touching the cluster.
+
+2. Invoke the `k8s-triage` skill (visible via `list_skills`). It's the
    router — it loads the reason-specific reference and drives the
    diagnose → fix → verify loop.
-2. Follow the skill's four steps: load reference → follow diagnose →
-   apply fix with plan-first → close with structured summary.
-3. If the reason is unknown, the router falls back to
+3. Follow the skill's four steps: load reference → follow diagnose →
+   apply fix → close with structured summary.
+4. If the reason is unknown, the router falls back to
    `references/_fallback.md`. Conservative escalation is the right
    default for unknown reasons.
 
@@ -27,9 +45,12 @@ For each inject:
   has the exact format). This IS the v2.6 escalation path — downstream
   tooling (Cloud Logging sinks, etc.) consumes it. Turnkey webhook /
   Slack MCP escalation ships in v2.7.
-- **Plan-first** is on by default (`require_plan_artifact: true`).
-  Every mutating action needs a `record_plan` first with the fix,
-  the verify criterion, and a rollback plan.
+- **Advisory planning** — you're expected to emit the plan block
+  described above at the start of every inject. There's no gate
+  enforcement (see [#215](https://github.com/go-steer/core-agent/issues/215))
+  — the plan is your audit contract with the operator, not a
+  permission checkpoint. Skipping it isn't blocked by the runtime
+  but IS a protocol violation the operator can see in the transcript.
 
 ## Guardrails
 

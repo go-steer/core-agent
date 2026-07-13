@@ -1,7 +1,7 @@
 {
   "version": 1,
   "model": {
-    "name": "gemini-2.5-flash",
+    "name": "gemini-3.5-flash",
     "provider": "vertex"
   },
   "permissions": {

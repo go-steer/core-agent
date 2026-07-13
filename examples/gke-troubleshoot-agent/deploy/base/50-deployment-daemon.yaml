@@ -176,17 +176,18 @@ spec:
             - name: session-db
               mountPath: /var/lib/core-agent
           readinessProbe:
-            httpGet:
-              path: /sessions
+            # TCP probe: passes as soon as :7777 accepts a connection —
+            # which is when the attach listener is actually up. That's
+            # what "ready to serve" means for this daemon.
+            #
+            # An earlier revision used an HTTP GET /sessions probe with
+            # a deliberately-invalid Bearer token, on the (incorrect)
+            # assumption that kubelet treats 401 as healthy. It doesn't
+            # — HTTP probes count only 2xx/3xx as success. Until the
+            # daemon exposes an unauthenticated /healthz endpoint we
+            # can probe, TCP is the correct choice.
+            tcpSocket:
               port: attach
-              httpHeaders:
-                - name: Authorization
-                  value: "Bearer probe-token-never-valid"
-            # A 401 from the auth surface is proof of life; the probe
-            # doesn't need to pass auth. Any HTTP response counts as
-            # "the listener is up." Kubelet treats 401 as healthy per
-            # the standard http-probe semantics (2xx / 3xx pass; we
-            # avoid making the probe carry a real token).
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:

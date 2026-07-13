@@ -7,6 +7,9 @@
   "permissions": {
     "mode": "yolo"
   },
+  "tools": {
+    "disable": ["bash", "write_file", "edit_file", "delete_file"]
+  },
   "attach": {
     "listen": "0.0.0.0:7777",
     "multi_session": {

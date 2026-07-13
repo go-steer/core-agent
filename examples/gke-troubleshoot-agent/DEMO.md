@@ -181,12 +181,21 @@ cp -r examples/gke-troubleshoot-agent/deploy "${DEMO_DEPLOY_DIR}"
 sed -i "s/prod-us-central1/${CLUSTER_NAME}/" \
     "${DEMO_OVERLAY_DIR}/patch-watcher-cluster-name.yaml"
 
-# Confirm the substitution took (guards against a future rename of
-# the placeholder string in the source overlay).
+# Substitute AGENTS.md placeholders — the agent needs to know your
+# actual project + cluster + region for every gke-mcp call. Without
+# these, the model hallucinates plausible-looking-but-wrong IDs and
+# every MCP call returns 403.
+sed -i "s|__GCP_PROJECT__|${PROJECT_ID}|g;s|__GKE_CLUSTER__|${CLUSTER_NAME}|g;s|__GKE_LOCATION__|${REGION}|g" \
+    "${DEMO_DEPLOY_DIR}/base/config/AGENTS.md"
+
+# Confirm the substitutions took.
 grep -q -- "--cluster-name=${CLUSTER_NAME}" \
     "${DEMO_OVERLAY_DIR}/patch-watcher-cluster-name.yaml" \
-    && echo "✓ cluster name patched" \
+    && echo "✓ cluster name patched (watcher)" \
     || (echo "✗ placeholder 'prod-us-central1' not found in patch file — check the source overlay"; false)
+grep -q "${PROJECT_ID}" "${DEMO_DEPLOY_DIR}/base/config/AGENTS.md" \
+    && echo "✓ project ID patched (AGENTS.md)" \
+    || (echo "✗ project ID not substituted into AGENTS.md — check the source"; false)
 
 # Create only the namespace here. Full `apply -k` (which creates the
 # Deployments that mount the Secrets) waits until step 4, AFTER

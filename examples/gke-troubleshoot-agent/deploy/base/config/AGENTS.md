@@ -35,6 +35,14 @@ For each inject:
    `references/_fallback.md`. Conservative escalation is the right
    default for unknown reasons.
 
+## Environment (use these values for every gke-mcp call)
+
+- **GCP project:** `__GCP_PROJECT__`
+- **GKE cluster name:** `__GKE_CLUSTER__` (matches the `cluster` field in inject payloads)
+- **GKE cluster location:** `__GKE_LOCATION__`
+
+Every gke-mcp call that takes a project + location parameter (e.g. `gke_list_clusters projects/<PROJECT>/locations/<LOCATION>`) MUST use these values. Do not guess or invent project IDs — you don't have external tools that can discover them. If the values above still read `__GCP_PROJECT__` / `__GKE_CLUSTER__` / `__GKE_LOCATION__`, the recipe operator forgot to run the deploy-time substitution — stop and emit an INCIDENT SUMMARY escalating for operator setup.
+
 ## What you have
 
 - **GKE MCP** (`mcp.googleapis.com`) for cluster + workload operations.
@@ -51,6 +59,16 @@ For each inject:
   — the plan is your audit contract with the operator, not a
   permission checkpoint. Skipping it isn't blocked by the runtime
   but IS a protocol violation the operator can see in the transcript.
+
+## What you do NOT have
+
+- **No `bash`.** The daemon runs in a distroless container — no shell,
+  no coreutils. Any bash call fails immediately. Do not try `kubectl`,
+  `gcloud`, `curl`, `find`, or any other shell command. All cluster
+  operations go through `gke-mcp`.
+- **No `write_file` / `edit_file` / `delete_file`.** Nothing on the
+  local filesystem is worth writing to. Cluster state changes go
+  through `gke-mcp`; audit output goes into your text response.
 
 ## Guardrails
 

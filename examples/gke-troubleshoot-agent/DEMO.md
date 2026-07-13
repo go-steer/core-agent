@@ -152,17 +152,35 @@ Execute once per cluster. If re-running (fresh cluster after teardown), redo eve
 
 ### 1. Create namespace + service accounts + RBAC
 
-```bash
-# Copy the example overlay to your own working dir
-cp -r examples/gke-troubleshoot-agent/deploy/overlays/example \
-      examples/gke-troubleshoot-agent/deploy/overlays/demo
+Copy the example overlay to a scratch dir outside the repo, patch the cluster name into the watcher-arg placeholder, and apply from the scratch dir. This keeps the repo tree clean (no post-run `git status` surprises) and matches the demo's convention of putting throwaway state under `/tmp`.
 
-# Edit the cluster name in the watcher patch
+```bash
+# Scratch deploy tree lives outside the repo — nothing here is tracked.
+# We copy the whole deploy/ tree (base + overlays) so the overlay's
+# relative `resources: [../../base]` reference still resolves. Kustomize
+# rejects absolute paths as resources for security reasons, so keeping
+# the relative layout intact is simpler than working around the restriction.
+export DEMO_DEPLOY_DIR="/tmp/core-agent-demo/deploy"
+export DEMO_OVERLAY_DIR="${DEMO_DEPLOY_DIR}/overlays/example"
+mkdir -p "$(dirname "${DEMO_DEPLOY_DIR}")"
+rm -rf "${DEMO_DEPLOY_DIR}"
+cp -r examples/gke-troubleshoot-agent/deploy "${DEMO_DEPLOY_DIR}"
+
+# Substitute the placeholder cluster name (kustomize itself is
+# non-templating — the placeholder lives in the checked-in patch
+# file and we rewrite it in the scratch copy at apply time).
 sed -i "s/prod-us-central1/${CLUSTER_NAME}/" \
-    examples/gke-troubleshoot-agent/deploy/overlays/demo/patch-watcher-cluster-name.yaml
+    "${DEMO_OVERLAY_DIR}/patch-watcher-cluster-name.yaml"
+
+# Confirm the substitution took (guards against a future rename of
+# the placeholder string in the source overlay).
+grep -q -- "--cluster-name=${CLUSTER_NAME}" \
+    "${DEMO_OVERLAY_DIR}/patch-watcher-cluster-name.yaml" \
+    && echo "✓ cluster name patched" \
+    || (echo "✗ placeholder 'prod-us-central1' not found in patch file — check the source overlay"; false)
 
 # Apply base resources (namespace, SAs, ClusterRole, CRB, PVC, Deployments, Service)
-kubectl apply -k examples/gke-troubleshoot-agent/deploy/overlays/demo
+kubectl apply -k "${DEMO_OVERLAY_DIR}"
 
 # Wait for namespace to exist
 kubectl wait --for=condition=Established --timeout=30s crd/managed-fields 2>/dev/null || true
@@ -300,7 +318,7 @@ If non-zero, clean up: kill lingering sessions from prior rehearsals.
 # Nuke the eventlog for a clean start (aggressive; do only during rehearsal)
 kubectl -n "${DEMO_NS}" scale deployment/core-agent --replicas=0
 kubectl -n "${DEMO_NS}" delete pvc core-agent-session-db
-kubectl apply -k examples/gke-troubleshoot-agent/deploy/overlays/demo   # recreates PVC
+kubectl apply -k "${DEMO_OVERLAY_DIR:-/tmp/core-agent-demo/overlay}"   # recreates PVC
 kubectl -n "${DEMO_NS}" scale deployment/core-agent --replicas=1
 kubectl -n "${DEMO_NS}" rollout status deployment/core-agent
 ```
@@ -563,8 +581,14 @@ kubectl -n "${TARGET_NS}" delete pod demo-crash --ignore-not-found
 # Optional: wipe the eventlog for a clean state
 kubectl -n "${DEMO_NS}" scale deployment/core-agent --replicas=0
 kubectl -n "${DEMO_NS}" delete pvc core-agent-session-db
-kubectl apply -k examples/gke-troubleshoot-agent/deploy/overlays/demo
+kubectl apply -k "${DEMO_OVERLAY_DIR:-/tmp/core-agent-demo/overlay}"
 kubectl -n "${DEMO_NS}" scale deployment/core-agent --replicas=1
+```
+
+Wipe the scratch deploy tree (safe — it's just a working copy of the tracked `deploy/` tree):
+
+```bash
+rm -rf "${DEMO_DEPLOY_DIR:-/tmp/core-agent-demo/deploy}"
 ```
 
 Full cluster teardown (only if the demo cluster is single-purpose):
@@ -594,7 +618,7 @@ Common causes:
 The ConfigMap didn't materialize. Re-run:
 
 ```bash
-kubectl apply -k examples/gke-troubleshoot-agent/deploy/overlays/demo
+kubectl apply -k "${DEMO_OVERLAY_DIR:-/tmp/core-agent-demo/overlay}"
 kubectl -n "${DEMO_NS}" get configmap core-agent-config core-agent-agents
 ```
 

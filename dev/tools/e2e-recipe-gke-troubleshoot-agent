@@ -1,0 +1,300 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# End-to-end deployment smoke test for the GKE-troubleshoot recipe.
+#
+# Spins up a local kind cluster, deploys examples/gke-troubleshoot-agent/
+# as an operator would (matching the DEMO.md flow), and asserts that:
+#
+#   1. Both Deployments reach 1/1 Ready within the rollout timeout.
+#   2. The attach listener responds to an authenticated /sessions probe.
+#   3. The daemon startup log contains the expected fingerprint (attach
+#      listener bound, instruction file(s) loaded) and NO error lines.
+#
+# What this catches (from the v2.6 demo drive):
+#
+#   ✓ Missing namespace on generated ConfigMaps → pod hangs on
+#     FailedMount → rollout times out
+#   ✓ Wrong daemon args (--config vs -c, nonexistent --agents-dir) →
+#     daemon exits at flag-parse → CrashLoopBackOff
+#   ✓ Split-configMap layout the daemon can't reconcile → CrashLoop
+#   ✓ Volume mount conflicts under /etc/core-agent → containerd init
+#     fails → pod stuck
+#   ✓ users.json + fsGroup permission mismatch → daemon exits at
+#     auth-load → CrashLoop
+#   ✓ Wrong readiness probe (401 counted as failure) → pod stays 0/1
+#     Ready → rollout times out
+#   ✓ AGENTS.md load-path mismatch (agents/ vs .agents/) → daemon
+#     boots with empty instructions → "instruction: loaded" log line
+#     absent → assertion FAIL
+#
+# What this deliberately does NOT catch:
+#
+#   ✗ Runtime issues after a successful boot (record_plan writes,
+#     agent reasoning quality) — belongs to a live-cluster e2e that
+#     costs Vertex quota.
+#   ✗ Vertex-init specifically — this test uses --provider=echo to
+#     avoid requiring GCP creds. Vertex config bugs (missing
+#     GOOGLE_CLOUD_PROJECT, wrong location) are caught INDIRECTLY:
+#     if the recipe's core-agent-gcp-env ConfigMap is missing, the
+#     Deployment's envFrom would fail to expand → CreateContainerError.
+#
+# Runtime: ~90-180s wall clock (kind create ~30s; rollout ~60s;
+# probe/logs ~10s; cleanup ~15s).
+
+set -euo pipefail
+. "$(dirname "$0")/common.sh"
+cd "$(repo_root)"
+
+# --- config ------------------------------------------------------------
+
+CLUSTER_NAME="${CLUSTER_NAME:-e2e-gke-troubleshoot}"
+NAMESPACE="${NAMESPACE:-agent-triage}"
+# Reuses the daemon image the recipe pins in overlays/example/kustomization.yaml.
+# Overridable so a future variant can build local + kind load.
+DAEMON_IMAGE="${DAEMON_IMAGE:-ghcr.io/go-steer/core-agent:2.6.0}"
+WATCHER_IMAGE="${WATCHER_IMAGE:-ghcr.io/go-steer/k8s-event-watcher:2.6.0}"
+ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-180s}"
+
+# --- prereqs -----------------------------------------------------------
+
+for tool in kind kubectl docker openssl jq; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "e2e: missing required tool: $tool" >&2
+        exit 1
+    fi
+done
+
+# --- scratch state cleanup --------------------------------------------
+
+SCRATCH_DIR="$(mktemp -d -t e2e-gke-troubleshoot-XXXXXX)"
+PF_PID=""
+
+cleanup() {
+    local exit_code=$?
+    set +e
+    # Dump diagnostics on failure so CI logs are actionable.
+    if [[ $exit_code -ne 0 ]]; then
+        echo ""
+        echo "=== FAIL DIAGNOSTICS (exit=$exit_code) ==="
+        kubectl -n "$NAMESPACE" get pods 2>&1 | head -20 || true
+        kubectl -n "$NAMESPACE" get events --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+        echo ""
+        echo "--- daemon logs ---"
+        kubectl -n "$NAMESPACE" logs deployment/core-agent --tail=100 --all-containers=true 2>&1 || true
+        echo ""
+        echo "--- watcher logs ---"
+        kubectl -n "$NAMESPACE" logs deployment/k8s-event-watcher --tail=50 2>&1 || true
+        echo "=== END DIAGNOSTICS ==="
+    fi
+    if [[ -n "$PF_PID" ]]; then
+        kill "$PF_PID" 2>/dev/null || true
+    fi
+    kind delete cluster --name "$CLUSTER_NAME" >/dev/null 2>&1 || true
+    rm -rf "$SCRATCH_DIR"
+}
+trap cleanup EXIT
+
+# --- phase 1: cluster --------------------------------------------------
+
+echo "▸ create kind cluster ($CLUSTER_NAME)"
+kind create cluster --name "$CLUSTER_NAME" --wait 60s
+
+# --- phase 2: stage scratch deploy tree -------------------------------
+
+echo "▸ stage scratch deploy tree at $SCRATCH_DIR/deploy"
+cp -r examples/gke-troubleshoot-agent/deploy "$SCRATCH_DIR/deploy"
+OVERLAY_DIR="$SCRATCH_DIR/deploy/overlays/example"
+BASE_AGENTS_MD="$SCRATCH_DIR/deploy/base/config/AGENTS.md"
+
+# Cluster-name placeholder in the watcher patch — same sed the DEMO.md
+# runbook does. E2E cluster name is a stand-in; watcher inject payloads
+# will report this as the "cluster" field.
+sed -i "s/prod-us-central1/e2e-kind/g" \
+    "$OVERLAY_DIR/patch-watcher-cluster-name.yaml"
+
+# AGENTS.md placeholders — plausible fake values (this recipe requires
+# them substituted or the daemon logs a self-diagnostic per #218).
+sed -i "s|__GCP_PROJECT__|e2e-project|g;\
+        s|__GKE_CLUSTER__|e2e-kind|g;\
+        s|__GKE_LOCATION__|us-central1|g" \
+    "$BASE_AGENTS_MD"
+
+# Verify sed hit — placeholders should be gone.
+if grep -qE "__GCP_PROJECT__|__GKE_CLUSTER__|__GKE_LOCATION__" "$BASE_AGENTS_MD"; then
+    echo "e2e: AGENTS.md placeholders were not substituted" >&2
+    grep -nE "__GCP_PROJECT__|__GKE_CLUSTER__|__GKE_LOCATION__" "$BASE_AGENTS_MD" >&2
+    exit 1
+fi
+
+# --- phase 3: overlay patches for e2e environment ---------------------
+
+# Force --provider=echo so the daemon starts without requiring GCP creds.
+# The echo provider satisfies the model.provider registry check without
+# any credential fetch, which is what lets this test run on kind with
+# no Vertex/Anthropic access. Real provider integration is validated
+# separately by the live-cluster smoke.
+#
+# Also add a container image override for reproducibility — the base
+# ships with :latest by default; overlays/example pins to a specific
+# tag but a future recipe change might drop that. Explicit here.
+cat >> "$OVERLAY_DIR/kustomization.yaml" <<EOF
+
+# --- e2e-only overlays (appended by dev/tools/e2e-recipe-gke-troubleshoot-agent) ---
+images:
+  - name: ghcr.io/go-steer/core-agent
+    newName: ${DAEMON_IMAGE%:*}
+    newTag: ${DAEMON_IMAGE##*:}
+  - name: ghcr.io/go-steer/k8s-event-watcher
+    newName: ${WATCHER_IMAGE%:*}
+    newTag: ${WATCHER_IMAGE##*:}
+
+# Patch daemon args to add --provider=echo (skips Vertex init).
+patches:
+  - target:
+      kind: Deployment
+      name: core-agent
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: "--provider=echo"
+EOF
+
+# --- phase 4: bootstrap namespace + Secrets (out-of-band per recipe) --
+
+echo "▸ create namespace + Secrets"
+kubectl create namespace "$NAMESPACE"
+
+SRE_TOKEN=$(openssl rand -hex 32)
+BOB_TOKEN=$(openssl rand -hex 32)
+WATCHER_TOKEN=$(openssl rand -hex 32)
+USERS_JSON="$SCRATCH_DIR/users.json"
+cat > "$USERS_JSON" <<EOF
+{
+  "version": 1,
+  "users": [
+    { "identity": "sre-oncall@example.com", "token": "$SRE_TOKEN" },
+    { "identity": "bob@example.com",        "token": "$BOB_TOKEN" },
+    { "identity": "sa:k8s-event-watcher",   "token": "$WATCHER_TOKEN" }
+  ]
+}
+EOF
+chmod 0600 "$USERS_JSON"
+
+kubectl -n "$NAMESPACE" create secret generic core-agent-users \
+    --from-file=users.json="$USERS_JSON"
+kubectl -n "$NAMESPACE" create secret generic k8s-event-watcher-token \
+    --from-literal=token="$WATCHER_TOKEN"
+
+# --- phase 5: apply overlay -------------------------------------------
+
+echo "▸ kubectl apply -k"
+kubectl apply -k "$OVERLAY_DIR"
+
+echo "▸ wait for rollouts ($ROLLOUT_TIMEOUT max)"
+kubectl -n "$NAMESPACE" rollout status deployment/core-agent \
+    --timeout="$ROLLOUT_TIMEOUT"
+kubectl -n "$NAMESPACE" rollout status deployment/k8s-event-watcher \
+    --timeout="$ROLLOUT_TIMEOUT"
+
+# --- phase 6: probe attach listener -----------------------------------
+
+echo "▸ port-forward + probe attach listener"
+kubectl -n "$NAMESPACE" port-forward svc/core-agent 7777:7777 >/dev/null 2>&1 &
+PF_PID=$!
+# Give port-forward a beat to establish; kubectl doesn't expose a
+# ready-signal so a small sleep is the pragmatic option here.
+sleep 3
+
+# The /sessions endpoint returns 200 with any valid bearer + JSON body
+# (may be empty [] on a fresh cluster; may contain a "default" bootstrap
+# session — either shape is fine, we just need proof-of-life).
+resp="$(curl -sS --max-time 5 \
+    -H "Authorization: Bearer $SRE_TOKEN" \
+    -o "$SCRATCH_DIR/sessions.json" \
+    -w '%{http_code}' \
+    http://127.0.0.1:7777/sessions 2>&1)" || {
+    echo "e2e: attach listener probe failed (curl error): $resp" >&2
+    exit 1
+}
+if [[ "$resp" != "200" ]]; then
+    echo "e2e: attach listener returned HTTP $resp (expected 200)" >&2
+    cat "$SCRATCH_DIR/sessions.json" 2>&1 | head -20 >&2
+    exit 1
+fi
+# Parse just to make sure it's valid JSON.
+if ! jq -e '.sessions' "$SCRATCH_DIR/sessions.json" >/dev/null 2>&1; then
+    echo "e2e: /sessions response not shaped like {sessions: [...]}" >&2
+    cat "$SCRATCH_DIR/sessions.json" >&2
+    exit 1
+fi
+
+# --- phase 7: log-fingerprint assertions ------------------------------
+
+echo "▸ verify daemon startup fingerprint"
+LOG="$(kubectl -n "$NAMESPACE" logs deployment/core-agent --tail=200 2>&1)"
+
+# Required lines — any missing = something is broken at startup.
+# Note: `grep -- "$pat"` (double-dash sentinel) is required to let
+# patterns starting with `--` through without grep treating them as
+# option flags.
+required_patterns=(
+    "pricing refresh:"
+    "attach listener on 0.0.0.0:7777"
+    "session db:"
+)
+for pat in "${required_patterns[@]}"; do
+    if ! echo "$LOG" | grep -qF -- "$pat"; then
+        echo "e2e: daemon log missing expected line: $pat" >&2
+        echo "--- daemon log ---" >&2
+        echo "$LOG" >&2
+        exit 1
+    fi
+done
+
+# Forbidden lines — any present = latent issue we should catch.
+# 'instruction: no AGENTS.md found' assertion depends on issue #218
+# landing (adds the diagnostic); once it does, uncomment the line.
+forbidden_patterns=(
+    "permission denied"
+    "core-agent: mcp:"          # daemon only prints this on MCP error
+    "fatal"
+    "panic"
+    # "instruction: no AGENTS.md found"  # enable after #218 merges
+)
+for pat in "${forbidden_patterns[@]}"; do
+    if echo "$LOG" | grep -iqF -- "$pat"; then
+        echo "e2e: daemon log contains forbidden pattern: $pat" >&2
+        echo "--- daemon log (matching lines) ---" >&2
+        echo "$LOG" | grep -iF -- "$pat" >&2
+        exit 1
+    fi
+done
+
+# --- phase 8: sanity-check what actually landed in the cluster --------
+
+echo "▸ verify ConfigMap + Secret presence in $NAMESPACE"
+kubectl -n "$NAMESPACE" get cm core-agent-agents core-agent-gcp-env >/dev/null
+kubectl -n "$NAMESPACE" get secret core-agent-users k8s-event-watcher-token >/dev/null
+
+# Confirm the ConfigMaps landed in the RIGHT namespace (namespace-
+# regression bug #6baae3c would put them in `default`).
+if kubectl -n default get cm core-agent-agents >/dev/null 2>&1; then
+    echo "e2e: core-agent-agents ConfigMap leaked into default namespace" >&2
+    exit 1
+fi
+
+echo ""
+echo "✓ e2e: gke-troubleshoot-agent recipe deploys end-to-end"

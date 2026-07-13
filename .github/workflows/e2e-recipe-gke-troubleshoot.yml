@@ -1,0 +1,105 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: E2E (gke-troubleshoot-agent recipe)
+
+# Runs the recipe end-to-end on a kind cluster whenever anything that
+# could break the recipe's deployment shape changes. Not in the main
+# ci.yml because it's heavier (~2 min including cluster startup +
+# image pulls) and only relevant to a subset of changes.
+#
+# Path filter deliberately narrow — most Go changes don't touch
+# recipe wiring. Adjust the filter here if a future refactor moves
+# recipe-adjacent code somewhere new.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'examples/gke-troubleshoot-agent/**'
+      - 'cmd/core-agent/**'
+      - 'cmd/k8s-event-watcher/**'
+      - 'pkg/config/**'
+      - 'pkg/auth/**'
+      - 'pkg/instruction/**'
+      - 'pkg/attach/**'
+      - 'dev/tools/e2e-recipe-gke-troubleshoot-agent'
+      - 'dev/ci/presubmits/e2e-recipe-gke-troubleshoot-agent'
+      - '.github/workflows/e2e-recipe-gke-troubleshoot.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'examples/gke-troubleshoot-agent/**'
+      - 'cmd/core-agent/**'
+      - 'cmd/k8s-event-watcher/**'
+      - 'pkg/config/**'
+      - 'pkg/auth/**'
+      - 'pkg/instruction/**'
+      - 'pkg/attach/**'
+      - 'dev/tools/e2e-recipe-gke-troubleshoot-agent'
+      - 'dev/ci/presubmits/e2e-recipe-gke-troubleshoot-agent'
+      - '.github/workflows/e2e-recipe-gke-troubleshoot.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    # 10 min is comfortably above the observed p99. Bail if kind create
+    # hangs on a broken runner rather than wait 6h for the GitHub
+    # default to trip.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # Docker is preinstalled on ubuntu-latest runners; kind needs
+      # explicit install. helm/kind-action is the standard idiom and
+      # handles the version pin + registry pull idempotently.
+      - name: Install kind
+        uses: helm/kind-action@v1
+        with:
+          # Skip cluster creation — the e2e script owns cluster
+          # lifecycle so it can clean up on failure via trap.
+          install_only: true
+          version: v0.24.0
+
+      # kubectl comes with kind's install path but pin it explicitly
+      # for reproducibility; version matches what recent GKE clusters
+      # commonly serve.
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.30.0
+
+      # Confirms tooling landed. Cheap sanity check.
+      - name: Tool versions
+        run: |
+          docker --version
+          kind --version
+          kubectl version --client
+          jq --version
+          openssl version
+
+      - name: Run E2E
+        run: dev/ci/presubmits/e2e-recipe-gke-troubleshoot-agent
+
+      # If the E2E fails, the script already dumps pods/events/logs to
+      # stdout via its cleanup trap — captured in the standard job log.
+      # No separate artifact upload needed for a first cut; add one
+      # here if we start needing kubectl-describe outputs across runs.

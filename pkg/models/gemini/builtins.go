@@ -16,6 +16,7 @@ package gemini
 
 import (
 	"context"
+	"errors"
 	"iter"
 
 	adkmodel "google.golang.org/adk/model"
@@ -196,24 +197,99 @@ func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequ
 	}
 
 	inner := l.inner.GenerateContent(ctx, req, stream)
-	if !l.tolerateEmptyChunks || !stream {
-		return inner
-	}
-	// Stream + Vertex: drop ADK's "empty response" chunks so the
-	// stream survives Vertex's heartbeat SSE frames. Caller still
-	// receives every real chunk, and any non-heartbeat error
-	// (network, auth, model failure) propagates untouched.
+	// Both wrappers below track whether the turn emitted anything
+	// usable so we can surface a synthetic error if Vertex/Gemini
+	// returned an empty response without any signaled reason
+	// (#220 — silent-hang bug observed live during v2.6 GKE-
+	// troubleshoot demo drive).
+	return wrapEmptyTailDetection(inner, stream, l.tolerateEmptyChunks)
+}
+
+// wrapEmptyTailDetection wraps a raw model iterator with two
+// invariants:
+//
+//  1. When tolerateEmptyChunks + stream is on, drop ADK's
+//     "empty response" per-chunk errors — those are Vertex
+//     heartbeat SSE frames and the caller shouldn't see them.
+//  2. If the entire iteration completes without emitting a
+//     SINGLE usable response AND without emitting any error,
+//     synthesize ErrEmptyResponse at the tail. This catches the
+//     #220 silent-hang case where the model returns
+//     Content{role:model, parts:nil} with FinishReason=""
+//     ErrorCode="" — ADK forwards as-is, agent loop has no
+//     next action, session goes idle indefinitely.
+//
+// "Usable response" = non-nil response with either non-empty
+// Content.Parts OR a non-empty FinishReason OR a non-empty
+// ErrorCode. A finish reason (even STOP with no parts) counts
+// because that's the model's explicit "I'm done" signal.
+func wrapEmptyTailDetection(inner iter.Seq2[*adkmodel.LLMResponse, error], stream, tolerateEmpty bool) iter.Seq2[*adkmodel.LLMResponse, error] {
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		sawUsable := false
+		sawError := false
 		for resp, err := range inner {
-			if err != nil && err.Error() == adkEmptyResponseError {
+			if err != nil {
+				// Streaming Vertex heartbeats surface as ADK's
+				// "empty response" error — drop them in that
+				// specific configuration (same as before).
+				if tolerateEmpty && stream && err.Error() == adkEmptyResponseError {
+					continue
+				}
+				sawError = true
+				if !yield(resp, err) {
+					return
+				}
 				continue
+			}
+			if isUsableResponse(resp) {
+				sawUsable = true
 			}
 			if !yield(resp, err) {
 				return
 			}
 		}
+		// Tail check: iteration finished without any usable content
+		// AND without any error. This is the exact silent-hang shape
+		// #220 was filed for. Surface as an error so the agent loop
+		// can retry / escalate rather than going idle indefinitely.
+		if !sawUsable && !sawError {
+			yield(nil, ErrEmptyResponse)
+		}
 	}
 }
+
+// isUsableResponse reports whether an LLMResponse carries a real
+// signal — parts, a finish reason, or an error code. Empty-shell
+// responses (heartbeats, aborted streams) return false.
+func isUsableResponse(resp *adkmodel.LLMResponse) bool {
+	if resp == nil {
+		return false
+	}
+	if resp.Content != nil && len(resp.Content.Parts) > 0 {
+		return true
+	}
+	if resp.FinishReason != "" {
+		return true
+	}
+	if resp.ErrorCode != "" || resp.ErrorMessage != "" {
+		return true
+	}
+	return false
+}
+
+// ErrEmptyResponse is surfaced by the Gemini adapter when the
+// model returns no usable content AND no explicit finish reason
+// AND no error — the "silent hang" pattern #220 documents. The
+// error text names the likely upstream causes so operators
+// reading the daemon log get an actionable next step rather than
+// a mystery.
+//
+// Callers (typically the agent loop) may treat this as retryable —
+// empty responses from Vertex are usually transient (safety filter
+// race, streaming truncation, provisional-throughput mismatch). A
+// second attempt often succeeds; a persistent pattern signals a
+// deeper Vertex-side issue worth escalating.
+var ErrEmptyResponse = errors.New("gemini: model returned no usable content with no finish reason and no error — likely a silent safety filter, streaming truncation, or transient Vertex fault; retrying often succeeds")
 
 // adkEmptyResponseError is the literal error text ADK's streaming
 // aggregator (google.golang.org/adk/internal/llminternal) and

@@ -25,6 +25,7 @@ import (
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/adk/tool"
@@ -261,6 +262,15 @@ func transportFor(ctx context.Context, name string, spec ServerSpec) (mcpsdk.Tra
 		if len(headers) > 0 {
 			rt = &headerTransport{base: rt, headers: headers}
 		}
+
+		// OTel wrap outermost so the span covers the full outbound
+		// MCP call (including auth-token attachment + custom headers)
+		// AND traceparent gets injected on every request. This closes
+		// the daemon → MCP-server link in the trace chain started by
+		// the incoming inject request (see pkg/attach/server.go). No-
+		// op when the global tracer provider is noop (telemetry off).
+		// See #217.
+		rt = otelhttp.NewTransport(rt)
 
 		return &mcpsdk.StreamableClientTransport{
 			Endpoint:   spec.URL,

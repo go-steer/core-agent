@@ -26,6 +26,8 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
 	"github.com/go-steer/core-agent/pkg/auth"
 )
 
@@ -322,8 +324,25 @@ func (s *Server) Bind() error {
 		proxyHeader:           s.opts.ProxyHeader,
 	}
 	handler := callerMiddlewareWithConfig(mcfg, s.mux)
+	// Wrap the outermost handler with OTel HTTP instrumentation. This
+	// extracts W3C traceparent from incoming requests (set by the
+	// watcher's otelhttp-wrapped client per #217) and starts a server
+	// span whose context propagates through the middleware chain +
+	// into the handler goroutine — so downstream tool-call / MCP /
+	// Vertex spans nest under the caller's trace. When telemetry is
+	// off (no global tracer provider), the wrapper is a no-op.
+	//
+	// SpanNameFormatter uses the route's method+path pattern for
+	// grep-friendly span names in the collector (e.g. "POST /inject").
+	tracedHandler := otelhttp.NewHandler(
+		cardBypass(s.cardHandler, s.opts.Auth.Middleware(handler)),
+		"daemon.attach",
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+			return r.Method + " " + r.URL.Path
+		}),
+	)
 	s.srv = &http.Server{
-		Handler:           cardBypass(s.cardHandler, s.opts.Auth.Middleware(handler)),
+		Handler:           tracedHandler,
 		TLSConfig:         tlsCfg,
 		ReadHeaderTimeout: 10 * time.Second,
 		// Streaming endpoints have no useful write timeout — SSE

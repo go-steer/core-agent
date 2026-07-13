@@ -33,7 +33,9 @@ import (
 	"context"
 	"fmt"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	adktelemetry "google.golang.org/adk/telemetry"
 )
@@ -52,6 +54,20 @@ const (
 // shutdown returns nil — call sites stay clean either way.
 func Setup(ctx context.Context, mode string) (shutdown func(context.Context) error, err error) {
 	noop := func(context.Context) error { return nil }
+
+	// Register the W3C TextMapPropagator globally REGARDLESS of the
+	// exporter mode. Even with no exporter, downstream code that
+	// starts spans against the noop tracer will produce contexts;
+	// otelhttp middleware needs a propagator to inject/extract
+	// traceparent headers so distributed-trace continuity works the
+	// moment an operator flips exporter to otlp. Registering a
+	// composite of TraceContext (traceparent) + Baggage covers the
+	// W3C shape every OTel-instrumented downstream expects. See #217.
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	))
+
 	switch mode {
 	case "", ModeNone:
 		return noop, nil

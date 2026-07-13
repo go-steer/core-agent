@@ -253,8 +253,13 @@ func TestBuiltinsLLM_SwallowsEmptyResponseHeartbeats_OnVertexStream(t *testing.T
 	// empty Candidates[] (heartbeat-like), which ADK surfaces as
 	// "empty response" errors mid-stream. The wrapper must drop
 	// those frames so the surrounding real chunks reach the caller.
-	r1 := &adkmodel.LLMResponse{}
-	r2 := &adkmodel.LLMResponse{}
+	//
+	// r1 and r2 carry real content (Parts set) so isUsableResponse
+	// classifies them as legitimate — mimics what production Vertex
+	// responses look like between heartbeats. Zero-value LLMResponse
+	// sentinels would trip the #220 empty-tail detection.
+	r1 := &adkmodel.LLMResponse{Content: &genai.Content{Parts: []*genai.Part{{Text: "chunk-1"}}}}
+	r2 := &adkmodel.LLMResponse{Content: &genai.Content{Parts: []*genai.Part{{Text: "chunk-2"}}}}
 	fake := &fakeLLM{
 		events: []fakeEvent{
 			{resp: r1},

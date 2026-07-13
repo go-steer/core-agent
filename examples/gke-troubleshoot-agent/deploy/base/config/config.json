@@ -5,8 +5,7 @@
     "provider": "vertex"
   },
   "permissions": {
-    "mode": "yolo",
-    "require_plan_artifact": true
+    "mode": "yolo"
   },
   "attach": {
     "listen": "0.0.0.0:7777",

@@ -15,6 +15,7 @@
 package tools
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -78,7 +79,7 @@ func RecordPlan(gate *permissions.Gate, agentsDir string) (tool.Tool, error) {
 }
 
 func recordPlanFunc(gate *permissions.Gate, agentsDir string) functiontool.Func[recordPlanArgs, recordPlanResult] {
-	return func(_ tool.Context, in recordPlanArgs) (recordPlanResult, error) {
+	return func(ctx tool.Context, in recordPlanArgs) (recordPlanResult, error) {
 		body := strings.TrimSpace(in.Plan)
 		if body == "" {
 			return recordPlanResult{}, errors.New("record_plan: plan is required (non-empty markdown)")
@@ -100,12 +101,40 @@ func recordPlanFunc(gate *permissions.Gate, agentsDir string) functiontool.Func[
 		if err := atomicWriteFile(path, []byte(body), 0o644); err != nil {
 			return recordPlanResult{}, fmt.Errorf("record_plan: write %s: %w", path, err)
 		}
-		gate.MarkPlanRecorded()
+		markPlanRecorded(ctx, gate)
 		return recordPlanResult{
 			Path:     path,
 			Sequence: seq,
 			Message:  fmt.Sprintf("Plan recorded at %s. Mutating tools are now unblocked for this session. The operator can revoke via /replan, which clears the gate flag and forces a redraft.", path),
 		}, nil
+	}
+}
+
+// markPlanRecorded routes the plan-recorded flip through the per-
+// session sub-gate when one is threaded on ctx (multi-session mode).
+// Falls back to the template gate for single-session paths (direct-
+// attach without DeriveForSession, mock runs, tests) where no session
+// gate is set on ctx.
+//
+// Why this indirection: the captured `template` closure variable in
+// recordPlanFunc is the daemon-wide template gate; every permission
+// check consults resolveSessionGate(ctx) which returns the per-
+// session sub-gate (see pkg/permissions/gate.go). Marking the
+// template WITHOUT marking the session sub-gate produced an infinite
+// loop during the v2.6 GKE-troubleshoot demo drive: record_plan
+// "succeeded" on every call but list_skills / write_file / bash
+// stayed denied because the check-side gate never saw
+// planRecorded=true. Filed as #214.
+//
+// Extracted as its own helper so unit tests can exercise both paths
+// without stubbing the full tool.Context interface.
+func markPlanRecorded(ctx context.Context, template *permissions.Gate) {
+	if sg, ok := permissions.SessionGateFromContext(ctx); ok {
+		sg.MarkPlanRecorded()
+		return
+	}
+	if template != nil {
+		template.MarkPlanRecorded()
 	}
 }
 

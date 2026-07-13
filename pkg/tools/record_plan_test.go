@@ -15,6 +15,7 @@
 package tools
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -89,6 +90,82 @@ func TestRecordPlan_WritesArtifactAndFlipsGate(t *testing.T) {
 	if !strings.HasSuffix(string(body), "\n") {
 		t.Errorf("artifact should end with newline, got %q", body)
 	}
+}
+
+// TestMarkPlanRecorded_RoutesThroughSessionGate is the regression
+// test for #214. Before the fix, recordPlanFunc called
+// `gate.MarkPlanRecorded()` on the closure-captured TEMPLATE gate,
+// but every permission check goes through the per-SESSION sub-gate
+// (via resolveSessionGate(ctx) in pkg/permissions/gate.go). The two
+// have independent planRecorded fields, so record_plan wrote plan
+// files but the guard never saw the flip — infinite loop.
+//
+// This test exercises both paths:
+//   - ctx carries a session sub-gate → flip lands on the session
+//     sub-gate (template stays false)
+//   - ctx has no session sub-gate → fall back to template
+func TestMarkPlanRecorded_RoutesThroughSessionGate(t *testing.T) {
+	t.Parallel()
+
+	t.Run("session gate on ctx: session flipped, template untouched", func(t *testing.T) {
+		t.Parallel()
+		template := permissions.New(permissions.Options{RequirePlanArtifact: true})
+		session := template.DeriveForSession("sid-123", nil)
+
+		if template.IsPlanRecorded() {
+			t.Fatal("template starts unrecorded")
+		}
+		if session.IsPlanRecorded() {
+			t.Fatal("session starts unrecorded")
+		}
+
+		ctx := permissions.WithSessionGate(context.Background(), session)
+		markPlanRecorded(ctx, template)
+
+		if !session.IsPlanRecorded() {
+			t.Error("session gate: MarkPlanRecorded should have flipped session sub-gate")
+		}
+		if template.IsPlanRecorded() {
+			t.Error("session gate: template must NOT be flipped when session gate is present (multi-session isolation)")
+		}
+	})
+
+	t.Run("no session gate on ctx: template flipped (fallback path)", func(t *testing.T) {
+		t.Parallel()
+		template := permissions.New(permissions.Options{RequirePlanArtifact: true})
+
+		markPlanRecorded(context.Background(), template)
+
+		if !template.IsPlanRecorded() {
+			t.Error("no session gate: MarkPlanRecorded should have flipped template gate")
+		}
+	})
+
+	t.Run("empty ctx: template flipped (single-user path)", func(t *testing.T) {
+		t.Parallel()
+		template := permissions.New(permissions.Options{RequirePlanArtifact: true})
+
+		// context.TODO() carries no session gate — falls through to
+		// the template. Mirrors the shape existing tests use via
+		// tool.Context(nil), except linter-safe (SA1012 rejects
+		// bare nil contexts). SessionGateFromContext handles the
+		// nil-context case internally at pkg/permissions/session_context.go
+		// so the recordPlanFunc handler stays safe regardless.
+		markPlanRecorded(context.TODO(), template)
+
+		if !template.IsPlanRecorded() {
+			t.Error("empty ctx: MarkPlanRecorded should have flipped template gate")
+		}
+	})
+
+	t.Run("nil template + no session gate: no panic", func(t *testing.T) {
+		t.Parallel()
+		// Defensive coverage — the recordPlanFunc constructor rejects
+		// a nil gate at RecordPlan(), so this path shouldn't be hit
+		// in production. But the helper must not panic if it ever is
+		// (e.g., a future refactor). Just verifies no panic.
+		markPlanRecorded(context.Background(), nil)
+	})
 }
 
 func TestRecordPlan_RejectsEmptyPlan(t *testing.T) {

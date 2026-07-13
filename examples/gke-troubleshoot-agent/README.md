@@ -11,6 +11,11 @@ that recipe first if you haven't already; the concepts (WIF for GKE
 direct binding, kustomize base + overlays, cosign image verification)
 apply here too.
 
+> **Running a live demo?** See [`DEMO.md`](DEMO.md) — a step-by-step
+> runbook (prerequisites + setup + 6-scene walkthrough + teardown +
+> troubleshooting) structured so a human or an agent can execute it
+> top-to-bottom with explicit commands and checkpoints.
+
 ## What you get
 
 1. A `core-agent` Deployment (multi-session enabled, plan-first on,

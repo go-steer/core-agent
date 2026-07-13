@@ -20,6 +20,15 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# Default namespace for all resources — including those emitted by
+# configMapGenerator/secretGenerator. Individual resource YAMLs
+# already hardcode this, but generated ConfigMaps have no such
+# hardcoded namespace; WITHOUT this line they'd land in whatever
+# namespace kubectl defaults to (usually `default`) and the daemon
+# pod would sit in FailedMount indefinitely. Cluster-scoped
+# resources (ClusterRole, ClusterRoleBinding) ignore this field.
+namespace: agent-triage
+
 resources:
   - 00-namespace.yaml
   - 10-serviceaccount-daemon.yaml
@@ -34,23 +43,41 @@ resources:
   # kustomization — they're created out-of-band per the instructions
   # in 20-secrets-placeholder.md.
 
-# ConfigMap for the daemon's config.json.
+# ConfigMap for the .agents/ tree — a single flat ConfigMap holds
+# every file the daemon needs (config.json + AGENTS.md + mcp.json +
+# skills/**). The Deployment's projected volume (see
+# 50-deployment-daemon.yaml) maps each key to its correct subpath.
+#
+# The daemon uses -c=<config.json> to bootstrap and derives its
+# agentsDir from filepath.Dir(that arg), so config.json MUST be a
+# sibling of AGENTS.md / mcp.json / skills/ (same projected volume,
+# same directory). See cmd/core-agent/main.go loadConfig() and the
+# recipe README's "why one configMap" note.
+#
+# k8s ConfigMap keys can't contain "/", so we flatten file paths
+# into safe key names here and reconstitute the tree in the
+# projected volume's items: list.
 configMapGenerator:
-  - name: core-agent-config
-    files:
-      - config.json=config/config.json
-
-  # ConfigMap for the .agents/ tree — a single flat ConfigMap holds
-  # every file the daemon's --agents-dir needs. The Deployment's
-  # projected volume (see 50-deployment-daemon.yaml) maps each key
-  # to its correct subpath (AGENTS.md, skills/k8s-triage/SKILL.md,
-  # skills/k8s-triage/references/*.md).
+  # GCP project + location the daemon uses when initializing the
+  # Vertex client. Consumed via envFrom on the daemon container (see
+  # 50-deployment-daemon.yaml). Defaults work out-of-the-box for the
+  # go-steer demo project; every other operator overrides these via
+  # 'behavior: merge' in their overlay:
   #
-  # k8s ConfigMap keys can't contain "/", so we flatten file paths
-  # into safe key names here and reconstitute the tree in the
-  # projected volume's items: list.
+  #   configMapGenerator:
+  #     - name: core-agent-gcp-env
+  #       behavior: merge
+  #       literals:
+  #         - GOOGLE_CLOUD_PROJECT=my-real-project
+  #         - GOOGLE_CLOUD_LOCATION=us-central1
+  - name: core-agent-gcp-env
+    literals:
+      - GOOGLE_CLOUD_PROJECT=gke-demos-345619
+      - GOOGLE_CLOUD_LOCATION=global
+
   - name: core-agent-agents
     files:
+      - config.json=config/config.json
       - AGENTS.md=config/AGENTS.md
       - mcp.json=config/mcp.json
       - k8s-triage_SKILL.md=config/skills/k8s-triage/SKILL.md

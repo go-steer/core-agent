@@ -38,17 +38,20 @@ images:
 #   environment: prod
 #   team: sre
 
-# Overlay-specific config.json (replaces the base's admin identity +
-# cluster-name references). Uncomment + provide your own config.json
-# to swap in team-specific admin identities, custom idle timeout,
-# etc. The `behavior: replace` semantics require the same generator
-# name as the base ("core-agent-config").
+# Overlay-specific .agents/ tree (replaces the base's admin
+# identity, custom skills, custom mcp.json, etc.). Uncomment +
+# provide the files you want to replace. The `behavior: replace`
+# semantics require the same generator name as the base
+# ("core-agent-agents") — kustomize merges the file list, so you
+# only need to list the files you're overriding, not the whole tree.
 #
 # configMapGenerator:
-#   - name: core-agent-config
+#   - name: core-agent-agents
 #     behavior: replace
 #     files:
 #       - config.json=config/config.json
+#       # - AGENTS.md=config/AGENTS.md
+#       # - mcp.json=config/mcp.json
 #
 # generatorOptions:
 #   disableNameSuffixHash: true

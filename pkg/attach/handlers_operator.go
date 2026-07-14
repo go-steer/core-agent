@@ -51,6 +51,7 @@ func (h *handlers) registerOperatorState(mux *http.ServeMux) {
 	mux.HandleFunc("POST /sessions/{app}/{sid}/pricing/refresh", h.pricingRefreshQualified)
 	mux.HandleFunc("POST /sessions/{app}/{sid}/pricing/set", h.pricingSetQualified)
 	mux.HandleFunc("POST /sessions/{app}/{sid}/reload", h.reloadQualified)
+	mux.HandleFunc("DELETE /sessions/{app}/{sid}", h.deleteSessionQualified)
 
 	// Single-segment shortcut.
 	mux.HandleFunc("GET /sessions/{sid}/usage", h.usageShortcut)
@@ -66,6 +67,7 @@ func (h *handlers) registerOperatorState(mux *http.ServeMux) {
 	mux.HandleFunc("POST /sessions/{sid}/pricing/refresh", h.pricingRefreshShortcut)
 	mux.HandleFunc("POST /sessions/{sid}/pricing/set", h.pricingSetShortcut)
 	mux.HandleFunc("POST /sessions/{sid}/reload", h.reloadShortcut)
+	mux.HandleFunc("DELETE /sessions/{sid}", h.deleteSessionShortcut)
 
 	// PR A3 async slash dispatchers. All synchronous on the wire —
 	// the operator stares at silence until the handler returns. The

@@ -282,8 +282,8 @@ func (r *SessionRegistry) RegisterOwned(ag Registrant, owner string) (*Entry, er
 }
 
 // RegisterOwnedWithCancel is RegisterOwned with a cancel func the
-// registry invokes when the entry is evicted (idle sweep, future
-// DELETE /sessions, or explicit Unregister via UnregisterAndCancel).
+// registry invokes when the entry is evicted (idle sweep,
+// DELETE /sessions via HardDelete, or explicit Unregister).
 // The cancel typically shuts down the session's wake-loop goroutine
 // so it exits cleanly instead of leaking past the session's
 // lifetime.
@@ -356,10 +356,10 @@ func (r *SessionRegistry) registerWithACL(ag Registrant, acl auth.SessionACL, ca
 //
 // Does NOT delete the persisted ACL row when a store is wired —
 // Unregister is about removing the in-memory entry (agent shutdown,
-// future eviction sweep). The ACL row stays on disk so the next
-// Lookup miss can lazily resume the session (Phase 2). For hard
-// removal that also clears the persisted ACL, use a future
-// DELETE /sessions endpoint (out of scope here).
+// eviction sweep). The ACL row stays on disk so the next Lookup
+// miss can lazily resume the session (Phase 2). For hard removal
+// that also clears the persisted ACL — as the DELETE /sessions
+// endpoint requires — use HardDelete.
 func (r *SessionRegistry) Unregister(appName, userID, sessionID string) {
 	r.mu.Lock()
 	key := tripleKey{App: appName, User: userID, SID: sessionID}
@@ -372,6 +372,42 @@ func (r *SessionRegistry) Unregister(appName, userID, sessionID string) {
 	if entry != nil && entry.cancelOnEvict != nil {
 		entry.cancelOnEvict()
 	}
+}
+
+// HardDelete removes the in-memory entry (like Unregister) AND
+// deletes its persisted ACL row when a store is wired, so a
+// subsequent Lookup miss can't lazy-resume the session from
+// persistence. Idempotent — no error when either the in-memory
+// entry or the ACL row is absent.
+//
+// Not cleaned by HardDelete (out of scope; the registry owns
+// session identity, not session data):
+//   - Underlying ADK/SQLite session records (see pkg/eventlog).
+//     They become unreachable via the registry but stay on disk.
+//   - Broadcaster subscribers — the caller must Close the per-
+//     entry broadcaster via BroadcasterPool.Remove.
+//
+// The wake-loop cancel (cancelOnEvict) fires exactly as with
+// Unregister, so goroutines tied to the session exit cleanly.
+func (r *SessionRegistry) HardDelete(ctx context.Context, appName, userID, sessionID string) error {
+	r.mu.Lock()
+	key := tripleKey{App: appName, User: userID, SID: sessionID}
+	entry := r.byTriple[key]
+	delete(r.byTriple, key)
+	aclStore := r.aclStore
+	r.mu.Unlock()
+
+	// Fire cancel outside the lock (same rationale as Unregister).
+	if entry != nil && entry.cancelOnEvict != nil {
+		entry.cancelOnEvict()
+	}
+
+	if aclStore != nil {
+		if err := aclStore.Delete(ctx, appName, userID, sessionID); err != nil {
+			return fmt.Errorf("attach: hard-delete session ACL: %w", err)
+		}
+	}
+	return nil
 }
 
 // Lookup returns the entry for the qualified (appName, sessionID) form.

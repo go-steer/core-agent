@@ -522,6 +522,24 @@ func (p *BroadcasterPool) For(entry *Entry) (*Broadcaster, error) {
 	return b, nil
 }
 
+// Remove pulls the broadcaster for entry out of the pool and
+// returns it, without lazily constructing one on miss. Returns nil
+// when no broadcaster exists (e.g. a session with no subscribers
+// this session). Callers should Close() the returned broadcaster
+// to disconnect active subscribers — used by DELETE /sessions to
+// force-hang up SSE clients streaming the deleted session.
+func (p *BroadcasterPool) Remove(entry *Entry) *Broadcaster {
+	key := tripleKey{App: entry.AppName, User: entry.UserID, SID: entry.SessionID}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	b, ok := p.bcasts[key]
+	if !ok {
+		return nil
+	}
+	delete(p.bcasts, key)
+	return b
+}
+
 // Close stops every broadcaster in the pool. Used by Server.Close.
 func (p *BroadcasterPool) Close() {
 	p.mu.Lock()

@@ -128,12 +128,15 @@ jobs:
     name: version fallback
     runs-on: ubuntu-latest
     steps:
-      # fetch-tags: true so `git tag --list` inside the presubmit
-      # sees the release history. Default checkout only fetches the
-      # single ref, no tags — which would make the presubmit's
-      # "latest release" lookup return empty.
+      # fetch-depth: 0 fetches full history including all tags — the
+      # presubmit's `git tag --list` needs to see release tags to
+      # compute the expected next-target. `fetch-tags: true` alone
+      # was not enough (observed on run 29343455489: post-merge CI
+      # reported "no release tags found" despite the flag being set;
+      # actions/checkout materializes tag REFS but not the objects
+      # they point at without full history).
       - uses: actions/checkout@v4
         with:
-          fetch-tags: true
+          fetch-depth: 0
       - name: Verify version fallback
         run: dev/ci/presubmits/verify-version-fallback

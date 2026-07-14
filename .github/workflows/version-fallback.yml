@@ -1,0 +1,50 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Version fallback
+
+# Runs unconditionally on every PR — including docs-only PRs.
+# `ci.yml` skips markdown-only changes via `paths-ignore`, which is
+# right for the heavy test/lint jobs but wrong for `version
+# fallback`: it's on branch-protection's required-checks list, so a
+# skipped run blocks the merge indefinitely. Splitting it out here
+# keeps the docs-PR path unblocked while preserving the enforcement
+# on code PRs. Job name (`version fallback`) matches what's in
+# branch protection so no settings change is needed.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: version fallback
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 so `git tag --list` inside the presubmit
+      # sees the release history (fetch-tags alone doesn't
+      # materialize tag objects with shallow depth — see #245).
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify version fallback
+        run: dev/ci/presubmits/verify-version-fallback

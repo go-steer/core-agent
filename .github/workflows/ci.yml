@@ -123,3 +123,17 @@ jobs:
           check-latest: true
       - name: Vuln scan
         run: dev/ci/presubmits/verify-vuln
+
+  version:
+    name: version fallback
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-tags: true so `git tag --list` inside the presubmit
+      # sees the release history. Default checkout only fetches the
+      # single ref, no tags — which would make the presubmit's
+      # "latest release" lookup return empty.
+      - uses: actions/checkout@v4
+        with:
+          fetch-tags: true
+      - name: Verify version fallback
+        run: dev/ci/presubmits/verify-version-fallback

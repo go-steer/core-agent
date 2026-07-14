@@ -27,6 +27,7 @@ For attach-mode (`core-agent-tui` remote client) commands, see [Attach mode TUI]
 | Command | Aliases | Effect |
 |---|---|---|
 | `/stats` | | Session token totals, cost, duration, per-model breakdown |
+| `/usage` | | Extended /stats: cached-vs-uncached input tokens, per-turn history, cache-savings vs uncached-reference cost |
 | `/context` | `/boundaries` | Context-management activity: compactions, checkpoints, summarized chars, subtask cost |
 | `/tools` | | List the tools the agent has access to (built-ins + MCP + skills) |
 | `/skills` | | List loaded skills with their trigger descriptions |

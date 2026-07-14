@@ -27,20 +27,47 @@ import (
 
 // Turn captures one model call's resource use. Times are wall clock so
 // summary lines can include session duration without a monotonic ref.
+//
+// InputTokens is the total effective prompt size — for Gemini this
+// matches PromptTokenCount, which already includes any cache-hit tokens
+// (google.golang.org/genai types.go: "the total effective prompt size
+// meaning this includes the number of tokens in the cached content").
+// CachedInputTokens is therefore a subset of InputTokens, not an
+// addition to it. Uncached = InputTokens - CachedInputTokens.
 type Turn struct {
-	Model        string
-	InputTokens  int
-	OutputTokens int
-	CostUSD      float64
-	At           time.Time
+	Model             string
+	InputTokens       int
+	CachedInputTokens int
+	OutputTokens      int
+	ThoughtsTokens    int
+	ToolUseTokens     int
+	CostUSD           float64
+	At                time.Time
 }
 
-// Totals aggregates a slice of Turns.
+// TurnUsage is the per-call token breakdown a provider adapter hands
+// to Tracker.AppendUsage. Provider-independent: adapters normalize
+// their per-response metadata into this shape (see
+// TurnUsageFromGenaiMetadata for the Gemini/Vertex path).
+type TurnUsage struct {
+	InputTokens       int
+	CachedInputTokens int
+	OutputTokens      int
+	ThoughtsTokens    int
+	ToolUseTokens     int
+}
+
+// Totals aggregates a slice of Turns. Cached / thoughts / tool-use
+// mirror the Turn fields so callers projecting Totals into wire
+// formats can render every dimension without walking All().
 type Totals struct {
-	Turns        int
-	InputTokens  int
-	OutputTokens int
-	CostUSD      float64
+	Turns             int
+	InputTokens       int
+	CachedInputTokens int
+	OutputTokens      int
+	ThoughtsTokens    int
+	ToolUseTokens     int
+	CostUSD           float64
 }
 
 // Tracker accumulates per-turn usage for one session.
@@ -75,18 +102,44 @@ func (t *Tracker) SetOnAppend(f func()) {
 	t.mu.Unlock()
 }
 
-// Append records one turn's usage. Cost is computed via the supplied
-// Pricing; pass a zero Pricing to skip cost tracking. If SetOnAppend
-// has been called with a non-nil callback, the callback fires after
-// the new turn is durable in the tracker and the lock has been
-// released.
+// Append records one turn's usage with input/output only. Cost is
+// computed via the supplied Pricing; pass a zero Pricing to skip cost
+// tracking. If SetOnAppend has been called with a non-nil callback,
+// the callback fires after the new turn is durable in the tracker and
+// the lock has been released.
+//
+// Callers that have a full per-turn breakdown (cache hits, thoughts,
+// tool-use) should use AppendUsage instead so the extra dimensions
+// flow through to Totals + wire formats.
 func (t *Tracker) Append(model string, inputTokens, outputTokens int, p Pricing) Turn {
-	turn := Turn{
-		Model:        model,
+	return t.AppendUsage(model, TurnUsage{
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,
-		CostUSD:      p.CostUSD(inputTokens, outputTokens),
-		At:           time.Now(),
+	}, p)
+}
+
+// AppendUsage records one turn's usage with the full per-field
+// breakdown. CachedInputTokens > InputTokens is clamped to InputTokens
+// (defensive against occasional provider quirks where the cached
+// counter over-reports; the input/uncached math must stay non-negative
+// downstream). Cost applies CostUSDWithCache when any cache hits are
+// present so the cached-vs-uncached rate split is reflected in the
+// stored Turn.
+func (t *Tracker) AppendUsage(model string, u TurnUsage, p Pricing) Turn {
+	if u.CachedInputTokens > u.InputTokens {
+		u.CachedInputTokens = u.InputTokens
+	}
+	uncached := u.InputTokens - u.CachedInputTokens
+	cost := p.CostUSDWithCache(uncached, u.CachedInputTokens, u.OutputTokens)
+	turn := Turn{
+		Model:             model,
+		InputTokens:       u.InputTokens,
+		CachedInputTokens: u.CachedInputTokens,
+		OutputTokens:      u.OutputTokens,
+		ThoughtsTokens:    u.ThoughtsTokens,
+		ToolUseTokens:     u.ToolUseTokens,
+		CostUSD:           cost,
+		At:                time.Now(),
 	}
 	t.mu.Lock()
 	t.turns = append(t.turns, turn)
@@ -115,7 +168,10 @@ func (t *Tracker) Totals() Totals {
 	out := Totals{Turns: len(t.turns)}
 	for _, x := range t.turns {
 		out.InputTokens += x.InputTokens
+		out.CachedInputTokens += x.CachedInputTokens
 		out.OutputTokens += x.OutputTokens
+		out.ThoughtsTokens += x.ThoughtsTokens
+		out.ToolUseTokens += x.ToolUseTokens
 		out.CostUSD += x.CostUSD
 	}
 	return out
@@ -138,7 +194,10 @@ func (t *Tracker) TotalsByModel() map[string]Totals {
 		cur := out[x.Model]
 		cur.Turns++
 		cur.InputTokens += x.InputTokens
+		cur.CachedInputTokens += x.CachedInputTokens
 		cur.OutputTokens += x.OutputTokens
+		cur.ThoughtsTokens += x.ThoughtsTokens
+		cur.ToolUseTokens += x.ToolUseTokens
 		cur.CostUSD += x.CostUSD
 		out[x.Model] = cur
 	}

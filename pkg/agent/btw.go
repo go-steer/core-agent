@@ -80,6 +80,7 @@ func (a *Agent) AskSideQuestion(ctx context.Context, question string) (string, e
 	// second internal-LLM caller bypassing the tracker before #61's
 	// fix.
 	var lastIn, lastOut int
+	var lastMeta *genai.GenerateContentResponseUsageMetadata
 	var b strings.Builder
 	for resp, err := range a.model.GenerateContent(ctx, req, false) {
 		if err != nil {
@@ -88,6 +89,7 @@ func (a *Agent) AskSideQuestion(ctx context.Context, question string) (string, e
 		if resp != nil && resp.UsageMetadata != nil {
 			lastIn = int(resp.UsageMetadata.PromptTokenCount)
 			lastOut = int(resp.UsageMetadata.CandidatesTokenCount)
+			lastMeta = resp.UsageMetadata
 		}
 		if resp == nil || resp.Content == nil {
 			continue
@@ -106,7 +108,7 @@ func (a *Agent) AskSideQuestion(ctx context.Context, question string) (string, e
 			}
 		}
 	}
-	a.recordInternalLLMUsage(lastIn, lastOut)
+	a.recordInternalLLMUsage(lastIn, lastOut, lastMeta)
 	out := strings.TrimSpace(b.String())
 	if out == "" {
 		return "", errors.New("agent: AskSideQuestion: model returned no text")

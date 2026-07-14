@@ -329,6 +329,42 @@ func TestAdapter_SlashContext_ReturnsSystemMessage(t *testing.T) {
 	}
 }
 
+func TestAdapter_SlashUsage_ReturnsFormattedBlock(t *testing.T) {
+	t.Parallel()
+	fs := startFakeServer(t)
+	// Two turns: one cold, one warm. RenderUsage should surface the
+	// cache-savings line because the reference cost exceeds the actual.
+	fs.usage = attach.UsageInfo{
+		Overall: attach.UsageTotals{
+			Turns:                    2,
+			InputTokens:              20_000,
+			InputTokensCached:        8_000,
+			InputTokensUncached:      12_000,
+			OutputTokens:             1_000,
+			CostUSD:                  0.0175,
+			CostUSDUncachedReference: 0.030,
+		},
+	}
+
+	parsed, _ := attachclient.ParseURL(fs.URL + "/sessions/s1")
+	client := attachclient.New(parsed, "", 0)
+	a := New(client, "/sessions/s1")
+
+	res, err := a.InvokeSlash(context.Background(), "usage", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sanity: shape check, not full format match (RenderUsage is
+	// exhaustively unit-tested in pkg/attach — this just confirms the
+	// slash dispatch reaches the formatter with real data).
+	if !strings.Contains(res.SystemMessage, "Session totals") {
+		t.Errorf("expected Session totals header:\n%s", res.SystemMessage)
+	}
+	if !strings.Contains(res.SystemMessage, "cache saved") {
+		t.Errorf("expected cache-savings line:\n%s", res.SystemMessage)
+	}
+}
+
 func TestAdapter_SlashAsync_BtwReturnsModal(t *testing.T) {
 	t.Parallel()
 	mux := http.NewServeMux()

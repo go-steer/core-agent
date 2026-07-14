@@ -21,18 +21,23 @@ import (
 	"github.com/go-steer/core-agent/pkg/config"
 )
 
-// Pricing is the per-million-token rate for one model. Both fields are
-// USD per million tokens (the same unit upstream providers publish
-// public list rates in). A zero Pricing carries no useful pricing —
-// callers should distinguish "rate unknown" from "free" (e.g. echo
-// models). See pricing.Rates / pricing.Catalog for the layered
-// resolution behind PriceFor.
+// Pricing is the per-million-token rate for one model. Fields are USD
+// per million tokens (the same unit upstream providers publish public
+// list rates in). CachedInputPerMTok is the reduced rate applied to
+// prompt-cache-hit input tokens — Gemini charges 25% of the base input
+// rate for both implicit and explicit caches. A zero Pricing carries
+// no useful pricing — callers should distinguish "rate unknown" from
+// "free" (e.g. echo models). See pricing.Rates / pricing.Catalog for
+// the layered resolution behind PriceFor.
 type Pricing struct {
-	InputPerMTok  float64
-	OutputPerMTok float64
+	InputPerMTok       float64
+	CachedInputPerMTok float64
+	OutputPerMTok      float64
 }
 
 // IsZero reports whether the rates carry no useful pricing.
+// CachedInputPerMTok isn't part of the check: a row that carries only
+// a cache rate but no base input/output rates is still "unpriced".
 func (p Pricing) IsZero() bool { return p.InputPerMTok == 0 && p.OutputPerMTok == 0 }
 
 // globalCatalog is the package-level pricing catalog consulted by
@@ -68,7 +73,7 @@ func SetCatalog(c *pricing.Catalog) { globalCatalog.Store(c) }
 func PriceFor(modelID string, cfg *config.Config) Pricing {
 	if c := globalCatalog.Load(); c != nil {
 		r, _ := c.Lookup(modelID)
-		return Pricing{InputPerMTok: r.InputPerMTok, OutputPerMTok: r.OutputPerMTok}
+		return ratesToPricing(r)
 	}
 	// Catalog not installed (test / library). Build a one-shot
 	// catalog from cfg + builtin so the answer is consistent with
@@ -77,7 +82,18 @@ func PriceFor(modelID string, cfg *config.Config) Pricing {
 		CfgOverride: cfgToOverride(cfg),
 	})
 	r, _ := c.Lookup(modelID)
-	return Pricing{InputPerMTok: r.InputPerMTok, OutputPerMTok: r.OutputPerMTok}
+	return ratesToPricing(r)
+}
+
+// ratesToPricing projects internal/pricing.Rates into the public
+// Pricing shape. Split out so PriceFor's two code paths stay in
+// lockstep as new rate fields land.
+func ratesToPricing(r pricing.Rates) Pricing {
+	return Pricing{
+		InputPerMTok:       r.InputPerMTok,
+		CachedInputPerMTok: r.CachedInputPerMTok,
+		OutputPerMTok:      r.OutputPerMTok,
+	}
 }
 
 // cfgToOverride extracts the cfg.Model.Pricing map into the
@@ -89,16 +105,34 @@ func cfgToOverride(cfg *config.Config) map[string]pricing.ModelRates {
 	out := make(map[string]pricing.ModelRates, len(cfg.Model.Pricing))
 	for k, v := range cfg.Model.Pricing {
 		out[k] = pricing.ModelRates{
-			InputPerMTok:  v.InputPerMTok,
-			OutputPerMTok: v.OutputPerMTok,
+			InputPerMTok:       v.InputPerMTok,
+			CachedInputPerMTok: v.CachedInputPerMTok,
+			OutputPerMTok:      v.OutputPerMTok,
 		}
 	}
 	return out
 }
 
 // CostUSD returns the dollar cost of (input, output) tokens at p.
+// Treats every input token as uncached — see CostUSDWithCache for the
+// cached-vs-uncached split.
 func (p Pricing) CostUSD(inputTokens, outputTokens int) float64 {
 	const million = 1_000_000.0
 	return (float64(inputTokens)/million)*p.InputPerMTok +
+		(float64(outputTokens)/million)*p.OutputPerMTok
+}
+
+// CostUSDWithCache returns the dollar cost with cache-hit tokens billed
+// at CachedInputPerMTok. When CachedInputPerMTok is zero (rate unknown)
+// cached tokens fall back to InputPerMTok so the estimate never
+// silently drops to zero cost for cached input.
+func (p Pricing) CostUSDWithCache(uncachedInputTokens, cachedInputTokens, outputTokens int) float64 {
+	const million = 1_000_000.0
+	cachedRate := p.CachedInputPerMTok
+	if cachedRate == 0 {
+		cachedRate = p.InputPerMTok
+	}
+	return (float64(uncachedInputTokens)/million)*p.InputPerMTok +
+		(float64(cachedInputTokens)/million)*cachedRate +
 		(float64(outputTokens)/million)*p.OutputPerMTok
 }

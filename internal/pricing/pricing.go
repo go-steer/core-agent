@@ -43,21 +43,44 @@ import (
 	"strings"
 )
 
-// Rates is the per-million-token cost for one model.
+// Rates is the per-million-token cost for one model. CachedInputPerMTok
+// is the rate applied to input tokens served from the provider's prompt
+// cache (Gemini's `cachedContentTokenCount`, Anthropic's
+// `cache_read_input_tokens`); a zero value means the cache-read rate
+// isn't known and callers should bill cached tokens at InputPerMTok.
 type Rates struct {
-	InputPerMTok  float64
-	OutputPerMTok float64
+	InputPerMTok       float64
+	CachedInputPerMTok float64
+	OutputPerMTok      float64
 }
 
 // IsZero reports whether the rates carry no useful pricing.
 // Used by callers to distinguish "free model" from "rate unknown" —
-// only the latter should render "$—".
+// only the latter should render "$—". CachedInputPerMTok isn't part
+// of this check: a row that carries only a cache rate but no base
+// input/output rates is still "unpriced" in the useful sense.
 func (r Rates) IsZero() bool { return r.InputPerMTok == 0 && r.OutputPerMTok == 0 }
 
 // CostUSD returns the dollar cost of (input, output) tokens at r.
+// Treats every input token as uncached — see CostUSDWithCache for the
+// cached-vs-uncached split.
 func (r Rates) CostUSD(inputTokens, outputTokens int) float64 {
 	const million = 1_000_000.0
 	return (float64(inputTokens)/million)*r.InputPerMTok +
+		(float64(outputTokens)/million)*r.OutputPerMTok
+}
+
+// CostUSDWithCache returns the dollar cost with cache-hit tokens billed
+// at CachedInputPerMTok. When CachedInputPerMTok is zero (rate unknown)
+// cached tokens fall back to InputPerMTok — no silent free-riding.
+func (r Rates) CostUSDWithCache(uncachedInputTokens, cachedInputTokens, outputTokens int) float64 {
+	const million = 1_000_000.0
+	cachedRate := r.CachedInputPerMTok
+	if cachedRate == 0 {
+		cachedRate = r.InputPerMTok
+	}
+	return (float64(uncachedInputTokens)/million)*r.InputPerMTok +
+		(float64(cachedInputTokens)/million)*cachedRate +
 		(float64(outputTokens)/million)*r.OutputPerMTok
 }
 

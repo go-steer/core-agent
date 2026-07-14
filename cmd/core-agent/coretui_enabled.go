@@ -516,7 +516,7 @@ func (a *coreAgentAdapter) Run(ctx context.Context, prompt string) iter.Seq2[cor
 		// pkg/agent/subtask.go:315-374: overwrite per event, commit
 		// once on TurnComplete, reset so multi-turn Run loops account
 		// each model turn separately.
-		var lastTurnIn, lastTurnOut int
+		var lastTurnUsage usage.TurnUsage
 		for ev, err := range a.inner.Run(ctx, prompt) {
 			if err != nil {
 				yield(coretui.Event{}, err)
@@ -524,13 +524,11 @@ func (a *coreAgentAdapter) Run(ctx context.Context, prompt string) iter.Seq2[cor
 			}
 			te := coretui.Event{Partial: ev.Partial, Model: modelName}
 			if ev.UsageMetadata != nil {
-				in := int(ev.UsageMetadata.PromptTokenCount)
-				out := int(ev.UsageMetadata.CandidatesTokenCount)
+				lastTurnUsage = usage.TurnUsageFromGenaiMetadata(ev.UsageMetadata)
 				te.Usage = &coretui.Usage{
-					InputTokens:  in,
-					OutputTokens: out,
+					InputTokens:  lastTurnUsage.InputTokens,
+					OutputTokens: lastTurnUsage.OutputTokens,
 				}
-				lastTurnIn, lastTurnOut = in, out
 			}
 			if ev.Content != nil {
 				for _, p := range ev.Content.Parts {
@@ -557,16 +555,16 @@ func (a *coreAgentAdapter) Run(ctx context.Context, prompt string) iter.Seq2[cor
 			}
 			// Commit usage exactly once per completed model turn.
 			// TurnComplete fires after the model's tool-call loops
-			// settle for that turn; the lastTurnIn/Out captured from
-			// the stream's UsageMetadata events is the final per-turn
-			// total at this point.
-			if ev.TurnComplete && (lastTurnIn > 0 || lastTurnOut > 0) {
+			// settle for that turn; lastTurnUsage captured from the
+			// stream's UsageMetadata events is the final per-turn
+			// breakdown at this point.
+			if ev.TurnComplete && (lastTurnUsage.InputTokens > 0 || lastTurnUsage.OutputTokens > 0) {
 				if a.deps.Tracker != nil && a.deps.Cfg != nil {
 					pricing := usage.PriceFor(modelName, a.deps.Cfg)
-					turn := a.deps.Tracker.Append(modelName, lastTurnIn, lastTurnOut, pricing)
+					turn := a.deps.Tracker.AppendUsage(modelName, lastTurnUsage, pricing)
 					te.CostUSD = turn.CostUSD
 				}
-				lastTurnIn, lastTurnOut = 0, 0
+				lastTurnUsage = usage.TurnUsage{}
 			}
 			if !yield(te, nil) {
 				return
@@ -843,6 +841,10 @@ func (a *coreAgentAdapter) SlashCommands() []coretui.SlashCommandSpec {
 		Aliases:     []string{"boundaries"},
 		Description: "show context-management activity for this session (compactions, checkpoints, subtask usage)",
 	})
+	cmds = append(cmds, coretui.SlashCommandSpec{
+		Name:        "usage",
+		Description: "show cache-hit attribution + per-turn cost breakdown (companion to /stats)",
+	})
 	// /replan is registered unconditionally; the InvokeSlash case
 	// returns a friendly "plan-first gating isn't enabled" message
 	// when WithAttachReplanner wasn't wired (operator's config has
@@ -919,6 +921,15 @@ func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (
 		// what came from subtasks).
 		return coretui.SlashResult{
 			SystemMessage: renderContextStats(a.inner.ContextStats()),
+		}, nil
+	case "usage":
+		// /usage projects the local agent's AttachUsage() through the
+		// same formatter the remote adapter uses so operators see the
+		// same block regardless of whether they're driving the TUI in
+		// process or over a socket. /stats keeps the terse aggregate;
+		// /usage carries the cache-hit attribution + per-turn history.
+		return coretui.SlashResult{
+			SystemMessage: attach.RenderUsage(a.inner.AttachUsage()),
 		}, nil
 	case "compact", "summarize":
 		// NOTE: core-tui v0.5 calls InvokeSlash synchronously from

@@ -198,6 +198,33 @@ func TestSaveAndReloadUserFile(t *testing.T) {
 	}
 }
 
+// TestModelRates_CachedInputPerMTokRoundTrip guards the on-disk field
+// name so an operator's pricing.json cache-rate override survives the
+// load path and reaches Rates.CachedInputPerMTok.
+func TestModelRates_CachedInputPerMTokRoundTrip(t *testing.T) {
+	t.Parallel()
+	userHome := t.TempDir()
+	if err := SaveUserFile(userHome, &UserFile{
+		Version: 1,
+		Manual: &ManualSection{Models: map[string]ModelRates{
+			"my-model": {InputPerMTok: 2, CachedInputPerMTok: 0.5, OutputPerMTok: 4},
+		}},
+	}); err != nil {
+		t.Fatalf("SaveUserFile: %v", err)
+	}
+	c, err := NewCatalog(Options{UserHome: userHome})
+	if err != nil {
+		t.Fatalf("NewCatalog: %v", err)
+	}
+	r, ok := c.Lookup("my-model")
+	if !ok {
+		t.Fatal("lookup missing")
+	}
+	if r.CachedInputPerMTok != 0.5 {
+		t.Errorf("CachedInputPerMTok = %v, want 0.5", r.CachedInputPerMTok)
+	}
+}
+
 // TestRates_CostUSD spot-checks the cost arithmetic. The exit-time
 // summary + per-message footer both depend on this being correct
 // for non-trivial token counts.
@@ -215,6 +242,49 @@ func TestRates_CostUSD(t *testing.T) {
 	}
 	if r.IsZero() {
 		t.Error("non-zero Rates should not report IsZero")
+	}
+	// Cache rate alone doesn't make a row "priced" — a row that only
+	// carries a cache-read rate is still unpriced for base billing.
+	if !(Rates{CachedInputPerMTok: 0.5}).IsZero() {
+		t.Error("cache-only Rates should still report IsZero")
+	}
+}
+
+// TestRates_CostUSDWithCache pins the cache-hit rate application and
+// the "no discount known" fallback so operators never see cached input
+// silently drop to zero cost.
+func TestRates_CostUSDWithCache(t *testing.T) {
+	t.Parallel()
+	r := Rates{InputPerMTok: 1.25, CachedInputPerMTok: 0.3125, OutputPerMTok: 5.0}
+	// 800k uncached at $1.25/M + 200k cached at $0.3125/M + 100k out at $5/M.
+	got := r.CostUSDWithCache(800_000, 200_000, 100_000)
+	want := 0.8*1.25 + 0.2*0.3125 + 0.1*5.0
+	if got != want {
+		t.Errorf("CostUSDWithCache = %v, want %v", got, want)
+	}
+	// Fallback: cached rate absent → cache hits bill at input rate.
+	r2 := Rates{InputPerMTok: 1.0, OutputPerMTok: 2.0}
+	got2 := r2.CostUSDWithCache(500_000, 500_000, 100_000)
+	want2 := 0.5*1.0 + 0.5*1.0 + 0.1*2.0
+	if got2 != want2 {
+		t.Errorf("CostUSDWithCache (fallback) = %v, want %v", got2, want2)
+	}
+}
+
+// TestBuiltin_GeminiHasCachedRate guards against dropping the cached
+// rate when the builtin table gets regenerated. Every entry must carry
+// a positive CachedInputPerMTok — issue #222's operator-facing cache
+// savings depend on it.
+func TestBuiltin_GeminiHasCachedRate(t *testing.T) {
+	t.Parallel()
+	for name, r := range builtin {
+		if r.CachedInputPerMTok <= 0 {
+			t.Errorf("builtin %q has zero CachedInputPerMTok — cache savings won't render", name)
+		}
+		if r.CachedInputPerMTok >= r.InputPerMTok {
+			t.Errorf("builtin %q cached rate (%v) >= input rate (%v) — should be a discount",
+				name, r.CachedInputPerMTok, r.InputPerMTok)
+		}
 	}
 }
 

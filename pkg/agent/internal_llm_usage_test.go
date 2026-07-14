@@ -146,16 +146,16 @@ func TestRecordInternalLLMUsage_NilSafe(t *testing.T) {
 	// per-turn-deferred cleanup paths where a panic would tear down
 	// the agent.
 	var nilAgent *Agent
-	nilAgent.recordInternalLLMUsage(100, 50)
+	nilAgent.recordInternalLLMUsage(100, 50, nil)
 
-	(&Agent{}).recordInternalLLMUsage(100, 50)                         // nil tracker
-	(&Agent{tracker: usage.NewTracker()}).recordInternalLLMUsage(0, 0) // zero tokens
-	(&Agent{tracker: usage.NewTracker()}).recordInternalLLMUsage(1, 1) // nil model
+	(&Agent{}).recordInternalLLMUsage(100, 50, nil)                         // nil tracker
+	(&Agent{tracker: usage.NewTracker()}).recordInternalLLMUsage(0, 0, nil) // zero tokens
+	(&Agent{tracker: usage.NewTracker()}).recordInternalLLMUsage(1, 1, nil) // nil model
 
 	// Sanity: with both wired AND non-zero tokens, the call appends.
 	tr := usage.NewTracker()
 	a := &Agent{tracker: tr, model: &captureLLM{}}
-	a.recordInternalLLMUsage(10, 2)
+	a.recordInternalLLMUsage(10, 2, nil)
 	if got := tr.Totals().Turns; got != 1 {
 		t.Errorf("Turns = %d, want 1 after wired + non-zero call", got)
 	}

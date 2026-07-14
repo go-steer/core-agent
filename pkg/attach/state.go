@@ -128,21 +128,60 @@ type InterruptProvider interface {
 }
 
 // UsageInfo is the response shape of GET /sessions/.../usage. Backs
-// the remote TUI's /stats slash. PerModel is empty when only one
-// model has been used (no breakdown needed).
+// the remote TUI's /stats slash. PerModel is empty when only one model
+// has been used (no breakdown needed). PerTurn is one entry per model
+// call in submission order and is always populated when the tracker
+// recorded any turns — see issue #222 for the motivating operator
+// use case (per-turn cost + cache attribution).
 type UsageInfo struct {
 	Overall  UsageTotals            `json:"overall"`
 	PerModel map[string]UsageTotals `json:"per_model,omitempty"`
+	PerTurn  []UsageTurn            `json:"per_turn,omitempty"`
 }
 
-// UsageTotals mirrors usage.Totals in a JSON-friendly shape. Cached
-// input tokens omitted when zero (most providers don't break them out).
+// UsageTotals mirrors usage.Totals in a JSON-friendly shape.
+//
+// InputTokens is the total effective prompt size and already includes
+// InputTokensCached (Gemini semantics — see usage.Turn docstring).
+// InputTokensUncached = InputTokens - InputTokensCached and is emitted
+// as a convenience so operators don't have to do the subtraction.
+//
+// CostUSD is the daemon's own cost estimate with the cached-vs-uncached
+// rate split applied. CostUSDUncachedReference is what CostUSD would
+// have been with zero cache hits — the delta between the two is the
+// caching win, which the demo drive on 2026-07-13 confirmed operators
+// have no other way to see.
+//
+// Fields default to zero and use omitempty so a session that never
+// touched the prompt cache still renders cleanly.
 type UsageTotals struct {
-	InputTokens       int64   `json:"input_tokens"`
-	OutputTokens      int64   `json:"output_tokens"`
-	CachedInputTokens int64   `json:"cached_input_tokens,omitempty"`
-	Turns             int     `json:"turns"`
-	CostUSD           float64 `json:"cost_usd"`
+	InputTokens              int64   `json:"input_tokens"`
+	InputTokensCached        int64   `json:"input_tokens_cached,omitempty"`
+	InputTokensUncached      int64   `json:"input_tokens_uncached,omitempty"`
+	OutputTokens             int64   `json:"output_tokens"`
+	ThoughtsTokens           int64   `json:"thoughts_tokens,omitempty"`
+	Turns                    int     `json:"turns"`
+	CostUSD                  float64 `json:"cost_usd"`
+	CostUSDUncachedReference float64 `json:"cost_usd_uncached_reference,omitempty"`
+}
+
+// UsageTurn is one entry in UsageInfo.PerTurn — the per-model-call
+// breakdown behind the aggregate Overall totals. Turn is 1-based in
+// submission order; TotalTokens follows the genai convention
+// (prompt + candidates + tool-use + thoughts).
+type UsageTurn struct {
+	Turn                     int       `json:"turn"`
+	At                       time.Time `json:"ts"`
+	Model                    string    `json:"model,omitempty"`
+	InputTokens              int64     `json:"input_tokens"`
+	InputTokensCached        int64     `json:"input_tokens_cached,omitempty"`
+	InputTokensUncached      int64     `json:"input_tokens_uncached,omitempty"`
+	OutputTokens             int64     `json:"output_tokens"`
+	ThoughtsTokens           int64     `json:"thoughts_tokens,omitempty"`
+	ToolUseTokens            int64     `json:"tool_use_tokens,omitempty"`
+	TotalTokens              int64     `json:"total_tokens"`
+	CostUSD                  float64   `json:"cost_usd"`
+	CostUSDUncachedReference float64   `json:"cost_usd_uncached_reference,omitempty"`
 }
 
 // ContextInfo is the response shape of GET /sessions/.../context.

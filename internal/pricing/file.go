@@ -35,12 +35,13 @@ const SchemaVersion = 1
 // spelling regardless of whether they live in pricing.json or in
 // .agents/config.json's `model.pricing` override map.
 type ModelRates struct {
-	InputPerMTok  float64 `json:"input_per_mtok,omitempty"`
-	OutputPerMTok float64 `json:"output_per_mtok,omitempty"`
+	InputPerMTok       float64 `json:"input_per_mtok,omitempty"`
+	CachedInputPerMTok float64 `json:"cached_input_per_mtok,omitempty"`
+	OutputPerMTok      float64 `json:"output_per_mtok,omitempty"`
 }
 
 // rates converts the JSON-tagged form into the internal Rates type.
-// Field names are identical so a direct conversion suffices.
+// Field order + names are identical so a direct conversion suffices.
 func (m ModelRates) rates() Rates { return Rates(m) }
 
 // ProjectFile is the .agents/pricing.json shape — flat models map.

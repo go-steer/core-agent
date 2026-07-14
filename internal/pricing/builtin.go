@@ -30,17 +30,21 @@ package pricing
 // entries are deliberately omitted until PR B can supply them
 // authoritatively — the previous file shipped only Gemini, which
 // at least signaled "rate unknown" honestly for everything else.
+//
+// CachedInputPerMTok follows Google's published rule of 25% of the
+// base input rate for Gemini implicit + explicit prompt caches. Revisit
+// on each release along with the base rates.
 var builtin = map[string]Rates{
-	"gemini-3.1-pro-preview":         {InputPerMTok: 1.25, OutputPerMTok: 5.00},
-	"gemini-3.1-pro":                 {InputPerMTok: 1.25, OutputPerMTok: 5.00},
-	"gemini-3-pro-preview":           {InputPerMTok: 1.25, OutputPerMTok: 5.00},
-	"gemini-3-pro":                   {InputPerMTok: 1.25, OutputPerMTok: 5.00},
-	"gemini-3.5-flash":               {InputPerMTok: 0.075, OutputPerMTok: 0.30},
-	"gemini-3-flash-preview":         {InputPerMTok: 0.075, OutputPerMTok: 0.30},
-	"gemini-3-flash":                 {InputPerMTok: 0.075, OutputPerMTok: 0.30},
-	"gemini-3.1-flash-lite-preview":  {InputPerMTok: 0.04, OutputPerMTok: 0.15},
-	"gemini-3.1-flash-lite":          {InputPerMTok: 0.04, OutputPerMTok: 0.15},
-	"gemini-3.1-flash-image-preview": {InputPerMTok: 0.10, OutputPerMTok: 0.40},
+	"gemini-3.1-pro-preview":         {InputPerMTok: 1.25, CachedInputPerMTok: 0.3125, OutputPerMTok: 5.00},
+	"gemini-3.1-pro":                 {InputPerMTok: 1.25, CachedInputPerMTok: 0.3125, OutputPerMTok: 5.00},
+	"gemini-3-pro-preview":           {InputPerMTok: 1.25, CachedInputPerMTok: 0.3125, OutputPerMTok: 5.00},
+	"gemini-3-pro":                   {InputPerMTok: 1.25, CachedInputPerMTok: 0.3125, OutputPerMTok: 5.00},
+	"gemini-3.5-flash":               {InputPerMTok: 0.075, CachedInputPerMTok: 0.01875, OutputPerMTok: 0.30},
+	"gemini-3-flash-preview":         {InputPerMTok: 0.075, CachedInputPerMTok: 0.01875, OutputPerMTok: 0.30},
+	"gemini-3-flash":                 {InputPerMTok: 0.075, CachedInputPerMTok: 0.01875, OutputPerMTok: 0.30},
+	"gemini-3.1-flash-lite-preview":  {InputPerMTok: 0.04, CachedInputPerMTok: 0.01, OutputPerMTok: 0.15},
+	"gemini-3.1-flash-lite":          {InputPerMTok: 0.04, CachedInputPerMTok: 0.01, OutputPerMTok: 0.15},
+	"gemini-3.1-flash-image-preview": {InputPerMTok: 0.10, CachedInputPerMTok: 0.025, OutputPerMTok: 0.40},
 }
 
 // Builtin returns a defensive copy of the compiled-in table. Used

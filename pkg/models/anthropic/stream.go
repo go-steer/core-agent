@@ -48,6 +48,15 @@ func finalResponseFromMessage(msg *anthropic.Message) (*genai.Content, genai.Fin
 	// Token counts come from the SDK as int64; genai's metadata type
 	// uses int32. Realistic token counts (under ~2B) fit comfortably,
 	// so the narrowing is safe.
+	//
+	// TODO(#222 follow-up): map msg.Usage.CacheReadInputTokens into
+	// CachedContentTokenCount so the /usage endpoint's cache-hit
+	// attribution works for Anthropic too. Deferred because
+	// internal/pricing/builtin.go has no Anthropic rows yet — without
+	// pricing there's no cost-savings signal to show, so the delta
+	// isn't actionable. Pair with a builtin Anthropic pricing entry
+	// (cache_read = 10% of input, cache_creation = 125% of input per
+	// Anthropic's docs).
 	return content, mapStopReason(msg.StopReason), &genai.GenerateContentResponseUsageMetadata{
 		PromptTokenCount:     int32(msg.Usage.InputTokens),                          // #nosec G115 -- token counts won't overflow int32
 		CandidatesTokenCount: int32(msg.Usage.OutputTokens),                         // #nosec G115 -- token counts won't overflow int32

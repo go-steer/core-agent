@@ -17,15 +17,19 @@ package agent
 import (
 	"context"
 	"errors"
+	"iter"
 	"strings"
 	"testing"
 	"time"
 
+	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
+	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/pkg/models"
 	"github.com/go-steer/core-agent/pkg/models/mock"
+	"github.com/go-steer/core-agent/pkg/usage"
 )
 
 // newNamedStubTool returns a no-op tool whose Name() is `name`. Used
@@ -392,6 +396,119 @@ func TestResolveTools_SkipsAutoWiredNames(t *testing.T) {
 	}
 	if len(got) != 1 || got[0] != custom {
 		t.Errorf("expected only the catalog custom_inspector after auto-wired skipping; got %v", got)
+	}
+}
+
+// usageProvider is a test-local models.Provider whose LLM emits a
+// UsageMetadata block on the final response so the parent tracker's
+// AppendUsage path exercises end-to-end. Used to prove that background
+// subagent turns roll into the parent tracker after issue #222's
+// wiring in background_spawn.go.
+type usageProvider struct {
+	name string
+	in   int32
+	out  int32
+}
+
+func (p *usageProvider) Name() string { return p.name }
+func (p *usageProvider) Model(_ context.Context, _ string) (adkmodel.LLM, error) {
+	return &usageEmittingLLM{in: p.in, out: p.out}, nil
+}
+
+type usageEmittingLLM struct {
+	in  int32
+	out int32
+}
+
+func (usageEmittingLLM) Name() string { return "usage-emitter" }
+func (l usageEmittingLLM) GenerateContent(_ context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		content := &genai.Content{
+			Role:  genai.RoleModel,
+			Parts: []*genai.Part{{Text: "done"}},
+		}
+		yield(&adkmodel.LLMResponse{Content: content, Partial: true}, nil)
+		yield(&adkmodel.LLMResponse{
+			Content:      content,
+			FinishReason: genai.FinishReasonStop,
+			TurnComplete: true,
+			UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:     l.in,
+				CandidatesTokenCount: l.out,
+				TotalTokenCount:      l.in + l.out,
+			},
+		}, nil)
+	}
+}
+
+// TestSpawn_RollsUsageIntoParentTracker is the wire-through for the
+// #222 follow-up: background subagent turns must land in the parent
+// agent's usage.Tracker so /usage + /stats reflect the actual session
+// cost, not just the parent conversation's cost.
+//
+// Uses a UsageMetadata-emitting stub provider (echoLLM never sets
+// usage, so the default mock can't exercise this path).
+func TestSpawn_RollsUsageIntoParentTracker(t *testing.T) {
+	t.Parallel()
+	prov := &usageProvider{name: "usage", in: 1234, out: 56}
+	mgr, err := NewBackgroundAgentManager(
+		WithBackgroundProvider(prov, "usage-emitter"),
+		WithBackgroundMaxConcurrent(2),
+		WithBackgroundAlertBuffer(4),
+		WithBackgroundDefaultBudgets(BackgroundBudgets{MaxTurns: 1}),
+	)
+	if err != nil {
+		t.Fatalf("NewBackgroundAgentManager: %v", err)
+	}
+
+	// Parent has its own usage tracker wired — the whole point of
+	// this test is that background subagent turns show up in it.
+	parentLLM, err := prov.Model(context.Background(), "usage-emitter")
+	if err != nil {
+		t.Fatalf("provider Model: %v", err)
+	}
+	tracker := usage.NewTracker()
+	parent, err := New(parentLLM, WithBackgroundManager(mgr), WithUsageTracker(tracker))
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	_ = parent
+
+	if tot := tracker.Totals(); tot.Turns != 0 {
+		t.Fatalf("pre-spawn tracker should be empty: %+v", tot)
+	}
+
+	h, err := mgr.Spawn(context.Background(), "", BackgroundSpec{
+		Name: "usage-sub", SystemPrompt: "go", Goal: "go",
+		Budgets: BackgroundBudgets{MaxTurns: 1},
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	defer mgr.Close()
+
+	select {
+	case <-h.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("subagent goroutine didn't finish")
+	}
+
+	tot := tracker.Totals()
+	if tot.Turns == 0 {
+		t.Fatalf("parent tracker didn't see any subagent turns: %+v", tot)
+	}
+	// The subagent's model name should show up in TotalsByModel so
+	// mixed-model sessions (parent frontier + background flash) can
+	// render the per-model split in /usage's PerModel section.
+	byModel := tracker.TotalsByModel()
+	if _, ok := byModel["usage-emitter"]; !ok {
+		t.Errorf("TotalsByModel missing subagent model: %+v", byModel)
+	}
+	// At least one turn should have carried real input tokens (the
+	// stub returned 1234; RunAutonomous drives >=1 turn before the
+	// max-turns cap fires).
+	if tot.InputTokens == 0 {
+		t.Errorf("expected non-zero InputTokens rolled into parent tracker: %+v", tot)
 	}
 }
 

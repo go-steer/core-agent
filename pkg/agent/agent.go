@@ -1187,13 +1187,25 @@ func (a *Agent) AttachStatus() attach.StatusInfo {
 // usage tracker totals plus a per-model breakdown when more than one
 // model has been used in this session (typical pattern: parent on a
 // frontier model, subtasks on a cheap flash-tier model via
-// --agentic-small-model). Returns a zero UsageInfo if no usage
-// tracker was wired (WithUsageTracker).
+// --agentic-small-model), plus a per-turn array so operators can
+// answer per-turn cost/cache questions without hand-scraping the
+// eventlog (issue #222). Returns a zero UsageInfo if no usage tracker
+// was wired (WithUsageTracker).
+//
+// cost_usd_uncached_reference is computed per-turn using the resolved
+// pricing for that turn's model — sessions that mix models (parent +
+// subtask on a flash-tier via --agentic-small-model) get accurate
+// reference numbers instead of averaging one model's rates over the
+// other. Rolled up into Overall / PerModel by summing per-turn
+// contributions.
 func (a *Agent) AttachUsage() attach.UsageInfo {
 	if a == nil || a.tracker == nil {
 		return attach.UsageInfo{}
 	}
-	out := attach.UsageInfo{Overall: usageTotalsToAttach(a.tracker.Totals())}
+	turns := a.tracker.All()
+	out := attach.UsageInfo{
+		Overall: usageTotalsToAttach(a.tracker.Totals()),
+	}
 	byModel := a.tracker.TotalsByModel()
 	if len(byModel) > 1 {
 		out.PerModel = make(map[string]attach.UsageTotals, len(byModel))
@@ -1201,6 +1213,28 @@ func (a *Agent) AttachUsage() attach.UsageInfo {
 			out.PerModel[name] = usageTotalsToAttach(t)
 		}
 	}
+	if len(turns) == 0 {
+		return out
+	}
+	perTurn := make([]attach.UsageTurn, 0, len(turns))
+	var overallUncachedRef float64
+	perModelUncachedRef := make(map[string]float64, len(byModel))
+	for i, t := range turns {
+		p := usage.PriceFor(t.Model, nil)
+		uncachedRef := p.CostUSD(t.InputTokens, t.OutputTokens)
+		perTurn = append(perTurn, turnToAttach(i+1, t, uncachedRef))
+		overallUncachedRef += uncachedRef
+		perModelUncachedRef[t.Model] += uncachedRef
+	}
+	out.Overall.CostUSDUncachedReference = overallUncachedRef
+	if out.PerModel != nil {
+		for name, ref := range perModelUncachedRef {
+			totals := out.PerModel[name]
+			totals.CostUSDUncachedReference = ref
+			out.PerModel[name] = totals
+		}
+	}
+	out.PerTurn = perTurn
 	return out
 }
 
@@ -1228,13 +1262,39 @@ func (a *Agent) AttachContext() attach.ContextInfo {
 
 // usageTotalsToAttach projects usage.Totals into attach.UsageTotals.
 // Tokens widen from int to int64 since the wire format reserves the
-// larger range for forward compatibility.
+// larger range for forward compatibility. CostUSDUncachedReference is
+// filled in by AttachUsage after this projection because it depends
+// on per-turn rate lookups the Totals shape doesn't carry.
 func usageTotalsToAttach(t usage.Totals) attach.UsageTotals {
 	return attach.UsageTotals{
-		InputTokens:  int64(t.InputTokens),
-		OutputTokens: int64(t.OutputTokens),
-		Turns:        t.Turns,
-		CostUSD:      t.CostUSD,
+		InputTokens:         int64(t.InputTokens),
+		InputTokensCached:   int64(t.CachedInputTokens),
+		InputTokensUncached: int64(t.InputTokens - t.CachedInputTokens),
+		OutputTokens:        int64(t.OutputTokens),
+		ThoughtsTokens:      int64(t.ThoughtsTokens),
+		Turns:               t.Turns,
+		CostUSD:             t.CostUSD,
+	}
+}
+
+// turnToAttach projects one usage.Turn into attach.UsageTurn. turnIdx
+// is 1-based (submission order). uncachedRef is the counterfactual
+// cost for this turn if nothing had been cached — computed by the
+// caller against the per-turn model's pricing.
+func turnToAttach(turnIdx int, t usage.Turn, uncachedRef float64) attach.UsageTurn {
+	return attach.UsageTurn{
+		Turn:                     turnIdx,
+		At:                       t.At,
+		Model:                    t.Model,
+		InputTokens:              int64(t.InputTokens),
+		InputTokensCached:        int64(t.CachedInputTokens),
+		InputTokensUncached:      int64(t.InputTokens - t.CachedInputTokens),
+		OutputTokens:             int64(t.OutputTokens),
+		ThoughtsTokens:           int64(t.ThoughtsTokens),
+		ToolUseTokens:            int64(t.ToolUseTokens),
+		TotalTokens:              int64(t.InputTokens + t.OutputTokens + t.ThoughtsTokens + t.ToolUseTokens),
+		CostUSD:                  t.CostUSD,
+		CostUSDUncachedReference: uncachedRef,
 	}
 }
 

@@ -229,7 +229,7 @@ func (d *dispatcher) Dispatch(ctx context.Context, ev TriageEvent) {
 	if !d.filter.Accept(ev) {
 		return
 	}
-	result := d.dedup.Observe(ev.Key)
+	result := d.dedup.Observe(ev.Key, ev.LastSeen)
 	d.metrics.activeIncidents.Set(float64(d.dedup.Len()))
 	if result.Kind == dedupDuplicate {
 		d.metrics.eventsDedupSuppress.WithLabelValues(ev.Key.Reason, ev.Namespace).Inc()

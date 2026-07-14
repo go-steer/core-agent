@@ -35,10 +35,21 @@ type dedupEntry struct {
 	// FirstSeen is when the sidecar first observed this key.
 	// Rolls forward when the window expires + a new event arrives.
 	FirstSeen time.Time `json:"first_seen"`
-	// LastSeen is when the sidecar last observed this key. Used
-	// to determine window expiry: the entry ages out when
-	// LastSeen + window < now.
+	// LastSeen is the wall-clock time we last recorded REAL new
+	// activity for this key (replays do NOT advance it — see
+	// Observe). Used to compute retry-cooldown: the entry ages
+	// out when LastSeen + window < now.
 	LastSeen time.Time `json:"last_seen"`
+	// EventLastTS is the k8s Event's own LastTimestamp we last
+	// processed for this key. Enables idempotent replay handling:
+	// client-go informers periodically re-List all Events on
+	// watch-connection rotation (~15-25min in practice), which
+	// used to trigger spurious "new incident" fires. Comparing
+	// incoming event.LastTimestamp against this field lets us
+	// distinguish replay of already-seen activity (dedup) from
+	// genuinely new activity (real new events k8s aggregated
+	// into the same Event object since we last saw it).
+	EventLastTS time.Time `json:"event_last_ts"`
 	// Count is how many events the sidecar has seen for this key
 	// in the current window (the first event that created the
 	// session counts as 1). Reset when the window rolls.
@@ -162,9 +173,10 @@ func canonicalizeReason(reason string) string {
 	return reason
 }
 
-// Observe records that key was just seen. Returns a dedupResult
-// telling the caller whether this is a fresh incident (start a new
-// session) or a duplicate within the current window (suppress).
+// Observe records that key was just seen with eventLastTS (the
+// k8s Event's own LastTimestamp). Returns a dedupResult telling the
+// caller whether this is a fresh incident (start a new session) or
+// a duplicate within the current window (suppress).
 //
 // The key's Reason is canonicalized (see reasonCanonical) so events
 // from the same underlying failure with different reason variants
@@ -172,32 +184,72 @@ func canonicalizeReason(reason string) string {
 // slot. The wire event's original Reason is preserved on the
 // inject payload — canonicalization is a dedup-only mechanism.
 //
+// Three cases, checked in order:
+//
+//  1. **Replay** — eventLastTS is not later than the recorded
+//     EventLastTS. This is the k8s Event object being re-delivered
+//     (informer watch-rotation triggers a re-List; kube-apiserver
+//     rotates watch connections every ~15-25min in practice). The
+//     activity is one we've already processed — dedup, do NOT
+//     advance LastSeen (retry cooldown continues to age from real
+//     activity time). Bump count so metrics stay accurate.
+//
+//  2. **New activity past cooldown** — eventLastTS is later AND
+//     wall-clock now is more than `window` past LastSeen. The prior
+//     session's cooldown has expired and k8s is still actively
+//     reporting the issue, so create a new session (retry safety
+//     net: if the previous agent-run failed to resolve the
+//     incident, the fresh reporting gives it another chance).
+//
+//  3. **New activity within cooldown** — eventLastTS is later,
+//     within the window. Real new k8s aggregation on top of an
+//     ongoing incident — dedup to the existing session, advance
+//     both LastSeen and EventLastTS.
+//
 // Contract: the caller MUST call BindSession after a successful
-// createSession call to attach the SessionID to the newly-created
+// CreateSession call to attach the SessionID to the newly-created
 // entry, so subsequent duplicates can route to the same session.
-func (c *dedupCache) Observe(key EventKey) dedupResult {
+func (c *dedupCache) Observe(key EventKey, eventLastTS time.Time) dedupResult {
 	key.Reason = canonicalizeReason(key.Reason)
 	now := c.clock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	entry, ok := c.entries[key]
-	if !ok || now.Sub(entry.LastSeen) > c.window {
-		// New incident: either first sighting or the prior window
-		// expired. Fresh entry, count=1, LastSeen=now. SessionID
-		// is set later via BindSession once the daemon creates
-		// the session.
+	if !ok {
+		// First sighting for this key.
 		c.evictIfFull()
 		c.entries[key] = &dedupEntry{
-			FirstSeen: now,
-			LastSeen:  now,
-			Count:     1,
+			FirstSeen:   now,
+			LastSeen:    now,
+			EventLastTS: eventLastTS,
+			Count:       1,
 		}
 		return dedupResult{Kind: dedupNewIncident, Count: 1}
 	}
-	// Duplicate within window: bump count + LastSeen; caller
-	// suppresses the inject.
+	if !eventLastTS.After(entry.EventLastTS) {
+		// Case 1: replay. Same activity we already processed;
+		// don't advance LastSeen (retry cooldown untouched).
+		entry.Count++
+		return dedupResult{Kind: dedupDuplicate, SessionID: entry.SessionID, Count: entry.Count}
+	}
+	if now.Sub(entry.LastSeen) > c.window {
+		// Case 2: retry safety net. Prior session's cooldown
+		// elapsed AND k8s is still reporting new activity —
+		// spin up a fresh session so an agent that failed to
+		// resolve the last one gets another attempt.
+		c.evictIfFull()
+		c.entries[key] = &dedupEntry{
+			FirstSeen:   now,
+			LastSeen:    now,
+			EventLastTS: eventLastTS,
+			Count:       1,
+		}
+		return dedupResult{Kind: dedupNewIncident, Count: 1}
+	}
+	// Case 3: new activity within cooldown → dedup + advance.
 	entry.Count++
 	entry.LastSeen = now
+	entry.EventLastTS = eventLastTS
 	return dedupResult{Kind: dedupDuplicate, SessionID: entry.SessionID, Count: entry.Count}
 }
 

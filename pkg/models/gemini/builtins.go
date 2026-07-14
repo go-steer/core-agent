@@ -17,7 +17,9 @@ package gemini
 import (
 	"context"
 	"errors"
+	"fmt"
 	"iter"
+	"os"
 
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/genai"
@@ -196,13 +198,124 @@ func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequ
 		}
 	}
 
-	inner := l.inner.GenerateContent(ctx, req, stream)
-	// Both wrappers below track whether the turn emitted anything
-	// usable so we can surface a synthetic error if Vertex/Gemini
-	// returned an empty response without any signaled reason
-	// (#220 — silent-hang bug observed live during v2.6 GKE-
-	// troubleshoot demo drive).
-	return wrapEmptyTailDetection(inner, stream, l.tolerateEmptyChunks)
+	// Three composed wrappers, innermost first:
+	//   1. inner.GenerateContent — the raw ADK model call
+	//   2. wrapEmptyTailDetection — surfaces ErrEmptyResponse when
+	//      the model returns no usable content (heartbeat-only
+	//      streams, bare STOP with empty parts, etc.). #220.
+	//   3. retryOnceOnEmpty — transparently retries the whole
+	//      call once on ErrEmptyResponse, so transient Vertex
+	//      silent-STOP behavior doesn't hang the agent loop.
+	//      Emits a stderr alert on detect / recover / persist so
+	//      operators see the event in the daemon log even when
+	//      recovery succeeds. #78 follow-up.
+	return retryOnceOnEmpty(func() iter.Seq2[*adkmodel.LLMResponse, error] {
+		return wrapEmptyTailDetection(
+			l.inner.GenerateContent(ctx, req, stream),
+			stream, l.tolerateEmptyChunks,
+		)
+	})
+}
+
+// logf is the daemon-log alert hook the retry wrapper uses to
+// surface silent-hang events. Package-level so tests can intercept
+// (see empty_response_test.go). Defaults to the daemon's standard
+// stderr line format ("core-agent: gemini: ...").
+var logf = func(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "core-agent: gemini: "+format+"\n", args...)
+}
+
+// retryOnceOnEmpty wraps a per-invocation iterator factory and
+// retries the whole call once if the entire iteration produces
+// ErrEmptyResponse without ever yielding usable content. Callers
+// see a single continuous stream regardless of whether the retry
+// fired.
+//
+// Buffering semantics: chunks are held internally until the first
+// usable response arrives. At that point the buffer is flushed and
+// the wrapper switches to pass-through for the remainder of the
+// stream. If instead the iteration ends with ErrEmptyResponse and
+// no usable chunk was seen, the buffer is DISCARDED (so ADK never
+// records the empty session event) and the factory is invoked
+// again. This keeps session state clean across retries.
+//
+// Cap: one retry (two attempts total). Persistent empty responses
+// after retry surface as ErrEmptyResponse to the caller.
+//
+// Every retry decision logs to the daemon stderr so operators see
+// the event even when recovery is silent from the user's view.
+func retryOnceOnEmpty(fn func() iter.Seq2[*adkmodel.LLMResponse, error]) iter.Seq2[*adkmodel.LLMResponse, error] {
+	const maxAttempts = 2
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		type pending struct {
+			resp *adkmodel.LLMResponse
+			err  error
+		}
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			var buf []pending
+			var flushed, gotEmptyTail bool
+			for resp, err := range fn() {
+				if flushed {
+					if !yield(resp, err) {
+						return
+					}
+					continue
+				}
+				if errors.Is(err, ErrEmptyResponse) {
+					// Tail signal from wrapEmptyTailDetection —
+					// don't yield it; decide retry first.
+					gotEmptyTail = true
+					continue
+				}
+				if err == nil && isUsableResponse(resp) {
+					for _, b := range buf {
+						if !yield(b.resp, b.err) {
+							return
+						}
+					}
+					buf = nil
+					flushed = true
+					if !yield(resp, err) {
+						return
+					}
+					continue
+				}
+				// Not-yet-usable chunk (empty response OR a real
+				// error). Buffer until we know if the stream will
+				// produce usable content. Real errors that arrive
+				// here bubble on flush; they don't trigger retry
+				// (wrapEmptyTailDetection wouldn't have appended
+				// ErrEmptyResponse if it also saw a real error).
+				buf = append(buf, pending{resp, err})
+			}
+			if flushed {
+				if attempt > 1 {
+					logf("empty response recovered on retry (attempt %d/%d)",
+						attempt, maxAttempts)
+				}
+				return
+			}
+			if gotEmptyTail && attempt < maxAttempts {
+				logf("empty response detected — retrying (attempt %d/%d)",
+					attempt+1, maxAttempts)
+				continue
+			}
+			// Give up: flush any buffered items (may include real
+			// non-empty errors from inner we must not swallow),
+			// then surface the terminal ErrEmptyResponse if that
+			// was the tail signal.
+			for _, b := range buf {
+				if !yield(b.resp, b.err) {
+					return
+				}
+			}
+			if gotEmptyTail {
+				logf("empty response persisted after retry — surfacing ErrEmptyResponse to caller")
+				yield(nil, ErrEmptyResponse)
+			}
+			return
+		}
+	}
 }
 
 // wrapEmptyTailDetection wraps a raw model iterator with two
@@ -214,15 +327,17 @@ func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequ
 //  2. If the entire iteration completes without emitting a
 //     SINGLE usable response AND without emitting any error,
 //     synthesize ErrEmptyResponse at the tail. This catches the
-//     #220 silent-hang case where the model returns
-//     Content{role:model, parts:nil} with FinishReason=""
-//     ErrorCode="" — ADK forwards as-is, agent loop has no
-//     next action, session goes idle indefinitely.
+//     silent-hang shapes #220 was filed for: an empty
+//     Content{}/nil-parts turn, and — as observed in the v2.6
+//     GKE-triage drive — a bare FinishReason=STOP with no
+//     content. ADK forwards both as-is, agent loop has no next
+//     action, session goes idle indefinitely.
 //
 // "Usable response" = non-nil response with either non-empty
-// Content.Parts OR a non-empty FinishReason OR a non-empty
-// ErrorCode. A finish reason (even STOP with no parts) counts
-// because that's the model's explicit "I'm done" signal.
+// Content.Parts OR a non-STOP FinishReason (SAFETY, RECITATION,
+// MAX_TOKENS, OTHER, ...) OR a non-empty ErrorCode. Bare STOP
+// with no parts is NOT usable: the model claims to be done but
+// produced nothing, which for our agentic loop is a hang.
 func wrapEmptyTailDetection(inner iter.Seq2[*adkmodel.LLMResponse, error], stream, tolerateEmpty bool) iter.Seq2[*adkmodel.LLMResponse, error] {
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
 		sawUsable := false
@@ -259,8 +374,18 @@ func wrapEmptyTailDetection(inner iter.Seq2[*adkmodel.LLMResponse, error], strea
 }
 
 // isUsableResponse reports whether an LLMResponse carries a real
-// signal — parts, a finish reason, or an error code. Empty-shell
-// responses (heartbeats, aborted streams) return false.
+// signal — parts, an operator-visible finish reason (SAFETY,
+// RECITATION, MAX_TOKENS, OTHER, ...), or an error code. Empty-
+// shell responses (heartbeats, aborted streams) return false.
+//
+// Bare FinishReason=STOP with no parts does NOT count: it's the
+// exact silent-hang shape observed during the v2.6 GKE-triage
+// drive (session 019f...daf0d, 2026-07-14 turn 4). Vertex
+// returned a STOP frame with zero content, ADK forwarded it
+// unchanged, the agent loop treated it as "turn complete, wait
+// for input" and the session went idle. Classifying bare STOP
+// as non-usable lets wrapEmptyTailDetection synthesize
+// ErrEmptyResponse so the caller can retry / surface an error.
 func isUsableResponse(resp *adkmodel.LLMResponse) bool {
 	if resp == nil {
 		return false
@@ -268,10 +393,10 @@ func isUsableResponse(resp *adkmodel.LLMResponse) bool {
 	if resp.Content != nil && len(resp.Content.Parts) > 0 {
 		return true
 	}
-	if resp.FinishReason != "" {
+	if resp.ErrorCode != "" || resp.ErrorMessage != "" {
 		return true
 	}
-	if resp.ErrorCode != "" || resp.ErrorMessage != "" {
+	if resp.FinishReason != "" && resp.FinishReason != genai.FinishReasonStop {
 		return true
 	}
 	return false

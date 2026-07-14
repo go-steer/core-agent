@@ -308,6 +308,21 @@ Design detail: `docs/session-resume-design.md` in the repo.
 
 ---
 
+## In-place session switching (v2.6+ / core-tui v0.10.0)
+
+Prior versions required an exit-and-relaunch cycle to hop between sessions: `q` out of the TUI, re-launch, pick a different session from the startup picker. Painful when a single incident spawned N parallel triage sessions (v2.6 GKE-troubleshoot drive: 4+ sessions per incident, ~5-8 relaunch cycles).
+
+With core-agent bumped to core-tui v0.10.0 the remote TUI (`core-agent-tui`) exposes two new slashes:
+
+- `/switch [<sid>]` — enumerate sessions via `GET /sessions`, open an in-chat picker (or direct-jump when the operator types the sid). Chat wipes; the local SSE reader closes; the outgoing daemon session keeps running for later re-attach.
+- `/new` — POST `/sessions`, then detach + reattach to the fresh session in place. Companion for the "give me a clean slate" flow; previously required `q` + `core-agent-tui --new-session`.
+
+The daemon-side lifecycle is unchanged — sessions detach cleanly, per-caller ACLs are still enforced on the new attach, session resume (§ *Session resume*) applies to the outgoing session verbatim.
+
+Design details in core-tui issues #48 (`SlashResult.SwitchTo` API) and #53 (`/switch` UX). Adapter wiring in this repo lives in `internal/coretuiremote/capabilities.go` (`Sessions` / `SwitchToSession`).
+
+---
+
 ## Recipe
 
 See `examples/multi-session-bearer/` in the repo for a minimum-viable two-user starter you can run locally in five minutes.

@@ -388,6 +388,131 @@ func (a *Adapter) Set(modelID string, in, out float64) (string, error) {
 	return fmt.Sprintf("Applied %s @ $%.2f in / $%.2f out per Mtok.", modelID, in, out), nil
 }
 
+// ===== Session switch =====
+//
+// SessionSwitcher backs core-tui's /switch built-in (core-tui #48 / #53).
+// Sessions() enumerates via GET /sessions and marks the currently-
+// attached row with Current=true; SwitchToSession(id) constructs a
+// fresh Adapter pointing at the picked session and hands it back
+// inside a SwitchTarget so core-tui can detach + reattach in place.
+//
+// Detach semantics are core-tui-side: cancelling the outgoing
+// Adapter's ctxs closes the local SSE reader; the daemon session
+// keeps ticking per its own reattach policy. See the SwitchTarget
+// godoc in core-tui for the full contract.
+
+// Sessions satisfies coretui.SessionSwitcher. Enumerates via
+// GET /sessions on the same client, marking the currently-attached
+// row with Current=true so the picker can render "(current)" next
+// to it. On enumeration failure returns nil (no rows) — the picker
+// then renders "(no sessions advertised by the agent)" and Esc
+// closes cleanly. Callers wanting richer error surfacing can
+// inspect the client separately.
+func (a *Adapter) Sessions() []coretui.SessionInfo {
+	descs, err := a.client.ListSessions(context.TODO())
+	if err != nil {
+		return nil
+	}
+	curSID := currentSessionID(a.sessionPath)
+	out := make([]coretui.SessionInfo, 0, len(descs))
+	for _, d := range descs {
+		display := d.SessionID
+		if d.App != "" {
+			display = d.App + "/" + d.SessionID
+		}
+		out = append(out, coretui.SessionInfo{
+			ID:      d.SessionID,
+			Display: display,
+			Current: d.SessionID == curSID,
+		})
+	}
+	return out
+}
+
+// SwitchToSession satisfies coretui.SessionSwitcher. Constructs a
+// fresh Adapter pointing at sessionID against the SAME client (each
+// call is stateless — the client just multiplexes over sessionPath)
+// and returns it inside a SwitchTarget. The daemon-side session is
+// unaffected; core-tui detaches locally on the outgoing Adapter and
+// starts fresh subscriptions against this one.
+//
+// Path resolution: we don't have the App qualifier in a bare
+// sessionID lookup, so we consult the enumeration to recover it.
+// This keeps operator-typed `/switch <sid>` working when the
+// daemon's ListSessions returns App-qualified rows without the
+// operator having to type the full app/sid path.
+func (a *Adapter) SwitchToSession(sessionID string) (coretui.SwitchTarget, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return coretui.SwitchTarget{}, fmt.Errorf("SwitchToSession: empty session ID")
+	}
+	if sessionID == currentSessionID(a.sessionPath) {
+		// Already attached — treat as a no-op switch by returning
+		// the current Adapter unchanged. core-tui's picker also
+		// no-ops on the Current row so this is mostly a
+		// direct-jump-typing safety.
+		return coretui.SwitchTarget{
+			Agent: a,
+			Note:  "/switch: already attached to " + sessionID,
+		}, nil
+	}
+	newPath, err := a.resolveSessionPath(sessionID)
+	if err != nil {
+		return coretui.SwitchTarget{}, err
+	}
+	next := New(a.client, newPath)
+	return coretui.SwitchTarget{
+		Agent: next,
+		Note:  "Attached to session " + sessionID,
+	}, nil
+}
+
+// currentSessionID extracts the trailing sessionID from a session
+// path. The path is one of:
+//
+//	/sessions/<sid>              — shortcut form
+//	/sessions/<app>/<sid>        — qualified
+//
+// A malformed path yields "" so the caller's compare-and-mark logic
+// simply leaves Current=false on every row (the picker still opens
+// and switching still works — only the visual marker is lost).
+func currentSessionID(sessionPath string) string {
+	rest := strings.TrimPrefix(sessionPath, "/sessions/")
+	if idx := strings.LastIndex(rest, "/"); idx >= 0 {
+		return rest[idx+1:]
+	}
+	return rest
+}
+
+// resolveSessionPath maps a bare sessionID to the App-qualified path
+// the daemon expects. Enumerates GET /sessions and picks the first
+// row whose SessionID matches (bare form is unique across apps in
+// practice — if it isn't, the operator can /switch with an
+// app/sid-qualified argument once we teach the built-in to accept
+// slashes in the arg). Falls back to the shortcut form when the
+// enumeration doesn't find a match, which lets a stale operator-
+// typed ID surface as a clean "attach failed" downstream instead
+// of an opaque enumeration miss here.
+func (a *Adapter) resolveSessionPath(sessionID string) (string, error) {
+	descs, err := a.client.ListSessions(context.TODO())
+	if err != nil {
+		return "", fmt.Errorf("ListSessions: %w", err)
+	}
+	for _, d := range descs {
+		if d.SessionID != sessionID {
+			continue
+		}
+		if d.App == "" {
+			return "/sessions/" + d.SessionID, nil
+		}
+		return "/sessions/" + d.App + "/" + d.SessionID, nil
+	}
+	// Not found in enumeration — return the shortcut form so the
+	// downstream attach surfaces the not-found via a real HTTP
+	// error rather than a silent enumeration miss.
+	return "/sessions/" + sessionID, nil
+}
+
 // ===== Slash dispatch =====
 //
 // coretui's SlashProvider / AsyncSlashProviderWithPreamble hooks
@@ -407,6 +532,7 @@ func (a *Adapter) SlashCommands() []coretui.SlashCommandSpec {
 		{Name: "reload", Description: "Reload memory + skills + MCP from disk"},
 		{Name: "perms", Description: "Show permission gate state"},
 		{Name: "replan", Description: "Revoke the current plan and force a redraft (plan-first mode only)"},
+		{Name: "new", Description: "Create a fresh daemon session and attach in place (companion to core-tui's /switch)"},
 	}
 }
 
@@ -567,22 +693,25 @@ func (a *Adapter) invokeAsyncSlash(ctx context.Context, name, args string) (core
 		// hits the daemon-level POST /sessions endpoint directly —
 		// session creation isn't logically scoped to the current
 		// session, even though the operator typed the slash inside
-		// one. The TUI doesn't tear down + reattach mid-session
-		// (that needs coretui-side support, see core-tui#48);
-		// instead it shows the new session URL so the operator can
-		// relaunch with --new-session or paste the URL into a fresh
-		// tab.
-		//
-		// SystemMessage format: short prefix + URL on its own visual
-		// line so even when core-tui truncates long rows
-		// (core-tui#49) the URL stays readable. \n inside the
-		// SystemMessage renders as a line break in the chat
-		// scrollback.
+		// one. As of core-tui v0.10.0 (issue #48) we can now detach
+		// + reattach in place: return SwitchTo carrying a fresh
+		// Adapter pointing at the new session, and core-tui swaps
+		// the chat over on the same tick.
 		resp, err := a.client.NewSession(ctx)
 		if err != nil {
 			return coretui.SlashResult{}, err
 		}
-		return coretui.SlashResult{SystemMessage: fmt.Sprintf("/new: created %s\n%s", resp.SessionID, resp.URL)}, nil
+		newPath := "/sessions/" + resp.SessionID
+		if resp.AppName != "" {
+			newPath = "/sessions/" + resp.AppName + "/" + resp.SessionID
+		}
+		next := New(a.client, newPath)
+		return coretui.SlashResult{
+			SwitchTo: &coretui.SwitchTarget{
+				Agent: next,
+				Note:  fmt.Sprintf("Attached to new session %s (%s)", resp.SessionID, resp.URL),
+			},
+		}, nil
 	}
 	return coretui.SlashResult{}, fmt.Errorf("invokeAsyncSlash: unknown slash %s", name)
 }

@@ -146,7 +146,9 @@ Until then, the documented attach path for non-IAM gateways remains a wrapper ar
 | `/interrupt` | Cancel the in-flight model turn on the remote. |
 | `/reconnect` | Force-reconnect the SSE stream (resumes from `?since=<lastSeq>` — lossless). |
 | `/wake` | Pierce a scheduler sleep on the remote. |
-| `/sessions` | Pop back to the session picker. |
+| `/sessions` | Pop back to the startup session picker (kills the TUI, re-launches). |
+| `/switch [<sid>]`, `/sess` | Detach + reattach to a different daemon session **in place**. Bare form opens an in-chat picker (rows enumerated via `GET /sessions`, current row marked `(current)`); `/switch <sid>` direct-jumps. Chat wipes; local SSE reader closes; the outgoing daemon session keeps running for later re-attach. Requires core-tui v0.10.0+ (issues #48 / #53). |
+| `/new` | POST `/sessions` on the daemon (per-caller bearer auth, ACL-isolated) and detach + reattach to the fresh session in place. Companion to `/switch` for the "I need a clean slate" flow. |
 | `/transcript [path]` | Save the local scrollback to a markdown file (default `/tmp/<sid>.md`). |
 | `/theme dark\|light` | Switch glamour theme; re-renders existing assistant messages. |
 

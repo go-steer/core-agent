@@ -841,6 +841,10 @@ func (a *coreAgentAdapter) SlashCommands() []coretui.SlashCommandSpec {
 		Aliases:     []string{"boundaries"},
 		Description: "show context-management activity for this session (compactions, checkpoints, subtask usage)",
 	})
+	cmds = append(cmds, coretui.SlashCommandSpec{
+		Name:        "usage",
+		Description: "show cache-hit attribution + per-turn cost breakdown (companion to /stats)",
+	})
 	// /replan is registered unconditionally; the InvokeSlash case
 	// returns a friendly "plan-first gating isn't enabled" message
 	// when WithAttachReplanner wasn't wired (operator's config has
@@ -917,6 +921,15 @@ func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (
 		// what came from subtasks).
 		return coretui.SlashResult{
 			SystemMessage: renderContextStats(a.inner.ContextStats()),
+		}, nil
+	case "usage":
+		// /usage projects the local agent's AttachUsage() through the
+		// same formatter the remote adapter uses so operators see the
+		// same block regardless of whether they're driving the TUI in
+		// process or over a socket. /stats keeps the terse aggregate;
+		// /usage carries the cache-hit attribution + per-turn history.
+		return coretui.SlashResult{
+			SystemMessage: attach.RenderUsage(a.inner.AttachUsage()),
 		}, nil
 	case "compact", "summarize":
 		// NOTE: core-tui v0.5 calls InvokeSlash synchronously from

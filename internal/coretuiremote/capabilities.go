@@ -528,6 +528,7 @@ func (a *Adapter) SlashCommands() []coretui.SlashCommandSpec {
 		{Name: "btw", Description: "Ask a side question without polluting conversation history"},
 		{Name: "subagent", Description: "Spawn a background subagent"},
 		{Name: "context", Description: "Show context-management snapshot (compactions / checkpoints / subtasks)"},
+		{Name: "usage", Description: "Show cache-hit attribution + per-turn cost breakdown"},
 		{Name: "pricing", Description: "Show current pricing snapshot; sub: refresh / set"},
 		{Name: "reload", Description: "Reload memory + skills + MCP from disk"},
 		{Name: "perms", Description: "Show permission gate state"},
@@ -548,6 +549,13 @@ func (a *Adapter) InvokeSlash(ctx context.Context, name, args string) (coretui.S
 			return coretui.SlashResult{}, err
 		}
 		return coretui.SlashResult{SystemMessage: renderContextInfo(info)}, nil
+
+	case "usage":
+		info, err := a.client.Usage(ctx, a.sessionPath)
+		if err != nil {
+			return coretui.SlashResult{}, err
+		}
+		return coretui.SlashResult{SystemMessage: attach.RenderUsage(info)}, nil
 
 	case "pricing":
 		args = strings.TrimSpace(args)

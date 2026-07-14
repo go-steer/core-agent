@@ -63,7 +63,22 @@ func translateTypedFrame(frame attach.Frame) (coretui.Event, bool) {
 		if !ok || p == nil {
 			return coretui.Event{}, false
 		}
-		return coretui.Event{UsageUpdate: usageUpdateToCoreTui(p)}, true
+		ev := coretui.Event{UsageUpdate: usageUpdateToCoreTui(p)}
+		// Per-turn info piggybacks on the same Event so core-tui's
+		// per-turn footer updates from the authoritative server-side
+		// number instead of the adapter's applyPricing estimate. The
+		// framework's emitEvent fans out both usageMsg (for
+		// currentCost) and usageUpdateMsg (for sessionUsage) from a
+		// single Event that has both fields set.
+		if p.LastTurn != nil {
+			ev.Usage = &coretui.Usage{
+				InputTokens:  p.LastTurn.TokensIn,
+				OutputTokens: p.LastTurn.TokensOut,
+			}
+			ev.CostUSD = p.LastTurn.CostUSD
+			ev.Model = p.LastTurn.Model
+		}
+		return ev, true
 	case attach.EventInbox:
 		p, ok := frame.TypedData.(*attach.InboxEvent)
 		if !ok || p == nil {

@@ -275,7 +275,7 @@ Example:
 **What doesn't count**:
 - Time spent evicted — an evicted session's disk timestamp only bumps when it's re-resumed.
 
-**Trade-off**: a session stuck in a broken retry loop keeps broadcasting events, so it stays non-idle. Kill it with `/interrupt` (v2.4+) or `DELETE /sessions/<sid>` (v2.6+ when it ships).
+**Trade-off**: a session stuck in a broken retry loop keeps broadcasting events, so it stays non-idle. Kill it with `/interrupt` (v2.4+) or `DELETE /sessions/<sid>` (v2.7+). The bootstrap `default` session is refused with 403 — restart the daemon to reset it.
 
 ### What resumes vs. what doesn't
 

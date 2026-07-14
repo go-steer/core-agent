@@ -43,8 +43,12 @@ var (
 	// Version is the semver tag for released builds, or vX.Y.Z-dev
 	// for in-development builds. Bump this manually on main right
 	// after cutting a release so post-release builds report the
-	// next target version.
-	Version = "v2.4.0-dev"
+	// next target version. Enforced by
+	// dev/ci/presubmits/verify-version-fallback so drift caught in
+	// v2.4→v2.5→v2.6 (skipped bumps produced stale --version output
+	// on go-installed binaries during the v2.7.0-dev.N demo drive)
+	// can't happen again silently.
+	Version = "v2.7.0-dev"
 
 	// Commit is the git SHA the binary was built from. Defaults to
 	// "none" so the debug.BuildInfo fallback can detect that nothing

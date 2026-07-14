@@ -17,12 +17,14 @@ package coretuiremote
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	coretui "github.com/go-steer/core-tui/tui"
 
+	"github.com/go-steer/core-agent/internal/attachclient"
 	"github.com/go-steer/core-agent/pkg/attach"
 )
 
@@ -401,19 +403,40 @@ func (a *Adapter) Set(modelID string, in, out float64) (string, error) {
 // keeps ticking per its own reattach policy. See the SwitchTarget
 // godoc in core-tui for the full contract.
 
-// Sessions satisfies coretui.SessionSwitcher. Enumerates via
-// GET /sessions on the same client, marking the currently-attached
-// row with Current=true so the picker can render "(current)" next
-// to it. On enumeration failure returns nil (no rows) — the picker
-// then renders "(no sessions advertised by the agent)" and Esc
-// closes cleanly. Callers wanting richer error surfacing can
-// inspect the client separately.
+// peerEnumTimeout bounds the per-peer ListSessions call in the
+// fan-out so one slow peer doesn't stall the whole picker open.
+// Mirrors cmd/core-agent-tui/picker.go's 5s startup budget.
+const peerEnumTimeout = 5 * time.Second
+
+// Sessions satisfies coretui.SessionSwitcher. Enumerates sessions
+// on the current daemon, and (when a ClientFactory is wired via
+// NewWithClientFactory) parallel-fans across peers advertised on
+// GET /peers to include their sessions too. Local rows come first;
+// peer rows follow, each tagged in Display with the peer origin
+// so operators can tell which daemon they're picking. Currently-
+// attached row marked Current=true.
+//
+// On local enumeration failure returns nil (picker then renders
+// "no sessions advertised by the agent"). Peer failures are
+// silently dropped per row so a single unhappy peer doesn't take
+// the whole enumeration down. Single-daemon adapters (no factory)
+// skip peer enumeration entirely — same behavior as v0.10.x.
+//
+// Side effect: repopulates the endpointByID map so
+// SwitchToSession can decide whether a picked session is local
+// (empty / missing → use a.client) or peer (non-empty endpoint →
+// build a fresh Client via clientFactory).
 func (a *Adapter) Sessions() []coretui.SessionInfo {
 	descs, err := a.client.ListSessions(context.TODO())
 	if err != nil {
 		return nil
 	}
 	curSID := currentSessionID(a.sessionPath)
+
+	// Fresh endpoint map per enumeration — stale entries from a prior
+	// Sessions() call must not survive a peer disappearing from
+	// GET /peers.
+	newMap := make(map[string]string, len(descs))
 	out := make([]coretui.SessionInfo, 0, len(descs))
 	for _, d := range descs {
 		display := d.SessionID
@@ -425,42 +448,174 @@ func (a *Adapter) Sessions() []coretui.SessionInfo {
 			Display: display,
 			Current: d.SessionID == curSID,
 		})
+		newMap[d.SessionID] = "" // "" = local
 	}
+
+	// Peer fan-out only when the factory is wired (multi-daemon
+	// mode). Bare New adapters stay single-daemon.
+	if a.clientFactory != nil {
+		peers, perr := a.client.ListPeers(context.TODO())
+		if perr == nil && len(peers) > 0 {
+			peerRows := a.enumeratePeers(peers)
+			for _, row := range peerRows {
+				out = append(out, row.info)
+				newMap[row.info.ID] = row.endpoint
+			}
+		}
+	}
+
+	a.mu.Lock()
+	a.endpointByID = newMap
+	a.mu.Unlock()
+
 	return out
 }
 
-// SwitchToSession satisfies coretui.SessionSwitcher. Constructs a
-// fresh Adapter pointing at sessionID against the SAME client (each
-// call is stateless — the client just multiplexes over sessionPath)
-// and returns it inside a SwitchTarget. The daemon-side session is
-// unaffected; core-tui detaches locally on the outgoing Adapter and
-// starts fresh subscriptions against this one.
+// peerRow is one enumerated peer session plus the endpoint that
+// serves it — internal-only, so the endpoint→ID cache stays in
+// step with what Sessions() actually returned.
+type peerRow struct {
+	info     coretui.SessionInfo
+	endpoint string
+}
+
+// enumeratePeers parallel-fans across peers, calling ListSessions
+// on each via a fresh Client from clientFactory. Per-peer timeout
+// bounds the wait; peers that error (auth failure, network drop,
+// no factory support for their scheme, etc.) are silently dropped.
+// Sorted by peer name for deterministic picker ordering across
+// enumerations.
+func (a *Adapter) enumeratePeers(peers []attachclient.PeerDescriptor) []peerRow {
+	type result struct {
+		peer attachclient.PeerDescriptor
+		rows []peerRow
+	}
+	results := make(chan result, len(peers))
+	for _, p := range peers {
+		go func(p attachclient.PeerDescriptor) {
+			out := result{peer: p}
+			if p.Endpoint == "" {
+				results <- out
+				return
+			}
+			c, err := a.clientFactory(p.Endpoint)
+			if err != nil {
+				results <- out
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), peerEnumTimeout)
+			defer cancel()
+			descs, err := c.ListSessions(ctx)
+			if err != nil {
+				results <- out
+				return
+			}
+			for _, d := range descs {
+				display := d.SessionID
+				if d.App != "" {
+					display = d.App + "/" + d.SessionID
+				}
+				peerLabel := p.Name
+				if peerLabel == "" {
+					peerLabel = p.Endpoint
+				}
+				out.rows = append(out.rows, peerRow{
+					info: coretui.SessionInfo{
+						ID:          d.SessionID,
+						Display:     "[peer:" + peerLabel + "] " + display,
+						Description: p.Endpoint,
+					},
+					endpoint: p.Endpoint,
+				})
+			}
+			results <- out
+		}(p)
+	}
+	collected := make([]result, 0, len(peers))
+	for i := 0; i < len(peers); i++ {
+		collected = append(collected, <-results)
+	}
+	// Deterministic order across enumerations — sort by peer name
+	// (fallback endpoint), then flatten. Without this the picker
+	// order shifts run-to-run and (current) marker jumps around.
+	sort.Slice(collected, func(i, j int) bool {
+		ni, nj := collected[i].peer.Name, collected[j].peer.Name
+		if ni == "" {
+			ni = collected[i].peer.Endpoint
+		}
+		if nj == "" {
+			nj = collected[j].peer.Endpoint
+		}
+		return ni < nj
+	})
+	var flat []peerRow
+	for _, r := range collected {
+		flat = append(flat, r.rows...)
+	}
+	return flat
+}
+
+// SwitchToSession satisfies coretui.SessionSwitcher. Local targets
+// (empty / missing endpoint in the cache populated by Sessions())
+// construct a fresh Adapter against the same client; peer targets
+// (non-empty endpoint) build a fresh Client via clientFactory and
+// return an Adapter pointing at that peer's session. In both cases
+// the returned Adapter inherits this Adapter's clientFactory so
+// the operator can hop again from the new session.
 //
-// Path resolution: we don't have the App qualifier in a bare
-// sessionID lookup, so we consult the enumeration to recover it.
-// This keeps operator-typed `/switch <sid>` working when the
-// daemon's ListSessions returns App-qualified rows without the
-// operator having to type the full app/sid path.
+// Direct-jump operator-typed IDs that Sessions() hasn't seen fall
+// through the local path (resolveSessionPath handles the "unknown
+// sid" case). Cross-daemon direct-jumps by bare sid aren't
+// supported — the operator uses /attach <url> <sid> for that.
 func (a *Adapter) SwitchToSession(sessionID string) (coretui.SwitchTarget, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return coretui.SwitchTarget{}, fmt.Errorf("SwitchToSession: empty session ID")
 	}
 	if sessionID == currentSessionID(a.sessionPath) {
-		// Already attached — treat as a no-op switch by returning
-		// the current Adapter unchanged. core-tui's picker also
-		// no-ops on the Current row so this is mostly a
-		// direct-jump-typing safety.
+		// Already attached — no-op switch. core-tui's picker also
+		// no-ops on the Current row so this is mostly a direct-jump-
+		// typing safety.
 		return coretui.SwitchTarget{
 			Agent: a,
 			Note:  "/switch: already attached to " + sessionID,
 		}, nil
 	}
+
+	// Peer targets: use the endpoint the last Sessions() enumeration
+	// recorded, construct a fresh Client via the factory, wrap in a
+	// new Adapter that inherits the factory (so the operator can hop
+	// again from the peer).
+	a.mu.Lock()
+	endpoint := a.endpointByID[sessionID]
+	a.mu.Unlock()
+	if endpoint != "" {
+		if a.clientFactory == nil {
+			// Shouldn't happen (endpoints only populate when factory
+			// is wired), but defensive against internal invariant
+			// drift.
+			return coretui.SwitchTarget{}, fmt.Errorf("SwitchToSession: peer target %q but clientFactory not wired", sessionID)
+		}
+		peerClient, err := a.clientFactory(endpoint)
+		if err != nil {
+			return coretui.SwitchTarget{}, fmt.Errorf("clientFactory(%s): %w", endpoint, err)
+		}
+		newPath, err := resolvePathOnClient(peerClient, sessionID)
+		if err != nil {
+			return coretui.SwitchTarget{}, err
+		}
+		next := NewWithClientFactory(peerClient, newPath, a.clientFactory)
+		return coretui.SwitchTarget{
+			Agent: next,
+			Note:  "Attached to peer session " + sessionID + " (" + endpoint + ")",
+		}, nil
+	}
+
 	newPath, err := a.resolveSessionPath(sessionID)
 	if err != nil {
 		return coretui.SwitchTarget{}, err
 	}
-	next := New(a.client, newPath)
+	next := NewWithClientFactory(a.client, newPath, a.clientFactory)
 	return coretui.SwitchTarget{
 		Agent: next,
 		Note:  "Attached to session " + sessionID,
@@ -485,16 +640,25 @@ func currentSessionID(sessionPath string) string {
 }
 
 // resolveSessionPath maps a bare sessionID to the App-qualified path
-// the daemon expects. Enumerates GET /sessions and picks the first
-// row whose SessionID matches (bare form is unique across apps in
-// practice — if it isn't, the operator can /switch with an
-// app/sid-qualified argument once we teach the built-in to accept
-// slashes in the arg). Falls back to the shortcut form when the
-// enumeration doesn't find a match, which lets a stale operator-
-// typed ID surface as a clean "attach failed" downstream instead
-// of an opaque enumeration miss here.
+// the current daemon expects. Thin wrapper over resolvePathOnClient
+// for the common case; peer-daemon path resolution uses
+// resolvePathOnClient directly with a fresh client.
 func (a *Adapter) resolveSessionPath(sessionID string) (string, error) {
-	descs, err := a.client.ListSessions(context.TODO())
+	return resolvePathOnClient(a.client, sessionID)
+}
+
+// resolvePathOnClient enumerates GET /sessions on client and picks
+// the first row whose SessionID matches, returning the App-qualified
+// path form (or shortcut form when App is empty). Falls back to
+// the shortcut form when the enumeration doesn't find a match, so
+// a stale operator-typed ID surfaces via a downstream HTTP error
+// rather than an opaque enumeration miss here.
+//
+// Extracted so SwitchToSession (peer branch) + /attach can share
+// the resolution against arbitrary daemons — the pre-#246 form was
+// a method on Adapter and only spoke to a.client.
+func resolvePathOnClient(client *attachclient.Client, sessionID string) (string, error) {
+	descs, err := client.ListSessions(context.TODO())
 	if err != nil {
 		return "", fmt.Errorf("ListSessions: %w", err)
 	}
@@ -507,9 +671,6 @@ func (a *Adapter) resolveSessionPath(sessionID string) (string, error) {
 		}
 		return "/sessions/" + d.App + "/" + d.SessionID, nil
 	}
-	// Not found in enumeration — return the shortcut form so the
-	// downstream attach surfaces the not-found via a real HTTP
-	// error rather than a silent enumeration miss.
 	return "/sessions/" + sessionID, nil
 }
 
@@ -534,6 +695,7 @@ func (a *Adapter) SlashCommands() []coretui.SlashCommandSpec {
 		{Name: "perms", Description: "Show permission gate state"},
 		{Name: "replan", Description: "Revoke the current plan and force a redraft (plan-first mode only)"},
 		{Name: "new", Description: "Create a fresh daemon session and attach in place (companion to core-tui's /switch)"},
+		{Name: "attach", Description: "Attach to another daemon: /attach <url> lists that daemon's sessions; /attach <url> <sid> direct-jumps in place. Escape hatch when GET /peers is empty (issue #246)."},
 	}
 }
 
@@ -636,6 +798,8 @@ func (a *Adapter) InvokeSlashAsync(ctx context.Context, name, args string) (stri
 		preamble = "Spawning subagent…"
 	case "new":
 		preamble = "Creating new session…"
+	case "attach":
+		preamble = "Contacting daemon…"
 	default:
 		// Sync path: delegate to InvokeSlash off the Update goroutine.
 		go func() {
@@ -713,15 +877,108 @@ func (a *Adapter) invokeAsyncSlash(ctx context.Context, name, args string) (core
 		if resp.AppName != "" {
 			newPath = "/sessions/" + resp.AppName + "/" + resp.SessionID
 		}
-		next := New(a.client, newPath)
+		// Preserve clientFactory (nil in single-daemon mode) so the
+		// operator can hop again from the new session without losing
+		// multi-daemon capabilities they had before /new.
+		next := NewWithClientFactory(a.client, newPath, a.clientFactory)
 		return coretui.SlashResult{
 			SwitchTo: &coretui.SwitchTarget{
 				Agent: next,
 				Note:  fmt.Sprintf("Attached to new session %s (%s)", resp.SessionID, resp.URL),
 			},
 		}, nil
+
+	case "attach":
+		// /attach <url>          → enumerate that daemon's sessions
+		//                          into a system message; operator
+		//                          picks a sid and reissues.
+		// /attach <url> <sid>    → direct-jump: build a fresh Adapter
+		//                          against the peer daemon's sid path.
+		//
+		// Escape hatch (issue #246) for when GET /peers is empty on
+		// the current daemon or the operator wants to reach an
+		// unregistered daemon. Requires a wired clientFactory —
+		// single-daemon adapters error cleanly.
+		return a.dispatchAttach(ctx, args)
 	}
 	return coretui.SlashResult{}, fmt.Errorf("invokeAsyncSlash: unknown slash %s", name)
+}
+
+// dispatchAttach handles /attach <url> [<sid>] (issue #246).
+//
+//	/attach <url>          → contact daemon at <url>, enumerate its
+//	                         sessions, return a system message listing
+//	                         them. No switch.
+//	/attach <url> <sid>    → direct-jump: construct a fresh Adapter
+//	                         against <url>/sessions/<sid> (App-resolved
+//	                         via ListSessions on the peer) and return
+//	                         a SwitchTarget.
+//
+// Requires clientFactory to be wired (NewWithClientFactory).
+// Single-daemon adapters get a friendly error pointing at #246.
+func (a *Adapter) dispatchAttach(ctx context.Context, args string) (coretui.SlashResult, error) {
+	if a.clientFactory == nil {
+		return coretui.SlashResult{
+			SystemMessage: "/attach: cross-daemon switch requires multi-daemon mode (host built with NewWithClientFactory — see issue #246). Standard core-agent-tui builds enable this automatically.",
+		}, nil
+	}
+	parts := strings.Fields(args)
+	if len(parts) == 0 {
+		return coretui.SlashResult{
+			SystemMessage: "/attach: usage — /attach <daemon-url> [<session-id>]",
+		}, nil
+	}
+	rawURL := parts[0]
+	// Parse to fail-fast on malformed URLs before we hit the network.
+	if _, err := attachclient.ParseURL(rawURL); err != nil {
+		return coretui.SlashResult{SystemMessage: "/attach: parse URL: " + err.Error()}, nil
+	}
+	peerClient, err := a.clientFactory(rawURL)
+	if err != nil {
+		return coretui.SlashResult{SystemMessage: "/attach: clientFactory: " + err.Error()}, nil
+	}
+
+	// Bare form: enumerate the peer's sessions into a system message.
+	// Operator picks a sid and re-runs `/attach <url> <sid>`. Chose
+	// this over "attach to first session" because the operator may
+	// not know what's on the peer; a listing makes the choice explicit.
+	if len(parts) == 1 {
+		enumCtx, cancel := context.WithTimeout(ctx, peerEnumTimeout)
+		defer cancel()
+		descs, err := peerClient.ListSessions(enumCtx)
+		if err != nil {
+			return coretui.SlashResult{SystemMessage: "/attach: ListSessions on " + rawURL + ": " + err.Error()}, nil
+		}
+		if len(descs) == 0 {
+			return coretui.SlashResult{
+				SystemMessage: "/attach: " + rawURL + " has no sessions. Post one via `curl -X POST " + rawURL + "/sessions` first, then rerun.",
+			}, nil
+		}
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "/attach: %d session(s) on %s — re-run /attach <url> <sid> to jump:\n", len(descs), rawURL)
+		for _, d := range descs {
+			if d.App != "" {
+				fmt.Fprintf(&sb, "  • %s/%s\n", d.App, d.SessionID)
+			} else {
+				fmt.Fprintf(&sb, "  • %s\n", d.SessionID)
+			}
+		}
+		return coretui.SlashResult{SystemMessage: strings.TrimRight(sb.String(), "\n")}, nil
+	}
+
+	// /attach <url> <sid>: direct-jump.
+	sid := parts[1]
+	newPath, err := resolvePathOnClient(peerClient, sid)
+	if err != nil {
+		return coretui.SlashResult{SystemMessage: "/attach: resolve path on " + rawURL + ": " + err.Error()}, nil
+	}
+	next := NewWithClientFactory(peerClient, newPath, a.clientFactory)
+	return coretui.SlashResult{
+		SwitchTo: &coretui.SwitchTarget{
+			Agent: next,
+			Note:  "Attached to " + rawURL + " session " + sid,
+		},
+	}, nil
 }
 
 // ===== Render helpers =====

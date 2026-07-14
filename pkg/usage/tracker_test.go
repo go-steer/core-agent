@@ -180,3 +180,126 @@ func TestTracker_TotalsByModelEmpty(t *testing.T) {
 		t.Errorf("TotalsByModel on empty tracker = %v, want empty", got)
 	}
 }
+
+func TestPricing_CostUSDWithCache(t *testing.T) {
+	t.Parallel()
+	// Cached rate honored when set: 800k uncached at $1.25/M + 200k
+	// cached at $0.3125/M + 100k output at $5/M = $1.5625 total.
+	p := Pricing{InputPerMTok: 1.25, CachedInputPerMTok: 0.3125, OutputPerMTok: 5.00}
+	got := p.CostUSDWithCache(800_000, 200_000, 100_000)
+	want := 0.8*1.25 + 0.2*0.3125 + 0.1*5.00
+	if math.Abs(got-want) > 1e-9 {
+		t.Errorf("CostUSDWithCache = %f, want %f", got, want)
+	}
+
+	// Fallback: no cached rate → cache hits bill at InputPerMTok
+	// (honest "no discount known" signal, not silent freebie).
+	p2 := Pricing{InputPerMTok: 1.0, OutputPerMTok: 2.0}
+	got2 := p2.CostUSDWithCache(500_000, 500_000, 100_000)
+	want2 := 0.5*1.0 + 0.5*1.0 + 0.1*2.0
+	if math.Abs(got2-want2) > 1e-9 {
+		t.Errorf("CostUSDWithCache (fallback) = %f, want %f", got2, want2)
+	}
+}
+
+func TestTracker_AppendUsage_CachedFields(t *testing.T) {
+	t.Parallel()
+	tr := NewTracker()
+	// gemini-3.1-pro rates: input $1.25, cached $0.3125, output $5.
+	p := Pricing{InputPerMTok: 1.25, CachedInputPerMTok: 0.3125, OutputPerMTok: 5.00}
+
+	// One warm turn with 200k of 1M input from cache + 50k output +
+	// 10k thinking + 5k tool-use.
+	tr.AppendUsage("gemini-3.1-pro", TurnUsage{
+		InputTokens:       1_000_000,
+		CachedInputTokens: 200_000,
+		OutputTokens:      50_000,
+		ThoughtsTokens:    10_000,
+		ToolUseTokens:     5_000,
+	}, p)
+	// One cold turn: no cache hits.
+	tr.AppendUsage("gemini-3.1-pro", TurnUsage{
+		InputTokens:  500_000,
+		OutputTokens: 20_000,
+	}, p)
+
+	tot := tr.Totals()
+	if tot.Turns != 2 {
+		t.Errorf("Turns = %d, want 2", tot.Turns)
+	}
+	if tot.InputTokens != 1_500_000 {
+		t.Errorf("InputTokens = %d, want 1_500_000", tot.InputTokens)
+	}
+	if tot.CachedInputTokens != 200_000 {
+		t.Errorf("CachedInputTokens = %d, want 200_000", tot.CachedInputTokens)
+	}
+	if tot.OutputTokens != 70_000 {
+		t.Errorf("OutputTokens = %d, want 70_000", tot.OutputTokens)
+	}
+	if tot.ThoughtsTokens != 10_000 || tot.ToolUseTokens != 5_000 {
+		t.Errorf("thoughts/tool-use rollup wrong: %+v", tot)
+	}
+	// Warm turn: 800k uncached * 1.25 + 200k cached * 0.3125 + 50k * 5 = 1.3125
+	// Cold turn: 500k * 1.25 + 20k * 5 = 0.725
+	wantCost := (0.8*1.25 + 0.2*0.3125 + 0.05*5.00) + (0.5*1.25 + 0.02*5.00)
+	if math.Abs(tot.CostUSD-wantCost) > 1e-9 {
+		t.Errorf("CostUSD = %f, want %f", tot.CostUSD, wantCost)
+	}
+}
+
+func TestTracker_AppendUsage_ClampsCachedOverInput(t *testing.T) {
+	t.Parallel()
+	// Provider quirk: the issue observed cached > prompt occasionally.
+	// AppendUsage must clamp so downstream uncached math stays >= 0.
+	tr := NewTracker()
+	p := Pricing{InputPerMTok: 1.0, CachedInputPerMTok: 0.25, OutputPerMTok: 2.0}
+
+	tr.AppendUsage("m", TurnUsage{
+		InputTokens:       100_000,
+		CachedInputTokens: 250_000, // over-reported
+		OutputTokens:      1_000,
+	}, p)
+
+	got, ok := tr.Last()
+	if !ok {
+		t.Fatal("expected one recorded turn")
+	}
+	if got.CachedInputTokens != 100_000 {
+		t.Errorf("CachedInputTokens = %d, want clamped to 100_000", got.CachedInputTokens)
+	}
+	// Uncached = 0, all input at cached rate: 100k * 0.25 + 1k * 2 = 0.027
+	wantCost := 0.1*0.25 + 0.001*2.0
+	if math.Abs(got.CostUSD-wantCost) > 1e-9 {
+		t.Errorf("clamped-turn CostUSD = %f, want %f", got.CostUSD, wantCost)
+	}
+}
+
+func TestTracker_AppendBackCompat(t *testing.T) {
+	t.Parallel()
+	// The old Append(model, in, out, p) signature is now a shim over
+	// AppendUsage. Verify legacy callers still land a well-formed
+	// Turn with zero cached/thoughts (i.e. cost matches CostUSD, not
+	// CostUSDWithCache-with-savings).
+	tr := NewTracker()
+	p := Pricing{InputPerMTok: 1.0, CachedInputPerMTok: 0.25, OutputPerMTok: 2.0}
+	tr.Append("m", 1_000_000, 100_000, p)
+	got, ok := tr.Last()
+	if !ok {
+		t.Fatal("expected one recorded turn")
+	}
+	if got.CachedInputTokens != 0 || got.ThoughtsTokens != 0 {
+		t.Errorf("legacy Append should zero cached/thoughts: %+v", got)
+	}
+	wantCost := 1.0*1.0 + 0.1*2.0 // 1.20 — no cache discount
+	if math.Abs(got.CostUSD-wantCost) > 1e-9 {
+		t.Errorf("legacy Append cost = %f, want %f", got.CostUSD, wantCost)
+	}
+}
+
+func TestTurnUsageFromGenaiMetadata_NilSafe(t *testing.T) {
+	t.Parallel()
+	got := TurnUsageFromGenaiMetadata(nil)
+	if got != (TurnUsage{}) {
+		t.Errorf("nil metadata should yield zero TurnUsage, got %+v", got)
+	}
+}

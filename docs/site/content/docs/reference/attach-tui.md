@@ -130,7 +130,7 @@ Until then, the documented attach path for non-IAM gateways remains a wrapper ar
 | Command | Effect |
 |---|---|
 | `/help`, `/quit`, `/clear` | Standard housekeeping. |
-| `/stats` | Cumulative token + cost totals, per-model breakdown. Pulls from the remote's `usage.Tracker`. |
+| `/stats` | Cumulative token + cost totals, per-model breakdown, plus cached-vs-uncached input attribution and per-turn history. Pulls from the remote's `usage.Tracker` via `GET /sessions/<id>/usage`. |
 | `/context` | Compactions, checkpoints, summarized chars, subtask cost. |
 | `/memory` | Current `AGENTS.md` chain (project + user-global). |
 | `/skills` | Loaded skills with trigger descriptions. |

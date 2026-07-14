@@ -75,15 +75,15 @@ func Headless(ctx context.Context, m adkmodel.LLM, prompt string, stdout, stderr
 // counts as they fly by, then hands the wrapped iterator to
 // WriteEvents for formatting.
 func streamTurn(ctx context.Context, a *agent.Agent, m adkmodel.LLM, prompt string, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing, eventsOpts []EventsOption) (int, error) {
-	var lastUsageInput, lastUsageOutput int
-	events := tapUsage(a.Run(ctx, prompt), func(in, out int) {
-		lastUsageInput, lastUsageOutput = in, out
+	var lastUsage usage.TurnUsage
+	events := tapUsage(a.Run(ctx, prompt), func(u usage.TurnUsage) {
+		lastUsage = u
 	})
 	if err := WriteEvents(events, stdout, stderr, eventsOpts...); err != nil {
 		return ExitAgentError, fmt.Errorf("runner: agent run: %w", err)
 	}
-	if tracker != nil && (lastUsageInput > 0 || lastUsageOutput > 0) {
-		tracker.Append(m.Name(), lastUsageInput, lastUsageOutput, pricing)
+	if tracker != nil && (lastUsage.InputTokens > 0 || lastUsage.OutputTokens > 0) {
+		tracker.AppendUsage(m.Name(), lastUsage, pricing)
 	}
 	return ExitOK, nil
 }
@@ -92,11 +92,11 @@ func streamTurn(ctx context.Context, a *agent.Agent, m adkmodel.LLM, prompt stri
 // that carries UsageMetadata. The event itself passes through to the
 // next consumer unchanged. Used so streamTurn can delegate formatting
 // to WriteEvents while still maintaining its per-turn token totals.
-func tapUsage(events iter.Seq2[*session.Event, error], track func(input, output int)) iter.Seq2[*session.Event, error] {
+func tapUsage(events iter.Seq2[*session.Event, error], track func(usage.TurnUsage)) iter.Seq2[*session.Event, error] {
 	return func(yield func(*session.Event, error) bool) {
 		for ev, err := range events {
 			if ev != nil && ev.UsageMetadata != nil {
-				track(int(ev.UsageMetadata.PromptTokenCount), int(ev.UsageMetadata.CandidatesTokenCount))
+				track(usage.TurnUsageFromGenaiMetadata(ev.UsageMetadata))
 			}
 			if !yield(ev, err) {
 				return

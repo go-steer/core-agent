@@ -126,7 +126,22 @@ Both Anthropic and Google support prompt caching: stable prefix content is hashe
 
 ### What's measurable
 
-`/stats` and `/context` don't currently break out cache-hit vs cache-miss tokens — that detail lives in the provider's response metadata. For now, the proxy is "input-token totals grew linearly with turn count" (no caching) vs "grew sub-linearly" (caching working). Direct cache-hit accounting is queued behind provider-side support.
+Since v2.7.0-dev.3 the `GET /sessions/<id>/usage` endpoint (which `/stats` renders) breaks input tokens into `input_tokens_cached` + `input_tokens_uncached` and reports both the actual `cost_usd` and a `cost_usd_uncached_reference` — the delta is the caching win. A `per_turn` array carries the same fields per model call so you can tell exactly which turns went cold and which warmed up. Curl it directly for scripting:
+
+```console
+$ curl -s http://<daemon>/sessions/<sid>/usage | jq '.overall'
+{
+  "input_tokens": 181449,
+  "input_tokens_cached": 143937,
+  "input_tokens_uncached": 37512,
+  "output_tokens": 1405,
+  "turns": 10,
+  "cost_usd": 0.077,
+  "cost_usd_uncached_reference": 0.284
+}
+```
+
+The cached-vs-uncached rate split relies on `Pricing.CachedInputPerMTok` being set for your model (Gemini entries in the built-in table use Google's public 25% rule; add your own via `.agents/pricing.json` or `~/.core-agent/pricing.json` `cached_input_per_mtok` for other providers).
 
 ---
 

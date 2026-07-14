@@ -345,6 +345,7 @@ func (a *Agent) runSummarizer(ctx context.Context, spec summarizerSpec) (summari
 	// therefore also escape the --max-turn-cost-usd / --max-session-
 	// cost-usd ceilings from #145.
 	var lastIn, lastOut int
+	var lastMeta *genai.GenerateContentResponseUsageMetadata
 	for resp, err := range a.model.GenerateContent(ctx, req, false) {
 		if err != nil {
 			return summarizerOutcome{}, fmt.Errorf("agent: %s: generate: %w", spec.operation, err)
@@ -352,6 +353,7 @@ func (a *Agent) runSummarizer(ctx context.Context, spec summarizerSpec) (summari
 		if resp != nil && resp.UsageMetadata != nil {
 			lastIn = int(resp.UsageMetadata.PromptTokenCount)
 			lastOut = int(resp.UsageMetadata.CandidatesTokenCount)
+			lastMeta = resp.UsageMetadata
 		}
 		if resp == nil || resp.Content == nil || resp.Partial {
 			continue
@@ -363,7 +365,7 @@ func (a *Agent) runSummarizer(ctx context.Context, spec summarizerSpec) (summari
 		}
 	}
 	elapsed := time.Since(start)
-	a.recordInternalLLMUsage(lastIn, lastOut)
+	a.recordInternalLLMUsage(lastIn, lastOut, lastMeta)
 	summary := strings.TrimSpace(b.String())
 	if summary == "" {
 		return summarizerOutcome{}, fmt.Errorf("agent: %s: model returned no summary text", spec.operation)

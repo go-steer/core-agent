@@ -323,7 +323,7 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 	// to-zero after Append keeps multi-turn subtasks accurate (a
 	// subtask that does read_file + summarize fires two TurnComplete
 	// events, each with its own per-turn usage to commit).
-	var lastTurnIn, lastTurnOut int
+	var lastTurnUsage usage.TurnUsage
 
 	// ADK's runner.Run iterates events for ONE turn-as-the-runner-
 	// sees-it. Multi-turn = call Run multiple times with each new
@@ -346,8 +346,7 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 		// sum — see comment above). The final per-turn values
 		// commit to the tracker on TurnComplete below.
 		if ev.UsageMetadata != nil {
-			lastTurnIn = int(ev.UsageMetadata.PromptTokenCount)
-			lastTurnOut = int(ev.UsageMetadata.CandidatesTokenCount)
+			lastTurnUsage = usage.TurnUsageFromGenaiMetadata(ev.UsageMetadata)
 		}
 		// Capture final text. collectFinalText filters out
 		// partials so we don't double-count streaming chunks.
@@ -362,16 +361,16 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 			// pricing comes from the subtask's model name. When
 			// the parent has no tracker wired, the local totals
 			// still flow into SubtaskResult/ContextStats.
-			if lastTurnIn > 0 || lastTurnOut > 0 {
-				totalIn += lastTurnIn
-				totalOut += lastTurnOut
+			if lastTurnUsage.InputTokens > 0 || lastTurnUsage.OutputTokens > 0 {
+				totalIn += lastTurnUsage.InputTokens
+				totalOut += lastTurnUsage.OutputTokens
 				if a.tracker != nil {
 					modelName := subModel.Name()
 					pricing := usage.PriceFor(modelName, nil)
-					turn := a.tracker.Append(modelName, lastTurnIn, lastTurnOut, pricing)
+					turn := a.tracker.AppendUsage(modelName, lastTurnUsage, pricing)
 					totalCostUSD += turn.CostUSD
 				}
-				lastTurnIn, lastTurnOut = 0, 0
+				lastTurnUsage = usage.TurnUsage{}
 			}
 			if turnsUsed >= maxTurns {
 				turnComplete = true

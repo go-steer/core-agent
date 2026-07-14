@@ -1371,21 +1371,21 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 				return runner.ExitOK
 			case <-a.WakeRequested():
 				debugf("--no-repl: wake fired; calling Run")
-				var lastIn, lastOut, evCount int
+				var lastUsage usage.TurnUsage
+				var evCount int
 				for ev, runErr := range a.Run(ctx, "") {
 					evCount++
 					if ev != nil && ev.UsageMetadata != nil {
-						lastIn = int(ev.UsageMetadata.PromptTokenCount)
-						lastOut = int(ev.UsageMetadata.CandidatesTokenCount)
+						lastUsage = usage.TurnUsageFromGenaiMetadata(ev.UsageMetadata)
 					}
 					if runErr != nil {
 						fmt.Fprintf(os.Stderr, "core-agent: turn: %v\n", runErr)
 						debugf("--no-repl: Run yielded error: %v", runErr)
 					}
 				}
-				debugf("--no-repl: Run finished (events=%d lastIn=%d lastOut=%d)", evCount, lastIn, lastOut)
-				if tracker != nil && (lastIn > 0 || lastOut > 0) {
-					tracker.Append(m.Name(), lastIn, lastOut, pricingRate)
+				debugf("--no-repl: Run finished (events=%d lastIn=%d lastOut=%d)", evCount, lastUsage.InputTokens, lastUsage.OutputTokens)
+				if tracker != nil && (lastUsage.InputTokens > 0 || lastUsage.OutputTokens > 0) {
+					tracker.AppendUsage(m.Name(), lastUsage, pricingRate)
 				}
 			}
 		}

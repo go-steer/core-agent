@@ -15,6 +15,8 @@
 package agent
 
 import (
+	"google.golang.org/genai"
+
 	"github.com/go-steer/core-agent/pkg/usage"
 )
 
@@ -36,8 +38,12 @@ import (
 // No-ops when the tracker isn't wired (tests / hand-constructed
 // agents) or when both token counts are zero (some providers report
 // usage only on the final response and may leave it empty on
-// failure paths).
-func (a *Agent) recordInternalLLMUsage(promptTokens, completionTokens int) {
+// failure paths). The metadata argument may be nil for callers that
+// don't have access to the full breakdown; cached/thoughts/tool-use
+// then default to zero and the caller silently loses the cache
+// attribution — no cost regression because CostUSDWithCache falls back
+// to InputPerMTok when cached is zero.
+func (a *Agent) recordInternalLLMUsage(promptTokens, completionTokens int, meta *genai.GenerateContentResponseUsageMetadata) {
 	if a == nil || a.tracker == nil {
 		return
 	}
@@ -48,5 +54,12 @@ func (a *Agent) recordInternalLLMUsage(promptTokens, completionTokens int) {
 		return
 	}
 	modelName := a.model.Name()
-	a.tracker.Append(modelName, promptTokens, completionTokens, usage.PriceFor(modelName, nil))
+	turnUsage := usage.TurnUsageFromGenaiMetadata(meta)
+	if turnUsage.InputTokens == 0 {
+		turnUsage.InputTokens = promptTokens
+	}
+	if turnUsage.OutputTokens == 0 {
+		turnUsage.OutputTokens = completionTokens
+	}
+	a.tracker.AppendUsage(modelName, turnUsage, usage.PriceFor(modelName, nil))
 }

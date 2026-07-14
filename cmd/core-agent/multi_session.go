@@ -292,11 +292,10 @@ func runSessionWakeLoop(ctx context.Context, ag *agent.Agent, tracker *usage.Tra
 		case <-ctx.Done():
 			return
 		case <-ag.WakeRequested():
-			var lastIn, lastOut int
+			var lastUsage usage.TurnUsage
 			for ev, runErr := range ag.Run(ctx, "") {
 				if ev != nil && ev.UsageMetadata != nil {
-					lastIn = int(ev.UsageMetadata.PromptTokenCount)
-					lastOut = int(ev.UsageMetadata.CandidatesTokenCount)
+					lastUsage = usage.TurnUsageFromGenaiMetadata(ev.UsageMetadata)
 				}
 				if runErr != nil {
 					// Surface to stderr but keep the loop alive —
@@ -304,8 +303,8 @@ func runSessionWakeLoop(ctx context.Context, ag *agent.Agent, tracker *usage.Tra
 					fmt.Fprintf(os.Stderr, "core-agent: session %s turn: %v\n", ag.SessionID(), runErr)
 				}
 			}
-			if tracker != nil && (lastIn > 0 || lastOut > 0) {
-				tracker.Append(trackerName, lastIn, lastOut, pricingRate)
+			if tracker != nil && (lastUsage.InputTokens > 0 || lastUsage.OutputTokens > 0) {
+				tracker.AppendUsage(trackerName, lastUsage, pricingRate)
 			}
 		}
 	}

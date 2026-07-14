@@ -415,20 +415,23 @@ func runOneTurn(ctx context.Context, a *Agent, prompt string, doneCh chan string
 		if cfg.progress != nil {
 			cfg.progress(turnNo, ev)
 		}
-		if u := ev.UsageMetadata; u != nil {
-			inTok := int(u.PromptTokenCount)
-			outTok := int(u.CandidatesTokenCount)
-			out.inputTokens += inTok
-			out.outputTokens += outTok
+		if ev.UsageMetadata != nil {
+			turnUsage := usage.TurnUsageFromGenaiMetadata(ev.UsageMetadata)
+			out.inputTokens += turnUsage.InputTokens
+			out.outputTokens += turnUsage.OutputTokens
 			if cfg.tracker != nil {
 				modelName := ""
 				if a.inner != nil {
 					modelName = a.inner.Name()
 				}
-				rec := cfg.tracker.Append(modelName, inTok, outTok, cfg.pricing)
+				rec := cfg.tracker.AppendUsage(modelName, turnUsage, cfg.pricing)
 				out.costUSD += rec.CostUSD
 			} else if !cfg.pricing.IsZero() {
-				out.costUSD += cfg.pricing.CostUSD(inTok, outTok)
+				uncached := turnUsage.InputTokens - turnUsage.CachedInputTokens
+				if uncached < 0 {
+					uncached = 0
+				}
+				out.costUSD += cfg.pricing.CostUSDWithCache(uncached, turnUsage.CachedInputTokens, turnUsage.OutputTokens)
 			}
 		}
 		if ev.Content != nil {

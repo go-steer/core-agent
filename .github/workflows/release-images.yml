@@ -124,9 +124,17 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # docker/metadata-action computes the full tag matrix from a
-      # declarative spec (much cleaner than hand-rolled bash). On a
-      # `v2.3.0` push it produces:
-      #   :v2.3.0  :v2.3  :v2  :latest
+      # declarative spec (much cleaner than hand-rolled bash). Note:
+      # the leading `v` is stripped from semver tags by {{version}}
+      # (i.e. `v2.3.0` → `:2.3.0`, not `:v2.3.0`).
+      #
+      # On a released `v2.3.0` push it produces:
+      #   :2.3.0  :2.3  :2  :latest
+      # On a pre-release `v2.7.0-dev.1` push it produces:
+      #   :2.7.0-dev.1
+      #   (no floating short-tags: docker/metadata-action's semver
+      #    handler skips :{{major}}.{{minor}} and :{{major}} for
+      #    pre-releases; we skip :latest via the enable-guard below.)
       # On a main push:
       #   :main  :main-<short-sha>
       # On workflow_dispatch with tag input: uses that input verbatim.
@@ -140,8 +148,13 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            # Tag pushes also get :latest
-            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+            # Released semver tags get :latest — pre-release tags
+            # (v2.7.0-dev.1 / v2.7.0-rc.1 / v2.7.0-alpha.2 / etc.)
+            # do NOT, so a dev drop or RC doesn't accidentally become
+            # the tag consumers pull by default. Semver's convention:
+            # any tag containing a `-` is a pre-release (`v2.7.0-dev.1`
+            # matches; `v2.7.0` doesn't).
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
             # Main pushes get :main + :main-<short-sha> for
             # developers who want a moving "latest-development" tag
             type=ref,event=branch,enable=${{ github.ref_type != 'tag' }}

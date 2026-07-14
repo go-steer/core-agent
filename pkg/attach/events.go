@@ -98,13 +98,36 @@ type StatusUpdate struct {
 // UsageUpdate is emitted after each turn finalizes and as a
 // cumulative snapshot on stream open. ByModel is optional — present
 // when the tracker has more than one model bucketed (typical when
-// --agentic-tools routes subtasks to a small model).
+// --agentic-tools routes subtasks to a small model). LastTurn is
+// optional — populated on turn-end emissions (the tracker.Append
+// callback path), omitted on the snapshot emission at stream open
+// where there's no meaningful "last turn" to attribute.
+//
+// LastTurn carries the just-completed turn's per-turn cost so
+// operator surfaces (remote TUI's per-turn footer) can render
+// authoritative cost without needing client-side pricing lookups.
+// The server's tracker owns the pricing catalog + cache-discount
+// math; clients that recompute inevitably drift.
 type UsageUpdate struct {
 	TokensInTotal  int                     `json:"tokens_in_total"`
 	TokensOutTotal int                     `json:"tokens_out_total"`
 	CostUSDTotal   float64                 `json:"cost_usd_total"`
 	TurnsTotal     int                     `json:"turns_total"`
 	ByModel        map[string]UsageByModel `json:"by_model,omitempty"`
+	LastTurn       *UsageLastTurn          `json:"last_turn,omitempty"`
+}
+
+// UsageLastTurn captures the just-completed turn's per-turn footer
+// fields — enough for a "◇ 12,345 in · 456 out · $0.0125 · gemini-3.1-pro"
+// row without a follow-up round-trip. Cached input is surfaced when
+// present so future TUI iterations can render a "· 8k cached" tag
+// alongside the base tokens.
+type UsageLastTurn struct {
+	TokensIn       int     `json:"tokens_in"`
+	TokensInCached int     `json:"tokens_in_cached,omitempty"`
+	TokensOut      int     `json:"tokens_out"`
+	CostUSD        float64 `json:"cost_usd"`
+	Model          string  `json:"model,omitempty"`
 }
 
 // UsageByModel is one model's bucket inside UsageUpdate.ByModel.

@@ -329,6 +329,84 @@ func TestAdapter_SlashContext_ReturnsSystemMessage(t *testing.T) {
 	}
 }
 
+// TestAdapter_Run_PopulatesPerTurnCostFromPricing pins the per-turn
+// cost path end-to-end: an event carrying UsageMetadata + a /pricing
+// endpoint that returns non-zero rates must yield a coretui.Event with
+// CostUSD > 0 so core-tui's per-turn footer renders "$X.XX". Guards
+// against regressions where applyPricing stops firing or the pricing
+// fetch silently returns zero rates.
+func TestAdapter_Run_PopulatesPerTurnCostFromPricing(t *testing.T) {
+	t.Parallel()
+	fs := startFakeServer(t)
+
+	// Wire the /pricing endpoint the adapter lazy-fetches on the first
+	// usage-carrying event. Real rates so cost math is exercised, not
+	// short-circuited by IsZero.
+	pricingHits := 0
+	fs.Server.Config.Handler.(*http.ServeMux).HandleFunc("GET /sessions/{sid}/pricing", func(w http.ResponseWriter, r *http.Request) {
+		pricingHits++
+		_ = json.NewEncoder(w).Encode(attach.PricingInfo{
+			CurrentModel: "gemini-3.1-pro",
+			Current: &attach.ModelPricing{
+				InputUSDPerMTok:  1.25,
+				OutputUSDPerMTok: 5.00,
+			},
+		})
+	})
+
+	// Final chunk carries UsageMetadata + TurnComplete — matches the
+	// Gemini streaming shape. 10k input * $1.25/M + 500 out * $5/M
+	// = $0.0125 + $0.0025 = $0.015.
+	fs.streamFrames = []attach.Frame{
+		{Seq: 1, Event: &session.Event{
+			Author: "model",
+			LLMResponse: model.LLMResponse{
+				Content: &genai.Content{Parts: []*genai.Part{{Text: "done"}}},
+				UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+					PromptTokenCount:     10_000,
+					CandidatesTokenCount: 500,
+					TotalTokenCount:      10_500,
+				},
+				Partial:      false,
+				TurnComplete: true,
+			},
+		}},
+	}
+
+	parsed, _ := attachclient.ParseURL(fs.URL + "/sessions/s1")
+	client := attachclient.New(parsed, "", 0)
+	a := New(client, "/sessions/s1")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	var gotCost float64
+	var gotModel string
+	for ev, err := range a.Run(ctx, "hi") {
+		if err != nil {
+			// Stream disconnect after final frame is expected — the
+			// fake server closes when holdOpen=false, and even with
+			// hold-open the ctx timeout eventually fires. Break out
+			// cleanly and check what we captured.
+			break
+		}
+		if ev.CostUSD > 0 {
+			gotCost = ev.CostUSD
+			gotModel = ev.Model
+		}
+	}
+
+	if pricingHits == 0 {
+		t.Errorf("/pricing was never fetched — applyPricing didn't fire on any UsageMetadata event")
+	}
+	if gotCost == 0 {
+		t.Errorf("per-turn CostUSD stayed at 0; want ~0.015 (10k in @ $1.25/M + 500 out @ $5/M)")
+	}
+	if gotModel != "gemini-3.1-pro" {
+		t.Errorf("per-turn Model = %q, want gemini-3.1-pro", gotModel)
+	}
+}
+
 func TestAdapter_SlashUsage_ReturnsFormattedBlock(t *testing.T) {
 	t.Parallel()
 	fs := startFakeServer(t)

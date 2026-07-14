@@ -63,6 +63,50 @@ func TestTranslateTypedFrame_UsageUpdate_WithByModel(t *testing.T) {
 	if got := ev.UsageUpdate.ByModel["claude-opus-4-7"].TokensIn; got != 80 {
 		t.Errorf("ByModel[opus].TokensIn = %d, want 80", got)
 	}
+	// Snapshot form (no LastTurn) — Usage / CostUSD / Model stay
+	// zero-valued so the framework's emitEvent doesn't fabricate a
+	// per-turn footer update from cumulative totals.
+	if ev.Usage != nil || ev.CostUSD != 0 || ev.Model != "" {
+		t.Errorf("snapshot UsageUpdate should not populate per-turn fields: usage=%+v cost=%v model=%q",
+			ev.Usage, ev.CostUSD, ev.Model)
+	}
+}
+
+// TestTranslateTypedFrame_UsageUpdate_LastTurnFansOut pins the
+// authoritative per-turn cost path: when UsageUpdate carries LastTurn
+// (populated by the server's tracker after each turn commits), the
+// translator sets Usage + CostUSD + Model on the coretui.Event so
+// emitEvent fans out both usageMsg (per-turn currentCost) AND
+// usageUpdateMsg (session totals) from the same wire event. That's
+// what makes the remote per-turn footer render "$X.XX" without a
+// separate pricing round-trip.
+func TestTranslateTypedFrame_UsageUpdate_LastTurnFansOut(t *testing.T) {
+	src := &attach.UsageUpdate{
+		TokensInTotal: 20_000, TokensOutTotal: 1_000, CostUSDTotal: 0.03, TurnsTotal: 2,
+		LastTurn: &attach.UsageLastTurn{
+			TokensIn:       10_000,
+			TokensInCached: 8_000,
+			TokensOut:      500,
+			CostUSD:        0.0025,
+			Model:          "gemini-3.1-pro",
+		},
+	}
+	ev, _ := translateTypedFrame(attach.Frame{Type: attach.EventUsageUpdate, TypedData: src})
+	if ev.UsageUpdate == nil {
+		t.Fatal("UsageUpdate field nil")
+	}
+	if ev.Usage == nil {
+		t.Fatal("per-turn Usage not populated from LastTurn — remote footer won't show cost")
+	}
+	if ev.Usage.InputTokens != 10_000 || ev.Usage.OutputTokens != 500 {
+		t.Errorf("per-turn tokens = %+v, want in=10000 out=500", ev.Usage)
+	}
+	if ev.CostUSD != 0.0025 {
+		t.Errorf("per-turn CostUSD = %v, want 0.0025", ev.CostUSD)
+	}
+	if ev.Model != "gemini-3.1-pro" {
+		t.Errorf("per-turn Model = %q, want gemini-3.1-pro", ev.Model)
+	}
 }
 
 func TestTranslateTypedFrame_Inbox(t *testing.T) {

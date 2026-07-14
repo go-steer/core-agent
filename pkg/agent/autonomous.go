@@ -420,8 +420,12 @@ func runOneTurn(ctx context.Context, a *Agent, prompt string, doneCh chan string
 			out.inputTokens += turnUsage.InputTokens
 			out.outputTokens += turnUsage.OutputTokens
 			if cfg.tracker != nil {
-				modelName := ""
-				if a.inner != nil {
+				// Tag by the LLM model name (matches subtask.go +
+				// internal_llm_usage.go). Falls back to the agent
+				// name only when the model isn't wired (defensive —
+				// New always sets modelName from model.Name()).
+				modelName := a.modelName
+				if modelName == "" && a.inner != nil {
 					modelName = a.inner.Name()
 				}
 				rec := cfg.tracker.AppendUsage(modelName, turnUsage, cfg.pricing)

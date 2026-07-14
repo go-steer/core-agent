@@ -23,6 +23,7 @@ import (
 	"google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/pkg/permissions"
+	"github.com/go-steer/core-agent/pkg/usage"
 )
 
 // Spawn launches a new background subagent under spec. parentBranch
@@ -197,6 +198,15 @@ func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string,
 		}
 		if sched != nil {
 			opts = append(opts, WithScheduler(sched))
+		}
+		// Roll background subagent turns into the parent agent's usage
+		// tracker so /usage + /stats reflect the actual session cost,
+		// not just the parent conversation. Pricing is looked up per
+		// the subagent's own model ID (may differ from parent when the
+		// manager was constructed with a cheaper flash-tier model), so
+		// the per-model attribution in /usage stays accurate.
+		if parent.tracker != nil {
+			opts = append(opts, WithTracker(parent.tracker, usage.PriceFor(m.modelID, nil)))
 		}
 
 		result, runErr := RunAutonomous(goCtx, build, subagentGoal, opts...)

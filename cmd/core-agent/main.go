@@ -1070,6 +1070,13 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 				return
 			}
 			digestStore.Set(es)
+			// Positive log — surfaces to the same stderr operators
+			// grep at startup, symmetric with the failure line above.
+			// Without this, a healthy digest wire looked identical to
+			// "wrap disabled" during the 2026-07-15 demo drive; the
+			// only way to confirm was to inspect /tools for
+			// retrieve_raw.
+			fmt.Fprintf(os.Stderr, "core-agent: mcp digest store: bound EventlogStore for session %s (retrieve_raw enabled)\n", a.SessionID())
 		}
 	}))
 	if sessionDB || sessionDBPath != "" {

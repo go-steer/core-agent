@@ -44,6 +44,7 @@ import (
 	"github.com/go-steer/core-agent/pkg/agent"
 	"github.com/go-steer/core-agent/pkg/attach"
 	"github.com/go-steer/core-agent/pkg/config"
+	"github.com/go-steer/core-agent/pkg/digest"
 	"github.com/go-steer/core-agent/pkg/eventlog"
 	"github.com/go-steer/core-agent/pkg/instruction"
 	"github.com/go-steer/core-agent/pkg/mcp"
@@ -152,6 +153,7 @@ func main() {
 	watchdogMode := flag.String("watchdog", "warn", "behavioral watchdog mode (#123 PR 2). 'warn' = observe tool-call stream + log structured alerts to the operator when a runaway pattern is detected (e.g. 5 consecutive identical tool calls — the read_file loop from #144). 'off' = no observation. v1 ships warn-mode + one signal (repeated-tool-call); future modes (prompt, auto) and additional signals (tools-without-text, files-not-touched) are deferred per the design doc.")
 	agenticTools := flag.Bool("agentic-tools", true, "register the agentic tool wrappers (agentic_read_file, agentic_fetch_url, agentic_grep, agentic_research) that route through a subtask so only the digest enters the parent's context (docs/context-management-design.md Mechanism B). On by default since v2.1; pass --agentic-tools=false to register only the bare tools.")
 	agenticSmallModel := flag.String("agentic-small-model", "", "small/cheap model ID the agentic_* wrappers should route subtasks to (e.g. gemini-2.5-flash, claude-haiku-4-5). When empty, the provider's cheap-tier default is used (gemini-2.5-flash for Gemini/Vertex, claude-haiku-4-5 for Anthropic); providers without a cheap tier (echo, scripted) fall through to inheriting the parent's model. Requires --agentic-tools.")
+	noMCPDigest := flag.Bool("no-mcp-digest", false, "disable the structural pkg/digest wrap around MCP tool responses (docs/digest-design.md). Default: enabled. When on, JSON-shaped MCP responses get a deterministic prune (identifier keys preserved, long strings truncated, arrays collapsed head+tail) before reaching the parent context; prose passthroughs are bounded. Also registers retrieve_raw as a built-in tool so the model can fetch back the un-digested payload when a digest looks suspicious. Kill switch for demos / debugging; leave on for production. Also gated per-project by cfg.MCP.AgenticWrap and per-server by mcp.json's agentic_never.")
 
 	// Agent-card discovery (docs/agent-card-design.md). All optional —
 	// either the .agents/agent-card.json file or the CLI flags must
@@ -166,7 +168,7 @@ func main() {
 	agentCardDocsURL := flag.String("agent-card-docs-url", "", "override documentationUrl in /.well-known/agent-card.json")
 	flag.Parse()
 
-	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *maxTurnCostUSD, *maxSessionCostUSD, *watchdogMode, *smallTierParent, *agenticTools, *agenticSmallModel,
+	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *maxTurnCostUSD, *maxSessionCostUSD, *watchdogMode, *smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest,
 		attachOpts{
 			Listen:           *attachListen,
 			UnixSocket:       *attachUnixSocket,
@@ -342,7 +344,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	return opts
 }
 
-func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, maxTurnCostUSD, maxSessionCostUSD float64, watchdogMode, smallTierParent string, agenticTools bool, agenticSmallModel string, attachCfg attachOpts, cardCfg agentCardOpts) int {
+func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, maxTurnCostUSD, maxSessionCostUSD float64, watchdogMode, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest bool, attachCfg attachOpts, cardCfg agentCardOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -607,7 +609,21 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 	// constructs a tui.Elicitor (and stashes the handle for
 	// launchTUI to attach later); in the slim `-tags no_tui` build
 	// it returns nil so MCP elicit requests decline server-side.
-	mcpServers, mcpToolsets, mcpErr := mcp.Build(ctx, agentsDir, send, gate, makeMCPElicitor())
+	//
+	// digestOpts wires the pkg/digest structural pruner into every
+	// MCP tool response (see docs/digest-design.md, task #84). The
+	// LazyStore lets the wrap layer accept a stable Store reference
+	// up front — the EventlogStore itself needs a session ID which
+	// isn't known until agent.New runs, so we .Set(...) the real
+	// backing later. Nil digestOpts disables wrapping entirely
+	// (--no-mcp-digest kill switch).
+	var digestStore *digest.LazyStore
+	var digestOpts *mcp.DigestOptions
+	if !noMCPDigest {
+		digestStore = &digest.LazyStore{}
+		digestOpts = &mcp.DigestOptions{Store: digestStore}
+	}
+	mcpServers, mcpToolsets, mcpErr := mcp.Build(ctx, agentsDir, send, gate, makeMCPElicitor(), digestOpts)
 	if mcpErr != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: mcp: %v\n", mcpErr)
 	}
@@ -741,6 +757,26 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 		}
 		defer func() { _ = bgMgr.Close() }()
 		builtinTools = append(builtinTools, agent.NewBackgroundSpawnTools(bgMgr)...)
+	}
+
+	// retrieve_raw built-in: model-facing escape hatch to fetch back
+	// the un-digested MCP payload when a digest looks suspicious
+	// (docs/digest-design.md CCR store). Registered only when the
+	// digest wrap is on AND we have a store to back it — otherwise
+	// every call would return "no raw payload stored," which just
+	// confuses the model.
+	//
+	// The LazyStore's inner delegate is bound below, once the
+	// eventlog handle is open. Registering the tool here (with the
+	// LazyStore) means retrieve_raw becomes usable the moment the
+	// binding fires.
+	if digestStore != nil {
+		rtTool, err := tools.NewRetrieveRawTool(tools.RetrieveRawOptions{Store: digestStore})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: retrieve_raw: %v\n", err)
+			return runner.ExitConfigError
+		}
+		builtinTools = append(builtinTools, rtTool)
 	}
 
 	// Agentic tool wrappers (docs/context-management-design.md
@@ -1004,8 +1040,6 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 	// resolves to a non-nil pointer on the model's first call. No-
 	// op when --agentic-tools was off (agentRef is unused but
 	// captured into a closure that nothing ever invokes).
-	opts = append(opts, agent.WithPostConstruct(func(a *agent.Agent) { agentRef = a }))
-
 	// Durable sessions + audit log. Either flag enables: --session-db
 	// alone uses the default path (~/.<binary>/sessions.db);
 	// --session-db-path enables and overrides the path. Off by default
@@ -1014,8 +1048,30 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 	// handle is hoisted to the outer scope so the multi-session
 	// SessionFactory closure below (which constructs on-demand
 	// agents from POST /sessions) can reference the same eventlog
-	// without re-opening it.
+	// without re-opening it. Declared here so the PostConstruct
+	// closure below can capture it before the eventlog block runs.
 	var eventlogHandle *eventlog.Handle
+
+	opts = append(opts, agent.WithPostConstruct(func(a *agent.Agent) {
+		agentRef = a
+		// Bind the MCP digest LazyStore now that the agent knows its
+		// session ID. EventlogStore is session-scoped, so it can't be
+		// constructed at mcp.Build time (session ID = empty). Binding
+		// here lights up retrieve_raw against the correct session
+		// from the model's first tool call onward.
+		//
+		// Non-fatal if it fails: the digest wrap continues without a
+		// store, retrieve_raw returns "no raw payload stored" — the
+		// model handles this cleanly per the tool's error contract.
+		if digestStore != nil && eventlogHandle != nil {
+			es, err := digest.NewEventlogStore(eventlogHandle, a.AppName(), a.UserID(), a.SessionID())
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "core-agent: mcp digest store: %v (retrieve_raw disabled)\n", err)
+				return
+			}
+			digestStore.Set(es)
+		}
+	}))
 	if sessionDB || sessionDBPath != "" {
 		path, err := resolveSessionDBPath(sessionDBPath)
 		if err != nil {
@@ -1053,6 +1109,11 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 		opts = append(opts, agent.WithEventLog(handle))
 		eventlogHandle = handle
 		fmt.Fprintf(os.Stderr, "core-agent: session db: %s\n", path)
+
+		// digestStore is bound below, after agent.New — the
+		// EventlogStore constructor rejects empty session identity
+		// and the session ID isn't known until ADK assigns one
+		// inside agent.New. Deferred to the post-construct hook.
 	}
 
 	// Attach-mode wiring. Must come after the eventlog is set up

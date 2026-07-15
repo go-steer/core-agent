@@ -168,7 +168,10 @@ func run(initialInput, cfgPath, modelOverride, providerOverride string, noBuilti
 	}
 
 	send := func(s string) { fmt.Fprintln(os.Stderr, "scion-agent: "+s) }
-	_, mcpToolsets, mcpErr := mcp.Build(ctx, agentsDir, send, gate, nil)
+	// nil DigestOptions: this example doesn't wire pkg/digest. Real
+	// callers pass a *mcp.DigestOptions to enable the structural wrap
+	// per docs/digest-design.md.
+	_, mcpToolsets, mcpErr := mcp.Build(ctx, agentsDir, send, gate, nil, nil)
 	if mcpErr != nil {
 		fmt.Fprintf(os.Stderr, "scion-agent: mcp: %v\n", mcpErr)
 	}

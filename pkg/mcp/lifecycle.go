@@ -117,13 +117,28 @@ func (s *Server) Close() {
 //
 // Servers that fail to start come back with Status==StatusError so
 // they're visible without breaking the rest of the agent.
-func Build(ctx context.Context, agentsDir string, send func(string), gate *permissions.Gate, elicitor ElicitorFn) ([]*Server, []tool.Toolset, error) {
+func Build(ctx context.Context, agentsDir string, send func(string), gate *permissions.Gate, elicitor ElicitorFn, digestOpts *DigestOptions) ([]*Server, []tool.Toolset, error) {
 	cfg, err := Load(agentsDir)
 	if err != nil {
 		return nil, nil, err
 	}
 	if len(cfg.Servers) == 0 {
 		return nil, nil, nil
+	}
+
+	// The AgenticWrap toggle in mcp.json can kill the wrap layer
+	// without the operator having to null the digestOpts pointer at
+	// every Build call site — it's a per-project config knob layered
+	// on top of the process-wide --no-mcp-digest flag. Both must be
+	// on for wrapping to fire.
+	if digestOpts != nil && !cfg.AgenticWrapEnabled() {
+		digestOpts = nil
+	}
+	// Merge the per-project threshold into DigestOptions when the
+	// caller didn't pin one explicitly. Preserves precedence: CLI /
+	// caller-supplied threshold wins; mcp.json fills the default.
+	if digestOpts != nil && digestOpts.Threshold <= 0 {
+		digestOpts.Threshold = cfg.AgenticWrapThresholdBytes()
 	}
 
 	out := make([]*Server, 0, len(cfg.Servers))
@@ -133,7 +148,7 @@ func Build(ctx context.Context, agentsDir string, send func(string), gate *permi
 		wg.Add(1)
 		go func(name string, spec ServerSpec) {
 			defer wg.Done()
-			srv := startOne(ctx, name, spec, send, gate, elicitor)
+			srv := startOne(ctx, name, spec, send, gate, elicitor, digestOpts)
 			mu.Lock()
 			out = append(out, srv)
 			mu.Unlock()
@@ -155,7 +170,7 @@ func Build(ctx context.Context, agentsDir string, send func(string), gate *permi
 // startOne instantiates one server. Errors are stored on the Server
 // rather than returned so a single broken server doesn't prevent the
 // rest of the registry from coming up.
-func startOne(ctx context.Context, name string, spec ServerSpec, send func(string), gate *permissions.Gate, elicitor ElicitorFn) *Server {
+func startOne(ctx context.Context, name string, spec ServerSpec, send func(string), gate *permissions.Gate, elicitor ElicitorFn, digestOpts *DigestOptions) *Server {
 	srv := &Server{Name: name}
 
 	transport, cmd, err := transportFor(ctx, name, spec)
@@ -180,8 +195,18 @@ func startOne(ctx context.Context, name string, spec ServerSpec, send func(strin
 		return srv
 	}
 	// Wrap with our own namespace so an MCP server's `read_file` (for
-	// example) doesn't collide with a built-in `read_file`.
-	wrapped := withNamespace(ts, name)
+	// example) doesn't collide with a built-in `read_file`. When
+	// digestOpts is wired AND this server isn't in the per-server
+	// denylist AND spec.AgenticNever is false, also compose the
+	// digesting wrapper so responses route through pkg/digest before
+	// reaching the model. Per-spec AgenticNever is layered onto the
+	// options-level denylist so operators have two knobs (project-
+	// wide via DigestOptions.NeverServers, per-server via mcp.json).
+	optsForServer := digestOpts
+	if optsForServer != nil && spec.AgenticNever {
+		optsForServer = nil
+	}
+	wrapped := withNamespaceAndDigest(ts, name, name, optsForServer)
 	// Then wrap with the permission gate so MCP tool calls go through
 	// the same ask/allow/yolo flow as built-in tools. Allowlist
 	// patterns use the "mcp" namespace, e.g. "mcp:filesystem_read_file".

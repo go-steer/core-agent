@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // ErrNotFound is returned by Store.Get when a callID has no entry.
@@ -280,6 +281,64 @@ func sanitize(callID string) string {
 		return ""
 	}
 	return callID
+}
+
+// LazyStore is a Store whose delegate is set after construction.
+// Solves a chicken-and-egg problem in the CLI wiring: the MCP wrap
+// layer needs a Store reference at Build time, but the EventlogStore
+// needs a session ID that isn't known until the agent constructs.
+// LazyStore lets callers pass a stable Store reference to the wrap
+// layer up front, then Set the real delegate after agent.New returns.
+//
+// Reads before Set return ErrNotFound (safe passthrough — the digest
+// still runs, just no retrieval). Writes before Set are dropped
+// silently — the caller shouldn't have wired a CallID if it wasn't
+// ready to accept writes. Reads/writes after Set delegate to the
+// inner Store atomically.
+//
+// Safe for concurrent use: Set can race Get/Put and both callers see
+// consistent state (either pre-Set no-op or post-Set delegation, never
+// a torn read).
+type LazyStore struct {
+	inner atomic.Pointer[storeBox]
+}
+
+// storeBox wraps a Store in a heap value so atomic.Pointer can swap
+// interface values (which are two-word). Boxing keeps the swap atomic.
+type storeBox struct{ s Store }
+
+// Set installs delegate as the LazyStore's backing. Subsequent Put/Get
+// calls proxy to delegate. Safe to call multiple times (each Set
+// overrides the last), though typical wiring calls Set exactly once
+// after agent construction. Pass nil to detach (subsequent calls
+// degrade to no-op / ErrNotFound).
+func (l *LazyStore) Set(delegate Store) {
+	if delegate == nil {
+		l.inner.Store(nil)
+		return
+	}
+	l.inner.Store(&storeBox{s: delegate})
+}
+
+// Put implements Store. Drops the write when no delegate is set (see
+// LazyStore docstring); the caller shouldn't have supplied a CallID
+// pre-Set, so this is a no-op safety net rather than an error path.
+func (l *LazyStore) Put(ctx context.Context, callID string, raw []byte) error {
+	box := l.inner.Load()
+	if box == nil {
+		return nil
+	}
+	return box.s.Put(ctx, callID, raw)
+}
+
+// Get implements Store. Returns ErrNotFound when no delegate is set.
+// retrieve_raw surfaces this as a clean "no raw payload" tool response.
+func (l *LazyStore) Get(ctx context.Context, callID string) ([]byte, error) {
+	box := l.inner.Load()
+	if box == nil {
+		return nil, ErrNotFound
+	}
+	return box.s.Get(ctx, callID)
 }
 
 // atomicWriteFile writes data to path via a temp file + rename so

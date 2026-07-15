@@ -30,14 +30,17 @@ import (
 const sampleLiteLLM = `{
   "sample_spec": {"input_cost_per_token": 999, "output_cost_per_token": 999, "mode": "chat"},
   "gemini-3.5-flash": {
-    "input_cost_per_token": 0.000000075,
-    "output_cost_per_token": 0.0000003,
+    "input_cost_per_token": 0.0000015,
+    "output_cost_per_token": 0.000009,
+    "cache_read_input_token_cost": 0.00000015,
     "litellm_provider": "vertex_ai-language-models",
     "mode": "chat"
   },
   "claude-opus-4-7": {
     "input_cost_per_token": 0.000015,
     "output_cost_per_token": 0.000075,
+    "cache_read_input_token_cost": 0.0000015,
+    "cache_creation_input_token_cost": 0.00001875,
     "mode": "chat"
   },
   "dall-e-3": {
@@ -83,9 +86,24 @@ func TestRefresh_HappyPathWritesExternalSection(t *testing.T) {
 	if !ok {
 		t.Fatal("gemini-3.5-flash not written")
 	}
-	// 0.000000075 per token * 1e6 = 0.075 per million.
-	if gemini.InputPerMTok != 0.075 {
-		t.Errorf("gemini-3.5-flash InputPerMTok = %v, want 0.075", gemini.InputPerMTok)
+	// 0.0000015 per token * 1e6 = 1.50 per million.
+	if gemini.InputPerMTok != 1.50 {
+		t.Errorf("gemini-3.5-flash InputPerMTok = %v, want 1.50", gemini.InputPerMTok)
+	}
+	// 0.00000015 per token * 1e6 = 0.15 per million (10% of input,
+	// per Google's published Gemini 3.5 Flash cache-read rate).
+	if gemini.CachedInputPerMTok != 0.15 {
+		t.Errorf("gemini-3.5-flash CachedInputPerMTok = %v, want 0.15", gemini.CachedInputPerMTok)
+	}
+	// Anthropic gets a cache-read rate too. Cache-creation is captured
+	// on the LiteLLM entry but not yet plumbed into our Rates schema
+	// (Slice B follow-up).
+	claude, ok := uf.External.Models["claude-opus-4-7"]
+	if !ok {
+		t.Fatal("claude-opus-4-7 not written")
+	}
+	if claude.CachedInputPerMTok != 1.50 {
+		t.Errorf("claude-opus-4-7 CachedInputPerMTok = %v, want 1.50 (10%% of $15/M input)", claude.CachedInputPerMTok)
 	}
 	if _, ok := uf.External.Models["dall-e-3"]; ok {
 		t.Error("image_generation entry should have been filtered")
@@ -326,9 +344,18 @@ func TestParseLiteLLMBody_FiltersAndConverts(t *testing.T) {
 		t.Fatalf("len = %d, want 2 (gemini + claude); got %v", len(parsed), keysOf(parsed))
 	}
 	got := parsed["gemini-3.5-flash"]
-	wantInput := 0.075
+	wantInput := 1.50
 	if got.InputPerMTok != wantInput {
 		t.Errorf("per-token → per-MTok conversion off: got %v, want %v", got.InputPerMTok, wantInput)
+	}
+	// Cache-read rate present + correctly converted.
+	if got.CachedInputPerMTok != 0.15 {
+		t.Errorf("cache_read_input_token_cost not mapped: got %v, want 0.15", got.CachedInputPerMTok)
+	}
+	// Anthropic entry also carries the cache-read rate.
+	claude := parsed["claude-opus-4-7"]
+	if claude.CachedInputPerMTok != 1.50 {
+		t.Errorf("claude cache-read: got %v, want 1.50", claude.CachedInputPerMTok)
 	}
 }
 

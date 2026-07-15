@@ -56,6 +56,23 @@ var globalCatalog atomic.Pointer[pricing.Catalog]
 // catalog atomically, never a torn read.
 func SetCatalog(c *pricing.Catalog) { globalCatalog.Store(c) }
 
+// KnownModelsCount returns the total number of models across every
+// layer of the installed pricing catalog (cfg override + project file
+// + user manual + user external + builtin). Returns 0 when no catalog
+// is installed. Used by the attach /pricing endpoint's snapshot so
+// operators can see how many models the daemon knows about at a
+// glance — the previous default of hard-coded 0 was actively
+// misleading during the v2.7.0-dev.3 demo drive.
+func KnownModelsCount() int {
+	c := globalCatalog.Load()
+	if c == nil {
+		return 0
+	}
+	counts := c.Counts()
+	return counts.CfgOverride + counts.ProjectFile + counts.UserManual +
+		counts.UserExternal + counts.Builtin
+}
+
 // PriceFor returns the Pricing for modelID. Resolution chain (first
 // exact match wins; longest-prefix fallback at the end):
 //

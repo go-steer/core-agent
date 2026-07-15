@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -308,6 +309,97 @@ func TestAdapter_Usage_CachedThenRefreshes(t *testing.T) {
 	fs.mu.Unlock()
 	if got := a.SessionTotals(); got.InputTokens != 100 {
 		t.Errorf("cached SessionTotals = %+v, expected stale cache", got)
+	}
+}
+
+// TestAdapter_LastTurn_FallsBackToUsageSnapshot pins the fix for the
+// observer-mode /stats "Last turn: 0" bug (companion to core-tui #57):
+// when the streaming Run/Events loop hasn't populated a.lastTurn (which
+// happens when the operator attaches after the last non-partial
+// UsageMetadata event, or in LiveAgent mode when text-bearing chunks
+// don't reach applyPricing), LastTurn() must fall back to the last
+// per-turn entry from the /usage snapshot rather than reporting
+// zeros. That entry carries authoritative server-side cost.
+func TestAdapter_LastTurn_FallsBackToUsageSnapshot(t *testing.T) {
+	t.Parallel()
+	fs := startFakeServer(t)
+	fs.usage = attach.UsageInfo{
+		Overall: attach.UsageTotals{InputTokens: 74450, OutputTokens: 1349, Turns: 3, CostUSD: 0.1238},
+		PerTurn: []attach.UsageTurn{
+			{Turn: 1, InputTokens: 23183, OutputTokens: 255, CostUSD: 0.0371},
+			{Turn: 2, InputTokens: 24711, OutputTokens: 472, CostUSD: 0.0413},
+			{Turn: 3, InputTokens: 26556, OutputTokens: 622, CostUSD: 0.045432},
+		},
+	}
+
+	parsed, _ := attachclient.ParseURL(fs.URL + "/sessions/s1")
+	client := attachclient.New(parsed, "", 0)
+	a := New(client, "/sessions/s1")
+
+	// a.lastTurn is zero — no streaming events observed yet.
+	// LastTurn() should read the tail per_turn entry from the
+	// snapshot rather than returning zeros.
+	got, cost := a.LastTurn()
+	if got.InputTokens != 26556 || got.OutputTokens != 622 {
+		t.Errorf("fallback LastTurn tokens = %+v, want in=26556 out=622", got)
+	}
+	if cost != 0.045432 {
+		t.Errorf("fallback LastTurn cost = %v, want 0.045432 (server-authoritative)", cost)
+	}
+}
+
+// TestAdapter_LastTurn_LiveStateWinsOverFallback ensures the fallback
+// activates ONLY when the streaming loop hasn't populated a.lastTurn.
+// When live-stream state is present, we prefer it (fresher data than
+// the 2s-TTL /usage cache).
+func TestAdapter_LastTurn_LiveStateWinsOverFallback(t *testing.T) {
+	t.Parallel()
+	fs := startFakeServer(t)
+	fs.usage = attach.UsageInfo{
+		Overall: attach.UsageTotals{Turns: 1},
+		PerTurn: []attach.UsageTurn{
+			{Turn: 1, InputTokens: 100, OutputTokens: 10, CostUSD: 0.001},
+		},
+	}
+
+	parsed, _ := attachclient.ParseURL(fs.URL + "/sessions/s1")
+	client := attachclient.New(parsed, "", 0)
+	a := New(client, "/sessions/s1")
+
+	// Simulate the Run/Events loop having observed a fresher turn.
+	a.mu.Lock()
+	a.lastTurn = coretui.Usage{InputTokens: 500, OutputTokens: 50}
+	a.pricingIn = 1.0
+	a.pricingOut = 2.0
+	a.mu.Unlock()
+
+	got, cost := a.LastTurn()
+	if got.InputTokens != 500 || got.OutputTokens != 50 {
+		t.Errorf("live-state LastTurn = %+v, want in=500 out=50 (not the snapshot's 100/10)", got)
+	}
+	// Cost from client-side rates: 500 * 1.0/M + 50 * 2.0/M = 0.0006
+	if math.Abs(cost-0.0006) > 1e-9 {
+		t.Errorf("live-state LastTurn cost = %v, want 0.0006 (client-computed, not snapshot's 0.001)", cost)
+	}
+}
+
+// TestAdapter_LastTurn_ZeroWhenNoDataAnywhere pins the empty-session
+// edge case — no live state, no per_turn entries. Must not panic and
+// should return zero values (previous behavior preserved).
+func TestAdapter_LastTurn_ZeroWhenNoDataAnywhere(t *testing.T) {
+	t.Parallel()
+	fs := startFakeServer(t)
+	fs.usage = attach.UsageInfo{
+		Overall: attach.UsageTotals{Turns: 0},
+	}
+
+	parsed, _ := attachclient.ParseURL(fs.URL + "/sessions/s1")
+	client := attachclient.New(parsed, "", 0)
+	a := New(client, "/sessions/s1")
+
+	got, cost := a.LastTurn()
+	if got.InputTokens != 0 || got.OutputTokens != 0 || cost != 0 {
+		t.Errorf("empty-session LastTurn = %+v cost=%v, want all zero", got, cost)
 	}
 }
 

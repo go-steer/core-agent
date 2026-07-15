@@ -141,7 +141,17 @@ $ curl -s http://<daemon>/sessions/<sid>/usage | jq '.overall'
 }
 ```
 
-The cached-vs-uncached rate split relies on `Pricing.CachedInputPerMTok` being set for your model (Gemini entries in the built-in table use Google's public 25% rule; add your own via `.agents/pricing.json` or `~/.core-agent/pricing.json` `cached_input_per_mtok` for other providers).
+The cached-vs-uncached rate split relies on `Pricing.CachedInputPerMTok` being set for your model. When it's not set, the daemon falls back to charging cached tokens at the full input rate — safer than silently pretending cached tokens are free, but it means `cost_usd_uncached_reference` will equal `cost_usd` even when `input_tokens_cached` is non-zero. Set your model's cache rate via `.agents/pricing.json` or `~/.core-agent/pricing.json` using the `cached_input_per_mtok` field. Rates vary by model — for example, `gemini-3.5-flash` charges 10% of input for cache reads (`$0.15/M`), older Gemini families used 25%.
+
+### The important caveat: implicit caching is opportunistic
+
+Vertex implicit caching (the default-on prefix cache on Gemini) is designed for short-term optimization and offers **no guarantees**. From Google's docs:
+
+> Cache hits are more likely when you place large, unchanging content at the beginning of your prompts and send similar requests in close succession. The cache likely relies on in-memory systems and its contents can be evicted based on system load, memory pressure, and time since last access. There is no settable or queryable TTL. Benefits are not guaranteed, unlike explicit caching.
+
+Practical consequence: `input_tokens_cached` on `/usage` reports **what Vertex chose to cache post-hoc**, not a savings floor you can plan around. Two turns of an identical prompt shape within seconds usually hit the cache; the same two turns 10 minutes apart may not. The `cost_usd_uncached_reference` delta is honest as a "here's what today's turn saved" number — treat it as informational, not as forecasted ROI.
+
+For **deterministic** cache savings, use [explicit context caching](https://cloud.google.com/vertex-ai/generative-ai/docs/context-cache/context-cache-overview) — you create a `CachedContent` resource with a settable TTL and reference it in requests. That's on the roadmap ([issue #221](https://github.com/go-steer/core-agent/issues/221)); the implicit path is what ships today.
 
 ---
 

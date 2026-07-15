@@ -75,6 +75,18 @@ type Options struct {
 	// overhead.
 	Threshold int
 
+	// Store: optional CCR backing. When non-nil AND CallID is
+	// non-empty, Process writes the raw payload to the store before
+	// returning and populates Result.CallID so the caller can weave
+	// the ID into the synthetic map handed to the model. When nil or
+	// CallID is empty, no retrieval is possible and CallID stays
+	// empty on the way back.
+	//
+	// Store errors are surfaced in Result.Metadata["store_err"] but
+	// don't fail Process — losing retrieval capability shouldn't
+	// break the primary digest path.
+	Store Store
+
 	// LLMFallback: optional prose digester. Called when the router
 	// cannot dispatch to a structural pruner. When nil, payloads that
 	// would fall through return Method == passthrough with Digest
@@ -83,8 +95,8 @@ type Options struct {
 	LLMFallback func(ctx context.Context, raw []byte) (string, error)
 
 	// CallID: caller-provided identifier (e.g. tool-call ID). When
-	// empty, Process leaves Result.CallID empty. Used as the Store
-	// key once the Store layer lands (follow-up PR).
+	// empty, Process leaves Result.CallID empty and skips the Store
+	// write even when Store is non-nil.
 	CallID string
 }
 
@@ -101,16 +113,36 @@ const MaxPassthroughBytes = 64 * 1024
 // mistake (nil ctx) or an LLMFallback that errors out; even the
 // latter degrades to a truncated-passthrough Result so the caller
 // still has *something* to hand to the model.
+//
+// When opts.Store is wired AND opts.CallID is set, the raw payload
+// is persisted to the store before the dispatch decision is made
+// (so retrieve_raw works even when the router chose passthrough).
+// Store failures degrade to a Result with Metadata["store_err"] set
+// — losing retrieval capability shouldn't break the primary digest
+// path.
 func Process(ctx context.Context, payload []byte, opts Options) (Result, error) {
 	if ctx == nil {
 		return Result{}, errors.New("digest: nil context")
 	}
 	rawBytes := len(payload)
 
+	// Persist to the CCR store BEFORE routing. If the write fails,
+	// we still process — the caller gets a digest, just no retrieval
+	// backdoor for this payload. The error surfaces in Metadata so
+	// telemetry can catch it.
+	var storeErr error
+	if opts.Store != nil && opts.CallID != "" {
+		storeErr = opts.Store.Put(ctx, opts.CallID, payload)
+	}
+
 	// Route on payload shape. The router owns the "which method" call;
 	// each branch below owns the actual compression work.
 	method := route(payload, opts.Threshold, opts.LLMFallback != nil)
 
+	res := Result{
+		RawBytes: rawBytes,
+		CallID:   opts.CallID,
+	}
 	switch method {
 	case MethodPassthrough:
 		// truncatePassthrough is a no-op when payload fits under
@@ -118,22 +150,14 @@ func Process(ctx context.Context, payload []byte, opts Options) (Result, error) 
 		// bounds oversize prose that reached here because no
 		// LLMFallback was wired. Either way, the model never sees an
 		// unbounded blob.
-		return Result{
-			Digest:   truncatePassthrough(payload),
-			Method:   MethodPassthrough,
-			RawBytes: rawBytes,
-			CallID:   opts.CallID,
-		}, nil
+		res.Digest = truncatePassthrough(payload)
+		res.Method = MethodPassthrough
 
 	case MethodStructuralJSON:
 		digest, meta := PruneJSON(payload)
-		return Result{
-			Digest:   digest,
-			Method:   MethodStructuralJSON,
-			RawBytes: rawBytes,
-			CallID:   opts.CallID,
-			Metadata: meta,
-		}, nil
+		res.Digest = digest
+		res.Method = MethodStructuralJSON
+		res.Metadata = meta
 
 	case MethodLLMFallback:
 		digest, err := opts.LLMFallback(ctx, payload)
@@ -141,29 +165,30 @@ func Process(ctx context.Context, payload []byte, opts Options) (Result, error) 
 			// The LLM path errored — fall back to a bounded passthrough
 			// so the caller still gets a usable Result. Callers who want
 			// to surface the error can inspect Result.Metadata["llm_err"].
-			return Result{
-				Digest:   truncatePassthrough(payload),
-				Method:   MethodPassthrough,
-				RawBytes: rawBytes,
-				CallID:   opts.CallID,
-				Metadata: map[string]any{"llm_err": err.Error()},
-			}, nil
+			res.Digest = truncatePassthrough(payload)
+			res.Method = MethodPassthrough
+			res.Metadata = map[string]any{"llm_err": err.Error()}
+			break
 		}
-		return Result{
-			Digest:   digest,
-			Method:   MethodLLMFallback,
-			RawBytes: rawBytes,
-			CallID:   opts.CallID,
-		}, nil
+		res.Digest = digest
+		res.Method = MethodLLMFallback
+
+	default:
+		// Unreachable: route() returns one of the three consts above.
+		res.Digest = truncatePassthrough(payload)
+		res.Method = MethodPassthrough
 	}
 
-	// Unreachable: route() returns one of the three consts above.
-	return Result{
-		Digest:   truncatePassthrough(payload),
-		Method:   MethodPassthrough,
-		RawBytes: rawBytes,
-		CallID:   opts.CallID,
-	}, nil
+	if storeErr != nil {
+		// Losing retrieval capability shouldn't invalidate the digest
+		// itself, but operators need to see the failure. Retrieval is
+		// silently broken for this CallID going forward.
+		if res.Metadata == nil {
+			res.Metadata = map[string]any{}
+		}
+		res.Metadata["store_err"] = storeErr.Error()
+	}
+	return res, nil
 }
 
 // truncatePassthrough returns payload verbatim if it fits under

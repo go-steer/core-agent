@@ -84,7 +84,10 @@ func main() {
 	gate, _ := permissions.FromConfig(cfg, cwd, "", nil)
 
 	send := func(s string) { fmt.Fprintln(os.Stderr, "core-agent: "+s) }
-	_, mcpToolsets, err := mcp.Build(ctx, filepath.Join(cwd, ".agents"), send, gate, nil)
+	// nil DigestOptions: this example doesn't wire pkg/digest. Real
+	// callers pass a *mcp.DigestOptions to enable the structural wrap
+	// per docs/digest-design.md.
+	_, mcpToolsets, err := mcp.Build(ctx, filepath.Join(cwd, ".agents"), send, gate, nil, nil)
 	if err != nil {
 		log.Printf("mcp: %v", err)
 	}

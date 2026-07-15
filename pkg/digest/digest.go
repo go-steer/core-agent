@@ -188,6 +188,10 @@ func Process(ctx context.Context, payload []byte, opts Options) (Result, error) 
 		}
 		res.Metadata["store_err"] = storeErr.Error()
 	}
+	// Global counter update — feeds the /usage endpoint's
+	// digest_methods breakdown so operators can see which path
+	// dominates without wiring per-call telemetry themselves.
+	recordTelemetry(res.Method, res.RawBytes, len(res.Digest))
 	return res, nil
 }
 

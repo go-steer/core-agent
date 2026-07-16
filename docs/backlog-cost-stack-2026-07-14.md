@@ -2,6 +2,57 @@
 
 Session handoff. Filed after wrapping the v2.7.0-dev.N demo drive on 2026-07-14. Fresh session should pick up from **first action** at the bottom.
 
+## Status (2026-07-16)
+
+Plan largely shipped. All four cost levers landed to main:
+
+| Lever | Issue | PR | Merged |
+|---|---|---|---|
+| Per-turn UsageMetadata | #222 | #248 | 2026-07-14 |
+| pkg/digest skeleton | #128 | #256 | 2026-07-15 |
+| MCP wrap + retrieve_raw | #130 + #129 | #257 | 2026-07-15 |
+| Vertex context caching | #221 | #269 + #270 hotfix | 2026-07-16 |
+
+Related pricing follow-ups also shipped: #259 Slice A (cache-read rate wiring, PR #264) and Slice B (LiteLLM-generated builtin + universal UpdatedAt, PR #265) — surfaced during the drive.
+
+## Measurements — post-#221 demo drive (2026-07-16)
+
+**Setup**: GKE-troubleshoot recipe against `${PROJECT_ID}` / `std-simian-test`, image `ghcr.io/go-steer/core-agent:main-9120541` (post-#270 hotfix). Vertex endpoint resolved to `location=global` (env-var-driven; no `location` in config.json). Model: `gemini-3.5-flash`.
+
+**Turn shape**: 2 turns — turn 1 initial triage, turn 2 short follow-up ("everything in good state?"). Agent successfully diagnosed and remediated a real infrastructure issue (`opentelemetry-collector` bound to `127.0.0.1:4317` instead of `0.0.0.0:4317`), applied the ConfigMap fix, and verified frontend trace exports resumed.
+
+**Session totals** (from `/stats` in the TUI):
+- 2 turns · in 80,846 (30,932 cached / 49,914 uncached) · out 612
+- **Cost: $0.0850** (uncached-reference $0.1268 → cache saved $0.0418, ~33% reduction)
+
+**Per turn**:
+| Turn | Input | Cached | Output | Cost |
+|---|---|---|---|---|
+| 1 (13:28 UTC) | 40,144 | 15,466 | 542 | $0.0442 |
+| 2 (13:29 UTC) | 40,702 | 15,466 | 70 | $0.0408 |
+
+**vs baseline** ($0.28 / 10 turns / 181k input from 2026-07-13 v2.6 drive):
+
+| Metric | Baseline (2026-07-13) | Post-stack (2026-07-16) | Ratio |
+|---|---|---|---|
+| Effective input rate | $1.55/M | $1.05/M | 0.68× |
+| Per-turn input | ~18k | ~40k | 2.2× (more tool activity) |
+| Per-turn cost | $0.028 | $0.042 | 1.5× |
+
+Per-turn cost is _higher_ than the baseline in absolute terms because today's turns issued more (and larger) MCP tool calls per turn — the two drives aren't apples-to-apples turn shapes. The **effective input rate** is the honest lever comparison: dropped from $1.55/M to $1.05/M, a ~33% reduction attributable to a mix of caching + structural digest.
+
+**Verified `#221` explicit-cache infrastructure landed cleanly**:
+- Vertex CachedContent resource created (`projects/1067056737933/locations/global/cachedContents/6116704758662168576`, displayName `core-agent-gemini-3.5-flash`, expires 6h from creation)
+- Startup log confirms: `core-agent: context cache: enabled (ttl=6h0m0s, model=gemini-3.5-flash)`
+- No `core-agent-vertexcache: Caches.* failed` log lines
+
+**Attribution caveat**: turn 1 (no cache reference stamped yet, async Init still in flight) and turn 2 (my explicit cache stamped, prefix fields stripped) both report `CachedContentTokenCount = 15,466` — numerically indistinguishable. Plausibly turn 1 is Vertex's implicit prefix cache (warm from prior sessions today) finding ~15k of matching prefix, and turn 2 is my explicit cache hitting a ~15k system-instruction + tools blob. Cost arithmetic on turn 2 is consistent with a real 10%-rate hit on 15,466 tokens (matches `$0.0408` to the cent). Numerically we cannot distinguish "implicit fully covers it" from "explicit replaced implicit" — but operationally #221 guarantees the discount regardless of Vertex's opportunistic implicit behavior, which was the point.
+
+**Follow-up worth doing**:
+- Cold-cache drive: destroy the daemon + PVC, wait ~90min for implicit caches to age out, drive a fresh session. Explicit's contribution should be starkly visible there.
+- Consider adding a `Snapshot()` accessor to `/usage` or `/stats` that exposes the Manager's state (active/failed/initializing) + cache name + expiry, so operators can see which mechanism is doing the work at a glance.
+- v1.1 (#221 follow-up): verify explicit context caching on the `global` Vertex endpoint specifically — my spike ran on `us-central1` and the two endpoints occasionally differ.
+
 ## Context
 
 The v2.6 GKE-troubleshoot demo drive surfaced that the recipe's cost per triage session is **$0.28** (10 turns, 181k input tokens). At 100 incidents/day that's ~$840/mo — high enough that operators will notice, low enough that they haven't yet. We shipped all recipe-breaking bugs in the v2.7.0-dev.N series (see `git log v2.6.0..main`); cost is now the biggest remaining ticket.

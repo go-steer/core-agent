@@ -1052,8 +1052,11 @@ func renderPricingInfo(info attach.PricingInfo) string {
 	if info.Current != nil {
 		fmt.Fprintf(&sb, "Rates: $%.2f in / $%.2f out per Mtok",
 			info.Current.InputUSDPerMTok, info.Current.OutputUSDPerMTok)
-		if info.Current.Source != "" {
-			fmt.Fprintf(&sb, " (source: %s)", info.Current.Source)
+		if info.Current.CachedUSDPerMTok > 0 {
+			fmt.Fprintf(&sb, " / $%.4f cache-read", info.Current.CachedUSDPerMTok)
+		}
+		if !info.Current.UpdatedAt.IsZero() {
+			fmt.Fprintf(&sb, " (updated %s)", info.Current.UpdatedAt.Format("2006-01-02"))
 		}
 	}
 	return sb.String()

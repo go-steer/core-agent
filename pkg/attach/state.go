@@ -257,7 +257,13 @@ type MCPToolInfo struct {
 // current model resolved against, and the current model's rate
 // breakdown.
 type PricingInfo struct {
-	Source       string        `json:"source"` // "config" | "project-file" | "user-file" | "compiled-in" | "litellm-cache" | "fallback"
+	// Source names the catalog layer that served CurrentModel's rate.
+	// Values are the pricing.SourceX constants:
+	//   "cfg-override" | "project-file" | "user-manual" |
+	//   "user-external" | "builtin"
+	// Empty when no rate resolved for CurrentModel (renders as "$—"
+	// downstream).
+	Source       string        `json:"source"`
 	LastRefresh  time.Time     `json:"last_refresh,omitempty"`
 	KnownModels  int           `json:"known_models"`
 	CurrentModel string        `json:"current_model,omitempty"`
@@ -265,11 +271,21 @@ type PricingInfo struct {
 }
 
 // ModelPricing describes one model's rate breakdown.
+//
+// UpdatedAt records when the rate was last verified against its
+// provider — LiteLLM refresh time for external entries, generator
+// run time for builtin entries, operator edit time for manual
+// overrides. Zero when unknown. Surfaced via GET /sessions/.../pricing
+// so operators can spot stale rates. The catalog-layer attribution
+// ("which source served this rate") lives on the enclosing
+// PricingInfo.Source, not here — one field per snapshot avoids
+// implying the ModelPricing block would carry per-entry sources if
+// PricingInfo ever grows to return multiple models.
 type ModelPricing struct {
-	InputUSDPerMTok  float64 `json:"input_usd_per_mtok"`
-	OutputUSDPerMTok float64 `json:"output_usd_per_mtok"`
-	CachedUSDPerMTok float64 `json:"cached_usd_per_mtok,omitempty"`
-	Source           string  `json:"source,omitempty"`
+	InputUSDPerMTok  float64   `json:"input_usd_per_mtok"`
+	OutputUSDPerMTok float64   `json:"output_usd_per_mtok"`
+	CachedUSDPerMTok float64   `json:"cached_usd_per_mtok,omitempty"`
+	UpdatedAt        time.Time `json:"updated_at,omitempty"`
 }
 
 // UsageProvider is the optional capability for GET /sessions/.../usage.

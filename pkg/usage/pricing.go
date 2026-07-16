@@ -16,6 +16,7 @@ package usage
 
 import (
 	"sync/atomic"
+	"time"
 
 	"github.com/go-steer/core-agent/internal/pricing"
 	"github.com/go-steer/core-agent/pkg/config"
@@ -33,6 +34,10 @@ type Pricing struct {
 	InputPerMTok       float64
 	CachedInputPerMTok float64
 	OutputPerMTok      float64
+	// UpdatedAt is when the rate was last verified against its
+	// source. Threads through from internal/pricing.Rates so /pricing
+	// can surface staleness. Zero when unknown.
+	UpdatedAt time.Time
 }
 
 // IsZero reports whether the rates carry no useful pricing.
@@ -73,6 +78,27 @@ func KnownModelsCount() int {
 		counts.UserExternal + counts.Builtin
 }
 
+// PriceForWithSource is PriceFor + the catalog layer name that served
+// the rate (pricing.SourceCfgOverride / SourceProjectFile /
+// SourceUserManual / SourceUserExternal / SourceBuiltin). Empty source
+// when no rate was found. Used by /pricing so operators can spot when
+// a rate came from a stale builtin instead of the freshly-refreshed
+// LiteLLM external catalog they were expecting.
+//
+// The cfg override path (used only when no globalCatalog is installed)
+// reports source SourceCfgOverride when the model resolves through it.
+func PriceForWithSource(modelID string, cfg *config.Config) (Pricing, string) {
+	if c := globalCatalog.Load(); c != nil {
+		r, src, _ := c.LookupWithSource(modelID)
+		return ratesToPricing(r), src
+	}
+	c, _ := pricing.NewCatalog(pricing.Options{
+		CfgOverride: cfgToOverride(cfg),
+	})
+	r, src, _ := c.LookupWithSource(modelID)
+	return ratesToPricing(r), src
+}
+
 // PriceFor returns the Pricing for modelID. Resolution chain (first
 // exact match wins; longest-prefix fallback at the end):
 //
@@ -110,6 +136,7 @@ func ratesToPricing(r pricing.Rates) Pricing {
 		InputPerMTok:       r.InputPerMTok,
 		CachedInputPerMTok: r.CachedInputPerMTok,
 		OutputPerMTok:      r.OutputPerMTok,
+		UpdatedAt:          r.UpdatedAt,
 	}
 }
 

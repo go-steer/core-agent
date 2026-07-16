@@ -265,7 +265,6 @@ func TestIntegration_PricingEndpoint(t *testing.T) {
 			Current: &ModelPricing{
 				InputUSDPerMTok:  15.00,
 				OutputUSDPerMTok: 75.00,
-				Source:           "litellm",
 			},
 		},
 	}

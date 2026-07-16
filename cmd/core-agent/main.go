@@ -857,20 +857,22 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 			return out
 		}),
 		agent.WithAttachPricingProvider(func() attach.PricingInfo {
-			// Minimal snapshot for the operator-facing /pricing
-			// endpoint. Source + last-refresh fields stay empty;
-			// exposing "which catalog layer served this rate"
-			// requires a Catalog.LookupWithSource API extension
-			// tracked separately (issue #259 follow-up).
+			// Re-resolve on every call so a fresh /pricing refresh
+			// during the session is reflected immediately — pricingRate
+			// captured at startup would go stale. Also lets Source +
+			// UpdatedAt reflect wherever the winning layer landed.
+			currentRate, source := usage.PriceForWithSource(cfg.Model.Name, cfg)
 			info := attach.PricingInfo{
 				CurrentModel: cfg.Model.Name,
 				KnownModels:  usage.KnownModelsCount(),
+				Source:       source,
 			}
-			if !pricingRate.IsZero() {
+			if !currentRate.IsZero() {
 				info.Current = &attach.ModelPricing{
-					InputUSDPerMTok:  pricingRate.InputPerMTok,
-					OutputUSDPerMTok: pricingRate.OutputPerMTok,
-					CachedUSDPerMTok: pricingRate.CachedInputPerMTok,
+					InputUSDPerMTok:  currentRate.InputPerMTok,
+					OutputUSDPerMTok: currentRate.OutputPerMTok,
+					CachedUSDPerMTok: currentRate.CachedInputPerMTok,
+					UpdatedAt:        currentRate.UpdatedAt,
 				}
 			}
 			return info

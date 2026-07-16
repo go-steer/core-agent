@@ -9,7 +9,7 @@ Both trigger on `push: tags: ['v*.*.*']`.
 
 ## Cut a release
 
-1. **Update `CHANGELOG.md`.** Promote the `## [Unreleased]` block to `## [X.Y.Z] — YYYY-MM-DD`. Add a short headline paragraph describing the release before the `### Added` / `### Changed` / `### Fixed` / `### Removed` sections — that paragraph is what shows up at the top of the GitHub Release page.
+1. **Update `CHANGELOG.md`.** Promote the `## [Unreleased]` block to `## [X.Y.Z] — YYYY-MM-DD`. Write a short headline paragraph describing the release (3–5 sentences of what an operator upgrading needs to know), followed by a `### Changes by Kind` section grouping the merged PRs under `#### Feature` / `#### Bug or Regression` / `#### Documentation` / `#### Other (Cleanup)`. Each bullet is one line with a trailing `([#NNN](https://github.com/go-steer/core-agent/pull/NNN))` link. Add a `### Breaking changes` section only when there is one. The whole entry becomes the GitHub Release body verbatim. See v2.6.0 / v2.5.0 for the target shape.
 2. **Bump `internal/version.Version`** in [`internal/version/version.go`](../internal/version/version.go) to `vX.Y.Z` (the tag you're about to cut), commit.
 3. **Tag and push:**
    ```bash
@@ -32,6 +32,25 @@ gh workflow run release-images.yml --ref vX.Y.Z
 ```
 
 The image workflow also takes an optional `-f tag=vX.Y.Z` input for situations where the workflow at the target ref pre-dates `workflow_dispatch` support; see the comment in [`release-images.yml`](../.github/workflows/release-images.yml).
+
+## Pre-release / dev tags
+
+Every merged PR bumps `## [Unreleased]` with a bullet (per AGENTS.md), so by the time you're ready to cut a dev tag `[Unreleased]` already has the narrative + PR list. Cutting the tag is one command:
+
+```bash
+./dev/release/cut-dev-tag.sh v2.7.0-dev.4
+```
+
+That script rewrites CHANGELOG.md in place — renames `## [Unreleased]` to `## [X.Y.Z-dev.N] — YYYY-MM-DD` and reseeds a fresh empty `## [Unreleased]` above. It shows the diff and prints the git commands to commit + tag + push (doesn't run them itself). Bails early if `[Unreleased]` is still boilerplate — you're expected to backfill from `git log` first if per-PR bumps got skipped.
+
+Tags cut without a matching CHANGELOG section still publish successfully: [`dev/release/compose-release-notes.sh`](../dev/release/compose-release-notes.sh) auto-generates the release body from `## [Unreleased]` (as the narrative) plus a PR list synthesized from `git log vLAST_STABLE..vTAG` grouped by conventional-commit type. That's the safety net; the script above is the happy path.
+
+Dry-run the composer locally to preview the notes for a tag before pushing:
+
+```bash
+./dev/release/compose-release-notes.sh v2.7.0-dev.3 /tmp/notes.md
+less /tmp/notes.md
+```
 
 ## Verify a release locally
 

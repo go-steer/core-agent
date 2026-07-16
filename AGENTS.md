@@ -169,6 +169,14 @@ Conventions worth knowing at agent prompt time:
 - **Hugo site walks alongside README/DESIGN.** User-visible changes
   update the published site at `docs/site/content/docs/` in the
   same PR as the code, not as a follow-up.
+- **`[Unreleased]` grows on every merged PR.** Any user-visible
+  change (new feature, bugfix, doc, breaking change) adds one
+  bullet under the appropriate `#### Feature` / `#### Bug or
+  Regression` / `#### Documentation` / `#### Other (Cleanup)` /
+  `#### Security` subsection of `## [Unreleased]` in `CHANGELOG.md`
+  as part of the PR itself. `dev/release/cut-dev-tag.sh` and the
+  stable release recipe both assume `[Unreleased]` is current — if
+  it's stale at tag time, backfill from `git log` before tagging.
 
 ## How we release
 
@@ -180,10 +188,19 @@ Recipe (mechanical — we just did it for v1.8.0):
 
 1. **Branch** `release/vX.Y.Z` off main once the feature PRs are merged.
 2. **Promote** `[Unreleased]` → `[X.Y.Z] — YYYY-MM-DD` in `CHANGELOG.md`
-   with a one-paragraph summary at the top, the `### Added` /
-   `### Fixed` / `### Security` entries you've been accumulating
-   under it, then a fresh empty `[Unreleased]` above for whatever
-   lands next.
+   with a headline paragraph (3–5 sentences of what an operator
+   upgrading needs to know), then a `### Changes by Kind` section
+   grouping merged PRs under `#### Feature` / `#### Bug or Regression`
+   / `#### Documentation` / `#### Other (Cleanup)` — one line per PR
+   with a trailing `([#NNN](url))` link. Add `### Breaking changes`
+   only when there is one. See v2.6.0 / v2.5.0 for the target shape.
+   Leave a fresh empty `[Unreleased]` above for whatever lands next.
+   Pre-release tags (`vX.Y.Z-dev.N` etc.) use `dev/release/cut-dev-tag.sh
+   vX.Y.Z-dev.N` — carves current `[Unreleased]` into a dated
+   pre-release section and reseeds a fresh `[Unreleased]`. Assumes
+   `[Unreleased]` is current (see the per-PR expectation above);
+   the composer's auto-generation from `git log` is only the safety
+   net for tags that skip the script entirely.
 3. **Bump the README pin.** Update the "Current release" paragraph
    to the new framing, condense the previous release into the
    historical chain, change `go get github.com/go-steer/core-agent@vX.Y.Z`.

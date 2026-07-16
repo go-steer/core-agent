@@ -83,16 +83,16 @@ func buildMultiSessionAuthn(cfg config.MultiSessionConfig) (auth.Authenticator, 
 // once at daemon startup; the resulting factory builds fresh
 // *agent.Agent values for each POST /sessions request.
 //
-// v0 spike: substrate-essential options only (tools, eventlog,
-// per-session sub-gate, per-caller instruction overlay, per-session
-// prompter). Operator features that flow into the startup-time agent
-// (BackgroundManager, Compactor, Watchdog, Checkpointer, CostCeiling,
-// agentic tools, ask_user, MCP custom auth, etc.) are intentionally
-// NOT wired into on-demand sessions in this iteration — every one of
-// them needs scope-aware re-instantiation per session, which is a
-// follow-up. Sessions created via POST /sessions are functional but
-// see the substrate as it is, without the operator-feature
-// extensions. Document the gap in the recipe.
+// Substrate + config-only operator features are wired per-session:
+// tools, eventlog, per-session sub-gate, per-caller instruction
+// overlay, per-session prompter, plus Compactor / Checkpointer /
+// CostCeiling (these are pure config, so per-session reconstruction
+// is trivial and the alternative was /compact and /done erroring on
+// every session-created agent). Features that need per-session
+// scoping decisions the daemon doesn't yet make (BackgroundManager
+// sharing, Watchdog alert-sink routing, agentic tool wrappers, MCP
+// custom auth) remain deferred — sessions created via POST /sessions
+// see the substrate without them.
 type sessionFactoryDeps struct {
 	// daemonCtx is the daemon's lifetime context — every per-session
 	// wake loop spawned by the factory uses it as the cancellation
@@ -123,6 +123,15 @@ type sessionFactoryDeps struct {
 	// from it on Lookup miss to reconstruct evicted sessions. Nil
 	// disables resume — the registry behaves as pre-v2.5.
 	aclStore attach.SessionACLStore
+	// noCompact / noCheckpoint mirror the --no-compact /
+	// --no-checkpoint CLI flags. When false (the default),
+	// reproduceAgent wires WithCompactor / WithCheckpointer so
+	// /compact and /done work against session-created agents; when
+	// true, the corresponding option is skipped so the disable flag
+	// applies uniformly to the main agent AND every session-created
+	// agent under it.
+	noCompact    bool
+	noCheckpoint bool
 }
 
 // newSessionTracker constructs the *usage.Tracker each on-demand
@@ -217,6 +226,43 @@ func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, ori
 	// agent (toolsets include MCP, instructions are loaded,
 	// etc.) — the slashes just have nothing to look at.
 	opts = append(opts, attachProviderOpts(deps, sessionGate)...)
+
+	// Context-window compaction (Mechanism A). Default-on unless
+	// --no-compact was passed. Without this wiring, /compact against
+	// session-created agents errored with agent.ErrNoCompactor even
+	// though the CLI defaults advertise the feature.
+	if !deps.noCompact {
+		var compactionCfg config.CompactionConfig
+		if deps.cfg != nil {
+			compactionCfg = deps.cfg.Compaction
+		}
+		opts = append(opts, agent.WithCompactor(buildCompactor(compactionCfg)))
+	}
+	// Task-boundary checkpoints (Mechanism C). Default-on unless
+	// --no-checkpoint was passed. Without this wiring, /done and
+	// the model-facing mark_task_done tool were unavailable on
+	// session-created agents.
+	if !deps.noCheckpoint {
+		opts = append(opts, agent.WithCheckpointer(agent.NewDefaultCheckpointer()))
+	}
+	// Cost-ceiling kill switch (#145). The zero-value CostCeiling is
+	// a no-op, so this is safe to always append; enforcement runs
+	// only when either bound in cfg.Agent is > 0. Config-driven
+	// only — the operator's --max-turn-cost-usd /
+	// --max-session-cost-usd CLI flags are already merged into
+	// cfg.Agent before deps is built.
+	if deps.cfg != nil {
+		ceiling := agent.CostCeiling{}
+		if deps.cfg.Agent.MaxTurnCostUSD != nil {
+			ceiling.MaxTurnUSD = *deps.cfg.Agent.MaxTurnCostUSD
+		}
+		if deps.cfg.Agent.MaxSessionCostUSD != nil {
+			ceiling.MaxSessionUSD = *deps.cfg.Agent.MaxSessionCostUSD
+		}
+		if ceiling.MaxTurnUSD > 0 || ceiling.MaxSessionUSD > 0 {
+			opts = append(opts, agent.WithCostCeiling(ceiling))
+		}
+	}
 
 	ag, err := agent.New(deps.model, opts...)
 	if err != nil {

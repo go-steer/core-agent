@@ -99,3 +99,68 @@ func TestReproduceAgent_PerSessionTracker(t *testing.T) {
 		t.Errorf("sid-b AttachUsage.Overall.Turns = %d, want 0 (turns leaked across sessions)", got)
 	}
 }
+
+// TestReproduceAgent_WiresCompactorAndCheckpointer is the regression
+// gate for the bug where per-session agents created by the multi-
+// session daemon were constructed without WithCompactor /
+// WithCheckpointer, so /compact and /done returned "no compactor
+// wired" / "no checkpointer wired" on daemon-hosted sessions even
+// though the default-on advertisements said otherwise.
+//
+// CostCeiling is wired by the same reproduceAgent code path but has
+// no public HasCostCeiling accessor to assert against; the shared
+// opts append flow makes a targeted test redundant.
+func TestReproduceAgent_WiresCompactorAndCheckpointer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	deps := sessionFactoryDeps{
+		daemonCtx: ctx,
+		model:     stubLLM{},
+		template:  permissions.New(permissions.Options{}),
+	}
+
+	ag, cancelAg, err := reproduceAgent(deps, auth.Anonymous, "sid-defaults", "created")
+	if err != nil {
+		t.Fatalf("reproduceAgent: %v", err)
+	}
+	t.Cleanup(cancelAg)
+
+	if !ag.HasCompactor() {
+		t.Errorf("HasCompactor() = false, want true (default-on; /compact would return ErrNoCompactor)")
+	}
+	if !ag.HasCheckpointer() {
+		t.Errorf("HasCheckpointer() = false, want true (default-on; /done would be unavailable)")
+	}
+}
+
+// TestReproduceAgent_HonorsDisableFlags asserts that the
+// noCompact / noCheckpoint fields on sessionFactoryDeps (fed from
+// the --no-compact / --no-checkpoint CLI flags) suppress the
+// corresponding option, so the disable flags apply uniformly to
+// per-session agents and not just the main-loop agent.
+func TestReproduceAgent_HonorsDisableFlags(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	deps := sessionFactoryDeps{
+		daemonCtx:    ctx,
+		model:        stubLLM{},
+		template:     permissions.New(permissions.Options{}),
+		noCompact:    true,
+		noCheckpoint: true,
+	}
+
+	ag, cancelAg, err := reproduceAgent(deps, auth.Anonymous, "sid-disabled", "created")
+	if err != nil {
+		t.Fatalf("reproduceAgent: %v", err)
+	}
+	t.Cleanup(cancelAg)
+
+	if ag.HasCompactor() {
+		t.Errorf("HasCompactor() = true with noCompact=true, want false")
+	}
+	if ag.HasCheckpointer() {
+		t.Errorf("HasCheckpointer() = true with noCheckpoint=true, want false")
+	}
+}

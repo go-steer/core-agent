@@ -495,7 +495,7 @@ func (c *Client) Stream(ctx context.Context, sessionPath string, since int64) (<
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		return nil, fmt.Errorf("stream: status %d: %s", resp.StatusCode, body)
+		return nil, &httpStatusError{op: "stream", statusCode: resp.StatusCode, body: string(body)}
 	}
 
 	out := make(chan attach.Frame, 32)
@@ -614,7 +614,7 @@ func (c *Client) PromptStream(ctx context.Context, sessionPath string) (<-chan a
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		return nil, fmt.Errorf("perms/stream: status %d: %s", resp.StatusCode, body)
+		return nil, &httpStatusError{op: "perms/stream", statusCode: resp.StatusCode, body: string(body)}
 	}
 
 	out := make(chan attach.PromptFrame, 16)
@@ -664,7 +664,7 @@ func (c *Client) doJSON(ctx context.Context, method, suffix string, body, out an
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%s %s: status %d: %s", method, suffix, resp.StatusCode, b)
+		return &httpStatusError{op: fmt.Sprintf("%s %s", method, suffix), statusCode: resp.StatusCode, body: string(b)}
 	}
 	if out == nil {
 		return nil

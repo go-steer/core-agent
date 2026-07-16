@@ -100,11 +100,13 @@ func (a *Adapter) Subagents() []coretui.SubagentInfo {
 const usageCacheTTL = 2 * time.Second
 
 type usageCache struct {
-	mu        sync.Mutex
-	cached    coretui.Usage
-	costUSD   float64
-	turns     int
-	lastFetch time.Time
+	mu           sync.Mutex
+	cached       coretui.Usage
+	costUSD      float64
+	turns        int
+	lastTurn     coretui.Usage // from Overall.PerTurn[-1]; used as fallback in LastTurn()
+	lastTurnCost float64
+	lastFetch    time.Time
 }
 
 // snapshot returns the cached usage, refreshing if the cache is
@@ -129,8 +131,35 @@ func (a *Adapter) snapshot() (coretui.Usage, float64, int) {
 	}
 	a.usage.costUSD = info.Overall.CostUSD
 	a.usage.turns = info.Overall.Turns
+	// Stash the last per-turn entry so LastTurn() can fall back to
+	// authoritative server-side data when the streaming-loop state
+	// is empty. In observer / LiveAgent mode the Run/Events loops
+	// may not have observed a non-partial event with UsageMetadata
+	// (see docs/digest-design.md for the shared-state pathway), so
+	// `a.lastTurn` on the Adapter stays zero even after real turns
+	// complete — the /usage snapshot always has the truth.
+	if n := len(info.PerTurn); n > 0 {
+		last := info.PerTurn[n-1]
+		a.usage.lastTurn = coretui.Usage{
+			InputTokens:  int(last.InputTokens),
+			OutputTokens: int(last.OutputTokens),
+		}
+		a.usage.lastTurnCost = last.CostUSD
+	}
 	a.usage.lastFetch = time.Now()
 	return a.usage.cached, a.usage.costUSD, a.usage.turns
+}
+
+// snapshotLastTurn returns the last per-turn entry from the cached
+// /usage snapshot, refreshing the cache when stale. Used by
+// LastTurn() as the authoritative fallback when the Run/Events
+// streaming loop hasn't populated a.lastTurn.
+func (a *Adapter) snapshotLastTurn() (coretui.Usage, float64) {
+	// Force a snapshot fetch (also fills lastTurn under the cache mutex).
+	_, _, _ = a.snapshot()
+	a.usage.mu.Lock()
+	defer a.usage.mu.Unlock()
+	return a.usage.lastTurn, a.usage.lastTurnCost
 }
 
 // SessionTotals satisfies coretui.UsageTracker.
@@ -146,15 +175,31 @@ func (a *Adapter) SessionCostUSD() float64 {
 }
 
 // LastTurn satisfies coretui.UsageTracker. Returns the most recent
-// per-turn token counts captured during Run() and the matching cost
-// (computed client-side from cached per-Mtok rates). Falls back to
-// $0 cost when the pricing snapshot hasn't been fetched yet or the
-// model has no published rate.
+// per-turn token counts + cost.
+//
+// Preferred source: the streaming Run/Events loop stashes each
+// non-partial event's UsageMetadata into a.lastTurn as they arrive
+// (adapter.go). Cost is then computed client-side from the /pricing
+// snapshot rates cached in applyPricing.
+//
+// Fallback: when a.lastTurn is empty — which happens in observer /
+// LiveAgent mode for sessions whose SSE events don't surface a non-
+// partial UsageMetadata (e.g. when the terminal chunk is Partial:true,
+// or when the operator connected after the last such event) — read
+// the last per-turn entry from the cached /usage snapshot. That path
+// carries authoritative server-side cost (with cache-discount +
+// operator pricing overrides already applied) so the /stats slash
+// stops rendering "Last turn: 0" for perfectly-fine sessions.
 func (a *Adapter) LastTurn() (coretui.Usage, float64) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	cost := costFromRates(a.lastTurn.InputTokens, a.lastTurn.OutputTokens, a.pricingIn, a.pricingOut)
-	return a.lastTurn, cost
+	live := a.lastTurn
+	rin := a.pricingIn
+	rout := a.pricingOut
+	a.mu.Unlock()
+	if live.InputTokens > 0 || live.OutputTokens > 0 {
+		return live, costFromRates(live.InputTokens, live.OutputTokens, rin, rout)
+	}
+	return a.snapshotLastTurn()
 }
 
 // applyPricing populates ev.CostUSD + ev.Model when we have rates

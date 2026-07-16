@@ -184,3 +184,60 @@ If an MCP server tries to elicit input from the user (the protocol's `elicit` re
 ## Reload
 
 `core-agent` doesn't currently watch `mcp.json` for changes — to pick up an edit, restart the process. Each `Server` exposes a `Close()` method that terminates its child process; if you build a `/reload` slash command in your host, call `Close()` on every old server before re-running `mcp.Build()`.
+
+---
+
+## Structural digest wrap (`--no-mcp-digest`)
+
+Since v2.7.0-dev.4, MCP tool responses are routed through the [`pkg/digest`](https://github.com/go-steer/core-agent/tree/main/pkg/digest) structural pruner before reaching the model's context. The wrapper preserves identifier-shaped keys (`id`, `name`, `status`, `apiVersion`, `*url*`, `*_id`, …), truncates long strings past 500 chars, collapses arrays over 20 items into a head-plus-tail summary, and caps recursion at depth 8. Prose-shaped responses take a bounded passthrough (max 64 KiB) — no LLM subagent in this pass.
+
+The model sees a synthetic tool response:
+
+```json
+{
+  "digest": "...compressed payload...",
+  "raw_bytes": 12345,
+  "method": "structural_json",
+  "call_id": "toolcall-abc"
+}
+```
+
+The `call_id` is the escape hatch — the model can pass it to the built-in `retrieve_raw(call_id)` tool to fetch the un-digested payload when a digest looks suspicious. `retrieve_raw` is registered whenever the wrap is on AND a Store is wired (which happens automatically when `--session-db` is on).
+
+### Configuration
+
+- **CLI kill switch**: `--no-mcp-digest` disables the wrap layer entirely. `retrieve_raw` is not registered.
+- **Per-project**: `agentic_wrap: false` (top-level in `.agents/mcp.json`) has the same effect as the CLI kill switch, scoped to that project.
+- **Per-project threshold**: `agentic_wrap_threshold: 8000` (bytes). Responses below this bypass the router. Default 8000 (~2000 tokens).
+- **Per-server escape hatch**: `agentic_never: true` on any `ServerSpec` opts that server out of digesting. Use for debug-sensitive or known-tiny servers where the digest hurts more than it helps.
+
+```json
+{
+  "version": 1,
+  "agentic_wrap": true,
+  "agentic_wrap_threshold": 8000,
+  "servers": {
+    "gke": { "transport": "stdio", "command": "gke-mcp" },
+    "debug-inspector": {
+      "transport": "stdio",
+      "command": "raw-mcp",
+      "agentic_never": true
+    }
+  }
+}
+```
+
+### Telemetry
+
+`GET /sessions/<id>/usage` returns a `digest_methods` block with per-method call counts + cumulative bytes saved so operators can tell which pruner path dominates:
+
+```json
+{
+  "digest_methods": {
+    "counts": {"structural_json": 42, "passthrough": 3},
+    "bytes_saved": {"structural_json": 1234567, "passthrough": 0}
+  }
+}
+```
+
+Design: [`docs/digest-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/digest-design.md). Tracking issue: [#128](https://github.com/go-steer/core-agent/issues/128).

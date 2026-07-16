@@ -47,6 +47,7 @@ import (
 
 	"github.com/go-steer/core-agent/pkg/attach"
 	"github.com/go-steer/core-agent/pkg/auth"
+	"github.com/go-steer/core-agent/pkg/digest"
 	"github.com/go-steer/core-agent/pkg/eventlog"
 	"github.com/go-steer/core-agent/pkg/permissions"
 	corebuiltins "github.com/go-steer/core-agent/pkg/tools"
@@ -1250,6 +1251,17 @@ func (a *Agent) AttachUsage() attach.UsageInfo {
 		}
 	}
 	out.PerTurn = perTurn
+	// Digest telemetry is a package-level counter (see pkg/digest/telemetry.go).
+	// Populate the wire field only when at least one Process call has
+	// fired — an empty snapshot on a session that never touched
+	// pkg/digest would confuse operators into thinking the wrap is
+	// wired when it isn't.
+	if snap := digest.Telemetry(); len(snap.MethodCounts) > 0 {
+		out.DigestMethods = &attach.DigestMethodsInfo{
+			Counts:     snap.MethodCounts,
+			BytesSaved: snap.BytesSaved,
+		}
+	}
 	return out
 }
 

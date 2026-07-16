@@ -133,10 +133,25 @@ type InterruptProvider interface {
 // call in submission order and is always populated when the tracker
 // recorded any turns — see issue #222 for the motivating operator
 // use case (per-turn cost + cache attribution).
+//
+// DigestMethods is the digest wrapper's per-method call count (issue
+// #130 / task #84). Present when at least one digest.Process call has
+// fired process-wide. Feeds "which pruner path is dominating" without
+// operators needing to scrape per-event metadata.
 type UsageInfo struct {
-	Overall  UsageTotals            `json:"overall"`
-	PerModel map[string]UsageTotals `json:"per_model,omitempty"`
-	PerTurn  []UsageTurn            `json:"per_turn,omitempty"`
+	Overall       UsageTotals            `json:"overall"`
+	PerModel      map[string]UsageTotals `json:"per_model,omitempty"`
+	PerTurn       []UsageTurn            `json:"per_turn,omitempty"`
+	DigestMethods *DigestMethodsInfo     `json:"digest_methods,omitempty"`
+}
+
+// DigestMethodsInfo carries the pkg/digest telemetry snapshot in the
+// /usage response. Counts is calls-per-method; BytesSaved is the
+// cumulative byte reduction (raw - digest) accrued per method.
+// Passthrough always contributes 0 to BytesSaved by definition.
+type DigestMethodsInfo struct {
+	Counts     map[string]int64 `json:"counts,omitempty"`
+	BytesSaved map[string]int64 `json:"bytes_saved,omitempty"`
 }
 
 // UsageTotals mirrors usage.Totals in a JSON-friendly shape.

@@ -43,21 +43,57 @@ import (
 const MCPFileName = "mcp.json"
 
 // Servers is the on-disk schema for .agents/mcp.json.
+//
+// AgenticWrap + AgenticWrapThreshold are the operator knobs for the
+// structural-digester wrap layer (#130). CLI --no-mcp-digest kills the
+// whole surface regardless; per-server AgenticNever opts one server
+// out without touching the global flag.
 type Servers struct {
-	Version int                   `json:"version"`
-	Servers map[string]ServerSpec `json:"servers"`
+	Version              int                   `json:"version"`
+	Servers              map[string]ServerSpec `json:"servers"`
+	AgenticWrap          *bool                 `json:"agentic_wrap,omitempty"`           // default true; ptr for explicit off
+	AgenticWrapThreshold int                   `json:"agentic_wrap_threshold,omitempty"` // default 8000
+}
+
+// DefaultAgenticWrapThreshold is the default byte threshold below which
+// MCP responses bypass the digest wrapper. 8000 bytes ≈ 2000 tokens —
+// the wrap/router overhead exceeds the bloat cost below this.
+const DefaultAgenticWrapThreshold = 8000
+
+// AgenticWrapEnabled reports whether the operator has opted the wrap
+// layer in. Default true; the flag ships as a kill switch (matches
+// #217 OTel posture — no --enable-* flags), so absence == on.
+func (s *Servers) AgenticWrapEnabled() bool {
+	if s == nil || s.AgenticWrap == nil {
+		return true
+	}
+	return *s.AgenticWrap
+}
+
+// AgenticWrapThresholdBytes returns the operator-configured threshold
+// or the built-in default when unset / zero.
+func (s *Servers) AgenticWrapThresholdBytes() int {
+	if s == nil || s.AgenticWrapThreshold <= 0 {
+		return DefaultAgenticWrapThreshold
+	}
+	return s.AgenticWrapThreshold
 }
 
 // ServerSpec describes one MCP server. Either Command (stdio) or URL
 // (Streamable HTTP) must be set; we intentionally don't support both.
+//
+// AgenticNever opts this specific server out of the digest wrap layer
+// — the operator escape hatch for debug-sensitive or known-tiny
+// servers where wrapping would hurt more than it helps.
 type ServerSpec struct {
-	Transport string            `json:"transport"`         // "stdio" | "http"
-	Command   string            `json:"command,omitempty"` // stdio
-	Args      []string          `json:"args,omitempty"`    // stdio
-	Env       map[string]string `json:"env,omitempty"`     // stdio
-	URL       string            `json:"url,omitempty"`     // http
-	Headers   map[string]string `json:"headers,omitempty"` // http
-	Auth      *AuthSpec         `json:"auth,omitempty"`    // http
+	Transport    string            `json:"transport"`               // "stdio" | "http"
+	Command      string            `json:"command,omitempty"`       // stdio
+	Args         []string          `json:"args,omitempty"`          // stdio
+	Env          map[string]string `json:"env,omitempty"`           // stdio
+	URL          string            `json:"url,omitempty"`           // http
+	Headers      map[string]string `json:"headers,omitempty"`       // http
+	Auth         *AuthSpec         `json:"auth,omitempty"`          // http
+	AgenticNever bool              `json:"agentic_never,omitempty"` // skip digest wrap for this server
 }
 
 // AuthSpec selects an authentication strategy for an HTTP MCP server.

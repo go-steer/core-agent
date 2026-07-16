@@ -81,6 +81,34 @@ jobs:
         with:
           go-version: ${{ steps.go-version.outputs.version }}
 
+      # Pricing freshness guard: refuse to release if the tagged
+      # commit's internal/pricing/builtin.go doesn't match what
+      # dev/regen-builtin-pricing would produce today. Motivation:
+      # #259 — hand-authored rates drifted 20-30x silently before the
+      # regen path landed. The weekly bot/pricing-regen workflow keeps
+      # main current; this guard makes sure a stale release can't slip
+      # out between weekly runs.
+      #
+      # Skipped on dry-run so operators can smoke-test the release
+      # pipeline from a feature branch without keeping pricing fresh.
+      - name: Guard — pricing catalog fresh
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          go run ./dev/regen-builtin-pricing
+          if ! git diff --quiet internal/pricing/builtin.go; then
+            echo "::error::internal/pricing/builtin.go is stale vs LiteLLM's current catalog."
+            echo ""
+            echo "Remediation:"
+            echo "  1. Merge the open auto-PR from bot/pricing-regen (if any), OR"
+            echo "  2. Run \`go run ./dev/regen-builtin-pricing\` locally, commit, push."
+            echo "  3. Retag and re-push the tag."
+            echo ""
+            echo "Diff:"
+            git --no-pager diff internal/pricing/builtin.go
+            exit 1
+          fi
+
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 

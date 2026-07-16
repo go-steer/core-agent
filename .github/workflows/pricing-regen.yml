@@ -1,0 +1,132 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: pricing-regen
+
+# Weekly + on-demand refresh of internal/pricing/builtin.go from
+# LiteLLM's catalog. Opens an auto-PR when the regenerated file differs
+# from what's in main. Fixed branch name (bot/pricing-regen) so re-runs
+# update the existing PR rather than stacking dupes.
+#
+# Motivation: issue #259. The builtin table drifted silently between
+# hand-authored revisions and shipped rates 20-30x off during the
+# v2.7.0-dev.3 demo drive. This workflow guarantees at least one
+# regen attempt per week without a human remembering.
+#
+# The generator + allowlist live in dev/regen-builtin-pricing/. Bump
+# the allowlist there when a new model family should ship built-in.
+
+on:
+  schedule:
+    # Mondays at 09:00 UTC — off-hour, well before US working day.
+    # Cron minute is 7 (not 0) to avoid the schedule-hour thundering
+    # herd against GHA's minute-0 spike.
+    - cron: '7 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  GO_VERSION: '1.26'
+  BRANCH: bot/pricing-regen
+
+jobs:
+  regen:
+    name: regen
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Regenerate builtin.go from LiteLLM
+        run: go run ./dev/regen-builtin-pricing
+
+      # Short-circuit if nothing changed. LiteLLM's catalog moves
+      # slowly; most weeks this workflow will exit here.
+      - name: Detect drift
+        id: drift
+        run: |
+          if git diff --quiet internal/pricing/builtin.go; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No drift — builtin.go matches LiteLLM."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Drift detected."
+          fi
+
+      # Pre-validate the regenerated file. If lint/tests fail on the
+      # new output, we'd rather fail the workflow than open a bad PR.
+      # Reviewer then sees the alert and either fixes the generator
+      # or curates the allowlist.
+      - name: Verify regen (lint + unit tests)
+        if: steps.drift.outputs.changed == 'true'
+        run: |
+          bash dev/ci/presubmits/lint-go
+          bash dev/ci/presubmits/test-unit
+
+      - name: Extract regen date for PR body
+        if: steps.drift.outputs.changed == 'true'
+        id: meta
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      # peter-evans/create-pull-request handles the branch/push/PR
+      # lifecycle idempotently: if BRANCH already exists as an open
+      # PR, it force-updates the branch and the PR head refreshes;
+      # if no diff, it does nothing.
+      - name: Open / update auto-PR
+        if: steps.drift.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ env.BRANCH }}
+          base: main
+          commit-message: |
+            chore(pricing): regenerate builtin.go from LiteLLM (${{ steps.meta.outputs.date }})
+
+            Automated regeneration by .github/workflows/pricing-regen.yml.
+            Curate the allowlist in dev/regen-builtin-pricing/main.go.
+          title: 'chore(pricing): regenerate builtin.go from LiteLLM (${{ steps.meta.outputs.date }})'
+          body: |
+            Automated pricing regen — LiteLLM's `model_prices_and_context_window.json` shifted since the last time `internal/pricing/builtin.go` was regenerated.
+
+            **Regen date**: ${{ steps.meta.outputs.date }}
+            **Source**: https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
+            **Allowlist**: `dev/regen-builtin-pricing/main.go` (edit + re-run to add/remove models)
+
+            ## Review checklist
+
+            - [ ] Diff on `internal/pricing/builtin.go` is only rate/date changes (no spurious formatting churn)
+            - [ ] Any rate change that halves or doubles is real (spot-check the provider's public pricing page — LiteLLM has occasionally shipped bad entries)
+            - [ ] `UpdatedAt` dates on all entries are today
+            - [ ] If any model was dropped from LiteLLM upstream, the workflow's stderr surfaces it — bump the allowlist or accept the removal
+
+            ## Verification
+
+            Presubmits (lint-go, test-unit) already ran green in this workflow before the PR opened. Full CI runs on push here.
+
+            ## Manual regen
+
+            ```
+            go run ./dev/regen-builtin-pricing
+            ```
+
+            Context: this workflow is the automation half of #259 Slice B. Hand-authored builtin rates drifted 20-30x silently before we added the generator + weekly PR.
+          labels: |
+            pricing
+            automated
+          delete-branch: false

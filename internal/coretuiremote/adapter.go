@@ -113,7 +113,36 @@ type Adapter struct {
 	// this channel alongside frames and yields each error as a
 	// transient (zero Event, err) pair.
 	injectErrs chan error
+
+	// clientFactory returns fresh *attachclient.Clients pointing at
+	// arbitrary daemon endpoints (base URLs), using the same auth
+	// policy the operator picked at startup (--auth mode, --token env
+	// var). Populated by NewWithClientFactory — cross-daemon Sessions
+	// + SwitchToSession + /attach depend on it. Nil when constructed
+	// via the bare New (single-daemon mode); in that case peer
+	// enumeration is skipped, cross-daemon SwitchToSession errors,
+	// and /attach errors with a hint. See issue #246.
+	clientFactory ClientFactory
+
+	// endpointByID caches the daemon base URL each enumerated session
+	// lives on, populated by Sessions() when it fans out to peers.
+	// SwitchToSession looks this up to decide whether the target is
+	// local (empty / missing → use a.client) or peer (non-empty →
+	// call clientFactory). Reset on every Sessions() call so stale
+	// peer rows don't accumulate. Protected by mu.
+	endpointByID map[string]string
 }
+
+// ClientFactory constructs a fresh *attachclient.Client pointing at
+// a daemon base URL, reusing whatever auth policy the operator
+// picked at startup. The closure lives in cmd/core-agent-tui where
+// --auth / --token flag parsing owns the credential-strategy choice,
+// so the adapter stays free of auth concerns. See issue #246.
+//
+// endpoint is a bare daemon URL (e.g. "http://otherhost:7778"),
+// NOT a session-path-qualified URL. The caller composes sessionPath
+// separately when constructing the switched-to Adapter.
+type ClientFactory func(endpoint string) (*attachclient.Client, error)
 
 // replayGrace is the slack we allow when discarding historical
 // events by timestamp. Frames whose Timestamp is older than
@@ -129,6 +158,12 @@ const replayGrace = 2 * time.Second
 // connect time — either /sessions/<sid> (shortcut form) or
 // /sessions/<app>/<sid> (qualified). The adapter passes it verbatim
 // to every attachclient call.
+//
+// Constructed via New the adapter is single-daemon: Sessions()
+// enumerates only the daemon `client` points at, and cross-daemon
+// switch capabilities (peer sessions in the picker, /attach <url>)
+// are disabled. Use NewWithClientFactory to enable multi-daemon
+// support.
 func New(client *attachclient.Client, sessionPath string) *Adapter {
 	return &Adapter{
 		client:        client,
@@ -137,6 +172,23 @@ func New(client *attachclient.Client, sessionPath string) *Adapter {
 		reconnectKick: make(chan struct{}, 1),
 		injectErrs:    make(chan error, 8),
 	}
+}
+
+// NewWithClientFactory returns a multi-daemon-capable Adapter
+// (issue #246). Behaves identically to New for single-daemon flows
+// (Run, Events, all the read/write endpoints on `client`) but
+// additionally uses factory to construct fresh Clients when the
+// operator switches to a peer-registered daemon via /switch or
+// direct-jumps via /attach <url>. The factory closure typically
+// captures the operator's --auth mode + --token so peer clients
+// authenticate the same way the startup client did.
+//
+// Pass nil factory to get the same behavior as bare New — the
+// adapter falls back to single-daemon mode.
+func NewWithClientFactory(client *attachclient.Client, sessionPath string, factory ClientFactory) *Adapter {
+	a := New(client, sessionPath)
+	a.clientFactory = factory
+	return a
 }
 
 // Run satisfies coretui.Agent. Sends prompt as an inject to the

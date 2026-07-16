@@ -321,6 +321,25 @@ The daemon-side lifecycle is unchanged — sessions detach cleanly, per-caller A
 
 Design details in core-tui issues #48 (`SlashResult.SwitchTo` API) and #53 (`/switch` UX). Adapter wiring in this repo lives in `internal/coretuiremote/capabilities.go` (`Sessions` / `SwitchToSession`).
 
+### Cross-daemon switching (v2.7+ / issue #246)
+
+The v2.6 landing was scoped to sessions on **one** daemon — the daemon the TUI connected to at startup. Operators running multiple daemons (or peer-registered fleets discoverable via `GET /peers`) still had to `q` out and re-launch `core-agent-tui <other-daemon-url>` to hop daemons.
+
+v2.7 (adapter wired via `coretuiremote.NewWithClientFactory` in `cmd/core-agent-tui/main.go`) closes that gap:
+
+- **`/switch` picker now includes peer sessions.** Local sessions come first (unchanged); peer sessions follow, each row tagged `[peer:<name>]` in the Display and with the peer's endpoint URL in the Description. Enter attaches in place — chat wipes and reopens against the peer's session. The adapter's `clientFactory` closure captures the operator's startup `--auth` mode + `--token`, so peer clients authenticate the same way the startup client did (audience-bound per endpoint for `--auth=google-id-token`).
+- **`/attach <url>`** — escape hatch when `GET /peers` is empty on the current daemon, or the operator wants to reach an unregistered daemon. Two forms:
+  - `/attach <daemon-url>` — enumerates that daemon's sessions into a system message; operator picks a sid and reissues.
+  - `/attach <daemon-url> <sid>` — direct-jump in place.
+
+Peer fan-out is parallel with a 5s per-peer timeout (mirrors the startup picker's budget); peers that error or time out are silently dropped so one bad peer doesn't take down the whole picker.
+
+Auth caveats:
+- Peers that don't share the operator's auth policy (different bearer token, different IAM identity) will fail the peer's `ListSessions` fan-out and drop from the picker without a chat error. Operators can still `/attach <url>` explicitly to see the failure surface.
+- Per-peer auth config (`--peer-auth peer-name=bearer-token`) isn't shipped in v2.7. Follow-up if the operator population requests it.
+
+Design details in [core-tui issue #56](https://github.com/go-steer/core-tui/issues/56) (deferred text-input Dialog primitive, for a possible future inline endpoint-typing UX) and [core-agent issue #246](https://github.com/go-steer/core-agent/issues/246).
+
 ---
 
 ## Recipe

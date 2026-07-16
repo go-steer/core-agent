@@ -59,7 +59,16 @@ func maybeWireContextCache(
 		// line for every Anthropic / echo session.
 		return nil
 	}
-	if cfg.Model.Vertex == nil || !cfg.Model.Vertex.ContextCache.IsEnabled() {
+	// cfg.Model.Vertex may be nil in the common auto-detection path:
+	// operators typically set `"provider": "vertex"` and rely on
+	// GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION env vars rather
+	// than duplicating them in config.json. Missing block means
+	// "no per-project override" — caching defaults to ON, not off.
+	var cc *config.ContextCacheConfig
+	if cfg.Model.Vertex != nil {
+		cc = cfg.Model.Vertex.ContextCache
+	}
+	if !cc.IsEnabled() {
 		send("context cache: disabled (cfg.model.vertex.context_cache.enabled=false)")
 		return nil
 	}
@@ -86,7 +95,7 @@ func maybeWireContextCache(
 	// over an operator typo in a duration string.
 	var opts vertexcache.Options
 	opts.DisplayName = fmt.Sprintf("core-agent-%s", cfg.Model.Name)
-	if cc := cfg.Model.Vertex.ContextCache; cc != nil {
+	if cc != nil {
 		if cc.TTL != "" {
 			if d, err := time.ParseDuration(cc.TTL); err == nil {
 				opts.TTL = d

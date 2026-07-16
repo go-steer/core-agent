@@ -104,7 +104,6 @@ type sessionFactoryDeps struct {
 	builtinTools   []adktool.Tool
 	toolsets       []adktool.Toolset
 	eventlogHandle *eventlog.Handle
-	tracker        *usage.Tracker
 	pricingRate    usage.Pricing
 	projectRoot    string
 	userRoot       string
@@ -125,6 +124,13 @@ type sessionFactoryDeps struct {
 	// disables resume — the registry behaves as pre-v2.5.
 	aclStore attach.SessionACLStore
 }
+
+// newSessionTracker constructs the *usage.Tracker each on-demand
+// session-created agent gets. Var (not const-func) so
+// multi_session_test.go can wrap it to capture the per-session
+// instances and assert they're distinct — the regression gate for
+// issue #275. Never nil; callers assume a working tracker.
+var newSessionTracker = usage.NewTracker
 
 // buildSessionFactory returns an attach.SessionFactory closure that
 // constructs a fresh *agent.Agent per POST /sessions request. The
@@ -195,9 +201,15 @@ func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, ori
 	if deps.eventlogHandle != nil {
 		opts = append(opts, agent.WithEventLog(deps.eventlogHandle))
 	}
-	if deps.tracker != nil {
-		opts = append(opts, agent.WithUsageTracker(deps.tracker))
-	}
+	// Fresh tracker per session (issue #275). The Tracker's own godoc
+	// says it "accumulates per-turn usage for one session"; sharing
+	// one across every session-created agent made AttachUsage,
+	// broadcaster's usage-update snapshot, and cost_ceiling all
+	// return the union of every session's turns. Indirected through
+	// a package var so multi_session_test.go can observe / capture
+	// the per-session instances.
+	sessionTracker := newSessionTracker()
+	opts = append(opts, agent.WithUsageTracker(sessionTracker))
 	// AttachXProvider closures power the operator-state slashes
 	// (/memory, /skills, /mcp, /pricing). Without these the
 	// per-session slashes report "no <thing> configured" even
@@ -221,7 +233,7 @@ func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, ori
 	// handed to the registry, which invokes it when the eviction
 	// sweep removes this session.
 	loopCtx, cancelOnEvict := context.WithCancel(deps.daemonCtx)
-	go runSessionWakeLoop(loopCtx, ag, deps.tracker, deps.model.Name(), deps.pricingRate)
+	go runSessionWakeLoop(loopCtx, ag, sessionTracker, deps.model.Name(), deps.pricingRate)
 	return ag, cancelOnEvict, nil
 }
 

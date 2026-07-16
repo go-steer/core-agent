@@ -1243,7 +1243,6 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 				builtinTools:   builtinTools,
 				toolsets:       allToolsets,
 				eventlogHandle: eventlogHandle,
-				tracker:        tracker,
 				projectRoot:    projectRoot,
 				userRoot:       coreHome,
 				usersDir:       cfg.Attach.MultiSession.UsersDir,

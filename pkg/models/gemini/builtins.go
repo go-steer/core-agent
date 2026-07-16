@@ -235,30 +235,29 @@ func (l *builtinsLLM) Name() string { return l.inner.Name() }
 func (l *builtinsLLM) WithoutBuiltins() adkmodel.LLM { return l.inner }
 
 func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
-	// Context-cache Init: fire on every call — the underlying manager
-	// is at-most-once so repeated calls after the first are cheap
-	// state checks. Capturing req.Config.SystemInstruction + Tools
-	// here is deliberate: this is the moment ADK has finished
-	// composing the request, so what we cache is byte-for-byte what
-	// subsequent requests would send. Turn 1 misses (async Init still
-	// in flight); turn 2+ benefits. See docs/vertex-context-caching-design.md.
-	if l.cacheInit != nil && req.Config != nil {
-		l.cacheInit(ctx, req.Config.SystemInstruction, req.Config.Tools)
-	}
-	// Context-cache reference: read the resolved cache name (or "")
-	// and stamp it. Must happen BEFORE the builtins-append block
-	// below — Vertex requires the cache reference to match the
-	// content originally cached, so we don't want the per-call
-	// builtins injection to muddy the cached-vs-request comparison.
+	// Context-cache reference — first, before builtins-append. Vertex
+	// rejects ANY request that sets CachedContent AND Tools/
+	// SystemInstruction/ToolConfig with 400 INVALID_ARGUMENT:
+	//   "Tool config, tools and system instruction should not be set
+	//    in the request when using cached content."
+	// So on cached turns we stamp the cache reference AND strip the
+	// fields the cache already contains, then bypass the builtins-
+	// append block entirely (built-ins were captured into the cache
+	// at Init time — see the "capture after builtins" block below).
+	cachedTurn := false
 	if l.cacheName != nil {
 		if name := l.cacheName(ctx); name != "" {
 			if req.Config == nil {
 				req.Config = &genai.GenerateContentConfig{}
 			}
 			req.Config.CachedContent = name
+			req.Config.SystemInstruction = nil
+			req.Config.Tools = nil
+			req.Config.ToolConfig = nil
+			cachedTurn = true
 		}
 	}
-	if len(l.builtins) > 0 {
+	if !cachedTurn && len(l.builtins) > 0 {
 		if req.Config == nil {
 			req.Config = &genai.GenerateContentConfig{}
 		}
@@ -291,6 +290,18 @@ func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequ
 			t := true
 			req.Config.ToolConfig.IncludeServerSideToolInvocations = &t
 		}
+	}
+
+	// Context-cache Init AFTER the builtins-append so the captured
+	// Tools slice includes google_search / url_context / etc. If we
+	// captured before, the cache would be missing built-ins and the
+	// model on cached turns would silently lose access to them.
+	// Only runs on non-cached turns — once the cache is stamped
+	// (cachedTurn=true) req.Config.Tools has been nil'd by the strip
+	// above, so there's nothing meaningful to seed anyway; and Init
+	// is at-most-once internally so post-first-turn calls are cheap.
+	if !cachedTurn && l.cacheInit != nil && req.Config != nil {
+		l.cacheInit(ctx, req.Config.SystemInstruction, req.Config.Tools)
 	}
 
 	// Three composed wrappers, innermost first:

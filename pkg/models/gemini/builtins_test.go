@@ -456,8 +456,95 @@ func TestBuiltinsLLM_ContextCacheHooksFire(t *testing.T) {
 	if req2.Config.CachedContent != "projects/p/locations/l/cachedContents/abc" {
 		t.Errorf("CachedContent not stamped: %q", req2.Config.CachedContent)
 	}
-	if initCalls != 2 {
-		t.Errorf("cacheInit called %d total times, want 2 (once per request)", initCalls)
+	// cacheInit gates on !cachedTurn so it's only called on uncached
+	// turns (turn 1 above). Cached turn 2 must NOT re-fire it — the
+	// stripped Config.Tools would corrupt what a real Manager captures.
+	if initCalls != 1 {
+		t.Errorf("cacheInit called %d total times, want 1 (uncached turn 1 only, not cached turn 2)", initCalls)
+	}
+}
+
+// TestBuiltinsLLM_CachedTurn_StripsForbiddenFields is the load-bearing
+// contract test for #221's cached-turn shape. Vertex rejects a request
+// with 400 "Tool config, tools and system instruction should not be
+// set in the request when using cached content" if we set
+// CachedContent AND leave those fields populated. The wrapper must
+// strip them + skip the builtins-append so the downstream request
+// carries only Contents + CachedContent.
+//
+// Regression signal: if this test fails, cached turns 400 on Vertex
+// and every session with #221 enabled breaks after turn 1.
+func TestBuiltinsLLM_CachedTurn_StripsForbiddenFields(t *testing.T) {
+	t.Parallel()
+
+	// Cache is ready — name hook returns a non-empty handle.
+	nameFn := func(_ context.Context) string {
+		return "projects/p/locations/l/cachedContents/abc"
+	}
+	fake := &fakeLLM{}
+	wrapped := &builtinsLLM{
+		inner:     fake,
+		builtins:  DefaultBuiltinTools().asTools(), // would append 2 tools if not skipped
+		cacheName: nameFn,
+	}
+
+	// ADK has already populated Tools + SystemInstruction + ToolConfig
+	// on this request. Real Vertex traffic would 400 on these coexisting
+	// with a CachedContent reference. The wrapper must strip them.
+	initialToolConfig := &genai.ToolConfig{}
+	req := &adkmodel.LLMRequest{Config: &genai.GenerateContentConfig{
+		SystemInstruction: &genai.Content{Parts: []*genai.Part{{Text: "sys"}}},
+		Tools:             []*genai.Tool{{}, {}},
+		ToolConfig:        initialToolConfig,
+	}}
+	for range wrapped.GenerateContent(context.Background(), req, false) {
+	}
+
+	if fake.last.Config.CachedContent != "projects/p/locations/l/cachedContents/abc" {
+		t.Errorf("CachedContent not stamped: %q", fake.last.Config.CachedContent)
+	}
+	if fake.last.Config.SystemInstruction != nil {
+		t.Errorf("SystemInstruction not stripped on cached turn: %+v", fake.last.Config.SystemInstruction)
+	}
+	if fake.last.Config.Tools != nil {
+		t.Errorf("Tools not stripped on cached turn: %d entries — Vertex will 400", len(fake.last.Config.Tools))
+	}
+	if fake.last.Config.ToolConfig != nil {
+		t.Errorf("ToolConfig not stripped on cached turn: %+v", fake.last.Config.ToolConfig)
+	}
+}
+
+// TestBuiltinsLLM_UncachedTurn_KeepsFields is the mirror: when the
+// cache isn't ready (Name returns ""), the wrapper must NOT strip
+// SystemInstruction/Tools/ToolConfig — turn 1 is uncached and needs
+// those fields to work.
+func TestBuiltinsLLM_UncachedTurn_KeepsFields(t *testing.T) {
+	t.Parallel()
+
+	// Name hook returns empty — cache not ready (async Init still in flight).
+	nameFn := func(_ context.Context) string { return "" }
+	fake := &fakeLLM{}
+	wrapped := &builtinsLLM{
+		inner:     fake,
+		builtins:  DefaultBuiltinTools().asTools(),
+		cacheName: nameFn,
+	}
+
+	req := &adkmodel.LLMRequest{Config: &genai.GenerateContentConfig{
+		SystemInstruction: &genai.Content{Parts: []*genai.Part{{Text: "sys"}}},
+	}}
+	for range wrapped.GenerateContent(context.Background(), req, false) {
+	}
+
+	if fake.last.Config.CachedContent != "" {
+		t.Errorf("CachedContent set on uncached turn: %q", fake.last.Config.CachedContent)
+	}
+	if fake.last.Config.SystemInstruction == nil {
+		t.Errorf("SystemInstruction stripped on uncached turn — would break turn 1")
+	}
+	// Builtins-append still fires on uncached turns (2 default builtins).
+	if len(fake.last.Config.Tools) != 2 {
+		t.Errorf("builtins not appended on uncached turn: %d tools, want 2", len(fake.last.Config.Tools))
 	}
 }
 

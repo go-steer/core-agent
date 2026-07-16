@@ -25,6 +25,8 @@ import (
 	"strings"
 	"testing"
 
+	coretui "github.com/go-steer/core-tui/tui"
+
 	"github.com/go-steer/core-agent/internal/attachclient"
 )
 
@@ -336,6 +338,99 @@ func TestSlashNew_BareAppInResponse(t *testing.T) {
 	next := res.SwitchTo.Agent.(*Adapter)
 	if next.SessionPath() != "/sessions/solo" {
 		t.Errorf("bare-App new sessionPath = %q, want /sessions/solo", next.SessionPath())
+	}
+}
+
+// TestSwitchToSession_PopulatesFullSwitchTarget is the regression gate
+// for issue #274. Before the fix, Adapter.SwitchToSession returned a
+// SwitchTarget containing only Agent + Note — core-tui's
+// applySwitchTarget gates every other Options field on non-nil, so
+// UsageTracker / Branding / Memory / Skills / MCPServers stayed
+// pointed at the outgoing session's state. After the fix, /switch
+// swaps the full capability payload so the title bar reflects the new
+// session id and /stats reads the new session's totals.
+func TestSwitchToSession_PopulatesFullSwitchTarget(t *testing.T) {
+	t.Parallel()
+	fs := startSessionsServer(t)
+	fs.list = []attachclient.SessionDescriptor{
+		{App: "core-agent", SessionID: "here"},
+		{App: "core-agent", SessionID: "there"},
+	}
+	a := newTestAdapter(t, fs, "/sessions/core-agent/here")
+
+	brandedFor := ""
+	a.SetBrander(func(newPath string) *coretui.Branding {
+		brandedFor = newPath
+		return &coretui.Branding{
+			Wordmark:      "core-agent-tui",
+			AgentIdentity: "there", // trailing sid of newPath
+		}
+	})
+
+	tgt, err := a.SwitchToSession("there")
+	if err != nil {
+		t.Fatalf("SwitchToSession: %v", err)
+	}
+
+	next, ok := tgt.Agent.(*Adapter)
+	if !ok {
+		t.Fatalf("SwitchTarget.Agent is %T, want *Adapter", tgt.Agent)
+	}
+
+	// UsageTracker must be set — and it must be the incoming Adapter
+	// so /stats reads the new session's snapshot cache, not the
+	// outgoing one.
+	if tgt.UsageTracker == nil {
+		t.Fatal("SwitchTarget.UsageTracker is nil — /stats will keep reporting the outgoing session")
+	}
+	if tgt.UsageTracker != coretui.UsageTracker(next) {
+		t.Errorf("UsageTracker != incoming Adapter; got %T", tgt.UsageTracker)
+	}
+
+	// Branding must reflect the incoming session so the title bar
+	// updates. The brander closure was invoked with the newly-
+	// resolved sessionPath.
+	if tgt.Branding == nil {
+		t.Fatal("SwitchTarget.Branding is nil — title bar will keep the outgoing session's identity")
+	}
+	if got, want := tgt.Branding.AgentIdentity, "there"; got != want {
+		t.Errorf("Branding.AgentIdentity = %q, want %q", got, want)
+	}
+	if brandedFor != "/sessions/core-agent/there" {
+		t.Errorf("brander invoked with %q, want /sessions/core-agent/there", brandedFor)
+	}
+
+	// The brander must propagate to the incoming Adapter so a further
+	// /switch from this session still updates the title bar.
+	if next.brander == nil {
+		t.Error("brander did not propagate to the incoming Adapter — a subsequent /switch would leave the title stale")
+	}
+}
+
+// TestSwitchToSession_NoBranderLeavesBrandingNil — without a brander
+// wired the SwitchTarget omits Branding, matching the pre-fix
+// behavior for hosts that opt out of branding refresh. Regression
+// gate for the nil-brander branch of buildSwitchTarget.
+func TestSwitchToSession_NoBranderLeavesBrandingNil(t *testing.T) {
+	t.Parallel()
+	fs := startSessionsServer(t)
+	fs.list = []attachclient.SessionDescriptor{
+		{App: "core-agent", SessionID: "here"},
+		{App: "core-agent", SessionID: "there"},
+	}
+	a := newTestAdapter(t, fs, "/sessions/core-agent/here")
+	// intentionally no SetBrander
+
+	tgt, err := a.SwitchToSession("there")
+	if err != nil {
+		t.Fatalf("SwitchToSession: %v", err)
+	}
+	if tgt.Branding != nil {
+		t.Errorf("Branding = %+v, want nil when no brander is wired", tgt.Branding)
+	}
+	// UsageTracker still populates — it doesn't depend on brander.
+	if tgt.UsageTracker == nil {
+		t.Error("UsageTracker should populate even without a brander")
 	}
 }
 

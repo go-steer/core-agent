@@ -650,10 +650,9 @@ func (a *Adapter) SwitchToSession(sessionID string) (coretui.SwitchTarget, error
 			return coretui.SwitchTarget{}, err
 		}
 		next := NewWithClientFactory(peerClient, newPath, a.clientFactory)
-		return coretui.SwitchTarget{
-			Agent: next,
-			Note:  "Attached to peer session " + sessionID + " (" + endpoint + ")",
-		}, nil
+		next.SetBrander(a.branderFn())
+		return a.buildSwitchTarget(next, newPath,
+			"Attached to peer session "+sessionID+" ("+endpoint+")"), nil
 	}
 
 	newPath, err := a.resolveSessionPath(sessionID)
@@ -661,10 +660,48 @@ func (a *Adapter) SwitchToSession(sessionID string) (coretui.SwitchTarget, error
 		return coretui.SwitchTarget{}, err
 	}
 	next := NewWithClientFactory(a.client, newPath, a.clientFactory)
-	return coretui.SwitchTarget{
-		Agent: next,
-		Note:  "Attached to session " + sessionID,
-	}, nil
+	next.SetBrander(a.branderFn())
+	return a.buildSwitchTarget(next, newPath, "Attached to session "+sessionID), nil
+}
+
+// branderFn returns the brander closure under lock so SwitchToSession
+// can safely propagate it to the incoming Adapter without racing with
+// a concurrent SetBrander from the host. Nil is a valid return.
+func (a *Adapter) branderFn() func(string) *coretui.Branding {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.brander
+}
+
+// buildSwitchTarget assembles the full coretui.SwitchTarget for a
+// /switch. Populates UsageTracker (next itself implements the
+// interface, and its cache is scoped to its own sessionPath),
+// Memory / Skills / MCPServers (fresh remote fetches against the
+// incoming session — mirrors the initial-attach wiring in
+// cmd/core-agent-tui/main.go), and Branding (via the brander closure
+// if the host wired one). Without this population, core-tui's
+// applySwitchTarget leaves the corresponding Options fields pointed
+// at the outgoing session's state (issue #274).
+//
+// Fetch failures inside the FetchX helpers already degrade to nil
+// slices; a nil Memory/Skills/MCPServers slice on the SwitchTarget
+// means "don't replace" per the field godoc, so a transient network
+// blip during /switch keeps the outgoing snapshot rather than
+// clearing it. That's the safe fallback.
+func (a *Adapter) buildSwitchTarget(next *Adapter, newPath, note string) coretui.SwitchTarget {
+	ctx := context.TODO()
+	tgt := coretui.SwitchTarget{
+		Agent:        next,
+		UsageTracker: next,
+		Memory:       next.FetchMemory(ctx),
+		Skills:       next.FetchSkills(ctx),
+		MCPServers:   next.FetchMCPServers(ctx),
+		Note:         note,
+	}
+	if fn := a.branderFn(); fn != nil {
+		tgt.Branding = fn(newPath)
+	}
+	return tgt
 }
 
 // currentSessionID extracts the trailing sessionID from a session

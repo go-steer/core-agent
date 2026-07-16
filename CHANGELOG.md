@@ -26,6 +26,9 @@ _In flight toward v2.7.0. Commits since [2.7.0-dev.3]:_
 #### Bug or Regression
 - Pricing: wire LiteLLM cache-read rates + expose cached rate on `/pricing` + Anthropic cache-read ([#259](https://github.com/go-steer/core-agent/issues/259) Slice A) ([#264](https://github.com/go-steer/core-agent/pull/264))
 - coretuiremote: `Adapter.LastTurn()` falls back to `/usage` snapshot when live-stream state is empty ([#258](https://github.com/go-steer/core-agent/pull/258))
+- Digest: `EventlogStore.Put` now writes to a derived `<sid>:digest` session row so mid-turn digest writes don't trip ADK's optimistic-concurrency check against the runner's session snapshot ([#273](https://github.com/go-steer/core-agent/issues/273))
+- coretuiremote: `Adapter.SwitchToSession` returns a full `SwitchTarget` — UsageTracker, Memory, Skills, MCPServers, and Branding all refresh so `/switch` actually updates the title bar and `/stats` ([#274](https://github.com/go-steer/core-agent/issues/274))
+- Multi-session: per-session `usage.Tracker` in the session factory so `AttachUsage`, the broadcaster's usage-update snapshot, and per-session cost ceilings stop returning the union across every session on the daemon ([#275](https://github.com/go-steer/core-agent/issues/275))
 
 #### Other (Cleanup)
 - Deps: bump core-tui v0.10.1 → v0.10.2 for observer-mode per-turn footer ([#262](https://github.com/go-steer/core-agent/pull/262))

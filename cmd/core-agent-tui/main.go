@@ -150,6 +150,22 @@ func run(ctx context.Context, args []string, token, authMode, theme, alias strin
 
 	a := coretuiremote.NewWithClientFactory(client, sessionPath, clientFactory)
 
+	// Brander closure (issue #274). The Adapter uses this in
+	// SwitchToSession to build the SwitchTarget's Branding so /switch
+	// updates the title-bar identity to the new session. --alias is
+	// respected for the initial attach only; a subsequent /switch
+	// falls back to the derived per-session identity, because an
+	// operator-chosen alias for the FIRST session doesn't apply to
+	// whatever session they hop to next.
+	wordmark := "core-agent-tui"
+	brander := func(newPath string) *coretui.Branding {
+		return &coretui.Branding{
+			Wordmark:      wordmark,
+			AgentIdentity: displayIdentity(newPath),
+		}
+	}
+	a.SetBrander(brander)
+
 	// Pre-fetch the static feeds (memory / skills / mcp). These
 	// don't change during a session unless the operator triggers
 	// /reload, which the adapter handles by re-fetching server-side
@@ -172,7 +188,6 @@ func run(ctx context.Context, args []string, token, authMode, theme, alias strin
 	prompter, stopPrompter := coretuiremote.StartRemotePrompter(ctx, client, sessionPath, io.Discard)
 	defer stopPrompter()
 
-	wordmark := "core-agent-tui"
 	identity := alias
 	if identity == "" {
 		identity = displayIdentity(sessionPath)

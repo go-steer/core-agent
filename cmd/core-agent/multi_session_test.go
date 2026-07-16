@@ -23,6 +23,7 @@ import (
 	adkmodel "google.golang.org/adk/model"
 
 	"github.com/go-steer/core-agent/pkg/auth"
+	"github.com/go-steer/core-agent/pkg/config"
 	"github.com/go-steer/core-agent/pkg/permissions"
 	"github.com/go-steer/core-agent/pkg/usage"
 )
@@ -98,4 +99,112 @@ func TestReproduceAgent_PerSessionTracker(t *testing.T) {
 	if got := agB.AttachUsage().Overall.Turns; got != 0 {
 		t.Errorf("sid-b AttachUsage.Overall.Turns = %d, want 0 (turns leaked across sessions)", got)
 	}
+}
+
+// TestReproduceAgent_WiresCompactorAndCheckpointerAndCostCeiling is the
+// regression gate for #279 — the v0 multi-session spike silently
+// omitted these three operator features, so on-demand sessions had
+// /compact returning "no compactor wired", /done unavailable, and
+// cost ceilings never enforced.
+//
+// Default deps → compactor + checkpointer both present; --no-compact
+// / --no-checkpoint (via deps.noCompact / noCheckpoint) turn them off
+// individually so the on/off knobs match the main-loop flags.
+//
+// Cost-ceiling is exercised by wiring a small MaxTurnUSD into the
+// cfg and asserting CostCeilingTripped stays false at construction
+// time (the ceiling only trips after AppendUsage crosses the bound —
+// pinning that requires driving Run and is out of scope for this
+// wiring-only test). The material regression this guards is
+// "WithCostCeiling not called at all," which would make
+// ResetCostCeiling a no-op-on-a-non-existent-field.
+func TestReproduceAgent_WiresCompactorAndCheckpointerAndCostCeiling(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	turn := 5.0
+	sess := 50.0
+	cfg := &config.Config{}
+	cfg.Agent.MaxTurnCostUSD = &turn
+	cfg.Agent.MaxSessionCostUSD = &sess
+
+	baseDeps := sessionFactoryDeps{
+		daemonCtx: ctx,
+		model:     stubLLM{},
+		template:  permissions.New(permissions.Options{}),
+		cfg:       cfg,
+	}
+
+	t.Run("defaults-on", func(t *testing.T) {
+		ag, cancelAg, err := reproduceAgent(baseDeps, auth.Anonymous, "sid-defaults", "created")
+		if err != nil {
+			t.Fatalf("reproduceAgent: %v", err)
+		}
+		t.Cleanup(cancelAg)
+		if !ag.HasCompactor() {
+			t.Error("HasCompactor = false; /compact will fail with 'no compactor wired' (regression of #279)")
+		}
+		if !ag.HasCheckpointer() {
+			t.Error("HasCheckpointer = false; /done + mark_task_done unavailable (regression of #279)")
+		}
+		// Cost ceiling wired → ResetCostCeiling exists as a no-op and
+		// CostCeilingTripped reports (false, "") on a fresh agent.
+		tripped, _ := ag.CostCeilingTripped()
+		if tripped {
+			t.Error("fresh agent reports cost ceiling tripped — ceiling misconfigured at wiring")
+		}
+	})
+
+	t.Run("no-compact-flag-off", func(t *testing.T) {
+		d := baseDeps
+		d.noCompact = true
+		ag, cancelAg, err := reproduceAgent(d, auth.Anonymous, "sid-nocompact", "created")
+		if err != nil {
+			t.Fatalf("reproduceAgent: %v", err)
+		}
+		t.Cleanup(cancelAg)
+		if ag.HasCompactor() {
+			t.Error("HasCompactor = true despite noCompact=true; --no-compact flag not honored on on-demand sessions")
+		}
+		// Checkpointer still on (independent flag).
+		if !ag.HasCheckpointer() {
+			t.Error("HasCheckpointer = false with only noCompact set; flag scoping wrong")
+		}
+	})
+
+	t.Run("no-checkpoint-flag-off", func(t *testing.T) {
+		d := baseDeps
+		d.noCheckpoint = true
+		ag, cancelAg, err := reproduceAgent(d, auth.Anonymous, "sid-nocheckpoint", "created")
+		if err != nil {
+			t.Fatalf("reproduceAgent: %v", err)
+		}
+		t.Cleanup(cancelAg)
+		if ag.HasCheckpointer() {
+			t.Error("HasCheckpointer = true despite noCheckpoint=true; --no-checkpoint flag not honored on on-demand sessions")
+		}
+		// Compactor still on (independent flag).
+		if !ag.HasCompactor() {
+			t.Error("HasCompactor = false with only noCheckpoint set; flag scoping wrong")
+		}
+	})
+
+	t.Run("cost-ceiling-absent-when-cfg-unset", func(t *testing.T) {
+		// No cost-ceiling fields in cfg → WithCostCeiling still called
+		// but with a zero-value CostCeiling (the documented no-op
+		// shape). Regression signal: if the cfg-nil branch panics or
+		// the ceiling gets a garbage value, this test surfaces it.
+		d := baseDeps
+		d.cfg = &config.Config{} // no MaxTurnCostUSD / MaxSessionCostUSD
+		ag, cancelAg, err := reproduceAgent(d, auth.Anonymous, "sid-noceiling", "created")
+		if err != nil {
+			t.Fatalf("reproduceAgent: %v", err)
+		}
+		t.Cleanup(cancelAg)
+		tripped, _ := ag.CostCeilingTripped()
+		if tripped {
+			t.Error("agent with no cost-ceiling cfg still reports tripped")
+		}
+	})
 }

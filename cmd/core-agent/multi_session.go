@@ -123,6 +123,16 @@ type sessionFactoryDeps struct {
 	// from it on Lookup miss to reconstruct evicted sessions. Nil
 	// disables resume — the registry behaves as pre-v2.5.
 	aclStore attach.SessionACLStore
+
+	// noCompact / noCheckpoint mirror the --no-compact / --no-checkpoint
+	// CLI flags for on-demand sessions. Default false = feature ON,
+	// matching the main-loop shape at cmd/core-agent/main.go:1014,1060.
+	// Wired here (rather than deriving from cfg) so operators who set
+	// the CLI flag once at daemon startup get the same behavior across
+	// the process's own session and every on-demand session — issue
+	// #279's v0-deferral fix.
+	noCompact    bool
+	noCheckpoint bool
 }
 
 // newSessionTracker constructs the *usage.Tracker each on-demand
@@ -217,6 +227,38 @@ func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, ori
 	// agent (toolsets include MCP, instructions are loaded,
 	// etc.) — the slashes just have nothing to look at.
 	opts = append(opts, attachProviderOpts(deps, sessionGate)...)
+
+	// Operator features that were deferred in the v0 multi-session
+	// spike but are pure config (no per-session sink or
+	// shared-manager semantics to resolve) — issue #279:
+	//
+	//  - Compactor: gated by deps.noCompact. Without it, /compact
+	//    returns "no compactor wired" on on-demand sessions.
+	//  - Checkpointer: gated by deps.noCheckpoint. Without it,
+	//    /done + mark_task_done are silently unavailable.
+	//  - CostCeiling: read from cfg.Agent.MaxTurnCostUSD /
+	//    MaxSessionCostUSD. Always safe to call (zero-value
+	//    CostCeiling is a no-op enforcer per WithCostCeiling's
+	//    contract).
+	//
+	// BackgroundManager + Watchdog remain deferred — see the
+	// sessionFactoryDeps docstring.
+	if !deps.noCompact && deps.cfg != nil {
+		opts = append(opts, agent.WithCompactor(buildCompactor(deps.cfg.Compaction)))
+	}
+	if !deps.noCheckpoint {
+		opts = append(opts, agent.WithCheckpointer(agent.NewDefaultCheckpointer()))
+	}
+	ceiling := agent.CostCeiling{}
+	if deps.cfg != nil {
+		if deps.cfg.Agent.MaxTurnCostUSD != nil {
+			ceiling.MaxTurnUSD = *deps.cfg.Agent.MaxTurnCostUSD
+		}
+		if deps.cfg.Agent.MaxSessionCostUSD != nil {
+			ceiling.MaxSessionUSD = *deps.cfg.Agent.MaxSessionCostUSD
+		}
+	}
+	opts = append(opts, agent.WithCostCeiling(ceiling))
 
 	ag, err := agent.New(deps.model, opts...)
 	if err != nil {

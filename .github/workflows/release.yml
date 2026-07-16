@@ -112,9 +112,20 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
-      # Resolve the effective tag and build RELEASE_NOTES.md by
-      # carving the matching `## [X.Y.Z]` section out of CHANGELOG.md
-      # and appending the static install/verify footer template.
+      # Resolve the effective tag and build RELEASE_NOTES.md.
+      #
+      # Stable tags (vX.Y.Z) carve the matching `## [X.Y.Z]` section
+      # out of CHANGELOG.md; missing section is a hard-fail.
+      #
+      # Pre-release tags (vX.Y.Z-dev.N / -rc.N / -alpha.N / -beta.N)
+      # fall through cleanly: dev tags are cut frequently and shouldn't
+      # each require a per-tag CHANGELOG edit. The helper uses the
+      # [Unreleased] section as the narrative and auto-appends a PR
+      # list synthesized from `git log vLAST_STABLE..vTAG`.
+      #
+      # Both paths append the static install/verify footer template.
+      # See dev/release/compose-release-notes.sh for the details;
+      # the same helper can be invoked locally as a dry-run.
       - name: Compose release notes
         id: notes
         run: |
@@ -127,28 +138,13 @@ jobs:
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag }}" ]]; then
             TAG="${{ inputs.tag }}"
           fi
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-            echo "::error::expected vX.Y.Z tag, got: ${TAG}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
+            echo "::error::expected vX.Y.Z or vX.Y.Z-<pre>, got: ${TAG}"
             exit 1
           fi
           VERSION="${TAG#v}"
           echo "tag=${TAG}"         >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-
-          # Extract CHANGELOG section: enter on `## [VERSION]`, stop
-          # at the next `## [`. Try the tagged commit's file first;
-          # fall back to main's CHANGELOG when the tag predates the
-          # entry — that supports retroactively tagging historical
-          # commits (e.g., cutting v2.4.0 from an old commit after
-          # the CHANGELOG has been split on main). Fail loudly only
-          # when BOTH sources come up empty.
-          extract_section() {
-            awk -v ver="$VERSION" '
-              $0 ~ "^## \\[" ver "\\]" { in_section=1; print; next }
-              in_section && /^## \[/    { exit }
-              in_section                { print }
-            '
-          }
 
           # Write to $RUNNER_TEMP rather than the working tree so
           # GoReleaser's dirty-tree check doesn't fire on an
@@ -158,33 +154,23 @@ jobs:
           NOTES="${RUNNER_TEMP}/RELEASE_NOTES.md"
           echo "notes_path=${NOTES}" >> "$GITHUB_OUTPUT"
 
-          extract_section < CHANGELOG.md > "${NOTES}"
-          if [[ ! -s "${NOTES}" ]]; then
-            echo "no [${VERSION}] section in tag's CHANGELOG.md; falling back to origin/main"
-            # fetch-depth: 0 above pulled all history but not
-            # necessarily the remote refs by name; fetch main
-            # explicitly. --no-tags avoids re-touching our tag refs.
-            git fetch --no-tags origin main
-            # Read git-show output into a variable first, then feed
-            # awk via herestring. Direct pipe to awk trips SIGPIPE
-            # (exit 141) because awk's `exit` closes the read side
-            # while git-show is still writing; under `set -o pipefail`
-            # (above) that fails the whole step.
-            MAIN_CHANGELOG="$(git show origin/main:CHANGELOG.md)"
-            extract_section > "${NOTES}" <<<"${MAIN_CHANGELOG}"
-          fi
-          if [[ ! -s "${NOTES}" ]]; then
-            echo "::error::no CHANGELOG.md section found for [${VERSION}] in tag OR in main — add one and retag"
-            exit 1
+          # Stable path: try the tag's CHANGELOG first, then fall
+          # back to origin/main's when the tag predates the entry
+          # (retroactive-tagging support). The helper only hard-fails
+          # for stable tags, so pre-release invocations skip the
+          # fallback dance entirely.
+          if ./dev/release/compose-release-notes.sh "$TAG" "$NOTES" CHANGELOG.md; then
+            exit 0
           fi
 
-          # Append the install/verify footer with @TAG@ / @VERSION@
-          # placeholders substituted.
-          sed \
-            -e "s|@TAG@|${TAG}|g" \
-            -e "s|@VERSION@|${VERSION}|g" \
-            dev/release/install-verify-footer.md.tmpl \
-            >> "${NOTES}"
+          echo "no [${VERSION}] section in tag's CHANGELOG.md; falling back to origin/main"
+          # fetch-depth: 0 above pulled all history but not necessarily
+          # the remote refs by name; fetch main explicitly. --no-tags
+          # avoids re-touching our tag refs.
+          git fetch --no-tags origin main
+          MAIN_CHANGELOG="${RUNNER_TEMP}/CHANGELOG.main.md"
+          git show origin/main:CHANGELOG.md > "$MAIN_CHANGELOG"
+          ./dev/release/compose-release-notes.sh "$TAG" "$NOTES" "$MAIN_CHANGELOG"
 
       # dry_run → --snapshot (no publish, no sign, fabricated version).
       # Normal run → publish + sign with our composed release notes.

@@ -131,6 +131,13 @@ type Adapter struct {
 	// call clientFactory). Reset on every Sessions() call so stale
 	// peer rows don't accumulate. Protected by mu.
 	endpointByID map[string]string
+
+	// brander turns a sessionPath into the *coretui.Branding the
+	// SwitchTarget carries on /switch. Wired by cmd/core-agent-tui
+	// (which owns the wordmark + AgentIdentity formatting rules) via
+	// SetBrander. Nil = don't populate SwitchTarget.Branding, which
+	// leaves the outgoing session's chrome in place (issue #274).
+	brander func(sessionPath string) *coretui.Branding
 }
 
 // ClientFactory constructs a fresh *attachclient.Client pointing at
@@ -172,6 +179,20 @@ func New(client *attachclient.Client, sessionPath string) *Adapter {
 		reconnectKick: make(chan struct{}, 1),
 		injectErrs:    make(chan error, 8),
 	}
+}
+
+// SetBrander wires the brander closure the Adapter uses when it
+// builds a SwitchTarget on /switch (issue #274). The closure receives
+// the incoming session's attach path (e.g. "/sessions/core-agent/abc")
+// and returns the Branding to display. Nil clears the wiring; the
+// SwitchTarget then leaves Branding unset and core-tui keeps the
+// outgoing session's chrome — the pre-fix behavior. The wiring
+// propagates to Adapters returned from SwitchToSession so subsequent
+// hops keep the same branding rules.
+func (a *Adapter) SetBrander(fn func(sessionPath string) *coretui.Branding) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.brander = fn
 }
 
 // NewWithClientFactory returns a multi-daemon-capable Adapter

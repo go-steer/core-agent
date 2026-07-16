@@ -1248,6 +1248,8 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 				usersDir:       cfg.Attach.MultiSession.UsersDir,
 				registry:       attachReg,
 				aclStore:       aclStore,
+				noCompact:      noCompact,
+				noCheckpoint:   noCheckpoint,
 			}
 			sessionFactory = buildSessionFactory(factoryDeps)
 			// Session resume: reconstructs sessions persisted in

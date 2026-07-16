@@ -18,6 +18,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/go-steer/core-agent/internal/pricing"
 	"github.com/go-steer/core-agent/pkg/config"
 )
 
@@ -89,6 +90,35 @@ func TestPriceFor_UnknownModelIsZero(t *testing.T) {
 	t.Parallel()
 	if !PriceFor("openai-gpt-9000", nil).IsZero() {
 		t.Errorf("expected zero pricing for unknown model")
+	}
+}
+
+// TestKnownModelsCount pins the accessor behavior — the /pricing
+// endpoint's snapshot uses this to report how many models the
+// operator's catalog knows about. Zero when no catalog installed
+// (fallback / library mode); non-zero when SetCatalog was called
+// (typical daemon startup).
+//
+// NOT parallel: mutates package-global catalog state (defer-restores
+// so the change doesn't leak to other tests).
+func TestKnownModelsCount(t *testing.T) {
+	prev := globalCatalog.Load()
+	t.Cleanup(func() { globalCatalog.Store(prev) })
+
+	// No catalog installed → 0.
+	globalCatalog.Store(nil)
+	if got := KnownModelsCount(); got != 0 {
+		t.Errorf("KnownModelsCount with no catalog = %d, want 0", got)
+	}
+
+	// Builtin-only catalog (what NewCatalog produces with empty opts).
+	c, err := pricing.NewCatalog(pricing.Options{})
+	if err != nil {
+		t.Fatalf("NewCatalog: %v", err)
+	}
+	globalCatalog.Store(c)
+	if got := KnownModelsCount(); got == 0 {
+		t.Errorf("KnownModelsCount with builtin catalog = 0, want > 0")
 	}
 }
 

@@ -227,7 +227,24 @@ func Refresh(ctx context.Context, userHome string, opts RefreshOptions) (Refresh
 type liteLLMEntry struct {
 	InputCostPerToken  *float64 `json:"input_cost_per_token,omitempty"`
 	OutputCostPerToken *float64 `json:"output_cost_per_token,omitempty"`
-	Mode               string   `json:"mode,omitempty"`
+	// CacheReadInputTokenCost is populated by LiteLLM for models that
+	// support prompt caching with a distinct read rate — Gemini
+	// (implicit + explicit), Anthropic (`cache_read_input_tokens`),
+	// Bedrock, etc. Absent for models that don't offer cache reads at
+	// a different rate. When present, it feeds Rates.CachedInputPerMTok
+	// so CostUSDWithCache applies the discount rather than silently
+	// billing cached tokens at InputPerMTok.
+	CacheReadInputTokenCost *float64 `json:"cache_read_input_token_cost,omitempty"`
+	// CacheCreationInputTokenCost is Anthropic-specific: the rate for
+	// tokens that CREATE cache entries (billed at ~125% of input per
+	// Anthropic's docs). Captured here so LiteLLM data isn't lost, but
+	// NOT plumbed anywhere yet — Slice B follow-up work needs to
+	// extend Rates + Pricing.CostUSDWithCache to attribute these
+	// tokens at the correct rate. Today they're folded into the
+	// uncached-input bucket for Anthropic, undercounting cost on
+	// cache-warming turns.
+	CacheCreationInputTokenCost *float64 `json:"cache_creation_input_token_cost,omitempty"`
+	Mode                        string   `json:"mode,omitempty"`
 }
 
 // parseLiteLLMBody decodes the LiteLLM JSON and maps it into our
@@ -269,10 +286,17 @@ func parseLiteLLMBody(body []byte) (map[string]ModelRates, error) {
 		if e.Mode != "" && !isTextMode(e.Mode) {
 			continue
 		}
-		out[strings.ToLower(strings.TrimSpace(name))] = ModelRates{
+		rates := ModelRates{
 			InputPerMTok:  *e.InputCostPerToken * million,
 			OutputPerMTok: *e.OutputCostPerToken * million,
 		}
+		// Populate cache-read rate when LiteLLM provides it. Ignore
+		// zero values — some entries carry `cache_read_input_token_cost: 0`
+		// as a placeholder for "not supported" rather than free.
+		if e.CacheReadInputTokenCost != nil && *e.CacheReadInputTokenCost > 0 {
+			rates.CachedInputPerMTok = *e.CacheReadInputTokenCost * million
+		}
+		out[strings.ToLower(strings.TrimSpace(name))] = rates
 	}
 	if len(out) == 0 {
 		return nil, errors.New("pricing refresh: litellm body contained zero usable entries")

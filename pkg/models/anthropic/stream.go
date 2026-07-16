@@ -49,18 +49,34 @@ func finalResponseFromMessage(msg *anthropic.Message) (*genai.Content, genai.Fin
 	// uses int32. Realistic token counts (under ~2B) fit comfortably,
 	// so the narrowing is safe.
 	//
-	// TODO(#222 follow-up): map msg.Usage.CacheReadInputTokens into
-	// CachedContentTokenCount so the /usage endpoint's cache-hit
-	// attribution works for Anthropic too. Deferred because
-	// internal/pricing/builtin.go has no Anthropic rows yet — without
-	// pricing there's no cost-savings signal to show, so the delta
-	// isn't actionable. Pair with a builtin Anthropic pricing entry
-	// (cache_read = 10% of input, cache_creation = 125% of input per
-	// Anthropic's docs).
+	// Anthropic reports three mutually-exclusive input buckets:
+	//   - Usage.InputTokens               — fresh input, billed at 1× input rate
+	//   - Usage.CacheReadInputTokens      — served from cache, ~10% of input rate
+	//   - Usage.CacheCreationInputTokens  — created cache entries, ~125% of input rate
+	//
+	// We fold ALL three into PromptTokenCount so it matches Gemini's
+	// "total effective prompt size" semantics (the genai SDK docstring
+	// says this field is the whole prompt including cached content).
+	// CachedContentTokenCount carries just the cache_read subset,
+	// letting /usage's input_tokens_cached / cost_usd_uncached_reference
+	// render Anthropic cache savings the same way Gemini's do.
+	//
+	// KNOWN GAP (Slice B follow-up, tracked separately): cache_creation
+	// tokens are billed at 125% of input rate but the tracker's
+	// CostUSDWithCache path bills them at 1× (they fold into the
+	// uncached-input bucket). Cost is UNDERCOUNTED on cache-warming
+	// turns by roughly (cache_creation_tokens × input_rate × 0.25).
+	// Fixing this needs a new Rates.CacheCreationInputPerMTok field, a
+	// CostUSDWithCache signature bump, and a sidecar for
+	// cache_creation token counts (genai UsageMetadata has no place
+	// to carry them). Steady-state cache-hit turns (where
+	// cache_creation == 0) are unaffected.
+	totalInput := msg.Usage.InputTokens + msg.Usage.CacheReadInputTokens + msg.Usage.CacheCreationInputTokens
 	return content, mapStopReason(msg.StopReason), &genai.GenerateContentResponseUsageMetadata{
-		PromptTokenCount:     int32(msg.Usage.InputTokens),                          // #nosec G115 -- token counts won't overflow int32
-		CandidatesTokenCount: int32(msg.Usage.OutputTokens),                         // #nosec G115 -- token counts won't overflow int32
-		TotalTokenCount:      int32(msg.Usage.InputTokens + msg.Usage.OutputTokens), // #nosec G115 -- token counts won't overflow int32
+		PromptTokenCount:        int32(totalInput),                          // #nosec G115 -- token counts won't overflow int32
+		CachedContentTokenCount: int32(msg.Usage.CacheReadInputTokens),      // #nosec G115 -- token counts won't overflow int32
+		CandidatesTokenCount:    int32(msg.Usage.OutputTokens),              // #nosec G115 -- token counts won't overflow int32
+		TotalTokenCount:         int32(totalInput + msg.Usage.OutputTokens), // #nosec G115 -- token counts won't overflow int32
 	}
 }
 

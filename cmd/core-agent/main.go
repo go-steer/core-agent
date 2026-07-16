@@ -857,18 +857,20 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 			return out
 		}),
 		agent.WithAttachPricingProvider(func() attach.PricingInfo {
-			// v1: minimal snapshot — surface the current model name
-			// + its per-Mtok rates so the remote adapter can compute
-			// per-turn cost client-side. Source + last-refresh
-			// fields stay empty for now; richer reporting belongs in
-			// a pricing-catalog accessor.
+			// Minimal snapshot for the operator-facing /pricing
+			// endpoint. Source + last-refresh fields stay empty;
+			// exposing "which catalog layer served this rate"
+			// requires a Catalog.LookupWithSource API extension
+			// tracked separately (issue #259 follow-up).
 			info := attach.PricingInfo{
 				CurrentModel: cfg.Model.Name,
+				KnownModels:  usage.KnownModelsCount(),
 			}
 			if !pricingRate.IsZero() {
 				info.Current = &attach.ModelPricing{
 					InputUSDPerMTok:  pricingRate.InputPerMTok,
 					OutputUSDPerMTok: pricingRate.OutputPerMTok,
+					CachedUSDPerMTok: pricingRate.CachedInputPerMTok,
 				}
 			}
 			return info

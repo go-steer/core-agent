@@ -164,7 +164,7 @@ Operator typing still works: the prompt goes through `POST /inject` and the agen
 
 Reconnection is automatic. If the daemon dies (restart, SIGHUP, network drop), the TUI shows a transient error row, retries with exponential backoff (5 s → 30 s cap), and resumes from the last-seen event sequence when the daemon comes back. An operator typing during a backoff window pre-empts the sleep so the next attempt happens immediately. No need to kill the TUI and reattach.
 
-The `Attached as observer` row at the top of the chat marks the start of the live feed.
+The `Live session — your messages drive the agent; events stream as they happen.` row at the top of the chat marks the start of the live feed. Read-only attachments (viewer identities without session-write) instead see `Attached as observer — agent runs autonomously; events stream below.` — same feed, honest disclosure that typing won't inject.
 
 ## Permission prompts
 

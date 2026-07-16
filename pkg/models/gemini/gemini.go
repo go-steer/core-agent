@@ -45,6 +45,13 @@ type Provider struct {
 	cfg      *genai.ClientConfig
 	prefix   string
 	builtins BuiltinTools
+
+	// cacheInit + cacheName are threaded into every builtinsLLM this
+	// Provider constructs; see WithContextCache. Only wired on Vertex
+	// in the current daemon flow — the direct Gemini API rejects the
+	// cache-reference parameter on some model families.
+	cacheInit ContextCacheInitFn
+	cacheName ContextCacheNameFn
 }
 
 // Name reports the provider identity (e.g. "gemini" or "vertex").
@@ -72,6 +79,15 @@ func (p *Provider) Model(ctx context.Context, modelID string) (adkmodel.LLM, err
 		return nil, fmt.Errorf("%s: new model %q: %w", p.prefix, modelID, err)
 	}
 	isVertex := p.cfg != nil && p.cfg.Backend == genai.BackendVertexAI
+	// Cache hooks are only threaded on Vertex — the direct Gemini API
+	// may reject the CachedContent reference parameter on some model
+	// families, and #221's v1 scope is Vertex-only anyway.
+	var initFn ContextCacheInitFn
+	var nameFn ContextCacheNameFn
+	if isVertex {
+		initFn = p.cacheInit
+		nameFn = p.cacheName
+	}
 	if tools := p.builtins.asTools(); len(tools) > 0 {
 		return &builtinsLLM{
 			inner:    llm,
@@ -91,12 +107,16 @@ func (p *Provider) Model(ctx context.Context, modelID string) (adkmodel.LLM, err
 			// and aborts the stream. Tolerate the heartbeats so the
 			// remaining grounded chunks can come through.
 			tolerateEmptyChunks: isVertex,
+			cacheInit:           initFn,
+			cacheName:           nameFn,
 		}, nil
 	}
 	if isVertex {
 		return &builtinsLLM{
 			inner:               llm,
 			tolerateEmptyChunks: true,
+			cacheInit:           initFn,
+			cacheName:           nameFn,
 		}, nil
 	}
 	return llm, nil

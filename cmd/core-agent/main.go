@@ -154,6 +154,7 @@ func main() {
 	agenticTools := flag.Bool("agentic-tools", true, "register the agentic tool wrappers (agentic_read_file, agentic_fetch_url, agentic_grep, agentic_research) that route through a subtask so only the digest enters the parent's context (docs/context-management-design.md Mechanism B). On by default since v2.1; pass --agentic-tools=false to register only the bare tools.")
 	agenticSmallModel := flag.String("agentic-small-model", "", "small/cheap model ID the agentic_* wrappers should route subtasks to (e.g. gemini-2.5-flash, claude-haiku-4-5). When empty, the provider's cheap-tier default is used (gemini-2.5-flash for Gemini/Vertex, claude-haiku-4-5 for Anthropic); providers without a cheap tier (echo, scripted) fall through to inheriting the parent's model. Requires --agentic-tools.")
 	noMCPDigest := flag.Bool("no-mcp-digest", false, "disable the structural pkg/digest wrap around MCP tool responses (docs/digest-design.md). Default: enabled. When on, JSON-shaped MCP responses get a deterministic prune (identifier keys preserved, long strings truncated, arrays collapsed head+tail) before reaching the parent context; prose passthroughs are bounded. Also registers retrieve_raw as a built-in tool so the model can fetch back the un-digested payload when a digest looks suspicious. Kill switch for demos / debugging; leave on for production. Also gated per-project by cfg.MCP.AgenticWrap and per-server by mcp.json's agentic_never.")
+	noContextCache := flag.Bool("no-context-cache", false, "disable Vertex explicit context caching for the stable request prefix (system instruction + tools). Default: enabled on Vertex. When on, the daemon creates a CachedContent resource after turn 1 and stamps it onto every subsequent GenerateContent call so the prefix bills at ~10%% of the input rate. Kill switch for demos / debugging Vertex issues; leave on for production. See docs/vertex-context-caching-design.md. Also gated per-project by cfg.Model.Vertex.ContextCache.enabled.")
 
 	// Agent-card discovery (docs/agent-card-design.md). All optional —
 	// either the .agents/agent-card.json file or the CLI flags must
@@ -168,7 +169,7 @@ func main() {
 	agentCardDocsURL := flag.String("agent-card-docs-url", "", "override documentationUrl in /.well-known/agent-card.json")
 	flag.Parse()
 
-	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *maxTurnCostUSD, *maxSessionCostUSD, *watchdogMode, *smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest,
+	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *maxTurnCostUSD, *maxSessionCostUSD, *watchdogMode, *smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *noContextCache,
 		attachOpts{
 			Listen:           *attachListen,
 			UnixSocket:       *attachUnixSocket,
@@ -344,7 +345,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	return opts
 }
 
-func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, maxTurnCostUSD, maxSessionCostUSD float64, watchdogMode, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest bool, attachCfg attachOpts, cardCfg agentCardOpts) int {
+func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, maxTurnCostUSD, maxSessionCostUSD float64, watchdogMode, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest bool, noContextCache bool, attachCfg attachOpts, cardCfg agentCardOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -459,6 +460,28 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 		return runner.ExitConfigError
 	}
+
+	// Vertex explicit context caching (#221 v1). Wire the cache
+	// manager BEFORE Model() is called — Provider.Model constructs
+	// the builtinsLLM wrapper that reads the cache hooks, so
+	// installing hooks after Model() would leave them dangling.
+	//
+	// Gated three ways:
+	//   1. Provider must be *gemini.Provider (only Vertex/Gemini SDK).
+	//   2. Config: cfg.Model.Vertex.ContextCache.IsEnabled() (default
+	//      ON when the block is absent from config.json).
+	//   3. --no-context-cache CLI kill switch takes precedence.
+	//
+	// Failure to construct the sibling genai.Client is logged and
+	// caching is skipped — never breaks agent startup.
+	contextCacheManager := maybeWireContextCache(
+		ctx, provider, cfg, noContextCache,
+		func(s string) { fmt.Fprintln(os.Stderr, "core-agent: "+s) },
+	)
+	if contextCacheManager != nil {
+		defer contextCacheManager.Delete(context.Background())
+	}
+
 	m, err := provider.Model(ctx, cfg.Model.Name)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)

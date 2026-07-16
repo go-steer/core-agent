@@ -188,6 +188,45 @@ GOOGLE_GENAI_USE_VERTEXAI=true \
 - ADC resolution follows the standard Google chain: `GOOGLE_APPLICATION_CREDENTIALS`, `gcloud auth application-default login`, then workload identity in production environments.
 - Project/region in config takes precedence over env vars.
 
+### Context caching
+
+Vertex explicit context caching is **on by default** for the stable request prefix (system instruction + tools). On turn 1 the daemon captures the fully-assembled request and creates a `CachedContent` resource; every subsequent turn stamps that cache handle onto the request so the prefix bills at ~10% of the input rate. Typical GKE-triage session prefix is 4–8k tokens — savings compound across every turn.
+
+| Knob | Where | Default |
+|---|---|---|
+| Kill switch | `--no-context-cache` CLI flag | off (caching ON) |
+| Per-project enable | `model.vertex.context_cache.enabled` | `true` (nil = on) |
+| Cache TTL | `model.vertex.context_cache.ttl` | `"6h"` |
+| Refresh threshold | `model.vertex.context_cache.refresh` | `"30m"` |
+
+Example config:
+
+```json
+{
+  "model": {
+    "provider": "vertex",
+    "name": "gemini-3.5-flash",
+    "vertex": {
+      "project": "my-gcp-project",
+      "location": "us-central1",
+      "context_cache": {
+        "enabled": true,
+        "ttl": "6h",
+        "refresh": "30m"
+      }
+    }
+  }
+}
+```
+
+Startup log line confirms the wiring:
+
+```
+core-agent: context cache: enabled (ttl=6h0m0s, model=gemini-3.5-flash)
+```
+
+Any Vertex `Caches.*` RPC failure degrades to running uncached — the session never fails because of a cache error. Failures are logged with `core-agent-vertexcache:` prefix so operators can spot them.
+
 ---
 
 ## Anthropic (first-party)

@@ -389,3 +389,90 @@ func TestBuiltinsLLM_WithoutBuiltinsReturnsInner(t *testing.T) {
 		t.Errorf("wrapper should still inject builtins; got %v", req2.Config)
 	}
 }
+
+// TestBuiltinsLLM_ContextCacheHooksFire verifies the Vertex explicit
+// context-cache wiring (#221):
+//
+//   - cacheInit runs on every GenerateContent call with the
+//     request's fully-assembled SystemInstruction + Tools (the
+//     capture-on-first-call design that lets us cache exactly what
+//     ADK would send).
+//   - cacheName runs on every call; when it returns a non-empty
+//     name the wrapper stamps it onto Config.CachedContent.
+//   - Empty cacheName return means uncached — Config.CachedContent
+//     stays unset so Vertex doesn't reject the request.
+func TestBuiltinsLLM_ContextCacheHooksFire(t *testing.T) {
+	t.Parallel()
+
+	var initCalls int
+	var lastInitSys *genai.Content
+	var lastInitTools []*genai.Tool
+	initFn := func(_ context.Context, sys *genai.Content, tools []*genai.Tool) {
+		initCalls++
+		lastInitSys = sys
+		lastInitTools = tools
+	}
+	nameFn := func(_ context.Context) string {
+		return "" // no cache ready yet on this call
+	}
+
+	fake := &fakeLLM{}
+	wrapped := &builtinsLLM{
+		inner:     fake,
+		cacheInit: initFn,
+		cacheName: nameFn,
+	}
+
+	// Call 1: ADK assembles a request with SystemInstruction + Tools.
+	// Init must capture both; CachedContent must NOT be set (name
+	// hook returned empty).
+	req1 := &adkmodel.LLMRequest{Config: &genai.GenerateContentConfig{
+		SystemInstruction: &genai.Content{Parts: []*genai.Part{{Text: "you are a test agent"}}},
+		Tools:             []*genai.Tool{{}},
+	}}
+	for range wrapped.GenerateContent(context.Background(), req1, false) {
+	}
+	if initCalls != 1 {
+		t.Errorf("cacheInit called %d times on call 1, want 1", initCalls)
+	}
+	if lastInitSys == nil || len(lastInitSys.Parts) == 0 || lastInitSys.Parts[0].Text != "you are a test agent" {
+		t.Errorf("cacheInit didn't receive the request's SystemInstruction: %+v", lastInitSys)
+	}
+	if len(lastInitTools) != 1 {
+		t.Errorf("cacheInit didn't receive the request's Tools: %+v", lastInitTools)
+	}
+	if req1.Config.CachedContent != "" {
+		t.Errorf("CachedContent set when name hook returned empty: %q", req1.Config.CachedContent)
+	}
+
+	// Call 2: name hook now returns a cache name. Wrapper stamps it.
+	nameFn2 := func(_ context.Context) string {
+		return "projects/p/locations/l/cachedContents/abc"
+	}
+	wrapped.cacheName = nameFn2
+	req2 := &adkmodel.LLMRequest{Config: &genai.GenerateContentConfig{}}
+	for range wrapped.GenerateContent(context.Background(), req2, false) {
+	}
+	if req2.Config.CachedContent != "projects/p/locations/l/cachedContents/abc" {
+		t.Errorf("CachedContent not stamped: %q", req2.Config.CachedContent)
+	}
+	if initCalls != 2 {
+		t.Errorf("cacheInit called %d total times, want 2 (once per request)", initCalls)
+	}
+}
+
+// TestBuiltinsLLM_NoCacheHooks_LeavesConfigUnchanged is the safety
+// property: when cache hooks are nil (the pre-#221 pathway and every
+// non-Vertex Provider), CachedContent must never be set and no
+// panics can fire from a bare Config.
+func TestBuiltinsLLM_NoCacheHooks_LeavesConfigUnchanged(t *testing.T) {
+	t.Parallel()
+	fake := &fakeLLM{}
+	wrapped := &builtinsLLM{inner: fake} // no cache hooks
+	req := &adkmodel.LLMRequest{Config: &genai.GenerateContentConfig{}}
+	for range wrapped.GenerateContent(context.Background(), req, false) {
+	}
+	if req.Config.CachedContent != "" {
+		t.Errorf("CachedContent set without hooks: %q", req.Config.CachedContent)
+	}
+}

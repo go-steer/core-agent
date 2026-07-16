@@ -7,7 +7,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/glebarez/sqlite v1.11.0
-	github.com/go-steer/core-tui v0.10.1
+	github.com/go-steer/core-tui v0.10.2
 	github.com/google/jsonschema-go v0.4.2
 	github.com/google/uuid v1.6.0
 	github.com/itchyny/gojq v0.12.19

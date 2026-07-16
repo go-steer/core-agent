@@ -128,7 +128,27 @@ func run(ctx context.Context, args []string, token, authMode, theme, alias strin
 		return err
 	}
 
-	a := coretuiremote.New(client, sessionPath)
+	// Client factory for multi-daemon /switch + /attach (issue #246).
+	// Captures the operator's --auth mode + --token env var so peer
+	// / operator-typed daemon endpoints get authenticated the same
+	// way the startup client did. resolveCredentials is per-endpoint
+	// (audience-bound for --auth=google-id-token; trivial for bearer),
+	// so we call it fresh each hop.
+	clientFactory := func(endpoint string) (*attachclient.Client, error) {
+		p, err := attachclient.ParseURL(endpoint)
+		if err != nil {
+			return nil, fmt.Errorf("parse URL: %w", err)
+		}
+		c, err := resolveCredentials(ctx, authMode, p, token)
+		if err != nil {
+			return nil, err
+		}
+		nc := attachclient.NewWithCredentials(p, c, 0)
+		nc.Token = token
+		return nc, nil
+	}
+
+	a := coretuiremote.NewWithClientFactory(client, sessionPath, clientFactory)
 
 	// Pre-fetch the static feeds (memory / skills / mcp). These
 	// don't change during a session unless the operator triggers

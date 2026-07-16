@@ -47,6 +47,13 @@ type sessionsServer struct {
 	// created is what POST /sessions returns (the /new path). Tests
 	// set this to drive the /new slash upgrade.
 	created attachclient.NewSessionResponse
+
+	// peers is what GET /peers returns. Empty (default) means the
+	// handler returns 404, which the client treats as "no peer
+	// registration wired" and returns nil / no error — matches
+	// production behavior on daemons without peer registration.
+	// Multi-daemon tests populate this to opt into peer fan-out.
+	peers []attachclient.PeerDescriptor
 }
 
 func startSessionsServer(t *testing.T) *sessionsServer {
@@ -65,6 +72,14 @@ func startSessionsServer(t *testing.T) *sessionsServer {
 	mux.HandleFunc("POST /sessions", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(fs.created)
+	})
+
+	mux.HandleFunc("GET /peers", func(w http.ResponseWriter, r *http.Request) {
+		if len(fs.peers) == 0 {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"peers": fs.peers})
 	})
 
 	fs.Server = httptest.NewServer(mux)

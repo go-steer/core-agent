@@ -254,6 +254,50 @@ type PricingMap map[string]PricingConfig
 type VertexConfig struct {
 	Project  string `json:"project"`
 	Location string `json:"location"`
+
+	// ContextCache toggles Vertex explicit context caching for the
+	// stable request prefix (system instruction + tools). When nil
+	// or Enabled != false, caching is ON — the daemon creates a
+	// CachedContent resource on the first turn and stamps it onto
+	// every subsequent turn's GenerateContentConfig.CachedContent.
+	// See docs/vertex-context-caching-design.md and
+	// internal/vertexcache/manager.go.
+	ContextCache *ContextCacheConfig `json:"context_cache,omitempty"`
+}
+
+// ContextCacheConfig tunes Vertex explicit context caching. All
+// fields have sensible defaults — an empty struct enables caching
+// with the design-doc defaults (6h TTL, 30min refresh window).
+//
+// Enabled is a pointer so the config surface distinguishes "unset"
+// (default ON) from an explicit "off" — operators typing
+// `"enabled": false` disable caching while leaving TTL/Refresh in
+// place for future re-enabling. The --no-context-cache CLI flag
+// takes precedence over both.
+type ContextCacheConfig struct {
+	// Enabled defaults to true (nil = ON). Set to false to disable
+	// caching without touching the other fields.
+	Enabled *bool `json:"enabled,omitempty"`
+	// TTL is how long each Create/Update requests the cache live for.
+	// Format: any string time.ParseDuration accepts (e.g. "6h", "30m").
+	// Empty → 6h. Vertex caps at 24h.
+	TTL string `json:"ttl,omitempty"`
+	// Refresh triggers a background Update when time-to-expiry drops
+	// below this value. Format matches TTL. Empty → 30min.
+	Refresh string `json:"refresh,omitempty"`
+}
+
+// IsEnabled reports whether caching should be turned on given this
+// config. Nil receiver → true (default ON when the whole block is
+// absent from config.json). Set Enabled to false to disable.
+func (c *ContextCacheConfig) IsEnabled() bool {
+	if c == nil {
+		return true
+	}
+	if c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
 }
 
 // AnthropicConfig holds Claude-specific settings for the anthropic

@@ -113,6 +113,66 @@ func WithCodeExecution(on bool) Option {
 	return func(p *Provider) { p.builtins.CodeExecution = on }
 }
 
+// ContextCacheInitFn is called on the first GenerateContent request
+// with the fully-assembled system instruction + tools ADK is about
+// to send. Implementations typically snapshot these into a Vertex
+// explicit-cache Create call (async — must not block the request).
+type ContextCacheInitFn func(ctx context.Context, systemInstruction *genai.Content, tools []*genai.Tool)
+
+// ContextCacheNameFn returns the currently-resolved cache name to
+// stamp onto GenerateContentConfig.CachedContent, or "" if no cache
+// is available yet (async Init still in flight, failed, or explicitly
+// disabled). Empty return = request runs uncached, which is always
+// safe — the caller degrades gracefully.
+type ContextCacheNameFn func(ctx context.Context) string
+
+// WithContextCache wires Vertex explicit-cache hooks into every
+// GenerateContent call this Provider issues. Only meaningful on the
+// Vertex backend — the direct Gemini API rejects the cache-reference
+// parameter on some model families and the wrap silently no-ops on
+// GeminiAPI even when set (the caller is expected to gate this on
+// backend). Passing nil for either hook disables caching.
+//
+// The hooks compose with builtins (google_search / url_context /
+// code_execution) — nothing special about their interaction.
+func WithContextCache(init ContextCacheInitFn, name ContextCacheNameFn) Option {
+	return func(p *Provider) {
+		p.cacheInit = init
+		p.cacheName = name
+	}
+}
+
+// SetContextCache installs Vertex explicit-cache hooks on an
+// already-constructed Provider. Same effect as WithContextCache
+// but usable when the Provider comes from a registry (models.Resolve)
+// that doesn't thread arbitrary options through — the daemon's
+// wiring in cmd/core-agent constructs the vertexcache.Manager
+// AFTER Resolve() returns because Manager needs cfg.Model.Name +
+// a *genai.Caches client bound to the same ClientConfig the
+// Provider already owns.
+//
+// Not safe to call concurrently with a Model() invocation on the
+// same Provider — treat as construction-time-only, invoked before
+// the first Model() call.
+func (p *Provider) SetContextCache(init ContextCacheInitFn, name ContextCacheNameFn) {
+	p.cacheInit = init
+	p.cacheName = name
+}
+
+// ClientConfig returns a copy of the Provider's underlying genai
+// client config so callers (chiefly cmd/core-agent) can construct
+// a sibling *genai.Client for the vertexcache.Manager without
+// duplicating auth/backend/project detection. Returns nil if the
+// Provider was constructed without one (shouldn't happen via the
+// public constructors, but defensive against tests).
+func (p *Provider) ClientConfig() *genai.ClientConfig {
+	if p.cfg == nil {
+		return nil
+	}
+	cfg := *p.cfg
+	return &cfg
+}
+
 // builtinsLLM wraps an upstream model.LLM, injecting the configured
 // built-in tools into Config.Tools on every request and smoothing
 // over a small set of backend quirks. Stateless: the same wrapper
@@ -137,6 +197,18 @@ type builtinsLLM struct {
 	builtins            []*genai.Tool
 	isDirectGeminiAPI   bool
 	tolerateEmptyChunks bool
+
+	// cacheInit + cacheName wire Vertex explicit context caching.
+	// Both nil = no caching (behavior identical to pre-#221).
+	//
+	// cacheInit runs on every call — the manager it points at is
+	// at-most-once internally (see internal/vertexcache.Manager.Init),
+	// so repeated fires are cheap. Kept here (not sync.Once-guarded)
+	// so builtinsLLM stays stateless. cacheName runs on every call
+	// and stamps the resolved cache handle (or "") onto the request
+	// config.
+	cacheInit ContextCacheInitFn
+	cacheName ContextCacheNameFn
 }
 
 func (l *builtinsLLM) Name() string { return l.inner.Name() }
@@ -163,6 +235,29 @@ func (l *builtinsLLM) Name() string { return l.inner.Name() }
 func (l *builtinsLLM) WithoutBuiltins() adkmodel.LLM { return l.inner }
 
 func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	// Context-cache Init: fire on every call — the underlying manager
+	// is at-most-once so repeated calls after the first are cheap
+	// state checks. Capturing req.Config.SystemInstruction + Tools
+	// here is deliberate: this is the moment ADK has finished
+	// composing the request, so what we cache is byte-for-byte what
+	// subsequent requests would send. Turn 1 misses (async Init still
+	// in flight); turn 2+ benefits. See docs/vertex-context-caching-design.md.
+	if l.cacheInit != nil && req.Config != nil {
+		l.cacheInit(ctx, req.Config.SystemInstruction, req.Config.Tools)
+	}
+	// Context-cache reference: read the resolved cache name (or "")
+	// and stamp it. Must happen BEFORE the builtins-append block
+	// below — Vertex requires the cache reference to match the
+	// content originally cached, so we don't want the per-call
+	// builtins injection to muddy the cached-vs-request comparison.
+	if l.cacheName != nil {
+		if name := l.cacheName(ctx); name != "" {
+			if req.Config == nil {
+				req.Config = &genai.GenerateContentConfig{}
+			}
+			req.Config.CachedContent = name
+		}
+	}
 	if len(l.builtins) > 0 {
 		if req.Config == nil {
 			req.Config = &genai.GenerateContentConfig{}

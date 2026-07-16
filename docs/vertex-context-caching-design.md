@@ -99,12 +99,17 @@ content that's fixed at agent startup:
                                                    (back to ACTIVE)
 ```
 
-- **START → ACTIVE**: on agent construction, background goroutine
-  calls `caches.Create(...)` with prefix content. On success, stores
-  the returned cache name on the agent. On failure, logs a structured
-  warning and marks the agent as "no cache" — subsequent generation
-  calls skip the cache reference field. Non-blocking: turn 1 must not
-  wait for cache creation.
+- **START → ACTIVE**: fires from the **first `GenerateContent` call**
+  (not agent construction) — `builtinsLLM` in `pkg/models/gemini`
+  captures the request's fully-assembled `Config.SystemInstruction`
+  + `Config.Tools` and hands them to `Manager.Init` on a background
+  goroutine. Rationale: ADK converts `[]tool.Tool` → `[]*genai.Tool`
+  inside its own generation pipeline, so capturing at the point ADK
+  hands the request to our wrapper gives us byte-for-byte what
+  subsequent requests would send — no need to reproduce ADK's
+  internals to seed the cache. Turn 1 misses (async Init still in
+  flight); turn 2+ benefits. Cheap tradeoff for a much simpler
+  integration (implemented 2026-07-16, PR-TODO).
 - **ACTIVE → REFRESH**: session touch (any turn) checks remaining TTL.
   If under 30min, background goroutine calls `caches.Update(...)` to
   extend by the daemon-configured TTL (default 6h).
@@ -140,21 +145,27 @@ Explicitly NOT in the cache:
 
 ### Integration points
 
-Three files touched:
+As shipped, three files land the wiring:
 
-1. **`pkg/models/vertex/vertex.go`** (or wherever we call
-   `client.Models.GenerateContent` / `StreamGenerateContent`): accept
-   an optional cache handle in the request config. When present, set
-   `GenerateContentConfig.CachedContent = <cache_name>`. When absent,
-   behavior identical to today.
-2. **`pkg/agent/agent.go` (`agent.New` / `AgentBuilder.Build`)**: after
-   building the tools slice + system instruction, kick off a
-   background goroutine that calls a new `cacheManager.Init(ctx,
-   systemInstruction, tools)`. Cache manager stores the resulting
-   cache name; a getter is threaded through to `Generate` calls.
+1. **`pkg/models/gemini/builtins.go`** (the generation-side wrapper
+   `builtinsLLM`, which every Vertex request already flows through):
+   fires `cacheInit(ctx, sys, tools)` on every call (Manager is
+   at-most-once internally) and stamps `Config.CachedContent =
+   cacheName(ctx)` when the hook returns a non-empty name. Two new
+   Provider hooks (`ContextCacheInitFn` / `ContextCacheNameFn`)
+   plumb both closures through `WithContextCache`/`SetContextCache`
+   options. Non-Vertex backends are untouched — the direct Gemini
+   API path silently ignores the hooks even if wired.
+2. **`cmd/core-agent/context_cache.go`** (NEW): reads
+   `cfg.Model.Vertex.ContextCache` + `--no-context-cache`, constructs
+   a sibling `*genai.Client` for the `Caches` surface, builds the
+   Manager, calls `SetContextCache` on the resolved provider, and
+   `defer`s `Delete` on daemon shutdown. `pkg/agent` unchanged —
+   capture-on-first-call means the cache lifecycle sits entirely
+   inside the model wrapper.
 3. **`internal/vertexcache/manager.go`** (NEW): thin manager owning
-   the cache-lifecycle state machine. Exposes `Init`, `Handle`,
-   `Refresh`, `Delete`. All Vertex `Caches.*` RPCs live here.
+   the cache-lifecycle state machine. Exposes `Init`, `Name`,
+   `Delete`, `Snapshot`. All Vertex `Caches.*` RPCs live here.
 
 ### Config
 
@@ -230,7 +241,22 @@ measurements section — this is the follow-through gate on whether
 - Agent construction: [`pkg/agent/agent.go`](../pkg/agent/agent.go)
 - Pricing wiring (cache-read rate landed 2026-07-15): [`internal/pricing/builtin.go`](../internal/pricing/builtin.go)
 - Backlog measurement gates: [`docs/backlog-cost-stack-2026-07-14.md`](backlog-cost-stack-2026-07-14.md)
-- ADK Go SDK caching API reference: TBD — verify the SDK exposes
-  `Caches.Create`/`Get`/`Update`/`Delete` before writing manager code.
-  If the SDK is missing this surface, we need to fall back to raw REST
-  against the Vertex API (`v1/projects/.../cachedContents`).
+- `google.golang.org/genai@v1.55.0` caching API — CONFIRMED via
+  spike (`dev/vertex-cache-spike/main.go`, 2026-07-16 run against
+  Vertex):
+  - `client.Caches.Create(ctx, model, *CreateCachedContentConfig)` →
+    `*CachedContent` (`caches.go:502`)
+  - `client.Caches.Get(ctx, name, *GetCachedContentConfig)` →
+    `*CachedContent` (`caches.go:578`)
+  - `client.Caches.Update(ctx, name, *UpdateCachedContentConfig)` →
+    `*CachedContent` (`caches.go:727`)
+  - `client.Caches.Delete(ctx, name, *DeleteCachedContentConfig)`
+    (`caches.go:654`)
+  - Cache reference on generate: `GenerateContentConfig.CachedContent
+    string` (`types.go:2655`)
+  - Cache hit reported as `UsageMetadata.CachedContentTokenCount`
+    (`types.go:3259` + `:4338`)
+
+  The v1 design maps 1:1 to this surface. No raw-REST fallback
+  needed. Delete `dev/vertex-cache-spike/` after implementation
+  PR lands (its verdict is already recorded here).

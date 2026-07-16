@@ -4,10 +4,84 @@ Design doc for routing MCP tool calls through a digesting subtask
 at the toolset layer — invisible to the model — so large MCP
 responses don't pollute the parent's context.
 
-**Status:** proposed (2026-06-08). Awaiting approval before
-implementation. v2.5 candidate.
+**Status:** revised (2026-07-16). Original design proposed 2026-06-08
+under closed issue [#124](https://github.com/go-steer/core-agent/issues/124).
+Reopened as [#223](https://github.com/go-steer/core-agent/issues/223)
+now that #130's structural digest has shipped and reframes the
+scope: the LLM subagent wrap becomes the *complement* to structural
+digest, not a replacement.
 
-**Tracking issue:** [#124](https://github.com/go-steer/core-agent/issues/124)
+**Tracking issue:** [#223](https://github.com/go-steer/core-agent/issues/223)
+(supersedes closed #124)
+
+## 2026-07-16 update — composition with structural digest
+
+The original doc assumed no structural digest existed and proposed
+LLM subagent wrap as the sole line of defense against MCP output
+bloat. Since then, #130 (`pkg/digest` structural JSON pruner) and
+#84 (wrap `digest.Process` into MCP tools) have shipped. This
+changes the design in three concrete ways:
+
+1. **Structural is the fast path.** Any MCP response that's JSON-
+   shaped and passes structural pruning under the threshold never
+   invokes a subagent. This is the vast majority of today's MCP
+   surface (GKE MCP is 100% JSON; kube-mcp is 100% JSON). LLM wrap
+   only fires for prose responses and JSON responses that stay
+   over-threshold after structural pruning.
+2. **Compose over `digestingTool`, not `renamedTool`.** The wrap
+   stack (outer to inner) becomes:
+   `agenticMCPTool` → `digestingTool` → `renamedTool` → upstream MCP
+   tool. Structural runs first; the LLM wrap sees what structural
+   couldn't reduce.
+3. **Reuse `retrieve_raw` as the shared escape hatch.** Both digest
+   paths (structural and LLM) can persist raw responses via the same
+   `digest.Store` shipped in #128 (steps 3 + 4). The main model
+   already knows about `retrieve_raw` — no new tool surface.
+
+Model choice: MCP-specific override with fallback to the general
+`--agentic-small-model` resolution used by built-in wrappers
+(`cmd/core-agent/main.go` around `models.ResolveSmallModel`). Two
+levels of override for operators who want to tune MCP wraps
+independently from built-in wraps:
+
+1. **MCP-specific**: `cfg.MCP.AgenticWrapModel` (new field). Wins
+   when set. Motivation: MCP responses can have a genuinely
+   different shape/complexity than built-in-wrapped surfaces
+   (a structured `gke_get_k8s_logs` response vs an arbitrary
+   `fetch_url` body), and operators may find a different tier
+   works better for one but not the other.
+2. **General small-model**: `--agentic-small-model <id>` flag (or
+   equivalent config). The same knob already used by built-in
+   wrappers today. Falls back to this when the MCP-specific field
+   is empty.
+3. **Provider cheap-tier default**: `gemini-2.5-flash` for
+   Gemini/Vertex, `claude-haiku-4-5` for Anthropic. Falls back to
+   this when neither operator override is set.
+4. **Parent inherit**: providers without a cheap tier (echo,
+   scripted) inherit the parent's model — no cost benefit but no
+   correctness break either.
+
+Implementation shape: extend `models.ResolveSmallModel` to accept
+an optional first-preference override, or add a thin
+`models.ResolveMCPSmallModel(provider, mcpSpecific, agenticSmall)`
+sibling that layers the MCP field in front. Either way, the
+resolved value is threaded into the `agenticMCPTool` factory the
+same way `resolvedSmallModel` is already threaded into
+`buildAgenticTools`. Startup log gets a second line so operators
+see the resolved MCP wrap model separately from the built-in wrap
+model (`"agentic MCP wrap: gemini-2.5-flash (mcp-specific override)"`).
+
+Economics at the default cheap tier: `gemini-2.5-flash` runs
+~$0.075/M input / $0.30/M output. A 5k-token prose response
+digested to a 500-token summary costs ~$0.0005. Break-even after
+one subsequent turn where the digest replaces the full response in
+history resend.
+
+The rest of the doc below (from #124's original 2026-06-08 draft)
+still applies to the LLM-wrap component. Read it with the layered
+composition above in mind — the "when to route through subagent"
+gate is now "when structural digest can't reduce the response
+under threshold," not "always for MCP."
 
 ## Motivation
 

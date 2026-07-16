@@ -26,7 +26,15 @@ import "time"
 // following usage-update carries authoritative cost). This server
 // emits TurnComplete with CostUSD = nil so the field is omitted from
 // the wire entirely — the "cost deferred" signal is explicit.
-const ProtocolVersion = "1.1.0"
+//
+// v1.2.0 (#277): tool-result response payloads now carry a
+// `latency_ms` sidecar (int64, milliseconds) reporting the wall-
+// clock time spent in the upstream tool call. Additive — consumers
+// on older schema versions simply don't see the field. Populated
+// by both the MCP digest wrap (pkg/mcp/digest_wrap.go) and the
+// plain rename passthrough (pkg/mcp/namespace.go), so operators
+// see per-call timing whether digest is enabled or not.
+const ProtocolVersion = "1.2.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (

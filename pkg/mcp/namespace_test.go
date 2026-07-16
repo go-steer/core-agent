@@ -231,3 +231,56 @@ func newInMemoryToolset(t *testing.T) tool.Toolset {
 }
 
 var _ agent.ReadonlyContext = asReadonly(context.Background())
+
+// TestRenamedTool_Run_StampsLatencyMS pins the non-digest wrap
+// path for #277: even without the digest layer, every MCP tool
+// response carries a `latency_ms` sidecar so operators see
+// per-call timing in the TUI regardless of whether MCP digest
+// is enabled. Regression signal: if this test fails, tool-row
+// timing goes dark for daemons run with --no-mcp-digest.
+func TestRenamedTool_Run_StampsLatencyMS(t *testing.T) {
+	t.Parallel()
+	inner := newInMemoryToolset(t)
+	wrapped := withNamespace(inner, "demo")
+	tools, err := wrapped.Tools(asReadonly(context.Background()))
+	if err != nil {
+		t.Fatalf("Tools: %v", err)
+	}
+	var echo tool.Tool
+	for _, tl := range tools {
+		if tl.Name() == "demo_echo" {
+			echo = tl
+			break
+		}
+	}
+	if echo == nil {
+		t.Fatal("demo_echo tool not found on wrapped toolset")
+	}
+	res, err := echo.(runnable).Run(
+		&stubToolCtx{Context: context.Background()},
+		map[string]any{"msg": "ping"},
+	)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res == nil {
+		t.Fatal("Run returned nil map — no sidecar to inspect")
+	}
+	v, ok := res["latency_ms"]
+	if !ok {
+		t.Fatalf("latency_ms missing from response: %+v", res)
+	}
+	ms, ok := v.(int64)
+	if !ok {
+		t.Fatalf("latency_ms wrong type: %T (want int64)", v)
+	}
+	if ms < 0 {
+		t.Errorf("latency_ms negative (%d) — clock skew?", ms)
+	}
+	// Upstream response fields still present. MCP wraps single-arg
+	// tool output under `output`; the exact shape isn't the point,
+	// just that the merge is additive rather than replacing.
+	if _, ok := res["output"]; !ok {
+		t.Errorf("upstream output field lost after latency merge: %+v", res)
+	}
+}

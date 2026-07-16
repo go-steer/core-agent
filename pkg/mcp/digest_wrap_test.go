@@ -323,3 +323,119 @@ var (
 	_ tool.Context = (*stubToolCtx)(nil)
 	_ digest.Store = (*spyStore)(nil)
 )
+
+// TestDigestingTool_Run_LatencyStampedOnAllPaths pins the #277
+// contract: every tool response returned through the digest wrap
+// carries a `latency_ms` sidecar. Operators use this on the wire
+// to answer "which MCP call took N seconds" without hand-scraping
+// the eventlog. Regression signal: if this test fails, per-tool-
+// call timing disappears from the TUI's tool rows.
+//
+// Covers three code paths that all need the sidecar:
+//   - Happy path with digest (synthetic map).
+//   - Under-threshold passthrough (also the synthetic map path
+//     with digest.Method == passthrough).
+//   - Upstream error path (raw map returned with sidecar merged).
+func TestDigestingTool_Run_LatencyStampedOnAllPaths(t *testing.T) {
+	t.Parallel()
+
+	// Happy path — large response gets structural digest, and the
+	// synthetic map still carries latency_ms.
+	toolsLarge := runWrappedEcho(t, "demo", "demo", &DigestOptions{Threshold: 100})
+	echoLarge := pickEchoTool(t, toolsLarge)
+	res, err := echoLarge.(runnable).Run(
+		&stubToolCtx{Context: context.Background(), callID: "call-latency-large"},
+		map[string]any{"msg": strings.Repeat("x", 5000)},
+	)
+	if err != nil {
+		t.Fatalf("Run (happy): %v", err)
+	}
+	assertLatencyMS(t, res, "digest happy path")
+
+	// Under-threshold passthrough — synthetic map still.
+	toolsSmall := runWrappedEcho(t, "demo", "demo", &DigestOptions{Threshold: 100_000})
+	echoSmall := pickEchoTool(t, toolsSmall)
+	res, err = echoSmall.(runnable).Run(
+		&stubToolCtx{Context: context.Background(), callID: "call-latency-small"},
+		map[string]any{"msg": "tiny"},
+	)
+	if err != nil {
+		t.Fatalf("Run (passthrough): %v", err)
+	}
+	assertLatencyMS(t, res, "passthrough path")
+
+	// Error path is exercised indirectly by TestWithLatency_Helper
+	// below — the digestingTool.Run error branch delegates to
+	// withLatency, and testing that pure function is simpler than
+	// constructing a digestingTool around a custom-erroring
+	// runnable (renamedTool wrapping is ADK-transport-specific).
+}
+
+// TestWithLatency_Helper is the direct unit for the shared helper
+// both digest_wrap.Run and renamedTool.Run delegate to on their
+// merge-a-sidecar-onto-an-existing-map paths.
+func TestWithLatency_Helper(t *testing.T) {
+	t.Parallel()
+	// Nil in → nil out. Some error paths from ADK/MCP produce
+	// (nil, err); can't attach a sidecar to nothing.
+	if got := withLatency(nil, 42); got != nil {
+		t.Errorf("withLatency(nil, ...) = %v, want nil", got)
+	}
+	// Existing keys preserved, latency_ms stamped on top.
+	in := map[string]any{"a": 1, "b": "two"}
+	out := withLatency(in, 123)
+	if out["a"] != 1 || out["b"] != "two" {
+		t.Errorf("withLatency dropped existing keys: %+v", out)
+	}
+	if got, ok := out["latency_ms"].(int64); !ok || got != 123 {
+		t.Errorf("latency_ms = %v (ok=%v), want int64(123)", out["latency_ms"], ok)
+	}
+	// Shallow copy — mutating the returned map must not affect
+	// the input. Callers reuse the upstream map.
+	if _, present := in["latency_ms"]; present {
+		t.Errorf("withLatency mutated the input map — caller may reuse it")
+	}
+	out["latency_ms"] = int64(999)
+	if _, present := in["latency_ms"]; present {
+		t.Errorf("post-mutation, input map still shows leakage")
+	}
+}
+
+func pickEchoTool(t *testing.T, tools []tool.Tool) tool.Tool {
+	t.Helper()
+	for _, tl := range tools {
+		if strings.HasSuffix(tl.Name(), "_echo") {
+			return tl
+		}
+	}
+	t.Fatal("no echo tool found on wrapped toolset")
+	return nil
+}
+
+func assertLatencyMS(t *testing.T, res map[string]any, label string) {
+	t.Helper()
+	if res == nil {
+		t.Fatalf("%s: response map is nil — no sidecar to inspect", label)
+	}
+	v, ok := res["latency_ms"]
+	if !ok {
+		t.Errorf("%s: latency_ms missing from response: keys=%v", label, keys(res))
+		return
+	}
+	ms, ok := v.(int64)
+	if !ok {
+		t.Errorf("%s: latency_ms wrong type: %T (want int64)", label, v)
+		return
+	}
+	if ms < 0 {
+		t.Errorf("%s: latency_ms negative (%d) — clock skew?", label, ms)
+	}
+}
+
+func keys(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}

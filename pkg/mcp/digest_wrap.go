@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"time"
 
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/model"
@@ -148,12 +149,29 @@ func (d digestingTool) Declaration() *genai.FunctionDeclaration { return d.inner
 // the marshaled raw response, so the caller always gets *something*
 // they can hand to the model.
 func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
+	// Bracket wall-clock latency around the upstream tool call so
+	// operators can see per-call timing without hand-scraping the
+	// eventlog (#277). Stamped as `latency_ms` on the returned map
+	// alongside the digest keys — travels the wire through both
+	// remote (internal/coretuiremote/adapter.go:toolResultFromPart)
+	// and embedded (cmd/core-agent/coretui_enabled.go:splitFunctionResponse)
+	// TUI paths without any adapter-side plumbing, because both
+	// projections copy the whole FunctionResponse.Response map
+	// through to coretui.ToolResult.Response verbatim.
+	//
+	// Also stamped on the error / marshal-fallback paths so slow
+	// failing calls are still visible (a 30-second MCP timeout is
+	// exactly the case operators need to see).
+	start := time.Now()
 	raw, err := d.inner.Run(ctx, args)
+	latencyMS := time.Since(start).Milliseconds()
 	if err != nil {
-		// Upstream tool errored — return the error verbatim, no
-		// digesting. The model needs to see the raw failure to
-		// decide whether to retry / adapt.
-		return raw, err
+		// Upstream tool errored — return the error verbatim + inject
+		// latency into a shallow-copied map so the caller gets *some*
+		// timing signal on the failing call. If raw is nil we can't
+		// carry the sidecar (nothing to attach it to); accept that
+		// edge as unmeasured.
+		return withLatency(raw, latencyMS), err
 	}
 
 	rawBytes, marshalErr := json.Marshal(raw)
@@ -162,7 +180,7 @@ func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 		// still completes. digest_method telemetry will not capture
 		// this case, which is acceptable for what should be a
 		// vanishingly rare path.
-		return raw, nil
+		return withLatency(raw, latencyMS), nil
 	}
 
 	callID := ""
@@ -177,13 +195,14 @@ func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 	})
 	if procErr != nil {
 		// Same fallback rationale as marshal error.
-		return raw, nil
+		return withLatency(raw, latencyMS), nil
 	}
 
 	out := map[string]any{
-		"digest":    res.Digest,
-		"raw_bytes": res.RawBytes,
-		"method":    res.Method,
+		"digest":     res.Digest,
+		"raw_bytes":  res.RawBytes,
+		"method":     res.Method,
+		"latency_ms": latencyMS,
 	}
 	if res.CallID != "" {
 		out["call_id"] = res.CallID
@@ -192,6 +211,25 @@ func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 		out["digest_meta"] = res.Metadata
 	}
 	return out, nil
+}
+
+// withLatency returns a shallow-copied response map with a
+// `latency_ms` sidecar stamped on top. Used on the digest wrap's
+// error + fallback paths where we return the upstream MCP server's
+// map verbatim (no synthetic wrapping) — copying rather than
+// mutating avoids surprising a caller that might reuse the raw
+// map. Returns nil unchanged: some error paths from ADK/MCP can
+// produce (nil, err), and we can't attach a sidecar to nothing.
+func withLatency(raw map[string]any, latencyMS int64) map[string]any {
+	if raw == nil {
+		return nil
+	}
+	out := make(map[string]any, len(raw)+1)
+	for k, v := range raw {
+		out[k] = v
+	}
+	out["latency_ms"] = latencyMS
+	return out
 }
 
 // ProcessRequest satisfies ADK's internal RequestProcessor interface

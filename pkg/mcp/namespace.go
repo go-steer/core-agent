@@ -17,6 +17,7 @@ package mcp
 import (
 	"context"
 	"strings"
+	"time"
 
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/model"
@@ -106,7 +107,18 @@ func (r renamedTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 	if !ok {
 		return nil, errNotRunnable
 	}
-	return rn.Run(ctx, args)
+	// Bracket wall-clock latency around the upstream MCP call so
+	// operators can see per-call timing without hand-scraping the
+	// eventlog (#277). This is the non-digest-wrap path — when
+	// pkg/mcp/digest_wrap.go is composed outside this wrapper, the
+	// outer digestingTool.Run does its own bracketing and both
+	// values match to within a JSON marshal. shallow-copies the
+	// response so we don't surprise mcptoolset by mutating the map
+	// it handed us. Also stamps on the error path so slow-failing
+	// MCP calls stay visible.
+	start := time.Now()
+	res, err := rn.Run(ctx, args)
+	return withLatency(res, time.Since(start).Milliseconds()), err
 }
 
 // ProcessRequest satisfies ADK's internal toolinternal.RequestProcessor

@@ -247,6 +247,74 @@ func TestProcess_WithEventlogStore(t *testing.T) {
 	}
 }
 
+// TestEventlogStore_PutDoesNotAdvanceParentSession is the regression
+// gate for issue #273: EventlogStore.Put used to Get + AppendEvent
+// against the parent session row, which bumped the ADK last_update_time
+// and tripped optimistic-concurrency on the runner's mid-turn session
+// snapshot ("stale session error"). After the fix Put writes to a
+// derived <sid>:digest row and the parent row's update time is
+// unchanged from Put — proven here by fetching the parent session
+// before + after a Put and asserting the two snapshots have identical
+// LastUpdateTime.
+func TestEventlogStore_PutDoesNotAdvanceParentSession(t *testing.T) {
+	t.Parallel()
+	h, cleanup := newTestEventLog(t)
+	defer cleanup()
+
+	store, err := digest.NewEventlogStore(h, testApp, testUsr, testSid)
+	if err != nil {
+		t.Fatalf("NewEventlogStore: %v", err)
+	}
+
+	// Snapshot the parent session's LastUpdateTime BEFORE any Put.
+	before, err := h.Service.Get(context.Background(), &session.GetRequest{
+		AppName: testApp, UserID: testUsr, SessionID: testSid,
+	})
+	if err != nil {
+		t.Fatalf("parent Get (before): %v", err)
+	}
+	beforeUpdated := before.Session.LastUpdateTime()
+
+	if err := store.Put(context.Background(), "call-1", []byte("payload")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	after, err := h.Service.Get(context.Background(), &session.GetRequest{
+		AppName: testApp, UserID: testUsr, SessionID: testSid,
+	})
+	if err != nil {
+		t.Fatalf("parent Get (after): %v", err)
+	}
+	afterUpdated := after.Session.LastUpdateTime()
+
+	if !afterUpdated.Equal(beforeUpdated) {
+		t.Errorf("parent session LastUpdateTime moved: before=%v after=%v — Put leaked onto the runner-visible row (issue #273 regressed)",
+			beforeUpdated, afterUpdated)
+	}
+}
+
+// TestEventlogStore_MultiplePutsShareDerivedSession is the sibling
+// invariant: repeated Puts must not each try to Create the derived
+// session — that would surface a duplicate-key error on the second
+// Put. The sync.Once guard in ensureDerivedSession is what carries
+// this invariant; regressing it (e.g. moving Create outside the Once)
+// would fail this test.
+func TestEventlogStore_MultiplePutsShareDerivedSession(t *testing.T) {
+	t.Parallel()
+	h, cleanup := newTestEventLog(t)
+	defer cleanup()
+
+	store, err := digest.NewEventlogStore(h, testApp, testUsr, testSid)
+	if err != nil {
+		t.Fatalf("NewEventlogStore: %v", err)
+	}
+	for i, id := range []string{"a", "b", "c"} {
+		if err := store.Put(context.Background(), id, []byte("p")); err != nil {
+			t.Fatalf("Put[%d]: %v", i, err)
+		}
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (len(sub) == 0 || indexOf(s, sub) >= 0)
 }

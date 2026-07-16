@@ -22,7 +22,7 @@ func TestContextWindowSizeFor(t *testing.T) {
 		model string
 		want  int
 	}{
-		{"gemini-3.1-pro-preview-customtools", 1_000_000},
+		{"gemini-3.5-flash-customtools", 1_000_000},
 		{"gemini-3.5-pro", 1_000_000},
 		{"gemini-3.5-flash", 1_000_000},
 		{"gemini-2.5-pro", 2_000_000},

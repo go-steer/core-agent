@@ -30,17 +30,19 @@ import (
 func TestAttachUsage_CachedFieldsAndPerTurn(t *testing.T) {
 	t.Parallel()
 	tr := usage.NewTracker()
-	// Rates match builtin gemini-3.1-pro so the numbers are the same
-	// operators will see against a real Vertex session.
-	p := usage.Pricing{InputPerMTok: 1.25, CachedInputPerMTok: 0.3125, OutputPerMTok: 5.00}
+	// Rates match builtin gemini-3.5-flash ($1.50/$0.15/$9.00) so the
+	// numbers are the same operators will see against a real Vertex
+	// session; the reference-cost check depends on PriceFor resolving
+	// against the same builtin entry.
+	p := usage.Pricing{InputPerMTok: 1.50, CachedInputPerMTok: 0.15, OutputPerMTok: 9.00}
 
 	// Turn 1: cold. No cache.
-	tr.AppendUsage("gemini-3.1-pro", usage.TurnUsage{
+	tr.AppendUsage("gemini-3.5-flash", usage.TurnUsage{
 		InputTokens:  10_000,
 		OutputTokens: 500,
 	}, p)
 	// Turn 2: warm. 8k of the 10k input from cache.
-	tr.AppendUsage("gemini-3.1-pro", usage.TurnUsage{
+	tr.AppendUsage("gemini-3.5-flash", usage.TurnUsage{
 		InputTokens:       10_000,
 		CachedInputTokens: 8_000,
 		OutputTokens:      500,
@@ -66,15 +68,15 @@ func TestAttachUsage_CachedFieldsAndPerTurn(t *testing.T) {
 		t.Errorf("Overall.OutputTokens = %d, want 1_000", info.Overall.OutputTokens)
 	}
 
-	// Actual cost: turn1 (10k * 1.25 + 500 * 5)/1e6 + turn2 (2k * 1.25 + 8k * 0.3125 + 500 * 5)/1e6
-	wantCost := (0.01*1.25 + 0.0005*5.00) + (0.002*1.25 + 0.008*0.3125 + 0.0005*5.00)
+	// Actual cost: turn1 (10k * 1.50 + 500 * 9)/1e6 + turn2 (2k * 1.50 + 8k * 0.15 + 500 * 9)/1e6
+	wantCost := (0.01*1.50 + 0.0005*9.00) + (0.002*1.50 + 0.008*0.15 + 0.0005*9.00)
 	if math.Abs(info.Overall.CostUSD-wantCost) > 1e-9 {
 		t.Errorf("Overall.CostUSD = %f, want %f", info.Overall.CostUSD, wantCost)
 	}
 	// Reference cost: both turns billed at input rate for all inputs.
-	// (10k * 1.25 + 500 * 5)/1e6 * 2 = 2 * (0.0125 + 0.0025) = 0.03
-	wantRef := 2 * (0.01*1.25 + 0.0005*5.00)
-	// PriceFor("gemini-3.1-pro", nil) may or may not resolve — depends on
+	// (10k * 1.50 + 500 * 9)/1e6 * 2 = 2 * (0.015 + 0.0045) = 0.039
+	wantRef := 2 * (0.01*1.50 + 0.0005*9.00)
+	// PriceFor("gemini-3.5-flash", nil) may or may not resolve — depends on
 	// whether SetCatalog was called by any test that ran first. If it
 	// hasn't, PriceFor still falls back to a fresh builtin catalog per
 	// the pkg/usage/pricing.go path, so the answer is stable.
@@ -101,8 +103,8 @@ func TestAttachUsage_CachedFieldsAndPerTurn(t *testing.T) {
 	if info.PerTurn[1].InputTokensCached != 8_000 {
 		t.Errorf("warm turn cached = %d, want 8_000", info.PerTurn[1].InputTokensCached)
 	}
-	if info.PerTurn[0].Model != "gemini-3.1-pro" {
-		t.Errorf("PerTurn[0].Model = %q, want gemini-3.1-pro", info.PerTurn[0].Model)
+	if info.PerTurn[0].Model != "gemini-3.5-flash" {
+		t.Errorf("PerTurn[0].Model = %q, want gemini-3.5-flash", info.PerTurn[0].Model)
 	}
 	// TotalTokens = input + output (+ thoughts + tool-use, both zero here).
 	if info.PerTurn[0].TotalTokens != 10_500 {
@@ -128,14 +130,14 @@ func TestAttachUsage_NoTracker(t *testing.T) {
 func TestAttachUsage_PerModelWhenMultipleModels(t *testing.T) {
 	t.Parallel()
 	tr := usage.NewTracker()
-	// Use rates the pricing catalog knows: gemini-3.1-pro + gemini-3.5-flash.
-	pro := usage.PriceFor("gemini-3.1-pro", nil)
+	// Use rates the pricing catalog knows: gemini-3.5-flash + gemini-3.1-flash-lite.
 	flash := usage.PriceFor("gemini-3.5-flash", nil)
-	if pro.IsZero() || flash.IsZero() {
+	lite := usage.PriceFor("gemini-3.1-flash-lite", nil)
+	if flash.IsZero() || lite.IsZero() {
 		t.Skip("catalog didn't resolve gemini rates; skipping in this env")
 	}
-	tr.AppendUsage("gemini-3.1-pro", usage.TurnUsage{InputTokens: 10_000, OutputTokens: 500}, pro)
-	tr.AppendUsage("gemini-3.5-flash", usage.TurnUsage{InputTokens: 5_000, OutputTokens: 200}, flash)
+	tr.AppendUsage("gemini-3.5-flash", usage.TurnUsage{InputTokens: 10_000, OutputTokens: 500}, flash)
+	tr.AppendUsage("gemini-3.1-flash-lite", usage.TurnUsage{InputTokens: 5_000, OutputTokens: 200}, lite)
 
 	a := &Agent{tracker: tr}
 	info := a.AttachUsage()

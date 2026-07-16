@@ -34,7 +34,7 @@ func TestPricing_CostMath(t *testing.T) {
 
 func TestPriceFor_BuiltinExact(t *testing.T) {
 	t.Parallel()
-	p := PriceFor("gemini-3.1-pro-preview", nil)
+	p := PriceFor("gemini-3.5-flash", nil)
 	if p.IsZero() {
 		t.Fatalf("expected non-zero pricing for known model")
 	}
@@ -42,7 +42,7 @@ func TestPriceFor_BuiltinExact(t *testing.T) {
 
 func TestPriceFor_PrefixMatch(t *testing.T) {
 	t.Parallel()
-	p := PriceFor("gemini-3.1-pro-preview-05-15", nil)
+	p := PriceFor("gemini-3.5-flash-05-15", nil)
 	if p.IsZero() {
 		t.Fatalf("date-suffixed variant should still match the family")
 	}
@@ -51,11 +51,11 @@ func TestPriceFor_PrefixMatch(t *testing.T) {
 func TestPriceFor_ConfigOverrideWins(t *testing.T) {
 	t.Parallel()
 	cfg := config.DefaultConfig()
-	cfg.Model.Name = "gemini-3.1-pro-preview"
+	cfg.Model.Name = "gemini-3.5-flash"
 	cfg.Model.Pricing = config.PricingMap{
-		"gemini-3.1-pro-preview": {InputPerMTok: 99, OutputPerMTok: 999},
+		"gemini-3.5-flash": {InputPerMTok: 99, OutputPerMTok: 999},
 	}
-	p := PriceFor("gemini-3.1-pro-preview", cfg)
+	p := PriceFor("gemini-3.5-flash", cfg)
 	if p.InputPerMTok != 99 || p.OutputPerMTok != 999 {
 		t.Errorf("config override ignored: got %+v", p)
 	}

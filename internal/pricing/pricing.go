@@ -41,6 +41,7 @@ package pricing
 
 import (
 	"strings"
+	"time"
 )
 
 // Rates is the per-million-token cost for one model. CachedInputPerMTok
@@ -48,10 +49,20 @@ import (
 // cache (Gemini's `cachedContentTokenCount`, Anthropic's
 // `cache_read_input_tokens`); a zero value means the cache-read rate
 // isn't known and callers should bill cached tokens at InputPerMTok.
+//
+// UpdatedAt records when the rate was last verified against its
+// source (LiteLLM refresh time, generator run time for builtin
+// entries, operator edit time for manual overrides). Zero when
+// unknown. Surfaced through /pricing so operators can spot stale
+// entries at a glance — issue #259 called out that hand-authored
+// rates drift silently, and staleness visibility is the mitigation
+// baked into the "regenerate builtin from LiteLLM" workflow that
+// followed.
 type Rates struct {
 	InputPerMTok       float64
 	CachedInputPerMTok float64
 	OutputPerMTok      float64
+	UpdatedAt          time.Time
 }
 
 // IsZero reports whether the rates carry no useful pricing.
@@ -102,6 +113,17 @@ type Catalog struct {
 	builtin     map[string]Rates // compiled-in fallback
 }
 
+// Layer source names surfaced via LookupWithSource + the attach
+// /pricing endpoint. Stable strings — operators grep for them, docs
+// reference them. Don't rename without a deprecation cycle.
+const (
+	SourceCfgOverride  = "cfg-override"
+	SourceProjectFile  = "project-file"
+	SourceUserManual   = "user-manual"
+	SourceUserExternal = "user-external"
+	SourceBuiltin      = "builtin"
+)
+
 // Lookup returns the resolved rates for modelID plus a found flag.
 // !found means the caller should treat the cost as unknown ($—)
 // rather than zero.
@@ -109,49 +131,73 @@ type Catalog struct {
 // Resolution: exact match scan across layers in precedence order,
 // then a longest-prefix scan across the union of all layers.
 func (c *Catalog) Lookup(modelID string) (Rates, bool) {
+	r, _, ok := c.LookupWithSource(modelID)
+	return r, ok
+}
+
+// LookupWithSource is Lookup + the name of the catalog layer that
+// served the rate (SourceCfgOverride / SourceProjectFile /
+// SourceUserManual / SourceUserExternal / SourceBuiltin). Empty
+// source string when !ok. Used by /pricing so operators can spot
+// stale builtin rates that should have been overridden by a fresh
+// LiteLLM refresh but weren't — the visibility that #259 asked for.
+//
+// Resolution matches Lookup: exact match by precedence first, then
+// longest-prefix across the union. The prefix-fallback path returns
+// the source of the LAYER that held the winning prefix entry.
+func (c *Catalog) LookupWithSource(modelID string) (Rates, string, bool) {
 	if c == nil {
-		return Rates{}, false
+		return Rates{}, "", false
 	}
 	low := strings.ToLower(strings.TrimSpace(modelID))
 	if low == "" {
-		return Rates{}, false
+		return Rates{}, "", false
 	}
 	// Exact match by precedence.
-	for _, layer := range c.layersInOrder() {
-		if r, ok := layer[low]; ok {
-			return r, true
+	for _, ls := range c.layersWithSource() {
+		if r, ok := ls.layer[low]; ok {
+			return r, ls.source, true
 		}
 	}
 	// Longest-prefix fallback across the union.
 	var bestKey string
 	var bestRates Rates
-	for _, layer := range c.layersInOrder() {
-		for k, r := range layer {
+	var bestSource string
+	for _, ls := range c.layersWithSource() {
+		for k, r := range ls.layer {
 			if !strings.HasPrefix(low, k) {
 				continue
 			}
 			if len(k) > len(bestKey) {
 				bestKey = k
 				bestRates = r
+				bestSource = ls.source
 			}
 		}
 	}
 	if bestKey != "" {
-		return bestRates, true
+		return bestRates, bestSource, true
 	}
-	return Rates{}, false
+	return Rates{}, "", false
 }
 
-// layersInOrder returns the per-source maps in precedence order
-// (highest first). Used by both the exact-match scan and the
-// prefix-match scan so they stay in lockstep.
-func (c *Catalog) layersInOrder() []map[string]Rates {
-	return []map[string]Rates{
-		c.cfgOverride,
-		c.projectFile,
-		c.userManual,
-		c.userExt,
-		c.builtin,
+// layerWithSource pairs one layer map with its source-name string.
+type layerWithSource struct {
+	layer  map[string]Rates
+	source string
+}
+
+// layersWithSource is the precedence-ordered pairing consulted by
+// LookupWithSource — highest precedence first. The layer name is
+// carried alongside so callers can attribute the match to the layer
+// that served it.
+func (c *Catalog) layersWithSource() []layerWithSource {
+	return []layerWithSource{
+		{c.cfgOverride, SourceCfgOverride},
+		{c.projectFile, SourceProjectFile},
+		{c.userManual, SourceUserManual},
+		{c.userExt, SourceUserExternal},
+		{c.builtin, SourceBuiltin},
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestLookup_BuiltinOnly verifies the zero-config path: empty Options
@@ -30,7 +31,7 @@ func TestLookup_BuiltinOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCatalog: %v", err)
 	}
-	r, ok := c.Lookup("gemini-3.1-pro-preview")
+	r, ok := c.Lookup("gemini-3.5-flash")
 	if !ok {
 		t.Fatal("builtin entry not found")
 	}
@@ -47,15 +48,15 @@ func TestLookup_BuiltinOnly(t *testing.T) {
 // makes date-suffixed and custom-tools variants Just Work without
 // per-variant entries. The bug this guards against: a future
 // refactor that drops the prefix loop and returns "$—" for
-// "gemini-3.1-pro-preview-customtools" even though the family rate
+// "gemini-3.5-flash-customtools" even though the family rate
 // is sitting right there.
 func TestLookup_PrefixFallback(t *testing.T) {
 	t.Parallel()
 	c, _ := NewCatalog(Options{})
 	for _, name := range []string{
-		"gemini-3.1-pro-preview-customtools",
-		"gemini-3.1-pro-preview-05-15",
-		"gemini-3-pro-2026-03-01",
+		"gemini-3.5-flash-customtools",
+		"gemini-3.5-flash-05-15",
+		"gemini-3.1-flash-lite-2026-03-01",
 	} {
 		r, ok := c.Lookup(name)
 		if !ok || r.InputPerMTok == 0 {
@@ -169,7 +170,7 @@ func TestNewCatalog_MissingFilesAreOK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCatalog with missing files should not error: %v", err)
 	}
-	if r, ok := c.Lookup("gemini-3.1-pro-preview"); !ok || r.InputPerMTok == 0 {
+	if r, ok := c.Lookup("gemini-3.5-flash"); !ok || r.InputPerMTok == 0 {
 		t.Errorf("builtin layer missing after empty file load")
 	}
 }
@@ -285,6 +286,74 @@ func TestBuiltin_GeminiHasCachedRate(t *testing.T) {
 			t.Errorf("builtin %q cached rate (%v) >= input rate (%v) — should be a discount",
 				name, r.CachedInputPerMTok, r.InputPerMTok)
 		}
+	}
+}
+
+// TestLookupWithSource_AttributesEachLayer pins the source-attribution
+// contract: LookupWithSource must name the layer that served the rate
+// so /pricing can distinguish "your override" from "the shipped
+// fallback" — issue #259's staleness visibility hinges on this.
+func TestLookupWithSource_AttributesEachLayer(t *testing.T) {
+	t.Parallel()
+	c := &Catalog{
+		cfgOverride: map[string]Rates{"cfg-model": {InputPerMTok: 1}},
+		projectFile: map[string]Rates{"proj-model": {InputPerMTok: 2}},
+		userManual:  map[string]Rates{"manual-model": {InputPerMTok: 3}},
+		userExt:     map[string]Rates{"ext-model": {InputPerMTok: 4}},
+		builtin:     map[string]Rates{"builtin-model": {InputPerMTok: 5}},
+	}
+	cases := []struct {
+		name       string
+		wantSource string
+	}{
+		{"cfg-model", SourceCfgOverride},
+		{"proj-model", SourceProjectFile},
+		{"manual-model", SourceUserManual},
+		{"ext-model", SourceUserExternal},
+		{"builtin-model", SourceBuiltin},
+	}
+	for _, tc := range cases {
+		_, src, ok := c.LookupWithSource(tc.name)
+		if !ok {
+			t.Errorf("%s: expected lookup to succeed", tc.name)
+			continue
+		}
+		if src != tc.wantSource {
+			t.Errorf("%s: source = %q, want %q", tc.name, src, tc.wantSource)
+		}
+	}
+	// Unknown model → empty source string, !ok.
+	if _, src, ok := c.LookupWithSource("nope"); ok || src != "" {
+		t.Errorf("unknown model: got src=%q ok=%v, want empty/false", src, ok)
+	}
+}
+
+// TestModelRates_UpdatedAtRoundTrip guards the on-disk field for
+// UpdatedAt so an operator's manual pricing.json entry (or a future
+// LiteLLM-fetched external entry) preserves its verified-at date
+// through the load path and surfaces on /pricing.
+func TestModelRates_UpdatedAtRoundTrip(t *testing.T) {
+	t.Parallel()
+	userHome := t.TempDir()
+	when := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	if err := SaveUserFile(userHome, &UserFile{
+		Version: 1,
+		Manual: &ManualSection{Models: map[string]ModelRates{
+			"dated-model": {InputPerMTok: 2, OutputPerMTok: 4, UpdatedAt: when},
+		}},
+	}); err != nil {
+		t.Fatalf("SaveUserFile: %v", err)
+	}
+	c, err := NewCatalog(Options{UserHome: userHome})
+	if err != nil {
+		t.Fatalf("NewCatalog: %v", err)
+	}
+	r, ok := c.Lookup("dated-model")
+	if !ok {
+		t.Fatal("lookup missing")
+	}
+	if !r.UpdatedAt.Equal(when) {
+		t.Errorf("UpdatedAt = %v, want %v", r.UpdatedAt, when)
 	}
 }
 

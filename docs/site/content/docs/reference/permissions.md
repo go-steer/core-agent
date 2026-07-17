@@ -108,6 +108,31 @@ Pattern syntax:
 
 Symlinks are not followed — the input path is trusted as-is.
 
+### Typed r/w/rw entries + CLI `--allow-path`
+
+`path_scope.allow_paths` is the typed form of `allow` — each entry carries an explicit access mode:
+
+```json
+{
+  "path_scope": {
+    "allow_paths": [
+      { "path": "/home/me/sibling-repo/...", "mode": "rw" },
+      { "path": "/var/log/myapp.log",         "mode": "r"  }
+    ]
+  }
+}
+```
+
+`mode` is one of `r` / `w` / `rw` (long forms `read` / `write` / `readwrite` also accepted). Read-only entries allow reads but still prompt on writes; write-only is uncommon but supported for tools that only append. Composes with the plain `allow` list (which grants both r+w unconditionally, matching the legacy shape).
+
+The `--allow-path PATH:MODE` CLI flag adds one entry inline without touching `config.json`:
+
+```bash
+core-agent --allow-path /home/me/sibling-repo:rw --allow-path /var/log/myapp.log:r
+```
+
+Repeatable; entries are merged with anything in `path_scope.allow_paths`. Useful for one-off sessions (a sibling checkout, a scratch dir) where you don't want to commit the grant.
+
 ---
 
 ## Bash denylist

@@ -178,6 +178,16 @@ Fallback chain: `AGENTS.md` → `CLAUDE.md` → `GEMINI.md` (first match wins). 
 Beyond `--provider` / `-m` / `-p`, the flags that come up most often:
 
 ```
+-i / --interactive-prompt=TEXT  seed the first turn of an interactive session
+                                and stay in the TUI/REPL. Mutually exclusive
+                                with -p; incompatible with --no-repl.
+                                See "Seed the first turn from the CLI" in the
+                                interactive quickstart for the pattern.
+--allow-path=PATH:MODE          grant tree access outside project + user-home
+                                roots, e.g. --allow-path /home/me/sibling:rw
+                                (repeatable). MODE = r / w / rw. Matching paths
+                                skip the permission prompt; unmatched still
+                                prompt.
 --ask=stdin|auto|off            register an ask_user tool the model can call
                                 (auto = stdin if interactive, refuse otherwise)
 --session-db                    persist sessions + audit log to a durable database

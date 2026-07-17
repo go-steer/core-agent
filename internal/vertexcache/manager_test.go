@@ -291,6 +291,71 @@ func TestManager_DeleteBeforeInit(t *testing.T) {
 	}
 }
 
+// TestManager_MarkEvicted_ResetsForFreshInit pins the eviction-recovery
+// contract: after MarkEvicted, Name() returns "" (so the caller runs
+// uncached this turn) AND a subsequent Init call fires a fresh Create
+// (so future turns re-benefit from caching). Otherwise the daemon runs
+// uncached forever after a TTL eviction, defeating the point of #221.
+func TestManager_MarkEvicted_ResetsForFreshInit(t *testing.T) {
+	t.Parallel()
+	fake := &fakeCaches{nextCacheNameOnce: "projects/p/l/l/cc/first"}
+	m := NewManager(fake, "gemini-2.5-flash", Options{TTL: time.Hour})
+
+	sys := &genai.Content{Parts: []*genai.Part{{Text: "sys"}}}
+	m.Init(context.Background(), sys, nil)
+	waitFor(t, time.Second, func() bool { return m.Name(context.Background()) != "" })
+	if fake.createCount.Load() != 1 {
+		t.Fatalf("expected 1 Create call, got %d", fake.createCount.Load())
+	}
+
+	// Simulate the wrapper detecting NOT_FOUND on the cache reference.
+	m.MarkEvicted("Vertex 404")
+
+	if got := m.Name(context.Background()); got != "" {
+		t.Errorf("Name after MarkEvicted = %q, want empty (so caller runs uncached)", got)
+	}
+
+	// Next Init should fire a fresh Create — this is the load-bearing
+	// half of eviction recovery.
+	fake.nextCacheNameOnce = "projects/p/l/l/cc/second"
+	m.Init(context.Background(), sys, nil)
+	waitFor(t, time.Second, func() bool { return m.Name(context.Background()) == "projects/p/l/l/cc/second" })
+	if fake.createCount.Load() != 2 {
+		t.Errorf("expected 2 Create calls after eviction + re-init, got %d", fake.createCount.Load())
+	}
+}
+
+// TestManager_MarkEvicted_NoOpBeforeActive pins that eviction on a
+// pre-active or failed manager doesn't reset a fresh init that hasn't
+// landed, and doesn't accidentally unblock a stateFailed manager
+// (which represents a persistent problem, not a TTL eviction).
+func TestManager_MarkEvicted_NoOpBeforeActive(t *testing.T) {
+	t.Parallel()
+	fake := &fakeCaches{createErr: errors.New("boom")}
+	m := NewManager(fake, "gemini-2.5-flash", Options{TTL: time.Hour})
+
+	// stateStart — MarkEvicted should no-op.
+	m.MarkEvicted("nothing to evict")
+
+	// Drive Init to stateFailed.
+	m.Init(context.Background(), &genai.Content{Parts: []*genai.Part{{Text: "sys"}}}, nil)
+	waitFor(t, time.Second, func() bool {
+		return fake.createCount.Load() >= 1
+	})
+	// Give the goroutine one more scheduler tick to write the state.
+	time.Sleep(20 * time.Millisecond)
+	// MarkEvicted on a failed manager must NOT reset it to stateStart —
+	// stateFailed is a "persistent problem, stay uncached" signal that
+	// eviction recovery shouldn't paper over.
+	m.MarkEvicted("shouldn't matter")
+	m.Init(context.Background(), &genai.Content{Parts: []*genai.Part{{Text: "sys"}}}, nil)
+	// Give any incorrectly-scheduled Create a chance to fire.
+	time.Sleep(20 * time.Millisecond)
+	if fake.createCount.Load() != 1 {
+		t.Errorf("Init after eviction on stateFailed re-fired Create: count=%d, want 1", fake.createCount.Load())
+	}
+}
+
 // TestStatus_String pins the human-readable form used by the daemon's
 // startup log line. Deliberately covers all three states because
 // operators grep for these strings.

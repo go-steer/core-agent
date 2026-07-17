@@ -113,6 +113,11 @@ func maybeWireContextCache(
 	}
 	manager := vertexcache.NewManager(client.Caches, cfg.Model.Name, opts)
 	gemProvider.SetContextCache(manager.Init, manager.Name)
+	// Wire the eviction-recovery hook so a Vertex-side TTL expiry
+	// (the common case on long-lived daemons whose cache outlives a
+	// single session) triggers uncached retry + fresh Init on the
+	// next turn instead of a hard turn error.
+	gemProvider.SetContextCacheInvalidate(manager.MarkEvicted)
 
 	// Startup log — mirrors the "agentic subtasks:" line pattern so
 	// operators see cache state at the same glance.

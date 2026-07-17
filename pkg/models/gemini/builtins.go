@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"iter"
 	"os"
+	"strings"
 
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/genai"
@@ -126,6 +127,22 @@ type ContextCacheInitFn func(ctx context.Context, systemInstruction *genai.Conte
 // safe — the caller degrades gracefully.
 type ContextCacheNameFn func(ctx context.Context) string
 
+// ContextCacheInvalidateFn is called when a GenerateContent response
+// carries a NOT_FOUND for the stamped cache reference — the signal
+// that Vertex has reaped our cache server-side (TTL elapsed while the
+// daemon held a valid-looking Manager handle). Implementations flip
+// their manager back to a pre-Init state so:
+//
+//  1. The follow-up retry (issued by GenerateContent itself) runs
+//     uncached.
+//  2. The next turn's Init call fires a fresh Create instead of the
+//     daemon staying uncached for the rest of its lifetime.
+//
+// The reason string is opaque; wired into the operator-facing log
+// line so grep-triage can distinguish TTL eviction from other 404
+// shapes as the deployment matures.
+type ContextCacheInvalidateFn func(reason string)
+
 // WithContextCache wires Vertex explicit-cache hooks into every
 // GenerateContent call this Provider issues. Only meaningful on the
 // Vertex backend — the direct Gemini API rejects the cache-reference
@@ -157,6 +174,18 @@ func WithContextCache(init ContextCacheInitFn, name ContextCacheNameFn) Option {
 func (p *Provider) SetContextCache(init ContextCacheInitFn, name ContextCacheNameFn) {
 	p.cacheInit = init
 	p.cacheName = name
+}
+
+// SetContextCacheInvalidate installs the eviction-recovery hook —
+// called when GenerateContent detects that Vertex has reaped our
+// cache server-side. See ContextCacheInvalidateFn. Optional: without
+// it, cache-not-found responses surface as hard turn errors instead
+// of transparent retry, and the daemon needs a restart to recover.
+//
+// Same concurrency contract as SetContextCache — treat as
+// construction-time-only.
+func (p *Provider) SetContextCacheInvalidate(invalidate ContextCacheInvalidateFn) {
+	p.cacheInvalidate = invalidate
 }
 
 // ClientConfig returns a copy of the Provider's underlying genai
@@ -207,8 +236,18 @@ type builtinsLLM struct {
 	// so builtinsLLM stays stateless. cacheName runs on every call
 	// and stamps the resolved cache handle (or "") onto the request
 	// config.
-	cacheInit ContextCacheInitFn
-	cacheName ContextCacheNameFn
+	//
+	// cacheInvalidate is the third leg: called from the retry-once
+	// path below when the inner GenerateContent surfaces a NOT_FOUND
+	// on the stamped cache reference — the signal that Vertex has
+	// reaped the cache while our manager still thought it was valid.
+	// The invalidate hook resets the manager so this-turn's retry runs
+	// uncached AND next-turn's cacheInit can create a fresh handle.
+	// Nil is safe: cache-not-found errors surface to the caller as
+	// hard turn errors instead of transparent retry.
+	cacheInit       ContextCacheInitFn
+	cacheName       ContextCacheNameFn
+	cacheInvalidate ContextCacheInvalidateFn
 }
 
 func (l *builtinsLLM) Name() string { return l.inner.Name() }
@@ -244,12 +283,26 @@ func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequ
 	// fields the cache already contains, then bypass the builtins-
 	// append block entirely (built-ins were captured into the cache
 	// at Init time — see the "capture after builtins" block below).
+	//
+	// Snapshot the stripped fields before nulling so the retry-once
+	// path can restore them if Vertex 404s the cache reference (TTL
+	// eviction on a long-lived daemon). Without the snapshot the
+	// uncached retry would go to the model missing its system
+	// instruction + tools — worse than the original failure.
 	cachedTurn := false
+	var (
+		savedSystemInstruction *genai.Content
+		savedTools             []*genai.Tool
+		savedToolConfig        *genai.ToolConfig
+	)
 	if l.cacheName != nil {
 		if name := l.cacheName(ctx); name != "" {
 			if req.Config == nil {
 				req.Config = &genai.GenerateContentConfig{}
 			}
+			savedSystemInstruction = req.Config.SystemInstruction
+			savedTools = req.Config.Tools
+			savedToolConfig = req.Config.ToolConfig
 			req.Config.CachedContent = name
 			req.Config.SystemInstruction = nil
 			req.Config.Tools = nil
@@ -304,23 +357,164 @@ func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequ
 		l.cacheInit(ctx, req.Config.SystemInstruction, req.Config.Tools)
 	}
 
-	// Three composed wrappers, innermost first:
+	// Four composed wrappers, innermost first:
 	//   1. inner.GenerateContent — the raw ADK model call
-	//   2. wrapEmptyTailDetection — surfaces ErrEmptyResponse when
+	//   2. wrapCachedContentEvictionRetry (when cachedTurn) —
+	//      detects Vertex NOT_FOUND on the cache reference, calls
+	//      cacheInvalidate, restores stripped fields, retries once
+	//      uncached. On non-cached turns this is a no-op.
+	//   3. wrapEmptyTailDetection — surfaces ErrEmptyResponse when
 	//      the model returns no usable content (heartbeat-only
 	//      streams, bare STOP with empty parts, etc.). #220.
-	//   3. retryOnceOnEmpty — transparently retries the whole
+	//   4. retryOnceOnEmpty — transparently retries the whole
 	//      call once on ErrEmptyResponse, so transient Vertex
 	//      silent-STOP behavior doesn't hang the agent loop.
 	//      Emits a stderr alert on detect / recover / persist so
 	//      operators see the event in the daemon log even when
 	//      recovery succeeds. #78 follow-up.
+	//
+	// Cache-eviction retry lives INSIDE retryOnceOnEmpty so a cache
+	// miss followed by an empty response gets both safety nets. The
+	// two conditions are orthogonal — empty response is a Vertex
+	// silent-STOP shape, cache eviction is a TTL server-state issue.
 	return retryOnceOnEmpty(func() iter.Seq2[*adkmodel.LLMResponse, error] {
 		return wrapEmptyTailDetection(
-			l.inner.GenerateContent(ctx, req, stream),
+			l.wrapCachedContentEvictionRetry(ctx, req, stream, cachedTurn, savedSystemInstruction, savedTools, savedToolConfig),
 			stream, l.tolerateEmptyChunks,
 		)
 	})
+}
+
+// wrapCachedContentEvictionRetry retries the GenerateContent call
+// once, uncached, when the first attempt fails with the Vertex
+// NOT_FOUND-on-cached-content signature — the shape Vertex returns
+// when it has reaped our cache server-side while the manager still
+// thought it was valid (TTL elapsed on a long-lived daemon holding
+// a resumed session's cache handle).
+//
+// Non-cached turns pass through unchanged: nothing to detect, nothing
+// to restore.
+//
+// The retry:
+//  1. Signals cacheInvalidate so the manager transitions back to a
+//     pre-Init state — future Name() calls return "" until a fresh
+//     Init lands.
+//  2. Restores the SystemInstruction / Tools / ToolConfig the outer
+//     GenerateContent stripped when it stamped the cache reference,
+//     and clears CachedContent. Without the restore the uncached
+//     retry would go to the model with no system prompt + no tools.
+//  3. Re-invokes inner.GenerateContent on the same context with the
+//     restored request.
+//
+// One retry only — persistent NOT_FOUND after retry surfaces to the
+// caller unchanged (indicates a config problem, not TTL eviction).
+func (l *builtinsLLM) wrapCachedContentEvictionRetry(
+	ctx context.Context,
+	req *adkmodel.LLMRequest,
+	stream, cachedTurn bool,
+	savedSystemInstruction *genai.Content,
+	savedTools []*genai.Tool,
+	savedToolConfig *genai.ToolConfig,
+) iter.Seq2[*adkmodel.LLMResponse, error] {
+	inner := l.inner.GenerateContent(ctx, req, stream)
+	if !cachedTurn {
+		return inner
+	}
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		var buf []struct {
+			resp *adkmodel.LLMResponse
+			err  error
+		}
+		flushed := false
+		for resp, err := range inner {
+			if flushed {
+				if !yield(resp, err) {
+					return
+				}
+				continue
+			}
+			if isCachedContentNotFound(err) {
+				// Cache is gone server-side. Invalidate the manager
+				// so this-turn retry + next-turn Init both do the
+				// right thing.
+				if l.cacheInvalidate != nil {
+					l.cacheInvalidate("Vertex 404 on cached content reference")
+				}
+				logf("cached content evicted server-side, retrying uncached")
+				// Restore the stripped fields on req.Config so the
+				// retry has the full system instruction + tools.
+				if req.Config == nil {
+					req.Config = &genai.GenerateContentConfig{}
+				}
+				req.Config.CachedContent = ""
+				req.Config.SystemInstruction = savedSystemInstruction
+				req.Config.Tools = savedTools
+				req.Config.ToolConfig = savedToolConfig
+				// Any buffered chunks are dropped by returning without
+				// flushing — Vertex may have emitted partial content
+				// before the NOT_FOUND, which the retry supersedes.
+				for r2, e2 := range l.inner.GenerateContent(ctx, req, stream) {
+					if !yield(r2, e2) {
+						return
+					}
+				}
+				return
+			}
+			// Non-eviction event: buffer until we know whether the
+			// stream succeeds or triggers the retry, then flush on
+			// first non-error usable chunk or on stream end.
+			buf = append(buf, struct {
+				resp *adkmodel.LLMResponse
+				err  error
+			}{resp, err})
+			if err != nil || (resp != nil && resp.Content != nil && len(resp.Content.Parts) > 0) {
+				// Flush the buffer — we're past the point where a
+				// retry decision is meaningful.
+				for _, b := range buf {
+					if !yield(b.resp, b.err) {
+						return
+					}
+				}
+				buf = nil
+				flushed = true
+			}
+		}
+		// Iteration ended without triggering retry AND without hitting
+		// the flush-on-usable branch (empty stream, all-heartbeat, etc.):
+		// flush whatever we buffered so the outer wrapEmptyTailDetection
+		// sees the same shape it would have without our interception.
+		if !flushed {
+			for _, b := range buf {
+				if !yield(b.resp, b.err) {
+					return
+				}
+			}
+		}
+	}
+}
+
+// isCachedContentNotFound reports whether err carries the specific
+// Vertex signature for "the cached content ID you stamped no longer
+// exists" — the shape observed when a long-lived daemon holds a cache
+// handle whose server-side TTL has elapsed. Matched via substring
+// because the genai SDK doesn't expose a typed error for this case;
+// the "cached content" clause is specific enough to avoid false
+// positives on generic NOT_FOUND errors (missing model, wrong region,
+// etc.).
+//
+// The exact string Vertex returns:
+//
+//	Error 404, Message: Not found: cached content metadata for <id>.,
+//	Status: NOT_FOUND
+//
+// so we look for the "cached content" substring plus NOT_FOUND.
+func isCachedContentNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "NOT_FOUND") &&
+		strings.Contains(strings.ToLower(s), "cached content")
 }
 
 // logf is the daemon-log alert hook the retry wrapper uses to

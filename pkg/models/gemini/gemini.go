@@ -50,8 +50,13 @@ type Provider struct {
 	// Provider constructs; see WithContextCache. Only wired on Vertex
 	// in the current daemon flow — the direct Gemini API rejects the
 	// cache-reference parameter on some model families.
-	cacheInit ContextCacheInitFn
-	cacheName ContextCacheNameFn
+	//
+	// cacheInvalidate is called when GenerateContent detects that
+	// Vertex has evicted the cache server-side (TTL elapsed on a
+	// long-lived daemon). Same Vertex-only gating as the other two.
+	cacheInit       ContextCacheInitFn
+	cacheName       ContextCacheNameFn
+	cacheInvalidate ContextCacheInvalidateFn
 }
 
 // Name reports the provider identity (e.g. "gemini" or "vertex").
@@ -84,9 +89,11 @@ func (p *Provider) Model(ctx context.Context, modelID string) (adkmodel.LLM, err
 	// families, and #221's v1 scope is Vertex-only anyway.
 	var initFn ContextCacheInitFn
 	var nameFn ContextCacheNameFn
+	var invalidateFn ContextCacheInvalidateFn
 	if isVertex {
 		initFn = p.cacheInit
 		nameFn = p.cacheName
+		invalidateFn = p.cacheInvalidate
 	}
 	if tools := p.builtins.asTools(); len(tools) > 0 {
 		return &builtinsLLM{
@@ -109,6 +116,7 @@ func (p *Provider) Model(ctx context.Context, modelID string) (adkmodel.LLM, err
 			tolerateEmptyChunks: isVertex,
 			cacheInit:           initFn,
 			cacheName:           nameFn,
+			cacheInvalidate:     invalidateFn,
 		}, nil
 	}
 	if isVertex {
@@ -117,6 +125,7 @@ func (p *Provider) Model(ctx context.Context, modelID string) (adkmodel.LLM, err
 			tolerateEmptyChunks: true,
 			cacheInit:           initFn,
 			cacheName:           nameFn,
+			cacheInvalidate:     invalidateFn,
 		}, nil
 	}
 	return llm, nil

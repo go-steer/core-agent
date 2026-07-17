@@ -142,9 +142,19 @@ jobs:
       # On a main push:
       #   :main  :main-<short-sha>
       # On workflow_dispatch with tag input: uses that input verbatim.
-      - name: Compute image tags + labels
+      - name: Compute image tags + labels + annotations
         id: meta
         uses: docker/metadata-action@v5
+        env:
+          # For MULTI-ARCH images, GHCR pulls its package-page
+          # description from manifest INDEX annotations, not from
+          # per-image LABELs. Setting DOCKER_METADATA_ANNOTATIONS_LEVELS
+          # tells metadata-action to also emit annotations for the
+          # index level (the multi-arch fat manifest) — not just for
+          # each per-platform child manifest. Without this, GHCR's
+          # page description stays blank on multi-arch even when the
+          # OCI label is set correctly.
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index,manifest
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ matrix.image_name }}
           tags: |
@@ -165,13 +175,20 @@ jobs:
             type=sha,prefix=main-,format=short,enable=${{ github.ref_name == 'main' && github.ref_type != 'tag' }}
             # Manual dispatch with tag input
             type=raw,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && inputs.tag != '' }}
-          # OCI image labels populated from repo metadata. The per-
-          # image description is what GHCR shows on the package page
-          # under the image name; the documentation URL points OCI
-          # inspectors at the published docs site. Vendor + source
-          # (the latter set in Dockerfile) link the image back to
-          # this repo so GHCR auto-attaches the README.
+          # OCI image LABELS — baked into each per-platform image
+          # config blob. Consumed by OCI-aware tooling (registries
+          # other than GHCR, image inspectors).
           labels: |
+            org.opencontainers.image.title=${{ matrix.image_name }}
+            org.opencontainers.image.description=${{ matrix.description }}
+            org.opencontainers.image.documentation=https://go-steer.github.io/core-agent/
+            org.opencontainers.image.vendor=go-steer
+          # OCI ANNOTATIONS — attached to the manifest / index.
+          # GHCR renders its package-page description from the index
+          # annotation on multi-arch images (labels alone don't
+          # populate the GHCR page). Keep this list in sync with
+          # `labels:` above.
+          annotations: |
             org.opencontainers.image.title=${{ matrix.image_name }}
             org.opencontainers.image.description=${{ matrix.description }}
             org.opencontainers.image.documentation=https://go-steer.github.io/core-agent/
@@ -206,6 +223,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
           build-args: |
             GO_VERSION=${{ steps.go-version.outputs.version }}
             VARIANT=${{ matrix.variant }}

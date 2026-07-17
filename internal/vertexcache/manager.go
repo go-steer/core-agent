@@ -241,6 +241,41 @@ func (m *Manager) doRefresh(ctx context.Context, name string) {
 	m.mu.Unlock()
 }
 
+// MarkEvicted resets the manager to its pre-Init state after learning
+// (via a GenerateContent NOT_FOUND on the cache reference) that Vertex
+// has reaped our cache server-side. Callers who see the eviction — the
+// pkg/models/gemini wrapper's retry-once path — invoke this so:
+//
+//  1. Subsequent Name() calls return "" (the request goes uncached).
+//  2. The next non-cached turn can call Init again and get a fresh
+//     cache handle instead of the agent running uncached for the rest
+//     of its lifetime.
+//
+// Distinct from stateFailed (which stays sticky — a Create failure at
+// Init time signals a persistent problem worth surfacing). Eviction is
+// a normal end-of-TTL event, especially on long-lived daemons whose
+// cache outlives a single session.
+//
+// Idempotent + safe against races with in-flight Refresh: a refresh
+// that lands after MarkEvicted just sees state != active and no-ops.
+func (m *Manager) MarkEvicted(reason string) {
+	m.mu.Lock()
+	// Only meaningful when we currently think we hold a cache.
+	// stateFailed / stateDeleted / stateStart-with-init-in-flight all
+	// have nothing to invalidate.
+	if m.state != stateActive {
+		m.mu.Unlock()
+		return
+	}
+	name := m.cacheName
+	m.state = stateStart
+	m.cacheName = ""
+	m.expiresAt = time.Time{}
+	m.initStarted = false
+	m.mu.Unlock()
+	m.opts.logger().Printf("core-agent-vertexcache: cache %s marked evicted (%s); next turn will attempt fresh Init", name, reason)
+}
+
 // Delete releases the Vertex cache. Best-effort — failures are
 // logged but don't propagate. Callers should invoke this on session
 // unregister / daemon shutdown; skipping the call is fine (Vertex

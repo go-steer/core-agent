@@ -626,6 +626,12 @@ func (a *Adapter) Interrupt(ctx context.Context) error {
 	return err
 }
 
+// Compile-time check: *Adapter must satisfy coretui.RemoteInterrupter
+// (added in core-tui v0.15.0). If a future refactor drops or renames
+// Interrupt, this line fails at build time before the operator ever
+// hits the "/interrupt returned nothing" regression.
+var _ coretui.RemoteInterrupter = (*Adapter)(nil)
+
 // SessionPath returns the configured attach session path (mostly
 // for diagnostics / tests).
 func (a *Adapter) SessionPath() string { return a.sessionPath }

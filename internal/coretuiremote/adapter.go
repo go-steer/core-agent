@@ -609,6 +609,23 @@ func (a *Adapter) RequestWake() {
 	_ = a.client.Wake(context.TODO(), a.sessionPath)
 }
 
+// Interrupt satisfies coretui.RemoteInterrupter — dispatches the
+// operator's /interrupt slash to the daemon's POST /sessions/<sid>/
+// interrupt endpoint. Without this, /interrupt short-circuits in
+// observer mode with "no turn in flight" (the local Run-path gate
+// keys off m.cancelTurn, which is always nil for autonomous turns
+// streamed via LiveAgent). The daemon-side endpoint returned 200
+// during manual repro of the 2026-07-17 runaway list_skills loop;
+// this wiring closes the gap so operators can cancel from the TUI.
+//
+// The passed-in ctx carries coretui's 5s bound — long enough for a
+// healthy attach round-trip, short enough that a hung endpoint
+// surfaces as an error row instead of a silent stall.
+func (a *Adapter) Interrupt(ctx context.Context) error {
+	_, err := a.client.Interrupt(ctx, a.sessionPath)
+	return err
+}
+
 // SessionPath returns the configured attach session path (mostly
 // for diagnostics / tests).
 func (a *Adapter) SessionPath() string { return a.sessionPath }

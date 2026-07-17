@@ -119,9 +119,10 @@ func PruneJSON(payload []byte) (string, map[string]any) {
 // as Result.Metadata so telemetry can spot pathological inputs
 // (huge arrays, deep subtrees) without re-parsing the digest.
 type pruneStats struct {
-	stringsTruncated int
-	arraysCollapsed  int
-	subtreesDropped  int
+	stringsTruncated   int
+	arraysCollapsed    int
+	subtreesDropped    int
+	nestedJSONExpanded int
 }
 
 func (s *pruneStats) metadata() map[string]any {
@@ -134,6 +135,9 @@ func (s *pruneStats) metadata() map[string]any {
 	}
 	if s.subtreesDropped > 0 {
 		m["subtrees_dropped"] = s.subtreesDropped
+	}
+	if s.nestedJSONExpanded > 0 {
+		m["nested_json_expanded"] = s.nestedJSONExpanded
 	}
 	return m
 }
@@ -154,7 +158,7 @@ func prune(v any, depth int, stats *pruneStats) any {
 	case []any:
 		return pruneArray(x, depth, stats)
 	case string:
-		return pruneString(x, false, stats)
+		return pruneString(x, false, depth, stats)
 	default:
 		// Numbers, bools, nil — pass through unchanged.
 		return v
@@ -172,7 +176,7 @@ func pruneObject(obj map[string]any, depth int, stats *pruneStats) map[string]an
 		if s, ok := v.(string); ok {
 			// String values need the identifier-key context, which
 			// prune() doesn't carry — handle inline.
-			out[k] = pruneString(s, isID, stats)
+			out[k] = pruneString(s, isID, depth, stats)
 			continue
 		}
 		out[k] = prune(v, depth+1, stats)
@@ -212,12 +216,47 @@ func pruneArray(arr []any, depth int, stats *pruneStats) any {
 	}
 }
 
-// pruneString truncates a string past MaxStringChars unless the caller
-// flagged it as living under an identifier key (in which case losing
-// the tail would destroy semantic identity — URLs, IDs, etc.).
-// Idempotence: previously-truncated strings match the truncation
-// marker pattern and pass through untouched.
-func pruneString(s string, isIdentifier bool, stats *pruneStats) string {
+// pruneString compresses an over-threshold string. Two paths, in
+// order of preference:
+//
+//  1. **Nested-JSON expansion.** If the string looks like a serialized
+//     JSON payload (starts with `{` or `[`) and parses cleanly, the
+//     string is REPLACED with the parsed-and-recursively-pruned inner
+//     structure. This is the load-bearing path for MCP servers whose
+//     native wire encoding wraps structured data as a JSON-string
+//     inside a JSON envelope (GKE MCP's
+//     `{"clusters":["<serialized cluster>",...]}` shape,
+//     `mcp/text-content` wrapping in general). Without this, the
+//     outer pruner sees an opaque long string and truncates the whole
+//     semantic content to a `<truncated, N chars>` marker — model
+//     gets zero useful data and falls back to `retrieve_raw` or
+//     tool-loops trying to re-orient (root cause of the 2026-07-17
+//     demo's runaway `list_skills` loop, where every `gke_*` digest
+//     was 18 opaque markers instead of 18 cluster names).
+//
+//     The return type is `any` (not `string`) so a JSON-in-string can
+//     be substituted with the parsed object directly. If we returned
+//     a string, the outer marshal would escape-wrap it and the model
+//     would still see a nested-string shape — same failure mode with
+//     nicer-looking bytes.
+//
+//  2. **Truncate-and-mark.** Fallback for real prose strings, tool
+//     stdout, code snippets, etc. Returns the marker as a string so
+//     the outer marshal serializes it verbatim.
+//
+// Identifier-keyed values (see identifierKey regex) skip both paths —
+// truncating a URL, ID, or status field silently defeats the whole
+// point of digesting.
+//
+// Idempotence: previously-produced truncation markers pass through
+// untouched. Nested-JSON expansion is stable across passes: after the
+// first pass the inner value is a real structure (no longer a JSON
+// string), so the second pass takes the object/array branch of prune()
+// and gets the same result.
+//
+// depth is threaded through so nested-JSON expansion respects the
+// same MaxDepth guard the top-level pruner uses.
+func pruneString(s string, isIdentifier bool, depth int, stats *pruneStats) any {
 	if isIdentifier {
 		return s
 	}
@@ -229,8 +268,46 @@ func pruneString(s string, isIdentifier bool, stats *pruneStats) string {
 		// we already truncated.
 		return s
 	}
+	if expanded, ok := expandNestedJSON(s, depth, stats); ok {
+		return expanded
+	}
 	stats.stringsTruncated++
 	return fmt.Sprintf("<truncated, %d chars>", len(s))
+}
+
+// expandNestedJSON tries to parse s as JSON (object or array root)
+// and recursively prune the result. Returns (parsed, true) on success;
+// (nil, false) when s doesn't look like JSON, doesn't parse, or would
+// recurse past MaxDepth (in which case the caller falls back to the
+// truncation marker).
+//
+// Prefix sniff before Unmarshal so we don't pay parse cost on obvious
+// non-JSON strings (base64 blobs, prose, code) — the vast majority of
+// over-threshold strings in practice. Only starts-with-`{`-or-`[`
+// strings attempt the parse.
+//
+// Depth guard: if the caller's depth is already at MaxDepth-1, we
+// don't expand (recursion would immediately hit the depth cap). Falls
+// through to truncation.
+func expandNestedJSON(s string, depth int, stats *pruneStats) (any, bool) {
+	if depth+1 >= MaxDepth {
+		return nil, false
+	}
+	if len(s) == 0 {
+		return nil, false
+	}
+	switch s[0] {
+	case '{', '[':
+		// worth parsing
+	default:
+		return nil, false
+	}
+	var inner any
+	if err := json.Unmarshal([]byte(s), &inner); err != nil {
+		return nil, false
+	}
+	stats.nestedJSONExpanded++
+	return prune(inner, depth+1, stats), true
 }
 
 // isTruncationMarker recognizes strings this pruner itself produced,

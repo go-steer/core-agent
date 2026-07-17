@@ -169,6 +169,18 @@ Rules:
 - **Truncate long string values** past `MaxStringChars` (default
   500) → `"<truncated, N chars>"`. Identifier-key values are
   exempt.
+- **Expand nested JSON strings** before truncating. If a long
+  string starts with `{` or `[` and parses cleanly as JSON, the
+  string is REPLACED with the parsed-and-recursively-pruned inner
+  structure. This handles MCP servers whose native wire encoding
+  wraps structured data as a JSON-string inside a JSON envelope
+  (GKE MCP's `{"clusters":["<JSON obj>", ...]}` shape; any
+  MCP `text-content` payload carrying JSON). Without this, the
+  outer pruner sees an opaque long string and truncates the whole
+  semantic content — model gets zero useful data. Falls back to
+  the truncate-and-mark rule when the string doesn't parse.
+  Depth-guarded via the same `MaxDepth` cap. Metadata bump:
+  `nested_json_expanded: N`.
 - **Collapse long arrays** past `MaxArrayElems` (default 20) →
   `{"_summary": true, "first": [...10 items...], "last": [...10
   items...], "total": K, "dropped": K - 20}`. Items inside the

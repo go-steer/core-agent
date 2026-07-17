@@ -15,6 +15,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 
@@ -27,15 +28,34 @@ import (
 	coretools "github.com/go-steer/core-agent/pkg/tools"
 )
 
+// LLMFallbackResult is what an operator-supplied LLMFallback returns
+// after running the raw MCP payload through a small-tier subagent.
+// Text is the digest the model sees; SubagentModel + token counts
+// feed digest.Savings.Subagent* for /stats + OTel display without
+// pkg/mcp needing to import pkg/agent (which would create an import
+// cycle down the line — pkg/agent lives above pkg/mcp in the layer
+// hierarchy).
+//
+// The caller (cmd/core-agent, or any host code) constructs the
+// closure supplying LLMFallback and captures the *Agent needed to
+// invoke RunSubtask in that closure's environment.
+type LLMFallbackResult struct {
+	Text                 string
+	SubagentModel        string
+	SubagentInputTokens  int
+	SubagentOutputTokens int
+}
+
 // DigestOptions configures how Build wraps MCP tool responses through
 // pkg/digest. A nil *DigestOptions passed to Build disables wrapping
 // entirely (existing behavior). A non-nil options struct wraps every
 // tool from every server that isn't in NeverServers.
 //
-// LLMFallback is intentionally omitted from v1 — per the 2026-07-14
-// cost-stack plan (docs/backlog-cost-stack-2026-07-14.md), the LLM
-// subagent path (#124) is parked. Prose-shaped MCP responses take the
-// bounded passthrough branch, not a fallback subtask.
+// LLMFallback opt-in (#223): a non-nil LLMFallback enables the LLM
+// subagent digester for prose-shaped MCP responses that the
+// structural pruner can't reduce below Threshold. Left nil, those
+// responses take the bounded passthrough branch (#128's shipped
+// default).
 type DigestOptions struct {
 	// Store is the CCR backing for retrieve_raw. When nil, digest
 	// still runs but retrieve_raw returns "no raw payload" — matches
@@ -50,6 +70,24 @@ type DigestOptions struct {
 	// of digesting. Operator escape hatch for debug-sensitive or
 	// known-tiny servers.
 	NeverServers map[string]bool
+
+	// LLMFallback, when non-nil, invokes a small-tier subagent to
+	// digest MCP responses the structural JSON pruner can't reduce
+	// (prose, malformed JSON, or JSON that's structurally minimal
+	// and mostly-values). Callers pass a closure that owns a
+	// reference to an Agent + a resolved small-model; the wrapper
+	// invokes it with the raw payload and gets back a compressed
+	// digest plus subagent usage numbers.
+	//
+	// Returned SubagentModel + token counts populate
+	// digest.Savings.Subagent* on the resulting Result so /stats,
+	// per-tool footer, and OTel span attributes have real cost
+	// figures for the agentic path.
+	//
+	// A nil LLMFallback preserves the #128-shipped structural-only
+	// behavior (bounded passthrough for anything structural can't
+	// reduce). No opt-in from operators required to keep that.
+	LLMFallback func(ctx context.Context, raw []byte) (LLMFallbackResult, error)
 }
 
 // threshold returns the effective threshold (default when zero).
@@ -188,14 +226,51 @@ func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 		callID = ctx.FunctionCallID()
 	}
 
+	// Adapt operator-supplied LLMFallback to digest.Options's simpler
+	// signature. We need the subagent's usage numbers to populate
+	// Savings.Subagent* AFTER Process returns, so capture them in a
+	// closure here rather than threading a new return through pkg/digest.
+	// Zero-valued when LLMFallback is nil OR the router doesn't take
+	// the fallback path.
+	var (
+		fbModel string
+		fbIn    int
+		fbOut   int
+	)
+	var digestLLM func(context.Context, []byte) (string, error)
+	if d.opts.LLMFallback != nil {
+		digestLLM = func(ctx context.Context, raw []byte) (string, error) {
+			r, err := d.opts.LLMFallback(ctx, raw)
+			if err != nil {
+				return "", err
+			}
+			fbModel = r.SubagentModel
+			fbIn = r.SubagentInputTokens
+			fbOut = r.SubagentOutputTokens
+			return r.Text, nil
+		}
+	}
+
 	res, procErr := digest.Process(ctx, rawBytes, digest.Options{
-		Threshold: d.opts.threshold(),
-		Store:     d.opts.Store,
-		CallID:    callID,
+		Threshold:   d.opts.threshold(),
+		Store:       d.opts.Store,
+		CallID:      callID,
+		LLMFallback: digestLLM,
 	})
 	if procErr != nil {
 		// Same fallback rationale as marshal error.
 		return withLatency(raw, latencyMS), nil
+	}
+
+	// If the LLM fallback fired, decorate Savings with the subagent's
+	// usage — pkg/digest can't populate this itself (it doesn't own
+	// the subagent). Only touch Savings on the fallback path; on
+	// structural / passthrough the Subagent* fields correctly stay
+	// zero.
+	if res.Savings != nil && res.Method == digest.MethodLLMFallback {
+		res.Savings.SubagentModel = fbModel
+		res.Savings.SubagentInputTokens = fbIn
+		res.Savings.SubagentOutputTokens = fbOut
 	}
 
 	out := map[string]any{
@@ -209,6 +284,25 @@ func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 	}
 	if len(res.Metadata) > 0 {
 		out["digest_meta"] = res.Metadata
+	}
+	// Surface Savings on the returned map so the runner + TUI adapters
+	// (which already forward the whole FunctionResponse map through)
+	// can render per-tool-call footers without a new plumbing layer.
+	// Same forward-compat rationale as latency_ms above.
+	if res.Savings != nil {
+		sv := map[string]any{
+			"path":                res.Savings.Path,
+			"original_bytes":      res.Savings.OriginalBytes,
+			"digest_bytes":        res.Savings.DigestBytes,
+			"original_tokens_est": res.Savings.OriginalTokensEst,
+			"digest_tokens_est":   res.Savings.DigestTokensEst,
+		}
+		if res.Savings.SubagentModel != "" {
+			sv["subagent_model"] = res.Savings.SubagentModel
+			sv["subagent_input_tokens"] = res.Savings.SubagentInputTokens
+			sv["subagent_output_tokens"] = res.Savings.SubagentOutputTokens
+		}
+		out["savings"] = sv
 	}
 	return out, nil
 }

@@ -223,6 +223,43 @@ func Process(ctx context.Context, payload []byte, opts Options) (Result, error) 
 		res.Method = MethodStructuralJSON
 		res.Metadata = meta
 
+		// Second-chance fallthrough. If the structural pruner
+		// produced a digest that's STILL over threshold (payload
+		// was structurally minimal — one field, one long value; or
+		// many small fields the pruner has nothing to truncate)
+		// AND the caller wired an LLMFallback, re-dispatch to the
+		// LLM. Design intent: "structural is fast path; LLM wrap
+		// sees what structural couldn't reduce." Without this,
+		// JSON payloads that resist structural pruning silently
+		// stay large and the caller's LLMFallback is dead code for
+		// the MCP surface (which is 100% JSON in practice).
+		if opts.LLMFallback != nil && len(digest) >= opts.Threshold {
+			llmDigest, err := opts.LLMFallback(ctx, payload)
+			if err == nil {
+				res.Digest = llmDigest
+				res.Method = MethodLLMFallback
+				// Preserve pruner metadata for observability
+				// even though the LLM overrode the digest —
+				// operators can see "structural tried and left
+				// N bytes; LLM further compressed to M."
+				if res.Metadata == nil {
+					res.Metadata = map[string]any{}
+				}
+				res.Metadata["structural_digest_bytes"] = len(digest)
+			}
+			// LLM error: keep the structural digest. It's the
+			// best we've got; the caller can still hand it to the
+			// model. Error surfaces in a separate metadata key
+			// (llm_err_after_structural) so telemetry can catch
+			// the pattern of chronic LLM failures on this path.
+			if err != nil {
+				if res.Metadata == nil {
+					res.Metadata = map[string]any{}
+				}
+				res.Metadata["llm_err_after_structural"] = err.Error()
+			}
+		}
+
 	case MethodLLMFallback:
 		digest, err := opts.LLMFallback(ctx, payload)
 		if err != nil {

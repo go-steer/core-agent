@@ -919,8 +919,18 @@ func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (
 		// /stats: /stats shows token totals + cost, /context shows
 		// the SHAPE of the conversation (what's been compressed,
 		// what came from subtasks).
+		//
+		// Parent input rate is passed through so the digest-savings
+		// block can compute "saved ~$X" dollar figures at display
+		// time (pricing catalog is layered — resolving here ensures
+		// operator overrides + fresh refreshes both take effect
+		// without recomputing per-record at accumulation time).
+		var parentInputRate float64
+		if a.deps.Cfg != nil {
+			parentInputRate = usage.PriceFor(a.deps.Cfg.Model.Name, a.deps.Cfg).InputPerMTok
+		}
 		return coretui.SlashResult{
-			SystemMessage: renderContextStats(a.inner.ContextStats()),
+			SystemMessage: renderContextStats(a.inner.ContextStats(), parentInputRate),
 		}, nil
 	case "usage":
 		// /usage projects the local agent's AttachUsage() through the

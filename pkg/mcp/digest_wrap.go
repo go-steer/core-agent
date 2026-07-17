@@ -19,6 +19,9 @@ import (
 	"encoding/json"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/model"
 	"google.golang.org/adk/tool"
@@ -27,6 +30,33 @@ import (
 	"github.com/go-steer/core-agent/pkg/digest"
 	coretools "github.com/go-steer/core-agent/pkg/tools"
 )
+
+// tracer is the OTel tracer for the MCP wrap layer. The mcp.tool_call
+// span groups the upstream HTTP call (mcp.http_call, contributed by
+// otelhttp) and the digest.process child span emitted by pkg/digest.
+// Resolved once — no-op when the global tracer provider is noop.
+var tracer = otel.Tracer("core-agent/mcp")
+
+// spanCtxToolContext overrides just the context.Context methods on a
+// tool.Context so the inner tool's HTTP round-trip picks up our
+// mcp.tool_call span as its parent (nesting mcp.http_call under
+// mcp.tool_call in the trace tree). All other tool.Context methods
+// (FunctionCallID, Actions, State, ...) delegate to the wrapped
+// context so the inner tool sees identical behavior otherwise.
+//
+// Without this, ADK's tool.Context carries whatever context.Context
+// the runner handed to it — likely the turn-level one — and
+// otelhttp parents mcp.http_call off that instead of mcp.tool_call.
+// The trace still records all the spans; they just don't nest.
+type spanCtxToolContext struct {
+	tool.Context
+	span context.Context
+}
+
+func (s spanCtxToolContext) Deadline() (time.Time, bool) { return s.span.Deadline() }
+func (s spanCtxToolContext) Done() <-chan struct{}       { return s.span.Done() }
+func (s spanCtxToolContext) Err() error                  { return s.span.Err() }
+func (s spanCtxToolContext) Value(key any) any           { return s.span.Value(key) }
 
 // LLMFallbackResult is what an operator-supplied LLMFallback returns
 // after running the raw MCP payload through a small-tier subagent.
@@ -88,6 +118,18 @@ type DigestOptions struct {
 	// behavior (bounded passthrough for anything structural can't
 	// reduce). No opt-in from operators required to keep that.
 	LLMFallback func(ctx context.Context, raw []byte) (LLMFallbackResult, error)
+
+	// OnResult, when non-nil, fires after every successful Process
+	// call with the (fully-decorated) Result. Callers use this to
+	// aggregate per-call Savings into session-level counters — the
+	// usage.Tracker sink in cmd/core-agent wires this to a cumulative
+	// digest-savings block rendered by /context.
+	//
+	// Firing is best-effort: skipped on Process errors / marshal
+	// failures where Result is undefined. Runs synchronously on the
+	// wrapper's Run goroutine, so callers should keep the callback
+	// fast (increment counters, don't do I/O).
+	OnResult func(*digest.Result)
 }
 
 // threshold returns the effective threshold (default when zero).
@@ -187,6 +229,18 @@ func (d digestingTool) Declaration() *genai.FunctionDeclaration { return d.inner
 // the marshaled raw response, so the caller always gets *something*
 // they can hand to the model.
 func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
+	// mcp.tool_call span groups the upstream HTTP round-trip
+	// (already otelhttp-instrumented via #237) with the digest
+	// child span pkg/digest.Process emits below. Attribute names
+	// use core_agent.* namespace per docs/agentic-mcp-design.md.
+	// Span kind: internal — the wrap layer isn't itself a network
+	// egress; the underlying HTTP call is a child span in its own
+	// right.
+	toolName := d.Name()
+	spanCtx, span := tracer.Start(ctx, "mcp.tool_call", trace.WithSpanKind(trace.SpanKindInternal))
+	span.SetAttributes(attribute.String("core_agent.mcp.tool_name", toolName))
+	defer span.End()
+
 	// Bracket wall-clock latency around the upstream tool call so
 	// operators can see per-call timing without hand-scraping the
 	// eventlog (#277). Stamped as `latency_ms` on the returned map
@@ -200,8 +254,14 @@ func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 	// Also stamped on the error / marshal-fallback paths so slow
 	// failing calls are still visible (a 30-second MCP timeout is
 	// exactly the case operators need to see).
+	// Swap the context.Context inside tool.Context to spanCtx so
+	// otelhttp on the inner MCP call picks up mcp.tool_call as the
+	// parent span. Delegates non-context methods (FunctionCallID,
+	// State, ...) to the original tool.Context so the inner tool
+	// sees the same behavior otherwise.
+	innerCtx := spanCtxToolContext{Context: ctx, span: spanCtx}
 	start := time.Now()
-	raw, err := d.inner.Run(ctx, args)
+	raw, err := d.inner.Run(innerCtx, args)
 	latencyMS := time.Since(start).Milliseconds()
 	if err != nil {
 		// Upstream tool errored — return the error verbatim + inject
@@ -251,7 +311,10 @@ func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 		}
 	}
 
-	res, procErr := digest.Process(ctx, rawBytes, digest.Options{
+	// Pass spanCtx (not ctx) so digest.process nests under mcp.tool_call
+	// in the trace. The LLMFallback closure sees the same spanCtx and
+	// stamps subagent.llm_call as a grandchild.
+	res, procErr := digest.Process(spanCtx, rawBytes, digest.Options{
 		Threshold:   d.opts.threshold(),
 		Store:       d.opts.Store,
 		CallID:      callID,
@@ -271,6 +334,13 @@ func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 		res.Savings.SubagentModel = fbModel
 		res.Savings.SubagentInputTokens = fbIn
 		res.Savings.SubagentOutputTokens = fbOut
+	}
+
+	// Fire the aggregator callback (best-effort — a nil callback is
+	// the shipped default). Called AFTER Subagent* decoration so the
+	// sink sees the fully-populated Savings.
+	if d.opts.OnResult != nil {
+		d.opts.OnResult(&res)
 	}
 
 	out := map[string]any{

@@ -79,6 +79,47 @@ type Tracker struct {
 	turns     []Turn
 	startedAt time.Time
 	onAppend  func() // optional; fired after each Append, under no lock
+
+	// Digest-savings counters (#223 Phase 4). Cumulative across the
+	// session; rendered by /context. Populated via
+	// AppendDigestSavings from the MCP wrap's OnResult callback. The
+	// tracker stays pricing-lookup-agnostic — callers compute
+	// SubagentCostUSD from their own pricing catalog before appending
+	// so pkg/usage doesn't need a pricing import here.
+	digestSavings DigestSavingsTotals
+}
+
+// DigestSavingsRecord is one per-call sample of the MCP digest wrap's
+// effect on the parent's context. Aggregated into DigestSavingsTotals
+// via Tracker.AppendDigestSavings; callers construct one per Process
+// result the wrap hands back.
+//
+// Path mirrors digest.Method (structural_json / llm_fallback /
+// passthrough). Passthrough records still flow through — a call the
+// router decided to pass through verbatim IS a data point (told the
+// operator "the wrap layer thought this was small enough to skip").
+type DigestSavingsRecord struct {
+	Path                 string
+	ParentTokensSaved    int // max(0, OriginalTokensEst - DigestTokensEst)
+	SubagentModel        string
+	SubagentInputTokens  int
+	SubagentOutputTokens int
+	SubagentCostUSD      float64
+}
+
+// DigestSavingsTotals is the cumulative session view rendered by
+// /context and (when wired) OTel session-close attributes. Structural
+// and agentic-path counts are broken out because their cost math
+// differs (agentic pays a subagent bill, structural doesn't).
+type DigestSavingsTotals struct {
+	StructuralCalls          int
+	StructuralTokensSaved    int
+	AgenticCalls             int
+	AgenticTokensSaved       int // parent-side tokens saved BEFORE subagent offset
+	AgenticSubagentInTokens  int
+	AgenticSubagentOutTokens int
+	AgenticSubagentCostUSD   float64
+	PassthroughCalls         int
 }
 
 // NewTracker returns a tracker with its session-start time set to now.
@@ -215,3 +256,39 @@ func (t *Tracker) All() []Turn {
 
 // Duration reports wall-clock time since NewTracker was called.
 func (t *Tracker) Duration() time.Duration { return time.Since(t.startedAt) }
+
+// AppendDigestSavings accumulates one MCP digest-wrap result into the
+// session's cumulative counters. Negative ParentTokensSaved is
+// clamped to zero — a "digest" longer than the original happens
+// occasionally on the passthrough path when the wrap adds a
+// truncation marker, and we don't want that to subtract from savings
+// totals.
+func (t *Tracker) AppendDigestSavings(rec DigestSavingsRecord) {
+	saved := rec.ParentTokensSaved
+	if saved < 0 {
+		saved = 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	switch rec.Path {
+	case "structural_json":
+		t.digestSavings.StructuralCalls++
+		t.digestSavings.StructuralTokensSaved += saved
+	case "llm_fallback":
+		t.digestSavings.AgenticCalls++
+		t.digestSavings.AgenticTokensSaved += saved
+		t.digestSavings.AgenticSubagentInTokens += rec.SubagentInputTokens
+		t.digestSavings.AgenticSubagentOutTokens += rec.SubagentOutputTokens
+		t.digestSavings.AgenticSubagentCostUSD += rec.SubagentCostUSD
+	case "passthrough":
+		t.digestSavings.PassthroughCalls++
+	}
+}
+
+// DigestSavings returns the session-cumulative snapshot of the
+// digest-wrap's effect. Safe to call from any goroutine.
+func (t *Tracker) DigestSavings() DigestSavingsTotals {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.digestSavings
+}

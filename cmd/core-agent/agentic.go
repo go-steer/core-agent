@@ -127,7 +127,13 @@ func toolNames(ts []adktool.Tool) []string {
 // sections collapse to a one-line "no X yet" so a fresh session
 // still gets a meaningful response. Format intentionally mirrors
 // /stats' two-column key-value layout for visual parity.
-func renderContextStats(s agent.ContextStats) string {
+//
+// parentInputRate is the parent model's per-million-token input rate
+// (in USD), used to compute the "savings vs. no-digest baseline"
+// dollar figure for the Digest savings block. Zero means "unknown"
+// (fresh session, provider-less pricing, or an unpriced model) —
+// the block still renders but omits the dollar figures.
+func renderContextStats(s agent.ContextStats, parentInputRate float64) string {
 	var b strings.Builder
 	b.WriteString("Context-management activity:\n")
 
@@ -202,6 +208,42 @@ func renderContextStats(s agent.ContextStats) string {
 			fmt.Fprintf(&b, "%s (%d turns, %d in / %d out, $%.4f)", m, t.Turns, t.InputTokens, t.OutputTokens, t.CostUSD)
 		}
 		b.WriteByte('\n')
+	}
+
+	// Digest savings block (#223 Phase 4). Hidden when the wrap
+	// layer has recorded nothing — a fresh session or a session
+	// with no MCP tool calls.
+	//
+	// Labeling: "savings vs. no-digest baseline" makes the
+	// hypothetical nature explicit — this is what it WOULD have
+	// cost without the wrap infra, not a reduction in real spend.
+	// Real spend is /stats' totals.
+	ds := s.DigestSavings
+	if ds.StructuralCalls+ds.AgenticCalls+ds.PassthroughCalls > 0 {
+		fmt.Fprintf(&b, "  Digest savings (vs. no-digest baseline):\n")
+		if ds.StructuralCalls > 0 {
+			fmt.Fprintf(&b, "    Structural: %d calls, %d tokens saved",
+				ds.StructuralCalls, ds.StructuralTokensSaved)
+			if parentInputRate > 0 {
+				gross := float64(ds.StructuralTokensSaved) * parentInputRate / 1_000_000
+				fmt.Fprintf(&b, " (~$%.4f)", gross)
+			}
+			b.WriteByte('\n')
+		}
+		if ds.AgenticCalls > 0 {
+			fmt.Fprintf(&b, "    Agentic:    %d calls, %d tokens saved",
+				ds.AgenticCalls, ds.AgenticTokensSaved)
+			if parentInputRate > 0 {
+				gross := float64(ds.AgenticTokensSaved) * parentInputRate / 1_000_000
+				net := gross - ds.AgenticSubagentCostUSD
+				fmt.Fprintf(&b, " (~$%.4f net after $%.4f subagent cost)", net, ds.AgenticSubagentCostUSD)
+			}
+			b.WriteByte('\n')
+		}
+		if ds.PassthroughCalls > 0 {
+			fmt.Fprintf(&b, "    Passthrough: %d calls under threshold (skipped wrap)\n",
+				ds.PassthroughCalls)
+		}
 	}
 
 	return strings.TrimRight(b.String(), "\n")

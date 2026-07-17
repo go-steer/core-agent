@@ -25,7 +25,7 @@ import (
 
 func TestRenderContextStats_FreshSession(t *testing.T) {
 	t.Parallel()
-	out := renderContextStats(agent.ContextStats{})
+	out := renderContextStats(agent.ContextStats{}, 0)
 	if !strings.Contains(out, "Compactions:  none yet") {
 		t.Errorf("fresh-session output missing 'Compactions: none yet':\n%s", out)
 	}
@@ -57,7 +57,7 @@ func TestRenderContextStats_PopulatedSession(t *testing.T) {
 		SubtaskOutputTokens: 1500,
 		SubtaskCostUSD:      0.0234,
 	}
-	out := renderContextStats(s)
+	out := renderContextStats(s, 0)
 
 	for _, want := range []string{
 		"Compactions:  2",
@@ -83,7 +83,7 @@ func TestRenderContextStats_TruncatesLongCheckpointNote(t *testing.T) {
 		LastCheckpointNote: longNote,
 		LastCheckpointTime: time.Now(),
 	}
-	out := renderContextStats(s)
+	out := renderContextStats(s, 0)
 	if !strings.Contains(out, "...") {
 		t.Errorf("expected long note to be truncated with '...', got:\n%s", out)
 	}
@@ -103,7 +103,7 @@ func TestRenderContextStats_ModelBreakdownSortsByCost(t *testing.T) {
 			"unused-model-zero-cost-tiebrk": {Turns: 1, InputTokens: 100, OutputTokens: 10, CostUSD: 0.0001},
 		},
 	}
-	out := renderContextStats(s)
+	out := renderContextStats(s, 0)
 	if !strings.Contains(out, "Models:") {
 		t.Errorf("expected Models row in output:\n%s", out)
 	}
@@ -132,8 +132,77 @@ func TestRenderContextStats_ModelBreakdownHiddenWhenEmpty(t *testing.T) {
 		SubtaskCount: 1,
 		// ModelBreakdown nil
 	}
-	out := renderContextStats(s)
+	out := renderContextStats(s, 0)
 	if strings.Contains(out, "Models:") {
 		t.Errorf("Models row should be hidden when breakdown is empty:\n%s", out)
+	}
+}
+
+// TestRenderContextStats_DigestSavingsBlockRendersWithPricing pins the
+// #223 Phase 4 contract: when the MCP wrap has fired AND parent input
+// pricing is available, /context surfaces a "Digest savings" block
+// with token counts + dollar figures. Regression signal: if this
+// fails, the cost-reduction infra's operator-visible proof-point
+// disappears from /context.
+func TestRenderContextStats_DigestSavingsBlockRendersWithPricing(t *testing.T) {
+	t.Parallel()
+	s := agent.ContextStats{
+		DigestSavings: usage.DigestSavingsTotals{
+			StructuralCalls:          3,
+			StructuralTokensSaved:    12_000,
+			AgenticCalls:             1,
+			AgenticTokensSaved:       8_000,
+			AgenticSubagentInTokens:  1_500,
+			AgenticSubagentOutTokens: 400,
+			AgenticSubagentCostUSD:   0.0006,
+			PassthroughCalls:         2,
+		},
+	}
+	// Parent at $15/M input (roughly Opus rate) → structural saves
+	// 12k * 15 / 1M = $0.18; agentic saves 8k * 15 / 1M - 0.0006 =
+	// $0.12 - $0.0006 = $0.1194.
+	out := renderContextStats(s, 15.0)
+	for _, want := range []string{
+		"Digest savings (vs. no-digest baseline)",
+		"Structural: 3 calls, 12000 tokens saved (~$0.1800)",
+		"Agentic:    1 calls, 8000 tokens saved (~$0.1194 net after $0.0006 subagent cost)",
+		"Passthrough: 2 calls under threshold",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("digest-savings output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestRenderContextStats_DigestSavingsWithoutPricing pins the "unknown
+// rate" degradation: when the parent isn't priced, the block still
+// renders token counts but omits dollar figures (better than hiding
+// the block entirely — operators still see the wrap layer's activity).
+func TestRenderContextStats_DigestSavingsWithoutPricing(t *testing.T) {
+	t.Parallel()
+	s := agent.ContextStats{
+		DigestSavings: usage.DigestSavingsTotals{
+			StructuralCalls:       1,
+			StructuralTokensSaved: 500,
+		},
+	}
+	out := renderContextStats(s, 0)
+	if !strings.Contains(out, "Structural: 1 calls, 500 tokens saved") {
+		t.Errorf("expected token count row when rate is 0:\n%s", out)
+	}
+	if strings.Contains(out, "~$") {
+		t.Errorf("no dollar figure should appear when parent rate is 0:\n%s", out)
+	}
+}
+
+// TestRenderContextStats_DigestSavingsHiddenWhenNoActivity pins the
+// clean-fresh-session invariant: no MCP calls → no Digest savings
+// block. Otherwise /context on a session with no MCP servers shows a
+// zero-block that carries no signal.
+func TestRenderContextStats_DigestSavingsHiddenWhenNoActivity(t *testing.T) {
+	t.Parallel()
+	out := renderContextStats(agent.ContextStats{}, 15.0)
+	if strings.Contains(out, "Digest savings") {
+		t.Errorf("empty digest-savings totals should hide the block:\n%s", out)
 	}
 }

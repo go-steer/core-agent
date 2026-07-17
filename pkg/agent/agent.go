@@ -1275,7 +1275,7 @@ func (a *Agent) AttachContext() attach.ContextInfo {
 		return attach.ContextInfo{}
 	}
 	s := a.ContextStats()
-	return attach.ContextInfo{
+	out := attach.ContextInfo{
 		Compactions:          s.CompactionCount,
 		Checkpoints:          s.CheckpointCount,
 		LastTaskNote:         s.LastCheckpointNote,
@@ -1285,6 +1285,23 @@ func (a *Agent) AttachContext() attach.ContextInfo {
 		SubtaskOutputTokens:  int64(s.SubtaskOutputTokens),
 		SubtaskCostUSD:       s.SubtaskCostUSD,
 	}
+	// Digest savings (#223): nil out on a fresh session so remote
+	// renderers can distinguish "wrap layer never fired" from "fired
+	// with zero savings."
+	ds := s.DigestSavings
+	if ds.StructuralCalls+ds.AgenticCalls+ds.PassthroughCalls > 0 {
+		out.DigestSavings = &attach.DigestSavingsInfo{
+			StructuralCalls:          ds.StructuralCalls,
+			StructuralTokensSaved:    int64(ds.StructuralTokensSaved),
+			AgenticCalls:             ds.AgenticCalls,
+			AgenticTokensSaved:       int64(ds.AgenticTokensSaved),
+			AgenticSubagentInTokens:  int64(ds.AgenticSubagentInTokens),
+			AgenticSubagentOutTokens: int64(ds.AgenticSubagentOutTokens),
+			AgenticSubagentCostUSD:   ds.AgenticSubagentCostUSD,
+			PassthroughCalls:         ds.PassthroughCalls,
+		}
+	}
+	return out
 }
 
 // usageTotalsToAttach projects usage.Totals into attach.UsageTotals.

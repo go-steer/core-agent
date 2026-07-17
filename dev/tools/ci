@@ -42,6 +42,7 @@ done
 
 # Order matters: cheap, format-style checks first; the slow scanners last.
 STEPS=(
+  "docs-lint       dev/tools/docs-lint"
   "format          dev/tools/verify-go-format"
   "vet             dev/tools/vet"
   "build           dev/tools/build"

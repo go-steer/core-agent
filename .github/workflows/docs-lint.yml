@@ -1,0 +1,49 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Docs lint
+
+# Runs unconditionally on every PR — including docs-only PRs and
+# code-only PRs. Same reasoning as version-fallback.yml: docs-lint
+# guards drift patterns in markdown, so `ci.yml`'s paths-ignore on
+# `**/*.md` would skip exactly the case we care about. Splitting it
+# out here means the check runs on every merge candidate regardless
+# of what changed.
+#
+# The linter itself lives at `dev/tools/docs-lint`; see that script
+# for what it catches. `dev/ci/presubmits/verify-docs-lint` is the
+# CI-facing shim so branch protection sees a stable job name and
+# `dev/tools/ci` runs the same script locally.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  docs-lint:
+    name: docs-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify docs freshness
+        run: dev/ci/presubmits/verify-docs-lint

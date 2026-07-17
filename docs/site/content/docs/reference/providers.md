@@ -85,11 +85,11 @@ The same options apply to `gemini.NewVertex(...)`. Other genai built-ins aren't 
 
 ### Server-side built-ins on Vertex AI
 
-`GoogleSearch` and `URLContext` work on both the direct Gemini API and Vertex AI from v1.0.1 onward. Vertex's streaming search-grounding API emits a small number of heartbeat SSE frames (no `Candidates[]`, just `UsageMetadata` and a response ID); ADK's stream aggregator treats any empty-candidates chunk as a fatal `empty response` error, which previously killed Vertex grounded responses 30–60% of the time. The Gemini provider's `builtinsLLM` wrapper now drops those heartbeat-error chunks on Vertex only — the direct Gemini API path is untouched. Function-calling tools (`bash`, `read_file`, consumer-supplied tools) were already unaffected.
+`GoogleSearch` and `URLContext` work on both the direct Gemini API and Vertex AI (since v1.0.1). Vertex's streaming search-grounding API emits a small number of heartbeat SSE frames (no `Candidates[]`, just `UsageMetadata` and a response ID); ADK's stream aggregator treats any empty-candidates chunk as a fatal `empty response` error, which previously killed Vertex grounded responses 30–60% of the time. The Gemini provider's `builtinsLLM` wrapper now drops those heartbeat-error chunks on Vertex only — the direct Gemini API path is untouched. Function-calling tools (`bash`, `read_file`, consumer-supplied tools) were already unaffected.
 
 ### Surfacing grounded search activity (v1.1.0+)
 
-`GoogleSearch` runs entirely inside Google's infrastructure — there's no client-side request/result round-trip the way there is for `bash` or `read_file`. But the **evidence trail** (the queries the model issued, the URLs it grounded on) is in the response payload, and from v1.1.0 onward `core-agent` surfaces it in two places:
+`GoogleSearch` runs entirely inside Google's infrastructure — there's no client-side request/result round-trip the way there is for `bash` or `read_file`. But the **evidence trail** (the queries the model issued, the URLs it grounded on) is in the response payload, and `core-agent` surfaces it in two places (since v1.1.0):
 
 **In `runner.WriteEvents` output** — alongside the standard `→ tool(...)` / `← tool(...)` chat-style lines, you'll see:
 

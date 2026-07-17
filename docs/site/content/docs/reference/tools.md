@@ -7,7 +7,7 @@ The model-facing tool catalog `core-agent` registers by default, plus the option
 
 ## The built-in catalog
 
-Thirteen tools are registered by default. Each is configurable via the `BuiltinTools` struct in `pkg/tools` (library callers) or the `--disable-tools` flag / `tools.disable` config field (CLI users). Every call routes through the [permission gate]({{< relref "/docs/reference/permissions.md" >}}) under the `tool` namespace — denying a tool by pattern keeps it from running even if it's registered.
+Tools are grouped by domain — files, search, shell, data + network, planning, and interactive prompting. Each is configurable via the `BuiltinTools` struct in `pkg/tools` (library callers) or the `--disable-tools` flag / `tools.disable` config field (CLI users). Every call routes through the [permission gate]({{< relref "/docs/reference/permissions.md" >}}) under the `tool` namespace — denying a tool by pattern keeps it from running even if it's registered. Two tools are conditionally registered: `fetch_url` only when `url_scope.allow` has at least one entry, and `record_plan` only when `permissions.RequirePlanArtifact` is on (see [Plan-first enforcement]({{< relref "/docs/reference/permissions.md" >}}#plan-first-enforcement)).
 
 ### File system
 

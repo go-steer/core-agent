@@ -3,7 +3,7 @@
 Cutting a release is fully automated from a tag push. The two release workflows fire in parallel:
 
 - **`.github/workflows/release.yml`** — cross-compiles `core-agent` + `core-agent-tui` binaries via GoReleaser (see [`.goreleaser.yml`](../.goreleaser.yml)), signs the checksum file via Sigstore keyless, and publishes the GitHub Release with notes drawn from `CHANGELOG.md` plus a static install/verify footer.
-- **`.github/workflows/release-images.yml`** — builds and pushes three multi-arch container images (`core-agent`, `core-agent-slim`, `core-agent-tui`) to ghcr.io, signed via Sigstore keyless.
+- **`.github/workflows/release-images.yml`** — builds and pushes four multi-arch container images (`core-agent`, `core-agent-slim`, `core-agent-tui`, `k8s-event-watcher`) to ghcr.io, signed via Sigstore keyless.
 
 Both trigger on `push: tags: ['v*.*.*']`.
 
@@ -19,19 +19,23 @@ Both trigger on `push: tags: ['v*.*.*']`.
 4. **Bump `internal/version.Version`** to `v<next-minor>.0-dev` (e.g. `v2.4.0` release → main becomes `v2.5.0-dev`) so post-release builds report their next-target version. Commit + push. Enforced by [`dev/ci/presubmits/verify-version-fallback`](../dev/ci/presubmits/verify-version-fallback) — the next PR after a release will fail CI until this bump lands, so drift can't rot silently (this was retroactive after the bump was skipped for v2.5.0 + v2.6.0).
 5. **Verify both workflows went green** on the [Actions tab](https://github.com/go-steer/core-agent/actions):
    - `Release` → produces 8 archives (`core-agent` + `core-agent-tui`, each in linux/darwin × amd64/arm64), `checksums.txt`, `checksums.txt.sig`, `checksums.txt.pem`. All attached to the GitHub Release.
-   - `Release images` → publishes `:X.Y.Z`, `:X.Y`, `:X`, `:latest` tags for each of the three images plus their cosign signatures.
+   - `Release images` → publishes `:X.Y.Z`, `:X.Y`, `:X`, `:latest` tags for each of the four images plus their cosign signatures.
 6. **Sanity-check the GitHub Release page** — confirm the body shows the right CHANGELOG content, the assets list looks complete, and the "Latest" badge appears (non-prerelease tags only).
 
 ## Republish (rerun the workflows against an existing tag)
 
-If the workflow itself was missing or buggy at the time the tag was first pushed:
+If the workflow at the target tag ref was buggy or missing pieces (e.g. dev-tag CHANGELOG fallback landed after the tag was cut), dispatch **against `main`** and pass the tag as an input:
 
 ```bash
-gh workflow run release.yml        --ref vX.Y.Z
-gh workflow run release-images.yml --ref vX.Y.Z
+gh workflow run release.yml        --ref main -f tag=vX.Y.Z
+gh workflow run release-images.yml --ref main -f tag=vX.Y.Z
 ```
 
-The image workflow also takes an optional `-f tag=vX.Y.Z` input for situations where the workflow at the target ref pre-dates `workflow_dispatch` support; see the comment in [`release-images.yml`](../.github/workflows/release-images.yml).
+`release.yml` in retroactive-tag mode does three things: (1) checks out the tag so goreleaser's HEAD-vs-tag check passes and the binary's version stamp is correct; (2) overlays `dev/release/`, `.goreleaser.yml`, and `CHANGELOG.md` from `origin/main` so the current release infra + narrative drive the run; (3) passes `--skip=validate` + `GORELEASER_CURRENT_TAG` to goreleaser to tolerate the working-tree drift. The pricing-freshness guard is also skipped — historical tags carry historical pricing on purpose.
+
+`release-images.yml` supports the same `-f tag=vX.Y.Z` pattern via `docker/metadata-action`'s manual-input branch; see the comment there.
+
+Republishing an existing GitHub Release is idempotent: goreleaser overwrites the same asset filenames and the same tag reference.
 
 ## Pre-release / dev tags
 

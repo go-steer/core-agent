@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Docs freshness linter.
+#
+# Fails on the small set of drift patterns that have actually bitten us
+# in the past — invariant-sounding numeric counts and pinned versions
+# that go stale the moment code lands. Not a spell-checker; not a style
+# checker; not a link-checker. Just the four specific patterns.
+#
+# Checks:
+#   1. Numeric tool counts     — "13-tool", "Thirteen tools", "the 13 tools", ...
+#   2. Spelled image counts    — "three container variants", "four images", ...
+#   3. Pinned @vX.Y.Z installs — `go get github.com/go-steer/core-agent@v2.0.0`
+#   4. Wrong-major version pins — "as of v1.5", "Current release: v1.8.0"
+#
+# Scope:
+#   README.md + docs/site/content/**/*.md by default. docs/release-process.md
+#   and dev/release/install-verify-footer.md.tmpl legitimately use @vX.Y.Z
+#   placeholders and are excluded.
+#
+# Usage:
+#   dev/tools/docs-lint             — scan the tree, exit 1 on any finding
+#   dev/tools/docs-lint --self-test — run against a synthetic fixture and
+#                                     verify each rule fires (returns 0 if
+#                                     every check catches its pattern)
+
+set -euo pipefail
+. "$(dirname "$0")/common.sh"
+cd "$(repo_root)"
+
+# ---- paths in scope ---------------------------------------------------
+
+scoped_paths() {
+  # README + all Hugo site content markdown. Nothing under docs/*.md at
+  # the top level (release-process.md legitimately uses @vX.Y.Z), nothing
+  # under dev/ (templates), nothing under CHANGELOG.md (version headers).
+  find README.md docs/site/content -type f -name '*.md' 2>/dev/null | sort
+}
+
+# ---- individual checks ------------------------------------------------
+#
+# Each check_* function takes a single markdown path and prints
+# "path:line:col: <message>" lines. No output = clean.
+
+# Check 1: numeric tool counts.
+#
+# Fires on the drift shape "N tools" / "N-tool built-in" / "Thirteen tools".
+# Does NOT fire on:
+#   - "N tool-heavy reads"      — "tool" is adjectival here (post-hyphen)
+#   - "20-tools.md" in a tree   — path/filename, not prose
+#   - "3-tool build" (imagined) — no plural, no built-in context
+#
+# The rule: hyphenated form requires the char after "tool[s]" to be a
+# sentence delimiter (space/period/comma/paren), and the plural
+# space-separated form requires plural "tools" (not "tool"). Path-like
+# lines (tree-drawing chars, embedded `.md`/`.go`) skip entirely.
+check_tool_counts() {
+  local path="$1"
+  awk -v p="$path" '
+    # Skip lines that look like directory-tree entries or contain a
+    # markdown/go filename — these are code-shaped, not prose.
+    /^[ \t│├└─┌┐┘┴┬┼]+/ && /\.(md|go|yaml|yml|json|sh|ts|tsx|py)/ { next }
+
+    # Digit form. Match "13-tool" / "13-tools" ONLY when the char
+    # after tool[s] is a sentence delimiter (space, punctuation) —
+    # NOT another hyphen (which would be "13 tool-heavy reads").
+    match($0, /(^|[^A-Za-z0-9])[0-9]+-tools?([ .,;:)]|$)/) {
+      printf "%s:%d: numeric tool count — list tools by category (files / search / shell / …) instead of a count that drifts on every new tool\n", p, NR
+      next
+    }
+    # Digit form, space-separated. Require PLURAL "tools" to avoid
+    # matching "20 tool-heavy" (which would be "20 tool" adjective).
+    match($0, /(^|[^A-Za-z0-9])[0-9]+ tools\b/) {
+      printf "%s:%d: numeric tool count — list tools by category (files / search / shell / …) instead of a count that drifts on every new tool\n", p, NR
+      next
+    }
+    # Spelled form: Ten..Twenty [space or hyphen] tool[s].
+    match($0, /(^|[^A-Za-z])(Ten|Eleven|Twelve|Thirteen|Fourteen|Fifteen|Sixteen|Seventeen|Eighteen|Nineteen|Twenty)[- ]?tools?/) {
+      printf "%s:%d: spelled tool count — list tools by category (files / search / shell / …) instead of a count that drifts on every new tool\n", p, NR
+    }
+  ' "$path"
+}
+
+# Check 2: spelled or numeric image-variant counts.
+#
+# Matches: three images / four container variants / 4-image ...
+# The four-variant matrix in .github/workflows/release-images.yml is the
+# ground truth; describing by name is drift-safe.
+check_image_counts() {
+  local path="$1"
+  grep -n -E '\b(two|three|four|five|six|seven|[2-9]|1[0-9])[- ]?(container|image|variant)s?\b' "$path" 2>/dev/null | \
+    awk -F: -v p="$path" '{
+      msg = "hard-coded container/image count — describe variants by name (core-agent / -slim / -tui / k8s-event-watcher) or use a table";
+      printf "%s:%s: %s\n", p, $1, msg
+    }' || true
+}
+
+# Check 3: pinned @vX.Y.Z in a go get / go install snippet referencing
+# our own module. Use @latest (or a shell variable) instead.
+#
+# `go get github.com/go-steer/core-agent/cmd/core-agent@v2.0.0`  ← bad
+# `go get github.com/go-steer/core-agent/cmd/core-agent@latest`  ← good
+check_pinned_installs() {
+  local path="$1"
+  grep -n -E 'go (get|install)\s+github\.com/go-steer/core-agent[^ ]*@v[0-9]+\.[0-9]+\.[0-9]+' "$path" 2>/dev/null | \
+    awk -F: -v p="$path" '{
+      msg = "pinned @vX.Y.Z in install snippet — use @latest so the doc doesn'\''t rot after the next release";
+      printf "%s:%s: %s\n", p, $1, msg
+    }' || true
+}
+
+# Check 4: wrong-major (v1.X.Y) prose version claims.
+#
+# Matches unquoted v1.X.Y outside CHANGELOG-style `## [1.X.Y]` headers
+# and the accepted historical-marker patterns. Catches "Current
+# release: v1.8.0", "as of v1.5", "shipped in v1.3.0". v2.X.Y is fine
+# — release badge renders current dynamically.
+#
+# Accepted forms (allow-listed):
+#   `## [1.X.Y]` in CHANGELOG-shape section headers
+#   `(since v1.X.Y)` — intentional "this feature landed in" annotation
+#   `pre-v1.X.Y`    — intentional "before this version" annotation
+#   `post-v1.X.Y`   — intentional "after this version" annotation
+#   `v1.X.Y+`       — "since vX or later"
+check_wrong_major_pins() {
+  local path="$1"
+  grep -n -E '\bv1\.[0-9]+\.[0-9]+\b' "$path" 2>/dev/null | \
+    grep -v -E '^\s*[0-9]+:## \[1\.' | \
+    grep -v -E '\(since v1\.' | \
+    grep -v -E '\bpre-v1\.[0-9]' | \
+    grep -v -E '\bpost-v1\.[0-9]' | \
+    grep -v -E 'v1\.[0-9]+(\.[0-9]+)?\+' | \
+    awk -F: -v p="$path" '{
+      msg = "v1.X.Y in prose — drop the version (badge shows current) or convert to a `(since vX.Y.Z)` historical marker";
+      printf "%s:%s: %s\n", p, $1, msg
+    }' || true
+}
+
+# ---- driver -----------------------------------------------------------
+
+run_all_checks() {
+  local findings=0
+  while IFS= read -r path; do
+    [[ -z "$path" ]] && continue
+    local out
+    out=$(
+      check_tool_counts "$path"
+      check_image_counts "$path"
+      check_pinned_installs "$path"
+      check_wrong_major_pins "$path"
+    )
+    if [[ -n "$out" ]]; then
+      printf '%s\n' "$out"
+      findings=$((findings + $(printf '%s\n' "$out" | wc -l)))
+    fi
+  done < <(scoped_paths)
+
+  if (( findings > 0 )); then
+    echo ""
+    echo "docs-lint: $findings finding(s). See remediation hints above."
+    echo "Reference: dev/tools/docs-lint --self-test to see each rule in action."
+    return 1
+  fi
+  return 0
+}
+
+# ---- self-test --------------------------------------------------------
+#
+# Writes a fixture into a temp dir, points the scan at it, and verifies
+# every rule fires at least once. Used by CI and by anyone editing this
+# script to confirm the rules still catch what they should.
+
+self_test() {
+  local tmp
+  tmp=$(mktemp -d)
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmp'" EXIT
+
+  cat > "$tmp/fixture.md" <<'EOF'
+# Fixture
+
+The 13-tool built-in catalog is stale phrasing.
+Thirteen tools are registered by default.
+
+We ship three container images: `core-agent`, `-slim`, `-tui`.
+
+Install with:
+
+```
+go get github.com/go-steer/core-agent/cmd/core-agent@v2.0.0
+```
+
+Current release: v1.8.0.
+EOF
+
+  local out=0
+  # Run each check directly against the fixture and confirm it produces
+  # at least one finding line. Failure of any check → self-test failure.
+  local n
+  n=$(check_tool_counts "$tmp/fixture.md" | wc -l)
+  (( n >= 1 )) || { echo "self-test: check_tool_counts fired 0 times, expected ≥1"; out=1; }
+
+  n=$(check_image_counts "$tmp/fixture.md" | wc -l)
+  (( n >= 1 )) || { echo "self-test: check_image_counts fired 0 times, expected ≥1"; out=1; }
+
+  n=$(check_pinned_installs "$tmp/fixture.md" | wc -l)
+  (( n >= 1 )) || { echo "self-test: check_pinned_installs fired 0 times, expected ≥1"; out=1; }
+
+  n=$(check_wrong_major_pins "$tmp/fixture.md" | wc -l)
+  (( n >= 1 )) || { echo "self-test: check_wrong_major_pins fired 0 times, expected ≥1"; out=1; }
+
+  if (( out == 0 )); then
+    echo "docs-lint self-test: OK (all 4 rules fired on the fixture)"
+  fi
+  return $out
+}
+
+# ---- entry point ------------------------------------------------------
+
+case "${1:-}" in
+  --self-test) self_test ;;
+  "")          run_all_checks ;;
+  *)           echo "usage: $0 [--self-test]" >&2; exit 2 ;;
+esac

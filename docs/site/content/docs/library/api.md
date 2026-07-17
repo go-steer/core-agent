@@ -172,7 +172,7 @@ func New(model adkmodel.LLM, opts ...agent.Option) (*agent.Agent, error) {
 
 ## Built-in tools
 
-The `pkg/tools` package ships a 13-tool baseline suitable for any agent that acts on its workspace: file (`read_file`, `read_many_files`, `write_file`, `edit_file`, `delete_file`, `stat`, `list_dir`), search (`glob`, `grep`), data + network (`json_query`, `fetch_url`), shell (`bash`), planning (`todo`). All route through `permissions.Gate` (so the bash denylist and path-scope checks apply), and all honor the per-tool output caps from `cfg.ToolOutput`.
+The `pkg/tools` package ships a built-in baseline suitable for any agent that acts on its workspace: file (`read_file`, `read_many_files`, `write_file`, `edit_file`, `delete_file`, `stat`, `list_dir`), search (`glob`, `grep`), data + network (`json_query`, `fetch_url`), shell (`bash`), planning (`todo`, opt-in `record_plan`), and interactive prompting (opt-in `ask_user`). All route through `permissions.Gate` (so the bash denylist and path-scope checks apply), and all honor the per-tool output caps from `cfg.ToolOutput`.
 
 See [Built-in tools]({{< relref "/docs/reference/tools.md" >}}) for the full catalog with per-tool parameters, permission interactions, and the optional lifecycle tools (`mark_task_done`, `ask_user`, `schedule_next_turn`).
 
@@ -522,7 +522,7 @@ Behavior:
 
 ## Soft interrupt and programmatic control (v1.3.0+)
 
-`agent.RunAutonomous` is synchronous and fire-and-forget. For harness embedding (Scion, custom orchestrators, anything that needs to push instructions to a running loop) v1.3.0 ships two new surfaces.
+`agent.RunAutonomous` is synchronous and fire-and-forget. For harness embedding (Scion, custom orchestrators, anything that needs to push instructions to a running loop) two additional surfaces are available (since v1.3.0).
 
 ### `Agent.Inject(message)` — queue a message for the next turn
 
@@ -977,7 +977,7 @@ Each step is independent — skip the ones you don't need (e.g. no MCP, no skill
 
 ## Prompter
 
-The permission gate's `Prompter` is the seam for interactive consent in `ask` mode. From v1.1.0 the package ships `permissions.StdinPrompter(in, out)` for terminal use, and the bundled CLI auto-wires it when stdin is a TTY (`--yolo` bypasses the gate entirely for headless runs). To plug in your own custom UI:
+The permission gate's `Prompter` is the seam for interactive consent in `ask` mode. The package ships `permissions.StdinPrompter(in, out)` for terminal use (since v1.1.0), and the bundled CLI auto-wires it when stdin is a TTY (`--yolo` bypasses the gate entirely for headless runs). To plug in your own custom UI:
 
 ```go
 type myPrompter struct{ /* UI handle */ }

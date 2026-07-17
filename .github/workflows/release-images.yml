@@ -66,6 +66,7 @@ jobs:
           - image_name: core-agent
             variant: core-agent
             build_tags: ""
+            description: "core-agent daemon: multi-turn LLM agent runtime with in-process TUI, remote attach, MCP, and per-session isolation."
 
           # Slim build: same agent runtime, no embedded TUI. ~5MB
           # smaller binary. For headless K8s deployments where the
@@ -73,12 +74,14 @@ jobs:
           - image_name: core-agent-slim
             variant: core-agent
             build_tags: "no_tui"
+            description: "Headless core-agent daemon (no embedded TUI). ~5MB smaller image for distroless K8s deployments."
 
           # Remote TUI client. Separate consumer (operators on
           # workstations attaching to a daemon). Smaller deps tree.
           - image_name: core-agent-tui
             variant: core-agent-tui
             build_tags: ""
+            description: "Remote TUI client for core-agent — connects to a running daemon over the attach API. Not a runtime by itself."
 
           # k8s-event-watcher sidecar (v2.6, #186). Client-go informer
           # that watches Kubernetes Events, filters + dedupes, and
@@ -88,6 +91,7 @@ jobs:
           - image_name: k8s-event-watcher
             variant: k8s-event-watcher
             build_tags: ""
+            description: "Kubernetes event-triage sidecar: watches Events, dedupes, and injects matched ones into a core-agent daemon."
 
     steps:
       - uses: actions/checkout@v4
@@ -161,10 +165,16 @@ jobs:
             type=sha,prefix=main-,format=short,enable=${{ github.ref_name == 'main' && github.ref_type != 'tag' }}
             # Manual dispatch with tag input
             type=raw,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && inputs.tag != '' }}
-          # OCI image labels populated from repo metadata
+          # OCI image labels populated from repo metadata. The per-
+          # image description is what GHCR shows on the package page
+          # under the image name; the documentation URL points OCI
+          # inspectors at the published docs site. Vendor + source
+          # (the latter set in Dockerfile) link the image back to
+          # this repo so GHCR auto-attaches the README.
           labels: |
             org.opencontainers.image.title=${{ matrix.image_name }}
-            org.opencontainers.image.description=core-agent ${{ matrix.image_name }} variant
+            org.opencontainers.image.description=${{ matrix.description }}
+            org.opencontainers.image.documentation=https://go-steer.github.io/core-agent/
             org.opencontainers.image.vendor=go-steer
 
       # Compute the build version: the tag if we're on one, else

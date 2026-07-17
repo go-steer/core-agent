@@ -170,31 +170,40 @@ rm -f /tmp/ca
 
 ## Section 3 — Adapter smoke (credential-free) 🟡
 
-### V1-T3.1 — `scion-agent` builds and starts
+### V1-T3.1 — Hook mechanism fires on tool boundaries
+
+Scion integration no longer ships an adapter binary — it runs stock `core-agent` with a hooks-driven `.agents/config.json`. This test exercises `pkg/hooks` end-to-end via `cmd/core-agent`.
 
 **Steps:**
 
 ```bash
-go build -o /tmp/scion-agent ./extras/scion-agent
-timeout 1 /tmp/scion-agent --provider=echo -input "ping" 2>&1 | head -5
-rm -f /tmp/scion-agent
+LOG=$(mktemp -u)
+CFG=$(mktemp -u --suffix=.json)
+cat > "$CFG" <<EOF
+{
+  "model": {"provider": "echo"},
+  "hooks": {
+    "agent-end": [{"command": "cat >> $LOG && echo >> $LOG"}]
+  }
+}
+EOF
+go build -o /tmp/core-agent ./cmd/core-agent
+/tmp/core-agent -c "$CFG" --provider=echo -p "ping" --no-tui > /dev/null 2>&1
+test -s "$LOG" && jq -r .hook_event_name "$LOG"
+rm -f "$LOG" "$CFG" /tmp/core-agent
 ```
 
-**Pass:** binary builds; emits `[user]: ping` and an echoed response; exits cleanly when killed by timeout.
+**Pass:** the log file contains at least one `agent-end` envelope; jq prints `agent-end`.
 
-### V1-T3.2 — `scion-agent` with `--session-db`
+### V1-T3.2 — `sciontool_status` tool gated on PATH
 
-**Steps:**
+**Steps:** the authoritative check is a unit test in `pkg/tools/sciontool_status_test.go`:
 
 ```bash
-DB=$(mktemp -u --suffix=.db)
-go build -o /tmp/scion-agent ./extras/scion-agent
-echo "ping" | timeout 2 /tmp/scion-agent --provider=echo --session-db --session-db-path="$DB" 2>&1 | head -5
-test -f "$DB" && echo "DB created"
-rm -f "$DB" /tmp/scion-agent
+go test ./pkg/tools/... -race -run TestBuild_GatesSciontoolStatusOnPath -v
 ```
 
-**Pass:** stderr shows `scion-agent: session db: <path>`; the SQLite file is created.
+**Pass:** the test flips PATH to include/exclude a `sciontool` stub and asserts the tool is present/absent in the built Registry.Tools slice respectively.
 
 ### V1-T3.3 — `ax-agent` (axplore branch only) builds and starts
 

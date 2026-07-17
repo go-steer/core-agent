@@ -7,7 +7,7 @@ The model-facing tool catalog `core-agent` registers by default, plus the option
 
 ## The built-in catalog
 
-Tools are grouped by domain — files, search, shell, data + network, planning, and interactive prompting. Each is configurable via the `BuiltinTools` struct in `pkg/tools` (library callers) or the `--disable-tools` flag / `tools.disable` config field (CLI users). Every call routes through the [permission gate]({{< relref "/docs/reference/permissions.md" >}}) under the `tool` namespace — denying a tool by pattern keeps it from running even if it's registered. Two tools are conditionally registered: `fetch_url` only when `url_scope.allow` has at least one entry, and `record_plan` only when `permissions.RequirePlanArtifact` is on (see [Plan-first enforcement]({{< relref "/docs/reference/permissions.md" >}}#plan-first-enforcement)).
+Tools are grouped by domain — files, search, shell, data + network, planning, and interactive prompting. Each is configurable via the `BuiltinTools` struct in `pkg/tools` (library callers) or the `--disable-tools` flag / `tools.disable` config field (CLI users). Every call routes through the [permission gate]({{< relref "/docs/reference/permissions.md" >}}) under the `tool` namespace — denying a tool by pattern keeps it from running even if it's registered. Three tools are conditionally registered: `fetch_url` only when `url_scope.allow` has at least one entry, `record_plan` only when `permissions.RequirePlanArtifact` is on (see [Plan-first enforcement]({{< relref "/docs/reference/permissions.md" >}}#plan-first-enforcement)), and `sciontool_status` only when the `sciontool` binary is on `PATH`.
 
 ### File system
 
@@ -46,6 +46,12 @@ Tools are grouped by domain — files, search, shell, data + network, planning, 
 | Tool | Purpose | Key parameters |
 |---|---|---|
 | `todo` | In-process plan tracker. Actions: `list`, `add`, `set_status`, `clear`. Underlying `TodoStore` is exposed via `Registry.Todo` so a TUI can render plan progress (the in-process TUI's `/todo` slash command uses this). | `action`, `id?`, `text?`, `status?` |
+
+### Runtime integration
+
+| Tool | Purpose | Key parameters |
+|---|---|---|
+| `sciontool_status` | Signal a sticky lifecycle event (`ask_user`, `blocked`, `task_completed`, `limits_exceeded`) to a Scion hub. Registered only when the `sciontool` binary is on `PATH` — outside a Scion container the tool is hidden from the model rather than exposed as a subprocess no-op. See [Scion adapter]({{< relref "/docs/reference/scion-adapter.md" >}}). | `status_type`, `message` |
 
 ## Toggling individual tools
 

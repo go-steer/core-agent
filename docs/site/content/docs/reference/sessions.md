@@ -40,14 +40,14 @@ The `*eventlog.Handle` bundles two things every consumer wants:
 
 ## CLI flags
 
-The bundled CLIs (`core-agent`, `scion-agent`, `ax-agent`) opt into durable sessions through two flags:
+The bundled CLI (`core-agent`) and any consumer fork opts into durable sessions through two flags:
 
 ```
 --session-db                    persist sessions + audit log to a durable database (default off)
 --session-db-path=PATH          override the database path (default: ~/.<binary>/sessions.db)
 ```
 
-Either flag enables. The default path is derived from `os.Executable()`, so `core-agent`, `scion-agent`, and forks each get their own directory automatically — no per-binary configuration needed.
+Either flag enables. The default path is derived from `os.Executable()`, so `core-agent` and forks each get their own directory automatically — no per-binary configuration needed.
 
 ---
 

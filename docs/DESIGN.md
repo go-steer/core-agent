@@ -429,11 +429,16 @@ An adapter owns:
 
 An adapter does *not* fold runtime-specific knowledge back into the core packages. If an adapter wants a hook that core-agent doesn't expose (e.g. ADK callbacks for control-flow interception), the adapter either inspects the existing `agent.Run()` event stream or that hook gets promoted to core-agent's public API only when a second adapter needs it. We avoid speculative API surface.
 
-### First adapter: scion-agent
+### Scion integration (no adapter binary)
 
-[`extras/scion-agent/`](../extras/scion-agent/) runs core-agent inside [Scion](https://github.com/GoogleCloudPlatform/scion)'s container runtime. Mirrors the Python `adk_scion_agent` example but built on core-agent.
+[Scion](https://github.com/GoogleCloudPlatform/scion) runs stock `cmd/core-agent` — no adapter binary. Two features cover the Scion contract:
 
-Lifecycle hook strategy: the adapter's `streamTurn` ranges over `agent.Run()`'s event stream and emits transient activity (`thinking` / `executing` / `working`) on agent and tool boundaries. Sticky transitions (`ask_user`, `task_completed`, etc.) flow through a `sciontool_status` ADK tool the model invokes intentionally. No changes to core-agent's public API for this — if a future adapter needs *control-flow* callbacks (abort tool calls, substitute responses), we'll add `WithBeforeToolCallbacks` etc. on `agent.New` then.
+- **`pkg/hooks`** — config-driven shell-command dispatch on tool/model/turn boundaries. Consumers wire `sciontool hook --dialect=core-agent` into `.agents/config.json` to update Scion's `$HOME/agent-info.json` transient-activity display. The mechanism is general-purpose — any consumer can use it for custom telemetry, notifications, etc.
+- **`sciontool_status` built-in tool** — auto-registered when `sciontool` is on `PATH`. The model calls it to signal sticky lifecycle states (`ask_user`, `blocked`, `task_completed`, `limits_exceeded`).
+
+The Scion-side harness bundle (config.yaml, dialect.yaml) is staged at `extras/scion/` until Scion upstream adopts it under its own `harnesses/core-agent/`. Full docs: [Scion adapter]({{< relref "/docs/reference/scion-adapter.md" >}}).
+
+Historical note: an earlier `extras/scion-agent/` adapter binary duplicated `cmd/core-agent`'s config-load / agent-build wiring purely to add these two Scion-shaped features. Moving them into the main binary (behind opt-in config and PATH-conditional registration) eliminated the duplication.
 
 ---
 

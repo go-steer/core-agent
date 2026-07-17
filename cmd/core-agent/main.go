@@ -46,6 +46,7 @@ import (
 	"github.com/go-steer/core-agent/pkg/config"
 	"github.com/go-steer/core-agent/pkg/digest"
 	"github.com/go-steer/core-agent/pkg/eventlog"
+	"github.com/go-steer/core-agent/pkg/hooks"
 	"github.com/go-steer/core-agent/pkg/instruction"
 	"github.com/go-steer/core-agent/pkg/mcp"
 	"github.com/go-steer/core-agent/pkg/models"
@@ -1153,6 +1154,21 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	}
 	if !noCheckpoint {
 		opts = append(opts, agent.WithCheckpointer(agent.NewDefaultCheckpointer()))
+	}
+	// Config-driven hook dispatch (pkg/hooks). Fires operator-configured
+	// shell commands on tool/model/turn boundaries. Most consumers won't
+	// set cfg.Hooks — the dispatcher becomes a no-op and we skip wiring
+	// so the tap loop stays hot-path-free. Primary consumer: Scion, via
+	// `sciontool hook --dialect=core-agent`.
+	//
+	// session_id is left empty in the envelope: the agent's session ID
+	// isn't known until agent.New returns (a.SessionID()), and the
+	// primary consumer (Scion) doesn't require it. Late-binding via
+	// WithPostConstruct is a follow-up if a consumer asks for the
+	// correlation.
+	if hookDispatcher := hooks.New(cfg.Hooks, "", os.Stderr); !hookDispatcher.Empty() {
+		opts = append(opts, agent.WithEventHook(hookDispatcher.OnEvent, hookDispatcher.OnTurnEnd))
+		send(fmt.Sprintf("hooks: %d event(s) wired", len(cfg.Hooks)))
 	}
 	// Late-bind agentRef for the agentic tool wrappers (Mechanism
 	// B). The wrappers were registered above with an AgentGetter

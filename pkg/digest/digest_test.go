@@ -170,3 +170,133 @@ func TestProcess_CallIDRoundTrip(t *testing.T) {
 		t.Errorf("CallID = %q, want tool-call-abc123", res.CallID)
 	}
 }
+
+func TestProcess_Savings_PopulatedOnPassthrough(t *testing.T) {
+	t.Parallel()
+	payload := []byte(`{"k":"v"}`)
+	res, err := Process(context.Background(), payload, Options{Threshold: 4096})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Savings == nil {
+		t.Fatal("Savings unpopulated on passthrough")
+	}
+	if got, want := res.Savings.Path, MethodPassthrough; got != want {
+		t.Errorf("Savings.Path = %q, want %q", got, want)
+	}
+	if got, want := res.Savings.OriginalBytes, len(payload); got != want {
+		t.Errorf("Savings.OriginalBytes = %d, want %d", got, want)
+	}
+	// Passthrough returns payload verbatim → digest bytes == original.
+	if res.Savings.DigestBytes != res.Savings.OriginalBytes {
+		t.Errorf("passthrough: DigestBytes = %d, want == OriginalBytes = %d",
+			res.Savings.DigestBytes, res.Savings.OriginalBytes)
+	}
+	// Token estimates use the 4-char-per-token round-up: 9 bytes → 3 tokens.
+	if got, want := res.Savings.OriginalTokensEst, 3; got != want {
+		t.Errorf("OriginalTokensEst = %d, want %d (9 bytes / 4 = 2.25 → 3)", got, want)
+	}
+	// Subagent fields untouched on passthrough.
+	if res.Savings.SubagentModel != "" ||
+		res.Savings.SubagentInputTokens != 0 ||
+		res.Savings.SubagentOutputTokens != 0 {
+		t.Errorf("Subagent fields unexpectedly populated on passthrough: %+v", res.Savings)
+	}
+}
+
+func TestProcess_Savings_ReflectsStructuralReduction(t *testing.T) {
+	t.Parallel()
+	// JSON payload with a long string field that structural pruning
+	// will truncate. Digest bytes should be materially less than
+	// original bytes; savings must reflect that.
+	longVal := strings.Repeat("x", MaxStringChars*4)
+	payload := []byte(fmt.Sprintf(`{"prose": %q}`, longVal))
+
+	res, err := Process(context.Background(), payload, Options{Threshold: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Method != MethodStructuralJSON {
+		t.Fatalf("expected structural path, got %q", res.Method)
+	}
+	if res.Savings == nil {
+		t.Fatal("Savings unpopulated on structural path")
+	}
+	if got, want := res.Savings.Path, MethodStructuralJSON; got != want {
+		t.Errorf("Savings.Path = %q, want %q", got, want)
+	}
+	if res.Savings.OriginalBytes != len(payload) {
+		t.Errorf("OriginalBytes = %d, want %d", res.Savings.OriginalBytes, len(payload))
+	}
+	if res.Savings.DigestBytes >= res.Savings.OriginalBytes {
+		t.Errorf("structural pruner did not reduce: original=%d digest=%d",
+			res.Savings.OriginalBytes, res.Savings.DigestBytes)
+	}
+	if res.Savings.DigestTokensEst >= res.Savings.OriginalTokensEst {
+		t.Errorf("token estimate did not reflect reduction: orig=%d digest=%d",
+			res.Savings.OriginalTokensEst, res.Savings.DigestTokensEst)
+	}
+}
+
+func TestProcess_Savings_ReflectsLLMFallbackReduction(t *testing.T) {
+	t.Parallel()
+	// Prose payload above threshold with an LLM fallback that returns
+	// a shorter digest. Savings.DigestBytes reflects the fallback
+	// output.
+	payload := []byte(strings.Repeat("The rain in Spain falls mainly on the plain. ", 200))
+	shortDigest := "Rain falls in Spain."
+
+	res, err := Process(context.Background(), payload, Options{
+		Threshold: 100,
+		LLMFallback: func(_ context.Context, _ []byte) (string, error) {
+			return shortDigest, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Method != MethodLLMFallback {
+		t.Fatalf("expected LLM fallback path, got %q", res.Method)
+	}
+	if res.Savings == nil {
+		t.Fatal("Savings unpopulated on LLM fallback path")
+	}
+	if got, want := res.Savings.Path, MethodLLMFallback; got != want {
+		t.Errorf("Savings.Path = %q, want %q", got, want)
+	}
+	if got, want := res.Savings.DigestBytes, len(shortDigest); got != want {
+		t.Errorf("DigestBytes = %d, want %d", got, want)
+	}
+	if res.Savings.OriginalBytes <= res.Savings.DigestBytes {
+		t.Errorf("expected LLM digest smaller than original: orig=%d digest=%d",
+			res.Savings.OriginalBytes, res.Savings.DigestBytes)
+	}
+	// pkg/digest doesn't own the subagent so Subagent* stay zero here.
+	// The MCP wrapper populates them AFTER Process returns.
+	if res.Savings.SubagentModel != "" {
+		t.Errorf("pkg/digest should not populate SubagentModel; got %q",
+			res.Savings.SubagentModel)
+	}
+}
+
+func TestEstimateTokens_Boundaries(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		bytes, want int
+	}{
+		{0, 0},
+		{-1, 0},
+		{1, 1}, // round up
+		{3, 1},
+		{4, 1},
+		{5, 2},
+		{8, 2},
+		{9, 3},
+		{4000, 1000},
+		{4001, 1001},
+	} {
+		if got := estimateTokens(tc.bytes); got != tc.want {
+			t.Errorf("estimateTokens(%d) = %d, want %d", tc.bytes, got, tc.want)
+		}
+	}
+}

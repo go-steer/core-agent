@@ -17,10 +17,46 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore: ['**/*.md']
+    paths-ignore:
+      # Docs — the parallel ci-docs.yml emits matching green stubs
+      # so required checks stay satisfied.
+      - '**/*.md'
+      # Image-build config — no Go code touched, so the Go test /
+      # lint / vet / vuln pipeline can't be affected. release-images.yml
+      # rebuilds on its own trigger; changes there don't need the
+      # Go pipeline to re-run.
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.github/workflows/release*.yml'
+      - '.github/workflows/docs*.yml'
+      - '.github/workflows/pricing-regen.yml'
+      # Docs-site sources — Hugo build lives outside this workflow.
+      - 'docs/site/**'
+      # License / config-only chores that can't affect Go.
+      - 'LICENSE'
+      - 'CODE_OF_CONDUCT.md'
+      - 'CONTRIBUTING.md'
   pull_request:
     branches: [main]
-    paths-ignore: ['**/*.md']
+    paths-ignore:
+      # Docs — the parallel ci-docs.yml emits matching green stubs
+      # so required checks stay satisfied.
+      - '**/*.md'
+      # Image-build config — no Go code touched, so the Go test /
+      # lint / vet / vuln pipeline can't be affected. release-images.yml
+      # rebuilds on its own trigger; changes there don't need the
+      # Go pipeline to re-run.
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.github/workflows/release*.yml'
+      - '.github/workflows/docs*.yml'
+      - '.github/workflows/pricing-regen.yml'
+      # Docs-site sources — Hugo build lives outside this workflow.
+      - 'docs/site/**'
+      # License / config-only chores that can't affect Go.
+      - 'LICENSE'
+      - 'CODE_OF_CONDUCT.md'
+      - 'CONTRIBUTING.md'
 
 # Cancel in-progress runs when a new commit lands on the same branch
 # so we don't queue stale tests.

@@ -823,6 +823,75 @@ the standalone library first if shared-memory or AX integration
 also wants it. Either path is consistent with the project's "land
 in-tree first, extract on second consumer" pattern.
 
+## 2026-07-17 addendum — route `retrieve_raw` through the agentic wrap
+
+The `retrieve_raw` escape hatch (shipped in #128 steps 3+4) closes
+the "digest looks suspicious" gap by letting the model fetch the
+full un-digested payload back into context. As shipped, it hands
+back the raw bytes verbatim — same cost as if the wrap had never
+fired for that call.
+
+Field-observed on the 2026-07-17 demo drive: the model would call
+`retrieve_raw` in exactly the cases where the digest was working
+correctly for the majority of the response but had lost a specific
+detail — and pay the full cost of re-inflating everything. On a
+28k-token GKE `describe` response where the model needed ONE
+truncated field, `retrieve_raw` adds all 28k tokens back to
+context.
+
+### Proposal
+
+When `retrieve_raw` fires, route the raw payload through the
+existing `DigestOptions.LLMFallback` closure BEFORE returning to
+the model. This turns the escape hatch from "give me everything
+verbatim" into "give me a higher-fidelity digest, produced by a
+subagent with more headroom than the structural pruner has."
+
+Wire shape:
+
+- Same LLM subagent hook already wired for the second-chance path
+  in `pkg/digest.Process` (agentic MCP wrap, #223 Phase 3). Reuse
+  the closure — no new configuration surface.
+- `retrieve_raw`'s handler in `pkg/tools/retrieve.go` gets an
+  optional `LLMFallback` field on `RetrieveRawOptions`. When set:
+  handler fetches raw from Store, then invokes fallback with a
+  higher token budget than the wrap's per-call default (the model
+  is asking specifically because it wants MORE than the digest
+  gave it — the subagent should have room to expand).
+- Fallback is opt-in via `--mcp-agentic-wrap-llm` (already the
+  gate for the wrap's own LLM path); off by default matches the
+  wrap's shipped posture.
+- When off, `retrieve_raw` returns raw verbatim — same behavior
+  as today. No regression.
+
+### Trade-offs
+
+**Pro:** turns the cost-bomb escape hatch into a bounded higher-
+fidelity digest. Combines naturally with tighter `retrieve_raw`
+tool-description guidance (PR #300, merged) — the model is
+DISCOURAGED from calling it casually, but when it does, the cost
+is bounded.
+
+**Pro:** operators who care about cost can enable LLM-fallback and
+get the safety net without worrying that `retrieve_raw` misuse
+undoes all their savings.
+
+**Con:** adds a subagent round-trip to `retrieve_raw` latency (~1-3s
+on Flash-tier). But `retrieve_raw` is already the escape hatch;
+operators expecting it to be cheap already broke their mental model.
+
+**Con:** the model can't get truly raw bytes when it needs them
+(cross-tool piping, exact-quote extraction). Mitigation: a second
+tool (`retrieve_raw_verbatim`) or an argument (`raw_mode=true`)
+that skips the fallback. Not v1 — add if operator demand
+materializes.
+
+### Sequencing
+
+Follow-up PR, not blocking. Ships after the `pkg/digest` pruner-in-
+string fix (root cause of most retrieve_raw calls) and the wrap's
+LLM subagent path (Phase 3, already in #290) both bed in.
+
 ## References
 
 - #118 — agentic-tools default on (shipped). Sets the posture this

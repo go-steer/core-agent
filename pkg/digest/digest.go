@@ -40,7 +40,17 @@ package digest
 import (
 	"context"
 	"errors"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// tracer is the OTel tracer used by Process. Resolved once at package
+// load — no-op when the global tracer provider is noop (telemetry off).
+// Name matches the design doc's span-namespace convention
+// (docs/agentic-mcp-design.md, "OTel spans + attributes" addendum).
+var tracer = otel.Tracer("core-agent/digest")
 
 // Method values populated on Result.Method — the observable dispatch
 // decision the router made. Callers surface these in telemetry
@@ -190,6 +200,14 @@ func Process(ctx context.Context, payload []byte, opts Options) (Result, error) 
 	}
 	rawBytes := len(payload)
 
+	// digest.process span. No-op when the global tracer provider is
+	// noop (telemetry off, the default). Path + savings attributes
+	// stamp at End time so the span carries the router's actual
+	// decision, not just "we started digesting."
+	ctx, span := tracer.Start(ctx, "digest.process", trace.WithSpanKind(trace.SpanKindInternal))
+	defer span.End()
+	span.SetAttributes(attribute.Int("core_agent.digest.original_bytes", rawBytes))
+
 	// Persist to the CCR store BEFORE routing. If the write fails,
 	// we still process — the caller gets a digest, just no retrieval
 	// backdoor for this payload. The error surfaces in Metadata so
@@ -305,6 +323,23 @@ func Process(ctx context.Context, payload []byte, opts Options) (Result, error) 
 	// digest_methods breakdown so operators can see which path
 	// dominates without wiring per-call telemetry themselves.
 	recordTelemetry(res.Method, res.RawBytes, digestBytes)
+
+	// Stamp the router's decision + savings math onto the span so
+	// OTel dashboards can slice by path (structural vs. agentic vs.
+	// passthrough) and rank tools by savings without hand-scraping
+	// eventlog. Subagent cost stays out — the LLMFallback closure's
+	// own subagent.llm_call child span carries that.
+	savingsTokens := res.Savings.OriginalTokensEst - res.Savings.DigestTokensEst
+	if savingsTokens < 0 {
+		savingsTokens = 0
+	}
+	span.SetAttributes(
+		attribute.String("core_agent.digest.path", res.Method),
+		attribute.Int("core_agent.digest.digest_bytes", digestBytes),
+		attribute.Int("core_agent.digest.original_tokens_est", res.Savings.OriginalTokensEst),
+		attribute.Int("core_agent.digest.digest_tokens_est", res.Savings.DigestTokensEst),
+		attribute.Int("core_agent.digest.savings_tokens_est", savingsTokens),
+	)
 	return res, nil
 }
 

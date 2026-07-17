@@ -656,6 +656,129 @@ func pickEchoTool(t *testing.T, tools []tool.Tool) tool.Tool {
 	return nil
 }
 
+// TestDigestingTool_Run_OnResultFiresWithDecoratedSavings pins the
+// #223 Phase 4 accumulator contract: when OnResult is wired, the
+// wrapper fires it once per successful Process call with the fully-
+// decorated Result (Subagent* populated for the fallback path,
+// otherwise zero). The main.go aggregator relies on this to feed
+// /context's Digest savings block.
+func TestDigestingTool_Run_OnResultFiresWithDecoratedSavings(t *testing.T) {
+	t.Parallel()
+
+	fallback := func(_ context.Context, _ []byte) (LLMFallbackResult, error) {
+		return LLMFallbackResult{
+			Text:                 "compressed",
+			SubagentModel:        "gemini-2.5-flash",
+			SubagentInputTokens:  100,
+			SubagentOutputTokens: 25,
+		}, nil
+	}
+
+	var (
+		captured    *digest.Result
+		invocations int
+	)
+	onResult := func(r *digest.Result) {
+		invocations++
+		captured = r
+	}
+
+	// Force structural-second-chance fallthrough: shallow object,
+	// many small identifier-shaped keys — same shape the existing
+	// LLMFallback tests use.
+	resp := make(map[string]any, 100)
+	for i := 0; i < 100; i++ {
+		resp[fmt.Sprintf("pod_%02d_id", i)] = fmt.Sprintf("id-%02d", i)
+	}
+	tool := wrapFixedTool(t, "gke_get_pods", resp, &DigestOptions{
+		Threshold:   500,
+		LLMFallback: fallback,
+		OnResult:    onResult,
+	})
+
+	callCtx := &stubToolCtx{Context: context.Background(), callID: "call-onresult"}
+	if _, err := tool.(runnable).Run(callCtx, map[string]any{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if invocations != 1 {
+		t.Errorf("OnResult invocations = %d, want 1", invocations)
+	}
+	if captured == nil || captured.Savings == nil {
+		t.Fatalf("OnResult captured no Result or nil Savings: %+v", captured)
+	}
+	if captured.Savings.SubagentModel != "gemini-2.5-flash" {
+		t.Errorf("SubagentModel not decorated before OnResult fired: %+v", captured.Savings)
+	}
+	if captured.Savings.SubagentInputTokens != 100 || captured.Savings.SubagentOutputTokens != 25 {
+		t.Errorf("Subagent token counts not decorated: %+v", captured.Savings)
+	}
+}
+
+// TestDigestingTool_Run_OnResultNilSkipsCallback pins the shipped
+// default: no OnResult wired → wrapper doesn't crash, doesn't try
+// to invoke a nil closure. Regression signal against a lazy `if != nil`
+// check dropping out during future refactors.
+func TestDigestingTool_Run_OnResultNilSkipsCallback(t *testing.T) {
+	t.Parallel()
+	tools := runWrappedEcho(t, "demo", "demo", &DigestOptions{
+		Threshold: 100,
+		// OnResult intentionally nil
+	})
+	echo := pickEchoTool(t, tools)
+	callCtx := &stubToolCtx{Context: context.Background(), callID: "call-noon"}
+	if _, err := echo.(runnable).Run(callCtx, map[string]any{"msg": strings.Repeat("x", 5000)}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}
+
+// TestDigestingTool_Run_EmitsMCPToolCallSpan pins the #223 Phase 5
+// OTel contract: each MCP tool call emits an mcp.tool_call parent
+// span with core_agent.mcp.tool_name. The digest.process child span
+// (from pkg/digest.Process) nests underneath in the exported trace
+// so operators can see the whole "MCP call → digest decision" flow
+// grouped in trace UIs.
+//
+// Not t.Parallel-safe: swaps the global tracer provider.
+func TestDigestingTool_Run_EmitsMCPToolCallSpan(t *testing.T) {
+	rec := installRecorderMCP(t)
+
+	tools := runWrappedEcho(t, "demo", "demo", &DigestOptions{Threshold: 100})
+	echo := pickEchoTool(t, tools)
+	callCtx := &stubToolCtx{Context: context.Background(), callID: "call-otel"}
+	if _, err := echo.(runnable).Run(callCtx, map[string]any{"msg": strings.Repeat("x", 5000)}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	spans := rec.Ended()
+	var toolSpan *readOnlySpanStub
+	for _, sp := range spans {
+		if sp.Name() == "mcp.tool_call" {
+			toolSpan = &readOnlySpanStub{sp}
+			break
+		}
+	}
+	if toolSpan == nil {
+		names := make([]string, 0, len(spans))
+		for _, sp := range spans {
+			names = append(names, sp.Name())
+		}
+		t.Fatalf("mcp.tool_call span not emitted; got spans: %v", names)
+	}
+	var foundName bool
+	for _, kv := range toolSpan.Attributes() {
+		if string(kv.Key) == "core_agent.mcp.tool_name" {
+			foundName = true
+			if got := kv.Value.AsString(); !strings.Contains(got, "echo") {
+				t.Errorf("core_agent.mcp.tool_name = %q, want prefix_echo", got)
+			}
+		}
+	}
+	if !foundName {
+		t.Errorf("core_agent.mcp.tool_name attribute missing on mcp.tool_call span")
+	}
+}
+
 func assertLatencyMS(t *testing.T, res map[string]any, label string) {
 	t.Helper()
 	if res == nil {

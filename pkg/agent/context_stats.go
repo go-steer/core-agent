@@ -88,6 +88,15 @@ type ContextStats struct {
 	// breakdown wouldn't tell the operator anything new beyond
 	// /stats' grand total).
 	ModelBreakdown map[string]usage.Totals
+
+	// DigestSavings surfaces the MCP digest wrap's cumulative
+	// effect on the parent's context (#223). Structural and agentic
+	// paths are broken out because their cost math differs — the
+	// renderer labels the block "savings vs. no-digest baseline"
+	// since these are hypothetical (what it would have cost without
+	// the wrap layer), not real spend reductions. Zero-value when
+	// the wrap layer is off or nothing has fired yet.
+	DigestSavings usage.DigestSavingsTotals
 }
 
 // ContextStats returns a snapshot of compaction/checkpoint/subtask
@@ -123,6 +132,10 @@ func (a *Agent) ContextStats() ContextStats {
 		if len(byModel) > 1 {
 			stats.ModelBreakdown = byModel
 		}
+		// Digest savings snapshot: cheap read of the tracker's
+		// accumulated counters (populated by pkg/mcp's OnResult
+		// callback when the wrap fires).
+		stats.DigestSavings = a.tracker.DigestSavings()
 	}
 
 	// Boundary scan. When the session.Service isn't available,

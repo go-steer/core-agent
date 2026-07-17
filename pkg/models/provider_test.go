@@ -83,3 +83,66 @@ func TestResolveSmallModel(t *testing.T) {
 		})
 	}
 }
+
+// TestResolveMCPSmallModel pins the three-layer precedence chain for
+// the MCP-wrap subagent (#223): mcp-specific override → general
+// agentic override → provider cheap-tier default → "" (inherit).
+//
+// Regression signal: if this test fails, operators lose the ability
+// to tune MCP-wrap and built-in-wrap subagents independently — the
+// exact use case the extra layer was introduced for.
+func TestResolveMCPSmallModel(t *testing.T) {
+	geminiCheap := stubProviderWithSmall{stubProvider{"gemini"}, "gemini-2.5-flash"}
+	tests := []struct {
+		name        string
+		provider    models.Provider
+		mcpOverride string
+		agentic     string
+		want        string
+	}{
+		{
+			name:        "mcp override wins over agentic override",
+			provider:    geminiCheap,
+			mcpOverride: "gemini-2.5-pro",
+			agentic:     "claude-haiku-4-5",
+			want:        "gemini-2.5-pro",
+		},
+		{
+			name:        "mcp override wins over provider default",
+			provider:    geminiCheap,
+			mcpOverride: "claude-haiku-4-5",
+			agentic:     "",
+			want:        "claude-haiku-4-5",
+		},
+		{
+			name:        "agentic override wins when mcp empty",
+			provider:    geminiCheap,
+			mcpOverride: "",
+			agentic:     "claude-haiku-4-5",
+			want:        "claude-haiku-4-5",
+		},
+		{
+			name:        "provider default when both empty",
+			provider:    geminiCheap,
+			mcpOverride: "",
+			agentic:     "",
+			want:        "gemini-2.5-flash",
+		},
+		{
+			name:        "empty when provider has no default and both empty",
+			provider:    stubProvider{"echo"},
+			mcpOverride: "",
+			agentic:     "",
+			want:        "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := models.ResolveMCPSmallModel(tt.provider, tt.mcpOverride, tt.agentic)
+			if got != tt.want {
+				t.Errorf("ResolveMCPSmallModel(%q, %q, %q) = %q, want %q",
+					tt.provider.Name(), tt.mcpOverride, tt.agentic, got, tt.want)
+			}
+		})
+	}
+}

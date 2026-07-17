@@ -74,6 +74,22 @@ func ResolveSmallModel(p Provider, override string) string {
 	return ""
 }
 
+// ResolveMCPSmallModel is ResolveSmallModel's MCP-wrap sibling —
+// layers a per-surface override (mcp.json's agentic_wrap_model or
+// --mcp-agentic-wrap-model) in front of the general chain so
+// operators can pick a different tier for MCP responses than for
+// built-in-tool wrappers. Rationale: MCP responses can be shaped
+// differently enough (structured GKE tables vs. arbitrary fetch_url
+// bodies) that one tier works well for one surface but not the other.
+//
+// Precedence: mcpSpecific → agenticGeneral → provider default → "".
+func ResolveMCPSmallModel(p Provider, mcpSpecific, agenticGeneral string) string {
+	if mcpSpecific != "" {
+		return mcpSpecific
+	}
+	return ResolveSmallModel(p, agenticGeneral)
+}
+
 // Constructor builds a Provider from validated config. Tests register
 // alternates via Register so resolution stays decoupled from the
 // imports of any single backend.

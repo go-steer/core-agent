@@ -105,6 +105,22 @@ All three were cost-instrumented in v2.0 ([fix #61](https://github.com/go-steer/
 
 For short headless one-shots (`core-agent -p "..."`) compaction and checkpoints would never fire — the session ends before either threshold is crossed. The flags `--no-compact` and `--no-checkpoint` skip the wiring entirely; saves a few KB of context budget that's otherwise spent on the auto-wired `mark_task_done` tool description.
 
+### MCP digest wrap
+
+MCP tool responses go through their own dedicated wrap layer (see [MCP reference → Structural digest wrap]({{< relref "/docs/reference/mcp.md" >}}#structural-digest-wrap---no-mcp-digest)). The structural pruner ships default-on: JSON-shaped MCP responses get identifier-preserving compression before reaching the parent's context, and prose passthroughs are bounded at 64 KiB. This is the biggest cost lever for sessions that use MCP-heavy servers (GKE, GitHub, Linear, filesystem) — a 13-row `gke_list_clusters` table burns ~2k tokens raw and ~200 tokens digested, and MCP-heavy sessions typically hit that on every turn.
+
+The `--mcp-agentic-wrap-llm` opt-in adds a small-tier LLM subagent for responses the structural pruner can't reduce (prose, malformed JSON, JSON that's structurally minimal). Cost profile mirrors the `agentic_*` wrappers — subagent pays Flash/Haiku rates, parent-side savings run 90-95% of gross for typical GKE-shape responses. Enable via CLI or `mcp.json`.
+
+The cumulative effect surfaces in `/context` under **Digest savings**:
+
+```
+Digest savings (vs. no-digest baseline):
+  Structural: 12 calls, 41200 tokens saved (~$0.1442)
+  Agentic:    3 calls, 22000 tokens saved (~$0.0769 net after $0.0002 subagent cost)
+```
+
+Labeled "vs. no-digest baseline" because these are hypothetical — what the session WOULD have cost without the wrap layer, not a reduction in real spend (real spend is `/stats`).
+
 ---
 
 ## Lever 3 — Prompt caching

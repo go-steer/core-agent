@@ -189,7 +189,7 @@ If an MCP server tries to elicit input from the user (the protocol's `elicit` re
 
 ## Structural digest wrap (`--no-mcp-digest`)
 
-Since v2.7.0-dev.4, MCP tool responses are routed through the [`pkg/digest`](https://github.com/go-steer/core-agent/tree/main/pkg/digest) structural pruner before reaching the model's context. The wrapper preserves identifier-shaped keys (`id`, `name`, `status`, `apiVersion`, `*url*`, `*_id`, …), truncates long strings past 500 chars, collapses arrays over 20 items into a head-plus-tail summary, and caps recursion at depth 8. Prose-shaped responses take a bounded passthrough (max 64 KiB) — no LLM subagent in this pass.
+Since v2.7.0-dev.4, MCP tool responses are routed through the [`pkg/digest`](https://github.com/go-steer/core-agent/tree/main/pkg/digest) structural pruner before reaching the model's context. The wrapper preserves identifier-shaped keys (`id`, `name`, `status`, `apiVersion`, `*url*`, `*_id`, …), truncates long strings past 500 chars, collapses arrays over 20 items into a head-plus-tail summary, and caps recursion at depth 8. Prose-shaped responses take a bounded passthrough (max 64 KiB) — unless the LLM subagent second-chance path is enabled (see below).
 
 The model sees a synthetic tool response:
 
@@ -227,6 +227,28 @@ The `call_id` is the escape hatch — the model can pass it to the built-in `ret
 }
 ```
 
+### LLM subagent second-chance (`--mcp-agentic-wrap-llm`)
+
+Opt-in. When the structural pruner can't reduce a response below the threshold — prose-shaped payloads, malformed JSON, or JSON whose keys are all preserved by the pruner — the LLM subagent runs a small-tier model over the original payload and returns a compressed summary. Full design in [`docs/agentic-mcp-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/agentic-mcp-design.md).
+
+- **CLI**: `--mcp-agentic-wrap-llm=true` enables the path. `--mcp-agentic-wrap-model=<id>` overrides the subagent model just for MCP (falls through to `--agentic-small-model` → provider default → parent-inherit).
+- **Per-project**: `agentic_wrap_llm: true` and `agentic_wrap_model: "<id>"` in `.agents/mcp.json` mirror the CLI flags. Either source enabling turns it on.
+- **Cost profile**: the subagent pays a small-tier bill (e.g. Flash: ~$0.075/M input / $0.30/M output). Break-even after one subsequent turn where the digest replaces the raw response in history resend.
+
+```json
+{
+  "version": 1,
+  "agentic_wrap": true,
+  "agentic_wrap_llm": true,
+  "agentic_wrap_model": "gemini-2.5-flash",
+  "servers": {
+    "gke": { "transport": "stdio", "command": "gke-mcp" }
+  }
+}
+```
+
+When the fallback fires the tool response `method` field is `llm_fallback` (structural cases stay `structural_json`).
+
 ### Telemetry
 
 `GET /sessions/<id>/usage` returns a `digest_methods` block with per-method call counts + cumulative bytes saved so operators can tell which pruner path dominates:
@@ -234,10 +256,12 @@ The `call_id` is the escape hatch — the model can pass it to the built-in `ret
 ```json
 {
   "digest_methods": {
-    "counts": {"structural_json": 42, "passthrough": 3},
-    "bytes_saved": {"structural_json": 1234567, "passthrough": 0}
+    "counts": {"structural_json": 42, "passthrough": 3, "llm_fallback": 5},
+    "bytes_saved": {"structural_json": 1234567, "passthrough": 0, "llm_fallback": 89012}
   }
 }
 ```
+
+`GET /sessions/<id>/context` returns a `digest_savings` block with the session-cumulative view — structural vs. agentic call counts, parent-side tokens saved, subagent input/output tokens, and subagent cost. Also surfaced inline in the `/context` slash's "Digest savings" section, which computes the parent-side dollar savings from the current pricing catalog.
 
 Design: [`docs/digest-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/digest-design.md). Tracking issue: [#128](https://github.com/go-steer/core-agent/issues/128).

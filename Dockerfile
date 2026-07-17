@@ -97,8 +97,17 @@ FROM gcr.io/distroless/static-debian12:nonroot
 # pipeline sets per-variant `title` / `description` / `documentation`
 # via docker/metadata-action (see .github/workflows/release-images.yml)
 # and those overrides win over anything set here.
-LABEL org.opencontainers.image.source="https://github.com/go-steer/core-agent" \
-      org.opencontainers.image.licenses="Apache-2.0"
+#
+# Deliberately DOES NOT set `org.opencontainers.image.source`: when
+# GHCR sees that label, it links the package to the source repo and
+# renders the repo's description on the package page — overriding the
+# per-image OCI description we set via docker/metadata-action. Four
+# images sharing one repo end up with four identical taglines. To
+# preserve the per-image description on GHCR, we drop the label here
+# and rely on the manifest annotation `image.source` set in
+# release-images.yml — that still gives OCI-aware tooling (Dependabot,
+# docker scout, cosign chains) the source pointer via the manifest.
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 COPY --from=builder /out/binary /usr/local/bin/binary
 

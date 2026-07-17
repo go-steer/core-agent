@@ -38,8 +38,10 @@ func TestBuild_DefaultProducesNineTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if len(reg.Tools) != 12 {
-		t.Fatalf("expected 12 tools, got %d", len(reg.Tools))
+	// Count varies with host: sciontool_status is added when
+	// `sciontool` is on PATH. Assert on the always-on set instead.
+	if len(reg.Tools) < 12 || len(reg.Tools) > 13 {
+		t.Fatalf("expected 12 or 13 tools, got %d", len(reg.Tools))
 	}
 	if reg.Todo == nil {
 		t.Errorf("Registry.Todo should always be non-nil")
@@ -113,20 +115,21 @@ func TestBuiltinTools_Disable_KnownNames(t *testing.T) {
 	// table mirrors BuiltinToolNames so a future rename or addition
 	// fails this test until the helper learns about it.
 	cases := map[string]func(BuiltinTools) bool{
-		"bash":            func(b BuiltinTools) bool { return b.Bash },
-		"read_file":       func(b BuiltinTools) bool { return b.ReadFile },
-		"read_many_files": func(b BuiltinTools) bool { return b.ReadManyFiles },
-		"write_file":      func(b BuiltinTools) bool { return b.WriteFile },
-		"edit_file":       func(b BuiltinTools) bool { return b.EditFile },
-		"delete_file":     func(b BuiltinTools) bool { return b.DeleteFile },
-		"stat":            func(b BuiltinTools) bool { return b.Stat },
-		"list_dir":        func(b BuiltinTools) bool { return b.ListDir },
-		"glob":            func(b BuiltinTools) bool { return b.Glob },
-		"grep":            func(b BuiltinTools) bool { return b.Grep },
-		"json_query":      func(b BuiltinTools) bool { return b.JSONQuery },
-		"fetch_url":       func(b BuiltinTools) bool { return b.FetchURL },
-		"todo":            func(b BuiltinTools) bool { return b.Todo },
-		"record_plan":     func(b BuiltinTools) bool { return b.RecordPlan },
+		"bash":             func(b BuiltinTools) bool { return b.Bash },
+		"read_file":        func(b BuiltinTools) bool { return b.ReadFile },
+		"read_many_files":  func(b BuiltinTools) bool { return b.ReadManyFiles },
+		"write_file":       func(b BuiltinTools) bool { return b.WriteFile },
+		"edit_file":        func(b BuiltinTools) bool { return b.EditFile },
+		"delete_file":      func(b BuiltinTools) bool { return b.DeleteFile },
+		"stat":             func(b BuiltinTools) bool { return b.Stat },
+		"list_dir":         func(b BuiltinTools) bool { return b.ListDir },
+		"glob":             func(b BuiltinTools) bool { return b.Glob },
+		"grep":             func(b BuiltinTools) bool { return b.Grep },
+		"json_query":       func(b BuiltinTools) bool { return b.JSONQuery },
+		"fetch_url":        func(b BuiltinTools) bool { return b.FetchURL },
+		"todo":             func(b BuiltinTools) bool { return b.Todo },
+		"record_plan":      func(b BuiltinTools) bool { return b.RecordPlan },
+		"sciontool_status": func(b BuiltinTools) bool { return b.SciontoolStatus },
 	}
 	names := BuiltinToolNames()
 	if len(cases) != len(names) {

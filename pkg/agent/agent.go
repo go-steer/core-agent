@@ -207,6 +207,14 @@ type Agent struct {
 	// (alerts accumulate but never surface — useful for tests).
 	watchdog        watchdog.Watchdog
 	onWatchdogAlert func(watchdog.Alert)
+
+	// Event hook (WithEventHook). Optional callbacks that observe
+	// session events as they stream (onEvent) and once per turn from
+	// the post-turn cleanup (onTurnEnd). Both nil = no-op. The
+	// pkg/hooks Dispatcher plugs its methods in here to fan events
+	// out to operator-configured shell commands.
+	onEvent   func(*session.Event)
+	onTurnEnd func()
 }
 
 // attachRegistrar is the subset of *attach.SessionRegistry the agent
@@ -245,6 +253,8 @@ type options struct {
 	costCeiling     CostCeiling
 	watchdog        watchdog.Watchdog
 	onWatchdogAlert func(watchdog.Alert)
+	onEvent         func(*session.Event)
+	onTurnEnd       func()
 	postConstruct   func(*Agent)
 
 	// Attach-extras snapshot funcs — set via WithAttachMemoryProvider /
@@ -627,6 +637,8 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		costCeiling:        o.costCeiling,
 		watchdog:           o.watchdog,
 		onWatchdogAlert:    o.onWatchdogAlert,
+		onEvent:            o.onEvent,
+		onTurnEnd:          o.onTurnEnd,
 	}
 	if a.bgMgr != nil {
 		a.bgMgr.attachParent(a)
@@ -964,6 +976,14 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 			if a.watchdog != nil && ev != nil {
 				a.observeToolCallsForWatchdog(ev)
 			}
+			// Event-hook observation (WithEventHook). Fires alongside
+			// watchdog observation so both observers see the same
+			// event stream in the same order. Callback is expected
+			// to be synchronous and quick (pkg/hooks bounds its
+			// subprocess calls with per-hook timeouts).
+			if a.onEvent != nil && ev != nil {
+				a.onEvent(ev)
+			}
 			if !yield(ev, err) {
 				return
 			}
@@ -980,6 +1000,9 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		a.maybeMarkCompactionPending()
 		a.maybeEnforceCostCeiling()
 		a.drainWatchdogAlerts()
+		if a.onTurnEnd != nil {
+			a.onTurnEnd()
+		}
 
 		// Terminal event per spec: exactly one turn-complete OR
 		// turn-error fires per turn. usage-update fires separately

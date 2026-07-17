@@ -24,3 +24,4 @@ Cross-cutting reference material that both CLI users and library consumers need.
 - **[Attach mode TUI]({{< relref "/docs/reference/attach-tui.md" >}})** — `core-agent-tui` remote operator client.
 - **[Multi-session daemon]({{< relref "/docs/reference/multi-session.md" >}})** — one daemon serving multiple concurrent sessions with per-caller auth, ACL, audit threading, and instruction overlays.
 - **[Scion adapter]({{< relref "/docs/reference/scion-adapter.md" >}})** — embedding `core-agent` under the Scion distributed-runtime layer.
+- **[Hooks]({{< relref "/docs/reference/hooks.md" >}})** — config-driven shell-command dispatch on tool/model/turn boundaries.

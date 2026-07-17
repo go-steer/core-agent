@@ -46,8 +46,26 @@ func TestNewRetrieveRawTool_DefaultsNameAndDescription(t *testing.T) {
 	if tl.Name() != "retrieve_raw" {
 		t.Errorf("default name = %q, want retrieve_raw", tl.Name())
 	}
-	if tl.Description() == "" {
-		t.Errorf("default description should be non-empty")
+	desc := tl.Description()
+	if desc == "" {
+		t.Fatalf("default description should be non-empty")
+	}
+	// Pin the load-bearing anti-pattern clauses. Field-observed cost
+	// spike on the demo (2026-07-17): Flash called retrieve_raw to
+	// "double-check" a digest and re-inflated ~28k tokens, defeating
+	// the wrap's savings and running the turn ~6x more expensive than
+	// the same triage the day before. The description is the primary
+	// nudge the model sees for this tool; softening any of these
+	// clauses in a future edit reintroduces the same failure mode.
+	for _, want := range []string{
+		"DO NOT",
+		"digest as authoritative",
+		"re-inflates",
+		"truncated-field marker",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("description missing anti-pattern clause %q; got:\n%s", want, desc)
+		}
 	}
 }
 

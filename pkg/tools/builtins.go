@@ -16,6 +16,7 @@ package tools
 
 import (
 	"fmt"
+	"os/exec"
 
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
@@ -64,6 +65,11 @@ type BuiltinTools struct {
 	FetchURL      bool // HTTP GET against url_scope.allow; URL-allowlist enforced
 	Todo          bool // In-process plan tracker
 	RecordPlan    bool // Plan-first artifact + gate-flag flip (record_plan)
+	// SciontoolStatus is enabled in the Default struct but Build only
+	// registers it when `sciontool` is on PATH — inside a Scion
+	// container. Outside Scion the tool would be inert (subprocess
+	// no-op) and pointlessly visible in the model's schema.
+	SciontoolStatus bool
 }
 
 // builtinToolNames is the canonical name of every built-in tool, in
@@ -84,6 +90,7 @@ var builtinToolNames = []string{
 	"fetch_url",
 	"todo",
 	"record_plan",
+	"sciontool_status",
 }
 
 // BuiltinToolNames returns a fresh copy of the canonical built-in tool
@@ -129,6 +136,8 @@ func (b *BuiltinTools) Disable(name string) error {
 		b.Todo = false
 	case "record_plan":
 		b.RecordPlan = false
+	case "sciontool_status":
+		b.SciontoolStatus = false
 	default:
 		return fmt.Errorf("tools: unknown built-in tool %q (valid: %v)", name, builtinToolNames)
 	}
@@ -164,6 +173,9 @@ func Default() BuiltinTools {
 		// require it (the call would just be noise). The agentsDir
 		// requirement is structural (plans need somewhere to live).
 		RecordPlan: true,
+		// SciontoolStatus is enabled here but Build only registers it
+		// when `sciontool` is on PATH (inside a Scion container).
+		SciontoolStatus: true,
 	}
 }
 
@@ -175,6 +187,14 @@ func Default() BuiltinTools {
 type Registry struct {
 	Tools []tool.Tool
 	Todo  *TodoStore
+}
+
+// sciontoolOnPath reports whether the `sciontool` binary is on PATH.
+// Used at Build time to gate sciontool_status registration — inside a
+// Scion container the tool is functional; outside, we hide it.
+func sciontoolOnPath() bool {
+	_, err := exec.LookPath("sciontool")
+	return err == nil
 }
 
 // Build constructs the registry. cfg supplies output-truncation caps;
@@ -279,6 +299,13 @@ func Build(cfg *config.Config, gate *permissions.Gate, agentsDir string, b Built
 		{b.RecordPlan && cfg.Permissions.RequirePlanArtifact && agentsDir != "", "record_plan", "Record the agent's plan and unblock plan-first gating.", func() (tool.Tool, error) {
 			return RecordPlan(gate, agentsDir)
 		}},
+		// sciontool_status is registered only when `sciontool` is
+		// on PATH — i.e. inside a Scion container. Outside Scion the
+		// tool would degrade to a subprocess no-op, so we hide it
+		// from the model entirely rather than pollute the schema.
+		// Matches the fetch_url / record_plan conditional-registration
+		// pattern (both are also `on && something_else` gated).
+		{b.SciontoolStatus && sciontoolOnPath(), "sciontool_status", "Signal a sticky lifecycle event to Scion.", NewSciontoolStatusTool},
 	}
 
 	out := &Registry{Todo: store}

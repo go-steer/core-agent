@@ -83,6 +83,241 @@ composition above in mind — the "when to route through subagent"
 gate is now "when structural digest can't reduce the response
 under threshold," not "always for MCP."
 
+## 2026-07-17 update — savings telemetry + OTel spans
+
+The existing "Telemetry to capture" section (below) sketches per-
+call eventlog metadata but predates the shipping of #128 (structural
+digest) and doesn't cover OTel. This update makes the observability
+story concrete for both paths — structural (shipped) and agentic
+(this PR) — so the value the cost-reduction stack is actually
+delivering is visible to operators and dashboards.
+
+Two surfaces, one measurement path:
+
+1. **Eventlog metadata** → surfaced in the attach TUI (`/stats`,
+   per-tool-call footer) and in transcripts.
+2. **OTel spans + attributes** → surfaced in any OTLP consumer
+   (Jaeger, Honeycomb, GCP Cloud Trace).
+
+Both are populated from the same measured points in the wrapper
+pipeline — no double instrumentation.
+
+### The `digest.Savings` shape
+
+Extend `pkg/digest.Result` with an optional `Savings` field. Present
+on both structural and agentic paths; absent (`nil`) only on the
+passthrough path where we deliberately skipped digesting because the
+payload was already small.
+
+```go
+// pkg/digest
+type Savings struct {
+    // Path: "passthrough" | "structural" | "agentic". Matches the
+    // Method* constants but named separately since Savings can be
+    // omitted on passthrough (no bytes to save) while Method is
+    // always set.
+    Path string
+
+    // Byte counts of the payload before and after digesting.
+    // Deterministic; measured on serialized JSON.
+    OriginalBytes int
+    DigestBytes   int
+
+    // Token estimates. Standard 4-char-per-token heuristic — cheap,
+    // no tokenizer round-trip, accurate to ±15% for typical mixed
+    // content. Precise counts via provider tokenizer are available
+    // but not worth the round-trip for a metric.
+    OriginalTokensEst int
+    DigestTokensEst   int
+
+    // Agentic path only (zero on structural / passthrough): the
+    // subagent's own LLM call. Populated by the caller (the MCP
+    // wrapper) after invoking the small-tier subagent, since
+    // pkg/digest doesn't own the subagent itself.
+    SubagentInputTokens  int
+    SubagentOutputTokens int
+    SubagentModel        string
+}
+```
+
+`pkg/digest.Process` populates `Path`, `OriginalBytes`, `DigestBytes`,
+`OriginalTokensEst`, `DigestTokensEst` from what it can measure
+locally. The caller (the MCP wrapper for #223, or `agentic_read_file`
+et al when we retro-fit) fills in `Subagent*` fields on the agentic
+path from the subagent's `ResponseUsage` before writing the eventlog
+metadata / OTel attributes.
+
+**Cost computation happens at display time, not at digest time.** The
+digest struct carries counts; `usage.Tracker` (or the display layer)
+looks up pricing via the existing layered-pricing chain and produces
+a dollar figure. This keeps `pkg/digest` free of the pricing/model
+dependency graph and lets a single price change re-price historical
+digests correctly.
+
+### Cost math
+
+**Structural path** (no subagent, pure input-token reduction):
+
+```
+savings_tokens = OriginalTokensEst - DigestTokensEst
+savings_cost   = savings_tokens × parent_model.input_rate
+```
+
+The parent model's input rate is used because the saved tokens are
+what the parent would have paid for on this turn's input and every
+subsequent turn's history resend.
+
+**Agentic path** (subagent cost offsets the parent-input savings):
+
+```
+parent_input_saved   = (OriginalTokensEst - DigestTokensEst) × parent_model.input_rate
+subagent_input_cost  = SubagentInputTokens × subagent_model.input_rate
+subagent_output_cost = SubagentOutputTokens × subagent_model.output_rate
+net_savings          = parent_input_saved - subagent_input_cost - subagent_output_cost
+```
+
+Break-even is when `parent_input_saved > subagent_input+output_cost`.
+For a typical GKE MCP response (10k tokens raw, 800 tokens digest,
+Sonnet/Opus parent, Haiku subagent), net savings run 90–95% of
+gross — the subagent cost is nearly noise. Small responses can
+break even negative; the size threshold guard (line 207 below)
+prevents this.
+
+**Cumulative session savings** roll up in `usage.Tracker`: one
+counter per (session, path). `/stats` shows them alongside the
+existing per-model breakdown.
+
+### Display
+
+Three surfaces, ranked by operator value:
+
+1. **Per-tool-call footer** in the chat stream (in-process TUI +
+   remote TUI). Emitted whenever `Savings.Path != "passthrough"`:
+
+   ```
+   ↪ mcp/gke_get_k8s_resource: 12.4k → 2.1k tokens (agentic, saved ~$0.008)
+   ↪ mcp/gke_list_clusters:     4.8k → 0.9k tokens (structural, saved ~$0.014)
+   ```
+
+   Immediate operator feedback; visible during live drives so the
+   cost-reduction infra proves itself in real time.
+
+2. **`/stats` session totals** — new "Digest savings" block:
+
+   ```
+   Digest savings this session
+     Structural: 41.2k tokens saved  (~$0.14)
+     Agentic:    43.0k tokens saved  (~$0.17 net after subagent cost)
+     Total:      84.2k tokens saved  (~$0.31)
+   ```
+
+3. **`/context`** — annotate the context-budget breakdown with
+   "reduced from N via digest infrastructure" so operators can see
+   what would have been in context if digesting were off.
+
+Labeling matters: these are *hypothetical* savings ("what it would
+have cost without digest infra" minus "what we actually spent"). Real
+session spend is still `actual`. Label the `/stats` block as
+"savings vs. no-digest baseline" so the number is honest — this is
+the exact question operators ask ("is this infra earning its keep?").
+
+### OTel spans + attributes
+
+Per MCP tool call, spans nest:
+
+```
+mcp.tool_call                              (parent, new)
+├── mcp.http_call                          (existing, from otelhttp)
+└── digest.process                         (new)
+      └── subagent.llm_call                (new, agentic path only)
+```
+
+Same measurement points as the eventlog metadata — one code path
+emits both. `mcp.tool_call` is the wrap layer; `mcp.http_call` is
+the underlying `renamedTool.Run` HTTP round-trip (already
+otelhttp-instrumented via #217's foundation, PR #237).
+
+Attributes use `core_agent.*` namespace so they're easy to filter
+in trace UIs. Where OTel semantic conventions cover LLM operations
+(`gen_ai.*`), we emit those too for tooling that has LLM-aware
+dashboards (Honeycomb's LLM view, GCP Vertex AI Trace, etc.).
+
+**`digest.process` span:**
+
+- `core_agent.digest.path` = `passthrough` | `structural` | `agentic`
+- `core_agent.digest.original_bytes` / `digest_bytes`
+- `core_agent.digest.original_tokens_est` / `digest_tokens_est` /
+  `savings_tokens_est`
+- `core_agent.digest.savings_cost_usd_est` (agentic only, since we
+  have full cost math there; structural gets computed at display
+  time from the parent model's rate)
+- `core_agent.mcp.server_name` / `core_agent.mcp.tool_name` (so
+  savings can be sliced by which MCP tool)
+
+**`subagent.llm_call` span** (agentic only):
+
+- `core_agent.subagent.model`
+- `core_agent.subagent.input_tokens` / `output_tokens` / `total_tokens`
+- `core_agent.subagent.cost_usd`
+- `gen_ai.request.model` = same as `subagent.model` (OTel semconv)
+- `gen_ai.usage.input_tokens` / `output_tokens` (OTel semconv)
+- `gen_ai.system` = provider name (`google.gemini` / `anthropic`)
+
+**Span kind:** internal for `digest.process` (no network egress at
+the span level); client for `subagent.llm_call` (crosses provider
+boundary). `mcp.tool_call` is internal (the wrap layer); the child
+`mcp.http_call` is client (HTTP egress).
+
+### Bundling with #223
+
+The observability wiring is *not* a follow-up PR — it lands in the
+same PR as the wrapper implementation. Rationale:
+
+- Same measurement points → same code traversal. Two PRs would
+  require re-touching the wrapper code and re-reasoning about where
+  measurements attach.
+- The value-add of #223 is invisible without the savings surface.
+  Landing the wrapper without the display means the demo story
+  ("we saved 84k tokens this session") isn't proveable until the
+  follow-up ships.
+- Structural-only savings (backfill for `pkg/digest.Result` on the
+  already-shipped structural path) drops out of the same code with
+  no extra effort — the `Savings` struct is populated by
+  `pkg/digest.Process` regardless of which path the router chose.
+
+### Progress against #217
+
+#217 asks for end-to-end distributed tracing across k8s-event-watcher
+→ daemon → MCP/Vertex. The current state after #237 (foundation) +
+this PR is:
+
+- ✅ k8s-event-watcher → daemon (traceparent propagation, done in
+  #237)
+- ✅ Daemon → MCP HTTP (otelhttp, done in #237)
+- ✅ Daemon → MCP tool call → digest → subagent LLM (this PR)
+- ⏳ Daemon → Vertex/Gemini SDK calls (not this PR — needs
+  instrumenting the genai SDK path, tracked separately in #217)
+
+Add a comment on #217 when this PR merges, listing the two remaining
+Vertex/Gemini SDK legs so the outstanding scope is visible.
+
+### Post-drive validation
+
+Same v2.6 GKE-troubleshoot fixture the issue body references
+(session `019f5bff-ca1a`, four sequential `gke_get_k8s_resource`
+calls, 16k → 21k prompt-token growth by turn 8). After this PR
+lands, re-run the fixture and verify:
+
+- Each of the four MCP calls emits a per-tool footer with
+  measurable digest.
+- `/stats` at end-of-session shows a `Digest savings` block with
+  the four contributions summed.
+- OTel export (LM otel-collector locally) shows the span tree
+  above with populated attributes.
+- Cumulative `promptTokenCount` stays near baseline (~15k) instead
+  of climbing to 21k — the fixture's cost baseline was the design
+  target.
+
 ## Motivation
 
 MCP tools are an unbounded source of context bloat in core-agent

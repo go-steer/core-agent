@@ -139,10 +139,15 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 		Notifier:     notifier,
 		UsageTracker: &coreUsageBridge{inner: deps.Tracker},
 		AgentsDir:    deps.AgentsDir,
-		Memory:       memoryToCoreTui(deps.Memory),
-		MCPServers:   mcpServersToCoreTui(deps.MCPServers),
-		Skills:       skillsToCoreTui(deps.LoadedSkills),
-		PathScope:    pathScopeToCoreTui(deps.Cfg),
+		// -i / --interactive-prompt (issue #291). core-tui v0.13+
+		// consumes this via a one-shot msg from Init() that flows
+		// through the same submitTurn path an operator-typed
+		// submission uses.
+		InitialPrompt: deps.InitialPrompt,
+		Memory:        memoryToCoreTui(deps.Memory),
+		MCPServers:    mcpServersToCoreTui(deps.MCPServers),
+		Skills:        skillsToCoreTui(deps.LoadedSkills),
+		PathScope:     pathScopeToCoreTui(deps.Cfg),
 		// Branding.AgentIdentity surfaces cfg.Agent.DisplayName in
 		// the status-line banner ("core-agent · scion · ◇ model")
 		// so operators can tell which agent deployment they're

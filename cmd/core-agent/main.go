@@ -92,6 +92,17 @@ func main() {
 
 	prompt := flag.String("p", "", "single prompt; runs one turn and exits (REPL otherwise)")
 
+	// `-i` seeds the first turn of an INTERACTIVE session — issue #291.
+	// Both short (`-i`) and long (`--interactive-prompt`) forms bind to
+	// the same variable. Mutually exclusive with `-p` (single-shot
+	// headless) and incompatible with `--no-repl` (attach-only daemon
+	// has no operator to stay interactive for); both combinations are
+	// rejected at run() entry with a config error.
+	var initialPromptVal string
+	flag.StringVar(&initialPromptVal, "i", "", "initial prompt; runs one turn then stays in the interactive REPL/TUI. Mutually exclusive with -p.")
+	flag.StringVar(&initialPromptVal, "interactive-prompt", "", "long-form alias for -i — same behavior")
+	initialPrompt := &initialPromptVal
+
 	// `-c` (short) and `--config` (long) both bind to the same
 	// variable so operators can write manifests using whichever form
 	// matches their muscle memory. Every other flag on this CLI uses
@@ -169,7 +180,7 @@ func main() {
 	agentCardDocsURL := flag.String("agent-card-docs-url", "", "override documentationUrl in /.well-known/agent-card.json")
 	flag.Parse()
 
-	code := run(*prompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *maxTurnCostUSD, *maxSessionCostUSD, *watchdogMode, *smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *noContextCache,
+	code := run(*prompt, *initialPrompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *maxTurnCostUSD, *maxSessionCostUSD, *watchdogMode, *smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *noContextCache,
 		attachOpts{
 			Listen:           *attachListen,
 			UnixSocket:       *attachUnixSocket,
@@ -345,7 +356,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	return opts
 }
 
-func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, maxTurnCostUSD, maxSessionCostUSD float64, watchdogMode, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest bool, noContextCache bool, attachCfg attachOpts, cardCfg agentCardOpts) int {
+func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, maxTurnCostUSD, maxSessionCostUSD float64, watchdogMode, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest bool, noContextCache bool, attachCfg attachOpts, cardCfg agentCardOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -355,6 +366,22 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 	// process at exit code 130 — standard one-shot-CLI behavior.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stop()
+
+	// -i is incompatible with headless (-p runs one turn and exits;
+	// -i seeds one turn and stays interactive — they can't both win)
+	// and with --no-repl (attach-only daemon; the seed prompt has no
+	// operator surface to remain interactive on). Reject early with a
+	// config error so operators see the message before startup work.
+	if initialPrompt != "" {
+		if prompt != "" {
+			fmt.Fprintln(os.Stderr, "core-agent: -p and -i are mutually exclusive (headless single-turn vs seeded interactive)")
+			return runner.ExitConfigError
+		}
+		if noREPL {
+			fmt.Fprintln(os.Stderr, "core-agent: -i is not compatible with --no-repl (attach-only daemon has no operator to stay interactive for)")
+			return runner.ExitConfigError
+		}
+	}
 
 	// Filter "Error context canceled" out of the default log
 	// output. genai's SSE scanner unconditionally log.Printfs
@@ -1500,18 +1527,19 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 		// internal/tui/ tree are gone. Slim build (no_tui) still
 		// stubs launchTUIv2 to no-op + REPL fall-through.
 		didRun, code, err := launchTUIv2(ctx, tuiDeps{
-			Cfg:          cfg,
-			Model:        m,
-			AgentOpts:    opts,
-			Provider:     provider,
-			Gate:         gate,
-			Tracker:      tracker,
-			Memory:       loaded,
-			MCPServers:   mcpServers,
-			LoadedSkills: loadedSkills,
-			AgentsDir:    agentsDir,
-			CoreHome:     coreHome,
-			ProjectRoot:  projectRoot,
+			Cfg:           cfg,
+			Model:         m,
+			AgentOpts:     opts,
+			Provider:      provider,
+			Gate:          gate,
+			Tracker:       tracker,
+			Memory:        loaded,
+			MCPServers:    mcpServers,
+			LoadedSkills:  loadedSkills,
+			AgentsDir:     agentsDir,
+			CoreHome:      coreHome,
+			ProjectRoot:   projectRoot,
+			InitialPrompt: initialPrompt,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
@@ -1529,7 +1557,11 @@ func run(prompt, cfgPath, modelOverride, providerOverride, taskClass string, noB
 		// through to the REPL fallback below.
 	}
 
-	code, err = runner.REPL(ctx, m, os.Stdin, os.Stdout, os.Stderr, tracker, pricingRate, opts, eventsOpts...)
+	if initialPrompt != "" {
+		code, err = runner.REPLWithInitialPrompt(ctx, m, initialPrompt, os.Stdin, os.Stdout, os.Stderr, tracker, pricingRate, opts, eventsOpts...)
+	} else {
+		code, err = runner.REPL(ctx, m, os.Stdin, os.Stdout, os.Stderr, tracker, pricingRate, opts, eventsOpts...)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 	}

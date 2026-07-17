@@ -47,4 +47,9 @@ type tuiDeps struct {
 	AgentsDir    string
 	CoreHome     string
 	ProjectRoot  string
+	// InitialPrompt seeds the TUI's first turn when non-empty (issue
+	// #291). Forwarded to core-tui's Options.InitialPrompt so the
+	// prompt renders as a normal user row on startup and the operator
+	// lands on the input line once the turn completes.
+	InitialPrompt string
 }

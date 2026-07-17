@@ -21,6 +21,7 @@ _In flight toward v2.7.0. Commits since [2.7.0-dev.3]:_
 ### Changes by Kind
 
 #### Feature
+- CLI: new `-i` / `--interactive-prompt` flag seeds the first turn of a REPL or TUI session and stays interactive — useful for shell aliases and scripted onboarding (`core-agent -i "audit this repo for races"`). Mutually exclusive with `-p`; incompatible with `--no-repl`. Requires core-tui v0.13.0 (adds `Options.InitialPrompt`). Closes [#291](https://github.com/go-steer/core-agent/issues/291).
 - coretuiremote: multi-daemon `/switch` + `/attach` (issue [#246](https://github.com/go-steer/core-agent/issues/246) Phase 1) ([#253](https://github.com/go-steer/core-agent/pull/253))
 
 #### Bug or Regression

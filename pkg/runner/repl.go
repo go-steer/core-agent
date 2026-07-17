@@ -59,12 +59,38 @@ func REPL(ctx context.Context, m adkmodel.LLM, stdin io.Reader, stdout, stderr i
 	return REPLWithAgent(ctx, a, m, stdin, stdout, stderr, tracker, pricing, eventsOpts...)
 }
 
+// REPLWithInitialPrompt behaves like REPL but seeds the first turn
+// with initialPrompt before entering the main select loop (issue
+// #291). The seed runs through the same runREPLTurn used mid-loop, so
+// ESC interrupt, usage tracking, and tool-approval prompts all work
+// identically to a user-typed submission.
+//
+// initialPrompt == "" is exactly equivalent to REPL — no seed, no
+// behavior change. Prefer REPL when you don't need the seed.
+func REPLWithInitialPrompt(ctx context.Context, m adkmodel.LLM, initialPrompt string, stdin io.Reader, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing, agentOpts []agent.Option, eventsOpts ...EventsOption) (int, error) {
+	a, err := agent.New(m, agentOpts...)
+	if err != nil {
+		return ExitAgentError, err
+	}
+	return replCore(ctx, a, m, initialPrompt, stdin, stdout, stderr, tracker, pricing, eventsOpts...)
+}
+
 // REPLWithAgent runs the REPL against a pre-constructed Agent. Useful
 // for tests that need a reference to the agent (to call Inject from
 // outside the loop, for example) and for library consumers that
 // construct the Agent themselves. Equivalent to REPL minus the
 // agent.New() call at the top.
 func REPLWithAgent(ctx context.Context, a *agent.Agent, m adkmodel.LLM, stdin io.Reader, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing, eventsOpts ...EventsOption) (int, error) {
+	return replCore(ctx, a, m, "", stdin, stdout, stderr, tracker, pricing, eventsOpts...)
+}
+
+// replCore is the shared body of REPL / REPLWithAgent /
+// REPLWithInitialPrompt. When initialPrompt is non-empty, it fires
+// exactly one runREPLTurn before entering the stdin/wake select loop
+// so the seed prompt behaves like a user-typed first submission
+// (including ESC interrupt via the per-turn interrupter and cost
+// accounting via the shared tracker).
+func replCore(ctx context.Context, a *agent.Agent, m adkmodel.LLM, initialPrompt string, stdin io.Reader, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing, eventsOpts ...EventsOption) (int, error) {
 	// If a BackgroundAgentManager is wired, install an alert hook so
 	// the human running the REPL sees subagent reports inline as
 	// they arrive — same ↪ magenta sigil used for Gemini grounding
@@ -138,6 +164,33 @@ func REPLWithAgent(ctx context.Context, a *agent.Agent, m adkmodel.LLM, stdin io
 			}
 		}
 	}()
+
+	// Seed the first turn from -i / --interactive-prompt before
+	// entering the main select loop. The seed reuses runREPLTurn so
+	// interrupt handling, usage tracking, and tool prompts behave
+	// identically to a real submission — the operator sees the
+	// initial prompt echo on the "> " prefix, the model responds,
+	// then the loop hands control back to stdin/wake. Empty
+	// initialPrompt is a no-op and matches the pre-seed REPL
+	// behavior byte-for-byte. Slash + /exit shortcuts are refused
+	// so a caller can't accidentally exit-before-start.
+	if seed := strings.TrimSpace(initialPrompt); seed != "" {
+		switch seed {
+		case "/exit", "/quit":
+			fmt.Fprintln(stderr, "core-agent: -i cannot be /exit or /quit")
+			return ExitConfigError, nil
+		}
+		fmt.Fprintln(stdout, "> "+seed)
+		exit, err := runREPLTurn(replCtx, a, m, stdinFile, seed, stdout, stderr, tracker, pricing, eventsOpts)
+		if err != nil {
+			fmt.Fprintf(stderr, "core-agent: %v\n", err)
+			// A failed seed shouldn't tank the whole session — fall
+			// through to the loop so the operator can retry.
+		}
+		if exit {
+			return ExitOK, nil
+		}
+	}
 
 	for {
 		if err := replCtx.Err(); err != nil {

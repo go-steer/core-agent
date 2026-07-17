@@ -80,7 +80,15 @@ $ core-agent
 
 The TUI is the default when stdin is a real terminal. Conversation history persists across turns. While the agent is working you can keep typing — your follow-up notes queue up and the model picks them up when the current turn finishes.
 
-For the slash command catalog see [Slash reference]({{< relref "/docs/cli/interactive/slash-reference.md" >}}). For the line-mode REPL fallback (non-TTY environments, scripts, slim builds) pass `--no-tui`.
+**Seed the first turn from the CLI.** Pass `-i "<prompt>"` (or `--interactive-prompt`) to submit an initial turn on startup and *stay* interactive — useful for shell aliases and scripted onboarding:
+
+```text
+$ core-agent -i "audit this repo for potential race conditions"
+[TUI opens, the initial prompt renders as a user row, model streams a response]
+> [operator lands on the input line, can continue the conversation]
+```
+
+`-i` is mutually exclusive with `-p` (which runs one turn and exits) and incompatible with `--no-repl`. Works in both the TUI and the `--no-tui` line-mode REPL. For the slash command catalog see [Slash reference]({{< relref "/docs/cli/interactive/slash-reference.md" >}}).
 
 ---
 

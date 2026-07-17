@@ -179,18 +179,27 @@ jobs:
           # config blob. Consumed by OCI-aware tooling (registries
           # other than GHCR, image inspectors).
           #
-          # Deliberately DOES NOT set `image.source` here. See the
-          # Dockerfile comment for the full reasoning — TL;DR the
-          # source LABEL triggers GHCR to link the package to the
-          # repo and render the repo description on the package
-          # page, overriding our per-image description. The source
-          # is set as a manifest ANNOTATION below so OCI tooling
-          # still finds it.
+          # `image.source` and `image.url` are EXPLICITLY UNSET
+          # (empty right-hand sides). docker/metadata-action auto-
+          # injects both from the git context, and removing the
+          # `LABEL org.opencontainers.image.source` from Dockerfile
+          # alone is NOT enough — metadata-action puts them back.
+          # We suppress the LABELs because when GHCR sees
+          # `image.source` on the image config, it links the package
+          # to that repo and renders the repo description on the
+          # package page, overriding our per-image description
+          # (all four images share one repo → all four show the
+          # same tagline). The source and url stay as manifest
+          # ANNOTATIONS below so OCI tooling (Dependabot, docker
+          # scout, cosign chains) still finds the upstream via the
+          # manifest.
           labels: |
             org.opencontainers.image.title=${{ matrix.image_name }}
             org.opencontainers.image.description=${{ matrix.description }}
             org.opencontainers.image.documentation=https://go-steer.github.io/core-agent/
             org.opencontainers.image.vendor=go-steer
+            org.opencontainers.image.source=
+            org.opencontainers.image.url=
           # OCI ANNOTATIONS — attached to the manifest / index.
           # GHCR renders its package-page description from the index
           # annotation on multi-arch images (labels alone don't

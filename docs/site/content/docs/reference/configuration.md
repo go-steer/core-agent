@@ -209,6 +209,8 @@ Configures the permission gate that consults every tool call. See [Permissions](
 | `mode` | string | `ask` | One of `ask`, `allow`, `yolo`. |
 | `allow` | string[] | `[]` | Allowlist patterns. Format: `<tool>:<glob>` or `<glob>`. |
 | `deny` | string[] | `[]` | Denylist patterns. Always wins over allow. |
+| `use_builtin_allow` | bool | `true` | Include the built-in read-only bundle in the effective allowlist (reads, greps, `list_dir`, `git status` / `git diff`, etc.). Turn off if you want to allowlist every tool from scratch. |
+| `builtin_allow_extras` | string[] | `[]` | Names of additional built-in bundles to fold into the effective allowlist (e.g. `["testing", "linting"]`). See `permissions.Bundles` in the Go source for the current catalog; also configurable interactively via the `/allow-bundle` slash. |
 
 Example:
 
@@ -352,7 +354,8 @@ Extra paths file tools may touch outside the default project root + user home.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `allow` | string[] | `[]` | Patterns. Exact paths, directory trees ending in `/...`, or `path/filepath.Match` globs. |
+| `allow` | string[] | `[]` | Patterns. Exact paths, directory trees ending in `/...`, or `path/filepath.Match` globs. Grants both read + write. |
+| `allow_paths` | object[] | `[]` | Typed form: each entry is `{ "path": "<pattern>", "mode": "r"\|"w"\|"rw" }` (long forms `read` / `write` / `readwrite` also accepted). Composes with `allow`. Also available as the repeatable `--allow-path PATH:MODE` CLI flag for one-off grants. |
 
 Example:
 
@@ -377,6 +380,41 @@ Runtime tuning for the agent loop.
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `max_steps` | int | `50` | Max tool-call cycles within a single turn before the agent gives up. |
+| `max_turn_cost_usd` | float | `0` | Per-turn spend ceiling in USD (0 = disabled). When a single turn's cumulative cost (across all model calls + subtask costs) meets or exceeds this value, the agent emits a `cost_ceiling` turn-error and refuses new turns until `Agent.ResetCostCeiling` is called (interactively: `/resume-after-cost-ceiling`). CLI: `--max-turn-cost-usd`. |
+| `max_session_cost_usd` | float | `0` | Session-level spend ceiling in USD (0 = disabled). Cumulative across every turn including subtasks; same trip + refuse behavior. Useful for long-running autonomous deploys where per-turn cost is reasonable but the session total adds up. CLI: `--max-session-cost-usd`. |
+| `display_name` | string | `""` | Operator-visible per-deployment label. Rendered in the TUI status-line banner (`core-agent · <name> · ◇ model`) so operators can distinguish between multiple agent deployments across windows. Empty falls back to the bare wordmark. |
+| `description` | string | `""` | Human-readable summary of what this agent does. Surfaced by `/.well-known/agent-card.json` when the agent-card endpoint is enabled (see [Agent card]({{< relref "/docs/reference/agent-card.md" >}})). Required (via file or `--agent-card-description` flag) to enable that endpoint. |
+
+---
+
+## `session`
+
+Session-scoped defaults picked up on startup.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `task_class` | string | `""` | Operator-declared task class — picks a bundle of defaults (model tier, compaction threshold, agentic-tools posture, ask mode) tuned for the kind of work being done. One of `debug`, `implement`, `chat`, `research`, `review`. Empty = no task class (substrate defaults). Explicit config fields + CLI flags always win over the task-class profile. CLI: `--task`. See [Context management → Task class]({{< relref "/docs/reference/context-management.md#task-class" >}}). |
+
+---
+
+## `safety`
+
+Startup safety checks that guard against footguns.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `small_tier_parent` | string | `"warn"` | What to do when an interactive session resolves to a small-tier parent model (Flash / Haiku-class — these work well as `agentic_*` subtask workers but loop and stall as the parent). One of `warn` / `refuse` / `allow`. `warn` logs a one-line operator notice and proceeds; `refuse` exits with a config error; `allow` suppresses the check. Skipped under `-p`, `--yolo`, or when the model's tier can't be classified. CLI: `--small-tier-parent`. |
+
+---
+
+## `compaction`
+
+Overrides for the automatic context-window compaction trigger. See [Context management → Compaction]({{< relref "/docs/reference/context-management.md" >}}) for the full picture.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `threshold` | float | tier default | Fraction of the model's context window (0-1) at which compaction fires. When unset, `threshold_by_tier` applies. |
+| `threshold_by_tier` | object | see notes | Per-model-tier defaults keyed by tier name (`frontier`, `mid`, `small`, ...). Lets a shared config target different thresholds per model without a per-project override. |
 
 ---
 
@@ -488,6 +526,10 @@ OpenTelemetry exporter config. Off by default — a fresh invocation makes zero 
 
 Console mode prints span JSON to stderr — useful for local debugging. OTLP mode honors all the standard `OTEL_*` env vars.
 
+### Trace context propagation
+
+Every outbound HTTP the daemon makes (Vertex / Anthropic / Gemini / MCP HTTP / attach peer calls) is wrapped in `otelhttp` and stamped with the W3C `traceparent` header, threading the current span's trace ID into upstream requests. When the OTEL exporter is off, header injection still fires but produces no-op values — hosts running their own tracer above the daemon can rely on continuity without needing to enable the built-in exporter. Inbound attach requests already extract `traceparent`; the propagation change closes the outbound half of the loop.
+
 ---
 
 ## `pricing` (top-level)
@@ -562,7 +604,7 @@ See [`fetch-url-design.md`](https://github.com/go-steer/core-agent/blob/main/doc
 
 ## `attach`
 
-Default values for the attach-mode listener and the peer-registration client. Every field below is also exposed as a `--attach-*` CLI flag; the flag wins when explicitly set, otherwise the config value applies, otherwise the zero value. This section exists for K8s-style deployments where the same settings would otherwise be repeated on every invocation.
+Default values for the attach-mode listener and the peer-registration client. Every field below is also exposed as a `--attach-*` CLI flag: names follow the `--attach-<kebab-case-field>` convention (`unix_socket` → `--attach-unix-socket`, `peer_hub` → `--attach-peer-hub`, `register_to` → `--attach-register-to`, and so on). The flag wins when explicitly set, otherwise the config value applies, otherwise the zero value. This section exists for K8s-style deployments where the same settings would otherwise be repeated on every invocation.
 
 String fields are passed through `os.ExpandEnv` so per-pod values like `"https://${POD_IP}:7777"` can live in a shared ConfigMap and resolve to the right address at startup.
 
@@ -603,6 +645,22 @@ Worked example for a K8s deployment ConfigMap:
 
 See [Attach mode TUI]({{< relref "/docs/reference/attach-tui.md" >}}) for the protocol and CLI overview, including the `--attach-token=<envvar>` flag that pairs with `token_env`.
 
+### `attach.multi_session`
+
+Nested under `attach`, enables the multi-tenant surface where distinct callers each drive their own session on the same daemon. See [Multi-session]({{< relref "/docs/reference/multi-session.md" >}}) for the operator narrative; this table is the field reference.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `users_dir` | string | `""` | Directory holding per-caller overlays (`<usersDir>/<callerIdentity>/.agents/`). Empty disables the per-caller overlay path; the daemon behaves as single-user. |
+| `auth.kind` | string | `""` | Authentication scheme: `bearer_table` (default when `table_file` is set), `asserted_caller_header`, or `""` (single-user / no per-caller auth). |
+| `auth.table_file` | string | `""` | Path to the bearer-token → identity JSON table when `auth.kind == "bearer_table"`. Reloaded on file modification. |
+| `admin_identities` | string[] | `[]` | Caller identities granted the admin surface (`/sessions/*` cross-caller reads, `DELETE /sessions/{sid}` against any owner, etc.). Non-admin callers only see their own sessions. |
+| `allow_anonymous` | bool | `false` | Accept requests with no caller identity as the daemon-wide anonymous user. Off by default; useful for smoke tests. |
+| `default_identity` | string | `""` | Identity used when the caller doesn't present one AND `allow_anonymous` is off. Empty rejects the request. |
+| `proxy_identities` | string[] | `[]` | Identities trusted to set `X-Asserted-Caller` on behalf of others (typical: a front-door proxy that has already authenticated). |
+| `asserted_caller_header` | string | `"X-Asserted-Caller"` | HTTP header the daemon reads for the pre-authenticated caller identity when the request came from a `proxy_identities` member. |
+| `session_idle_timeout` | duration | `"0s"` | Reap sessions with no activity for this long. `0s` = never reap; interactive daemons typically leave off, long-lived multi-tenant daemons might set `"30m"` to prevent unbounded growth. |
+
 ---
 
 ## Discovery and merge
@@ -615,6 +673,22 @@ See [Attach mode TUI]({{< relref "/docs/reference/attach-tui.md" >}}) for the pr
 4. **Validate** the merged result. Bad provider name, missing required field, or wrong schema version → fail fast at startup.
 
 Override discovery with the CLI's `-c <path>` flag, which reads the file directly and treats its parent directory as the agentsDir for MCP / skills resolution.
+
+### Startup summary
+
+Every invocation prints a compact one-line-per-item summary to stderr right after config resolution — the exact model + provider, the source of the config (`.agents/` discovery vs. `-c <path>` vs. built-in defaults), the resolved `agentsDir`, and follow-up notices for MCP servers, skills, and multi-session auth. Use this to confirm at a glance which config actually loaded when a deployment behaves unexpectedly.
+
+```
+core-agent: config: source=/home/me/proj/.agents/config.json (via .agents/ discovery)
+core-agent: agentsDir: /home/me/proj/.agents
+core-agent: model: claude-opus-4-7 provider=anthropic-vertex
+core-agent: mcp: 2 server(s) loaded — github(ok), grafana(ok)
+core-agent: skills: 3 loaded — code-review, security-review, incident-triage
+```
+
+Structured JSON emission for machine consumers isn't wired today; if you need it, parse the stderr lines or open an issue.
+
+Add `-i "seed prompt"` to seed the first turn of an interactive session and stay in the REPL/TUI. See the [interactive quickstart]({{< relref "/docs/cli/interactive/quickstart.md" >}}).
 
 ---
 
@@ -630,6 +704,8 @@ A handful of features are CLI-flag-only, with no `config.json` field today (cons
 
 | Flag | Documented at |
 |---|---|
+| `-i` / `--interactive-prompt=TEXT` | [Interactive quickstart → Seed the first turn]({{< relref "/docs/cli/interactive/quickstart.md" >}}) — submit an initial turn on startup and stay in the REPL/TUI. Mutually exclusive with `-p`; incompatible with `--no-repl`. |
+| `--allow-path=PATH:MODE` | [Permissions → Path scope]({{< relref "/docs/reference/permissions.md" >}}) — grant `r` / `w` / `rw` access to a tree outside project + user-home roots (repeatable). |
 | `--ask=stdin\|auto\|off` | [Library API → Prompter]({{< relref "/docs/library/api.md#prompter" >}}) |
 | `--session-db`, `--session-db-path` | [Sessions and event log]({{< relref "/docs/reference/sessions.md#cli-flags" >}}) |
 | `--color=auto\|always\|never` | [Library API → Color]({{< relref "/docs/library/api.md#color" >}}) |

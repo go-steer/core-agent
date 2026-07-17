@@ -26,7 +26,7 @@ import (
 
 const (
 	defaultRetrieveRawName        = "retrieve_raw"
-	defaultRetrieveRawDescription = "Fetch the raw, un-digested payload for a prior tool call. The call_id is what the digest wrapper stamped onto the compressed response the model saw. Use when a digest looks suspicious (dropped a field, collapsed a critical array, appears truncated), when the digest is ambiguous, or when a downstream tool call needs the full data. Returns the raw text and its byte size. Not for browsing — every call ships the full payload back into the model context."
+	defaultRetrieveRawDescription = "Fetch the raw, un-digested payload for a prior tool call whose response arrived digested. The call_id is what the digest wrapper stamped onto the compressed response you saw. Treat the digest as authoritative by default — DO NOT call retrieve_raw to spot-check, cross-verify, or 'see what was truncated' when the digest already answers your question. Every call re-inflates the full payload back into your context, undoing the wrap's savings (which is the point: a call that would have burned 12k tokens uncached still burns those 12k when you retrieve_raw the same content). Only call when the digest itself signals a load-bearing field was dropped (metadata will include a truncated-field marker) AND you need that specific truncated content to proceed. When the digest is ambiguous but the raw isn't obviously needed, prefer a narrower follow-up call to the underlying tool over re-inflating the whole payload. Returns the raw text and its byte size."
 )
 
 // RetrieveRawOptions configures NewRetrieveRawTool.

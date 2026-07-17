@@ -22,6 +22,8 @@ package config
 import (
 	"fmt"
 	"strings"
+
+	"github.com/go-steer/core-agent/pkg/hooks"
 )
 
 // SchemaVersion is the current major version of the on-disk config format.
@@ -41,6 +43,7 @@ type Config struct {
 	Agent       AgentConfig       `json:"agent,omitempty"`
 	ToolOutput  ToolOutputConfig  `json:"tool_output,omitempty"`
 	Tools       ToolsConfig       `json:"tools,omitempty"`
+	Hooks       hooks.Config      `json:"hooks,omitempty"`
 	Mock        MockConfig        `json:"mock,omitempty"`
 	OTEL        OTELConfig        `json:"otel,omitempty"`
 	URLScope    URLScopeConfig    `json:"url_scope,omitempty"`
@@ -770,6 +773,9 @@ func (c *Config) Validate() error {
 		// ok; "" defaults to warn.
 	default:
 		return fmt.Errorf("config: unknown safety.small_tier_parent %q (want one of %q, %q, %q)", c.Safety.SmallTierParent, SmallTierParentWarn, SmallTierParentRefuse, SmallTierParentAllow)
+	}
+	if err := c.Hooks.Validate(); err != nil {
+		return fmt.Errorf("config: %w", err)
 	}
 	if c.Attach.MultiSession.Enabled {
 		// Only "bearer_table" (or empty → bearer_table default) is

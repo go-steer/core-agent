@@ -160,8 +160,9 @@ The README explains how to:
 
 1. Stand up a local Scion Hub (`scion server start`).
 2. Register the orchestrator and investigator templates.
-3. Build the `scion-core-agent` container image (already exists in
-   `extras/scion-agent/Dockerfile`).
+3. Build a container image with `core-agent`, `sciontool`, and
+   `tmux` on `PATH` (typically `FROM scion-base:latest` + one COPY
+   of the `core-agent` binary — see [Scion adapter]({{< relref "/docs/reference/scion-adapter.md" >}})).
 4. Start the orchestrator: `scion create orchestrator "summarize
    recent commits in agent/ runner/ tools/"`.
 5. Watch it work: `scion logs orchestrator --follow`.
@@ -231,9 +232,14 @@ The README explains how to:
   the orchestrator's tool list.
 - `agent.BackgroundAgentManager` (`agent/background.go`) —
   orchestrator uses it for the in-process subagents.
-- `scion-agent` harness (`extras/scion-agent/`) — runs unchanged
-  as the container entrypoint for both orchestrator and
-  investigator.
+- Stock `cmd/core-agent` binary — runs unchanged as the container
+  entrypoint for both orchestrator and investigator. Scion-shaped
+  behavior comes from `pkg/hooks` (transient activity via
+  `sciontool hook`) + the `sciontool_status` built-in tool (sticky
+  states via `sciontool status`). No adapter binary required; the
+  Scion harness bundle staged at `extras/scion/` (moves to Scion's
+  `harnesses/core-agent/` on upstream adoption) tells Scion how to
+  launch it. See [Scion adapter]({{< relref "/docs/reference/scion-adapter.md" >}}).
 - Scion `hubclient.AgentService` (`pkg/hubclient/agents.go:34-101`)
   — direct import.
 - Scion's `httptest.Server` mock pattern

@@ -1,0 +1,28 @@
+# Scion hook-event dialect for core-agent.
+#
+# core-agent's pkg/hooks emits event names matching Scion's canonical
+# vocabulary (pkg/sciontool/hooks/types.go), so this dialect is a
+# nearly-identity mapping. The `fields:` clauses only exist so
+# sciontool's auto-extraction picks up the top-level fields the
+# core-agent envelope carries.
+
+dialect: core-agent
+event_name_field: hook_event_name
+
+mappings:
+  model-start:
+    event: model-start
+  model-end:
+    event: model-end
+  tool-start:
+    event: tool-start
+    fields:
+      tool_name: .tool_name
+      tool_input: .tool_input
+  tool-end:
+    event: tool-end
+    fields:
+      tool_name: .tool_name
+      tool_output: .tool_output
+  agent-end:
+    event: agent-end

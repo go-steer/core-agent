@@ -1,0 +1,62 @@
+# Scion harness bundle for core-agent.
+#
+# STAGING LOCATION. When Scion upstream adopts this bundle, it moves
+# to `harnesses/core-agent/` in the Scion repo and this copy is
+# deleted from core-agent. See README.md.
+#
+# Same shape as harnesses/antigravity/config.yaml — declarative
+# ContainerScriptHarness config that tells Scion how to launch and
+# drive the core-agent binary.
+
+harness: core-agent
+image: core-agent:latest
+user: scion
+
+# No provisioner needed. The container image is expected to have
+# `core-agent` on PATH already (built from cmd/core-agent). If the
+# hosting deployment needs setup (auth capture, path fudging, etc.)
+# add a container-script provisioner here — see harnesses/antigravity/
+# for the pattern.
+
+interrupt_key: C-c
+# core-agent's project-memory convention (loaded automatically when
+# it starts up). Scion stages instructions here so the agent sees them
+# as system prompt.
+instructions_file: AGENTS.md
+
+command:
+  base: ["core-agent"]
+  # -i "TASK" seeds the first turn then stays in the interactive TUI/REPL.
+  # Scion runs the container in tmux (real PTY) so core-agent's bubble-tea
+  # TUI auto-launches; `scion message <agent>` via tmux send-keys types
+  # into the TUI's input field. Do NOT use -p (headless one-shot) — the
+  # process would exit after the first turn.
+  task_flag: "-i"
+  task_position: after_base_args
+
+env_template:
+  SCION_AGENT_NAME: "{{ .AgentName }}"
+
+# Model aliases — map Scion's tiered names to core-agent-supported
+# model IDs. Consumers override these in their template if they want
+# a different provider (e.g. Anthropic).
+model_aliases:
+  small: "gemini-2.0-flash"
+  medium: "gemini-2.0-flash"
+  large: "gemini-2.5-pro"
+  extra-large: "gemini-2.5-pro"
+
+capabilities:
+  limits:
+    max_turns: { support: "no", reason: "core-agent enforces per-turn cost ceilings, not turn counts" }
+    max_model_calls: { support: "no" }
+    max_duration: { support: "no" }
+  telemetry:
+    enabled: { support: "yes" }
+    native_emitter: { support: "yes", reason: "OTEL via pkg/telemetry" }
+  prompts:
+    system_prompt: { support: "yes" }
+    agent_instructions: { support: "yes" }
+  auth:
+    api_key: { support: "yes", reason: "GOOGLE_API_KEY / ANTHROPIC_API_KEY" }
+    oauth: { support: "no" }

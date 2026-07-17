@@ -40,7 +40,17 @@ package digest
 import (
 	"context"
 	"errors"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// tracer is the OTel tracer used by Process. Resolved once at package
+// load — no-op when the global tracer provider is noop (telemetry off).
+// Name matches the design doc's span-namespace convention
+// (docs/agentic-mcp-design.md, "OTel spans + attributes" addendum).
+var tracer = otel.Tracer("core-agent/digest")
 
 // Method values populated on Result.Method — the observable dispatch
 // decision the router made. Callers surface these in telemetry
@@ -56,12 +66,76 @@ const (
 // serialized size of the original payload — useful for telemetry
 // even when Method is passthrough. CallID is populated when a Store
 // is wired (follow-up PR); the skeleton always leaves it empty.
+//
+// Savings is populated on every success path (including passthrough,
+// where OriginalBytes ≈ DigestBytes so savings are ~0) and gives
+// callers the per-call byte + token math they need to surface
+// operator-visible savings totals without recomputing from Digest /
+// RawBytes themselves. See docs/agentic-mcp-design.md
+// § "savings telemetry" for the full display + OTel wiring.
 type Result struct {
 	Digest   string         // compressed payload (caller hands this to the model)
 	Method   string         // one of the Method* constants above
 	RawBytes int            // serialized size of the original
 	CallID   string         // opaque ID for CCR retrieval (empty until Store lands)
 	Metadata map[string]any // pruner-specific stats (e.g. {"arrays_collapsed": 3})
+	Savings  *Savings       // per-call byte + token reduction; nil only on nil-ctx error
+}
+
+// Savings quantifies the byte + token reduction one Process call
+// achieved, plus (agentic path only) the offsetting subagent LLM
+// cost. Populated on every Result Process returns; the pointer wrap
+// keeps a nil marker available for the (only) failure path (nil ctx)
+// where nothing was measured.
+//
+// The 4-char-per-token estimate for Original/DigestTokensEst is a
+// cheap heuristic — no tokenizer round-trip. Accurate to ±15% for
+// typical mixed content (JSON / prose / code). Suitable for savings
+// display; not suitable for billing enforcement.
+//
+// SubagentModel / SubagentInputTokens / SubagentOutputTokens are
+// left ZERO by pkg/digest — the package doesn't own the subagent
+// LLM (that lives in the caller, e.g. the MCP agentic wrapper).
+// Callers populate these AFTER Process returns from the subagent's
+// ResponseUsage, then hand the Result off to whatever surfaces the
+// telemetry (eventlog, /stats, OTel span attributes).
+//
+// Dollar-cost figures are NOT stored here. They're computed at
+// display time via usage.Tracker's layered pricing chain so
+// historical digests re-price correctly when rates change and so
+// pkg/digest stays free of the pricing dependency graph.
+type Savings struct {
+	// Path mirrors Result.Method — denormalized for callers that
+	// only carry Savings around (e.g. an eventlog metadata blob).
+	Path string
+
+	// Byte counts of the payload before and after digesting.
+	// Deterministic; measured on serialized JSON (or raw prose for
+	// passthrough).
+	OriginalBytes int
+	DigestBytes   int
+
+	// Token estimates. See package docs on the 4-char-per-token
+	// heuristic and its accuracy bounds.
+	OriginalTokensEst int
+	DigestTokensEst   int
+
+	// Agentic path only. Zero on structural / passthrough. Populated
+	// by the caller after invoking the small-tier subagent, from
+	// the subagent's ResponseUsage.
+	SubagentModel        string
+	SubagentInputTokens  int
+	SubagentOutputTokens int
+}
+
+// estimateTokens returns a cheap token count from a byte length
+// using the 4-char-per-token heuristic. Rounds up so a 3-byte
+// payload doesn't estimate 0 tokens.
+func estimateTokens(bytes int) int {
+	if bytes <= 0 {
+		return 0
+	}
+	return (bytes + 3) / 4
 }
 
 // Options configure a single Process call. All fields are optional;
@@ -126,6 +200,14 @@ func Process(ctx context.Context, payload []byte, opts Options) (Result, error) 
 	}
 	rawBytes := len(payload)
 
+	// digest.process span. No-op when the global tracer provider is
+	// noop (telemetry off, the default). Path + savings attributes
+	// stamp at End time so the span carries the router's actual
+	// decision, not just "we started digesting."
+	ctx, span := tracer.Start(ctx, "digest.process", trace.WithSpanKind(trace.SpanKindInternal))
+	defer span.End()
+	span.SetAttributes(attribute.Int("core_agent.digest.original_bytes", rawBytes))
+
 	// Persist to the CCR store BEFORE routing. If the write fails,
 	// we still process — the caller gets a digest, just no retrieval
 	// backdoor for this payload. The error surfaces in Metadata so
@@ -159,6 +241,43 @@ func Process(ctx context.Context, payload []byte, opts Options) (Result, error) 
 		res.Method = MethodStructuralJSON
 		res.Metadata = meta
 
+		// Second-chance fallthrough. If the structural pruner
+		// produced a digest that's STILL over threshold (payload
+		// was structurally minimal — one field, one long value; or
+		// many small fields the pruner has nothing to truncate)
+		// AND the caller wired an LLMFallback, re-dispatch to the
+		// LLM. Design intent: "structural is fast path; LLM wrap
+		// sees what structural couldn't reduce." Without this,
+		// JSON payloads that resist structural pruning silently
+		// stay large and the caller's LLMFallback is dead code for
+		// the MCP surface (which is 100% JSON in practice).
+		if opts.LLMFallback != nil && len(digest) >= opts.Threshold {
+			llmDigest, err := opts.LLMFallback(ctx, payload)
+			if err == nil {
+				res.Digest = llmDigest
+				res.Method = MethodLLMFallback
+				// Preserve pruner metadata for observability
+				// even though the LLM overrode the digest —
+				// operators can see "structural tried and left
+				// N bytes; LLM further compressed to M."
+				if res.Metadata == nil {
+					res.Metadata = map[string]any{}
+				}
+				res.Metadata["structural_digest_bytes"] = len(digest)
+			}
+			// LLM error: keep the structural digest. It's the
+			// best we've got; the caller can still hand it to the
+			// model. Error surfaces in a separate metadata key
+			// (llm_err_after_structural) so telemetry can catch
+			// the pattern of chronic LLM failures on this path.
+			if err != nil {
+				if res.Metadata == nil {
+					res.Metadata = map[string]any{}
+				}
+				res.Metadata["llm_err_after_structural"] = err.Error()
+			}
+		}
+
 	case MethodLLMFallback:
 		digest, err := opts.LLMFallback(ctx, payload)
 		if err != nil {
@@ -188,10 +307,39 @@ func Process(ctx context.Context, payload []byte, opts Options) (Result, error) 
 		}
 		res.Metadata["store_err"] = storeErr.Error()
 	}
+	// Populate per-call Savings so the caller can surface operator-
+	// visible reduction numbers without recomputing from Digest /
+	// RawBytes. Callers layering an LLM subagent on top (agentic MCP
+	// wrap, agentic_read_file, etc.) fill Subagent* AFTER we return.
+	digestBytes := len(res.Digest)
+	res.Savings = &Savings{
+		Path:              res.Method,
+		OriginalBytes:     rawBytes,
+		DigestBytes:       digestBytes,
+		OriginalTokensEst: estimateTokens(rawBytes),
+		DigestTokensEst:   estimateTokens(digestBytes),
+	}
 	// Global counter update — feeds the /usage endpoint's
 	// digest_methods breakdown so operators can see which path
 	// dominates without wiring per-call telemetry themselves.
-	recordTelemetry(res.Method, res.RawBytes, len(res.Digest))
+	recordTelemetry(res.Method, res.RawBytes, digestBytes)
+
+	// Stamp the router's decision + savings math onto the span so
+	// OTel dashboards can slice by path (structural vs. agentic vs.
+	// passthrough) and rank tools by savings without hand-scraping
+	// eventlog. Subagent cost stays out — the LLMFallback closure's
+	// own subagent.llm_call child span carries that.
+	savingsTokens := res.Savings.OriginalTokensEst - res.Savings.DigestTokensEst
+	if savingsTokens < 0 {
+		savingsTokens = 0
+	}
+	span.SetAttributes(
+		attribute.String("core_agent.digest.path", res.Method),
+		attribute.Int("core_agent.digest.digest_bytes", digestBytes),
+		attribute.Int("core_agent.digest.original_tokens_est", res.Savings.OriginalTokensEst),
+		attribute.Int("core_agent.digest.digest_tokens_est", res.Savings.DigestTokensEst),
+		attribute.Int("core_agent.digest.savings_tokens_est", savingsTokens),
+	)
 	return res, nil
 }
 

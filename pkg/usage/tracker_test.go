@@ -333,3 +333,64 @@ func TestTurnUsageFromGenaiMetadata_NilSafe(t *testing.T) {
 		t.Errorf("nil metadata should yield zero TurnUsage, got %+v", got)
 	}
 }
+
+// TestTracker_AppendDigestSavings_AggregatesByPath pins the #223
+// Phase 4 accumulator contract: structural + agentic records land in
+// distinct counter buckets so /context can label them separately.
+// Regression signal: if this fails, the "Digest savings" block loses
+// its structural-vs-agentic breakdown and can't honestly compute net
+// cost.
+func TestTracker_AppendDigestSavings_AggregatesByPath(t *testing.T) {
+	t.Parallel()
+	tr := NewTracker()
+
+	tr.AppendDigestSavings(DigestSavingsRecord{
+		Path:              "structural_json",
+		ParentTokensSaved: 1200,
+	})
+	tr.AppendDigestSavings(DigestSavingsRecord{
+		Path:              "structural_json",
+		ParentTokensSaved: 800,
+	})
+	tr.AppendDigestSavings(DigestSavingsRecord{
+		Path:                 "llm_fallback",
+		ParentTokensSaved:    5000,
+		SubagentModel:        "gemini-2.5-flash",
+		SubagentInputTokens:  400,
+		SubagentOutputTokens: 200,
+		SubagentCostUSD:      0.00012,
+	})
+	tr.AppendDigestSavings(DigestSavingsRecord{Path: "passthrough"})
+
+	got := tr.DigestSavings()
+	want := DigestSavingsTotals{
+		StructuralCalls:          2,
+		StructuralTokensSaved:    2000,
+		AgenticCalls:             1,
+		AgenticTokensSaved:       5000,
+		AgenticSubagentInTokens:  400,
+		AgenticSubagentOutTokens: 200,
+		AgenticSubagentCostUSD:   0.00012,
+		PassthroughCalls:         1,
+	}
+	if got != want {
+		t.Errorf("DigestSavings() = %+v, want %+v", got, want)
+	}
+}
+
+// TestTracker_AppendDigestSavings_NegativeTokensClamped pins the edge
+// case where DigestBytes > OriginalBytes (rare — happens on
+// passthrough when the wrap stamps a truncation marker). The digest
+// column can produce a negative "saved" value; the tracker clamps to
+// zero so cumulative totals never drift below reality.
+func TestTracker_AppendDigestSavings_NegativeTokensClamped(t *testing.T) {
+	t.Parallel()
+	tr := NewTracker()
+	tr.AppendDigestSavings(DigestSavingsRecord{
+		Path:              "structural_json",
+		ParentTokensSaved: -50,
+	})
+	if got := tr.DigestSavings().StructuralTokensSaved; got != 0 {
+		t.Errorf("StructuralTokensSaved = %d, want 0 (negative clamped)", got)
+	}
+}

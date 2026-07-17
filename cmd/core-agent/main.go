@@ -165,6 +165,8 @@ func main() {
 	agenticTools := flag.Bool("agentic-tools", true, "register the agentic tool wrappers (agentic_read_file, agentic_fetch_url, agentic_grep, agentic_research) that route through a subtask so only the digest enters the parent's context (docs/context-management-design.md Mechanism B). On by default since v2.1; pass --agentic-tools=false to register only the bare tools.")
 	agenticSmallModel := flag.String("agentic-small-model", "", "small/cheap model ID the agentic_* wrappers should route subtasks to (e.g. gemini-2.5-flash, claude-haiku-4-5). When empty, the provider's cheap-tier default is used (gemini-2.5-flash for Gemini/Vertex, claude-haiku-4-5 for Anthropic); providers without a cheap tier (echo, scripted) fall through to inheriting the parent's model. Requires --agentic-tools.")
 	noMCPDigest := flag.Bool("no-mcp-digest", false, "disable the structural pkg/digest wrap around MCP tool responses (docs/digest-design.md). Default: enabled. When on, JSON-shaped MCP responses get a deterministic prune (identifier keys preserved, long strings truncated, arrays collapsed head+tail) before reaching the parent context; prose passthroughs are bounded. Also registers retrieve_raw as a built-in tool so the model can fetch back the un-digested payload when a digest looks suspicious. Kill switch for demos / debugging; leave on for production. Also gated per-project by cfg.MCP.AgenticWrap and per-server by mcp.json's agentic_never.")
+	mcpAgenticWrapLLM := flag.Bool("mcp-agentic-wrap-llm", false, "enable the LLM subagent second-chance path for MCP responses the structural pruner can't reduce below threshold (docs/agentic-mcp-design.md #223). Default off — opt-in until the operator has confirmed the cost trade-off works for their MCP surface. Layered on top of --no-mcp-digest: structural runs first regardless, and the LLM subagent only fires when structural leaves the response above threshold. Config-file equivalent: mcp.json's agentic_wrap_llm.")
+	mcpAgenticWrapModel := flag.String("mcp-agentic-wrap-model", "", "MCP-specific small-model override for the --mcp-agentic-wrap-llm subagent. When empty, falls through to --agentic-small-model, then to the provider's cheap-tier default. Motivation: MCP responses can be shaped differently enough from built-in-tool wrappers that one tier works well for one surface but not the other. Requires --mcp-agentic-wrap-llm. Config-file equivalent: mcp.json's agentic_wrap_model.")
 	noContextCache := flag.Bool("no-context-cache", false, "disable Vertex explicit context caching for the stable request prefix (system instruction + tools). Default: enabled on Vertex. When on, the daemon creates a CachedContent resource after turn 1 and stamps it onto every subsequent GenerateContent call so the prefix bills at ~10%% of the input rate. Kill switch for demos / debugging Vertex issues; leave on for production. See docs/vertex-context-caching-design.md. Also gated per-project by cfg.Model.Vertex.ContextCache.enabled.")
 
 	// Agent-card discovery (docs/agent-card-design.md). All optional —
@@ -180,7 +182,7 @@ func main() {
 	agentCardDocsURL := flag.String("agent-card-docs-url", "", "override documentationUrl in /.well-known/agent-card.json")
 	flag.Parse()
 
-	code := run(*prompt, *initialPrompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *maxTurnCostUSD, *maxSessionCostUSD, *watchdogMode, *smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *noContextCache,
+	code := run(*prompt, *initialPrompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *maxTurnCostUSD, *maxSessionCostUSD, *watchdogMode, *smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *mcpAgenticWrapLLM, *mcpAgenticWrapModel, *noContextCache,
 		attachOpts{
 			Listen:           *attachListen,
 			UnixSocket:       *attachUnixSocket,
@@ -356,7 +358,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	return opts
 }
 
-func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, maxTurnCostUSD, maxSessionCostUSD float64, watchdogMode, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest bool, noContextCache bool, attachCfg attachOpts, cardCfg agentCardOpts) int {
+func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, maxTurnCostUSD, maxSessionCostUSD float64, watchdogMode, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache bool, attachCfg attachOpts, cardCfg agentCardOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -667,11 +669,73 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// isn't known until agent.New runs, so we .Set(...) the real
 	// backing later. Nil digestOpts disables wrapping entirely
 	// (--no-mcp-digest kill switch).
+	//
+	// agentRef + tracker are hoisted above mcp.Build so the
+	// LLMFallback + OnResult closures below can capture them —
+	// mcp.Build precedes agent.New (the toolsets feed into
+	// agent.New's options), and OnResult needs to accumulate into
+	// the same tracker /stats + /context read from. tracker is
+	// inert until Append fires so early construction is safe.
+	var agentRef *agent.Agent
+	tracker := usage.NewTracker()
 	var digestStore *digest.LazyStore
 	var digestOpts *mcp.DigestOptions
 	if !noMCPDigest {
 		digestStore = &digest.LazyStore{}
 		digestOpts = &mcp.DigestOptions{Store: digestStore}
+		// Feed per-call Savings into the session-cumulative digest
+		// counters that back /context's "Digest savings" block +
+		// (in Phase 5) the OTel span attributes. usage.PriceFor
+		// consults the global catalog set later in run(); on the
+		// pre-catalog path it falls through to builtin rates, which
+		// still produce meaningful subagent cost figures.
+		digestOpts.OnResult = func(res *digest.Result) {
+			if res == nil || res.Savings == nil {
+				return
+			}
+			var subCost float64
+			if res.Savings.SubagentModel != "" {
+				p := usage.PriceFor(res.Savings.SubagentModel, cfg)
+				subCost = p.CostUSD(res.Savings.SubagentInputTokens, res.Savings.SubagentOutputTokens)
+			}
+			tracker.AppendDigestSavings(usage.DigestSavingsRecord{
+				Path:                 res.Savings.Path,
+				ParentTokensSaved:    res.Savings.OriginalTokensEst - res.Savings.DigestTokensEst,
+				SubagentModel:        res.Savings.SubagentModel,
+				SubagentInputTokens:  res.Savings.SubagentInputTokens,
+				SubagentOutputTokens: res.Savings.SubagentOutputTokens,
+				SubagentCostUSD:      subCost,
+			})
+		}
+		// LLM subagent second-chance path (#223). Opt-in from either
+		// source: the CLI flag OR mcp.json's agentic_wrap_llm. Either
+		// on → build the closure. Peek at mcp.json up front so config
+		// alone can enable this without touching CLI flags (config is
+		// the persistent source for per-project defaults).
+		//
+		// Load errors surface later inside mcp.Build itself; here we
+		// just default to "no config-side opt-in" so a misconfigured
+		// mcp.json doesn't accidentally light up the LLM subagent.
+		mcpCfg, _ := mcp.Load(agentsDir)
+		llmEnabled := mcpAgenticWrapLLM || mcpCfg.AgenticWrapLLMEnabled()
+		llmModelOverride := mcpAgenticWrapModel
+		if llmModelOverride == "" {
+			llmModelOverride = mcpCfg.AgenticWrapModel
+		}
+		if llmEnabled {
+			resolvedMCPModel := models.ResolveMCPSmallModel(provider, llmModelOverride, agenticSmallModel)
+			digestOpts.LLMFallback = buildMCPDigestLLMFallback(&agentRef, provider, resolvedMCPModel)
+			switch {
+			case resolvedMCPModel == "":
+				send(fmt.Sprintf("mcp agentic wrap: LLM subagent on, inherits parent (%s — no cheap-tier default for provider %q)", cfg.Model.Name, provider.Name()))
+			case llmModelOverride != "":
+				send(fmt.Sprintf("mcp agentic wrap: LLM subagent on, %s (mcp-specific override)", resolvedMCPModel))
+			case agenticSmallModel != "":
+				send(fmt.Sprintf("mcp agentic wrap: LLM subagent on, %s (via --agentic-small-model)", resolvedMCPModel))
+			default:
+				send(fmt.Sprintf("mcp agentic wrap: LLM subagent on, %s (provider default)", resolvedMCPModel))
+			}
+		}
 	}
 	mcpServers, mcpToolsets, mcpErr := mcp.Build(ctx, agentsDir, send, gate, makeMCPElicitor(), digestOpts)
 	if mcpErr != nil {
@@ -785,7 +849,9 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		usage.SetCatalog(catalog)
 	}
 
-	tracker := usage.NewTracker()
+	// tracker was hoisted above mcp.Build so the digest OnResult
+	// closure could capture it. Just resolve the pricing rate for
+	// this run now that the catalog has been installed.
 	pricingRate := usage.PriceFor(cfg.Model.Name, cfg)
 
 	// Background subagent spawning. Constructed before agent.New so
@@ -833,12 +899,13 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// Mechanism B). On by default since v2.1; disable via
 	// --agentic-tools=false. Each wrapper routes its operation
 	// through Agent.RunSubtask so only the digest reaches the
-	// parent's context — raw tool output stays in the subtask. Late-bound *Agent via agentRef closure;
-	// agentRef is populated after agent.New returns. The inner
-	// tools the subtask runs are pulled from builtinTools by
-	// canonical name, so the subtask shares the parent's gate +
-	// output caps.
-	var agentRef *agent.Agent
+	// parent's context — raw tool output stays in the subtask.
+	// Late-bound *Agent via agentRef closure; agentRef was hoisted
+	// above mcp.Build (the MCP digest LLM fallback needs the same
+	// late binding) and is populated inside the WithPostConstruct
+	// hook below. The inner tools the subtask runs are pulled from
+	// builtinTools by canonical name, so the subtask shares the
+	// parent's gate + output caps.
 	if agenticTools {
 		resolvedSmallModel := models.ResolveSmallModel(provider, agenticSmallModel)
 		switch {

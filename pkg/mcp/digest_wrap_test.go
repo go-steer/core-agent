@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -290,6 +291,200 @@ func TestDigestingTool_Run_TelemetryRecorded(t *testing.T) {
 }
 
 // runWrappedEcho spins up the in-memory MCP echo server, wraps it
+// TestDigestingTool_Run_LLMFallback_PopulatesSubagentSavings pins the
+// #223 contract: when the operator supplies an LLMFallback, the
+// wrapper adapts it to digest.Options's signature, captures the
+// returned SubagentModel + token counts, and decorates Result.Savings
+// (and the returned map's `savings` sidecar) with them so /stats +
+// per-tool footer + OTel span attributes have real numbers.
+//
+// Regression signal: if this test fails, agentic-path savings become
+// invisible to operators — the cost-reduction infra "works" but its
+// output isn't measurable, defeating the observability goal.
+func TestDigestingTool_Run_LLMFallback_PopulatesSubagentSavings(t *testing.T) {
+	t.Parallel()
+
+	// Force the router to the LLM fallback path: prose payload above
+	// threshold with a fallback wired. digest.Options.LLMFallback
+	// non-nil is what tells the router to route prose through the LLM
+	// rather than the bounded-passthrough branch.
+	//
+	// The wrapper stub always returns the same digest text + fake
+	// usage numbers so the assertions can compare exact values.
+	const wantModel = "gemini-2.5-flash"
+	const wantInputTok = 1234
+	const wantOutputTok = 87
+	const wantDigest = "The pod is CrashLoopBackOff because /entrypoint.sh is missing."
+
+	fallback := func(_ context.Context, _ []byte) (LLMFallbackResult, error) {
+		return LLMFallbackResult{
+			Text:                 wantDigest,
+			SubagentModel:        wantModel,
+			SubagentInputTokens:  wantInputTok,
+			SubagentOutputTokens: wantOutputTok,
+		}, nil
+	}
+
+	// Build a payload the structural pruner CAN'T reduce below
+	// threshold — a shallow object with many small identifier-shaped
+	// keys and short values. Every key + value is preserved by the
+	// pruner (no long strings to truncate, no arrays past N to
+	// collapse) so the digest stays large, forcing the router's
+	// second-chance fallthrough to the LLM.
+	//
+	// The echo tool's single-field {"echo":"<msg>"} shape doesn't
+	// exercise this — the pruner truncates the one long value to a
+	// 34-byte marker regardless of input size, so structural always
+	// "wins" for that shape.
+	resp := make(map[string]any, 100)
+	for i := 0; i < 100; i++ {
+		resp[fmt.Sprintf("pod_%02d_id", i)] = fmt.Sprintf("id-%02d", i)
+	}
+	tool := wrapFixedTool(t, "gke_get_pods", resp, &DigestOptions{
+		Threshold:   500,
+		LLMFallback: fallback,
+	})
+
+	callCtx := &stubToolCtx{Context: context.Background(), callID: "call-fallback"}
+	res, err := tool.(runnable).Run(callCtx, map[string]any{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if got, _ := res["method"].(string); got != digest.MethodLLMFallback {
+		t.Fatalf("method = %q, want %q (structural pruning would leave this over threshold; router should have used LLM fallback)",
+			got, digest.MethodLLMFallback)
+	}
+	if got, _ := res["digest"].(string); got != wantDigest {
+		t.Errorf("digest = %q, want %q (the fallback's returned text should be what the model sees)",
+			got, wantDigest)
+	}
+
+	// The `savings` sidecar on the returned map is what the runner +
+	// TUI adapters render.
+	sv, ok := res["savings"].(map[string]any)
+	if !ok {
+		t.Fatalf("savings sidecar missing or wrong type: %v", res["savings"])
+	}
+	if got, _ := sv["path"].(string); got != digest.MethodLLMFallback {
+		t.Errorf("savings.path = %q, want %q", got, digest.MethodLLMFallback)
+	}
+	if got, _ := sv["subagent_model"].(string); got != wantModel {
+		t.Errorf("savings.subagent_model = %q, want %q", got, wantModel)
+	}
+	if got, _ := sv["subagent_input_tokens"].(int); got != wantInputTok {
+		t.Errorf("savings.subagent_input_tokens = %d, want %d", got, wantInputTok)
+	}
+	if got, _ := sv["subagent_output_tokens"].(int); got != wantOutputTok {
+		t.Errorf("savings.subagent_output_tokens = %d, want %d", got, wantOutputTok)
+	}
+	// digest_tokens_est reflects the compressed digest; original
+	// reflects the raw serialized payload. Compression should be
+	// dramatic.
+	origTokens, _ := sv["original_tokens_est"].(int)
+	digestTokens, _ := sv["digest_tokens_est"].(int)
+	if origTokens == 0 || digestTokens == 0 {
+		t.Errorf("token estimates zero: original=%d digest=%d", origTokens, digestTokens)
+	}
+	if digestTokens >= origTokens {
+		t.Errorf("expected LLM digest to reduce token count: original=%d digest=%d",
+			origTokens, digestTokens)
+	}
+}
+
+// TestDigestingTool_Run_LLMFallback_NotInvokedOnStructuralPath pins
+// the layering: even when LLMFallback is wired, a JSON payload the
+// structural pruner CAN reduce under threshold must take the
+// structural path and NOT invoke the fallback. Otherwise operators
+// pay for a subagent LLM call on responses that structural could
+// have handled for free.
+func TestDigestingTool_Run_LLMFallback_NotInvokedOnStructuralPath(t *testing.T) {
+	t.Parallel()
+
+	fallbackInvoked := false
+	fallback := func(_ context.Context, _ []byte) (LLMFallbackResult, error) {
+		fallbackInvoked = true
+		return LLMFallbackResult{Text: "should not be called"}, nil
+	}
+
+	tools := runWrappedEcho(t, "demo", "demo", &DigestOptions{
+		Threshold:   100,
+		LLMFallback: fallback,
+	})
+	echo := pickEchoTool(t, tools)
+
+	// Structurally-reducible payload: a long-string value that the
+	// pruner will truncate, taking the response back under threshold.
+	bigMsg := strings.Repeat("x", 5000)
+	callCtx := &stubToolCtx{Context: context.Background(), callID: "call-structural"}
+	res, err := echo.(runnable).Run(callCtx, map[string]any{"msg": bigMsg})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got, _ := res["method"].(string); got != digest.MethodStructuralJSON {
+		t.Errorf("method = %q, want %q — the structural pruner should have reduced this",
+			got, digest.MethodStructuralJSON)
+	}
+	if fallbackInvoked {
+		t.Error("LLMFallback invoked on a payload the structural pruner handled — subagent cost paid unnecessarily")
+	}
+	// Savings sidecar populated but Subagent* fields absent.
+	sv, ok := res["savings"].(map[string]any)
+	if !ok {
+		t.Fatalf("savings sidecar missing: %v", res["savings"])
+	}
+	if _, present := sv["subagent_model"]; present {
+		t.Errorf("subagent_model unexpectedly present on structural path: %+v", sv)
+	}
+}
+
+// TestDigestingTool_Run_LLMFallback_ErrorDegradesToBoundedPassthrough
+// pins the failure mode: when the fallback errors out (subagent LLM
+// unreachable, budget hit), the wrapper degrades to bounded
+// passthrough — the model still gets a usable response.
+func TestDigestingTool_Run_LLMFallback_ErrorDegradesToBoundedPassthrough(t *testing.T) {
+	t.Parallel()
+
+	fallback := func(_ context.Context, _ []byte) (LLMFallbackResult, error) {
+		return LLMFallbackResult{}, errors.New("subagent unavailable")
+	}
+
+	// Same "structurally-minimal + many small keys" payload as the
+	// happy-path test — forces the router into the second-chance
+	// fallthrough where our failing LLMFallback fires.
+	resp := make(map[string]any, 100)
+	for i := 0; i < 100; i++ {
+		resp[fmt.Sprintf("pod_%02d_id", i)] = fmt.Sprintf("id-%02d", i)
+	}
+	tool := wrapFixedTool(t, "gke_get_pods", resp, &DigestOptions{
+		Threshold:   500,
+		LLMFallback: fallback,
+	})
+
+	callCtx := &stubToolCtx{Context: context.Background(), callID: "call-fallback-err"}
+	res, err := tool.(runnable).Run(callCtx, map[string]any{})
+	if err != nil {
+		t.Fatalf("Run should not surface fallback errors — got: %v", err)
+	}
+	// Fallback error on the second-chance path: we keep the structural
+	// digest (best-effort), stamp llm_err_after_structural into
+	// Metadata so telemetry can surface chronic failures, and leave
+	// Method as structural_json (the structural attempt still ran and
+	// produced something usable). Bounded-passthrough is the failure
+	// mode for the OTHER LLM path — when router picks MethodLLMFallback
+	// directly for non-JSON payloads.
+	if got, _ := res["method"].(string); got != digest.MethodStructuralJSON {
+		t.Errorf("method = %q, want structural_json (fallback error keeps structural digest)", got)
+	}
+	if digestStr, _ := res["digest"].(string); digestStr == "" {
+		t.Error("structural digest must remain when LLM fallback errors, got empty")
+	}
+	meta, _ := res["digest_meta"].(map[string]any)
+	if _, ok := meta["llm_err_after_structural"]; !ok {
+		t.Errorf("digest_meta.llm_err_after_structural missing: %+v", meta)
+	}
+}
+
 // through withNamespaceAndDigest with opts, and returns the resulting
 // tool list.
 func runWrappedEcho(t *testing.T, prefix, server string, opts *DigestOptions) []tool.Tool {
@@ -315,6 +510,55 @@ func (errRunnable) IsLongRunning() bool                     { return false }
 func (errRunnable) Declaration() *genai.FunctionDeclaration { return nil }
 func (e errRunnable) Run(_ tool.Context, _ any) (map[string]any, error) {
 	return nil, e.err
+}
+
+// fixedResponseRunnable returns a caller-supplied map from Run.
+// Used to test the digest wrap against payloads with exact
+// serialized-byte-count and structural-shape properties (the echo
+// tool only produces one-string-field payloads, which the pruner
+// reduces to a 34-byte marker regardless of input length).
+type fixedResponseRunnable struct {
+	name string
+	resp map[string]any
+}
+
+func (f fixedResponseRunnable) Name() string                            { return f.name }
+func (f fixedResponseRunnable) Description() string                     { return "returns a fixed map" }
+func (f fixedResponseRunnable) IsLongRunning() bool                     { return false }
+func (f fixedResponseRunnable) Declaration() *genai.FunctionDeclaration { return nil }
+func (f fixedResponseRunnable) Run(_ tool.Context, _ any) (map[string]any, error) {
+	return f.resp, nil
+}
+
+// fixedToolset returns a single fixedResponseRunnable so digest wrap
+// tests can control the raw payload the pruner sees.
+type fixedToolset struct {
+	t fixedResponseRunnable
+}
+
+func (fs fixedToolset) Name() string { return "" }
+func (fs fixedToolset) Tools(_ adkagent.ReadonlyContext) ([]tool.Tool, error) {
+	return []tool.Tool{fs.t}, nil
+}
+func (fixedToolset) Close() error { return nil }
+
+// wrapFixedTool builds a digest-wrapped toolset around a single
+// caller-supplied response map. Lets tests assert digest wrap
+// behavior on payloads with specific structural properties (many
+// small keys, all-string arrays, etc.) that the shared echo helper
+// can't produce.
+func wrapFixedTool(t *testing.T, name string, resp map[string]any, opts *DigestOptions) tool.Tool {
+	t.Helper()
+	inner := fixedToolset{t: fixedResponseRunnable{name: name, resp: resp}}
+	wrapped := withNamespaceAndDigest(inner, "demo", "demo", opts)
+	tools, err := wrapped.Tools(asReadonly(context.Background()))
+	if err != nil {
+		t.Fatalf("Tools: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("want 1 tool, got %d", len(tools))
+	}
+	return tools[0]
 }
 
 // Compile-time asserts so future ADK / interface bumps force the
@@ -410,6 +654,129 @@ func pickEchoTool(t *testing.T, tools []tool.Tool) tool.Tool {
 	}
 	t.Fatal("no echo tool found on wrapped toolset")
 	return nil
+}
+
+// TestDigestingTool_Run_OnResultFiresWithDecoratedSavings pins the
+// #223 Phase 4 accumulator contract: when OnResult is wired, the
+// wrapper fires it once per successful Process call with the fully-
+// decorated Result (Subagent* populated for the fallback path,
+// otherwise zero). The main.go aggregator relies on this to feed
+// /context's Digest savings block.
+func TestDigestingTool_Run_OnResultFiresWithDecoratedSavings(t *testing.T) {
+	t.Parallel()
+
+	fallback := func(_ context.Context, _ []byte) (LLMFallbackResult, error) {
+		return LLMFallbackResult{
+			Text:                 "compressed",
+			SubagentModel:        "gemini-2.5-flash",
+			SubagentInputTokens:  100,
+			SubagentOutputTokens: 25,
+		}, nil
+	}
+
+	var (
+		captured    *digest.Result
+		invocations int
+	)
+	onResult := func(r *digest.Result) {
+		invocations++
+		captured = r
+	}
+
+	// Force structural-second-chance fallthrough: shallow object,
+	// many small identifier-shaped keys — same shape the existing
+	// LLMFallback tests use.
+	resp := make(map[string]any, 100)
+	for i := 0; i < 100; i++ {
+		resp[fmt.Sprintf("pod_%02d_id", i)] = fmt.Sprintf("id-%02d", i)
+	}
+	tool := wrapFixedTool(t, "gke_get_pods", resp, &DigestOptions{
+		Threshold:   500,
+		LLMFallback: fallback,
+		OnResult:    onResult,
+	})
+
+	callCtx := &stubToolCtx{Context: context.Background(), callID: "call-onresult"}
+	if _, err := tool.(runnable).Run(callCtx, map[string]any{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if invocations != 1 {
+		t.Errorf("OnResult invocations = %d, want 1", invocations)
+	}
+	if captured == nil || captured.Savings == nil {
+		t.Fatalf("OnResult captured no Result or nil Savings: %+v", captured)
+	}
+	if captured.Savings.SubagentModel != "gemini-2.5-flash" {
+		t.Errorf("SubagentModel not decorated before OnResult fired: %+v", captured.Savings)
+	}
+	if captured.Savings.SubagentInputTokens != 100 || captured.Savings.SubagentOutputTokens != 25 {
+		t.Errorf("Subagent token counts not decorated: %+v", captured.Savings)
+	}
+}
+
+// TestDigestingTool_Run_OnResultNilSkipsCallback pins the shipped
+// default: no OnResult wired → wrapper doesn't crash, doesn't try
+// to invoke a nil closure. Regression signal against a lazy `if != nil`
+// check dropping out during future refactors.
+func TestDigestingTool_Run_OnResultNilSkipsCallback(t *testing.T) {
+	t.Parallel()
+	tools := runWrappedEcho(t, "demo", "demo", &DigestOptions{
+		Threshold: 100,
+		// OnResult intentionally nil
+	})
+	echo := pickEchoTool(t, tools)
+	callCtx := &stubToolCtx{Context: context.Background(), callID: "call-noon"}
+	if _, err := echo.(runnable).Run(callCtx, map[string]any{"msg": strings.Repeat("x", 5000)}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}
+
+// TestDigestingTool_Run_EmitsMCPToolCallSpan pins the #223 Phase 5
+// OTel contract: each MCP tool call emits an mcp.tool_call parent
+// span with core_agent.mcp.tool_name. The digest.process child span
+// (from pkg/digest.Process) nests underneath in the exported trace
+// so operators can see the whole "MCP call → digest decision" flow
+// grouped in trace UIs.
+//
+// Not t.Parallel-safe: swaps the global tracer provider.
+func TestDigestingTool_Run_EmitsMCPToolCallSpan(t *testing.T) {
+	rec := installRecorderMCP(t)
+
+	tools := runWrappedEcho(t, "demo", "demo", &DigestOptions{Threshold: 100})
+	echo := pickEchoTool(t, tools)
+	callCtx := &stubToolCtx{Context: context.Background(), callID: "call-otel"}
+	if _, err := echo.(runnable).Run(callCtx, map[string]any{"msg": strings.Repeat("x", 5000)}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	spans := rec.Ended()
+	var toolSpan *readOnlySpanStub
+	for _, sp := range spans {
+		if sp.Name() == "mcp.tool_call" {
+			toolSpan = &readOnlySpanStub{sp}
+			break
+		}
+	}
+	if toolSpan == nil {
+		names := make([]string, 0, len(spans))
+		for _, sp := range spans {
+			names = append(names, sp.Name())
+		}
+		t.Fatalf("mcp.tool_call span not emitted; got spans: %v", names)
+	}
+	var foundName bool
+	for _, kv := range toolSpan.Attributes() {
+		if string(kv.Key) == "core_agent.mcp.tool_name" {
+			foundName = true
+			if got := kv.Value.AsString(); !strings.Contains(got, "echo") {
+				t.Errorf("core_agent.mcp.tool_name = %q, want prefix_echo", got)
+			}
+		}
+	}
+	if !foundName {
+		t.Errorf("core_agent.mcp.tool_name attribute missing on mcp.tool_call span")
+	}
 }
 
 func assertLatencyMS(t *testing.T, res map[string]any, label string) {

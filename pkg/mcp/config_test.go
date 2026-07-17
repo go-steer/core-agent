@@ -170,6 +170,56 @@ func TestLoad_RejectsAuthWithoutStrategy(t *testing.T) {
 	}
 }
 
+// TestAgenticWrapLLMEnabled pins the opt-in default for the LLM
+// second-chance path (#223): absence == off (the opposite of
+// AgenticWrap). The subagent trades wall-clock + cost for its
+// compression win, so we make operators opt in rather than
+// discovering the trade-off in production.
+func TestAgenticWrapLLMEnabled(t *testing.T) {
+	t.Parallel()
+	yes, no := true, false
+	tests := []struct {
+		name string
+		s    *Servers
+		want bool
+	}{
+		{"nil receiver", nil, false},
+		{"absent field defaults off", &Servers{}, false},
+		{"explicit false", &Servers{AgenticWrapLLM: &no}, false},
+		{"explicit true", &Servers{AgenticWrapLLM: &yes}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.s.AgenticWrapLLMEnabled(); got != tt.want {
+				t.Errorf("AgenticWrapLLMEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestLoad_AgenticWrapLLMFields pins that mcp.json's agentic_wrap_llm
+// + agentic_wrap_model round-trip through Load. Regression signal:
+// if this fails, operators lose the config-file path for enabling
+// the LLM subagent — CLI flag becomes the only knob.
+func TestLoad_AgenticWrapLLMFields(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	body := `{"version":1,"servers":{"x":{"transport":"stdio","command":"a"}},"agentic_wrap_llm":true,"agentic_wrap_model":"gemini-2.5-flash"}`
+	if err := os.WriteFile(filepath.Join(dir, MCPFileName), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.AgenticWrapLLMEnabled() {
+		t.Errorf("AgenticWrapLLMEnabled() = false, want true (agentic_wrap_llm: true in mcp.json)")
+	}
+	if got.AgenticWrapModel != "gemini-2.5-flash" {
+		t.Errorf("AgenticWrapModel = %q, want gemini-2.5-flash", got.AgenticWrapModel)
+	}
+}
+
 func TestInterpolateMap(t *testing.T) {
 	t.Setenv("TOKEN", "secret")
 	got := InterpolateMap(map[string]string{

@@ -48,11 +48,19 @@ const MCPFileName = "mcp.json"
 // structural-digester wrap layer (#130). CLI --no-mcp-digest kills the
 // whole surface regardless; per-server AgenticNever opts one server
 // out without touching the global flag.
+//
+// AgenticWrapLLM + AgenticWrapModel gate the #223 LLM subagent
+// second-chance path — a small-tier subagent that digests responses
+// the structural pruner can't reduce under threshold. Default off:
+// the mechanism is safe but the cost profile depends on the
+// operator's MCP surface, so opt-in until dogfooded.
 type Servers struct {
 	Version              int                   `json:"version"`
 	Servers              map[string]ServerSpec `json:"servers"`
 	AgenticWrap          *bool                 `json:"agentic_wrap,omitempty"`           // default true; ptr for explicit off
 	AgenticWrapThreshold int                   `json:"agentic_wrap_threshold,omitempty"` // default 8000
+	AgenticWrapLLM       *bool                 `json:"agentic_wrap_llm,omitempty"`       // default false; ptr for explicit on
+	AgenticWrapModel     string                `json:"agentic_wrap_model,omitempty"`     // MCP-specific small-model override; empty falls through to --agentic-small-model resolution
 }
 
 // DefaultAgenticWrapThreshold is the default byte threshold below which
@@ -77,6 +85,19 @@ func (s *Servers) AgenticWrapThresholdBytes() int {
 		return DefaultAgenticWrapThreshold
 	}
 	return s.AgenticWrapThreshold
+}
+
+// AgenticWrapLLMEnabled reports whether the operator has opted the
+// LLM subagent second-chance path in via mcp.json. Absence == off
+// (opposite of AgenticWrap): the structural pruner is a safe default
+// but the LLM fallback trades wall-clock + subagent cost for its
+// compression win, so opt-in until an operator confirms the
+// trade-off works for their MCP surface.
+func (s *Servers) AgenticWrapLLMEnabled() bool {
+	if s == nil || s.AgenticWrapLLM == nil {
+		return false
+	}
+	return *s.AgenticWrapLLM
 }
 
 // ServerSpec describes one MCP server. Either Command (stdio) or URL

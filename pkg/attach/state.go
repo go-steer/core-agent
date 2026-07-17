@@ -212,6 +212,29 @@ type ContextInfo struct {
 	SubtaskInputTokens   int64   `json:"subtask_input_tokens"`
 	SubtaskOutputTokens  int64   `json:"subtask_output_tokens"`
 	SubtaskCostUSD       float64 `json:"subtask_cost_usd"`
+
+	// DigestSavings surfaces the MCP wrap's cumulative effect (#223).
+	// Zero-valued when the wrap layer never fired this session (no
+	// MCP servers, wrap disabled, or every response was under the
+	// threshold). Structural + agentic counts break out separately
+	// because their cost math differs — see agent.ContextStats /
+	// usage.DigestSavingsTotals for details.
+	DigestSavings *DigestSavingsInfo `json:"digest_savings,omitempty"`
+}
+
+// DigestSavingsInfo is the wire-format view of one session's
+// cumulative MCP digest-wrap savings. Nil on ContextInfo when the
+// session has recorded no digest-wrap activity. Broken out so remote
+// TUI renderers pick out structural vs. agentic without recomputing.
+type DigestSavingsInfo struct {
+	StructuralCalls          int     `json:"structural_calls"`
+	StructuralTokensSaved    int64   `json:"structural_tokens_saved"`
+	AgenticCalls             int     `json:"agentic_calls"`
+	AgenticTokensSaved       int64   `json:"agentic_tokens_saved"`
+	AgenticSubagentInTokens  int64   `json:"agentic_subagent_input_tokens"`
+	AgenticSubagentOutTokens int64   `json:"agentic_subagent_output_tokens"`
+	AgenticSubagentCostUSD   float64 `json:"agentic_subagent_cost_usd"`
+	PassthroughCalls         int     `json:"passthrough_calls"`
 }
 
 // MemorySource is one row in GET /sessions/.../memory — backs the

@@ -29,9 +29,8 @@ _In flight toward v2.7.0. Commits since [2.7.0-dev.3]:_
 - Digest: `EventlogStore.Put` now writes to a derived `<sid>:digest` session row so mid-turn digest writes don't trip ADK's optimistic-concurrency check against the runner's session snapshot ([#273](https://github.com/go-steer/core-agent/issues/273))
 - coretuiremote: `Adapter.SwitchToSession` returns a full `SwitchTarget` — UsageTracker, Memory, Skills, MCPServers, and Branding all refresh so `/switch` actually updates the title bar and `/stats` ([#274](https://github.com/go-steer/core-agent/issues/274))
 - Multi-session: per-session `usage.Tracker` in the session factory so `AttachUsage`, the broadcaster's usage-update snapshot, and per-session cost ceilings stop returning the union across every session on the daemon ([#275](https://github.com/go-steer/core-agent/issues/275))
-
-#### Bug or Regression
 - Release: dev-tag republish overlays release helpers from `origin/main` so tags cut before `dev/release/compose-release-notes.sh` existed can be republished via `gh workflow run release.yml --ref main -f tag=vX.Y.Z-dev.N`; unblocks the three orphan `v2.7.0-dev.[123]` tags that failed the initial workflow.
+- Release images: bury the broken `set-package-descriptions.sh` (GitHub has no REST/GraphQL API for setting a GHCR package's description); replace with manifest-index annotations via `docker/metadata-action`'s `annotations:` + `DOCKER_METADATA_ANNOTATIONS_LEVELS=index,manifest`, which is the actual mechanism GHCR reads for multi-arch package-page descriptions.
 
 #### Documentation
 - README: rewrite from a v1 launch document to a v2 product doc — drop the Milestones / Roadmap sections, replace paragraph-form Features with a category-grouped bulleted list covering multi-session, remote TUI, plan-first, agent-card, k8s-event-watcher, add a container-variants table, remove hard-coded version numbers (release-shield badge renders current dynamically).
@@ -41,7 +40,7 @@ _In flight toward v2.7.0. Commits since [2.7.0-dev.3]:_
 #### Other (Cleanup)
 - Deps: bump core-tui v0.10.1 → v0.10.2 for observer-mode per-turn footer ([#262](https://github.com/go-steer/core-agent/pull/262))
 - Post-drive: implicit-caching caveat in docs + startup log line for mcp digest store binding ([#261](https://github.com/go-steer/core-agent/pull/261))
-- Container images: per-image `org.opencontainers.image.description` label in the release-images matrix (was generic `core-agent <name> variant` for all four) + new `docs/site` documentation label + `dev/release/set-package-descriptions.sh` one-off ops script that PATCHes GHCR package descriptions via the packages API; dropped the redundant `LABEL org.opencontainers.image.description` from `Dockerfile` since the workflow labels win.
+- Container images: per-image `org.opencontainers.image.description` in the release-images matrix, threaded through both `labels:` (for OCI-aware tooling) and `annotations:` with `DOCKER_METADATA_ANNOTATIONS_LEVELS=index,manifest` (GHCR pulls its package-page description from the manifest index annotation on multi-arch images — labels alone don't populate it); also sets `org.opencontainers.image.documentation` pointing at the site. Dropped the redundant `LABEL org.opencontainers.image.description` from `Dockerfile` since the workflow labels/annotations win.
 - Docs freshness linter: new `dev/tools/docs-lint` + `dev/ci/presubmits/verify-docs-lint` + standalone `.github/workflows/docs-lint.yml`; hard-fails on four drift patterns (numeric tool counts, spelled-out image counts, pinned `@vX.Y.Z` in install snippets, wrong-major prose version pins) with a `--self-test` mode that verifies every rule fires against an inline fixture.
 
 

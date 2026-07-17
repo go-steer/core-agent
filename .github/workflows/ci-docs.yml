@@ -12,25 +12,52 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: CI (docs-only)
+name: CI (non-Go)
 
-# Companion no-op to ci.yml. ci.yml uses `paths-ignore: ['**/*.md']`, so a
-# docs-only change wouldn't produce the test/lint/tidy/vuln status checks
-# that branch protection on `main` requires. This workflow runs on the same
-# triggers but matches the inverse paths and emits four trivially-green jobs
-# with the same names. Net effect: docs-only PRs satisfy required checks in
-# ~10s instead of running the full Go pipeline.
+# Companion no-op to ci.yml. ci.yml uses `paths-ignore:` to skip a set
+# of paths that can't affect the Go pipeline (docs, image build config,
+# release workflows, docs-site sources, license/config-only chores).
+# Branch protection requires the four named checks (`test`, `lint`,
+# `go mod tidy is clean`, `govulncheck`), so a PR that only touches
+# those skipped paths would otherwise wait for checks that never fire.
 #
-# For mixed PRs (code + docs) both workflows run; the real ci.yml's results
-# are what gates the merge — the latest run of each named check wins.
+# This workflow fires on the exact inverse — the paths ci.yml SKIPS —
+# and emits four trivially-green jobs with the matching names. Keep
+# the `paths:` list here in lockstep with the `paths-ignore:` list in
+# ci.yml; a mismatch means either checks never run (PR blocked
+# forever) or both workflows run and duplicate work.
+#
+# For mixed PRs (Go code + docs) ci.yml alone runs; the paths-ignore
+# only skips when EVERY changed path is in the ignore list, so any
+# Go file re-arms the real pipeline.
 
 on:
   push:
     branches: [main]
-    paths: ['**/*.md']
+    paths:
+      - '**/*.md'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.github/workflows/release*.yml'
+      - '.github/workflows/docs*.yml'
+      - '.github/workflows/pricing-regen.yml'
+      - 'docs/site/**'
+      - 'LICENSE'
+      - 'CODE_OF_CONDUCT.md'
+      - 'CONTRIBUTING.md'
   pull_request:
     branches: [main]
-    paths: ['**/*.md']
+    paths:
+      - '**/*.md'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.github/workflows/release*.yml'
+      - '.github/workflows/docs*.yml'
+      - '.github/workflows/pricing-regen.yml'
+      - 'docs/site/**'
+      - 'LICENSE'
+      - 'CODE_OF_CONDUCT.md'
+      - 'CONTRIBUTING.md'
 
 concurrency:
   group: ${{ github.workflow }}-docs-${{ github.ref }}
@@ -44,22 +71,22 @@ jobs:
     name: test
     runs-on: ubuntu-latest
     steps:
-      - run: echo "docs-only change — no Go to test"
+      - run: echo "non-Go change — no Go to test"
 
   lint:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - run: echo "docs-only change — no Go to lint"
+      - run: echo "non-Go change — no Go to lint"
 
   tidy:
     name: go mod tidy is clean
     runs-on: ubuntu-latest
     steps:
-      - run: echo "docs-only change — go.mod unaffected"
+      - run: echo "non-Go change — go.mod unaffected"
 
   vuln:
     name: govulncheck
     runs-on: ubuntu-latest
     steps:
-      - run: echo "docs-only change — no Go to scan"
+      - run: echo "non-Go change — no Go to scan"

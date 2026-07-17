@@ -56,12 +56,76 @@ const (
 // serialized size of the original payload — useful for telemetry
 // even when Method is passthrough. CallID is populated when a Store
 // is wired (follow-up PR); the skeleton always leaves it empty.
+//
+// Savings is populated on every success path (including passthrough,
+// where OriginalBytes ≈ DigestBytes so savings are ~0) and gives
+// callers the per-call byte + token math they need to surface
+// operator-visible savings totals without recomputing from Digest /
+// RawBytes themselves. See docs/agentic-mcp-design.md
+// § "savings telemetry" for the full display + OTel wiring.
 type Result struct {
 	Digest   string         // compressed payload (caller hands this to the model)
 	Method   string         // one of the Method* constants above
 	RawBytes int            // serialized size of the original
 	CallID   string         // opaque ID for CCR retrieval (empty until Store lands)
 	Metadata map[string]any // pruner-specific stats (e.g. {"arrays_collapsed": 3})
+	Savings  *Savings       // per-call byte + token reduction; nil only on nil-ctx error
+}
+
+// Savings quantifies the byte + token reduction one Process call
+// achieved, plus (agentic path only) the offsetting subagent LLM
+// cost. Populated on every Result Process returns; the pointer wrap
+// keeps a nil marker available for the (only) failure path (nil ctx)
+// where nothing was measured.
+//
+// The 4-char-per-token estimate for Original/DigestTokensEst is a
+// cheap heuristic — no tokenizer round-trip. Accurate to ±15% for
+// typical mixed content (JSON / prose / code). Suitable for savings
+// display; not suitable for billing enforcement.
+//
+// SubagentModel / SubagentInputTokens / SubagentOutputTokens are
+// left ZERO by pkg/digest — the package doesn't own the subagent
+// LLM (that lives in the caller, e.g. the MCP agentic wrapper).
+// Callers populate these AFTER Process returns from the subagent's
+// ResponseUsage, then hand the Result off to whatever surfaces the
+// telemetry (eventlog, /stats, OTel span attributes).
+//
+// Dollar-cost figures are NOT stored here. They're computed at
+// display time via usage.Tracker's layered pricing chain so
+// historical digests re-price correctly when rates change and so
+// pkg/digest stays free of the pricing dependency graph.
+type Savings struct {
+	// Path mirrors Result.Method — denormalized for callers that
+	// only carry Savings around (e.g. an eventlog metadata blob).
+	Path string
+
+	// Byte counts of the payload before and after digesting.
+	// Deterministic; measured on serialized JSON (or raw prose for
+	// passthrough).
+	OriginalBytes int
+	DigestBytes   int
+
+	// Token estimates. See package docs on the 4-char-per-token
+	// heuristic and its accuracy bounds.
+	OriginalTokensEst int
+	DigestTokensEst   int
+
+	// Agentic path only. Zero on structural / passthrough. Populated
+	// by the caller after invoking the small-tier subagent, from
+	// the subagent's ResponseUsage.
+	SubagentModel        string
+	SubagentInputTokens  int
+	SubagentOutputTokens int
+}
+
+// estimateTokens returns a cheap token count from a byte length
+// using the 4-char-per-token heuristic. Rounds up so a 3-byte
+// payload doesn't estimate 0 tokens.
+func estimateTokens(bytes int) int {
+	if bytes <= 0 {
+		return 0
+	}
+	return (bytes + 3) / 4
 }
 
 // Options configure a single Process call. All fields are optional;
@@ -188,10 +252,22 @@ func Process(ctx context.Context, payload []byte, opts Options) (Result, error) 
 		}
 		res.Metadata["store_err"] = storeErr.Error()
 	}
+	// Populate per-call Savings so the caller can surface operator-
+	// visible reduction numbers without recomputing from Digest /
+	// RawBytes. Callers layering an LLM subagent on top (agentic MCP
+	// wrap, agentic_read_file, etc.) fill Subagent* AFTER we return.
+	digestBytes := len(res.Digest)
+	res.Savings = &Savings{
+		Path:              res.Method,
+		OriginalBytes:     rawBytes,
+		DigestBytes:       digestBytes,
+		OriginalTokensEst: estimateTokens(rawBytes),
+		DigestTokensEst:   estimateTokens(digestBytes),
+	}
 	// Global counter update — feeds the /usage endpoint's
 	// digest_methods breakdown so operators can see which path
 	// dominates without wiring per-call telemetry themselves.
-	recordTelemetry(res.Method, res.RawBytes, len(res.Digest))
+	recordTelemetry(res.Method, res.RawBytes, digestBytes)
 	return res, nil
 }
 

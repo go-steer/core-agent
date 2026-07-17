@@ -178,6 +178,14 @@ jobs:
           # OCI image LABELS — baked into each per-platform image
           # config blob. Consumed by OCI-aware tooling (registries
           # other than GHCR, image inspectors).
+          #
+          # Deliberately DOES NOT set `image.source` here. See the
+          # Dockerfile comment for the full reasoning — TL;DR the
+          # source LABEL triggers GHCR to link the package to the
+          # repo and render the repo description on the package
+          # page, overriding our per-image description. The source
+          # is set as a manifest ANNOTATION below so OCI tooling
+          # still finds it.
           labels: |
             org.opencontainers.image.title=${{ matrix.image_name }}
             org.opencontainers.image.description=${{ matrix.description }}
@@ -186,13 +194,17 @@ jobs:
           # OCI ANNOTATIONS — attached to the manifest / index.
           # GHCR renders its package-page description from the index
           # annotation on multi-arch images (labels alone don't
-          # populate the GHCR page). Keep this list in sync with
-          # `labels:` above.
+          # populate the GHCR page). `image.source` is safe here
+          # (only the LABEL form triggers GHCR's repo-linkage
+          # override), and keeping it lets Dependabot / docker scout
+          # / cosign still find the upstream repo via manifest data.
           annotations: |
             org.opencontainers.image.title=${{ matrix.image_name }}
             org.opencontainers.image.description=${{ matrix.description }}
             org.opencontainers.image.documentation=https://go-steer.github.io/core-agent/
             org.opencontainers.image.vendor=go-steer
+            org.opencontainers.image.source=https://github.com/go-steer/core-agent
+            org.opencontainers.image.licenses=Apache-2.0
 
       # Compute the build version: the tag if we're on one, else
       # main-<short-sha>. Threaded into the binary via -ldflags so

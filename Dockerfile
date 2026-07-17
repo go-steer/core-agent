@@ -93,9 +93,12 @@ RUN go build \
 FROM gcr.io/distroless/static-debian12:nonroot
 
 # OCI image labels for registry tooling + GHCR metadata pages.
+# Only the truly per-image-invariant labels live here — the release
+# pipeline sets per-variant `title` / `description` / `documentation`
+# via docker/metadata-action (see .github/workflows/release-images.yml)
+# and those overrides win over anything set here.
 LABEL org.opencontainers.image.source="https://github.com/go-steer/core-agent" \
-      org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.description="core-agent — foundational Go library + CLI for long-running, multi-turn, multi-agent LLM applications."
+      org.opencontainers.image.licenses="Apache-2.0"
 
 COPY --from=builder /out/binary /usr/local/bin/binary
 

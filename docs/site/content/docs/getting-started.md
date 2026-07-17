@@ -46,7 +46,7 @@ sha256sum -c checksums.txt --ignore-missing
 
 ### As a container image
 
-See the [README's install section](https://github.com/go-steer/core-agent#install) for the three image variants (`core-agent`, `core-agent-slim`, `core-agent-tui`) and the floating-tag conventions.
+See the [README's install section](https://github.com/go-steer/core-agent#install) for the image variants (`core-agent`, `core-agent-slim`, `core-agent-tui`, `k8s-event-watcher`) and the floating-tag conventions.
 
 ### As a library
 

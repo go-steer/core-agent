@@ -30,9 +30,19 @@ _In flight toward v2.7.0. Commits since [2.7.0-dev.3]:_
 - coretuiremote: `Adapter.SwitchToSession` returns a full `SwitchTarget` — UsageTracker, Memory, Skills, MCPServers, and Branding all refresh so `/switch` actually updates the title bar and `/stats` ([#274](https://github.com/go-steer/core-agent/issues/274))
 - Multi-session: per-session `usage.Tracker` in the session factory so `AttachUsage`, the broadcaster's usage-update snapshot, and per-session cost ceilings stop returning the union across every session on the daemon ([#275](https://github.com/go-steer/core-agent/issues/275))
 
+#### Bug or Regression
+- Release: dev-tag republish overlays release helpers from `origin/main` so tags cut before `dev/release/compose-release-notes.sh` existed can be republished via `gh workflow run release.yml --ref main -f tag=vX.Y.Z-dev.N`; unblocks the three orphan `v2.7.0-dev.[123]` tags that failed the initial workflow.
+
+#### Documentation
+- README: rewrite from a v1 launch document to a v2 product doc — drop the Milestones / Roadmap sections, replace paragraph-form Features with a category-grouped bulleted list covering multi-session, remote TUI, plan-first, agent-card, k8s-event-watcher, add a container-variants table, remove hard-coded version numbers (release-shield badge renders current dynamically).
+- Site docs: kill "13-tool" / "Thirteen tools" phrasing across five files (`_index.md`, `docs/_index.md`, `why-core-agent.md`, `library/api.md`, `cli/interactive/workflows.md`, `reference/tools.md`) — describe tools by category so the count can't rot; convert five "from vX.Y.Z" prose fragments to `(since vX.Y.Z)` historical markers; fix pinned `@v2.0.0` install snippet on the landing page.
+- AGENTS.md: refresh stale bits (dropped "we just did it for v1.8.0" anchor, removed obsolete "Bump the README pin" step now that the README doesn't hard-code a version, deleted the M1/M2/M3 `## Status` section that references a Milestones section the README no longer has), added a docs-lint mandate under the existing "Hugo site walks alongside" rule.
+
 #### Other (Cleanup)
 - Deps: bump core-tui v0.10.1 → v0.10.2 for observer-mode per-turn footer ([#262](https://github.com/go-steer/core-agent/pull/262))
 - Post-drive: implicit-caching caveat in docs + startup log line for mcp digest store binding ([#261](https://github.com/go-steer/core-agent/pull/261))
+- Container images: per-image `org.opencontainers.image.description` label in the release-images matrix (was generic `core-agent <name> variant` for all four) + new `docs/site` documentation label + `dev/release/set-package-descriptions.sh` one-off ops script that PATCHes GHCR package descriptions via the packages API; dropped the redundant `LABEL org.opencontainers.image.description` from `Dockerfile` since the workflow labels win.
+- Docs freshness linter: new `dev/tools/docs-lint` + `dev/ci/presubmits/verify-docs-lint` + standalone `.github/workflows/docs-lint.yml`; hard-fails on four drift patterns (numeric tool counts, spelled-out image counts, pinned `@vX.Y.Z` in install snippets, wrong-major prose version pins) with a `--self-test` mode that verifies every rule fires against an inline fixture.
 
 
 ## [2.7.0-dev.3] — 2026-07-14

@@ -59,15 +59,40 @@ jobs:
           # Retroactive-tag mode: when dispatched with a `tag` input
           # (e.g., `gh workflow run release.yml --ref main -f tag=v2.4.5`),
           # check out the tagged commit rather than the ref that
-          # triggered. This lets main's version of the workflow run
-          # (so it has all our fixes) while GoReleaser still sees
-          # HEAD == the tagged commit — GoReleaser errors otherwise
-          # with "git tag vX.Y.Z was not made against commit ...".
+          # triggered. main's workflow file drives (GitHub Actions
+          # uses the workflow at --ref), but the checkout is the tag
+          # so goreleaser sees HEAD == tag commit — otherwise it
+          # errors with "git tag vX.Y.Z was not made against
+          # commit …". The overlay step below then pulls the release
+          # helpers from main so the tag's older infra doesn't run.
           #
           # Contemporary mode (tag push): `inputs.tag` is empty so
           # this falls back to `github.ref` (the tag ref that fired
           # the workflow) — same as the default checkout behavior.
           ref: ${{ inputs.tag || github.ref }}
+
+      # Retroactive-tag mode only: overlay main's release helpers on
+      # top of the tag checkout so tags cut before those helpers
+      # existed can still be republished cleanly.
+      #
+      # Motivation: `dev/release/compose-release-notes.sh` (with the
+      # pre-release `[Unreleased]` fallback) landed in PR #267; tags
+      # cut before that commit (e.g., v2.7.0-dev.[123]) don't have
+      # the helper and their inline notes-composer hard-fails on
+      # missing `## [X.Y.Z-dev.N]` sections. Overlaying the helper +
+      # current CHANGELOG lets the current logic drive the republish.
+      #
+      # `--skip=validate` on the GoReleaser step below tolerates the
+      # working-tree drift this introduces — endorsed by goreleaser
+      # docs for exactly this "reproduce release from a different
+      # tree" scenario. HEAD still points at the tag commit, so the
+      # binary's -X version stamp is correct.
+      - name: Overlay release helpers from main (retroactive-tag mode)
+        if: ${{ inputs.tag != '' }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin main
+          git checkout origin/main -- dev/release/ .goreleaser.yml CHANGELOG.md
 
       # Same go-version-from-go.mod pattern as release-images.yml.
       - name: Extract Go version from go.mod
@@ -91,8 +116,11 @@ jobs:
       #
       # Skipped on dry-run so operators can smoke-test the release
       # pipeline from a feature branch without keeping pricing fresh.
+      # Also skipped in retroactive-tag mode: historical tags carry
+      # historical pricing on purpose, and pre-#259 tags don't even
+      # have the regen tool to invoke.
       - name: Guard — pricing catalog fresh
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && inputs.tag == '' }}
         run: |
           set -euo pipefail
           go run ./dev/regen-builtin-pricing
@@ -173,7 +201,9 @@ jobs:
           ./dev/release/compose-release-notes.sh "$TAG" "$NOTES" "$MAIN_CHANGELOG"
 
       # dry_run → --snapshot (no publish, no sign, fabricated version).
-      # Normal run → publish + sign with our composed release notes.
+      # Normal tag push → publish + sign with our composed release notes.
+      # Retroactive-tag republish → same, plus --skip=validate so goreleaser
+      # tolerates the working-tree drift from the overlay step above.
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
@@ -182,9 +212,16 @@ jobs:
           args: >-
             ${{ inputs.dry_run
                 && 'release --snapshot --clean --skip=sign'
-                || format('release --clean --release-notes={0}', steps.notes.outputs.notes_path) }}
+                || (inputs.tag != ''
+                    && format('release --clean --skip=validate --release-notes={0}', steps.notes.outputs.notes_path)
+                    || format('release --clean --release-notes={0}', steps.notes.outputs.notes_path)) }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Retro-tag republish only: --skip=validate short-circuits
+          # goreleaser's git-tag/HEAD check too, so tell it the tag
+          # explicitly. In contemporary tag-push mode this is empty
+          # and goreleaser resolves the tag from HEAD as usual.
+          GORELEASER_CURRENT_TAG: ${{ inputs.tag }}
 
       # On dry-run, surface the built artifacts so they can be
       # downloaded + inspected without a Release ever being created.

@@ -19,7 +19,7 @@ The pattern across these features is the same: ADK gives you the primitive (a `m
 
 **Multi-provider model selection.** ADK ships Gemini + Apigee adapters. `core-agent` adds Anthropic (first-party and Vertex-served) as a real `model.LLM` implementation, plus mock providers (`echo`, `scripted`) for credential-free testing, plus a `models.Resolve(cfg)` resolver that auto-detects which provider to use from your environment. One config field — `model.provider` — picks the backend; everything else is wired identically. The Anthropic adapter alone is ~1,500 lines you don't have to write.
 
-**13-tool built-in catalog.** File (`read_file`, `read_many_files`, `write_file`, `edit_file`, `delete_file`, `stat`, `list_dir`), search (`glob`, `grep`), data + network (`json_query`, `fetch_url`), shell (`bash`), planning (`todo`) — all gated, all output-capped, all with prescriptive descriptions that tell the model "use INSTEAD OF `bash X`" so it routes through the structured tool rather than the shell. See [Built-in tools]({{< relref "/docs/reference/tools.md" >}}).
+**Built-in tool catalog.** File (`read_file`, `read_many_files`, `write_file`, `edit_file`, `delete_file`, `stat`, `list_dir`), search (`glob`, `grep`), data + network (`json_query`, `fetch_url`), shell (`bash`), planning (`todo`, opt-in `record_plan`), interactive prompting (opt-in `ask_user`) — all gated, all output-capped, all with prescriptive descriptions that tell the model "use INSTEAD OF `bash X`" so it routes through the structured tool rather than the shell. See [Built-in tools]({{< relref "/docs/reference/tools.md" >}}).
 
 **Permission gate that humans can live with.** Three modes (`ask`, `allow`, `yolo`), pattern-based allow/deny lists, path-scope enforcement on file tools, a non-overridable bash denylist that catches `rm -rf /`-class mistakes, and a pluggable `Prompter` interface so the same gate works in a TTY, a headless CI run (with `--ask=auto`), a TUI, or a web frontend. Each tool call routes through the gate before it executes; rejections come back as model-visible errors so the agent can recover, not as silent failures. Writing this yourself takes two weeks and you'll get the bash-denylist escapes wrong.
 
@@ -79,7 +79,7 @@ What ships with each substrate, scored from empty (○) through partial (◐) to
 | Anthropic provider (first-party + Vertex)           | ○ | ● |
 | Mock providers (echo / scripted) for testing        | ○ | ● |
 | Provider auto-detection from env                    | ○ | ● |
-| 13-tool built-in catalog (file/search/shell/net/…)  | ○ | ● |
+| Built-in tool catalog (file/search/shell/net/planning) | ○ | ● |
 | Permission gate (ask/allow/yolo + denylist)         | ○ | ● |
 | Path-scope enforcement on file tools                | ○ | ● |
 | Pluggable `Prompter` for approvals                  | ○ | ● |

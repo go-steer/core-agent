@@ -168,7 +168,13 @@ Conventions worth knowing at agent prompt time:
   never `$HOME`.
 - **Hugo site walks alongside README/DESIGN.** User-visible changes
   update the published site at `docs/site/content/docs/` in the
-  same PR as the code, not as a follow-up.
+  same PR as the code, not as a follow-up. Before opening a PR that
+  adds or renames a user-visible surface (tool, provider, image
+  variant, CLI flag, release), run `dev/tools/docs-lint` — it
+  hard-fails on the small set of drift patterns that have actually
+  bitten us before (numeric tool counts, spelled-out image-variant
+  counts, pinned `@vX.Y.Z` in install snippets, wrong-major prose
+  version pins).
 - **`[Unreleased]` grows on every merged PR.** Any user-visible
   change (new feature, bugfix, doc, breaking change) adds one
   bullet under the appropriate `#### Feature` / `#### Bug or
@@ -180,47 +186,23 @@ Conventions worth knowing at agent prompt time:
 
 ## How we release
 
-SemVer: minor bump (`v1.X.0`) for additive features, patch (`v1.X.Y`)
-for fixes only. Pre-1.0 the minor bump is also where breaking changes
-land, with a one-version deprecation period when feasible.
+SemVer: minor bump (`vX.Y.0`) for additive features, patch (`vX.Y.Z`)
+for fixes only. Breaking changes go through a `vX+1.0.0` bump with a
+one-version deprecation period when feasible. Full mechanical recipe
+in `docs/release-process.md` — this section covers only what an agent
+authoring PRs needs to know.
 
-Recipe (mechanical — we just did it for v1.8.0):
+Every merged PR that ships a user-visible change adds one bullet to
+`## [Unreleased]` in `CHANGELOG.md`, under the right `#### Feature` /
+`#### Bug or Regression` / `#### Documentation` / `#### Other (Cleanup)` /
+`#### Security` subsection, with a trailing `([#NNN](url))` link.
+`dev/release/cut-dev-tag.sh` and the stable release recipe both assume
+`[Unreleased]` is current — if it's stale at tag time, backfill from
+`git log` before tagging. Pre-release tags (`vX.Y.Z-dev.N`, `-rc.N`,
+`-alpha.N`, `-beta.N`) auto-fall-back to `[Unreleased]` + a synthesized
+PR list when their specific section doesn't exist, so most dev tags
+don't need a per-tag CHANGELOG edit.
 
-1. **Branch** `release/vX.Y.Z` off main once the feature PRs are merged.
-2. **Promote** `[Unreleased]` → `[X.Y.Z] — YYYY-MM-DD` in `CHANGELOG.md`
-   with a headline paragraph (3–5 sentences of what an operator
-   upgrading needs to know), then a `### Changes by Kind` section
-   grouping merged PRs under `#### Feature` / `#### Bug or Regression`
-   / `#### Documentation` / `#### Other (Cleanup)` — one line per PR
-   with a trailing `([#NNN](url))` link. Add `### Breaking changes`
-   only when there is one. See v2.6.0 / v2.5.0 for the target shape.
-   Leave a fresh empty `[Unreleased]` above for whatever lands next.
-   Pre-release tags (`vX.Y.Z-dev.N` etc.) use `dev/release/cut-dev-tag.sh
-   vX.Y.Z-dev.N` — carves current `[Unreleased]` into a dated
-   pre-release section and reseeds a fresh `[Unreleased]`. Assumes
-   `[Unreleased]` is current (see the per-PR expectation above);
-   the composer's auto-generation from `git log` is only the safety
-   net for tags that skip the script entirely.
-3. **Bump the README pin.** Update the "Current release" paragraph
-   to the new framing, condense the previous release into the
-   historical chain, change `go get github.com/go-steer/core-agent@vX.Y.Z`.
-4. **PR** the release commit (`docs: promote [Unreleased] to [X.Y.Z] + bump release pin`).
-   Docs-only CI satisfies branch protection without the full Go pipeline.
-5. **Admin-squash-merge** once docs-only CI is green.
-6. **Tag** on the merge SHA: `git tag -a vX.Y.Z <sha> -m "vX.Y.Z — <theme>"` then `git push origin vX.Y.Z`.
-7. **Create the GH release** with `gh release create vX.Y.Z --title --notes-file <file>`
-   where `<file>` is the `[X.Y.Z]` CHANGELOG section extracted as
-   markdown (single source of truth between in-tree changelog and
-   the release page — no risk of drift).
-
-Patch releases (`vX.Y.Z+1`) follow the same recipe but the
-`[Unreleased]` section under promotion typically only has `### Fixed`
-or `### Security` entries — post-release bug fixes flow this way
-rather than holding back the next minor.
-
-## Status
-
-M1 (extraction + Anthropic adapter) and M2 (Anthropic via Vertex AI)
-shipped together as the initial commit. Acceptance plans live at
-`docs/acceptance-m1.md` and `docs/acceptance-m2.md`. M3 candidates
-listed in the [README's Milestones section](./README.md#milestones).
+The README doesn't hard-code a "current release" pin any more — the
+release-shield badge picks up the latest tag automatically. Nothing to
+bump there at release time.

@@ -19,7 +19,7 @@ title: core-agent
 
 {{% blocks/lead color="primary" %}}
 
-`core-agent` ships first-class **Gemini** and **Claude** (first-party + Vertex) backends, **MCP** server integration, Claude-style **skills**, an **autonomous-run driver** with budgets + crash-resume, **durable sessions** with audit/replay event log, **in-process subagents**, and a **permission gate** — all behind a small Option-pattern API designed to be embedded in your own Go program.
+`core-agent` ships first-class **Gemini** and **Claude** (first-party + Vertex) backends, **MCP** server integration, Claude-style **skills**, an **autonomous-run driver** with budgets + crash-resume, **durable sessions** with audit/replay event log, in-process and remote **subagents**, a **permission gate** with plan-first enforcement, an in-process Bubble Tea **TUI** plus a **remote TUI client** (`core-agent-tui`), a **multi-session daemon** with per-caller ACLs, and a **Kubernetes event-triage sidecar** — all behind a small Option-pattern API designed to be embedded in your own Go program.
 
 {{% /blocks/lead %}}
 
@@ -37,6 +37,10 @@ title: core-agent
 `agent.WithSubagents([]*Agent)` registers each as a callable tool. Subagent events stream into the parent's audit log under a branch-scoped path.
 {{% /blocks/feature %}}
 
+{{% blocks/feature icon="fa-solid fa-tower-broadcast" title="Remote TUI + multi-session daemon" url="docs/reference/attach-tui/" %}}
+`core-agent-tui` attaches to any daemon over HTTP + SSE. One daemon serves many concurrent sessions with per-caller ACLs, per-session gates, and transparent resume across restarts.
+{{% /blocks/feature %}}
+
 {{% /blocks/section %}}
 
 {{% blocks/section %}}
@@ -44,7 +48,7 @@ title: core-agent
 ## Install
 
 ```bash
-go get github.com/go-steer/core-agent@v2.0.0
+go get github.com/go-steer/core-agent@latest
 ```
 
 See [Getting started](docs/getting-started/) for the first turn, or jump to [Library API](docs/library/api/) if you want the full surface.

@@ -976,6 +976,15 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 			if a.watchdog != nil && ev != nil {
 				a.observeToolCallsForWatchdog(ev)
 			}
+			// Digest-savings observation. Walk FunctionResponse
+			// parts for the `savings` sidecar the MCP digest wrap
+			// stamps on every wrapped tool response, and append to
+			// the session-scoped tracker. Fixes the multi-session
+			// gap where the process-level `DigestOptions.OnResult`
+			// callback wired in main.go never reached per-session
+			// trackers (see tool_savings_observer.go's file
+			// docstring for the full rationale).
+			a.observeToolSavings(ev)
 			// Event-hook observation (WithEventHook). Fires alongside
 			// watchdog observation so both observers see the same
 			// event stream in the same order. Callback is expected

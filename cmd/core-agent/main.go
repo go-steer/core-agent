@@ -682,12 +682,10 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// backing later. Nil digestOpts disables wrapping entirely
 	// (--no-mcp-digest kill switch).
 	//
-	// agentRef + tracker are hoisted above mcp.Build so the
-	// LLMFallback + OnResult closures below can capture them —
-	// mcp.Build precedes agent.New (the toolsets feed into
-	// agent.New's options), and OnResult needs to accumulate into
-	// the same tracker /stats + /context read from. tracker is
-	// inert until Append fires so early construction is safe.
+	// agentRef is hoisted above mcp.Build so the LLMFallback closure
+	// below can capture it — mcp.Build precedes agent.New (the
+	// toolsets feed into agent.New's options), and the LLM subagent
+	// path needs a reference to the *Agent to invoke RunSubtask.
 	var agentRef *agent.Agent
 	tracker := usage.NewTracker()
 	var digestStore *digest.LazyStore
@@ -695,30 +693,17 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	if !noMCPDigest {
 		digestStore = &digest.LazyStore{}
 		digestOpts = &mcp.DigestOptions{Store: digestStore}
-		// Feed per-call Savings into the session-cumulative digest
-		// counters that back /context's "Digest savings" block +
-		// (in Phase 5) the OTel span attributes. usage.PriceFor
-		// consults the global catalog set later in run(); on the
-		// pre-catalog path it falls through to builtin rates, which
-		// still produce meaningful subagent cost figures.
-		digestOpts.OnResult = func(res *digest.Result) {
-			if res == nil || res.Savings == nil {
-				return
-			}
-			var subCost float64
-			if res.Savings.SubagentModel != "" {
-				p := usage.PriceFor(res.Savings.SubagentModel, cfg)
-				subCost = p.CostUSD(res.Savings.SubagentInputTokens, res.Savings.SubagentOutputTokens)
-			}
-			tracker.AppendDigestSavings(usage.DigestSavingsRecord{
-				Path:                 res.Savings.Path,
-				ParentTokensSaved:    res.Savings.OriginalTokensEst - res.Savings.DigestTokensEst,
-				SubagentModel:        res.Savings.SubagentModel,
-				SubagentInputTokens:  res.Savings.SubagentInputTokens,
-				SubagentOutputTokens: res.Savings.SubagentOutputTokens,
-				SubagentCostUSD:      subCost,
-			})
-		}
+		// Per-call digest savings are observed on the AGENT side now
+		// — see pkg/agent/tool_savings_observer.go. The previous
+		// wiring here (DigestOptions.OnResult → this process-level
+		// tracker) only worked in single-session mode: multi-session
+		// gives each on-demand session its own tracker, and OnResult
+		// still fired against the closure-captured process tracker,
+		// so per-session /context reads were always empty. The
+		// agent-side observer reads the `savings` sidecar off each
+		// FunctionResponse it processes and appends to the session's
+		// own tracker — one code path, both modes fixed.
+
 		// LLM subagent second-chance path (#223). Opt-in from either
 		// source: the CLI flag OR mcp.json's agentic_wrap_llm. Either
 		// on → build the closure. Peek at mcp.json up front so config
@@ -861,9 +846,9 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		usage.SetCatalog(catalog)
 	}
 
-	// tracker was hoisted above mcp.Build so the digest OnResult
-	// closure could capture it. Just resolve the pricing rate for
-	// this run now that the catalog has been installed.
+	// Resolve the parent model's pricing rate now that the layered
+	// catalog is installed. tracker was hoisted earlier for symmetry
+	// with the LLMFallback + agentRef late-binding above.
 	pricingRate := usage.PriceFor(cfg.Model.Name, cfg)
 
 	// Background subagent spawning. Constructed before agent.New so

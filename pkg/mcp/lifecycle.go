@@ -288,6 +288,14 @@ func transportFor(ctx context.Context, name string, spec ServerSpec) (mcpsdk.Tra
 			rt = &headerTransport{base: rt, headers: headers}
 		}
 
+		// JSON-RPC error extraction wraps below OTel so the span records
+		// the raw HTTP outcome, but above auth/headers so it sees the
+		// server's real response. See #180: without this, the SDK
+		// surfaces only http.StatusText and drops the JSON-RPC body
+		// (which is where MCP servers put actionable messages like the
+		// missing IAM permission name).
+		rt = &jsonRPCErrorTransport{base: rt}
+
 		// OTel wrap outermost so the span covers the full outbound
 		// MCP call (including auth-token attachment + custom headers)
 		// AND traceparent gets injected on every request. This closes

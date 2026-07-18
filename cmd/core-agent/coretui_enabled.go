@@ -511,28 +511,37 @@ type coreAgentAdapter struct {
 func (a *coreAgentAdapter) Run(ctx context.Context, prompt string) iter.Seq2[coretui.Event, error] {
 	return func(yield func(coretui.Event, error) bool) {
 		modelName := a.inner.ModelName()
-		// Per-turn cumulative usage tracking. Gemini's UsageMetadata is
-		// cumulative across streaming chunks within one model turn — the
-		// last chunk carries the final count, earlier chunks carry
-		// running totals. Appending on every UsageMetadata-bearing event
-		// both inflates the tracker's turn count and double-counts
-		// tokens (issue surfaced as "totals exactly 2x last turn").
-		// Mirror pkg/runner/headless.go tapUsage and
-		// pkg/agent/subtask.go:315-374: overwrite per event, commit
-		// once on TurnComplete, reset so multi-turn Run loops account
-		// each model turn separately.
-		var lastTurnUsage usage.TurnUsage
+		// Per-turn usage bookkeeping via the shared TurnTap discipline
+		// (overwrite-per-event, commit-once-per-TurnComplete, reset
+		// between turns). Without this, cumulative-within-turn
+		// UsageMetadata from Gemini/Vertex double-counts — the
+		// regression #156 fixed and #157 extracted to pkg/usage.TurnTap
+		// so future adapters get it right by default.
+		var tap usage.TurnTap
 		for ev, err := range a.inner.Run(ctx, prompt) {
 			if err != nil {
 				yield(coretui.Event{}, err)
 				return
 			}
 			te := coretui.Event{Partial: ev.Partial, Model: modelName}
+			tap.Observe(ev)
+			// Live per-event usage snapshot for the TUI's status
+			// sidebar — running cumulative during the turn, final at
+			// TurnComplete. Observe has already updated tap.last;
+			// Peek reads it without resetting. Must precede Commit
+			// (which resets state on TurnComplete).
 			if ev.UsageMetadata != nil {
-				lastTurnUsage = usage.TurnUsageFromGenaiMetadata(ev.UsageMetadata)
+				peek := tap.Peek()
 				te.Usage = &coretui.Usage{
-					InputTokens:  lastTurnUsage.InputTokens,
-					OutputTokens: lastTurnUsage.OutputTokens,
+					InputTokens:  peek.InputTokens,
+					OutputTokens: peek.OutputTokens,
+				}
+			}
+			if u, ok := tap.Commit(ev); ok {
+				if a.deps.Tracker != nil && a.deps.Cfg != nil {
+					pricing := usage.PriceFor(modelName, a.deps.Cfg)
+					turn := a.deps.Tracker.AppendUsage(modelName, u, pricing)
+					te.CostUSD = turn.CostUSD
 				}
 			}
 			if ev.Content != nil {
@@ -557,19 +566,6 @@ func (a *coreAgentAdapter) Run(ctx context.Context, prompt string) iter.Seq2[cor
 						te.Text += p.Text
 					}
 				}
-			}
-			// Commit usage exactly once per completed model turn.
-			// TurnComplete fires after the model's tool-call loops
-			// settle for that turn; lastTurnUsage captured from the
-			// stream's UsageMetadata events is the final per-turn
-			// breakdown at this point.
-			if ev.TurnComplete && (lastTurnUsage.InputTokens > 0 || lastTurnUsage.OutputTokens > 0) {
-				if a.deps.Tracker != nil && a.deps.Cfg != nil {
-					pricing := usage.PriceFor(modelName, a.deps.Cfg)
-					turn := a.deps.Tracker.AppendUsage(modelName, lastTurnUsage, pricing)
-					te.CostUSD = turn.CostUSD
-				}
-				lastTurnUsage = usage.TurnUsage{}
 			}
 			if !yield(te, nil) {
 				return

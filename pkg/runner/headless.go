@@ -71,32 +71,29 @@ func Headless(ctx context.Context, m adkmodel.LLM, prompt string, stdout, stderr
 }
 
 // streamTurn is the shared one-turn driver used by Headless and REPL.
-// Wraps the agent's event iterator with tapUsage to record token
-// counts as they fly by, then hands the wrapped iterator to
-// WriteEvents for formatting.
+// Wraps the agent's event iterator so per-turn usage lands in tracker
+// via the shared TurnTap discipline (overwrite-per-event, commit-once-
+// per-TurnComplete, reset between turns — see pkg/usage.TurnTap), then
+// hands the wrapped iterator to WriteEvents for formatting.
 func streamTurn(ctx context.Context, a *agent.Agent, m adkmodel.LLM, prompt string, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing, eventsOpts []EventsOption) (int, error) {
-	var lastUsage usage.TurnUsage
-	events := tapUsage(a.Run(ctx, prompt), func(u usage.TurnUsage) {
-		lastUsage = u
-	})
+	events := tapTracker(a.Run(ctx, prompt), tracker, m.Name(), pricing)
 	if err := WriteEvents(events, stdout, stderr, eventsOpts...); err != nil {
 		return ExitAgentError, fmt.Errorf("runner: agent run: %w", err)
-	}
-	if tracker != nil && (lastUsage.InputTokens > 0 || lastUsage.OutputTokens > 0) {
-		tracker.AppendUsage(m.Name(), lastUsage, pricing)
 	}
 	return ExitOK, nil
 }
 
-// tapUsage wraps an event iterator and invokes track for every event
-// that carries UsageMetadata. The event itself passes through to the
-// next consumer unchanged. Used so streamTurn can delegate formatting
-// to WriteEvents while still maintaining its per-turn token totals.
-func tapUsage(events iter.Seq2[*session.Event, error], track func(usage.TurnUsage)) iter.Seq2[*session.Event, error] {
+// tapTracker wraps an event iterator so per-turn usage is appended to
+// tracker exactly once per TurnComplete. Events pass through unchanged
+// so WriteEvents (an opaque consumer) sees the raw stream. A nil
+// tracker makes the wrapper a straight passthrough.
+func tapTracker(events iter.Seq2[*session.Event, error], tracker *usage.Tracker, modelName string, pricing usage.Pricing) iter.Seq2[*session.Event, error] {
 	return func(yield func(*session.Event, error) bool) {
+		var tap usage.TurnTap
 		for ev, err := range events {
-			if ev != nil && ev.UsageMetadata != nil {
-				track(usage.TurnUsageFromGenaiMetadata(ev.UsageMetadata))
+			tap.Observe(ev)
+			if u, ok := tap.Commit(ev); ok && tracker != nil {
+				tracker.AppendUsage(modelName, u, pricing)
 			}
 			if !yield(ev, err) {
 				return

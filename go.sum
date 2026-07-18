@@ -129,8 +129,8 @@ github.com/go-openapi/jsonreference v0.20.2/go.mod h1:Bl1zwGIM8/wsvqjsOQLJ/SH+En
 github.com/go-openapi/swag v0.22.3/go.mod h1:UzaqsxGiab7freDnrUUra0MwWfN/q7tE4j+VcZ0yl14=
 github.com/go-openapi/swag v0.23.0 h1:vsEVJDUo2hPJ2tu0/Xc+4noaxyEffXNIs3cOULZ+GrE=
 github.com/go-openapi/swag v0.23.0/go.mod h1:esZ8ITTYEsH1V2trKHjAN8Ai7xHb8RV+YSZ577vPjgQ=
-github.com/go-steer/core-tui v0.15.0 h1:ABd3UqlV44CBVshnVC6AUo6MTEfwYmbHKBc4FnJKGpA=
-github.com/go-steer/core-tui v0.15.0/go.mod h1:pNTNKbXMDUzS8Oxr2kvU9A8dZKwBJPSyBNjyFGL2ags=
+github.com/go-steer/core-tui v0.16.0 h1:vVx9+IV9b/n+L0l/D9VeQqgfWLtgfSxmmFy6e6APZI0=
+github.com/go-steer/core-tui v0.16.0/go.mod h1:pNTNKbXMDUzS8Oxr2kvU9A8dZKwBJPSyBNjyFGL2ags=
 github.com/golang-jwt/jwt/v5 v5.3.0 h1:pv4AsKCKKZuqlgs5sUmn4x8UlGa0kEVt/puTpKx9vvo=
 github.com/golang-jwt/jwt/v5 v5.3.0/go.mod h1:fxCRLWMO43lRc8nhHWY6LGqRcf+1gQWArsqaEUEa5bE=
 github.com/golang/protobuf v1.5.4 h1:i7eJL8qZTpSEXOPTxNKhASYpMn+8e5Q6AdndVa1dWek=

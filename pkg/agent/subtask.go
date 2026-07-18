@@ -312,18 +312,13 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 		turnComplete bool
 		runErr       error
 	)
-	// Per-turn cumulative usage tracking. Gemini's UsageMetadata is
-	// CUMULATIVE across streaming chunks within one model turn — the
-	// last chunk carries the final count, all earlier chunks carry
-	// running totals. If we Append on every chunk we'd both inflate
-	// the tracker's turn count (one Append per chunk) AND
-	// double-count tokens (summing cumulative running totals). The
-	// fix mirrors runner/headless.go's tapUsage pattern: overwrite
-	// last-seen per event, commit ONCE per TurnComplete. The reset-
-	// to-zero after Append keeps multi-turn subtasks accurate (a
-	// subtask that does read_file + summarize fires two TurnComplete
-	// events, each with its own per-turn usage to commit).
-	var lastTurnUsage usage.TurnUsage
+	// Per-turn usage bookkeeping via the shared TurnTap discipline:
+	// overwrite last-seen UsageMetadata per event, commit once on
+	// TurnComplete, reset between turns so multi-turn subtasks
+	// (e.g. read_file + summarize) attribute each turn separately.
+	// See pkg/usage.TurnTap for the underlying reason (Gemini's
+	// UsageMetadata is cumulative within a turn, not per-chunk).
+	var tap usage.TurnTap
 
 	// ADK's runner.Run iterates events for ONE turn-as-the-runner-
 	// sees-it. Multi-turn = call Run multiple times with each new
@@ -342,36 +337,30 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 		if ev == nil {
 			continue
 		}
-		// Track usage cumulatively per turn (overwrite, don't
-		// sum — see comment above). The final per-turn values
-		// commit to the tracker on TurnComplete below.
-		if ev.UsageMetadata != nil {
-			lastTurnUsage = usage.TurnUsageFromGenaiMetadata(ev.UsageMetadata)
-		}
 		// Capture final text. collectFinalText filters out
 		// partials so we don't double-count streaming chunks.
 		collectFinalText(&digest, ev)
 		// Count completed model turns + bail on the budget cap.
 		// TurnComplete fires once per finished model turn (after
 		// any tool-call loops inside the turn).
-		if ev.TurnComplete {
-			turnsUsed++
+		tap.Observe(ev)
+		if u, ok := tap.Commit(ev); ok {
 			// Commit this turn's usage exactly once. Roll cost
 			// up to the parent tracker so /stats shows it;
 			// pricing comes from the subtask's model name. When
 			// the parent has no tracker wired, the local totals
 			// still flow into SubtaskResult/ContextStats.
-			if lastTurnUsage.InputTokens > 0 || lastTurnUsage.OutputTokens > 0 {
-				totalIn += lastTurnUsage.InputTokens
-				totalOut += lastTurnUsage.OutputTokens
-				if a.tracker != nil {
-					modelName := subModel.Name()
-					pricing := usage.PriceFor(modelName, nil)
-					turn := a.tracker.AppendUsage(modelName, lastTurnUsage, pricing)
-					totalCostUSD += turn.CostUSD
-				}
-				lastTurnUsage = usage.TurnUsage{}
+			totalIn += u.InputTokens
+			totalOut += u.OutputTokens
+			if a.tracker != nil {
+				modelName := subModel.Name()
+				pricing := usage.PriceFor(modelName, nil)
+				turn := a.tracker.AppendUsage(modelName, u, pricing)
+				totalCostUSD += turn.CostUSD
 			}
+		}
+		if ev.TurnComplete {
+			turnsUsed++
 			if turnsUsed >= maxTurns {
 				turnComplete = true
 				break

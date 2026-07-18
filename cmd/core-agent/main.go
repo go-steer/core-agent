@@ -181,7 +181,18 @@ func main() {
 	agentCardProviderOrg := flag.String("agent-card-provider-org", "", "override provider.organization in /.well-known/agent-card.json")
 	agentCardProviderURL := flag.String("agent-card-provider-url", "", "override provider.url in /.well-known/agent-card.json")
 	agentCardDocsURL := flag.String("agent-card-docs-url", "", "override documentationUrl in /.well-known/agent-card.json")
+	logFile := flag.String("log-file", "", `mirror daemon stderr (operator diagnostics) to this path in addition to the terminal. Empty (default) or "-" leaves stderr-only. Recommended: /tmp/core-agent.log so TUI screen-takeover doesn't swallow startup diagnostics.`)
 	flag.Parse()
+
+	// Install --log-file tee BEFORE run() so any config-load / mcp
+	// init / model-resolution diagnostics land in the file too. Errors
+	// opening the file are fatal — an operator who asked for a log
+	// destination and got nothing has been left worse off than the
+	// no-flag baseline.
+	if err := installLogFileTee(*logFile); err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: --log-file: %v\n", err)
+		os.Exit(runner.ExitConfigError)
+	}
 
 	code := run(*prompt, *initialPrompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *maxTurnCostUSD, *maxSessionCostUSD, *watchdogMode, *smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *mcpAgenticWrapLLM, *mcpAgenticWrapModel, *noContextCache,
 		attachOpts{

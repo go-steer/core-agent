@@ -403,6 +403,113 @@ func TestAdapter_LastTurn_ZeroWhenNoDataAnywhere(t *testing.T) {
 	}
 }
 
+// TestAdapter_ContextWindow_ResolvesFromPerTurnModel pins the fix for
+// the remote-TUI "/stats Context: (unknown)" regression. The adapter
+// used to hardcode 0 for both ContextWindowSize/Used; it now sources
+// the last per-turn model from the /usage snapshot, delegates the
+// window-size lookup to pkg/usage (same table the in-process TUI
+// uses), and returns the last turn's InputTokens as the fill.
+func TestAdapter_ContextWindow_ResolvesFromPerTurnModel(t *testing.T) {
+	t.Parallel()
+	fs := startFakeServer(t)
+	fs.usage = attach.UsageInfo{
+		Overall: attach.UsageTotals{InputTokens: 20049, OutputTokens: 319, Turns: 1, CostUSD: 0.0117},
+		PerTurn: []attach.UsageTurn{
+			{Turn: 1, Model: "gemini-3.5-flash", InputTokens: 20049, OutputTokens: 319, CostUSD: 0.0329},
+		},
+	}
+
+	parsed, _ := attachclient.ParseURL(fs.URL + "/sessions/s1")
+	client := attachclient.New(parsed, "", 0)
+	a := New(client, "/sessions/s1")
+
+	if got := a.ContextWindowSize(); got != 1_000_000 {
+		t.Errorf("ContextWindowSize = %d, want 1_000_000 (gemini-3.5-flash cap)", got)
+	}
+	if got := a.ContextWindowUsed(); got != 20049 {
+		t.Errorf("ContextWindowUsed = %d, want 20049 (last per-turn InputTokens)", got)
+	}
+}
+
+// TestAdapter_ContextWindow_LiveStateWinsOverSnapshot ensures the
+// streaming-loop's per-event usage (fresher than the 2s /usage cache
+// TTL) drives ContextWindowUsed once the operator has actually seen a
+// turn tick by. Mirrors LastTurn's live-wins-over-fallback freshness
+// policy so /stats stays coherent with the per-turn footer.
+func TestAdapter_ContextWindow_LiveStateWinsOverSnapshot(t *testing.T) {
+	t.Parallel()
+	fs := startFakeServer(t)
+	fs.usage = attach.UsageInfo{
+		Overall: attach.UsageTotals{Turns: 1},
+		PerTurn: []attach.UsageTurn{
+			{Turn: 1, Model: "gemini-3.5-flash", InputTokens: 100, OutputTokens: 10},
+		},
+	}
+
+	parsed, _ := attachclient.ParseURL(fs.URL + "/sessions/s1")
+	client := attachclient.New(parsed, "", 0)
+	a := New(client, "/sessions/s1")
+
+	a.mu.Lock()
+	a.lastTurn = coretui.Usage{InputTokens: 42_000, OutputTokens: 300}
+	a.mu.Unlock()
+
+	if got := a.ContextWindowUsed(); got != 42_000 {
+		t.Errorf("ContextWindowUsed = %d, want 42_000 (live state, not snapshot 100)", got)
+	}
+}
+
+// TestAdapter_ContextWindow_UnknownModelReturnsZero pins the
+// "coretui renders (unknown)" contract: when the last per-turn model
+// isn't in pkg/usage's lookup table, ContextWindowSize returns 0 so
+// coretui's slash_builtin.go falls into the "(unknown)" branch rather
+// than dividing by a made-up cap.
+func TestAdapter_ContextWindow_UnknownModelReturnsZero(t *testing.T) {
+	t.Parallel()
+	fs := startFakeServer(t)
+	fs.usage = attach.UsageInfo{
+		Overall: attach.UsageTotals{Turns: 1},
+		PerTurn: []attach.UsageTurn{
+			{Turn: 1, Model: "some-unrecognized-model", InputTokens: 500, OutputTokens: 50},
+		},
+	}
+
+	parsed, _ := attachclient.ParseURL(fs.URL + "/sessions/s1")
+	client := attachclient.New(parsed, "", 0)
+	a := New(client, "/sessions/s1")
+
+	if got := a.ContextWindowSize(); got != 0 {
+		t.Errorf("ContextWindowSize = %d, want 0 for unrecognized model", got)
+	}
+}
+
+// TestAdapter_ContextWindow_FallsBackToPricingModel exercises the
+// pre-first-turn path: /usage has no PerTurn entries yet (fresh
+// session, no turn landed), but the operator has already streamed a
+// usage-bearing event so applyPricing cached the pricing snapshot's
+// CurrentModel. ContextWindowSize should use that as the fallback
+// model identity rather than returning 0.
+func TestAdapter_ContextWindow_FallsBackToPricingModel(t *testing.T) {
+	t.Parallel()
+	fs := startFakeServer(t)
+	fs.usage = attach.UsageInfo{
+		Overall: attach.UsageTotals{Turns: 0},
+		// No PerTurn entries — pre-first-turn state.
+	}
+
+	parsed, _ := attachclient.ParseURL(fs.URL + "/sessions/s1")
+	client := attachclient.New(parsed, "", 0)
+	a := New(client, "/sessions/s1")
+
+	a.mu.Lock()
+	a.pricingModel = "claude-opus-4-7"
+	a.mu.Unlock()
+
+	if got := a.ContextWindowSize(); got != 200_000 {
+		t.Errorf("ContextWindowSize = %d, want 200_000 (claude-opus-4 base cap from pricingModel fallback)", got)
+	}
+}
+
 func TestAdapter_SlashContext_ReturnsSystemMessage(t *testing.T) {
 	t.Parallel()
 	fs := startFakeServer(t)

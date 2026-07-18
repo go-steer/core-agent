@@ -26,6 +26,7 @@ import (
 
 	"github.com/go-steer/core-agent/internal/attachclient"
 	"github.com/go-steer/core-agent/pkg/attach"
+	"github.com/go-steer/core-agent/pkg/usage"
 )
 
 // ===== Status / Tools / Subagents (read-only capabilities) =====
@@ -100,13 +101,14 @@ func (a *Adapter) Subagents() []coretui.SubagentInfo {
 const usageCacheTTL = 2 * time.Second
 
 type usageCache struct {
-	mu           sync.Mutex
-	cached       coretui.Usage
-	costUSD      float64
-	turns        int
-	lastTurn     coretui.Usage // from Overall.PerTurn[-1]; used as fallback in LastTurn()
-	lastTurnCost float64
-	lastFetch    time.Time
+	mu            sync.Mutex
+	cached        coretui.Usage
+	costUSD       float64
+	turns         int
+	lastTurn      coretui.Usage // from Overall.PerTurn[-1]; used as fallback in LastTurn()
+	lastTurnCost  float64
+	lastTurnModel string // keys usage.ContextWindowSizeFor from ContextWindowSize()
+	lastFetch     time.Time
 }
 
 // snapshot returns the cached usage, refreshing if the cache is
@@ -145,6 +147,7 @@ func (a *Adapter) snapshot() (coretui.Usage, float64, int) {
 			OutputTokens: int(last.OutputTokens),
 		}
 		a.usage.lastTurnCost = last.CostUSD
+		a.usage.lastTurnModel = last.Model
 	}
 	a.usage.lastFetch = time.Now()
 	return a.usage.cached, a.usage.costUSD, a.usage.turns
@@ -244,14 +247,51 @@ func costFromRates(inTok, outTok int, inRate, outRate float64) float64 {
 	return float64(inTok)/million*inRate + float64(outTok)/million*outRate
 }
 
-// ContextWindowSize satisfies coretui.UsageTracker. Returns 0
-// (unknown) — would require attach-side surfacing of the model's
-// context window cap.
-func (a *Adapter) ContextWindowSize() int { return 0 }
+// ContextWindowSize satisfies coretui.UsageTracker. Resolves the last
+// per-turn model from the cached /usage snapshot (or the currently-
+// selected pricing model as a pre-first-turn fallback) and looks up
+// its cap via usage.ContextWindowSizeFor. Returns 0 when the model is
+// unknown or unrecognized — coretui then renders "Context: (unknown)".
+//
+// Same lookup table the embedded TUI's coreUsageBridge uses (both
+// paths flow through pkg/usage), so /stats surfaces identical values
+// whether the operator is in the in-process TUI or attached remotely.
+func (a *Adapter) ContextWindowSize() int {
+	_, _, _ = a.snapshot() // refresh cache; populates lastTurnModel under a.usage.mu
+	a.usage.mu.Lock()
+	model := a.usage.lastTurnModel
+	a.usage.mu.Unlock()
+	if model == "" {
+		// Pre-first-turn or older daemons that don't stamp per-turn
+		// Model: fall back to the pricing snapshot's CurrentModel
+		// (populated on the first usage-bearing event via applyPricing).
+		a.mu.Lock()
+		model = a.pricingModel
+		a.mu.Unlock()
+	}
+	return usage.ContextWindowSizeFor(model)
+}
 
-// ContextWindowUsed satisfies coretui.UsageTracker. Returns 0
-// (unknown) — see ContextWindowSize.
-func (a *Adapter) ContextWindowUsed() int { return 0 }
+// ContextWindowUsed satisfies coretui.UsageTracker. Approximates the
+// current context fill as the most recent turn's input-token count
+// (each turn re-sends the full conversation, so input == rolling size
+// — matches the in-process Tracker.ContextWindowUsed semantics).
+//
+// Live streaming state wins over the /usage snapshot fallback (same
+// freshness policy as LastTurn): the Run/Events loop stashes each
+// non-partial event's usage into a.lastTurn as it arrives, so the
+// fill reading catches up on turn-end rather than waiting on the 2s
+// snapshot TTL.
+func (a *Adapter) ContextWindowUsed() int {
+	a.mu.Lock()
+	live := a.lastTurn.InputTokens
+	a.mu.Unlock()
+	if live > 0 {
+		return live
+	}
+	snap, _ := a.snapshotLastTurn()
+	return snap.InputTokens
+}
 
 // SessionTurns satisfies coretui.UsageTracker.
 func (a *Adapter) SessionTurns() int {

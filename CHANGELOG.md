@@ -16,7 +16,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
-_No unreleased changes since [2.7.0-dev.4]._
+### Changes by Kind
+
+#### Other (Cleanup)
+- Release tooling: `dev/release/cut-dev-tag.sh` now runs the release-workflow preflight guards (starting with pricing-catalog freshness) BEFORE carving the CHANGELOG. Catches drift locally in seconds instead of a 4-minute CI round-trip that ends in a broken tag needing retag. Motivated by the 2026-07-18 v2.7.0-dev.4 retag caused by a 3-day stale `internal/pricing/builtin.go`. Guards intentionally mirror `.github/workflows/release.yml` — keep in sync as new guards land there.
 
 ## [2.7.0-dev.4] — 2026-07-18
 

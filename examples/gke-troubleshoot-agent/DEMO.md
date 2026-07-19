@@ -181,21 +181,28 @@ cp -r examples/gke-troubleshoot-agent/deploy "${DEMO_DEPLOY_DIR}"
 sed -i "s/prod-us-central1/${CLUSTER_NAME}/" \
     "${DEMO_OVERLAY_DIR}/patch-watcher-cluster-name.yaml"
 
-# Substitute AGENTS.md placeholders — the agent needs to know your
-# actual project + cluster + region for every gke-mcp call. Without
-# these, the model hallucinates plausible-looking-but-wrong IDs and
-# every MCP call returns 403.
-sed -i "s|__GCP_PROJECT__|${PROJECT_ID}|g;s|__GKE_CLUSTER__|${CLUSTER_NAME}|g;s|__GKE_LOCATION__|${REGION}|g" \
-    "${DEMO_DEPLOY_DIR}/base/config/AGENTS.md"
+# AGENTS.md's project / cluster / region are ${env:VAR}-interpolated by
+# the daemon at boot — resolved via envFrom on the daemon container
+# from the core-agent-gcp-env ConfigMap. The base ConfigMap ships with
+# go-steer's demo values (see deploy/base/kustomization.yaml); for your
+# cluster, sed the literals list so kustomize regenerates it with your
+# GCP project + GKE cluster + location. Missing required vars →
+# fail-loud daemon exit at boot, per config/env.yaml.
+sed -i \
+    -e "s|GOOGLE_CLOUD_PROJECT=gke-demos-345619|GOOGLE_CLOUD_PROJECT=${PROJECT_ID}|" \
+    -e "s|GCP_PROJECT=gke-demos-345619|GCP_PROJECT=${PROJECT_ID}|" \
+    -e "s|GKE_CLUSTER=std-simian-test|GKE_CLUSTER=${CLUSTER_NAME}|" \
+    -e "s|GKE_LOCATION=us-central1|GKE_LOCATION=${REGION}|" \
+    "${DEMO_DEPLOY_DIR}/base/kustomization.yaml"
 
 # Confirm the substitutions took.
 grep -q -- "--cluster-name=${CLUSTER_NAME}" \
     "${DEMO_OVERLAY_DIR}/patch-watcher-cluster-name.yaml" \
     && echo "✓ cluster name patched (watcher)" \
     || (echo "✗ placeholder 'prod-us-central1' not found in patch file — check the source overlay"; false)
-grep -q "${PROJECT_ID}" "${DEMO_DEPLOY_DIR}/base/config/AGENTS.md" \
-    && echo "✓ project ID patched (AGENTS.md)" \
-    || (echo "✗ project ID not substituted into AGENTS.md — check the source"; false)
+grep -q "GCP_PROJECT=${PROJECT_ID}" "${DEMO_DEPLOY_DIR}/base/kustomization.yaml" \
+    && echo "✓ core-agent-gcp-env ConfigMap literals patched (GCP_PROJECT / GKE_CLUSTER / GKE_LOCATION)" \
+    || (echo "✗ ConfigMap literals not substituted — check the base kustomization.yaml"; false)
 
 # Create only the namespace here. Full `apply -k` (which creates the
 # Deployments that mount the Secrets) waits until step 4, AFTER

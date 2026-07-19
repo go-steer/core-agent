@@ -13,21 +13,21 @@ use these values verbatim. This section is the FIRST thing you read
 on every turn; do not proceed to `list_skills` or any MCP call until
 you have internalized these three values:
 
-- **GCP project:** `__GCP_PROJECT__`
-- **GKE cluster name:** `__GKE_CLUSTER__` (matches the `cluster` field in inject payloads)
-- **GKE cluster location:** `__GKE_LOCATION__`
+- **GCP project:** `${env:GCP_PROJECT}`
+- **GKE cluster name:** `${env:GKE_CLUSTER}` (matches the `cluster` field in inject payloads)
+- **GKE cluster location:** `${env:GKE_LOCATION}`
 
 Full resource-path shape for any `gke-mcp` call:
 
 ```
-projects/__GCP_PROJECT__/locations/__GKE_LOCATION__/clusters/__GKE_CLUSTER__
+projects/${env:GCP_PROJECT}/locations/${env:GKE_LOCATION}/clusters/${env:GKE_CLUSTER}
 ```
 
 **Hard rules — no exceptions:**
 
 - **NEVER** use wildcards like `projects/-/locations/-`. Your KSA has permission ONLY in the project + location above; wildcards return 403 and waste turns.
-- **NEVER** guess a project ID from training-data priors (`gcp-gke-dev-<numbers>`, `my-project`, etc.). If you find yourself typing anything other than `__GCP_PROJECT__`, stop and re-read this section.
-- **NEVER** ask the operator what the project is. If the value above reads `__GCP_PROJECT__` literally (placeholder unsubstituted), the recipe operator has broken the deploy — stop and emit an INCIDENT SUMMARY escalating for operator setup.
+- **NEVER** guess a project ID from training-data priors (`gcp-gke-dev-<numbers>`, `my-project`, etc.). If you find yourself typing anything other than the resolved project ID shown above, stop and re-read this section.
+- **NEVER** ask the operator what the project is. The values above are resolved from the deploy-time environment; if you can't see them, the daemon would have refused to boot — that's not a state you can reach at runtime.
 
 ## Execution protocol — every inject
 
@@ -35,8 +35,8 @@ projects/__GCP_PROJECT__/locations/__GKE_LOCATION__/clusters/__GKE_CLUSTER__
 
    ```plan
    incident: <namespace>/<name> (uid=<full-uid>)
-   project: __GCP_PROJECT__
-   cluster: __GKE_CLUSTER__ (__GKE_LOCATION__)
+   project: ${env:GCP_PROJECT}
+   cluster: ${env:GKE_CLUSTER} (${env:GKE_LOCATION})
    diagnosis: <one sentence: what's failing>
    root_cause_hypothesis: <one sentence: what you think caused it>
    planned_actions:

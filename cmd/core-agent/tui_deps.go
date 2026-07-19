@@ -47,6 +47,12 @@ type tuiDeps struct {
 	AgentsDir    string
 	CoreHome     string
 	ProjectRoot  string
+	// EnvInterp is the ${env:VAR} interpolator wired from the daemon's
+	// env manifest (see pkg/agentenv, #322). May be nil when the
+	// bundle doesn't ship an env.yaml / env.json — loaders treat nil
+	// as "no interpolation." Used by the /reload path to keep
+	// interpolation consistent between startup and mid-session reload.
+	EnvInterp func(string) string
 	// InitialPrompt seeds the TUI's first turn when non-empty (issue
 	// #291). Forwarded to core-tui's Options.InitialPrompt so the
 	// prompt renders as a normal user row on startup and the operator

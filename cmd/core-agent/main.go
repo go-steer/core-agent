@@ -42,6 +42,7 @@ import (
 	"github.com/go-steer/core-agent/internal/version"
 	"github.com/go-steer/core-agent/internal/webui"
 	"github.com/go-steer/core-agent/pkg/agent"
+	"github.com/go-steer/core-agent/pkg/agentenv"
 	"github.com/go-steer/core-agent/pkg/attach"
 	"github.com/go-steer/core-agent/pkg/config"
 	"github.com/go-steer/core-agent/pkg/digest"
@@ -411,6 +412,25 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 		return runner.ExitConfigError
 	}
+
+	// #322: load the optional env manifest (.agents/env.yaml or
+	// .env.json) that declares which env vars the bundle expects.
+	// Nil manifest = bundle didn't opt in = pre-#322 behavior (no
+	// interpolation, no validation). Required-var-missing is fail-
+	// loud; drift diagnostics warn but never block startup.
+	envManifest, err := agentenv.LoadManifest(agentsDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+		return runner.ExitConfigError
+	}
+	envResolver := agentenv.NewResolver(envManifest, os.LookupEnv)
+	if errs := envResolver.Errors(); len(errs) > 0 {
+		for _, e := range errs {
+			fmt.Fprintf(os.Stderr, "core-agent: %v\n", e)
+		}
+		return runner.ExitConfigError
+	}
+
 	attachCfg = mergeAttachOpts(attachCfg, cfg.Attach, flag.CommandLine)
 	if modelOverride != "" {
 		cfg.Model.Name = modelOverride
@@ -585,7 +605,8 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// identically to Load. The per-caller overlay path lights up when
 	// a request-time Caller threads through — γ wires the call site;
 	// future session-creation flows pass the resolved Caller.Identity.
-	loaded, err := instruction.LoadForSession(projectRoot, coreHome, "", cfg.Attach.MultiSession.UsersDir)
+	loaded, err := instruction.LoadForSession(projectRoot, coreHome, "", cfg.Attach.MultiSession.UsersDir,
+		instruction.WithInterpolator(envResolver.InterpolateFunc()))
 	if err != nil {
 		// Fatal: malformed @include / escaped path / missing target / non-UTF-8
 		// content indicates a config bug. Silently shipping a degraded prompt
@@ -738,9 +759,19 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	if mcpErr != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: mcp: %v\n", mcpErr)
 	}
-	loadedSkills, skillsErr := skills.LoadAll(ctx, agentsDir, coreHome, gate)
+	loadedSkills, skillsErr := skills.LoadAll(ctx, agentsDir, coreHome, gate,
+		skills.WithInterpolator(envResolver.InterpolateFunc()))
 	if skillsErr != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: skills: %v\n", skillsErr)
+	}
+
+	// #322: surface drift diagnostics AFTER instruction + skill loading
+	// so ReportDrift can see every reference the bundle actually made.
+	// Warnings only — never blocks startup.
+	if envResolver != nil {
+		for _, w := range envResolver.ReportDrift() {
+			send(w)
+		}
 	}
 
 	// Startup config summary (#212 part 1). Emits the resolved state
@@ -1352,6 +1383,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 				projectRoot:    projectRoot,
 				userRoot:       coreHome,
 				usersDir:       cfg.Attach.MultiSession.UsersDir,
+				envInterp:      envResolver.InterpolateFunc(),
 				registry:       attachReg,
 				aclStore:       aclStore,
 				noCompact:      noCompact,
@@ -1618,6 +1650,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			AgentsDir:     agentsDir,
 			CoreHome:      coreHome,
 			ProjectRoot:   projectRoot,
+			EnvInterp:     envResolver.InterpolateFunc(),
 			InitialPrompt: initialPrompt,
 		})
 		if err != nil {

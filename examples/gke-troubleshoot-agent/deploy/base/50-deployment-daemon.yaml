@@ -223,6 +223,8 @@ spec:
                 path: config.json
               - key: AGENTS.md
                 path: AGENTS.md
+              - key: env.yaml
+                path: env.yaml
               - key: mcp.json
                 path: mcp.json
               - key: k8s-triage_SKILL.md

@@ -109,7 +109,12 @@ type sessionFactoryDeps struct {
 	userRoot       string
 	agentsDir      string
 	usersDir       string
-	registry       *attach.SessionRegistry
+	// envInterp is the ${env:VAR} interpolator wired from the daemon's
+	// env manifest (see pkg/agentenv, #322). May be nil when the
+	// bundle doesn't ship an env.yaml / env.json — loaders treat nil
+	// as "no interpolation."
+	envInterp func(string) string
+	registry  *attach.SessionRegistry
 	// cfg + mcpServers feed the read-only AttachXProvider closures
 	// (memory / skills / mcp / pricing) so the per-session /memory,
 	// /skills, /mcp, /pricing slash commands return real data
@@ -193,7 +198,8 @@ func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, ori
 	// <usersDir>/<caller.Identity>/.agents/ tree layered on
 	// top of project + user scopes. Empty usersDir or unknown
 	// caller falls through to the daemon-wide instruction stack.
-	instr, err := instruction.LoadForSession(deps.projectRoot, deps.userRoot, caller.Identity, deps.usersDir)
+	instr, err := instruction.LoadForSession(deps.projectRoot, deps.userRoot, caller.Identity, deps.usersDir,
+		instruction.WithInterpolator(deps.envInterp))
 	if err != nil {
 		broker.Close()
 		return nil, nil, fmt.Errorf("load per-caller instructions: %w", err)
@@ -389,7 +395,8 @@ func attachProviderOpts(deps sessionFactoryDeps, _ *permissions.Gate) []agent.Op
 
 	if deps.projectRoot != "" || deps.userRoot != "" {
 		opts = append(opts, agent.WithAttachMemoryProvider(func() []attach.MemorySource {
-			fresh, _ := instruction.Load(deps.projectRoot, deps.userRoot)
+			fresh, _ := instruction.Load(deps.projectRoot, deps.userRoot,
+				instruction.WithInterpolator(deps.envInterp))
 			out := make([]attach.MemorySource, 0, len(fresh.Sources))
 			for _, s := range fresh.Sources {
 				out = append(out, attach.MemorySource{Scope: s.Scope, Path: s.Path, Size: s.Bytes})
@@ -400,7 +407,8 @@ func attachProviderOpts(deps sessionFactoryDeps, _ *permissions.Gate) []agent.Op
 
 	if deps.agentsDir != "" || deps.userRoot != "" {
 		opts = append(opts, agent.WithAttachSkillsProvider(func() []attach.SkillInfo {
-			fresh, err := skills.LoadAll(deps.daemonCtx, deps.agentsDir, deps.userRoot, deps.template)
+			fresh, err := skills.LoadAll(deps.daemonCtx, deps.agentsDir, deps.userRoot, deps.template,
+				skills.WithInterpolator(deps.envInterp))
 			if err != nil {
 				return nil
 			}

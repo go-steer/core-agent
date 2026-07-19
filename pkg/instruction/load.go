@@ -100,6 +100,27 @@ type Loaded struct {
 // Empty reports whether nothing was loaded.
 func (l Loaded) Empty() bool { return l.Instruction == "" }
 
+// Option configures a Load / LoadForSession call. All options are
+// optional; the zero-options call matches the pre-#322 loader
+// behavior exactly.
+type Option func(*loadOptions)
+
+type loadOptions struct {
+	// interp is applied to each raw file body after UTF-8 validation
+	// and before frontmatter stripping. Nil = no interpolation
+	// (identity function semantics). Wire from pkg/agentenv via
+	// (*agentenv.Resolver).InterpolateFunc().
+	interp func(string) string
+}
+
+// WithInterpolator supplies a string transform applied to every loaded
+// file body — used to substitute ${env:VAR} references declared in
+// .agents/env.yaml (see pkg/agentenv). Passing nil is legal and equals
+// "no interpolation."
+func WithInterpolator(fn func(string) string) Option {
+	return func(o *loadOptions) { o.interp = fn }
+}
+
 // Load resolves the project + user memory files and returns the
 // concatenated instruction text. Missing files at primary slots are
 // not errors — memory is optional. A missing @include target IS an
@@ -107,8 +128,8 @@ func (l Loaded) Empty() bool { return l.Instruction == "" }
 //
 // projectRoot may be empty; in that case only user memory is loaded.
 // userRoot may be empty in tests.
-func Load(projectRoot, userRoot string) (Loaded, error) {
-	return LoadForSession(projectRoot, userRoot, "", "")
+func Load(projectRoot, userRoot string, opts ...Option) (Loaded, error) {
+	return LoadForSession(projectRoot, userRoot, "", "", opts...)
 }
 
 // LoadForSession extends Load with an optional per-caller overlay
@@ -135,7 +156,12 @@ func Load(projectRoot, userRoot string) (Loaded, error) {
 // The visited-set propagates across all three scopes — a file
 // referenced by both the project layer and the caller overlay loads
 // exactly once, preserving the dedup semantics of Load.
-func LoadForSession(projectRoot, userRoot, callerIdentity, usersDir string) (Loaded, error) {
+func LoadForSession(projectRoot, userRoot, callerIdentity, usersDir string, opts ...Option) (Loaded, error) {
+	var lo loadOptions
+	for _, o := range opts {
+		o(&lo)
+	}
+
 	var loaded Loaded
 	var b strings.Builder
 	// Single visited set across all scopes — a file reached from
@@ -146,13 +172,13 @@ func LoadForSession(projectRoot, userRoot, callerIdentity, usersDir string) (Loa
 	visited := make(map[string]bool)
 
 	if userRoot != "" {
-		if err := loadScopeWithFallback(userRoot, "user", []string{userMemoryName}, &b, &loaded.Sources, &loaded.Searched, visited); err != nil {
+		if err := loadScopeWithFallback(userRoot, "user", []string{userMemoryName}, &b, &loaded.Sources, &loaded.Searched, visited, lo.interp); err != nil {
 			return loaded, err
 		}
 	}
 
 	if projectRoot != "" {
-		if err := loadScopeWithFallback(projectRoot, "project", projectMemoryNames, &b, &loaded.Sources, &loaded.Searched, visited); err != nil {
+		if err := loadScopeWithFallback(projectRoot, "project", projectMemoryNames, &b, &loaded.Sources, &loaded.Searched, visited, lo.interp); err != nil {
 			return loaded, err
 		}
 	}
@@ -163,7 +189,7 @@ func LoadForSession(projectRoot, userRoot, callerIdentity, usersDir string) (Loa
 		}
 		overlayRoot := filepath.Join(usersDir, callerIdentity)
 		if info, err := os.Stat(overlayRoot); err == nil && info.IsDir() {
-			if err := loadScopeWithFallback(overlayRoot, "caller", []string{userMemoryName}, &b, &loaded.Sources, &loaded.Searched, visited); err != nil {
+			if err := loadScopeWithFallback(overlayRoot, "caller", []string{userMemoryName}, &b, &loaded.Sources, &loaded.Searched, visited, lo.interp); err != nil {
 				return loaded, err
 			}
 		} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -219,20 +245,20 @@ func validateCallerIdentity(id string) error {
 // Order: .agents/ first, then root. Operators who only put files in
 // one location see no behavior difference; operators with both get
 // .agents/ content prepended.
-func loadScopeWithFallback(root, scope string, primaryNames []string, b *strings.Builder, sources *[]Source, searched *[]string, visited map[string]bool) error {
+func loadScopeWithFallback(root, scope string, primaryNames []string, b *strings.Builder, sources *[]Source, searched *[]string, visited map[string]bool, interp func(string) string) error {
 	subDir := filepath.Join(root, ".agents")
 	if info, err := os.Stat(subDir); err == nil && info.IsDir() {
-		if err := loadScope(subDir, scope, primaryNames, b, sources, searched, visited); err != nil {
+		if err := loadScope(subDir, scope, primaryNames, b, sources, searched, visited, interp); err != nil {
 			return err
 		}
 	}
-	return loadScope(root, scope, primaryNames, b, sources, searched, visited)
+	return loadScope(root, scope, primaryNames, b, sources, searched, visited, interp)
 }
 
 // loadScope drives one scope's primary-file + AGENTS.d/ load. The
 // primary fallback chain is per-scope (just AGENTS.md for user; full
 // chain for project). The AGENTS.d/ scan is identical at both scopes.
-func loadScope(scopeRoot, scope string, primaryNames []string, b *strings.Builder, sources *[]Source, searched *[]string, visited map[string]bool) error {
+func loadScope(scopeRoot, scope string, primaryNames []string, b *strings.Builder, sources *[]Source, searched *[]string, visited map[string]bool, interp func(string) string) error {
 	// Primary file via fallback chain. First-match-wins.
 	for _, name := range primaryNames {
 		path := filepath.Join(scopeRoot, name)
@@ -245,7 +271,7 @@ func loadScope(scopeRoot, scope string, primaryNames []string, b *strings.Builde
 			}
 			return fmt.Errorf("instruction: stat %s: %w", path, err)
 		}
-		body, err := loadFile(path, scope, scopeRoot, 0, visited, sources)
+		body, err := loadFile(path, scope, scopeRoot, 0, visited, sources, interp)
 		if err != nil {
 			return err
 		}
@@ -283,7 +309,7 @@ func loadScope(scopeRoot, scope string, primaryNames []string, b *strings.Builde
 	sort.Strings(mdFiles) // lexical order; operator picks the prefix convention
 	for _, name := range mdFiles {
 		path := filepath.Join(dirPath, name)
-		body, err := loadFile(path, scope, scopeRoot, 0, visited, sources)
+		body, err := loadFile(path, scope, scopeRoot, 0, visited, sources, interp)
 		if err != nil {
 			return err
 		}
@@ -354,7 +380,7 @@ func mustCanonical(p string) string {
 // Load (a missing @include target, a path escape, depth exceeded,
 // non-UTF-8 content) — operator typos and config bugs should surface
 // loudly rather than silently truncating the system prompt.
-func loadFile(path, scope, scopeRoot string, depth int, visited map[string]bool, sources *[]Source) (string, error) {
+func loadFile(path, scope, scopeRoot string, depth int, visited map[string]bool, sources *[]Source, interp func(string) string) (string, error) {
 	if depth > maxIncludeDepth {
 		return "", fmt.Errorf("instruction: include depth exceeded (max %d) at %s", maxIncludeDepth, path)
 	}
@@ -384,7 +410,17 @@ func loadFile(path, scope, scopeRoot string, depth int, visited map[string]bool,
 		return "", fmt.Errorf("instruction: %s contains invalid UTF-8", canonPath)
 	}
 
-	body := stripFrontmatter(string(raw))
+	// Apply ${env:VAR} interpolation before frontmatter strip. Doing
+	// it here (rather than after strip) keeps interpolation-vs-
+	// frontmatter interactions simple: any ${env:VAR} inside YAML
+	// frontmatter is legal and gets resolved. If nil (bundle without
+	// an env.yaml manifest), pass through unchanged — full backwards
+	// compat with pre-#322 bundles.
+	rawStr := string(raw)
+	if interp != nil {
+		rawStr = interp(rawStr)
+	}
+	body := stripFrontmatter(rawStr)
 	if truncated {
 		// Visible-in-prompt marker so the agent and the operator
 		// both know the on-disk file was bigger than the cap. The
@@ -408,7 +444,7 @@ func loadFile(path, scope, scopeRoot string, depth int, visited map[string]bool,
 	// Recurse: resolve @include directives in the body. The
 	// containing file's directory is the base for relative paths.
 	fileDir := filepath.Dir(canonPath)
-	expanded, err := processIncludes(body, scope, fileDir, scopeRoot, depth+1, visited, sources)
+	expanded, err := processIncludes(body, scope, fileDir, scopeRoot, depth+1, visited, sources, interp)
 	if err != nil {
 		return "", err
 	}
@@ -423,7 +459,7 @@ func loadFile(path, scope, scopeRoot string, depth int, visited map[string]bool,
 //
 // Code fence tracking is necessary so an @include in a markdown
 // example block stays literal rather than being expanded.
-func processIncludes(body, scope, fileDir, scopeRoot string, depth int, visited map[string]bool, sources *[]Source) (string, error) {
+func processIncludes(body, scope, fileDir, scopeRoot string, depth int, visited map[string]bool, sources *[]Source, interp func(string) string) (string, error) {
 	var out strings.Builder
 	out.Grow(len(body))
 	inFence := false
@@ -449,7 +485,7 @@ func processIncludes(body, scope, fileDir, scopeRoot string, depth int, visited 
 					}
 					return "", fmt.Errorf("instruction: @include %q: %w", rel, err)
 				}
-				included, err := loadFile(target, scope, scopeRoot, depth, visited, sources)
+				included, err := loadFile(target, scope, scopeRoot, depth, visited, sources, interp)
 				if err != nil {
 					return "", err
 				}

@@ -26,6 +26,7 @@ BASE = "/core-agent"
 CONCEPTS = {
     "permissions", "providers", "sessions", "mcp", "tools",
     "hooks", "skills", "context-management", "multi-session",
+    "otel",
 }
 
 

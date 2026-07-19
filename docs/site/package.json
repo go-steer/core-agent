@@ -1,7 +1,7 @@
 {
   "name": "core-agent-docs",
   "version": "0.0.1",
-  "description": "core-agent documentation site — Astro Starlight smoketest (Phase 0).",
+  "description": "core-agent documentation site — Astro Starlight.",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
@@ -13,10 +13,10 @@
     "astro": "astro"
   },
   "dependencies": {
-    "@astrojs/starlight": "^0.32.0",
+    "@astrojs/starlight": "^0.41.0",
     "@fontsource-variable/inter": "^5.1.0",
     "@fontsource-variable/jetbrains-mono": "^5.1.0",
-    "astro": "^5.5.0",
+    "astro": "^7.1.0",
     "sharp": "^0.33.5",
     "unist-util-visit": "^5.1.0"
   }

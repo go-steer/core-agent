@@ -219,7 +219,7 @@ Every turn, every tool call, and every model response is appended to the durable
 ## Where to go next
 
 - **[Operations](/run/autonomous/operations/)** — the depth reference: budgets, lifecycle tool, crash-resume, failure policy, audit-log queries, subagent composition
-- **[GKE team scenario](/run/autonomous/gke-team-scenario/)** — multi-agent worked example: a platform parent + operator + devteam working together against real GKE workloads
+- **[GKE team scenario](/use-cases/k8s-triage/)** — multi-agent worked example: a platform parent + operator + devteam working together against real GKE workloads
 - **[Context management](/concepts/context-management/)** — compaction + checkpoints make long unattended runs viable
 - **[Sessions and event log](/concepts/sessions/)** — durable storage, replay, live tail, crash-resume
 - **[Attach mode TUI](/reference/attach-tui/)** — let an operator drop into an unattended agent mid-run

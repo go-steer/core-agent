@@ -14,7 +14,7 @@ The bundle staged at [`extras/scion/`](https://github.com/go-steer/core-agent/tr
 
 ## How Scion drives core-agent
 
-1. Scion launches `core-agent` inside a tmux session in a container. tmux gives it a real PTY, so core-agent's [TUI](/reference/tui/) auto-launches — `scion attach` shows the live TUI.
+1. Scion launches `core-agent` inside a tmux session in a container. tmux gives it a real PTY, so core-agent's [TUI](/reference/attach-tui/) auto-launches — `scion attach` shows the live TUI.
 2. `scion message <agent> "..."` types into the TUI input field via `tmux send-keys`. No side-channel required.
 3. As tool calls and model turns stream through the agent's event iterator, `pkg/hooks` shells out to `sciontool hook` with a JSON envelope on stdin, which updates `agent-info.json`.
 4. When the model wants to signal a sticky state, it calls the `sciontool_status` tool, which shells out to `sciontool status <type> <message>`.

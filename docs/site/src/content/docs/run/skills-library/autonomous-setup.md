@@ -47,7 +47,7 @@ Three reference files; the agent fetches based on the user's path:
 |---|---|
 | Agent to walk you through autonomous setup | Install + invoke `autonomous-setup` |
 | First-time 15-minute autonomous walkthrough | [Autonomous quickstart](/run/autonomous/quickstart/) |
-| Multi-agent reference (GKE team-shaped) | [GKE multi-agent scenario](/run/autonomous/gke-team-scenario/) |
+| Multi-agent reference (GKE team-shaped) | [GKE multi-agent scenario](/use-cases/k8s-triage/) |
 | Budget / lifecycle reference | [Autonomous → Operations](/run/autonomous/operations/) |
 
 The skill IS the docs in workflow form.
@@ -87,6 +87,6 @@ Then customize cmd/main.go's goal string.
 ## Where to go next
 
 - **[Autonomous quickstart](/run/autonomous/quickstart/)** — single-agent worked example
-- **[GKE multi-agent scenario](/run/autonomous/gke-team-scenario/)** — multi-agent worked example
+- **[GKE multi-agent scenario](/use-cases/k8s-triage/)** — multi-agent worked example
 - **[Subagents and wrappers](/agent-design/subagents-and-wrappers/)** — choreography patterns the skill references
 - **[Cost efficiency](/agent-design/cost-efficiency/)** — model-selection decisions for autonomous runs

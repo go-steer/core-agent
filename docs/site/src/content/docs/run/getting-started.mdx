@@ -1,0 +1,179 @@
+---
+title: Getting started
+description: Install core-agent, configure a provider, and drive an agent from your terminal in under five minutes.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+`core-agent` ships a CLI (`core-agent`) that lands you in an
+in-process Bubble Tea TUI on a TTY, or runs one-shot with `-p "…"`
+in a script or CI job. This page gets you from zero to your first
+turn.
+
+<Aside type="note">
+Embedding `core-agent` in your own Go program instead? Head over to
+[Embed the library → Getting started](/core-agent/embed/getting-started/).
+The two audiences share a codebase but have distinct first-run flows.
+</Aside>
+
+## Install
+
+<Tabs>
+  <TabItem label="Go toolchain">
+    Requires Go 1.26 or newer.
+
+    ```bash
+    go install github.com/go-steer/core-agent/cmd/core-agent@latest
+    ```
+
+    The binary lands in `$(go env GOBIN)` (or `$GOPATH/bin` if `GOBIN`
+    is unset). Make sure that's on your `$PATH`.
+  </TabItem>
+  <TabItem label="Pre-built binary">
+    Cross-compiled archives for `linux/darwin × amd64/arm64` are
+    published on the [Releases page](https://github.com/go-steer/core-agent/releases/latest),
+    signed via Sigstore keyless.
+
+    ```bash
+    TAG=$(gh release view --repo go-steer/core-agent --json tagName -q .tagName)
+    OS=$(uname -s | tr A-Z a-z)
+    ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+    gh release download "$TAG" --repo go-steer/core-agent \
+      --pattern "core-agent_${TAG#v}_${OS}_${ARCH}.tar.gz"
+    tar xzf "core-agent_${TAG#v}_${OS}_${ARCH}.tar.gz"
+    ./core-agent --version
+    ```
+  </TabItem>
+  <TabItem label="Container">
+    See the [README's install section](https://github.com/go-steer/core-agent#install)
+    for the image variants (`core-agent`, `core-agent-slim`,
+    `core-agent-tui`, `k8s-event-watcher`) and floating-tag
+    conventions.
+  </TabItem>
+</Tabs>
+
+## First run — pick a provider
+
+You need credentials for at least one model backend. Skip the tabs
+you don't have keys for.
+
+<Tabs>
+  <TabItem label="Gemini API">
+    Get a key at [aistudio.google.com](https://aistudio.google.com).
+
+    ```bash
+    export GEMINI_API_KEY=...   # or GOOGLE_API_KEY — either works
+    core-agent -p "what's the capital of France?"
+    ```
+
+    Auto-detection picks the Gemini provider when `GEMINI_API_KEY` or
+    `GOOGLE_API_KEY` is set and no other provider is configured.
+  </TabItem>
+  <TabItem label="Vertex AI (Gemini)">
+    If you have GCP infrastructure already:
+
+    ```bash
+    gcloud auth application-default login
+    export GOOGLE_GENAI_USE_VERTEXAI=true
+    export GOOGLE_CLOUD_PROJECT=my-gcp-project
+    export GOOGLE_CLOUD_LOCATION=us-central1
+    core-agent -p "what's the capital of France?"
+    ```
+  </TabItem>
+  <TabItem label="Anthropic (Claude)">
+    Get a key at [console.anthropic.com](https://console.anthropic.com).
+
+    ```bash
+    export ANTHROPIC_API_KEY=...
+    core-agent --provider anthropic --model claude-opus-4-7 \
+      -p "what's the capital of France?"
+    ```
+  </TabItem>
+  <TabItem label="Vertex AI (Claude)">
+    Use existing GCP credentials and billing for Claude:
+
+    ```bash
+    gcloud auth application-default login
+    export ANTHROPIC_VERTEX_PROJECT_ID=my-gcp-project
+    export CLOUD_ML_REGION=us-east5
+    core-agent --provider anthropic-vertex --model claude-opus-4-7 \
+      -p "what's 2+2?"
+    ```
+
+    <Aside type="caution">
+    Vertex's Claude model IDs sometimes carry a `@version` suffix
+    (e.g. `claude-opus-4-5@20251101`). If the bare alias doesn't
+    resolve, check the [Vertex Model Garden](https://console.cloud.google.com/vertex-ai/model-garden)
+    for the current ID.
+    </Aside>
+  </TabItem>
+</Tabs>
+
+## Multi-turn TUI
+
+Drop the `-p` flag and `core-agent` lands in its Bubble Tea TUI
+(the default when stdin is a real terminal). Conversation history is
+preserved across turns automatically.
+
+```text
+$ core-agent
+[Bubble Tea TUI takes over the terminal]
+> Remember the number 73.
+Got it — I'll remember 73.
+> What number did I just give you?
+73.
+> /quit
+```
+
+The TUI ships a rich slash-command surface — try `/help` to enumerate
+the catalog (`/stats`, `/context`, `/compact`, `/done`, `/btw`,
+`/tools`, `/memory`, and more).
+
+<Aside type="tip">
+**Headless and slim-build fallbacks:** `core-agent --no-tui` (or
+non-TTY stdin like a pipe or CI run) falls through to a line-mode
+REPL with `/exit`, `/quit`, EOF (Ctrl-D). The slim build
+(`go build -tags no_tui`, ~5 MB smaller, no Bubble Tea deps)
+excludes the TUI entirely and always uses the REPL.
+</Aside>
+
+## Layer in a project — the `.agents/` directory
+
+`core-agent` walks up from the current working directory looking for
+a folder named `.agents/`, much like `git` looks for `.git`. It's the
+project-level home for everything `core-agent` reads or writes:
+
+```
+your-repo/
+├── .agents/
+│   ├── config.json          # provider, model, permissions, etc.
+│   ├── mcp.json             # MCP server declarations
+│   ├── skills/              # SKILL.md bundles
+│   │   └── echo/SKILL.md
+│   └── sessions/            # one-shot transcripts (auto-written)
+└── AGENTS.md                # system prompt prefix (project-scoped)
+```
+
+A minimal `config.json`:
+
+```json
+{
+  "version": 1,
+  "model": {
+    "provider": "anthropic",
+    "name": "claude-opus-4-7"
+  }
+}
+```
+
+`core-agent` picks up everything in `.agents/` automatically — no
+flags needed.
+
+## What to read next
+
+- [Tools](/core-agent/concepts/tools/) — the model-facing tool
+  catalog (files, search, shell, network, planning).
+- Interactive quickstart — operator workflow, slash commands,
+  AGENTS.md, skills, MCP, in 15 minutes. *(coming in Phase 2)*
+- Providers — full reference for each model backend, env vars, and
+  gotchas. *(coming in Phase 2)*

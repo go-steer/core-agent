@@ -1,0 +1,8 @@
+# Hugo build output + caches.
+public/
+resources/
+.hugo_build.lock
+
+# Docsy npm build deps (autoprefixer / postcss / postcss-cli).
+node_modules/
+package-lock.json

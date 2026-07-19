@@ -1,0 +1,31 @@
+---
+title: Plan-first workflows
+description: Require the agent to record a plan artifact before it can edit — useful for review-first workflows and change-management-heavy environments.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**Use when:** you want the model to think through the change *first*,
+commit that thinking to an artifact a human can review, and only then
+start editing. Common in code-review flows, migrations,
+change-management environments, and unattended runs where a bad plan
+is cheaper to catch than a bad diff.
+
+## How it works
+
+`core-agent`'s permission gate has a **plan-first** posture: the model
+must call the `record_plan` tool with a written plan before any
+mutating tool (`write_file`, `edit_file`, `delete_file`, `bash` with
+non-read-only commands) is allowed. The gate refuses those tool calls
+until the plan is on file.
+
+<Aside type="tip">
+Turn it on with `permissions.RequirePlanArtifact: true` in the library
+API, or `--require-plan` on the CLI.
+</Aside>
+
+## Where the details live
+
+- **[Permissions → Plan-first enforcement](/concepts/permissions/#plan-first-enforcement)** — the gate contract, refusal shape, escape hatches.
+- **[Built-in tools → `record_plan`](/concepts/tools/#recording-plans)** — the tool the model calls, its schema, the artifact format.
+- **[Agent design → System instructions](/agent-design/system-instructions/)** — how to phrase the `AGENTS.md` so the model reaches for a plan naturally.

@@ -1,0 +1,94 @@
+---
+title: core-agent
+description: A reusable Go-based agent built on the Google Agent Development Kit. Embed it in your binary, pick the providers and tools you need, ship.
+template: doc
+tableOfContents: false
+hero:
+  title: core-agent
+  tagline: A reusable Go-based agent built on the Google Agent Development Kit. Embed it in your binary, pick the providers and tools you need, ship.
+  image:
+    file: ../../assets/featured-banner.jpeg
+    alt: core-agent
+  actions:
+    - text: Run the CLI
+      link: /core-agent/run/getting-started/
+      icon: right-arrow
+      variant: primary
+    - text: Embed the library
+      link: /core-agent/embed/getting-started/
+      icon: right-arrow
+      variant: secondary
+    - text: GitHub
+      link: https://github.com/go-steer/core-agent
+      icon: github
+      variant: minimal
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## Two ways to use it
+
+<CardGrid>
+  <LinkCard
+    title="Run the CLI"
+    description="Drive an agent from your terminal — Bubble Tea TUI, slash commands, or headless one-shot with -p."
+    href="/core-agent/run/getting-started/"
+  />
+  <LinkCard
+    title="Embed the library"
+    description="Add core-agent to your Go binary. Bring your own UI, tools, providers, and runtime topology."
+    href="/core-agent/embed/getting-started/"
+  />
+</CardGrid>
+
+## What you get
+
+<CardGrid>
+  <LinkCard
+    title="Autonomous runs"
+    description="agent.RunAutonomous loops the model toward a goal with budgets (turns / tokens / cost / wallclock). ResumeAutonomous picks up after a crash."
+    href="/core-agent/run/getting-started/"
+  />
+  <LinkCard
+    title="Durable sessions + audit log"
+    description="eventlog.Open returns a SQLite/Postgres/MySQL-backed session.Service plus a Stream with Since(seq) replay and Watch(seq) live tail."
+    href="/core-agent/concepts/tools/"
+  />
+  <LinkCard
+    title="In-process subagents"
+    description="agent.WithSubagents registers each as a callable tool. Subagent events stream into the parent's audit log under a branch-scoped path."
+    href="/core-agent/embed/getting-started/"
+  />
+  <LinkCard
+    title="Remote TUI + multi-session daemon"
+    description="core-agent-tui attaches to any daemon over HTTP + SSE. One daemon serves many concurrent sessions with per-caller ACLs."
+    href="/core-agent/run/getting-started/"
+  />
+</CardGrid>
+
+## Why core-agent
+
+`core-agent` is an opinionated substrate on top of Google's
+[Agent Development Kit](https://pkg.go.dev/google.golang.org/adk).
+It wraps ADK with the parts that aren't about model intelligence but
+about being a real piece of software: a **permission system humans
+trust**, **multiple model backends behind one config**, a **durable
+event log** that survives crashes and powers replay, **skills**,
+**MCP** server lifecycle, **autonomous-run budgets**, **in-process
+and remote subagents**, **context-management mechanisms** that keep
+long sessions alive past the model's context wall, **per-model cost
+tracking**, and a **headless CLI** that's useful in five minutes.
+
+Every one of those is something you'd write before shipping. Pulling
+them in as a library is a one-day exercise; building them yourself is
+two engineer-months.
+
+→ Full comparison in [Why core-agent](/core-agent/why-core-agent/).
+
+## Install
+
+```bash
+go install github.com/go-steer/core-agent/cmd/core-agent@latest
+```
+
+Or `go get github.com/go-steer/core-agent` if you're embedding.

@@ -1,0 +1,38 @@
+---
+title: Interactive (TUI)
+description: Drive the agent from a terminal — Bubble Tea takes over, conversation history is preserved, slash commands surface session controls.
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+You're at a terminal, driving the agent yourself. `core-agent` (no
+flags, stdin is a TTY) lands in the Bubble Tea TUI. Conversation
+history is preserved across turns. Slash commands surface session
+controls.
+
+<CardGrid>
+  <LinkCard
+    title="Quickstart"
+    description="First 15 minutes: install, point at a provider, drop an AGENTS.md, add a skill, set permission posture, check it in."
+    href="/run/interactive/quickstart/"
+  />
+  <LinkCard
+    title="Workflows"
+    description="Worked examples — Go code-reviewer with MCP web search, read-only documentation writer."
+    href="/run/interactive/workflows/"
+  />
+  <LinkCard
+    title="Slash reference"
+    description="Full slash-command catalog + keybindings — /stats, /context, /compact, /done, /btw, and the rest."
+    href="/run/interactive/slash-reference/"
+  />
+</CardGrid>
+
+## Common references
+
+- [Configuration](/reference/configuration/) — `.agents/config.json` schema
+- [Permissions](/concepts/permissions/) — controlling what the agent can do
+- [Skills](/concepts/skills/) — reusable named procedures
+- [MCP servers](/concepts/mcp/) — declarative third-party tool integration
+- [Context management](/concepts/context-management/) — keeping long sessions alive
+- [Agent design](/agent-design/) — prescriptive patterns for prompts, skills, and tool choice

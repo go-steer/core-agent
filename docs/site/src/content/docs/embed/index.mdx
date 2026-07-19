@@ -1,0 +1,42 @@
+---
+title: Embed the Library
+description: Add core-agent to your Go binary — bring your own UI, tools, providers, and runtime topology.
+---
+
+import { CardGrid, LinkCard, Aside } from '@astrojs/starlight/components';
+
+Embedding `core-agent` in your own Go binary. Common cases: custom
+coding assistants with domain tools, HTTP-served agents, web-app
+prompt UX, alternative LLM backends, integrations into existing
+orchestration frameworks.
+
+<Aside type="tip">
+Prefer to have an agent walk you through this? The
+[`library-embedding` skill](/run/skills-library/library-embedding/)
+covers the same material in workflow form.
+</Aside>
+
+<CardGrid>
+  <LinkCard
+    title="Getting started"
+    description="Install, minimal embed, first agent call — under five minutes."
+    href="/embed/getting-started/"
+  />
+  <LinkCard
+    title="Guide"
+    description="Narrative tour of every extension point with worked examples — custom prompter, custom tools, custom provider, HTTP-served agent."
+    href="/embed/guide/"
+  />
+  <LinkCard
+    title="API reference"
+    description="Exhaustive reference: every option function, every public type, every default."
+    href="/embed/api/"
+  />
+</CardGrid>
+
+## Common references
+
+- [Configuration](/reference/configuration/) — `.agents/config.json` schema (consumed by both CLI + library callers)
+- [Providers](/concepts/providers/) — each backend's env vars, model IDs, gotchas
+- [Sessions and event log](/concepts/sessions/) — durable session storage via `eventlog`
+- [Context management](/concepts/context-management/) — `WithCompactor` / `WithCheckpointer` / `tools/agentic` for long-lived agents

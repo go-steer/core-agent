@@ -1,0 +1,275 @@
+/* Go Native palette + Inter/JetBrains typography. Light-only site.
+ *
+ * Starlight semantically inverts its color vars between themes:
+ *   --sl-color-white: highest-contrast text on the current bg
+ *                     (white in dark mode, near-black in light mode)
+ *   --sl-color-black: the page bg (dark in dark mode, white in light)
+ *   --sl-color-gray-1 (darkest text) → gray-7 (lightest bg)
+ *
+ * Server-side Starlight ships <html data-theme="dark"> and flips it
+ * client-side via its ThemeProvider script. To avoid a flash of dark
+ * (which reads as invisible white-on-white text under our overrides),
+ * we duplicate every override under BOTH :root, [data-theme='light'],
+ * AND [data-theme='dark'] — so the initial dark-attributed render
+ * already paints with light-mode values.
+ */
+
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/jetbrains-mono';
+
+:root,
+:root[data-theme='light'],
+:root[data-theme='dark'] {
+  /* Typography */
+  --sl-font: 'Inter Variable', system-ui, -apple-system, BlinkMacSystemFont,
+    'Segoe UI', Roboto, sans-serif;
+  --sl-font-system-mono: 'JetBrains Mono Variable', ui-monospace,
+    SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* Semantic color tokens — light-mode values under both themes */
+  --sl-color-white: #0f1721;          /* used as high-contrast text */
+  --sl-color-gray-1: #1e2734;         /* body prose */
+  --sl-color-gray-2: #3a4556;         /* strong text */
+  --sl-color-gray-3: #556170;         /* muted metadata */
+  --sl-color-gray-4: #7a8393;         /* faded / captions */
+  --sl-color-gray-5: #c8ced8;         /* borders */
+  --sl-color-gray-6: #eef1f5;         /* subtle surface (inline code bg) */
+  --sl-color-gray-7: #f6f8fa;         /* softer surface (sidebar hover) */
+  --sl-color-black: #ffffff;          /* used as page bg */
+
+  /* Surfaces */
+  --sl-color-bg: #ffffff;
+  --sl-color-bg-nav: #ffffff;
+  --sl-color-bg-sidebar: #f6f8fa;
+  --sl-color-bg-inline-code: #f0f4f8;
+  --sl-color-bg-accent: #00add8;
+
+  /* Text */
+  --sl-color-text: #1e2734;           /* body text */
+  --sl-color-text-accent: #00add8;    /* links */
+  --sl-color-text-invert: #ffffff;    /* text on accent-colored bg */
+
+  /* Hairlines / borders (Starlight uses these directly in a few places) */
+  --sl-color-hairline: #e4e8ee;
+  --sl-color-hairline-shade: #d6dbe3;
+  --sl-color-hairline-light: #eef1f5;
+
+  /* Accent ramp (Go cyan) */
+  --sl-color-accent-low: #e6f7fb;
+  --sl-color-accent: #00add8;
+  --sl-color-accent-high: #0092b8;
+
+  /* Content measure + type scale */
+  --sl-content-width: 55rem;
+  --sl-line-height: 1.7;
+  --sl-text-base: 1rem;
+}
+
+/* Hero title/tagline use --sl-color-white; guarantee they're dark */
+.hero h1,
+.hero .tagline {
+  color: var(--sl-color-white);
+}
+
+/* Stack the hero vertically with the banner above the title/tagline.
+ * Our custom Hero.astro omits Starlight's scoped <style> block, so we
+ * own every layout rule for the hero region here.  */
+.hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 1.5rem;
+  padding-block: 2rem;
+}
+.hero > img,
+.hero > .hero-html {
+  order: -1;
+  max-width: 520px;
+  width: 100%;
+  height: auto;
+  margin-inline: auto;
+  border-radius: 12px;
+}
+.hero .stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(1.5rem, calc(1.5rem + 1vw), 2rem);
+  text-align: center;
+}
+.hero .copy {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+.hero .copy > * {
+  max-width: 50ch;
+}
+.hero h1 {
+  font-size: clamp(2rem, calc(1rem + 4vw), 3.5rem);
+  line-height: 1.15;
+  font-weight: 600;
+  margin: 0;
+}
+.hero .tagline {
+  font-size: clamp(1rem, calc(0.9rem + 0.6vw), 1.25rem);
+  color: var(--sl-color-gray-2);
+  line-height: 1.5;
+}
+.hero .actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 1rem 1.5rem;
+  margin-top: 0.5rem;
+}
+
+/* Base .sl-link-button styles — our custom Hero.astro emits raw <a>
+ * with these classes (Starlight's LinkButton component isn't an
+ * exported subpath), so we own the styling here rather than relying
+ * on Starlight's scoped rules. */
+.sl-link-button {
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 999rem;
+  display: inline-flex;
+  font-size: 0.95rem;
+  font-weight: 500;
+  gap: 0.5em;
+  line-height: 1.2;
+  padding: 0.55rem 1.25rem;
+  text-decoration: none;
+  transition: background-color 120ms ease, border-color 120ms ease,
+    transform 120ms ease;
+  white-space: nowrap;
+}
+.sl-link-button:hover {
+  transform: translateY(-1px);
+}
+
+/* Primary (Go cyan) — the main audience CTA */
+.sl-link-button.primary {
+  background-color: var(--sl-color-accent);
+  color: #ffffff;
+  border-color: var(--sl-color-accent);
+}
+.sl-link-button.primary:hover {
+  background-color: var(--sl-color-accent-high);
+  border-color: var(--sl-color-accent-high);
+  color: #ffffff;
+}
+
+/* Secondary (gopher teal) — the other audience CTA */
+.sl-link-button.secondary {
+  background-color: #29beb0;
+  color: #ffffff;
+  border-color: #29beb0;
+}
+.sl-link-button.secondary:hover {
+  background-color: #1fa093;
+  border-color: #1fa093;
+  color: #ffffff;
+}
+
+/* Minimal (icon-only) — used for GitHub link. Round pill, no fill,
+ * subtle hairline border; hovers to the accent. */
+.sl-link-button.minimal {
+  background-color: transparent;
+  color: var(--sl-color-gray-2);
+  border-color: var(--sl-color-hairline);
+}
+.sl-link-button.minimal:hover {
+  color: var(--sl-color-accent);
+  border-color: var(--sl-color-accent);
+}
+.sl-link-button.icon-only {
+  padding: 0.55rem;
+  width: 2.75rem;
+  height: 2.75rem;
+  justify-content: center;
+}
+
+/* Screen-reader-only label for icon-only buttons */
+.sl-link-button .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* LinkCard tiles: soft border + accent hover */
+.sl-link-card {
+  border: 1px solid var(--sl-color-hairline) !important;
+  background: #ffffff !important;
+  transition: border-color 120ms ease, box-shadow 120ms ease,
+    transform 120ms ease;
+}
+.sl-link-card:hover {
+  border-color: var(--sl-color-accent) !important;
+  box-shadow: 0 2px 16px rgba(0, 173, 216, 0.1);
+  transform: translateY(-1px);
+}
+.sl-link-card .title,
+.sl-link-card a {
+  color: var(--sl-color-white) !important;
+}
+.sl-link-card .description {
+  color: var(--sl-color-gray-2) !important;
+}
+
+/* Focus ring — brand color */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--sl-color-accent);
+  outline-offset: 2px;
+}
+
+/* Inline code — subtle border keeps it distinct in prose */
+.sl-markdown-content :not(pre) > code {
+  border: 1px solid var(--sl-color-hairline);
+  padding: 0.05rem 0.35rem;
+  border-radius: 4px;
+  background: var(--sl-color-bg-inline-code);
+  color: var(--sl-color-gray-1);
+}
+
+/* --- Tables ---
+ * Fix identifier wrapping in the first column: tool names like
+ * `read_many_files` were breaking at underscores. Also prevent any
+ * inline code inside a table cell from wrapping mid-token.
+ */
+.sl-markdown-content table code {
+  white-space: nowrap;
+  word-break: keep-all;
+  overflow-wrap: normal;
+}
+.sl-markdown-content table td:first-child,
+.sl-markdown-content table th:first-child {
+  white-space: nowrap;
+}
+.sl-markdown-content table {
+  display: table;
+  width: 100%;
+  border-collapse: collapse;
+}
+.sl-markdown-content table th,
+.sl-markdown-content table td {
+  border-bottom: 1px solid var(--sl-color-hairline);
+  padding: 0.6rem 0.75rem;
+  vertical-align: top;
+}
+.sl-markdown-content table th {
+  text-align: left;
+  background: var(--sl-color-gray-7);
+  color: var(--sl-color-gray-1);
+  font-weight: 600;
+}
+.sl-markdown-content table tbody tr:hover {
+  background: var(--sl-color-gray-7);
+}

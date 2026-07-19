@@ -516,7 +516,7 @@ CLI flags `--script`, `--script-strict`, and `--record-to` override the correspo
 
 ## `otel`
 
-OpenTelemetry exporter config. Off by default — a fresh invocation makes zero outbound spans.
+OpenTelemetry exporter config. Off by default — a fresh invocation makes zero outbound spans. See the [OpenTelemetry concept page](/concepts/otel/) for enabling, span tree, K8s deployment, and pitfalls.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|

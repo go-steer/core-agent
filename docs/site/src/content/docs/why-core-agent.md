@@ -64,7 +64,7 @@ See [Context management](/concepts/context-management/) for the full design.
 
 **Server-side built-in observability.** When Gemini's `GoogleSearch` or `URLContext` tools fire on the server side, `core-agent` surfaces them in the chat-style output (`↪ google_search: query: ...`) and as queryable eventlog rows (`Author="gemini/google_search"`). Same `↪` namespace reserved for Anthropic's server-side tools when they land in the SDK.
 
-**Telemetry, opt-in.** OpenTelemetry export to console or OTLP. Off by default so a fresh invocation makes zero outbound calls beyond the model.
+**Telemetry, opt-in.** [OpenTelemetry](/concepts/otel/) export to console or OTLP. Off by default so a fresh invocation makes zero outbound calls beyond the model.
 
 **A CLI and TUI that are useful immediately.** `core-agent -p "hello"` is the one-shot headless path; bare `core-agent` lands you in the in-process Bubble Tea TUI with conversation history preserved across turns. Both honor the same config, the same permissions, the same provider auto-detection. Most users never need to write Go code at all.
 

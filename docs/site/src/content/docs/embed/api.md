@@ -21,7 +21,7 @@ title: Library API
 | `github.com/go-steer/core-agent/models` | `Provider` interface + registry / `Resolve()`. |
 | `github.com/go-steer/core-agent/pkg/models/gemini` | Gemini API + Vertex AI provider. |
 | `github.com/go-steer/core-agent/pkg/models/anthropic` | Anthropic / Claude provider (first-party + Vertex). |
-| `github.com/go-steer/core-agent/telemetry` | OpenTelemetry exporter setup. |
+| `github.com/go-steer/core-agent/telemetry` | [OpenTelemetry](/concepts/otel/) exporter setup. |
 | `github.com/go-steer/core-agent/usage` | Per-turn token + cost tracker. |
 | `github.com/go-steer/core-agent/session` | Transcript persistence (`.agents/sessions/`). |
 | `github.com/go-steer/core-agent/runner` | Headless (one-shot) + REPL (multi-turn) drivers. |

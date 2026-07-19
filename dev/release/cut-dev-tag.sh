@@ -42,6 +42,42 @@ if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
   exit 1
 fi
 
+# Preflight: run the release-time guards that .github/workflows/release.yml
+# runs, BEFORE we carve the CHANGELOG. Motivation (2026-07-18 retag): the
+# v2.7.0-dev.4 tag got cut on a day when internal/pricing/builtin.go was
+# 3 days stale relative to LiteLLM's current catalog. The pricing-freshness
+# guard in release.yml rejected the build, forcing a retag. Running the
+# same guard here catches the drift locally in ~10s instead of a 4-minute
+# CI round-trip that ends in a broken tag.
+#
+# Guards mirrored from release.yml — keep in sync when new guards land
+# there. Each one prints its own remediation on failure.
+echo "── Preflight: release guards ────────────────────────────"
+
+# Guard 1: pricing catalog freshness. Same command release.yml runs.
+# Skips if the regen tool isn't present (pre-#259 checkouts) so
+# retroactive dev-tag operators aren't blocked.
+if [[ -d "dev/regen-builtin-pricing" ]]; then
+  go run ./dev/regen-builtin-pricing >/dev/null
+  if ! git diff --quiet internal/pricing/builtin.go; then
+    echo "error: internal/pricing/builtin.go is stale vs LiteLLM's current catalog." >&2
+    echo "" >&2
+    echo "Remediation: commit the diff (or discard if the drift is intentional)," >&2
+    echo "then re-run this script." >&2
+    echo "" >&2
+    echo "Diff:" >&2
+    git --no-pager diff internal/pricing/builtin.go >&2
+    exit 1
+  fi
+  echo "  pricing freshness: OK"
+fi
+
+# (Add new preflight guards above this line as they get added to
+# release.yml. Keep this section short — the tag-cut script is not the
+# place for expensive checks.)
+echo "── Preflight OK ─────────────────────────────────────────"
+echo ""
+
 # Extract the [Unreleased] section content — everything between the
 # `## [Unreleased]` header and the next `## [` header, excluding both
 # headers themselves.

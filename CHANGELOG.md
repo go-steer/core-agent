@@ -26,6 +26,9 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 #### Other (Cleanup)
 - Release tooling: `dev/release/cut-dev-tag.sh` now runs the release-workflow preflight guards (starting with pricing-catalog freshness) BEFORE carving the CHANGELOG. Catches drift locally in seconds instead of a 4-minute CI round-trip that ends in a broken tag needing retag. Motivated by the 2026-07-18 v2.7.0-dev.4 retag caused by a 3-day stale `internal/pricing/builtin.go`. Guards intentionally mirror `.github/workflows/release.yml` — keep in sync as new guards land there.
 
+#### Documentation
+- Attach-mode docs: three new / expanded pages under `docs/site/src/content/docs/reference/`. New `attach-http.md` — wire-level reference for every HTTP endpoint the attach listener exposes (session lifecycle, read/write, peers, streaming), including the two-layer auth model, path grammar, the v2.7-dev.3 per-turn `UsageMetadata` schema from [#222](https://github.com/go-steer/core-agent/issues/222), and the status-code + idempotency cheat sheet. Closes [#297](https://github.com/go-steer/core-agent/issues/297). New `core-agent-tui.md` — dedicated CLI reference for the remote TUI binary (synopsis, flag table, env vars, exit codes, URL grammar, install). Adds a "Multi-daemon workflow" section to `attach-tui.md` unifying `/switch` + `/attach` + peer-hub into one operator narrative with a worked-example (three daemons, one TUI). Closes [#296](https://github.com/go-steer/core-agent/issues/296).
+
 ## [2.7.0-dev.4] — 2026-07-18
 
 _In flight toward v2.7.0. Commits since [2.7.0-dev.3]:_

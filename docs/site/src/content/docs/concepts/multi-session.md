@@ -320,6 +320,8 @@ The daemon-side lifecycle is unchanged — sessions detach cleanly, per-caller A
 
 Design details in core-tui issues #48 (`SlashResult.SwitchTo` API) and #53 (`/switch` UX). Adapter wiring in this repo lives in `internal/coretuiremote/capabilities.go` (`Sessions` / `SwitchToSession`).
 
+For the operator-facing walkthrough — worked example, auth propagation, when-to-use-what table — see [Attach TUI § Multi-daemon workflow](/reference/attach-tui/#multi-daemon-workflow).
+
 ### Cross-daemon switching (v2.7+ / issue #246)
 
 The v2.6 landing was scoped to sessions on **one** daemon — the daemon the TUI connected to at startup. Operators running multiple daemons (or peer-registered fleets discoverable via `GET /peers`) still had to `q` out and re-launch `core-agent-tui <other-daemon-url>` to hop daemons.

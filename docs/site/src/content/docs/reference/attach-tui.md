@@ -2,7 +2,12 @@
 title: Attach TUI
 ---
 
-`core-agent-tui` is the operator-facing terminal UI for attach-mode — the remote client for an agent running elsewhere (workstation, K8s pod, peer-registered fleet member). It ships as a separate binary so the default `core-agent` stays distroless-clean (no terminal-rendering deps land in production K8s images). See [Configuration → attach](/reference/configuration/) for the listener-side config and the HTTP/SSE protocol it consumes.
+`core-agent-tui` is the operator-facing terminal UI for attach-mode — the remote client for an agent running elsewhere (workstation, K8s pod, peer-registered fleet member). It ships as a separate binary so the default `core-agent` stays distroless-clean (no terminal-rendering deps land in production K8s images).
+
+**Related references:**
+- [`core-agent-tui` CLI reference](/reference/core-agent-tui/) — flag table, env vars, exit codes, install.
+- [Attach HTTP endpoints](/reference/attach-http/) — the daemon-side protocol the TUI speaks.
+- [Configuration → attach](/reference/configuration/) — daemon-side listener config (`attach.listen`, tokens, `multi_session`, peer-hub).
 
 For local interactive use, run `core-agent` directly — its in-process TUI is the default when stdin is a terminal. `core-agent-tui` is the remote client only.
 
@@ -154,6 +159,54 @@ Until then, the documented attach path for non-IAM gateways remains a wrapper ar
 | `/theme dark\|light` | Switch glamour theme; re-renders existing assistant messages. |
 
 Sync slashes (`/context`, `/pricing`, `/reload`, `/perms`) hit the corresponding [attach read/mutation endpoints](/reference/configuration/) directly. Async slashes (`/compact`, `/done`, `/btw`, `/subagent`) flow through synchronous POSTs that block until the underlying agent operation completes; the remote TUI renders an in-chat preamble row at dispatch to bridge the 5–30 s gap.
+
+## Multi-daemon workflow
+
+The `/switch` + `/attach` + peer-hub trio ([issue #246](https://github.com/go-steer/core-agent/issues/246)) turns one TUI window into a control plane for a fleet of daemons. The story:
+
+**One laptop → one TUI → many daemons.** The operator launches `core-agent-tui` against any one daemon in the fleet, then hops between daemons — and between sessions inside each daemon — from the running TUI. No re-launch. No second terminal.
+
+Three pieces make it work:
+
+1. **Peer-hub registration** (daemon-side) — each daemon can register itself with a hub daemon at startup via `--attach-peer-hub` + `--attach-register-to=<hub-url>`. The hub keeps a live view of registered peers via heartbeats (see [Attach HTTP → peer endpoints](/reference/attach-http/#peer-endpoints)). Every daemon that participates knows about every other; there's no central controller.
+
+2. **`/switch`** (TUI, in-process) — inside a running TUI, `/switch` opens an in-chat picker that fans `GET /sessions` in parallel across the current daemon's hub PLUS every registered peer (5 s per-peer timeout so a slow peer doesn't block the list). Pick a row, the TUI detaches from the current session and reattaches to the picked one in place — chat wipes, but the outgoing session keeps running on its daemon for later re-attach. Peer rows tag as `[peer:<name>]`; local rows are unadorned. Bare `/switch` opens the picker; `/switch <sid>` direct-jumps to a local session.
+
+3. **`/attach <url>`** (TUI, escape hatch) — for reaching a daemon that ISN'T peer-registered on the current one (fresh laptop-local daemon, operator-typed URL from a Slack link, ad-hoc jump to a peer that hadn't checked in yet). Bare `/attach <url>` enumerates that daemon's sessions into a system message so the operator can pick manually; `/attach <url> <sid>` direct-jumps in place. Peer clients minted by `/attach` inherit the operator's startup `--auth` mode + `--token` env var, so credentials propagate automatically.
+
+**Worked example.** One operator laptop, three daemons: local dev daemon on `localhost:7777`, staging daemon on Cloud Run, prod daemon on GKE. Staging + prod are peer-registered on the same hub daemon (say, staging is the hub); local isn't in the peer graph.
+
+```bash
+# Terminal setup — one TUI, connected to staging (the hub daemon):
+core-agent-tui --auth=google-id-token \
+  --token=ATTACH_TOKEN \
+  https://staging.example.com
+
+# Inside the TUI:
+/switch                # → picker shows staging + prod sessions (peer)
+/switch <prod-sid>     # → direct-jump to a known prod session
+/attach http://localhost:7777 --token=DEV_TOKEN
+                       # → escape hatch to the local daemon (not peer-registered)
+/new                   # → fresh session on whichever daemon you're currently on
+```
+
+Every hop keeps the same TUI process alive. Cost totals, theme, and keybindings persist; only the session-scoped chat + status bar update.
+
+**Auth propagation.** The TUI captures `--auth` + the token env var name at startup. When `/switch` or `/attach` spawns a subordinate client to reach a peer, the same auth strategy runs against the new endpoint (audience-bound per endpoint for `google-id-token`; trivial passthrough for `bearer`). Operators need `roles/run.invoker` (or equivalent) on every peer they intend to hop into — `--auth=google-id-token` doesn't magically grant access, it just relays the credential correctly.
+
+**When to use what:**
+
+| Scenario | Right slash |
+|---|---|
+| Same daemon, different session I own | `/switch <sid>` |
+| Same daemon, pick from live sessions | `/switch` (bare) |
+| Same daemon, fresh isolated session | `/new` |
+| Registered peer daemon, direct-jump | `/switch <sid>` (picker also works) |
+| Registered peer daemon, pick from live | `/switch` (bare) |
+| Unregistered daemon (ad-hoc) | `/attach <url>` |
+| Kill TUI + repick from startup | `/sessions` |
+
+`/switch` and `/attach` are the ergonomic difference between "I manage a fleet" and "I manage one daemon at a time." Both landed in v2.7.0-dev.1 ([#246](https://github.com/go-steer/core-agent/issues/246) Phase 1).
 
 ## Observer mode (LiveAgent)
 

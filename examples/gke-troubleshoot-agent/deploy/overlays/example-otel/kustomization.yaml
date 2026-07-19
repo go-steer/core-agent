@@ -1,0 +1,44 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Example overlay + OTel enablement. Same shape as ../example, plus
+# the components/otel patch that turns on OpenTelemetry OTLP export
+# to GKE Managed OTel. See README.md for the cluster prerequisites
+# (managed-otel-scope, Cloud Trace IAM, etc.).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Compose the plain example overlay as-is (base + watcher cluster
+# name patch + agents ConfigMap) so this overlay stays a superset,
+# not a fork. If you want to point at a different underlying overlay
+# (e.g. your customized copy of `example/`), change this path.
+resources:
+  - ../example
+
+# The OTel enablement bit — patches the daemon Deployment's env to
+# add the OpenTelemetry SDK env vars targeting GKE Managed OTel.
+# Kustomize resolves components after resources, so this patch stacks
+# on top of whatever the composed example produces.
+components:
+  - ../../components/otel
+
+# Override the composed example's 2.6.0 tag pinning to the first
+# release that includes the OTEL_TRACES_EXPORTER env override
+# (PR #315, shipped in v2.7.0-dev.4). Without this, the daemon would
+# ignore the exporter env var and stay on whatever config.json shipped.
+images:
+  - name: ghcr.io/go-steer/core-agent
+    newTag: "2.7.0-dev.4"
+  - name: ghcr.io/go-steer/k8s-event-watcher
+    newTag: "2.7.0-dev.4"

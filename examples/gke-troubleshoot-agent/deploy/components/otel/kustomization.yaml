@@ -1,0 +1,43 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# OTel enablement component. Compose into any overlay via:
+#
+#   components:
+#     - ../../components/otel
+#
+# The component turns on OpenTelemetry OTLP export by patching the
+# daemon Deployment's env with the standard OTel SDK env vars —
+# `OTEL_TRACES_EXPORTER` (recognized by pkg/telemetry.Setup as an
+# override on the config-file exporter mode; see PR #315) plus the
+# OTEL_EXPORTER_OTLP_* / OTEL_SERVICE_NAME / OTEL_RESOURCE_ATTRIBUTES
+# vars ADK's underlying OTel SDK honors.
+#
+# Defaults target GKE Managed OpenTelemetry:
+# https://docs.cloud.google.com/kubernetes-engine/docs/how-to/managed-otel-gke
+#
+# For non-GKE deployments or self-managed collectors, patch
+# OTEL_EXPORTER_OTLP_ENDPOINT in your overlay after composing this
+# component. See README.md § "Tuning" for the recipe.
+#
+# See README.md in this directory for operator prerequisites (GKE
+# version, gcloud commands, IAM roles).
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  - path: daemon-env.yaml
+    target:
+      kind: Deployment
+      name: core-agent

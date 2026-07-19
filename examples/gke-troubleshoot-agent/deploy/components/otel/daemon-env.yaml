@@ -1,0 +1,62 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Strategic-merge patch: adds the standard OpenTelemetry SDK env vars
+# to the daemon container. Container-list merge is by name, so we
+# target the `core-agent` container specifically without disturbing
+# the existing envFrom / args / volumeMounts / etc.
+#
+# Each env var carries a specific role — see the inline comments.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: core-agent
+spec:
+  template:
+    spec:
+      containers:
+        - name: core-agent
+          env:
+            # Overrides cfg.OTEL.Exporter without patching the shipped
+            # config.json in the base ConfigMap. This is the load-bearing
+            # knob PR #315 landed for multi-daemon k8s deployments where
+            # a shared config can't carry per-Pod exporter targets.
+            # Values: "none" | "console" | "otlp".
+            - name: OTEL_TRACES_EXPORTER
+              value: "otlp"
+            # Targets the GKE Managed OpenTelemetry collector's HTTP
+            # OTLP endpoint (:4318). The collector Deployment + Service
+            # are created by GKE when
+            #   gcloud container clusters update <cluster> \
+            #     --managed-otel-scope=COLLECTION_AND_INSTRUMENTATION_COMPONENTS
+            # is run against the cluster (see README.md for the full
+            # setup). For self-managed collectors or non-GKE
+            # deployments, override this value in your overlay.
+            #
+            # Managed OTel exposes HTTP only (no :4317 gRPC).
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://opentelemetry-collector.gke-managed-otel.svc.cluster.local:4318"
+            # Service name that appears in Cloud Trace / Jaeger /
+            # Honeycomb service filters. Overridable so multi-agent
+            # clusters can disambiguate (e.g. "core-agent-triage" vs
+            # "core-agent-observer").
+            - name: OTEL_SERVICE_NAME
+              value: "core-agent"
+            # Resource attributes stamped on every span. `deployment.
+            # environment` is a semconv-standard tag; operators
+            # commonly extend with k8s.cluster.name, k8s.namespace.name
+            # (though the collector-side k8s attribute processor
+            # usually adds these automatically on GKE).
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "deployment.environment=demo"

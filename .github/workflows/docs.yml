@@ -19,6 +19,12 @@ on:
     branches: [main]
     paths:
       - 'docs/site/**'
+      - 'scripts/verify-*.py'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - 'docs/site/**'
+      - 'scripts/verify-*.py'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
@@ -35,7 +41,8 @@ permissions:
   id-token: write
 
 env:
-  NODE_VERSION: '20'
+  # Astro 7 requires Node >=22.12. Bumped from 20 during PR #318.
+  NODE_VERSION: '22'
 
 jobs:
   build:
@@ -52,6 +59,9 @@ jobs:
 
       - id: pages
         uses: actions/configure-pages@v5
+        # Runs only on main push (deploy path) — PRs skip it since there's
+        # no Pages env to configure against.
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
 
       - name: Install
         working-directory: docs/site
@@ -61,7 +71,18 @@ jobs:
         working-directory: docs/site
         run: npm run build
 
+      # --- Verification passes -------------------------------------------
+
+      - name: Verify redirect stubs
+        run: python3 scripts/verify-redirects.py
+
+      - name: Verify internal links
+        run: python3 scripts/verify-internal-links.py
+
+      # --- Upload for deploy (main only) --------------------------------
+
       - uses: actions/upload-pages-artifact@v3
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         with:
           path: docs/site/dist
 
@@ -69,6 +90,8 @@ jobs:
     name: deploy
     needs: build
     runs-on: ubuntu-latest
+    # Deploy on main pushes and manual runs only — PRs verify but don't ship.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

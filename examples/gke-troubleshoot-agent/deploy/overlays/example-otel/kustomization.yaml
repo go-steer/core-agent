@@ -12,31 +12,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Example overlay + OTel enablement. Same shape as ../example, plus
-# the components/otel patch that turns on OpenTelemetry OTLP export
-# to GKE Managed OTel. See README.md for the cluster prerequisites
-# (managed-otel-scope, Cloud Trace IAM, etc.).
+# Example overlay + OpenTelemetry to GKE Managed OTel. Same shape as
+# ../example, plus:
+#
+#   1. components/otel — turns the daemon's exporter on (one env var).
+#   2. instrumentation.yaml — the GKE Managed OpenTelemetry CR that
+#      auto-injects OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_SERVICE_NAME /
+#      OTEL_RESOURCE_ATTRIBUTES into every Pod in the namespace.
+#
+# Spans land in Cloud Trace with no self-managed collector to run.
+# See README.md for GKE cluster prereqs.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 # Compose the plain example overlay as-is (base + watcher cluster
 # name patch + agents ConfigMap) so this overlay stays a superset,
-# not a fork. If you want to point at a different underlying overlay
-# (e.g. your customized copy of `example/`), change this path.
+# not a fork. Also compose the Instrumentation CR — kustomize
+# doesn't have a dedicated CR slot, so it goes in `resources:`
+# alongside the composed overlay.
 resources:
   - ../example
+  - instrumentation.yaml
 
-# The OTel enablement bit — patches the daemon Deployment's env to
-# add the OpenTelemetry SDK env vars targeting GKE Managed OTel.
-# Kustomize resolves components after resources, so this patch stacks
-# on top of whatever the composed example produces.
+# The one-env-var component. See components/otel/README.md — the
+# endpoint / service / resource attrs come from the CR above, not
+# this component.
 components:
   - ../../components/otel
 
 # Override the composed example's 2.6.0 tag pinning to the first
 # release that includes the OTEL_TRACES_EXPORTER env override
-# (PR #315, shipped in v2.7.0-dev.4). Without this, the daemon would
-# ignore the exporter env var and stay on whatever config.json shipped.
+# (PR #315, shipped in v2.7.0-dev.4). Without this, the daemon
+# would ignore the exporter env var and stay on whatever the base
+# config.json says.
 images:
   - name: ghcr.io/go-steer/core-agent
     newTag: "2.7.0-dev.4"

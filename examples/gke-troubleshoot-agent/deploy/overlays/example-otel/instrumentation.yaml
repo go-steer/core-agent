@@ -1,0 +1,43 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# GKE Managed OpenTelemetry auto-configuration CR.
+#
+# When applied to a cluster with managed OTel enabled (see README §
+# "GKE prerequisites"), GKE injects the standard OTel SDK env vars
+# (OTEL_EXPORTER_OTLP_ENDPOINT targeting the in-cluster managed
+# collector, OTEL_SERVICE_NAME, OTEL_RESOURCE_ATTRIBUTES with
+# k8s.* attributes, sampler ratio, metric export interval) into
+# every Pod matched by `spec.selector`.
+#
+# Empty selector = all Pods in this namespace. That's what we want
+# for the demo overlay — the only Pods in `agent-triage` are the
+# core-agent daemon and the k8s-event-watcher, both of which we
+# want traces from.
+#
+# Tune sampling / resource attrs / prompt+response capture by
+# extending this spec — see:
+# https://docs.cloud.google.com/kubernetes-engine/docs/how-to/managed-otel-gke
+#
+# CRD is installed by `gcloud container clusters update
+# --managed-otel-scope=COLLECTION_AND_INSTRUMENTATION_COMPONENTS`;
+# `kubectl apply -k` will fail with "no matches for kind" until
+# that command has been run against the cluster.
+apiVersion: telemetry.googleapis.com/v1alpha1
+kind: Instrumentation
+metadata:
+  name: core-agent
+  namespace: agent-triage
+spec:
+  selector: {}

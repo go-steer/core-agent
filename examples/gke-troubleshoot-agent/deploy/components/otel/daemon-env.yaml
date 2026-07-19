@@ -12,12 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Strategic-merge patch: adds the standard OpenTelemetry SDK env vars
-# to the daemon container. Container-list merge is by name, so we
-# target the `core-agent` container specifically without disturbing
-# the existing envFrom / args / volumeMounts / etc.
+# Strategic-merge patch: adds the ONE non-standard env var that
+# `pkg/telemetry` needs to actually register an exporter — everything
+# else (endpoint, service name, resource attributes, sampling) is
+# spec-standard and honored by ADK's underlying OpenTelemetry SDK
+# directly, so it's set by whatever provides the runtime environment:
 #
-# Each env var carries a specific role — see the inline comments.
+#   - On GKE with Managed OpenTelemetry, an `Instrumentation` CR
+#     injects OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_SERVICE_NAME /
+#     OTEL_RESOURCE_ATTRIBUTES / sampler ratio / metric interval into
+#     matching Pods automatically. See overlays/example-otel/ for a
+#     working shape.
+#
+#   - Off GKE (self-managed Collector, Docker Compose, systemd, etc.)
+#     the operator sets those env vars themselves — either via their
+#     own overlay's env patch (see this component's README § "Non-GKE")
+#     or via whatever env-injection mechanism their runtime provides.
+#
+# Container-list merge is by name, so we target `core-agent`
+# specifically without disturbing the base's envFrom / args /
+# volumeMounts / etc.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -28,35 +42,16 @@ spec:
       containers:
         - name: core-agent
           env:
-            # Overrides cfg.OTEL.Exporter without patching the shipped
-            # config.json in the base ConfigMap. This is the load-bearing
-            # knob PR #315 landed for multi-daemon k8s deployments where
-            # a shared config can't carry per-Pod exporter targets.
+            # Overrides `otel.exporter` from the base config.json
+            # (default: "none"). This is the load-bearing knob PR #315
+            # landed for k8s deployments — a shared config.json
+            # ConfigMap can't carry per-Pod exporter targets, so the
+            # per-Deployment env var wins.
+            #
             # Values: "none" | "console" | "otlp".
+            #
+            # No other env var flips the exporter on — the standard
+            # OTel SDK env vars (OTEL_EXPORTER_OTLP_ENDPOINT etc.)
+            # only take effect once an exporter is registered.
             - name: OTEL_TRACES_EXPORTER
               value: "otlp"
-            # Targets the GKE Managed OpenTelemetry collector's HTTP
-            # OTLP endpoint (:4318). The collector Deployment + Service
-            # are created by GKE when
-            #   gcloud container clusters update <cluster> \
-            #     --managed-otel-scope=COLLECTION_AND_INSTRUMENTATION_COMPONENTS
-            # is run against the cluster (see README.md for the full
-            # setup). For self-managed collectors or non-GKE
-            # deployments, override this value in your overlay.
-            #
-            # Managed OTel exposes HTTP only (no :4317 gRPC).
-            - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: "http://opentelemetry-collector.gke-managed-otel.svc.cluster.local:4318"
-            # Service name that appears in Cloud Trace / Jaeger /
-            # Honeycomb service filters. Overridable so multi-agent
-            # clusters can disambiguate (e.g. "core-agent-triage" vs
-            # "core-agent-observer").
-            - name: OTEL_SERVICE_NAME
-              value: "core-agent"
-            # Resource attributes stamped on every span. `deployment.
-            # environment` is a semconv-standard tag; operators
-            # commonly extend with k8s.cluster.name, k8s.namespace.name
-            # (though the collector-side k8s attribute processor
-            # usually adds these automatically on GKE).
-            - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "deployment.environment=demo"

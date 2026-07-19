@@ -17,22 +17,24 @@
 #   components:
 #     - ../../components/otel
 #
-# The component turns on OpenTelemetry OTLP export by patching the
-# daemon Deployment's env with the standard OTel SDK env vars —
-# `OTEL_TRACES_EXPORTER` (recognized by pkg/telemetry.Setup as an
-# override on the config-file exporter mode; see PR #315) plus the
-# OTEL_EXPORTER_OTLP_* / OTEL_SERVICE_NAME / OTEL_RESOURCE_ATTRIBUTES
-# vars ADK's underlying OTel SDK honors.
+# Deliberately narrow scope: this component sets the ONE non-standard
+# env var (`OTEL_TRACES_EXPORTER`, from PR #315) needed to switch
+# `pkg/telemetry` from "no exporter" to "OTLP exporter." Everything
+# else — endpoint, service name, resource attributes, sampling — is
+# spec-standard and honored by ADK's underlying OpenTelemetry SDK, so
+# it belongs wherever the operator provisions env for their runtime:
 #
-# Defaults target GKE Managed OpenTelemetry:
-# https://docs.cloud.google.com/kubernetes-engine/docs/how-to/managed-otel-gke
+#   - GKE with Managed OpenTelemetry: an `Instrumentation` custom
+#     resource auto-injects the standard OTEL_* env vars. See
+#     overlays/example-otel/ for the shipped example.
 #
-# For non-GKE deployments or self-managed collectors, patch
-# OTEL_EXPORTER_OTLP_ENDPOINT in your overlay after composing this
-# component. See README.md § "Tuning" for the recipe.
+#   - Anywhere else: the operator sets OTEL_EXPORTER_OTLP_ENDPOINT
+#     (and any other standard OTel SDK env vars they want) in their
+#     own overlay's env patch. See README.md § "Non-GKE" for the
+#     recipe.
 #
-# See README.md in this directory for operator prerequisites (GKE
-# version, gcloud commands, IAM roles).
+# Both paths compose the same component; only the "where does the
+# endpoint come from" step differs.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 

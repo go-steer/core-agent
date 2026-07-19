@@ -85,9 +85,16 @@ Key attributes:
 
 ---
 
-## Deploying to GKE with managed collector
+## Deploying on Kubernetes
 
-The [`example-otel`](https://github.com/go-steer/core-agent/tree/main/examples/gke-troubleshoot-agent/deploy/overlays/example-otel) overlay in the GKE troubleshooting recipe wires the daemon to [Google Cloud Managed OpenTelemetry](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/managed-otel-gke). Spans land in Cloud Trace, no collector Deployment to maintain.
+The GKE troubleshooting recipe ships a reusable kustomize component and a canonical overlay that wire OTel export in two composable pieces:
+
+- **[`components/otel`](https://github.com/go-steer/core-agent/tree/main/examples/gke-troubleshoot-agent/deploy/components/otel)** — one-env-var component that flips the daemon's exporter from `none` to `otlp` via `OTEL_TRACES_EXPORTER`. Environment-agnostic; the same component works on and off GKE.
+- **Endpoint + service + resource attrs** — supplied by the runtime environment via standard OTel SDK env vars. Where those come from depends on where you're deploying.
+
+### On GKE (Managed OpenTelemetry)
+
+The [`example-otel`](https://github.com/go-steer/core-agent/tree/main/examples/gke-troubleshoot-agent/deploy/overlays/example-otel) overlay composes the component + an `Instrumentation` CR. [GKE Managed OpenTelemetry](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/managed-otel-gke) auto-injects the standard OTel SDK env vars (endpoint targeting the in-cluster managed collector, service name, resource attrs with `k8s.*`) into every Pod matched by the CR's selector. Spans land in Cloud Trace with no self-managed collector to run.
 
 Cluster prereqs (one-time):
 
@@ -106,16 +113,27 @@ Then:
 kubectl apply -k examples/gke-troubleshoot-agent/deploy/overlays/example-otel/
 ```
 
-The overlay composes [`components/otel`](https://github.com/go-steer/core-agent/tree/main/examples/gke-troubleshoot-agent/deploy/components/otel), a reusable kustomize `Component` that adds the OTel env vars to the daemon Deployment. Compose it into any overlay of your own:
+### Anywhere else (self-managed Collector, Docker, systemd, ...)
+
+Same component; supply the endpoint yourself. In kustomize:
 
 ```yaml
 resources:
   - ../../base
 components:
   - ../../components/otel
+patches:
+  - target: {kind: Deployment, name: core-agent}
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-collector.observability.svc:4318"}
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: OTEL_SERVICE_NAME, value: core-agent}
 ```
 
-See the [component's README](https://github.com/go-steer/core-agent/tree/main/examples/gke-troubleshoot-agent/deploy/components/otel/README.md) for tuning (endpoint, sampling, resource attributes) and for the `Instrumentation` CRD alternative.
+In Docker: `-e OTEL_TRACES_EXPORTER=otlp -e OTEL_EXPORTER_OTLP_ENDPOINT=http://...`. In systemd: `Environment=OTEL_TRACES_EXPORTER=otlp` etc. All standard OTel SDK env vars are honored by ADK-go's underlying SDK directly — no core-agent-side plumbing.
 
 ---
 

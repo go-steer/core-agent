@@ -18,18 +18,23 @@
 #
 # What it does (in order):
 #
-#   1. Enables the three GCP APIs the recipe requires:
+#   1. Enables the four GCP APIs the recipe requires:
 #        - container.googleapis.com   (GKE + GKE MCP)
 #        - aiplatform.googleapis.com  (Vertex AI / Gemini)
 #        - iamcredentials.googleapis.com  (WIF token-exchange path)
+#        - cloudtrace.googleapis.com  (OpenTelemetry → Cloud Trace; harmless
+#                                       if the OTel overlay is never applied)
 #
-#   2. Binds four IAM roles the daemon needs:
+#   2. Binds five IAM roles the daemon needs:
 #        - roles/aiplatform.user               (call Gemini via Vertex API)
 #        - roles/mcp.toolUser                  (call GKE MCP tools at all)
 #        - roles/container.admin               (read + write cluster/workload state via MCP)
 #        - roles/iam.serviceAccountUser        (impersonate node SA — required by
 #                                                GKE MCP's server-side chain; missing
 #                                                this gives 403 with no clear hint)
+#        - roles/cloudtrace.user               (write spans to Cloud Trace when the
+#                                                OTel overlay is applied; harmless
+#                                                permission grant if never used)
 #
 # All bindings use WIF-for-GKE direct binding — no Google Service Account
 # impersonation for the KSA itself. The `principal://` member string names
@@ -192,6 +197,11 @@ log_info "=== Phase 1: enabling required GCP APIs ==="
 enable_api "container.googleapis.com"
 enable_api "aiplatform.googleapis.com"
 enable_api "iamcredentials.googleapis.com"
+# Cloud Trace API: needed by the optional OTel overlay (deploy/overlays/
+# example-otel/). Enabling it here is idempotent and free — no spans are
+# emitted unless the overlay is applied, so this is harmless for
+# operators who never use OTel.
+enable_api "cloudtrace.googleapis.com"
 echo
 
 # ---- Phase 2: bind IAM roles ----
@@ -214,6 +224,12 @@ bind_project_role "roles/container.admin"
 #     server-side chain. Bound on the SA resource, not the project.
 bind_sa_role "${NODE_SA}"
 
+# 2e. Write spans to Cloud Trace. Load-bearing only when the OTel overlay
+#     is applied AND `--managed-otel-scope=COLLECTION_AND_INSTRUMENTATION_COMPONENTS`
+#     has been run against the cluster. Otherwise the role is inert — no
+#     spans get emitted, so the permission never gets exercised.
+bind_project_role "roles/cloudtrace.user"
+
 echo
 
 # ---- Summary ----
@@ -228,13 +244,15 @@ else
     echo "  - Call the GKE MCP server + its tools"
     echo "  - Administer GKE clusters + workloads"
     echo "  - Impersonate the node SA (required by GKE MCP)"
+    echo "  - Write spans to Cloud Trace (used by the OTel overlay only)"
     echo
     echo "Next step: kubectl apply -k examples/gke-troubleshoot-agent/deploy/overlays/<your-overlay>"
     echo
     echo "Bindings applied:"
-    echo "  - roles/aiplatform.user       on projects/${PROJECT_ID}"
-    echo "  - roles/mcp.toolUser          on projects/${PROJECT_ID}"
-    echo "  - roles/container.admin       on projects/${PROJECT_ID}"
+    echo "  - roles/aiplatform.user        on projects/${PROJECT_ID}"
+    echo "  - roles/mcp.toolUser           on projects/${PROJECT_ID}"
+    echo "  - roles/container.admin        on projects/${PROJECT_ID}"
+    echo "  - roles/cloudtrace.user        on projects/${PROJECT_ID}"
     echo "  - roles/iam.serviceAccountUser on ${NODE_SA}"
     echo "  All bound to member: ${KSA_PRINCIPAL}"
 fi

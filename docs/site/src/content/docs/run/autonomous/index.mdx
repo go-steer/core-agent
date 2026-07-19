@@ -1,0 +1,33 @@
+---
+title: Autonomous (headless)
+description: Long-running agents that pursue a goal without an operator — budgets bound the run, the session log is the audit trail.
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+The agent runs unattended against a goal you defined up front —
+typically a long-lived monitor, scheduled job, or remediation worker.
+Budgets (turns, tokens, cost, wallclock) bound the run; the session
+log is the audit trail.
+
+<CardGrid>
+  <LinkCard
+    title="Quickstart"
+    description="First 15 minutes: a working monitor with budgets, headless permission posture, durable session log."
+    href="/run/autonomous/quickstart/"
+  />
+  <LinkCard
+    title="Operations"
+    description="Depth reference: budgets, lifecycle tool, crash-resume, failure policy, audit log, subagent composition."
+    href="/run/autonomous/operations/"
+  />
+</CardGrid>
+
+## Common references
+
+- [Sessions and event log](/concepts/sessions/) — durable session storage + crash-resume
+- [Context management](/concepts/context-management/) — compaction + checkpoints make long unattended runs viable
+- [Attach mode](/reference/attach-tui/) — let an operator drop into an unattended agent mid-run
+- [Kubernetes event triage](/use-cases/k8s-triage/) — worked multi-agent example
+- [Autonomous fleets](/use-cases/autonomous-fleets/) — the general pattern for long-lived unattended workers
+- [Agent design](/agent-design/) — prescriptive patterns; goal-following is stricter without an operator in the loop

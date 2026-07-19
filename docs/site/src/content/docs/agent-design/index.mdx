@@ -1,0 +1,47 @@
+---
+title: Agent design
+description: Prescriptive patterns for AGENTS.md, skills, and tool descriptions — what works, what fails, how to get the model to reach for the right primitives.
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+How to write the `AGENTS.md`, skills, and tool descriptions that make
+your agent actually behave the way you want. Prescriptive content
+rather than reference — what patterns work, what failure modes to
+watch for, how to make the model use subagents and `agentic_*`
+wrappers efficiently.
+
+The reference material these pages draw from lives in
+[Concepts](/concepts/) — [Skills](/concepts/skills/),
+[Permissions](/concepts/permissions/),
+[Context management](/concepts/context-management/).
+
+<CardGrid>
+  <LinkCard
+    title="System instructions"
+    description="AGENTS.md patterns — role framing, do/don't lists, model-specific quirks. Includes the post-checkpoint loop case study from v2.0."
+    href="/agent-design/system-instructions/"
+  />
+  <LinkCard
+    title="Skills"
+    description="SKILL.md design — when to write a skill vs. an AGENTS.md rule, how to write a description that triggers, body structure, composability."
+    href="/agent-design/skills/"
+  />
+  <LinkCard
+    title="Subagents and wrappers"
+    description="Getting the model to actually use agentic_* wrappers and background subagents. The verify-with-bare-tool failure mode. Choreography patterns."
+    href="/agent-design/subagents-and-wrappers/"
+  />
+  <LinkCard
+    title="Cost efficiency"
+    description="What moves the cost needle — model selection, context management compounding, prompt caching, output shape. Includes a decision tree."
+    href="/agent-design/cost-efficiency/"
+  />
+</CardGrid>
+
+## Reading order
+
+If you're new to `core-agent`, walk these in order — each builds on
+the prior. Operators who've used `core-agent` for a while can pick
+whichever covers the specific friction they're hitting; the pages
+cross-link generously.

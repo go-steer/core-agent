@@ -1,15 +1,23 @@
 {
   "name": "core-agent-docs",
   "version": "0.0.1",
-  "description": "Build-time deps for the core-agent Hugo + Docsy docs site. Docsy's CSS pipeline shells out to PostCSS + autoprefixer.",
+  "description": "core-agent documentation site — Astro Starlight smoketest (Phase 0).",
   "license": "Apache-2.0",
   "private": true,
+  "type": "module",
   "scripts": {
-    "build": "hugo --minify"
+    "dev": "astro dev",
+    "start": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro"
   },
-  "devDependencies": {
-    "autoprefixer": "^10.4.20",
-    "postcss": "^8.4.49",
-    "postcss-cli": "^11.0.0"
+  "dependencies": {
+    "@astrojs/starlight": "^0.32.0",
+    "@fontsource-variable/inter": "^5.1.0",
+    "@fontsource-variable/jetbrains-mono": "^5.1.0",
+    "astro": "^5.5.0",
+    "sharp": "^0.33.5",
+    "unist-util-visit": "^5.1.0"
   }
 }

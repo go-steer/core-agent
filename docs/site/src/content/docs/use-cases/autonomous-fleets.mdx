@@ -1,0 +1,40 @@
+---
+title: Autonomous fleets
+description: Long-lived unattended agents with budgets, crash-resume, and unified audit logging — the general pattern that K8s triage is a specific case of.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**Use when:** you need agents that run without an operator at the
+keyboard — scheduled jobs, event-driven remediators, long-lived
+monitors, batch processors. Anything where the agent's job is to
+*keep working* rather than *respond to a person*.
+
+## The pattern
+
+Every autonomous fleet has four moving parts:
+
+1. **Budget envelope.** Turns, tokens, cost, wallclock — one of them
+   trips and the run stops cleanly. Prevents runaway spend.
+2. **Durable event log.** SQLite/Postgres/MySQL-backed session store
+   with `Since(seq)` replay and `Watch(seq)` live tail. Survives
+   crashes; an operator can attach mid-run and see history.
+3. **Lifecycle tool.** The model calls `lifecycle` to declare done,
+   blocked, or asking-for-input. `RunAutonomous` translates those
+   into loop exits or waits.
+4. **Failure policy.** What happens on transient errors, gate
+   rejections, budget trips. Configurable — retry, escalate, give up.
+
+<Aside type="note">
+`Kubernetes event triage` is one instance of this pattern with three
+coordinating agents. The pattern itself scales down (single worker)
+and up (multi-agent teams).
+</Aside>
+
+## Where the details live
+
+- **[Autonomous → Quickstart](/run/autonomous/quickstart/)** — first 15 minutes: a working monitor with budgets and a durable session.
+- **[Autonomous → Operations](/run/autonomous/operations/)** — the depth reference: budgets, lifecycle tool, crash-resume, failure policy, subagent composition.
+- **[Sessions and event log](/concepts/sessions/)** — durable storage, replay, live tail.
+- **[Context management](/concepts/context-management/)** — compaction and checkpoints keep long runs alive past the context wall.
+- **[Kubernetes event triage](/use-cases/k8s-triage/)** — the worked multi-agent example.

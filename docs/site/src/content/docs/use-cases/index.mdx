@@ -1,0 +1,33 @@
+---
+title: Use cases
+description: Scenario-driven walkthroughs — pick a use case and follow the pattern.
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+Concrete scenarios showing `core-agent` deployed against real problems.
+Each page frames the shape of the work, the choices that matter, and
+links into the depth reference that backs it up.
+
+<CardGrid>
+  <LinkCard
+    title="Kubernetes event triage"
+    description="Multi-agent unattended workers against a GKE fleet — platform, operator, and devteam agents coordinating around a rollout/SLO incident."
+    href="/use-cases/k8s-triage/"
+  />
+  <LinkCard
+    title="Plan-first workflows"
+    description="Force the agent to produce and commit to a plan artifact before it starts editing. When to use it, how the gate enforces it."
+    href="/use-cases/plan-first/"
+  />
+  <LinkCard
+    title="Autonomous fleets"
+    description="Long-lived unattended workers with budgets, crash-resume, and audit-log observability. The general pattern behind K8s triage."
+    href="/use-cases/autonomous-fleets/"
+  />
+  <LinkCard
+    title="Remote TUI operations"
+    description="Attach a Bubble Tea client to a headless daemon over HTTP + SSE. Multi-session, per-caller ACLs, transparent reconnect."
+    href="/use-cases/remote-tui-operations/"
+  />
+</CardGrid>

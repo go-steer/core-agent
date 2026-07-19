@@ -1,0 +1,58 @@
+---
+title: Concepts
+description: Cross-cutting building blocks — providers, permissions, sessions, MCP, skills, tools. Consumed by both CLI users and library embedders.
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+The primitives every `core-agent` deployment touches, regardless of
+whether you're running the CLI or embedding the library. Reference-shaped:
+each page is the depth material for one concept, not a tutorial.
+
+<CardGrid>
+  <LinkCard
+    title="Providers"
+    description="Gemini (API + Vertex), Anthropic (first-party + Vertex), mock providers. Env vars, model IDs, auto-detection."
+    href="/concepts/providers/"
+  />
+  <LinkCard
+    title="Permissions"
+    description="ask / allow / plan / yolo modes, pattern grammar, path + URL scopes, bash denylist, per-call vs. session grants."
+    href="/concepts/permissions/"
+  />
+  <LinkCard
+    title="Sessions and event log"
+    description="Durable SQLite/Postgres/MySQL-backed session storage, monotonic seq, Since(seq) replay, Watch(seq) live tail, crash-resume."
+    href="/concepts/sessions/"
+  />
+  <LinkCard
+    title="Context management"
+    description="Compaction, task-boundary checkpoints, and agentic tool wrappers — the three mechanisms that keep long sessions alive past the context wall."
+    href="/concepts/context-management/"
+  />
+  <LinkCard
+    title="MCP servers"
+    description="Declarative third-party tool integration via .agents/mcp.json — lifecycle, transports (stdio + Streamable HTTP), namespacing, gating."
+    href="/concepts/mcp/"
+  />
+  <LinkCard
+    title="Skills"
+    description="Claude-compatible SKILL.md bundles, auto-discovery from project + user-global scopes, invocation on demand."
+    href="/concepts/skills/"
+  />
+  <LinkCard
+    title="Built-in tools"
+    description="File, search, shell, data + network, planning, interactive-prompting tools. Every one gated, every one output-capped."
+    href="/concepts/tools/"
+  />
+  <LinkCard
+    title="Hooks"
+    description="Late-binding integration points — before-turn, after-tool, post-construct — for rate limits, custom budgets, external approvals."
+    href="/concepts/hooks/"
+  />
+  <LinkCard
+    title="Multi-session daemon"
+    description="One server process serving many concurrent sessions with per-caller ACLs and per-session gate configuration."
+    href="/concepts/multi-session/"
+  />
+</CardGrid>

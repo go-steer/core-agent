@@ -1,0 +1,127 @@
+---
+title: Getting started
+description: Add core-agent to your Go project and make your first agent call.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+This page is for Go engineers embedding `core-agent` in their own
+binary. If you just want to run the bundled CLI, head over to
+[Run the CLI → Getting started](/core-agent/run/getting-started/)
+instead.
+
+<Aside type="note">
+Requires Go 1.26 or newer. `core-agent` is a standard Go module — no
+generation step, no build-time codegen.
+</Aside>
+
+## Install
+
+```bash
+go get github.com/go-steer/core-agent
+```
+
+## The minimal embed
+
+The shortest possible program: pick a provider, build an agent, run
+one turn.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/go-steer/core-agent/pkg/agent"
+    "github.com/go-steer/core-agent/pkg/config"
+    "github.com/go-steer/core-agent/pkg/models"
+    _ "github.com/go-steer/core-agent/pkg/models/gemini"
+)
+
+func main() {
+    cfg := config.DefaultConfig()
+    cfg.Model.Provider = config.ProviderGemini
+
+    provider, err := models.Resolve(cfg)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    ctx := context.Background()
+    m, err := provider.Model(ctx, cfg.Model.Name)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    a, err := agent.New(m)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    for event, err := range a.Run(ctx, "what's the capital of France?") {
+        if err != nil {
+            log.Fatal(err)
+        }
+        if event.Content == nil {
+            continue
+        }
+        for _, p := range event.Content.Parts {
+            if p.Text != "" && event.Partial {
+                fmt.Print(p.Text)
+            }
+        }
+    }
+    fmt.Println()
+}
+```
+
+<Aside type="tip">
+The blank `_` import on the provider package matters — it triggers
+the `init()` that registers the provider with `models.Register`.
+Each model package you import this way becomes available to
+`models.Resolve`.
+</Aside>
+
+This works, but it has no tools, no permissions, no persistence. The
+rest of the [Library guide](/core-agent/embed/guide/) is about
+layering those in via extension points.
+
+## The extension points
+
+Every customization happens through one of these interfaces or option
+functions. The pattern across all of them is the same: `core-agent`
+ships sensible defaults; you replace any of them with
+`WithX(yourImplementation)`.
+
+| Surface | Interface | When you'd extend it |
+|---|---|---|
+| Approvals | `permissions.Prompter` | UI is not a TTY (web, Slack, IDE plugin) |
+| Tool execution | `tool.Tool` (via `functiontool.New`) | Domain operations, internal APIs |
+| Model backend | `models.Provider` | LLM not in the box (OpenAI, local Ollama, …) |
+| Remote subagents | `agent.RemoteAgentSpawner` | Delegate to K8s Job / Cloud Run / your runtime |
+| Session persistence | `session.Service` | Beyond eventlog's SQLite/Postgres/MySQL |
+| Background workers | `agent.BackgroundAgentManager` | Async tasks the parent's model spawns at runtime |
+| Inbound messages | `agent.Inject(msg)` | Push input to a running agent from another goroutine |
+| Tool inspection | `agent.WithBeforeTurn` | Rate limits, external approvals, custom budgets |
+| Context management | `agent.Compactor` / `agent.Checkpointer` | Custom summarizer prompts / thresholds |
+| Agentic subtasks | `agent.RunSubtask` + `tools/agentic` wrappers | Route bulk tool output through a cheap-model subtask |
+| Late-binding hooks | `agent.WithPostConstruct` | External tools whose handler needs the constructed `*Agent` |
+
+<Aside type="caution">
+`core-agent` runs *one* agent (with subagents). If you're building
+LangGraph-style multi-agent workflows where the graph topology is the
+main abstraction, you'll find its shape constraining. ADK has more
+flexible workflow agents (`SequentialAgent`, `ParallelAgent`,
+`LoopAgent`) you can build on directly.
+</Aside>
+
+## What to read next
+
+- [Tools](/core-agent/concepts/tools/) — the model-facing tool
+  catalog and how to register your own via `functiontool.New`.
+- Library guide — narrative tour of every extension point above with
+  worked examples. *(coming in Phase 2)*
+- API reference — exhaustive reference for every exported type and
+  option. *(coming in Phase 2)*

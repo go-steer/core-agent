@@ -1,0 +1,35 @@
+---
+title: Remote TUI operations
+description: Attach the core-agent-tui client to a headless daemon over HTTP + SSE — multi-session, per-caller ACLs, transparent reconnect across restarts.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**Use when:** the agent process runs somewhere that isn't your laptop
+(a K8s pod, a build worker, a shared session server) and you want to
+drive it interactively without giving up the operator UX. Or when one
+daemon needs to serve many concurrent sessions with different
+callers, each with their own permission scope.
+
+## What ships
+
+- **`core-agent-tui`** — Bubble Tea client that speaks HTTP + SSE to
+  any daemon that mounts the core-agent attach API.
+- **Multi-session daemon** — one server process, many concurrent
+  sessions, per-caller ACLs enforced at the transport layer.
+- **Transparent resume** — if the daemon restarts, the client
+  reconnects and replays from the last-seen `seq`.
+- **Mid-turn interrupt from anywhere** — Esc in the TUI, `/interrupt`
+  slash command, or `POST /sessions/<sid>/interrupt` from a script.
+
+<Aside type="tip">
+The client and the in-process TUI share their slash-command surface —
+`/stats`, `/context`, `/compact`, `/done`, `/btw` all work the same
+whether you're local or attached.
+</Aside>
+
+## Where the details live
+
+- **[Attach mode TUI](/reference/attach-tui/)** — the depth reference: transport, ACLs, resume protocol, deployment shapes.
+- **[Multi-session daemon](/concepts/multi-session/)** — daemon config, session isolation, per-caller scope.
+- **[Sessions and event log](/concepts/sessions/)** — the durable log that resume replays from.

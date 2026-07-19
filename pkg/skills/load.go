@@ -31,6 +31,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	adktool "google.golang.org/adk/tool"
@@ -62,6 +63,27 @@ type Skills struct {
 // Empty reports whether no skills were discovered.
 func (s Skills) Empty() bool { return s.Toolset == nil }
 
+// Option configures a Load / LoadAll call. All options are optional;
+// the zero-options call matches the pre-#322 loader behavior exactly.
+type Option func(*loadOptions)
+
+type loadOptions struct {
+	// interp is applied to each .md file body opened through the
+	// sanitizing filesystem — SKILL.md and everything under a skill's
+	// references/. Nil = no interpolation, matching pre-#322 behavior.
+	// Wire from pkg/agentenv via (*agentenv.Resolver).InterpolateFunc().
+	interp func(string) string
+}
+
+// WithInterpolator supplies a string transform applied to every .md
+// file loaded from a skill directory — SKILL.md and referenced files
+// under references/. Used to substitute ${env:VAR} references declared
+// in .agents/env.yaml (see pkg/agentenv). Passing nil is legal and
+// equals "no interpolation."
+func WithInterpolator(fn func(string) string) Option {
+	return func(o *loadOptions) { o.interp = fn }
+}
+
 // Load discovers skills under agentsDir/skills/ only. A missing
 // directory (or empty agentsDir) yields a zero Skills with no error.
 //
@@ -72,8 +94,8 @@ func (s Skills) Empty() bool { return s.Toolset == nil }
 //
 // gate (optional) wraps the resulting toolset so skill invocations go
 // through the permission system. Pass nil to skip gating.
-func Load(ctx context.Context, agentsDir string, gate *permissions.Gate) (Skills, error) {
-	return LoadAll(ctx, agentsDir, "", gate)
+func Load(ctx context.Context, agentsDir string, gate *permissions.Gate, opts ...Option) (Skills, error) {
+	return LoadAll(ctx, agentsDir, "", gate, opts...)
 }
 
 // LoadAll discovers skills from up to two sources and merges them
@@ -97,18 +119,23 @@ func Load(ctx context.Context, agentsDir string, gate *permissions.Gate) (Skills
 //
 // gate (optional) wraps the resulting toolset so skill invocations
 // go through the permission system. Pass nil to skip gating.
-func LoadAll(ctx context.Context, projectAgentsDir, userCoreHome string, gate *permissions.Gate) (Skills, error) {
+func LoadAll(ctx context.Context, projectAgentsDir, userCoreHome string, gate *permissions.Gate, opts ...Option) (Skills, error) {
+	var lo loadOptions
+	for _, o := range opts {
+		o(&lo)
+	}
+
 	primary, primaryOK := openSkillsDir(projectAgentsDir)
 	fallback, fallbackOK := openSkillsDir(userCoreHome)
 
 	var rootFS fs.FS
 	switch {
 	case primaryOK && fallbackOK:
-		rootFS = newSanitizingFS(&overlayFS{primary: primary, fallback: fallback})
+		rootFS = newSanitizingFS(&overlayFS{primary: primary, fallback: fallback}, lo.interp)
 	case primaryOK:
-		rootFS = newSanitizingFS(primary)
+		rootFS = newSanitizingFS(primary, lo.interp)
 	case fallbackOK:
-		rootFS = newSanitizingFS(fallback)
+		rootFS = newSanitizingFS(fallback, lo.interp)
 	default:
 		return Skills{}, nil
 	}
@@ -157,15 +184,22 @@ func openSkillsDir(dir string) (fs.FS, bool) {
 	return os.DirFS(skillsDir), true
 }
 
-// newSanitizingFS wraps an fs.FS and intercepts files named "SKILL.md",
-// stripping out unsupported/extended frontmatter properties before
-// they are passed to the underlying ADK parser.
-func newSanitizingFS(filesystem fs.FS) fs.FS {
-	return &sanitizingFS{fs: filesystem}
+// newSanitizingFS wraps an fs.FS with two behaviors:
+//
+//   - Files named "SKILL.md" get their frontmatter sanitized (drop
+//     extended fields the ADK parser doesn't recognize).
+//   - Any .md file (SKILL.md and everything under references/) gets
+//     ${env:VAR} interpolation applied when interp != nil.
+//
+// Non-.md files pass through unchanged — no wrapping overhead for
+// binary attachments, scripts, or other assets skills might include.
+func newSanitizingFS(filesystem fs.FS, interp func(string) string) fs.FS {
+	return &sanitizingFS{fs: filesystem, interp: interp}
 }
 
 type sanitizingFS struct {
-	fs fs.FS
+	fs     fs.FS
+	interp func(string) string
 }
 
 // ReadDir delegates to the wrapped filesystem so fs.ReadDir(sanitizingFS,
@@ -182,7 +216,11 @@ func (s *sanitizingFS) Open(name string) (fs.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	if filepath.Base(name) != "SKILL.md" {
+	base := filepath.Base(name)
+	// Non-.md files (assets bundled with skills) pass through raw.
+	// Extension check catches SKILL.md, references/*.md, and anything
+	// else in the skill tree that flows through the ADK parser.
+	if !strings.HasSuffix(base, ".md") {
 		return file, nil
 	}
 	defer func() { _ = file.Close() }()
@@ -197,11 +235,23 @@ func (s *sanitizingFS) Open(name string) (fs.File, error) {
 		return nil, err
 	}
 
-	sanitized := sanitizeFrontmatter(data)
+	// SKILL.md gets frontmatter sanitized before anything else — the
+	// interpolation pass would preserve it, but a broken frontmatter
+	// would cause parse failures downstream.
+	if base == "SKILL.md" {
+		data = sanitizeFrontmatter(data)
+	}
+
+	// ${env:VAR} interpolation. Applies to SKILL.md and reference
+	// files uniformly so recipe authors don't have to remember which
+	// files support substitution.
+	if s.interp != nil {
+		data = []byte(s.interp(string(data)))
+	}
 
 	return &memFile{
 		name:    name,
-		data:    sanitized,
+		data:    data,
 		modTime: stat.ModTime(),
 		mode:    stat.Mode(),
 	}, nil

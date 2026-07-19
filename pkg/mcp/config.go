@@ -36,7 +36,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
+
+	"github.com/go-steer/core-agent/pkg/agentenv"
 )
 
 // MCPFileName is the project-local MCP config file inside .agents/.
@@ -234,30 +235,18 @@ func Load(agentsDir string) (Servers, error) {
 	return s, nil
 }
 
-var envInterpRe = regexp.MustCompile(`\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}`)
+// InterpolateEnv is retained as a delegating alias for pkg/agentenv.
+// The regex + resolver logic migrated to pkg/agentenv when the wider
+// ${env:VAR} substitution mechanism landed (#322); this file keeps the
+// symbol so lifecycle.go call sites don't need touching. New callers
+// should use agentenv.NewResolver to get manifest-aware interpolation
+// (fail-loud required checks, sensitive-value tracking, drift
+// diagnostics) rather than this bare-os.Getenv path.
+func InterpolateEnv(s string) string { return agentenv.InterpolateEnv(s) }
 
-// InterpolateEnv replaces ${env:NAME} placeholders in s by looking
-// each NAME up via os.Getenv. Unset values pass through as empty
-// strings — same semantics shells use.
-func InterpolateEnv(s string) string {
-	return envInterpRe.ReplaceAllStringFunc(s, func(match string) string {
-		sub := envInterpRe.FindStringSubmatch(match)
-		if len(sub) < 2 {
-			return ""
-		}
-		return os.Getenv(sub[1])
-	})
-}
-
-// InterpolateMap returns a copy of m with each value run through
-// InterpolateEnv. Used for ServerSpec.Env and ServerSpec.Headers.
+// InterpolateMap runs each value through InterpolateEnv. Used for
+// ServerSpec.Env and ServerSpec.Headers. Same delegation note as
+// InterpolateEnv applies.
 func InterpolateMap(m map[string]string) map[string]string {
-	if len(m) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[k] = InterpolateEnv(v)
-	}
-	return out
+	return agentenv.InterpolateMap(m)
 }

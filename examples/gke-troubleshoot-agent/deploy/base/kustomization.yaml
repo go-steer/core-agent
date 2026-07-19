@@ -58,11 +58,21 @@ resources:
 # into safe key names here and reconstitute the tree in the
 # projected volume's items: list.
 configMapGenerator:
-  # GCP project + location the daemon uses when initializing the
-  # Vertex client. Consumed via envFrom on the daemon container (see
-  # 50-deployment-daemon.yaml). Defaults work out-of-the-box for the
-  # go-steer demo project; every other operator overrides these via
-  # 'behavior: merge' in their overlay:
+  # GCP + GKE environment the daemon needs. Consumed via envFrom on
+  # the daemon container (see 50-deployment-daemon.yaml). Two clusters
+  # of keys, both routed through the same ConfigMap for one-stop
+  # operator overrides:
+  #
+  #   - GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION are read by the
+  #     Vertex client at boot to initialize Gemini calls.
+  #   - GCP_PROJECT / GKE_CLUSTER / GKE_LOCATION are the agent-prompt
+  #     values AGENTS.md interpolates via ${env:VAR} references
+  #     (declared in config/env.yaml — the daemon validates them as
+  #     required at boot, so a missing value fail-loud rather than
+  #     silently leaking a placeholder into the prompt).
+  #
+  # Defaults target the go-steer demo project. Every other operator
+  # overrides via 'behavior: merge' in their overlay:
   #
   #   configMapGenerator:
   #     - name: core-agent-gcp-env
@@ -70,15 +80,22 @@ configMapGenerator:
   #       literals:
   #         - GOOGLE_CLOUD_PROJECT=my-real-project
   #         - GOOGLE_CLOUD_LOCATION=us-central1
+  #         - GCP_PROJECT=my-real-project
+  #         - GKE_CLUSTER=my-cluster
+  #         - GKE_LOCATION=us-central1
   - name: core-agent-gcp-env
     literals:
       - GOOGLE_CLOUD_PROJECT=gke-demos-345619
       - GOOGLE_CLOUD_LOCATION=global
+      - GCP_PROJECT=gke-demos-345619
+      - GKE_CLUSTER=std-simian-test
+      - GKE_LOCATION=us-central1
 
   - name: core-agent-agents
     files:
       - config.json=config/config.json
       - AGENTS.md=config/AGENTS.md
+      - env.yaml=config/env.yaml
       - mcp.json=config/mcp.json
       - k8s-triage_SKILL.md=config/skills/k8s-triage/SKILL.md
       - k8s-triage_CrashLoopBackOff.md=config/skills/k8s-triage/references/CrashLoopBackOff.md

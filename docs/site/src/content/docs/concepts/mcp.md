@@ -69,6 +69,8 @@ Both `env` values (stdio) and `headers` values (http) support `${env:NAME}` plac
 
 This keeps secrets out of `mcp.json` (which you can commit) and in your local env (which you don't).
 
+The same `${env:NAME}` syntax works in `AGENTS.md`, skill files, and skill references when the bundle ships a `.agents/env.yaml` manifest — see [Environment variables (env.yaml)](/concepts/env-manifest/) for boot-time required-var validation, sensitive-value handling, and drift diagnostics.
+
 ---
 
 ## Authentication

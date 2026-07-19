@@ -521,10 +521,14 @@ OpenTelemetry exporter config. Off by default — a fresh invocation makes zero 
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `exporter` | string | `none` | One of `none`, `console`, `otlp`. |
+| `exporter` | string | `none` | One of `none`, `console`, `otlp`. Overridable via the standard `OTEL_TRACES_EXPORTER` env var (env wins). |
 | `endpoint` | string | `""` | OTLP endpoint when `exporter: otlp` (or set via standard `OTEL_EXPORTER_OTLP_ENDPOINT` env). |
 
 Console mode prints span JSON to stderr — useful for local debugging. OTLP mode honors all the standard `OTEL_*` env vars.
+
+### Env-var override
+
+The `OTEL_TRACES_EXPORTER` env var overrides `otel.exporter` when set. Matches the OTel SDK spec's env-vars-win convention. Load-bearing for k8s deployments with a shared `.agents/config.json` ConfigMap but per-Pod exporter targets — operators wire the exporter mode via a Deployment env patch instead of forking config.json per daemon. Same values as the config field (`none` / `console` / `otlp`); an invalid value produces the same clear "unknown mode" error at startup.
 
 ### Trace context propagation
 

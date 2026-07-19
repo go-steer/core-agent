@@ -1,0 +1,37 @@
+---
+title: Skills library
+description: Three bundled Claude-Skills — cli-setup, autonomous-setup, library-embedding — that let an existing agent walk a user through configuring another one.
+---
+
+import { CardGrid, LinkCard, Aside } from '@astrojs/starlight/components';
+
+`core-agent` ships three Claude-Skills–shaped bundles in
+[`SKILLS/`](https://github.com/go-steer/core-agent/tree/main/SKILLS)
+at the repo root. They teach an agent how to configure and embed
+`core-agent` itself — the meta-use case is that `core-agent` can use
+them to help a user set up another `core-agent`.
+
+<Aside type="note">
+Same material as the static [Agent design](/agent-design/) and
+[Concepts](/concepts/) pages, in workflow form. Reading first-time
+and want depth? Use those pages. Want an agent to walk you through
+setup? Install the relevant skill below.
+</Aside>
+
+<CardGrid>
+  <LinkCard
+    title="cli-setup"
+    description="Walks a user through configuring core-agent for interactive (TUI / REPL) use. Provider → AGENTS.md → skills → tools → permission posture."
+    href="/run/skills-library/cli-setup/"
+  />
+  <LinkCard
+    title="autonomous-setup"
+    description="Walks through unattended single-agent or multi-agent setup — budgets, lifecycle tool, durable session, headless permission posture."
+    href="/run/skills-library/autonomous-setup/"
+  />
+  <LinkCard
+    title="library-embedding"
+    description="Walks a Go developer through agent.New + the seven extension points. Includes worked examples for prompter, tools, provider, remote spawner."
+    href="/run/skills-library/library-embedding/"
+  />
+</CardGrid>

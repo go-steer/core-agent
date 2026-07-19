@@ -1,8 +1,13 @@
-# Hugo build output + caches.
-public/
-resources/
-.hugo_build.lock
-
-# Docsy npm build deps (autoprefixer / postcss / postcss-cli).
+# build output
+dist/
+# generated types
+.astro/
+# dependencies
 node_modules/
-package-lock.json
+# logs
+npm-debug.log*
+# environment variables
+.env
+.env.production
+# macOS
+.DS_Store

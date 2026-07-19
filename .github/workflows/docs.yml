@@ -19,6 +19,12 @@ on:
     branches: [main]
     paths:
       - 'docs/site/**'
+      - 'scripts/verify-*.py'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - 'docs/site/**'
+      - 'scripts/verify-*.py'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
@@ -35,9 +41,8 @@ permissions:
   id-token: write
 
 env:
-  GO_VERSION: '1.26'
-  HUGO_VERSION: '0.158.0'
-  NODE_VERSION: '20'
+  # Astro 7 requires Node >=22.12. Bumped from 20 during PR #318.
+  NODE_VERSION: '22'
 
 jobs:
   build:
@@ -45,55 +50,48 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0   # needed for enableGitInfo (lastmod from git history)
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          check-latest: true
-
-      # Docsy compiles Bootstrap SCSS through Hugo's bundled pipeline
-      # and pipes the result through PostCSS for autoprefixing. The
-      # SCSS itself ships in the docsy/dependencies Hugo module so
-      # we don't need to npm-install Bootstrap — but PostCSS + the
-      # autoprefixer plugin are Node-side and have to be available
-      # on PATH at hugo-build time.
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-
-      - name: Install PostCSS + autoprefixer (Docsy CSS pipeline)
-        working-directory: docs/site
-        run: npm install
-
-      - name: Install Hugo
-        run: |
-          curl -sSLf -o /tmp/hugo.tar.gz \
-            "https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}/hugo_extended_${HUGO_VERSION}_linux-amd64.tar.gz"
-          tar -C /tmp -xzf /tmp/hugo.tar.gz hugo
-          sudo install /tmp/hugo /usr/local/bin/hugo
-          hugo version
+          cache: 'npm'
+          cache-dependency-path: docs/site/package-lock.json
 
       - id: pages
         uses: actions/configure-pages@v5
+        # Runs only on main push (deploy path) — PRs skip it since there's
+        # no Pages env to configure against.
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+
+      - name: Install
+        working-directory: docs/site
+        run: npm ci
 
       - name: Build
         working-directory: docs/site
-        run: |
-          hugo mod get -u
-          hugo --minify --baseURL "${{ steps.pages.outputs.base_url }}/"
-        env:
-          HUGO_ENVIRONMENT: production
+        run: npm run build
+
+      # --- Verification passes -------------------------------------------
+
+      - name: Verify redirect stubs
+        run: python3 scripts/verify-redirects.py
+
+      - name: Verify internal links
+        run: python3 scripts/verify-internal-links.py
+
+      # --- Upload for deploy (main only) --------------------------------
 
       - uses: actions/upload-pages-artifact@v3
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         with:
-          path: docs/site/public
+          path: docs/site/dist
 
   deploy:
     name: deploy
     needs: build
     runs-on: ubuntu-latest
+    # Deploy on main pushes and manual runs only — PRs verify but don't ship.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

@@ -84,6 +84,51 @@ Key attributes:
 
 ---
 
+## Distributed tracing across binaries
+
+When several core-agent binaries run alongside each other — daemon + `k8s-event-watcher` sidecar + `core-agent-tui` client, or daemon + peer daemons — a single incident produces spans that live in different processes. Stitching them into one trace requires two things: the [W3C Trace Context](https://www.w3.org/TR/trace-context/) `traceparent` header propagating across HTTP hops, and the HTTP clients / servers on each hop being instrumented to extract + re-inject it.
+
+`core-agent` uses OpenTelemetry's standard TextMapPropagator and [`otelhttp`](https://pkg.go.dev/go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp) middleware to make this transparent:
+
+- **Propagator registered globally** at daemon startup — supports both `traceparent` and `tracestate` (`pkg/telemetry/otel.go`). Every span the daemon emits carries the current trace's IDs.
+- **Attach server** wraps the router in `otelhttp.NewHandler` (`pkg/attach/server.go`) — every inbound HTTP request extracts `traceparent` if present, becomes a root or child span, and the trace context flows into every downstream operation the request touches.
+- **MCP client** wraps the outbound transport in `otelhttp.NewTransport` (`pkg/mcp/lifecycle.go`) — the `mcp.http_call` span you see in the span tree above rides on that transport, and MCP servers that speak OTel see the parent trace.
+- **`k8s-event-watcher`** initializes the same OTel SDK at startup (`cmd/k8s-event-watcher/main.go`) and wraps its outbound HTTP client (`injector.go`) so a `POST /sessions/{sid}/inject` from the sidecar starts a trace on the watcher, propagates via `traceparent`, and the daemon's `otelhttp.Handler` extracts it into the request context. The inject → session-turn → tool-call → MCP-call chain becomes one trace across two processes.
+
+### End-to-end span tree
+
+A full triage inject on GKE with the OTel overlay applied produces roughly:
+
+```
+watcher.inject                          (root — watcher process)
+└── http.POST /sessions/{sid}/inject    (otelhttp on watcher's client)
+    └── attach.inject                   (attach server on daemon; extracted from traceparent)
+        └── adk.invoke_agent            (session turn)
+            ├── adk.call_llm            (planner)
+            └── mcp.tool_call
+                ├── mcp.http_call       (otelhttp on MCP transport)
+                └── digest.process
+                      └── subagent.llm_call
+```
+
+The watcher's root span and the daemon's `attach.inject` span share a trace ID. Jaeger / Cloud Trace / Tempo will render them as one waterfall.
+
+### Verifying it works
+
+In Cloud Trace, filter by `service.name = "k8s-event-watcher"` and open one trace. You should see a child span with `service.name = "core-agent"` on the same trace ID. If the daemon's spans appear on a separate trace, `traceparent` isn't being propagated — likely causes:
+
+- Watcher didn't have `OTEL_TRACES_EXPORTER=otlp` set (spans get recorded but dropped).
+- A reverse proxy or load balancer between the two is stripping `traceparent` (rare — most cloud LBs pass it through).
+- The daemon's attach listener isn't going through `otelhttp.NewHandler` (only happens if `attach.listen` is disabled — the wrap is unconditional otherwise).
+
+### Known gap: Vertex / Gemini calls
+
+**The Vertex / Gemini genai client is not currently wrapped in `otelhttp`.** `adk.call_llm` and `subagent.llm_call` spans exist (ADK emits them internally), but the outbound HTTPS request to `generativelanguage.googleapis.com` / `aiplatform.googleapis.com` produces no `http.POST vertex.generate`-shaped span, and no `traceparent` header is sent to Google. Traces stop at the LLM boundary — you can attribute cost + latency at the ADK layer but can't stitch the model's internal timing (if Google ever exposes it) back to the caller's trace.
+
+Wrapping `genai.ClientConfig.HTTPClient` with `otelhttp.NewTransport` closes this gap. Tracked as follow-up work; ADK-Go's client-injection points at `pkg/models/gemini/gemini.go` are the natural hook.
+
+---
+
 ## Deploying on Kubernetes
 
 The GKE troubleshooting recipe ships a reusable kustomize component and a canonical overlay that wire OTel export in two composable pieces:

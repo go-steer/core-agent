@@ -24,9 +24,13 @@ export default defineConfig({
       description:
         'A reusable Go-based agent built on the Google Agent Development Kit.',
       logo: undefined,
-      social: {
-        github: 'https://github.com/go-steer/core-agent',
-      },
+      social: [
+        {
+          icon: 'github',
+          label: 'GitHub',
+          href: 'https://github.com/go-steer/core-agent',
+        },
+      ],
       editLink: {
         baseUrl:
           'https://github.com/go-steer/core-agent/edit/main/docs/site/',
@@ -67,9 +71,9 @@ export default defineConfig({
           label: 'Run the CLI',
           items: [
             { label: 'Getting started (CLI)', link: '/run/getting-started/' },
-            { label: 'Interactive (TUI)', autogenerate: { directory: 'run/interactive' } },
-            { label: 'Autonomous (headless)', autogenerate: { directory: 'run/autonomous' } },
-            { label: 'Skills library', autogenerate: { directory: 'run/skills-library' } },
+            { label: 'Interactive (TUI)', items: [{ autogenerate: { directory: 'run/interactive' } }] },
+            { label: 'Autonomous (headless)', items: [{ autogenerate: { directory: 'run/autonomous' } }] },
+            { label: 'Skills library', items: [{ autogenerate: { directory: 'run/skills-library' } }] },
           ],
         },
         {
@@ -82,15 +86,15 @@ export default defineConfig({
         },
         {
           label: 'Concepts',
-          autogenerate: { directory: 'concepts' },
+          items: [{ autogenerate: { directory: 'concepts' } }],
         },
         {
           label: 'Agent design',
-          autogenerate: { directory: 'agent-design' },
+          items: [{ autogenerate: { directory: 'agent-design' } }],
         },
         {
           label: 'Use cases',
-          autogenerate: { directory: 'use-cases' },
+          items: [{ autogenerate: { directory: 'use-cases' } }],
         },
         {
           label: 'Examples',
@@ -98,7 +102,7 @@ export default defineConfig({
         },
         {
           label: 'Reference',
-          autogenerate: { directory: 'reference' },
+          items: [{ autogenerate: { directory: 'reference' } }],
         },
       ],
     }),

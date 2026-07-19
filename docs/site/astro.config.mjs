@@ -1,5 +1,6 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
+import { unified } from '@astrojs/markdown-remark';
 import starlight from '@astrojs/starlight';
 import { remarkPrependBase } from './src/plugins/remark-prepend-base.mjs';
 
@@ -16,7 +17,7 @@ export default defineConfig({
   site: 'https://go-steer.github.io',
   base: BASE,
   markdown: {
-    remarkPlugins: [remarkPrependBase(BASE)],
+    processor: unified({ remarkPlugins: [remarkPrependBase(BASE)] }),
   },
   integrations: [
     starlight({

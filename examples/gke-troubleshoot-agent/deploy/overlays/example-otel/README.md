@@ -8,7 +8,7 @@ Three composable pieces:
 
 1. **`../example`** — the plain overlay (base + agents ConfigMap + watcher cluster-name patch).
 2. **[`../../components/otel`](../../components/otel/)** — one-env-var component that flips `pkg/telemetry`'s exporter from `none` to `otlp` via `OTEL_TRACES_EXPORTER`. That's the only core-agent-specific knob.
-3. **[`instrumentation.yaml`](instrumentation.yaml)** — a GKE Managed OpenTelemetry `Instrumentation` CR. Empty selector, so it targets all Pods in the `agent-triage` namespace. GKE auto-injects the standard OTel SDK env vars (`OTEL_EXPORTER_OTLP_ENDPOINT` pointing at the in-cluster managed collector, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` with `k8s.*` attributes) into every matched Pod.
+3. **[`instrumentation.yaml`](instrumentation.yaml)** — a GKE Managed OpenTelemetry `Instrumentation` CR. Empty selector, so it targets all Pods in the `agent-triage` namespace. GKE auto-injects a subset of standard OTel SDK env vars: `OTEL_EXPORTER_OTLP_ENDPOINT` (in-cluster managed collector), `OTEL_TRACES_EXPORTER`, `OTEL_METRIC_EXPORT_INTERVAL`, `K8S_POD_UID`, sampler config, and `OTEL_RESOURCE_ATTRIBUTES` with `k8s.pod.uid` (collector then attaches `k8s.namespace.name` etc. server-side). **`OTEL_SERVICE_NAME` is NOT auto-injected** — the component sets it explicitly on the daemon + watcher deployments.
 
 Images are pinned to `2.7.0-dev.4`, the first release carrying the env override ([PR #315](https://github.com/go-steer/core-agent/pull/315)).
 
@@ -85,7 +85,9 @@ Trigger any tool call (kill a Pod to fire the watcher, or use `core-agent-cli` a
 | Symptom | Likely cause |
 |---|---|
 | `kubectl apply -k` errors: `no matches for kind "Instrumentation"` | Cluster doesn't have managed OTel enabled — re-run the `gcloud container clusters update --managed-otel-scope=...` command from prereqs. |
-| No traces in Cloud Trace after 2–3 minutes | (1) Pod not restarted after apply, (2) IAM: `roles/cloudtrace.user` not granted, (3) collector not running (`kubectl get pods -n gke-managed-otel`). |
+| No traces in Cloud Trace + collector logs `InvalidArgument: Resource is missing required attribute "gcp.project_id"` | The daemon isn't stamping the `gcp.project_id` resource attribute Cloud Trace requires. Verify `GOOGLE_CLOUD_PROJECT` is set in the daemon Pod env — the base recipe wires it via `envFrom: core-agent-gcp-env`. `kubectl describe pod` on the daemon; if absent, the ConfigMap wasn't populated for your cluster. `pkg/telemetry.Setup` reads `GOOGLE_CLOUD_PROJECT` and passes it to ADK via `WithGcpResourceProject` so the resource stamp is non-empty. |
+| No traces in Cloud Trace after 2–3 minutes (no collector-side error) | (1) Pod not restarted after apply, (2) IAM: `roles/cloudtrace.user` not granted, (3) collector not running (`kubectl get pods -n gke-managed-otel`). |
+| Daemon logs `otel-export: ...` or `otel-diag ...` | The visibility hooks in `pkg/telemetry.Setup` — export failure surfaces (unreachable collector, TLS, protocol mismatch). Read the specific error to diagnose. |
 | Daemon logs `OTLP export failed: dial tcp: ... connection refused` | Managed OTel enabled but the `Instrumentation` CR didn't reach the daemon Pod — check `kubectl describe pod` for injected env vars; if absent, verify the CR is in the same namespace. |
 | Traces show but span tree stops at `mcp.tool_call` | Agentic wrap disabled. Set `--mcp-agentic-wrap-llm=true` on the daemon (or in the base config) to see the `subagent.llm_call` child span. |
 | `k8s.namespace.name` / `k8s.pod.name` missing on spans | Managed OTel's k8s-attributes processor needs Pod-metadata access; usually the default, but restrictive Workload Identity setups can strip it. Check collector logs. |

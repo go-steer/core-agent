@@ -100,32 +100,35 @@ When several core-agent binaries run alongside each other — daemon + `k8s-even
 A full triage inject on GKE with the OTel overlay applied produces roughly:
 
 ```
-watcher.inject                          (root — watcher process)
-└── http.POST /sessions/{sid}/inject    (otelhttp on watcher's client)
-    └── attach.inject                   (attach server on daemon; extracted from traceparent)
-        └── adk.invoke_agent            (session turn)
-            ├── adk.call_llm            (planner)
-            └── mcp.tool_call
-                ├── mcp.http_call       (otelhttp on MCP transport)
-                └── digest.process
-                      └── subagent.llm_call
+POST /sessions                              (root — watcher creating session, otelhttp client span)
+POST /sessions/{sid}/inject                 (root — watcher's inject call)
+invoke_agent core_agent                     (root — daemon's ADK-emitted turn span)
+├── HTTP POST                               (otelhttp on outbound calls)
+├── generate_content <model>                (ADK-emitted LLM call, e.g. "generate_content gemini-3.5-flash")
+│   └── HTTP POST                           (otelhttp on genai transport → Vertex / Gemini)
+├── execute_tool <tool_name>                (per tool call, e.g. "execute_tool gke_get_k8s_resource")
+├── mcp.tool_call                           (our custom span wrapping the MCP round-trip)
+│   ├── mcp.http_call                       (otelhttp on MCP HTTP transport)
+│   └── digest.process                      (response digest / prune)
+│         └── subagent.llm_call             (agentic wrap only — --mcp-agentic-wrap-llm=true)
+└── tools/call <tool_name>                  (MCP server's own instrumentation; may appear as separate root)
 ```
 
-The watcher's root span and the daemon's `attach.inject` span share a trace ID. Jaeger / Cloud Trace / Tempo will render them as one waterfall.
+Attach-server spans use the `METHOD PATH` naming convention (from `otelhttp.WithSpanNameFormatter` in `pkg/attach/server.go`), so what shows up in your backend is literally `POST /sessions/019f8075.../inject` — not a semantic-name like `attach.inject`. Filter / query by path prefix if you want to isolate all inject events, or by the `http.route` attribute if your backend surfaces it.
 
 ### Verifying it works
 
-In Cloud Trace, filter by `service.name = "k8s-event-watcher"` and open one trace. You should see a child span with `service.name = "core-agent"` on the same trace ID. If the daemon's spans appear on a separate trace, `traceparent` isn't being propagated — likely causes:
+In Cloud Trace, filter by `service.name = "core-agent"` and open one trace. You should see:
+
+- Root spans from the watcher (`POST /sessions/...`) and daemon (`invoke_agent core_agent`, `POST /sessions/{sid}/inject`).
+- Cross-binary stitching: `traceparent` propagation from watcher → daemon should make the watcher's `POST /sessions/{sid}/inject` a child of the corresponding daemon-side span (or vice versa depending on which side started the trace).
+- `HTTP POST` spans under `generate_content` show the outbound Vertex calls are instrumented.
+
+If daemon spans appear on separate traces from the watcher's, `traceparent` isn't propagating — likely causes:
 
 - Watcher didn't have `OTEL_TRACES_EXPORTER=otlp` set (spans get recorded but dropped).
 - A reverse proxy or load balancer between the two is stripping `traceparent` (rare — most cloud LBs pass it through).
 - The daemon's attach listener isn't going through `otelhttp.NewHandler` (only happens if `attach.listen` is disabled — the wrap is unconditional otherwise).
-
-### Known gap: Vertex / Gemini calls
-
-**The Vertex / Gemini genai client is not currently wrapped in `otelhttp`.** `adk.call_llm` and `subagent.llm_call` spans exist (ADK emits them internally), but the outbound HTTPS request to `generativelanguage.googleapis.com` / `aiplatform.googleapis.com` produces no `http.POST vertex.generate`-shaped span, and no `traceparent` header is sent to Google. Traces stop at the LLM boundary — you can attribute cost + latency at the ADK layer but can't stitch the model's internal timing (if Google ever exposes it) back to the caller's trace.
-
-Wrapping `genai.ClientConfig.HTTPClient` with `otelhttp.NewTransport` closes this gap. Tracked as follow-up work; ADK-Go's client-injection points at `pkg/models/gemini/gemini.go` are the natural hook.
 
 ---
 
@@ -138,7 +141,7 @@ The GKE troubleshooting recipe ships a reusable kustomize component and a canoni
 
 ### On GKE (Managed OpenTelemetry)
 
-The [`example-otel`](https://github.com/go-steer/core-agent/tree/main/examples/gke-troubleshoot-agent/deploy/overlays/example-otel) overlay composes the component + an `Instrumentation` CR. [GKE Managed OpenTelemetry](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/managed-otel-gke) auto-injects the standard OTel SDK env vars (endpoint targeting the in-cluster managed collector, service name, resource attrs with `k8s.*`) into every Pod matched by the CR's selector. Spans land in Cloud Trace with no self-managed collector to run.
+The [`example-otel`](https://github.com/go-steer/core-agent/tree/main/examples/gke-troubleshoot-agent/deploy/overlays/example-otel) overlay composes the component + an `Instrumentation` CR. [GKE Managed OpenTelemetry](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/managed-otel-gke) auto-injects a subset of standard OTel SDK env vars into every Pod matched by the CR's selector — specifically `OTEL_EXPORTER_OTLP_ENDPOINT` (in-cluster managed collector), `OTEL_TRACES_EXPORTER=otlp` / `OTEL_METRICS_EXPORTER` / `OTEL_LOGS_EXPORTER`, `OTEL_TRACES_SAMPLER` + `_ARG`, `OTEL_METRIC_EXPORT_INTERVAL`, and `K8S_POD_UID` + `OTEL_RESOURCE_ATTRIBUTES` with `k8s.pod.uid` (the collector's k8s-attributes processor then attaches `k8s.namespace.name` etc.). Notably **`OTEL_SERVICE_NAME` is NOT auto-injected** — set it yourself in the daemon Pod's env (the recipe's component patch does). Spans land in Cloud Trace with no self-managed collector to run.
 
 Cluster prereqs (one-time):
 
@@ -183,8 +186,12 @@ In Docker: `-e OTEL_TRACES_EXPORTER=otlp -e OTEL_EXPORTER_OTLP_ENDPOINT=http://.
 
 ## Pitfalls
 
+- **Cloud Trace requires `gcp.project_id` on every span's resource.** Without it, the managed collector's Cloud Trace exporter drops entire batches with `InvalidArgument: Resource is missing required attribute "gcp.project_id"`. Set `GOOGLE_CLOUD_PROJECT` in the daemon Pod's env (Vertex needs it anyway); `pkg/telemetry.Setup` reads it and passes to ADK via `WithGcpResourceProject`. Alternative: `OTEL_RESOURCE_ATTRIBUTES=gcp.project_id=<project>,...` — but note ADK's resource merge overrides it with `cfg.gcpResourceProject` (empty by default), so `GOOGLE_CLOUD_PROJECT` is the reliable path.
+- **Silent export failures.** OTel SDK's default diag + error handlers are noop — export failures (unreachable collector, TLS mismatch, wrong port, permission-denied) go nowhere. `pkg/telemetry.Setup` installs stderr handlers (`otel-diag ...` + `otel-export: ...` prefixes) — grep the daemon log after any "no spans in the backend" symptom.
 - **Set `OTEL_TRACES_EXPORTER` if config.json says `none`.** The env var is an override, not an additive setting. `otel.exporter: "none"` + `OTEL_TRACES_EXPORTER=otlp` → OTLP wins; but `OTEL_TRACES_EXPORTER=""` (empty) doesn't override.
 - **HTTP vs gRPC endpoint ports.** OTLP HTTP is `:4318`, gRPC is `:4317`. GKE Managed OTel exposes HTTP only. Mismatch shows as `dial tcp: connection refused` in daemon logs.
 - **Env vars need a Pod restart.** SDK reads env at process start. After changing `OTEL_*` on a running daemon, `kubectl rollout restart deployment/core-agent`.
 - **Sampling defaults to `AlwaysOn`.** In production, set `OTEL_TRACES_SAMPLER=parentbased_traceidratio` + `OTEL_TRACES_SAMPLER_ARG=0.05` (5%) to keep collector load manageable.
 - **`subagent.llm_call` requires the agentic wrap.** Without `--mcp-agentic-wrap-llm=true`, digest runs the structural pruner and no sub-agent span appears. This is a common cause of "cost dashboards look wrong" when the wrap is toggled off silently.
+- **Polling reads on the attach listener don't trace.** The remote TUI polls `/status`, `/usage`, `/tools`, `/agents`, `/context`, `/memory`, `/skills`, `/mcp`, `/pricing`, `/perms` every 1-2s for status-bar rendering. Those GETs are excluded from tracing (via `otelhttp.WithFilter` on the attach handler) so they don't flood Cloud Trace with noise. Writes, SSE streams, and admin ops (DELETE) still trace normally.
+- **Metrics aren't emitted yet.** Only traces (and internally-scoped logs) flow via OTLP today. ADK-go's telemetry package has a TODO for meter provider; tracked as [#338](https://github.com/go-steer/core-agent/issues/338) for our own wiring plus alignment with ADK's `gen_ai.*` histogram schema.

@@ -7,7 +7,7 @@ By participating in this project you agree to abide by the [Code of Conduct](./C
 ## Reporting bugs and requesting features
 
 - **Bugs:** [open an issue](https://github.com/go-steer/core-agent/issues/new) and include your OS / Go version, the model + provider you're using (`gemini`, `vertex`, `anthropic`, `anthropic-vertex`), and the smallest set of steps that reproduces the problem. If the bug shows up under a specific provider, mention which acceptance test (`docs/acceptance-mN.md`) it relates to if any.
-- **Feature requests:** check the [README's Milestones section](./README.md#milestones) and the [open milestones](https://github.com/go-steer/core-agent/milestones) first — your idea may already be planned. If not, file an issue with the use case (what you're trying to do) before the proposed solution.
+- **Feature requests:** check the [CHANGELOG](./CHANGELOG.md) and [open issues](https://github.com/go-steer/core-agent/issues) first — your idea may already be planned or tracked. If not, file an issue with the use case (what you're trying to do) before the proposed solution.
 - **Questions / discussion:** [GitHub Discussions](https://github.com/go-steer/core-agent/discussions).
 
 ## Pull requests
@@ -16,7 +16,7 @@ By participating in this project you agree to abide by the [Code of Conduct](./C
 
 For anything beyond a typo fix or one-line bug, open an issue first so we can agree on the approach. PRs that are aligned upfront merge faster than ones that surface a design disagreement at review time.
 
-For substantive features, the project follows a milestone-based development model — each milestone gets an `acceptance-mN.md` plan written before the work starts, and an entry added to the README's Milestones section when it lands. If your change is large enough to warrant a milestone, propose the scope in an issue first.
+For substantive features, sketch the scope in the issue upfront — design decisions surfaced there beat design disagreements at code review. Large changes often benefit from a design doc under `docs/*.md` at the repo root; smaller ones are fine to iterate on directly in the PR.
 
 ### Workflow
 
@@ -96,7 +96,7 @@ Every source file carries the full Apache 2.0 header attributed to Google LLC:
 - `examples/` — minimal library-use examples.
 - `dev/` — local + CI tooling (run from here, don't reinvent).
 - `docs/` — internal design docs (`acceptance-mN.md`).
-- `docs/site/` — Hugo source for the published documentation site.
+- `docs/site/` — Astro Starlight source for the published documentation site.
 - `.github/workflows/` — thin delegators to `dev/ci/presubmits/`.
 
 For deeper context on conventions and gotchas, read [`AGENTS.md`](./AGENTS.md).

@@ -1,16 +1,19 @@
 # OTel enablement component
 
-Opt-in kustomize component that switches core-agent's exporter from `none` to `otlp`. Environment-agnostic and deliberately narrow — one env var, one purpose. Endpoint + service name + resource attributes + sampling are all spec-standard and honored by ADK's underlying OpenTelemetry SDK, so they belong wherever the operator provisions env for their runtime (GKE `Instrumentation` CR, self-managed Collector Deployment, Compose env file, systemd unit, etc.).
+Opt-in kustomize component that switches core-agent's exporter from `none` to `otlp` and sets the service name for both the daemon and watcher containers. Deliberately narrow — two env vars per binary, both required, neither auto-injected by GKE Managed OpenTelemetry's `Instrumentation` CR.
 
 ## What it does
 
-Patches the `core-agent` container's `env:` with a single var:
+Patches both the `core-agent` and `k8s-event-watcher` containers with:
 
 | Var | Value | Purpose |
 |---|---|---|
 | `OTEL_TRACES_EXPORTER` | `otlp` | Overrides `otel.exporter` from the base `config.json` (default `none`). See [PR #315](https://github.com/go-steer/core-agent/pull/315). |
+| `OTEL_SERVICE_NAME` | `core-agent` / `k8s-event-watcher` | GKE Managed OTel's `Instrumentation` CR does NOT auto-inject this ([docs](https://docs.cloud.google.com/kubernetes-engine/docs/concepts/managed-otel-gke#environment_variables)); without it, spans surface as `unknown_service:<binary>` in Cloud Trace. |
 
-Nothing else. Endpoint discovery, service name, resource attributes, and sampling ride the standard OTel SDK env vars (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER`) which the ADK-go SDK reads directly without any core-agent-side plumbing.
+**GOOGLE_CLOUD_PROJECT** (for the `gcp.project_id` resource attribute Cloud Trace requires) is already wired via the base's `envFrom` reference to the `core-agent-gcp-env` ConfigMap. `pkg/telemetry.Setup` reads it and passes to ADK via `WithGcpResourceProject` so the resource attribute is stamped correctly.
+
+Endpoint discovery, sampling ratio, metric export interval, and k8s.* resource attributes ride the standard OTel SDK env vars — auto-injected by the `Instrumentation` CR on GKE, or set operator-side off-GKE (see "Non-GKE" below).
 
 ## Composing
 
@@ -25,7 +28,7 @@ Then supply the endpoint via one of the paths below.
 
 ## On GKE (Managed OpenTelemetry)
 
-Compose this component **plus** ship an `Instrumentation` CR in your overlay. The CR auto-injects `OTEL_EXPORTER_OTLP_ENDPOINT` and friends into every Pod matched by its selector; our component turns the exporter on.
+Compose this component **plus** ship an `Instrumentation` CR in your overlay. The CR auto-injects `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_METRIC_EXPORT_INTERVAL`, `K8S_POD_UID`, sampler config, and `OTEL_RESOURCE_ATTRIBUTES` (with `k8s.pod.uid`) into every Pod matched by its selector. Notably absent from the auto-inject list: `OTEL_SERVICE_NAME` — which is exactly why this component sets it.
 
 See [`overlays/example-otel/`](../../overlays/example-otel/) for the canonical shape.
 

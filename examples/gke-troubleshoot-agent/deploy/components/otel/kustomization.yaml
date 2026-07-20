@@ -17,24 +17,27 @@
 #   components:
 #     - ../../components/otel
 #
-# Deliberately narrow scope: this component sets the ONE non-standard
-# env var (`OTEL_TRACES_EXPORTER`, from PR #315) needed to switch
-# `pkg/telemetry` from "no exporter" to "OTLP exporter." Everything
-# else — endpoint, service name, resource attributes, sampling — is
-# spec-standard and honored by ADK's underlying OpenTelemetry SDK, so
-# it belongs wherever the operator provisions env for their runtime:
+# Sets two env vars on BOTH the daemon and watcher containers that
+# GKE Managed OTel's Instrumentation CR does not auto-inject:
 #
-#   - GKE with Managed OpenTelemetry: an `Instrumentation` custom
-#     resource auto-injects the standard OTEL_* env vars. See
-#     overlays/example-otel/ for the shipped example.
+#   - OTEL_TRACES_EXPORTER=otlp — flips pkg/telemetry.Setup from
+#     "no exporter" (config.json default: "none") to OTLP. Load-bearing
+#     off-GKE; harmless-redundant on GKE (CR also injects it).
 #
-#   - Anywhere else: the operator sets OTEL_EXPORTER_OTLP_ENDPOINT
-#     (and any other standard OTel SDK env vars they want) in their
-#     own overlay's env patch. See README.md § "Non-GKE" for the
-#     recipe.
+#   - OTEL_SERVICE_NAME — set to "core-agent" and "k8s-event-watcher"
+#     respectively. GKE Managed OTel's Instrumentation CR explicitly
+#     does NOT inject this (verified against
+#     https://docs.cloud.google.com/kubernetes-engine/docs/concepts/managed-otel-gke#environment_variables),
+#     so spans would otherwise show up as "unknown_service:<binary>".
 #
-# Both paths compose the same component; only the "where does the
-# endpoint come from" step differs.
+# Everything else — endpoint, resource attributes, sampling — rides
+# the standard OTel SDK env vars the CR injects on GKE, or gets set
+# operator-side off-GKE (see README.md § "Non-GKE").
+#
+# GOOGLE_CLOUD_PROJECT (for the gcp.project_id resource attribute
+# Cloud Trace requires) is already wired via the base's envFrom on
+# the core-agent-gcp-env ConfigMap — pkg/telemetry.Setup reads it
+# and passes to ADK via WithGcpResourceProject.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 
@@ -43,3 +46,7 @@ patches:
     target:
       kind: Deployment
       name: core-agent
+  - path: watcher-env.yaml
+    target:
+      kind: Deployment
+      name: k8s-event-watcher

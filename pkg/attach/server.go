@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"sync"
 	"time"
 
@@ -340,6 +341,16 @@ func (s *Server) Bind() error {
 		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
 			return r.Method + " " + r.URL.Path
 		}),
+		// Skip tracing on the polling read endpoints — the remote TUI
+		// hits /status + /usage every ~1-2s for status-bar rendering,
+		// producing 30+ spans/min of pure noise. Same for the other
+		// hydration reads that back /tools /mcp /pricing /perms /memory
+		// /skills /context /agents slash commands. Traces stay meaningful
+		// for the write path (/inject, /wake, /interrupt, /slash/*) and
+		// SSE stream (/events, /perms/stream) — anything that actually
+		// exercises the agent loop. Kept as a Filter (not a sampler
+		// ratio) so operator writes never accidentally drop out.
+		otelhttp.WithFilter(shouldTraceRequest),
 	)
 	s.srv = &http.Server{
 		Handler:           tracedHandler,
@@ -368,6 +379,25 @@ func (s *Server) Bind() error {
 // When card is nil (AgentCard disabled), every request goes to the
 // protected handler and /.well-known/agent-card.json returns 404
 // from the mux as expected.
+// pollingReadRe matches the read endpoints the remote TUI polls every
+// 1-2s for status-bar rendering. Filter used by otelhttp.WithFilter to
+// suppress span creation on these paths — otherwise Cloud Trace fills
+// with per-poll spans (30+/min) that drown the actually interesting
+// tool-call and inject traces. Deliberately narrow: only GETs, only
+// the hydration reads. Write paths (/inject, /wake, /interrupt,
+// /slash/*), SSE streams (/events, /perms/stream), and admin ops
+// (DELETE /sessions) all continue to trace.
+var pollingReadRe = regexp.MustCompile(
+	`^/sessions/(?:[^/]+/)?[^/]+/(?:status|usage|tools|agents|context|memory|skills|mcp|pricing|perms)$`,
+)
+
+func shouldTraceRequest(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return true
+	}
+	return !pollingReadRe.MatchString(r.URL.Path)
+}
+
 func cardBypass(card http.Handler, protected http.Handler) http.Handler {
 	if card == nil {
 		return protected

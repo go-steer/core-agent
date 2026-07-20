@@ -45,7 +45,6 @@ import (
 
 	"github.com/go-logr/stdr"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -154,25 +153,17 @@ func Setup(ctx context.Context, mode string) (shutdown func(context.Context) err
 		}
 		opts = append(opts, adktelemetry.WithSpanProcessors(sdktrace.NewBatchSpanProcessor(exp)))
 	case ModeOTLP:
-		// Construct the OTLP HTTP exporter explicitly instead of relying
-		// on ADK's implicit env-var wiring. Two reasons:
-		//   1. Ownership — a construction error surfaces via
-		//      telemetry.Setup's returned error, not silently
-		//      swallowed inside ADK's configure() path.
-		//   2. Log-visible endpoint — we log the resolved endpoint at
-		//      construction, so operators can grep the daemon boot
-		//      log to confirm the exporter is talking to the right
-		//      collector. Without this line, "no spans arrive" is
-		//      indistinguishable from "wrong endpoint".
-		//
-		// otlptracehttp.New honors OTEL_EXPORTER_OTLP_ENDPOINT +
-		// OTEL_EXPORTER_OTLP_TRACES_ENDPOINT +
-		// OTEL_EXPORTER_OTLP_HEADERS + OTEL_EXPORTER_OTLP_INSECURE
-		// internally, so operators still use the standard env vars.
-		exp, err := otlptracehttp.New(ctx)
-		if err != nil {
-			return noop, fmt.Errorf("telemetry: otlp http exporter: %w", err)
-		}
+		// Rely on ADK's implicit OTLP-exporter wiring — it reads the
+		// same standard env vars (OTEL_EXPORTER_OTLP_ENDPOINT etc.)
+		// and appends its own BatchSpanProcessor internally. Earlier
+		// (#333) we added an explicit exporter here for visibility;
+		// that duplicated every span (two BatchSpanProcessors on the
+		// same TracerProvider, each exporting → 2× spans in the
+		// backend). The visibility win from #333 came from the
+		// otel.SetLogger + otel.SetErrorHandler hooks above, not from
+		// the explicit exporter — so we keep those and let ADK handle
+		// exporter construction. Log the resolved endpoint so
+		// operators can still grep boot logs to confirm the target.
 		endpoint := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
 		if endpoint == "" {
 			endpoint = os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -180,8 +171,7 @@ func Setup(ctx context.Context, mode string) (shutdown func(context.Context) err
 		if endpoint == "" {
 			endpoint = "(default localhost:4318)"
 		}
-		fmt.Fprintf(os.Stderr, "core-agent: telemetry: OTLP HTTP exporter wired → %s\n", endpoint)
-		opts = append(opts, adktelemetry.WithSpanProcessors(sdktrace.NewBatchSpanProcessor(exp)))
+		fmt.Fprintf(os.Stderr, "core-agent: telemetry: OTLP HTTP exporter (via ADK) → %s\n", endpoint)
 	}
 
 	providers, err := adktelemetry.New(ctx, opts...)

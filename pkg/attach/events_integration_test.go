@@ -118,6 +118,103 @@ func (e *emitTargetStub) fire(eventType string, payload any) {
 	}
 }
 
+// TestEvents_CapabilitiesV1_4_Fields verifies the SSE v1.4.0
+// additions ride the actual /events stream: features/slash_commands/
+// agent/caller_id all populate from server + registrant + caller
+// state at Subscribe time. Companion to the unit-level
+// TestCapabilitiesBuilder_EndToEnd — this one exercises the pool +
+// broadcaster wiring end-to-end via the real HTTP server.
+func TestEvents_CapabilitiesV1_4_Fields(t *testing.T) {
+	t.Parallel()
+	h, cleanupLog := openTestEventLog(t)
+	defer cleanupLog()
+
+	reg := NewSessionRegistry()
+	// featureRichRegistrant lives in capabilities_test.go; it
+	// implements every optional interface the builder probes for
+	// (MCP + subagent-spawn + interrupt + prompt-broker + the 5
+	// slash providers).
+	ag := &featureRichRegistrant{
+		stubRegistrant: stubRegistrant{
+			app: "core-agent", user: "u", sid: "caps",
+			log: h,
+		},
+		statusInfo: StatusInfo{ModelName: "gemini-3.5-flash"},
+		descText:   "Test agent",
+	}
+	if _, err := reg.Register(ag); err != nil {
+		t.Fatal(err)
+	}
+
+	base, cleanupSrv := startTestServer(t, reg)
+	defer cleanupSrv()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet,
+		base+"/sessions/core-agent/caps/events", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("subscribe status %d: %s", resp.StatusCode, body)
+	}
+
+	frames := readSSEFrames(t, resp.Body)
+	first := mustReadFrame(t, frames, time.Second, "capabilities")
+	if first.Event != EventCapabilities {
+		t.Fatalf("first frame event = %q, want %q", first.Event, EventCapabilities)
+	}
+	var caps Capabilities
+	if err := json.Unmarshal([]byte(first.Data), &caps); err != nil {
+		t.Fatalf("capabilities JSON: %v (data=%s)", err, first.Data)
+	}
+
+	// v1.4.0 additions: every optional field should populate given
+	// the fully-capable registrant.
+	if caps.Features == nil {
+		t.Fatal("Features map should be populated on v1.4.0 stream")
+	}
+	for _, key := range []string{
+		FeaturePermsStream, FeatureMCP, FeatureSpecialists, FeatureInterrupt,
+	} {
+		if !caps.Features[key] {
+			t.Errorf("Features[%q] = false, want true (registrant implements the capability)", key)
+		}
+	}
+	if want := []string{"btw", "compact", "done", "replan", "subagent"}; !equalStrings(caps.SlashCommands, want) {
+		t.Errorf("SlashCommands = %v, want %v", caps.SlashCommands, want)
+	}
+	if caps.Agent == nil {
+		t.Fatal("Agent identity block should populate when registrant advertises status + description")
+	}
+	if caps.Agent.Model != "gemini-3.5-flash" {
+		t.Errorf("Agent.Model = %q, want gemini-3.5-flash (from StatusProvider)", caps.Agent.Model)
+	}
+	// caller_id — the default test server uses AnonymousAuth with
+	// the default Anonymous caller, so we should see "anon".
+	if caps.CallerID != "anon" {
+		t.Errorf("CallerID = %q, want anon (default AnonymousAuth identity)", caps.CallerID)
+	}
+}
+
+// equalStrings is a small helper — comparable-slice helper for the
+// wire-format assertions above.
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // TestEvents_BootFrameOrder is the load-bearing assertion of the
 // protocol contract: on every newly-opened stream the server MUST
 // emit `capabilities` first, then `status-update`, optionally

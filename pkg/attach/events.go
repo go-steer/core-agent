@@ -34,7 +34,21 @@ import "time"
 // by both the MCP digest wrap (pkg/mcp/digest_wrap.go) and the
 // plain rename passthrough (pkg/mcp/namespace.go), so operators
 // see per-call timing whether digest is enabled or not.
-const ProtocolVersion = "1.2.0"
+//
+// v1.3.0 (#223 Phase 4): tool-result response payloads now carry
+// an optional `savings` object reporting the digest wrap's per-call
+// byte + token reduction, router path, and (agentic path only)
+// subagent usage. Sidecar rides the same response-map channel as
+// v1.2.0's latency_ms. Fully additive.
+//
+// v1.4.0 (#329): capabilities frame extended with four optional
+// fields — `features` (feature-flag map), `slash_commands` (dynamic
+// list of server-side slash names), `agent` (name/version/model/
+// provider/url/description identity block), and `caller_id` (resolved
+// Caller.Identity). Enables backend-agnostic clients (mast-web) to
+// render without a code change per producer. Also spec'd an optional
+// `capabilities` merge field on status-update for future hot changes.
+const ProtocolVersion = "1.4.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (
@@ -74,10 +88,99 @@ var SupportedEventTypes = []string{
 
 // Capabilities is the first frame on every newly-opened stream
 // (spec section 2.1). Required so clients can decide push vs poll.
+//
+// v1.4.0 (#329) added the Features/SlashCommands/Agent/CallerID
+// fields. All four are optional — older clients that don't know
+// about them ignore silently; older servers omit them and the
+// consumer sees the pre-1.4.0 shape unchanged.
 type Capabilities struct {
 	ProtocolVersion string   `json:"protocol_version"`
 	EventTypes      []string `json:"event_types"`
 	Server          string   `json:"server,omitempty"`
+
+	// Features is a feature-flag map derived from live runtime state
+	// (are MCP servers registered? does the daemon have multi-session
+	// on? etc.). Consumers should treat absent keys as "off / unknown"
+	// and unknown keys as forward-compat additions. Suggested initial
+	// keys are exported as Feature* string constants below.
+	Features map[string]bool `json:"features,omitempty"`
+
+	// SlashCommands lists the server-side slash-command names the
+	// producer will accept via POST /sessions/.../slash/<name>. Derived
+	// from capability-interface presence, not a registry table. Clients
+	// use this to render only the slashes that will actually work
+	// against the connected agent.
+	SlashCommands []string `json:"slash_commands,omitempty"`
+
+	// Agent identifies the producing agent — same source that feeds
+	// the /.well-known/agent-card.json endpoint plus per-session
+	// runtime state (model/provider). Consolidates fields today
+	// scattered across the agent card, GET /status, and the free-form
+	// Server banner. Absent when the server doesn't know its own
+	// identity (rare — implies neither AgentCardConfig nor a
+	// StatusProvider is wired).
+	Agent *AgentIdentity `json:"agent,omitempty"`
+
+	// CallerID is the resolved Caller.Identity after the auth
+	// middleware ran, echoed back to the consumer as a display hint.
+	// The canonical source is GET /whoami (which also carries admin
+	// + auth source). Empty when the caller couldn't be resolved.
+	CallerID string `json:"caller_id,omitempty"`
+}
+
+// Feature flag keys advertised on Capabilities.Features. String
+// constants (not a typed enum) so downstream clients — mast-web,
+// the coretui adapter, operator scripts — don't have to know a Go
+// type to reason about them. Servers MAY advertise additional keys
+// clients don't know about (forward-compat); clients MUST NOT crash
+// on unknown ones.
+const (
+	// FeatureMultiSession is true when the server enforces per-session
+	// ACLs (Options.MultiSessionEnabled) — clients rendering a
+	// session picker use it to decide whether to show "your sessions"
+	// vs an unfiltered fleet view.
+	FeatureMultiSession = "multi_session"
+	// FeaturePermsStream is true when the agent implements the
+	// PromptBrokerProvider capability — clients gate the
+	// /perms/stream + /perms/respond wiring on it.
+	FeaturePermsStream = "perms_stream"
+	// FeatureCostCeiling is true when the agent has a per-turn or
+	// per-session cost ceiling wired. Absent today (no capability
+	// interface); reserved for the follow-up that surfaces the
+	// setting to the client.
+	FeatureCostCeiling = "cost_ceiling"
+	// FeatureObserverMode is true when the producer exposes a
+	// LiveAgent observer surface. Reserved for the observer-mode
+	// integration; absent today.
+	FeatureObserverMode = "observer_mode"
+	// FeatureMCP is true when the agent implements MCPProvider
+	// (there's at least one MCP server declared).
+	FeatureMCP = "mcp"
+	// FeatureSpecialists is true when the agent supports the
+	// SubagentSpawner capability (POST /slash/subagent will work
+	// against the agent).
+	FeatureSpecialists = "specialists"
+	// FeatureCrossDaemon is true when the server hosts the peer
+	// registry (Options.PeerRegistry != nil) — clients use it to
+	// enable the multi-daemon fleet picker.
+	FeatureCrossDaemon = "cross_daemon"
+	// FeatureInterrupt is true when the agent implements
+	// InterruptProvider — clients gate ESC → cancel wiring on it.
+	FeatureInterrupt = "interrupt"
+)
+
+// AgentIdentity is the capabilities.agent block — the producer's
+// own identity, consolidating agent-card + per-session status
+// fields the client would otherwise have to fan-out fetches to
+// assemble. Every field is optional; consumers render only what's
+// present.
+type AgentIdentity struct {
+	Name        string `json:"name,omitempty"`
+	Version     string `json:"version,omitempty"`
+	Description string `json:"description,omitempty"`
+	Model       string `json:"model,omitempty"`
+	Provider    string `json:"provider,omitempty"`
+	URL         string `json:"url,omitempty"`
 }
 
 // Turn-state values per spec section 2.2.
@@ -95,12 +198,22 @@ const (
 // Merge semantics: fields not present in an update are unchanged on
 // the consumer side. TurnState is always present on every emission
 // (snapshot or delta) per spec.
+//
+// Capabilities (v1.4.0+) is an optional merge frame carrying hot
+// changes to the capabilities the server advertised on stream
+// open — e.g. an MCP server registers mid-session and features.mcp
+// flips true, or a new slash provider gets wired. Semantics: any
+// field the server sets is merged into the consumer's cached
+// capabilities; fields absent from the update stay as-is. Not
+// emitted by this server today (spec'd for future use); consumers
+// MUST tolerate its absence.
 type StatusUpdate struct {
-	Model      string `json:"model,omitempty"`
-	Provider   string `json:"provider,omitempty"`
-	PermMode   string `json:"perm_mode,omitempty"`
-	TurnState  string `json:"turn_state"`
-	ContextPct *int   `json:"context_pct,omitempty"`
+	Model        string        `json:"model,omitempty"`
+	Provider     string        `json:"provider,omitempty"`
+	PermMode     string        `json:"perm_mode,omitempty"`
+	TurnState    string        `json:"turn_state"`
+	ContextPct   *int          `json:"context_pct,omitempty"`
+	Capabilities *Capabilities `json:"capabilities,omitempty"`
 }
 
 // UsageUpdate is emitted after each turn finalizes and as a

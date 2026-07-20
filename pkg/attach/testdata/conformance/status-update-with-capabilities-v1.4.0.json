@@ -1,0 +1,31 @@
+{
+  "model": "gemini-3.1-pro",
+  "provider": "vertex",
+  "perm_mode": "default",
+  "turn_state": "idle",
+  "context_pct": 42,
+  "capabilities": {
+    "protocol_version": "1.4.0",
+    "event_types": [
+      "status-update",
+      "usage-update",
+      "inbox",
+      "turn-complete",
+      "turn-error",
+      "stream-chunk",
+      "tool-call",
+      "tool-result"
+    ],
+    "features": {
+      "mcp": true,
+      "specialists": true
+    },
+    "slash_commands": [
+      "btw",
+      "compact",
+      "done",
+      "replan",
+      "subagent"
+    ]
+  }
+}

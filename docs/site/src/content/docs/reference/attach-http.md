@@ -188,6 +188,7 @@ Registered only when `Options.PeerRegistry` is non-nil (daemon launched with `--
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `GET` | `/.well-known/agent-card.json` | **none** (bypasses transport auth) | Public agent-card discovery. Enabled when `AgentCard.Description` + `ExternalURL` are both non-empty in the daemon config. 405 on non-GET/HEAD. |
+| `GET` | `/whoami` | Transport auth (no per-session ACL) | Returns `{"identity":..., "admin":bool, "source":..., "proxy_by":...}` for the current caller. `source ∈ {"bearer","mtls","iap","asserted","anonymous"}` (consumers tolerate unknowns). `proxy_by` populated only when `source="asserted"` (X-Asserted-Caller path). Companion to the SSE `capabilities.caller_id` display hint. |
 | `GET` | `/ui/*` | Transport auth | Optional SPA passthrough — only when `Options.UI` is non-null. `/ui` (no trailing slash) → **301** → `/ui/`. |
 
 ## Streaming endpoints (summary)
@@ -200,6 +201,26 @@ Two SSE endpoints:
 | `GET /sessions/.../perms/stream` | `text/event-stream` | none | Per-prompt frames: `event: prompt`. **501** without `PromptBrokerProvider`. |
 
 The `since` cursor is monotonic per-session — the TUI's `/reconnect` slash sends `?since=<lastSeq>` to resume without missing events across reconnects.
+
+### `capabilities` frame
+
+The first frame on every `/events` stream is `event: capabilities` — the client advertises the wire contract before any state flows. The full field list lives in [the SSE spec](https://github.com/go-steer/core-tui/blob/main/docs/sse-event-stream-protocol.md#21-capabilities); the current additions are:
+
+- **`features`** — feature-flag map derived from live runtime state. Suggested keys: `multi_session`, `perms_stream`, `cost_ceiling`, `observer_mode`, `mcp`, `specialists`, `cross_daemon`, `interrupt`. Consumers treat absent keys as "off / unknown"; producers MAY add unknown keys.
+- **`slash_commands`** — dynamic list of the slash names this agent's `POST /slash/<name>` will accept. Derived from capability-interface presence (`CompactSlashProvider` → `"compact"`, etc.). Clients render only what the connected agent supports.
+- **`agent`** — the producing agent's own identity: `{name, version, description, model, provider, url}`. Consolidates fields previously scattered across `/.well-known/agent-card.json`, `GET /status`, and the `server` banner.
+- **`caller_id`** — the resolved caller identity display hint. Canonical source: `GET /whoami`.
+
+`status-update` also carries an optional `capabilities` field (merge semantics) for future hot updates — no producer emits it today, but consumers MUST tolerate its absence and MUST merge (not replace) when it does arrive.
+
+### Slash-response conventions
+
+Every `POST /sessions/.../slash/<name>` response body reserves two keys for renderer negotiation:
+
+- **`_render`** — `"text" | "markdown" | "json" | <future>`. Advises the client which built-in renderer to use for the body. Producers MAY omit; consumers fall back to their per-slash default.
+- **`_schema`** — reserved for schema-driven rendering (v0.3.0+ target). No producer emits it today.
+
+Consumers MUST tolerate unknown values and MUST NOT crash on missing keys.
 
 ## Status code cheat sheet
 

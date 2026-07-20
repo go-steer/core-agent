@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/uuid"
 	adkmodel "google.golang.org/adk/model"
+	"google.golang.org/adk/session"
 	adktool "google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
@@ -224,6 +225,42 @@ func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, ori
 	// a package var so multi_session_test.go can observe / capture
 	// the per-session instances.
 	sessionTracker := newSessionTracker()
+
+	// On resume (session evicted from memory, brought back by
+	// SessionResumer), replay persisted eventlog into the fresh
+	// tracker so /stats + AttachUsage return real historical totals
+	// instead of "0 in / 0 out / $0.00". Fixes the aggregate-totals
+	// regression that shipped alongside #275 — per-turn footers kept
+	// working because they replay from live SSE events, but the
+	// aggregate started at zero on every resume. Only runs when
+	// origin=="resumed"; freshly-created sessions have no history
+	// to rebuild.
+	if origin == "resumed" && deps.eventlogHandle != nil && deps.eventlogHandle.Stream != nil {
+		events := deps.eventlogHandle.Stream.Since(
+			deps.daemonCtx, 0,
+			eventlog.ForSession("core-agent", caller.Identity, sid),
+		)
+		// Adapter: eventlog yields (Entry, error); tracker rebuild
+		// wants (*session.Event, error). Peel the event field.
+		eventsSeq := func(yield func(*session.Event, error) bool) {
+			for entry, err := range events {
+				if !yield(entry.Event, err) {
+					return
+				}
+			}
+		}
+		if err := usage.RebuildTrackerFromEvents(
+			deps.daemonCtx, sessionTracker, eventsSeq,
+			deps.model.Name(),
+			func(model string) usage.Pricing { return deps.pricingRate },
+		); err != nil {
+			// Non-fatal — the session still functions, just with
+			// zero baseline aggregate. Log so operators can spot
+			// silent rebuild failures.
+			fmt.Fprintf(os.Stderr, "core-agent: rebuild tracker for resumed session %s: %v\n", sid, err)
+		}
+	}
+
 	opts = append(opts, agent.WithUsageTracker(sessionTracker))
 	// AttachXProvider closures power the operator-state slashes
 	// (/memory, /skills, /mcp, /pricing). Without these the

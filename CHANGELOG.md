@@ -16,7 +16,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
-_No unreleased changes since [2.7.0-dev.5]._
+### Changes by Kind
+
+#### Other (Cleanup)
+- Release notes: hybrid composition (compose-release-notes.sh primary + [git-cliff](https://git-cliff.org) fallback + contributor trailer). Hand-written `## [X.Y.Z]` CHANGELOG sections stay authoritative when present; the pre-release fallback path (missing section) now uses git-cliff to render a K8s-style-grouped PR list from `git log vLAST_STABLE..vTAG` — replaces ~90 lines of ad-hoc bash render helpers. Both paths append a `### Contributors` trailer via `git log --format='%aN' | sort -u`. Also fixes [#328](https://github.com/go-steer/core-agent/issues/328) — every release since at least v2.6.0 has come out with an empty body because GoReleaser's `--release-notes` flag isn't populating the GitHub Release body in this project's wiring. Root cause deferred; workaround shipped: new `Populate release body` step calls `gh release edit --notes-file` after GoReleaser succeeds, with a fail-if-`body_len < 100` sanity check to catch future drift.
 
 ## [2.7.0-dev.5] — 2026-07-20
 

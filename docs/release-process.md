@@ -47,7 +47,18 @@ Every merged PR bumps `## [Unreleased]` with a bullet (per AGENTS.md), so by the
 
 That script rewrites CHANGELOG.md in place — renames `## [Unreleased]` to `## [X.Y.Z-dev.N] — YYYY-MM-DD` and reseeds a fresh empty `## [Unreleased]` above. It shows the diff and prints the git commands to commit + tag + push (doesn't run them itself). Bails early if `[Unreleased]` is still boilerplate — you're expected to backfill from `git log` first if per-PR bumps got skipped.
 
-Tags cut without a matching CHANGELOG section still publish successfully: [`dev/release/compose-release-notes.sh`](../dev/release/compose-release-notes.sh) auto-generates the release body from `## [Unreleased]` (as the narrative) plus a PR list synthesized from `git log vLAST_STABLE..vTAG` grouped by conventional-commit type. That's the safety net; the script above is the happy path.
+Tags cut without a matching CHANGELOG section still publish successfully: [`dev/release/compose-release-notes.sh`](../dev/release/compose-release-notes.sh) auto-generates the release body from `## [Unreleased]` (as the narrative) plus a K8s-style-grouped PR list from `git log vLAST_STABLE..vTAG`, produced by [git-cliff](https://git-cliff.org) using [`dev/release/cliff.toml`](../dev/release/cliff.toml). That's the safety net; the script above is the happy path.
+
+The composer also appends a `### Contributors` trailer listing unique commit authors in the tag range — fires on BOTH the primary CHANGELOG-driven path and the git-cliff fallback, so every release credits the folks whose PRs landed.
+
+**Local install for dry-running:**
+
+```bash
+curl -sfL "https://github.com/orhun/git-cliff/releases/download/v2.13.1/git-cliff-2.13.1-x86_64-unknown-linux-gnu.tar.gz" \
+  | sudo tar xz -C /usr/local/bin --strip-components=1 git-cliff-2.13.1/git-cliff
+```
+
+The release workflow installs the same pinned version — bumps happen in both places together.
 
 Dry-run the composer locally to preview the notes for a tag before pushing:
 

@@ -17,7 +17,7 @@ package attach
 import (
 	"testing"
 
-	"github.com/go-steer/core-agent/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
 
 func TestRegister_DefaultsToEmptyACL(t *testing.T) {

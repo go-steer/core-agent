@@ -22,7 +22,7 @@ core-agent_<os>_<arch>        # default — K8s, distroless, headless
 core-agent-tui_<os>_<arch>    # for laptop operators
 ```
 
-If you have Go installed: `go install github.com/go-steer/core-agent/cmd/core-agent-tui@latest`.
+If you have Go installed: `go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@latest`.
 
 ## Quick start
 

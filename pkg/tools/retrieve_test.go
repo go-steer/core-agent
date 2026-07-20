@@ -23,7 +23,7 @@ import (
 
 	"google.golang.org/adk/tool"
 
-	"github.com/go-steer/core-agent/pkg/digest"
+	"github.com/go-steer/core-agent/v2/pkg/digest"
 )
 
 func TestNewRetrieveRawTool_RequiresStore(t *testing.T) {

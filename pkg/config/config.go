@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/go-steer/core-agent/pkg/hooks"
+	"github.com/go-steer/core-agent/v2/pkg/hooks"
 )
 
 // SchemaVersion is the current major version of the on-disk config format.

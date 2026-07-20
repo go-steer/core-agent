@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/pkg/instruction"
+	"github.com/go-steer/core-agent/v2/pkg/instruction"
 )
 
 func writeMemoryFile(t *testing.T, dir, name, body string) {

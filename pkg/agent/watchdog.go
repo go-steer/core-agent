@@ -26,7 +26,7 @@ import (
 
 	"google.golang.org/adk/session"
 
-	"github.com/go-steer/core-agent/pkg/watchdog"
+	"github.com/go-steer/core-agent/v2/pkg/watchdog"
 )
 
 // WithWatchdog wires a behavioral watchdog. The agent calls

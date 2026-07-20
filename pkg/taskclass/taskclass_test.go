@@ -17,7 +17,7 @@ package taskclass_test
 import (
 	"testing"
 
-	"github.com/go-steer/core-agent/pkg/taskclass"
+	"github.com/go-steer/core-agent/v2/pkg/taskclass"
 )
 
 func TestResolve_KnownClasses(t *testing.T) {

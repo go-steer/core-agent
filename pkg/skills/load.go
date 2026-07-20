@@ -39,8 +39,8 @@ import (
 	"google.golang.org/adk/tool/skilltoolset/skill"
 	"gopkg.in/yaml.v3"
 
-	"github.com/go-steer/core-agent/pkg/permissions"
-	coretools "github.com/go-steer/core-agent/pkg/tools"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
 )
 
 // SkillDirName is the project-local directory holding skill bundles.

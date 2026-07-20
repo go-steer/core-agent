@@ -19,8 +19,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/go-steer/core-agent/pkg/auth"
-	"github.com/go-steer/core-agent/pkg/eventlog"
+	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 )
 
 // stubRegistrant is a minimal Registrant for registry tests. It

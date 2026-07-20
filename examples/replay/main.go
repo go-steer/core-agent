@@ -30,8 +30,8 @@ import (
 	"log"
 	"os"
 
-	"github.com/go-steer/core-agent/pkg/agent"
-	"github.com/go-steer/core-agent/pkg/models/mock"
+	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/models/mock"
 )
 
 // transcript is a 2-turn JSONL fixture. Each line is one RecordedTurn:

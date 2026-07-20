@@ -20,7 +20,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/go-steer/core-agent/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
 
 // Operator-state read endpoints — feed the remote TUI's slash

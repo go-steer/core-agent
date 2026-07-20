@@ -18,7 +18,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/go-steer/core-agent/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
 
 func TestCallerContext_RoundTrip(t *testing.T) {

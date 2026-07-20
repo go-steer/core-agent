@@ -25,10 +25,10 @@ import (
 	"log"
 	"os"
 
-	"github.com/go-steer/core-agent/pkg/agent"
-	"github.com/go-steer/core-agent/pkg/config"
-	"github.com/go-steer/core-agent/pkg/models"
-	_ "github.com/go-steer/core-agent/pkg/models/gemini"
+	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v2/pkg/models"
+	_ "github.com/go-steer/core-agent/v2/pkg/models/gemini"
 )
 
 func main() {

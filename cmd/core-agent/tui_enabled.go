@@ -25,7 +25,7 @@ package main
 import (
 	coretui "github.com/go-steer/core-tui/tui"
 
-	"github.com/go-steer/core-agent/pkg/mcp"
+	"github.com/go-steer/core-agent/v2/pkg/mcp"
 )
 
 // makeMCPElicitor constructs the core-tui elicitor and returns its

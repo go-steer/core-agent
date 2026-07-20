@@ -63,9 +63,9 @@ import (
     "log"
     "os"
 
-    "github.com/go-steer/core-agent/pkg/agent"
-    "github.com/go-steer/core-agent/pkg/models"
-    _ "github.com/go-steer/core-agent/pkg/models/gemini"
+    "github.com/go-steer/core-agent/v2/pkg/agent"
+    "github.com/go-steer/core-agent/v2/pkg/models"
+    _ "github.com/go-steer/core-agent/v2/pkg/models/gemini"
 )
 
 func main() {
@@ -116,7 +116,7 @@ For each one, fetch the relevant section and walk through the implementation con
 If the user is building anything beyond a one-shot CLI, push them toward durable sessions early:
 
 ```go
-import "github.com/go-steer/core-agent/pkg/eventlog"
+import "github.com/go-steer/core-agent/v2/pkg/eventlog"
 import "github.com/glebarez/sqlite"
 
 handle, err := eventlog.Open(ctx, sqlite.Open("./sessions.db"))
@@ -136,7 +136,7 @@ Now every turn, every tool call, every model response lands in `sessions.db`. Cr
 If the embedded agent is itself autonomous OR spawns subagents, use `RunAutonomous` + `BackgroundAgentManager`:
 
 ```go
-import "github.com/go-steer/core-agent/pkg/agent"
+import "github.com/go-steer/core-agent/v2/pkg/agent"
 
 bgMgr, err := agent.NewBackgroundAgentManager(
     agent.WithBackgroundProvider(provider, "gemini-2.5-flash"),

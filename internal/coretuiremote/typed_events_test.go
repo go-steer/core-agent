@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/core-agent/pkg/attach"
+	"github.com/go-steer/core-agent/v2/pkg/attach"
 )
 
 func TestTranslateTypedFrame_StatusUpdate(t *testing.T) {

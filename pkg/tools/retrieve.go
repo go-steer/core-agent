@@ -21,7 +21,7 @@ import (
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
 
-	"github.com/go-steer/core-agent/pkg/digest"
+	"github.com/go-steer/core-agent/v2/pkg/digest"
 )
 
 const (

@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/core-agent/pkg/permissions"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
 
 func TestPromptBroker_RoundTripsDecision(t *testing.T) {

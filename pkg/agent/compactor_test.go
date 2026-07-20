@@ -25,7 +25,7 @@ import (
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/session"
 
-	"github.com/go-steer/core-agent/pkg/usage"
+	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
 func TestCompact_NoCompactorReturnsSentinel(t *testing.T) {

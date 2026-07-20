@@ -51,7 +51,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/go-steer/core-agent/pkg/attach"
+	"github.com/go-steer/core-agent/v2/pkg/attach"
 )
 
 // Credentials stamps authentication headers on outbound requests.

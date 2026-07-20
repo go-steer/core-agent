@@ -19,7 +19,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/pkg/mcp"
+	"github.com/go-steer/core-agent/v2/pkg/mcp"
 )
 
 func TestMCPStartupFailureNotice(t *testing.T) {

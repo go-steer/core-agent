@@ -26,8 +26,8 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 
-	"github.com/go-steer/core-agent/pkg/auth"
-	"github.com/go-steer/core-agent/pkg/eventlog"
+	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 )
 
 // fixtureRegistrant is a minimal Registrant + SkillsProvider +

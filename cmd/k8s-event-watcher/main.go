@@ -32,7 +32,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/go-steer/core-agent/pkg/telemetry"
+	"github.com/go-steer/core-agent/v2/pkg/telemetry"
 )
 
 // flags is the CLI-shaped config, parsed once in main and threaded

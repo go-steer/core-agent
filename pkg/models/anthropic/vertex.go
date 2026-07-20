@@ -23,8 +23,8 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/vertex"
 	"golang.org/x/oauth2/google"
 
-	"github.com/go-steer/core-agent/pkg/config"
-	"github.com/go-steer/core-agent/pkg/models"
+	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v2/pkg/models"
 )
 
 // Env vars consulted by the Vertex constructor when project / region

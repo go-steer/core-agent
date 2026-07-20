@@ -31,9 +31,9 @@ builds:
     # "vX.Y.Z" format the package's String() formatter expects.
     ldflags:
       - -s -w
-      - -X github.com/go-steer/core-agent/internal/version.Version={{.Tag}}
-      - -X github.com/go-steer/core-agent/internal/version.Commit={{.FullCommit}}
-      - -X github.com/go-steer/core-agent/internal/version.Date={{.Date}}
+      - -X github.com/go-steer/core-agent/v2/internal/version.Version={{.Tag}}
+      - -X github.com/go-steer/core-agent/v2/internal/version.Commit={{.FullCommit}}
+      - -X github.com/go-steer/core-agent/v2/internal/version.Date={{.Date}}
 
   - id: core-agent-tui
     main: ./cmd/core-agent-tui
@@ -44,9 +44,9 @@ builds:
     goarch: [amd64, arm64]
     ldflags:
       - -s -w
-      - -X github.com/go-steer/core-agent/internal/version.Version={{.Tag}}
-      - -X github.com/go-steer/core-agent/internal/version.Commit={{.FullCommit}}
-      - -X github.com/go-steer/core-agent/internal/version.Date={{.Date}}
+      - -X github.com/go-steer/core-agent/v2/internal/version.Version={{.Tag}}
+      - -X github.com/go-steer/core-agent/v2/internal/version.Commit={{.FullCommit}}
+      - -X github.com/go-steer/core-agent/v2/internal/version.Date={{.Date}}
 
 # One archive per binary per platform. Names match the
 # `<binary>_<semver>_<os>_<arch>` shape used in the install footer

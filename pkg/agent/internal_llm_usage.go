@@ -17,7 +17,7 @@ package agent
 import (
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/pkg/usage"
+	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
 // recordInternalLLMUsage rolls one internal-LLM call's token usage

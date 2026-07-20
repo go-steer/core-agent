@@ -31,8 +31,8 @@ import (
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/mcptoolset"
 
-	"github.com/go-steer/core-agent/pkg/permissions"
-	coretools "github.com/go-steer/core-agent/pkg/tools"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
 )
 
 // Status values surfaced via the per-server records.

@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/core-agent/pkg/models/mock"
+	"github.com/go-steer/core-agent/v2/pkg/models/mock"
 )
 
 func TestAgent_Interrupt_NoOpWhenIdle(t *testing.T) {

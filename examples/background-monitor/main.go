@@ -33,8 +33,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/go-steer/core-agent/pkg/agent"
-	"github.com/go-steer/core-agent/pkg/models/mock"
+	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/models/mock"
 )
 
 func main() {

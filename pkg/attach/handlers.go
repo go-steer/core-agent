@@ -27,7 +27,7 @@ import (
 
 	"google.golang.org/adk/session"
 
-	"github.com/go-steer/core-agent/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
 
 // injectMaxBytes caps the size of the POST /inject body. 8 KiB is

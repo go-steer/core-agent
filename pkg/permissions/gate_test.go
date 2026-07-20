@@ -22,7 +22,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/pkg/config"
+	"github.com/go-steer/core-agent/v2/pkg/config"
 )
 
 // fakePrompter records the requests it was asked about and returns a

@@ -27,7 +27,7 @@ import (
 
 	adkmodel "google.golang.org/adk/model"
 
-	"github.com/go-steer/core-agent/pkg/recording"
+	"github.com/go-steer/core-agent/v2/pkg/recording"
 )
 
 // scriptedLLM replays a sequence of recording.RecordedTurns. Each

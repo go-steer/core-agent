@@ -22,8 +22,8 @@ import (
 
 	"google.golang.org/adk/tool"
 
-	"github.com/go-steer/core-agent/pkg/config"
-	"github.com/go-steer/core-agent/pkg/permissions"
+	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
 
 // gateFor builds a permissive (yolo) gate scoped to root for use in

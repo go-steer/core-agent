@@ -22,9 +22,9 @@ import (
 
 	adkmodel "google.golang.org/adk/model"
 
-	"github.com/go-steer/core-agent/pkg/auth"
-	"github.com/go-steer/core-agent/pkg/permissions"
-	"github.com/go-steer/core-agent/pkg/usage"
+	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
 // stubLLM satisfies adkmodel.LLM without any provider setup. Tests

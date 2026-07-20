@@ -19,8 +19,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-steer/core-agent/pkg/attach"
-	"github.com/go-steer/core-agent/pkg/models/mock"
+	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v2/pkg/models/mock"
 )
 
 func TestAgent_AttachReload_NotRegistered_ReturnsSentinel(t *testing.T) {

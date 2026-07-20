@@ -17,7 +17,7 @@ package auth_test
 import (
 	"testing"
 
-	"github.com/go-steer/core-agent/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
 
 // TestAuthorize_Matrix walks the full action × role grid documented in

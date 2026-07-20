@@ -37,9 +37,9 @@ import (
 
 	coretui "github.com/go-steer/core-tui/tui"
 
-	"github.com/go-steer/core-agent/pkg/attach"
+	"github.com/go-steer/core-agent/v2/pkg/attach"
 
-	"github.com/go-steer/core-agent/internal/attachclient"
+	"github.com/go-steer/core-agent/v2/internal/attachclient"
 )
 
 // Adapter wraps an attachclient.Client to satisfy coretui.Agent and

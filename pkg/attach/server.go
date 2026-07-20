@@ -387,8 +387,18 @@ func (s *Server) Bind() error {
 // the hydration reads. Write paths (/inject, /wake, /interrupt,
 // /slash/*), SSE streams (/events, /perms/stream), and admin ops
 // (DELETE /sessions) all continue to trace.
+//
+// Three alternations:
+//   - `/sessions` bare — the session-picker enumeration hit on every
+//     TUI startup + on every fleet-view refresh.
+//   - `/peers` bare — analogous peer enumeration for the multi-daemon
+//     picker; polled at the same cadence.
+//   - `/sessions/{app?}/{sid}/{leaf}` — the per-session hydration reads
+//     the status bar polls every 1-2s.
 var pollingReadRe = regexp.MustCompile(
-	`^/sessions/(?:[^/]+/)?[^/]+/(?:status|usage|tools|agents|context|memory|skills|mcp|pricing|perms)$`,
+	`^/sessions$` +
+		`|^/peers$` +
+		`|^/sessions/(?:[^/]+/)?[^/]+/(?:status|usage|tools|agents|context|memory|skills|mcp|pricing|perms)$`,
 )
 
 func shouldTraceRequest(r *http.Request) bool {

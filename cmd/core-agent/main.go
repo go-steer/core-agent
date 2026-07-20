@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/glebarez/sqlite"
+	"go.opentelemetry.io/otel"
 	"golang.org/x/term"
 	adktool "google.golang.org/adk/tool"
 
@@ -183,6 +184,7 @@ func main() {
 	agentCardProviderURL := flag.String("agent-card-provider-url", "", "override provider.url in /.well-known/agent-card.json")
 	agentCardDocsURL := flag.String("agent-card-docs-url", "", "override documentationUrl in /.well-known/agent-card.json")
 	logFile := flag.String("log-file", "", `mirror daemon stderr (operator diagnostics) to this path in addition to the terminal. Empty (default) or "-" leaves stderr-only. Recommended: /tmp/core-agent.log so TUI screen-takeover doesn't swallow startup diagnostics.`)
+	metricsAddr := flag.String("metrics-addr", "", "Prometheus scrape endpoint bind address (e.g. :9464). Overrides cfg.otel.metrics.prometheus_addr. Ignored unless cfg.otel.metrics.exporter (or OTEL_METRICS_EXPORTER) selects prometheus or both. Empty leaves the config value in effect; :9464 is the default when neither is set.")
 	flag.Parse()
 
 	// Install --log-file tee BEFORE run() so any config-load / mcp
@@ -220,7 +222,8 @@ func main() {
 			ProviderOrg:      *agentCardProviderOrg,
 			ProviderURL:      *agentCardProviderURL,
 			DocumentationURL: *agentCardDocsURL,
-		})
+		},
+		metricsOpts{Addr: *metricsAddr})
 	os.Exit(code)
 }
 
@@ -371,7 +374,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	return opts
 }
 
-func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, maxTurnCostUSD, maxSessionCostUSD float64, watchdogMode, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache bool, attachCfg attachOpts, cardCfg agentCardOpts) int {
+func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, maxTurnCostUSD, maxSessionCostUSD float64, watchdogMode, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache bool, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -515,6 +518,24 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		fmt.Fprintf(os.Stderr, "core-agent: telemetry setup: %v\n", err)
 	}
 	defer func() { _ = otelShutdown(context.Background()) }()
+
+	// Metrics pipeline runs alongside traces but doesn't share init.
+	// ADK has no MeterProvider (upstream TODO(#479)), so telemetry.SetupMetrics
+	// builds one directly. Off by default; opt-in via cfg.otel.metrics
+	// or OTEL_METRICS_EXPORTER. See docs/metrics-design.md.
+	//
+	// Fail-loudly: init errors abort the daemon rather than silently
+	// shipping a binary that emits no metrics. Prometheus bind
+	// failures are the most common cause in dev (port already in use).
+	metricsShutdown, err := telemetry.SetupMetrics(ctx, cfg.OTEL.Metrics, telemetry.MetricsOptions{
+		PrometheusAddr: metricsCfg.Addr,
+		ServiceName:    "core-agent",
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: metrics setup: %v\n", err)
+		return runner.ExitConfigError
+	}
+	defer func() { _ = metricsShutdown(context.Background()) }()
 
 	provider, err := models.Resolve(cfg)
 	if err != nil {
@@ -709,6 +730,20 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// path needs a reference to the *Agent to invoke RunSubtask.
 	var agentRef *agent.Agent
 	tracker := usage.NewTracker()
+
+	// Register the usage/cost observer against whatever MeterProvider
+	// telemetry.SetupMetrics installed. When metrics are disabled the
+	// global MeterProvider is a noop and RegisterMetrics is
+	// effectively free — the callback registers but never fires
+	// because no reader collects. Identity fields (SessionID, AppName,
+	// UserID) are lazily populated via primaryTracker.SetIdentity in
+	// the WithPostConstruct hook below, since a.SessionID() isn't
+	// known until agent.New completes.
+	primaryTracker := &primaryTrackerProvider{tracker: tracker}
+	if _, err := usage.RegisterMetrics(otel.GetMeterProvider(), primaryTracker); err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: metrics: register usage observer: %v\n", err)
+		return runner.ExitConfigError
+	}
 	var digestStore *digest.LazyStore
 	var digestOpts *mcp.DigestOptions
 	if !noMCPDigest {
@@ -1218,6 +1253,13 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 
 	opts = append(opts, agent.WithPostConstruct(func(a *agent.Agent) {
 		agentRef = a
+		// Stamp the primary session's identity into the metrics
+		// observer so cumulative counters get session.id + app.name +
+		// user.id attributes from the first turn onward. Before this
+		// point the tracker has no recorded turns, so the observer
+		// callback produces no data — the empty-identity window is
+		// harmless.
+		primaryTracker.SetIdentity(a)
 		// Bind the MCP digest LazyStore now that the agent knows its
 		// session ID. EventlogStore is session-scoped, so it can't be
 		// constructed at mcp.Build time (session ID = empty). Binding

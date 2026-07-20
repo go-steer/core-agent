@@ -180,9 +180,12 @@ Conventions worth knowing at agent prompt time:
   bullet under the appropriate `#### Feature` / `#### Bug or
   Regression` / `#### Documentation` / `#### Other (Cleanup)` /
   `#### Security` subsection of `## [Unreleased]` in `CHANGELOG.md`
-  as part of the PR itself. `dev/release/cut-dev-tag.sh` and the
-  stable release recipe both assume `[Unreleased]` is current — if
-  it's stale at tag time, backfill from `git log` before tagging.
+  as part of the PR itself. Breaking changes get a `**BREAKING:**`
+  prefix under `#### Changed` so the release scripts can hoist them
+  automatically into a `### Breaking Changes` section at tag time.
+  Both `dev/release/cut-dev-tag.sh` and `dev/release/cut-ga-tag.sh`
+  assume `[Unreleased]` is current — if it's stale at tag time,
+  backfill from `git log` before tagging.
 
 ## How we release
 
@@ -196,12 +199,34 @@ Every merged PR that ships a user-visible change adds one bullet to
 `## [Unreleased]` in `CHANGELOG.md`, under the right `#### Feature` /
 `#### Bug or Regression` / `#### Documentation` / `#### Other (Cleanup)` /
 `#### Security` subsection, with a trailing `([#NNN](url))` link.
-`dev/release/cut-dev-tag.sh` and the stable release recipe both assume
-`[Unreleased]` is current — if it's stale at tag time, backfill from
-`git log` before tagging. Pre-release tags (`vX.Y.Z-dev.N`, `-rc.N`,
-`-alpha.N`, `-beta.N`) auto-fall-back to `[Unreleased]` + a synthesized
-PR list when their specific section doesn't exist, so most dev tags
-don't need a per-tag CHANGELOG edit.
+Breaking changes get a `**BREAKING:**` prefix under `#### Changed`.
+Both tag-cut scripts assume `[Unreleased]` is current — if it's stale
+at tag time, backfill from `git log` before tagging.
+
+Two scripts under `dev/release/` do the CHANGELOG carve — **use one,
+do NOT hand-carve**:
+
+- **`cut-dev-tag.sh vX.Y.Z-<pre>`** — for dev / rc / pre-release
+  tags. Renames `## [Unreleased]` → `## [X.Y.Z-pre] — YYYY-MM-DD`
+  and reseeds an empty `## [Unreleased]` above it. Pre-release tags
+  also auto-fall-back to `[Unreleased]` + a synthesized PR list if
+  their specific section doesn't exist, so most dev tags don't need
+  a per-tag CHANGELOG edit at all.
+- **`cut-ga-tag.sh vX.Y.Z`** — for GA tags. Folds every pre-release
+  section between `## [Unreleased]` and the previous GA into a
+  **cumulative** `## [X.Y.Z]` entry (the "since last GA" story an
+  operator upgrading from `vX.(Y-1).0` needs, not just what
+  accumulated since the last dev tag), hoists `**BREAKING:**`
+  bullets to a `### Breaking Changes` section, and deletes the
+  folded pre-release sections. Leaves a `<HEADLINE — ...>`
+  placeholder for the operator-facing summary; replace it before
+  committing. This exists because v2.7.0's first-cut GA notes only
+  covered ~5 post-dev.5 bullets and had to be rewritten by hand —
+  don't repeat that.
+
+Both scripts run release-time preflight guards (pricing catalog
+freshness), edit `CHANGELOG.md` in place, print the git commands to
+finish the cut, and do NOT commit / tag / push themselves.
 
 The README doesn't hard-code a "current release" pin any more — the
 release-shield badge picks up the latest tag automatically. Nothing to

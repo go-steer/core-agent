@@ -140,6 +140,17 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
+      # Install git-cliff — used by dev/release/compose-release-notes.sh
+      # for the pre-release fallback path (auto-generated PR list when
+      # the tag's CHANGELOG has no matching `## [X.Y.Z-pre]` section).
+      # Version pinned to keep behavior reproducible; bump deliberately.
+      - name: Install git-cliff
+        run: |
+          set -euo pipefail
+          curl -sfL "https://github.com/orhun/git-cliff/releases/download/v2.13.1/git-cliff-2.13.1-x86_64-unknown-linux-gnu.tar.gz" \
+            | sudo tar xz -C /usr/local/bin --strip-components=1 git-cliff-2.13.1/git-cliff
+          git-cliff --version
+
       # Resolve the effective tag and build RELEASE_NOTES.md.
       #
       # Stable tags (vX.Y.Z) carve the matching `## [X.Y.Z]` section
@@ -222,6 +233,45 @@ jobs:
           # explicitly. In contemporary tag-push mode this is empty
           # and goreleaser resolves the tag from HEAD as usual.
           GORELEASER_CURRENT_TAG: ${{ inputs.tag }}
+
+      # #328 workaround — GoReleaser's --release-notes flag has never
+      # populated the GitHub Release body in this project's wiring;
+      # every release since at least v2.6.0 (2026-07-10) came out with
+      # an empty body until manually backfilled. Root cause is deferred
+      # (see #328 for the debugging trail: mode: replace behavior,
+      # changelog: disable interaction, or a GoReleaser action arg
+      # quoting issue — take your pick). Meanwhile, take back
+      # body-population from GoReleaser: it keeps managing assets +
+      # signing + tag creation, we set the body ourselves right after.
+      #
+      # Fail the workflow if the body still ends up under 100 chars —
+      # early-warning on regressions to this belt-and-suspenders step.
+      - name: Populate release body (workaround for #328)
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.notes.outputs.tag }}"
+          NOTES="${{ steps.notes.outputs.notes_path }}"
+
+          if [[ ! -s "$NOTES" ]]; then
+            echo "::error::composed notes file $NOTES is empty; nothing to populate"
+            exit 1
+          fi
+
+          gh release edit "$TAG" \
+            --repo "${{ github.repository }}" \
+            --notes-file "$NOTES"
+
+          body_len=$(gh release view "$TAG" \
+            --repo "${{ github.repository }}" \
+            --json body --jq '.body | length')
+          echo "release body populated: body_len=${body_len}"
+          if [[ "$body_len" -lt 100 ]]; then
+            echo "::error::release body suspiciously short after edit (body_len=${body_len}); check the compose step's output"
+            exit 1
+          fi
 
       # On dry-run, surface the built artifacts so they can be
       # downloaded + inspected without a Release ever being created.

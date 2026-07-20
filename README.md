@@ -184,7 +184,7 @@ Fuller examples in [`examples/`](./examples/) — basic, with-tools, streaming, 
 - **Release process** — [`docs/release-process.md`](./docs/release-process.md)
 - **Changelog + stability promise** — [`CHANGELOG.md`](./CHANGELOG.md)
 
-The site is built with [Hugo](https://gohugo.io) (Extended ≥ 0.146.0) using the [Docsy](https://www.docsy.dev/) theme; sources live in [`docs/site/`](./docs/site).
+The site is built with [Astro](https://astro.build) and [Starlight](https://starlight.astro.build); sources live in [`docs/site/`](./docs/site).
 
 ---
 
@@ -215,7 +215,7 @@ core-agent/
 │   └── k8s-event-watcher/  # K8s event-triage sidecar
 ├── extras/scion-agent/     # opt-in Scion runtime adapter
 ├── examples/               # 15+ worked examples
-├── docs/                   # DESIGN.md, release-process.md, Hugo site
+├── docs/                   # DESIGN.md, release-process.md, Astro site
 ├── SKILLS/                 # bundled meta-skills (cli-setup, autonomous-setup, library-embedding)
 └── dev/                    # build/test/lint/release tooling
 ```

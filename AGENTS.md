@@ -40,7 +40,7 @@ cmd/core-agent/       Reference CLI binary.
 examples/             Library use examples.
 dev/                  Build/test/lint tooling — see dev/README.md.
 docs/                 Internal design docs (acceptance-mN.md, ...).
-docs/site/            Published Hugo site (Hextra theme).
+docs/site/            Published Astro Starlight site.
 ```
 
 ## Build & test
@@ -166,8 +166,8 @@ Conventions worth knowing at agent prompt time:
   richer driver (typically a `run.sh` + tmux + fixtures + a README
   walking numbered scenarios). All UAT state goes under `/tmp`,
   never `$HOME`.
-- **Hugo site walks alongside README/DESIGN.** User-visible changes
-  update the published site at `docs/site/content/docs/` in the
+- **Astro site walks alongside README/DESIGN.** User-visible changes
+  update the published site at `docs/site/src/content/docs/` in the
   same PR as the code, not as a follow-up. Before opening a PR that
   adds or renames a user-visible surface (tool, provider, image
   variant, CLI flag, release), run `dev/tools/docs-lint` — it

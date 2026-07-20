@@ -12,26 +12,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Strategic-merge patch: adds the ONE non-standard env var that
-# `pkg/telemetry` needs to actually register an exporter — everything
-# else (endpoint, service name, resource attributes, sampling) is
-# spec-standard and honored by ADK's underlying OpenTelemetry SDK
-# directly, so it's set by whatever provides the runtime environment:
+# Strategic-merge patch: adds the two env vars that operators
+# universally need but that GKE Managed OTel's Instrumentation CR
+# does NOT auto-inject. Everything else (endpoint, exporter selection,
+# resource attributes with k8s.pod.uid, sampler config, metric interval)
+# rides the standard OTel SDK env vars the CR does inject on GKE, or
+# gets set operator-side off-GKE.
 #
-#   - On GKE with Managed OpenTelemetry, an `Instrumentation` CR
-#     injects OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_SERVICE_NAME /
-#     OTEL_RESOURCE_ATTRIBUTES / sampler ratio / metric interval into
-#     matching Pods automatically. See overlays/example-otel/ for a
-#     working shape.
+#   - OTEL_TRACES_EXPORTER=otlp — load-bearing since PR #315: overrides
+#     cfg.OTEL.Exporter (default "none") without patching config.json.
+#     Redundant on GKE (the CR also injects it) but harmless there, and
+#     required off-GKE where nothing else flips the exporter on.
 #
-#   - Off GKE (self-managed Collector, Docker Compose, systemd, etc.)
-#     the operator sets those env vars themselves — either via their
-#     own overlay's env patch (see this component's README § "Non-GKE")
-#     or via whatever env-injection mechanism their runtime provides.
+#   - OTEL_SERVICE_NAME=core-agent — GKE Managed OTel's
+#     Instrumentation CR explicitly does NOT inject this (verified
+#     against the docs + a live cluster; see
+#     https://docs.cloud.google.com/kubernetes-engine/docs/concepts/managed-otel-gke#environment_variables).
+#     Without it, our daemon's spans show up in Cloud Trace with a
+#     synthesized "unknown_service:core-agent" tag. Setting it on the
+#     Deployment guarantees a stable service.name across GKE + off-GKE.
 #
 # Container-list merge is by name, so we target `core-agent`
 # specifically without disturbing the base's envFrom / args /
 # volumeMounts / etc.
+#
+# GOOGLE_CLOUD_PROJECT (needed for the gcp.project_id resource attr
+# Cloud Trace requires) is already wired via the base's envFrom
+# reference to the core-agent-gcp-env ConfigMap — no need to
+# duplicate it here. pkg/telemetry.Setup reads it and passes to ADK
+# via WithGcpResourceProject.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -42,16 +51,7 @@ spec:
       containers:
         - name: core-agent
           env:
-            # Overrides `otel.exporter` from the base config.json
-            # (default: "none"). This is the load-bearing knob PR #315
-            # landed for k8s deployments — a shared config.json
-            # ConfigMap can't carry per-Pod exporter targets, so the
-            # per-Deployment env var wins.
-            #
-            # Values: "none" | "console" | "otlp".
-            #
-            # No other env var flips the exporter on — the standard
-            # OTel SDK env vars (OTEL_EXPORTER_OTLP_ENDPOINT etc.)
-            # only take effect once an exporter is registered.
             - name: OTEL_TRACES_EXPORTER
               value: "otlp"
+            - name: OTEL_SERVICE_NAME
+              value: "core-agent"

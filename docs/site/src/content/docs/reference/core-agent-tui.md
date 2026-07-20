@@ -117,11 +117,17 @@ tail -f /tmp/tui.log
 ## Install
 
 ```bash
-# From GitHub Releases:
-curl -L https://github.com/go-steer/core-agent/releases/download/v2.7.0/core-agent-tui_$(uname -s | tr A-Z a-z)_$(uname -m).tar.gz \
-  | tar xz -C /usr/local/bin core-agent-tui
+# From GitHub Releases (resolves the latest tag dynamically so the
+# snippet doesn't rot on subsequent releases):
+TAG=$(gh release view --repo go-steer/core-agent --json tagName -q .tagName)
+OS=$(uname -s | tr A-Z a-z)
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+gh release download "$TAG" --repo go-steer/core-agent \
+  --pattern "core-agent-tui_${TAG#v}_${OS}_${ARCH}.tar.gz"
+tar xzf "core-agent-tui_${TAG#v}_${OS}_${ARCH}.tar.gz"
+./core-agent-tui --version
 
-# From source (Go 1.24+):
+# From source (Go 1.26+):
 go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@latest
 ```
 

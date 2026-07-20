@@ -27,7 +27,7 @@
 #   4. Wrong-major version pins — "as of v1.5", "Current release: v1.8.0"
 #
 # Scope:
-#   README.md + docs/site/content/**/*.md by default. docs/release-process.md
+#   README.md + docs/site/src/content/**/*.{md,mdx} by default. docs/release-process.md
 #   and dev/release/install-verify-footer.md.tmpl legitimately use @vX.Y.Z
 #   placeholders and are excluded.
 #
@@ -44,10 +44,16 @@ cd "$(repo_root)"
 # ---- paths in scope ---------------------------------------------------
 
 scoped_paths() {
-  # README + all Hugo site content markdown. Nothing under docs/*.md at
-  # the top level (release-process.md legitimately uses @vX.Y.Z), nothing
-  # under dev/ (templates), nothing under CHANGELOG.md (version headers).
-  find README.md docs/site/content -type f -name '*.md' 2>/dev/null | sort
+  # README + all Astro Starlight site content markdown. Nothing under
+  # docs/*.md at the top level (release-process.md legitimately uses
+  # @vX.Y.Z), nothing under dev/ (templates), nothing under
+  # CHANGELOG.md (version headers).
+  #
+  # Path bumped from docs/site/content → docs/site/src/content post-
+  # 2c6e57f Astro Starlight migration (July 2026). The old path was
+  # silently missing for weeks, letting drift like `Go 1.24+` land in
+  # reference/core-agent-tui.md without a lint hit.
+  find README.md docs/site/src/content -type f \( -name '*.md' -o -name '*.mdx' \) 2>/dev/null | sort
 }
 
 # ---- individual checks ------------------------------------------------

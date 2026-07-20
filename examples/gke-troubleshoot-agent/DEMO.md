@@ -116,17 +116,21 @@ Three ways to get it — pick one:
 
 ```bash
 # Option 1 (recommended): build from source at the v2.6.0 tag.
-# `go install @v2.6.0` doesn't work today — the module path
-# doesn't yet carry the /v2 suffix required by Go SIVE for
-# major version ≥ 2. Tracked as a separate issue.
+# `go install @v2.6.0` fails on any tag prior to #327 (the /v2
+# module-path rewrite that landed in v2.7.0) — Go's SIVE rule
+# requires the /v2 suffix on the module path once major ≥ 2, and
+# only tags at v2.7.0 or later carry it. Historical v2.x tags stay
+# uninstallable via `go install`; source builds + container images
+# were never affected.
 git clone https://github.com/go-steer/core-agent.git /tmp/core-agent-src
 cd /tmp/core-agent-src && git checkout v2.6.0
 go install ./cmd/core-agent-tui
 cd - >/dev/null
 
 # Option 2: install from main (latest development; may include
-# post-v2.6.0 changes)
-go install github.com/go-steer/core-agent/cmd/core-agent-tui@main
+# post-v2.6.0 changes). Requires the /v2 module-path suffix
+# per #327.
+go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@main
 
 # Option 3: pull the published container image and extract the binary
 docker pull ghcr.io/go-steer/core-agent-tui:2.6.0

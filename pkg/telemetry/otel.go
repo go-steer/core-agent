@@ -40,9 +40,12 @@ package telemetry
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 
+	"github.com/go-logr/stdr"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -86,6 +89,22 @@ func Setup(ctx context.Context, mode string) (shutdown func(context.Context) err
 		mode = envMode
 	}
 
+	// Route OTel SDK internal diag messages + span-export errors to
+	// stderr so exporter failures (unreachable collector, TLS mismatch,
+	// wrong port, wrong protocol) surface loudly instead of silently
+	// dropping spans. Default handlers are noop; without these two
+	// hooks, "no spans in the backend" is indistinguishable from
+	// "backend rejecting them silently." Verbosity gates via
+	// OTEL_LOG_LEVEL — 0=fatal, 1=error (default), higher = more.
+	logLevel := 1
+	if lvl := os.Getenv("OTEL_LOG_LEVEL"); lvl == "debug" {
+		logLevel = 8
+	}
+	otel.SetLogger(stdr.New(log.New(os.Stderr, "otel-diag ", log.LstdFlags)).V(logLevel))
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		fmt.Fprintf(os.Stderr, "core-agent: otel-export: %v\n", err)
+	}))
+
 	// Register the W3C TextMapPropagator globally REGARDLESS of the
 	// exporter mode. Even with no exporter, downstream code that
 	// starts spans against the noop tracer will produce contexts;
@@ -109,15 +128,43 @@ func Setup(ctx context.Context, mode string) (shutdown func(context.Context) err
 	}
 
 	var opts []adktelemetry.Option
-	if mode == ModeConsole {
+	switch mode {
+	case ModeConsole:
 		exp, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
 		if err != nil {
 			return noop, fmt.Errorf("telemetry: console exporter: %w", err)
 		}
 		opts = append(opts, adktelemetry.WithSpanProcessors(sdktrace.NewBatchSpanProcessor(exp)))
+	case ModeOTLP:
+		// Construct the OTLP HTTP exporter explicitly instead of relying
+		// on ADK's implicit env-var wiring. Two reasons:
+		//   1. Ownership — a construction error surfaces via
+		//      telemetry.Setup's returned error, not silently
+		//      swallowed inside ADK's configure() path.
+		//   2. Log-visible endpoint — we log the resolved endpoint at
+		//      construction, so operators can grep the daemon boot
+		//      log to confirm the exporter is talking to the right
+		//      collector. Without this line, "no spans arrive" is
+		//      indistinguishable from "wrong endpoint".
+		//
+		// otlptracehttp.New honors OTEL_EXPORTER_OTLP_ENDPOINT +
+		// OTEL_EXPORTER_OTLP_TRACES_ENDPOINT +
+		// OTEL_EXPORTER_OTLP_HEADERS + OTEL_EXPORTER_OTLP_INSECURE
+		// internally, so operators still use the standard env vars.
+		exp, err := otlptracehttp.New(ctx)
+		if err != nil {
+			return noop, fmt.Errorf("telemetry: otlp http exporter: %w", err)
+		}
+		endpoint := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+		if endpoint == "" {
+			endpoint = os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+		}
+		if endpoint == "" {
+			endpoint = "(default localhost:4318)"
+		}
+		fmt.Fprintf(os.Stderr, "core-agent: telemetry: OTLP HTTP exporter wired → %s\n", endpoint)
+		opts = append(opts, adktelemetry.WithSpanProcessors(sdktrace.NewBatchSpanProcessor(exp)))
 	}
-	// For mode==otlp we let ADK's telemetry.New honor the standard
-	// OTEL_EXPORTER_OTLP_* env vars without explicit option overrides.
 
 	providers, err := adktelemetry.New(ctx, opts...)
 	if err != nil {

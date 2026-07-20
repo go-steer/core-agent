@@ -65,7 +65,7 @@ The Gemini Provider injects a small set of Gemini's server-side built-in tools i
 To override:
 
 ```go
-import "github.com/go-steer/core-agent/pkg/models/gemini"
+import "github.com/go-steer/core-agent/v2/pkg/models/gemini"
 
 // Turn one off:
 provider, _ := gemini.NewAPIKey(key, gemini.WithURLContext(false))
@@ -275,7 +275,7 @@ The Anthropic provider can inject Claude's server-side built-in tools alongside 
 To enable:
 
 ```go
-import "github.com/go-steer/core-agent/pkg/models/anthropic"
+import "github.com/go-steer/core-agent/v2/pkg/models/anthropic"
 
 provider, _ := anthropic.New(key, anthropic.WithWebSearch(true))
 
@@ -431,8 +431,8 @@ Register your implementation in an `init()` and import the package for its side 
 package myprovider
 
 import (
-    "github.com/go-steer/core-agent/pkg/config"
-    "github.com/go-steer/core-agent/pkg/models"
+    "github.com/go-steer/core-agent/v2/pkg/config"
+    "github.com/go-steer/core-agent/v2/pkg/models"
 )
 
 func init() {

@@ -24,8 +24,8 @@ import (
 
 	coretui "github.com/go-steer/core-tui/tui"
 
-	"github.com/go-steer/core-agent/internal/attachclient"
-	"github.com/go-steer/core-agent/pkg/attach"
+	"github.com/go-steer/core-agent/v2/internal/attachclient"
+	"github.com/go-steer/core-agent/v2/pkg/attach"
 )
 
 // StartRemotePrompter wires the remote agent's permission prompts

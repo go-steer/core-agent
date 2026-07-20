@@ -18,8 +18,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-steer/core-agent/internal/pricing"
-	"github.com/go-steer/core-agent/pkg/config"
+	"github.com/go-steer/core-agent/v2/internal/pricing"
+	"github.com/go-steer/core-agent/v2/pkg/config"
 )
 
 // Pricing is the per-million-token rate for one model. Fields are USD

@@ -27,7 +27,7 @@ import (
 	"google.golang.org/adk/tool"
 	"google.golang.org/genai"
 
-	coretools "github.com/go-steer/core-agent/pkg/tools"
+	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
 )
 
 func TestResumeAutonomous_FromDeferredCheckpoint(t *testing.T) {

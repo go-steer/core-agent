@@ -24,9 +24,9 @@ import (
 	"google.golang.org/adk/agent"
 	adktool "google.golang.org/adk/tool"
 
-	"github.com/go-steer/core-agent/pkg/config"
-	"github.com/go-steer/core-agent/pkg/mcp"
-	"github.com/go-steer/core-agent/pkg/skills"
+	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v2/pkg/mcp"
+	"github.com/go-steer/core-agent/v2/pkg/skills"
 )
 
 func TestFormatConfigLine(t *testing.T) {

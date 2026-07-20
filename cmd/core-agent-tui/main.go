@@ -54,9 +54,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	coretui "github.com/go-steer/core-tui/tui"
 
-	"github.com/go-steer/core-agent/internal/attachclient"
-	"github.com/go-steer/core-agent/internal/coretuiremote"
-	"github.com/go-steer/core-agent/internal/version"
+	"github.com/go-steer/core-agent/v2/internal/attachclient"
+	"github.com/go-steer/core-agent/v2/internal/coretuiremote"
+	"github.com/go-steer/core-agent/v2/internal/version"
 )
 
 func main() {

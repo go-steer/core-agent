@@ -21,9 +21,9 @@
 // Release process (see docs/release-process.md):
 //
 //	go build -ldflags "\
-//	  -X github.com/go-steer/core-agent/internal/version.Version=v2.2.0 \
-//	  -X github.com/go-steer/core-agent/internal/version.Commit=$(git rev-parse HEAD) \
-//	  -X github.com/go-steer/core-agent/internal/version.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+//	  -X github.com/go-steer/core-agent/v2/internal/version.Version=v2.2.0 \
+//	  -X github.com/go-steer/core-agent/v2/internal/version.Commit=$(git rev-parse HEAD) \
+//	  -X github.com/go-steer/core-agent/v2/internal/version.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
 //	" ./cmd/core-agent ./cmd/core-agent-tui
 //
 // After cutting a tag, bump Version below to the next minor + "-dev"

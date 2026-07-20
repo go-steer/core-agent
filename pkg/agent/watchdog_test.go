@@ -22,7 +22,7 @@ import (
 	"google.golang.org/adk/session"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/pkg/watchdog"
+	"github.com/go-steer/core-agent/v2/pkg/watchdog"
 )
 
 // Bridge tests — focused on the agent-side wiring (event-tap →

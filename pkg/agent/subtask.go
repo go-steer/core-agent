@@ -61,7 +61,7 @@ import (
 	"google.golang.org/adk/runner"
 	"google.golang.org/adk/tool"
 
-	"github.com/go-steer/core-agent/pkg/usage"
+	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
 // SubtaskSpec configures one RunSubtask call.

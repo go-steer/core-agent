@@ -17,7 +17,7 @@ package modeltier_test
 import (
 	"testing"
 
-	"github.com/go-steer/core-agent/pkg/modeltier"
+	"github.com/go-steer/core-agent/v2/pkg/modeltier"
 )
 
 func TestClassify(t *testing.T) {

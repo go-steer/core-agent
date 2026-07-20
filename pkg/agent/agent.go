@@ -45,14 +45,14 @@ import (
 	"google.golang.org/adk/session"
 	"google.golang.org/adk/tool"
 
-	"github.com/go-steer/core-agent/pkg/attach"
-	"github.com/go-steer/core-agent/pkg/auth"
-	"github.com/go-steer/core-agent/pkg/digest"
-	"github.com/go-steer/core-agent/pkg/eventlog"
-	"github.com/go-steer/core-agent/pkg/permissions"
-	corebuiltins "github.com/go-steer/core-agent/pkg/tools"
-	"github.com/go-steer/core-agent/pkg/usage"
-	"github.com/go-steer/core-agent/pkg/watchdog"
+	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/digest"
+	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	corebuiltins "github.com/go-steer/core-agent/v2/pkg/tools"
+	"github.com/go-steer/core-agent/v2/pkg/usage"
+	"github.com/go-steer/core-agent/v2/pkg/watchdog"
 )
 
 // DefaultAppName tags this process in the ADK runner. Telemetry and

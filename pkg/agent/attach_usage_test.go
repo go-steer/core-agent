@@ -19,8 +19,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/go-steer/core-agent/pkg/attach"
-	"github.com/go-steer/core-agent/pkg/usage"
+	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
 // TestAttachUsage_CachedFieldsAndPerTurn is the on-the-wire spec test

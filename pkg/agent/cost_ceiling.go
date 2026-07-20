@@ -54,7 +54,7 @@ package agent
 import (
 	"fmt"
 
-	"github.com/go-steer/core-agent/pkg/attach"
+	"github.com/go-steer/core-agent/v2/pkg/attach"
 )
 
 // CostCeiling configures the per-turn / per-session spend caps the

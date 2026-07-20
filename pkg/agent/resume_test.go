@@ -25,7 +25,7 @@ import (
 	"google.golang.org/adk/session"
 	"google.golang.org/adk/tool"
 
-	"github.com/go-steer/core-agent/pkg/eventlog"
+	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 )
 
 // openTestEventLog returns a Handle backed by a fresh on-disk SQLite

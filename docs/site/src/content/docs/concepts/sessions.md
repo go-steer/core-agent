@@ -14,8 +14,8 @@ This page covers when to use durable sessions, how to enable them, and what the 
 ```go
 import (
     "github.com/glebarez/sqlite"
-    "github.com/go-steer/core-agent/pkg/agent"
-    "github.com/go-steer/core-agent/pkg/eventlog"
+    "github.com/go-steer/core-agent/v2/pkg/agent"
+    "github.com/go-steer/core-agent/v2/pkg/eventlog"
 )
 
 handle, err := eventlog.Open(ctx, sqlite.Open("sessions.db"))

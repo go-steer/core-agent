@@ -27,9 +27,9 @@ import (
 	"google.golang.org/adk/tool/functiontool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/pkg/models"
-	"github.com/go-steer/core-agent/pkg/models/mock"
-	"github.com/go-steer/core-agent/pkg/usage"
+	"github.com/go-steer/core-agent/v2/pkg/models"
+	"github.com/go-steer/core-agent/v2/pkg/models/mock"
+	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
 // newNamedStubTool returns a no-op tool whose Name() is `name`. Used

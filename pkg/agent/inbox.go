@@ -23,8 +23,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/go-steer/core-agent/pkg/attach"
-	"github.com/go-steer/core-agent/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
 
 // inboxMessage pairs an inbox message with the prompt_id assigned at

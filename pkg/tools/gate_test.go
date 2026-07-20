@@ -21,7 +21,7 @@ import (
 	adktool "google.golang.org/adk/tool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/pkg/permissions"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
 
 // fakeInnerTool implements the bits of adktool.Tool the wrapper

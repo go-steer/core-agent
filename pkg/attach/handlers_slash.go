@@ -17,7 +17,7 @@ package attach
 import (
 	"net/http"
 
-	"github.com/go-steer/core-agent/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
 
 // Slash dispatchers — POST /sessions/<sid>/slash/<name>. Wire to

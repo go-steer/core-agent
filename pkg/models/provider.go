@@ -32,7 +32,7 @@ import (
 
 	"google.golang.org/adk/model"
 
-	"github.com/go-steer/core-agent/pkg/config"
+	"github.com/go-steer/core-agent/v2/pkg/config"
 )
 
 // Provider constructs concrete model.LLM instances on demand. A Provider

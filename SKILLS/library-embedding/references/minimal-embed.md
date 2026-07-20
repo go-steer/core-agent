@@ -13,9 +13,9 @@ import (
     "log"
     "os"
 
-    "github.com/go-steer/core-agent/pkg/agent"
-    "github.com/go-steer/core-agent/pkg/models"
-    _ "github.com/go-steer/core-agent/pkg/models/gemini"
+    "github.com/go-steer/core-agent/v2/pkg/agent"
+    "github.com/go-steer/core-agent/v2/pkg/models"
+    _ "github.com/go-steer/core-agent/v2/pkg/models/gemini"
 )
 
 func main() {
@@ -77,7 +77,7 @@ Session is in-memory by default. For persistence across process restarts, use du
 
 ```go
 import (
-    "github.com/go-steer/core-agent/pkg/eventlog"
+    "github.com/go-steer/core-agent/v2/pkg/eventlog"
     "github.com/glebarez/sqlite"
 )
 

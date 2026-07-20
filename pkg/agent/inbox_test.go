@@ -23,8 +23,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/core-agent/pkg/auth"
-	"github.com/go-steer/core-agent/pkg/models/mock"
+	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/models/mock"
 )
 
 func TestInbox_PushDrainOrder(t *testing.T) {

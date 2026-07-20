@@ -26,7 +26,7 @@ import (
 	"google.golang.org/adk/tool/functiontool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/agent"
 )
 
 // stubTool is a no-op tool.Tool used as a placeholder in

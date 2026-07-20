@@ -18,8 +18,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/go-steer/core-agent/internal/pricing"
-	"github.com/go-steer/core-agent/pkg/config"
+	"github.com/go-steer/core-agent/v2/internal/pricing"
+	"github.com/go-steer/core-agent/v2/pkg/config"
 )
 
 func TestPricing_CostMath(t *testing.T) {

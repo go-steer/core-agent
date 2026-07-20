@@ -17,7 +17,7 @@ package attach
 import (
 	"context"
 
-	"github.com/go-steer/core-agent/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
 
 // SessionResumer reconstructs a session that exists on disk

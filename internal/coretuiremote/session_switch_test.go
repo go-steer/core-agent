@@ -27,7 +27,7 @@ import (
 
 	coretui "github.com/go-steer/core-tui/tui"
 
-	"github.com/go-steer/core-agent/internal/attachclient"
+	"github.com/go-steer/core-agent/v2/internal/attachclient"
 )
 
 // startSessionsServer wires the two daemon-scoped endpoints the

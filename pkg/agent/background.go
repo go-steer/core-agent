@@ -25,9 +25,9 @@ import (
 
 	"google.golang.org/adk/tool"
 
-	"github.com/go-steer/core-agent/pkg/models"
-	"github.com/go-steer/core-agent/pkg/permissions"
-	coretools "github.com/go-steer/core-agent/pkg/tools"
+	"github.com/go-steer/core-agent/v2/pkg/models"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
 )
 
 // BackgroundAgentManager owns the lifecycle of in-process background

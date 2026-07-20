@@ -102,7 +102,7 @@ func Setup(ctx context.Context, mode string) (shutdown func(context.Context) err
 	}
 	otel.SetLogger(stdr.New(log.New(os.Stderr, "otel-diag ", log.LstdFlags)).V(logLevel))
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
-		log.Printf("otel-export: %v", err)
+		fmt.Fprintf(os.Stderr, "core-agent: otel-export: %v\n", err)
 	}))
 
 	// Register the W3C TextMapPropagator globally REGARDLESS of the
@@ -162,7 +162,7 @@ func Setup(ctx context.Context, mode string) (shutdown func(context.Context) err
 		if endpoint == "" {
 			endpoint = "(default localhost:4318)"
 		}
-		log.Printf("core-agent: telemetry: OTLP HTTP exporter wired → %s", endpoint)
+		fmt.Fprintf(os.Stderr, "core-agent: telemetry: OTLP HTTP exporter wired → %s\n", endpoint)
 		opts = append(opts, adktelemetry.WithSpanProcessors(sdktrace.NewBatchSpanProcessor(exp)))
 	}
 

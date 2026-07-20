@@ -122,7 +122,7 @@ curl -L https://github.com/go-steer/core-agent/releases/download/v2.7.0/core-age
   | tar xz -C /usr/local/bin core-agent-tui
 
 # From source (Go 1.24+):
-go install github.com/go-steer/core-agent/cmd/core-agent-tui@latest
+go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@latest
 ```
 
 The daemon binary (`core-agent`) is a separate download — see the [main install guide](/run/getting-started/) for both.

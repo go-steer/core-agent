@@ -26,7 +26,7 @@ import (
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/session"
 
-	"github.com/go-steer/core-agent/pkg/eventlog"
+	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 )
 
 // eventlogAuthorRaw is the event Author string EventlogStore uses to

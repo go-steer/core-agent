@@ -23,7 +23,7 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/go-steer/core-agent/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
 
 // SessionACLStore persists per-session ACL state across daemon

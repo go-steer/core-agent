@@ -1,4 +1,4 @@
-module github.com/go-steer/core-agent
+module github.com/go-steer/core-agent/v2
 
 go 1.26.3
 

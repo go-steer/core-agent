@@ -30,8 +30,8 @@ import (
 	adkgemini "google.golang.org/adk/model/gemini"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/pkg/config"
-	"github.com/go-steer/core-agent/pkg/models"
+	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v2/pkg/models"
 )
 
 func init() {

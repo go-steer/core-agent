@@ -1,0 +1,93 @@
+# git-cliff config for release-notes fallback + contributor extraction.
+#
+# Used by dev/release/compose-release-notes.sh in two spots:
+#
+#   1. Fallback path — when a tag's CHANGELOG.md is missing a matching
+#      `## [X.Y.Z-pre]` section, compose falls back to auto-generating
+#      the release-notes body from `git log LAST_STABLE..TAG`.
+#      git-cliff replaces the old render_changes_by_kind bash helper
+#      here: same K8s-style grouping, but with proper PR links, cleaner
+#      subject rendering, and zero maintenance.
+#
+#   2. Contributor trailer — invoked with `--context` to extract a
+#      `unique-authors` list for the tag range, which compose splices
+#      onto every release-notes output (both primary and fallback
+#      paths).
+#
+# git-cliff itself is pinned in the release workflow at v2.13.1.
+# Locally, `curl -sfL https://github.com/orhun/git-cliff/releases/…/git-cliff-2.13.1-<host>-linux-gnu.tar.gz`.
+
+[remote.github]
+owner = "go-steer"
+repo = "core-agent"
+
+[changelog]
+header = ""
+
+# Fallback body — used only when compose-release-notes.sh's primary
+# path (CHANGELOG-section extraction) finds no matching section.
+#
+# Grouping order is operator-priority (Feature first, then Bug,
+# Documentation, Cleanup) — git-cliff sorts groups by the first
+# commit-parser rule that assigned each group, so the parser order
+# below governs this.
+body = """
+{% if version -%}
+## [{{ version | trim_start_matches(pat="v") }}] — {{ timestamp | date(format="%Y-%m-%d") }}
+{%- else -%}
+## [Unreleased]
+{%- endif %}
+
+**{{ commits | length }} commits from {{ commits | map(attribute="author.name") | unique | length }} contributor(s).**
+{% for group, commits in commits | group_by(attribute="group") %}
+{#- Groups are prefixed "N-" (e.g. "1-Feature") so alphabetical sort in group_by yields operator-priority order. Strip the prefix at render. -#}
+### {{ group | split(pat="-") | slice(start=1) | join(sep="-") }}
+{% for commit in commits -%}
+{%- set subject = commit.message | split(pat="\n") | first | trim -%}
+{%- if commit.remote.pr_number -%}
+{#- Strip the trailing (#NN) our commit subjects carry so it doesn't duplicate the PR link we render below. Only safe when pr_number is set — otherwise trim_end_matches's pat= would concat with null. -#}
+{%- set pr_suffix = " (#" ~ commit.remote.pr_number ~ ")" -%}
+- {{ subject | trim_end_matches(pat=pr_suffix) }} ([#{{ commit.remote.pr_number }}](https://github.com/go-steer/core-agent/pull/{{ commit.remote.pr_number }}))
+{% else -%}
+- {{ subject }} ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/go-steer/core-agent/commit/{{ commit.id }}))
+{% endif -%}
+{% endfor %}
+{% endfor %}
+"""
+
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = false
+split_commits = false
+
+commit_preprocessors = []
+
+# Parser order below governs group render order. Priority-first, so
+# Feature / Bug / Docs land above the noise.
+commit_parsers = [
+  # Skip release-plumbing chores — noise on the release page.
+  { message = "^chore\\(changelog\\)", skip = true },
+  { message = "^chore\\(pricing\\): refresh built-in table", skip = true },
+  { message = "^chore\\(release\\)", skip = true },
+
+  # Groups are prefixed "N-" so alphabetical sort in the template's
+  # group_by(attribute="group") produces operator-priority order:
+  # Feature → Bug/Regression → Documentation → Other → Cleanup. The
+  # prefix is stripped at render time by the template.
+  { message = "^feat", group = "1-Feature" },
+  { message = "^fix", group = "2-Bug or Regression" },
+  { message = "^docs", group = "3-Documentation" },
+  { message = "^perf", group = "4-Other" },
+  { message = "^refactor", group = "4-Other" },
+  { message = "^ci", group = "4-Other" },
+  { message = "^build", group = "4-Other" },
+  { message = "^test", group = "4-Other" },
+  { message = "^style", group = "4-Other" },
+  { message = "^chore", group = "5-Other (Cleanup)" },
+  { message = ".*", group = "6-Uncategorized" },
+]
+
+filter_commits = true
+sort_commits = "newest"

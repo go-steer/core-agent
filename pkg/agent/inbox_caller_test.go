@@ -17,7 +17,7 @@ package agent
 import (
 	"testing"
 
-	"github.com/go-steer/core-agent/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
 
 func TestInbox_PushPreservesCaller(t *testing.T) {

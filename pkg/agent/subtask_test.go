@@ -23,7 +23,7 @@ import (
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/pkg/usage"
+	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
 func TestRunSubtask_RejectsInvalidSpec(t *testing.T) {

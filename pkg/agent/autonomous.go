@@ -25,9 +25,9 @@ import (
 	"google.golang.org/adk/session"
 	"google.golang.org/adk/tool"
 
-	"github.com/go-steer/core-agent/pkg/permissions"
-	coretools "github.com/go-steer/core-agent/pkg/tools"
-	"github.com/go-steer/core-agent/pkg/usage"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
+	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
 // RunAutonomous drives a multi-turn loop against an Agent built by

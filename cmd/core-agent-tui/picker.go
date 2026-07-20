@@ -23,7 +23,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/go-steer/core-agent/internal/attachclient"
+	"github.com/go-steer/core-agent/v2/internal/attachclient"
 )
 
 // pickerModel is the session-picker screen. Lists hub-local sessions

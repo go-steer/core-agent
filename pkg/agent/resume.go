@@ -23,8 +23,8 @@ import (
 
 	"google.golang.org/adk/tool"
 
-	"github.com/go-steer/core-agent/pkg/eventlog"
-	coretools "github.com/go-steer/core-agent/pkg/tools"
+	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
 )
 
 // ResumeBuildFunc is the agent constructor accepted by

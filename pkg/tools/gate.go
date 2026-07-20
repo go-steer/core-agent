@@ -27,7 +27,7 @@ import (
 	adktool "google.golang.org/adk/tool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/pkg/permissions"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
 
 // runnableTool is the unexported ADK interface every callable tool

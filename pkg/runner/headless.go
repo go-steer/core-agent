@@ -27,8 +27,8 @@ import (
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/session"
 
-	"github.com/go-steer/core-agent/pkg/agent"
-	"github.com/go-steer/core-agent/pkg/usage"
+	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
 // Exit codes — kept distinct so CI can disambiguate failure modes.

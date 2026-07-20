@@ -27,7 +27,7 @@ import (
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/session"
 
-	"github.com/go-steer/core-agent/pkg/modeltier"
+	"github.com/go-steer/core-agent/v2/pkg/modeltier"
 )
 
 // CompactionEventTag is the value stored under

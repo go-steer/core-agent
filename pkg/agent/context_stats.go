@@ -42,7 +42,7 @@ import (
 
 	"google.golang.org/adk/session"
 
-	"github.com/go-steer/core-agent/pkg/usage"
+	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
 // ContextStats is a snapshot view of the three context-management

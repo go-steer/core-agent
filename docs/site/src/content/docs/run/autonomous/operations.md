@@ -21,7 +21,7 @@ This page covers across-turn autonomy. For the within-turn case, see [Library AP
 ```go
 import (
     adktool "google.golang.org/adk/tool"
-    "github.com/go-steer/core-agent/pkg/agent"
+    "github.com/go-steer/core-agent/v2/pkg/agent"
 )
 
 build := func(extras []adktool.Tool) (*agent.Agent, error) {
@@ -134,8 +134,8 @@ When the agent is wired with `WithEventLog`, `RunAutonomous` emits a checkpoint 
 ```go
 import (
     "github.com/glebarez/sqlite"
-    "github.com/go-steer/core-agent/pkg/agent"
-    "github.com/go-steer/core-agent/pkg/eventlog"
+    "github.com/go-steer/core-agent/v2/pkg/agent"
+    "github.com/go-steer/core-agent/v2/pkg/eventlog"
 )
 
 handle, _ := eventlog.Open(ctx, sqlite.Open("/path/to/sessions.db"))
@@ -187,7 +187,7 @@ Behavior worth knowing:
 `tools.NewLifecycleTool` is the generic state-emission primitive the autonomous driver uses internally for its `report_done` signal. It's also exported for direct use — orchestrator adapters (Scion, AX) wire it for "I'm thinking / blocked / done" emission to their UI even though they have their own loops.
 
 ```go
-import "github.com/go-steer/core-agent/pkg/tools"
+import "github.com/go-steer/core-agent/v2/pkg/tools"
 
 statusTool, _ := tools.NewLifecycleTool(tools.LifecycleOptions{
     Handler: func(ctx context.Context, ev tools.LifecycleEvent) error {

@@ -54,7 +54,7 @@ import (
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/idtoken"
 
-	"github.com/go-steer/core-agent/internal/attachclient"
+	"github.com/go-steer/core-agent/v2/internal/attachclient"
 )
 
 // Auth mode names. Keep in sync with the --auth flag's usage string.

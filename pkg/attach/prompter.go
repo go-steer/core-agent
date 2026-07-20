@@ -23,7 +23,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-steer/core-agent/pkg/permissions"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
 
 // PromptBroker bridges a permissions.Gate (which expects an in-process

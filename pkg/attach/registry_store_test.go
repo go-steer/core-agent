@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-steer/core-agent/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
 
 func TestRegisterOwned_PersistsACLToStore(t *testing.T) {

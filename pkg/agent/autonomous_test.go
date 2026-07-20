@@ -30,8 +30,8 @@ import (
 	"google.golang.org/adk/tool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/pkg/permissions"
-	"github.com/go-steer/core-agent/pkg/usage"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
 // stubLLM is a tiny scriptable LLM used by these tests to drive the

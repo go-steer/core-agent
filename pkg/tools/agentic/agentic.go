@@ -49,8 +49,8 @@ import (
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
 
-	"github.com/go-steer/core-agent/pkg/agent"
-	"github.com/go-steer/core-agent/pkg/models"
+	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/models"
 )
 
 // AgenticToolOpts is shared configuration for every agentic

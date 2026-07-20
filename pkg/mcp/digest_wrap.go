@@ -27,8 +27,8 @@ import (
 	"google.golang.org/adk/tool"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/pkg/digest"
-	coretools "github.com/go-steer/core-agent/pkg/tools"
+	"github.com/go-steer/core-agent/v2/pkg/digest"
+	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
 )
 
 // tracer is the OTel tracer for the MCP wrap layer. The mcp.tool_call

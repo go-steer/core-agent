@@ -21,7 +21,7 @@ import (
 
 	coretui "github.com/go-steer/core-tui/tui"
 
-	"github.com/go-steer/core-agent/pkg/config"
+	"github.com/go-steer/core-agent/v2/pkg/config"
 )
 
 func TestUIThemeToCoreTui_Dark(t *testing.T) {

@@ -62,94 +62,6 @@ extract_section() {
   '
 }
 
-# Map a conventional-commit type prefix to a K8s-style category
-# heading. Anything unrecognized falls through to "Other".
-classify_type() {
-  local t="$1"
-  case "$t" in
-    feat)             echo "Feature" ;;
-    fix)              echo "Bug or Regression" ;;
-    docs|docs+ci)     echo "Documentation" ;;
-    chore|polish|refactor|test|ci|style|perf|build)
-                      echo "Other (Cleanup)" ;;
-    *)                echo "Other" ;;
-  esac
-}
-
-# Given a commit subject, print `KIND|BULLET_TEXT|PR_NUMBER`. Empty
-# PR_NUMBER when the subject has no trailing `(#NNN)`. Bullet text
-# strips the `type(scope):` prefix and the trailing PR ref so the
-# markdown link can be appended cleanly.
-render_bullet() {
-  local subject="$1"
-  local prefix rest pr kind
-  # Split on the first `: ` — everything before is the prefix, after
-  # is the human-readable subject.
-  if [[ "$subject" == *": "* ]]; then
-    prefix="${subject%%: *}"
-    rest="${subject#*: }"
-  else
-    prefix=""
-    rest="$subject"
-  fi
-  # Prefix looks like `feat`, `feat(scope)`, or `feat(scope+scope2)`.
-  # Strip the `(...)` if present.
-  local type_only="${prefix%%(*}"
-  kind="$(classify_type "$type_only")"
-  # Pull the last `(#NNN)` off the tail — some subjects embed
-  # intermediate `(#NNN)` refs to related issues, so use the trailing
-  # one as the PR number.
-  if [[ "$rest" =~ \(#([0-9]+)\)[[:space:]]*$ ]]; then
-    pr="${BASH_REMATCH[1]}"
-    # Strip the trailing `(#NNN)` and any preceding whitespace.
-    rest="$(printf '%s' "$rest" | sed -E 's/[[:space:]]*\(#[0-9]+\)[[:space:]]*$//')"
-  else
-    pr=""
-  fi
-  printf '%s|%s|%s\n' "$kind" "$rest" "$pr"
-}
-
-# Emit `### Changes by Kind` + per-kind subsections from a
-# newline-separated list of commit subjects on stdin.
-render_changes_by_kind() {
-  local subjects
-  subjects="$(cat)"
-  if [[ -z "$subjects" ]]; then
-    echo "_No commits in this range._"
-    return
-  fi
-
-  # Build a single tab-separated table: KIND\tBULLET\tPR (one row per
-  # commit). Then group by KIND for output.
-  local rows=""
-  while IFS= read -r subject; do
-    [[ -z "$subject" ]] && continue
-    rows+="$(render_bullet "$subject")"$'\n'
-  done <<<"$subjects"
-
-  echo "### Changes by Kind"
-  echo
-
-  # Emit in a fixed order so output is deterministic.
-  local kind
-  for kind in "Feature" "Bug or Regression" "Documentation" "Other (Cleanup)" "Other"; do
-    local matches
-    matches="$(printf '%s' "$rows" | awk -F'|' -v k="$kind" '$1 == k')"
-    if [[ -n "$matches" ]]; then
-      printf '#### %s\n' "$kind"
-      while IFS='|' read -r _ bullet pr; do
-        [[ -z "$bullet" ]] && continue
-        if [[ -n "$pr" ]]; then
-          printf -- '- %s ([#%s](%s/pull/%s))\n' "$bullet" "$pr" "$REPO_URL" "$pr"
-        else
-          printf -- '- %s\n' "$bullet"
-        fi
-      done <<<"$matches"
-      echo
-    fi
-  done
-}
-
 # Find the newest stable tag (no `-pre` suffix) that is an ancestor
 # of the given ref. Returns empty if none found.
 last_stable_before() {
@@ -158,6 +70,66 @@ last_stable_before() {
     | grep -v -- '-' \
     | grep -v "^${ref}\$" \
     | head -n1
+}
+
+# Path to the git-cliff config that ships alongside this script.
+# Located next to compose-release-notes.sh so both stay together.
+CLIFF_CONFIG="$(dirname "$0")/cliff.toml"
+
+# Emit the K8s-style grouped PR list for the tag range via git-cliff.
+# Used as the fallback body when compose's primary CHANGELOG-section
+# extraction finds nothing. Replaces the ~90-line render_changes_by_kind
+# / render_bullet / classify_type bash helpers deleted in this PR;
+# git-cliff handles group ordering, PR-link injection, and
+# subject-cleanup via cliff.toml's template.
+#
+# Args: START_REF (exclusive) END_REF (inclusive; usually a tag).
+render_range_with_cliff() {
+  local start_ref="$1" end_ref="$2"
+  if ! command -v git-cliff >/dev/null 2>&1; then
+    echo "_git-cliff not on \$PATH — skipping auto-generated PR list. "
+    echo "See ${CLIFF_CONFIG} for install instructions._"
+    return
+  fi
+  local range="${end_ref}"
+  if [[ -n "$start_ref" ]]; then
+    range="${start_ref}..${end_ref}"
+  fi
+  # --tag pins the output header to the target release version even
+  # when the tag doesn't yet exist locally (release workflows tag
+  # then invoke compose in the same job). Errors surface on stderr;
+  # empty output surfaces the "no commits in range" case above.
+  git-cliff \
+    --config "$CLIFF_CONFIG" \
+    --tag "$end_ref" \
+    "$range" 2>/dev/null \
+    | sed '/^$/N;/^\n$/D'  # collapse consecutive blank lines
+}
+
+# Emit a "### Contributors" trailer listing unique commit authors in
+# the range. Fires on both the primary (CHANGELOG-driven) and fallback
+# paths so every release credits the folks whose PRs landed.
+#
+# Deliberately independent of git-cliff — a shell one-liner covers
+# this and keeps the trailer working even when git-cliff is absent.
+render_contributors() {
+  local start_ref="$1" end_ref="$2"
+  local range="${end_ref}"
+  if [[ -n "$start_ref" ]]; then
+    range="${start_ref}..${end_ref}"
+  fi
+  local authors
+  authors="$(git log --format='%aN' "$range" 2>/dev/null | sort -u)"
+  if [[ -z "$authors" ]]; then
+    return
+  fi
+  echo "### Contributors"
+  echo
+  while IFS= read -r name; do
+    [[ -z "$name" ]] && continue
+    printf -- '- %s\n' "$name"
+  done <<<"$authors"
+  echo
 }
 
 # ────────── stable path ──────────
@@ -172,7 +144,7 @@ if [[ "$IS_PRERELEASE" -eq 0 ]]; then
 else
   # Prefer an explicit `## [X.Y.Z-pre]` section if the operator wrote
   # one; otherwise use `## [Unreleased]` as the narrative and follow
-  # it with an auto-generated PR list.
+  # it with an auto-generated PR list produced by git-cliff.
   extract_section "$VERSION" < "$CHANGELOG" > "$NOTES"
   if [[ ! -s "$NOTES" ]]; then
     UNRELEASED="$(extract_section "Unreleased" < "$CHANGELOG" || true)"
@@ -188,17 +160,30 @@ else
         printf 'Pre-release build of %s.\n\n' "$BASE_VERSION"
       fi
 
-      # Auto-generated PR list from git log range.
+      # Auto-generated PR list from git log range (git-cliff-driven).
+      # Section header differs by whether we found a stable ancestor
+      # to anchor the range against.
       if [[ -n "$LAST_STABLE" ]]; then
         printf '## Commits since %s\n\n' "$LAST_STABLE"
-        git log --pretty='%s' "$LAST_STABLE..$TAG" | render_changes_by_kind
       else
         printf '## Commits in this pre-release\n\n'
-        git log --pretty='%s' "$TAG" | head -n 200 | render_changes_by_kind
       fi
+      render_range_with_cliff "$LAST_STABLE" "$TAG"
     } > "$NOTES"
   fi
 fi
+
+# Append contributor trailer to BOTH paths — the CHANGELOG-driven
+# primary path doesn't naturally credit anyone, and the git-cliff
+# fallback's grouped-PR-list section already gives us the raw
+# commit-author info to work with. Position between narrative +
+# install footer so it reads as "and thanks to..." before the
+# operator-facing install steps.
+LAST_STABLE="${LAST_STABLE:-$(last_stable_before "$TAG" || true)}"
+{
+  echo
+  render_contributors "$LAST_STABLE" "$TAG"
+} >> "$NOTES"
 
 # Append the install/verify footer with placeholders substituted.
 if [[ -f "$FOOTER" ]]; then

@@ -27,8 +27,8 @@ import (
 
 	adkmodel "google.golang.org/adk/model"
 
-	"github.com/go-steer/core-agent/pkg/agent"
-	"github.com/go-steer/core-agent/pkg/usage"
+	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
 // REPL drives a multi-turn stdin loop against m. Each line is sent

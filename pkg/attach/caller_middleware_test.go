@@ -19,7 +19,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/go-steer/core-agent/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
 
 // captureCallerHandler records whichever Caller it sees on the request

@@ -21,7 +21,7 @@ import (
 
 	"google.golang.org/adk/tool"
 
-	"github.com/go-steer/core-agent/pkg/config"
+	"github.com/go-steer/core-agent/v2/pkg/config"
 )
 
 func TestReadManyFiles_RequiresPathsOrPattern(t *testing.T) {

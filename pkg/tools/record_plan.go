@@ -28,7 +28,7 @@ import (
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
 
-	"github.com/go-steer/core-agent/pkg/permissions"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
 
 // recordPlanDir is the subdirectory under agentsDir where plan

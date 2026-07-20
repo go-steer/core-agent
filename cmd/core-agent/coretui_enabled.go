@@ -31,14 +31,14 @@ import (
 
 	coretui "github.com/go-steer/core-tui/tui"
 
-	"github.com/go-steer/core-agent/pkg/agent"
-	"github.com/go-steer/core-agent/pkg/attach"
-	"github.com/go-steer/core-agent/pkg/config"
-	"github.com/go-steer/core-agent/pkg/instruction"
-	"github.com/go-steer/core-agent/pkg/mcp"
-	"github.com/go-steer/core-agent/pkg/permissions"
-	"github.com/go-steer/core-agent/pkg/skills"
-	"github.com/go-steer/core-agent/pkg/usage"
+	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v2/pkg/instruction"
+	"github.com/go-steer/core-agent/v2/pkg/mcp"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v2/pkg/skills"
+	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
 // pkgCoreElicitor is the core-tui elicitor handle shared between

@@ -57,15 +57,15 @@ import (
 	"google.golang.org/adk/session"
 	adktool "google.golang.org/adk/tool"
 
-	"github.com/go-steer/core-agent/pkg/agent"
-	"github.com/go-steer/core-agent/pkg/config"
-	"github.com/go-steer/core-agent/pkg/eventlog"
-	"github.com/go-steer/core-agent/pkg/models"
-	_ "github.com/go-steer/core-agent/pkg/models/anthropic"
-	_ "github.com/go-steer/core-agent/pkg/models/gemini"
-	"github.com/go-steer/core-agent/pkg/permissions"
-	"github.com/go-steer/core-agent/pkg/runner"
-	coretools "github.com/go-steer/core-agent/pkg/tools"
+	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	"github.com/go-steer/core-agent/v2/pkg/models"
+	_ "github.com/go-steer/core-agent/v2/pkg/models/anthropic"
+	_ "github.com/go-steer/core-agent/v2/pkg/models/gemini"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v2/pkg/runner"
+	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
 )
 
 const defaultGoal = `Watch this Kubernetes project. Spawn one background monitor per target the operator specifies (cluster names or namespaces — discover them via kubectl get if not told explicitly), and have each monitor scan periodically for anything odd: error-rate spikes in logs, new deployments, deployments that disappeared, pods in CrashLoopBackOff, image-pull failures.

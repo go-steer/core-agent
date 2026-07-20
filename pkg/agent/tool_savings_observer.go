@@ -40,7 +40,7 @@ import (
 	"google.golang.org/adk/session"
 	"google.golang.org/genai"
 
-	"github.com/go-steer/core-agent/pkg/usage"
+	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
 // toolSavingsResponseKey is the well-known sidecar key core-agent's

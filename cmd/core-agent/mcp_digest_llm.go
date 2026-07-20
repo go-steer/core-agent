@@ -24,9 +24,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	adkmodel "google.golang.org/adk/model"
 
-	"github.com/go-steer/core-agent/pkg/agent"
-	"github.com/go-steer/core-agent/pkg/mcp"
-	"github.com/go-steer/core-agent/pkg/models"
+	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/mcp"
+	"github.com/go-steer/core-agent/v2/pkg/models"
 )
 
 // mcpDigestTracer scopes the subagent.llm_call span emitted from the

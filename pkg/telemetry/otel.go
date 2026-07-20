@@ -128,6 +128,24 @@ func Setup(ctx context.Context, mode string) (shutdown func(context.Context) err
 	}
 
 	var opts []adktelemetry.Option
+
+	// GCP project ID for the `gcp.project_id` resource attribute —
+	// Cloud Trace's OTLP-receiver ingress requires it, and rejects
+	// entire batches missing it with "InvalidArgument: Resource is
+	// missing required attribute gcp.project_id". ADK unconditionally
+	// stamps this attribute from cfg.gcpResourceProject even when
+	// empty (setup_otel.go:145), which overrides any value the OTel
+	// SDK parsed from OTEL_RESOURCE_ATTRIBUTES. Passing it via ADK's
+	// option is the only way to survive the merge order.
+	//
+	// GOOGLE_CLOUD_PROJECT is the standard env var Google client
+	// libraries already look for (Vertex uses it too); reading it
+	// here means operators who set it once for Vertex get gcp.project_id
+	// set for free. Empty → no option passed → same behavior as before.
+	if gcpProject := os.Getenv("GOOGLE_CLOUD_PROJECT"); gcpProject != "" {
+		opts = append(opts, adktelemetry.WithGcpResourceProject(gcpProject))
+	}
+
 	switch mode {
 	case ModeConsole:
 		exp, err := stdouttrace.New(stdouttrace.WithPrettyPrint())

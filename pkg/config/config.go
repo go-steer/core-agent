@@ -436,9 +436,36 @@ type MockConfig struct {
 }
 
 // OTELConfig configures the OpenTelemetry exporter.
+//
+// Exporter/Endpoint govern trace export. Metrics is an independent
+// nested block for the metric pipeline — separate because the traces
+// path delegates to ADK while metrics do not (see docs/metrics-design.md).
 type OTELConfig struct {
-	Exporter string `json:"exporter,omitempty"` // "none" | "console" | "otlp"
-	Endpoint string `json:"endpoint,omitempty"`
+	Exporter string            `json:"exporter,omitempty"` // "none" | "console" | "otlp"
+	Endpoint string            `json:"endpoint,omitempty"`
+	Metrics  OTELMetricsConfig `json:"metrics,omitempty"`
+}
+
+// OTELMetricsConfig configures the OpenTelemetry metrics pipeline.
+//
+// Exporter values:
+//   - "none"       — default; no MeterProvider is installed
+//   - "otlp"       — OTLP metrics via HTTP; honors OTEL_EXPORTER_OTLP_METRICS_ENDPOINT
+//   - "prometheus" — served at PrometheusAddr for scrape
+//   - "both"       — OTLP push + Prometheus pull on the same MeterProvider
+//
+// The standard OTel env var OTEL_METRICS_EXPORTER overrides Exporter
+// when set — matches the OTEL_TRACES_EXPORTER convention (#315) and
+// lets K8s Deployments with shared ConfigMaps flip the metrics
+// surface per-Pod without duplicating config.json.
+//
+// PrometheusAddr is the bind address for the /metrics scrape
+// endpoint (e.g. ":9464"). Ignored unless Exporter is "prometheus"
+// or "both". Empty + Prometheus mode selected implies ":9464"
+// (the OTel-conventional Prometheus reader port).
+type OTELMetricsConfig struct {
+	Exporter       string `json:"exporter,omitempty"`
+	PrometheusAddr string `json:"prometheus_addr,omitempty"`
 }
 
 // URLScopeConfig governs which URLs the fetch_url built-in is allowed
@@ -673,6 +700,9 @@ func DefaultConfig() *Config {
 		},
 		OTEL: OTELConfig{
 			Exporter: "none",
+			Metrics: OTELMetricsConfig{
+				Exporter: "none",
+			},
 		},
 		UI: UIConfig{
 			Theme: ThemeAuto,

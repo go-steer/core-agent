@@ -69,7 +69,20 @@ func RebuildTrackerFromEvents(
 	if pricingFor == nil {
 		pricingFor = func(string) Pricing { return Pricing{} }
 	}
-	var tap TurnTap
+	// Persisted events differ from live-stream events: the ADK
+	// eventlog serialization strips TurnComplete / Partial /
+	// FinishReason (all zero-valued in rehydrated events). So the
+	// live TurnTap.Commit pattern that keys off TurnComplete can't
+	// fire on rebuild.
+	//
+	// Fortunately, Vertex + ADK only emit UsageMetadata on the
+	// FINAL response chunk per model call, and ADK persists the
+	// terminal chunk (not intermediates), so every event we see
+	// carrying UsageMetadata represents exactly one committed
+	// model response — one turn's worth of usage. AppendUsage per
+	// UsageMetadata-bearing event reconstructs the tracker's
+	// cumulative totals without needing the TurnComplete signal
+	// that persistence dropped.
 	for ev, err := range events {
 		if err != nil {
 			return err
@@ -77,15 +90,17 @@ func RebuildTrackerFromEvents(
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		tap.Observe(ev)
-		u, ok := tap.Commit(ev)
-		if !ok {
+		if ev == nil || ev.UsageMetadata == nil {
 			continue
 		}
-		modelName := ""
-		if ev != nil {
-			modelName = ev.ModelVersion
+		u := TurnUsageFromGenaiMetadata(ev.UsageMetadata)
+		if u.InputTokens == 0 && u.OutputTokens == 0 {
+			// Vertex occasionally emits a UsageMetadata block with
+			// zero token counts on error paths. Skip — appending
+			// would inflate the turn count without adding real cost.
+			continue
 		}
+		modelName := ev.ModelVersion
 		if modelName == "" {
 			modelName = defaultModel
 		}

@@ -64,12 +64,18 @@ func seqFromEvents(events []*session.Event) iter.Seq2[*session.Event, error] {
 func TestRebuildTrackerFromEvents_MultiTurn(t *testing.T) {
 	t.Parallel()
 	tracker := NewTracker()
+	// Persisted events strip TurnComplete (ADK serialization quirk),
+	// so rebuild uses UsageMetadata presence as the "committed turn"
+	// signal. Each UsageMetadata-bearing event = one AppendUsage.
+	// Non-UsageMetadata events are skipped.
 	events := []*session.Event{
-		// Turn 1: mid-stream chunk + final. Cumulative shape.
-		mkEvent(100, 50, false, "gemini-3.5-flash"),
-		mkEvent(100, 150, true, "gemini-3.5-flash"),
-		// Turn 2: single event, TurnComplete=true.
-		mkEvent(200, 80, true, "gemini-3.5-flash"),
+		// Turn 1 model response.
+		mkEvent(100, 150, false, "gemini-3.5-flash"),
+		// A follow-up event with no UsageMetadata (e.g. a tool-call
+		// event) — should be skipped.
+		{},
+		// Turn 2 model response.
+		mkEvent(200, 80, false, "gemini-3.5-flash"),
 	}
 
 	err := RebuildTrackerFromEvents(
@@ -82,8 +88,8 @@ func TestRebuildTrackerFromEvents_MultiTurn(t *testing.T) {
 	}
 
 	totals := tracker.Totals()
-	// 2 committed turns (mid-stream chunk with TurnComplete=false didn't
-	// commit; the final chunk with TurnComplete=true did).
+	// 2 turns committed (both had UsageMetadata; the empty middle
+	// event was skipped).
 	if totals.Turns != 2 {
 		t.Errorf("Turns = %d; want 2", totals.Turns)
 	}
@@ -96,13 +102,35 @@ func TestRebuildTrackerFromEvents_MultiTurn(t *testing.T) {
 	}
 }
 
+func TestRebuildTrackerFromEvents_SkipsZeroTokenEvents(t *testing.T) {
+	t.Parallel()
+	// Vertex sometimes emits a UsageMetadata block with zero token
+	// counts on error paths. Rebuild should skip these so they don't
+	// inflate the turn count without adding cost.
+	tracker := NewTracker()
+	events := []*session.Event{
+		mkEvent(0, 0, false, "gemini-3.5-flash"),
+		mkEvent(100, 50, false, "gemini-3.5-flash"),
+	}
+	if err := RebuildTrackerFromEvents(
+		t.Context(), tracker, seqFromEvents(events),
+		"gemini-3.5-flash",
+		func(string) Pricing { return Pricing{} },
+	); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tracker.Totals().Turns != 1 {
+		t.Errorf("Turns = %d; want 1 (zero-token event should be skipped)", tracker.Totals().Turns)
+	}
+}
+
 func TestRebuildTrackerFromEvents_NilTracker(t *testing.T) {
 	t.Parallel()
 	// Nil tracker is a no-op — happens when the tracker feature is
 	// disabled entirely (rare, but Setup returns nil in some paths).
 	err := RebuildTrackerFromEvents(
 		t.Context(), nil,
-		seqFromEvents([]*session.Event{mkEvent(100, 50, true, "x")}),
+		seqFromEvents([]*session.Event{mkEvent(100, 50, false, "x")}),
 		"x",
 		func(string) Pricing { return Pricing{} },
 	)
@@ -116,7 +144,7 @@ func TestRebuildTrackerFromEvents_ModelFallback(t *testing.T) {
 	tracker := NewTracker()
 	// Event with empty ModelVersion — should fall back to default.
 	events := []*session.Event{
-		mkEvent(100, 50, true, ""),
+		mkEvent(100, 50, false, ""),
 	}
 	err := RebuildTrackerFromEvents(
 		t.Context(), tracker, seqFromEvents(events),
@@ -138,7 +166,7 @@ func TestRebuildTrackerFromEvents_IteratorError(t *testing.T) {
 	sentinelErr := errors.New("scan failed")
 	iterWithErr := func(yield func(*session.Event, error) bool) {
 		// First event succeeds.
-		if !yield(mkEvent(100, 50, true, "x"), nil) {
+		if !yield(mkEvent(100, 50, false, "x"), nil) {
 			return
 		}
 		// Second yields an error.
@@ -167,7 +195,7 @@ func TestRebuildTrackerFromEvents_ContextCancel(t *testing.T) {
 
 	err := RebuildTrackerFromEvents(
 		ctx, tracker,
-		seqFromEvents([]*session.Event{mkEvent(100, 50, true, "x")}),
+		seqFromEvents([]*session.Event{mkEvent(100, 50, false, "x")}),
 		"x",
 		func(string) Pricing { return Pricing{} },
 	)

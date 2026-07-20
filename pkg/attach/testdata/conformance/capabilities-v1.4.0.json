@@ -1,0 +1,39 @@
+{
+  "protocol_version": "1.4.0",
+  "event_types": [
+    "status-update",
+    "usage-update",
+    "inbox",
+    "turn-complete",
+    "turn-error",
+    "stream-chunk",
+    "tool-call",
+    "tool-result"
+  ],
+  "server": "core-agent/2.8.0-dev",
+  "features": {
+    "cost_ceiling": false,
+    "cross_daemon": false,
+    "interrupt": true,
+    "mcp": true,
+    "multi_session": true,
+    "observer_mode": false,
+    "perms_stream": true,
+    "specialists": true
+  },
+  "slash_commands": [
+    "btw",
+    "compact",
+    "done",
+    "replan",
+    "subagent"
+  ],
+  "agent": {
+    "name": "core-agent",
+    "version": "v2.8.0-dev",
+    "description": "Autonomous coding assistant for the core-agent repository.",
+    "model": "gemini-3.1-pro",
+    "url": "https://agents.example.com/core-agent"
+  },
+  "caller_id": "alice@example.com"
+}

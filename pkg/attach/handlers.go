@@ -158,6 +158,10 @@ func (h *handlers) register(mux *http.ServeMux) {
 	// PR D — HTTP-driven permission prompts (/perms/stream SSE +
 	// /perms/respond POST); see handlers_prompts.go.
 	h.registerPrompts(mux)
+
+	// GET /whoami — session-agnostic caller-identity echo
+	// (SSE spec v1.4.0 companion, see handlers_whoami.go).
+	h.registerWhoAmI(mux)
 }
 
 // sessionDescriptor is one row in the GET /sessions response.

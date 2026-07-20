@@ -75,6 +75,15 @@ type Broadcaster struct {
 	subs      map[*subscriber]struct{}
 	cancel    context.CancelFunc // cancels the pump goroutine
 	startedAt int64              // last seq the pump has yielded
+
+	// capsBuilder, when non-nil, extends the default boot Capabilities
+	// frame with runtime-derived fields (features, slash_commands,
+	// agent identity, caller_id) per SSE spec v1.4.0. Set by
+	// BroadcasterPool.For from the server-level builder closure so
+	// tests that construct a Broadcaster directly still get the
+	// pre-1.4.0 minimal shape without ceremony. Called per-subscribe
+	// so caller_id reflects the current request's Caller.
+	capsBuilder func(ctx context.Context, entry *Entry) Capabilities
 }
 
 type subscriber struct {
@@ -179,7 +188,7 @@ func (b *Broadcaster) Subscribe(ctx context.Context, since int64) <-chan Frame {
 	// a cumulative usage-update. Direct writes into sub.ch — the
 	// 256-slot buffer has plenty of room for these three small frames
 	// before any other producer touches the channel.
-	b.deliverBootFrames(sub)
+	b.deliverBootFrames(ctx, sub)
 
 	// Replay loop runs in its own goroutine so Subscribe returns
 	// immediately. The same channel carries both replayed and live
@@ -220,12 +229,30 @@ func (b *Broadcaster) Emit(eventType string, payload any) {
 // created). If for any reason a send would block, the subscriber is
 // detached — the operator gets no stream, but the broadcaster is
 // not stalled.
-func (b *Broadcaster) deliverBootFrames(sub *subscriber) {
+//
+// ctx is the subscriber's request context — used by the caps builder
+// to resolve the request's Caller for the caller_id field. When
+// capsBuilder is nil (test callers of NewBroadcaster that skip the
+// pool wiring) the minimal pre-1.4.0 shape is emitted.
+func (b *Broadcaster) deliverBootFrames(ctx context.Context, sub *subscriber) {
 	// 1. Capabilities — required first frame per spec section 2.1.
 	caps := Capabilities{
 		ProtocolVersion: ProtocolVersion,
 		EventTypes:      SupportedEventTypes,
 		Server:          serverBanner(),
+	}
+	if b.capsBuilder != nil {
+		extended := b.capsBuilder(ctx, b.entry)
+		// Preserve the required scaffolding — the builder is only
+		// responsible for the additive v1.4.0 fields; the wire-format
+		// invariants (protocol_version, event_types) stay owned here.
+		caps.Features = extended.Features
+		caps.SlashCommands = extended.SlashCommands
+		caps.Agent = extended.Agent
+		caps.CallerID = extended.CallerID
+		if extended.Server != "" {
+			caps.Server = extended.Server
+		}
 	}
 	if !b.sendTyped(sub, Frame{Type: EventCapabilities, TypedData: caps}) {
 		return
@@ -497,11 +524,37 @@ type BroadcasterPool struct {
 	// Keyed by tripleKey so the (app, user, sid) identity matches
 	// the registry's.
 	bcasts map[tripleKey]*Broadcaster
+
+	// capsBuilder, when non-nil, is stamped onto every Broadcaster
+	// this pool constructs so the SSE v1.4.0 capabilities frame gets
+	// its features/slash_commands/agent/caller_id fields populated
+	// from server-level state (see BroadcasterPool.SetCapabilitiesBuilder).
+	// Set once at server startup; reads are lock-free per the
+	// "capsBuilder set exactly once before first For" contract.
+	capsBuilder func(ctx context.Context, entry *Entry) Capabilities
 }
 
 // NewBroadcasterPool returns an empty pool.
 func NewBroadcasterPool() *BroadcasterPool {
 	return &BroadcasterPool{bcasts: make(map[tripleKey]*Broadcaster)}
+}
+
+// SetCapabilitiesBuilder wires the closure that produces the
+// runtime-derived Capabilities extensions (features/slash_commands/
+// agent/caller_id) for every new Broadcaster this pool constructs.
+// Called once during Server construction; ignored (and a no-op)
+// on subsequent calls to keep the "one builder per pool" contract
+// simple. Passing nil clears the builder — Broadcasters constructed
+// after clear fall back to the minimal pre-1.4.0 shape.
+//
+// Called BEFORE the first For() so pool-created broadcasters see
+// the builder. Existing broadcasters (from an earlier For hit)
+// keep whatever builder they were constructed with — the pool
+// doesn't back-fill.
+func (p *BroadcasterPool) SetCapabilitiesBuilder(fn func(ctx context.Context, entry *Entry) Capabilities) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.capsBuilder = fn
 }
 
 // For returns a Broadcaster for entry, constructing it on first use.
@@ -518,6 +571,7 @@ func (p *BroadcasterPool) For(entry *Entry) (*Broadcaster, error) {
 	if err != nil {
 		return nil, err
 	}
+	b.capsBuilder = p.capsBuilder
 	p.bcasts[key] = b
 	return b, nil
 }

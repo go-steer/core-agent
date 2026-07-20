@@ -235,6 +235,12 @@ func NewServer(opts Options) (*Server, error) {
 		return nil, err
 	}
 	pool := NewBroadcasterPool()
+	// Stamp the v1.4.0 capabilities builder onto the pool BEFORE the
+	// first For() hit so every Broadcaster gets it. The builder
+	// captures Options-derived state (multi_session, cross_daemon,
+	// agent card) once here; per-request state (caller_id) is
+	// resolved on each Subscribe.
+	pool.SetCapabilitiesBuilder(capabilitiesBuilder(opts))
 	mux := http.NewServeMux()
 	h := newHandlers(opts.Registry, pool)
 	h.enforceACL = opts.MultiSessionEnabled

@@ -16,12 +16,21 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+## [2.7.0] — 2026-07-20
+
+The 2.7 minor is the first `core-agent` release that's fully `go install`-able (module path is now `github.com/go-steer/core-agent/v2` per Go's Semantic Import Versioning), ships end-to-end distributed tracing across the daemon + `k8s-event-watcher` + MCP tool calls (verified against [GKE Managed OpenTelemetry](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/managed-otel-gke) landing in Cloud Trace), and closes out the cost-stack sequencing work that started in v2.7.0-dev.3 (per-turn `UsageMetadata`, Vertex explicit context caching, per-tool `latency_ms` sidecar, MCP agentic wrap). Two ergonomics items rounded out the ramp: `.agents/env.yaml` manifests replace sed placeholders in bundles, and multi-daemon `/switch` + `/attach` unifies fleet operation in one TUI.
+
+### Breaking Changes
+
+- **Module path rename** — `github.com/go-steer/core-agent` → `github.com/go-steer/core-agent/v2`. Every v2.x tag before v2.7.0 fails `go install github.com/go-steer/core-agent/...@vX.Y.Z` with `module path must match major version`. Consumer migration is a mechanical `sed` on import paths: `github.com/go-steer/core-agent/pkg/agent` → `github.com/go-steer/core-agent/v2/pkg/agent`. Container images (`ghcr.io/go-steer/core-agent:X.Y.Z`) and source builds (`git checkout && go build`) were never affected and remain a working path for consumers pinned to pre-fix tags. Closes [#206](https://github.com/go-steer/core-agent/issues/206).
+
 ### Changes by Kind
 
 #### Bug or Regression
 - OTel: Cloud Trace was silently dropping every span our daemon emitted because the resource lacked the required `gcp.project_id` attribute (Cloud Trace's OTLP-receiver ingress hard-rejects batches without it). ADK-go's telemetry setup stamps the attribute from `cfg.gcpResourceProject` — which was empty in our path — and merge order let the empty value win over anything the SDK parsed from `OTEL_RESOURCE_ATTRIBUTES`. Fix: `pkg/telemetry.Setup` now reads `GOOGLE_CLOUD_PROJECT` (already set for Vertex) and passes it via `adktelemetry.WithGcpResourceProject`. Closes [#334](https://github.com/go-steer/core-agent/pull/334).
 - OTel: every span was being exported twice with identical span_id — #333's explicit-exporter fix inadvertently doubled up with ADK's implicit env-var-driven exporter (two BatchSpanProcessors on one TracerProvider). Removed our explicit exporter; ADK's implicit path handles it. Visibility hooks from #333 (SDK logger + error handler) kept. Closes [#335](https://github.com/go-steer/core-agent/pull/335).
 - OTel: attach server tracing was flooded with per-poll GET spans (`/status`, `/usage`, `/tools`, ...) from the remote TUI's ~1-2s status-bar refresh cycle. Added `otelhttp.WithFilter` on the attach handler to skip tracing for GET/HEAD on the eight known hydration-read paths. Writes, SSE streams, and admin ops continue to trace. Also fixed in [#335](https://github.com/go-steer/core-agent/pull/335).
+- OTel: filter also skips bare `GET /sessions` (session-picker enumeration) and `GET /peers` (multi-daemon peer enumeration) — both fired on every TUI startup + fleet-view refresh and slipped past #335's per-session regex. Closes [#340](https://github.com/go-steer/core-agent/pull/340).
 - Multi-session: aggregate session totals (`/stats`, TUI status-bar cost) showed `0 in / 0 out / $0.00` for sessions resumed after daemon eviction — the per-session tracker isolated in #275 was recreated fresh on resume but never rebuilt from the persisted eventlog. New `usage.RebuildTrackerFromEvents` helper replays UsageMetadata-bearing events into the fresh tracker on the `SessionResumer` path in `cmd/core-agent/multi_session.go`. Skips zero-token events (Vertex error-path artifacts) and honors context cancellation. Closes [#336](https://github.com/go-steer/core-agent/pull/336) + fixed via [#337](https://github.com/go-steer/core-agent/pull/337).
 
 #### Other (Cleanup)
@@ -30,6 +39,7 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 #### Documentation
 - OTel concept page: new "Distributed tracing across binaries" section documenting the shipped end-to-end trace flow — W3C propagator wiring, `otelhttp` handler on the attach server, `otelhttp` transport on the MCP client + k8s-event-watcher inject client, resulting cross-binary span waterfall. Closes [#217](https://github.com/go-steer/core-agent/issues/217); a still-open follow-up ([#325](https://github.com/go-steer/core-agent/issues/325)) tracks turning up the Vertex-side genai client's HTTP spans (which turn out to be emitted already — worth confirming). [#326](https://github.com/go-steer/core-agent/pull/326).
+- Pre-GA docs sweep — README/AGENTS.md/CONTRIBUTING.md refresh for the Astro Starlight docs site migration (Hugo/Docsy → Astro Starlight, Milestones references removed); `dev/tools/docs-lint` path corrected from the pre-Astro `docs/site/content` to `docs/site/src/content` so lint stops silently no-op'ing; `deploy/components/otel/` sets `OTEL_SERVICE_NAME` explicitly (the GKE `Instrumentation` CR does not auto-inject it, contrary to earlier docs). [#339](https://github.com/go-steer/core-agent/pull/339).
 
 ## [2.7.0-dev.5] — 2026-07-20
 

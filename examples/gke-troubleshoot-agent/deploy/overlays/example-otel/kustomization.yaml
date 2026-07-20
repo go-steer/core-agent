@@ -40,13 +40,15 @@ resources:
 components:
   - ../../components/otel
 
-# Override the composed example's 2.6.0 tag pinning to the first
-# release that includes the OTEL_TRACES_EXPORTER env override
-# (PR #315, shipped in v2.7.0-dev.4). Without this, the daemon
-# would ignore the exporter env var and stay on whatever the base
-# config.json says.
+# Pin the composed example's images to the v2.7.0 GA — the first
+# stable release carrying the OTEL_TRACES_EXPORTER env override
+# (PR #315, initially shipped in v2.7.0-dev.4) plus the OTel span-
+# duplication and Cloud Trace resource fixes from #333–#340.
+# Without this pin, kustomize would fall through to the base
+# example overlay's 2.6.0 tag and the daemon would ignore the
+# exporter env var.
 images:
   - name: ghcr.io/go-steer/core-agent
-    newTag: "2.7.0-dev.4"
+    newTag: "2.7.0"
   - name: ghcr.io/go-steer/k8s-event-watcher
-    newTag: "2.7.0-dev.4"
+    newTag: "2.7.0"

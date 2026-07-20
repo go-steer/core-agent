@@ -48,7 +48,7 @@ var (
 	// v2.4→v2.5→v2.6 (skipped bumps produced stale --version output
 	// on go-installed binaries during the v2.7.0-dev.N demo drive)
 	// can't happen again silently.
-	Version = "v2.7.0-dev"
+	Version = "v2.7.0"
 
 	// Commit is the git SHA the binary was built from. Defaults to
 	// "none" so the debug.BuildInfo fallback can detect that nothing

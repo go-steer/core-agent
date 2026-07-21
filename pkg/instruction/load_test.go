@@ -835,3 +835,155 @@ func TestLoad_AgentsSubdir_PropagatesIncludeErrors(t *testing.T) {
 		t.Errorf("error should mention 'not found': %v", err)
 	}
 }
+
+// --- WithHomeAgentsRoot ---
+//
+// Home-agents scope is the portable $HOME/.agents/ root — a third
+// scope layered between userRoot (typically $HOME/.core-agent/) and
+// projectRoot. Its bodies concatenate; scope=user-home; visited-set
+// dedupes across every scope.
+
+func TestLoad_HomeAgentsRoot_Loaded(t *testing.T) {
+	t.Parallel()
+	homeAgents := t.TempDir()
+	writeFile(t, homeAgents, "AGENTS.md", "PORTABLE-HOME-BODY")
+
+	loaded, err := Load("", "", WithHomeAgentsRoot(homeAgents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(loaded.Instruction, "PORTABLE-HOME-BODY") {
+		t.Errorf("home-agents body missing:\n%s", loaded.Instruction)
+	}
+	if len(loaded.Sources) != 1 || loaded.Sources[0].Scope != "user-home" {
+		t.Errorf("expected 1 source with scope=user-home, got %+v", loaded.Sources)
+	}
+}
+
+func TestLoad_HomeAgentsRoot_ConcatenatesWithOtherScopes(t *testing.T) {
+	t.Parallel()
+	user := t.TempDir()
+	homeAgents := t.TempDir()
+	project := t.TempDir()
+
+	writeFile(t, user, userMemoryName, "USER-BODY")
+	writeFile(t, homeAgents, userMemoryName, "HOME-AGENTS-BODY")
+	writeFile(t, project, "AGENTS.md", "PROJECT-BODY")
+
+	loaded, err := Load(project, user, WithHomeAgentsRoot(homeAgents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"USER-BODY", "HOME-AGENTS-BODY", "PROJECT-BODY"} {
+		if !strings.Contains(loaded.Instruction, want) {
+			t.Errorf("missing %s in output:\n%s", want, loaded.Instruction)
+		}
+	}
+	// Ordering: user → user-home → project. Verify by index.
+	iUser := strings.Index(loaded.Instruction, "USER-BODY")
+	iHome := strings.Index(loaded.Instruction, "HOME-AGENTS-BODY")
+	iProj := strings.Index(loaded.Instruction, "PROJECT-BODY")
+	if iUser >= iHome || iHome >= iProj {
+		t.Errorf("scope order wrong (want user<user-home<project): indices user=%d home=%d proj=%d\n%s",
+			iUser, iHome, iProj, loaded.Instruction)
+	}
+}
+
+func TestLoad_HomeAgentsRoot_AgentsDDirectoryScanned(t *testing.T) {
+	t.Parallel()
+	homeAgents := t.TempDir()
+	writeFile(t, homeAgents, "AGENTS.md", "PRIMARY")
+	writeFile(t, filepath.Join(homeAgents, "AGENTS.d"), "01-extra.md", "AGENTSD-EXTRA")
+
+	loaded, err := Load("", "", WithHomeAgentsRoot(homeAgents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(loaded.Instruction, "PRIMARY") || !strings.Contains(loaded.Instruction, "AGENTSD-EXTRA") {
+		t.Errorf("home-agents primary + AGENTS.d/ should both load:\n%s", loaded.Instruction)
+	}
+}
+
+func TestLoad_HomeAgentsRoot_MissingDirectorySilentlySkipped(t *testing.T) {
+	t.Parallel()
+	// Only project set; home-agents points at a nonexistent path.
+	project := t.TempDir()
+	writeFile(t, project, "AGENTS.md", "PROJECT-ONLY")
+
+	loaded, err := Load(project, "", WithHomeAgentsRoot("/nonexistent/home/agents/path"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(loaded.Instruction, "PROJECT-ONLY") {
+		t.Errorf("project body missing:\n%s", loaded.Instruction)
+	}
+	// No user-home scope source should have leaked in.
+	for _, s := range loaded.Sources {
+		if s.Scope == "user-home" {
+			t.Errorf("unexpected user-home source when home-agents path is missing: %+v", s)
+		}
+	}
+}
+
+func TestLoad_HomeAgentsRoot_EmptyOptionSkipsScope(t *testing.T) {
+	t.Parallel()
+	project := t.TempDir()
+	writeFile(t, project, "AGENTS.md", "PROJECT-ONLY")
+
+	// WithHomeAgentsRoot("") — behaves identically to not passing the option.
+	loaded, err := Load(project, "", WithHomeAgentsRoot(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(loaded.Instruction, "PROJECT-ONLY") {
+		t.Errorf("project body missing:\n%s", loaded.Instruction)
+	}
+	for _, s := range loaded.Sources {
+		if s.Scope == "user-home" {
+			t.Errorf("unexpected user-home source with empty option: %+v", s)
+		}
+	}
+}
+
+// TestLoad_HomeAgentsRoot_DoesNotDescendIntoNestedAgentsDir pins that
+// the loader does NOT look for `$HOME/.agents/.agents/AGENTS.md` — the
+// root IS already .agents/, so a nested .agents/ would be nonsensical.
+// If this test starts failing, someone swapped loadScope for
+// loadScopeWithFallback and re-introduced the double-nested weirdness.
+func TestLoad_HomeAgentsRoot_DoesNotDescendIntoNestedAgentsDir(t *testing.T) {
+	t.Parallel()
+	homeAgents := t.TempDir()
+	// Create a bait file at $HOME/.agents/.agents/AGENTS.md that should
+	// NOT be loaded (the .agents/ subdir under a home-agents root is
+	// pathological — operators shouldn't create it, and the loader
+	// mustn't reward them for doing so).
+	writeFile(t, filepath.Join(homeAgents, ".agents"), "AGENTS.md", "BAIT-NESTED")
+
+	loaded, err := Load("", "", WithHomeAgentsRoot(homeAgents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(loaded.Instruction, "BAIT-NESTED") {
+		t.Errorf("nested .agents/.agents/AGENTS.md must not be loaded:\n%s", loaded.Instruction)
+	}
+}
+
+// TestLoad_HomeAgentsRoot_VisitedSetDedupsCrossScope pins that the
+// same file reachable from both the home-agents scope and the project
+// scope (via a symlink or literal path collision) loads exactly once
+// — the visited-set is shared across all scopes.
+func TestLoad_HomeAgentsRoot_VisitedSetDedupsCrossScope(t *testing.T) {
+	t.Parallel()
+	shared := t.TempDir()
+	writeFile(t, shared, "AGENTS.md", "SHARED-CROSS-SCOPE")
+
+	// Same directory passed as BOTH home-agents and project — the
+	// canonical-path visited-set should dedupe.
+	loaded, err := Load(shared, "", WithHomeAgentsRoot(shared))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(loaded.Instruction, "SHARED-CROSS-SCOPE"); got != 1 {
+		t.Errorf("SHARED-CROSS-SCOPE should appear once via cross-scope dedup, got %d:\n%s", got, loaded.Instruction)
+	}
+}

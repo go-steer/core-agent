@@ -5,7 +5,7 @@ title: Configuration
 
 ## The `.agents/` directory
 
-`core-agent` walks up from the working directory looking for a folder named `.agents/`, analogous to how `git` looks for `.git`. The first match wins. Everything `core-agent` reads or writes lives there:
+`core-agent` walks up from the working directory looking for a folder named `.agents/`, analogous to how `git` looks for `.git`. The first match wins. Everything `core-agent` reads or writes for a project lives there:
 
 ```
 .agents/
@@ -17,6 +17,22 @@ title: Configuration
 
 You don't have to create `.agents/` — without it, `core-agent` runs with built-in defaults and skips the project-specific bits (no transcripts, no MCP, no skills). It's required only when you want to customize.
 
+### User-scope directories
+
+Beyond the project `.agents/`, `core-agent` reads a few user-scope paths for assets that follow you across projects:
+
+| Path | Contents | Notes |
+|---|---|---|
+| `~/.agents/` | `AGENTS.md`, `AGENTS.d/*.md`, `skills/`, `mcp.json` | Portable user assets, layered under project scope but above the legacy `~/.core-agent/` fallback. Use this as the primary user root. |
+| `~/.core-agent/` | `AGENTS.md`, `AGENTS.d/*.md`, `skills/`, `pricing.json` | Historical user root plus runtime cache (`pricing.json` — auto-fetched pricing data, `/pricing set` writes). `AGENTS.md` + `skills/` remain read here as a lower-precedence fallback. |
+
+Per-loader precedence (higher-scope entries win on collision):
+
+- **Skills**: `<project>/.agents/skills/` > `~/.agents/skills/` > `~/.core-agent/skills/` — merged via overlay; project wins on skill-name collision.
+- **AGENTS.md**: user (`~/.core-agent/`) → user-home (`~/.agents/`) → project — concatenated in order; canonical-path visited-set dedupes cross-scope duplicates.
+- **MCP servers**: `<project>/.agents/mcp.json` > `~/.agents/mcp.json` — merged by server-name key; project wins on collision. Non-server fields (`agentic_wrap*`) take the first explicitly-set value.
+- **Config**: `<project>/.agents/config.json` only — no user-scope layering today. If you want personal defaults, use the CLI `-c ~/.agents/config.json` to point at a HOME file explicitly.
+
 ---
 
 ## Multi-file instructions (v2.3+)
@@ -25,21 +41,25 @@ You don't have to create `.agents/` — without it, `core-agent` runs with built
 
 ### Where the loader looks
 
-Both primitives work at **project scope** and at **user-global scope**, with two valid locations per scope:
+Both primitives work at **three scopes**, loaded and concatenated in this order:
 
 | Scope | Searched first | Fallback location |
 |---|---|---|
+| User (`~/.core-agent/`) | `~/.core-agent/.agents/AGENTS.md` and `~/.core-agent/.agents/AGENTS.d/*.md` | `~/.core-agent/AGENTS.md` and `~/.core-agent/AGENTS.d/*.md` |
+| User-home (`~/.agents/`) | `~/.agents/AGENTS.md` and `~/.agents/AGENTS.d/*.md` | — (the root IS already `.agents/`; no nested fallback) |
 | Project | `<project-root>/.agents/AGENTS.md` and `<project-root>/.agents/AGENTS.d/*.md` | `<project-root>/AGENTS.md` and `<project-root>/AGENTS.d/*.md` |
-| User | `~/.core-agent/.agents/AGENTS.md` and `~/.core-agent/.agents/AGENTS.d/*.md` | `~/.core-agent/AGENTS.md` and `~/.core-agent/AGENTS.d/*.md` |
 
-Both locations load **additively** when both exist — `.agents/AGENTS.md` content appears first in the prompt, followed by `<root>/AGENTS.md` content. The per-load canonical-path **dedup** ensures any single file reached from multiple paths (via `@include`, via both AGENTS.d directories, via cross-scope symlinks) loads exactly once.
+Each scope's primary file + `AGENTS.d/*.md` are concatenated into the prompt in the order above (user → user-home → project). The per-load canonical-path **dedup** ensures any single file reached from multiple paths (via `@include`, via both AGENTS.d directories, via cross-scope symlinks) loads exactly once.
 
-Why two locations? Operators following the "everything agent-related lives under `.agents/`" convention (the `core-agent` / `kube-agents` recipe pattern) drop their files there; operators following the broader-ecosystem `<project-root>/AGENTS.md` convention (Cursor, Antigravity, Hermes) keep them at root. Both work. Mixing is supported — root `AGENTS.md` as the cross-tool canonical document plus `.agents/AGENTS.md` for core-agent-specific additions is a legitimate layout.
+Why two user-level roots? `~/.agents/` is the portable cross-tool convention — the same layout you'd use inside a project's `.agents/` but at `$HOME`. `~/.core-agent/` is the historical core-agent-specific root and remains supported. Drop your rules in whichever fits; both load additively.
+
+Within the project scope, both locations (`.agents/` subdir and root) load additively — `.agents/AGENTS.md` content appears first, followed by `<root>/AGENTS.md`. Operators following the "everything agent-related lives under `.agents/`" convention drop their files in the subdir; operators following the broader-ecosystem `<project-root>/AGENTS.md` convention (Cursor, Antigravity, Hermes) keep them at root. Both work. Mixing is supported — root `AGENTS.md` as the cross-tool canonical document plus `.agents/AGENTS.md` for core-agent-specific additions is a legitimate layout.
 
 Files within each scope load in this order:
 
-1. User scope: primary `AGENTS.md` (from either location), then `AGENTS.d/*.md` lexically (from both directories, merged).
-2. Project scope: primary `AGENTS.md` (or `CLAUDE.md` / `GEMINI.md`) from either location, then `AGENTS.d/*.md` lexically (from both directories, merged).
+1. User scope (`~/.core-agent/`): primary `AGENTS.md` from either location, then `AGENTS.d/*.md` lexically (from both directories, merged).
+2. User-home scope (`~/.agents/`): primary `AGENTS.md`, then `AGENTS.d/*.md` lexically.
+3. Project scope: primary `AGENTS.md` (or `CLAUDE.md` / `GEMINI.md`) from either location, then `AGENTS.d/*.md` lexically (from both directories, merged).
 
 ### `@include <relative-path>` directive
 

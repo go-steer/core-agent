@@ -26,10 +26,10 @@ A production-grade Go substrate for multi-turn LLM agents, built on the [Google 
 - Mock providers for credential-free testing: `--provider=echo` and `--provider=scripted --script=path.jsonl`; `--record-to=path.jsonl` captures any real session for later replay.
 
 **Instructions, tools, MCP, skills**
-- `AGENTS.md` primary + `AGENTS.d/*.md` overlay directory + `@include <path>` directive for composable, multi-file system instructions; both user (`~/.core-agent/`) and project scope, with `CLAUDE.md` / `GEMINI.md` fallbacks.
+- `AGENTS.md` primary + `AGENTS.d/*.md` overlay directory + `@include <path>` directive for composable, multi-file system instructions; three scopes (user `~/.core-agent/`, user-home `~/.agents/`, project) concatenated in order, with `CLAUDE.md` / `GEMINI.md` fallbacks.
 - Built-in tool catalog covering files (`read_file`, `read_many_files`, `write_file`, `edit_file`, `delete_file`, `stat`, `list_dir`), search (`glob`, `grep`), data + network (`json_query`, `fetch_url`), shell (`bash`), planning (`todo`, opt-in `record_plan`), and interactive prompting (opt-in `ask_user`). Disable the whole suite with `--no-builtin-tools` or specific entries with `--disable-tools=bash,write_file`.
-- MCP servers declared in `.agents/mcp.json`; stdio and Streamable HTTP transports (including remote MCP with Google OAuth); tools are namespaced (`<server>_<tool>`) and route through the permission gate.
-- Claude-compatible skills auto-discovered from `.agents/skills/<name>/SKILL.md` (project) and `~/.core-agent/skills/` (user-global).
+- MCP servers declared in `.agents/mcp.json` (project) and/or `~/.agents/mcp.json` (portable user scope); stdio and Streamable HTTP transports (including remote MCP with Google OAuth); tools are namespaced (`<server>_<tool>`) and route through the permission gate.
+- Claude-compatible skills auto-discovered from `.agents/skills/<name>/SKILL.md` (project), `~/.agents/skills/` (portable user), and `~/.core-agent/skills/` (legacy user-global fallback).
 
 **Permissions**
 - `ask` / `allow` / `yolo` modes with pattern-based allow/deny lists, path-scope enforcement on file tools, URL-scope allowlist for `fetch_url`, and a non-overridable `bash` denylist that catches `rm -rf /`-class mistakes.

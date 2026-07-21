@@ -68,10 +68,20 @@ The Anthropic SKILL.md spec allows additional fields (`allowed_tools`, `version`
 
 ## Discovery
 
-At startup, `core-agent`:
+At startup, `core-agent` reads skills from three roots in precedence order and merges them into one virtual filesystem. On name collision the higher-precedence source wins.
 
-1. Stats `<agentsDir>/skills/`. Missing directory → no-op (most projects don't use skills).
-2. Lists frontmatters via ADK's `skill.NewFileSystemSource`.
+| Precedence | Path | Scope |
+|---|---|---|
+| 1 (highest) | `<agentsDir>/skills/` (typically `<project>/.agents/skills/`) | Project — checked in to the repo |
+| 2 | `~/.agents/skills/` | Portable user assets |
+| 3 (lowest) | `~/.core-agent/skills/` | User-global fallback |
+
+`~/.agents/` is the portable user root — the same layout you'd use inside a project's `.agents/` but at `$HOME`. Drop a skill there once and every project picks it up, even in harness setups (e.g. scion) that pre-create a workspace `.agents/skills/` that would otherwise shadow it. `~/.core-agent/skills/` remains supported as a lower-precedence fallback.
+
+The loader:
+
+1. Stats each of the three `skills/` directories. Missing directories are silently skipped (most operators have none or one populated).
+2. Lists frontmatters via ADK's `skill.NewFileSystemSource` over the merged view.
 3. If at least one valid frontmatter is found, builds a `skilltoolset` and registers it as a single ADK Toolset.
 4. If a [permission gate](/concepts/permissions/) is configured, wraps the toolset with the gate under the `skill` namespace.
 
@@ -109,6 +119,8 @@ The detail string surfaced in prompts is `<skill_name> <json-args>` (truncated).
 ## Empty bundles
 
 A `.agents/skills/` directory that exists but contains no valid `SKILL.md` bundles is treated as a no-op (returns an empty `Skills`). No error, no toolset registered. This means you can scaffold the directory in advance and add bundles incrementally.
+
+The same holds for the fallback roots — an empty `~/.agents/skills/` or `~/.core-agent/skills/` contributes nothing to the merged view, so scaffolding one root before populating it is safe.
 
 ---
 

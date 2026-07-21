@@ -581,8 +581,16 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 
 	userHome, _ := os.UserHomeDir()
 	coreHome := ""
+	homeAgentsDir := ""
 	if userHome != "" {
 		coreHome = filepath.Join(userHome, ".core-agent")
+		// Portable user-scope root: $HOME/.agents/. Read by the skills,
+		// mcp, and instruction loaders as a layer between project-scope
+		// (workspace) and ~/.core-agent/. Lets a user park skills /
+		// mcp.json / AGENTS.md once and have every session pick them up,
+		// even when a harness (e.g. scion) pre-creates an empty
+		// workspace .agents/ that would otherwise shadow it.
+		homeAgentsDir = filepath.Join(userHome, ".agents")
 	}
 
 	if yolo {
@@ -627,6 +635,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// a request-time Caller threads through — γ wires the call site;
 	// future session-creation flows pass the resolved Caller.Identity.
 	loaded, err := instruction.LoadForSession(projectRoot, coreHome, "", cfg.Attach.MultiSession.UsersDir,
+		instruction.WithHomeAgentsRoot(homeAgentsDir),
 		instruction.WithInterpolator(envResolver.InterpolateFunc()))
 	if err != nil {
 		// Fatal: malformed @include / escaped path / missing target / non-UTF-8
@@ -769,7 +778,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		// Load errors surface later inside mcp.Build itself; here we
 		// just default to "no config-side opt-in" so a misconfigured
 		// mcp.json doesn't accidentally light up the LLM subagent.
-		mcpCfg, _ := mcp.Load(agentsDir)
+		mcpCfg, _ := mcp.LoadAll(agentsDir, homeAgentsDir)
 		llmEnabled := mcpAgenticWrapLLM || mcpCfg.AgenticWrapLLMEnabled()
 		llmModelOverride := mcpAgenticWrapModel
 		if llmModelOverride == "" {
@@ -790,11 +799,12 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			}
 		}
 	}
-	mcpServers, mcpToolsets, mcpErr := mcp.Build(ctx, agentsDir, send, gate, makeMCPElicitor(), digestOpts)
+	mcpServers, mcpToolsets, mcpErr := mcp.Build(ctx, agentsDir, homeAgentsDir, send, gate, makeMCPElicitor(), digestOpts)
 	if mcpErr != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: mcp: %v\n", mcpErr)
 	}
 	loadedSkills, skillsErr := skills.LoadAll(ctx, agentsDir, coreHome, gate,
+		skills.WithHomeAgentsSkillsDir(homeAgentsDir),
 		skills.WithInterpolator(envResolver.InterpolateFunc()))
 	if skillsErr != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: skills: %v\n", skillsErr)
@@ -1015,7 +1025,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			// agent itself) surfaces without a daemon restart. Cheap
 			// — a few file stats + reads of small files capped at
 			// 32 KiB each.
-			fresh, _ := instruction.Load(projectRoot, coreHome)
+			fresh, _ := instruction.Load(projectRoot, coreHome, instruction.WithHomeAgentsRoot(homeAgentsDir))
 			out := make([]attach.MemorySource, 0, len(fresh.Sources))
 			for _, s := range fresh.Sources {
 				out = append(out, attach.MemorySource{Scope: s.Scope, Path: s.Path, Size: s.Bytes})
@@ -1026,7 +1036,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			// Re-walk on every call so newly-dropped SKILL.md bundles
 			// surface without restart. The merge across project +
 			// user-global sources happens inside skills.LoadAll.
-			fresh, err := skills.LoadAll(ctx, agentsDir, coreHome, gate)
+			fresh, err := skills.LoadAll(ctx, agentsDir, coreHome, gate, skills.WithHomeAgentsSkillsDir(homeAgentsDir))
 			if err != nil {
 				return nil
 			}
@@ -1087,12 +1097,12 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			// for now MCP comes back as a configuration-only re-read
 			// note.
 			out := attach.ReloadResponse{}
-			if _, err := instruction.Load(projectRoot, coreHome); err != nil {
+			if _, err := instruction.Load(projectRoot, coreHome, instruction.WithHomeAgentsRoot(homeAgentsDir)); err != nil {
 				out.Errors = append(out.Errors, fmt.Sprintf("memory: %v", err))
 			} else {
 				out.Memory = true
 			}
-			if _, err := skills.LoadAll(ctx, agentsDir, coreHome, gate); err != nil {
+			if _, err := skills.LoadAll(ctx, agentsDir, coreHome, gate, skills.WithHomeAgentsSkillsDir(homeAgentsDir)); err != nil {
 				out.Errors = append(out.Errors, fmt.Sprintf("skills: %v", err))
 			} else {
 				out.Skills = true
@@ -1100,7 +1110,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			// MCP: confirm the on-disk config still parses; surface
 			// the limitation so the operator doesn't expect a live
 			// server restart.
-			if _, err := mcp.Load(agentsDir); err != nil {
+			if _, err := mcp.LoadAll(agentsDir, homeAgentsDir); err != nil {
 				out.Errors = append(out.Errors, fmt.Sprintf("mcp config: %v", err))
 			}
 			out.MCP = false
@@ -1424,6 +1434,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 				eventlogHandle: eventlogHandle,
 				projectRoot:    projectRoot,
 				userRoot:       coreHome,
+				homeAgentsDir:  homeAgentsDir,
 				usersDir:       cfg.Attach.MultiSession.UsersDir,
 				envInterp:      envResolver.InterpolateFunc(),
 				registry:       attachReg,
@@ -1691,6 +1702,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			LoadedSkills:  loadedSkills,
 			AgentsDir:     agentsDir,
 			CoreHome:      coreHome,
+			HomeAgentsDir: homeAgentsDir,
 			ProjectRoot:   projectRoot,
 			EnvInterp:     envResolver.InterpolateFunc(),
 			InitialPrompt: initialPrompt,

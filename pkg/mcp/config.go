@@ -210,8 +210,68 @@ func (s ServerSpec) Validate(name string) error {
 
 // Load reads <agentsDir>/mcp.json. A missing file is treated as
 // "no servers configured" — not an error, since most projects never
-// declare MCP servers.
+// declare MCP servers. Thin wrapper over LoadAll for callers that
+// only care about a single scope.
 func Load(agentsDir string) (Servers, error) {
+	return LoadAll(agentsDir)
+}
+
+// LoadAll reads mcp.json from each path in order and merges the
+// results. HIGHER-PRECEDENCE PATHS APPEAR FIRST: on server-name
+// collision the first path that declares the server wins, and
+// non-server fields (AgenticWrap*, AgenticWrapThreshold,
+// AgenticWrapModel) take the first explicitly-set value walking
+// the list.
+//
+// Empty paths in the list are silently skipped so callers can pass
+// a possibly-empty homeAgentsDir without guarding.
+//
+// Typical scion-style call: LoadAll(projectAgentsDir, homeAgentsDir)
+// yields project servers with any home-agents servers by unused
+// names filled in.
+func LoadAll(paths ...string) (Servers, error) {
+	var merged Servers
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		s, err := loadOne(p)
+		if err != nil {
+			return Servers{}, err
+		}
+		// Servers map: first path wins per name.
+		for name, spec := range s.Servers {
+			if merged.Servers == nil {
+				merged.Servers = make(map[string]ServerSpec)
+			}
+			if _, exists := merged.Servers[name]; !exists {
+				merged.Servers[name] = spec
+			}
+		}
+		// Non-server fields: first explicit value wins. A nil *bool
+		// or zero int/string means "not set at this scope."
+		if merged.Version == 0 {
+			merged.Version = s.Version
+		}
+		if merged.AgenticWrap == nil && s.AgenticWrap != nil {
+			merged.AgenticWrap = s.AgenticWrap
+		}
+		if merged.AgenticWrapThreshold == 0 && s.AgenticWrapThreshold > 0 {
+			merged.AgenticWrapThreshold = s.AgenticWrapThreshold
+		}
+		if merged.AgenticWrapLLM == nil && s.AgenticWrapLLM != nil {
+			merged.AgenticWrapLLM = s.AgenticWrapLLM
+		}
+		if merged.AgenticWrapModel == "" && s.AgenticWrapModel != "" {
+			merged.AgenticWrapModel = s.AgenticWrapModel
+		}
+	}
+	return merged, nil
+}
+
+// loadOne reads and validates a single agentsDir/mcp.json. Missing
+// file is not an error (returns zero Servers).
+func loadOne(agentsDir string) (Servers, error) {
 	if agentsDir == "" {
 		return Servers{}, nil
 	}

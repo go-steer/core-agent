@@ -24,11 +24,13 @@ cp -r /path/to/core-agent/SKILLS/cli-setup .agents/skills/
 **User-global install** (every project for this operator):
 
 ```bash
-mkdir -p ~/.core-agent/skills
-cp -r /path/to/core-agent/SKILLS/cli-setup ~/.core-agent/skills/
+mkdir -p ~/.agents/skills
+cp -r /path/to/core-agent/SKILLS/cli-setup ~/.agents/skills/
 ```
 
-`core-agent` (v2.1+) auto-discovers both `~/.core-agent/skills/` (user-global) and `.agents/skills/` (project-scoped) and merges them. On name collision, the project-scoped skill wins — handy for forking the generic bundle and shipping a project-specific variant under the same name.
+`core-agent` auto-discovers skills from three roots, in this precedence order: `.agents/skills/` (project) > `~/.agents/skills/` (portable user) > `~/.core-agent/skills/` (legacy user-global fallback). Sources merge into a single view; on name collision, the higher-precedence source wins — handy for forking the generic bundle and shipping a project-specific variant under the same name.
+
+`~/.agents/skills/` is the recommended user root. `~/.core-agent/skills/` remains supported for existing installs.
 
 ## Why ship these as skills, not just docs
 

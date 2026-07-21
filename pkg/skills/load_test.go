@@ -250,3 +250,91 @@ func TestLoadAll_ProjectExistsUserHomeMissing(t *testing.T) {
 		t.Errorf("got %+v", got.Infos)
 	}
 }
+
+func TestLoadAll_HomeAgentsSourceOnly(t *testing.T) {
+	t.Parallel()
+	homeAgents := t.TempDir()
+	writeSkill(t, homeAgents, "portable", "lives in home-agents")
+
+	got, err := LoadAll(context.Background(), "", "", nil, WithHomeAgentsSkillsDir(homeAgents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Infos) != 1 || got.Infos[0].Name != "portable" {
+		t.Errorf("expected portable skill from home-agents, got %+v", got.Infos)
+	}
+}
+
+func TestLoadAll_ThreeSourcePrecedence(t *testing.T) {
+	t.Parallel()
+	project := t.TempDir()
+	homeAgents := t.TempDir()
+	coreHome := t.TempDir()
+
+	// Same skill name in all three sources with different descriptions.
+	// project > home-agents > core-home per docs/site precedence.
+	writeSkill(t, project, "shared", "PROJECT")
+	writeSkill(t, homeAgents, "shared", "HOME-AGENTS")
+	writeSkill(t, coreHome, "shared", "CORE-HOME")
+
+	// Also put unique skills at each level to confirm all three sources
+	// are actually consulted, not just the winner.
+	writeSkill(t, project, "only-project", "p")
+	writeSkill(t, homeAgents, "only-home-agents", "h")
+	writeSkill(t, coreHome, "only-core-home", "c")
+
+	got, err := LoadAll(context.Background(), project, coreHome, nil, WithHomeAgentsSkillsDir(homeAgents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]string{}
+	for _, info := range got.Infos {
+		names[info.Name] = info.Description
+	}
+	if names["shared"] != "PROJECT" {
+		t.Errorf("shared skill description = %q, want PROJECT (project must win over home-agents and core-home)", names["shared"])
+	}
+	for _, want := range []string{"only-project", "only-home-agents", "only-core-home"} {
+		if _, ok := names[want]; !ok {
+			t.Errorf("missing skill %q — all three sources should be consulted; got %+v", want, names)
+		}
+	}
+}
+
+func TestLoadAll_HomeAgentsShadowsCoreHomeOnCollision(t *testing.T) {
+	t.Parallel()
+	homeAgents := t.TempDir()
+	coreHome := t.TempDir()
+
+	// No project source; home-agents should beat core-home on collision.
+	writeSkill(t, homeAgents, "cli-setup", "HOME-AGENTS version")
+	writeSkill(t, coreHome, "cli-setup", "CORE-HOME version")
+
+	got, err := LoadAll(context.Background(), "", coreHome, nil, WithHomeAgentsSkillsDir(homeAgents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Infos) != 1 {
+		t.Fatalf("expected 1 skill (home-agents shadows core-home), got %d: %+v", len(got.Infos), got.Infos)
+	}
+	if got.Infos[0].Description != "HOME-AGENTS version" {
+		t.Errorf("description = %q, want HOME-AGENTS version", got.Infos[0].Description)
+	}
+}
+
+func TestLoadAll_HomeAgentsMissingSilentlySkipped(t *testing.T) {
+	t.Parallel()
+	project := t.TempDir()
+	writeSkill(t, project, "p1", "p1")
+
+	// homeAgentsDir passed but the dir doesn't exist at all — should
+	// silently degrade, not error.
+	got, err := LoadAll(context.Background(), project, "", nil,
+		WithHomeAgentsSkillsDir("/nonexistent/path/that/does/not/exist"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Infos) != 1 || got.Infos[0].Name != "p1" {
+		t.Errorf("got %+v", got.Infos)
+	}
+}

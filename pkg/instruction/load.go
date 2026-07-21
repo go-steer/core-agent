@@ -111,6 +111,14 @@ type loadOptions struct {
 	// (identity function semantics). Wire from pkg/agentenv via
 	// (*agentenv.Resolver).InterpolateFunc().
 	interp func(string) string
+
+	// homeAgentsRoot is an additional user-scope root (typically
+	// $HOME/.agents/) loaded between the userRoot and projectRoot
+	// scopes. Empty = skip. Unlike userRoot / projectRoot, this
+	// scope loads via loadScope directly — the root IS already an
+	// .agents/ dir, so descending into a nested .agents/ subdir
+	// would be nonsensical.
+	homeAgentsRoot string
 }
 
 // WithInterpolator supplies a string transform applied to every loaded
@@ -119,6 +127,16 @@ type loadOptions struct {
 // "no interpolation."
 func WithInterpolator(fn func(string) string) Option {
 	return func(o *loadOptions) { o.interp = fn }
+}
+
+// WithHomeAgentsRoot supplies the portable user-scope agents root
+// (typically $HOME/.agents/) as a scope loaded between userRoot and
+// projectRoot. Its AGENTS.md and AGENTS.d/*.md concatenate into the
+// system prompt with scope="user-home"; the visited-set dedupes
+// against every other scope. Empty is legal and equals "no
+// home-agents scope."
+func WithHomeAgentsRoot(dir string) Option {
+	return func(o *loadOptions) { o.homeAgentsRoot = dir }
 }
 
 // Load resolves the project + user memory files and returns the
@@ -174,6 +192,20 @@ func LoadForSession(projectRoot, userRoot, callerIdentity, usersDir string, opts
 	if userRoot != "" {
 		if err := loadScopeWithFallback(userRoot, "user", []string{userMemoryName}, &b, &loaded.Sources, &loaded.Searched, visited, lo.interp); err != nil {
 			return loaded, err
+		}
+	}
+
+	if lo.homeAgentsRoot != "" {
+		// loadScope (not loadScopeWithFallback): the home-agents root
+		// IS already an .agents/ dir, so descending into <root>/.agents/
+		// would look for $HOME/.agents/.agents/AGENTS.md, which is
+		// nonsensical. Load the primary + AGENTS.d/ directly at the root.
+		if info, err := os.Stat(lo.homeAgentsRoot); err == nil && info.IsDir() {
+			if err := loadScope(lo.homeAgentsRoot, "user-home", []string{userMemoryName}, &b, &loaded.Sources, &loaded.Searched, visited, lo.interp); err != nil {
+				return loaded, err
+			}
+		} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return loaded, fmt.Errorf("instruction: stat home-agents dir %q: %w", lo.homeAgentsRoot, err)
 		}
 	}
 

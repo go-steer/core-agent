@@ -102,10 +102,15 @@ func (s *Server) Close() {
 	}
 }
 
-// Build reads .agents/mcp.json and starts every declared server in
-// parallel. The send callback is plumbed into each server's
+// Build reads mcp.json from the project agents dir plus (optionally)
+// the user's home-agents dir, merges the resulting server maps
+// (project wins on name collision), and starts every declared server
+// in parallel. The send callback is plumbed into each server's
 // elicitation handler (when no interactive elicitor is provided) so
 // the host can surface elicitation requests in the right place.
+//
+// homeAgentsDir is the portable user-scope root (typically
+// $HOME/.agents/); pass "" to skip. See LoadAll for the merge rules.
 //
 // gate (optional) gates each MCP tool call through the permission
 // system so MCP tools are subject to the same ask/allow/yolo rules
@@ -117,8 +122,8 @@ func (s *Server) Close() {
 //
 // Servers that fail to start come back with Status==StatusError so
 // they're visible without breaking the rest of the agent.
-func Build(ctx context.Context, agentsDir string, send func(string), gate *permissions.Gate, elicitor ElicitorFn, digestOpts *DigestOptions) ([]*Server, []tool.Toolset, error) {
-	cfg, err := Load(agentsDir)
+func Build(ctx context.Context, agentsDir, homeAgentsDir string, send func(string), gate *permissions.Gate, elicitor ElicitorFn, digestOpts *DigestOptions) ([]*Server, []tool.Toolset, error) {
+	cfg, err := LoadAll(agentsDir, homeAgentsDir)
 	if err != nil {
 		return nil, nil, err
 	}

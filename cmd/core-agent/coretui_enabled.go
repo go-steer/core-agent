@@ -329,8 +329,10 @@ func makeReloadCallback(ctx context.Context, deps tuiDeps, a *agent.Agent) func(
 	return func() (coretui.ReloadResult, error) {
 		resp := a.AttachReload(ctx)
 		freshMem, _ := instruction.Load(deps.ProjectRoot, deps.CoreHome,
+			instruction.WithHomeAgentsRoot(deps.HomeAgentsDir),
 			instruction.WithInterpolator(deps.EnvInterp))
 		freshSkills, _ := skills.LoadAll(ctx, deps.AgentsDir, deps.CoreHome, deps.Gate,
+			skills.WithHomeAgentsSkillsDir(deps.HomeAgentsDir),
 			skills.WithInterpolator(deps.EnvInterp))
 		freshMCP := deps.MCPServers // not restarted; surfaces the same set as startup
 		out := coretui.ReloadResult{

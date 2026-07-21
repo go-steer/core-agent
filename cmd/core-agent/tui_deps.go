@@ -35,18 +35,19 @@ import (
 // the TUI-launch branch; the struct exists purely to keep
 // launchTUI's signature short.
 type tuiDeps struct {
-	Cfg          *config.Config
-	Model        adkmodel.LLM
-	AgentOpts    []agent.Option
-	Provider     models.Provider
-	Gate         *permissions.Gate
-	Tracker      *usage.Tracker
-	Memory       instruction.Loaded
-	MCPServers   []*mcp.Server
-	LoadedSkills skills.Skills
-	AgentsDir    string
-	CoreHome     string
-	ProjectRoot  string
+	Cfg           *config.Config
+	Model         adkmodel.LLM
+	AgentOpts     []agent.Option
+	Provider      models.Provider
+	Gate          *permissions.Gate
+	Tracker       *usage.Tracker
+	Memory        instruction.Loaded
+	MCPServers    []*mcp.Server
+	LoadedSkills  skills.Skills
+	AgentsDir     string
+	CoreHome      string
+	HomeAgentsDir string
+	ProjectRoot   string
 	// EnvInterp is the ${env:VAR} interpolator wired from the daemon's
 	// env manifest (see pkg/agentenv, #322). May be nil when the
 	// bundle doesn't ship an env.yaml / env.json — loaders treat nil

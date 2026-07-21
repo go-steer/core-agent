@@ -108,6 +108,7 @@ type sessionFactoryDeps struct {
 	pricingRate    usage.Pricing
 	projectRoot    string
 	userRoot       string
+	homeAgentsDir  string
 	agentsDir      string
 	usersDir       string
 	// envInterp is the ${env:VAR} interpolator wired from the daemon's
@@ -200,6 +201,7 @@ func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, ori
 	// top of project + user scopes. Empty usersDir or unknown
 	// caller falls through to the daemon-wide instruction stack.
 	instr, err := instruction.LoadForSession(deps.projectRoot, deps.userRoot, caller.Identity, deps.usersDir,
+		instruction.WithHomeAgentsRoot(deps.homeAgentsDir),
 		instruction.WithInterpolator(deps.envInterp))
 	if err != nil {
 		broker.Close()
@@ -433,6 +435,7 @@ func attachProviderOpts(deps sessionFactoryDeps, _ *permissions.Gate) []agent.Op
 	if deps.projectRoot != "" || deps.userRoot != "" {
 		opts = append(opts, agent.WithAttachMemoryProvider(func() []attach.MemorySource {
 			fresh, _ := instruction.Load(deps.projectRoot, deps.userRoot,
+				instruction.WithHomeAgentsRoot(deps.homeAgentsDir),
 				instruction.WithInterpolator(deps.envInterp))
 			out := make([]attach.MemorySource, 0, len(fresh.Sources))
 			for _, s := range fresh.Sources {
@@ -445,6 +448,7 @@ func attachProviderOpts(deps sessionFactoryDeps, _ *permissions.Gate) []agent.Op
 	if deps.agentsDir != "" || deps.userRoot != "" {
 		opts = append(opts, agent.WithAttachSkillsProvider(func() []attach.SkillInfo {
 			fresh, err := skills.LoadAll(deps.daemonCtx, deps.agentsDir, deps.userRoot, deps.template,
+				skills.WithHomeAgentsSkillsDir(deps.homeAgentsDir),
 				skills.WithInterpolator(deps.envInterp))
 			if err != nil {
 				return nil

@@ -73,6 +73,11 @@ type loadOptions struct {
 	// references/. Nil = no interpolation, matching pre-#322 behavior.
 	// Wire from pkg/agentenv via (*agentenv.Resolver).InterpolateFunc().
 	interp func(string) string
+
+	// homeAgentsSkillsDir is an additional user-scope skills root
+	// (typically $HOME/.agents/skills/) layered between the project
+	// source and the ~/.core-agent/skills/ source. Empty = skip.
+	homeAgentsSkillsDir string
 }
 
 // WithInterpolator supplies a string transform applied to every .md
@@ -82,6 +87,16 @@ type loadOptions struct {
 // equals "no interpolation."
 func WithInterpolator(fn func(string) string) Option {
 	return func(o *loadOptions) { o.interp = fn }
+}
+
+// WithHomeAgentsSkillsDir supplies an extra user-scope skills root
+// — typically $HOME/.agents/ (LoadAll appends the "skills" suffix
+// itself, same as it does for the positional args). This source
+// layers between the project-scoped source and the ~/.core-agent/
+// fallback, so precedence is project > home-agents > core-home.
+// Empty is legal and equals "no home-agents source."
+func WithHomeAgentsSkillsDir(dir string) Option {
+	return func(o *loadOptions) { o.homeAgentsSkillsDir = dir }
 }
 
 // Load discovers skills under agentsDir/skills/ only. A missing
@@ -98,24 +113,27 @@ func Load(ctx context.Context, agentsDir string, gate *permissions.Gate, opts ..
 	return LoadAll(ctx, agentsDir, "", gate, opts...)
 }
 
-// LoadAll discovers skills from up to two sources and merges them
+// LoadAll discovers skills from up to three sources and merges them
 // into a single toolset:
 //
 //  1. projectAgentsDir/skills/ — project-scoped skills, checked in
 //     to the repo (or wherever .agents/ lives). Takes precedence on
 //     name collision.
-//  2. userCoreHome/skills/ — user-global skills (typically
-//     ~/.core-agent/skills/). Falls back when no project-scoped
-//     skill by the same name exists.
+//  2. WithHomeAgentsSkillsDir/skills/ — portable user-scope skills
+//     (typically $HOME/.agents/skills/), layered under project scope
+//     but above the ~/.core-agent/ fallback. Off unless the option
+//     is passed. See the note at WithHomeAgentsSkillsDir.
+//  3. userCoreHome/skills/ — user-global skills (typically
+//     ~/.core-agent/skills/). Bottom layer.
 //
-// Either path may be "" to skip that source. Missing directories
-// (vs missing parent) are silently treated as empty — most operators
-// won't have either populated.
+// Any path may be "" to skip that source. Missing directories (vs
+// missing parent) are silently treated as empty — most operators
+// won't have any populated.
 //
-// The two sources are merged via an overlayFS so the underlying
-// skilltoolset sees a single virtual root; primary entries win on
-// name collision. Both sources share the same sanitizingFS wrapper
-// so extended-frontmatter properties get filtered the same way.
+// Sources are merged via nested overlayFS so the underlying
+// skilltoolset sees a single virtual root; higher-precedence entries
+// win on name collision. Every source shares the same sanitizingFS
+// wrapper so extended-frontmatter properties get filtered the same way.
 //
 // gate (optional) wraps the resulting toolset so skill invocations
 // go through the permission system. Pass nil to skip gating.
@@ -125,20 +143,29 @@ func LoadAll(ctx context.Context, projectAgentsDir, userCoreHome string, gate *p
 		o(&lo)
 	}
 
-	primary, primaryOK := openSkillsDir(projectAgentsDir)
-	fallback, fallbackOK := openSkillsDir(userCoreHome)
-
-	var rootFS fs.FS
-	switch {
-	case primaryOK && fallbackOK:
-		rootFS = newSanitizingFS(&overlayFS{primary: primary, fallback: fallback}, lo.interp)
-	case primaryOK:
-		rootFS = newSanitizingFS(primary, lo.interp)
-	case fallbackOK:
-		rootFS = newSanitizingFS(fallback, lo.interp)
-	default:
+	// Collect the open sources in precedence order (highest first).
+	// Any dir that's "" or missing is silently skipped.
+	sources := make([]fs.FS, 0, 3)
+	if primary, ok := openSkillsDir(projectAgentsDir); ok {
+		sources = append(sources, primary)
+	}
+	if homeAgents, ok := openSkillsDir(lo.homeAgentsSkillsDir); ok {
+		sources = append(sources, homeAgents)
+	}
+	if fallback, ok := openSkillsDir(userCoreHome); ok {
+		sources = append(sources, fallback)
+	}
+	if len(sources) == 0 {
 		return Skills{}, nil
 	}
+
+	// Right-fold into nested overlays so [A, B, C] becomes
+	// overlayFS{A, overlayFS{B, C}} — A wins over B wins over C.
+	composed := sources[len(sources)-1]
+	for i := len(sources) - 2; i >= 0; i-- {
+		composed = &overlayFS{primary: sources[i], fallback: composed}
+	}
+	rootFS := newSanitizingFS(composed, lo.interp)
 
 	source := skill.NewFileSystemSource(rootFS)
 	frontmatters, err := source.ListFrontmatters(ctx)

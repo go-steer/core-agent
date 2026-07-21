@@ -3,7 +3,20 @@ title: MCP servers
 ---
 
 
-`core-agent` integrates with [Model Context Protocol](https://modelcontextprotocol.io) servers via ADK's `mcptoolset`. Declare servers in `.agents/mcp.json`; `core-agent` spawns or connects to them at startup, namespaces their tools, and routes every tool call through the [permission gate](/concepts/permissions/).
+`core-agent` integrates with [Model Context Protocol](https://modelcontextprotocol.io) servers via ADK's `mcptoolset`. Declare servers in `.agents/mcp.json` and/or `~/.agents/mcp.json`; `core-agent` spawns or connects to them at startup, namespaces their tools, and routes every tool call through the [permission gate](/concepts/permissions/).
+
+### Where `mcp.json` is read from
+
+At startup the loader reads `mcp.json` from two paths and merges the results:
+
+| Precedence | Path | Scope |
+|---|---|---|
+| 1 (highest) | `<agentsDir>/mcp.json` (typically `<project>/.agents/mcp.json`) | Project — checked in to the repo |
+| 2 | `~/.agents/mcp.json` | Portable user-scope, applies to every project |
+
+Server entries merge by name: on collision, the project entry wins. Non-server fields (`agentic_wrap`, `agentic_wrap_threshold`, `agentic_wrap_llm`, `agentic_wrap_model`) take the first explicitly-set value walking the precedence list. Missing files at either path are silently treated as "no servers here."
+
+Use `~/.agents/mcp.json` for servers that should follow you into every project (e.g. Linear, Slack, GitHub); use `.agents/mcp.json` for servers specific to one repo. Nothing prevents both — a project-local entry with the same name as a user-scope entry will win, letting you override a global server per project.
 
 ---
 

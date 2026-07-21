@@ -87,7 +87,7 @@ func main() {
 	// nil DigestOptions: this example doesn't wire pkg/digest. Real
 	// callers pass a *mcp.DigestOptions to enable the structural wrap
 	// per docs/digest-design.md.
-	_, mcpToolsets, err := mcp.Build(ctx, filepath.Join(cwd, ".agents"), send, gate, nil, nil)
+	_, mcpToolsets, err := mcp.Build(ctx, filepath.Join(cwd, ".agents"), "", send, gate, nil, nil)
 	if err != nil {
 		log.Printf("mcp: %v", err)
 	}

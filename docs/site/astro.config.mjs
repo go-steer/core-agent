@@ -105,6 +105,18 @@ export default defineConfig({
           label: 'Reference',
           items: [{ autogenerate: { directory: 'reference' } }],
         },
+        {
+          label: 'Blog',
+          items: [
+            { label: 'All posts', link: '/blog/' },
+            { label: 'What we built (hub)', link: '/blog/hub/' },
+            { label: '1. Working with a coding assistant, one project later', link: '/blog/working-with-coding-assistants/' },
+            { label: '2. The attach protocol', link: '/blog/attach-protocol/' },
+            { label: '3. The cost stack, in the right order', link: '/blog/cost-stack/' },
+            { label: '4. The embedded-TUI thesis flip', link: '/blog/embedded-tui-flip/' },
+            { label: '5. Distributed runtime and fleet observability', link: '/blog/distributed-runtime/' },
+          ],
+        },
       ],
     }),
   ],

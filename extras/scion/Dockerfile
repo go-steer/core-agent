@@ -44,6 +44,7 @@
 # registry-qualified image.
 ARG BASE_IMAGE=scion-base:latest
 ARG GO_VERSION=1.26.3
+ARG BUILDPLATFORM=linux/amd64
 
 # ---- Builder stage ----
 # Alpine-based Go builder — matches the repo-root Dockerfile so a

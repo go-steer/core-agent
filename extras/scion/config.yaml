@@ -1,31 +1,41 @@
-# Scion harness bundle for core-agent.
+# Copyright 2026 Google LLC
 #
-# STAGING LOCATION. When Scion upstream adopts this bundle, it moves
-# to `harnesses/core-agent/` in the Scion repo and this copy is
-# deleted from core-agent. See README.md.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
-# Same shape as harnesses/antigravity/config.yaml — declarative
-# ContainerScriptHarness config that tells Scion how to launch and
-# drive the core-agent binary.
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 harness: core-agent
-image: core-agent:latest
+name: core-agent
+image: scion-core-agent:latest
 user: scion
 
-# No provisioner needed. The container image is expected to have
-# `core-agent` on PATH already (built from cmd/core-agent). If the
-# hosting deployment needs setup (auth capture, path fudging, etc.)
-# add a container-script provisioner here — see harnesses/antigravity/
-# for the pattern.
+provisioner:
+  type: container-script
+  interface_version: 2
+  command: ["python3", "/home/scion/.scion/harness/provision.py"]
+  timeout: 30s
+  lifecycle_events:
+    - pre-start
+  required_image_tools:
+    - python3
 
+config_dir: .agents
+skills_dir: .agents/skills
 interrupt_key: C-c
-# core-agent's project-memory convention (loaded automatically when
-# it starts up). Scion stages instructions here so the agent sees them
-# as system prompt.
 instructions_file: AGENTS.md
+system_prompt_file: AGENTS.md
+system_prompt_mode: prepend_to_instructions
 
 command:
-  base: ["core-agent"]
+  base: ["core-agent", "--yolo"]
   # -i "TASK" seeds the first turn then stays in the interactive TUI/REPL.
   # Scion runs the container in tmux (real PTY) so core-agent's bubble-tea
   # TUI auto-launches; `scion message <agent>` via tmux send-keys types
@@ -46,11 +56,20 @@ model_aliases:
   large: "gemini-2.5-pro"
   extra-large: "gemini-2.5-pro"
 
+mcp:
+  global_config_file: .agents/mcp.json
+  global_config_path: servers
+  transport_field: transport
+  transport_map:
+    stdio: stdio
+    sse: http
+    streamable-http: http
+
 capabilities:
   limits:
     max_turns: { support: "no", reason: "core-agent enforces per-turn cost ceilings, not turn counts" }
     max_model_calls: { support: "no" }
-    max_duration: { support: "no" }
+    max_duration: { support: "yes" }
   telemetry:
     enabled: { support: "yes" }
     native_emitter: { support: "yes", reason: "OTEL via pkg/telemetry" }
@@ -59,4 +78,34 @@ capabilities:
     agent_instructions: { support: "yes" }
   auth:
     api_key: { support: "yes", reason: "GOOGLE_API_KEY / ANTHROPIC_API_KEY" }
-    oauth: { support: "no" }
+    auth_file: { support: "no" }
+    oauth_token: { support: "no" }
+    vertex_ai: { support: "yes", reason: "Vertex AI mode using Application Default Credentials" }
+  mcp:
+    stdio: { support: "yes" }
+    sse: { support: "yes" }
+    streamable_http: { support: "yes" }
+    project_scope: { support: "no", reason: "core-agent demotes project-scoped MCP to global" }
+
+no_auth:
+  behavior: drop-to-shell
+  message: |
+    This agent started without credentials.
+    Set GOOGLE_API_KEY for the Gemini API, or configure Vertex AI.
+
+auth:
+  default_type: api-key
+  types:
+    api-key:
+      required_env:
+        - any_of: ["GOOGLE_API_KEY", "GEMINI_API_KEY"]
+    vertex-ai:
+      required_env:
+        - any_of: ["GOOGLE_CLOUD_PROJECT"]
+        - any_of: ["GOOGLE_CLOUD_LOCATION"]
+        - any_of: ["GOOGLE_GENAI_USE_VERTEXAI"]
+  autodetect:
+    env:
+      GOOGLE_API_KEY: api-key
+      GEMINI_API_KEY: api-key
+      GOOGLE_CLOUD_PROJECT: vertex-ai

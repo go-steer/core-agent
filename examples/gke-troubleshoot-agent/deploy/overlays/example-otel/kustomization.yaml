@@ -40,15 +40,19 @@ resources:
 components:
   - ../../components/otel
 
-# Pin the composed example's images to the v2.7.0 GA — the first
-# stable release carrying the OTEL_TRACES_EXPORTER env override
+# Pin the composed example's daemon image to the v2.7.0 GA — the
+# first stable release carrying the OTEL_TRACES_EXPORTER env override
 # (PR #315, initially shipped in v2.7.0-dev.4) plus the OTel span-
 # duplication and Cloud Trace resource fixes from #333–#340.
 # Without this pin, kustomize would fall through to the base
 # example overlay's 2.6.0 tag and the daemon would ignore the
 # exporter env var.
+#
+# The watcher image comes from go-steer/k8s-lookout (`lookout watch`,
+# moved from this repo — behavior-identical, OTel wiring included)
+# and versions independently of core-agent.
 images:
   - name: ghcr.io/go-steer/core-agent
     newTag: "2.7.0"
-  - name: ghcr.io/go-steer/k8s-event-watcher
-    newTag: "2.7.0"
+  - name: ghcr.io/go-steer/lookout
+    newTag: "v0.1.0"

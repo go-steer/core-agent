@@ -47,8 +47,10 @@ The two audiences share a codebase but have distinct first-run flows.
   <TabItem label="Container">
     See the [README's install section](https://github.com/go-steer/core-agent#install)
     for the image variants (`core-agent`, `core-agent-slim`,
-    `core-agent-tui`, `k8s-event-watcher`) and floating-tag
-    conventions.
+    `core-agent-tui`) and floating-tag conventions. The K8s
+    event-triage sidecar image now ships from
+    [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout)
+    as `ghcr.io/go-steer/lookout` (`lookout watch`).
   </TabItem>
 </Tabs>
 

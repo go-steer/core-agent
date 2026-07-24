@@ -41,16 +41,19 @@ resources:
 #     Set newName + newTag together. Useful when your cluster can't
 #     reach ghcr.io directly (air-gapped, corporate proxy, etc.).
 images:
-  # (A) tag pinning — recipe default
+  # (A) tag pinning — recipe default. The watcher image comes from
+  #     go-steer/k8s-lookout (`lookout watch` subcommand — moved from
+  #     this repo, behavior-identical); its tags follow that repo's
+  #     releases (first tag v0.1.0), not core-agent's.
   - name: ghcr.io/go-steer/core-agent
     newTag: "2.6.0"
-  - name: ghcr.io/go-steer/k8s-event-watcher
-    newTag: "2.6.0"
+  - name: ghcr.io/go-steer/lookout
+    newTag: "v0.1.0"
 
   # (B) example — digest pinning (uncomment + comment out (A) above)
   # - name: ghcr.io/go-steer/core-agent
   #   digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
-  # - name: ghcr.io/go-steer/k8s-event-watcher
+  # - name: ghcr.io/go-steer/lookout
   #   digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
   # (C) example — private mirror

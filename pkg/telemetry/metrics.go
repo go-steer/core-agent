@@ -132,8 +132,7 @@ func SetupMetrics(ctx context.Context, cfg config.OTELMetricsConfig, opts Metric
 	if mode == MetricsModePrometheus || mode == MetricsModeBoth {
 		// Dedicated registry (not prometheus.DefaultRegisterer) so
 		// scrape output is isolated from any other Prometheus code
-		// in the same process (e.g. k8s-event-watcher's collectors
-		// pre-#C migration).
+		// a consumer might register in the same process.
 		reg := prometheus.NewRegistry()
 		promReader, err := promexporter.New(
 			promexporter.WithRegisterer(reg),
@@ -232,7 +231,8 @@ func resolvedOTLPEndpoint() string {
 // path rather than as background goroutine crashes.
 //
 // The handler is unauthenticated by design — matches Prometheus
-// scrape norms and the existing k8s-event-watcher endpoint. Operators
+// scrape norms and the k8s event watcher's endpoint (`lookout watch`
+// in go-steer/k8s-lookout, formerly cmd/k8s-event-watcher). Operators
 // wanting auth put a reverse proxy in front or bind to a
 // cluster-internal address.
 func servePrometheus(addr string, reg *prometheus.Registry) (func(context.Context) error, error) {

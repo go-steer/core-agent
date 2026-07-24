@@ -16,6 +16,13 @@
 # via the local kube-apiserver, filters + dedupes, and POSTs matched
 # events to the core-agent daemon's session inject endpoint.
 #
+# The watcher binary lives in go-steer/k8s-lookout as the
+# `lookout watch` subcommand (moved from this repo's
+# cmd/k8s-event-watcher — behavior-identical, flags unchanged). The
+# ghcr.io/go-steer/lookout image runs it directly, so only the image
+# reference changes; args/env/RBAC below are the same as before the
+# move.
+#
 # Runs as a SEPARATE Deployment from the daemon (not a sidecar
 # container in the daemon's pod) so:
 #   - operators can scale the two independently
@@ -53,7 +60,7 @@ spec:
         runAsUser: 65532
       containers:
         - name: watcher
-          image: ghcr.io/go-steer/k8s-event-watcher:latest
+          image: ghcr.io/go-steer/lookout:latest
           imagePullPolicy: IfNotPresent
           args:
             - "--daemon-url=http://core-agent.agent-triage.svc.cluster.local:7777"

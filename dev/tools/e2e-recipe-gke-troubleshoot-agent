@@ -65,6 +65,12 @@ NAMESPACE="${NAMESPACE:-agent-triage}"
 # Reuses the daemon image the recipe pins in overlays/example/kustomization.yaml.
 # Overridable so a future variant can build local + kind load.
 DAEMON_IMAGE="${DAEMON_IMAGE:-ghcr.io/go-steer/core-agent:2.6.0}"
+# The watcher moved to go-steer/k8s-lookout (`lookout watch`,
+# behavior-identical). Until ghcr.io/go-steer/lookout:v0.1.0 is
+# published, keep pulling the last core-agent-built watcher image —
+# it is the same binary behavior the recipe was validated against.
+# TODO(k8s-lookout M0 release): flip the default to
+# ghcr.io/go-steer/lookout:v0.1.0 once that tag exists on GHCR.
 WATCHER_IMAGE="${WATCHER_IMAGE:-ghcr.io/go-steer/k8s-event-watcher:2.6.0}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-180s}"
 
@@ -157,7 +163,7 @@ images:
   - name: ghcr.io/go-steer/core-agent
     newName: ${DAEMON_IMAGE%:*}
     newTag: ${DAEMON_IMAGE##*:}
-  - name: ghcr.io/go-steer/k8s-event-watcher
+  - name: ghcr.io/go-steer/lookout
     newName: ${WATCHER_IMAGE%:*}
     newTag: ${WATCHER_IMAGE##*:}
 

@@ -103,13 +103,13 @@ check_tool_counts() {
 # Check 2: spelled or numeric image-variant counts.
 #
 # Matches: three images / four container variants / 4-image ...
-# The four-variant matrix in .github/workflows/release-images.yml is the
+# The variant matrix in .github/workflows/release-images.yml is the
 # ground truth; describing by name is drift-safe.
 check_image_counts() {
   local path="$1"
   grep -n -E '\b(two|three|four|five|six|seven|[2-9]|1[0-9])[- ]?(container|image|variant)s?\b' "$path" 2>/dev/null | \
     awk -F: -v p="$path" '{
-      msg = "hard-coded container/image count — describe variants by name (core-agent / -slim / -tui / k8s-event-watcher) or use a table";
+      msg = "hard-coded container/image count — describe variants by name (core-agent / -slim / -tui) or use a table";
       printf "%s:%s: %s\n", p, $1, msg
     }' || true
 }

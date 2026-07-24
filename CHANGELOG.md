@@ -16,6 +16,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **`k8s-event-watcher` moved to [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout) as the `lookout watch` subcommand.** `cmd/k8s-event-watcher` is removed from this repo and the `ghcr.io/go-steer/k8s-event-watcher` image is no longer built by `release-images.yml`; new releases publish as `ghcr.io/go-steer/lookout` from the k8s-lookout repo. The move is behavior-identical — flags, metrics endpoint, dedup semantics, and inject payloads are unchanged — so existing deployments migrate by swapping the container image reference to `ghcr.io/go-steer/lookout` (zero config change; args/env/RBAC stay as-is). Previously published `ghcr.io/go-steer/k8s-event-watcher` tags remain on GHCR. With the watcher gone, core-agent no longer depends on `k8s.io/*` (all client-go / apimachinery deps dropped from `go.mod`).
+
 ### Changes by Kind
 
 #### Feature

@@ -3,7 +3,7 @@
 Cutting a release is fully automated from a tag push. The two release workflows fire in parallel:
 
 - **`.github/workflows/release.yml`** — cross-compiles `core-agent` + `core-agent-tui` binaries via GoReleaser (see [`.goreleaser.yml`](../.goreleaser.yml)), signs the checksum file via Sigstore keyless, and publishes the GitHub Release with notes drawn from `CHANGELOG.md` plus a static install/verify footer.
-- **`.github/workflows/release-images.yml`** — builds and pushes four multi-arch container images (`core-agent`, `core-agent-slim`, `core-agent-tui`, `k8s-event-watcher`) to ghcr.io, signed via Sigstore keyless.
+- **`.github/workflows/release-images.yml`** — builds and pushes three multi-arch container images (`core-agent`, `core-agent-slim`, `core-agent-tui`) to ghcr.io, signed via Sigstore keyless. (The `k8s-event-watcher` image moved to [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout) and releases from there as `ghcr.io/go-steer/lookout`.)
 
 Both trigger on `push: tags: ['v*.*.*']`.
 
@@ -19,7 +19,7 @@ Both trigger on `push: tags: ['v*.*.*']`.
 4. **Bump `internal/version.Version`** to `v<next-minor>.0-dev` (e.g. `v2.4.0` release → main becomes `v2.5.0-dev`) so post-release builds report their next-target version. Commit + push. Enforced by [`dev/ci/presubmits/verify-version-fallback`](../dev/ci/presubmits/verify-version-fallback) — the next PR after a release will fail CI until this bump lands, so drift can't rot silently (this was retroactive after the bump was skipped for v2.5.0 + v2.6.0).
 5. **Verify both workflows went green** on the [Actions tab](https://github.com/go-steer/core-agent/actions):
    - `Release` → produces 8 archives (`core-agent` + `core-agent-tui`, each in linux/darwin × amd64/arm64), `checksums.txt`, `checksums.txt.sig`, `checksums.txt.pem`. All attached to the GitHub Release.
-   - `Release images` → publishes `:X.Y.Z`, `:X.Y`, `:X`, `:latest` tags for each of the four images plus their cosign signatures.
+   - `Release images` → publishes `:X.Y.Z`, `:X.Y`, `:X`, `:latest` tags for each of the three images plus their cosign signatures.
 6. **Sanity-check the GitHub Release page** — confirm the body shows the right CHANGELOG content, the assets list looks complete, and the "Latest" badge appears (non-prerelease tags only).
 
 ## Republish (rerun the workflows against an existing tag)

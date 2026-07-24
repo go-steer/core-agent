@@ -2,7 +2,7 @@
 title: Kubernetes troubleshooting agent
 ---
 
-Semi-autonomous Kubernetes triage running as `core-agent` inside your cluster. A `k8s-event-watcher` sidecar streams filtered Events into per-incident sessions on the daemon; a router skill (`k8s-triage`) loads reason-specific references and drives the diagnose → fix → verify loop. In v2.6, incident summaries land in the eventlog for downstream consumption (turnkey Slack/webhook escalation lands in v2.7 via a native `alert` tool).
+Semi-autonomous Kubernetes triage running as `core-agent` inside your cluster. A `k8s-event-watcher` sidecar (now shipped from [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout) as the `lookout watch` subcommand, image `ghcr.io/go-steer/lookout` — behavior-identical, flags unchanged) streams filtered Events into per-incident sessions on the daemon; a router skill (`k8s-triage`) loads reason-specific references and drives the diagnose → fix → verify loop. In v2.6, incident summaries land in the eventlog for downstream consumption (turnkey Slack/webhook escalation lands in v2.7 via a native `alert` tool).
 
 Shipped in **v2.6**. Requires v2.4's multi-session substrate + v2.5's session-resume (both on by default in the recipe).
 
@@ -25,7 +25,7 @@ If none apply — you don't have K8s to triage, or you'd rather see events in yo
 Two Deployments in the cluster:
 
 - **`core-agent` daemon**: multi-session enabled, plan-first on, session-resume on. Exposes `/sessions` endpoints on port 7777. This is a regular `core-agent` — nothing k8s-specific in the daemon.
-- **`k8s-event-watcher` sidecar**: separate Deployment. Uses client-go informer to watch `core/v1.Events`, filters by `reason`, dedupes on `(uid, reason)` in a rolling window, POSTs matched events to the daemon's session inject endpoint.
+- **`k8s-event-watcher` sidecar**: separate Deployment running `ghcr.io/go-steer/lookout` (the `lookout watch` subcommand from [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout); formerly built here as `ghcr.io/go-steer/k8s-event-watcher` — swap the image reference, no flag or config changes). Uses client-go informer to watch `core/v1.Events`, filters by `reason`, dedupes on `(uid, reason)` in a rolling window, POSTs matched events to the daemon's session inject endpoint.
 
 Both talk multi-session bearer tokens; the sidecar authenticates as `sa:k8s-event-watcher` (a proxy identity) and asserts `X-Asserted-Caller: sre-oncall@example.com` on POST /sessions so incidents show up in the on-call team's session list.
 

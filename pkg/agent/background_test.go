@@ -19,6 +19,7 @@ import (
 	"errors"
 	"iter"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -509,6 +510,130 @@ func TestSpawn_RollsUsageIntoParentTracker(t *testing.T) {
 	// max-turns cap fires).
 	if tot.InputTokens == 0 {
 		t.Errorf("expected non-zero InputTokens rolled into parent tracker: %+v", tot)
+	}
+}
+
+// blockingModelProvider blocks inside Model() until release is closed,
+// signalling entry on `entered`. This lets a test freeze Spawn in the
+// exact window between handle registration (m.agents[name] = handle) and
+// the goroutine launch, so it can call Stop() there — the race that used
+// to strand a "stopped" subagent that kept running (#366).
+type blockingModelProvider struct {
+	entered chan struct{}
+	release chan struct{}
+	llm     *stopRaceLLM
+}
+
+func (p *blockingModelProvider) Name() string { return "blocking" }
+func (p *blockingModelProvider) Model(_ context.Context, _ string) (adkmodel.LLM, error) {
+	close(p.entered)
+	<-p.release
+	return p.llm, nil
+}
+
+// stopRaceLLM records whether GenerateContent was ever called, so a test
+// can assert the autonomous loop never ran a turn.
+type stopRaceLLM struct {
+	genCalled atomic.Bool
+}
+
+func (*stopRaceLLM) Name() string { return "stop-race" }
+func (l *stopRaceLLM) GenerateContent(_ context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	l.genCalled.Store(true)
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		content := &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "done"}}}
+		yield(&adkmodel.LLMResponse{
+			Content:      content,
+			FinishReason: genai.FinishReasonStop,
+			TurnComplete: true,
+		}, nil)
+	}
+}
+
+// TestSpawn_StopDuringResolutionCancelsBeforeLoop is the #366 regression:
+// a Stop() arriving while Spawn is still resolving tools/scheduler/model
+// (slow, network-capable work that runs after the handle is visible but
+// before the goroutine launches) must cancel the goroutine's context so
+// RunAutonomous exits immediately. Before the fix, handle.cancel was wired
+// only after resolution, so such a Stop found cancel == nil, marked the
+// handle Stopped, and returned — while the goroutine still launched and
+// ran a full turn, burning budget under a "stopped" status.
+func TestSpawn_StopDuringResolutionCancelsBeforeLoop(t *testing.T) {
+	t.Parallel()
+	llm := &stopRaceLLM{}
+	prov := &blockingModelProvider{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+		llm:     llm,
+	}
+	mgr, err := NewBackgroundAgentManager(
+		WithBackgroundProvider(prov, "stop-race"),
+		WithBackgroundMaxConcurrent(2),
+		WithBackgroundAlertBuffer(4),
+		// Bound the loop so a regressed build (which runs a turn) still
+		// terminates instead of spinning.
+		WithBackgroundDefaultBudgets(BackgroundBudgets{MaxTurns: 1}),
+	)
+	if err != nil {
+		t.Fatalf("NewBackgroundAgentManager: %v", err)
+	}
+	// Parent uses a separate echo LLM so the blocking provider's Model
+	// is only invoked by Spawn (the window under test).
+	parentLLM, err := mock.NewEcho().Model(context.Background(), "echo")
+	if err != nil {
+		t.Fatalf("parent Model: %v", err)
+	}
+	parent, err := New(parentLLM, WithBackgroundManager(mgr))
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	_ = parent
+
+	type spawnResult struct {
+		h   *BackgroundHandle
+		err error
+	}
+	done := make(chan spawnResult, 1)
+	go func() {
+		h, err := mgr.Spawn(context.Background(), "", BackgroundSpec{
+			Name: "racer", SystemPrompt: "go", Goal: "go",
+		})
+		done <- spawnResult{h, err}
+	}()
+
+	// Wait until Spawn is blocked inside provider.Model — the handle is
+	// already registered in m.agents but the goroutine hasn't launched.
+	select {
+	case <-prov.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("provider.Model was never entered")
+	}
+
+	if err := mgr.Stop("racer"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// Let resolution finish; the goroutine now launches with an
+	// already-cancelled context.
+	close(prov.release)
+
+	res := <-done
+	if res.err != nil {
+		t.Fatalf("Spawn returned error: %v", res.err)
+	}
+	select {
+	case <-res.h.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("subagent goroutine didn't exit")
+	}
+
+	if res.h.Status() != StatusStopped {
+		t.Errorf("status = %v, want StatusStopped", res.h.Status())
+	}
+	// Core regression assertion: because Stop cancelled the context during
+	// resolution, RunAutonomous must exit before ever calling the model.
+	if llm.genCalled.Load() {
+		t.Error("model was invoked after Stop during resolution window; goroutine ran despite being stopped (#366)")
 	}
 }
 

@@ -75,12 +75,26 @@ func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string,
 	// of the same name (or contending for the last concurrency slot)
 	// sees us already registered.
 	branch := composeBranch(parentBranch, "bg."+spec.Name)
+	// Create the goroutine's cancellable context and register its
+	// cancel on the handle BEFORE the handle becomes visible in
+	// m.agents. Otherwise a Stop() arriving during the slow tool /
+	// scheduler / model resolution below (which can do network I/O)
+	// would find handle.cancel == nil, mark the subagent Stopped, and
+	// return — while the goroutine still launched and ran the full
+	// autonomous loop, burning budget under a "stopped" status (#366).
+	// With cancel registered up front, such a Stop() cancels goCtx, so
+	// when the goroutine launches RunAutonomous exits immediately and
+	// the status stays Stopped.
+	goCtx, cancel := context.WithCancel(contextWithoutCancel(ctx))
+	goCtx = context.WithValue(goCtx, subagentDepthKey{}, CurrentSubagentDepth(ctx)+1)
+	goCtx = permissions.WithSubagentSource(goCtx, spec.Name)
 	handle := &BackgroundHandle{
 		Name:      spec.Name,
 		Branch:    branch,
 		StartedAt: time.Now(),
 		status:    StatusRunning,
 		done:      make(chan struct{}),
+		cancel:    cancel,
 	}
 	m.agents[spec.Name] = handle
 	m.mu.Unlock()
@@ -89,7 +103,9 @@ func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string,
 	// construction, so safe.
 	tools, err := m.resolveTools(append([]string{}, append(spec.Tools, spec.Extras...)...))
 	if err != nil {
-		// Undo the reservation since the goroutine never launches.
+		// Undo the reservation since the goroutine never launches, and
+		// release the goroutine context we registered up front (#366).
+		cancel()
 		m.mu.Lock()
 		delete(m.agents, spec.Name)
 		m.mu.Unlock()
@@ -102,6 +118,7 @@ func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string,
 	// registered.
 	sched, err := m.resolveScheduler(spec.Scheduler)
 	if err != nil {
+		cancel()
 		m.mu.Lock()
 		delete(m.agents, spec.Name)
 		m.mu.Unlock()
@@ -114,6 +131,7 @@ func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string,
 	// internally, so this is cheap.
 	subModel, err := m.provider.Model(ctx, m.modelID)
 	if err != nil {
+		cancel()
 		m.mu.Lock()
 		delete(m.agents, spec.Name)
 		m.mu.Unlock()
@@ -147,16 +165,6 @@ func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string,
 	subagentInstruction := spec.SystemPrompt
 	subagentName := spec.Name
 	subagentGoal := spec.Goal
-
-	// Each spawn gets its own bounded goroutine context derived from
-	// the caller's ctx. Stop cancels via the saved CancelFunc.
-	goCtx, cancel := context.WithCancel(contextWithoutCancel(ctx))
-	goCtx = context.WithValue(goCtx, subagentDepthKey{}, CurrentSubagentDepth(ctx)+1)
-	goCtx = permissions.WithSubagentSource(goCtx, subagentName)
-
-	handle.mu.Lock()
-	handle.cancel = cancel
-	handle.mu.Unlock()
 
 	build := func(extraTools []tool.Tool) (*Agent, error) {
 		// extraTools is the report_done tool the autonomous driver

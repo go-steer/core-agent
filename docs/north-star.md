@@ -3,6 +3,19 @@
 Captured 2026-05-26 as a strategic anchor. Goes stale fast — re-read
 quarterly and prune.
 
+> **Status update (2026-07-25).** The "v2.0 blockers" and "critical
+> path" sections below are the mid-2026 pre-v2.0 snapshot and are now
+> largely **historical**: v2.0 shipped, and **v2.7.0 GA shipped
+> 2026-07-20** (first `go install`-able `/v2` release — E2E OTel, full
+> cost stack, multi-daemon fleet). Main is on `v2.8.0-dev`. The
+> context-management quartet (compaction, micro-subagents,
+> task-boundary checkpoints, persistent memory) that this doc lists as
+> "designed, not built" has since landed. Treat the two goals and the
+> "risks worth naming" section as the still-current strategic anchor;
+> treat the dated milestone/critical-path lists as a record of how we
+> got here, not a live plan. A full rewrite of the readiness assessment
+> is due at the next quarterly prune.
+
 ## The two goals
 
 1. **core-agent should be one of the best autonomous agent runtimes

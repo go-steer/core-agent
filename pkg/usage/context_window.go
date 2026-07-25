@@ -70,14 +70,29 @@ func contextWindowSizeFor(model string) int {
 		return 2_000_000
 	case containsAny(model, "gemini-2.5-flash", "gemini-2.0-flash"):
 		return 1_000_000
+	case containsAny(model,
+		"claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8",
+		"claude-sonnet-4-6"):
+		// Current-gen Claude 4.6+ Opus/Sonnet ship a 1M context window
+		// by default — the "-1m" suffix predates the window becoming
+		// standard, so these no longer need it. Must stay ABOVE the
+		// generic "claude-*-4" case below, which those IDs also match.
+		return 1_000_000
+	case containsAny(model, "claude-opus-5", "claude-sonnet-5"):
+		// Claude 5-tier Opus/Sonnet: 1M context.
+		return 1_000_000
 	case containsAny(model, "claude-opus-4", "claude-sonnet-4", "claude-haiku-4"):
-		// Claude 4.x family: 200K base, 1M tier when the "-1m" suffix
-		// is set. Honor the suffix when present.
+		// Earlier Claude 4.x (Opus 4.0/4.1/4.5, Sonnet 4.0/4.5, Haiku
+		// 4.x): 200K base, 1M tier only when the "-1m" long-context
+		// suffix is set. Honor the suffix when present.
 		if containsAny(model, "-1m") {
 			return 1_000_000
 		}
 		return 200_000
 	case containsAny(model, "claude"):
+		// Unknown Claude model: default conservatively to 200K so
+		// compaction fires early rather than overshooting a real
+		// window that turns out smaller than assumed.
 		return 200_000
 	}
 	return 0

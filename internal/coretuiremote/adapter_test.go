@@ -505,8 +505,8 @@ func TestAdapter_ContextWindow_FallsBackToPricingModel(t *testing.T) {
 	a.pricingModel = "claude-opus-4-7"
 	a.mu.Unlock()
 
-	if got := a.ContextWindowSize(); got != 200_000 {
-		t.Errorf("ContextWindowSize = %d, want 200_000 (claude-opus-4 base cap from pricingModel fallback)", got)
+	if got := a.ContextWindowSize(); got != 1_000_000 {
+		t.Errorf("ContextWindowSize = %d, want 1_000_000 (claude-opus-4-7 cap from pricingModel fallback)", got)
 	}
 }
 

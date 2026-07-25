@@ -105,6 +105,12 @@ const (
 	AttrSessionID      = "session.id"
 	AttrAppName        = "app.name"
 	AttrUserID         = "user.id"
+	// AttrPriced tags the cost series with whether every turn for the
+	// model had a known catalog rate. priced=false means CostUSD is a
+	// lower bound because at least one turn was unpriced (rate unknown,
+	// billed as $0) — dashboards can filter it out of "exact spend"
+	// panels rather than under-reporting. See #368.
+	AttrPriced = "priced"
 )
 
 // Token-type attribute values. Match the Turn breakdown fields.
@@ -188,7 +194,17 @@ func RegisterMetrics(mp metric.MeterProvider, tp TrackerProvider) (metric.Regist
 				modelAttrs = append(modelAttrs, sessionAttrs...)
 				modelAttrs = append(modelAttrs, attribute.String(AttrGenAIModel, model))
 				o.ObserveInt64(turns, int64(totals.Turns), metric.WithAttributes(modelAttrs...))
-				o.ObserveFloat64(cost, totals.CostUSD, metric.WithAttributes(modelAttrs...))
+
+				// Cost carries an extra `priced` dimension so a total
+				// that includes unpriced (rate-unknown) turns is
+				// distinguishable from an exact one — see #368. Kept
+				// off the turn/token series to hold their cardinality
+				// down; cost is the only surface where "$0 because
+				// unknown" is misleading.
+				costAttrs := make([]attribute.KeyValue, 0, len(modelAttrs)+1)
+				costAttrs = append(costAttrs, modelAttrs...)
+				costAttrs = append(costAttrs, attribute.Bool(AttrPriced, totals.UnpricedTurns == 0))
+				o.ObserveFloat64(cost, totals.CostUSD, metric.WithAttributes(costAttrs...))
 
 				// One token observation per token-type dimension.
 				// Skip zero-valued fields to keep low-cardinality

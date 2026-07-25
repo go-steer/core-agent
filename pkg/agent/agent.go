@@ -32,7 +32,6 @@ import (
 	"errors"
 	"fmt"
 	"iter"
-	"reflect"
 	"sync"
 	"time"
 
@@ -175,6 +174,8 @@ type Agent struct {
 	// clear operations; never across an LLM call.
 	mu                    sync.Mutex
 	cancelInFlight        context.CancelFunc
+	cancelInFlightGen     uint64 // generation of the currently-registered cancel (0 = none)
+	cancelSeq             uint64 // monotonic issuer for cancel generations (#359)
 	compactionPending     bool
 	compactionFailures    int    // consecutive failed auto-compactions; drives backoff (#356)
 	compactionCooldown    int    // turns to skip before the next auto-compaction attempt (#356)
@@ -950,7 +951,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// permissions.WithSessionGate(nil) is a no-op so the guard is
 	// covered by the helper.
 	runCtx = permissions.WithSessionGate(runCtx, a.gate)
-	a.setCancelInFlight(cancel)
+	cancelGen := a.setCancelInFlight(cancel)
 	inner := a.runner.Run(runCtx, a.userID, a.sessionID, msg, adkagent.RunConfig{
 		StreamingMode: a.streaming,
 	})
@@ -1002,7 +1003,14 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	}
 
 	return wrapWithCleanup(tapped, func() {
-		a.clearCancelInFlight(cancel)
+		// Always release the per-turn context. Only Interrupt() used
+		// to call cancel(); an uninterrupted turn leaked a live
+		// cancellable child of the process-lifetime parent ctx every
+		// turn (classic lostcancel — thousands accrue in a long-lived
+		// daemon). Safe here: cleanup runs after the event stream has
+		// fully drained, so nothing still depends on runCtx (#359).
+		cancel()
+		a.clearCancelInFlight(cancelGen)
 		// Post-turn hooks. Order matters: mark_task_done flag
 		// promotion first (it's the operator-visible signal); then
 		// the threshold check. Either can flag a pending cleanup
@@ -1121,8 +1129,13 @@ func (a *Agent) RunWithContents(ctx context.Context, contents []*genai.Content) 
 		// turn — mirrors Run(). Clearing happens via defer here
 		// since we're already inside the closure.
 		runCtx, cancel := context.WithCancel(ctx)
-		a.setCancelInFlight(cancel)
-		defer a.clearCancelInFlight(cancel)
+		// defer cancel() releases the per-turn context on return —
+		// without it every RunWithContents turn leaked a live
+		// cancellable child ctx (#359). clearCancelInFlight is keyed
+		// by generation so a late defer can't clobber a newer turn.
+		cancelGen := a.setCancelInFlight(cancel)
+		defer cancel()
+		defer a.clearCancelInFlight(cancelGen)
 		for ev, err := range a.runner.Run(runCtx, a.userID, sessionID, last, adkagent.RunConfig{
 			StreamingMode: a.streaming,
 		}) {
@@ -1685,6 +1698,7 @@ func (a *Agent) Interrupt() bool {
 	a.mu.Lock()
 	cancel := a.cancelInFlight
 	a.cancelInFlight = nil
+	a.cancelInFlightGen = 0
 	a.mu.Unlock()
 	if cancel == nil {
 		return false
@@ -1701,18 +1715,23 @@ func (a *Agent) AttachInterrupt() bool {
 	return a.Interrupt()
 }
 
-// setCancelInFlight stores the cancel func for the current turn.
-// Replaces any prior value — concurrent Run() calls on the same
-// Agent are not supported (the agent's session ID is per-Agent, so
-// a parallel Run would interleave events on the same session
-// anyway). Same convention as the existing single-runner model.
-func (a *Agent) setCancelInFlight(cancel context.CancelFunc) {
+// setCancelInFlight stores the cancel func for the current turn and
+// returns a generation token identifying this registration. The token
+// is passed back to clearCancelInFlight so a late-firing older-turn
+// cleanup can't clobber a newer turn's cancel (#359). Replaces any
+// prior value — concurrent Run() calls on the same Agent are not
+// supported (the agent's session ID is per-Agent, so a parallel Run
+// would interleave events on the same session anyway).
+func (a *Agent) setCancelInFlight(cancel context.CancelFunc) uint64 {
 	if a == nil {
-		return
+		return 0
 	}
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cancelSeq++
 	a.cancelInFlight = cancel
-	a.mu.Unlock()
+	a.cancelInFlightGen = a.cancelSeq
+	return a.cancelInFlightGen
 }
 
 // turnInFlight reports whether a Run turn is currently executing on
@@ -1729,37 +1748,28 @@ func (a *Agent) turnInFlight() bool {
 	return a.cancelInFlight != nil
 }
 
-// clearCancelInFlight clears the stored cancel func only when the
-// passed-in cancel matches the stored one. Avoids clobbering a
+// clearCancelInFlight clears the stored cancel func only when gen
+// matches the currently-registered generation. Avoids clobbering a
 // newer turn's cancel when an older turn's cleanup runs late (the
-// iter.Seq2 wrapper's defer might fire after the consumer has
-// already started a follow-up turn — though see the
-// no-concurrent-Run-per-Agent rule).
-func (a *Agent) clearCancelInFlight(cancel context.CancelFunc) {
-	if a == nil {
+// iter.Seq2 wrapper's defer might fire after the consumer has already
+// started a follow-up turn — though see the no-concurrent-Run-per-
+// Agent rule).
+//
+// Generation matching replaces the old pointer-identity check
+// (reflect.Value.Pointer() on a context.CancelFunc returns the shared
+// code pointer for every context.WithCancel cancel, so the guard was
+// always true and a stale cleanup could silently clobber a live
+// turn's cancel — making Interrupt a no-op; see #359).
+func (a *Agent) clearCancelInFlight(gen uint64) {
+	if a == nil || gen == 0 {
 		return
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	// Pointer-equality comparison via function value. context.CancelFunc
-	// is a func type so direct == doesn't compile; use reflect-free
-	// trick: store pointer addresses. We just compare via cancel()
-	// idempotency — if the stored one is the one we set, clear it.
-	if cancelFuncEqual(a.cancelInFlight, cancel) {
+	if a.cancelInFlightGen == gen {
 		a.cancelInFlight = nil
+		a.cancelInFlightGen = 0
 	}
-}
-
-// cancelFuncEqual compares two context.CancelFunc values for
-// identity. Direct == comparison is illegal in Go for func types,
-// so we wrap via reflect.ValueOf().Pointer() to get the underlying
-// function pointer. Used only for the "was this cleanup mine?"
-// check in clearCancelInFlight; not a general utility.
-func cancelFuncEqual(a, b context.CancelFunc) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	return reflect.ValueOf(a).Pointer() == reflect.ValueOf(b).Pointer()
 }
 
 // wrapWithCleanup wraps a session.Event iterator so cleanup runs

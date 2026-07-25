@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"sync"
 )
 
 // Resolver interpolates ${env:NAME} in strings using an env-var lookup,
@@ -39,9 +40,17 @@ import (
 // (bundle without a manifest) rather than requiring a stub.
 type Resolver struct {
 	manifest *Manifest
-	values   map[string]string   // name → resolved value (post-default)
-	sens     map[string]struct{} // names flagged sensitive: true
-	errs     []error             // required-var-missing errors
+	values   map[string]string   // name → resolved value (post-default); read-only after NewResolver
+	sens     map[string]struct{} // names flagged sensitive: true; read-only after NewResolver
+	errs     []error             // required-var-missing errors; read-only after NewResolver
+
+	// mu guards seenRefs, the only field mutated after construction.
+	// The same resolver's InterpolateFunc is shared across sessions
+	// (cmd/core-agent captures it into sessionFactoryDeps.envInterp),
+	// so concurrent POST /sessions -> reproduceAgent -> Interpolate can
+	// write seenRefs from multiple goroutines at once. Without this lock
+	// that's a data race (guaranteed -race failure, panic under load).
+	mu       sync.Mutex
 	seenRefs map[string]struct{} // names encountered during interpolation
 }
 
@@ -117,9 +126,11 @@ func (r *Resolver) Interpolate(s string) string {
 		return s
 	}
 	return interpolate(s, func(name string) string {
+		r.mu.Lock()
 		if r.seenRefs != nil {
 			r.seenRefs[name] = struct{}{}
 		}
+		r.mu.Unlock()
 		if v, ok := r.values[name]; ok {
 			return v
 		}
@@ -196,13 +207,17 @@ func (r *Resolver) ReportDrift() []string {
 		declared[e.Name] = struct{}{}
 	}
 
+	// Snapshot seenRefs under the lock so a concurrent Interpolate can't
+	// mutate the map while we range over it (see the Resolver.mu note).
+	seen := r.snapshotSeenRefs()
+
 	// Undeclared references: seen during interpolation but not in the
 	// manifest. Ambient system env vars (HOME, PATH, etc.) that the
 	// bundle happens to reference count as undeclared — arguably the
 	// right behavior, since the recipe author should be explicit about
 	// what environmental context the bundle assumes.
 	undeclared := make([]string, 0)
-	for name := range r.seenRefs {
+	for name := range seen {
 		if _, ok := declared[name]; !ok {
 			undeclared = append(undeclared, name)
 		}
@@ -218,7 +233,7 @@ func (r *Resolver) ReportDrift() []string {
 	// does.
 	unref := make([]string, 0)
 	for name := range declared {
-		if _, ok := r.seenRefs[name]; !ok {
+		if _, ok := seen[name]; !ok {
 			unref = append(unref, name)
 		}
 	}
@@ -228,6 +243,19 @@ func (r *Resolver) ReportDrift() []string {
 	}
 
 	return warnings
+}
+
+// snapshotSeenRefs returns a copy of the interpolation-seen set taken
+// under the lock, so callers can range over it without racing a
+// concurrent Interpolate.
+func (r *Resolver) snapshotSeenRefs() map[string]struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]struct{}, len(r.seenRefs))
+	for name := range r.seenRefs {
+		out[name] = struct{}{}
+	}
+	return out
 }
 
 // describeUsage builds a short hint string for the "required var

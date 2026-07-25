@@ -453,6 +453,40 @@ func TestWatch_AdvancesPastUnhydratableRow(t *testing.T) {
 	}
 }
 
+// TestClose_ClosesADKConnectionPool is the regression test for #360:
+// Open creates two gorm.DBs (ADK's inside NewSessionService plus our
+// overlay), and Close must shut down both. Before the fix Close closed
+// only the overlay pool, leaking ADK's pool every Open/Close cycle.
+func TestClose_ClosesADKConnectionPool(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	dsn := filepath.Join(dir, "eventlog.db")
+	h, err := Open(context.Background(), sqlite.Open(dsn))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if h.adkDB == nil {
+		t.Fatal("Open did not retain the ADK connection pool")
+	}
+	adkSQL, err := h.adkDB.DB()
+	if err != nil {
+		t.Fatalf("ADK pool DB(): %v", err)
+	}
+	if err := adkSQL.Ping(); err != nil {
+		t.Fatalf("ADK pool should be live before Close: %v", err)
+	}
+
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// After Close the ADK pool must be shut down; Ping on a closed
+	// *sql.DB returns an error. Before the fix it stayed open (leak).
+	if err := adkSQL.Ping(); err == nil {
+		t.Error("ADK connection pool is still open after Handle.Close — leaked")
+	}
+}
+
 func TestService_DelegatesCRUDToADK(t *testing.T) {
 	t.Parallel()
 	h, cleanup := openTestHandle(t)

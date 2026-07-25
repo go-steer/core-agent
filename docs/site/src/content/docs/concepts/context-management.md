@@ -104,7 +104,11 @@ Resolution per-provider:
 | mid | `gemini-2.5-pro` | `claude-sonnet-4-6` |
 | small | `gemini-2.5-flash` | `claude-haiku-4-5` |
 
-Explicit flags always win — pass `--task=debug --model=gemini-3.5-pro` to use debug-mode defaults but pin a specific model.
+Explicit per-knob flags always win over the class defaults:
+
+- `--model` (long-form alias of `-m`) pins the model — e.g. `--task=debug --model=gemini-3.5-pro` uses debug-mode defaults but a specific model. A model set in the config file (`model.name`) is likewise respected; `--task` only fills in the tier model when neither `--model` nor a config-file model is set.
+- `--compaction-threshold=<0..1>` pins the post-turn compaction trigger, overriding both the config-file `compaction.threshold` and the class default.
+- `--ask=off|stdin|auto` pins the ask-user mode; left unset, the class default applies.
 
 Config-file equivalent:
 

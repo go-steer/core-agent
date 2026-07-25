@@ -63,7 +63,7 @@ func TestCompactCheckpoint_RefusedWhileTurnInFlight(t *testing.T) {
 	// Simulate an in-flight turn: the runner registers its cancel func
 	// via setCancelInFlight once it starts driving the model.
 	_, cancel := context.WithCancel(context.Background())
-	a.setCancelInFlight(cancel)
+	cancelGen := a.setCancelInFlight(cancel)
 
 	if _, err := a.Compact(context.Background(), ""); !errors.Is(err, ErrTurnInFlight) {
 		t.Errorf("Compact mid-turn = %v, want ErrTurnInFlight", err)
@@ -76,7 +76,7 @@ func TestCompactCheckpoint_RefusedWhileTurnInFlight(t *testing.T) {
 	}
 
 	// Turn ends: the guard lifts and Compact proceeds normally.
-	a.clearCancelInFlight(cancel)
+	a.clearCancelInFlight(cancelGen)
 	cancel()
 	res, err := a.Compact(context.Background(), "")
 	if err != nil {

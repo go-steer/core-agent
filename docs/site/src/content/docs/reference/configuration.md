@@ -175,6 +175,23 @@ A minimal viable config:
 }
 ```
 
+### How the file is written back
+
+Interactive flows (`/allow`, `/deny`, `/model`, `/theme`, "always allow this
+path") edit `config.json` in place. The writer is deliberately conservative:
+
+- **Partial stays partial.** Only the sections you actually set are written —
+  substrate defaults are never materialized into the file. This keeps a future
+  bump to a default (e.g. the default model) reaching you instead of being
+  pinned to whatever was current when the file was first written.
+- **Unknown keys are preserved.** A section written by a newer build is kept
+  verbatim on round-trip, so an older build editing the file no longer drops
+  fields it doesn't recognize. A misspelled key (e.g. `permisions`) is
+  preserved but logs a warning at load, since it otherwise has no effect.
+- **Permissions are protected.** A new file is created mode `0600` (the schema
+  can hold `api_key` values); an existing file keeps whatever mode it already
+  has — the writer never widens it.
+
 ---
 
 ## `model`

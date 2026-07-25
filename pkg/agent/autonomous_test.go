@@ -105,6 +105,39 @@ func textTurn(text string, in, out int32) scenarioFn {
 	}
 }
 
+// cumulativeUsageTurn models Gemini's real streaming behaviour: the
+// partial chunk carries a running (cumulative) UsageMetadata and the
+// final TurnComplete chunk carries the per-turn total. A correct
+// driver must count only the final total once; a naïve
+// Append-on-every-event driver double-counts tokens and records two
+// tracker turns for one model turn. Regression fixture for #353.
+func cumulativeUsageTurn(text string, partialIn, partialOut, finalIn, finalOut int32) scenarioFn {
+	return func(_ context.Context, _ *adkmodel.LLMRequest) []stubResp {
+		content := &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: text}}}
+		return []stubResp{
+			{resp: &adkmodel.LLMResponse{
+				Content: content,
+				Partial: true,
+				UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+					PromptTokenCount:     partialIn,
+					CandidatesTokenCount: partialOut,
+					TotalTokenCount:      partialIn + partialOut,
+				},
+			}},
+			{resp: &adkmodel.LLMResponse{
+				Content:      content,
+				FinishReason: genai.FinishReasonStop,
+				TurnComplete: true,
+				UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+					PromptTokenCount:     finalIn,
+					CandidatesTokenCount: finalOut,
+					TotalTokenCount:      finalIn + finalOut,
+				},
+			}},
+		}
+	}
+}
+
 // doneCallTurn yields a single response calling the done tool. The
 // runner will execute the tool, then dispatch another LLM call; the
 // caller must script that follow-up too (typically with textTurn).
@@ -446,6 +479,55 @@ func TestRunAutonomous_TracksTokensAndCost(t *testing.T) {
 	totals := tracker.Totals()
 	if totals.InputTokens != wantIn || totals.OutputTokens != wantOut {
 		t.Errorf("tracker totals = %+v, want input=%d output=%d", totals, wantIn, wantOut)
+	}
+}
+
+// TestRunAutonomous_DoesNotDoubleCountCumulativeUsage is the #353
+// regression: Gemini emits cumulative UsageMetadata per streaming
+// chunk. The driver must attribute only each model turn's final total
+// once (via usage.TurnTap), not sum every chunk. Before the fix this
+// summed the partial + final chunks (inflated tokens/cost) and
+// recorded two tracker turns per model turn.
+func TestRunAutonomous_DoesNotDoubleCountCumulativeUsage(t *testing.T) {
+	t.Parallel()
+	llm := &stubLLM{scenarios: []scenarioFn{
+		// One model turn, streamed as: partial (running total 100/20)
+		// then final (per-turn total 200/50).
+		cumulativeUsageTurn("a", 100, 20, 200, 50),
+		doneCallTurn("done"),
+		// Follow-up LLM call after the done tool runs.
+		cumulativeUsageTurn("ok", 5, 2, 10, 5),
+	}}
+	tracker := usage.NewTracker()
+	pricing := usage.Pricing{InputPerMTok: 2.0, OutputPerMTok: 8.0}
+	res, err := RunAutonomous(context.Background(),
+		buildAgent(llm, "cumulative"),
+		"go",
+		WithTracker(tracker, pricing))
+	if err != nil {
+		t.Fatalf("RunAutonomous: %v", err)
+	}
+	// Only the final per-turn totals count: 200+10 in, 50+5 out.
+	wantIn := 200 + 10
+	wantOut := 50 + 5
+	if res.InputTokens != wantIn {
+		t.Errorf("InputTokens = %d, want %d (double-counted cumulative chunks?)", res.InputTokens, wantIn)
+	}
+	if res.OutputTokens != wantOut {
+		t.Errorf("OutputTokens = %d, want %d (double-counted cumulative chunks?)", res.OutputTokens, wantOut)
+	}
+	totals := tracker.Totals()
+	if totals.InputTokens != wantIn || totals.OutputTokens != wantOut {
+		t.Errorf("tracker totals = %+v, want input=%d output=%d", totals, wantIn, wantOut)
+	}
+	// Two model turns => exactly two tracker turns (one Append each),
+	// not one-per-chunk.
+	if totals.Turns != 2 {
+		t.Errorf("tracker Turns = %d, want 2 (one Append per model turn)", totals.Turns)
+	}
+	wantCost := pricing.CostUSD(wantIn, wantOut)
+	if diff := res.CostUSD - wantCost; diff > 1e-9 || diff < -1e-9 {
+		t.Errorf("CostUSD = %v, want %v", res.CostUSD, wantCost)
 	}
 }
 

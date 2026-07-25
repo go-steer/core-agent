@@ -404,6 +404,16 @@ func runOneTurn(ctx context.Context, a *Agent, prompt string, doneCh chan string
 		}
 	}
 
+	// Per-model-turn usage bookkeeping via the shared TurnTap
+	// discipline: overwrite last-seen UsageMetadata per event, commit
+	// exactly once on TurnComplete. Gemini's UsageMetadata is
+	// cumulative across streaming chunks within a model turn, so the
+	// old Append-on-every-event path both double-counted tokens and
+	// inflated the tracker's turn count (one Append per chunk). See
+	// pkg/usage.TurnTap and #156/#353; subtask.go uses the same
+	// discipline. Note a.Run can drive several model turns in one
+	// runOneTurn call (tool loops), so we accumulate across Commits.
+	var tap usage.TurnTap
 	for ev, err := range a.Run(ctx, prompt) {
 		if err != nil {
 			out.text = buf.String()
@@ -415,8 +425,8 @@ func runOneTurn(ctx context.Context, a *Agent, prompt string, doneCh chan string
 		if cfg.progress != nil {
 			cfg.progress(turnNo, ev)
 		}
-		if ev.UsageMetadata != nil {
-			turnUsage := usage.TurnUsageFromGenaiMetadata(ev.UsageMetadata)
+		tap.Observe(ev)
+		if turnUsage, ok := tap.Commit(ev); ok {
 			out.inputTokens += turnUsage.InputTokens
 			out.outputTokens += turnUsage.OutputTokens
 			if cfg.tracker != nil {

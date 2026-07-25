@@ -26,6 +26,7 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 #### Bug or Regression
 
 - eventlog: deleting a session no longer permanently poisons every `Watch`/`Since` consumer. `Service.Delete` now drops the session's `agent_eventlog` overlay rows alongside ADK's rows (previously they were orphaned, and their `loadEvent` failed with "session not found" forever), and `Watch` now advances its cursor past a row that fails to hydrate — surfacing it once instead of re-querying and re-erroring it every poll interval. Closes [#354](https://github.com/go-steer/core-agent/issues/354).
+- eventlog: `SessionLock` now detects a stolen lease and signals it instead of writing on regardless (split-brain). If the heartbeat's conditional UPDATE matches zero rows — another process reclaimed the lease after a `>staleAfter` stall — the lock closes the new `SessionLock.Lost()` channel and stops heartbeating, so a run loop can select on it and abort. Each heartbeat is also bounded by a timeout, so a wedged database can no longer hang the heartbeat goroutine (or `Release`, which waits on it) indefinitely. Closes [#358](https://github.com/go-steer/core-agent/issues/358).
 
 #### Documentation
 

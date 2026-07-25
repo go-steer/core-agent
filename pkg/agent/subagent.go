@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
 	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/runner"
 	"google.golang.org/adk/session"
@@ -177,10 +178,17 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 	// parent's so two concurrent runners don't trip ADK's
 	// stale-session optimistic-concurrency check. Events still land
 	// in the same database — audit queries find the subagent via
-	// WithBranchPrefix(branch) across sessions, or via the derived
-	// session ID directly.
+	// WithBranchPrefix(branch) across sessions.
+	//
+	// The derived session ID is computed per invocation (below, in
+	// the handler) with an invocation-unique component: DefaultInstruction
+	// urges parallel tool calls, so two concurrent invocations of the
+	// same subagent would otherwise share one deterministic session
+	// row — interleaving each other's in-flight history and racing
+	// ADK's optimistic-concurrency check — and sequential invocations
+	// would silently accumulate history across independent requests
+	// (#364).
 	parentSessionID := firstNonEmpty(opts.ParentSessionID, opts.Inner.SessionID())
-	subagentSessionID := deriveSubagentSessionID(parentSessionID, branch)
 
 	handler := func(toolCtx tool.Context, args subagentArgs) (subagentResult, error) {
 		// tool.Context embeds agent.ReadonlyContext which embeds
@@ -202,6 +210,11 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 			inner:  parentService,
 			branch: fullBranch,
 		}
+
+		// Derive a per-invocation session row. The invocation-unique
+		// component keeps concurrent and sequential invocations of the
+		// same subagent isolated from one another (#364).
+		subagentSessionID := deriveSubagentSessionID(parentSessionID, branch, subagentInvocationID(toolCtx.FunctionCallID()))
 
 		// Build a fresh runner per invocation so concurrent
 		// subagent calls (ADK dispatches function calls in
@@ -342,15 +355,37 @@ func firstNonEmpty(s ...string) string {
 
 // deriveSubagentSessionID composes the session ID the subagent's
 // runner uses. Lives in the same database as the parent's session
-// so audit queries can find both, but as a separate session row so
-// ADK's per-session optimistic-concurrency check doesn't trip when
-// the parent's outer runner resumes after the subagent finishes.
+// so audit queries can find both (via the shared "<parent>:sub:<branch>"
+// prefix + branch tag), but as a separate row per invocation so ADK's
+// per-session optimistic-concurrency check doesn't trip and independent
+// requests don't accumulate one another's history (#364).
 //
-// Format: "<parent>:sub:<branch>". When parent is empty (consumer
-// constructed NewSubagentTool standalone), the prefix is dropped.
-func deriveSubagentSessionID(parent, branch string) string {
-	if parent == "" {
-		return "sub:" + branch
+// Format: "<parent>:sub:<branch>:<invocation>". When parent is empty
+// (consumer constructed NewSubagentTool standalone), the parent prefix
+// is dropped. When invocation is empty the suffix is dropped — but
+// callers should pass a value from subagentInvocationID, which never
+// returns empty.
+func deriveSubagentSessionID(parent, branch, invocation string) string {
+	id := "sub:" + branch
+	if parent != "" {
+		id = parent + ":" + id
 	}
-	return parent + ":sub:" + branch
+	if invocation != "" {
+		id = id + ":" + invocation
+	}
+	return id
+}
+
+// subagentInvocationID returns a per-invocation unique component for
+// the derived subagent session ID. It prefers ADK's FunctionCallID
+// (stable, ties the derived row to the triggering tool call for audit)
+// and falls back to a fresh UUID when that's empty — some non-Gemini
+// or synthetic invocation paths don't populate it, and an empty
+// component would collapse concurrent invocations back onto one shared
+// row (#364).
+func subagentInvocationID(functionCallID string) string {
+	if id := strings.TrimSpace(functionCallID); id != "" {
+		return id
+	}
+	return uuid.NewString()
 }

@@ -273,7 +273,10 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 	// session.Service rows. Branch label keeps the audit log
 	// correlated to the parent.
 	branch := composeBranch("", "sub."+spec.Name)
-	subSessionID := deriveSubagentSessionID(a.sessionID, "sub."+spec.Name)
+	// No invocation-unique component: a subtask is addressed by its
+	// stable name, so its derived row is intentionally deterministic
+	// (unlike the parallel-tool-call subagent path in subagent.go, #364).
+	subSessionID := deriveSubagentSessionID(a.sessionID, "sub."+spec.Name, "")
 
 	// Use the UNWRAPPED parent session service (a.sessionService,
 	// not the compactingService the runner uses). The subtask has

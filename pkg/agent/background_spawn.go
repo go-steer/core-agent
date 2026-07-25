@@ -129,7 +129,11 @@ func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string,
 		inner:  parentSvc,
 		branch: branch,
 	}
-	subSessionID := deriveSubagentSessionID(parent.SessionID(), "bg."+spec.Name)
+	// No invocation-unique component: a background agent is addressed
+	// (and resumed/reported on) by its stable name, so its derived row
+	// is intentionally deterministic (unlike the parallel-tool-call
+	// subagent path in subagent.go, #364).
+	subSessionID := deriveSubagentSessionID(parent.SessionID(), "bg."+spec.Name, "")
 
 	// Per-spawn budgets: spec overrides default, default fills the
 	// rest. Zero values mean "no cap" for that dimension.

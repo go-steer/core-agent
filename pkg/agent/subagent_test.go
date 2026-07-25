@@ -307,3 +307,71 @@ func TestWithSubagents_OrderIndependent(t *testing.T) {
 		t.Errorf("research subagent tool missing from parent")
 	}
 }
+
+// TestDeriveSubagentSessionID_UniquePerInvocation is the #364
+// regression: two invocations of the same subagent (identical parent
+// + branch) must land in distinct session rows so concurrent calls
+// don't interleave history and race ADK's optimistic-concurrency
+// check, and sequential calls don't silently accumulate history
+// across independent requests. The derived ID must still carry the
+// shared "<parent>:sub:<branch>" prefix so audit queries find both.
+func TestDeriveSubagentSessionID_UniquePerInvocation(t *testing.T) {
+	t.Parallel()
+
+	const (
+		parent = "sess-1"
+		branch = "research"
+	)
+	a := deriveSubagentSessionID(parent, branch, subagentInvocationID("fc-A"))
+	b := deriveSubagentSessionID(parent, branch, subagentInvocationID("fc-B"))
+
+	if a == b {
+		t.Fatalf("distinct invocations produced the same session row %q (would interleave; #364)", a)
+	}
+	prefix := parent + ":sub:" + branch
+	for _, id := range []string{a, b} {
+		if !strings.HasPrefix(id, prefix) {
+			t.Errorf("derived id %q lost the audit prefix %q", id, prefix)
+		}
+	}
+}
+
+// TestDeriveSubagentSessionID_EmptyParentAndInvocation covers the
+// standalone-construction and no-invocation-component edges: the
+// parent prefix and invocation suffix are each dropped when empty,
+// so the deterministic name-addressed callers (subtask / background
+// spawn, which pass "") keep their historical IDs.
+func TestDeriveSubagentSessionID_EmptyParentAndInvocation(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ parent, branch, invocation, want string }{
+		{"", "research", "", "sub:research"},
+		{"sess-1", "research", "", "sess-1:sub:research"},
+		{"", "research", "fc-1", "sub:research:fc-1"},
+		{"sess-1", "research", "fc-1", "sess-1:sub:research:fc-1"},
+	}
+	for _, c := range cases {
+		if got := deriveSubagentSessionID(c.parent, c.branch, c.invocation); got != c.want {
+			t.Errorf("deriveSubagentSessionID(%q,%q,%q)=%q, want %q", c.parent, c.branch, c.invocation, got, c.want)
+		}
+	}
+}
+
+// TestSubagentInvocationID prefers the FunctionCallID and falls back
+// to a fresh unique value when it's empty/blank — otherwise an empty
+// component would collapse concurrent invocations back onto one shared
+// row (#364).
+func TestSubagentInvocationID(t *testing.T) {
+	t.Parallel()
+	if got := subagentInvocationID("fc-123"); got != "fc-123" {
+		t.Errorf("subagentInvocationID(%q)=%q, want passthrough", "fc-123", got)
+	}
+	// Blank IDs must not be treated as a usable component.
+	a := subagentInvocationID("")
+	b := subagentInvocationID("   ")
+	if a == "" || b == "" {
+		t.Fatalf("fallback produced an empty invocation id (a=%q b=%q)", a, b)
+	}
+	if a == b {
+		t.Errorf("fallback ids collided (%q); concurrent invocations would share a row", a)
+	}
+}

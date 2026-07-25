@@ -27,11 +27,22 @@ func TestContextWindowSizeFor(t *testing.T) {
 		{"gemini-3.5-flash", 1_000_000},
 		{"gemini-2.5-pro", 2_000_000},
 		{"gemini-2.5-flash", 1_000_000},
-		{"claude-opus-4-7", 200_000},
+		// Current-gen Opus/Sonnet are 1M with no "-1m" suffix (#369).
+		{"claude-opus-4-6", 1_000_000},
+		{"claude-opus-4-7", 1_000_000},
+		{"claude-opus-4-8", 1_000_000},
 		{"claude-opus-4-7-1m", 1_000_000},
-		{"claude-sonnet-4-6", 200_000},
+		{"claude-sonnet-4-6", 1_000_000},
 		{"claude-sonnet-4-6-1m", 1_000_000},
+		{"claude-opus-5", 1_000_000},
+		{"claude-sonnet-5", 1_000_000},
+		// Earlier 4.x stay 200K base; honor the "-1m" long-context suffix.
+		{"claude-opus-4-5", 200_000},
+		{"claude-opus-4-5-1m", 1_000_000},
+		{"claude-sonnet-4-5", 200_000},
+		// Haiku 4.5 has no 1M tier — stays 200K.
 		{"claude-haiku-4-5-20251001", 200_000},
+		// Legacy + unknown Claude default conservatively to 200K.
 		{"claude-3-opus", 200_000},
 		// Unknown models map to 0 so consumers can treat as "skip".
 		{"some-future-llm-7b", 0},
@@ -69,9 +80,10 @@ func TestTracker_ContextWindow_TracksLastTurn(t *testing.T) {
 		t.Errorf("ContextWindowUsed() = %d, want 12345 (last turn's input)", got)
 	}
 	// Newer turn updates both — even if the model changed mid-session.
+	// Current-gen Opus is 1M context with no "-1m" suffix (#369).
 	tr.Append("claude-opus-4-7", 50000, 100, Pricing{})
-	if got := tr.ContextWindowSize(); got != 200_000 {
-		t.Errorf("ContextWindowSize() after model switch = %d, want 200_000 (Claude Opus)", got)
+	if got := tr.ContextWindowSize(); got != 1_000_000 {
+		t.Errorf("ContextWindowSize() after model switch = %d, want 1_000_000 (Claude Opus 4.7)", got)
 	}
 	if got := tr.ContextWindowUsed(); got != 50000 {
 		t.Errorf("ContextWindowUsed() after model switch = %d, want 50000", got)

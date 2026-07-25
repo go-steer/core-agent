@@ -18,7 +18,7 @@ It's intentionally opinionated and intentionally honest about what's unresolved.
 
 ### Non-goals
 
-- **Not a finished agent.** No TUI. No rich slash-command framework. No domain-specific tools beyond the generic file/shell/todo set. Those belong in the consumer.
+- **Not a finished agent.** No rich slash-command framework. No domain-specific tools beyond the generic file/shell/search/todo set. Those belong in the consumer. (An in-process TUI *does* ship now as the default TTY surface via `go-steer/core-tui` — see "Telemetry, usage, sessions" and the out-of-scope note below for why that line moved; the substrate still runs headless.)
 - **Not a multi-language polyglot.** Go only. We don't try to mirror the Python ADK or the TypeScript ADK behavior.
 - **Not a competitor to ADK.** We wrap ADK; we don't replace it. When ADK's `runner.Runner`, `llmagent.LlmAgent`, or `model.LLM` change shape, our adapter packages change too.
 - **Not a benchmarking surface.** No micro-bench infrastructure, no eval harness. Consumers wire those up.
@@ -547,6 +547,8 @@ The bundled CLI is a *reference* implementation. Two modes:
 - **`-p PROMPT`**: one-shot. Stream partial text to stdout, tool-call summaries to stderr, exit. The shape every agent CLI of this era has.
 - **No `-p`**: REPL. Read a line, send through `agent.Run()`, stream back. Same session ID across the loop so ADK preserves history. Built-in commands: `/exit`, `/quit`, EOF.
 
+**Update (v2.x):** the original v1 stance below ("no TUI, `/exit` only") has since been reversed. `cmd/core-agent` now launches an in-process Bubble Tea TUI (via `go-steer/core-tui`) as the default TTY surface, with `--no-tui` for the line REPL and a `-tags no_tui` slim build that drops the TUI tree entirely, plus a broad slash-command set (`/model`, `/permissions`, `/compact`, …). The headless one-shot (`-p`) and REPL modes below are still the substrate contract; the TUI is layered on top, not baked into the base loop. The original rationale is kept for the record:
+
 Why no Bubble Tea / TUI: belongs in the consumer. The base library should be runnable headless; a TUI is a presentation choice.
 
 Why no slash-command framework: same reasoning. `/exit` is the minimum viable. Anything richer (e.g. `/model`, `/permissions`) requires interactive UI shapes that are consumer-specific.
@@ -558,7 +560,7 @@ Why no slash-command framework: same reasoning. `/exit` is the minimum viable. A
 Three small packages, each lifted from cogo unchanged.
 
 - **`telemetry/`** — OTEL setup. Off by default (no spans). Console mode for local debug, OTLP for production. The one gotcha worth knowing: ADK's `telemetry.New(...)` returns providers but does NOT install them as OTEL globals. We call `providers.SetGlobalOtelProviders()` explicitly. Without that, ADK's instrumentation runs against the noop tracer and you wonder why nothing's being emitted.
-- **`usage/`** — per-turn token + cost tracker. Pricing comes from a built-in table for the Gemini family; Anthropic models return zero pricing today (deferred — consumers override per-model via `cfg.Model.Pricing`).
+- **`usage/`** — per-turn token + cost tracker. Pricing is a layered catalog (`internal/pricing`): a built-in table covering both the Gemini *and* Anthropic families, refreshed daily from LiteLLM, with per-turn cost attribution incl. cache-read/write buckets. (The v1 "Anthropic returns zero pricing" state is long gone; consumers can still override per-model via `cfg.Model.Pricing`.) One known gap: models absent from the catalog currently attribute as `$0` rather than "unpriced" — tracked in the cleanup milestones.
 - **`session/`** — transcript persistence. One-shot writes a JSON file under `.agents/sessions/`; REPL doesn't (because in-memory ADK sessions don't survive process exit anyway).
 
 ---
@@ -567,21 +569,34 @@ Three small packages, each lifted from cogo unchanged.
 
 Each of these was considered and rejected for v1. The rationale matters because future M3+ work will keep relitigating these.
 
+> **Update (v2.x): several of these have since shipped.** This section is
+> kept as the historical v1 record — the rationale still explains *why*
+> each was deferred — but the **Status** line on each item reflects the
+> current reality. Don't cite an item here as evidence something is
+> unshipped; check the Status line and the README/site first.
+
 **Subagents** — a `WithSubagents([]*Agent)` option that registers each subagent as a synthetic tool. Marker is in `agent/agent.go`. Reason for deferral: cogo doesn't have it yet, and the right shape depends on whether you want subagent-as-tool (Anthropic-style) or ADK's native sub-agent transfer. Pick the shape based on the first concrete consumer that needs it.
+**Status: SHIPPED.** Background subagents with branch isolation, budgets, and spawn/list/check/report tools live in `pkg/agent/background*.go`.
 
 **Bubble Tea TUI** — would commit core-agent to a particular UI library and pull in ~30 transitive deps. Belongs in the consumer.
+**Status: SHIPPED (in the consumer, then adopted as default).** The TUI lives in the separate `go-steer/core-tui` module and is wired in as the default TTY surface via `internal/coretuiremote`; a `-tags no_tui` slim build drops it. The "particular UI library" concern was resolved by keeping the TUI out-of-tree behind an attach adapter.
 
 **File-backed session service** — `session.InMemoryService()` works for v1. For long-lived agents the right answer is a `session.Service` implementation that persists to BoltDB or SQLite. Drop it in via the (currently hard-coded) session service field on `runner.Config` — that field gets a `WithSessionService` option when this lands.
+**Status: SHIPPED.** `pkg/eventlog` provides durable sessions + audit log over SQLite/Postgres/MySQL with `Since`/`Watch` replay and crash-resume; `agent.WithEventLog` / `WithSessionService` are the seams.
 
 **Slash-command framework** — anything richer than `/exit` requires interactive UI semantics that vary by host. Best to let consumers add their own.
+**Status: PARTIALLY SHIPPED.** A broad slash-command set ships in the TUI/attach surface; the substrate loop itself still stays UI-agnostic.
 
 **Anthropic feature coverage** — extended thinking, structured outputs, server-side tools, vision, prompt caching beyond the simple `WithCacheSystem` toggle. All require small, well-bounded additions to the Anthropic adapter. None block v1 use.
+**Status: PARTIAL.** Prompt caching and `WithWebSearch` server-side tool are wired; **extended thinking is NOT round-tripped and currently breaks tool loops on thinking-default models — see the correctness cleanup milestone.** Vision/structured-outputs remain unshipped.
 
 **Auto-detection for `anthropic-vertex`** — env-var overlap with Vertex Gemini makes this risky. Possible solution: fire only when `ANTHROPIC_VERTEX_PROJECT_ID` is set without `GOOGLE_API_KEY`. Worth doing once the env semantics are designed deliberately, not as a follow-on.
 
 **Built-in tools** — bash, read_file, write_file, edit_file, grep, list_dir. Cogo has these in `internal/tools/`. We deliberately don't ship them. Reasoning: they're consumer policy as much as code (output capping per tool, security model, etc.) and we want each consumer to make those choices explicitly. The seam (`agent.WithTools`) is sufficient.
+**Status: SHIPPED — decision reversed.** The full built-in suite now ships in `pkg/tools` (default-on at the CLI, explicit at the library). See the "Built-in tools" section above for the reversal rationale.
 
 **CLI for everything cogo's CLI does** — `init`, `migrate`, `models`, `mcp`, `skills`, etc. Cogo's `cmd/cogo` has dozens of subcommands. Our `cmd/core-agent` has one (REPL with optional `-p`). Same reasoning: a base library shouldn't dictate CLI ergonomics.
+**Status: STILL OUT OF SCOPE** (though `cmd/core-agent` has grown many flags; see the "reference CLI has become a second library" note in the substrate cleanup milestone).
 
 ---
 

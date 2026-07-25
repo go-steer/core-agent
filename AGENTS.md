@@ -9,9 +9,12 @@ instruction prefix. Keep it short and load-bearing.
 `core-agent` is a reusable Go-based agent built on the Google ADK
 (`google.golang.org/adk`). It's the bottom layer for any project that
 needs a multi-turn LLM agent in Go — model providers, MCP servers,
-skills, instruction loading, permission gating, telemetry, transcript
-persistence — without the consumer-specific bits (no built-in
-bash/file tools, no TUI, no slash-command framework).
+skills, instruction loading, permission gating, telemetry, durable
+sessions, remote attach, and a baseline built-in tool suite
+(files/shell/search/todo). It ships an in-process Bubble Tea TUI as
+the default TTY surface (via `go-steer/core-tui`) but stays runnable
+headless; product-specific tools and rich slash-command frameworks
+remain a consumer concern.
 
 It deliberately mirrors the structure and conventions of
 [`go-steer/cogo`](https://github.com/go-steer/cogo), the project it
@@ -19,25 +22,44 @@ was extracted from.
 
 ## Layout
 
+Library packages live under `pkg/`; unexported helpers under
+`internal/`; runnable binaries under `cmd/`.
+
 ```
-agent/                ADK llmagent + runner wrapper; Option pattern.
-instruction/          AGENTS.md / CLAUDE.md / GEMINI.md fallback loader.
-config/               .agents/config.json schema + discovery + atomic Save.
-permissions/          ask/allow/yolo gate + bash denylist + path scope.
-tools/                GateToolset wrapper (bridges permissions to ADK toolsets).
-mcp/                  mcp.json schema + stdio/HTTP server lifecycle.
-skills/               SKILL.md discovery → ADK skilltoolset.
-models/
-  provider.go         Provider interface + registry/Resolve.
-  gemini/             Gemini API + Vertex AI.
-  anthropic/          Native model.LLM adapter for Claude
-                      (api.anthropic.com + Vertex AI backends).
-telemetry/            OpenTelemetry exporter setup.
-usage/                Per-turn token + cost tracker.
-session/              Transcript persistence (.agents/sessions/).
-runner/               Headless (one-shot) + REPL (multi-turn) drivers.
-cmd/core-agent/       Reference CLI binary.
+pkg/
+  agent/              ADK llmagent + runner wrapper; autonomous loop;
+                      background subagents; compaction/checkpoints.
+  instruction/        AGENTS.md / CLAUDE.md / GEMINI.md loader
+                      (+ AGENTS.d overlay + @include; scoped).
+  config/             .agents/config.json schema + discovery + atomic Save.
+  permissions/        ask/accept-edits/plan/yolo gate + bash denylist
+                      + path scope + plan-first enforcement.
+  tools/              Built-in tool suite + GateToolset wrapper
+                      (bridges permissions to ADK toolsets).
+  mcp/                mcp.json schema + stdio/HTTP server lifecycle.
+  skills/             SKILL.md discovery → ADK skilltoolset.
+  models/             Provider interface + registry/Resolve;
+                      gemini/ (API + Vertex), anthropic/ (native
+                      model.LLM adapter, api.anthropic.com + Vertex).
+  usage/              Per-turn token + cost tracker.
+  modeltier/,         Model-tier + task-class routing tables.
+  taskclass/
+  eventlog/           Durable sessions + audit log (SQLite/Postgres/MySQL).
+  session/            Transcript persistence (.agents/sessions/).
+  digest/             Oversized-tool-output summarization.
+  attach/             HTTP/SSE remote-attach server.
+  agentenv/, auth/,   Env interpolation; attach auth; hooks; watchdog;
+  hooks/, watchdog/,  session replay recording.
+  recording/
+  telemetry/          OpenTelemetry + Prometheus setup.
+  runner/             Headless (one-shot) + REPL (multi-turn) drivers.
+internal/             pricing catalog, attach client, core-tui remote
+                      adapter, web UI, vertex cache, version, testutil.
+cmd/core-agent/       Reference CLI binary (default in-process TUI).
+cmd/core-agent-tui/   Standalone TUI binary (spawn-and-attach).
+cmd/k8s-event-watcher/ Sample consumer (moving to go-steer/k8s-lookout).
 examples/             Library use examples.
+extras/scion/         Scion harness integration.
 dev/                  Build/test/lint tooling — see dev/README.md.
 docs/                 Internal design docs (acceptance-mN.md, ...).
 docs/site/            Published Astro Starlight site.
@@ -111,13 +133,13 @@ needs no network and no API keys.
   pass the date-suffixed form via `--model`.
 - **Gemini function names must match `[A-Za-z0-9_]{1,64}`** — no dots
   in MCP tool namespaces; we use `<server>_<tool>` not
-  `<server>.<tool>`. See `mcp/namespace.go::sanitizePrefix`.
+  `<server>.<tool>`. See `pkg/mcp/namespace.go::sanitizePrefix`.
 - **The MCP SDK's `Toolset.Tools(ctx)` requires an
   `agent.ReadonlyContext`**, not a regular `context.Context`. There's
-  a minimal stub at `mcp/listctx.go`.
+  a minimal stub at `pkg/mcp/listctx.go`.
 - **ADK's `telemetry.New(...)` returns providers but does NOT install
   them as OTEL globals.** Always call
-  `providers.SetGlobalOtelProviders()`. `telemetry/otel.go` does this.
+  `providers.SetGlobalOtelProviders()`. `pkg/telemetry/otel.go` does this.
 
 ## How we develop
 

@@ -1713,6 +1713,20 @@ func (a *Agent) setCancelInFlight(cancel context.CancelFunc) {
 	a.mu.Unlock()
 }
 
+// turnInFlight reports whether a Run turn is currently executing on
+// this agent. A turn registers its cancel func via setCancelInFlight
+// once it starts driving the runner and clears it on cleanup, so a
+// non-nil cancelInFlight is the in-flight signal. Used by Compact /
+// Checkpoint to refuse mid-turn boundary writes (#355).
+func (a *Agent) turnInFlight() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cancelInFlight != nil
+}
+
 // clearCancelInFlight clears the stored cancel func only when the
 // passed-in cancel matches the stored one. Avoids clobbering a
 // newer turn's cancel when an older turn's cleanup runs late (the

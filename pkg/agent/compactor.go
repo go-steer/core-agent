@@ -226,6 +226,20 @@ type CompactionResult struct {
 // sentinel before treating it as a hard failure.
 var ErrNoCompactor = errors.New("agent: no compactor wired (pass WithCompactor at agent.New)")
 
+// ErrTurnInFlight is returned by Compact / Checkpoint when a Run turn
+// is currently in flight on this agent. Both operations append a
+// boundary event directly to the parent session row; doing so mid-turn
+// races the runner's own AppendEvent (ADK optimistic-concurrency
+// failure against the runner's stale snapshot) and can wedge a boundary
+// between a persisted functionCall and its functionResponse, which the
+// history-slicing path (sliceFromBoundary) would then emit as an
+// orphaned functionResponse that Gemini rejects. Callers (AttachCompact,
+// the TUI /compact + /done slashes) should retry once the turn ends.
+// See #355. The internal pre-turn drivers (runPendingCompaction /
+// runPendingCheckpoint) run before the turn's cancel is registered, so
+// this guard never blocks the automatic threshold-driven path.
+var ErrTurnInFlight = errors.New("agent: cannot compact/checkpoint while a turn is in flight; retry after the turn completes")
+
 // Compact runs an out-of-band summarizer LLM call against the
 // current session's history and writes the result as a "summary"
 // marker event the history-slicing path in Run picks up on the
@@ -310,6 +324,15 @@ func (a *Agent) runSummarizer(ctx context.Context, spec summarizerSpec) (summari
 	}
 	if a.sessionService == nil {
 		return summarizerOutcome{}, fmt.Errorf("agent: %s: no session.Service wired", spec.operation)
+	}
+	// In-flight-turn guard (#355). Appending a boundary event to the
+	// parent row while the runner is mid-turn races its optimistic-
+	// concurrency check and can orphan a functionResponse. The internal
+	// threshold drivers run before the turn's cancel is registered, so
+	// this only trips for out-of-band callers (AttachCompact, TUI
+	// slashes) that fire during an active turn.
+	if a.turnInFlight() {
+		return summarizerOutcome{}, fmt.Errorf("agent: %s: %w", spec.operation, ErrTurnInFlight)
 	}
 
 	// Load the full session history — unsliced. The summarizer is

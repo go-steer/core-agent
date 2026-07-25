@@ -48,9 +48,16 @@ func (agentRunLockRow) TableName() string { return "agent_run_lock" }
 // against a 30s staleness window leaves plenty of headroom for
 // short hiccups (DB pause, GC stall) without false-sharing the
 // lock.
+//
+// defaultHeartbeatTimeout bounds each heartbeat UPDATE so a wedged
+// database can't hang the heartbeat goroutine (and, via Release's
+// wait on the goroutine, Release itself) indefinitely. It comfortably
+// exceeds SQLite's 5s busy_timeout so a heartbeat isn't spuriously
+// cancelled while merely waiting on the write lock.
 const (
 	defaultHeartbeatInterval = 5 * time.Second
 	defaultStaleAfter        = 30 * time.Second
+	defaultHeartbeatTimeout  = 10 * time.Second
 )
 
 // ErrSessionLocked is returned by AcquireLock when another live
@@ -69,12 +76,18 @@ type SessionLock struct {
 	holder    string
 
 	heartbeatInterval time.Duration
+	heartbeatTimeout  time.Duration
 	staleAfter        time.Duration
 
 	mu       sync.Mutex
 	released bool
 	stop     chan struct{}
 	done     chan struct{}
+	// lost is closed by the heartbeat loop if it discovers the lease
+	// was stolen out from under us (its conditional UPDATE matched zero
+	// rows). Callers running work under the lock select on Lost() to
+	// abort before committing split-brain writes.
+	lost chan struct{}
 }
 
 // AcquireLock takes an exclusive lease on (app, user, session) for
@@ -149,9 +162,11 @@ func (h *Handle) AcquireLock(ctx context.Context, app, user, session string) (*S
 		session:           session,
 		holder:            holder,
 		heartbeatInterval: defaultHeartbeatInterval,
+		heartbeatTimeout:  defaultHeartbeatTimeout,
 		staleAfter:        defaultStaleAfter,
 		stop:              make(chan struct{}),
 		done:              make(chan struct{}),
+		lost:              make(chan struct{}),
 	}
 	go lock.heartbeatLoop()
 	return lock, nil
@@ -195,6 +210,17 @@ func (l *SessionLock) Release() error {
 // row content.
 func (l *SessionLock) Holder() string { return l.holder }
 
+// Lost returns a channel that is closed if the lease is stolen out
+// from under us while it is held — the heartbeat's conditional UPDATE
+// matched zero rows, meaning another process reclaimed the lease after
+// our heartbeat lapsed past the staleness window (a >staleAfter GC
+// pause, sleep, or DB stall). A caller running work under the lock —
+// e.g. the autonomous run loop — must select on this channel and abort
+// promptly, otherwise both processes run against the same session: the
+// exact split-brain the lock exists to prevent. The channel is never
+// closed for a lock that is cleanly Released while still held.
+func (l *SessionLock) Lost() <-chan struct{} { return l.lost }
+
 func (l *SessionLock) heartbeatLoop() {
 	defer close(l.done)
 	ticker := time.NewTicker(l.heartbeatInterval)
@@ -204,18 +230,37 @@ func (l *SessionLock) heartbeatLoop() {
 		case <-l.stop:
 			return
 		case <-ticker.C:
-			now := time.Now()
-			// Conditional UPDATE — only refresh if we still own
-			// the row. If another process stole the lease while
-			// we paused, the WHERE clause matches zero rows and
-			// we silently degrade until Release.
-			_ = l.db.
-				Model(&agentRunLockRow{}).
-				Where("app_name = ? AND user_id = ? AND session_id = ? AND holder = ?",
-					l.app, l.user, l.session, l.holder).
-				Update("heartbeat_at", now)
+			if l.beat() {
+				// Lease lost. Signal any consumer running under the
+				// lock so it can abort, then stop heartbeating —
+				// continuing to refresh a row we no longer own is
+				// pointless.
+				close(l.lost)
+				return
+			}
 		}
 	}
+}
+
+// beat refreshes heartbeat_at for the row we still own, bounded by
+// heartbeatTimeout so a wedged database can't hang the loop forever. It
+// returns true only when the lease has been definitively lost — the
+// conditional UPDATE succeeded but matched zero rows, meaning our
+// holder no longer owns the row. A transient error (context timeout, DB
+// hiccup) is deliberately NOT treated as loss: the lease may still be
+// ours, so we return false and retry on the next tick.
+func (l *SessionLock) beat() (lost bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), l.heartbeatTimeout)
+	defer cancel()
+	res := l.db.WithContext(ctx).
+		Model(&agentRunLockRow{}).
+		Where("app_name = ? AND user_id = ? AND session_id = ? AND holder = ?",
+			l.app, l.user, l.session, l.holder).
+		Update("heartbeat_at", time.Now())
+	if res.Error != nil {
+		return false
+	}
+	return res.RowsAffected == 0
 }
 
 // newHolderID builds a per-acquisition identifier string of the

@@ -191,6 +191,78 @@ func TestHeartbeat_KeepsLeaseFresh(t *testing.T) {
 	}
 }
 
+// TestHeartbeat_LeaseLostSignalsAndStops is the regression test for
+// #358: when the heartbeat's conditional UPDATE matches zero rows (the
+// lease was stolen after a long stall), the loop must signal loss via
+// Lost() and stop, so a run loop can abort instead of committing
+// split-brain writes. Before the fix the heartbeat discarded
+// RowsAffected and silently kept running.
+//
+// We drive a SessionLock directly with a fast heartbeat interval rather
+// than waiting out the 5s production interval.
+func TestHeartbeat_LeaseLostSignalsAndStops(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestHandle(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	if err := h.db.WithContext(ctx).AutoMigrate(&agentRunLockRow{}); err != nil {
+		t.Fatalf("AutoMigrate: %v", err)
+	}
+	// Plant the row we "own".
+	const holder = "me/1/beef"
+	if err := h.db.WithContext(ctx).Create(&agentRunLockRow{
+		AppName:     "app",
+		UserID:      "user",
+		SessionID:   "sess1",
+		Holder:      holder,
+		AcquiredAt:  time.Now(),
+		HeartbeatAt: time.Now(),
+	}).Error; err != nil {
+		t.Fatalf("plant row: %v", err)
+	}
+
+	lock := &SessionLock{
+		db:                h.db,
+		app:               "app",
+		user:              "user",
+		session:           "sess1",
+		holder:            holder,
+		heartbeatInterval: 10 * time.Millisecond,
+		heartbeatTimeout:  time.Second,
+		staleAfter:        defaultStaleAfter,
+		stop:              make(chan struct{}),
+		done:              make(chan struct{}),
+		lost:              make(chan struct{}),
+	}
+	go lock.heartbeatLoop()
+	defer lock.Release()
+
+	// Simulate another process stealing the lease by overwriting the
+	// holder. The next heartbeat's WHERE holder = <us> now matches zero
+	// rows.
+	if err := h.db.WithContext(ctx).
+		Model(&agentRunLockRow{}).
+		Where("app_name = ? AND user_id = ? AND session_id = ?", "app", "user", "sess1").
+		Update("holder", "thief/2/f00d").Error; err != nil {
+		t.Fatalf("simulate steal: %v", err)
+	}
+
+	select {
+	case <-lock.Lost():
+		// Expected: heartbeat detected the zero-row UPDATE and signaled.
+	case <-time.After(2 * time.Second):
+		t.Fatal("lease loss was not signaled via Lost() after the lease was stolen")
+	}
+
+	// The loop must also have stopped (done closed) once it signaled.
+	select {
+	case <-lock.done:
+	case <-time.After(time.Second):
+		t.Error("heartbeat loop did not stop after detecting lease loss")
+	}
+}
+
 func TestRelease_DoesNotDeleteStolenSuccessor(t *testing.T) {
 	t.Parallel()
 	// Scenario: A acquires, A's heartbeat lapses, B steals, A

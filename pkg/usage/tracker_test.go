@@ -93,6 +93,54 @@ func TestPriceFor_UnknownModelIsZero(t *testing.T) {
 	}
 }
 
+// TestPriceFor_UnpricedFlag pins the #368 fix: PriceFor must mark the
+// result Unpriced when no catalog layer had a rate, so a downstream $0
+// cost is distinguishable from a genuinely free model. Before the fix
+// PriceFor discarded the catalog's found bool and every result looked
+// "priced", making unknown models render as silent $0.
+func TestPriceFor_UnpricedFlag(t *testing.T) {
+	t.Parallel()
+	if unknown := PriceFor("openai-gpt-9000", nil); !unknown.Unpriced {
+		t.Errorf("unknown model should be Unpriced=true, got %+v", unknown)
+	}
+	if known := PriceFor("gemini-3.5-flash", nil); known.Unpriced {
+		t.Errorf("known builtin model should be Unpriced=false, got %+v", known)
+	}
+}
+
+// TestTracker_UnpricedTurns_DistinguishesUnknownFromFree is the core
+// #368 regression: a turn whose model had no rate (Unpriced) must be
+// countable apart from a genuinely free model (zero rates, priced).
+// Both contribute $0 to CostUSD, so before the fix the two were
+// indistinguishable in Totals / TotalsByModel / the cost metric.
+func TestTracker_UnpricedTurns_DistinguishesUnknownFromFree(t *testing.T) {
+	t.Parallel()
+	tr := NewTracker()
+	// Unknown-price model: rate unknown, cost defaults to 0.
+	tr.AppendUsage("mystery-model", TurnUsage{InputTokens: 1000, OutputTokens: 500}, Pricing{Unpriced: true})
+	// Genuinely free model: rate known to be zero (e.g. an echo/mock).
+	tr.AppendUsage("free-echo", TurnUsage{InputTokens: 1000, OutputTokens: 500}, Pricing{})
+
+	totals := tr.Totals()
+	if totals.Turns != 2 {
+		t.Fatalf("Turns = %d, want 2", totals.Turns)
+	}
+	if totals.CostUSD != 0 {
+		t.Errorf("CostUSD = %f, want 0 (both models bill $0)", totals.CostUSD)
+	}
+	if totals.UnpricedTurns != 1 {
+		t.Errorf("UnpricedTurns = %d, want 1 (only mystery-model is unpriced)", totals.UnpricedTurns)
+	}
+
+	byModel := tr.TotalsByModel()
+	if got := byModel["mystery-model"].UnpricedTurns; got != 1 {
+		t.Errorf("mystery-model UnpricedTurns = %d, want 1", got)
+	}
+	if got := byModel["free-echo"].UnpricedTurns; got != 0 {
+		t.Errorf("free-echo UnpricedTurns = %d, want 0 (free != unknown)", got)
+	}
+}
+
 // TestKnownModelsCount pins the accessor behavior — the /pricing
 // endpoint's snapshot uses this to report how many models the
 // operator's catalog knows about. Zero when no catalog installed

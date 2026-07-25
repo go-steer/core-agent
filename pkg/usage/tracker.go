@@ -43,6 +43,12 @@ type Turn struct {
 	ToolUseTokens     int
 	CostUSD           float64
 	At                time.Time
+	// Unpriced is true when the model had no rate in the pricing
+	// catalog, so CostUSD is 0 because the price is unknown rather
+	// than because the model is free. Threads through from the
+	// Pricing passed to AppendUsage; consumers rendering cost should
+	// show "$—" for unpriced turns instead of "$0.00". See #368.
+	Unpriced bool
 }
 
 // TurnUsage is the per-call token breakdown a provider adapter hands
@@ -68,6 +74,13 @@ type Totals struct {
 	ThoughtsTokens    int
 	ToolUseTokens     int
 	CostUSD           float64
+	// UnpricedTurns counts turns whose model had no catalog rate, so
+	// their contribution to CostUSD was 0 for lack of a price rather
+	// than because the model is free. When > 0, CostUSD is a lower
+	// bound and consumers should flag the total as incomplete (e.g.
+	// "$X.YY+" or a "$—" marker) rather than presenting it as exact.
+	// See #368.
+	UnpricedTurns int
 }
 
 // Tracker accumulates per-turn usage for one session.
@@ -181,6 +194,7 @@ func (t *Tracker) AppendUsage(model string, u TurnUsage, p Pricing) Turn {
 		ToolUseTokens:     u.ToolUseTokens,
 		CostUSD:           cost,
 		At:                time.Now(),
+		Unpriced:          p.Unpriced,
 	}
 	t.mu.Lock()
 	t.turns = append(t.turns, turn)
@@ -214,6 +228,9 @@ func (t *Tracker) Totals() Totals {
 		out.ThoughtsTokens += x.ThoughtsTokens
 		out.ToolUseTokens += x.ToolUseTokens
 		out.CostUSD += x.CostUSD
+		if x.Unpriced {
+			out.UnpricedTurns++
+		}
 	}
 	return out
 }
@@ -240,6 +257,9 @@ func (t *Tracker) TotalsByModel() map[string]Totals {
 		cur.ThoughtsTokens += x.ThoughtsTokens
 		cur.ToolUseTokens += x.ToolUseTokens
 		cur.CostUSD += x.CostUSD
+		if x.Unpriced {
+			cur.UnpricedTurns++
+		}
 		out[x.Model] = cur
 	}
 	return out

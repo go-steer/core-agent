@@ -38,6 +38,14 @@ type Pricing struct {
 	// source. Threads through from internal/pricing.Rates so /pricing
 	// can surface staleness. Zero when unknown.
 	UpdatedAt time.Time
+	// Unpriced is true when no catalog layer had a rate for the model
+	// (pricing.Catalog.Lookup returned found=false). It disambiguates
+	// "rate unknown" (Unpriced=true, cost should render "$—") from a
+	// genuinely free model (Unpriced=false, all rates zero). Without
+	// this flag a $0 cost is indistinguishable from an unknown-price
+	// model in Totals, per-model breakdowns, and the
+	// core_agent.session.cost_usd metric — see #368.
+	Unpriced bool
 }
 
 // IsZero reports whether the rates carry no useful pricing.
@@ -89,14 +97,14 @@ func KnownModelsCount() int {
 // reports source SourceCfgOverride when the model resolves through it.
 func PriceForWithSource(modelID string, cfg *config.Config) (Pricing, string) {
 	if c := globalCatalog.Load(); c != nil {
-		r, src, _ := c.LookupWithSource(modelID)
-		return ratesToPricing(r), src
+		r, src, found := c.LookupWithSource(modelID)
+		return ratesToPricing(r, found), src
 	}
 	c, _ := pricing.NewCatalog(pricing.Options{
 		CfgOverride: cfgToOverride(cfg),
 	})
-	r, src, _ := c.LookupWithSource(modelID)
-	return ratesToPricing(r), src
+	r, src, found := c.LookupWithSource(modelID)
+	return ratesToPricing(r, found), src
 }
 
 // PriceFor returns the Pricing for modelID. Resolution chain (first
@@ -115,8 +123,8 @@ func PriceForWithSource(modelID string, cfg *config.Config) (Pricing, string) {
 // through cmd/core-agent's startup.
 func PriceFor(modelID string, cfg *config.Config) Pricing {
 	if c := globalCatalog.Load(); c != nil {
-		r, _ := c.Lookup(modelID)
-		return ratesToPricing(r)
+		r, found := c.Lookup(modelID)
+		return ratesToPricing(r, found)
 	}
 	// Catalog not installed (test / library). Build a one-shot
 	// catalog from cfg + builtin so the answer is consistent with
@@ -124,19 +132,22 @@ func PriceFor(modelID string, cfg *config.Config) Pricing {
 	c, _ := pricing.NewCatalog(pricing.Options{
 		CfgOverride: cfgToOverride(cfg),
 	})
-	r, _ := c.Lookup(modelID)
-	return ratesToPricing(r)
+	r, found := c.Lookup(modelID)
+	return ratesToPricing(r, found)
 }
 
 // ratesToPricing projects internal/pricing.Rates into the public
 // Pricing shape. Split out so PriceFor's two code paths stay in
-// lockstep as new rate fields land.
-func ratesToPricing(r pricing.Rates) Pricing {
+// lockstep as new rate fields land. found is the catalog lookup's
+// found flag; !found marks the result Unpriced so downstream cost
+// aggregation can tell "rate unknown" apart from "genuinely free".
+func ratesToPricing(r pricing.Rates, found bool) Pricing {
 	return Pricing{
 		InputPerMTok:       r.InputPerMTok,
 		CachedInputPerMTok: r.CachedInputPerMTok,
 		OutputPerMTok:      r.OutputPerMTok,
 		UpdatedAt:          r.UpdatedAt,
+		Unpriced:           !found,
 	}
 }
 

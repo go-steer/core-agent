@@ -219,10 +219,17 @@ exist; everything else uses `core_agent.*`.
 | Metric | Type | Unit | Attributes | Source |
 |---|---|---|---|---|
 | `core_agent.session.turns` | ObservableCounter | `{turn}` | `session.id`, `gen_ai.request.model` | `Tracker.Totals().Turns` |
-| `core_agent.session.cost_usd` | ObservableCounter | `USD` | `session.id`, `gen_ai.request.model` | `Tracker.TotalsByModel()` |
+| `core_agent.session.cost_usd` | ObservableCounter | `USD` | `session.id`, `gen_ai.request.model`, `priced` | `Tracker.TotalsByModel()` |
 | `core_agent.session.duration` | ObservableGauge | `s` | `session.id` | `Tracker.Duration()` |
 | `core_agent.context.window_used` | ObservableGauge | `{token}` | `session.id`, `gen_ai.request.model` | `usage.ContextWindowUsed()` |
 | `core_agent.context.window_size` | ObservableGauge | `{token}` | `session.id`, `gen_ai.request.model` | `usage.ContextWindowSize()` |
+
+The `priced` boolean on `core_agent.session.cost_usd` is `false` when the
+model had at least one turn with no rate in the pricing catalog
+(`Totals.UnpricedTurns > 0`). Such turns bill $0 for lack of a known
+price, not because the model is free, so `priced=false` marks the series
+as a lower bound — filter it out of exact-spend panels rather than
+under-reporting. See #368.
 
 ### core-agent-specific — digest / MCP wrap
 

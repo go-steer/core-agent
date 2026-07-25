@@ -271,6 +271,22 @@ func (s *gormStream) Append(ctx context.Context, sess session.Session, ev *sessi
 	return row.Seq, nil
 }
 
+// deleteSession removes every overlay row for a session. The service
+// wrapper calls this after ADK deletes its own rows so we don't leave
+// orphaned overlay rows behind. An orphaned row is poison: loadEvent
+// re-fetches the (now missing) session and returns "session not found"
+// forever, and because the row's seq is real, an unfiltered Watch/Since
+// re-queries and re-errors it on every poll — one deletion would
+// otherwise break live-tail/replay for every consumer on the log.
+func (s *gormStream) deleteSession(ctx context.Context, appName, userID, sessionID string) error {
+	if err := s.db.WithContext(ctx).
+		Where("app_name = ? AND user_id = ? AND session_id = ?", appName, userID, sessionID).
+		Delete(&agentEventRow{}).Error; err != nil {
+		return fmt.Errorf("eventlog: delete overlay rows for session %q: %w", sessionID, err)
+	}
+	return nil
+}
+
 // Since returns events with seq > fromSeq, in seq order, bounded by
 // current end-of-log.
 func (s *gormStream) Since(ctx context.Context, fromSeq int64, opts ...QueryOption) iter.Seq2[Entry, error] {
@@ -308,14 +324,18 @@ func (s *gormStream) Watch(ctx context.Context, fromSeq int64, opts ...QueryOpti
 			}
 			advanced := false
 			ok := s.iterateOnceFunc(ctx, cursor, q, func(e Entry, err error) bool {
-				if err != nil {
-					return yield(e, err)
-				}
+				// Advance the cursor past this row unconditionally —
+				// including when hydration failed. iterateOnceFunc
+				// still populates e.Seq on error, so a permanently
+				// unhydratable row (e.g. its session was deleted out
+				// from under us) is surfaced once and then skipped,
+				// instead of being re-queried and re-errored on every
+				// poll interval forever.
 				if e.Seq > cursor {
 					cursor = e.Seq
 					advanced = true
 				}
-				return yield(e, nil)
+				return yield(e, err)
 			})
 			if !ok {
 				return

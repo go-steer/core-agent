@@ -74,10 +74,17 @@ func (s *service) Create(ctx context.Context, req *session.CreateRequest) (*sess
 	return s.inner.Create(ctx, req)
 }
 
+// Delete removes the session from ADK and then drops the matching
+// overlay rows. Deleting only ADK's rows would leave orphaned overlay
+// rows whose loadEvent fails forever, poisoning every unfiltered
+// Watch/Since consumer (see gormStream.deleteSession).
 func (s *service) Delete(ctx context.Context, req *session.DeleteRequest) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	return s.inner.Delete(ctx, req)
+	if err := s.inner.Delete(ctx, req); err != nil {
+		return err
+	}
+	return s.stream.deleteSession(ctx, req.AppName, req.UserID, req.SessionID)
 }
 
 // AppendEvent writes the event through ADK first (so the events row

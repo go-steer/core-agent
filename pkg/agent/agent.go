@@ -863,6 +863,21 @@ func (a *Agent) ModelName() string {
 // first (internal state changes); inbox goes second (external
 // input, closer to the prompt logically); then the original prompt.
 func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event, error] {
+	// Settle-time cost-ceiling enforcement (#362). The prior turn's
+	// post-turn hook already ran maybeEnforceCostCeiling, but in
+	// harness-driven deployments the harness calls tracker.Append for
+	// that turn's main-model cost AFTER the cleanup hook (see the
+	// tapped/UsageMetadata comment below and the turn-complete emit
+	// path) — so the post-turn delta saw only in-turn internal appends
+	// (subtasks, summarizer) and missed the main-model spend entirely.
+	// A single runaway turn (the #144 read-file-loop) could therefore
+	// never trip the per-turn cap. Re-run enforcement here, at the top
+	// of the next Run, now that the prior turn is fully settled in the
+	// tracker: a.turnStartCost still holds the prior turn's baseline
+	// (snapshotTurnStartCost below hasn't reset it yet), so the delta is
+	// the prior turn's true cost. Idempotent + a no-op when no ceiling
+	// is configured, so this is cheap on the common path.
+	a.maybeEnforceCostCeiling()
 	// Cost-ceiling pre-flight (#145). If a prior turn tripped the
 	// configured per-turn / per-session spend cap, refuse this turn
 	// at the very top — before any tracker writes, model calls, or

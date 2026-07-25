@@ -15,9 +15,14 @@
 package agent
 
 import (
+	"context"
 	"errors"
+	"iter"
 	"strings"
 	"testing"
+
+	adkmodel "google.golang.org/adk/model"
+	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
@@ -181,6 +186,80 @@ func TestMaybeEnforceCostCeiling_AlreadyTripped_IsIdempotent(t *testing.T) {
 	// duplicate turn-error frames per turn if this guard regressed.
 	if reason != "already tripped previously" {
 		t.Errorf("reason should be unchanged on idempotent re-check; got %q", reason)
+	}
+}
+
+// oneShotLLM completes each turn with a single TurnComplete response and
+// no UsageMetadata — mirroring a harness-driven deployment where the
+// agent itself never appends the main-model cost (the harness does that,
+// after the turn's cleanup hook runs).
+type oneShotLLM struct{}
+
+func (oneShotLLM) Name() string { return "oneshot" }
+func (oneShotLLM) GenerateContent(_ context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		yield(&adkmodel.LLMResponse{
+			Content:      &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "done"}}},
+			TurnComplete: true,
+		}, nil)
+	}
+}
+
+// TestRun_CostCeiling_SettlesAfterHarnessAppend is the #362 regression.
+// In harness-driven deployments the harness appends a turn's main-model
+// cost AFTER that turn's post-turn hook runs, so the hook's per-turn
+// delta misses it and a single runaway turn (#144's read-file loop) can
+// never trip the per-turn cap. The fix re-runs enforcement at the top of
+// the next Run, once the prior turn is fully settled in the tracker.
+//
+// Drives the real Run loop (not maybeEnforceCostCeiling directly) because
+// the bug is a timing/wiring issue in Run, not in the decision logic:
+// the unit tests below already cover the decision, and would pass with or
+// without the fix.
+func TestRun_CostCeiling_SettlesAfterHarnessAppend(t *testing.T) {
+	t.Parallel()
+
+	tr := usage.NewTracker()
+	a, err := New(oneShotLLM{},
+		WithSession("u-cc", "s-cc"),
+		WithUsageTracker(tr),
+		WithCostCeiling(CostCeiling{MaxTurnUSD: 0.10}),
+	)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	ctx := context.Background()
+
+	// Turn 1: drive to completion. The agent appends nothing itself (no
+	// inline subtasks), matching a harness-driven main turn.
+	for _, err := range a.Run(ctx, "hi") {
+		if err != nil {
+			t.Fatalf("turn 1 Run: %v", err)
+		}
+	}
+	if tripped, _ := a.CostCeilingTripped(); tripped {
+		t.Fatalf("ceiling tripped at turn-1 cleanup, but the main-model cost hasn't been appended yet")
+	}
+
+	// Harness appends turn 1's main-model cost AFTER the cleanup hook:
+	// $0.15, over the $0.10 per-turn cap.
+	tr.Append("oneshot", 1_500_000, 0, usage.Pricing{InputPerMTok: 0.10})
+
+	// Turn 2: Run must refuse, because settle-time enforcement now sees
+	// turn 1's full cost. Before the fix, turn 1's cost fell in the gap
+	// between its cleanup and turn 2's start-of-turn snapshot, so the cap
+	// never tripped and turn 2 ran normally.
+	var gotErr error
+	for _, err := range a.Run(ctx, "again") {
+		if err != nil {
+			gotErr = err
+		}
+	}
+	if !IsCostCeilingExceeded(gotErr) {
+		t.Fatalf("turn 2 should have been refused by the per-turn ceiling; got err=%v", gotErr)
+	}
+	if tripped, reason := a.CostCeilingTripped(); !tripped || !strings.Contains(reason, "per-turn") {
+		t.Errorf("expected per-turn ceiling tripped; tripped=%v reason=%q", tripped, reason)
 	}
 }
 

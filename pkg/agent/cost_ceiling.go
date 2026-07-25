@@ -136,16 +136,24 @@ func (a *Agent) CostCeilingTripped() (bool, string) {
 	return a.costCeilingExceeded, a.costCeilingReason
 }
 
-// maybeEnforceCostCeiling is the post-turn hook entry point. Runs
-// after each turn finishes; checks the configured ceilings against
-// the current tracker totals + the snapshot taken at turn start.
-// Sets the costCeilingExceeded flag and emits a turn-error event
-// when either ceiling trips. Idempotent — if already tripped, the
-// check is a no-op so we don't re-emit on every subsequent turn-end.
+// maybeEnforceCostCeiling checks the configured ceilings against the
+// current tracker totals + the snapshot taken at turn start. Sets the
+// costCeilingExceeded flag and emits a turn-error event when either
+// ceiling trips. Idempotent — if already tripped, the check is a no-op
+// so we don't re-emit on every subsequent call.
 //
-// Called from the same post-turn hook spot as
-// maybeMarkCompactionPending; both run after the user-visible turn
-// boundary closes.
+// Called from two spots, both against the same turnStartCost baseline:
+//
+//   - The post-turn hook (alongside maybeMarkCompactionPending), right
+//     after the user-visible turn boundary closes. This catches in-turn
+//     internal appends (subtasks, summarizer) immediately.
+//   - The top of the next Run, before turnStartCost is re-snapshotted.
+//     In harness-driven deployments the harness appends the just-finished
+//     turn's main-model cost AFTER the post-turn hook, so only this
+//     settle-time pass sees the full per-turn spend (#362).
+//
+// Running at both points means a runaway turn is caught as early as the
+// available data allows, and always by the start of the following turn.
 func (a *Agent) maybeEnforceCostCeiling() {
 	if a == nil || a.tracker == nil || !a.costCeiling.active() {
 		return

@@ -128,7 +128,12 @@ func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*Age
 	// Skipped when the agent has no event log; checkpoints are only
 	// useful for durable sessions.
 	emitFinalCheckpoint := func(reason StopReason) {
-		_ = emitCheckpoint(ctx, a, checkpointPayload{
+		// Detached write: the final checkpoint is the crash-resume
+		// anchor and is emitted even when the loop exits because ctx
+		// was cancelled — passing the dead ctx here silently lost the
+		// checkpoint on exactly the shutdown path where it matters
+		// most (#365).
+		emitFinalCheckpointDetached(ctx, a, checkpointPayload{
 			Turn:               result.Turns,
 			InputTokens:        result.InputTokens,
 			OutputTokens:       result.OutputTokens,

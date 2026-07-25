@@ -332,3 +332,70 @@ func TestResumeAutonomous_LockBlocksConcurrent(t *testing.T) {
 		t.Errorf("err = %v, want eventlog.ErrSessionLocked", err)
 	}
 }
+
+// TestEmitFinalCheckpointDetached_WritesDespiteCancelledContext is the
+// #365 regression: the final checkpoint is emitted on every loop exit,
+// including context cancellation/shutdown — exactly when crash-resume
+// needs it most. Passing the already-cancelled ctx straight to
+// emitCheckpoint failed the DB write (error swallowed), losing the
+// checkpoint. The detached write must land it anyway.
+func TestEmitFinalCheckpointDetached_WritesDespiteCancelledContext(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestEventLog(t)
+	defer cleanup()
+
+	a, err := New(&stubLLM{},
+		WithAppName("app"),
+		WithSession("u", "cancelled-cp"),
+		WithEventLog(h),
+		WithInstruction("test agent"),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// The session already exists by the time the final checkpoint
+	// fires (the loop has run turns); the shutdown path is only special
+	// because ctx is dead. Create it up front with a live context.
+	if _, err := a.SessionService().Create(context.Background(), &session.CreateRequest{
+		AppName:   "app",
+		UserID:    "u",
+		SessionID: "cancelled-cp",
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+
+	// The shutdown path: a context that's already cancelled.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	payload := checkpointPayload{Turn: 1, StopReason: string(StopReasonContextCancelled)}
+
+	// Baseline: the old behavior (dead ctx → emitCheckpoint) fails, so
+	// the checkpoint would be silently lost. Assert the failure so the
+	// test genuinely exercises the cancellation path — if the backend
+	// ignored cancellation the bug couldn't manifest and this guard
+	// would flag it.
+	if err := emitCheckpoint(ctx, a, payload); err == nil {
+		t.Fatalf("emitCheckpoint with a cancelled ctx unexpectedly succeeded; cannot exercise the #365 path")
+	}
+
+	// The fix: the detached write lands the checkpoint despite the
+	// cancelled ctx.
+	emitFinalCheckpointDetached(ctx, a, payload)
+
+	var checkpoints int
+	for entry, err := range h.Stream.Since(context.Background(), 0,
+		eventlog.ForSession("app", "u", "cancelled-cp"),
+		eventlog.WithAuthorSuffix(checkpointAuthorSuffix)) {
+		if err != nil {
+			t.Fatalf("Since: %v", err)
+		}
+		if entry.Event != nil {
+			checkpoints++
+		}
+	}
+	if checkpoints != 1 {
+		t.Errorf("checkpoint events = %d, want 1 (detached final checkpoint must land despite cancelled ctx; #365)", checkpoints)
+	}
+}

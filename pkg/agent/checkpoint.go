@@ -135,6 +135,27 @@ func checkpointFromMap(m map[string]any) checkpointPayload {
 	}
 }
 
+// finalCheckpointWriteTimeout bounds the detached write of the final
+// checkpoint. The final checkpoint is emitted on every exit path,
+// including context cancellation/shutdown — exactly when crash-resume
+// matters most — so its write must not ride the (possibly already
+// cancelled) run context. See emitFinalCheckpointDetached (#365).
+const finalCheckpointWriteTimeout = 5 * time.Second
+
+// emitFinalCheckpointDetached writes the loop's final checkpoint on a
+// context detached from ctx's cancellation. It keeps ctx's values (so
+// tracing/telemetry stays correlated) but drops its deadline and
+// cancellation and bounds the write with finalCheckpointWriteTimeout,
+// so a checkpoint still lands when the loop is exiting because ctx was
+// cancelled — and a wedged session service still can't hang shutdown
+// (#365). Errors are swallowed like the other checkpoint call sites:
+// a failed checkpoint should not change the loop's stop reason.
+func emitFinalCheckpointDetached(ctx context.Context, a *Agent, payload checkpointPayload) {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finalCheckpointWriteTimeout)
+	defer cancel()
+	_ = emitCheckpoint(writeCtx, a, payload)
+}
+
 // emitCheckpoint writes a checkpoint event to the agent's
 // session.Service. No-op when the agent has no event log wired
 // (in-memory sessions can't survive a process restart, so the

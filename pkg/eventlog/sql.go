@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"google.golang.org/adk/session"
 	adkdatabase "google.golang.org/adk/session/database"
@@ -147,7 +148,41 @@ func Open(ctx context.Context, dialector gorm.Dialector, opts ...Option) (*Handl
 		metadataExtractor: o.metadataExtractor,
 	}
 	svc := &service{inner: adkSvc, stream: stream}
-	return &Handle{Stream: stream, Service: svc, db: db, DB: db}, nil
+	return &Handle{Stream: stream, Service: svc, db: db, DB: db, adkDB: adkGormDB(adkSvc)}, nil
+}
+
+// adkGormDB reaches the *gorm.DB that adkdatabase.NewSessionService
+// opens internally so Handle.Close can shut down its connection pool.
+// ADK's databaseService keeps the handle in an unexported `db` field
+// with no accessor, so we read it reflectively (mirroring the reflection
+// injectSQLitePragma already relies on for the dialector's DSN field).
+// Returns nil if the service isn't the shape we expect — Close then
+// simply skips it, preserving today's behavior rather than panicking.
+func adkGormDB(svc session.Service) *gorm.DB {
+	if svc == nil {
+		return nil
+	}
+	v := reflect.ValueOf(svc)
+	if v.Kind() == reflect.Pointer {
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return nil
+	}
+	f := v.FieldByName("db")
+	if !f.IsValid() || f.Kind() != reflect.Pointer || !f.CanAddr() {
+		return nil
+	}
+	// The field is unexported, so read it through its address. The
+	// value is only ever read (never mutated) and lives for the
+	// lifetime of the Handle.
+	// #nosec G103 -- unexported-field read of ADK's own *gorm.DB; the only way to close its pool.
+	f = reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).Elem()
+	db, ok := f.Interface().(*gorm.DB)
+	if !ok {
+		return nil
+	}
+	return db
 }
 
 // defaultGormOpts returns the gorm.Option list passed to ADK's

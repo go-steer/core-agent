@@ -120,6 +120,12 @@ type Handle struct {
 	// the original lifecycle code in Close (so the cleanup nil-out
 	// stays correct).
 	db *gorm.DB
+	// adkDB is ADK's own gorm.DB — a second connection pool opened
+	// inside adkdatabase.NewSessionService against the same DSN. We
+	// retain it so Close can shut it down too; otherwise every
+	// Open/Close cycle leaks the ADK pool's connections and file
+	// handles. Nil if it couldn't be retrieved (Close then skips it).
+	adkDB *gorm.DB
 }
 
 // Close releases all resources held by the Handle (Stream + the
@@ -135,17 +141,30 @@ func (h *Handle) Close() error {
 		}
 	}
 	if h.db != nil {
-		sqlDB, err := h.db.DB()
-		if err == nil {
-			if cerr := sqlDB.Close(); cerr != nil && firstErr == nil {
-				firstErr = cerr
-			}
-		} else if firstErr == nil {
+		if err := closeGormDB(h.db); err != nil && firstErr == nil {
 			firstErr = err
 		}
 		h.db = nil
 	}
+	// Close ADK's separate connection pool too. Skipping it leaked a
+	// pool per Open/Close cycle (tests, multi-daemon session churn).
+	if h.adkDB != nil {
+		if err := closeGormDB(h.adkDB); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		h.adkDB = nil
+	}
 	return firstErr
+}
+
+// closeGormDB closes the underlying *sql.DB connection pool behind a
+// gorm.DB. Shared by Handle.Close for both the overlay and ADK pools.
+func closeGormDB(db *gorm.DB) error {
+	sqlDB, err := db.DB()
+	if err != nil {
+		return err
+	}
+	return sqlDB.Close()
 }
 
 // Option configures Open.

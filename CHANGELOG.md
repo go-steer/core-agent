@@ -26,6 +26,7 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 #### Documentation
 
 - Refresh the three project-identity docs (`AGENTS.md`, `docs/DESIGN.md`, `docs/north-star.md`) that had drifted behind the codebase: `AGENTS.md`'s layout section now reflects the `pkg/` + `internal/` + `cmd/` tree (was still showing the pre-reorg top-level packages) and no longer claims "no built-in tools, no TUI"; `DESIGN.md`'s non-goals and "deliberately out of scope" section now carry per-item Status lines for the features that have since shipped (built-in tools, TUI, durable sessions, subagents, Anthropic cost/caching) while preserving the original v1 rationale; `north-star.md` gains a status banner noting v2.7.0 GA shipped and the dated critical-path list is now historical.
+- Add `docs/cleanup-execution-plan.md` — the parallel-agent execution plan for the four `Cleanup: *` milestones from the 2026-07-25 code-review sweep (conflict-domain lanes, Auto/Assisted/Human-led classification, wave sequencing, and automode guardrails).
 
 #### Security
 

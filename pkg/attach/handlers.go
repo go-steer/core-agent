@@ -272,6 +272,13 @@ func (h *handlers) eventsShortcut(w http.ResponseWriter, r *http.Request) {
 // every write. Returns when the client disconnects or the subscriber
 // is dropped (slow).
 func (h *handlers) streamEvents(w http.ResponseWriter, r *http.Request, entry *Entry) {
+	// Reject a protocol-incompatible client cleanly before opening the
+	// SSE stream: a major-version skew means the wire shape differs and
+	// the client would silently mis-render (#389). Always echoes the
+	// server's version back via the X-Attach-Protocol-Version header.
+	if !negotiateProtocolVersion(w, r) {
+		return
+	}
 	since := parseSince(r.URL.Query().Get("since"))
 	if entry.Agent.EventLog() == nil {
 		http.Error(w, "this session has no event log; attach requires --session-db", http.StatusPreconditionFailed)

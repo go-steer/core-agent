@@ -60,6 +60,8 @@ Most callers can use the shortcut. Multi-app daemons (rare — `attach.multi_app
 | `X-Attach-Token` | request | Transport bearer token; wins over `Authorization`. |
 | `Authorization: Bearer <token>` | request | Transport bearer fallback. |
 | `X-Asserted-Caller` | request | Proxy identity assertion (multi-session only). Header name overridable. |
+| `X-Attach-Protocol-Version` | request | SSE protocol version the client speaks (semver). Optional; `?protocol=<semver>` is the query-param equivalent and wins when both are set. A declared **major** that differs from the server's is rejected `409`; a malformed value is `400`. Declaring nothing is accepted (back-compat). |
+| `X-Attach-Protocol-Version` | response | The SSE protocol version the server speaks, echoed on every `/events` response (success or rejection). |
 | `WWW-Authenticate: Bearer realm="attach"` | response | 401, transport layer. |
 | `WWW-Authenticate: Bearer realm="attach-multisession"` | response | 401, per-caller layer (bad proxy assertion). |
 | `X-Interrupted: nothing-in-flight` | response | `POST /interrupt` when the agent is idle. |
@@ -84,7 +86,7 @@ Every path suffix below appears under both `/sessions/{sid}/...` and `/sessions/
 
 | Path suffix | Response |
 |---|---|
-| `/events` | SSE, `text/event-stream`. Query `?since=<int64>` cursor for lossless replay. **412** when the session has no eventlog. Frames typed via `event: <type>` (or legacy `event: agent`). |
+| `/events` | SSE, `text/event-stream`. Query `?since=<int64>` cursor for lossless replay. **412** when the session has no eventlog. **409** when the client declares an incompatible protocol major (`?protocol=` / `X-Attach-Protocol-Version`); **400** when the declared version is malformed. Frames typed via `event: <type>` (or legacy `event: agent`). |
 | `/perms/stream` | SSE, `event: prompt`. **501** without `PromptBrokerProvider`. |
 | `/status` | `{"state":..., "model_name":..., "next_wake_at":..., "current_tool":...}` — never empty `state`. |
 | `/usage` | `UsageInfo` — see [UsageMetadata schema](#usagemetadata-schema) below. |
@@ -197,7 +199,7 @@ Two SSE endpoints:
 
 | Path | Content-Type | Cursor | Notes |
 |---|---|---|---|
-| `GET /sessions/.../events` | `text/event-stream` | `?since=<int64>` | Lossless replay via cursor. **412** when session has no eventlog. Frames typed via `event: <type>` header (or legacy `event: agent`). `X-Accel-Buffering: no` + `Cache-Control: no-cache`. |
+| `GET /sessions/.../events` | `text/event-stream` | `?since=<int64>` | Lossless replay via cursor. **412** when session has no eventlog. **409**/**400** on incompatible/malformed declared protocol version (`?protocol=` / `X-Attach-Protocol-Version`). Frames typed via `event: <type>` header (or legacy `event: agent`). `X-Accel-Buffering: no` + `Cache-Control: no-cache`. |
 | `GET /sessions/.../perms/stream` | `text/event-stream` | none | Per-prompt frames: `event: prompt`. **501** without `PromptBrokerProvider`. |
 
 The `since` cursor is monotonic per-session — the TUI's `/reconnect` slash sends `?since=<lastSeq>` to resume without missing events across reconnects.
@@ -212,6 +214,15 @@ The first frame on every `/events` stream is `event: capabilities` — the clien
 - **`caller_id`** — the resolved caller identity display hint. Canonical source: `GET /whoami`.
 
 `status-update` also carries an optional `capabilities` field (merge semantics) for future hot updates — no producer emits it today, but consumers MUST tolerate its absence and MUST merge (not replace) when it does arrive.
+
+### Protocol version negotiation
+
+The `capabilities` frame carries the server's `protocol_version`, but a client can also fail fast *before* opening the stream. On the `/events` request a client MAY declare the version it speaks with the `?protocol=<semver>` query param or the `X-Attach-Protocol-Version` header (the query param wins when both are present). The server:
+
+- echoes the version it speaks on the `X-Attach-Protocol-Version` **response** header (always, success or failure), and
+- rejects a declared **major** that differs from its own with **409 Conflict**, or a malformed version with **400 Bad Request**.
+
+Only the major is enforced — minor/patch differences within a major are compatible by the protocol's additive-field convention (older clients ignore unknown fields; older servers omit newer ones). Clients that declare nothing are accepted unchanged, so every pre-negotiation client keeps working. A future breaking (major) bump therefore fails cleanly on skewed clients instead of silently mis-rendering.
 
 ### Slash-response conventions
 

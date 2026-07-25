@@ -18,8 +18,15 @@ import "time"
 
 // ProtocolVersion is the SSE event-stream protocol semver this
 // server speaks. Bumped on any change to the contract per
-// go-steer/core-tui's docs/sse-event-stream-protocol.md. Clients
-// fall back to poll-only mode if their major doesn't match.
+// go-steer/core-tui's docs/sse-event-stream-protocol.md.
+//
+// Negotiation (#389): a client MAY declare the version it speaks on an
+// /events request via the ?protocol= query param or the
+// X-Attach-Protocol-Version header. The server echoes this constant
+// back on every /events response header and rejects a declared major
+// that differs from ProtocolVersion's major with 409 Conflict (a
+// malformed declaration is 400). Clients that declare nothing are
+// accepted unchanged for back-compat. See negotiateProtocolVersion.
 //
 // v1.1.0 (core-tui#42): turn-complete.cost_usd demoted from required
 // to optional with documented fallback semantics (the immediately-

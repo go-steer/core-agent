@@ -119,7 +119,14 @@ func main() {
 	flag.StringVar(&cfgPathVal, "c", "", "config file path (default: discover .agents/config.json)")
 	flag.StringVar(&cfgPathVal, "config", "", "long-form alias for -c — same behavior")
 	cfgPath := &cfgPathVal
-	modelOverride := flag.String("m", "", "override model name from config")
+	// -m / --model bind to the same var (same alias pattern as -c/--config,
+	// issue #209). Several operator-facing messages suggest `--model ...`
+	// (e.g. the small-tier-parent warning), so the long form must exist or
+	// copy-pasting them fails with "flag provided but not defined: -model".
+	var modelOverrideVal string
+	flag.StringVar(&modelOverrideVal, "m", "", "override model name from config")
+	flag.StringVar(&modelOverrideVal, "model", "", "long-form alias for -m — same behavior")
+	modelOverride := &modelOverrideVal
 	providerOverride := flag.String("provider", "", "override model.provider (gemini|vertex|anthropic|anthropic-vertex|echo|scripted)")
 	noBuiltinTools := flag.Bool("no-builtin-tools", false, "disable the built-in tool suite ("+strings.Join(tools.BuiltinToolNames(), ", ")+")")
 	disableTools := flag.String("disable-tools", "", "comma-separated list of built-in tools to disable (e.g. bash,write_file). Composes with cfg.tools.disable; ignored when --no-builtin-tools is set.")
@@ -127,7 +134,10 @@ func main() {
 	scriptStrict := flag.Bool("script-strict", false, "scripted: assert each incoming request matches the recorded one (overrides cfg.mock.strict)")
 	recordTo := flag.String("record-to", "", "write a JSONL recording of all LLM turns to this path (overrides cfg.mock.record)")
 	color := flag.String("color", "auto", "ANSI color in streamed output: auto|always|never (auto = TTY-detect on stdout)")
-	ask := flag.String("ask", "off", "register an ask_user tool the model can call when its instructions tell it to ask: off|stdin|auto (auto = stdin if interactive, refuse otherwise)")
+	// Default "" (not "off") so run() can tell "operator didn't pass --ask"
+	// from an explicit --ask=off. A task profile's ask mode only applies to
+	// the former; "" is treated as "off" everywhere downstream.
+	ask := flag.String("ask", "", "register an ask_user tool the model can call when its instructions tell it to ask: off|stdin|auto (auto = stdin if interactive, refuse otherwise). Empty (default) behaves as off.")
 	sessionDB := flag.Bool("session-db", false, "persist sessions + audit log to a durable database (default off; in-memory)")
 	sessionDBPath := flag.String("session-db-path", "", "override the database path used when --session-db is set (default: ~/.<binary>/sessions.db)")
 	yolo := flag.Bool("yolo", false, "bypass the permissions gate entirely (every tool call runs without approval). Equivalent to permissions.mode=\"yolo\" in config.")
@@ -159,6 +169,7 @@ func main() {
 	noTUI := flag.Bool("no-tui", false, "skip the in-process bubble-tea TUI even when stdin is a terminal — falls back to the line-mode REPL (or whatever else --no-repl / -p select). Use for scripts or shells where the TUI's raw-mode takeover is disruptive. Equivalent to forcing the pre-v2 default behavior.")
 	noPricingRefresh := flag.Bool("no-pricing-refresh", false, "skip the daily pricing-catalog refresh from LiteLLM at startup. Use for air-gapped pods, CI runs, or any environment without outbound network. Overrides cfg.pricing.refresh.")
 	noCompact := flag.Bool("no-compact", false, "disable automatic context-window compaction. /compact slash still works for manual summarization, but the post-turn threshold trigger is off. Use when running headless against a model whose window is huge enough that compaction would never fire anyway, or when debugging an issue where you don't want history rewrites in play.")
+	compactionThreshold := flag.Float64("compaction-threshold", 0, "context-window utilization (0,1) at which automatic compaction fires, overriding cfg.compaction.threshold and any task-profile value. 0 (default) = unset; the per-tier substrate defaults apply. Ignored when --no-compact is set.")
 	noCheckpoint := flag.Bool("no-checkpoint", false, "disable task-boundary checkpoints. /done slash + the model-facing mark_task_done tool are both removed. Use when running headless where the model shouldn't self-signal task completion, or when debugging an issue where you don't want auto-slicing in play.")
 	taskClass := flag.String("task", "", "operator-declared task class — picks a bundle of defaults (model tier, compaction threshold, agentic-tools posture, ask mode) tuned for the kind of work being done. One of: debug, implement, chat, research, review. Empty = no task class applied (substrate defaults). Explicit flags (--model, --ask, etc.) always win over the task profile. Per docs/model-selection-design.md / issue #123. Config-file equivalent: session.task_class.")
 	maxTurnCostUSD := flag.Float64("max-turn-cost-usd", 0, "per-turn spend ceiling in USD. When a single conversation turn's cumulative cost (across all model calls + subtask costs) meets or exceeds this value, the agent emits a structured turn-error (kind=cost_ceiling) and refuses new turns until the operator runs /resume-after-cost-ceiling. 0 = disabled (default). Defense against runaway tool-loops within one turn (e.g. issue #144). Pairs with --max-session-cost-usd; either or both can be set. Overrides config.agent.max_turn_cost_usd when set.")
@@ -197,7 +208,7 @@ func main() {
 		os.Exit(runner.ExitConfigError)
 	}
 
-	code := run(*prompt, *initialPrompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *maxTurnCostUSD, *maxSessionCostUSD, *watchdogMode, *smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *mcpAgenticWrapLLM, *mcpAgenticWrapModel, *noContextCache,
+	code := run(*prompt, *initialPrompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *compactionThreshold, *maxTurnCostUSD, *maxSessionCostUSD, *watchdogMode, *smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *mcpAgenticWrapLLM, *mcpAgenticWrapModel, *noContextCache,
 		attachOpts{
 			Listen:           *attachListen,
 			UnixSocket:       *attachUnixSocket,
@@ -374,7 +385,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	return opts
 }
 
-func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, maxTurnCostUSD, maxSessionCostUSD float64, watchdogMode, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache bool, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
+func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, compactionThreshold float64, maxTurnCostUSD, maxSessionCostUSD float64, watchdogMode, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache bool, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -459,6 +470,19 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			cfg.URLScope.Allow = append(cfg.URLScope.Allow, h)
 		}
 	}
+	// Explicit --compaction-threshold wins over both the config-file value
+	// and any task profile. Applied before the task-class block so that
+	// block sees a non-nil threshold and won't overwrite it. Config
+	// loading already bounds cfg.Compaction.Threshold; validate the flag
+	// here since it lands after Load.
+	if compactionThreshold != 0 {
+		if compactionThreshold <= 0 || compactionThreshold >= 1 {
+			fmt.Fprintf(os.Stderr, "core-agent: --compaction-threshold=%v must be in (0, 1) exclusive\n", compactionThreshold)
+			return runner.ExitConfigError
+		}
+		thr := compactionThreshold
+		cfg.Compaction.Threshold = &thr
+	}
 
 	// Task class (#123). CLI --task overrides cfg.Session.TaskClass.
 	// Apply the resolved profile to whichever flags the operator left
@@ -481,18 +505,14 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		if providerForTier == "" {
 			providerForTier = models.AutoDetectProvider()
 		}
-		// Model: if neither operator's --model nor cfg.Model.Name is
-		// the value the profile would pick, use the profile's tier
-		// selection. modelOverride == "" means CLI didn't specify;
-		// the existing cfg.Model.Name was either the config-file value
-		// or the substrate default — we treat the substrate default
-		// (DefaultConfig's gemini-3.1-pro-preview-customtools) as
-		// overridable by --task, but a config-file value as
-		// operator-set and respect it. Distinguishing those today
-		// requires comparing against DefaultConfig().Model.Name; for
-		// v1 we use a simpler rule: --task only fills in when the CLI
-		// --model flag is empty.
-		if modelOverride == "" {
+		// Model: the profile's tier→model selection only fills in when the
+		// operator has expressed no preference. That means BOTH the CLI
+		// --model flag is empty AND cfg.Model.Name is still the substrate
+		// default — a value present in the config file is operator-set and
+		// must be respected (previously --task clobbered it, #395). When
+		// the config file pins a model, --task adjusts the other knobs
+		// (compaction, ask) but leaves the model alone.
+		if modelOverride == "" && cfg.Model.Name == config.DefaultConfig().Model.Name {
 			if tierModel := taskclass.ModelForTier(providerForTier, profile.Tier); tierModel != "" {
 				cfg.Model.Name = tierModel
 			}

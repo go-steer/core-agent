@@ -487,6 +487,57 @@ func TestClose_ClosesADKConnectionPool(t *testing.T) {
 	}
 }
 
+// countingService wraps a session.Service and counts Get calls so
+// tests can assert on how many full-session loads a replay performs.
+type countingService struct {
+	session.Service
+	gets int
+}
+
+func (c *countingService) Get(ctx context.Context, req *session.GetRequest) (*session.GetResponse, error) {
+	c.gets++
+	return c.Service.Get(ctx, req)
+}
+
+// TestReplay_LoadsSessionOncePerPass is the regression test for #361:
+// hydrating N overlay rows of one session must not issue N full-session
+// Gets (O(N^2) replay). With the per-pass session index it issues one
+// Get and then serves every row from the in-memory index.
+func TestReplay_LoadsSessionOncePerPass(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestHandle(t)
+	defer cleanup()
+	ctx := context.Background()
+	sess := mustCreateSession(t, h, "app", "user", "s")
+
+	const n = 20
+	for i := 0; i < n; i++ {
+		if err := h.Service.AppendEvent(ctx, sess, makeEvent(fmt.Sprintf("ev-%d", i), "author", "", fmt.Sprintf("t%d", i))); err != nil {
+			t.Fatalf("AppendEvent %d: %v", i, err)
+		}
+	}
+
+	// Swap the stream's ADK service for a counting wrapper. Only the
+	// hydration path reads stream.adkSvc, so writes above are unaffected.
+	gs := h.Stream.(*gormStream)
+	counter := &countingService{Service: gs.adkSvc}
+	gs.adkSvc = counter
+
+	entries := drain(t, h.Stream.Since(ctx, 0, ForSession("app", "user", "s")))
+	if len(entries) != n {
+		t.Fatalf("Since returned %d entries, want %d", len(entries), n)
+	}
+	// Every event must have hydrated correctly from the single load.
+	for i, e := range entries {
+		if e.Event == nil || e.Event.ID != fmt.Sprintf("ev-%d", i) {
+			t.Fatalf("entry %d hydrated wrong event: %+v", i, e.Event)
+		}
+	}
+	if counter.gets != 1 {
+		t.Errorf("replay of %d events issued %d session Gets; want exactly 1 (pre-fix would be %d)", n, counter.gets, n)
+	}
+}
+
 func TestService_DelegatesCRUDToADK(t *testing.T) {
 	t.Parallel()
 	h, cleanup := openTestHandle(t)

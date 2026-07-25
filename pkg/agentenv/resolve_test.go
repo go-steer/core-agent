@@ -15,10 +15,12 @@
 package agentenv
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -171,6 +173,54 @@ func TestResolverReportDrift(t *testing.T) {
 		// USED was interpolated AND declared — shouldn't appear on
 		// either list.
 		t.Errorf("USED should not appear in drift; got %v", warnings)
+	}
+}
+
+// TestResolverInterpolateConcurrent is the #371 regression guard: the
+// same Resolver's InterpolateFunc is shared across sessions, so
+// concurrent Interpolate calls (plus a concurrent ReportDrift reader)
+// mutate/range seenRefs from multiple goroutines. Before the mutex this
+// tripped `go test -race` (and could panic with "concurrent map writes"
+// under load). Run this suite with -race to enforce the fix.
+func TestResolverInterpolateConcurrent(t *testing.T) {
+	t.Parallel()
+	m := &Manifest{Env: []Entry{{Name: "DECLARED", Default: "d"}}}
+	r := NewResolver(m, mkLookup(nil))
+
+	const goroutines = 64
+	var wg sync.WaitGroup
+
+	// Concurrent writers: each hits a distinct undeclared name so
+	// seenRefs takes writes for many different keys at once.
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_ = r.Interpolate(fmt.Sprintf("${env:DECLARED}-${env:VAR_%d}", i))
+		}(i)
+	}
+
+	// Concurrent readers ranging over seenRefs via ReportDrift.
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < goroutines; j++ {
+				_ = r.ReportDrift()
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	// After the storm, every undeclared VAR_* must have been recorded so
+	// ReportDrift can flag them — proves writes weren't lost to the lock.
+	warnings := r.ReportDrift()
+	joined := strings.Join(warnings, "\n")
+	for i := 0; i < goroutines; i++ {
+		if !strings.Contains(joined, fmt.Sprintf("VAR_%d", i)) {
+			t.Errorf("VAR_%d not recorded in seenRefs; drift = %v", i, warnings)
+		}
 	}
 }
 

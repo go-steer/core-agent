@@ -44,6 +44,7 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 #### Bug or Regression
 
+- `agentenv.Resolver` no longer races under multi-session load. `seenRefs` (the interpolation-tracking set feeding drift reports) was mutated without a lock, but the resolver's `InterpolateFunc` is shared across sessions — concurrent `POST /sessions` → `reproduceAgent` → `Interpolate` wrote the map from several goroutines at once (a guaranteed `-race` failure, and a "concurrent map writes" panic under load). `seenRefs` is now guarded by a mutex and `ReportDrift` snapshots it under the lock. Added a `-race` regression test. Closes [#371](https://github.com/go-steer/core-agent/issues/371).
 - Config persistence is now safe for its own schema (`pkg/config`). `Save` preserves unknown top-level keys on round-trip (an older binary's `Load → mutate → Save` no longer drops sections a newer binary wrote), retains the existing file mode instead of hardcoding `0644` (new files are created `0600` since the schema can hold `api_key`), and stops materializing substrate defaults into a partial config (so a future default bump — e.g. the default model — still reaches operators who never pinned it). `Load` now warns on unknown top-level keys so a security-relevant typo (`permisions`/`denny`) surfaces instead of being silently ignored. Closes [#387](https://github.com/go-steer/core-agent/issues/387).
 
 #### Documentation

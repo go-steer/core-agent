@@ -235,6 +235,10 @@ func (b *Broadcaster) Emit(eventType string, payload any) {
 // capsBuilder is nil (test callers of NewBroadcaster that skip the
 // pool wiring) the minimal pre-1.4.0 shape is emitted.
 func (b *Broadcaster) deliverBootFrames(ctx context.Context, sub *subscriber) {
+	// Build the frame payloads BEFORE taking b.mu — capsBuilder,
+	// statusSnapshot and usageSnapshot all call into agent code and we
+	// don't want that running under the broadcaster mutex.
+
 	// 1. Capabilities — required first frame per spec section 2.1.
 	caps := Capabilities{
 		ProtocolVersion: ProtocolVersion,
@@ -254,22 +258,33 @@ func (b *Broadcaster) deliverBootFrames(ctx context.Context, sub *subscriber) {
 			caps.Server = extended.Server
 		}
 	}
-	if !b.sendTyped(sub, Frame{Type: EventCapabilities, TypedData: caps}) {
-		return
-	}
 
 	// 2. Status snapshot — full state so a fresh client sees the
 	// agent's current model / turn state without waiting for the
 	// next state change. Agents that don't implement StatusProvider
 	// get a minimal idle snapshot.
-	if !b.sendTyped(sub, Frame{Type: EventStatusUpdate, TypedData: b.statusSnapshot()}) {
-		return
-	}
+	status := b.statusSnapshot()
 
 	// 3. Usage snapshot — cumulative tracker state so the consumer
 	// can render cost without polling /usage. Optional per spec;
 	// skip silently if the agent has no usage data wired.
-	if usage, ok := b.usageSnapshot(); ok {
+	usage, hasUsage := b.usageSnapshot()
+
+	// The sends must run under b.mu: sendTyped calls detachLocked() on a
+	// full buffer (map delete + close(sub.ch)), and the pump goroutine
+	// may already be broadcasting to this same subscriber (it was added
+	// to b.subs in Subscribe before this call). Without the lock a full
+	// buffer here races the pump into "send on closed channel" or
+	// "concurrent map writes" (#377). Sends are non-blocking.
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.sendTyped(sub, Frame{Type: EventCapabilities, TypedData: caps}) {
+		return
+	}
+	if !b.sendTyped(sub, Frame{Type: EventStatusUpdate, TypedData: status}) {
+		return
+	}
+	if hasUsage {
 		if !b.sendTyped(sub, Frame{Type: EventUsageUpdate, TypedData: usage}) {
 			return
 		}
@@ -356,7 +371,17 @@ func (b *Broadcaster) replayThenTail(ctx context.Context, sub *subscriber, since
 			b.detach(sub)
 			return
 		}
-		if !b.send(sub, Frame{Seq: entry.Seq, Event: entry.Event}) {
+		// send() must run under b.mu: on a full buffer it calls
+		// detachLocked() (map delete + close(sub.ch)), which races the
+		// pump goroutine's own locked send/iterate over b.subs. Without
+		// the lock a slow consumer during replay triggers "send on
+		// closed channel" or "concurrent map writes" — a daemon-wide
+		// crash (#377). The send is non-blocking, so holding the mutex
+		// here can't stall the pump.
+		b.mu.Lock()
+		ok := b.send(sub, Frame{Seq: entry.Seq, Event: entry.Event})
+		b.mu.Unlock()
+		if !ok {
 			return // dropped or ctx cancelled
 		}
 	}

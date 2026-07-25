@@ -40,6 +40,51 @@ func TestCompact_NoCompactorReturnsSentinel(t *testing.T) {
 	}
 }
 
+// TestCompactCheckpoint_RefusedWhileTurnInFlight is the #355
+// regression: Compact / Checkpoint append a boundary event directly to
+// the parent session row, which races the runner's own AppendEvent when
+// a turn is mid-flight (optimistic-concurrency failure) and can orphan a
+// functionResponse behind a boundary. Both must refuse with
+// ErrTurnInFlight while a turn is in flight and proceed once it clears.
+func TestCompactCheckpoint_RefusedWhileTurnInFlight(t *testing.T) {
+	t.Parallel()
+	llm := &captureLLM{response: "# state\nwork in progress"}
+	a, err := New(llm,
+		WithCompactor(NewDefaultCompactor()),
+		WithCheckpointer(NewDefaultCheckpointer()),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	plantEvent(t, a, genai.RoleUser, "let's build a thing")
+
+	// Simulate an in-flight turn: the runner registers its cancel func
+	// via setCancelInFlight once it starts driving the model.
+	_, cancel := context.WithCancel(context.Background())
+	a.setCancelInFlight(cancel)
+
+	if _, err := a.Compact(context.Background(), ""); !errors.Is(err, ErrTurnInFlight) {
+		t.Errorf("Compact mid-turn = %v, want ErrTurnInFlight", err)
+	}
+	if _, err := a.Checkpoint(context.Background(), ""); !errors.Is(err, ErrTurnInFlight) {
+		t.Errorf("Checkpoint mid-turn = %v, want ErrTurnInFlight", err)
+	}
+	if len(llm.reqs) != 0 {
+		t.Errorf("summarizer LLM called %d time(s) despite in-flight guard; want 0", len(llm.reqs))
+	}
+
+	// Turn ends: the guard lifts and Compact proceeds normally.
+	a.clearCancelInFlight(cancel)
+	cancel()
+	res, err := a.Compact(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Compact after turn cleared: %v", err)
+	}
+	if res.SummaryEventID == "" {
+		t.Errorf("Compact after turn cleared produced no summary event")
+	}
+}
+
 func TestCompact_EmptyHistoryIsSkipped(t *testing.T) {
 	t.Parallel()
 	llm := &captureLLM{response: "should not be called"}

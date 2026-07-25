@@ -40,7 +40,7 @@ package agent
 import (
 	"context"
 	"errors"
-	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -320,20 +320,11 @@ func (a *Agent) runPendingCheckpoint(ctx context.Context) {
 		return
 	}
 	if _, err := a.Checkpoint(ctx, note); err != nil {
-		// Don't fail the turn — the operator can /done manually
-		// if it persistently fails. The flag is already cleared
-		// above so we don't loop.
-		_ = err
-		// Best-effort log so the failure isn't completely silent.
-		fmt.Fprintf(devNullForLog{}, "agent: pending checkpoint failed: %v\n", err)
+		// Don't fail the turn — the operator can /done manually if it
+		// persistently fails. The flag is already cleared above so we
+		// don't loop. Surface the failure so it isn't silent (#356):
+		// a checkpoint drops a task boundary the operator expected,
+		// so a swallowed failure is materially misleading.
+		log.Printf("agent: pending checkpoint failed: %v", err)
 	}
 }
-
-// devNullForLog is a placeholder writer the failed-checkpoint log
-// goes to today. Wiring a real *log.Logger or eventlog write
-// would be a follow-up; for now we don't want to litter stderr
-// with mid-turn diagnostic noise that the operator can't act on.
-// Replace with the agent-level logger when one lands.
-type devNullForLog struct{}
-
-func (devNullForLog) Write(p []byte) (int, error) { return len(p), nil }

@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"log"
 	"strings"
 	"time"
 
@@ -335,11 +336,19 @@ func (a *Agent) runSummarizer(ctx context.Context, spec summarizerSpec) (summari
 		return summarizerOutcome{}, fmt.Errorf("agent: %s: %w", spec.operation, ErrTurnInFlight)
 	}
 
-	// Load the full session history — unsliced. The summarizer is
-	// the one place that wants to see EVERYTHING (so the summary
-	// can capture the early-conversation context that's about to
-	// be dropped from future turns).
-	history, err := a.sessionHistory(ctx)
+	// Load the session history bounded to the current compaction
+	// window — from the latest boundary (summary/checkpoint) forward
+	// (#356). Loading the FULL unsliced history made each successive
+	// compaction's LLM input strictly larger than the last (it re-fed
+	// every prior summary + all pre-boundary turns), so long sessions
+	// eventually blew past the summarizer's own context window and
+	// wedged: every turn re-flagged pending and paid for a doomed
+	// call. The prior boundary's summary already captures everything
+	// before it and IS included at the head of the window, so the
+	// summarizer still sees the full narrative — [prior summary] +
+	// [turns since] — the exact conversation that triggered this
+	// compaction, without the unbounded growth.
+	history, err := a.summarizerHistory(ctx)
 	if err != nil {
 		return summarizerOutcome{}, fmt.Errorf("agent: %s: load history: %w", spec.operation, err)
 	}
@@ -444,10 +453,14 @@ func (a *Agent) maybeMarkCompactionPending() {
 // inbox messages drain pre-turn. No-op when no flag is set or when
 // no compactor is wired.
 //
-// Errors from the compactor are intentionally logged-and-swallowed:
-// a failed compaction shouldn't block the operator's turn. The flag
-// is cleared in either case so we don't retry-loop on a persistent
-// model failure.
+// Errors from the compactor are logged-and-swallowed (a failed
+// compaction shouldn't block the operator's turn) but NOT silently: a
+// failure is surfaced via log and triggers exponential turn-based
+// backoff (#356). Without backoff, the post-turn hook re-flags pending
+// every turn while still over threshold, so a persistently failing
+// summarizer would pay for a doomed call on every single turn while
+// the operator sees nothing. A successful compaction resets the
+// backoff.
 func (a *Agent) runPendingCompaction(ctx context.Context) {
 	if a == nil || a.compactor == nil {
 		return
@@ -455,16 +468,57 @@ func (a *Agent) runPendingCompaction(ctx context.Context) {
 	a.mu.Lock()
 	pending := a.compactionPending
 	a.compactionPending = false
+	// Backoff: skip this attempt while cooling down from a prior
+	// failure so we don't retry a doomed summarizer call every turn.
+	if a.compactionCooldown > 0 {
+		a.compactionCooldown--
+		a.mu.Unlock()
+		return
+	}
 	a.mu.Unlock()
 	if !pending {
 		return
 	}
 	if _, err := a.Compact(ctx, ""); err != nil {
-		// Don't fail the turn. The next post-turn hook may re-flag
-		// pending if we're still over threshold and the operator
-		// can /compact manually.
-		_ = err
+		// Don't fail the turn. Surface the failure and back off
+		// (exponential in the consecutive-failure count) so we're not
+		// re-attempting — and re-paying — every turn. The operator can
+		// still /compact manually.
+		a.mu.Lock()
+		a.compactionFailures++
+		a.compactionCooldown = compactionBackoffTurns(a.compactionFailures)
+		failures := a.compactionFailures
+		cooldown := a.compactionCooldown
+		a.mu.Unlock()
+		log.Printf("agent: auto-compaction failed (consecutive failures=%d, backing off %d turns): %v",
+			failures, cooldown, err)
+		return
 	}
+	// Success — clear the backoff state.
+	a.mu.Lock()
+	a.compactionFailures = 0
+	a.compactionCooldown = 0
+	a.mu.Unlock()
+}
+
+// compactionBackoffTurns maps a consecutive-failure count to the
+// number of turns to skip before the next auto-compaction attempt.
+// Exponential (2, 4, 8, …) capped so a wedged summarizer settles into
+// a periodic retry rather than hammering every turn or backing off
+// forever. See #356.
+func compactionBackoffTurns(failures int) int {
+	const maxBackoff = 32
+	if failures < 1 {
+		return 0
+	}
+	b := 1
+	for i := 0; i < failures; i++ {
+		b *= 2
+		if b >= maxBackoff {
+			return maxBackoff
+		}
+	}
+	return b
 }
 
 // appendBoundaryEvent writes a marker event (either summary or
@@ -598,6 +652,59 @@ func prefixForTag(tag string) string {
 	default:
 		return compactionPrefix
 	}
+}
+
+// summarizerHistory loads the session events bounded to the current
+// compaction window: from the latest boundary (summary/checkpoint)
+// forward, converted to []*genai.Content for the summarizer request.
+// Applies the same branch/partial/empty filters as sessionHistory.
+//
+// Bounding here (rather than feeding the full unsliced history) keeps
+// each successive compaction's input from growing without limit —
+// see the rationale on runSummarizer's caller. The boundary event's
+// own content (the prior summary) is retained as the first element so
+// continuity is preserved. When no boundary exists (the first
+// compaction), the whole history is returned, which is inherently
+// bounded by the compaction threshold. Fixes #356.
+func (a *Agent) summarizerHistory(ctx context.Context) ([]*genai.Content, error) {
+	if a.sessionService == nil {
+		return nil, errors.New("no session.Service wired")
+	}
+	resp, err := a.sessionService.Get(ctx, &session.GetRequest{
+		AppName:   a.appName,
+		UserID:    a.userID,
+		SessionID: a.sessionID,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if resp == nil || resp.Session == nil {
+		return nil, nil
+	}
+	var all []*session.Event
+	for ev := range resp.Session.Events().All() {
+		all = append(all, ev)
+	}
+	// Slice to the current window. Keep the boundary event itself
+	// (its summary text is the running narrative the new summary
+	// extends), so start at the boundary index rather than after it.
+	if idx, _, _ := findLatestBoundary(all); idx >= 0 {
+		all = all[idx:]
+	}
+	var out []*genai.Content
+	for _, ev := range all {
+		if ev == nil || ev.Branch != "" || ev.Partial {
+			continue
+		}
+		if ev.Content == nil || len(ev.Content.Parts) == 0 {
+			continue
+		}
+		out = append(out, ev.Content)
+	}
+	return out, nil
 }
 
 // sliceFromBoundary returns events from the latest boundary

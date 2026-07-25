@@ -176,6 +176,8 @@ type Agent struct {
 	mu                    sync.Mutex
 	cancelInFlight        context.CancelFunc
 	compactionPending     bool
+	compactionFailures    int    // consecutive failed auto-compactions; drives backoff (#356)
+	compactionCooldown    int    // turns to skip before the next auto-compaction attempt (#356)
 	checkpointRequested   bool   // flipped by mark_task_done tool handler during a turn
 	checkpointPending     bool   // promoted from checkpointRequested by post-turn hook
 	pendingCheckpointNote string // detail from the mark_task_done call (or /done arg)

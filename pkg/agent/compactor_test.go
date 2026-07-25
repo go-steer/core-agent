@@ -15,8 +15,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"strings"
 	"testing"
 
@@ -82,6 +84,124 @@ func TestCompactCheckpoint_RefusedWhileTurnInFlight(t *testing.T) {
 	}
 	if res.SummaryEventID == "" {
 		t.Errorf("Compact after turn cleared produced no summary event")
+	}
+}
+
+// contentsText flattens a []*genai.Content's text parts for test
+// assertions on what the summarizer was actually fed.
+func contentsText(cs []*genai.Content) string {
+	var b strings.Builder
+	for _, c := range cs {
+		if c == nil {
+			continue
+		}
+		for _, p := range c.Parts {
+			if p != nil && p.Text != "" {
+				b.WriteString(p.Text)
+				b.WriteString("\n")
+			}
+		}
+	}
+	return b.String()
+}
+
+// TestCompact_SummarizerInputBoundedToWindow is the #356 regression:
+// each successive compaction must summarize only the current window
+// (from the latest boundary forward) — the prior summary plus the
+// turns since — NOT the full unsliced history. Before the fix the
+// summarizer re-loaded every pre-boundary event on every compaction,
+// so its input grew without bound and eventually blew past its own
+// context window.
+func TestCompact_SummarizerInputBoundedToWindow(t *testing.T) {
+	t.Parallel()
+	llm := &captureLLM{response: "SUMMARY-1"}
+	a, err := New(llm, WithCompactor(NewDefaultCompactor()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+
+	// Pre-boundary conversation.
+	plantEvent(t, a, genai.RoleUser, "FIRST-pre-boundary-msg")
+	plantEvent(t, a, genai.RoleModel, "reply one")
+	if _, err := a.Compact(ctx, ""); err != nil {
+		t.Fatalf("first Compact: %v", err)
+	}
+
+	// New turns land after the boundary summary event.
+	plantEvent(t, a, genai.RoleUser, "SECOND-post-boundary-msg")
+	plantEvent(t, a, genai.RoleModel, "reply two")
+	llm.response = "SUMMARY-2"
+	if _, err := a.Compact(ctx, ""); err != nil {
+		t.Fatalf("second Compact: %v", err)
+	}
+
+	got := contentsText(llm.lastRequest().Contents)
+	if strings.Contains(got, "FIRST-pre-boundary-msg") {
+		t.Errorf("second summarizer input still includes pre-boundary history; want bounded to window.\ninput:\n%s", got)
+	}
+	if !strings.Contains(got, "SUMMARY-1") {
+		t.Errorf("second summarizer input dropped the prior summary; continuity lost.\ninput:\n%s", got)
+	}
+	if !strings.Contains(got, "SECOND-post-boundary-msg") {
+		t.Errorf("second summarizer input missing the post-boundary turns.\ninput:\n%s", got)
+	}
+}
+
+// TestRunPendingCompaction_BacksOffOnFailure is the #356 regression:
+// a persistently failing auto-compaction must NOT re-attempt (and
+// re-pay for) a doomed summarizer call on every turn. After a failure
+// it backs off, so across several pending turns only a bounded number
+// of attempts fire.
+func TestRunPendingCompaction_BacksOffOnFailure(t *testing.T) {
+	t.Parallel()
+	llm := &captureLLM{response: "unused", err: errors.New("summarizer boom")}
+	a, err := New(llm, WithCompactor(NewDefaultCompactor()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	plantEvent(t, a, genai.RoleUser, "some history to summarize")
+	ctx := context.Background()
+
+	// Simulate four consecutive turns, each flagging compaction pending
+	// (as the post-turn hook would while still over threshold).
+	for i := 0; i < 4; i++ {
+		a.mu.Lock()
+		a.compactionPending = true
+		a.mu.Unlock()
+		a.runPendingCompaction(ctx)
+	}
+
+	// First turn attempts and fails (cooldown=2); turns 2 and 3 are
+	// skipped; turn 4 attempts and fails again. Two attempts, not four.
+	if got := len(llm.reqs); got != 2 {
+		t.Errorf("summarizer called %d times across 4 pending turns; want 2 (backoff)", got)
+	}
+}
+
+// TestRunPendingCheckpoint_SurfacesFailure is the #356 regression:
+// a failed auto-checkpoint must be logged, not swallowed into a
+// devNull writer. Not parallel — it captures the global logger.
+func TestRunPendingCheckpoint_SurfacesFailure(t *testing.T) {
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(old) })
+
+	llm := &captureLLM{response: "unused", err: errors.New("checkpoint boom")}
+	a, err := New(llm, WithCheckpointer(NewDefaultCheckpointer()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	plantEvent(t, a, genai.RoleUser, "history to checkpoint")
+
+	a.mu.Lock()
+	a.checkpointPending = true
+	a.mu.Unlock()
+	a.runPendingCheckpoint(context.Background())
+
+	if !strings.Contains(buf.String(), "pending checkpoint failed") {
+		t.Errorf("checkpoint failure not surfaced to log; got %q", buf.String())
 	}
 }
 

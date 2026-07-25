@@ -76,6 +76,22 @@ type Broadcaster struct {
 	cancel    context.CancelFunc // cancels the pump goroutine
 	startedAt int64              // last seq the pump has yielded
 
+	// wg tracks every goroutine this broadcaster spawns (the pump and
+	// each replayThenTail). Close() waits on it so that, once Close
+	// returns, no goroutine is still reading the eventlog — the caller
+	// (Server.Close → pool.Close) can then close the eventlog handle
+	// without a lingering Stream.Watch/Since read racing the teardown
+	// (which manifested as a flaky "TempDir: directory not empty" on
+	// the SQLite -wal/-shm sidecar files).
+	wg sync.WaitGroup
+
+	// closing is closed exactly once by Close to wake replayThenTail
+	// goroutines parked on the post-replay live-tail wait, so shutdown
+	// doesn't have to depend on each subscriber's request context
+	// being cancelled first.
+	closing   chan struct{}
+	closeOnce sync.Once
+
 	// capsBuilder, when non-nil, extends the default boot Capabilities
 	// frame with runtime-derived fields (features, slash_commands,
 	// agent identity, caller_id) per SSE spec v1.4.0. Set by
@@ -131,7 +147,8 @@ func NewBroadcaster(entry *Entry) (*Broadcaster, error) {
 		query: []eventlog.QueryOption{
 			eventlog.ForSession(entry.AppName, entry.UserID, entry.SessionID),
 		},
-		subs: make(map[*subscriber]struct{}),
+		subs:    make(map[*subscriber]struct{}),
+		closing: make(chan struct{}),
 	}, nil
 }
 
@@ -166,7 +183,13 @@ func (b *Broadcaster) Subscribe(ctx context.Context, since int64) <-chan Frame {
 		// since >= startedAt (already in flight) or get a fresh
 		// scan via the replay loop below.
 		b.startedAt = since
-		go b.pump(pumpCtx)
+		// Add/Done are paired here at the spawn site (not inside pump)
+		// so Close's wg.Wait tracks the goroutine's full lifetime.
+		b.wg.Add(1)
+		go func() {
+			defer b.wg.Done()
+			b.pump(pumpCtx)
+		}()
 	}
 	b.mu.Unlock()
 
@@ -193,7 +216,11 @@ func (b *Broadcaster) Subscribe(ctx context.Context, since int64) <-chan Frame {
 	// Replay loop runs in its own goroutine so Subscribe returns
 	// immediately. The same channel carries both replayed and live
 	// frames — the client doesn't distinguish.
-	go b.replayThenTail(ctx, sub, since)
+	b.wg.Add(1)
+	go func() {
+		defer b.wg.Done()
+		b.replayThenTail(ctx, sub, since)
+	}()
 
 	return sub.ch
 }
@@ -385,9 +412,15 @@ func (b *Broadcaster) replayThenTail(ctx context.Context, sub *subscriber, since
 			return // dropped or ctx cancelled
 		}
 	}
-	// Wait for the ctx to fire (live frames are delivered by the
-	// pump goroutine into our channel directly).
-	<-ctx.Done()
+	// Wait for the subscriber to go away (live frames are delivered by
+	// the pump goroutine into our channel directly). Two triggers: the
+	// request context ending (normal client disconnect) or Close
+	// signalling a server-wide shutdown — the latter so teardown
+	// doesn't hang waiting on a request context that may outlive it.
+	select {
+	case <-ctx.Done():
+	case <-b.closing:
+	}
 	b.detach(sub)
 }
 
@@ -523,11 +556,24 @@ func (b *Broadcaster) detachLocked(sub *subscriber) {
 	}
 }
 
-// Close cancels the pump goroutine and closes every subscriber
-// channel. Idempotent. Called from Server.Close.
+// Close cancels the pump goroutine, closes every subscriber channel,
+// and blocks until all of this broadcaster's goroutines (pump and any
+// replayThenTail) have returned. Once Close returns, nothing this
+// broadcaster spawned is still reading the eventlog, so the caller may
+// safely close the underlying handle. Idempotent. Called from
+// Server.Close.
 func (b *Broadcaster) Close() {
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	// Wake replayThenTail goroutines parked on the live-tail wait,
+	// independent of their request contexts. Once — the channel is a
+	// broadcast latch, and Close may be called more than once. The nil
+	// check tolerates broadcasters built directly in white-box tests
+	// (production always goes through NewBroadcaster, which sets it).
+	b.closeOnce.Do(func() {
+		if b.closing != nil {
+			close(b.closing)
+		}
+	})
 	for sub := range b.subs {
 		if !sub.closed {
 			sub.closed = true
@@ -539,6 +585,12 @@ func (b *Broadcaster) Close() {
 		b.cancel()
 		b.cancel = nil
 	}
+	b.mu.Unlock()
+
+	// Wait OUTSIDE the mutex: the pump takes b.mu on every iteration,
+	// so holding it here would deadlock against the goroutines we're
+	// waiting to drain.
+	b.wg.Wait()
 }
 
 // BroadcasterPool lazily constructs and tracks one Broadcaster per

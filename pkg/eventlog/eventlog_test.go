@@ -350,6 +350,109 @@ func TestWatch_BlocksUntilAppendThenYields(t *testing.T) {
 	}
 }
 
+// TestDelete_RemovesOverlayRowsAndUnpoisonsLog is the regression test
+// for #354's first half: Service.Delete must drop the overlay rows for
+// the deleted session, not just ADK's rows. If the overlay rows linger,
+// loadEvent fails on them forever and an unfiltered Since/Watch over the
+// whole log surfaces that error for every consumer.
+func TestDelete_RemovesOverlayRowsAndUnpoisonsLog(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestHandle(t)
+	defer cleanup()
+	ctx := context.Background()
+	a := mustCreateSession(t, h, "app", "user", "A")
+	b := mustCreateSession(t, h, "app", "user", "B")
+	if err := h.Service.AppendEvent(ctx, a, makeEvent("a-1", "x", "", "hi-A")); err != nil {
+		t.Fatalf("AppendEvent A: %v", err)
+	}
+	if err := h.Service.AppendEvent(ctx, b, makeEvent("b-1", "x", "", "hi-B")); err != nil {
+		t.Fatalf("AppendEvent B: %v", err)
+	}
+
+	if err := h.Service.Delete(ctx, &session.DeleteRequest{
+		AppName: "app", UserID: "user", SessionID: "A",
+	}); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	// A's overlay rows must be gone.
+	var remaining int64
+	if err := h.db.WithContext(ctx).Model(&agentEventRow{}).
+		Where("session_id = ?", "A").Count(&remaining).Error; err != nil {
+		t.Fatalf("count overlay rows: %v", err)
+	}
+	if remaining != 0 {
+		t.Errorf("expected 0 overlay rows for deleted session A, got %d", remaining)
+	}
+
+	// An unfiltered scan over the whole log must not error on orphaned
+	// rows and must still return B's event. drain() fails the test on
+	// any iterator error — which is exactly what the pre-fix orphan
+	// rows would produce.
+	all := drain(t, h.Stream.Since(ctx, 0))
+	if len(all) != 1 || all[0].Event == nil || all[0].Event.ID != "b-1" {
+		t.Errorf("Since over whole log after delete = %+v; want just b-1", all)
+	}
+}
+
+// TestWatch_AdvancesPastUnhydratableRow is the regression test for
+// #354's second half: a permanently unhydratable overlay row (its
+// backing session/event is gone) must be surfaced at most once, not
+// re-queried and re-errored on every poll interval forever. We plant an
+// orphan overlay row directly (no ADK session backs it) and assert that
+// a Watch over a bounded window sees exactly one error rather than a
+// steady stream of them.
+func TestWatch_AdvancesPastUnhydratableRow(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	dsn := filepath.Join(dir, "eventlog.db")
+	h, err := Open(context.Background(), sqlite.Open(dsn),
+		WithWatchInterval(10*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer h.Close()
+	ctx := context.Background()
+
+	// Plant an orphan overlay row: no ADK session "ghost" exists, so
+	// loadEvent will fail on it every time.
+	if err := h.db.WithContext(ctx).Create(&agentEventRow{
+		AppName:   "app",
+		UserID:    "user",
+		SessionID: "ghost",
+		EventID:   "ev-ghost",
+		Author:    "x",
+		Timestamp: time.Now(),
+	}).Error; err != nil {
+		t.Fatalf("plant orphan row: %v", err)
+	}
+
+	watchCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer cancel()
+
+	// Count only the poison row's own hydration errors (they name the
+	// missing "ghost" session). A watch whose query is cancelled at the
+	// watchCtx deadline can surface a benign context/interrupted error
+	// during teardown; that is unrelated to the cursor-advance behavior
+	// under test, so we filter it out to keep the assertion stable under
+	// -race.
+	poisonErrs := 0
+	for _, werr := range h.Stream.Watch(watchCtx, 0, ForSession("app", "user", "ghost")) {
+		if werr != nil && strings.Contains(werr.Error(), `"ghost"`) {
+			poisonErrs++
+		}
+	}
+
+	// With the cursor advancing past the poison row, the error is
+	// surfaced exactly once and then the watch parks. Without the fix,
+	// the row re-fires every 10ms and poisonErrs would be well into the
+	// double digits over the 300ms window.
+	if poisonErrs != 1 {
+		t.Errorf("orphan overlay row surfaced %d hydration errors over the window; want exactly 1", poisonErrs)
+	}
+}
+
 func TestService_DelegatesCRUDToADK(t *testing.T) {
 	t.Parallel()
 	h, cleanup := openTestHandle(t)

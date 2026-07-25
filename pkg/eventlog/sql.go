@@ -308,7 +308,7 @@ func (s *gormStream) Append(ctx context.Context, sess session.Session, ev *sessi
 
 // deleteSession removes every overlay row for a session. The service
 // wrapper calls this after ADK deletes its own rows so we don't leave
-// orphaned overlay rows behind. An orphaned row is poison: loadEvent
+// orphaned overlay rows behind. An orphaned row is poison: hydration
 // re-fetches the (now missing) session and returns "session not found"
 // forever, and because the row's seq is real, an unfiltered Watch/Since
 // re-queries and re-errors it on every poll — one deletion would
@@ -404,9 +404,10 @@ func (s *gormStream) iterateOnceFunc(ctx context.Context, fromSeq int64, q query
 	if err != nil {
 		return yield(Entry{}, err)
 	}
+	h := newSessionHydrator(s.adkSvc)
 	for _, r := range rows {
 		md := decodeMetadata(r.Metadata)
-		ev, err := s.loadEvent(ctx, r)
+		ev, err := h.hydrate(ctx, r)
 		if err != nil {
 			if !yield(Entry{Seq: r.Seq, Metadata: md}, err) {
 				return false
@@ -470,28 +471,80 @@ func (s *gormStream) queryRows(ctx context.Context, fromSeq int64, q queryOpts) 
 	return rows, nil
 }
 
-// loadEvent hydrates a session.Event for a row by re-fetching it from
-// ADK's events table via the session.Service. We deliberately go
-// through the session.Service interface rather than reaching into
-// ADK's schema directly so we stay decoupled from ADK's row layout.
-func (s *gormStream) loadEvent(ctx context.Context, r agentEventRow) (*session.Event, error) {
-	resp, err := s.adkSvc.Get(ctx, &session.GetRequest{
-		AppName:   r.AppName,
-		UserID:    r.UserID,
-		SessionID: r.SessionID,
+// sessionKey identifies a session for the hydration cache.
+type sessionKey struct {
+	app, user, session string
+}
+
+// sessionIndex is a loaded session's events indexed by event ID (or the
+// error from trying to load it). Building it once turns per-row
+// hydration into an O(1) map lookup.
+type sessionIndex struct {
+	events map[string]*session.Event
+	err    error
+}
+
+// sessionHydrator hydrates overlay rows into their session.Events for a
+// single Since/Watch pass. It loads each distinct session at most once
+// through the session.Service and indexes that session's events by ID,
+// so hydrating a row is a map lookup rather than a full-session Get plus
+// linear scan per row. This is what keeps replay linear: previously
+// loadEvent re-fetched and re-scanned the whole session for every one
+// of its N rows, so a Since/Watch over an N-event session did N
+// full-session Gets — O(N^2). We still go through the session.Service
+// interface rather than reaching into ADK's schema, so the decoupling
+// from ADK's row layout is preserved.
+type sessionHydrator struct {
+	svc   session.Service
+	cache map[sessionKey]*sessionIndex
+}
+
+func newSessionHydrator(svc session.Service) *sessionHydrator {
+	return &sessionHydrator{svc: svc, cache: make(map[sessionKey]*sessionIndex)}
+}
+
+// hydrate returns the session.Event for row r, loading and indexing r's
+// session on first use and serving subsequent rows of the same session
+// (including a failed load) from the cache.
+func (h *sessionHydrator) hydrate(ctx context.Context, r agentEventRow) (*session.Event, error) {
+	key := sessionKey{app: r.AppName, user: r.UserID, session: r.SessionID}
+	idx, ok := h.cache[key]
+	if !ok {
+		idx = h.buildIndex(ctx, key)
+		h.cache[key] = idx
+	}
+	if idx.err != nil {
+		return nil, idx.err
+	}
+	ev := idx.events[r.EventID]
+	if ev == nil {
+		return nil, fmt.Errorf("eventlog: event %q not found in session %q", r.EventID, r.SessionID)
+	}
+	return ev, nil
+}
+
+// buildIndex loads a session once and indexes its events by ID. A load
+// failure (or missing session) is captured in the returned index and
+// cached so we don't re-Get a missing session for each of its rows.
+func (h *sessionHydrator) buildIndex(ctx context.Context, key sessionKey) *sessionIndex {
+	resp, err := h.svc.Get(ctx, &session.GetRequest{
+		AppName:   key.app,
+		UserID:    key.user,
+		SessionID: key.session,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("eventlog: load session %q: %w", r.SessionID, err)
+		return &sessionIndex{err: fmt.Errorf("eventlog: load session %q: %w", key.session, err)}
 	}
 	if resp == nil || resp.Session == nil {
-		return nil, fmt.Errorf("eventlog: session %q not found", r.SessionID)
+		return &sessionIndex{err: fmt.Errorf("eventlog: session %q not found", key.session)}
 	}
+	events := make(map[string]*session.Event)
 	for ev := range resp.Session.Events().All() {
-		if ev != nil && ev.ID == r.EventID {
-			return ev, nil
+		if ev != nil {
+			events[ev.ID] = ev
 		}
 	}
-	return nil, fmt.Errorf("eventlog: event %q not found in session %q", r.EventID, r.SessionID)
+	return &sessionIndex{events: events}
 }
 
 // Close idempotently shuts down the stream. The underlying *gorm.DB

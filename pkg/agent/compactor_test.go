@@ -404,8 +404,8 @@ func TestDefaultCompactor_TierAwareThreshold(t *testing.T) {
 		},
 		{
 			name:        "mid tier fires at 70% (above 0.65)",
-			model:       "claude-sonnet-4-6", // 200K window, mid tier
-			inputTokens: 140_000,             // 70% util
+			model:       "claude-sonnet-4-6", // 1M window, mid tier
+			inputTokens: 700_000,             // 70% util
 			want:        true,
 		},
 		{
@@ -423,7 +423,7 @@ func TestDefaultCompactor_TierAwareThreshold(t *testing.T) {
 		{
 			name:        "frontier tier fires at 90% (above 0.85)",
 			model:       "claude-opus-4-7",
-			inputTokens: 180_000, // 90% util
+			inputTokens: 900_000, // 90% util
 			want:        true,
 		},
 	}

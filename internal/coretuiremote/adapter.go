@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -138,6 +139,16 @@ type Adapter struct {
 	// SetBrander. Nil = don't populate SwitchTarget.Branding, which
 	// leaves the outgoing session's chrome in place (issue #274).
 	brander func(sessionPath string) *coretui.Branding
+
+	// trustedPeerHosts lists extra hostnames (no port) whose
+	// hub-advertised peer endpoints receive the operator's
+	// credentials (#384). Endpoints on the hub's own host are always
+	// trusted; anything else connects credential-less so a hostile
+	// registrant can't exfiltrate the operator's bearer/OAuth token
+	// by publishing an attacker endpoint on the hub. Set via
+	// SetTrustedPeerHosts; protected by mu; propagated to Adapters
+	// returned from SwitchToSession.
+	trustedPeerHosts []string
 }
 
 // ClientFactory constructs a fresh *attachclient.Client pointing at
@@ -193,6 +204,88 @@ func (a *Adapter) SetBrander(fn func(sessionPath string) *coretui.Branding) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.brander = fn
+}
+
+// SetTrustedPeerHosts wires the client-side trusted-peers list
+// (#384): hostnames (no port, case-insensitive) whose hub-advertised
+// peer endpoints may receive the operator's credentials on peer
+// enumeration and /switch. The hub's own host is always trusted and
+// need not be listed. Nil/empty resets to hub-host-only. Propagates
+// to Adapters returned from SwitchToSession so subsequent hops keep
+// the same policy.
+func (a *Adapter) SetTrustedPeerHosts(hosts []string) {
+	cp := make([]string, len(hosts))
+	copy(cp, hosts)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.trustedPeerHosts = cp
+}
+
+// trustedPeerHostsSnapshot returns a copy of the trusted-hosts list
+// for propagation to a switched-to Adapter.
+func (a *Adapter) trustedPeerHostsSnapshot() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	cp := make([]string, len(a.trustedPeerHosts))
+	copy(cp, a.trustedPeerHosts)
+	return cp
+}
+
+// peerClientFor returns a Client for a hub-advertised peer endpoint,
+// deciding whether the operator's credentials ride along (#384).
+// Credentials attach only when the endpoint's hostname matches the
+// hub's own hostname or an entry in the trusted-peers list; every
+// other endpoint gets a credential-less Client. Rationale: peer rows
+// are attacker-influenceable data (any registrant on the hub can
+// publish an arbitrary endpoint), so connecting to them with the
+// operator's bearer/OAuth token hands the token to whoever registered
+// the row. Operator-typed /attach <url> is deliberately NOT routed
+// through this gate — an explicitly typed URL is operator intent and
+// uses the credentialed factory.
+func (a *Adapter) peerClientFor(endpoint string) (*attachclient.Client, error) {
+	if a.clientFactory == nil {
+		return nil, fmt.Errorf("peerClientFor: clientFactory not wired")
+	}
+	parsed, err := attachclient.ParseURL(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	if a.trustPeerEndpointHost(parsed.Host) {
+		return a.clientFactory(endpoint)
+	}
+	debugf("peer endpoint %s: host not trusted (hub host or --trusted-peers); connecting credential-less", endpoint)
+	return attachclient.NewWithCredentials(parsed, attachclient.BearerCreds{}, 0), nil
+}
+
+// trustPeerEndpointHost reports whether a peer endpoint hostPort may
+// receive operator credentials: hostname match (port-insensitive,
+// case-insensitive) with the hub's host or with any configured
+// trusted peer host.
+func (a *Adapter) trustPeerEndpointHost(hostPort string) bool {
+	host := hostnameOnly(hostPort)
+	if host == "" {
+		return false
+	}
+	if hub := hostnameOnly(a.client.URL.Host); hub != "" && strings.EqualFold(host, hub) {
+		return true
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, t := range a.trustedPeerHosts {
+		if strings.EqualFold(host, strings.TrimSpace(t)) {
+			return true
+		}
+	}
+	return false
+}
+
+// hostnameOnly strips a port (and IPv6 brackets) from a host:port
+// string. Returns the input when no port is present.
+func hostnameOnly(hostPort string) string {
+	if h, _, err := net.SplitHostPort(hostPort); err == nil {
+		return h
+	}
+	return strings.Trim(hostPort, "[]")
 }
 
 // NewWithClientFactory returns a multi-daemon-capable Adapter

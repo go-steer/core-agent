@@ -70,7 +70,7 @@ func TestPeerRegistry_RegisterValidation(t *testing.T) {
 	r := NewPeerRegistry()
 	defer func() { _ = r.Close() }()
 
-	if _, err := r.Register(RegisterRequest{Endpoint: "x"}); !errors.Is(err, ErrPeerNameRequired) {
+	if _, err := r.Register(RegisterRequest{Endpoint: "http://peer-x:7777"}); !errors.Is(err, ErrPeerNameRequired) {
 		t.Errorf("missing name: want ErrPeerNameRequired, got %v", err)
 	}
 	if _, err := r.Register(RegisterRequest{Name: "n"}); !errors.Is(err, ErrPeerEndpointRequired) {
@@ -86,7 +86,7 @@ func TestPeerRegistry_ClampsAtMaxTTL(t *testing.T) {
 
 	// Peer asks for an hour; should get clamped to 2 minutes.
 	p, err := r.Register(RegisterRequest{
-		Name: "n", Endpoint: "x", HeartbeatTTLSec: 3600,
+		Name: "n", Endpoint: "http://peer-x:7777", HeartbeatTTLSec: 3600,
 	})
 	if err != nil {
 		t.Fatalf("Register: %v", err)
@@ -101,8 +101,8 @@ func TestPeerRegistry_RegisterUpsertsOnName(t *testing.T) {
 	r := NewPeerRegistry()
 	defer func() { _ = r.Close() }()
 
-	first, _ := r.Register(RegisterRequest{Name: "n", Endpoint: "v1"})
-	second, _ := r.Register(RegisterRequest{Name: "n", Endpoint: "v2"})
+	first, _ := r.Register(RegisterRequest{Name: "n", Endpoint: "http://peer-v1:7777"})
+	second, _ := r.Register(RegisterRequest{Name: "n", Endpoint: "http://peer-v2:7777"})
 
 	if first.RegistrationID == second.RegistrationID {
 		t.Errorf("upsert should issue a fresh RegistrationID")
@@ -122,7 +122,7 @@ func TestPeerRegistry_HeartbeatExtendsLease(t *testing.T) {
 	r := NewPeerRegistry(withClock(now))
 	defer func() { _ = r.Close() }()
 
-	p, _ := r.Register(RegisterRequest{Name: "n", Endpoint: "x", HeartbeatTTLSec: 60})
+	p, _ := r.Register(RegisterRequest{Name: "n", Endpoint: "http://peer-x:7777", HeartbeatTTLSec: 60})
 	expiresBefore := p.LeaseExpiresAt
 	advance(30 * time.Second)
 	p2, err := r.Heartbeat(p.RegistrationID)
@@ -140,8 +140,8 @@ func TestPeerRegistry_PruneExpired(t *testing.T) {
 	r := NewPeerRegistry(withClock(now))
 	defer func() { _ = r.Close() }()
 
-	_, _ = r.Register(RegisterRequest{Name: "fast", Endpoint: "x", HeartbeatTTLSec: 5})
-	_, _ = r.Register(RegisterRequest{Name: "slow", Endpoint: "y", HeartbeatTTLSec: 60})
+	_, _ = r.Register(RegisterRequest{Name: "fast", Endpoint: "http://peer-x:7777", HeartbeatTTLSec: 5})
+	_, _ = r.Register(RegisterRequest{Name: "slow", Endpoint: "http://peer-y:7777", HeartbeatTTLSec: 60})
 
 	advance(10 * time.Second) // "fast" lease (5s) has expired; "slow" still live
 	pruned := r.Prune()
@@ -158,9 +158,9 @@ func TestPeerRegistry_ListSortedAndFiltered(t *testing.T) {
 	r := NewPeerRegistry()
 	defer func() { _ = r.Close() }()
 
-	_, _ = r.Register(RegisterRequest{Name: "z", Endpoint: "x", Labels: map[string]string{"role": "monitor"}})
-	_, _ = r.Register(RegisterRequest{Name: "a", Endpoint: "x", Labels: map[string]string{"role": "monitor"}})
-	_, _ = r.Register(RegisterRequest{Name: "m", Endpoint: "x", Labels: map[string]string{"role": "supervisor"}})
+	_, _ = r.Register(RegisterRequest{Name: "z", Endpoint: "http://peer-x:7777", Labels: map[string]string{"role": "monitor"}})
+	_, _ = r.Register(RegisterRequest{Name: "a", Endpoint: "http://peer-x:7777", Labels: map[string]string{"role": "monitor"}})
+	_, _ = r.Register(RegisterRequest{Name: "m", Endpoint: "http://peer-x:7777", Labels: map[string]string{"role": "supervisor"}})
 
 	all := r.List(nil)
 	if len(all) != 3 || all[0].Name != "a" || all[1].Name != "m" || all[2].Name != "z" {
@@ -184,7 +184,7 @@ func TestPeerRegistry_ListDefensiveCopy(t *testing.T) {
 	t.Parallel()
 	r := NewPeerRegistry()
 	defer func() { _ = r.Close() }()
-	_, _ = r.Register(RegisterRequest{Name: "n", Endpoint: "x", Labels: map[string]string{"a": "b"}})
+	_, _ = r.Register(RegisterRequest{Name: "n", Endpoint: "http://peer-x:7777", Labels: map[string]string{"a": "b"}})
 	ps := r.List(nil)
 	// Mutate the returned labels map. Should not affect the registry.
 	ps[0].Labels["a"] = "tampered"

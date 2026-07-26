@@ -75,6 +75,7 @@ func main() {
 	theme := fs.String("theme", "", "force a theme: 'dark', 'light', or empty for auto (queries the terminal via OSC 11)")
 	alias := fs.String("alias", "", "agent identity label shown in the status banner; default uses the session ID")
 	newSession := fs.Bool("new-session", false, "create a fresh session owned by the authenticated caller (POST /sessions) and attach to it in one shot. Skips the picker. Requires the daemon to have attach.multi_session.enabled with a configured SessionFactory; older daemons return 501 and the TUI exits with a clear error.")
+	trustedPeers := fs.String("trusted-peers", "", "comma-separated hostnames (no port) whose hub-advertised peer endpoints receive your credentials on peer enumeration and /switch. Endpoints on the hub's own host are always trusted; every other peer endpoint is contacted credential-less so a hostile registration on the hub can't capture your token. Explicitly typed /attach <url> targets always use your credentials.")
 	// permuteFlags reorders os.Args so flag order doesn't matter:
 	//   core-agent-tui --token T http://host:7777
 	//   core-agent-tui http://host:7777 --token T
@@ -94,7 +95,7 @@ func main() {
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	err := run(ctx, args, token, *authMode, *theme, *alias, *newSession)
+	err := run(ctx, args, token, *authMode, *theme, *alias, *newSession, splitCommaList(*trustedPeers))
 	cancel()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent-tui: %v\n", err)
@@ -104,7 +105,7 @@ func main() {
 
 // run resolves a session (parse URL → optional picker), constructs
 // the coretuiremote adapter, and hands off to coretui.Run.
-func run(ctx context.Context, args []string, token, authMode, theme, alias string, newSession bool) error {
+func run(ctx context.Context, args []string, token, authMode, theme, alias string, newSession bool, trustedPeers []string) error {
 	rawURL, err := chooseURL(args)
 	if err != nil {
 		return err
@@ -149,6 +150,10 @@ func run(ctx context.Context, args []string, token, authMode, theme, alias strin
 	}
 
 	a := coretuiremote.NewWithClientFactory(client, sessionPath, clientFactory)
+	// Credential-forwarding policy for hub-advertised peer endpoints
+	// (#384): only the hub's own host — plus any --trusted-peers
+	// hostnames — receives the operator's credentials.
+	a.SetTrustedPeerHosts(trustedPeers)
 
 	// Brander closure (issue #274). The Adapter uses this in
 	// SwitchToSession to build the SwitchTarget's Branding so /switch
@@ -207,6 +212,18 @@ func run(ctx context.Context, args []string, token, authMode, theme, alias strin
 		},
 	}
 	return coretui.Run(ctx, opts)
+}
+
+// splitCommaList splits a comma-separated flag value into trimmed,
+// non-empty entries. Returns nil for an empty value.
+func splitCommaList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // chooseURL returns the attach URL — either from args[0] or via a

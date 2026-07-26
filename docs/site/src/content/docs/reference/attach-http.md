@@ -187,14 +187,14 @@ Field notes:
 
 ## Peer / hub endpoints
 
-Registered only when `Options.PeerRegistry` is non-nil (daemon launched with `--attach-peer-hub`). **Peer endpoints go through the transport layer only** — no per-caller ACL check. Rationale: peer registration is cluster-infra, not per-session state; auth is the shared token or mTLS.
+Registered only when `Options.PeerRegistry` is non-nil (daemon launched with `--attach-peer-hub`). Peer endpoints go through the transport layer (shared token / mTLS). When **multi-session auth** is enabled they additionally require an authenticated, non-anonymous caller and enforce owner-scoping (v2.8+, [#384](https://github.com/go-steer/core-agent/issues/384)); single-user daemons keep the transport token as the only gate.
 
 | Method | Path | Request | Response |
 |---|---|---|---|
-| `POST` | `/peers` | `{"name":..., "endpoint":..., "labels"?:{...}, "heartbeat_ttl_sec"?:...}` (16 KiB cap) | **201** `{"registration_id":..., "name":..., "endpoint":..., "labels":..., "registered_at":..., "last_heartbeat":..., "lease_expires_at":...}`. Name-based upsert. |
-| `GET` | `/peers` | `?label=k=v` (repeatable filter) | **200** `{"peers":[{...}]}`. |
+| `POST` | `/peers` | `{"name":..., "endpoint":..., "labels"?:{...}, "heartbeat_ttl_sec"?:...}` (16 KiB cap) | **201** `{"registration_id":..., "name":..., "endpoint":..., ...}`. `endpoint` must be an **absolute http/https URL with a host** — otherwise **400** (`javascript:`, relative, host-less, `ftp:` all rejected). The registering caller is recorded as the registration's **owner**. Name-based upsert. **401** anonymous (multi-session). |
+| `GET` | `/peers` | `?label=k=v` (repeatable filter) | **200** `{"peers":[{...}]}`. `registration_id` is returned **only** to the registration's owner or an admin — redacted (`omitempty`) for everyone else, closing the enumerate-then-delete vector. **401** anonymous (multi-session). |
 | `POST` | `/peers/{id}/heartbeat` | — | **200** `Peer` (extended lease); **404** unknown id. |
-| `DELETE` | `/peers/{id}` | — | **204**; **idempotent** (unknown id → 204). |
+| `DELETE` | `/peers/{id}` | — | **204** on success; **403** when the caller is neither the owner nor an admin; **204** (idempotent) on unknown id. **401** anonymous (multi-session). |
 
 ## Non-session routes
 
@@ -268,7 +268,7 @@ Consumers MUST tolerate unknown values and MUST NOT crash on missing keys.
 | Endpoint | Idempotent? |
 |---|---|
 | `DELETE /sessions/{sid}` | **No** — first call **204**, second call **500** (`ErrSessionNotFound`). Callers that retry on transient failure should treat 204 and 500 as equivalent success. |
-| `DELETE /peers/{id}` | **Yes** — unknown id also **204**. |
+| `DELETE /peers/{id}` | **Yes** — unknown id also **204** (owner/admin only; **403** otherwise). |
 | `POST /sessions` | **No** — every call spins a fresh session. |
 | `POST /peers` | Effectively **yes** — name-based upsert extends the lease of an existing peer. |
 | `POST /perms/respond` | **No** — second respond for the same prompt → **404** (`ErrPromptNotFound`). |

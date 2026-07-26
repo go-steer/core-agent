@@ -560,11 +560,19 @@ func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, 
 	// per-call session allow and the prompt: if the user previously
 	// chose DecisionAllowSessionVerb for "<verb>", every subsequent
 	// command starting with that verb is approved without re-prompting.
+	//
+	// The grant only applies when safecmd confirms the command is a
+	// single simple command — `git status; evil` extracts verb "git"
+	// but must NOT ride a `git` session grant past the prompt, since
+	// the user trusted "git *", not "git-then-anything". Compound or
+	// non-literal commands fall through to normal prompting.
 	var verb string
 	if kind == PromptKindBash {
 		verb = extractBashVerb(key)
 		if verb != "" && g.sessionVerbAllowed(toolName, verb) {
-			return nil
+			if _, safe := parseSafeArgv(key); safe {
+				return nil
+			}
 		}
 	}
 	mode := g.Mode()

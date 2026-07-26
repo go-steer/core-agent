@@ -58,6 +58,20 @@ The `<glob>` uses `path/filepath.Match` semantics, so it understands `*`, `?`, a
 - **Exact match** comes first: a pattern with no wildcards matches the literal key only (so `bash:git status` matches the literal command, not `git statusabc`).
 - **Open prefix** for trailing `*`: `bash:git diff*` matches `git diff`, `git diff main..HEAD`, etc.
 
+### Safe-command guard on bash prefix rules
+
+For **bash**, an open-prefix allow rule only auto-allows a command that is exactly **one simple command with a fully literal argv**. The command string is parsed with a real shell parser; any of the following disqualifies it from matching a `<verb> *`-style rule and sends it to the normal prompt flow instead:
+
+- Chaining or composition: `;`, `&&`, `||`, pipes, background `&`, subshells.
+- Redirections of any kind (`>`, `>>`, `<`, `2>&1`, heredocs).
+- Any expansion: `$VAR`, `$(...)`, backticks, arithmetic, process substitution.
+
+So `bash:cat *` auto-allows `cat notes.txt` but **not** `cat notes.txt; rm -rf ~` or `cat f > /etc/passwd`. Plain quoting of literal text is fine (`find . -name '*.go'` matches `bash:find *`). Leading `KEY=VAL` environment assignments are skipped when computing the argv, so `CGO_ENABLED=0 go build` matches a `bash:go *` rule.
+
+A small set of **verb profiles** additionally withholds auto-allow when a dangerous predicate appears in the argv of an otherwise read-only verb: `find . -exec …`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fls`, `-fprint`, `-fprint0`, `-fprintf` all prompt even though `bash:find *` is in the default bundle. A profile hit never hard-denies — it only removes the auto-allow.
+
+**Exact-match rules are exempt** from both guards: if you allowlist the literal string `bash:make build && make test`, that exact string passes. Deny rules are also unaffected — they stay as broad as written.
+
 Examples:
 
 | Pattern | Matches |

@@ -95,13 +95,21 @@ const (
 // Match returns OutcomeDeny if any deny rule matches the request,
 // OutcomeAllow if any allow rule matches and no deny rule matches,
 // otherwise OutcomeUnmatched. Deny always wins.
+//
+// Allow-side matching for bash is stricter than deny-side matching:
+// a trailing-`*` prefix rule (the matchGlob open-prefix path, e.g.
+// "bash:cat *") only auto-allows a command that safecmd classifies
+// as a single simple literal command that clears its verb profile —
+// otherwise `cat f; rm -rf ~` would ride an allowlist entry meant
+// for plain file reads. Deny rules stay maximally broad on purpose:
+// weakening a deny would be a security regression.
 func (p *Policy) Match(tool, key string) Outcome {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if matchAny(p.deny, tool, key) {
 		return OutcomeDeny
 	}
-	if matchAny(p.allow, tool, key) {
+	if matchAnyAllow(p.allow, tool, key) {
 		return OutcomeAllow
 	}
 	return OutcomeUnmatched
@@ -200,6 +208,51 @@ func matchAny(rules []rule, tool, key string) bool {
 	return false
 }
 
+// matchAnyAllow is matchAny with the bash auto-allow guard: an
+// open-prefix pattern ("<literal prefix>*") matching a bash request
+// only counts when the command passes the safecmd analysis (single
+// simple command, literal argv, verb profile clear). Exact-match
+// rules are unchanged — an operator who allowlists a literal command
+// string gets exactly that string, chaining metacharacters included.
+//
+// The safecmd result is computed at most once per Match call and only
+// when an open-prefix bash rule actually matches, so the parser cost
+// is not paid on the hot path for non-bash tools.
+func matchAnyAllow(rules []rule, tool, key string) bool {
+	safeComputed, safe := false, false
+	for _, r := range rules {
+		if r.tool != "" && r.tool != tool {
+			continue
+		}
+		if r.pat == key {
+			return true // exact match: unchanged semantics
+		}
+		if !matchGlob(r.pat, key) {
+			continue
+		}
+		if tool != "bash" || !isOpenPrefixPattern(r.pat) {
+			return true
+		}
+		if !safeComputed {
+			safe = bashSafeForAutoAllow(key)
+			safeComputed = true
+		}
+		if safe {
+			return true
+		}
+		// Unsafe command matched an open-prefix rule: keep scanning —
+		// a later exact rule may still legitimately match.
+	}
+	return false
+}
+
+// isOpenPrefixPattern reports whether pattern uses the trailing-`*`
+// open-prefix form matchGlob special-cases (a literal prefix followed
+// by a single trailing `*`).
+func isOpenPrefixPattern(pattern string) bool {
+	return strings.HasSuffix(pattern, "*") && !strings.ContainsAny(pattern[:len(pattern)-1], "*?[")
+}
+
 // matchGlob tries an exact match first (so the pattern "git status" only
 // matches the literal command, not "git statusabc"), then a path-style
 // glob via filepath.Match. A trailing `*` is treated as an open prefix
@@ -208,7 +261,7 @@ func matchGlob(pattern, s string) bool {
 	if pattern == s {
 		return true
 	}
-	if strings.HasSuffix(pattern, "*") && !strings.ContainsAny(pattern[:len(pattern)-1], "*?[") {
+	if isOpenPrefixPattern(pattern) {
 		return strings.HasPrefix(s, pattern[:len(pattern)-1])
 	}
 	if ok, _ := filepath.Match(pattern, s); ok {

@@ -522,7 +522,10 @@ type URLScopeConfig struct {
 // want to nail the env-var name down per-deployment.
 type AttachConfig struct {
 	// Server-side: where the attach listener binds. Set at most one.
-	Listen     string `json:"listen,omitempty"`      // e.g. "0.0.0.0:7777"
+	// Non-loopback listen addresses (e.g. "0.0.0.0:7777") refuse to
+	// start without authentication (TokenEnv bearer token, mTLS, or
+	// enforced multi-session auth) — see pkg/attach.NewServer (#376).
+	Listen     string `json:"listen,omitempty"`      // e.g. "127.0.0.1:7777"
 	UnixSocket string `json:"unix_socket,omitempty"` // e.g. "/var/run/core-agent.sock"
 
 	// TLS material. TLSCert + TLSKey enable HTTPS; ClientCA additionally

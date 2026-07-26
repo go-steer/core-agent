@@ -655,7 +655,7 @@ String fields are passed through `os.ExpandEnv` so per-pod values like `"https:/
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `listen` | string | `""` | Address the attach HTTP server binds to (e.g. `"0.0.0.0:7777"`). Empty → server off. Mutually exclusive with `unix_socket`. Requires `--session-db` at runtime (the broadcaster pumps from the event log). |
+| `listen` | string | `""` | Address the attach HTTP server binds to (e.g. `"127.0.0.1:7777"`). Empty → server off. Mutually exclusive with `unix_socket`. Requires `--session-db` at runtime (the broadcaster pumps from the event log). **Non-loopback addresses** (`":7777"`, `"0.0.0.0:7777"`, ...) refuse to start without authentication — set `token_env` (or mTLS via `client_ca`, or enforced multi-session auth). Tokenless loopback starts but logs a loud warning. |
 | `unix_socket` | string | `""` | Bind path for the Unix-socket transport (e.g. `"/var/run/core-agent.sock"`). Same SSE protocol; useful for local dev and Cloud Run sidecar shapes. |
 | `tls_cert` | string | `""` | TLS server certificate (PEM path). Pair with `tls_key` to enable HTTPS. |
 | `tls_key` | string | `""` | TLS server key (PEM path). |

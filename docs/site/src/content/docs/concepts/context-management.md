@@ -185,7 +185,7 @@ core-agent --max-turn-cost-usd=0.50
 
 # Long-running autonomous deploy — bound the whole session so a slow
 # burn over hours doesn't quietly exceed the deploy's budget
-core-agent --no-repl --attach-listen=:7777 \
+core-agent --no-repl --attach-listen=127.0.0.1:7777 \
   --max-turn-cost-usd=1.00 --max-session-cost-usd=20.00
 ```
 

@@ -595,6 +595,7 @@ Governs which URLs the `fetch_url` built-in is allowed to reach. Same Allow/Deny
 | `max_body_bytes` | int | `65536` | Cap on the response body returned to the model. Per-call `max_bytes` argument can lower this, never raise it. |
 | `timeout_seconds` | int | `30` | HTTP timeout per call. |
 | `headers` | object | `{}` | Per-host header bundles. Map of host-pattern → header-name → value template. Values pass through `os.ExpandEnv` at request time, so rotated env vars take effect on the next fetch without a restart. Most-specific pattern wins (longer wins; exact match beats wildcard). The model **never** sets headers directly — keeps credential exfiltration off the tool-argument surface. |
+| `allow_metadata_endpoints` | bool | `false` | Opts back into fetching link-local / cloud-metadata addresses (`169.254.0.0/16` incl. `169.254.169.254`, `fe80::/10`, AWS IMDSv6 `fd00:ec2::254`), which are otherwise hard-blocked in **every** permission mode regardless of the allowlist. Leave off unless you are deliberately building a metadata-service integration. |
 
 Worked example:
 
@@ -619,6 +620,14 @@ Worked example:
   }
 }
 ```
+
+### SSRF defenses
+
+The allowlist matches host *names*; a second layer vets the *addresses* those names resolve to, at dial time:
+
+- **Link-local / cloud-metadata ranges are always blocked** — `169.254.0.0/16` (including the `169.254.169.254` metadata service), `fe80::/10`, and the AWS IMDS IPv6 address `fd00:ec2::254` are refused in every permission mode (yolo included), no matter what the allowlist says. The only opt-out is `allow_metadata_endpoints: true`.
+- **Loopback / private ranges need an exact-host opt-in** — `127.0.0.0/8`, `::1`, RFC1918 (`10/8`, `172.16/12`, `192.168/16`), CGNAT `100.64/10`, and IPv6 ULA `fc00::/7` are refused **unless** the request host appears in `allow` as an exact (non-wildcard) entry. Listing `internal-api.corp:8443` explicitly opts that host in; a broad `*` or `*.svc.cluster.local` wildcard does **not** unlock private ranges.
+- **DNS rebinding is closed by IP pinning** — the host is resolved once, *every* returned IP is validated (one bad IP rejects the whole set), and the connection is dialed to one of those same vetted IPs. TLS SNI and the `Host` header still carry the original hostname; only the TCP dial target is pinned. Every redirect hop re-runs the full validation + pinning.
 
 Each fetch emits a `tool/fetch_url` event into the eventlog with structured metadata (`url`, `final_url`, `status`, `content_type`, `bytes`, `truncated`), so an audit query can answer "what URLs did this agent touch, when, and what came back" without parsing tool output. Composes with the [permissions gate](//#permissions) — write `permissions.allow: ["fetch_url:github.com/*"]` to gate per-host even within the URL allowlist.
 

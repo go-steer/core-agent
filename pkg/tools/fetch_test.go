@@ -15,12 +15,15 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/adk/tool"
 
@@ -325,6 +328,264 @@ func TestURLMatcher_PortPattern(t *testing.T) {
 	m2 := newURLMatcher([]string{"http://localhost:*"}, nil)
 	if err := m2.check(u2); err != nil {
 		t.Errorf("wildcard port: %v", err)
+	}
+}
+
+// --- SSRF guard tests ---------------------------------------------------
+
+// staticResolver returns a fetchResolver serving a fixed hostname→IPs
+// map; unknown hosts error like NXDOMAIN.
+func staticResolver(m map[string][]string) fetchResolver {
+	return func(_ context.Context, host string) ([]netip.Addr, error) {
+		ips, ok := m[host]
+		if !ok {
+			return nil, fmt.Errorf("lookup %s: no such host", host)
+		}
+		out := make([]netip.Addr, 0, len(ips))
+		for _, s := range ips {
+			out = append(out, netip.MustParseAddr(s))
+		}
+		return out, nil
+	}
+}
+
+func TestFetchURL_MetadataLiteralIP_BlockedDespiteWildcard(t *testing.T) {
+	t.Parallel()
+	fn := fetchURLFunc(fetchGate(t), fetchCfg([]string{"http://*"}, nil))
+	_, err := fn(tool.Context(nil), fetchURLArgs{URL: "http://169.254.169.254/latest/meta-data/"})
+	if err == nil || !strings.Contains(err.Error(), "link-local/metadata") {
+		t.Errorf("want metadata block, got: %v", err)
+	}
+}
+
+func TestFetchURL_MetadataLiteralIP_BlockedDespiteExactAllow(t *testing.T) {
+	t.Parallel()
+	// Even an exact-host allowlist entry does not unlock the
+	// metadata ranges — only allow_metadata_endpoints does.
+	fn := fetchURLFunc(fetchGate(t), fetchCfg([]string{"http://169.254.169.254"}, nil))
+	_, err := fn(tool.Context(nil), fetchURLArgs{URL: "http://169.254.169.254/latest/meta-data/"})
+	if err == nil || !strings.Contains(err.Error(), "link-local/metadata") {
+		t.Errorf("want metadata block, got: %v", err)
+	}
+}
+
+func TestFetchURL_MetadataHostname_Blocked(t *testing.T) {
+	t.Parallel()
+	// A hostname under attacker DNS control resolving to the
+	// metadata IP is caught at dial time, wildcard allow or not.
+	fn := fetchURLFuncWithResolver(
+		fetchGate(t),
+		fetchCfg([]string{"http://*"}, nil),
+		staticResolver(map[string][]string{"metadata.internal": {"169.254.169.254"}}),
+	)
+	_, err := fn(tool.Context(nil), fetchURLArgs{URL: "http://metadata.internal/latest/meta-data/"})
+	if err == nil || !strings.Contains(err.Error(), "link-local/metadata") {
+		t.Errorf("want metadata block, got: %v", err)
+	}
+}
+
+func TestFetchURL_PrivateIP_WildcardAllow_Blocked(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("server should never be reached")
+	}))
+	defer srv.Close()
+
+	// Wildcard allowlist entry does NOT unlock loopback/private.
+	fn := fetchURLFunc(fetchGate(t), fetchCfg([]string{"http://*"}, nil))
+	_, err := fn(tool.Context(nil), fetchURLArgs{URL: srv.URL})
+	if err == nil || !strings.Contains(err.Error(), "loopback/private") {
+		t.Errorf("want private-range block, got: %v", err)
+	}
+}
+
+func TestFetchURL_PrivateIP_ExactHostAllow_PinnedDial(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, "internal ok")
+	}))
+	defer srv.Close()
+
+	// The URL uses a hostname real DNS cannot resolve; the fake
+	// resolver maps it to the test server's loopback IP. Success
+	// therefore proves two things at once: an exact-host allowlist
+	// entry unlocks the private range, and the dial went to the
+	// pinned resolver-provided IP (not a second resolution).
+	u, _ := url.Parse(srv.URL)
+	host := "app.internal:" + u.Port()
+	fn := fetchURLFuncWithResolver(
+		fetchGate(t),
+		fetchCfg([]string{"http://" + host}, nil),
+		staticResolver(map[string][]string{"app.internal": {u.Hostname()}}),
+	)
+	res, err := fn(tool.Context(nil), fetchURLArgs{URL: "http://" + host + "/"})
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if res.Body != "internal ok" {
+		t.Errorf("body = %q, want %q", res.Body, "internal ok")
+	}
+}
+
+func TestFetchURL_Rebinding_PrivateResolution_WildcardBlocked(t *testing.T) {
+	t.Parallel()
+	// Rebinding simulation: the resolver hands back a loopback IP
+	// for a public-looking host that only a wildcard entry allows.
+	fn := fetchURLFuncWithResolver(
+		fetchGate(t),
+		fetchCfg([]string{"http://*"}, nil),
+		staticResolver(map[string][]string{"rebind.example.net": {"127.0.0.1"}}),
+	)
+	_, err := fn(tool.Context(nil), fetchURLArgs{URL: "http://rebind.example.net/"})
+	if err == nil || !strings.Contains(err.Error(), "loopback/private") {
+		t.Errorf("want private-range block, got: %v", err)
+	}
+}
+
+func TestFetchURL_MixedResolution_AnyBadIPRejects(t *testing.T) {
+	t.Parallel()
+	// A host mixing a public IP with the metadata IP is rejected
+	// outright — even with an exact-host allowlist entry.
+	fn := fetchURLFuncWithResolver(
+		fetchGate(t),
+		fetchCfg([]string{"http://mixed.example.net"}, nil),
+		staticResolver(map[string][]string{"mixed.example.net": {"93.184.216.34", "169.254.169.254"}}),
+	)
+	_, err := fn(tool.Context(nil), fetchURLArgs{URL: "http://mixed.example.net/"})
+	if err == nil || !strings.Contains(err.Error(), "link-local/metadata") {
+		t.Errorf("want metadata block, got: %v", err)
+	}
+}
+
+func TestFetchURL_RedirectToMetadataIP_Blocked(t *testing.T) {
+	t.Parallel()
+	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://169.254.169.254/latest/meta-data/", http.StatusFound)
+	}))
+	defer src.Close()
+
+	// The wildcard entry lets the redirect target pass the host
+	// allowlist; the IP guard must still stop it.
+	fn := fetchURLFunc(fetchGate(t), fetchCfg(
+		[]string{"http://" + mustHost(t, src.URL), "http://*"},
+		nil,
+	))
+	_, err := fn(tool.Context(nil), fetchURLArgs{URL: src.URL})
+	if err == nil || !strings.Contains(err.Error(), "link-local/metadata") {
+		t.Errorf("want metadata block on redirect, got: %v", err)
+	}
+}
+
+// ctxToolContext adapts a plain context.Context into the tool.Context
+// interface for tests that need cancellation. Only the context methods
+// are backed; everything else panics via the nil embedded interface.
+type ctxToolContext struct {
+	tool.Context
+	ctx context.Context
+}
+
+func (c ctxToolContext) Deadline() (time.Time, bool) { return c.ctx.Deadline() }
+func (c ctxToolContext) Done() <-chan struct{}       { return c.ctx.Done() }
+func (c ctxToolContext) Err() error                  { return c.ctx.Err() }
+func (c ctxToolContext) Value(key any) any           { return c.ctx.Value(key) }
+
+func TestFetchURL_ContextCancellationAborts(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	fn := fetchURLFunc(fetchGate(t), fetchCfg([]string{"http://" + mustHost(t, srv.URL)}, nil))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := fn(ctxToolContext{ctx: ctx}, fetchURLArgs{URL: srv.URL})
+	if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("want context-deadline error, got: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("cancellation took %v; the tool ctx is not threaded into the request", elapsed)
+	}
+}
+
+func TestSSRFGuard_CheckAddr(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name          string
+		addr          string
+		exactHost     bool
+		allowMetadata bool
+		wantErr       string // "" = allowed
+	}{
+		{"public v4", "93.184.216.34", false, false, ""},
+		{"public v6", "2606:2800:220:1::1", false, false, ""},
+		{"metadata v4", "169.254.169.254", false, false, "link-local/metadata"},
+		{"metadata v4 exact host does not unlock", "169.254.169.254", true, false, "link-local/metadata"},
+		{"metadata v4 opt-in flag unlocks", "169.254.169.254", false, true, ""},
+		{"link-local v4", "169.254.1.1", false, false, "link-local/metadata"},
+		{"link-local v6", "fe80::1", false, false, "link-local/metadata"},
+		{"aws imds v6", "fd00:ec2::254", true, false, "link-local/metadata"},
+		{"aws imds v6 opt-in flag unlocks", "fd00:ec2::254", true, true, ""},
+		{"loopback v4", "127.0.0.1", false, false, "loopback/private"},
+		{"loopback v4 exact host unlocks", "127.0.0.1", true, false, ""},
+		{"loopback v6", "::1", false, false, "loopback/private"},
+		{"mapped loopback unmapped first", "::ffff:127.0.0.1", false, false, "loopback/private"},
+		{"rfc1918 10/8", "10.1.2.3", false, false, "loopback/private"},
+		{"rfc1918 172.16/12", "172.20.0.1", false, false, "loopback/private"},
+		{"rfc1918 192.168/16", "192.168.1.1", false, false, "loopback/private"},
+		{"cgnat 100.64/10", "100.64.0.1", false, false, "loopback/private"},
+		{"ula fc00::/7", "fc00::1", false, false, "loopback/private"},
+		{"ula exact host unlocks", "fc00::1", true, false, ""},
+		{"rfc1918 exact host unlocks", "10.1.2.3", true, false, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			g := &ssrfGuard{allowMetadata: c.allowMetadata}
+			err := g.checkAddr(netip.MustParseAddr(c.addr), "host.test", c.exactHost)
+			if c.wantErr == "" {
+				if err != nil {
+					t.Errorf("checkAddr(%s): unexpected error: %v", c.addr, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+				t.Errorf("checkAddr(%s): got %v, want error containing %q", c.addr, err, c.wantErr)
+			}
+		})
+	}
+}
+
+func TestURLMatcher_AllowsExactHost(t *testing.T) {
+	t.Parallel()
+	m := newURLMatcher([]string{
+		"api.github.com",
+		"http://localhost:8080",
+		"*.svc.cluster.local",
+		"*",
+	}, nil)
+
+	cases := []struct {
+		host, port string
+		want       bool
+	}{
+		{"api.github.com", "443", true},
+		{"API.GITHUB.COM", "443", true},         // case-insensitive
+		{"localhost", "8080", true},             // exact host, matching port
+		{"localhost", "9090", false},            // exact host, wrong port
+		{"db.svc.cluster.local", "5432", false}, // wildcard entry never counts
+		{"anything.example.com", "443", false},  // bare * never counts
+	}
+	for _, c := range cases {
+		if got := m.allowsExactHost(c.host, c.port); got != c.want {
+			t.Errorf("allowsExactHost(%q, %q) = %v, want %v", c.host, c.port, got, c.want)
+		}
 	}
 }
 

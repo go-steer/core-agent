@@ -32,6 +32,7 @@ func TestURLScopeConfig_RoundTrip(t *testing.T) {
 			"deny":  ["*.internal.evil.com"],
 			"max_body_bytes":   131072,
 			"timeout_seconds":  45,
+			"allow_metadata_endpoints": true,
 			"headers": {
 				"api.github.com": {
 					"Authorization": "Bearer ${GITHUB_TOKEN}",
@@ -63,6 +64,7 @@ func TestURLScopeConfig_RoundTrip(t *testing.T) {
 				"Accept":        "application/vnd.github+json",
 			},
 		},
+		AllowMetadataEndpoints: true,
 	}
 	if !reflect.DeepEqual(cfg.URLScope, want) {
 		t.Errorf("URLScope round-trip mismatch:\n got:  %+v\n want: %+v", cfg.URLScope, want)

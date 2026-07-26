@@ -25,6 +25,8 @@ Each key is a hook event name (see table below). Each value is an ordered list o
 
 `timeout_seconds` bounds the wall-clock per handler; default is 10 seconds. A hung command is killed at the timeout — the agent's event stream is not stalled beyond that.
 
+Hook commands are routed through the [permission gate](/concepts/permissions/#hook-command-execution) (a bash-kind check: built-in denylist, mode, and deny patterns) before they run — because `.agents/config.json` is itself model-writable, an ungated `/bin/sh -c` from config would be an escalation path. A command the gate refuses does not run.
+
 If a handler exits non-zero, the failure is logged to `core-agent`'s stderr and the next handler for that event fires. Hooks are observers, not veto-holders — they can't cancel the agent's work.
 
 ---

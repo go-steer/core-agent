@@ -272,6 +272,8 @@ func kindToWire(k permissions.PromptKind) string {
 		return "file_write"
 	case permissions.PromptKindPathScope:
 		return "path_scope"
+	case permissions.PromptKindControlPlaneWrite:
+		return "control_plane_write"
 	default:
 		return "generic"
 	}

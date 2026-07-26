@@ -1111,7 +1111,7 @@ func translateKind(k permissions.PromptKind) coretui.PermissionKind {
 	switch k {
 	case permissions.PromptKindBash:
 		return coretui.PermissionKindBash
-	case permissions.PromptKindFileWrite, permissions.PromptKindPathScope:
+	case permissions.PromptKindFileWrite, permissions.PromptKindPathScope, permissions.PromptKindControlPlaneWrite:
 		return coretui.PermissionKindEdit
 	default:
 		return coretui.PermissionKindOther

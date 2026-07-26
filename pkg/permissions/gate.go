@@ -523,6 +523,14 @@ func (g *Gate) CheckFileRead(ctx context.Context, toolName, path string) error {
 // permits reads — escalate via the path-scope prompt.
 func (g *Gate) CheckFileWrite(ctx context.Context, toolName, path string) error {
 	g = g.resolveSessionGate(ctx)
+	// Control-plane classification runs FIRST and on the symlink-
+	// resolved path, before any mode/session/allowlist short-circuit,
+	// so a write (or a symlink laundering one) to .agents/config.json
+	// or .agents/mcp.json cannot be auto-approved by yolo, acceptEdits,
+	// a session-tool grant, or an allowlist entry. See #378.
+	if resolved, err := ResolvePath(path); err == nil && isControlPlanePath(resolved) {
+		return g.checkControlPlaneWrite(ctx, toolName, resolved)
+	}
 	if g.sessionToolAllowed(toolName) {
 		return nil
 	}
@@ -534,6 +542,51 @@ func (g *Gate) CheckFileWrite(ctx context.Context, toolName, path string) error 
 		return g.promptForPath(ctx, toolName, path, AccessWrite)
 	}
 	return g.gateRequest(ctx, PromptKindFileWrite, toolName, path, toolName, path)
+}
+
+// checkControlPlaneWrite is the elevated gate for privilege-bearing
+// control-plane files (#378). It deliberately bypasses every
+// auto-approval path: mode (yolo/acceptEdits), session/verb/tool
+// grants, allowlist entries, and built-in bundles are all ignored.
+// A configured deny rule still wins (deny is always maximal), the
+// plan-first pre-check still applies, and otherwise the write
+// requires a fresh interactive approval every time. With no prompter
+// wired the write is denied with a clear, actionable error.
+//
+// A non-deny decision authorizes only THIS write — nothing is
+// remembered, so a session-tool/always choice on a control-plane
+// prompt can't install a standing bypass.
+func (g *Gate) checkControlPlaneWrite(ctx context.Context, toolName, path string) error {
+	if err := g.planFirstDenial(toolName); err != nil {
+		return err
+	}
+	if g.policy.Match(toolName, path) == OutcomeDeny {
+		return fmt.Errorf("%s denied by config policy: %q", toolName, path)
+	}
+	if g.prompter == nil {
+		return fmt.Errorf("%s denied: %q is a privilege-bearing control-plane file (%w); it can only be modified with an explicit interactive approval, which is unavailable in this session. Edit it directly outside the agent if the change is intended", toolName, path, ErrControlPlaneWrite)
+	}
+	d, err := g.prompter.AskApproval(ctx, PromptRequest{
+		Kind:        PromptKindControlPlaneWrite,
+		ToolName:    toolName,
+		Detail:      fmt.Sprintf("modify control-plane file %s", path),
+		PersistTool: toolName,
+		PersistKey:  path,
+		Source:      SubagentSourceFromContext(ctx),
+		Access:      AccessWrite,
+	})
+	if err != nil {
+		return fmt.Errorf("permissions: %w", err)
+	}
+	if d == DecisionDeny {
+		return fmt.Errorf("%s denied by user: control-plane write to %s", toolName, path)
+	}
+	// Any non-deny decision authorizes exactly this write. We record
+	// the approval for the audit log but intentionally do NOT remember
+	// it (no rememberSession / rememberSessionTool / allowlist persist)
+	// so the elevated gate re-prompts on the next control-plane write.
+	g.recordApproval(toolName, path, DecisionAllowOnce)
+	return nil
 }
 
 func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, persistTool, persistKey string) error {

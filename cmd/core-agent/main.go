@@ -1258,7 +1258,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// primary consumer (Scion) doesn't require it. Late-binding via
 	// WithPostConstruct is a follow-up if a consumer asks for the
 	// correlation.
-	if hookDispatcher := hooks.New(cfg.Hooks, "", os.Stderr); !hookDispatcher.Empty() {
+	if hookDispatcher := hooks.New(cfg.Hooks, "", os.Stderr, gate); !hookDispatcher.Empty() {
 		opts = append(opts, agent.WithEventHook(hookDispatcher.OnEvent, hookDispatcher.OnTurnEnd))
 		send(fmt.Sprintf("hooks: %d event(s) wired", len(cfg.Hooks)))
 	}

@@ -19,6 +19,8 @@ The permission gate is the central chokepoint consulted before every tool call. 
 | `allow` | Only allowlisted calls pass. Everything else is rejected without prompting — useful for headless / automated runs. |
 | `yolo` | All calls pass except those caught by the bash denylist or a deny-pattern. Use with care; intended for trusted local dev. |
 
+No mode — not even `yolo` — auto-approves a write to a **control-plane file** (see below).
+
 Set via `.agents/config.json`:
 
 ```json
@@ -162,6 +164,19 @@ A small set of patterns are rejected for any `bash` call, in any mode, regardles
 This list is intentionally conservative — it's not a complete bash sandbox, just a refusal list for the patterns most likely to brick a system by accident.
 
 ---
+
+## Control-plane files (elevated writes)
+
+Two tiers of files live under `.agents/`:
+
+- **Instruction-bearing** files — `AGENTS.md`, skills content — shape what the model is told. They stay normally writable; a change takes effect through the model, which is still gated.
+- **Privilege-bearing** control-plane files — the agent config (`.agents/config.json`) and the MCP config (`.agents/mcp.json`), in both the project and `~/.agents/` trees — directly control the permission gate, the `hooks` commands, and the stdio MCP servers the daemon spawns. A write here is a self-escalation + persistence vector (add an `allow` entry, flip the mode, register a hook that runs arbitrary shell, add a malicious MCP server) whose effect lands out-of-band on the next session/restart.
+
+Writes to the privilege-bearing files require a **new elevated interactive approval**. This approval is **never** satisfied by `yolo`/`acceptEdits` mode, a session/verb/tool grant, an allowlist entry, or a built-in bundle — only an explicit prompt approval passes. With no interactive prompter available (headless), the write is **denied** with a clear error. Classification runs on the symlink-resolved path, so a symlink pointing at a control-plane file is caught too. Each elevated approval authorizes exactly one write; it is not remembered.
+
+## Hook command execution
+
+Config-driven `hooks` (see [Hooks](/concepts/hooks/)) run shell commands on event boundaries. Because `.agents/config.json` is writable by the model, hook commands are **routed through the permission gate** (a bash-kind check: the built-in denylist, the configured mode, and any deny patterns apply) before they execute. A hook the gate refuses does not run. If the dispatcher has no gate wired, it fails closed and runs nothing.
 
 ## In-session decisions
 

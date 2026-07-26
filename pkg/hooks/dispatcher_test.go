@@ -17,6 +17,7 @@ package hooks
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -109,10 +110,38 @@ func (r *recorder) events() []string {
 	return out
 }
 
+// fakeGate is a CommandGate that records every gated command and
+// returns a scripted error. A nil err means "allow".
+type fakeGate struct {
+	mu   sync.Mutex
+	cmds []string
+	err  error
+}
+
+func (g *fakeGate) CheckBash(_ context.Context, command string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.cmds = append(g.cmds, command)
+	return g.err
+}
+
+func (g *fakeGate) commands() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make([]string, len(g.cmds))
+	copy(out, g.cmds)
+	return out
+}
+
+// allowGate is a CommandGate that permits every command.
+type allowGate struct{}
+
+func (allowGate) CheckBash(context.Context, string) error { return nil }
+
 func newDispatcher(t *testing.T, cfg Config) (*Dispatcher, *recorder) {
 	t.Helper()
 	rec := &recorder{}
-	d := New(cfg, "sess-abc", io.Discard)
+	d := New(cfg, "sess-abc", io.Discard, allowGate{})
 	d.runCmd = rec.run
 	return d, rec
 }
@@ -249,11 +278,11 @@ func TestOnEvent_UnknownEventTypeIsSilent(t *testing.T) {
 }
 
 func TestEmpty(t *testing.T) {
-	d := New(nil, "", io.Discard)
+	d := New(nil, "", io.Discard, allowGate{})
 	if !d.Empty() {
 		t.Fatal("empty config: Empty() = false, want true")
 	}
-	d2 := New(Config{"tool-start": {{Command: "true"}}}, "", io.Discard)
+	d2 := New(Config{"tool-start": {{Command: "true"}}}, "", io.Discard, allowGate{})
 	if d2.Empty() {
 		t.Fatal("non-empty config: Empty() = true, want false")
 	}
@@ -282,7 +311,7 @@ func TestExecCommand_RunsRealShell(t *testing.T) {
 		// point of shelling out — direct exec.Command wouldn't parse '>').
 		"tool-start": {{Command: "cat > " + target}},
 	}
-	d := New(cfg, "sess-real", os.Stderr)
+	d := New(cfg, "sess-real", os.Stderr, allowGate{})
 	d.OnEvent(&session.Event{LLMResponse: adkmodel.LLMResponse{
 		Content: &genai.Content{Parts: []*genai.Part{{
 			FunctionCall: &genai.FunctionCall{Name: "read_file"},
@@ -308,7 +337,7 @@ func TestExecCommand_FailureLoggedNotPropagated(t *testing.T) {
 	// A non-zero-exit command must not crash the agent; error goes to
 	// stderr and OnEvent returns normally.
 	var stderr strings.Builder
-	d := New(Config{"agent-end": {{Command: "sh -c 'exit 7'"}}}, "", &stderr)
+	d := New(Config{"agent-end": {{Command: "sh -c 'exit 7'"}}}, "", &stderr, allowGate{})
 	// Doesn't panic; doesn't hang.
 	d.OnTurnEnd()
 	if stderr.Len() == 0 {
@@ -316,6 +345,66 @@ func TestExecCommand_FailureLoggedNotPropagated(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "agent-end") {
 		t.Errorf("stderr = %q, want mention of agent-end", stderr.String())
+	}
+}
+
+// TestFire_GateApprovesRunsCommand pins that an approved hook command
+// is both gated and executed, and that the gate saw the exact command
+// string (#378).
+func TestFire_GateApprovesRunsCommand(t *testing.T) {
+	rec := &recorder{}
+	gate := &fakeGate{} // nil err = allow
+	d := New(Config{"agent-end": {{Command: "echo hi"}}}, "", io.Discard, gate)
+	d.runCmd = rec.run
+
+	d.OnTurnEnd()
+
+	if got := gate.commands(); len(got) != 1 || got[0] != "echo hi" {
+		t.Fatalf("gate commands = %v, want [\"echo hi\"]", got)
+	}
+	if got := rec.events(); len(got) != 1 || got[0] != "agent-end" {
+		t.Fatalf("runCmd events = %v, want [agent-end]", got)
+	}
+}
+
+// TestFire_GateDeniesSkipsCommand pins that a gate denial blocks
+// execution — the command is never handed to runCmd, and the denial
+// is logged.
+func TestFire_GateDeniesSkipsCommand(t *testing.T) {
+	rec := &recorder{}
+	gate := &fakeGate{err: errors.New("bash refused: denylist")}
+	var stderr strings.Builder
+	d := New(Config{"agent-end": {{Command: "rm -rf /"}}}, "", &stderr, gate)
+	d.runCmd = rec.run
+
+	d.OnTurnEnd()
+
+	if got := gate.commands(); len(got) != 1 {
+		t.Fatalf("gate should have been consulted once, got %v", got)
+	}
+	if got := rec.events(); len(got) != 0 {
+		t.Fatalf("denied command must not run; runCmd events = %v", got)
+	}
+	if !strings.Contains(stderr.String(), "permission gate refused") {
+		t.Errorf("stderr = %q, want gate-refusal log", stderr.String())
+	}
+}
+
+// TestFire_NoGateFailsClosed pins that a dispatcher with no gate runs
+// nothing — an ungated `/bin/sh -c` path is exactly what #378 closes.
+func TestFire_NoGateFailsClosed(t *testing.T) {
+	rec := &recorder{}
+	var stderr strings.Builder
+	d := New(Config{"agent-end": {{Command: "echo hi"}}}, "", &stderr, nil)
+	d.runCmd = rec.run
+
+	d.OnTurnEnd()
+
+	if got := rec.events(); len(got) != 0 {
+		t.Fatalf("no-gate dispatcher must not run commands; got %v", got)
+	}
+	if !strings.Contains(stderr.String(), "no permission gate wired") {
+		t.Errorf("stderr = %q, want no-gate refusal log", stderr.String())
 	}
 }
 

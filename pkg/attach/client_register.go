@@ -182,7 +182,10 @@ func (c *PeerClient) do(ctx context.Context, method, path string, body, out any)
 	if err != nil {
 		return fmt.Errorf("attach: peer client: build request: %w", err)
 	}
-	if reqBody != nil {
+	// Stamp the JSON content type on every write, body or not (the
+	// heartbeat POST has no body) — hubs require it on state-changing
+	// endpoints as part of their browser-CSRF protection (#383).
+	if reqBody != nil || (method != http.MethodGet && method != http.MethodHead) {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if c.bearer != "" {

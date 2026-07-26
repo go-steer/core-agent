@@ -312,8 +312,10 @@ func TestIntegration_PeersHTTP(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 
-	// DELETE /peers/<id> → 204; subsequent list is empty.
+	// DELETE /peers/<id> → 204; subsequent list is empty. The JSON
+	// content type is required on writes since #383.
 	req, _ := http.NewRequest(http.MethodDelete, base+"/peers/"+registered.RegistrationID, nil)
+	req.Header.Set("Content-Type", "application/json")
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("DELETE peer: %v", err)

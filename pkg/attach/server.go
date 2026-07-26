@@ -407,7 +407,11 @@ func (s *Server) Bind() error {
 		enforceAuthentication: s.opts.MultiSessionEnabled && !s.opts.AllowAnonymous,
 		proxyHeader:           s.opts.ProxyHeader,
 	}
-	handler := callerMiddlewareWithConfig(mcfg, s.mux)
+	// browserWriteGuard sits between the caller middleware and the
+	// mux: every state-changing route (sessions, perms, slash, peers)
+	// gets the anti-CSRF Origin + Content-Type checks (#383)
+	// regardless of token/auth mode.
+	handler := callerMiddlewareWithConfig(mcfg, browserWriteGuard(s.mux))
 	// Wrap the outermost handler with OTel HTTP instrumentation. This
 	// extracts W3C traceparent from incoming requests (set by the
 	// watcher's otelhttp-wrapped client per #217) and starts a server

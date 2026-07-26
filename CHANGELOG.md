@@ -16,6 +16,23 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+### ⚠️ Breaking changes
+
+- **Attach listener is loopback-only by default and refuses tokenless network binds.** The default listen address is now `127.0.0.1:7777` (`attach.DefaultListenAddr`), and `attach.NewServer` **refuses to construct** a listener on any non-loopback address (`:7777`, `0.0.0.0`, `[::]`, a wildcard/empty host, or a routable IP/hostname) unless an authentication gate is configured — a bearer token (`--attach-token` / `Options.Auth.BearerToken`), mTLS (`Options.Auth.ClientCAFile`), or multi-session auth with `AllowAnonymous=false`. The previous documented default bound *all* interfaces with no authorization, so any LAN peer could read transcripts, drive the agent, and answer permission prompts. **To upgrade:** a network-reachable deployment must now set one of those auth gates; tokenless *loopback* still starts but logs a loud warning; and callers that relied on `:7777` / `0.0.0.0` examples must switch to loopback or add a token. There is no insecure-override flag by design. (See the #### Security entry for #376, and the CSRF/peer-hub hardening in #383/#384 that ship alongside it.)
+
+### Security posture
+
+The 2026-07 Assisted-security sweep (issues #373–#384, plus #375) closes the highest-severity findings from the full-codebase review as a coordinated hardening pass. Taken together they move several defaults and grants from "trusting" to "fail-closed":
+
+- **Bash allowlisting is argv-aware.** Prefix (`<verb> *`) allow rules and verb-scoped session grants now auto-allow only a single simple command with a fully literal argv (via a new `safecmd` analysis over `mvdan.cc/sh`); chaining, pipes, redirections, and substitutions fall through to a prompt. `find` keeps a per-verb predicate denylist (`-exec`/`-delete`/…), and `awk`/`sed` leave the default `read_only` bundle (#373, #382).
+- **File-tool path scope resolves symlinks before every check**, fail-closed, with no opt-out — a symlink laundering an in-scope path to `/etc` or `~/.ssh` no longer escapes the gate (#374).
+- **The `.agents/` control plane is two-tier.** Writes to the privilege-bearing config files (`config.json`, `mcp.json`) require an elevated approval that *no* mode/grant/allowlist/bundle — yolo included — can satisfy; instruction files (`AGENTS.md`, skills) stay normally writable so the "agent fixes itself" workflow survives. Hook commands now route through the permission gate instead of raw `/bin/sh` (#378).
+- **Session grants are tighter.** Per-tool MCP/skill grants are keyed per underlying tool rather than per whole namespace, and a per-tool grant no longer drops the path boundary for file tools (#379, #380).
+- **Network egress and exposure are hardened:** `fetch_url` gains an SSRF guard with cloud-metadata hard-block and DNS-rebinding-safe IP pinning (#375); the attach surface flips to the loopback/auth default above (#376, see Breaking changes), adds CSRF defenses on state-changing endpoints (#383), and validates + owner-scopes the peer hub while refusing to forward operator credentials to untrusted peers (#384).
+- **The bash denylist is documented as best-effort defense-in-depth**, not a boundary — allowlist-based execution is the recommended hardened posture (#381).
+
+Yolo mode is unchanged in spirit — no prompts — but the hard blocks above (bash denylist, config denies, metadata endpoints, elevated control-plane writes) bind in every mode. Per-issue detail is under **#### Security** below.
+
 ### Changes by Kind
 
 #### Feature

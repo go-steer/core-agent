@@ -5,7 +5,7 @@ title: Permissions
 
 The permission gate is the central chokepoint consulted before every tool call. It enforces three things in order:
 
-1. A built-in **bash denylist** that's non-overridable (even `yolo` mode can't run `rm -rf /`).
+1. A built-in **bash denylist** — best-effort defense-in-depth, not a security boundary (see [below](#bash-denylist)). It catches the laziest `rm -rf /`-class mistakes even in `yolo` mode, but is trivially evadable.
 2. A **path scope** check for file tools — out-of-scope reads/writes either prompt the user or fail.
 3. The **mode + allow/deny patterns** from `.agents/config.json`.
 
@@ -161,7 +161,20 @@ A small set of patterns are rejected for any `bash` call, in any mode, regardles
 - `curl|wget … | sh|bash|zsh|ash|dash` (download-and-execute)
 - The classic fork bomb `:(){ :|: & };:`
 
-This list is intentionally conservative — it's not a complete bash sandbox, just a refusal list for the patterns most likely to brick a system by accident.
+:::caution[Defense-in-depth, not a security boundary]
+The bash denylist is **best-effort defense-in-depth, not a security boundary**. It's a small, pattern-based refusal list for the shell forms most likely to brick a machine by accident (or on a prompt-injected model's first, laziest attempt). It is **trivially evaded** and cannot be made complete — a regex denylist over the full shell grammar is a losing game by construction. Do not rely on it to contain a determined or adversarial command. Known bypass classes it does **not** catch:
+
+- **Quoting / whitespace**: `rm -rf "$HOME"`, `rm -r${IFS}-f ~`.
+- **Variable / expansion indirection**: `X=/ ; rm -rf "$X"`, `eval`, `base64 -d | sh`.
+- **Staging**: `curl … -o /tmp/x; sh /tmp/x` — each command looks benign on its own.
+- **Uncovered targets**: `rm -rf /etc`, `rm -rf ~/important` — the target list is a hard-coded handful, not "everything dangerous."
+
+It is also the **only** bash protection left once a command reaches `yolo` mode or a session/verb grant.
+:::
+
+### Hardened posture: allowlist-based execution
+
+For a real bash boundary, don't lean on the denylist — **allowlist** the commands you intend. Run in `allow` mode (or `ask` with a Prompter) and grant only specific commands via `permissions.allow`. Prefix allow rules (`bash:git *`) are guarded so they only auto-allow single literal simple commands — chaining, pipes, redirections, and command substitution fall through to prompting (see [Safe-command guard](#safe-command-guard-on-bash-prefix-rules)). An allowlist is an enumerated set of permitted actions; a denylist is a guess at the set of dangerous ones. The former is a boundary, the latter is a seatbelt.
 
 ---
 

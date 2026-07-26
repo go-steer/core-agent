@@ -165,7 +165,7 @@ With this, common workflows run without prompting; anything outside the allow-li
 
 **Approve interactively, persist on the fly.** In `ask` mode, when the agent requests a gated call you can choose "always allow this tool" or "always allow this exact call" and the entry lands in `.agents/config.json` automatically. No need to draft the allow-list up front.
 
-A handful of bash commands are on a non-overridable denylist (the `rm -rf /` class). You can't allowlist past those.
+A handful of bash commands are on a built-in denylist (the `rm -rf /` class) that config can't switch off. It's a best-effort safety net for accidental footguns, **not a security boundary** — it's trivially evadable, so don't rely on it to contain untrusted commands. For a real boundary, allowlist the commands you intend (`allow` mode + `permissions.allow`) rather than trusting the denylist. See [Permissions → Bash denylist](/concepts/permissions/#bash-denylist).
 
 ---
 

@@ -152,7 +152,7 @@ func main() {
 		allowPathEntries = append(allowPathEntries, e)
 		return nil
 	})
-	attachListen := flag.String("attach-listen", "", "enable attach-mode HTTP listener on this address (e.g. :7777). Requires --session-db.")
+	attachListen := flag.String("attach-listen", "", "enable attach-mode HTTP listener on this address (e.g. 127.0.0.1:7777). Requires --session-db. Non-loopback binds (:7777, 0.0.0.0:7777, ...) refuse to start without authentication — set --attach-token (or mTLS / enforced multi-session auth).")
 	attachUnixSocket := flag.String("attach-unix-socket", "", "enable attach-mode on a Unix socket at this path. Mutually exclusive with --attach-listen.")
 	attachTLSCert := flag.String("attach-tls-cert", "", "TLS server certificate (PEM) for --attach-listen. Pair with --attach-tls-key.")
 	attachTLSKey := flag.String("attach-tls-key", "", "TLS server key (PEM) for --attach-listen.")

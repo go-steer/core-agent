@@ -480,10 +480,9 @@ func TestNewServer_ValidatesOptions(t *testing.T) {
 		want string
 	}{
 		{"no registry", Options{Addr: ":7777"}, "Registry is required"},
-		{"no addr or socket", Options{Registry: reg}, "exactly one"},
 		{"both addr and socket", Options{Registry: reg, Addr: ":7777", UnixSocket: "/x"}, "mutually exclusive"},
-		{"tls half", Options{Registry: reg, Addr: ":7777", Auth: AuthConfig{TLSCertFile: "/x"}}, "TLSCertFile and TLSKeyFile must be set together"},
-		{"card provider half", Options{Registry: reg, Addr: ":7777", AgentCard: AgentCardConfig{Description: "x", Provider: AgentCardProvider{Organization: "x"}}}, "Provider.Organization and Provider.URL"},
+		{"tls half", Options{Registry: reg, Addr: "127.0.0.1:7777", Auth: AuthConfig{TLSCertFile: "/x"}}, "TLSCertFile and TLSKeyFile must be set together"},
+		{"card provider half", Options{Registry: reg, Addr: "127.0.0.1:7777", AgentCard: AgentCardConfig{Description: "x", Provider: AgentCardProvider{Organization: "x"}}}, "Provider.Organization and Provider.URL"},
 	}
 	for _, c := range cases {
 		_, err := NewServer(c.opts)

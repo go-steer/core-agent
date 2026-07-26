@@ -67,7 +67,9 @@ Embedders building their own daemon populate `attach.Options.AgentCard` directly
 ```go
 srv, err := attach.NewServer(attach.Options{
     Registry: reg,
-    Addr:     ":7777",
+    // Non-loopback binds require auth (Auth.BearerToken / mTLS /
+    // enforced multi-session) — see #376. Loopback shown here.
+    Addr:     "127.0.0.1:7777",
     AgentCard: attach.AgentCardConfig{
         Name:        "my-agent",
         Description: "Does the thing.",

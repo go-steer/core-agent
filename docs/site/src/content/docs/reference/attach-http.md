@@ -3,13 +3,15 @@ title: Attach mode HTTP endpoints
 ---
 
 
-HTTP/SSE protocol reference for the attach listener — the surface `core-agent-tui`, third-party dashboards, and CI tooling call. The daemon exposes this when launched with `--attach-listen=:<port>` (or the `attach.listen` config field).
+HTTP/SSE protocol reference for the attach listener — the surface `core-agent-tui`, third-party dashboards, and CI tooling call. The daemon exposes this when launched with `--attach-listen=127.0.0.1:<port>` (or the `attach.listen` config field).
 
 This page is the wire-level reference: paths, request/response shapes, auth requirements, status codes, and idempotency semantics. For **why** attach mode exists and how the TUI consumes it, see [Attach TUI](/reference/attach-tui/). For daemon-side listener configuration (TLS, tokens, multi-session, peer-hub), see [Configuration → attach](/reference/configuration/).
 
 ---
 
 ## Auth model
+
+**Default bind + startup policy** (v2.8+, [#376](https://github.com/go-steer/core-agent/issues/376)): the default listen address is loopback-only (`127.0.0.1:7777`). Binding a **non-loopback** address (`:7777`, `0.0.0.0:7777`, `[::]:7777`, any non-loopback IP/hostname) without an authentication gate — bearer token, mTLS client CA, or multi-session auth with `allow_anonymous: false` — is a startup **error**: the daemon refuses to start rather than exposing transcript reads (`/events`), message injection (`/inject`), and permission approvals (`/perms/respond`) to the network. Tokenless **loopback** listeners still start, but log a loud warning that any local process can drive the agent.
 
 Two orthogonal layers run on every request:
 

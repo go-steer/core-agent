@@ -20,10 +20,12 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +33,14 @@ import (
 
 	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
+
+// DefaultListenAddr is the address the server binds when Options
+// leaves both Addr and UnixSocket empty. Loopback-only by design
+// (#376): the attach surface can read transcripts, inject messages,
+// and answer permission prompts, so the default must not be reachable
+// from the network. Binding a non-loopback address requires
+// authentication — see NewServer.
+const DefaultListenAddr = "127.0.0.1:7777"
 
 // Options configures NewServer. Zero value is invalid — Registry is
 // required at minimum.
@@ -51,8 +61,16 @@ type Options struct {
 	// already-trusted transport).
 	Auth AuthConfig
 
-	// Addr is the TCP listen address (e.g. ":7777"). Mutually
-	// exclusive with UnixSocket — set exactly one.
+	// Addr is the TCP listen address (e.g. "127.0.0.1:7777").
+	// Mutually exclusive with UnixSocket. When both Addr and
+	// UnixSocket are empty, defaults to DefaultListenAddr
+	// (loopback-only).
+	//
+	// Non-loopback addresses (including ":7777", "0.0.0.0:7777",
+	// "[::]:7777") require an authentication gate — Auth.BearerToken,
+	// mTLS via Auth.ClientCAFile, or MultiSessionEnabled with
+	// AllowAnonymous=false — otherwise NewServer refuses to
+	// construct the server (#376).
 	Addr string
 
 	// UnixSocket is the Unix domain socket path (e.g.
@@ -162,6 +180,38 @@ type Options struct {
 	SessionIdleTimeout time.Duration
 }
 
+// listenerAuthenticated reports whether the configured Options put
+// any credential gate in front of the TCP listener: a bearer token,
+// mTLS client-cert verification, or multi-session auth with anonymous
+// fallback disabled (which 401s every request lacking a valid
+// credential). Used by the #376 bind policy.
+func listenerAuthenticated(opts Options) bool {
+	if opts.Auth.BearerToken != "" {
+		return true
+	}
+	if opts.Auth.ClientCAFile != "" {
+		return true
+	}
+	return opts.MultiSessionEnabled && !opts.AllowAnonymous
+}
+
+// isLoopbackAddr reports whether a TCP listen address binds only a
+// loopback interface. Conservative by design: an empty host (":7777"),
+// the wildcards "0.0.0.0" / "::", and any hostname other than
+// "localhost" all count as NON-loopback — when in doubt, treat the
+// bind as network-reachable so the #376 policy errs toward refusing.
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // SessionFactory constructs a fresh Registrant for the POST /sessions
 // endpoint. Implementations capture the daemon-wide config (model,
 // tools, MCP toolsets, eventlog handle, instruction roots) in a
@@ -215,11 +265,15 @@ func NewServer(opts Options) (*Server, error) {
 	if opts.Registry == nil {
 		return nil, errors.New("attach: Server: Options.Registry is required")
 	}
-	if opts.Addr == "" && opts.UnixSocket == "" {
-		return nil, errors.New("attach: Server: exactly one of Options.Addr or Options.UnixSocket must be set")
-	}
 	if opts.Addr != "" && opts.UnixSocket != "" {
 		return nil, errors.New("attach: Server: Options.Addr and Options.UnixSocket are mutually exclusive")
+	}
+	if opts.Addr == "" && opts.UnixSocket == "" {
+		// Default bind is loopback-only (#376). Pre-v2.8 this was a
+		// hard error; defaulting to a safe local address matches the
+		// documented "local operator surface" posture without opening
+		// anything to the network.
+		opts.Addr = DefaultListenAddr
 	}
 	if opts.ShutdownTimeout == 0 {
 		opts.ShutdownTimeout = 5 * time.Second
@@ -233,6 +287,20 @@ func NewServer(opts Options) (*Server, error) {
 	// startup error, not a silent 404 at first registry fetch.
 	if err := opts.AgentCard.Validate(); err != nil {
 		return nil, err
+	}
+	// Refuse to expose an unauthenticated listener beyond loopback
+	// (#376). Without any credential gate, every endpoint — transcript
+	// reads via /events, message injection via /inject, permission
+	// approvals via /perms/respond — would be driveable by any host
+	// that can reach the port. mTLS (ClientCAFile) and enforced
+	// multi-session authentication count as credential gates alongside
+	// the bearer token.
+	if opts.Addr != "" && !isLoopbackAddr(opts.Addr) && !listenerAuthenticated(opts) {
+		return nil, fmt.Errorf("attach: Server: refusing to bind non-loopback address %q without authentication: "+
+			"any host that can reach this port could read transcripts (/events), inject messages (/inject), and "+
+			"answer permission prompts (/perms/respond). Set an attach token (--attach-token=<ENVVAR> / "+
+			"Options.Auth.BearerToken), enable mTLS or enforced multi-session auth, or bind a loopback address "+
+			"(e.g. %s)", opts.Addr, DefaultListenAddr)
 	}
 	pool := NewBroadcasterPool()
 	// Stamp the v1.4.0 capabilities builder onto the pool BEFORE the
@@ -320,6 +388,15 @@ func (s *Server) Bind() error {
 		return errors.New("attach: Server: already bound")
 	}
 	s.listener = ln
+	// Tokenless loopback is allowed (local-dev posture) but never
+	// silent (#376): any process on this machine can read transcripts,
+	// drive the agent, and answer permission prompts.
+	if s.opts.Addr != "" && !listenerAuthenticated(s.opts) {
+		log.Printf("attach: WARNING: listener on %s has NO authentication (no attach token, no mTLS, no enforced "+
+			"multi-session auth). Any local process can read transcripts (/events), inject messages (/inject), and "+
+			"answer permission prompts (/perms/respond). Set --attach-token=<ENVVAR> (Options.Auth.BearerToken) to "+
+			"require a bearer token.", ln.Addr())
+	}
 	// Middleware order: transport-level auth (TLS handshake + bearer
 	// token check in AuthConfig.Middleware) gates first, then the
 	// per-caller Authenticator resolves identity onto the request

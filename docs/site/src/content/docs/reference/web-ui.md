@@ -10,7 +10,7 @@ This is one of four ways to deploy mast-web. The others (hosted SPA, container i
 
 ```bash
 # Operator workstation or container
-core-agent --attach-listen :7777 --session-db --ui
+core-agent --attach-listen 127.0.0.1:7777 --session-db --ui
 
 # Browser
 open http://localhost:7777/ui/
@@ -40,7 +40,7 @@ When iterating on mast-web against a live agent, point `--ui-dir` at your checko
 cd ~/projects/mast-web && make build   # populates dist/
 
 # In another, run the agent serving from that dist/
-core-agent --attach-listen :7777 --session-db --ui-dir ~/projects/mast-web/dist
+core-agent --attach-listen 127.0.0.1:7777 --session-db --ui-dir ~/projects/mast-web/dist
 ```
 
 The agent serves whatever's in the directory at request time — no rebuild needed when you tweak `web/app.js`. `--ui-dir` implies `--ui`.

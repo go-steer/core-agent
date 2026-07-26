@@ -58,6 +58,46 @@ though it is conceptually a cost bug.
    rebase once over the settled tree instead of forcing in-flight PRs to
    chase a moving layout.
 
+## Wave 2 policy decisions (signed off 2026-07-26)
+
+The maintainer huddle for the Assisted (Lane E + attach-security)
+issues resolved as follows. Implementation agents execute these
+verbatim; changes to a decision go back to the maintainer.
+
+- **#373 + #382 — bash allow matching:** argv-aware. A new `safecmd`
+  helper (mvdan.cc/sh parser) requires a single simple literal
+  command (no chaining/pipes/subshells/substitution/redirections)
+  before any trailing-`*` prefix rule or verb-scoped session grant
+  auto-allows. Per-verb predicate denylists keep `find` in the
+  `read_only` bundle (deny `-exec`/`-execdir`/`-ok`/`-okdir`/
+  `-delete`/`-fls`/`-fprint*`); `awk` and `sed` leave the bundle —
+  their danger lives in program text and cannot be flag-filtered.
+- **#374 — symlinks:** resolve (`EvalSymlinks`) before every scope
+  check, fail closed, no opt-out. Non-existent write targets resolve
+  through the deepest existing ancestor.
+- **#376 + #383 — attach exposure:** default bind flips to loopback;
+  binding non-loopback without a token refuses to start; tokenless
+  loopback warns loudly. State-changing endpoints require
+  `Content-Type: application/json` and reject non-self `Origin`.
+  Applies in every permission mode (server posture, not gate).
+- **#378 — control plane:** two-tier. Instruction files (`AGENTS.md`,
+  skills) stay normally writable — the "agent fixes itself" workflow
+  is preserved. Privilege files (agent config, MCP config) get an
+  elevated prompt no mode/grant can auto-approve (yolo included);
+  headless denies. Hook commands route through the gate. Field-level
+  splitting inside config files was rejected as too complex.
+- **#375, #379, #380, #381, #384:** implemented as the issues
+  recommend (metadata hard-block + private-range allowlist gating +
+  IP pinning; per-tool MCP/skill session grants; path scope survives
+  per-tool grants; denylist documented as defense-in-depth; peer
+  endpoint validation + owner-scoped deregistration + no credential
+  forwarding to untrusted peers).
+
+Yolo semantics after Wave 2: no prompts ever, but hard blocks (bash
+denylist, config denies, metadata endpoint, elevated control-plane
+writes) still hold — consistent with the pre-existing precedent that
+the denylist and config `deny` rules already bind in yolo.
+
 ## Guardrails (every automode agent)
 
 - One worktree per lane; feature branch `fix/…`. Stack downstream PRs on

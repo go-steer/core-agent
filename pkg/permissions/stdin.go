@@ -102,6 +102,8 @@ func promptHeading(req PromptRequest) string {
 		verb = "wants to write to:"
 	case PromptKindPathScope:
 		verb = "wants to access an out-of-scope path:"
+	case PromptKindControlPlaneWrite:
+		verb = "wants to modify a privilege-bearing control-plane file (elevated):"
 	default:
 		verb = "needs approval:"
 	}

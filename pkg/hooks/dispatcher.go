@@ -27,6 +27,18 @@ import (
 	"google.golang.org/adk/session"
 )
 
+// CommandGate is the subset of *permissions.Gate the dispatcher needs
+// to gate hook command execution. Declared as an interface (rather
+// than importing permissions) so the hooks package stays dependency-
+// light; *permissions.Gate satisfies it via CheckBash.
+//
+// CheckBash applies the built-in bash denylist, the configured mode,
+// and any deny patterns before returning nil (allowed) or an error
+// (blocked). A nil error means the command may run.
+type CommandGate interface {
+	CheckBash(ctx context.Context, command string) error
+}
+
 // Dispatcher fires configured shell commands on agent event boundaries.
 // Construct one per agent (or per session) via New, pass OnEvent and
 // OnTurnEnd to agent.WithEventHook, and the agent tap loop drives the
@@ -37,10 +49,18 @@ import (
 // that goroutine with per-command timeouts — a misbehaving hook stalls
 // the agent for at most Handler.TimeoutSeconds, matching the semantics
 // of Scion's Antigravity harness.
+//
+// Hook commands are operator-authored config, but `.agents/config.json`
+// is itself writable by the model, so a compromised/injected config
+// could register a hook that runs arbitrary `/bin/sh -c`. Every hook
+// command is therefore routed through the permission gate (as a
+// bash-kind check) before execution; a dispatcher with no gate fails
+// closed and runs nothing (#378).
 type Dispatcher struct {
 	events    map[string][]Handler
 	sessionID string
 	stderr    io.Writer
+	gate      CommandGate
 
 	mu              sync.Mutex
 	modelStartFired bool // true after we've fired model-start this turn
@@ -55,9 +75,16 @@ type Dispatcher struct {
 // omitted from the envelope). stderr receives one line per hook that
 // fails; pass io.Discard to suppress.
 //
+// gate gates every hook command through the permission system before
+// it runs (bash-kind check: denylist + mode + deny patterns). Passing
+// nil fails closed — the dispatcher refuses to run any command,
+// logging a diagnostic — so an ungated execution path can't slip
+// through. Callers that genuinely have no gate must pass an explicit
+// allow-all gate and accept the risk.
+//
 // cfg is copied — mutating the passed-in Config after New has no
 // effect. Validate cfg before calling if you want early config errors.
-func New(cfg Config, sessionID string, stderr io.Writer) *Dispatcher {
+func New(cfg Config, sessionID string, stderr io.Writer, gate CommandGate) *Dispatcher {
 	if stderr == nil {
 		stderr = io.Discard
 	}
@@ -65,6 +92,7 @@ func New(cfg Config, sessionID string, stderr io.Writer) *Dispatcher {
 		events:    make(map[string][]Handler, len(cfg)),
 		sessionID: sessionID,
 		stderr:    stderr,
+		gate:      gate,
 	}
 	for name, handlers := range cfg {
 		copied := make([]Handler, len(handlers))
@@ -166,6 +194,20 @@ func (d *Dispatcher) fire(eventName string, extra map[string]any) {
 			timeout = DefaultTimeoutSeconds * time.Second
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		// Gate the command before executing. Fail closed when no gate
+		// is wired — running an ungated `/bin/sh -c` from
+		// (model-writable) config is exactly the escalation #378
+		// closes.
+		if d.gate == nil {
+			fmt.Fprintf(d.stderr, "hooks: %s handler #%d (%q): refused — no permission gate wired\n", eventName, i, h.Command)
+			cancel()
+			continue
+		}
+		if err := d.gate.CheckBash(ctx, h.Command); err != nil {
+			fmt.Fprintf(d.stderr, "hooks: %s handler #%d (%q): permission gate refused: %v\n", eventName, i, h.Command, err)
+			cancel()
+			continue
+		}
 		if err := d.runCmd(ctx, h.Command, body); err != nil {
 			fmt.Fprintf(d.stderr, "hooks: %s handler #%d (%q): %v\n", eventName, i, h.Command, err)
 		}

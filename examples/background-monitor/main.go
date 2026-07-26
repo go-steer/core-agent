@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/agent/background"
 	"github.com/go-steer/core-agent/v2/pkg/models/mock"
 )
 
@@ -47,10 +48,10 @@ func run() error {
 	ctx := context.Background()
 	prov := mock.NewEcho()
 
-	mgr, err := agent.NewBackgroundAgentManager(
-		agent.WithBackgroundProvider(prov, "echo"),
-		agent.WithBackgroundMaxConcurrent(4),
-		agent.WithBackgroundDefaultBudgets(agent.BackgroundBudgets{
+	mgr, err := background.NewManager(
+		background.WithProvider(prov, "echo"),
+		background.WithMaxConcurrent(4),
+		background.WithDefaultBudgets(background.Budgets{
 			MaxTurns: 1, MaxWallclock: 5 * time.Second,
 		}),
 	)
@@ -61,7 +62,7 @@ func run() error {
 
 	// Install an OnAlert hook to show alerts inline as they arrive
 	// — same shape the bundled CLI's REPL uses.
-	mgr.OnAlert(func(a agent.Alert) {
+	mgr.OnAlert(func(a background.Alert) {
 		fmt.Printf("[hook] ↪ %s %s: %s\n", a.From, a.Kind, a.Text)
 	})
 
@@ -85,7 +86,7 @@ func run() error {
 	// Spawn two background subagents — they'll burn their 1-turn
 	// budget against the echo provider and complete.
 	for _, name := range []string{"watch-cluster-a", "watch-cluster-b"} {
-		h, err := mgr.Spawn(ctx, "", agent.BackgroundSpec{
+		h, err := mgr.Spawn(ctx, "", background.Spec{
 			Name:         name,
 			SystemPrompt: "you watch a cluster; on this echo provider you just complete",
 			Goal:         "report any issues you find",

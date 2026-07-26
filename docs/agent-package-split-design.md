@@ -6,8 +6,11 @@ four separable concerns — into a small stable core plus focused
 sibling packages, while the v2 surface is still unfrozen and the
 break is cheap.
 
-**Status:** proposed (2026-07-26). Human-led / API-shape; design-doc
-first per `docs/cleanup-execution-plan.md` (Wave 3).
+**Status:** in progress (2026-07-26). Human-led / API-shape; design-doc
+first per `docs/cleanup-execution-plan.md` (Wave 3). Phase 1 (seam)
+landed in #440. Phases 2 and 3 (`autonomous` + `background`) landed
+together — see **Phasing** for why they could not be separated and the
+**Implementation notes** for how the design changed under contact.
 
 **Tracking issue:** [#388](https://github.com/go-steer/core-agent/issues/388)
 
@@ -56,32 +59,64 @@ than the file sizes suggest:
 | `inbox.go` | `inbox`, `emit`, `drainInboxFull` |
 | `wake.go` | `wake` |
 
-So the entire split is unblocked by exposing a **small, deliberate
-seam** — not by surgery across dozens of fields. The core turn loop
-itself (`agent.go`, `compactor.go`, `checkpointer.go`, `subtask.go`,
-`cost_ceiling.go`, `context_stats.go`) stays put: it is cohesive and
-is the surface everyone legitimately depends on.
+So the *field-access* seam is narrow — the split is unblocked by
+exposing a small, deliberate accessor set, not by surgery across dozens
+of fields. The core turn loop itself (`agent.go`, `compactor.go`,
+`checkpointer.go`, `subtask.go`, `cost_ceiling.go`, `context_stats.go`)
+stays put: it is cohesive and is the surface everyone legitimately
+depends on.
+
+**Correction (as-built):** the field table above is accurate but it
+undersold the *type*-level coupling for the background manager, which is
+what actually made phase 3 harder than "operates on
+`BackgroundAgentManager`, no `Agent` internals" implies:
+
+- `agent.go` held a `*BackgroundAgentManager` **field** and called its
+  methods directly (`AttachAgents`, `AttachSpawnSubagent`). Moving the
+  manager into a sub-package would make `agent` import `background`,
+  while `background` must import `agent` (its spawned subagents *are*
+  `*agent.Agent`) — a cycle no accessor fixes.
+- The background spawner runs each subagent through the autonomous
+  driver, so `background` also imports `autonomous`. Once `autonomous`
+  is its own package, phase 3 cannot compile until phase 2 exists — the
+  two moves are not independently landable.
+- Core's `subagent.go`/`subtask.go` share unexported session-derivation
+  plumbing (`composeBranch`, `deriveSubagentSessionID`,
+  `branchInjectingService`, the depth context key) with the background
+  spawner. Splitting the packages orphans that shared code.
+
+The resolution for all three is in **Implementation notes**.
 
 ## Target layout
 
 ```
 pkg/agent/                 core: Agent, Run, options, context mgmt,
-                           cost ceiling, watchdog, event hooks
-  core.go                  exported seam (see below)
+                           cost ceiling, watchdog, event hooks, inbox,
+                           wake, and the SubagentManager seam interface
+  subagent_manager.go      SubagentManager interface (the manager seam)
+pkg/agent/internal/subsession/
+                           shared subagent session-derivation plumbing
+                           (branch compose, session-id derive, depth
+                           context, branch-injecting session.Service)
 pkg/agent/autonomous/      Driver over an *agent.Agent: RunAutonomous,
-                           resume, AutonomousHandle, checkpoint loop
-pkg/agent/background/      BackgroundAgentManager, remote spawner seam,
-                           inbox, wake
+                           resume, autonomous Handle, checkpoint loop
+pkg/agent/background/      background.Manager, spawn tools, remote
+                           spawner seam
 pkg/attachadapter/         Adapter bridging *agent.Agent ⇄ pkg/attach
                            (the 22 Attach* methods, as an adapter type)
+                           — phase 4, not yet landed
 ```
 
 Sub-packages of `pkg/agent` (not top-level siblings) for the driver and
 manager: they are agent-scoped and the import reads well
-(`autonomous.Driver`, `background.Manager`). The attach adapter goes
-top-level next to `pkg/attach` because it depends on both `pkg/agent`
-and `pkg/attach` and belongs to neither — a sub-package would invert the
-natural dependency direction.
+(`autonomous.RunAutonomous`, `background.Manager`). The attach adapter
+goes top-level next to `pkg/attach` because it depends on both
+`pkg/agent` and `pkg/attach` and belongs to neither — a sub-package
+would invert the natural dependency direction.
+
+`inbox.go`/`wake.go` **stayed in core** (see Implementation notes): they
+are wired into the core `Run`/`Inject` path, not just the manager, so
+relocating them is a separate change and out of scope for this split.
 
 ### The seam
 
@@ -89,27 +124,48 @@ Rather than export the raw fields, `pkg/agent` gains a narrow,
 documented accessor set consumed only by the sibling packages:
 
 ```go
-// core.go — the seam the driver/manager/adapter build on.
-func (a *Agent) Inner() adkagent.Agent        // for autonomous
+// The read-only accessor seam the driver/manager build on (in agent.go).
+func (a *Agent) Inner() adkagent.Agent               // for autonomous
 func (a *Agent) ModelName() string
-func (a *Agent) EventLog() *eventlog.Handle    // for checkpoint
-func (a *Agent) Emit(eventType string, payload any)  // already exists internally as emit()
-func (a *Agent) RunOneTurn(...) (...)          // promoted from unexported
+func (a *Agent) EventLog() *eventlog.Handle           // for checkpoint
+func (a *Agent) Emit(eventType string, payload any)   // attach SSE
+func (a *Agent) Streaming() adkagent.StreamingMode    // for spawn
+func (a *Agent) Tracker() *usage.Tracker              // for spawn/usage roll-up
 ```
 
-Inbox/wake move *with* the background package (they are the manager's
-own state, not the core's), so `a.inbox`/`a.wake` stop being `Agent`
-fields entirely — removing three of the private-access rows above
-outright rather than exposing them.
+**As-built, the open question resolved toward "export the read-only
+accessors, keep the turn-loop entrypoint private."** `RunOneTurn` was
+*not* promoted: the autonomous driver kept its own unexported
+`runOneTurn`, which simply moved into the `autonomous` package with the
+rest of the loop — so no turn-loop entrypoint is frozen onto the public
+surface and no `internal/agentcore` type was needed. The accessors are
+all read-only and nil-safe; `Streaming()`/`Tracker()` were added beyond
+the phase-1 set once the background spawner (which builds child agents
+mirroring the parent's streaming mode and rolls child usage into the
+parent tracker) turned out to need them.
 
-Open question for review: whether `Inner()`/`RunOneTurn()` should be
-exported on `Agent` or live behind an `internal/agentcore` shared type
-that only the three sibling packages import. Exporting is simpler and
-these are genuinely useful to advanced consumers; `internal` keeps the
-core's public surface minimal. **Recommendation: export `Inner()`,
-`ModelName()`, `EventLog()` (all read-only, already-safe accessors);
-keep `RunOneTurn` behind `internal/agentcore`** so the turn-loop
-entrypoint isn't a frozen public commitment.
+Because the background manager could not simply be referenced by
+concrete type from the core (that is the import cycle above), the core
+also grows a **manager seam interface** rather than only accessors:
+
+```go
+// subagent_manager.go — the core's view of "something that spawns subagents".
+type SubagentManager interface {
+    AttachParent(*Agent)
+    PrependPendingAlerts(prompt string) string
+    ListSubagents() []attach.AgentInfo
+    SpawnSubagent(ctx context.Context, spec attach.SubagentSpec) (attach.SubagentSpawnResponse, error)
+}
+```
+
+`agent.WithBackgroundManager` and `agent.BackgroundManager()` traffic in
+this interface; `*background.Manager` implements it. Callers needing the
+manager's richer surface recover the concrete type with
+`background.ManagerOf(a)`.
+
+Inbox/wake did **not** move (contrary to the original plan): they are
+part of the core `Run`/`Inject` path, so `a.inbox`/`a.wake` stay `Agent`
+fields. Relocating them is deferred as a separate change.
 
 ## The attach adapter (clean break)
 
@@ -145,23 +201,63 @@ documented in the CHANGELOG under **Breaking changes**.
 This alone removes 22 methods + 9 options + ~11 fields from the frozen
 `Agent` surface.
 
-## Phasing (stacked PRs, each independently green)
+## Phasing (as landed)
 
-1. **Seam + inbox/wake relocation** — add the accessors; move
-   `inbox.go`/`wake.go` state into what will become the background
-   package (kept in-package first to isolate the diff). No behavior
-   change; no consumer break.
+1. **Seam** — add the read-only accessors (`Inner`, `ModelName`,
+   `EventLog`, `Emit`, later `Streaming`, `Tracker`). No behavior
+   change; no consumer break. **Landed in #440.** (Inbox/wake relocation
+   was dropped from this phase — see Implementation notes.)
 2. **`pkg/agent/autonomous`** — move the driver behind the seam.
-   Consumer break: `a.RunAutonomous(...)` → `autonomous.New(a).Run(...)`.
-3. **`pkg/agent/background`** — move the manager + inbox/wake + remote.
-   Consumer break confined to background-spawn callers.
+   Consumer break: `agent.RunAutonomous(...)` → `autonomous.RunAutonomous(...)`
+   (the symbols keep their names; only the import path changes).
+3. **`pkg/agent/background`** — move the manager + spawn tools + remote,
+   behind the new `SubagentManager` seam, with the `Background*`→`*`
+   rename. Consumer break confined to background-spawn callers.
+
+   **Phases 2 and 3 were combined into one PR.** They are not
+   independently landable: `background` imports `autonomous` (subagents
+   run through the driver) and imports `agent` (subagents are
+   `*agent.Agent`), while the core→manager reference had to flip to the
+   `SubagentManager` interface in the same change to break the cycle. A
+   phase-2-only tree wouldn't compile phase 3, and a phase-3-only tree
+   needs phase 2 to exist. One breaking PR, one migration for consumers.
 4. **`pkg/attachadapter`** — the clean break above. Largest consumer
-   surface change; last so it rebases once over the settled tree.
+   surface change; last so it rebases once over the settled tree. **Not
+   yet landed.**
 
 Each PR: regression tests, `dev/ci/presubmits/*`, one CHANGELOG
 `[Unreleased]` bullet (Breaking changes for 2–4), and the migration
 note. Site reference docs (`docs/site/...`) updated in the same PR for
 any user-visible constructor change.
+
+## Implementation notes (deviations from the proposal)
+
+Recorded so the next reader trusts the code over the plan:
+
+- **Phases 2+3 shipped together** for the import-cycle reason above.
+- **`SubagentManager` interface** (`subagent_manager.go`) is the core's
+  seam onto the manager, replacing the concrete `*BackgroundAgentManager`
+  field. This is the load-bearing piece the original "background barely
+  touches `Agent`" framing missed: the coupling was a *type* reference in
+  `agent.go`, not private-field reach.
+- **`pkg/agent/internal/subsession`** houses the subagent
+  session-derivation plumbing that core (`subagent.go`, `subtask.go`)
+  and `background` both need: `ComposeBranch`, `DeriveSessionID`,
+  `CurrentDepth`/`WithDepth`, and `BranchInjectingService`. A Go
+  `internal/` package under `pkg/agent/` is importable by `pkg/agent`
+  and its sub-packages but nothing else, so this shares code without
+  widening the public surface. `subagentInvocationID` stayed in core
+  (it feeds `DeriveSessionID` but is core's concern).
+- **`Background*` prefix dropped** on the manager API now that the
+  package name carries the qualifier (`background.Manager`, not
+  `background.BackgroundAgentManager`). Full table in the CHANGELOG.
+- **`Streaming()`/`Tracker()`** were added to the seam beyond phase 1's
+  set, needed by the spawner.
+- **Inbox/wake stayed in core.** The proposal had them moving with
+  `background`; in practice they sit on the core `Run`/`Inject` path, so
+  moving them is a separable change and was left for later.
+- **`RunOneTurn` was not promoted;** the driver's `runOneTurn` moved into
+  `autonomous` unexported. No `internal/agentcore` type was introduced.
 
 ## Smaller warts folded in (from #388)
 
@@ -187,9 +283,13 @@ any user-visible constructor change.
   Mitigated by doing it pre-freeze, keeping breaks mechanical
   (interface-satisfaction unchanged), and documenting each in the
   CHANGELOG with before/after snippets.
-- **Import cycles.** `attachadapter` → {`agent`, `attach`} is acyclic;
-  `autonomous`/`background` → `agent` is acyclic. Verified against the
-  current import graph; the seam introduces no back-edge.
+- **Import cycles.** `attachadapter` → {`agent`, `attach`} is acyclic.
+  The `agent`/`autonomous`/`background` triad required care: the naïve
+  move creates `agent → background → agent`. Resolved by the
+  `SubagentManager` interface (core references the manager only through
+  it) and the `internal/subsession` shared package. Final graph:
+  `agent → subsession`; `autonomous → agent`; `background → {agent,
+  autonomous, subsession}`. Acyclic, verified by `go build ./...`.
 - **Hidden private-field reach.** The audit above is the current state;
   the phase-1 PR adds a lint/build gate so a later field access outside
   the seam fails CI rather than silently re-coupling.

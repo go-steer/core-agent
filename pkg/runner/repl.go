@@ -28,6 +28,7 @@ import (
 	adkmodel "google.golang.org/adk/model"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/agent/background"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
@@ -97,8 +98,8 @@ func replCore(ctx context.Context, a *agent.Agent, m adkmodel.LLM, initialPrompt
 	// in WriteEvents. The hook is purely a side channel; the model
 	// still receives the same alerts via Agent.Run's pre-turn drain.
 	colorOn := eventsConfigFromOpts(eventsOpts).color
-	if mgr := a.BackgroundManager(); mgr != nil {
-		mgr.OnAlert(func(al agent.Alert) {
+	if mgr := background.ManagerOf(a); mgr != nil {
+		mgr.OnAlert(func(al background.Alert) {
 			line := FormatAlertLine(al.From, al.Kind, al.Text)
 			_, _ = fmt.Fprintln(stderr, paint(line, ansiMagenta, colorOn))
 		})

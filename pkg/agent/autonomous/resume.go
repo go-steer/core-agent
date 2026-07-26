@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package agent
+package autonomous
 
 import (
 	"context"
@@ -23,6 +23,7 @@ import (
 
 	"google.golang.org/adk/tool"
 
+	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
 )
@@ -32,7 +33,7 @@ import (
 // but adds the sessionID the new agent must adopt — implementations
 // pass it to agent.WithSession so the constructed agent reuses the
 // session being resumed.
-type ResumeBuildFunc func(extras []tool.Tool, sessionID string) (*Agent, error)
+type ResumeBuildFunc func(extras []tool.Tool, sessionID string) (*agent.Agent, error)
 
 // SessionRef identifies the session ResumeAutonomous resumes from.
 // Handle supplies both the eventlog.Stream (used to find the latest

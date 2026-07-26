@@ -43,6 +43,7 @@ import (
 	"github.com/go-steer/core-agent/v2/internal/version"
 	"github.com/go-steer/core-agent/v2/internal/webui"
 	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/agent/background"
 	"github.com/go-steer/core-agent/v2/pkg/agentenv"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/config"
@@ -952,20 +953,20 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// Manager is attached to the parent agent inside agent.New via
 	// WithBackgroundManager; the agent's pre-turn alert drain
 	// surfaces background reports to the parent's model.
-	var bgMgr *agent.BackgroundAgentManager
+	var bgMgr *background.Manager
 	if !noBackgroundAgents {
 		var err error
-		bgMgr, err = agent.NewBackgroundAgentManager(
-			agent.WithBackgroundProvider(provider, cfg.Model.Name),
-			agent.WithBackgroundGate(gate),
-			agent.WithBackgroundCatalog(builtinTools),
+		bgMgr, err = background.NewManager(
+			background.WithProvider(provider, cfg.Model.Name),
+			background.WithGate(gate),
+			background.WithCatalog(builtinTools),
 		)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: background agents: %v\n", err)
 			return runner.ExitConfigError
 		}
 		defer func() { _ = bgMgr.Close() }()
-		builtinTools = append(builtinTools, agent.NewBackgroundSpawnTools(bgMgr)...)
+		builtinTools = append(builtinTools, background.NewSpawnTools(bgMgr)...)
 	}
 
 	// retrieve_raw built-in: model-facing escape hatch to fetch back

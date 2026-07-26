@@ -61,6 +61,7 @@ import (
 	"google.golang.org/adk/runner"
 	"google.golang.org/adk/tool"
 
+	"github.com/go-steer/core-agent/v2/pkg/agent/internal/subsession"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
@@ -272,20 +273,20 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 	// with the parent's optimistic-concurrency check on shared
 	// session.Service rows. Branch label keeps the audit log
 	// correlated to the parent.
-	branch := composeBranch("", "sub."+spec.Name)
+	branch := subsession.ComposeBranch("", "sub."+spec.Name)
 	// No invocation-unique component: a subtask is addressed by its
 	// stable name, so its derived row is intentionally deterministic
 	// (unlike the parallel-tool-call subagent path in subagent.go, #364).
-	subSessionID := deriveSubagentSessionID(a.sessionID, "sub."+spec.Name, "")
+	subSessionID := subsession.DeriveSessionID(a.sessionID, "sub."+spec.Name, "")
 
 	// Use the UNWRAPPED parent session service (a.sessionService,
 	// not the compactingService the runner uses). The subtask has
 	// no summary events of its own; running through compactingService
 	// would do unnecessary scanning + risk slicing on a parent's
 	// summary event that doesn't belong to this subtask.
-	subSvc := &branchInjectingService{
-		inner:  a.sessionService,
-		branch: branch,
+	subSvc := &subsession.BranchInjectingService{
+		Inner:  a.sessionService,
+		Branch: branch,
 	}
 
 	subRunner, err := runner.New(runner.Config{

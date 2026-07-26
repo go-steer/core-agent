@@ -3,14 +3,14 @@ title: Autonomous runs
 ---
 
 
-`agent.RunAutonomous` is the multi-turn driver for unattended workers — batch jobs, CI tasks, scheduled scripts, anything that needs to keep working after a single `agent.Run` turn would have ended. It loops `agent.Run` against a goal, enforces run-level budgets, and stops when the model signals "done" via an internal lifecycle tool.
+`autonomous.RunAutonomous` is the multi-turn driver for unattended workers — batch jobs, CI tasks, scheduled scripts, anything that needs to keep working after a single `agent.Run` turn would have ended. It loops `agent.Run` against a goal, enforces run-level budgets, and stops when the model signals "done" via an internal lifecycle tool.
 
 Two senses of "autonomous" matter here:
 
 | Sense | Driver | When to reach for it |
 |---|---|---|
 | **Within one turn** | `agent.Run` already loops the model through tool-call cycles until a final response | Single self-contained tasks: "find every TODO in the repo and write a list" |
-| **Across turns** | `agent.RunAutonomous` loops `agent.Run` against a goal | Long-running work the model decomposes into multiple turns |
+| **Across turns** | `autonomous.RunAutonomous` loops `agent.Run` against a goal | Long-running work the model decomposes into multiple turns |
 
 This page covers across-turn autonomy. For the within-turn case, see [Library API → Streaming events](/embed/api/#streaming-events-to-a-chat-like-ui).
 
@@ -22,6 +22,7 @@ This page covers across-turn autonomy. For the within-turn case, see [Library AP
 import (
     adktool "google.golang.org/adk/tool"
     "github.com/go-steer/core-agent/v2/pkg/agent"
+    "github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
 )
 
 build := func(extras []adktool.Tool) (*agent.Agent, error) {
@@ -35,11 +36,11 @@ build := func(extras []adktool.Tool) (*agent.Agent, error) {
     )
 }
 
-res, err := agent.RunAutonomous(ctx, build,
+res, err := autonomous.RunAutonomous(ctx, build,
     "find every TODO comment and write a tracking doc",
-    agent.WithMaxTurns(20),
-    agent.WithMaxWallclock(10*time.Minute),
-    agent.WithPerTurnTimeout(2*time.Minute),
+    autonomous.WithMaxTurns(20),
+    autonomous.WithMaxWallclock(10*time.Minute),
+    autonomous.WithPerTurnTimeout(2*time.Minute),
 )
 ```
 
@@ -88,7 +89,7 @@ For runs that do heavy file reads or web fetches, also wire the agentic wrappers
 By default any turn-level error aborts the run. Install `WithRetryPolicy` for transient-error recovery:
 
 ```go
-agent.WithRetryPolicy(func(err error, attempt int) agent.RetryDecision {
+autonomous.WithRetryPolicy(func(err error, attempt int) autonomous.RetryDecision {
     if attempt > 3 { return agent.AbortRun }
     if isTransient(err) { return agent.RetryTurn }
     return agent.SkipTurn
@@ -135,6 +136,7 @@ When the agent is wired with `WithEventLog`, `RunAutonomous` emits a checkpoint 
 import (
     "github.com/glebarez/sqlite"
     "github.com/go-steer/core-agent/v2/pkg/agent"
+    "github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
     "github.com/go-steer/core-agent/v2/pkg/eventlog"
 )
 
@@ -142,19 +144,19 @@ handle, _ := eventlog.Open(ctx, sqlite.Open("/path/to/sessions.db"))
 defer handle.Close()
 
 // Phase 1: original run, capped at 5 turns.
-res1, _ := agent.RunAutonomous(ctx, build, "the goal",
-    agent.WithMaxTurns(5))
+res1, _ := autonomous.RunAutonomous(ctx, build, "the goal",
+    autonomous.WithMaxTurns(5))
 // ... process exits, machine reboots, whatever ...
 
 // Phase 2: pick up where Phase 1 left off.
-res2, _ := agent.ResumeAutonomous(ctx, resumeBuild,
-    agent.SessionRef{
+res2, _ := autonomous.ResumeAutonomous(ctx, resumeBuild,
+    autonomous.SessionRef{
         Handle:    handle,
         AppName:   "my-app",
         UserID:    "alice",
         SessionID: "long-running-task",
     },
-    agent.WithMaxTurns(20))
+    autonomous.WithMaxTurns(20))
 ```
 
 `ResumeBuildFunc` differs from `RunAutonomous`'s `BuildFunc` in one detail — it receives the resumed session ID so the constructed agent rejoins the same session via `agent.WithSession`:

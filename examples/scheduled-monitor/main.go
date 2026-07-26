@@ -47,6 +47,7 @@ import (
 	"time"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/agent/background"
 	"github.com/go-steer/core-agent/v2/pkg/models/mock"
 	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
 )
@@ -140,23 +141,23 @@ func part3SupervisorTopology(ctx context.Context) error {
 	fmt.Println("=== Part 3: supervisor topology with WithBackgroundDefaultScheduler ===")
 
 	prov := mock.NewEcho()
-	mgr, err := agent.NewBackgroundAgentManager(
-		agent.WithBackgroundProvider(prov, "echo"),
-		agent.WithBackgroundMaxConcurrent(4),
-		agent.WithBackgroundDefaultBudgets(agent.BackgroundBudgets{
+	mgr, err := background.NewManager(
+		background.WithProvider(prov, "echo"),
+		background.WithMaxConcurrent(4),
+		background.WithDefaultBudgets(background.Budgets{
 			MaxTurns: 1, MaxWallclock: 5 * time.Second,
 		}),
 		// The line of interest: every spawned subagent's
 		// RunAutonomous gets WithScheduler(SleepScheduler()) unless
 		// the per-spawn BackgroundSpec.Scheduler overrides.
-		agent.WithBackgroundDefaultScheduler(coretools.SleepScheduler()),
+		background.WithDefaultScheduler(coretools.SleepScheduler()),
 	)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = mgr.Close() }()
 
-	mgr.OnAlert(func(a agent.Alert) {
+	mgr.OnAlert(func(a background.Alert) {
 		fmt.Printf("[hook] %s %s: %s\n", a.From, a.Kind, a.Text)
 	})
 
@@ -188,7 +189,7 @@ func part3SupervisorTopology(ctx context.Context) error {
 	// schedule_next_turn tool in its tool list and call it between
 	// scans.
 	for _, name := range []string{"monitor-cluster-a", "monitor-cluster-b"} {
-		h, err := mgr.Spawn(ctx, "", agent.BackgroundSpec{
+		h, err := mgr.Spawn(ctx, "", background.Spec{
 			Name:         name,
 			SystemPrompt: "you watch a cluster; report any anomalies",
 			Goal:         "scan cluster health periodically",

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package agent
+package autonomous
 
 import (
 	"context"
@@ -25,6 +25,7 @@ import (
 	"google.golang.org/adk/session"
 	"google.golang.org/adk/tool"
 
+	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 )
 
@@ -45,26 +46,26 @@ func openTestEventLog(t *testing.T) (*eventlog.Handle, func()) {
 // LLM, the supplied event log handle, and the resumed session ID.
 // Mirrors what a real consumer would write.
 func resumeBuilder(llm *stubLLM, h *eventlog.Handle, app, user string) ResumeBuildFunc {
-	return func(extras []tool.Tool, sessionID string) (*Agent, error) {
-		return New(llm,
-			WithAppName(app),
-			WithSession(user, sessionID),
-			WithEventLog(h),
-			WithTools(extras),
-			WithInstruction("test agent"),
+	return func(extras []tool.Tool, sessionID string) (*agent.Agent, error) {
+		return agent.New(llm,
+			agent.WithAppName(app),
+			agent.WithSession(user, sessionID),
+			agent.WithEventLog(h),
+			agent.WithTools(extras),
+			agent.WithInstruction("test agent"),
 		)
 	}
 }
 
 // runBuilder mirrors resumeBuilder for the fresh-run case.
-func runBuilder(llm *stubLLM, h *eventlog.Handle, app, user, sess string) func(extras []tool.Tool) (*Agent, error) {
-	return func(extras []tool.Tool) (*Agent, error) {
-		return New(llm,
-			WithAppName(app),
-			WithSession(user, sess),
-			WithEventLog(h),
-			WithTools(extras),
-			WithInstruction("test agent"),
+func runBuilder(llm *stubLLM, h *eventlog.Handle, app, user, sess string) func(extras []tool.Tool) (*agent.Agent, error) {
+	return func(extras []tool.Tool) (*agent.Agent, error) {
+		return agent.New(llm,
+			agent.WithAppName(app),
+			agent.WithSession(user, sess),
+			agent.WithEventLog(h),
+			agent.WithTools(extras),
+			agent.WithInstruction("test agent"),
 		)
 	}
 }
@@ -84,7 +85,7 @@ func TestResumeAutonomous_RequiresBuild(t *testing.T) {
 func TestResumeAutonomous_RequiresHandle(t *testing.T) {
 	t.Parallel()
 	_, err := ResumeAutonomous(context.Background(),
-		func([]tool.Tool, string) (*Agent, error) { return nil, nil },
+		func([]tool.Tool, string) (*agent.Agent, error) { return nil, nil },
 		SessionRef{AppName: "app", UserID: "u", SessionID: "s"})
 	if err == nil || !strings.Contains(err.Error(), "Handle is required") {
 		t.Errorf("expected Handle-required error, got %v", err)
@@ -96,7 +97,7 @@ func TestResumeAutonomous_RequiresSessionID(t *testing.T) {
 	h, cleanup := openTestEventLog(t)
 	defer cleanup()
 	_, err := ResumeAutonomous(context.Background(),
-		func([]tool.Tool, string) (*Agent, error) { return nil, nil },
+		func([]tool.Tool, string) (*agent.Agent, error) { return nil, nil },
 		SessionRef{Handle: h, AppName: "app", UserID: "u", SessionID: " "})
 	if err == nil || !strings.Contains(err.Error(), "SessionID is required") {
 		t.Errorf("expected SessionID-required error, got %v", err)
@@ -344,11 +345,11 @@ func TestEmitFinalCheckpointDetached_WritesDespiteCancelledContext(t *testing.T)
 	h, cleanup := openTestEventLog(t)
 	defer cleanup()
 
-	a, err := New(&stubLLM{},
-		WithAppName("app"),
-		WithSession("u", "cancelled-cp"),
-		WithEventLog(h),
-		WithInstruction("test agent"),
+	a, err := agent.New(&stubLLM{},
+		agent.WithAppName("app"),
+		agent.WithSession("u", "cancelled-cp"),
+		agent.WithEventLog(h),
+		agent.WithInstruction("test agent"),
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)

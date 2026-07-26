@@ -58,6 +58,8 @@ import (
 	adktool "google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
+	"github.com/go-steer/core-agent/v2/pkg/agent/background"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 	"github.com/go-steer/core-agent/v2/pkg/models"
@@ -208,16 +210,16 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 	}
 
 	// === BackgroundAgentManager with the new default scheduler ===
-	mgr, err := agent.NewBackgroundAgentManager(
-		agent.WithBackgroundProvider(prov, cfg.Model.Name),
-		agent.WithBackgroundGate(gate),
-		agent.WithBackgroundCatalog(reg.Tools),
-		agent.WithBackgroundMaxConcurrent(maxConc),
-		agent.WithBackgroundDefaultBudgets(agent.BackgroundBudgets{
+	mgr, err := background.NewManager(
+		background.WithProvider(prov, cfg.Model.Name),
+		background.WithGate(gate),
+		background.WithCatalog(reg.Tools),
+		background.WithMaxConcurrent(maxConc),
+		background.WithDefaultBudgets(background.Budgets{
 			MaxTurns:     500,
 			MaxWallclock: 24 * time.Hour,
 		}),
-		agent.WithBackgroundDefaultScheduler(coretools.SleepScheduler()),
+		background.WithDefaultScheduler(coretools.SleepScheduler()),
 	)
 	if err != nil {
 		return fmt.Errorf("BackgroundAgentManager: %w", err)
@@ -226,8 +228,8 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 	// onAlertWake fires after each alert; rebound below once the
 	// AutonomousHandle exists so we can call handle.RequestWake() to
 	// pierce the supervisor's active sleep.
-	var onAlertWake func(agent.Alert)
-	mgr.OnAlert(func(a agent.Alert) {
+	var onAlertWake func(background.Alert)
+	mgr.OnAlert(func(a background.Alert) {
 		fmt.Printf("[alert] %s %s: %s\n", a.From, a.Kind, a.Text)
 		if onAlertWake != nil {
 			onAlertWake(a)
@@ -238,7 +240,7 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 	instruction := agent.DefaultInstruction + "\n\n" +
 		agent.DefaultSchedulingInstruction + "\n\n" +
 		supervisorBrief
-	spawnTools := agent.NewBackgroundSpawnTools(mgr)
+	spawnTools := background.NewSpawnTools(mgr)
 	mkAgent := func(extras []adktool.Tool, sid string) (*agent.Agent, error) {
 		all := make([]adktool.Tool, 0, len(reg.Tools)+len(spawnTools)+len(extras))
 		all = append(all, reg.Tools...)
@@ -304,13 +306,13 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 
 	go logHeartbeat(ctx, mgr)
 
-	autoOpts := []agent.AutonomousOption{
-		agent.WithMaxWallclock(maxWC),
-		agent.WithMaxTurns(maxT),
-		agent.WithMaxDefer(maxDef),
-		agent.WithScheduler(coretools.SleepScheduler()),
-		agent.WithPermissionsGate(gate),
-		agent.WithProgress(func(_ int, ev *session.Event) {
+	autoOpts := []autonomous.AutonomousOption{
+		autonomous.WithMaxWallclock(maxWC),
+		autonomous.WithMaxTurns(maxT),
+		autonomous.WithMaxDefer(maxDef),
+		autonomous.WithScheduler(coretools.SleepScheduler()),
+		autonomous.WithPermissionsGate(gate),
+		autonomous.WithProgress(func(_ int, ev *session.Event) {
 			if ev == nil {
 				return
 			}
@@ -326,15 +328,15 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 	// out-of-band Inject + RequestWake from the alert-watcher and
 	// stdin-reader goroutines below.
 	var (
-		result agent.RunResult
+		result autonomous.RunResult
 		runErr error
 	)
 	if resumeFlag {
-		result, runErr = agent.ResumeAutonomous(ctx, resumeBuild,
-			agent.SessionRef{Handle: handle, AppName: appName, UserID: userID, SessionID: sessID},
+		result, runErr = autonomous.ResumeAutonomous(ctx, resumeBuild,
+			autonomous.SessionRef{Handle: handle, AppName: appName, UserID: userID, SessionID: sessID},
 			autoOpts...)
 	} else {
-		handle, err := agent.StartAutonomous(ctx, build, goal, autoOpts...)
+		handle, err := autonomous.StartAutonomous(ctx, build, goal, autoOpts...)
 		if err != nil {
 			return fmt.Errorf("StartAutonomous: %w", err)
 		}
@@ -342,7 +344,7 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 		// Wake the supervisor on every alert. mgr.OnAlert runs
 		// synchronously in the alert-pushing goroutine; we only need
 		// to call handle.RequestWake (non-blocking, coalesced).
-		onAlertWake = func(_ agent.Alert) { handle.RequestWake() }
+		onAlertWake = func(_ background.Alert) { handle.RequestWake() }
 
 		// Operator stdin reader. Each non-empty line is injected as
 		// a message into the supervisor's inbox; Inject internally
@@ -411,7 +413,7 @@ func modeLabel(resumeFlag bool) string {
 	return "FRESH"
 }
 
-func logHeartbeat(ctx context.Context, mgr *agent.BackgroundAgentManager) {
+func logHeartbeat(ctx context.Context, mgr *background.Manager) {
 	t := time.NewTicker(5 * time.Minute)
 	defer t.Stop()
 	for {
@@ -421,7 +423,7 @@ func logHeartbeat(ctx context.Context, mgr *agent.BackgroundAgentManager) {
 		case <-t.C:
 			running := 0
 			for _, h := range mgr.List() {
-				if h.Status() == agent.StatusRunning {
+				if h.Status() == background.StatusRunning {
 					running++
 				}
 			}

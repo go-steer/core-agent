@@ -17,7 +17,7 @@ A production-grade Go substrate for multi-turn LLM agents, built on the [Google 
 **Runtime**
 - Multi-turn conversation via ADK's `runner.Runner`; parallel tool-call dispatch.
 - In-process Bubble Tea TUI as the default TTY surface; `--no-tui` line REPL fallback; slim build (`-tags no_tui`) drops the TUI tree entirely.
-- `agent.RunAutonomous` for unattended workers with turn / token / cost / wallclock budgets and model-driven termination; `ResumeAutonomous` picks up from a durable checkpoint after a crash.
+- `autonomous.RunAutonomous` for unattended workers with turn / token / cost / wallclock budgets and model-driven termination; `ResumeAutonomous` picks up from a durable checkpoint after a crash.
 - Long-session survivability: automatic post-turn compaction at ~85% context utilization, subtasks with `agentic_*` tool wrappers that keep bulk tool output out of the parent's context, and task-boundary checkpoints via `mark_task_done`. See [Context management](https://go-steer.github.io/core-agent/docs/reference/context-management/).
 
 **Providers**
@@ -50,8 +50,8 @@ A production-grade Go substrate for multi-turn LLM agents, built on the [Google 
 - **Agent-card discovery**: opt-in `/.well-known/agent-card.json` endpoint describing name, description, skills, and required auth in the [A2A AgentCard](https://agent2agent.info/docs/concepts/agentcard/) shape so agent registries can index the binary.
 
 **Subagents**
-- In-process: `agent.WithSubagents([]*Agent)` for synchronous delegation; `agent.NewBackgroundAgentManager` + `spawn_agent` / `list_agents` / `check_agent` / `stop_agent` for background subagents the model spawns at runtime.
-- Remote: `agent.NewSpawnRemoteAgentTool` with a consumer-supplied `RemoteAgentSpawner` for out-of-process spawning (gRPC / K8s Jobs / Cloud Run).
+- In-process: `agent.WithSubagents([]*Agent)` for synchronous delegation; `background.NewManager` + `spawn_agent` / `list_agents` / `check_agent` / `stop_agent` for background subagents the model spawns at runtime.
+- Remote: `background.NewSpawnRemoteAgentTool` with a consumer-supplied `RemoteAgentSpawner` for out-of-process spawning (gRPC / K8s Jobs / Cloud Run).
 - Subagent events stream into the parent's audit log under a `Branch` label so the trail stays unified.
 
 **Kubernetes triage sidecar** (v2.6+)

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package agent
+package background
 
 import (
 	"time"
@@ -40,7 +40,7 @@ type reportResult struct {
 // (drop-oldest backpressure if full). The parent's run loop drains
 // the channel before its next turn and prepends formatted alert
 // lines to the prompt the model sees.
-func newReportAlertTool(mgr *BackgroundAgentManager, from string) tool.Tool {
+func newReportAlertTool(mgr *Manager, from string) tool.Tool {
 	t, err := functiontool.New(functiontool.Config{
 		Name:        "report_alert",
 		Description: "Send an alert back to the parent agent. The text becomes a user-visible report the parent agent reads before its next turn. Use for noteworthy findings, status updates, or things the parent should react to.",
@@ -56,7 +56,7 @@ func newReportAlertTool(mgr *BackgroundAgentManager, from string) tool.Tool {
 	if err != nil {
 		// functiontool.New only fails on programmer errors (bad
 		// signature) which the literal call above can't hit.
-		panic("agent: newReportAlertTool: " + err.Error())
+		panic("background: newReportAlertTool: " + err.Error())
 	}
 	return t
 }
@@ -70,7 +70,7 @@ func newReportAlertTool(mgr *BackgroundAgentManager, from string) tool.Tool {
 // when RunAutonomous returns, so calling report_completed is the
 // model's "let the parent know what I did" signal, not a hard
 // termination call (use report_done for that).
-func newReportCompletedTool(mgr *BackgroundAgentManager, from string) tool.Tool {
+func newReportCompletedTool(mgr *Manager, from string) tool.Tool {
 	t, err := functiontool.New(functiontool.Config{
 		Name:        "report_completed",
 		Description: "Tell the parent agent that you've finished your goal. The text becomes a user-visible completion report. Call report_done separately to actually terminate the autonomous loop.",
@@ -84,7 +84,7 @@ func newReportCompletedTool(mgr *BackgroundAgentManager, from string) tool.Tool 
 		return reportResult{OK: true}, nil
 	})
 	if err != nil {
-		panic("agent: newReportCompletedTool: " + err.Error())
+		panic("background: newReportCompletedTool: " + err.Error())
 	}
 	return t
 }
@@ -96,7 +96,7 @@ func newReportCompletedTool(mgr *BackgroundAgentManager, from string) tool.Tool 
 //
 // Called by Agent.Run before each turn so the parent's model sees
 // what its subagents have reported since the last turn.
-func (m *BackgroundAgentManager) PrependPendingAlerts(prompt string) string {
+func (m *Manager) PrependPendingAlerts(prompt string) string {
 	var pending []Alert
 drain:
 	for {

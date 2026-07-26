@@ -100,11 +100,11 @@ ships sensible defaults; you replace any of them with
 | Approvals | `permissions.Prompter` | UI is not a TTY (web, Slack, IDE plugin) |
 | Tool execution | `tool.Tool` (via `functiontool.New`) | Domain operations, internal APIs |
 | Model backend | `models.Provider` | LLM not in the box (OpenAI, local Ollama, …) |
-| Remote subagents | `agent.RemoteAgentSpawner` | Delegate to K8s Job / Cloud Run / your runtime |
+| Remote subagents | `background.RemoteAgentSpawner` | Delegate to K8s Job / Cloud Run / your runtime |
 | Session persistence | `session.Service` | Beyond eventlog's SQLite/Postgres/MySQL |
-| Background workers | `agent.BackgroundAgentManager` | Async tasks the parent's model spawns at runtime |
+| Background workers | `background.Manager` | Async tasks the parent's model spawns at runtime |
 | Inbound messages | `agent.Inject(msg)` | Push input to a running agent from another goroutine |
-| Tool inspection | `agent.WithBeforeTurn` | Rate limits, external approvals, custom budgets |
+| Tool inspection | `autonomous.WithBeforeTurn` | Rate limits, external approvals, custom budgets |
 | Context management | `agent.Compactor` / `agent.Checkpointer` | Custom summarizer prompts / thresholds |
 | Agentic subtasks | `agent.RunSubtask` + `tools/agentic` wrappers | Route bulk tool output through a cheap-model subtask |
 | Late-binding hooks | `agent.WithPostConstruct` | External tools whose handler needs the constructed `*Agent` |

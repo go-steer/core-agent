@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package agent
+package background
 
 import (
 	"context"
@@ -22,6 +22,9 @@ import (
 
 	"google.golang.org/adk/tool"
 
+	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
+	"github.com/go-steer/core-agent/v2/pkg/agent/internal/subsession"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
@@ -41,7 +44,7 @@ import (
 // cap exceeded, unknown tool name, or manager not yet attached to a
 // parent. Once the goroutine is running, terminal errors land on the
 // handle (h.Err()) and a corresponding Alert is pushed.
-func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string, spec BackgroundSpec) (*BackgroundHandle, error) {
+func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*Handle, error) {
 	// Validation + caps + parent presence are all checked under the
 	// manager lock so a burst of concurrent Spawn calls can't all
 	// pass the cap check before any registers a handle.
@@ -59,7 +62,7 @@ func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string,
 		m.mu.Unlock()
 		return nil, err
 	}
-	if depth := CurrentSubagentDepth(ctx); depth >= m.maxDepth {
+	if depth := subsession.CurrentDepth(ctx); depth >= m.maxDepth {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("%w (depth=%d, max=%d)", ErrDepthExceeded, depth, m.maxDepth)
 	}
@@ -74,7 +77,7 @@ func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string,
 	// Reserve the slot before we drop the lock so a concurrent Spawn
 	// of the same name (or contending for the last concurrency slot)
 	// sees us already registered.
-	branch := composeBranch(parentBranch, "bg."+spec.Name)
+	branch := subsession.ComposeBranch(parentBranch, "bg."+spec.Name)
 	// Create the goroutine's cancellable context and register its
 	// cancel on the handle BEFORE the handle becomes visible in
 	// m.agents. Otherwise a Stop() arriving during the slow tool /
@@ -86,9 +89,9 @@ func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string,
 	// when the goroutine launches RunAutonomous exits immediately and
 	// the status stays Stopped.
 	goCtx, cancel := context.WithCancel(contextWithoutCancel(ctx))
-	goCtx = context.WithValue(goCtx, subagentDepthKey{}, CurrentSubagentDepth(ctx)+1)
+	goCtx = subsession.WithDepth(goCtx, subsession.CurrentDepth(ctx)+1)
 	goCtx = permissions.WithSubagentSource(goCtx, spec.Name)
-	handle := &BackgroundHandle{
+	handle := &Handle{
 		Name:      spec.Name,
 		Branch:    branch,
 		StartedAt: time.Now(),
@@ -135,7 +138,7 @@ func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string,
 		m.mu.Lock()
 		delete(m.agents, spec.Name)
 		m.mu.Unlock()
-		return nil, fmt.Errorf("agent: BackgroundAgentManager: build subagent model: %w", err)
+		return nil, fmt.Errorf("background: build subagent model: %w", err)
 	}
 
 	// Branch-wrap the parent's session.Service so every event the
@@ -143,15 +146,15 @@ func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string,
 	// row itself is derived from the parent's so two concurrent
 	// runners don't collide on ADK's optimistic-concurrency check.
 	parentSvc := parent.SessionService()
-	wrappedSvc := &branchInjectingService{
-		inner:  parentSvc,
-		branch: branch,
+	wrappedSvc := &subsession.BranchInjectingService{
+		Inner:  parentSvc,
+		Branch: branch,
 	}
 	// No invocation-unique component: a background agent is addressed
 	// (and resumed/reported on) by its stable name, so its derived row
 	// is intentionally deterministic (unlike the parallel-tool-call
 	// subagent path in subagent.go, #364).
-	subSessionID := deriveSubagentSessionID(parent.SessionID(), "bg."+spec.Name, "")
+	subSessionID := subsession.DeriveSessionID(parent.SessionID(), "bg."+spec.Name, "")
 
 	// Per-spawn budgets: spec overrides default, default fills the
 	// rest. Zero values mean "no cap" for that dimension.
@@ -166,7 +169,7 @@ func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string,
 	subagentName := spec.Name
 	subagentGoal := spec.Goal
 
-	build := func(extraTools []tool.Tool) (*Agent, error) {
+	build := func(extraTools []tool.Tool) (*agent.Agent, error) {
 		// extraTools is the report_done tool the autonomous driver
 		// injected; merge it with our subagent's chosen tools and
 		// the always-on report_alert / report_completed tools.
@@ -177,14 +180,14 @@ func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string,
 			newReportAlertTool(m, subagentName),
 			newReportCompletedTool(m, subagentName),
 		)
-		return New(subModel,
-			WithAppName(parent.AppName()),
-			WithName(subagentName),
-			WithInstruction(subagentInstruction),
-			WithStreaming(parent.streaming),
-			WithSession(parent.UserID(), subSessionID),
-			WithTools(all),
-			WithSessionService(wrappedSvc),
+		return agent.New(subModel,
+			agent.WithAppName(parent.AppName()),
+			agent.WithName(subagentName),
+			agent.WithInstruction(subagentInstruction),
+			agent.WithStreaming(parent.Streaming()),
+			agent.WithSession(parent.UserID(), subSessionID),
+			agent.WithTools(all),
+			agent.WithSessionService(wrappedSvc),
 		)
 	}
 
@@ -192,24 +195,24 @@ func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string,
 		defer close(handle.done)
 		defer cancel()
 
-		opts := []AutonomousOption{}
+		opts := []autonomous.AutonomousOption{}
 		if budgets.MaxTurns > 0 {
-			opts = append(opts, WithMaxTurns(budgets.MaxTurns))
+			opts = append(opts, autonomous.WithMaxTurns(budgets.MaxTurns))
 		}
 		if budgets.MaxCost > 0 {
-			opts = append(opts, WithMaxCost(budgets.MaxCost))
+			opts = append(opts, autonomous.WithMaxCost(budgets.MaxCost))
 		}
 		if budgets.MaxWallclock > 0 {
-			opts = append(opts, WithMaxWallclock(budgets.MaxWallclock))
+			opts = append(opts, autonomous.WithMaxWallclock(budgets.MaxWallclock))
 		}
 		if budgets.PerTurnTimeout > 0 {
-			opts = append(opts, WithPerTurnTimeout(budgets.PerTurnTimeout))
+			opts = append(opts, autonomous.WithPerTurnTimeout(budgets.PerTurnTimeout))
 		}
 		if m.gate != nil {
-			opts = append(opts, WithPermissionsGate(m.gate))
+			opts = append(opts, autonomous.WithPermissionsGate(m.gate))
 		}
 		if sched != nil {
-			opts = append(opts, WithScheduler(sched))
+			opts = append(opts, autonomous.WithScheduler(sched))
 		}
 		// Roll background subagent turns into the parent agent's usage
 		// tracker so /usage + /stats reflect the actual session cost,
@@ -217,11 +220,11 @@ func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string,
 		// the subagent's own model ID (may differ from parent when the
 		// manager was constructed with a cheaper flash-tier model), so
 		// the per-model attribution in /usage stays accurate.
-		if parent.tracker != nil {
-			opts = append(opts, WithTracker(parent.tracker, usage.PriceFor(m.modelID, nil)))
+		if parent.Tracker() != nil {
+			opts = append(opts, autonomous.WithTracker(parent.Tracker(), usage.PriceFor(m.modelID, nil)))
 		}
 
-		result, runErr := RunAutonomous(goCtx, build, subagentGoal, opts...)
+		result, runErr := autonomous.RunAutonomous(goCtx, build, subagentGoal, opts...)
 
 		handle.mu.Lock()
 		handle.result = &result
@@ -232,13 +235,13 @@ func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string,
 			switch {
 			case runErr != nil:
 				handle.status = StatusFailed
-			case result.Reason == StopReasonCompleted:
+			case result.Reason == autonomous.StopReasonCompleted:
 				handle.status = StatusCompleted
-			case result.Reason == StopReasonDeferred,
-				result.Reason == StopReasonWallclockExceeded,
-				result.Reason == StopReasonMaxTurns,
-				result.Reason == StopReasonMaxTokens,
-				result.Reason == StopReasonMaxCost:
+			case result.Reason == autonomous.StopReasonDeferred,
+				result.Reason == autonomous.StopReasonWallclockExceeded,
+				result.Reason == autonomous.StopReasonMaxTurns,
+				result.Reason == autonomous.StopReasonMaxTokens,
+				result.Reason == autonomous.StopReasonMaxCost:
 				handle.status = StatusDeferred
 			default:
 				handle.status = StatusFailed
@@ -282,29 +285,29 @@ func (m *BackgroundAgentManager) Spawn(ctx context.Context, parentBranch string,
 // validateSpec rejects invalid Spec values early. Names are required
 // and must be reasonable (no whitespace; no separators that would
 // confuse branch parsing).
-func validateSpec(spec BackgroundSpec) error {
+func validateSpec(spec Spec) error {
 	name := strings.TrimSpace(spec.Name)
 	if name == "" {
-		return fmt.Errorf("agent: BackgroundAgentManager: spec.Name is required")
+		return fmt.Errorf("background: spec.Name is required")
 	}
 	if name != spec.Name {
-		return fmt.Errorf("agent: BackgroundAgentManager: spec.Name must not have leading/trailing whitespace: %q", spec.Name)
+		return fmt.Errorf("background: spec.Name must not have leading/trailing whitespace: %q", spec.Name)
 	}
 	if strings.ContainsAny(name, ". /") {
-		return fmt.Errorf("agent: BackgroundAgentManager: spec.Name must not contain '.', '/' or spaces: %q", name)
+		return fmt.Errorf("background: spec.Name must not contain '.', '/' or spaces: %q", name)
 	}
 	if strings.TrimSpace(spec.SystemPrompt) == "" {
-		return fmt.Errorf("agent: BackgroundAgentManager: spec.SystemPrompt is required")
+		return fmt.Errorf("background: spec.SystemPrompt is required")
 	}
 	if strings.TrimSpace(spec.Goal) == "" {
-		return fmt.Errorf("agent: BackgroundAgentManager: spec.Goal is required")
+		return fmt.Errorf("background: spec.Goal is required")
 	}
 	return nil
 }
 
 // mergeBudgets returns a budget that uses spec's non-zero values and
 // falls back to defaults for any zero field.
-func mergeBudgets(defaults, spec BackgroundBudgets) BackgroundBudgets {
+func mergeBudgets(defaults, spec Budgets) Budgets {
 	out := defaults
 	if spec.MaxTurns > 0 {
 		out.MaxTurns = spec.MaxTurns

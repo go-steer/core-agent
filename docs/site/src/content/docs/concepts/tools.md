@@ -113,7 +113,7 @@ ask_user(question: "Should I delete the backup file before re-running?", default
 
 ### `schedule_next_turn`
 
-Registered in autonomous-runner contexts. Lets the model emit a sleep / wake-at / wake-on-event signal that `agent.RunAutonomous` consumes between turns and feeds to a `Scheduler` implementation (e.g. `SleepScheduler` for long-lived daemons). See [Autonomous runs](/run/autonomous/operations/).
+Registered in autonomous-runner contexts. Lets the model emit a sleep / wake-at / wake-on-event signal that `autonomous.RunAutonomous` consumes between turns and feeds to a `Scheduler` implementation (e.g. `SleepScheduler` for long-lived daemons). See [Autonomous runs](/run/autonomous/operations/).
 
 ## Agentic wrappers (subtask-routed tools)
 

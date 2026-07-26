@@ -148,7 +148,7 @@ A background heartbeat goroutine refreshes the lease every 5 seconds. A lease is
 
 ## Crash-resume
 
-The session lock and the seq-numbered event log together support `agent.ResumeAutonomous`: a process that died mid-run can be restarted, and the new process picks up at the next turn from the same audit-log position.
+The session lock and the seq-numbered event log together support `autonomous.ResumeAutonomous`: a process that died mid-run can be restarted, and the new process picks up at the next turn from the same audit-log position.
 
 See [Autonomous runs → Crash-resume](/run/autonomous/operations/#crash-resume) for the full pattern.
 

@@ -712,6 +712,18 @@ func (a *Agent) SessionService() session.Service { return a.sessionService }
 // without keeping a separate reference.
 func (a *Agent) EventLog() *eventlog.Handle { return a.eventLog }
 
+// Inner returns the underlying ADK agent the turn loop drives. It is
+// the read-only seam the split-out driver package (pkg/agent/autonomous,
+// see docs/agent-package-split-design.md) uses instead of reaching the
+// unexported field directly; returns nil if the agent is nil or was
+// constructed without an inner agent.
+func (a *Agent) Inner() adkagent.Agent {
+	if a == nil {
+		return nil
+	}
+	return a.inner
+}
+
 // SetAttachEmitter installs (or clears, when f is nil) the callback
 // the agent uses to push typed events onto the attach SSE event
 // stream. The attach broadcaster calls this on first subscriber
@@ -806,6 +818,15 @@ func (a *Agent) emit(eventType string, payload any) {
 		return
 	}
 	cb(eventType, payload)
+}
+
+// Emit is the exported seam over emit() for the packages that will
+// split out of pkg/agent (pkg/agent/background's inbox lives outside
+// the core type — see docs/agent-package-split-design.md). It pushes a
+// typed event onto the attach SSE stream, or is a no-op when no
+// subscriber is connected. Safe on a nil receiver.
+func (a *Agent) Emit(eventType string, payload any) {
+	a.emit(eventType, payload)
 }
 
 // HasCompactor reports whether a Compactor was wired via

@@ -304,7 +304,7 @@ func (a *Agent) InjectAs(message string, caller auth.Caller) error {
 	if err != nil {
 		return err
 	}
-	a.emit(attach.EventInbox, attach.InboxEvent{
+	a.Emit(attach.EventInbox, attach.InboxEvent{
 		State:    attach.InboxStateQueued,
 		PromptID: id,
 		QueuedAt: time.Now().UTC(),
@@ -364,7 +364,7 @@ func (a *Agent) drainInboxFull() ([]string, auth.Caller) {
 	var originator auth.Caller
 	out := make([]string, len(msgs))
 	for i, m := range msgs {
-		a.emit(attach.EventInbox, attach.InboxEvent{
+		a.Emit(attach.EventInbox, attach.InboxEvent{
 			State:    attach.InboxStateDequeued,
 			PromptID: m.id,
 		})

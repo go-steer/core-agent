@@ -16,7 +16,8 @@
 // decides whether each tool invocation may proceed.
 //
 // The gate consults, in order:
-//  1. Bash denylist (built-in patterns; non-overridable) for bash calls.
+//  1. Bash denylist (built-in patterns; best-effort defense-in-depth,
+//     see below) for bash calls.
 //  2. Path scope check for file tools.
 //  3. Config denylist patterns.
 //  4. Config allowlist patterns.
@@ -25,6 +26,33 @@
 //
 // The interactive prompt path is implemented by the host (TUI / CLI REPL);
 // see prompter.go for the Prompter interface.
+//
+// # The bash denylist is defense-in-depth, NOT a security boundary
+//
+// The built-in bash denylist below (regexDenylist + the rm -rf target
+// list) runs before allow/deny/mode resolution and is not overridable
+// by config — but do NOT mistake "not overridable" for "a guarantee."
+// It is a small, pattern-based refusal list for the handful of shell
+// forms most likely to brick a machine by accident (or on the first,
+// laziest attempt by a prompt-injected model). It is trivially evaded
+// by anyone who wants to, and it is the ONLY bash protection left once
+// a command reaches yolo mode or a session/verb grant. Known bypass
+// classes it does not and cannot catch:
+//
+//   - Quoting / whitespace tricks: rm -rf "$HOME", rm -r${IFS}-f ~.
+//   - Variable / expansion indirection: X=/ ; rm -rf "$X", eval, base64
+//     | sh, $(printf ...).
+//   - Staging: curl … -o /tmp/x; sh /tmp/x (each command looks benign).
+//   - Uncovered targets: rm -rf /etc, rm -rf ~/important, mv over a
+//     device, chmod on a non-root path — the target list is a
+//     hard-coded handful, not "everything dangerous."
+//
+// A regex denylist over an unbounded shell grammar is a losing game by
+// construction; treating it as a boundary is a mistake. The hardened
+// posture is allowlist-based execution: run in `allow` mode (or `ask`
+// with a Prompter) and grant only the specific commands you intend,
+// using the safecmd-guarded prefix allow rules (see policy.go /
+// builtin_allow.go). The denylist is the seatbelt, not the brakes.
 package permissions
 
 import (
@@ -68,6 +96,11 @@ var dangerousRmTargets = map[string]struct{}{
 // IsBashDenied reports whether command matches any built-in denylist
 // pattern. The reason is a short, user-facing string suitable for
 // surfacing in a prompt or stderr.
+//
+// This is best-effort defense-in-depth, not a security boundary: a
+// false return means "no built-in pattern matched," NOT "this command
+// is safe." See the package doc for the bypass classes it cannot
+// catch and why allowlist-based execution is the hardened posture.
 func IsBashDenied(command string) (denied bool, reason string) {
 	if r := checkDangerousRm(command); r != "" {
 		return true, r

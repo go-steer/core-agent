@@ -514,9 +514,13 @@ func sessionToolKey(namespace, tool string) string {
 	return namespace + "/" + tool
 }
 
-// CheckBash gates a bash invocation. The denylist is checked first and
-// is non-overridable. After that, policy + mode determine whether the
-// call needs a prompt.
+// CheckBash gates a bash invocation. The built-in denylist is checked
+// first; it is not overridable by config, but it is best-effort
+// defense-in-depth, NOT a security boundary — a small pattern set that
+// is trivially evadable (see denylist.go). After that, policy + mode
+// determine whether the call needs a prompt. For a real bash boundary,
+// run in allow/ask mode with an explicit allowlist rather than relying
+// on the denylist.
 func (g *Gate) CheckBash(ctx context.Context, command string) error {
 	g = g.resolveSessionGate(ctx)
 	command = strings.TrimSpace(command)

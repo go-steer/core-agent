@@ -187,10 +187,10 @@ When `ask` mode prompts the user, the `Prompter` returns one of:
 | `DecisionDeny` | Reject this call. |
 | `DecisionAllowOnce` | Allow this call; prompt again next time the same call is made. |
 | `DecisionAllowSession` | Allow this exact request for the rest of the session — same `(tool, key)` pair won't re-prompt. |
-| `DecisionAllowSessionTool` | Trust the entire **tool** for the rest of the session — every call to it passes regardless of args. |
+| `DecisionAllowSessionTool` | Trust the specific **tool** for the rest of the session — every call to it passes regardless of args. For namespaced toolsets (MCP, skills) the grant is scoped **per underlying tool** (`mcp/<tool>`), so approving one MCP tool does not trust every tool from every server. |
 | `DecisionAllowAlways` | Allow + caller persists a permanent allowlist entry. The gate also remembers it for the rest of the session so persistence latency doesn't cause a re-prompt. |
 
-`DecisionAllowSessionTool` short-circuits the path-scope check too — once you trust `read_file` for the session, even out-of-scope reads pass without re-prompting. This is the affordance that prevents the "modal-soup" anti-pattern from wide-ranging tool use.
+`DecisionAllowSessionTool` suppresses the mode prompt for **in-scope** operations, but it does **not** drop the path boundary: an out-of-scope read or write still escalates via the path-scope prompt every time, even for a session-trusted file tool. Trusting `read_file` for the session silences repeat prompts for files inside your scope; it does not grant the tool the whole filesystem.
 
 ---
 

@@ -82,6 +82,14 @@ type PromptRequest struct {
 	PersistTool string // tool name to use when adding to allowlist (e.g. "bash")
 	PersistKey  string // pattern to add to allowlist
 
+	// SessionToolKey is the key under which a DecisionAllowSessionTool
+	// grant is remembered (and later checked). For most tools this is
+	// just the tool name, but for namespaced toolsets (MCP, skills) it
+	// is per-underlying-tool ("<namespace>/<tool>") so approving one
+	// MCP tool does not silently trust every tool from every MCP
+	// server (#379). Empty falls back to ToolName.
+	SessionToolKey string
+
 	// Verb, when populated, is the first whitespace-separated token of
 	// a bash command (e.g. "git" for "git push origin main"). The TUI
 	// modal uses this to offer DecisionAllowSessionVerb — broaden to

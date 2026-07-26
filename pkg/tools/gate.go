@@ -128,7 +128,11 @@ func (gt *gatedTool) Run(ctx adktool.Context, args any) (map[string]any, error) 
 	// right per-session attach broker: tool wrappers are
 	// constructed once at startup against the daemon-wide template
 	// gate, but every check looks at ctx for an override.
-	if err := gt.gate.CheckGeneric(ctx, gt.namespace, summarizeRequest(gt.inner.Name(), args)); err != nil {
+	// CheckToolCall (not CheckGeneric) keys any DecisionAllowSessionTool
+	// grant per underlying tool ("<namespace>/<tool>"), so trusting one
+	// MCP tool for the session doesn't trust every MCP tool from every
+	// server (#379). Policy allow/deny still matches on the namespace.
+	if err := gt.gate.CheckToolCall(ctx, gt.namespace, gt.inner.Name(), summarizeRequest(gt.inner.Name(), args)); err != nil {
 		return nil, err
 	}
 	return rn.Run(ctx, args)

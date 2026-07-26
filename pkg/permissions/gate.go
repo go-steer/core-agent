@@ -480,9 +480,38 @@ func (g *Gate) resolveSessionGate(ctx context.Context) *Gate {
 // (typically "mcp" or "skill"); key is the human-readable detail
 // shown in prompts (typically the tool's full namespaced name plus
 // a brief argument summary).
+//
+// A DecisionAllowSessionTool grant made through this entry point is
+// keyed by toolName (the whole namespace). Prefer CheckToolCall for
+// namespaced toolsets so the grant is scoped per underlying tool.
 func (g *Gate) CheckGeneric(ctx context.Context, toolName, key string) error {
 	g = g.resolveSessionGate(ctx)
-	return g.gateRequest(ctx, PromptKindGeneric, toolName, key, toolName, key)
+	return g.gateRequest(ctx, PromptKindGeneric, toolName, key, toolName, key, toolName)
+}
+
+// CheckToolCall gates a call to a specific tool within a namespaced
+// toolset (MCP, skills). namespace is the policy bucket used for
+// allow/deny lookups ("mcp"/"skill"); tool is the underlying tool's
+// name; key is the prompt detail (typically tool + arg summary).
+//
+// Unlike CheckGeneric, a DecisionAllowSessionTool grant here is keyed
+// per underlying tool ("<namespace>/<tool>"), so "allow every call to
+// this tool for the session" trusts only the tool the user actually
+// saw named in the prompt — not every tool from every MCP server or
+// the whole skills surface (#379). Policy allow/deny matching still
+// uses namespace, preserving the "mcp:<tool>" / "skill:<tool>"
+// pattern grammar.
+func (g *Gate) CheckToolCall(ctx context.Context, namespace, tool, key string) error {
+	g = g.resolveSessionGate(ctx)
+	return g.gateRequest(ctx, PromptKindGeneric, namespace, key, namespace, key, sessionToolKey(namespace, tool))
+}
+
+// sessionToolKey builds the per-underlying-tool session-grant key for
+// a namespaced toolset. The "/" separator can't appear in a bare
+// namespace, so the key is unambiguous and stable across grant and
+// check time (#379).
+func sessionToolKey(namespace, tool string) string {
+	return namespace + "/" + tool
 }
 
 // CheckBash gates a bash invocation. The denylist is checked first and
@@ -494,7 +523,7 @@ func (g *Gate) CheckBash(ctx context.Context, command string) error {
 	if denied, reason := IsBashDenied(command); denied {
 		return fmt.Errorf("bash refused: %s", reason)
 	}
-	return g.gateRequest(ctx, PromptKindBash, "bash", command, "bash", command)
+	return g.gateRequest(ctx, PromptKindBash, "bash", command, "bash", command, "bash")
 }
 
 // CheckFileRead gates a read-only file operation. An allow-list
@@ -503,9 +532,12 @@ func (g *Gate) CheckBash(ctx context.Context, command string) error {
 // promptForPath.
 func (g *Gate) CheckFileRead(ctx context.Context, toolName, path string) error {
 	g = g.resolveSessionGate(ctx)
-	if g.sessionToolAllowed(toolName) {
-		return nil
-	}
+	// Scope is consulted BEFORE any per-tool session grant (#380): a
+	// session-tool grant may suppress the mode prompt for in-scope
+	// operations, but it must not silently drop the path boundary and
+	// let the tool read arbitrary out-of-scope files. In-scope reads
+	// already pass without a prompt; out-of-scope reads still escalate
+	// via promptForPath even when the tool is trusted for the session.
 	access, err := g.scope.AccessFor(path)
 	if err != nil {
 		return err
@@ -531,9 +563,11 @@ func (g *Gate) CheckFileWrite(ctx context.Context, toolName, path string) error 
 	if resolved, err := ResolvePath(path); err == nil && isControlPlanePath(resolved) {
 		return g.checkControlPlaneWrite(ctx, toolName, resolved)
 	}
-	if g.sessionToolAllowed(toolName) {
-		return nil
-	}
+	// Scope is consulted BEFORE the per-tool session grant (#380).
+	// An out-of-scope write always escalates via promptForPath, even
+	// when the tool is trusted for the session — the grant suppresses
+	// the mode prompt for in-scope writes only, it does not widen the
+	// path boundary.
 	access, err := g.scope.AccessFor(path)
 	if err != nil {
 		return err
@@ -541,7 +575,10 @@ func (g *Gate) CheckFileWrite(ctx context.Context, toolName, path string) error 
 	if !access.Allows(AccessWrite) {
 		return g.promptForPath(ctx, toolName, path, AccessWrite)
 	}
-	return g.gateRequest(ctx, PromptKindFileWrite, toolName, path, toolName, path)
+	if g.sessionToolAllowed(toolName) {
+		return nil
+	}
+	return g.gateRequest(ctx, PromptKindFileWrite, toolName, path, toolName, path, toolName)
 }
 
 // checkControlPlaneWrite is the elevated gate for privilege-bearing
@@ -589,7 +626,7 @@ func (g *Gate) checkControlPlaneWrite(ctx context.Context, toolName, path string
 	return nil
 }
 
-func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, persistTool, persistKey string) error {
+func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, persistTool, persistKey, sessToolKey string) error {
 	// Plan-first pre-check runs before mode/policy logic. Even
 	// ModeYolo respects it — the operator opted into "no actions
 	// before plan" by setting RequirePlanArtifact. Once a plan is
@@ -603,7 +640,7 @@ func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, 
 	case OutcomeAllow:
 		return nil
 	}
-	if g.sessionToolAllowed(toolName) {
+	if g.sessionToolAllowed(sessToolKey) {
 		return nil
 	}
 	if g.sessionAllowed(toolName, key) {
@@ -647,13 +684,14 @@ func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, 
 		fallthrough
 	case ModeAsk:
 		return g.prompt(ctx, PromptRequest{
-			Kind:        kind,
-			ToolName:    toolName,
-			Detail:      key,
-			PersistTool: persistTool,
-			PersistKey:  persistKey,
-			Verb:        verb,
-			Source:      SubagentSourceFromContext(ctx),
+			Kind:           kind,
+			ToolName:       toolName,
+			Detail:         key,
+			PersistTool:    persistTool,
+			PersistKey:     persistKey,
+			Verb:           verb,
+			SessionToolKey: sessToolKey,
+			Source:         SubagentSourceFromContext(ctx),
 		})
 	}
 	return fmt.Errorf("%s denied: unknown permission mode %q", toolName, mode)
@@ -685,13 +723,14 @@ func (g *Gate) promptForPath(ctx context.Context, toolName, path string, op Acce
 		return nil
 	}
 	return g.prompt(ctx, PromptRequest{
-		Kind:        PromptKindPathScope,
-		ToolName:    toolName,
-		Detail:      fmt.Sprintf("%s %s (out of scope)", opLabel(op), path),
-		PersistTool: "path_scope",
-		PersistKey:  path,
-		Source:      SubagentSourceFromContext(ctx),
-		Access:      op,
+		Kind:           PromptKindPathScope,
+		ToolName:       toolName,
+		Detail:         fmt.Sprintf("%s %s (out of scope)", opLabel(op), path),
+		PersistTool:    "path_scope",
+		PersistKey:     path,
+		SessionToolKey: toolName,
+		Source:         SubagentSourceFromContext(ctx),
+		Access:         op,
 	})
 }
 
@@ -745,7 +784,15 @@ func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
 		g.recordApproval(req.ToolName, key, d)
 		return nil
 	case DecisionAllowSessionTool:
-		g.rememberSessionTool(req.ToolName)
+		// Key the tool-wide grant by SessionToolKey so namespaced
+		// toolsets (MCP/skill) remember per underlying tool, not per
+		// whole namespace (#379). Falls back to ToolName for callers
+		// that don't set it.
+		key := req.SessionToolKey
+		if key == "" {
+			key = req.ToolName
+		}
+		g.rememberSessionTool(key)
 		g.rememberSession(req.ToolName, req.Detail)
 		g.recordApproval(req.ToolName, req.Detail, d)
 		return nil

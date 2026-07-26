@@ -245,7 +245,7 @@ Configures the permission gate that consults every tool call. See [Permissions](
 | `mode` | string | `ask` | One of `ask`, `allow`, `yolo`. |
 | `allow` | string[] | `[]` | Allowlist patterns. Format: `<tool>:<glob>` or `<glob>`. |
 | `deny` | string[] | `[]` | Denylist patterns. Always wins over allow. |
-| `use_builtin_allow` | bool | `true` | Include the built-in read-only bundle in the effective allowlist (reads, greps, `list_dir`, `git status` / `git diff`, etc.). Turn off if you want to allowlist every tool from scratch. |
+| `use_builtin_allow` | bool | `true` | Include the built-in read-only bundle in the effective allowlist (reads, greps, `list_dir`, `git status` / `git diff`, etc.). Prefix-matched bash entries only auto-allow single literal simple commands — chained/piped/redirected commands and dangerous `find` predicates (`-exec`, `-delete`, …) still prompt; see [Permissions → Safe-command guard](/concepts/permissions/#safe-command-guard-on-bash-prefix-rules). Turn off if you want to allowlist every tool from scratch. |
 | `builtin_allow_extras` | string[] | `[]` | Names of additional built-in bundles to fold into the effective allowlist (e.g. `["testing", "linting"]`). See `permissions.Bundles` in the Go source for the current catalog; also configurable interactively via the `/allow-bundle` slash. |
 
 Example:

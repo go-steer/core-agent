@@ -583,7 +583,10 @@ func (a *Adapter) enumeratePeers(peers []attachclient.PeerDescriptor) []peerRow 
 				results <- out
 				return
 			}
-			c, err := a.clientFactory(p.Endpoint)
+			// Hub-advertised endpoints are attacker-influenceable —
+			// peerClientFor withholds the operator's credentials
+			// unless the endpoint host is trusted (#384).
+			c, err := a.peerClientFor(p.Endpoint)
 			if err != nil {
 				results <- out
 				return
@@ -681,9 +684,11 @@ func (a *Adapter) SwitchToSession(sessionID string) (coretui.SwitchTarget, error
 			// drift.
 			return coretui.SwitchTarget{}, fmt.Errorf("SwitchToSession: peer target %q but clientFactory not wired", sessionID)
 		}
-		peerClient, err := a.clientFactory(endpoint)
+		// Hub-advertised endpoint (recorded by Sessions()) —
+		// credentials only attach when the host is trusted (#384).
+		peerClient, err := a.peerClientFor(endpoint)
 		if err != nil {
-			return coretui.SwitchTarget{}, fmt.Errorf("clientFactory(%s): %w", endpoint, err)
+			return coretui.SwitchTarget{}, fmt.Errorf("peerClientFor(%s): %w", endpoint, err)
 		}
 		newPath, err := resolvePathOnClient(peerClient, sessionID)
 		if err != nil {
@@ -691,6 +696,7 @@ func (a *Adapter) SwitchToSession(sessionID string) (coretui.SwitchTarget, error
 		}
 		next := NewWithClientFactory(peerClient, newPath, a.clientFactory)
 		next.SetBrander(a.branderFn())
+		next.SetTrustedPeerHosts(a.trustedPeerHostsSnapshot())
 		return a.buildSwitchTarget(next, newPath,
 			"Attached to peer session "+sessionID+" ("+endpoint+")"), nil
 	}
@@ -701,6 +707,7 @@ func (a *Adapter) SwitchToSession(sessionID string) (coretui.SwitchTarget, error
 	}
 	next := NewWithClientFactory(a.client, newPath, a.clientFactory)
 	next.SetBrander(a.branderFn())
+	next.SetTrustedPeerHosts(a.trustedPeerHostsSnapshot())
 	return a.buildSwitchTarget(next, newPath, "Attached to session "+sessionID), nil
 }
 
@@ -1003,6 +1010,7 @@ func (a *Adapter) invokeAsyncSlash(ctx context.Context, name, args string) (core
 		// operator can hop again from the new session without losing
 		// multi-daemon capabilities they had before /new.
 		next := NewWithClientFactory(a.client, newPath, a.clientFactory)
+		next.SetTrustedPeerHosts(a.trustedPeerHostsSnapshot())
 		return coretui.SlashResult{
 			SwitchTo: &coretui.SwitchTarget{
 				Agent: next,
@@ -1095,6 +1103,7 @@ func (a *Adapter) dispatchAttach(ctx context.Context, args string) (coretui.Slas
 		return coretui.SlashResult{SystemMessage: "/attach: resolve path on " + rawURL + ": " + err.Error()}, nil
 	}
 	next := NewWithClientFactory(peerClient, newPath, a.clientFactory)
+	next.SetTrustedPeerHosts(a.trustedPeerHostsSnapshot())
 	return coretui.SlashResult{
 		SwitchTo: &coretui.SwitchTarget{
 			Agent: next,

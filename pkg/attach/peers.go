@@ -20,6 +20,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"sync"
 	"time"
@@ -37,13 +38,23 @@ const (
 // registration identity, the peer's reachable endpoint, opaque labels
 // for filtering, and the lease state for liveness tracking.
 type Peer struct {
-	RegistrationID string            `json:"registration_id"`
+	// RegistrationID is the capability handle for heartbeat +
+	// deregister. omitempty because GET /peers redacts it for
+	// callers other than the registration's owner or an admin
+	// (#384 — enumerate-then-delete hardening).
+	RegistrationID string            `json:"registration_id,omitempty"`
 	Name           string            `json:"name"`
 	Endpoint       string            `json:"endpoint"`
 	Labels         map[string]string `json:"labels,omitempty"`
 	RegisteredAt   time.Time         `json:"registered_at"`
 	LastHeartbeat  time.Time         `json:"last_heartbeat"`
 	LeaseExpiresAt time.Time         `json:"lease_expires_at"`
+
+	// Owner is the authenticated caller identity that registered
+	// this peer (#384). Deregistration requires the same owner or an
+	// admin. Never serialized — it's hub-side authorization state,
+	// not discovery data.
+	Owner string `json:"-"`
 }
 
 // RegisterRequest is the body the peer POSTs to /peers. Validated
@@ -126,19 +137,54 @@ var ErrPeerNameRequired = errors.New("attach: peer Name is required")
 // ErrPeerEndpointRequired is returned when RegisterRequest.Endpoint is empty.
 var ErrPeerEndpointRequired = errors.New("attach: peer Endpoint is required")
 
+// ErrPeerEndpointInvalid is returned when RegisterRequest.Endpoint is
+// not an absolute http/https URL with a host (#384). Unvalidated
+// endpoints let a hostile registrant publish javascript:/file:/
+// relative junk that downstream TUIs would then dial with operator
+// credentials.
+var ErrPeerEndpointInvalid = errors.New("attach: peer Endpoint must be an absolute http or https URL with a host")
+
+// validatePeerEndpoint enforces the #384 endpoint policy: absolute
+// URL, http or https scheme, non-empty host. Everything else —
+// javascript:, ftp:, scheme-less, relative paths, host-less URLs —
+// is rejected.
+func validatePeerEndpoint(endpoint string) error {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("%w: %q: %v", ErrPeerEndpointInvalid, endpoint, err)
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("%w: %q", ErrPeerEndpointInvalid, endpoint)
+	}
+	return nil
+}
+
 // ErrPeerNotFound is returned when Lookup / Heartbeat / Deregister
 // can't find the registration ID.
 var ErrPeerNotFound = errors.New("attach: peer registration not found")
 
-// Register adds (or upserts on Name match) a peer. Returns the
-// assigned RegistrationID + lease expiry. Name-based upsert avoids
-// orphaned entries when a peer restarts.
+// Register adds (or upserts on Name match) a peer with no recorded
+// owner. Prefer RegisterOwned where a caller identity is available —
+// ownerless registrations can only be deregistered by an admin or a
+// caller with the same (empty) identity.
 func (r *PeerRegistry) Register(req RegisterRequest) (*Peer, error) {
+	return r.RegisterOwned(req, "")
+}
+
+// RegisterOwned adds (or upserts on Name match) a peer, recording
+// owner (the authenticated caller identity) on the registration for
+// the #384 deregistration/visibility checks. Returns the assigned
+// RegistrationID + lease expiry. Name-based upsert avoids orphaned
+// entries when a peer restarts.
+func (r *PeerRegistry) RegisterOwned(req RegisterRequest, owner string) (*Peer, error) {
 	if req.Name == "" {
 		return nil, ErrPeerNameRequired
 	}
 	if req.Endpoint == "" {
 		return nil, ErrPeerEndpointRequired
+	}
+	if err := validatePeerEndpoint(req.Endpoint); err != nil {
+		return nil, err
 	}
 	ttl := time.Duration(req.HeartbeatTTLSec) * time.Second
 	if ttl <= 0 {
@@ -171,6 +217,7 @@ func (r *PeerRegistry) Register(req RegisterRequest) (*Peer, error) {
 		RegisteredAt:   now,
 		LastHeartbeat:  now,
 		LeaseExpiresAt: now.Add(ttl),
+		Owner:          owner,
 	}
 	r.byID[id] = p
 	r.byName[req.Name] = p
@@ -192,6 +239,21 @@ func (r *PeerRegistry) Heartbeat(id string) (*Peer, error) {
 	p.LastHeartbeat = now
 	p.LeaseExpiresAt = now.Add(ttl)
 	return p, nil
+}
+
+// Lookup returns a defensive copy of the peer registered under id,
+// or (nil, false) when unknown. Used by the HTTP handlers for the
+// #384 owner/admin deregistration check.
+func (r *PeerRegistry) Lookup(id string) (*Peer, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p, ok := r.byID[id]
+	if !ok {
+		return nil, false
+	}
+	cp := *p
+	cp.Labels = copyLabels(p.Labels)
+	return &cp, true
 }
 
 // Deregister removes the peer by ID. No-op on unknown id — keeps

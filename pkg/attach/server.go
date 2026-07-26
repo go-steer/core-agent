@@ -318,7 +318,11 @@ func NewServer(opts Options) (*Server, error) {
 	}
 	h.register(mux)
 	if opts.PeerRegistry != nil {
-		ph := newPeerHandlers(opts.PeerRegistry)
+		// requireAuth mirrors the session handlers' enforceACL: with
+		// multi-session on, peer registration/listing/deregistration
+		// demand a real caller identity; single-user mode keeps the
+		// transport token as the only gate (#384).
+		ph := newPeerHandlers(opts.PeerRegistry, opts.MultiSessionEnabled, opts.DefaultCaller.Identity)
 		ph.register(mux)
 	}
 	if opts.UI != nil {

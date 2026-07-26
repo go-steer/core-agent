@@ -489,12 +489,22 @@ type OTELMetricsConfig struct {
 // "Bearer ${GITHUB_TOKEN}" pick up rotated env vars without a
 // restart. The model never sets headers directly — keeps credential
 // exfiltration off the tool argument surface.
+//
+// AllowMetadataEndpoints opts back into fetching link-local and
+// cloud-metadata addresses (169.254.0.0/16 — including the
+// 169.254.169.254 metadata service — plus fe80::/10 and the AWS
+// IMDS IPv6 address fd00:ec2::254). fetch_url hard-blocks those
+// ranges in every permission mode regardless of the allowlist;
+// this flag is the only way to reach them. Default false — leave
+// it off unless you are deliberately building a metadata-service
+// integration and understand the credential-theft blast radius.
 type URLScopeConfig struct {
-	Allow          []string                     `json:"allow,omitempty"`
-	Deny           []string                     `json:"deny,omitempty"`
-	MaxBodyBytes   int                          `json:"max_body_bytes,omitempty"`
-	TimeoutSeconds int                          `json:"timeout_seconds,omitempty"`
-	Headers        map[string]map[string]string `json:"headers,omitempty"`
+	Allow                  []string                     `json:"allow,omitempty"`
+	Deny                   []string                     `json:"deny,omitempty"`
+	MaxBodyBytes           int                          `json:"max_body_bytes,omitempty"`
+	TimeoutSeconds         int                          `json:"timeout_seconds,omitempty"`
+	Headers                map[string]map[string]string `json:"headers,omitempty"`
+	AllowMetadataEndpoints bool                         `json:"allow_metadata_endpoints,omitempty"`
 }
 
 // AttachConfig holds defaults for the attach-mode listener and the

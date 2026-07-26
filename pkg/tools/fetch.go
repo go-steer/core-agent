@@ -19,7 +19,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -64,7 +66,7 @@ func NewFetchURLTool(gate *permissions.Gate, cfg *config.Config) tool.Tool {
 	t, err := functiontool.New(
 		functiontool.Config{
 			Name:        "fetch_url",
-			Description: "Fetch a URL via HTTP GET. Returns body, status, content-type, and final-URL after redirects. URLs must be in the operator's url_scope.allow list (typical: GitHub API, GCP APIs, internal cluster services). HTTPS by default; http:// only when explicitly allowed. Use this instead of `bash curl` so the URL + status land structured in the eventlog and the per-host header config can inject auth tokens for you. Body is capped (default 64KB) — pass max_bytes to override up to url_scope.max_body_bytes. Each redirect target is re-checked against the allowlist; a redirect to a denied host is an error, not a silent follow.",
+			Description: "Fetch a URL via HTTP GET. Returns body, status, content-type, and final-URL after redirects. URLs must be in the operator's url_scope.allow list (typical: GitHub API, GCP APIs, internal cluster services). HTTPS by default; http:// only when explicitly allowed. Use this instead of `bash curl` so the URL + status land structured in the eventlog and the per-host header config can inject auth tokens for you. Body is capped (default 64KB) — pass max_bytes to override up to url_scope.max_body_bytes. Each redirect target is re-checked against the allowlist; a redirect to a denied host is an error, not a silent follow. Link-local/cloud-metadata addresses (169.254.0.0/16, fe80::/10) are always refused; loopback and private-range addresses are refused unless the exact host appears in url_scope.allow (a wildcard entry does not unlock them).",
 		},
 		fetchURLFunc(gate, cfg),
 	)
@@ -74,9 +76,24 @@ func NewFetchURLTool(gate *permissions.Gate, cfg *config.Config) tool.Tool {
 	return t
 }
 
+// fetchResolver is the DNS seam: it resolves a hostname to the set
+// of IPs the guarded dialer is allowed to consider. Tests inject a
+// fake; production uses net.DefaultResolver.
+type fetchResolver func(ctx context.Context, host string) ([]netip.Addr, error)
+
+func defaultFetchResolver(ctx context.Context, host string) ([]netip.Addr, error) {
+	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+}
+
 // fetchURLFunc is the handler, extracted so tests can drive it
 // without going through ADK's functiontool wrapper.
 func fetchURLFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[fetchURLArgs, fetchURLResult] {
+	return fetchURLFuncWithResolver(gate, cfg, nil)
+}
+
+// fetchURLFuncWithResolver is fetchURLFunc with an injectable DNS
+// resolver. resolve == nil means net.DefaultResolver.
+func fetchURLFuncWithResolver(gate *permissions.Gate, cfg *config.Config, resolve fetchResolver) functiontool.Func[fetchURLArgs, fetchURLResult] {
 	scope := cfg.URLScope
 	matcher := newURLMatcher(scope.Allow, scope.Deny)
 	timeout := fetchURLDefaultTimeout
@@ -86,6 +103,39 @@ func fetchURLFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[
 	scopeCap := scope.MaxBodyBytes
 	if scopeCap <= 0 {
 		scopeCap = fetchURLDefaultMaxBodyBytes
+	}
+	if resolve == nil {
+		resolve = defaultFetchResolver
+	}
+	guard := &ssrfGuard{
+		matcher:       matcher,
+		allowMetadata: scope.AllowMetadataEndpoints,
+		resolve:       resolve,
+	}
+	// One transport for the tool's lifetime: every connection —
+	// initial request and each redirect hop alike — dials through
+	// the guard, which resolves the host once, validates every
+	// returned IP, and dials only a vetted IP (SSRF / DNS-rebinding
+	// defense; see ssrfGuard).
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = guard.dialContext
+	client := &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= fetchURLMaxRedirects {
+				return fmt.Errorf("fetch_url: stopped after %d redirects", fetchURLMaxRedirects)
+			}
+			if err := matcher.check(req.URL); err != nil {
+				return fmt.Errorf("fetch_url: redirect %s", err)
+			}
+			// Early literal-IP screen for a clearer error; the
+			// dial-time guard remains authoritative for hostnames.
+			if err := guard.checkURL(req.URL); err != nil {
+				return fmt.Errorf("fetch_url: redirect %s", err)
+			}
+			return nil
+		},
 	}
 	return func(ctx tool.Context, in fetchURLArgs) (fetchURLResult, error) {
 		if in.URL == "" {
@@ -110,26 +160,27 @@ func fetchURLFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[
 		if err := matcher.check(parsed); err != nil {
 			return fetchURLResult{}, err
 		}
+		// Early literal-IP screen for a clearer error; the dial-time
+		// guard remains authoritative for hostnames.
+		if err := guard.checkURL(parsed); err != nil {
+			return fetchURLResult{}, fmt.Errorf("fetch_url: %w", err)
+		}
 
 		cap := in.MaxBytes
 		if cap <= 0 || cap > scopeCap {
 			cap = scopeCap
 		}
 
-		client := &http.Client{
-			Timeout: timeout,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= fetchURLMaxRedirects {
-					return fmt.Errorf("fetch_url: stopped after %d redirects", fetchURLMaxRedirects)
-				}
-				if err := matcher.check(req.URL); err != nil {
-					return fmt.Errorf("fetch_url: redirect %s", err)
-				}
-				return nil
-			},
+		// Parent the request on the inbound tool ctx (not
+		// context.Background) so the turn-level cancel signal —
+		// /interrupt, daemon shutdown — aborts an in-flight fetch.
+		// tool.Context is an interface; some tests pass nil. Fall
+		// back to Background in that case.
+		parent := context.Context(ctx)
+		if parent == nil {
+			parent = context.Background()
 		}
-
-		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, parsed.String(), nil)
+		req, err := http.NewRequestWithContext(parent, http.MethodGet, parsed.String(), nil)
 		if err != nil {
 			return fetchURLResult{}, fmt.Errorf("fetch_url: build request: %w", err)
 		}
@@ -387,4 +438,160 @@ func matchHost(host, pattern string) bool {
 		return strings.HasSuffix(host, suffix) && host != suffix[1:]
 	}
 	return false
+}
+
+// allowsExactHost reports whether an allow entry names this host
+// exactly — no wildcard in the host part. An exact entry is the
+// operator explicitly opting THIS host in, which is what unlocks
+// loopback/private-range destinations for it; a wildcard/broad entry
+// ("*", "*.svc.cluster.local") deliberately does not. The port must
+// still satisfy the entry's port pattern ("" / "*" = any). Scheme is
+// not consulted here — scheme enforcement already happened in
+// urlMatcher.check; this is purely "did the operator name the host".
+func (m *urlMatcher) allowsExactHost(host, port string) bool {
+	host = strings.ToLower(host)
+	for _, p := range m.allow {
+		if p.host == "" || strings.Contains(p.host, "*") {
+			continue
+		}
+		if p.host != host {
+			continue
+		}
+		if p.port != "" && p.port != "*" && p.port != port {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// --- SSRF guard ---------------------------------------------------------
+//
+// The allowlist above matches host *names*; the guard below vets the
+// *addresses* those names resolve to, at dial time. Doing the check
+// inside DialContext closes the classic TOCTOU/DNS-rebinding gap: the
+// host is resolved exactly once, every returned IP is validated, and
+// the connection is dialed to one of those same vetted IPs (never a
+// second, attacker-controlled resolution). TLS SNI and the Host
+// header are untouched — the transport still sees the original
+// hostname; only the TCP dial target is pinned. Every redirect hop
+// opens its connection through the same path, so each hop is
+// re-validated and re-pinned.
+
+// fetchAlwaysBlockedRanges are hard-blocked in every permission mode
+// (including yolo) regardless of the allowlist: link-local ranges,
+// which include the cloud metadata services (169.254.169.254, AWS
+// IMDSv6 fd00:ec2::254). The only opt-out is the explicit
+// url_scope.allow_metadata_endpoints config flag.
+var fetchAlwaysBlockedRanges = []netip.Prefix{
+	netip.MustParsePrefix("169.254.0.0/16"),    // IPv4 link-local incl. 169.254.169.254
+	netip.MustParsePrefix("fe80::/10"),         // IPv6 link-local
+	netip.MustParsePrefix("fd00:ec2::254/128"), // AWS IMDS IPv6
+}
+
+// fetchPrivateRanges are blocked unless the request host is named by
+// an exact (non-wildcard) allowlist entry — the operator explicitly
+// opting that host in unlocks its private destination; a broad
+// wildcard entry does not.
+var fetchPrivateRanges = []netip.Prefix{
+	netip.MustParsePrefix("127.0.0.0/8"),    // IPv4 loopback
+	netip.MustParsePrefix("::1/128"),        // IPv6 loopback
+	netip.MustParsePrefix("10.0.0.0/8"),     // RFC1918
+	netip.MustParsePrefix("172.16.0.0/12"),  // RFC1918
+	netip.MustParsePrefix("192.168.0.0/16"), // RFC1918
+	netip.MustParsePrefix("100.64.0.0/10"),  // CGNAT
+	netip.MustParsePrefix("fc00::/7"),       // IPv6 ULA
+}
+
+// ssrfGuard vets destination IPs and pins the vetted resolution
+// through to the dial. It backs the tool's http.Transport.DialContext.
+type ssrfGuard struct {
+	matcher       *urlMatcher
+	allowMetadata bool
+	resolve       fetchResolver
+}
+
+// checkAddr validates one candidate address. exactHost says whether
+// the request host is named by an exact allowlist entry (which
+// unlocks the private ranges, never the metadata ranges).
+func (g *ssrfGuard) checkAddr(addr netip.Addr, host string, exactHost bool) error {
+	a := addr.Unmap() // ::ffff:127.0.0.1 → 127.0.0.1
+	if !g.allowMetadata {
+		for _, p := range fetchAlwaysBlockedRanges {
+			if p.Contains(a) {
+				return fmt.Errorf("url_scope: %s resolves to %s, a link-local/metadata address; blocked in all modes (url_scope.allow_metadata_endpoints is the only opt-out)", host, a)
+			}
+		}
+	}
+	if exactHost {
+		return nil
+	}
+	for _, p := range fetchPrivateRanges {
+		if p.Contains(a) {
+			return fmt.Errorf("url_scope: %s resolves to %s, a loopback/private address; blocked unless the exact host is listed in url_scope.allow (wildcard entries do not unlock private ranges)", host, a)
+		}
+	}
+	return nil
+}
+
+// checkURL screens a URL whose host is an IP literal, so an obviously
+// blocked target fails with a direct error before any dial. Hostname
+// targets pass through — they are resolved and vetted in dialContext.
+func (g *ssrfGuard) checkURL(u *url.URL) error {
+	host := u.Hostname()
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return nil // not an IP literal; dialContext handles it
+	}
+	port := u.Port()
+	if port == "" {
+		if strings.EqualFold(u.Scheme, "http") {
+			port = "80"
+		} else {
+			port = "443"
+		}
+	}
+	return g.checkAddr(addr, host, g.matcher.allowsExactHost(host, port))
+}
+
+// dialContext resolves addr's host once, validates every returned IP
+// (any bad IP rejects the whole dial), then dials only the vetted
+// IPs. This is the authoritative SSRF check — it runs for the initial
+// request and for every redirect hop.
+func (g *ssrfGuard) dialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("url_scope: split %q: %w", addr, err)
+	}
+	exact := g.matcher.allowsExactHost(host, port)
+
+	var addrs []netip.Addr
+	if ip, perr := netip.ParseAddr(host); perr == nil {
+		addrs = []netip.Addr{ip}
+	} else {
+		addrs, err = g.resolve(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("url_scope: resolve %s: %w", host, err)
+		}
+		if len(addrs) == 0 {
+			return nil, fmt.Errorf("url_scope: resolve %s: no addresses", host)
+		}
+	}
+	// Validate the full set before dialing anything: a host that
+	// mixes a public IP with a private one is treated as hostile.
+	for _, a := range addrs {
+		if err := g.checkAddr(a, host, exact); err != nil {
+			return nil, err
+		}
+	}
+	d := &net.Dialer{}
+	var lastErr error
+	for _, a := range addrs {
+		conn, derr := d.DialContext(ctx, network, net.JoinHostPort(a.Unmap().String(), port))
+		if derr == nil {
+			return conn, nil
+		}
+		lastErr = derr
+	}
+	return nil, lastErr
 }

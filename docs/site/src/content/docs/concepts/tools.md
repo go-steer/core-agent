@@ -32,7 +32,7 @@ Tools are grouped by domain — files, search, shell, data + network, planning, 
 | Tool | Purpose | Key parameters |
 |---|---|---|
 | `json_query` | Run a jq expression against JSON loaded from a file or supplied inline. | `expression`, `path?` or `data?` |
-| `fetch_url` | HTTP GET against an operator-configured allowlist. **Default-deny**: not registered at all when `cfg.URLScope.Allow` is empty, so the model never sees a tool that would refuse every call. | `url` |
+| `fetch_url` | HTTP GET against an operator-configured allowlist. **Default-deny**: not registered at all when `cfg.URLScope.Allow` is empty, so the model never sees a tool that would refuse every call. Built-in SSRF guard: link-local/cloud-metadata IPs are always blocked, loopback/private ranges require an exact-host allowlist entry, and resolved IPs are pinned through to the dial (DNS-rebinding defense) — see [`url_scope`](/reference/configuration/#url_scope). | `url` |
 
 ### Shell
 

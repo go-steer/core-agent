@@ -26,11 +26,24 @@ const (
 //
 // Conservative-by-construction: every entry here is a verb the LLM
 // commonly uses for inspection, with no `-i`/`-w`/`--delete`-style
-// mutating flag in the pattern. `find *` is the one knowing
-// concession — find has a `-delete` / `-exec rm` escape hatch, but
-// excluding it makes the read-only baseline frustrating in practice
-// and the bash denylist still blocks `rm -rf /` style targets if the
-// LLM tries to chain destructively through it.
+// mutating flag in the pattern. Two mechanisms in policy.go keep the
+// prefix-matched (`<verb> *`) entries honest:
+//
+//   - safecmd (safecmd.go): a prefix rule only auto-allows a single
+//     simple command with a fully literal argv — chained commands
+//     (`cat f; rm -rf ~`), pipes, redirections, and any expansion
+//     fall through to normal prompting instead of matching.
+//   - Verb profiles (verbAutoAllowDenyTokens): per-verb argv-token
+//     denylists that strip the auto-allow from otherwise read-only
+//     verbs when a dangerous predicate appears. This is what keeps
+//     `find *` in the bundle: `find . -name '*.go'` auto-allows, but
+//     `find . -exec ...` / `find . -delete` prompt.
+//
+// awk and sed are deliberately NOT in the bundle: their danger lives
+// in the program text (`awk 'BEGIN{system(...)}'`), which no amount
+// of argv-level flag filtering can classify — a literal argv is
+// exactly the attack. Verbs whose payload is code don't get prefix
+// entries.
 var Bundles = map[string][]string{
 	BundleReadOnly: {
 		// Identity / environment
@@ -74,8 +87,6 @@ var Bundles = map[string][]string{
 		"bash:uniq *",
 		"bash:cut *",
 		"bash:tr *",
-		"bash:awk *",
-		"bash:sed -n*",
 		// Tool lookup
 		"bash:which *",
 		"bash:type *",
@@ -90,7 +101,8 @@ var Bundles = map[string][]string{
 		"bash:free *",
 		"bash:ps",
 		"bash:ps *",
-		// Find (read-only by convention; documented caveat above)
+		// Find (guarded by the find verb profile in safecmd.go:
+		// -exec/-delete/... predicates fall back to prompting)
 		"bash:find *",
 	},
 	BundleDevTools: {

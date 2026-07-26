@@ -137,7 +137,16 @@ func NewPathScopeFromEntries(projectRoot, userRoot string, entries []pathEntry) 
 		if err != nil {
 			return nil, fmt.Errorf("path scope: %w", err)
 		}
-		s.roots = append(s.roots, filepath.Clean(abs))
+		abs = filepath.Clean(abs)
+		s.roots = append(s.roots, abs)
+		// Request paths are compared in symlink-RESOLVED form (see
+		// AccessFor), so a root that itself sits behind a symlink
+		// (macOS /tmp, a symlinked workspace) must also be present
+		// in resolved form or every in-root path would look
+		// out-of-scope. Keep both spellings; duplicates are cheap.
+		if resolved, rerr := resolveSymlinks(abs); rerr == nil && resolved != abs {
+			s.roots = append(s.roots, resolved)
+		}
 	}
 	for _, e := range entries {
 		if e.Pattern == "" {
@@ -178,14 +187,24 @@ func (s *PathScope) AllowList() []string {
 // permissive exception inside a less-permissive parent. Returns
 // AccessNone when nothing covers the path.
 //
-// The path is resolved to an absolute, cleaned form before
-// comparison; symlinks are not followed (we trust the input).
+// The path is resolved to an absolute, cleaned, SYMLINK-RESOLVED
+// form before comparison (ResolvePath). The file tools follow
+// symlinks at the OS level, so checking the lexical path would let
+// an in-scope symlink alias /etc, ~/.ssh, or any other out-of-scope
+// target past the gate (#374) — under a prompt-injection threat
+// model the input path cannot be trusted. Not-yet-existing tails are
+// classified by their deepest existing ancestor's real location; any
+// other resolution failure fails closed (the path is treated as
+// out-of-scope, so it prompts in ask mode and is denied where
+// prompting is impossible). There is no opt-out.
 func (s *PathScope) AccessFor(path string) (Access, error) {
-	abs, err := filepath.Abs(expandUser(path))
+	abs, err := ResolvePath(path)
 	if err != nil {
-		return AccessNone, fmt.Errorf("path scope: %w", err)
+		// Fail closed: unresolvable paths are out-of-scope, not
+		// errors — the caller escalates to the out-of-scope prompt
+		// (or denial) instead of aborting with a resolution error.
+		return AccessNone, nil
 	}
-	abs = filepath.Clean(abs)
 
 	for _, root := range s.roots {
 		if isInside(abs, root) {

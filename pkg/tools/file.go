@@ -215,8 +215,15 @@ func listDirFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[l
 }
 
 // absolutize resolves a possibly-relative path against the working
-// directory and cleans it. We deliberately do NOT call EvalSymlinks
-// here so the path the user typed is what the gate sees.
+// directory, cleans it, and resolves symlinks (#374). The gate and
+// the actual file I/O must see the same real target: os.ReadFile /
+// atomicWrite / os.Remove follow symlinks at the OS level, so gating
+// the lexical path would let an in-scope symlink alias an
+// out-of-scope file. Not-yet-existing paths (new-file writes) are
+// resolved through their deepest existing ancestor; when resolution
+// fails for any other reason the lexical path is kept and the scope
+// check fails closed on its own resolution attempt (see
+// permissions.PathScope.AccessFor).
 func absolutize(path string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("path is required")
@@ -230,7 +237,11 @@ func absolutize(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Clean(abs), nil
+	abs = filepath.Clean(abs)
+	if resolved, err := permissions.ResolvePath(abs); err == nil {
+		return resolved, nil
+	}
+	return abs, nil
 }
 
 // sliceLines extracts a window of lines [offset, offset+limit). offset

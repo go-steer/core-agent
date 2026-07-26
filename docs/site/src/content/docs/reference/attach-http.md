@@ -21,6 +21,13 @@ Two orthogonal layers run on every request:
 - **Shared bearer token** — `--attach-token=<ENVVAR>` on the daemon side. Constant-time compare. Header precedence: `X-Attach-Token` wins over `Authorization: Bearer` even when wrong. See [Attach TUI § Behind an identity gateway](/reference/attach-tui/#behind-an-identity-gateway-cloud-run-iam-iap-cloudflare-access-) for why the two-header split exists.
 - **Read-only mode** — `--attach-readonly` returns **403** for any non-`GET/HEAD/OPTIONS` request without further checks.
 
+**Browser CSRF protection** (v2.8+, [#383](https://github.com/go-steer/core-agent/issues/383), [`pkg/attach/csrf.go`](https://github.com/go-steer/core-agent/blob/main/pkg/attach/csrf.go)) — applies to every state-changing request (any method other than `GET`/`HEAD`/`OPTIONS`), regardless of token/auth mode:
+
+- **`Content-Type: application/json` is required** on writes — even body-less ones (`/interrupt`, `/pricing/refresh`, `DELETE`s, peer heartbeats) — otherwise **415**. This kills the CORS "simple request" vector (`text/plain` POST fires without a preflight).
+- **Origin enforcement** — when an `Origin` header is present it must be a loopback origin (`localhost` / `127.0.0.0/8` / `[::1]`) or a self origin (host matching the request's `Host`), otherwise **403**. Browsers always attach `Origin` to cross-site POSTs; native clients (curl, `core-agent-tui`, SDKs) send no `Origin` and pass untouched. The literal `null` origin (sandboxed iframes, `file://` pages) is rejected.
+
+Scripted callers: add `-H "Content-Type: application/json"` to every `curl -X POST/DELETE` against this API.
+
 **Per-caller layer** ([`pkg/attach/caller_middleware.go`](https://github.com/go-steer/core-agent/blob/main/pkg/attach/caller_middleware.go)):
 
 Resolves an `auth.Caller{Identity, Labels, Admin}` via a pluggable `auth.Authenticator`:
@@ -59,6 +66,8 @@ Most callers can use the shortcut. Multi-app daemons (rare — `attach.multi_app
 
 | Header | Direction | Purpose |
 |---|---|---|
+| `Content-Type: application/json` | request | **Required on every state-changing request** (non-`GET`/`HEAD`/`OPTIONS`), body or not — **415** otherwise. CSRF protection ([#383](https://github.com/go-steer/core-agent/issues/383)). |
+| `Origin` | request | Checked on state-changing requests: non-loopback, non-self origins → **403**. Absent (native clients) passes. |
 | `X-Attach-Token` | request | Transport bearer token; wins over `Authorization`. |
 | `Authorization: Bearer <token>` | request | Transport bearer fallback. |
 | `X-Asserted-Caller` | request | Proxy identity assertion (multi-session only). Header name overridable. |
@@ -245,11 +254,12 @@ Consumers MUST tolerate unknown values and MUST NOT crash on missing keys.
 | **301** | Redirect — `/ui` → `/ui/`. |
 | **400** | Bad request — empty required field (message, patterns, ...). |
 | **401** | Unauthenticated — missing / wrong bearer token; bad proxy assertion. |
-| **403** | Forbidden — `--attach-readonly` writes; delete of the bootstrap `"default"` session. |
+| **403** | Forbidden — `--attach-readonly` writes; delete of the bootstrap `"default"` session; cross-origin `Origin` header on a write (CSRF protection). |
 | **404** | Not found OR auth-deny (deliberately indistinguishable to avoid SID enumeration). |
 | **405** | Method not allowed — e.g. `POST /.well-known/agent-card.json`. |
 | **409** | Conflict — shortcut SID ambiguous across apps; `POST /sessions` on `ErrSessionExists`. |
 | **412** | Precondition failed — session has no eventlog (SSE reader); no `InterruptProvider` (interrupt). |
+| **415** | Unsupported media type — state-changing request without `Content-Type: application/json` (CSRF protection). |
 | **500** | Internal error — factory failure on `POST /sessions`; second `DELETE` of a gone session. |
 | **501** | Not implemented — capability provider absent (`SessionFactory`, `InterruptProvider`, `PromptBrokerProvider`, wake `target`, etc.). |
 

@@ -690,7 +690,10 @@ func (c *Client) do(ctx context.Context, method, suffix string, body any) (*http
 	if err != nil {
 		return nil, err
 	}
-	if body != nil {
+	// Stamp the JSON content type on every write, body or not — the
+	// server requires it on state-changing endpoints as part of its
+	// browser-CSRF protection (#383).
+	if body != nil || (method != http.MethodGet && method != http.MethodHead) {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if err := c.auth(req); err != nil {

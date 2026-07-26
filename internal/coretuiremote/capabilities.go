@@ -1073,7 +1073,7 @@ func (a *Adapter) dispatchAttach(ctx context.Context, args string) (coretui.Slas
 		}
 		if len(descs) == 0 {
 			return coretui.SlashResult{
-				SystemMessage: "/attach: " + rawURL + " has no sessions. Post one via `curl -X POST " + rawURL + "/sessions` first, then rerun.",
+				SystemMessage: "/attach: " + rawURL + " has no sessions. Post one via `curl -X POST -H 'Content-Type: application/json' " + rawURL + "/sessions` first, then rerun.",
 			}, nil
 		}
 		var sb strings.Builder

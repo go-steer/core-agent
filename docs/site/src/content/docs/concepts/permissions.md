@@ -119,7 +119,7 @@ Pattern syntax:
 | Standard `path/filepath.Match` glob | Glob match against absolute paths. |
 | Leading `~` or `~/` | Expanded to `os.UserHomeDir()`. |
 
-Symlinks are not followed — the input path is trusted as-is.
+Symlinks are resolved (`filepath.EvalSymlinks`) before every scope check, with no opt-out. The file tools follow symlinks at the OS level, so a symlink inside the project root pointing at `/etc`, `~/.ssh`, or `~/.aws/credentials` is classified by its **real** target, not its in-scope name — it prompts (in `ask` mode) or is denied like any other out-of-scope path. New-file writes into a not-yet-existing path are classified by the deepest existing ancestor directory's real location; any resolution failure fails closed (treated as out-of-scope).
 
 ### Typed r/w/rw entries + CLI `--allow-path`
 

@@ -17,6 +17,7 @@ package anthropic
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"google.golang.org/genai"
@@ -135,8 +136,19 @@ func mapRole(r string) anthropic.MessageParamRole {
 	}
 }
 
+// redactedThinkingPrefix marks a ThoughtSignature as carrying an
+// Anthropic redacted_thinking payload rather than a plain thinking
+// signature. genai.Part has no field for the opaque encrypted Data a
+// redacted block must echo back verbatim, so it rides in
+// ThoughtSignature behind this marker; finalResponseFromMessage writes
+// it, partsToBlocks peels it. The prefix can't collide with a real
+// signature reading it back — signatures are base64-ish opaque tokens
+// and the prefix is only interpreted on parts we stamped Thought=true.
+const redactedThinkingPrefix = "anthropic-redacted-thinking:"
+
 // partsToBlocks converts genai Parts into Anthropic content blocks.
-// Supported part types: text, FunctionCall (assistant tool_use),
+// Supported part types: thought (assistant thinking/redacted_thinking,
+// round-tripped for #357), text, FunctionCall (assistant tool_use),
 // FunctionResponse (user tool_result). Inline image data + other
 // genai part types are skipped with a TODO marker — easy to add later.
 func partsToBlocks(parts []*genai.Part) ([]anthropic.ContentBlockParamUnion, error) {
@@ -146,6 +158,12 @@ func partsToBlocks(parts []*genai.Part) ([]anthropic.ContentBlockParamUnion, err
 			continue
 		}
 		switch {
+		case p.Thought:
+			// Must precede the Text case: a thinking part carries its
+			// text in Part.Text with Thought=true.
+			if block, ok := thoughtBlock(p); ok {
+				out = append(out, block)
+			}
 		case p.Text != "":
 			out = append(out, anthropic.NewTextBlock(p.Text))
 		case p.FunctionCall != nil:
@@ -159,6 +177,31 @@ func partsToBlocks(parts []*genai.Part) ([]anthropic.ContentBlockParamUnion, err
 		}
 	}
 	return out, nil
+}
+
+// thoughtBlock rebuilds the Anthropic thinking/redacted_thinking block
+// a Thought part was converted from. Returns ok=false for thought
+// parts that can't be replayed to Anthropic: parts with no signature
+// (e.g. Gemini thought summaries after a mid-session provider switch,
+// or display-only thoughts) — the API rejects thinking blocks without
+// a valid signature, and it only requires replay of blocks it itself
+// produced, so dropping foreign ones is both necessary and safe.
+func thoughtBlock(p *genai.Part) (anthropic.ContentBlockParamUnion, bool) {
+	sig := string(p.ThoughtSignature)
+	if data, ok := strings.CutPrefix(sig, redactedThinkingPrefix); ok {
+		return anthropic.ContentBlockParamUnion{
+			OfRedactedThinking: &anthropic.RedactedThinkingBlockParam{Data: data},
+		}, true
+	}
+	if sig == "" || p.Text == "" {
+		return anthropic.ContentBlockParamUnion{}, false
+	}
+	return anthropic.ContentBlockParamUnion{
+		OfThinking: &anthropic.ThinkingBlockParam{
+			Thinking:  p.Text,
+			Signature: sig,
+		},
+	}, true
 }
 
 // functionCallBlock builds an assistant-side tool_use content block.

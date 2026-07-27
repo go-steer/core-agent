@@ -33,6 +33,29 @@ func finalResponseFromMessage(msg *anthropic.Message) (*genai.Content, genai.Fin
 			if v.Text != "" {
 				content.Parts = append(content.Parts, &genai.Part{Text: v.Text})
 			}
+		case anthropic.ThinkingBlock:
+			// Thinking blocks must survive the genai round-trip: on
+			// thinking-default models (claude-sonnet-5 / opus-5 /
+			// fable-5) the API requires the assistant turn preceding
+			// a tool_result to replay its thinking blocks, signature
+			// intact — dropping them 400s the second request of every
+			// tool loop (#357). genai.Part carries them natively as
+			// Thought + ThoughtSignature.
+			content.Parts = append(content.Parts, &genai.Part{
+				Text:             v.Thinking,
+				Thought:          true,
+				ThoughtSignature: []byte(v.Signature),
+			})
+		case anthropic.RedactedThinkingBlock:
+			// Redacted thinking is an opaque encrypted payload that
+			// must be echoed back verbatim. genai has no dedicated
+			// field, so the payload rides in ThoughtSignature behind
+			// a marker prefix; partsToBlocks peels it back into a
+			// redacted_thinking block on the way out.
+			content.Parts = append(content.Parts, &genai.Part{
+				Thought:          true,
+				ThoughtSignature: []byte(redactedThinkingPrefix + v.Data),
+			})
 		case anthropic.ToolUseBlock:
 			args, _ := decodeArgs(v.Input)
 			content.Parts = append(content.Parts, &genai.Part{

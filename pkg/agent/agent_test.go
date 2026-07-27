@@ -362,3 +362,57 @@ func flattenText(contents []*genai.Content) string {
 	}
 	return b.String()
 }
+
+func TestRunWithContents_DeletesSessionAfterTurn(t *testing.T) {
+	t.Parallel()
+	rec := &recordingLLM{}
+	svc := session.InMemoryService()
+	a, err := New(rec, WithSessionService(svc))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	countRWCSessions := func() int {
+		resp, err := svc.List(context.Background(), &session.ListRequest{
+			AppName: a.appName,
+			UserID:  a.userID,
+		})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		n := 0
+		for _, s := range resp.Sessions {
+			if strings.HasPrefix(s.ID(), "rwc-") {
+				n++
+			}
+		}
+		return n
+	}
+
+	contents := []*genai.Content{
+		{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "hello"}}},
+	}
+	for i := 0; i < 3; i++ {
+		for _, err := range a.RunWithContents(context.Background(), contents) {
+			if err != nil {
+				t.Fatalf("RunWithContents call %d: %v", i, err)
+			}
+		}
+	}
+	// Every call creates a fresh rwc-<hex> session; each must be
+	// deleted once its iterator completes — the AX adapter calls
+	// RunWithContents once per turn, so leftover rows grow without
+	// bound (#372).
+	if n := countRWCSessions(); n != 0 {
+		t.Errorf("leftover rwc- sessions after 3 completed calls = %d, want 0", n)
+	}
+
+	// A caller that stops consuming early must also clean up: the
+	// break ends the iterator, and the deferred delete still runs.
+	for range a.RunWithContents(context.Background(), contents) {
+		break
+	}
+	if n := countRWCSessions(); n != 0 {
+		t.Errorf("leftover rwc- sessions after early-break call = %d, want 0", n)
+	}
+}

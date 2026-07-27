@@ -682,3 +682,54 @@ func TestSpawn_BudgetExceedanceClassifiedAsDeferred(t *testing.T) {
 		t.Fatal("no terminal alert was pushed after subagent finished")
 	}
 }
+
+// TestSpawn_NameReusableAfterTerminal pins the eviction contract on
+// Spawn's name-collision check: a handle in a terminal state
+// (completed / failed / stopped / deferred) no longer burns its name
+// forever — the next Spawn of that name evicts it and proceeds. A
+// RUNNING holder still collides (#372). A synthetic handle keeps the
+// running/terminal transitions deterministic instead of racing a real
+// subagent's completion.
+func TestSpawn_NameReusableAfterTerminal(t *testing.T) {
+	t.Parallel()
+	mgr, _ := newFakeManager(t)
+	newTestParent(t, mgr)
+	defer mgr.Close()
+
+	stale := &Handle{Name: "shared", status: StatusRunning, done: make(chan struct{})}
+	mgr.mu.Lock()
+	mgr.agents["shared"] = stale
+	mgr.mu.Unlock()
+
+	// Running holder: still a collision.
+	_, err := mgr.Spawn(context.Background(), "", Spec{
+		Name: "shared", SystemPrompt: "p", Goal: "g",
+	})
+	if !errors.Is(err, ErrSubagentExists) {
+		t.Fatalf("Spawn over RUNNING holder: err = %v, want ErrSubagentExists", err)
+	}
+
+	// Terminal holder: evicted, spawn succeeds.
+	stale.mu.Lock()
+	stale.status = StatusStopped
+	stale.mu.Unlock()
+
+	h, err := mgr.Spawn(context.Background(), "", Spec{
+		Name: "shared", SystemPrompt: "p", Goal: "g",
+	})
+	if err != nil {
+		t.Fatalf("Spawn after terminal holder: %v", err)
+	}
+	if h == stale {
+		t.Fatal("Spawn returned the stale handle; want a fresh one")
+	}
+	got, ok := mgr.Get("shared")
+	if !ok || got != h {
+		t.Errorf("Get(shared) = (%p, %v), want the fresh handle %p", got, ok, h)
+	}
+	select {
+	case <-h.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("re-spawned subagent never finished")
+	}
+}

@@ -38,6 +38,12 @@ const DefaultRefreshSource = "https://raw.githubusercontent.com/BerriAI/litellm/
 // session.
 const DefaultRefreshInterval = 24 * time.Hour
 
+// maxPricingBodyBytes caps how much of the remote pricing body
+// Refresh will buffer. The LiteLLM catalog is ~2-3 MiB today; a body
+// larger than this cap is treated as a fetch failure (cache
+// preserved) rather than read into memory unbounded.
+const maxPricingBodyBytes = 32 << 20 // 32 MiB
+
 // RefreshOptions controls the refresh fetch. All fields optional;
 // defaults match a production launch (LiteLLM upstream, 24h cadence,
 // no max-size cap, 30s timeout). Tests + air-gapped mirrors override
@@ -182,11 +188,27 @@ func Refresh(ctx context.Context, userHome string, opts RefreshOptions) (Refresh
 		}, nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	// Cap the read: the body comes from a remote (if trusted) source,
+	// and an unbounded ReadAll would let a misbehaving server or
+	// misconfigured mirror OOM the process. The LiteLLM catalog is
+	// ~2-3 MiB today; 32 MiB leaves an order of magnitude of headroom.
+	// Read cap+1 so a body of exactly cap bytes still passes.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPricingBodyBytes+1))
 	if err != nil {
 		return RefreshOutcome{
 			NetworkFailed: true,
 			NetworkError:  fmt.Errorf("pricing refresh: read body: %w", err),
+			FetchedAt:     existingFetchedAt,
+			StaleAge:      ageOrZero(now, existingFetchedAt),
+			ModelCount:    externalCount(existing),
+		}, nil
+	}
+	if len(body) > maxPricingBodyBytes {
+		err := fmt.Errorf("pricing refresh: response from %s exceeds the %d-byte cap (%d MiB); refusing to buffer it",
+			opts.Source, maxPricingBodyBytes, maxPricingBodyBytes>>20)
+		return RefreshOutcome{
+			NetworkFailed: true,
+			NetworkError:  err,
 			FetchedAt:     existingFetchedAt,
 			StaleAge:      ageOrZero(now, existingFetchedAt),
 			ModelCount:    externalCount(existing),

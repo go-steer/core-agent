@@ -15,10 +15,12 @@
 package pricing
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -396,5 +398,56 @@ func TestRefresh_BadSourceURLHardErrors(t *testing.T) {
 	})
 	if err == nil {
 		t.Error("malformed Source URL should hard-error")
+	}
+}
+
+// TestRefresh_OversizedBodyRejectedAndKeepsCache pins the read cap on
+// the remote pricing body: a response larger than maxPricingBodyBytes
+// is rejected with a clear error naming the cap instead of being
+// buffered unbounded, and the existing cache is preserved (#372).
+func TestRefresh_OversizedBodyRejectedAndKeepsCache(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// One byte past the cap. Streamed in chunks so the handler
+		// doesn't allocate a 32 MiB string.
+		chunk := bytes.Repeat([]byte("x"), 1<<20)
+		total := 0
+		for total <= maxPricingBodyBytes {
+			n := maxPricingBodyBytes + 1 - total
+			if n > len(chunk) {
+				n = len(chunk)
+			}
+			_, _ = w.Write(chunk[:n])
+			total += n
+		}
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	pre := &UserFile{
+		Version: 1,
+		External: &ExternalSource{
+			FetchedAt: time.Now().Add(-2 * 24 * time.Hour),
+			Models:    map[string]ModelRates{"keep-me": {InputPerMTok: 7}},
+		},
+	}
+	_ = SaveUserFile(home, pre)
+
+	out, err := Refresh(context.Background(), home, RefreshOptions{Source: srv.URL})
+	if err != nil {
+		t.Fatalf("Refresh should not hard-error on oversized body: %v", err)
+	}
+	if !out.NetworkFailed {
+		t.Error("expected NetworkFailed=true on oversized body")
+	}
+	if out.NetworkError == nil || !strings.Contains(out.NetworkError.Error(), "cap") {
+		t.Errorf("NetworkError = %v, want an error naming the size cap", out.NetworkError)
+	}
+	if out.ModelCount != 1 {
+		t.Errorf("ModelCount = %d, want 1 (preserved cache)", out.ModelCount)
+	}
+	uf, _ := LoadUserFile(home)
+	if uf.External.Models["keep-me"].InputPerMTok != 7 {
+		t.Error("cache was clobbered by oversized-body fall-through")
 	}
 }

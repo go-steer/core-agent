@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"io"
 	"iter"
+	"log"
 	"sync"
 
 	adkmodel "google.golang.org/adk/model"
@@ -44,12 +45,31 @@ type recorderLLM struct {
 
 func (l *recorderLLM) Name() string { return l.inner.Name() }
 
+// recordedTurnWire is the encode-side twin of RecordedTurn: the
+// request rides as pre-serialized JSON so the recorded form is fixed
+// at snapshot time. Field names/order match RecordedTurn, so the
+// emitted JSONL is byte-identical to encoding a RecordedTurn.
+type recordedTurnWire struct {
+	Request   json.RawMessage         `json:"request"`
+	Responses []*adkmodel.LLMResponse `json:"responses"`
+}
+
 func (l *recorderLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
-		// Snapshot the request before handing it to the inner LLM, which
-		// may mutate Config (e.g., the Gemini built-ins wrapper appends
-		// to Config.Tools).
-		captured := *req
+		// Serialize the request to its recorded form BEFORE handing it
+		// to the inner LLM. A shallow struct copy is not enough: it
+		// shares the Config pointer, and the inner LLM may mutate
+		// Config in place (e.g., the built-ins wrapper appends to
+		// Config.Tools), which would retroactively rewrite what we
+		// "snapshotted". Marshal errors leave capturedReq nil — the
+		// turn is still recorded (request: null) so the response
+		// stream isn't lost, and the failure is logged rather than
+		// silently dropped.
+		capturedReq, err := json.Marshal(req)
+		if err != nil {
+			log.Printf("recording: failed to marshal request snapshot (recording turn with null request): %v", err)
+			capturedReq = nil
+		}
 
 		var responses []*adkmodel.LLMResponse
 		stopped := false
@@ -69,6 +89,8 @@ func (l *recorderLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequ
 
 		l.mu.Lock()
 		defer l.mu.Unlock()
-		_ = l.enc.Encode(RecordedTurn{Request: &captured, Responses: responses})
+		if err := l.enc.Encode(recordedTurnWire{Request: capturedReq, Responses: responses}); err != nil {
+			log.Printf("recording: failed to encode turn: %v", err)
+		}
 	}
 }

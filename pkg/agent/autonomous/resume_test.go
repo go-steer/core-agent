@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"google.golang.org/adk/session"
@@ -398,5 +399,60 @@ func TestEmitFinalCheckpointDetached_WritesDespiteCancelledContext(t *testing.T)
 	}
 	if checkpoints != 1 {
 		t.Errorf("checkpoint events = %d, want 1 (detached final checkpoint must land despite cancelled ctx; #365)", checkpoints)
+	}
+}
+
+// TestResumeAutonomous_CancelledWhileWaitingReportsElapsedDuration
+// pins the cancelled-while-waiting exit of the deferred-wake wait:
+// Duration must measure elapsed time since the resume started. The
+// original code computed time.Since(time.Now()), which is always ~0
+// (#372).
+func TestResumeAutonomous_CancelledWhileWaitingReportsElapsedDuration(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestEventLog(t)
+	defer cleanup()
+
+	// Seed a non-terminal checkpoint whose NextWakeAt is far in the
+	// future so ResumeAutonomous parks in the deferred-wake wait.
+	llm := &stubLLM{}
+	seed, err := resumeBuilder(llm, h, "app", "u")(nil, "wakewait")
+	if err != nil {
+		t.Fatalf("build seeding agent: %v", err)
+	}
+	if _, err := seed.SessionService().Create(context.Background(), &session.CreateRequest{
+		AppName: "app", UserID: "u", SessionID: "wakewait",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := emitCheckpoint(context.Background(), seed, checkpointPayload{
+		Turn:               2,
+		ContinuationPrompt: "continue",
+		NextWakeAt:         time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("emitCheckpoint: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	res, rerr := ResumeAutonomous(ctx,
+		resumeBuilder(llm, h, "app", "u"),
+		SessionRef{Handle: h, AppName: "app", UserID: "u", SessionID: "wakewait"})
+	elapsed := time.Since(start)
+	if rerr == nil {
+		t.Fatalf("expected context error, got nil (res=%+v)", res)
+	}
+	if res.Reason != StopReasonContextCancelled {
+		t.Errorf("Reason = %q, want %q", res.Reason, StopReasonContextCancelled)
+	}
+	// The wait started ~immediately and the ctx fired at ~100ms, so
+	// Duration must be at least a meaningful fraction of that (the
+	// old bug reported ~0/negative) and no more than what this test
+	// observed end to end.
+	if res.Duration < 50*time.Millisecond {
+		t.Errorf("Duration = %v, want >= 50ms (elapsed time since resume start)", res.Duration)
+	}
+	if res.Duration > elapsed {
+		t.Errorf("Duration = %v, want <= observed elapsed %v", res.Duration, elapsed)
 	}
 }

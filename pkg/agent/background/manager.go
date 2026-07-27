@@ -392,9 +392,12 @@ func (m *Manager) resolveScheduler(choice string) (coretools.Scheduler, error) {
 // ...) hasn't run).
 var ErrNoParent = errors.New("background: parent agent not wired (use agent.WithBackgroundManager)")
 
-// ErrSubagentExists is returned by Spawn when a subagent with the
-// requested name is already registered (running or terminal). Names
-// must be unique within a manager.
+// ErrSubagentExists is returned by Spawn when a RUNNING subagent with
+// the requested name is already registered. Names must be unique among
+// live subagents within a manager; a handle in a terminal state
+// (completed / failed / stopped / deferred) is evicted by the next
+// Spawn of the same name, so names become reusable once their previous
+// run has finished.
 var ErrSubagentExists = errors.New("background: subagent with this name already exists")
 
 // ErrDepthExceeded is returned by Spawn when the calling context is

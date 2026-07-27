@@ -272,7 +272,14 @@ func (m *Manager) doRefresh(ctx context.Context, name string) {
 		return
 	}
 	m.mu.Lock()
-	m.expiresAt = updated.ExpireTime
+	// Only apply the refreshed expiry if the cache we refreshed is
+	// still the active one. MarkEvicted or Delete may have landed
+	// while the Update RPC was in flight — writing m.expiresAt then
+	// would stamp a stale (evicted/deleted) identity with a fresh
+	// expiry, or hand a re-created cache the old cache's TTL.
+	if m.state == stateActive && m.cacheName == name {
+		m.expiresAt = updated.ExpireTime
+	}
 	m.mu.Unlock()
 }
 

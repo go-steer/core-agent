@@ -17,6 +17,7 @@ package anthropic
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -385,4 +386,181 @@ func TestContentsToMessages_IDSynthesisPerRequest(t *testing.T) {
 	if first[0].Content[1].OfToolUse.ID != "call_ls_2" {
 		t.Errorf("second occurrence = %q, want call_ls_2", first[0].Content[1].OfToolUse.ID)
 	}
+}
+
+func TestFunctionResponseBlock_MarshalErrorIsErroredToolResult(t *testing.T) {
+	t.Parallel()
+	// A channel value can't be JSON-marshaled. The old code swallowed
+	// the error and emitted an empty is_error=false result — the model
+	// read that as a clean success (#372).
+	fr := &genai.FunctionResponse{
+		ID:       "toolu_x",
+		Name:     "broken",
+		Response: map[string]any{"bad": make(chan int)},
+	}
+	block := functionResponseBlock(fr, newIDSynthesizer())
+	tr := block.OfToolResult
+	if tr == nil {
+		t.Fatal("expected a tool_result block")
+	}
+	if !tr.IsError.Valid() || !tr.IsError.Value {
+		t.Errorf("IsError = %+v, want true", tr.IsError)
+	}
+	if len(tr.Content) != 1 || tr.Content[0].OfText == nil {
+		t.Fatalf("Content = %+v, want one text block", tr.Content)
+	}
+	if got := tr.Content[0].OfText.Text; !strings.Contains(got, "core-agent: failed to marshal tool result:") {
+		t.Errorf("error text = %q, want the marshal-failure prefix", got)
+	}
+}
+
+func TestBuildParams_GenerationConfigMapped(t *testing.T) {
+	t.Parallel()
+	contents := []*genai.Content{
+		{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "hi"}}},
+	}
+
+	t.Run("sampling knobs and stop sequences pass through", func(t *testing.T) {
+		t.Parallel()
+		cfg := &genai.GenerateContentConfig{
+			Temperature:   genai.Ptr[float32](0.3),
+			TopP:          genai.Ptr[float32](0.9),
+			TopK:          genai.Ptr[float32](40),
+			StopSequences: []string{"END", "STOP"},
+		}
+		p, err := buildParams("claude-opus-4-7", contents, cfg, false, BuiltinTools{})
+		if err != nil {
+			t.Fatalf("buildParams: %v", err)
+		}
+		if !p.Temperature.Valid() || p.Temperature.Value != float64(float32(0.3)) {
+			t.Errorf("Temperature = %+v, want 0.3", p.Temperature)
+		}
+		if !p.TopP.Valid() || p.TopP.Value != float64(float32(0.9)) {
+			t.Errorf("TopP = %+v, want 0.9", p.TopP)
+		}
+		if !p.TopK.Valid() || p.TopK.Value != 40 {
+			t.Errorf("TopK = %+v, want 40", p.TopK)
+		}
+		if len(p.StopSequences) != 2 || p.StopSequences[0] != "END" || p.StopSequences[1] != "STOP" {
+			t.Errorf("StopSequences = %v", p.StopSequences)
+		}
+	})
+
+	t.Run("unset config leaves params unset", func(t *testing.T) {
+		t.Parallel()
+		p, err := buildParams("claude-opus-4-7", contents, nil, false, BuiltinTools{})
+		if err != nil {
+			t.Fatalf("buildParams: %v", err)
+		}
+		if p.Temperature.Valid() || p.TopP.Valid() || p.TopK.Valid() {
+			t.Errorf("sampling params should be unset with nil config: %+v %+v %+v",
+				p.Temperature, p.TopP, p.TopK)
+		}
+		if len(p.StopSequences) != 0 {
+			t.Errorf("StopSequences = %v, want empty", p.StopSequences)
+		}
+		if p.ToolChoice.OfAuto != nil || p.ToolChoice.OfAny != nil ||
+			p.ToolChoice.OfTool != nil || p.ToolChoice.OfNone != nil {
+			t.Errorf("ToolChoice should be unset: %+v", p.ToolChoice)
+		}
+	})
+
+	toolChoiceCases := []struct {
+		name    string
+		fcc     *genai.FunctionCallingConfig
+		checkTC func(t *testing.T, tc anthropic.ToolChoiceUnionParam)
+	}{
+		{
+			name: "ANY with single allowed name pins the tool",
+			fcc: &genai.FunctionCallingConfig{
+				Mode:                 genai.FunctionCallingConfigModeAny,
+				AllowedFunctionNames: []string{"get_weather"},
+			},
+			checkTC: func(t *testing.T, tc anthropic.ToolChoiceUnionParam) {
+				if tc.OfTool == nil || tc.OfTool.Name != "get_weather" {
+					t.Errorf("ToolChoice = %+v, want tool choice pinned to get_weather", tc)
+				}
+			},
+		},
+		{
+			name: "ANY without allowed names maps to any",
+			fcc:  &genai.FunctionCallingConfig{Mode: genai.FunctionCallingConfigModeAny},
+			checkTC: func(t *testing.T, tc anthropic.ToolChoiceUnionParam) {
+				if tc.OfAny == nil {
+					t.Errorf("ToolChoice = %+v, want any", tc)
+				}
+			},
+		},
+		{
+			name: "ANY with multiple allowed names maps to any",
+			fcc: &genai.FunctionCallingConfig{
+				Mode:                 genai.FunctionCallingConfigModeAny,
+				AllowedFunctionNames: []string{"a", "b"},
+			},
+			checkTC: func(t *testing.T, tc anthropic.ToolChoiceUnionParam) {
+				if tc.OfAny == nil {
+					t.Errorf("ToolChoice = %+v, want any", tc)
+				}
+			},
+		},
+		{
+			name: "NONE maps to none",
+			fcc:  &genai.FunctionCallingConfig{Mode: genai.FunctionCallingConfigModeNone},
+			checkTC: func(t *testing.T, tc anthropic.ToolChoiceUnionParam) {
+				if tc.OfNone == nil {
+					t.Errorf("ToolChoice = %+v, want none", tc)
+				}
+			},
+		},
+		{
+			name: "AUTO stays unset (Anthropic default)",
+			fcc:  &genai.FunctionCallingConfig{Mode: genai.FunctionCallingConfigModeAuto},
+			checkTC: func(t *testing.T, tc anthropic.ToolChoiceUnionParam) {
+				if tc.OfAuto != nil || tc.OfAny != nil || tc.OfTool != nil || tc.OfNone != nil {
+					t.Errorf("ToolChoice = %+v, want unset", tc)
+				}
+			},
+		},
+	}
+	for _, tt := range toolChoiceCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := &genai.GenerateContentConfig{
+				ToolConfig: &genai.ToolConfig{FunctionCallingConfig: tt.fcc},
+			}
+			p, err := buildParams("claude-opus-4-7", contents, cfg, false, BuiltinTools{})
+			if err != nil {
+				t.Fatalf("buildParams: %v", err)
+			}
+			tt.checkTC(t, p.ToolChoice)
+		})
+	}
+
+	t.Run("thinking budget wired to enabled thinking", func(t *testing.T) {
+		t.Parallel()
+		cfg := &genai.GenerateContentConfig{
+			ThinkingConfig: &genai.ThinkingConfig{ThinkingBudget: genai.Ptr[int32](2048)},
+		}
+		p, err := buildParams("claude-opus-4-7", contents, cfg, false, BuiltinTools{})
+		if err != nil {
+			t.Fatalf("buildParams: %v", err)
+		}
+		if p.Thinking.OfEnabled == nil || p.Thinking.OfEnabled.BudgetTokens != 2048 {
+			t.Errorf("Thinking = %+v, want enabled with budget 2048", p.Thinking)
+		}
+	})
+
+	t.Run("zero thinking budget leaves thinking unset", func(t *testing.T) {
+		t.Parallel()
+		cfg := &genai.GenerateContentConfig{
+			ThinkingConfig: &genai.ThinkingConfig{ThinkingBudget: genai.Ptr[int32](0)},
+		}
+		p, err := buildParams("claude-opus-4-7", contents, cfg, false, BuiltinTools{})
+		if err != nil {
+			t.Fatalf("buildParams: %v", err)
+		}
+		if p.Thinking.OfEnabled != nil || p.Thinking.OfDisabled != nil || p.Thinking.OfAdaptive != nil {
+			t.Errorf("Thinking = %+v, want unset for zero budget", p.Thinking)
+		}
+	})
 }

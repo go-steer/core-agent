@@ -487,6 +487,11 @@ var fetchAlwaysBlockedRanges = []netip.Prefix{
 	netip.MustParsePrefix("169.254.0.0/16"),    // IPv4 link-local incl. 169.254.169.254
 	netip.MustParsePrefix("fe80::/10"),         // IPv6 link-local
 	netip.MustParsePrefix("fd00:ec2::254/128"), // AWS IMDS IPv6
+	// IETF protocol assignments (RFC 6890). Metadata-adjacent: some
+	// cloud environments serve their metadata endpoint at
+	// 192.0.0.192, so the whole special-purpose /24 gets the same
+	// hard-block-with-flag-opt-out treatment as link-local (#428).
+	netip.MustParsePrefix("192.0.0.0/24"),
 }
 
 // fetchPrivateRanges are blocked unless the request host is named by
@@ -501,6 +506,17 @@ var fetchPrivateRanges = []netip.Prefix{
 	netip.MustParsePrefix("192.168.0.0/16"), // RFC1918
 	netip.MustParsePrefix("100.64.0.0/10"),  // CGNAT
 	netip.MustParsePrefix("fc00::/7"),       // IPv6 ULA
+	// Special-purpose ranges beyond the original #375 policy set
+	// (#428). Same tier as RFC1918: an exact-host allowlist entry
+	// unlocks them, wildcards do not.
+	netip.MustParsePrefix("0.0.0.0/8"),          // "this network"; 0.0.0.0 reaches loopback on Linux
+	netip.MustParsePrefix("::/96"),              // IPv6 unspecified (::) + deprecated IPv4-compatible embedding
+	netip.MustParsePrefix("64:ff9b::/96"),       // NAT64 well-known prefix — can embed a private IPv4
+	netip.MustParsePrefix("64:ff9b:1::/48"),     // NAT64 local-use prefix (RFC 8215)
+	netip.MustParsePrefix("198.18.0.0/15"),      // benchmarking (RFC 2544)
+	netip.MustParsePrefix("255.255.255.255/32"), // limited broadcast
+	netip.MustParsePrefix("224.0.0.0/4"),        // IPv4 multicast
+	netip.MustParsePrefix("ff00::/8"),           // IPv6 multicast
 }
 
 // ssrfGuard vets destination IPs and pins the vetted resolution

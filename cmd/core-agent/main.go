@@ -46,6 +46,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/agent/background"
 	"github.com/go-steer/core-agent/v2/pkg/agentenv"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v2/pkg/attachadapter"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/digest"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
@@ -1036,11 +1037,16 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		// window state from this same tracker so there's one source
 		// of truth.
 		agent.WithUsageTracker(tracker),
-		// Attach-extras snapshot funcs. The agent itself satisfies the
-		// MemoryProvider / SkillsProvider / MCPProvider interfaces via
-		// these closures, so the remote /memory /skills /mcp endpoints
-		// return the same state the in-process TUI sees.
-		agent.WithAttachMemoryProvider(func() []attach.MemorySource {
+	}
+	// Attach-extras snapshot funcs, collected separately since the
+	// pkg/agent split (#388 phase 4): they configure the
+	// *attachadapter.Adapter that wraps the agent at construction
+	// time, not the agent itself. The adapter satisfies the
+	// MemoryProvider / SkillsProvider / MCPProvider interfaces via
+	// these closures, so the remote /memory /skills /mcp endpoints
+	// return the same state the in-process TUI sees.
+	adapterOpts := []attachadapter.Option{
+		attachadapter.WithMemoryProvider(func() []attach.MemorySource {
 			// Re-walk on every call so a fresh AGENTS.md / CLAUDE.md /
 			// GEMINI.md picked up between turns (or written by the
 			// agent itself) surfaces without a daemon restart. Cheap
@@ -1053,7 +1059,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			}
 			return out
 		}),
-		agent.WithAttachSkillsProvider(func() []attach.SkillInfo {
+		attachadapter.WithSkillsProvider(func() []attach.SkillInfo {
 			// Re-walk on every call so newly-dropped SKILL.md bundles
 			// surface without restart. The merge across project +
 			// user-global sources happens inside skills.LoadAll.
@@ -1067,7 +1073,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			}
 			return out
 		}),
-		agent.WithAttachPricingProvider(func() attach.PricingInfo {
+		attachadapter.WithPricingProvider(func() attach.PricingInfo {
 			// Re-resolve on every call so a fresh /pricing refresh
 			// during the session is reflected immediately — pricingRate
 			// captured at startup would go stale. Also lets Source +
@@ -1088,7 +1094,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			}
 			return info
 		}),
-		agent.WithAttachRefreshPricer(func(ctx context.Context) (attach.PricingRefreshResponse, error) {
+		attachadapter.WithRefreshPricer(func(ctx context.Context) (attach.PricingRefreshResponse, error) {
 			if coreHome == "" {
 				return attach.PricingRefreshResponse{}, fmt.Errorf("pricing refresh: $HOME unavailable, no user file to write")
 			}
@@ -1102,14 +1108,14 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 				Detail:      summary,
 			}, nil
 		}),
-		agent.WithAttachPricingSetter(func(req attach.PricingSetRequest) error {
+		attachadapter.WithPricingSetter(func(req attach.PricingSetRequest) error {
 			if coreHome == "" {
 				return fmt.Errorf("pricing set: $HOME unavailable, no user file to write")
 			}
 			_, err := setPricingForTUI(cfg, agentsDir, coreHome, req.Model, req.InputUSDPerMTok, req.OutputUSDPerMTok)
 			return err
 		}),
-		agent.WithAttachReloader(func(_ context.Context) attach.ReloadResponse {
+		attachadapter.WithReloader(func(_ context.Context) attach.ReloadResponse {
 			// Best-effort re-walks: instruction + skills snapshots
 			// are reported per-surface so the operator sees which
 			// parts parsed cleanly after a .agents/ edit. MCP server
@@ -1138,7 +1144,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			out.Errors = append(out.Errors, "mcp: live server restart requires daemon restart (tracked for v2.3)")
 			return out
 		}),
-		agent.WithAttachReplanner(func(_ context.Context, _ attach.ReplanRequest) (attach.ReplanResponse, error) {
+		attachadapter.WithReplanner(func(_ context.Context, _ attach.ReplanRequest) (attach.ReplanResponse, error) {
 			// Wired unconditionally; the agent-side handler 501s
 			// the slash when require_plan_artifact is off
 			// (RevokeLatestPlan returns "" with no error and the
@@ -1164,7 +1170,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			}
 			return resp, nil
 		}),
-		agent.WithAttachMCPProvider(func() attach.MCPInfo {
+		attachadapter.WithMCPProvider(func() attach.MCPInfo {
 			servers := make([]attach.MCPServerInfo, 0, len(mcpServers))
 			for _, s := range mcpServers {
 				tools := make([]attach.MCPToolInfo, 0, len(s.ToolInfos))
@@ -1363,6 +1369,11 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// Attach-mode wiring. Must come after the eventlog is set up
 	// (broadcaster requires a Stream) and before the agent is
 	// constructed (so the registry is in opts).
+	// attachRegistry is non-nil exactly when attach-mode is enabled;
+	// each agent-construction site below registers its adapter with
+	// it. Hoisted out of the attach block so the TUI / --no-repl /
+	// REPL branches (which run after the block) can see it.
+	var attachRegistry *attach.SessionRegistry
 	if attachCfg.Listen != "" || attachCfg.UnixSocket != "" {
 		if !sessionDB && sessionDBPath == "" {
 			fmt.Fprintln(os.Stderr, "core-agent: --attach-listen / --attach-unix-socket requires --session-db (broadcaster pumps from the event log)")
@@ -1384,7 +1395,11 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			aclStore = s
 		}
 		attachReg := attach.NewSessionRegistryWithStore(aclStore)
-		opts = append(opts, agent.WithSessionRegistry(attach.NewAgentRegistrarAdapter(attachReg)))
+		// Every construction site below (TUI, --no-repl, REPL
+		// fallback) wraps the agent in an attachadapter.Adapter and
+		// registers it here — registration moved out of agent.New
+		// with the pkg/agent split (#388 phase 4).
+		attachRegistry = attachReg
 
 		// PR D — HTTP-driven permission prompts. Construct the
 		// broker now and register it as the gate's prompter so the
@@ -1398,7 +1413,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		// process shutdown.
 		promptBroker := attach.NewPromptBroker()
 		defer promptBroker.Close()
-		opts = append(opts, agent.WithAttachPromptBroker(promptBroker))
+		adapterOpts = append(adapterOpts, attachadapter.WithPromptBroker(promptBroker))
 		gate.SetPrompter(promptBroker)
 
 		token := ""
@@ -1647,7 +1662,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			fmt.Fprintln(os.Stderr, "core-agent: --no-repl requires --attach-listen or --attach-unix-socket")
 			return runner.ExitConfigError
 		}
-		a, err := agent.New(m, opts...)
+		a, _, err := buildAttachedAgent(m, opts, adapterOpts, attachRegistry)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 			return runner.ExitAgentError
@@ -1715,6 +1730,8 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			Cfg:           cfg,
 			Model:         m,
 			AgentOpts:     opts,
+			AdapterOpts:   adapterOpts,
+			AttachReg:     attachRegistry,
 			Provider:      provider,
 			Gate:          gate,
 			Tracker:       tracker,
@@ -1744,10 +1761,15 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		// through to the REPL fallback below.
 	}
 
+	replAgent, _, err := buildAttachedAgent(m, opts, adapterOpts, attachRegistry)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+		return runner.ExitAgentError
+	}
 	if initialPrompt != "" {
-		code, err = runner.REPLWithInitialPrompt(ctx, m, initialPrompt, os.Stdin, os.Stdout, os.Stderr, tracker, pricingRate, opts, eventsOpts...)
+		code, err = runner.REPLWithAgentAndInitialPrompt(ctx, replAgent, m, initialPrompt, os.Stdin, os.Stdout, os.Stderr, tracker, pricingRate, eventsOpts...)
 	} else {
-		code, err = runner.REPL(ctx, m, os.Stdin, os.Stdout, os.Stderr, tracker, pricingRate, opts, eventsOpts...)
+		code, err = runner.REPLWithAgent(ctx, replAgent, m, os.Stdin, os.Stdout, os.Stderr, tracker, pricingRate, eventsOpts...)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)

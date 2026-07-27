@@ -34,6 +34,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/agent/background"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v2/pkg/attachadapter"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/instruction"
 	"github.com/go-steer/core-agent/v2/pkg/mcp"
@@ -92,7 +93,7 @@ func availableModelIDs() []string {
 // docs/core-tui-adapter-design.md), this lets operators A/B the two
 // and stick on either until the migration settles.
 func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, err error) {
-	a, err := agent.New(deps.Model, deps.AgentOpts...)
+	a, ad, err := buildAttachedAgent(deps.Model, deps.AgentOpts, deps.AdapterOpts, deps.AttachReg)
 	if err != nil {
 		return false, 0, fmt.Errorf("agent.New: %w", err)
 	}
@@ -116,6 +117,7 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 
 	wrapped := &coreAgentAdapter{
 		inner:    a,
+		attachAd: ad,
 		deps:     deps,
 		ctxBuild: ctx,
 	}
@@ -232,7 +234,7 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 	// Wire the Reloader + PricingController bindings on the
 	// wrapped adapter so they read the same callback closures
 	// launchTUI uses.
-	wrapped.reload = makeReloadCallback(ctx, deps, a)
+	wrapped.reload = makeReloadCallback(ctx, deps, ad)
 	wrapped.refreshPricing = makeRefreshPricingCallback(ctx, deps)
 	wrapped.setPricing = makeSetPricingCallback(deps)
 
@@ -326,9 +328,9 @@ func (a *coreAgentAdapter) Set(modelID string, in, out float64) (string, error) 
 // outcomes. Agent rebuild is out of scope; the system prompt and
 // MCP servers retain whatever state they had at startup until a
 // daemon restart.
-func makeReloadCallback(ctx context.Context, deps tuiDeps, a *agent.Agent) func() (coretui.ReloadResult, error) {
+func makeReloadCallback(ctx context.Context, deps tuiDeps, ad *attachadapter.Adapter) func() (coretui.ReloadResult, error) {
 	return func() (coretui.ReloadResult, error) {
-		resp := a.AttachReload(ctx)
+		resp := ad.AttachReload(ctx)
 		freshMem, _ := instruction.Load(deps.ProjectRoot, deps.CoreHome,
 			instruction.WithHomeAgentsRoot(deps.HomeAgentsDir),
 			instruction.WithInterpolator(deps.EnvInterp))
@@ -495,7 +497,13 @@ func pathScopeToCoreTui(cfg *config.Config) coretui.PathScope {
 // support. Built incrementally — capability methods are listed
 // below in spec order.
 type coreAgentAdapter struct {
-	inner    *agent.Agent
+	inner *agent.Agent
+	// attachAd carries the attach capability surface (AttachTools /
+	// AttachStatus / AttachUsage / AttachReplan / AttachReload) that
+	// moved off *agent.Agent with the pkg/agent split (#388 phase 4).
+	// The in-process TUI reads the same projections remote operators
+	// get over HTTP.
+	attachAd *attachadapter.Adapter
 	deps     tuiDeps
 	ctxBuild context.Context
 
@@ -629,12 +637,13 @@ func (a *coreAgentAdapter) SwitchModel(modelID string) (coretui.Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	newAgent, err := agent.New(newLLM, a.deps.AgentOpts...)
+	newAgent, newAd, err := buildAttachedAgent(newLLM, a.deps.AgentOpts, a.deps.AdapterOpts, a.deps.AttachReg)
 	if err != nil {
 		return nil, err
 	}
 	return &coreAgentAdapter{
 		inner:          newAgent,
+		attachAd:       newAd,
 		deps:           a.deps,
 		ctxBuild:       a.ctxBuild,
 		reload:         a.reload,
@@ -711,7 +720,7 @@ func (a *coreAgentAdapter) AddBuiltinAllowExtra(bundleName string) error {
 // the live calls consult, so /tools and the actual approval
 // behavior stay consistent.
 func (a *coreAgentAdapter) Tools() []coretui.ToolInfo {
-	raw := a.inner.AttachTools()
+	raw := a.attachAd.AttachTools()
 	out := make([]coretui.ToolInfo, 0, len(raw))
 	for _, t := range raw {
 		out = append(out, coretui.ToolInfo{
@@ -758,7 +767,7 @@ func (a *coreAgentAdapter) Subagents() []coretui.SubagentInfo {
 // string, in which case the chip is suppressed rather than showing
 // a bogus tag).
 func (a *coreAgentAdapter) Status() coretui.Status {
-	s := a.inner.AttachStatus()
+	s := a.attachAd.AttachStatus()
 	provider := ""
 	if a.deps.Cfg != nil {
 		provider = a.deps.Cfg.Model.Provider
@@ -853,7 +862,7 @@ func (a *coreAgentAdapter) SlashCommands() []coretui.SlashCommandSpec {
 	})
 	// /replan is registered unconditionally; the InvokeSlash case
 	// returns a friendly "plan-first gating isn't enabled" message
-	// when WithAttachReplanner wasn't wired (operator's config has
+	// when attachadapter.WithReplanner wasn't wired (operator's config has
 	// require_plan_artifact: false). That's a clearer operator
 	// experience than hiding the command and surfacing "unknown
 	// command" when they expect it from the recipe docs.
@@ -945,7 +954,7 @@ func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (
 		// process or over a socket. /stats keeps the terse aggregate;
 		// /usage carries the cache-hit attribution + per-turn history.
 		return coretui.SlashResult{
-			SystemMessage: attach.RenderUsage(a.inner.AttachUsage()),
+			SystemMessage: attach.RenderUsage(a.attachAd.AttachUsage()),
 		}, nil
 	case "compact", "summarize":
 		// NOTE: core-tui v0.5 calls InvokeSlash synchronously from
@@ -982,7 +991,7 @@ func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (
 		// when plan-first gating is wired (the agent's
 		// AttachReplan returns 501 / "capability not registered"
 		// otherwise).
-		resp, err := a.inner.AttachReplan(ctx, attach.ReplanRequest{Reason: strings.TrimSpace(args)})
+		resp, err := a.attachAd.AttachReplan(ctx, attach.ReplanRequest{Reason: strings.TrimSpace(args)})
 		if err != nil {
 			if errors.Is(err, attach.ErrCapabilityNotRegistered) {
 				return coretui.SlashResult{

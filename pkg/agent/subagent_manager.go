@@ -44,10 +44,11 @@ type SubagentManager interface {
 	PrependPendingAlerts(prompt string) string
 
 	// ListSubagents returns attach-facing metadata for the manager's
-	// live subagents. Backs Agent.AttachAgents (attach.AgentLister).
+	// live subagents. Backs attachadapter.AttachAgents
+	// (attach.AgentsProvider).
 	ListSubagents() []attach.AgentInfo
 
 	// SpawnSubagent spawns a subagent from an attach spec. Backs
-	// Agent.AttachSpawnSubagent (attach.SubagentSpawner).
+	// attachadapter.AttachSpawnSubagent (attach.SubagentSpawner).
 	SpawnSubagent(ctx context.Context, spec attach.SubagentSpec) (attach.SubagentSpawnResponse, error)
 }

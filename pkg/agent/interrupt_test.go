@@ -200,30 +200,3 @@ func TestAgent_Interrupt_CancelsInFlightContext(t *testing.T) {
 		t.Errorf("second Interrupt returned true; want stored cancel cleared after first")
 	}
 }
-
-func TestAgent_AttachInterrupt_SameAsInterrupt(t *testing.T) {
-	t.Parallel()
-
-	provider := mock.NewEcho()
-	m, err := provider.Model(context.Background(), "echo")
-	if err != nil {
-		t.Fatalf("model: %v", err)
-	}
-	a, err := New(m)
-	if err != nil {
-		t.Fatalf("agent.New: %v", err)
-	}
-
-	// Idle: both methods return false.
-	if a.AttachInterrupt() {
-		t.Errorf("AttachInterrupt on idle returned true, want false")
-	}
-	// With a cancel installed: both methods return true (only the
-	// first one fires the cancel; AttachInterrupt and Interrupt
-	// share the same implementation).
-	_, c := context.WithCancel(context.Background())
-	a.setCancelInFlight(c)
-	if !a.AttachInterrupt() {
-		t.Errorf("AttachInterrupt with cancel installed returned false, want true")
-	}
-}

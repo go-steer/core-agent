@@ -85,6 +85,17 @@ func REPLWithAgent(ctx context.Context, a *agent.Agent, m adkmodel.LLM, stdin io
 	return replCore(ctx, a, m, "", stdin, stdout, stderr, tracker, pricing, eventsOpts...)
 }
 
+// REPLWithAgentAndInitialPrompt is REPLWithAgent plus the seed-prompt
+// behavior of REPLWithInitialPrompt: when initialPrompt is non-empty,
+// exactly one turn fires before the stdin/wake select loop. Exists so
+// hosts that construct (and decorate — e.g. wrap with
+// pkg/attachadapter and register for attach-mode) the Agent themselves
+// keep the --prompt startup behavior the construct-inside variants
+// provide.
+func REPLWithAgentAndInitialPrompt(ctx context.Context, a *agent.Agent, m adkmodel.LLM, initialPrompt string, stdin io.Reader, stdout, stderr io.Writer, tracker *usage.Tracker, pricing usage.Pricing, eventsOpts ...EventsOption) (int, error) {
+	return replCore(ctx, a, m, initialPrompt, stdin, stdout, stderr, tracker, pricing, eventsOpts...)
+}
+
 // replCore is the shared body of REPL / REPLWithAgent /
 // REPLWithInitialPrompt. When initialPrompt is non-empty, it fires
 // exactly one runREPLTurn before entering the stdin/wake select loop

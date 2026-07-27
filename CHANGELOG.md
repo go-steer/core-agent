@@ -42,6 +42,20 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
     **Migration:** `agent.NewBackgroundAgentManager(agent.WithBackgroundProvider(p, id))` → `background.NewManager(background.WithProvider(p, id))`.
   - **Core seam.** `agent.WithBackgroundManager` and `agent.BackgroundManager()` now speak the new `agent.SubagentManager` interface (`AttachParent`, `PrependPendingAlerts`, `ListSubagents`, `SpawnSubagent`) instead of the concrete `*BackgroundAgentManager` — this is what breaks the `agent → background` import cycle. Wiring is unchanged (`agent.New(llm, agent.WithBackgroundManager(mgr))`); `*background.Manager` satisfies the interface. Callers that need the manager's richer surface (`List`, `Get`, `Stop`, `Alerts`, `OnAlert`) recover the concrete type with `background.ManagerOf(a)`.
+- **The attach capability surface moved off `*agent.Agent` into a new `pkg/attachadapter` package.** Phase 4 (the last) of the `pkg/agent` decomposition: the 22 `Attach*` methods (`AttachTools`, `AttachStatus`, `AttachUsage`, `AttachPerms`, `AttachCompact`, `AttachSpawnSubagent`, …) are now methods on `*attachadapter.Adapter`, and the nine `agent.WithAttach*` provider options became `attachadapter` options with the redundant `Attach` dropped (`WithAttachMemoryProvider`→`WithMemoryProvider`, `WithAttachSkillsProvider`→`WithSkillsProvider`, `WithAttachMCPProvider`→`WithMCPProvider`, `WithAttachPricingProvider`→`WithPricingProvider`, `WithAttachRefreshPricer`→`WithRefreshPricer`, `WithAttachPricingSetter`→`WithPricingSetter`, `WithAttachReloader`→`WithReloader`, `WithAttachReplanner`→`WithReplanner`, `WithAttachPromptBroker`→`WithPromptBroker`). **Migration:**
+
+  ```go
+  // Before
+  a := agent.New(llm,
+      agent.WithAttachMemoryProvider(f),
+      agent.WithSessionRegistry(attach.NewAgentRegistrarAdapter(reg)))
+  // After
+  a := agent.New(llm /* core options only */)
+  ad := attachadapter.New(a, attachadapter.WithMemoryProvider(f))
+  reg.Register(ad) // or RegisterOwned/RegisterOwnedWithCancel; ad satisfies attach.Registrant
+  ```
+
+  Also in this change: `agent.WithSessionRegistry` and `attach.NewAgentRegistrarAdapter` are **removed** (the `any`-typed bridge existed only because `pkg/agent` couldn't import `pkg/attach`'s registry for the auto-register option; `attachadapter` imports both, so you register the adapter directly and registration errors surface at the `Register` call instead of inside `agent.New`); `agent.ErrSubagentSpawnerUnavailable` moved to `attachadapter.ErrSubagentSpawnerUnavailable` (same message string); `agent.AttachInterrupt` is gone (use `agent.Interrupt`, which remains — the adapter's `AttachInterrupt` forwards to it). The emit machinery stays on the core (`Agent.SetAttachEmitter`, `Agent.Emit`) because the run loop is the thing that emits; the adapter forwards `attach.EmitTarget` to it. New read-only seam accessors this phase builds on: `Agent.Gate()`, plus `attachadapter.Adapter.Agent()` to recover the wrapped agent. `runner.REPLWithAgentAndInitialPrompt` is new so hosts that construct + decorate the agent themselves keep the `--prompt` seeding behavior. This completes [#388](https://github.com/go-steer/core-agent/issues/388).
 
 ### Security posture
 

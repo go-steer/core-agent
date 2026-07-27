@@ -640,7 +640,7 @@ func (m *Manager) ListSubagents() []attach.AgentInfo {
 
 // SpawnSubagent implements agent.SubagentManager. Translates an attach
 // spec into a background Spec and delegates to Spawn; backs
-// Agent.AttachSpawnSubagent.
+// attachadapter.AttachSpawnSubagent.
 func (m *Manager) SpawnSubagent(ctx context.Context, spec attach.SubagentSpec) (attach.SubagentSpawnResponse, error) {
 	handle, err := m.Spawn(ctx, "" /* parentBranch */, Spec{
 		Name:         spec.Name,

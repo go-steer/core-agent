@@ -29,7 +29,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"iter"
 	"sync"
@@ -46,10 +45,8 @@ import (
 
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/auth"
-	"github.com/go-steer/core-agent/v2/pkg/digest"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
-	corebuiltins "github.com/go-steer/core-agent/v2/pkg/tools"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 	"github.com/go-steer/core-agent/v2/pkg/watchdog"
 )
@@ -126,39 +123,26 @@ const (
 // Agent is the wrapper around an ADK llmagent + runner. One Agent
 // represents one configured LLM-driven role.
 type Agent struct {
-	inner           adkagent.Agent
-	runner          *runner.Runner
-	sessionService  session.Service
-	eventLog        *eventlog.Handle
-	tools           []tool.Tool
-	streaming       adkagent.StreamingMode
-	appName         string
-	agentName       string
-	description     string
-	userID          string
-	sessionID       string
-	model           adkmodel.LLM
-	modelName       string
-	gate            *permissions.Gate
-	bgMgr           SubagentManager
-	inbox           *inbox
-	wake            *wakeSignal
-	attachRegistrar attachRegistrar
-	tracker         *usage.Tracker
-	compactor       Compactor
-	checkpointer    Checkpointer
-
-	// Attach-extras snapshot funcs (set via WithAttachMemoryProvider
-	// etc.). See the corresponding fields on `options` for docs.
-	attachMemoryFn     func() []attach.MemorySource
-	attachSkillsFn     func() []attach.SkillInfo
-	attachMCPFn        func() attach.MCPInfo
-	attachPricingFn    func() attach.PricingInfo
-	attachRefreshFn    func(ctx context.Context) (attach.PricingRefreshResponse, error)
-	attachSetPricingFn func(req attach.PricingSetRequest) error
-	attachReloadFn     func(ctx context.Context) attach.ReloadResponse
-	attachReplanFn     func(ctx context.Context, req attach.ReplanRequest) (attach.ReplanResponse, error)
-	attachPromptBroker *attach.PromptBroker
+	inner          adkagent.Agent
+	runner         *runner.Runner
+	sessionService session.Service
+	eventLog       *eventlog.Handle
+	tools          []tool.Tool
+	streaming      adkagent.StreamingMode
+	appName        string
+	agentName      string
+	description    string
+	userID         string
+	sessionID      string
+	model          adkmodel.LLM
+	modelName      string
+	gate           *permissions.Gate
+	bgMgr          SubagentManager
+	inbox          *inbox
+	wake           *wakeSignal
+	tracker        *usage.Tracker
+	compactor      Compactor
+	checkpointer   Checkpointer
 
 	// attachEmit is the SSE event-stream emit callback set by the
 	// broadcaster on first subscribe (see attach.Broadcaster.Subscribe).
@@ -220,17 +204,6 @@ type Agent struct {
 	onTurnEnd func()
 }
 
-// attachRegistrar is the subset of *attach.SessionRegistry the agent
-// package consumes. Uses `any` instead of a typed Registrant
-// interface because Go doesn't unify identically-shaped interfaces
-// across packages (attach.Registrant and agent.Registrant would be
-// distinct types even with the same method set). The attach package's
-// AgentRegistrarAdapter type-asserts internally.
-type attachRegistrar interface {
-	Register(ag any) (any, error)
-	Unregister(appName, userID, sessionID string)
-}
-
 // Option mutates Agent construction. Use the With* helpers below.
 type Option func(*options)
 
@@ -249,7 +222,6 @@ type options struct {
 	subagents       []*Agent
 	bgMgr           SubagentManager
 	gate            *permissions.Gate
-	attachRegistrar attachRegistrar
 	tracker         *usage.Tracker
 	compactor       Compactor
 	checkpointer    Checkpointer
@@ -259,21 +231,6 @@ type options struct {
 	onEvent         func(*session.Event)
 	onTurnEnd       func()
 	postConstruct   func(*Agent)
-
-	// Attach-extras snapshot funcs — set via WithAttachMemoryProvider /
-	// WithAttachSkillsProvider / WithAttachMCPProvider. Each returns
-	// the current state at call time so the attach handlers see fresh
-	// data after, e.g., a /reload. nil funcs make the corresponding
-	// AttachX method return an empty value (handler 200s with empty).
-	attachMemoryFn     func() []attach.MemorySource
-	attachSkillsFn     func() []attach.SkillInfo
-	attachMCPFn        func() attach.MCPInfo
-	attachPricingFn    func() attach.PricingInfo
-	attachRefreshFn    func(ctx context.Context) (attach.PricingRefreshResponse, error)
-	attachSetPricingFn func(req attach.PricingSetRequest) error
-	attachReloadFn     func(ctx context.Context) attach.ReloadResponse
-	attachReplanFn     func(ctx context.Context, req attach.ReplanRequest) (attach.ReplanResponse, error)
-	attachPromptBroker *attach.PromptBroker
 }
 
 func defaultOptions() options {
@@ -393,29 +350,6 @@ func WithBackgroundManager(mgr SubagentManager) Option {
 	return func(o *options) { o.bgMgr = mgr }
 }
 
-// WithSessionRegistry opts the constructed agent into attach-mode by
-// auto-registering it with the supplied registry. Once registered the
-// agent is reachable over HTTP/SSE via attach.NewServer for
-// observability (GET /sessions/<app>/<sid>/events) and control
-// (POST /inject, /wake).
-//
-// The registry's Register is called from agent.New; if it returns an
-// error (typically attach.ErrSessionExists from a double-register),
-// agent.New surfaces it. Pass nil to skip registration (default).
-//
-// Lifetime: the agent stays registered until the operator calls
-// registry.Unregister explicitly, or the listener that owns the
-// registry shuts down. In typical deployments (one agent per process,
-// long-lived) the agent IS the process and lives until shutdown.
-//
-// The registrar argument is typed as an interface so this package
-// doesn't import attach/ (avoids cycle). Pass
-// attach.NewAgentRegistrarAdapter(reg) to wire a *attach.SessionRegistry.
-func WithSessionRegistry(r attachRegistrar) Option {
-	return func(o *options) { o.attachRegistrar = r }
-}
-
-// WithGate wires the permissions gate that gates every tool call into
 // the agent's metadata, so it can be surfaced over the attach-mode
 // /tools endpoint (each tool gets a pre-flight `gate_state` field —
 // "allowed" / "denied" / "prompted" / "denied-allow-mode" — without
@@ -607,41 +541,31 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 	}
 
 	a := &Agent{
-		inner:              inner,
-		runner:             r,
-		sessionService:     svc,
-		eventLog:           o.eventLog,
-		tools:              o.tools,
-		streaming:          o.streaming,
-		appName:            o.appName,
-		agentName:          o.name,
-		description:        o.description,
-		userID:             o.userID,
-		sessionID:          o.sessionID,
-		model:              model,
-		modelName:          model.Name(),
-		gate:               o.gate,
-		bgMgr:              o.bgMgr,
-		inbox:              newInbox(),
-		wake:               newWakeSignal(),
-		attachRegistrar:    o.attachRegistrar,
-		tracker:            o.tracker,
-		compactor:          o.compactor,
-		attachMemoryFn:     o.attachMemoryFn,
-		attachSkillsFn:     o.attachSkillsFn,
-		attachMCPFn:        o.attachMCPFn,
-		attachPricingFn:    o.attachPricingFn,
-		attachRefreshFn:    o.attachRefreshFn,
-		attachSetPricingFn: o.attachSetPricingFn,
-		attachReloadFn:     o.attachReloadFn,
-		attachReplanFn:     o.attachReplanFn,
-		attachPromptBroker: o.attachPromptBroker,
-		checkpointer:       o.checkpointer,
-		costCeiling:        o.costCeiling,
-		watchdog:           o.watchdog,
-		onWatchdogAlert:    o.onWatchdogAlert,
-		onEvent:            o.onEvent,
-		onTurnEnd:          o.onTurnEnd,
+		inner:           inner,
+		runner:          r,
+		sessionService:  svc,
+		eventLog:        o.eventLog,
+		tools:           o.tools,
+		streaming:       o.streaming,
+		appName:         o.appName,
+		agentName:       o.name,
+		description:     o.description,
+		userID:          o.userID,
+		sessionID:       o.sessionID,
+		model:           model,
+		modelName:       model.Name(),
+		gate:            o.gate,
+		bgMgr:           o.bgMgr,
+		inbox:           newInbox(),
+		wake:            newWakeSignal(),
+		tracker:         o.tracker,
+		compactor:       o.compactor,
+		checkpointer:    o.checkpointer,
+		costCeiling:     o.costCeiling,
+		watchdog:        o.watchdog,
+		onWatchdogAlert: o.onWatchdogAlert,
+		onEvent:         o.onEvent,
+		onTurnEnd:       o.onTurnEnd,
 	}
 	if a.bgMgr != nil {
 		a.bgMgr.AttachParent(a)
@@ -650,11 +574,6 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 	// (registered above before llmagent.New) can resolve *Agent
 	// when the model calls it. See NewMarkTaskDoneTool docs.
 	agentRef = a
-	if a.attachRegistrar != nil {
-		if _, err := a.attachRegistrar.Register(a); err != nil {
-			return nil, fmt.Errorf("agent: attach registry: %w", err)
-		}
-	}
 	if o.postConstruct != nil {
 		o.postConstruct(a)
 	}
@@ -734,6 +653,17 @@ func (a *Agent) Tracker() *usage.Tracker {
 		return nil
 	}
 	return a.tracker
+}
+
+// Gate returns the permissions gate wired via WithGate, or nil when
+// none was configured. Read-only seam for the split-out packages
+// (pkg/attachadapter projects gate state onto the attach wire
+// format); mutations go through the gate's own methods.
+func (a *Agent) Gate() *permissions.Gate {
+	if a == nil {
+		return nil
+	}
+	return a.gate
 }
 
 // Inner returns the underlying ADK agent the turn loop drives. It is
@@ -1228,487 +1158,6 @@ func freshSessionID() (string, error) {
 	return "rwc-" + hex.EncodeToString(b[:]), nil
 }
 
-// builtinToolNameSet caches the canonical built-in names for source
-// classification in AttachTools. Recomputing per call would be cheap
-// but the set is static for the process lifetime.
-var builtinToolNameSet = func() map[string]struct{} {
-	out := map[string]struct{}{}
-	for _, n := range corebuiltins.BuiltinToolNames() {
-		out[n] = struct{}{}
-	}
-	return out
-}()
-
-// AttachTools implements attach.ToolsProvider. Returns the agent's
-// full tool catalog as ToolInfo entries with source classification
-// (builtin vs other) and the gate's pre-flight state per tool when
-// a gate was wired via WithGate. MCP / skill attribution is "other"
-// in v1 — distinguishing them at the slice level needs an upstream
-// metadata pass we haven't done yet.
-func (a *Agent) AttachTools() []attach.ToolInfo {
-	if a == nil {
-		return nil
-	}
-	out := make([]attach.ToolInfo, 0, len(a.tools))
-	for _, t := range a.tools {
-		name := t.Name()
-		info := attach.ToolInfo{
-			Name:        name,
-			Description: t.Description(),
-			Source:      attach.ToolSourceOther,
-		}
-		if _, ok := builtinToolNameSet[name]; ok {
-			info.Source = attach.ToolSourceBuiltin
-		}
-		if a.gate != nil {
-			info.GateState = a.gate.ToolGateState(name)
-		}
-		out = append(out, info)
-	}
-	return out
-}
-
-// AttachAgents implements attach.AgentsProvider. Returns the live
-// background subagents from this agent's BackgroundAgentManager, or
-// an empty slice when no manager was wired.
-func (a *Agent) AttachAgents() []attach.AgentInfo {
-	if a == nil || a.bgMgr == nil {
-		return nil
-	}
-	return a.bgMgr.ListSubagents()
-}
-
-// AttachStatus implements attach.StatusProvider. V1 returns the agent's
-// model name + a coarse "idle" state — finer-grained state (running /
-// deferred / paused) would require run-loop instrumentation that
-// hasn't been wired yet; the design doc captures pause/resume + state
-// mutation as v3 work.
-func (a *Agent) AttachStatus() attach.StatusInfo {
-	if a == nil {
-		return attach.StatusInfo{}
-	}
-	return attach.StatusInfo{
-		State:     attach.AgentStateIdle,
-		ModelName: a.modelName,
-	}
-}
-
-// AttachUsage implements attach.UsageProvider. Returns the agent's
-// usage tracker totals plus a per-model breakdown when more than one
-// model has been used in this session (typical pattern: parent on a
-// frontier model, subtasks on a cheap flash-tier model via
-// --agentic-small-model), plus a per-turn array so operators can
-// answer per-turn cost/cache questions without hand-scraping the
-// eventlog (issue #222). Returns a zero UsageInfo if no usage tracker
-// was wired (WithUsageTracker).
-//
-// cost_usd_uncached_reference is computed per-turn using the resolved
-// pricing for that turn's model — sessions that mix models (parent +
-// subtask on a flash-tier via --agentic-small-model) get accurate
-// reference numbers instead of averaging one model's rates over the
-// other. Rolled up into Overall / PerModel by summing per-turn
-// contributions.
-func (a *Agent) AttachUsage() attach.UsageInfo {
-	if a == nil || a.tracker == nil {
-		return attach.UsageInfo{}
-	}
-	turns := a.tracker.All()
-	out := attach.UsageInfo{
-		Overall: usageTotalsToAttach(a.tracker.Totals()),
-	}
-	byModel := a.tracker.TotalsByModel()
-	if len(byModel) > 1 {
-		out.PerModel = make(map[string]attach.UsageTotals, len(byModel))
-		for name, t := range byModel {
-			out.PerModel[name] = usageTotalsToAttach(t)
-		}
-	}
-	if len(turns) == 0 {
-		return out
-	}
-	perTurn := make([]attach.UsageTurn, 0, len(turns))
-	var overallUncachedRef float64
-	perModelUncachedRef := make(map[string]float64, len(byModel))
-	for i, t := range turns {
-		p := usage.PriceFor(t.Model, nil)
-		uncachedRef := p.CostUSD(t.InputTokens, t.OutputTokens)
-		perTurn = append(perTurn, turnToAttach(i+1, t, uncachedRef))
-		overallUncachedRef += uncachedRef
-		perModelUncachedRef[t.Model] += uncachedRef
-	}
-	out.Overall.CostUSDUncachedReference = overallUncachedRef
-	if out.PerModel != nil {
-		for name, ref := range perModelUncachedRef {
-			totals := out.PerModel[name]
-			totals.CostUSDUncachedReference = ref
-			out.PerModel[name] = totals
-		}
-	}
-	out.PerTurn = perTurn
-	// Digest telemetry is a package-level counter (see pkg/digest/telemetry.go).
-	// Populate the wire field only when at least one Process call has
-	// fired — an empty snapshot on a session that never touched
-	// pkg/digest would confuse operators into thinking the wrap is
-	// wired when it isn't.
-	if snap := digest.Telemetry(); len(snap.MethodCounts) > 0 {
-		out.DigestMethods = &attach.DigestMethodsInfo{
-			Counts:     snap.MethodCounts,
-			BytesSaved: snap.BytesSaved,
-		}
-	}
-	return out
-}
-
-// AttachContext implements attach.ContextProvider. Projects the
-// agent's ContextStats (compaction / checkpoint / subtask shape) into
-// the attach wire format. Same cost as ContextStats (one
-// session.Service.Get() + O(events) scan) — operator-driven,
-// infrequent.
-func (a *Agent) AttachContext() attach.ContextInfo {
-	if a == nil {
-		return attach.ContextInfo{}
-	}
-	s := a.ContextStats()
-	out := attach.ContextInfo{
-		Compactions:          s.CompactionCount,
-		Checkpoints:          s.CheckpointCount,
-		LastTaskNote:         s.LastCheckpointNote,
-		TotalCharsSummarized: s.TotalSummaryChars,
-		SubtaskTurns:         s.SubtaskCount,
-		SubtaskInputTokens:   int64(s.SubtaskInputTokens),
-		SubtaskOutputTokens:  int64(s.SubtaskOutputTokens),
-		SubtaskCostUSD:       s.SubtaskCostUSD,
-	}
-	// Digest savings (#223): nil out on a fresh session so remote
-	// renderers can distinguish "wrap layer never fired" from "fired
-	// with zero savings."
-	ds := s.DigestSavings
-	if ds.StructuralCalls+ds.AgenticCalls+ds.PassthroughCalls > 0 {
-		out.DigestSavings = &attach.DigestSavingsInfo{
-			StructuralCalls:          ds.StructuralCalls,
-			StructuralTokensSaved:    int64(ds.StructuralTokensSaved),
-			AgenticCalls:             ds.AgenticCalls,
-			AgenticTokensSaved:       int64(ds.AgenticTokensSaved),
-			AgenticSubagentInTokens:  int64(ds.AgenticSubagentInTokens),
-			AgenticSubagentOutTokens: int64(ds.AgenticSubagentOutTokens),
-			AgenticSubagentCostUSD:   ds.AgenticSubagentCostUSD,
-			PassthroughCalls:         ds.PassthroughCalls,
-		}
-	}
-	return out
-}
-
-// usageTotalsToAttach projects usage.Totals into attach.UsageTotals.
-// Tokens widen from int to int64 since the wire format reserves the
-// larger range for forward compatibility. CostUSDUncachedReference is
-// filled in by AttachUsage after this projection because it depends
-// on per-turn rate lookups the Totals shape doesn't carry.
-func usageTotalsToAttach(t usage.Totals) attach.UsageTotals {
-	return attach.UsageTotals{
-		InputTokens:         int64(t.InputTokens),
-		InputTokensCached:   int64(t.CachedInputTokens),
-		InputTokensUncached: int64(t.InputTokens - t.CachedInputTokens),
-		OutputTokens:        int64(t.OutputTokens),
-		ThoughtsTokens:      int64(t.ThoughtsTokens),
-		Turns:               t.Turns,
-		CostUSD:             t.CostUSD,
-	}
-}
-
-// turnToAttach projects one usage.Turn into attach.UsageTurn. turnIdx
-// is 1-based (submission order). uncachedRef is the counterfactual
-// cost for this turn if nothing had been cached — computed by the
-// caller against the per-turn model's pricing.
-func turnToAttach(turnIdx int, t usage.Turn, uncachedRef float64) attach.UsageTurn {
-	return attach.UsageTurn{
-		Turn:                     turnIdx,
-		At:                       t.At,
-		Model:                    t.Model,
-		InputTokens:              int64(t.InputTokens),
-		InputTokensCached:        int64(t.CachedInputTokens),
-		InputTokensUncached:      int64(t.InputTokens - t.CachedInputTokens),
-		OutputTokens:             int64(t.OutputTokens),
-		ThoughtsTokens:           int64(t.ThoughtsTokens),
-		ToolUseTokens:            int64(t.ToolUseTokens),
-		TotalTokens:              int64(t.InputTokens + t.OutputTokens + t.ThoughtsTokens + t.ToolUseTokens),
-		CostUSD:                  t.CostUSD,
-		CostUSDUncachedReference: uncachedRef,
-	}
-}
-
-// AttachPerms implements attach.PermsProvider. Returns the gate's
-// current Snapshot (mode + allow + deny pattern lists) projected
-// into the attach wire format, plus the per-session approval log
-// so the remote TUI's /permissions slash can render what was
-// approved this session. Returns zero PermsInfo if no gate was
-// wired via WithGate.
-func (a *Agent) AttachPerms() attach.PermsInfo {
-	if a == nil || a.gate == nil {
-		return attach.PermsInfo{}
-	}
-	s := a.gate.Snapshot()
-	out := attach.PermsInfo{
-		Mode:  string(s.Mode),
-		Allow: s.Allow,
-		Deny:  s.Deny,
-	}
-	for _, ap := range a.gate.Approvals() {
-		out.Approvals = append(out.Approvals, attach.ApprovalInfo{
-			Tool:     ap.Tool,
-			Key:      ap.Key,
-			Decision: ap.Decision.String(),
-			At:       ap.At,
-		})
-	}
-	return out
-}
-
-// AttachAddAllow implements attach.PermsController. Delegates to
-// permissions.Gate.AddAllowPatterns. Returns nil if no gate was
-// wired (no-op rather than error — operators shouldn't see an error
-// for an absent gate). Surfaces validation errors from the gate so
-// the operator sees malformed-pattern feedback.
-func (a *Agent) AttachAddAllow(patterns []string) error {
-	if a == nil || a.gate == nil {
-		return nil
-	}
-	return a.gate.AddAllowPatterns(patterns)
-}
-
-// AttachAddDeny implements attach.PermsController. Delegates to
-// permissions.Gate.AddDenyPatterns.
-func (a *Agent) AttachAddDeny(patterns []string) error {
-	if a == nil || a.gate == nil {
-		return nil
-	}
-	return a.gate.AddDenyPatterns(patterns)
-}
-
-// WithAttachMemoryProvider wires a snapshot func that returns the
-// agent's loaded instruction sources for the remote-attach
-// /sessions/<sid>/memory endpoint (backs the remote TUI's /memory
-// slash). The caller usually projects an `instruction.Loaded`'s
-// Sources list into []attach.MemorySource; nil = endpoint returns
-// empty.
-func WithAttachMemoryProvider(fn func() []attach.MemorySource) Option {
-	return func(o *options) { o.attachMemoryFn = fn }
-}
-
-// WithAttachSkillsProvider wires a snapshot func for
-// /sessions/<sid>/skills (backs /skills).
-func WithAttachSkillsProvider(fn func() []attach.SkillInfo) Option {
-	return func(o *options) { o.attachSkillsFn = fn }
-}
-
-// WithAttachMCPProvider wires a snapshot func for
-// /sessions/<sid>/mcp (backs /mcp).
-func WithAttachMCPProvider(fn func() attach.MCPInfo) Option {
-	return func(o *options) { o.attachMCPFn = fn }
-}
-
-// AttachMemory implements attach.MemoryProvider. Returns nil when
-// no provider was wired — the handler emits 200 with an empty
-// `{"sources": []}`.
-func (a *Agent) AttachMemory() []attach.MemorySource {
-	if a == nil || a.attachMemoryFn == nil {
-		return nil
-	}
-	return a.attachMemoryFn()
-}
-
-// AttachSkills implements attach.SkillsProvider.
-func (a *Agent) AttachSkills() []attach.SkillInfo {
-	if a == nil || a.attachSkillsFn == nil {
-		return nil
-	}
-	return a.attachSkillsFn()
-}
-
-// AttachMCP implements attach.MCPProvider.
-func (a *Agent) AttachMCP() attach.MCPInfo {
-	if a == nil || a.attachMCPFn == nil {
-		return attach.MCPInfo{}
-	}
-	return a.attachMCPFn()
-}
-
-// WithAttachPricingProvider wires a snapshot func for
-// /sessions/<sid>/pricing (backs the remote TUI's /pricing read).
-func WithAttachPricingProvider(fn func() attach.PricingInfo) Option {
-	return func(o *options) { o.attachPricingFn = fn }
-}
-
-// WithAttachRefreshPricer wires a func that runs on
-// POST /sessions/<sid>/pricing/refresh — typically calls into
-// `internal/pricing.Refresh` and rebuilds the catalog. Returns
-// the outcome the operator sees.
-func WithAttachRefreshPricer(fn func(ctx context.Context) (attach.PricingRefreshResponse, error)) Option {
-	return func(o *options) { o.attachRefreshFn = fn }
-}
-
-// WithAttachPricingSetter wires a func that runs on
-// POST /sessions/<sid>/pricing/set — writes a manual per-model
-// rate and rebuilds the catalog.
-func WithAttachPricingSetter(fn func(req attach.PricingSetRequest) error) Option {
-	return func(o *options) { o.attachSetPricingFn = fn }
-}
-
-// AttachPricing implements attach.PricingProvider.
-func (a *Agent) AttachPricing() attach.PricingInfo {
-	if a == nil || a.attachPricingFn == nil {
-		return attach.PricingInfo{}
-	}
-	return a.attachPricingFn()
-}
-
-// AttachRefreshPricing implements attach.PricingController. Returns
-// attach.ErrCapabilityNotRegistered when no func was wired — the
-// handler maps that to HTTP 501.
-func (a *Agent) AttachRefreshPricing(ctx context.Context) (attach.PricingRefreshResponse, error) {
-	if a == nil || a.attachRefreshFn == nil {
-		return attach.PricingRefreshResponse{}, attach.ErrCapabilityNotRegistered
-	}
-	return a.attachRefreshFn(ctx)
-}
-
-// AttachSetManualPricing implements attach.PricingController.
-func (a *Agent) AttachSetManualPricing(req attach.PricingSetRequest) error {
-	if a == nil || a.attachSetPricingFn == nil {
-		return attach.ErrCapabilityNotRegistered
-	}
-	return a.attachSetPricingFn(req)
-}
-
-// WithAttachReloader wires a func that runs on POST
-// /sessions/<sid>/reload. The closure is expected to re-walk
-// project deps (instruction sources, skills bundles, MCP config)
-// and return per-surface success in the response so the operator
-// sees which parts succeeded and which failed. The agent doesn't
-// inspect the response shape; what "reload" means is the host's
-// concern. Without this option the operator sees 501 / capability
-// not registered.
-func WithAttachReloader(fn func(ctx context.Context) attach.ReloadResponse) Option {
-	return func(o *options) { o.attachReloadFn = fn }
-}
-
-// AttachReload implements attach.Reloader. Returns a response with
-// Errors populated by ErrCapabilityNotRegistered when no func was
-// wired so the handler emits the same 501 the other unwired
-// controllers do.
-func (a *Agent) AttachReload(ctx context.Context) attach.ReloadResponse {
-	if a == nil || a.attachReloadFn == nil {
-		return attach.ReloadResponse{Errors: []string{attach.ErrCapabilityNotRegistered.Error()}}
-	}
-	return a.attachReloadFn(ctx)
-}
-
-// WithAttachReplanner wires a func that runs on POST
-// /sessions/<sid>/slash/replan and on the in-process TUI's
-// /replan slash dispatch. The closure is expected to clear the
-// gate's planRecorded flag and archive the latest plan artifact
-// (typically `tools.RevokeLatestPlan(gate, agentsDir)`). Without
-// this option the slash returns 501 / "capability not registered".
-//
-// Wire only when plan-first gating is active (config
-// permissions.require_plan_artifact: true). Wiring it under other
-// configs is a no-op but harmless.
-func WithAttachReplanner(fn func(ctx context.Context, req attach.ReplanRequest) (attach.ReplanResponse, error)) Option {
-	return func(o *options) { o.attachReplanFn = fn }
-}
-
-// AttachReplan implements attach.ReplanProvider. Routes to the
-// closure wired by WithAttachReplanner; returns
-// ErrCapabilityNotRegistered when no func was wired.
-func (a *Agent) AttachReplan(ctx context.Context, req attach.ReplanRequest) (attach.ReplanResponse, error) {
-	if a == nil || a.attachReplanFn == nil {
-		return attach.ReplanResponse{}, attach.ErrCapabilityNotRegistered
-	}
-	return a.attachReplanFn(ctx, req)
-}
-
-// WithAttachPromptBroker wires the broker that bridges the agent's
-// permissions.Gate prompts to remote operators over
-// GET /sessions/<sid>/perms/stream and POST /perms/respond. The
-// caller is also responsible for wiring this broker into the gate
-// (typically via Gate.SetPrompter(broker)) so prompts the gate
-// generates actually flow through it. Without this option the
-// /perms/stream + /perms/respond routes return 501.
-func WithAttachPromptBroker(b *attach.PromptBroker) Option {
-	return func(o *options) { o.attachPromptBroker = b }
-}
-
-// AttachPromptBroker implements attach.PromptBrokerProvider.
-func (a *Agent) AttachPromptBroker() *attach.PromptBroker {
-	if a == nil {
-		return nil
-	}
-	return a.attachPromptBroker
-}
-
-// AttachCompact implements attach.CompactSlashProvider. Wraps
-// Agent.Compact and projects the result into the JSON wire format.
-// Errors propagate; the attach handler turns them into 500s.
-func (a *Agent) AttachCompact(ctx context.Context, focus string) (attach.CompactResponse, error) {
-	if a == nil {
-		return attach.CompactResponse{}, nil
-	}
-	res, err := a.Compact(ctx, focus)
-	if err != nil {
-		return attach.CompactResponse{}, err
-	}
-	return attach.CompactResponse{
-		SummaryEventID: res.SummaryEventID,
-		SummaryText:    res.SummaryText,
-		DurationMS:     res.Duration.Milliseconds(),
-		Skipped:        res.Skipped,
-	}, nil
-}
-
-// AttachCheckpoint implements attach.CheckpointSlashProvider. Wraps
-// Agent.Checkpoint.
-func (a *Agent) AttachCheckpoint(ctx context.Context, note string) (attach.CheckpointResponse, error) {
-	if a == nil {
-		return attach.CheckpointResponse{}, nil
-	}
-	res, err := a.Checkpoint(ctx, note)
-	if err != nil {
-		return attach.CheckpointResponse{}, err
-	}
-	return attach.CheckpointResponse{
-		CheckpointEventID: res.CheckpointEventID,
-		SummaryText:       res.SummaryText,
-		TaskNote:          res.TaskNote,
-		DurationMS:        res.Duration.Milliseconds(),
-		Skipped:           res.Skipped,
-	}, nil
-}
-
-// AttachAskSideQuestion implements attach.SideQueryProvider. Wraps
-// Agent.AskSideQuestion (the /btw side-channel that doesn't persist
-// to the event log).
-func (a *Agent) AttachAskSideQuestion(ctx context.Context, question string) (string, error) {
-	if a == nil {
-		return "", nil
-	}
-	return a.AskSideQuestion(ctx, question)
-}
-
-// AttachSpawnSubagent implements attach.SubagentSpawner. Delegates
-// to the wired BackgroundAgentManager. Returns
-// ErrSubagentSpawnerUnavailable when no manager is attached.
-func (a *Agent) AttachSpawnSubagent(ctx context.Context, spec attach.SubagentSpec) (attach.SubagentSpawnResponse, error) {
-	if a == nil || a.bgMgr == nil {
-		return attach.SubagentSpawnResponse{}, ErrSubagentSpawnerUnavailable
-	}
-	return a.bgMgr.SpawnSubagent(ctx, spec)
-}
-
-// ErrSubagentSpawnerUnavailable is returned by AttachSpawnSubagent
-// when the agent wasn't constructed with WithBackgroundManager. The
-// attach handler maps this to HTTP 501 so the operator sees
-// "subagent spawn not registered" instead of a 500.
-var ErrSubagentSpawnerUnavailable = errors.New("agent: subagent spawner unavailable (no BackgroundAgentManager wired)")
-
 // Interrupt cancels the in-flight turn (if any) by invoking the
 // stored cancel func. Returns true if there was something to cancel
 // (a turn was in flight when called), false if the agent was idle
@@ -1736,14 +1185,6 @@ func (a *Agent) Interrupt() bool {
 	}
 	cancel()
 	return true
-}
-
-// AttachInterrupt implements attach.InterruptProvider so the
-// attach-mode POST /sessions/<sid>/interrupt handler can dispatch
-// cancel intents from a remote operator without importing this
-// package directly.
-func (a *Agent) AttachInterrupt() bool {
-	return a.Interrupt()
 }
 
 // setCancelInFlight stores the cancel func for the current turn and

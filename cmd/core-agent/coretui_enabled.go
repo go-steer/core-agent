@@ -193,42 +193,28 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 		// via `todo`. agent.FormatAutoContinueInbox is exported for
 		// exactly this use case.
 		AutoContinueFormatter: agent.FormatAutoContinueInbox,
-		// AllowAlways persists the entry to disk when the host's
-		// AgentsDir is writable. Path-scope entries land in
-		// .agents/config.json's path_scope.allow; everything else
-		// becomes a permissions.allow pattern of the form
-		// "<tool>:<key>" (matches Policy.Match's grammar) and is
-		// added to both the live gate (so subsequent calls this
-		// session don't re-prompt) and the on-disk config (so it
-		// survives a restart). Without AgentsDir the callback is a
-		// no-op and the TUI falls back to allow-session.
-		AlwaysAllow: func(req coretui.PermissionRequest) error {
-			if deps.AgentsDir == "" {
-				return nil
-			}
-			if req.PersistTool == "path_scope" {
-				return appendPathScope(deps.AgentsDir, req.PersistKey)
-			}
-			if req.PersistTool == "" || req.PersistKey == "" {
-				return nil
-			}
-			pattern := req.PersistTool + ":" + req.PersistKey
-			if err := deps.Gate.AddAllowPatterns([]string{pattern}); err != nil {
-				return err
-			}
-			return appendPermissionsAllow(deps.AgentsDir, []string{pattern})
-		},
+		// AllowAlways must be non-nil so the modal offers the
+		// "always" choice (a nil callback makes core-tui downgrade
+		// to allow-session), but since #386 PR 3 the persistence
+		// itself is the GATE's job: DecisionAllowAlways flows back
+		// through gatePrompterBridge and the gate installs the
+		// in-memory pattern AND persists the fully-expanded grant
+		// via the compose.ConfigGrantStore wired in main. Doing it
+		// here too would double-write — and with a DIVERGENT shape
+		// (this callback only saw the raw PersistKey, not the
+		// subtree-expanded pattern the gate installs).
+		AlwaysAllow: func(coretui.PermissionRequest) error { return nil },
 		PersistModelChoice: func(id string) error {
 			if deps.AgentsDir == "" {
 				return nil
 			}
-			return persistModelChoice(deps.AgentsDir, id)
+			return compose.PersistModelChoice(deps.AgentsDir, id)
 		},
 		PersistThemeChoice: func(name string) error {
 			if deps.AgentsDir == "" {
 				return nil
 			}
-			return persistThemeChoice(deps.AgentsDir, name)
+			return compose.PersistThemeChoice(deps.AgentsDir, name)
 		},
 	}
 
@@ -679,7 +665,7 @@ func (a *coreAgentAdapter) AddAllowPatterns(patterns []string) error {
 	if a.deps.AgentsDir == "" {
 		return nil
 	}
-	return appendPermissionsAllow(a.deps.AgentsDir, patterns)
+	return compose.AppendPermissionsAllow(a.deps.AgentsDir, patterns)
 }
 
 // AddDenyPatterns satisfies coretui.PermissionController.
@@ -691,7 +677,7 @@ func (a *coreAgentAdapter) AddDenyPatterns(patterns []string) error {
 	if a.deps.AgentsDir == "" {
 		return nil
 	}
-	return appendPermissionsDeny(a.deps.AgentsDir, patterns)
+	return compose.AppendPermissionsDeny(a.deps.AgentsDir, patterns)
 }
 
 // AddBuiltinAllowExtra satisfies coretui.PermissionController.
@@ -710,7 +696,7 @@ func (a *coreAgentAdapter) AddBuiltinAllowExtra(bundleName string) error {
 	if a.deps.AgentsDir == "" {
 		return nil
 	}
-	return appendBuiltinAllowExtra(a.deps.AgentsDir, bundleName)
+	return compose.AppendBuiltinAllowExtra(a.deps.AgentsDir, bundleName)
 }
 
 // Tools satisfies coretui.ToolLister. Routes through the agent's

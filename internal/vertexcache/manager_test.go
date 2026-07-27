@@ -49,6 +49,13 @@ type fakeCaches struct {
 	// spawning request's context.
 	honorCtx bool
 
+	// updateStarted / updateRelease, when non-nil, make Update signal
+	// entry and then block until released — lets tests hold a refresh
+	// RPC in flight while racing MarkEvicted / Delete against it.
+	// Set before the manager is constructed; never mutated after.
+	updateStarted chan struct{}
+	updateRelease chan struct{}
+
 	createCount atomic.Int32
 	updateCount atomic.Int32
 	deleteCount atomic.Int32
@@ -87,6 +94,12 @@ func (f *fakeCaches) Create(ctx context.Context, model string, cfg *genai.Create
 }
 
 func (f *fakeCaches) Update(_ context.Context, name string, cfg *genai.UpdateCachedContentConfig) (*genai.CachedContent, error) {
+	if f.updateStarted != nil {
+		f.updateStarted <- struct{}{}
+	}
+	if f.updateRelease != nil {
+		<-f.updateRelease
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.updateCount.Add(1)
@@ -476,5 +489,57 @@ func TestInit_RealErrorStaysSticky(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if got := f.createCount.Load(); got != 1 {
 		t.Errorf("createCount = %d, want 1 (sticky failure must not retry)", got)
+	}
+}
+
+// TestManager_RefreshLandingAfterEvictionIsDropped pins the doRefresh
+// success-path guard: when MarkEvicted lands while the Update RPC is
+// in flight, the refreshed ExpireTime must be dropped — applying it
+// would stamp the already-evicted (or a subsequently re-created)
+// cache identity with a stale expiry (#372).
+func TestManager_RefreshLandingAfterEvictionIsDropped(t *testing.T) {
+	t.Parallel()
+	fake := &fakeCaches{
+		// Near-expiry Create so the first Name() schedules a refresh.
+		ttlOverride:   500 * time.Millisecond,
+		updateStarted: make(chan struct{}, 1),
+		updateRelease: make(chan struct{}),
+	}
+	m := NewManager(fake, "gemini-2.5-flash", Options{
+		TTL:              time.Hour,
+		RefreshThreshold: 30 * time.Minute,
+		Logger:           discardLogger(),
+	})
+	m.Init(context.Background(), &genai.Content{Parts: []*genai.Part{{Text: "sys"}}}, nil)
+	waitFor(t, time.Second, func() bool { return m.Snapshot().Active })
+
+	// Schedule the refresh, then hold its Update RPC in flight.
+	_ = m.Name(context.Background())
+	select {
+	case <-fake.updateStarted:
+	case <-time.After(time.Second):
+		t.Fatal("refresh Update RPC never started")
+	}
+
+	// Eviction lands mid-RPC: state resets to pre-Init, expiry zeroed.
+	m.MarkEvicted("simulated NOT_FOUND")
+
+	// Let the in-flight refresh complete and settle.
+	close(fake.updateRelease)
+	waitFor(t, time.Second, func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return !m.refreshing
+	})
+
+	snap := m.Snapshot()
+	if snap.Active {
+		t.Errorf("Active = true after eviction; the landed refresh must not resurrect the cache")
+	}
+	if snap.CacheName != "" {
+		t.Errorf("CacheName = %q, want empty after eviction", snap.CacheName)
+	}
+	if !snap.ExpiresAt.IsZero() {
+		t.Errorf("ExpiresAt = %v, want zero (stale refresh result must be dropped)", snap.ExpiresAt)
 	}
 }

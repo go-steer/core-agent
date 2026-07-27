@@ -174,3 +174,52 @@ func drain(t *testing.T, llm adkmodel.LLM, req *adkmodel.LLMRequest) []*adkmodel
 	}
 	return out
 }
+
+// mutatingLLM mimics the Gemini built-ins wrapper: it mutates the
+// request's shared Config in place (appending to Config.Tools) before
+// producing its response. The recorder must have fixed the recorded
+// request form before this mutation can be observed.
+type mutatingLLM struct{}
+
+func (m *mutatingLLM) Name() string { return "mutating" }
+
+func (m *mutatingLLM) GenerateContent(_ context.Context, req *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		req.Config.Tools = append(req.Config.Tools, &genai.Tool{GoogleSearch: &genai.GoogleSearch{}})
+		req.Config.Temperature = genai.Ptr[float32](0.99)
+		yield(&adkmodel.LLMResponse{
+			Content:      textContent(genai.RoleModel, "done"),
+			TurnComplete: true,
+		}, nil)
+	}
+}
+
+func TestRecorder_SnapshotImmuneToConfigMutation(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	rec := NewRecorder(&mutatingLLM{}, &buf)
+
+	req := &adkmodel.LLMRequest{
+		Model: "test-model",
+		Config: &genai.GenerateContentConfig{
+			Temperature: genai.Ptr[float32](0.2),
+		},
+	}
+	_ = drain(t, rec, req)
+	// Mutation after the call must not alter the recording either.
+	req.Config.Tools = append(req.Config.Tools, &genai.Tool{GoogleSearch: &genai.GoogleSearch{}})
+
+	turns := decodeJSONL(t, &buf)
+	if len(turns) != 1 || turns[0].Request == nil || turns[0].Request.Config == nil {
+		t.Fatalf("expected 1 turn with a recorded request config, got %+v", turns)
+	}
+	cfg := turns[0].Request.Config
+	// The shallow-copy bug shared the Config pointer, so the inner
+	// LLM's in-call mutations leaked into the recording (#372).
+	if len(cfg.Tools) != 0 {
+		t.Errorf("recorded Config.Tools = %d entries, want 0 (pre-mutation snapshot)", len(cfg.Tools))
+	}
+	if cfg.Temperature == nil || *cfg.Temperature != 0.2 {
+		t.Errorf("recorded Config.Temperature = %v, want 0.2 (pre-mutation snapshot)", cfg.Temperature)
+	}
+}

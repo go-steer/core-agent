@@ -80,6 +80,12 @@ func ResumeAutonomous(ctx context.Context, build ResumeBuildFunc, ref SessionRef
 		opt(&cfg)
 	}
 
+	// resumeStart anchors Duration for the cancelled-while-waiting
+	// exit below. The loop's startedAt (declared after the deferred-
+	// wake wait) intentionally excludes the wait so the wallclock
+	// budget only counts active run time — it can't serve here.
+	resumeStart := time.Now()
+
 	// Lock first — fail fast if another process is resuming the
 	// same session.
 	lock, err := ref.Handle.AcquireLock(ctx, ref.AppName, ref.UserID, ref.SessionID)
@@ -187,7 +193,7 @@ func ResumeAutonomous(ctx context.Context, build ResumeBuildFunc, ref SessionRef
 					CostUSD:      latest.CostUSD,
 					FinalText:    latest.FinalText,
 				}
-				result.Duration = time.Since(time.Now())
+				result.Duration = time.Since(resumeStart)
 				return result, ctx.Err()
 			}
 		}

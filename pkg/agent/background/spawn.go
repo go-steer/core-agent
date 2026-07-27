@@ -66,9 +66,17 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 		m.mu.Unlock()
 		return nil, fmt.Errorf("%w (depth=%d, max=%d)", ErrDepthExceeded, depth, m.maxDepth)
 	}
-	if _, exists := m.agents[spec.Name]; exists {
-		m.mu.Unlock()
-		return nil, fmt.Errorf("%w: %q", ErrSubagentExists, spec.Name)
+	if existing, exists := m.agents[spec.Name]; exists {
+		if existing.Status() == StatusRunning {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("%w: %q", ErrSubagentExists, spec.Name)
+		}
+		// The previous holder of this name reached a terminal state
+		// (completed / failed / stopped / deferred) — evict its handle
+		// so the name is reusable. Without the eviction a name was
+		// burned forever once its subagent finished, which broke
+		// re-spawn-with-same-name workflows.
+		delete(m.agents, spec.Name)
 	}
 	if m.maxConcurrent > 0 && m.runningCount() >= m.maxConcurrent {
 		m.mu.Unlock()

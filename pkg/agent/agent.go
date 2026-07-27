@@ -1110,6 +1110,21 @@ func (a *Agent) RunWithContents(ctx context.Context, contents []*genai.Content) 
 			return
 		}
 		sess := createResp.Session
+		// This call created the session, so this call deletes it once
+		// the iterator finishes (success, error, or early caller stop).
+		// Without the cleanup every RunWithContents turn left one
+		// durable session row behind — the AX adapter calls this
+		// per-turn, so rows grew without bound. Best-effort and
+		// detached from ctx so an interrupted turn still cleans up;
+		// a failed delete just leaves one orphan row (the pre-fix
+		// behavior for every row), so the error is dropped.
+		defer func() {
+			_ = a.sessionService.Delete(context.WithoutCancel(ctx), &session.DeleteRequest{
+				AppName:   a.appName,
+				UserID:    a.userID,
+				SessionID: sessionID,
+			})
+		}()
 
 		for i, c := range history {
 			if c == nil {

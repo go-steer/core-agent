@@ -63,7 +63,69 @@ func buildParams(modelID string, contents []*genai.Content, cfg *genai.GenerateC
 		params.Tools = tools
 	}
 
+	applyGenerationConfig(&params, cfg)
+
 	return params, nil
+}
+
+// applyGenerationConfig maps the sampling / stop / tool-choice /
+// thinking knobs from a genai config onto the Anthropic params.
+// Unset genai fields leave the corresponding param unset so the API
+// defaults apply.
+func applyGenerationConfig(params *anthropic.MessageNewParams, cfg *genai.GenerateContentConfig) {
+	if cfg == nil {
+		return
+	}
+	if cfg.Temperature != nil {
+		params.Temperature = anthropic.Float(float64(*cfg.Temperature))
+	}
+	if cfg.TopP != nil {
+		params.TopP = anthropic.Float(float64(*cfg.TopP))
+	}
+	if cfg.TopK != nil {
+		// genai models TopK as a float; Anthropic takes an integer.
+		params.TopK = anthropic.Int(int64(*cfg.TopK))
+	}
+	if len(cfg.StopSequences) > 0 {
+		params.StopSequences = cfg.StopSequences
+	}
+	if tc := toolChoiceParam(cfg.ToolConfig); tc != nil {
+		params.ToolChoice = *tc
+	}
+	// Thinking: only an explicit positive budget opts in. genai's
+	// IncludeThoughts alone has no Anthropic equivalent (thinking
+	// blocks are always returned when thinking is enabled).
+	if cfg.ThinkingConfig != nil && cfg.ThinkingConfig.ThinkingBudget != nil &&
+		*cfg.ThinkingConfig.ThinkingBudget > 0 {
+		params.Thinking = anthropic.ThinkingConfigParamOfEnabled(int64(*cfg.ThinkingConfig.ThinkingBudget))
+	}
+}
+
+// toolChoiceParam maps genai's FunctionCallingConfig onto Anthropic's
+// tool_choice. AUTO / unspecified return nil — Anthropic defaults to
+// auto, so leaving the param unset preserves byte-identical requests
+// for configs that never set a mode. ANY with exactly one allowed
+// function pins that specific tool (Anthropic's closest equivalent of
+// Gemini's allowed-names constraint); ANY otherwise maps to "any";
+// NONE maps to "none".
+func toolChoiceParam(tc *genai.ToolConfig) *anthropic.ToolChoiceUnionParam {
+	if tc == nil || tc.FunctionCallingConfig == nil {
+		return nil
+	}
+	fcc := tc.FunctionCallingConfig
+	switch fcc.Mode {
+	case genai.FunctionCallingConfigModeAny:
+		if len(fcc.AllowedFunctionNames) == 1 {
+			choice := anthropic.ToolChoiceParamOfTool(fcc.AllowedFunctionNames[0])
+			return &choice
+		}
+		return &anthropic.ToolChoiceUnionParam{OfAny: &anthropic.ToolChoiceAnyParam{}}
+	case genai.FunctionCallingConfigModeNone:
+		return &anthropic.ToolChoiceUnionParam{OfNone: &anthropic.ToolChoiceNoneParam{}}
+	default:
+		// AUTO / unspecified: Anthropic's default is auto.
+		return nil
+	}
 }
 
 // maxTokens picks a MaxTokens value, preferring an explicit override
@@ -281,9 +343,15 @@ func functionResponseBlock(fr *genai.FunctionResponse, ids *idSynthesizer) anthr
 	}
 	body := ""
 	if fr.Response != nil {
-		if raw, err := json.Marshal(fr.Response); err == nil {
-			body = string(raw)
+		raw, err := json.Marshal(fr.Response)
+		if err != nil {
+			// Don't swallow the failure into an empty, is_error=false
+			// result — the model would read that as a clean success.
+			// Surface it as an errored tool result instead.
+			return anthropic.NewToolResultBlock(id,
+				fmt.Sprintf("core-agent: failed to marshal tool result: %v", err), true)
 		}
+		body = string(raw)
 	}
 	return anthropic.NewToolResultBlock(id, body, false)
 }

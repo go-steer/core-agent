@@ -93,7 +93,7 @@ When several core-agent binaries run alongside each other — daemon + `k8s-even
 - **Propagator registered globally** at daemon startup — supports both `traceparent` and `tracestate` (`pkg/telemetry/otel.go`). Every span the daemon emits carries the current trace's IDs.
 - **Attach server** wraps the router in `otelhttp.NewHandler` (`pkg/attach/server.go`) — every inbound HTTP request extracts `traceparent` if present, becomes a root or child span, and the trace context flows into every downstream operation the request touches.
 - **MCP client** wraps the outbound transport in `otelhttp.NewTransport` (`pkg/mcp/lifecycle.go`) — the `mcp.http_call` span you see in the span tree above rides on that transport, and MCP servers that speak OTel see the parent trace.
-- **`k8s-event-watcher`** initializes the same OTel SDK at startup (`cmd/k8s-event-watcher/main.go`) and wraps its outbound HTTP client (`injector.go`) so a `POST /sessions/{sid}/inject` from the sidecar starts a trace on the watcher, propagates via `traceparent`, and the daemon's `otelhttp.Handler` extracts it into the request context. The inject → session-turn → tool-call → MCP-call chain becomes one trace across two processes.
+- **`k8s-event-watcher`** (source now in [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout)) initializes the same OTel SDK at startup and wraps its outbound HTTP client so a `POST /sessions/{sid}/inject` from the sidecar starts a trace on the watcher, propagates via `traceparent`, and the daemon's `otelhttp.Handler` extracts it into the request context. The inject → session-turn → tool-call → MCP-call chain becomes one trace across two processes.
 
 ### End-to-end span tree
 

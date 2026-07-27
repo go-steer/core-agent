@@ -3,7 +3,7 @@
 Cutting a release is fully automated from a tag push. The two release workflows fire in parallel:
 
 - **`.github/workflows/release.yml`** — cross-compiles `core-agent` + `core-agent-tui` binaries via GoReleaser (see [`.goreleaser.yml`](../.goreleaser.yml)), signs the checksum file via Sigstore keyless, and publishes the GitHub Release with notes drawn from `CHANGELOG.md` plus a static install/verify footer.
-- **`.github/workflows/release-images.yml`** — builds and pushes four multi-arch container images (`core-agent`, `core-agent-slim`, `core-agent-tui`, `k8s-event-watcher`) to ghcr.io, signed via Sigstore keyless.
+- **`.github/workflows/release-images.yml`** — builds and pushes three multi-arch container images (`core-agent`, `core-agent-slim`, `core-agent-tui`) to ghcr.io, signed via Sigstore keyless. (The `k8s-event-watcher` image ships from [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout) as of v2.8; tags published here through v2.7 remain pullable.)
 
 Both trigger on `push: tags: ['v*.*.*']`.
 

@@ -65,6 +65,9 @@ NAMESPACE="${NAMESPACE:-agent-triage}"
 # Reuses the daemon image the recipe pins in overlays/example/kustomization.yaml.
 # Overridable so a future variant can build local + kind load.
 DAEMON_IMAGE="${DAEMON_IMAGE:-ghcr.io/go-steer/core-agent:2.6.0}"
+# The watcher source moved to go-steer/k8s-lookout; this published image
+# keeps working, and the pin will migrate to that repo's image in a
+# follow-up.
 WATCHER_IMAGE="${WATCHER_IMAGE:-ghcr.io/go-steer/k8s-event-watcher:2.6.0}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-180s}"
 

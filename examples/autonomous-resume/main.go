@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Example: drive an agent through agent.RunAutonomous, simulate a
+// Example: drive an agent through autonomous.RunAutonomous, simulate a
 // crash via a tight max-turns budget, then continue the run with
-// agent.ResumeAutonomous against the same SQLite event log.
+// autonomous.ResumeAutonomous against the same SQLite event log.
 //
 //	go run ./examples/autonomous-resume
 //
@@ -41,6 +41,7 @@ import (
 	adktool "google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 	"github.com/go-steer/core-agent/v2/pkg/models/mock"
 )
@@ -98,7 +99,7 @@ func run() error {
 		return err
 	}
 	fmt.Println("== Phase 1: RunAutonomous with MaxTurns(2) ==")
-	res1, err := agent.RunAutonomous(ctx,
+	res1, err := autonomous.RunAutonomous(ctx,
 		func(extras []adktool.Tool) (*agent.Agent, error) {
 			return agent.New(llm1,
 				agent.WithAppName(appName),
@@ -109,7 +110,7 @@ func run() error {
 			)
 		},
 		"work the problem",
-		agent.WithMaxTurns(2),
+		autonomous.WithMaxTurns(2),
 	)
 	if err != nil {
 		return fmt.Errorf("first RunAutonomous: %v", err)
@@ -127,7 +128,7 @@ func run() error {
 		return err
 	}
 	fmt.Println("== Phase 2: ResumeAutonomous picks up at the next turn ==")
-	res2, err := agent.ResumeAutonomous(ctx,
+	res2, err := autonomous.ResumeAutonomous(ctx,
 		func(extras []adktool.Tool, sess string) (*agent.Agent, error) {
 			return agent.New(llm2,
 				agent.WithAppName(appName),
@@ -137,13 +138,13 @@ func run() error {
 				agent.WithInstruction("autonomous worker; call report_done when finished"),
 			)
 		},
-		agent.SessionRef{
+		autonomous.SessionRef{
 			Handle:    handle,
 			AppName:   appName,
 			UserID:    userID,
 			SessionID: sessionID,
 		},
-		agent.WithMaxTurns(10),
+		autonomous.WithMaxTurns(10),
 	)
 	if err != nil {
 		return fmt.Errorf("ResumeAutonomous: %v", err)
@@ -153,7 +154,7 @@ func run() error {
 	return nil
 }
 
-func printResult(label string, r agent.RunResult) {
+func printResult(label string, r autonomous.RunResult) {
 	fmt.Printf("[%s] reason=%s turns=%d done_detail=%q final_text=%q\n\n",
 		label, r.Reason, r.Turns, r.DoneDetail, r.FinalText)
 }

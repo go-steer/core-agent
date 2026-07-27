@@ -140,7 +140,7 @@ type Agent struct {
 	model           adkmodel.LLM
 	modelName       string
 	gate            *permissions.Gate
-	bgMgr           *BackgroundAgentManager
+	bgMgr           SubagentManager
 	inbox           *inbox
 	wake            *wakeSignal
 	attachRegistrar attachRegistrar
@@ -247,7 +247,7 @@ type options struct {
 	sessionService  session.Service
 	eventLog        *eventlog.Handle
 	subagents       []*Agent
-	bgMgr           *BackgroundAgentManager
+	bgMgr           SubagentManager
 	gate            *permissions.Gate
 	attachRegistrar attachRegistrar
 	tracker         *usage.Tracker
@@ -389,7 +389,7 @@ func WithSubagents(agents []*Agent) Option {
 // what its background subagents have reported since the last turn.
 //
 // Pass nil to clear (e.g. for tests that re-construct an agent).
-func WithBackgroundManager(mgr *BackgroundAgentManager) Option {
+func WithBackgroundManager(mgr SubagentManager) Option {
 	return func(o *options) { o.bgMgr = mgr }
 }
 
@@ -644,7 +644,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		onTurnEnd:          o.onTurnEnd,
 	}
 	if a.bgMgr != nil {
-		a.bgMgr.attachParent(a)
+		a.bgMgr.AttachParent(a)
 	}
 	// Late-bind the agent pointer so the mark_task_done tool
 	// (registered above before llmagent.New) can resolve *Agent
@@ -711,6 +711,30 @@ func (a *Agent) SessionService() session.Service { return a.sessionService }
 // reach back to Stream.Since / Stream.Watch for replay or live tail
 // without keeping a separate reference.
 func (a *Agent) EventLog() *eventlog.Handle { return a.eventLog }
+
+// Streaming returns the ADK streaming mode the agent was constructed
+// with. Part of the read-only accessor seam the split-out subagent
+// packages (pkg/agent/background) use to build child agents that
+// inherit the parent's streaming behavior without reaching the
+// unexported field directly.
+func (a *Agent) Streaming() adkagent.StreamingMode {
+	if a == nil {
+		var zero adkagent.StreamingMode
+		return zero
+	}
+	return a.streaming
+}
+
+// Tracker returns the usage.Tracker the agent was constructed with via
+// WithTracker, or nil when none was wired. Part of the read-only
+// accessor seam pkg/agent/background uses to roll background subagent
+// turns into the parent's usage totals.
+func (a *Agent) Tracker() *usage.Tracker {
+	if a == nil {
+		return nil
+	}
+	return a.tracker
+}
 
 // Inner returns the underlying ADK agent the turn loop drives. It is
 // the read-only seam the split-out driver package (pkg/agent/autonomous,
@@ -1090,11 +1114,13 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	})
 }
 
-// BackgroundManager returns the BackgroundAgentManager the agent was
+// BackgroundManager returns the SubagentManager the agent was
 // constructed with via WithBackgroundManager, or nil when none was
 // wired. Used by spawn tools + the runner's REPL alert display to
-// reach the manager without keeping a separate reference.
-func (a *Agent) BackgroundManager() *BackgroundAgentManager {
+// reach the manager without keeping a separate reference. Callers that
+// need the concrete *background.Manager recover it with
+// background.ManagerOf.
+func (a *Agent) BackgroundManager() SubagentManager {
 	if a == nil {
 		return nil
 	}
@@ -1249,22 +1275,7 @@ func (a *Agent) AttachAgents() []attach.AgentInfo {
 	if a == nil || a.bgMgr == nil {
 		return nil
 	}
-	handles := a.bgMgr.List()
-	out := make([]attach.AgentInfo, 0, len(handles))
-	for _, h := range handles {
-		ai := attach.AgentInfo{
-			ID:              h.Name, // BackgroundHandle keys by name
-			Name:            h.Name,
-			Status:          h.Status().String(),
-			StartedAt:       h.StartedAt,
-			ParentSessionID: a.sessionID,
-		}
-		if r := h.Result(); r != nil && r.FinalText != "" {
-			ai.LastReport = r.FinalText
-		}
-		out = append(out, ai)
-	}
-	return out
+	return a.bgMgr.ListSubagents()
 }
 
 // AttachStatus implements attach.StatusProvider. V1 returns the agent's
@@ -1689,23 +1700,7 @@ func (a *Agent) AttachSpawnSubagent(ctx context.Context, spec attach.SubagentSpe
 	if a == nil || a.bgMgr == nil {
 		return attach.SubagentSpawnResponse{}, ErrSubagentSpawnerUnavailable
 	}
-	handle, err := a.bgMgr.Spawn(ctx, "" /* parentBranch */, BackgroundSpec{
-		Name:         spec.Name,
-		SystemPrompt: spec.SystemPrompt,
-		Goal:         spec.Goal,
-		Tools:        spec.Tools,
-		Extras:       spec.Extras,
-		Budgets: BackgroundBudgets{
-			MaxTurns:     spec.Budgets.MaxTurns,
-			MaxCost:      spec.Budgets.MaxCostUSD,
-			MaxWallclock: time.Duration(spec.Budgets.MaxWallClockS) * time.Second,
-		},
-		Scheduler: spec.Scheduler,
-	})
-	if err != nil {
-		return attach.SubagentSpawnResponse{}, err
-	}
-	return attach.SubagentSpawnResponse{Name: handle.Name, StartedAt: handle.StartedAt}, nil
+	return a.bgMgr.SpawnSubagent(ctx, spec)
 }
 
 // ErrSubagentSpawnerUnavailable is returned by AttachSpawnSubagent

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package agent
+package background
 
 import (
 	"context"
@@ -25,12 +25,19 @@ import (
 
 	"google.golang.org/adk/tool"
 
+	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
+	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/models"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
 )
 
-// BackgroundAgentManager owns the lifecycle of in-process background
+// defaultMaxDepth caps how deep the background subagent tree can go by
+// default. Mirrors the parallel-tool-call subagent depth cap in pkg/agent.
+const defaultMaxDepth = 2
+
+// Manager owns the lifecycle of in-process background
 // subagents that the parent agent's model decides to spawn at runtime
 // via the spawn_agent tool family (see background_tools.go).
 //
@@ -59,11 +66,11 @@ import (
 // agent.New stamps the parent back-reference onto the manager during
 // construction so Spawn can read parent.SessionService / AppName /
 // UserID / SessionID without the consumer plumbing them twice.
-type BackgroundAgentManager struct {
+type Manager struct {
 	mu sync.Mutex
 
 	// Set by WithBackgroundManager when the parent agent is built.
-	parent *Agent
+	parent *agent.Agent
 
 	// Required at construction.
 	provider models.Provider
@@ -82,10 +89,10 @@ type BackgroundAgentManager struct {
 
 	maxDepth         int
 	maxConcurrent    int
-	defaultBudgets   BackgroundBudgets
+	defaultBudgets   Budgets
 	defaultScheduler coretools.Scheduler
 
-	agents  map[string]*BackgroundHandle
+	agents  map[string]*Handle
 	alerts  chan Alert
 	onAlert func(Alert) // optional synchronous hook, set via OnAlert
 	closed  bool
@@ -100,35 +107,35 @@ type BackgroundAgentManager struct {
 // The hook runs in whichever goroutine triggered the alert
 // (typically a subagent's goroutine for report_alert, the Spawn
 // goroutine for completion). Hooks should not block.
-func (m *BackgroundAgentManager) OnAlert(h func(Alert)) {
+func (m *Manager) OnAlert(h func(Alert)) {
 	m.mu.Lock()
 	m.onAlert = h
 	m.mu.Unlock()
 }
 
-// BackgroundHandle is the lifecycle record for one spawned subagent.
+// Handle is the lifecycle record for one spawned subagent.
 // Exposed read-only via Manager.List / Manager.Get so the parent
 // model's check_agent tool can introspect status without reaching
 // into internal state.
-type BackgroundHandle struct {
+type Handle struct {
 	Name      string
 	Branch    string
 	StartedAt time.Time
 
 	mu     sync.Mutex
-	status BackgroundStatus
-	result *RunResult
+	status Status
+	result *autonomous.RunResult
 	err    error
 	cancel context.CancelFunc
 	done   chan struct{}
 }
 
-// BackgroundStatus is the lifecycle state of a background subagent.
-type BackgroundStatus int
+// Status is the lifecycle state of a background subagent.
+type Status int
 
 const (
 	// StatusRunning — goroutine alive, RunAutonomous loop active.
-	StatusRunning BackgroundStatus = iota
+	StatusRunning Status = iota
 	// StatusCompleted — RunAutonomous returned with Reason==Completed.
 	StatusCompleted
 	// StatusFailed — RunAutonomous returned with a non-Completed
@@ -141,7 +148,7 @@ const (
 )
 
 // String renders the status for tool results and diagnostics.
-func (s BackgroundStatus) String() string {
+func (s Status) String() string {
 	switch s {
 	case StatusRunning:
 		return "running"
@@ -159,7 +166,7 @@ func (s BackgroundStatus) String() string {
 }
 
 // Status returns the current status (safe for concurrent callers).
-func (h *BackgroundHandle) Status() BackgroundStatus {
+func (h *Handle) Status() Status {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.status
@@ -167,7 +174,7 @@ func (h *BackgroundHandle) Status() BackgroundStatus {
 
 // Result returns the terminal RunResult if the subagent has finished,
 // or nil if it's still running.
-func (h *BackgroundHandle) Result() *RunResult {
+func (h *Handle) Result() *autonomous.RunResult {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.result == nil {
@@ -179,7 +186,7 @@ func (h *BackgroundHandle) Result() *RunResult {
 
 // Err returns the terminal error if the subagent's RunAutonomous
 // returned one. Nil while running or on clean completion.
-func (h *BackgroundHandle) Err() error {
+func (h *Handle) Err() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.err
@@ -187,15 +194,15 @@ func (h *BackgroundHandle) Err() error {
 
 // Done returns a channel that closes when the subagent's goroutine
 // exits. Use to wait for completion from the parent without polling.
-func (h *BackgroundHandle) Done() <-chan struct{} {
+func (h *Handle) Done() <-chan struct{} {
 	return h.done
 }
 
-// BackgroundBudgets bounds a single spawned subagent's run. Zero
+// Budgets bounds a single spawned subagent's run. Zero
 // values mean no cap for that dimension. The manager's
-// WithBackgroundDefaultBudgets supplies the defaults; per-spawn
+// WithDefaultBudgets supplies the defaults; per-spawn
 // overrides come from the spawn_agent tool args.
-type BackgroundBudgets struct {
+type Budgets struct {
 	MaxTurns       int
 	MaxCost        float64
 	MaxWallclock   time.Duration
@@ -211,26 +218,26 @@ type Alert struct {
 	Kind      string // "alert" (default) | "completed" | "failed" | "stopped"
 }
 
-// BackgroundSpec is the request shape a single Spawn call expects.
+// Spec is the request shape a single Spawn call expects.
 // Built from the spawn_agent tool args by the tool handler.
-type BackgroundSpec struct {
+type Spec struct {
 	Name         string
 	SystemPrompt string
 	Goal         string
 	Tools        []string
 	Extras       []string
-	Budgets      BackgroundBudgets
+	Budgets      Budgets
 	// Scheduler selects the between-turn scheduler the subagent's
 	// RunAutonomous loop honors. Valid values: "" or "default" (use
-	// the manager's WithBackgroundDefaultScheduler — may itself be
+	// the manager's WithDefaultScheduler — may itself be
 	// nil), "sleep" (in-process goroutine sleep), "exit_on_defer"
 	// (orchestrator-managed exit), "none" (no scheduler — the
 	// schedule_next_turn tool won't be registered for this subagent).
 	Scheduler string
 }
 
-// BackgroundManagerOption configures NewBackgroundAgentManager.
-type BackgroundManagerOption func(*bgMgrConfig)
+// ManagerOption configures NewManager.
+type ManagerOption func(*bgMgrConfig)
 
 type bgMgrConfig struct {
 	provider         models.Provider
@@ -239,58 +246,58 @@ type bgMgrConfig struct {
 	catalog          []tool.Tool
 	maxDepth         int
 	maxConcurrent    int
-	defaultBudgets   BackgroundBudgets
+	defaultBudgets   Budgets
 	defaultScheduler coretools.Scheduler
 	alertBuffer      int
 }
 
-// WithBackgroundProvider wires the model provider + model ID used to
+// WithProvider wires the model provider + model ID used to
 // build a fresh LLM client per spawn. Required.
-func WithBackgroundProvider(p models.Provider, modelID string) BackgroundManagerOption {
+func WithProvider(p models.Provider, modelID string) ManagerOption {
 	return func(c *bgMgrConfig) { c.provider = p; c.modelID = modelID }
 }
 
-// WithBackgroundGate wires the permissions gate that spawned
+// WithGate wires the permissions gate that spawned
 // subagents inherit (by reference; same instance). Required when
 // running in ask/allow mode; the manager rejects spawn requests when
 // the gate is in ask-mode without a prompter (same deadlock guard as
 // RunAutonomous).
-func WithBackgroundGate(g *permissions.Gate) BackgroundManagerOption {
+func WithGate(g *permissions.Gate) ManagerOption {
 	return func(c *bgMgrConfig) { c.gate = g }
 }
 
-// WithBackgroundCatalog registers the tool instances spawn_agent
+// WithCatalog registers the tool instances spawn_agent
 // arguments can refer to by name. Pass the parent's already-gated
 // tool list (typically tools.Default() plus any MCP/skill tools
 // flattened to a single slice); the manager looks up each requested
 // tool by Tool.Name(). Tools not listed here can't be requested.
-func WithBackgroundCatalog(tools []tool.Tool) BackgroundManagerOption {
+func WithCatalog(tools []tool.Tool) ManagerOption {
 	return func(c *bgMgrConfig) { c.catalog = tools }
 }
 
-// WithBackgroundMaxDepth caps how deep the subagent tree can go.
+// WithMaxDepth caps how deep the subagent tree can go.
 // A spawn from a context already at depth>=N returns an error result
 // instead of nesting further. Default 2.
-func WithBackgroundMaxDepth(n int) BackgroundManagerOption {
+func WithMaxDepth(n int) ManagerOption {
 	return func(c *bgMgrConfig) { c.maxDepth = n }
 }
 
-// WithBackgroundMaxConcurrent caps how many subagents can be Running
+// WithMaxConcurrent caps how many subagents can be Running
 // at once. Spawn calls that would exceed this return a clean tool-
 // result error the model can adapt to. Default 8.
-func WithBackgroundMaxConcurrent(n int) BackgroundManagerOption {
+func WithMaxConcurrent(n int) ManagerOption {
 	return func(c *bgMgrConfig) { c.maxConcurrent = n }
 }
 
-// WithBackgroundDefaultBudgets sets the budgets a spawn request
+// WithDefaultBudgets sets the budgets a spawn request
 // inherits when its own per-call args don't override. Default:
 // 50 turns / $1.00 / 10 minutes, no per-turn timeout.
-func WithBackgroundDefaultBudgets(b BackgroundBudgets) BackgroundManagerOption {
+func WithDefaultBudgets(b Budgets) ManagerOption {
 	return func(c *bgMgrConfig) { c.defaultBudgets = b }
 }
 
-// WithBackgroundDefaultScheduler sets the tools.Scheduler that spawned
-// subagents inherit when the per-spawn BackgroundSpec.Scheduler is
+// WithDefaultScheduler sets the tools.Scheduler that spawned
+// subagents inherit when the per-spawn Spec.Scheduler is
 // empty or "default". Pass tools.SleepScheduler() for the canonical
 // in-process supervisor topology where the parent runs as a long-lived
 // daemon and children sleep between scans. Pass tools.ExitOnDeferScheduler()
@@ -298,30 +305,30 @@ func WithBackgroundDefaultBudgets(b BackgroundBudgets) BackgroundManagerOption {
 // run subagents without between-turn pacing — the schedule_next_turn
 // tool is then unavailable to those subagents.
 //
-// Per-spawn overrides via BackgroundSpec.Scheduler win when supplied;
+// Per-spawn overrides via Spec.Scheduler win when supplied;
 // see Spawn / NewSpawnAgentTool.
-func WithBackgroundDefaultScheduler(s coretools.Scheduler) BackgroundManagerOption {
+func WithDefaultScheduler(s coretools.Scheduler) ManagerOption {
 	return func(c *bgMgrConfig) { c.defaultScheduler = s }
 }
 
-// WithBackgroundAlertBuffer sets the alert channel buffer. When full,
+// WithAlertBuffer sets the alert channel buffer. When full,
 // the oldest pending alert is dropped to make room (with a warning
 // logged). Default 256.
-func WithBackgroundAlertBuffer(n int) BackgroundManagerOption {
+func WithAlertBuffer(n int) ManagerOption {
 	return func(c *bgMgrConfig) { c.alertBuffer = n }
 }
 
-// NewBackgroundAgentManager builds a manager from the supplied
-// options. Required: provider + modelID (WithBackgroundProvider).
+// NewManager builds a manager from the supplied
+// options. Required: provider + modelID (WithProvider).
 // The parent agent reference is established later by
 // WithBackgroundManager when the parent is constructed via agent.New
 // — until that wiring happens, Spawn returns ErrNoParent.
-func NewBackgroundAgentManager(opts ...BackgroundManagerOption) (*BackgroundAgentManager, error) {
+func NewManager(opts ...ManagerOption) (*Manager, error) {
 	cfg := bgMgrConfig{
-		maxDepth:      defaultSubagentMaxDepth,
+		maxDepth:      defaultMaxDepth,
 		maxConcurrent: 8,
 		alertBuffer:   256,
-		defaultBudgets: BackgroundBudgets{
+		defaultBudgets: Budgets{
 			MaxTurns:     50,
 			MaxCost:      1.0,
 			MaxWallclock: 10 * time.Minute,
@@ -331,10 +338,10 @@ func NewBackgroundAgentManager(opts ...BackgroundManagerOption) (*BackgroundAgen
 		opt(&cfg)
 	}
 	if cfg.provider == nil {
-		return nil, errors.New("agent: BackgroundAgentManager: WithBackgroundProvider is required")
+		return nil, errors.New("background: WithProvider is required")
 	}
 	if cfg.modelID == "" {
-		return nil, errors.New("agent: BackgroundAgentManager: WithBackgroundProvider needs a non-empty modelID")
+		return nil, errors.New("background: WithProvider needs a non-empty modelID")
 	}
 	catalog := make(map[string]tool.Tool, len(cfg.catalog))
 	for _, t := range cfg.catalog {
@@ -343,7 +350,7 @@ func NewBackgroundAgentManager(opts ...BackgroundManagerOption) (*BackgroundAgen
 		}
 		catalog[t.Name()] = t
 	}
-	return &BackgroundAgentManager{
+	return &Manager{
 		provider:         cfg.provider,
 		modelID:          cfg.modelID,
 		gate:             cfg.gate,
@@ -352,20 +359,20 @@ func NewBackgroundAgentManager(opts ...BackgroundManagerOption) (*BackgroundAgen
 		maxConcurrent:    cfg.maxConcurrent,
 		defaultBudgets:   cfg.defaultBudgets,
 		defaultScheduler: cfg.defaultScheduler,
-		agents:           make(map[string]*BackgroundHandle),
+		agents:           make(map[string]*Handle),
 		alerts:           make(chan Alert, cfg.alertBuffer),
 	}, nil
 }
 
 // ErrUnknownScheduler is wrapped and returned by Spawn when a
 // spec.Scheduler value isn't one of the recognized choices.
-var ErrUnknownScheduler = errors.New("agent: BackgroundAgentManager: unknown scheduler choice")
+var ErrUnknownScheduler = errors.New("background: unknown scheduler choice")
 
-// resolveScheduler maps a BackgroundSpec.Scheduler string to a
+// resolveScheduler maps a Spec.Scheduler string to a
 // tools.Scheduler instance. Recognized values: "" / "default" / "sleep"
 // / "exit_on_defer" / "none". Returns ErrUnknownScheduler for
 // anything else.
-func (m *BackgroundAgentManager) resolveScheduler(choice string) (coretools.Scheduler, error) {
+func (m *Manager) resolveScheduler(choice string) (coretools.Scheduler, error) {
 	switch choice {
 	case "", "default":
 		return m.defaultScheduler, nil
@@ -383,33 +390,34 @@ func (m *BackgroundAgentManager) resolveScheduler(choice string) (coretools.Sche
 // ErrNoParent is returned by Spawn when the manager hasn't been
 // attached to an agent yet (i.e. agent.New(... WithBackgroundManager
 // ...) hasn't run).
-var ErrNoParent = errors.New("agent: BackgroundAgentManager: parent agent not wired (use agent.WithBackgroundManager)")
+var ErrNoParent = errors.New("background: parent agent not wired (use agent.WithBackgroundManager)")
 
 // ErrSubagentExists is returned by Spawn when a subagent with the
 // requested name is already registered (running or terminal). Names
 // must be unique within a manager.
-var ErrSubagentExists = errors.New("agent: BackgroundAgentManager: subagent with this name already exists")
+var ErrSubagentExists = errors.New("background: subagent with this name already exists")
 
 // ErrDepthExceeded is returned by Spawn when the calling context is
 // already at the max subagent depth.
-var ErrDepthExceeded = errors.New("agent: BackgroundAgentManager: max subagent depth exceeded")
+var ErrDepthExceeded = errors.New("background: max subagent depth exceeded")
 
 // ErrTooManyConcurrent is returned by Spawn when the manager already
 // has MaxConcurrent running subagents.
-var ErrTooManyConcurrent = errors.New("agent: BackgroundAgentManager: max concurrent subagents reached")
+var ErrTooManyConcurrent = errors.New("background: max concurrent subagents reached")
 
 // ErrManagerClosed is returned by Spawn after Close has been called.
-var ErrManagerClosed = errors.New("agent: BackgroundAgentManager: closed")
+var ErrManagerClosed = errors.New("background: closed")
 
 // ErrUnknownTool is wrapped and returned by Spawn when a spec.Tools
 // or spec.Extras entry isn't present in the catalog.
-var ErrUnknownTool = errors.New("agent: BackgroundAgentManager: unknown tool")
+var ErrUnknownTool = errors.New("background: unknown tool")
 
-// attachParent records the parent agent on the manager. Called by
-// agent.New when WithBackgroundManager is set. Safe to call once;
-// subsequent calls overwrite (last-writer-wins so re-construction in
-// tests works cleanly).
-func (m *BackgroundAgentManager) attachParent(a *Agent) {
+// AttachParent records the parent agent on the manager. Called by
+// agent.New when WithBackgroundManager is set (via the
+// agent.SubagentManager seam). Safe to call once; subsequent calls
+// overwrite (last-writer-wins so re-construction in tests works
+// cleanly).
+func (m *Manager) AttachParent(a *agent.Agent) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.parent = a
@@ -417,7 +425,7 @@ func (m *BackgroundAgentManager) attachParent(a *Agent) {
 
 // Parent returns the agent the manager is attached to, or nil if no
 // agent.New has wired it yet. Exposed for tests + diagnostics.
-func (m *BackgroundAgentManager) Parent() *Agent {
+func (m *Manager) Parent() *agent.Agent {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.parent
@@ -434,14 +442,14 @@ func (m *BackgroundAgentManager) Parent() *Agent {
 // display goroutine drains for REPL display, and Agent.Run drains
 // for pre-turn injection. They're separated by which path is active
 // (REPL vs headless vs autonomous).
-func (m *BackgroundAgentManager) Alerts() <-chan Alert { return m.alerts }
+func (m *Manager) Alerts() <-chan Alert { return m.alerts }
 
 // pushAlert enqueues a non-blocking with drop-oldest backpressure.
 // When the channel is full, the oldest pending alert is dropped (and
 // the drop is logged) so a stuck consumer can't deadlock a runaway
 // spawner. Calls any installed OnAlert hook synchronously before the
 // channel send so side-channel display consumers see every alert.
-func (m *BackgroundAgentManager) pushAlert(a Alert) {
+func (m *Manager) pushAlert(a Alert) {
 	m.mu.Lock()
 	hook := m.onAlert
 	m.mu.Unlock()
@@ -456,7 +464,7 @@ func (m *BackgroundAgentManager) pushAlert(a Alert) {
 			// Drop oldest, retry once.
 			select {
 			case dropped := <-m.alerts:
-				log.Printf("BackgroundAgentManager: alert buffer full, dropped: from=%q kind=%q",
+				log.Printf("Manager: alert buffer full, dropped: from=%q kind=%q",
 					dropped.From, dropped.Kind)
 			default:
 				// Channel emptied between the failed send and our
@@ -469,10 +477,10 @@ func (m *BackgroundAgentManager) pushAlert(a Alert) {
 // List returns all currently-tracked handles, sorted by start time.
 // Terminal handles remain in the list until Close (so check_agent
 // can return final status). Defensive copy of slice.
-func (m *BackgroundAgentManager) List() []*BackgroundHandle {
+func (m *Manager) List() []*Handle {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]*BackgroundHandle, 0, len(m.agents))
+	out := make([]*Handle, 0, len(m.agents))
 	for _, h := range m.agents {
 		out = append(out, h)
 	}
@@ -484,7 +492,7 @@ func (m *BackgroundAgentManager) List() []*BackgroundHandle {
 
 // Get returns the handle for the named subagent. ok=false when the
 // name isn't registered.
-func (m *BackgroundAgentManager) Get(name string) (*BackgroundHandle, bool) {
+func (m *Manager) Get(name string) (*Handle, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	h, ok := m.agents[name]
@@ -495,12 +503,12 @@ func (m *BackgroundAgentManager) Get(name string) (*BackgroundHandle, bool) {
 // the next ctx-aware checkpoint inside RunAutonomous. Returns nil
 // even when the subagent is already terminal; surfaces "not found"
 // when the name isn't registered.
-func (m *BackgroundAgentManager) Stop(name string) error {
+func (m *Manager) Stop(name string) error {
 	m.mu.Lock()
 	h, ok := m.agents[name]
 	m.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("agent: BackgroundAgentManager: no subagent named %q", name)
+		return fmt.Errorf("background: no subagent named %q", name)
 	}
 	h.mu.Lock()
 	cancel := h.cancel
@@ -517,14 +525,14 @@ func (m *BackgroundAgentManager) Stop(name string) error {
 // Close stops every running subagent and prevents new spawns. Blocks
 // until each goroutine has exited so callers don't race with shutdown.
 // Idempotent.
-func (m *BackgroundAgentManager) Close() error {
+func (m *Manager) Close() error {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
 		return nil
 	}
 	m.closed = true
-	handles := make([]*BackgroundHandle, 0, len(m.agents))
+	handles := make([]*Handle, 0, len(m.agents))
 	for _, h := range m.agents {
 		handles = append(handles, h)
 	}
@@ -546,7 +554,7 @@ func (m *BackgroundAgentManager) Close() error {
 
 // runningCount returns the number of handles in StatusRunning.
 // Caller holds m.mu.
-func (m *BackgroundAgentManager) runningCount() int {
+func (m *Manager) runningCount() int {
 	n := 0
 	for _, h := range m.agents {
 		if h.Status() == StatusRunning {
@@ -565,7 +573,7 @@ func (m *BackgroundAgentManager) runningCount() int {
 //
 //   - schedule_next_turn: registered by RunAutonomous whenever
 //     WithScheduler is set on the child (which it is, by default,
-//     when WithBackgroundDefaultScheduler is configured).
+//     when WithDefaultScheduler is configured).
 //   - report_done: registered by RunAutonomous always (the loop's
 //     termination signal).
 //   - report_alert / report_completed: registered by the manager in
@@ -584,7 +592,7 @@ var autoWiredSubagentTools = map[string]struct{}{
 // Names in autoWiredSubagentTools are silently dropped from the
 // returned slice — the manager / autonomous driver register their
 // real implementations elsewhere.
-func (m *BackgroundAgentManager) resolveTools(names []string) ([]tool.Tool, error) {
+func (m *Manager) resolveTools(names []string) ([]tool.Tool, error) {
 	out := make([]tool.Tool, 0, len(names))
 	for _, n := range names {
 		if _, autoWired := autoWiredSubagentTools[n]; autoWired {
@@ -597,4 +605,71 @@ func (m *BackgroundAgentManager) resolveTools(names []string) ([]tool.Tool, erro
 		out = append(out, t)
 	}
 	return out, nil
+}
+
+// Compile-time check that *Manager satisfies the core seam.
+var _ agent.SubagentManager = (*Manager)(nil)
+
+// ListSubagents implements agent.SubagentManager. Returns attach-facing
+// metadata for the manager's live subagents; backs Agent.AttachAgents.
+func (m *Manager) ListSubagents() []attach.AgentInfo {
+	if m == nil {
+		return nil
+	}
+	parentSessionID := ""
+	if p := m.Parent(); p != nil {
+		parentSessionID = p.SessionID()
+	}
+	handles := m.List()
+	out := make([]attach.AgentInfo, 0, len(handles))
+	for _, h := range handles {
+		ai := attach.AgentInfo{
+			ID:              h.Name, // Handle keys by name
+			Name:            h.Name,
+			Status:          h.Status().String(),
+			StartedAt:       h.StartedAt,
+			ParentSessionID: parentSessionID,
+		}
+		if r := h.Result(); r != nil && r.FinalText != "" {
+			ai.LastReport = r.FinalText
+		}
+		out = append(out, ai)
+	}
+	return out
+}
+
+// SpawnSubagent implements agent.SubagentManager. Translates an attach
+// spec into a background Spec and delegates to Spawn; backs
+// Agent.AttachSpawnSubagent.
+func (m *Manager) SpawnSubagent(ctx context.Context, spec attach.SubagentSpec) (attach.SubagentSpawnResponse, error) {
+	handle, err := m.Spawn(ctx, "" /* parentBranch */, Spec{
+		Name:         spec.Name,
+		SystemPrompt: spec.SystemPrompt,
+		Goal:         spec.Goal,
+		Tools:        spec.Tools,
+		Extras:       spec.Extras,
+		Budgets: Budgets{
+			MaxTurns:     spec.Budgets.MaxTurns,
+			MaxCost:      spec.Budgets.MaxCostUSD,
+			MaxWallclock: time.Duration(spec.Budgets.MaxWallClockS) * time.Second,
+		},
+		Scheduler: spec.Scheduler,
+	})
+	if err != nil {
+		return attach.SubagentSpawnResponse{}, err
+	}
+	return attach.SubagentSpawnResponse{Name: handle.Name, StartedAt: handle.StartedAt}, nil
+}
+
+// ManagerOf recovers the concrete *Manager from an agent's
+// SubagentManager seam, or nil when the agent has no manager wired (or a
+// different implementation). Rich callers (the runner's REPL, the
+// embedded TUI) use this to reach Manager methods beyond the
+// agent.SubagentManager interface (List, Get, Stop, Alerts, OnAlert).
+func ManagerOf(a *agent.Agent) *Manager {
+	if a == nil {
+		return nil
+	}
+	m, _ := a.BackgroundManager().(*Manager)
+	return m
 }

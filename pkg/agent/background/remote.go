@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package agent
+package background
 
 import (
 	"context"
@@ -46,7 +46,7 @@ type RemoteAgentSpawner interface {
 }
 
 // RemoteAgentSpec is what the manager hands to the consumer's
-// spawner — the same shape as the in-process BackgroundSpec, plus a
+// spawner — the same shape as the in-process Spec, plus a
 // stable opaque ID the consumer can use as a primary key in their
 // substrate (e.g. the K8s Job name). Spec.Name is the human-facing
 // identifier the parent's model chose; Spec.ID is the manager's
@@ -59,7 +59,7 @@ type RemoteAgentSpec struct {
 	Goal         string
 	Tools        []string
 	Extras       []string
-	Budgets      BackgroundBudgets
+	Budgets      Budgets
 }
 
 // RemoteAgentHandle is the contract for a running remote subagent.
@@ -88,7 +88,7 @@ type RemoteAgentHandle interface {
 	Events() <-chan RemoteAgentEvent
 }
 
-// RemoteAgentStatus mirrors BackgroundStatus but lives in the remote
+// RemoteAgentStatus mirrors Status but lives in the remote
 // space. Implementations map their native states (K8s Job phase,
 // HTTP response, etc.) onto these.
 type RemoteAgentStatus int
@@ -150,7 +150,7 @@ func (r refuseRemoteSpawner) Spawn(_ context.Context, _ RemoteAgentSpec) (Remote
 // ErrNoSpawner is returned by NewSpawnRemoteAgentTool when nil is
 // passed for the spawner. Use RefuseRemoteAgentSpawner instead of
 // nil when you want the tool registered but no-op.
-var ErrNoSpawner = errors.New("agent: NewSpawnRemoteAgentTool: spawner is required (use RefuseRemoteAgentSpawner for the headless / unattended case)")
+var ErrNoSpawner = errors.New("background: NewSpawnRemoteAgentTool: spawner is required (use RefuseRemoteAgentSpawner for the headless / unattended case)")
 
 // spawnRemoteAgentArgs mirrors spawnAgentArgs — same fields so the
 // model can use whichever spawn tool with the same mental model.
@@ -182,7 +182,7 @@ type spawnRemoteAgentResult struct {
 // Pass nil for mgr to skip the alert + registry fan-in (alerts will
 // be dropped); typically you want both wired, especially for the
 // bundled CLI.
-func NewSpawnRemoteAgentTool(spawner RemoteAgentSpawner, mgr *BackgroundAgentManager) (tool.Tool, error) {
+func NewSpawnRemoteAgentTool(spawner RemoteAgentSpawner, mgr *Manager) (tool.Tool, error) {
 	if spawner == nil {
 		return nil, ErrNoSpawner
 	}
@@ -194,7 +194,7 @@ func NewSpawnRemoteAgentTool(spawner RemoteAgentSpawner, mgr *BackgroundAgentMan
 			Goal:         args.Goal,
 			Tools:        args.Tools,
 			Extras:       args.Extras,
-			Budgets: BackgroundBudgets{
+			Budgets: Budgets{
 				MaxTurns:     args.MaxTurns,
 				MaxCost:      args.MaxCostUSD,
 				MaxWallclock: time.Duration(args.MaxWallclockSeconds) * time.Second,
@@ -237,8 +237,8 @@ func NewSpawnRemoteAgentTool(spawner RemoteAgentSpawner, mgr *BackgroundAgentMan
 // (so list/check/stop work uniformly) and starts a fan-in goroutine
 // that maps events from the remote into the alert channel. Called by
 // NewSpawnRemoteAgentTool's handler.
-func (m *BackgroundAgentManager) registerRemote(rh RemoteAgentHandle, spec RemoteAgentSpec) {
-	bh := &BackgroundHandle{
+func (m *Manager) registerRemote(rh RemoteAgentHandle, spec RemoteAgentSpec) {
+	bh := &Handle{
 		Name:      spec.Name,
 		Branch:    "remote." + spec.Name,
 		StartedAt: time.Now(),
@@ -260,13 +260,13 @@ func (m *BackgroundAgentManager) registerRemote(rh RemoteAgentHandle, spec Remot
 }
 
 // fanInRemote drains the remote's event channel, maps each event
-// onto the manager's alert pipeline, and updates the BackgroundHandle
+// onto the manager's alert pipeline, and updates the Handle
 // status when terminal events arrive. Exits when the remote closes
 // its channel.
-func (m *BackgroundAgentManager) fanInRemote(rh RemoteAgentHandle, bh *BackgroundHandle, name string) {
+func (m *Manager) fanInRemote(rh RemoteAgentHandle, bh *Handle, name string) {
 	defer close(bh.done)
 	var once sync.Once
-	finalize := func(s BackgroundStatus) {
+	finalize := func(s Status) {
 		once.Do(func() {
 			bh.mu.Lock()
 			if bh.status == StatusRunning {

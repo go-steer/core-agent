@@ -106,7 +106,7 @@ Walk the user through what they're customizing:
 | LLM backend not in box | Implement `models.Provider`, register with `models.Register` | `references/extension-points.md` § Provider |
 | Custom persistence | `WithSessionService(impl)` | `references/extension-points.md` § Session |
 | Long-session survival | `WithCompactor(...)` + `WithCheckpointer(...)` | (built-in defaults usually fine) |
-| Distributed subagent execution | Implement `agent.RemoteAgentSpawner` | `references/extension-points.md` § Remote subagents |
+| Distributed subagent execution | Implement `background.RemoteAgentSpawner` | `references/extension-points.md` § Remote subagents |
 | HTTP-served agent | All of the above + handler shape | `references/http-served-agent.md` |
 
 For each one, fetch the relevant section and walk through the implementation contract + a minimal example.
@@ -133,7 +133,7 @@ Now every turn, every tool call, every model response lands in `sessions.db`. Cr
 
 ## Procedure: composition with autonomous + subagents
 
-If the embedded agent is itself autonomous OR spawns subagents, use `RunAutonomous` + `BackgroundAgentManager`:
+If the embedded agent is itself autonomous OR spawns subagents, use `RunAutonomous` + `background.Manager`:
 
 ```go
 import "github.com/go-steer/core-agent/v2/pkg/agent"

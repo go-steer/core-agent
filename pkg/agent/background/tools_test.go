@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package agent
+package background
 
 import (
 	"strings"
@@ -22,7 +22,7 @@ import (
 func TestNewBackgroundSpawnTools_RegistersAll(t *testing.T) {
 	t.Parallel()
 	mgr, _ := newFakeManager(t)
-	tools := NewBackgroundSpawnTools(mgr)
+	tools := NewSpawnTools(mgr)
 	if len(tools) != 4 {
 		t.Fatalf("expected 4 tools (spawn/list/check/stop); got %d", len(tools))
 	}

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package agent
+package autonomous
 
 import (
 	"context"
@@ -22,6 +22,7 @@ import (
 
 	"google.golang.org/adk/tool"
 
+	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
 
@@ -70,9 +71,9 @@ func (s AutonomousStatus) String() string {
 
 // BuildFunc has the same shape RunAutonomous expects: the driver
 // hands it the extra tools it injected (today: just the done tool)
-// and the consumer returns a configured *Agent. The Agent's
+// and the consumer returns a configured *agent.Agent. The Agent's
 // session.Service must be wired (durable or in-memory).
-type BuildFunc func(extraTools []tool.Tool) (*Agent, error)
+type BuildFunc func(extraTools []tool.Tool) (*agent.Agent, error)
 
 // AutonomousHandle is the programmatic-control surface returned by
 // StartAutonomous. The autonomous loop runs in its own goroutine;
@@ -99,7 +100,7 @@ type AutonomousHandle struct {
 	status     AutonomousStatus
 	result     *RunResult
 	runErr     error
-	agent      *Agent // captured once build() returns; used for Inject + emitNoteEvent
+	agent      *agent.Agent // captured once build() returns; used for Inject + emitNoteEvent
 	stopCalled atomic.Bool
 
 	// pauseCh is nil when running, a channel when paused. Resume
@@ -140,7 +141,7 @@ func StartAutonomous(ctx context.Context, build BuildFunc, goal string, opts ...
 	// out-of-band consumer (e.g. a stdin reader calling Inject) can
 	// wait for the agent to be available before sending input that
 	// would otherwise fail with "agent not yet constructed".
-	wrappedBuild := func(extras []tool.Tool) (*Agent, error) {
+	wrappedBuild := func(extras []tool.Tool) (*agent.Agent, error) {
 		a, err := build(extras)
 		if err != nil {
 			return nil, err

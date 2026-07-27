@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package agent
+package background
 
 import (
 	"context"
@@ -33,7 +33,7 @@ type spawnAgentArgs struct {
 	Goal                string   `json:"goal" jsonschema:"the task the subagent should accomplish, written as a single instruction"`
 	Tools               []string `json:"tools,omitempty" jsonschema:"built-in tool names to grant the subagent (e.g. read_file, list_dir, glob, grep, bash, todo, write_file, edit_file). Unknown names error at spawn time."`
 	Extras              []string `json:"extras,omitempty" jsonschema:"additional tool names beyond the built-ins (e.g. MCP tools like kubectl_get, or skill names). Looked up in the same catalog as tools."`
-	MaxTurns            int      `json:"max_turns,omitempty" jsonschema:"override the default per-subagent turn cap (default: manager's WithBackgroundDefaultBudgets)"`
+	MaxTurns            int      `json:"max_turns,omitempty" jsonschema:"override the default per-subagent turn cap (default: manager's WithDefaultBudgets)"`
 	MaxCostUSD          float64  `json:"max_cost_usd,omitempty" jsonschema:"override the default per-subagent dollar cap"`
 	MaxWallclockSeconds int      `json:"max_wallclock_seconds,omitempty" jsonschema:"override the default per-subagent wall-clock cap"`
 	Scheduler           string   `json:"scheduler,omitempty" jsonschema:"between-turn scheduler for this subagent. Values: 'default' (use the manager's default — typical), 'sleep' (in-process goroutine sleep — long-lived daemon shape), 'exit_on_defer' (exit cleanly so an orchestrator like k8s CronJob restarts at the wake-time), 'none' (no scheduler — schedule_next_turn unavailable, useful for one-shot triage subagents). Default: 'default'."`
@@ -57,16 +57,16 @@ type spawnAgentResult struct {
 // (e.g. by stopping a sibling first). Provider/model construction
 // errors propagate normally since those are typically caller-fixable
 // configuration problems.
-func NewSpawnAgentTool(mgr *BackgroundAgentManager) tool.Tool {
+func NewSpawnAgentTool(mgr *Manager) tool.Tool {
 	handler := func(toolCtx tool.Context, args spawnAgentArgs) (spawnAgentResult, error) {
 		parentBranch := toolCtx.Branch()
-		spec := BackgroundSpec{
+		spec := Spec{
 			Name:         args.Name,
 			SystemPrompt: args.SystemPrompt,
 			Goal:         args.Goal,
 			Tools:        args.Tools,
 			Extras:       args.Extras,
-			Budgets: BackgroundBudgets{
+			Budgets: Budgets{
 				MaxTurns:     args.MaxTurns,
 				MaxCost:      args.MaxCostUSD,
 				MaxWallclock: time.Duration(args.MaxWallclockSeconds) * time.Second,
@@ -96,7 +96,7 @@ func NewSpawnAgentTool(mgr *BackgroundAgentManager) tool.Tool {
 		Description: "Spawn an in-process background subagent that runs in parallel with you. You provide its name, system prompt, goal, and the tools it may use. The subagent runs autonomously; you'll receive its updates as '[Background reports]' lines prepended to your next turn when it calls report_alert or finishes. Use this for tasks that should run continuously (monitoring) or in parallel (independent fan-out work). Do NOT list 'schedule_next_turn', 'report_done', 'report_alert', or 'report_completed' in the tools field — those are auto-wired into every subagent by the runtime; listing them is a no-op (silently skipped).",
 	}, handler)
 	if err != nil {
-		panic("agent: NewSpawnAgentTool: " + err.Error())
+		panic("background: NewSpawnAgentTool: " + err.Error())
 	}
 	return t
 }
@@ -117,7 +117,7 @@ type agentSummary struct {
 // NewListAgentsTool returns a tool the parent's model can call to see
 // every subagent the manager has tracked (running + terminal). Empty
 // list when none have been spawned.
-func NewListAgentsTool(mgr *BackgroundAgentManager) tool.Tool {
+func NewListAgentsTool(mgr *Manager) tool.Tool {
 	handler := func(_ tool.Context, _ struct{}) (listAgentsResult, error) {
 		all := mgr.List()
 		out := listAgentsResult{Agents: make([]agentSummary, 0, len(all))}
@@ -136,7 +136,7 @@ func NewListAgentsTool(mgr *BackgroundAgentManager) tool.Tool {
 		Description: "List every background subagent you've spawned, with current status. Use to introspect what's running before deciding whether to spawn more or stop existing ones.",
 	}, handler)
 	if err != nil {
-		panic("agent: NewListAgentsTool: " + err.Error())
+		panic("background: NewListAgentsTool: " + err.Error())
 	}
 	return t
 }
@@ -163,7 +163,7 @@ type checkAgentResult struct {
 // NewCheckAgentTool returns a tool the parent's model can call to
 // inspect one subagent's detailed status — including its terminal
 // result (final text, stop reason, totals) once it's finished.
-func NewCheckAgentTool(mgr *BackgroundAgentManager) tool.Tool {
+func NewCheckAgentTool(mgr *Manager) tool.Tool {
 	handler := func(_ tool.Context, args checkAgentArgs) (checkAgentResult, error) {
 		h, ok := mgr.Get(args.Name)
 		if !ok {
@@ -197,7 +197,7 @@ func NewCheckAgentTool(mgr *BackgroundAgentManager) tool.Tool {
 		Description: "Get detailed status for one background subagent. Returns final result + totals once the subagent has finished, or the running status otherwise.",
 	}, handler)
 	if err != nil {
-		panic("agent: NewCheckAgentTool: " + err.Error())
+		panic("background: NewCheckAgentTool: " + err.Error())
 	}
 	return t
 }
@@ -215,7 +215,7 @@ type stopAgentResult struct {
 // cancel a running subagent. No-op if the subagent already terminal.
 // Returns an error result (not a tool failure) when the name is
 // unknown so the model can adapt.
-func NewStopAgentTool(mgr *BackgroundAgentManager) tool.Tool {
+func NewStopAgentTool(mgr *Manager) tool.Tool {
 	handler := func(_ tool.Context, args stopAgentArgs) (stopAgentResult, error) {
 		if err := mgr.Stop(args.Name); err != nil {
 			return stopAgentResult{
@@ -235,16 +235,16 @@ func NewStopAgentTool(mgr *BackgroundAgentManager) tool.Tool {
 		Description: "Stop a running background subagent. The subagent's goroutine exits at its next checkpoint; its terminal status becomes 'stopped'.",
 	}, handler)
 	if err != nil {
-		panic("agent: NewStopAgentTool: " + err.Error())
+		panic("background: NewStopAgentTool: " + err.Error())
 	}
 	return t
 }
 
-// NewBackgroundSpawnTools is a convenience that returns all four
+// NewSpawnTools is a convenience that returns all four
 // model-facing background-agent tools in one slice, ready to pass
 // through agent.WithTools. The bundled CLI uses this to wire the
 // full suite atomically.
-func NewBackgroundSpawnTools(mgr *BackgroundAgentManager) []tool.Tool {
+func NewSpawnTools(mgr *Manager) []tool.Tool {
 	return []tool.Tool{
 		NewSpawnAgentTool(mgr),
 		NewListAgentsTool(mgr),

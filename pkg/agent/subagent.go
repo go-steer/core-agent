@@ -15,7 +15,6 @@
 package agent
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -27,6 +26,8 @@ import (
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
 	"google.golang.org/genai"
+
+	"github.com/go-steer/core-agent/v2/pkg/agent/internal/subsession"
 )
 
 // SubagentOptions configures NewSubagentTool. Inner is required;
@@ -86,21 +87,7 @@ type SubagentOptions struct {
 const (
 	defaultSubagentMaxDepth = 2
 	defaultSubagentDesc     = "Run a focused subagent and return its result. Pass the request as a single string."
-	branchSeparator         = "."
 )
-
-// subagentDepthKey carries the current subagent recursion depth
-// through the context chain. Top-level callers see depth 0; each
-// nested subagent invocation increments by one.
-type subagentDepthKey struct{}
-
-// CurrentSubagentDepth returns the recursion depth of the current
-// subagent invocation. Zero when we're not inside a subagent (i.e.
-// the parent's top-level turn).
-func CurrentSubagentDepth(ctx context.Context) int {
-	v, _ := ctx.Value(subagentDepthKey{}).(int)
-	return v
-}
 
 // subagentArgs is the JSON shape the parent's model sees on every
 // subagent tool call: a single "request" string carrying the task
@@ -194,7 +181,7 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 		// tool.Context embeds agent.ReadonlyContext which embeds
 		// context.Context, so we can read context values and pass
 		// it to runner.Run directly.
-		if depth := CurrentSubagentDepth(toolCtx); depth >= maxDepth {
+		if depth := subsession.CurrentDepth(toolCtx); depth >= maxDepth {
 			return subagentResult{
 				Result: fmt.Sprintf("subagent %q refused: depth limit reached (%d)", name, maxDepth),
 			}, nil
@@ -205,16 +192,16 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 		// to decide which events show up in the LLM request — see
 		// internal/llminternal/contents_processor.go in ADK.
 		parentBranch := toolCtx.Branch()
-		fullBranch := composeBranch(parentBranch, branch)
-		wrapped := &branchInjectingService{
-			inner:  parentService,
-			branch: fullBranch,
+		fullBranch := subsession.ComposeBranch(parentBranch, branch)
+		wrapped := &subsession.BranchInjectingService{
+			Inner:  parentService,
+			Branch: fullBranch,
 		}
 
 		// Derive a per-invocation session row. The invocation-unique
 		// component keeps concurrent and sequential invocations of the
 		// same subagent isolated from one another (#364).
-		subagentSessionID := deriveSubagentSessionID(parentSessionID, branch, subagentInvocationID(toolCtx.FunctionCallID()))
+		subagentSessionID := subsession.DeriveSessionID(parentSessionID, branch, subagentInvocationID(toolCtx.FunctionCallID()))
 
 		// Build a fresh runner per invocation so concurrent
 		// subagent calls (ADK dispatches function calls in
@@ -235,7 +222,7 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 		// Push the new depth into the context value chain so any
 		// further subagent calls from inside this one see the
 		// incremented count.
-		childCtx := context.WithValue(toolCtx, subagentDepthKey{}, CurrentSubagentDepth(toolCtx)+1)
+		childCtx := subsession.WithDepth(toolCtx, subsession.CurrentDepth(toolCtx)+1)
 
 		msg := genai.NewContentFromText(args.Request, genai.RoleUser)
 		var sb strings.Builder
@@ -256,24 +243,6 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 	}, handler)
 }
 
-// composeBranch builds the full branch path for a subagent call:
-// the parent's branch (possibly empty for top-level), joined with
-// the subagent's own branch label by ADK's "." separator.
-func composeBranch(parent, this string) string {
-	parent = strings.TrimSpace(parent)
-	this = strings.TrimSpace(this)
-	switch {
-	case parent == "" && this == "":
-		return ""
-	case parent == "":
-		return this
-	case this == "":
-		return parent
-	default:
-		return parent + branchSeparator + this
-	}
-}
-
 // collectFinalText walks one event's content and appends any final
 // (non-partial) text parts to sb. We deliberately ignore partial
 // text streams to avoid double-counting tokens — ADK emits both
@@ -291,43 +260,6 @@ func collectFinalText(sb *strings.Builder, ev *session.Event) {
 		}
 		sb.WriteString(p.Text)
 	}
-}
-
-// branchInjectingService wraps a session.Service so every appended
-// event picks up our Branch label before landing in storage. The
-// CRUD methods pass through unchanged. This is how a subagent's
-// events end up tagged for the audit log without requiring the
-// subagent's runner to know anything about branching.
-type branchInjectingService struct {
-	inner  session.Service
-	branch string
-}
-
-func (s *branchInjectingService) Create(ctx context.Context, req *session.CreateRequest) (*session.CreateResponse, error) {
-	return s.inner.Create(ctx, req)
-}
-
-func (s *branchInjectingService) Get(ctx context.Context, req *session.GetRequest) (*session.GetResponse, error) {
-	return s.inner.Get(ctx, req)
-}
-
-func (s *branchInjectingService) List(ctx context.Context, req *session.ListRequest) (*session.ListResponse, error) {
-	return s.inner.List(ctx, req)
-}
-
-func (s *branchInjectingService) Delete(ctx context.Context, req *session.DeleteRequest) error {
-	return s.inner.Delete(ctx, req)
-}
-
-// AppendEvent stamps Branch on the event before delegating. We only
-// override an empty Branch — events that already carry one (e.g.,
-// nested subagent invocations) keep their existing label so the
-// branch hierarchy stays accurate.
-func (s *branchInjectingService) AppendEvent(ctx context.Context, sess session.Session, ev *session.Event) error {
-	if ev != nil && ev.Branch == "" {
-		ev.Branch = s.branch
-	}
-	return s.inner.AppendEvent(ctx, sess, ev)
 }
 
 // AgentName returns the configured agent name (the WithName value)
@@ -351,29 +283,6 @@ func firstNonEmpty(s ...string) string {
 		}
 	}
 	return ""
-}
-
-// deriveSubagentSessionID composes the session ID the subagent's
-// runner uses. Lives in the same database as the parent's session
-// so audit queries can find both (via the shared "<parent>:sub:<branch>"
-// prefix + branch tag), but as a separate row per invocation so ADK's
-// per-session optimistic-concurrency check doesn't trip and independent
-// requests don't accumulate one another's history (#364).
-//
-// Format: "<parent>:sub:<branch>:<invocation>". When parent is empty
-// (consumer constructed NewSubagentTool standalone), the parent prefix
-// is dropped. When invocation is empty the suffix is dropped — but
-// callers should pass a value from subagentInvocationID, which never
-// returns empty.
-func deriveSubagentSessionID(parent, branch, invocation string) string {
-	id := "sub:" + branch
-	if parent != "" {
-		id = parent + ":" + id
-	}
-	if invocation != "" {
-		id = id + ":" + invocation
-	}
-	return id
 }
 
 // subagentInvocationID returns a per-invocation unique component for

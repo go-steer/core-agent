@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Example: drive an agent through agent.RunAutonomous end-to-end with
+// Example: drive an agent through autonomous.RunAutonomous end-to-end with
 // no LLM credentials. The mock "scripted" provider replays a JSONL
 // transcript that the model would normally produce; the autonomous
 // driver loops, watches for the report_done tool call, and returns a
@@ -37,6 +37,7 @@ import (
 	adktool "google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
 	"github.com/go-steer/core-agent/v2/pkg/models/mock"
 )
 
@@ -96,8 +97,8 @@ func run() error {
 		)
 	}
 
-	res, err := agent.RunAutonomous(ctx, build, "summarize the project",
-		agent.WithMaxTurns(5),
+	res, err := autonomous.RunAutonomous(ctx, build, "summarize the project",
+		autonomous.WithMaxTurns(5),
 	)
 	if err != nil {
 		return fmt.Errorf("RunAutonomous: %w", err)

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package agent
+package autonomous
 
 import (
 	"context"
@@ -25,6 +25,7 @@ import (
 	"google.golang.org/adk/session"
 	"google.golang.org/adk/tool"
 
+	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
@@ -47,7 +48,7 @@ import (
 // caller-supplied Agent (which would race with concurrent runs) and
 // keeps agent.New's surface free of "extra tools" plumbing that only
 // matters here.
-func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*Agent, error), goal string, opts ...AutonomousOption) (RunResult, error) {
+func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*agent.Agent, error), goal string, opts ...AutonomousOption) (RunResult, error) {
 	if build == nil {
 		return RunResult{}, fmt.Errorf("agent: RunAutonomous: build is required")
 	}
@@ -387,7 +388,7 @@ type turnResult struct {
 	scheduleEvent    coretools.ScheduleEvent
 }
 
-func runOneTurn(ctx context.Context, a *Agent, prompt string, doneCh chan string, scheduleCh <-chan coretools.ScheduleEvent, cfg *autoConfig, turnNo int) (turnResult, error) {
+func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan string, scheduleCh <-chan coretools.ScheduleEvent, cfg *autoConfig, turnNo int) (turnResult, error) {
 	var (
 		out turnResult
 		buf strings.Builder

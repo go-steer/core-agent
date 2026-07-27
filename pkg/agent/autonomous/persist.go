@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package agent
+package autonomous
 
 import (
 	"context"
@@ -28,6 +28,8 @@ import (
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/session"
 	"google.golang.org/genai"
+
+	"github.com/go-steer/core-agent/v2/pkg/agent"
 )
 
 // checkpointAuthorSuffix is what every checkpoint event's Author
@@ -150,7 +152,7 @@ const finalCheckpointWriteTimeout = 5 * time.Second
 // cancelled — and a wedged session service still can't hang shutdown
 // (#365). Errors are swallowed like the other checkpoint call sites:
 // a failed checkpoint should not change the loop's stop reason.
-func emitFinalCheckpointDetached(ctx context.Context, a *Agent, payload checkpointPayload) {
+func emitFinalCheckpointDetached(ctx context.Context, a *agent.Agent, payload checkpointPayload) {
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finalCheckpointWriteTimeout)
 	defer cancel()
 	_ = emitCheckpoint(writeCtx, a, payload)
@@ -165,8 +167,8 @@ func emitFinalCheckpointDetached(ctx context.Context, a *Agent, payload checkpoi
 // AppendEvent error otherwise. Callers typically ignore the error
 // because checkpoint failure should not abort an otherwise healthy
 // run.
-func emitCheckpoint(ctx context.Context, a *Agent, payload checkpointPayload) error {
-	if a == nil || a.eventLog == nil {
+func emitCheckpoint(ctx context.Context, a *agent.Agent, payload checkpointPayload) error {
+	if a == nil || a.EventLog() == nil {
 		return nil
 	}
 	svc := a.SessionService()
@@ -223,8 +225,8 @@ func emitCheckpoint(ctx context.Context, a *Agent, payload checkpointPayload) er
 //
 // Content.Role is left empty so ADK's content processor skips this
 // from the LLM context — these are audit-only annotations.
-func emitNoteEvent(ctx context.Context, a *Agent, kind, text string) error {
-	if a == nil || a.eventLog == nil {
+func emitNoteEvent(ctx context.Context, a *agent.Agent, kind, text string) error {
+	if a == nil || a.EventLog() == nil {
 		return nil
 	}
 	svc := a.SessionService()

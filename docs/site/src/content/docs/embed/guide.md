@@ -76,11 +76,11 @@ Every customization happens through one of these interfaces or option functions.
 | Approvals | `permissions.Prompter` | UI is not a TTY (web, Slack, IDE plugin) |
 | Tool execution | `tool.Tool` (via `functiontool.New`) | Domain operations, internal APIs |
 | Model backend | `models.Provider` | LLM not in the box (OpenAI, local Ollama, …) |
-| Remote subagents | `agent.RemoteAgentSpawner` | Delegate to K8s Job / Cloud Run / your runtime |
+| Remote subagents | `background.RemoteAgentSpawner` | Delegate to K8s Job / Cloud Run / your runtime |
 | Session persistence | `session.Service` | Beyond eventlog's SQLite/Postgres/MySQL |
-| Background workers | `agent.BackgroundAgentManager` | Async tasks the parent's model spawns at runtime |
+| Background workers | `background.Manager` | Async tasks the parent's model spawns at runtime |
 | Inbound messages | `agent.Inject(msg)` | Push input to a running agent from another goroutine |
-| Tool inspection | `agent.WithBeforeTurn` | Rate limits, external approvals, custom budgets |
+| Tool inspection | `autonomous.WithBeforeTurn` | Rate limits, external approvals, custom budgets |
 | Context management | `agent.Compactor` / `agent.Checkpointer` (v2.0+) | Custom summarizer prompts / thresholds; default `NewDefaultCompactor` + `NewDefaultCheckpointer` cover the common case |
 | Agentic subtasks | `agent.RunSubtask` + `tools/agentic` wrappers (v2.0+) | Route specific tool calls through a cheap-model subtask so raw output doesn't bloat the parent's context |
 | Late-binding hooks | `agent.WithPostConstruct` (v2.0+) | External tools whose handler needs the constructed `*Agent` (same pattern the in-tree `mark_task_done` uses) |
@@ -209,7 +209,7 @@ See [Library API → Adding custom tools](../library-api/#adding-custom-tools) f
 
 ## Custom `RemoteAgentSpawner` — delegate to remote runtimes
 
-In-process subagents (`WithSubagents` / `BackgroundAgentManager`) run inside your binary. When you want to delegate work to a separate runtime — a Kubernetes Job, a Cloud Run invocation, your container scheduler — implement `agent.RemoteAgentSpawner`:
+In-process subagents (`WithSubagents` / `background.Manager`) run inside your binary. When you want to delegate work to a separate runtime — a Kubernetes Job, a Cloud Run invocation, your container scheduler — implement `background.RemoteAgentSpawner`:
 
 ```go
 type RemoteAgentSpawner interface {
@@ -235,7 +235,7 @@ type k8sJobSpawner struct {
     image     string
 }
 
-func (s *k8sJobSpawner) Spawn(ctx context.Context, req agent.RemoteAgentRequest) (agent.RemoteAgentHandle, error) {
+func (s *k8sJobSpawner) Spawn(ctx context.Context, req background.RemoteAgentSpec) (background.RemoteAgentHandle, error) {
     job := &batchv1.Job{
         ObjectMeta: metav1.ObjectMeta{GenerateName: "agent-"},
         Spec: batchv1.JobSpec{
@@ -256,7 +256,7 @@ func (s *k8sJobSpawner) Spawn(ctx context.Context, req agent.RemoteAgentRequest)
 
     h := &k8sJobHandle{
         id:     created.Name,
-        events: make(chan agent.RemoteAgentEvent, 32),
+        events: make(chan background.RemoteAgentEvent, 32),
         done:   make(chan struct{}),
         client: s.client,
     }
@@ -268,9 +268,9 @@ func (s *k8sJobSpawner) Spawn(ctx context.Context, req agent.RemoteAgentRequest)
 Wire it into the agent so the model can invoke `spawn_remote_agent`:
 
 ```go
-mgr := agent.NewBackgroundAgentManager(...)
+mgr := background.NewManager(...)
 spawner := &k8sJobSpawner{client: kClient, namespace: "agents", image: "myregistry/agent:v1"}
-spawnRemote := agent.NewSpawnRemoteAgentTool(spawner, mgr)
+spawnRemote := background.NewSpawnRemoteAgentTool(spawner, mgr)
 
 a, _ := agent.New(m,
     agent.WithBackgroundManager(mgr),
@@ -362,14 +362,14 @@ This is the least common extension point — `eventlog.Open` with a real databas
 
 ## Background workers and the inbox
 
-For agents that need to delegate fan-out work the parent's model decides on at runtime, use `BackgroundAgentManager` + the `spawn_agent` tool family. Background subagents run in goroutines inside the same process; events flow back through a per-turn drain so the parent sees them on its next turn.
+For agents that need to delegate fan-out work the parent's model decides on at runtime, use `background.Manager` + the `spawn_agent` tool family. Background subagents run in goroutines inside the same process; events flow back through a per-turn drain so the parent sees them on its next turn.
 
 ```go
-mgr := agent.NewBackgroundAgentManager(
-    agent.WithBackgroundProvider(provider, cfg.Model.Name),
-    agent.WithBackgroundTools(reg.Tools),
+mgr := background.NewManager(
+    background.WithProvider(provider, cfg.Model.Name),
+    background.WithCatalog(reg.Tools),
 )
-spawnLocal := agent.NewSpawnAgentTool(mgr)
+spawnLocal := background.NewSpawnAgentTool(mgr)
 
 parent, _ := agent.New(m,
     agent.WithBackgroundManager(mgr),

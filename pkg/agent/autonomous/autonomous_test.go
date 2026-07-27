@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package agent
+package autonomous
 
 import (
 	"context"
@@ -30,6 +30,7 @@ import (
 	"google.golang.org/adk/tool"
 	"google.golang.org/genai"
 
+	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
@@ -182,13 +183,13 @@ func slowTextTurn(text string, d time.Duration) scenarioFn {
 
 // buildAgent returns a build function that wires the stub LLM with
 // the supplied done tool. Used by every test in this file.
-func buildAgent(llm *stubLLM, name string) func([]tool.Tool) (*Agent, error) {
-	return func(extras []tool.Tool) (*Agent, error) {
-		return New(llm,
-			WithName(name),
-			WithSession("u-test", "s-test-"+name),
-			WithTools(extras),
-			WithInstruction("test agent; call report_done when finished."),
+func buildAgent(llm *stubLLM, name string) func([]tool.Tool) (*agent.Agent, error) {
+	return func(extras []tool.Tool) (*agent.Agent, error) {
+		return agent.New(llm,
+			agent.WithName(name),
+			agent.WithSession("u-test", "s-test-"+name),
+			agent.WithTools(extras),
+			agent.WithInstruction("test agent; call report_done when finished."),
 		)
 	}
 }
@@ -204,7 +205,7 @@ func TestRunAutonomous_RequiresBuild(t *testing.T) {
 func TestRunAutonomous_RequiresGoal(t *testing.T) {
 	t.Parallel()
 	_, err := RunAutonomous(context.Background(),
-		func([]tool.Tool) (*Agent, error) { return nil, nil },
+		func([]tool.Tool) (*agent.Agent, error) { return nil, nil },
 		"   ")
 	if err == nil || !strings.Contains(err.Error(), "goal is required") {
 		t.Fatalf("expected goal-required error, got %v", err)
@@ -594,9 +595,9 @@ func TestRunAutonomous_RejectsAskModeWithoutPrompter(t *testing.T) {
 	gate := permissions.New(permissions.Options{Mode: permissions.ModeAsk})
 	llm := &stubLLM{scenarios: nil} // never called
 	called := false
-	build := func([]tool.Tool) (*Agent, error) {
+	build := func([]tool.Tool) (*agent.Agent, error) {
 		called = true
-		return New(llm, WithSession("u", "s-ask-guard"))
+		return agent.New(llm, agent.WithSession("u", "s-ask-guard"))
 	}
 	res, err := RunAutonomous(context.Background(), build, "go",
 		WithPermissionsGate(gate))

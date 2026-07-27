@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package agent
+package background
 
 import (
 	"context"
@@ -28,6 +28,8 @@ import (
 	"google.golang.org/adk/tool/functiontool"
 	"google.golang.org/genai"
 
+	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/agent/internal/subsession"
 	"github.com/go-steer/core-agent/v2/pkg/models"
 	"github.com/go-steer/core-agent/v2/pkg/models/mock"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
@@ -49,16 +51,16 @@ func newNamedStubTool(t *testing.T, name string) tool.Tool {
 	return tl
 }
 
-func newFakeManager(t *testing.T) (*BackgroundAgentManager, models.Provider) {
+func newFakeManager(t *testing.T) (*Manager, models.Provider) {
 	t.Helper()
 	prov := mock.NewEcho()
-	mgr, err := NewBackgroundAgentManager(
-		WithBackgroundProvider(prov, "echo"),
-		WithBackgroundMaxConcurrent(4),
-		WithBackgroundAlertBuffer(16),
+	mgr, err := NewManager(
+		WithProvider(prov, "echo"),
+		WithMaxConcurrent(4),
+		WithAlertBuffer(16),
 	)
 	if err != nil {
-		t.Fatalf("NewBackgroundAgentManager: %v", err)
+		t.Fatalf("NewManager: %v", err)
 	}
 	return mgr, prov
 }
@@ -67,13 +69,13 @@ func newFakeManager(t *testing.T) (*BackgroundAgentManager, models.Provider) {
 // backed by the echo mock provider. Tests use this rather than a
 // bare struct literal so the session.Service + agent wiring is
 // realistic (Spawn dereferences both).
-func newTestParent(t *testing.T, mgr *BackgroundAgentManager) *Agent {
+func newTestParent(t *testing.T, mgr *Manager) *agent.Agent {
 	t.Helper()
 	llm, err := mock.NewEcho().Model(context.Background(), "echo")
 	if err != nil {
 		t.Fatalf("mock provider Model: %v", err)
 	}
-	a, err := New(llm, WithBackgroundManager(mgr))
+	a, err := agent.New(llm, agent.WithBackgroundManager(mgr))
 	if err != nil {
 		t.Fatalf("agent.New: %v", err)
 	}
@@ -82,7 +84,7 @@ func newTestParent(t *testing.T, mgr *BackgroundAgentManager) *Agent {
 
 func TestNewBackgroundAgentManager_ProviderRequired(t *testing.T) {
 	t.Parallel()
-	_, err := NewBackgroundAgentManager()
+	_, err := NewManager()
 	if err == nil {
 		t.Fatalf("expected error when provider is missing")
 	}
@@ -90,7 +92,7 @@ func TestNewBackgroundAgentManager_ProviderRequired(t *testing.T) {
 
 func TestNewBackgroundAgentManager_ModelIDRequired(t *testing.T) {
 	t.Parallel()
-	_, err := NewBackgroundAgentManager(WithBackgroundProvider(mock.NewEcho(), ""))
+	_, err := NewManager(WithProvider(mock.NewEcho(), ""))
 	if err == nil {
 		t.Fatalf("expected error when modelID is empty")
 	}
@@ -99,7 +101,7 @@ func TestNewBackgroundAgentManager_ModelIDRequired(t *testing.T) {
 func TestSpawn_ParentRequired(t *testing.T) {
 	t.Parallel()
 	mgr, _ := newFakeManager(t)
-	_, err := mgr.Spawn(context.Background(), "", BackgroundSpec{
+	_, err := mgr.Spawn(context.Background(), "", Spec{
 		Name: "x", SystemPrompt: "go", Goal: "go",
 	})
 	if !errors.Is(err, ErrNoParent) {
@@ -111,11 +113,11 @@ func TestSpawn_RejectsInvalidName(t *testing.T) {
 	t.Parallel()
 	mgr, _ := newFakeManager(t)
 	// Attach a parent so we get past the parent-presence check.
-	mgr.attachParent(&Agent{appName: "test", userID: "u", sessionID: "s"})
+	newTestParent(t, mgr)
 
 	cases := []string{"", " ", "has space", "has.dot", "has/slash"}
 	for _, name := range cases {
-		_, err := mgr.Spawn(context.Background(), "", BackgroundSpec{
+		_, err := mgr.Spawn(context.Background(), "", Spec{
 			Name: name, SystemPrompt: "go", Goal: "go",
 		})
 		if err == nil {
@@ -127,12 +129,12 @@ func TestSpawn_RejectsInvalidName(t *testing.T) {
 func TestSpawn_RejectsMissingSystemPromptOrGoal(t *testing.T) {
 	t.Parallel()
 	mgr, _ := newFakeManager(t)
-	mgr.attachParent(&Agent{appName: "test", userID: "u", sessionID: "s"})
+	newTestParent(t, mgr)
 
-	if _, err := mgr.Spawn(context.Background(), "", BackgroundSpec{Name: "n", Goal: "g"}); err == nil {
+	if _, err := mgr.Spawn(context.Background(), "", Spec{Name: "n", Goal: "g"}); err == nil {
 		t.Errorf("expected error when SystemPrompt is missing")
 	}
-	if _, err := mgr.Spawn(context.Background(), "", BackgroundSpec{Name: "n", SystemPrompt: "p"}); err == nil {
+	if _, err := mgr.Spawn(context.Background(), "", Spec{Name: "n", SystemPrompt: "p"}); err == nil {
 		t.Errorf("expected error when Goal is missing")
 	}
 }
@@ -140,10 +142,10 @@ func TestSpawn_RejectsMissingSystemPromptOrGoal(t *testing.T) {
 func TestSpawn_DepthCap(t *testing.T) {
 	t.Parallel()
 	mgr, _ := newFakeManager(t)
-	mgr.attachParent(&Agent{appName: "test", userID: "u", sessionID: "s"})
+	newTestParent(t, mgr)
 	// Default cap is 2; simulate depth 2 in ctx so Spawn rejects.
-	ctx := context.WithValue(context.Background(), subagentDepthKey{}, 2)
-	_, err := mgr.Spawn(ctx, "", BackgroundSpec{Name: "n", SystemPrompt: "p", Goal: "g"})
+	ctx := subsession.WithDepth(context.Background(), 2)
+	_, err := mgr.Spawn(ctx, "", Spec{Name: "n", SystemPrompt: "p", Goal: "g"})
 	if !errors.Is(err, ErrDepthExceeded) {
 		t.Errorf("expected ErrDepthExceeded; got %v", err)
 	}
@@ -152,8 +154,8 @@ func TestSpawn_DepthCap(t *testing.T) {
 func TestSpawn_UnknownToolReturnsError(t *testing.T) {
 	t.Parallel()
 	mgr, _ := newFakeManager(t)
-	mgr.attachParent(&Agent{appName: "test", userID: "u", sessionID: "s"})
-	_, err := mgr.Spawn(context.Background(), "", BackgroundSpec{
+	newTestParent(t, mgr)
+	_, err := mgr.Spawn(context.Background(), "", Spec{
 		Name: "n", SystemPrompt: "p", Goal: "g",
 		Tools: []string{"no_such_tool"},
 	})
@@ -173,7 +175,7 @@ func TestSpawn_NameMustBeUnique(t *testing.T) {
 	_ = parent
 	// First Spawn should succeed (echo provider means RunAutonomous
 	// runs against a no-op model).
-	h, err := mgr.Spawn(context.Background(), "", BackgroundSpec{
+	h, err := mgr.Spawn(context.Background(), "", Spec{
 		Name: "shared", SystemPrompt: "p", Goal: "g",
 	})
 	if err != nil {
@@ -184,7 +186,7 @@ func TestSpawn_NameMustBeUnique(t *testing.T) {
 		t.Fatal("Spawn returned nil handle on success")
 	}
 	// Second Spawn with the same name should reject before launching.
-	_, err = mgr.Spawn(context.Background(), "", BackgroundSpec{
+	_, err = mgr.Spawn(context.Background(), "", Spec{
 		Name: "shared", SystemPrompt: "p", Goal: "g",
 	})
 	if !errors.Is(err, ErrSubagentExists) {
@@ -197,7 +199,7 @@ func TestManager_Stop_TransitionsToStopped(t *testing.T) {
 	mgr, _ := newFakeManager(t)
 	parent := newTestParent(t, mgr)
 	_ = parent
-	h, err := mgr.Spawn(context.Background(), "", BackgroundSpec{
+	h, err := mgr.Spawn(context.Background(), "", Spec{
 		Name: "stopme", SystemPrompt: "p", Goal: "g",
 	})
 	if err != nil {
@@ -219,9 +221,9 @@ func TestManager_Stop_TransitionsToStopped(t *testing.T) {
 func TestManager_Close_StopsEverything(t *testing.T) {
 	t.Parallel()
 	mgr, _ := newFakeManager(t)
-	mgr.attachParent(&Agent{appName: "test", userID: "u", sessionID: "s"})
+	newTestParent(t, mgr)
 	for _, name := range []string{"a", "b", "c"} {
-		if _, err := mgr.Spawn(context.Background(), "", BackgroundSpec{
+		if _, err := mgr.Spawn(context.Background(), "", Spec{
 			Name: name, SystemPrompt: "p", Goal: "g",
 		}); err != nil {
 			t.Fatalf("spawn %s: %v", name, err)
@@ -235,7 +237,7 @@ func TestManager_Close_StopsEverything(t *testing.T) {
 		t.Errorf("Close second call: %v", err)
 	}
 	// New Spawn after Close should reject.
-	_, err := mgr.Spawn(context.Background(), "", BackgroundSpec{
+	_, err := mgr.Spawn(context.Background(), "", Spec{
 		Name: "after", SystemPrompt: "p", Goal: "g",
 	})
 	if !errors.Is(err, ErrManagerClosed) {
@@ -245,9 +247,9 @@ func TestManager_Close_StopsEverything(t *testing.T) {
 
 func TestPushAlert_DropsOldestWhenFull(t *testing.T) {
 	t.Parallel()
-	mgr, err := NewBackgroundAgentManager(
-		WithBackgroundProvider(mock.NewEcho(), "echo"),
-		WithBackgroundAlertBuffer(2),
+	mgr, err := NewManager(
+		WithProvider(mock.NewEcho(), "echo"),
+		WithAlertBuffer(2),
 	)
 	if err != nil {
 		t.Fatalf("manager: %v", err)
@@ -314,7 +316,7 @@ func TestSpawn_TerminalAlertIsPushed(t *testing.T) {
 	mgr, _ := newFakeManager(t)
 	parent := newTestParent(t, mgr)
 	_ = parent
-	h, err := mgr.Spawn(context.Background(), "", BackgroundSpec{
+	h, err := mgr.Spawn(context.Background(), "", Spec{
 		Name: "echoer", SystemPrompt: "say hi", Goal: "say hi",
 	})
 	if err != nil {
@@ -351,9 +353,9 @@ func TestResolveTools_LooksUpByName(t *testing.T) {
 	// path is exercised (auto-wired names are silently skipped — see
 	// TestResolveTools_SkipsAutoWiredNames below).
 	dummy := newNamedStubTool(t, "custom_inspector")
-	mgr, err := NewBackgroundAgentManager(
-		WithBackgroundProvider(mock.NewEcho(), "echo"),
-		WithBackgroundCatalog([]tool.Tool{dummy}),
+	mgr, err := NewManager(
+		WithProvider(mock.NewEcho(), "echo"),
+		WithCatalog([]tool.Tool{dummy}),
 	)
 	if err != nil {
 		t.Fatalf("manager: %v", err)
@@ -381,9 +383,9 @@ func TestResolveTools_SkipsAutoWiredNames(t *testing.T) {
 	//     is what actually runs)
 	//   - catalog tools alongside them still resolve normally
 	custom := newNamedStubTool(t, "custom_inspector")
-	mgr, err := NewBackgroundAgentManager(
-		WithBackgroundProvider(mock.NewEcho(), "echo"),
-		WithBackgroundCatalog([]tool.Tool{custom}),
+	mgr, err := NewManager(
+		WithProvider(mock.NewEcho(), "echo"),
+		WithCatalog([]tool.Tool{custom}),
 	)
 	if err != nil {
 		t.Fatalf("manager: %v", err)
@@ -452,14 +454,14 @@ func (l usageEmittingLLM) GenerateContent(_ context.Context, _ *adkmodel.LLMRequ
 func TestSpawn_RollsUsageIntoParentTracker(t *testing.T) {
 	t.Parallel()
 	prov := &usageProvider{name: "usage", in: 1234, out: 56}
-	mgr, err := NewBackgroundAgentManager(
-		WithBackgroundProvider(prov, "usage-emitter"),
-		WithBackgroundMaxConcurrent(2),
-		WithBackgroundAlertBuffer(4),
-		WithBackgroundDefaultBudgets(BackgroundBudgets{MaxTurns: 1}),
+	mgr, err := NewManager(
+		WithProvider(prov, "usage-emitter"),
+		WithMaxConcurrent(2),
+		WithAlertBuffer(4),
+		WithDefaultBudgets(Budgets{MaxTurns: 1}),
 	)
 	if err != nil {
-		t.Fatalf("NewBackgroundAgentManager: %v", err)
+		t.Fatalf("NewManager: %v", err)
 	}
 
 	// Parent has its own usage tracker wired — the whole point of
@@ -469,7 +471,7 @@ func TestSpawn_RollsUsageIntoParentTracker(t *testing.T) {
 		t.Fatalf("provider Model: %v", err)
 	}
 	tracker := usage.NewTracker()
-	parent, err := New(parentLLM, WithBackgroundManager(mgr), WithUsageTracker(tracker))
+	parent, err := agent.New(parentLLM, agent.WithBackgroundManager(mgr), agent.WithUsageTracker(tracker))
 	if err != nil {
 		t.Fatalf("agent.New: %v", err)
 	}
@@ -479,9 +481,9 @@ func TestSpawn_RollsUsageIntoParentTracker(t *testing.T) {
 		t.Fatalf("pre-spawn tracker should be empty: %+v", tot)
 	}
 
-	h, err := mgr.Spawn(context.Background(), "", BackgroundSpec{
+	h, err := mgr.Spawn(context.Background(), "", Spec{
 		Name: "usage-sub", SystemPrompt: "go", Goal: "go",
-		Budgets: BackgroundBudgets{MaxTurns: 1},
+		Budgets: Budgets{MaxTurns: 1},
 	})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
@@ -566,16 +568,16 @@ func TestSpawn_StopDuringResolutionCancelsBeforeLoop(t *testing.T) {
 		release: make(chan struct{}),
 		llm:     llm,
 	}
-	mgr, err := NewBackgroundAgentManager(
-		WithBackgroundProvider(prov, "stop-race"),
-		WithBackgroundMaxConcurrent(2),
-		WithBackgroundAlertBuffer(4),
+	mgr, err := NewManager(
+		WithProvider(prov, "stop-race"),
+		WithMaxConcurrent(2),
+		WithAlertBuffer(4),
 		// Bound the loop so a regressed build (which runs a turn) still
 		// terminates instead of spinning.
-		WithBackgroundDefaultBudgets(BackgroundBudgets{MaxTurns: 1}),
+		WithDefaultBudgets(Budgets{MaxTurns: 1}),
 	)
 	if err != nil {
-		t.Fatalf("NewBackgroundAgentManager: %v", err)
+		t.Fatalf("NewManager: %v", err)
 	}
 	// Parent uses a separate echo LLM so the blocking provider's Model
 	// is only invoked by Spawn (the window under test).
@@ -583,19 +585,19 @@ func TestSpawn_StopDuringResolutionCancelsBeforeLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parent Model: %v", err)
 	}
-	parent, err := New(parentLLM, WithBackgroundManager(mgr))
+	parent, err := agent.New(parentLLM, agent.WithBackgroundManager(mgr))
 	if err != nil {
 		t.Fatalf("agent.New: %v", err)
 	}
 	_ = parent
 
 	type spawnResult struct {
-		h   *BackgroundHandle
+		h   *Handle
 		err error
 	}
 	done := make(chan spawnResult, 1)
 	go func() {
-		h, err := mgr.Spawn(context.Background(), "", BackgroundSpec{
+		h, err := mgr.Spawn(context.Background(), "", Spec{
 			Name: "racer", SystemPrompt: "go", Goal: "go",
 		})
 		done <- spawnResult{h, err}
@@ -642,11 +644,11 @@ func TestSpawn_BudgetExceedanceClassifiedAsDeferred(t *testing.T) {
 	mgr, _ := newFakeManager(t)
 	parent := newTestParent(t, mgr)
 	_ = parent
-	h, err := mgr.Spawn(context.Background(), "", BackgroundSpec{
+	h, err := mgr.Spawn(context.Background(), "", Spec{
 		Name:         "budget-exceeder",
 		SystemPrompt: "say hi",
 		Goal:         "say hi",
-		Budgets: BackgroundBudgets{
+		Budgets: Budgets{
 			MaxWallclock: 1 * time.Nanosecond,
 		},
 	})

@@ -407,6 +407,7 @@ import (
     "time"
 
     "github.com/go-steer/core-agent/v2/pkg/agent"
+    "github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
     "github.com/go-steer/core-agent/v2/pkg/models"
     _ "github.com/go-steer/core-agent/v2/pkg/models/gemini"
 )
@@ -442,14 +443,14 @@ func main() {
     Then monitor: when subagents report alerts, route per your routing rules.
     Replace failed subagents within 60s of failure detection.`
 
-    res, err := agent.RunAutonomous(ctx, model, goal,
+    res, err := autonomous.RunAutonomous(ctx, model, goal,
         // Generous wallclock — the platform runs as long as the operator
         // wants the fleet managed.
-        agent.WithMaxWallclock(24*time.Hour),
+        autonomous.WithMaxWallclock(24*time.Hour),
         // Cost ceiling per day.
-        agent.WithMaxCost(50.00),
+        autonomous.WithMaxCost(50.00),
         // Per-turn timeout — the platform's individual turns should be fast.
-        agent.WithPerTurnTimeout(60*time.Second),
+        autonomous.WithPerTurnTimeout(60*time.Second),
         // No subagent inheritance — each child has its own config + budget.
         // See devteam.yaml / operator.yaml in the templates/ directory.
     )

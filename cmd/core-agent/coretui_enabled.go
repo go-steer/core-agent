@@ -32,6 +32,7 @@ import (
 	coretui "github.com/go-steer/core-tui/tui"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/agent/background"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/instruction"
@@ -730,7 +731,7 @@ func (a *coreAgentAdapter) Tools() []coretui.ToolInfo {
 // the list until reaped, so the /subagents display reflects
 // post-completion state instead of always reading "running."
 func (a *coreAgentAdapter) Subagents() []coretui.SubagentInfo {
-	mgr := a.inner.BackgroundManager()
+	mgr := background.ManagerOf(a.inner)
 	if mgr == nil {
 		return nil
 	}

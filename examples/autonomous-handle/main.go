@@ -36,6 +36,7 @@ import (
 	adktool "google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
 	"github.com/go-steer/core-agent/v2/pkg/models/mock"
 )
 
@@ -92,9 +93,9 @@ func run() error {
 	}
 
 	fmt.Println("== StartAutonomous ==")
-	h, err := agent.StartAutonomous(ctx, build, "first goal",
-		agent.WithMaxTurns(3),                  // bounded so the echo loop terminates
-		agent.WithMaxWallclock(10*time.Second), // safety net
+	h, err := autonomous.StartAutonomous(ctx, build, "first goal",
+		autonomous.WithMaxTurns(3),                  // bounded so the echo loop terminates
+		autonomous.WithMaxWallclock(10*time.Second), // safety net
 	)
 	if err != nil {
 		return fmt.Errorf("StartAutonomous: %w", err)
@@ -110,7 +111,7 @@ func run() error {
 	// Wait briefly for the loop to reach the pre-turn check.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if h.Status() == agent.AutonomousPaused {
+		if h.Status() == autonomous.AutonomousPaused {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)

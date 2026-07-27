@@ -373,12 +373,13 @@ The lock lives in its own `agent_run_lock` table in the same database; callers d
 
 ## Autonomous runs
 
-`agent.RunAutonomous` is a multi-turn driver for unattended workers — batch jobs, CI tasks, scheduled scripts. It loops `agent.Run` against a goal, enforces run-level budgets, and stops when the model signals "done" via an internal lifecycle tool.
+`autonomous.RunAutonomous` is a multi-turn driver for unattended workers — batch jobs, CI tasks, scheduled scripts. It loops `agent.Run` against a goal, enforces run-level budgets, and stops when the model signals "done" via an internal lifecycle tool.
 
 ```go
 import (
     adktool "google.golang.org/adk/tool"
     "github.com/go-steer/core-agent/v2/pkg/agent"
+    "github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
 )
 
 build := func(extras []adktool.Tool) (*agent.Agent, error) {
@@ -392,13 +393,13 @@ build := func(extras []adktool.Tool) (*agent.Agent, error) {
     )
 }
 
-res, err := agent.RunAutonomous(ctx, build,
+res, err := autonomous.RunAutonomous(ctx, build,
     "find every TODO comment and write a tracking doc",
-    agent.WithMaxTurns(20),
-    agent.WithMaxWallclock(10*time.Minute),
-    agent.WithPerTurnTimeout(2*time.Minute),
-    agent.WithPricing(usage.PriceFor(cfg.Model.Name, cfg)),
-    agent.WithMaxCost(2.50),
+    autonomous.WithMaxTurns(20),
+    autonomous.WithMaxWallclock(10*time.Minute),
+    autonomous.WithPerTurnTimeout(2*time.Minute),
+    autonomous.WithPricing(usage.PriceFor(cfg.Model.Name, cfg)),
+    autonomous.WithMaxCost(2.50),
 )
 fmt.Printf("%s after %d turns ($%.4f): %s\n",
     res.Reason, res.Turns, res.CostUSD, res.DoneDetail)
@@ -431,7 +432,7 @@ Budgets are checked between turns. A turn already in flight when the cap fires r
 By default any turn-level error aborts the run. Install `WithRetryPolicy` for transient-error recovery:
 
 ```go
-agent.WithRetryPolicy(func(err error, attempt int) agent.RetryDecision {
+autonomous.WithRetryPolicy(func(err error, attempt int) autonomous.RetryDecision {
     if attempt > 3 { return agent.AbortRun }
     if isTransient(err) { return agent.RetryTurn }
     return agent.SkipTurn // continue with the configured continuation prompt
@@ -467,6 +468,7 @@ When the agent is wired with `WithEventLog`, `RunAutonomous` emits a checkpoint 
 import (
     "github.com/glebarez/sqlite"
     "github.com/go-steer/core-agent/v2/pkg/agent"
+    "github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
     "github.com/go-steer/core-agent/v2/pkg/eventlog"
 )
 
@@ -474,19 +476,19 @@ handle, _ := eventlog.Open(ctx, sqlite.Open("/path/to/sessions.db"))
 defer handle.Close()
 
 // Phase 1: original run, capped at 5 turns.
-res1, _ := agent.RunAutonomous(ctx, build, "the goal",
-    agent.WithMaxTurns(5))
+res1, _ := autonomous.RunAutonomous(ctx, build, "the goal",
+    autonomous.WithMaxTurns(5))
 // ... process exits, machine reboots, whatever ...
 
 // Phase 2: pick up where Phase 1 left off.
-res2, _ := agent.ResumeAutonomous(ctx, resumeBuild,
-    agent.SessionRef{
+res2, _ := autonomous.ResumeAutonomous(ctx, resumeBuild,
+    autonomous.SessionRef{
         Handle:    handle,
         AppName:   "my-app",
         UserID:    "alice",
         SessionID: "long-running-task",
     },
-    agent.WithMaxTurns(20)) // bigger budget; carries forward Phase 1's totals
+    autonomous.WithMaxTurns(20)) // bigger budget; carries forward Phase 1's totals
 ```
 
 `ResumeBuildFunc` differs from `RunAutonomous`'s `BuildFunc` in one detail — it receives the resumed session ID so the constructed agent rejoins the same session via `agent.WithSession`:
@@ -521,7 +523,7 @@ Behavior:
 
 ## Soft interrupt and programmatic control (v1.3.0+)
 
-`agent.RunAutonomous` is synchronous and fire-and-forget. For harness embedding (Scion, custom orchestrators, anything that needs to push instructions to a running loop) two additional surfaces are available (since v1.3.0).
+`autonomous.RunAutonomous` is synchronous and fire-and-forget. For harness embedding (Scion, custom orchestrators, anything that needs to push instructions to a running loop) two additional surfaces are available (since v1.3.0).
 
 ### `Agent.Inject(message)` — queue a message for the next turn
 
@@ -545,7 +547,7 @@ go func() {
 //   <prompt argument from Run()>
 ```
 
-The inbox is per-agent (not per-manager) so consumers without a `BackgroundAgentManager` get it for free. Drop-oldest backpressure at 256 messages keeps a stuck consumer from deadlocking the agent. `Agent.InboxArrived() <-chan struct{}` exposes a 1-buffer notify channel for harnesses that want to wake on input instead of polling:
+The inbox is per-agent (not per-manager) so consumers without a `background.Manager` get it for free. Drop-oldest backpressure at 256 messages keeps a stuck consumer from deadlocking the agent. `Agent.InboxArrived() <-chan struct{}` exposes a 1-buffer notify channel for harnesses that want to wake on input instead of polling:
 
 ```go
 for {
@@ -560,14 +562,14 @@ for {
 
 The bundled Scion adapter uses exactly this pattern — see `extras/scion-agent/main.go`.
 
-### `agent.StartAutonomous` + `AutonomousHandle`
+### `autonomous.StartAutonomous` + `AutonomousHandle`
 
 Programmatic control over an autonomous run. `StartAutonomous` launches the loop in a goroutine and returns a handle:
 
 ```go
-h, err := agent.StartAutonomous(ctx, build, "monitor cluster X",
-    agent.WithMaxTurns(0),                // no cap; we'll Stop manually
-    agent.WithMaxWallclock(1*time.Hour),  // safety net
+h, err := autonomous.StartAutonomous(ctx, build, "monitor cluster X",
+    autonomous.WithMaxTurns(0),                // no cap; we'll Stop manually
+    autonomous.WithMaxWallclock(1*time.Hour),  // safety net
 )
 if err != nil { /* ... */ }
 defer h.Stop()
@@ -598,7 +600,7 @@ result, err := h.Wait()
 
 ### Custom BeforeTurn hook
 
-`agent.WithBeforeTurn(func(ctx, turnNo) error)` lets library callers gate the loop at the per-turn checkpoint. The hook runs after budget checks and before `runOneTurn`. Returning a non-nil error aborts the run. `AutonomousHandle.Pause` uses this internally; library callers can wire arbitrary gating (rate limits, external approvals) on top.
+`autonomous.WithBeforeTurn(func(ctx, turnNo) error)` lets library callers gate the loop at the per-turn checkpoint. The hook runs after budget checks and before `runOneTurn`. Returning a non-nil error aborts the run. `AutonomousHandle.Pause` uses this internally; library callers can wire arbitrary gating (rate limits, external approvals) on top.
 
 Heads-up: `StartAutonomous` appends its own BeforeTurn hook after the caller's options, so a user-supplied hook gets replaced. If you need both, chain them in your callback yourself for now.
 
@@ -683,11 +685,12 @@ parent, _ := agent.New(model,
 
 ## Dynamic background subagents (v1.2.0+)
 
-`WithSubagents` is **static** — you wire the subagent population at build time and the parent's model invokes registered subagents *synchronously* (parent blocks until the subagent returns). For long-running monitors, parallel fan-out work, and any case where the parent's model decides at runtime what kind of subagent it needs, use the `BackgroundAgentManager` + `spawn_agent` family instead.
+`WithSubagents` is **static** — you wire the subagent population at build time and the parent's model invokes registered subagents *synchronously* (parent blocks until the subagent returns). For long-running monitors, parallel fan-out work, and any case where the parent's model decides at runtime what kind of subagent it needs, use the `background.Manager` + `spawn_agent` family instead.
 
 ```go
 import (
     "github.com/go-steer/core-agent/v2/pkg/agent"
+    "github.com/go-steer/core-agent/v2/pkg/agent/background"
     "github.com/go-steer/core-agent/v2/pkg/models/gemini"
     "github.com/go-steer/core-agent/v2/pkg/permissions"
     "github.com/go-steer/core-agent/v2/pkg/tools"
@@ -700,20 +703,20 @@ gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
 builtins := tools.Default()
 reg, _ := tools.Build(cfg, gate, builtins)
 
-mgr, _ := agent.NewBackgroundAgentManager(
-    agent.WithBackgroundProvider(provider, "gemini-3.1-pro-preview"),
-    agent.WithBackgroundGate(gate),
-    agent.WithBackgroundCatalog(reg.Tools),
-    agent.WithBackgroundMaxDepth(2),
-    agent.WithBackgroundMaxConcurrent(8),
-    agent.WithBackgroundDefaultBudgets(agent.BackgroundBudgets{
+mgr, _ := background.NewManager(
+    background.WithProvider(provider, "gemini-3.1-pro-preview"),
+    background.WithGate(gate),
+    background.WithCatalog(reg.Tools),
+    background.WithMaxDepth(2),
+    background.WithMaxConcurrent(8),
+    background.WithDefaultBudgets(background.Budgets{
         MaxTurns: 50, MaxCost: 1.0, MaxWallclock: 10*time.Minute,
     }),
 )
 defer mgr.Close()
 
 a, _ := agent.New(m,
-    agent.WithTools(append(reg.Tools, agent.NewBackgroundSpawnTools(mgr)...)),
+    agent.WithTools(append(reg.Tools, background.NewSpawnTools(mgr)...)),
     agent.WithBackgroundManager(mgr),
 )
 ```
@@ -759,21 +762,21 @@ The bundled formatter `runner.FormatAlertLine(from, kind, text)` produces the sa
 
 ### Remote (out-of-process) subagents
 
-For subagents that should run elsewhere — gRPC to a remote agent server, K8s Jobs, Cloud Run, NATS-dispatched workers — implement `agent.RemoteAgentSpawner` and pass it to `agent.NewSpawnRemoteAgentTool`. The model gets a `spawn_remote_agent` tool with the same shape as `spawn_agent`; your spawner is responsible for transport + lifecycle. Events the consumer puts on the handle's `Events()` channel are mapped onto the same alert pipeline as in-process subagents, so `list_agents` / `check_agent` / `stop_agent` work uniformly.
+For subagents that should run elsewhere — gRPC to a remote agent server, K8s Jobs, Cloud Run, NATS-dispatched workers — implement `background.RemoteAgentSpawner` and pass it to `background.NewSpawnRemoteAgentTool`. The model gets a `spawn_remote_agent` tool with the same shape as `spawn_agent`; your spawner is responsible for transport + lifecycle. Events the consumer puts on the handle's `Events()` channel are mapped onto the same alert pipeline as in-process subagents, so `list_agents` / `check_agent` / `stop_agent` work uniformly.
 
 ```go
 type myK8sSpawner struct{ kubeconfig string }
 
-func (s *myK8sSpawner) Spawn(ctx context.Context, spec agent.RemoteAgentSpec) (agent.RemoteAgentHandle, error) {
+func (s *myK8sSpawner) Spawn(ctx context.Context, spec background.RemoteAgentSpec) (background.RemoteAgentHandle, error) {
     // create a K8s Job; return a handle whose Events() channel
     // is populated from the Job's pod logs or a sidecar gRPC stream
 }
 
-remoteTool, _ := agent.NewSpawnRemoteAgentTool(&myK8sSpawner{...}, mgr)
+remoteTool, _ := background.NewSpawnRemoteAgentTool(&myK8sSpawner{...}, mgr)
 a, _ := agent.New(m, agent.WithTools([]tool.Tool{remoteTool, ...}))
 ```
 
-When you don't want to wire a real spawner (headless / unattended / CI), use `agent.RefuseRemoteAgentSpawner(reason)` — analog of `tools.RefusePrompter`. The model sees a clean error result it can adapt to.
+When you don't want to wire a real spawner (headless / unattended / CI), use `background.RefuseRemoteAgentSpawner(reason)` — analog of `tools.RefusePrompter`. The model sees a clean error result it can adapt to.
 
 ### Bundled CLI
 
@@ -1001,7 +1004,7 @@ gate, _ := permissions.FromConfig(cfg, cwd, userHome, &myPrompter{})
 
 `PromptRequest.Source` carries the originating agent name when the request comes from a background subagent. `StdinPrompter` renders it as `[<source>] tool wants to ...` in the heading so the human knows which agent is asking. The gate populates `Source` from a context value (`permissions.WithSubagentSource(ctx, name)`) stamped by the spawn machinery; custom prompters that ignore the field still work.
 
-When the gate is shared across goroutines (any setup with background subagents), wrap the prompter in `permissions.Serialize(...)` so concurrent `AskApproval` calls run one at a time. Without this, multiple subagents racing for `os.Stdin` deadlock or interleave garbage. The bundled CLI does this automatically when a `BackgroundAgentManager` is wired; library callers using their own gate construction should do the same.
+When the gate is shared across goroutines (any setup with background subagents), wrap the prompter in `permissions.Serialize(...)` so concurrent `AskApproval` calls run one at a time. Without this, multiple subagents racing for `os.Stdin` deadlock or interleave garbage. The bundled CLI does this automatically when a `background.Manager` is wired; library callers using their own gate construction should do the same.
 
 ---
 

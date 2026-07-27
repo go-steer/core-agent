@@ -23,7 +23,7 @@ What doesn't fit autonomous mode: anything that needs real-time operator judgmen
 - Completed [Getting started](/run/getting-started/) — provider credentials work, `core-agent -p "hello"` returns a response.
 - Understand the four customization layers from [Interactive quickstart](/run/interactive/quickstart/) — `config.json`, `AGENTS.md`, skills, MCP. Autonomous mode uses the same files.
 
-This page works in a Go project (you'll write a small `main.go` to drive the agent). For autonomous use you call `agent.RunAutonomous` from your own code — it's not a CLI subcommand of `core-agent`.
+This page works in a Go project (you'll write a small `main.go` to drive the agent). For autonomous use you call `autonomous.RunAutonomous` from your own code — it's not a CLI subcommand of `core-agent`.
 
 ---
 
@@ -53,6 +53,7 @@ import (
     "time"
 
     "github.com/go-steer/core-agent/v2/pkg/agent"
+    "github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
     "github.com/go-steer/core-agent/v2/pkg/models"
     _ "github.com/go-steer/core-agent/v2/pkg/models/gemini"
 )
@@ -71,17 +72,17 @@ func main() {
         log.Fatalf("get model: %v", err)
     }
 
-    res, err := agent.RunAutonomous(ctx, model,
+    res, err := autonomous.RunAutonomous(ctx, model,
         "Watch deployment myapp in namespace prod for the next hour. "+
         "Every ~10 minutes, fetch its rollout status, pod conditions, "+
         "and recent events. Post a concise summary when anything looks "+
         "unhealthy; otherwise stay quiet. Use report_done at the end.",
         // Budgets — autonomous always runs against bounds.
-        agent.WithMaxWallclock(70*time.Minute),
-        agent.WithMaxTurns(20),
-        agent.WithMaxCost(2.00),
+        autonomous.WithMaxWallclock(70*time.Minute),
+        autonomous.WithMaxTurns(20),
+        autonomous.WithMaxCost(2.00),
         // Per-turn timeout — one rogue tool call can't stall the run.
-        agent.WithPerTurnTimeout(2*time.Minute),
+        autonomous.WithPerTurnTimeout(2*time.Minute),
     )
     if err != nil {
         log.Fatalf("autonomous run: %v", err)
@@ -101,7 +102,7 @@ func main() {
 
 - Resolves the provider from `.agents/config.json` (same as the CLI does)
 - Constructs a model handle
-- Calls `agent.RunAutonomous` with a goal + four budget caps
+- Calls `autonomous.RunAutonomous` with a goal + four budget caps
 - Logs the stop reason and totals when the run finishes
 
 **Budget semantics:**

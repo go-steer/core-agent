@@ -16,31 +16,27 @@ package agent
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	adkmodel "google.golang.org/adk/model"
-	"google.golang.org/adk/session"
-	"google.golang.org/genai"
+	"github.com/glebarez/sqlite"
+
+	"github.com/go-steer/core-agent/v2/pkg/agent/internal/subsession"
+	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 )
 
-// makeSubagentTestEvent constructs a minimal session.Event for the
-// branch-injecting tests. We can't reuse the helper from
-// eventlog_test.go (different package) so we redefine locally.
-func makeSubagentTestEvent(id, branch string) *session.Event {
-	return &session.Event{
-		ID:        id,
-		Author:    "tester",
-		Branch:    branch,
-		Timestamp: time.Now(),
-		LLMResponse: adkmodel.LLMResponse{
-			Content: &genai.Content{
-				Role:  genai.RoleModel,
-				Parts: []*genai.Part{{Text: "x"}},
-			},
-		},
+// openTestEventLog returns a Handle backed by a fresh on-disk SQLite
+// database. Duplicated (rather than exported) so this package's tests
+// stay self-contained.
+func openTestEventLog(t *testing.T) (*eventlog.Handle, func()) {
+	t.Helper()
+	dsn := filepath.Join(t.TempDir(), "session.db")
+	h, err := eventlog.Open(context.Background(), sqlite.Open(dsn))
+	if err != nil {
+		t.Fatalf("eventlog.Open: %v", err)
 	}
+	return h, func() { _ = h.Close() }
 }
 
 func TestNewSubagentTool_RequiresInner(t *testing.T) {
@@ -66,7 +62,7 @@ func TestNewSubagentTool_RequiresInnerADKAgent(t *testing.T) {
 
 func TestNewSubagentTool_DefaultsNameToInnerAgentName(t *testing.T) {
 	t.Parallel()
-	a, err := New(&stubLLM{}, WithName("research"))
+	a, err := New(minimalLLM{}, WithName("research"))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -81,7 +77,7 @@ func TestNewSubagentTool_DefaultsNameToInnerAgentName(t *testing.T) {
 
 func TestNewSubagentTool_NameAndDescriptionOverrides(t *testing.T) {
 	t.Parallel()
-	a, err := New(&stubLLM{}, WithName("research"), WithDescription("do research"))
+	a, err := New(minimalLLM{}, WithName("research"), WithDescription("do research"))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -103,7 +99,7 @@ func TestNewSubagentTool_NameAndDescriptionOverrides(t *testing.T) {
 
 func TestNewSubagentTool_FallsBackToInnerDescription(t *testing.T) {
 	t.Parallel()
-	a, err := New(&stubLLM{}, WithName("research"), WithDescription("inner description"))
+	a, err := New(minimalLLM{}, WithName("research"), WithDescription("inner description"))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -116,134 +112,19 @@ func TestNewSubagentTool_FallsBackToInnerDescription(t *testing.T) {
 	}
 }
 
-func TestBranchInjectingService_StampsEmptyBranch(t *testing.T) {
-	t.Parallel()
-	h, cleanup := openTestEventLog(t)
-	defer cleanup()
-	ctx := context.Background()
-	if _, err := h.Service.Create(ctx, &session.CreateRequest{
-		AppName: "app", UserID: "u", SessionID: "branch-test",
-	}); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	resp, err := h.Service.Get(ctx, &session.GetRequest{
-		AppName: "app", UserID: "u", SessionID: "branch-test",
-	})
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	wrapped := &branchInjectingService{inner: h.Service, branch: "research"}
-	ev := makeSubagentTestEvent("ev-1", "")
-	if err := wrapped.AppendEvent(ctx, resp.Session, ev); err != nil {
-		t.Fatalf("AppendEvent: %v", err)
-	}
-	if ev.Branch != "research" {
-		t.Errorf("Branch should be stamped on the event; got %q", ev.Branch)
-	}
-}
-
-func TestBranchInjectingService_PreservesPresetBranch(t *testing.T) {
-	t.Parallel()
-	h, cleanup := openTestEventLog(t)
-	defer cleanup()
-	ctx := context.Background()
-	if _, err := h.Service.Create(ctx, &session.CreateRequest{
-		AppName: "app", UserID: "u", SessionID: "preset",
-	}); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	resp, err := h.Service.Get(ctx, &session.GetRequest{
-		AppName: "app", UserID: "u", SessionID: "preset",
-	})
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	wrapped := &branchInjectingService{inner: h.Service, branch: "research"}
-	// A nested subagent at "research.deep" — the wrapper must not
-	// overwrite the deeper branch label with its own.
-	ev := makeSubagentTestEvent("ev-2", "research.deep")
-	if err := wrapped.AppendEvent(ctx, resp.Session, ev); err != nil {
-		t.Fatalf("AppendEvent: %v", err)
-	}
-	if ev.Branch != "research.deep" {
-		t.Errorf("preset Branch should not be overwritten; got %q", ev.Branch)
-	}
-}
-
-func TestBranchInjectingService_DelegatesCRUD(t *testing.T) {
-	t.Parallel()
-	h, cleanup := openTestEventLog(t)
-	defer cleanup()
-	ctx := context.Background()
-	wrapped := &branchInjectingService{inner: h.Service, branch: "research"}
-	if _, err := wrapped.Create(ctx, &session.CreateRequest{
-		AppName: "app", UserID: "u", SessionID: "delegated",
-	}); err != nil {
-		t.Fatalf("Create through wrapper: %v", err)
-	}
-	resp, err := wrapped.Get(ctx, &session.GetRequest{
-		AppName: "app", UserID: "u", SessionID: "delegated",
-	})
-	if err != nil {
-		t.Fatalf("Get through wrapper: %v", err)
-	}
-	if resp == nil || resp.Session == nil || resp.Session.ID() != "delegated" {
-		t.Errorf("Get returned %+v, want session with ID=delegated", resp)
-	}
-	listResp, err := wrapped.List(ctx, &session.ListRequest{AppName: "app", UserID: "u"})
-	if err != nil {
-		t.Fatalf("List through wrapper: %v", err)
-	}
-	if listResp == nil || len(listResp.Sessions) == 0 {
-		t.Errorf("List returned no sessions: %+v", listResp)
-	}
-	if err := wrapped.Delete(ctx, &session.DeleteRequest{
-		AppName: "app", UserID: "u", SessionID: "delegated",
-	}); err != nil {
-		t.Fatalf("Delete through wrapper: %v", err)
-	}
-}
-
-func TestComposeBranch(t *testing.T) {
-	t.Parallel()
-	cases := []struct{ parent, this, want string }{
-		{"", "", ""},
-		{"", "research", "research"},
-		{"parent", "", "parent"},
-		{"parent", "research", "parent.research"},
-		{"a.b", "c", "a.b.c"},
-	}
-	for _, c := range cases {
-		if got := composeBranch(c.parent, c.this); got != c.want {
-			t.Errorf("composeBranch(%q,%q)=%q, want %q", c.parent, c.this, got, c.want)
-		}
-	}
-}
-
-func TestCurrentSubagentDepth_DefaultsZeroAndReadsContext(t *testing.T) {
-	t.Parallel()
-	if d := CurrentSubagentDepth(context.Background()); d != 0 {
-		t.Errorf("default depth = %d, want 0", d)
-	}
-	ctx := context.WithValue(context.Background(), subagentDepthKey{}, 7)
-	if d := CurrentSubagentDepth(ctx); d != 7 {
-		t.Errorf("depth from context = %d, want 7", d)
-	}
-}
-
 func TestWithSubagents_RegistersTools(t *testing.T) {
 	t.Parallel()
 	h, cleanup := openTestEventLog(t)
 	defer cleanup()
-	r1, err := New(&stubLLM{}, WithName("research"), WithEventLog(h), WithSession("u", "s1"))
+	r1, err := New(minimalLLM{}, WithName("research"), WithEventLog(h), WithSession("u", "s1"))
 	if err != nil {
 		t.Fatalf("New r1: %v", err)
 	}
-	r2, err := New(&stubLLM{}, WithName("planner"), WithEventLog(h), WithSession("u", "s2"))
+	r2, err := New(minimalLLM{}, WithName("planner"), WithEventLog(h), WithSession("u", "s2"))
 	if err != nil {
 		t.Fatalf("New r2: %v", err)
 	}
-	parent, err := New(&stubLLM{},
+	parent, err := New(minimalLLM{},
 		WithName("parent"),
 		WithEventLog(h),
 		WithSession("u", "p"),
@@ -265,7 +146,7 @@ func TestWithSubagents_RegistersTools(t *testing.T) {
 
 func TestWithSubagents_NilEntryIgnored(t *testing.T) {
 	t.Parallel()
-	a, err := New(&stubLLM{}, WithSubagents([]*Agent{nil}))
+	a, err := New(minimalLLM{}, WithSubagents([]*Agent{nil}))
 	if err != nil {
 		t.Fatalf("nil subagent should not error: %v", err)
 	}
@@ -281,11 +162,11 @@ func TestWithSubagents_OrderIndependent(t *testing.T) {
 	// before WithEventLog. We verify by introspecting Inner.
 	h, cleanup := openTestEventLog(t)
 	defer cleanup()
-	research, err := New(&stubLLM{}, WithName("research"), WithEventLog(h), WithSession("u", "r"))
+	research, err := New(minimalLLM{}, WithName("research"), WithEventLog(h), WithSession("u", "r"))
 	if err != nil {
 		t.Fatalf("New research: %v", err)
 	}
-	parent, err := New(&stubLLM{},
+	parent, err := New(minimalLLM{},
 		WithSubagents([]*Agent{research}), // appears BEFORE WithEventLog
 		WithName("parent"),
 		WithEventLog(h),
@@ -315,6 +196,8 @@ func TestWithSubagents_OrderIndependent(t *testing.T) {
 // check, and sequential calls don't silently accumulate history
 // across independent requests. The derived ID must still carry the
 // shared "<parent>:sub:<branch>" prefix so audit queries find both.
+// This exercises core's subagentInvocationID feeding subsession's
+// DeriveSessionID — the two halves that together guarantee #364.
 func TestDeriveSubagentSessionID_UniquePerInvocation(t *testing.T) {
 	t.Parallel()
 
@@ -322,8 +205,8 @@ func TestDeriveSubagentSessionID_UniquePerInvocation(t *testing.T) {
 		parent = "sess-1"
 		branch = "research"
 	)
-	a := deriveSubagentSessionID(parent, branch, subagentInvocationID("fc-A"))
-	b := deriveSubagentSessionID(parent, branch, subagentInvocationID("fc-B"))
+	a := subsession.DeriveSessionID(parent, branch, subagentInvocationID("fc-A"))
+	b := subsession.DeriveSessionID(parent, branch, subagentInvocationID("fc-B"))
 
 	if a == b {
 		t.Fatalf("distinct invocations produced the same session row %q (would interleave; #364)", a)
@@ -332,26 +215,6 @@ func TestDeriveSubagentSessionID_UniquePerInvocation(t *testing.T) {
 	for _, id := range []string{a, b} {
 		if !strings.HasPrefix(id, prefix) {
 			t.Errorf("derived id %q lost the audit prefix %q", id, prefix)
-		}
-	}
-}
-
-// TestDeriveSubagentSessionID_EmptyParentAndInvocation covers the
-// standalone-construction and no-invocation-component edges: the
-// parent prefix and invocation suffix are each dropped when empty,
-// so the deterministic name-addressed callers (subtask / background
-// spawn, which pass "") keep their historical IDs.
-func TestDeriveSubagentSessionID_EmptyParentAndInvocation(t *testing.T) {
-	t.Parallel()
-	cases := []struct{ parent, branch, invocation, want string }{
-		{"", "research", "", "sub:research"},
-		{"sess-1", "research", "", "sess-1:sub:research"},
-		{"", "research", "fc-1", "sub:research:fc-1"},
-		{"sess-1", "research", "fc-1", "sess-1:sub:research:fc-1"},
-	}
-	for _, c := range cases {
-		if got := deriveSubagentSessionID(c.parent, c.branch, c.invocation); got != c.want {
-			t.Errorf("deriveSubagentSessionID(%q,%q,%q)=%q, want %q", c.parent, c.branch, c.invocation, got, c.want)
 		}
 	}
 }

@@ -186,21 +186,3 @@ func TestRegistry_List_Sorted(t *testing.T) {
 		}
 	}
 }
-
-func TestAgentRegistrarAdapter_TypeAssertion(t *testing.T) {
-	t.Parallel()
-	reg := NewSessionRegistry()
-	adapter := NewAgentRegistrarAdapter(reg)
-
-	ag := &stubRegistrant{app: "a", user: "u", sid: "s"}
-	if _, err := adapter.Register(ag); err != nil {
-		t.Errorf("Register(stubRegistrant) failed: %v", err)
-	}
-
-	// Something that doesn't implement Registrant.
-	_, err := adapter.Register("not a registrant")
-	var nrErr *ErrNotRegistrant
-	if !errors.As(err, &nrErr) {
-		t.Errorf("Register(string) want ErrNotRegistrant, got %v", err)
-	}
-}

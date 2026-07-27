@@ -18,6 +18,8 @@ import (
 	adkmodel "google.golang.org/adk/model"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v2/pkg/attachadapter"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/instruction"
 	"github.com/go-steer/core-agent/v2/pkg/mcp"
@@ -35,9 +37,15 @@ import (
 // the TUI-launch branch; the struct exists purely to keep
 // launchTUI's signature short.
 type tuiDeps struct {
-	Cfg           *config.Config
-	Model         adkmodel.LLM
-	AgentOpts     []agent.Option
+	Cfg       *config.Config
+	Model     adkmodel.LLM
+	AgentOpts []agent.Option
+	// AdapterOpts configures the *attachadapter.Adapter every
+	// agent-construction site wraps around the agent (#388 phase 4);
+	// AttachReg is non-nil when attach-mode is enabled and receives
+	// the adapter registration. Both flow through buildAttachedAgent.
+	AdapterOpts   []attachadapter.Option
+	AttachReg     *attach.SessionRegistry
 	Provider      models.Provider
 	Gate          *permissions.Gate
 	Tracker       *usage.Tracker

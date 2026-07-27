@@ -12,16 +12,86 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package agent
+package attachadapter
 
 import (
+	"context"
 	"math"
-	"sync"
+	"strings"
 	"testing"
 
+	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v2/pkg/models/mock"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
+
+// newEchoAgent constructs a real agent against the mock echo model —
+// the same shape hosts wrap with New().
+func newEchoAgent(t *testing.T, opts ...agent.Option) *agent.Agent {
+	t.Helper()
+	provider := mock.NewEcho()
+	m, err := provider.Model(context.Background(), "echo")
+	if err != nil {
+		t.Fatalf("model: %v", err)
+	}
+	a, err := agent.New(m, opts...)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	return a
+}
+
+func TestAdapter_Registrant_ForwardsIdentity(t *testing.T) {
+	t.Parallel()
+	a := newEchoAgent(t, agent.WithSession("u-1", "s-1"))
+	ad := New(a)
+	if ad.Agent() != a {
+		t.Fatalf("Agent() = %p, want the wrapped agent %p", ad.Agent(), a)
+	}
+	if ad.AppName() != a.AppName() || ad.UserID() != "u-1" || ad.SessionID() != "s-1" {
+		t.Errorf("Registrant triple = (%s,%s,%s), want (%s,u-1,s-1)",
+			ad.AppName(), ad.UserID(), ad.SessionID(), a.AppName())
+	}
+	// The adapter is what hosts register — it must satisfy Registrant
+	// against a live registry, not just the compile-time assertion.
+	reg := attach.NewSessionRegistry()
+	if _, err := reg.Register(ad); err != nil {
+		t.Fatalf("Register(adapter): %v", err)
+	}
+}
+
+func TestAdapter_AttachReload_NotRegistered_ReturnsSentinel(t *testing.T) {
+	t.Parallel()
+	ad := New(newEchoAgent(t))
+	resp := ad.AttachReload(context.Background())
+	if resp.Memory || resp.Skills || resp.MCP {
+		t.Errorf("AttachReload without reloader: surface flags = %+v, want all false", resp)
+	}
+	if len(resp.Errors) == 0 || !strings.Contains(resp.Errors[0], attach.ErrCapabilityNotRegistered.Error()) {
+		t.Errorf("AttachReload without reloader: errors = %v, want one containing %q",
+			resp.Errors, attach.ErrCapabilityNotRegistered.Error())
+	}
+}
+
+func TestAdapter_AttachReload_Wired_DelegatesToClosure(t *testing.T) {
+	t.Parallel()
+	called := false
+	ad := New(newEchoAgent(t), WithReloader(func(_ context.Context) attach.ReloadResponse {
+		called = true
+		return attach.ReloadResponse{Memory: true, Skills: true, MCP: false, Errors: []string{"mcp: not yet"}}
+	}))
+	resp := ad.AttachReload(context.Background())
+	if !called {
+		t.Fatal("AttachReload: closure was not invoked")
+	}
+	if !resp.Memory || !resp.Skills || resp.MCP {
+		t.Errorf("AttachReload: got %+v, want Memory=true Skills=true MCP=false", resp)
+	}
+	if len(resp.Errors) != 1 || resp.Errors[0] != "mcp: not yet" {
+		t.Errorf("AttachReload: errors = %v, want [\"mcp: not yet\"]", resp.Errors)
+	}
+}
 
 // TestAttachUsage_CachedFieldsAndPerTurn is the on-the-wire spec test
 // for issue #222: /sessions/<id>/usage must expose cached vs uncached
@@ -48,8 +118,8 @@ func TestAttachUsage_CachedFieldsAndPerTurn(t *testing.T) {
 		OutputTokens:      500,
 	}, p)
 
-	a := &Agent{tracker: tr}
-	info := a.AttachUsage()
+	ad := New(newEchoAgent(t, agent.WithUsageTracker(tr)))
+	info := ad.AttachUsage()
 
 	// Overall aggregates.
 	if info.Overall.Turns != 2 {
@@ -112,15 +182,23 @@ func TestAttachUsage_CachedFieldsAndPerTurn(t *testing.T) {
 	}
 }
 
-// TestAttachUsage_NoTracker exercises the nil-tracker path used by
-// hand-constructed test agents. Must return a zero UsageInfo without
-// panicking or allocating a PerTurn slice.
+// TestAttachUsage_NoTracker exercises the nil-tracker path. Must
+// return a zero UsageInfo without panicking or allocating a PerTurn
+// slice. Also pins the nil-adapter and nil-agent paths every
+// capability method promises.
 func TestAttachUsage_NoTracker(t *testing.T) {
 	t.Parallel()
-	a := &Agent{}
-	info := a.AttachUsage()
+	ad := New(newEchoAgent(t))
+	info := ad.AttachUsage()
 	if info.Overall.Turns != 0 || info.PerTurn != nil || info.PerModel != nil {
 		t.Errorf("nil-tracker AttachUsage should be zero: %+v", info)
+	}
+	var nilAd *Adapter
+	if got := nilAd.AttachUsage(); got.Overall.Turns != 0 {
+		t.Errorf("nil-adapter AttachUsage should be zero: %+v", got)
+	}
+	if got := New(nil).AttachUsage(); got.Overall.Turns != 0 {
+		t.Errorf("nil-agent AttachUsage should be zero: %+v", got)
 	}
 }
 
@@ -139,8 +217,8 @@ func TestAttachUsage_PerModelWhenMultipleModels(t *testing.T) {
 	tr.AppendUsage("gemini-3.5-flash", usage.TurnUsage{InputTokens: 10_000, OutputTokens: 500}, flash)
 	tr.AppendUsage("gemini-3.1-flash-lite", usage.TurnUsage{InputTokens: 5_000, OutputTokens: 200}, lite)
 
-	a := &Agent{tracker: tr}
-	info := a.AttachUsage()
+	ad := New(newEchoAgent(t, agent.WithUsageTracker(tr)))
+	info := ad.AttachUsage()
 	if len(info.PerModel) != 2 {
 		t.Fatalf("PerModel has %d models, want 2", len(info.PerModel))
 	}
@@ -154,7 +232,7 @@ func TestAttachUsage_PerModelWhenMultipleModels(t *testing.T) {
 	}
 }
 
-// TestUsageTotalsToAttach_UncachedMathClamps guards the projection
+// TestUsageTotalsToAttach_UncachedMathIsHonest guards the projection
 // math: if a caller ever manages to smuggle in Totals with cached >
 // input (shouldn't happen post-AppendUsage but the projection helper
 // runs unconditionally), InputTokensUncached must not underflow into
@@ -184,71 +262,99 @@ func TestUsageTotalsToAttach_UncachedMathIsHonest(t *testing.T) {
 	}
 }
 
-var _ attach.UsageProvider = (*Agent)(nil)
-
-// TestSetAttachEmitter_UsageUpdatePopulatesLastTurn is the pin for
-// authoritative per-turn cost delivery. When tracker.Append fires
-// the emit callback wired by SetAttachEmitter, the resulting
-// UsageUpdate must carry LastTurn with the just-committed cost — so
-// the remote TUI's per-turn footer renders without depending on a
-// separate client-side pricing lookup.
-func TestSetAttachEmitter_UsageUpdatePopulatesLastTurn(t *testing.T) {
+func TestAttachInterrupt_IdleAgentReturnsFalse(t *testing.T) {
 	t.Parallel()
-	tracker := usage.NewTracker()
-	a := &Agent{tracker: tracker}
+	ad := New(newEchoAgent(t))
+	if ad.AttachInterrupt() {
+		t.Errorf("AttachInterrupt on idle agent returned true, want false")
+	}
+}
 
-	// Capture whatever gets emitted so we can inspect it.
-	var (
-		mu       sync.Mutex
-		captured []attach.UsageUpdate
+func TestAttachSpawnSubagent_NoManager_ReturnsSentinel(t *testing.T) {
+	t.Parallel()
+	ad := New(newEchoAgent(t))
+	_, err := ad.AttachSpawnSubagent(context.Background(), attach.SubagentSpec{Name: "probe", Goal: "x"})
+	if err != ErrSubagentSpawnerUnavailable {
+		t.Fatalf("err = %v, want ErrSubagentSpawnerUnavailable", err)
+	}
+	// The message string is load-bearing — pkg/attach's slash handler
+	// matches it literally. Pin it.
+	const want = "agent: subagent spawner unavailable (no BackgroundAgentManager wired)"
+	if err.Error() != want {
+		t.Fatalf("sentinel message drifted: %q, want %q", err.Error(), want)
+	}
+}
+
+func TestAttachStatus_ReportsModelName(t *testing.T) {
+	t.Parallel()
+	ad := New(newEchoAgent(t))
+	got := ad.AttachStatus()
+	if got.State != attach.AgentStateIdle {
+		t.Errorf("State = %q, want %q", got.State, attach.AgentStateIdle)
+	}
+	if got.ModelName == "" {
+		t.Errorf("ModelName empty, want the wrapped agent's model id")
+	}
+}
+
+func TestCapabilities_UnwiredReturnEmptyOrSentinel(t *testing.T) {
+	t.Parallel()
+	ad := New(newEchoAgent(t))
+	if got := ad.AttachMemory(); got != nil {
+		t.Errorf("AttachMemory unwired = %v, want nil", got)
+	}
+	if got := ad.AttachSkills(); got != nil {
+		t.Errorf("AttachSkills unwired = %v, want nil", got)
+	}
+	if got := ad.AttachMCP(); len(got.Servers) != 0 {
+		t.Errorf("AttachMCP unwired = %+v, want empty", got)
+	}
+	if _, err := ad.AttachRefreshPricing(context.Background()); err != attach.ErrCapabilityNotRegistered {
+		t.Errorf("AttachRefreshPricing unwired err = %v, want ErrCapabilityNotRegistered", err)
+	}
+	if err := ad.AttachSetManualPricing(attach.PricingSetRequest{}); err != attach.ErrCapabilityNotRegistered {
+		t.Errorf("AttachSetManualPricing unwired err = %v, want ErrCapabilityNotRegistered", err)
+	}
+	if _, err := ad.AttachReplan(context.Background(), attach.ReplanRequest{}); err != attach.ErrCapabilityNotRegistered {
+		t.Errorf("AttachReplan unwired err = %v, want ErrCapabilityNotRegistered", err)
+	}
+	if got := ad.AttachPromptBroker(); got != nil {
+		t.Errorf("AttachPromptBroker unwired = %v, want nil", got)
+	}
+}
+
+func TestCapabilities_WiredProvidersDelegate(t *testing.T) {
+	t.Parallel()
+	broker := attach.NewPromptBroker()
+	t.Cleanup(broker.Close)
+	ad := New(newEchoAgent(t),
+		WithMemoryProvider(func() []attach.MemorySource {
+			return []attach.MemorySource{{Scope: "project", Path: "AGENTS.md"}}
+		}),
+		WithSkillsProvider(func() []attach.SkillInfo {
+			return []attach.SkillInfo{{Name: "deploy"}}
+		}),
+		WithMCPProvider(func() attach.MCPInfo {
+			return attach.MCPInfo{Servers: []attach.MCPServerInfo{{Name: "k8s"}}}
+		}),
+		WithPricingProvider(func() attach.PricingInfo {
+			return attach.PricingInfo{CurrentModel: "echo"}
+		}),
+		WithPromptBroker(broker),
 	)
-	a.SetAttachEmitter(func(eventType string, payload any) {
-		if eventType != attach.EventUsageUpdate {
-			return
-		}
-		p, ok := payload.(attach.UsageUpdate)
-		if !ok {
-			t.Errorf("payload wrong type: %T", payload)
-			return
-		}
-		mu.Lock()
-		captured = append(captured, p)
-		mu.Unlock()
-	})
-
-	p := usage.Pricing{InputPerMTok: 1.25, CachedInputPerMTok: 0.3125, OutputPerMTok: 5.00}
-	tracker.AppendUsage("gemini-3.1-pro", usage.TurnUsage{
-		InputTokens:       10_000,
-		CachedInputTokens: 8_000,
-		OutputTokens:      500,
-	}, p)
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(captured) != 1 {
-		t.Fatalf("expected exactly one UsageUpdate emission, got %d", len(captured))
+	if got := ad.AttachMemory(); len(got) != 1 || got[0].Path != "AGENTS.md" {
+		t.Errorf("AttachMemory = %+v", got)
 	}
-	got := captured[0]
-	if got.LastTurn == nil {
-		t.Fatal("LastTurn missing — remote TUI per-turn footer won't render")
+	if got := ad.AttachSkills(); len(got) != 1 || got[0].Name != "deploy" {
+		t.Errorf("AttachSkills = %+v", got)
 	}
-	if got.LastTurn.TokensIn != 10_000 || got.LastTurn.TokensOut != 500 {
-		t.Errorf("LastTurn tokens = %+v, want in=10000 out=500", got.LastTurn)
+	if got := ad.AttachMCP(); len(got.Servers) != 1 || got.Servers[0].Name != "k8s" {
+		t.Errorf("AttachMCP = %+v", got)
 	}
-	if got.LastTurn.TokensInCached != 8_000 {
-		t.Errorf("LastTurn.TokensInCached = %d, want 8_000", got.LastTurn.TokensInCached)
+	if got := ad.AttachPricing(); got.CurrentModel != "echo" {
+		t.Errorf("AttachPricing = %+v", got)
 	}
-	if got.LastTurn.Model != "gemini-3.1-pro" {
-		t.Errorf("LastTurn.Model = %q, want gemini-3.1-pro", got.LastTurn.Model)
-	}
-	// Cost with cache discount: 2k uncached @ $1.25/M + 8k cached @ $0.3125/M + 500 @ $5/M.
-	wantCost := 0.002*1.25 + 0.008*0.3125 + 0.0005*5.00
-	if math.Abs(got.LastTurn.CostUSD-wantCost) > 1e-9 {
-		t.Errorf("LastTurn.CostUSD = %v, want %v", got.LastTurn.CostUSD, wantCost)
-	}
-	// Cumulative totals still populated for the session-total path.
-	if got.CostUSDTotal != got.LastTurn.CostUSD {
-		t.Errorf("first-turn CostUSDTotal (%v) should equal LastTurn.CostUSD (%v)",
-			got.CostUSDTotal, got.LastTurn.CostUSD)
+	if got := ad.AttachPromptBroker(); got != broker {
+		t.Errorf("AttachPromptBroker = %p, want %p", got, broker)
 	}
 }

@@ -126,10 +126,10 @@ func TestReproduceAgent_WiresCompactorAndCheckpointer(t *testing.T) {
 	}
 	t.Cleanup(cancelAg)
 
-	if !ag.HasCompactor() {
+	if !ag.Agent().HasCompactor() {
 		t.Errorf("HasCompactor() = false, want true (default-on; /compact would return ErrNoCompactor)")
 	}
-	if !ag.HasCheckpointer() {
+	if !ag.Agent().HasCheckpointer() {
 		t.Errorf("HasCheckpointer() = false, want true (default-on; /done would be unavailable)")
 	}
 }
@@ -157,10 +157,10 @@ func TestReproduceAgent_HonorsDisableFlags(t *testing.T) {
 	}
 	t.Cleanup(cancelAg)
 
-	if ag.HasCompactor() {
+	if ag.Agent().HasCompactor() {
 		t.Errorf("HasCompactor() = true with noCompact=true, want false")
 	}
-	if ag.HasCheckpointer() {
+	if ag.Agent().HasCheckpointer() {
 		t.Errorf("HasCheckpointer() = true with noCheckpoint=true, want false")
 	}
 }

@@ -26,6 +26,7 @@ import (
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v2/pkg/attachadapter"
 	"github.com/go-steer/core-agent/v2/pkg/auth"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
@@ -157,9 +158,9 @@ var newSessionTracker = usage.NewTracker
 //
 // The handler is responsible for calling RegisterOwned on the
 // returned Registrant with the originating Caller.Identity — this
-// factory deliberately does NOT take a WithSessionRegistry option,
-// because that would self-register via the legacy Register() (no
-// Owner stamp), losing the ACL ownership that's the whole point.
+// factory deliberately does NOT register with the session registry
+// itself, because that would self-register via the legacy Register()
+// (no Owner stamp), losing the ACL ownership that's the whole point.
 func buildSessionFactory(deps sessionFactoryDeps) attach.SessionFactory {
 	return func(_ context.Context, caller auth.Caller) (attach.Registrant, context.CancelFunc, error) {
 		return reproduceAgent(deps, caller, newSessionID(), "created")
@@ -177,14 +178,16 @@ func buildSessionFactory(deps sessionFactoryDeps) attach.SessionFactory {
 // flows into the operator-visible stderr log line so the daemon log
 // distinguishes the two.
 //
-// Returns the constructed agent + a CancelFunc that stops the
-// per-session wake-loop goroutine. The caller hands the cancel to
-// the registry (via RegisterOwnedWithCancel / registerResumed) so
-// eviction terminates the loop cleanly instead of leaking it past
-// the session's lifetime. The wake loop's ctx is derived from
-// deps.daemonCtx — either source of cancellation (daemon shutdown
-// or per-session evict) closes ctx.Done and the loop exits.
-func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, origin string) (*agent.Agent, context.CancelFunc, error) {
+// Returns the constructed agent wrapped in its attach adapter (the
+// registry entry the handler registers via RegisterOwnedWithCancel /
+// registerResumed — recover the agent with Adapter.Agent()) + a
+// CancelFunc that stops the per-session wake-loop goroutine. The
+// caller hands the cancel to the registry so eviction terminates the
+// loop cleanly instead of leaking it past the session's lifetime.
+// The wake loop's ctx is derived from deps.daemonCtx — either source
+// of cancellation (daemon shutdown or per-session evict) closes
+// ctx.Done and the loop exits.
+func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, origin string) (*attachadapter.Adapter, context.CancelFunc, error) {
 	// Per-session HTTP prompt broker. Each new session gets its
 	// own broker so prompts route to the right per-session
 	// /perms/stream subscriber.
@@ -214,8 +217,16 @@ func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, ori
 		agent.WithSystemInstructionPrefix(instr.Instruction),
 		agent.WithGate(sessionGate),
 		agent.WithSession(caller.Identity, sid),
-		agent.WithAttachPromptBroker(broker),
 	}
+	// Per-session adapter options: the prompt broker plus the
+	// AttachXProvider closures that power the operator-state slashes
+	// (/memory, /skills, /mcp, /pricing). Without the providers the
+	// per-session slashes report "no <thing> configured" even though
+	// the underlying state is wired correctly into the agent
+	// (toolsets include MCP, instructions are loaded, etc.) — the
+	// slashes just have nothing to look at.
+	adOpts := append(attachProviderOpts(deps, sessionGate),
+		attachadapter.WithPromptBroker(broker))
 	if deps.eventlogHandle != nil {
 		opts = append(opts, agent.WithEventLog(deps.eventlogHandle))
 	}
@@ -264,14 +275,6 @@ func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, ori
 	}
 
 	opts = append(opts, agent.WithUsageTracker(sessionTracker))
-	// AttachXProvider closures power the operator-state slashes
-	// (/memory, /skills, /mcp, /pricing). Without these the
-	// per-session slashes report "no <thing> configured" even
-	// though the underlying state is wired correctly into the
-	// agent (toolsets include MCP, instructions are loaded,
-	// etc.) — the slashes just have nothing to look at.
-	opts = append(opts, attachProviderOpts(deps, sessionGate)...)
-
 	// Context-window compaction (Mechanism A). Default-on unless
 	// --no-compact was passed. Without this wiring, /compact against
 	// session-created agents errored with agent.ErrNoCompactor even
@@ -314,6 +317,7 @@ func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, ori
 		broker.Close()
 		return nil, nil, fmt.Errorf("agent.New: %w", err)
 	}
+	ad := attachadapter.New(ag, adOpts...)
 	// Operator-visible log line that mirrors the startup-time
 	// "--no-repl: attach-only mode, session <sid>" message so the
 	// daemon stderr reflects every long-lived agent it's hosting.
@@ -325,7 +329,7 @@ func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, ori
 	// sweep removes this session.
 	loopCtx, cancelOnEvict := context.WithCancel(deps.daemonCtx)
 	go runSessionWakeLoop(loopCtx, ag, sessionTracker, deps.model.Name(), deps.pricingRate)
-	return ag, cancelOnEvict, nil
+	return ad, cancelOnEvict, nil
 }
 
 // buildSessionResumer wires the cmd-level SessionResumer for the
@@ -429,11 +433,11 @@ func runSessionWakeLoop(ctx context.Context, ag *agent.Agent, tracker *usage.Tra
 // sessionGate is the derived sub-gate; threaded here so the
 // soon-to-arrive Replanner closure picks it up without expanding the
 // deps signature when it lands.
-func attachProviderOpts(deps sessionFactoryDeps, _ *permissions.Gate) []agent.Option {
-	var opts []agent.Option
+func attachProviderOpts(deps sessionFactoryDeps, _ *permissions.Gate) []attachadapter.Option {
+	var opts []attachadapter.Option
 
 	if deps.projectRoot != "" || deps.userRoot != "" {
-		opts = append(opts, agent.WithAttachMemoryProvider(func() []attach.MemorySource {
+		opts = append(opts, attachadapter.WithMemoryProvider(func() []attach.MemorySource {
 			fresh, _ := instruction.Load(deps.projectRoot, deps.userRoot,
 				instruction.WithHomeAgentsRoot(deps.homeAgentsDir),
 				instruction.WithInterpolator(deps.envInterp))
@@ -446,7 +450,7 @@ func attachProviderOpts(deps sessionFactoryDeps, _ *permissions.Gate) []agent.Op
 	}
 
 	if deps.agentsDir != "" || deps.userRoot != "" {
-		opts = append(opts, agent.WithAttachSkillsProvider(func() []attach.SkillInfo {
+		opts = append(opts, attachadapter.WithSkillsProvider(func() []attach.SkillInfo {
 			fresh, err := skills.LoadAll(deps.daemonCtx, deps.agentsDir, deps.userRoot, deps.template,
 				skills.WithHomeAgentsSkillsDir(deps.homeAgentsDir),
 				skills.WithInterpolator(deps.envInterp))
@@ -462,7 +466,7 @@ func attachProviderOpts(deps sessionFactoryDeps, _ *permissions.Gate) []agent.Op
 	}
 
 	if deps.cfg != nil {
-		opts = append(opts, agent.WithAttachPricingProvider(func() attach.PricingInfo {
+		opts = append(opts, attachadapter.WithPricingProvider(func() attach.PricingInfo {
 			info := attach.PricingInfo{CurrentModel: deps.cfg.Model.Name}
 			if !deps.pricingRate.IsZero() {
 				info.Current = &attach.ModelPricing{
@@ -475,7 +479,7 @@ func attachProviderOpts(deps sessionFactoryDeps, _ *permissions.Gate) []agent.Op
 	}
 
 	if len(deps.mcpServers) > 0 {
-		opts = append(opts, agent.WithAttachMCPProvider(func() attach.MCPInfo {
+		opts = append(opts, attachadapter.WithMCPProvider(func() attach.MCPInfo {
 			servers := make([]attach.MCPServerInfo, 0, len(deps.mcpServers))
 			for _, s := range deps.mcpServers {
 				tools := make([]attach.MCPToolInfo, 0, len(s.ToolInfos))

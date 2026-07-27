@@ -6,11 +6,12 @@ four separable concerns — into a small stable core plus focused
 sibling packages, while the v2 surface is still unfrozen and the
 break is cheap.
 
-**Status:** in progress (2026-07-26). Human-led / API-shape; design-doc
+**Status:** complete (2026-07-27). Human-led / API-shape; design-doc
 first per `docs/cleanup-execution-plan.md` (Wave 3). Phase 1 (seam)
-landed in #440. Phases 2 and 3 (`autonomous` + `background`) landed
-together — see **Phasing** for why they could not be separated and the
-**Implementation notes** for how the design changed under contact.
+landed in #440; phases 2 and 3 (`autonomous` + `background`) landed
+together in #441 — see **Phasing** for why they could not be separated;
+phase 4 (`attachadapter`) landed last. The **Implementation notes**
+record how the design changed under contact.
 
 **Tracking issue:** [#388](https://github.com/go-steer/core-agent/issues/388)
 
@@ -104,7 +105,6 @@ pkg/agent/background/      background.Manager, spawn tools, remote
                            spawner seam
 pkg/attachadapter/         Adapter bridging *agent.Agent ⇄ pkg/attach
                            (the 22 Attach* methods, as an adapter type)
-                           — phase 4, not yet landed
 ```
 
 Sub-packages of `pkg/agent` (not top-level siblings) for the driver and
@@ -173,32 +173,37 @@ Decision (signed off 2026-07-26): **move the attach surface off `Agent`
 now, no deprecating shims.** Pre-freeze is exactly when this is cheap;
 shims would re-freeze the surface we're trying to shed.
 
-Today:
+Before:
 
 ```go
-a := agent.New(..., agent.WithAttachMemoryProvider(f), ...)
-srv, _ := attach.NewServer(a, ...)   // a satisfies attach's iface via Attach* methods
+a := agent.New(...,
+    agent.WithAttachMemoryProvider(f),
+    agent.WithSessionRegistry(attach.NewAgentRegistrarAdapter(reg)), // self-registers in New
+    ...)
 ```
 
-After:
+After (as landed):
 
 ```go
-a := agent.New(...)
+a := agent.New(...)                   // core options only
 ad := attachadapter.New(a,
     attachadapter.WithMemoryProvider(f),
     attachadapter.WithSkillsProvider(g),
-    ...)                              // the 9 WithAttach* options move here
-srv, _ := attach.NewServer(ad, ...)  // ad satisfies attach's iface
+    ...)                              // the 9 WithAttach* options moved here
+reg.Register(ad)                      // ad satisfies attach.Registrant + every capability iface
 ```
 
-The 22 `Attach*` methods become methods on `*attachadapter.Adapter`;
-the `attach*Fn` fields, `attachRegistrar`, `attachPromptBroker`, and
-`emitMu`/`attachEmit` move into the adapter. `pkg/attach` keeps
-depending on an *interface* (it already does), so only the constructor
-wiring changes for consumers — a mechanical, greppable migration
-documented in the CHANGELOG under **Breaking changes**.
+The 22 `Attach*` methods became methods on `*attachadapter.Adapter`;
+the `attach*Fn` fields and `attachPromptBroker` moved into the adapter,
+and the `attachRegistrar` indirection was deleted (see the phase-4
+deviations in **Implementation notes** — the emit machinery stayed on
+`Agent`, and registration is now an explicit `Register` call rather
+than a construction option). `pkg/attach` keeps depending on
+*interfaces* (it already did), so only the constructor wiring changes
+for consumers — a mechanical, greppable migration documented in the
+CHANGELOG under **Breaking changes**.
 
-This alone removes 22 methods + 9 options + ~11 fields from the frozen
+This removed 22 methods + 9 options + ~11 fields from the frozen
 `Agent` surface.
 
 ## Phasing (as landed)
@@ -222,8 +227,10 @@ This alone removes 22 methods + 9 options + ~11 fields from the frozen
    phase-2-only tree wouldn't compile phase 3, and a phase-3-only tree
    needs phase 2 to exist. One breaking PR, one migration for consumers.
 4. **`pkg/attachadapter`** — the clean break above. Largest consumer
-   surface change; last so it rebases once over the settled tree. **Not
-   yet landed.**
+   surface change; landed last so it rebased once over the settled
+   tree. See the phase-4 deviations in **Implementation notes** (emit
+   machinery stayed core; `WithSessionRegistry` +
+   `NewAgentRegistrarAdapter` removed rather than relocated).
 
 Each PR: regression tests, `dev/ci/presubmits/*`, one CHANGELOG
 `[Unreleased]` bullet (Breaking changes for 2–4), and the migration
@@ -258,6 +265,27 @@ Recorded so the next reader trusts the code over the plan:
   moving them is a separable change and was left for later.
 - **`RunOneTurn` was not promoted;** the driver's `runOneTurn` moved into
   `autonomous` unexported. No `internal/agentcore` type was introduced.
+- **Phase 4 deviations (attachadapter, as landed).** The emit machinery
+  (`SetAttachEmitter` including its usage-update tracker hookup,
+  `emitMu`/`attachEmit`, `Emit`) did NOT move into the adapter as
+  proposed — the core run loop is the thing that emits status/turn
+  events, so the callback must live on `Agent`; the adapter forwards
+  `attach.EmitTarget` to it. `agent.WithSessionRegistry` and
+  `attach.NewAgentRegistrarAdapter` were removed outright instead of
+  being relocated: the `any`-typed bridge existed only because
+  `pkg/agent` couldn't import the registry, and `attachadapter` can —
+  hosts now call `reg.Register(ad)` directly, moving registration
+  errors from `agent.New` to the `Register` call site.
+  `ErrSubagentSpawnerUnavailable` moved to `attachadapter` with its
+  message string byte-identical (`pkg/attach` matches it literally).
+  `Agent.Gate()` joined the accessor seam (AttachTools/AttachPerms/
+  AttachAddAllow/AttachAddDeny read gate state), and
+  `Adapter.Agent()` recovers the wrapped agent for hosts that thread
+  the adapter through construction seams (the multi-session factory
+  returns the adapter as its `attach.Registrant`).
+  `runner.REPLWithAgentAndInitialPrompt` was added so the CLI's
+  REPL fallback could switch to host-side construction without losing
+  `--prompt` seeding.
 
 ## Smaller warts folded in (from #388)
 

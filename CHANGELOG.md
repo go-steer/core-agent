@@ -16,7 +16,12 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
-_No unreleased changes since [2.8.0-dev.1]._
+### Changes by Kind
+
+#### Bug or Regression
+
+- agent/watchdog: tool-call observations are deduped per turn, fixing repeated-tool-call false positives at ~half the configured threshold (`pkg/agent/watchdog.go`). ADK's streaming aggregator can re-emit the same FunctionCall part across an intermediate aggregate plus the final event — the display path (`runner/events.go`) already deduped this, but the watchdog observer didn't, so every real call counted up to twice. Calls dedup on their ID when present (a re-emitted part keeps its ID; a legitimate parallel call gets a fresh one), falling back to name+args for ID-less providers; the set resets each turn, since cross-turn repetition is exactly the signal the watchdog counts. Closes [#363](https://github.com/go-steer/core-agent/issues/363).
+
 
 ## [2.8.0-dev.1] — 2026-07-27
 

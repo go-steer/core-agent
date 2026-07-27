@@ -52,12 +52,22 @@ func WithWatchdog(w watchdog.Watchdog, onAlert func(watchdog.Alert)) Option {
 // has stable input — Go's map iteration order would otherwise
 // make logically-identical calls compare unequal.
 //
+// seen is the per-turn dedup set (#363): ADK's streaming aggregator
+// can re-emit the same FunctionCall part across more than one event
+// (an intermediate aggregate plus the final — the same duplication
+// runner/events.go dedups for display). Calls carrying an ID dedup
+// on it (a re-emitted part keeps its ID; a legitimate parallel call
+// with identical args gets a fresh one); ID-less calls fall back to
+// name+args, which also collapses same-args parallel calls within
+// ONE turn — acceptable, since the watchdog's runaway signal is
+// repetition ACROSS turns and the set resets each turn.
+//
 // Best-effort: if a part's args don't JSON-marshal cleanly we
 // fall back to a recognizable placeholder; the alternative would
 // be skipping the observation entirely, which silently weakens
 // the signal. Better to compare on the placeholder than miss
 // observations.
-func (a *Agent) observeToolCallsForWatchdog(ev *session.Event) {
+func (a *Agent) observeToolCallsForWatchdog(ev *session.Event, seen map[string]struct{}) {
 	if a.watchdog == nil || ev == nil || ev.Content == nil {
 		return
 	}
@@ -66,6 +76,14 @@ func (a *Agent) observeToolCallsForWatchdog(ev *session.Event) {
 			continue
 		}
 		args := serializeArgsForWatchdog(p.FunctionCall.Args)
+		key := p.FunctionCall.ID
+		if key == "" {
+			key = p.FunctionCall.Name + "\x00" + args
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
 		a.watchdog.ObserveToolCall(watchdog.ToolCall{
 			Name: p.FunctionCall.Name,
 			Args: args,

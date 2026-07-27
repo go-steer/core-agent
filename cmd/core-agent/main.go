@@ -1678,48 +1678,24 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		fmt.Fprintf(os.Stderr,
 			"core-agent: --no-repl: attach-only mode, session %s (Ctrl-C or SIGTERM to exit)\n",
 			a.SessionID())
-		debugf("--no-repl: wake loop starting (session=%s model=%s)", a.SessionID(), m.Name())
-		// Wake-driven inbox loop: when an attach client POSTs
-		// /inject, agent.Inject appends to the inbox + fires
-		// WakeRequested. We consume the event iterator from
-		// a.Run so the turn actually completes; the events also
-		// hit the eventlog → attach broadcaster, which is what
-		// the operator's TUI is rendering. Empty prompt means
-		// "no user text this turn, just drain the inbox" — same
-		// path REPL uses for the same case.
-		//
-		// Per-turn usage tap mirrors runner/headless.go's tapUsage:
-		// the loop watches each event's UsageMetadata, remembers
-		// the latest in/out counts, and on iterator end calls
-		// tracker.Append once. Without this the /stats and status-
-		// banner cumulative totals stay at zero in --no-repl mode
-		// because the tracker is only otherwise driven by
-		// agent/autonomous.go and agent/subtask.go.
-		for {
-			select {
-			case <-ctx.Done():
-				debugf("--no-repl: wake loop ending (ctx cancelled)")
-				return runner.ExitOK
-			case <-a.WakeRequested():
-				debugf("--no-repl: wake fired; calling Run")
-				var lastUsage usage.TurnUsage
-				var evCount int
-				for ev, runErr := range a.Run(ctx, "") {
-					evCount++
-					if ev != nil && ev.UsageMetadata != nil {
-						lastUsage = usage.TurnUsageFromGenaiMetadata(ev.UsageMetadata)
-					}
-					if runErr != nil {
-						fmt.Fprintf(os.Stderr, "core-agent: turn: %v\n", runErr)
-						debugf("--no-repl: Run yielded error: %v", runErr)
-					}
-				}
-				debugf("--no-repl: Run finished (events=%d lastIn=%d lastOut=%d)", evCount, lastUsage.InputTokens, lastUsage.OutputTokens)
-				if tracker != nil && (lastUsage.InputTokens > 0 || lastUsage.OutputTokens > 0) {
-					tracker.AppendUsage(m.Name(), lastUsage, pricingRate)
-				}
-			}
-		}
+		// Wake-driven inbox loop, consolidated behind
+		// runner.WakeLoop (#386 PR 4): blocks until an attach
+		// client's POST /inject fires WakeRequested, drains the
+		// inbox through an empty-prompt turn, accounts usage via
+		// the shared usage.TurnTap discipline, repeats until ctx
+		// cancels. Errors are surfaced per-turn; the loop stays up.
+		runner.WakeLoop(ctx, a, runner.WakeLoopOptions{
+			Tracker: tracker,
+			Model:   m.Name(),
+			Pricing: pricingRate,
+			OnTurnError: func(err error) {
+				fmt.Fprintf(os.Stderr, "core-agent: turn: %v\n", err)
+			},
+			Debugf: func(format string, args ...any) {
+				debugf("--no-repl: "+format, args...)
+			},
+		})
+		return runner.ExitOK
 	}
 
 	// TUI launch branch: when stdin is a real terminal and --no-tui

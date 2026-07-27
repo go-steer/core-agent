@@ -242,7 +242,7 @@ Configures the permission gate that consults every tool call. See [Permissions](
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `mode` | string | `ask` | One of `ask`, `allow`, `yolo`. |
+| `mode` | string | `ask` | One of `ask`, `allow`, `yolo`, `plan`, `acceptEdits`. `acceptEdits` auto-allows **all** file writes including out-of-scope paths — sandbox-only posture; see [Permissions → Modes](/concepts/permissions/#modes). |
 | `allow` | string[] | `[]` | Allowlist patterns. Format: `<tool>:<glob>` or `<glob>`. |
 | `deny` | string[] | `[]` | Denylist patterns. Always wins over allow. |
 | `use_builtin_allow` | bool | `true` | Include the built-in read-only bundle in the effective allowlist (reads, greps, `list_dir`, `git status` / `git diff`, etc.). Prefix-matched bash entries only auto-allow single literal simple commands — chained/piped/redirected commands and dangerous `find` predicates (`-exec`, `-delete`, …) still prompt; see [Permissions → Safe-command guard](/concepts/permissions/#safe-command-guard-on-bash-prefix-rules). Turn off if you want to allowlist every tool from scratch. |
@@ -288,7 +288,7 @@ The prompter is auto-wired when stdin is a TTY. Non-TTY callers (piped stdin, CI
 
 ### Plan-first gating (v2.3+) — `require_plan_artifact`
 
-Setting `permissions.require_plan_artifact: true` turns on **substrate-enforced plan-before-action**. The gate denies mutating tool calls (`write_file`/`edit_file`/`delete_file`/`bash`, the `spawn_agent` family, and all MCP tools) until the model has called the `record_plan` built-in tool. Read tools (`read_file`/`read_many_files`/`stat`/`list_dir`/`glob`/`grep`/`json_query`/`fetch_url`/`todo`) and `record_plan` itself remain allowed so research happens normally and the model has an escape valve.
+Setting `permissions.require_plan_artifact: true` turns on **substrate-enforced plan-before-action**. The gate denies mutating tool calls (`write_file`/`edit_file`/`delete_file`/`bash`, `fetch_url`, the `spawn_agent` family, and all MCP tools) until the model has called the `record_plan` built-in tool. Read tools (`read_file`/`read_many_files`/`stat`/`list_dir`/`glob`/`grep`/`json_query`/`todo`) and `record_plan` itself remain allowed so research happens normally and the model has an escape valve. `fetch_url` is deliberately **plan-gated** (v2.8+): it is network egress with a model-controlled URL — an exfiltration channel — so it only unlocks once a plan is recorded, like every other action tool.
 
 Once `record_plan(plan: <markdown>)` is called, the plan is written to `.agents/plans/plan-<seq>.md` and the gate's `planRecorded` flag flips. From that point on, the configured `mode` resumes its usual semantics — see the composition table below.
 
@@ -298,7 +298,7 @@ Once `record_plan(plan: <markdown>)` is called, the plan is written to `.agents/
   "permissions": {
     "mode": "ask",
     "require_plan_artifact": true,
-    "allow": ["read_file", "read_many_files", "grep", "glob", "list_dir", "stat", "json_query", "fetch_url", "todo"]
+    "allow": ["read_file", "read_many_files", "grep", "glob", "list_dir", "stat", "json_query", "todo"]
   }
 }
 ```

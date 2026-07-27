@@ -421,10 +421,33 @@ func (s *gormStream) iterateOnceFunc(ctx context.Context, fromSeq int64, q query
 	return true
 }
 
-// queryRows runs the SELECT against agent_eventlog with all filters
-// applied. Returns rows in seq order.
-func (s *gormStream) queryRows(ctx context.Context, fromSeq int64, q queryOpts) ([]agentEventRow, error) {
-	tx := s.db.WithContext(ctx).Model(&agentEventRow{}).Where("seq > ?", fromSeq)
+// LatestSeq returns the highest seq currently visible under the same
+// filters Since/Watch honor, or 0 when no matching rows exist. A
+// single indexed MAX(seq) query — used by pkg/attach to clamp an
+// unbounded ?since=0 replay to a bounded tail (#385) without scanning
+// (or hydrating) the full table. Optional Stream extension: callers
+// discover it by type assertion.
+func (s *gormStream) LatestSeq(ctx context.Context, opts ...QueryOption) (int64, error) {
+	if s.closed.Load() {
+		return 0, ErrClosed
+	}
+	q := queryOpts{}
+	for _, o := range opts {
+		o(&q)
+	}
+	tx := applyQueryFilters(s.db.WithContext(ctx).Model(&agentEventRow{}), q)
+	var maxSeq int64
+	if err := tx.Select("COALESCE(MAX(seq), 0)").Scan(&maxSeq).Error; err != nil {
+		return 0, fmt.Errorf("eventlog: query max seq: %w", err)
+	}
+	return maxSeq, nil
+}
+
+// applyQueryFilters translates queryOpts into WHERE clauses. Shared
+// by queryRows and LatestSeq so both see the exact same visibility
+// rules. Does NOT apply the seq cursor, ordering, or limit — those
+// belong to the row query only.
+func applyQueryFilters(tx *gorm.DB, q queryOpts) *gorm.DB {
 	// WithSessionTree wins over ForSession when both are set —
 	// the tree query already implies the (app, user) pair.
 	if q.treeParentID != "" {
@@ -460,6 +483,13 @@ func (s *gormStream) queryRows(ctx context.Context, fromSeq int64, q queryOpts) 
 	if q.authorSuffix != "" {
 		tx = tx.Where("author LIKE ?", "%"+q.authorSuffix)
 	}
+	return tx
+}
+
+// queryRows runs the SELECT against agent_eventlog with all filters
+// applied. Returns rows in seq order.
+func (s *gormStream) queryRows(ctx context.Context, fromSeq int64, q queryOpts) ([]agentEventRow, error) {
+	tx := applyQueryFilters(s.db.WithContext(ctx).Model(&agentEventRow{}).Where("seq > ?", fromSeq), q)
 	tx = tx.Order("seq ASC")
 	if q.limit > 0 {
 		tx = tx.Limit(q.limit)

@@ -131,6 +131,65 @@ func TestBroadcaster_DualSourceSend_NoRace(t *testing.T) {
 	}
 }
 
+// TestBroadcaster_SubscribeCapabilitiesAlwaysFirst pins the #385 SSE
+// boot-frame ordering fix: Subscribe must enqueue the spec-required
+// capabilities frame into the new subscriber's channel BEFORE the
+// subscriber becomes visible to any live producer. Pre-fix, Subscribe
+// registered the subscriber in b.subs (and started the pump) and only
+// THEN delivered boot frames — a concurrent Emit (or pump broadcast)
+// in that window put a typed live frame ahead of capabilities. The
+// test floods typed events from another goroutine while subscribing
+// repeatedly and asserts the first frame is always capabilities.
+// Run under -race.
+func TestBroadcaster_SubscribeCapabilitiesAlwaysFirst(t *testing.T) {
+	t.Parallel()
+
+	const iterations = 200
+
+	for run := 0; run < iterations; run++ {
+		b := &Broadcaster{
+			entry:   &Entry{AppName: "core-agent", UserID: "u", SessionID: "boot-order"},
+			stream:  floodStream{n: 16},
+			subs:    make(map[*subscriber]struct{}),
+			closing: make(chan struct{}),
+		}
+
+		stop := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				b.Emit(EventStatusUpdate, StatusUpdate{TurnState: TurnStateStreaming})
+			}
+		}()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		ch := b.Subscribe(ctx, 0)
+		first, ok := <-ch
+		if !ok {
+			t.Fatalf("run %d: channel closed before any frame", run)
+		}
+		if first.Type != EventCapabilities {
+			t.Fatalf("run %d: first frame = type=%q seq=%d, want the %q boot frame first",
+				run, first.Type, first.Seq, EventCapabilities)
+		}
+
+		close(stop)
+		wg.Wait()
+		cancel()
+		b.Close()
+		// Drain to release the (now closed) channel cleanly.
+		for range ch { //nolint:revive // draining
+		}
+	}
+}
+
 // TestBroadcaster_BootFramesRaceWithPump pins the companion half of
 // #377: deliverBootFrames sent the capabilities/status/usage frames via
 // sendTyped WITHOUT b.mu, even though the subscriber was already in

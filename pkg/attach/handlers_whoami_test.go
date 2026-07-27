@@ -26,87 +26,202 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
 
-func TestDetectAuthSource_PrecedenceMatrix(t *testing.T) {
+// middlewareAuthSource runs one request through the caller middleware
+// and returns the auth-source verdict it stamped onto the context
+// (plus the response status, for the 401 paths).
+func middlewareAuthSource(t *testing.T, cfg callerMiddlewareConfig, mutate func(*http.Request)) (string, int) {
+	t.Helper()
+	var source string
+	var sawHandler bool
+	h := callerMiddlewareWithConfig(cfg, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawHandler = true
+		source, _ = authSourceFromContext(r.Context())
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/whoami", nil)
+	if mutate != nil {
+		mutate(req)
+	}
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+	if !sawHandler {
+		return "", rw.Code
+	}
+	return source, rw.Code
+}
+
+// TestAuthSource_ServerVerdictOnly pins the #385 fix: the auth source
+// reported to /whoami is the caller middleware's verdict about what
+// the SERVER verified — never a re-derivation from spoofable request
+// headers. A forged Authorization header, an unverified client cert,
+// or a forged IAP header must all classify as anonymous.
+func TestAuthSource_ServerVerdictOnly(t *testing.T) {
 	t.Parallel()
+
+	bearerTable := auth.NewBearerTokenAuth(
+		[]auth.User{{Identity: "alice@example.com", Token: "sekret"}},
+		nil, nil,
+	)
+
 	cases := []struct {
-		name    string
-		headers map[string]string
-		tls     *tls.ConnectionState
-		proxyBy string
-		caller  auth.Caller
-		want    string
+		name   string
+		cfg    callerMiddlewareConfig
+		mutate func(*http.Request)
+		want   string
 	}{
 		{
-			name:    "asserted wins over bearer",
-			headers: map[string]string{"Authorization": "Bearer x"},
-			proxyBy: "sa:slack-bot",
-			want:    WhoAmISourceAsserted,
+			// The headline spoof: a bearer-looking header with NO
+			// server-side validator behind it is not "bearer".
+			name:   "forged Authorization header with anonymous auth → anonymous",
+			cfg:    callerMiddlewareConfig{},
+			mutate: func(r *http.Request) { r.Header.Set("Authorization", "Bearer forged") },
+			want:   WhoAmISourceAnonymous,
 		},
 		{
-			name:    "bearer via Authorization",
-			headers: map[string]string{"Authorization": "Bearer sekret"},
-			want:    WhoAmISourceBearer,
+			name:   "forged X-Attach-Token with anonymous auth → anonymous",
+			cfg:    callerMiddlewareConfig{},
+			mutate: func(r *http.Request) { r.Header.Set(HeaderAttachToken, "forged") },
+			want:   WhoAmISourceAnonymous,
 		},
 		{
-			name:    "bearer via X-Attach-Token",
-			headers: map[string]string{HeaderAttachToken: "sekret"},
-			want:    WhoAmISourceBearer,
+			// IAP headers are client-forgeable; the server validates
+			// no gateway assertion today, so they never move Source.
+			name: "forged IAP headers → anonymous",
+			cfg:  callerMiddlewareConfig{},
+			mutate: func(r *http.Request) {
+				r.Header.Set("X-Goog-Authenticated-User-Email", "accounts.google.com:alice@example.com")
+				r.Header.Set("X-Goog-Iap-Jwt-Assertion", "eyJ...")
+			},
+			want: WhoAmISourceAnonymous,
 		},
 		{
-			name: "mtls when client cert present",
-			tls: &tls.ConnectionState{
-				PeerCertificates: []*x509.Certificate{{}},
+			// A presented-but-unverified client cert (VerifiedChains
+			// empty) is not "mtls" — only our own listener's
+			// RequireAndVerifyClientCert verification counts.
+			name: "unverified peer certificate → anonymous",
+			cfg:  callerMiddlewareConfig{},
+			mutate: func(r *http.Request) {
+				r.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{}}}
+			},
+			want: WhoAmISourceAnonymous,
+		},
+		{
+			name: "listener-verified client cert → mtls",
+			cfg:  callerMiddlewareConfig{},
+			mutate: func(r *http.Request) {
+				r.TLS = &tls.ConnectionState{
+					PeerCertificates: []*x509.Certificate{{}},
+					VerifiedChains:   [][]*x509.Certificate{{{}}},
+				}
 			},
 			want: WhoAmISourceMTLS,
 		},
 		{
-			name:    "iap header X-Goog-Authenticated-User-Email",
-			headers: map[string]string{"X-Goog-Authenticated-User-Email": "accounts.google.com:alice@example.com"},
-			want:    WhoAmISourceIAP,
+			// Transport-level bearer gate: AuthConfig.Middleware
+			// already 401'd token-less requests before this
+			// middleware, so the config flag alone proves the
+			// credential was verified.
+			name: "transport bearer configured → bearer",
+			cfg:  callerMiddlewareConfig{transportBearerConfigured: true},
+			want: WhoAmISourceBearer,
 		},
 		{
-			name:    "iap header X-Goog-Iap-Jwt-Assertion",
-			headers: map[string]string{"X-Goog-Iap-Jwt-Assertion": "eyJ..."},
-			want:    WhoAmISourceIAP,
+			name: "bearer table hit → bearer",
+			cfg:  callerMiddlewareConfig{authenticator: bearerTable},
+			mutate: func(r *http.Request) {
+				r.Header.Set("Authorization", "Bearer sekret")
+			},
+			want: WhoAmISourceBearer,
 		},
 		{
-			name: "anonymous when nothing is present",
+			// Wrong token + no enforcement falls back to the
+			// anonymous caller — and the SOURCE must say so, not
+			// echo the (rejected) bearer header.
+			name: "bearer table miss falls back → anonymous",
+			cfg:  callerMiddlewareConfig{authenticator: bearerTable},
+			mutate: func(r *http.Request) {
+				r.Header.Set("Authorization", "Bearer wrong")
+			},
 			want: WhoAmISourceAnonymous,
 		},
 		{
-			// Non-Bearer Authorization schemes (Basic, Digest, custom)
-			// don't count as bearer — we only recognize the schemes
-			// our authenticators produce.
-			name:    "non-Bearer Authorization → anonymous",
-			headers: map[string]string{"Authorization": "Basic dXNlcjpwYXNz"},
-			want:    WhoAmISourceAnonymous,
+			// bearer wins over a verified cert when both are present
+			// (matches the pre-#385 precedence: asserted > bearer >
+			// mtls > anonymous).
+			name: "bearer beats mtls when both verified",
+			cfg:  callerMiddlewareConfig{transportBearerConfigured: true},
+			mutate: func(r *http.Request) {
+				r.TLS = &tls.ConnectionState{
+					PeerCertificates: []*x509.Certificate{{}},
+					VerifiedChains:   [][]*x509.Certificate{{{}}},
+				}
+			},
+			want: WhoAmISourceBearer,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/whoami", nil)
-			for k, v := range tc.headers {
-				req.Header.Set(k, v)
+			t.Parallel()
+			got, code := middlewareAuthSource(t, tc.cfg, tc.mutate)
+			if code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", code)
 			}
-			req.TLS = tc.tls
-			got := detectAuthSource(req, tc.caller, tc.proxyBy)
 			if got != tc.want {
-				t.Errorf("source = %q, want %q", got, tc.want)
+				t.Errorf("auth source = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestAuthSource_ValidatedProxyAssertionIsAsserted covers the one
+// path that may legitimately report "asserted": the middleware
+// validated the proxy assertion (requester on the proxy allowlist,
+// asserted identity provisioned). A forged assertion header 401s —
+// it can never downgrade into a plausible-looking Source.
+func TestAuthSource_ValidatedProxyAssertionIsAsserted(t *testing.T) {
+	t.Parallel()
+	authn := auth.NewBearerTokenAuth(
+		[]auth.User{
+			{Identity: "sa:slack-bot", Token: "bot-token"},
+			{Identity: "alice@example.com", Token: "alice-token"},
+		},
+		nil,
+		[]string{"sa:slack-bot"},
+	)
+	cfg := callerMiddlewareConfig{authenticator: authn}
+
+	got, code := middlewareAuthSource(t, cfg, func(r *http.Request) {
+		r.Header.Set("Authorization", "Bearer bot-token")
+		r.Header.Set(auth.HeaderAssertedCaller, "alice@example.com")
+	})
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if got != WhoAmISourceAsserted {
+		t.Errorf("auth source = %q, want asserted", got)
+	}
+
+	// Non-allowlisted requester forging the assertion header → 401,
+	// never a stamped source.
+	_, code = middlewareAuthSource(t, cfg, func(r *http.Request) {
+		r.Header.Set("Authorization", "Bearer alice-token")
+		r.Header.Set(auth.HeaderAssertedCaller, "sa:slack-bot")
+	})
+	if code != http.StatusUnauthorized {
+		t.Errorf("forged proxy assertion status = %d, want 401", code)
 	}
 }
 
 func TestWhoAmI_HandlerBody(t *testing.T) {
 	t.Parallel()
 	h := &handlers{}
-	// Simulate the auth middleware having stamped an admin caller.
+	// Simulate the caller middleware having stamped an admin caller
+	// plus its auth-source verdict.
 	req := httptest.NewRequest(http.MethodGet, "/whoami", nil)
-	req.Header.Set("Authorization", "Bearer sekret")
 	ctx := auth.WithCaller(req.Context(), auth.Caller{
 		Identity: "alice@example.com",
 		Admin:    true,
 	})
+	ctx = withAuthSource(ctx, WhoAmISourceBearer)
 	req = req.WithContext(ctx)
 	rw := httptest.NewRecorder()
 
@@ -134,6 +249,30 @@ func TestWhoAmI_HandlerBody(t *testing.T) {
 	}
 }
 
+// TestWhoAmI_HandlerIgnoresRawHeaders is the handler-level pin of the
+// #385 contract: with NO middleware verdict on the context, a request
+// dressed in every spoofable credential header still reports
+// anonymous — the handler no longer probes headers itself.
+func TestWhoAmI_HandlerIgnoresRawHeaders(t *testing.T) {
+	t.Parallel()
+	h := &handlers{}
+	req := httptest.NewRequest(http.MethodGet, "/whoami", nil)
+	req.Header.Set("Authorization", "Bearer forged")
+	req.Header.Set(HeaderAttachToken, "forged")
+	req.Header.Set("X-Goog-Authenticated-User-Email", "accounts.google.com:eve@example.com")
+	req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{}}}
+	req = req.WithContext(auth.WithCaller(req.Context(), auth.Anonymous))
+	rw := httptest.NewRecorder()
+
+	h.doWhoAmI(rw, req)
+
+	var resp WhoAmIResponse
+	_ = json.NewDecoder(rw.Body).Decode(&resp)
+	if resp.Source != WhoAmISourceAnonymous {
+		t.Errorf("Source = %q, want anonymous (handler must not trust raw headers)", resp.Source)
+	}
+}
+
 func TestWhoAmI_ProxyByStamped(t *testing.T) {
 	t.Parallel()
 	h := &handlers{}
@@ -141,6 +280,7 @@ func TestWhoAmI_ProxyByStamped(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer bot-token")
 	ctx := auth.WithCaller(req.Context(), auth.Caller{Identity: "alice@example.com"})
 	ctx = auth.WithProxyBy(ctx, "sa:slack-bot")
+	ctx = withAuthSource(ctx, WhoAmISourceAsserted)
 	req = req.WithContext(ctx)
 	rw := httptest.NewRecorder()
 
@@ -163,7 +303,8 @@ func TestWhoAmI_ProxyByStamped(t *testing.T) {
 }
 
 // TestWhoAmI_IntegrationBearer confirms the middleware chain gates
-// /whoami just like every other endpoint — no accidental bypass.
+// /whoami just like every other endpoint — no accidental bypass —
+// and that the transport bearer gate yields Source=bearer end-to-end.
 func TestWhoAmI_IntegrationBearerRequired(t *testing.T) {
 	t.Parallel()
 	reg := NewSessionRegistry()

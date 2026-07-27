@@ -145,6 +145,19 @@ func fetchURLFuncWithResolver(gate *permissions.Gate, cfg *config.Config, resolv
 			if err := guard.checkURL(req.URL); err != nil {
 				return fmt.Errorf("fetch_url: redirect %s", err)
 			}
+			// Recompute operator-injected header entitlement for the
+			// redirect target (#385). Go strips Authorization/Cookie
+			// on a cross-host redirect but forwards every CUSTOM
+			// header from the original request — including auth
+			// headers injected from a url_scope.headers bundle
+			// (X-Api-Key and friends), which would leak host A's
+			// credential to host B. Strip every header name any
+			// bundle can inject, then re-apply the bundle matching
+			// the NEW host, if one exists. Only operator-injected
+			// names are touched; Go's own sensitive-header handling
+			// and all other request headers are left alone.
+			stripInjectedHeaders(req, scope.Headers)
+			injectHeaders(req, req.URL.Host, scope.Headers)
 			return nil
 		},
 	}
@@ -301,6 +314,21 @@ func injectHeaders(req *http.Request, host string, headers map[string]map[string
 	}
 	for name, value := range headers[bestPattern] {
 		req.Header.Set(name, os.ExpandEnv(value))
+	}
+}
+
+// stripInjectedHeaders removes from req every header name that ANY
+// url_scope.headers bundle can inject, regardless of which host's
+// bundle set it. Called from CheckRedirect before re-applying the
+// redirect target's own bundle, so a credential injected for host A
+// never rides a redirect to host B (#385). Header names are
+// canonicalized by http.Header.Del, matching how injectHeaders set
+// them via http.Header.Set.
+func stripInjectedHeaders(req *http.Request, headers map[string]map[string]string) {
+	for _, bundle := range headers {
+		for name := range bundle {
+			req.Header.Del(name)
+		}
 	}
 }
 

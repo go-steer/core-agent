@@ -16,7 +16,6 @@ package attach
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
@@ -39,6 +38,14 @@ import (
 // "authenticated via bearer" vs "impersonating via asserted-caller"
 // without needing to inspect the request headers themselves.
 //
+// Source only ever reports a value the SERVER verified or was
+// explicitly configured to trust (#385): the caller-resolution
+// middleware stamps its verdict onto the request context and the
+// handler echoes it. It is never re-derived from raw request headers
+// — an Authorization header the server didn't validate, or a
+// gateway-style X-Goog-* header any client can forge, does not
+// change Source.
+//
 // Consumers MUST tolerate unknown Source values — a future
 // authenticator (K8s SA, OIDC/JWT) will add its own tag.
 type WhoAmIResponse struct {
@@ -54,28 +61,42 @@ type WhoAmIResponse struct {
 // Source values for WhoAmIResponse.Source. String constants so
 // downstream tools can switch on them without a Go dependency.
 const (
-	// WhoAmISourceBearer — Authorization: Bearer or X-Attach-Token
-	// header. Covers both static-table bearer auth and any future
-	// bearer-flavored authenticator (OIDC/JWT bearer, etc.).
+	// WhoAmISourceBearer — the server validated a bearer token:
+	// either the per-caller authenticator (static-table
+	// BearerTokenAuth, or a future bearer-flavored OIDC/JWT
+	// authenticator) accepted the credential, or the listener's
+	// transport-level bearer gate (Options.Auth.BearerToken) let the
+	// request through. The mere PRESENCE of an Authorization /
+	// X-Attach-Token header does not produce this value.
 	WhoAmISourceBearer = "bearer"
-	// WhoAmISourceMTLS — client presented a TLS certificate that
-	// passed RequireAndVerifyClientCert.
+	// WhoAmISourceMTLS — OUR listener verified the client's TLS
+	// certificate against its configured CA (ClientAuth =
+	// RequireAndVerifyClientCert via Auth.ClientCAFile). A presented
+	// -but-unverified certificate does not count.
 	WhoAmISourceMTLS = "mtls"
-	// WhoAmISourceIAP — request came through an identity gateway
-	// (Google IAP / Cloud Run IAM, Cloudflare Access, etc.) that
-	// stamps an authenticated-user header. Best-effort detection —
-	// only Google IAP's X-Goog-Authenticated-User-Email is probed
-	// today; other gateways add to the known-headers list as we
-	// integrate them.
+	// WhoAmISourceIAP — reserved for a future verified identity-
+	// gateway integration (Google IAP JWT-assertion validation,
+	// Cloudflare Access, etc.). NOT currently emitted: the server
+	// used to infer it from the X-Goog-Authenticated-User-Email /
+	// X-Goog-Iap-Jwt-Assertion request headers, but those are
+	// forgeable by any client the listener accepts, so the label
+	// was dropped until the server actually validates a gateway
+	// assertion (#385). Operators fronting the daemon with a
+	// trusted gateway should configure the asserted-caller
+	// ProxyHeader path, which reports "asserted".
 	WhoAmISourceIAP = "iap"
-	// WhoAmISourceAsserted — request came from a proxying credential
-	// that used X-Asserted-Caller to assert another identity. The
-	// proxying identity is exposed via ProxyBy.
+	// WhoAmISourceAsserted — a proxy-allowlisted credential used the
+	// configured asserted-caller header (Options.ProxyHeader,
+	// default X-Asserted-Caller) and the middleware VALIDATED the
+	// assertion (requester on the proxy allowlist, asserted identity
+	// provisioned). The proxying identity is exposed via ProxyBy.
 	WhoAmISourceAsserted = "asserted"
-	// WhoAmISourceAnonymous — no credential was presented and the
-	// listener allowed the request through (AllowAnonymous=true or
-	// multi-session disabled). Identity is the daemon's configured
-	// default (typically "anon").
+	// WhoAmISourceAnonymous — the server verified no credential for
+	// this request and the listener allowed it through
+	// (AllowAnonymous=true or multi-session disabled). Identity is
+	// the daemon's configured default (typically "anon"). Note this
+	// covers requests that CARRIED credential-looking headers the
+	// server had no validator for.
 	WhoAmISourceAnonymous = "anonymous"
 )
 
@@ -89,40 +110,32 @@ func (h *handlers) registerWhoAmI(mux *http.ServeMux) {
 func (h *handlers) doWhoAmI(w http.ResponseWriter, r *http.Request) {
 	c, _ := auth.CallerFromContext(r.Context())
 	proxyBy, _ := auth.ProxyByFromContext(r.Context())
+	// Source is the caller middleware's verdict, threaded via the
+	// request context — the middleware is the component that
+	// actually verified (or declined to verify) the credential, so
+	// it is the only trustworthy classifier. The handler must NOT
+	// re-derive the source from request headers: pre-#385 it probed
+	// Authorization / r.TLS.PeerCertificates / X-Goog-* directly,
+	// which let any client (or misbehaving fronting proxy) claim
+	// "bearer"/"mtls"/"iap" without the server having validated
+	// anything. Absent verdict (no middleware ran) = anonymous:
+	// nothing was verified.
+	source, ok := authSourceFromContext(r.Context())
+	if !ok {
+		source = WhoAmISourceAnonymous
+	}
+	// proxyBy is itself middleware-validated (a failed assertion
+	// 401s before any handler runs), so its presence always means
+	// the asserted path — keep the two fields consistent even for
+	// exotic embeddings that stamp the context themselves.
+	if proxyBy != "" {
+		source = WhoAmISourceAsserted
+	}
 	resp := WhoAmIResponse{
 		Identity: c.Identity,
 		Admin:    c.Admin,
-		Source:   detectAuthSource(r, c, proxyBy),
+		Source:   source,
 		ProxyBy:  proxyBy,
 	}
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// detectAuthSource classifies how the request was authenticated.
-// Precedence matches operator intent: an asserted-caller path wins
-// over the underlying bearer (so /whoami shows the impersonated
-// user's audit-relevant path), then bearer, then mTLS, then IAP,
-// then anonymous.
-func detectAuthSource(r *http.Request, c auth.Caller, proxyBy string) string {
-	if proxyBy != "" {
-		return WhoAmISourceAsserted
-	}
-	if r.Header.Get(HeaderAttachToken) != "" ||
-		strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
-		return WhoAmISourceBearer
-	}
-	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
-		return WhoAmISourceMTLS
-	}
-	if r.Header.Get("X-Goog-Authenticated-User-Email") != "" ||
-		r.Header.Get("X-Goog-Iap-Jwt-Assertion") != "" {
-		return WhoAmISourceIAP
-	}
-	// Callers falling through to here presented no recognizable
-	// credential. The identity might still be non-anon if the
-	// operator configured a custom default via
-	// attach.multi_session.default_identity — but the AUTH SOURCE
-	// is still "anonymous" because no credential was validated.
-	_ = c
-	return WhoAmISourceAnonymous
 }

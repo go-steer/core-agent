@@ -44,7 +44,7 @@ type metricsOpts struct {
 // agent.WithPostConstruct hook).
 //
 // Multi-session daemons (per-request sessions spawned via
-// buildSessionFactory) are NOT covered by this provider — each
+// compose.BuildSessionFactory) are NOT covered by this provider — each
 // on-demand session has its own tracker and would need registry-based
 // iteration. That's a follow-up slice; the primary-session case
 // covers the common single-daemon deployment.

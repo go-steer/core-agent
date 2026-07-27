@@ -46,8 +46,8 @@ type Resolver struct {
 
 	// mu guards seenRefs, the only field mutated after construction.
 	// The same resolver's InterpolateFunc is shared across sessions
-	// (cmd/core-agent captures it into sessionFactoryDeps.envInterp),
-	// so concurrent POST /sessions -> reproduceAgent -> Interpolate can
+	// (pkg/compose captures it into SessionFactoryDeps.EnvInterp),
+	// so concurrent POST /sessions -> ReproduceAgent -> Interpolate can
 	// write seenRefs from multiple goroutines at once. Without this lock
 	// that's a data race (guaranteed -race failure, panic under load).
 	mu       sync.Mutex

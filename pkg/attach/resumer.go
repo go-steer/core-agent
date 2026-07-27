@@ -48,11 +48,11 @@ import (
 // handler returns 404. Any other error surfaces as 500 with the
 // resume-failure message (see docs/session-resume-design.md OQ #2).
 //
-// Implementations live in cmd/core-agent (see buildSessionResumer)
-// because they need sessionFactoryDeps — model, gate template,
-// tools, eventlog handle, MCP servers, … all cmd-level wiring.
-// The interface stays in pkg/attach so the handlers can consult it
-// without importing cmd/core-agent.
+// Implementations live in pkg/compose (see compose.BuildSessionResumer)
+// because they need compose.SessionFactoryDeps — model, gate
+// template, tools, eventlog handle, MCP servers, … all daemon-wide
+// wiring. The interface stays in pkg/attach so the handlers can
+// consult it without importing pkg/compose.
 //
 // The cancelOnEvict return may be nil — the registry treats nil as
 // "no background work to stop." Test implementations of the

@@ -17,8 +17,8 @@
 // stack the bundled binary does, per
 // docs/compose-extraction-design.md (#386): substrate builders
 // (compactor, agentic tools, MCP digest LLM fallback, context
-// cache), operator-visible formatters, and pricing operations.
-// Flag parsing and run() orchestration stay in the binary.
-// Multi-session construction and grant persistence arrive in
-// later PRs of the same extraction.
+// cache), operator-visible formatters, pricing operations, grant
+// persistence, and multi-session construction (session factory,
+// resumer, and authn wiring). Flag parsing and run() orchestration
+// stay in the binary.
 package compose

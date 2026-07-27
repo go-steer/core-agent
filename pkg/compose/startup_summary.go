@@ -89,7 +89,7 @@ func FormatStartupSummary(in StartupSummaryInputs) []string {
 
 	// 6. multi-session auth: kind, user count, admin/proxy lists.
 	//    Reads users.json directly (LoadUsersFile) rather than
-	//    depending on the buildMultiSessionAuthn call in the attach
+	//    depending on the BuildMultiSessionAuthn call in the attach
 	//    branch — the summary must fire regardless of attach mode.
 	lines = append(lines, formatAuthLine(in.Cfg))
 

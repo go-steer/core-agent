@@ -18,6 +18,7 @@ research + friction logs, or handover notes.
 
 - [`DESIGN.md`](DESIGN.md) — package layout, the Anthropic adapter, deliberate non-goals
 - [`agent-package-split-design.md`](agent-package-split-design.md) — decomposing the `pkg/agent` god package (autonomous driver / background manager / attach adapter) behind a narrow seam before the v2 surface freezes
+- [`compose-extraction-design.md`](compose-extraction-design.md) — lifting reusable substrate wiring (multi-session construction, grant persistence, agentic/digest assembly) out of `cmd/core-agent` into `pkg/compose` so cogo/scion/ax stop re-implementing it
 - [`north-star.md`](north-star.md) — north-star goals + readiness assessment
 - [`v1-acceptance.md`](v1-acceptance.md) — v1.0 acceptance criteria
 - [`acceptance-m1.md`](acceptance-m1.md) — M1 acceptance plan (library + CLI extraction)

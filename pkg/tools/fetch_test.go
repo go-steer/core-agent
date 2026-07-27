@@ -253,6 +253,106 @@ func TestFetchURL_HeaderInjection_MostSpecificWins(t *testing.T) {
 	}
 }
 
+// TestFetchURL_Redirect_InjectedHeadersDoNotCrossHosts pins the #385
+// fix: a header bundle injected for the ORIGIN host must not ride a
+// cross-host redirect. Go's http.Client strips Authorization/Cookie
+// on cross-host redirects but forwards custom headers (X-Api-Key),
+// so CheckRedirect has to strip operator-injected names itself. Two
+// hostnames are mapped onto the same loopback test servers via the
+// injectable resolver because header bundles match on host name
+// (port-insensitive) — two bare 127.0.0.1 ports couldn't carry
+// distinct bundles.
+func TestFetchURL_Redirect_InjectedHeadersDoNotCrossHosts(t *testing.T) {
+	var gotB http.Header
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotB = r.Header.Clone()
+		_, _ = fmt.Fprint(w, "landed")
+	}))
+	defer target.Close()
+	portB := mustPort(t, target.URL)
+
+	var gotA http.Header
+	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotA = r.Header.Clone()
+		http.Redirect(w, r, "http://b.internal:"+portB+"/", http.StatusFound)
+	}))
+	defer src.Close()
+	portA := mustPort(t, src.URL)
+
+	cfg := fetchCfg([]string{"http://a.internal:" + portA, "http://b.internal:" + portB}, nil)
+	cfg.URLScope.Headers = map[string]map[string]string{
+		"a.internal": {"X-Api-Key": "secret-for-a"},
+	}
+	fn := fetchURLFuncWithResolver(fetchGate(t), cfg, staticResolver(map[string][]string{
+		"a.internal": {"127.0.0.1"},
+		"b.internal": {"127.0.0.1"},
+	}))
+
+	res, err := fn(tool.Context(nil), fetchURLArgs{URL: "http://a.internal:" + portA + "/"})
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if res.Body != "landed" {
+		t.Errorf("body = %q, want %q", res.Body, "landed")
+	}
+	if gotA.Get("X-Api-Key") != "secret-for-a" {
+		t.Errorf("origin host A should receive its own bundle header, got %q", gotA.Get("X-Api-Key"))
+	}
+	if leaked := gotB.Get("X-Api-Key"); leaked != "" {
+		t.Errorf("host A's injected X-Api-Key leaked to host B across the redirect: %q", leaked)
+	}
+}
+
+// TestFetchURL_Redirect_TargetHostBundleApplies is the positive half:
+// when the redirect TARGET has its own header bundle, that bundle is
+// applied to the redirected request — the recomputation swaps host
+// A's credentials for host B's rather than just dropping everything.
+func TestFetchURL_Redirect_TargetHostBundleApplies(t *testing.T) {
+	var gotB http.Header
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotB = r.Header.Clone()
+		_, _ = fmt.Fprint(w, "landed")
+	}))
+	defer target.Close()
+	portB := mustPort(t, target.URL)
+
+	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://b.internal:"+portB+"/", http.StatusFound)
+	}))
+	defer src.Close()
+	portA := mustPort(t, src.URL)
+
+	cfg := fetchCfg([]string{"http://a.internal:" + portA, "http://b.internal:" + portB}, nil)
+	cfg.URLScope.Headers = map[string]map[string]string{
+		"a.internal": {"X-Api-Key": "secret-for-a"},
+		"b.internal": {"X-Api-Key": "secret-for-b", "X-B-Extra": "yes"},
+	}
+	fn := fetchURLFuncWithResolver(fetchGate(t), cfg, staticResolver(map[string][]string{
+		"a.internal": {"127.0.0.1"},
+		"b.internal": {"127.0.0.1"},
+	}))
+
+	if _, err := fn(tool.Context(nil), fetchURLArgs{URL: "http://a.internal:" + portA + "/"}); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if got := gotB.Get("X-Api-Key"); got != "secret-for-b" {
+		t.Errorf("host B should receive ITS bundle's X-Api-Key, got %q", got)
+	}
+	if got := gotB.Get("X-B-Extra"); got != "yes" {
+		t.Errorf("host B's own extra header should arrive, got %q", got)
+	}
+}
+
+// mustPort extracts the port from a URL string.
+func mustPort(t *testing.T, raw string) string {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	return u.Port()
+}
+
 func TestFetchURL_EmptyURL(t *testing.T) {
 	fn := fetchURLFunc(fetchGate(t), fetchCfg([]string{"*"}, nil))
 	_, err := fn(tool.Context(nil), fetchURLArgs{URL: ""})

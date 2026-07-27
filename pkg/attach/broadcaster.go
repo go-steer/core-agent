@@ -60,6 +60,55 @@ type Frame struct {
 // catch-up room before a subscriber is declared slow.
 const subscriberBufferSize = 256
 
+// maxReplayEvents caps how many historical frames one Subscribe call
+// replays. Without it, any authenticated caller could open
+// /events?since=0 against a long-lived session and trigger a
+// full-table replay per connection — a cheap resource-exhaustion
+// lever (#385). When the catch-up range exceeds the cap, the OLDEST
+// events are dropped and the subscriber gets the most recent
+// maxReplayEvents (the tail); incremental resumes whose gap is below
+// the cap are unaffected.
+//
+// Package-level var (not const) purely as a test seam; production
+// code never mutates it.
+var maxReplayEvents int64 = 5000
+
+// latestSeqStream is the optional eventlog.Stream extension the
+// replay cap needs (implemented by the production gormStream).
+// Streams without it — test fakes, exotic embeddings — skip the cap
+// and keep the uncapped pre-#385 behavior.
+type latestSeqStream interface {
+	LatestSeq(ctx context.Context, opts ...eventlog.QueryOption) (int64, error)
+}
+
+// clampReplaySince bounds the catch-up range to the newest
+// maxReplayEvents frames: if the log's head is more than the cap
+// ahead of since, the cursor is advanced so only the tail replays.
+// The clamped value feeds BOTH delivery sources (replayThenTail and
+// the pump's startedAt), so no goroutine re-introduces the dropped
+// head. The SSE protocol has no "replay truncated" frame, so
+// truncation is surfaced via the server log only; clients that need
+// the full history can page it from the eventlog directly.
+func (b *Broadcaster) clampReplaySince(ctx context.Context, since int64) int64 {
+	ls, ok := b.stream.(latestSeqStream)
+	if !ok {
+		return since
+	}
+	latest, err := ls.LatestSeq(ctx, b.query...)
+	if err != nil {
+		// Best-effort: a failed max-seq probe must not kill the
+		// subscribe; the replay itself will surface a real error.
+		debugf("broadcaster %s/%s LatestSeq failed (replay uncapped): %v", b.entry.AppName, b.entry.SessionID, err)
+		return since
+	}
+	if floor := latest - maxReplayEvents; floor > since {
+		log.Printf("attach: broadcaster %s/%s replay truncated: since=%d is %d events behind head %d; replaying newest %d only", //nolint:gosec // AppName/SessionID are server-managed identifiers from the SessionRegistry
+			b.entry.AppName, b.entry.SessionID, since, latest-since, latest, maxReplayEvents)
+		return floor
+	}
+	return since
+}
+
 // Broadcaster owns one goroutine per session that pumps events from
 // eventlog.Stream.Watch into N subscriber channels. Subscribers can
 // join any time; replay-then-tail is handled via the since parameter.
@@ -154,7 +203,9 @@ func NewBroadcaster(entry *Entry) (*Broadcaster, error) {
 
 // Subscribe adds a new client and returns its frame channel. Replays
 // every frame with seq > since before switching to live-tail (which is
-// invisible to the caller; same channel).
+// invisible to the caller; same channel). The catch-up range is
+// bounded by maxReplayEvents — a cursor further behind the log head
+// than the cap replays only the newest cap-many frames (#385).
 //
 // The returned channel is closed when:
 //   - ctx is cancelled (typical: HTTP request ends), OR
@@ -164,11 +215,24 @@ func NewBroadcaster(entry *Entry) (*Broadcaster, error) {
 // Caller MUST drain the channel until close to release goroutine
 // resources.
 func (b *Broadcaster) Subscribe(ctx context.Context, since int64) <-chan Frame {
+	since = b.clampReplaySince(ctx, since)
 	sub := &subscriber{
 		ch:       make(chan Frame, subscriberBufferSize),
 		since:    since,
 		lastSent: since, // dedup baseline — skip anything at or below the operator's cursor
 	}
+
+	// Boot frames per the SSE event-stream protocol spec: capabilities
+	// is required as the FIRST frame on every newly-opened stream,
+	// followed by snapshot status-update and (when usage data exists)
+	// a cumulative usage-update. Delivered BEFORE the subscriber is
+	// published into b.subs: once registered, the pump / Emit fan-out
+	// can push a live frame into sub.ch, and doing that ahead of the
+	// boot frames would break the "capabilities first" protocol
+	// invariant (#385). Here the channel is still private to this
+	// goroutine, so the fresh 256-slot buffer takes the three small
+	// frames with no possible interleaving.
+	b.deliverBootFrames(ctx, sub)
 
 	b.mu.Lock()
 	firstSub := b.cancel == nil
@@ -204,14 +268,6 @@ func (b *Broadcaster) Subscribe(ctx context.Context, since int64) <-chan Frame {
 			et.SetAttachEmitter(b.Emit)
 		}
 	}
-
-	// Boot frames per the SSE event-stream protocol spec: capabilities
-	// is required as the first frame on every newly-opened stream,
-	// followed by snapshot status-update and (when usage data exists)
-	// a cumulative usage-update. Direct writes into sub.ch — the
-	// 256-slot buffer has plenty of room for these three small frames
-	// before any other producer touches the channel.
-	b.deliverBootFrames(ctx, sub)
 
 	// Replay loop runs in its own goroutine so Subscribe returns
 	// immediately. The same channel carries both replayed and live
@@ -249,8 +305,10 @@ func (b *Broadcaster) Emit(eventType string, payload any) {
 }
 
 // deliverBootFrames pushes the spec-required opening frames into a
-// freshly-subscribed channel. Called from Subscribe before the
-// replay/tail goroutine starts so these always land first.
+// freshly-subscribed channel. Called from Subscribe BEFORE the
+// subscriber is registered in b.subs (and before the replay/tail
+// goroutine starts), so no pump/Emit fan-out can interleave a live
+// frame ahead of the capabilities frame (#385).
 //
 // All three sends are non-blocking (sub.ch is buffered, freshly
 // created). If for any reason a send would block, the subscriber is
@@ -297,12 +355,13 @@ func (b *Broadcaster) deliverBootFrames(ctx context.Context, sub *subscriber) {
 	// skip silently if the agent has no usage data wired.
 	usage, hasUsage := b.usageSnapshot()
 
-	// The sends must run under b.mu: sendTyped calls detachLocked() on a
-	// full buffer (map delete + close(sub.ch)), and the pump goroutine
-	// may already be broadcasting to this same subscriber (it was added
-	// to b.subs in Subscribe before this call). Without the lock a full
-	// buffer here races the pump into "send on closed channel" or
-	// "concurrent map writes" (#377). Sends are non-blocking.
+	// The sends still run under b.mu even though Subscribe now calls
+	// this before registering sub in b.subs (so no other goroutine
+	// can be sending to THIS subscriber yet): sendTyped's full-buffer
+	// path calls detachLocked(), which mutates the shared b.subs map
+	// and inspects b.cancel — state that concurrent pump/Emit/detach
+	// activity for OTHER subscribers touches under the same mutex
+	// (#377). Sends are non-blocking.
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if !b.sendTyped(sub, Frame{Type: EventCapabilities, TypedData: caps}) {

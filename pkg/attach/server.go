@@ -410,6 +410,11 @@ func (s *Server) Bind() error {
 		fallback:              s.opts.DefaultCaller,
 		enforceAuthentication: s.opts.MultiSessionEnabled && !s.opts.AllowAnonymous,
 		proxyHeader:           s.opts.ProxyHeader,
+		// Auth.Middleware (below) 401s any request lacking the
+		// transport bearer token before the caller middleware runs,
+		// so with a token configured, "bearer" is a server-verified
+		// auth source for every request that gets through.
+		transportBearerConfigured: s.opts.Auth.BearerToken != "",
 	}
 	// browserWriteGuard sits between the caller middleware and the
 	// mux: every state-changing route (sessions, perms, slash, peers)

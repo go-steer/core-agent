@@ -15,12 +15,34 @@
 package attach
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
 
 	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
+
+// authSourceCtxKey threads the middleware's verdict on HOW a request
+// was authenticated to downstream handlers (/whoami). Only this
+// middleware writes the value, and it only ever writes a source the
+// server itself verified or was explicitly configured to trust —
+// never something re-derived from spoofable request headers (#385).
+type authSourceCtxKey struct{}
+
+// withAuthSource stamps the middleware-verified auth source onto ctx.
+func withAuthSource(ctx context.Context, source string) context.Context {
+	return context.WithValue(ctx, authSourceCtxKey{}, source)
+}
+
+// authSourceFromContext returns the middleware's auth-source verdict,
+// or ("", false) when no caller middleware ran (direct handler tests,
+// exotic embeddings). Callers should treat absence as anonymous —
+// nothing was verified.
+func authSourceFromContext(ctx context.Context) (string, bool) {
+	s, ok := ctx.Value(authSourceCtxKey{}).(string)
+	return s, ok
+}
 
 // callerMiddlewareConfig packages the per-server settings the
 // middleware needs. Separated from Options so the middleware can be
@@ -42,6 +64,13 @@ type callerMiddlewareConfig struct {
 	// Only honored when the resolved Authenticator implements
 	// AuthenticatorWithProxy.
 	proxyHeader string
+	// transportBearerConfigured records that the listener enforces a
+	// transport-level bearer token (Options.Auth.BearerToken). Any
+	// request that reaches this middleware already presented the
+	// valid token to AuthConfig.Middleware, so "bearer" is a
+	// server-verified auth source even when the per-caller
+	// authenticator is the anonymous default. Set by Server.Bind.
+	transportBearerConfigured bool
 }
 
 // callerMiddleware preserves the α.1 signature for callers that don't
@@ -84,6 +113,14 @@ func callerMiddlewareWithConfig(cfg callerMiddlewareConfig, next http.Handler) h
 		header = auth.HeaderAssertedCaller
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// source is the auth-source verdict stamped onto the context
+		// for /whoami. It only ever reflects something THIS server
+		// verified (a credential the authenticator accepted, our own
+		// TLS stack's client-cert verification, a validated proxy
+		// assertion) or was explicitly configured to trust (the
+		// transport bearer gate that already ran) — never a raw
+		// request header, which any client can forge (#385).
+		source := WhoAmISourceAnonymous
 		c, err := authn.Authenticate(r)
 		if err != nil {
 			if cfg.enforceAuthentication {
@@ -93,6 +130,24 @@ func callerMiddlewareWithConfig(cfg callerMiddlewareConfig, next http.Handler) h
 			c = cfg.fallback
 			if c.Identity == "" {
 				c = auth.Anonymous
+			}
+		} else {
+			source = credentialSource(authn)
+		}
+		if source == WhoAmISourceAnonymous {
+			if cfg.transportBearerConfigured {
+				// The transport-level bearer check (AuthConfig.
+				// Middleware) runs before this middleware; reaching
+				// here means the request carried the valid token.
+				source = WhoAmISourceBearer
+			} else if r.TLS != nil && len(r.TLS.VerifiedChains) > 0 {
+				// VerifiedChains is populated only when OUR listener
+				// verified the client cert against its configured CA
+				// (ClientAuth = RequireAndVerifyClientCert). A merely
+				// PRESENTED-but-unverified certificate never sets it,
+				// so this can't be spoofed by a client or a fronting
+				// proxy header.
+				source = WhoAmISourceMTLS
 			}
 		}
 
@@ -116,14 +171,36 @@ func callerMiddlewareWithConfig(cfg callerMiddlewareConfig, next http.Handler) h
 				return
 			}
 			c, proxyBy = effective, by
+			// The assertion was validated (proxy allowlist + identity
+			// provisioning) — the asserted path is the audit-relevant
+			// source and wins over the underlying credential.
+			source = WhoAmISourceAsserted
 		}
 
 		ctx := auth.WithCaller(r.Context(), c)
 		if proxyBy != "" {
 			ctx = auth.WithProxyBy(ctx, proxyBy)
 		}
+		ctx = withAuthSource(ctx, source)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// credentialSource maps a successfully-authenticated Authenticator to
+// the WhoAmISource* tag for its credential class. The anonymous
+// authenticator "succeeds" for every request without validating
+// anything, so it reports anonymous; every other authenticator
+// shipped today (BearerTokenAuth) validates a bearer-flavored
+// credential. A future non-bearer authenticator (OIDC, K8s SA,
+// mTLS-subject mapping) should get its own case here alongside its
+// own WhoAmISource constant.
+func credentialSource(a auth.Authenticator) string {
+	switch a.(type) {
+	case auth.AnonymousAuth, *auth.AnonymousAuth:
+		return WhoAmISourceAnonymous
+	default:
+		return WhoAmISourceBearer
+	}
 }
 
 // resolveProxyAssertion validates that requester is permitted to

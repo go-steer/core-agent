@@ -51,11 +51,14 @@ const (
 	// operator cycles out via Shift+Tab when ready to act.
 	ModePlan Mode = "plan"
 
-	// ModeAcceptEdits auto-allows file-write tool calls (and
-	// out-of-scope write paths) without prompting; every other tool
-	// kind still flows through the normal Ask path. Used by core-
-	// tui's "acceptEdits" chip so the operator can stream a
-	// refactor without clicking through every diff modal.
+	// ModeAcceptEdits auto-allows file-write tool calls — INCLUDING
+	// out-of-scope writes to ANY path (see promptForPath) — without
+	// prompting; every other tool kind still flows through the
+	// normal Ask path. Used by core-tui's "acceptEdits" chip so the
+	// operator can stream a refactor without clicking through every
+	// diff modal. This is "trust this agent with your filesystem"
+	// mode; see the promptForPath comment for the full blast-radius
+	// warning.
 	ModeAcceptEdits Mode = "acceptEdits"
 )
 
@@ -149,11 +152,19 @@ type Gate struct {
 // exempt the namespace.
 //
 // Anything not in this set (write_file/edit_file/delete_file/bash,
-// spawn_agent family, every MCP tool) is plan-gated. This matches
-// the original design's Q1 ("gate everything by default; per-server
-// allowlist later if it bites") and Q3 ("subagents inherit the
-// parent's planRecorded flag — gate spawn family so subagents only
+// fetch_url, spawn_agent family, every MCP tool) is plan-gated. This
+// matches the original design's Q1 ("gate everything by default;
+// per-server allowlist later if it bites") and Q3 ("subagents inherit
+// the parent's planRecorded flag — gate spawn family so subagents only
 // run under an approved plan").
+//
+// fetch_url is deliberately NOT exempt (#385): it is network egress,
+// and an outbound GET whose URL the model controls is an exfiltration
+// channel — query strings can carry anything the model has read.
+// Letting it run before a plan is recorded defeats the point of
+// plan-first gating. Research that needs the network happens after
+// record_plan, or the operator allowlists specific hosts and accepts
+// the trade-off consciously.
 var planExemptTools = map[string]bool{
 	// Read-only filesystem + research tools
 	"read_file":       true,
@@ -163,14 +174,20 @@ var planExemptTools = map[string]bool{
 	"glob":            true,
 	"grep":            true,
 	"json_query":      true,
-	"fetch_url":       true,
 	"todo":            true,
 	"record_plan":     true,
 
-	// Read-only skill introspection (namespace-level exempt: covers
-	// list_skills / load_skill / load_skill_resource, all of which
-	// only READ from the skills registry). See pkg/skills/load.go
-	// where the toolset gets wrapped with GateToolset(ts, gate, "skill").
+	// Read-only skill introspection, exempt at NAMESPACE level: skill
+	// tools are registered through GateToolset(ts, gate, "skill") in
+	// pkg/skills/load.go, so "skill" (the namespace) is the only
+	// toolName planFirstDenial ever sees for them — a per-tool exempt
+	// entry is impossible at this layer. The blanket exemption is safe
+	// because every tool in the namespace today (list_skills /
+	// load_skill / load_skill_resource) only READs from the skills
+	// registry; none mutates state or touches the network. If a
+	// mutating or network-capable skill tool is ever added to the
+	// namespace, this entry must be revisited — the exemption would
+	// silently cover it too.
 	"skill": true,
 
 	// Read-only subagent introspection (individual tool names,
@@ -745,6 +762,24 @@ func (g *Gate) promptForPath(ctx context.Context, toolName, path string, op Acce
 	// touch sibling repos without re-prompting every file. Reads
 	// still ask — the operator explicitly opted into "accept edits"
 	// not "expose new paths."
+	//
+	// SECURITY: "out-of-scope writes" means writes to ANY path the
+	// process can reach — ~/.bashrc, ~/.ssh/authorized_keys, cron
+	// files, systemd units — not just sibling repos. The path scope
+	// is NOT a boundary in this mode; acceptEdits is "trust this
+	// agent with your filesystem" and is recommended only inside a
+	// sandbox/container (or an equally disposable environment).
+	// Operators who want auto-approved writes ONLY within declared
+	// paths should stay in ask mode and grant path_scope entries
+	// (path_scope.allow / allow_paths / --allow-path) instead.
+	// (Control-plane files remain the one exception: CheckFileWrite
+	// routes them through the elevated prompt before mode is ever
+	// consulted, so acceptEdits cannot self-escalate the gate's own
+	// config.) Documented loudly in
+	// docs/site/src/content/docs/concepts/permissions.md; keep the
+	// two in sync. Deliberately NOT changed for #385 — this is the
+	// mode's contract, the fix is making sure nobody mistakes it
+	// for a scoped-writes mode.
 	if mode == ModeAcceptEdits && op == AccessWrite {
 		return nil
 	}

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package compose
 
 import (
 	"context"
@@ -28,7 +28,7 @@ import (
 )
 
 // stubLLM satisfies adkmodel.LLM without any provider setup. Tests
-// that call reproduceAgent don't drive Run() — the assembly is what
+// that call ReproduceAgent don't drive Run() — the assembly is what
 // they're exercising, not the LLM loop.
 type stubLLM struct{}
 
@@ -43,11 +43,11 @@ func (stubLLM) GenerateContent(context.Context, *adkmodel.LLMRequest, bool) iter
 // issue #275: every session-created agent must get its own
 // *usage.Tracker so AttachUsage / broadcaster snapshots / cost
 // ceilings are per-session, not process-global. Two sessions are
-// spun up through reproduceAgent; the test captures each session's
+// spun up through ReproduceAgent; the test captures each session's
 // tracker via the newSessionTracker indirection and asserts an
 // append against one tracker never surfaces in the other.
 func TestReproduceAgent_PerSessionTracker(t *testing.T) {
-	// Capture every tracker constructed by reproduceAgent. Not
+	// Capture every tracker constructed by ReproduceAgent. Not
 	// t.Parallel — newSessionTracker is a package var and swapping
 	// it under a parallel sibling test would race.
 	orig := newSessionTracker
@@ -63,21 +63,21 @@ func TestReproduceAgent_PerSessionTracker(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	deps := sessionFactoryDeps{
-		daemonCtx: ctx,
-		model:     stubLLM{},
-		template:  permissions.New(permissions.Options{}),
+	deps := SessionFactoryDeps{
+		DaemonCtx: ctx,
+		Model:     stubLLM{},
+		Template:  permissions.New(permissions.Options{}),
 	}
 
-	agA, cancelA, err := reproduceAgent(deps, auth.Anonymous, "sid-a", "created")
+	agA, cancelA, err := ReproduceAgent(deps, auth.Anonymous, "sid-a", "created")
 	if err != nil {
-		t.Fatalf("reproduceAgent(sid-a): %v", err)
+		t.Fatalf("ReproduceAgent(sid-a): %v", err)
 	}
 	t.Cleanup(cancelA)
 
-	agB, cancelB, err := reproduceAgent(deps, auth.Anonymous, "sid-b", "created")
+	agB, cancelB, err := ReproduceAgent(deps, auth.Anonymous, "sid-b", "created")
 	if err != nil {
-		t.Fatalf("reproduceAgent(sid-b): %v", err)
+		t.Fatalf("ReproduceAgent(sid-b): %v", err)
 	}
 	t.Cleanup(cancelB)
 
@@ -107,22 +107,22 @@ func TestReproduceAgent_PerSessionTracker(t *testing.T) {
 // wired" / "no checkpointer wired" on daemon-hosted sessions even
 // though the default-on advertisements said otherwise.
 //
-// CostCeiling is wired by the same reproduceAgent code path but has
+// CostCeiling is wired by the same ReproduceAgent code path but has
 // no public HasCostCeiling accessor to assert against; the shared
 // opts append flow makes a targeted test redundant.
 func TestReproduceAgent_WiresCompactorAndCheckpointer(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	deps := sessionFactoryDeps{
-		daemonCtx: ctx,
-		model:     stubLLM{},
-		template:  permissions.New(permissions.Options{}),
+	deps := SessionFactoryDeps{
+		DaemonCtx: ctx,
+		Model:     stubLLM{},
+		Template:  permissions.New(permissions.Options{}),
 	}
 
-	ag, cancelAg, err := reproduceAgent(deps, auth.Anonymous, "sid-defaults", "created")
+	ag, cancelAg, err := ReproduceAgent(deps, auth.Anonymous, "sid-defaults", "created")
 	if err != nil {
-		t.Fatalf("reproduceAgent: %v", err)
+		t.Fatalf("ReproduceAgent: %v", err)
 	}
 	t.Cleanup(cancelAg)
 
@@ -135,7 +135,7 @@ func TestReproduceAgent_WiresCompactorAndCheckpointer(t *testing.T) {
 }
 
 // TestReproduceAgent_HonorsDisableFlags asserts that the
-// noCompact / noCheckpoint fields on sessionFactoryDeps (fed from
+// NoCompact / NoCheckpoint fields on SessionFactoryDeps (fed from
 // the --no-compact / --no-checkpoint CLI flags) suppress the
 // corresponding option, so the disable flags apply uniformly to
 // per-session agents and not just the main-loop agent.
@@ -143,24 +143,24 @@ func TestReproduceAgent_HonorsDisableFlags(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	deps := sessionFactoryDeps{
-		daemonCtx:    ctx,
-		model:        stubLLM{},
-		template:     permissions.New(permissions.Options{}),
-		noCompact:    true,
-		noCheckpoint: true,
+	deps := SessionFactoryDeps{
+		DaemonCtx:    ctx,
+		Model:        stubLLM{},
+		Template:     permissions.New(permissions.Options{}),
+		NoCompact:    true,
+		NoCheckpoint: true,
 	}
 
-	ag, cancelAg, err := reproduceAgent(deps, auth.Anonymous, "sid-disabled", "created")
+	ag, cancelAg, err := ReproduceAgent(deps, auth.Anonymous, "sid-disabled", "created")
 	if err != nil {
-		t.Fatalf("reproduceAgent: %v", err)
+		t.Fatalf("ReproduceAgent: %v", err)
 	}
 	t.Cleanup(cancelAg)
 
 	if ag.Agent().HasCompactor() {
-		t.Errorf("HasCompactor() = true with noCompact=true, want false")
+		t.Errorf("HasCompactor() = true with NoCompact=true, want false")
 	}
 	if ag.Agent().HasCheckpointer() {
-		t.Errorf("HasCheckpointer() = true with noCheckpoint=true, want false")
+		t.Errorf("HasCheckpointer() = true with NoCheckpoint=true, want false")
 	}
 }

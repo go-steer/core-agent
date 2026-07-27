@@ -165,7 +165,7 @@ type Options struct {
 
 	// Resumer, when non-nil, reconstructs sessions that exist on
 	// disk but not in the in-memory registry. Wired by the daemon
-	// from buildSessionResumer; nil leaves the legacy "miss = 404"
+	// from compose.BuildSessionResumer; nil leaves the legacy "miss = 404"
 	// behavior in place (pre-v2.5 deployments). See
 	// docs/session-resume-design.md.
 	Resumer SessionResumer

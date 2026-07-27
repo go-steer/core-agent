@@ -1449,7 +1449,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		// chat-bot integrations. Single-user mode (the default) leaves
 		// these fields zero — the attach server behaves as it always
 		// has end-to-end.
-		authn, defaultCaller, authErr := buildMultiSessionAuthn(cfg.Attach.MultiSession)
+		authn, defaultCaller, authErr := compose.BuildMultiSessionAuthn(cfg.Attach.MultiSession)
 		if authErr != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: multi-session auth: %v\n", authErr)
 			return runner.ExitConfigError
@@ -1465,28 +1465,28 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		var sessionFactory attach.SessionFactory
 		var sessionResumer attach.SessionResumer
 		if cfg.Attach.MultiSession.Enabled {
-			factoryDeps := sessionFactoryDeps{
-				daemonCtx:      ctx,
-				model:          m,
-				template:       template,
-				pricingRate:    pricingRate,
-				agentsDir:      agentsDir,
-				cfg:            cfg,
-				mcpServers:     mcpServers,
-				builtinTools:   builtinTools,
-				toolsets:       allToolsets,
-				eventlogHandle: eventlogHandle,
-				projectRoot:    projectRoot,
-				userRoot:       coreHome,
-				homeAgentsDir:  homeAgentsDir,
-				usersDir:       cfg.Attach.MultiSession.UsersDir,
-				envInterp:      envResolver.InterpolateFunc(),
-				registry:       attachReg,
-				aclStore:       aclStore,
-				noCompact:      noCompact,
-				noCheckpoint:   noCheckpoint,
+			factoryDeps := compose.SessionFactoryDeps{
+				DaemonCtx:      ctx,
+				Model:          m,
+				Template:       template,
+				PricingRate:    pricingRate,
+				AgentsDir:      agentsDir,
+				Cfg:            cfg,
+				MCPServers:     mcpServers,
+				BuiltinTools:   builtinTools,
+				Toolsets:       allToolsets,
+				EventlogHandle: eventlogHandle,
+				ProjectRoot:    projectRoot,
+				UserRoot:       coreHome,
+				HomeAgentsDir:  homeAgentsDir,
+				UsersDir:       cfg.Attach.MultiSession.UsersDir,
+				EnvInterp:      envResolver.InterpolateFunc(),
+				Registry:       attachReg,
+				ACLStore:       aclStore,
+				NoCompact:      noCompact,
+				NoCheckpoint:   noCheckpoint,
 			}
-			sessionFactory = buildSessionFactory(factoryDeps)
+			sessionFactory = compose.BuildSessionFactory(factoryDeps)
 			// Session resume: reconstructs sessions persisted in
 			// agent_session_acl that aren't in the in-memory
 			// registry yet (post-daemon-restart, post-eviction).
@@ -1494,7 +1494,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			// without persisted ACLs keep their legacy 404-on-miss
 			// behavior. Wired into attach.NewServer's Options.Resumer
 			// below.
-			sessionResumer = buildSessionResumer(factoryDeps)
+			sessionResumer = compose.BuildSessionResumer(factoryDeps)
 		}
 		// Resolve --ui / --ui-dir into an fs.FS. --ui-dir wins when
 		// both are set (operator passed an explicit override; that's

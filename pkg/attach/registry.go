@@ -229,7 +229,7 @@ func NewSessionRegistryWithStore(store SessionACLStore) *SessionRegistry {
 //
 // The resumer is configured separately from the store because the
 // store is daemon-startup data (a SQL connection) while the
-// resumer is a closure capturing the full sessionFactoryDeps —
+// resumer is a closure capturing the full compose.SessionFactoryDeps —
 // the two have different construction sites and lifetimes.
 // Calling WithResumer(nil) is a no-op (preserves the existing
 // resumer); to disable, construct a fresh registry.

@@ -201,7 +201,7 @@ When `ask` mode prompts the user, the `Prompter` returns one of:
 | `DecisionAllowOnce` | Allow this call; prompt again next time the same call is made. |
 | `DecisionAllowSession` | Allow this exact request for the rest of the session — same `(tool, key)` pair won't re-prompt. |
 | `DecisionAllowSessionTool` | Trust the specific **tool** for the rest of the session — every call to it passes regardless of args. For namespaced toolsets (MCP, skills) the grant is scoped **per underlying tool** (`mcp/<tool>`), so approving one MCP tool does not trust every tool from every server. |
-| `DecisionAllowAlways` | Allow + caller persists a permanent allowlist entry. The gate also remembers it for the rest of the session so persistence latency doesn't cause a re-prompt. |
+| `DecisionAllowAlways` | Allow + the **gate** installs a permanent grant: non-path prompts become a live `"<tool>:<key>"` policy pattern, path prompts a subtree-expanded scope entry. When a `GrantStore` is wired (`permissions.Options.GrantStore` / `Gate.SetGrantStore`) the grant is also persisted — the bundled CLI wires the config-backed store, which writes `permissions.allow` patterns and typed `path_scope.allow_paths` entries (carrying the grant's `r`/`rw` access) into `.agents/config.json`. Persist failures surface to the gated call rather than silently downgrading to session-only. Without a store, the grant lasts the process lifetime. |
 
 `DecisionAllowSessionTool` suppresses the mode prompt for **in-scope** operations, but it does **not** drop the path boundary: an out-of-scope read or write still escalates via the path-scope prompt every time, even for a session-trusted file tool. Trusting `read_file` for the session silences repeat prompts for files inside your scope; it does not grant the tool the whole filesystem.
 
@@ -261,7 +261,7 @@ type Prompter interface {
 }
 ```
 
-`PromptRequest` carries everything needed to render a prompt — kind (bash / file write / path scope / generic), tool name, detail string, and the persistence keys to write back if the user picks `DecisionAllowAlways`.
+`PromptRequest` carries everything needed to render a prompt — kind (bash / file write / path scope / generic), tool name, detail string, and the persistence keys the gate uses to build the grant if the user picks `DecisionAllowAlways`. A custom Prompter only returns the decision; installing and persisting the grant is the gate's job (via the wired `GrantStore`).
 
 The bundled `cmd/core-agent` does not currently ship a Prompter — `ask` mode in the REPL fails closed. To use `ask` mode interactively, embed the library in your own host and supply a Prompter. See [Library API → Prompter](/embed/api/#prompter).
 

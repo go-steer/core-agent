@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package compose
 
 import (
 	"path/filepath"
@@ -20,19 +20,21 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/config"
 )
 
-// .agents/config.json persistence helpers used by the TUI's
-// /permissions, /allow, /deny, /model, and "always allow"
-// flows. Lifted from cogo's internal/tui/program.go and lowered
-// into the cmd/core-agent layer because the TUI itself should not
-// need to know about .agents/ on-disk layout — main.go has the
-// agentsDir resolution and feeds these as closures via
-// tui.Options.
+// .agents/config.json persistence helpers behind the operator's
+// /permissions, /allow, /deny, /model, and /theme flows, plus the
+// ConfigGrantStore the gate persists "allow always" grants through.
+// Exported so library consumers (and the bundled TUI's callbacks)
+// share one implementation of the on-disk layout: hosts resolve
+// their agentsDir once and feed these as closures. config.Save is
+// atomic (temp-file + rename) and every helper is idempotent, so
+// they satisfy the concurrency + idempotency contract
+// permissions.GrantStore documents.
 
-// appendPathScope adds pattern to .agents/config.json's
+// AppendPathScope adds pattern to .agents/config.json's
 // path_scope.allow list and rewrites the file atomically. If the
 // file doesn't exist yet it is created with defaults so the
 // addition has somewhere to live.
-func appendPathScope(agentsDir, pattern string) error {
+func AppendPathScope(agentsDir, pattern string) error {
 	cfg, err := config.Load(agentsDir)
 	if err != nil {
 		return err
@@ -46,11 +48,11 @@ func appendPathScope(agentsDir, pattern string) error {
 	return config.Save(filepath.Join(agentsDir, config.ConfigFileName), cfg)
 }
 
-// appendPermissionsAllow adds one or more patterns to
+// AppendPermissionsAllow adds one or more patterns to
 // .agents/config.json's permissions.allow list. Idempotent —
 // duplicate patterns are skipped silently so /permissions can be
 // re-run without growing the config file.
-func appendPermissionsAllow(agentsDir string, patterns []string) error {
+func AppendPermissionsAllow(agentsDir string, patterns []string) error {
 	cfg, err := config.Load(agentsDir)
 	if err != nil {
 		return err
@@ -69,9 +71,9 @@ func appendPermissionsAllow(agentsDir string, patterns []string) error {
 	return config.Save(filepath.Join(agentsDir, config.ConfigFileName), cfg)
 }
 
-// appendPermissionsDeny mirrors appendPermissionsAllow for the deny
+// AppendPermissionsDeny mirrors AppendPermissionsAllow for the deny
 // list. Idempotent.
-func appendPermissionsDeny(agentsDir string, patterns []string) error {
+func AppendPermissionsDeny(agentsDir string, patterns []string) error {
 	cfg, err := config.Load(agentsDir)
 	if err != nil {
 		return err
@@ -90,12 +92,12 @@ func appendPermissionsDeny(agentsDir string, patterns []string) error {
 	return config.Save(filepath.Join(agentsDir, config.ConfigFileName), cfg)
 }
 
-// appendBuiltinAllowExtra adds name to .agents/config.json's
+// AppendBuiltinAllowExtra adds name to .agents/config.json's
 // permissions.builtin_allow_extras list. Idempotent — re-enabling a
 // bundle that's already on is a no-op. Validation against the
 // bundle catalog (permissions.KnownBundles) happens in the TUI
 // before this is called, so an invalid name never reaches disk.
-func appendBuiltinAllowExtra(agentsDir, name string) error {
+func AppendBuiltinAllowExtra(agentsDir, name string) error {
 	cfg, err := config.Load(agentsDir)
 	if err != nil {
 		return err
@@ -109,11 +111,11 @@ func appendBuiltinAllowExtra(agentsDir, name string) error {
 	return config.Save(filepath.Join(agentsDir, config.ConfigFileName), cfg)
 }
 
-// persistModelChoice writes the new model name to
+// PersistModelChoice writes the new model name to
 // .agents/config.json so /model survives across runs. Caller is
 // responsible for first invoking the in-memory rebuild via
 // tui.Options.RebuildAgent — this is purely the disk side.
-func persistModelChoice(agentsDir, modelID string) error {
+func PersistModelChoice(agentsDir, modelID string) error {
 	cfg, err := config.Load(agentsDir)
 	if err != nil {
 		return err
@@ -122,12 +124,12 @@ func persistModelChoice(agentsDir, modelID string) error {
 	return config.Save(filepath.Join(agentsDir, config.ConfigFileName), cfg)
 }
 
-// persistThemeChoice writes the picker's selection to
+// PersistThemeChoice writes the picker's selection to
 // .agents/config.json so /theme survives across runs. Validates
 // before save so a bad name surfaces as a picker error instead
 // of silently corrupting the file (config.Save itself does not
 // validate).
-func persistThemeChoice(agentsDir, themeName string) error {
+func PersistThemeChoice(agentsDir, themeName string) error {
 	cfg, err := config.Load(agentsDir)
 	if err != nil {
 		return err

@@ -635,6 +635,14 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 		return runner.ExitConfigError
 	}
+	// Persist "allow always" grants through the config-backed store
+	// (#386 PR 3). The gate's DecisionAllowAlways path now owns both
+	// halves of the contract — in-memory policy add + disk write —
+	// for every prompter (TUI modal, stdin, HTTP broker). Derived
+	// per-session sub-gates share the store by reference. Empty
+	// agentsDir ⇒ Persist is a no-op (grants stay session-scoped),
+	// same fallback the TUI callback used to implement one layer up.
+	template.SetGrantStore(&compose.ConfigGrantStore{AgentsDir: agentsDir})
 	// Always-derive: even in single-user mode the agent runs against
 	// a per-session sub-gate so per-session state (sessionAllow,
 	// planRecorded, etc.) is naturally isolated and the multi-session

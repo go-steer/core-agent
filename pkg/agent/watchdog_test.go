@@ -74,7 +74,7 @@ func TestObserveToolCallsForWatchdog_ExtractsFunctionCalls(t *testing.T) {
 			},
 		},
 	}
-	a.observeToolCallsForWatchdog(ev)
+	a.observeToolCallsForWatchdog(ev, map[string]struct{}{})
 	if got, want := len(w.observed), 2; got != want {
 		t.Fatalf("observed %d calls, want %d", got, want)
 	}
@@ -95,18 +95,18 @@ func TestObserveToolCallsForWatchdog_NilSafe(t *testing.T) {
 	// empty parts. None should panic. (Bridge runs from the streaming
 	// event loop — a panic here would tear down the agent mid-turn.)
 	a := &Agent{}
-	a.observeToolCallsForWatchdog(nil) // nil watchdog AND nil ev
+	a.observeToolCallsForWatchdog(nil, map[string]struct{}{}) // nil watchdog AND nil ev
 	a.watchdog = &fakeWatchdog{}
-	a.observeToolCallsForWatchdog(nil)
-	a.observeToolCallsForWatchdog(&session.Event{}) // nil content
+	a.observeToolCallsForWatchdog(nil, map[string]struct{}{})
+	a.observeToolCallsForWatchdog(&session.Event{}, map[string]struct{}{}) // nil content
 	a.observeToolCallsForWatchdog(&session.Event{
 		LLMResponse: model.LLMResponse{Content: &genai.Content{}}, // empty parts
-	})
+	}, map[string]struct{}{})
 	a.observeToolCallsForWatchdog(&session.Event{
 		LLMResponse: model.LLMResponse{Content: &genai.Content{
 			Parts: []*genai.Part{nil, {Text: "x"}},
 		}},
-	})
+	}, map[string]struct{}{})
 }
 
 func TestSerializeArgsForWatchdog_StableAcrossMapOrder(t *testing.T) {
@@ -187,5 +187,77 @@ func TestWithWatchdog_SetsBothFields(t *testing.T) {
 	}
 	if o.onWatchdogAlert == nil {
 		t.Errorf("options.onWatchdogAlert not set")
+	}
+}
+
+// TestObserveToolCallsForWatchdog_DedupsAggregatorReEmission is the
+// #363 regression gate. ADK's streaming aggregator can re-emit the
+// same FunctionCall part across more than one event (intermediate
+// aggregate + final); without per-turn dedup each real call counted
+// up to twice and the repeated-tool-call signal tripped at ~half the
+// configured threshold. Same-ID re-emission dedups; a legitimate
+// parallel call with identical args but a distinct ID still counts;
+// and a fresh turn (fresh seen set) counts again — cross-turn
+// repetition IS the watchdog's signal.
+func TestObserveToolCallsForWatchdog_DedupsAggregatorReEmission(t *testing.T) {
+	t.Parallel()
+	w := &fakeWatchdog{}
+	a := &Agent{watchdog: w}
+
+	call := &genai.FunctionCall{ID: "fc-1", Name: "grep", Args: map[string]any{"pattern": "foo"}}
+	evIntermediate := &session.Event{LLMResponse: model.LLMResponse{Content: &genai.Content{
+		Parts: []*genai.Part{{FunctionCall: call}},
+	}}}
+	evFinal := &session.Event{LLMResponse: model.LLMResponse{Content: &genai.Content{
+		Parts: []*genai.Part{{FunctionCall: call}},
+	}}}
+
+	seen := map[string]struct{}{}
+	a.observeToolCallsForWatchdog(evIntermediate, seen)
+	a.observeToolCallsForWatchdog(evFinal, seen)
+	if got := len(w.observed); got != 1 {
+		t.Fatalf("re-emitted part observed %d times, want 1", got)
+	}
+
+	// A legitimate parallel call: same name+args, DIFFERENT ID.
+	evParallel := &session.Event{LLMResponse: model.LLMResponse{Content: &genai.Content{
+		Parts: []*genai.Part{{FunctionCall: &genai.FunctionCall{
+			ID: "fc-2", Name: "grep", Args: map[string]any{"pattern": "foo"},
+		}}},
+	}}}
+	a.observeToolCallsForWatchdog(evParallel, seen)
+	if got := len(w.observed); got != 2 {
+		t.Fatalf("distinct-ID parallel call observed total %d, want 2", got)
+	}
+
+	// Next turn: fresh seen set — the SAME call must count again
+	// (cross-turn repetition is the runaway signal).
+	a.observeToolCallsForWatchdog(evFinal, map[string]struct{}{})
+	if got := len(w.observed); got != 3 {
+		t.Fatalf("cross-turn repeat observed total %d, want 3 (dedup must not span turns)", got)
+	}
+}
+
+// TestObserveToolCallsForWatchdog_IDLessDedupsByNameArgs covers the
+// ID-less provider path: within one turn, identical name+args dedup
+// (aggregator artifact); different args still count.
+func TestObserveToolCallsForWatchdog_IDLessDedupsByNameArgs(t *testing.T) {
+	t.Parallel()
+	w := &fakeWatchdog{}
+	a := &Agent{watchdog: w}
+
+	mk := func(pattern string) *session.Event {
+		return &session.Event{LLMResponse: model.LLMResponse{Content: &genai.Content{
+			Parts: []*genai.Part{{FunctionCall: &genai.FunctionCall{
+				Name: "grep", Args: map[string]any{"pattern": pattern},
+			}}},
+		}}}
+	}
+	seen := map[string]struct{}{}
+	a.observeToolCallsForWatchdog(mk("foo"), seen)
+	a.observeToolCallsForWatchdog(mk("foo"), seen) // re-emission
+	a.observeToolCallsForWatchdog(mk("bar"), seen) // different args
+	if got := len(w.observed); got != 2 {
+		t.Fatalf("observed %d, want 2 (foo once, bar once)", got)
 	}
 }

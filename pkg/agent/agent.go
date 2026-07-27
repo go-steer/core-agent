@@ -953,6 +953,13 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		promptTokens, completionTokens int
 		turnErr                        error
 	)
+	// Per-turn dedup for watchdog observations (#363): ADK's streaming
+	// aggregator can re-emit the same FunctionCall part on an
+	// intermediate aggregate plus the final event, which double-counted
+	// each real call and tripped the repeated-tool-call signal at ~half
+	// the configured threshold. Scoped to this turn — cross-turn
+	// repeats are exactly the signal the watchdog exists to count.
+	watchdogSeen := map[string]struct{}{}
 	tapped := func(yield func(*session.Event, error) bool) {
 		for ev, err := range inner {
 			if ev != nil && ev.UsageMetadata != nil {
@@ -967,7 +974,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 			// the watchdog so its signals can fire on the post-turn
 			// hook. No-op when no watchdog is wired.
 			if a.watchdog != nil && ev != nil {
-				a.observeToolCallsForWatchdog(ev)
+				a.observeToolCallsForWatchdog(ev, watchdogSeen)
 			}
 			// Digest-savings observation. Walk FunctionResponse
 			// parts for the `savings` sidecar the MCP digest wrap

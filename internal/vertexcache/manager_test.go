@@ -43,6 +43,11 @@ type fakeCaches struct {
 	updateErr   error
 	deleteErr   error
 	ttlOverride time.Duration
+	// honorCtx makes Create return ctx.Err() when the passed context
+	// is already cancelled — mimics a real transport so the #370
+	// detachment tests can prove doInit no longer runs on the
+	// spawning request's context.
+	honorCtx bool
 
 	createCount atomic.Int32
 	updateCount atomic.Int32
@@ -55,10 +60,15 @@ type fakeCaches struct {
 	nextCacheNameOnce string // if set, used for the next Create's returned Name
 }
 
-func (f *fakeCaches) Create(_ context.Context, model string, cfg *genai.CreateCachedContentConfig) (*genai.CachedContent, error) {
+func (f *fakeCaches) Create(ctx context.Context, model string, cfg *genai.CreateCachedContentConfig) (*genai.CachedContent, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.createCount.Add(1)
+	if f.honorCtx {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
 	f.lastCreateModel = model
 	f.lastCreateConfig = cfg
 	if f.createErr != nil {
@@ -389,4 +399,82 @@ func findSubstr(h, n string) bool {
 		}
 	}
 	return false
+}
+
+// TestInit_DetachedFromRequestContext is the #370 regression gate:
+// Init runs on the FIRST TURN's request context, and pre-fix the
+// Create RPC died with context.Canceled when that turn finished
+// first — flipping the manager to sticky stateFailed and silently
+// disabling caching for the daemon's life. doInit now runs on a
+// detached (WithoutCancel) context, so a dead parent must not stop
+// the cache from activating.
+func TestInit_DetachedFromRequestContext(t *testing.T) {
+	t.Parallel()
+	f := &fakeCaches{honorCtx: true}
+	m := NewManager(f, "gemini-3.1-pro", Options{Logger: discardLogger()})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the spawning turn is already gone
+	m.Init(ctx, &genai.Content{Parts: []*genai.Part{{Text: "sys"}}}, nil)
+
+	waitFor(t, time.Second, func() bool { return m.Snapshot().Active })
+	if got := f.createCount.Load(); got != 1 {
+		t.Errorf("createCount = %d, want 1", got)
+	}
+}
+
+// TestInit_TransientCancelRetriesInsteadOfStickyFail pins the error
+// classification half of #370: a Create that dies with
+// context.Canceled / DeadlineExceeded (RPC timeout, transport blip)
+// resets the manager to its pre-Init state so a later turn retries —
+// only non-cancellation failures stay sticky.
+func TestInit_TransientCancelRetriesInsteadOfStickyFail(t *testing.T) {
+	t.Parallel()
+	for _, transient := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(transient.Error(), func(t *testing.T) {
+			t.Parallel()
+			f := &fakeCaches{createErr: transient}
+			m := NewManager(f, "gemini-3.1-pro", Options{Logger: discardLogger()})
+			sys := &genai.Content{Parts: []*genai.Part{{Text: "sys"}}}
+
+			m.Init(context.Background(), sys, nil)
+			// The failed attempt must NOT go sticky-failed, and must
+			// re-open the Init gate.
+			waitFor(t, time.Second, func() bool { return f.createCount.Load() == 1 })
+			waitFor(t, time.Second, func() bool {
+				s := m.Snapshot()
+				return !s.Active && !s.Failed
+			})
+
+			// Blip over: the next turn's Init retries and activates.
+			f.mu.Lock()
+			f.createErr = nil
+			f.mu.Unlock()
+			m.Init(context.Background(), sys, nil)
+			waitFor(t, time.Second, func() bool { return m.Snapshot().Active })
+			if got := f.createCount.Load(); got != 2 {
+				t.Errorf("createCount = %d, want 2 (one failed, one retried)", got)
+			}
+		})
+	}
+}
+
+// TestInit_RealErrorStaysSticky pins the counterpart: a genuine
+// Create failure (bad model, permission denied, ...) keeps the
+// documented sticky stateFailed — a later Init must NOT hammer the
+// API with doomed retries.
+func TestInit_RealErrorStaysSticky(t *testing.T) {
+	t.Parallel()
+	f := &fakeCaches{createErr: errors.New("permission denied")}
+	m := NewManager(f, "gemini-3.1-pro", Options{Logger: discardLogger()})
+	sys := &genai.Content{Parts: []*genai.Part{{Text: "sys"}}}
+
+	m.Init(context.Background(), sys, nil)
+	waitFor(t, time.Second, func() bool { return m.Snapshot().Failed })
+
+	m.Init(context.Background(), sys, nil) // must no-op
+	time.Sleep(20 * time.Millisecond)
+	if got := f.createCount.Load(); got != 1 {
+		t.Errorf("createCount = %d, want 1 (sticky failure must not retry)", got)
+	}
 }

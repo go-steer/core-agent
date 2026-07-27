@@ -26,6 +26,7 @@ package vertexcache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -155,10 +156,26 @@ func (m *Manager) Init(ctx context.Context, systemInstruction *genai.Content, to
 	m.initStarted = true
 	m.mu.Unlock()
 
-	go m.doInit(ctx, systemInstruction, tools)
+	// Detach from the caller's (typically the first turn's request)
+	// context: if that turn completes or is interrupted before
+	// Caches.Create returns, the RPC would die with context.Canceled
+	// and — pre-#370 — flip the manager to sticky stateFailed,
+	// silently disabling caching for the daemon's lifetime.
+	// WithoutCancel keeps the caller's values (auth, tracing) while
+	// dropping its cancellation; rpcTimeout bounds the detached RPC
+	// so it can't leak forever.
+	go m.doInit(context.WithoutCancel(ctx), systemInstruction, tools)
 }
 
+// rpcTimeout bounds the detached background Create/Update RPCs.
+// Generous — a Create carrying a large system prompt can take a
+// while — but finite, since the goroutines no longer die with their
+// spawning request's context.
+const rpcTimeout = 2 * time.Minute
+
 func (m *Manager) doInit(ctx context.Context, systemInstruction *genai.Content, tools []*genai.Tool) {
+	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
 	cfg := &genai.CreateCachedContentConfig{
 		SystemInstruction: systemInstruction,
 		Tools:             tools,
@@ -169,6 +186,20 @@ func (m *Manager) doInit(ctx context.Context, systemInstruction *genai.Content, 
 	}
 	created, err := m.caches.Create(ctx, m.model, cfg)
 	if err != nil {
+		// Cancellation/timeout is transient, not the persistent-
+		// failure class: reset to the pre-Init state so a later
+		// turn's Init retries, instead of the session paying full
+		// input price for the daemon's life over a blip (#370).
+		// (The detached ctx makes parent cancellation impossible,
+		// but the RPC timeout above and transport-level context
+		// errors still land here.)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			m.opts.logger().Printf("core-agent-vertexcache: Caches.Create cancelled/timed out (transient; will retry on a later turn): %v", err)
+			m.mu.Lock()
+			m.initStarted = false
+			m.mu.Unlock()
+			return
+		}
 		m.opts.logger().Printf("core-agent-vertexcache: Caches.Create failed (agent will run uncached for its lifetime): %v", err)
 		m.mu.Lock()
 		m.state = stateFailed
@@ -211,7 +242,9 @@ func (m *Manager) Name(ctx context.Context) string {
 		if m.state == stateActive && !m.refreshing &&
 			time.Until(m.expiresAt) < m.opts.refreshThreshold() {
 			m.refreshing = true
-			go m.doRefresh(ctx, name)
+			// Same detach as Init: the refresh outlives the request
+			// that happened to trigger it.
+			go m.doRefresh(context.WithoutCancel(ctx), name)
 		}
 		m.mu.Unlock()
 	}
@@ -224,6 +257,8 @@ func (m *Manager) doRefresh(ctx context.Context, name string) {
 		m.refreshing = false
 		m.mu.Unlock()
 	}()
+	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
 	updated, err := m.caches.Update(ctx, name, &genai.UpdateCachedContentConfig{
 		TTL: m.opts.ttl(),
 	})

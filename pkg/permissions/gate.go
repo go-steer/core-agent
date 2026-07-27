@@ -88,6 +88,13 @@ type Gate struct {
 	scope    *PathScope
 	prompter Prompter
 
+	// grants persists DecisionAllowAlways outcomes across restarts.
+	// Nil disables persistence (the grant still applies in-memory
+	// for the process lifetime). Shared by reference across
+	// DeriveForSession sub-gates, consistent with the daemon-wide
+	// Policy/PathScope mutation rules documented there.
+	grants GrantStore
+
 	// In-session allow set keyed by tool|key. Populated by
 	// DecisionAllowSession choices so we don't re-prompt the same call
 	// repeatedly within one session.
@@ -181,6 +188,12 @@ type Options struct {
 	Scope    *PathScope
 	Prompter Prompter // nil = no interactive path; ask-mode unresolved → deny
 
+	// GrantStore persists "allow always" grants beyond the process
+	// lifetime. nil = grants apply in-memory only (pre-v2.8 behavior).
+	// See the GrantStore interface docs; wire the bundled
+	// config-backed implementation or your own.
+	GrantStore GrantStore
+
 	// RequirePlanArtifact, when true, denies mutating tool calls
 	// (write_file/edit_file/delete_file/bash, spawn family, MCP
 	// tools, and anything else not in planExemptTools) until the
@@ -211,6 +224,7 @@ func New(opts Options) *Gate {
 		policy:              opts.Policy,
 		scope:               opts.Scope,
 		prompter:            opts.Prompter,
+		grants:              opts.GrantStore,
 		sessionAllow:        make(map[string]struct{}),
 		sessionAllowTools:   make(map[string]struct{}),
 		sessionAllowVerbs:   make(map[string]struct{}),
@@ -335,6 +349,7 @@ func (template *Gate) DeriveForSession(sessionID string, prompter Prompter) *Gat
 		policy:              template.policy,
 		scope:               template.scope,
 		prompter:            prompter,
+		grants:              template.grants,
 		sessionAllow:        make(map[string]struct{}),
 		sessionAllowTools:   make(map[string]struct{}),
 		sessionAllowVerbs:   make(map[string]struct{}),
@@ -431,6 +446,13 @@ func (g *Gate) HasPrompter() bool { return g.prompter != nil }
 // bubble-tea program. Set to nil to disable interactive prompting
 // (ask-mode calls then fail with ErrNoPrompter).
 func (g *Gate) SetPrompter(p Prompter) { g.prompter = p }
+
+// SetGrantStore swaps the gate's grant persistence backend. Mirrors
+// SetPrompter for hosts that construct the gate before the store's
+// dependencies (e.g. the resolved .agents dir) are known. Set to nil
+// to disable persistence — DecisionAllowAlways grants then apply for
+// the process lifetime only.
+func (g *Gate) SetGrantStore(s GrantStore) { g.grants = s }
 
 // AddAllowPatterns extends the live policy with additional allow
 // patterns and is safe to call concurrently with in-flight Match
@@ -802,6 +824,7 @@ func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
 		return nil
 	case DecisionAllowAlways:
 		g.rememberSession(req.ToolName, req.Detail)
+		grant := Grant{Kind: req.Kind, Tool: req.PersistTool, Key: req.PersistKey}
 		if req.Kind == PromptKindPathScope {
 			// Asymmetric op promotion from the interactive prompt:
 			//   write-always → install ReadWrite
@@ -828,7 +851,32 @@ func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
 			case AccessWrite:
 				access = AccessReadWrite
 			}
-			g.scope.AddAlwaysAllow(expandAlwaysAllowPattern(req.PersistKey), access)
+			grant.Pattern = expandAlwaysAllowPattern(req.PersistKey)
+			grant.Access = access
+			g.scope.AddAlwaysAllow(grant.Pattern, access)
+		} else {
+			// Non-path grants become a real in-memory policy
+			// pattern, closing the pre-v2.8 gap where "allow
+			// always" for bash/generic prompts only remembered the
+			// session (the persistent half of the contract lived
+			// exclusively in the bundled TUI's callbacks). With
+			// this, the very next identical call short-circuits at
+			// the policy layer regardless of which prompter the
+			// host wired.
+			grant.Pattern = req.PersistTool + ":" + req.PersistKey
+			if err := g.policy.AddAllow([]string{grant.Pattern}); err != nil {
+				return fmt.Errorf("permissions: install always-allow pattern %q: %w", grant.Pattern, err)
+			}
+		}
+		if g.grants != nil {
+			// The in-memory grant above already applies; a persist
+			// failure must still surface, not silently downgrade
+			// the operator's "always" to "this session" — they can
+			// retry, fix the config dir, or re-answer with a
+			// session-scoped choice.
+			if err := g.grants.Persist(ctx, grant); err != nil {
+				return fmt.Errorf("permissions: persist always-allow grant %q: %w", grant.Pattern, err)
+			}
 		}
 		g.recordApproval(req.ToolName, req.Detail, d)
 		return nil

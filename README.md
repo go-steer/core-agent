@@ -55,7 +55,7 @@ A production-grade Go substrate for multi-turn LLM agents, built on the [Google 
 - Subagent events stream into the parent's audit log under a `Branch` label so the trail stays unified.
 
 **Kubernetes triage sidecar** (v2.6+)
-- [`cmd/k8s-event-watcher/`](./cmd/k8s-event-watcher/) — client-go informer that watches Kubernetes Events, filters + dedupes, and injects matched incidents into per-incident sessions on a core-agent daemon. Pairs with the bundled triage skill to drive diagnose → fix → verify loops via the GKE MCP, gated by plan-first. See [`examples/gke-troubleshoot-agent/`](./examples/gke-troubleshoot-agent/).
+- `k8s-event-watcher` — watches Kubernetes Events, filters + dedupes, and injects matched incidents into per-incident sessions on a core-agent daemon. Pairs with the bundled triage skill to drive diagnose → fix → verify loops via the GKE MCP, gated by plan-first. The watcher's source now lives in [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout); the recipe in [`examples/gke-troubleshoot-agent/`](./examples/gke-troubleshoot-agent/) still deploys the published image.
 
 **Optional adapters**
 - [`extras/scion-agent/`](./extras/scion-agent/) — runs `core-agent` inside [Scion](https://github.com/GoogleCloudPlatform/scion)'s container runtime with lifecycle status emission and a `sciontool_status` tool.
@@ -91,8 +91,9 @@ tar xzf "core-agent_${TAG#v}_${OS}_${ARCH}.tar.gz"
 docker pull ghcr.io/go-steer/core-agent:latest        # daemon + in-process TUI
 docker pull ghcr.io/go-steer/core-agent-slim:latest   # headless daemon, ~5MB smaller
 docker pull ghcr.io/go-steer/core-agent-tui:latest    # remote TUI client only
-docker pull ghcr.io/go-steer/k8s-event-watcher:latest # K8s event-triage sidecar
 ```
+
+(The `k8s-event-watcher` sidecar image now ships from [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout); tags published from this repo through v2.7 remain pullable.)
 
 Floating tags: `:latest`, `:X.Y.Z`, `:X.Y`, `:X` (semver, no `v` prefix), `:main`, `:main-<sha>`.
 
@@ -111,7 +112,8 @@ go get github.com/go-steer/core-agent/v2
 | `core-agent` | Full daemon: multi-session runtime + in-process Bubble Tea TUI + remote-attach API. | Default target. |
 | `core-agent-slim` | Same daemon, built `-tags no_tui`. ~5MB smaller. | Distroless K8s pods where the TUI is dead weight. |
 | `core-agent-tui` | Remote TUI client only. Connects to a daemon over the attach API. | Operator workstations attaching to a remote daemon. |
-| `k8s-event-watcher` | Sidecar that watches Kubernetes Events, dedupes, and injects matched ones into a daemon. | GKE / K8s troubleshooting agents. |
+
+The `k8s-event-watcher` sidecar (watches Kubernetes Events, dedupes, injects matched ones into a daemon) moved to [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout) and ships from there.
 
 ---
 
@@ -211,8 +213,7 @@ core-agent/
 │   └── usage/              # per-turn token + cost tracker
 ├── cmd/
 │   ├── core-agent/         # daemon + CLI + in-process TUI
-│   ├── core-agent-tui/     # remote TUI client
-│   └── k8s-event-watcher/  # K8s event-triage sidecar
+│   └── core-agent-tui/     # remote TUI client
 ├── extras/scion-agent/     # opt-in Scion runtime adapter
 ├── examples/               # 15+ worked examples
 ├── docs/                   # DESIGN.md, release-process.md, Astro site

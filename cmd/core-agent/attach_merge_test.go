@@ -40,45 +40,10 @@ func registerAttachFlags(fs *flag.FlagSet) *attachOpts {
 	return &o
 }
 
-func TestMergeAttachOpts_ConfigSuppliesDefaults(t *testing.T) {
-	t.Parallel()
-
-	fs := flag.NewFlagSet("test", flag.ContinueOnError)
-	opts := registerAttachFlags(fs)
-	if err := fs.Parse(nil); err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-
-	cfg := config.AttachConfig{
-		Listen:           "0.0.0.0:7777",
-		TLSCert:          "/etc/attach/tls.crt",
-		TLSKey:           "/etc/attach/tls.key",
-		ClientCA:         "/etc/attach/ca.crt",
-		TokenEnv:         "ATTACH_TOKEN",
-		ReadOnly:         true,
-		PeerHub:          true,
-		RegisterTo:       "https://hub.svc:7777",
-		RegisterEndpoint: "https://10.0.0.7:7777",
-		RegisterName:     "monitor-pod-1",
-	}
-
-	got := mergeAttachOpts(*opts, cfg, fs)
-	want := attachOpts{
-		Listen:           "0.0.0.0:7777",
-		TLSCert:          "/etc/attach/tls.crt",
-		TLSKey:           "/etc/attach/tls.key",
-		ClientCA:         "/etc/attach/ca.crt",
-		TokenEnv:         "ATTACH_TOKEN",
-		ReadOnly:         true,
-		PeerHub:          true,
-		RegisterTo:       "https://hub.svc:7777",
-		RegisterEndpoint: "https://10.0.0.7:7777",
-		RegisterName:     "monitor-pod-1",
-	}
-	if got != want {
-		t.Errorf("merged opts:\n got:  %+v\n want: %+v", got, want)
-	}
-}
+// Config-value translation (field mapping + ${ENV} expansion of
+// config values) is covered in pkg/compose's BuildAttachOptions tests
+// since #386 PR 6; what stays here is the CLI-beats-config precedence
+// that needs flag.Visit.
 
 func TestMergeAttachOpts_CLIBeatsConfig(t *testing.T) {
 	t.Parallel()
@@ -115,35 +80,6 @@ func TestMergeAttachOpts_CLIBeatsConfig(t *testing.T) {
 	}
 }
 
-func TestMergeAttachOpts_EnvExpansion(t *testing.T) {
-	t.Setenv("POD_IP", "10.0.4.7")
-	t.Setenv("MY_PORT", "7777")
-	t.Setenv("MY_HOSTNAME", "pod-abc")
-
-	fs := flag.NewFlagSet("test", flag.ContinueOnError)
-	opts := registerAttachFlags(fs)
-	if err := fs.Parse(nil); err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-
-	cfg := config.AttachConfig{
-		Listen:           "0.0.0.0:${MY_PORT}",
-		RegisterEndpoint: "https://${POD_IP}:${MY_PORT}",
-		RegisterName:     "monitor-${MY_HOSTNAME}",
-	}
-	got := mergeAttachOpts(*opts, cfg, fs)
-
-	if got.Listen != "0.0.0.0:7777" {
-		t.Errorf("Listen env-expansion: got %q", got.Listen)
-	}
-	if got.RegisterEndpoint != "https://10.0.4.7:7777" {
-		t.Errorf("RegisterEndpoint env-expansion: got %q", got.RegisterEndpoint)
-	}
-	if got.RegisterName != "monitor-pod-abc" {
-		t.Errorf("RegisterName env-expansion: got %q", got.RegisterName)
-	}
-}
-
 func TestMergeAttachOpts_EnvExpansionOnCLIValue(t *testing.T) {
 	t.Setenv("POD_IP", "192.168.1.42")
 
@@ -173,5 +109,26 @@ func TestMergeAttachOpts_EmptyConfigEmptyFlags(t *testing.T) {
 	got := mergeAttachOpts(*opts, config.AttachConfig{}, fs)
 	if (got != attachOpts{}) {
 		t.Errorf("empty in, empty out — got: %+v", got)
+	}
+}
+
+func TestMergeAttachOpts_ConfigDefaultsFlowThroughMerge(t *testing.T) {
+	t.Parallel()
+
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	opts := registerAttachFlags(fs)
+	if err := fs.Parse(nil); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	// One representative field per kind proves the merge consumes
+	// compose.BuildAttachOptions for the config layer; exhaustive
+	// field translation is BuildAttachOptions's own test in compose.
+	got := mergeAttachOpts(*opts, config.AttachConfig{
+		Listen:   "0.0.0.0:7777",
+		ReadOnly: true,
+	}, fs)
+	if got.Listen != "0.0.0.0:7777" || !got.ReadOnly {
+		t.Errorf("config defaults did not flow through merge: %+v", got)
 	}
 }

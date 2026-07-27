@@ -2,7 +2,7 @@
 
 Roughly 5.5-6k lines of substrate-grade wiring — multi-session construction, the attach-only wake loop, agentic-tool assembly, the MCP digest LLM fallback, context-cache wiring, compactor construction, startup-summary formatting, and (critically) the only real implementation of "allow always" grant persistence — currently sit behind `package main` and are unreachable by cogo, scion, and ax. This doc lifts that logic into a new library package, `pkg/compose`, and promotes grant persistence to a first-class `pkg/permissions` API so the gate's "allow always" contract has a supported library-side implementation. The seam is deliberate: reusable *policy* moves; flag parsing, process wiring, `os.Exit`, and the TUI binary stay put.
 
-**Status:** proposed (2026-07-26). Human-led / API-shape; design-doc first per docs/cleanup-execution-plan.md (Wave 3).
+**Status:** in progress (2026-07-27). Human-led / API-shape; design-doc first per docs/cleanup-execution-plan.md (Wave 3). #388 completed first as planned (all four phases on main). PR 1 (`permissions.GrantStore` + gate wiring) landed.
 
 **Tracking issue:** [#386](https://github.com/go-steer/core-agent/issues/386)
 
@@ -251,7 +251,7 @@ Ordered so each PR compiles and tests clean on its own. PRs marked **[#388]** ar
 ## Open questions for review
 
 - **Wake-loop home.** The `--no-repl` loop is duplicated in `main.go` and `multi_session.go`, and both hand-roll the usage tap that `pkg/runner` already owns (`usage.TurnTap`). `runner/headless.go` is one-shot and has no wake loop. Recommendation: consolidate into a new `runner.WakeLoop` that both call, rather than a compose helper — runner is already the "drive the agent through a conversation" package. Compose then consumes it. Alternative: keep it in compose.
-- **`DecisionAllowAlways` behavior change.** Making non-path "allow always" add a real policy pattern + persist via the store is a bug fix against the documented contract (today it degrades to allow-session on the stdin/headless path), but it is observable. Ship as a fix (nil-store default preserves old behavior), or gate behind opt-in?
+- **`DecisionAllowAlways` behavior change.** ~~Ship as a fix, or gate behind opt-in?~~ **Resolved (PR 1, 2026-07-27): shipped as a fix.** Non-path "allow always" installs a real policy pattern; the nil-store default keeps persistence off, and `Persist` errors surface to the gated call. Documented in the CHANGELOG Feature entry.
 - **`internal/` coupling.** Compose depends on `internal/pricing` and `internal/vertexcache`. Legal and transitively fine for external consumers, but cogo/scion/ax cannot reconfigure those internals through compose. Recommendation: accept for v1; defer promoting them to `pkg/` until a consumer needs it.
 
 ## Risks

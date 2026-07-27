@@ -28,6 +28,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/attachadapter"
 	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/compose"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 	"github.com/go-steer/core-agent/v2/pkg/instruction"
@@ -284,7 +285,7 @@ func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, ori
 		if deps.cfg != nil {
 			compactionCfg = deps.cfg.Compaction
 		}
-		opts = append(opts, agent.WithCompactor(buildCompactor(compactionCfg)))
+		opts = append(opts, agent.WithCompactor(compose.BuildCompactor(compactionCfg)))
 	}
 	// Task-boundary checkpoints (Mechanism C). Default-on unless
 	// --no-checkpoint was passed. Without this wiring, /done and

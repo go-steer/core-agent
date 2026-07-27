@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package compose
 
 import (
 	"fmt"
@@ -27,7 +27,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/tools/agentic"
 )
 
-// buildAgenticTools constructs the agentic_* tool wrappers from
+// BuildAgenticTools constructs the agentic_* tool wrappers from
 // docs/context-management-design.md Mechanism B. The wrappers
 // call Agent.RunSubtask so raw tool output stays in the subtask
 // and only the digest reaches the parent's context.
@@ -46,7 +46,7 @@ import (
 // route subtasks through that cheaper model. Empty smallModelID
 // means subtasks inherit the parent's model — the wrappers still
 // work, just without the cost win.
-func buildAgenticTools(
+func BuildAgenticTools(
 	builtinTools []adktool.Tool,
 	agentGetter func() *agent.Agent,
 	provider models.Provider,
@@ -122,7 +122,7 @@ func toolNames(ts []adktool.Tool) []string {
 	return out
 }
 
-// renderContextStats formats Agent.ContextStats as a multi-line
+// RenderContextStats formats Agent.ContextStats as a multi-line
 // SystemMessage for the /context (alias /boundaries) slash. Empty
 // sections collapse to a one-line "no X yet" so a fresh session
 // still gets a meaningful response. Format intentionally mirrors
@@ -133,7 +133,7 @@ func toolNames(ts []adktool.Tool) []string {
 // dollar figure for the Digest savings block. Zero means "unknown"
 // (fresh session, provider-less pricing, or an unpriced model) —
 // the block still renders but omits the dollar figures.
-func renderContextStats(s agent.ContextStats, parentInputRate float64) string {
+func RenderContextStats(s agent.ContextStats, parentInputRate float64) string {
 	var b strings.Builder
 	b.WriteString("Context-management activity:\n")
 

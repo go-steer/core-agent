@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package compose
 
 import (
 	"strings"
@@ -25,7 +25,7 @@ import (
 
 func TestRenderContextStats_FreshSession(t *testing.T) {
 	t.Parallel()
-	out := renderContextStats(agent.ContextStats{}, 0)
+	out := RenderContextStats(agent.ContextStats{}, 0)
 	if !strings.Contains(out, "Compactions:  none yet") {
 		t.Errorf("fresh-session output missing 'Compactions: none yet':\n%s", out)
 	}
@@ -57,7 +57,7 @@ func TestRenderContextStats_PopulatedSession(t *testing.T) {
 		SubtaskOutputTokens: 1500,
 		SubtaskCostUSD:      0.0234,
 	}
-	out := renderContextStats(s, 0)
+	out := RenderContextStats(s, 0)
 
 	for _, want := range []string{
 		"Compactions:  2",
@@ -83,7 +83,7 @@ func TestRenderContextStats_TruncatesLongCheckpointNote(t *testing.T) {
 		LastCheckpointNote: longNote,
 		LastCheckpointTime: time.Now(),
 	}
-	out := renderContextStats(s, 0)
+	out := RenderContextStats(s, 0)
 	if !strings.Contains(out, "...") {
 		t.Errorf("expected long note to be truncated with '...', got:\n%s", out)
 	}
@@ -103,7 +103,7 @@ func TestRenderContextStats_ModelBreakdownSortsByCost(t *testing.T) {
 			"unused-model-zero-cost-tiebrk": {Turns: 1, InputTokens: 100, OutputTokens: 10, CostUSD: 0.0001},
 		},
 	}
-	out := renderContextStats(s, 0)
+	out := RenderContextStats(s, 0)
 	if !strings.Contains(out, "Models:") {
 		t.Errorf("expected Models row in output:\n%s", out)
 	}
@@ -132,7 +132,7 @@ func TestRenderContextStats_ModelBreakdownHiddenWhenEmpty(t *testing.T) {
 		SubtaskCount: 1,
 		// ModelBreakdown nil
 	}
-	out := renderContextStats(s, 0)
+	out := RenderContextStats(s, 0)
 	if strings.Contains(out, "Models:") {
 		t.Errorf("Models row should be hidden when breakdown is empty:\n%s", out)
 	}
@@ -161,7 +161,7 @@ func TestRenderContextStats_DigestSavingsBlockRendersWithPricing(t *testing.T) {
 	// Parent at $15/M input (roughly Opus rate) → structural saves
 	// 12k * 15 / 1M = $0.18; agentic saves 8k * 15 / 1M - 0.0006 =
 	// $0.12 - $0.0006 = $0.1194.
-	out := renderContextStats(s, 15.0)
+	out := RenderContextStats(s, 15.0)
 	for _, want := range []string{
 		"Digest savings (vs. no-digest baseline)",
 		"Structural: 3 calls, 12000 tokens saved (~$0.1800)",
@@ -186,7 +186,7 @@ func TestRenderContextStats_DigestSavingsWithoutPricing(t *testing.T) {
 			StructuralTokensSaved: 500,
 		},
 	}
-	out := renderContextStats(s, 0)
+	out := RenderContextStats(s, 0)
 	if !strings.Contains(out, "Structural: 1 calls, 500 tokens saved") {
 		t.Errorf("expected token count row when rate is 0:\n%s", out)
 	}
@@ -201,7 +201,7 @@ func TestRenderContextStats_DigestSavingsWithoutPricing(t *testing.T) {
 // zero-block that carries no signal.
 func TestRenderContextStats_DigestSavingsHiddenWhenNoActivity(t *testing.T) {
 	t.Parallel()
-	out := renderContextStats(agent.ContextStats{}, 15.0)
+	out := RenderContextStats(agent.ContextStats{}, 15.0)
 	if strings.Contains(out, "Digest savings") {
 		t.Errorf("empty digest-savings totals should hide the block:\n%s", out)
 	}

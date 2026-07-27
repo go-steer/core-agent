@@ -103,6 +103,7 @@ func systemBlocks(cfg *genai.GenerateContentConfig, cacheSystem bool) []anthropi
 // can hoist them to the top-level System field on Anthropic's API.
 func contentsToMessages(contents []*genai.Content) ([]anthropic.MessageParam, error) {
 	out := make([]anthropic.MessageParam, 0, len(contents))
+	ids := newIDSynthesizer()
 	for _, c := range contents {
 		if c == nil {
 			continue
@@ -111,7 +112,7 @@ func contentsToMessages(contents []*genai.Content) ([]anthropic.MessageParam, er
 		if role == "" {
 			continue
 		}
-		blocks, err := partsToBlocks(c.Parts)
+		blocks, err := partsToBlocks(c.Parts, ids)
 		if err != nil {
 			return nil, err
 		}
@@ -121,6 +122,46 @@ func contentsToMessages(contents []*genai.Content) ([]anthropic.MessageParam, er
 		out = append(out, anthropic.MessageParam{Role: role, Content: blocks})
 	}
 	return out, nil
+}
+
+// idSynthesizer allocates deterministic per-request IDs for tool
+// calls/results whose genai parts carry no ID — parallel calls to the
+// same tool (or a replayed Gemini-origin history, which frequently
+// omits IDs) would otherwise all synthesize the identical
+// "call_<name>" and Anthropic 400s duplicate tool_use IDs (#367).
+//
+// Pairing invariant: when IDs are absent, a tool_result pairs with
+// its tool_use by NAME in ORDER (ADK appends results in call order),
+// so the call-side and result-side counters advance independently per
+// name and stay aligned across the request. The first occurrence
+// keeps the historical bare "call_<name>" so single-call histories
+// produce byte-identical requests; only collisions get a suffix.
+// One synthesizer per request — counters must never leak across
+// requests or the same history would re-pair differently.
+type idSynthesizer struct {
+	calls map[string]int
+	resps map[string]int
+}
+
+func newIDSynthesizer() *idSynthesizer {
+	return &idSynthesizer{calls: map[string]int{}, resps: map[string]int{}}
+}
+
+func (s *idSynthesizer) callID(name string) string {
+	s.calls[name]++
+	return synthToolID(name, s.calls[name])
+}
+
+func (s *idSynthesizer) respID(name string) string {
+	s.resps[name]++
+	return synthToolID(name, s.resps[name])
+}
+
+func synthToolID(name string, n int) string {
+	if n == 1 {
+		return "call_" + name
+	}
+	return fmt.Sprintf("call_%s_%d", name, n)
 }
 
 func mapRole(r string) anthropic.MessageParamRole {
@@ -151,7 +192,7 @@ const redactedThinkingPrefix = "anthropic-redacted-thinking:"
 // round-tripped for #357), text, FunctionCall (assistant tool_use),
 // FunctionResponse (user tool_result). Inline image data + other
 // genai part types are skipped with a TODO marker — easy to add later.
-func partsToBlocks(parts []*genai.Part) ([]anthropic.ContentBlockParamUnion, error) {
+func partsToBlocks(parts []*genai.Part, ids *idSynthesizer) ([]anthropic.ContentBlockParamUnion, error) {
 	out := make([]anthropic.ContentBlockParamUnion, 0, len(parts))
 	for _, p := range parts {
 		if p == nil {
@@ -167,13 +208,13 @@ func partsToBlocks(parts []*genai.Part) ([]anthropic.ContentBlockParamUnion, err
 		case p.Text != "":
 			out = append(out, anthropic.NewTextBlock(p.Text))
 		case p.FunctionCall != nil:
-			block, err := functionCallBlock(p.FunctionCall)
+			block, err := functionCallBlock(p.FunctionCall, ids)
 			if err != nil {
 				return nil, err
 			}
 			out = append(out, block)
 		case p.FunctionResponse != nil:
-			out = append(out, functionResponseBlock(p.FunctionResponse))
+			out = append(out, functionResponseBlock(p.FunctionResponse, ids))
 		}
 	}
 	return out, nil
@@ -206,12 +247,12 @@ func thoughtBlock(p *genai.Part) (anthropic.ContentBlockParamUnion, bool) {
 
 // functionCallBlock builds an assistant-side tool_use content block.
 // Anthropic requires a non-empty ID so the user-side tool_result can
-// be matched back. Genai may omit ID; we synthesize from the function
-// name in that case.
-func functionCallBlock(fc *genai.FunctionCall) (anthropic.ContentBlockParamUnion, error) {
+// be matched back. Genai may omit ID; we synthesize a per-request
+// unique one from the function name in that case (see idSynthesizer).
+func functionCallBlock(fc *genai.FunctionCall, ids *idSynthesizer) (anthropic.ContentBlockParamUnion, error) {
 	id := fc.ID
 	if id == "" {
-		id = "call_" + fc.Name
+		id = ids.callID(fc.Name)
 	}
 	args := fc.Args
 	if args == nil {
@@ -233,10 +274,10 @@ func functionCallBlock(fc *genai.FunctionCall) (anthropic.ContentBlockParamUnion
 // functionResponseBlock builds a user-side tool_result content block.
 // We collapse the genai FunctionResponse.Response map into JSON text;
 // Anthropic accepts string content blocks for tool results.
-func functionResponseBlock(fr *genai.FunctionResponse) anthropic.ContentBlockParamUnion {
+func functionResponseBlock(fr *genai.FunctionResponse, ids *idSynthesizer) anthropic.ContentBlockParamUnion {
 	id := fr.ID
 	if id == "" {
-		id = "call_" + fr.Name
+		id = ids.respID(fr.Name)
 	}
 	body := ""
 	if fr.Response != nil {

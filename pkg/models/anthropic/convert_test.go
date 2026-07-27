@@ -248,7 +248,7 @@ func TestPartsToBlocks_ThoughtPartsRoundTrip(t *testing.T) {
 		{Text: "orphan thought summary", Thought: true}, // unsigned → dropped
 		{FunctionCall: &genai.FunctionCall{ID: "toolu_01", Name: "read_file", Args: map[string]any{"path": "a.txt"}}},
 	}
-	blocks, err := partsToBlocks(parts)
+	blocks, err := partsToBlocks(parts, newIDSynthesizer())
 	if err != nil {
 		t.Fatalf("partsToBlocks: %v", err)
 	}
@@ -302,5 +302,87 @@ func TestContentsToMessages_ThinkingToolLoopShape(t *testing.T) {
 	}
 	if asst.Content[1].OfToolUse == nil {
 		t.Errorf("assistant block[1] = %+v, want tool_use after thinking", asst.Content[1])
+	}
+}
+
+// TestContentsToMessages_ParallelSameToolCallsGetUniqueIDs is the
+// #367 regression gate: two ID-less parallel calls to the same tool
+// in one assistant turn (the common shape in replayed Gemini-origin
+// histories, which frequently omit IDs) must synthesize UNIQUE
+// tool_use IDs — Anthropic 400s duplicates — while each tool_result
+// pairs with its call by name-occurrence order. The first occurrence
+// keeps the historical bare "call_<name>" so single-call histories
+// produce byte-identical requests.
+func TestContentsToMessages_ParallelSameToolCallsGetUniqueIDs(t *testing.T) {
+	t.Parallel()
+	contents := []*genai.Content{
+		{Role: genai.RoleModel, Parts: []*genai.Part{
+			{FunctionCall: &genai.FunctionCall{Name: "grep", Args: map[string]any{"pattern": "foo"}}},
+			{FunctionCall: &genai.FunctionCall{Name: "grep", Args: map[string]any{"pattern": "bar"}}},
+		}},
+		{Role: genai.RoleUser, Parts: []*genai.Part{
+			{FunctionResponse: &genai.FunctionResponse{Name: "grep", Response: map[string]any{"output": "foo-hits"}}},
+			{FunctionResponse: &genai.FunctionResponse{Name: "grep", Response: map[string]any{"output": "bar-hits"}}},
+		}},
+	}
+	msgs, err := contentsToMessages(contents)
+	if err != nil {
+		t.Fatalf("contentsToMessages: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("messages = %d, want 2", len(msgs))
+	}
+
+	callA := msgs[0].Content[0].OfToolUse
+	callB := msgs[0].Content[1].OfToolUse
+	if callA == nil || callB == nil {
+		t.Fatalf("assistant blocks not tool_use: %+v", msgs[0].Content)
+	}
+	if callA.ID == callB.ID {
+		t.Fatalf("duplicate synthesized tool_use IDs %q — Anthropic 400s these", callA.ID)
+	}
+	if callA.ID != "call_grep" {
+		t.Errorf("first ID = %q, want the historical bare call_grep", callA.ID)
+	}
+
+	resA := msgs[1].Content[0].OfToolResult
+	resB := msgs[1].Content[1].OfToolResult
+	if resA == nil || resB == nil {
+		t.Fatalf("user blocks not tool_result: %+v", msgs[1].Content)
+	}
+	if resA.ToolUseID != callA.ID || resB.ToolUseID != callB.ID {
+		t.Errorf("result pairing broken: results (%q, %q) vs calls (%q, %q) — must pair by name-occurrence order",
+			resA.ToolUseID, resB.ToolUseID, callA.ID, callB.ID)
+	}
+}
+
+// TestContentsToMessages_IDSynthesisPerRequest pins that the
+// uniquifying counters reset per contentsToMessages call: replaying
+// the same history twice yields identical IDs both times, so a
+// persisted session re-pairs deterministically across requests.
+func TestContentsToMessages_IDSynthesisPerRequest(t *testing.T) {
+	t.Parallel()
+	contents := []*genai.Content{
+		{Role: genai.RoleModel, Parts: []*genai.Part{
+			{FunctionCall: &genai.FunctionCall{Name: "ls", Args: map[string]any{}}},
+			{FunctionCall: &genai.FunctionCall{Name: "ls", Args: map[string]any{}}},
+		}},
+	}
+	first, err := contentsToMessages(contents)
+	if err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	second, err := contentsToMessages(contents)
+	if err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	for i := range first[0].Content {
+		a, b := first[0].Content[i].OfToolUse.ID, second[0].Content[i].OfToolUse.ID
+		if a != b {
+			t.Errorf("block %d: IDs differ across passes (%q vs %q) — counters leaked between requests", i, a, b)
+		}
+	}
+	if first[0].Content[1].OfToolUse.ID != "call_ls_2" {
+		t.Errorf("second occurrence = %q, want call_ls_2", first[0].Content[1].OfToolUse.ID)
 	}
 }

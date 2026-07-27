@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package compose
 
 import (
 	"github.com/go-steer/core-agent/v2/pkg/agent"
@@ -20,7 +20,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/modeltier"
 )
 
-// buildCompactor constructs the auto-compaction trigger that the
+// BuildCompactor constructs the auto-compaction trigger that the
 // post-turn hook consults. Starts from the substrate's per-tier
 // defaults (modeltier.DefaultCompactionThresholds) and the historical
 // 0.85 fallback, then layers operator config overrides on top.
@@ -34,7 +34,7 @@ import (
 // Operators who want to leave defaults alone provide an empty
 // CompactionConfig — same behavior as agent.NewDefaultCompactor()
 // returns directly.
-func buildCompactor(cfg config.CompactionConfig) agent.Compactor {
+func BuildCompactor(cfg config.CompactionConfig) agent.Compactor {
 	tierThresholds := modeltier.DefaultCompactionThresholds()
 	for tier, v := range cfg.ThresholdByTier {
 		tierThresholds[tier] = v

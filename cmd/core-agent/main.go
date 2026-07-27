@@ -19,7 +19,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -47,6 +46,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/agentenv"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/attachadapter"
+	"github.com/go-steer/core-agent/v2/pkg/compose"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/digest"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
@@ -578,7 +578,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	//
 	// Failure to construct the sibling genai.Client is logged and
 	// caching is skipped — never breaks agent startup.
-	contextCacheManager := maybeWireContextCache(
+	contextCacheManager := compose.MaybeWireContextCache(
 		ctx, provider, cfg, noContextCache,
 		func(s string) { fmt.Fprintln(os.Stderr, "core-agent: "+s) },
 	)
@@ -808,7 +808,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		}
 		if llmEnabled {
 			resolvedMCPModel := models.ResolveMCPSmallModel(provider, llmModelOverride, agenticSmallModel)
-			digestOpts.LLMFallback = buildMCPDigestLLMFallback(&agentRef, provider, resolvedMCPModel)
+			digestOpts.LLMFallback = compose.BuildMCPDigestLLMFallback(&agentRef, provider, resolvedMCPModel)
 			switch {
 			case resolvedMCPModel == "":
 				send(fmt.Sprintf("mcp agentic wrap: LLM subagent on, inherits parent (%s — no cheap-tier default for provider %q)", cfg.Model.Name, provider.Name()))
@@ -848,13 +848,13 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// grep rather than `kubectl debug` + /proc/1/root inspection.
 	// Fires unconditionally at this point (both single-shot -p and
 	// attach modes), independent of the attach branch further down.
-	for _, line := range formatStartupSummary(startupSummaryInputs{
-		cfgPath:      cfgPath,
-		cfg:          cfg,
-		agentsDir:    agentsDir,
-		providerName: provider.Name(),
-		mcpServers:   mcpServers,
-		loadedSkills: loadedSkills,
+	for _, line := range compose.FormatStartupSummary(compose.StartupSummaryInputs{
+		CfgPath:      cfgPath,
+		Cfg:          cfg,
+		AgentsDir:    agentsDir,
+		ProviderName: provider.Name(),
+		MCPServers:   mcpServers,
+		LoadedSkills: loadedSkills,
 	}) {
 		send(line)
 	}
@@ -922,7 +922,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		if perr != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: pricing refresh: %v\n", perr)
 		} else {
-			describeRefresh(os.Stderr, outcome)
+			compose.DescribeRefresh(os.Stderr, outcome)
 		}
 	}
 
@@ -933,7 +933,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	//   → compiled-in builtin → longest-prefix → unknown.
 	// PR C adds /pricing refresh + /pricing set slash commands.
 	if catalog, perr := pricing.NewCatalog(pricing.Options{
-		CfgOverride: cfgToCatalogOverride(cfg.Model.Pricing),
+		CfgOverride: compose.CfgToCatalogOverride(cfg.Model.Pricing),
 		AgentsDir:   agentsDir,
 		UserHome:    coreHome,
 	}); perr != nil {
@@ -1011,7 +1011,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		default:
 			send(fmt.Sprintf("agentic subtasks: %s (provider default)", resolvedSmallModel))
 		}
-		agTools, err := buildAgenticTools(builtinTools, func() *agent.Agent { return agentRef }, provider, resolvedSmallModel)
+		agTools, err := compose.BuildAgenticTools(builtinTools, func() *agent.Agent { return agentRef }, provider, resolvedSmallModel)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: agentic tools: %v\n", err)
 			return runner.ExitConfigError
@@ -1098,7 +1098,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			if coreHome == "" {
 				return attach.PricingRefreshResponse{}, fmt.Errorf("pricing refresh: $HOME unavailable, no user file to write")
 			}
-			summary, err := refreshPricingForTUI(ctx, cfg, agentsDir, coreHome)
+			summary, err := compose.RefreshPricing(ctx, cfg, agentsDir, coreHome)
 			if err != nil {
 				return attach.PricingRefreshResponse{}, err
 			}
@@ -1112,7 +1112,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			if coreHome == "" {
 				return fmt.Errorf("pricing set: $HOME unavailable, no user file to write")
 			}
-			_, err := setPricingForTUI(cfg, agentsDir, coreHome, req.Model, req.InputUSDPerMTok, req.OutputUSDPerMTok)
+			_, err := compose.SetPricing(cfg, agentsDir, coreHome, req.Model, req.InputUSDPerMTok, req.OutputUSDPerMTok)
 			return err
 		}),
 		attachadapter.WithReloader(func(_ context.Context) attach.ReloadResponse {
@@ -1206,7 +1206,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// remains available regardless of this flag — disabling only
 	// turns off the automatic trigger.
 	if !noCompact {
-		opts = append(opts, agent.WithCompactor(buildCompactor(cfg.Compaction)))
+		opts = append(opts, agent.WithCompactor(compose.BuildCompactor(cfg.Compaction)))
 	}
 	// Task-boundary checkpoints (docs/context-management-design.md
 	// Mechanism C). Default-on; disable via --no-checkpoint.
@@ -1803,45 +1803,20 @@ func loadConfig(cfgPath, cwd string) (*config.Config, string, error) {
 	return config.LoadOrDefault(cwd)
 }
 
-// installLogFilter replaces log.Default()'s output with a writer
-// that drops lines matching known-noisy patterns the bundled CLI
-// doesn't want surfaced to users. Today the only filtered line is
-// `Error context canceled` from genai's SSE scanner, which fires
-// every time the user hits ESC mid-turn (genai/api_client.go:484
-// log.Printf's it unconditionally).
+// installLogFilter replaces log.Default()'s output with
+// compose.NewFilteredLogWriter, which drops lines matching
+// known-noisy patterns the bundled CLI doesn't want surfaced to
+// users (see pkg/compose/logfilter.go).
 //
 // Anything that isn't filtered passes through to fallback (typically
 // os.Stderr) unchanged, so consumer-supplied log lines still appear.
 func installLogFilter(fallback io.Writer) {
-	log.SetOutput(&filteredLogWriter{w: fallback})
+	log.SetOutput(compose.NewFilteredLogWriter(fallback))
 	// Strip the default date/time prefix so any line that DOES make
 	// it through reads like a normal stderr message rather than a
 	// log entry. Genai's own log.Printf will pick up our flags;
 	// fortunately the line we're filtering is the noisy one.
 	log.SetFlags(0)
-}
-
-// filteredLogWriter drops noisy log lines from genai/ADK that the
-// bundled CLI doesn't want to expose.
-type filteredLogWriter struct{ w io.Writer }
-
-// drop is the set of substrings that mark a line for filtering.
-// Kept small + literal so we don't accidentally suppress something
-// users need to see.
-var droppedLogPatterns = [][]byte{
-	[]byte("Error context canceled"),
-	[]byte("Error context deadline exceeded"),
-}
-
-func (f *filteredLogWriter) Write(p []byte) (int, error) {
-	for _, pat := range droppedLogPatterns {
-		if bytes.Contains(p, pat) {
-			// Return the full length so log.Output() doesn't see a
-			// short write and retry. The semantic is "consumed".
-			return len(p), nil
-		}
-	}
-	return f.w.Write(p)
 }
 
 // resolveSessionDBPath returns the path to use for the session

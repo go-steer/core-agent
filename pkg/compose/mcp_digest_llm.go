@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package compose
 
 import (
 	"context"
@@ -48,7 +48,7 @@ var mcpDigestTracer = otel.Tracer("core-agent/mcp-digest-llm")
 // customization as configuration explosion.
 const mcpDigestSubagentSystemPrompt = "You are a digesting subtask. Summarize the following MCP tool response, preserving identifying values (names, IDs, URLs, statuses, counts, error messages, timestamps, and any field name that looks like a primary key). Discard verbose descriptions, redundant metadata, and visual formatting. Stay under 500 tokens."
 
-// buildMCPDigestLLMFallback constructs the closure that pkg/mcp
+// BuildMCPDigestLLMFallback constructs the closure that pkg/mcp
 // invokes on responses the structural pruner can't reduce below
 // threshold. Returns nil when the operator hasn't opted in — callers
 // nil-check before setting DigestOptions.LLMFallback so the wrap
@@ -68,7 +68,7 @@ const mcpDigestSubagentSystemPrompt = "You are a digesting subtask. Summarize th
 // correct, no cost win). SubagentModel on the returned result mirrors
 // modelID verbatim so display-side pricing lookup uses the resolved
 // tier, not the parent.
-func buildMCPDigestLLMFallback(
+func BuildMCPDigestLLMFallback(
 	agentRef **agent.Agent,
 	provider models.Provider,
 	modelID string,

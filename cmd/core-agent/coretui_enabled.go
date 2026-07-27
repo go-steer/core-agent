@@ -35,6 +35,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/agent/background"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/attachadapter"
+	"github.com/go-steer/core-agent/v2/pkg/compose"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/instruction"
 	"github.com/go-steer/core-agent/v2/pkg/mcp"
@@ -377,7 +378,7 @@ func makeRefreshPricingCallback(_ context.Context, deps tuiDeps) func(context.Co
 		return nil
 	}
 	return func(ctx context.Context) (string, error) {
-		return refreshPricingForTUI(ctx, deps.Cfg, deps.AgentsDir, deps.CoreHome)
+		return compose.RefreshPricing(ctx, deps.Cfg, deps.AgentsDir, deps.CoreHome)
 	}
 }
 
@@ -386,7 +387,7 @@ func makeSetPricingCallback(deps tuiDeps) func(string, float64, float64) (string
 		return nil
 	}
 	return func(model string, in, out float64) (string, error) {
-		return setPricingForTUI(deps.Cfg, deps.AgentsDir, deps.CoreHome, model, in, out)
+		return compose.SetPricing(deps.Cfg, deps.AgentsDir, deps.CoreHome, model, in, out)
 	}
 }
 
@@ -945,7 +946,7 @@ func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (
 			parentInputRate = usage.PriceFor(a.deps.Cfg.Model.Name, a.deps.Cfg).InputPerMTok
 		}
 		return coretui.SlashResult{
-			SystemMessage: renderContextStats(a.inner.ContextStats(), parentInputRate),
+			SystemMessage: compose.RenderContextStats(a.inner.ContextStats(), parentInputRate),
 		}, nil
 	case "usage":
 		// /usage projects the local agent's AttachUsage() through the

@@ -2,7 +2,7 @@
 
 Roughly 5.5-6k lines of substrate-grade wiring — multi-session construction, the attach-only wake loop, agentic-tool assembly, the MCP digest LLM fallback, context-cache wiring, compactor construction, startup-summary formatting, and (critically) the only real implementation of "allow always" grant persistence — currently sit behind `package main` and are unreachable by cogo, scion, and ax. This doc lifts that logic into a new library package, `pkg/compose`, and promotes grant persistence to a first-class `pkg/permissions` API so the gate's "allow always" contract has a supported library-side implementation. The seam is deliberate: reusable *policy* moves; flag parsing, process wiring, `os.Exit`, and the TUI binary stay put.
 
-**Status:** in progress (2026-07-27). Human-led / API-shape; design-doc first per docs/cleanup-execution-plan.md (Wave 3). #388 completed first as planned (all four phases on main). PR 1 (`permissions.GrantStore` + gate wiring) landed.
+**Status:** in progress (2026-07-27). Human-led / API-shape; design-doc first per docs/cleanup-execution-plan.md (Wave 3). #388 completed first as planned (all four phases on main). PR 1 (`permissions.GrantStore` + gate wiring) and PR 2 (`pkg/compose` skeleton: builders, formatters, pricing ops, log filter) landed.
 
 **Tracking issue:** [#386](https://github.com/go-steer/core-agent/issues/386)
 

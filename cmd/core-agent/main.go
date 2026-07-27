@@ -255,26 +255,11 @@ type agentCardOpts struct {
 }
 
 // attachOpts bundles the attach-mode CLI flags so run()'s signature
-// doesn't grow by 11 more positional args.
-type attachOpts struct {
-	Listen           string
-	UnixSocket       string
-	TLSCert          string
-	TLSKey           string
-	ClientCA         string
-	TokenEnv         string
-	ReadOnly         bool
-	PeerHub          bool
-	RegisterTo       string
-	RegisterName     string
-	RegisterEndpoint string
-	// UI enables the /ui/* route on the attach listener serving the
-	// mast-web operator UI. Uses the embedded bundle from
-	// internal/webui (populated by dev/tools/fetch-mast-web at build
-	// time) unless UIDir overrides with a local directory.
-	UI    bool
-	UIDir string
-}
+// doesn't grow by 11 more positional args. The struct itself lives in
+// pkg/compose since the extraction (#386 PR 6) — main only owns the
+// flag binding and the CLI-beats-config precedence in
+// mergeAttachOpts.
+type attachOpts = compose.AttachOptions
 
 // resolveAgentCardConfig builds the attach.AgentCardConfig from
 // .agents/agent-card.json plus CLI flag overrides, with
@@ -361,9 +346,16 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	setOnCLI := map[string]bool{}
 	flagSet.Visit(func(f *flag.Flag) { setOnCLI[f.Name] = true })
 
+	// Config half (value translation + ${ENV} expansion) lives in
+	// compose; this function owns only the CLI-beats-config
+	// precedence, which needs flag.Visit and therefore stays in main.
+	fromCfg := compose.BuildAttachOptions(cfg)
+
 	overlayStr := func(name string, dst *string, cfgVal string) {
 		if !setOnCLI[name] && *dst == "" {
+			// cfgVal arrives pre-expanded from BuildAttachOptions.
 			*dst = cfgVal
+			return
 		}
 		*dst = os.ExpandEnv(*dst)
 	}
@@ -373,17 +365,17 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 		}
 	}
 
-	overlayStr("attach-listen", &opts.Listen, cfg.Listen)
-	overlayStr("attach-unix-socket", &opts.UnixSocket, cfg.UnixSocket)
-	overlayStr("attach-tls-cert", &opts.TLSCert, cfg.TLSCert)
-	overlayStr("attach-tls-key", &opts.TLSKey, cfg.TLSKey)
-	overlayStr("attach-client-ca", &opts.ClientCA, cfg.ClientCA)
-	overlayStr("attach-token", &opts.TokenEnv, cfg.TokenEnv)
-	overlayBool("attach-readonly", &opts.ReadOnly, cfg.ReadOnly)
-	overlayBool("attach-peer-hub", &opts.PeerHub, cfg.PeerHub)
-	overlayStr("attach-register-to", &opts.RegisterTo, cfg.RegisterTo)
-	overlayStr("attach-register-endpoint", &opts.RegisterEndpoint, cfg.RegisterEndpoint)
-	overlayStr("attach-register-name", &opts.RegisterName, cfg.RegisterName)
+	overlayStr("attach-listen", &opts.Listen, fromCfg.Listen)
+	overlayStr("attach-unix-socket", &opts.UnixSocket, fromCfg.UnixSocket)
+	overlayStr("attach-tls-cert", &opts.TLSCert, fromCfg.TLSCert)
+	overlayStr("attach-tls-key", &opts.TLSKey, fromCfg.TLSKey)
+	overlayStr("attach-client-ca", &opts.ClientCA, fromCfg.ClientCA)
+	overlayStr("attach-token", &opts.TokenEnv, fromCfg.TokenEnv)
+	overlayBool("attach-readonly", &opts.ReadOnly, fromCfg.ReadOnly)
+	overlayBool("attach-peer-hub", &opts.PeerHub, fromCfg.PeerHub)
+	overlayStr("attach-register-to", &opts.RegisterTo, fromCfg.RegisterTo)
+	overlayStr("attach-register-endpoint", &opts.RegisterEndpoint, fromCfg.RegisterEndpoint)
+	overlayStr("attach-register-name", &opts.RegisterName, fromCfg.RegisterName)
 	return opts
 }
 

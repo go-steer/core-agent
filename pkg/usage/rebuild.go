@@ -54,8 +54,9 @@ import (
 // Caller MUST invoke this BEFORE wiring tracker.SetOnAppend (which
 // happens later inside agent.New's option evaluation), otherwise
 // each rebuild AppendUsage would fire the OnAppend callback and
-// broadcast N synthetic usage-update SSE events. The reproduceAgent
-// call site respects this ordering by construction.
+// broadcast N synthetic usage-update SSE events. The
+// compose.ReproduceAgent call site respects this ordering by
+// construction.
 func RebuildTrackerFromEvents(
 	ctx context.Context,
 	t *Tracker,

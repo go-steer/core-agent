@@ -15,6 +15,7 @@
 package anthropic
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -87,5 +88,50 @@ func TestFinalResponseFromMessage_NoCacheTokensDegradesCleanly(t *testing.T) {
 	}
 	if meta.TotalTokenCount != 1050 {
 		t.Errorf("TotalTokenCount = %d, want 1050", meta.TotalTokenCount)
+	}
+}
+
+// TestFinalResponseFromMessage_ThinkingBlocksRoundTrip is the #357
+// regression gate, response side: thinking + redacted_thinking blocks
+// must land in the genai content as Thought parts (signature/payload
+// preserved, order intact) so the next request of a tool loop can
+// replay them. Dropping them 400s every tool loop on thinking-default
+// models ("Expected thinking … but found tool_use").
+func TestFinalResponseFromMessage_ThinkingBlocksRoundTrip(t *testing.T) {
+	t.Parallel()
+	// Built via json.Unmarshal because the SDK's union accessors
+	// (AsAny → AsThinking etc.) re-parse from the union's raw JSON —
+	// hand-constructed struct literals come back zero-valued.
+	raw := `{
+		"stop_reason": "tool_use",
+		"content": [
+			{"type": "thinking", "thinking": "let me check the file", "signature": "sig-abc123"},
+			{"type": "redacted_thinking", "data": "opaque-encrypted-payload"},
+			{"type": "text", "text": "Checking now."},
+			{"type": "tool_use", "id": "toolu_01", "name": "read_file", "input": {"path": "a.txt"}}
+		]
+	}`
+	var msg anthropic.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+	content, _, _ := finalResponseFromMessage(&msg)
+	if len(content.Parts) != 4 {
+		t.Fatalf("parts = %d, want 4 (thinking, redacted, text, tool_use): %+v", len(content.Parts), content.Parts)
+	}
+
+	th := content.Parts[0]
+	if !th.Thought || th.Text != "let me check the file" || string(th.ThoughtSignature) != "sig-abc123" {
+		t.Errorf("thinking part = %+v, want Thought=true text+signature preserved", th)
+	}
+	red := content.Parts[1]
+	if !red.Thought || string(red.ThoughtSignature) != redactedThinkingPrefix+"opaque-encrypted-payload" {
+		t.Errorf("redacted part = %+v, want Thought=true prefixed payload in ThoughtSignature", red)
+	}
+	if content.Parts[2].Text != "Checking now." || content.Parts[2].Thought {
+		t.Errorf("text part = %+v, want plain text", content.Parts[2])
+	}
+	if content.Parts[3].FunctionCall == nil || content.Parts[3].FunctionCall.ID != "toolu_01" {
+		t.Errorf("tool part = %+v, want FunctionCall toolu_01", content.Parts[3])
 	}
 }

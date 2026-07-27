@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package compose
 
 import (
 	"context"
@@ -48,10 +48,10 @@ func TestMaybeWireContextCache_DefaultsOnWhenVertexBlockAbsent(t *testing.T) {
 	var lines []string
 	send := func(s string) { lines = append(lines, s) }
 
-	got := maybeWireContextCache(context.Background(), fakeNonGeminiProvider{}, cfg, false, send)
+	got := MaybeWireContextCache(context.Background(), fakeNonGeminiProvider{}, cfg, false, send)
 
 	if got != nil {
-		t.Errorf("maybeWireContextCache returned non-nil for non-gemini provider — the type-assertion branch should skip: %v", got)
+		t.Errorf("MaybeWireContextCache returned non-nil for non-gemini provider — the type-assertion branch should skip: %v", got)
 	}
 	for _, line := range lines {
 		if strings.Contains(line, "disabled") {
@@ -77,7 +77,7 @@ func TestMaybeWireContextCache_ExplicitDisableRespected(t *testing.T) {
 
 	var lines []string
 	send := func(s string) { lines = append(lines, s) }
-	got := maybeWireContextCache(context.Background(), fakeNonGeminiProvider{}, cfg, false, send)
+	got := MaybeWireContextCache(context.Background(), fakeNonGeminiProvider{}, cfg, false, send)
 	if got != nil {
 		t.Errorf("explicit disable should return nil manager, got %v", got)
 	}
@@ -103,7 +103,7 @@ func TestMaybeWireContextCache_CLIKillSwitchWins(t *testing.T) {
 	// Expect the CLI to win.
 	var lines []string
 	send := func(s string) { lines = append(lines, s) }
-	got := maybeWireContextCache(context.Background(), fakeNonGeminiProvider{}, cfg, true, send)
+	got := MaybeWireContextCache(context.Background(), fakeNonGeminiProvider{}, cfg, true, send)
 	if got != nil {
 		t.Errorf("--no-context-cache should return nil manager, got %v", got)
 	}
@@ -128,7 +128,7 @@ func TestMaybeWireContextCache_NonVertexProviderSilent(t *testing.T) {
 	cfg.Model.Name = "claude-opus-4-7"
 	var lines []string
 	send := func(s string) { lines = append(lines, s) }
-	got := maybeWireContextCache(context.Background(), fakeNonGeminiProvider{}, cfg, false, send)
+	got := MaybeWireContextCache(context.Background(), fakeNonGeminiProvider{}, cfg, false, send)
 	if got != nil {
 		t.Errorf("non-vertex provider should return nil manager, got %v", got)
 	}
@@ -138,7 +138,7 @@ func TestMaybeWireContextCache_NonVertexProviderSilent(t *testing.T) {
 }
 
 // fakeNonGeminiProvider satisfies models.Provider without being a
-// *gemini.Provider, so maybeWireContextCache reaches the type-assertion
+// *gemini.Provider, so MaybeWireContextCache reaches the type-assertion
 // branch. It never actually gets Model()-called in these tests.
 type fakeNonGeminiProvider struct{}
 

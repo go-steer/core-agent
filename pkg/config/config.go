@@ -21,6 +21,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/go-steer/core-agent/v2/pkg/hooks"
@@ -505,6 +506,25 @@ type URLScopeConfig struct {
 	TimeoutSeconds         int                          `json:"timeout_seconds,omitempty"`
 	Headers                map[string]map[string]string `json:"headers,omitempty"`
 	AllowMetadataEndpoints bool                         `json:"allow_metadata_endpoints,omitempty"`
+
+	// Proxy controls outbound proxying for fetch_url (#429):
+	//
+	//   ""       (default) — no proxy. HTTP_PROXY/HTTPS_PROXY env
+	//            vars are deliberately IGNORED: with a proxy in the
+	//            path, hostname targets are resolved AT the proxy,
+	//            outside the SSRF guard's resolve-validate-pin dial,
+	//            so proxying must be an explicit operator decision,
+	//            not ambient environment.
+	//   "env"    — honor the standard proxy environment variables
+	//            (HTTP_PROXY / HTTPS_PROXY / NO_PROXY).
+	//   <url>    — route through this fixed proxy URL
+	//            (http://, https://, or socks5://).
+	//
+	// In either non-empty mode the operator delegates private/
+	// metadata-range SSRF policy for hostname targets to the proxy;
+	// literal-IP targets are still screened locally on the initial
+	// URL and every redirect hop.
+	Proxy string `json:"proxy,omitempty"`
 }
 
 // AttachConfig holds defaults for the attach-mode listener and the
@@ -767,6 +787,23 @@ func (c *Config) Validate() error {
 		}
 		if !validAccessSpec(e.Access) {
 			return fmt.Errorf("config: path_scope.allow_paths[%d].access=%q must be r, w, or rw (read / write / readwrite accepted)", i, e.Access)
+		}
+	}
+	switch c.URLScope.Proxy {
+	case "", "env":
+		// ok — no proxy / delegate to the standard env vars.
+	default:
+		u, err := url.Parse(c.URLScope.Proxy)
+		if err != nil {
+			return fmt.Errorf("config: url_scope.proxy %q: %v", c.URLScope.Proxy, err)
+		}
+		switch u.Scheme {
+		case "http", "https", "socks5":
+			if u.Host == "" {
+				return fmt.Errorf("config: url_scope.proxy %q has no host", c.URLScope.Proxy)
+			}
+		default:
+			return fmt.Errorf("config: url_scope.proxy %q must be \"env\" or an http(s)/socks5 URL", c.URLScope.Proxy)
 		}
 	}
 	if c.Compaction.Threshold != nil {

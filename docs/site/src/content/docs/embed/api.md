@@ -24,7 +24,8 @@ title: Library API
 | `github.com/go-steer/core-agent/telemetry` | [OpenTelemetry](/concepts/otel/) exporter setup. |
 | `github.com/go-steer/core-agent/usage` | Per-turn token + cost tracker. |
 | `github.com/go-steer/core-agent/session` | Transcript persistence (`.agents/sessions/`). |
-| `github.com/go-steer/core-agent/runner` | Headless (one-shot) + REPL (multi-turn) drivers. |
+| `github.com/go-steer/core-agent/runner` | Headless (one-shot) + REPL (multi-turn) drivers; `WakeLoop` for attach-only daemons. |
+| `github.com/go-steer/core-agent/pkg/compose` | The bundled binary's reusable wiring: substrate builders, multi-session construction, grant persistence, formatters. |
 
 ---
 
@@ -974,6 +975,18 @@ a, _ := agent.New(m,
 ```
 
 Each step is independent — skip the ones you don't need (e.g. no MCP, no skills, no permission gate) and the layers below still work.
+
+### pkg/compose — the binary's wiring as a library
+
+Everything the bundled binary layers on top of that minimum lives in `pkg/compose`, so a custom host doesn't re-implement it:
+
+- **Substrate builders** — `BuildCompactor`, `BuildAgenticTools`, `BuildMCPDigestLLMFallback`, `MaybeWireContextCache`.
+- **Multi-session construction** — `SessionFactoryDeps` + `BuildSessionFactory` / `ReproduceAgent` / `BuildSessionResumer` / `BuildMultiSessionAuthn` for daemons serving `POST /sessions`, including resume-from-ACL and per-session gate/tracker isolation. Per-session agents run their inbox on `runner.WakeLoop`.
+- **Grant persistence** — `ConfigGrantStore` (the reference `permissions.GrantStore`) plus the `/allow`, `/deny`, `/model`, `/theme` persist helpers (`AppendPermissionsAllow`, `AppendPathScopeEntry`, `PersistModelChoice`, …), all writing `.agents/config.json` atomically. Wire it with `gate.SetGrantStore(&compose.ConfigGrantStore{AgentsDir: agentsDir})` so "allow always" survives restarts.
+- **Attach config translation** — `BuildAttachOptions(cfg.Attach)` resolves the config file's `attach` block (with `${ENV}` expansion) into the options value your listener wiring consumes; layer your own flag precedence on top.
+- **Operator-facing formatters** — `FormatStartupSummary`, `RenderContextStats`, `DescribeRefresh`, and `NewFilteredLogWriter` for the ADK log-noise filter.
+
+See `docs/compose-extraction-design.md` in the repo for the seam rationale (reusable policy is library; flag parsing and process wiring stay in the binary).
 
 ---
 

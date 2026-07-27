@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package compose
 
 import (
 	"context"
@@ -33,24 +33,25 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/instruction"
 	"github.com/go-steer/core-agent/v2/pkg/mcp"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v2/pkg/runner"
 	"github.com/go-steer/core-agent/v2/pkg/skills"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
-// buildMultiSessionAuthn translates the operator's
+// BuildMultiSessionAuthn translates the operator's
 // attach.multi_session config block into the pkg/auth Authenticator
 // that the attach listener consults per-request. Returns:
 //
 //   - authn: the resolved Authenticator (or nil for single-user mode)
 //   - fallback: the Caller stamped on requests that don't authenticate
-//     (used by callerMiddleware as the no-cred default)
+//     (used by the host's caller middleware as the no-cred default)
 //   - err: a fatal startup error if the config is internally
 //     inconsistent OR a referenced file can't be loaded
 //
 // In single-user mode (multi_session.enabled = false), returns
 // (nil, zero-Caller, nil) — the attach server defaults its own
 // AnonymousAuth and the wiring is a no-op.
-func buildMultiSessionAuthn(cfg config.MultiSessionConfig) (auth.Authenticator, auth.Caller, error) {
+func BuildMultiSessionAuthn(cfg config.MultiSessionConfig) (auth.Authenticator, auth.Caller, error) {
 	// Default Caller comes from the config knob (resolved to "anon"
 	// when unset to match the design doc's documented default). Used
 	// for the legacy / single-user path AND as the AllowAnonymous
@@ -80,7 +81,7 @@ func buildMultiSessionAuthn(cfg config.MultiSessionConfig) (auth.Authenticator, 
 	}
 }
 
-// sessionFactoryDeps bundles the daemon-wide configuration the
+// SessionFactoryDeps bundles the daemon-wide configuration the
 // per-session SessionFactory closure needs to capture. Constructed
 // once at daemon startup; the resulting factory builds fresh
 // *agent.Agent values for each POST /sessions request.
@@ -95,51 +96,51 @@ func buildMultiSessionAuthn(cfg config.MultiSessionConfig) (auth.Authenticator, 
 // sharing, Watchdog alert-sink routing, agentic tool wrappers, MCP
 // custom auth) remain deferred — sessions created via POST /sessions
 // see the substrate without them.
-type sessionFactoryDeps struct {
-	// daemonCtx is the daemon's lifetime context — every per-session
+type SessionFactoryDeps struct {
+	// DaemonCtx is the daemon's lifetime context — every per-session
 	// wake loop spawned by the factory uses it as the cancellation
 	// signal so SIGTERM / Ctrl-C ends them cleanly. Required.
-	daemonCtx context.Context
+	DaemonCtx context.Context
 
-	model          adkmodel.LLM
-	template       *permissions.Gate
-	builtinTools   []adktool.Tool
-	toolsets       []adktool.Toolset
-	eventlogHandle *eventlog.Handle
-	pricingRate    usage.Pricing
-	projectRoot    string
-	userRoot       string
-	homeAgentsDir  string
-	agentsDir      string
-	usersDir       string
-	// envInterp is the ${env:VAR} interpolator wired from the daemon's
+	Model          adkmodel.LLM
+	Template       *permissions.Gate
+	BuiltinTools   []adktool.Tool
+	Toolsets       []adktool.Toolset
+	EventlogHandle *eventlog.Handle
+	PricingRate    usage.Pricing
+	ProjectRoot    string
+	UserRoot       string
+	HomeAgentsDir  string
+	AgentsDir      string
+	UsersDir       string
+	// EnvInterp is the ${env:VAR} interpolator wired from the daemon's
 	// env manifest (see pkg/agentenv, #322). May be nil when the
 	// bundle doesn't ship an env.yaml / env.json — loaders treat nil
 	// as "no interpolation."
-	envInterp func(string) string
-	registry  *attach.SessionRegistry
-	// cfg + mcpServers feed the read-only AttachXProvider closures
+	EnvInterp func(string) string
+	Registry  *attach.SessionRegistry
+	// Cfg + MCPServers feed the read-only AttachXProvider closures
 	// (memory / skills / mcp / pricing) so the per-session /memory,
 	// /skills, /mcp, /pricing slash commands return real data
 	// instead of "no servers configured" for on-demand sessions.
-	cfg        *config.Config
-	mcpServers []*mcp.Server
-	// aclStore is the persistent ACL backing for session-resume
+	Cfg        *config.Config
+	MCPServers []*mcp.Server
+	// ACLStore is the persistent ACL backing for session-resume
 	// (Phase 2 of docs/session-resume-design.md). The factory
 	// writes through it via RegisterOwned at session-creation time
 	// (handled by the registry, not directly); the resumer reads
 	// from it on Lookup miss to reconstruct evicted sessions. Nil
 	// disables resume — the registry behaves as pre-v2.5.
-	aclStore attach.SessionACLStore
-	// noCompact / noCheckpoint mirror the --no-compact /
+	ACLStore attach.SessionACLStore
+	// NoCompact / NoCheckpoint mirror the --no-compact /
 	// --no-checkpoint CLI flags. When false (the default),
-	// reproduceAgent wires WithCompactor / WithCheckpointer so
+	// ReproduceAgent wires WithCompactor / WithCheckpointer so
 	// /compact and /done work against session-created agents; when
 	// true, the corresponding option is skipped so the disable flag
 	// applies uniformly to the main agent AND every session-created
 	// agent under it.
-	noCompact    bool
-	noCheckpoint bool
+	NoCompact    bool
+	NoCheckpoint bool
 }
 
 // newSessionTracker constructs the *usage.Tracker each on-demand
@@ -149,7 +150,7 @@ type sessionFactoryDeps struct {
 // issue #275. Never nil; callers assume a working tracker.
 var newSessionTracker = usage.NewTracker
 
-// buildSessionFactory returns an attach.SessionFactory closure that
+// BuildSessionFactory returns an attach.SessionFactory closure that
 // constructs a fresh *agent.Agent per POST /sessions request. The
 // closure captures the deps by value (slices + pointers); per-call
 // it generates a unique sessionID, derives a per-session sub-gate +
@@ -161,14 +162,14 @@ var newSessionTracker = usage.NewTracker
 // factory deliberately does NOT register with the session registry
 // itself, because that would self-register via the legacy Register()
 // (no Owner stamp), losing the ACL ownership that's the whole point.
-func buildSessionFactory(deps sessionFactoryDeps) attach.SessionFactory {
+func BuildSessionFactory(deps SessionFactoryDeps) attach.SessionFactory {
 	return func(_ context.Context, caller auth.Caller) (attach.Registrant, context.CancelFunc, error) {
-		return reproduceAgent(deps, caller, newSessionID(), "created")
+		return ReproduceAgent(deps, caller, newSessionID(), "created")
 	}
 }
 
-// reproduceAgent constructs an *agent.Agent under (caller, sid) using
-// the shared sessionFactoryDeps shape. Used both by the on-demand
+// ReproduceAgent constructs an *agent.Agent under (caller, sid) using
+// the shared SessionFactoryDeps shape. Used both by the on-demand
 // session factory (sid is freshly minted) and by the resumer (sid
 // comes from the persisted ACL row — ADK's session.Service reattaches
 // the prior conversation history when the same triple opens the
@@ -184,10 +185,10 @@ func buildSessionFactory(deps sessionFactoryDeps) attach.SessionFactory {
 // CancelFunc that stops the per-session wake-loop goroutine. The
 // caller hands the cancel to the registry so eviction terminates the
 // loop cleanly instead of leaking it past the session's lifetime.
-// The wake loop's ctx is derived from deps.daemonCtx — either source
+// The wake loop's ctx is derived from deps.DaemonCtx — either source
 // of cancellation (daemon shutdown or per-session evict) closes
 // ctx.Done and the loop exits.
-func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, origin string) (*attachadapter.Adapter, context.CancelFunc, error) {
+func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, origin string) (*attachadapter.Adapter, context.CancelFunc, error) {
 	// Per-session HTTP prompt broker. Each new session gets its
 	// own broker so prompts route to the right per-session
 	// /perms/stream subscriber.
@@ -197,23 +198,23 @@ func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, ori
 	// / mode / approvals from sibling sessions. Shares Policy /
 	// PathScope / requirePlanArtifact via the template (the
 	// documented limitation in docs/multi-session-design.md).
-	sessionGate := deps.template.DeriveForSession(sid, broker)
+	sessionGate := deps.Template.DeriveForSession(sid, broker)
 
 	// Per-caller instruction overlay: the operator's
-	// <usersDir>/<caller.Identity>/.agents/ tree layered on
-	// top of project + user scopes. Empty usersDir or unknown
+	// <UsersDir>/<caller.Identity>/.agents/ tree layered on
+	// top of project + user scopes. Empty UsersDir or unknown
 	// caller falls through to the daemon-wide instruction stack.
-	instr, err := instruction.LoadForSession(deps.projectRoot, deps.userRoot, caller.Identity, deps.usersDir,
-		instruction.WithHomeAgentsRoot(deps.homeAgentsDir),
-		instruction.WithInterpolator(deps.envInterp))
+	instr, err := instruction.LoadForSession(deps.ProjectRoot, deps.UserRoot, caller.Identity, deps.UsersDir,
+		instruction.WithHomeAgentsRoot(deps.HomeAgentsDir),
+		instruction.WithInterpolator(deps.EnvInterp))
 	if err != nil {
 		broker.Close()
 		return nil, nil, fmt.Errorf("load per-caller instructions: %w", err)
 	}
 
 	opts := []agent.Option{
-		agent.WithTools(deps.builtinTools),
-		agent.WithToolsets(deps.toolsets),
+		agent.WithTools(deps.BuiltinTools),
+		agent.WithToolsets(deps.Toolsets),
 		agent.WithSystemInstructionPrefix(instr.Instruction),
 		agent.WithGate(sessionGate),
 		agent.WithSession(caller.Identity, sid),
@@ -227,8 +228,8 @@ func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, ori
 	// slashes just have nothing to look at.
 	adOpts := append(attachProviderOpts(deps, sessionGate),
 		attachadapter.WithPromptBroker(broker))
-	if deps.eventlogHandle != nil {
-		opts = append(opts, agent.WithEventLog(deps.eventlogHandle))
+	if deps.EventlogHandle != nil {
+		opts = append(opts, agent.WithEventLog(deps.EventlogHandle))
 	}
 	// Fresh tracker per session (issue #275). The Tracker's own godoc
 	// says it "accumulates per-turn usage for one session"; sharing
@@ -248,9 +249,9 @@ func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, ori
 	// aggregate started at zero on every resume. Only runs when
 	// origin=="resumed"; freshly-created sessions have no history
 	// to rebuild.
-	if origin == "resumed" && deps.eventlogHandle != nil && deps.eventlogHandle.Stream != nil {
-		events := deps.eventlogHandle.Stream.Since(
-			deps.daemonCtx, 0,
+	if origin == "resumed" && deps.EventlogHandle != nil && deps.EventlogHandle.Stream != nil {
+		events := deps.EventlogHandle.Stream.Since(
+			deps.DaemonCtx, 0,
 			eventlog.ForSession("core-agent", caller.Identity, sid),
 		)
 		// Adapter: eventlog yields (Entry, error); tracker rebuild
@@ -263,9 +264,9 @@ func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, ori
 			}
 		}
 		if err := usage.RebuildTrackerFromEvents(
-			deps.daemonCtx, sessionTracker, eventsSeq,
-			deps.model.Name(),
-			func(model string) usage.Pricing { return deps.pricingRate },
+			deps.DaemonCtx, sessionTracker, eventsSeq,
+			deps.Model.Name(),
+			func(model string) usage.Pricing { return deps.PricingRate },
 		); err != nil {
 			// Non-fatal — the session still functions, just with
 			// zero baseline aggregate. Log so operators can spot
@@ -279,40 +280,40 @@ func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, ori
 	// --no-compact was passed. Without this wiring, /compact against
 	// session-created agents errored with agent.ErrNoCompactor even
 	// though the CLI defaults advertise the feature.
-	if !deps.noCompact {
+	if !deps.NoCompact {
 		var compactionCfg config.CompactionConfig
-		if deps.cfg != nil {
-			compactionCfg = deps.cfg.Compaction
+		if deps.Cfg != nil {
+			compactionCfg = deps.Cfg.Compaction
 		}
-		opts = append(opts, agent.WithCompactor(buildCompactor(compactionCfg)))
+		opts = append(opts, agent.WithCompactor(BuildCompactor(compactionCfg)))
 	}
 	// Task-boundary checkpoints (Mechanism C). Default-on unless
 	// --no-checkpoint was passed. Without this wiring, /done and
 	// the model-facing mark_task_done tool were unavailable on
 	// session-created agents.
-	if !deps.noCheckpoint {
+	if !deps.NoCheckpoint {
 		opts = append(opts, agent.WithCheckpointer(agent.NewDefaultCheckpointer()))
 	}
 	// Cost-ceiling kill switch (#145). The zero-value CostCeiling is
 	// a no-op, so this is safe to always append; enforcement runs
-	// only when either bound in cfg.Agent is > 0. Config-driven
+	// only when either bound in Cfg.Agent is > 0. Config-driven
 	// only — the operator's --max-turn-cost-usd /
 	// --max-session-cost-usd CLI flags are already merged into
-	// cfg.Agent before deps is built.
-	if deps.cfg != nil {
+	// Cfg.Agent before deps is built.
+	if deps.Cfg != nil {
 		ceiling := agent.CostCeiling{}
-		if deps.cfg.Agent.MaxTurnCostUSD != nil {
-			ceiling.MaxTurnUSD = *deps.cfg.Agent.MaxTurnCostUSD
+		if deps.Cfg.Agent.MaxTurnCostUSD != nil {
+			ceiling.MaxTurnUSD = *deps.Cfg.Agent.MaxTurnCostUSD
 		}
-		if deps.cfg.Agent.MaxSessionCostUSD != nil {
-			ceiling.MaxSessionUSD = *deps.cfg.Agent.MaxSessionCostUSD
+		if deps.Cfg.Agent.MaxSessionCostUSD != nil {
+			ceiling.MaxSessionUSD = *deps.Cfg.Agent.MaxSessionCostUSD
 		}
 		if ceiling.MaxTurnUSD > 0 || ceiling.MaxSessionUSD > 0 {
 			opts = append(opts, agent.WithCostCeiling(ceiling))
 		}
 	}
 
-	ag, err := agent.New(deps.model, opts...)
+	ag, err := agent.New(deps.Model, opts...)
 	if err != nil {
 		broker.Close()
 		return nil, nil, fmt.Errorf("agent.New: %w", err)
@@ -322,24 +323,34 @@ func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, ori
 	// "--no-repl: attach-only mode, session <sid>" message so the
 	// daemon stderr reflects every long-lived agent it's hosting.
 	fmt.Fprintf(os.Stderr, "core-agent: session %s (owner=%s, id=%s)\n", origin, caller.Identity, sid)
-	// Derive the wake-loop ctx from daemonCtx so both daemon
+	// Derive the wake-loop ctx from DaemonCtx so both daemon
 	// shutdown AND per-session eviction terminate the loop
 	// through the same <-ctx.Done() branch. cancelOnEvict is
 	// handed to the registry, which invokes it when the eviction
 	// sweep removes this session.
-	loopCtx, cancelOnEvict := context.WithCancel(deps.daemonCtx)
-	go runSessionWakeLoop(loopCtx, ag, sessionTracker, deps.model.Name(), deps.pricingRate)
+	//
+	// runner.WakeLoop drains the inbox into a real turn on every
+	// WakeRequested and commits per-turn usage into the session
+	// tracker via usage.TurnTap; its default OnTurnError writes
+	// "core-agent: session <sid> turn: ..." to stderr and keeps the
+	// loop alive — one bad turn must not kill the session.
+	loopCtx, cancelOnEvict := context.WithCancel(deps.DaemonCtx)
+	go runner.WakeLoop(loopCtx, ag, runner.WakeLoopOptions{
+		Tracker: sessionTracker,
+		Model:   deps.Model.Name(),
+		Pricing: deps.PricingRate,
+	})
 	return ad, cancelOnEvict, nil
 }
 
-// buildSessionResumer wires the cmd-level SessionResumer for the
-// attach server. Reads the persisted ACL row from deps.aclStore;
-// materializes the original Caller from row.Owner; reconstructs the
-// agent via reproduceAgent with the EXPLICIT sessionID so ADK's
+// BuildSessionResumer wires the attach server's SessionResumer.
+// Reads the persisted ACL row from deps.ACLStore; materializes the
+// original Caller from row.Owner; reconstructs the agent via
+// ReproduceAgent with the EXPLICIT sessionID so ADK's
 // session.Service reattaches the prior conversation history from
 // the eventlog.
 //
-// Returns nil when deps.aclStore is nil — session-resume is opt-in.
+// Returns nil when deps.ACLStore is nil — session-resume is opt-in.
 // The attach server's Options.Resumer being nil leaves the legacy
 // "Lookup miss = 404" behavior in place, no behavior change for
 // pre-v2.5 deployments.
@@ -348,24 +359,24 @@ func reproduceAgent(deps sessionFactoryDeps, caller auth.Caller, sid string, ori
 // resumeAndRegister handles ErrSessionACLNotFound → ErrSessionNotFound
 // translation. Other errors surface as 500 with the underlying
 // cause (per docs/session-resume-design.md OQ #2).
-func buildSessionResumer(deps sessionFactoryDeps) attach.SessionResumer {
-	if deps.aclStore == nil {
+func BuildSessionResumer(deps SessionFactoryDeps) attach.SessionResumer {
+	if deps.ACLStore == nil {
 		return nil
 	}
 	return &sessionResumer{deps: deps}
 }
 
-// sessionResumer implements attach.SessionResumer using the cmd-level
-// factory deps. The same store the factory writes through (via the
-// registry's RegisterOwned path) is the store this reads from on
+// sessionResumer implements attach.SessionResumer using the shared
+// SessionFactoryDeps. The same store the factory writes through (via
+// the registry's RegisterOwned path) is the store this reads from on
 // miss — guaranteed-consistent because they share the eventlog DB
 // connection.
 type sessionResumer struct {
-	deps sessionFactoryDeps
+	deps SessionFactoryDeps
 }
 
 func (r *sessionResumer) Resume(ctx context.Context, app, sid string) (attach.Registrant, auth.SessionACL, context.CancelFunc, error) {
-	row, err := r.deps.aclStore.FindByAppSID(ctx, app, sid)
+	row, err := r.deps.ACLStore.FindByAppSID(ctx, app, sid)
 	if err != nil {
 		// ErrSessionACLNotFound propagates as-is; the registry
 		// translates it to ErrSessionNotFound. Any other store
@@ -373,55 +384,18 @@ func (r *sessionResumer) Resume(ctx context.Context, app, sid string) (attach.Re
 		return nil, auth.SessionACL{}, nil, err
 	}
 	caller := auth.Caller{Identity: row.Owner}
-	ag, cancelOnEvict, err := reproduceAgent(r.deps, caller, sid, "resumed")
+	ag, cancelOnEvict, err := ReproduceAgent(r.deps, caller, sid, "resumed")
 	if err != nil {
 		return nil, auth.SessionACL{}, nil, fmt.Errorf("resume: %w", err)
 	}
 	return ag, row.ACL(), cancelOnEvict, nil
 }
 
-// runSessionWakeLoop is the per-session driver that the SessionFactory
-// spawns for every on-demand session. Mirrors the inline --no-repl
-// wake loop in main.go: select on context cancel + WakeRequested,
-// then call ag.Run("") so the inbox drains into a real turn.
-//
-// Per-turn usage tap: every event's UsageMetadata is captured so
-// tracker.Append fires once per turn — matches what the startup
-// agent's --no-repl path does so /stats + status-banner cumulative
-// totals reflect on-demand-session activity too.
-//
-// trackerName is the model name string that gets passed to
-// tracker.Append; pricingRate may be zero (skipped Append in that
-// case — same as the startup path).
-func runSessionWakeLoop(ctx context.Context, ag *agent.Agent, tracker *usage.Tracker, trackerName string, pricingRate usage.Pricing) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ag.WakeRequested():
-			var lastUsage usage.TurnUsage
-			for ev, runErr := range ag.Run(ctx, "") {
-				if ev != nil && ev.UsageMetadata != nil {
-					lastUsage = usage.TurnUsageFromGenaiMetadata(ev.UsageMetadata)
-				}
-				if runErr != nil {
-					// Surface to stderr but keep the loop alive —
-					// one bad turn shouldn't kill the session.
-					fmt.Fprintf(os.Stderr, "core-agent: session %s turn: %v\n", ag.SessionID(), runErr)
-				}
-			}
-			if tracker != nil && (lastUsage.InputTokens > 0 || lastUsage.OutputTokens > 0) {
-				tracker.AppendUsage(trackerName, lastUsage, pricingRate)
-			}
-		}
-	}
-}
-
 // attachProviderOpts builds the daemon-wide read-only AttachXProvider
 // closures (memory / skills / pricing snapshot / MCP) for on-demand
-// sessions. Mirrors the startup-agent's closures in main.go so the
-// per-session /memory, /skills, /pricing, /mcp slashes return real
-// data instead of empty placeholders.
+// sessions. Mirrors the startup-agent's closures in cmd/core-agent's
+// main.go so the per-session /memory, /skills, /pricing, /mcp slashes
+// return real data instead of empty placeholders.
 //
 // Mutating closures (RefreshPricer, PricingSetter, Reloader,
 // Replanner) are deferred — they need careful per-session threading
@@ -433,14 +407,14 @@ func runSessionWakeLoop(ctx context.Context, ag *agent.Agent, tracker *usage.Tra
 // sessionGate is the derived sub-gate; threaded here so the
 // soon-to-arrive Replanner closure picks it up without expanding the
 // deps signature when it lands.
-func attachProviderOpts(deps sessionFactoryDeps, _ *permissions.Gate) []attachadapter.Option {
+func attachProviderOpts(deps SessionFactoryDeps, _ *permissions.Gate) []attachadapter.Option {
 	var opts []attachadapter.Option
 
-	if deps.projectRoot != "" || deps.userRoot != "" {
+	if deps.ProjectRoot != "" || deps.UserRoot != "" {
 		opts = append(opts, attachadapter.WithMemoryProvider(func() []attach.MemorySource {
-			fresh, _ := instruction.Load(deps.projectRoot, deps.userRoot,
-				instruction.WithHomeAgentsRoot(deps.homeAgentsDir),
-				instruction.WithInterpolator(deps.envInterp))
+			fresh, _ := instruction.Load(deps.ProjectRoot, deps.UserRoot,
+				instruction.WithHomeAgentsRoot(deps.HomeAgentsDir),
+				instruction.WithInterpolator(deps.EnvInterp))
 			out := make([]attach.MemorySource, 0, len(fresh.Sources))
 			for _, s := range fresh.Sources {
 				out = append(out, attach.MemorySource{Scope: s.Scope, Path: s.Path, Size: s.Bytes})
@@ -449,11 +423,11 @@ func attachProviderOpts(deps sessionFactoryDeps, _ *permissions.Gate) []attachad
 		}))
 	}
 
-	if deps.agentsDir != "" || deps.userRoot != "" {
+	if deps.AgentsDir != "" || deps.UserRoot != "" {
 		opts = append(opts, attachadapter.WithSkillsProvider(func() []attach.SkillInfo {
-			fresh, err := skills.LoadAll(deps.daemonCtx, deps.agentsDir, deps.userRoot, deps.template,
-				skills.WithHomeAgentsSkillsDir(deps.homeAgentsDir),
-				skills.WithInterpolator(deps.envInterp))
+			fresh, err := skills.LoadAll(deps.DaemonCtx, deps.AgentsDir, deps.UserRoot, deps.Template,
+				skills.WithHomeAgentsSkillsDir(deps.HomeAgentsDir),
+				skills.WithInterpolator(deps.EnvInterp))
 			if err != nil {
 				return nil
 			}
@@ -465,23 +439,23 @@ func attachProviderOpts(deps sessionFactoryDeps, _ *permissions.Gate) []attachad
 		}))
 	}
 
-	if deps.cfg != nil {
+	if deps.Cfg != nil {
 		opts = append(opts, attachadapter.WithPricingProvider(func() attach.PricingInfo {
-			info := attach.PricingInfo{CurrentModel: deps.cfg.Model.Name}
-			if !deps.pricingRate.IsZero() {
+			info := attach.PricingInfo{CurrentModel: deps.Cfg.Model.Name}
+			if !deps.PricingRate.IsZero() {
 				info.Current = &attach.ModelPricing{
-					InputUSDPerMTok:  deps.pricingRate.InputPerMTok,
-					OutputUSDPerMTok: deps.pricingRate.OutputPerMTok,
+					InputUSDPerMTok:  deps.PricingRate.InputPerMTok,
+					OutputUSDPerMTok: deps.PricingRate.OutputPerMTok,
 				}
 			}
 			return info
 		}))
 	}
 
-	if len(deps.mcpServers) > 0 {
+	if len(deps.MCPServers) > 0 {
 		opts = append(opts, attachadapter.WithMCPProvider(func() attach.MCPInfo {
-			servers := make([]attach.MCPServerInfo, 0, len(deps.mcpServers))
-			for _, s := range deps.mcpServers {
+			servers := make([]attach.MCPServerInfo, 0, len(deps.MCPServers))
+			for _, s := range deps.MCPServers {
 				tools := make([]attach.MCPToolInfo, 0, len(s.ToolInfos))
 				for _, t := range s.ToolInfos {
 					tools = append(tools, attach.MCPToolInfo{Name: t.Name, Description: t.Description})

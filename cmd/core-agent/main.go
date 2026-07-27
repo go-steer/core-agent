@@ -19,7 +19,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -47,6 +46,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/agentenv"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/attachadapter"
+	"github.com/go-steer/core-agent/v2/pkg/compose"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/digest"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
@@ -255,26 +255,11 @@ type agentCardOpts struct {
 }
 
 // attachOpts bundles the attach-mode CLI flags so run()'s signature
-// doesn't grow by 11 more positional args.
-type attachOpts struct {
-	Listen           string
-	UnixSocket       string
-	TLSCert          string
-	TLSKey           string
-	ClientCA         string
-	TokenEnv         string
-	ReadOnly         bool
-	PeerHub          bool
-	RegisterTo       string
-	RegisterName     string
-	RegisterEndpoint string
-	// UI enables the /ui/* route on the attach listener serving the
-	// mast-web operator UI. Uses the embedded bundle from
-	// internal/webui (populated by dev/tools/fetch-mast-web at build
-	// time) unless UIDir overrides with a local directory.
-	UI    bool
-	UIDir string
-}
+// doesn't grow by 11 more positional args. The struct itself lives in
+// pkg/compose since the extraction (#386 PR 6) — main only owns the
+// flag binding and the CLI-beats-config precedence in
+// mergeAttachOpts.
+type attachOpts = compose.AttachOptions
 
 // resolveAgentCardConfig builds the attach.AgentCardConfig from
 // .agents/agent-card.json plus CLI flag overrides, with
@@ -361,9 +346,16 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	setOnCLI := map[string]bool{}
 	flagSet.Visit(func(f *flag.Flag) { setOnCLI[f.Name] = true })
 
+	// Config half (value translation + ${ENV} expansion) lives in
+	// compose; this function owns only the CLI-beats-config
+	// precedence, which needs flag.Visit and therefore stays in main.
+	fromCfg := compose.BuildAttachOptions(cfg)
+
 	overlayStr := func(name string, dst *string, cfgVal string) {
 		if !setOnCLI[name] && *dst == "" {
+			// cfgVal arrives pre-expanded from BuildAttachOptions.
 			*dst = cfgVal
+			return
 		}
 		*dst = os.ExpandEnv(*dst)
 	}
@@ -373,17 +365,17 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 		}
 	}
 
-	overlayStr("attach-listen", &opts.Listen, cfg.Listen)
-	overlayStr("attach-unix-socket", &opts.UnixSocket, cfg.UnixSocket)
-	overlayStr("attach-tls-cert", &opts.TLSCert, cfg.TLSCert)
-	overlayStr("attach-tls-key", &opts.TLSKey, cfg.TLSKey)
-	overlayStr("attach-client-ca", &opts.ClientCA, cfg.ClientCA)
-	overlayStr("attach-token", &opts.TokenEnv, cfg.TokenEnv)
-	overlayBool("attach-readonly", &opts.ReadOnly, cfg.ReadOnly)
-	overlayBool("attach-peer-hub", &opts.PeerHub, cfg.PeerHub)
-	overlayStr("attach-register-to", &opts.RegisterTo, cfg.RegisterTo)
-	overlayStr("attach-register-endpoint", &opts.RegisterEndpoint, cfg.RegisterEndpoint)
-	overlayStr("attach-register-name", &opts.RegisterName, cfg.RegisterName)
+	overlayStr("attach-listen", &opts.Listen, fromCfg.Listen)
+	overlayStr("attach-unix-socket", &opts.UnixSocket, fromCfg.UnixSocket)
+	overlayStr("attach-tls-cert", &opts.TLSCert, fromCfg.TLSCert)
+	overlayStr("attach-tls-key", &opts.TLSKey, fromCfg.TLSKey)
+	overlayStr("attach-client-ca", &opts.ClientCA, fromCfg.ClientCA)
+	overlayStr("attach-token", &opts.TokenEnv, fromCfg.TokenEnv)
+	overlayBool("attach-readonly", &opts.ReadOnly, fromCfg.ReadOnly)
+	overlayBool("attach-peer-hub", &opts.PeerHub, fromCfg.PeerHub)
+	overlayStr("attach-register-to", &opts.RegisterTo, fromCfg.RegisterTo)
+	overlayStr("attach-register-endpoint", &opts.RegisterEndpoint, fromCfg.RegisterEndpoint)
+	overlayStr("attach-register-name", &opts.RegisterName, fromCfg.RegisterName)
 	return opts
 }
 
@@ -578,7 +570,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	//
 	// Failure to construct the sibling genai.Client is logged and
 	// caching is skipped — never breaks agent startup.
-	contextCacheManager := maybeWireContextCache(
+	contextCacheManager := compose.MaybeWireContextCache(
 		ctx, provider, cfg, noContextCache,
 		func(s string) { fmt.Fprintln(os.Stderr, "core-agent: "+s) },
 	)
@@ -635,6 +627,14 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 		return runner.ExitConfigError
 	}
+	// Persist "allow always" grants through the config-backed store
+	// (#386 PR 3). The gate's DecisionAllowAlways path now owns both
+	// halves of the contract — in-memory policy add + disk write —
+	// for every prompter (TUI modal, stdin, HTTP broker). Derived
+	// per-session sub-gates share the store by reference. Empty
+	// agentsDir ⇒ Persist is a no-op (grants stay session-scoped),
+	// same fallback the TUI callback used to implement one layer up.
+	template.SetGrantStore(&compose.ConfigGrantStore{AgentsDir: agentsDir})
 	// Always-derive: even in single-user mode the agent runs against
 	// a per-session sub-gate so per-session state (sessionAllow,
 	// planRecorded, etc.) is naturally isolated and the multi-session
@@ -808,7 +808,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		}
 		if llmEnabled {
 			resolvedMCPModel := models.ResolveMCPSmallModel(provider, llmModelOverride, agenticSmallModel)
-			digestOpts.LLMFallback = buildMCPDigestLLMFallback(&agentRef, provider, resolvedMCPModel)
+			digestOpts.LLMFallback = compose.BuildMCPDigestLLMFallback(&agentRef, provider, resolvedMCPModel)
 			switch {
 			case resolvedMCPModel == "":
 				send(fmt.Sprintf("mcp agentic wrap: LLM subagent on, inherits parent (%s — no cheap-tier default for provider %q)", cfg.Model.Name, provider.Name()))
@@ -848,13 +848,13 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// grep rather than `kubectl debug` + /proc/1/root inspection.
 	// Fires unconditionally at this point (both single-shot -p and
 	// attach modes), independent of the attach branch further down.
-	for _, line := range formatStartupSummary(startupSummaryInputs{
-		cfgPath:      cfgPath,
-		cfg:          cfg,
-		agentsDir:    agentsDir,
-		providerName: provider.Name(),
-		mcpServers:   mcpServers,
-		loadedSkills: loadedSkills,
+	for _, line := range compose.FormatStartupSummary(compose.StartupSummaryInputs{
+		CfgPath:      cfgPath,
+		Cfg:          cfg,
+		AgentsDir:    agentsDir,
+		ProviderName: provider.Name(),
+		MCPServers:   mcpServers,
+		LoadedSkills: loadedSkills,
 	}) {
 		send(line)
 	}
@@ -922,7 +922,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		if perr != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: pricing refresh: %v\n", perr)
 		} else {
-			describeRefresh(os.Stderr, outcome)
+			compose.DescribeRefresh(os.Stderr, outcome)
 		}
 	}
 
@@ -933,7 +933,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	//   → compiled-in builtin → longest-prefix → unknown.
 	// PR C adds /pricing refresh + /pricing set slash commands.
 	if catalog, perr := pricing.NewCatalog(pricing.Options{
-		CfgOverride: cfgToCatalogOverride(cfg.Model.Pricing),
+		CfgOverride: compose.CfgToCatalogOverride(cfg.Model.Pricing),
 		AgentsDir:   agentsDir,
 		UserHome:    coreHome,
 	}); perr != nil {
@@ -1011,7 +1011,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		default:
 			send(fmt.Sprintf("agentic subtasks: %s (provider default)", resolvedSmallModel))
 		}
-		agTools, err := buildAgenticTools(builtinTools, func() *agent.Agent { return agentRef }, provider, resolvedSmallModel)
+		agTools, err := compose.BuildAgenticTools(builtinTools, func() *agent.Agent { return agentRef }, provider, resolvedSmallModel)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: agentic tools: %v\n", err)
 			return runner.ExitConfigError
@@ -1098,7 +1098,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			if coreHome == "" {
 				return attach.PricingRefreshResponse{}, fmt.Errorf("pricing refresh: $HOME unavailable, no user file to write")
 			}
-			summary, err := refreshPricingForTUI(ctx, cfg, agentsDir, coreHome)
+			summary, err := compose.RefreshPricing(ctx, cfg, agentsDir, coreHome)
 			if err != nil {
 				return attach.PricingRefreshResponse{}, err
 			}
@@ -1112,7 +1112,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			if coreHome == "" {
 				return fmt.Errorf("pricing set: $HOME unavailable, no user file to write")
 			}
-			_, err := setPricingForTUI(cfg, agentsDir, coreHome, req.Model, req.InputUSDPerMTok, req.OutputUSDPerMTok)
+			_, err := compose.SetPricing(cfg, agentsDir, coreHome, req.Model, req.InputUSDPerMTok, req.OutputUSDPerMTok)
 			return err
 		}),
 		attachadapter.WithReloader(func(_ context.Context) attach.ReloadResponse {
@@ -1206,7 +1206,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// remains available regardless of this flag — disabling only
 	// turns off the automatic trigger.
 	if !noCompact {
-		opts = append(opts, agent.WithCompactor(buildCompactor(cfg.Compaction)))
+		opts = append(opts, agent.WithCompactor(compose.BuildCompactor(cfg.Compaction)))
 	}
 	// Task-boundary checkpoints (docs/context-management-design.md
 	// Mechanism C). Default-on; disable via --no-checkpoint.
@@ -1441,7 +1441,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		// chat-bot integrations. Single-user mode (the default) leaves
 		// these fields zero — the attach server behaves as it always
 		// has end-to-end.
-		authn, defaultCaller, authErr := buildMultiSessionAuthn(cfg.Attach.MultiSession)
+		authn, defaultCaller, authErr := compose.BuildMultiSessionAuthn(cfg.Attach.MultiSession)
 		if authErr != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: multi-session auth: %v\n", authErr)
 			return runner.ExitConfigError
@@ -1457,28 +1457,28 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		var sessionFactory attach.SessionFactory
 		var sessionResumer attach.SessionResumer
 		if cfg.Attach.MultiSession.Enabled {
-			factoryDeps := sessionFactoryDeps{
-				daemonCtx:      ctx,
-				model:          m,
-				template:       template,
-				pricingRate:    pricingRate,
-				agentsDir:      agentsDir,
-				cfg:            cfg,
-				mcpServers:     mcpServers,
-				builtinTools:   builtinTools,
-				toolsets:       allToolsets,
-				eventlogHandle: eventlogHandle,
-				projectRoot:    projectRoot,
-				userRoot:       coreHome,
-				homeAgentsDir:  homeAgentsDir,
-				usersDir:       cfg.Attach.MultiSession.UsersDir,
-				envInterp:      envResolver.InterpolateFunc(),
-				registry:       attachReg,
-				aclStore:       aclStore,
-				noCompact:      noCompact,
-				noCheckpoint:   noCheckpoint,
+			factoryDeps := compose.SessionFactoryDeps{
+				DaemonCtx:      ctx,
+				Model:          m,
+				Template:       template,
+				PricingRate:    pricingRate,
+				AgentsDir:      agentsDir,
+				Cfg:            cfg,
+				MCPServers:     mcpServers,
+				BuiltinTools:   builtinTools,
+				Toolsets:       allToolsets,
+				EventlogHandle: eventlogHandle,
+				ProjectRoot:    projectRoot,
+				UserRoot:       coreHome,
+				HomeAgentsDir:  homeAgentsDir,
+				UsersDir:       cfg.Attach.MultiSession.UsersDir,
+				EnvInterp:      envResolver.InterpolateFunc(),
+				Registry:       attachReg,
+				ACLStore:       aclStore,
+				NoCompact:      noCompact,
+				NoCheckpoint:   noCheckpoint,
 			}
-			sessionFactory = buildSessionFactory(factoryDeps)
+			sessionFactory = compose.BuildSessionFactory(factoryDeps)
 			// Session resume: reconstructs sessions persisted in
 			// agent_session_acl that aren't in the in-memory
 			// registry yet (post-daemon-restart, post-eviction).
@@ -1486,7 +1486,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			// without persisted ACLs keep their legacy 404-on-miss
 			// behavior. Wired into attach.NewServer's Options.Resumer
 			// below.
-			sessionResumer = buildSessionResumer(factoryDeps)
+			sessionResumer = compose.BuildSessionResumer(factoryDeps)
 		}
 		// Resolve --ui / --ui-dir into an fs.FS. --ui-dir wins when
 		// both are set (operator passed an explicit override; that's
@@ -1670,48 +1670,24 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		fmt.Fprintf(os.Stderr,
 			"core-agent: --no-repl: attach-only mode, session %s (Ctrl-C or SIGTERM to exit)\n",
 			a.SessionID())
-		debugf("--no-repl: wake loop starting (session=%s model=%s)", a.SessionID(), m.Name())
-		// Wake-driven inbox loop: when an attach client POSTs
-		// /inject, agent.Inject appends to the inbox + fires
-		// WakeRequested. We consume the event iterator from
-		// a.Run so the turn actually completes; the events also
-		// hit the eventlog → attach broadcaster, which is what
-		// the operator's TUI is rendering. Empty prompt means
-		// "no user text this turn, just drain the inbox" — same
-		// path REPL uses for the same case.
-		//
-		// Per-turn usage tap mirrors runner/headless.go's tapUsage:
-		// the loop watches each event's UsageMetadata, remembers
-		// the latest in/out counts, and on iterator end calls
-		// tracker.Append once. Without this the /stats and status-
-		// banner cumulative totals stay at zero in --no-repl mode
-		// because the tracker is only otherwise driven by
-		// agent/autonomous.go and agent/subtask.go.
-		for {
-			select {
-			case <-ctx.Done():
-				debugf("--no-repl: wake loop ending (ctx cancelled)")
-				return runner.ExitOK
-			case <-a.WakeRequested():
-				debugf("--no-repl: wake fired; calling Run")
-				var lastUsage usage.TurnUsage
-				var evCount int
-				for ev, runErr := range a.Run(ctx, "") {
-					evCount++
-					if ev != nil && ev.UsageMetadata != nil {
-						lastUsage = usage.TurnUsageFromGenaiMetadata(ev.UsageMetadata)
-					}
-					if runErr != nil {
-						fmt.Fprintf(os.Stderr, "core-agent: turn: %v\n", runErr)
-						debugf("--no-repl: Run yielded error: %v", runErr)
-					}
-				}
-				debugf("--no-repl: Run finished (events=%d lastIn=%d lastOut=%d)", evCount, lastUsage.InputTokens, lastUsage.OutputTokens)
-				if tracker != nil && (lastUsage.InputTokens > 0 || lastUsage.OutputTokens > 0) {
-					tracker.AppendUsage(m.Name(), lastUsage, pricingRate)
-				}
-			}
-		}
+		// Wake-driven inbox loop, consolidated behind
+		// runner.WakeLoop (#386 PR 4): blocks until an attach
+		// client's POST /inject fires WakeRequested, drains the
+		// inbox through an empty-prompt turn, accounts usage via
+		// the shared usage.TurnTap discipline, repeats until ctx
+		// cancels. Errors are surfaced per-turn; the loop stays up.
+		runner.WakeLoop(ctx, a, runner.WakeLoopOptions{
+			Tracker: tracker,
+			Model:   m.Name(),
+			Pricing: pricingRate,
+			OnTurnError: func(err error) {
+				fmt.Fprintf(os.Stderr, "core-agent: turn: %v\n", err)
+			},
+			Debugf: func(format string, args ...any) {
+				debugf("--no-repl: "+format, args...)
+			},
+		})
+		return runner.ExitOK
 	}
 
 	// TUI launch branch: when stdin is a real terminal and --no-tui
@@ -1803,45 +1779,20 @@ func loadConfig(cfgPath, cwd string) (*config.Config, string, error) {
 	return config.LoadOrDefault(cwd)
 }
 
-// installLogFilter replaces log.Default()'s output with a writer
-// that drops lines matching known-noisy patterns the bundled CLI
-// doesn't want surfaced to users. Today the only filtered line is
-// `Error context canceled` from genai's SSE scanner, which fires
-// every time the user hits ESC mid-turn (genai/api_client.go:484
-// log.Printf's it unconditionally).
+// installLogFilter replaces log.Default()'s output with
+// compose.NewFilteredLogWriter, which drops lines matching
+// known-noisy patterns the bundled CLI doesn't want surfaced to
+// users (see pkg/compose/logfilter.go).
 //
 // Anything that isn't filtered passes through to fallback (typically
 // os.Stderr) unchanged, so consumer-supplied log lines still appear.
 func installLogFilter(fallback io.Writer) {
-	log.SetOutput(&filteredLogWriter{w: fallback})
+	log.SetOutput(compose.NewFilteredLogWriter(fallback))
 	// Strip the default date/time prefix so any line that DOES make
 	// it through reads like a normal stderr message rather than a
 	// log entry. Genai's own log.Printf will pick up our flags;
 	// fortunately the line we're filtering is the noisy one.
 	log.SetFlags(0)
-}
-
-// filteredLogWriter drops noisy log lines from genai/ADK that the
-// bundled CLI doesn't want to expose.
-type filteredLogWriter struct{ w io.Writer }
-
-// drop is the set of substrings that mark a line for filtering.
-// Kept small + literal so we don't accidentally suppress something
-// users need to see.
-var droppedLogPatterns = [][]byte{
-	[]byte("Error context canceled"),
-	[]byte("Error context deadline exceeded"),
-}
-
-func (f *filteredLogWriter) Write(p []byte) (int, error) {
-	for _, pat := range droppedLogPatterns {
-		if bytes.Contains(p, pat) {
-			// Return the full length so log.Output() doesn't see a
-			// short write and retry. The semantic is "consumed".
-			return len(p), nil
-		}
-	}
-	return f.w.Write(p)
 }
 
 // resolveSessionDBPath returns the path to use for the session

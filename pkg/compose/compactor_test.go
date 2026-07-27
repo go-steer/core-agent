@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package compose
 
 import (
 	"testing"
@@ -23,10 +23,10 @@ import (
 )
 
 func TestBuildCompactor_DefaultsWhenConfigEmpty(t *testing.T) {
-	c := buildCompactor(config.CompactionConfig{})
+	c := BuildCompactor(config.CompactionConfig{})
 	dc, ok := c.(*agent.DefaultCompactor)
 	if !ok {
-		t.Fatalf("buildCompactor returned %T, want *agent.DefaultCompactor", c)
+		t.Fatalf("BuildCompactor returned %T, want *agent.DefaultCompactor", c)
 	}
 	if dc.Threshold != agent.DefaultCompactionThreshold {
 		t.Errorf("Threshold = %v, want substrate default %v", dc.Threshold, agent.DefaultCompactionThreshold)
@@ -41,7 +41,7 @@ func TestBuildCompactor_DefaultsWhenConfigEmpty(t *testing.T) {
 
 func TestBuildCompactor_OperatorOverrides(t *testing.T) {
 	custom := 0.5
-	c := buildCompactor(config.CompactionConfig{
+	c := BuildCompactor(config.CompactionConfig{
 		Threshold: &custom,
 		ThresholdByTier: map[string]float64{
 			// Operator override: keep frontier on the substrate default
@@ -52,7 +52,7 @@ func TestBuildCompactor_OperatorOverrides(t *testing.T) {
 	})
 	dc, ok := c.(*agent.DefaultCompactor)
 	if !ok {
-		t.Fatalf("buildCompactor returned %T, want *agent.DefaultCompactor", c)
+		t.Fatalf("BuildCompactor returned %T, want *agent.DefaultCompactor", c)
 	}
 	if dc.Threshold != 0.5 {
 		t.Errorf("Threshold = %v, want operator override 0.5", dc.Threshold)

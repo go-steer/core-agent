@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package compose
 
 import (
 	"fmt"
@@ -27,38 +27,38 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/skills"
 )
 
-// startupSummaryInputs bundles everything formatStartupSummary needs.
+// StartupSummaryInputs bundles everything FormatStartupSummary needs.
 // Keeping the input surface explicit (vs pulling from package-level
 // state) is what makes the formatter unit-testable.
-type startupSummaryInputs struct {
-	// cfgPath is the value of the -c / --config flag as passed on the
+type StartupSummaryInputs struct {
+	// CfgPath is the value of the -c / --config flag as passed on the
 	// CLI. Empty means the daemon fell through to config discovery
 	// (walk-up from cwd looking for .agents/config.json).
-	cfgPath string
-	// cfg is the fully-resolved config (post CLI overrides, post
+	CfgPath string
+	// Cfg is the fully-resolved config (post CLI overrides, post
 	// task-class tier fills).
-	cfg *config.Config
-	// agentsDir is the resolved .agents/ directory (from
+	Cfg *config.Config
+	// AgentsDir is the resolved .agents/ directory (from
 	// filepath.Dir(cfgPath) when -c is set, else from config
 	// discovery). Empty means "no agentsDir was found" — the daemon
 	// still runs; MCP + skills + record_plan just have nowhere to
 	// live.
-	agentsDir string
-	// providerName is the concrete provider name after resolution
+	AgentsDir string
+	// ProviderName is the concrete provider name after resolution
 	// (vertex / gemini / anthropic / anthropic-vertex / echo /
 	// scripted). Comes from provider.Name() at the call site.
-	providerName string
-	// mcpServers describes every MCP server the daemon successfully
+	ProviderName string
+	// MCPServers describes every MCP server the daemon successfully
 	// or unsuccessfully started. mcp.Server carries the name +
 	// Status + Err — this summary calls the ones with a nil Err
 	// "ok" and the ones with Status != "" but Err != nil "failed".
-	mcpServers []*mcp.Server
-	// loadedSkills describes the discovered skills — count + names
-	// via loadedSkills.Infos.
-	loadedSkills skills.Skills
+	MCPServers []*mcp.Server
+	// LoadedSkills describes the discovered skills — count + names
+	// via LoadedSkills.Infos.
+	LoadedSkills skills.Skills
 }
 
-// formatStartupSummary produces the config-summary block emitted at
+// FormatStartupSummary produces the config-summary block emitted at
 // daemon startup right after the config / instruction / MCP / skills
 // resolution completes. Six lines, one per topic, in the standard
 // core-agent: <topic>: <detail> shape. Callers wrap each returned line
@@ -69,29 +69,29 @@ type startupSummaryInputs struct {
 // the daemon log see these lines FIRST (before "attach listener on"
 // and the other established lines) — this is the "what did the
 // daemon actually load" answer that was silent before #212.
-func formatStartupSummary(in startupSummaryInputs) []string {
+func FormatStartupSummary(in StartupSummaryInputs) []string {
 	lines := make([]string, 0, 6)
 
 	// 1. config: source + resolution path.
-	lines = append(lines, formatConfigLine(in.cfgPath, in.agentsDir))
+	lines = append(lines, formatConfigLine(in.CfgPath, in.AgentsDir))
 
 	// 2. agentsDir: resolved absolute path + how we got there.
-	lines = append(lines, formatAgentsDirLine(in.cfgPath, in.agentsDir))
+	lines = append(lines, formatAgentsDirLine(in.CfgPath, in.AgentsDir))
 
 	// 3. model + provider + project/location (for cloud providers).
-	lines = append(lines, formatModelLine(in.cfg, in.providerName))
+	lines = append(lines, formatModelLine(in.Cfg, in.ProviderName))
 
 	// 4. mcp: N server(s) loaded — names.
-	lines = append(lines, formatMCPLine(in.mcpServers))
+	lines = append(lines, formatMCPLine(in.MCPServers))
 
 	// 5. skills: N loaded — names.
-	lines = append(lines, formatSkillsLine(in.loadedSkills))
+	lines = append(lines, formatSkillsLine(in.LoadedSkills))
 
 	// 6. multi-session auth: kind, user count, admin/proxy lists.
 	//    Reads users.json directly (LoadUsersFile) rather than
-	//    depending on the buildMultiSessionAuthn call in the attach
+	//    depending on the BuildMultiSessionAuthn call in the attach
 	//    branch — the summary must fire regardless of attach mode.
-	lines = append(lines, formatAuthLine(in.cfg))
+	lines = append(lines, formatAuthLine(in.Cfg))
 
 	return lines
 }

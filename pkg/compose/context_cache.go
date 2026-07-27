@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package compose
 
 import (
 	"context"
@@ -27,7 +27,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/models/gemini"
 )
 
-// maybeWireContextCache builds a vertexcache.Manager and installs
+// MaybeWireContextCache builds a vertexcache.Manager and installs
 // its hooks on the provider when the following are all true:
 //
 //  1. The provider is *gemini.Provider (concrete type — cache
@@ -42,7 +42,7 @@ import (
 // hard: if constructing the sibling genai.Client fails, the
 // helper logs and returns nil — the agent still starts, just
 // without caching.
-func maybeWireContextCache(
+func MaybeWireContextCache(
 	ctx context.Context,
 	provider models.Provider,
 	cfg *config.Config,

@@ -29,7 +29,6 @@ on:
     paths:
       - 'examples/gke-troubleshoot-agent/**'
       - 'cmd/core-agent/**'
-      - 'cmd/k8s-event-watcher/**'
       - 'pkg/config/**'
       - 'pkg/auth/**'
       - 'pkg/instruction/**'
@@ -42,7 +41,6 @@ on:
     paths:
       - 'examples/gke-troubleshoot-agent/**'
       - 'cmd/core-agent/**'
-      - 'cmd/k8s-event-watcher/**'
       - 'pkg/config/**'
       - 'pkg/auth/**'
       - 'pkg/instruction/**'

@@ -57,7 +57,7 @@ internal/             pricing catalog, attach client, core-tui remote
                       adapter, web UI, vertex cache, version, testutil.
 cmd/core-agent/       Reference CLI binary (default in-process TUI).
 cmd/core-agent-tui/   Standalone TUI binary (spawn-and-attach).
-cmd/k8s-event-watcher/ Sample consumer (moving to go-steer/k8s-lookout).
+                      (k8s-event-watcher moved to go-steer/k8s-lookout.)
 examples/             Library use examples.
 extras/scion/         Scion harness integration.
 dev/                  Build/test/lint tooling — see dev/README.md.

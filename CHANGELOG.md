@@ -16,6 +16,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+### ⚠️ Breaking changes
+
+- **The `k8s-event-watcher` binary moved to [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout).** `cmd/k8s-event-watcher/` is deleted and every `k8s.io/*` module (plus ~20 orphaned transitives) left the dependency graph — the core-agent *library* no longer pulls Kubernetes into any consumer's build. Published watcher images through v2.7 remain pullable from ghcr; new watcher releases ship from k8s-lookout, and the GKE troubleshoot recipe keeps using the pinned published image until it migrates to k8s-lookout's. Closes [#393](https://github.com/go-steer/core-agent/issues/393).
+
 ### Changes by Kind
 
 #### Bug or Regression

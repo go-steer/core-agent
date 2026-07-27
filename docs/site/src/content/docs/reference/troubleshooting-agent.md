@@ -8,6 +8,8 @@ Shipped in **v2.6**. Requires v2.4's multi-session substrate + v2.5's session-re
 
 Full recipe: `examples/gke-troubleshoot-agent/` in the repo. Design doc: `docs/k8s-event-agent-design.md`.
 
+> **Note:** the `k8s-event-watcher` source moved to [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout). The recipe keeps deploying the published `ghcr.io/go-steer/k8s-event-watcher` image; future watcher releases ship from that repo.
+
 ---
 
 ## When to use it

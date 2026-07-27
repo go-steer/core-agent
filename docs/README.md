@@ -87,7 +87,7 @@ research + friction logs, or handover notes.
 
 ### Kubernetes + platform integrations
 
-- [`k8s-event-agent-design.md`](k8s-event-agent-design.md) — K8s-event-driven troubleshooting agent (`cmd/k8s-event-watcher/`)
+- [`k8s-event-agent-design.md`](k8s-event-agent-design.md) — K8s-event-driven troubleshooting agent (watcher source now lives in [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout))
 - [`kube-agents-platform-fit.md`](kube-agents-platform-fit.md) — running `core-agent` as the `kube-agents` platform agent
 - [`scion-core-agent-architecture.md`](scion-core-agent-architecture.md) — layered architecture for Scion-managed agent runtimes
 - [`ax-integration-audit.md`](ax-integration-audit.md) — gap audit for `extras/ax-agent/`; don't build a parallel coordinator

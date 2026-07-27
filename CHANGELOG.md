@@ -16,6 +16,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+_No unreleased changes since [2.8.0-dev.1]._
+
+## [2.8.0-dev.1] — 2026-07-27
+
 ### ⚠️ Breaking changes
 
 - **`fetch_url` ignores ambient `HTTP_PROXY`/`HTTPS_PROXY` env vars unless `url_scope.proxy` opts in.** The tool's transport previously inherited `ProxyFromEnvironment` from `http.DefaultTransport`, and with a proxy in the path the SSRF guard's resolve-validate-pin dial vets the *proxy's* address — hostname targets are resolved at the proxy, outside the guard. Proxying is now an explicit operator decision via the new `url_scope.proxy` config field: `""` (default) = no proxy; `"env"` = honor the standard env vars; a fixed `http://`/`https://`/`socks5://` URL = route every fetch through it. **To upgrade:** deployments that relied on ambient proxy env vars for `fetch_url` egress must set `url_scope.proxy: "env"` — and understand that either non-empty mode delegates private/metadata-range SSRF policy for hostname targets to the proxy (literal-IP targets are still screened locally on the initial URL and every redirect hop). (See the #### Security entry for #429.)

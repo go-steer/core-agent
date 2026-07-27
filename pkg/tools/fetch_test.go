@@ -545,6 +545,22 @@ func TestSSRFGuard_CheckAddr(t *testing.T) {
 		{"ula fc00::/7", "fc00::1", false, false, "loopback/private"},
 		{"ula exact host unlocks", "fc00::1", true, false, ""},
 		{"rfc1918 exact host unlocks", "10.1.2.3", true, false, ""},
+		// #428 additions.
+		{"ietf special-purpose 192.0.0.0/24 metadata-adjacent", "192.0.0.192", false, false, "link-local/metadata"},
+		{"192.0.0.0/24 exact host does not unlock", "192.0.0.192", true, false, "link-local/metadata"},
+		{"192.0.0.0/24 opt-in flag unlocks", "192.0.0.192", false, true, ""},
+		{"unspecified v4 0.0.0.0", "0.0.0.0", false, false, "loopback/private"},
+		{"this-network 0/8", "0.1.2.3", false, false, "loopback/private"},
+		{"unspecified v6 ::", "::", false, false, "loopback/private"},
+		{"deprecated v4-compatible embedding", "::10.1.2.3", false, false, "loopback/private"},
+		{"nat64 well-known embedding private v4", "64:ff9b::10.0.0.1", false, false, "loopback/private"},
+		{"nat64 well-known embedding public v4", "64:ff9b::5db8:d822", false, false, "loopback/private"},
+		{"nat64 local-use prefix", "64:ff9b:1::1", false, false, "loopback/private"},
+		{"nat64 exact host unlocks", "64:ff9b::10.0.0.1", true, false, ""},
+		{"benchmarking 198.18/15", "198.19.255.1", false, false, "loopback/private"},
+		{"limited broadcast", "255.255.255.255", false, false, "loopback/private"},
+		{"multicast v4", "224.0.0.251", false, false, "loopback/private"},
+		{"multicast v6", "ff02::fb", false, false, "loopback/private"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

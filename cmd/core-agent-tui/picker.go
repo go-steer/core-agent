@@ -20,8 +20,8 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	lipgloss "charm.land/lipgloss/v2"
 
 	"github.com/go-steer/core-agent/v2/internal/attachclient"
 )
@@ -164,7 +164,7 @@ func (m pickerModel) UpdateInner(msg tea.Msg) (pickerModel, tea.Cmd) {
 			}
 		}
 		return m, nil
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if m.loading {
 			return m, nil
 		}

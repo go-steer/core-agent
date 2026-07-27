@@ -14,7 +14,7 @@
 
 package main
 
-import "github.com/charmbracelet/lipgloss"
+import lipgloss "charm.land/lipgloss/v2"
 
 // Minimal lipgloss palette + styles needed by the session picker
 // (the only bubble-tea screen left in this binary after the

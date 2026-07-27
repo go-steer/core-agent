@@ -5,9 +5,9 @@ go 1.26.4
 toolchain go1.26.5
 
 require (
+	charm.land/bubbletea/v2 v2.0.6
+	charm.land/lipgloss/v2 v2.0.3
 	github.com/anthropics/anthropic-sdk-go v1.43.0
-	github.com/charmbracelet/bubbletea v1.3.10
-	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/glebarez/sqlite v1.11.0
 	github.com/go-logr/stdr v1.2.2
 	github.com/go-steer/core-tui v0.16.1
@@ -38,10 +38,8 @@ require (
 
 require (
 	charm.land/bubbles/v2 v2.1.0 // indirect
-	charm.land/bubbletea/v2 v2.0.6 // indirect
 	charm.land/glamour/v2 v2.0.0 // indirect
 	charm.land/huh/v2 v2.0.3 // indirect
-	charm.land/lipgloss/v2 v2.0.3 // indirect
 	cloud.google.com/go v0.123.0 // indirect
 	cloud.google.com/go/auth v0.20.0 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
@@ -49,7 +47,6 @@ require (
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.32.0 // indirect
 	github.com/alecthomas/chroma/v2 v2.20.0 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
-	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/aymanbagabas/go-udiff v0.4.1 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
@@ -61,7 +58,6 @@ require (
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260416155717-489999b90468 // indirect
 	github.com/charmbracelet/x/ansi v0.11.7 // indirect
-	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect
 	github.com/charmbracelet/x/exp/ordered v0.1.0 // indirect
 	github.com/charmbracelet/x/exp/slice v0.0.0-20250327172914-2fdc97757edf // indirect
 	github.com/charmbracelet/x/exp/strings v0.0.0-20240722160745-212f7b056ed0 // indirect
@@ -72,7 +68,6 @@ require (
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/glebarez/go-sqlite v1.21.2 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
@@ -91,13 +86,10 @@ require (
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
-	github.com/mattn/go-localereader v0.0.1 // indirect
 	github.com/mattn/go-runewidth v0.0.23 // indirect
 	github.com/microcosm-cc/bluemonday v1.0.27 // indirect
 	github.com/mitchellh/hashstructure/v2 v2.0.2 // indirect
-	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
-	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect

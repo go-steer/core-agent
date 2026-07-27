@@ -615,3 +615,71 @@ func mustHost(t *testing.T, raw string) string {
 	}
 	return u.Host
 }
+
+// TestProxyFuncFor pins the url_scope.proxy → transport.Proxy mapping
+// (#429): default is NO proxy even when HTTP_PROXY is set in the
+// environment (with a proxy in the path, hostname targets resolve at
+// the proxy, outside the SSRF guard — so proxying must be explicit);
+// "env" opts back in; a fixed URL routes everything there.
+func TestProxyFuncFor(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://ambient-proxy.corp:3128")
+	t.Setenv("HTTPS_PROXY", "http://ambient-proxy.corp:3128")
+
+	req, _ := http.NewRequest(http.MethodGet, "http://example.com/", nil)
+
+	if fn := proxyFuncFor(""); fn != nil {
+		t.Errorf("proxyFuncFor(\"\") = non-nil; ambient env proxies must be ignored by default")
+	}
+
+	fn := proxyFuncFor("env")
+	if fn == nil {
+		t.Fatal("proxyFuncFor(\"env\") = nil, want ProxyFromEnvironment")
+	}
+	u, err := fn(req)
+	if err != nil || u == nil || u.Host != "ambient-proxy.corp:3128" {
+		t.Errorf("proxyFuncFor(\"env\")(req) = %v, %v; want the ambient proxy", u, err)
+	}
+
+	fn = proxyFuncFor("http://fixed-proxy.corp:8080")
+	if fn == nil {
+		t.Fatal("proxyFuncFor(fixed) = nil")
+	}
+	u, err = fn(req)
+	if err != nil || u == nil || u.Host != "fixed-proxy.corp:8080" {
+		t.Errorf("proxyFuncFor(fixed)(req) = %v, %v; want the fixed proxy", u, err)
+	}
+
+	// Defense-in-depth: a malformed value that slipped past
+	// config.Validate falls back to no-proxy, not a guess.
+	if fn := proxyFuncFor("://bad"); fn != nil {
+		t.Errorf("proxyFuncFor(malformed) = non-nil, want nil (no proxy)")
+	}
+}
+
+// TestFetchURL_TransportIgnoresAmbientProxyByDefault is the
+// integration pin for the #429 default: the constructed tool's
+// transport must carry a nil Proxy func when url_scope.proxy is
+// unset, so a poisoned/ambient HTTP_PROXY cannot pull hostname
+// resolution out of the SSRF guard's dial path.
+func TestFetchURL_TransportIgnoresAmbientProxyByDefault(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://ambient-proxy.corp:3128")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("direct"))
+	}))
+	t.Cleanup(srv.Close)
+
+	fn := fetchURLFunc(fetchGate(t), fetchCfg([]string{srv.URL}, nil))
+
+	// The test server listens on 127.0.0.1 with the exact host:port
+	// allowlisted, so the only way this fetch fails is if the
+	// transport tried to route through the (nonexistent) ambient
+	// proxy instead of dialing direct.
+	out, err := fn(tool.Context(nil), fetchURLArgs{URL: srv.URL})
+	if err != nil {
+		t.Fatalf("fetch via ambient-proxy env: %v (transport should dial direct)", err)
+	}
+	if out.Body != "direct" {
+		t.Errorf("body = %q, want %q", out.Body, "direct")
+	}
+}

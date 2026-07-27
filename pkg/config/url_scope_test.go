@@ -88,3 +88,36 @@ func TestURLScopeConfig_OmittedSection(t *testing.T) {
 		t.Errorf("URLScope should be zero value when absent, got: %+v", cfg.URLScope)
 	}
 }
+
+func TestValidate_URLScopeProxy(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		proxy   string
+		wantErr bool
+	}{
+		{"", false},
+		{"env", false},
+		{"http://proxy.corp:3128", false},
+		{"https://proxy.corp:3128", false},
+		{"socks5://127.0.0.1:1080", false},
+		{"ftp://proxy.corp:21", true}, // unsupported scheme
+		{"proxy.corp:3128", true},     // scheme-less parses as opaque; rejected
+		{"http://", true},             // no host
+		{"://bad", true},              // unparseable
+	}
+	for _, c := range cases {
+		t.Run("proxy="+c.proxy, func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.URLScope.Proxy = c.proxy
+			err := cfg.Validate()
+			if c.wantErr && err == nil {
+				t.Errorf("Validate(proxy=%q): want error, got nil", c.proxy)
+			}
+			if !c.wantErr && err != nil {
+				t.Errorf("Validate(proxy=%q): unexpected error: %v", c.proxy, err)
+			}
+		})
+	}
+}

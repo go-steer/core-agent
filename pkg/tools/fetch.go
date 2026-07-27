@@ -119,6 +119,17 @@ func fetchURLFuncWithResolver(gate *permissions.Gate, cfg *config.Config, resolv
 	// defense; see ssrfGuard).
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DialContext = guard.dialContext
+	// Proxying is explicit-config only (#429). DefaultTransport's
+	// ProxyFromEnvironment would silently route through
+	// HTTP_PROXY/HTTPS_PROXY, and with a proxy in the path the
+	// guarded dial validates/pins the PROXY's address — hostname
+	// targets are resolved at the proxy, outside the SSRF guard.
+	// So ambient env proxies are ignored; url_scope.proxy: "env"
+	// opts back in, and a fixed proxy URL routes everything there.
+	// In both proxied modes the operator delegates private/metadata
+	// SSRF policy for hostname targets to the proxy; literal-IP
+	// targets stay screened locally (checkURL, every redirect hop).
+	transport.Proxy = proxyFuncFor(scope.Proxy)
 	client := &http.Client{
 		Timeout:   timeout,
 		Transport: transport,
@@ -517,6 +528,31 @@ var fetchPrivateRanges = []netip.Prefix{
 	netip.MustParsePrefix("255.255.255.255/32"), // limited broadcast
 	netip.MustParsePrefix("224.0.0.0/4"),        // IPv4 multicast
 	netip.MustParsePrefix("ff00::/8"),           // IPv6 multicast
+}
+
+// proxyFuncFor maps url_scope.proxy onto an http.Transport.Proxy
+// func (#429):
+//
+//	""    → nil (no proxy; ambient HTTP_PROXY/HTTPS_PROXY ignored)
+//	"env" → http.ProxyFromEnvironment (explicit operator opt-in)
+//	<url> → fixed proxy for every request
+//
+// A malformed fixed URL is rejected by config.Validate at load time;
+// this parse is a defense-in-depth backstop for hand-constructed
+// configs and falls back to no-proxy rather than guessing.
+func proxyFuncFor(setting string) func(*http.Request) (*url.URL, error) {
+	switch setting {
+	case "":
+		return nil
+	case "env":
+		return http.ProxyFromEnvironment
+	default:
+		u, err := url.Parse(setting)
+		if err != nil || u.Host == "" {
+			return nil
+		}
+		return http.ProxyURL(u)
+	}
 }
 
 // ssrfGuard vets destination IPs and pins the vetted resolution

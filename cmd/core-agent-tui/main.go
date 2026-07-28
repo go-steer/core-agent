@@ -51,7 +51,7 @@ import (
 	"strings"
 	"syscall"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	coretui "github.com/go-steer/core-tui/tui"
 
 	"github.com/go-steer/core-agent/v2/internal/attachclient"
@@ -301,7 +301,7 @@ type standalonePicker struct {
 func (s *standalonePicker) Init() tea.Cmd { return s.pm.Init() }
 
 func (s *standalonePicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if k, ok := msg.(tea.KeyMsg); ok && k.Type == tea.KeyCtrlC {
+	if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "ctrl+c" {
 		return s, tea.Quit
 	}
 	if sz, ok := msg.(tea.WindowSizeMsg); ok {
@@ -315,7 +315,7 @@ func (s *standalonePicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return s, cmd
 }
 
-func (s *standalonePicker) View() string { return s.pm.View() }
+func (s *standalonePicker) View() tea.View { return tea.NewView(s.pm.View()) }
 
 // displayIdentity derives a short label from a session path for
 // the status-line banner when --alias wasn't passed. Returns the

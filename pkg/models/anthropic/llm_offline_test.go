@@ -33,6 +33,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
@@ -80,6 +81,66 @@ data: {"type":"message_stop"}
 
 `
 
+// pauseTurnSSEFixture is request #1 of a long server-side web_search
+// turn: the model issues a server_tool_use invocation, then the API
+// pauses the turn (stop_reason pause_turn) because the server-side
+// tool loop ran long. The adapter must NOT treat this as terminal — it
+// must replay the paused assistant message and re-issue the request.
+const pauseTurnSSEFixture = `event: message_start
+data: {"type":"message_start","message":{"id":"msg_pause_01","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":30,"output_tokens":1}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_01","name":"web_search","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":" \"latest Go release\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"pause_turn","stop_sequence":null},"usage":{"output_tokens":7}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
+// webSearchDoneSSEFixture is request #2: the resumed turn returns the
+// search results (web_search_tool_result) followed by the model's
+// answer text, and ends normally.
+const webSearchDoneSSEFixture = `event: message_start
+data: {"type":"message_start","message":{"id":"msg_done_01","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":50,"output_tokens":1}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_01","content":[{"type":"web_search_result","title":"Go 1.26 released","url":"https://go.dev/blog/go1.26","encrypted_content":"opaque-encrypted-blob","page_age":"2 days ago"}]}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Go 1.26 shipped"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" two days ago."}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":12}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
 // capturedRequest is what the fake Messages endpoint saw — used to
 // assert the adapter built the request correctly.
 type capturedRequest struct {
@@ -113,6 +174,42 @@ func newOfflineLLM(t *testing.T, modelID, sse string) (*llm, *capturedRequest) {
 		),
 		modelID:  modelID,
 		builtins: BuiltinTools{}, // no server-side built-ins in the fixture
+	}, captured
+}
+
+// newOfflineLLMSeq is newOfflineLLM for multi-request turns: request
+// #i is answered with sses[i] (the last fixture repeats once the list
+// is exhausted, so a fixture ending in pause_turn simulates a server
+// that pauses forever). Every request body is captured in order.
+func newOfflineLLMSeq(t *testing.T, modelID string, sses []string) (*llm, *[]capturedRequest) {
+	t.Helper()
+	var mu sync.Mutex
+	captured := &[]capturedRequest{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		req := capturedRequest{path: r.URL.Path, method: r.Method}
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &req.body)
+		*captured = append(*captured, req)
+		i := len(*captured) - 1
+		mu.Unlock()
+
+		if i >= len(sses) {
+			i = len(sses) - 1
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, sses[i])
+	}))
+	t.Cleanup(srv.Close)
+
+	return &llm{
+		client: sdk.NewClient(
+			option.WithAPIKey("test-key-not-real"),
+			option.WithBaseURL(srv.URL),
+		),
+		modelID:  modelID,
+		builtins: BuiltinTools{WebSearch: true},
 	}, captured
 }
 
@@ -283,5 +380,152 @@ func TestGenerateContent_OfflineStream_HTTPErrorYieldsError(t *testing.T) {
 		if r.TurnComplete {
 			t.Errorf("a TurnComplete response was yielded despite the HTTP error: %+v", r)
 		}
+	}
+}
+
+// TestGenerateContent_PauseTurnContinuation drives the two-request
+// web-search turn end to end (#461): request #1 ends in pause_turn
+// with a server_tool_use block, so the adapter must replay the paused
+// assistant message verbatim and re-issue; request #2 completes the
+// turn. Asserts the request count, the replayed blocks, the terminal
+// content, the summed usage, and that server-side tool blocks are not
+// surfaced as parts.
+func TestGenerateContent_PauseTurnContinuation(t *testing.T) {
+	t.Parallel()
+	l, captured := newOfflineLLMSeq(t, "claude-test",
+		[]string{pauseTurnSSEFixture, webSearchDoneSSEFixture})
+
+	var partials []string
+	var final *adkmodel.LLMResponse
+	for resp, err := range l.GenerateContent(context.Background(), &adkmodel.LLMRequest{
+		Contents: userText("what's the latest Go release?"),
+	}, true) {
+		if err != nil {
+			t.Fatalf("GenerateContent yielded error: %v", err)
+		}
+		if resp.Partial {
+			partials = append(partials, resp.Content.Parts[0].Text)
+			continue
+		}
+		if final != nil {
+			t.Fatalf("more than one terminal response: %+v then %+v", final, resp)
+		}
+		final = resp
+	}
+
+	// --- exactly two requests were issued ---
+	if len(*captured) != 2 {
+		t.Fatalf("adapter issued %d requests, want 2 (initial + one pause_turn continuation)", len(*captured))
+	}
+
+	// --- request #1: just the user turn ---
+	firstMsgs, _ := (*captured)[0].body["messages"].([]any)
+	if len(firstMsgs) != 1 {
+		t.Fatalf("request #1 has %d messages, want 1 (user only): %+v", len(firstMsgs), firstMsgs)
+	}
+
+	// --- request #2: user turn + the replayed paused assistant turn ---
+	secondMsgs, _ := (*captured)[1].body["messages"].([]any)
+	if len(secondMsgs) != 2 {
+		t.Fatalf("request #2 has %d messages, want 2 (user + replayed assistant): %+v", len(secondMsgs), secondMsgs)
+	}
+	replayed, _ := secondMsgs[1].(map[string]any)
+	if got := replayed["role"]; got != "assistant" {
+		t.Errorf("replayed message role = %v, want assistant", got)
+	}
+	blocks, _ := replayed["content"].([]any)
+	if len(blocks) != 1 {
+		t.Fatalf("replayed message has %d blocks, want 1 (server_tool_use): %+v", len(blocks), blocks)
+	}
+	block, _ := blocks[0].(map[string]any)
+	if block["type"] != "server_tool_use" || block["id"] != "srvtoolu_01" || block["name"] != "web_search" {
+		t.Errorf("replayed block = %+v, want server_tool_use srvtoolu_01/web_search", block)
+	}
+	if input, _ := block["input"].(map[string]any); input["query"] != "latest Go release" {
+		t.Errorf("replayed block input = %+v, want the accumulated {query: latest Go release}", block["input"])
+	}
+
+	// --- partial text kept flowing during the continuation ---
+	if want := []string{"Go 1.26 shipped", " two days ago."}; !reflect.DeepEqual(partials, want) {
+		t.Errorf("partials = %q, want %q (continuation deltas surfaced)", partials, want)
+	}
+
+	// --- terminal response carries the completed text only ---
+	if final == nil {
+		t.Fatal("no terminal (TurnComplete) response was yielded")
+	}
+	if final.FinishReason != genai.FinishReasonStop {
+		t.Errorf("FinishReason = %v, want %v (end_turn after the continuation)", final.FinishReason, genai.FinishReasonStop)
+	}
+	if len(final.Content.Parts) != 1 || final.Content.Parts[0].Text != "Go 1.26 shipped two days ago." {
+		t.Errorf("terminal parts = %+v, want the single completed text part (server_tool_use / web_search_tool_result blocks are not surfaced)", final.Content.Parts)
+	}
+	for i, p := range final.Content.Parts {
+		if p.FunctionCall != nil {
+			t.Errorf("part[%d] surfaced a FunctionCall %+v — server_tool_use must not become a dispatchable call", i, p.FunctionCall)
+		}
+	}
+
+	// --- usage is the SUM across both requests ---
+	u := final.UsageMetadata
+	if u == nil {
+		t.Fatal("terminal response carries no UsageMetadata")
+	}
+	if u.PromptTokenCount != 30+50 || u.CandidatesTokenCount != 7+12 || u.TotalTokenCount != 30+50+7+12 {
+		t.Errorf("usage = prompt:%d candidates:%d total:%d, want 80/19/99 (summed across the paused and resumed requests)",
+			u.PromptTokenCount, u.CandidatesTokenCount, u.TotalTokenCount)
+	}
+}
+
+// TestGenerateContent_PauseTurnLoopBound pins the runaway guard: a
+// server that answers pause_turn forever must stop the adapter at
+// 1 + maxPauseTurnContinuations requests with a clean terminal
+// response (FinishReasonOther) rather than hanging or erroring.
+func TestGenerateContent_PauseTurnLoopBound(t *testing.T) {
+	t.Parallel()
+	l, captured := newOfflineLLMSeq(t, "claude-test", []string{pauseTurnSSEFixture})
+
+	var final *adkmodel.LLMResponse
+	for resp, err := range l.GenerateContent(context.Background(), &adkmodel.LLMRequest{
+		Contents: userText("search forever"),
+	}, true) {
+		if err != nil {
+			t.Fatalf("GenerateContent yielded error: %v", err)
+		}
+		if resp.Partial {
+			continue
+		}
+		if final != nil {
+			t.Fatalf("more than one terminal response: %+v then %+v", final, resp)
+		}
+		final = resp
+	}
+
+	wantRequests := 1 + maxPauseTurnContinuations
+	if len(*captured) != wantRequests {
+		t.Fatalf("adapter issued %d requests, want %d (initial + %d bounded continuations)",
+			len(*captured), wantRequests, maxPauseTurnContinuations)
+	}
+	// Each continuation replays everything accumulated so far: request
+	// #N carries the user turn plus N-1 paused assistant messages.
+	lastMsgs, _ := (*captured)[wantRequests-1].body["messages"].([]any)
+	if len(lastMsgs) != 1+maxPauseTurnContinuations {
+		t.Errorf("last request has %d messages, want %d (user + %d replayed assistant turns)",
+			len(lastMsgs), 1+maxPauseTurnContinuations, maxPauseTurnContinuations)
+	}
+
+	if final == nil {
+		t.Fatal("no terminal response after hitting the continuation cap")
+	}
+	if final.FinishReason != genai.FinishReasonOther {
+		t.Errorf("FinishReason = %v, want %v (pause_turn at the cap maps to Other)", final.FinishReason, genai.FinishReasonOther)
+	}
+	if !final.TurnComplete {
+		t.Error("terminal response TurnComplete = false, want true")
+	}
+	// Usage still reflects every request made.
+	if u := final.UsageMetadata; u == nil || u.PromptTokenCount != int32(30*wantRequests) || u.CandidatesTokenCount != int32(7*wantRequests) {
+		t.Errorf("usage = %+v, want prompt:%d candidates:%d (summed across all %d requests)",
+			final.UsageMetadata, 30*wantRequests, 7*wantRequests, wantRequests)
 	}
 }

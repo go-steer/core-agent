@@ -25,13 +25,23 @@ import (
 // accumulated Anthropic Message. Tool-use blocks are surfaced as
 // FunctionCall parts so the ADK runner can dispatch them.
 func finalResponseFromMessage(msg *anthropic.Message) (*genai.Content, genai.FinishReason, *genai.GenerateContentResponseUsageMetadata) {
-	content := &genai.Content{Role: genai.RoleModel}
+	content := &genai.Content{Role: genai.RoleModel, Parts: contentPartsFromMessage(msg)}
+	return content, mapStopReason(msg.StopReason), usageMetadata(msg.Usage)
+}
+
+// contentPartsFromMessage converts one accumulated Message's content
+// blocks into genai Parts. The pause_turn continuation loop in llm.go
+// calls this once per continuation request and concatenates the
+// results, so the terminal response carries every surfaced block from
+// the whole (possibly multi-request) assistant turn.
+func contentPartsFromMessage(msg *anthropic.Message) []*genai.Part {
+	var parts []*genai.Part
 
 	for _, block := range msg.Content {
 		switch v := block.AsAny().(type) {
 		case anthropic.TextBlock:
 			if v.Text != "" {
-				content.Parts = append(content.Parts, &genai.Part{Text: v.Text})
+				parts = append(parts, &genai.Part{Text: v.Text})
 			}
 		case anthropic.ThinkingBlock:
 			// Thinking blocks must survive the genai round-trip: on
@@ -41,7 +51,7 @@ func finalResponseFromMessage(msg *anthropic.Message) (*genai.Content, genai.Fin
 			// intact — dropping them 400s the second request of every
 			// tool loop (#357). genai.Part carries them natively as
 			// Thought + ThoughtSignature.
-			content.Parts = append(content.Parts, &genai.Part{
+			parts = append(parts, &genai.Part{
 				Text:             v.Thinking,
 				Thought:          true,
 				ThoughtSignature: []byte(v.Signature),
@@ -52,22 +62,45 @@ func finalResponseFromMessage(msg *anthropic.Message) (*genai.Content, genai.Fin
 			// field, so the payload rides in ThoughtSignature behind
 			// a marker prefix; partsToBlocks peels it back into a
 			// redacted_thinking block on the way out.
-			content.Parts = append(content.Parts, &genai.Part{
+			parts = append(parts, &genai.Part{
 				Thought:          true,
 				ThoughtSignature: []byte(redactedThinkingPrefix + v.Data),
 			})
 		case anthropic.ToolUseBlock:
 			args, _ := decodeArgs(v.Input)
-			content.Parts = append(content.Parts, &genai.Part{
+			parts = append(parts, &genai.Part{
 				FunctionCall: &genai.FunctionCall{
 					ID:   v.ID,
 					Name: v.Name,
 					Args: args,
 				},
 			})
+		case anthropic.ServerToolUseBlock, anthropic.WebSearchToolResultBlock:
+			// Server-side tool blocks (WithWebSearch): deliberately NOT
+			// surfaced. genai.Part has no slot for them, and mapping
+			// server_tool_use to a FunctionCall part would make the ADK
+			// runner try to dispatch a tool that only exists on
+			// Anthropic's servers. The web_search_tool_result payload is
+			// mostly encrypted_content the client can't read; the
+			// model's own text blocks already carry the answer derived
+			// from the results. Skipping is also round-trip safe:
+			//   - within a pause_turn continuation the paused turn is
+			//     replayed verbatim via Message.ToParam() in llm.go, so
+			//     these blocks survive where the API requires them;
+			//   - for HISTORY replay across turns (partsToBlocks never
+			//     sees them, so they're absent from later requests) the
+			//     API tolerates completed assistant turns missing their
+			//     server tool blocks — only a paused turn must be
+			//     replayed exactly.
 		}
 	}
+	return parts
+}
 
+// usageMetadata maps an Anthropic Usage (possibly summed across the
+// requests of a pause_turn continuation loop — see addUsage) onto
+// genai's UsageMetadata shape.
+func usageMetadata(u anthropic.Usage) *genai.GenerateContentResponseUsageMetadata {
 	// Token counts come from the SDK as int64; genai's metadata type
 	// uses int32. Realistic token counts (under ~2B) fit comfortably,
 	// so the narrowing is safe.
@@ -94,13 +127,25 @@ func finalResponseFromMessage(msg *anthropic.Message) (*genai.Content, genai.Fin
 	// cache_creation token counts (genai UsageMetadata has no place
 	// to carry them). Steady-state cache-hit turns (where
 	// cache_creation == 0) are unaffected.
-	totalInput := msg.Usage.InputTokens + msg.Usage.CacheReadInputTokens + msg.Usage.CacheCreationInputTokens
-	return content, mapStopReason(msg.StopReason), &genai.GenerateContentResponseUsageMetadata{
-		PromptTokenCount:        int32(totalInput),                          // #nosec G115 -- token counts won't overflow int32
-		CachedContentTokenCount: int32(msg.Usage.CacheReadInputTokens),      // #nosec G115 -- token counts won't overflow int32
-		CandidatesTokenCount:    int32(msg.Usage.OutputTokens),              // #nosec G115 -- token counts won't overflow int32
-		TotalTokenCount:         int32(totalInput + msg.Usage.OutputTokens), // #nosec G115 -- token counts won't overflow int32
+	totalInput := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
+	return &genai.GenerateContentResponseUsageMetadata{
+		PromptTokenCount:        int32(totalInput),                  // #nosec G115 -- token counts won't overflow int32
+		CachedContentTokenCount: int32(u.CacheReadInputTokens),      // #nosec G115 -- token counts won't overflow int32
+		CandidatesTokenCount:    int32(u.OutputTokens),              // #nosec G115 -- token counts won't overflow int32
+		TotalTokenCount:         int32(totalInput + u.OutputTokens), // #nosec G115 -- token counts won't overflow int32
 	}
+}
+
+// addUsage folds one request's usage buckets into a running total so
+// the terminal UsageMetadata of a pause_turn continuation loop reflects
+// the spend of every request in the turn. Only the four token buckets
+// usageMetadata reads are summed — the fold stays consistent with the
+// three-input-bucket mapping documented above.
+func addUsage(dst *anthropic.Usage, src anthropic.Usage) {
+	dst.InputTokens += src.InputTokens
+	dst.OutputTokens += src.OutputTokens
+	dst.CacheReadInputTokens += src.CacheReadInputTokens
+	dst.CacheCreationInputTokens += src.CacheCreationInputTokens
 }
 
 // decodeArgs unmarshals Anthropic's tool-input JSON into the

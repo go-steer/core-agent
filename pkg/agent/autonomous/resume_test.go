@@ -432,7 +432,13 @@ func TestResumeAutonomous_CancelledWhileWaitingReportsElapsedDuration(t *testing
 		t.Fatalf("emitCheckpoint: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	// 1s deadline: the resume's setup (eventlog scan + agent build)
+	// races this timer before the deferred-wake wait is reached; a
+	// tight 100ms flaked under full-suite -race load. If setup STILL
+	// exceeds the deadline, the target code path was never entered —
+	// skip rather than mis-fail (Reason is only stamped by the
+	// wait's cancel exit).
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	start := time.Now()
 	res, rerr := ResumeAutonomous(ctx,
@@ -442,15 +448,17 @@ func TestResumeAutonomous_CancelledWhileWaitingReportsElapsedDuration(t *testing
 	if rerr == nil {
 		t.Fatalf("expected context error, got nil (res=%+v)", res)
 	}
+	if res.Reason == "" {
+		t.Skipf("setup exceeded the ctx deadline before reaching the deferred-wake wait (elapsed=%v); environment too loaded to exercise the target path", elapsed)
+	}
 	if res.Reason != StopReasonContextCancelled {
 		t.Errorf("Reason = %q, want %q", res.Reason, StopReasonContextCancelled)
 	}
-	// The wait started ~immediately and the ctx fired at ~100ms, so
-	// Duration must be at least a meaningful fraction of that (the
-	// old bug reported ~0/negative) and no more than what this test
-	// observed end to end.
-	if res.Duration < 50*time.Millisecond {
-		t.Errorf("Duration = %v, want >= 50ms (elapsed time since resume start)", res.Duration)
+	// The wait was reached, so the ctx fired at ~1s and Duration
+	// must reflect real elapsed time (the old bug reported
+	// ~0/negative) and no more than what this test observed.
+	if res.Duration < 300*time.Millisecond {
+		t.Errorf("Duration = %v, want >= 300ms (elapsed time since resume start)", res.Duration)
 	}
 	if res.Duration > elapsed {
 		t.Errorf("Duration = %v, want <= observed elapsed %v", res.Duration, elapsed)

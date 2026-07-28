@@ -1535,11 +1535,23 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 				sessionIdleTimeout = d // may be 0 (disabled by design)
 			}
 		}
+		// Per-caller cost rate limit: config-tunable since #463's
+		// follow-up; nil config keeps the library defaults (burst 5,
+		// 10/min per caller), which apply to every daemon.
+		var costLimit attach.CostRateLimit
+		if rl := cfg.Attach.CostRateLimit; rl != nil {
+			costLimit = attach.CostRateLimit{
+				PerMinute: rl.PerMinute,
+				Burst:     rl.Burst,
+				Disabled:  rl.Disabled,
+			}
+		}
 		attachSrv, err := attach.NewServer(attach.Options{
-			Registry:     attachReg,
-			PeerRegistry: peerReg,
-			Addr:         attachCfg.Listen,
-			UnixSocket:   attachCfg.UnixSocket,
+			Registry:      attachReg,
+			PeerRegistry:  peerReg,
+			Addr:          attachCfg.Listen,
+			UnixSocket:    attachCfg.UnixSocket,
+			CostRateLimit: costLimit,
 			Auth: attach.AuthConfig{
 				TLSCertFile:  attachCfg.TLSCert,
 				TLSKeyFile:   attachCfg.TLSKey,

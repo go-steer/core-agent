@@ -576,6 +576,13 @@ type AttachConfig struct {
 	// gate at the transport layer as today. See
 	// docs/multi-session-design.md.
 	MultiSession MultiSessionConfig `json:"multi_session,omitempty"`
+
+	// CostRateLimit tunes the per-caller token bucket that bounds the
+	// COST-BEARING attach endpoints (the five slash ops, POST
+	// /sessions, pricing/refresh) — see #463. Omitted (nil) keeps the
+	// library defaults: burst 5, 10/minute per caller. Reads, /events
+	// streams, /inject, and /wake are never limited.
+	CostRateLimit *CostRateLimitConfig `json:"cost_rate_limit,omitempty"`
 }
 
 // MultiSessionConfig configures the per-caller authentication +
@@ -588,6 +595,16 @@ type AttachConfig struct {
 //
 // Field-by-field detail in docs/multi-session-design.md §"Config
 // surface".
+// CostRateLimitConfig is the config-file form of the attach
+// listener's per-caller cost rate limit (attach.CostRateLimit).
+// PerMinute/Burst <= 0 fall back to the library defaults (10/min,
+// burst 5); Disabled switches enforcement off entirely.
+type CostRateLimitConfig struct {
+	PerMinute int  `json:"per_minute,omitempty"`
+	Burst     int  `json:"burst,omitempty"`
+	Disabled  bool `json:"disabled,omitempty"`
+}
+
 type MultiSessionConfig struct {
 	// Enabled switches the attach listener from single-user mode
 	// (daemon-level bearer token, no per-caller threading) to
@@ -787,6 +804,11 @@ func (c *Config) Validate() error {
 		}
 		if !validAccessSpec(e.Access) {
 			return fmt.Errorf("config: path_scope.allow_paths[%d].access=%q must be r, w, or rw (read / write / readwrite accepted)", i, e.Access)
+		}
+	}
+	if rl := c.Attach.CostRateLimit; rl != nil {
+		if rl.PerMinute < 0 || rl.Burst < 0 {
+			return fmt.Errorf("config: attach.cost_rate_limit: per_minute (%d) and burst (%d) must be >= 0 (0 = library default; use disabled: true to turn enforcement off)", rl.PerMinute, rl.Burst)
 		}
 	}
 	switch c.URLScope.Proxy {

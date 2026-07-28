@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# End-to-end deployment smoke test for the GKE-troubleshoot recipe.
+# End-to-end deployment + pipeline smoke test for the GKE-troubleshoot
+# recipe.
 #
 # Spins up a local kind cluster, deploys examples/gke-troubleshoot-agent/
 # as an operator would (matching the DEMO.md flow), and asserts that:
@@ -22,6 +23,13 @@
 #   2. The attach listener responds to an authenticated /sessions probe.
 #   3. The daemon startup log contains the expected fingerprint (attach
 #      listener bound, instruction file(s) loaded) and NO error lines.
+#   4. The PIPELINE FLOWS (hermetically, on the echo provider): a
+#      deliberately broken pod fires a Warning event → lookout's filter
+#      passes it → the watcher's authenticated POST /sessions +
+#      /sessions/<sid>/inject lands in the daemon (per-incident mode:
+#      one new session per (uid, reason)) → the daemon's wake loop
+#      drains the inject into a real model turn (echo mirrors the
+#      injected payload back as the model response).
 #
 # What this catches (from the v2.6 demo drive):
 #
@@ -42,17 +50,19 @@
 #
 # What this deliberately does NOT catch:
 #
-#   ✗ Runtime issues after a successful boot (record_plan writes,
-#     agent reasoning quality) — belongs to a live-cluster e2e that
-#     costs Vertex quota.
+#   ✗ Agent reasoning quality / tool-call correctness (record_plan
+#     writes, MCP-driven remediation) — belongs to a live-cluster e2e
+#     that costs Vertex quota. The pipeline assertion (#4) only proves
+#     the event → inject → turn plumbing; the "model" is echo.
 #   ✗ Vertex-init specifically — this test uses --provider=echo to
 #     avoid requiring GCP creds. Vertex config bugs (missing
 #     GOOGLE_CLOUD_PROJECT, wrong location) are caught INDIRECTLY:
 #     if the recipe's core-agent-gcp-env ConfigMap is missing, the
 #     Deployment's envFrom would fail to expand → CreateContainerError.
 #
-# Runtime: ~90-180s wall clock (kind create ~30s; rollout ~60s;
-# probe/logs ~10s; cleanup ~15s).
+# Runtime: ~2-4 min wall clock (kind create ~30s; rollout ~60s;
+# probe/logs ~10s; pipeline assertion ~45-120s — dominated by waiting
+# for kubelet's first image-pull BackOff event; cleanup ~15s).
 
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
@@ -71,6 +81,10 @@ DAEMON_IMAGE="${DAEMON_IMAGE:-ghcr.io/go-steer/core-agent:2.6.0}"
 # ghcr.io/go-steer/k8s-event-watcher image.
 WATCHER_IMAGE="${WATCHER_IMAGE:-ghcr.io/go-steer/lookout:v0.8.0}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-180s}"
+# Seconds allowed for the whole event → inject → echo-turn pipeline
+# (phase 9). Typical pass is ~30-60s; the long pole is kubelet's first
+# "Back-off pulling image" event (~10-30s after pod creation).
+PIPELINE_TIMEOUT="${PIPELINE_TIMEOUT:-120}"
 
 # --- prereqs -----------------------------------------------------------
 
@@ -85,6 +99,7 @@ done
 
 SCRATCH_DIR="$(mktemp -d -t e2e-gke-troubleshoot-XXXXXX)"
 PF_PID=""
+PF2_PID=""
 
 cleanup() {
     local exit_code=$?
@@ -105,6 +120,9 @@ cleanup() {
     fi
     if [[ -n "$PF_PID" ]]; then
         kill "$PF_PID" 2>/dev/null || true
+    fi
+    if [[ -n "$PF2_PID" ]]; then
+        kill "$PF2_PID" 2>/dev/null || true
     fi
     kind delete cluster --name "$CLUSTER_NAME" >/dev/null 2>&1 || true
     rm -rf "$SCRATCH_DIR"
@@ -300,5 +318,126 @@ if kubectl -n default get cm core-agent-agents >/dev/null 2>&1; then
     exit 1
 fi
 
+# --- phase 9: pipeline assertion (event → lookout → inject → turn) -----
+
+# Prove the pipeline FLOWS, hermetically: a broken pod fires Warning
+# events; the nonexistent image produces reason=Failed (NOT in
+# lookout's default reason allow-list — filtered) and reason=BackOff
+# ("Back-off pulling image", which IS in the allow-list, see
+# k8s-lookout pkg/engine/filter.go defaultReasons). lookout is running
+# with --mode=per-incident, so on first BackOff it POSTs /sessions
+# (asserting X-Asserted-Caller=--owner, allowed because users.json's
+# sa:k8s-event-watcher is in the recipe's proxy_identities) and then
+# POSTs the incident payload to /sessions/<sid>/inject. The daemon's
+# wake loop drains the inject into one echo-provider turn, so the
+# session's eventlog ends up with a user event carrying the payload
+# AND a model event mirroring it back.
+echo "▸ pipeline: create broken-image pod (BackOff event source)"
+SCRATCH_NS="e2e-pipeline"
+BROKEN_POD="broken-image-pod"
+kubectl create namespace "$SCRATCH_NS"
+# Nonexistent image → no bytes pulled, fails fast, fully hermetic.
+kubectl -n "$SCRATCH_NS" run "$BROKEN_POD" \
+    --image=ghcr.io/go-steer/definitely-not-a-real-image:v0 \
+    --restart=Never
+
+# (a) Watcher-side evidence. lookout logs exactly one line per
+# successful inject:
+#   fire <reason> pod=<ns>/<name> → sid=<sessionID> (mode=per-incident)
+# which both proves accept+inject AND hands us the session ID for the
+# daemon-side check. One shared deadline covers the whole pipeline.
+echo "▸ pipeline: wait for lookout accept + inject (${PIPELINE_TIMEOUT}s max)"
+pipeline_deadline=$(( SECONDS + PIPELINE_TIMEOUT ))
+SID=""
+while (( SECONDS < pipeline_deadline )); do
+    SID="$(kubectl -n "$NAMESPACE" logs deployment/k8s-event-watcher --tail=300 2>/dev/null \
+        | sed -n "s|.*fire BackOff pod=${SCRATCH_NS}/${BROKEN_POD} → sid=\([^ ]*\).*|\1|p" \
+        | tail -1)"
+    [[ -n "$SID" ]] && break
+    sleep 5
+done
+if [[ -z "$SID" ]]; then
+    echo "e2e: lookout never logged an inject for ${SCRATCH_NS}/${BROKEN_POD} within ${PIPELINE_TIMEOUT}s" >&2
+    echo "--- scratch-namespace events ---" >&2
+    kubectl -n "$SCRATCH_NS" get events --sort-by='.lastTimestamp' 2>&1 | tail -10 >&2
+    echo "--- watcher logs ---" >&2
+    kubectl -n "$NAMESPACE" logs deployment/k8s-event-watcher --tail=50 >&2 2>&1 || true
+    exit 1
+fi
+echo "  lookout fired: sid=$SID"
+
+# Cross-check the watcher's own counter (the DEMO.md troubleshooting
+# metric): filter+dedup survivors that were POSTed to the daemon.
+echo "▸ pipeline: verify watcher injected counter (:9090 metrics)"
+kubectl -n "$NAMESPACE" port-forward deployment/k8s-event-watcher \
+    19090:9090 >/dev/null 2>&1 &
+PF2_PID=$!
+sleep 3
+if ! curl -sS --max-time 5 http://127.0.0.1:19090/metrics 2>/dev/null \
+    | grep 'k8s_event_watcher_events_injected_total' \
+    | grep -q 'reason="BackOff"'; then
+    echo "e2e: watcher metrics missing events_injected_total{reason=\"BackOff\"}" >&2
+    curl -sS --max-time 5 http://127.0.0.1:19090/metrics 2>/dev/null \
+        | grep 'k8s_event_watcher' | head -20 >&2 || true
+    exit 1
+fi
+kill "$PF2_PID" 2>/dev/null || true
+PF2_PID=""
+
+# (b) Daemon-side evidence, via the still-forwarded attach listener.
+# Per-incident sessions are created with X-Asserted-Caller=--owner
+# (sre-oncall@example.com), so SRE_TOKEN — the owner — can see them.
+echo "▸ pipeline: verify incident session is listed by the daemon"
+curl -sS --max-time 5 -H "Authorization: Bearer $SRE_TOKEN" \
+    -o "$SCRATCH_DIR/sessions-after.json" \
+    http://127.0.0.1:7777/sessions
+if ! jq -e --arg sid "$SID" \
+    '.sessions | map(select(.sessionID == $sid)) | length >= 1' \
+    "$SCRATCH_DIR/sessions-after.json" >/dev/null; then
+    echo "e2e: incident session $SID missing from /sessions" >&2
+    cat "$SCRATCH_DIR/sessions-after.json" >&2
+    exit 1
+fi
+
+# The eventlog must show the incident payload arriving as a user
+# event AND an echo model response following it (proof the wake loop
+# actually ran a turn — echo mirrors the last user text, so the model
+# event carries the broken pod's name too). /events is SSE with a
+# full replay at since=0; --max-time bounds the then-idle stream, so
+# curl exiting 28 is expected and we keep whatever replayed.
+echo "▸ pipeline: verify inject + echo turn in session eventlog"
+verdict="pending"
+events_deadline=$(( pipeline_deadline > SECONDS + 30 ? pipeline_deadline : SECONDS + 30 ))
+while (( SECONDS < events_deadline )); do
+    curl -sS -N --max-time 8 -H "Authorization: Bearer $SRE_TOKEN" \
+        "http://127.0.0.1:7777/sessions/$SID/events?since=0" \
+        > "$SCRATCH_DIR/pipeline-events.sse" 2>/dev/null || true
+    verdict="$(sed -n 's/^data: //p' "$SCRATCH_DIR/pipeline-events.sse" \
+        | jq -rs --arg pod "$BROKEN_POD" '
+            [ .[] | objects | .seq as $seq
+                  | (.event? // empty) | objects
+                  | (.Content? // empty) | objects
+                  | select(((.parts // []) | map(.text // "") | join(" "))
+                           | contains($pod))
+                  | {seq: $seq, role: (.role // "")} ] as $hits
+            | ([$hits[] | select(.role == "user")  | .seq] | min) as $u
+            | ([$hits[] | select(.role == "model") | .seq] | min) as $m
+            | if $u != null and $m != null and $m > $u
+              then "ok" else "pending" end' 2>/dev/null || echo pending)"
+    [[ "$verdict" == "ok" ]] && break
+    sleep 5
+done
+if [[ "$verdict" != "ok" ]]; then
+    echo "e2e: session $SID never showed user-inject + echo-model events for $BROKEN_POD" >&2
+    echo "--- session $SID event frames (data lines, tail) ---" >&2
+    sed -n 's/^data: //p' "$SCRATCH_DIR/pipeline-events.sse" | tail -20 >&2
+    echo "--- /sessions ---" >&2
+    cat "$SCRATCH_DIR/sessions-after.json" >&2
+    echo "--- watcher logs ---" >&2
+    kubectl -n "$NAMESPACE" logs deployment/k8s-event-watcher --tail=30 >&2 2>&1 || true
+    exit 1
+fi
+
 echo ""
-echo "✓ e2e: gke-troubleshoot-agent recipe deploys end-to-end"
+echo "✓ e2e: gke-troubleshoot-agent recipe deploys AND the pipeline flows"
+echo "       (k8s event → lookout filter → authenticated inject → echo turn)"

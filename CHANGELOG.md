@@ -16,7 +16,11 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
-_No unreleased changes since [2.8.0-dev.2]._
+### Changes by Kind
+
+#### Bug or Regression
+
+- models/anthropic: server-side tools no longer break turns (`pkg/models/anthropic/llm.go`, `stream.go`). With `WithWebSearch` enabled, a long search could end the turn at `pause_turn` — the adapter now resumes it: the paused assistant message is replayed verbatim (SDK `Message.ToParam()`, `server_tool_use`/`web_search_tool_result` blocks intact) and streaming continues, bounded at 4 continuations, with partial text flowing throughout and usage summed across all requests of the turn. Text emitted before a pause is preserved in the terminal response. Server-side tool blocks are deliberately not projected into genai parts (a `FunctionCall` would make the runner dispatch a server-only tool; result payloads are mostly encrypted; the model's own text carries the answer) — the strict replay case is the continuation loop, which is exact; completed turns tolerate their absence in later history per the API contract. Offline SSE-fixture tests cover the two-request continuation, verbatim replay, usage summing, and the loop bound. Closes [#461](https://github.com/go-steer/core-agent/issues/461).
 
 ## [2.8.0-dev.2] — 2026-07-27
 

@@ -18,11 +18,20 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"log"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/genai"
 )
+
+// maxPauseTurnContinuations bounds how many times GenerateContent
+// re-issues a request after a pause_turn stop. pause_turn means the
+// server-side tool loop (e.g. web_search) ran long and the API wants
+// the turn resubmitted so it can keep working; a well-behaved turn
+// finishes within a couple of continuations, so the cap only exists to
+// stop a pathological server from spinning us forever.
+const maxPauseTurnContinuations = 4
 
 // llm implements google.golang.org/adk/model.LLM for Anthropic Claude.
 // One llm corresponds to one model ID; the Provider mints a fresh
@@ -55,40 +64,69 @@ func (l *llm) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, _ b
 			params.Model = l.modelID
 		}
 
-		stream := l.client.Messages.NewStreaming(ctx, params)
-		final := anthropic.Message{}
+		// The turn may span several requests: a long server-side tool
+		// run (WithWebSearch) ends its request with stop_reason
+		// pause_turn, and the API expects the paused assistant turn
+		// replayed verbatim so it can resume. Content parts and usage
+		// accumulate across all requests of the turn; exactly one
+		// terminal response is yielded at the end.
+		var parts []*genai.Part
+		var usage anthropic.Usage
 
-		for stream.Next() {
-			ev := stream.Current()
-			if err := final.Accumulate(ev); err != nil {
-				yield(nil, fmt.Errorf("anthropic: accumulate: %w", err))
-				return
-			}
-			if delta, ok := textDelta(ev); ok {
-				partial := &adkmodel.LLMResponse{
-					Content: &genai.Content{
-						Role:  genai.RoleModel,
-						Parts: []*genai.Part{{Text: delta}},
-					},
-					Partial: true,
-				}
-				if !yield(partial, nil) {
+		for continuation := 0; ; continuation++ {
+			stream := l.client.Messages.NewStreaming(ctx, params)
+			final := anthropic.Message{}
+
+			for stream.Next() {
+				ev := stream.Current()
+				if err := final.Accumulate(ev); err != nil {
+					yield(nil, fmt.Errorf("anthropic: accumulate: %w", err))
 					return
 				}
+				if delta, ok := textDelta(ev); ok {
+					partial := &adkmodel.LLMResponse{
+						Content: &genai.Content{
+							Role:  genai.RoleModel,
+							Parts: []*genai.Part{{Text: delta}},
+						},
+						Partial: true,
+					}
+					if !yield(partial, nil) {
+						return
+					}
+				}
 			}
-		}
-		if err := stream.Err(); err != nil {
-			yield(nil, fmt.Errorf("anthropic: stream: %w", err))
+			if err := stream.Err(); err != nil {
+				yield(nil, fmt.Errorf("anthropic: stream: %w", err))
+				return
+			}
+
+			parts = append(parts, contentPartsFromMessage(&final)...)
+			addUsage(&usage, final.Usage)
+
+			if final.StopReason == anthropic.StopReasonPauseTurn {
+				if continuation < maxPauseTurnContinuations {
+					// Replay the paused assistant message exactly as
+					// received (ToParam preserves server_tool_use /
+					// web_search_tool_result blocks the API needs) and
+					// re-issue; the server resumes where it left off.
+					params.Messages = append(params.Messages, final.ToParam())
+					continue
+				}
+				// Cap reached: surface what we have instead of spinning.
+				// mapStopReason turns pause_turn into FinishReasonOther,
+				// which is an honest "stopped for a non-standard reason".
+				log.Printf("anthropic: pause_turn continuation cap (%d) reached on model %s; yielding accumulated content", maxPauseTurnContinuations, params.Model)
+			}
+
+			yield(&adkmodel.LLMResponse{
+				Content:       &genai.Content{Role: genai.RoleModel, Parts: parts},
+				UsageMetadata: usageMetadata(usage),
+				FinishReason:  mapStopReason(final.StopReason),
+				TurnComplete:  true,
+			}, nil)
 			return
 		}
-
-		content, finish, usage := finalResponseFromMessage(&final)
-		yield(&adkmodel.LLMResponse{
-			Content:       content,
-			UsageMetadata: usage,
-			FinishReason:  finish,
-			TurnComplete:  true,
-		}, nil)
 	}
 }
 

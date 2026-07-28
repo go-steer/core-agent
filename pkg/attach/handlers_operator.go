@@ -49,7 +49,10 @@ func (h *handlers) registerOperatorState(mux *http.ServeMux) {
 	// at the auth layer when ReadOnly=true (any non-GET is gated).
 	h.routeSession(mux, "POST", "perms/allow", auth.ActionSessionWrite, h.doPermsAllow)
 	h.routeSession(mux, "POST", "perms/deny", auth.ActionSessionWrite, h.doPermsDeny)
-	h.routeSession(mux, "POST", "pricing/refresh", auth.ActionSessionWrite, h.doPricingRefresh)
+	// pricing/refresh is cost-limited (#463): it does a network
+	// fetch + catalog rebuild per call. pricing/set, perms/*, and
+	// reload stay unlimited — they're cheap local mutations.
+	h.routeSession(mux, "POST", "pricing/refresh", auth.ActionSessionWrite, h.limitCost(h.doPricingRefresh))
 	h.routeSession(mux, "POST", "pricing/set", auth.ActionSessionWrite, h.doPricingSet)
 	h.routeSession(mux, "POST", "reload", auth.ActionSessionWrite, h.doReload)
 	h.routeSession(mux, "DELETE", "", auth.ActionSessionAdmin, h.doDeleteSession)
@@ -59,11 +62,16 @@ func (h *handlers) registerOperatorState(mux *http.ServeMux) {
 	// in-chat preamble row is the remote TUI's responsibility (it
 	// renders the same preamble at dispatch as the in-process TUI's
 	// AsyncSlashProviderWithPreamble path).
-	h.routeSession(mux, "POST", "slash/compact", auth.ActionSessionWrite, h.doSlashCompact)
-	h.routeSession(mux, "POST", "slash/done", auth.ActionSessionWrite, h.doSlashDone)
-	h.routeSession(mux, "POST", "slash/btw", auth.ActionSessionWrite, h.doSlashBtw)
-	h.routeSession(mux, "POST", "slash/subagent", auth.ActionSessionWrite, h.doSlashSubagent)
-	h.routeSession(mux, "POST", "slash/replan", auth.ActionSessionWrite, h.doSlashReplan)
+	//
+	// All five run unbounded model work per request, so each is
+	// wrapped in the per-caller cost limiter (#463) — the limiter
+	// fires before the capability dispatch, so even a 501 from an
+	// unwired capability consumes a token.
+	h.routeSession(mux, "POST", "slash/compact", auth.ActionSessionWrite, h.limitCost(h.doSlashCompact))
+	h.routeSession(mux, "POST", "slash/done", auth.ActionSessionWrite, h.limitCost(h.doSlashDone))
+	h.routeSession(mux, "POST", "slash/btw", auth.ActionSessionWrite, h.limitCost(h.doSlashBtw))
+	h.routeSession(mux, "POST", "slash/subagent", auth.ActionSessionWrite, h.limitCost(h.doSlashSubagent))
+	h.routeSession(mux, "POST", "slash/replan", auth.ActionSessionWrite, h.limitCost(h.doSlashReplan))
 }
 
 func (h *handlers) doUsage(w http.ResponseWriter, _ *http.Request, entry *Entry) {

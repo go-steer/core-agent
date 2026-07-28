@@ -501,4 +501,3 @@ This pattern scales to roughly a few hundred concurrent sessions in one process.
 - **[Sessions and event log](../sessions/)** — the Stream API (`Since(seq)`, `Watch(seq)`), the session lock, the audit-log shape.
 - **[Permissions](../permissions/)** — pattern grammar, path scope details, the prompter contract.
 - **[`extras/scion-remote-agent/`](https://github.com/go-steer/core-agent/tree/main/extras/scion-remote-agent)** — full reference implementation of `RemoteAgentSpawner`, including the SSE log classification machinery.
-- **[`examples/`](https://github.com/go-steer/core-agent/tree/main/examples)** — runnable embedding patterns: `basic`, `with-tools`, `with-subagent`, `background-monitor`, `autonomous`, `autonomous-handle`, `autonomous-resume`, `replay`, `streaming`, `scion-research-demo`.

@@ -78,11 +78,39 @@ Drive a run, hit a tight `max_turns` budget (simulated crash), then continue fro
 
 Wire `BackgroundAgentManager` and demonstrate in-process spawn end-to-end with no LLM credentials. Use as the template for "parent agent + background subagent workers."
 
+### [`parallel-spawn`](https://github.com/go-steer/core-agent/tree/main/examples/parallel-spawn)
+
+One assistant turn fans out three independent background subagents via the `spawn_agent` tool family; their reports drain back into the parent's next turn automatically. The Claude-Code-style parallel dispatch pattern, hermetic on the scripted mock.
+
 ### [`scheduled-monitor`](https://github.com/go-steer/core-agent/tree/main/examples/scheduled-monitor)
 
 The supervision-tree topology from [`docs/scheduled-monitoring-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/scheduled-monitoring-design.md) — periodic health sweeps with a scheduler + supervisor + worker layout. Pattern for cron-style monitoring agents.
 
 ---
+
+## Serving & deployment
+
+Running core-agent as a long-lived daemon — from the library or from the published binary.
+
+### [`attach-daemon`](https://github.com/go-steer/core-agent/tree/main/examples/attach-daemon)
+
+The canonical library embedding of a headless daemon: `agent.New` → `attachadapter.New` → session registry → `attach.NewServer` → `runner.WakeLoop`. Self-demonstrates over real HTTP (list, status, inject, SSE tail with the `capabilities` boot frame). Hermetic — echo model, loopback listener, no credentials.
+
+### [`compose-multi-session`](https://github.com/go-steer/core-agent/tree/main/examples/compose-multi-session)
+
+A multi-session daemon built from `pkg/compose` instead of re-implementing the binary's wiring: bearer-table auth (`BuildMultiSessionAuthn`), per-caller session factory + resumer, and `ConfigGrantStore` persisting "allow always" grants to `.agents/config.json`. Demonstrates per-identity session isolation (bob can't see alice's session) over real HTTP. Hermetic.
+
+### [`multi-session-bearer`](https://github.com/go-steer/core-agent/tree/main/examples/multi-session-bearer)
+
+Config-only counterpart: the published binary serving two bearer-token users from a static table, with per-caller instruction overlays. Pairs with the [multi-session concepts page](/concepts/multi-session/).
+
+### [`cloud-run-deploy`](https://github.com/go-steer/core-agent/tree/main/examples/cloud-run-deploy)
+
+core-agent as a long-lived Cloud Run service: IAM-gated HTTPS, Vertex runtime service account, Dockerfile + prebuilt-image path.
+
+### [`gke-troubleshoot-agent`](https://github.com/go-steer/core-agent/tree/main/examples/gke-troubleshoot-agent)
+
+Event-driven K8s triage: the daemon plus the event-watcher sidecar and a triage skill. **Being reworked**: the watcher now lives in [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout) and this recipe migrates to its image next.
 
 ## Testing & debugging
 

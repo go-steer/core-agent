@@ -8,7 +8,7 @@ Shipped in **v2.6**. Requires v2.4's multi-session substrate + v2.5's session-re
 
 Full recipe: `examples/gke-troubleshoot-agent/` in the repo. Design doc: `docs/k8s-event-agent-design.md`.
 
-> **Note:** the watcher ships from [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout) as `ghcr.io/go-steer/lookout` (the recipe pins `v0.8.0`). The image's entrypoint is `lookout watch`, a drop-in swap for the retired `ghcr.io/go-steer/k8s-event-watcher` image — same flags, RBAC, and Deployment shape. k8s-lookout also offers a `-gke` image flavor and a richer `--sources=` capability set beyond what this recipe uses.
+> **Note:** the watcher ships from [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout) as `ghcr.io/go-steer/lookout` (the recipe pins `v0.8.0`). The image's entrypoint is `lookout watch`, a drop-in swap for the retired `ghcr.io/go-steer/k8s-event-watcher` image — same flags, RBAC, and Deployment shape. k8s-lookout also offers a `-gke` image flavor and a richer `--sources=` capability set beyond what this recipe uses. Every PR touching this recipe (or the packages under it) runs a kind-based CI e2e that deploys the pinned images and asserts the full pipeline: a broken pod's `BackOff` event → lookout's per-incident inject → a completed daemon turn.
 
 ---
 

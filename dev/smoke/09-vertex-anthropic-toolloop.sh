@@ -23,17 +23,18 @@
 #
 # Requires: ANTHROPIC_VERTEX_PROJECT_ID (+ gcloud ADC). Region from
 # CLOUD_ML_REGION (default us-east5; "global" also works). Model via
-# ANTHROPIC_SMOKE_MODEL (default claude-opus-4-7 — the adapter's
-# DefaultModel and the most widely enabled in Model Garden). Point it
-# at a thinking-default model (claude-sonnet-5 / claude-opus-5) when
-# the project has access to exercise the #357 thinking path live.
+# ANTHROPIC_SMOKE_MODEL (default claude-sonnet-5 — thinking-default,
+# so the tool loop exercises the #357 thinking round-trip live, which
+# is this script's highest-value regression guard). Projects without
+# Claude 5-gen Model Garden access should override with
+# ANTHROPIC_SMOKE_MODEL=claude-opus-4-7 (the adapter's DefaultModel).
 
 set -euo pipefail
 source "$(dirname "$0")/_common.sh"
 require_env ANTHROPIC_VERTEX_PROJECT_ID
 build_core_agent
 
-MODEL="${ANTHROPIC_SMOKE_MODEL:-claude-opus-4-7}"
+MODEL="${ANTHROPIC_SMOKE_MODEL:-claude-sonnet-5}"
 
 log_step "vertex-anthropic: single turn (${MODEL})"
 set +e

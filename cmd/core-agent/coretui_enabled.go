@@ -74,6 +74,12 @@ func availableModelIDs() []string {
 		// generation.
 		"gemini-2.5-pro",
 		"gemini-2.5-flash",
+		// Anthropic Claude 5 family — thinking-default models
+		// (the #357 round-trip path). Fable is the Mythos-class
+		// tier above Opus. Same provider routing as the 4.x line.
+		"claude-fable-5",
+		"claude-opus-5",
+		"claude-sonnet-5",
 		// Anthropic Claude 4.x — opus / sonnet / haiku across the
 		// 200K and 1M context tiers. Resolved through the
 		// "anthropic" or "anthropic-vertex" provider in the host

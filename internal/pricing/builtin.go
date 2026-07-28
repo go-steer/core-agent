@@ -31,9 +31,11 @@ package pricing
 import "time"
 
 var builtin = map[string]Rates{
+	"claude-fable-5":        {InputPerMTok: 10, CachedInputPerMTok: 1, OutputPerMTok: 50, UpdatedAt: time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)},        // anthropic
 	"claude-haiku-4-5":      {InputPerMTok: 1, CachedInputPerMTok: 0.1, OutputPerMTok: 5, UpdatedAt: time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)},        // anthropic
 	"claude-opus-4-7":       {InputPerMTok: 5, CachedInputPerMTok: 0.5, OutputPerMTok: 25, UpdatedAt: time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)},       // anthropic
 	"claude-opus-4-8":       {InputPerMTok: 5, CachedInputPerMTok: 0.5, OutputPerMTok: 25, UpdatedAt: time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)},       // anthropic
+	"claude-opus-5":         {InputPerMTok: 5, CachedInputPerMTok: 0.5, OutputPerMTok: 25, UpdatedAt: time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)},       // anthropic
 	"claude-sonnet-5":       {InputPerMTok: 2, CachedInputPerMTok: 0.2, OutputPerMTok: 10, UpdatedAt: time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)},       // anthropic
 	"gemini-3.1-flash-lite": {InputPerMTok: 0.25, CachedInputPerMTok: 0.025, OutputPerMTok: 1.5, UpdatedAt: time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)}, // vertex_ai-language-models
 	"gemini-3.5-flash":      {InputPerMTok: 1.5, CachedInputPerMTok: 0.15, OutputPerMTok: 9, UpdatedAt: time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)},     // vertex_ai-language-models

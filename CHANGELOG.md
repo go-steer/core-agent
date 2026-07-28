@@ -16,6 +16,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+_No unreleased changes since [2.8.0-dev.2]._
+
+## [2.8.0-dev.2] — 2026-07-27
+
 ### ⚠️ Breaking changes
 
 - **`pkg/attach`'s public API shrank to its real embedding contract** (`Server`/`Options`/`AuthConfig`, the registry contract, peers, the prompt broker, and the capability-provider interfaces + wire types). Implementation detail that widened the stability surface for no consumer is now unexported: `Broadcaster`/`NewBroadcaster`/`BroadcasterPool`/`NewBroadcasterPool` (the embedding contract is `EmitTarget`, which `attachadapter` satisfies), `SupportedEventTypes`, `ProtocolVersion`/`HeaderProtocolVersion`/`QueryProtocolVersion` and the `Feature*` capability-key constants (the wire strings are unchanged — only the Go symbols went private; re-exporting later is non-breaking if client-side negotiation lands), `WhoAmIResponse` + the `WhoAmISource*` constants, and `DefaultListenAddr`/`DefaultHeartbeatTTL` (the defaults themselves are unchanged). Also collapsed the mechanical qualified-vs-shortcut route duplication behind one registration helper — 58 wrapper funcs deleted, handler files down 442 lines (−27%) — with all 57 route patterns byte-identical before/after. No wire-format, path, auth, or semantic change. Closes [#390](https://github.com/go-steer/core-agent/issues/390).

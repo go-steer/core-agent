@@ -58,7 +58,7 @@ func TestProtocolMajor(t *testing.T) {
 // header must always carry the server's version.
 func TestNegotiateProtocolVersion(t *testing.T) {
 	t.Parallel()
-	serverMajor, _ := protocolMajor(ProtocolVersion)
+	serverMajor, _ := protocolMajor(protocolVersion)
 	skewed := strconv.Itoa(serverMajor+1) + ".0.0"
 
 	cases := []struct {
@@ -69,9 +69,9 @@ func TestNegotiateProtocolVersion(t *testing.T) {
 		wantCode int // only checked when wantOK is false
 	}{
 		{name: "no declaration", wantOK: true},
-		{name: "matching exact", query: ProtocolVersion, wantOK: true},
+		{name: "matching exact", query: protocolVersion, wantOK: true},
 		{name: "matching older minor same major", query: strconv.Itoa(serverMajor) + ".0.0", wantOK: true},
-		{name: "matching via header", header: ProtocolVersion, wantOK: true},
+		{name: "matching via header", header: protocolVersion, wantOK: true},
 		{name: "skewed major query", query: skewed, wantOK: false, wantCode: http.StatusConflict},
 		{name: "skewed major header", header: skewed, wantOK: false, wantCode: http.StatusConflict},
 		{name: "malformed", query: "not-a-version", wantOK: false, wantCode: http.StatusBadRequest},
@@ -81,11 +81,11 @@ func TestNegotiateProtocolVersion(t *testing.T) {
 			t.Parallel()
 			url := "/sessions/app/sid/events"
 			if tc.query != "" {
-				url += "?" + QueryProtocolVersion + "=" + tc.query
+				url += "?" + queryProtocolVersion + "=" + tc.query
 			}
 			r := httptest.NewRequest(http.MethodGet, url, nil)
 			if tc.header != "" {
-				r.Header.Set(HeaderProtocolVersion, tc.header)
+				r.Header.Set(headerProtocolVersion, tc.header)
 			}
 			w := httptest.NewRecorder()
 
@@ -94,8 +94,8 @@ func TestNegotiateProtocolVersion(t *testing.T) {
 				t.Fatalf("negotiateProtocolVersion ok = %v, want %v", ok, tc.wantOK)
 			}
 			// Server version always echoed on the response.
-			if got := w.Header().Get(HeaderProtocolVersion); got != ProtocolVersion {
-				t.Errorf("response %s = %q, want %q", HeaderProtocolVersion, got, ProtocolVersion)
+			if got := w.Header().Get(headerProtocolVersion); got != protocolVersion {
+				t.Errorf("response %s = %q, want %q", headerProtocolVersion, got, protocolVersion)
 			}
 			if !tc.wantOK && w.Code != tc.wantCode {
 				t.Errorf("status = %d, want %d", w.Code, tc.wantCode)
@@ -108,14 +108,14 @@ func TestNegotiateProtocolVersion(t *testing.T) {
 // precedence over the header when both are present.
 func TestNegotiateProtocolVersion_QueryBeatsHeader(t *testing.T) {
 	t.Parallel()
-	serverMajor, _ := protocolMajor(ProtocolVersion)
+	serverMajor, _ := protocolMajor(protocolVersion)
 	skewed := strconv.Itoa(serverMajor+1) + ".0.0"
 
 	// Query declares a compatible version, header declares a skewed one.
 	// Query wins → accept.
 	r := httptest.NewRequest(http.MethodGet,
-		"/sessions/app/sid/events?"+QueryProtocolVersion+"="+ProtocolVersion, nil)
-	r.Header.Set(HeaderProtocolVersion, skewed)
+		"/sessions/app/sid/events?"+queryProtocolVersion+"="+protocolVersion, nil)
+	r.Header.Set(headerProtocolVersion, skewed)
 	w := httptest.NewRecorder()
 	if !negotiateProtocolVersion(w, r) {
 		t.Fatalf("expected accept when query declares compatible version, got reject (code %d)", w.Code)
@@ -142,7 +142,7 @@ func TestEvents_ProtocolNegotiation_Endpoint(t *testing.T) {
 	base, cleanupSrv := startTestServer(t, reg)
 	defer cleanupSrv()
 
-	serverMajor, _ := protocolMajor(ProtocolVersion)
+	serverMajor, _ := protocolMajor(protocolVersion)
 	skewed := strconv.Itoa(serverMajor+1) + ".0.0"
 
 	do := func(t *testing.T, rawQueryOrHeader func(*http.Request)) *http.Response {
@@ -161,22 +161,22 @@ func TestEvents_ProtocolNegotiation_Endpoint(t *testing.T) {
 
 	t.Run("skewed major rejected 409", func(t *testing.T) {
 		resp := do(t, func(req *http.Request) {
-			req.Header.Set(HeaderProtocolVersion, skewed)
+			req.Header.Set(headerProtocolVersion, skewed)
 		})
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusConflict {
 			b, _ := io.ReadAll(resp.Body)
 			t.Fatalf("status = %d, want 409; body=%s", resp.StatusCode, b)
 		}
-		if got := resp.Header.Get(HeaderProtocolVersion); got != ProtocolVersion {
-			t.Errorf("response %s = %q, want %q", HeaderProtocolVersion, got, ProtocolVersion)
+		if got := resp.Header.Get(headerProtocolVersion); got != protocolVersion {
+			t.Errorf("response %s = %q, want %q", headerProtocolVersion, got, protocolVersion)
 		}
 	})
 
 	t.Run("malformed rejected 400", func(t *testing.T) {
 		resp := do(t, func(req *http.Request) {
 			q := req.URL.Query()
-			q.Set(QueryProtocolVersion, "garbage")
+			q.Set(queryProtocolVersion, "garbage")
 			req.URL.RawQuery = q.Encode()
 		})
 		defer resp.Body.Close()
@@ -188,15 +188,15 @@ func TestEvents_ProtocolNegotiation_Endpoint(t *testing.T) {
 
 	t.Run("compatible client streams", func(t *testing.T) {
 		resp := do(t, func(req *http.Request) {
-			req.Header.Set(HeaderProtocolVersion, ProtocolVersion)
+			req.Header.Set(headerProtocolVersion, protocolVersion)
 		})
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			b, _ := io.ReadAll(resp.Body)
 			t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, b)
 		}
-		if got := resp.Header.Get(HeaderProtocolVersion); got != ProtocolVersion {
-			t.Errorf("response %s = %q, want %q", HeaderProtocolVersion, got, ProtocolVersion)
+		if got := resp.Header.Get(headerProtocolVersion); got != protocolVersion {
+			t.Errorf("response %s = %q, want %q", headerProtocolVersion, got, protocolVersion)
 		}
 		// The stream should open with the capabilities frame as usual.
 		frames := readSSEFrames(t, resp.Body)

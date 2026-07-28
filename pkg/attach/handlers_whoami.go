@@ -33,7 +33,7 @@ import (
 // this endpoint is the canonical source and carries the admin flag +
 // auth-source discriminator too.
 
-// WhoAmIResponse is the response shape of GET /whoami. Source is a
+// whoAmIResponse is the response shape of GET /whoami. Source is a
 // coarse discriminator so client-side auth-debug flows can show
 // "authenticated via bearer" vs "impersonating via asserted-caller"
 // without needing to inspect the request headers themselves.
@@ -48,7 +48,7 @@ import (
 //
 // Consumers MUST tolerate unknown Source values — a future
 // authenticator (K8s SA, OIDC/JWT) will add its own tag.
-type WhoAmIResponse struct {
+type whoAmIResponse struct {
 	Identity string `json:"identity"`
 	Admin    bool   `json:"admin,omitempty"`
 	Source   string `json:"source"`
@@ -58,23 +58,23 @@ type WhoAmIResponse struct {
 	ProxyBy string `json:"proxy_by,omitempty"`
 }
 
-// Source values for WhoAmIResponse.Source. String constants so
+// Source values for whoAmIResponse.Source. String constants so
 // downstream tools can switch on them without a Go dependency.
 const (
-	// WhoAmISourceBearer — the server validated a bearer token:
+	// whoAmISourceBearer — the server validated a bearer token:
 	// either the per-caller authenticator (static-table
 	// BearerTokenAuth, or a future bearer-flavored OIDC/JWT
 	// authenticator) accepted the credential, or the listener's
 	// transport-level bearer gate (Options.Auth.BearerToken) let the
 	// request through. The mere PRESENCE of an Authorization /
 	// X-Attach-Token header does not produce this value.
-	WhoAmISourceBearer = "bearer"
-	// WhoAmISourceMTLS — OUR listener verified the client's TLS
+	whoAmISourceBearer = "bearer"
+	// whoAmISourceMTLS — OUR listener verified the client's TLS
 	// certificate against its configured CA (ClientAuth =
 	// RequireAndVerifyClientCert via Auth.ClientCAFile). A presented
 	// -but-unverified certificate does not count.
-	WhoAmISourceMTLS = "mtls"
-	// WhoAmISourceIAP — reserved for a future verified identity-
+	whoAmISourceMTLS = "mtls"
+	// whoAmISourceIAP — reserved for a future verified identity-
 	// gateway integration (Google IAP JWT-assertion validation,
 	// Cloudflare Access, etc.). NOT currently emitted: the server
 	// used to infer it from the X-Goog-Authenticated-User-Email /
@@ -84,20 +84,20 @@ const (
 	// assertion (#385). Operators fronting the daemon with a
 	// trusted gateway should configure the asserted-caller
 	// ProxyHeader path, which reports "asserted".
-	WhoAmISourceIAP = "iap"
-	// WhoAmISourceAsserted — a proxy-allowlisted credential used the
+	whoAmISourceIAP = "iap" //nolint:unused // reserved: emitted once real gateway validation lands (#385 whoami hardening)
+	// whoAmISourceAsserted — a proxy-allowlisted credential used the
 	// configured asserted-caller header (Options.ProxyHeader,
 	// default X-Asserted-Caller) and the middleware VALIDATED the
 	// assertion (requester on the proxy allowlist, asserted identity
 	// provisioned). The proxying identity is exposed via ProxyBy.
-	WhoAmISourceAsserted = "asserted"
-	// WhoAmISourceAnonymous — the server verified no credential for
+	whoAmISourceAsserted = "asserted"
+	// whoAmISourceAnonymous — the server verified no credential for
 	// this request and the listener allowed it through
 	// (AllowAnonymous=true or multi-session disabled). Identity is
 	// the daemon's configured default (typically "anon"). Note this
 	// covers requests that CARRIED credential-looking headers the
 	// server had no validator for.
-	WhoAmISourceAnonymous = "anonymous"
+	whoAmISourceAnonymous = "anonymous"
 )
 
 // registerWhoAmI wires GET /whoami onto the mux. Called from
@@ -122,16 +122,16 @@ func (h *handlers) doWhoAmI(w http.ResponseWriter, r *http.Request) {
 	// nothing was verified.
 	source, ok := authSourceFromContext(r.Context())
 	if !ok {
-		source = WhoAmISourceAnonymous
+		source = whoAmISourceAnonymous
 	}
 	// proxyBy is itself middleware-validated (a failed assertion
 	// 401s before any handler runs), so its presence always means
 	// the asserted path — keep the two fields consistent even for
 	// exotic embeddings that stamp the context themselves.
 	if proxyBy != "" {
-		source = WhoAmISourceAsserted
+		source = whoAmISourceAsserted
 	}
-	resp := WhoAmIResponse{
+	resp := whoAmIResponse{
 		Identity: c.Identity,
 		Admin:    c.Admin,
 		Source:   source,

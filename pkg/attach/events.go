@@ -16,7 +16,7 @@ package attach
 
 import "time"
 
-// ProtocolVersion is the SSE event-stream protocol semver this
+// protocolVersion is the SSE event-stream protocol semver this
 // server speaks. Bumped on any change to the contract per
 // go-steer/core-tui's docs/sse-event-stream-protocol.md.
 //
@@ -24,7 +24,7 @@ import "time"
 // /events request via the ?protocol= query param or the
 // X-Attach-Protocol-Version header. The server echoes this constant
 // back on every /events response header and rejects a declared major
-// that differs from ProtocolVersion's major with 409 Conflict (a
+// that differs from protocolVersion's major with 409 Conflict (a
 // malformed declaration is 400). Clients that declare nothing are
 // accepted unchanged for back-compat. See negotiateProtocolVersion.
 //
@@ -55,7 +55,7 @@ import "time"
 // Caller.Identity). Enables backend-agnostic clients (mast-web) to
 // render without a code change per producer. Also spec'd an optional
 // `capabilities` merge field on status-update for future hot changes.
-const ProtocolVersion = "1.4.0"
+const protocolVersion = "1.4.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (
@@ -75,14 +75,14 @@ const (
 	EventAgent = "agent"
 )
 
-// SupportedEventTypes lists every event type this server emits.
+// supportedEventTypes lists every event type this server emits.
 // Surfaced in the Capabilities event on stream open so consumers
 // can detect push-mode support without probing. The list includes
 // legacy sub-types (stream-chunk / tool-call / tool-result) even
 // though they all ride on EventAgent today — the consumer cares
 // about the logical surface, not the SSE event name they currently
 // share.
-var SupportedEventTypes = []string{
+var supportedEventTypes = []string{
 	EventStatusUpdate,
 	EventUsageUpdate,
 	EventInbox,
@@ -109,7 +109,7 @@ type Capabilities struct {
 	// (are MCP servers registered? does the daemon have multi-session
 	// on? etc.). Consumers should treat absent keys as "off / unknown"
 	// and unknown keys as forward-compat additions. Suggested initial
-	// keys are exported as Feature* string constants below.
+	// keys are defined as the feature* string constants below.
 	Features map[string]bool `json:"features,omitempty"`
 
 	// SlashCommands lists the server-side slash-command names the
@@ -142,38 +142,38 @@ type Capabilities struct {
 // clients don't know about (forward-compat); clients MUST NOT crash
 // on unknown ones.
 const (
-	// FeatureMultiSession is true when the server enforces per-session
+	// featureMultiSession is true when the server enforces per-session
 	// ACLs (Options.MultiSessionEnabled) — clients rendering a
 	// session picker use it to decide whether to show "your sessions"
 	// vs an unfiltered fleet view.
-	FeatureMultiSession = "multi_session"
-	// FeaturePermsStream is true when the agent implements the
+	featureMultiSession = "multi_session"
+	// featurePermsStream is true when the agent implements the
 	// PromptBrokerProvider capability — clients gate the
 	// /perms/stream + /perms/respond wiring on it.
-	FeaturePermsStream = "perms_stream"
-	// FeatureCostCeiling is true when the agent has a per-turn or
+	featurePermsStream = "perms_stream"
+	// featureCostCeiling is true when the agent has a per-turn or
 	// per-session cost ceiling wired. Absent today (no capability
 	// interface); reserved for the follow-up that surfaces the
 	// setting to the client.
-	FeatureCostCeiling = "cost_ceiling"
-	// FeatureObserverMode is true when the producer exposes a
+	featureCostCeiling = "cost_ceiling"
+	// featureObserverMode is true when the producer exposes a
 	// LiveAgent observer surface. Reserved for the observer-mode
 	// integration; absent today.
-	FeatureObserverMode = "observer_mode"
-	// FeatureMCP is true when the agent implements MCPProvider
+	featureObserverMode = "observer_mode"
+	// featureMCP is true when the agent implements MCPProvider
 	// (there's at least one MCP server declared).
-	FeatureMCP = "mcp"
-	// FeatureSpecialists is true when the agent supports the
+	featureMCP = "mcp"
+	// featureSpecialists is true when the agent supports the
 	// SubagentSpawner capability (POST /slash/subagent will work
 	// against the agent).
-	FeatureSpecialists = "specialists"
-	// FeatureCrossDaemon is true when the server hosts the peer
+	featureSpecialists = "specialists"
+	// featureCrossDaemon is true when the server hosts the peer
 	// registry (Options.PeerRegistry != nil) — clients use it to
 	// enable the multi-daemon fleet picker.
-	FeatureCrossDaemon = "cross_daemon"
-	// FeatureInterrupt is true when the agent implements
+	featureCrossDaemon = "cross_daemon"
+	// featureInterrupt is true when the agent implements
 	// InterruptProvider — clients gate ESC → cancel wiring on it.
-	FeatureInterrupt = "interrupt"
+	featureInterrupt = "interrupt"
 )
 
 // AgentIdentity is the capabilities.agent block — the producer's

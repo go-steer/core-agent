@@ -66,21 +66,21 @@ func TestBuildFeatures_ServerAndEntryFlags(t *testing.T) {
 		},
 	}
 	server := map[string]bool{
-		FeatureMultiSession: true,
-		FeatureCrossDaemon:  false,
+		featureMultiSession: true,
+		featureCrossDaemon:  false,
 	}
 	got := buildFeatures(entry, server)
 	want := map[string]bool{
-		FeatureMultiSession: true,
-		FeatureCrossDaemon:  false,
-		FeaturePermsStream:  true,
-		FeatureMCP:          true,
-		FeatureSpecialists:  true,
-		FeatureInterrupt:    true,
+		featureMultiSession: true,
+		featureCrossDaemon:  false,
+		featurePermsStream:  true,
+		featureMCP:          true,
+		featureSpecialists:  true,
+		featureInterrupt:    true,
 		// Reserved keys advertised as false so consumers see an
 		// explicit "no" rather than key absence.
-		FeatureCostCeiling:  false,
-		FeatureObserverMode: false,
+		featureCostCeiling:  false,
+		featureObserverMode: false,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("buildFeatures mismatch:\n got  %#v\n want %#v", got, want)
@@ -96,18 +96,18 @@ func TestBuildFeatures_BareRegistrantOnlyServerFlags(t *testing.T) {
 		SessionID: "sid",
 		Agent:     &stubRegistrant{app: "app", user: "u", sid: "sid"},
 	}
-	got := buildFeatures(entry, map[string]bool{FeatureMultiSession: false})
-	if got[FeatureMultiSession] != false {
-		t.Errorf("FeatureMultiSession = %v, want false", got[FeatureMultiSession])
+	got := buildFeatures(entry, map[string]bool{featureMultiSession: false})
+	if got[featureMultiSession] != false {
+		t.Errorf("featureMultiSession = %v, want false", got[featureMultiSession])
 	}
-	for _, key := range []string{FeaturePermsStream, FeatureMCP, FeatureSpecialists, FeatureInterrupt} {
+	for _, key := range []string{featurePermsStream, featureMCP, featureSpecialists, featureInterrupt} {
 		if _, present := got[key]; present {
 			t.Errorf("bare registrant should not advertise %q, but got %v", key, got[key])
 		}
 	}
 	// Reserved keys are always advertised as false so clients know
 	// the server understands them.
-	for _, key := range []string{FeatureCostCeiling, FeatureObserverMode} {
+	for _, key := range []string{featureCostCeiling, featureObserverMode} {
 		if got[key] != false {
 			t.Errorf("reserved key %q = %v, want false", key, got[key])
 		}
@@ -260,13 +260,13 @@ func TestCapabilitiesBuilder_EndToEnd(t *testing.T) {
 	ctx := auth.WithCaller(context.Background(), auth.Caller{Identity: "alice"})
 	got := build(ctx, entry)
 
-	if !got.Features[FeatureMultiSession] {
+	if !got.Features[featureMultiSession] {
 		t.Error("Features.multi_session should be true when Options.MultiSessionEnabled")
 	}
-	if !got.Features[FeatureCrossDaemon] {
+	if !got.Features[featureCrossDaemon] {
 		t.Error("Features.cross_daemon should be true when Options.PeerRegistry set")
 	}
-	if !got.Features[FeatureMCP] {
+	if !got.Features[featureMCP] {
 		t.Error("Features.mcp should be true for MCPProvider-implementing agent")
 	}
 	if !reflect.DeepEqual(got.SlashCommands, []string{"btw", "compact", "done", "replan", "subagent"}) {

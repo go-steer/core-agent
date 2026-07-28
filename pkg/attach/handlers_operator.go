@@ -35,75 +35,38 @@ import (
 // only).
 
 func (h *handlers) registerOperatorState(mux *http.ServeMux) {
-	// Qualified two-segment form.
-	mux.HandleFunc("GET /sessions/{app}/{sid}/usage", h.usageQualified)
-	mux.HandleFunc("GET /sessions/{app}/{sid}/context", h.contextQualified)
-	mux.HandleFunc("GET /sessions/{app}/{sid}/memory", h.memoryQualified)
-	mux.HandleFunc("GET /sessions/{app}/{sid}/skills", h.skillsQualified)
-	mux.HandleFunc("GET /sessions/{app}/{sid}/mcp", h.mcpQualified)
-	mux.HandleFunc("GET /sessions/{app}/{sid}/pricing", h.pricingQualified)
+	// Reads — 200 with empty/zero data when the capability isn't
+	// implemented (same convention as /tools, /agents, /status).
+	h.routeSession(mux, "GET", "usage", auth.ActionSessionRead, h.doUsage)
+	h.routeSession(mux, "GET", "context", auth.ActionSessionRead, h.doContext)
+	h.routeSession(mux, "GET", "memory", auth.ActionSessionRead, h.doMemory)
+	h.routeSession(mux, "GET", "skills", auth.ActionSessionRead, h.doSkills)
+	h.routeSession(mux, "GET", "mcp", auth.ActionSessionRead, h.doMCP)
+	h.routeSession(mux, "GET", "pricing", auth.ActionSessionRead, h.doPricing)
+	h.routeSession(mux, "GET", "perms", auth.ActionSessionRead, h.doPerms)
 
 	// Mutation endpoints (PR A2): blocked by the ReadOnly middleware
 	// at the auth layer when ReadOnly=true (any non-GET is gated).
-	mux.HandleFunc("GET /sessions/{app}/{sid}/perms", h.permsQualified)
-	mux.HandleFunc("POST /sessions/{app}/{sid}/perms/allow", h.permsAllowQualified)
-	mux.HandleFunc("POST /sessions/{app}/{sid}/perms/deny", h.permsDenyQualified)
-	mux.HandleFunc("POST /sessions/{app}/{sid}/pricing/refresh", h.pricingRefreshQualified)
-	mux.HandleFunc("POST /sessions/{app}/{sid}/pricing/set", h.pricingSetQualified)
-	mux.HandleFunc("POST /sessions/{app}/{sid}/reload", h.reloadQualified)
-	mux.HandleFunc("DELETE /sessions/{app}/{sid}", h.deleteSessionQualified)
-
-	// Single-segment shortcut.
-	mux.HandleFunc("GET /sessions/{sid}/usage", h.usageShortcut)
-	mux.HandleFunc("GET /sessions/{sid}/context", h.contextShortcut)
-	mux.HandleFunc("GET /sessions/{sid}/memory", h.memoryShortcut)
-	mux.HandleFunc("GET /sessions/{sid}/skills", h.skillsShortcut)
-	mux.HandleFunc("GET /sessions/{sid}/mcp", h.mcpShortcut)
-	mux.HandleFunc("GET /sessions/{sid}/pricing", h.pricingShortcut)
-
-	mux.HandleFunc("GET /sessions/{sid}/perms", h.permsShortcut)
-	mux.HandleFunc("POST /sessions/{sid}/perms/allow", h.permsAllowShortcut)
-	mux.HandleFunc("POST /sessions/{sid}/perms/deny", h.permsDenyShortcut)
-	mux.HandleFunc("POST /sessions/{sid}/pricing/refresh", h.pricingRefreshShortcut)
-	mux.HandleFunc("POST /sessions/{sid}/pricing/set", h.pricingSetShortcut)
-	mux.HandleFunc("POST /sessions/{sid}/reload", h.reloadShortcut)
-	mux.HandleFunc("DELETE /sessions/{sid}", h.deleteSessionShortcut)
+	h.routeSession(mux, "POST", "perms/allow", auth.ActionSessionWrite, h.doPermsAllow)
+	h.routeSession(mux, "POST", "perms/deny", auth.ActionSessionWrite, h.doPermsDeny)
+	h.routeSession(mux, "POST", "pricing/refresh", auth.ActionSessionWrite, h.doPricingRefresh)
+	h.routeSession(mux, "POST", "pricing/set", auth.ActionSessionWrite, h.doPricingSet)
+	h.routeSession(mux, "POST", "reload", auth.ActionSessionWrite, h.doReload)
+	h.routeSession(mux, "DELETE", "", auth.ActionSessionAdmin, h.doDeleteSession)
 
 	// PR A3 async slash dispatchers. All synchronous on the wire —
 	// the operator stares at silence until the handler returns. The
 	// in-chat preamble row is the remote TUI's responsibility (it
 	// renders the same preamble at dispatch as the in-process TUI's
 	// AsyncSlashProviderWithPreamble path).
-	mux.HandleFunc("POST /sessions/{app}/{sid}/slash/compact", h.slashCompactQualified)
-	mux.HandleFunc("POST /sessions/{app}/{sid}/slash/done", h.slashDoneQualified)
-	mux.HandleFunc("POST /sessions/{app}/{sid}/slash/btw", h.slashBtwQualified)
-	mux.HandleFunc("POST /sessions/{app}/{sid}/slash/subagent", h.slashSubagentQualified)
-	mux.HandleFunc("POST /sessions/{app}/{sid}/slash/replan", h.slashReplanQualified)
-
-	mux.HandleFunc("POST /sessions/{sid}/slash/compact", h.slashCompactShortcut)
-	mux.HandleFunc("POST /sessions/{sid}/slash/done", h.slashDoneShortcut)
-	mux.HandleFunc("POST /sessions/{sid}/slash/btw", h.slashBtwShortcut)
-	mux.HandleFunc("POST /sessions/{sid}/slash/subagent", h.slashSubagentShortcut)
-	mux.HandleFunc("POST /sessions/{sid}/slash/replan", h.slashReplanShortcut)
+	h.routeSession(mux, "POST", "slash/compact", auth.ActionSessionWrite, h.doSlashCompact)
+	h.routeSession(mux, "POST", "slash/done", auth.ActionSessionWrite, h.doSlashDone)
+	h.routeSession(mux, "POST", "slash/btw", auth.ActionSessionWrite, h.doSlashBtw)
+	h.routeSession(mux, "POST", "slash/subagent", auth.ActionSessionWrite, h.doSlashSubagent)
+	h.routeSession(mux, "POST", "slash/replan", auth.ActionSessionWrite, h.doSlashReplan)
 }
 
-func (h *handlers) usageQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveQualified(w, r)
-	if !ok {
-		return
-	}
-	h.doUsage(w, entry)
-}
-
-func (h *handlers) usageShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveShortcut(w, r)
-	if !ok {
-		return
-	}
-	h.doUsage(w, entry)
-}
-
-func (h *handlers) doUsage(w http.ResponseWriter, entry *Entry) {
+func (h *handlers) doUsage(w http.ResponseWriter, _ *http.Request, entry *Entry) {
 	out := UsageInfo{}
 	if p, ok := entry.Agent.(UsageProvider); ok {
 		out = p.AttachUsage()
@@ -111,23 +74,7 @@ func (h *handlers) doUsage(w http.ResponseWriter, entry *Entry) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (h *handlers) contextQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveQualified(w, r)
-	if !ok {
-		return
-	}
-	h.doContext(w, entry)
-}
-
-func (h *handlers) contextShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveShortcut(w, r)
-	if !ok {
-		return
-	}
-	h.doContext(w, entry)
-}
-
-func (h *handlers) doContext(w http.ResponseWriter, entry *Entry) {
+func (h *handlers) doContext(w http.ResponseWriter, _ *http.Request, entry *Entry) {
 	out := ContextInfo{}
 	if p, ok := entry.Agent.(ContextProvider); ok {
 		out = p.AttachContext()
@@ -135,23 +82,7 @@ func (h *handlers) doContext(w http.ResponseWriter, entry *Entry) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (h *handlers) memoryQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveQualified(w, r)
-	if !ok {
-		return
-	}
-	h.doMemory(w, entry)
-}
-
-func (h *handlers) memoryShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveShortcut(w, r)
-	if !ok {
-		return
-	}
-	h.doMemory(w, entry)
-}
-
-func (h *handlers) doMemory(w http.ResponseWriter, entry *Entry) {
+func (h *handlers) doMemory(w http.ResponseWriter, _ *http.Request, entry *Entry) {
 	out := []MemorySource{}
 	if p, ok := entry.Agent.(MemoryProvider); ok {
 		if list := p.AttachMemory(); list != nil {
@@ -161,23 +92,7 @@ func (h *handlers) doMemory(w http.ResponseWriter, entry *Entry) {
 	writeJSON(w, http.StatusOK, map[string]any{"sources": out})
 }
 
-func (h *handlers) skillsQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveQualified(w, r)
-	if !ok {
-		return
-	}
-	h.doSkills(w, entry)
-}
-
-func (h *handlers) skillsShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveShortcut(w, r)
-	if !ok {
-		return
-	}
-	h.doSkills(w, entry)
-}
-
-func (h *handlers) doSkills(w http.ResponseWriter, entry *Entry) {
+func (h *handlers) doSkills(w http.ResponseWriter, _ *http.Request, entry *Entry) {
 	out := []SkillInfo{}
 	if p, ok := entry.Agent.(SkillsProvider); ok {
 		if list := p.AttachSkills(); list != nil {
@@ -187,23 +102,7 @@ func (h *handlers) doSkills(w http.ResponseWriter, entry *Entry) {
 	writeJSON(w, http.StatusOK, map[string]any{"skills": out})
 }
 
-func (h *handlers) mcpQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveQualified(w, r)
-	if !ok {
-		return
-	}
-	h.doMCP(w, entry)
-}
-
-func (h *handlers) mcpShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveShortcut(w, r)
-	if !ok {
-		return
-	}
-	h.doMCP(w, entry)
-}
-
-func (h *handlers) doMCP(w http.ResponseWriter, entry *Entry) {
+func (h *handlers) doMCP(w http.ResponseWriter, _ *http.Request, entry *Entry) {
 	out := MCPInfo{Servers: []MCPServerInfo{}}
 	if p, ok := entry.Agent.(MCPProvider); ok {
 		info := p.AttachMCP()
@@ -215,44 +114,12 @@ func (h *handlers) doMCP(w http.ResponseWriter, entry *Entry) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (h *handlers) pricingQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveQualified(w, r)
-	if !ok {
-		return
-	}
-	h.doPricing(w, entry)
-}
-
-func (h *handlers) pricingShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveShortcut(w, r)
-	if !ok {
-		return
-	}
-	h.doPricing(w, entry)
-}
-
-func (h *handlers) doPricing(w http.ResponseWriter, entry *Entry) {
+func (h *handlers) doPricing(w http.ResponseWriter, _ *http.Request, entry *Entry) {
 	out := PricingInfo{}
 	if p, ok := entry.Agent.(PricingProvider); ok {
 		out = p.AttachPricing()
 	}
 	writeJSON(w, http.StatusOK, out)
-}
-
-// resolveQualified is a thin shim over lookupQualifiedAuth that
-// preserves the legacy 2-arg call sites. New code should use
-// lookupQualifiedAuth directly with an explicit action; this helper
-// is retained for the operator-state read handlers where the action
-// is always SessionRead and the existing call sites are dense.
-func (h *handlers) resolveQualified(w http.ResponseWriter, r *http.Request) (*Entry, bool) {
-	return h.lookupQualifiedAuth(w, r, auth.ActionSessionRead)
-}
-
-// resolveShortcut is the single-segment-shortcut counterpart of
-// resolveQualified. Returns 409 on ambiguous SessionID. Same
-// SessionRead-only convention.
-func (h *handlers) resolveShortcut(w http.ResponseWriter, r *http.Request) (*Entry, bool) {
-	return h.lookupShortcutAuth(w, r, auth.ActionSessionRead)
 }
 
 // ===== PR A2 mutation handlers =====
@@ -265,24 +132,9 @@ func (h *handlers) resolveShortcut(w http.ResponseWriter, r *http.Request) (*Ent
 
 const operatorPostMaxBytes = 8 * 1024
 
-// permsQualified / permsShortcut / doPerms — GET /perms.
-func (h *handlers) permsQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveQualified(w, r)
-	if !ok {
-		return
-	}
-	h.doPerms(w, entry)
-}
+// doPerms — GET /perms.
 
-func (h *handlers) permsShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveShortcut(w, r)
-	if !ok {
-		return
-	}
-	h.doPerms(w, entry)
-}
-
-func (h *handlers) doPerms(w http.ResponseWriter, entry *Entry) {
+func (h *handlers) doPerms(w http.ResponseWriter, _ *http.Request, entry *Entry) {
 	out := PermsInfo{}
 	if p, ok := entry.Agent.(PermsProvider); ok {
 		out = p.AttachPerms()
@@ -290,37 +142,12 @@ func (h *handlers) doPerms(w http.ResponseWriter, entry *Entry) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// permsAllowQualified / permsAllowShortcut / doPermsAllow — POST /perms/allow.
-func (h *handlers) permsAllowQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doPermsMutation(w, r, entry, false /* deny */)
-}
-
-func (h *handlers) permsAllowShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
+// doPermsAllow / doPermsDeny — POST /perms/allow, /perms/deny.
+func (h *handlers) doPermsAllow(w http.ResponseWriter, r *http.Request, entry *Entry) {
 	h.doPermsMutation(w, r, entry, false)
 }
 
-// permsDenyQualified / permsDenyShortcut — POST /perms/deny.
-func (h *handlers) permsDenyQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doPermsMutation(w, r, entry, true /* deny */)
-}
-
-func (h *handlers) permsDenyShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
+func (h *handlers) doPermsDeny(w http.ResponseWriter, r *http.Request, entry *Entry) {
 	h.doPermsMutation(w, r, entry, true)
 }
 
@@ -352,22 +179,7 @@ func (h *handlers) doPermsMutation(w http.ResponseWriter, r *http.Request, entry
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// pricingRefreshQualified / Shortcut / doPricingRefresh — POST /pricing/refresh.
-func (h *handlers) pricingRefreshQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doPricingRefresh(w, r, entry)
-}
-
-func (h *handlers) pricingRefreshShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doPricingRefresh(w, r, entry)
-}
+// doPricingRefresh — POST /pricing/refresh.
 
 func (h *handlers) doPricingRefresh(w http.ResponseWriter, r *http.Request, entry *Entry) {
 	p, ok := entry.Agent.(PricingController)
@@ -387,22 +199,7 @@ func (h *handlers) doPricingRefresh(w http.ResponseWriter, r *http.Request, entr
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// pricingSetQualified / Shortcut / doPricingSet — POST /pricing/set.
-func (h *handlers) pricingSetQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doPricingSet(w, r, entry)
-}
-
-func (h *handlers) pricingSetShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doPricingSet(w, r, entry)
-}
+// doPricingSet — POST /pricing/set.
 
 func (h *handlers) doPricingSet(w http.ResponseWriter, r *http.Request, entry *Entry) {
 	p, ok := entry.Agent.(PricingController)
@@ -435,22 +232,7 @@ func (h *handlers) doPricingSet(w http.ResponseWriter, r *http.Request, entry *E
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// reloadQualified / reloadShortcut / doReload — POST /reload.
-func (h *handlers) reloadQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doReload(w, r, entry)
-}
-
-func (h *handlers) reloadShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doReload(w, r, entry)
-}
+// doReload — POST /reload.
 
 func (h *handlers) doReload(w http.ResponseWriter, r *http.Request, entry *Entry) {
 	p, ok := entry.Agent.(Reloader)

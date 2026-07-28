@@ -48,14 +48,14 @@ const wakeMaxBytes = 8 * 1024
 // behavior (every request passes the auth gate).
 type handlers struct {
 	reg        *SessionRegistry
-	pool       *BroadcasterPool
+	pool       *broadcasterPool
 	enforceACL bool
 	// factory, when non-nil, enables the POST /sessions endpoint.
 	// Set from Options.SessionFactory by the Server constructor.
 	factory SessionFactory
 }
 
-func newHandlers(reg *SessionRegistry, pool *BroadcasterPool) *handlers {
+func newHandlers(reg *SessionRegistry, pool *broadcasterPool) *handlers {
 	return &handlers{reg: reg, pool: pool}
 }
 
@@ -117,6 +117,34 @@ func (h *handlers) lookupShortcutAuth(w http.ResponseWriter, r *http.Request, ac
 	return entry, true
 }
 
+// routeSession registers one session-scoped endpoint under BOTH URL
+// forms — the qualified /sessions/{app}/{sid} route and the
+// /sessions/{sid} shortcut (which resolves when the SessionID is
+// unambiguous across registered apps; 409 otherwise) — wiring entry
+// lookup plus the per-action authorization check in front of fn.
+//
+// method is the HTTP verb; suffix is the path below the session
+// segment ("events", "perms/allow", ...) or "" for the bare session
+// URL (DELETE /sessions/...). Every fn runs with lookup + auth
+// already done, exactly like the former per-endpoint Qualified /
+// Shortcut wrapper pairs this helper replaced.
+func (h *handlers) routeSession(mux *http.ServeMux, method, suffix string, action auth.Action, fn func(http.ResponseWriter, *http.Request, *Entry)) {
+	tail := ""
+	if suffix != "" {
+		tail = "/" + suffix
+	}
+	mux.HandleFunc(method+" /sessions/{app}/{sid}"+tail, func(w http.ResponseWriter, r *http.Request) {
+		if entry, ok := h.lookupQualifiedAuth(w, r, action); ok {
+			fn(w, r, entry)
+		}
+	})
+	mux.HandleFunc(method+" /sessions/{sid}"+tail, func(w http.ResponseWriter, r *http.Request) {
+		if entry, ok := h.lookupShortcutAuth(w, r, action); ok {
+			fn(w, r, entry)
+		}
+	})
+}
+
 // register wires the handler set onto a mux. Routes use Go 1.22+
 // pattern matching so {app}/{sid} is a clean two-segment match.
 func (h *handlers) register(mux *http.ServeMux) {
@@ -126,30 +154,19 @@ func (h *handlers) register(mux *http.ServeMux) {
 	// factory is nil, so older deployments behave as today.
 	mux.HandleFunc("POST /sessions", h.createSession)
 
-	// Qualified two-segment form: /sessions/<app>/<sid>/...
-	mux.HandleFunc("GET /sessions/{app}/{sid}/events", h.eventsQualified)
-	mux.HandleFunc("POST /sessions/{app}/{sid}/inject", h.injectQualified)
-	mux.HandleFunc("POST /sessions/{app}/{sid}/wake", h.wakeQualified)
-	mux.HandleFunc("POST /sessions/{app}/{sid}/interrupt", h.interruptQualified)
+	// Session-scoped endpoints — each registered under both the
+	// qualified and shortcut URL forms via routeSession.
+	h.routeSession(mux, "GET", "events", auth.ActionSessionRead, h.streamEvents)
+	h.routeSession(mux, "POST", "inject", auth.ActionSessionWrite, h.doInject)
+	h.routeSession(mux, "POST", "wake", auth.ActionSessionWrite, h.doWake)
+	h.routeSession(mux, "POST", "interrupt", auth.ActionSessionWrite, h.doInterrupt)
 
 	// Read-only state endpoints — feed the TUI's /tools, /subagents,
 	// /status slash commands. Pure projections over in-memory state;
 	// safe for ReadOnly mode (the read-only flag gates POSTs only).
-	mux.HandleFunc("GET /sessions/{app}/{sid}/tools", h.toolsQualified)
-	mux.HandleFunc("GET /sessions/{app}/{sid}/agents", h.agentsQualified)
-	mux.HandleFunc("GET /sessions/{app}/{sid}/status", h.statusQualified)
-
-	// Single-segment shortcut: /sessions/<sid>/... — resolves when
-	// SessionID is unambiguous across registered apps; 409 otherwise.
-	// Registered after the qualified patterns so Go's routing prefers
-	// the longer match.
-	mux.HandleFunc("GET /sessions/{sid}/events", h.eventsShortcut)
-	mux.HandleFunc("POST /sessions/{sid}/inject", h.injectShortcut)
-	mux.HandleFunc("POST /sessions/{sid}/wake", h.wakeShortcut)
-	mux.HandleFunc("POST /sessions/{sid}/interrupt", h.interruptShortcut)
-	mux.HandleFunc("GET /sessions/{sid}/tools", h.toolsShortcut)
-	mux.HandleFunc("GET /sessions/{sid}/agents", h.agentsShortcut)
-	mux.HandleFunc("GET /sessions/{sid}/status", h.statusShortcut)
+	h.routeSession(mux, "GET", "tools", auth.ActionSessionRead, h.doTools)
+	h.routeSession(mux, "GET", "agents", auth.ActionSessionRead, h.doAgents)
+	h.routeSession(mux, "GET", "status", auth.ActionSessionRead, h.doStatus)
 
 	// Operator-state read endpoints (usage / context / memory /
 	// skills / mcp / pricing); see handlers_operator.go.
@@ -251,22 +268,6 @@ func (h *handlers) listSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
 }
 
-func (h *handlers) eventsQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionRead)
-	if !ok {
-		return
-	}
-	h.streamEvents(w, r, entry)
-}
-
-func (h *handlers) eventsShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionRead)
-	if !ok {
-		return
-	}
-	h.streamEvents(w, r, entry)
-}
-
 // streamEvents is the core SSE handler. Subscribes to the broadcaster,
 // writes each frame as `event: agent` + JSON payload, flushes after
 // every write. Returns when the client disconnects or the subscriber
@@ -343,22 +344,6 @@ type injectRequest struct {
 	Message string `json:"message"`
 }
 
-func (h *handlers) injectQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doInject(w, r, entry)
-}
-
-func (h *handlers) injectShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doInject(w, r, entry)
-}
-
 func (h *handlers) doInject(w http.ResponseWriter, r *http.Request, entry *Entry) {
 	var req injectRequest
 	if err := readJSON(r, &req, injectMaxBytes); err != nil {
@@ -389,22 +374,6 @@ type wakeRequest struct {
 	// wake fires (equivalent to a paired inject + wake from the
 	// operator). Empty just wakes without queuing a message.
 	Prompt string `json:"prompt,omitempty"`
-}
-
-func (h *handlers) wakeQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doWake(w, r, entry)
-}
-
-func (h *handlers) wakeShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doWake(w, r, entry)
 }
 
 func (h *handlers) doWake(w http.ResponseWriter, r *http.Request, entry *Entry) {
@@ -458,22 +427,6 @@ func (h *handlers) doWake(w http.ResponseWriter, r *http.Request, entry *Entry) 
 // CustomMetadata={source:"operator"} so the operator's intent is
 // captured in the audit trail alongside the agent's own
 // ctx.Canceled response.
-
-func (h *handlers) interruptQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doInterrupt(w, r, entry)
-}
-
-func (h *handlers) interruptShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doInterrupt(w, r, entry)
-}
 
 func (h *handlers) doInterrupt(w http.ResponseWriter, r *http.Request, entry *Entry) {
 	ip, ok := entry.Agent.(InterruptProvider)
@@ -586,23 +539,7 @@ func parseSince(s string) int64 {
 // struct) — never 501, so a TUI that fans these out at startup
 // against mixed-vintage agents doesn't have to special-case errors.
 
-func (h *handlers) toolsQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionRead)
-	if !ok {
-		return
-	}
-	h.doTools(w, entry)
-}
-
-func (h *handlers) toolsShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionRead)
-	if !ok {
-		return
-	}
-	h.doTools(w, entry)
-}
-
-func (h *handlers) doTools(w http.ResponseWriter, entry *Entry) {
+func (h *handlers) doTools(w http.ResponseWriter, _ *http.Request, entry *Entry) {
 	out := []ToolInfo{}
 	if p, ok := entry.Agent.(ToolsProvider); ok {
 		if list := p.AttachTools(); list != nil {
@@ -612,23 +549,7 @@ func (h *handlers) doTools(w http.ResponseWriter, entry *Entry) {
 	writeJSON(w, http.StatusOK, map[string]any{"tools": out})
 }
 
-func (h *handlers) agentsQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionRead)
-	if !ok {
-		return
-	}
-	h.doAgents(w, entry)
-}
-
-func (h *handlers) agentsShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionRead)
-	if !ok {
-		return
-	}
-	h.doAgents(w, entry)
-}
-
-func (h *handlers) doAgents(w http.ResponseWriter, entry *Entry) {
+func (h *handlers) doAgents(w http.ResponseWriter, _ *http.Request, entry *Entry) {
 	out := []AgentInfo{}
 	if p, ok := entry.Agent.(AgentsProvider); ok {
 		if list := p.AttachAgents(); list != nil {
@@ -638,23 +559,7 @@ func (h *handlers) doAgents(w http.ResponseWriter, entry *Entry) {
 	writeJSON(w, http.StatusOK, map[string]any{"agents": out})
 }
 
-func (h *handlers) statusQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionRead)
-	if !ok {
-		return
-	}
-	h.doStatus(w, entry)
-}
-
-func (h *handlers) statusShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionRead)
-	if !ok {
-		return
-	}
-	h.doStatus(w, entry)
-}
-
-func (h *handlers) doStatus(w http.ResponseWriter, entry *Entry) {
+func (h *handlers) doStatus(w http.ResponseWriter, _ *http.Request, entry *Entry) {
 	var out StatusInfo
 	if p, ok := entry.Agent.(StatusProvider); ok {
 		out = p.AttachStatus()

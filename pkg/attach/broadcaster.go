@@ -89,7 +89,7 @@ type latestSeqStream interface {
 // head. The SSE protocol has no "replay truncated" frame, so
 // truncation is surfaced via the server log only; clients that need
 // the full history can page it from the eventlog directly.
-func (b *Broadcaster) clampReplaySince(ctx context.Context, since int64) int64 {
+func (b *broadcaster) clampReplaySince(ctx context.Context, since int64) int64 {
 	ls, ok := b.stream.(latestSeqStream)
 	if !ok {
 		return since
@@ -109,13 +109,13 @@ func (b *Broadcaster) clampReplaySince(ctx context.Context, since int64) int64 {
 	return since
 }
 
-// Broadcaster owns one goroutine per session that pumps events from
+// broadcaster owns one goroutine per session that pumps events from
 // eventlog.Stream.Watch into N subscriber channels. Subscribers can
 // join any time; replay-then-tail is handled via the since parameter.
 //
-// One Broadcaster per Entry. Lazily created on first Subscribe and
+// One broadcaster per Entry. Lazily created on first Subscribe and
 // torn down when the last subscriber leaves (refcount).
-type Broadcaster struct {
+type broadcaster struct {
 	entry  *Entry
 	stream eventlog.Stream
 	query  []eventlog.QueryOption // ForSession(...) for this entry
@@ -144,8 +144,8 @@ type Broadcaster struct {
 	// capsBuilder, when non-nil, extends the default boot Capabilities
 	// frame with runtime-derived fields (features, slash_commands,
 	// agent identity, caller_id) per SSE spec v1.4.0. Set by
-	// BroadcasterPool.For from the server-level builder closure so
-	// tests that construct a Broadcaster directly still get the
+	// broadcasterPool.For from the server-level builder closure so
+	// tests that construct a broadcaster directly still get the
 	// pre-1.4.0 minimal shape without ceremony. Called per-subscribe
 	// so caller_id reflects the current request's Caller.
 	capsBuilder func(ctx context.Context, entry *Entry) Capabilities
@@ -176,21 +176,21 @@ type subscriber struct {
 	lastSent int64
 }
 
-// NewBroadcaster constructs a broadcaster for one registered session.
+// newBroadcaster constructs a broadcaster for one registered session.
 // The pump goroutine is NOT started until the first Subscribe — we
 // don't want background goroutines for sessions nobody's watching.
-func NewBroadcaster(entry *Entry) (*Broadcaster, error) {
+func newBroadcaster(entry *Entry) (*broadcaster, error) {
 	if entry == nil {
-		return nil, errors.New("attach: NewBroadcaster: nil entry")
+		return nil, errors.New("attach: newBroadcaster: nil entry")
 	}
 	if entry.Agent == nil {
-		return nil, errors.New("attach: NewBroadcaster: entry has nil Agent")
+		return nil, errors.New("attach: newBroadcaster: entry has nil Agent")
 	}
 	h := entry.Agent.EventLog()
 	if h == nil {
-		return nil, errors.New("attach: NewBroadcaster: agent has no eventlog (attach-mode requires --session-db)")
+		return nil, errors.New("attach: newBroadcaster: agent has no eventlog (attach-mode requires --session-db)")
 	}
-	return &Broadcaster{
+	return &broadcaster{
 		entry:  entry,
 		stream: h.Stream,
 		query: []eventlog.QueryOption{
@@ -214,7 +214,7 @@ func NewBroadcaster(entry *Entry) (*Broadcaster, error) {
 //
 // Caller MUST drain the channel until close to release goroutine
 // resources.
-func (b *Broadcaster) Subscribe(ctx context.Context, since int64) <-chan Frame {
+func (b *broadcaster) Subscribe(ctx context.Context, since int64) <-chan Frame {
 	since = b.clampReplaySince(ctx, since)
 	sub := &subscriber{
 		ch:       make(chan Frame, subscriberBufferSize),
@@ -292,7 +292,7 @@ func (b *Broadcaster) Subscribe(ctx context.Context, since int64) <-chan Frame {
 // here when something happens that needs to reach the operator.
 //
 // Safe to call concurrently from any goroutine.
-func (b *Broadcaster) Emit(eventType string, payload any) {
+func (b *broadcaster) Emit(eventType string, payload any) {
 	if eventType == "" {
 		return // Defensive: callers should always pass a non-empty type.
 	}
@@ -317,17 +317,17 @@ func (b *Broadcaster) Emit(eventType string, payload any) {
 //
 // ctx is the subscriber's request context — used by the caps builder
 // to resolve the request's Caller for the caller_id field. When
-// capsBuilder is nil (test callers of NewBroadcaster that skip the
+// capsBuilder is nil (test callers of newBroadcaster that skip the
 // pool wiring) the minimal pre-1.4.0 shape is emitted.
-func (b *Broadcaster) deliverBootFrames(ctx context.Context, sub *subscriber) {
+func (b *broadcaster) deliverBootFrames(ctx context.Context, sub *subscriber) {
 	// Build the frame payloads BEFORE taking b.mu — capsBuilder,
 	// statusSnapshot and usageSnapshot all call into agent code and we
 	// don't want that running under the broadcaster mutex.
 
 	// 1. Capabilities — required first frame per spec section 2.1.
 	caps := Capabilities{
-		ProtocolVersion: ProtocolVersion,
-		EventTypes:      SupportedEventTypes,
+		ProtocolVersion: protocolVersion,
+		EventTypes:      supportedEventTypes,
 		Server:          serverBanner(),
 	}
 	if b.capsBuilder != nil {
@@ -383,7 +383,7 @@ func (b *Broadcaster) deliverBootFrames(ctx context.Context, sub *subscriber) {
 // (state/model_name) to the spec's StatusUpdate (turn_state/model)
 // keeps the two surfaces aligned without forcing agents to implement
 // a second snapshot method just for SSE.
-func (b *Broadcaster) statusSnapshot() StatusUpdate {
+func (b *broadcaster) statusSnapshot() StatusUpdate {
 	out := StatusUpdate{TurnState: TurnStateIdle}
 	p, ok := b.entry.Agent.(StatusProvider)
 	if !ok {
@@ -409,7 +409,7 @@ func (b *Broadcaster) statusSnapshot() StatusUpdate {
 // UsageProvider so the caller can omit the frame entirely (spec
 // allows usage-update to be skipped on stream open when no data
 // exists yet).
-func (b *Broadcaster) usageSnapshot() (UsageUpdate, bool) {
+func (b *broadcaster) usageSnapshot() (UsageUpdate, bool) {
 	p, ok := b.entry.Agent.(UsageProvider)
 	if !ok {
 		return UsageUpdate{}, false
@@ -449,7 +449,7 @@ func serverBanner() string {
 // range, sending each frame to the subscriber, then leaves the
 // subscriber attached for the live-tail (pump goroutine handles
 // live broadcasts). Honors ctx.Done so disconnects are clean.
-func (b *Broadcaster) replayThenTail(ctx context.Context, sub *subscriber, since int64) {
+func (b *broadcaster) replayThenTail(ctx context.Context, sub *subscriber, since int64) {
 	for entry, err := range b.stream.Since(ctx, since, b.query...) {
 		if err != nil {
 			// Replay failures close the subscriber; the client sees
@@ -483,11 +483,11 @@ func (b *Broadcaster) replayThenTail(ctx context.Context, sub *subscriber, since
 	b.detach(sub)
 }
 
-// pump is the single publisher goroutine per Broadcaster. Drains
+// pump is the single publisher goroutine per broadcaster. Drains
 // eventlog.Stream.Watch and fans out to every subscriber that's
 // attached at the time of the broadcast. Exits when no subscribers
 // remain (set by detach).
-func (b *Broadcaster) pump(ctx context.Context) {
+func (b *broadcaster) pump(ctx context.Context) {
 	debugf("broadcaster pump START %s/%s startedAt=%d", b.entry.AppName, b.entry.SessionID, b.startedAt)
 	defer debugf("broadcaster pump END %s/%s", b.entry.AppName, b.entry.SessionID)
 	for entry, err := range b.stream.Watch(ctx, b.startedAt, b.query...) {
@@ -532,7 +532,7 @@ func (b *Broadcaster) pump(ctx context.Context) {
 // Typed frames (Type != "") bypass the seq-based dedup and are
 // routed through sendTyped — they have no monotonic eventlog seq
 // and the dedup logic would silently drop every one of them.
-func (b *Broadcaster) send(sub *subscriber, f Frame) bool {
+func (b *broadcaster) send(sub *subscriber, f Frame) bool {
 	if f.Type != "" {
 		return b.sendTyped(sub, f)
 	}
@@ -570,7 +570,7 @@ func (b *Broadcaster) send(sub *subscriber, f Frame) bool {
 // sendTyped delivers a typed event frame to one subscriber.
 // Bypasses send's seq-based dedup (typed events have no eventlog
 // seq) and shares the same drop-the-slow-subscriber policy.
-func (b *Broadcaster) sendTyped(sub *subscriber, f Frame) bool {
+func (b *broadcaster) sendTyped(sub *subscriber, f Frame) bool {
 	if sub.closed {
 		debugf("broadcaster sendTyped %s/%s type=%s → sub already closed", b.entry.AppName, b.entry.SessionID, f.Type)
 		return false
@@ -590,13 +590,13 @@ func (b *Broadcaster) sendTyped(sub *subscriber, f Frame) bool {
 // detach removes the subscriber under the broadcaster's mutex. If
 // this was the last subscriber, the pump goroutine is cancelled at
 // its next iteration.
-func (b *Broadcaster) detach(sub *subscriber) {
+func (b *broadcaster) detach(sub *subscriber) {
 	b.mu.Lock()
 	b.detachLocked(sub)
 	b.mu.Unlock()
 }
 
-func (b *Broadcaster) detachLocked(sub *subscriber) {
+func (b *broadcaster) detachLocked(sub *subscriber) {
 	if sub.closed {
 		return
 	}
@@ -621,13 +621,13 @@ func (b *Broadcaster) detachLocked(sub *subscriber) {
 // broadcaster spawned is still reading the eventlog, so the caller may
 // safely close the underlying handle. Idempotent. Called from
 // Server.Close.
-func (b *Broadcaster) Close() {
+func (b *broadcaster) Close() {
 	b.mu.Lock()
 	// Wake replayThenTail goroutines parked on the live-tail wait,
 	// independent of their request contexts. Once — the channel is a
 	// broadcast latch, and Close may be called more than once. The nil
 	// check tolerates broadcasters built directly in white-box tests
-	// (production always goes through NewBroadcaster, which sets it).
+	// (production always goes through newBroadcaster, which sets it).
 	b.closeOnce.Do(func() {
 		if b.closing != nil {
 			close(b.closing)
@@ -652,58 +652,58 @@ func (b *Broadcaster) Close() {
 	b.wg.Wait()
 }
 
-// BroadcasterPool lazily constructs and tracks one Broadcaster per
+// broadcasterPool lazily constructs and tracks one broadcaster per
 // Entry. Server uses this so multiple SSE clients for the same session
 // share one pump goroutine.
-type BroadcasterPool struct {
+type broadcasterPool struct {
 	mu sync.Mutex
 	// Keyed by tripleKey so the (app, user, sid) identity matches
 	// the registry's.
-	bcasts map[tripleKey]*Broadcaster
+	bcasts map[tripleKey]*broadcaster
 
-	// capsBuilder, when non-nil, is stamped onto every Broadcaster
+	// capsBuilder, when non-nil, is stamped onto every broadcaster
 	// this pool constructs so the SSE v1.4.0 capabilities frame gets
 	// its features/slash_commands/agent/caller_id fields populated
-	// from server-level state (see BroadcasterPool.SetCapabilitiesBuilder).
+	// from server-level state (see broadcasterPool.SetCapabilitiesBuilder).
 	// Set once at server startup; reads are lock-free per the
 	// "capsBuilder set exactly once before first For" contract.
 	capsBuilder func(ctx context.Context, entry *Entry) Capabilities
 }
 
-// NewBroadcasterPool returns an empty pool.
-func NewBroadcasterPool() *BroadcasterPool {
-	return &BroadcasterPool{bcasts: make(map[tripleKey]*Broadcaster)}
+// newBroadcasterPool returns an empty pool.
+func newBroadcasterPool() *broadcasterPool {
+	return &broadcasterPool{bcasts: make(map[tripleKey]*broadcaster)}
 }
 
 // SetCapabilitiesBuilder wires the closure that produces the
 // runtime-derived Capabilities extensions (features/slash_commands/
-// agent/caller_id) for every new Broadcaster this pool constructs.
+// agent/caller_id) for every new broadcaster this pool constructs.
 // Called once during Server construction; ignored (and a no-op)
 // on subsequent calls to keep the "one builder per pool" contract
-// simple. Passing nil clears the builder — Broadcasters constructed
+// simple. Passing nil clears the builder — broadcasters constructed
 // after clear fall back to the minimal pre-1.4.0 shape.
 //
 // Called BEFORE the first For() so pool-created broadcasters see
 // the builder. Existing broadcasters (from an earlier For hit)
 // keep whatever builder they were constructed with — the pool
 // doesn't back-fill.
-func (p *BroadcasterPool) SetCapabilitiesBuilder(fn func(ctx context.Context, entry *Entry) Capabilities) {
+func (p *broadcasterPool) SetCapabilitiesBuilder(fn func(ctx context.Context, entry *Entry) Capabilities) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.capsBuilder = fn
 }
 
-// For returns a Broadcaster for entry, constructing it on first use.
+// For returns a broadcaster for entry, constructing it on first use.
 // Returns an error when the entry's agent has no eventlog (attach
 // requires it).
-func (p *BroadcasterPool) For(entry *Entry) (*Broadcaster, error) {
+func (p *broadcasterPool) For(entry *Entry) (*broadcaster, error) {
 	key := tripleKey{App: entry.AppName, User: entry.UserID, SID: entry.SessionID}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if b, ok := p.bcasts[key]; ok {
 		return b, nil
 	}
-	b, err := NewBroadcaster(entry)
+	b, err := newBroadcaster(entry)
 	if err != nil {
 		return nil, err
 	}
@@ -718,7 +718,7 @@ func (p *BroadcasterPool) For(entry *Entry) (*Broadcaster, error) {
 // this session). Callers should Close() the returned broadcaster
 // to disconnect active subscribers — used by DELETE /sessions to
 // force-hang up SSE clients streaming the deleted session.
-func (p *BroadcasterPool) Remove(entry *Entry) *Broadcaster {
+func (p *broadcasterPool) Remove(entry *Entry) *broadcaster {
 	key := tripleKey{App: entry.AppName, User: entry.UserID, SID: entry.SessionID}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -731,7 +731,7 @@ func (p *BroadcasterPool) Remove(entry *Entry) *Broadcaster {
 }
 
 // Close stops every broadcaster in the pool. Used by Server.Close.
-func (p *BroadcasterPool) Close() {
+func (p *broadcasterPool) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, b := range p.bcasts {

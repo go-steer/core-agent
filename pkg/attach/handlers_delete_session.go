@@ -17,8 +17,6 @@ package attach
 import (
 	"fmt"
 	"net/http"
-
-	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
 
 // DELETE /sessions/{app}/{sid} and its /sessions/{sid} shortcut —
@@ -49,24 +47,9 @@ import (
 // avoid pkg/attach → pkg/agent import cycle.
 const defaultBootstrapSessionID = "default"
 
-func (h *handlers) deleteSessionQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionAdmin)
-	if !ok {
-		return
-	}
-	h.doDeleteSession(w, r, entry)
-}
-
-func (h *handlers) deleteSessionShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionAdmin)
-	if !ok {
-		return
-	}
-	h.doDeleteSession(w, r, entry)
-}
-
-// doDeleteSession is the shared body for the two route handlers.
-// Auth + entry lookup already ran. Order:
+// doDeleteSession is the DELETE /sessions handler body (wired for
+// both URL forms via routeSession in registerOperatorState). Auth +
+// entry lookup already ran. Order:
 //  1. Guard bootstrap session (403).
 //  2. Close per-entry broadcaster (SSE subscribers get channel-
 //     closed signals so they can 200-then-EOF their responses).

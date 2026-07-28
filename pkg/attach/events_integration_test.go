@@ -179,7 +179,7 @@ func TestEvents_CapabilitiesV1_4_Fields(t *testing.T) {
 		t.Fatal("Features map should be populated on v1.4.0 stream")
 	}
 	for _, key := range []string{
-		FeaturePermsStream, FeatureMCP, FeatureSpecialists, FeatureInterrupt,
+		featurePermsStream, featureMCP, featureSpecialists, featureInterrupt,
 	} {
 		if !caps.Features[key] {
 			t.Errorf("Features[%q] = false, want true (registrant implements the capability)", key)
@@ -265,8 +265,8 @@ func TestEvents_BootFrameOrder(t *testing.T) {
 	if err := json.Unmarshal([]byte(first.Data), &caps); err != nil {
 		t.Fatalf("capabilities JSON: %v (data=%s)", err, first.Data)
 	}
-	if caps.ProtocolVersion != ProtocolVersion {
-		t.Errorf("capabilities.protocol_version = %q, want %q", caps.ProtocolVersion, ProtocolVersion)
+	if caps.ProtocolVersion != protocolVersion {
+		t.Errorf("capabilities.protocol_version = %q, want %q", caps.ProtocolVersion, protocolVersion)
 	}
 	if len(caps.EventTypes) == 0 {
 		t.Errorf("capabilities.event_types should be non-empty")

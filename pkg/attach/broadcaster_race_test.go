@@ -91,7 +91,7 @@ func TestBroadcaster_DualSourceSend_NoRace(t *testing.T) {
 	const iterations = 300
 
 	for run := 0; run < iterations; run++ {
-		b := &Broadcaster{
+		b := &broadcaster{
 			entry:  &Entry{AppName: "core-agent", UserID: "u", SessionID: "test"},
 			stream: floodStream{n: 64},
 			query:  nil,
@@ -147,7 +147,7 @@ func TestBroadcaster_SubscribeCapabilitiesAlwaysFirst(t *testing.T) {
 	const iterations = 200
 
 	for run := 0; run < iterations; run++ {
-		b := &Broadcaster{
+		b := &broadcaster{
 			entry:   &Entry{AppName: "core-agent", UserID: "u", SessionID: "boot-order"},
 			stream:  floodStream{n: 16},
 			subs:    make(map[*subscriber]struct{}),
@@ -203,7 +203,7 @@ func TestBroadcaster_BootFramesRaceWithPump(t *testing.T) {
 	const iterations = 300
 
 	for run := 0; run < iterations; run++ {
-		b := &Broadcaster{
+		b := &broadcaster{
 			entry:  &Entry{AppName: "core-agent", UserID: "u", SessionID: "test"},
 			stream: floodStream{n: 64},
 		}

@@ -21,19 +21,19 @@ import (
 	"strings"
 )
 
-// HeaderProtocolVersion is the request/response header carrying the SSE
+// headerProtocolVersion is the request/response header carrying the SSE
 // event-stream protocol version. On an /events stream request the
 // client MAY declare the version it speaks; the server always echoes
 // the version it speaks on the response so a client can detect skew
 // even before the `capabilities` frame arrives. Mirrors the X-Attach-*
 // header convention (see HeaderAttachToken).
-const HeaderProtocolVersion = "X-Attach-Protocol-Version" //nolint:gosec // header name, not a credential
+const headerProtocolVersion = "X-Attach-Protocol-Version" //nolint:gosec // header name, not a credential
 
-// QueryProtocolVersion is the query-param equivalent of
-// HeaderProtocolVersion, for URL-only clients (curl, browsers) that
+// queryProtocolVersion is the query-param equivalent of
+// headerProtocolVersion, for URL-only clients (curl, browsers) that
 // can't set a custom header. Takes precedence over the header when both
 // are present.
-const QueryProtocolVersion = "protocol"
+const queryProtocolVersion = "protocol"
 
 // clientProtocolVersion extracts the client-declared protocol version
 // from the request: the ?protocol= query param wins, falling back to
@@ -41,10 +41,10 @@ const QueryProtocolVersion = "protocol"
 // declared nothing — the pre-negotiation back-compat case, which every
 // client shipped before this negotiation existed.
 func clientProtocolVersion(r *http.Request) string {
-	if v := strings.TrimSpace(r.URL.Query().Get(QueryProtocolVersion)); v != "" {
+	if v := strings.TrimSpace(r.URL.Query().Get(queryProtocolVersion)); v != "" {
 		return v
 	}
-	return strings.TrimSpace(r.Header.Get(HeaderProtocolVersion))
+	return strings.TrimSpace(r.Header.Get(headerProtocolVersion))
 }
 
 // protocolMajor parses the major component of a semver-ish version
@@ -92,7 +92,7 @@ func protocolMajor(version string) (int, bool) {
 // Returns true when the caller may proceed; false (after writing the
 // error response) when the request was rejected.
 func negotiateProtocolVersion(w http.ResponseWriter, r *http.Request) bool {
-	w.Header().Set(HeaderProtocolVersion, ProtocolVersion)
+	w.Header().Set(headerProtocolVersion, protocolVersion)
 
 	declared := clientProtocolVersion(r)
 	if declared == "" {
@@ -102,15 +102,15 @@ func negotiateProtocolVersion(w http.ResponseWriter, r *http.Request) bool {
 	if !ok {
 		http.Error(w, fmt.Sprintf(
 			"malformed protocol version %q (expected semver like %q)",
-			declared, ProtocolVersion), http.StatusBadRequest)
+			declared, protocolVersion), http.StatusBadRequest)
 		return false
 	}
-	serverMajor, _ := protocolMajor(ProtocolVersion)
+	serverMajor, _ := protocolMajor(protocolVersion)
 	if clientMajor != serverMajor {
 		http.Error(w, fmt.Sprintf(
 			"protocol version mismatch: client speaks %q (major %d), server speaks %q (major %d); "+
 				"upgrade the client or connect to a compatible daemon",
-			declared, clientMajor, ProtocolVersion, serverMajor), http.StatusConflict)
+			declared, clientMajor, protocolVersion, serverMajor), http.StatusConflict)
 		return false
 	}
 	return true

@@ -74,13 +74,13 @@ func TestAuthSource_ServerVerdictOnly(t *testing.T) {
 			name:   "forged Authorization header with anonymous auth → anonymous",
 			cfg:    callerMiddlewareConfig{},
 			mutate: func(r *http.Request) { r.Header.Set("Authorization", "Bearer forged") },
-			want:   WhoAmISourceAnonymous,
+			want:   whoAmISourceAnonymous,
 		},
 		{
 			name:   "forged X-Attach-Token with anonymous auth → anonymous",
 			cfg:    callerMiddlewareConfig{},
 			mutate: func(r *http.Request) { r.Header.Set(HeaderAttachToken, "forged") },
-			want:   WhoAmISourceAnonymous,
+			want:   whoAmISourceAnonymous,
 		},
 		{
 			// IAP headers are client-forgeable; the server validates
@@ -91,7 +91,7 @@ func TestAuthSource_ServerVerdictOnly(t *testing.T) {
 				r.Header.Set("X-Goog-Authenticated-User-Email", "accounts.google.com:alice@example.com")
 				r.Header.Set("X-Goog-Iap-Jwt-Assertion", "eyJ...")
 			},
-			want: WhoAmISourceAnonymous,
+			want: whoAmISourceAnonymous,
 		},
 		{
 			// A presented-but-unverified client cert (VerifiedChains
@@ -102,7 +102,7 @@ func TestAuthSource_ServerVerdictOnly(t *testing.T) {
 			mutate: func(r *http.Request) {
 				r.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{}}}
 			},
-			want: WhoAmISourceAnonymous,
+			want: whoAmISourceAnonymous,
 		},
 		{
 			name: "listener-verified client cert → mtls",
@@ -113,7 +113,7 @@ func TestAuthSource_ServerVerdictOnly(t *testing.T) {
 					VerifiedChains:   [][]*x509.Certificate{{{}}},
 				}
 			},
-			want: WhoAmISourceMTLS,
+			want: whoAmISourceMTLS,
 		},
 		{
 			// Transport-level bearer gate: AuthConfig.Middleware
@@ -122,7 +122,7 @@ func TestAuthSource_ServerVerdictOnly(t *testing.T) {
 			// credential was verified.
 			name: "transport bearer configured → bearer",
 			cfg:  callerMiddlewareConfig{transportBearerConfigured: true},
-			want: WhoAmISourceBearer,
+			want: whoAmISourceBearer,
 		},
 		{
 			name: "bearer table hit → bearer",
@@ -130,7 +130,7 @@ func TestAuthSource_ServerVerdictOnly(t *testing.T) {
 			mutate: func(r *http.Request) {
 				r.Header.Set("Authorization", "Bearer sekret")
 			},
-			want: WhoAmISourceBearer,
+			want: whoAmISourceBearer,
 		},
 		{
 			// Wrong token + no enforcement falls back to the
@@ -141,7 +141,7 @@ func TestAuthSource_ServerVerdictOnly(t *testing.T) {
 			mutate: func(r *http.Request) {
 				r.Header.Set("Authorization", "Bearer wrong")
 			},
-			want: WhoAmISourceAnonymous,
+			want: whoAmISourceAnonymous,
 		},
 		{
 			// bearer wins over a verified cert when both are present
@@ -155,7 +155,7 @@ func TestAuthSource_ServerVerdictOnly(t *testing.T) {
 					VerifiedChains:   [][]*x509.Certificate{{{}}},
 				}
 			},
-			want: WhoAmISourceBearer,
+			want: whoAmISourceBearer,
 		},
 	}
 	for _, tc := range cases {
@@ -196,7 +196,7 @@ func TestAuthSource_ValidatedProxyAssertionIsAsserted(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", code)
 	}
-	if got != WhoAmISourceAsserted {
+	if got != whoAmISourceAsserted {
 		t.Errorf("auth source = %q, want asserted", got)
 	}
 
@@ -221,7 +221,7 @@ func TestWhoAmI_HandlerBody(t *testing.T) {
 		Identity: "alice@example.com",
 		Admin:    true,
 	})
-	ctx = withAuthSource(ctx, WhoAmISourceBearer)
+	ctx = withAuthSource(ctx, whoAmISourceBearer)
 	req = req.WithContext(ctx)
 	rw := httptest.NewRecorder()
 
@@ -231,7 +231,7 @@ func TestWhoAmI_HandlerBody(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rw.Code)
 	}
 	body, _ := io.ReadAll(rw.Body)
-	var resp WhoAmIResponse
+	var resp whoAmIResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
 		t.Fatalf("unmarshal: %v (body=%s)", err, body)
 	}
@@ -241,7 +241,7 @@ func TestWhoAmI_HandlerBody(t *testing.T) {
 	if !resp.Admin {
 		t.Error("Admin should be true")
 	}
-	if resp.Source != WhoAmISourceBearer {
+	if resp.Source != whoAmISourceBearer {
 		t.Errorf("Source = %q, want bearer", resp.Source)
 	}
 	if resp.ProxyBy != "" {
@@ -266,9 +266,9 @@ func TestWhoAmI_HandlerIgnoresRawHeaders(t *testing.T) {
 
 	h.doWhoAmI(rw, req)
 
-	var resp WhoAmIResponse
+	var resp whoAmIResponse
 	_ = json.NewDecoder(rw.Body).Decode(&resp)
-	if resp.Source != WhoAmISourceAnonymous {
+	if resp.Source != whoAmISourceAnonymous {
 		t.Errorf("Source = %q, want anonymous (handler must not trust raw headers)", resp.Source)
 	}
 }
@@ -280,7 +280,7 @@ func TestWhoAmI_ProxyByStamped(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer bot-token")
 	ctx := auth.WithCaller(req.Context(), auth.Caller{Identity: "alice@example.com"})
 	ctx = auth.WithProxyBy(ctx, "sa:slack-bot")
-	ctx = withAuthSource(ctx, WhoAmISourceAsserted)
+	ctx = withAuthSource(ctx, whoAmISourceAsserted)
 	req = req.WithContext(ctx)
 	rw := httptest.NewRecorder()
 
@@ -289,9 +289,9 @@ func TestWhoAmI_ProxyByStamped(t *testing.T) {
 	if rw.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rw.Code)
 	}
-	var resp WhoAmIResponse
+	var resp whoAmIResponse
 	_ = json.NewDecoder(rw.Body).Decode(&resp)
-	if resp.Source != WhoAmISourceAsserted {
+	if resp.Source != whoAmISourceAsserted {
 		t.Errorf("Source = %q, want asserted (proxy path wins over bearer)", resp.Source)
 	}
 	if resp.ProxyBy != "sa:slack-bot" {
@@ -347,11 +347,11 @@ func TestWhoAmI_IntegrationBearerRequired(t *testing.T) {
 		body, _ := io.ReadAll(resp2.Body)
 		t.Fatalf("/whoami with token = %d, want 200. Body: %s", resp2.StatusCode, body)
 	}
-	var body WhoAmIResponse
+	var body whoAmIResponse
 	if err := json.NewDecoder(resp2.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body.Source != WhoAmISourceBearer {
+	if body.Source != whoAmISourceBearer {
 		t.Errorf("Source = %q, want bearer", body.Source)
 	}
 }

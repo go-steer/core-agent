@@ -66,7 +66,7 @@ func (s *blockingStream) Watch(ctx context.Context, _ int64, _ ...eventlog.Query
 func (s *blockingStream) Close() error { return nil }
 
 // TestBroadcaster_CloseWaitsForPump pins the fix for the flaky attach
-// teardown: Broadcaster.Close used to cancel the pump goroutine and
+// teardown: broadcaster.Close used to cancel the pump goroutine and
 // return immediately, so Server.Close (→ pool.Close) could hand back to
 // a caller that then closed the eventlog while the pump's Stream.Watch
 // was still mid-read. In tests that surfaced as
@@ -86,7 +86,7 @@ func TestBroadcaster_CloseWaitsForPump(t *testing.T) {
 		watchExited:  make(chan struct{}),
 		postCancel:   80 * time.Millisecond,
 	}
-	b := &Broadcaster{
+	b := &broadcaster{
 		entry:   &Entry{AppName: "core-agent", UserID: "u", SessionID: "test"},
 		stream:  fake,
 		subs:    make(map[*subscriber]struct{}),

@@ -156,7 +156,7 @@ func (c *PeerClient) heartbeatLoop(ctx context.Context, initial *Peer, req Regis
 			fresh, rerr := c.Register(ctx, req)
 			if rerr != nil {
 				log.Printf("attach: peer re-register also failed: %v; will retry on next tick", rerr)
-				current.LeaseExpiresAt = time.Now().Add(DefaultHeartbeatTTL)
+				current.LeaseExpiresAt = time.Now().Add(defaultHeartbeatTTL)
 				continue
 			}
 			current = fresh

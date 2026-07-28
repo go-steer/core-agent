@@ -426,10 +426,31 @@ func (r *SessionRegistry) HardDelete(ctx context.Context, appName, userID, sessi
 // error, store I/O error) so the handler can surface a 500 with the
 // underlying cause.
 func (r *SessionRegistry) Lookup(ctx context.Context, appName, sessionID string) (*Entry, error) {
+	return r.lookupGated(ctx, appName, sessionID, nil)
+}
+
+// resumeGate is a per-request pre-authorization hook consulted on a
+// Lookup miss BEFORE the SessionResumer runs. Resume is expensive —
+// it constructs a full agent, loads instructions, replays the
+// session's entire eventlog into the usage tracker, and spawns a wake
+// loop — so a caller the ACL would reject must be turned away from
+// the persisted row alone, not after the daemon already did the work
+// (#484). The gate receives the persisted ACL row and returns nil to
+// proceed; any error aborts the lookup and is returned verbatim (the
+// handlers pass a not-found-shaped error so a deny stays
+// indistinguishable from a genuine miss).
+type resumeGate func(SessionACLRow) error
+
+// lookupGated is Lookup with an optional pre-resume authorization
+// gate. Internal — the HTTP handlers thread their per-request gate
+// through here; the exported Lookup keeps the ungated signature.
+func (r *SessionRegistry) lookupGated(ctx context.Context, appName, sessionID string, gate resumeGate) (*Entry, error) {
 	if appName == "" || sessionID == "" {
 		return nil, fmt.Errorf("attach: Lookup: appName and sessionID are required")
 	}
-	// Fast path: check the in-memory map.
+	// Fast path: check the in-memory map. The gate deliberately does
+	// NOT run here — in-memory hits are cheap and the caller's own
+	// per-action authorize covers them (as it always has).
 	r.mu.RLock()
 	for k, e := range r.byTriple {
 		if k.App == appName && k.SID == sessionID {
@@ -444,7 +465,7 @@ func (r *SessionRegistry) Lookup(ctx context.Context, appName, sessionID string)
 	if resumer == nil {
 		return nil, fmt.Errorf("%w: %s/%s", ErrSessionNotFound, appName, sessionID)
 	}
-	return r.resumeAndRegister(ctx, appName, sessionID, resumer)
+	return r.resumeAndRegister(ctx, appName, sessionID, resumer, gate)
 }
 
 // LookupSingle resolves the /sessions/<sessionID> shortcut. Returns
@@ -458,6 +479,12 @@ func (r *SessionRegistry) Lookup(ctx context.Context, appName, sessionID string)
 // practice every session in scope for resume comes from the
 // same single app per daemon, so this is the right behavior.
 func (r *SessionRegistry) LookupSingle(ctx context.Context, sessionID string) (*Entry, error) {
+	return r.lookupSingleGated(ctx, sessionID, nil)
+}
+
+// lookupSingleGated is LookupSingle with an optional pre-resume
+// authorization gate — see lookupGated.
+func (r *SessionRegistry) lookupSingleGated(ctx context.Context, sessionID string, gate resumeGate) (*Entry, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("attach: LookupSingle: sessionID is required")
 	}
@@ -481,7 +508,7 @@ func (r *SessionRegistry) LookupSingle(ctx context.Context, sessionID string) (*
 	if resumer == nil {
 		return nil, fmt.Errorf("%w: %s", ErrSessionNotFound, sessionID)
 	}
-	return r.resumeAndRegister(ctx, resumerDefaultApp, sessionID, resumer)
+	return r.resumeAndRegister(ctx, resumerDefaultApp, sessionID, resumer, gate)
 }
 
 // resumerDefaultApp is the AppName passed to SessionResumer.Resume
@@ -495,7 +522,34 @@ const resumerDefaultApp = "core-agent"
 // registers the result under its own ACL. Returns the new Entry on
 // success; ErrSessionNotFound when the resumer reports no persisted
 // row; the underlying error otherwise.
-func (r *SessionRegistry) resumeAndRegister(ctx context.Context, app, sid string, resumer SessionResumer) (*Entry, error) {
+//
+// When a gate is supplied it is evaluated against the persisted ACL
+// row BEFORE any resume work — and, critically, OUTSIDE the
+// singleflight: flights are keyed by (app, sid) and shared across
+// callers, so an unauthorized caller's deny must never become the
+// shared flight result an authorized concurrent caller receives.
+// The extra row read is one indexed point query. When no aclStore is
+// wired the gate is skipped (nothing to authorize against — matches
+// the pre-gate behavior, and production resume deployments always
+// wire the store the resumer itself reads).
+func (r *SessionRegistry) resumeAndRegister(ctx context.Context, app, sid string, resumer SessionResumer, gate resumeGate) (*Entry, error) {
+	if gate != nil {
+		r.mu.RLock()
+		store := r.aclStore
+		r.mu.RUnlock()
+		if store != nil {
+			row, err := store.FindByAppSID(ctx, app, sid)
+			if err != nil {
+				if errors.Is(err, ErrSessionACLNotFound) {
+					return nil, fmt.Errorf("%w: %s/%s", ErrSessionNotFound, app, sid)
+				}
+				return nil, err
+			}
+			if err := gate(row); err != nil {
+				return nil, err
+			}
+		}
+	}
 	key := app + "/" + sid
 	v, err, _ := r.resumeFlight.Do(key, func() (any, error) {
 		// Recheck the map under the lock — another goroutine may

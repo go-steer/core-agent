@@ -89,6 +89,32 @@ func (h *handlers) authorize(w http.ResponseWriter, r *http.Request, entry *Entr
 	return false
 }
 
+// resumeGateFor returns the pre-resume authorization gate for this
+// request, or nil when ACL enforcement is off. A Lookup miss lazily
+// RESUMES the session — constructing a full agent, replaying its
+// eventlog, spawning a wake loop — so the caller must be checked
+// against the persisted ACL row BEFORE that work runs, not only by
+// the post-lookup authorize (#484). The gate uses ActionSessionRead
+// as the resume bar (the weakest session action — anyone the ACL
+// admits at all may cause a resume); the per-action authorize still
+// runs on the resumed entry afterwards, exactly as before.
+//
+// A deny returns the same not-found-shaped error a genuine miss
+// produces, so writeLookupError emits an indistinguishable 404 — no
+// session-existence oracle (mirrors authorize's 404-not-403 choice).
+func (h *handlers) resumeGateFor(r *http.Request) resumeGate {
+	if !h.enforceACL {
+		return nil
+	}
+	c, _ := auth.CallerFromContext(r.Context())
+	return func(row SessionACLRow) error {
+		if auth.Authorize(c, auth.ActionSessionRead, row.ACL()) {
+			return nil
+		}
+		return fmt.Errorf("%w: %s/%s", ErrSessionNotFound, row.AppName, row.SessionID)
+	}
+}
+
 // lookupQualifiedAuth resolves a /sessions/{app}/{sid}/... handler's
 // target entry AND runs the per-action authorization check in one
 // call. Returns (entry, true) on success; writes the appropriate
@@ -96,7 +122,7 @@ func (h *handlers) authorize(w http.ResponseWriter, r *http.Request, entry *Entr
 func (h *handlers) lookupQualifiedAuth(w http.ResponseWriter, r *http.Request, action auth.Action) (*Entry, bool) {
 	app := r.PathValue("app")
 	sid := r.PathValue("sid")
-	entry, err := h.reg.Lookup(r.Context(), app, sid)
+	entry, err := h.reg.lookupGated(r.Context(), app, sid, h.resumeGateFor(r))
 	if err != nil {
 		writeLookupError(w, err)
 		return nil, false
@@ -112,7 +138,7 @@ func (h *handlers) lookupQualifiedAuth(w http.ResponseWriter, r *http.Request, a
 // /sessions/{sid}/... shortcut routes.
 func (h *handlers) lookupShortcutAuth(w http.ResponseWriter, r *http.Request, action auth.Action) (*Entry, bool) {
 	sid := r.PathValue("sid")
-	entry, err := h.reg.LookupSingle(r.Context(), sid)
+	entry, err := h.reg.lookupSingleGated(r.Context(), sid, h.resumeGateFor(r))
 	if err != nil {
 		writeLookupError(w, err)
 		return nil, false
@@ -145,6 +171,46 @@ func (h *handlers) routeSession(mux *http.ServeMux, method, suffix string, actio
 		}
 	})
 	mux.HandleFunc(method+" /sessions/{sid}"+tail, func(w http.ResponseWriter, r *http.Request) {
+		if entry, ok := h.lookupShortcutAuth(w, r, action); ok {
+			fn(w, r, entry)
+		}
+	})
+}
+
+// routeSessionLimited is routeSession with the per-caller cost
+// limiter run BEFORE entry lookup. The order matters (#484): a
+// Lookup miss lazily resumes the session — constructing a full
+// agent, replaying its eventlog into the tracker, spawning a wake
+// loop — which is exactly the work the limiter exists to bound.
+// The pre-#484 limitCost wrapper ran after lookup, so a caller who
+// was about to be 429'd forced that work anyway on every call.
+//
+// Consequence: an over-limit caller gets 429 before the 404-vs-200
+// lookup outcome is computed. Deliberate — it also closes the mild
+// existence/cost oracle the old order exposed.
+//
+// Always POST + ActionSessionWrite — every cost-bearing endpoint
+// mutates or drives model work, so unlike routeSession there are no
+// method/action parameters.
+func (h *handlers) routeSessionLimited(mux *http.ServeMux, suffix string, fn func(http.ResponseWriter, *http.Request, *Entry)) {
+	const method = "POST"
+	const action = auth.ActionSessionWrite
+	tail := ""
+	if suffix != "" {
+		tail = "/" + suffix
+	}
+	mux.HandleFunc(method+" /sessions/{app}/{sid}"+tail, func(w http.ResponseWriter, r *http.Request) {
+		if !h.allowCost(w, r) {
+			return
+		}
+		if entry, ok := h.lookupQualifiedAuth(w, r, action); ok {
+			fn(w, r, entry)
+		}
+	})
+	mux.HandleFunc(method+" /sessions/{sid}"+tail, func(w http.ResponseWriter, r *http.Request) {
+		if !h.allowCost(w, r) {
+			return
+		}
 		if entry, ok := h.lookupShortcutAuth(w, r, action); ok {
 			fn(w, r, entry)
 		}

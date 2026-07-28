@@ -198,16 +198,8 @@ func (h *handlers) allowCost(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
-// limitCost wraps a session-scoped handler so the cost limiter runs
-// BEFORE any handler work — including the capability type-assert, so
-// a 501 from an unwired capability still consumed a token. Composes
-// with routeSession at registration; the non-limited endpoints stay
-// on the plain path.
-func (h *handlers) limitCost(fn func(http.ResponseWriter, *http.Request, *Entry)) func(http.ResponseWriter, *http.Request, *Entry) {
-	return func(w http.ResponseWriter, r *http.Request, entry *Entry) {
-		if !h.allowCost(w, r) {
-			return
-		}
-		fn(w, r, entry)
-	}
-}
+// The session-scoped cost-limited endpoints register through
+// handlers.routeSessionLimited (handlers.go), which runs allowCost
+// BEFORE entry lookup — a Lookup miss lazily resumes the session,
+// and that construction cost is precisely what the limiter bounds
+// (#484). POST /sessions calls allowCost directly in register.

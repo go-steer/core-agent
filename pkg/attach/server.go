@@ -170,6 +170,18 @@ type Options struct {
 	// docs/session-resume-design.md.
 	Resumer SessionResumer
 
+	// CostRateLimit bounds the COST-BEARING endpoints only — the
+	// operations that run unbounded model work or construct agents
+	// per request: the five slash dispatchers (compact, done, btw,
+	// subagent, replan), POST /sessions, and POST .../pricing/refresh.
+	// Enforced per middleware-resolved caller identity (token bucket).
+	// Read endpoints, /events streams, /inject, /wake, and
+	// /perms/respond are never limited.
+	//
+	// Zero value enables the limiter with defaults (PerMinute 10,
+	// Burst 5). Set Disabled to turn enforcement off. See #463.
+	CostRateLimit CostRateLimit
+
 	// SessionIdleTimeout, when > 0, enables the background sweep
 	// that evicts in-memory Entries idle longer than this duration.
 	// Evicted sessions remain resumable via the Resumer — eviction
@@ -313,6 +325,9 @@ func NewServer(opts Options) (*Server, error) {
 	h := newHandlers(opts.Registry, pool)
 	h.enforceACL = opts.MultiSessionEnabled
 	h.factory = opts.SessionFactory
+	// Per-caller cost limiter (#463). nil when Disabled — handlers
+	// skip enforcement entirely on a nil limiter.
+	h.costLimit = newCostRateLimiter(opts.CostRateLimit)
 	if opts.Resumer != nil {
 		opts.Registry.WithResumer(opts.Resumer)
 	}

@@ -53,6 +53,12 @@ type handlers struct {
 	// factory, when non-nil, enables the POST /sessions endpoint.
 	// Set from Options.SessionFactory by the Server constructor.
 	factory SessionFactory
+	// costLimit is the per-caller token bucket applied to the
+	// cost-bearing endpoints (slash ops, POST /sessions,
+	// pricing/refresh). Set from Options.CostRateLimit by the Server
+	// constructor; nil (the default for bare newHandlers, and for
+	// CostRateLimit.Disabled) means no enforcement. See rate_limit.go.
+	costLimit *costRateLimiter
 }
 
 func newHandlers(reg *SessionRegistry, pool *broadcasterPool) *handlers {
@@ -152,7 +158,13 @@ func (h *handlers) register(mux *http.ServeMux) {
 	// POST /sessions creates a new owned session via the
 	// SessionFactory closure (cmd-level wiring). 501 when the
 	// factory is nil, so older deployments behave as today.
-	mux.HandleFunc("POST /sessions", h.createSession)
+	// Cost-limited (#463): each create constructs a fresh agent.
+	mux.HandleFunc("POST /sessions", func(w http.ResponseWriter, r *http.Request) {
+		if !h.allowCost(w, r) {
+			return
+		}
+		h.createSession(w, r)
+	})
 
 	// Session-scoped endpoints — each registered under both the
 	// qualified and shortcut URL forms via routeSession.

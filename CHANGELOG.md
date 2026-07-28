@@ -18,6 +18,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ### Changes by Kind
 
+#### Feature
+
+- attach: per-caller rate limiting on the cost-bearing endpoints (`pkg/attach/rate_limit.go`), on by default — a token bucket keyed by the middleware-resolved caller identity (bearer-table hit, validated proxy assertion, or the anonymous single-user bucket; never spoofable headers/IPs) bounds the operations that run real model/network work per request: the five slash ops (`compact`, `done`, `btw`, `subagent`, `replan`), `POST /sessions`, and `POST …/pricing/refresh`. Defaults: burst 5, 10/minute per caller; tune or disable via `attach.Options.CostRateLimit` (`{PerMinute, Burst, Disabled}`). Over-limit requests get `429` with a `Retry-After` header and a matching JSON body. Reads, `/events` streams, `/inject`, `/wake`, and perms endpoints are unlimited. Closes [#463](https://github.com/go-steer/core-agent/issues/463).
+
 #### Bug or Regression
 
 - models/anthropic: server-side tools no longer break turns (`pkg/models/anthropic/llm.go`, `stream.go`). With `WithWebSearch` enabled, a long search could end the turn at `pause_turn` — the adapter now resumes it: the paused assistant message is replayed verbatim (SDK `Message.ToParam()`, `server_tool_use`/`web_search_tool_result` blocks intact) and streaming continues, bounded at 4 continuations, with partial text flowing throughout and usage summed across all requests of the turn. Text emitted before a pause is preserved in the terminal response. Server-side tool blocks are deliberately not projected into genai parts (a `FunctionCall` would make the runner dispatch a server-only tool; result payloads are mostly encrypted; the model's own text carries the answer) — the strict replay case is the continuation loop, which is exact; completed turns tolerate their absence in later history per the API contract. Offline SSE-fixture tests cover the two-request continuation, verbatim replay, usage summing, and the loop bound. Closes [#461](https://github.com/go-steer/core-agent/issues/461).

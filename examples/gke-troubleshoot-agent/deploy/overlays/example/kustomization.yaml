@@ -44,13 +44,15 @@ images:
   # (A) tag pinning — recipe default
   - name: ghcr.io/go-steer/core-agent
     newTag: "2.6.0"
-  - name: ghcr.io/go-steer/k8s-event-watcher
-    newTag: "2.6.0"
+  # The watcher ships from go-steer/k8s-lookout; its tags keep the
+  # leading `v` (e.g. "v0.8.0"), unlike this repo's images.
+  - name: ghcr.io/go-steer/lookout
+    newTag: "v0.8.0"
 
   # (B) example — digest pinning (uncomment + comment out (A) above)
   # - name: ghcr.io/go-steer/core-agent
   #   digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
-  # - name: ghcr.io/go-steer/k8s-event-watcher
+  # - name: ghcr.io/go-steer/lookout
   #   digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
   # (C) example — private mirror

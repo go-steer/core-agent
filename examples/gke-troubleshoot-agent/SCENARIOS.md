@@ -1,10 +1,10 @@
-# Additional k8s-event-watcher scenarios
+# Additional event-watcher scenarios
 
 Trigger-and-revert recipes for Event reasons other than `ImagePullBackOff` (which `DEMO.md` already covers). All assume:
 
 - kube context points at the demo cluster
 - target workloads live in `online-boutique`
-- k8s-event-watcher runs with its default reason allow-list (`CrashLoopBackOff`, `ImagePullBackOff`, `ErrImagePull`, `OOMKilled`, `FailedMount`, `FailedScheduling`, `BackOff`, `Unhealthy`, `NetworkNotReady`, `NodeNotReady`, `Evicted`)
+- the watcher (k8s-lookout's `lookout watch`, deployed as `k8s-event-watcher`) runs with its default reason allow-list (`CrashLoopBackOff`, `ImagePullBackOff`, `ErrImagePull`, `OOMKilled`, `FailedMount`, `FailedScheduling`, `BackOff`, `Unhealthy`, `NetworkNotReady`, `NodeNotReady`, `Evicted`)
 
 Each scenario is a single `kubectl` command to trigger and a single `rollout undo` (or equivalent) to revert.
 

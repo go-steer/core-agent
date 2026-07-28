@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# The k8s-event-watcher sidecar Deployment. Watches Kubernetes Events
-# via the local kube-apiserver, filters + dedupes, and POSTs matched
-# events to the core-agent daemon's session inject endpoint.
+# The event-watcher sidecar Deployment (`lookout watch` from
+# go-steer/k8s-lookout). Watches Kubernetes Events via the local
+# kube-apiserver, filters + dedupes, and POSTs matched events to the
+# core-agent daemon's session inject endpoint.
 #
 # Runs as a SEPARATE Deployment from the daemon (not a sidecar
 # container in the daemon's pod) so:
@@ -53,7 +54,12 @@ spec:
         runAsUser: 65532
       containers:
         - name: watcher
-          image: ghcr.io/go-steer/k8s-event-watcher:latest
+          # Source lives in go-steer/k8s-lookout; the image ENTRYPOINT
+          # is `lookout watch`, drop-in compatible with the retired
+          # k8s-event-watcher image (same flags below). A `-gke` image
+          # flavor and a richer `--sources=` capability set are
+          # available there.
+          image: ghcr.io/go-steer/lookout:v0.8.0
           imagePullPolicy: IfNotPresent
           args:
             - "--daemon-url=http://core-agent.agent-triage.svc.cluster.local:7777"

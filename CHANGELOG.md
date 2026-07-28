@@ -18,6 +18,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ### Changes by Kind
 
+#### Security
+
+- compose: concurrent "allow always" / `/allow` / `/deny` persists no longer lose grants. Every `.agents/config.json` helper (`ConfigGrantStore.Persist`, the `Append*` and `Persist*` functions) was an unguarded `config.Load → mutate → config.Save` read-modify-write over one shared file — and one store instance is shared by every per-session sub-gate — so racing writers overwrote each other's snapshots (repro: 32 concurrent appends left 2–3 grants on disk). Losing a **deny** entry is fail-open. A package-level mutex now serializes all in-process config read-modify-writes; `config.Save`'s atomic rename is unchanged. Closes [#482](https://github.com/go-steer/core-agent/issues/482).
+
 #### Bug or Regression
 
 - attach: the `/events` replay cap (#385) no longer destroys a session's reconnect history when sibling sessions are busy. The cap's floor was computed as `head_seq − 5000` in the eventlog's **global** sequence space — one autoincrement shared by every session — so a busy neighbor pushed a quiet session's rows under the floor and a `since=0` reconnect silently replayed a fraction of the conversation (repro: an 11-event session next to a 6000-row sibling replayed one event). The floor is now the subscribing session's own 5001st-newest seq (indexed `ORDER BY seq DESC LIMIT 1 OFFSET cap` via the new optional `NthNewestSeq` stream extension), so a session at or under the cap always replays in full and one over it replays exactly its newest 5000. Closes [#481](https://github.com/go-steer/core-agent/issues/481).

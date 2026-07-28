@@ -24,11 +24,12 @@
 //     directly, no LLM in the loop — what RunAutonomous sees after a
 //     turn that calls the tool.
 //
-//  3. A BackgroundAgentManager configured with
-//     WithBackgroundDefaultScheduler(SleepScheduler()) — the wiring
-//     a real GKE-monitoring deployment would use. Children run
-//     against the echo mock so the example stays hermetic and runs
-//     in CI without credentials.
+//  3. A background.Manager (background.NewManager) configured with
+//     background.WithDefaultScheduler(SleepScheduler()) — the wiring
+//     a real GKE-monitoring deployment would use. The spawned child
+//     runs against the echo mock so the example stays hermetic and
+//     runs in CI without credentials. (The rest of the spawn/alert
+//     pathway is demonstrated in examples/background-monitor.)
 //
 // For an LLM-driven demo, replace the echo provider with
 // gemini.NewVertex / anthropic.NewVertex and give the parent agent
@@ -138,18 +139,19 @@ func part2ScheduleTool(_ context.Context) error {
 }
 
 func part3SupervisorTopology(ctx context.Context) error {
-	fmt.Println("=== Part 3: supervisor topology with WithBackgroundDefaultScheduler ===")
+	fmt.Println("=== Part 3: manager with a default scheduler ===")
 
 	prov := mock.NewEcho()
 	mgr, err := background.NewManager(
 		background.WithProvider(prov, "echo"),
-		background.WithMaxConcurrent(4),
 		background.WithDefaultBudgets(background.Budgets{
 			MaxTurns: 1, MaxWallclock: 5 * time.Second,
 		}),
-		// The line of interest: every spawned subagent's
-		// RunAutonomous gets WithScheduler(SleepScheduler()) unless
-		// the per-spawn BackgroundSpec.Scheduler overrides.
+		// The line of interest: every spawned subagent's autonomous
+		// run gets WithScheduler(SleepScheduler()) unless the
+		// per-spawn Spec.Scheduler overrides — pass "none" to opt out
+		// for one-shot triage subagents, "exit_on_defer" for
+		// CronJob-managed children, etc.
 		background.WithDefaultScheduler(coretools.SleepScheduler()),
 	)
 	if err != nil {
@@ -157,19 +159,18 @@ func part3SupervisorTopology(ctx context.Context) error {
 	}
 	defer func() { _ = mgr.Close() }()
 
-	mgr.OnAlert(func(a background.Alert) {
-		fmt.Printf("[hook] %s %s: %s\n", a.From, a.Kind, a.Text)
-	})
-
-	// Construct the parent against the same echo provider; the real
-	// CLI wires the spawn tools so the model can call them — this
-	// example calls mgr.Spawn directly to exercise the lifecycle
-	// without an LLM round-trip.
+	// Spawn requires a parent wired via agent.WithBackgroundManager.
+	// The scheduling-specific line is DefaultSchedulingInstruction —
+	// the priming that teaches a real LLM the cadence ladder for
+	// schedule_next_turn. Everything else about parent wiring (OnAlert
+	// hooks, the PrependPendingAlerts model-context drain, spawn tools
+	// in the model's tool list) is demonstrated in
+	// examples/background-monitor.
 	llm, err := prov.Model(ctx, "echo")
 	if err != nil {
 		return err
 	}
-	parent, err := agent.New(llm,
+	if _, err := agent.New(llm,
 		agent.WithName("supervisor"),
 		agent.WithInstruction(
 			agent.DefaultInstruction+"\n\n"+
@@ -177,46 +178,28 @@ func part3SupervisorTopology(ctx context.Context) error {
 				"You are the supervisor of N cluster monitors. Each child runs schedule_next_turn between scans.",
 		),
 		agent.WithBackgroundManager(mgr),
-	)
-	if err != nil {
+	); err != nil {
 		return err
 	}
-	_ = parent
 
-	// Spawn two monitors. With the echo provider they complete
-	// immediately (no real schedule_next_turn call); the wiring is
-	// what's being demonstrated. A real LLM would see the
-	// schedule_next_turn tool in its tool list and call it between
-	// scans.
-	for _, name := range []string{"monitor-cluster-a", "monitor-cluster-b"} {
-		h, err := mgr.Spawn(ctx, "", background.Spec{
-			Name:         name,
-			SystemPrompt: "you watch a cluster; report any anomalies",
-			Goal:         "scan cluster health periodically",
-			// Scheduler omitted → uses the manager default
-			// (SleepScheduler we wired above). Pass "none" to opt
-			// out for one-shot triage subagents, "exit_on_defer" for
-			// CronJob-managed children, etc.
-		})
-		if err != nil {
-			return fmt.Errorf("spawn %s: %w", name, err)
-		}
-		fmt.Printf("spawned: %s (branch=%s, status=%s)\n", h.Name, h.Branch, h.Status())
+	// Spawn one monitor with Spec.Scheduler omitted — it inherits the
+	// manager default wired above. With the echo provider it completes
+	// immediately; a real LLM would see schedule_next_turn in its tool
+	// list and call it between scans.
+	h, err := mgr.Spawn(ctx, "", background.Spec{
+		Name:         "monitor-cluster-a",
+		SystemPrompt: "you watch a cluster; report any anomalies",
+		Goal:         "scan cluster health periodically",
+	})
+	if err != nil {
+		return fmt.Errorf("spawn: %w", err)
 	}
+	select {
+	case <-h.Done():
+	case <-time.After(10 * time.Second):
+		return fmt.Errorf("subagent %s did not finish", h.Name)
+	}
+	fmt.Printf("spawned with default scheduler: %s -> %s\n", h.Name, h.Status())
 
-	// Wait for both children to finish (the echo provider returns the
-	// prompt verbatim, so they hit their 1-turn budget immediately).
-	for _, h := range mgr.List() {
-		select {
-		case <-h.Done():
-		case <-time.After(10 * time.Second):
-			return fmt.Errorf("subagent %s did not finish", h.Name)
-		}
-	}
-
-	fmt.Println("\nfinal handle states:")
-	for _, h := range mgr.List() {
-		fmt.Printf("  %s -> %s\n", h.Name, h.Status())
-	}
 	return nil
 }

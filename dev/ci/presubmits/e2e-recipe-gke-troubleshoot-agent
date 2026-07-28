@@ -18,7 +18,7 @@
 #
 # Note: unlike the fast presubmits (lint, test, vet, ...) this one
 # spins up a kind cluster and pulls container images from GHCR — expect
-# ~90-180s runtime and requires docker + kind + kubectl on PATH.
+# ~2-4 min runtime and requires docker + kind + kubectl on PATH.
 # NOT wired into dev/tools/ci (the fast-loop aggregator) for that
 # reason; runs only on CI + explicit local invocation.
 set -euo pipefail

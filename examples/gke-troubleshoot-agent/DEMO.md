@@ -459,7 +459,7 @@ If a Vertex auth error appears, common causes:
 
 If an MCP error appears (`core-agent: mcp: <details>`), the message itself names the failing server + reason (auth-scope missing, config parse error, endpoint unreachable).
 
-**True end-to-end signal**: the ONLY way to be certain MCP + Vertex both work is Scene 2 driving an actual triage — the agent's first tool call exercises Vertex, its second-or-third exercises GKE MCP. If the pre-flight above passes and Scene 2 shows the agent calling `gke-mcp: logs.tail` (or similar), everything's wired. Follow-up TODO #211 (E2E recipe smoke test in CI) will close the observability gap by making a scripted-provider deploy pass the "no errors" gate on every PR.
+**True end-to-end signal**: the ONLY way to be certain MCP + Vertex both work is Scene 2 driving an actual triage — the agent's first tool call exercises Vertex, its second-or-third exercises GKE MCP. If the pre-flight above passes and Scene 2 shows the agent calling `gke-mcp: logs.tail` (or similar), everything's wired. The CI e2e (`dev/tools/e2e-recipe-gke-troubleshoot-agent`, from TODO #211) covers everything short of that on every PR: deploy on kind, plus the full event → lookout inject → daemon turn pipeline on the echo provider — so a Scene 2 no-show narrows straight to Vertex/MCP credentials, not plumbing.
 
 Rehearsal complete. Ready to go live.
 
@@ -511,7 +511,7 @@ kubectl -n "${TARGET_NS}" set image deployment/demo-webapp \
 
 **Say**: "That deploy just pointed at a nonexistent image tag. In a real environment this happens all the time — bad CI, typo in a manifest, image mirror out of sync. In ~30 seconds kubelet will emit an `ImagePullBackOff` event. My sidecar is watching that event stream."
 
-**Watch in Pane A** (TUI): within ~30s, a new session appears in the picker. The watcher itself is silent on successful inject (see [#212](https://github.com/go-steer/core-agent/issues/212) — until that lands, "did the sidecar fire" is best answered by "did a new session appear in the daemon"). Alternative confirmations:
+**Watch in Pane A** (TUI): within ~30s, a new session appears in the picker. Pane C (the watcher log) prints one line per successful inject ([#212](https://github.com/go-steer/core-agent/issues/212), shipped in lookout): `fire BackOff pod=<ns>/<pod> → sid=<sessionID> (mode=per-incident)`. Alternative confirmations:
 
 ```bash
 # The kubernetes Event that triggered the inject (source truth)
@@ -519,7 +519,7 @@ kubectl -n "${TARGET_NS}" get events --field-selector reason=Failed --sort-by='.
 
 # Watcher counters (namespace of the DAEMON, not the target workload)
 kubectl -n "${DEMO_NS}" port-forward deployment/k8s-event-watcher 9090:9090 &
-curl -s http://localhost:9090/metrics | grep -E "watcher_events_(matched|injected)_total"
+curl -s http://localhost:9090/metrics | grep -E "k8s_event_watcher_events_(seen|injected)_total"
 ```
 
 ### Scene 3 — Agent auto-triages (4-5 min)

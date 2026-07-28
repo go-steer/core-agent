@@ -15,9 +15,11 @@
 name: E2E (gke-troubleshoot-agent recipe)
 
 # Runs the recipe end-to-end on a kind cluster whenever anything that
-# could break the recipe's deployment shape changes. Not in the main
-# ci.yml because it's heavier (~2 min including cluster startup +
-# image pulls) and only relevant to a subset of changes.
+# could break the recipe's deployment shape OR its event → inject →
+# turn pipeline changes. Not in the main ci.yml because it's heavier
+# (~3-4 min including cluster startup, image pulls, and the pipeline
+# assertion's wait for kubelet's BackOff event) and only relevant to a
+# subset of changes.
 #
 # Path filter deliberately narrow — most Go changes don't touch
 # recipe wiring. Adjust the filter here if a future refactor moves

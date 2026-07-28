@@ -291,6 +291,7 @@ The same options apply to `anthropic.NewVertex(...)`. Other Anthropic server-sid
 
 - Get a key at [console.anthropic.com](https://console.anthropic.com).
 - The current default model is `claude-opus-4-7`. Override per-call with `--model` or `cfg.Model.Name`.
+- Claude 5-generation models (`claude-sonnet-5`, `claude-opus-5`, `claude-fable-5`) are fully supported as of v2.8: thinking-default tool loops round-trip correctly (thinking blocks are replayed with signatures intact), builtin pricing ships for all three, and they appear in the TUI's `/model` picker.
 - Pricing entries for Claude models are intentionally absent from `usage.PriceFor` today — `usage.Tracker.Append` will record zero cost for Claude turns. Override per-model via `cfg.Model.Pricing`.
 
 ---

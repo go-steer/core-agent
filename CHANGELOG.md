@@ -16,6 +16,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+_No unreleased changes since [2.8.0-dev.3]._
+
+## [2.8.0-dev.3] — 2026-07-28
+
 ### Changes by Kind
 
 #### Other (Cleanup, Flake, or Docs)

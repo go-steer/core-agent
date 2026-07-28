@@ -16,6 +16,7 @@ package compose
 
 import (
 	"path/filepath"
+	"sync"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 )
@@ -26,15 +27,35 @@ import (
 // Exported so library consumers (and the bundled TUI's callbacks)
 // share one implementation of the on-disk layout: hosts resolve
 // their agentsDir once and feed these as closures. config.Save is
-// atomic (temp-file + rename) and every helper is idempotent, so
-// they satisfy the concurrency + idempotency contract
-// permissions.GrantStore documents.
+// atomic (temp-file + rename), every helper is idempotent, and
+// configMu below serializes the read-modify-writes, so they satisfy
+// the concurrency + idempotency contract permissions.GrantStore
+// documents.
+
+// configMu serializes every config.Load → mutate → config.Save
+// read-modify-write in this package. Save's atomic rename keeps a
+// lone writer from corrupting the file, but atomicity alone does not
+// make concurrent RMWs safe: two goroutines that Load the same
+// snapshot each Save their own mutation, and the later rename
+// silently erases the earlier one's entry — including a DENY, which
+// fails open (#482). One ConfigGrantStore instance is shared by every
+// per-session sub-gate, and the slash /allow + /deny flows call these
+// helpers directly, so the lock lives at package level (covering all
+// writers in the process) rather than inside the store.
+//
+// Process-wide rather than per-agentsDir on purpose: writes are tiny
+// and rare (operator decisions), so cross-directory serialization is
+// unmeasurable and a per-dir lock table would just add machinery.
+// Writers in OTHER processes are out of scope, same as before.
+var configMu sync.Mutex
 
 // AppendPathScope adds pattern to .agents/config.json's
 // path_scope.allow list and rewrites the file atomically. If the
 // file doesn't exist yet it is created with defaults so the
 // addition has somewhere to live.
 func AppendPathScope(agentsDir, pattern string) error {
+	configMu.Lock()
+	defer configMu.Unlock()
 	cfg, err := config.Load(agentsDir)
 	if err != nil {
 		return err
@@ -53,6 +74,8 @@ func AppendPathScope(agentsDir, pattern string) error {
 // duplicate patterns are skipped silently so /permissions can be
 // re-run without growing the config file.
 func AppendPermissionsAllow(agentsDir string, patterns []string) error {
+	configMu.Lock()
+	defer configMu.Unlock()
 	cfg, err := config.Load(agentsDir)
 	if err != nil {
 		return err
@@ -74,6 +97,8 @@ func AppendPermissionsAllow(agentsDir string, patterns []string) error {
 // AppendPermissionsDeny mirrors AppendPermissionsAllow for the deny
 // list. Idempotent.
 func AppendPermissionsDeny(agentsDir string, patterns []string) error {
+	configMu.Lock()
+	defer configMu.Unlock()
 	cfg, err := config.Load(agentsDir)
 	if err != nil {
 		return err
@@ -98,6 +123,8 @@ func AppendPermissionsDeny(agentsDir string, patterns []string) error {
 // bundle catalog (permissions.KnownBundles) happens in the TUI
 // before this is called, so an invalid name never reaches disk.
 func AppendBuiltinAllowExtra(agentsDir, name string) error {
+	configMu.Lock()
+	defer configMu.Unlock()
 	cfg, err := config.Load(agentsDir)
 	if err != nil {
 		return err
@@ -116,6 +143,8 @@ func AppendBuiltinAllowExtra(agentsDir, name string) error {
 // responsible for first invoking the in-memory rebuild via
 // tui.Options.RebuildAgent — this is purely the disk side.
 func PersistModelChoice(agentsDir, modelID string) error {
+	configMu.Lock()
+	defer configMu.Unlock()
 	cfg, err := config.Load(agentsDir)
 	if err != nil {
 		return err
@@ -130,6 +159,8 @@ func PersistModelChoice(agentsDir, modelID string) error {
 // of silently corrupting the file (config.Save itself does not
 // validate).
 func PersistThemeChoice(agentsDir, themeName string) error {
+	configMu.Lock()
+	defer configMu.Unlock()
 	cfg, err := config.Load(agentsDir)
 	if err != nil {
 		return err

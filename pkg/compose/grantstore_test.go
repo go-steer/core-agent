@@ -16,6 +16,8 @@ package compose
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
@@ -159,6 +161,79 @@ func TestConfigGrantStore_RoundTripsThroughGate(t *testing.T) {
 	// reloaded allow pattern can explain a pass.
 	if err := g2.CheckBash(context.Background(), "kubectl get pods"); err != nil {
 		t.Fatalf("restarted gate CheckBash: %v (grant did not survive restart)", err)
+	}
+}
+
+// TestConfigGrantStore_ConcurrentPersistLosesNothing pins the #482
+// fix: Persist (and the /allow + /deny slash helpers) are
+// Load→mutate→Save read-modify-writes over one shared file, and one
+// store instance is shared by every per-session sub-gate. Before the
+// package-level configMu, 32 concurrent appends left only 2–3 grants
+// on disk (4/4 runs) — and a lost DENY fails open. Every grant, deny,
+// and path-scope entry written concurrently must survive.
+func TestConfigGrantStore_ConcurrentPersistLosesNothing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s := &ConfigGrantStore{AgentsDir: dir}
+
+	const n = 32
+	var wg sync.WaitGroup
+	errs := make(chan error, 3*n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			// Three racing writer flavors per iteration: a gate
+			// "allow always" grant, an operator /deny, and a typed
+			// path-scope grant.
+			errs <- s.Persist(context.Background(), permissions.Grant{
+				Kind:    permissions.PromptKindBash,
+				Tool:    "bash",
+				Pattern: fmt.Sprintf("bash:cmd-%02d", i),
+			})
+			errs <- AppendPermissionsDeny(dir, []string{fmt.Sprintf("bash:evil-%02d", i)})
+			errs <- s.Persist(context.Background(), permissions.Grant{
+				Kind:    permissions.PromptKindPathScope,
+				Tool:    "path_scope",
+				Pattern: fmt.Sprintf("/data/%02d/...", i),
+				Access:  permissions.AccessRead,
+			})
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent persist: %v", err)
+		}
+	}
+
+	cfg, err := config.Load(dir)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	allow := make(map[string]bool, len(cfg.Permissions.Allow))
+	for _, p := range cfg.Permissions.Allow {
+		allow[p] = true
+	}
+	deny := make(map[string]bool, len(cfg.Permissions.Deny))
+	for _, p := range cfg.Permissions.Deny {
+		deny[p] = true
+	}
+	paths := make(map[string]bool, len(cfg.PathScope.AllowPaths))
+	for _, e := range cfg.PathScope.AllowPaths {
+		paths[e.Path] = true
+	}
+	for i := 0; i < n; i++ {
+		if p := fmt.Sprintf("bash:cmd-%02d", i); !allow[p] {
+			t.Errorf("allow grant %q lost (have %d of %d)", p, len(allow), n)
+		}
+		if p := fmt.Sprintf("bash:evil-%02d", i); !deny[p] {
+			t.Errorf("DENY %q lost — fail-open (have %d of %d)", p, len(deny), n)
+		}
+		if p := fmt.Sprintf("/data/%02d/...", i); !paths[p] {
+			t.Errorf("path-scope grant %q lost (have %d of %d)", p, len(paths), n)
+		}
 	}
 }
 

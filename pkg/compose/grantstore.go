@@ -36,6 +36,11 @@ import (
 // historical "no .agents dir resolved ⇒ fall back to allow-session"
 // behavior. A present-but-unwritable dir errors — the operator asked
 // to persist and it failed; the gate surfaces that to the call.
+//
+// Safe for concurrent use: one store instance is shared by every
+// per-session sub-gate derived from the template gate, so concurrent
+// "allow always" answers race. Persist routes through the package's
+// configMu-serialized helpers (#482).
 type ConfigGrantStore struct {
 	AgentsDir string
 }
@@ -73,6 +78,8 @@ func AppendPathScopeEntry(agentsDir, path, access string) error {
 	if err != nil {
 		return err
 	}
+	configMu.Lock()
+	defer configMu.Unlock()
 	cfg, err := config.Load(agentsDir)
 	if err != nil {
 		return err

@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Example: wire a BackgroundAgentManager and demonstrate the
-// in-process spawn pathway end-to-end with no LLM credentials. We
+// Example: wire a background.Manager (built with background.NewManager
+// and attached to the parent via agent.WithBackgroundManager) and
+// demonstrate the in-process spawn pathway end-to-end with no LLM
+// credentials. We
 // spawn two "monitor" subagents (running against the echo mock), wait
 // for them to finish, and show the resulting alerts flowing through
 // both the OnAlert side channel (for display) and the model-context

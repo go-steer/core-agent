@@ -218,8 +218,9 @@ come back, and a synthesis identifying `broken-svc` as the failing one
   branch label, so you can post-mortem how the synthesis was reached).
 - **Replay**: pair with `core-agent attach <url>` from another operator
   to watch a triage as it runs (LiveAgent observer mode — see
-  [`docs/site/content/docs/reference/attach-tui.md`](../../docs/site/content/docs/reference/attach-tui.md)).
+  [`docs/site/src/content/docs/reference/attach-tui.md`](../../docs/site/src/content/docs/reference/attach-tui.md)).
 - **Scheduled monitoring**: wrap this same config under
-  `agent.RunAutonomous` + a `Scheduler` to do periodic health sweeps
+  `autonomous.RunAutonomous` (package `pkg/agent/autonomous`) + a
+  `Scheduler` to do periodic health sweeps
   rather than incident-only triage. See `examples/scheduled-monitor`
   for the substrate pattern.

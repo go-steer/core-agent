@@ -1,7 +1,7 @@
 # `multi-session-bearer` — two-user starter for the multi-session daemon
 
 A **config-only** recipe that turns on the multi-session daemon
-([`attach.multi_session.*`](../../docs/site/content/docs/reference/multi-session.md))
+([`attach.multi_session.*`](../../docs/site/src/content/docs/concepts/multi-session.md))
 with a static bearer-token user table. Two users (alice + bob) attach
 to the same daemon over the network; each sees only their own session;
 cross-session isolation is enforced by the substrate.
@@ -127,10 +127,10 @@ header). That's how "who did what" queries work in shared deployments.
   v2.5+. Static bearer table is the shipped Authenticator.
 - **Per-caller instruction overlays.** Configure `multi_session.users_dir`
   and drop a `<usersDir>/<identity>/.agents/` directory per caller.
-  See the [Multi-session reference](../../docs/site/content/docs/reference/multi-session.md#per-caller-instruction-overlays).
+  See the [Multi-session guide](../../docs/site/src/content/docs/concepts/multi-session.md#per-caller-instruction-overlays).
 - **Proxy / chat-bot integration pattern.** Bots authenticate as
   themselves and assert the user's identity via `X-Asserted-Caller`.
-  See the [Shared-session pattern reference](../../docs/site/content/docs/reference/multi-session.md#shared-session-pattern-chat-bot-integration).
+  See the [Shared-session pattern guide](../../docs/site/src/content/docs/concepts/multi-session.md#shared-session-pattern-chat-bot-integration).
 - **Per-session quotas.** Not in v2.4.
 
 ## Smoketest

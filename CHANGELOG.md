@@ -16,7 +16,11 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
-_No unreleased changes since [2.8.0-dev.3]._
+### Changes by Kind
+
+#### Bug or Regression
+
+- attach: the `/events` replay cap (#385) no longer destroys a session's reconnect history when sibling sessions are busy. The cap's floor was computed as `head_seq − 5000` in the eventlog's **global** sequence space — one autoincrement shared by every session — so a busy neighbor pushed a quiet session's rows under the floor and a `since=0` reconnect silently replayed a fraction of the conversation (repro: an 11-event session next to a 6000-row sibling replayed one event). The floor is now the subscribing session's own 5001st-newest seq (indexed `ORDER BY seq DESC LIMIT 1 OFFSET cap` via the new optional `NthNewestSeq` stream extension), so a session at or under the cap always replays in full and one over it replays exactly its newest 5000. Closes [#481](https://github.com/go-steer/core-agent/issues/481).
 
 ## [2.8.0-dev.3] — 2026-07-28
 

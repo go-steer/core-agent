@@ -148,6 +148,137 @@ collect:
 	}
 }
 
+// appendMoreTestEvents appends n further events to an already-created
+// session (seedTestEvents owns the Create). Used to interleave two
+// sessions' rows so their seqs are non-contiguous in the shared
+// global sequence — the layout that exposed #481.
+func appendMoreTestEvents(t *testing.T, h *eventlog.Handle, appName, userID, sessionID string, start, n int) {
+	t.Helper()
+	ctx := context.Background()
+	getResp, err := h.Service.Get(ctx, &session.GetRequest{
+		AppName: appName, UserID: userID, SessionID: sessionID,
+	})
+	if err != nil {
+		t.Fatalf("session Get: %v", err)
+	}
+	for i := 0; i < n; i++ {
+		ev := session.NewEvent(fmt.Sprintf("evt-%03d", start+i))
+		ev.Author = "test"
+		if err := h.Service.AppendEvent(ctx, getResp.Session, ev); err != nil {
+			t.Fatalf("AppendEvent %d: %v", start+i, err)
+		}
+	}
+}
+
+// TestEvents_ReplayCapIsPerSession pins the #481 fix: seq is ONE
+// global autoincrement across all sessions, so the replay floor must
+// be derived from the subscribing session's own rows — not from
+// head-seq arithmetic, which measures sibling traffic. Two sessions
+// share the log with a busy sibling interleaved between their bursts:
+//
+//	quiet:  seqs 1–5, 111–115   (10 events — exactly the cap of 10)
+//	active: seqs 6–10, 116–125  (15 events — over the cap)
+//	busy:   seqs 11–110         (100 events of sibling noise)
+//
+// A since=0 reconnect to quiet must replay ALL 10 of its events (the
+// pre-fix global floor of head−cap would have dropped seqs 1–5,
+// replaying half of a 10-event history). A since=0 reconnect to
+// active must still be capped — its newest 10 events only.
+func TestEvents_ReplayCapIsPerSession(t *testing.T) {
+	oldCap := maxReplayEvents
+	maxReplayEvents = 10
+	defer func() { maxReplayEvents = oldCap }()
+
+	h, cleanupLog := openTestEventLog(t)
+	defer cleanupLog()
+
+	reg := NewSessionRegistry()
+	for _, sid := range []string{"quiet", "active"} {
+		ag := &eventfulRegistrant{
+			stubRegistrant: stubRegistrant{app: "core-agent", user: "u", sid: sid},
+			handle:         h,
+		}
+		if _, err := reg.Register(ag); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	seedTestEvents(t, h, "core-agent", "u", "quiet", 5)            // seqs 1–5
+	seedTestEvents(t, h, "core-agent", "u", "active", 5)           // seqs 6–10
+	seedTestEvents(t, h, "core-agent", "u", "busy", 100)           // seqs 11–110 (never subscribed; pure sibling noise)
+	appendMoreTestEvents(t, h, "core-agent", "u", "quiet", 5, 5)   // seqs 111–115
+	appendMoreTestEvents(t, h, "core-agent", "u", "active", 5, 10) // seqs 116–125
+
+	base, cleanupSrv := startTestServer(t, reg)
+	defer cleanupSrv()
+
+	collectUntil := func(sid string, lastSeq int64) []int64 {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet,
+			base+"/sessions/core-agent/"+sid+"/events?since=0", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("subscribe %s: %v", sid, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("subscribe %s status %d", sid, resp.StatusCode)
+		}
+		frames := readSSEFrames(t, resp.Body)
+		var seqs []int64
+		deadline := time.After(4 * time.Second)
+		for {
+			select {
+			case f, ok := <-frames:
+				if !ok {
+					return seqs
+				}
+				if f.Event != EventAgent {
+					continue
+				}
+				var fr struct {
+					Seq int64 `json:"seq"`
+				}
+				if err := json.Unmarshal([]byte(f.Data), &fr); err != nil {
+					t.Fatalf("frame JSON: %v (data=%s)", err, f.Data)
+				}
+				seqs = append(seqs, fr.Seq)
+				if fr.Seq == lastSeq {
+					return seqs
+				}
+			case <-deadline:
+				return seqs
+			}
+		}
+	}
+
+	// Quiet session: 10 events ≤ cap ⇒ no truncation, full history.
+	wantQuiet := []int64{1, 2, 3, 4, 5, 111, 112, 113, 114, 115}
+	if got := collectUntil("quiet", 115); !equalSeqs(got, wantQuiet) {
+		t.Errorf("quiet session replay = %v, want full history %v (sibling traffic must not truncate a quiet session)", got, wantQuiet)
+	}
+
+	// Active session: 15 events > cap ⇒ its OWN newest 10 replay.
+	wantActive := []int64{116, 117, 118, 119, 120, 121, 122, 123, 124, 125}
+	if got := collectUntil("active", 125); !equalSeqs(got, wantActive) {
+		t.Errorf("active session replay = %v, want its newest cap-many %v", got, wantActive)
+	}
+}
+
+func equalSeqs(a, b []int64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // TestEvents_IncrementalResumeBelowCapUnaffected locks in the
 // preserved semantics for since>0 resumes whose gap fits under the
 // cap: every event after the cursor arrives, nothing is truncated.

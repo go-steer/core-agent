@@ -29,6 +29,9 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 #### Other (Cleanup, Flake, or Docs)
 
 - `core-agent-tui`: the session picker/spinner ported from legacy `github.com/charmbracelet/bubbletea` v1 + `lipgloss` v1 to the `charm.land/*` v2 tree the rest of the TUI already uses (via core-tui), dropping the duplicate v1 dependency stack from the module graph. Behavior and keybindings unchanged; the picker gains its first unit tests (navigation clamping, select/cancel, load-error retry, auto-select). Closes [#394](https://github.com/go-steer/core-agent/issues/394).
+#### Other (Cleanup, Flake, or Docs)
+
+- CI/test hygiene ([#397](https://github.com/go-steer/core-agent/issues/397)): a **real-provider E2E** lands as `dev/ci/presubmits/e2e-real-provider` + a weekly/dispatch GitHub workflow — it detects provider credentials in the environment (Gemini-via-Vertex, Anthropic-via-Vertex) and runs live single-turn + tool-loop legs, skipping cleanly with an explicit message when no credentials exist, so it is safe on forks and secret-less runners. The new Anthropic leg (`dev/smoke/09-vertex-anthropic-toolloop.sh`) drives a real bash tool loop, guarding the provider-regression class (wire drift, thinking round-trip on thinking-default models, `tool_use` pairing) no mock can reproduce — validated against live Vertex before landing. A **coverage floor** (62%, vs 63.1% measured at introduction) turns the previously display-only coverage number into a ratchet that fails `test-unit` when coverage slides. The **sleep-based flakes** in the autonomous handle tests are rewritten onto channel-gated LLM scenarios (`gatedTextTurn`) so pause/stop assertions coordinate on provable in-flight states instead of timers — the `PauseHaltsBeforeNextTurn` "calls advanced during pause" flake class is structurally gone — and the attach peers test drops its 1500ms sleep for polling.
 
 #### Bug or Regression
 

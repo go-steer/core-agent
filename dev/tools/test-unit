@@ -22,6 +22,25 @@ set -euo pipefail
 . "$(dirname "$0")/common.sh"
 cd "$(repo_root)"
 
-exec go test -race -timeout 5m \
+# Coverage floor (#397): a ratchet, not an aspiration. Raise it as
+# coverage grows; never lower it without a review conversation. The
+# floor sits ~1pt under the measured total at introduction (63.1% on
+# 2026-07-28) so ordinary fluctuation doesn't flake, while a change
+# that silently sheds a percent of coverage fails loudly here.
+COVERAGE_FLOOR="62.0"
+
+go test -race -timeout 5m \
   -coverprofile=coverage.out -covermode=atomic \
   ./...
+
+total="$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/, "", $3); print $3}')"
+if [[ -z "${total}" ]]; then
+  echo "test-unit: could not read total coverage from coverage.out" >&2
+  exit 1
+fi
+if awk -v t="${total}" -v f="${COVERAGE_FLOOR}" 'BEGIN { exit !(t < f) }'; then
+  echo "test-unit: total coverage ${total}% fell below the ${COVERAGE_FLOOR}% floor" >&2
+  echo "test-unit: add tests for what you changed, or discuss lowering the floor in review" >&2
+  exit 1
+fi
+echo "test-unit: coverage ${total}% (floor ${COVERAGE_FLOOR}%)"

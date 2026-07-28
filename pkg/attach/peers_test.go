@@ -397,19 +397,30 @@ func TestPeerClient_RegisterAndHeartbeatRoundTrip(t *testing.T) {
 		t.Fatalf("RegisterAndHeartbeat: %v", err)
 	}
 
-	// Wait for at least one heartbeat to land (cadence = ttl/3 = 1s).
-	time.Sleep(1500 * time.Millisecond)
-	peers := peerReg.List(nil)
-	if len(peers) != 1 {
-		t.Fatalf("hub Len = %d, want 1", len(peers))
+	// Poll until at least one heartbeat lands (cadence = ttl/3 = 1s).
+	// Polling instead of a fixed 1500ms sleep (#397 de-flake): under
+	// CI load the first beat can slip past a fixed window, and on a
+	// fast machine the fixed sleep wastes a second per run.
+	beatDeadline := time.Now().Add(5 * time.Second)
+	beat := false
+	for time.Now().Before(beatDeadline) {
+		peers := peerReg.List(nil)
+		if len(peers) == 1 && !peers[0].LastHeartbeat.Equal(peers[0].RegisteredAt) {
+			beat = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	if peers[0].LastHeartbeat.Equal(peers[0].RegisteredAt) {
-		t.Errorf("LastHeartbeat never advanced beyond RegisteredAt — heartbeat goroutine isn't firing")
+	if !beat {
+		t.Fatalf("no heartbeat advanced LastHeartbeat within 5s (hub Len = %d)", peerReg.Len())
 	}
 
 	stop()
-	// Give the deregister a moment to round-trip.
-	time.Sleep(100 * time.Millisecond)
+	// Poll the deregister round-trip instead of a fixed 100ms grace.
+	deregDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deregDeadline) && peerReg.Len() != 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if peerReg.Len() != 0 {
 		t.Errorf("after stop, hub Len = %d, want 0 (Deregister)", peerReg.Len())
 	}

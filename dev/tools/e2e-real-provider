@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# e2e-real-provider — run the real-model smoke legs against whatever
+# provider credentials the environment carries (#397).
+#
+# Credential detection, per leg:
+#   Gemini via Vertex   — GOOGLE_CLOUD_PROJECT set
+#                         → dev/smoke/02-vertex-basic.sh
+#   Anthropic via Vertex — ANTHROPIC_VERTEX_PROJECT_ID set
+#                         → dev/smoke/09-vertex-anthropic-toolloop.sh
+#
+# No credentials at all → prints SKIP and exits 0, so this is safe to
+# wire as an always-on presubmit/CI step: it degrades to a no-op on
+# credential-less machines and hosted runners without secrets.
+# A leg whose credentials ARE present must pass; smoke-script exit 77
+# (its own skip convention) is treated as skipped, anything else
+# non-zero fails the run.
+
+set -uo pipefail
+cd "$(dirname "$0")/../.."
+
+ran=0
+failed=0
+
+run_leg() {
+  local name="$1" script="$2"
+  echo "── e2e-real-provider: ${name} ──────────────────────────"
+  bash "${script}"
+  local rc=$?
+  case "${rc}" in
+    0)  ran=$((ran+1)) ;;
+    77) echo "e2e-real-provider: ${name}: skipped by script (exit 77)" ;;
+    *)  echo "e2e-real-provider: ${name}: FAILED (exit ${rc})" >&2; failed=$((failed+1)) ;;
+  esac
+}
+
+if [[ -n "${GOOGLE_CLOUD_PROJECT:-}" ]]; then
+  run_leg "vertex-gemini" dev/smoke/02-vertex-basic.sh
+else
+  echo "e2e-real-provider: vertex-gemini: skipped (GOOGLE_CLOUD_PROJECT unset)"
+fi
+
+if [[ -n "${ANTHROPIC_VERTEX_PROJECT_ID:-}" ]]; then
+  run_leg "vertex-anthropic" dev/smoke/09-vertex-anthropic-toolloop.sh
+else
+  echo "e2e-real-provider: vertex-anthropic: skipped (ANTHROPIC_VERTEX_PROJECT_ID unset)"
+fi
+
+if [[ "${failed}" -gt 0 ]]; then
+  echo "e2e-real-provider: ${failed} leg(s) FAILED" >&2
+  exit 1
+fi
+if [[ "${ran}" -eq 0 ]]; then
+  echo "e2e-real-provider: SKIP — no provider credentials in the environment (set GOOGLE_CLOUD_PROJECT and/or ANTHROPIC_VERTEX_PROJECT_ID)"
+  exit 0
+fi
+echo "e2e-real-provider: OK (${ran} leg(s) passed against real providers)"

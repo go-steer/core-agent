@@ -1,0 +1,612 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Wire-format drift guard for the attachclient RPC surface (#396).
+//
+// Every test in this file drives the REAL attach.Server over a real
+// TCP listener — no handler mocks — so a change to the server's JSON
+// shapes, status-code mapping, or SSE framing that the client can't
+// parse fails here first. The Registrant behind the registry is a
+// real *agent.Agent (echo model) wrapped in attachadapter.New, the
+// same shape production daemons register.
+package attachclient
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/glebarez/sqlite"
+	adkmodel "google.golang.org/adk/model"
+	"google.golang.org/adk/session"
+
+	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v2/pkg/attachadapter"
+	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	"github.com/go-steer/core-agent/v2/pkg/models/mock"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
+)
+
+const (
+	testToken  = "attachclient-test-token"
+	testUserID = "operator-user"
+	testSID    = "s1"
+)
+
+// rpcHarness is one live attach.Server + the Client under test.
+type rpcHarness struct {
+	base    string
+	client  *Client
+	broker  *attach.PromptBroker
+	handle  *eventlog.Handle
+	adapter *attachadapter.Adapter
+	reg     *attach.SessionRegistry
+}
+
+// sessionPath returns the /sessions/<app>/<sid> prefix for the
+// harness's primary registered session.
+func (h *rpcHarness) sessionPath() string {
+	return "/sessions/" + h.adapter.AppName() + "/" + h.adapter.SessionID()
+}
+
+// newEchoAdapter builds a real echo-model agent wrapped in the attach
+// adapter — the exact Registrant shape production daemons register.
+func newEchoAdapter(t *testing.T, handle *eventlog.Handle, userID, sid string, opts ...attachadapter.Option) *attachadapter.Adapter {
+	t.Helper()
+	m, err := mock.NewEcho().Model(context.Background(), "echo")
+	if err != nil {
+		t.Fatalf("echo model: %v", err)
+	}
+	a, err := agent.New(m, agent.WithSession(userID, sid), agent.WithEventLog(handle))
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	return attachadapter.New(a, opts...)
+}
+
+// harnessConfig tweaks optional server wiring per test.
+type harnessConfig struct {
+	withFactory bool
+}
+
+// newRPCHarness stands up a real attach.Server on 127.0.0.1:0 with a
+// bearer token (so the client's auth stamping is exercised too), a
+// registered echo agent with an eventlog + prompt broker, and returns
+// a Client pointed at it. Everything is torn down via t.Cleanup.
+func newRPCHarness(t *testing.T, cfg harnessConfig) *rpcHarness {
+	t.Helper()
+
+	dsn := filepath.Join(t.TempDir(), "session.db")
+	handle, err := eventlog.Open(context.Background(), sqlite.Open(dsn))
+	if err != nil {
+		t.Fatalf("eventlog.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = handle.Close() })
+
+	broker := attach.NewPromptBroker()
+	t.Cleanup(broker.Close)
+
+	adapter := newEchoAdapter(t, handle, testUserID, testSID, attachadapter.WithPromptBroker(broker))
+	reg := attach.NewSessionRegistry()
+	if _, err := reg.Register(adapter); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	opts := attach.Options{
+		Registry:        reg,
+		Addr:            "127.0.0.1:0",
+		Auth:            attach.AuthConfig{BearerToken: testToken},
+		DefaultCaller:   auth.Caller{Identity: "op@local"},
+		ShutdownTimeout: 2 * time.Second,
+	}
+	if cfg.withFactory {
+		var n atomic.Int64
+		opts.SessionFactory = func(ctx context.Context, caller auth.Caller) (attach.Registrant, context.CancelFunc, error) {
+			sid := fmt.Sprintf("s-new-%d", n.Add(1))
+			return newEchoAdapter(t, handle, "factory-user", sid), nil, nil
+		}
+	}
+
+	srv, err := attach.NewServer(opts)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if err := srv.Bind(); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Serve() }()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Logf("Serve returned: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Logf("Serve did not exit promptly")
+		}
+	})
+
+	base := "http://" + srv.Addr()
+	parsed, err := ParseURL(base)
+	if err != nil {
+		t.Fatalf("ParseURL(%q): %v", base, err)
+	}
+
+	return &rpcHarness{
+		base:    base,
+		client:  New(parsed, testToken, 5*time.Second),
+		broker:  broker,
+		handle:  handle,
+		adapter: adapter,
+		reg:     reg,
+	}
+}
+
+// appendSessionEvent writes one event with a recognizable
+// CustomMetadata marker into the harness's eventlog so the
+// broadcaster has something to stream.
+func (h *rpcHarness) appendSessionEvent(t *testing.T, text string) {
+	t.Helper()
+	ctx := context.Background()
+	app, user, sid := h.adapter.AppName(), h.adapter.UserID(), h.adapter.SessionID()
+	if _, err := h.handle.Service.Create(ctx, &session.CreateRequest{
+		AppName: app, UserID: user, SessionID: sid,
+	}); err != nil {
+		t.Fatalf("session Create: %v", err)
+	}
+	resp, err := h.handle.Service.Get(ctx, &session.GetRequest{
+		AppName: app, UserID: user, SessionID: sid,
+	})
+	if err != nil {
+		t.Fatalf("session Get: %v", err)
+	}
+	ev := session.NewEvent("evt-" + text)
+	ev.Author = "test"
+	ev.LLMResponse = adkmodel.LLMResponse{}
+	ev.CustomMetadata = map[string]any{"text": text}
+	if err := h.handle.Service.AppendEvent(ctx, resp.Session, ev); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+}
+
+// ---- /sessions (list + create) ------------------------------------
+
+func TestClientListSessions_AgainstRealServer(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{})
+
+	got, err := h.client.ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ListSessions returned %d rows, want 1: %+v", len(got), got)
+	}
+	want := SessionDescriptor{
+		App:         h.adapter.AppName(),
+		User:        testUserID,
+		SessionID:   testSID,
+		HasEventLog: true,
+	}
+	if got[0] != want {
+		t.Errorf("ListSessions[0] = %+v, want %+v", got[0], want)
+	}
+}
+
+func TestClientNewSession_CreatesOwnedSession(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{withFactory: true})
+
+	resp, err := h.client.NewSession(context.Background())
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if resp.SessionID != "s-new-1" {
+		t.Errorf("SessionID = %q, want s-new-1", resp.SessionID)
+	}
+	if resp.AppName != h.adapter.AppName() {
+		t.Errorf("AppName = %q, want %q", resp.AppName, h.adapter.AppName())
+	}
+	if resp.UserID != "factory-user" {
+		t.Errorf("UserID = %q, want factory-user", resp.UserID)
+	}
+	wantSuffix := "/sessions/" + resp.AppName + "/" + resp.SessionID
+	if !strings.HasPrefix(resp.URL, "http://") || !strings.HasSuffix(resp.URL, wantSuffix) {
+		t.Errorf("URL = %q, want http://<host>%s", resp.URL, wantSuffix)
+	}
+
+	// The new session is immediately visible to ListSessions — the
+	// decoded response and the registry agree.
+	rows, err := h.client.ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListSessions after create: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Errorf("ListSessions after create returned %d rows, want 2: %+v", len(rows), rows)
+	}
+}
+
+func TestClientNewSession_NoFactoryIs501(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{}) // no SessionFactory
+
+	_, err := h.client.NewSession(context.Background())
+	if err == nil {
+		t.Fatal("NewSession without a server-side factory should error")
+	}
+	var se *httpStatusError
+	if !errors.As(err, &se) {
+		t.Fatalf("err = %v (%T), want *httpStatusError", err, err)
+	}
+	if se.statusCode != 501 {
+		t.Errorf("status = %d, want 501 (no SessionFactory configured)", se.statusCode)
+	}
+	if se.PermanentStreamErr() {
+		t.Errorf("501 should not classify as permanent (it's a deployment-capability miss, not a revoked session)")
+	}
+}
+
+// ---- SSE /events ---------------------------------------------------
+
+// TestClientStream_CapabilitiesBootFrameFirst regression-guards the
+// #385 ordering fix: the capabilities frame MUST be the first frame on
+// every newly-opened stream, before any snapshot or live frame.
+func TestClientStream_CapabilitiesBootFrameFirst(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	frames, err := h.client.Stream(ctx, h.sessionPath(), 0)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	first, ok := <-frames
+	if !ok {
+		t.Fatal("stream closed before delivering any frame")
+	}
+	if first.Type != attach.EventCapabilities {
+		t.Fatalf("first frame Type = %q, want %q (capabilities-first is a protocol invariant, #385)",
+			first.Type, attach.EventCapabilities)
+	}
+	caps, isCaps := first.TypedData.(*attach.Capabilities)
+	if !isCaps || caps == nil {
+		t.Fatalf("first frame TypedData = %T, want *attach.Capabilities", first.TypedData)
+	}
+	if caps.ProtocolVersion == "" {
+		t.Error("capabilities.protocol_version is empty")
+	}
+	if len(caps.EventTypes) == 0 {
+		t.Error("capabilities.event_types is empty")
+	}
+
+	// Live-tail: an event appended to the eventlog after subscribe
+	// arrives as a legacy frame with the payload intact.
+	h.appendSessionEvent(t, "hello-rpc")
+
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case frame, ok := <-frames:
+			if !ok {
+				t.Fatal("stream closed before the live event arrived")
+			}
+			if frame.Type != "" {
+				continue // boot status-update / usage-update frames
+			}
+			if frame.Event == nil {
+				t.Fatalf("legacy frame with nil Event: %+v", frame)
+			}
+			if frame.Seq <= 0 {
+				t.Errorf("legacy frame Seq = %d, want > 0", frame.Seq)
+			}
+			if got := frame.Event.CustomMetadata["text"]; got != "hello-rpc" {
+				t.Errorf("event CustomMetadata[text] = %v, want hello-rpc", got)
+			}
+			return
+		case <-deadline:
+			t.Fatal("timed out waiting for the live-tail frame")
+		}
+	}
+}
+
+func TestClientStream_UnknownSessionIs404(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := h.client.Stream(ctx, "/sessions/"+h.adapter.AppName()+"/absent", 0)
+	if err == nil {
+		t.Fatal("Stream against a missing session should fail synchronously")
+	}
+	var se *httpStatusError
+	if !errors.As(err, &se) {
+		t.Fatalf("err = %v (%T), want *httpStatusError", err, err)
+	}
+	if se.statusCode != 404 {
+		t.Errorf("status = %d, want 404", se.statusCode)
+	}
+	if !se.PermanentStreamErr() {
+		t.Error("404 must classify as permanent so the TUI stops its reconnect loop")
+	}
+}
+
+// ---- /perms/stream + /perms/respond --------------------------------
+
+func TestClientPromptStreamAndRespond_RoundTrip(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	frames, err := h.client.PromptStream(ctx, h.sessionPath())
+	if err != nil {
+		t.Fatalf("PromptStream: %v", err)
+	}
+
+	// The gate side: AskApproval blocks until the operator responds.
+	type approval struct {
+		decision permissions.Decision
+		err      error
+	}
+	done := make(chan approval, 1)
+	go func() {
+		d, err := h.broker.AskApproval(ctx, permissions.PromptRequest{
+			Kind:     permissions.PromptKindBash,
+			ToolName: "bash",
+			Detail:   "git push origin main",
+			Verb:     "git",
+		})
+		done <- approval{d, err}
+	}()
+
+	var frame attach.PromptFrame
+	select {
+	case frame = <-frames:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the prompt frame")
+	}
+	if frame.ID == "" {
+		t.Fatal("prompt frame has empty id")
+	}
+	if frame.Kind != "bash" || frame.ToolName != "bash" || frame.Detail != "git push origin main" || frame.Verb != "git" {
+		t.Errorf("prompt frame fields drifted: %+v", frame)
+	}
+
+	if err := h.client.RespondToPrompt(ctx, h.sessionPath(), frame.ID, "allow-once"); err != nil {
+		t.Fatalf("RespondToPrompt: %v", err)
+	}
+
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("AskApproval: %v", got.err)
+		}
+		if got.decision != permissions.DecisionAllowOnce {
+			t.Errorf("decision = %v, want DecisionAllowOnce", got.decision)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("AskApproval did not unblock after RespondToPrompt")
+	}
+}
+
+func TestClientRespondToPrompt_ErrorMapping(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{})
+	ctx := context.Background()
+
+	// Unknown decision string → 400 before the broker is consulted.
+	err := h.client.RespondToPrompt(ctx, h.sessionPath(), "some-id", "maybe-later")
+	var se *httpStatusError
+	if !errors.As(err, &se) || se.statusCode != 400 {
+		t.Errorf("bad decision: err = %v, want *httpStatusError with 400", err)
+	}
+
+	// Valid decision, unknown prompt id → 404.
+	err = h.client.RespondToPrompt(ctx, h.sessionPath(), "no-such-prompt", "deny")
+	se = nil
+	if !errors.As(err, &se) || se.statusCode != 404 {
+		t.Errorf("unknown id: err = %v, want *httpStatusError with 404", err)
+	}
+}
+
+func TestClientPromptStream_NoBrokerIs501(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{})
+
+	// A second session whose adapter has NO prompt broker wired.
+	bare := newEchoAdapter(t, h.handle, "u2", "s2")
+	if _, err := h.reg.Register(bare); err != nil {
+		t.Fatalf("Register bare adapter: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := h.client.PromptStream(ctx, "/sessions/"+bare.AppName()+"/s2")
+	if err == nil {
+		t.Fatal("PromptStream without a broker should fail synchronously")
+	}
+	var se *httpStatusError
+	if !errors.As(err, &se) {
+		t.Fatalf("err = %v (%T), want *httpStatusError", err, err)
+	}
+	if se.statusCode != 501 {
+		t.Errorf("status = %d, want 501 (capability not registered)", se.statusCode)
+	}
+}
+
+// ---- /interrupt ------------------------------------------------------
+
+func TestClientInterrupt_IdleAgent(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{})
+
+	resp, err := h.client.Interrupt(context.Background(), h.sessionPath())
+	if err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	if resp.Interrupted {
+		t.Error("Interrupted = true on an idle agent, want false (nothing in flight)")
+	}
+	if resp.Session != testSID {
+		t.Errorf("Session = %q, want %q", resp.Session, testSID)
+	}
+}
+
+// ---- session-scoped reads + writes over the real wire ----------------
+
+func TestClientSessionReadsAndWrites(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{})
+	ctx := context.Background()
+	path := h.sessionPath()
+
+	status, err := h.client.Status(ctx, path)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.State != attach.AgentStateIdle {
+		t.Errorf("Status.State = %q, want %q", status.State, attach.AgentStateIdle)
+	}
+	if status.ModelName != "echo" {
+		t.Errorf("Status.ModelName = %q, want echo", status.ModelName)
+	}
+
+	tools, err := h.client.Tools(ctx, path)
+	if err != nil {
+		t.Fatalf("Tools: %v", err)
+	}
+	if len(tools) != 0 {
+		t.Errorf("Tools = %+v, want empty (echo agent has none)", tools)
+	}
+
+	usage, err := h.client.Usage(ctx, path)
+	if err != nil {
+		t.Fatalf("Usage: %v", err)
+	}
+	if usage.Overall.Turns != 0 {
+		t.Errorf("Usage.Overall.Turns = %d, want 0 (fresh agent)", usage.Overall.Turns)
+	}
+
+	// No PeerRegistry configured → server 404s /peers → client maps
+	// that to (nil, nil), not an error.
+	peers, err := h.client.ListPeers(ctx)
+	if err != nil {
+		t.Fatalf("ListPeers: %v", err)
+	}
+	if peers != nil {
+		t.Errorf("ListPeers = %+v, want nil when peer registration is disabled", peers)
+	}
+
+	if err := h.client.Inject(ctx, path, "operator note"); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	if err := h.client.Wake(ctx, path); err != nil {
+		t.Fatalf("Wake: %v", err)
+	}
+}
+
+// ---- do/doJSON error paths ------------------------------------------
+
+func TestClientDoJSON_Non2xxMapsToStatusError(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{})
+
+	_, err := h.client.Status(context.Background(), "/sessions/"+h.adapter.AppName()+"/absent")
+	if err == nil {
+		t.Fatal("Status against a missing session should error")
+	}
+	var se *httpStatusError
+	if !errors.As(err, &se) {
+		t.Fatalf("err = %v (%T), want *httpStatusError", err, err)
+	}
+	if se.statusCode != 404 {
+		t.Errorf("status = %d, want 404", se.statusCode)
+	}
+	if !strings.Contains(err.Error(), "status 404") {
+		t.Errorf("error string %q should carry the \"status 404\" grep marker", err.Error())
+	}
+	if !se.PermanentStreamErr() {
+		t.Error("404 must classify as permanent")
+	}
+}
+
+func TestClientAuth_WrongTokenIs401(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{})
+
+	parsed, err := ParseURL(h.base)
+	if err != nil {
+		t.Fatalf("ParseURL: %v", err)
+	}
+	badClient := New(parsed, "wrong-token", 5*time.Second)
+	_, err = badClient.ListSessions(context.Background())
+	var se *httpStatusError
+	if !errors.As(err, &se) || se.statusCode != 401 {
+		t.Fatalf("wrong token: err = %v, want *httpStatusError with 401", err)
+	}
+	if !se.PermanentStreamErr() {
+		t.Error("401 must classify as permanent (revoked/invalid token doesn't heal by retrying)")
+	}
+}
+
+func TestClientDo_ConnectionRefused(t *testing.T) {
+	t.Parallel()
+
+	// Reserve a port, then free it so nothing is listening.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	parsed, err := ParseURL("http://" + addr)
+	if err != nil {
+		t.Fatalf("ParseURL: %v", err)
+	}
+	c := New(parsed, "", 2*time.Second)
+
+	_, err = c.ListSessions(context.Background())
+	if err == nil {
+		t.Fatal("ListSessions against a dead port should error")
+	}
+	var se *httpStatusError
+	if errors.As(err, &se) {
+		t.Errorf("connection errors must NOT be httpStatusError (they're retryable transport failures): %v", err)
+	}
+
+	// The stream path surfaces the same class of error synchronously.
+	_, err = c.Stream(context.Background(), "/sessions/app/sid", 0)
+	if err == nil {
+		t.Fatal("Stream against a dead port should error synchronously")
+	}
+	if errors.As(err, &se) {
+		t.Errorf("stream connection error must NOT be httpStatusError: %v", err)
+	}
+}

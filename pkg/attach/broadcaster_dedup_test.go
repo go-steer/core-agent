@@ -23,7 +23,7 @@ import "testing"
 // the other goroutine's attempt is a no-op skip.
 func TestSubscriberSend_DedupesByLastSent(t *testing.T) {
 	t.Parallel()
-	b := &Broadcaster{
+	b := &broadcaster{
 		entry: &Entry{AppName: "core-agent", SessionID: "test"},
 	}
 	sub := &subscriber{
@@ -64,7 +64,7 @@ func TestSubscriberSend_DedupesByLastSent(t *testing.T) {
 // had ever broadcast.
 func TestSubscriberSend_FiltersBelowSince(t *testing.T) {
 	t.Parallel()
-	b := &Broadcaster{
+	b := &broadcaster{
 		entry: &Entry{AppName: "core-agent", SessionID: "test"},
 	}
 	sub := &subscriber{

@@ -39,27 +39,8 @@ import (
 // other PR A2 mutators.
 
 func (h *handlers) registerPrompts(mux *http.ServeMux) {
-	mux.HandleFunc("GET /sessions/{app}/{sid}/perms/stream", h.permsStreamQualified)
-	mux.HandleFunc("POST /sessions/{app}/{sid}/perms/respond", h.permsRespondQualified)
-
-	mux.HandleFunc("GET /sessions/{sid}/perms/stream", h.permsStreamShortcut)
-	mux.HandleFunc("POST /sessions/{sid}/perms/respond", h.permsRespondShortcut)
-}
-
-func (h *handlers) permsStreamQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveQualified(w, r)
-	if !ok {
-		return
-	}
-	h.doPermsStream(w, r, entry)
-}
-
-func (h *handlers) permsStreamShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.resolveShortcut(w, r)
-	if !ok {
-		return
-	}
-	h.doPermsStream(w, r, entry)
+	h.routeSession(mux, "GET", "perms/stream", auth.ActionSessionRead, h.doPermsStream)
+	h.routeSession(mux, "POST", "perms/respond", auth.ActionSessionWrite, h.doPermsRespond)
 }
 
 func (h *handlers) doPermsStream(w http.ResponseWriter, r *http.Request, entry *Entry) {
@@ -103,22 +84,6 @@ func (h *handlers) doPermsStream(w http.ResponseWriter, r *http.Request, entry *
 			flusher.Flush()
 		}
 	}
-}
-
-func (h *handlers) permsRespondQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doPermsRespond(w, r, entry)
-}
-
-func (h *handlers) permsRespondShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doPermsRespond(w, r, entry)
 }
 
 func (h *handlers) doPermsRespond(w http.ResponseWriter, r *http.Request, entry *Entry) {

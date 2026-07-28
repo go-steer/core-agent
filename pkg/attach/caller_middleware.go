@@ -120,7 +120,7 @@ func callerMiddlewareWithConfig(cfg callerMiddlewareConfig, next http.Handler) h
 		// assertion) or was explicitly configured to trust (the
 		// transport bearer gate that already ran) — never a raw
 		// request header, which any client can forge (#385).
-		source := WhoAmISourceAnonymous
+		source := whoAmISourceAnonymous
 		c, err := authn.Authenticate(r)
 		if err != nil {
 			if cfg.enforceAuthentication {
@@ -134,12 +134,12 @@ func callerMiddlewareWithConfig(cfg callerMiddlewareConfig, next http.Handler) h
 		} else {
 			source = credentialSource(authn)
 		}
-		if source == WhoAmISourceAnonymous {
+		if source == whoAmISourceAnonymous {
 			if cfg.transportBearerConfigured {
 				// The transport-level bearer check (AuthConfig.
 				// Middleware) runs before this middleware; reaching
 				// here means the request carried the valid token.
-				source = WhoAmISourceBearer
+				source = whoAmISourceBearer
 			} else if r.TLS != nil && len(r.TLS.VerifiedChains) > 0 {
 				// VerifiedChains is populated only when OUR listener
 				// verified the client cert against its configured CA
@@ -147,7 +147,7 @@ func callerMiddlewareWithConfig(cfg callerMiddlewareConfig, next http.Handler) h
 				// PRESENTED-but-unverified certificate never sets it,
 				// so this can't be spoofed by a client or a fronting
 				// proxy header.
-				source = WhoAmISourceMTLS
+				source = whoAmISourceMTLS
 			}
 		}
 
@@ -174,7 +174,7 @@ func callerMiddlewareWithConfig(cfg callerMiddlewareConfig, next http.Handler) h
 			// The assertion was validated (proxy allowlist + identity
 			// provisioning) — the asserted path is the audit-relevant
 			// source and wins over the underlying credential.
-			source = WhoAmISourceAsserted
+			source = whoAmISourceAsserted
 		}
 
 		ctx := auth.WithCaller(r.Context(), c)
@@ -197,9 +197,9 @@ func callerMiddlewareWithConfig(cfg callerMiddlewareConfig, next http.Handler) h
 func credentialSource(a auth.Authenticator) string {
 	switch a.(type) {
 	case auth.AnonymousAuth, *auth.AnonymousAuth:
-		return WhoAmISourceAnonymous
+		return whoAmISourceAnonymous
 	default:
-		return WhoAmISourceBearer
+		return whoAmISourceBearer
 	}
 }
 

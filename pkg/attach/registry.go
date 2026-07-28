@@ -384,8 +384,8 @@ func (r *SessionRegistry) Unregister(appName, userID, sessionID string) {
 // session identity, not session data):
 //   - Underlying ADK/SQLite session records (see pkg/eventlog).
 //     They become unreachable via the registry but stay on disk.
-//   - Broadcaster subscribers — the caller must Close the per-
-//     entry broadcaster via BroadcasterPool.Remove.
+//   - broadcaster subscribers — the caller must Close the per-
+//     entry broadcaster via broadcasterPool.Remove.
 //
 // The wake-loop cancel (cancelOnEvict) fires exactly as with
 // Unregister, so goroutines tied to the session exit cleanly.

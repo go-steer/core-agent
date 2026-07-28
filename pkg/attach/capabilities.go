@@ -29,7 +29,7 @@ import (
 // per-entry / per-caller state is resolved on each call.
 //
 // The returned closure only populates the v1.4.0 additive fields —
-// Broadcaster.deliverBootFrames preserves ProtocolVersion, EventTypes,
+// broadcaster.deliverBootFrames preserves ProtocolVersion, EventTypes,
 // and Server so the wire-format invariants stay owned by one place.
 //
 // serverFeatures pre-computes the daemon-level feature flags
@@ -37,8 +37,8 @@ import (
 // scoped ones. Nil-safe: an empty map is fine.
 func capabilitiesBuilder(opts Options) func(ctx context.Context, entry *Entry) Capabilities {
 	serverFeatures := map[string]bool{
-		FeatureMultiSession: opts.MultiSessionEnabled,
-		FeatureCrossDaemon:  opts.PeerRegistry != nil,
+		featureMultiSession: opts.MultiSessionEnabled,
+		featureCrossDaemon:  opts.PeerRegistry != nil,
 	}
 	card := opts.AgentCard
 	return func(ctx context.Context, entry *Entry) Capabilities {
@@ -64,25 +64,25 @@ func buildFeatures(entry *Entry, serverFeatures map[string]bool) map[string]bool
 		return out
 	}
 	if _, ok := entry.Agent.(PromptBrokerProvider); ok {
-		out[FeaturePermsStream] = true
+		out[featurePermsStream] = true
 	}
 	if _, ok := entry.Agent.(MCPProvider); ok {
-		out[FeatureMCP] = true
+		out[featureMCP] = true
 	}
 	if _, ok := entry.Agent.(SubagentSpawner); ok {
-		out[FeatureSpecialists] = true
+		out[featureSpecialists] = true
 	}
 	if _, ok := entry.Agent.(InterruptProvider); ok {
-		out[FeatureInterrupt] = true
+		out[featureInterrupt] = true
 	}
-	// FeatureCostCeiling + FeatureObserverMode are reserved keys —
+	// featureCostCeiling + featureObserverMode are reserved keys —
 	// no capability interface for them today. Emitting them as false
 	// (rather than omitting) advertises "server understands the key
 	// name; the answer is no." Consumers that treat absent-key as
 	// off see the same behavior either way; consumers that
 	// distinguish absent from false get a truthful "no."
-	out[FeatureCostCeiling] = false
-	out[FeatureObserverMode] = false
+	out[featureCostCeiling] = false
+	out[featureObserverMode] = false
 	return out
 }
 
@@ -154,7 +154,7 @@ func buildAgentIdentity(entry *Entry, card AgentCardConfig) *AgentIdentity {
 
 // callerIDFromContext returns the resolved caller identity for the
 // display-hint field, or "" when the middleware didn't stamp one
-// (typical for tests that call Broadcaster.Subscribe with a bare
+// (typical for tests that call broadcaster.Subscribe with a bare
 // context.Background).
 func callerIDFromContext(ctx context.Context) string {
 	c, ok := auth.CallerFromContext(ctx)

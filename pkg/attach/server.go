@@ -34,13 +34,13 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
 
-// DefaultListenAddr is the address the server binds when Options
+// defaultListenAddr is the address the server binds when Options
 // leaves both Addr and UnixSocket empty. Loopback-only by design
 // (#376): the attach surface can read transcripts, inject messages,
 // and answer permission prompts, so the default must not be reachable
 // from the network. Binding a non-loopback address requires
 // authentication — see NewServer.
-const DefaultListenAddr = "127.0.0.1:7777"
+const defaultListenAddr = "127.0.0.1:7777"
 
 // Options configures NewServer. Zero value is invalid — Registry is
 // required at minimum.
@@ -63,7 +63,7 @@ type Options struct {
 
 	// Addr is the TCP listen address (e.g. "127.0.0.1:7777").
 	// Mutually exclusive with UnixSocket. When both Addr and
-	// UnixSocket are empty, defaults to DefaultListenAddr
+	// UnixSocket are empty, defaults to defaultListenAddr
 	// (loopback-only).
 	//
 	// Non-loopback addresses (including ":7777", "0.0.0.0:7777",
@@ -239,7 +239,7 @@ type SessionFactory func(ctx context.Context, caller auth.Caller) (Registrant, c
 // NewServer; start via ListenAndServe; stop via Close.
 type Server struct {
 	opts Options
-	pool *BroadcasterPool
+	pool *broadcasterPool
 	mux  *http.ServeMux
 	srv  *http.Server
 
@@ -273,7 +273,7 @@ func NewServer(opts Options) (*Server, error) {
 		// hard error; defaulting to a safe local address matches the
 		// documented "local operator surface" posture without opening
 		// anything to the network.
-		opts.Addr = DefaultListenAddr
+		opts.Addr = defaultListenAddr
 	}
 	if opts.ShutdownTimeout == 0 {
 		opts.ShutdownTimeout = 5 * time.Second
@@ -300,11 +300,11 @@ func NewServer(opts Options) (*Server, error) {
 			"any host that can reach this port could read transcripts (/events), inject messages (/inject), and "+
 			"answer permission prompts (/perms/respond). Set an attach token (--attach-token=<ENVVAR> / "+
 			"Options.Auth.BearerToken), enable mTLS or enforced multi-session auth, or bind a loopback address "+
-			"(e.g. %s)", opts.Addr, DefaultListenAddr)
+			"(e.g. %s)", opts.Addr, defaultListenAddr)
 	}
-	pool := NewBroadcasterPool()
+	pool := newBroadcasterPool()
 	// Stamp the v1.4.0 capabilities builder onto the pool BEFORE the
-	// first For() hit so every Broadcaster gets it. The builder
+	// first For() hit so every broadcaster gets it. The builder
 	// captures Options-derived state (multi_session, cross_daemon,
 	// agent card) once here; per-request state (caller_id) is
 	// resolved on each Subscribe.

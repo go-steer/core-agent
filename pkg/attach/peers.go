@@ -29,7 +29,7 @@ import (
 // Default TTL bounds. See docs/peer-registration-design.md "TTL +
 // heartbeat policy" for the rationale.
 const (
-	DefaultHeartbeatTTL = 60 * time.Second
+	defaultHeartbeatTTL = 60 * time.Second
 	defaultMaxTTL       = 5 * time.Minute
 	pruneTick           = 5 * time.Second
 )
@@ -188,7 +188,7 @@ func (r *PeerRegistry) RegisterOwned(req RegisterRequest, owner string) (*Peer, 
 	}
 	ttl := time.Duration(req.HeartbeatTTLSec) * time.Second
 	if ttl <= 0 {
-		ttl = DefaultHeartbeatTTL
+		ttl = defaultHeartbeatTTL
 	}
 	if ttl > r.maxTTL {
 		ttl = r.maxTTL

@@ -16,8 +16,6 @@ package attach
 
 import (
 	"net/http"
-
-	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
 
 // Slash dispatchers — POST /sessions/<sid>/slash/<name>. Wire to
@@ -33,22 +31,7 @@ import (
 // result row are enough operator UX without adding a job-correlation
 // protocol.
 
-// slashCompactQualified / Shortcut — POST /slash/compact.
-func (h *handlers) slashCompactQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doSlashCompact(w, r, entry)
-}
-
-func (h *handlers) slashCompactShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doSlashCompact(w, r, entry)
-}
+// doSlashCompact — POST /slash/compact.
 
 func (h *handlers) doSlashCompact(w http.ResponseWriter, r *http.Request, entry *Entry) {
 	p, ok := entry.Agent.(CompactSlashProvider)
@@ -72,22 +55,7 @@ func (h *handlers) doSlashCompact(w http.ResponseWriter, r *http.Request, entry 
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// slashDoneQualified / Shortcut — POST /slash/done.
-func (h *handlers) slashDoneQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doSlashDone(w, r, entry)
-}
-
-func (h *handlers) slashDoneShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doSlashDone(w, r, entry)
-}
+// doSlashDone — POST /slash/done.
 
 func (h *handlers) doSlashDone(w http.ResponseWriter, r *http.Request, entry *Entry) {
 	p, ok := entry.Agent.(CheckpointSlashProvider)
@@ -110,22 +78,7 @@ func (h *handlers) doSlashDone(w http.ResponseWriter, r *http.Request, entry *En
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// slashBtwQualified / Shortcut — POST /slash/btw.
-func (h *handlers) slashBtwQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doSlashBtw(w, r, entry)
-}
-
-func (h *handlers) slashBtwShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doSlashBtw(w, r, entry)
-}
+// doSlashBtw — POST /slash/btw.
 
 func (h *handlers) doSlashBtw(w http.ResponseWriter, r *http.Request, entry *Entry) {
 	p, ok := entry.Agent.(SideQueryProvider)
@@ -150,22 +103,7 @@ func (h *handlers) doSlashBtw(w http.ResponseWriter, r *http.Request, entry *Ent
 	writeJSON(w, http.StatusOK, SideQueryResponse{Answer: answer})
 }
 
-// slashSubagentQualified / Shortcut — POST /slash/subagent.
-func (h *handlers) slashSubagentQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doSlashSubagent(w, r, entry)
-}
-
-func (h *handlers) slashSubagentShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doSlashSubagent(w, r, entry)
-}
+// doSlashSubagent — POST /slash/subagent.
 
 func (h *handlers) doSlashSubagent(w http.ResponseWriter, r *http.Request, entry *Entry) {
 	p, ok := entry.Agent.(SubagentSpawner)
@@ -211,26 +149,11 @@ func isSubagentSpawnerUnavailable(err error) bool {
 	return err != nil && err.Error() == "agent: subagent spawner unavailable (no BackgroundAgentManager wired)"
 }
 
-// slashReplanQualified / Shortcut — POST /slash/replan. Clears the
+// doSlashReplan — POST /slash/replan. Clears the
 // gate's plan-recorded flag and archives the latest plan to
 // plan-<N>-revoked.md so the agent must call record_plan again
 // before any mutating tool succeeds. Used when the operator
 // rejects an active plan and wants the agent to redraft.
-func (h *handlers) slashReplanQualified(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupQualifiedAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doSlashReplan(w, r, entry)
-}
-
-func (h *handlers) slashReplanShortcut(w http.ResponseWriter, r *http.Request) {
-	entry, ok := h.lookupShortcutAuth(w, r, auth.ActionSessionWrite)
-	if !ok {
-		return
-	}
-	h.doSlashReplan(w, r, entry)
-}
 
 func (h *handlers) doSlashReplan(w http.ResponseWriter, r *http.Request, entry *Entry) {
 	p, ok := entry.Agent.(ReplanProvider)

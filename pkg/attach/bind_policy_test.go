@@ -49,8 +49,8 @@ func TestNewServer_RefusesNonLoopbackWithoutAuth(t *testing.T) {
 			t.Errorf("NewServer(Addr=%q) error %q: want the non-loopback refusal", addr, err)
 		}
 		// The error must tell the operator how to fix it.
-		if !strings.Contains(err.Error(), "--attach-token") || !strings.Contains(err.Error(), DefaultListenAddr) {
-			t.Errorf("NewServer(Addr=%q) error %q: want remediation hints (--attach-token, %s)", addr, err, DefaultListenAddr)
+		if !strings.Contains(err.Error(), "--attach-token") || !strings.Contains(err.Error(), defaultListenAddr) {
+			t.Errorf("NewServer(Addr=%q) error %q: want remediation hints (--attach-token, %s)", addr, err, defaultListenAddr)
 		}
 	}
 }
@@ -107,7 +107,7 @@ func TestNewServer_MultiSessionAllowAnonymousStillRefused(t *testing.T) {
 }
 
 // TestNewServer_DefaultAddrIsLoopback verifies the zero-Addr default:
-// leaving both Addr and UnixSocket empty binds DefaultListenAddr
+// leaving both Addr and UnixSocket empty binds defaultListenAddr
 // (127.0.0.1:7777) instead of erroring or binding all interfaces.
 func TestNewServer_DefaultAddrIsLoopback(t *testing.T) {
 	t.Parallel()
@@ -116,8 +116,8 @@ func TestNewServer_DefaultAddrIsLoopback(t *testing.T) {
 		t.Fatalf("NewServer with empty Addr/UnixSocket: %v", err)
 	}
 	defer func() { _ = srv.Close() }()
-	if srv.opts.Addr != DefaultListenAddr {
-		t.Fatalf("default Addr = %q, want %q", srv.opts.Addr, DefaultListenAddr)
+	if srv.opts.Addr != defaultListenAddr {
+		t.Fatalf("default Addr = %q, want %q", srv.opts.Addr, defaultListenAddr)
 	}
 	if !isLoopbackAddr(srv.opts.Addr) {
 		t.Fatalf("default Addr %q is not loopback", srv.opts.Addr)

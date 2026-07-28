@@ -145,7 +145,7 @@ type Agent struct {
 	checkpointer   Checkpointer
 
 	// attachEmit is the SSE event-stream emit callback set by the
-	// broadcaster on first subscribe (see attach.Broadcaster.Subscribe).
+	// broadcaster on first subscribe (see the attach package's broadcaster Subscribe).
 	// Nil when no SSE client is connected — the emit() helper drops
 	// events to the floor in that case (no consumer = no work).
 	// Guarded by emitMu so the broadcaster can swap or clear it

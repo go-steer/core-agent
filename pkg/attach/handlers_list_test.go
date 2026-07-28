@@ -71,7 +71,7 @@ func TestListSessions_UnionsInMemoryAndPersisted(t *testing.T) {
 	if _, err := reg.RegisterOwned(&stubRegistrant{app: "core-agent", user: "bob", sid: "sess-bob-live"}, "bob@example.com"); err != nil {
 		t.Fatalf("RegisterOwned bob: %v", err)
 	}
-	h := &handlers{reg: reg, pool: NewBroadcasterPool(), enforceACL: true}
+	h := &handlers{reg: reg, pool: newBroadcasterPool(), enforceACL: true}
 
 	// Alice: sees exactly her persisted session, status "idle".
 	got := listSessionsFor(t, h, auth.Caller{Identity: "alice@example.com"})
@@ -110,7 +110,7 @@ func TestListSessions_ActiveDedupsPersisted(t *testing.T) {
 	if _, err := reg.RegisterOwned(&stubRegistrant{app: "core-agent", user: "alice@example.com", sid: "sess-both"}, "alice@example.com"); err != nil {
 		t.Fatalf("RegisterOwned: %v", err)
 	}
-	h := &handlers{reg: reg, pool: NewBroadcasterPool(), enforceACL: true}
+	h := &handlers{reg: reg, pool: newBroadcasterPool(), enforceACL: true}
 
 	got := listSessionsFor(t, h, auth.Caller{Identity: "alice@example.com"})
 	if len(got) != 1 {
@@ -138,7 +138,7 @@ func TestListSessions_AdminSeesEverything(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("store.Put: %v", err)
 	}
-	h := &handlers{reg: reg, pool: NewBroadcasterPool(), enforceACL: true}
+	h := &handlers{reg: reg, pool: newBroadcasterPool(), enforceACL: true}
 
 	got := listSessionsFor(t, h, auth.Caller{Identity: "ops@example.com", Admin: true})
 	if len(got) != 2 {
@@ -162,7 +162,7 @@ func TestListSessions_NoStoreFallsBackToMemoryOnly(t *testing.T) {
 	if _, err := reg.RegisterOwned(&stubRegistrant{app: "core-agent", user: "u", sid: "sess-only"}, "alice@example.com"); err != nil {
 		t.Fatalf("RegisterOwned: %v", err)
 	}
-	h := &handlers{reg: reg, pool: NewBroadcasterPool(), enforceACL: true}
+	h := &handlers{reg: reg, pool: newBroadcasterPool(), enforceACL: true}
 
 	got := listSessionsFor(t, h, auth.Caller{Identity: "alice@example.com"})
 	if len(got) != 1 {
@@ -189,7 +189,7 @@ func TestListSessions_EnforceACLOffSkipsUnion(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("store.Put: %v", err)
 	}
-	h := &handlers{reg: reg, pool: NewBroadcasterPool(), enforceACL: false}
+	h := &handlers{reg: reg, pool: newBroadcasterPool(), enforceACL: false}
 
 	// No caller in the request context. With enforceACL=false,
 	// list should return only in-memory entries (empty), NOT

@@ -67,7 +67,7 @@ func TestCreateSession_NoFactoryReturns501(t *testing.T) {
 	t.Parallel()
 	h := &handlers{
 		reg:        NewSessionRegistry(),
-		pool:       NewBroadcasterPool(),
+		pool:       newBroadcasterPool(),
 		enforceACL: true,
 		// factory is nil — POST /sessions should refuse cleanly.
 	}
@@ -85,7 +85,7 @@ func TestCreateSession_NoCallerReturns401(t *testing.T) {
 	}}
 	h := &handlers{
 		reg:     NewSessionRegistry(),
-		pool:    NewBroadcasterPool(),
+		pool:    newBroadcasterPool(),
 		factory: fs.Factory(),
 	}
 	r, rr := newCreateRequest(t, auth.Caller{}) // no caller on context
@@ -104,7 +104,7 @@ func TestCreateSession_HappyPathStampsOwner(t *testing.T) {
 		return &stubRegistrant{app: "core-agent", user: "u", sid: "sess-new-1"}
 	}}
 	reg := NewSessionRegistry()
-	h := &handlers{reg: reg, pool: NewBroadcasterPool(), factory: fs.Factory()}
+	h := &handlers{reg: reg, pool: newBroadcasterPool(), factory: fs.Factory()}
 
 	r, rr := newCreateRequest(t, auth.Caller{Identity: "alice@example.com"})
 	h.createSession(rr, r)
@@ -145,7 +145,7 @@ func TestCreateSession_FactoryErrorReturns500(t *testing.T) {
 	fs := &factoryStub{err: errors.New("model not configured")}
 	h := &handlers{
 		reg:     NewSessionRegistry(),
-		pool:    NewBroadcasterPool(),
+		pool:    newBroadcasterPool(),
 		factory: fs.Factory(),
 	}
 	r, rr := newCreateRequest(t, auth.Caller{Identity: "alice@example.com"})
@@ -163,7 +163,7 @@ func TestCreateSession_FactoryNilReturnsAlso500(t *testing.T) {
 	fs := &factoryStub{produce: func(_ auth.Caller) Registrant { return nil }}
 	h := &handlers{
 		reg:     NewSessionRegistry(),
-		pool:    NewBroadcasterPool(),
+		pool:    newBroadcasterPool(),
 		factory: fs.Factory(),
 	}
 	r, rr := newCreateRequest(t, auth.Caller{Identity: "alice@example.com"})
@@ -186,7 +186,7 @@ func TestCreateSession_DuplicateTripleReturns409(t *testing.T) {
 	fs := &factoryStub{produce: func(_ auth.Caller) Registrant {
 		return &stubRegistrant{app: "core-agent", user: "u", sid: "sess-collision"}
 	}}
-	h := &handlers{reg: reg, pool: NewBroadcasterPool(), factory: fs.Factory()}
+	h := &handlers{reg: reg, pool: newBroadcasterPool(), factory: fs.Factory()}
 
 	r, rr := newCreateRequest(t, auth.Caller{Identity: "alice@example.com"})
 	h.createSession(rr, r)

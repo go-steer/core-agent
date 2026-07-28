@@ -53,7 +53,7 @@ func deleteHandlerFixture(t *testing.T, enforceACL bool, aclStore SessionACLStor
 	}
 	h := &handlers{
 		reg:        reg,
-		pool:       NewBroadcasterPool(),
+		pool:       newBroadcasterPool(),
 		enforceACL: enforceACL,
 	}
 	mux := http.NewServeMux()
@@ -254,7 +254,7 @@ func TestRegistry_HardDelete_FiresCancelOnEvict(t *testing.T) {
 // lazily construct a broadcaster (unlike For). Missing key ⇒ nil.
 func TestBroadcasterPool_Remove_ReturnsNilOnMiss(t *testing.T) {
 	t.Parallel()
-	pool := NewBroadcasterPool()
+	pool := newBroadcasterPool()
 	entry := &Entry{AppName: "core-agent", UserID: "u", SessionID: "never-existed"}
 	if b := pool.Remove(entry); b != nil {
 		t.Errorf("Remove on missing entry = %v, want nil", b)

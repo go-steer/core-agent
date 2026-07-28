@@ -73,37 +73,47 @@ const subscriberBufferSize = 256
 // code never mutates it.
 var maxReplayEvents int64 = 5000
 
-// latestSeqStream is the optional eventlog.Stream extension the
+// replayFloorStream is the optional eventlog.Stream extension the
 // replay cap needs (implemented by the production gormStream).
 // Streams without it — test fakes, exotic embeddings — skip the cap
 // and keep the uncapped pre-#385 behavior.
-type latestSeqStream interface {
-	LatestSeq(ctx context.Context, opts ...eventlog.QueryOption) (int64, error)
+type replayFloorStream interface {
+	NthNewestSeq(ctx context.Context, offset int64, opts ...eventlog.QueryOption) (int64, error)
 }
 
-// clampReplaySince bounds the catch-up range to the newest
-// maxReplayEvents frames: if the log's head is more than the cap
-// ahead of since, the cursor is advanced so only the tail replays.
+// clampReplaySince bounds the catch-up range to THIS SESSION's newest
+// maxReplayEvents frames: if the cursor sits below the session's
+// (cap+1)-th-newest seq, it is advanced so only the tail replays.
 // The clamped value feeds BOTH delivery sources (replayThenTail and
 // the pump's startedAt), so no goroutine re-introduces the dropped
 // head. The SSE protocol has no "replay truncated" frame, so
 // truncation is surfaced via the server log only; clients that need
 // the full history can page it from the eventlog directly.
+//
+// The floor MUST be derived from the session's own row set (the
+// Nth-newest query below), not arithmetic on the head seq: seq is one
+// global autoincrement across every session in the log, so
+// `latest - cap` measures sibling traffic — a busy neighbor session
+// would push a quiet session's entire history under the floor and a
+// reconnecting client would silently lose its conversation (#481).
 func (b *broadcaster) clampReplaySince(ctx context.Context, since int64) int64 {
-	ls, ok := b.stream.(latestSeqStream)
+	fs, ok := b.stream.(replayFloorStream)
 	if !ok {
 		return since
 	}
-	latest, err := ls.LatestSeq(ctx, b.query...)
+	floor, err := fs.NthNewestSeq(ctx, maxReplayEvents, b.query...)
 	if err != nil {
-		// Best-effort: a failed max-seq probe must not kill the
+		// Best-effort: a failed floor probe must not kill the
 		// subscribe; the replay itself will surface a real error.
-		debugf("broadcaster %s/%s LatestSeq failed (replay uncapped): %v", b.entry.AppName, b.entry.SessionID, err)
+		debugf("broadcaster %s/%s NthNewestSeq failed (replay uncapped): %v", b.entry.AppName, b.entry.SessionID, err)
 		return since
 	}
-	if floor := latest - maxReplayEvents; floor > since {
-		log.Printf("attach: broadcaster %s/%s replay truncated: since=%d is %d events behind head %d; replaying newest %d only", //nolint:gosec // AppName/SessionID are server-managed identifiers from the SessionRegistry
-			b.entry.AppName, b.entry.SessionID, since, latest-since, latest, maxReplayEvents)
+	// floor is 0 when the session holds fewer than cap+1 events —
+	// nothing to truncate. Otherwise exactly maxReplayEvents of the
+	// session's rows have seq > floor.
+	if floor > since {
+		log.Printf("attach: broadcaster %s/%s replay truncated: since=%d is below the session's replay floor %d; replaying its newest %d events only", //nolint:gosec // AppName/SessionID are server-managed identifiers from the SessionRegistry
+			b.entry.AppName, b.entry.SessionID, since, floor, maxReplayEvents)
 		return floor
 	}
 	return since

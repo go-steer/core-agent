@@ -443,10 +443,44 @@ func (s *gormStream) LatestSeq(ctx context.Context, opts ...QueryOption) (int64,
 	return maxSeq, nil
 }
 
+// NthNewestSeq returns the seq of the row `offset` places behind the
+// newest row visible under the same filters Since/Watch honor
+// (offset 0 = the newest row), or 0 when fewer than offset+1 rows
+// match. A single indexed ORDER BY seq DESC LIMIT 1 OFFSET n query.
+//
+// Used by pkg/attach to clamp an unbounded ?since=0 replay to the
+// session's own newest N events (#481): seq values are global across
+// sessions (one autoincrement for the whole table), so a floor
+// computed as MAX(seq)-N silently truncates a quiet session's history
+// whenever a busy sibling session has advanced the global counter.
+// The floor must come from the filtered row set itself. Optional
+// Stream extension: callers discover it by type assertion.
+func (s *gormStream) NthNewestSeq(ctx context.Context, offset int64, opts ...QueryOption) (int64, error) {
+	if s.closed.Load() {
+		return 0, ErrClosed
+	}
+	if offset < 0 {
+		return 0, fmt.Errorf("eventlog: NthNewestSeq: negative offset %d", offset)
+	}
+	q := queryOpts{}
+	for _, o := range opts {
+		o(&q)
+	}
+	tx := applyQueryFilters(s.db.WithContext(ctx).Model(&agentEventRow{}), q)
+	var seqs []int64
+	if err := tx.Order("seq DESC").Offset(int(offset)).Limit(1).Pluck("seq", &seqs).Error; err != nil {
+		return 0, fmt.Errorf("eventlog: query nth-newest seq: %w", err)
+	}
+	if len(seqs) == 0 {
+		return 0, nil
+	}
+	return seqs[0], nil
+}
+
 // applyQueryFilters translates queryOpts into WHERE clauses. Shared
-// by queryRows and LatestSeq so both see the exact same visibility
-// rules. Does NOT apply the seq cursor, ordering, or limit — those
-// belong to the row query only.
+// by queryRows, LatestSeq, and NthNewestSeq so all see the exact same
+// visibility rules. Does NOT apply the seq cursor, ordering, or limit
+// — those belong to the row query only.
 func applyQueryFilters(tx *gorm.DB, q queryOpts) *gorm.DB {
 	// WithSessionTree wins over ForSession when both are set —
 	// the tree query already implies the (app, user) pair.

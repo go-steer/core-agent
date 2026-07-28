@@ -1,0 +1,73 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Real-provider E2E (#397): runs dev/tools/e2e-real-provider against
+# live Vertex models. Credential-gated by design — the script detects
+# provider env vars and SKIPS cleanly (exit 0) when they're absent, so
+# this workflow is safe to run on a fork or a repo with no secrets:
+# it reports success with an explicit "SKIP — no provider credentials"
+# line instead of red noise.
+#
+# To arm it, configure repository secrets:
+#   GCP_SA_KEY                   — service-account key JSON with Vertex
+#                                  access (used by google-github-actions/auth)
+#   GOOGLE_CLOUD_PROJECT         — project for the Gemini-via-Vertex leg
+#   ANTHROPIC_VERTEX_PROJECT_ID  — project for the Claude-via-Vertex leg
+# Optional: GOOGLE_CLOUD_LOCATION (default global), CLOUD_ML_REGION
+# (default us-east5), ANTHROPIC_SMOKE_MODEL (default claude-sonnet-5).
+#
+# Scheduled weekly rather than per-PR: these legs spend real API money
+# and guard the provider-regression class (wire-format drift, thinking
+# round-trip, tool-loop pairing), which moves with provider releases,
+# not with every commit. workflow_dispatch covers on-demand runs.
+
+name: E2E real provider
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 6 * * 1' # Mondays 06:23 UTC — off the :00 stampede
+
+permissions:
+  contents: read
+  id-token: write # google-github-actions/auth (harmless when skipped)
+
+env:
+  GO_VERSION: '1.26'
+
+jobs:
+  e2e-real-provider:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HAS_GCP_KEY: ${{ secrets.GCP_SA_KEY != '' }}
+      GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+      GOOGLE_GENAI_USE_VERTEXAI: 'true'
+      GOOGLE_CLOUD_LOCATION: ${{ secrets.GOOGLE_CLOUD_LOCATION }}
+      ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.ANTHROPIC_VERTEX_PROJECT_ID }}
+      CLOUD_ML_REGION: ${{ secrets.CLOUD_ML_REGION }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Authenticate to Google Cloud
+        if: env.HAS_GCP_KEY == 'true'
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Run real-provider E2E (skips without credentials)
+        run: bash dev/ci/presubmits/e2e-real-provider

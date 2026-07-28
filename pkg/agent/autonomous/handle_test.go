@@ -77,12 +77,49 @@ func TestAutonomousHandle_RunsToCompletion(t *testing.T) {
 	}
 }
 
+// gatedTextTurn returns a scenario that signals `started` when the
+// LLM call begins and then BLOCKS until `release` is closed before
+// yielding its response. This is the de-flake seam (#397): tests that
+// need "a turn is provably in flight" or "pause landed before this
+// turn completed" coordinate on channels instead of sleeping and
+// hoping the scheduler cooperated.
+// closedChan returns an already-closed channel — a gatedTextTurn
+// release that never blocks, for turns that only need the started
+// signal.
+func closedChan() <-chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}
+
+func gatedTextTurn(text string, started chan<- struct{}, release <-chan struct{}) scenarioFn {
+	return func(ctx context.Context, _ *adkmodel.LLMRequest) []stubResp {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		content := &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: text}}}
+		return []stubResp{{resp: &adkmodel.LLMResponse{
+			Content:      content,
+			FinishReason: genai.FinishReasonStop,
+			TurnComplete: true,
+		}}}
+	}
+}
+
 func TestAutonomousHandle_StopCancelsRun(t *testing.T) {
 	t.Parallel()
-	// Each turn yields a slow text response so we have time to
-	// observe the stop before the loop voluntarily exits.
+	// Turn 1 signals when it is in flight and blocks until released,
+	// so Stop() is issued at a KNOWN point instead of after a sleep
+	// and a prayer (#397 de-flake).
+	turn1Started := make(chan struct{}, 1)
+	turn1Release := make(chan struct{})
 	llm := &stubLLM{scenarios: []scenarioFn{
-		slowTextTurn("stalling", 500*time.Millisecond),
+		gatedTextTurn("stalling", turn1Started, turn1Release),
 		slowTextTurn("stalling", 500*time.Millisecond),
 		slowTextTurn("stalling", 500*time.Millisecond),
 		slowTextTurn("stalling", 500*time.Millisecond),
@@ -94,11 +131,17 @@ func TestAutonomousHandle_StopCancelsRun(t *testing.T) {
 		t.Fatalf("StartAutonomous: %v", err)
 	}
 
-	// Give the first turn a moment to be in flight.
-	time.Sleep(100 * time.Millisecond)
+	// Deterministic: wait for turn 1 to actually be in flight, stop,
+	// then release the blocked LLM call so cancellation propagates.
+	select {
+	case <-turn1Started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("turn 1 never started")
+	}
 	if err := h.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
+	close(turn1Release)
 	// Wait should return promptly with a cancelled run.
 	doneCh := make(chan struct{})
 	go func() {
@@ -121,9 +164,19 @@ func TestAutonomousHandle_StopCancelsRun(t *testing.T) {
 
 func TestAutonomousHandle_PauseHaltsBeforeNextTurn(t *testing.T) {
 	t.Parallel()
+	// De-flaked (#397): turn 1 blocks until released and turn 2
+	// signals if it ever starts, so the assertions coordinate on
+	// KNOWN points instead of sleeps. The old shape sampled the call
+	// counter after observing Status()==Paused — but Pause() flips
+	// the status immediately from the caller while a turn can still
+	// be in flight, so the counter could legally advance once more
+	// ("before=2 after=3" flakes under CI load).
+	turn1Started := make(chan struct{}, 1)
+	turn1Release := make(chan struct{})
+	turn2Started := make(chan struct{}, 1)
 	llm := &stubLLM{scenarios: []scenarioFn{
-		textTurn("turn 1", 1, 1),
-		textTurn("turn 2", 1, 1),
+		gatedTextTurn("turn 1", turn1Started, turn1Release),
+		gatedTextTurn("turn 2", turn2Started, closedChan()),
 		textTurn("turn 3", 1, 1),
 		doneCallTurn("ok"),
 		textTurn("done", 1, 1),
@@ -136,33 +189,35 @@ func TestAutonomousHandle_PauseHaltsBeforeNextTurn(t *testing.T) {
 	}
 	defer h.Stop()
 
-	// Pause asap; the first turn may already be in flight, but the
-	// pause takes effect at the next beforeTurn check.
+	// Pause while turn 1 is PROVABLY in flight (its LLM call has
+	// signaled and is blocked on our release). The pause takes
+	// effect at the next beforeTurn check.
+	select {
+	case <-turn1Started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("turn 1 never started")
+	}
 	if err := h.Pause(); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
+	close(turn1Release)
 
-	// Wait until status reflects paused. The pause shows up as soon
-	// as the BeforeTurn hook fires on the loop side — i.e. between
-	// turns. Give the loop up to 2s.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if h.Status() == AutonomousPaused {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+	// Turn 1 completes; the driver must then park at BeforeTurn.
+	// Turn 2 starting would signal turn2Started — assert it doesn't.
+	// The window is a negative-assertion bound, not a sync point:
+	// the pause landed before turn 1 completed, so the driver is
+	// GUARANTEED to see pauseCh at the boundary; if it doesn't, the
+	// bug is real, not timing.
+	select {
+	case <-turn2Started:
+		t.Fatal("turn 2 started while paused")
+	case <-time.After(200 * time.Millisecond):
 	}
-	if h.Status() != AutonomousPaused {
-		t.Fatalf("Status = %v, want AutonomousPaused", h.Status())
+	if got := h.Status(); got != AutonomousPaused {
+		t.Fatalf("Status = %v, want AutonomousPaused", got)
 	}
-
-	// Sample the call count, wait, sample again — no new turns
-	// should land while paused.
-	before := atomic.LoadInt32(&llm.calls)
-	time.Sleep(300 * time.Millisecond)
-	after := atomic.LoadInt32(&llm.calls)
-	if after != before {
-		t.Errorf("calls advanced during pause: before=%d after=%d", before, after)
+	if calls := atomic.LoadInt32(&llm.calls); calls != 1 {
+		t.Errorf("calls = %d while paused, want exactly 1 (turn 1 only)", calls)
 	}
 
 	// Resume; the loop continues until done.

@@ -692,6 +692,20 @@ Worked example for a K8s deployment ConfigMap:
 
 See [Attach mode TUI](/reference/attach-tui/) for the protocol and CLI overview, including the `--attach-token=<envvar>` flag that pairs with `token_env`.
 
+### `attach.cost_rate_limit`
+
+Tunes the per-caller token bucket that bounds the **cost-bearing** attach endpoints — the five slash ops (`compact`, `done`, `btw`, `subagent`, `replan`), `POST /sessions`, and `pricing/refresh`. On by default; reads, `/events` streams, `/inject`, and `/wake` are never limited. Callers are the server-verified identities (bearer table, validated proxy assertion, or the single anonymous bucket in single-user mode). Over-limit requests get `429` with a `Retry-After` header.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `per_minute` | int | `10` | Sustained per-caller rate. `0` keeps the default; negative fails validation. |
+| `burst` | int | `5` | Bucket size — how many back-to-back calls before the sustained rate applies. |
+| `disabled` | bool | `false` | Turns enforcement off entirely. Prefer raising the limits over disabling on multi-session daemons. |
+
+```json
+{ "attach": { "cost_rate_limit": { "per_minute": 60, "burst": 15 } } }
+```
+
 ### `attach.multi_session`
 
 Nested under `attach`, enables the multi-tenant surface where distinct callers each drive their own session on the same daemon. See [Multi-session](/concepts/multi-session/) for the operator narrative; this table is the field reference.

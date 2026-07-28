@@ -20,6 +20,8 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 #### Feature
 
+- tests: `TestResumeAutonomous_CancelledWhileWaitingReportsElapsedDuration` (added in #462) raced its 100ms deadline against the resume's setup under full-suite `-race` load; the deadline is now 1s and the test skips honestly when setup provably never reached the deferred-wake wait (the only path that stamps the asserted fields).
+- config: `attach.cost_rate_limit` exposes the #463 per-caller cost rate limit to operators — `{per_minute, burst, disabled}` in `.agents/config.json` flows onto `attach.Options.CostRateLimit` at daemon startup (omitted = library defaults: burst 5, 10/min; negatives fail validation). Documented on the site configuration reference.
 - attach: per-caller rate limiting on the cost-bearing endpoints (`pkg/attach/rate_limit.go`), on by default — a token bucket keyed by the middleware-resolved caller identity (bearer-table hit, validated proxy assertion, or the anonymous single-user bucket; never spoofable headers/IPs) bounds the operations that run real model/network work per request: the five slash ops (`compact`, `done`, `btw`, `subagent`, `replan`), `POST /sessions`, and `POST …/pricing/refresh`. Defaults: burst 5, 10/minute per caller; tune or disable via `attach.Options.CostRateLimit` (`{PerMinute, Burst, Disabled}`). Over-limit requests get `429` with a `Retry-After` header and a matching JSON body. Reads, `/events` streams, `/inject`, `/wake`, and perms endpoints are unlimited. Closes [#463](https://github.com/go-steer/core-agent/issues/463).
 
 #### Bug or Regression

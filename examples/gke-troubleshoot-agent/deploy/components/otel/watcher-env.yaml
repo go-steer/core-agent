@@ -19,8 +19,10 @@
 # (docs confirm auto-inject skips this).
 #
 # Without OTEL_SERVICE_NAME the watcher's spans show up in Cloud
-# Trace as "unknown_service:k8s-event-watcher"; setting it explicitly
-# lets operators filter by service.name=k8s-event-watcher cleanly.
+# Trace as "unknown_service:lookout" (the binary shipped by
+# go-steer/k8s-lookout); setting it explicitly keeps the service
+# name matched to the Deployment so operators can filter by
+# service.name=k8s-event-watcher cleanly.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

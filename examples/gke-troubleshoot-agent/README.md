@@ -2,7 +2,8 @@
 
 Semi-autonomous Kubernetes triage agent for GKE. Runs `core-agent` as
 a long-lived daemon in your cluster, watches Kubernetes Events via a
-sidecar (`k8s-event-watcher`), and drives per-incident investigations
+sidecar (k8s-lookout's `lookout watch`, deployed under the
+`k8s-event-watcher` name), and drives per-incident investigations
 using structured triage skills backed by the GKE MCP server.
 
 This recipe layers on top of `../gke-deploy/` — the multi-session
@@ -22,7 +23,12 @@ apply here too.
    session-resume-enabled) exposed as an in-cluster Service.
 2. A `k8s-event-watcher` Deployment (sidecar; runs alongside the
    daemon in the same cluster) watching Events via client-go
-   informer.
+   informer. It runs `ghcr.io/go-steer/lookout:v0.8.0` — the
+   watcher's source lives in
+   [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout),
+   and its image is a drop-in swap for the retired
+   `ghcr.io/go-steer/k8s-event-watcher` image (same flags, same
+   RBAC, same Deployment shape).
 3. The `k8s-triage` skill — a router that loads reason-specific
    references (CrashLoopBackOff, ImagePullBackOff, OOMKilled,
    FailedMount, FailedScheduling, BackOff, Unhealthy,
@@ -409,6 +415,16 @@ incrementally.
 For failure modes you want the sidecar to WATCH but currently
 doesn't: edit the watcher's `--reason` flag to add the reason to
 the allow-list.
+
+This recipe is the event-driven-triage baseline: the watcher runs
+with the classic Events-only configuration this recipe has always
+used. The [k8s-lookout](https://github.com/go-steer/k8s-lookout)
+project it ships from has a much larger capability surface —
+additional signal sources via `--sources=` (object-state, rollout,
+saturation, degradation, expiry, capacity, token-burn), storm
+correlation (`--storm=`), an on-disk occurrence store (`--store=`),
+and a `-gke` image flavor with cloud-provider sources compiled in.
+See that repo's README and deploy manifests to opt in.
 
 ## Related
 

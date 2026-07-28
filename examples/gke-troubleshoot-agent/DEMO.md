@@ -100,12 +100,19 @@ kubectl config current-context | grep -q "${CLUSTER_NAME}" \
 ### Container images
 
 ```bash
-# v2.6.0 images published on GHCR (should exist since we tagged v2.6.0)
-for img in core-agent core-agent-slim core-agent-tui k8s-event-watcher; do
+# v2.6.0 images published on GHCR (should exist since we tagged v2.6.0).
+# Three images ship from this repo; the watcher ships from
+# go-steer/k8s-lookout as ghcr.io/go-steer/lookout (its ENTRYPOINT is
+# `lookout watch`, a drop-in swap for the retired k8s-event-watcher
+# image).
+for img in core-agent core-agent-slim core-agent-tui; do
   crane digest "ghcr.io/go-steer/${img}:2.6.0" >/dev/null 2>&1 \
       && echo "✓ ghcr.io/go-steer/${img}:2.6.0 exists" \
       || echo "✗ ghcr.io/go-steer/${img}:2.6.0 NOT found — check ε.4 release ran"
 done
+crane digest "ghcr.io/go-steer/lookout:v0.8.0" >/dev/null 2>&1 \
+    && echo "✓ ghcr.io/go-steer/lookout:v0.8.0 exists" \
+    || echo "✗ ghcr.io/go-steer/lookout:v0.8.0 NOT found — check the k8s-lookout release"
 ```
 
 (If `crane` isn't installed, skip this — the deploy will fail loudly if an image is missing.)
@@ -475,7 +482,7 @@ kubectl -n "${DEMO_NS}" get pods
 kubectl get ns
 ```
 
-**Say**: "This is a live GKE cluster. Two pods in the `agent-triage` namespace: `core-agent` is the LLM-driven agent daemon; `k8s-event-watcher` is the sidecar that turns Kubernetes Events into agent injects. My TUI is attached over port-forward with an SRE oncall bearer token. Session list is empty — nothing's wrong yet."
+**Say**: "This is a live GKE cluster. Two pods in the `agent-triage` namespace: `core-agent` is the LLM-driven agent daemon; `k8s-event-watcher` is the sidecar (k8s-lookout's `lookout watch`) that turns Kubernetes Events into agent injects. My TUI is attached over port-forward with an SRE oncall bearer token. Session list is empty — nothing's wrong yet."
 
 ```bash
 # Pane A — show TUI session list (empty)
@@ -758,7 +765,7 @@ If they differ, the Secret was created with old tokens. Rerun setup step 3.
 ### Agent doesn't fire on the injected failure
 
 Two possibilities:
-1. **Sidecar didn't see the event**. The watcher is silent on successful inject (fixed by [#212](https://github.com/go-steer/core-agent/issues/212)), so check the metrics endpoint instead: `kubectl -n "${DEMO_NS}" port-forward deployment/k8s-event-watcher 9090:9090 & sleep 2 && curl -s http://localhost:9090/metrics | grep -E "watcher_events_(seen|matched|injected|deduped)_total"`. If `matched` incremented but `injected` didn't, the daemon POST failed (check the watcher log for the error line). If `seen` incremented but `matched` didn't, the event was filtered out. If nothing incremented, the k8s event never landed — check `kubectl -n "${TARGET_NS}" get events` directly.
+1. **Sidecar didn't see the event**. The watcher is silent on successful inject (fixed by [#212](https://github.com/go-steer/core-agent/issues/212)), so check the metrics endpoint instead: `kubectl -n "${DEMO_NS}" port-forward deployment/k8s-event-watcher 9090:9090 & sleep 2 && curl -s http://localhost:9090/metrics | grep -E "watcher_(events_(seen|injected|deduped)|inject_errors)_total"`. If `seen` incremented but neither `injected` nor `deduped` did, the event was filtered out by the reason allow-list. If `inject_errors` incremented, the daemon POST failed (check the watcher log for the error line). If nothing incremented, the k8s event never landed — check `kubectl -n "${TARGET_NS}" get events` directly.
 2. **Sidecar saw + injected but daemon rejected**. Check daemon logs: `kubectl -n "${DEMO_NS}" logs deployment/core-agent --tail=100 | grep -i inject`.
 
 If neither log shows the event, the failure hasn't emitted the expected `reason`. Check what reason kubelet actually used:

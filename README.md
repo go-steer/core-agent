@@ -175,7 +175,7 @@ func main() {
 }
 ```
 
-Fuller examples in [`examples/`](./examples/) — basic, with-tools, streaming, autonomous, autonomous-handle, autonomous-resume, with-subagent, background-monitor, scheduled-monitor, replay, plan-first, multi-session-bearer, cloud-run-deploy, gke-*.
+Fuller examples in [`examples/`](./examples/) — basic, with-tools, streaming, autonomous, autonomous-handle, autonomous-resume, with-subagent, background-monitor, scheduled-monitor, replay, plan-first, multi-session-bearer, cloud-run-deploy, gke-*, attach-daemon, compose-multi-session, parallel-spawn.
 
 ---
 

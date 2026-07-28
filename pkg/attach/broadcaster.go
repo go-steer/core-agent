@@ -132,6 +132,7 @@ type broadcaster struct {
 
 	mu        sync.Mutex
 	subs      map[*subscriber]struct{}
+	closed    bool               // set by Close under mu; Subscribe refuses to register after
 	cancel    context.CancelFunc // cancels the pump goroutine
 	startedAt int64              // last seq the pump has yielded
 
@@ -220,7 +221,10 @@ func newBroadcaster(entry *Entry) (*broadcaster, error) {
 // The returned channel is closed when:
 //   - ctx is cancelled (typical: HTTP request ends), OR
 //   - the subscriber falls behind subscriberBufferSize frames (the
-//     drop-the-subscriber decision; better than stalling everyone).
+//     drop-the-subscriber decision; better than stalling everyone), OR
+//   - the broadcaster is already Closed at registration time — the
+//     caller gets an immediately-closed channel (a clean EOF, exactly
+//     what a subscriber hung up BY Close sees).
 //
 // Caller MUST drain the channel until close to release goroutine
 // resources.
@@ -244,28 +248,20 @@ func (b *broadcaster) Subscribe(ctx context.Context, since int64) <-chan Frame {
 	// frames with no possible interleaving.
 	b.deliverBootFrames(ctx, sub)
 
-	b.mu.Lock()
-	firstSub := b.cancel == nil
-	b.subs[sub] = struct{}{}
-	// Lazy pump start on first subscriber.
-	if firstSub {
-		pumpCtx, cancel := context.WithCancel(context.Background())
-		b.cancel = cancel
-		// startedAt is set to the lowest "since" we've ever seen so
-		// the pump pulls from far enough back to satisfy this
-		// subscriber. Subsequent subscribers either find their
-		// since >= startedAt (already in flight) or get a fresh
-		// scan via the replay loop below.
-		b.startedAt = since
-		// Add/Done are paired here at the spawn site (not inside pump)
-		// so Close's wg.Wait tracks the goroutine's full lifetime.
-		b.wg.Add(1)
-		go func() {
-			defer b.wg.Done()
-			b.pump(pumpCtx)
-		}()
+	registered, firstSub := b.register(sub, since)
+	if !registered {
+		// Close won the race (handlers resolve the broadcaster via
+		// pool.For before subscribing, so DELETE /sessions'
+		// pool.Remove + Close can land in between, #483). Joining
+		// anyway would panic on the nil subs map and — worse — a
+		// late wg.Add/eventlog read after Close's wg.Wait returned
+		// would void the #424 "nothing reads the eventlog once Close
+		// returns" fence. Hand back a closed channel instead: the
+		// caller sees a clean EOF, same as being hung up by Close.
+		sub.closed = true
+		close(sub.ch)
+		return sub.ch
 	}
-	b.mu.Unlock()
 
 	// First-subscriber wiring: hand the broadcaster's Emit method to
 	// the agent so it can push typed events to the SSE stream while
@@ -281,14 +277,58 @@ func (b *broadcaster) Subscribe(ctx context.Context, since int64) <-chan Frame {
 
 	// Replay loop runs in its own goroutine so Subscribe returns
 	// immediately. The same channel carries both replayed and live
-	// frames — the client doesn't distinguish.
-	b.wg.Add(1)
+	// frames — the client doesn't distinguish. Its wg.Add already
+	// happened inside register, under the same critical section that
+	// published the subscriber (see there for why).
 	go func() {
 		defer b.wg.Done()
 		b.replayThenTail(ctx, sub, since)
 	}()
 
 	return sub.ch
+}
+
+// register publishes sub into the fan-out set and lazily starts the
+// pump, all under b.mu (deferred unlock — a panic here must not leave
+// the broadcaster mutex held forever, poisoning every future
+// Subscribe/Emit/Close). Returns registered=false when Close has
+// already run; the caller must not join.
+//
+// Both wg.Add calls live INSIDE the critical section on purpose:
+// Close sets b.closed under b.mu and only then wg.Waits, so every
+// Add either happens-before Close's flag flip (and Close waits for
+// the goroutine) or the flag is observed and no goroutine spawns.
+// An Add outside the lock could slip in after wg.Wait returned —
+// re-opening the #424 use-after-close window on the eventlog.
+func (b *broadcaster) register(sub *subscriber, since int64) (registered, firstSub bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return false, false
+	}
+	firstSub = b.cancel == nil
+	b.subs[sub] = struct{}{}
+	// Lazy pump start on first subscriber.
+	if firstSub {
+		pumpCtx, cancel := context.WithCancel(context.Background())
+		b.cancel = cancel
+		// startedAt is set to the lowest "since" we've ever seen so
+		// the pump pulls from far enough back to satisfy this
+		// subscriber. Subsequent subscribers either find their
+		// since >= startedAt (already in flight) or get a fresh
+		// scan via the replay loop in Subscribe.
+		b.startedAt = since
+		// Add/Done are paired at the spawn site (not inside pump)
+		// so Close's wg.Wait tracks the goroutine's full lifetime.
+		b.wg.Add(1)
+		go func() {
+			defer b.wg.Done()
+			b.pump(pumpCtx)
+		}()
+	}
+	// The caller's replayThenTail slot.
+	b.wg.Add(1)
+	return true, firstSub
 }
 
 // Emit pushes a typed event to every current subscriber. Non-blocking
@@ -633,6 +673,13 @@ func (b *broadcaster) detachLocked(sub *subscriber) {
 // Server.Close.
 func (b *broadcaster) Close() {
 	b.mu.Lock()
+	// Refuse all future registrations FIRST: a Subscribe racing this
+	// Close (handlers grab the broadcaster from the pool before
+	// subscribing) must either land before this flag — in which case
+	// the loop below hangs it up and wg.Wait covers its goroutines —
+	// or observe it and never touch the nilled subs map / spawn a
+	// late eventlog reader (#483).
+	b.closed = true
 	// Wake replayThenTail goroutines parked on the live-tail wait,
 	// independent of their request contexts. Once — the channel is a
 	// broadcast latch, and Close may be called more than once. The nil

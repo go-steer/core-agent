@@ -205,7 +205,7 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 		// itself is the GATE's job: DecisionAllowAlways flows back
 		// through gatePrompterBridge and the gate installs the
 		// in-memory pattern AND persists the fully-expanded grant
-		// via the compose.ConfigGrantStore wired in main. Doing it
+		// via the permissions.ConfigGrantStore wired in main. Doing it
 		// here too would double-write — and with a DIVERGENT shape
 		// (this callback only saw the raw PersistKey, not the
 		// subtree-expanded pattern the gate installs).
@@ -214,13 +214,13 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 			if deps.AgentsDir == "" {
 				return nil
 			}
-			return compose.PersistModelChoice(deps.AgentsDir, id)
+			return config.PersistModelChoice(deps.AgentsDir, id)
 		},
 		PersistThemeChoice: func(name string) error {
 			if deps.AgentsDir == "" {
 				return nil
 			}
-			return compose.PersistThemeChoice(deps.AgentsDir, name)
+			return config.PersistThemeChoice(deps.AgentsDir, name)
 		},
 	}
 
@@ -671,7 +671,7 @@ func (a *coreAgentAdapter) AddAllowPatterns(patterns []string) error {
 	if a.deps.AgentsDir == "" {
 		return nil
 	}
-	return compose.AppendPermissionsAllow(a.deps.AgentsDir, patterns)
+	return config.AppendPermissionsAllow(a.deps.AgentsDir, patterns)
 }
 
 // AddDenyPatterns satisfies coretui.PermissionController.
@@ -683,7 +683,7 @@ func (a *coreAgentAdapter) AddDenyPatterns(patterns []string) error {
 	if a.deps.AgentsDir == "" {
 		return nil
 	}
-	return compose.AppendPermissionsDeny(a.deps.AgentsDir, patterns)
+	return config.AppendPermissionsDeny(a.deps.AgentsDir, patterns)
 }
 
 // AddBuiltinAllowExtra satisfies coretui.PermissionController.
@@ -702,7 +702,7 @@ func (a *coreAgentAdapter) AddBuiltinAllowExtra(bundleName string) error {
 	if a.deps.AgentsDir == "" {
 		return nil
 	}
-	return compose.AppendBuiltinAllowExtra(a.deps.AgentsDir, bundleName)
+	return config.AppendBuiltinAllowExtra(a.deps.AgentsDir, bundleName)
 }
 
 // Tools satisfies coretui.ToolLister. Routes through the agent's

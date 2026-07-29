@@ -19,7 +19,7 @@
 //
 //   - compose.BuildMultiSessionAuthn — bearer-table users.json ->
 //     per-request auth.Authenticator
-//   - permissions.New + Gate.SetGrantStore(&compose.ConfigGrantStore)
+//   - permissions.New + Gate.SetGrantStore(&permissions.ConfigGrantStore)
 //     — an "allow always" prompt answer persists into
 //     .agents/config.json (demonstrated with a scripted prompter)
 //   - compose.SessionFactoryDeps + BuildSessionFactory /
@@ -126,7 +126,7 @@ func run() error {
 		Mode:     permissions.ModeAsk,
 		Prompter: allowAlwaysPrompter{},
 	})
-	gate.SetGrantStore(&compose.ConfigGrantStore{AgentsDir: agentsDir})
+	gate.SetGrantStore(&permissions.ConfigGrantStore{AgentsDir: agentsDir})
 
 	// Demonstrate the persistence contract: an ask-mode check prompts,
 	// the scripted prompter answers "allow always", and the gate

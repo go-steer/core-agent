@@ -11,7 +11,7 @@ and then drives it over HTTP as two identities.
 
 - `compose.BuildMultiSessionAuthn` — a `users.json` bearer table
   (mode `0600` required) becomes the per-request `auth.Authenticator`.
-- `permissions.New` + `gate.SetGrantStore(&compose.ConfigGrantStore{...})`
+- `permissions.New` + `gate.SetGrantStore(&permissions.ConfigGrantStore{...})`
   — an ask-mode check prompts, a scripted prompter answers
   **allow always**, and the grant persists into
   `.agents/config.json` (`permissions.allow`), surviving restarts.
@@ -37,7 +37,7 @@ tokens. Exits 0 after a clean shutdown.
 | Concern | API |
 |---|---|
 | authn | `compose.BuildMultiSessionAuthn(config.MultiSessionConfig{...})` |
-| grants | `permissions.Gate.SetGrantStore`, `compose.ConfigGrantStore` |
+| grants | `permissions.Gate.SetGrantStore`, `permissions.ConfigGrantStore` |
 | sessions | `compose.SessionFactoryDeps`, `BuildSessionFactory`, `BuildSessionResumer` |
 | ACL persistence | `attach.NewSessionACLStore(ctx, handle.DB)`, `attach.NewSessionRegistryWithStore` |
 | listener | `attach.Options{Authenticator, MultiSessionEnabled, SessionFactory, Resumer}` |

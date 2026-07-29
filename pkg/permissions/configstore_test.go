@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package compose
+package permissions
 
 import (
 	"context"
@@ -21,7 +21,6 @@ import (
 	"testing"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
-	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
 
 func TestConfigGrantStore_PolicyGrant_AppendsAllowPattern(t *testing.T) {
@@ -29,8 +28,8 @@ func TestConfigGrantStore_PolicyGrant_AppendsAllowPattern(t *testing.T) {
 	dir := t.TempDir()
 	s := &ConfigGrantStore{AgentsDir: dir}
 
-	g := permissions.Grant{
-		Kind:    permissions.PromptKindBash,
+	g := Grant{
+		Kind:    PromptKindBash,
 		Tool:    "bash",
 		Key:     "git status",
 		Pattern: "bash:git status",
@@ -54,7 +53,7 @@ func TestConfigGrantStore_PolicyGrant_AppendsAllowPattern(t *testing.T) {
 		}
 	}
 	if count != 1 {
-		t.Fatalf("permissions.allow has %d copies of the pattern, want 1 (allow=%v)", count, cfg.Permissions.Allow)
+		t.Fatalf("allow has %d copies of the pattern, want 1 (allow=%v)", count, cfg.Permissions.Allow)
 	}
 }
 
@@ -68,12 +67,12 @@ func TestConfigGrantStore_PathGrant_TypedEntryCarriesAccess(t *testing.T) {
 	// there would silently broaden the grant on restart, which is
 	// exactly the surprise the gate's asymmetric promotion exists
 	// to prevent.
-	g := permissions.Grant{
-		Kind:    permissions.PromptKindPathScope,
+	g := Grant{
+		Kind:    PromptKindPathScope,
 		Tool:    "path_scope",
 		Key:     "/data/reports/q3.csv",
 		Pattern: "/data/reports/...",
-		Access:  permissions.AccessRead,
+		Access:  AccessRead,
 	}
 	if err := s.Persist(context.Background(), g); err != nil {
 		t.Fatalf("Persist: %v", err)
@@ -126,8 +125,8 @@ func TestAppendPathScopeEntry_WidensToUnion(t *testing.T) {
 func TestConfigGrantStore_EmptyAgentsDir_NoOp(t *testing.T) {
 	t.Parallel()
 	s := &ConfigGrantStore{}
-	err := s.Persist(context.Background(), permissions.Grant{
-		Kind: permissions.PromptKindBash, Pattern: "bash:ls",
+	err := s.Persist(context.Background(), Grant{
+		Kind: PromptKindBash, Pattern: "bash:ls",
 	})
 	if err != nil {
 		t.Fatalf("Persist with empty AgentsDir: %v, want nil (session-scoped fallback)", err)
@@ -142,8 +141,8 @@ func TestConfigGrantStore_RoundTripsThroughGate(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
-	always := &scriptedPrompter{decision: permissions.DecisionAllowAlways}
-	g1 := permissions.New(permissions.Options{Prompter: always})
+	always := &scriptedPrompter{decision: DecisionAllowAlways}
+	g1 := New(Options{Prompter: always})
 	g1.SetGrantStore(&ConfigGrantStore{AgentsDir: dir})
 	if err := g1.CheckBash(context.Background(), "kubectl get pods"); err != nil {
 		t.Fatalf("first gate CheckBash: %v", err)
@@ -153,7 +152,7 @@ func TestConfigGrantStore_RoundTripsThroughGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	g2, err := permissions.FromConfig(cfg, dir, "", &scriptedPrompter{decision: permissions.DecisionDeny})
+	g2, err := FromConfig(cfg, dir, "", &scriptedPrompter{decision: DecisionDeny})
 	if err != nil {
 		t.Fatalf("FromConfig (restart): %v", err)
 	}
@@ -186,17 +185,17 @@ func TestConfigGrantStore_ConcurrentPersistLosesNothing(t *testing.T) {
 			// Three racing writer flavors per iteration: a gate
 			// "allow always" grant, an operator /deny, and a typed
 			// path-scope grant.
-			errs <- s.Persist(context.Background(), permissions.Grant{
-				Kind:    permissions.PromptKindBash,
+			errs <- s.Persist(context.Background(), Grant{
+				Kind:    PromptKindBash,
 				Tool:    "bash",
 				Pattern: fmt.Sprintf("bash:cmd-%02d", i),
 			})
-			errs <- AppendPermissionsDeny(dir, []string{fmt.Sprintf("bash:evil-%02d", i)})
-			errs <- s.Persist(context.Background(), permissions.Grant{
-				Kind:    permissions.PromptKindPathScope,
+			errs <- config.AppendPermissionsDeny(dir, []string{fmt.Sprintf("bash:evil-%02d", i)})
+			errs <- s.Persist(context.Background(), Grant{
+				Kind:    PromptKindPathScope,
 				Tool:    "path_scope",
 				Pattern: fmt.Sprintf("/data/%02d/...", i),
-				Access:  permissions.AccessRead,
+				Access:  AccessRead,
 			})
 		}(i)
 	}
@@ -238,8 +237,8 @@ func TestConfigGrantStore_ConcurrentPersistLosesNothing(t *testing.T) {
 }
 
 // scriptedPrompter returns a fixed decision for every prompt.
-type scriptedPrompter struct{ decision permissions.Decision }
+type scriptedPrompter struct{ decision Decision }
 
-func (p *scriptedPrompter) AskApproval(_ context.Context, _ permissions.PromptRequest) (permissions.Decision, error) {
+func (p *scriptedPrompter) AskApproval(_ context.Context, _ PromptRequest) (Decision, error) {
 	return p.decision, nil
 }

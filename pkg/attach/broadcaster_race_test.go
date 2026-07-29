@@ -117,7 +117,7 @@ func TestBroadcaster_DualSourceSend_NoRace(t *testing.T) {
 		// Shared pump: locks b.mu, iterates b.subs, sends.
 		go func() {
 			defer wg.Done()
-			b.pump(ctx)
+			b.pump(ctx, b.pumpGen)
 		}()
 		// Per-subscriber replay+tail: the goroutine that used to send
 		// unlocked.
@@ -222,7 +222,7 @@ func TestBroadcaster_BootFramesRaceWithPump(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			b.pump(ctx)
+			b.pump(ctx, b.pumpGen)
 		}()
 		go func() {
 			defer wg.Done()

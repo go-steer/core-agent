@@ -18,6 +18,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ### Changes by Kind
 
+#### Bug or Regression
+
+- attach: a transient eventlog `Watch` error (e.g. SQLite "database is locked") no longer permanently freezes a session's live-tail. The pump goroutine died without cleanup: subscribers kept open-but-silent channels (a frozen stream with no EOF to trigger a client reconnect), and the stale `b.cancel` made every future `Subscribe` skip the lazy pump start — one hiccup bricked the stream until every client disconnected at once. A deferred sweep in the pump now makes every exit path converge: all subscribers are detached (channels close, clients reconnect) and the restart latch is cleared, so the next `Subscribe` brings up a fresh pump. The sweep is generation-guarded — a stale pump whose sweep runs late must not hang up a successor pump's subscribers or cancel the successor's context (caught by adversarial review of the initial fix; both interleavings are pinned by deterministic tests). Closes [#485](https://github.com/go-steer/core-agent/issues/485).
+
 #### Security
 
 - attach: lazy session resume no longer runs before authorization and the cost rate limiter. A `Lookup` miss on any session-scoped endpoint reconstructed the full session — agent construction, instruction load, unbounded eventlog replay into the tracker, wake-loop spawn — before the caller's ACL check and before the #463 limiter, so a caller destined for a 404 or 429 forced exactly the work those checks exist to bound (and gained a mild session-existence/cost oracle). Now the cost limiter fires before entry lookup on the six cost-limited routes (the five slash ops + `pricing/refresh`; an over-limit caller gets 429 before the lookup outcome is computed), and with ACL enforcement on, a resume is pre-authorized against the persisted ACL row — evaluated per-caller outside the resume singleflight so one caller's deny can never become another's shared result; a deny returns the standard indistinguishable 404. In-memory lookups and the post-lookup per-action authorize are unchanged. Closes [#484](https://github.com/go-steer/core-agent/issues/484).

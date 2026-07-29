@@ -1,5 +1,13 @@
 # System prompt layering: minimal core, provider quirks, mode overlays, user layers
 
+> **Status (2026-07-29):** SHIPPED — #459 implemented this design
+> (PR #522), and the #460 follow-up landed the executor serialization
+> of mutating tools, taking the edit-sequencing paragraph's marked
+> exit path: that paragraph is now DELETED from `CoreInstruction` and
+> the dispatch-fact sentence states the serialized contract. The
+> quoted layer-1 text below is the as-designed version; `pkg/agent`
+> is the living source.
+
 Design doc for restructuring how core-agent assembles system
 instructions. Sibling to `docs/instruction-loader-v2-design.md` (the
 user-layer loader this composes with), `docs/scheduled-monitoring-design.md`

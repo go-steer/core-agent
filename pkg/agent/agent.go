@@ -48,6 +48,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/auth"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v2/pkg/tools"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 	"github.com/go-steer/core-agent/v2/pkg/watchdog"
 )
@@ -79,31 +80,16 @@ const DefaultAppName = "core-agent"
 // marked exit path for when it does. Everything else goes in quirks,
 // overlays, tool descriptions, or user layers.
 
-// CoreInstruction is layer 1 — the always-on core. Three items:
-// the parallel-dispatch fact (harness contract), the edit-sequencing
-// rule (safety invariant; EXIT PATH: deleted when the executor
-// serializes mutating tools, tracked in #460), and the
-// compaction/handover contract (harness contract — the paragraph
-// spawned subagents were silently losing pre-#459).
-const CoreInstruction = `Independent tool calls issued in the same response execute in parallel; a call that depends on another call's result must go in a later response.
+// CoreInstruction is layer 1 — the always-on core. Two items, both
+// harness contract: the dispatch fact (read-only tools run
+// concurrently; the runtime serializes state-mutating tools — the
+// #460 enforcement whose landing DELETED the old edit-sequencing
+// prompt rule, exactly per its marked exit path) and the
+// compaction/handover contract (the paragraph spawned subagents
+// were silently losing pre-#459).
+const CoreInstruction = `Independent tool calls issued in the same response may execute concurrently; the runtime serializes state-mutating tools so writes cannot race. A call that depends on another call's result must go in a later response — results are never visible to sibling calls in the same response.
 
-Do not issue multiple ` + "`edit_file`" + ` or ` + "`write_file`" + ` calls targeting the
-same path in one response — those must run sequentially across turns
-so each edit sees the prior result; parallel writes to the same file
-race and corrupt state. If you are unsure whether two operations are
-independent, run them sequentially.
-
-Earlier conversation may have been summarized into context for you in
-one of two shapes: "[Conversation compacted…]" framing (we hit the
-context wall mid-task and the prior turns were condensed), or "[The
-prior task is complete…]" framing (the prior task closed cleanly and
-a handover record replaces its history). Both arrive wrapped at the
-start of your context, both are authoritative shared history. Read
-FROM them when the user references prior work — what was discussed,
-what files were touched, what was decided — rather than re-running
-tools to rediscover what's already recorded there. The conversation
-continues in both cases; treat the framing as picking up an
-in-progress session, not as a fresh start.`
+Earlier conversation may have been summarized into context for you in one of two shapes: "[Conversation compacted…]" framing (we hit the context wall mid-task and the prior turns were condensed), or "[The prior task is complete…]" framing (the prior task closed cleanly and a handover record replaces its history). Both arrive wrapped at the start of your context, both are authoritative shared history. Read FROM them when the user references prior work — what was discussed, what files were touched, what was decided — rather than re-running tools to rediscover what's already recorded there. The conversation continues in both cases; treat the framing as picking up an in-progress session, not as a fresh start.`
 
 // GeminiParallelismQuirk is a layer-2 provider quirk applied to
 // Gemini-family models (model identifier containing "gemini").
@@ -692,6 +678,19 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 	var agentRef *Agent
 	if o.checkpointer != nil {
 		o.tools = append(o.tools, NewMarkTaskDoneTool(func() *Agent { return agentRef }))
+	}
+
+	// Mutating-tool serialization (#460): read-only tools keep ADK's
+	// concurrent dispatch; state-mutating tools share one per-agent
+	// lock so parallel writes can never race and corrupt state — the
+	// runtime enforcement that retired CoreInstruction's old
+	// edit-sequencing prompt rule. Wrapped last so every registered
+	// tool (consumer tools, internal mark_task_done, spawn extras)
+	// is covered by the same serializer.
+	var mutationMu tools.MutationSerializer
+	o.tools = tools.SerializeMutating(o.tools, &mutationMu)
+	for i, ts := range o.toolsets {
+		o.toolsets[i] = tools.SerializeMutatingToolset(ts, &mutationMu)
 	}
 
 	// Layer assembly (#459). WithInstruction / the deprecated prefix

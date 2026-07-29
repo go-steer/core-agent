@@ -62,6 +62,7 @@ import (
 	"google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent/internal/subsession"
+	"github.com/go-steer/core-agent/v2/pkg/tools"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
@@ -272,12 +273,16 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 		// mid-flight; the parent consumes the result).
 		subInstruction = assembleInstruction(subModel.Name(), ModeAutonomous, false, "", []string{spec.SystemPrompt})
 	}
+	// Mutating-tool serialization (#460), same guarantee the parent
+	// gets from agent.New — subtasks usually run read-only subsets,
+	// but the invariant must hold wherever a model response fans out.
+	var subMutationMu tools.MutationSerializer
 	subInner, err := llmagent.New(llmagent.Config{
 		Name:        "subtask_" + spec.Name,
 		Model:       subModel,
 		Description: "core-agent subtask: " + spec.Name,
 		Instruction: subInstruction,
-		Tools:       spec.Tools,
+		Tools:       tools.SerializeMutating(spec.Tools, &subMutationMu),
 	})
 	if err != nil {
 		return SubtaskResult{}, fmt.Errorf("agent: RunSubtask: build llmagent: %w", err)

@@ -166,3 +166,15 @@ func (e simpleErr) Error() string { return string(e) }
 
 // Compile-time assertion that tool.Context is still a context.Context.
 var _ context.Context = (tool.Context)(nil)
+
+// ReadOnlyHint forwards the wrapped tool's dispatch-class
+// declaration when it makes one (tools.ReadOnlyHinter, #460). ADK's
+// mcptoolset does not surface the MCP readOnlyHint annotation today,
+// so in practice MCP tools classify as mutating (the fail-safe
+// default) until it does — this forward keeps the seam ready.
+func (r *renamedTool) ReadOnlyHint() bool {
+	if h, ok := r.inner.(interface{ ReadOnlyHint() bool }); ok {
+		return h.ReadOnlyHint()
+	}
+	return false
+}

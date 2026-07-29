@@ -217,19 +217,21 @@ func TestInstructionLayers_GuardLoadBearingSubstrings(t *testing.T) {
 	// in review rather than silently dropping behavior we depend on.
 	// The old monolith's persona / plan-sketch / "Efficiency is
 	// secondary" lines were deleted or softened per the disposition
-	// table in docs/system-prompt-layering-design.md — do not re-add
-	// guards for them.
+	// table in docs/system-prompt-layering-design.md, and the
+	// edit-sequencing paragraph was DELETED by #460's executor
+	// serialization (its marked exit path) — do not re-add guards
+	// for any of them.
 	for _, tc := range []struct {
 		layer string
 		text  string
 		wants []string
 	}{
 		{"CoreInstruction", CoreInstruction, []string{
-			"execute in parallel",              // parallel-dispatch fact (harness contract)
-			"parallel writes to the same file", // edit-collision guard (EXIT PATH: #460 deletes this)
-			"run them sequentially",            // edit-sequencing fallback
-			"Conversation compacted",           // compaction contract
-			"authoritative shared history",     // compaction contract
+			"execute concurrently",            // dispatch fact (harness contract)
+			"serializes state-mutating tools", // the #460 runtime guarantee, stated as fact
+			"must go in a later response",     // result-visibility rule
+			"Conversation compacted",          // compaction contract
+			"authoritative shared history",    // compaction contract
 		}},
 		{"GeminiParallelismQuirk", GeminiParallelismQuirk, []string{
 			"in parallel",                    // the measured mandate (dev/parallel-probe)

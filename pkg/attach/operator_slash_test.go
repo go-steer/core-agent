@@ -308,7 +308,7 @@ func TestIntegration_SlashSubagent_SpawnerUnavailable_501(t *testing.T) {
 	reg := NewSessionRegistry()
 	ag := &operatorSlashRegistrant{
 		stubRegistrant: stubRegistrant{app: "core-agent", user: "u", sid: "s1"},
-		subagentErr:    errors.New("agent: subagent spawner unavailable (no BackgroundAgentManager wired)"),
+		subagentErr:    errors.New("attachadapter: subagent spawner unavailable (no BackgroundAgentManager wired)"),
 	}
 	if _, err := reg.Register(ag); err != nil {
 		t.Fatal(err)

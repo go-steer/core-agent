@@ -445,9 +445,12 @@ func (ad *Adapter) AttachSpawnSubagent(ctx context.Context, spec attach.Subagent
 //
 // The message string is load-bearing: pkg/attach matches it literally
 // (it can't import this package's sentinel without knowing about the
-// agent side), so it must not change. Formerly
-// agent.ErrSubagentSpawnerUnavailable.
-var ErrSubagentSpawnerUnavailable = errors.New("agent: subagent spawner unavailable (no BackgroundAgentManager wired)")
+// agent side), so change it only in lockstep with
+// isSubagentSpawnerUnavailable in pkg/attach/handlers_slash.go. The
+// prefix says "attachadapter" — the sentinel's home since the #443
+// split (the stale "agent:" prefix from its old home was fixed under
+// #492 item 5).
+var ErrSubagentSpawnerUnavailable = errors.New("attachadapter: subagent spawner unavailable (no BackgroundAgentManager wired)")
 
 // AttachInterrupt implements attach.InterruptProvider so the
 // attach-mode POST /sessions/<sid>/interrupt handler can dispatch

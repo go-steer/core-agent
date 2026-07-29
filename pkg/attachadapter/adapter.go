@@ -74,9 +74,19 @@ type Adapter struct {
 // Option configures an Adapter under construction.
 type Option func(*Adapter)
 
-// New wraps a with the attach capability surface. a may be nil (the
-// adapter's methods all no-op / zero-value), though in practice the
-// caller constructs the agent first and wraps it immediately.
+// New wraps a with the attach capability surface.
+//
+// Contract (one rule, not two): the CAPABILITY methods (Attach*) are
+// nil-safe — on a nil adapter or nil wrapped agent they degrade to
+// the same "capability not registered" / zero-value responses an
+// unwired closure produces. The plain attach.Registrant forwards are
+// NOT nil-safe: they require a real wrapped agent and misbehave
+// otherwise (the identity accessors — AppName, SessionID, EventLog —
+// panic; Inject/InjectAs error; RequestWake no-ops), exactly as
+// registering a bare *agent.Agent did before the #443 split. Passing a nil agent
+// is therefore only useful for constructing a capability-only value
+// in tests — never register one (attach.SessionRegistry would reject
+// its empty identity anyway).
 func New(a *agent.Agent, opts ...Option) *Adapter {
 	ad := &Adapter{a: a}
 	for _, opt := range opts {

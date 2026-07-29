@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/models/mock"
 )
 
@@ -63,5 +64,34 @@ func TestRun_ConstructsAgentAndRunsSeededTurn(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "hello-seed") {
 		t.Errorf("stdout %q missing the seeded prompt echo", stdout.String())
+	}
+}
+
+// TestRun_DerivesModelFromAgent pins the #510 ergonomic: a pre-built
+// Agent is enough — Run derives the streaming model via
+// Agent.Model() instead of demanding the mismatch-prone pair.
+func TestRun_DerivesModelFromAgent(t *testing.T) {
+	t.Parallel()
+	m, err := mock.NewEcho().Model(context.Background(), "echo")
+	if err != nil {
+		t.Fatalf("mock model: %v", err)
+	}
+	a, err := agent.New(m)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	code, err := Run(context.Background(), RunOptions{
+		Agent:         a, // no Model — derived
+		InitialPrompt: "derive-me",
+		Stdin:         strings.NewReader("/exit\n"),
+		Stdout:        &stdout,
+		Stderr:        &stderr,
+	})
+	if err != nil || code != ExitOK {
+		t.Fatalf("Run = (%d, %v), want (ExitOK, nil)", code, err)
+	}
+	if !strings.Contains(stdout.String(), "derive-me") {
+		t.Errorf("stdout %q missing the seeded turn", stdout.String())
 	}
 }

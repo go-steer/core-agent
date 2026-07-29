@@ -33,11 +33,11 @@ import (
 // parameters — and whose agent-taking forms invited an
 // agent/model mismatch by accepting both.
 type RunOptions struct {
-	// Model drives every turn. Required — both for constructing the
-	// Agent (when Agent is nil) and for the per-turn streaming call.
-	// When Agent is non-nil, pass the SAME model the agent was built
-	// with; the split parameter is inherited from the streaming
-	// internals and a mismatch produces confusing turns.
+	// Model drives every turn. Required when Agent is nil (it is
+	// what the constructed Agent runs on). When Agent is non-nil,
+	// leave Model nil — Run derives it from Agent.Model() (#510) —
+	// or, if set, it MUST be the same model the agent was built
+	// with; a mismatch produces confusing turns.
 	Model adkmodel.LLM
 
 	// Agent, when non-nil, is used as-is — for hosts that construct
@@ -79,8 +79,14 @@ type RunOptions struct {
 // terminal error, same contract as the deprecated positional
 // variants it replaces.
 func Run(ctx context.Context, opts RunOptions) (int, error) {
+	if opts.Model == nil && opts.Agent != nil {
+		// Derive the streaming model from the pre-built agent (#510)
+		// — the agent knows its model, and requiring both invited
+		// the mismatch the #492 assessment flagged.
+		opts.Model = opts.Agent.Model()
+	}
 	if opts.Model == nil {
-		return ExitConfigError, errors.New("runner: Run: Model is required")
+		return ExitConfigError, errors.New("runner: Run: Model is required (or pass a pre-built Agent to derive it from)")
 	}
 	a := opts.Agent
 	if a == nil {

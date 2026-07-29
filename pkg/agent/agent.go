@@ -818,6 +818,18 @@ func (a *Agent) ModelName() string {
 	return a.modelName
 }
 
+// Model returns the LLM the agent was constructed with (#510).
+// Exposes the value New received so drivers that accept a pre-built
+// Agent — runner.Run in particular — can derive the streaming model
+// from the agent instead of demanding it be passed alongside (the
+// agent/model mismatch hazard #492 flagged). Nil-safe.
+func (a *Agent) Model() adkmodel.LLM {
+	if a == nil {
+		return nil
+	}
+	return a.model
+}
+
 // Run executes one turn of the agent against prompt and returns the event
 // iterator straight from ADK's runner. Callers are expected to range over
 // the returned iter.Seq2 and consume events as they arrive — partial text

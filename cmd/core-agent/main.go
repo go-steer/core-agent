@@ -61,11 +61,11 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/pricing"
 	"github.com/go-steer/core-agent/v2/pkg/recording"
 	"github.com/go-steer/core-agent/v2/pkg/runner"
-	"github.com/go-steer/core-agent/v2/pkg/session"
 	"github.com/go-steer/core-agent/v2/pkg/skills"
 	"github.com/go-steer/core-agent/v2/pkg/taskclass"
 	"github.com/go-steer/core-agent/v2/pkg/telemetry"
 	"github.com/go-steer/core-agent/v2/pkg/tools"
+	"github.com/go-steer/core-agent/v2/pkg/transcript"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 	"github.com/go-steer/core-agent/v2/pkg/watchdog"
 )
@@ -1902,12 +1902,12 @@ func persistTranscript(agentsDir, model, prompt string, tracker *usage.Tracker) 
 		return
 	}
 	tot := tracker.Totals()
-	_, _ = session.Save(agentsDir, session.Transcript{
+	_, _ = transcript.Save(agentsDir, transcript.Transcript{
 		Model: model,
-		Messages: []session.Message{
+		Messages: []transcript.Message{
 			{Role: "user", Text: prompt},
 		},
-		Usage: session.Usage{
+		Usage: transcript.Usage{
 			Turns:        tot.Turns,
 			InputTokens:  tot.InputTokens,
 			OutputTokens: tot.OutputTokens,

@@ -164,6 +164,7 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 	}
 
 	a, err := build(extras, ref.SessionID)
+	warnIfInteractiveMode(a, err)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("agent: Resume: build agent: %w", err)
 	}

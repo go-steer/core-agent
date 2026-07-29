@@ -48,6 +48,13 @@ import (
 // caller-supplied Agent (which would race with concurrent runs) and
 // keeps agent.New's surface free of "extra tools" plumbing that only
 // matters here.
+//
+// The build closure SHOULD set agent.WithMode(agent.ModeAutonomous)
+// (#459) — the driver cannot inject it (drivers don't mutate
+// caller-built agents), so an agent built without it runs with the
+// interactive overlay and may ask questions nobody will answer. The
+// driver logs a one-line warning when it detects that; consumers
+// replacing the whole prompt via agent.WithInstruction can ignore it.
 func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (RunResult, error) {
 	if build == nil {
 		return RunResult{}, fmt.Errorf("agent: Run: build is required")
@@ -113,6 +120,7 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 	}
 
 	a, err := build(extras)
+	warnIfInteractiveMode(a, err)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("agent: Run: build agent: %w", err)
 	}
@@ -495,6 +503,21 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 
 // Option mutates Run configuration. Use the With*
 // helpers below.
+// warnIfInteractiveMode logs the #459 advisory when an autonomous
+// driver receives an interactive-mode agent: the interactive overlay
+// tells the model a user is present, which is exactly wrong here.
+// Warning, not error — a consumer that replaced the whole prompt via
+// agent.WithInstruction knows what they're doing, and Mode() still
+// reports the (unused) WithMode value in that case.
+func warnIfInteractiveMode(a *agent.Agent, buildErr error) {
+	if buildErr != nil || a == nil {
+		return
+	}
+	if a.Mode() == agent.ModeInteractive {
+		log.Printf("autonomous: agent built with the interactive overlay; did the build closure mean agent.WithMode(agent.ModeAutonomous)?")
+	}
+}
+
 type Option func(*autoConfig)
 
 type autoConfig struct {

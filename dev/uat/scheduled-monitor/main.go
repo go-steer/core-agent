@@ -237,9 +237,8 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 	})
 
 	// === Parent agent build ===
-	instruction := agent.DefaultInstruction + "\n\n" +
-		agent.DefaultSchedulingInstruction + "\n\n" +
-		supervisorBrief
+	// #459: layered assembly replaces DefaultInstruction composition —
+	// autonomous overlay + scheduling guidance + the supervisor brief.
 	spawnTools := background.NewSpawnTools(mgr)
 	mkAgent := func(extras []adktool.Tool, sid string) (*agent.Agent, error) {
 		all := make([]adktool.Tool, 0, len(reg.Tools)+len(spawnTools)+len(extras))
@@ -250,7 +249,9 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 			agent.WithAppName(appName),
 			agent.WithName("scheduled-monitor-supervisor"),
 			agent.WithSession(userID, sid),
-			agent.WithInstruction(instruction),
+			agent.WithMode(agent.ModeAutonomous),
+			agent.WithExtraInstruction(agent.DefaultSchedulingInstruction),
+			agent.WithExtraInstruction(supervisorBrief),
 			agent.WithTools(all),
 			agent.WithBackgroundManager(mgr),
 		}

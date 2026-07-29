@@ -31,6 +31,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"iter"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,30 +57,154 @@ import (
 // in a host that wants its own identity.
 const DefaultAppName = "core-agent"
 
-// DefaultInstruction is the system instruction applied to every agent
-// that doesn't override it via WithInstruction. Comprises a baseline
-// helpfulness/concision directive plus a parallelism mandate adapted
-// from google-gemini/gemini-cli's prompt patterns
-// (packages/core/src/prompts/snippets.ts).
+// The system prompt is assembled from ordered LAYERS, stable →
+// volatile (docs/system-prompt-layering-design.md, #459):
 //
-// The parallelism mandate is load-bearing for Gemini, which otherwise
-// emits one tool call per assistant turn even when independent
-// operations are obviously batchable. Direct measurement
-// (dev/parallel-probe/) shows Gemini-3.1-pro-preview-customtools
-// without this instruction never batched across 65 search turns;
-// Claude is less affected but still benefits marginally.
+//	1. CoreInstruction        — always (harness contract + unenforced safety invariants)
+//	2. provider quirks        — selected from the model identifier; WithoutProviderQuirks suppresses
+//	3. mode overlay           — InteractiveOverlay (default) or AutonomousOverlay via WithMode
+//	4. user memory            — WithUserInstruction (the pkg/instruction loader's output)
+//	5. consumer/operator text — WithExtraInstruction (repeatable), config append_system_prompt, flags
 //
-// Exported so consumers building on WithInstruction can reuse the
-// baseline + mandate verbatim: `agent.WithInstruction(agent.DefaultInstruction + "\n\n" + extra)`.
-const DefaultInstruction = `You are a helpful assistant. Be concise and accurate.
+// Later layers are more specific and, by ordinary instruction-following
+// convention, win on conflict — a project's AGENTS.md can override the
+// interactive overlay's communication defaults, but nothing silently
+// overrides the compaction contract short of a WithInstruction full
+// replace. Stable-first ordering is also the prompt-cache-friendly
+// ordering: editing project memory never invalidates the cached core.
+//
+// Admission test for CoreInstruction (do not add lines that fail it):
+// (1) harness contract the model cannot discover by looking, or
+// (2) a safety invariant the runtime does not yet enforce, carrying a
+// marked exit path for when it does. Everything else goes in quirks,
+// overlays, tool descriptions, or user layers.
 
-For non-trivial work — multi-file edits, architectural choices, or asks with multiple valid approaches — sketch your plan in 1-3 sentences before acting so the user can redirect cheaply. Skip the preamble for trivial asks (typo fixes, single-line changes, narrowly-scoped tasks with one obvious solution); just do them.
+// CoreInstruction is layer 1 — the always-on core. Three items:
+// the parallel-dispatch fact (harness contract), the edit-sequencing
+// rule (safety invariant; EXIT PATH: deleted when the executor
+// serializes mutating tools, tracked in #460), and the
+// compaction/handover contract (harness contract — the paragraph
+// spawned subagents were silently losing pre-#459).
+const CoreInstruction = `Independent tool calls issued in the same response execute in parallel; a call that depends on another call's result must go in a later response.
 
-Tools execute in parallel by default. Execute multiple independent tool calls in parallel when feasible — searching, reading files, independent shell commands, or editing different files. When investigating code, if you need to read multiple files or grep multiple directories, issue all the tool calls in a single response; do not execute them one by one.
+Do not issue multiple ` + "`edit_file`" + ` or ` + "`write_file`" + ` calls targeting the
+same path in one response — those must run sequentially across turns
+so each edit sees the prior result; parallel writes to the same file
+race and corrupt state. If you are unsure whether two operations are
+independent, run them sequentially.
 
-Do not issue multiple ` + "`edit_file`" + ` or ` + "`write_file`" + ` calls targeting the same path in one response — those must run sequentially across turns so each edit sees the prior result; parallel writes to the same file race and corrupt state. Efficiency is secondary to correctness: if you are unsure whether two operations are independent, run them sequentially.
+Earlier conversation may have been summarized into context for you in
+one of two shapes: "[Conversation compacted…]" framing (we hit the
+context wall mid-task and the prior turns were condensed), or "[The
+prior task is complete…]" framing (the prior task closed cleanly and
+a handover record replaces its history). Both arrive wrapped at the
+start of your context, both are authoritative shared history. Read
+FROM them when the user references prior work — what was discussed,
+what files were touched, what was decided — rather than re-running
+tools to rediscover what's already recorded there. The conversation
+continues in both cases; treat the framing as picking up an
+in-progress session, not as a fresh start.`
 
-Earlier conversation may have been summarized into context for you in one of two shapes: "[Conversation compacted…]" framing (we hit the context wall mid-task and the prior turns were condensed), or "[The prior task is complete…]" framing (the prior task closed cleanly and a handover record replaces its history). Both arrive wrapped at the start of your context, both are authoritative shared history. Read FROM them when the user references prior work — what was discussed, what files were touched, what was decided, recap, summary, status — rather than re-running tools to rediscover what's already recorded there. The conversation continues in both cases; treat the framing as picking up an in-progress session, not as a fresh start.`
+// GeminiParallelismQuirk is a layer-2 provider quirk applied to
+// Gemini-family models (model identifier containing "gemini").
+//
+// Probe evidence (dev/parallel-probe/): Gemini-3.1-pro-preview-
+// customtools without this mandate never batched across 65 search
+// turns; Claude models are "less affected, marginal benefit" and get
+// no quirks. Retire this when a probe rerun shows the provider no
+// longer needs the exhortation.
+const GeminiParallelismQuirk = `Execute multiple independent tool calls in parallel when feasible — searching, reading files, independent shell commands, or editing different files. When investigating code, if you need to read multiple files or grep multiple directories, issue all the tool calls in a single response; do not execute them one by one.`
+
+// InteractiveOverlay is layer 3a — the default mode overlay.
+// Disposition only: a present user can redirect cheaply, so narrate
+// before non-trivial work and ask focused questions when genuinely
+// blocked. No tool names (tool mechanics live in tool descriptions).
+const InteractiveOverlay = `A user is present. Before starting non-trivial work — multi-file edits, architectural choices, asks with multiple valid approaches — say what you're about to do in a sentence or two so they can redirect cheaply; skip the preamble for trivial asks. When blocked on a decision only the user can make, ask one focused question rather than guessing. Report outcomes plainly, including failures and steps you skipped.`
+
+// AutonomousOverlay is layer 3b — selected by WithMode(ModeAutonomous).
+// The narrate-before-acting line is deliberately here: the
+// eventlog/OTel trace is a runtime property of every autonomous
+// deployment, and stated intent is what makes a burst of tool calls
+// legible in that record. The no-clarification line is scoped to
+// questions in OUTPUT TEXT; a deliberately installed ask channel
+// (tools.NewAskUserTool with a live prompter) carries its own
+// exception in its tool description.
+const AutonomousOverlay = `You are operating autonomously: no human reads your output in real time, and questions posed in it go unanswered — do not ask for clarification in your responses. Proceed on reversible actions that follow from the goal; gather missing information with your tools instead of asking, and prefer a recorded reasonable assumption over stalling. Before each multi-step or consequential series of actions, state in a sentence or two what you are about to do and why — nobody will approve it; your output is the audit record of the run. Verify your work before declaring it done: run the checks that exist rather than asserting success. End your turn only when the goal is complete or blocked on something no tool can resolve, and say which.`
+
+// DefaultInstruction is the pre-#459 monolithic prompt, retained as
+// a compositional alias through the v2.8.x series (deleted at the
+// next breaking window alongside WithSystemInstructionPrefix). Close
+// to today's semantics minus the persona and plan-sketch lines — see
+// the disposition table in docs/system-prompt-layering-design.md.
+//
+// Deprecated: build with the layer options (WithMode,
+// WithExtraInstruction, WithUserInstruction) instead of composing
+// against this constant.
+const DefaultInstruction = CoreInstruction + "\n\n" + InteractiveOverlay
+
+// Mode selects the layer-3 overlay: how the agent should carry
+// itself given who (if anyone) is watching. Set where the agent is
+// built — drivers never mutate a caller-supplied agent (the
+// autonomous driver warns when it sees an interactive-mode agent;
+// see autonomous.Run).
+type Mode int
+
+const (
+	// ModeInteractive (the default): a user is present and can
+	// redirect / answer questions.
+	ModeInteractive Mode = iota
+	// ModeAutonomous: nobody reads output in real time; narrate for
+	// the audit record and never ask questions in output text.
+	ModeAutonomous
+)
+
+// assembleInstruction builds the layered system prompt for modelName
+// (docs/system-prompt-layering-design.md): core → provider quirks →
+// mode overlay → user memory → extras, blank-line joined, empty
+// layers omitted. Shared by agent.New and RunSubtask (which builds
+// its llmagent directly).
+func assembleInstruction(modelName string, mode Mode, noQuirks bool, userInstruction string, extras []string) string {
+	layers := make([]string, 0, 4+len(extras))
+	layers = append(layers, CoreInstruction)
+	if !noQuirks {
+		layers = append(layers, providerQuirks(modelName)...)
+	}
+	switch mode {
+	case ModeAutonomous:
+		layers = append(layers, AutonomousOverlay)
+	default:
+		layers = append(layers, InteractiveOverlay)
+	}
+	if userInstruction != "" {
+		layers = append(layers, userInstruction)
+	}
+	layers = append(layers, extras...)
+	return joinLayers(layers)
+}
+
+// providerQuirks selects the layer-2 workarounds for a model
+// identifier. Quirk admission requires probe evidence cited on the
+// quirk const, and each quirk names its models so it can be retired
+// when the provider improves. Claude models get no quirks today.
+func providerQuirks(modelName string) []string {
+	if strings.Contains(strings.ToLower(modelName), "gemini") {
+		return []string{GeminiParallelismQuirk}
+	}
+	return nil
+}
+
+// joinLayers blank-line-joins the non-empty layers — no headers, no
+// placeholders (the instruction loader emits its own scope headers
+// inside layer 4).
+func joinLayers(layers []string) string {
+	out := make([]string, 0, len(layers))
+	for _, l := range layers {
+		if strings.TrimSpace(l) != "" {
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, "\n\n")
+}
 
 // DefaultSchedulingInstruction is the composable system-instruction
 // constant for autonomous loops that have a tools.Scheduler installed
@@ -136,6 +261,7 @@ type Agent struct {
 	sessionID      string
 	model          adkmodel.LLM
 	modelName      string
+	mode           Mode
 	gate           *permissions.Gate
 	bgMgr          SubagentManager
 	inbox          *inbox
@@ -208,29 +334,37 @@ type Agent struct {
 type Option func(*options)
 
 type options struct {
-	appName         string
-	name            string
-	description     string
-	instruction     string
-	streaming       adkagent.StreamingMode
-	userID          string
-	sessionID       string
-	tools           []tool.Tool
-	toolsets        []tool.Toolset
-	sessionService  session.Service
-	eventLog        *eventlog.Handle
-	subagents       []*Agent
-	bgMgr           SubagentManager
-	gate            *permissions.Gate
-	tracker         *usage.Tracker
-	compactor       Compactor
-	checkpointer    Checkpointer
-	costCeiling     CostCeiling
-	watchdog        watchdog.Watchdog
-	onWatchdogAlert func(watchdog.Alert)
-	onEvent         func(*session.Event)
-	onTurnEnd       func()
-	postConstruct   func(*Agent)
+	appName     string
+	name        string
+	description string
+	instruction string
+	// instructionExplicit records that WithInstruction (or the
+	// deprecated prefix path) supplied a full replacement — layers
+	// 1–3 are skipped; layers 4–5 still append (#459).
+	instructionExplicit bool
+	mode                Mode
+	userInstruction     string
+	extraInstructions   []string
+	noQuirks            bool
+	streaming           adkagent.StreamingMode
+	userID              string
+	sessionID           string
+	tools               []tool.Tool
+	toolsets            []tool.Toolset
+	sessionService      session.Service
+	eventLog            *eventlog.Handle
+	subagents           []*Agent
+	bgMgr               SubagentManager
+	gate                *permissions.Gate
+	tracker             *usage.Tracker
+	compactor           Compactor
+	checkpointer        Checkpointer
+	costCeiling         CostCeiling
+	watchdog            watchdog.Watchdog
+	onWatchdogAlert     func(watchdog.Alert)
+	onEvent             func(*session.Event)
+	onTurnEnd           func()
+	postConstruct       func(*Agent)
 }
 
 func defaultOptions() options {
@@ -238,7 +372,6 @@ func defaultOptions() options {
 		appName:     DefaultAppName,
 		name:        "core_agent",
 		description: "core-agent conversational agent",
-		instruction: DefaultInstruction,
 		streaming:   adkagent.StreamingModeSSE,
 		userID:      defaultUserID,
 		sessionID:   defaultSessionID,
@@ -256,8 +389,56 @@ func WithName(s string) Option { return func(o *options) { o.name = s } }
 // WithDescription overrides the agent's description.
 func WithDescription(s string) Option { return func(o *options) { o.description = s } }
 
-// WithInstruction overrides the system instruction.
-func WithInstruction(s string) Option { return func(o *options) { o.instruction = s } }
+// WithInstruction replaces the assembled system instruction wholesale
+// — the full-replace escape hatch. Layers 1–3 (core, provider quirks,
+// mode overlay) are skipped ENTIRELY; you take on the harness
+// contract yourself (compaction summaries, parallel-dispatch rules —
+// tool-use degradation is on you). Layers 4–5 (WithUserInstruction /
+// WithExtraInstruction) still append after the replacement so a
+// custom base can compose with operator appends.
+func WithInstruction(s string) Option {
+	return func(o *options) {
+		o.instruction = s
+		o.instructionExplicit = true
+	}
+}
+
+// WithMode selects the layer-3 overlay (default ModeInteractive).
+// Autonomous consumers — anything driving the agent with no human
+// reading output in real time — should set ModeAutonomous where they
+// build the agent; the in-tree spawn paths (background subagents,
+// RunSubtask, remote spawn) do.
+func WithMode(m Mode) Option { return func(o *options) { o.mode = m } }
+
+// WithExtraInstruction appends s as a layer-5 block (repeatable —
+// each call appends another blank-line-separated block, in call
+// order). The encouraged customization path: the harness contract
+// and mode overlay stay intact underneath. Empty strings are
+// dropped.
+func WithExtraInstruction(s string) Option {
+	return func(o *options) {
+		if s == "" {
+			return
+		}
+		o.extraInstructions = append(o.extraInstructions, s)
+	}
+}
+
+// WithUserInstruction installs the pkg/instruction loader's output
+// as layer 4 (user memory: AGENTS.md and friends). Deliberately
+// AFTER the core/overlay layers — user instructions take precedence
+// over our defaults by ordinary instruction-following convention,
+// and the stable-first ordering keeps the cached core prefix intact
+// across memory edits (this inverts the deprecated
+// WithSystemInstructionPrefix arrangement on purpose).
+func WithUserInstruction(s string) Option {
+	return func(o *options) { o.userInstruction = s }
+}
+
+// WithoutProviderQuirks suppresses layer 2 — for consumers that have
+// measured their model doesn't need the workarounds, or that are
+// running their own probes.
+func WithoutProviderQuirks() Option { return func(o *options) { o.noQuirks = true } }
 
 // WithStreaming overrides the streaming mode. Default is StreamingModeSSE
 // (required to receive Partial events).
@@ -364,20 +545,31 @@ func WithGate(g *permissions.Gate) Option {
 	return func(o *options) { o.gate = g }
 }
 
-// WithSystemInstructionPrefix prepends prefix to the agent's default
-// instruction. Used for memory loading: AGENTS.md / CLAUDE.md /
-// GEMINI.md project memory becomes part of the system prompt rather
-// than the user's first message.
+// WithSystemInstructionPrefix prepends prefix to the agent's
+// instruction with the pre-#459 semantics: the result is a full
+// replacement (prefix + whatever instruction was set, defaulting to
+// the DefaultInstruction alias), so layer assembly is skipped.
+//
+// Deprecated: memory belongs AFTER the core, not before it — use
+// WithUserInstruction (layer 4). This survives through v2.8.x for
+// consumers that composed against the old prefix arrangement and is
+// deleted at the next breaking window together with
+// DefaultInstruction.
 func WithSystemInstructionPrefix(prefix string) Option {
 	return func(o *options) {
 		if prefix == "" {
 			return
 		}
-		if o.instruction == "" {
-			o.instruction = prefix
-			return
+		base := o.instruction
+		if !o.instructionExplicit {
+			base = DefaultInstruction
 		}
-		o.instruction = prefix + "\n\n" + o.instruction
+		if base == "" {
+			o.instruction = prefix
+		} else {
+			o.instruction = prefix + "\n\n" + base
+		}
+		o.instructionExplicit = true
 	}
 }
 
@@ -502,11 +694,26 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		o.tools = append(o.tools, NewMarkTaskDoneTool(func() *Agent { return agentRef }))
 	}
 
+	// Layer assembly (#459). WithInstruction / the deprecated prefix
+	// path replace layers 1–3 wholesale; layers 4–5 append in both
+	// arrangements so operator appends compose with a custom base.
+	instruction := o.instruction
+	if o.instructionExplicit {
+		tail := make([]string, 0, 1+len(o.extraInstructions))
+		if o.userInstruction != "" {
+			tail = append(tail, o.userInstruction)
+		}
+		tail = append(tail, o.extraInstructions...)
+		instruction = joinLayers(append([]string{instruction}, tail...))
+	} else {
+		instruction = assembleInstruction(model.Name(), o.mode, o.noQuirks, o.userInstruction, o.extraInstructions)
+	}
+
 	inner, err := llmagent.New(llmagent.Config{
 		Name:        o.name,
 		Model:       model,
 		Description: o.description,
-		Instruction: o.instruction,
+		Instruction: instruction,
 		Tools:       o.tools,
 		Toolsets:    o.toolsets,
 	})
@@ -554,6 +761,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		sessionID:       o.sessionID,
 		model:           model,
 		modelName:       model.Name(),
+		mode:            o.mode,
 		gate:            o.gate,
 		bgMgr:           o.bgMgr,
 		inbox:           newInbox(),
@@ -819,6 +1027,20 @@ func (a *Agent) ModelName() string {
 		return ""
 	}
 	return a.modelName
+}
+
+// Mode reports the layer-3 overlay mode the agent was built with
+// (#459). The autonomous driver consults this to warn when an
+// interactive-mode agent is driven autonomously. Note a
+// WithInstruction full-replace skips the overlay entirely; Mode
+// still reports whatever WithMode set (default ModeInteractive) —
+// the warning is advisory, and full-replace consumers know what
+// they're doing.
+func (a *Agent) Mode() Mode {
+	if a == nil {
+		return ModeInteractive
+	}
+	return a.mode
 }
 
 // Model returns the LLM the agent was constructed with (#510).

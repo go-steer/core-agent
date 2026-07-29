@@ -357,6 +357,21 @@ type PermissionsConfig struct {
 type AgentConfig struct {
 	MaxSteps int `json:"max_steps,omitempty"`
 
+	// AppendSystemPrompt is layer-5 operator text appended to the
+	// assembled system prompt (agent.WithExtraInstruction) — the
+	// documented, encouraged customization path: the harness
+	// contract and mode overlay stay intact underneath. Mirrored by
+	// the --append-system-prompt flag (flag beats config). #459.
+	AppendSystemPrompt string `json:"append_system_prompt,omitempty"`
+
+	// SystemPromptFile names a file whose contents REPLACE the
+	// assembled system prompt wholesale (agent.WithInstruction).
+	// You lose the harness contract — compaction summaries arrive
+	// unexplained and tool-use degradation is on you; prefer
+	// AppendSystemPrompt. Mirrored by --system-prompt-file (flag
+	// beats config). #459.
+	SystemPromptFile string `json:"system_prompt_file,omitempty"`
+
 	// MaxTurnCostUSD caps a single conversation turn's cumulative
 	// spend. When the post-turn hook detects spend ≥ this value, the
 	// agent emits a structured turn-error (kind=cost_ceiling) and

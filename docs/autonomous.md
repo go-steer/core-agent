@@ -5,16 +5,13 @@ How to drive core-agent autonomously — without a human in the loop on every tu
 1. **Within one turn** — already supported. A single `agent.Run` call is itself an autonomous loop: the model reasons, calls tools, sees results, calls more tools, until it emits a final response. Bounded by `cfg.Agent.MaxSteps` (default 50) so a runaway tool-call cycle can't go forever.
 2. **Across turns** — shipped as `agent.RunAutonomous`. A multi-turn driver that loops `agent.Run` against a goal, enforces run-level budgets (turns / tokens / cost / wallclock + per-turn timeout), and stops when the model signals "done" via an internal lifecycle tool.
 
-For "give the agent a goal, let it work end-to-end" use cases, sense (1) is often enough. Set the system prompt to discourage clarification-asking and the permission gate to `yolo` (since `ask` would block on prompts no human is reading), and you've got a one-shot autonomous worker. When the goal needs to span more than one model turn, reach for sense (2).
+For "give the agent a goal, let it work end-to-end" use cases, sense (1) is often enough. Set `agent.WithMode(agent.ModeAutonomous)` (the layered overlay that discourages clarification-asking and mandates audit-record narration, #459) and the permission gate to `yolo` (since `ask` would block on prompts no human is reading), and you've got a one-shot autonomous worker. When the goal needs to span more than one model turn, reach for sense (2).
 
 ## Within one turn — the easy case
 
 ```go
 a, _ := agent.New(m,
-    agent.WithInstruction(`You are an autonomous worker. Complete the
-user's request end-to-end without asking clarification questions.
-When you've finished or if you can't make progress, output a final
-summary explaining what you did or why you stopped.`),
+    agent.WithMode(agent.ModeAutonomous), // autonomous overlay (#459): no clarification-asking, narrate for the audit record, verify before done
 )
 
 for ev, err := range a.Run(ctx, "find every TODO in the codebase and write a tracking doc") {
@@ -44,12 +41,13 @@ import (
 )
 
 build := func(extras []adktool.Tool) (*agent.Agent, error) {
+    // WithMode is REQUIRED in autonomous build closures (#459): the
+    // driver never mutates a caller-built agent, so it can only warn
+    // if you forget. Task-specific guidance goes in
+    // WithExtraInstruction; report_done mechanics live in the tool's
+    // own description.
     return agent.New(m,
-        agent.WithInstruction(
-            "You are an autonomous worker. Complete the user's goal end-to-end "+
-                "without asking clarifying questions. When finished, call "+
-                "report_done with state=\"done\" and a one-sentence detail.",
-        ),
+        agent.WithMode(agent.ModeAutonomous),
         agent.WithTools(append(extras, myTools...)),
     )
 }

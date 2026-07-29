@@ -221,12 +221,25 @@ type Alert struct {
 // Spec is the request shape a single Spawn call expects.
 // Built from the spawn_agent tool args by the tool handler.
 type Spec struct {
-	Name         string
+	Name string
+	// SystemPrompt is the subagent's task-specific instruction.
+	// Since #459 it COMPOSES: the built agent gets the layered
+	// baseline (agent.CoreInstruction + provider quirks +
+	// agent.AutonomousOverlay) with this text appended as a layer-5
+	// block — so spawned subagents keep the compaction contract and
+	// edit-safety rules they previously lost to the full replace.
+	// Set ReplaceSystemPrompt for the old bare-prompt behavior.
 	SystemPrompt string
-	Goal         string
-	Tools        []string
-	Extras       []string
-	Budgets      Budgets
+	// ReplaceSystemPrompt, when true, restores the pre-#459
+	// semantics: SystemPrompt fully replaces the layered baseline
+	// (agent.WithInstruction). The subagent then carries NO harness
+	// contract — compaction summaries arrive unexplained — so use
+	// only when you are supplying your own complete prompt.
+	ReplaceSystemPrompt bool
+	Goal                string
+	Tools               []string
+	Extras              []string
+	Budgets             Budgets
 	// Scheduler selects the between-turn scheduler the subagent's
 	// RunAutonomous loop honors. Valid values: "" or "default" (use
 	// the manager's WithDefaultScheduler — may itself be

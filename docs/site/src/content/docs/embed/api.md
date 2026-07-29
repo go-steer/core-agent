@@ -109,8 +109,12 @@ a2, _ := agent.New(m, agent.WithSession("bob",   "session-2"))
 agent.WithAppName(s string)            // identity used by ADK runner; default "core-agent"
 agent.WithName(s string)               // agent display name (visible in OTEL spans)
 agent.WithDescription(s string)        // agent description
-agent.WithInstruction(s string)        // base system instruction; default is agent.DefaultInstruction
-agent.WithSystemInstructionPrefix(s)   // prepends s to the instruction
+agent.WithMode(m Mode)                 // layer-3 overlay: ModeInteractive (default) | ModeAutonomous (v2.8, #459)
+agent.WithExtraInstruction(s string)   // layer-5 append (repeatable) — the encouraged customization path (v2.8)
+agent.WithUserInstruction(s string)    // layer-4 user memory (the instruction loader's output) (v2.8)
+agent.WithoutProviderQuirks()          // suppress layer-2 provider workarounds (v2.8)
+agent.WithInstruction(s string)        // FULL REPLACE: skips layers 1–3 (core/quirks/overlay); layers 4–5 still append
+agent.WithSystemInstructionPrefix(s)   // deprecated (v2.8): use WithUserInstruction — memory belongs after the core
 agent.WithStreaming(m StreamingMode)   // override; default is StreamingModeSSE
 agent.WithSession(userID, sessionID)   // override session identity
 agent.WithTools(ts []tool.Tool)        // register individual tools
@@ -125,23 +129,25 @@ Options are applied in the order they're passed. Tools and toolsets accumulate a
 
 `WithCompactor`, `WithCheckpointer`, and the `tools/agentic` wrapper family are documented in detail under [Context management](/concepts/context-management/). `WithPostConstruct` is the late-binding hook external tools use when their handler needs to call back into the constructed agent — same pattern the in-tree `mark_task_done` tool uses, exposed publicly so consumers can build similar agent-aware tools without forking the agent package.
 
-### Default instruction
+### System prompt layers (v2.8)
 
-When `WithInstruction` is not used, agents get `agent.DefaultInstruction` — a baseline helpfulness directive plus a parallelism mandate adapted from `google-gemini/gemini-cli`. The mandate tells the model to batch independent tool calls in a single response; it's load-bearing for Gemini, which otherwise emits one tool call per turn even when batching is obvious. To layer your own guidance on top of the default rather than replacing it:
+When `WithInstruction` is not used, the prompt assembles from ordered layers (#459): `agent.CoreInstruction` (harness contract — compaction/handover framing, tool-dispatch rules) → provider quirks selected from the model identifier (`agent.GeminiParallelismQuirk` for Gemini models, probe-backed; Claude gets none) → a mode overlay (`agent.InteractiveOverlay` default, `agent.AutonomousOverlay` via `WithMode`) → user memory (`WithUserInstruction`) → appends (`WithExtraInstruction`). Later layers win on conflict; the stable-first ordering keeps the cached core prefix intact across memory edits. To layer your own guidance on top rather than replacing:
 
 ```go
-agent.WithInstruction(agent.DefaultInstruction + "\n\n" + extraGuidance)
+agent.WithExtraInstruction(extraGuidance) // composes; the harness contract stays intact
 ```
+
+The pre-#459 `agent.DefaultInstruction` constant survives as a deprecated alias (`CoreInstruction + InteractiveOverlay`) through v2.8.x; `WithInstruction(DefaultInstruction + extra)` compositions should migrate to `WithExtraInstruction(extra)` (+ `WithMode(ModeAutonomous)` for autonomous consumers).
 
 ### Composition layers — substrate, consumer, deploy
 
-`DefaultInstruction` stays intentionally generic. Anything that varies by *product* (a coding assistant, an ops bot, a research agent) or by *deployment* (this customer's repo conventions, that team's allow-lists) lives one layer up, not in the substrate.
+The core layers stay intentionally generic. Anything that varies by *product* (a coding assistant, an ops bot, a research agent) or by *deployment* (this customer's repo conventions, that team's allow-lists) lives in the upper layers (`WithExtraInstruction`, user memory), not in the substrate.
 
 Three layers, increasingly specific:
 
 | Layer | Where it lives | Audience | Examples of what belongs here |
 |---|---|---|---|
-| Substrate | `agent.DefaultInstruction` (in `pkg/agent`) | Every consumer | Parallel tool batching, plan-before-acting nudge, terseness, compacted-history framing |
+| Substrate | `agent.CoreInstruction` + quirks + mode overlay (in `pkg/agent`) | Every consumer | Tool-dispatch rules, edit sequencing, compacted-history framing; mode disposition |
 | Consumer | Library that wraps `agent.New` (e.g. `cogo`'s coding assistant, a custom ops agent) | Every deploy of that product | Coding-assistant opinions: render code inline, prefer `edit_file` over `write_file` for existing files, test-after-change. Or ops opinions: never run destructive commands without confirmation. |
 | Operator / deploy | `.agents/AGENTS.md` in a project root, loaded automatically by `pkg/instruction` | One specific deploy | This repo's conventions, this team's allow-lists, this service's persona |
 
@@ -156,9 +162,7 @@ changes that touch behavior.`
 
 func New(model adkmodel.LLM, opts ...agent.Option) (*agent.Agent, error) {
     return agent.New(model, append([]agent.Option{
-        agent.WithInstruction(
-            agent.DefaultInstruction + "\n\n" + codingAgentInstruction,
-        ),
+        agent.WithExtraInstruction(codingAgentInstruction), // composes onto the layered baseline (v2.8)
         // ...other library-default options
     }, opts...)...)
 }
@@ -166,7 +170,7 @@ func New(model adkmodel.LLM, opts ...agent.Option) (*agent.Agent, error) {
 
 `.agents/AGENTS.md` appends operator-/deploy-specific content on top of whatever the consumer wired (the `pkg/instruction` loader handles this — see [Configuration → memory loading](/reference/configuration/) for the full chain). A concrete example: [`examples/cloud-run-deploy/.agents/AGENTS.md`](https://github.com/go-steer/core-agent/blob/main/examples/cloud-run-deploy/.agents/AGENTS.md) carries Cloud Run operational context (what the agent can/can't reach) plus a Pro-tier-specific nudge to render code inline — none of which belongs in the substrate, all of which is correctly scoped to that one deploy.
 
-**Why keep the substrate generic.** Model-class behavior deltas (e.g. Gemini Pro defaults to silent tool use; Gemini Flash inlines code naturally) are a leaky abstraction if pushed into `DefaultInstruction` — the substrate would accrete model-specific carve-outs forever. Letting consumers and operators carry those nudges keeps the substrate stable across model changes and across product flavors.
+**Where model-class deltas live.** Since v2.8 (#459), *measured* provider workarounds get their own quirks layer — selected from the model identifier at `agent.New`, one const per probe-backed workaround (`GeminiParallelismQuirk` today), suppressible via `WithoutProviderQuirks`, and retired when the provider improves. Unmeasured, taste-level nudges still belong to consumers and operators in the upper layers — the quirks layer's admission bar (probe evidence + explicit model list) is what keeps the substrate from accreting carve-outs.
 
 ---
 
@@ -822,7 +826,7 @@ Don't spawn a subagent for trivial work you can do in one or two
 turns yourself.
 ```
 
-Drop that block into your `AGENTS.md` (or pass via `agent.WithInstruction` / `agent.WithSystemInstructionPrefix`) and the model will use the tools when the situation matches.
+Drop that block into your `AGENTS.md` (or pass via `agent.WithExtraInstruction`, which composes with the layered baseline — v2.8) and the model will use the tools when the situation matches.
 
 **User prompt patterns that imply background work:**
 
@@ -976,7 +980,7 @@ if !loadedSkills.Empty() {
 
 a, _ := agent.New(m,
     agent.WithToolsets(allToolsets),
-    agent.WithSystemInstructionPrefix(instr.Instruction),
+    agent.WithUserInstruction(instr.Instruction), // layer 4 (v2.8) — memory after the core
     agent.WithTools(myCustomTools),
 )
 ```

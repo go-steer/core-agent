@@ -210,22 +210,52 @@ func TestNew_WithEventLog_NilIsNoop(t *testing.T) {
 	}
 }
 
-func TestDefaultInstruction_GuardsLoadBearingSubstrings(t *testing.T) {
+func TestInstructionLayers_GuardLoadBearingSubstrings(t *testing.T) {
 	t.Parallel()
-	// Each substring guards a load-bearing piece of DefaultInstruction.
+	// Each substring guards a load-bearing piece of its layer (#459).
 	// If a reword removes one, this test fails so the change surfaces
 	// in review rather than silently dropping behavior we depend on.
-	for _, want := range []string{
-		"in parallel",                      // parallelism mandate
-		"do not execute them one by one",   // anti-serial instruction
-		"parallel writes to the same file", // edit-collision guard
-		"Efficiency is secondary",          // quality caveat
-		"sketch your plan",                 // pre-action plan nudge
-		"Skip the preamble for trivial",    // don't-narrate-trivial guard
+	// The old monolith's persona / plan-sketch / "Efficiency is
+	// secondary" lines were deleted or softened per the disposition
+	// table in docs/system-prompt-layering-design.md — do not re-add
+	// guards for them.
+	for _, tc := range []struct {
+		layer string
+		text  string
+		wants []string
+	}{
+		{"CoreInstruction", CoreInstruction, []string{
+			"execute in parallel",              // parallel-dispatch fact (harness contract)
+			"parallel writes to the same file", // edit-collision guard (EXIT PATH: #460 deletes this)
+			"run them sequentially",            // edit-sequencing fallback
+			"Conversation compacted",           // compaction contract
+			"authoritative shared history",     // compaction contract
+		}},
+		{"GeminiParallelismQuirk", GeminiParallelismQuirk, []string{
+			"in parallel",                    // the measured mandate (dev/parallel-probe)
+			"do not execute them one by one", // anti-serial instruction
+		}},
+		{"InteractiveOverlay", InteractiveOverlay, []string{
+			"A user is present",
+			"redirect cheaply",
+			"one focused question",
+		}},
+		{"AutonomousOverlay", AutonomousOverlay, []string{
+			"operating autonomously",
+			"do not ask for clarification",
+			"audit record",
+			"Verify your work",
+		}},
 	} {
-		if !strings.Contains(DefaultInstruction, want) {
-			t.Errorf("DefaultInstruction missing required substring %q", want)
+		for _, want := range tc.wants {
+			if !strings.Contains(tc.text, want) {
+				t.Errorf("%s missing required substring %q", tc.layer, want)
+			}
 		}
+	}
+	// The deprecated alias must keep composing core + interactive.
+	if DefaultInstruction != CoreInstruction+"\n\n"+InteractiveOverlay {
+		t.Error("DefaultInstruction alias drifted from CoreInstruction + InteractiveOverlay")
 	}
 }
 
@@ -263,10 +293,28 @@ func TestRunWithContents_FeedsHistoryToLLM(t *testing.T) {
 	}
 }
 
-func TestDefaultOptions_UsesDefaultInstruction(t *testing.T) {
+func TestDefaultOptions_AssemblesLayers(t *testing.T) {
 	t.Parallel()
-	if got := defaultOptions().instruction; got != DefaultInstruction {
-		t.Errorf("defaultOptions().instruction = %q, want DefaultInstruction", got)
+	// Bare defaults assemble layers at New time (#459) — defaultOptions
+	// itself carries no instruction (assembly needs the model name for
+	// quirk selection).
+	o := defaultOptions()
+	if o.instruction != "" || o.instructionExplicit {
+		t.Errorf("defaultOptions() = (instruction=%q, explicit=%v), want empty/false — layers assemble in New", o.instruction, o.instructionExplicit)
+	}
+	// Non-Gemini model, no options: core + interactive, no quirks.
+	if got, want := assembleInstruction("claude-test", ModeInteractive, false, "", nil), CoreInstruction+"\n\n"+InteractiveOverlay; got != want {
+		t.Errorf("default assembly for claude =\n%q\nwant core+interactive", got)
+	}
+	// Gemini model gets the parallelism quirk between core and overlay.
+	if got, want := assembleInstruction("gemini-3.1-pro", ModeInteractive, false, "", nil), CoreInstruction+"\n\n"+GeminiParallelismQuirk+"\n\n"+InteractiveOverlay; got != want {
+		t.Errorf("default assembly for gemini =\n%q\nwant core+quirk+interactive", got)
+	}
+	// Quirk suppression + autonomous overlay + user + extras, in order.
+	got := assembleInstruction("gemini-3.1-pro", ModeAutonomous, true, "USER-MEMORY", []string{"EXTRA-1", "EXTRA-2"})
+	want := CoreInstruction + "\n\n" + AutonomousOverlay + "\n\n" + "USER-MEMORY" + "\n\n" + "EXTRA-1" + "\n\n" + "EXTRA-2"
+	if got != want {
+		t.Errorf("full-stack assembly =\n%q\nwant core+autonomous+user+extras (quirks suppressed)", got)
 	}
 }
 

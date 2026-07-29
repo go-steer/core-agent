@@ -1240,7 +1240,7 @@ func parseSubagentSpec(args string) (attach.SubagentSpec, error) {
 	return attach.SubagentSpec{
 		Name:         name,
 		Goal:         goal,
-		SystemPrompt: "You are an autonomous background subagent. Your task: " + goal,
+		SystemPrompt: "Your task: " + goal, // the autonomous baseline (mode overlay etc.) composes underneath since #459
 	}, nil
 }
 

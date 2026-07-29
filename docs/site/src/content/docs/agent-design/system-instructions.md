@@ -10,17 +10,19 @@ For the basic mechanics (file location, fallback chain, schema) see [Interactive
 
 ---
 
-## Mental model: three layers of instruction
+## Mental model: the layer stack (v2.8)
 
-A core-agent agent sees three layers of system instruction stacked together, in order:
+Since #459 the system prompt assembles from ordered layers, **stable → volatile** (see the [layer table](/reference/configuration/#system-prompt-layers-v28) for the full reference):
 
-1. **`agent.DefaultInstruction`** (built-in, always present). Baseline helpfulness directive + parallelism mandate ("execute independent tool calls in parallel") + post-boundary framing ("when prior conversation arrives wrapped in `[Conversation compacted...]` or `[The prior task is complete...]`, read it as authoritative shared history; don't re-run tools").
-2. **User-global `~/.core-agent/AGENTS.md`** (optional, prepended). Your personal preferences across all projects — voice, style, "always show me file:line citations," etc.
-3. **Project `AGENTS.md`** (optional, prepended last). What this specific project's agent IS — role, what it reviews, house style, do/don't lists.
+1. **`agent.CoreInstruction`** (built-in, always present). The harness contract: tool-dispatch rules, edit sequencing, and the post-boundary framing ("when prior conversation arrives wrapped in `[Conversation compacted...]` or `[The prior task is complete...]`, read it as authoritative shared history; don't re-run tools").
+2. **Provider quirks** (built-in, model-selected). Measured workarounds — Gemini gets the parallel-batching mandate; Claude gets none.
+3. **Mode overlay** (built-in). Interactive (default) or autonomous disposition, via `agent.WithMode`.
+4. **Your memory** — user-global `~/.core-agent/AGENTS.md`, then project `AGENTS.md`, in that order. Since v2.8 memory sits AFTER the built-in layers: your instructions win on conflict with the built-in communication defaults, and editing memory never invalidates the prompt-cached core.
+5. **Operator/consumer appends** — `agent.append_system_prompt` config, `--append-system-prompt`, or `agent.WithExtraInstruction`.
 
-The model concatenates all three for every turn. `core-agent` doesn't let you skip the default — it's load-bearing for behavior on a half-dozen specific failure modes (Gemini batching tool calls; post-summary recap behavior). Layer your own guidance ON TOP of it.
+The model sees all active layers concatenated on every turn. `core-agent` doesn't let you skip the core short of a full replace — it's load-bearing for a half-dozen specific failure modes (post-summary recap behavior; edit races). Layer your own guidance in 4–5, where it takes precedence naturally.
 
-If you're building a library binary and need to override the default entirely, see [Library API → `agent.WithInstruction`](/embed/api/).
+If you're building a library binary and need to replace everything, see [Library API → `agent.WithInstruction`](/embed/api/) — and note what you give up.
 
 ---
 
@@ -93,12 +95,12 @@ log.Printf("user %d authenticated via %s", uid, "oauth")
 
 The agent's outputs will mirror the patterns you show.
 
-### Don't fight the default instruction
+### Don't fight the built-in layers
 
-`agent.DefaultInstruction` already tells the model to:
-- Batch independent tool calls in parallel
+The core + quirks + overlay layers already tell the model to:
+- Batch independent tool calls in parallel (on Gemini, where it's measured to matter)
 - Treat post-boundary summaries as authoritative shared history
-- Be concise and accurate
+- Narrate before non-trivial work and report outcomes plainly
 
 You don't need to repeat any of that. If you want to *amplify* one of these (e.g., "when batching tool calls, prefer read_many_files over multiple parallel read_file calls"), do it as an addition — but don't restate the baseline. Re-instruction crowds out your project-specific content.
 
@@ -181,7 +183,7 @@ A real iteration cycle from v2.0 development, showing how `AGENTS.md` + boundary
 **Fix (PR #54):**
 - New `checkpointPrefix` distinct from compaction's: "[The prior task is complete... the conversation CONTINUES from here; the next user message is part of the SAME ongoing session, not a fresh start. When the user asks anything about the prior task — what was done, what files were touched, what was learned, recap, summary, status — read FROM the record below..."
 - Renamed `# Task complete` → `# Task` in the summarizer prompt. Removed terminal language.
-- Added a sentence to `agent.DefaultInstruction` about both framing shapes (`[Conversation compacted…]` and `[The prior task is complete…]`).
+- Added a sentence to the built-in instruction (today's `agent.CoreInstruction`) about both framing shapes (`[Conversation compacted…]` and `[The prior task is complete…]`).
 
 **Lesson for your `AGENTS.md`:**
 

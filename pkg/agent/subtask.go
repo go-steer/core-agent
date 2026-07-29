@@ -72,11 +72,19 @@ type SubtaskSpec struct {
 	// session-branch derives from this name.
 	Name string
 
-	// SystemPrompt is the subtask's role instruction. Replaces
-	// agent.DefaultInstruction for this subtask only; the parent's
-	// instruction is NOT inherited (the subtask runs in fresh
-	// context).
+	// SystemPrompt is the subtask's role instruction. Since #459 it
+	// COMPOSES: the subtask runs on the layered baseline
+	// (CoreInstruction + provider quirks + AutonomousOverlay) with
+	// this text appended, so it understands compaction summaries and
+	// edit sequencing like any other agent. The parent's own
+	// instruction is still NOT inherited (fresh context). Set
+	// ReplaceSystemPrompt for the pre-#459 bare-prompt behavior.
 	SystemPrompt string
+
+	// ReplaceSystemPrompt, when true, makes SystemPrompt a full
+	// replacement — no harness layers. Use only when supplying a
+	// complete prompt of your own.
+	ReplaceSystemPrompt bool
 
 	// UserMessage is the question / instruction the subtask
 	// receives. Treated as the operator's first user message in
@@ -258,6 +266,12 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 	// doesn't want. Direct llmagent.New + runner.New gives us
 	// the minimal stack.
 	subInstruction := spec.SystemPrompt
+	if !spec.ReplaceSystemPrompt {
+		// Layered baseline + the task-specific role (#459) — subtasks
+		// are autonomous by construction (nobody reads their output
+		// mid-flight; the parent consumes the result).
+		subInstruction = assembleInstruction(subModel.Name(), ModeAutonomous, false, "", []string{spec.SystemPrompt})
+	}
 	subInner, err := llmagent.New(llmagent.Config{
 		Name:        "subtask_" + spec.Name,
 		Model:       subModel,

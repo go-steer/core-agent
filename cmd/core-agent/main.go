@@ -170,6 +170,8 @@ func main() {
 	noREPL := flag.Bool("no-repl", false, "skip the stdin REPL — run until ctx cancellation (SIGTERM / SIGINT). Useful for attach-only daemons (e.g. spawned by core-agent-tui --local) where the operator drives the agent over attach-mode and stdin is /dev/null. Requires --attach-listen or --attach-unix-socket.")
 	noTUI := flag.Bool("no-tui", false, "skip the in-process bubble-tea TUI even when stdin is a terminal — falls back to the line-mode REPL (or whatever else --no-repl / -p select). Use for scripts or shells where the TUI's raw-mode takeover is disruptive. Equivalent to forcing the pre-v2 default behavior.")
 	noPricingRefresh := flag.Bool("no-pricing-refresh", false, "skip the daily pricing-catalog refresh from LiteLLM at startup. Use for air-gapped pods, CI runs, or any environment without outbound network. Overrides cfg.pricing.refresh.")
+	appendSystemPrompt := flag.String("append-system-prompt", "", "text appended to the assembled system prompt as an operator layer (layer 5); pass @<path> to read the text from a file. The harness contract and mode overlay stay intact underneath — this is the encouraged customization path. Beats config agent.append_system_prompt. (#459)")
+	systemPromptFile := flag.String("system-prompt-file", "", "path to a file whose contents REPLACE the assembled system prompt wholesale. You lose the harness contract (compaction summaries arrive unexplained; tool-use degradation is on you) — prefer --append-system-prompt. Beats config agent.system_prompt_file. (#459)")
 	noCompact := flag.Bool("no-compact", false, "disable automatic context-window compaction. /compact slash still works for manual summarization, but the post-turn threshold trigger is off. Use when running headless against a model whose window is huge enough that compaction would never fire anyway, or when debugging an issue where you don't want history rewrites in play.")
 	compactionThreshold := flag.Float64("compaction-threshold", 0, "context-window utilization (0,1) at which automatic compaction fires, overriding cfg.compaction.threshold and any task-profile value. 0 (default) = unset; the per-tier substrate defaults apply. Ignored when --no-compact is set.")
 	noCheckpoint := flag.Bool("no-checkpoint", false, "disable task-boundary checkpoints. /done slash + the model-facing mark_task_done tool are both removed. Use when running headless where the model shouldn't self-signal task completion, or when debugging an issue where you don't want auto-slicing in play.")
@@ -210,7 +212,7 @@ func main() {
 		os.Exit(runner.ExitConfigError)
 	}
 
-	code := run(*prompt, *initialPrompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *compactionThreshold, *maxTurnCostUSD, *maxSessionCostUSD, *watchdogMode, *smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *mcpAgenticWrapLLM, *mcpAgenticWrapModel, *noContextCache,
+	code := run(*prompt, *initialPrompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *compactionThreshold, *maxTurnCostUSD, *maxSessionCostUSD, *watchdogMode, *smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *mcpAgenticWrapLLM, *mcpAgenticWrapModel, *noContextCache, promptOpts{appendSystemPrompt: *appendSystemPrompt, systemPromptFile: *systemPromptFile},
 		attachOpts{
 			Listen:           *attachListen,
 			UnixSocket:       *attachUnixSocket,
@@ -379,7 +381,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	return opts
 }
 
-func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, compactionThreshold float64, maxTurnCostUSD, maxSessionCostUSD float64, watchdogMode, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache bool, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
+func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, compactionThreshold float64, maxTurnCostUSD, maxSessionCostUSD float64, watchdogMode, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache bool, promptCfg promptOpts, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -1019,10 +1021,41 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		builtinTools = append(builtinTools, agTools...)
 	}
 
+	// System-prompt layer resolution (#459): memory enters as layer 4
+	// (AFTER the core — the intended precedence flip from the old
+	// prefix arrangement); operator append is layer 5; a full-replace
+	// file skips layers 1–3. Flags beat config.
+	appendPrompt := cfg.Agent.AppendSystemPrompt
+	if promptCfg.appendSystemPrompt != "" {
+		appendPrompt = promptCfg.appendSystemPrompt
+	}
+	if strings.HasPrefix(appendPrompt, "@") {
+		raw, err := os.ReadFile(strings.TrimPrefix(appendPrompt, "@")) //nolint:gosec // operator-supplied CLI flag naming a file on the operator's own machine — reading it is the feature, same trust model as --system-prompt-file and every other path flag
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: --append-system-prompt: %v\n", err)
+			return runner.ExitConfigError
+		}
+		appendPrompt = string(raw)
+	}
+	replaceFile := cfg.Agent.SystemPromptFile
+	if promptCfg.systemPromptFile != "" {
+		replaceFile = promptCfg.systemPromptFile
+	}
+	var replacePrompt string
+	if replaceFile != "" {
+		raw, err := os.ReadFile(replaceFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: --system-prompt-file: %v\n", err)
+			return runner.ExitConfigError
+		}
+		replacePrompt = string(raw)
+		fmt.Fprintln(os.Stderr, "core-agent: system prompt replaced from file — the built-in harness contract (compaction framing, tool dispatch rules) is NOT included; tool-use degradation is on you")
+	}
+
 	opts := []agent.Option{
 		agent.WithTools(builtinTools),
 		agent.WithToolsets(allToolsets),
-		agent.WithSystemInstructionPrefix(loaded.Instruction),
+		agent.WithUserInstruction(loaded.Instruction),
 		agent.WithGate(gate),
 		// One source of truth for the agent's one-line description:
 		// .agents/config.json's `agent.description`. Flows to both
@@ -1037,6 +1070,12 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		// window state from this same tracker so there's one source
 		// of truth.
 		agent.WithUsageTracker(tracker),
+	}
+	if replacePrompt != "" {
+		opts = append(opts, agent.WithInstruction(replacePrompt))
+	}
+	if appendPrompt != "" {
+		opts = append(opts, agent.WithExtraInstruction(appendPrompt))
 	}
 	// Attach-extras snapshot funcs, collected separately since the
 	// pkg/agent split (#388 phase 4): they configure the
@@ -1053,7 +1092,11 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			// — a few file stats + reads of small files capped at
 			// 32 KiB each.
 			fresh, _ := instruction.Load(projectRoot, coreHome, instruction.WithHomeAgentsRoot(homeAgentsDir))
-			out := make([]attach.MemorySource, 0, len(fresh.Sources))
+			out := make([]attach.MemorySource, 0, len(fresh.Sources)+1)
+			// First row: which system-prompt layers are active (#459)
+			// so operators can see the assembled shape from /memory
+			// without reading code.
+			out = append(out, attach.MemorySource{Scope: "system-prompt", Path: describePromptLayers(cfg.Model.Name, replacePrompt != "", appendPrompt != "", len(fresh.Sources))})
 			for _, s := range fresh.Sources {
 				out = append(out, attach.MemorySource{Scope: s.Scope, Path: s.Path, Size: s.Bytes})
 			}

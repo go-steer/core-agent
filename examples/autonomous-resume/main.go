@@ -106,7 +106,7 @@ func run() error {
 				agent.WithSession(userID, sessionID),
 				agent.WithEventLog(handle),
 				agent.WithTools(extras),
-				agent.WithInstruction("autonomous worker; call report_done when finished"),
+				agent.WithMode(agent.ModeAutonomous), // report_done mechanics live in the tool description (#459)
 			)
 		},
 		"work the problem",
@@ -135,7 +135,7 @@ func run() error {
 				agent.WithSession(userID, sess),
 				agent.WithEventLog(handle),
 				agent.WithTools(extras),
-				agent.WithInstruction("autonomous worker; call report_done when finished"),
+				agent.WithMode(agent.ModeAutonomous), // report_done mechanics live in the tool description (#459)
 			)
 		},
 		autonomous.SessionRef{

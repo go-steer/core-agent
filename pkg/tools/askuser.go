@@ -66,7 +66,7 @@ type AskUserOptions struct {
 
 const (
 	defaultAskUserName        = "ask_user"
-	defaultAskUserDescription = "Ask the user a clarifying question and wait for their answer. Use sparingly — only when you need information you don't have to make progress, and not when you can reasonably proceed with a default. The user's answer is returned as the tool's response."
+	defaultAskUserDescription = "Ask the user a clarifying question and wait for their answer. If this tool is available, a human is reachable: use it for decisions that genuinely block progress, instead of guessing or asking in your response text. Use sparingly — only when you need information you don't have to make progress, and not when you can reasonably proceed with a default. The user's answer is returned as the tool's response."
 )
 
 type askUserArgs struct {

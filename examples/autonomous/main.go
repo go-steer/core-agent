@@ -86,13 +86,13 @@ func run() error {
 	// extras carries the internal "report_done" tool the driver
 	// registers; consumers compose it with their own tools here.
 	build := func(extras []adktool.Tool) (*agent.Agent, error) {
+		// WithMode(ModeAutonomous) selects the autonomous overlay —
+		// the layered replacement (#459) for the hand-typed "You are
+		// an autonomous worker…" boilerplate this example used to
+		// carry. report_done mechanics live in the tool's own
+		// description; nothing to restate here.
 		return agent.New(m,
-			agent.WithInstruction(
-				"You are an autonomous worker. Complete the user's goal "+
-					"end-to-end without asking clarifying questions. When "+
-					"finished, call report_done with state=\"done\" and a "+
-					"one-sentence detail.",
-			),
+			agent.WithMode(agent.ModeAutonomous),
 			agent.WithTools(extras),
 		)
 	}

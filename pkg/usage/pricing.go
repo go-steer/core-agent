@@ -18,8 +18,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/internal/pricing"
 	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v2/pkg/pricing"
 )
 
 // Pricing is the per-million-token rate for one model. Fields are USD
@@ -35,7 +35,7 @@ type Pricing struct {
 	CachedInputPerMTok float64
 	OutputPerMTok      float64
 	// UpdatedAt is when the rate was last verified against its
-	// source. Threads through from internal/pricing.Rates so /pricing
+	// source. Threads through from pkg/pricing.Rates so /pricing
 	// can surface staleness. Zero when unknown.
 	UpdatedAt time.Time
 	// Unpriced is true when no catalog layer had a rate for the model
@@ -136,7 +136,7 @@ func PriceFor(modelID string, cfg *config.Config) Pricing {
 	return ratesToPricing(r, found)
 }
 
-// ratesToPricing projects internal/pricing.Rates into the public
+// ratesToPricing projects pkg/pricing.Rates into the public
 // Pricing shape. Split out so PriceFor's two code paths stay in
 // lockstep as new rate fields land. found is the catalog lookup's
 // found flag; !found marks the result Unpriced so downstream cost
@@ -152,7 +152,7 @@ func ratesToPricing(r pricing.Rates, found bool) Pricing {
 }
 
 // cfgToOverride extracts the cfg.Model.Pricing map into the
-// internal/pricing wire shape. nil-safe.
+// pkg/pricing wire shape. nil-safe.
 func cfgToOverride(cfg *config.Config) map[string]pricing.ModelRates {
 	if cfg == nil || len(cfg.Model.Pricing) == 0 {
 		return nil

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Generator for internal/pricing/builtin.go.
+// Generator for pkg/pricing/builtin.go.
 //
 // Reads BerriAI/litellm's model_prices_and_context_window.json (from
 // the URL by default, or a local file via --source), filters to the
@@ -117,7 +117,7 @@ func main() {
 	source := flag.String("source", defaultLiteLLMSource,
 		"URL or path to LiteLLM's model_prices_and_context_window.json")
 	outPath := flag.String("out", defaultOutPath(),
-		"path to write generated builtin.go (default: internal/pricing/builtin.go relative to cwd)")
+		"path to write generated builtin.go (default: pkg/pricing/builtin.go relative to cwd)")
 	toStdout := flag.Bool("stdout", false,
 		"print generated file to stdout instead of writing to --out")
 	flag.Parse()
@@ -331,11 +331,11 @@ func Builtin() map[string]Rates {
 }
 `
 
-// defaultOutPath resolves internal/pricing/builtin.go relative to the
+// defaultOutPath resolves pkg/pricing/builtin.go relative to the
 // current working directory. Assumes the generator is run from the
 // repo root (the go run invocation from README's usage block).
 func defaultOutPath() string {
-	return filepath.Join("internal", "pricing", "builtin.go")
+	return filepath.Join("pkg", "pricing", "builtin.go")
 }
 
 func die(format string, args ...any) {

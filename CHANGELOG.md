@@ -6,7 +6,7 @@ All notable changes to `core-agent` are recorded here. The format follows [Keep 
 
 The public API of `core-agent` is the exported surface of these packages:
 
-- `agent`, `eventlog`, `tools`, `permissions`, `config`, `models` (+ `models/anthropic`, `models/gemini`, `models/mock`), `recording`, `runner`, `session`, `usage`, `instruction`, `mcp`, `skills`, `telemetry`
+- `agent`, `eventlog`, `tools`, `permissions`, `config`, `models` (+ `models/anthropic`, `models/gemini`, `models/mock`), `pricing`, `recording`, `runner`, `session`, `usage`, `instruction`, `mcp`, `skills`, `telemetry`
 
 Pre-1.0, breaking changes are possible at any minor version (`v0.X`). When we make one, the change is called out in this file under **Changed** or **Removed**, and non-trivial removals get a one-version deprecation period when feasible. Patch versions (`v0.X.Y`) are bug fixes only.
 
@@ -17,6 +17,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 ## [Unreleased]
 
 ### Changes by Kind
+
+#### Feature
+
+- pricing: `internal/pricing` is promoted to **`pkg/pricing`** and joins the stability surface (#489 — the finishing pass the #386 compose extraction needed). Parts of the public API were uncallable outside the module because their signatures named internal types: `compose.CfgToCatalogOverride` (returns `map[string]pricing.ModelRates`), `compose.DescribeRefresh` (takes `pricing.RefreshOutcome`), and `usage.SetCatalog` (takes `*pricing.Catalog`, with nothing exported able to produce one). External consumers can now build catalogs (per tenant, via the explicit-catalog arguments `usage` already accepts), drive `pricing.Refresh`, and name every argument/result of the compose pricing helpers. `compose.MaybeWireContextCache` similarly returns a new exported `compose.ContextCacheHandle` interface instead of the un-nameable `*internal/vertexcache.Manager` — `Delete` is the only method hosts need after wiring, so the manager itself stays internal. No behavior change anywhere; import-path move plus one return-type change (callers using `:=` are unaffected; nil-skip semantics preserved). Closes [#489](https://github.com/go-steer/core-agent/issues/489).
 
 #### Bug or Regression
 

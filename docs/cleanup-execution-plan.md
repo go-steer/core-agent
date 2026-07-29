@@ -36,7 +36,7 @@ file sets); PRs stack within a lane.
 |---|---|---|
 | A — eventlog | `pkg/eventlog/*` | Correctness |
 | B — anthropic | `pkg/models/anthropic/{convert,stream}.go` | Correctness |
-| C — cost/usage | `pkg/usage`, `internal/pricing`, `modeltier`, `taskclass` | Correctness |
+| C — cost/usage | `pkg/usage`, `pkg/pricing`, `modeltier`, `taskclass` | Correctness |
 | D — agent loop | `pkg/agent/{agent,autonomous,compactor,subagent,background_spawn,watchdog,cost_ceiling,resume}.go` | Correctness |
 | E — gate/tools security | `pkg/permissions/*`, `pkg/tools/{file,fetch}.go`, `pkg/hooks` | Security |
 | F — attach | `pkg/attach/*` | Security + Structure |

@@ -60,7 +60,7 @@ File format (one shape across all three locations):
 ```
 
 Scope: ~80 LoC across `usage/`, `config/`, and a new
-`internal/pricing/` package that holds the loader + merge logic.
+`pkg/pricing/` package that holds the loader + merge logic.
 
 ### Layer B: external-source refresh (network, opt-in)
 
@@ -77,7 +77,7 @@ Cadence: once-per-day on startup. Skip when:
   cache or `$—`, never a startup error)
 
 HTTP: `If-Modified-Since` (or `ETag`) so we don't re-download
-unchanged data. ~80 LoC across `internal/pricing/refresh.go` + the
+unchanged data. ~80 LoC across `pkg/pricing/refresh.go` + the
 startup wire-up in `cmd/core-agent/main.go`.
 
 ### Layer C: force refresh (trivial, on top of B)
@@ -193,7 +193,7 @@ adding to the manual section.
 
 Three PRs, each independently shippable:
 
-1. **Layer A + map-shaped cfg override.** `internal/pricing` package
+1. **Layer A + map-shaped cfg override.** `pkg/pricing` package
    skeleton + loader + lookup chain + tests. Closes the
    "operators can't price multiple models" pain. No network.
 2. **Layer B.** Add the LiteLLM fetcher + daily-refresh wire-up +

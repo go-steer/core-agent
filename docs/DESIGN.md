@@ -560,7 +560,7 @@ Why no slash-command framework: same reasoning. `/exit` is the minimum viable. A
 Three small packages, each lifted from cogo unchanged.
 
 - **`telemetry/`** — OTEL setup. Off by default (no spans). Console mode for local debug, OTLP for production. The one gotcha worth knowing: ADK's `telemetry.New(...)` returns providers but does NOT install them as OTEL globals. We call `providers.SetGlobalOtelProviders()` explicitly. Without that, ADK's instrumentation runs against the noop tracer and you wonder why nothing's being emitted.
-- **`usage/`** — per-turn token + cost tracker. Pricing is a layered catalog (`internal/pricing`): a built-in table covering both the Gemini *and* Anthropic families, refreshed daily from LiteLLM, with per-turn cost attribution incl. cache-read/write buckets. (The v1 "Anthropic returns zero pricing" state is long gone; consumers can still override per-model via `cfg.Model.Pricing`.) One known gap: models absent from the catalog currently attribute as `$0` rather than "unpriced" — tracked in the cleanup milestones.
+- **`usage/`** — per-turn token + cost tracker. Pricing is a layered catalog (`pkg/pricing`): a built-in table covering both the Gemini *and* Anthropic families, refreshed daily from LiteLLM, with per-turn cost attribution incl. cache-read/write buckets. (The v1 "Anthropic returns zero pricing" state is long gone; consumers can still override per-model via `cfg.Model.Pricing`.) One known gap: models absent from the catalog currently attribute as `$0` rather than "unpriced" — tracked in the cleanup milestones.
 - **`session/`** — transcript persistence. One-shot writes a JSON file under `.agents/sessions/`; REPL doesn't (because in-memory ADK sessions don't survive process exit anyway).
 
 ---

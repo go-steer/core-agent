@@ -526,7 +526,7 @@ type PermsController interface {
 
 // PricingController is the optional capability for POST
 // /sessions/.../pricing/refresh + /pricing/set. Implementations
-// typically delegate to the binary's pricing layer (internal/pricing
+// typically delegate to the binary's pricing layer (pkg/pricing
 // in cmd/core-agent) rather than reimplementing it.
 type PricingController interface {
 	AttachRefreshPricing(ctx context.Context) (PricingRefreshResponse, error)

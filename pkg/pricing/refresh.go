@@ -61,7 +61,7 @@ type RefreshOptions struct {
 	// MinInterval is the minimum age the cache must reach before
 	// Refresh actually fetches. Zero defaults to
 	// DefaultRefreshInterval (24h). Set to a negative duration to
-	// force a fetch regardless of cache age (used by PR C's
+	// force a fetch regardless of cache age (used by the
 	// /pricing refresh slash command).
 	MinInterval time.Duration
 
@@ -72,7 +72,7 @@ type RefreshOptions struct {
 }
 
 // RefreshOutcome is the result of a Refresh call. Surfaced so the
-// caller (cmd/core-agent startup + PR C's /pricing refresh slash)
+// caller (cmd/core-agent startup + the /pricing refresh slash)
 // can render a meaningful one-liner: "Refreshed 247 models from
 // LiteLLM" / "Cache is 4h old; skipped" / "Using 6-day-old cache;
 // network unreachable: connection refused".
@@ -274,7 +274,7 @@ type liteLLMEntry struct {
 //   - Skip "sample_spec" (LiteLLM's documentation row)
 //   - Skip entries without both cost fields populated (image gen,
 //     embeddings, etc. either have no costs or mode-specific costs
-//     we don't model yet — PR C extension if it becomes a gap).
+//     we don't model yet — future extension if it becomes a gap).
 //   - Convert per-token rates → per-million-token rates to match
 //     our internal Rates struct.
 func parseLiteLLMBody(body []byte) (map[string]ModelRates, error) {

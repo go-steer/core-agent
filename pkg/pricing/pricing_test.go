@@ -176,7 +176,7 @@ func TestNewCatalog_MissingFilesAreOK(t *testing.T) {
 }
 
 // TestSaveAndReloadUserFile verifies the atomic write round-trips,
-// preserving manual + external sections. Critical for PR B's
+// preserving manual + external sections. Critical for the LiteLLM refresh flow's
 // refresh-without-clobbering-manual semantics.
 func TestSaveAndReloadUserFile(t *testing.T) {
 	t.Parallel()

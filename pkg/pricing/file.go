@@ -41,9 +41,12 @@ type ModelRates struct {
 	UpdatedAt          time.Time `json:"updated_at,omitempty"`
 }
 
-// rates converts the JSON-tagged form into the internal Rates type.
-// Field order + names are identical so a direct conversion suffices.
-func (m ModelRates) rates() Rates { return Rates(m) }
+// Rates converts the JSON-tagged wire form into the Catalog's Rates
+// type. The two structs are guaranteed field-for-field convertible —
+// that identical layout is a documented invariant of the public
+// surface (external consumers building catalogs from their own file
+// handling rely on it), enforced by this very conversion compiling.
+func (m ModelRates) Rates() Rates { return Rates(m) }
 
 // ProjectFile is the .agents/pricing.json shape — flat models map.
 // Project files are always operator-curated (never auto-fetched), so
@@ -54,17 +57,17 @@ type ProjectFile struct {
 }
 
 // UserFile is the ~/.core-agent/pricing.json shape — sectioned so
-// PR B's daily refresh can overwrite the `external` section without
+// the daily refresh can overwrite the `external` section without
 // touching `manual` entries the operator hand-edited (or set via
-// /pricing set in PR C).
+// /pricing set).
 type UserFile struct {
 	Version  int             `json:"version"`
 	External *ExternalSource `json:"external,omitempty"`
 	Manual   *ManualSection  `json:"manual,omitempty"`
 }
 
-// ExternalSource is the auto-fetched section. Populated by PR B's
-// LiteLLM refresh; unused in PR A. The fetched_at + etag fields
+// ExternalSource is the auto-fetched section. Populated by the
+// LiteLLM refresh. The fetched_at + etag fields
 // drive cache-validity logic (skip refresh if <24h, send
 // If-None-Match on revalidation).
 type ExternalSource struct {
@@ -75,7 +78,7 @@ type ExternalSource struct {
 }
 
 // ManualSection is the operator-curated section. Round-trips intact
-// across refreshes (PR B's fetcher only rewrites External).
+// across refreshes (the LiteLLM fetcher only rewrites External).
 type ManualSection struct {
 	Models map[string]ModelRates `json:"models,omitempty"`
 }
@@ -140,7 +143,7 @@ func loadUserFile(path string) (*UserFile, error) {
 }
 
 // SaveUserFile writes uf to <userHome>/<UserFileName> atomically.
-// Used by PR B's refresher and PR C's /pricing set slash. Empty
+// Used by the LiteLLM refresher and the /pricing set slash. Empty
 // userHome is an error (caller should resolve a real home first).
 func SaveUserFile(userHome string, uf *UserFile) error {
 	if userHome == "" {
@@ -210,7 +213,7 @@ func lowerKeys(m map[string]ModelRates) map[string]Rates {
 		if k == "" {
 			continue
 		}
-		out[k] = v.rates()
+		out[k] = v.Rates()
 	}
 	return out
 }

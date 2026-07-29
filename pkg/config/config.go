@@ -172,7 +172,7 @@ const (
 // PricingFileConfig governs the pricing-catalog refresh behavior —
 // distinct from ModelConfig.Pricing (which is the per-model rate
 // override map). Defaults: refresh enabled, daily cadence, LiteLLM
-// upstream. See internal/pricing and docs/pricing-design.md.
+// upstream. See pkg/pricing and docs/pricing-design.md.
 type PricingFileConfig struct {
 	// Refresh enables the daily background fetch from Source into
 	// ~/.core-agent/pricing.json's external section. Defaults to
@@ -242,7 +242,7 @@ type ModelConfig struct {
 	// (case-insensitive). Survives /model switches mid-session —
 	// every model the operator routes to can carry its own rates.
 	// Layered with .agents/pricing.json + ~/.core-agent/pricing.json
-	// + the compiled-in fallback; see internal/pricing for the
+	// + the compiled-in fallback; see pkg/pricing for the
 	// lookup chain. Previously a single *PricingConfig that matched
 	// only Model.Name; PR core-agent/#NN renamed the JSON key
 	// `pricing` from "{input_per_mtok, output_per_mtok}" to a map.

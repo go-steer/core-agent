@@ -14,7 +14,7 @@
 
 name: pricing-regen
 
-# Weekly + on-demand refresh of internal/pricing/builtin.go from
+# Weekly + on-demand refresh of pkg/pricing/builtin.go from
 # LiteLLM's catalog. Opens an auto-PR when the regenerated file differs
 # from what's in main. Fixed branch name (bot/pricing-regen) so re-runs
 # update the existing PR rather than stacking dupes.
@@ -61,7 +61,7 @@ jobs:
       - name: Detect drift
         id: drift
         run: |
-          if git diff --quiet internal/pricing/builtin.go; then
+          if git diff --quiet pkg/pricing/builtin.go; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "No drift — builtin.go matches LiteLLM."
           else
@@ -102,7 +102,7 @@ jobs:
             Curate the allowlist in dev/regen-builtin-pricing/main.go.
           title: 'chore(pricing): regenerate builtin.go from LiteLLM (${{ steps.meta.outputs.date }})'
           body: |
-            Automated pricing regen — LiteLLM's `model_prices_and_context_window.json` shifted since the last time `internal/pricing/builtin.go` was regenerated.
+            Automated pricing regen — LiteLLM's `model_prices_and_context_window.json` shifted since the last time `pkg/pricing/builtin.go` was regenerated.
 
             **Regen date**: ${{ steps.meta.outputs.date }}
             **Source**: https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
@@ -110,7 +110,7 @@ jobs:
 
             ## Review checklist
 
-            - [ ] Diff on `internal/pricing/builtin.go` is only rate/date changes (no spurious formatting churn)
+            - [ ] Diff on `pkg/pricing/builtin.go` is only rate/date changes (no spurious formatting churn)
             - [ ] Any rate change that halves or doubles is real (spot-check the provider's public pricing page — LiteLLM has occasionally shipped bad entries)
             - [ ] `UpdatedAt` dates on all entries are today
             - [ ] If any model was dropped from LiteLLM upstream, the workflow's stderr surfaces it — bump the allowlist or accept the removal

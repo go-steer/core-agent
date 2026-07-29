@@ -93,23 +93,23 @@ func awaitFrame(t *testing.T, ch <-chan sseFrame, deadline time.Duration, match 
 	}
 }
 
-// emitTargetStub is a Registrant that also implements EmitTarget so
+// operatorEventTargetStub is a Registrant that also implements OperatorEventTarget so
 // the broadcaster wires its Emit method as the agent-side callback.
 // Captures the wired emitter so tests can drive Emit() externally
 // without spinning up a full agent.
-type emitTargetStub struct {
+type operatorEventTargetStub struct {
 	eventfulRegistrant
 	mu      sync.Mutex
 	wiredFn func(string, any)
 }
 
-func (e *emitTargetStub) SetAttachEmitter(f func(string, any)) {
+func (e *operatorEventTargetStub) SetOperatorEventEmitter(f func(string, any)) {
 	e.mu.Lock()
 	e.wiredFn = f
 	e.mu.Unlock()
 }
 
-func (e *emitTargetStub) fire(eventType string, payload any) {
+func (e *operatorEventTargetStub) fire(eventType string, payload any) {
 	e.mu.Lock()
 	fn := e.wiredFn
 	e.mu.Unlock()
@@ -227,7 +227,7 @@ func TestEvents_BootFrameOrder(t *testing.T) {
 	defer cleanupLog()
 
 	reg := NewSessionRegistry()
-	ag := &emitTargetStub{
+	ag := &operatorEventTargetStub{
 		eventfulRegistrant: eventfulRegistrant{
 			stubRegistrant: stubRegistrant{app: "core-agent", user: "u", sid: "boot"},
 			handle:         h,
@@ -294,7 +294,7 @@ func TestEvents_BootFrameOrder(t *testing.T) {
 // TestEvents_EmitDispatch verifies that broadcaster.Emit pushes a
 // typed event onto every connected subscriber's stream with the
 // correct event name and payload field shape. Covers the path
-// agents will take (via SetAttachEmitter) without depending on a
+// agents will take (via SetOperatorEventEmitter) without depending on a
 // full agent.
 func TestEvents_EmitDispatch(t *testing.T) {
 	t.Parallel()
@@ -302,7 +302,7 @@ func TestEvents_EmitDispatch(t *testing.T) {
 	defer cleanupLog()
 
 	reg := NewSessionRegistry()
-	ag := &emitTargetStub{
+	ag := &operatorEventTargetStub{
 		eventfulRegistrant: eventfulRegistrant{
 			stubRegistrant: stubRegistrant{app: "core-agent", user: "u", sid: "emit"},
 			handle:         h,

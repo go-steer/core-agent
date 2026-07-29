@@ -144,14 +144,14 @@ type Agent struct {
 	compactor      Compactor
 	checkpointer   Checkpointer
 
-	// attachEmit is the SSE event-stream emit callback set by the
+	// operatorEmit is the typed operator-event callback set by the
 	// broadcaster on first subscribe (see the attach package's broadcaster Subscribe).
 	// Nil when no SSE client is connected — the emit() helper drops
 	// events to the floor in that case (no consumer = no work).
 	// Guarded by emitMu so the broadcaster can swap or clear it
 	// without racing the agent's per-turn emit calls.
-	emitMu     sync.Mutex
-	attachEmit func(eventType string, payload any)
+	emitMu       sync.Mutex
+	operatorEmit func(eventType string, payload any)
 
 	// mu guards cancelInFlight + compactionPending + checkpoint
 	// flags + subtask counters. Held only across short store-and-
@@ -678,13 +678,16 @@ func (a *Agent) Inner() adkagent.Agent {
 	return a.inner
 }
 
-// SetAttachEmitter installs (or clears, when f is nil) the callback
-// the agent uses to push typed events onto the attach SSE event
-// stream. The attach broadcaster calls this on first subscriber
-// (wiring its Emit method) and again with nil when the last
-// subscriber disconnects.
+// SetOperatorEventEmitter installs (or clears, when f is nil) the
+// callback the agent uses to push typed operator events —
+// status-update, usage-update, turn-complete, turn-error, inbox —
+// to whatever transport is listening. The attach SSE broadcaster is
+// today's only consumer (it wires its Emit on first subscriber and
+// clears it when the last disconnects), but the seam itself is
+// transport-neutral (#506; formerly SetAttachEmitter, which baked
+// one transport's name into the frozen core surface).
 //
-// When a tracker is wired via WithUsageTracker, SetAttachEmitter
+// When a tracker is wired via WithUsageTracker, this
 // also installs (or clears) a tracker.SetOnAppend callback that
 // emits a usage-update event with cumulative + per-model totals
 // after every Append. That's what carries the "running cost" the
@@ -700,12 +703,12 @@ func (a *Agent) Inner() adkagent.Agent {
 //
 // Safe to call concurrently with the agent's own emit path; the
 // internal mutex serializes the swap and any in-flight emit reads.
-func (a *Agent) SetAttachEmitter(f func(eventType string, payload any)) {
+func (a *Agent) SetOperatorEventEmitter(f func(eventType string, payload any)) {
 	if a == nil {
 		return
 	}
 	a.emitMu.Lock()
-	a.attachEmit = f
+	a.operatorEmit = f
 	a.emitMu.Unlock()
 
 	if a.tracker == nil {
@@ -753,20 +756,20 @@ func (a *Agent) SetAttachEmitter(f func(eventType string, payload any)) {
 	})
 }
 
-// emit pushes one typed event to the attach SSE stream if a
-// broadcaster is currently wired. No-op when no SSE client is
-// connected.
+// emit pushes one typed operator event to the installed emitter.
+// No-op when none is wired (no operator listening, nothing to
+// signal).
 //
 // The lock is held only across the callback read, not the call
-// itself, so the broadcaster's Emit (which fans out to subscriber
-// channels) doesn't block agent progress and a SetAttachEmitter
+// itself, so a fan-out-heavy emitter (the attach broadcaster's
+// Emit) doesn't block agent progress and a SetOperatorEventEmitter
 // swap can't race a long-running fan-out.
 func (a *Agent) emit(eventType string, payload any) {
 	if a == nil {
 		return
 	}
 	a.emitMu.Lock()
-	cb := a.attachEmit
+	cb := a.operatorEmit
 	a.emitMu.Unlock()
 	if cb == nil {
 		return
@@ -1291,4 +1294,13 @@ func wrapWithCleanup(seq iter.Seq2[*session.Event, error], cleanup func()) iter.
 			}
 		}
 	}
+}
+
+// SetAttachEmitter is the pre-#506 name of SetOperatorEventEmitter —
+// the typed operator-event seam is transport-neutral; only its
+// first consumer was attach.
+//
+// Deprecated: use SetOperatorEventEmitter.
+func (a *Agent) SetAttachEmitter(f func(eventType string, payload any)) {
+	a.SetOperatorEventEmitter(f)
 }

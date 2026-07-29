@@ -225,13 +225,21 @@ func (ad *Adapter) RequestWake() { ad.Agent().RequestWake() }
 // explicit AgentCardConfig.Description override is supplied.
 func (ad *Adapter) Description() string { return ad.Agent().Description() }
 
-// SetAttachEmitter implements attach.EmitTarget. The attach
-// broadcaster calls this on first SSE subscriber (wiring its Emit
-// method) and again with nil when the last subscriber disconnects.
-// Forwards to the agent, which owns the emit machinery — the core
-// run loop is the thing that emits status/turn/usage events.
+// SetOperatorEventEmitter implements attach.OperatorEventTarget.
+// The attach broadcaster calls this on first SSE subscriber (wiring
+// its Emit method) and again with nil when the last subscriber
+// disconnects. Forwards to the agent, which owns the emit machinery
+// — the core run loop is the thing that emits status/turn/usage
+// events.
+func (ad *Adapter) SetOperatorEventEmitter(f func(eventType string, payload any)) {
+	ad.Agent().SetOperatorEventEmitter(f)
+}
+
+// SetAttachEmitter is the pre-#506 name.
+//
+// Deprecated: use SetOperatorEventEmitter.
 func (ad *Adapter) SetAttachEmitter(f func(eventType string, payload any)) {
-	ad.Agent().SetAttachEmitter(f)
+	ad.SetOperatorEventEmitter(f)
 }
 
 // AttachCapabilities implements attach.CapabilityReporter (#490).
@@ -287,7 +295,8 @@ func (ad *Adapter) AttachCapabilities() attach.CapabilityReport {
 var (
 	_ attach.Registrant          = (*Adapter)(nil)
 	_ attach.DescriptionProvider = (*Adapter)(nil)
-	_ attach.EmitTarget          = (*Adapter)(nil)
+	_ attach.OperatorEventTarget = (*Adapter)(nil)
+	_ attach.EmitTarget          = (*Adapter)(nil) //nolint:staticcheck // deprecation-cycle conformance
 	_ attach.CapabilityReporter  = (*Adapter)(nil)
 
 	_ attach.ToolsProvider           = (*Adapter)(nil)

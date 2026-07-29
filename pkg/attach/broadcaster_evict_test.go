@@ -17,6 +17,7 @@ package attach
 import (
 	"context"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,7 +27,7 @@ import (
 // The #486 fixes: the broadcaster pool keys by (app, user, sid), so
 // after an idle-evict + lazy resume (or an Unregister + re-register)
 // the fresh *Entry shares the triple and pool.For handed back the
-// OLD broadcaster — boot snapshots and SetAttachEmitter bound to the
+// OLD broadcaster — boot snapshots and SetOperatorEventEmitter bound to the
 // dead agent, and a pump whose touch() kept refreshing the stale
 // entry so the resumed session looked idle to the sweep while
 // actively streaming. Two layers fix it: the registry evict hook
@@ -391,5 +392,63 @@ wait:
 		case <-deadline:
 			t.Fatal("SSE stream still open after eviction — stale broadcaster kept serving the dead registration")
 		}
+	}
+}
+
+// legacyEmitRegistrant implements ONLY the deprecated EmitTarget —
+// the pre-#506 shape. The broadcaster must still wire it: dropping
+// the fallback would fail silently (typed operator events just stop
+// flowing for that session).
+type legacyEmitRegistrant struct {
+	eventfulRegistrant
+	mu      sync.Mutex
+	emitter func(eventType string, payload any)
+}
+
+func (l *legacyEmitRegistrant) SetAttachEmitter(f func(eventType string, payload any)) {
+	l.mu.Lock()
+	l.emitter = f
+	l.mu.Unlock()
+}
+
+func (l *legacyEmitRegistrant) emitterSet() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.emitter != nil
+}
+
+// TestBroadcaster_LegacyEmitTargetFallback pins the #506 deprecation
+// cycle: a registrant built against the old SetAttachEmitter name
+// keeps getting the emitter wired on first subscribe and cleared on
+// last detach.
+func TestBroadcaster_LegacyEmitTargetFallback(t *testing.T) {
+	t.Parallel()
+
+	l := &legacyEmitRegistrant{
+		eventfulRegistrant: eventfulRegistrant{
+			stubRegistrant: stubRegistrant{app: "core-agent", user: "u", sid: "legacy-emit"},
+			handle:         &eventlog.Handle{Stream: newFlakyStream()},
+		},
+	}
+	entry := &Entry{AppName: "core-agent", UserID: "u", SessionID: "legacy-emit", regSeq: 1, Agent: l}
+	b, err := newBroadcaster(entry)
+	if err != nil {
+		t.Fatalf("newBroadcaster: %v", err)
+	}
+	defer b.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := b.Subscribe(ctx, 0)
+	if !l.emitterSet() {
+		t.Fatal("deprecated EmitTarget was not wired on first subscribe — the fallback is the whole point of the deprecation cycle")
+	}
+	cancel()
+	drainUntilClosed(t, ch, "legacy-emit subscriber")
+	deadline := time.Now().Add(5 * time.Second)
+	for l.emitterSet() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if l.emitterSet() {
+		t.Fatal("emitter not cleared after last subscriber detached")
 	}
 }

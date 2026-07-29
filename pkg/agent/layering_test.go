@@ -57,7 +57,7 @@ func TestNew_LayerAssemblyReachesModel(t *testing.T) {
 	// Defaults: core + interactive; NOT the Gemini quirk (recordingLLM
 	// names itself "recording") and NOT the autonomous overlay.
 	instr := instructionSeenByModel(t)
-	if !strings.Contains(instr, "execute in parallel") || !strings.Contains(instr, "A user is present") {
+	if !strings.Contains(instr, "execute concurrently") || !strings.Contains(instr, "A user is present") {
 		t.Errorf("default assembly missing core/interactive: %q", instr)
 	}
 	if strings.Contains(instr, "do not execute them one by one") {
@@ -82,7 +82,7 @@ func TestNew_LayerAssemblyReachesModel(t *testing.T) {
 	if strings.Contains(instr, "A user is present") {
 		t.Error("interactive overlay leaked into autonomous mode")
 	}
-	core := strings.Index(instr, "execute in parallel")
+	core := strings.Index(instr, "execute concurrently")
 	user := strings.Index(instr, "USER-MEMORY-BLOCK")
 	e1 := strings.Index(instr, "EXTRA-BLOCK-1")
 	e2 := strings.Index(instr, "EXTRA-BLOCK-2")

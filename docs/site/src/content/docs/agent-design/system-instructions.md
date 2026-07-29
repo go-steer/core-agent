@@ -14,7 +14,7 @@ For the basic mechanics (file location, fallback chain, schema) see [Interactive
 
 Since #459 the system prompt assembles from ordered layers, **stable → volatile** (see the [layer table](/reference/configuration/#system-prompt-layers-v28) for the full reference):
 
-1. **`agent.CoreInstruction`** (built-in, always present). The harness contract: tool-dispatch rules, edit sequencing, and the post-boundary framing ("when prior conversation arrives wrapped in `[Conversation compacted...]` or `[The prior task is complete...]`, read it as authoritative shared history; don't re-run tools").
+1. **`agent.CoreInstruction`** (built-in, always present). The harness contract: tool-dispatch rules (the runtime serializes state-mutating tools — #460 — so no prompt-level edit-sequencing rule is needed) and the post-boundary framing ("when prior conversation arrives wrapped in `[Conversation compacted...]` or `[The prior task is complete...]`, read it as authoritative shared history; don't re-run tools").
 2. **Provider quirks** (built-in, model-selected). Measured workarounds — Gemini gets the parallel-batching mandate; Claude gets none.
 3. **Mode overlay** (built-in). Interactive (default) or autonomous disposition, via `agent.WithMode`.
 4. **Your memory** — user-global `~/.core-agent/AGENTS.md`, then project `AGENTS.md`, in that order. Since v2.8 memory sits AFTER the built-in layers: your instructions win on conflict with the built-in communication defaults, and editing memory never invalidates the prompt-cached core.

@@ -147,7 +147,7 @@ Three layers, increasingly specific:
 
 | Layer | Where it lives | Audience | Examples of what belongs here |
 |---|---|---|---|
-| Substrate | `agent.CoreInstruction` + quirks + mode overlay (in `pkg/agent`) | Every consumer | Tool-dispatch rules, edit sequencing, compacted-history framing; mode disposition |
+| Substrate | `agent.CoreInstruction` + quirks + mode overlay (in `pkg/agent`) | Every consumer | Tool-dispatch rules (mutating tools runtime-serialized, #460), compacted-history framing; mode disposition |
 | Consumer | Library that wraps `agent.New` (e.g. `cogo`'s coding assistant, a custom ops agent) | Every deploy of that product | Coding-assistant opinions: render code inline, prefer `edit_file` over `write_file` for existing files, test-after-change. Or ops opinions: never run destructive commands without confirmation. |
 | Operator / deploy | `.agents/AGENTS.md` in a project root, loaded automatically by `pkg/instruction` | One specific deploy | This repo's conventions, this team's allow-lists, this service's persona |
 

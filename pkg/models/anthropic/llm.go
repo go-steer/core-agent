@@ -77,27 +77,46 @@ func (l *llm) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, _ b
 			stream := l.client.Messages.NewStreaming(ctx, params)
 			final := anthropic.Message{}
 
-			for stream.Next() {
-				ev := stream.Current()
-				if err := final.Accumulate(ev); err != nil {
-					yield(nil, fmt.Errorf("anthropic: accumulate: %w", err))
-					return
-				}
-				if delta, ok := textDelta(ev); ok {
-					partial := &adkmodel.LLMResponse{
-						Content: &genai.Content{
-							Role:  genai.RoleModel,
-							Parts: []*genai.Part{{Text: delta}},
-						},
-						Partial: true,
+			// Drain inside a closure so the deferred Close releases
+			// this request's HTTP connection on EVERY exit path —
+			// early consumer stop, accumulate/stream error, the
+			// pause_turn continue, and the terminal return (#487).
+			// Without it the connection stayed open until the
+			// caller's ctx was cancelled; in-tree callers cancel
+			// per-turn so the leak was bounded, but library consumers
+			// with a long-lived ctx that stop mid-iteration leaked
+			// one connection per stop — and the continuation loop
+			// opens up to 1+maxPauseTurnContinuations streams per
+			// call. Returns false when GenerateContent must stop
+			// (consumer said stop, or an error was already yielded).
+			drained := func() bool {
+				defer func() { _ = stream.Close() }()
+				for stream.Next() {
+					ev := stream.Current()
+					if err := final.Accumulate(ev); err != nil {
+						yield(nil, fmt.Errorf("anthropic: accumulate: %w", err))
+						return false
 					}
-					if !yield(partial, nil) {
-						return
+					if delta, ok := textDelta(ev); ok {
+						partial := &adkmodel.LLMResponse{
+							Content: &genai.Content{
+								Role:  genai.RoleModel,
+								Parts: []*genai.Part{{Text: delta}},
+							},
+							Partial: true,
+						}
+						if !yield(partial, nil) {
+							return false
+						}
 					}
 				}
-			}
-			if err := stream.Err(); err != nil {
-				yield(nil, fmt.Errorf("anthropic: stream: %w", err))
+				if err := stream.Err(); err != nil {
+					yield(nil, fmt.Errorf("anthropic: stream: %w", err))
+					return false
+				}
+				return true
+			}()
+			if !drained {
 				return
 			}
 

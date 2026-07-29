@@ -172,11 +172,9 @@ func part3SupervisorTopology(ctx context.Context) error {
 	}
 	if _, err := agent.New(llm,
 		agent.WithName("supervisor"),
-		agent.WithInstruction(
-			agent.DefaultInstruction+"\n\n"+
-				agent.DefaultSchedulingInstruction+"\n\n"+
-				"You are the supervisor of N cluster monitors. Each child runs schedule_next_turn between scans.",
-		),
+		agent.WithMode(agent.ModeAutonomous),
+		agent.WithExtraInstruction(agent.DefaultSchedulingInstruction),
+		agent.WithExtraInstruction("You are the supervisor of N cluster monitors. Each child runs schedule_next_turn between scans."),
 		agent.WithBackgroundManager(mgr),
 	); err != nil {
 		return err

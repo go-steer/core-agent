@@ -166,6 +166,7 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 	// goroutine so the construction happens after the goroutine
 	// starts (autonomous.Run calls build).
 	subagentInstruction := spec.SystemPrompt
+	replacePrompt := spec.ReplaceSystemPrompt
 	subagentName := spec.Name
 	subagentGoal := spec.Goal
 
@@ -180,10 +181,16 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 			newReportAlertTool(m, subagentName),
 			newReportCompletedTool(m, subagentName),
 		)
+		instrOpt := agent.WithExtraInstruction(subagentInstruction)
+		if replacePrompt {
+			// Pre-#459 escape hatch: bare prompt, no harness layers.
+			instrOpt = agent.WithInstruction(subagentInstruction)
+		}
 		return agent.New(subModel,
 			agent.WithAppName(parent.AppName()),
 			agent.WithName(subagentName),
-			agent.WithInstruction(subagentInstruction),
+			agent.WithMode(agent.ModeAutonomous),
+			instrOpt,
 			agent.WithStreaming(parent.Streaming()),
 			agent.WithSession(parent.UserID(), subSessionID),
 			agent.WithTools(all),

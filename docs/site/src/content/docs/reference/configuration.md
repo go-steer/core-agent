@@ -355,7 +355,7 @@ When background subagents are enabled (default; `--no-background-agents` disable
 
 The subagent inherits the parent's gate wholesale: the same allow/deny lists, the same mode, the same session-level approvals. If you approve `session-tool: bash` while a subagent is asking, every subagent gets the grant for the rest of the session (sibling included). Bounded-subset grants where the parent's model arbitrates out-of-subset requests is deferred to v1.3+.
 
-**Teaching the model to use the spawn tools.** Just registering the tools isn't always enough — most models default to doing things synchronously. Drop a short paragraph into your project's `AGENTS.md` (or pass via `agent.WithInstruction`) describing when background subagents are appropriate (monitoring, fan-out, long bounded delegations). See [Library API → Background subagents → Prompting patterns](/embed/api/#prompting-patterns) for a ready-to-paste system instruction.
+**Teaching the model to use the spawn tools.** Just registering the tools isn't always enough — most models default to doing things synchronously. Drop a short paragraph into your project's `AGENTS.md` (or pass via `agent.WithExtraInstruction`, which composes with the layered baseline — v2.8) describing when background subagents are appropriate (monitoring, fan-out, long bounded delegations). See [Library API → Background subagents → Prompting patterns](/embed/api/#prompting-patterns) for a ready-to-paste system instruction.
 
 ### REPL keybindings (v1.3.0+)
 
@@ -420,6 +420,22 @@ Runtime tuning for the agent loop.
 | `max_session_cost_usd` | float | `0` | Session-level spend ceiling in USD (0 = disabled). Cumulative across every turn including subtasks; same trip + refuse behavior. Useful for long-running autonomous deploys where per-turn cost is reasonable but the session total adds up. CLI: `--max-session-cost-usd`. |
 | `display_name` | string | `""` | Operator-visible per-deployment label. Rendered in the TUI status-line banner (`core-agent · <name> · ◇ model`) so operators can distinguish between multiple agent deployments across windows. Empty falls back to the bare wordmark. |
 | `description` | string | `""` | Human-readable summary of what this agent does. Surfaced by `/.well-known/agent-card.json` when the agent-card endpoint is enabled (see [Agent card](/reference/agent-card/)). Required (via file or `--agent-card-description` flag) to enable that endpoint. |
+| `append_system_prompt` | string | `""` | Operator text appended to the assembled system prompt as its final layer (v2.8, #459). The built-in harness contract, provider quirks, and mode overlay stay intact underneath — this is the encouraged customization path. CLI: `--append-system-prompt <text\|@file>` (flag beats config). |
+| `system_prompt_file` | string | `""` | Path to a file whose contents **replace** the assembled system prompt wholesale. You lose the harness contract (compaction summaries arrive unexplained; tool-dispatch rules are gone) — tool-use degradation is on you; prefer `append_system_prompt`. CLI: `--system-prompt-file` (flag beats config). |
+
+### System prompt layers (v2.8)
+
+Since #459 the system prompt is assembled from ordered layers, stable → volatile:
+
+| # | Layer | Source | Changes when |
+|---|-------|--------|--------------|
+| 1 | Core contract | `agent.CoreInstruction` (compaction/handover framing, tool-dispatch rules) | core-agent release |
+| 2 | Provider quirks | selected from the model identifier (Gemini: parallelism mandate; Claude: none) | model changes |
+| 3 | Mode overlay | interactive (default) or autonomous via `agent.WithMode` | mode changes |
+| 4 | User memory | the instruction loader (AGENTS.md and friends, user → project → per-caller) | project/session |
+| 5 | Operator append | `append_system_prompt` / `--append-system-prompt` / `agent.WithExtraInstruction` | deployment |
+
+Later layers win on conflict — your AGENTS.md overrides the built-in communication defaults, but nothing short of `system_prompt_file` overrides the core contract. The `/memory` slash (and attach endpoint) reports the active layer stack as its first row.
 
 ---
 

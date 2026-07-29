@@ -143,6 +143,7 @@ func Start(ctx context.Context, build BuildFunc, goal string, opts ...Option) (*
 	// would otherwise fail with "agent not yet constructed".
 	wrappedBuild := func(extras []tool.Tool) (*agent.Agent, error) {
 		a, err := build(extras)
+		warnIfInteractiveMode(a, err)
 		if err != nil {
 			return nil, err
 		}

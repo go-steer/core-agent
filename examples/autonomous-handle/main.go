@@ -87,7 +87,8 @@ func run() error {
 	build := func(extras []adktool.Tool) (*agent.Agent, error) {
 		return agent.New(llm,
 			agent.WithName("autonomous-handle-demo"),
-			agent.WithInstruction("you are an echo agent; this example demonstrates the handle API"),
+			agent.WithMode(agent.ModeAutonomous),
+			agent.WithExtraInstruction("you are an echo agent; this example demonstrates the handle API"),
 			agent.WithTools(extras),
 		)
 	}

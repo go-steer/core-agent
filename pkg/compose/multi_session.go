@@ -293,7 +293,7 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 	opts := []agent.Option{
 		agent.WithTools(cust.Tools),
 		agent.WithToolsets(cust.Toolsets),
-		agent.WithSystemInstructionPrefix(instr.Instruction),
+		agent.WithUserInstruction(instr.Instruction), // layer 4 since #459 — memory AFTER the core, the intended precedence flip
 		agent.WithGate(sessionGate),
 		agent.WithSession(caller.Identity, sid),
 	}

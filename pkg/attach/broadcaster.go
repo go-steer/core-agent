@@ -253,7 +253,7 @@ func (b *broadcaster) Subscribe(ctx context.Context, since int64) <-chan Frame {
 	if !registered {
 		// Close won the race (handlers resolve the broadcaster via
 		// pool.For before subscribing, so DELETE /sessions'
-		// pool.Remove + Close can land in between, #483). Joining
+		// pool.Retire (remove + Close) can land in between, #483). Joining
 		// anyway would panic on the nil subs map and — worse — a
 		// late wg.Add/eventlog read after Close's wg.Wait returned
 		// would void the #424 "nothing reads the eventlog once Close
@@ -768,6 +768,46 @@ type broadcasterPool struct {
 	// Set once at server startup; reads are lock-free per the
 	// "capsBuilder set exactly once before first For" contract.
 	capsBuilder func(ctx context.Context, entry *Entry) Capabilities
+
+	// retiring counts broadcasters that have been removed from
+	// bcasts but whose Close hasn't finished — the For-swap and
+	// Retire paths. pool.Close waits on it so that once Close
+	// returns, no broadcaster this pool EVER owned still has
+	// goroutines reading the eventlog (#424's quiescence contract);
+	// a swap-removed broadcaster is invisible to the map walk alone.
+	// Add happens under mu at removal time so Close's Wait can't
+	// miss an in-flight retirement.
+	retiring sync.WaitGroup
+}
+
+// Retire removes the broadcaster still bound to exactly this *Entry
+// and Closes it under the pool's retiring group. The identity check
+// makes it safe on asynchronous paths: between an eviction's
+// registry removal and its hook firing, the session can already be
+// lazily resumed with a client attached — the pool then holds a
+// FRESH broadcaster for the resumed Entry under the same triple,
+// and an unguarded remove would rip it out mid-stream (the same
+// late-teardown class the #485 pump sweep needed a generation guard
+// for). Used by the registry evict hook:
+// routing the Close through the pool keeps #424's quiescence
+// contract — pool.Close blocks until this retirement drains, so the
+// eventlog handle can't be closed under a live Watch even when
+// server shutdown races an in-flight eviction sweep. Reports whether
+// a broadcaster was retired.
+func (p *broadcasterPool) Retire(entry *Entry) bool {
+	key := tripleKey{App: entry.AppName, User: entry.UserID, SID: entry.SessionID}
+	p.mu.Lock()
+	b, ok := p.bcasts[key]
+	if !ok || b.entry != entry {
+		p.mu.Unlock()
+		return false
+	}
+	delete(p.bcasts, key)
+	p.retiring.Add(1)
+	p.mu.Unlock()
+	b.Close()
+	p.retiring.Done()
+	return true
 }
 
 // newBroadcasterPool returns an empty pool.
@@ -796,46 +836,78 @@ func (p *broadcasterPool) SetCapabilitiesBuilder(fn func(ctx context.Context, en
 // For returns a broadcaster for entry, constructing it on first use.
 // Returns an error when the entry's agent has no eventlog (attach
 // requires it).
+//
+// A pool hit is only a hit when the cached broadcaster is bound to
+// the CURRENT *Entry for the triple. The pool keys by triple, but a
+// triple can be re-registered with a fresh Entry — idle-evict
+// followed by lazy resume, or an agent restart re-registering after
+// Unregister — and a broadcaster bound to the old Entry serves the
+// DEAD agent: boot snapshots and the SetAttachEmitter wiring hit the
+// evicted agent (the resumed agent's typed events never reach SSE),
+// and the pump touch()es the stale entry so the resumed session
+// looks idle to the sweep while actively streaming (#486). The evict
+// hook retires pool entries eagerly; this check is the backstop for
+// any re-registration path that bypasses it.
+//
+// The comparison is regSeq-DIRECTED, not mere pointer inequality:
+// handlers resolve their *Entry before calling For, so a preempted
+// request can arrive holding an OLDER Entry than the pooled
+// broadcaster's (session recreated + a new client attached in the
+// gap). Swapping on inequality alone would let that stale caller
+// tear down the current broadcaster and install a dead-agent one —
+// the #486 symptom reinstalled by its own fix (caught by adversarial
+// review). An older-or-equal caller is instead handed the current
+// broadcaster: it asked for this session's stream, and this is that
+// stream.
+//
+// The replaced broadcaster is closed OUTSIDE the pool lock — Close
+// blocks on its goroutines draining, and other sessions' For calls
+// must not wait on that — with the pool's retiring group held so
+// pool.Close can fence #424-style eventlog use-after-close.
 func (p *broadcasterPool) For(entry *Entry) (*broadcaster, error) {
 	key := tripleKey{App: entry.AppName, User: entry.UserID, SID: entry.SessionID}
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	var stale *broadcaster
 	if b, ok := p.bcasts[key]; ok {
-		return b, nil
+		if b.entry == entry || entry.regSeq <= b.entry.regSeq {
+			p.mu.Unlock()
+			return b, nil
+		}
+		stale = b
+		delete(p.bcasts, key)
+		p.retiring.Add(1)
 	}
 	b, err := newBroadcaster(entry)
+	if err == nil {
+		b.capsBuilder = p.capsBuilder
+		p.bcasts[key] = b
+	}
+	p.mu.Unlock()
+	if stale != nil {
+		stale.Close()
+		p.retiring.Done()
+	}
 	if err != nil {
 		return nil, err
 	}
-	b.capsBuilder = p.capsBuilder
-	p.bcasts[key] = b
 	return b, nil
 }
 
-// Remove pulls the broadcaster for entry out of the pool and
-// returns it, without lazily constructing one on miss. Returns nil
-// when no broadcaster exists (e.g. a session with no subscribers
-// this session). Callers should Close() the returned broadcaster
-// to disconnect active subscribers — used by DELETE /sessions to
-// force-hang up SSE clients streaming the deleted session.
-func (p *broadcasterPool) Remove(entry *Entry) *broadcaster {
-	key := tripleKey{App: entry.AppName, User: entry.UserID, SID: entry.SessionID}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	b, ok := p.bcasts[key]
-	if !ok {
-		return nil
-	}
-	delete(p.bcasts, key)
-	return b
-}
-
-// Close stops every broadcaster in the pool. Used by Server.Close.
+// Close stops every broadcaster in the pool, then waits for any
+// in-flight retirements (For-swap, Retire) to finish draining. Once
+// Close returns, no broadcaster this pool ever owned still has
+// goroutines reading the eventlog — the #424 quiescence contract the
+// caller (Server.Close) relies on before the eventlog handle is
+// closed. The per-broadcaster Closes run OUTSIDE the pool mutex:
+// each blocks on that broadcaster's goroutines, and a concurrent
+// Retire must be able to take the mutex to make progress.
 func (p *broadcasterPool) Close() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	for _, b := range p.bcasts {
+	snapshot := p.bcasts
+	p.bcasts = nil
+	p.mu.Unlock()
+	for _, b := range snapshot {
 		b.Close()
 	}
-	p.bcasts = nil
+	p.retiring.Wait()
 }

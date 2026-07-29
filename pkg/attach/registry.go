@@ -128,6 +128,33 @@ type SessionRegistry struct {
 	// "app/sid" so resumes for different sessions still run in
 	// parallel.
 	resumeFlight singleflight.Group
+	// regSeq is a monotonically increasing stamp assigned (under mu)
+	// to every Entry this registry creates. It gives "which of two
+	// Entries for the same triple is newer" a defined answer — the
+	// broadcaster pool's staleness check needs a DIRECTION, not just
+	// inequality: a handler that resolved its Entry before a
+	// re-registration must not be able to unseat the current
+	// broadcaster with its stale pointer (#486).
+	regSeq uint64
+	// evictHook, when non-nil, is invoked (outside the registry lock)
+	// once per entry removed by EvictBefore. The attach server wires
+	// it to retire the entry's broadcaster from the pool (#486): the
+	// pool keys by triple, so after evict + lazy resume the resumed
+	// Entry would otherwise inherit the OLD broadcaster — its
+	// snapshots and emitter bound to the dead agent, and its pump
+	// touch()ing the stale entry so the resumed session looks idle
+	// to the sweep while actively streaming.
+	evictHook func(*Entry)
+}
+
+// SetEvictHook wires a callback invoked for each entry the idle
+// sweep evicts, after the entry's cancelOnEvict fired. Called once at
+// server construction; last-wins if called again (a registry shared
+// by multiple servers keeps the most recent server's hook).
+func (r *SessionRegistry) SetEvictHook(fn func(*Entry)) {
+	r.mu.Lock()
+	r.evictHook = fn
+	r.mu.Unlock()
 }
 
 // Entry is one registered session as the registry sees it.
@@ -162,6 +189,14 @@ type Entry struct {
 	// for eviction. Not persisted on every touch (write
 	// amplification); the sweep persists it once, at evict time.
 	lastTouchedNs atomic.Int64
+
+	// regSeq orders Entries for the same triple across
+	// re-registrations (evict + lazy resume, agent restart).
+	// Assigned by the registry under its mutex; 0 only for Entries
+	// constructed outside the registry (white-box tests). The
+	// broadcaster pool compares regSeq to decide whether an incoming
+	// Entry may replace the pooled broadcaster's (#486).
+	regSeq uint64
 
 	// cancelOnEvict is invoked by the registry just before removing
 	// the entry — from the idle sweep, from a future DELETE
@@ -312,12 +347,14 @@ func (r *SessionRegistry) registerWithACL(ag Registrant, acl auth.SessionACL, ca
 	if _, dup := r.byTriple[key]; dup {
 		return nil, fmt.Errorf("%w: %s/%s/%s", ErrSessionExists, key.App, key.User, key.SID)
 	}
+	r.regSeq++
 	e := &Entry{
 		AppName:       key.App,
 		UserID:        key.User,
 		SessionID:     key.SID,
 		Agent:         ag,
 		ACL:           acl,
+		regSeq:        r.regSeq,
 		cancelOnEvict: cancelOnEvict,
 	}
 	e.touch() // seed lastTouchedNs so the very first sweep doesn't fire on a brand-new entry
@@ -621,12 +658,14 @@ func (r *SessionRegistry) registerResumed(ag Registrant, acl auth.SessionACL, ca
 	if existing, ok := r.byTriple[key]; ok {
 		return existing, nil
 	}
+	r.regSeq++
 	e := &Entry{
 		AppName:       key.App,
 		UserID:        key.User,
 		SessionID:     key.SID,
 		Agent:         ag,
 		ACL:           acl,
+		regSeq:        r.regSeq,
 		cancelOnEvict: cancelOnEvict,
 	}
 	e.touch() // seed lastTouchedNs — matches the initial-touch behavior of registerWithACL
@@ -756,6 +795,7 @@ func (r *SessionRegistry) EvictBefore(cutoff time.Time) int {
 	// lock so slow cancels / DB writes don't block Lookup.
 	type candidate struct {
 		key           tripleKey
+		entry         *Entry
 		cancel        context.CancelFunc
 		lastTouchedNs int64
 	}
@@ -763,16 +803,24 @@ func (r *SessionRegistry) EvictBefore(cutoff time.Time) int {
 	r.mu.Lock()
 	for k, e := range r.byTriple {
 		if e.lastTouchedNs.Load() < cutoffNs {
-			evicted = append(evicted, candidate{key: k, cancel: e.cancelOnEvict, lastTouchedNs: e.lastTouchedNs.Load()})
+			evicted = append(evicted, candidate{key: k, entry: e, cancel: e.cancelOnEvict, lastTouchedNs: e.lastTouchedNs.Load()})
 			delete(r.byTriple, k)
 		}
 	}
 	store := r.aclStore
+	hook := r.evictHook
 	r.mu.Unlock()
 
 	for _, c := range evicted {
 		if c.cancel != nil {
 			c.cancel()
+		}
+		if hook != nil {
+			// Retire per-entry server state bound to this Entry —
+			// in production, the pool broadcaster (#486). Runs
+			// outside the registry lock: the hook Closes the
+			// broadcaster, which blocks on its goroutines draining.
+			hook(c.entry)
 		}
 		if store != nil {
 			// Persist the last-touched time we removed. The row

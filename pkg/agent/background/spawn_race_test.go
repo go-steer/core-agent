@@ -14,7 +14,15 @@
 
 package background
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	adkmodel "google.golang.org/adk/model"
+)
 
 // The #488 spawn-race fixes, distilled. The hazardous interleaving:
 // Spawn A reserves a name and drops the lock for tool/scheduler/
@@ -91,4 +99,72 @@ func TestShouldAlert_SuppressedOnlyWhenNameReSpawned(t *testing.T) {
 	if !mgr.shouldAlert("n", h1) {
 		t.Error("alert for an evicted-but-not-replaced name must still deliver")
 	}
+}
+
+// blockingProvider parks Model() until released, then fails — the
+// injectable seam that makes the #502 interleaving deterministic:
+// Spawn is provably inside its pre-launch resolution window when
+// Manager.Close snapshots the reservation.
+type blockingProvider struct {
+	entered  chan struct{} // closed when Model() is first entered
+	release  chan struct{} // closing lets Model() return its error
+	enterOne sync.Once
+}
+
+func (p *blockingProvider) Name() string { return "blocking" }
+func (p *blockingProvider) Model(ctx context.Context, id string) (adkmodel.LLM, error) {
+	p.enterOne.Do(func() { close(p.entered) })
+	<-p.release
+	return nil, errors.New("blocking provider always fails")
+}
+
+// TestClose_DoesNotHangOnPreLaunchFailingSpawn pins the #502 fix: a
+// Spawn whose pre-launch resolution fails never launches the
+// goroutine that closes handle.done — so a Manager.Close that
+// snapshotted the reservation mid-window blocked on <-h.done
+// forever. abortSpawn now closes done on every failure path.
+func TestClose_DoesNotHangOnPreLaunchFailingSpawn(t *testing.T) {
+	t.Parallel()
+
+	prov := &blockingProvider{entered: make(chan struct{}), release: make(chan struct{})}
+	mgr, err := NewManager(WithProvider(prov, "blocked"), WithMaxConcurrent(4))
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	newTestParent(t, mgr)
+
+	spawnDone := make(chan struct{})
+	go func() {
+		defer close(spawnDone)
+		_, _ = mgr.Spawn(context.Background(), "", Spec{Name: "stuck", SystemPrompt: "p", Goal: "g"})
+	}()
+
+	// Spawn is now provably inside provider.Model — reservation in
+	// the map, goroutine never to launch.
+	select {
+	case <-prov.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Spawn never reached provider.Model")
+	}
+	if _, ok := mgr.Get("stuck"); !ok {
+		t.Fatal("reservation not visible mid-resolution")
+	}
+
+	closeDone := make(chan struct{})
+	go func() {
+		_ = mgr.Close()
+		close(closeDone)
+	}()
+	// Give Close time to snapshot the reservation and start waiting.
+	time.Sleep(100 * time.Millisecond)
+
+	// Release the provider: the failure path must close handle.done
+	// and unblock Close. Pre-fix this hung forever.
+	close(prov.release)
+	select {
+	case <-closeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Manager.Close hung on the pre-launch-failing spawn's never-closed done channel (#502)")
+	}
+	<-spawnDone
 }

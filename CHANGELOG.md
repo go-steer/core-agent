@@ -18,6 +18,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ### Changes by Kind
 
+#### Bug or Regression
+
+- background: `Manager.Close` can no longer hang forever racing a failing `Spawn` (#502, found during #488's adversarial review). `Close` snapshots every handle and blocks on `<-h.done`, but a Spawn that failed during pre-launch resolution (tools/scheduler/model) never launched the goroutine that closes `done` — a Close that snapshotted the reservation inside that window waited on it forever. The three failure paths now roll back through a shared `abortSpawn` that closes `done` alongside the #488 identity-checked unreservation. Deterministic regression test blocks a stub provider mid-resolution, snapshots via a concurrent Close, then releases — hangs pre-fix, returns instantly post-fix.
+
 #### Feature
 
 - compose: per-tenant session construction (#505) — `SessionFactoryDeps.Customize`, a hook invoked at the top of every session creation AND lazy resume with the owning caller and a `SessionCustomization` pre-filled from the daemon-wide defaults. Hosts can vary the model (per-turn cost attribution and pricing re-resolve from the layered catalog automatically), the tools, and the toolsets (skills bundles ride as toolsets) without forking `ReproduceAgent`; permissions and instructions were already per-session/per-caller (template-derived sub-gates, `UsersDir` overlays). The pre-filled slices are clones, so a hook's appends can never write through into the shared deps and leak one tenant's tools to another; a hook error aborts construction with the caller identity in the message.

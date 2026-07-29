@@ -1755,9 +1755,15 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		return runner.ExitAgentError
 	}
 	if initialPrompt != "" {
-		code, err = runner.REPLWithAgentAndInitialPrompt(ctx, replAgent, m, initialPrompt, os.Stdin, os.Stdout, os.Stderr, tracker, pricingRate, eventsOpts...)
+		code, err = runner.Run(ctx, runner.RunOptions{
+			Model: m, Agent: replAgent, InitialPrompt: initialPrompt,
+			Tracker: tracker, Pricing: pricingRate, EventsOptions: eventsOpts,
+		})
 	} else {
-		code, err = runner.REPLWithAgent(ctx, replAgent, m, os.Stdin, os.Stdout, os.Stderr, tracker, pricingRate, eventsOpts...)
+		code, err = runner.Run(ctx, runner.RunOptions{
+			Model: m, Agent: replAgent,
+			Tracker: tracker, Pricing: pricingRate, EventsOptions: eventsOpts,
+		})
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)

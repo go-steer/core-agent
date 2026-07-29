@@ -1069,19 +1069,26 @@ _, _, _ = mcp.Build(ctx, agentsDir, send, gate, elicitor)
 
 ## Headless and REPL drivers
 
-`runner/headless.go` and `runner/repl.go` are the canonical drivers used by the bundled CLI:
+`runner/headless.go` and `runner/run.go` are the canonical drivers used by the bundled CLI:
 
 ```go
 runner.Headless(ctx, m, prompt, stdout, stderr, tracker, pricing, agentOpts...)
-runner.REPL    (ctx, m, stdin,  stdout, stderr, tracker, pricing, agentOpts...)
+runner.Run(ctx, runner.RunOptions{
+    Model:   m,          // required
+    Agent:   a,          // optional pre-built (possibly decorated) agent; nil = construct from AgentOptions
+    Tracker: tracker, Pricing: pricing,
+    // InitialPrompt, Stdin/Stdout/Stderr (default to the process's), EventsOptions…
+})
 runner.WriteSummary(stderr, tracker, m.Name())
 ```
+
+`runner.Run` (v2.8) replaces the four positional `REPL*` variants, which remain as deprecated wrappers.
 
 They share a one-turn streamer that consumes the agent's event iterator, splits partial text → stdout / tool-call summaries → stderr, and updates the usage tracker. Reach for them when you want the same I/O conventions in your own binary; replace them when you need different rendering (e.g. JSON-stream output, Slack formatting, Bubble Tea TUI).
 
 ### REPL keybindings (v1.3.0+)
 
-When `runner.REPL` is called with a real TTY for stdin (the bundled CLI's default; not the case when stdin is piped or redirected), each turn runs inside a `turnInterrupter` that puts stdin in raw input mode and reads single bytes:
+When `runner.Run` is called with a real TTY for Stdin (the bundled CLI's default; not the case when stdin is piped or redirected), each turn runs inside a `turnInterrupter` that puts stdin in raw input mode and reads single bytes:
 
 | Key | Effect |
 |---|---|

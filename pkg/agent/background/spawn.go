@@ -117,9 +117,7 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 		// Undo the reservation since the goroutine never launches, and
 		// release the goroutine context we registered up front (#366).
 		cancel()
-		m.mu.Lock()
-		delete(m.agents, spec.Name)
-		m.mu.Unlock()
+		m.unreserve(spec.Name, handle)
 		return nil, err
 	}
 
@@ -130,9 +128,7 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 	sched, err := m.resolveScheduler(spec.Scheduler)
 	if err != nil {
 		cancel()
-		m.mu.Lock()
-		delete(m.agents, spec.Name)
-		m.mu.Unlock()
+		m.unreserve(spec.Name, handle)
 		return nil, err
 	}
 
@@ -143,9 +139,7 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 	subModel, err := m.provider.Model(ctx, m.modelID)
 	if err != nil {
 		cancel()
-		m.mu.Lock()
-		delete(m.agents, spec.Name)
-		m.mu.Unlock()
+		m.unreserve(spec.Name, handle)
 		return nil, fmt.Errorf("background: build subagent model: %w", err)
 	}
 
@@ -279,6 +273,9 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 				text = "stopped: " + string(result.Reason)
 			}
 		}
+		if !m.shouldAlert(subagentName, handle) {
+			return
+		}
 		m.pushAlert(Alert{
 			From:      subagentName,
 			Text:      text,
@@ -288,6 +285,37 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 	}()
 
 	return handle, nil
+}
+
+// shouldAlert reports whether handle's terminal alert should still
+// be delivered: yes unless the name is now owned by a DIFFERENT
+// handle (#488). The parent consumes alerts by name, so an old
+// incarnation's "completed" arriving after a same-name re-spawn
+// would read as the NEW subagent finishing. A name that is merely
+// gone (terminal-evicted, never re-spawned) still alerts — only a
+// different handle owning the name suppresses.
+func (m *Manager) shouldAlert(name string, handle *Handle) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, occupied := m.agents[name]
+	return !occupied || current == handle
+}
+
+// unreserve rolls back a Spawn reservation after a pre-launch
+// failure (tool/scheduler/model resolution), deleting the map slot
+// ONLY if it still holds this attempt's handle. The identity check
+// matters (#488): resolution runs outside m.mu and can do network
+// I/O, so in the gap a Stop can mark this handle terminal, a
+// same-name re-Spawn can evict it and register a NEW handle — and an
+// unconditional delete would then remove the new subagent's handle
+// (it keeps running, unreachable by name, with the name freed for a
+// duplicate).
+func (m *Manager) unreserve(name string, handle *Handle) {
+	m.mu.Lock()
+	if m.agents[name] == handle {
+		delete(m.agents, name)
+	}
+	m.mu.Unlock()
 }
 
 // validateSpec rejects invalid Spec values early. Names are required

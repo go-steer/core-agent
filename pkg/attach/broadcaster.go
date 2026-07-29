@@ -867,6 +867,16 @@ func (p *broadcasterPool) SetCapabilitiesBuilder(fn func(ctx context.Context, en
 func (p *broadcasterPool) For(entry *Entry) (*broadcaster, error) {
 	key := tripleKey{App: entry.AppName, User: entry.UserID, SID: entry.SessionID}
 	p.mu.Lock()
+	if p.bcasts == nil {
+		// pool.Close ran — the server is shutting down. Server.Close
+		// now closes the pool BEFORE srv.Shutdown (#488), so a
+		// request draining during shutdown can land here; fail it
+		// cleanly instead of panicking on the nil-map insert below
+		// (which was already reachable, post-ShutdownTimeout, before
+		// the reorder).
+		p.mu.Unlock()
+		return nil, errors.New("attach: server is shutting down")
+	}
 	var stale *broadcaster
 	if b, ok := p.bcasts[key]; ok {
 		if b.entry == entry || entry.regSeq <= b.entry.regSeq {

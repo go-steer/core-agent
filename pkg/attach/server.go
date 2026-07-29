@@ -252,6 +252,7 @@ type SessionFactory func(ctx context.Context, caller auth.Caller) (Registrant, c
 type Server struct {
 	opts Options
 	pool *broadcasterPool
+	h    *handlers // retained so Close can wake non-pool streams (/perms/stream) via h.closing (#488)
 	mux  *http.ServeMux
 	srv  *http.Server
 
@@ -378,6 +379,7 @@ func NewServer(opts Options) (*Server, error) {
 	return &Server{
 		opts:        opts,
 		pool:        pool,
+		h:           h,
 		mux:         mux,
 		cardHandler: cardHandler,
 	}, nil
@@ -618,9 +620,10 @@ func (s *Server) listen() (net.Listener, error) {
 	return ln, nil
 }
 
-// Close stops the server, waits up to Options.ShutdownTimeout for
-// in-flight SSE clients to disconnect, then tears down the broadcaster
-// pool. Idempotent.
+// Close stops the server: joins the idle sweep, tears down the
+// broadcaster pool (hanging up SSE streams so they can't hold
+// shutdown hostage), then waits up to Options.ShutdownTimeout for
+// the remaining in-flight requests to drain. Idempotent.
 func (s *Server) Close() error {
 	s.mu.Lock()
 	if s.closed {
@@ -645,11 +648,24 @@ func (s *Server) Close() error {
 	if srv == nil {
 		return nil
 	}
+	// Wake the non-pool streaming handlers (/perms/stream) so they
+	// exit before Shutdown starts draining — they select on this
+	// alongside their request context (#488).
+	close(s.h.closing)
+	// Pool BEFORE Shutdown (#488): SSE handlers block ranging their
+	// subscriber channel, which only closes when the broadcaster
+	// does — with the old Shutdown-first order, a single attached
+	// client meant Shutdown could never drain and every daemon stop
+	// burned the full ShutdownTimeout. Closing the pool first hangs
+	// up the streams (clients see EOF and reconnect elsewhere), so
+	// Shutdown then drains the remaining short-lived requests
+	// promptly. A request that reaches pool.For after this sees a
+	// clean "shutting down" error instead of the old post-timeout
+	// nil-map panic window.
+	s.pool.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), s.opts.ShutdownTimeout)
 	defer cancel()
-	shutdownErr := srv.Shutdown(ctx)
-	s.pool.Close()
-	return shutdownErr
+	return srv.Shutdown(ctx)
 }
 
 // Addr returns the actual listener address the server bound to. Useful

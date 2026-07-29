@@ -70,6 +70,12 @@ func (h *handlers) doPermsStream(w http.ResponseWriter, r *http.Request, entry *
 		select {
 		case <-r.Context().Done():
 			return
+		case <-h.closing:
+			// Server shutdown: end the stream so srv.Shutdown can
+			// drain instead of waiting out its full timeout on a
+			// client that would otherwise stay attached (#488). The
+			// client sees EOF and re-subscribes after reconnect.
+			return
 		case frame, ok := <-frames:
 			if !ok {
 				return

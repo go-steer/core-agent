@@ -350,9 +350,13 @@ echo "▸ pipeline: wait for lookout accept + inject (${PIPELINE_TIMEOUT}s max)"
 pipeline_deadline=$(( SECONDS + PIPELINE_TIMEOUT ))
 SID=""
 while (( SECONDS < pipeline_deadline )); do
+    # `|| true` inside the substitution: a transient kubectl failure
+    # (pod restarting, apiserver blip) must count as "not found yet"
+    # and retry — under set -euo pipefail it otherwise kills the
+    # whole run mid-poll (#488).
     SID="$(kubectl -n "$NAMESPACE" logs deployment/k8s-event-watcher --tail=300 2>/dev/null \
         | sed -n "s|.*fire BackOff pod=${SCRATCH_NS}/${BROKEN_POD} → sid=\([^ ]*\).*|\1|p" \
-        | tail -1)"
+        | tail -1 || true)"
     [[ -n "$SID" ]] && break
     sleep 5
 done
@@ -388,14 +392,26 @@ PF2_PID=""
 # Per-incident sessions are created with X-Asserted-Caller=--owner
 # (sre-oncall@example.com), so SRE_TOKEN — the owner — can see them.
 echo "▸ pipeline: verify incident session is listed by the daemon"
-curl -sS --max-time 5 -H "Authorization: Bearer $SRE_TOKEN" \
-    -o "$SCRATCH_DIR/sessions-after.json" \
-    http://127.0.0.1:7777/sessions
-if ! jq -e --arg sid "$SID" \
-    '.sessions | map(select(.sessionID == $sid)) | length >= 1' \
-    "$SCRATCH_DIR/sessions-after.json" >/dev/null; then
+# Retry-tolerant like the SID poll above: a port-forward blip on one
+# curl must not abort the run under set -e (#488); only the deadline
+# expiring is a verdict.
+sessions_deadline=$(( SECONDS + 30 ))
+session_listed="no"
+while (( SECONDS < sessions_deadline )); do
+    curl -sS --max-time 5 -H "Authorization: Bearer $SRE_TOKEN" \
+        -o "$SCRATCH_DIR/sessions-after.json" \
+        http://127.0.0.1:7777/sessions || true
+    if jq -e --arg sid "$SID" \
+        '.sessions | map(select(.sessionID == $sid)) | length >= 1' \
+        "$SCRATCH_DIR/sessions-after.json" >/dev/null 2>&1; then
+        session_listed="yes"
+        break
+    fi
+    sleep 3
+done
+if [[ "$session_listed" != "yes" ]]; then
     echo "e2e: incident session $SID missing from /sessions" >&2
-    cat "$SCRATCH_DIR/sessions-after.json" >&2
+    cat "$SCRATCH_DIR/sessions-after.json" >&2 || true
     exit 1
 fi
 

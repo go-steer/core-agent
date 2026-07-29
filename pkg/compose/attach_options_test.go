@@ -75,6 +75,35 @@ func TestBuildAttachOptions_ExpandsEnvReferences(t *testing.T) {
 	}
 }
 
+// TestBuildAttachOptions_UnsetEnvKeptLiteral pins the #488 fix:
+// os.ExpandEnv silently expanded UNSET variables to "" — a typo'd
+// `"127.0.0.1:$PORT"` became `"127.0.0.1:"`, a valid listen address
+// on an ephemeral port. Unset references now stay literal so the
+// downstream error names the unresolved variable; variables that are
+// SET but empty still expand to "" (a deliberate operator choice).
+func TestBuildAttachOptions_UnsetEnvKeptLiteral(t *testing.T) {
+	t.Setenv("COMPOSE_TEST_SET_EMPTY", "")
+	// COMPOSE_TEST_DEFINITELY_UNSET is intentionally not set.
+
+	got := BuildAttachOptions(config.AttachConfig{
+		Listen:     "127.0.0.1:$COMPOSE_TEST_DEFINITELY_UNSET",
+		UnixSocket: "/run/agent-${COMPOSE_TEST_DEFINITELY_UNSET}.sock",
+		RegisterTo: "hub$COMPOSE_TEST_SET_EMPTY.example",
+	})
+	if got.Listen != "127.0.0.1:$COMPOSE_TEST_DEFINITELY_UNSET" {
+		t.Errorf("Listen = %q, want the unset reference kept literal (silent \"\" turned typos into ephemeral-port binds)", got.Listen)
+	}
+	// Braces must survive byte-for-byte: collapsing ${X}suffix into
+	// $Xsuffix would name a MANGLED variable in the warning and, if
+	// ever re-expanded, resolve a different one entirely.
+	if got.UnixSocket != "/run/agent-${COMPOSE_TEST_DEFINITELY_UNSET}.sock" {
+		t.Errorf("UnixSocket = %q, want the unset ${...} reference kept verbatim, braces included", got.UnixSocket)
+	}
+	if got.RegisterTo != "hub.example" {
+		t.Errorf("RegisterTo = %q, want set-but-empty var expanded to \"\"", got.RegisterTo)
+	}
+}
+
 func TestBuildAttachOptions_ZeroConfigZeroOptions(t *testing.T) {
 	t.Parallel()
 	if got := BuildAttachOptions(config.AttachConfig{}); (got != AttachOptions{}) {

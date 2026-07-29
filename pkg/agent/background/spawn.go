@@ -16,6 +16,7 @@ package background
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -116,8 +117,7 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 	if err != nil {
 		// Undo the reservation since the goroutine never launches, and
 		// release the goroutine context we registered up front (#366).
-		cancel()
-		m.unreserve(spec.Name, handle)
+		m.abortSpawn(spec.Name, handle, cancel)
 		return nil, err
 	}
 
@@ -127,8 +127,7 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 	// registered.
 	sched, err := m.resolveScheduler(spec.Scheduler)
 	if err != nil {
-		cancel()
-		m.unreserve(spec.Name, handle)
+		m.abortSpawn(spec.Name, handle, cancel)
 		return nil, err
 	}
 
@@ -138,8 +137,7 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 	// internally, so this is cheap.
 	subModel, err := m.provider.Model(ctx, m.modelID)
 	if err != nil {
-		cancel()
-		m.unreserve(spec.Name, handle)
+		m.abortSpawn(spec.Name, handle, cancel)
 		return nil, fmt.Errorf("background: build subagent model: %w", err)
 	}
 
@@ -299,6 +297,31 @@ func (m *Manager) shouldAlert(name string, handle *Handle) bool {
 	defer m.mu.Unlock()
 	current, occupied := m.agents[name]
 	return !occupied || current == handle
+}
+
+// abortSpawn rolls back a reservation whose goroutine will never
+// launch: cancels the pre-registered goroutine context, releases the
+// identity-checked reservation (#488), and closes handle.done —
+// without that close, a Manager.Close that snapshotted the handle in
+// the window between the reservation and this rollback would block
+// on <-h.done forever, because the goroutine that normally closes it
+// never starts (#502).
+func (m *Manager) abortSpawn(name string, handle *Handle, cancel context.CancelFunc) {
+	cancel()
+	m.unreserve(name, handle)
+	// Leave the orphan self-consistent for any holder that Get()'d
+	// it mid-resolution: a terminal status (preserving an explicit
+	// Stop's StatusStopped from the #366 flow) rather than a
+	// forever-"running" handle whose done channel is closed.
+	handle.mu.Lock()
+	if handle.status == StatusRunning {
+		handle.status = StatusFailed
+		if handle.err == nil {
+			handle.err = errors.New("background: spawn aborted before launch")
+		}
+	}
+	handle.mu.Unlock()
+	close(handle.done)
 }
 
 // unreserve rolls back a Spawn reservation after a pre-launch

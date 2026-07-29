@@ -18,6 +18,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ### Changes by Kind
 
+#### Feature
+
+- models: a programmatic provider-construction path (#492 item 7) — `models.New(opts models.ProviderOptions)` with per-provider option structs (`models.GeminiAPI`, `models.GeminiVertex`, `models.AnthropicAPI`, `models.AnthropicVertex`) routes through the same registry as `Resolve`, so embedders no longer fabricate the on-disk `*config.Config` struct just to pick a backend. The structs carry exactly what the routing layer needs — backend plus credentials/deployment; the model ID is deliberately not routing state and goes to `Provider.Model(ctx, name)`, same as with `Resolve`; the per-backend constructors and functional options (`gemini.NewAPIKey`, `anthropic.NewVertex`, …) remain the full-control path, and `Resolve` remains the config-file adapter, unchanged. The interface is sealed so option shapes evolve with the registry.
+
 #### Other (Cleanup, Flake, or Docs)
 
 - transcript: `pkg/session` is renamed to **`pkg/transcript`** (#492 item 6) — ADK's own `session` package dominates `pkg/agent`'s signatures, so the old name collided in almost every file that used both, forcing awkward import aliases on embedders. `pkg/session` remains as a deprecated forwarding shim (aliases + wrappers, one release); the on-disk layout is untouched — transcripts still land in `.agents/sessions/` with the same schema, and `ErrNoProject` keeps its historical `session:` message prefix for anyone matching on it. The stability-promise list swaps `session` for `transcript`.

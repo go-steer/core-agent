@@ -1756,12 +1756,12 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	}
 	if initialPrompt != "" {
 		code, err = runner.Run(ctx, runner.RunOptions{
-			Model: m, Agent: replAgent, InitialPrompt: initialPrompt,
+			Agent: replAgent, InitialPrompt: initialPrompt,
 			Tracker: tracker, Pricing: pricingRate, EventsOptions: eventsOpts,
 		})
 	} else {
 		code, err = runner.Run(ctx, runner.RunOptions{
-			Model: m, Agent: replAgent,
+			Agent:   replAgent,
 			Tracker: tracker, Pricing: pricingRate, EventsOptions: eventsOpts,
 		})
 	}

@@ -1081,8 +1081,8 @@ _, _, _ = mcp.Build(ctx, agentsDir, send, gate, elicitor)
 ```go
 runner.Headless(ctx, m, prompt, stdout, stderr, tracker, pricing, agentOpts...)
 runner.Run(ctx, runner.RunOptions{
-    Model:   m,          // required
-    Agent:   a,          // optional pre-built (possibly decorated) agent; nil = construct from AgentOptions
+    Agent:   a,          // pre-built (possibly decorated) agent; Model derives from it (v2.8, #510)
+    // Model: m,          // required only when Agent is nil (Run constructs from AgentOptions)
     Tracker: tracker, Pricing: pricing,
     // InitialPrompt, Stdin/Stdout/Stderr (default to the process's), EventsOptions…
 })

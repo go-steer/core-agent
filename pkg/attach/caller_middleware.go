@@ -73,7 +73,7 @@ type callerMiddlewareConfig struct {
 	transportBearerConfigured bool
 }
 
-// callerMiddleware preserves the α.1 signature for callers that don't
+// callerMiddleware keeps the original two-arg signature for callers that don't
 // need the enforcement / proxy plumbing. Delegates to
 // callerMiddlewareWithConfig with the no-enforcement default — every
 // existing test path keeps working without ceremony.
@@ -92,8 +92,8 @@ func callerMiddleware(authn auth.Authenticator, fallback auth.Caller, next http.
 // Behavior matrix:
 //
 //   - enforceAuthentication=false (default): ErrUnauthenticated
-//     downgrades to fallback Caller. No 401 path. Preserves the α.1
-//     no-behavior-change posture.
+//     downgrades to fallback Caller. No 401 path — the single-user
+//     no-enforcement posture.
 //   - enforceAuthentication=true (multi-session with
 //     AllowAnonymous=false): ErrUnauthenticated returns 401.
 //

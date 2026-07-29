@@ -17,6 +17,8 @@ package attachadapter
 import (
 	"context"
 	"math"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -356,5 +358,51 @@ func TestCapabilities_WiredProvidersDelegate(t *testing.T) {
 	}
 	if got := ad.AttachPromptBroker(); got != broker {
 		t.Errorf("AttachPromptBroker = %p, want %p", got, broker)
+	}
+}
+
+// TestAdapter_AttachCapabilities_ReportsWiredness pins the #490 fix:
+// the adapter satisfies every optional attach interface by type, so
+// the capabilities frame must come from this report — which states
+// what is actually wired — not from interface presence.
+func TestAdapter_AttachCapabilities_ReportsWiredness(t *testing.T) {
+	t.Parallel()
+
+	// Bare adapter over a bare agent: only the core capabilities.
+	bare := New(newEchoAgent(t))
+	rep := bare.AttachCapabilities()
+	if rep.PermsStream || rep.MCP || rep.Specialists {
+		t.Errorf("bare adapter reports %+v, want no optional capabilities (nothing is wired)", rep)
+	}
+	if !rep.Interrupt {
+		t.Error("bare adapter must still report interrupt — it forwards to the core agent")
+	}
+	wantBare := []string{"btw"} // AskSideQuestion is core; compact/done/subagent/replan need wiring
+	sort.Strings(rep.SlashCommands)
+	if !reflect.DeepEqual(rep.SlashCommands, wantBare) {
+		t.Errorf("bare adapter slash = %v, want %v", rep.SlashCommands, wantBare)
+	}
+
+	// Wired adapter: broker + mcp + replanner flip their bits.
+	wired := New(newEchoAgent(t),
+		WithPromptBroker(attach.NewPromptBroker()),
+		WithMCPProvider(func() attach.MCPInfo { return attach.MCPInfo{} }),
+		WithReplanner(func(context.Context, attach.ReplanRequest) (attach.ReplanResponse, error) {
+			return attach.ReplanResponse{}, nil
+		}),
+	)
+	rep = wired.AttachCapabilities()
+	if !rep.PermsStream || !rep.MCP {
+		t.Errorf("wired adapter reports %+v, want perms_stream + mcp true", rep)
+	}
+	sort.Strings(rep.SlashCommands)
+	if !reflect.DeepEqual(rep.SlashCommands, []string{"btw", "replan"}) {
+		t.Errorf("wired adapter slash = %v, want [btw replan]", rep.SlashCommands)
+	}
+
+	// Nil adapter / nil agent degrade to an empty report.
+	var nilAd *Adapter
+	if got := nilAd.AttachCapabilities(); !reflect.DeepEqual(got, attach.CapabilityReport{}) {
+		t.Errorf("nil adapter report = %+v, want zero", got)
 	}
 }

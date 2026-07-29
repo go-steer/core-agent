@@ -95,17 +95,21 @@ type Options struct {
 	// the same anonymous Caller and downstream code sees a
 	// Caller-on-context just like in a multi-session deployment.
 	//
-	// α.1 wiring is intentionally additive: the resolved Caller is
-	// available via auth.CallerFromContext but no handler enforces
-	// authorization yet. α.2 layers enforcement on top without
-	// changing this field's shape. See
-	// docs/multi-session-design.md and issue #162.
+	// Whether the resolved Caller is ENFORCED is governed by
+	// MultiSessionEnabled below: off (the default) preserves the
+	// single-user posture (Callers are resolved and stamped onto
+	// eventlog metadata, but every request passes the auth gate); on,
+	// session-scoped handlers authorize each action against the
+	// session ACL — including pre-resume (#484) — and unauthenticated
+	// requests are rejected unless AllowAnonymous. See
+	// docs/multi-session-design.md.
 	Authenticator auth.Authenticator
 
 	// DefaultCaller is the Caller stamped onto requests when
 	// Authenticator is nil, or when the Authenticator returns
-	// ErrUnauthenticated under the α.1 no-behavior-change posture.
-	// Zero value resolves to auth.Anonymous.
+	// ErrUnauthenticated while enforcement is off (the single-user
+	// posture; see MultiSessionEnabled). Zero value resolves to
+	// auth.Anonymous.
 	DefaultCaller auth.Caller
 
 	// MultiSessionEnabled turns on per-session ACL enforcement in

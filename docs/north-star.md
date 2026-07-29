@@ -60,17 +60,27 @@ flagship consumer that validates (1) is actually good.
 - `/btw` parallel side queries (PR β).
 - `/subagent` direct spawn slash (PR γ).
 
-**Designed, not built (the critical path):**
+**Designed, not built as of the 2026-05 snapshot** (statuses
+re-verified 2026-07-29 against v2.8.0-dev — see annotations):
 
 - Context management quartet — compaction, micro-subagents,
   task-boundary checkpoints, persistent memory
   ([`context-management-design.md`](context-management-design.md)).
-- Agent-hooks public extension surface
-  ([`agent-hooks-design.md`](agent-hooks-design.md) — TODO).
+  **SHIPPED** (see the 2026-07-25 status note above).
+- Agent-hooks public extension surface. **SHIPPED 2026-06 in #298**
+  (`pkg/hooks`: config-driven command hooks on four events with a
+  Scion-compatible JSON envelope; execution gate-hardened in #378)
+  — the implementation landed directly, so the once-planned
+  `agent-hooks-design.md` was never written and never will be; the
+  living spec is the site's [Hooks concepts page](site/src/content/docs/concepts/hooks.md)
+  plus `pkg/hooks` itself. In-process Go-level hooks for library
+  embedders also exist: the exported `agent.WithEventHook`
+  (single-slot onEvent/onTurnEnd callbacks) — deliberately minimal;
+  anything richer is YAGNI until a consumer asks.
 - Shared-memory in-tree FTS5-over-eventlog backend
-  ([`shared-memory-design.md`](shared-memory-design.md)).
-- core-tui as default TUI (in-flight on
-  `feat/core-tui-adapter` branch).
+  ([`shared-memory-design.md`](shared-memory-design.md)) — still
+  design-only; the genuinely open item on this list.
+- core-tui as default TUI. **SHIPPED** (default since v2.0).
 
 **Cost-efficiency specifically:** unusually well-positioned.
 Micro-subagents on cheap models is *the* cost lever; combined
@@ -118,9 +128,10 @@ cleanest exposer of on the market.
 
 1. **Feature focus discipline.** The design docs are sprawling
    and it would be easy to keep designing instead of shipping.
-   Heuristic: stop drafting after `agent-hooks-design.md` lands;
-   execute through context-management trilogy + memory + cogo
-   flip + v2.0 release before the next new design doc.
+   Heuristic (as resolved in practice: agent-hooks shipped as
+   code in #298 with no separate design doc): execute through
+   context-management trilogy + memory + cogo flip + v2.0
+   release before the next new design doc.
 2. **Cogo flip drift.** Every week we don't flip cogo to
    consume core-agent, the two codebases diverge more. The
    flip should land soon after v2.0 — not "eventually."
@@ -169,8 +180,9 @@ Sequenced so each step unblocks the next.
    [`cogo-flip-readiness-audit.md`](cogo-flip-readiness-audit.md)).
    Delete cogo's duplicate internals; register 6 Go tools +
    coder-instruction overrides.
-10. **Ship `agent-hooks-design.md`** as a public surface; refactor
-    the internal hooks A/B/C/D use into the public API.
+10. **Ship the agent-hooks public surface** — DONE (shipped
+    implementation-first as `pkg/hooks` in #298, gate-hardened in
+    #378; no separate design doc was written).
 11. **Polish pass for v2.x release** — onboarding sweep, README,
     site docs, goreleaser matrix, slim build verification, attach
     mode docs.
@@ -193,6 +205,6 @@ driver readiness. IDE-parity is v3.
 
 The single biggest risk to both goals is **design-doc drift** —
 spending the next month writing six more design docs instead of
-shipping the ten PRs already designed. The discipline call:
-after `agent-hooks-design.md` lands, no new design docs until
-context-management PRs I–V are merged.
+shipping the ten PRs already designed. The discipline call (since
+resolved: agent-hooks shipped as code, context-management landed):
+no new design docs until the already-designed PRs are merged.

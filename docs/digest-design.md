@@ -4,8 +4,8 @@ Design doc for a small, in-tree library that consolidates the
 digesting primitives core-agent uses to keep large tool responses
 out of the parent context.
 
-**Status:** proposed (2026-06-09). Awaiting approval before
-implementation. v2.6 candidate, post-#124 v1.
+**Status:** SHIPPED (header updated 2026-07-29 — the doc below is
+the original proposal; see the tracking issue for what landed).
 
 **Tracking issue:** [#128](https://github.com/go-steer/core-agent/issues/128)
 

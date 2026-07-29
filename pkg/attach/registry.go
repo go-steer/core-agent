@@ -15,30 +15,47 @@
 // Package attach implements live-tail + inject over HTTP/SSE for
 // headless core-agent deployments. See docs/attach-mode-design.md.
 //
-// Server side (agent process):
+// Server side (agent process) — the agent is bridged onto the attach
+// surface by pkg/attachadapter, registered, and served (compiling
+// excerpt of examples/attach-daemon, the canonical embedding):
 //
+//	a, _ := agent.New(llm,
+//	    agent.WithSession("operator", "main"),
+//	    agent.WithEventLog(handle), // attach requires an eventlog
+//	)
+//	ad := attachadapter.New(a) // + optional attachadapter.With* capability providers
 //	reg := attach.NewSessionRegistry()
-//	ag, _ := agent.New(m, agent.WithSessionRegistry(reg), ...)
-//	srv, _ := attach.NewServer(reg, attach.Options{
+//	reg.Register(ad)
+//	srv, _ := attach.NewServer(attach.Options{
+//	    Registry: reg,
 //	    Addr:     ":7777",
-//	    TLSCert:  "/etc/certs/server.crt",
-//	    TLSKey:   "/etc/certs/server.key",
-//	    ClientCA: "/etc/certs/ca.crt",  // mTLS
-//	    ReadOnly: false,
+//	    Auth: attach.AuthConfig{
+//	        BearerToken:  os.Getenv("ATTACH_TOKEN"),  // and/or…
+//	        TLSCertFile:  "/etc/certs/server.crt",    // TLS
+//	        TLSKeyFile:   "/etc/certs/server.key",
+//	        ClientCAFile: "/etc/certs/ca.crt", // mTLS
+//	    },
 //	})
 //	go srv.ListenAndServe()
+//	go runner.WakeLoop(ctx, a, runner.WakeLoopOptions{}) // drain injects into turns
 //
 // Client side (operator on a laptop, or another binary):
 //
 //	core-agent ls https://pod-ip:7777
 //	core-agent attach https://pod-ip:7777/sessions/<app>/<sid>
 //
-// The protocol is HTTP + Server-Sent Events. Four endpoints:
+// The protocol is HTTP + Server-Sent Events. The core endpoints:
 //
 //	GET  /sessions                                   list active sessions
 //	GET  /sessions/<app>/<sid>/events?since=N        SSE event stream
 //	POST /sessions/<app>/<sid>/inject                queue an inbox message
 //	POST /sessions/<app>/<sid>/wake                  wake a deferred subagent
+//
+// plus read-only state projections (/tools, /status, /usage, …),
+// operator mutations (/interrupt, /perms/*, /slash/*), and the
+// HTTP-driven permission-prompt stream (/perms/stream + /perms/respond)
+// — see the SSE event-stream protocol spec on the docs site for the
+// full surface.
 //
 // URL shortcut: /sessions/<sid> works when <sid> is unambiguous across
 // registered apps. Returns 409 with a helpful message on collision.
@@ -98,8 +115,9 @@ type Registrant interface {
 	RequestWake()
 }
 
-// SessionRegistry holds every Agent that opted into attach-mode by
-// calling agent.WithSessionRegistry at construction. Keys by the full
+// SessionRegistry holds every session exposed over attach — hosts
+// wrap their *agent.Agent in attachadapter.New and Register the
+// adapter (agent.WithSessionRegistry was removed in #443). Keys by the full
 // (AppName, UserID, SessionID) triple but exposes a single-segment
 // SessionID shortcut for the unambiguous case.
 //

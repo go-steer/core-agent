@@ -6,8 +6,11 @@ declared task class to sensible defaults, and an out-of-band
 watchdog that detects sessions going off the rails and triggers
 escalation.
 
-**Status:** proposed (2026-06-08). Awaiting approval before
-implementation. v2.5 candidate.
+**Status:** partially SHIPPED (header updated 2026-07-29 — the doc
+below is the original proposal). Model profiles landed; the
+escalation/watchdog loop remains open, tracked in
+[#159](https://github.com/go-steer/core-agent/issues/159) /
+[#160](https://github.com/go-steer/core-agent/issues/160).
 
 **Tracking issue:** [#123](https://github.com/go-steer/core-agent/issues/123)
 

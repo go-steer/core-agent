@@ -953,6 +953,13 @@ The bundled `cmd/core-agent/main.go` is the canonical reference for wiring every
 ```go
 cfg, agentsDir, _ := config.LoadOrDefault(cwd)
 provider, _ := models.Resolve(cfg)
+```
+
+Programmatic embedders that don't want to fabricate the on-disk `config.Config` can pick a backend directly with `models.New` (v2.8) — same registry, same blank-import requirement; the model ID still goes to `Provider.Model`:
+
+```go
+provider, _ := models.New(models.AnthropicVertex{Project: "my-proj", Region: "us-east5"})
+llm, _ := provider.Model(ctx, "claude-sonnet-5")
 m, _ := provider.Model(ctx, cfg.Model.Name)
 
 gate, _ := permissions.FromConfig(cfg, cwd, userHome, prompter)

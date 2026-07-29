@@ -140,13 +140,13 @@ func (h *handlers) doSlashSubagent(w http.ResponseWriter, r *http.Request, entry
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// isSubagentSpawnerUnavailable matches the agent-side sentinel by
-// string compare so pkg/attach doesn't import pkg/agent (would
-// create a cycle). The sentinel text is stable; the agent package's
-// ErrSubagentSpawnerUnavailable.Error() returns the literal we match
-// here.
+// isSubagentSpawnerUnavailable matches the adapter-side sentinel by
+// string compare so pkg/attach doesn't import pkg/attachadapter
+// (which imports attach — a cycle). The sentinel text is stable;
+// pkg/attachadapter's ErrSubagentSpawnerUnavailable.Error() returns
+// the literal we match here — change only in lockstep.
 func isSubagentSpawnerUnavailable(err error) bool {
-	return err != nil && err.Error() == "agent: subagent spawner unavailable (no BackgroundAgentManager wired)"
+	return err != nil && err.Error() == "attachadapter: subagent spawner unavailable (no BackgroundAgentManager wired)"
 }
 
 // doSlashReplan — POST /slash/replan. Clears the

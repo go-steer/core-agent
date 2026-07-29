@@ -281,7 +281,7 @@ func TestAttachSpawnSubagent_NoManager_ReturnsSentinel(t *testing.T) {
 	}
 	// The message string is load-bearing — pkg/attach's slash handler
 	// matches it literally. Pin it.
-	const want = "agent: subagent spawner unavailable (no BackgroundAgentManager wired)"
+	const want = "attachadapter: subagent spawner unavailable (no BackgroundAgentManager wired)"
 	if err.Error() != want {
 		t.Fatalf("sentinel message drifted: %q, want %q", err.Error(), want)
 	}

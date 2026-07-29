@@ -18,6 +18,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ### Changes by Kind
 
+#### Other (Cleanup, Flake, or Docs)
+
+- attachadapter: the nil-agent contract is now stated as one rule instead of two contradictory ones (#492 item 5): `New`'s doc claimed "a may be nil (the adapter's methods all no-op)" while the plain `attach.Registrant` forwards misbehave on a nil agent (identity accessors panic; Inject errors) — the doc now says exactly which half is nil-safe (the `Attach*` capability methods) and which requires a real agent (the Registrant forwards, unchanged from pre-#443 behavior). `ErrSubagentSpawnerUnavailable`'s message drops the stale `agent:` prefix from its pre-#443 home (now `attachadapter:`); the literal matcher in `pkg/attach` is updated in lockstep, and the operator-visible 501 mapping is unchanged.
+
 #### Feature
 
 - pricing: `internal/pricing` is promoted to **`pkg/pricing`** and joins the stability surface (#489 — the finishing pass the #386 compose extraction needed). Parts of the public API were uncallable outside the module because their signatures named internal types: `compose.CfgToCatalogOverride` (returns `map[string]pricing.ModelRates`), `compose.DescribeRefresh` (takes `pricing.RefreshOutcome`), and `usage.SetCatalog` (takes `*pricing.Catalog`, with nothing exported able to produce one). External consumers can now build catalogs (per tenant, via the explicit-catalog arguments `usage` already accepts), drive `pricing.Refresh`, and name every argument/result of the compose pricing helpers. `compose.MaybeWireContextCache` similarly returns a new exported `compose.ContextCacheHandle` interface instead of the un-nameable `*internal/vertexcache.Manager` — `Delete` is the only method hosts need after wiring, so the manager itself stays internal. No behavior change anywhere; import-path move plus one return-type change (callers using `:=` are unaffected; nil-skip semantics preserved). Closes [#489](https://github.com/go-steer/core-agent/issues/489).

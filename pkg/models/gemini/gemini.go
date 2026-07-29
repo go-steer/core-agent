@@ -24,8 +24,10 @@ package gemini
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	adkmodel "google.golang.org/adk/model"
 	adkgemini "google.golang.org/adk/model/gemini"
 	"google.golang.org/genai"
@@ -146,6 +148,15 @@ func NewAPIKey(key string, opts ...Option) (*Provider, error) {
 		cfg: &genai.ClientConfig{
 			APIKey:  key,
 			Backend: genai.BackendGeminiAPI,
+			// Without an explicit HTTPClient, genai falls back to a bare
+			// http.Client with no tracing, so outbound calls to
+			// generativelanguage.googleapis.com would produce no HTTP
+			// client span and no traceparent (#325). Supplying one is
+			// safe on this backend only: API-key auth is a per-request
+			// header genai sets itself, independent of the transport.
+			HTTPClient: &http.Client{
+				Transport: otelhttp.NewTransport(http.DefaultTransport),
+			},
 		},
 		builtins: DefaultBuiltinTools(),
 	}
@@ -171,6 +182,14 @@ func NewVertex(project, location string, opts ...Option) (*Provider, error) {
 			Backend:  genai.BackendVertexAI,
 			Project:  project,
 			Location: location,
+			// No HTTPClient here, deliberately (#325). With it nil,
+			// genai detects ADC and builds its client via
+			// cloud.google.com/go/auth/httptransport, which wraps the
+			// transport in otelhttp by default — outbound Vertex calls
+			// already get an HTTP client span + traceparent. Setting
+			// HTTPClient would BOTH double-instrument and skip genai's
+			// ADC path entirely, breaking auth (genai only wires
+			// credentials into a client it builds itself).
 		},
 		builtins: DefaultBuiltinTools(),
 	}

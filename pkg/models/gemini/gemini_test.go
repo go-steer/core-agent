@@ -18,6 +18,8 @@ import (
 	"strings"
 	"testing"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/models"
 )
@@ -153,5 +155,37 @@ func TestDefaultSmallModel(t *testing.T) {
 	}
 	if DefaultSmallModelID != "gemini-2.5-flash" {
 		t.Errorf("DefaultSmallModelID = %q; expected gemini-2.5-flash (the cheap-tier alias used across the codebase)", DefaultSmallModelID)
+	}
+}
+
+// TestNewAPIKey_TracedHTTPClient pins the #325 contract: the direct
+// Gemini API backend supplies its own otelhttp-instrumented client
+// (genai would otherwise fall back to an untraced bare http.Client).
+func TestNewAPIKey_TracedHTTPClient(t *testing.T) {
+	p, err := NewAPIKey("test-key")
+	if err != nil {
+		t.Fatalf("NewAPIKey: %v", err)
+	}
+	if p.cfg.HTTPClient == nil {
+		t.Fatal("NewAPIKey: cfg.HTTPClient is nil; direct Gemini API calls would be untraced")
+	}
+	if _, ok := p.cfg.HTTPClient.Transport.(*otelhttp.Transport); !ok {
+		t.Errorf("NewAPIKey: transport is %T, want *otelhttp.Transport", p.cfg.HTTPClient.Transport)
+	}
+}
+
+// TestNewVertex_NoHTTPClientOverride pins the other half of the #325
+// contract: the Vertex backend must NOT set HTTPClient. genai only
+// wires ADC credentials into a client it builds itself, and that
+// client is already otelhttp-instrumented via
+// cloud.google.com/go/auth/httptransport's default telemetry —
+// overriding would break auth and double-instrument.
+func TestNewVertex_NoHTTPClientOverride(t *testing.T) {
+	p, err := NewVertex("proj", "us-central1")
+	if err != nil {
+		t.Fatalf("NewVertex: %v", err)
+	}
+	if p.cfg.HTTPClient != nil {
+		t.Error("NewVertex: cfg.HTTPClient is set; this bypasses genai's ADC wiring (auth breaks) and double-instruments the transport")
 	}
 }

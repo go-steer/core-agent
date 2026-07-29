@@ -6,7 +6,7 @@ All notable changes to `core-agent` are recorded here. The format follows [Keep 
 
 The public API of `core-agent` is the exported surface of these packages:
 
-- `agent`, `eventlog`, `tools`, `permissions`, `config`, `models` (+ `models/anthropic`, `models/gemini`, `models/mock`), `pricing`, `recording`, `runner`, `session`, `usage`, `instruction`, `mcp`, `skills`, `telemetry`
+- `agent`, `eventlog`, `tools`, `permissions`, `config`, `models` (+ `models/anthropic`, `models/gemini`, `models/mock`), `pricing`, `recording`, `runner`, `transcript` (formerly `session`; the old path forwards, deprecated), `usage`, `instruction`, `mcp`, `skills`, `telemetry`
 
 Pre-1.0, breaking changes are possible at any minor version (`v0.X`). When we make one, the change is called out in this file under **Changed** or **Removed**, and non-trivial removals get a one-version deprecation period when feasible. Patch versions (`v0.X.Y`) are bug fixes only.
 
@@ -19,6 +19,8 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 ### Changes by Kind
 
 #### Other (Cleanup, Flake, or Docs)
+
+- transcript: `pkg/session` is renamed to **`pkg/transcript`** (#492 item 6) — ADK's own `session` package dominates `pkg/agent`'s signatures, so the old name collided in almost every file that used both, forcing awkward import aliases on embedders. `pkg/session` remains as a deprecated forwarding shim (aliases + wrappers, one release); the on-disk layout is untouched — transcripts still land in `.agents/sessions/` with the same schema, and `ErrNoProject` keeps its historical `session:` message prefix for anyone matching on it. The stability-promise list swaps `session` for `transcript`.
 
 - autonomous: the package stopped stuttering (#492 item 4) — `autonomous.Run` / `Start` / `Resume` / `Handle` / `Option` are the primary names (previously `RunAutonomous` / `StartAutonomous` / `ResumeAutonomous` / `AutonomousHandle` / `AutonomousOption`), and `Run`'s raw `func(extraTools []tool.Tool) (*agent.Agent, error)` parameter now uses the named `BuildFunc` type `Start` already used. Every old name remains as a deprecated alias/wrapper for one release, so existing callers build unchanged; in-tree callers, examples, and site docs are migrated (historical design-doc references to the pre-#441 `agent.RunAutonomous` era are deliberately left as written).
 

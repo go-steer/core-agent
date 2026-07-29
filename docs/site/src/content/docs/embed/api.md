@@ -1121,11 +1121,11 @@ Modes: `none` (default — no spans), `console` (stderr JSON), `otlp` (honors st
 ## Transcripts
 
 ```go
-session.Save(agentsDir, session.Transcript{
+transcript.Save(agentsDir, transcript.Transcript{
     StartedAt: started,
     Model:     m.Name(),
-    Messages:  []session.Message{{Role: "user", Text: prompt}},
-    Usage:     session.Usage{Turns: tot.Turns, InputTokens: tot.InputTokens, ...},
+    Messages:  []transcript.Message{{Role: "user", Text: prompt}},
+    Usage:     transcript.Usage{Turns: tot.Turns, InputTokens: tot.InputTokens, ...},
 })
 ```
 

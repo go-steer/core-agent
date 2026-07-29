@@ -12,13 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package session writes session transcripts to disk on exit.
+// Package transcript writes session transcripts to disk on exit.
 //
 // Every run that has a project .agents/ directory persists a JSON
 // transcript to .agents/sessions/<RFC3339-timestamp>.json containing
 // the chat history and the final usage totals. The schema is
 // versioned so future readers can evolve safely.
-package session
+//
+// Renamed from pkg/session (#492): ADK's own session package
+// dominates pkg/agent's signatures, so the old name collided in
+// almost every file that used both. pkg/session remains as a
+// deprecated forwarding shim for one release. On-disk layout is
+// unchanged (still .agents/sessions/, same schema, same
+// "session:"-prefixed sentinel text for error compatibility).
+package transcript
 
 import (
 	"encoding/json"
@@ -129,6 +136,9 @@ func atomicWrite(path string, data []byte, mode fs.FileMode) error {
 	return nil
 }
 
-// ErrNoProject is a sentinel callers can check via errors.Is when they
-// want to distinguish "no project" from a real failure.
+// ErrNoProject is the sentinel returned when no project .agents/
+// directory is configured — check with errors.Is. The message keeps
+// the historical "session:" prefix: callers may have matched on it,
+// and the on-disk/product concept ("sessions") is unchanged; only
+// the Go package name moved (#492).
 var ErrNoProject = errors.New("session: no project directory configured")

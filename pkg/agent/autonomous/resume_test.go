@@ -75,7 +75,7 @@ func TestResumeAutonomous_RequiresBuild(t *testing.T) {
 	t.Parallel()
 	h, cleanup := openTestEventLog(t)
 	defer cleanup()
-	_, err := ResumeAutonomous(context.Background(), nil, SessionRef{
+	_, err := Resume(context.Background(), nil, SessionRef{
 		Handle: h, AppName: "app", UserID: "u", SessionID: "s",
 	})
 	if err == nil || !strings.Contains(err.Error(), "build is required") {
@@ -85,7 +85,7 @@ func TestResumeAutonomous_RequiresBuild(t *testing.T) {
 
 func TestResumeAutonomous_RequiresHandle(t *testing.T) {
 	t.Parallel()
-	_, err := ResumeAutonomous(context.Background(),
+	_, err := Resume(context.Background(),
 		func([]tool.Tool, string) (*agent.Agent, error) { return nil, nil },
 		SessionRef{AppName: "app", UserID: "u", SessionID: "s"})
 	if err == nil || !strings.Contains(err.Error(), "Handle is required") {
@@ -97,7 +97,7 @@ func TestResumeAutonomous_RequiresSessionID(t *testing.T) {
 	t.Parallel()
 	h, cleanup := openTestEventLog(t)
 	defer cleanup()
-	_, err := ResumeAutonomous(context.Background(),
+	_, err := Resume(context.Background(),
 		func([]tool.Tool, string) (*agent.Agent, error) { return nil, nil },
 		SessionRef{Handle: h, AppName: "app", UserID: "u", SessionID: " "})
 	if err == nil || !strings.Contains(err.Error(), "SessionID is required") {
@@ -115,11 +115,11 @@ func TestRunAutonomous_EmitsCheckpointPerTurn(t *testing.T) {
 		doneCallTurn("done after two"),
 		textTurn("ok", 0, 0),
 	}}
-	res, err := RunAutonomous(context.Background(),
+	res, err := Run(context.Background(),
 		runBuilder(llm, h, "app", "u", "checkpoints"),
 		"go")
 	if err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if res.Reason != StopReasonCompleted {
 		t.Errorf("Reason = %q, want completed", res.Reason)
@@ -153,11 +153,11 @@ func TestResumeAutonomous_TerminalCheckpointReturnsImmediately(t *testing.T) {
 		doneCallTurn("the result"),
 		textTurn("ok", 4, 2),
 	}}
-	first, err := RunAutonomous(context.Background(),
+	first, err := Run(context.Background(),
 		runBuilder(llm, h, "app", "u", "terminal"),
 		"go")
 	if err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if first.Reason != StopReasonCompleted {
 		t.Fatalf("first run Reason = %q, want completed", first.Reason)
@@ -169,11 +169,11 @@ func TestResumeAutonomous_TerminalCheckpointReturnsImmediately(t *testing.T) {
 	llm2 := &stubLLM{scenarios: []scenarioFn{
 		textTurn("should not be invoked", 0, 0),
 	}}
-	res, err := ResumeAutonomous(context.Background(),
+	res, err := Resume(context.Background(),
 		resumeBuilder(llm2, h, "app", "u"),
 		SessionRef{Handle: h, AppName: "app", UserID: "u", SessionID: "terminal"})
 	if err != nil {
-		t.Fatalf("ResumeAutonomous: %v", err)
+		t.Fatalf("Resume: %v", err)
 	}
 	if res.Reason != StopReasonCompleted {
 		t.Errorf("resumed Reason = %q, want completed", res.Reason)
@@ -195,11 +195,11 @@ func TestResumeAutonomous_ContinuesFromMidRun(t *testing.T) {
 		textTurn("first", 7, 3),
 		textTurn("second", 7, 3),
 	}}
-	first, err := RunAutonomous(context.Background(),
+	first, err := Run(context.Background(),
 		runBuilder(llm1, h, "app", "u", "midrun"),
 		"go", WithMaxTurns(2))
 	if err != nil {
-		t.Fatalf("first RunAutonomous: %v", err)
+		t.Fatalf("first Run: %v", err)
 	}
 	if first.Reason != StopReasonMaxTurns {
 		t.Fatalf("first Reason = %q, want %q", first.Reason, StopReasonMaxTurns)
@@ -210,12 +210,12 @@ func TestResumeAutonomous_ContinuesFromMidRun(t *testing.T) {
 		doneCallTurn("done on resume"),
 		textTurn("ok", 1, 1),
 	}}
-	res, err := ResumeAutonomous(context.Background(),
+	res, err := Resume(context.Background(),
 		resumeBuilder(llm2, h, "app", "u"),
 		SessionRef{Handle: h, AppName: "app", UserID: "u", SessionID: "midrun"},
 		WithMaxTurns(10))
 	if err != nil {
-		t.Fatalf("ResumeAutonomous: %v", err)
+		t.Fatalf("Resume: %v", err)
 	}
 	if res.Reason != StopReasonCompleted {
 		t.Errorf("resumed Reason = %q, want completed", res.Reason)
@@ -245,10 +245,10 @@ func TestResumeAutonomous_BudgetsCarryForward(t *testing.T) {
 		textTurn("b", 0, 0),
 		textTurn("c", 0, 0),
 	}}
-	if _, err := RunAutonomous(context.Background(),
+	if _, err := Run(context.Background(),
 		runBuilder(llm1, h, "app", "u", "budgets"),
 		"go", WithMaxTurns(3)); err != nil {
-		t.Fatalf("first RunAutonomous: %v", err)
+		t.Fatalf("first Run: %v", err)
 	}
 
 	// Resume with the same max_turns budget — already exceeded,
@@ -257,12 +257,12 @@ func TestResumeAutonomous_BudgetsCarryForward(t *testing.T) {
 	llm2 := &stubLLM{scenarios: []scenarioFn{
 		textTurn("never", 0, 0),
 	}}
-	res, err := ResumeAutonomous(context.Background(),
+	res, err := Resume(context.Background(),
 		resumeBuilder(llm2, h, "app", "u"),
 		SessionRef{Handle: h, AppName: "app", UserID: "u", SessionID: "budgets"},
 		WithMaxTurns(3))
 	if err != nil {
-		t.Fatalf("ResumeAutonomous: %v", err)
+		t.Fatalf("Resume: %v", err)
 	}
 	if res.Reason != StopReasonMaxTurns {
 		t.Errorf("Reason = %q, want %q (budget should fire on resumed totals)", res.Reason, StopReasonMaxTurns)
@@ -290,11 +290,11 @@ func TestResumeAutonomous_NoCheckpointStartsAtZero(t *testing.T) {
 		doneCallTurn("first done"),
 		textTurn("ok", 0, 0),
 	}}
-	res, err := ResumeAutonomous(context.Background(),
+	res, err := Resume(context.Background(),
 		resumeBuilder(llm, h, "app", "u"),
 		SessionRef{Handle: h, AppName: "app", UserID: "u", SessionID: "fresh"})
 	if err != nil {
-		t.Fatalf("ResumeAutonomous: %v", err)
+		t.Fatalf("Resume: %v", err)
 	}
 	if res.Reason != StopReasonCompleted {
 		t.Errorf("Reason = %q, want completed", res.Reason)
@@ -309,11 +309,11 @@ func TestResumeAutonomous_LockBlocksConcurrent(t *testing.T) {
 	h, cleanup := openTestEventLog(t)
 	defer cleanup()
 	// Plant a checkpoint and a held lock to simulate another
-	// process running ResumeAutonomous concurrently.
+	// process running Resume concurrently.
 	llm := &stubLLM{scenarios: []scenarioFn{
 		textTurn("seed", 0, 0),
 	}}
-	if _, err := RunAutonomous(context.Background(),
+	if _, err := Run(context.Background(),
 		runBuilder(llm, h, "app", "u", "locked"),
 		"go", WithMaxTurns(1)); err != nil {
 		t.Fatalf("seed run: %v", err)
@@ -326,8 +326,8 @@ func TestResumeAutonomous_LockBlocksConcurrent(t *testing.T) {
 	}
 	defer otherLock.Release()
 
-	// ResumeAutonomous must refuse with a clear error.
-	_, err = ResumeAutonomous(context.Background(),
+	// Resume must refuse with a clear error.
+	_, err = Resume(context.Background(),
 		resumeBuilder(llm, h, "app", "u"),
 		SessionRef{Handle: h, AppName: "app", UserID: "u", SessionID: "locked"})
 	if !errors.Is(err, eventlog.ErrSessionLocked) {
@@ -413,7 +413,7 @@ func TestResumeAutonomous_CancelledWhileWaitingReportsElapsedDuration(t *testing
 	defer cleanup()
 
 	// Seed a non-terminal checkpoint whose NextWakeAt is far in the
-	// future so ResumeAutonomous parks in the deferred-wake wait.
+	// future so Resume parks in the deferred-wake wait.
 	llm := &stubLLM{}
 	seed, err := resumeBuilder(llm, h, "app", "u")(nil, "wakewait")
 	if err != nil {
@@ -441,7 +441,7 @@ func TestResumeAutonomous_CancelledWhileWaitingReportsElapsedDuration(t *testing
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	start := time.Now()
-	res, rerr := ResumeAutonomous(ctx,
+	res, rerr := Resume(ctx,
 		resumeBuilder(llm, h, "app", "u"),
 		SessionRef{Handle: h, AppName: "app", UserID: "u", SessionID: "wakewait"})
 	elapsed := time.Since(start)

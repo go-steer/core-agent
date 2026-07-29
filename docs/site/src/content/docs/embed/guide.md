@@ -497,7 +497,7 @@ This pattern scales to roughly a few hundred concurrent sessions in one process.
 ## Where to go next
 
 - **[Library API](../library-api/)** — exhaustive reference for every type and option mentioned here, plus details deferred for narrative flow.
-- **[Autonomous runs](../autonomous/)** — the `RunAutonomous` driver with budgets, lifecycle tool, ask-mode behavior. Most server-side embedders also run autonomous workloads.
+- **[Autonomous runs](../autonomous/)** — the `autonomous.Run` driver with budgets, lifecycle tool, ask-mode behavior. Most server-side embedders also run autonomous workloads.
 - **[Sessions and event log](../sessions/)** — the Stream API (`Since(seq)`, `Watch(seq)`), the session lock, the audit-log shape.
 - **[Permissions](../permissions/)** — pattern grammar, path scope details, the prompter contract.
 - **[`extras/scion-remote-agent/`](https://github.com/go-steer/core-agent/tree/main/extras/scion-remote-agent)** — full reference implementation of `RemoteAgentSpawner`, including the SSE log classification machinery.

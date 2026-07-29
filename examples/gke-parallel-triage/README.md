@@ -220,7 +220,7 @@ come back, and a synthesis identifying `broken-svc` as the failing one
   to watch a triage as it runs (LiveAgent observer mode — see
   [`docs/site/src/content/docs/reference/attach-tui.md`](../../docs/site/src/content/docs/reference/attach-tui.md)).
 - **Scheduled monitoring**: wrap this same config under
-  `autonomous.RunAutonomous` (package `pkg/agent/autonomous`) + a
+  `autonomous.Run` (package `pkg/agent/autonomous`) + a
   `Scheduler` to do periodic health sweeps
   rather than incident-only triage. See `examples/scheduled-monitor`
   for the substrate pattern.

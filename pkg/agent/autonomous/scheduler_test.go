@@ -40,13 +40,13 @@ func TestResumeAutonomous_FromDeferredCheckpoint(t *testing.T) {
 		scheduleCallTurn(1, "rescan", "10m cadence"),
 		textTurn("scheduled", 1, 1),
 	}}
-	res1, err := RunAutonomous(context.Background(),
+	res1, err := Run(context.Background(),
 		runBuilder(llm1, h, "app", "u", "deferred-session"),
 		"monitor",
 		WithScheduler(coretools.ExitOnDeferScheduler()),
 	)
 	if err != nil {
-		t.Fatalf("phase 1 RunAutonomous: %v", err)
+		t.Fatalf("phase 1 Run: %v", err)
 	}
 	if res1.Reason != StopReasonDeferred {
 		t.Fatalf("phase 1 Reason = %q, want deferred", res1.Reason)
@@ -56,18 +56,18 @@ func TestResumeAutonomous_FromDeferredCheckpoint(t *testing.T) {
 	}
 
 	// Phase 2: resume the same session. The deferred checkpoint's
-	// next_wake_at is roughly now+1s. ResumeAutonomous honors it
+	// next_wake_at is roughly now+1s. Resume honors it
 	// inline (daemon-mode behavior) — for this test we wait it out.
 	llm2 := &stubLLM{scenarios: []scenarioFn{
 		doneCallTurn("resumed and finished"),
 		textTurn("ok", 1, 1),
 	}}
-	res2, err := ResumeAutonomous(context.Background(),
+	res2, err := Resume(context.Background(),
 		resumeBuilder(llm2, h, "app", "u"),
 		SessionRef{Handle: h, AppName: "app", UserID: "u", SessionID: "deferred-session"},
 	)
 	if err != nil {
-		t.Fatalf("phase 2 ResumeAutonomous: %v", err)
+		t.Fatalf("phase 2 Resume: %v", err)
 	}
 	if res2.Reason != StopReasonCompleted {
 		t.Errorf("phase 2 Reason = %q, want completed", res2.Reason)
@@ -167,9 +167,9 @@ func TestRunAutonomous_NoSchedulerIgnoresScheduleEmission(t *testing.T) {
 		doneCallTurn("just done"),
 		textTurn("finished", 1, 1),
 	}}
-	res, err := RunAutonomous(context.Background(), buildAgent(llm, "no-scheduler"), "go")
+	res, err := Run(context.Background(), buildAgent(llm, "no-scheduler"), "go")
 	if err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if res.Reason != StopReasonCompleted {
 		t.Errorf("Reason = %q, want completed", res.Reason)
@@ -190,13 +190,13 @@ func TestRunAutonomous_ScheduleEmissionContinuesLoop(t *testing.T) {
 		textTurn("ok", 1, 1),
 	}}
 	sched := &recordingScheduler{}
-	res, err := RunAutonomous(context.Background(),
+	res, err := Run(context.Background(),
 		buildAgent(llm, "schedule-continues"),
 		"monitor",
 		WithScheduler(sched),
 	)
 	if err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if res.Reason != StopReasonCompleted {
 		t.Errorf("Reason = %q, want completed", res.Reason)
@@ -223,13 +223,13 @@ func TestRunAutonomous_ExitOnDeferSchedulerStops(t *testing.T) {
 		scheduleCallTurn(60, "rescan", "10m cadence"),
 		textTurn("scheduled", 1, 1),
 	}}
-	res, err := RunAutonomous(context.Background(),
+	res, err := Run(context.Background(),
 		buildAgent(llm, "exit-on-defer"),
 		"monitor",
 		WithScheduler(coretools.ExitOnDeferScheduler()),
 	)
 	if err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if res.Reason != StopReasonDeferred {
 		t.Errorf("Reason = %q, want %q", res.Reason, StopReasonDeferred)
@@ -250,13 +250,13 @@ func TestRunAutonomous_DoneWinsOverScheduleInSameTurn(t *testing.T) {
 		textTurn("finished", 1, 1),
 	}}
 	sched := &recordingScheduler{}
-	res, err := RunAutonomous(context.Background(),
+	res, err := Run(context.Background(),
 		buildAgent(llm, "done-wins"),
 		"monitor",
 		WithScheduler(sched),
 	)
 	if err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if res.Reason != StopReasonCompleted {
 		t.Errorf("Reason = %q, want completed (done should win)", res.Reason)
@@ -280,14 +280,14 @@ func TestRunAutonomous_MaxDeferClampsWakeAt(t *testing.T) {
 	sched := &recordingScheduler{
 		action: func(_ coretools.ScheduleEvent) error { return coretools.ErrSchedulerDefer },
 	}
-	res, err := RunAutonomous(context.Background(),
+	res, err := Run(context.Background(),
 		buildAgent(llm, "max-defer-clamp"),
 		"monitor",
 		WithScheduler(sched),
 		WithMaxDefer(5*time.Minute), // driver caps at 5 minutes
 	)
 	if err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if res.Reason != StopReasonDeferred {
 		t.Errorf("Reason = %q, want deferred", res.Reason)
@@ -311,7 +311,7 @@ func TestRunAutonomous_SchedulerErrorAbortsRun(t *testing.T) {
 	sched := &recordingScheduler{
 		action: func(_ coretools.ScheduleEvent) error { return customErr },
 	}
-	res, err := RunAutonomous(context.Background(),
+	res, err := Run(context.Background(),
 		buildAgent(llm, "sched-err"),
 		"monitor",
 		WithScheduler(sched),
@@ -337,14 +337,14 @@ func TestRunAutonomous_ScheduleToolMaxDeferRejectsAtTool(t *testing.T) {
 		textTurn("finished", 1, 1),
 	}}
 	sched := &recordingScheduler{}
-	res, err := RunAutonomous(context.Background(),
+	res, err := Run(context.Background(),
 		buildAgent(llm, "tool-max-defer"),
 		"monitor",
 		WithScheduler(sched),
 		WithScheduleToolMaxDefer(time.Minute),
 	)
 	if err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if res.Reason != StopReasonCompleted {
 		t.Errorf("Reason = %q, want completed (model adapted after rejection)", res.Reason)
@@ -360,13 +360,13 @@ func TestRunAutonomous_DeferredCheckpointPersistsNextWakeAt(t *testing.T) {
 		scheduleCallTurn(60, "rescan", "10m cadence"),
 		textTurn("scheduled", 1, 1),
 	}}
-	res, err := RunAutonomous(context.Background(),
+	res, err := Run(context.Background(),
 		buildAgent(llm, "deferred-checkpoint"),
 		"monitor",
 		WithScheduler(coretools.ExitOnDeferScheduler()),
 	)
 	if err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if res.Reason != StopReasonDeferred {
 		t.Errorf("Reason = %q, want deferred", res.Reason)

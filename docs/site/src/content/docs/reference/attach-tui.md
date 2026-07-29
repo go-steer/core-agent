@@ -212,7 +212,7 @@ Every hop keeps the same TUI process alive. Cost totals, theme, and keybindings 
 
 ## Observer mode (LiveAgent)
 
-When the remote agent is running on its own — `autonomous.RunAutonomous`, scheduled background subagents, MCP-server-triggered activity, other attached operators' injects — the TUI surfaces every event in the chat scrollback as it happens. You don't have to type anything to see what the agent is doing; attaching is enough.
+When the remote agent is running on its own — `autonomous.Run`, scheduled background subagents, MCP-server-triggered activity, other attached operators' injects — the TUI surfaces every event in the chat scrollback as it happens. You don't have to type anything to see what the agent is doing; attaching is enough.
 
 Operator typing still works: the prompt goes through `POST /inject` and the agent's response streams back through the same observer feed. The scrollback shows the full mixture — your prompts, autonomous turns, subagent activity — in order.
 

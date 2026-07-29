@@ -49,7 +49,7 @@ func lastUserPrompt(req *adkmodel.LLMRequest) string {
 
 func TestStartAutonomous_RequiresBuild(t *testing.T) {
 	t.Parallel()
-	_, err := StartAutonomous(context.Background(), nil, "go")
+	_, err := Start(context.Background(), nil, "go")
 	if err == nil {
 		t.Errorf("expected error for nil build")
 	}
@@ -61,9 +61,9 @@ func TestAutonomousHandle_RunsToCompletion(t *testing.T) {
 		doneCallTurn("did the thing"),
 		textTurn("all done", 5, 3),
 	}}
-	h, err := StartAutonomous(context.Background(), buildAgent(llm, "h-complete"), "do the thing")
+	h, err := Start(context.Background(), buildAgent(llm, "h-complete"), "do the thing")
 	if err != nil {
-		t.Fatalf("StartAutonomous: %v", err)
+		t.Fatalf("Start: %v", err)
 	}
 	res, err := h.Wait()
 	if err != nil {
@@ -124,11 +124,11 @@ func TestAutonomousHandle_StopCancelsRun(t *testing.T) {
 		slowTextTurn("stalling", 500*time.Millisecond),
 		slowTextTurn("stalling", 500*time.Millisecond),
 	}}
-	h, err := StartAutonomous(context.Background(),
+	h, err := Start(context.Background(),
 		buildAgent(llm, "h-stop"), "monitor",
 		WithMaxTurns(0)) // no cap; we'll Stop manually
 	if err != nil {
-		t.Fatalf("StartAutonomous: %v", err)
+		t.Fatalf("Start: %v", err)
 	}
 
 	// Deterministic: wait for turn 1 to actually be in flight, stop,
@@ -181,11 +181,11 @@ func TestAutonomousHandle_PauseHaltsBeforeNextTurn(t *testing.T) {
 		doneCallTurn("ok"),
 		textTurn("done", 1, 1),
 	}}
-	h, err := StartAutonomous(context.Background(),
+	h, err := Start(context.Background(),
 		buildAgent(llm, "h-pause"), "monitor",
 		WithMaxTurns(0))
 	if err != nil {
-		t.Fatalf("StartAutonomous: %v", err)
+		t.Fatalf("Start: %v", err)
 	}
 	defer h.Stop()
 
@@ -240,9 +240,9 @@ func TestAutonomousHandle_PauseIdempotent(t *testing.T) {
 		doneCallTurn("ok"),
 		textTurn("done", 1, 1),
 	}}
-	h, err := StartAutonomous(context.Background(), buildAgent(llm, "h-pause-idem"), "g", WithMaxTurns(0))
+	h, err := Start(context.Background(), buildAgent(llm, "h-pause-idem"), "g", WithMaxTurns(0))
 	if err != nil {
-		t.Fatalf("StartAutonomous: %v", err)
+		t.Fatalf("Start: %v", err)
 	}
 	defer h.Stop()
 	if err := h.Pause(); err != nil {
@@ -265,9 +265,9 @@ func TestAutonomousHandle_StopUnblocksPause(t *testing.T) {
 		textTurn("t1", 1, 1),
 		textTurn("t2", 1, 1),
 	}}
-	h, err := StartAutonomous(context.Background(), buildAgent(llm, "h-stop-paused"), "g", WithMaxTurns(0))
+	h, err := Start(context.Background(), buildAgent(llm, "h-stop-paused"), "g", WithMaxTurns(0))
 	if err != nil {
-		t.Fatalf("StartAutonomous: %v", err)
+		t.Fatalf("Start: %v", err)
 	}
 	if err := h.Pause(); err != nil {
 		t.Fatalf("Pause: %v", err)
@@ -333,9 +333,9 @@ func TestAutonomousHandle_InjectReachesNextTurn(t *testing.T) {
 		// Follow-up after the tool call.
 		textTurn("done", 1, 1),
 	}}
-	h, err := StartAutonomous(context.Background(), buildAgent(llm, "h-inject"), "first goal")
+	h, err := Start(context.Background(), buildAgent(llm, "h-inject"), "first goal")
 	if err != nil {
-		t.Fatalf("StartAutonomous: %v", err)
+		t.Fatalf("Start: %v", err)
 	}
 	// Inject during turn 1's delay so the message is queued in
 	// time for turn 2's pre-turn drain.
@@ -375,9 +375,9 @@ func TestAutonomousHandle_PauseAfterTerminalErrors(t *testing.T) {
 		doneCallTurn("done"),
 		textTurn("done", 1, 1),
 	}}
-	h, err := StartAutonomous(context.Background(), buildAgent(llm, "h-pause-term"), "g")
+	h, err := Start(context.Background(), buildAgent(llm, "h-pause-term"), "g")
 	if err != nil {
-		t.Fatalf("StartAutonomous: %v", err)
+		t.Fatalf("Start: %v", err)
 	}
 	_, _ = h.Wait()
 	if err := h.Pause(); err == nil {
@@ -394,9 +394,9 @@ func TestAutonomousHandle_DoneChannelCloses(t *testing.T) {
 		doneCallTurn("d"),
 		textTurn("done", 1, 1),
 	}}
-	h, err := StartAutonomous(context.Background(), buildAgent(llm, "h-done"), "g")
+	h, err := Start(context.Background(), buildAgent(llm, "h-done"), "g")
 	if err != nil {
-		t.Fatalf("StartAutonomous: %v", err)
+		t.Fatalf("Start: %v", err)
 	}
 	select {
 	case <-h.Done():

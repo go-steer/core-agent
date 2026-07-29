@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Example: drive an agent through autonomous.RunAutonomous end-to-end with
+// Example: drive an agent through autonomous.Run end-to-end with
 // no LLM credentials. The mock "scripted" provider replays a JSONL
 // transcript that the model would normally produce; the autonomous
 // driver loops, watches for the report_done tool call, and returns a
@@ -42,7 +42,7 @@ import (
 )
 
 // transcript scripts two LLM round-trips inside a single
-// RunAutonomous turn:
+// autonomous.Run turn:
 //
 //   - Round 1: the model emits a function call to report_done with
 //     state="done" and a brief detail describing what it did.
@@ -82,7 +82,7 @@ func run() error {
 		return err
 	}
 
-	// build constructs the agent each time RunAutonomous starts.
+	// build constructs the agent each time autonomous.Run starts.
 	// extras carries the internal "report_done" tool the driver
 	// registers; consumers compose it with their own tools here.
 	build := func(extras []adktool.Tool) (*agent.Agent, error) {
@@ -97,11 +97,11 @@ func run() error {
 		)
 	}
 
-	res, err := autonomous.RunAutonomous(ctx, build, "summarize the project",
+	res, err := autonomous.Run(ctx, build, "summarize the project",
 		autonomous.WithMaxTurns(5),
 	)
 	if err != nil {
-		return fmt.Errorf("RunAutonomous: %w", err)
+		return fmt.Errorf("autonomous.Run: %w", err)
 	}
 
 	fmt.Printf("reason:      %s\n", res.Reason)

@@ -92,13 +92,13 @@ func run() error {
 		)
 	}
 
-	fmt.Println("== StartAutonomous ==")
-	h, err := autonomous.StartAutonomous(ctx, build, "first goal",
+	fmt.Println("== autonomous.Start ==")
+	h, err := autonomous.Start(ctx, build, "first goal",
 		autonomous.WithMaxTurns(3),                  // bounded so the echo loop terminates
 		autonomous.WithMaxWallclock(10*time.Second), // safety net
 	)
 	if err != nil {
-		return fmt.Errorf("StartAutonomous: %w", err)
+		return fmt.Errorf("autonomous.Start: %w", err)
 	}
 	fmt.Printf("  status: %s\n", h.Status())
 

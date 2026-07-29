@@ -294,7 +294,7 @@ For non-interactive runs (CI, batch jobs), use:
 
 ### Autonomous runs and the gate
 
-`autonomous.RunAutonomous` would deadlock under `mode: ask` if your tools route through a gate without a `Prompter` — the model's first gated tool call would block waiting for human approval that's never going to arrive. Two options:
+`autonomous.Run` would deadlock under `mode: ask` if your tools route through a gate without a `Prompter` — the model's first gated tool call would block waiting for human approval that's never going to arrive. Two options:
 
 - Use `mode: yolo` (or `mode: allow` with an explicit allowlist) for unattended runs.
 - Wire `permissions.RefusePrompter` so the agent gets a clean refusal instead of blocking, and pass `autonomous.WithPermissionsGate(g)` to enable the driver's startup deadlock guard. See [Autonomous runs → Permission modes](/run/autonomous/operations/#permission-modes).

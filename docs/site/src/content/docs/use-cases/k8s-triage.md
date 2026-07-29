@@ -391,7 +391,7 @@ Only the read-only endpoint. Devteam structurally cannot mutate the cluster — 
 
 ## The Go driver
 
-The driver that ties everything together. `platform` runs via `RunAutonomous`; its children are spawned dynamically via `spawn_agent`.
+The driver that ties everything together. `platform` runs via `autonomous.Run`; its children are spawned dynamically via `spawn_agent`.
 
 **`cmd/gke-team/main.go`:**
 
@@ -443,7 +443,7 @@ func main() {
     Then monitor: when subagents report alerts, route per your routing rules.
     Replace failed subagents within 60s of failure detection.`
 
-    res, err := autonomous.RunAutonomous(ctx, model, goal,
+    res, err := autonomous.Run(ctx, model, goal,
         // Generous wallclock — the platform runs as long as the operator
         // wants the fleet managed.
         autonomous.WithMaxWallclock(24*time.Hour),
@@ -599,7 +599,7 @@ A human (or the CI/CD pipeline) detects the push failure separately, re-pushes t
 
 | Your situation | Adaptation |
 |---|---|
-| Single-cluster, single-tenant | Skip `platform` entirely. Run `operator` and `devteam` as two `RunAutonomous` calls in the same Go binary, with shared session storage but separate `agent.New` instances. |
+| Single-cluster, single-tenant | Skip `platform` entirely. Run `operator` and `devteam` as two `autonomous.Run` calls in the same Go binary, with shared session storage but separate `agent.New` instances. |
 | Multi-cloud (GKE + EKS + AKS) | Add cloud-specific MCP servers per `operator`. Devteam stays cloud-agnostic if your workloads are. |
 | Different specialist split | The 3-agent shape is a starting point. A `security` agent for IAM + audit-log review is a common 4th specialist. |
 | Want operator approval before remediation | Remove `operator`'s access to the full `/mcp` endpoint; have it propose remediations as `report_alert` to platform, which a human approves before running `kubectl apply` manually. |

@@ -40,6 +40,6 @@ lenient mode doing its job.
 
 ## Next
 
-- [`autonomous`](../autonomous/) — the same scripted provider driving `autonomous.RunAutonomous`.
+- [`autonomous`](../autonomous/) — the same scripted provider driving `autonomous.Run`.
 - [`with-subagent`](../with-subagent/) — two scripted providers, one per agent.
 - Library guide: [`docs/site/src/content/docs/embed/guide.md`](../../docs/site/src/content/docs/embed/guide.md)

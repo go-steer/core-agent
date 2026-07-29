@@ -36,7 +36,7 @@ import (
 // so the eventlog audit trail remains hierarchical.
 //
 // Returns the handle immediately; the subagent's goroutine runs
-// RunAutonomous against spec.Goal until budgets fire, the model
+// autonomous.Run against spec.Goal until budgets fire, the model
 // signals done via report_completed, the parent calls Stop, or the
 // goroutine's context is cancelled.
 //
@@ -94,7 +94,7 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 	// return — while the goroutine still launched and ran the full
 	// autonomous loop, burning budget under a "stopped" status (#366).
 	// With cancel registered up front, such a Stop() cancels goCtx, so
-	// when the goroutine launches RunAutonomous exits immediately and
+	// when the goroutine launches autonomous.Run exits immediately and
 	// the status stays Stopped.
 	goCtx, cancel := context.WithCancel(contextWithoutCancel(ctx))
 	goCtx = subsession.WithDepth(goCtx, subsession.CurrentDepth(ctx)+1)
@@ -166,7 +166,7 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 	// to include alongside our subagent's tools + our own report
 	// tools. The Agent we build inside `build` runs in its own
 	// goroutine so the construction happens after the goroutine
-	// starts (RunAutonomous calls build).
+	// starts (autonomous.Run calls build).
 	subagentInstruction := spec.SystemPrompt
 	subagentName := spec.Name
 	subagentGoal := spec.Goal
@@ -197,7 +197,7 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 		defer close(handle.done)
 		defer cancel()
 
-		opts := []autonomous.AutonomousOption{}
+		opts := []autonomous.Option{}
 		if budgets.MaxTurns > 0 {
 			opts = append(opts, autonomous.WithMaxTurns(budgets.MaxTurns))
 		}
@@ -226,7 +226,7 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 			opts = append(opts, autonomous.WithTracker(parent.Tracker(), usage.PriceFor(m.modelID, nil)))
 		}
 
-		result, runErr := autonomous.RunAutonomous(goCtx, build, subagentGoal, opts...)
+		result, runErr := autonomous.Run(goCtx, build, subagentGoal, opts...)
 
 		handle.mu.Lock()
 		handle.result = &result

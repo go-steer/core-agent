@@ -107,7 +107,7 @@ Filters available:
 | `WithSessionTree(app, user, parent)` | Returns events for `parent` and every derived sub-session (`<parent>:sub:%`). The one-query alternative to running `ForSession(parent)` plus `WithBranchPrefix(branch)` separately. Use this when you want the full audit trail of one logical "run." |
 | `WithBranchPrefix(prefix)` | Match events whose `Branch` field begins with `prefix`. Subagent runners set `Branch="<parent>.<sub>"` so e.g. `WithBranchPrefix("research")` returns every research subagent's events across sessions. See [Library API → Subagents](/embed/api/#subagents) |
 | `WithAuthor(name)` | Exact-match on the event's `Author` |
-| `WithAuthorSuffix(suffix)` | Suffix-match on `Author`. Used internally by `ResumeAutonomous` to find checkpoints regardless of which binary emitted them (`/autonomous`) |
+| `WithAuthorSuffix(suffix)` | Suffix-match on `Author`. Used internally by `autonomous.Resume` to find checkpoints regardless of which binary emitted them (`/autonomous`) |
 | `WithLimit(n)` | Cap the result set |
 
 ---
@@ -132,7 +132,7 @@ Cancel `ctx` to stop. Native push (PostgreSQL `LISTEN/NOTIFY`, SQLite `update_ho
 
 ## Session lock
 
-To prevent two processes from simultaneously running `ResumeAutonomous` against the same session, the package ships a small lock primitive that lives in the same database:
+To prevent two processes from simultaneously running `autonomous.Resume` against the same session, the package ships a small lock primitive that lives in the same database:
 
 ```go
 lock, err := handle.AcquireLock(ctx, "core-agent", "alice", "long-task")
@@ -142,13 +142,13 @@ defer lock.Release()
 
 A background heartbeat goroutine refreshes the lease every 5 seconds. A lease is considered stale after 30 seconds without a heartbeat and is automatically stolen by the next acquirer (recovers from crashed processes). Concurrent attempts on a fresh lease return `eventlog.ErrSessionLocked` with the holder identifier in the error message for diagnostics.
 
-`ResumeAutonomous` acquires the lock automatically. Plain `RunAutonomous` does not — fresh runs have no shared session to protect.
+`autonomous.Resume` acquires the lock automatically. Plain `autonomous.Run` does not — fresh runs have no shared session to protect.
 
 ---
 
 ## Crash-resume
 
-The session lock and the seq-numbered event log together support `autonomous.ResumeAutonomous`: a process that died mid-run can be restarted, and the new process picks up at the next turn from the same audit-log position.
+The session lock and the seq-numbered event log together support `autonomous.Resume`: a process that died mid-run can be restarted, and the new process picks up at the next turn from the same audit-log position.
 
 See [Autonomous runs → Crash-resume](/run/autonomous/operations/#crash-resume) for the full pattern.
 
@@ -186,4 +186,4 @@ The CLIs add the `glebarez/sqlite` driver — pure-Go, ~10 MB binary growth. CGO
 - **Cross-session app/user state mutations in the overlay.** The state tables are owned by ADK; their changes don't get seq numbers today. Add when a consumer needs cross-session audit trails.
 - **Encrypted-at-rest event log.** Defer to filesystem/DB-level encryption.
 - **Streaming subscribers over the network.** No gRPC/HTTP bridge in v1; an `extras/eventlog-server/` adapter would land if a consumer wants AX-style remote tail.
-- **Multi-writer coordination across processes for plain `RunAutonomous`.** The session lock is acquired by `ResumeAutonomous` only; concurrent fresh runs against the same session ID are possible but not protected.
+- **Multi-writer coordination across processes for plain `autonomous.Run`.** The session lock is acquired by `autonomous.Resume` only; concurrent fresh runs against the same session ID are possible but not protected.

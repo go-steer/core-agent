@@ -217,6 +217,6 @@ The composition keeps the parent's context tiny (it just sees "spawned subagent,
 - **[Built-in tools](/concepts/tools/)** — the bare tools the wrappers are wrapping; description-text patterns you can mirror in your own tools
 - **[Context management → Agentic wrappers](/concepts/context-management/)** — the mechanism + the four built-in wrappers
 - **[Autonomous quickstart](/run/autonomous/quickstart/)** — background subagents + scheduling in unattended runs
-- **[Autonomous → Operations](/run/autonomous/operations/)** — `RunAutonomous`, budgets, lifecycle tool, the spawn tools
+- **[Autonomous → Operations](/run/autonomous/operations/)** — `autonomous.Run`, budgets, lifecycle tool, the spawn tools
 - **[Issue #59](https://github.com/go-steer/core-agent/issues/59)** — agentic_* description tightening (v2.1 polish)
 - **[Issue #60](https://github.com/go-steer/core-agent/issues/60)** — Flash hallucination on agentic_grep (v2.1 polish)

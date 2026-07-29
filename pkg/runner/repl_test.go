@@ -29,7 +29,7 @@ import (
 )
 
 // safeBuf is a goroutine-safe bytes.Buffer. The REPL test goroutine
-// reads from stdout while REPLWithAgent's goroutine writes to it;
+// reads from stdout while Run's goroutine writes to it;
 // the race detector flags the bare bytes.Buffer for that pattern.
 type safeBuf struct {
 	mu sync.Mutex
@@ -74,7 +74,7 @@ func TestREPL_WakeTriggersInboxDrain(t *testing.T) {
 	}
 
 	// Stdin reader feeds /exit after we've verified the inbox was
-	// drained so REPLWithAgent returns. We don't write anything
+	// drained so Run returns. We don't write anything
 	// until the model reply lands.
 	stdinR, stdinW := stringPipe()
 	var stdout, stderr safeBuf
@@ -85,8 +85,8 @@ func TestREPL_WakeTriggersInboxDrain(t *testing.T) {
 
 	go func() {
 		defer close(repLDone)
-		_, _ = REPLWithAgent(ctx, a, m, stdinR, &stdout, &stderr,
-			usage.NewTracker(), usage.Pricing{})
+		_, _ = Run(ctx, RunOptions{Agent: a, Model: m, Stdin: stdinR, Stdout: &stdout, Stderr: &stderr,
+			Tracker: usage.NewTracker(), Pricing: usage.Pricing{}})
 	}()
 
 	// Give the REPL a moment to enter its loop before injecting.
@@ -152,8 +152,8 @@ func TestREPL_StdinStillWorksAfterWake(t *testing.T) {
 
 	go func() {
 		defer close(repLDone)
-		_, _ = REPLWithAgent(ctx, a, m, stdinR, &stdout, &stderr,
-			usage.NewTracker(), usage.Pricing{})
+		_, _ = Run(ctx, RunOptions{Agent: a, Model: m, Stdin: stdinR, Stdout: &stdout, Stderr: &stderr,
+			Tracker: usage.NewTracker(), Pricing: usage.Pricing{}})
 	}()
 
 	time.Sleep(50 * time.Millisecond)

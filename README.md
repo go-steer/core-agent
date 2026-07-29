@@ -17,7 +17,7 @@ A production-grade Go substrate for multi-turn LLM agents, built on the [Google 
 **Runtime**
 - Multi-turn conversation via ADK's `runner.Runner`; parallel tool-call dispatch.
 - In-process Bubble Tea TUI as the default TTY surface; `--no-tui` line REPL fallback; slim build (`-tags no_tui`) drops the TUI tree entirely.
-- `autonomous.RunAutonomous` for unattended workers with turn / token / cost / wallclock budgets and model-driven termination; `ResumeAutonomous` picks up from a durable checkpoint after a crash.
+- `autonomous.Run` for unattended workers with turn / token / cost / wallclock budgets and model-driven termination; `autonomous.Resume` picks up from a durable checkpoint after a crash.
 - Long-session survivability: automatic post-turn compaction at ~85% context utilization, subtasks with `agentic_*` tool wrappers that keep bulk tool output out of the parent's context, and task-boundary checkpoints via `mark_task_done`. See [Context management](https://go-steer.github.io/core-agent/docs/reference/context-management/).
 
 **Providers**

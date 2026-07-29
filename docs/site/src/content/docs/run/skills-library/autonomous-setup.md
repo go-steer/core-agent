@@ -39,7 +39,7 @@ Three reference files; the agent fetches based on the user's path:
 
 - **[`single-agent-monitor.md`](https://github.com/go-steer/core-agent/blob/main/SKILLS/autonomous-setup/references/single-agent-monitor.md)** — single-agent monitor pattern with a full worked example (Kubernetes deployment watcher). Covers goal-sentence shape, `AGENTS.md`, `config.json`, the Go driver, attach-mode observation, variations (cadence, multi-cluster), common failure modes. Read for ~80% of autonomous setups.
 - **[`multi-agent-decomposition.md`](https://github.com/go-steer/core-agent/blob/main/SKILLS/autonomous-setup/references/multi-agent-decomposition.md)** — parent + specialists pattern (from gke-labs/kube-agents). Covers when to split, scope separation via tool surface, parent / specialist AGENTS.md patterns, cost model, anti-patterns. Read when the workload genuinely decomposes (multi-tenant, multi-domain).
-- **[`budgets-and-recovery.md`](https://github.com/go-steer/core-agent/blob/main/SKILLS/autonomous-setup/references/budgets-and-recovery.md)** — sizing the four budget caps, per-agent vs shared budgets, failure policy, crash-resume via `ResumeAutonomous`, audit-log queries, diagnosing runaway cost. Read when sizing or troubleshooting.
+- **[`budgets-and-recovery.md`](https://github.com/go-steer/core-agent/blob/main/SKILLS/autonomous-setup/references/budgets-and-recovery.md)** — sizing the four budget caps, per-agent vs shared budgets, failure policy, crash-resume via `autonomous.Resume`, audit-log queries, diagnosing runaway cost. Read when sizing or troubleshooting.
 
 ## When to invoke vs read the docs
 

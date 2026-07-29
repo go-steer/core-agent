@@ -196,7 +196,7 @@ func buildAgent(llm *stubLLM, name string) func([]tool.Tool) (*agent.Agent, erro
 
 func TestRunAutonomous_RequiresBuild(t *testing.T) {
 	t.Parallel()
-	_, err := RunAutonomous(context.Background(), nil, "go")
+	_, err := Run(context.Background(), nil, "go")
 	if err == nil || !strings.Contains(err.Error(), "build is required") {
 		t.Fatalf("expected build-required error, got %v", err)
 	}
@@ -204,7 +204,7 @@ func TestRunAutonomous_RequiresBuild(t *testing.T) {
 
 func TestRunAutonomous_RequiresGoal(t *testing.T) {
 	t.Parallel()
-	_, err := RunAutonomous(context.Background(),
+	_, err := Run(context.Background(),
 		func([]tool.Tool) (*agent.Agent, error) { return nil, nil },
 		"   ")
 	if err == nil || !strings.Contains(err.Error(), "goal is required") {
@@ -221,9 +221,9 @@ func TestRunAutonomous_StopsOnDoneTool(t *testing.T) {
 		// runs; that call must have something to return.
 		textTurn("all done!", 5, 3),
 	}}
-	res, err := RunAutonomous(context.Background(), buildAgent(llm, "done"), "do the thing")
+	res, err := Run(context.Background(), buildAgent(llm, "done"), "do the thing")
 	if err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if res.Reason != StopReasonCompleted {
 		t.Errorf("Reason = %q, want %q", res.Reason, StopReasonCompleted)
@@ -247,12 +247,12 @@ func TestRunAutonomous_StopsOnMaxTurns(t *testing.T) {
 		textTurn("three", 1, 1),
 		textTurn("four (should never run)", 1, 1),
 	}}
-	res, err := RunAutonomous(context.Background(),
+	res, err := Run(context.Background(),
 		buildAgent(llm, "max-turns"),
 		"keep going",
 		WithMaxTurns(3))
 	if err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if res.Reason != StopReasonMaxTurns {
 		t.Errorf("Reason = %q, want %q", res.Reason, StopReasonMaxTurns)
@@ -272,12 +272,12 @@ func TestRunAutonomous_StopsOnMaxTokens(t *testing.T) {
 		textTurn("turn2", 100, 50),
 		textTurn("turn3 (should not run)", 100, 50),
 	}}
-	res, err := RunAutonomous(context.Background(),
+	res, err := Run(context.Background(),
 		buildAgent(llm, "max-tokens"),
 		"go",
 		WithMaxTokens(150, 0)) // input cap
 	if err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if res.Reason != StopReasonMaxTokens {
 		t.Errorf("Reason = %q, want %q", res.Reason, StopReasonMaxTokens)
@@ -298,13 +298,13 @@ func TestRunAutonomous_StopsOnMaxCost(t *testing.T) {
 		textTurn("t3 (should not run)", 1_000_000, 0),
 	}}
 	pricing := usage.Pricing{InputPerMTok: 1.0, OutputPerMTok: 0}
-	res, err := RunAutonomous(context.Background(),
+	res, err := Run(context.Background(),
 		buildAgent(llm, "max-cost"),
 		"spend",
 		WithPricing(pricing),
 		WithMaxCost(1.5))
 	if err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if res.Reason != StopReasonMaxCost {
 		t.Errorf("Reason = %q, want %q", res.Reason, StopReasonMaxCost)
@@ -325,12 +325,12 @@ func TestRunAutonomous_StopsOnWallclock(t *testing.T) {
 		slowTextTurn("slow", 80*time.Millisecond),
 		slowTextTurn("slow (never)", 80*time.Millisecond),
 	}}
-	res, err := RunAutonomous(context.Background(),
+	res, err := Run(context.Background(),
 		buildAgent(llm, "wallclock"),
 		"go",
 		WithMaxWallclock(150*time.Millisecond))
 	if err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if res.Reason != StopReasonWallclockExceeded {
 		t.Errorf("Reason = %q, want %q", res.Reason, StopReasonWallclockExceeded)
@@ -351,7 +351,7 @@ func TestRunAutonomous_StopsOnContextCancel(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		cancel()
 	}()
-	res, err := RunAutonomous(ctx, buildAgent(llm, "ctx-cancel"), "go")
+	res, err := Run(ctx, buildAgent(llm, "ctx-cancel"), "go")
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
 	}
@@ -376,12 +376,12 @@ func TestRunAutonomous_RetryPolicy_RetriesThenSucceeds(t *testing.T) {
 		}
 		return RetryTurn
 	}
-	res, err := RunAutonomous(context.Background(),
+	res, err := Run(context.Background(),
 		buildAgent(llm, "retry"),
 		"go",
 		WithRetryPolicy(policy))
 	if err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if res.Reason != StopReasonCompleted {
 		t.Errorf("Reason = %q, want completed", res.Reason)
@@ -396,7 +396,7 @@ func TestRunAutonomous_RetryPolicy_AbortsOnDecision(t *testing.T) {
 	wantErr := errors.New("permanent")
 	llm := &stubLLM{scenarios: []scenarioFn{errTurn(wantErr)}}
 	policy := func(_ error, _ int) RetryDecision { return AbortRun }
-	res, err := RunAutonomous(context.Background(),
+	res, err := Run(context.Background(),
 		buildAgent(llm, "retry-abort"),
 		"go",
 		WithRetryPolicy(policy))
@@ -417,12 +417,12 @@ func TestRunAutonomous_RetryPolicy_SkipMovesToContinuation(t *testing.T) {
 		textTurn("ok", 0, 0),
 	}}
 	policy := func(_ error, _ int) RetryDecision { return SkipTurn }
-	res, err := RunAutonomous(context.Background(),
+	res, err := Run(context.Background(),
 		buildAgent(llm, "retry-skip"),
 		"original goal",
 		WithRetryPolicy(policy))
 	if err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if res.Reason != StopReasonCompleted {
 		t.Errorf("Reason = %q, want completed", res.Reason)
@@ -436,7 +436,7 @@ func TestRunAutonomous_DefaultAbortsOnError(t *testing.T) {
 	t.Parallel()
 	wantErr := errors.New("nope")
 	llm := &stubLLM{scenarios: []scenarioFn{errTurn(wantErr)}}
-	res, err := RunAutonomous(context.Background(), buildAgent(llm, "abort"), "go")
+	res, err := Run(context.Background(), buildAgent(llm, "abort"), "go")
 	if !errors.Is(err, wantErr) {
 		t.Errorf("err = %v, want %v", err, wantErr)
 	}
@@ -455,12 +455,12 @@ func TestRunAutonomous_TracksTokensAndCost(t *testing.T) {
 	}}
 	tracker := usage.NewTracker()
 	pricing := usage.Pricing{InputPerMTok: 2.0, OutputPerMTok: 8.0}
-	res, err := RunAutonomous(context.Background(),
+	res, err := Run(context.Background(),
 		buildAgent(llm, "tracker"),
 		"go",
 		WithTracker(tracker, pricing))
 	if err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if res.Reason != StopReasonCompleted {
 		t.Errorf("Reason = %q, want completed", res.Reason)
@@ -501,12 +501,12 @@ func TestRunAutonomous_DoesNotDoubleCountCumulativeUsage(t *testing.T) {
 	}}
 	tracker := usage.NewTracker()
 	pricing := usage.Pricing{InputPerMTok: 2.0, OutputPerMTok: 8.0}
-	res, err := RunAutonomous(context.Background(),
+	res, err := Run(context.Background(),
 		buildAgent(llm, "cumulative"),
 		"go",
 		WithTracker(tracker, pricing))
 	if err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	// Only the final per-turn totals count: 200+10 in, 50+5 out.
 	wantIn := 200 + 10
@@ -550,11 +550,11 @@ func TestRunAutonomous_ProgressCallbackFires(t *testing.T) {
 			seen = append(seen, turn)
 		}
 	}
-	if _, err := RunAutonomous(context.Background(),
+	if _, err := Run(context.Background(),
 		buildAgent(llm, "progress"),
 		"go",
 		WithProgress(cb)); err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if len(seen) != 2 || seen[0] != 1 || seen[1] != 2 {
 		t.Errorf("turn indices = %v, want [1 2]", seen)
@@ -569,11 +569,11 @@ func TestRunAutonomous_ContinuationPromptOverridesDefault(t *testing.T) {
 		prompts.wrap(doneCallTurn("done")),
 		prompts.wrap(textTurn("ok", 0, 0)),
 	}}
-	if _, err := RunAutonomous(context.Background(),
+	if _, err := Run(context.Background(),
 		buildAgent(llm, "cont"),
 		"original goal",
 		WithContinuationPrompt("what next?")); err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	captured := prompts.snapshot()
 	if len(captured) < 2 {
@@ -599,7 +599,7 @@ func TestRunAutonomous_RejectsAskModeWithoutPrompter(t *testing.T) {
 		called = true
 		return agent.New(llm, agent.WithSession("u", "s-ask-guard"))
 	}
-	res, err := RunAutonomous(context.Background(), build, "go",
+	res, err := Run(context.Background(), build, "go",
 		WithPermissionsGate(gate))
 	if err == nil {
 		t.Fatalf("expected guard error, got nil")
@@ -629,12 +629,12 @@ func TestRunAutonomous_AskModeWithPrompterIsAllowed(t *testing.T) {
 		doneCallTurn("ok"),
 		textTurn("done", 0, 0),
 	}}
-	res, err := RunAutonomous(context.Background(),
+	res, err := Run(context.Background(),
 		buildAgent(llm, "ask-with-prompter"),
 		"go",
 		WithPermissionsGate(gate))
 	if err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if res.Reason != StopReasonCompleted {
 		t.Errorf("Reason = %q, want completed", res.Reason)
@@ -658,7 +658,7 @@ func TestRunAutonomous_StopsOnPerTurnTimeout(t *testing.T) {
 	llm := &stubLLM{scenarios: []scenarioFn{
 		slowTextTurn("slow", 200*time.Millisecond),
 	}}
-	res, err := RunAutonomous(context.Background(),
+	res, err := Run(context.Background(),
 		buildAgent(llm, "per-turn"),
 		"go",
 		WithPerTurnTimeout(40*time.Millisecond))
@@ -690,11 +690,11 @@ func TestRunAutonomous_FinalTextIsLastTurnText(t *testing.T) {
 		doneCallTurn("done"),
 		textTurn("post-tool follow-up", 0, 0),
 	}}
-	res, err := RunAutonomous(context.Background(),
+	res, err := Run(context.Background(),
 		buildAgent(llm, "final-text"),
 		"go")
 	if err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if res.Reason != StopReasonCompleted {
 		t.Errorf("Reason = %q, want completed", res.Reason)
@@ -721,12 +721,12 @@ func TestRunAutonomous_DoneToolNameOverride(t *testing.T) {
 		},
 		textTurn("done", 0, 0),
 	}}
-	res, err := RunAutonomous(context.Background(),
+	res, err := Run(context.Background(),
 		buildAgent(llm, "rename"),
 		"go",
 		WithDoneToolName("all_done"))
 	if err != nil {
-		t.Fatalf("RunAutonomous: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if res.Reason != StopReasonCompleted {
 		t.Errorf("Reason = %q, want completed", res.Reason)

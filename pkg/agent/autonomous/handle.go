@@ -27,7 +27,7 @@ import (
 )
 
 // AutonomousStatus describes the lifecycle state of a run started
-// via StartAutonomous. Read via AutonomousHandle.Status; transitions
+// via Start. Read via Handle.Status; transitions
 // are driven by Pause / Resume / Stop and by the run goroutine's
 // terminal handoff.
 type AutonomousStatus int
@@ -42,10 +42,10 @@ const (
 	// is about to (the ctx cancel propagates through the current
 	// turn's LLM/tool calls).
 	AutonomousStopped
-	// AutonomousCompleted — RunAutonomous returned with
+	// AutonomousCompleted — Run returned with
 	// Reason==Completed.
 	AutonomousCompleted
-	// AutonomousFailed — RunAutonomous returned with a non-Completed
+	// AutonomousFailed — Run returned with a non-Completed
 	// terminal reason (budget exceeded, retry aborted, etc.) or a
 	// Go error from the loop machinery.
 	AutonomousFailed
@@ -69,19 +69,19 @@ func (s AutonomousStatus) String() string {
 	}
 }
 
-// BuildFunc has the same shape RunAutonomous expects: the driver
+// BuildFunc has the same shape Run expects: the driver
 // hands it the extra tools it injected (today: just the done tool)
 // and the consumer returns a configured *agent.Agent. The Agent's
 // session.Service must be wired (durable or in-memory).
 type BuildFunc func(extraTools []tool.Tool) (*agent.Agent, error)
 
-// AutonomousHandle is the programmatic-control surface returned by
-// StartAutonomous. The autonomous loop runs in its own goroutine;
+// Handle is the programmatic-control surface returned by
+// Start. The autonomous loop runs in its own goroutine;
 // methods on the handle are safe for concurrent callers.
 //
 // Typical usage from a harness:
 //
-//	h, _ := agent.StartAutonomous(ctx, build, "monitor cluster X",
+//	h, _ := autonomous.Start(ctx, build, "monitor cluster X",
 //	    agent.WithMaxTurns(0), agent.WithMaxWallclock(time.Hour))
 //	defer h.Stop()
 //	// Inject new instructions as they arrive from outside:
@@ -90,7 +90,7 @@ type BuildFunc func(extraTools []tool.Tool) (*agent.Agent, error)
 //	h.Pause(); ...; h.Resume()
 //	// Block until terminal:
 //	result, err := h.Wait()
-type AutonomousHandle struct {
+type Handle struct {
 	// runCtx is the context the autonomous loop runs under. Stop
 	// cancels via runCancel.
 	runCtx    context.Context
@@ -110,24 +110,24 @@ type AutonomousHandle struct {
 	pauseCh chan struct{}
 
 	done  chan struct{} // closed when the run goroutine exits
-	ready chan struct{} // closed when h.agent has been captured (see wrappedBuild in StartAutonomous)
+	ready chan struct{} // closed when h.agent has been captured (see wrappedBuild in Start)
 }
 
-// StartAutonomous launches a new autonomous run in a goroutine and
+// Start launches a new autonomous run in a goroutine and
 // returns a handle the caller uses to control / observe it.
-// Otherwise identical surface to RunAutonomous — same BuildFunc,
+// Otherwise identical surface to Run — same BuildFunc,
 // same options. Wait() returns the same RunResult shape.
 //
 // The goroutine context is derived from ctx with our own cancel
 // function so Stop() can cancel independently of the caller's ctx.
 // If the caller's ctx fires, the run is still cancelled (the
 // derived ctx inherits cancellation).
-func StartAutonomous(ctx context.Context, build BuildFunc, goal string, opts ...AutonomousOption) (*AutonomousHandle, error) {
+func Start(ctx context.Context, build BuildFunc, goal string, opts ...Option) (*Handle, error) {
 	if build == nil {
-		return nil, errors.New("agent: StartAutonomous: build is required")
+		return nil, errors.New("agent: Start: build is required")
 	}
 	runCtx, cancel := context.WithCancel(ctx)
-	h := &AutonomousHandle{
+	h := &Handle{
 		runCtx:    runCtx,
 		runCancel: cancel,
 		status:    AutonomousRunning,
@@ -157,12 +157,12 @@ func StartAutonomous(ctx context.Context, build BuildFunc, goal string, opts ...
 	// override unrelated config but not nuke the pause/stop wiring.
 	// If a caller wants their own beforeTurn behavior, they can
 	// chain by calling our hook from inside theirs.
-	allOpts := append([]AutonomousOption{}, opts...)
+	allOpts := append([]Option{}, opts...)
 	allOpts = append(allOpts, WithBeforeTurn(h.beforeTurn))
 
 	go func() {
 		defer close(h.done)
-		result, err := RunAutonomous(runCtx, wrappedBuild, goal, allOpts...)
+		result, err := Run(runCtx, wrappedBuild, goal, allOpts...)
 
 		h.mu.Lock()
 		h.result = &result
@@ -184,10 +184,10 @@ func StartAutonomous(ctx context.Context, build BuildFunc, goal string, opts ...
 	return h, nil
 }
 
-// beforeTurn is the hook AutonomousHandle wires into the autonomous
+// beforeTurn is the hook Handle wires into the autonomous
 // loop via WithBeforeTurn. Runs at the top of each iteration; blocks
 // while paused (until Resume fires or the run context is cancelled).
-func (h *AutonomousHandle) beforeTurn(ctx context.Context, _ int) error {
+func (h *Handle) beforeTurn(ctx context.Context, _ int) error {
 	h.mu.Lock()
 	ch := h.pauseCh
 	h.mu.Unlock()
@@ -214,11 +214,11 @@ func (h *AutonomousHandle) beforeTurn(ctx context.Context, _ int) error {
 // Emits a synthetic "paused" event to the agent's eventlog
 // (Author="<binary>/autonomous", CustomMetadata.kind="paused") for
 // audit, when an eventlog is wired. No-op when not.
-func (h *AutonomousHandle) Pause() error {
+func (h *Handle) Pause() error {
 	h.mu.Lock()
 	if h.status == AutonomousStopped || h.status == AutonomousCompleted || h.status == AutonomousFailed {
 		h.mu.Unlock()
-		return errors.New("agent: AutonomousHandle.Pause: run already terminated")
+		return errors.New("agent: Handle.Pause: run already terminated")
 	}
 	if h.pauseCh != nil {
 		h.mu.Unlock()
@@ -242,11 +242,11 @@ func (h *AutonomousHandle) Pause() error {
 //
 // Emits a synthetic "resumed" event to the agent's eventlog for
 // audit, when an eventlog is wired.
-func (h *AutonomousHandle) Resume() error {
+func (h *Handle) Resume() error {
 	h.mu.Lock()
 	if h.status == AutonomousStopped || h.status == AutonomousCompleted || h.status == AutonomousFailed {
 		h.mu.Unlock()
-		return errors.New("agent: AutonomousHandle.Resume: run already terminated")
+		return errors.New("agent: Handle.Resume: run already terminated")
 	}
 	if h.pauseCh == nil {
 		h.mu.Unlock()
@@ -271,7 +271,7 @@ func (h *AutonomousHandle) Resume() error {
 // If the loop is paused when Stop is called, the ctx cancellation
 // unblocks the BeforeTurn hook (which selects on both pauseCh and
 // ctx.Done) so the goroutine can exit.
-func (h *AutonomousHandle) Stop() error {
+func (h *Handle) Stop() error {
 	if !h.stopCalled.CompareAndSwap(false, true) {
 		return nil
 	}
@@ -290,20 +290,20 @@ func (h *AutonomousHandle) Stop() error {
 // turn drains the inbox and prepends an "[Inbox]" block to the
 // prompt the model sees. Returns an error when called before the
 // goroutine has constructed the agent (typically a fraction of a
-// second after StartAutonomous returns) or after the agent is
+// second after Start returns) or after the agent is
 // inaccessible.
-func (h *AutonomousHandle) Inject(message string) error {
+func (h *Handle) Inject(message string) error {
 	return h.InjectAs(message, auth.Caller{})
 }
 
 // InjectAs is Inject with a per-message originator identity (see
 // Agent.InjectAs). Same lifecycle rules as Inject.
-func (h *AutonomousHandle) InjectAs(message string, caller auth.Caller) error {
+func (h *Handle) InjectAs(message string, caller auth.Caller) error {
 	h.mu.Lock()
 	a := h.agent
 	h.mu.Unlock()
 	if a == nil {
-		return errors.New("agent: AutonomousHandle.Inject: agent not yet constructed")
+		return errors.New("agent: Handle.Inject: agent not yet constructed")
 	}
 	return a.InjectAs(message, caller)
 }
@@ -314,7 +314,7 @@ func (h *AutonomousHandle) InjectAs(message string, caller auth.Caller) error {
 // internally, so this is for the alert-arrival case (or any other
 // signal that doesn't carry a message). No-op when the agent hasn't
 // been constructed yet.
-func (h *AutonomousHandle) RequestWake() {
+func (h *Handle) RequestWake() {
 	h.mu.Lock()
 	a := h.agent
 	h.mu.Unlock()
@@ -326,17 +326,17 @@ func (h *AutonomousHandle) RequestWake() {
 
 // Status returns the current lifecycle state. Safe to call any time;
 // the goroutine's terminal handoff is mutex-coordinated.
-func (h *AutonomousHandle) Status() AutonomousStatus {
+func (h *Handle) Status() AutonomousStatus {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.status
 }
 
 // Wait blocks until the autonomous goroutine exits, then returns
-// the same RunResult + error pair RunAutonomous returns. Safe to
+// the same RunResult + error pair Run returns. Safe to
 // call from multiple goroutines; the result + err are set under the
 // mutex once before the done channel closes.
-func (h *AutonomousHandle) Wait() (RunResult, error) {
+func (h *Handle) Wait() (RunResult, error) {
 	<-h.done
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -350,7 +350,7 @@ func (h *AutonomousHandle) Wait() (RunResult, error) {
 // Done returns the channel that closes when the autonomous
 // goroutine exits. Useful when a caller wants to combine the wait
 // with other selects (e.g. ctx + Done).
-func (h *AutonomousHandle) Done() <-chan struct{} { return h.done }
+func (h *Handle) Done() <-chan struct{} { return h.done }
 
 // Ready returns a channel that closes once the underlying agent has
 // been constructed (i.e. the wrappedBuild closure inside the
@@ -360,4 +360,4 @@ func (h *AutonomousHandle) Done() <-chan struct{} { return h.done }
 // watchers) should wait on Ready before issuing those calls. May
 // already be closed by the time Ready returns — the select-on-Ready
 // pattern handles both cases naturally.
-func (h *AutonomousHandle) Ready() <-chan struct{} { return h.ready }
+func (h *Handle) Ready() <-chan struct{} { return h.ready }

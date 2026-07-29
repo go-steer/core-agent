@@ -29,13 +29,13 @@ import (
 )
 
 // ResumeBuildFunc is the agent constructor accepted by
-// ResumeAutonomous. It mirrors RunAutonomous's BuildFunc signature
+// Resume. It mirrors Run's BuildFunc signature
 // but adds the sessionID the new agent must adopt — implementations
 // pass it to agent.WithSession so the constructed agent reuses the
 // session being resumed.
 type ResumeBuildFunc func(extras []tool.Tool, sessionID string) (*agent.Agent, error)
 
-// SessionRef identifies the session ResumeAutonomous resumes from.
+// SessionRef identifies the session Resume resumes from.
 // Handle supplies both the eventlog.Stream (used to find the latest
 // checkpoint) and the session.Service (used by the constructed
 // agent for live event reads + writes).
@@ -46,7 +46,7 @@ type SessionRef struct {
 	SessionID string
 }
 
-// ResumeAutonomous reads the most recent checkpoint event from the
+// Resume reads the most recent checkpoint event from the
 // session's event log, reconstructs RunResult totals, and continues
 // the run from the next turn. The build function receives the
 // resumed sessionID so the constructed agent rejoins the same
@@ -54,26 +54,26 @@ type SessionRef struct {
 //
 // Behavior:
 //   - Acquires an exclusive SessionLock on (App, User, Session). A
-//     concurrent ResumeAutonomous on the same session returns
+//     concurrent Resume on the same session returns
 //     ErrSessionLocked from eventlog.
 //   - If the session has no checkpoint events at all, the run starts
 //     from turn 0 with whatever event history the session already
 //     holds — "make this existing session autonomous from here" is
 //     a valid use case.
 //   - If the latest checkpoint has stop_reason set (terminal state),
-//     ResumeAutonomous returns that state immediately without
+//     Resume returns that state immediately without
 //     constructing the agent or running any turns.
 //   - Otherwise, the loop continues with prompt =
 //     checkpoint.ContinuationPrompt; budgets carry forward.
-func ResumeAutonomous(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...AutonomousOption) (RunResult, error) {
+func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...Option) (RunResult, error) {
 	if build == nil {
-		return RunResult{}, errors.New("agent: ResumeAutonomous: build is required")
+		return RunResult{}, errors.New("agent: Resume: build is required")
 	}
 	if ref.Handle == nil {
-		return RunResult{}, errors.New("agent: ResumeAutonomous: SessionRef.Handle is required")
+		return RunResult{}, errors.New("agent: Resume: SessionRef.Handle is required")
 	}
 	if strings.TrimSpace(ref.SessionID) == "" {
-		return RunResult{}, errors.New("agent: ResumeAutonomous: SessionRef.SessionID is required")
+		return RunResult{}, errors.New("agent: Resume: SessionRef.SessionID is required")
 	}
 	cfg := defaultAutoConfig()
 	for _, opt := range opts {
@@ -90,7 +90,7 @@ func ResumeAutonomous(ctx context.Context, build ResumeBuildFunc, ref SessionRef
 	// same session.
 	lock, err := ref.Handle.AcquireLock(ctx, ref.AppName, ref.UserID, ref.SessionID)
 	if err != nil {
-		return RunResult{}, fmt.Errorf("agent: ResumeAutonomous: %w", err)
+		return RunResult{}, fmt.Errorf("agent: Resume: %w", err)
 	}
 	defer func() { _ = lock.Release() }()
 
@@ -99,7 +99,7 @@ func ResumeAutonomous(ctx context.Context, build ResumeBuildFunc, ref SessionRef
 	// ax-agent) work.
 	latest, found, err := loadLatestCheckpoint(ctx, ref)
 	if err != nil {
-		return RunResult{}, fmt.Errorf("agent: ResumeAutonomous: %w", err)
+		return RunResult{}, fmt.Errorf("agent: Resume: %w", err)
 	}
 
 	// Terminal-state short-circuit: only StopReasonCompleted is
@@ -129,7 +129,7 @@ func ResumeAutonomous(ctx context.Context, build ResumeBuildFunc, ref SessionRef
 		prompt = latest.ContinuationPrompt
 	}
 
-	// Done-tool registration mirrors RunAutonomous so the model has
+	// Done-tool registration mirrors Run so the model has
 	// the same termination gesture available on resume.
 	doneCh := make(chan string, 1)
 	doneTool, err := coretools.NewLifecycleTool(coretools.LifecycleOptions{
@@ -145,7 +145,7 @@ func ResumeAutonomous(ctx context.Context, build ResumeBuildFunc, ref SessionRef
 		},
 	})
 	if err != nil {
-		return RunResult{}, fmt.Errorf("agent: ResumeAutonomous: build done tool: %w", err)
+		return RunResult{}, fmt.Errorf("agent: Resume: build done tool: %w", err)
 	}
 
 	extras := []tool.Tool{doneTool}
@@ -157,7 +157,7 @@ func ResumeAutonomous(ctx context.Context, build ResumeBuildFunc, ref SessionRef
 			MaxDefer:    cfg.scheduleToolMaxDefer,
 		})
 		if err != nil {
-			return RunResult{}, fmt.Errorf("agent: ResumeAutonomous: build schedule tool: %w", err)
+			return RunResult{}, fmt.Errorf("agent: Resume: build schedule tool: %w", err)
 		}
 		extras = append(extras, schTool)
 		scheduleCh = ch
@@ -165,10 +165,10 @@ func ResumeAutonomous(ctx context.Context, build ResumeBuildFunc, ref SessionRef
 
 	a, err := build(extras, ref.SessionID)
 	if err != nil {
-		return RunResult{}, fmt.Errorf("agent: ResumeAutonomous: build agent: %w", err)
+		return RunResult{}, fmt.Errorf("agent: Resume: build agent: %w", err)
 	}
 	if a == nil {
-		return RunResult{}, errors.New("agent: ResumeAutonomous: build returned nil agent")
+		return RunResult{}, errors.New("agent: Resume: build returned nil agent")
 	}
 
 	// If the latest checkpoint is a deferred-state checkpoint, honor
@@ -313,7 +313,7 @@ func ResumeAutonomous(ctx context.Context, build ResumeBuildFunc, ref SessionRef
 			break
 		}
 
-		// Schedule emission — same wiring as RunAutonomous so a
+		// Schedule emission — same wiring as Run so a
 		// resumed daemon continues honoring schedule_next_turn calls
 		// across restarts.
 		if turnRes.scheduleSignaled && cfg.scheduler != nil {
@@ -348,7 +348,7 @@ func ResumeAutonomous(ctx context.Context, build ResumeBuildFunc, ref SessionRef
 				result.Reason = StopReasonRetryAborted
 				result.Duration = time.Since(startedAt)
 				emitFinalCheckpoint(StopReasonRetryAborted)
-				return result, fmt.Errorf("agent: ResumeAutonomous: scheduler: %w", serr)
+				return result, fmt.Errorf("agent: Resume: scheduler: %w", serr)
 			}
 		}
 

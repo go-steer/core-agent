@@ -3,14 +3,14 @@ title: Autonomous runs
 ---
 
 
-`autonomous.RunAutonomous` is the multi-turn driver for unattended workers — batch jobs, CI tasks, scheduled scripts, anything that needs to keep working after a single `agent.Run` turn would have ended. It loops `agent.Run` against a goal, enforces run-level budgets, and stops when the model signals "done" via an internal lifecycle tool.
+`autonomous.Run` is the multi-turn driver for unattended workers — batch jobs, CI tasks, scheduled scripts, anything that needs to keep working after a single `agent.Run` turn would have ended. It loops `agent.Run` against a goal, enforces run-level budgets, and stops when the model signals "done" via an internal lifecycle tool.
 
 Two senses of "autonomous" matter here:
 
 | Sense | Driver | When to reach for it |
 |---|---|---|
 | **Within one turn** | `agent.Run` already loops the model through tool-call cycles until a final response | Single self-contained tasks: "find every TODO in the repo and write a list" |
-| **Across turns** | `autonomous.RunAutonomous` loops `agent.Run` against a goal | Long-running work the model decomposes into multiple turns |
+| **Across turns** | `autonomous.Run` loops `agent.Run` against a goal | Long-running work the model decomposes into multiple turns |
 
 This page covers across-turn autonomy. For the within-turn case, see [Library API → Streaming events](/embed/api/#streaming-events-to-a-chat-like-ui).
 
@@ -36,7 +36,7 @@ build := func(extras []adktool.Tool) (*agent.Agent, error) {
     )
 }
 
-res, err := autonomous.RunAutonomous(ctx, build,
+res, err := autonomous.Run(ctx, build,
     "find every TODO comment and write a tracking doc",
     autonomous.WithMaxTurns(20),
     autonomous.WithMaxWallclock(10*time.Minute),
@@ -130,7 +130,7 @@ The bundled prompters cover the common shapes:
 
 ## Crash-resume
 
-When the agent is wired with `WithEventLog`, `RunAutonomous` emits a checkpoint event after every turn (and a final checkpoint with `stop_reason` on loop exit). A later `ResumeAutonomous` call against the same session walks the event log, re-derives the run totals from the latest checkpoint, and continues from the next turn.
+When the agent is wired with `WithEventLog`, `autonomous.Run` emits a checkpoint event after every turn (and a final checkpoint with `stop_reason` on loop exit). A later `autonomous.Resume` call against the same session walks the event log, re-derives the run totals from the latest checkpoint, and continues from the next turn.
 
 ```go
 import (
@@ -144,12 +144,12 @@ handle, _ := eventlog.Open(ctx, sqlite.Open("/path/to/sessions.db"))
 defer handle.Close()
 
 // Phase 1: original run, capped at 5 turns.
-res1, _ := autonomous.RunAutonomous(ctx, build, "the goal",
+res1, _ := autonomous.Run(ctx, build, "the goal",
     autonomous.WithMaxTurns(5))
 // ... process exits, machine reboots, whatever ...
 
 // Phase 2: pick up where Phase 1 left off.
-res2, _ := autonomous.ResumeAutonomous(ctx, resumeBuild,
+res2, _ := autonomous.Resume(ctx, resumeBuild,
     autonomous.SessionRef{
         Handle:    handle,
         AppName:   "my-app",
@@ -159,7 +159,7 @@ res2, _ := autonomous.ResumeAutonomous(ctx, resumeBuild,
     autonomous.WithMaxTurns(20))
 ```
 
-`ResumeBuildFunc` differs from `RunAutonomous`'s `BuildFunc` in one detail — it receives the resumed session ID so the constructed agent rejoins the same session via `agent.WithSession`:
+`ResumeBuildFunc` differs from `autonomous.Run`'s `BuildFunc` in one detail — it receives the resumed session ID so the constructed agent rejoins the same session via `agent.WithSession`:
 
 ```go
 resumeBuild := func(extras []adktool.Tool, sess string) (*agent.Agent, error) {
@@ -178,7 +178,7 @@ Behavior worth knowing:
 - **No-checkpoint = turn-0 start.** A session with no `/autonomous`-suffix checkpoints is treated as a fresh start. "Take this existing conversation and make it autonomous from here" is a valid use.
 - **Cross-binary resume.** Checkpoints carry `Author = "<binary>/autonomous"` (from `os.Executable()`). Discovery filters by the `/autonomous` suffix so a run started under `core-agent` can be resumed under `scion-agent` or `ax-agent` without losing its trail.
 - **Budgets carry forward.** `WithMaxTurns(3)` on resume against a session that already used 3 turns fires the pre-turn budget check immediately. Pass a higher budget to extend.
-- **Session lock.** `ResumeAutonomous` takes an exclusive lease on `(AppName, UserID, SessionID)` for its lifetime; concurrent attempts return `eventlog.ErrSessionLocked` with the holder identifier in the error message. See [Sessions → Session lock](/concepts/sessions/#session-lock).
+- **Session lock.** `autonomous.Resume` takes an exclusive lease on `(AppName, UserID, SessionID)` for its lifetime; concurrent attempts return `eventlog.ErrSessionLocked` with the holder identifier in the error message. See [Sessions → Session lock](/concepts/sessions/#session-lock).
 
 `examples/autonomous-resume/` runs end-to-end with no credentials — uses the scripted mock provider, drives a Phase 1 run capped at 2 turns, then a Phase 2 resume that completes the task.
 
@@ -237,7 +237,7 @@ build := func(extras []adktool.Tool) (*agent.Agent, error) {
 }
 ```
 
-To test the loop without burning quota, drive `RunAutonomous` against a `mock.NewScripted(...)` model. `examples/autonomous/` runs end-to-end this way with no credentials.
+To test the loop without burning quota, drive `autonomous.Run` against a `mock.NewScripted(...)` model. `examples/autonomous/` runs end-to-end this way with no credentials.
 
 ---
 

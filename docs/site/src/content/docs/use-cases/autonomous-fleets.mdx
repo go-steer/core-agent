@@ -20,7 +20,7 @@ Every autonomous fleet has four moving parts:
    with `Since(seq)` replay and `Watch(seq)` live tail. Survives
    crashes; an operator can attach mid-run and see history.
 3. **Lifecycle tool.** The model calls `lifecycle` to declare done,
-   blocked, or asking-for-input. `RunAutonomous` translates those
+   blocked, or asking-for-input. `autonomous.Run` translates those
    into loop exits or waits.
 4. **Failure policy.** What happens on transient errors, gate
    rejections, budget trips. Configurable — retry, escalate, give up.

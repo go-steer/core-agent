@@ -76,7 +76,7 @@ func (p checkpointPayload) toMap() map[string]any {
 	return m
 }
 
-// checkpointFromMap is the inverse — used by ResumeAutonomous to
+// checkpointFromMap is the inverse — used by Resume to
 // rehydrate the payload from a loaded session.Event. Defensively
 // handles type drift (e.g. JSON round-trip turning ints into
 // float64s).
@@ -219,7 +219,7 @@ func emitCheckpoint(ctx context.Context, a *agent.Agent, payload checkpointPaylo
 
 // emitNoteEvent writes a short text event to the agent's session
 // service, authored by the autonomous binary, with a `kind` field on
-// CustomMetadata for filtering. Used by AutonomousHandle to record
+// CustomMetadata for filtering. Used by Handle to record
 // Pause and Resume events for audit. Same no-op-on-no-eventlog +
 // session-create-on-first-write semantics as emitCheckpoint.
 //

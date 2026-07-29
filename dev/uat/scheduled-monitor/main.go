@@ -306,7 +306,7 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 
 	go logHeartbeat(ctx, mgr)
 
-	autoOpts := []autonomous.AutonomousOption{
+	autoOpts := []autonomous.Option{
 		autonomous.WithMaxWallclock(maxWC),
 		autonomous.WithMaxTurns(maxT),
 		autonomous.WithMaxDefer(maxDef),
@@ -332,13 +332,13 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 		runErr error
 	)
 	if resumeFlag {
-		result, runErr = autonomous.ResumeAutonomous(ctx, resumeBuild,
+		result, runErr = autonomous.Resume(ctx, resumeBuild,
 			autonomous.SessionRef{Handle: handle, AppName: appName, UserID: userID, SessionID: sessID},
 			autoOpts...)
 	} else {
-		handle, err := autonomous.StartAutonomous(ctx, build, goal, autoOpts...)
+		handle, err := autonomous.Start(ctx, build, goal, autoOpts...)
 		if err != nil {
-			return fmt.Errorf("StartAutonomous: %w", err)
+			return fmt.Errorf("autonomous.Start: %w", err)
 		}
 
 		// Wake the supervisor on every alert. mgr.OnAlert runs

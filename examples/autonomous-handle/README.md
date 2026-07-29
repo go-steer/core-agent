@@ -2,7 +2,7 @@
 
 ## What this shows
 
-The `AutonomousHandle` control API: `autonomous.StartAutonomous`
+The `autonomous.Handle` control API: `autonomous.Start`
 launches the loop on a goroutine and returns a handle you steer from
 outside. The example pauses the run mid-flight, queues a message with
 `Inject` (it lands on the next turn's prompt as an `[Inbox]` block),
@@ -25,15 +25,15 @@ Takes a couple of seconds (three 400 ms echo turns plus the pause).
 
 ## Key APIs
 
-- `autonomous.StartAutonomous` — `github.com/go-steer/core-agent/v2/pkg/agent/autonomous`
-- `AutonomousHandle.Pause` / `.Resume` / `.Inject` / `.Wait` / `.Stop` / `.Status`
+- `autonomous.Start` — `github.com/go-steer/core-agent/v2/pkg/agent/autonomous`
+- `autonomous.Handle.Pause` / `.Resume` / `.Inject` / `.Wait` / `.Stop` / `.Status`
 - `autonomous.WithMaxTurns` / `autonomous.WithMaxWallclock` — run budgets
 - `mock.NewEcho` — `github.com/go-steer/core-agent/v2/pkg/models/mock`
 
 ## What you should see
 
 ```
-== StartAutonomous ==
+== autonomous.Start ==
   status: running
 == Pause ==
   status: paused
@@ -53,6 +53,6 @@ Takes a couple of seconds (three 400 ms echo turns plus the pause).
 
 ## Next
 
-- [`autonomous`](../autonomous/) — the blocking `RunAutonomous` form and the `report_done` gesture.
+- [`autonomous`](../autonomous/) — the blocking `autonomous.Run` form and the `report_done` gesture.
 - [`autonomous-resume`](../autonomous-resume/) — durable checkpoints + resume across processes.
 - API reference: [`docs/site/src/content/docs/embed/api.md`](../../docs/site/src/content/docs/embed/api.md)

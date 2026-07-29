@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Example: drive an agent through autonomous.RunAutonomous, simulate a
+// Example: drive an agent through autonomous.Run, simulate a
 // crash via a tight max-turns budget, then continue the run with
-// autonomous.ResumeAutonomous against the same SQLite event log.
+// autonomous.Resume against the same SQLite event log.
 //
 //	go run ./examples/autonomous-resume
 //
@@ -23,7 +23,7 @@
 // What this demonstrates end-to-end:
 //
 //   - Per-turn checkpoint events emitted into a durable event log.
-//   - ResumeAutonomous picking up where the prior run stopped, with
+//   - autonomous.Resume picking up where the prior run stopped, with
 //     turn count + token totals carried forward.
 //   - The session lock primitive (acquired automatically) preventing
 //     two simultaneous resumers from clobbering each other.
@@ -54,7 +54,7 @@ const firstScript = `{"request":{"Contents":[{"parts":[{"text":"work the problem
 `
 
 // resumeScript: one turn that calls report_done, then the post-tool
-// follow-up. ResumeAutonomous walks the event log, finds the latest
+// follow-up. autonomous.Resume walks the event log, finds the latest
 // (non-terminal) checkpoint, picks up where it left off.
 const resumeScript = `{"request":{"Contents":[{"parts":[{"text":"continue"}],"role":"user"}]},"responses":[{"Content":{"parts":[{"functionCall":{"name":"report_done","args":{"state":"done","detail":"resumed and finished"}}}],"role":"model"},"TurnComplete":true,"FinishReason":"STOP"}]}
 {"request":{"Contents":[{"parts":[{"text":"continue"}],"role":"user"}]},"responses":[{"Content":{"parts":[{"text":"All done after resume."}],"role":"model"},"TurnComplete":true,"FinishReason":"STOP"}]}
@@ -98,8 +98,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	fmt.Println("== Phase 1: RunAutonomous with MaxTurns(2) ==")
-	res1, err := autonomous.RunAutonomous(ctx,
+	fmt.Println("== Phase 1: autonomous.Run with MaxTurns(2) ==")
+	res1, err := autonomous.Run(ctx,
 		func(extras []adktool.Tool) (*agent.Agent, error) {
 			return agent.New(llm1,
 				agent.WithAppName(appName),
@@ -113,7 +113,7 @@ func run() error {
 		autonomous.WithMaxTurns(2),
 	)
 	if err != nil {
-		return fmt.Errorf("first RunAutonomous: %v", err)
+		return fmt.Errorf("first autonomous.Run: %v", err)
 	}
 	printResult("Phase 1", res1)
 
@@ -127,8 +127,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	fmt.Println("== Phase 2: ResumeAutonomous picks up at the next turn ==")
-	res2, err := autonomous.ResumeAutonomous(ctx,
+	fmt.Println("== Phase 2: autonomous.Resume picks up at the next turn ==")
+	res2, err := autonomous.Resume(ctx,
 		func(extras []adktool.Tool, sess string) (*agent.Agent, error) {
 			return agent.New(llm2,
 				agent.WithAppName(appName),
@@ -147,7 +147,7 @@ func run() error {
 		autonomous.WithMaxTurns(10),
 	)
 	if err != nil {
-		return fmt.Errorf("ResumeAutonomous: %v", err)
+		return fmt.Errorf("autonomous.Resume: %v", err)
 	}
 	printResult("Phase 2", res2)
 

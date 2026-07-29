@@ -23,7 +23,7 @@ What doesn't fit autonomous mode: anything that needs real-time operator judgmen
 - Completed [Getting started](/run/getting-started/) — provider credentials work, `core-agent -p "hello"` returns a response.
 - Understand the four customization layers from [Interactive quickstart](/run/interactive/quickstart/) — `config.json`, `AGENTS.md`, skills, MCP. Autonomous mode uses the same files.
 
-This page works in a Go project (you'll write a small `main.go` to drive the agent). For autonomous use you call `autonomous.RunAutonomous` from your own code — it's not a CLI subcommand of `core-agent`.
+This page works in a Go project (you'll write a small `main.go` to drive the agent). For autonomous use you call `autonomous.Run` from your own code — it's not a CLI subcommand of `core-agent`.
 
 ---
 
@@ -72,7 +72,7 @@ func main() {
         log.Fatalf("get model: %v", err)
     }
 
-    res, err := autonomous.RunAutonomous(ctx, model,
+    res, err := autonomous.Run(ctx, model,
         "Watch deployment myapp in namespace prod for the next hour. "+
         "Every ~10 minutes, fetch its rollout status, pod conditions, "+
         "and recent events. Post a concise summary when anything looks "+
@@ -102,7 +102,7 @@ func main() {
 
 - Resolves the provider from `.agents/config.json` (same as the CLI does)
 - Constructs a model handle
-- Calls `autonomous.RunAutonomous` with a goal + four budget caps
+- Calls `autonomous.Run` with a goal + four budget caps
 - Logs the stop reason and totals when the run finishes
 
 **Budget semantics:**
@@ -213,7 +213,7 @@ core-agent --session-db --session-db-path=/tmp/watch-deploy.db &
 sqlite3 /tmp/watch-deploy.db "SELECT seq, author, json_extract(payload,'$.text') FROM agent_eventlog ORDER BY seq DESC LIMIT 20;"
 ```
 
-Every turn, every tool call, and every model response is appended to the durable event log. If the process crashes mid-turn, you can resume the same session via `ResumeAutonomous` and the agent picks up where it left off. See [Sessions and event log](/concepts/sessions/).
+Every turn, every tool call, and every model response is appended to the durable event log. If the process crashes mid-turn, you can resume the same session via `autonomous.Resume` and the agent picks up where it left off. See [Sessions and event log](/concepts/sessions/).
 
 ---
 
@@ -224,4 +224,4 @@ Every turn, every tool call, and every model response is appended to the durable
 - **[Context management](/concepts/context-management/)** — compaction + checkpoints make long unattended runs viable
 - **[Sessions and event log](/concepts/sessions/)** — durable storage, replay, live tail, crash-resume
 - **[Attach mode TUI](/reference/attach-tui/)** — let an operator drop into an unattended agent mid-run
-- **[Library API → Autonomous runs](/embed/api/#autonomous-runs)** — full `RunAutonomous` reference + every option function
+- **[Library API → Autonomous runs](/embed/api/#autonomous-runs)** — full `autonomous.Run` reference + every option function

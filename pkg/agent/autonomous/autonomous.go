@@ -31,7 +31,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
-// RunAutonomous drives a multi-turn loop against an Agent built by
+// Run drives a multi-turn loop against an Agent built by
 // build, sending goal as the first prompt and a continuation prompt
 // thereafter, until one of the stop conditions fires. Returns a
 // RunResult describing why it stopped and the totals it accumulated,
@@ -48,12 +48,12 @@ import (
 // caller-supplied Agent (which would race with concurrent runs) and
 // keeps agent.New's surface free of "extra tools" plumbing that only
 // matters here.
-func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*agent.Agent, error), goal string, opts ...AutonomousOption) (RunResult, error) {
+func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (RunResult, error) {
 	if build == nil {
-		return RunResult{}, fmt.Errorf("agent: RunAutonomous: build is required")
+		return RunResult{}, fmt.Errorf("agent: Run: build is required")
 	}
 	if strings.TrimSpace(goal) == "" {
-		return RunResult{}, fmt.Errorf("agent: RunAutonomous: goal is required")
+		return RunResult{}, fmt.Errorf("agent: Run: goal is required")
 	}
 	cfg := defaultAutoConfig()
 	for _, opt := range opts {
@@ -70,7 +70,7 @@ func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*age
 	if cfg.permissionsGate != nil {
 		g := cfg.permissionsGate
 		if g.Mode() == permissions.ModeAsk && !g.HasPrompter() {
-			return RunResult{}, fmt.Errorf("agent: RunAutonomous: permissions gate is in ask-mode with no Prompter; would deadlock on first tool call (use ModeYolo / ModeAllow for unattended runs, or wire a Prompter)")
+			return RunResult{}, fmt.Errorf("agent: Run: permissions gate is in ask-mode with no Prompter; would deadlock on first tool call (use ModeYolo / ModeAllow for unattended runs, or wire a Prompter)")
 		}
 	}
 
@@ -90,7 +90,7 @@ func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*age
 		},
 	})
 	if err != nil {
-		return RunResult{}, fmt.Errorf("agent: RunAutonomous: build done tool: %w", err)
+		return RunResult{}, fmt.Errorf("agent: Run: build done tool: %w", err)
 	}
 
 	// Optional schedule tool: only wired when a Scheduler is installed
@@ -106,7 +106,7 @@ func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*age
 			MaxDefer:    cfg.scheduleToolMaxDefer,
 		})
 		if err != nil {
-			return RunResult{}, fmt.Errorf("agent: RunAutonomous: build schedule tool: %w", err)
+			return RunResult{}, fmt.Errorf("agent: Run: build schedule tool: %w", err)
 		}
 		extras = append(extras, schTool)
 		scheduleCh = ch
@@ -114,10 +114,10 @@ func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*age
 
 	a, err := build(extras)
 	if err != nil {
-		return RunResult{}, fmt.Errorf("agent: RunAutonomous: build agent: %w", err)
+		return RunResult{}, fmt.Errorf("agent: Run: build agent: %w", err)
 	}
 	if a == nil {
-		return RunResult{}, fmt.Errorf("agent: RunAutonomous: build returned nil agent")
+		return RunResult{}, fmt.Errorf("agent: Run: build returned nil agent")
 	}
 
 	startedAt := time.Now()
@@ -176,7 +176,7 @@ func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*age
 			return result, err
 		}
 
-		// BeforeTurn hook (used by AutonomousHandle to implement
+		// BeforeTurn hook (used by Handle to implement
 		// Pause). Runs after budget + ctx checks; may block (e.g.
 		// pause waits for resume) and may return an error to abort.
 		if cfg.beforeTurn != nil {
@@ -272,7 +272,7 @@ func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*age
 			if cfg.maxDefer > 0 {
 				ceiling := time.Now().Add(cfg.maxDefer)
 				if ev.WakeAt.After(ceiling) {
-					log.Printf("agent: RunAutonomous: clamping scheduler wake-time from %s to driver MaxDefer ceiling %s (max_defer=%s)",
+					log.Printf("agent: Run: clamping scheduler wake-time from %s to driver MaxDefer ceiling %s (max_defer=%s)",
 						ev.WakeAt.Format(time.RFC3339), ceiling.Format(time.RFC3339), cfg.maxDefer)
 					ev.WakeAt = ceiling
 				}
@@ -302,7 +302,7 @@ func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*age
 			case errors.Is(serr, coretools.ErrSchedulerDefer):
 				// Orchestrator-managed exit: the process should end
 				// cleanly with the wake-time persisted to the eventlog
-				// for ResumeAutonomous to pick up. break out of the
+				// for Resume to pick up. break out of the
 				// for-select via the labeled break below.
 				result.Reason = StopReasonDeferred
 				result.NextWakeAt = ev.WakeAt
@@ -317,12 +317,12 @@ func RunAutonomous(ctx context.Context, build func(extraTools []tool.Tool) (*age
 				result.Reason = StopReasonRetryAborted
 				result.Duration = time.Since(startedAt)
 				emitFinalCheckpoint(StopReasonRetryAborted)
-				return result, fmt.Errorf("agent: RunAutonomous: scheduler: %w", serr)
+				return result, fmt.Errorf("agent: Run: scheduler: %w", serr)
 			}
 		}
 
 		// Per-turn checkpoint after a clean (non-done, non-error)
-		// turn. Per-turn emission is the cursor ResumeAutonomous
+		// turn. Per-turn emission is the cursor Resume
 		// continues from; a no-checkpoint run can still resume from
 		// turn 0 if its session has events but no checkpoints.
 		_ = emitCheckpoint(ctx, a, perTurnCheckpoint(result, goal, cfg.continuationPrompt))
@@ -493,9 +493,9 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 	return out, nil
 }
 
-// AutonomousOption mutates RunAutonomous configuration. Use the With*
+// Option mutates Run configuration. Use the With*
 // helpers below.
-type AutonomousOption func(*autoConfig)
+type Option func(*autoConfig)
 
 type autoConfig struct {
 	maxTurns                int
@@ -535,13 +535,13 @@ func defaultAutoConfig() autoConfig {
 // WithMaxTurns caps the number of turns the loop will execute. Zero
 // disables the cap (use with caution; pair with another budget). The
 // default is 50.
-func WithMaxTurns(n int) AutonomousOption {
+func WithMaxTurns(n int) Option {
 	return func(c *autoConfig) { c.maxTurns = n }
 }
 
 // WithMaxTokens caps the cumulative input + output token totals for
 // the run. A zero value for either disables that side of the cap.
-func WithMaxTokens(input, output int) AutonomousOption {
+func WithMaxTokens(input, output int) Option {
 	return func(c *autoConfig) {
 		c.maxInputTokens = input
 		c.maxOutputTokens = output
@@ -551,28 +551,28 @@ func WithMaxTokens(input, output int) AutonomousOption {
 // WithMaxCost caps the cumulative dollar cost of the run. Requires a
 // non-zero pricing source — either WithTracker(tracker, pricing) or
 // the recorded UsageMetadata being priced via the same Pricing.
-func WithMaxCost(usd float64) AutonomousOption {
+func WithMaxCost(usd float64) Option {
 	return func(c *autoConfig) { c.maxCostUSD = usd }
 }
 
 // WithMaxWallclock caps the wall-clock duration of the run, measured
-// from RunAutonomous entry. Checked between turns; a single rogue turn
+// from Run entry. Checked between turns; a single rogue turn
 // can still exceed this — pair with WithPerTurnTimeout to bound that.
-func WithMaxWallclock(d time.Duration) AutonomousOption {
+func WithMaxWallclock(d time.Duration) Option {
 	return func(c *autoConfig) { c.maxWallclock = d }
 }
 
 // WithPerTurnTimeout wraps each turn's context with a timeout so a
 // single hung turn cannot stall the whole run. Distinct from
 // WithMaxWallclock, which bounds total time.
-func WithPerTurnTimeout(d time.Duration) AutonomousOption {
+func WithPerTurnTimeout(d time.Duration) Option {
 	return func(c *autoConfig) { c.perTurnTimeout = d }
 }
 
 // WithDoneToolName overrides the function name of the internal done
 // tool. Useful when "report_done" collides with an existing tool the
 // consumer has registered. Default: "report_done".
-func WithDoneToolName(name string) AutonomousOption {
+func WithDoneToolName(name string) Option {
 	return func(c *autoConfig) {
 		if name = strings.TrimSpace(name); name != "" {
 			c.doneToolName = name
@@ -584,7 +584,7 @@ func WithDoneToolName(name string) AutonomousOption {
 // model for the internal done tool. Override when the default prose
 // doesn't fit your task — for example to instruct the model to call
 // done only after writing a summary.
-func WithDoneToolDescription(desc string) AutonomousOption {
+func WithDoneToolDescription(desc string) Option {
 	return func(c *autoConfig) {
 		if desc = strings.TrimSpace(desc); desc != "" {
 			c.doneToolDescription = desc
@@ -595,7 +595,7 @@ func WithDoneToolDescription(desc string) AutonomousOption {
 // WithContinuationPrompt overrides the prompt sent on every turn
 // after the first. Default: "continue". Real consumers often pass
 // something more specific to their loop ("what's your next step?").
-func WithContinuationPrompt(s string) AutonomousOption {
+func WithContinuationPrompt(s string) Option {
 	return func(c *autoConfig) {
 		if s = strings.TrimSpace(s); s != "" {
 			c.continuationPrompt = s
@@ -610,7 +610,7 @@ func WithContinuationPrompt(s string) AutonomousOption {
 //
 // When omitted, RunResult still tracks tokens — but cost is zero
 // unless a non-zero Pricing is supplied via WithPricing.
-func WithTracker(t *usage.Tracker, p usage.Pricing) AutonomousOption {
+func WithTracker(t *usage.Tracker, p usage.Pricing) Option {
 	return func(c *autoConfig) {
 		c.tracker = t
 		c.pricing = p
@@ -620,14 +620,14 @@ func WithTracker(t *usage.Tracker, p usage.Pricing) AutonomousOption {
 // WithPricing sets the Pricing used for cost rollup when a
 // usage.Tracker is not supplied. Useful for headless runs that just
 // want a final dollar number on RunResult.
-func WithPricing(p usage.Pricing) AutonomousOption {
+func WithPricing(p usage.Pricing) Option {
 	return func(c *autoConfig) { c.pricing = p }
 }
 
 // WithProgress invokes cb for every session.Event observed during
 // the run. The turn index is the 1-based count of completed turns at
 // the time the event is emitted (always at least 1 inside a turn).
-func WithProgress(cb func(turn int, ev *session.Event)) AutonomousOption {
+func WithProgress(cb func(turn int, ev *session.Event)) Option {
 	return func(c *autoConfig) { c.progress = cb }
 }
 
@@ -635,7 +635,7 @@ func WithProgress(cb func(turn int, ev *session.Event)) AutonomousOption {
 // returns an error. The callback receives the error and the
 // 1-indexed attempt count and returns one of AbortRun, RetryTurn, or
 // SkipTurn. Without a policy, the driver aborts on the first error.
-func WithRetryPolicy(p RetryPolicy) AutonomousOption {
+func WithRetryPolicy(p RetryPolicy) Option {
 	return func(c *autoConfig) { c.retryPolicy = p }
 }
 
@@ -645,11 +645,11 @@ func WithRetryPolicy(p RetryPolicy) AutonomousOption {
 // turn number (1-based). Returning a non-nil error aborts the run
 // with that error.
 //
-// This is the seam AutonomousHandle uses to implement Pause: the
+// This is the seam Handle uses to implement Pause: the
 // callback blocks while paused, returning when Resume fires or the
 // run context is cancelled. Library callers can wire arbitrary
 // gating logic (rate limits, external approvals, etc.) on top.
-func WithBeforeTurn(cb func(ctx context.Context, turnNo int) error) AutonomousOption {
+func WithBeforeTurn(cb func(ctx context.Context, turnNo int) error) Option {
 	return func(c *autoConfig) { c.beforeTurn = cb }
 }
 
@@ -663,7 +663,7 @@ func WithBeforeTurn(cb func(ctx context.Context, turnNo int) error) AutonomousOp
 // Pass this when your build function constructs gated tools and your
 // permission mode might be ask. Omit it for ModeYolo / ModeAllow runs
 // where deadlock isn't a risk.
-func WithPermissionsGate(g *permissions.Gate) AutonomousOption {
+func WithPermissionsGate(g *permissions.Gate) Option {
 	return func(c *autoConfig) { c.permissionsGate = g }
 }
 
@@ -676,9 +676,9 @@ func WithPermissionsGate(g *permissions.Gate) AutonomousOption {
 // Bundled schedulers: tools.SleepScheduler() for long-lived daemons
 // (sleeps the goroutine between turns), tools.ExitOnDeferScheduler()
 // for orchestrator-managed deployments (exits with
-// StopReasonDeferred + RunResult.NextWakeAt populated, ResumeAutonomous
+// StopReasonDeferred + RunResult.NextWakeAt populated, Resume
 // picks up at the wake-time). See docs/scheduled-monitoring-design.md.
-func WithScheduler(s coretools.Scheduler) AutonomousOption {
+func WithScheduler(s coretools.Scheduler) Option {
 	return func(c *autoConfig) { c.scheduler = s }
 }
 
@@ -689,7 +689,7 @@ func WithScheduler(s coretools.Scheduler) AutonomousOption {
 // the driver clamps the wake-time and logs a warning, then proceeds
 // with the clamped value. The model-facing cap is configured via
 // WithScheduleToolMaxDefer.
-func WithMaxDefer(d time.Duration) AutonomousOption {
+func WithMaxDefer(d time.Duration) Option {
 	return func(c *autoConfig) { c.maxDefer = d }
 }
 
@@ -697,7 +697,7 @@ func WithMaxDefer(d time.Duration) AutonomousOption {
 // schedule tool. Useful when the default "schedule_next_turn" collides
 // with a consumer-registered tool. Only takes effect when WithScheduler
 // is also set.
-func WithScheduleToolName(name string) AutonomousOption {
+func WithScheduleToolName(name string) Option {
 	return func(c *autoConfig) {
 		if name = strings.TrimSpace(name); name != "" {
 			c.scheduleToolName = name
@@ -711,7 +711,7 @@ func WithScheduleToolName(name string) AutonomousOption {
 // reminder; override when domain-specific guidance is needed (e.g.
 // "always wake by the top of the hour"). Only takes effect when
 // WithScheduler is also set.
-func WithScheduleToolDescription(desc string) AutonomousOption {
+func WithScheduleToolDescription(desc string) Option {
 	return func(c *autoConfig) {
 		if desc = strings.TrimSpace(desc); desc != "" {
 			c.scheduleToolDescription = desc
@@ -724,11 +724,11 @@ func WithScheduleToolDescription(desc string) AutonomousOption {
 // error to the model so it can adapt. Zero means no cap. Distinct
 // from WithMaxDefer, which is the driver's silent safety net. Only
 // takes effect when WithScheduler is also set.
-func WithScheduleToolMaxDefer(d time.Duration) AutonomousOption {
+func WithScheduleToolMaxDefer(d time.Duration) Option {
 	return func(c *autoConfig) { c.scheduleToolMaxDefer = d }
 }
 
-// RetryPolicy decides what RunAutonomous does when a turn errors.
+// RetryPolicy decides what Run does when a turn errors.
 // The callback receives the error and the 1-indexed attempt count
 // (the first failure is attempt=1, second is attempt=2, etc.).
 type RetryPolicy func(turnErr error, attempt int) RetryDecision
@@ -746,7 +746,7 @@ const (
 	SkipTurn
 )
 
-// RunResult is the structured outcome of RunAutonomous.
+// RunResult is the structured outcome of Run.
 type RunResult struct {
 	// Reason explains why the loop stopped.
 	Reason StopReason
@@ -763,7 +763,7 @@ type RunResult struct {
 	// CostUSD is the cumulative dollar cost computed via the
 	// configured Pricing. Zero when pricing is zero.
 	CostUSD float64
-	// Duration is the wall-clock time from RunAutonomous entry to
+	// Duration is the wall-clock time from Run entry to
 	// loop exit.
 	Duration time.Duration
 	// DoneDetail is the detail string the model passed to the done
@@ -773,11 +773,11 @@ type RunResult struct {
 	// scheduler returned ErrSchedulerDefer and the loop exited
 	// cleanly with a wake-time persisted to the eventlog. Whatever
 	// orchestrator wraps the process restarts at or after this time
-	// and ResumeAutonomous picks up the deferred checkpoint.
+	// and Resume picks up the deferred checkpoint.
 	NextWakeAt time.Time
 }
 
-// StopReason explains why RunAutonomous returned.
+// StopReason explains why Run returned.
 type StopReason string
 
 const (
@@ -801,6 +801,6 @@ const (
 	// ErrSchedulerDefer in response to a schedule emission. The loop
 	// exited cleanly with RunResult.NextWakeAt populated; whatever
 	// orchestrator wraps the process restarts at or after the
-	// wake-time and ResumeAutonomous picks up.
+	// wake-time and Resume picks up.
 	StopReasonDeferred StopReason = "deferred"
 )

@@ -329,7 +329,7 @@ for entry, err := range handle.Stream.Watch(ctx, lastSeq,
 }
 ```
 
-Filter with `WithBranchPrefix(prefix)` to scope to a subagent subtree (subagent runners set `Branch`), `WithAuthor(name)` to find checkpoint events from `RunAutonomous`, or `WithLimit(n)` to cap the result set.
+Filter with `WithBranchPrefix(prefix)` to scope to a subagent subtree (subagent runners set `Branch`), `WithAuthor(name)` to find checkpoint events from `autonomous.Run`, or `WithLimit(n)` to cap the result set.
 
 ### Multi-driver
 
@@ -366,7 +366,7 @@ The bundled CLI wires this automatically when `--session-db` is combined with `-
 
 ### Session lock
 
-Both `RunAutonomous` (when its agent is wired with `WithEventLog`) and `ResumeAutonomous` acquire an exclusive lease on `(AppName, UserID, SessionID)` via `Handle.AcquireLock`. A heartbeat goroutine refreshes the lease every 5 seconds; a lease is considered stale after 30 seconds without a heartbeat and is automatically stolen by the next acquirer (recovers from crashed processes). Concurrent attempts on a fresh lease return `eventlog.ErrSessionLocked` with the holder identifier in the error message for diagnostics.
+Both `autonomous.Run` (when its agent is wired with `WithEventLog`) and `autonomous.Resume` acquire an exclusive lease on `(AppName, UserID, SessionID)` via `Handle.AcquireLock`. A heartbeat goroutine refreshes the lease every 5 seconds; a lease is considered stale after 30 seconds without a heartbeat and is automatically stolen by the next acquirer (recovers from crashed processes). Concurrent attempts on a fresh lease return `eventlog.ErrSessionLocked` with the holder identifier in the error message for diagnostics.
 
 The lock lives in its own `agent_run_lock` table in the same database; callers don't manage it directly.
 
@@ -374,7 +374,7 @@ The lock lives in its own `agent_run_lock` table in the same database; callers d
 
 ## Autonomous runs
 
-`autonomous.RunAutonomous` is a multi-turn driver for unattended workers — batch jobs, CI tasks, scheduled scripts. It loops `agent.Run` against a goal, enforces run-level budgets, and stops when the model signals "done" via an internal lifecycle tool.
+`autonomous.Run` is a multi-turn driver for unattended workers — batch jobs, CI tasks, scheduled scripts. It loops `agent.Run` against a goal, enforces run-level budgets, and stops when the model signals "done" via an internal lifecycle tool.
 
 ```go
 import (
@@ -394,7 +394,7 @@ build := func(extras []adktool.Tool) (*agent.Agent, error) {
     )
 }
 
-res, err := autonomous.RunAutonomous(ctx, build,
+res, err := autonomous.Run(ctx, build,
     "find every TODO comment and write a tracking doc",
     autonomous.WithMaxTurns(20),
     autonomous.WithMaxWallclock(10*time.Minute),
@@ -446,7 +446,7 @@ autonomous.WithRetryPolicy(func(err error, attempt int) autonomous.RetryDecision
 
 For unattended runs, use `permissions.ModeYolo` (or `ModeAllow` with an explicit allowlist) — `ModeAsk` would deadlock on the first tool call waiting for a human who isn't there. If you do use `ModeAsk`, wire a `permissions.Prompter` that fails fast (e.g. `tools.RefusePrompter` plus a custom prompter that just denies).
 
-When your `build` function constructs gated tools, pass the gate to `RunAutonomous` via `WithPermissionsGate(g)`. The driver does a single startup check — `Mode==ask && !HasPrompter` errors out before invoking `build`, so you don't burn an LLM round-trip discovering the misconfiguration. Runtime gating is still enforced by the tools themselves; `WithPermissionsGate` only enables the deadlock guard.
+When your `build` function constructs gated tools, pass the gate to `autonomous.Run` via `WithPermissionsGate(g)`. The driver does a single startup check — `Mode==ask && !HasPrompter` errors out before invoking `build`, so you don't burn an LLM round-trip discovering the misconfiguration. Runtime gating is still enforced by the tools themselves; `WithPermissionsGate` only enables the deadlock guard.
 
 ### Composition with recording and mock providers
 
@@ -459,11 +459,11 @@ build := func(extras []adktool.Tool) (*agent.Agent, error) {
 }
 ```
 
-To test the loop without burning quota, drive `RunAutonomous` against a `mock.NewScripted(...)` model. `examples/autonomous/` runs end-to-end this way with no credentials.
+To test the loop without burning quota, drive `autonomous.Run` against a `mock.NewScripted(...)` model. `examples/autonomous/` runs end-to-end this way with no credentials.
 
 ### Crash-resume
 
-When the agent is wired with `WithEventLog`, `RunAutonomous` emits a checkpoint event after every turn (and a final checkpoint with `stop_reason` on loop exit). A later `ResumeAutonomous` call against the same session walks the event log, re-derives the run totals from the latest checkpoint, and continues from the next turn.
+When the agent is wired with `WithEventLog`, `autonomous.Run` emits a checkpoint event after every turn (and a final checkpoint with `stop_reason` on loop exit). A later `autonomous.Resume` call against the same session walks the event log, re-derives the run totals from the latest checkpoint, and continues from the next turn.
 
 ```go
 import (
@@ -477,12 +477,12 @@ handle, _ := eventlog.Open(ctx, sqlite.Open("/path/to/sessions.db"))
 defer handle.Close()
 
 // Phase 1: original run, capped at 5 turns.
-res1, _ := autonomous.RunAutonomous(ctx, build, "the goal",
+res1, _ := autonomous.Run(ctx, build, "the goal",
     autonomous.WithMaxTurns(5))
 // ... process exits, machine reboots, whatever ...
 
 // Phase 2: pick up where Phase 1 left off.
-res2, _ := autonomous.ResumeAutonomous(ctx, resumeBuild,
+res2, _ := autonomous.Resume(ctx, resumeBuild,
     autonomous.SessionRef{
         Handle:    handle,
         AppName:   "my-app",
@@ -492,7 +492,7 @@ res2, _ := autonomous.ResumeAutonomous(ctx, resumeBuild,
     autonomous.WithMaxTurns(20)) // bigger budget; carries forward Phase 1's totals
 ```
 
-`ResumeBuildFunc` differs from `RunAutonomous`'s `BuildFunc` in one detail — it receives the resumed session ID so the constructed agent rejoins the same session via `agent.WithSession`:
+`ResumeBuildFunc` differs from `autonomous.Run`'s `BuildFunc` in one detail — it receives the resumed session ID so the constructed agent rejoins the same session via `agent.WithSession`:
 
 ```go
 resumeBuild := func(extras []adktool.Tool, sess string) (*agent.Agent, error) {
@@ -507,24 +507,24 @@ resumeBuild := func(extras []adktool.Tool, sess string) (*agent.Agent, error) {
 
 Behavior:
 
-- **Terminal-state short-circuit** — if the latest checkpoint has `stop_reason == "completed"` (the model called `report_done`), `ResumeAutonomous` returns the stored `RunResult` immediately without running any new turns. Other stop reasons (`max_turns_exceeded`, `wallclock_exceeded`, `context_cancelled`, etc.) are interruptions, not terminations — those resume normally with the carried-forward totals.
+- **Terminal-state short-circuit** — if the latest checkpoint has `stop_reason == "completed"` (the model called `report_done`), `autonomous.Resume` returns the stored `RunResult` immediately without running any new turns. Other stop reasons (`max_turns_exceeded`, `wallclock_exceeded`, `context_cancelled`, etc.) are interruptions, not terminations — those resume normally with the carried-forward totals.
 - **No-checkpoint case** — a session with no `/autonomous`-suffix checkpoint events is treated as a fresh start (turn 0). Useful for taking over an existing conversation: "make this session autonomous from here."
 - **Cross-binary resume** — the checkpoint author is `<binary>/autonomous` (e.g. `core-agent/autonomous`, `scion-agent/autonomous`). Discovery filters by the `/autonomous` suffix so a run started from one binary can be resumed from another.
-- **Budgets carry forward** — if the prior run accumulated 3 turns and the resume passes `WithMaxTurns(3)`, the pre-turn budget check fires immediately and `ResumeAutonomous` returns without running any new turns. Pass a higher budget to extend.
-- **Session lock** — `ResumeAutonomous` acquires the session lock (see "Durable sessions and audit log → Session lock"); concurrent attempts return `eventlog.ErrSessionLocked`.
+- **Budgets carry forward** — if the prior run accumulated 3 turns and the resume passes `WithMaxTurns(3)`, the pre-turn budget check fires immediately and `autonomous.Resume` returns without running any new turns. Pass a higher budget to extend.
+- **Session lock** — `autonomous.Resume` acquires the session lock (see "Durable sessions and audit log → Session lock"); concurrent attempts return `eventlog.ErrSessionLocked`.
 
 `examples/autonomous-resume/` runs end-to-end with no credentials — uses the scripted mock provider, drives a Phase 1 run capped at 2 turns, then a Phase 2 resume that completes the task.
 
 ### What's deferred
 
-- **Mid-turn Pause** — `AutonomousHandle.Pause` waits for the current turn to finish before honoring the pause. Mid-turn (cancel current LLM call and wait) needs more design and will ship with `Redirect` when a consumer hits the seam.
+- **Mid-turn Pause** — `autonomous.Handle.Pause` waits for the current turn to finish before honoring the pause. Mid-turn (cancel current LLM call and wait) needs more design and will ship with `Redirect` when a consumer hits the seam.
 - **Streaming structured results** — pass a `WithProgress` callback if you need per-event observation; richer shapes will land when a consumer asks.
 
 ---
 
 ## Soft interrupt and programmatic control (v1.3.0+)
 
-`autonomous.RunAutonomous` is synchronous and fire-and-forget. For harness embedding (Scion, custom orchestrators, anything that needs to push instructions to a running loop) two additional surfaces are available (since v1.3.0).
+`autonomous.Run` is synchronous and fire-and-forget. For harness embedding (Scion, custom orchestrators, anything that needs to push instructions to a running loop) two additional surfaces are available (since v1.3.0).
 
 ### `Agent.Inject(message)` — queue a message for the next turn
 
@@ -563,12 +563,12 @@ for {
 
 The bundled Scion adapter uses exactly this pattern — see `extras/scion-agent/main.go`.
 
-### `autonomous.StartAutonomous` + `AutonomousHandle`
+### `autonomous.Start` + `autonomous.Handle`
 
-Programmatic control over an autonomous run. `StartAutonomous` launches the loop in a goroutine and returns a handle:
+Programmatic control over an autonomous run. `autonomous.Start` launches the loop in a goroutine and returns a handle:
 
 ```go
-h, err := autonomous.StartAutonomous(ctx, build, "monitor cluster X",
+h, err := autonomous.Start(ctx, build, "monitor cluster X",
     autonomous.WithMaxTurns(0),                // no cap; we'll Stop manually
     autonomous.WithMaxWallclock(1*time.Hour),  // safety net
 )
@@ -594,16 +594,16 @@ result, err := h.Wait()
 | `Stop()` | Hard cancel via the run's `ctx.Cancel`. Current LLM call returns `Canceled`; loop exits. Idempotent; unblocks Pause too. |
 | `Inject(msg)` | Thin wrapper around the underlying `Agent.Inject`. |
 | `Status()` | `Running` / `Paused` / `Stopped` / `Completed` / `Failed`. |
-| `Wait()` | Block until the goroutine exits; returns the same `RunResult` + error pair `RunAutonomous` does. |
+| `Wait()` | Block until the goroutine exits; returns the same `RunResult` + error pair `autonomous.Run` does. |
 | `Done()` | Channel that closes when the goroutine exits, for select-style integration. |
 
-`RunAutonomous` keeps working unchanged — it's now a synchronous convenience that wraps `StartAutonomous(...).Wait()`.
+`autonomous.Run` keeps working unchanged — it's now a synchronous convenience that wraps `autonomous.Start(...).Wait()`.
 
 ### Custom BeforeTurn hook
 
-`autonomous.WithBeforeTurn(func(ctx, turnNo) error)` lets library callers gate the loop at the per-turn checkpoint. The hook runs after budget checks and before `runOneTurn`. Returning a non-nil error aborts the run. `AutonomousHandle.Pause` uses this internally; library callers can wire arbitrary gating (rate limits, external approvals) on top.
+`autonomous.WithBeforeTurn(func(ctx, turnNo) error)` lets library callers gate the loop at the per-turn checkpoint. The hook runs after budget checks and before `runOneTurn`. Returning a non-nil error aborts the run. `autonomous.Handle.Pause` uses this internally; library callers can wire arbitrary gating (rate limits, external approvals) on top.
 
-Heads-up: `StartAutonomous` appends its own BeforeTurn hook after the caller's options, so a user-supplied hook gets replaced. If you need both, chain them in your callback yourself for now.
+Heads-up: `autonomous.Start` appends its own BeforeTurn hook after the caller's options, so a user-supplied hook gets replaced. If you need both, chain them in your callback yourself for now.
 
 ### Pause semantics
 
@@ -611,7 +611,7 @@ The currently-running turn finishes before `Pause` takes effect — clean checkp
 
 ### Example
 
-`examples/autonomous-handle/` runs end-to-end with no credentials. Uses a thin slow-LLM wrapper around the echo mock so the Pause window is observable. Demonstrates the full lifecycle: `StartAutonomous` → `Pause` → `Inject` → `Resume` → `Wait`.
+`examples/autonomous-handle/` runs end-to-end with no credentials. Uses a thin slow-LLM wrapper around the echo mock so the Pause window is observable. Demonstrates the full lifecycle: `autonomous.Start` → `Pause` → `Inject` → `Resume` → `Wait`.
 
 ---
 
@@ -746,7 +746,7 @@ When a subagent calls `report_alert(text)`, the manager pushes an `Alert` onto a
 1. **Synchronous `OnAlert` hook** — for inline display in the parent's UI. The bundled CLI's REPL installs one that writes `↪ <from> alert: <text>` in magenta to stderr.
 2. **Pre-turn drain** — `Agent.Run` calls `mgr.PrependPendingAlerts(prompt)` before each turn, which drains every pending alert (non-blocking) and prepends them as a `[Background reports]` block to the prompt the model sees.
 
-Both consumers see every alert (the hook runs synchronously before the channel push). One-shot headless (`core-agent -p ...`) has no next turn so alerts arrive only in the eventlog and via the hook; REPL and `RunAutonomous` see them through both paths.
+Both consumers see every alert (the hook runs synchronously before the channel push). One-shot headless (`core-agent -p ...`) has no next turn so alerts arrive only in the eventlog and via the hook; REPL and `autonomous.Run` see them through both paths.
 
 ### Custom UI sinks
 

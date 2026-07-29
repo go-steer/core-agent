@@ -60,15 +60,15 @@ The standard built-in tools (`read_file`, `list_dir`, `bash`, …) wired into an
 
 ## Autonomous (headless) patterns
 
-Long-running agents driven by a goal rather than turn-by-turn operator prompts. All use `autonomous.RunAutonomous`.
+Long-running agents driven by a goal rather than turn-by-turn operator prompts. All use `autonomous.Run`.
 
 ### [`autonomous`](https://github.com/go-steer/core-agent/tree/main/examples/autonomous)
 
-End-to-end `autonomous.RunAutonomous` against the mock "scripted" provider. No LLM credentials needed. Shows the full Goal → cost-bounded loop → terminal-report shape.
+End-to-end `autonomous.Run` against the mock "scripted" provider. No LLM credentials needed. Shows the full Goal → cost-bounded loop → terminal-report shape.
 
 ### [`autonomous-handle`](https://github.com/go-steer/core-agent/tree/main/examples/autonomous-handle)
 
-Same as above plus the `AutonomousHandle` API — `Pause` / `Resume` / `Inject` / `Stop` an in-flight run from another goroutine. Pattern for "long task + operator can steer mid-run."
+Same as above plus the `autonomous.Handle` API — `Pause` / `Resume` / `Inject` / `Stop` an in-flight run from another goroutine. Pattern for "long task + operator can steer mid-run."
 
 ### [`autonomous-resume`](https://github.com/go-steer/core-agent/tree/main/examples/autonomous-resume)
 

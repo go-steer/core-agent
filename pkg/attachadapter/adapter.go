@@ -224,6 +224,53 @@ func (ad *Adapter) SetAttachEmitter(f func(eventType string, payload any)) {
 	ad.Agent().SetAttachEmitter(f)
 }
 
+// AttachCapabilities implements attach.CapabilityReporter (#490).
+// The adapter satisfies every optional capability interface
+// unconditionally (see the conformance block below), so interface
+// presence stopped signaling wiredness the moment the adapter became
+// the universal registration path — every session advertised
+// mcp/perms_stream/specialists and all five slash commands, and
+// remote UIs rendered dead affordances backed by empty payloads or
+// 501s. This report states what is actually wired:
+//
+//   - perms_stream ⇔ a prompt broker was supplied (WithPromptBroker);
+//   - mcp ⇔ an MCP snapshot fn was supplied (WithMCPProvider);
+//   - specialists / "subagent" ⇔ the agent carries a background
+//     manager (agent.WithBackgroundManager);
+//   - interrupt, "btw" ⇔ a live agent is wrapped (both are core
+//     agent capabilities — Interrupt and AskSideQuestion need no
+//     extra wiring);
+//   - "compact" ⇔ agent.HasCompactor(); "done" ⇔ HasCheckpointer();
+//   - "replan" ⇔ a replanner fn was supplied (WithReplanner).
+func (ad *Adapter) AttachCapabilities() attach.CapabilityReport {
+	var rep attach.CapabilityReport
+	if ad == nil {
+		return rep
+	}
+	rep.PermsStream = ad.promptBroker != nil
+	rep.MCP = ad.mcpFn != nil
+	if ad.replanFn != nil {
+		rep.SlashCommands = append(rep.SlashCommands, "replan")
+	}
+	a := ad.a
+	if a == nil {
+		return rep
+	}
+	rep.Interrupt = true
+	rep.SlashCommands = append(rep.SlashCommands, "btw")
+	if a.BackgroundManager() != nil {
+		rep.Specialists = true
+		rep.SlashCommands = append(rep.SlashCommands, "subagent")
+	}
+	if a.HasCompactor() {
+		rep.SlashCommands = append(rep.SlashCommands, "compact")
+	}
+	if a.HasCheckpointer() {
+		rep.SlashCommands = append(rep.SlashCommands, "done")
+	}
+	return rep
+}
+
 // Compile-time interface conformance. If one of these ever fails,
 // the corresponding attach endpoint silently degrades to
 // "capability not registered" in production — keep the full list.
@@ -231,6 +278,7 @@ var (
 	_ attach.Registrant          = (*Adapter)(nil)
 	_ attach.DescriptionProvider = (*Adapter)(nil)
 	_ attach.EmitTarget          = (*Adapter)(nil)
+	_ attach.CapabilityReporter  = (*Adapter)(nil)
 
 	_ attach.ToolsProvider           = (*Adapter)(nil)
 	_ attach.AgentsProvider          = (*Adapter)(nil)

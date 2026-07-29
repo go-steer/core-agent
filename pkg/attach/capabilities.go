@@ -51,10 +51,51 @@ func capabilitiesBuilder(opts Options) func(ctx context.Context, entry *Entry) C
 	}
 }
 
+// CapabilityReport is a registrant's own statement of which optional
+// capabilities are actually WIRED — as opposed to which interfaces
+// its Go type happens to satisfy. pkg/attachadapter's Adapter
+// satisfies every optional interface unconditionally (compile-time
+// conformance), so interface presence stopped meaning "works" the
+// moment #443 made the adapter the universal registration path:
+// every session advertised mcp/perms_stream/specialists and all five
+// slash commands, and remote UIs rendered dead affordances that
+// answered with empty payloads or 501s (#490).
+//
+// Struct fields rather than raw feature-key strings so reporters
+// can't typo a wire name; the frame builder owns the mapping onto
+// the protocol's feature keys.
+type CapabilityReport struct {
+	// PermsStream: GET /perms/stream + POST /perms/respond are
+	// serviceable (a prompt broker is wired).
+	PermsStream bool
+	// MCP: GET /mcp returns real data (an MCP snapshot fn is wired).
+	MCP bool
+	// Specialists: POST /slash/subagent can spawn (a background
+	// manager is wired).
+	Specialists bool
+	// Interrupt: POST /interrupt reaches a live agent.
+	Interrupt bool
+	// SlashCommands is the set of slash names actually serviceable
+	// ("compact", "done", "btw", "subagent", "replan"). Order is
+	// irrelevant; the frame builder sorts.
+	SlashCommands []string
+}
+
+// CapabilityReporter overrides interface-presence probing when
+// building the capabilities boot frame. Registrants that satisfy
+// capability interfaces structurally (adapters, test fakes) should
+// implement this and report actual wiredness; registrants that
+// don't implement it keep the legacy presence-based probing, which
+// remains correct for types that only satisfy what they support.
+type CapabilityReporter interface {
+	AttachCapabilities() CapabilityReport
+}
+
 // buildFeatures merges the pre-computed server-level flags with the
-// entry-scoped ones (probed via optional capability-interface
-// presence). Returns a copy so callers can mutate the map without
-// racing with other subscribers.
+// entry-scoped ones — from the registrant's own CapabilityReport
+// when it implements CapabilityReporter (#490), or probed via
+// optional capability-interface presence otherwise. Returns a copy
+// so callers can mutate the map without racing other subscribers.
 func buildFeatures(entry *Entry, serverFeatures map[string]bool) map[string]bool {
 	out := make(map[string]bool, len(serverFeatures)+6)
 	for k, v := range serverFeatures {
@@ -63,17 +104,33 @@ func buildFeatures(entry *Entry, serverFeatures map[string]bool) map[string]bool
 	if entry == nil || entry.Agent == nil {
 		return out
 	}
-	if _, ok := entry.Agent.(PromptBrokerProvider); ok {
-		out[featurePermsStream] = true
-	}
-	if _, ok := entry.Agent.(MCPProvider); ok {
-		out[featureMCP] = true
-	}
-	if _, ok := entry.Agent.(SubagentSpawner); ok {
-		out[featureSpecialists] = true
-	}
-	if _, ok := entry.Agent.(InterruptProvider); ok {
-		out[featureInterrupt] = true
+	if rep, ok := entry.Agent.(CapabilityReporter); ok {
+		r := rep.AttachCapabilities()
+		if r.PermsStream {
+			out[featurePermsStream] = true
+		}
+		if r.MCP {
+			out[featureMCP] = true
+		}
+		if r.Specialists {
+			out[featureSpecialists] = true
+		}
+		if r.Interrupt {
+			out[featureInterrupt] = true
+		}
+	} else {
+		if _, ok := entry.Agent.(PromptBrokerProvider); ok {
+			out[featurePermsStream] = true
+		}
+		if _, ok := entry.Agent.(MCPProvider); ok {
+			out[featureMCP] = true
+		}
+		if _, ok := entry.Agent.(SubagentSpawner); ok {
+			out[featureSpecialists] = true
+		}
+		if _, ok := entry.Agent.(InterruptProvider); ok {
+			out[featureInterrupt] = true
+		}
 	}
 	// featureCostCeiling + featureObserverMode are reserved keys —
 	// no capability interface for them today. Emitting them as false
@@ -86,14 +143,21 @@ func buildFeatures(entry *Entry, serverFeatures map[string]bool) map[string]bool
 	return out
 }
 
-// buildSlashCommands probes for each async slash provider interface
-// and returns the sorted set of names the agent will accept. Mirrors
-// the wire routes registered in handlers_operator.go:77-87.
+// buildSlashCommands returns the sorted set of slash names the agent
+// will actually accept — from the registrant's CapabilityReport when
+// it implements CapabilityReporter (#490), else probed per async
+// slash provider interface. Mirrors the wire routes registered in
+// handlers_operator.go.
 func buildSlashCommands(entry *Entry) []string {
 	if entry == nil || entry.Agent == nil {
 		return nil
 	}
 	var out []string
+	if rep, ok := entry.Agent.(CapabilityReporter); ok {
+		out = append(out, rep.AttachCapabilities().SlashCommands...)
+		sort.Strings(out)
+		return out
+	}
 	if _, ok := entry.Agent.(CompactSlashProvider); ok {
 		out = append(out, "compact")
 	}

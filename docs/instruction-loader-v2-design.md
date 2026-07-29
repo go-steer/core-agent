@@ -4,8 +4,8 @@ Design doc for extending `pkg/instruction` from single-file
 AGENTS.md to a composable multi-file loader, scoped to maximize
 ecosystem migration on-ramp while keeping the v1 surface tight.
 
-**Status:** proposed (2026-06-01). Awaiting approval before
-implementation. v2.3 candidate.
+**Status:** SHIPPED (header updated 2026-07-29 — the doc below is
+the original proposal; `pkg/instruction`'s loader implements it).
 
 ## Motivation
 

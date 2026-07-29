@@ -5,8 +5,9 @@ stable prefix of every generation call (SystemInstruction + Tools +
 skill-reference content) so multi-turn sessions don't re-pay the
 input-token cost of a 4–8k prefix on every turn.
 
-**Status:** proposed (2026-07-16). Awaiting approval before
-implementation.
+**Status:** v1 SHIPPED in v2.7 (header updated 2026-07-29 —
+`internal/vertexcache`). The doc's eager-refresh refinement remains
+the unshipped portion.
 
 **Tracking issue:** [#221](https://github.com/go-steer/core-agent/issues/221)
 

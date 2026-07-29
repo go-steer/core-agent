@@ -4,8 +4,11 @@ Design doc for a substrate primitive that **enforces** the
 plan-first workflow — write a plan, present it, get approval — rather
 than relying on AGENTS.md prompting alone.
 
-**Status:** proposed (2026-06-02). Awaiting approval before
-implementation. v2.3 candidate.
+**Status:** SHIPPED (gate enforcement; header updated 2026-07-29 —
+the doc below is the original proposal). Plan-first mode with
+`require_plan_artifact` enforcement landed and is documented on the
+site; the residual unshipped slice is the advisory/soft variant
+tracked in [#215](https://github.com/go-steer/core-agent/issues/215).
 
 ## Motivation
 

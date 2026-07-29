@@ -20,6 +20,7 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 #### Bug or Regression
 
+- tests: `internal/vertexcache`'s asynchronous assertions no longer flake under full-suite `-race` CI load (#499) — all sixteen `waitFor` sites — plus the one bare `time.After` select with the same exposure — move from a 1s deadline to a shared generous `testWait` (10s). The conditions are goroutine-scheduling hops that resolve in microseconds on an idle scheduler; the deadline only bounds genuinely broken runs, so the passing path is exactly as fast as before. Same treatment as the #462 resume-test flake. Closes [#499](https://github.com/go-steer/core-agent/issues/499).
 - background: `Manager.Close` can no longer hang forever racing a failing `Spawn` (#502, found during #488's adversarial review). `Close` snapshots every handle and blocks on `<-h.done`, but a Spawn that failed during pre-launch resolution (tools/scheduler/model) never launched the goroutine that closes `done` — a Close that snapshotted the reservation inside that window waited on it forever. The three failure paths now roll back through a shared `abortSpawn` that closes `done` alongside the #488 identity-checked unreservation. Deterministic regression test blocks a stub provider mid-resolution, snapshots via a concurrent Close, then releases — hangs pre-fix, returns instantly post-fix.
 
 #### Feature

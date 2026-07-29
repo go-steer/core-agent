@@ -268,6 +268,10 @@ type Server struct {
 	// (started by Bind) when the server closes. Nil when
 	// SessionIdleTimeout <= 0 (sweep not started).
 	sweepCancel context.CancelFunc
+	// sweepWG joins the sweep goroutine on Close — cancellation is
+	// only observed between ticks, and an in-flight EvictBefore's
+	// evict hook may be Closing a broadcaster (#486/#424).
+	sweepWG sync.WaitGroup
 }
 
 // NewServer builds a Server. Validates Options; returns an error for
@@ -321,6 +325,22 @@ func NewServer(opts Options) (*Server, error) {
 	// agent card) once here; per-request state (caller_id) is
 	// resolved on each Subscribe.
 	pool.SetCapabilitiesBuilder(capabilitiesBuilder(opts))
+	// Idle-evicting a session must also retire its broadcaster
+	// (#486): the pool keys by triple, so after evict + lazy resume
+	// pool.For would hand the resumed Entry the OLD broadcaster —
+	// snapshots and the typed-event emitter bound to the dead agent,
+	// and a pump whose touch() keeps refreshing the stale entry so
+	// the resumed session looks idle to the sweep while actively
+	// streaming. Closing here hangs up the evicted session's SSE
+	// clients (EOF → they reconnect and trigger the resume path).
+	// Retire is identity-checked (by hook time the session may
+	// already be resumed with a fresh broadcaster under the same
+	// triple, which must not be torn down) and accounted in the
+	// pool's retiring group, so pool.Close fences an in-flight
+	// hook before the eventlog can be closed (#424 contract).
+	opts.Registry.SetEvictHook(func(e *Entry) {
+		pool.Retire(e)
+	})
 	mux := http.NewServeMux()
 	h := newHandlers(opts.Registry, pool)
 	h.enforceACL = opts.MultiSessionEnabled
@@ -473,11 +493,20 @@ func (s *Server) Bind() error {
 	// Start the idle-session sweep once the listener is bound.
 	// Zero timeout disables — matches the "0s = keep everything
 	// in memory forever" config contract. Sweep exits when
-	// sweepCancel fires (called from Close).
+	// sweepCancel fires (called from Close). The WaitGroup lets
+	// Close JOIN the goroutine, not just signal it: cancellation is
+	// only observed between sweep ticks, so a sweep mid-EvictBefore
+	// — evict hook Closing a broadcaster included — must be waited
+	// out before the pool (and then the caller's eventlog handle)
+	// is torn down (#424 quiescence, #486).
 	if s.opts.SessionIdleTimeout > 0 {
 		sweepCtx, cancel := context.WithCancel(context.Background())
 		s.sweepCancel = cancel
-		go s.opts.Registry.SweepIdle(sweepCtx, s.opts.SessionIdleTimeout)
+		s.sweepWG.Add(1)
+		go func() {
+			defer s.sweepWG.Done()
+			s.opts.Registry.SweepIdle(sweepCtx, s.opts.SessionIdleTimeout)
+		}()
 	}
 	return nil
 }
@@ -604,10 +633,15 @@ func (s *Server) Close() error {
 	s.mu.Unlock()
 
 	// Stop the idle sweep before shutdown so it doesn't try to
-	// evict during teardown.
+	// evict during teardown — and JOIN it: cancellation is only
+	// observed between ticks, so a sweep mid-EvictBefore (its evict
+	// hook possibly Closing a broadcaster) would otherwise still be
+	// running when the caller closes the eventlog handle right after
+	// this returns (#424, #486).
 	if sweepCancel != nil {
 		sweepCancel()
 	}
+	s.sweepWG.Wait()
 	if srv == nil {
 		return nil
 	}

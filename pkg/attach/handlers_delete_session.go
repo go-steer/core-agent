@@ -61,9 +61,10 @@ func (h *handlers) doDeleteSession(w http.ResponseWriter, r *http.Request, entry
 		http.Error(w, "the bootstrap 'default' session is protected; restart the daemon to reset it", http.StatusForbidden)
 		return
 	}
-	if b := h.pool.Remove(entry); b != nil {
-		b.Close()
-	}
+	// Retire (identity-checked + retiring-group accounted, #486):
+	// hangs up this session's SSE subscribers, and its in-flight
+	// Close is fenced by pool.Close on server shutdown.
+	h.pool.Retire(entry)
 	if err := h.reg.HardDelete(r.Context(), entry.AppName, entry.UserID, entry.SessionID); err != nil {
 		http.Error(w, fmt.Sprintf("delete session: %v", err), http.StatusInternalServerError)
 		return

@@ -250,13 +250,13 @@ func TestRegistry_HardDelete_FiresCancelOnEvict(t *testing.T) {
 	}
 }
 
-// TestBroadcasterPool_Remove_ReturnsNilOnMiss — Remove must NOT
-// lazily construct a broadcaster (unlike For). Missing key ⇒ nil.
-func TestBroadcasterPool_Remove_ReturnsNilOnMiss(t *testing.T) {
+// TestBroadcasterPool_Retire_FalseOnMiss — Retire must NOT lazily
+// construct a broadcaster (unlike For). Missing key ⇒ false.
+func TestBroadcasterPool_Retire_FalseOnMiss(t *testing.T) {
 	t.Parallel()
 	pool := newBroadcasterPool()
 	entry := &Entry{AppName: "core-agent", UserID: "u", SessionID: "never-existed"}
-	if b := pool.Remove(entry); b != nil {
-		t.Errorf("Remove on missing entry = %v, want nil", b)
+	if pool.Retire(entry) {
+		t.Error("Retire on missing entry = true, want false")
 	}
 }

@@ -42,7 +42,7 @@ func drainUntilClosed(t *testing.T, ch <-chan Frame, what string) {
 
 // TestBroadcaster_SubscribeRacingClose pins the #483 fix. Handlers
 // resolve a broadcaster via pool.For BEFORE subscribing, and DELETE
-// /sessions runs pool.Remove + Close in between — so Subscribe can
+// /sessions runs pool.Retire (remove + Close) in between — so Subscribe can
 // execute against an already-closed broadcaster. Pre-fix that was
 // `panic: assignment to entry in nil map` inside Subscribe while it
 // held b.mu with no deferred unlock: net/http recovered the panic and

@@ -41,7 +41,7 @@ Vertex ships two caching flavors:
 - **Explicit caching** (this doc): operator creates a `CachedContent`
   resource once, references it by name on subsequent generation calls.
   Rate is 10% of input (per LiteLLM's `cache_read_input_token_cost`
-  now wired in [`internal/pricing/builtin.go`](../internal/pricing/builtin.go)
+  now wired in [`pkg/pricing/builtin.go`](../pkg/pricing/builtin.go)
   as of #259 Slice A). Guaranteed cache-hit on every referencing call.
 
 **Expected impact** (GKE-triage recipe, per the plan's back-of-envelope
@@ -240,7 +240,7 @@ measurements section — this is the follow-through gate on whether
 
 - Vertex model client: [`pkg/models/vertex/vertex.go`](../pkg/models/vertex/vertex.go)
 - Agent construction: [`pkg/agent/agent.go`](../pkg/agent/agent.go)
-- Pricing wiring (cache-read rate landed 2026-07-15): [`internal/pricing/builtin.go`](../internal/pricing/builtin.go)
+- Pricing wiring (cache-read rate landed 2026-07-15): [`pkg/pricing/builtin.go`](../pkg/pricing/builtin.go)
 - Backlog measurement gates: [`docs/backlog-cost-stack-2026-07-14.md`](backlog-cost-stack-2026-07-14.md)
 - `google.golang.org/genai@v1.55.0` caching API — CONFIRMED via
   spike (`dev/vertex-cache-spike/main.go`, 2026-07-16 run against

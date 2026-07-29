@@ -130,7 +130,7 @@ func WithPricingProvider(fn func() attach.PricingInfo) Option {
 
 // WithRefreshPricer wires a func that runs on
 // POST /sessions/<sid>/pricing/refresh — typically calls into
-// `internal/pricing.Refresh` and rebuilds the catalog. Returns
+// `pkg/pricing.Refresh` and rebuilds the catalog. Returns
 // the outcome the operator sees. Formerly agent.WithAttachRefreshPricer.
 func WithRefreshPricer(fn func(ctx context.Context) (attach.PricingRefreshResponse, error)) Option {
 	return func(ad *Adapter) { ad.refreshFn = fn }

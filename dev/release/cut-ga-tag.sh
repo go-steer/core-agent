@@ -74,14 +74,14 @@ echo "── Preflight: release guards ─────────────�
 # Guard 1: pricing catalog freshness.
 if [[ -d "dev/regen-builtin-pricing" ]]; then
   go run ./dev/regen-builtin-pricing >/dev/null
-  if ! git diff --quiet internal/pricing/builtin.go; then
-    echo "error: internal/pricing/builtin.go is stale vs LiteLLM's current catalog." >&2
+  if ! git diff --quiet pkg/pricing/builtin.go; then
+    echo "error: pkg/pricing/builtin.go is stale vs LiteLLM's current catalog." >&2
     echo "" >&2
     echo "Remediation: commit the diff (or discard if the drift is intentional)," >&2
     echo "then re-run this script." >&2
     echo "" >&2
     echo "Diff:" >&2
-    git --no-pager diff internal/pricing/builtin.go >&2
+    git --no-pager diff pkg/pricing/builtin.go >&2
     exit 1
   fi
   echo "  pricing freshness: OK"

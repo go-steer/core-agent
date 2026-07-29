@@ -46,7 +46,7 @@ In:
 
 Out:
 - No changes to `internal/agent`, `internal/attachclient`,
-  `internal/permissions`, `internal/pricing`, or `internal/config`
+  `internal/permissions`, `pkg/pricing`, or `internal/config`
   beyond what's needed to *expose* state the adapter consumes
   through stable interfaces. The agent loop is unchanged.
 - No changes to the attach API surface. Attach-mode features that
@@ -75,7 +75,7 @@ Each `MIGRATION.md` §3.2 row maps to one of:
 | `ModelSwapper.{Available, SwitchModel}` | existing `rebuildAgent` callback + a new `availableModelIDs() []string` helper | Expose (small helper) |
 | `Reloader.Reload` | existing `reloadFromDisk` callback | Wrap |
 | `PermissionController` (5 methods) | `permissions.Gate` | Wrap |
-| `PricingController.{Refresh, Set}` | `internal/pricing.{RefreshPricing, SetPricing}` | Wrap |
+| `PricingController.{Refresh, Set}` | `pkg/pricing.{RefreshPricing, SetPricing}` | Wrap |
 | `SlashProvider` for `/subagent` | new flag parser in adapter; calls `BackgroundManager().Spawn` | Adapter owns |
 | `SlashProvider` for `/btw` | `agent.AskSideQuestion` | Adapter owns (with caveat — see §4.1) |
 | `PermissionPrompter` (TUI-provided) | wired into `gate.SetPrompter` | Wire |

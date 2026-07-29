@@ -21,8 +21,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-steer/core-agent/v2/internal/pricing"
 	"github.com/go-steer/core-agent/v2/pkg/config"
+	"github.com/go-steer/core-agent/v2/pkg/pricing"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
@@ -54,7 +54,7 @@ func DescribeRefresh(w io.Writer, out pricing.RefreshOutcome) {
 
 // CfgToCatalogOverride translates config.PricingMap (the JSON-tagged
 // per-model rate map operators put under model.pricing) into the
-// internal/pricing wire shape. nil-safe; an empty map means "no
+// pkg/pricing wire shape. nil-safe; an empty map means "no
 // cfg override, fall through to the file + builtin layers".
 func CfgToCatalogOverride(m config.PricingMap) map[string]pricing.ModelRates {
 	if len(m) == 0 {

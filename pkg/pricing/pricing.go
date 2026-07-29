@@ -16,6 +16,14 @@
 // layered set of sources so usage costs stay accurate as new models
 // ship and operators add overrides.
 //
+// Promoted from internal/pricing in v2.8 (#489): pkg/compose's
+// pricing helpers and pkg/usage's SetCatalog take and return these
+// types, so keeping them internal made that API uncallable outside
+// the module. The package is now part of the public surface —
+// external consumers can build a *Catalog (per tenant if they like),
+// feed it to usage.SetCatalog or carry it explicitly, and drive
+// Refresh themselves.
+//
 // Lookup chain (first exact-match wins; longest-prefix only at the
 // end):
 //
@@ -25,10 +33,10 @@
 //     model variants, project-specific routing).
 //  3. ~/.core-agent/pricing.json — user-global file. Two sections:
 //     `manual` (operator-curated, hand-edited or set via /pricing set)
-//     and `external` (auto-fetched from LiteLLM in PR B; absent in PR A).
+//     and `external` (auto-fetched from LiteLLM by the refresh flow).
 //  4. builtin                 — the compiled-in fallback table; the
 //     zero-config baseline for common Gemini models. Lives in
-//     internal/pricing/builtin.go.
+//     pkg/pricing/builtin.go.
 //  5. longest-prefix match across the merge of (1)..(4) — handles
 //     `gemini-3.1-pro-preview-customtools`-style suffixes.
 //  6. (Rates{}, false)        — rate unknown; callers (e.g. the TUI's
@@ -98,7 +106,7 @@ func (r Rates) CostUSDWithCache(uncachedInputTokens, cachedInputTokens, outputTo
 // Catalog is the merged view of all pricing sources, queried by
 // model name. Construct with NewCatalog; consult with Lookup.
 //
-// Layers are stored separately so PR B's daily refresh can rewrite
+// Layers are stored separately so the daily LiteLLM refresh can rewrite
 // the external slice without touching the others, and so the
 // precedence chain stays explicit (no "where did this rate come
 // from" mystery).
@@ -202,7 +210,7 @@ func (c *Catalog) layersWithSource() []layerWithSource {
 }
 
 // CountByLayer reports how many model entries each layer holds.
-// Surfaced via /pricing list (PR C) and useful for tests that
+// Surfaced via /pricing list and useful for tests that
 // want to assert the expected number of rows landed in each layer.
 type CountByLayer struct {
 	CfgOverride  int

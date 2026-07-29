@@ -44,7 +44,7 @@ fi
 
 # Preflight: run the release-time guards that .github/workflows/release.yml
 # runs, BEFORE we carve the CHANGELOG. Motivation (2026-07-18 retag): the
-# v2.7.0-dev.4 tag got cut on a day when internal/pricing/builtin.go was
+# v2.7.0-dev.4 tag got cut on a day when pkg/pricing/builtin.go was
 # 3 days stale relative to LiteLLM's current catalog. The pricing-freshness
 # guard in release.yml rejected the build, forcing a retag. Running the
 # same guard here catches the drift locally in ~10s instead of a 4-minute
@@ -59,14 +59,14 @@ echo "── Preflight: release guards ─────────────�
 # retroactive dev-tag operators aren't blocked.
 if [[ -d "dev/regen-builtin-pricing" ]]; then
   go run ./dev/regen-builtin-pricing >/dev/null
-  if ! git diff --quiet internal/pricing/builtin.go; then
-    echo "error: internal/pricing/builtin.go is stale vs LiteLLM's current catalog." >&2
+  if ! git diff --quiet pkg/pricing/builtin.go; then
+    echo "error: pkg/pricing/builtin.go is stale vs LiteLLM's current catalog." >&2
     echo "" >&2
     echo "Remediation: commit the diff (or discard if the drift is intentional)," >&2
     echo "then re-run this script." >&2
     echo "" >&2
     echo "Diff:" >&2
-    git --no-pager diff internal/pricing/builtin.go >&2
+    git --no-pager diff pkg/pricing/builtin.go >&2
     exit 1
   fi
   echo "  pricing freshness: OK"

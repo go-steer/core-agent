@@ -17,7 +17,7 @@ package pricing
 // Options bundle the inputs NewCatalog needs to assemble the
 // layered view. All fields are optional — an empty Options yields
 // a catalog with only the compiled-in builtin layer (useful for
-// tests + as the default before main.go wires the files in).
+// tests + as the default when no pricing files are wired).
 type Options struct {
 	// CfgOverride is the operator's per-model override from
 	// .agents/config.json's `model.pricing` map. Highest precedence.
@@ -39,7 +39,7 @@ type Options struct {
 // I/O failures and malformed JSON return non-nil.
 //
 // The returned catalog is read-only after construction. Callers
-// that want a refresh (PR B's daily fetch, or after /reload) build
+// that want a refresh (the daily LiteLLM fetch, or after /reload) build
 // a new Catalog and swap atomically via the consumer's chosen
 // pointer-store mechanism.
 func NewCatalog(opts Options) (*Catalog, error) {

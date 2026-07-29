@@ -38,7 +38,6 @@ import (
 	"golang.org/x/term"
 	adktool "google.golang.org/adk/tool"
 
-	"github.com/go-steer/core-agent/v2/internal/pricing"
 	"github.com/go-steer/core-agent/v2/internal/version"
 	"github.com/go-steer/core-agent/v2/internal/webui"
 	"github.com/go-steer/core-agent/v2/pkg/agent"
@@ -59,6 +58,7 @@ import (
 	_ "github.com/go-steer/core-agent/v2/pkg/models/mock"
 	"github.com/go-steer/core-agent/v2/pkg/modeltier"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v2/pkg/pricing"
 	"github.com/go-steer/core-agent/v2/pkg/recording"
 	"github.com/go-steer/core-agent/v2/pkg/runner"
 	"github.com/go-steer/core-agent/v2/pkg/session"

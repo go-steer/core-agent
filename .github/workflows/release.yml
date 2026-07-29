@@ -107,7 +107,7 @@ jobs:
           go-version: ${{ steps.go-version.outputs.version }}
 
       # Pricing freshness guard: refuse to release if the tagged
-      # commit's internal/pricing/builtin.go doesn't match what
+      # commit's pkg/pricing/builtin.go doesn't match what
       # dev/regen-builtin-pricing would produce today. Motivation:
       # #259 — hand-authored rates drifted 20-30x silently before the
       # regen path landed. The weekly bot/pricing-regen workflow keeps
@@ -124,8 +124,8 @@ jobs:
         run: |
           set -euo pipefail
           go run ./dev/regen-builtin-pricing
-          if ! git diff --quiet internal/pricing/builtin.go; then
-            echo "::error::internal/pricing/builtin.go is stale vs LiteLLM's current catalog."
+          if ! git diff --quiet pkg/pricing/builtin.go; then
+            echo "::error::pkg/pricing/builtin.go is stale vs LiteLLM's current catalog."
             echo ""
             echo "Remediation:"
             echo "  1. Merge the open auto-PR from bot/pricing-regen (if any), OR"
@@ -133,7 +133,7 @@ jobs:
             echo "  3. Retag and re-push the tag."
             echo ""
             echo "Diff:"
-            git --no-pager diff internal/pricing/builtin.go
+            git --no-pager diff pkg/pricing/builtin.go
             exit 1
           fi
 

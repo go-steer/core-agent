@@ -221,7 +221,7 @@ pkg/runner/
   wakeloop.go         WakeLoop (replaces the two hand-rolled loops)
 ```
 
-Compose is a **leaf consumer**: it imports `pkg/agent`, `pkg/attachadapter`, `pkg/attach`, `pkg/auth`, `pkg/config`, `pkg/permissions`, `pkg/mcp`, `pkg/models`, `pkg/runner`, `pkg/usage`, `pkg/instruction`, `pkg/skills`, `pkg/taskclass`, `pkg/modeltier`, and `internal/pricing` + `internal/vertexcache`. Nothing in those packages imports compose, so there is no cycle risk. The `internal/*` imports are legal within the module and resolve fine for external consumers of `pkg/compose` (they never import `internal/` directly).
+Compose is a **leaf consumer**: it imports `pkg/agent`, `pkg/attachadapter`, `pkg/attach`, `pkg/auth`, `pkg/config`, `pkg/permissions`, `pkg/mcp`, `pkg/models`, `pkg/runner`, `pkg/usage`, `pkg/instruction`, `pkg/skills`, `pkg/taskclass`, `pkg/modeltier`, and `pkg/pricing` + `internal/vertexcache`. Nothing in those packages imports compose, so there is no cycle risk. The `internal/*` imports are legal within the module and resolve fine for external consumers of `pkg/compose` (they never import `internal/` directly).
 
 ## Phasing (stacked PRs, each independently green)
 
@@ -245,19 +245,19 @@ Ordered so each PR compiles and tests clean on its own. PRs marked **[#388]** ar
 - **Moving the TUI.** `coretui_enabled.go` and the bubble-tea integration stay in the binary; compose only supplies the callbacks they invoke.
 - **Changing multi-session isolation semantics.** Per-session policy/scope carve-outs remain deferred per docs/multi-session-design.md; grants stay daemon-wide.
 - **A plugin/registry system.** Compose is plain functions and structs. No dynamic registration, no DI container.
-- **Promoting `internal/pricing` or `internal/vertexcache` to `pkg/`.** Compose consumes them as-is; promotion waits for a concrete external need.
+- **Promoting `pkg/pricing` or `internal/vertexcache` to `pkg/`.** Compose consumes them as-is; promotion waits for a concrete external need.
 - **Lifting the task-class / small-tier-parent flow verbatim.** The reusable primitives already live in `pkg/taskclass` and `pkg/modeltier`; only CLI-bound precedence glue remains, and it stays in main.
 
 ## Open questions for review
 
 - **Wake-loop home.** The `--no-repl` loop is duplicated in `main.go` and `multi_session.go`, and both hand-roll the usage tap that `pkg/runner` already owns (`usage.TurnTap`). `runner/headless.go` is one-shot and has no wake loop. Recommendation: consolidate into a new `runner.WakeLoop` that both call, rather than a compose helper — runner is already the "drive the agent through a conversation" package. Compose then consumes it. Alternative: keep it in compose.
 - **`DecisionAllowAlways` behavior change.** ~~Ship as a fix, or gate behind opt-in?~~ **Resolved (PR 1, 2026-07-27): shipped as a fix.** Non-path "allow always" installs a real policy pattern; the nil-store default keeps persistence off, and `Persist` errors surface to the gated call. Documented in the CHANGELOG Feature entry.
-- **`internal/` coupling.** Compose depends on `internal/pricing` and `internal/vertexcache`. Legal and transitively fine for external consumers, but cogo/scion/ax cannot reconfigure those internals through compose. Recommendation: accept for v1; defer promoting them to `pkg/` until a consumer needs it.
+- **`internal/` coupling.** Compose depends on `pkg/pricing` and `internal/vertexcache`. Legal and transitively fine for external consumers, but cogo/scion/ax cannot reconfigure those internals through compose. Recommendation: accept for v1; defer promoting them to `pkg/` until a consumer needs it.
 
 ## Risks
 
 - **Behavior change on the stdin/headless "allow always" path.** PR 1 makes non-path "allow always" add a real policy pattern and persist via the store, where today it lasts one session. This is a bug fix relative to the documented contract, but it is observable. Mitigation: land it as an explicit, documented fix; the nil-store default preserves the old behavior for anyone who wants it.
-- **`internal/` coupling.** Compose depends on `internal/pricing` and `internal/vertexcache`. Legal and transitively fine for external consumers, but it means cogo/scion/ax cannot reconfigure those internals through compose. Accepted for v1; revisit only if a consumer needs to.
+- **`internal/` coupling.** Compose depends on `pkg/pricing` and `internal/vertexcache`. Legal and transitively fine for external consumers, but it means cogo/scion/ax cannot reconfigure those internals through compose. Accepted for v1; revisit only if a consumer needs to.
 - **#388 sequencing.** PRs 5-6 cannot land until the agent split and `pkg/attachadapter` exist. PRs 1-4 are independent and can proceed in parallel with #388. If #388 slips, the high-value grant-persistence fix (PRs 1, 3) still ships.
 - **Test-seam preservation.** `newSessionTracker` (the package-var indirection that lets `multi_session_test.go` assert distinct per-session trackers, the #275 regression gate) must survive the move as an exported-or-package-level seam in compose. Called out so the move doesn't quietly inline it.
 - **Grant `Persist` error surfacing.** The gate now returns `Persist` errors to the caller instead of silently applying an in-memory-only grant. A read-only `.agents` dir that previously "worked" (allow-session) will now surface an error on "allow always". The `ConfigGrantStore` no-ops on empty `AgentsDir`, but a present-but-unwritable dir will error — arguably correct (the operator asked to persist and it failed), but a behavior operators may notice. Recommend documenting in the release notes.

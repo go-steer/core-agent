@@ -27,28 +27,50 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/models/gemini"
 )
 
-// MaybeWireContextCache builds a vertexcache.Manager and installs
-// its hooks on the provider when the following are all true:
+// ContextCacheHandle is the exported face of the wired Vertex
+// context-cache manager. The manager itself lives in
+// internal/vertexcache (its construction couples to the genai SDK's
+// Caches client); everything a HOST needs after wiring — tearing the
+// remote cache resource down at shutdown — is this one method, so
+// promoting the whole manager would widen the stability surface for
+// no consumer benefit (#489: the previous *vertexcache.Manager
+// return type was un-nameable outside the module, making the
+// function's result usable only via := inference).
+type ContextCacheHandle interface {
+	// Delete tears down the remote cache resource. Call (typically
+	// deferred) at daemon shutdown; safe on a manager whose cache
+	// was never created.
+	Delete(ctx context.Context)
+}
+
+// MaybeWireContextCache builds the Vertex context-cache manager and
+// installs its hooks on the provider when the following are all true:
 //
 //  1. The provider is *gemini.Provider (concrete type — cache
 //     hooks live on that struct).
 //  2. Backend is Vertex (cfg.Model.Provider == "vertex").
 //  3. Caching is enabled in config (default ON; explicit
 //     enabled=false in cfg.Model.Vertex.ContextCache disables).
-//  4. The --no-context-cache CLI kill switch was NOT set.
+//  4. The noContextCache kill switch (the CLI's --no-context-cache)
+//     was NOT set.
 //
-// Returns the manager on success (caller wires deferred Delete)
-// or nil when caching was skipped for any reason. Never fails
-// hard: if constructing the sibling genai.Client fails, the
-// helper logs and returns nil — the agent still starts, just
-// without caching.
+// Returns the handle on success (caller wires deferred Delete) or
+// nil when caching was skipped for any reason. Never fails hard: if
+// constructing the sibling genai.Client fails, the helper logs and
+// returns nil — the agent still starts, just without caching.
+//
+// Contract note: every skip path returns a LITERAL nil (a nil
+// interface), never a nil *Manager boxed into the interface — the
+// caller's `handle != nil` guard is load-bearing because the
+// manager's Delete is not nil-receiver-safe. Keep it that way when
+// adding skip paths.
 func MaybeWireContextCache(
 	ctx context.Context,
 	provider models.Provider,
 	cfg *config.Config,
 	noContextCache bool,
 	send func(string),
-) *vertexcache.Manager {
+) ContextCacheHandle {
 	if noContextCache {
 		send("context cache: disabled (--no-context-cache)")
 		return nil

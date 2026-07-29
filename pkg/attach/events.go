@@ -328,17 +328,31 @@ type TurnError struct {
 	Hint      string `json:"hint,omitempty"`
 }
 
-// EmitTarget is the optional capability a Registrant can implement
-// so the broadcaster wires its Emit method as the agent's typed-event
-// callback at first-subscriber time, and clears it when the last
-// subscriber disconnects.
+// OperatorEventTarget is the optional capability a Registrant can
+// implement so the broadcaster wires its Emit method as the agent's
+// typed operator-event callback at first-subscriber time, and clears
+// it when the last subscriber disconnects.
 //
-// Agents that don't implement EmitTarget still get the legacy
-// `event: agent` frames pumped from the eventlog (back-compat with
-// every poll-mode client) — they just won't emit typed events
-// (capabilities still fires from the broadcaster directly, and the
-// snapshot frames still flow because they read agent state via
-// StatusProvider / UsageProvider, not via Emit).
+// Registrants that implement neither this nor the deprecated
+// EmitTarget still get the legacy `event: agent` frames pumped from
+// the eventlog (back-compat with every poll-mode client) — they just
+// won't emit typed events (capabilities still fires from the
+// broadcaster directly, and the snapshot frames still flow because
+// they read agent state via StatusProvider / UsageProvider, not via
+// Emit).
+type OperatorEventTarget interface {
+	SetOperatorEventEmitter(func(eventType string, payload any))
+}
+
+// EmitTarget is the pre-#506 shape of OperatorEventTarget. The
+// broadcaster still probes it as a fallback, so registrants built
+// against the old method name keep emitting typed events — the
+// failure mode of dropping the fallback would be SILENT (an
+// interface assertion quietly failing means the operator stream
+// just goes dark), which is why this stays for a full deprecation
+// cycle rather than being cut over.
+//
+// Deprecated: implement OperatorEventTarget.
 type EmitTarget interface {
 	SetAttachEmitter(func(eventType string, payload any))
 }

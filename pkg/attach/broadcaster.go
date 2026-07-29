@@ -271,9 +271,7 @@ func (b *broadcaster) Subscribe(ctx context.Context, since int64) <-chan Frame {
 	// drops everything to the floor (and so a re-subscribed
 	// broadcaster re-wires cleanly).
 	if firstSub {
-		if et, ok := b.entry.Agent.(EmitTarget); ok {
-			et.SetAttachEmitter(b.Emit)
-		}
+		setOperatorEmitter(b.entry.Agent, b.Emit)
 	}
 
 	// Replay loop runs in its own goroutine so Subscribe returns
@@ -702,9 +700,7 @@ func (b *broadcaster) detachLocked(sub *subscriber) {
 		// Last subscriber left — clear the agent's typed-event
 		// callback so it stops doing emit work for an audience that
 		// doesn't exist. The next Subscribe call re-wires.
-		if et, ok := b.entry.Agent.(EmitTarget); ok {
-			et.SetAttachEmitter(nil)
-		}
+		setOperatorEmitter(b.entry.Agent, nil)
 	}
 }
 
@@ -750,6 +746,22 @@ func (b *broadcaster) Close() {
 	// so holding it here would deadlock against the goroutines we're
 	// waiting to drain.
 	b.wg.Wait()
+}
+
+// setOperatorEmitter installs (or clears) the typed operator-event
+// callback on a registrant, probing the primary OperatorEventTarget
+// first and falling back to the deprecated EmitTarget (#506) so
+// registrants built against the old method name keep emitting —
+// dropping the fallback would fail SILENTLY (the operator stream
+// would simply go dark for that session).
+func setOperatorEmitter(ag Registrant, f func(eventType string, payload any)) {
+	if et, ok := ag.(OperatorEventTarget); ok {
+		et.SetOperatorEventEmitter(f)
+		return
+	}
+	if et, ok := ag.(EmitTarget); ok { //nolint:staticcheck // deliberate deprecation-cycle fallback
+		et.SetAttachEmitter(f)
+	}
 }
 
 // broadcasterPool lazily constructs and tracks one broadcaster per

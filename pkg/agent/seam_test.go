@@ -48,7 +48,7 @@ func TestEmit_RoutesToAttachEmitter(t *testing.T) {
 	a := &Agent{}
 	var gotType string
 	var gotPayload any
-	a.attachEmit = func(eventType string, payload any) {
+	a.operatorEmit = func(eventType string, payload any) {
 		gotType = eventType
 		gotPayload = payload
 	}
@@ -60,7 +60,7 @@ func TestEmit_RoutesToAttachEmitter(t *testing.T) {
 
 func TestEmit_NoEmitterIsNoop(t *testing.T) {
 	t.Parallel()
-	// No attachEmit installed (no SSE subscriber) and a nil receiver
+	// No operatorEmit installed (no SSE subscriber) and a nil receiver
 	// must both be safe no-ops — the emit() contract the seam wraps.
 	(&Agent{}).Emit("evt", nil)
 	(*Agent)(nil).Emit("evt", nil)

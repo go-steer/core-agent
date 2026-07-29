@@ -23,13 +23,13 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
-// TestSetAttachEmitter_UsageUpdatePopulatesLastTurn is the pin for
+// TestSetOperatorEventEmitter_UsageUpdatePopulatesLastTurn is the pin for
 // authoritative per-turn cost delivery. When tracker.Append fires
-// the emit callback wired by SetAttachEmitter, the resulting
+// the emit callback wired by SetOperatorEventEmitter, the resulting
 // UsageUpdate must carry LastTurn with the just-committed cost — so
 // the remote TUI's per-turn footer renders without depending on a
 // separate client-side pricing lookup.
-func TestSetAttachEmitter_UsageUpdatePopulatesLastTurn(t *testing.T) {
+func TestSetOperatorEventEmitter_UsageUpdatePopulatesLastTurn(t *testing.T) {
 	t.Parallel()
 	tracker := usage.NewTracker()
 	a := &Agent{tracker: tracker}
@@ -39,7 +39,7 @@ func TestSetAttachEmitter_UsageUpdatePopulatesLastTurn(t *testing.T) {
 		mu       sync.Mutex
 		captured []attach.UsageUpdate
 	)
-	a.SetAttachEmitter(func(eventType string, payload any) {
+	a.SetOperatorEventEmitter(func(eventType string, payload any) {
 		if eventType != attach.EventUsageUpdate {
 			return
 		}

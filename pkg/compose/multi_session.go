@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 
 	"github.com/google/uuid"
 	adkmodel "google.golang.org/adk/model"
@@ -141,6 +142,51 @@ type SessionFactoryDeps struct {
 	// agent under it.
 	NoCompact    bool
 	NoCheckpoint bool
+
+	// Customize, when non-nil, runs at the top of every session
+	// construction — POST /sessions creations AND lazy resumes — with
+	// the caller the session belongs to (#505). It receives a
+	// SessionCustomization pre-filled from the daemon-wide deps and
+	// may vary the per-tenant knobs: the model, the tools, and the
+	// toolsets (skills ride as toolsets — load a per-tenant skills
+	// tree into a toolset here). Per-tenant PERMISSIONS need no hook:
+	// every session already runs a sub-gate derived from Template,
+	// and per-caller instructions layer via UsersDir.
+	//
+	// An error aborts the construction (the client sees the 500 with
+	// this error's text). The hook must be safe for concurrent calls.
+	//
+	// On RESUME, Identity is the only Caller field populated (it is
+	// materialized from the persisted ACL owner — Labels and Admin
+	// are not stored). Key customization decisions on Identity
+	// alone, or re-derive tenant metadata from your own store;
+	// a hook keyed on Labels would silently build a different
+	// session shape on lazy resume than it did at creation.
+	Customize SessionCustomizer
+}
+
+// SessionCustomizer is SessionFactoryDeps.Customize — the per-caller
+// hook that varies session construction without forking
+// ReproduceAgent. ctx is the daemon lifetime context (construction
+// may outlive the triggering request; a resume's work certainly
+// does).
+type SessionCustomizer func(ctx context.Context, caller auth.Caller, c *SessionCustomization) error
+
+// SessionCustomization is the per-caller slice of the session recipe
+// a SessionCustomizer may change. Every field arrives pre-filled with
+// the daemon-wide default (the slices are copies — append extends,
+// reassign replaces, and neither corrupts the shared deps).
+type SessionCustomization struct {
+	// Model drives the session's turns. Defaults to deps.Model.
+	// When changed, per-turn cost attribution follows the new
+	// model's name and its pricing is re-resolved from the layered
+	// catalog (deps.Cfg overrides, pricing files, builtin).
+	Model adkmodel.LLM
+	// Tools is the flat tool list (defaults to deps.BuiltinTools).
+	Tools []adktool.Tool
+	// Toolsets is the toolset list (defaults to deps.Toolsets) —
+	// MCP servers and skills bundles live here.
+	Toolsets []adktool.Toolset
 }
 
 // newSessionTracker constructs the *usage.Tracker each on-demand
@@ -189,6 +235,38 @@ func BuildSessionFactory(deps SessionFactoryDeps) attach.SessionFactory {
 // of cancellation (daemon shutdown or per-session evict) closes
 // ctx.Done and the loop exits.
 func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, origin string) (*attachadapter.Adapter, context.CancelFunc, error) {
+	// Per-caller customization first (#505): fail-fast before any
+	// per-session resource (broker, gate, instruction I/O) exists,
+	// so an aborting hook needs no cleanup. The slices are cloned so
+	// a hook that appends can never write through into the shared
+	// deps backing arrays and leak one tenant's tools to another.
+	cust := SessionCustomization{
+		Model:    deps.Model,
+		Tools:    slices.Clone(deps.BuiltinTools),
+		Toolsets: slices.Clone(deps.Toolsets),
+	}
+	if deps.Customize != nil {
+		if err := deps.Customize(deps.DaemonCtx, caller, &cust); err != nil {
+			return nil, nil, fmt.Errorf("customize session for %q: %w", caller.Identity, err)
+		}
+		if cust.Model == nil {
+			// Defensive: a hook that nils the model gets the default
+			// back rather than a construction panic downstream.
+			cust.Model = deps.Model
+		}
+	}
+	// Cost attribution follows the effective model. When the hook
+	// swapped it, the daemon-wide PricingRate (resolved for
+	// deps.Model at startup) would misprice every turn — re-resolve
+	// from the same layered catalog the startup path used.
+	pricingRate := deps.PricingRate
+	if cust.Model.Name() != deps.Model.Name() {
+		// Name comparison, not interface identity: pricing depends
+		// only on the model name, and comparing interface values
+		// panics on non-comparable host-supplied LLM types.
+		pricingRate = usage.PriceFor(cust.Model.Name(), deps.Cfg)
+	}
+
 	// Per-session HTTP prompt broker. Each new session gets its
 	// own broker so prompts route to the right per-session
 	// /perms/stream subscriber.
@@ -213,8 +291,8 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 	}
 
 	opts := []agent.Option{
-		agent.WithTools(deps.BuiltinTools),
-		agent.WithToolsets(deps.Toolsets),
+		agent.WithTools(cust.Tools),
+		agent.WithToolsets(cust.Toolsets),
 		agent.WithSystemInstructionPrefix(instr.Instruction),
 		agent.WithGate(sessionGate),
 		agent.WithSession(caller.Identity, sid),
@@ -226,7 +304,7 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 	// the underlying state is wired correctly into the agent
 	// (toolsets include MCP, instructions are loaded, etc.) — the
 	// slashes just have nothing to look at.
-	adOpts := append(attachProviderOpts(deps, sessionGate),
+	adOpts := append(attachProviderOpts(deps, sessionGate, cust.Model.Name(), pricingRate),
 		attachadapter.WithPromptBroker(broker))
 	if deps.EventlogHandle != nil {
 		opts = append(opts, agent.WithEventLog(deps.EventlogHandle))
@@ -265,8 +343,8 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 		}
 		if err := usage.RebuildTrackerFromEvents(
 			deps.DaemonCtx, sessionTracker, eventsSeq,
-			deps.Model.Name(),
-			func(model string) usage.Pricing { return deps.PricingRate },
+			cust.Model.Name(),
+			func(model string) usage.Pricing { return pricingRate },
 		); err != nil {
 			// Non-fatal — the session still functions, just with
 			// zero baseline aggregate. Log so operators can spot
@@ -313,7 +391,7 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 		}
 	}
 
-	ag, err := agent.New(deps.Model, opts...)
+	ag, err := agent.New(cust.Model, opts...)
 	if err != nil {
 		broker.Close()
 		return nil, nil, fmt.Errorf("agent.New: %w", err)
@@ -337,8 +415,8 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 	loopCtx, cancelOnEvict := context.WithCancel(deps.DaemonCtx)
 	go runner.WakeLoop(loopCtx, ag, runner.WakeLoopOptions{
 		Tracker: sessionTracker,
-		Model:   deps.Model.Name(),
-		Pricing: deps.PricingRate,
+		Model:   cust.Model.Name(),
+		Pricing: pricingRate,
 	})
 	return ad, cancelOnEvict, nil
 }
@@ -407,7 +485,7 @@ func (r *sessionResumer) Resume(ctx context.Context, app, sid string) (attach.Re
 // sessionGate is the derived sub-gate; threaded here so the
 // soon-to-arrive Replanner closure picks it up without expanding the
 // deps signature when it lands.
-func attachProviderOpts(deps SessionFactoryDeps, _ *permissions.Gate) []attachadapter.Option {
+func attachProviderOpts(deps SessionFactoryDeps, _ *permissions.Gate, modelName string, rate usage.Pricing) []attachadapter.Option {
 	var opts []attachadapter.Option
 
 	if deps.ProjectRoot != "" || deps.UserRoot != "" {
@@ -440,12 +518,16 @@ func attachProviderOpts(deps SessionFactoryDeps, _ *permissions.Gate) []attachad
 	}
 
 	if deps.Cfg != nil {
+		// modelName/rate are the SESSION's effective values — after a
+		// Customize model swap they differ from deps.Cfg.Model.Name /
+		// deps.PricingRate, and /pricing must agree with what /status
+		// reports and what the tracker bills (#505).
 		opts = append(opts, attachadapter.WithPricingProvider(func() attach.PricingInfo {
-			info := attach.PricingInfo{CurrentModel: deps.Cfg.Model.Name}
-			if !deps.PricingRate.IsZero() {
+			info := attach.PricingInfo{CurrentModel: modelName}
+			if !rate.IsZero() {
 				info.Current = &attach.ModelPricing{
-					InputUSDPerMTok:  deps.PricingRate.InputPerMTok,
-					OutputUSDPerMTok: deps.PricingRate.OutputPerMTok,
+					InputUSDPerMTok:  rate.InputPerMTok,
+					OutputUSDPerMTok: rate.OutputPerMTok,
 				}
 			}
 			return info

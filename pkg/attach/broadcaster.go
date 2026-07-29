@@ -134,6 +134,7 @@ type broadcaster struct {
 	subs      map[*subscriber]struct{}
 	closed    bool               // set by Close under mu; Subscribe refuses to register after
 	cancel    context.CancelFunc // cancels the pump goroutine
+	pumpGen   uint64             // bumped per pump start; lets a dying pump's sweep recognize a successor (#485)
 	startedAt int64              // last seq the pump has yielded
 
 	// wg tracks every goroutine this broadcaster spawns (the pump and
@@ -318,12 +319,20 @@ func (b *broadcaster) register(sub *subscriber, since int64) (registered, firstS
 		// since >= startedAt (already in flight) or get a fresh
 		// scan via the replay loop in Subscribe.
 		b.startedAt = since
+		// Generation stamp: the pump's deferred death-sweep must only
+		// tear down state that still belongs to THIS pump. Without
+		// it, a stale pump whose sweep runs late (goroutine
+		// descheduled between its Watch iterator ending and the
+		// sweep acquiring b.mu) would detach a successor pump's
+		// subscribers and cancel the successor's context.
+		b.pumpGen++
+		gen := b.pumpGen
 		// Add/Done are paired at the spawn site (not inside pump)
 		// so Close's wg.Wait tracks the goroutine's full lifetime.
 		b.wg.Add(1)
 		go func() {
 			defer b.wg.Done()
-			b.pump(pumpCtx)
+			b.pump(pumpCtx, gen)
 		}()
 	}
 	// The caller's replayThenTail slot.
@@ -537,9 +546,43 @@ func (b *broadcaster) replayThenTail(ctx context.Context, sub *subscriber, since
 // eventlog.Stream.Watch and fans out to every subscriber that's
 // attached at the time of the broadcast. Exits when no subscribers
 // remain (set by detach).
-func (b *broadcaster) pump(ctx context.Context) {
-	debugf("broadcaster pump START %s/%s startedAt=%d", b.entry.AppName, b.entry.SessionID, b.startedAt)
-	defer debugf("broadcaster pump END %s/%s", b.entry.AppName, b.entry.SessionID)
+func (b *broadcaster) pump(ctx context.Context, gen uint64) {
+	debugf("broadcaster pump START %s/%s startedAt=%d gen=%d", b.entry.AppName, b.entry.SessionID, b.startedAt, gen)
+	defer debugf("broadcaster pump END %s/%s gen=%d", b.entry.AppName, b.entry.SessionID, gen)
+	// A dying pump must never strand the broadcaster (#485). The
+	// error exit used to just return: subscribers kept their open-
+	// but-silent channels (no frames, no close — a frozen stream from
+	// the client's view), and because b.cancel stayed non-nil every
+	// future Subscribe saw firstSub == false and never started a
+	// replacement pump. One transient Watch error ("database is
+	// locked") bricked live-tail for the session until every client
+	// happened to disconnect at once.
+	//
+	// The deferred sweep detaches every subscriber (channels close,
+	// so SSE clients see EOF and reconnect) and clears b.cancel (so
+	// the next Subscribe starts a fresh pump) — but ONLY while this
+	// pump is still the current generation with a live cancel. The
+	// guard matters: on the clean exits (no-subscribers-left return,
+	// ctx cancelled by the last detach or by Close) b.cancel is
+	// already nil by the time the sweep runs, and a successor pump
+	// may already be up with its own subscribers — a guardless sweep
+	// running late would hang up the successor's subscribers and
+	// cancel the successor's context.
+	defer func() {
+		b.mu.Lock()
+		if b.pumpGen == gen && b.cancel != nil {
+			for sub := range b.subs { // delete-during-range is defined in Go
+				b.detachLocked(sub)
+			}
+			// detachLocked of the last subscriber already cancelled
+			// and nilled; this covers the subscriber-less error exit.
+			if b.cancel != nil {
+				b.cancel()
+				b.cancel = nil
+			}
+		}
+		b.mu.Unlock()
+	}()
 	for entry, err := range b.stream.Watch(ctx, b.startedAt, b.query...) {
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {

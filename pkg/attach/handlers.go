@@ -59,10 +59,18 @@ type handlers struct {
 	// constructor; nil (the default for bare newHandlers, and for
 	// CostRateLimit.Disabled) means no enforcement. See rate_limit.go.
 	costLimit *costRateLimiter
+	// closing is closed by Server.Close (before srv.Shutdown) to wake
+	// long-lived streaming handlers that do NOT ride the broadcaster
+	// pool — today the /perms/stream prompt feed. Without it those
+	// streams held Shutdown hostage for the full ShutdownTimeout,
+	// exactly like /events did before its pool.Close reorder (#488).
+	// /events itself needs no select on this: closing the pool closes
+	// its subscriber channels.
+	closing chan struct{}
 }
 
 func newHandlers(reg *SessionRegistry, pool *broadcasterPool) *handlers {
-	return &handlers{reg: reg, pool: pool}
+	return &handlers{reg: reg, pool: pool, closing: make(chan struct{})}
 }
 
 // authorize checks the request's Caller against entry.ACL for the

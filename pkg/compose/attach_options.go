@@ -15,7 +15,10 @@
 package compose
 
 import (
+	"log"
 	"os"
+	"regexp"
+	"strings"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 )
@@ -57,16 +60,46 @@ type AttachOptions struct {
 // surface apply whatever precedence they want on top.
 func BuildAttachOptions(cfg config.AttachConfig) AttachOptions {
 	return AttachOptions{
-		Listen:           os.ExpandEnv(cfg.Listen),
-		UnixSocket:       os.ExpandEnv(cfg.UnixSocket),
-		TLSCert:          os.ExpandEnv(cfg.TLSCert),
-		TLSKey:           os.ExpandEnv(cfg.TLSKey),
-		ClientCA:         os.ExpandEnv(cfg.ClientCA),
-		TokenEnv:         os.ExpandEnv(cfg.TokenEnv),
+		Listen:           expandEnvOrKeep(cfg.Listen),
+		UnixSocket:       expandEnvOrKeep(cfg.UnixSocket),
+		TLSCert:          expandEnvOrKeep(cfg.TLSCert),
+		TLSKey:           expandEnvOrKeep(cfg.TLSKey),
+		ClientCA:         expandEnvOrKeep(cfg.ClientCA),
+		TokenEnv:         expandEnvOrKeep(cfg.TokenEnv),
 		ReadOnly:         cfg.ReadOnly,
 		PeerHub:          cfg.PeerHub,
-		RegisterTo:       os.ExpandEnv(cfg.RegisterTo),
-		RegisterName:     os.ExpandEnv(cfg.RegisterName),
-		RegisterEndpoint: os.ExpandEnv(cfg.RegisterEndpoint),
+		RegisterTo:       expandEnvOrKeep(cfg.RegisterTo),
+		RegisterName:     expandEnvOrKeep(cfg.RegisterName),
+		RegisterEndpoint: expandEnvOrKeep(cfg.RegisterEndpoint),
 	}
+}
+
+// envRefPattern matches the two reference forms os.ExpandEnv
+// understands for well-formed names: `$NAME` and `${NAME}`. Shell
+// specials os.ExpandEnv would eat ($$, $1, a trailing lone $) are
+// deliberately NOT matched — they pass through untouched, which is
+// strictly more predictable than the old silent stripping.
+var envRefPattern = regexp.MustCompile(`\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)`)
+
+// expandEnvOrKeep is os.ExpandEnv that keeps an UNSET variable's
+// reference literal — byte-for-byte, braces included — and logs a
+// warning, instead of silently expanding it to "" (#488). The empty
+// expansion turned typos into working-but-wrong config:
+// `"127.0.0.1:$PORT"` with PORT unset became `"127.0.0.1:"`, a valid
+// listen address on an ephemeral port. Keeping the reference verbatim
+// makes the downstream error (bind failure, missing file) name the
+// unresolved variable; preserving the exact spelling matters so
+// `"pre-${X}suffix"` doesn't collapse into the different reference
+// `$Xsuffix` (adversarial-review catch). Variables set to an empty
+// string are honored as empty — "set but empty" is a deliberate
+// operator choice; only "not set at all" is suspect.
+func expandEnvOrKeep(s string) string {
+	return envRefPattern.ReplaceAllStringFunc(s, func(ref string) string {
+		name := strings.TrimFunc(ref[1:], func(r rune) bool { return r == '{' || r == '}' })
+		if v, ok := os.LookupEnv(name); ok {
+			return v
+		}
+		log.Printf("compose: attach config references $%s, which is not set; keeping it literal", name)
+		return ref
+	})
 }

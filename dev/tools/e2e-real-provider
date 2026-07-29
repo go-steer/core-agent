@@ -34,6 +34,7 @@ cd "$(dirname "$0")/../.."
 
 ran=0
 failed=0
+self_skipped=0
 
 run_leg() {
   local name="$1" script="$2"
@@ -42,7 +43,7 @@ run_leg() {
   local rc=$?
   case "${rc}" in
     0)  ran=$((ran+1)) ;;
-    77) echo "e2e-real-provider: ${name}: skipped by script (exit 77)" ;;
+    77) echo "e2e-real-provider: ${name}: skipped by script (exit 77)"; self_skipped=$((self_skipped+1)) ;;
     *)  echo "e2e-real-provider: ${name}: FAILED (exit ${rc})" >&2; failed=$((failed+1)) ;;
   esac
 }
@@ -64,7 +65,19 @@ if [[ "${failed}" -gt 0 ]]; then
   exit 1
 fi
 if [[ "${ran}" -eq 0 ]]; then
-  echo "e2e-real-provider: SKIP — no provider credentials in the environment (set GOOGLE_CLOUD_PROJECT and/or ANTHROPIC_VERTEX_PROJECT_ID)"
+  # Distinguish "no credentials" from "credentials present but every
+  # leg self-skipped via exit 77" (#488) — the old summary blamed
+  # missing credentials either way, sending operators down the wrong
+  # debugging path.
+  if [[ "${self_skipped}" -gt 0 ]]; then
+    echo "e2e-real-provider: SKIP — ${self_skipped} leg(s) self-skipped (exit 77); credentials were present but the scripts declined to run (see their output above)"
+  else
+    echo "e2e-real-provider: SKIP — no provider credentials in the environment (set GOOGLE_CLOUD_PROJECT and/or ANTHROPIC_VERTEX_PROJECT_ID)"
+  fi
   exit 0
 fi
-echo "e2e-real-provider: OK (${ran} leg(s) passed against real providers)"
+if [[ "${self_skipped}" -gt 0 ]]; then
+  echo "e2e-real-provider: OK (${ran} leg(s) passed against real providers; ${self_skipped} self-skipped via exit 77)"
+else
+  echo "e2e-real-provider: OK (${ran} leg(s) passed against real providers)"
+fi

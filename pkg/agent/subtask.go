@@ -282,7 +282,10 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 		Model:       subModel,
 		Description: "core-agent subtask: " + spec.Name,
 		Instruction: subInstruction,
-		Tools:       tools.SerializeMutating(spec.Tools, &subMutationMu),
+		// Timed outside the serializer, same as the parent's tools in
+		// New — subtask tool calls land in the shared
+		// gen_ai.tool.execution.duration histogram (#338).
+		Tools: a.toolInstrumenter.Instrument(tools.SerializeMutating(spec.Tools, &subMutationMu)),
 	})
 	if err != nil {
 		return SubtaskResult{}, fmt.Errorf("agent: RunSubtask: build llmagent: %w", err)

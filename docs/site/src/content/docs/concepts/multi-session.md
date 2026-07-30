@@ -236,7 +236,7 @@ Sessions created via `POST /sessions` **survive daemon restarts**. A TUI reconne
 
 ### How it works
 
-Every `RegisterOwned` call writes a row to `agent_session_acl` (a new GORM table sharing the eventlog's database). The row carries `(app, user, sid, owner, viewers, contributors, created_at, last_touched_at)`. On daemon restart the in-memory registry is empty, but the row persists. The next Lookup for that session misses the memory map, calls the resumer, reads the row, reconstructs the agent under the same triple, and installs it in the registry. ADK's `session.Service` reads the same eventlog and reattaches the prior conversation history automatically.
+Every `RegisterOwned` call writes a row to `agent_session_acl` (a new GORM table sharing the eventlog's database). The row carries `(app, user, sid, owner, viewers, contributors, created_at, last_touched_at)`. On daemon restart the in-memory registry is empty, but the row persists. The next Lookup for that session misses the memory map, calls the resumer, reads the row, reconstructs the agent under the same triple, and installs it in the registry. ADK's `session.Service` reads the same eventlog and reattaches the prior conversation history automatically. If the restart caught a turn mid-tool-call, the history is healed on the next turn — see [Sessions → Interrupted tool calls are repaired automatically](/concepts/sessions/#interrupted-tool-calls-are-repaired-automatically).
 
 Cost: one DB query + one `agent.New` on the first reconnect (~50 ms typically). Subsequent requests hit the memory registry directly.
 

@@ -1192,6 +1192,17 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 			yield(nil, err)
 		}
 	}
+	// Tail repair (#537): heal a history whose previous turn died
+	// between a persisted functionCall and its functionResponse —
+	// crash mid-tool, or any mid-tool cancellation (the runner
+	// appends the tool's error response with the already-cancelled
+	// turn ctx, so the write fails and the call is orphaned durably).
+	// Providers reject an unanswered call, so without this the
+	// session is poisoned for every subsequent turn. Must run before
+	// the checkpoint/compaction drains below: both invoke the
+	// summarizer over this same history and would trip on the
+	// dangling tail themselves. See tail_repair.go.
+	a.repairDanglingToolCalls(ctx)
 	// Pre-turn: drain any pending cleanups from the prior turn's
 	// post-hook so the runner builds its request against a slimmed
 	// history. Checkpoint runs before compaction — a checkpoint

@@ -45,6 +45,8 @@ func TestClassify(t *testing.T) {
 		// agentic-strong.
 		{"gemini-3.1-pro-preview-customtools", modeltier.TierFrontier},
 		{"gemini-3.5-pro", modeltier.TierFrontier},
+		{"gemini-3.6-flash", modeltier.TierFrontier},         // taskclass frontier default
+		{"gemini-3.6-flash-06-2026", modeltier.TierFrontier}, // dated snapshot
 		{"gemini-3.5-flash", modeltier.TierMid},
 		{"gemini-3.5-flash-05-2026", modeltier.TierMid}, // dated snapshot
 		{"gemini-3.1-flash", modeltier.TierSmall},
@@ -142,6 +144,7 @@ func TestIsSmall(t *testing.T) {
 		// --small-tier-parent=allow purely to suppress a false-positive
 		// warning on 3.5-flash can drop that flag once this ships.
 		{"gemini-3.5-flash", false},
+		{"gemini-3.6-flash", false},
 		{"gemini-3.5-pro", false},
 		{"gemini-2.5-pro", false},
 		{"claude-opus-4-7", false},

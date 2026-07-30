@@ -229,7 +229,7 @@ The `Provider` interface is the extension point — register your own model back
 
 - **`.agents/` directory** — walked up from the working directory like `.git`. Holds `config.json`, `mcp.json`, `skills/<name>/SKILL.md`, and per-session JSON transcripts.
 - **`AGENTS.md`** — project-level system-instruction prefix. `CLAUDE.md` and `GEMINI.md` are picked up as fallbacks for repos that already have one.
-- **`~/.<binary>/sessions.db`** — durable session storage when `--session-db` is set. The binary name is derived from `os.Executable()` so `core-agent`, adapters, and forks each get their own directory. Override with `--session-db-path`.
+- **`~/.<binary>/sessions.db`** — durable session storage when `--session-db` is set. The binary name is derived from `os.Executable()` so `core-agent`, adapters, and forks each get their own directory. Override with `--session-db-path`. Without the flag, sessions are **in-memory only** and every restart loses all conversation state — for daemon/K8s deployments, always set it (and put the file on storage that survives the pod).
 
 ---
 

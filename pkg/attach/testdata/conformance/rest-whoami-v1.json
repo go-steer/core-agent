@@ -1,0 +1,6 @@
+{
+  "identity": "release-bot@example.com",
+  "admin": true,
+  "source": "asserted",
+  "proxy_by": "gateway-svc@example.com"
+}

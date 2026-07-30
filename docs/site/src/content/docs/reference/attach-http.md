@@ -87,8 +87,8 @@ No cookies — the listener is stateless per request. Identity is re-derived fro
 
 | Method | Path | Action | Request | Response |
 |---|---|---|---|---|
-| `GET` | `/sessions` | `SessionList` (always OK, ACL-filtered) | — | **200** `{"sessions":[{"session_id":..., "app":..., ...}]}` — union of in-memory + persisted-idle rows. |
-| `POST` | `/sessions` | Authenticated caller | — | **201** `{"app":..., "user":..., "sessionID":..., "url":...}`. **501** when the daemon lacks a `SessionFactory`; **401** anonymous; **409** on `ErrSessionExists`. Caller stamped as ACL Owner. |
+| `GET` | `/sessions` | `SessionList` (always OK, ACL-filtered) | — | **200** `{"sessions":[{"app":..., "user":..., "sessionID":..., "has_event_log":bool, "status":"active"\|"idle", "last_touched_at":...}]}` — union of in-memory (`active`) + persisted-idle rows. Note the field is `sessionID`, not `session_id` — pin against the [conformance fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-sessions-list-v1.json). `last_touched_at` is RFC 3339 with arbitrary precision and zone offset (parse, don't pattern-match); the zero value `0001-01-01T00:00:00Z` means never-touched. |
+| `POST` | `/sessions` | Authenticated caller | — | **201** `{"app":..., "user":..., "sessionID":..., "url":...}` ([fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-create-session-v1.json)). **501** when the daemon lacks a `SessionFactory`; **401** anonymous; **409** on `ErrSessionExists`. Caller stamped as ACL Owner. |
 | `DELETE` | `/sessions/{sid}` and `/sessions/{app}/{sid}` | `SessionAdmin` | — | **204** on success. **403** on the bootstrap `"default"` session. **404** on not-found OR auth-deny (masked). **NOT idempotent** — second call returns **500** wrapping `ErrSessionNotFound`. |
 
 ### Session read (`SessionRead` — all owner/contributor/viewer OK)
@@ -201,7 +201,7 @@ Registered only when `Options.PeerRegistry` is non-nil (daemon launched with `--
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `GET` | `/.well-known/agent-card.json` | **none** (bypasses transport auth) | Public agent-card discovery. Enabled when `AgentCard.Description` + `ExternalURL` are both non-empty in the daemon config. 405 on non-GET/HEAD. |
-| `GET` | `/whoami` | Transport auth (no per-session ACL) | Returns `{"identity":..., "admin":bool, "source":..., "proxy_by":...}` for the current caller. `source ∈ {"bearer","mtls","iap","asserted","anonymous"}` (consumers tolerate unknowns). `proxy_by` populated only when `source="asserted"` (X-Asserted-Caller path). Companion to the SSE `capabilities.caller_id` display hint. |
+| `GET` | `/whoami` | Transport auth (no per-session ACL) | Returns `{"identity":..., "admin":bool, "source":..., "proxy_by":...}` for the current caller. `source ∈ {"bearer","mtls","iap","asserted","anonymous"}` (consumers tolerate unknowns). `proxy_by` populated only when `source="asserted"` (X-Asserted-Caller path). Companion to the SSE `capabilities.caller_id` display hint. Wire shape pinned by the [conformance fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-whoami-v1.json). |
 | `GET` | `/ui/*` | Transport auth | Optional SPA passthrough — only when `Options.UI` is non-null. `/ui` (no trailing slash) → **301** → `/ui/`. |
 
 ## Streaming endpoints (summary)

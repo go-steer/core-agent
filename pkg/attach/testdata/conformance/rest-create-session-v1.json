@@ -1,0 +1,6 @@
+{
+  "app": "core-agent",
+  "user": "alice@example.com",
+  "sessionID": "s-1a2b3c",
+  "url": "http://daemon.example.com:8844/sessions/core-agent/s-1a2b3c"
+}

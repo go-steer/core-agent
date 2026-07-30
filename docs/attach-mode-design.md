@@ -41,7 +41,12 @@ This is the analog of `tmux attach` for a headless agent.
   scheme — `unix://`, `http://`, `https://`.
 - **Endpoints** (`<id>` resolves to `<appName>/<sessionID>` —
   see "URL form" below):
-  - `GET /sessions` — list active sessions; returns `{app, user, sessionID}` triples
+  - `GET /sessions` — list sessions; returns a `{"sessions": [...]}`
+    envelope of `{app, user, sessionID, has_event_log, status,
+    last_touched_at}` rows (`status` ∈ `active`/`idle`). The
+    normative wire shape is the conformance fixture
+    `pkg/attach/testdata/conformance/rest-sessions-list-v1.json`
+    (clients: pin against it, don't transcribe this prose — #536)
   - `GET /sessions/<id>/events` — SSE stream; supports `?since=N`
     for replay before live-tail
   - `POST /sessions/<id>/inject` — call `Agent.Inject`

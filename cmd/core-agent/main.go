@@ -381,6 +381,12 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	return opts
 }
 
+// teardownStepTimeout bounds each individual shutdown defer in run()
+// that talks to something external (OTLP flush, Prometheus/metrics
+// shutdown, Vertex context-cache delete). See the teardown-budget
+// comment at the otelShutdown defer (#538).
+const teardownStepTimeout = 3 * time.Second
+
 func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, compactionThreshold float64, maxTurnCostUSD, maxSessionCostUSD float64, watchdogMode, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache bool, promptCfg promptOpts, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
@@ -533,7 +539,19 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: telemetry setup: %v\n", err)
 	}
-	defer func() { _ = otelShutdown(context.Background()) }()
+	// Teardown waits are bounded (#538): every shutdown defer in run()
+	// carries its own deadline so a single stalled dependency (OTLP
+	// endpoint, Vertex cache delete, wedged subagent) can't eat the
+	// supervisor's termination grace period. Budget with defaults:
+	// peer deregister 2s + attach drain 5s + background drain 5s +
+	// MCP children 3s (parallel) + context-cache/metrics/OTel 3s each
+	// ≈ 24s worst case, inside K8s' default 30s
+	// terminationGracePeriodSeconds with headroom.
+	defer func() {
+		shCtx, cancel := context.WithTimeout(context.Background(), teardownStepTimeout)
+		defer cancel()
+		_ = otelShutdown(shCtx)
+	}()
 
 	// Metrics pipeline runs alongside traces but doesn't share init.
 	// ADK has no MeterProvider (upstream TODO(#479)), so telemetry.SetupMetrics
@@ -551,7 +569,11 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		fmt.Fprintf(os.Stderr, "core-agent: metrics setup: %v\n", err)
 		return runner.ExitConfigError
 	}
-	defer func() { _ = metricsShutdown(context.Background()) }()
+	defer func() {
+		shCtx, cancel := context.WithTimeout(context.Background(), teardownStepTimeout)
+		defer cancel()
+		_ = metricsShutdown(shCtx)
+	}()
 
 	provider, err := models.Resolve(cfg)
 	if err != nil {
@@ -577,7 +599,14 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		func(s string) { fmt.Fprintln(os.Stderr, "core-agent: "+s) },
 	)
 	if contextCacheManager != nil {
-		defer contextCacheManager.Delete(context.Background())
+		defer func() {
+			// Bounded (#538): Delete is a Vertex API call; a slow or
+			// unreachable endpoint must not stall teardown. An
+			// undeleted CachedContent expires server-side via its TTL.
+			shCtx, cancel := context.WithTimeout(context.Background(), teardownStepTimeout)
+			defer cancel()
+			contextCacheManager.Delete(shCtx)
+		}()
 	}
 
 	m, err := provider.Model(ctx, cfg.Model.Name)
@@ -846,6 +875,11 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	if mcpErr != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: mcp: %v\n", mcpErr)
 	}
+	// Terminate stdio MCP children on the way out (#538): SIGTERM,
+	// 3s grace, SIGKILL — concurrently across servers. Without this,
+	// children were orphaned at exit and died only via stdio pipe
+	// closure, which leaves servers that ignore EOF running forever.
+	defer mcp.CloseAll(mcpServers)
 	if len(mcpServers) > 0 {
 		// Status gauge over the write-once server slice (#338).
 		if _, err := mcp.RegisterMetrics(otel.GetMeterProvider(), mcpServers); err != nil {
@@ -994,7 +1028,15 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			fmt.Fprintf(os.Stderr, "core-agent: background agents: %v\n", err)
 			return runner.ExitConfigError
 		}
-		defer func() { _ = bgMgr.Close() }()
+		defer func() {
+			// Close is bounded internally (closeDrainTimeout); a
+			// non-nil error means stragglers were abandoned — log
+			// them so a wedged-subagent pattern is visible instead
+			// of silently absorbed into pod-restart latency.
+			if err := bgMgr.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "core-agent: shutdown: %v\n", err)
+			}
+		}()
 		builtinTools = append(builtinTools, background.NewSpawnTools(bgMgr)...)
 	}
 
@@ -1621,12 +1663,33 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 				Disabled:  rl.Disabled,
 			}
 		}
+		// Attach graceful-shutdown cap: config-tunable since #538;
+		// empty keeps the library default (5s). Same duration-string
+		// convention as session_idle_timeout above.
+		var attachShutdownTimeout time.Duration
+		if raw := cfg.Attach.ShutdownTimeout; raw != "" {
+			d, perr := time.ParseDuration(raw)
+			if perr != nil {
+				fmt.Fprintf(os.Stderr, "core-agent: parse attach.shutdown_timeout=%q: %v\n", raw, perr)
+				return runner.ExitConfigError
+			}
+			// NewServer promotes 0 to the library default, so an
+			// explicit "0s" would silently become 5s — reject it (and
+			// negatives, which would mean zero drain) instead of
+			// inverting the operator's intent.
+			if d <= 0 {
+				fmt.Fprintf(os.Stderr, "core-agent: attach.shutdown_timeout=%q: must be > 0 (omit the field to keep the 5s default)\n", raw)
+				return runner.ExitConfigError
+			}
+			attachShutdownTimeout = d
+		}
 		attachSrv, err := attach.NewServer(attach.Options{
-			Registry:      attachReg,
-			PeerRegistry:  peerReg,
-			Addr:          attachCfg.Listen,
-			UnixSocket:    attachCfg.UnixSocket,
-			CostRateLimit: costLimit,
+			Registry:        attachReg,
+			PeerRegistry:    peerReg,
+			Addr:            attachCfg.Listen,
+			UnixSocket:      attachCfg.UnixSocket,
+			CostRateLimit:   costLimit,
+			ShutdownTimeout: attachShutdownTimeout,
 			Auth: attach.AuthConfig{
 				TLSCertFile:  attachCfg.TLSCert,
 				TLSKeyFile:   attachCfg.TLSKey,

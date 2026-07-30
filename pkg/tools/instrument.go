@@ -203,7 +203,7 @@ func (tt *timedTool) Run(ctx adktool.Context, args any) (map[string]any, error) 
 	// span is recording. Record ignores ctx cancellation. Nil guard:
 	// ADK always passes a real Context, but direct callers (tests,
 	// other wrappers) may not.
-	rctx := context.Context(context.Background())
+	var rctx = context.Background()
 	if ctx != nil {
 		rctx = ctx
 	}

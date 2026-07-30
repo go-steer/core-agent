@@ -538,8 +538,21 @@ func (m *Manager) Stop(name string) error {
 	return nil
 }
 
+// closeDrainTimeout bounds how long Close waits for cancelled
+// subagent goroutines to observe their ctx and exit. Unbounded, a
+// single wedged subagent (a tool stuck in uninterruptible I/O) held
+// daemon teardown hostage until the supervisor's SIGKILL (#538);
+// bounded, teardown latency stays predictable and inside K8s' default
+// 30s termination grace period. Per-event persistence means an
+// abandoned goroutine loses nothing already committed — it dies with
+// the process moments later.
+// Var, not const, so tests can shrink it.
+var closeDrainTimeout = 5 * time.Second
+
 // Close stops every running subagent and prevents new spawns. Blocks
-// until each goroutine has exited so callers don't race with shutdown.
+// until each goroutine has exited or closeDrainTimeout elapses —
+// stragglers are abandoned (their contexts stay cancelled) and
+// reported in the returned error so the caller can log them.
 // Idempotent.
 func (m *Manager) Close() error {
 	m.mu.Lock()
@@ -562,10 +575,33 @@ func (m *Manager) Close() error {
 			cancel()
 		}
 	}
-	for _, h := range handles {
-		<-h.done
+	drained := make(chan struct{})
+	go func() {
+		for _, h := range handles {
+			<-h.done
+		}
+		close(drained)
+	}()
+	select {
+	case <-drained:
+		return nil
+	case <-time.After(closeDrainTimeout):
+		stuck := 0
+		for _, h := range handles {
+			select {
+			case <-h.done:
+			default:
+				stuck++
+			}
+		}
+		if stuck == 0 {
+			// The last handle drained in the window between the timer
+			// firing and the recount (or the select picked the timer
+			// arm with both cases ready). Clean drain, not an error.
+			return nil
+		}
+		return fmt.Errorf("background: %d subagent(s) still running after %s close drain; abandoning wait (their contexts remain cancelled)", stuck, closeDrainTimeout)
 	}
-	return nil
 }
 
 // runningCount returns the number of handles in StatusRunning.

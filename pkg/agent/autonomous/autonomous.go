@@ -153,6 +153,11 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 			}
 			runs.Add(context.Background(), 1, metric.WithAttributes(attribute.String(AttrStopReason, reason)))
 		}()
+	} else {
+		// Practically unreachable (fixed valid instrument name; the
+		// noop provider never errors) — logged rather than fatal so
+		// a metrics bug can't kill an autonomous run.
+		log.Printf("autonomous: runs counter unavailable, runs will be uncounted: %v", cErr)
 	}
 
 	// Convenience: emit a final checkpoint with the configured

@@ -85,6 +85,13 @@ func newWatchdogAlertCounter(mp metric.MeterProvider) (metric.Int64Counter, erro
 // AgentSource enumerates live agents for RegisterMetrics to sample on
 // each export interval. Implementations must be cheap and
 // thread-safe; nil agents in the slice are skipped.
+//
+// session.id comes from each agent's own SessionID() — unlike the
+// usage observer, which takes the registry Entry's triple as
+// authoritative. The two coincide in the daemon (the adapter derives
+// Entry fields from the agent); hosts registering agents under a
+// different Entry session id will see the two observer families
+// disagree.
 type AgentSource interface {
 	Agents() []*Agent
 }

@@ -244,7 +244,7 @@ under-reporting. See #368.
 
 | Metric | Type | Unit | Attributes | Source |
 |---|---|---|---|---|
-| `core_agent.agent.compactions` | ObservableCounter | `{compaction}` | `session.id` | in-memory `atomic.Int64` on `Agent`, ++ on successful `Compact` — NOT `ContextStats.CompactionCount`: that's an O(events) eventlog scan per read and resumes across restarts (wrong shape for a process-lifetime counter) |
+| `core_agent.agent.compactions` | ObservableCounter | `{compaction}` | `session.id` | in-memory `atomic.Int64` on `Agent`, ++ on successful `Compact` — NOT `ContextStats.CompactionCount`: that's an O(events) eventlog scan per read and resumes across restarts (wrong shape for a process-lifetime counter). Accepted: like every per-session series, an evict + lazy resume restarts the series at zero (same acceptance as the usage side) |
 | `core_agent.agent.checkpoints` | ObservableCounter | `{checkpoint}` | `session.id` | in-memory `atomic.Int64`, ++ on successful `Checkpoint` (same rationale) |
 | `core_agent.agent.subtasks` | ObservableCounter | `{subtask}` | `session.id` | `Agent.subtaskCount` (in-memory, `a.mu`) |
 | `core_agent.autonomous.runs` | Counter (sync) | `{run}` | `stop_reason` = the ACTUAL `StopReason` constants: completed\|max_turns_exceeded\|max_tokens_exceeded\|max_cost_exceeded\|wallclock_exceeded\|context_cancelled\|retry_policy_aborted\|deferred, plus `error` for aborts before a reason is assigned | deferred record in `autonomous.Run` (6 exit sites; no single return hook). Note: the daemon doesn't call `autonomous.Run` — consumers are background subagent spawns + embedders |

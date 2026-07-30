@@ -117,16 +117,22 @@ func (p *primaryTrackerProvider) Agents() []*agent.Agent {
 
 	var out []*agent.Agent
 	seen := map[*agent.Agent]bool{}
+	seenSIDs := map[string]bool{}
 	if agents != nil {
 		for _, a := range agents() {
 			if a == nil || seen[a] {
 				continue
 			}
 			seen[a] = true
+			seenSIDs[a.SessionID()] = true
 			out = append(out, a)
 		}
 	}
-	if primary != nil && !seen[primary] {
+	// Session-id dedup mirrors Trackers(): after evict + lazy resume
+	// the registry holds a fresh agent for the primary session; the
+	// stale p.agent must not shadow its gauges (inbox_pending frozen
+	// at the dead agent's value would be actively misleading).
+	if primary != nil && !seen[primary] && !seenSIDs[primary.SessionID()] {
 		out = append(out, primary)
 	}
 	return out
@@ -154,16 +160,25 @@ func (p *primaryTrackerProvider) Trackers() []usage.TrackedSession {
 
 	var out []usage.TrackedSession
 	seen := map[*usage.Tracker]bool{}
+	seenSIDs := map[string]bool{}
 	if registry != nil {
 		for _, ts := range registry.Trackers() {
 			if ts.Tracker == nil || seen[ts.Tracker] {
 				continue
 			}
 			seen[ts.Tracker] = true
+			seenSIDs[ts.SessionID] = true
 			out = append(out, ts)
 		}
 	}
-	if primary.Tracker != nil && !seen[primary.Tracker] {
+	// Skip the primary on session-id match too, not just tracker
+	// pointer: after an idle-evict + lazy resume the registry holds a
+	// FRESH tracker for the primary session while p.tracker still
+	// points at the dead incarnation — emitting both would let the
+	// stale snapshot shadow the live one (identical attrs, last
+	// observation wins).
+	if primary.Tracker != nil && !seen[primary.Tracker] &&
+		(primary.SessionID == "" || !seenSIDs[primary.SessionID]) {
 		out = append(out, primary)
 	}
 	return out

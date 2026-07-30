@@ -482,6 +482,26 @@ type OTELConfig struct {
 type OTELMetricsConfig struct {
 	Exporter       string `json:"exporter,omitempty"`
 	PrometheusAddr string `json:"prometheus_addr,omitempty"`
+
+	// SessionLabels controls whether per-session identity attributes
+	// (session.id, app.name, user.id) are stamped on the usage
+	// metrics. Absent/true — the default — preserves the per-session
+	// series shape; false aggregates across sessions before export,
+	// for fleet operators where per-session labels would blow up
+	// series cardinality (many short-lived attach sessions × models).
+	// Per-tool and per-turn histograms never carry session labels
+	// regardless of this setting.
+	SessionLabels *bool `json:"session_labels,omitempty"`
+}
+
+// SessionLabelsEnabled reports whether usage metrics carry per-session
+// identity attributes. Nil field → true (default ON; same tri-state
+// convention as ContextCacheConfig.IsEnabled).
+func (c OTELMetricsConfig) SessionLabelsEnabled() bool {
+	if c.SessionLabels == nil {
+		return true
+	}
+	return *c.SessionLabels
 }
 
 // URLScopeConfig governs which URLs the fetch_url built-in is allowed

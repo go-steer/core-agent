@@ -514,13 +514,16 @@ About **900–1200 LoC + tests** total, split across three PRs.
    attach listener is TLS-authenticated, do we require the same for
    `/metrics`? Lean: **no, follow Prometheus norms** — operators
    wanting auth reverse-proxy in front. Cheap to revisit.
-2. **Per-session cardinality.** Emitting `session.id` as an attribute
-   on every per-session metric explodes cardinality on long-running
-   daemons handling thousands of sessions. Lean: **make it configurable**
-   — a `otel.metrics.session_labels` bool (default `false`) that,
-   when off, aggregates across sessions. Consumers running <100
-   sessions/day flip it on for the drill-down; big-fleet operators
-   leave it off. Worth deciding before PR #A freezes attribute keys.
+2. **Per-session cardinality.** SETTLED (#338 Phase 3):
+   `otel.metrics.session_labels`, default **true** — inverted from
+   the original lean because PR #A had already shipped per-session
+   series unconditionally, and flipping the default would have
+   silently changed every deployed dashboard's series shape. When
+   false, the usage observer AGGREGATES across sessions before
+   observing (stripping attributes alone would be last-wins-lossy),
+   drops `core_agent.session.duration` (aggregated wall-clock is
+   meaningless), and ANDs the cost `priced` flag. The gen_ai.*
+   histograms carry no session labels in either mode.
 3. **GenAI semconv version pin.** The GenAI semconv is still moving.
    Do we pin to the version stable at PR #A time, or track upstream
    and accept breakage? Lean: **pin, and bump in a dedicated PR** with

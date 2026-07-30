@@ -289,3 +289,105 @@ func dataPointAttributes(m metricdata.Metrics) []attribute.Set {
 	}
 	return out
 }
+
+// TestRegisterMetrics_WithoutSessionLabels_Aggregates pins the
+// labels-off contract: totals merge across sessions BEFORE observing
+// (identical-attribute observations are last-wins in the SDK, so
+// stripping labels without aggregating silently drops sessions), no
+// session identity attrs anywhere, priced is the AND across sessions,
+// and the per-session duration gauge disappears entirely.
+func TestRegisterMetrics_WithoutSessionLabels_Aggregates(t *testing.T) {
+	t.Parallel()
+	a := NewTracker()
+	a.AppendUsage("m", TurnUsage{InputTokens: 10, OutputTokens: 5}, Pricing{})
+	a.AppendDigestSavings(DigestSavingsRecord{Path: "llm_fallback", SubagentCostUSD: 0.25})
+	b := NewTracker()
+	b.AppendUsage("m", TurnUsage{InputTokens: 30, OutputTokens: 7}, Pricing{Unpriced: true})
+	b.AppendDigestSavings(DigestSavingsRecord{Path: "llm_fallback", SubagentCostUSD: 0.5})
+
+	mp, collect := setupReader(t)
+	_, err := RegisterMetrics(mp, staticProvider{
+		{Tracker: a, SessionID: "s1", AppName: "app", UserID: "u"},
+		{Tracker: b, SessionID: "s2", AppName: "app", UserID: "u"},
+	}, WithoutSessionLabels())
+	if err != nil {
+		t.Fatalf("RegisterMetrics: %v", err)
+	}
+	byName := indexByName(collect())
+
+	if _, ok := byName[MetricSessionDuration]; ok {
+		t.Errorf("%s present in labels-off mode; aggregated wall-clock is meaningless", MetricSessionDuration)
+	}
+
+	turns, ok := byName[MetricSessionTurns].Data.(metricdata.Sum[int64])
+	if !ok || len(turns.DataPoints) != 1 {
+		t.Fatalf("turns: want exactly 1 aggregated point, got %+v", byName[MetricSessionTurns])
+	}
+	if turns.DataPoints[0].Value != 2 {
+		t.Errorf("turns = %d, want 2 (1+1 across sessions)", turns.DataPoints[0].Value)
+	}
+
+	tokens := byName[MetricGenAITokenUsage].Data.(metricdata.Sum[int64])
+	var sawInput bool
+	for _, dp := range tokens.DataPoints {
+		if v, _ := dp.Attributes.Value(attribute.Key(AttrGenAITokenType)); v.AsString() == TokenTypeInput {
+			sawInput = true
+			if dp.Value != 40 {
+				t.Errorf("input tokens = %d, want 40 (10+30)", dp.Value)
+			}
+		}
+	}
+	if !sawInput {
+		t.Error("no input token point in labels-off mode")
+	}
+
+	cost := byName[MetricSessionCost].Data.(metricdata.Sum[float64])
+	if len(cost.DataPoints) != 1 {
+		t.Fatalf("cost: want 1 aggregated point, got %d", len(cost.DataPoints))
+	}
+	if v, _ := cost.DataPoints[0].Attributes.Value(attribute.Key(AttrPriced)); v.AsBool() {
+		t.Error("priced = true; one session had unpriced turns, AND-merge must yield false")
+	}
+
+	digest := byName[MetricDigestSubagentCost].Data.(metricdata.Sum[float64])
+	if len(digest.DataPoints) != 1 || digest.DataPoints[0].Value != 0.75 {
+		t.Errorf("digest subagent cost: want single 0.75 point, got %+v", digest.DataPoints)
+	}
+
+	// No series anywhere may carry session identity.
+	for name, m := range byName {
+		for _, set := range dataPointAttributes(m) {
+			for _, key := range []string{AttrSessionID, AttrAppName, AttrUserID} {
+				if _, ok := set.Value(attribute.Key(key)); ok {
+					t.Errorf("%s carries %s in labels-off mode", name, key)
+				}
+			}
+		}
+	}
+}
+
+// TestRegisterMetrics_DigestSubagentCost_PerSession pins the new
+// digest-cost series in default (labels-on) mode: one point per
+// session that actually spent, zero-spend sessions suppressed.
+func TestRegisterMetrics_DigestSubagentCost_PerSession(t *testing.T) {
+	t.Parallel()
+	spender := NewTracker()
+	spender.AppendDigestSavings(DigestSavingsRecord{Path: "llm_fallback", SubagentCostUSD: 0.4})
+	idle := NewTracker()
+
+	mp, collect := setupReader(t)
+	if _, err := RegisterMetrics(mp, staticProvider{
+		{Tracker: spender, SessionID: "s1"},
+		{Tracker: idle, SessionID: "s2"},
+	}); err != nil {
+		t.Fatalf("RegisterMetrics: %v", err)
+	}
+	byName := indexByName(collect())
+	digest, ok := byName[MetricDigestSubagentCost].Data.(metricdata.Sum[float64])
+	if !ok || len(digest.DataPoints) != 1 {
+		t.Fatalf("digest cost: want 1 point (zero-spend suppressed), got %+v", byName[MetricDigestSubagentCost])
+	}
+	if v, _ := digest.DataPoints[0].Attributes.Value(attribute.Key(AttrSessionID)); v.AsString() != "s1" {
+		t.Errorf("digest cost session = %q, want s1", v.AsString())
+	}
+}

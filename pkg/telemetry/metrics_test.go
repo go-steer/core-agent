@@ -208,6 +208,41 @@ func TestSetupMetrics_OptsAddrWinsOverCfg(t *testing.T) {
 	}
 }
 
+// TestSetupMetrics_Prometheus_RuntimeMetricsPresent verifies the Go
+// runtime instrumentation (#338) is registered on the provider: a
+// scrape must carry the contrib runtime package's go.* instruments
+// (rendered in Prometheus form, e.g. go_memory_used_bytes). This is
+// the end-to-end pipeline proof — an async instrument observed at
+// collection time, through the reader, out the scrape endpoint.
+func TestSetupMetrics_Prometheus_RuntimeMetricsPresent(t *testing.T) {
+	addr := freeAddr(t)
+	shutdown, err := SetupMetrics(
+		context.Background(),
+		config.OTELMetricsConfig{Exporter: MetricsModePrometheus, PrometheusAddr: addr},
+		MetricsOptions{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = shutdown(context.Background()) })
+
+	waitForListener(t, addr)
+	resp, err := http.Get("http://" + addr + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read scrape body: %v", err)
+	}
+	for _, want := range []string{"go_memory_used", "go_goroutine_count"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("scrape output missing runtime metric %q", want)
+		}
+	}
+}
+
 // freeAddr grabs and releases a port to get a likely-free address.
 // Small race window, acceptable for local tests.
 func freeAddr(t *testing.T) string {

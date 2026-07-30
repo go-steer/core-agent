@@ -31,6 +31,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	otelruntime "go.opentelemetry.io/contrib/instrumentation/runtime"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
@@ -129,6 +130,18 @@ func SetupMetrics(ctx context.Context, cfg config.OTELMetricsConfig, opts Metric
 		fmt.Fprintf(os.Stderr, "core-agent: telemetry: metrics OTLP HTTP exporter → %s\n", resolvedOTLPEndpoint())
 	}
 
+	// A reader created before a later init step fails would leak its
+	// export goroutine for the process lifetime (the periodic OTLP
+	// reader in "both" mode when the Prometheus bind fails, most
+	// commonly). Every error return below the first reader goes
+	// through failReaders.
+	failReaders := func(cause error) error {
+		for _, r := range readers {
+			cause = errors.Join(cause, r.Shutdown(ctx))
+		}
+		return cause
+	}
+
 	if mode == MetricsModePrometheus || mode == MetricsModeBoth {
 		// Dedicated registry (not prometheus.DefaultRegisterer) so
 		// scrape output is isolated from any other Prometheus code
@@ -141,7 +154,7 @@ func SetupMetrics(ctx context.Context, cfg config.OTELMetricsConfig, opts Metric
 			promexporter.WithoutScopeInfo(),
 		)
 		if err != nil {
-			return noop, fmt.Errorf("telemetry: prometheus reader: %w", err)
+			return noop, failReaders(fmt.Errorf("telemetry: prometheus reader: %w", err))
 		}
 		readers = append(readers, promReader)
 
@@ -154,7 +167,7 @@ func SetupMetrics(ctx context.Context, cfg config.OTELMetricsConfig, opts Metric
 		}
 		stop, err := servePrometheus(addr, reg)
 		if err != nil {
-			return noop, fmt.Errorf("telemetry: prometheus scrape endpoint on %s: %w", addr, err)
+			return noop, failReaders(fmt.Errorf("telemetry: prometheus scrape endpoint on %s: %w", addr, err))
 		}
 		shutdowns = append(shutdowns, stop)
 		fmt.Fprintf(os.Stderr, "core-agent: telemetry: metrics Prometheus scrape → http://%s/metrics\n", addr)
@@ -174,6 +187,21 @@ func SetupMetrics(ctx context.Context, cfg config.OTELMetricsConfig, opts Metric
 		providerOpts = append(providerOpts, sdkmetric.WithReader(r))
 	}
 	mp := sdkmetric.NewMeterProvider(providerOpts...)
+
+	// Go runtime metrics (go.memory.*, go.goroutine.count, GC config)
+	// ride on the same provider (#338): operators get heap / GC /
+	// goroutine visibility with zero agent-loop instrumentation, and
+	// a scrape or OTLP export interval that shows them proves the
+	// whole metrics pipeline end-to-end. Registered BEFORE the global
+	// install so a registration failure leaves no half-configured
+	// global provider behind.
+	if err := otelruntime.Start(otelruntime.WithMeterProvider(mp)); err != nil {
+		shutdownErr := mp.Shutdown(ctx)
+		for _, stop := range shutdowns {
+			shutdownErr = errors.Join(shutdownErr, stop(ctx))
+		}
+		return noop, errors.Join(fmt.Errorf("telemetry: runtime metrics: %w", err), shutdownErr)
+	}
 	otel.SetMeterProvider(mp)
 
 	shutdown = func(ctx context.Context) error {

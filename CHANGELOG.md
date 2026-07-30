@@ -16,7 +16,12 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
-_No unreleased changes since [2.8.0-dev.4]._
+### Changes by Kind
+
+#### Feature
+
+- telemetry: `SetupMetrics` now starts the otel-contrib Go runtime instrumentation on the MeterProvider it installs, completing #338 Phase 1 — with metrics enabled (`otel.metrics` config or `OTEL_METRICS_EXPORTER`), operators get `go.memory.*`, `go.goroutine.count`, and GC-config gauges via OTLP and/or the Prometheus scrape endpoint with zero agent-loop instrumentation. Registration happens before the global provider install so a failure can't leave a half-configured global, and the scrape test asserts the runtime instruments actually flow end-to-end. Instrument inventory recorded in `docs/metrics-design.md`. Advances [#338](https://github.com/go-steer/core-agent/issues/338) (Phase 1 complete; Phase 2 moved to k8s-lookout; Phase 3 pending design).
+- models/gemini: outbound LLM calls on the direct Gemini API (API-key) backend now emit `otelhttp` HTTP client spans and propagate `traceparent`, closing the last dark Gemini-family segment at the LLM boundary (#325; the Anthropic provider's HTTP client remains untraced, per that issue's explicit non-goal — file separately if needed). Live verification showed the issue was already three-quarters done upstream: on Vertex, genai builds its client through `cloud.google.com/go/auth/httptransport`, whose default telemetry wraps the transport in `otelhttp` — so `NewVertex` deliberately does NOT set `ClientConfig.HTTPClient` (doing so would bypass genai's ADC wiring and break auth; a field comment and `TestNewVertex_NoHTTPClientOverride` pin that trap). Only `NewAPIKey` supplies an instrumented client, which is safe there because API-key auth is a per-request header genai sets itself. Friction-log entry 5 for genai rewritten to record the backend asymmetry and the `HTTPClient`/ADC coupling. Closes [#325](https://github.com/go-steer/core-agent/issues/325).
 
 ## [2.8.0-dev.4] — 2026-07-29
 

@@ -584,19 +584,19 @@ Three patterns recur:
 
 **Evidence.** PR #299; `pkg/models/gemini/builtins.go:496-518`; `pkg/models/gemini/cache_eviction_retry_test.go:60-90`.
 
-### 5. [medium] genai HTTP client is not `otelhttp`-wrapped — distributed traces stop at the LLM boundary
+### 5. [medium] genai HTTP tracing is backend-asymmetric, and `HTTPClient` is auth-coupled — you can't inject a transport on Vertex
 
-**Category:** missing-feature
+**Category:** behavior-surprise
 
-**Issue.** `genai.ClientConfig` has an `HTTPClient` field but neither the SDK nor our provider wraps it with `otelhttp.NewTransport` by default. Result: ADK's `adk.call_llm` / `subagent.llm_call` spans exist, but no HTTP client span for the actual POST to `aiplatform.googleapis.com` / `generativelanguage.googleapis.com` is emitted, and no `traceparent` header rides on the request. Distributed traces stop at the LLM boundary.
+**Issue.** Whether a genai LLM call emits an HTTP client span depends on which auth backend you're on, and the obvious fix is a trap. On Vertex with ADC, `genai.NewClient` builds its client via `cloud.google.com/go/auth/httptransport`, whose *default* telemetry wraps the transport in `otelhttp` (`transport.go:218`) — spans and `traceparent` come for free. On the direct Gemini API (API key), genai falls back to a bare `&http.Client{}` (`client.go:385`) — no span, no `traceparent`. And you cannot fix Vertex symmetrically by setting `ClientConfig.HTTPClient`: ADC detection and the auth middleware only run when `HTTPClient == nil` (`client.go:351,367`), so supplying your own client silently breaks Vertex auth. The SDK conflates "who owns the transport" with "who owns credentials".
 
-**Impact.** Docs (`concepts/otel.md`) had to publish a "Known gap" section explicitly calling out that Vertex/Gemini calls don't participate in the distributed trace, even though every other outbound HTTP surface (attach, MCP, k8s-event-watcher) does. [Issue #325](https://github.com/go-steer/core-agent/issues/325) remains OPEN.
+**Impact.** [Issue #325](https://github.com/go-steer/core-agent/issues/325) was filed on the belief that traces stop at the LLM boundary on all backends, budgeted a three-site wrap, and sketched exactly the `HTTPClient` override that would have broken Vertex auth. Live verification (2026-07-29, in-memory exporter + one call per backend) showed Vertex was already instrumented upstream and only the API-key path was dark.
 
-**Workaround.** None shipped yet. Sketch in the issue: wrap `genai.ClientConfig.HTTPClient` with `otelhttp.NewTransport` at three known construction sites.
+**Workaround.** Asymmetric by necessity: `NewAPIKey` supplies an `otelhttp`-wrapped `HTTPClient` (safe — API-key auth is a per-request header genai sets itself); `NewVertex` deliberately leaves `HTTPClient` nil and documents why in a field comment. `pkg/models/gemini/gemini.go`; contract pinned by `TestNewAPIKey_TracedHTTPClient` / `TestNewVertex_NoHTTPClientOverride`.
 
-**Recommendation.** genai should either wrap its default HTTP client with an `otelhttp` transport when OTel is initialized in the process, or document + prominently sample-code the wrap pattern in the `ClientConfig` godoc.
+**Recommendation.** genai should wrap its API-key fallback client in `otelhttp` like the ADC path already is, and decouple transport injection from credential wiring (e.g. honor a `BaseRoundTripper`-style option the way `httptransport.Options` does).
 
-**Evidence.** Issue #325; PR #326; `pkg/models/gemini/gemini.go:146`.
+**Evidence.** Issue #325; `google.golang.org/genai@v1.55.0/client.go:351,367,385`; `cloud.google.com/go/auth@v0.20.0/httptransport/transport.go:218`; `pkg/models/gemini/gemini.go`.
 
 ### 6. [low] `cachedContentTokenCount` > `promptTokenCount` observed occasionally — no docs, forced defensive clamp
 

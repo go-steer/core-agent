@@ -262,6 +262,18 @@ under-reporting. See #368.
 | `core_agent.mcp.server.status` | ObservableGauge | `{server}` (0/1 per label combo) | `mcp.server`, `mcp.status` = running\|starting\|failed\|stopped | `Server.Status` |
 | `core_agent.watchdog.alerts` | ObservableCounter | `{alert}` | `session.id`, `signal` (e.g. repeated_tool_call) | `Watchdog.alerts` |
 
+### Go runtime (otel-contrib, shipped with the MeterProvider)
+
+`go.opentelemetry.io/contrib/instrumentation/runtime` is started
+inside `SetupMetrics` on the same provider (#338): `go.memory.used`,
+`go.memory.limit`, `go.memory.allocated`, `go.memory.allocations`,
+`go.memory.gc.goal`, `go.goroutine.count`, `go.processor.limit`,
+`go.config.gogc` — the contrib package's
+current (non-deprecated) instrument set, observed from
+`runtime/metrics` at each collection. Zero agent-loop code; these
+are also the cheapest end-to-end proof that the pipeline works,
+since they emit on every scrape / export interval with no traffic.
+
 ### k8s-event-watcher (migrated from Prometheus)
 
 Existing metric names preserved exactly for scrape backward

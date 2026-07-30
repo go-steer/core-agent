@@ -100,19 +100,21 @@ kubectl config current-context | grep -q "${CLUSTER_NAME}" \
 ### Container images
 
 ```bash
-# v2.6.0 images published on GHCR (should exist since we tagged v2.6.0).
+# v2.7.0 images published on GHCR (should exist since we tagged v2.7.0).
 # Three images ship from this repo; the watcher ships from
 # go-steer/k8s-lookout as ghcr.io/go-steer/lookout (its ENTRYPOINT is
 # `lookout watch`, a drop-in swap for the retired k8s-event-watcher
-# image).
+# image). Watcher floor is v0.11.0: earlier releases don't send
+# Content-Type on the bodyless POST /sessions, which daemons ≥
+# 2.8.0-dev.1 reject with 415 (#383's CSRF guard).
 for img in core-agent core-agent-slim core-agent-tui; do
-  crane digest "ghcr.io/go-steer/${img}:2.6.0" >/dev/null 2>&1 \
-      && echo "✓ ghcr.io/go-steer/${img}:2.6.0 exists" \
-      || echo "✗ ghcr.io/go-steer/${img}:2.6.0 NOT found — check ε.4 release ran"
+  crane digest "ghcr.io/go-steer/${img}:2.7.0" >/dev/null 2>&1 \
+      && echo "✓ ghcr.io/go-steer/${img}:2.7.0 exists" \
+      || echo "✗ ghcr.io/go-steer/${img}:2.7.0 NOT found — check the release-images workflow ran"
 done
-crane digest "ghcr.io/go-steer/lookout:v0.8.0" >/dev/null 2>&1 \
-    && echo "✓ ghcr.io/go-steer/lookout:v0.8.0 exists" \
-    || echo "✗ ghcr.io/go-steer/lookout:v0.8.0 NOT found — check the k8s-lookout release"
+crane digest "ghcr.io/go-steer/lookout:v0.11.0" >/dev/null 2>&1 \
+    && echo "✓ ghcr.io/go-steer/lookout:v0.11.0 exists" \
+    || echo "✗ ghcr.io/go-steer/lookout:v0.11.0 NOT found — check the k8s-lookout release"
 ```
 
 (If `crane` isn't installed, skip this — the deploy will fail loudly if an image is missing.)
@@ -122,26 +124,20 @@ crane digest "ghcr.io/go-steer/lookout:v0.8.0" >/dev/null 2>&1 \
 Three ways to get it — pick one:
 
 ```bash
-# Option 1 (recommended): build from source at the v2.6.0 tag.
-# `go install @v2.6.0` fails on any tag prior to #327 (the /v2
-# module-path rewrite that landed in v2.7.0) — Go's SIVE rule
-# requires the /v2 suffix on the module path once major ≥ 2, and
-# only tags at v2.7.0 or later carry it. Historical v2.x tags stay
-# uninstallable via `go install`; source builds + container images
-# were never affected.
-git clone https://github.com/go-steer/core-agent.git /tmp/core-agent-src
-cd /tmp/core-agent-src && git checkout v2.6.0
-go install ./cmd/core-agent-tui
-cd - >/dev/null
+# Option 1 (recommended): go install the v2.7.0 tag directly.
+# v2.7.0 is the first go-install-able tag (#327's /v2 module-path
+# rewrite — Go's SIVE rule requires the /v2 suffix once major ≥ 2).
+# Historical v2.x tags stay uninstallable via `go install`; source
+# builds + container images were never affected.
+go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@v2.7.0
 
 # Option 2: install from main (latest development; may include
-# post-v2.6.0 changes). Requires the /v2 module-path suffix
-# per #327.
+# post-v2.7.0 changes).
 go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@main
 
 # Option 3: pull the published container image and extract the binary
-docker pull ghcr.io/go-steer/core-agent-tui:2.6.0
-CID=$(docker create ghcr.io/go-steer/core-agent-tui:2.6.0)
+docker pull ghcr.io/go-steer/core-agent-tui:2.7.0
+CID=$(docker create ghcr.io/go-steer/core-agent-tui:2.7.0)
 docker cp "${CID}:/usr/local/bin/binary" "${GOPATH:-$HOME/go}/bin/core-agent-tui"
 docker rm "${CID}"
 chmod +x "${GOPATH:-$HOME/go}/bin/core-agent-tui"
@@ -150,7 +146,7 @@ chmod +x "${GOPATH:-$HOME/go}/bin/core-agent-tui"
 which core-agent-tui \
     && echo "✓ core-agent-tui on PATH" \
     || (echo "✗ TUI not on PATH; ensure ${GOPATH:-$HOME/go}/bin is in \$PATH"; false)
-core-agent-tui --version | grep -q "v2.6\|main-" \
+core-agent-tui --version | grep -q "v2.7\|main-" \
     && echo "✓ TUI version looks right" \
     || echo "warning: version string unexpected (may still work)"
 ```

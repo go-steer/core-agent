@@ -18,6 +18,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ### Changes by Kind
 
+#### Bug or Regression
+
+- e2e/examples: the GKE-troubleshoot e2e now builds the daemon image from the current checkout and side-loads it into kind (override with `DAEMON_IMAGE=<tag>` to smoke a published tag), and the recipe's watcher pin moves to `lookout:v0.11.0` with the daemon pin at the `2.7.0` GA. This closes the skew blind spot that let #383's CSRF guard (PR #431) ship while the e2e stayed green: the e2e pinned a pre-guard `core-agent:2.6.0`, so no CI leg ever ran a current daemon against the shipped watcher — meanwhile in production every per-incident session open failed with `415 unsupported media type`, because lookout ≤ v0.10.0 sends no `Content-Type` on the bodyless `POST /sessions` (fixed in k8s-lookout#139, released as v0.11.0). The e2e's stale `__GCP_PROJECT__` AGENTS.md sed (dead since #323's `${env:VAR}` interpolation) is replaced by a guard that fails if placeholder tokens ever resurface.
+
 #### Feature
 
 - telemetry: `SetupMetrics` now starts the otel-contrib Go runtime instrumentation on the MeterProvider it installs, completing #338 Phase 1 — with metrics enabled (`otel.metrics` config or `OTEL_METRICS_EXPORTER`), operators get `go.memory.*`, `go.goroutine.count`, and GC-config gauges via OTLP and/or the Prometheus scrape endpoint with zero agent-loop instrumentation. Registration happens before the global provider install so a failure can't leave a half-configured global, and the scrape test asserts the runtime instruments actually flow end-to-end. Instrument inventory recorded in `docs/metrics-design.md`. Advances [#338](https://github.com/go-steer/core-agent/issues/338) (Phase 1 complete; Phase 2 moved to k8s-lookout; Phase 3 pending design).

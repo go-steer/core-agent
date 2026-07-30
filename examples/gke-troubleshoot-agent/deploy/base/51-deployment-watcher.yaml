@@ -59,7 +59,7 @@ spec:
           # k8s-event-watcher image (same flags below). A `-gke` image
           # flavor and a richer `--sources=` capability set are
           # available there.
-          image: ghcr.io/go-steer/lookout:v0.8.0
+          image: ghcr.io/go-steer/lookout:v0.11.0
           imagePullPolicy: IfNotPresent
           args:
             - "--daemon-url=http://core-agent.agent-triage.svc.cluster.local:7777"

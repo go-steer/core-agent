@@ -26,6 +26,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -38,7 +39,6 @@ import (
 	"google.golang.org/genai"
 
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/llmagent"
@@ -247,10 +247,14 @@ type Agent struct {
 	agentName      string
 	// invocationHist + toolInstrumenter are the #338 gen_ai.*
 	// instruments; both are non-nil after New (noop-backed when
-	// metrics are off). toolInstrumenter is reused by RunSubtask so
-	// subtask tool calls land in the same histogram.
+	// metrics are off; nil only on hand-constructed Agents, which
+	// the record sites guard against). toolInstrumenter is reused
+	// by RunSubtask so subtask tool calls land in the same
+	// histogram. metricAgentName is the low-cardinality
+	// gen_ai.agent.name attribute value (see WithMetricAgentName).
 	invocationHist   metric.Float64Histogram
 	toolInstrumenter *tools.DurationInstrumenter
+	metricAgentName  string
 	description      string
 	userID           string
 	sessionID        string
@@ -361,6 +365,7 @@ type options struct {
 	onTurnEnd           func()
 	postConstruct       func(*Agent)
 	meterProvider       metric.MeterProvider
+	metricAgentName     string
 }
 
 func defaultOptions() options {
@@ -646,9 +651,23 @@ func WithPostConstruct(f func(*Agent)) Option {
 // is built, and when metrics are disabled the global is the noop
 // provider, so recording costs nothing. Embedders wanting metrics
 // must likewise install their provider (or pass one here) before
-// calling New. Primarily useful for tests injecting a ManualReader.
+// calling New. Background subagents always bind to the global
+// provider (the spawn path doesn't thread this option). Primarily
+// useful for tests injecting a ManualReader.
 func WithMeterProvider(mp metric.MeterProvider) Option {
 	return func(o *options) { o.meterProvider = mp }
+}
+
+// WithMetricAgentName overrides the gen_ai.agent.name attribute value
+// on the agent's metric instruments without changing the agent's
+// actual name (WithName). Metric attribute values must stay
+// low-cardinality: the spawn path names background subagents with
+// MODEL-CHOSEN strings, and stamping those on a histogram would
+// accrete one series per invented name on a long-lived daemon — it
+// passes a fixed class-level value here instead. Defaults to the
+// WithName value, which is operator-configured and bounded.
+func WithMetricAgentName(name string) Option {
+	return func(o *options) { o.metricAgentName = name }
 }
 
 // New constructs an Agent backed by model. Returns a clear error if the
@@ -809,6 +828,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		mode:             o.mode,
 		invocationHist:   invocationHist,
 		toolInstrumenter: toolInstrumenter,
+		metricAgentName:  cmp.Or(o.metricAgentName, o.name),
 		gate:             o.gate,
 		bgMgr:            o.bgMgr,
 		inbox:            newInbox(),
@@ -1147,6 +1167,12 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// emitted when the ceiling first tripped.
 	if err := a.preflightCostCeiling(); err != nil {
 		return func(yield func(*session.Event, error) bool) {
+			// Still a refused turn the caller observes — record it
+			// (#338), or the invocation histogram goes dark exactly
+			// during a spend-cap incident, with no error.type series
+			// to alert on. Duration ~0 is accurate: the turn was
+			// refused before any work.
+			a.recordInvocation(0, err)
 			yield(nil, err)
 		}
 	}
@@ -1312,15 +1338,12 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		// because the harness calls Append after this cleanup runs).
 		// gen_ai.agent.invocation.duration (#338): one point per
 		// turn, error.type only on failed turns (stable classifier
-		// kinds, not raw error text). context.Background() because
-		// runCtx is already cancelled here — exemplar linkage is
-		// lost for this instrument; acceptable, the terminal SSE
-		// event carries prompt_id for correlation.
-		invAttrs := []attribute.KeyValue{attribute.String(AttrGenAIAgentName, a.agentName)}
-		if turnErr != nil {
-			invAttrs = append(invAttrs, attribute.String(AttrErrorType, attach.ClassifyTurnError(turnErr).Kind))
-		}
-		a.invocationHist.Record(context.Background(), time.Since(started).Seconds(), metric.WithAttributes(invAttrs...))
+		// kinds, not raw error text). Recorded against
+		// context.Background() because runCtx is already cancelled
+		// here — exemplar linkage is lost for this instrument;
+		// acceptable, the terminal SSE event carries prompt_id for
+		// correlation.
+		a.recordInvocation(time.Since(started).Seconds(), turnErr)
 
 		if turnErr != nil {
 			a.emit(attach.EventTurnError, attach.ClassifyTurnError(turnErr))
@@ -1390,8 +1413,19 @@ func (a *Agent) RunWithContents(ctx context.Context, contents []*genai.Content) 
 		}
 		history := contents[:len(contents)-1]
 
+		// gen_ai.agent.invocation.duration (#338) for the
+		// RunWithContents path too (the AX adapter drives turns
+		// exclusively through here). Timing starts after argument
+		// validation — a contract violation isn't a turn. turnErr
+		// tracks the last error yielded so the deferred record
+		// carries error.type on failed turns.
+		started := time.Now()
+		var turnErr error
+		defer func() { a.recordInvocation(time.Since(started).Seconds(), turnErr) }()
+
 		sessionID, err := freshSessionID()
 		if err != nil {
+			turnErr = err
 			yield(nil, err)
 			return
 		}
@@ -1402,7 +1436,8 @@ func (a *Agent) RunWithContents(ctx context.Context, contents []*genai.Content) 
 			SessionID: sessionID,
 		})
 		if err != nil {
-			yield(nil, fmt.Errorf("agent: RunWithContents: create session: %w", err))
+			turnErr = fmt.Errorf("agent: RunWithContents: create session: %w", err)
+			yield(nil, turnErr)
 			return
 		}
 		sess := createResp.Session
@@ -1430,7 +1465,8 @@ func (a *Agent) RunWithContents(ctx context.Context, contents []*genai.Content) 
 			ev.Author = authorFor(c.Role, a.agentName)
 			ev.LLMResponse = adkmodel.LLMResponse{Content: c}
 			if err := a.sessionService.AppendEvent(ctx, sess, ev); err != nil {
-				yield(nil, fmt.Errorf("agent: RunWithContents: append history event %d: %w", i, err))
+				turnErr = fmt.Errorf("agent: RunWithContents: append history event %d: %w", i, err)
+				yield(nil, turnErr)
 				return
 			}
 		}
@@ -1449,6 +1485,9 @@ func (a *Agent) RunWithContents(ctx context.Context, contents []*genai.Content) 
 		for ev, err := range a.runner.Run(runCtx, a.userID, sessionID, last, adkagent.RunConfig{
 			StreamingMode: a.streaming,
 		}) {
+			if err != nil {
+				turnErr = err
+			}
 			if !yield(ev, err) {
 				return
 			}

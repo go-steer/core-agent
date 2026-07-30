@@ -15,7 +15,12 @@
 package agent
 
 import (
+	"context"
+
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+
+	"github.com/go-steer/core-agent/v2/pkg/attach"
 )
 
 // Agent-level metrics (#338 Phase 3). Names and attributes match
@@ -50,6 +55,22 @@ const (
 // meterName is the instrumentation scope for all pkg/agent
 // instruments, per the module-path convention (see pkg/usage).
 const meterName = "github.com/go-steer/core-agent/v2/pkg/agent"
+
+// recordInvocation lands one gen_ai.agent.invocation.duration point.
+// error.type (the stable ClassifyTurnError kind) rides only on failed
+// turns. Nil-guarded: hand-constructed Agents (tests) have no
+// histogram and degrade to a no-op, matching the rest of Run's
+// nil-field posture.
+func (a *Agent) recordInvocation(seconds float64, turnErr error) {
+	if a.invocationHist == nil {
+		return
+	}
+	attrs := []attribute.KeyValue{attribute.String(AttrGenAIAgentName, a.metricAgentName)}
+	if turnErr != nil {
+		attrs = append(attrs, attribute.String(AttrErrorType, attach.ClassifyTurnError(turnErr).Kind))
+	}
+	a.invocationHist.Record(context.Background(), seconds, metric.WithAttributes(attrs...))
+}
 
 // newInvocationHistogram builds the turn-duration histogram on mp.
 // Bucket boundaries span real turn shapes: a single-model-call turn

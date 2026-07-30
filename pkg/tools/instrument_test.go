@@ -36,9 +36,9 @@ type timedFakeTool struct {
 	err   error
 }
 
-func (f *timedFakeTool) Name() string                            { return f.name }
-func (f *timedFakeTool) Description() string                     { return "fake" }
-func (f *timedFakeTool) IsLongRunning() bool                     { return false }
+func (f *timedFakeTool) Name() string        { return f.name }
+func (f *timedFakeTool) Description() string { return "fake" }
+func (f *timedFakeTool) IsLongRunning() bool { return false }
 func (f *timedFakeTool) Declaration() *genai.FunctionDeclaration {
 	return &genai.FunctionDeclaration{Name: f.name}
 }
@@ -188,8 +188,13 @@ func TestDurationInstrumenter_IncludesLockWait(t *testing.T) {
 	if len(pts) != 1 {
 		t.Fatalf("got %d points, want 1", len(pts))
 	}
-	if pts[0].Sum < hold.Seconds() {
-		t.Errorf("recorded duration %.4fs < lock hold %.4fs; timer must wrap outside the serializer", pts[0].Sum, hold.Seconds())
+	// Assert against half the hold rather than the full hold: the
+	// unlocker's sleep starts concurrently with Run's entry, so a
+	// pathologically preempted main goroutine could shave a little
+	// off the observed wait. Half still cleanly separates
+	// "lock wait included" (~hold) from "excluded" (~0).
+	if pts[0].Sum < (hold / 2).Seconds() {
+		t.Errorf("recorded duration %.4fs < %.4fs; timer must wrap outside the serializer", pts[0].Sum, (hold / 2).Seconds())
 	}
 }
 

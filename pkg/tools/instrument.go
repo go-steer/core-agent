@@ -159,6 +159,20 @@ func (tt *timedTool) Name() string        { return tt.inner.Name() }
 func (tt *timedTool) Description() string { return tt.inner.Description() }
 func (tt *timedTool) IsLongRunning() bool { return tt.inner.IsLongRunning() }
 
+// ReadOnlyHint forwards the wrapped tool's dispatch-class declaration
+// (ReadOnlyHinter, #460), same as gatedTool and the MCP namespace
+// wrapper. The production composition serializes BEFORE instrumenting
+// so nothing classifies through this layer today, but both functions
+// are exported and nothing enforces that order — without the forward,
+// a caller composing the other way around would silently reclassify
+// every hinted read-only tool as mutating.
+func (tt *timedTool) ReadOnlyHint() bool {
+	if h, ok := tt.inner.(ReadOnlyHinter); ok {
+		return h.ReadOnlyHint()
+	}
+	return false
+}
+
 func (tt *timedTool) Declaration() *genai.FunctionDeclaration {
 	if rn, ok := tt.inner.(runnableTool); ok {
 		return rn.Declaration()

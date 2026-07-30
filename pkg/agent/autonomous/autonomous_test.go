@@ -18,6 +18,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"iter"
 	"strings"
 	"sync"
@@ -791,4 +794,47 @@ func (p *promptCapture) snapshot() []string {
 	out := make([]string, len(p.captured))
 	copy(out, p.captured)
 	return out
+}
+
+// TestRunAutonomous_RecordsRunsCounter pins the #338 stop-reason
+// counter: one point per run carrying the ACTUAL StopReason constant.
+func TestRunAutonomous_RecordsRunsCounter(t *testing.T) {
+	t.Parallel()
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+
+	llm := &stubLLM{scenarios: []scenarioFn{
+		textTurn("one", 1, 1),
+		textTurn("two", 1, 1),
+	}}
+	if _, err := Run(context.Background(),
+		buildAgent(llm, "runs-counter"),
+		"keep going",
+		WithMaxTurns(1),
+		WithMeterProvider(mp)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != MetricAutonomousRuns {
+				continue
+			}
+			sum := m.Data.(metricdata.Sum[int64])
+			if len(sum.DataPoints) != 1 || sum.DataPoints[0].Value != 1 {
+				t.Fatalf("runs = %+v, want single point of 1", sum.DataPoints)
+			}
+			reason, _ := sum.DataPoints[0].Attributes.Value(attribute.Key(AttrStopReason))
+			if reason.AsString() != string(StopReasonMaxTurns) {
+				t.Errorf("stop_reason = %q, want %q", reason.AsString(), StopReasonMaxTurns)
+			}
+			return
+		}
+	}
+	t.Fatal("autonomous runs metric not found")
 }

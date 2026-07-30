@@ -784,6 +784,18 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		fmt.Fprintf(os.Stderr, "core-agent: metrics: register usage observer: %v\n", err)
 		return runner.ExitConfigError
 	}
+	// Subsystem observers (#338 Phase 3): digest is process-global;
+	// the agent observer reuses primaryTracker as its AgentSource
+	// (primary agent + attach registry, stamped later like the
+	// tracker side). Same fail-loud posture as the usage observer.
+	if _, err := digest.RegisterMetrics(otel.GetMeterProvider()); err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: metrics: register digest observer: %v\n", err)
+		return runner.ExitConfigError
+	}
+	if _, err := agent.RegisterMetrics(otel.GetMeterProvider(), primaryTracker); err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: metrics: register agent observer: %v\n", err)
+		return runner.ExitConfigError
+	}
 	var digestStore *digest.LazyStore
 	var digestOpts *mcp.DigestOptions
 	if !noMCPDigest {
@@ -833,6 +845,13 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	mcpServers, mcpToolsets, mcpErr := mcp.Build(ctx, agentsDir, homeAgentsDir, send, gate, makeMCPElicitor(), digestOpts)
 	if mcpErr != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: mcp: %v\n", mcpErr)
+	}
+	if len(mcpServers) > 0 {
+		// Status gauge over the write-once server slice (#338).
+		if _, err := mcp.RegisterMetrics(otel.GetMeterProvider(), mcpServers); err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: metrics: register mcp observer: %v\n", err)
+			return runner.ExitConfigError
+		}
 	}
 	loadedSkills, skillsErr := skills.LoadAll(ctx, agentsDir, coreHome, gate,
 		skills.WithHomeAgentsSkillsDir(homeAgentsDir),
@@ -1450,11 +1469,12 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		// registers it here — registration moved out of agent.New
 		// with the pkg/agent split (#388 phase 4).
 		attachRegistry = attachReg
-		// Attach-created sessions join the usage metrics observer
-		// through the registry adapter (#338 — closes the "only the
-		// primary session is observed" gap). primaryTracker dedups
-		// the primary session, which registers in both places.
+		// Attach-created sessions join the usage + agent metrics
+		// observers through the registry adapters (#338 — closes the
+		// "only the primary session is observed" gap). primaryTracker
+		// dedups the primary session, which registers in both places.
 		primaryTracker.SetRegistry(compose.RegistryTrackerProvider(attachReg))
+		primaryTracker.SetAgentRegistry(func() []*agent.Agent { return compose.RegistryAgents(attachReg) })
 
 		// PR D — HTTP-driven permission prompts. Construct the
 		// broker now and register it as the gate's prompter so the
@@ -1634,6 +1654,11 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		// the operator's TUI talks to the OLD process holding the port.
 		if err := attachSrv.Bind(); err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: attach listener: %v\n", err)
+			return runner.ExitConfigError
+		}
+		// Attach observers (#338): sessions/subscribers/drops/peers.
+		if _, err := attach.RegisterMetrics(otel.GetMeterProvider(), attachSrv); err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: metrics: register attach observer: %v\n", err)
 			return runner.ExitConfigError
 		}
 		endpoint := attachCfg.Listen

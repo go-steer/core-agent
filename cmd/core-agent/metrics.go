@@ -47,6 +47,7 @@ type primaryTrackerProvider struct {
 	tracker *usage.Tracker
 
 	mu        sync.RWMutex
+	agent     *agent.Agent // stamped by SetIdentity; feeds Agents()
 	sessionID string
 	appName   string
 	userID    string
@@ -57,6 +58,9 @@ type primaryTrackerProvider struct {
 	// time, whereas the local fields may still be empty in the
 	// pre-SetIdentity window.
 	registry usage.TrackerProvider
+	// agents enumerates registry-backed agents for the
+	// agent.AgentSource side (SetAgentRegistry).
+	agents registryAgentsFn
 }
 
 // SetRegistry installs the attach-registry adapter
@@ -79,10 +83,53 @@ func (p *primaryTrackerProvider) SetIdentity(a *agent.Agent) {
 		return
 	}
 	p.mu.Lock()
+	p.agent = a
 	p.sessionID = a.SessionID()
 	p.appName = a.AppName()
 	p.userID = a.UserID()
 	p.mu.Unlock()
+}
+
+// registryAgents is the attach-registry half of Agents(); stamped by
+// SetAgentRegistry alongside SetRegistry.
+type registryAgentsFn func() []*agent.Agent
+
+// SetAgentRegistry installs the registry-backed agent enumerator
+// (compose.RegistryAgents closure) so agent.RegisterMetrics sees
+// attach-created sessions too.
+func (p *primaryTrackerProvider) SetAgentRegistry(f registryAgentsFn) {
+	if f == nil {
+		return
+	}
+	p.mu.Lock()
+	p.agents = f
+	p.mu.Unlock()
+}
+
+// Agents implements agent.AgentSource: the primary agent plus every
+// registry-backed agent, deduped by pointer (the primary registers in
+// both places).
+func (p *primaryTrackerProvider) Agents() []*agent.Agent {
+	p.mu.RLock()
+	primary := p.agent
+	agents := p.agents
+	p.mu.RUnlock()
+
+	var out []*agent.Agent
+	seen := map[*agent.Agent]bool{}
+	if agents != nil {
+		for _, a := range agents() {
+			if a == nil || seen[a] {
+				continue
+			}
+			seen[a] = true
+			out = append(out, a)
+		}
+	}
+	if primary != nil && !seen[primary] {
+		out = append(out, primary)
+	}
+	return out
 }
 
 // Trackers implements usage.TrackerProvider. Merges the primary

@@ -204,6 +204,9 @@ func (a *Agent) Checkpoint(ctx context.Context, taskNote string) (CheckpointResu
 	a.pendingCheckpointNote = ""
 	a.compactionPending = false
 	a.mu.Unlock()
+	// In-memory metrics counter (#338) — see the matching increment
+	// in Compact for why this isn't the eventlog-derived count.
+	a.checkpointsDone.Add(1)
 	return CheckpointResult{
 		CheckpointEventID: out.SummaryEventID,
 		SummaryText:       out.SummaryText,

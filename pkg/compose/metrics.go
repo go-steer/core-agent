@@ -52,6 +52,33 @@ func RegistryTrackerProvider(reg *attach.SessionRegistry) usage.TrackerProvider 
 	return &registryTrackerProvider{reg: reg}
 }
 
+// RegistryAgents unwraps the live *agent.Agent behind every registry
+// entry whose Registrant exposes one (attachadapter.Adapter does).
+// Duplicates collapse pointer-identity (the TUI /model swap leaves
+// two entries wrapping distinct agents, so this mostly matters for
+// hosts registering one adapter twice). Used by the daemon to feed
+// agent.RegisterMetrics.
+func RegistryAgents(reg *attach.SessionRegistry) []*agent.Agent {
+	if reg == nil {
+		return nil
+	}
+	seen := map[*agent.Agent]bool{}
+	var out []*agent.Agent
+	for _, e := range reg.List() {
+		uw, ok := e.Agent.(agentUnwrapper)
+		if !ok {
+			continue
+		}
+		a := uw.Agent()
+		if a == nil || seen[a] {
+			continue
+		}
+		seen[a] = true
+		out = append(out, a)
+	}
+	return out
+}
+
 // Trackers implements usage.TrackerProvider. One TrackedSession per
 // distinct *usage.Tracker: if several registry entries share a
 // tracker (the TUI's /model swap re-registers the swapped agent under

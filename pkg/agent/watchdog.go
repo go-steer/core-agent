@@ -22,8 +22,11 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/adk/session"
 
 	"github.com/go-steer/core-agent/v2/pkg/watchdog"
@@ -100,6 +103,19 @@ func (a *Agent) drainWatchdogAlerts() {
 		return
 	}
 	alerts := a.watchdog.Check()
+	// Count BEFORE the nil-callback early return (#338): the metric
+	// covers every alert the watchdog raised, whether or not a host
+	// callback consumes them. The internal buffer drains on Check(),
+	// so a sync counter here is the only place these can be counted.
+	if a.watchdogAlertCounter != nil {
+		for _, alert := range alerts {
+			a.watchdogAlertCounter.Add(context.Background(), 1, metric.WithAttributes(
+				attribute.String(AttrWatchdogSignal, alert.Signal),
+				attribute.String(AttrWatchdogSeverity, string(alert.Severity)),
+				attribute.String(AttrMetricSessionID, a.sessionID),
+			))
+		}
+	}
 	if a.onWatchdogAlert == nil {
 		return
 	}

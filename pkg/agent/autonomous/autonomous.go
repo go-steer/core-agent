@@ -22,6 +22,9 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/adk/session"
 	"google.golang.org/adk/tool"
 
@@ -131,6 +134,26 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 	startedAt := time.Now()
 	prompt := goal
 	result := RunResult{}
+
+	// core_agent.autonomous.runs (#338): one point per run, recorded
+	// via defer because the loop has many exit sites and no single
+	// return hook. Runs that error out before any StopReason is
+	// assigned record the "error" fallback — never silent. Recorded
+	// against context.Background(): ctx is often already cancelled
+	// on the paths this most needs to count.
+	mp := cfg.meterProvider
+	if mp == nil {
+		mp = otel.GetMeterProvider()
+	}
+	if runs, cErr := newRunsCounter(mp); cErr == nil {
+		defer func() {
+			reason := string(result.Reason)
+			if reason == "" {
+				reason = StopReasonErrorFallback
+			}
+			runs.Add(context.Background(), 1, metric.WithAttributes(attribute.String(AttrStopReason, reason)))
+		}()
+	}
 
 	// Convenience: emit a final checkpoint with the configured
 	// stop reason regardless of which exit path the loop takes.
@@ -541,6 +564,7 @@ type autoConfig struct {
 	scheduleToolName        string
 	scheduleToolDescription string
 	scheduleToolMaxDefer    time.Duration
+	meterProvider           metric.MeterProvider
 }
 
 // Sensible defaults used when no With* options override them. MaxTurns
@@ -560,6 +584,14 @@ func defaultAutoConfig() autoConfig {
 // default is 50.
 func WithMaxTurns(n int) Option {
 	return func(c *autoConfig) { c.maxTurns = n }
+}
+
+// WithMeterProvider overrides the OTel MeterProvider backing the
+// core_agent.autonomous.runs counter. Defaults to the global provider
+// resolved when Run starts (noop when metrics are disabled).
+// Primarily for tests injecting a ManualReader.
+func WithMeterProvider(mp metric.MeterProvider) Option {
+	return func(c *autoConfig) { c.meterProvider = mp }
 }
 
 // WithMaxTokens caps the cumulative input + output token totals for

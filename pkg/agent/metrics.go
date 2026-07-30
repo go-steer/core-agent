@@ -16,6 +16,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -55,6 +56,114 @@ const (
 // meterName is the instrumentation scope for all pkg/agent
 // instruments, per the module-path convention (see pkg/usage).
 const meterName = "github.com/go-steer/core-agent/v2/pkg/agent"
+
+// core_agent.* instruments for agent-lifecycle state (#338 Phase 3).
+const (
+	MetricAgentCompactions  = "core_agent.agent.compactions"
+	MetricAgentCheckpoints  = "core_agent.agent.checkpoints"
+	MetricAgentSubtasks     = "core_agent.agent.subtasks"
+	MetricAgentInboxPending = "core_agent.agent.inbox_pending"
+	MetricWatchdogAlerts    = "core_agent.watchdog.alerts"
+
+	// AttrMetricSessionID mirrors pkg/usage's session.id key (kept
+	// local to avoid an import for one string).
+	AttrMetricSessionID  = "session.id"
+	AttrWatchdogSignal   = "signal"
+	AttrWatchdogSeverity = "severity"
+)
+
+// newWatchdogAlertCounter builds the sync alert counter recorded in
+// drainWatchdogAlerts.
+func newWatchdogAlertCounter(mp metric.MeterProvider) (metric.Int64Counter, error) {
+	return mp.Meter(meterName).Int64Counter(
+		MetricWatchdogAlerts,
+		metric.WithDescription("Watchdog alerts raised, by signal and severity."),
+		metric.WithUnit("{alert}"),
+	)
+}
+
+// AgentSource enumerates live agents for RegisterMetrics to sample on
+// each export interval. Implementations must be cheap and
+// thread-safe; nil agents in the slice are skipped.
+type AgentSource interface {
+	Agents() []*Agent
+}
+
+// RegisterMetrics wires the per-agent lifecycle observers against mp:
+// compactions, checkpoints, subtasks (counters) and inbox_pending
+// (gauge), each dimensioned by session.id. Call once at boot with the
+// process-global MeterProvider.
+//
+// Counter sources are the in-memory per-process fields on Agent — NOT
+// the eventlog-derived ContextStats, which is an O(events) scan per
+// call and resumes across restarts (a restart would step an
+// ObservableCounter backward or forward arbitrarily).
+func RegisterMetrics(mp metric.MeterProvider, src AgentSource) (metric.Registration, error) {
+	if mp == nil {
+		return nil, fmt.Errorf("agent.RegisterMetrics: nil MeterProvider")
+	}
+	if src == nil {
+		return nil, fmt.Errorf("agent.RegisterMetrics: nil AgentSource")
+	}
+	meter := mp.Meter(meterName)
+
+	compactions, err := meter.Int64ObservableCounter(
+		MetricAgentCompactions,
+		metric.WithDescription("Successful context compactions this process."),
+		metric.WithUnit("{compaction}"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("agent: compactions instrument: %w", err)
+	}
+	checkpoints, err := meter.Int64ObservableCounter(
+		MetricAgentCheckpoints,
+		metric.WithDescription("Successful checkpoints this process."),
+		metric.WithUnit("{checkpoint}"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("agent: checkpoints instrument: %w", err)
+	}
+	subtasks, err := meter.Int64ObservableCounter(
+		MetricAgentSubtasks,
+		metric.WithDescription("Agentic subtasks run this process."),
+		metric.WithUnit("{subtask}"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("agent: subtasks instrument: %w", err)
+	}
+	inbox, err := meter.Int64ObservableGauge(
+		MetricAgentInboxPending,
+		metric.WithDescription("Messages waiting in the agent inbox."),
+		metric.WithUnit("{message}"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("agent: inbox instrument: %w", err)
+	}
+
+	callback := func(_ context.Context, o metric.Observer) error {
+		for _, a := range src.Agents() {
+			if a == nil {
+				continue
+			}
+			attrs := metric.WithAttributes(attribute.String(AttrMetricSessionID, a.SessionID()))
+			if v := a.compactionsDone.Load(); v > 0 {
+				o.ObserveInt64(compactions, v, attrs)
+			}
+			if v := a.checkpointsDone.Load(); v > 0 {
+				o.ObserveInt64(checkpoints, v, attrs)
+			}
+			a.mu.Lock()
+			st := int64(a.subtaskCount)
+			a.mu.Unlock()
+			if st > 0 {
+				o.ObserveInt64(subtasks, st, attrs)
+			}
+			o.ObserveInt64(inbox, int64(a.PendingInboxCount()), attrs)
+		}
+		return nil
+	}
+	return meter.RegisterCallback(callback, compactions, checkpoints, subtasks, inbox)
+}
 
 // recordInvocation lands one gen_ai.agent.invocation.duration point.
 // error.type (the stable ClassifyTurnError kind) rides only on failed

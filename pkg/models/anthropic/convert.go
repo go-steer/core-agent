@@ -414,6 +414,7 @@ func schemaToInput(s *genai.Schema) (map[string]any, []string, error) {
 	if err := json.Unmarshal(raw, &generic); err != nil {
 		return nil, nil, fmt.Errorf("unmarshal schema: %w", err)
 	}
+	normalizeSchemaTypes(generic)
 	var props map[string]any
 	if p, ok := generic["properties"].(map[string]any); ok {
 		props = p
@@ -429,4 +430,48 @@ func schemaToInput(s *genai.Schema) (map[string]any, []string, error) {
 		}
 	}
 	return props, required, nil
+}
+
+// normalizeSchemaTypes rewrites genai.Type enum spellings into JSON
+// Schema draft 2020-12 types, recursively. genai marshals Type as its
+// proto enum string ("OBJECT", "STRING", ...), which Anthropic's
+// strict input_schema validation rejects with 400 invalid_request
+// ("It must match JSON Schema draft 2020-12") — any tool declaration
+// built from genai typed fields trips it (#532).
+//
+// The walk is positional: schemas can only appear at the node itself,
+// its "items", its "anyOf" elements, and its "properties" values —
+// the complete set of schema-valued fields on genai.Schema (which
+// this map was just marshaled from). Instance data ("default",
+// "example", "enum" values, a property literally named "type") is
+// never descended into, so a default that happens to be an object
+// with an enum-spelled "type" member passes through untouched.
+func normalizeSchemaTypes(schema map[string]any) {
+	if ts, ok := schema["type"].(string); ok {
+		switch ts {
+		case "TYPE_UNSPECIFIED":
+			// genai's zero enum; draft 2020-12 has no equivalent —
+			// absent "type" means unconstrained, which matches.
+			delete(schema, "type")
+		case "STRING", "NUMBER", "INTEGER", "BOOLEAN", "ARRAY", "OBJECT", "NULL":
+			schema["type"] = strings.ToLower(ts)
+		}
+	}
+	if items, ok := schema["items"].(map[string]any); ok {
+		normalizeSchemaTypes(items)
+	}
+	if anyOf, ok := schema["anyOf"].([]any); ok {
+		for _, alt := range anyOf {
+			if s, ok := alt.(map[string]any); ok {
+				normalizeSchemaTypes(s)
+			}
+		}
+	}
+	if props, ok := schema["properties"].(map[string]any); ok {
+		for _, p := range props {
+			if s, ok := p.(map[string]any); ok {
+				normalizeSchemaTypes(s)
+			}
+		}
+	}
 }

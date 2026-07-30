@@ -152,6 +152,12 @@ The session lock and the seq-numbered event log together support `autonomous.Res
 
 See [Autonomous runs → Crash-resume](/run/autonomous/operations/#crash-resume) for the full pattern.
 
+### Interrupted tool calls are repaired automatically
+
+Events are committed as they are produced: the model response carrying a tool call lands in the database before the tool runs. If the process dies mid-tool (SIGKILL, OOMKill, pod replacement) — or the turn is cancelled mid-tool by an interrupt or daemon shutdown — the history can end with a tool call that never received its result. Model providers reject such a history outright.
+
+The agent heals this on its own: at the start of every turn it scans recent history for its own unanswered tool calls and appends a synthesized error result ("tool execution was interrupted…") for each. The repair is a real, durable event — audit and replay see a consistent history — stamped with `kind: tool_tail_repair` in its event metadata so it is distinguishable from a genuine tool result. The model sees the interruption notice and can re-issue the call if the result still matters. No operator action is required.
+
 ---
 
 ## Recording vs event log

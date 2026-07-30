@@ -299,7 +299,13 @@ func (t *Tracker) AppendDigestSavings(rec DigestSavingsRecord) {
 		t.digestSavings.AgenticTokensSaved += saved
 		t.digestSavings.AgenticSubagentInTokens += rec.SubagentInputTokens
 		t.digestSavings.AgenticSubagentOutTokens += rec.SubagentOutputTokens
-		t.digestSavings.AgenticSubagentCostUSD += rec.SubagentCostUSD
+		// Clamp like ParentTokensSaved above: a buggy (or hostile)
+		// MCP savings sidecar reporting negative token counts must
+		// not drag the cumulative spend down — the cost meter built
+		// on this accumulator is a monotonic counter.
+		if rec.SubagentCostUSD > 0 {
+			t.digestSavings.AgenticSubagentCostUSD += rec.SubagentCostUSD
+		}
 	case "passthrough":
 		t.digestSavings.PassthroughCalls++
 	}

@@ -391,3 +391,121 @@ func TestRegisterMetrics_DigestSubagentCost_PerSession(t *testing.T) {
 		t.Errorf("digest cost session = %q, want s1", v.AsString())
 	}
 }
+
+// mutableProvider lets tests change the live session set between
+// collections, simulating registry eviction and lazy resume.
+type mutableProvider struct{ sessions []TrackedSession }
+
+func (m *mutableProvider) Trackers() []TrackedSession { return m.sessions }
+
+// TestRegisterMetrics_WithoutSessionLabels_MonotonicAcrossEviction
+// pins the retirement baseline: a session leaving the provider (idle
+// eviction) must NOT make the aggregated counters drop — Prometheus
+// would read the decrease as a counter reset. And a session that
+// comes back (lazy resume, tracker rebuilt from eventlog replay) must
+// not double-count against its own baseline; its unreplayed digest
+// spend must keep counting.
+func TestRegisterMetrics_WithoutSessionLabels_MonotonicAcrossEviction(t *testing.T) {
+	t.Parallel()
+	a := NewTracker()
+	a.AppendUsage("m", TurnUsage{InputTokens: 10}, Pricing{})
+	a.AppendDigestSavings(DigestSavingsRecord{Path: "llm_fallback", SubagentCostUSD: 0.4})
+	b := NewTracker()
+	b.AppendUsage("m", TurnUsage{InputTokens: 5}, Pricing{})
+
+	prov := &mutableProvider{sessions: []TrackedSession{
+		{Tracker: a, SessionID: "s-a", AppName: "app"},
+		{Tracker: b, SessionID: "s-b", AppName: "app"},
+	}}
+	mp, collect := setupReader(t)
+	if _, err := RegisterMetrics(mp, prov, WithoutSessionLabels()); err != nil {
+		t.Fatalf("RegisterMetrics: %v", err)
+	}
+
+	inputTokens := func() int64 {
+		byName := indexByName(collect())
+		sum, _ := byName[MetricGenAITokenUsage].Data.(metricdata.Sum[int64])
+		for _, dp := range sum.DataPoints {
+			if v, _ := dp.Attributes.Value(attribute.Key(AttrGenAITokenType)); v.AsString() == TokenTypeInput {
+				return dp.Value
+			}
+		}
+		return 0
+	}
+	digestUSD := func() float64 {
+		byName := indexByName(collect())
+		sum, ok := byName[MetricDigestSubagentCost].Data.(metricdata.Sum[float64])
+		if !ok || len(sum.DataPoints) == 0 {
+			return 0
+		}
+		return sum.DataPoints[0].Value
+	}
+
+	if got := inputTokens(); got != 15 {
+		t.Fatalf("baseline input tokens = %d, want 15", got)
+	}
+
+	// Evict session a: the aggregate must HOLD at 15, not drop to 5.
+	prov.sessions = prov.sessions[1:]
+	if got := inputTokens(); got != 15 {
+		t.Errorf("post-eviction input tokens = %d, want 15 (retirement baseline)", got)
+	}
+	if got := digestUSD(); got != 0.4 {
+		t.Errorf("post-eviction digest cost = %v, want 0.4 (retired baseline)", got)
+	}
+
+	// Lazy resume: fresh tracker, eventlog replay restores the usage
+	// turns (simulated by re-appending the same turn) but NOT digest
+	// savings. Tokens must not double-count; digest keeps the
+	// retired incarnation's spend.
+	resumed := NewTracker()
+	resumed.AppendUsage("m", TurnUsage{InputTokens: 10}, Pricing{})
+	prov.sessions = append(prov.sessions, TrackedSession{Tracker: resumed, SessionID: "s-a", AppName: "app"})
+	if got := inputTokens(); got != 15 {
+		t.Errorf("post-resume input tokens = %d, want 15 (replayed totals supersede baseline)", got)
+	}
+	if got := digestUSD(); got != 0.4 {
+		t.Errorf("post-resume digest cost = %v, want 0.4 (unreplayed digest baseline retained)", got)
+	}
+
+	// New spend on the resumed incarnation adds on top of both.
+	resumed.AppendUsage("m", TurnUsage{InputTokens: 3}, Pricing{})
+	resumed.AppendDigestSavings(DigestSavingsRecord{Path: "llm_fallback", SubagentCostUSD: 0.1})
+	if got := inputTokens(); got != 18 {
+		t.Errorf("post-resume growth input tokens = %d, want 18", got)
+	}
+	if got := digestUSD(); got < 0.499 || got > 0.501 {
+		t.Errorf("post-resume growth digest cost = %v, want 0.5", got)
+	}
+}
+
+// TestRegisterMetrics_WithoutSessionLabels_PerModelSeparation pins
+// that aggregation merges per model, not into one blob, and that
+// priced stays true when every session is priced.
+func TestRegisterMetrics_WithoutSessionLabels_PerModelSeparation(t *testing.T) {
+	t.Parallel()
+	a := NewTracker()
+	a.AppendUsage("m1", TurnUsage{InputTokens: 10}, Pricing{})
+	b := NewTracker()
+	b.AppendUsage("m2", TurnUsage{InputTokens: 20}, Pricing{})
+
+	mp, collect := setupReader(t)
+	if _, err := RegisterMetrics(mp, staticProvider{
+		{Tracker: a, SessionID: "s1"},
+		{Tracker: b, SessionID: "s2"},
+	}, WithoutSessionLabels()); err != nil {
+		t.Fatalf("RegisterMetrics: %v", err)
+	}
+	byName := indexByName(collect())
+
+	turns := byName[MetricSessionTurns].Data.(metricdata.Sum[int64])
+	if len(turns.DataPoints) != 2 {
+		t.Fatalf("turns: want 2 per-model points, got %d", len(turns.DataPoints))
+	}
+	cost := byName[MetricSessionCost].Data.(metricdata.Sum[float64])
+	for _, dp := range cost.DataPoints {
+		if v, _ := dp.Attributes.Value(attribute.Key(AttrPriced)); !v.AsBool() {
+			t.Error("priced = false with every session priced")
+		}
+	}
+}

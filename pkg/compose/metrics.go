@@ -52,9 +52,19 @@ func RegistryTrackerProvider(reg *attach.SessionRegistry) usage.TrackerProvider 
 	return &registryTrackerProvider{reg: reg}
 }
 
-// Trackers implements usage.TrackerProvider.
+// Trackers implements usage.TrackerProvider. One TrackedSession per
+// distinct *usage.Tracker: if several registry entries share a
+// tracker (the TUI's /model swap re-registers the swapped agent under
+// a fresh session id without unregistering the old entry), the
+// LAST entry in registry order wins — List() sorts by the identity
+// triple and session ids are UUIDv7 (time-ordered), so last-wins
+// attributes the shared tracker's series to the newest session, the
+// same outcome the pre-registry wiring produced via SetIdentity.
+// Without the dedup, a shared tracker would double-count every series
+// in aggregated (labels-off) mode.
 func (p *registryTrackerProvider) Trackers() []usage.TrackedSession {
 	entries := p.reg.List()
+	byTracker := make(map[*usage.Tracker]int, len(entries))
 	out := make([]usage.TrackedSession, 0, len(entries))
 	for _, e := range entries {
 		uw, ok := e.Agent.(agentUnwrapper)
@@ -65,12 +75,18 @@ func (p *registryTrackerProvider) Trackers() []usage.TrackedSession {
 		if a == nil || a.Tracker() == nil {
 			continue
 		}
-		out = append(out, usage.TrackedSession{
+		ts := usage.TrackedSession{
 			Tracker:   a.Tracker(),
 			SessionID: e.SessionID,
 			AppName:   e.AppName,
 			UserID:    e.UserID,
-		})
+		}
+		if i, dup := byTracker[ts.Tracker]; dup {
+			out[i] = ts
+			continue
+		}
+		byTracker[ts.Tracker] = len(out)
+		out = append(out, ts)
 	}
 	return out
 }

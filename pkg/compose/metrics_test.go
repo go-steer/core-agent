@@ -98,3 +98,51 @@ func newTestAgent(t *testing.T, app, user, sess string) *agent.Agent {
 	}
 	return a
 }
+
+// TestRegistryTrackerProvider_SharedTrackerLastWins pins the /model
+// swap shape: two registry entries sharing one tracker (swap
+// re-registers under a fresh UUIDv7 session id without unregistering
+// the old entry) must yield ONE TrackedSession attributed to the
+// LAST entry in registry order — the newest session id.
+func TestRegistryTrackerProvider_SharedTrackerLastWins(t *testing.T) {
+	t.Parallel()
+	reg := attach.NewSessionRegistry()
+	tr := usage.NewTracker()
+
+	old := newTestAgentWithTracker(t, "app", "u", "0195-old", tr)
+	if _, err := reg.Register(attachadapter.New(old)); err != nil {
+		t.Fatalf("register old: %v", err)
+	}
+	swapped := newTestAgentWithTracker(t, "app", "u", "0196-new", tr)
+	if _, err := reg.Register(attachadapter.New(swapped)); err != nil {
+		t.Fatalf("register swapped: %v", err)
+	}
+
+	got := RegistryTrackerProvider(reg).Trackers()
+	if len(got) != 1 {
+		t.Fatalf("Trackers() len = %d, want 1 (shared tracker deduped)", len(got))
+	}
+	if got[0].SessionID != "0196-new" {
+		t.Errorf("session = %q, want the newest entry 0196-new", got[0].SessionID)
+	}
+}
+
+// newTestAgentWithTracker is newTestAgent with a caller-supplied
+// tracker (shared-tracker scenarios).
+func newTestAgentWithTracker(t *testing.T, app, user, sess string, tr *usage.Tracker) *agent.Agent {
+	t.Helper()
+	prov := mock.NewEcho()
+	llm, err := prov.Model(context.Background(), "echo")
+	if err != nil {
+		t.Fatalf("mock model: %v", err)
+	}
+	a, err := agent.New(llm,
+		agent.WithAppName(app),
+		agent.WithSession(user, sess),
+		agent.WithUsageTracker(tr),
+	)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	return a
+}

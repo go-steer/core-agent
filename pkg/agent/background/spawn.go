@@ -189,6 +189,11 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 		return agent.New(subModel,
 			agent.WithAppName(parent.AppName()),
 			agent.WithName(subagentName),
+			// subagentName is MODEL-CHOSEN — stamping it on the
+			// invocation histogram would accrete one series per
+			// invented name on a long-lived daemon. Metrics get the
+			// bounded class-level identity instead.
+			agent.WithMetricAgentName("background_subagent"),
 			agent.WithMode(agent.ModeAutonomous),
 			instrOpt,
 			agent.WithStreaming(parent.Streaming()),

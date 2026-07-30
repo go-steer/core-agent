@@ -262,6 +262,23 @@ under-reporting. See #368.
 | `core_agent.mcp.server.status` | ObservableGauge | `{server}` (0/1 per label combo) | `mcp.server`, `mcp.status` = running\|starting\|failed\|stopped | `Server.Status` |
 | `core_agent.watchdog.alerts` | ObservableCounter | `{alert}` | `session.id`, `signal` (e.g. repeated_tool_call) | `Watchdog.alerts` |
 
+### ADK-schema GenAI histograms (shipped, #338 Phase 3 slice 1)
+
+Two sync histograms matching ADK's cross-language metrics schema
+(adk.dev/observability/metrics) verbatim — same dashboards for
+Python / Kotlin / Go agents:
+
+| Metric | Type | Unit | Attributes | Source |
+|---|---|---|---|---|
+| `gen_ai.agent.invocation.duration` | Histogram (sync) | `s` | `gen_ai.agent.name`; `error.type` (failed turns only, `attach.ClassifyTurnError` kinds) | `Agent.Run` terminal cleanup |
+| `gen_ai.tool.execution.duration` | Histogram (sync) | `s` | `gen_ai.tool.name`; `error.type` (failed calls only: `canceled`\|`timeout`\|`_OTHER`) | `tools.DurationInstrumenter` wrapper, outermost around serializer + gate — duration includes lock-wait and permission-prompt wait by design |
+
+The schema's other three histograms (`gen_ai.agent.request.size`,
+`gen_ai.agent.response.size`, `gen_ai.agent.workflow.steps`) are
+deliberately deferred: units/semantics are undocumented upstream and
+absent from adk-python's source — emitting a guess would create false
+cross-language compatibility. Revisit when ADK defines them.
+
 ### Go runtime (otel-contrib, shipped with the MeterProvider)
 
 `go.opentelemetry.io/contrib/instrumentation/runtime` is started

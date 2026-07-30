@@ -26,6 +26,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -37,6 +38,8 @@ import (
 
 	"google.golang.org/genai"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 	adkagent "google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/llmagent"
 	adkmodel "google.golang.org/adk/model"
@@ -242,19 +245,29 @@ type Agent struct {
 	streaming      adkagent.StreamingMode
 	appName        string
 	agentName      string
-	description    string
-	userID         string
-	sessionID      string
-	model          adkmodel.LLM
-	modelName      string
-	mode           Mode
-	gate           *permissions.Gate
-	bgMgr          SubagentManager
-	inbox          *inbox
-	wake           *wakeSignal
-	tracker        *usage.Tracker
-	compactor      Compactor
-	checkpointer   Checkpointer
+	// invocationHist + toolInstrumenter are the #338 gen_ai.*
+	// instruments; both are non-nil after New (noop-backed when
+	// metrics are off; nil only on hand-constructed Agents, which
+	// the record sites guard against). toolInstrumenter is reused
+	// by RunSubtask so subtask tool calls land in the same
+	// histogram. metricAgentName is the low-cardinality
+	// gen_ai.agent.name attribute value (see WithMetricAgentName).
+	invocationHist   metric.Float64Histogram
+	toolInstrumenter *tools.DurationInstrumenter
+	metricAgentName  string
+	description      string
+	userID           string
+	sessionID        string
+	model            adkmodel.LLM
+	modelName        string
+	mode             Mode
+	gate             *permissions.Gate
+	bgMgr            SubagentManager
+	inbox            *inbox
+	wake             *wakeSignal
+	tracker          *usage.Tracker
+	compactor        Compactor
+	checkpointer     Checkpointer
 
 	// operatorEmit is the typed operator-event callback set by the
 	// broadcaster on first subscribe (see the attach package's broadcaster Subscribe).
@@ -351,6 +364,8 @@ type options struct {
 	onEvent             func(*session.Event)
 	onTurnEnd           func()
 	postConstruct       func(*Agent)
+	meterProvider       metric.MeterProvider
+	metricAgentName     string
 }
 
 func defaultOptions() options {
@@ -628,6 +643,33 @@ func WithPostConstruct(f func(*Agent)) Option {
 	return func(o *options) { o.postConstruct = f }
 }
 
+// WithMeterProvider overrides the OTel MeterProvider backing the
+// agent's metric instruments (gen_ai.agent.invocation.duration and
+// the per-tool gen_ai.tool.execution.duration wrapper). Defaults to
+// otel.GetMeterProvider() resolved at construction time — the daemon
+// installs its provider via telemetry.SetupMetrics before any agent
+// is built, and when metrics are disabled the global is the noop
+// provider, so recording costs nothing. Embedders wanting metrics
+// must likewise install their provider (or pass one here) before
+// calling New. Background subagents always bind to the global
+// provider (the spawn path doesn't thread this option). Primarily
+// useful for tests injecting a ManualReader.
+func WithMeterProvider(mp metric.MeterProvider) Option {
+	return func(o *options) { o.meterProvider = mp }
+}
+
+// WithMetricAgentName overrides the gen_ai.agent.name attribute value
+// on the agent's metric instruments without changing the agent's
+// actual name (WithName). Metric attribute values must stay
+// low-cardinality: the spawn path names background subagents with
+// MODEL-CHOSEN strings, and stamping those on a histogram would
+// accrete one series per invented name on a long-lived daemon — it
+// passes a fixed class-level value here instead. Defaults to the
+// WithName value, which is operator-configured and bounded.
+func WithMetricAgentName(name string) Option {
+	return func(o *options) { o.metricAgentName = name }
+}
+
 // New constructs an Agent backed by model. Returns a clear error if the
 // underlying ADK constructors reject the configuration.
 func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
@@ -693,6 +735,29 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		o.toolsets[i] = tools.SerializeMutatingToolset(ts, &mutationMu)
 	}
 
+	// Per-tool duration metrics (#338): wrap OUTSIDE the serializer
+	// so the recorded latency includes mutation-lock wait (and, for
+	// MCP tools gated inside mcp.Build, permission-prompt wait) —
+	// the latency the model actually observes. When metrics are
+	// disabled the resolved global provider is the noop one and
+	// recording costs nothing.
+	mp := o.meterProvider
+	if mp == nil {
+		mp = otel.GetMeterProvider()
+	}
+	toolInstrumenter, err := tools.NewDurationInstrumenter(mp)
+	if err != nil {
+		return nil, fmt.Errorf("agent: tool duration instrumenter: %w", err)
+	}
+	o.tools = toolInstrumenter.Instrument(o.tools)
+	for i, ts := range o.toolsets {
+		o.toolsets[i] = toolInstrumenter.InstrumentToolset(ts)
+	}
+	invocationHist, err := newInvocationHistogram(mp)
+	if err != nil {
+		return nil, fmt.Errorf("agent: invocation histogram: %w", err)
+	}
+
 	// Layer assembly (#459). WithInstruction / the deprecated prefix
 	// path replace layers 1–3 wholesale; layers 4–5 append in both
 	// arrangements so operator appends compose with a custom base.
@@ -747,32 +812,35 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 	}
 
 	a := &Agent{
-		inner:           inner,
-		runner:          r,
-		sessionService:  svc,
-		eventLog:        o.eventLog,
-		tools:           o.tools,
-		streaming:       o.streaming,
-		appName:         o.appName,
-		agentName:       o.name,
-		description:     o.description,
-		userID:          o.userID,
-		sessionID:       o.sessionID,
-		model:           model,
-		modelName:       model.Name(),
-		mode:            o.mode,
-		gate:            o.gate,
-		bgMgr:           o.bgMgr,
-		inbox:           newInbox(),
-		wake:            newWakeSignal(),
-		tracker:         o.tracker,
-		compactor:       o.compactor,
-		checkpointer:    o.checkpointer,
-		costCeiling:     o.costCeiling,
-		watchdog:        o.watchdog,
-		onWatchdogAlert: o.onWatchdogAlert,
-		onEvent:         o.onEvent,
-		onTurnEnd:       o.onTurnEnd,
+		inner:            inner,
+		runner:           r,
+		sessionService:   svc,
+		eventLog:         o.eventLog,
+		tools:            o.tools,
+		streaming:        o.streaming,
+		appName:          o.appName,
+		agentName:        o.name,
+		description:      o.description,
+		userID:           o.userID,
+		sessionID:        o.sessionID,
+		model:            model,
+		modelName:        model.Name(),
+		mode:             o.mode,
+		invocationHist:   invocationHist,
+		toolInstrumenter: toolInstrumenter,
+		metricAgentName:  cmp.Or(o.metricAgentName, o.name),
+		gate:             o.gate,
+		bgMgr:            o.bgMgr,
+		inbox:            newInbox(),
+		wake:             newWakeSignal(),
+		tracker:          o.tracker,
+		compactor:        o.compactor,
+		checkpointer:     o.checkpointer,
+		costCeiling:      o.costCeiling,
+		watchdog:         o.watchdog,
+		onWatchdogAlert:  o.onWatchdogAlert,
+		onEvent:          o.onEvent,
+		onTurnEnd:        o.onTurnEnd,
 	}
 	if a.bgMgr != nil {
 		a.bgMgr.AttachParent(a)
@@ -1099,6 +1167,12 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// emitted when the ceiling first tripped.
 	if err := a.preflightCostCeiling(); err != nil {
 		return func(yield func(*session.Event, error) bool) {
+			// Still a refused turn the caller observes — record it
+			// (#338), or the invocation histogram goes dark exactly
+			// during a spend-cap incident, with no error.type series
+			// to alert on. Duration ~0 is accurate: the turn was
+			// refused before any work.
+			a.recordInvocation(0, err)
 			yield(nil, err)
 		}
 	}
@@ -1262,6 +1336,15 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		// which lands AFTER turn-complete (matching the spec's
 		// "turn-complete → status-update idle → usage-update" order
 		// because the harness calls Append after this cleanup runs).
+		// gen_ai.agent.invocation.duration (#338): one point per
+		// turn, error.type only on failed turns (stable classifier
+		// kinds, not raw error text). Recorded against
+		// context.Background() because runCtx is already cancelled
+		// here — exemplar linkage is lost for this instrument;
+		// acceptable, the terminal SSE event carries prompt_id for
+		// correlation.
+		a.recordInvocation(time.Since(started).Seconds(), turnErr)
+
 		if turnErr != nil {
 			a.emit(attach.EventTurnError, attach.ClassifyTurnError(turnErr))
 		} else {
@@ -1330,8 +1413,19 @@ func (a *Agent) RunWithContents(ctx context.Context, contents []*genai.Content) 
 		}
 		history := contents[:len(contents)-1]
 
+		// gen_ai.agent.invocation.duration (#338) for the
+		// RunWithContents path too (the AX adapter drives turns
+		// exclusively through here). Timing starts after argument
+		// validation — a contract violation isn't a turn. turnErr
+		// tracks the last error yielded so the deferred record
+		// carries error.type on failed turns.
+		started := time.Now()
+		var turnErr error
+		defer func() { a.recordInvocation(time.Since(started).Seconds(), turnErr) }()
+
 		sessionID, err := freshSessionID()
 		if err != nil {
+			turnErr = err
 			yield(nil, err)
 			return
 		}
@@ -1342,7 +1436,8 @@ func (a *Agent) RunWithContents(ctx context.Context, contents []*genai.Content) 
 			SessionID: sessionID,
 		})
 		if err != nil {
-			yield(nil, fmt.Errorf("agent: RunWithContents: create session: %w", err))
+			turnErr = fmt.Errorf("agent: RunWithContents: create session: %w", err)
+			yield(nil, turnErr)
 			return
 		}
 		sess := createResp.Session
@@ -1370,7 +1465,8 @@ func (a *Agent) RunWithContents(ctx context.Context, contents []*genai.Content) 
 			ev.Author = authorFor(c.Role, a.agentName)
 			ev.LLMResponse = adkmodel.LLMResponse{Content: c}
 			if err := a.sessionService.AppendEvent(ctx, sess, ev); err != nil {
-				yield(nil, fmt.Errorf("agent: RunWithContents: append history event %d: %w", i, err))
+				turnErr = fmt.Errorf("agent: RunWithContents: append history event %d: %w", i, err)
+				yield(nil, turnErr)
 				return
 			}
 		}
@@ -1389,6 +1485,9 @@ func (a *Agent) RunWithContents(ctx context.Context, contents []*genai.Content) 
 		for ev, err := range a.runner.Run(runCtx, a.userID, sessionID, last, adkagent.RunConfig{
 			StreamingMode: a.streaming,
 		}) {
+			if err != nil {
+				turnErr = err
+			}
 			if !yield(ev, err) {
 				return
 			}

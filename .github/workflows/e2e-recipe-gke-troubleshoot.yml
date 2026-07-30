@@ -17,13 +17,17 @@ name: E2E (gke-troubleshoot-agent recipe)
 # Runs the recipe end-to-end on a kind cluster whenever anything that
 # could break the recipe's deployment shape OR its event → inject →
 # turn pipeline changes. Not in the main ci.yml because it's heavier
-# (~3-4 min including cluster startup, image pulls, and the pipeline
-# assertion's wait for kubelet's BackOff event) and only relevant to a
-# subset of changes.
+# (~4-8 min including the docker build of the daemon from HEAD,
+# cluster startup, and the pipeline assertion's wait for kubelet's
+# BackOff event) and only relevant to a subset of changes.
 #
-# Path filter deliberately narrow — most Go changes don't touch
-# recipe wiring. Adjust the filter here if a future refactor moves
-# recipe-adjacent code somewhere new.
+# Path filter covers everything the HEAD-built daemon image is made
+# from (go source, go.mod/sum, Dockerfile) plus the recipe + e2e
+# tooling: since the e2e compiles the daemon from the checkout, any
+# Go change can break it, and a narrower filter would recreate the
+# blind spot where a daemon-side change ships while this workflow
+# never runs (see #383's CSRF guard vs the watcher's bodyless
+# POST /sessions).
 
 on:
   push:
@@ -31,10 +35,11 @@ on:
     paths:
       - 'examples/gke-troubleshoot-agent/**'
       - 'cmd/core-agent/**'
-      - 'pkg/config/**'
-      - 'pkg/auth/**'
-      - 'pkg/instruction/**'
-      - 'pkg/attach/**'
+      - 'pkg/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Dockerfile'
       - 'dev/tools/e2e-recipe-gke-troubleshoot-agent'
       - 'dev/ci/presubmits/e2e-recipe-gke-troubleshoot-agent'
       - '.github/workflows/e2e-recipe-gke-troubleshoot.yml'
@@ -43,10 +48,11 @@ on:
     paths:
       - 'examples/gke-troubleshoot-agent/**'
       - 'cmd/core-agent/**'
-      - 'pkg/config/**'
-      - 'pkg/auth/**'
-      - 'pkg/instruction/**'
-      - 'pkg/attach/**'
+      - 'pkg/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Dockerfile'
       - 'dev/tools/e2e-recipe-gke-troubleshoot-agent'
       - 'dev/ci/presubmits/e2e-recipe-gke-troubleshoot-agent'
       - '.github/workflows/e2e-recipe-gke-troubleshoot.yml'
@@ -62,10 +68,11 @@ jobs:
   e2e:
     name: e2e
     runs-on: ubuntu-latest
-    # 10 min is comfortably above the observed p99. Bail if kind create
-    # hangs on a broken runner rather than wait 6h for the GitHub
-    # default to trip.
-    timeout-minutes: 10
+    # Headroom above the observed p99 including the cold docker build
+    # of the daemon from HEAD (~2-4 min on a fresh runner). Bail if
+    # kind create hangs on a broken runner rather than wait 6h for
+    # the GitHub default to trip.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 

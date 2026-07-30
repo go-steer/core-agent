@@ -23,7 +23,7 @@ apply here too.
    session-resume-enabled) exposed as an in-cluster Service.
 2. A `k8s-event-watcher` Deployment (sidecar; runs alongside the
    daemon in the same cluster) watching Events via client-go
-   informer. It runs `ghcr.io/go-steer/lookout:v0.8.0` — the
+   informer. It runs `ghcr.io/go-steer/lookout:v0.11.0` — the
    watcher's source lives in
    [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout),
    and its image is a drop-in swap for the retired

@@ -44,13 +44,14 @@ components:
 # first stable release carrying the OTEL_TRACES_EXPORTER env override
 # (PR #315, initially shipped in v2.7.0-dev.4) plus the OTel span-
 # duplication and Cloud Trace resource fixes from #333–#340.
-# Without this pin, kustomize would fall through to the base
-# example overlay's 2.6.0 tag and the daemon would ignore the
-# exporter env var. The watcher (ghcr.io/go-steer/lookout, from
+# The composed example overlay now pins the same 2.7.0 tag; the pin
+# is restated here so this overlay stays correct if the example's
+# moves. The watcher (ghcr.io/go-steer/lookout, from
 # go-steer/k8s-lookout) is pinned to the same tag as the composed
-# example overlay.
+# example overlay — v0.11.0+ is required against daemons ≥
+# 2.8.0-dev.1 (Content-Type on the bodyless POST /sessions; #383).
 images:
   - name: ghcr.io/go-steer/core-agent
     newTag: "2.7.0"
   - name: ghcr.io/go-steer/lookout
-    newTag: "v0.8.0"
+    newTag: "v0.11.0"

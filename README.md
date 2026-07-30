@@ -55,7 +55,7 @@ A production-grade Go substrate for multi-turn LLM agents, built on the [Google 
 - Subagent events stream into the parent's audit log under a `Branch` label so the trail stays unified.
 
 **Kubernetes triage sidecar** (v2.6+)
-- `k8s-event-watcher` — watches Kubernetes Events, filters + dedupes, and injects matched incidents into per-incident sessions on a core-agent daemon. Pairs with the bundled triage skill to drive diagnose → fix → verify loops via the GKE MCP, gated by plan-first. The watcher ships from [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout) as `ghcr.io/go-steer/lookout` (the recipe in [`examples/gke-troubleshoot-agent/`](./examples/gke-troubleshoot-agent/) pins `v0.8.0`); its `lookout watch` entrypoint is a drop-in swap for the retired `ghcr.io/go-steer/k8s-event-watcher` image.
+- `k8s-event-watcher` — watches Kubernetes Events, filters + dedupes, and injects matched incidents into per-incident sessions on a core-agent daemon. Pairs with the bundled triage skill to drive diagnose → fix → verify loops via the GKE MCP, gated by plan-first. The watcher ships from [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout) as `ghcr.io/go-steer/lookout` (the recipe in [`examples/gke-troubleshoot-agent/`](./examples/gke-troubleshoot-agent/) pins `v0.11.0`); its `lookout watch` entrypoint is a drop-in swap for the retired `ghcr.io/go-steer/k8s-event-watcher` image.
 
 **Optional adapters**
 - [`extras/scion-agent/`](./extras/scion-agent/) — runs `core-agent` inside [Scion](https://github.com/GoogleCloudPlatform/scion)'s container runtime with lifecycle status emission and a `sciontool_status` tool.

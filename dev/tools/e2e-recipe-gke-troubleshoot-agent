@@ -60,7 +60,8 @@
 #     if the recipe's core-agent-gcp-env ConfigMap is missing, the
 #     Deployment's envFrom would fail to expand → CreateContainerError.
 #
-# Runtime: ~2-4 min wall clock (kind create ~30s; rollout ~60s;
+# Runtime: ~4-8 min wall clock (docker build from HEAD ~2-4 min cold,
+# seconds warm; kind create ~30s; rollout ~60s;
 # probe/logs ~10s; pipeline assertion ~45-120s — dominated by waiting
 # for kubelet's first image-pull BackOff event; cleanup ~15s).
 
@@ -72,14 +73,22 @@ cd "$(repo_root)"
 
 CLUSTER_NAME="${CLUSTER_NAME:-e2e-gke-troubleshoot}"
 NAMESPACE="${NAMESPACE:-agent-triage}"
-# Reuses the daemon image the recipe pins in overlays/example/kustomization.yaml.
-# Overridable so a future variant can build local + kind load.
-DAEMON_IMAGE="${DAEMON_IMAGE:-ghcr.io/go-steer/core-agent:2.6.0}"
+# Daemon image: empty (the default) builds core-agent from the
+# CURRENT CHECKOUT and side-loads it into kind, so every PR's e2e
+# exercises the code under review against the pinned watcher. That's
+# what catches daemon-side API skew: the #383 CSRF guard 415'd
+# lookout's bodyless POST /sessions in production while this e2e
+# stayed green, because it pinned a pre-guard core-agent:2.6.0.
+# Set DAEMON_IMAGE to a published tag to smoke that tag instead.
+DAEMON_IMAGE="${DAEMON_IMAGE:-}"
 # The watcher migrated to go-steer/k8s-lookout's published image: a
 # multicall binary whose container ENTRYPOINT is `lookout watch`,
 # drop-in image-swap compatible with the retired
-# ghcr.io/go-steer/k8s-event-watcher image.
-WATCHER_IMAGE="${WATCHER_IMAGE:-ghcr.io/go-steer/lookout:v0.8.0}"
+# ghcr.io/go-steer/k8s-event-watcher image. Keep this pin current:
+# an old watcher pin hides daemon↔watcher protocol skew (and vice
+# versa — v0.8.0 through v0.10.0 lack the Content-Type fix the
+# current daemon's CSRF guard requires).
+WATCHER_IMAGE="${WATCHER_IMAGE:-ghcr.io/go-steer/lookout:v0.11.0}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-180s}"
 # Seconds allowed for the whole event → inject → echo-turn pipeline
 # (phase 9). Typical pass is ~30-60s; the long pole is kubelet's first
@@ -134,6 +143,22 @@ trap cleanup EXIT
 echo "▸ create kind cluster ($CLUSTER_NAME)"
 kind create cluster --name "$CLUSTER_NAME" --wait 60s
 
+# Build the daemon from HEAD unless a published tag was requested.
+# imagePullPolicy in the base is IfNotPresent, so the side-loaded
+# local tag is used as-is and never triggers a registry pull.
+if [[ -z "$DAEMON_IMAGE" ]]; then
+    DAEMON_IMAGE="local/core-agent:e2e-$(git rev-parse --short HEAD)"
+    echo "▸ build daemon image from HEAD ($DAEMON_IMAGE)"
+    # Same go.mod-extraction idiom as release-images.yml: the
+    # Dockerfile's GO_VERSION default drifts behind go.mod (official
+    # golang images set GOTOOLCHAIN=local, so no auto-upgrade), and
+    # without this arg `go mod download` fails the build the first
+    # time go.mod's directive moves past the default.
+    GO_VERSION=$(grep -E '^go [0-9]+\.[0-9]+(\.[0-9]+)?$' go.mod | awk '{print $2}')
+    docker build --build-arg GO_VERSION="$GO_VERSION" -t "$DAEMON_IMAGE" .
+    kind load docker-image --name "$CLUSTER_NAME" "$DAEMON_IMAGE"
+fi
+
 # --- phase 2: stage scratch deploy tree -------------------------------
 
 echo "▸ stage scratch deploy tree at $SCRATCH_DIR/deploy"
@@ -147,17 +172,15 @@ BASE_AGENTS_MD="$SCRATCH_DIR/deploy/base/config/AGENTS.md"
 sed -i "s/prod-us-central1/e2e-kind/g" \
     "$OVERLAY_DIR/patch-watcher-cluster-name.yaml"
 
-# AGENTS.md placeholders — plausible fake values (this recipe requires
-# them substituted or the daemon logs a self-diagnostic per #218).
-sed -i "s|__GCP_PROJECT__|e2e-project|g;\
-        s|__GKE_CLUSTER__|e2e-kind|g;\
-        s|__GKE_LOCATION__|us-central1|g" \
-    "$BASE_AGENTS_MD"
-
-# Verify sed hit — placeholders should be gone.
+# AGENTS.md project/cluster/location need no sed since #323: the file
+# interpolates ${env:GCP_PROJECT} etc. at daemon boot, fed via envFrom
+# from the core-agent-gcp-env ConfigMap. The base kustomization's
+# literal defaults are wrong-for-kind but present, which is all the
+# echo-provider boot path requires (env.yaml only fail-louds on
+# MISSING vars). Guard against the placeholder pattern resurfacing:
 if grep -qE "__GCP_PROJECT__|__GKE_CLUSTER__|__GKE_LOCATION__" "$BASE_AGENTS_MD"; then
-    echo "e2e: AGENTS.md placeholders were not substituted" >&2
-    grep -nE "__GCP_PROJECT__|__GKE_CLUSTER__|__GKE_LOCATION__" "$BASE_AGENTS_MD" >&2
+    echo "e2e: AGENTS.md grew __PLACEHOLDER__ tokens again — the daemon" >&2
+    echo "     no longer substitutes these; use \${env:VAR} + env.yaml instead" >&2
     exit 1
 fi
 
@@ -243,14 +266,29 @@ sleep 3
 # The /sessions endpoint returns 200 with any valid bearer + JSON body
 # (may be empty [] on a fresh cluster; may contain a "default" bootstrap
 # session — either shape is fine, we just need proof-of-life).
-resp="$(curl -sS --max-time 5 \
-    -H "Authorization: Bearer $SRE_TOKEN" \
-    -o "$SCRATCH_DIR/sessions.json" \
-    -w '%{http_code}' \
-    http://127.0.0.1:7777/sessions 2>&1)" || {
-    echo "e2e: attach listener probe failed (curl error): $resp" >&2
+#
+# Bounded retry: the first attempt can race the port-forward's
+# pod-side stream (kubectl accepts the local connection before the
+# endpoint is dialable → curl exits 52 "empty reply"), especially on
+# a machine still hot from the docker build. Observed ~1-in-2 on a
+# loaded runner; one retry has always sufficed, five is margin.
+probe_ok=""
+for attempt in 1 2 3 4 5; do
+    if resp="$(curl -sS --max-time 5 \
+        -H "Authorization: Bearer $SRE_TOKEN" \
+        -o "$SCRATCH_DIR/sessions.json" \
+        -w '%{http_code}' \
+        http://127.0.0.1:7777/sessions 2>&1)"; then
+        probe_ok=1
+        break
+    fi
+    echo "e2e: attach probe attempt $attempt failed ($resp); retrying" >&2
+    sleep 3
+done
+if [[ -z "$probe_ok" ]]; then
+    echo "e2e: attach listener probe failed after 5 attempts: $resp" >&2
     exit 1
-}
+fi
 if [[ "$resp" != "200" ]]; then
     echo "e2e: attach listener returned HTTP $resp (expected 200)" >&2
     cat "$SCRATCH_DIR/sessions.json" 2>&1 | head -20 >&2
@@ -276,6 +314,12 @@ required_patterns=(
     "pricing refresh:"
     "attach listener on 0.0.0.0:7777"
     "session db:"
+    # The MCP summary line always prints (any outcome). gke(failed)
+    # is EXPECTED here — the GKE MCP endpoint isn't reachable from
+    # kind and phase 9's echo-provider pipeline never calls it. What
+    # this asserts is that the loader ran and accounted for the one
+    # configured server rather than silently skipping mcp.json.
+    "mcp: 1 server(s) loaded"
 )
 for pat in "${required_patterns[@]}"; do
     if ! echo "$LOG" | grep -qF -- "$pat"; then
@@ -289,9 +333,12 @@ done
 # Forbidden lines — any present = latent issue we should catch.
 # 'instruction: no AGENTS.md found' assertion depends on issue #218
 # landing (adds the diagnostic); once it does, uncomment the line.
+# "core-agent: mcp:" is no longer forbidden: since 2.6.0 the daemon
+# ALWAYS prints an informational "core-agent: mcp: N server(s)
+# loaded" summary, and in kind the gke server's failure is expected
+# (asserted as a required pattern above instead).
 forbidden_patterns=(
     "permission denied"
-    "core-agent: mcp:"          # daemon only prints this on MCP error
     "fatal"
     "panic"
     # "instruction: no AGENTS.md found"  # enable after #218 merges

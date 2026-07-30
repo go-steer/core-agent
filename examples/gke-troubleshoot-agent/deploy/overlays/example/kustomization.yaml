@@ -26,7 +26,7 @@ resources:
 #
 # (A) TAG PINNING — the default. Uses tags published by
 #     .github/workflows/release-images.yml (docker/metadata-action
-#     strips the leading `v`, so the GHCR tag is "2.6.0", not "v2.6.0").
+#     strips the leading `v`, so the GHCR tag is "2.7.0", not "v2.7.0").
 #     Dev drops publish as e.g. "2.7.0-dev.1"; RCs as "2.7.0-rc.1".
 #     For the recipe's shipped default, prefer a released semver
 #     over :latest so operators get reproducible deploys.
@@ -34,7 +34,7 @@ resources:
 # (B) DIGEST PINNING — for reproducibility-critical deployments
 #     (SBOM tracking, cosign verification, immutable revs). Mutually
 #     exclusive with newTag under kustomize semantics. Look up the
-#     digest via `crane digest ghcr.io/go-steer/core-agent:2.6.0`
+#     digest via `crane digest ghcr.io/go-steer/core-agent:2.7.0`
 #     or `docker buildx imagetools inspect ...`.
 #
 # (C) REGISTRY REMAPPING — for private mirrors or self-built images.
@@ -43,11 +43,14 @@ resources:
 images:
   # (A) tag pinning — recipe default
   - name: ghcr.io/go-steer/core-agent
-    newTag: "2.6.0"
+    newTag: "2.7.0"
   # The watcher ships from go-steer/k8s-lookout; its tags keep the
-  # leading `v` (e.g. "v0.8.0"), unlike this repo's images.
+  # leading `v` (e.g. "v0.11.0"), unlike this repo's images.
+  # v0.11.0 is the floor for daemons ≥ 2.8.0-dev.1: earlier lookout
+  # releases don't send Content-Type on the bodyless POST /sessions,
+  # which the daemon's #383 CSRF guard rejects with 415.
   - name: ghcr.io/go-steer/lookout
-    newTag: "v0.8.0"
+    newTag: "v0.11.0"
 
   # (B) example — digest pinning (uncomment + comment out (A) above)
   # - name: ghcr.io/go-steer/core-agent
@@ -58,7 +61,7 @@ images:
   # (C) example — private mirror
   # - name: ghcr.io/go-steer/core-agent
   #   newName: my-registry.internal/mirrors/core-agent
-  #   newTag: "2.6.0"
+  #   newTag: "2.7.0"
 
 # Uncomment to add your organization's namespace prefix or
 # per-cluster labels:

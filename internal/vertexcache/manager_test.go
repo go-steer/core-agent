@@ -469,12 +469,24 @@ func TestInit_TransientCancelRetriesInsteadOfStickyFail(t *testing.T) {
 				return !s.Active && !s.Failed
 			})
 
-			// Blip over: the next turn's Init retries and activates.
+			// Blip over: later turns retry and activate. Poll Init
+			// rather than calling it once — a single call can land in
+			// the window between Create returning context.Canceled and
+			// doInit resetting the gate (state stays stateStart through
+			// the transient path, so the waits above can pass with
+			// initStarted still true), get swallowed as an "already
+			// initializing" no-op, and leave nobody to retry. That is
+			// the real shape of the #499 flake: a lost retry, not a
+			// slow one — no waitFor deadline can save a condition that
+			// can never become true (#534). Polling mirrors the product
+			// contract: every real turn calls Init again.
 			f.mu.Lock()
 			f.createErr = nil
 			f.mu.Unlock()
-			m.Init(context.Background(), sys, nil)
-			waitFor(t, testWait, func() bool { return m.Snapshot().Active })
+			waitFor(t, testWait, func() bool {
+				m.Init(context.Background(), sys, nil)
+				return m.Snapshot().Active
+			})
 			if got := f.createCount.Load(); got != 2 {
 				t.Errorf("createCount = %d, want 2 (one failed, one retried)", got)
 			}

@@ -162,5 +162,7 @@ func (a *Agent) sessionHistory(ctx context.Context) ([]*genai.Content, error) {
 		}
 		out = append(out, ev.Content)
 	}
-	return out, nil
+	// Same call/response normalization the summarizer path applies —
+	// side-question history is raw event contents too (#541).
+	return normalizeToolPairs(out), nil
 }

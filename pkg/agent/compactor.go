@@ -709,7 +709,10 @@ func (a *Agent) summarizerHistory(ctx context.Context) ([]*genai.Content, error)
 		}
 		out = append(out, ev.Content)
 	}
-	return out, nil
+	// Raw event contents can violate the providers' call/response
+	// invariants (crash tails, #537 repair events at a distance from
+	// their call) — normalize before handing to the summarizer (#541).
+	return normalizeToolPairs(out), nil
 }
 
 // sliceFromBoundary returns events from the latest boundary

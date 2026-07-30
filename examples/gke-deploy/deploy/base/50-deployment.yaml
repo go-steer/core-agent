@@ -98,6 +98,12 @@ spec:
         app: core-agent
     spec:
       serviceAccountName: core-agent
+      # Explicit even though 30 is the K8s default: the daemon's
+      # worst-case teardown is ~24s with default timeouts (see the
+      # "Restarts and shutdown" reference page), so the grace period
+      # must stay >= that budget. Raise in lockstep if you raise
+      # attach.shutdown_timeout.
+      terminationGracePeriodSeconds: 30
 
       securityContext:
         # Match the distroless image's nonroot user (UID 65532) so

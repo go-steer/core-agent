@@ -179,11 +179,14 @@ func TestBuiltinsLLM_PreservesExistingTools(t *testing.T) {
 		builtins: BuiltinTools{GoogleSearch: true}.asTools(),
 	}
 	// Caller already supplied a function-declaration tool. The wrapper
-	// must append, not replace.
+	// must append, not replace. Model must be Gemini 3.0+ — with
+	// function tools present, builtinsCompatible skips injection on
+	// older or unparseable ids (#535, see the dedicated tests below).
 	userTool := &genai.Tool{
 		FunctionDeclarations: []*genai.FunctionDeclaration{{Name: "my_func"}},
 	}
 	req := &adkmodel.LLMRequest{
+		Model:  "gemini-3.5-flash",
 		Config: &genai.GenerateContentConfig{Tools: []*genai.Tool{userTool}},
 	}
 	for range wrapped.GenerateContent(context.Background(), req, false) {
@@ -561,5 +564,185 @@ func TestBuiltinsLLM_NoCacheHooks_LeavesConfigUnchanged(t *testing.T) {
 	}
 	if req.Config.CachedContent != "" {
 		t.Errorf("CachedContent set without hooks: %q", req.Config.CachedContent)
+	}
+}
+
+// TestBuiltinsLLM_SkipsInjectionOnPre30WithFunctionTools pins the
+// #535 guard: Gemini 2.x rejects server-side search builtins
+// alongside client-side function declarations ("Multiple tools are
+// supported only when they are all search tools"), so the wrapper
+// must degrade unGrounded instead of 400ing every turn. Unparseable
+// ids conservatively skip too. Requests with NO function tools keep
+// builtins on every model generation.
+func TestBuiltinsLLM_SkipsInjectionOnPre30WithFunctionTools(t *testing.T) {
+	t.Parallel()
+	userTool := &genai.Tool{
+		FunctionDeclarations: []*genai.FunctionDeclaration{{Name: "my_func"}},
+	}
+	cases := []struct {
+		name       string
+		model      string
+		funcTools  bool
+		wantInject bool
+	}{
+		{"gemini-2.5 with function tools skips", "gemini-2.5-pro", true, false},
+		{"gemini-2.0 with function tools skips", "gemini-2.0-flash", true, false},
+		{"unparseable id with function tools skips", "some-future-model", true, false},
+		{"gemini-3.x with function tools injects", "gemini-3.6-flash", true, true},
+		{"dated 3.x snapshot injects", "gemini-3.5-flash-05-2026", true, true},
+		{"case-insensitive 3.x injects", "GEMINI-3.1-PRO", true, true},
+		{"gemini-2.5 without function tools keeps builtins", "gemini-2.5-pro", false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeLLM{}
+			wrapped := &builtinsLLM{
+				inner:    fake,
+				builtins: BuiltinTools{GoogleSearch: true}.asTools(),
+			}
+			req := &adkmodel.LLMRequest{Model: tc.model}
+			wantTools := 0
+			if tc.funcTools {
+				req.Config = &genai.GenerateContentConfig{Tools: []*genai.Tool{userTool}}
+				wantTools = 1
+			}
+			if tc.wantInject {
+				wantTools++
+			}
+			for range wrapped.GenerateContent(context.Background(), req, false) {
+			}
+			got := 0
+			if fake.last.Config != nil {
+				got = len(fake.last.Config.Tools)
+			}
+			if got != wantTools {
+				t.Errorf("tools after wrapper = %d, want %d (inject=%v)", got, wantTools, tc.wantInject)
+			}
+		})
+	}
+}
+
+// TestBuiltinsLLM_SkipFallsBackToInnerName pins the model-resolution
+// order in builtinsCompatible: an empty LLMRequest.Model falls back
+// to the wrapper's inner Name() — the Provider-bound model — before
+// deciding compatibility. fakeLLM's Name() is "fake" (unparseable),
+// so injection must be skipped when function tools are present.
+func TestBuiltinsLLM_SkipFallsBackToInnerName(t *testing.T) {
+	t.Parallel()
+	fake := &fakeLLM{}
+	wrapped := &builtinsLLM{
+		inner:    fake,
+		builtins: BuiltinTools{GoogleSearch: true}.asTools(),
+	}
+	req := &adkmodel.LLMRequest{
+		Config: &genai.GenerateContentConfig{Tools: []*genai.Tool{
+			{FunctionDeclarations: []*genai.FunctionDeclaration{{Name: "f"}}},
+		}},
+	}
+	for range wrapped.GenerateContent(context.Background(), req, false) {
+	}
+	if got := len(fake.last.Config.Tools); got != 1 {
+		t.Errorf("tools = %d, want 1 (unparseable inner name must skip injection)", got)
+	}
+}
+
+func TestGeminiMajorVersion(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		model string
+		want  int
+	}{
+		{"gemini-3.6-flash", 3},
+		{"gemini-3-pro", 3},
+		{"gemini-2.5-pro", 2},
+		{"gemini-2.0-flash", 2},
+		{"GEMINI-3.1-PRO", 3},
+		{"gemini-10.1-mega", 10},
+		{"gemini-", 0},
+		{"gemini-x", 0},
+		{"claude-opus-4-7", 0},
+		{"", 0},
+	}
+	for _, tc := range cases {
+		if got := geminiMajorVersion(tc.model); got != tc.want {
+			t.Errorf("geminiMajorVersion(%q) = %d, want %d", tc.model, got, tc.want)
+		}
+	}
+}
+
+// TestBuiltinsLLM_CacheSeedExcludesBuiltinsWhenGuardSkips pins the
+// cache half of the #535 guard: on a pre-3.0 model with function
+// tools, builtinsCompatible skips the append, so cacheInit must
+// capture the Tools slice WITHOUT built-ins — cached turns (which
+// strip Tools and rely on the cache) then agree with uncached turns
+// (both unGrounded). A regression that moved the guard after the
+// append would seed the cache with the illegal mix and fail here.
+func TestBuiltinsLLM_CacheSeedExcludesBuiltinsWhenGuardSkips(t *testing.T) {
+	t.Parallel()
+
+	var lastInitTools []*genai.Tool
+	initFn := func(_ context.Context, _ *genai.Content, tools []*genai.Tool) {
+		lastInitTools = tools
+	}
+	nameFn := func(_ context.Context) string { return "" }
+
+	fake := &fakeLLM{}
+	wrapped := &builtinsLLM{
+		inner:     fake,
+		builtins:  BuiltinTools{GoogleSearch: true}.asTools(),
+		cacheInit: initFn,
+		cacheName: nameFn,
+	}
+	userTool := &genai.Tool{
+		FunctionDeclarations: []*genai.FunctionDeclaration{{Name: "my_func"}},
+	}
+	req := &adkmodel.LLMRequest{
+		Model:  "gemini-2.5-pro",
+		Config: &genai.GenerateContentConfig{Tools: []*genai.Tool{userTool}},
+	}
+	for range wrapped.GenerateContent(context.Background(), req, false) {
+	}
+	if len(lastInitTools) != 1 || lastInitTools[0] != userTool {
+		t.Errorf("cacheInit tools = %+v, want exactly the user tool (no built-ins seeded on guard skip)", lastInitTools)
+	}
+
+	// Counterpart: same request shape on a 3.x model seeds the cache
+	// WITH the built-ins.
+	lastInitTools = nil
+	fake2 := &fakeLLM{}
+	wrapped2 := &builtinsLLM{
+		inner:     fake2,
+		builtins:  BuiltinTools{GoogleSearch: true}.asTools(),
+		cacheInit: initFn,
+		cacheName: nameFn,
+	}
+	req2 := &adkmodel.LLMRequest{
+		Model:  "gemini-3.6-flash",
+		Config: &genai.GenerateContentConfig{Tools: []*genai.Tool{userTool}},
+	}
+	for range wrapped2.GenerateContent(context.Background(), req2, false) {
+	}
+	if len(lastInitTools) != 2 {
+		t.Errorf("cacheInit tools on 3.x = %d entries, want 2 (user tool + injected builtin)", len(lastInitTools))
+	}
+}
+
+func TestGeminiMajorVersion_PathQualifiedIDs(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		model string
+		want  int
+	}{
+		{"models/gemini-3.5-flash", 3},
+		{"publishers/google/models/gemini-2.5-pro", 2},
+		{"projects/p/locations/l/publishers/google/models/gemini-3.6-flash", 3},
+		{"gemini-flash-latest", 0}, // version-less alias: conservative skip
+		{"models/", 0},
+	}
+	for _, tc := range cases {
+		if got := geminiMajorVersion(tc.model); got != tc.want {
+			t.Errorf("geminiMajorVersion(%q) = %d, want %d", tc.model, got, tc.want)
+		}
 	}
 }

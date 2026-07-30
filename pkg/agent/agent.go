@@ -34,6 +34,7 @@ import (
 	"iter"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/genai"
@@ -255,19 +256,29 @@ type Agent struct {
 	invocationHist   metric.Float64Histogram
 	toolInstrumenter *tools.DurationInstrumenter
 	metricAgentName  string
-	description      string
-	userID           string
-	sessionID        string
-	model            adkmodel.LLM
-	modelName        string
-	mode             Mode
-	gate             *permissions.Gate
-	bgMgr            SubagentManager
-	inbox            *inbox
-	wake             *wakeSignal
-	tracker          *usage.Tracker
-	compactor        Compactor
-	checkpointer     Checkpointer
+	// compactionsDone / checkpointsDone are process-lifetime metric
+	// counters (#338), incremented on successful Compact/Checkpoint.
+	// Deliberately not derived from ContextStats: the eventlog scan
+	// is O(events) per read and its count survives restarts — the
+	// wrong shape for an ObservableCounter.
+	compactionsDone atomic.Int64
+	checkpointsDone atomic.Int64
+	// watchdogAlertCounter is the sync core_agent.watchdog.alerts
+	// instrument; counted in drainWatchdogAlerts.
+	watchdogAlertCounter metric.Int64Counter
+	description          string
+	userID               string
+	sessionID            string
+	model                adkmodel.LLM
+	modelName            string
+	mode                 Mode
+	gate                 *permissions.Gate
+	bgMgr                SubagentManager
+	inbox                *inbox
+	wake                 *wakeSignal
+	tracker              *usage.Tracker
+	compactor            Compactor
+	checkpointer         Checkpointer
 
 	// operatorEmit is the typed operator-event callback set by the
 	// broadcaster on first subscribe (see the attach package's broadcaster Subscribe).
@@ -757,6 +768,10 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agent: invocation histogram: %w", err)
 	}
+	watchdogAlerts, err := newWatchdogAlertCounter(mp)
+	if err != nil {
+		return nil, fmt.Errorf("agent: watchdog alert counter: %w", err)
+	}
 
 	// Layer assembly (#459). WithInstruction / the deprecated prefix
 	// path replace layers 1–3 wholesale; layers 4–5 append in both
@@ -812,35 +827,36 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 	}
 
 	a := &Agent{
-		inner:            inner,
-		runner:           r,
-		sessionService:   svc,
-		eventLog:         o.eventLog,
-		tools:            o.tools,
-		streaming:        o.streaming,
-		appName:          o.appName,
-		agentName:        o.name,
-		description:      o.description,
-		userID:           o.userID,
-		sessionID:        o.sessionID,
-		model:            model,
-		modelName:        model.Name(),
-		mode:             o.mode,
-		invocationHist:   invocationHist,
-		toolInstrumenter: toolInstrumenter,
-		metricAgentName:  cmp.Or(o.metricAgentName, o.name),
-		gate:             o.gate,
-		bgMgr:            o.bgMgr,
-		inbox:            newInbox(),
-		wake:             newWakeSignal(),
-		tracker:          o.tracker,
-		compactor:        o.compactor,
-		checkpointer:     o.checkpointer,
-		costCeiling:      o.costCeiling,
-		watchdog:         o.watchdog,
-		onWatchdogAlert:  o.onWatchdogAlert,
-		onEvent:          o.onEvent,
-		onTurnEnd:        o.onTurnEnd,
+		inner:                inner,
+		runner:               r,
+		sessionService:       svc,
+		eventLog:             o.eventLog,
+		tools:                o.tools,
+		streaming:            o.streaming,
+		appName:              o.appName,
+		agentName:            o.name,
+		description:          o.description,
+		userID:               o.userID,
+		sessionID:            o.sessionID,
+		model:                model,
+		modelName:            model.Name(),
+		mode:                 o.mode,
+		invocationHist:       invocationHist,
+		toolInstrumenter:     toolInstrumenter,
+		metricAgentName:      cmp.Or(o.metricAgentName, o.name),
+		watchdogAlertCounter: watchdogAlerts,
+		gate:                 o.gate,
+		bgMgr:                o.bgMgr,
+		inbox:                newInbox(),
+		wake:                 newWakeSignal(),
+		tracker:              o.tracker,
+		compactor:            o.compactor,
+		checkpointer:         o.checkpointer,
+		costCeiling:          o.costCeiling,
+		watchdog:             o.watchdog,
+		onWatchdogAlert:      o.onWatchdogAlert,
+		onEvent:              o.onEvent,
+		onTurnEnd:            o.onTurnEnd,
 	}
 	if a.bgMgr != nil {
 		a.bgMgr.AttachParent(a)

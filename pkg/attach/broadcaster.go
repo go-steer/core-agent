@@ -19,6 +19,7 @@ import (
 	"errors"
 	"log"
 	"sync"
+	"sync/atomic"
 
 	"google.golang.org/adk/session"
 
@@ -136,6 +137,13 @@ type broadcaster struct {
 	cancel    context.CancelFunc // cancels the pump goroutine
 	pumpGen   uint64             // bumped per pump start; lets a dying pump's sweep recognize a successor (#485)
 	startedAt int64              // last seq the pump has yielded
+
+	// drops points at the owning pool's cumulative dropped-subscriber
+	// counter (#338 metrics); nil on broadcasters constructed outside
+	// a pool (tests). Both drop sites are the same condition — the
+	// subscriber's channel buffer filled — so there is no per-reason
+	// dimension.
+	drops *atomic.Int64
 
 	// wg tracks every goroutine this broadcaster spawns (the pump and
 	// each replayThenTail). Close() waits on it so that, once Close
@@ -653,6 +661,9 @@ func (b *broadcaster) send(sub *subscriber, f Frame) bool {
 		log.Printf("attach: broadcaster %s/%s dropping slow subscriber (buffer=%d full)", //nolint:gosec // AppName/SessionID are server-managed identifiers from the SessionRegistry
 			b.entry.AppName, b.entry.SessionID, subscriberBufferSize)
 		debugf("broadcaster send %s/%s seq=%d → buffer FULL, dropping subscriber", b.entry.AppName, b.entry.SessionID, f.Seq)
+		if b.drops != nil {
+			b.drops.Add(1)
+		}
 		b.detachLocked(sub)
 		return false
 	}
@@ -673,6 +684,9 @@ func (b *broadcaster) sendTyped(sub *subscriber, f Frame) bool {
 		log.Printf("attach: broadcaster %s/%s dropping slow subscriber (typed=%s, buffer=%d full)", //nolint:gosec // AppName/SessionID/Type are server-managed; Type is one of the typed-event protocol constants
 			b.entry.AppName, b.entry.SessionID, f.Type, subscriberBufferSize)
 		debugf("broadcaster sendTyped %s/%s type=%s → buffer FULL, dropping subscriber", b.entry.AppName, b.entry.SessionID, f.Type)
+		if b.drops != nil {
+			b.drops.Add(1)
+		}
 		b.detachLocked(sub)
 		return false
 	}
@@ -768,6 +782,12 @@ func setOperatorEmitter(ag Registrant, f func(eventType string, payload any)) {
 // Entry. Server uses this so multiple SSE clients for the same session
 // share one pump goroutine.
 type broadcasterPool struct {
+	// drops accumulates dropped-slow-subscriber events across every
+	// broadcaster this pool ever constructed (#338 metrics). Atomic
+	// and pool-lifetime so the counter survives individual
+	// broadcaster teardown (they die with their last subscriber).
+	drops atomic.Int64
+
 	mu sync.Mutex
 	// Keyed by tripleKey so the (app, user, sid) identity matches
 	// the registry's.
@@ -902,6 +922,7 @@ func (p *broadcasterPool) For(entry *Entry) (*broadcaster, error) {
 	b, err := newBroadcaster(entry)
 	if err == nil {
 		b.capsBuilder = p.capsBuilder
+		b.drops = &p.drops
 		p.bcasts[key] = b
 	}
 	p.mu.Unlock()

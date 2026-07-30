@@ -244,10 +244,10 @@ under-reporting. See #368.
 
 | Metric | Type | Unit | Attributes | Source |
 |---|---|---|---|---|
-| `core_agent.agent.compactions` | ObservableCounter | `{compaction}` | `session.id` | `ContextStats.CompactionCount` |
-| `core_agent.agent.checkpoints` | ObservableCounter | `{checkpoint}` | `session.id` | `ContextStats.CheckpointCount` |
-| `core_agent.agent.subtasks` | ObservableCounter | `{subtask}` | `session.id` | `ContextStats.SubtaskCount` |
-| `core_agent.autonomous.runs` | ObservableCounter | `{run}` | `stop_reason` (completed\|max_turns\|max_tokens\|max_cost\|wallclock\|context_cancelled\|retry_aborted\|deferred) | incremented on `RunResult.StopReason` at run end (thin sync counter; the only v1 exception to the async-only rule because `RunResult` doesn't accumulate) |
+| `core_agent.agent.compactions` | ObservableCounter | `{compaction}` | `session.id` | in-memory `atomic.Int64` on `Agent`, ++ on successful `Compact` — NOT `ContextStats.CompactionCount`: that's an O(events) eventlog scan per read and resumes across restarts (wrong shape for a process-lifetime counter). Accepted: like every per-session series, an evict + lazy resume restarts the series at zero (same acceptance as the usage side) |
+| `core_agent.agent.checkpoints` | ObservableCounter | `{checkpoint}` | `session.id` | in-memory `atomic.Int64`, ++ on successful `Checkpoint` (same rationale) |
+| `core_agent.agent.subtasks` | ObservableCounter | `{subtask}` | `session.id` | `Agent.subtaskCount` (in-memory, `a.mu`) |
+| `core_agent.autonomous.runs` | Counter (sync) | `{run}` | `stop_reason` = the ACTUAL `StopReason` constants: completed\|max_turns_exceeded\|max_tokens_exceeded\|max_cost_exceeded\|wallclock_exceeded\|context_cancelled\|retry_policy_aborted\|deferred, plus `error` for aborts before a reason is assigned | deferred record in `autonomous.Run` (6 exit sites; no single return hook). Note: the daemon doesn't call `autonomous.Run` — consumers are background subagent spawns + embedders |
 | `core_agent.agent.inbox_pending` | ObservableGauge | `{message}` | `session.id` | `Agent.PendingInboxCount()` |
 
 ### core-agent-specific — attach / peers / MCP
@@ -255,11 +255,11 @@ under-reporting. See #368.
 | Metric | Type | Unit | Attributes | Source |
 |---|---|---|---|---|
 | `core_agent.attach.sessions.active` | ObservableGauge | `{session}` | none | `SessionRegistry.Len()` |
-| `core_agent.attach.subscribers` | ObservableGauge | `{subscriber}` | `session.id` | broadcaster subscriber count |
-| `core_agent.attach.subscriber_drops` | ObservableCounter | `{drop}` | `session.id`, `reason` = slow\|full | broadcaster drop sites |
-| `core_agent.attach.peers.active` | ObservableGauge | `{peer}` | none | `PeerRegistry.Len()` |
-| `core_agent.mcp.server.status` | ObservableGauge | `{server}` (0/1 per label combo) | `mcp.server`, `mcp.status` = running\|starting\|failed\|stopped | `Server.Status` |
-| `core_agent.watchdog.alerts` | ObservableCounter | `{alert}` | `session.id`, `signal` (e.g. repeated_tool_call) | `Watchdog.alerts` |
+| `core_agent.attach.subscribers` | ObservableGauge | `{subscriber}` | `session.id` | new `Server.SubscriberStats()` (pool walk; broadcaster stays unexported per #390). Sessions with no live broadcaster don't appear — broadcasters tear down with their last subscriber |
+| `core_agent.attach.subscriber_drops` | ObservableCounter | `{drop}` | none — the originally-sketched `reason=slow\|full` split doesn't exist in code: both drop sites are the same buffer-full condition | pool-lifetime atomic, ++ at both broadcaster drop sites; surfaced via `Server.SubscriberDrops()` |
+| `core_agent.attach.peers.active` | ObservableGauge | `{peer}` | none | `PeerRegistry.Len()`; series absent entirely on non-hub daemons (nil registry) |
+| `core_agent.mcp.server.status` | ObservableGauge (=1) | `{server}` | `mcp.server`, `mcp.status` = **ok\|error** — the ACTUAL enum, set once at `mcp.Build` and never transitioned; the sketched running\|starting\|failed\|stopped lifecycle doesn't exist | `Server.Status` over the write-once `[]*Server` slice |
+| `core_agent.watchdog.alerts` | Counter (sync) | `{alert}` | `session.id`, `signal`, `severity` (warn\|critical) | counted in `drainWatchdogAlerts` BEFORE the nil-callback return — the internal buffer drains on `Check()`, so it cannot be observed async (the sketched "observer over `Watchdog.alerts`" was never possible) |
 
 ### ADK-schema GenAI histograms (shipped, #338 Phase 3 slice 1)
 

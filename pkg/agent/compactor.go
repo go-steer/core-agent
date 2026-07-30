@@ -280,6 +280,11 @@ func (a *Agent) Compact(ctx context.Context, focus string) (CompactionResult, er
 	a.mu.Lock()
 	a.compactionPending = false
 	a.mu.Unlock()
+	// In-memory metrics counter (#338) — deliberately NOT the
+	// eventlog-derived ContextStats count: that resumes across
+	// restarts (wrong shape for a process-lifetime counter) and
+	// costs an O(events) scan per read.
+	a.compactionsDone.Add(1)
 	return CompactionResult{
 		SummaryEventID: out.SummaryEventID,
 		SummaryText:    out.SummaryText,

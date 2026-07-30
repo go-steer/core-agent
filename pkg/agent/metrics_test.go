@@ -21,8 +21,10 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/models/mock"
+	"github.com/go-steer/core-agent/v2/pkg/watchdog"
 )
 
 func invocationPoints(t *testing.T, rm metricdata.ResourceMetrics) []metricdata.HistogramDataPoint[float64] {
@@ -139,4 +141,143 @@ func TestRun_RecordsInvocationErrorType(t *testing.T) {
 	if et == "" || len(et) > 32 {
 		t.Errorf("error.type = %q, want a short stable kind", et)
 	}
+}
+
+type staticAgentSource []*Agent
+
+func (s staticAgentSource) Agents() []*Agent { return s }
+
+// TestAgentRegisterMetrics_ObservesLifecycle pins the per-agent
+// observer: counters read the in-memory fields, gauges read live
+// state, zero-valued counters are suppressed, and every series
+// carries the agent's session.id.
+func TestAgentRegisterMetrics_ObservesLifecycle(t *testing.T) {
+	t.Parallel()
+	prov := mock.NewEcho()
+	llm, err := prov.Model(context.Background(), "echo")
+	if err != nil {
+		t.Fatalf("mock model: %v", err)
+	}
+	busy, err := New(llm, WithSession("u", "sess-busy"))
+	if err != nil {
+		t.Fatalf("New busy: %v", err)
+	}
+	busy.compactionsDone.Add(2)
+	busy.checkpointsDone.Add(1)
+	if err := busy.Inject("pending message"); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	idle, err := New(llm, WithSession("u", "sess-idle"))
+	if err != nil {
+		t.Fatalf("New idle: %v", err)
+	}
+
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+	if _, err := RegisterMetrics(mp, staticAgentSource{busy, idle, nil}); err != nil {
+		t.Fatalf("RegisterMetrics: %v", err)
+	}
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	byName := map[string]metricdata.Metrics{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			byName[m.Name] = m
+		}
+	}
+
+	comp := byName[MetricAgentCompactions].Data.(metricdata.Sum[int64])
+	if len(comp.DataPoints) != 1 {
+		t.Fatalf("compactions: want 1 point (idle agent suppressed), got %d", len(comp.DataPoints))
+	}
+	if comp.DataPoints[0].Value != 2 {
+		t.Errorf("compactions = %d, want 2", comp.DataPoints[0].Value)
+	}
+	if sid, _ := invAttr(comp.DataPoints[0].Attributes, AttrMetricSessionID); sid != "sess-busy" {
+		t.Errorf("compactions session.id = %q, want sess-busy", sid)
+	}
+
+	inbox := byName[MetricAgentInboxPending].Data.(metricdata.Gauge[int64])
+	if len(inbox.DataPoints) != 2 {
+		t.Fatalf("inbox_pending: want 2 points (gauge not suppressed), got %d", len(inbox.DataPoints))
+	}
+	for _, dp := range inbox.DataPoints {
+		sid, _ := invAttr(dp.Attributes, AttrMetricSessionID)
+		want := int64(0)
+		if sid == "sess-busy" {
+			want = 1
+		}
+		if dp.Value != want {
+			t.Errorf("inbox_pending{%s} = %d, want %d", sid, dp.Value, want)
+		}
+	}
+}
+
+// TestCompact_IncrementsMetricCounter pins the increment site: a
+// successful Compact bumps the in-memory counter the observer reads.
+func TestCompact_IncrementsMetricCounter(t *testing.T) {
+	t.Parallel()
+	llm := &captureLLM{response: "SUMMARY"}
+	a, err := New(llm, WithCompactor(NewDefaultCompactor()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	plantEvent(t, a, genai.RoleUser, "hello")
+	plantEvent(t, a, genai.RoleModel, "world")
+	if _, err := a.Compact(context.Background(), ""); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if got := a.compactionsDone.Load(); got != 1 {
+		t.Errorf("compactionsDone = %d, want 1", got)
+	}
+}
+
+// TestDrainWatchdogAlerts_CountsWithoutCallback pins that alerts are
+// counted even when no host callback is wired — the internal buffer
+// drains on Check, so this is the only counting opportunity.
+func TestDrainWatchdogAlerts_CountsWithoutCallback(t *testing.T) {
+	t.Parallel()
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+
+	prov := mock.NewEcho()
+	llm, err := prov.Model(context.Background(), "echo")
+	if err != nil {
+		t.Fatalf("mock model: %v", err)
+	}
+	w := &fakeWatchdog{pending: []watchdog.Alert{
+		{Signal: "repeated_tool_call", Severity: watchdog.SeverityWarn, Reason: "x3"},
+		{Signal: "repeated_tool_call", Severity: watchdog.SeverityWarn, Reason: "x4"},
+	}}
+	// NO onAlert callback — the counter must still see both alerts.
+	a, err := New(llm, WithMeterProvider(mp), WithWatchdog(w, nil), WithSession("u", "sess-wd"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.drainWatchdogAlerts()
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != MetricWatchdogAlerts {
+				continue
+			}
+			sum := m.Data.(metricdata.Sum[int64])
+			if len(sum.DataPoints) != 1 || sum.DataPoints[0].Value != 2 {
+				t.Fatalf("watchdog alerts = %+v, want single point of 2", sum.DataPoints)
+			}
+			if sig, _ := invAttr(sum.DataPoints[0].Attributes, AttrWatchdogSignal); sig != "repeated_tool_call" {
+				t.Errorf("signal = %q", sig)
+			}
+			return
+		}
+	}
+	t.Fatal("watchdog alerts metric not found")
 }

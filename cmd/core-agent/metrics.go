@@ -47,6 +47,7 @@ type primaryTrackerProvider struct {
 	tracker *usage.Tracker
 
 	mu        sync.RWMutex
+	agent     *agent.Agent // stamped by SetIdentity; feeds Agents()
 	sessionID string
 	appName   string
 	userID    string
@@ -57,6 +58,9 @@ type primaryTrackerProvider struct {
 	// time, whereas the local fields may still be empty in the
 	// pre-SetIdentity window.
 	registry usage.TrackerProvider
+	// agents enumerates registry-backed agents for the
+	// agent.AgentSource side (SetAgentRegistry).
+	agents registryAgentsFn
 }
 
 // SetRegistry installs the attach-registry adapter
@@ -79,10 +83,59 @@ func (p *primaryTrackerProvider) SetIdentity(a *agent.Agent) {
 		return
 	}
 	p.mu.Lock()
+	p.agent = a
 	p.sessionID = a.SessionID()
 	p.appName = a.AppName()
 	p.userID = a.UserID()
 	p.mu.Unlock()
+}
+
+// registryAgents is the attach-registry half of Agents(); stamped by
+// SetAgentRegistry alongside SetRegistry.
+type registryAgentsFn func() []*agent.Agent
+
+// SetAgentRegistry installs the registry-backed agent enumerator
+// (compose.RegistryAgents closure) so agent.RegisterMetrics sees
+// attach-created sessions too.
+func (p *primaryTrackerProvider) SetAgentRegistry(f registryAgentsFn) {
+	if f == nil {
+		return
+	}
+	p.mu.Lock()
+	p.agents = f
+	p.mu.Unlock()
+}
+
+// Agents implements agent.AgentSource: the primary agent plus every
+// registry-backed agent, deduped by pointer (the primary registers in
+// both places).
+func (p *primaryTrackerProvider) Agents() []*agent.Agent {
+	p.mu.RLock()
+	primary := p.agent
+	agents := p.agents
+	p.mu.RUnlock()
+
+	var out []*agent.Agent
+	seen := map[*agent.Agent]bool{}
+	seenSIDs := map[string]bool{}
+	if agents != nil {
+		for _, a := range agents() {
+			if a == nil || seen[a] {
+				continue
+			}
+			seen[a] = true
+			seenSIDs[a.SessionID()] = true
+			out = append(out, a)
+		}
+	}
+	// Session-id dedup mirrors Trackers(): after evict + lazy resume
+	// the registry holds a fresh agent for the primary session; the
+	// stale p.agent must not shadow its gauges (inbox_pending frozen
+	// at the dead agent's value would be actively misleading).
+	if primary != nil && !seen[primary] && !seenSIDs[primary.SessionID()] {
+		out = append(out, primary)
+	}
+	return out
 }
 
 // Trackers implements usage.TrackerProvider. Merges the primary
@@ -107,16 +160,25 @@ func (p *primaryTrackerProvider) Trackers() []usage.TrackedSession {
 
 	var out []usage.TrackedSession
 	seen := map[*usage.Tracker]bool{}
+	seenSIDs := map[string]bool{}
 	if registry != nil {
 		for _, ts := range registry.Trackers() {
 			if ts.Tracker == nil || seen[ts.Tracker] {
 				continue
 			}
 			seen[ts.Tracker] = true
+			seenSIDs[ts.SessionID] = true
 			out = append(out, ts)
 		}
 	}
-	if primary.Tracker != nil && !seen[primary.Tracker] {
+	// Skip the primary on session-id match too, not just tracker
+	// pointer: after an idle-evict + lazy resume the registry holds a
+	// FRESH tracker for the primary session while p.tracker still
+	// points at the dead incarnation — emitting both would let the
+	// stale snapshot shadow the live one (identical attrs, last
+	// observation wins).
+	if primary.Tracker != nil && !seen[primary.Tracker] &&
+		(primary.SessionID == "" || !seenSIDs[primary.SessionID]) {
 		out = append(out, primary)
 	}
 	return out

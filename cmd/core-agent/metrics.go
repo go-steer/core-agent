@@ -37,17 +37,12 @@ type metricsOpts struct {
 }
 
 // primaryTrackerProvider is a lazy usage.TrackerProvider for the
-// daemon's primary session. Constructed before agent.New completes
-// so the metrics observer can be registered against a live
-// MeterProvider up front; the session-identity fields are stamped
-// in via SetIdentity once agent.New returns (typically from the
-// agent.WithPostConstruct hook).
-//
-// Multi-session daemons (per-request sessions spawned via
-// compose.BuildSessionFactory) are NOT covered by this provider — each
-// on-demand session has its own tracker and would need registry-based
-// iteration. That's a follow-up slice; the primary-session case
-// covers the common single-daemon deployment.
+// daemon's sessions. Constructed before agent.New completes so the
+// metrics observer can be registered against a live MeterProvider up
+// front; the primary session's identity fields are stamped in via
+// SetIdentity once agent.New returns (typically from the
+// agent.WithPostConstruct hook), and attach-mode sessions join via
+// SetRegistry once the SessionRegistry exists.
 type primaryTrackerProvider struct {
 	tracker *usage.Tracker
 
@@ -55,6 +50,25 @@ type primaryTrackerProvider struct {
 	sessionID string
 	appName   string
 	userID    string
+	// registry contributes attach-created sessions (multi-session
+	// daemons). The PRIMARY session is registered there too, so
+	// Trackers dedups by tracker pointer — the registry entry wins
+	// because its identity triple is complete from registration
+	// time, whereas the local fields may still be empty in the
+	// pre-SetIdentity window.
+	registry usage.TrackerProvider
+}
+
+// SetRegistry installs the attach-registry adapter
+// (compose.RegistryTrackerProvider). Safe to call once the registry
+// exists; nil is ignored.
+func (p *primaryTrackerProvider) SetRegistry(tp usage.TrackerProvider) {
+	if tp == nil {
+		return
+	}
+	p.mu.Lock()
+	p.registry = tp
+	p.mu.Unlock()
 }
 
 // SetIdentity stamps the session-identity fields once the agent
@@ -71,23 +85,39 @@ func (p *primaryTrackerProvider) SetIdentity(a *agent.Agent) {
 	p.mu.Unlock()
 }
 
-// Trackers implements usage.TrackerProvider. Returns an empty slice
-// when the tracker is nil (metrics disabled path) or a single-element
-// slice with the current identity snapshot. Session-identity may be
-// empty on early calls before SetIdentity fires; the tracker has no
-// turns recorded in that window so the observer emits nothing
+// Trackers implements usage.TrackerProvider. Merges the primary
+// session with the attach registry's sessions, deduplicating by
+// *usage.Tracker pointer: the primary agent is ALSO registered in the
+// registry, and double-listing its tracker would double-count every
+// series in aggregated (labels-off) mode. Registry entries win the
+// dedup (complete identity triple). Session-identity may be empty on
+// early calls before SetIdentity fires; the tracker has no turns
+// recorded in that window so the observer emits nothing
 // consequential.
 func (p *primaryTrackerProvider) Trackers() []usage.TrackedSession {
-	if p.tracker == nil {
-		return nil
-	}
 	p.mu.RLock()
-	ts := usage.TrackedSession{
+	primary := usage.TrackedSession{
 		Tracker:   p.tracker,
 		SessionID: p.sessionID,
 		AppName:   p.appName,
 		UserID:    p.userID,
 	}
+	registry := p.registry
 	p.mu.RUnlock()
-	return []usage.TrackedSession{ts}
+
+	var out []usage.TrackedSession
+	seen := map[*usage.Tracker]bool{}
+	if registry != nil {
+		for _, ts := range registry.Trackers() {
+			if ts.Tracker == nil || seen[ts.Tracker] {
+				continue
+			}
+			seen[ts.Tracker] = true
+			out = append(out, ts)
+		}
+	}
+	if primary.Tracker != nil && !seen[primary.Tracker] {
+		out = append(out, primary)
+	}
+	return out
 }

@@ -578,6 +578,16 @@ OpenTelemetry exporter config. Off by default — a fresh invocation makes zero 
 
 Console mode prints span JSON to stderr — useful for local debugging. OTLP mode honors all the standard `OTEL_*` env vars.
 
+### `otel.metrics`
+
+Metrics run on a separate pipeline from traces (the daemon builds its own MeterProvider — ADK-go has none). Off by default.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `exporter` | string | `none` | One of `none`, `otlp`, `prometheus`, `both`. Env `OTEL_METRICS_EXPORTER` overrides. |
+| `prometheus_addr` | string | `:9464` | Scrape endpoint bind address when `prometheus`/`both`. `--metrics-addr` overrides. |
+| `session_labels` | bool | `true` | Stamp `session.id` / `app.name` / `user.id` on usage metrics. Set `false` to aggregate across sessions before export — for fleets where many short-lived sessions × models would blow up series cardinality. When `false`, `core_agent.session.duration` is not emitted (an aggregated wall-clock is meaningless) and the cost series' `priced` flag is the AND across sessions. |
+
 ### Trace context propagation
 
 Every outbound HTTP the daemon makes (Vertex / Anthropic / Gemini / MCP HTTP / attach peer calls) is wrapped in `otelhttp` and stamped with the W3C `traceparent` header, threading the current span's trace ID into upstream requests. When the OTEL exporter is off, header injection still fires but produces no-op values — hosts running their own tracer above the daemon can rely on continuity without needing to enable the built-in exporter. Inbound attach requests already extract `traceparent`; the propagation change closes the outbound half of the loop.

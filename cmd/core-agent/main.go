@@ -773,7 +773,14 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// the WithPostConstruct hook below, since a.SessionID() isn't
 	// known until agent.New completes.
 	primaryTracker := &primaryTrackerProvider{tracker: tracker}
-	if _, err := usage.RegisterMetrics(otel.GetMeterProvider(), primaryTracker); err != nil {
+	var usageMetricOpts []usage.RegisterOption
+	if !cfg.OTEL.Metrics.SessionLabelsEnabled() {
+		// otel.metrics.session_labels=false — fleet operators trade
+		// per-session drill-down for bounded series cardinality; the
+		// observer aggregates across sessions before export.
+		usageMetricOpts = append(usageMetricOpts, usage.WithoutSessionLabels())
+	}
+	if _, err := usage.RegisterMetrics(otel.GetMeterProvider(), primaryTracker, usageMetricOpts...); err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: metrics: register usage observer: %v\n", err)
 		return runner.ExitConfigError
 	}
@@ -1443,6 +1450,11 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		// registers it here — registration moved out of agent.New
 		// with the pkg/agent split (#388 phase 4).
 		attachRegistry = attachReg
+		// Attach-created sessions join the usage metrics observer
+		// through the registry adapter (#338 — closes the "only the
+		// primary session is observed" gap). primaryTracker dedups
+		// the primary session, which registers in both places.
+		primaryTracker.SetRegistry(compose.RegistryTrackerProvider(attachReg))
 
 		// PR D — HTTP-driven permission prompts. Construct the
 		// broker now and register it as the gate's prompter so the

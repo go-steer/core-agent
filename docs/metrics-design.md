@@ -218,9 +218,9 @@ exist; everything else uses `core_agent.*`.
 
 | Metric | Type | Unit | Attributes | Source |
 |---|---|---|---|---|
-| `core_agent.session.turns` | ObservableCounter | `{turn}` | `session.id`, `gen_ai.request.model` | `Tracker.Totals().Turns` |
-| `core_agent.session.cost_usd` | ObservableCounter | `USD` | `session.id`, `gen_ai.request.model`, `priced` | `Tracker.TotalsByModel()` |
-| `core_agent.session.duration` | ObservableGauge | `s` | `session.id` | `Tracker.Duration()` |
+| `core_agent.session.turns` | ObservableCounter | `{turn}` | `session.id`, `app.name`, `user.id` (empty dropped), `gen_ai.request.model` | `Tracker.Totals().Turns` |
+| `core_agent.session.cost_usd` | ObservableCounter | `USD` | session identity as above, `gen_ai.request.model`, `priced` | `Tracker.TotalsByModel()` |
+| `core_agent.session.duration` | ObservableGauge | `s` | session identity as above | `Tracker.Duration()`; on a lazily-RESUMED session the tracker is rebuilt, so duration restarts at resume time — it measures the current incarnation, not the session's full life. Not emitted in `session_labels=false` mode |
 | `core_agent.context.window_used` | ObservableGauge | `{token}` | `session.id`, `gen_ai.request.model` | `usage.ContextWindowUsed()` |
 | `core_agent.context.window_size` | ObservableGauge | `{token}` | `session.id`, `gen_ai.request.model` | `usage.ContextWindowSize()` |
 
@@ -237,9 +237,8 @@ under-reporting. See #368.
 |---|---|---|---|---|
 | `core_agent.digest.calls` | ObservableCounter | `{call}` | `digest.method` = structural_json\|llm_fallback\|passthrough | `digest.telemetry.MethodCounts` |
 | `core_agent.digest.bytes_saved` | ObservableCounter | `By` | `digest.method` | `digest.telemetry.BytesSaved` |
-| `core_agent.digest.store.entries` | ObservableGauge | `{entry}` | none | `FilesystemStore.Len()` |
-| `core_agent.digest.store.bytes` | ObservableGauge | `By` | none | `FilesystemStore.Bytes()` |
-| `core_agent.digest.subagent.cost_usd` | ObservableCounter | `USD` | none | `Tracker.DigestSavings().AgenticSubagentCostUSD` |
+| ~~`core_agent.digest.store.entries` / `.store.bytes`~~ | — | — | — | DROPPED (#338 Phase 3): the production binary wires `LazyStore`→`EventlogStore`, neither of which has Len/Bytes; `FilesystemStore`'s accessors are test helpers. Revisit only if a store with real occupancy semantics ships |
+| `core_agent.digest.subagent.cost_usd` | ObservableCounter | `USD` | session identity (SHIPPED in `usage.RegisterMetrics`, not pkg/digest — the accumulator is `Tracker.DigestSavings()`, digest's own snapshot has no cost field). Zero-spend sessions suppressed; NOT replayed on lazy resume (aggregated mode compensates via its retirement baseline; per-session mode's series restarts) | `Tracker.DigestSavings().AgenticSubagentCostUSD` |
 
 ### core-agent-specific — agent / autonomous
 
@@ -407,6 +406,15 @@ Each subsystem contributes an observer. The composition happens at boot
 in `cmd/core-agent/main.go`, alongside the existing `telemetry.Setup`
 call.
 
+> **Shipped idiom differs from this sketch.** PR #A landed
+> per-package `<pkg>.RegisterMetrics(mp metric.MeterProvider, dep)`
+> functions called individually from main.go against the global
+> provider — no `telemetry.Observer` interface, no central
+> `Observers` slice. `digest.subagent.cost_usd` ships from
+> `usage.RegisterMetrics` (see the instrument table). The sketch is
+> kept for the registration-locality rationale below, which still
+> holds.
+
 ```go
 // In cmd/core-agent/main.go, after tracker/registry/etc. are built.
 metricsShutdown, err := telemetry.SetupMetrics(ctx, cfg.OTEL.Metrics.Exporter, telemetry.MetricsOptions{
@@ -514,13 +522,16 @@ About **900–1200 LoC + tests** total, split across three PRs.
    attach listener is TLS-authenticated, do we require the same for
    `/metrics`? Lean: **no, follow Prometheus norms** — operators
    wanting auth reverse-proxy in front. Cheap to revisit.
-2. **Per-session cardinality.** Emitting `session.id` as an attribute
-   on every per-session metric explodes cardinality on long-running
-   daemons handling thousands of sessions. Lean: **make it configurable**
-   — a `otel.metrics.session_labels` bool (default `false`) that,
-   when off, aggregates across sessions. Consumers running <100
-   sessions/day flip it on for the drill-down; big-fleet operators
-   leave it off. Worth deciding before PR #A freezes attribute keys.
+2. **Per-session cardinality.** SETTLED (#338 Phase 3):
+   `otel.metrics.session_labels`, default **true** — inverted from
+   the original lean because PR #A had already shipped per-session
+   series unconditionally, and flipping the default would have
+   silently changed every deployed dashboard's series shape. When
+   false, the usage observer AGGREGATES across sessions before
+   observing (stripping attributes alone would be last-wins-lossy),
+   drops `core_agent.session.duration` (aggregated wall-clock is
+   meaningless), and ANDs the cost `priced` flag. The gen_ai.*
+   histograms carry no session labels in either mode.
 3. **GenAI semconv version pin.** The GenAI semconv is still moving.
    Do we pin to the version stable at PR #A time, or track upstream
    and accept breakage? Lean: **pin, and bump in a dedicated PR** with

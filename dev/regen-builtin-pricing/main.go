@@ -83,11 +83,17 @@ var allowlist = []string{
 	"gemini-3.5-flash-lite",
 	"gemini-3.1-flash-lite",
 
-	// Anthropic Claude 4/5 — common alternative
+	// Anthropic Claude 4/5 — common alternative. Every taskclass
+	// tier default MUST appear here: builtin is the air-gapped /
+	// refresh-failed pricing floor, and an unpriced default leaves
+	// --max-*-cost-usd ceilings silently inert exactly where
+	// daemons run unattended. Pinned by pricing's
+	// TestBuiltin_CoversTaskclassTierDefaults.
 	"claude-opus-4-8",
 	"claude-opus-5",
 	"claude-fable-5",
 	"claude-sonnet-5",
+	"claude-sonnet-4-6",
 	"claude-haiku-4-5",
 	"claude-opus-4-7",
 }

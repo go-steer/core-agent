@@ -27,6 +27,8 @@ func TestContextWindowSizeFor(t *testing.T) {
 		{"gemini-3.5-flash", 1_000_000},
 		{"gemini-3.6-flash", 1_000_000},      // taskclass frontier default (#530)
 		{"gemini-3.5-flash-lite", 1_000_000}, // taskclass small default
+		{"GEMINI-3.5-FLASH-LITE", 1_000_000}, // case-insensitive like modeltier/pricing
+		{"claude-fable-5", 1_000_000},        // Mythos-class tier; 1M like the rest of the 5 family
 		{"gemini-2.5-pro", 2_000_000},
 		{"gemini-2.5-flash", 1_000_000},
 		// Current-gen Opus/Sonnet are 1M with no "-1m" suffix (#369).

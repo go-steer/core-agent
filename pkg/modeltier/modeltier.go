@@ -92,6 +92,18 @@ func DefaultCompactionThresholds() map[string]float64 {
 func Classify(modelID string) string {
 	m := strings.ToLower(modelID)
 	switch {
+	// Anthropic Claude 5.x. Fable is the Mythos-class tier above
+	// Opus — frontier a fortiori. No 5-generation Haiku exists yet;
+	// when one ships, add it (unknown ids conservatively classify
+	// "" rather than small, so nothing misfires meanwhile). Without
+	// these cases the whole family classified "" and Claude 5
+	// sessions ran the universal 0.85 compaction threshold on a 1M
+	// window instead of their tier's.
+	case containsAny(m, "claude-fable-5", "claude-opus-5"):
+		return TierFrontier
+	case containsAny(m, "claude-sonnet-5"):
+		return TierMid
+
 	// Anthropic Claude 4.x.
 	case containsAny(m, "claude-opus-4"):
 		return TierFrontier

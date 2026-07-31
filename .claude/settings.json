@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go doc *)",
+      "Bash(go version)",
+      "Bash(go vet *)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v jq >/dev/null 2>&1 || exit 0; c=$(jq -r \".tool_input.command // \\\"\\\"\"); printf \"%s\" \"$c\" | grep -qE \"(^|[;&|[:space:]])gh +pr +create\" || exit 0; printf \"%s\" \"$c\" | grep -qi \"adversarial review\" && exit 0; bf=$(printf \"%s\" \"$c\" | sed -n \"s/.*--body-file[= ]*\\([^ ]*\\).*/\\1/p\"); if [ -n \"$bf\" ] && [ -f \"$bf\" ] && grep -qi \"adversarial review\" \"$bf\"; then exit 0; fi; echo \"review gate (AGENTS.md 'How we develop'): PR bodies must include an '## Adversarial review' section — run the skeptic subagent on the staged diff, fix or pin its findings, and for bug fixes verify the regression test FAILS on pre-fix code. Put the section in --body (or the --body-file file) and retry.\" >&2; exit 2",
+            "timeout": 10,
+            "statusMessage": "Checking adversarial-review gate..."
+          }
+        ]
+      }
+    ]
+  }
+}

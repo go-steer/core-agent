@@ -50,11 +50,16 @@ env_template:
 # Model aliases — map Scion's tiered names to core-agent-supported
 # model IDs. Consumers override these in their template if they want
 # a different provider (e.g. Anthropic).
+# Tracks core-agent's tier tables (pkg/taskclass): small/medium ride
+# the cheap tier, large the mid tier, extra-large the frontier tier.
+# large and up sit on Gemini 3.x so search built-ins can coexist with
+# function tools (2.x rejects the mix; on 2.x parents core-agent now
+# degrades unGrounded rather than 400ing — #535/#546).
 model_aliases:
-  small: "gemini-2.0-flash"
-  medium: "gemini-2.0-flash"
-  large: "gemini-2.5-pro"
-  extra-large: "gemini-2.5-pro"
+  small: "gemini-3.5-flash-lite"
+  medium: "gemini-3.5-flash-lite"
+  large: "gemini-3.5-flash"
+  extra-large: "gemini-3.6-flash"
 
 mcp:
   global_config_file: .agents/mcp.json

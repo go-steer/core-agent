@@ -83,6 +83,14 @@ type Options struct {
 	// SSE clients to drain. Default 5 seconds.
 	ShutdownTimeout time.Duration
 
+	// DaemonCtx, when non-nil, is the daemon's lifetime context. Once
+	// it is cancelled (SIGTERM has fired, wake loops are exiting) the
+	// mutating intake endpoints (POST /inject, POST /wake) return
+	// 503 + Retry-After instead of acknowledging messages that would
+	// die with the process in an in-memory inbox (#564). Nil disables
+	// the gate (embedders and tests that manage their own lifecycle).
+	DaemonCtx context.Context
+
 	// AgentCard, when its Description and ExternalURL are both
 	// non-empty, enables the unauthenticated discovery endpoint
 	// GET /.well-known/agent-card.json. Zero value disables the
@@ -348,6 +356,7 @@ func NewServer(opts Options) (*Server, error) {
 	})
 	mux := http.NewServeMux()
 	h := newHandlers(opts.Registry, pool)
+	h.daemonCtx = opts.DaemonCtx
 	h.enforceACL = opts.MultiSessionEnabled
 	h.factory = opts.SessionFactory
 	// Per-caller cost limiter (#463). nil when Disabled — handlers

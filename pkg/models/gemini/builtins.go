@@ -20,7 +20,9 @@ import (
 	"fmt"
 	"iter"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/genai"
@@ -151,7 +153,10 @@ type ContextCacheInvalidateFn func(reason string)
 // backend). Passing nil for either hook disables caching.
 //
 // The hooks compose with builtins (google_search / url_context /
-// code_execution) — nothing special about their interaction.
+// code_execution): the cache is seeded from the request AFTER the
+// builtins-append, so it contains the built-ins exactly when the
+// model supports injecting them (see builtinsCompatible, #535) —
+// cached and uncached turns always agree on the tool set.
 func WithContextCache(init ContextCacheInitFn, name ContextCacheNameFn) Option {
 	return func(p *Provider) {
 		p.cacheInit = init
@@ -203,9 +208,10 @@ func (p *Provider) ClientConfig() *genai.ClientConfig {
 }
 
 // builtinsLLM wraps an upstream model.LLM, injecting the configured
-// built-in tools into Config.Tools on every request and smoothing
-// over a small set of backend quirks. Stateless: the same wrapper
-// handles concurrent calls.
+// built-in tools into Config.Tools on every request (when the target
+// model supports the mix — see builtinsCompatible) and smoothing
+// over a small set of backend quirks. Safe for concurrent calls;
+// the only mutable state is the one-shot skip-notice guard.
 //
 // isDirectGeminiAPI controls whether we also set
 // Config.ToolConfig.IncludeServerSideToolInvocations on the request.
@@ -248,6 +254,14 @@ type builtinsLLM struct {
 	cacheInit       ContextCacheInitFn
 	cacheName       ContextCacheNameFn
 	cacheInvalidate ContextCacheInvalidateFn
+
+	// mixSkipOnce dedups the operator notice logged when
+	// builtinsCompatible skips injection for a pre-3.0 model (#535).
+	// One line per wrapper instance (one per Model() call), not per
+	// turn — the condition is static for a given model so repeating
+	// it every generation is pure noise. The only mutable state on
+	// the wrapper; everything else stays stateless.
+	mixSkipOnce sync.Once
 }
 
 func (l *builtinsLLM) Name() string { return l.inner.Name() }
@@ -310,7 +324,7 @@ func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequ
 			cachedTurn = true
 		}
 	}
-	if !cachedTurn && len(l.builtins) > 0 {
+	if !cachedTurn && len(l.builtins) > 0 && l.builtinsCompatible(req) {
 		if req.Config == nil {
 			req.Config = &genai.GenerateContentConfig{}
 		}
@@ -335,7 +349,9 @@ func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequ
 		// Gemini 2.5 and older reject the combination outright with
 		// a different error regardless of this flag; core-agent
 		// requires Gemini 3.0+ when using built-in tools alongside
-		// the agent's tool registry.
+		// the agent's tool registry — enforced by builtinsCompatible
+		// in the condition above (#535), which skips injection
+		// entirely on pre-3.0 models carrying function tools.
 		if l.isDirectGeminiAPI {
 			if req.Config.ToolConfig == nil {
 				req.Config.ToolConfig = &genai.ToolConfig{}
@@ -515,6 +531,79 @@ func isCachedContentNotFound(err error) bool {
 	s := err.Error()
 	return strings.Contains(s, "NOT_FOUND") &&
 		strings.Contains(strings.ToLower(s), "cached content")
+}
+
+// builtinsCompatible reports whether injecting the server-side
+// built-ins into this request is legal for the target model.
+//
+// Gemini 2.5 and older reject requests that mix server-side search
+// tools with client-side function declarations ("Multiple tools are
+// supported only when they are all search tools", 400
+// INVALID_ARGUMENT); Gemini 3.0+ supports the combination (with
+// IncludeServerSideToolInvocations on the direct API — see the
+// append block above). Agent loops virtually always carry function
+// declarations, so on a pre-3.0 model the blanket injection would
+// 400 every turn (#535, caught live on the pre-#530 mid-tier
+// default gemini-2.5-pro). Degrade by skipping the built-ins for
+// that request — the model keeps working, it just runs unGrounded —
+// and say so once in the daemon log.
+//
+// Requests with no function declarations (a bare classifier, chat
+// with no tools) keep built-ins on every model generation.
+func (l *builtinsLLM) builtinsCompatible(req *adkmodel.LLMRequest) bool {
+	if !hasFunctionDeclarations(req) {
+		return true
+	}
+	model := req.Model
+	if model == "" {
+		model = l.inner.Name()
+	}
+	if geminiMajorVersion(model) >= 3 {
+		return true
+	}
+	l.mixSkipOnce.Do(func() {
+		logf("model %q predates mixed built-in + function tools (Gemini 3.0+); running without server-side built-ins (google_search/url_context/code_execution) for this model", model)
+	})
+	return false
+}
+
+func hasFunctionDeclarations(req *adkmodel.LLMRequest) bool {
+	if req == nil || req.Config == nil {
+		return false
+	}
+	for _, t := range req.Config.Tools {
+		if t != nil && len(t.FunctionDeclarations) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// geminiMajorVersion parses the leading major version out of a
+// gemini model id ("gemini-3.6-flash" → 3, "gemini-2.5-pro" → 2).
+// Path-qualified ids ("models/gemini-3.5-flash", Vertex
+// "publishers/google/models/gemini-…" resource names) resolve via
+// their last path segment. Returns 0 when the id doesn't parse —
+// unknown ids (including version-less aliases like
+// "gemini-flash-latest") conservatively skip the mix rather than
+// risk a hard 400 on every turn.
+func geminiMajorVersion(model string) int {
+	if i := strings.LastIndexByte(model, '/'); i >= 0 {
+		model = model[i+1:]
+	}
+	rest, ok := strings.CutPrefix(strings.ToLower(model), "gemini-")
+	if !ok {
+		return 0
+	}
+	digits := rest
+	if i := strings.IndexFunc(rest, func(r rune) bool { return r < '0' || r > '9' }); i >= 0 {
+		digits = rest[:i]
+	}
+	n, err := strconv.Atoi(digits)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // logf is the daemon-log alert hook the retry wrapper uses to

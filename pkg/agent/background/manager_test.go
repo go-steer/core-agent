@@ -245,6 +245,45 @@ func TestManager_Close_StopsEverything(t *testing.T) {
 	}
 }
 
+func TestManager_Close_AbandonsWedgedSubagent(t *testing.T) {
+	// Not t.Parallel(): mutates the package-level closeDrainTimeout.
+	old := closeDrainTimeout
+	closeDrainTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { closeDrainTimeout = old })
+
+	mgr, _ := newFakeManager(t)
+	newTestParent(t, mgr)
+	// A healthy subagent that exits on cancel...
+	if _, err := mgr.Spawn(context.Background(), "", Spec{
+		Name: "healthy", SystemPrompt: "p", Goal: "g",
+	}); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	// ...plus a wedged handle whose done channel never closes — the
+	// stand-in for a tool stuck in uninterruptible I/O.
+	wedged := &Handle{Name: "wedged", done: make(chan struct{})}
+	mgr.mu.Lock()
+	mgr.agents["wedged"] = wedged
+	mgr.mu.Unlock()
+
+	start := time.Now()
+	err := mgr.Close()
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("Close = nil, want straggler error for the wedged subagent")
+	}
+	if !strings.Contains(err.Error(), "1 subagent(s) still running") {
+		t.Errorf("Close error = %q, want it to count 1 straggler", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("Close blocked %v; the drain wait must be bounded", elapsed)
+	}
+	// Second Close stays a no-op even after a timed-out first Close.
+	if err := mgr.Close(); err != nil {
+		t.Errorf("Close second call: %v", err)
+	}
+}
+
 func TestPushAlert_DropsOldestWhenFull(t *testing.T) {
 	t.Parallel()
 	mgr, err := NewManager(

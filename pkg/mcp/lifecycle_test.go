@@ -134,6 +134,39 @@ func TestRoundTripperChain_AuthWinsOverStaticAuthorization(t *testing.T) {
 	}
 }
 
+func TestCloseAll_ClosesConcurrentlyAndTolerateNils(t *testing.T) {
+	t.Parallel()
+	var servers []*Server
+	for i := 0; i < 3; i++ {
+		cmd := exec.Command("/bin/sh", "-c", "sleep 60")
+		if err := cmd.Start(); err != nil {
+			t.Skipf("can't spawn child: %v", err)
+		}
+		// Reap on any exit path (including the Skipf above on a later
+		// iteration); double-kill after CloseAll is a harmless error.
+		t.Cleanup(func() { _ = cmd.Process.Kill() })
+		servers = append(servers, &Server{cmd: cmd})
+	}
+	// Nil entry and HTTP-transport server (no cmd) must be tolerated.
+	servers = append(servers, nil, &Server{})
+
+	done := make(chan struct{})
+	go func() {
+		CloseAll(servers)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		for _, s := range servers {
+			if s != nil && s.cmd != nil && s.cmd.Process != nil {
+				_ = s.cmd.Process.Kill()
+			}
+		}
+		t.Fatal("CloseAll did not return within 5s (children should terminate on SIGTERM well before the 3s per-server grace)")
+	}
+}
+
 func TestServer_Close_ReapsStartedProcess(t *testing.T) {
 	t.Parallel()
 	cmd := exec.Command("/bin/sh", "-c", "sleep 60")

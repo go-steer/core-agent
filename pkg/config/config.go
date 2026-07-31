@@ -618,6 +618,15 @@ type AttachConfig struct {
 	// library defaults: burst 5, 10/minute per caller. Reads, /events
 	// streams, /inject, and /wake are never limited.
 	CostRateLimit *CostRateLimitConfig `json:"cost_rate_limit,omitempty"`
+
+	// ShutdownTimeout caps how long the attach listener's graceful
+	// HTTP shutdown waits for in-flight requests once SSE streams are
+	// hung up, as a time.Duration string (e.g. "5s"). Omitted/empty
+	// keeps the library default (5s). Counts toward the daemon's
+	// total teardown budget — keep it comfortably under the
+	// supervisor's kill timeout (K8s terminationGracePeriodSeconds,
+	// default 30s). See #538.
+	ShutdownTimeout string `json:"shutdown_timeout,omitempty"`
 }
 
 // MultiSessionConfig configures the per-caller authentication +

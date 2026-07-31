@@ -718,6 +718,14 @@ Worked example for a K8s deployment ConfigMap:
 
 See [Attach mode TUI](/reference/attach-tui/) for the protocol and CLI overview, including the `--attach-token=<envvar>` flag that pairs with `token_env`.
 
+### `attach.shutdown_timeout`
+
+Caps how long the attach listener's graceful HTTP shutdown waits for in-flight requests after SSE streams are hung up. Duration string, must be greater than zero; omit the field to keep the default `"5s"`. This counts toward the daemon's total teardown budget — keep it comfortably under the supervisor's kill timeout (K8s `terminationGracePeriodSeconds`, default 30s).
+
+```json
+{ "attach": { "shutdown_timeout": "10s" } }
+```
+
 ### `attach.cost_rate_limit`
 
 Tunes the per-caller token bucket that bounds the **cost-bearing** attach endpoints — the five slash ops (`compact`, `done`, `btw`, `subagent`, `replan`), `POST /sessions`, and `pricing/refresh`. On by default; reads, `/events` streams, `/inject`, and `/wake` are never limited. Callers are the server-verified identities (bearer table, validated proxy assertion, or the single anonymous bucket in single-user mode). Over-limit requests get `429` with a `Retry-After` header.

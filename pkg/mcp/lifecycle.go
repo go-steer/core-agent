@@ -102,6 +102,27 @@ func (s *Server) Close() {
 	}
 }
 
+// CloseAll terminates every server's child process concurrently and
+// waits for all of them. Concurrency matters at daemon shutdown: each
+// stdio Close is worst-case SIGTERM + 3s grace + SIGKILL, and serial
+// closes over N servers would multiply that into the supervisor's
+// termination grace period (#538). Nil servers are skipped; safe on
+// an empty or nil slice.
+func CloseAll(servers []*Server) {
+	var wg sync.WaitGroup
+	for _, s := range servers {
+		if s == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(s *Server) {
+			defer wg.Done()
+			s.Close()
+		}(s)
+	}
+	wg.Wait()
+}
+
 // Build reads mcp.json from the project agents dir plus (optionally)
 // the user's home-agents dir, merges the resulting server maps
 // (project wins on name collision), and starts every declared server

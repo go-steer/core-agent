@@ -17,6 +17,7 @@ package anthropic
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -563,4 +564,115 @@ func TestBuildParams_GenerationConfigMapped(t *testing.T) {
 			t.Errorf("Thinking = %+v, want unset for zero budget", p.Thinking)
 		}
 	})
+}
+
+// TestSchemaToInput_NormalizesGenaiTypeEnums pins the draft-2020-12
+// projection (#532): genai marshals Schema.Type as proto enum
+// spellings ("OBJECT", "STRING", ...), which Anthropic's strict
+// input_schema validation 400s on. schemaToInput must lowercase
+// enum-valued "type" keys recursively and drop TYPE_UNSPECIFIED,
+// while leaving schema data untouched.
+func TestSchemaToInput_NormalizesGenaiTypeEnums(t *testing.T) {
+	t.Parallel()
+	props, required, err := schemaToInput(&genai.Schema{
+		Type: genai.TypeObject,
+		Properties: map[string]*genai.Schema{
+			"q": {Type: genai.TypeString, Description: "query"},
+			"tags": {
+				Type:  genai.TypeArray,
+				Items: &genai.Schema{Type: genai.TypeString},
+			},
+			"mode": {
+				Type: genai.TypeString,
+				// Schema DATA that happens to spell an enum name —
+				// enum values are not "type" keys and must survive.
+				Enum: []string{"OBJECT", "STRING"},
+			},
+			// A property literally named "type": its value is a
+			// schema map, not a string, so the walker must not
+			// mistake the KEY for a type declaration.
+			"type": {Type: genai.TypeInteger},
+			"choice": {
+				AnyOf: []*genai.Schema{
+					{Type: genai.TypeString},
+					{Type: genai.TypeInteger},
+				},
+			},
+			"opts": {
+				Type: genai.TypeObject,
+				// Instance data, not a schema: an object default
+				// whose member spells a proto enum name must ride
+				// through byte-identical.
+				Default: map[string]any{"type": "STRING"},
+			},
+			"anything": {
+				// genai's zero enum marshals as TYPE_UNSPECIFIED;
+				// draft 2020-12 has no equivalent, the key must go.
+				Type: genai.TypeUnspecified,
+			},
+		},
+		Required: []string{"q"},
+	})
+	if err != nil {
+		t.Fatalf("schemaToInput: %v", err)
+	}
+	if len(required) != 1 || required[0] != "q" {
+		t.Errorf("required = %v, want [q]", required)
+	}
+
+	typeOf := func(name string) (string, bool) {
+		p, ok := props[name].(map[string]any)
+		if !ok {
+			t.Fatalf("property %q = %#v, want a schema map", name, props[name])
+		}
+		ts, ok := p["type"].(string)
+		return ts, ok
+	}
+
+	for name, want := range map[string]string{
+		"q":    "string",
+		"tags": "array",
+		"mode": "string",
+		"type": "integer",
+		"opts": "object",
+	} {
+		if got, ok := typeOf(name); !ok || got != want {
+			t.Errorf("property %q type = %q (present=%v), want %q", name, got, ok, want)
+		}
+	}
+	if got, ok := typeOf("anything"); ok {
+		t.Errorf("property \"anything\" type = %q, want TYPE_UNSPECIFIED dropped", got)
+	}
+
+	tags := props["tags"].(map[string]any)
+	items, ok := tags["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("tags.items = %#v, want nested schema map", tags["items"])
+	}
+	if got := items["type"]; got != "string" {
+		t.Errorf("tags.items.type = %v, want string (nested schemas normalize too)", got)
+	}
+
+	mode := props["mode"].(map[string]any)
+	wantEnum := []any{"OBJECT", "STRING"}
+	if got, _ := mode["enum"].([]any); !reflect.DeepEqual(got, wantEnum) {
+		t.Errorf("mode.enum = %#v, want %#v untouched (enum data is not a type key)", mode["enum"], wantEnum)
+	}
+
+	choice := props["choice"].(map[string]any)
+	alts, ok := choice["anyOf"].([]any)
+	if !ok || len(alts) != 2 {
+		t.Fatalf("choice.anyOf = %#v, want 2 alternatives", choice["anyOf"])
+	}
+	for i, want := range []string{"string", "integer"} {
+		if got := alts[i].(map[string]any)["type"]; got != want {
+			t.Errorf("choice.anyOf[%d].type = %v, want %q (anyOf alternatives normalize)", i, got, want)
+		}
+	}
+
+	opts := props["opts"].(map[string]any)
+	wantDefault := map[string]any{"type": "STRING"}
+	if got, _ := opts["default"].(map[string]any); !reflect.DeepEqual(got, wantDefault) {
+		t.Errorf("opts.default = %#v, want %#v untouched (instance data is never descended into)", opts["default"], wantDefault)
+	}
 }

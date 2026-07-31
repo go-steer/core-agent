@@ -529,3 +529,35 @@ func TestGenerateContent_PauseTurnLoopBound(t *testing.T) {
 			final.UsageMetadata, 30*wantRequests, 7*wantRequests, wantRequests)
 	}
 }
+
+// TestGenerateContent_OfflineNoStream_TerminalOnly pins the stream
+// flag contract (#533): with stream=false the caller sees exactly one
+// TurnComplete response and zero partials — ADK's StreamingModeNone
+// consumers must not receive one runner event per text fragment. The
+// transport still speaks SSE underneath (same fixture as the
+// streaming test); the flag only gates what's yielded.
+func TestGenerateContent_OfflineNoStream_TerminalOnly(t *testing.T) {
+	t.Parallel()
+	l, _ := newOfflineLLM(t, "claude-test", messagesSSEFixture)
+
+	var got []*adkmodel.LLMResponse
+	for resp, err := range l.GenerateContent(context.Background(), &adkmodel.LLMRequest{
+		Contents: userText("what's the weather in Paris?"),
+	}, false) {
+		if err != nil {
+			t.Fatalf("GenerateContent yielded error: %v", err)
+		}
+		got = append(got, resp)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("got %d responses, want exactly 1 terminal: %+v", len(got), got)
+	}
+	final := got[0]
+	if final.Partial || !final.TurnComplete {
+		t.Errorf("flags = Partial:%v TurnComplete:%v, want terminal-only", final.Partial, final.TurnComplete)
+	}
+	if final.Content == nil || len(final.Content.Parts) == 0 || final.Content.Parts[0].Text != "Hello world" {
+		t.Errorf("terminal content = %+v, want full accumulated \"Hello world\"", final.Content)
+	}
+}

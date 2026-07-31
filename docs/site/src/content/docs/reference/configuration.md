@@ -433,7 +433,7 @@ Off by default; requires `--session-db` (there is nothing to detect against with
 |---|---|---|---|
 | `enabled` | bool | `false` | Turn the feature on. |
 | `freshness` | duration | `"1h"` | Only interruptions younger than this are continued; staler ones wait for the next real message. Explicit `"0s"` disables the window (always continue). |
-| `max_per_boot` | int | `10` | Cap for the boot-time scan (design PR 2; the lazy-resume trigger ignores it). |
+| `max_per_boot` | int | `10` | Caps how many sessions the boot-time scan continues in one daemon start, oldest interruption first; the rest are logged and resume on touch. The lazy-resume trigger ignores it. |
 
 ```json
 { "agent": { "auto_continue": { "enabled": true, "freshness": "1h" } } }

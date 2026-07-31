@@ -36,7 +36,7 @@ A single 0.85 threshold worked for frontier-tier models (Opus, Pro) but fired fa
 |---|---|---|
 | `frontier` | `0.85` (unchanged) | `claude-opus-4-*`, `gemini-3.x-pro`, `gemini-3.6-flash` |
 | `mid` | `0.65` | `claude-sonnet-4-*`, `gemini-3.5-flash`, `gemini-2.5-pro` |
-| `small` | `0.35` | `claude-haiku-4-*`, `gemini-3.1-flash`, `gemini-2.5-flash` |
+| `small` | `0.35` | `claude-haiku-4-*`, `gemini-3.5-flash-lite`, `gemini-3.1-flash`, `gemini-2.5-flash` |
 
 Tier classification is by substring match against the model ID — see `pkg/modeltier`. Unknown models fall back to the single `compaction.threshold` setting (default `0.85`).
 
@@ -102,7 +102,7 @@ Resolution per-provider:
 |---|---|---|
 | frontier | `gemini-3.6-flash` | `claude-opus-4-7` |
 | mid | `gemini-3.5-flash` | `claude-sonnet-4-6` |
-| small | `gemini-2.5-flash` | `claude-haiku-4-5` |
+| small | `gemini-3.5-flash-lite` | `claude-haiku-4-5` |
 
 Explicit per-knob flags always win over the class defaults:
 
@@ -261,7 +261,7 @@ On by default since v2.1. Pass `--agentic-tools=false` to register only the bare
 
 ```bash
 # Default — wrappers register; subtasks auto-route to the provider's
-# cheap-tier model (gemini-2.5-flash on Gemini/Vertex, claude-haiku-4-5
+# cheap-tier model (gemini-3.5-flash-lite on Gemini/Vertex, claude-haiku-4-5
 # on Anthropic). The cost-efficiency win activates without extra config.
 core-agent
 

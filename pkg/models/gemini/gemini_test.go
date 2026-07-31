@@ -153,8 +153,8 @@ func TestDefaultSmallModel(t *testing.T) {
 	if got, want := p.DefaultSmallModel(), DefaultSmallModelID; got != want {
 		t.Errorf("DefaultSmallModel() = %q, want %q", got, want)
 	}
-	if DefaultSmallModelID != "gemini-2.5-flash" {
-		t.Errorf("DefaultSmallModelID = %q; expected gemini-2.5-flash (the cheap-tier alias used across the codebase)", DefaultSmallModelID)
+	if DefaultSmallModelID != "gemini-3.5-flash-lite" {
+		t.Errorf("DefaultSmallModelID = %q; expected gemini-3.5-flash-lite (the cheap-tier alias used across the codebase; moves in lockstep with taskclass's gemini small tier)", DefaultSmallModelID)
 	}
 }
 

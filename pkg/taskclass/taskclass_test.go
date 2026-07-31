@@ -123,10 +123,10 @@ func TestModelForTier(t *testing.T) {
 		// Gemini family.
 		{"gemini", "frontier", "gemini-3.6-flash"},
 		{"gemini", "mid", "gemini-3.5-flash"},
-		{"gemini", "small", "gemini-2.5-flash"},
+		{"gemini", "small", "gemini-3.5-flash-lite"},
 		{"vertex", "frontier", "gemini-3.6-flash"}, // vertex aliases gemini
 		{"vertex", "mid", "gemini-3.5-flash"},
-		{"vertex", "small", "gemini-2.5-flash"},
+		{"vertex", "small", "gemini-3.5-flash-lite"},
 
 		// Anthropic family.
 		{"anthropic", "frontier", "claude-opus-4-7"},
@@ -162,8 +162,8 @@ func TestModelForTier_ConsistentWithSmallModelDefaulters(t *testing.T) {
 	cases := []struct {
 		provider, want string
 	}{
-		{"gemini", "gemini-2.5-flash"},
-		{"vertex", "gemini-2.5-flash"},
+		{"gemini", "gemini-3.5-flash-lite"},
+		{"vertex", "gemini-3.5-flash-lite"},
 		{"anthropic", "claude-haiku-4-5"},
 		{"anthropic-vertex", "claude-haiku-4-5"},
 	}

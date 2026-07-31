@@ -54,7 +54,7 @@ independently from built-in wraps:
    equivalent config). The same knob already used by built-in
    wrappers today. Falls back to this when the MCP-specific field
    is empty.
-3. **Provider cheap-tier default**: `gemini-2.5-flash` for
+3. **Provider cheap-tier default**: `gemini-3.5-flash-lite` for
    Gemini/Vertex, `claude-haiku-4-5` for Anthropic. Falls back to
    this when neither operator override is set.
 4. **Parent inherit**: providers without a cheap tier (echo,
@@ -69,11 +69,11 @@ resolved value is threaded into the `agenticMCPTool` factory the
 same way `resolvedSmallModel` is already threaded into
 `buildAgenticTools`. Startup log gets a second line so operators
 see the resolved MCP wrap model separately from the built-in wrap
-model (`"agentic MCP wrap: gemini-2.5-flash (mcp-specific override)"`).
+model (`"agentic MCP wrap: gemini-3.5-flash-lite (mcp-specific override)"`).
 
-Economics at the default cheap tier: `gemini-2.5-flash` runs
-~$0.075/M input / $0.30/M output. A 5k-token prose response
-digested to a 500-token summary costs ~$0.0005. Break-even after
+Economics at the default cheap tier: `gemini-3.5-flash-lite` runs
+$0.30/M input / $2.50/M output. A 5k-token prose response
+digested to a 500-token summary costs ~$0.003. Break-even after
 one subsequent turn where the digest replaces the full response in
 history resend.
 

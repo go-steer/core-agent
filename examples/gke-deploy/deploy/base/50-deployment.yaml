@@ -154,7 +154,7 @@ spec:
             # enters the parent's context. For a long-running GKE
             # agent doing dense MCP read tools this is real savings
             # ($x cheaper per turn vs running everything through
-            # Pro). Default small model: gemini-2.5-flash on Vertex.
+            # Pro). Provider cheap-tier default is gemini-3.5-flash-lite; this pin overrides it.
             # Override via the AGENTIC_SMALL_MODEL env var (e.g., a
             # different Flash variant; or "" to disable routing and
             # let subtasks inherit the parent model).

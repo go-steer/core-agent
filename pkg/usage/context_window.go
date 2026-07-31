@@ -61,6 +61,11 @@ func (t *Tracker) ContextWindowUsed() int {
 func ContextWindowSizeFor(model string) int { return contextWindowSizeFor(model) }
 
 func contextWindowSizeFor(model string) int {
+	// Case-insensitive like modeltier.Classify and pricing.Lookup —
+	// the three tables resolve the same operator-typed ids, and this
+	// one returning the 0 sentinel on "GEMINI-3.5-FLASH" would
+	// silently disable threshold-based compaction for the session.
+	model = strings.ToLower(model)
 	switch {
 	case containsAny(model, "gemini-3.1-pro", "gemini-3.5-pro", "gemini-3-pro"):
 		return 1_000_000
@@ -78,8 +83,10 @@ func contextWindowSizeFor(model string) int {
 		// standard, so these no longer need it. Must stay ABOVE the
 		// generic "claude-*-4" case below, which those IDs also match.
 		return 1_000_000
-	case containsAny(model, "claude-opus-5", "claude-sonnet-5"):
-		// Claude 5-tier Opus/Sonnet: 1M context.
+	case containsAny(model, "claude-fable-5", "claude-opus-5", "claude-sonnet-5"):
+		// Claude 5 family (incl. the Mythos-class Fable tier): 1M
+		// context. Without an explicit case Fable would fall to the
+		// conservative unknown-Claude 200K below.
 		return 1_000_000
 	case containsAny(model, "claude-opus-4", "claude-sonnet-4", "claude-haiku-4"):
 		// Earlier Claude 4.x (Opus 4.0/4.1/4.5, Sonnet 4.0/4.5, Haiku

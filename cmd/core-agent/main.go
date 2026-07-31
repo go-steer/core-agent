@@ -1573,27 +1573,63 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		// not yet wired into on-demand sessions; document follow-up.
 		var sessionFactory attach.SessionFactory
 		var sessionResumer attach.SessionResumer
+		// Enabled-but-unusable combination: auto-continue rides the
+		// lazy-resume path, which only exists under multi-session.
+		// Warn instead of silently ignoring (parity with the
+		// missing-eventlog warning inside the block below).
+		if ac := cfg.Agent.AutoContinue; ac != nil && ac.Enabled && !cfg.Attach.MultiSession.Enabled {
+			fmt.Fprintln(os.Stderr, "core-agent: agent.auto_continue requires attach.multi_session.enabled (lazy session resume); ignoring")
+		}
 		if cfg.Attach.MultiSession.Enabled {
+			// Auto-continue (#539): parse + validate the config block
+			// once so ReproduceAgent gets ready-to-use values. Same
+			// duration-string convention as session_idle_timeout:
+			// omitted freshness → default 1h; explicit "0s" → no
+			// window (always continue). Requires a durable eventlog —
+			// with none there is nothing to detect against.
+			var autoContinueEnabled bool
+			autoContinueFreshness := time.Hour
+			if ac := cfg.Agent.AutoContinue; ac != nil && ac.Enabled {
+				if eventlogHandle == nil {
+					fmt.Fprintln(os.Stderr, "core-agent: agent.auto_continue requires --session-db (durable eventlog); ignoring")
+				} else {
+					autoContinueEnabled = true
+					if raw := ac.Freshness; raw != "" {
+						d, perr := time.ParseDuration(raw)
+						if perr != nil {
+							fmt.Fprintf(os.Stderr, "core-agent: parse agent.auto_continue.freshness=%q: %v\n", raw, perr)
+							return runner.ExitConfigError
+						}
+						if d < 0 {
+							fmt.Fprintf(os.Stderr, "core-agent: agent.auto_continue.freshness=%q: must be >= 0 (\"0s\" disables the window)\n", raw)
+							return runner.ExitConfigError
+						}
+						autoContinueFreshness = d // 0 = disabled window, by design
+					}
+				}
+			}
 			factoryDeps := compose.SessionFactoryDeps{
-				DaemonCtx:      ctx,
-				Model:          m,
-				Template:       template,
-				PricingRate:    pricingRate,
-				AgentsDir:      agentsDir,
-				Cfg:            cfg,
-				MCPServers:     mcpServers,
-				BuiltinTools:   builtinTools,
-				Toolsets:       allToolsets,
-				EventlogHandle: eventlogHandle,
-				ProjectRoot:    projectRoot,
-				UserRoot:       coreHome,
-				HomeAgentsDir:  homeAgentsDir,
-				UsersDir:       cfg.Attach.MultiSession.UsersDir,
-				EnvInterp:      envResolver.InterpolateFunc(),
-				Registry:       attachReg,
-				ACLStore:       aclStore,
-				NoCompact:      noCompact,
-				NoCheckpoint:   noCheckpoint,
+				DaemonCtx:             ctx,
+				Model:                 m,
+				Template:              template,
+				PricingRate:           pricingRate,
+				AgentsDir:             agentsDir,
+				Cfg:                   cfg,
+				MCPServers:            mcpServers,
+				BuiltinTools:          builtinTools,
+				Toolsets:              allToolsets,
+				EventlogHandle:        eventlogHandle,
+				ProjectRoot:           projectRoot,
+				UserRoot:              coreHome,
+				HomeAgentsDir:         homeAgentsDir,
+				UsersDir:              cfg.Attach.MultiSession.UsersDir,
+				EnvInterp:             envResolver.InterpolateFunc(),
+				Registry:              attachReg,
+				ACLStore:              aclStore,
+				NoCompact:             noCompact,
+				NoCheckpoint:          noCheckpoint,
+				AutoContinueEnabled:   autoContinueEnabled,
+				AutoContinueFreshness: autoContinueFreshness,
 			}
 			sessionFactory = compose.BuildSessionFactory(factoryDeps)
 			// Session resume: reconstructs sessions persisted in

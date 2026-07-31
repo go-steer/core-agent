@@ -389,6 +389,14 @@ type AgentConfig struct {
 	// where individual turns are reasonable but the session adds up.
 	MaxSessionCostUSD *float64 `json:"max_session_cost_usd,omitempty"`
 
+	// AutoContinue opts in to continuing restart-interrupted turns
+	// automatically (#539, docs/auto-continue-design.md). Nil/absent
+	// = disabled: a session interrupted mid-turn by a daemon restart
+	// resumes with intact history but waits for the next message.
+	// Applies to lazily-resumed multi-session agents; autonomous
+	// runs have their own checkpoint/resume machinery.
+	AutoContinue *AutoContinueConfig `json:"auto_continue,omitempty"`
+
 	// DisplayName overrides the brand line at the top of the TUI. By
 	// default the TUI shows the AppName (e.g. "core-agent"); set this
 	// to give the agent a human-friendly identity ("Triage Bot",
@@ -404,6 +412,31 @@ type AgentConfig struct {
 	// and the card endpoint stays off unless --agent-card-description
 	// overrides.
 	Description string `json:"description,omitempty"`
+}
+
+// AutoContinueConfig tunes opt-in continuation of restart-interrupted
+// turns (#539). See docs/auto-continue-design.md for the full
+// semantics, including the crash-loop breaker that ships with the
+// boot scan.
+type AutoContinueConfig struct {
+	// Enabled turns the feature on. False (or a nil parent pointer)
+	// keeps today's behavior: interrupted sessions resume inert.
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Freshness bounds how old an interruption may be and still get
+	// auto-continued, as a time.Duration string. Omitted/empty
+	// defaults to "1h". Explicit "0s" disables the window (always
+	// continue). Staler interruptions wait for the next real
+	// message.
+	Freshness string `json:"freshness,omitempty"`
+
+	// MaxPerBoot caps how many sessions the boot-time scan will
+	// continue in one daemon start, oldest interruption first.
+	// Omitted/0 defaults to 10. (The scan itself lands with the
+	// design doc's PR 2; the lazy-resume trigger ignores this cap —
+	// a touched session is one the operator is already paying
+	// attention to.)
+	MaxPerBoot int `json:"max_per_boot,omitempty"`
 }
 
 // ToolOutputConfig caps tool result size before it enters model context.

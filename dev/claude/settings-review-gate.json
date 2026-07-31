@@ -1,11 +1,4 @@
 {
-  "permissions": {
-    "allow": [
-      "Bash(go doc *)",
-      "Bash(go version)",
-      "Bash(go vet *)"
-    ]
-  },
   "hooks": {
     "PreToolUse": [
       {

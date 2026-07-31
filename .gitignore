@@ -38,16 +38,13 @@ profile.cov
 /internal/webui/dist/*
 !/internal/webui/dist/.gitkeep
 
-# AI assistant working state — never committed to this repo, EXCEPT
-# the root project settings file, which carries the team-wide
-# adversarial-review-gate hook (see AGENTS.md "How we develop").
-# Root-anchored pair so the negation works (a fully-excluded
-# directory can't have files re-included); the */** rule keeps
-# .claude dirs at ANY nested depth fully ignored, preserving the old
-# `.claude/` any-depth semantics for everything but the one file.
-/.claude/*
-!/.claude/settings.json
-*/**/.claude/
+# AI assistant working state — never committed to this repo.
+# (Includes .claude/settings.json: assistant harness config is
+# personal tooling. The review-gate hook lives in
+# dev/claude/settings-review-gate.json for opt-in local copying; the
+# repo-native enforcement is AGENTS.md + the required review-gate CI
+# check.)
+.claude/
 
 # Per-user .agents/ state.
 /.agents/sessions/

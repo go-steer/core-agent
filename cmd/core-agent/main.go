@@ -1573,6 +1573,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		// not yet wired into on-demand sessions; document follow-up.
 		var sessionFactory attach.SessionFactory
 		var sessionResumer attach.SessionResumer
+		var autoContinueBootScan func()
 		// Enabled-but-unusable combination: auto-continue rides the
 		// lazy-resume path, which only exists under multi-session.
 		// Warn instead of silently ignoring (parity with the
@@ -1640,6 +1641,18 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			// behavior. Wired into attach.NewServer's Options.Resumer
 			// below.
 			sessionResumer = compose.BuildSessionResumer(factoryDeps)
+			// Boot-time auto-continue scan (#539 PR 2): launched after
+			// the attach listener is serving (below) so continued
+			// sessions are immediately attachable. No-op unless
+			// auto-continue is enabled; internally guarded by the
+			// crash-loop breaker in agent_boot_log.
+			if autoContinueEnabled {
+				maxPerBoot := 0
+				if ac := cfg.Agent.AutoContinue; ac != nil {
+					maxPerBoot = ac.MaxPerBoot
+				}
+				autoContinueBootScan = func() { compose.AutoContinueBootScan(factoryDeps, maxPerBoot) }
+			}
 		}
 		// Resolve --ui / --ui-dir into an fs.FS. --ui-dir wins when
 		// both are set (operator passed an explicit override; that's
@@ -1775,6 +1788,9 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			}
 		}()
 		defer func() { _ = attachSrv.Close() }()
+		if autoContinueBootScan != nil {
+			go autoContinueBootScan()
+		}
 	}
 
 	// Peer registration: this agent registers with a remote hub. Lives

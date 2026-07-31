@@ -27,8 +27,10 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/auth"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
 
 const acUser = "alice"
@@ -100,6 +102,182 @@ func acDeps(h *eventlog.Handle, freshness time.Duration) SessionFactoryDeps {
 		AutoContinueEnabled:   true,
 		AutoContinueFreshness: freshness,
 	}
+}
+
+// scanDeps builds full boot-scan deps: real temp eventlog, real ACL
+// store on the same DB, registry with the production resumer wired.
+// The wake loops started by resumed agents run against stubLLM (their
+// turns fail and log; the loop stays alive) — the scan's observable
+// contract here is registry membership + the boot-log record.
+func scanDeps(t *testing.T, h *eventlog.Handle) SessionFactoryDeps {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	store, err := attach.NewSessionACLStore(context.Background(), h.DB)
+	if err != nil {
+		t.Fatalf("NewSessionACLStore: %v", err)
+	}
+	deps := SessionFactoryDeps{
+		DaemonCtx:             ctx,
+		Model:                 stubLLM{},
+		Template:              permissions.New(permissions.Options{}),
+		EventlogHandle:        h,
+		ACLStore:              store,
+		AutoContinueEnabled:   true,
+		AutoContinueFreshness: time.Hour,
+	}
+	deps.Registry = attach.NewSessionRegistryWithStore(store).WithResumer(BuildSessionResumer(deps))
+	return deps
+}
+
+func putACLRow(t *testing.T, store attach.SessionACLStore, sid string) {
+	t.Helper()
+	if err := store.Put(context.Background(), attach.SessionACLRow{
+		AppName: "core-agent", UserID: acUser, SessionID: sid, Owner: acUser,
+	}); err != nil {
+		t.Fatalf("ACL Put(%s): %v", sid, err)
+	}
+}
+
+func seedACSession(t *testing.T, h *eventlog.Handle, sid string, events ...*session.Event) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := h.Service.Create(ctx, &session.CreateRequest{AppName: "core-agent", UserID: acUser, SessionID: sid}); err != nil {
+		t.Fatalf("Create(%s): %v", sid, err)
+	}
+	resp, err := h.Service.Get(ctx, &session.GetRequest{AppName: "core-agent", UserID: acUser, SessionID: sid})
+	if err != nil {
+		t.Fatalf("Get(%s): %v", sid, err)
+	}
+	for _, ev := range events {
+		if err := h.Service.AppendEvent(ctx, resp.Session, ev); err != nil {
+			t.Fatalf("AppendEvent(%s): %v", sid, err)
+		}
+	}
+}
+
+func openAC(t *testing.T) *eventlog.Handle {
+	t.Helper()
+	h, err := eventlog.Open(context.Background(), sqlite.Open(filepath.Join(t.TempDir(), "s.db")))
+	if err != nil {
+		t.Fatalf("eventlog.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	return h
+}
+
+func TestAutoContinueBootScan_ContinuesInterruptedSkipsCompleted(t *testing.T) {
+	t.Parallel()
+	h := openAC(t)
+	seedACSession(t, h, "sid-hung", acUserEvent("hello?", time.Now().Add(-5*time.Minute)))
+	seedACSession(t, h, "sid-done",
+		acUserEvent("q", time.Now().Add(-10*time.Minute)),
+		acModelEvent("answered", time.Now().Add(-9*time.Minute)))
+	deps := scanDeps(t, h)
+	putACLRow(t, deps.ACLStore, "sid-hung")
+	putACLRow(t, deps.ACLStore, "sid-done")
+
+	AutoContinueBootScan(deps, 10)
+
+	boots, err := h.RecentBoots(context.Background(), time.Now().Add(-time.Minute))
+	if err != nil || len(boots) != 1 {
+		t.Fatalf("boot log = (%v, %v), want exactly one record", boots, err)
+	}
+	if len(boots[0].Attempted) != 1 || boots[0].Attempted[0] != "sid-hung" {
+		t.Errorf("attempted = %v, want [sid-hung] (completed session must not be touched)", boots[0].Attempted)
+	}
+}
+
+func TestAutoContinueBootScan_BreakerAndSingleRetry(t *testing.T) {
+	t.Parallel()
+	t.Run("breaker trips after repeated attempting boots", func(t *testing.T) {
+		t.Parallel()
+		h := openAC(t)
+		seedACSession(t, h, "sid-hung", acUserEvent("hello?", time.Now()))
+		deps := scanDeps(t, h)
+		putACLRow(t, deps.ACLStore, "sid-hung")
+		for i := 0; i < 3; i++ {
+			if err := h.RecordBoot(context.Background(), time.Now().Add(-time.Duration(i+1)*time.Minute), []string{"other-sid"}); err != nil {
+				t.Fatalf("RecordBoot: %v", err)
+			}
+		}
+		AutoContinueBootScan(deps, 10)
+		boots, _ := h.RecentBoots(context.Background(), time.Now().Add(-breakerWindow))
+		if len(boots) != 3 {
+			t.Errorf("boot log has %d records, want 3 — a tripped breaker must stand down without recording an attempt", len(boots))
+		}
+	})
+	t.Run("session attempted in a recent boot is skipped", func(t *testing.T) {
+		t.Parallel()
+		h := openAC(t)
+		seedACSession(t, h, "sid-hung", acUserEvent("hello?", time.Now()))
+		deps := scanDeps(t, h)
+		putACLRow(t, deps.ACLStore, "sid-hung")
+		if err := h.RecordBoot(context.Background(), time.Now().Add(-time.Minute), []string{"sid-hung"}); err != nil {
+			t.Fatalf("RecordBoot: %v", err)
+		}
+		AutoContinueBootScan(deps, 10)
+		boots, _ := h.RecentBoots(context.Background(), time.Now().Add(-breakerWindow))
+		if len(boots) != 2 {
+			t.Fatalf("boot log has %d records, want 2", len(boots))
+		}
+		if len(boots[1].Attempted) != 0 {
+			t.Errorf("second boot attempted = %v, want empty (single automatic retry already spent)", boots[1].Attempted)
+		}
+	})
+	t.Run("cumulative cap stops a self-renewing session", func(t *testing.T) {
+		t.Parallel()
+		h := openAC(t)
+		// Fresh interrupted tail every time (a poisoned continuation
+		// that makes partial progress before dying renews itself) —
+		// only the attempt COUNT can terminate this.
+		seedACSession(t, h, "sid-poison", acUserEvent("hello?", time.Now()))
+		deps := scanDeps(t, h)
+		putACLRow(t, deps.ACLStore, "sid-poison")
+		// Three prior attempts spread outside the breaker window but
+		// inside the lookback: single-retry and breaker both pass,
+		// the cumulative cap must not.
+		for i := 0; i < 3; i++ {
+			if err := h.RecordBoot(context.Background(), time.Now().Add(-time.Duration(15+10*i)*time.Minute), []string{"sid-poison"}); err != nil {
+				t.Fatalf("RecordBoot: %v", err)
+			}
+		}
+		AutoContinueBootScan(deps, 10)
+		boots, _ := h.RecentBoots(context.Background(), time.Now().Add(-time.Minute))
+		if len(boots) != 1 || len(boots[0].Attempted) != 0 {
+			t.Errorf("this boot's record = %+v, want empty attempted (cumulative cap reached)", boots)
+		}
+	})
+	t.Run("boot intent is recorded before resumes are driven", func(t *testing.T) {
+		t.Parallel()
+		h := openAC(t)
+		seedACSession(t, h, "sid-hung", acUserEvent("hello?", time.Now()))
+		deps := scanDeps(t, h)
+		putACLRow(t, deps.ACLStore, "sid-hung")
+		// Nil out the registry's resumer path by using a fresh
+		// registry with NO resumer: Lookup will fail — but the boot
+		// record must exist anyway (write-ahead), listing the intent.
+		deps.Registry = attach.NewSessionRegistryWithStore(deps.ACLStore)
+		AutoContinueBootScan(deps, 10)
+		boots, _ := h.RecentBoots(context.Background(), time.Now().Add(-time.Minute))
+		if len(boots) != 1 || len(boots[0].Attempted) != 1 || boots[0].Attempted[0] != "sid-hung" {
+			t.Errorf("boot log = %+v, want write-ahead intent [sid-hung] even though the resume failed", boots)
+		}
+	})
+	t.Run("max_per_boot caps oldest-first", func(t *testing.T) {
+		t.Parallel()
+		h := openAC(t)
+		seedACSession(t, h, "sid-older", acUserEvent("hello?", time.Now().Add(-30*time.Minute)))
+		seedACSession(t, h, "sid-newer", acUserEvent("hello?", time.Now().Add(-5*time.Minute)))
+		deps := scanDeps(t, h)
+		putACLRow(t, deps.ACLStore, "sid-older")
+		putACLRow(t, deps.ACLStore, "sid-newer")
+		AutoContinueBootScan(deps, 1)
+		boots, _ := h.RecentBoots(context.Background(), time.Now().Add(-breakerWindow))
+		if len(boots) != 1 || len(boots[0].Attempted) != 1 || boots[0].Attempted[0] != "sid-older" {
+			t.Errorf("attempted = %+v, want exactly [sid-older]", boots)
+		}
+	})
 }
 
 func TestMaybeAutoContinue_QueuesNoteForFreshInterruption(t *testing.T) {

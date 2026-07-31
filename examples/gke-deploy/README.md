@@ -96,6 +96,7 @@ Two opt-in integrations layered on top of the core deploy:
 | One replica only | Session DB on `ReadWriteOnce` PVC — multi-replica needs `ReadWriteMany` storage + multi-session daemon (task #12, v2.4). |
 | Plan-first OFF by default | Simpler first-run; operator flips `permissions.require_plan_artifact: true` in the ConfigMap to enable. |
 | One operator's perspective | Single-session daemon for v2.3. Per-user sessions land in v2.4 (PR #105). |
+| No auto-continue after a pod roll | `agent.auto_continue` (v2.8) currently covers multi-session daemons only; this recipe's single-user shape resumes with intact history but waits for the next message after a mid-turn restart. Coverage for this shape is tracked in #558. Everything else on the [Restarts and shutdown](https://go-steer.github.io/core-agent/reference/restarts-and-shutdown/) page (durability, tail repair, bounded teardown) applies as-is. |
 
 ## Prerequisites
 

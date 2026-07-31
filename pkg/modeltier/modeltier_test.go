@@ -51,6 +51,13 @@ func TestClassify(t *testing.T) {
 		{"gemini-3.5-flash-05-2026", modeltier.TierMid}, // dated snapshot
 		{"gemini-3.1-flash", modeltier.TierSmall},
 		{"gemini-3-flash", modeltier.TierSmall},
+		// flash-lite is the budget tier every generation; the lite
+		// case must win over the base-flash substring match (a 3.5
+		// lite falling through to the 3.5-flash case would classify
+		// mid and dodge the small-tier-parent guard).
+		{"gemini-3.5-flash-lite", modeltier.TierSmall},
+		{"gemini-3.1-flash-lite", modeltier.TierSmall},
+		{"gemini-3.6-flash-lite", modeltier.TierSmall}, // future lite of the frontier base
 
 		// Gemini 2.x.
 		{"gemini-2.5-pro", modeltier.TierMid},
@@ -134,6 +141,7 @@ func TestIsSmall(t *testing.T) {
 		{"gemini-2.5-flash", true},
 		{"gemini-3-flash", true},
 		{"gemini-3.1-flash", true},
+		{"gemini-3.5-flash-lite", true},
 		{"claude-haiku-4-5", true},
 		{"claude-haiku-4-5-20251001", true},
 		{"claude-3-5-haiku-latest", true},

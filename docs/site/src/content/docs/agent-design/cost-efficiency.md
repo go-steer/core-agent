@@ -31,7 +31,7 @@ Frontier models (Gemini Pro, Claude Opus) cost 5-15x more per token than Flash/H
 
 The intended cost model for tool-heavy work: **parent on Pro/Opus for reasoning, subtasks on Flash/Haiku for content digestion.**
 
-This now activates by default. `--agentic-tools` is on by default (since v2.1) and `--agentic-small-model` auto-defaults to the provider's cheap-tier model (`gemini-2.5-flash` on Gemini/Vertex, `claude-haiku-4-5` on Anthropic) since v2.5. So with `--model claude-opus-4-7` (or any Pro/Opus parent), the split is in effect with no extra flags:
+This now activates by default. `--agentic-tools` is on by default (since v2.1) and `--agentic-small-model` auto-defaults to the provider's cheap-tier model (`gemini-3.5-flash-lite` on Gemini/Vertex, `claude-haiku-4-5` on Anthropic) since v2.5. So with `--model claude-opus-4-7` (or any Pro/Opus parent), the split is in effect with no extra flags:
 
 ```bash
 # v2.5+: default behavior — Pro/Opus parent, Flash/Haiku subtasks
@@ -232,7 +232,7 @@ Context-management activity:
 
 | Mistake | What it costs | Fix |
 |---|---|---|
-| Default model is Pro/Opus, no `--agentic-small-model` | 30-50% over-spend on tool-heavy work | `--agentic-tools --agentic-small-model gemini-2.5-flash` |
+| Default model is Pro/Opus, no `--agentic-small-model` | 30-50% over-spend on tool-heavy work | `--agentic-tools --agentic-small-model gemini-3.5-flash-lite` |
 | Long `AGENTS.md` repeating default instruction guidance | 5-10% over-spend across all turns + worse model attention | Strip rules covered by `agent.DefaultInstruction` |
 | Tools enabled the agent never uses | 2-5% over-spend on every turn (schema in prompt) | `tools.disable` the unused ones |
 | Switching models mid-session | Cache invalidation, ~10-30% input-token over-spend per turn after switch | Pin the model in `config.json`; switch only when intentional |
@@ -253,7 +253,7 @@ Context-management activity:
 **"I'm starting a new project and want to minimize cost from day 1."**
 
 1. Pin a model in `config.json` — don't rely on auto-detection
-2. Default to `Pro+Flash split`: `--agentic-tools --agentic-small-model gemini-2.5-flash` (or `claude-haiku-4-5` on Anthropic)
+2. Default to `Pro+Flash split`: `--agentic-tools --agentic-small-model gemini-3.5-flash-lite` (or `claude-haiku-4-5` on Anthropic)
 3. Write a concise `AGENTS.md` with an output-style section ("default to concise")
 4. Leave compaction + checkpoints on (default-on)
 5. Disable tools the agent doesn't need with `tools.disable`

@@ -297,7 +297,7 @@ func TestBuiltin_GeminiHasCachedRate(t *testing.T) {
 // every test would stay green (#530/#531).
 func TestBuiltin_CoversTaskclassGeminiDefaults(t *testing.T) {
 	t.Parallel()
-	for _, model := range []string{"gemini-3.6-flash", "gemini-3.5-flash"} {
+	for _, model := range []string{"gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"} {
 		r, ok := builtin[model]
 		if !ok {
 			t.Errorf("builtin table is missing %q — a taskclass tier default; check the dev/regen-builtin-pricing allowlist", model)

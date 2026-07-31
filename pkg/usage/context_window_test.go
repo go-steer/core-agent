@@ -25,7 +25,8 @@ func TestContextWindowSizeFor(t *testing.T) {
 		{"gemini-3.5-flash-customtools", 1_000_000},
 		{"gemini-3.5-pro", 1_000_000},
 		{"gemini-3.5-flash", 1_000_000},
-		{"gemini-3.6-flash", 1_000_000}, // taskclass frontier default (#530)
+		{"gemini-3.6-flash", 1_000_000},      // taskclass frontier default (#530)
+		{"gemini-3.5-flash-lite", 1_000_000}, // taskclass small default
 		{"gemini-2.5-pro", 2_000_000},
 		{"gemini-2.5-flash", 1_000_000},
 		// Current-gen Opus/Sonnet are 1M with no "-1m" suffix (#369).

@@ -423,6 +423,22 @@ Runtime tuning for the agent loop.
 | `append_system_prompt` | string | `""` | Operator text appended to the assembled system prompt as its final layer (v2.8, #459). The built-in harness contract, provider quirks, and mode overlay stay intact underneath — this is the encouraged customization path. CLI: `--append-system-prompt <text\|@file>` (flag beats config). |
 | `system_prompt_file` | string | `""` | Path to a file whose contents **replace** the assembled system prompt wholesale. You lose the harness contract (compaction summaries arrive unexplained; tool-dispatch rules are gone) — tool-use degradation is on you; prefer `append_system_prompt`. CLI: `--system-prompt-file` (flag beats config). |
 
+### `agent.auto_continue`
+
+Opt-in continuation of restart-interrupted turns ([design](https://github.com/go-steer/core-agent/blob/main/docs/auto-continue-design.md), #539). When a lazily-resumed multi-session agent finds a fresh interrupted turn in its committed history — an unanswered user message, a dangling tool call, or a repaired-but-unconsumed tool result — it queues a synthesized system-note turn ("the previous turn was interrupted by a daemon restart… continue") instead of waiting for the next human message. Continuation turns are queued under the `core-agent/auto-continue` identity (visible in the audit log; if the note happens to drain into one turn with a concurrently-arriving human message, the human becomes the turn originator and the note text still marks the turn), guarded by the session run lock against double-continuation in shared-DB fleets, and spend under the session's normal cost ceilings. One automatic attempt per interruption: a committed continuation note that itself gets interrupted is never re-continued — a real human message resets the state. Deliberately-interrupted turns (`POST /interrupt`) are never resurrected.
+
+Off by default; requires `--session-db` (there is nothing to detect against without a durable eventlog). Autonomous runs are unaffected — they have their own checkpoint/resume machinery.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | bool | `false` | Turn the feature on. |
+| `freshness` | duration | `"1h"` | Only interruptions younger than this are continued; staler ones wait for the next real message. Explicit `"0s"` disables the window (always continue). |
+| `max_per_boot` | int | `10` | Cap for the boot-time scan (design PR 2; the lazy-resume trigger ignores it). |
+
+```json
+{ "agent": { "auto_continue": { "enabled": true, "freshness": "1h" } } }
+```
+
 ### System prompt layers (v2.8)
 
 Since #459 the system prompt is assembled from ordered layers, stable → volatile:

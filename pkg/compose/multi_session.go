@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"time"
 
 	"github.com/google/uuid"
 	adkmodel "google.golang.org/adk/model"
@@ -133,6 +134,15 @@ type SessionFactoryDeps struct {
 	// from it on Lookup miss to reconstruct evicted sessions. Nil
 	// disables resume — the registry behaves as pre-v2.5.
 	ACLStore attach.SessionACLStore
+	// AutoContinueEnabled + AutoContinueFreshness switch on opt-in
+	// continuation of restart-interrupted turns on the lazy-resume
+	// path (#539, docs/auto-continue-design.md). Freshness 0 means
+	// "no window" (always continue); the daemon parses and validates
+	// the config strings so these are ready-to-use values here.
+	// Requires EventlogHandle — with no durable eventlog there is
+	// nothing to detect against.
+	AutoContinueEnabled   bool
+	AutoContinueFreshness time.Duration
 	// NoCompact / NoCheckpoint mirror the --no-compact /
 	// --no-checkpoint CLI flags. When false (the default),
 	// ReproduceAgent wires WithCompactor / WithCheckpointer so
@@ -412,6 +422,15 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 	// tracker via usage.TurnTap; its default OnTurnError writes
 	// "core-agent: session <sid> turn: ..." to stderr and keeps the
 	// loop alive — one bad turn must not kill the session.
+	// Auto-continue (#539 PR 1): if this resume finds a fresh
+	// interrupted turn in the committed tail, queue a synthesized
+	// continuation before the wake loop starts — the injected note
+	// latches the wake signal, so the loop's first drain runs it.
+	// Created sessions have no history to be interrupted; only the
+	// resumed path checks.
+	if origin == "resumed" && deps.AutoContinueEnabled && deps.EventlogHandle != nil && deps.EventlogHandle.Service != nil {
+		maybeAutoContinue(deps, caller, sid, ag)
+	}
 	loopCtx, cancelOnEvict := context.WithCancel(deps.DaemonCtx)
 	go runner.WakeLoop(loopCtx, ag, runner.WakeLoopOptions{
 		Tracker: sessionTracker,

@@ -289,6 +289,26 @@ func TestBuiltin_GeminiHasCachedRate(t *testing.T) {
 	}
 }
 
+// TestBuiltin_CoversTaskclassGeminiDefaults pins that the models
+// taskclass hands out for the gemini tiers stay priced across
+// regenerations. The regen tool's filter drops non-allowlisted
+// entries silently, so without this pin a curation slip would ship
+// the DEFAULT models with no rates ("$—" across all cost UI) and
+// every test would stay green (#530/#531).
+func TestBuiltin_CoversTaskclassGeminiDefaults(t *testing.T) {
+	t.Parallel()
+	for _, model := range []string{"gemini-3.6-flash", "gemini-3.5-flash"} {
+		r, ok := builtin[model]
+		if !ok {
+			t.Errorf("builtin table is missing %q — a taskclass tier default; check the dev/regen-builtin-pricing allowlist", model)
+			continue
+		}
+		if r.InputPerMTok <= 0 || r.OutputPerMTok <= 0 {
+			t.Errorf("builtin %q rates = %+v, want positive input/output", model, r)
+		}
+	}
+}
+
 // TestLookupWithSource_AttributesEachLayer pins the source-attribution
 // contract: LookupWithSource must name the layer that served the rate
 // so /pricing can distinguish "your override" from "the shipped

@@ -107,7 +107,11 @@ func Classify(modelID string) string {
 	case containsAny(m, "claude-3-5-haiku", "claude-3-haiku"):
 		return TierSmall
 
-	// Google Gemini 3.x.
+	// Google Gemini 3.x. gemini-3.6-flash is the top of the
+	// flash-first agentic line and taskclass's gemini frontier
+	// default (the two tables move together; see ModelForTier).
+	case containsAny(m, "gemini-3.6-flash"):
+		return TierFrontier
 	case containsAny(m, "gemini-3-pro", "gemini-3.1-pro", "gemini-3.5-pro"):
 		return TierFrontier
 	// gemini-3.5-flash was Google's headline agentic release at I/O

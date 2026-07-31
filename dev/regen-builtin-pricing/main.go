@@ -72,11 +72,13 @@ const defaultLiteLLMSource = "https://raw.githubusercontent.com/BerriAI/litellm/
 // When a model gets deprecated by its provider, remove it here and
 // regenerate.
 var allowlist = []string{
-	// Gemini 3.x — the demo's primary family. LiteLLM's catalog
-	// currently only has the flash-lite and 3.5-flash entries; if
-	// Google adds gemini-3-pro / gemini-3.5-pro back to LiteLLM,
-	// add them here (the regen tool logs skipped-but-listed models
-	// to stderr, which is how we'd notice).
+	// Gemini 3.x — the demo's primary family. 3.6-flash and
+	// 3.5-flash are the taskclass frontier/mid defaults (#530/#531)
+	// so their absence here would leave the default models unpriced;
+	// if Google adds a pro-line entry back to LiteLLM, add it here
+	// (the regen tool logs skipped-but-listed models to stderr,
+	// which is how we'd notice).
+	"gemini-3.6-flash",
 	"gemini-3.5-flash",
 	"gemini-3.1-flash-lite",
 

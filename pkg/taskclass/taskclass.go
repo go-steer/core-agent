@@ -190,9 +190,20 @@ func ModelForTier(provider, tier string) string {
 	case "gemini", "vertex":
 		switch tier {
 		case TierFrontier:
-			return "gemini-3.5-pro"
+			// gemini-3.6-flash: the current top of the flash-first
+			// agentic line. The table used to say gemini-3.5-pro — a
+			// model id that never shipped (3.5 went flash-first);
+			// caught by mast's first live-credential run (#530).
+			return "gemini-3.6-flash"
 		case TierMid:
-			return "gemini-2.5-pro"
+			// gemini-3.5-flash, not the older 2.5-pro: mid-tier
+			// classes (research, chat) need built-in grounding to
+			// coexist with function tools, which Gemini supports only
+			// from 3.0 on — on 2.5-pro the research class literally
+			// could not search (#531). Also cheaper per the pricing
+			// catalog, and modeltier already classifies the
+			// 3.5-flash line as mid.
+			return "gemini-3.5-flash"
 		case TierSmall:
 			return "gemini-2.5-flash"
 		}

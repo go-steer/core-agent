@@ -205,7 +205,14 @@ func ModelForTier(provider, tier string) string {
 			// 3.5-flash line as mid.
 			return "gemini-3.5-flash"
 		case TierSmall:
-			return "gemini-2.5-flash"
+			// gemini-3.5-flash-lite: current-gen budget tier at the
+			// same price point as the 2.5-flash it replaced
+			// ($0.30/$2.50 per MTok), with far stronger agentic
+			// scores (OSWorld 74.0, Terminal-bench 54.0) and a
+			// March 2026 knowledge cutoff. Moves in lockstep with
+			// pkg/models/gemini's DefaultSmallModelID — pinned by
+			// TestModelForTier_ConsistentWithSmallModelDefaulters.
+			return "gemini-3.5-flash-lite"
 		}
 	case "anthropic", "anthropic-vertex":
 		switch tier {

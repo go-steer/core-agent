@@ -107,6 +107,18 @@ func Classify(modelID string) string {
 	case containsAny(m, "claude-3-5-haiku", "claude-3-haiku"):
 		return TierSmall
 
+	// Google Gemini flash-lite line — the budget/speed tier by
+	// Google's own naming, every generation. MUST precede the base
+	// flash cases: "gemini-3.5-flash-lite" substring-contains
+	// "gemini-3.5-flash", and letting it fall through would classify
+	// a lite model at its base model's tier (mid for the 3.5 line,
+	// frontier for a future 3.6 lite) — hiding it from the
+	// small-tier-parent guard (#121). One generic case instead of
+	// per-generation entries so the next lite release can't
+	// reintroduce the hole.
+	case containsAny(m, "flash-lite"):
+		return TierSmall
+
 	// Google Gemini 3.x. gemini-3.6-flash is the top of the
 	// flash-first agentic line and taskclass's gemini frontier
 	// default (the two tables move together; see ModelForTier).

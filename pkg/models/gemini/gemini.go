@@ -66,8 +66,9 @@ func (p *Provider) Name() string { return p.name }
 
 // DefaultSmallModelID is the Gemini cheap-tier model used by default
 // for agentic subtasks when the operator hasn't pinned one with
-// --agentic-small-model.
-const DefaultSmallModelID = "gemini-2.5-flash"
+// --agentic-small-model. Moves in lockstep with taskclass's gemini
+// small tier (TestModelForTier_ConsistentWithSmallModelDefaulters).
+const DefaultSmallModelID = "gemini-3.5-flash-lite"
 
 // DefaultSmallModel satisfies models.SmallModelDefaulter so core-agent
 // can route subtask digesting to a cheap-tier Gemini model without

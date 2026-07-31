@@ -159,6 +159,21 @@ Conventions worth knowing at agent prompt time:
   same scripts CI runs. A green local run is the same green run as
   remote CI — skipping them ships preventable red builds. Full sweep:
   `dev/ci/presubmits/{build,lint-go,test-unit,verify-go-format,verify-mod-tidy,vet,verify-vuln}`.
+- **Adversarial review gate before every PR.** Before `gh pr create`
+  on any change touching Go code: run a skeptic subagent over the
+  staged diff (correctness, races, API misuse — verified against
+  real dependency source, not memory), fix or pin every finding, and
+  record the outcome in the PR body under an `## Adversarial review`
+  heading. For bug fixes, additionally **verify the new regression
+  test FAILS on the pre-fix code** (run it against the parent commit
+  in a scratch checkout) — a test that passes on the buggy code is
+  documentation, not a gate; this exact failure shipped in a
+  downstream release. Enforced three ways: this convention, the
+  PreToolUse hook in `.claude/settings.json` (blocks `gh pr create`
+  without the section), and the `review-gate` CI check. Evidence it
+  pays: the #537–#567 shutdown/resume train shipped seven substantive
+  PRs and the gate caught a P0/P1-class defect in nearly every first
+  draft.
 - **Rebase, don't merge.** Feature branches stay rebased on `main`.
   `git push --force-with-lease` on your own branches is normal;
   never force-push `main`.

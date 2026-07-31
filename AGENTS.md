@@ -168,9 +168,12 @@ Conventions worth knowing at agent prompt time:
   test FAILS on the pre-fix code** (run it against the parent commit
   in a scratch checkout) — a test that passes on the buggy code is
   documentation, not a gate; this exact failure shipped in a
-  downstream release. Enforced three ways: this convention, the
-  PreToolUse hook in `.claude/settings.json` (blocks `gh pr create`
-  without the section), and the `review-gate` CI check. Evidence it
+  downstream release. Enforced by this convention plus the
+  `review-gate` **required** CI check (Go-touching PRs fail without
+  the section; docs-only and pricing-regen-bot PRs exempt).
+  Optionally, copy `dev/claude/settings-review-gate.json` to your
+  local `.claude/settings.json` for a Claude Code hook that blocks
+  `gh pr create` at the terminal before CI ever sees it. Evidence it
   pays: the #537–#567 shutdown/resume train shipped seven substantive
   PRs and the gate caught a P0/P1-class defect in nearly every first
   draft.

@@ -96,7 +96,7 @@ Two opt-in integrations layered on top of the core deploy:
 | One replica only | Session DB on `ReadWriteOnce` PVC — multi-replica needs `ReadWriteMany` storage + multi-session daemon (task #12, v2.4). |
 | Plan-first OFF by default | Simpler first-run; operator flips `permissions.require_plan_artifact: true` in the ConfigMap to enable. |
 | One operator's perspective | Single-session daemon for v2.3. Per-user sessions land in v2.4 (PR #105). |
-| No auto-continue after a pod roll | `agent.auto_continue` (v2.8) currently covers multi-session daemons only; this recipe's single-user shape resumes with intact history but waits for the next message after a mid-turn restart. Coverage for this shape is tracked in #558. Everything else on the [Restarts and shutdown](https://go-steer.github.io/core-agent/reference/restarts-and-shutdown/) page (durability, tail repair, bounded teardown) applies as-is. |
+| ~~No auto-continue after a pod roll~~ | Since #558, `agent.auto_continue` covers this recipe's single-user `--no-repl` shape and is **enabled in this recipe's config.json**: a turn interrupted by a pod roll is finished automatically on the next boot (one attempt per interruption, crash-loop guarded). Disable by removing the block. ⚠️ Takes effect once the recipe's pinned image digest is bumped past #558 (next dev tag) — an older binary silently ignores the config key. See [Restarts and shutdown](https://go-steer.github.io/core-agent/reference/restarts-and-shutdown/). |
 
 ## Prerequisites
 

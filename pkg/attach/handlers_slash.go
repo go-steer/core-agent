@@ -116,6 +116,16 @@ func (h *handlers) doSlashSubagent(w http.ResponseWriter, r *http.Request, entry
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Shutdown gate (#564): a spawn in the SIGTERM window returns a
+	// 200 with a name/startedAt for a subagent with no durable record
+	// that the background-manager drain abandons seconds later — the
+	// same acknowledged-then-lost class as /inject. Checked after the
+	// body read (TOCTOU) and only here: the other slash ops run
+	// synchronously with durable eventlog effects, so their clients
+	// see either a completed result or a visible failure.
+	if h.rejectDraining(w) {
+		return
+	}
 	if spec.Name == "" {
 		http.Error(w, "name: required", http.StatusBadRequest)
 		return

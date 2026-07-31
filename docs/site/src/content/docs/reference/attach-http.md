@@ -88,7 +88,7 @@ No cookies — the listener is stateless per request. Identity is re-derived fro
 | Method | Path | Action | Request | Response |
 |---|---|---|---|---|
 | `GET` | `/sessions` | `SessionList` (always OK, ACL-filtered) | — | **200** `{"sessions":[{"app":..., "user":..., "sessionID":..., "has_event_log":bool, "status":"active"\|"idle", "last_touched_at":...}]}` — union of in-memory (`active`) + persisted-idle rows. Note the field is `sessionID`, not `session_id` — pin against the [conformance fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-sessions-list-v1.json). `last_touched_at` is RFC 3339 with arbitrary precision and zone offset (parse, don't pattern-match); the zero value `0001-01-01T00:00:00Z` means never-touched. |
-| `POST` | `/sessions` | Authenticated caller | — | **201** `{"app":..., "user":..., "sessionID":..., "url":...}` ([fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-create-session-v1.json)). **501** when the daemon lacks a `SessionFactory`; **401** anonymous; **409** on `ErrSessionExists`. Caller stamped as ACL Owner. |
+| `POST` | `/sessions` | Authenticated caller | — | **201** `{"app":..., "user":..., "sessionID":..., "url":...}` ([fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-create-session-v1.json)). **501** when the daemon lacks a `SessionFactory`; **401** anonymous; **409** on `ErrSessionExists`. Caller stamped as ACL Owner. Deliberately ungated during daemon shutdown: the ACL row is durable, so a session created in that window resumes normally after the restart — but it is usable only then. |
 | `DELETE` | `/sessions/{sid}` and `/sessions/{app}/{sid}` | `SessionAdmin` | — | **204** on success. **403** on the bootstrap `"default"` session. **404** on not-found OR auth-deny (masked). **NOT idempotent** — second call returns **500** wrapping `ErrSessionNotFound`. |
 
 ### Session read (`SessionRead` — all owner/contributor/viewer OK)
@@ -116,8 +116,8 @@ All write endpoints cap request bodies at **8 KiB** (`operatorPostMaxBytes`).
 
 | Method | Path suffix | Request | Response |
 |---|---|---|---|
-| `POST` | `/inject` | `{"message":"..."}` (empty → **400**) | `{"injected":..., "session":...}` |
-| `POST` | `/wake` | `{"target"?:..., "prompt"?:...}` (both optional) | `{"woken":..., "prompt":...}`; **501** if `target` set |
+| `POST` | `/inject` | `{"message":"..."}` (empty → **400**) | `{"injected":..., "session":...}`; **503** + `Retry-After` during daemon shutdown (message would die with the in-memory inbox — redeliver after restart) |
+| `POST` | `/wake` | `{"target"?:..., "prompt"?:...}` (both optional) | `{"woken":..., "prompt":...}`; **501** if `target` set; **503** + `Retry-After` during daemon shutdown |
 | `POST` | `/interrupt` | — | `{"interrupted":bool, "session":...}`; **412** if agent lacks `InterruptProvider`; `X-Interrupted: nothing-in-flight` header when idle; writes audit event `Author=attach/interrupt` |
 | `POST` | `/perms/allow` / `/perms/deny` | `{"patterns":[...]}` (empty → **400**) | **204**; **501** if no controller |
 | `POST` | `/perms/respond` | `{"id":..., "decision":...}` | `{"acknowledged":true}`; **404** on unknown id |

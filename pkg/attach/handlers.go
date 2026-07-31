@@ -67,10 +67,44 @@ type handlers struct {
 	// /events itself needs no select on this: closing the pool closes
 	// its subscriber channels.
 	closing chan struct{}
+	// daemonCtx is the daemon's lifetime context (Options.DaemonCtx);
+	// consulted by draining(). Nil = shutdown gating disabled.
+	daemonCtx context.Context
 }
 
 func newHandlers(reg *SessionRegistry, pool *broadcasterPool) *handlers {
 	return &handlers{reg: reg, pool: pool, closing: make(chan struct{})}
+}
+
+// draining reports whether the daemon's lifetime context has been
+// cancelled (SIGTERM has fired). The window between ctx-cancel and
+// Server.Close is where wake loops are already dead but the listener
+// still accepts requests — a message queued there lands in the
+// IN-MEMORY inbox and dies with the process, after the client got a
+// 200 (#564). Mutating intake endpoints check this and 503 instead so
+// clients redeliver after the restart. nil daemonCtx (bare
+// newHandlers, tests, embedders that don't wire it) never drains.
+func (h *handlers) draining() bool {
+	if h.daemonCtx == nil {
+		return false
+	}
+	select {
+	case <-h.daemonCtx.Done():
+		return true
+	default:
+		return false
+	}
+}
+
+// rejectDraining writes the 503 + Retry-After response for intake
+// during shutdown. Returns true when the request was rejected.
+func (h *handlers) rejectDraining(w http.ResponseWriter) bool {
+	if !h.draining() {
+		return false
+	}
+	w.Header().Set("Retry-After", "5")
+	http.Error(w, "daemon is shutting down; queued messages would be lost — retry after restart", http.StatusServiceUnavailable)
+	return true
 }
 
 // authorize checks the request's Caller against entry.ACL for the
@@ -185,6 +219,36 @@ func (h *handlers) routeSession(mux *http.ServeMux, method, suffix string, actio
 	})
 }
 
+// routeSessionDrainGated is routeSession with the shutdown drain gate
+// run BEFORE entry lookup (#564 review). Same rationale as
+// routeSessionLimited/#484: a Lookup miss lazily resumes the session
+// — full agent construction, tracker replay, a wake loop spawned off
+// the already-cancelled daemon ctx — which is pure waste when the
+// response is going to be 503, exactly while the process races its
+// termination grace period.
+func (h *handlers) routeSessionDrainGated(mux *http.ServeMux, method, suffix string, action auth.Action, fn func(http.ResponseWriter, *http.Request, *Entry)) {
+	tail := ""
+	if suffix != "" {
+		tail = "/" + suffix
+	}
+	mux.HandleFunc(method+" /sessions/{app}/{sid}"+tail, func(w http.ResponseWriter, r *http.Request) {
+		if h.rejectDraining(w) {
+			return
+		}
+		if entry, ok := h.lookupQualifiedAuth(w, r, action); ok {
+			fn(w, r, entry)
+		}
+	})
+	mux.HandleFunc(method+" /sessions/{sid}"+tail, func(w http.ResponseWriter, r *http.Request) {
+		if h.rejectDraining(w) {
+			return
+		}
+		if entry, ok := h.lookupShortcutAuth(w, r, action); ok {
+			fn(w, r, entry)
+		}
+	})
+}
+
 // routeSessionLimited is routeSession with the per-caller cost
 // limiter run BEFORE entry lookup. The order matters (#484): a
 // Lookup miss lazily resumes the session — constructing a full
@@ -243,8 +307,8 @@ func (h *handlers) register(mux *http.ServeMux) {
 	// Session-scoped endpoints — each registered under both the
 	// qualified and shortcut URL forms via routeSession.
 	h.routeSession(mux, "GET", "events", auth.ActionSessionRead, h.streamEvents)
-	h.routeSession(mux, "POST", "inject", auth.ActionSessionWrite, h.doInject)
-	h.routeSession(mux, "POST", "wake", auth.ActionSessionWrite, h.doWake)
+	h.routeSessionDrainGated(mux, "POST", "inject", auth.ActionSessionWrite, h.doInject)
+	h.routeSessionDrainGated(mux, "POST", "wake", auth.ActionSessionWrite, h.doWake)
 	h.routeSession(mux, "POST", "interrupt", auth.ActionSessionWrite, h.doInterrupt)
 
 	// Read-only state endpoints — feed the TUI's /tools, /subagents,
@@ -440,6 +504,15 @@ func (h *handlers) doInject(w http.ResponseWriter, r *http.Request, entry *Entry
 		http.Error(w, "inject: message is required", http.StatusBadRequest)
 		return
 	}
+	// Second drain check, AFTER the body read: the route-level gate
+	// runs before an unbounded body read (no ReadTimeout on the
+	// listener), so a request that passed it pre-SIGTERM can trickle
+	// its body across the cancel instant. Re-check here so the 503
+	// lands instead of an acknowledged-then-lost message; a duplicate
+	// on client redelivery beats a silent loss (#564 review P1).
+	if h.rejectDraining(w) {
+		return
+	}
 	caller, _ := auth.CallerFromContext(r.Context())
 	if err := entry.Agent.InjectAs(req.Message, caller); err != nil {
 		http.Error(w, fmt.Sprintf("inject: %v", err), http.StatusInternalServerError)
@@ -473,6 +546,12 @@ func (h *handlers) doWake(w http.ResponseWriter, r *http.Request, entry *Entry) 
 	}
 	if req.Target != "" {
 		http.Error(w, "wake: per-subagent target is not yet implemented; omit 'target' to wake the session", http.StatusNotImplemented)
+		return
+	}
+	// Second drain check after the (optional, unbounded) body read —
+	// same TOCTOU closure as doInject (#564 review P1). A bare wake
+	// also matters: 200 promises a turn the dead wake loop never runs.
+	if h.rejectDraining(w) {
 		return
 	}
 	if req.Prompt != "" {

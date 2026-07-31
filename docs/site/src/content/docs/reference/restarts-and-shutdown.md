@@ -13,7 +13,8 @@ The daemon catches SIGTERM (and only SIGTERM — SIGINT belongs to the REPL's do
 
 1. **In-flight turns are interrupted immediately.** There is no drain phase and no drain knob, deliberately: agent turns can run unboundedly long, so no timeout is "long enough", and a drain longer than the supervisor's kill timeout just invites SIGKILL mid-cleanup. Interrupted work is recoverable instead (see below).
 2. **Teardown runs with bounded steps**: peer-hub deregistration (2s cap), attach listener drain (SSE streams hung up, then graceful HTTP shutdown — default 5s, tunable via [`attach.shutdown_timeout`](/reference/configuration/#attachshutdown_timeout)), background-subagent drain (5s, stragglers abandoned and logged), MCP stdio children (SIGTERM → 3s grace → SIGKILL, concurrently), then telemetry flush and Vertex context-cache cleanup (3s each).
-3. **The process exits 0.** Restart-on-exit is the supervisor's job (K8s `restartPolicy`), not an exit-code contract.
+3. **Message intake refuses instead of lying.** Once SIGTERM fires, `POST /inject` and `POST /wake` return `503` with `Retry-After` — a message accepted in that window would sit in an in-memory inbox and die with the process after the client got a success response. Clients redeliver after the restart; committed history is unaffected.
+4. **The process exits 0.** Restart-on-exit is the supervisor's job (K8s `restartPolicy`), not an exit-code contract.
 
 Worst case with defaults, the whole sequence takes **≈ 24 seconds** — inside Kubernetes' default `terminationGracePeriodSeconds: 30` with headroom. If you raise `attach.shutdown_timeout`, raise the grace period to keep that inequality true.
 

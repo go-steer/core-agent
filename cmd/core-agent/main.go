@@ -1736,6 +1736,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		attachSrv, err := attach.NewServer(attach.Options{
 			Registry:        attachReg,
 			PeerRegistry:    peerReg,
+			DaemonCtx:       ctx,
 			Addr:            attachCfg.Listen,
 			UnixSocket:      attachCfg.UnixSocket,
 			CostRateLimit:   costLimit,

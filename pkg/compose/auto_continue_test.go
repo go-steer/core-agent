@@ -280,6 +280,88 @@ func TestAutoContinueBootScan_BreakerAndSingleRetry(t *testing.T) {
 	})
 }
 
+func TestAutoContinueStartupSession(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	t.Run("interrupted tail queues note and records intent", func(t *testing.T) {
+		t.Parallel()
+		h := seedAC(t, acUserEvent("hello?", time.Now().Add(-5*time.Minute)))
+		ag := acAgent(t, h) // triple = (core-agent, alice, sid-ac) via WithSession
+		AutoContinueStartupSession(ctx, h, ag, time.Hour)
+		msgs := ag.DrainInbox()
+		if len(msgs) != 1 || !strings.Contains(msgs[0], "interrupted by a daemon restart") {
+			t.Fatalf("inbox = %v, want the continuation note", msgs)
+		}
+		boots, _ := h.RecentBoots(ctx, time.Now().Add(-time.Minute))
+		if len(boots) != 1 || len(boots[0].Attempted) != 1 || boots[0].Attempted[0] != acSID {
+			t.Errorf("boot log = %+v, want write-ahead intent [%s]", boots, acSID)
+		}
+	})
+	t.Run("clean tail burns no attempt", func(t *testing.T) {
+		t.Parallel()
+		// This trigger fires EVERY boot — recording an attempt for a
+		// healthy restart would exhaust the cumulative cap and block
+		// a real interruption later.
+		h := seedAC(t,
+			acUserEvent("q", time.Now().Add(-10*time.Minute)),
+			acModelEvent("answered", time.Now().Add(-9*time.Minute)))
+		ag := acAgent(t, h)
+		AutoContinueStartupSession(ctx, h, ag, time.Hour)
+		if msgs := ag.DrainInbox(); len(msgs) != 0 {
+			t.Errorf("inbox = %v, want empty for a completed tail", msgs)
+		}
+		boots, _ := h.RecentBoots(ctx, time.Now().Add(-time.Minute))
+		if len(boots) != 0 {
+			t.Errorf("boot log = %+v, want no record for a clean boot", boots)
+		}
+	})
+	t.Run("cumulative cap blocks the fourth attempt", func(t *testing.T) {
+		t.Parallel()
+		h := seedAC(t, acUserEvent("hello?", time.Now()))
+		for i := 0; i < 3; i++ {
+			if err := h.RecordBoot(ctx, time.Now().Add(-time.Duration(15+10*i)*time.Minute), []string{acSID}); err != nil {
+				t.Fatalf("RecordBoot: %v", err)
+			}
+		}
+		ag := acAgent(t, h)
+		AutoContinueStartupSession(ctx, h, ag, time.Hour)
+		if msgs := ag.DrainInbox(); len(msgs) != 0 {
+			t.Errorf("inbox = %v, want empty (cumulative cap reached)", msgs)
+		}
+	})
+	t.Run("stale interruption burns no attempt", func(t *testing.T) {
+		t.Parallel()
+		h := seedAC(t, acUserEvent("hello?", time.Now().Add(-3*time.Hour)))
+		ag := acAgent(t, h)
+		AutoContinueStartupSession(ctx, h, ag, time.Hour)
+		if msgs := ag.DrainInbox(); len(msgs) != 0 {
+			t.Errorf("inbox = %v, want empty beyond freshness", msgs)
+		}
+		boots, _ := h.RecentBoots(ctx, time.Now().Add(-time.Minute))
+		if len(boots) != 0 {
+			t.Errorf("boot log = %+v, want no record — a stale skip must not charge the cumulative cap", boots)
+		}
+	})
+	t.Run("breaker stands the startup trigger down", func(t *testing.T) {
+		t.Parallel()
+		h := seedAC(t, acUserEvent("hello?", time.Now()))
+		for i := 0; i < 3; i++ {
+			if err := h.RecordBoot(ctx, time.Now().Add(-time.Duration(i+1)*time.Minute), []string{"other-sid"}); err != nil {
+				t.Fatalf("RecordBoot: %v", err)
+			}
+		}
+		ag := acAgent(t, h)
+		AutoContinueStartupSession(ctx, h, ag, time.Hour)
+		if msgs := ag.DrainInbox(); len(msgs) != 0 {
+			t.Errorf("inbox = %v, want empty while the breaker is tripped", msgs)
+		}
+		boots, _ := h.RecentBoots(ctx, time.Now().Add(-breakerWindow))
+		if len(boots) != 3 {
+			t.Errorf("boot log has %d records, want 3 — stand-down must not record", len(boots))
+		}
+	})
+}
+
 func TestMaybeAutoContinue_QueuesNoteForFreshInterruption(t *testing.T) {
 	t.Parallel()
 	h := seedAC(t,

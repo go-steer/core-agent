@@ -1477,6 +1477,41 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		// inside agent.New. Deferred to the post-construct hook.
 	}
 
+	// Auto-continue config (#539, #558): parsed once here, consumed by
+	// two triggers — the multi-session lazy/boot-scan path inside the
+	// attach block, and the --no-repl startup-session path below it.
+	// Same duration-string convention as session_idle_timeout: omitted
+	// freshness → default 1h; explicit "0s" → no window (always
+	// continue). Requires a durable eventlog — with none there is
+	// nothing to detect against. Interactive modes (REPL/TUI) never
+	// consume these: a human is present there by definition.
+	var autoContinueEnabled bool
+	autoContinueFreshness := time.Hour
+	if ac := cfg.Agent.AutoContinue; ac != nil && ac.Enabled {
+		switch {
+		case !cfg.Attach.MultiSession.Enabled && !noREPL:
+			// Mode check first: in a REPL/TUI/one-shot run, the
+			// missing-session-db message would point at the wrong knob.
+			fmt.Fprintln(os.Stderr, "core-agent: agent.auto_continue has no effect in this mode; it applies to multi-session daemons and --no-repl single-user daemons — ignoring")
+		case eventlogHandle == nil:
+			fmt.Fprintln(os.Stderr, "core-agent: agent.auto_continue requires --session-db (durable eventlog); ignoring")
+		default:
+			autoContinueEnabled = true
+			if raw := ac.Freshness; raw != "" {
+				d, perr := time.ParseDuration(raw)
+				if perr != nil {
+					fmt.Fprintf(os.Stderr, "core-agent: parse agent.auto_continue.freshness=%q: %v\n", raw, perr)
+					return runner.ExitConfigError
+				}
+				if d < 0 {
+					fmt.Fprintf(os.Stderr, "core-agent: agent.auto_continue.freshness=%q: must be >= 0 (\"0s\" disables the window)\n", raw)
+					return runner.ExitConfigError
+				}
+				autoContinueFreshness = d // 0 = disabled window, by design
+			}
+		}
+	}
+
 	// Attach-mode wiring. Must come after the eventlog is set up
 	// (broadcaster requires a Stream) and before the agent is
 	// constructed (so the registry is in opts).
@@ -1574,41 +1609,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		var sessionFactory attach.SessionFactory
 		var sessionResumer attach.SessionResumer
 		var autoContinueBootScan func()
-		// Enabled-but-unusable combination: auto-continue rides the
-		// lazy-resume path, which only exists under multi-session.
-		// Warn instead of silently ignoring (parity with the
-		// missing-eventlog warning inside the block below).
-		if ac := cfg.Agent.AutoContinue; ac != nil && ac.Enabled && !cfg.Attach.MultiSession.Enabled {
-			fmt.Fprintln(os.Stderr, "core-agent: agent.auto_continue requires attach.multi_session.enabled (lazy session resume); ignoring")
-		}
 		if cfg.Attach.MultiSession.Enabled {
-			// Auto-continue (#539): parse + validate the config block
-			// once so ReproduceAgent gets ready-to-use values. Same
-			// duration-string convention as session_idle_timeout:
-			// omitted freshness → default 1h; explicit "0s" → no
-			// window (always continue). Requires a durable eventlog —
-			// with none there is nothing to detect against.
-			var autoContinueEnabled bool
-			autoContinueFreshness := time.Hour
-			if ac := cfg.Agent.AutoContinue; ac != nil && ac.Enabled {
-				if eventlogHandle == nil {
-					fmt.Fprintln(os.Stderr, "core-agent: agent.auto_continue requires --session-db (durable eventlog); ignoring")
-				} else {
-					autoContinueEnabled = true
-					if raw := ac.Freshness; raw != "" {
-						d, perr := time.ParseDuration(raw)
-						if perr != nil {
-							fmt.Fprintf(os.Stderr, "core-agent: parse agent.auto_continue.freshness=%q: %v\n", raw, perr)
-							return runner.ExitConfigError
-						}
-						if d < 0 {
-							fmt.Fprintf(os.Stderr, "core-agent: agent.auto_continue.freshness=%q: must be >= 0 (\"0s\" disables the window)\n", raw)
-							return runner.ExitConfigError
-						}
-						autoContinueFreshness = d // 0 = disabled window, by design
-					}
-				}
-			}
 			factoryDeps := compose.SessionFactoryDeps{
 				DaemonCtx:             ctx,
 				Model:                 m,
@@ -1877,6 +1878,22 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		fmt.Fprintf(os.Stderr,
 			"core-agent: --no-repl: attach-only mode, session %s (Ctrl-C or SIGTERM to exit)\n",
 			a.SessionID())
+		// Auto-continue for the startup session (#558): a headless
+		// single-user daemon has no human present, so a restart-
+		// interrupted turn deserves the same continuation the
+		// multi-session paths get. Runs before the wake loop so the
+		// injected note latches the wake signal and drains as the
+		// first turn. Guarded internally by the boot-log breaker /
+		// attempt caps + run lock; no-op on a clean tail.
+		//
+		// Single-user mode only: a multi-session --no-repl daemon
+		// already runs the boot scan, and both triggers writing
+		// agent_boot_log rows would double-count boots in the
+		// breaker math (its bootstrap `default` session has no ACL
+		// row and stays uncovered — status quo since #539).
+		if autoContinueEnabled && !cfg.Attach.MultiSession.Enabled {
+			compose.AutoContinueStartupSession(ctx, eventlogHandle, a, autoContinueFreshness)
+		}
 		// Wake-driven inbox loop, consolidated behind
 		// runner.WakeLoop (#386 PR 4): blocks until an attach
 		// client's POST /inject fires WakeRequested, drains the

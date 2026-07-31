@@ -20,6 +20,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/go-steer/core-agent/v2/pkg/taskclass"
 )
 
 // TestLookup_BuiltinOnly verifies the zero-config path: empty Options
@@ -289,22 +291,37 @@ func TestBuiltin_GeminiHasCachedRate(t *testing.T) {
 	}
 }
 
-// TestBuiltin_CoversTaskclassGeminiDefaults pins that the models
-// taskclass hands out for the gemini tiers stay priced across
-// regenerations. The regen tool's filter drops non-allowlisted
-// entries silently, so without this pin a curation slip would ship
-// the DEFAULT models with no rates ("$—" across all cost UI) and
-// every test would stay green (#530/#531).
-func TestBuiltin_CoversTaskclassGeminiDefaults(t *testing.T) {
+// TestBuiltin_CoversTaskclassTierDefaults pins that EVERY model
+// taskclass hands out — all providers, all tiers — stays priced in
+// the compiled-in builtin across regenerations. builtin is the
+// air-gapped / refresh-failed pricing floor (the LiteLLM startup
+// refresh covers networked daemons); an unpriced default accrues
+// $0 cost, so --max-turn/session-cost-usd ceilings never trip
+// exactly where daemons run unattended. The regen tool's filter
+// drops non-allowlisted entries silently, so without this pin a
+// curation slip ships silently ("$—" across all cost UI) and every
+// test stays green. The gemini-only predecessor of this test did
+// exactly that: it stated this invariant and left claude-sonnet-4-6
+// (the anthropic mid default) unpriced.
+func TestBuiltin_CoversTaskclassTierDefaults(t *testing.T) {
 	t.Parallel()
-	for _, model := range []string{"gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"} {
-		r, ok := builtin[model]
-		if !ok {
-			t.Errorf("builtin table is missing %q — a taskclass tier default; check the dev/regen-builtin-pricing allowlist", model)
-			continue
-		}
-		if r.InputPerMTok <= 0 || r.OutputPerMTok <= 0 {
-			t.Errorf("builtin %q rates = %+v, want positive input/output", model, r)
+	providers := taskclass.Providers()
+	tiers := []string{taskclass.TierFrontier, taskclass.TierMid, taskclass.TierSmall}
+	for _, provider := range providers {
+		for _, tier := range tiers {
+			model := taskclass.ModelForTier(provider, tier)
+			if model == "" {
+				t.Errorf("ModelForTier(%q, %q) = \"\" — provider missing from the tier table?", provider, tier)
+				continue
+			}
+			r, ok := builtin[model]
+			if !ok {
+				t.Errorf("builtin table is missing %q (the %s/%s tier default) — check the dev/regen-builtin-pricing allowlist", model, provider, tier)
+				continue
+			}
+			if r.InputPerMTok <= 0 || r.OutputPerMTok <= 0 {
+				t.Errorf("builtin %q rates = %+v, want positive input/output", model, r)
+			}
 		}
 	}
 }

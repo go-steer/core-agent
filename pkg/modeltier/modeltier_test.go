@@ -25,6 +25,13 @@ func TestClassify(t *testing.T) {
 		model string
 		want  string
 	}{
+		// Anthropic Claude 5.x.
+		{"claude-fable-5", modeltier.TierFrontier},
+		{"claude-opus-5", modeltier.TierFrontier},
+		{"claude-sonnet-5", modeltier.TierMid},
+		{"claude-sonnet-5-1m", modeltier.TierMid},
+		{"claude-haiku-5", ""}, // no 5-gen Haiku shipped; unknown until it does
+
 		// Anthropic Claude 4.x.
 		{"claude-opus-4-7", modeltier.TierFrontier},
 		{"claude-opus-4-8", modeltier.TierFrontier},
@@ -158,6 +165,9 @@ func TestIsSmall(t *testing.T) {
 		{"claude-opus-4-7", false},
 		{"claude-opus-4-8", false},
 		{"claude-sonnet-4-6", false},
+		{"claude-fable-5", false},
+		{"claude-opus-5", false},
+		{"claude-sonnet-5", false},
 
 		// Unknown — must NOT trigger (false-positive risk on
 		// newly-released models the table doesn't know yet).

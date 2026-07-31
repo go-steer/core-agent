@@ -153,6 +153,21 @@ func TestModelForTier(t *testing.T) {
 	}
 }
 
+// TestModelForTier_CoversAllProviders pins that every provider in
+// Providers() resolves a model for every tier — the list and the
+// switch in ModelForTier must move together, because downstream
+// invariant tests (pricing's builtin-floor coverage) iterate
+// Providers() and a missing entry silently loses their coverage.
+func TestModelForTier_CoversAllProviders(t *testing.T) {
+	for _, provider := range taskclass.Providers() {
+		for _, tier := range []string{taskclass.TierFrontier, taskclass.TierMid, taskclass.TierSmall} {
+			if got := taskclass.ModelForTier(provider, tier); got == "" {
+				t.Errorf("ModelForTier(%q, %q) = \"\" — Providers() and the ModelForTier switch have drifted", provider, tier)
+			}
+		}
+	}
+}
+
 func TestModelForTier_ConsistentWithSmallModelDefaulters(t *testing.T) {
 	// The "small" tier for each provider should match the
 	// DefaultSmallModelID constants in pkg/models/<provider>/.

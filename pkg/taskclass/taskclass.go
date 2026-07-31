@@ -171,6 +171,16 @@ func Classes() []string {
 	return []string{Debug, Implement, Chat, Research, Review}
 }
 
+// Providers returns the provider names ModelForTier has tier
+// mappings for. Extend together with ModelForTier's switch when a
+// provider is added — consumers iterate this list to verify
+// cross-table invariants for every default (pricing's
+// TestBuiltin_CoversTaskclassTierDefaults walks Providers() × tiers,
+// so a provider missing here silently loses that coverage).
+func Providers() []string {
+	return []string{"gemini", "vertex", "anthropic", "anthropic-vertex"}
+}
+
 // ModelForTier returns the default model ID for a (provider, tier)
 // pair. Returns "" when no mapping exists — caller should fall
 // through to whatever model would've been chosen without --task.

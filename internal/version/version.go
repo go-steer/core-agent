@@ -17,6 +17,10 @@
 // overridable at release time via -ldflags; plain `go build` falls
 // back to the VCS metadata Go embeds when -buildvcs=true (the
 // default since Go 1.18) so dev builds still report a real SHA.
+// `go install module@version` builds carry no VCS metadata, so those
+// fall back to the module version Go records instead: exact tags
+// report the tag, and branch installs report the pseudo-version,
+// whose suffix encodes the commit time and short SHA.
 //
 // Release process (see docs/release-process.md):
 //
@@ -33,7 +37,10 @@ package version
 
 import (
 	"fmt"
+	"regexp"
 	"runtime/debug"
+	"strings"
+	"time"
 )
 
 // Build-time metadata. Defaults assume an in-development build off
@@ -68,6 +75,11 @@ var (
 //
 //	<prog> <semver> (commit <8-char-sha>[, modified], built <date>)
 //
+// Fields still holding their "none"/"unknown" sentinels are omitted
+// rather than printed; when neither commit nor date is known the
+// parenthesized suffix is dropped entirely (the module version alone
+// identifies the build for `go install module@tag` binaries).
+//
 // The leading two tokens are always (prog, version) so scripts can
 // grep without parsing the parenthesized suffix.
 func String(prog string) string {
@@ -77,20 +89,38 @@ func String(prog string) string {
 
 // resolveBuildInfo returns the version/commit/date/dirty tuple to
 // report. ldflags-injected values are authoritative when present;
-// when the defaults are still in place we fall back to the VCS
-// metadata Go embeds via -buildvcs=true so a plain `go build` at
-// least surfaces the SHA + commit time + dirty marker.
+// when the defaults are still in place we fall back to whatever
+// debug.BuildInfo carries for this build flavor.
 func resolveBuildInfo(ldVersion, ldCommit, ldDate string) (v, c, d string, dirty bool) {
-	v, c, d = ldVersion, ldCommit, ldDate
 	// Only consult ReadBuildInfo when nothing was injected — the
-	// release-time ldflags win when set.
-	if c != "none" {
-		return v, c, d, false
+	// release-time ldflags win when set. An empty Commit counts as
+	// not-injected too, so a release pipeline whose $(git rev-parse)
+	// expands empty can't silently produce "commit ".
+	if ldCommit != "none" && ldCommit != "" {
+		return ldVersion, ldCommit, ldDate, false
 	}
+	ldCommit = "none"
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
-		return v, c, d, false
+		return ldVersion, ldCommit, ldDate, false
 	}
+	return resolveFromBuildInfo(ldVersion, ldCommit, ldDate, info)
+}
+
+// resolveFromBuildInfo is the deterministic half of resolveBuildInfo,
+// split out so tests can hand it a constructed BuildInfo. Two
+// fallback sources, in order:
+//
+//  1. vcs.* settings — present when built from a git checkout with
+//     -buildvcs=true (plain `go build`/`go install ./...`). Surfaces
+//     the SHA + commit time + dirty marker.
+//  2. Main.Version — present for `go install module@version` builds,
+//     which compile from the module cache and carry no vcs.*
+//     settings. Exact tags report the tag alone; pseudo-versions
+//     (branch installs) additionally yield the commit SHA and commit
+//     time encoded in their suffix.
+func resolveFromBuildInfo(ldVersion, ldCommit, ldDate string, info *debug.BuildInfo) (v, c, d string, dirty bool) {
+	v, c, d = ldVersion, ldCommit, ldDate
 	for _, s := range info.Settings {
 		switch s.Key {
 		case "vcs.revision":
@@ -107,20 +137,75 @@ func resolveBuildInfo(ldVersion, ldCommit, ldDate string) (v, c, d string, dirty
 			}
 		}
 	}
+	if c != "none" {
+		return v, c, d, dirty
+	}
+	// No vcs.* settings → module-cache build. Note Go 1.24+ also
+	// stamps Main.Version (e.g. "v2.8.0-dev.5+dirty") for checkout
+	// builds, but only alongside vcs.* settings, so the early return
+	// above intentionally keeps vcs metadata (and the ldflags -dev
+	// version) authoritative for those.
+	if mv := info.Main.Version; mv != "" && mv != "(devel)" {
+		v = mv
+		if sha, when, ok := parsePseudoVersion(mv); ok {
+			c, d = sha, when
+		}
+	}
 	return v, c, d, dirty
+}
+
+// pseudoVersionSuffix matches the "<UTC commit time>-<12-hex short
+// SHA>" tail of Go pseudo-versions, mirroring the grammar in
+// golang.org/x/mod/module (pseudo.go). Three prefixes carry it:
+//
+//	vX.0.0-<time>-<sha>            no base tag for this major
+//	vX.Y.Z-pre.0.<time>-<sha>      base tag is a pre-release
+//	vX.Y.(Z+1)-0.<time>-<sha>      base tag is a release
+//
+// plus an optional "+incompatible"/"+dirty"-style build-metadata
+// tail. End-anchoring keeps base-version dots and hyphens from
+// confusing it.
+var pseudoVersionSuffix = regexp.MustCompile(
+	`(?:^v[0-9]+\.0\.0-|[.-]0\.)([0-9]{14})-([0-9a-f]{12})(?:\+[0-9A-Za-z.-]+)?$`)
+
+// parsePseudoVersion extracts the short commit SHA and RFC 3339
+// commit time from a Go module pseudo-version. ok is false for
+// exact tags and anything else that doesn't carry a well-formed
+// pseudo-version timestamp+SHA tail.
+func parsePseudoVersion(mv string) (sha, when string, ok bool) {
+	m := pseudoVersionSuffix.FindStringSubmatch(mv)
+	if m == nil {
+		return "", "", false
+	}
+	t, err := time.Parse("20060102150405", m[1])
+	if err != nil {
+		return "", "", false
+	}
+	return m[2], t.UTC().Format(time.RFC3339), true
 }
 
 // formatVersion is the deterministic string-building half, split out
 // so tests can exercise format choices without juggling build-info
-// state.
+// state. Fields still holding their sentinels ("none"/"unknown") are
+// omitted; with neither known the output is just "<prog> <version>".
 func formatVersion(prog, v, c, d string, dirty bool) string {
-	short := c
-	if len(short) > 8 {
-		short = short[:8]
+	var parts []string
+	if c != "none" && c != "" {
+		short := c
+		if len(short) > 8 {
+			short = short[:8]
+		}
+		commit := "commit " + short
+		if dirty {
+			commit += ", modified"
+		}
+		parts = append(parts, commit)
 	}
-	suffix := ""
-	if dirty {
-		suffix = ", modified"
+	if d != "unknown" && d != "" {
+		parts = append(parts, "built "+d)
 	}
-	return fmt.Sprintf("%s %s (commit %s%s, built %s)", prog, v, short, suffix, d)
+	if len(parts) == 0 {
+		return fmt.Sprintf("%s %s", prog, v)
+	}
+	return fmt.Sprintf("%s %s (%s)", prog, v, strings.Join(parts, ", "))
 }

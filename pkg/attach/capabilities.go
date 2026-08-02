@@ -207,7 +207,7 @@ func buildAgentIdentity(entry *Entry, card AgentCardConfig) *AgentIdentity {
 		}
 	}
 	if id.Version == "" {
-		id.Version = version.Version
+		id.Version = version.Effective()
 	}
 	// Drop empty AgentIdentity — nothing worth advertising.
 	if *id == (AgentIdentity{}) {

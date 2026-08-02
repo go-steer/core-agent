@@ -65,7 +65,9 @@ type AgentCardConfig struct {
 	ExternalURL string
 
 	// Version is the agent's own version string. Defaults to
-	// internal/version.Version (the ldflag-injected build version).
+	// internal/version.Effective() — the ldflag-injected build
+	// version, or the module/VCS-derived fallback when none was
+	// injected (matches what --version reports).
 	Version string
 
 	// Provider, when set, must have both Organization and URL — the
@@ -297,7 +299,7 @@ func resolveVersion(configured string) string {
 	if configured != "" {
 		return configured
 	}
-	if v := version.Version; v != "" {
+	if v := version.Effective(); v != "" {
 		return v
 	}
 	return "0.0.0"

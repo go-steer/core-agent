@@ -18,11 +18,13 @@ import (
 	"context"
 	"errors"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 
 	"google.golang.org/adk/session"
 
+	"github.com/go-steer/core-agent/v2/internal/version"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 )
 
@@ -504,10 +506,10 @@ func (b *broadcaster) usageSnapshot() (UsageUpdate, bool) {
 // Capabilities event. Best-effort identification of this process for
 // operator diagnostics; not used for any protocol logic.
 func serverBanner() string {
-	// TODO: populate from build-stamped version once that's wired
-	// (see cmd/core-agent's --version flag). Empty banner is valid
-	// per spec — the field is diagnostic, not required.
-	return "core-agent"
+	// HTTP Server-header style, "name/version" without the leading
+	// "v" (matches the conformance fixture). Version resolution is
+	// the same the --version flag uses.
+	return "core-agent/" + strings.TrimPrefix(version.Effective(), "v")
 }
 
 // replayThenTail does an eventlog.Stream.Since pull for the catch-up

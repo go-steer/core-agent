@@ -40,6 +40,7 @@ import (
 	"regexp"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -86,6 +87,24 @@ func String(prog string) string {
 	v, c, d, dirty := resolveBuildInfo(Version, Commit, Date)
 	return formatVersion(prog, v, c, d, dirty)
 }
+
+// Effective returns just the version token String() reports (module
+// version for `go install module@version` builds, the ldflags or
+// in-repo value otherwise). For callers that advertise a version
+// string (e.g. the A2A agent card) and want the same identity
+// --version prints, without the commit/date suffix.
+//
+// Cached: the value is immutable after link time, debug.ReadBuildInfo
+// re-parses on every call (go1.26), and one caller serves the
+// unauthenticated agent-card route per request.
+func Effective() string {
+	return effective()
+}
+
+var effective = sync.OnceValue(func() string {
+	v, _, _, _ := resolveBuildInfo(Version, Commit, Date)
+	return v
+})
 
 // resolveBuildInfo returns the version/commit/date/dirty tuple to
 // report. ldflags-injected values are authoritative when present;

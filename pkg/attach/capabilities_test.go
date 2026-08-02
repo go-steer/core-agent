@@ -199,16 +199,16 @@ func TestBuildAgentIdentity_RegistrantFallbacks(t *testing.T) {
 	if got.Model != "gemini-3.5-flash" {
 		t.Errorf("Model = %q, want StatusProvider fallback", got.Model)
 	}
-	// Version falls through to the build-stamped internal/version.Version;
-	// don't assert on the actual value (moves per commit).
+	// Version falls through to internal/version.Effective(); don't
+	// assert on the actual value (moves per commit and build flavor).
 }
 
 func TestBuildAgentIdentity_NilWhenNothingKnown(t *testing.T) {
 	t.Parallel()
 	// No card, no entry — the block should be dropped entirely so
 	// omitempty removes it from the wire frame. (Version fallback to
-	// internal/version.Version keeps this from being fully empty in
-	// production; the test uses a synthetic path.)
+	// internal/version.Effective() keeps this from being fully empty
+	// in production; the test uses a synthetic path.)
 	got := buildAgentIdentity(nil, AgentCardConfig{})
 	// Version fallback populates a value → we don't get nil in this
 	// case. Instead, verify the shape has ONLY Version set — the

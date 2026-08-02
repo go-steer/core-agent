@@ -254,6 +254,22 @@ func TestParsePseudoVersion(t *testing.T) {
 	}
 }
 
+// TestEffective_MatchesStringVersionToken pins the contract callers
+// like the A2A agent card rely on: Effective() is exactly the version
+// token String() reports, whatever build flavor produced this test
+// binary.
+func TestEffective_MatchesStringVersionToken(t *testing.T) {
+	t.Parallel()
+	got := Effective()
+	if got == "" {
+		t.Fatal("Effective() = empty, want a version string")
+	}
+	fields := strings.Fields(String("core-agent"))
+	if len(fields) < 2 || got != fields[1] {
+		t.Errorf("Effective() = %q, want String()'s version token %q", got, fields[1])
+	}
+}
+
 // TestString_LeadingTokens guarantees the format starts with
 // "<prog> <version>" so scripts can grep / cut the first two tokens
 // without parsing the parenthesized suffix.

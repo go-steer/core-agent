@@ -48,10 +48,32 @@ func TestFormatVersion(t *testing.T) {
 			want: "core-agent v2.1.0 (commit abc, built 2026-05-31T12:00:00Z)",
 		},
 		{
+			// `go install module@tag`: module version known, no
+			// commit/date — the sentinels are omitted, not printed.
 			name: "no-vcs-info",
 			prog: "core-agent",
-			v:    "v2.2.0-dev", c: "none", d: "unknown",
-			want: "core-agent v2.2.0-dev (commit none, built unknown)",
+			v:    "v2.8.0-dev.5", c: "none", d: "unknown",
+			want: "core-agent v2.8.0-dev.5",
+		},
+		{
+			name: "commit-without-date",
+			prog: "core-agent",
+			v:    "v2.2.0-dev", c: "deadbeefcafe", d: "unknown",
+			want: "core-agent v2.2.0-dev (commit deadbeef)",
+		},
+		{
+			name: "date-without-commit",
+			prog: "core-agent",
+			v:    "v2.2.0-dev", c: "none", d: "2026-06-01T08:00:00Z",
+			want: "core-agent v2.2.0-dev (built 2026-06-01T08:00:00Z)",
+		},
+		{
+			// A broken release pipeline injecting empty -X values
+			// must not yield "(commit , built )".
+			name: "empty-injections-omitted",
+			prog: "core-agent",
+			v:    "v2.2.0-dev", c: "", d: "",
+			want: "core-agent v2.2.0-dev",
 		},
 	}
 	for _, tc := range cases {
@@ -101,6 +123,134 @@ func TestResolveBuildInfo_FallbackUsesVCS(t *testing.T) {
 	_, c, _, _ := resolveBuildInfo("dev", "none", "unknown")
 	if c == "none" {
 		t.Errorf("resolveBuildInfo fallback: commit stayed %q despite vcs.revision being present", c)
+	}
+}
+
+// TestResolveFromBuildInfo covers the two BuildInfo fallback sources
+// and their precedence: vcs.* settings (git-checkout builds) win over
+// Main.Version (module-cache builds), and "(devel)" never leaks into
+// the reported version.
+func TestResolveFromBuildInfo(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		info      *debug.BuildInfo
+		wantV     string
+		wantC     string
+		wantD     string
+		wantDirty bool
+	}{
+		{
+			// `go install module@tag`: no vcs.*, exact module version.
+			name:  "module-exact-tag",
+			info:  &debug.BuildInfo{Main: debug.Module{Version: "v2.8.0-dev.5"}},
+			wantV: "v2.8.0-dev.5", wantC: "none", wantD: "unknown",
+		},
+		{
+			// `go install module@main`: pseudo-version suffix yields
+			// commit SHA + commit time.
+			name:  "module-pseudo-version",
+			info:  &debug.BuildInfo{Main: debug.Module{Version: "v2.8.0-dev.5.0.20260802143512-abcdef123456"}},
+			wantV: "v2.8.0-dev.5.0.20260802143512-abcdef123456",
+			wantC: "abcdef123456", wantD: "2026-08-02T14:35:12Z",
+		},
+		{
+			// Plain `go build` in a checkout: vcs.* populated,
+			// Main.Version is "(devel)" and must not override the
+			// -dev fallback version.
+			name: "vcs-checkout",
+			info: &debug.BuildInfo{
+				Main: debug.Module{Version: "(devel)"},
+				Settings: []debug.BuildSetting{
+					{Key: "vcs.revision", Value: "deadbeefcafe0123"},
+					{Key: "vcs.time", Value: "2026-06-01T08:00:00Z"},
+					{Key: "vcs.modified", Value: "true"},
+				},
+			},
+			wantV: "v2.8.0-dev", wantC: "deadbeefcafe0123",
+			wantD: "2026-06-01T08:00:00Z", wantDirty: true,
+		},
+		{
+			// vcs.revision present → module version is not consulted.
+			name: "vcs-wins-over-module",
+			info: &debug.BuildInfo{
+				Main: debug.Module{Version: "v2.8.0-dev.5"},
+				Settings: []debug.BuildSetting{
+					{Key: "vcs.revision", Value: "deadbeefcafe0123"},
+				},
+			},
+			wantV: "v2.8.0-dev", wantC: "deadbeefcafe0123", wantD: "unknown",
+		},
+		{
+			// Nothing usable anywhere: defaults pass through.
+			name:  "empty-buildinfo",
+			info:  &debug.BuildInfo{},
+			wantV: "v2.8.0-dev", wantC: "none", wantD: "unknown",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			v, c, d, dirty := resolveFromBuildInfo("v2.8.0-dev", "none", "unknown", tc.info)
+			if v != tc.wantV || c != tc.wantC || d != tc.wantD || dirty != tc.wantDirty {
+				t.Errorf("resolveFromBuildInfo = (%q, %q, %q, %v), want (%q, %q, %q, %v)",
+					v, c, d, dirty, tc.wantV, tc.wantC, tc.wantD, tc.wantDirty)
+			}
+		})
+	}
+}
+
+// TestParsePseudoVersion pins the suffix grammar: 14-digit UTC commit
+// time + 12-hex short SHA, anchored at the end of the version.
+func TestParsePseudoVersion(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		mv       string
+		wantSHA  string
+		wantWhen string
+		wantOK   bool
+	}{
+		{
+			name:    "pre-release-base",
+			mv:      "v2.8.0-dev.5.0.20260802143512-abcdef123456",
+			wantSHA: "abcdef123456", wantWhen: "2026-08-02T14:35:12Z", wantOK: true,
+		},
+		{
+			name:    "release-base",
+			mv:      "v2.7.1-0.20260715090102-0123456789ab",
+			wantSHA: "0123456789ab", wantWhen: "2026-07-15T09:01:02Z", wantOK: true,
+		},
+		{
+			// Form (1) in x/mod's grammar: no tagged base version for
+			// this major, so no "0." segment before the timestamp.
+			name:    "no-base-tag",
+			mv:      "v3.0.0-20260802143512-abcdef123456",
+			wantSHA: "abcdef123456", wantWhen: "2026-08-02T14:35:12Z", wantOK: true,
+		},
+		{
+			name:    "incompatible-suffix",
+			mv:      "v2.7.1-0.20260715090102-0123456789ab+incompatible",
+			wantSHA: "0123456789ab", wantWhen: "2026-07-15T09:01:02Z", wantOK: true,
+		},
+		{name: "exact-tag", mv: "v2.8.0-dev.5"},
+		{name: "exact-release-tag", mv: "v2.7.0"},
+		{name: "devel", mv: "(devel)"},
+		{
+			// Right shape, impossible calendar date — must not parse.
+			name: "invalid-timestamp",
+			mv:   "v2.8.0-0.20261399999999-abcdef123456",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sha, when, ok := parsePseudoVersion(tc.mv)
+			if sha != tc.wantSHA || when != tc.wantWhen || ok != tc.wantOK {
+				t.Errorf("parsePseudoVersion(%q) = (%q, %q, %v), want (%q, %q, %v)",
+					tc.mv, sha, when, ok, tc.wantSHA, tc.wantWhen, tc.wantOK)
+			}
+		})
 	}
 }
 

@@ -143,6 +143,15 @@ type SessionFactoryDeps struct {
 	// nothing to detect against.
 	AutoContinueEnabled   bool
 	AutoContinueFreshness time.Duration
+	// AutoContinueDeferInject suppresses ReproduceAgent's inline
+	// continuation inject on the resumed path. Set per-call by the
+	// resumer from a context marker (withDeferAutoContinueInject) when
+	// the boot scan drives the resume: the scan then owns the
+	// classify+inject step itself so it can observe the outcome
+	// (injected vs. run-lock-held-elsewhere) and keep the boot-log
+	// attempt accounting honest (#575). The lazy-touch resume path
+	// leaves this false and injects inline as before.
+	AutoContinueDeferInject bool
 	// NoCompact / NoCheckpoint mirror the --no-compact /
 	// --no-checkpoint CLI flags. When false (the default),
 	// ReproduceAgent wires WithCompactor / WithCheckpointer so
@@ -427,8 +436,11 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 	// continuation before the wake loop starts — the injected note
 	// latches the wake signal, so the loop's first drain runs it.
 	// Created sessions have no history to be interrupted; only the
-	// resumed path checks.
-	if origin == "resumed" && deps.AutoContinueEnabled && deps.EventlogHandle != nil && deps.EventlogHandle.Service != nil {
+	// resumed path checks. AutoContinueDeferInject hands the
+	// classify+inject to the boot scan (see the field's doc) so it can
+	// account the outcome; the lazy-touch path leaves it false.
+	if origin == "resumed" && deps.AutoContinueEnabled && !deps.AutoContinueDeferInject &&
+		deps.EventlogHandle != nil && deps.EventlogHandle.Service != nil {
 		maybeAutoContinue(deps, caller, sid, ag)
 	}
 	loopCtx, cancelOnEvict := context.WithCancel(deps.DaemonCtx)
@@ -481,7 +493,14 @@ func (r *sessionResumer) Resume(ctx context.Context, app, sid string) (attach.Re
 		return nil, auth.SessionACL{}, nil, err
 	}
 	caller := auth.Caller{Identity: row.Owner}
-	ag, cancelOnEvict, err := ReproduceAgent(r.deps, caller, sid, "resumed")
+	// A boot-scan-driven resume marks the ctx so we defer the inline
+	// continuation inject to the scan (which then accounts its outcome).
+	// Mutate a per-call copy, never the shared r.deps.
+	deps := r.deps
+	if deferAutoContinueInject(ctx) {
+		deps.AutoContinueDeferInject = true
+	}
+	ag, cancelOnEvict, err := ReproduceAgent(deps, caller, sid, "resumed")
 	if err != nil {
 		return nil, auth.SessionACL{}, nil, fmt.Errorf("resume: %w", err)
 	}

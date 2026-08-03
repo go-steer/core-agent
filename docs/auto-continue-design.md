@@ -4,6 +4,8 @@ Design doc for the last piece of the "Clean shutdown & crash resume" milestone (
 
 **Status:** shipped 2026-07-31. PR 1 (detection + lazy-touch continuation): `pkg/agent/autocontinue.go` (classifier + note), `pkg/compose/auto_continue.go` (trigger), `agent.auto_continue` config block. PR 2 (+ folded docs): `AutoContinueBootScan` over persisted ACL rows driving the registry's normal Lookup→resume path, `agent_boot_log` table (`pkg/eventlog/bootlog.go`), crash-loop breaker (3 attempting boots / 10 min → stand down), per-session single-retry, `max_per_boot` oldest-first cap with logged remainder. Un-defers the "auto-recovering an in-progress turn at restart" non-goal in `docs/session-resume-design.md`, whose corrupting half already shipped as #537 (tail repair). Depends on: #537 (shipped), #538 (shipped — bounded teardown), lazy session resume (v2.5, #178).
 
+*Defect B (#575, v2.8):* UAT on v2.8.0-dev.5 surfaced a residual class of failure once #576 (`_txlock=immediate`) fixed the concrete `SQLITE_BUSY` trigger. Two gaps closed here: (1) **no in-lifetime retry** — the one-shot-per-boot scan stranded a transiently-failed continuation until a reboot or human message; a bounded, default-on retry driver (`AutoContinueRetryLoop`) now self-heals it. (2) **fleet amplification of the attempt burn** — every daemon boot-scanned a shared session and all but the lock winner charged an attempt against the shared cap; outcome-aware accounting now refunds the lock-losers. Sequenced before #559 (which flips auto-continue default-on). See "In-lifetime retry" and the outcome-aware-accounting note below.
+
 *Implementation note (PR 1):* the lazy path ships with a one-shot loop bound instead of the full breaker: the classifier refuses to continue a tail that IS a committed continuation note (recognized by marker substring), so a continuation turn that crashes after its note commits gets exactly one automatic attempt — the boot-log breaker below still lands with PR 2 for the scan path. The classifier also vetoes tails behind an operator interrupt-audit row (a deliberate kill must not be resurrected), ErrorCode finals, empty-aggregate Gemini finals, confirmation-parked turns, and SkipSummarization finals. Additionally, the run lock is held across detection + injection only, not across the continuation turn itself — the turn runs asynchronously in the session's wake loop, which has no turn-end hook this path can wait on. The residual double-continue window (two shared-DB daemons both resuming the same session after one's injection but before its turn commits events) closes with PR 2's synchronously-driven boot scan; for the lazy path it requires near-simultaneous cross-daemon touches of one session inside the freshness window, which the singleflight per daemon already makes rare.
 
 ## Motivation
@@ -73,8 +75,17 @@ New failure mode: a continuation turn whose execution kills the daemon (patholog
 - **Reset**: a boot that completes its continuations without dying ages out of the window naturally. No operator action needed; `/stats`-style surfacing can come later.
 - **Write-ahead intent (implementation)**: the boot record is written *before* any resume is driven — a continuation (or resume-time agent construction) that kills the daemon mid-scan must still count on the next boot; a write-behind record would leave every guard blind in exactly the fast-kill scenarios they exist for. If the intent record can't be written, the scan aborts rather than run unguarded. The scan goroutine also recovers panics (the lazy path gets this for free from net/http).
 - **Cumulative per-session cap (implementation)**: the committed-note rule and the freshness window do NOT bound a *progress-making* poisoned continuation — each attempt commits fresh events, renewing both. Only attempt counting terminates that sequence: a session attempted 3 times within the last hour (from the same boot log) is skipped until the log ages. Known corner: a multi-daemon fleet restart with legitimate continuations can trip the boot breaker for up to one window — fail-safe direction, cost one quiet boot.
+- **Outcome-aware accounting / fleet refund (#575, implementation)**: the write-ahead record is *pessimistic* — it charges every candidate before any resume runs, so a daemon killed mid-scan still counts them. After the synchronous pass, the record is **narrowed** to drop sessions that skipped for a benign or contended reason: the run lock was held by a peer (`ErrSessionLocked`), or the tail went clean or stale between the unlocked candidate scan and the locked re-classification. Everything else stays charged — a queued note is a real attempt, and a *persistent* resume/inject failure is a crash-loop vector the cap must bound. This closes the fleet-amplification bug: in a fleet all sharing one eventlog, every daemon boot-scans the same session but only one wins the run lock; without the refund, each of the N−1 losers would burn an attempt against the shared cap, capping the session out after 3 boots having never once continued it. The narrowing is a single `UPDATE` of the same one-row-per-boot record, so the breaker's "distinct boots with attempts" math is unchanged. Narrowing failures are non-fatal: the pessimistic count simply stands, which fails safe.
 
-Additionally, per-session: a session whose continuation turn was attempted in the previous boot and is *still* interrupted (i.e., the continuation itself died) is skipped by the next boot's scan — one automatic retry, then wait for a human. This is per-session state derivable from the boot log + tail shape; no new marker.
+Additionally, per-session: a session attempted inside the breaker window is skipped by the next pass — the effective per-session retry cadence is therefore ≈one attempt per window (10 min) regardless of how often a pass runs, and the cumulative cap (3 / hour) terminates a self-renewing session. This is per-session state derivable from the boot log + tail shape; no new marker.
+
+## In-lifetime retry (#575, default-on)
+
+The boot scan and the startup-session trigger each fire **once per boot**. That leaves a gap: a continuation that fails for a *transient* reason — a peer daemon momentarily holding the run lock, a provider blip, a residual DB hiccup — is stranded until the daemon reboots or a human sends the next message. On a stable, long-lived daemon that is exactly the audience the feature promises to serve, so v2.8 adds a bounded in-lifetime retry driver (`AutoContinueRetryLoop`) that re-runs the same guarded pass on a fixed interval (`auto_continue.retry_interval`, default `5m`).
+
+- **Default-on wherever auto-continue is enabled.** The documented contract is no longer "one automatic attempt, then wait for a human" — it is now "self-heal up to the cumulative cap (3), minutes apart, unattended." Set `auto_continue.retry: false` to restore the one-shot-per-boot behaviour.
+- **Bounded by the same guards, not a new schedule.** Every tick runs the ordinary pass, so the breaker, the per-session single-retry window, and the cumulative cap all apply unchanged. No exponential backoff is needed: a session attempted within the breaker window simply no-ops on the next tick, and the cap terminates a self-renewing session. `retry_interval <= 0` is rejected at config load.
+- **Safety lever (why an in-lifetime retry is safe at all).** The driver runs off the daemon's own context, so a continuation turn that *kills* the daemon kills the driver with it. It can therefore only ever re-fire failures that did **not** take the daemon down; a true crash loop still bottoms out on the cross-boot breaker exactly as before. The driver goroutine is joined (via a `sync.WaitGroup`) before the eventlog handle closes, so a mid-tick pass never races DB teardown — consistent with the clean-shutdown milestone.
 
 ## Multi-daemon fleets
 
@@ -92,13 +103,15 @@ Continuation turns run under the session's existing `CostCeiling` (per-turn and 
     "auto_continue": {
       "enabled": true,
       "freshness": "1h",
-      "max_per_boot": 10
+      "max_per_boot": 10,
+      "retry": true,
+      "retry_interval": "5m"
     }
   }
 }
 ```
 
-Absent block = disabled = today's behavior. Breaker thresholds are constants in v1 (3 boots / 10 min); making them knobs waits for a demonstrated need.
+Absent block = disabled = today's behavior. `retry` defaults to on when the block is present and enabled (omit or `true` to self-heal; `false` for one-shot-per-boot); `retry_interval` defaults to `5m` and must be `> 0`. Breaker thresholds are constants in v1 (3 boots / 10 min); making them knobs waits for a demonstrated need.
 
 ## Proposed PR shape
 

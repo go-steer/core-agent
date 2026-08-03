@@ -437,6 +437,39 @@ type AutoContinueConfig struct {
 	// a touched session is one the operator is already paying
 	// attention to.)
 	MaxPerBoot int `json:"max_per_boot,omitempty"`
+
+	// Retry controls the in-lifetime retry driver: a background pass
+	// that re-attempts a stranded continuation without waiting for a
+	// reboot or a human message (#575 defect B), so a transient
+	// continuation failure self-heals on a long-lived daemon. It stays
+	// bounded by the crash-loop breaker + per-session cumulative cap —
+	// a daemon-killing turn kills the driver too, so only survivable
+	// failures are ever re-fired.
+	//
+	// A *bool so the default (nil) can be "on wherever auto-continue is
+	// enabled": with the driver on, the promise shifts from "one
+	// automatic retry, then wait for a human" to "self-heal up to the
+	// cap, minutes apart, unattended". Set an explicit false to keep the
+	// one-shot-then-wait contract.
+	Retry *bool `json:"retry,omitempty"`
+
+	// RetryInterval is how often the retry driver re-runs a guarded
+	// pass, as a time.Duration string. Omitted/empty defaults to "5m".
+	// The per-session single-retry guard (breakerWindow, 10m) is the
+	// effective per-session cadence, so values below it simply no-op on
+	// recently-attempted sessions. Must parse and be > 0.
+	RetryInterval string `json:"retry_interval,omitempty"`
+}
+
+// RetryEnabled reports whether the in-lifetime retry driver should run.
+// Nil (unset) defaults to on — the driver is enabled wherever
+// auto-continue itself is enabled; an explicit false opts out. Callers
+// must have already checked Enabled.
+func (c *AutoContinueConfig) RetryEnabled() bool {
+	if c == nil {
+		return false
+	}
+	return c.Retry == nil || *c.Retry
 }
 
 // ToolOutputConfig caps tool result size before it enters model context.

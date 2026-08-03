@@ -30,6 +30,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -1487,6 +1488,8 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// consume these: a human is present there by definition.
 	var autoContinueEnabled bool
 	autoContinueFreshness := time.Hour
+	var autoContinueRetry bool
+	autoContinueRetryInterval := 5 * time.Minute
 	if ac := cfg.Agent.AutoContinue; ac != nil && ac.Enabled {
 		switch {
 		case !cfg.Attach.MultiSession.Enabled && !noREPL:
@@ -1509,8 +1512,38 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 				}
 				autoContinueFreshness = d // 0 = disabled window, by design
 			}
+			// In-lifetime retry driver (#575 defect B). Default-on
+			// wherever auto-continue is enabled; an explicit
+			// retry:false keeps the one-shot-then-wait contract.
+			autoContinueRetry = ac.RetryEnabled()
+			if raw := ac.RetryInterval; raw != "" {
+				d, perr := time.ParseDuration(raw)
+				if perr != nil {
+					fmt.Fprintf(os.Stderr, "core-agent: parse agent.auto_continue.retry_interval=%q: %v\n", raw, perr)
+					return runner.ExitConfigError
+				}
+				if d <= 0 {
+					fmt.Fprintf(os.Stderr, "core-agent: agent.auto_continue.retry_interval=%q: must be > 0\n", raw)
+					return runner.ExitConfigError
+				}
+				autoContinueRetryInterval = d
+			}
 		}
 	}
+	// In-lifetime auto-continue retry driver lifecycle (#575 defect B).
+	// The driver(s) get a dedicated child context cancelled in the defer
+	// below, and the WaitGroup is joined there too. Registered AFTER the
+	// eventlog handle's Close defer (above) so LIFO ordering stops the
+	// drivers and joins them BEFORE the eventlog closes — a mid-tick
+	// RecordBoot / resume must never race DB teardown (clean-shutdown
+	// milestone). Cancelling our own child ctx (not just relying on the
+	// parent) means Wait() can never deadlock on an early return.
+	autoContinueDriverCtx, stopAutoContinueDrivers := context.WithCancel(ctx)
+	var autoContinueWG sync.WaitGroup
+	defer func() {
+		stopAutoContinueDrivers()
+		autoContinueWG.Wait()
+	}()
 
 	// Attach-mode wiring. Must come after the eventlog is set up
 	// (broadcaster requires a Stream) and before the agent is
@@ -1792,6 +1825,19 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		defer func() { _ = attachSrv.Close() }()
 		if autoContinueBootScan != nil {
 			go autoContinueBootScan()
+			// In-lifetime retry driver (#575 defect B): re-runs the
+			// boot-scan pass on a fixed interval so a stranded
+			// continuation self-heals without a reboot. Bounded by the
+			// same breaker + per-session cap as the boot scan; a
+			// daemon-killing turn kills this goroutine too, so only
+			// survivable failures are ever re-fired.
+			if autoContinueRetry {
+				autoContinueWG.Add(1)
+				go func() {
+					defer autoContinueWG.Done()
+					compose.AutoContinueRetryLoop(autoContinueDriverCtx, autoContinueRetryInterval, autoContinueBootScan)
+				}()
+			}
 		}
 	}
 
@@ -1894,6 +1940,22 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		// row and stays uncovered — status quo since #539).
 		if autoContinueEnabled && !cfg.Attach.MultiSession.Enabled {
 			compose.AutoContinueStartupSession(ctx, eventlogHandle, a, autoContinueFreshness)
+			// In-lifetime retry driver (#575 defect B) for the headless
+			// single-user session: re-runs the startup-session pass so a
+			// stranded continuation self-heals without a reboot. Same
+			// breaker + cap bounds; joined via autoContinueWG before the
+			// eventlog closes. Runs concurrently with the WakeLoop below,
+			// which blocks until ctx cancels.
+			if autoContinueRetry {
+				startupAgent := a
+				autoContinueWG.Add(1)
+				go func() {
+					defer autoContinueWG.Done()
+					compose.AutoContinueRetryLoop(autoContinueDriverCtx, autoContinueRetryInterval, func() {
+						compose.AutoContinueStartupSession(autoContinueDriverCtx, eventlogHandle, startupAgent, autoContinueFreshness)
+					})
+				}()
+			}
 		}
 		// Wake-driven inbox loop, consolidated behind
 		// runner.WakeLoop (#386 PR 4): blocks until an attach

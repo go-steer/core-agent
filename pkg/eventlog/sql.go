@@ -85,16 +85,35 @@ func Open(ctx context.Context, dialector gorm.Dialector, opts ...Option) (*Handl
 		opt(&o)
 	}
 
-	// 0) For SQLite, inject `_pragma=busy_timeout(N)` into the DSN
-	// before any connection is opened. This applies to every
-	// connection in both the ADK and the overlay pools (they each
-	// open their own gorm.DB against this dialector), so concurrent
-	// writers — e.g. a parent's checkpoint and a background
-	// subagent's session create — wait on the write lock instead of
-	// failing immediately with SQLITE_BUSY. No-op for non-SQLite
-	// drivers, which carry their own timeout semantics.
+	// 0) For SQLite, tune the DSN before any connection is opened.
+	// Both settings apply to every connection in the ADK and overlay
+	// pools (each opens its own gorm.DB against this dialector).
+	//
+	//   - busy_timeout(N): a writer that finds the write lock held
+	//     waits up to N ms instead of failing immediately with
+	//     SQLITE_BUSY.
+	//   - _txlock=immediate: begin every read-write transaction with
+	//     BEGIN IMMEDIATE so the write lock is taken up front. This is
+	//     load-bearing, not belt-and-suspenders: ADK's AppendEvent
+	//     reads the session row and then writes state + the event row
+	//     inside one transaction. Under the default deferred BEGIN the
+	//     read takes a snapshot and the first write tries to upgrade it
+	//     to the write lock — and SQLite refuses that upgrade with an
+	//     *immediate* SQLITE_BUSY when another connection holds the
+	//     lock, because busy_timeout deliberately never retries a
+	//     snapshot upgrade (doing so could deadlock two upgraders). So
+	//     busy_timeout alone does nothing for the case that actually
+	//     bites us: the boot-scan/lock/bootlog writes on the overlay
+	//     pool holding the write lock while a continuation turn's
+	//     AppendEvent on the ADK pool tries to commit (#575), and the
+	//     parent-checkpoint vs. subagent-create race (#230). IMMEDIATE
+	//     turns both into an ordinary busy_timeout wait. Reads (Get,
+	//     List) use no explicit transaction, so they stay lock-free
+	//     under WAL — IMMEDIATE only affects read-write transactions.
+	// No-op for non-SQLite drivers, which carry their own semantics.
 	if isSQLite(dialector) {
 		injectSQLitePragma(dialector, fmt.Sprintf("busy_timeout(%d)", sqliteBusyTimeoutMs))
+		injectSQLiteDSNParam(dialector, "_txlock", "immediate")
 	}
 
 	// 1) ADK's session service does the heavy schema lifting (events,
@@ -208,13 +227,41 @@ func isSQLite(d gorm.Dialector) bool {
 
 // injectSQLitePragma appends `_pragma=<spec>` (e.g. "busy_timeout(5000)")
 // to the SQLite dialector's DSN so every subsequent connection picks
-// up the pragma at open time. Both `github.com/glebarez/sqlite` and
-// `gorm.io/driver/sqlite` expose an exported `DSN` field on the
-// dialector struct, so reflection works without us hard-coding either
-// driver here. No-op when the field isn't present (unknown SQLite
-// driver shape — caller can still set the pragma manually) or when
-// the pragma is already in the DSN.
+// up the pragma at open time. A DSN may carry several `_pragma=` params,
+// so double-injection is detected per pragma name (a caller-supplied
+// busy_timeout with a different value is left untouched).
 func injectSQLitePragma(d gorm.Dialector, spec string) {
+	mutateSQLiteDSN(d, func(dsn string) string {
+		// Don't double-inject — caller may have set this in their DSN.
+		if strings.Contains(dsn, "_pragma="+pragmaName(spec)) {
+			return dsn
+		}
+		return appendDSNParam(dsn, "_pragma="+spec)
+	})
+}
+
+// injectSQLiteDSNParam appends a plain `key=value` query parameter to
+// the SQLite dialector's DSN (e.g. "_txlock", "immediate"). Unlike
+// _pragma these are driver-level DSN options rather than SQL PRAGMAs,
+// so they can't ride the _pragma channel. No-op when the key is already
+// present, so a caller-supplied value in their own DSN wins.
+func injectSQLiteDSNParam(d gorm.Dialector, key, value string) {
+	mutateSQLiteDSN(d, func(dsn string) string {
+		if strings.Contains(dsn, key+"=") {
+			return dsn
+		}
+		return appendDSNParam(dsn, key+"="+value)
+	})
+}
+
+// mutateSQLiteDSN reads the dialector's exported string `DSN` field and
+// replaces it with fn(dsn). Both `github.com/glebarez/sqlite` and
+// `gorm.io/driver/sqlite` expose that field, so reflection works
+// without hard-coding either driver here. No-op when the field isn't
+// present (unknown SQLite driver shape — caller can still set options
+// in their own DSN). Centralizes the one reflective access the pragma
+// and raw-param injectors share.
+func mutateSQLiteDSN(d gorm.Dialector, fn func(string) string) {
 	if d == nil {
 		return
 	}
@@ -229,16 +276,17 @@ func injectSQLitePragma(d gorm.Dialector, spec string) {
 	if !f.IsValid() || f.Kind() != reflect.String || !f.CanSet() {
 		return
 	}
-	dsn := f.String()
-	// Don't double-inject — caller may have set this in their DSN.
-	if strings.Contains(dsn, "_pragma="+pragmaName(spec)) {
-		return
-	}
+	f.SetString(fn(f.String()))
+}
+
+// appendDSNParam appends a `key=value` (or `_pragma=spec`) query
+// parameter to a DSN, choosing `?` or `&` as the separator.
+func appendDSNParam(dsn, param string) string {
 	sep := "?"
 	if strings.Contains(dsn, "?") {
 		sep = "&"
 	}
-	f.SetString(dsn + sep + "_pragma=" + spec)
+	return dsn + sep + param
 }
 
 // pragmaName extracts the pragma name from a spec like

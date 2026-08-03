@@ -371,8 +371,18 @@ func TestAutoContinueRetryLoop_SelfHealsAfterTransientLock(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go AutoContinueRetryLoop(ctx, 20*time.Millisecond, func() { AutoContinueBootScan(deps, 10) })
+	loopDone := make(chan struct{})
+	go func() {
+		defer close(loopDone)
+		AutoContinueRetryLoop(ctx, 20*time.Millisecond, func() { AutoContinueBootScan(deps, 10) })
+	}()
+	// Honor AutoContinueRetryLoop's contract: cancel THEN join before the
+	// eventlog Handle closes. cancel() only signals — a tick already inside
+	// AutoContinueBootScan → AcquireLock keeps running, so without the join
+	// openAC's LIFO h.Close() cleanup can nil the Handle mid-pass and race
+	// (go test -race). This cleanup is registered after openAC's, so LIFO
+	// runs it first: loop fully drained before the DB tears down.
+	t.Cleanup(func() { cancel(); <-loopDone })
 
 	// Let a few ticks fire against the held lock, then free it.
 	time.Sleep(80 * time.Millisecond)

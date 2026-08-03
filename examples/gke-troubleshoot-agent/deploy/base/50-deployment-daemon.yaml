@@ -118,18 +118,25 @@ spec:
             # socket to be set (via CLI flag or config overlay).
             #
             # --small-tier-parent=allow suppresses the small-tier-parent
-            # warning. This demo runs gemini-3.5-flash-lite as the parent
-            # (config.json) because it is single-purpose triage: the
-            # structural digest + agentic-wrap sub-agent (mcp.json's
-            # agentic_wrap_llm, also lite) keep MCP payloads out of the
-            # parent context, so the small tier handles it cheaply
-            # (~$0.05/session vs ~$0.24 on the mid tier). lite is a
-            # small-tier model, hence the flag.
+            # warning. This demo runs gemini-3.5-flash as the parent
+            # (config.json). We tried the cheaper gemini-3.5-flash-lite
+            # parent (~$0.05/session vs ~$0.24) but it does not drive the
+            # recipe's multi-step remediation loop: on a watcher inject it
+            # emits the mandated plan block and then ENDS the turn without
+            # executing (write_file -> list_skills -> gke-mcp -> INCIDENT
+            # SUMMARY), so incidents were abandoned after planning. Prompt
+            # hardening (the "one continuous turn" framing in AGENTS.md)
+            # did not move it — the lite model treats the plan as a
+            # terminal deliverable. gemini-3.5-flash executes the loop.
+            # Cost is still bounded well below the naive mid-tier figure
+            # by the structural digest + agentic-wrap sub-agent (mcp.json's
+            # agentic_wrap_llm, kept on flash-lite) keeping MCP payloads
+            # out of the parent context. flash is a small-tier model per
+            # the classifier, hence the flag.
             #
-            # For a MULTI-use-case agent, invert this: run a capable
-            # parent (mid gemini-3.5-flash or frontier gemini-3.6-flash)
-            # and push cost down via sub-agents + --task/task_class
-            # tiering, not by downgrading the parent. See
+            # For a MULTI-use-case agent, push cost down via sub-agents +
+            # --task/task_class tiering, not by downgrading the parent to
+            # a model that can't sustain the tool loop. See
             # docs/model-selection-design.md and the "Agentic wrappers"
             # section of docs/site concepts/tools.md.
             - "-c"

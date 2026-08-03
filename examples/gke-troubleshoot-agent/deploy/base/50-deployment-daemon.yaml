@@ -117,15 +117,21 @@ spec:
             # config.json; --no-repl requires attach.listen or unix
             # socket to be set (via CLI flag or config overlay).
             #
-            # --small-tier-parent=allow suppresses the "gemini-3.5-flash
-            # is a small-tier model" warning. That warning is a hangover
-            # from the Gemini 2.x era where Flash-class parents would
-            # loop or stall on long interactive sessions; 3.5 Flash is
-            # designed as an agentic model (Google's own benchmarks put
-            # it ahead of 3.1 Pro on agent tasks) and handles triage
-            # fine. See pkg/modeltier/modeltier.go — the classifier
-            # still marks all "flash" as small-tier. Follow-up issue
-            # tracks reclassifying 3.5 Flash to mid-tier.
+            # --small-tier-parent=allow suppresses the small-tier-parent
+            # warning. This demo runs gemini-3.5-flash-lite as the parent
+            # (config.json) because it is single-purpose triage: the
+            # structural digest + agentic-wrap sub-agent (mcp.json's
+            # agentic_wrap_llm, also lite) keep MCP payloads out of the
+            # parent context, so the small tier handles it cheaply
+            # (~$0.05/session vs ~$0.24 on the mid tier). lite is a
+            # small-tier model, hence the flag.
+            #
+            # For a MULTI-use-case agent, invert this: run a capable
+            # parent (mid gemini-3.5-flash or frontier gemini-3.6-flash)
+            # and push cost down via sub-agents + --task/task_class
+            # tiering, not by downgrading the parent. See
+            # docs/model-selection-design.md and the "Agentic wrappers"
+            # section of docs/site concepts/tools.md.
             - "-c"
             - "/etc/core-agent/.agents/config.json"
             - "--no-repl"

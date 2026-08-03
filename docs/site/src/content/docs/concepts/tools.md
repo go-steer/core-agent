@@ -124,13 +124,21 @@ By default (or when `tools/agentic` is registered manually in library use), four
 - `agentic_grep`
 - `agentic_research`
 
-Each wrapper's handler delegates to `Agent.RunSubtask` against a separate, optionally cheaper model (via `--agentic-small-model=ID`, e.g. `gemini-2.5-flash`). The bulk tool output lands in the subtask's context; only a focused digest flows back to the parent. The wrapper descriptions explicitly tell the model "use INSTEAD OF `read_file` when the file might be large" so the agent reaches for the wrapper at the right moments.
+Each wrapper's handler delegates to `Agent.RunSubtask` against a separate, optionally cheaper model (via `--agentic-small-model=ID`, e.g. `gemini-3.5-flash-lite`). The bulk tool output lands in the subtask's context; only a focused digest flows back to the parent. The wrapper descriptions explicitly tell the model "use INSTEAD OF `read_file` when the file might be large" so the agent reaches for the wrapper at the right moments.
 
 Cost rolls up to the parent's `usage.Tracker` so `/stats` reflects subtask spend transparently. See [Context management](/concepts/context-management/) for the design and the per-model cost breakdown.
 
 ## MCP tools
 
 Tools declared in `.agents/mcp.json` are namespaced under the server name (`mcp.<server>.<tool>`). They route through the same permission gate under that namespace, with the same pattern grammar. The model sees them alongside built-ins; nothing in the catalog distinguishes built-in from MCP at the model interface. See [MCP servers](/concepts/mcp/) for the declaration schema.
+
+## `retrieve_raw` — digest escape hatch
+
+| Tool | Purpose | Params |
+| --- | --- | --- |
+| `retrieve_raw` | Fetch the raw, un-digested payload for a prior tool call whose response arrived compressed by the [structural digest wrap](/concepts/mcp/#structural-digest-wrap---no-mcp-digest). The `call_id` is the marker the wrapper stamped on the digest. | `call_id` |
+
+Registered automatically whenever the MCP digest wrap is on **and** a store is wired (i.e. `--session-db` is set); the `--no-mcp-digest` kill switch removes it. It is the model's reversal path when a digest looks like it dropped a load-bearing field — but every call re-inflates the full payload back into context, undoing the wrap's savings, so its description tells the model to treat the digest as authoritative and only reach for `retrieve_raw` when the digest itself flags a truncated field it needs. See [MCP → Structural digest wrap](/concepts/mcp/#structural-digest-wrap---no-mcp-digest).
 
 ## Custom tools
 

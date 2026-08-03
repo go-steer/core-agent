@@ -197,7 +197,7 @@ func TestAutoContinueBootScan_BreakerAndSingleRetry(t *testing.T) {
 		deps := scanDeps(t, h)
 		putACLRow(t, deps.ACLStore, "sid-hung")
 		for i := 0; i < 3; i++ {
-			if err := h.RecordBoot(context.Background(), time.Now().Add(-time.Duration(i+1)*time.Minute), []string{"other-sid"}); err != nil {
+			if _, err := h.RecordBoot(context.Background(), time.Now().Add(-time.Duration(i+1)*time.Minute), []string{"other-sid"}); err != nil {
 				t.Fatalf("RecordBoot: %v", err)
 			}
 		}
@@ -213,7 +213,7 @@ func TestAutoContinueBootScan_BreakerAndSingleRetry(t *testing.T) {
 		seedACSession(t, h, "sid-hung", acUserEvent("hello?", time.Now()))
 		deps := scanDeps(t, h)
 		putACLRow(t, deps.ACLStore, "sid-hung")
-		if err := h.RecordBoot(context.Background(), time.Now().Add(-time.Minute), []string{"sid-hung"}); err != nil {
+		if _, err := h.RecordBoot(context.Background(), time.Now().Add(-time.Minute), []string{"sid-hung"}); err != nil {
 			t.Fatalf("RecordBoot: %v", err)
 		}
 		AutoContinueBootScan(deps, 10)
@@ -238,7 +238,7 @@ func TestAutoContinueBootScan_BreakerAndSingleRetry(t *testing.T) {
 		// inside the lookback: single-retry and breaker both pass,
 		// the cumulative cap must not.
 		for i := 0; i < 3; i++ {
-			if err := h.RecordBoot(context.Background(), time.Now().Add(-time.Duration(15+10*i)*time.Minute), []string{"sid-poison"}); err != nil {
+			if _, err := h.RecordBoot(context.Background(), time.Now().Add(-time.Duration(15+10*i)*time.Minute), []string{"sid-poison"}); err != nil {
 				t.Fatalf("RecordBoot: %v", err)
 			}
 		}
@@ -280,6 +280,122 @@ func TestAutoContinueBootScan_BreakerAndSingleRetry(t *testing.T) {
 	})
 }
 
+// countAttempted totals how many times sid appears across all boot
+// records — i.e. how deep the per-session cumulative cap has been
+// charged. The #575 fleet fix must keep this at 0 for a session no
+// daemon ever actually continued (every peer lost the run lock).
+func countAttempted(boots []eventlog.BootRecord, sid string) int {
+	n := 0
+	for _, b := range boots {
+		for _, s := range b.Attempted {
+			if s == sid {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// TestAutoContinueBootScan_FleetLockLoserRefundsCap is the #575 defect-B
+// accounting gate. A daemon that boot-scans a session another daemon
+// already owns (run lock held) made NO real continuation attempt — yet
+// the write-ahead record charged one. In a fleet all sharing one
+// eventlog, every boot-scanning peer but the lock winner burns an attempt
+// this way; after maxAttemptsPerSession such boots the session is capped
+// out having never once been continued. The lock-loser must REFUND its
+// write-ahead charge.
+//
+// Fails-first: pre-fix records the candidate unconditionally, so a
+// lock-held scan leaves Attempted == [sid] and repeated scans exhaust the
+// cap.
+func TestAutoContinueBootScan_FleetLockLoserRefundsCap(t *testing.T) {
+	t.Parallel()
+	h := openAC(t)
+	seedACSession(t, h, "sid-hung", acUserEvent("hello?", time.Now()))
+	deps := scanDeps(t, h)
+	putACLRow(t, deps.ACLStore, "sid-hung")
+
+	// A peer daemon owns the run lock across every scan below.
+	lock, err := h.AcquireLock(context.Background(), "core-agent", acUser, "sid-hung")
+	if err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+
+	// Three lock-losing boots (a three-daemon fleet, or one daemon
+	// retrying three times) must not charge the session even once.
+	for i := 0; i < 3; i++ {
+		AutoContinueBootScan(deps, 10)
+	}
+	boots, err := h.RecentBoots(context.Background(), time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("RecentBoots: %v", err)
+	}
+	if got := countAttempted(boots, "sid-hung"); got != 0 {
+		t.Fatalf("sid-hung charged %d times across lock-held scans, want 0 — a fleet of lock-losers must not burn the cap", got)
+	}
+
+	// Cap intact: once the lock frees, a scan continues the session for
+	// real (a fresh attempt is now recorded).
+	lock.Release()
+	AutoContinueBootScan(deps, 10)
+	boots, err = h.RecentBoots(context.Background(), time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("RecentBoots: %v", err)
+	}
+	if got := countAttempted(boots, "sid-hung"); got != 1 {
+		t.Errorf("sid-hung charged %d times after the lock freed, want exactly 1 (the cap was preserved, so the real attempt still lands)", got)
+	}
+}
+
+// TestAutoContinueRetryLoop_SelfHealsAfterTransientLock is the #575
+// defect-B retry gate. A continuation that fails for a TRANSIENT reason
+// (here: the run lock briefly held by a peer) is stranded until a reboot
+// or a human message, because the boot scan is one-shot per boot. The
+// in-lifetime retry loop must self-heal it once the transient condition
+// clears.
+//
+// Fails-first: pre-fix has no retry driver, so nothing re-attempts after
+// the lock frees and the poll times out.
+func TestAutoContinueRetryLoop_SelfHealsAfterTransientLock(t *testing.T) {
+	t.Parallel()
+	h := openAC(t)
+	seedACSession(t, h, "sid-hung", acUserEvent("hello?", time.Now()))
+	deps := scanDeps(t, h)
+	putACLRow(t, deps.ACLStore, "sid-hung")
+
+	// Hold the lock so the first ticks can't continue the session (each
+	// must refund, per the accounting gate above), then release it.
+	lock, err := h.AcquireLock(context.Background(), "core-agent", acUser, "sid-hung")
+	if err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go AutoContinueRetryLoop(ctx, 20*time.Millisecond, func() { AutoContinueBootScan(deps, 10) })
+
+	// Let a few ticks fire against the held lock, then free it.
+	time.Sleep(80 * time.Millisecond)
+	lock.Release()
+
+	// A later tick must now continue the session. Poll the boot log for
+	// the recorded attempt.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		boots, err := h.RecentBoots(context.Background(), time.Now().Add(-time.Minute))
+		if err != nil {
+			t.Fatalf("RecentBoots: %v", err)
+		}
+		if countAttempted(boots, "sid-hung") >= 1 {
+			return // self-healed after the transient lock cleared
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("retry loop never continued the session after the lock freed — no in-lifetime self-heal")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func TestAutoContinueStartupSession(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -319,7 +435,7 @@ func TestAutoContinueStartupSession(t *testing.T) {
 		t.Parallel()
 		h := seedAC(t, acUserEvent("hello?", time.Now()))
 		for i := 0; i < 3; i++ {
-			if err := h.RecordBoot(ctx, time.Now().Add(-time.Duration(15+10*i)*time.Minute), []string{acSID}); err != nil {
+			if _, err := h.RecordBoot(ctx, time.Now().Add(-time.Duration(15+10*i)*time.Minute), []string{acSID}); err != nil {
 				t.Fatalf("RecordBoot: %v", err)
 			}
 		}
@@ -346,7 +462,7 @@ func TestAutoContinueStartupSession(t *testing.T) {
 		t.Parallel()
 		h := seedAC(t, acUserEvent("hello?", time.Now()))
 		for i := 0; i < 3; i++ {
-			if err := h.RecordBoot(ctx, time.Now().Add(-time.Duration(i+1)*time.Minute), []string{"other-sid"}); err != nil {
+			if _, err := h.RecordBoot(ctx, time.Now().Add(-time.Duration(i+1)*time.Minute), []string{"other-sid"}); err != nil {
 				t.Fatalf("RecordBoot: %v", err)
 			}
 		}

@@ -33,13 +33,13 @@ func TestBootLog_RoundTripAndWindow(t *testing.T) {
 	t.Cleanup(func() { _ = h.Close() })
 
 	now := time.Now()
-	if err := h.RecordBoot(ctx, now.Add(-20*time.Minute), []string{"old-sid"}); err != nil {
+	if _, err := h.RecordBoot(ctx, now.Add(-20*time.Minute), []string{"old-sid"}); err != nil {
 		t.Fatalf("RecordBoot(old): %v", err)
 	}
-	if err := h.RecordBoot(ctx, now.Add(-5*time.Minute), []string{"sid-a", "sid-b"}); err != nil {
+	if _, err := h.RecordBoot(ctx, now.Add(-5*time.Minute), []string{"sid-a", "sid-b"}); err != nil {
 		t.Fatalf("RecordBoot: %v", err)
 	}
-	if err := h.RecordBoot(ctx, now.Add(-time.Minute), nil); err != nil {
+	if _, err := h.RecordBoot(ctx, now.Add(-time.Minute), nil); err != nil {
 		t.Fatalf("RecordBoot(empty): %v", err)
 	}
 
@@ -58,5 +58,58 @@ func TestBootLog_RoundTripAndWindow(t *testing.T) {
 	}
 	if !recent[0].BootAt.Before(recent[1].BootAt) {
 		t.Error("records not in oldest-first order")
+	}
+}
+
+func TestUpdateBootAttempted(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	h, err := Open(ctx, sqlite.Open(filepath.Join(t.TempDir(), "s.db")))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+
+	now := time.Now()
+	id, err := h.RecordBoot(ctx, now, []string{"sid-a", "sid-b", "sid-c"})
+	if err != nil {
+		t.Fatalf("RecordBoot: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("RecordBoot returned zero id")
+	}
+
+	// Narrow the pessimistic write-ahead list down to the one session
+	// that actually got a fair shot.
+	if err := h.UpdateBootAttempted(ctx, id, []string{"sid-b"}); err != nil {
+		t.Fatalf("UpdateBootAttempted: %v", err)
+	}
+	recent, err := h.RecentBoots(ctx, now.Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("RecentBoots: %v", err)
+	}
+	if len(recent) != 1 || len(recent[0].Attempted) != 1 || recent[0].Attempted[0] != "sid-b" {
+		t.Fatalf("after narrow, attempted = %v, want [sid-b]", recent[0].Attempted)
+	}
+
+	// Narrowing to empty (every candidate was skipped) round-trips as empty.
+	if err := h.UpdateBootAttempted(ctx, id, nil); err != nil {
+		t.Fatalf("UpdateBootAttempted(empty): %v", err)
+	}
+	recent, err = h.RecentBoots(ctx, now.Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("RecentBoots: %v", err)
+	}
+	if len(recent) != 1 || len(recent[0].Attempted) != 0 {
+		t.Fatalf("after narrow-to-empty, attempted = %v, want empty", recent[0].Attempted)
+	}
+
+	// A bogus id is a loud error, not a silent no-op — the guard must
+	// never believe it narrowed a row it didn't.
+	if err := h.UpdateBootAttempted(ctx, id+999, []string{"x"}); err == nil {
+		t.Error("UpdateBootAttempted(missing id) = nil, want error")
+	}
+	if err := h.UpdateBootAttempted(ctx, 0, []string{"x"}); err == nil {
+		t.Error("UpdateBootAttempted(0) = nil, want error")
 	}
 }

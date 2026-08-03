@@ -38,6 +38,7 @@ import (
 	"google.golang.org/adk/session"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/attachadapter"
 	"github.com/go-steer/core-agent/v2/pkg/auth"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 )
@@ -91,12 +92,70 @@ func maybeAutoContinue(deps SessionFactoryDeps, caller auth.Caller, sid string, 
 	lockClassifyInject(deps.DaemonCtx, deps.EventlogHandle, ag, "core-agent", caller.Identity, sid, deps.AutoContinueFreshness)
 }
 
+// autoContinueOutcome reports what lockClassifyInject did, so the boot
+// scan can keep its attempt accounting outcome-aware: only acInjected
+// means the session actually got a continuation turn queued and should
+// count against the per-session cap. Every other outcome is a
+// synchronous skip BEFORE any turn ran — charging it would burn the cap
+// on daemons that never got a fair shot (the fleet run-lock case, #575).
+type autoContinueOutcome int
+
+const (
+	acInjected              autoContinueOutcome = iota // note queued: a real attempt
+	acSkippedLocked                                    // run lock held by another daemon/run
+	acSkippedLockErr                                   // AcquireLock failed for another reason
+	acSkippedNotInterrupted                            // tail re-classified clean under the lock
+	acSkippedStale                                     // interruption older than the freshness window
+	acSkippedInjectErr                                 // inject itself failed
+)
+
+// injected reports whether the outcome represents a queued continuation.
+// Used only for the human-facing "queued N continuations" log line.
+func (o autoContinueOutcome) injected() bool { return o == acInjected }
+
+// refundable reports whether the write-ahead attempt charge should be
+// REFUNDED (narrowed out of the boot record) for this outcome. Only the
+// benign/contended skips qualify: a peer daemon holding the run lock
+// (the #575 fleet case — we made no attempt, another daemon will), or
+// the tail having gone clean or stale between the unlocked candidate
+// scan and the locked re-classification. Everything else stays charged:
+// a queued note is a real attempt, and a failed resume/inject or an
+// unexpected lock error must stay counted because a PERSISTENT such
+// failure is a crash-loop vector that only the per-session cap can
+// bound. Sessions the scan never reaches (ctx cancelled, resume error)
+// are likewise left charged — over-counting only makes the guards more
+// conservative, which is the safe direction.
+func (o autoContinueOutcome) refundable() bool {
+	switch o {
+	case acSkippedLocked, acSkippedNotInterrupted, acSkippedStale:
+		return true
+	default:
+		return false
+	}
+}
+
+// deferInjectKey marks a resume ctx so sessionResumer.Resume defers the
+// inline continuation inject to the boot scan. Unexported: only the
+// scan (setter) and the resumer (reader) — both in this package — use
+// it; the registry threads the ctx through opaquely.
+type deferInjectKey struct{}
+
+func withDeferAutoContinueInject(ctx context.Context) context.Context {
+	return context.WithValue(ctx, deferInjectKey{}, true)
+}
+
+func deferAutoContinueInject(ctx context.Context) bool {
+	v, _ := ctx.Value(deferInjectKey{}).(bool)
+	return v
+}
+
 // lockClassifyInject is the shared core: take the session run lock
 // (fleet mutual exclusion — skip on ErrSessionLocked), classify the
 // committed tail under it, apply the freshness window, inject the
-// synthesized note. Every skip path returns silently or with one stderr line; callers
-// must never fail because auto-continue couldn't run.
-func lockClassifyInject(ctx context.Context, h *eventlog.Handle, ag *agent.Agent, app, user, sid string, freshness time.Duration) {
+// synthesized note. Every skip path returns silently or with one stderr
+// line; callers must never fail because auto-continue couldn't run. The
+// returned outcome lets the boot scan account only real attempts.
+func lockClassifyInject(ctx context.Context, h *eventlog.Handle, ag *agent.Agent, app, user, sid string, freshness time.Duration) autoContinueOutcome {
 	// Lock first — one cheap DB write, and classifying under it means
 	// two daemons can't both read the same interrupted tail.
 	lock, err := h.AcquireLock(ctx, app, user, sid)
@@ -106,30 +165,32 @@ func lockClassifyInject(ctx context.Context, h *eventlog.Handle, ag *agent.Agent
 			// right now. Logged because on the startup/boot-scan paths
 			// the write-ahead intent record has already been charged —
 			// a silent skip here would make a burned attempt
-			// undiagnosable.
+			// undiagnosable. The boot scan refunds this via the
+			// acSkippedLocked outcome so the cap is not burned.
 			fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: skipped, run lock held elsewhere\n", sid)
-			return
+			return acSkippedLocked
 		}
 		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: acquire run lock: %v\n", sid, err)
-		return
+		return acSkippedLockErr
 	}
 	defer func() { _ = lock.Release() }()
 
 	interruptedAt, interrupted := classifyTail(ctx, h, app, user, sid)
 	if !interrupted {
-		return
+		return acSkippedNotInterrupted
 	}
 	if freshness > 0 && time.Since(interruptedAt) > freshness {
 		fmt.Fprintf(os.Stderr, "core-agent: session %s: interrupted turn is %s old (> freshness %s); waiting for the next message\n",
 			sid, time.Since(interruptedAt).Round(time.Second), freshness)
-		return
+		return acSkippedStale
 	}
 	if err := ag.InjectAs(agent.AutoContinueNote(interruptedAt), auth.Caller{Identity: agent.AutoContinueOriginator}); err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: inject: %v\n", sid, err)
-		return
+		return acSkippedInjectErr
 	}
 	fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue queued (turn interrupted %s ago)\n",
 		sid, time.Since(interruptedAt).Round(time.Second))
+	return acInjected
 }
 
 // classifyTail does one bounded tail read + classification. Bounded
@@ -237,11 +298,58 @@ func AutoContinueStartupSession(ctx context.Context, h *eventlog.Handle, ag *age
 	if freshness > 0 && time.Since(interruptedAt) > freshness {
 		return
 	}
-	if err := h.RecordBoot(ctx, time.Now(), []string{sid}); err != nil {
+	bootID, err := h.RecordBoot(ctx, time.Now(), []string{sid})
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: auto-continue startup: record boot intent: %v — skipping (guards must not be blind)\n", err)
 		return
 	}
-	lockClassifyInject(ctx, h, ag, app, user, sid, freshness)
+	// Narrow the write-ahead record only if the session skipped for a
+	// benign/contended reason (run lock held elsewhere, raced-clean or
+	// raced-stale tail), so a synchronous skip does not burn the cap —
+	// same accounting the boot scan does. An inject/lock error stays
+	// charged: a persistent one is a crash loop the cap must bound.
+	// Non-fatal on error: the pessimistic count stands.
+	if lockClassifyInject(ctx, h, ag, app, user, sid, freshness).refundable() {
+		if err := h.UpdateBootAttempted(ctx, bootID, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: auto-continue startup: narrow boot record: %v (pessimistic count stands)\n", err)
+		}
+	}
+}
+
+// AutoContinueRetryLoop re-runs a guarded auto-continue pass on a fixed
+// interval until ctx cancels. It runs NO pass immediately — callers keep
+// their existing boot-time invocation, so the note-latches-before-wake-
+// loop ordering is unchanged; this loop only adds the in-lifetime
+// *re-tries* that let a stable daemon self-heal a stranded continuation
+// without waiting for a reboot or a human message (#575 defect B).
+//
+// Safety: a continuation turn that kills the daemon kills this loop too,
+// so the loop can only ever re-fire failures that did NOT take the
+// daemon down (transient run-lock contention, a provider blip, a
+// poisoned-but-survivable turn). True crash loops remain bounded by the
+// cross-boot breaker, and every pass is still bounded by the per-session
+// single-retry guard (breakerWindow) + cumulative cap
+// (maxAttemptsPerSession) — so no separate backoff schedule is needed:
+// a session attempted within breakerWindow simply no-ops on the next
+// tick, and the cap terminates a self-renewing session.
+//
+// interval <= 0 disables the loop (returns immediately). Callers launch
+// it on a goroutine tracked by a WaitGroup joined before the eventlog
+// closes, so a mid-tick pass never races DB teardown.
+func AutoContinueRetryLoop(ctx context.Context, interval time.Duration, pass func()) {
+	if interval <= 0 || pass == nil {
+		return
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			pass()
+		}
+	}
 }
 
 // AutoContinueBootScan is the boot-time trigger for multi-session
@@ -309,8 +417,8 @@ func AutoContinueBootScan(deps SessionFactoryDeps, maxPerBoot int) {
 	}
 
 	type candidate struct {
-		app, sid      string
-		interruptedAt time.Time
+		app, user, sid string
+		interruptedAt  time.Time
 	}
 	var candidates []candidate
 	for _, row := range rows {
@@ -327,10 +435,10 @@ func AutoContinueBootScan(deps SessionFactoryDeps, maxPerBoot int) {
 		if deps.AutoContinueFreshness > 0 && time.Since(interruptedAt) > deps.AutoContinueFreshness {
 			continue
 		}
-		candidates = append(candidates, candidate{app: row.AppName, sid: row.SessionID, interruptedAt: interruptedAt})
+		candidates = append(candidates, candidate{app: row.AppName, user: row.UserID, sid: row.SessionID, interruptedAt: interruptedAt})
 	}
 	if len(candidates) == 0 {
-		if err := h.RecordBoot(ctx, time.Now(), nil); err != nil {
+		if _, err := h.RecordBoot(ctx, time.Now(), nil); err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: auto-continue boot scan: record boot: %v\n", err)
 		}
 		return
@@ -353,24 +461,68 @@ func AutoContinueBootScan(deps SessionFactoryDeps, maxPerBoot int) {
 	for _, c := range candidates {
 		attempted = append(attempted, c.sid)
 	}
-	if err := h.RecordBoot(ctx, time.Now(), attempted); err != nil {
+	bootID, err := h.RecordBoot(ctx, time.Now(), attempted)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: auto-continue boot scan: record boot intent: %v — aborting scan (guards must not be blind)\n", err)
 		return
 	}
-	queued := 0
+	// The write-ahead record above charged every candidate
+	// pessimistically (so a daemon killed mid-loop still counts them).
+	// We now drive each resume and refund only the benign/contended
+	// skips — chiefly the fleet run-lock case where a peer daemon owns
+	// the session (#575). refunded holds those sids; anything not in it
+	// (a queued note, a failed resume/inject, a candidate we never
+	// reached) stays charged, which is the crash-loop-safe direction.
+	refunded := make(map[string]bool, len(candidates))
+	injectedCount := 0
 	for _, c := range candidates {
-		// Lookup drives the normal miss → resume path; ReproduceAgent's
-		// resumed-origin hook re-classifies under the run lock and
-		// injects the continuation. Already-in-memory sessions (raced
-		// by an operator touch) just hit the registry and are handled
-		// by that touch's own resume.
-		if _, err := deps.Registry.Lookup(ctx, c.app, c.sid); err != nil {
+		if ctx.Err() != nil {
+			break // daemon shutting down mid-scan; unprocessed candidates stay charged
+		}
+		// Lookup drives the normal miss → resume path, but with the
+		// inject DEFERRED (withDeferAutoContinueInject): ReproduceAgent
+		// constructs + registers + wake-loops the agent without
+		// injecting, so the scan can classify+inject itself and observe
+		// the outcome. Already-in-memory sessions (raced by an operator
+		// touch) return their existing entry; injecting into them is
+		// still correct — a run-lock/clean-tail skip just reports the
+		// matching refundable outcome.
+		entry, err := deps.Registry.Lookup(withDeferAutoContinueInject(ctx), c.app, c.sid)
+		if err != nil {
+			// Resume failed: leave it charged. A persistent reproduction
+			// failure is a crash loop the per-session cap must bound.
 			fmt.Fprintf(os.Stderr, "core-agent: auto-continue boot scan: resume session %s: %v\n", c.sid, err)
 			continue
 		}
-		queued++
+		ad, ok := entry.Agent.(*attachadapter.Adapter)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "core-agent: auto-continue boot scan: session %s: unexpected registrant type %T; skipping inject\n", c.sid, entry.Agent)
+			continue
+		}
+		outcome := lockClassifyInject(ctx, h, ad.Agent(), c.app, c.user, c.sid, deps.AutoContinueFreshness)
+		if outcome.injected() {
+			injectedCount++
+		}
+		if outcome.refundable() {
+			refunded[c.sid] = true
+		}
 	}
-	if queued > 0 {
-		fmt.Fprintf(os.Stderr, "core-agent: auto-continue boot scan: queued continuations for %d session(s)\n", queued)
+	// Narrow the write-ahead row by dropping the refunded sids. Non-fatal
+	// on error: the pessimistic count simply stands, which fails safe
+	// (over-counting only ever makes the guards MORE conservative). Skip
+	// the write when nothing was refunded.
+	if len(refunded) > 0 {
+		kept := make([]string, 0, len(attempted))
+		for _, sid := range attempted {
+			if !refunded[sid] {
+				kept = append(kept, sid)
+			}
+		}
+		if err := h.UpdateBootAttempted(ctx, bootID, kept); err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: auto-continue boot scan: narrow boot record: %v (pessimistic count stands)\n", err)
+		}
+	}
+	if injectedCount > 0 {
+		fmt.Fprintf(os.Stderr, "core-agent: auto-continue boot scan: queued continuations for %d session(s)\n", injectedCount)
 	}
 }

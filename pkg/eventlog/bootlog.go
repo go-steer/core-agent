@@ -40,16 +40,49 @@ type BootRecord struct {
 	Attempted []string
 }
 
-// RecordBoot appends a boot-scan record. attempted lists the session
-// IDs the scan triggered continuations for (empty slice = scan ran,
-// found nothing). AutoMigrate is idempotent and cheap at once-per-boot
-// call frequency.
-func (h *Handle) RecordBoot(ctx context.Context, at time.Time, attempted []string) error {
+// RecordBoot appends a boot-scan record and returns the new row's ID.
+// attempted lists the session IDs the scan triggered continuations for
+// (empty slice = scan ran, found nothing). The returned ID lets a
+// caller later narrow the row to the sessions that actually got a fair
+// shot via UpdateBootAttempted — outcome-aware accounting for the
+// write-ahead intent record (#575). AutoMigrate is idempotent and cheap
+// at once-per-boot call frequency.
+func (h *Handle) RecordBoot(ctx context.Context, at time.Time, attempted []string) (uint, error) {
 	if h == nil || h.DB == nil {
-		return fmt.Errorf("eventlog: RecordBoot: no database")
+		return 0, fmt.Errorf("eventlog: RecordBoot: no database")
 	}
 	if err := h.DB.WithContext(ctx).AutoMigrate(&bootLogRow{}); err != nil {
-		return fmt.Errorf("eventlog: migrate agent_boot_log: %w", err)
+		return 0, fmt.Errorf("eventlog: migrate agent_boot_log: %w", err)
+	}
+	if attempted == nil {
+		attempted = []string{}
+	}
+	blob, err := json.Marshal(attempted)
+	if err != nil {
+		return 0, fmt.Errorf("eventlog: marshal attempted sessions: %w", err)
+	}
+	row := bootLogRow{BootAt: at, Attempted: string(blob)}
+	if err := h.DB.WithContext(ctx).Create(&row).Error; err != nil {
+		return 0, fmt.Errorf("eventlog: record boot: %w", err)
+	}
+	return row.ID, nil
+}
+
+// UpdateBootAttempted rewrites the attempted-session list of an existing
+// boot-log row (identified by the ID from RecordBoot). It exists to
+// narrow a pessimistic write-ahead record down to the sessions a scan
+// actually attempted, after synchronous skips (a run lock held by
+// another daemon, a raced-clean tail) have been resolved — so those
+// skips don't burn the per-session cumulative cap on daemons that never
+// got a fair shot (#575, the fleet cap-burn). The write-ahead property
+// is preserved: this only ever runs AFTER the intent record exists, so
+// a daemon killed mid-scan leaves the full pessimistic list in place.
+func (h *Handle) UpdateBootAttempted(ctx context.Context, id uint, attempted []string) error {
+	if h == nil || h.DB == nil {
+		return fmt.Errorf("eventlog: UpdateBootAttempted: no database")
+	}
+	if id == 0 {
+		return fmt.Errorf("eventlog: UpdateBootAttempted: zero row id")
 	}
 	if attempted == nil {
 		attempted = []string{}
@@ -58,9 +91,12 @@ func (h *Handle) RecordBoot(ctx context.Context, at time.Time, attempted []strin
 	if err != nil {
 		return fmt.Errorf("eventlog: marshal attempted sessions: %w", err)
 	}
-	row := bootLogRow{BootAt: at, Attempted: string(blob)}
-	if err := h.DB.WithContext(ctx).Create(&row).Error; err != nil {
-		return fmt.Errorf("eventlog: record boot: %w", err)
+	res := h.DB.WithContext(ctx).Model(&bootLogRow{}).Where("id = ?", id).Update("attempted", string(blob))
+	if res.Error != nil {
+		return fmt.Errorf("eventlog: update boot attempted: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return fmt.Errorf("eventlog: update boot attempted: no row with id %d", id)
 	}
 	return nil
 }

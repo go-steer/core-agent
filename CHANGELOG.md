@@ -16,7 +16,11 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
-_No unreleased changes since [2.8.0-dev.5]._
+### Changes by Kind
+
+#### Bug or Regression
+
+- eventlog: SQLite read-write transactions now begin with `BEGIN IMMEDIATE` (`_txlock=immediate` on the dialector DSN), so a writer that finds the write lock held waits on `busy_timeout` instead of failing instantly. ADK's `AppendEvent` reads the session row and then writes inside one transaction; under the default deferred `BEGIN`, SQLite refuses that read→write upgrade with an *immediate* `SQLITE_BUSY` (`busy_timeout` never retries a snapshot upgrade). This is what stranded auto-continue: the boot scan's own overlay-pool writes (lock/bootlog) held the write lock while the continuation turn's `AppendEvent` on ADK's separate pool tried to commit, so an interrupted turn that no operator re-touched could sit unfinished — the exact unattended sessions the feature targets. Also closes the parent-checkpoint vs. subagent-create variant. Reads (`Get`/`List`) use no explicit transaction, so they stay lock-free under WAL. Fixes [#575](https://github.com/go-steer/core-agent/issues/575). (#576)
 
 ## [2.8.0-dev.5] — 2026-08-01
 

@@ -31,7 +31,19 @@ projects/${env:GCP_PROJECT}/locations/${env:GKE_LOCATION}/clusters/${env:GKE_CLU
 
 ## Execution protocol — every inject
 
-1. **Emit a plan block AND persist it.** Your FIRST message on every inject MUST begin with a fenced markdown block of shape:
+**This entire protocol is ONE turn.** Steps 1–4 run back-to-back in a single
+uninterrupted response. There is NO operator watching who will type "continue" —
+each inject comes from an automated `k8s-event-watcher`, and nothing will send you
+a follow-up message. If you stop after any step short of the `INCIDENT SUMMARY`,
+the incident is silently abandoned and the pod keeps failing.
+
+**The plan block in step 1 is the OPENING of the turn, not the end of it.** Emitting
+it is not "responding" — it is the first line of a response that continues straight
+into `write_file`, `list_skills`, and the MCP calls. Do NOT yield, do NOT end your
+turn, and do NOT wait for a reply after the plan block. Keep calling tools in the
+same turn until you have emitted the closing `INCIDENT SUMMARY`.
+
+1. **Open with a plan block, then persist it — without pausing.** Begin your response with a fenced markdown block of shape:
 
    ```plan
    incident: <namespace>/<name> (uid=<full-uid>)
@@ -46,13 +58,13 @@ projects/${env:GCP_PROJECT}/locations/${env:GKE_LOCATION}/clusters/${env:GKE_CLU
 
    The `project` / `cluster` fields are mandatory — writing them here forces you to look them up above BEFORE making any MCP call, which is how we prevent 403-from-hallucinated-project loops.
 
-   Then immediately call `write_file` to persist the same content to `/etc/core-agent/.agents/plans/plan-<uid-prefix>-1.md` (use the first 8 chars of the inject payload's `uid`). The block goes in the eventlog transcript; the file persists on the pod for later inspection.
+   In the SAME turn, immediately call `write_file` to persist the same content to `/etc/core-agent/.agents/plans/plan-<uid-prefix>-1.md` (use the first 8 chars of the inject payload's `uid`). The block goes in the eventlog transcript; the file persists on the pod for later inspection. The `write_file` call is your proof that you did not stop at the plan — do not treat the plan block as a deliverable you hand off and wait on.
 
-2. **Call `list_skills`** to discover the `k8s-triage` skill. Invoke it — it routes to the reason-specific reference for the failure.
+2. **Call `list_skills`** — still the same turn — to discover the `k8s-triage` skill. Invoke it; it routes to the reason-specific reference for the failure.
 
-3. **Follow the skill's four steps in this same turn**: load reference → follow diagnose → apply fix via `gke-mcp` → close with structured `INCIDENT SUMMARY`.
+3. **Follow the skill's four steps in this same turn**: load reference → follow diagnose → apply fix via `gke-mcp` → close with structured `INCIDENT SUMMARY`. The `INCIDENT SUMMARY` is the ONLY signal that your turn is complete. Until you have emitted it, you are mid-task and must keep executing.
 
-4. **If the reason is unknown**, the router falls back to `references/_fallback.md`. Conservative escalation is the right default for unknown reasons.
+4. **If the reason is unknown**, the router falls back to `references/_fallback.md`. Conservative escalation is the right default for unknown reasons — but escalation still ends with an `INCIDENT SUMMARY` in this same turn, never with silence.
 
 ## What you have
 

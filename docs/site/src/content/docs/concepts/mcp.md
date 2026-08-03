@@ -247,14 +247,14 @@ Opt-in. When the structural pruner can't reduce a response below the threshold �
 
 - **CLI**: `--mcp-agentic-wrap-llm=true` enables the path. `--mcp-agentic-wrap-model=<id>` overrides the subagent model just for MCP (falls through to `--agentic-small-model` → provider default → parent-inherit).
 - **Per-project**: `agentic_wrap_llm: true` and `agentic_wrap_model: "<id>"` in `.agents/mcp.json` mirror the CLI flags. Either source enabling turns it on.
-- **Cost profile**: the subagent pays a small-tier bill (e.g. Flash: ~$0.075/M input / $0.30/M output). Break-even after one subsequent turn where the digest replaces the raw response in history resend.
+- **Cost profile**: the subagent pays a small-tier bill (e.g. `gemini-3.5-flash-lite`: ~$0.30/M input, $0.03/M cached, $2.50/M output). Break-even after one subsequent turn where the digest replaces the raw response in history resend.
 
 ```json
 {
   "version": 1,
   "agentic_wrap": true,
   "agentic_wrap_llm": true,
-  "agentic_wrap_model": "gemini-2.5-flash",
+  "agentic_wrap_model": "gemini-3.5-flash-lite",
   "servers": {
     "gke": { "transport": "stdio", "command": "gke-mcp" }
   }

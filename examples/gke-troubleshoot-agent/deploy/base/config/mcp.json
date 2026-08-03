@@ -1,5 +1,7 @@
 {
   "version": 1,
+  "agentic_wrap_llm": true,
+  "agentic_wrap_model": "gemini-3.5-flash-lite",
   "servers": {
     "gke": {
       "transport": "http",

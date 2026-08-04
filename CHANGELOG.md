@@ -16,7 +16,15 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
-_No unreleased changes since [2.8.0-dev.6]._
+### Changes by Kind
+
+#### Bug or Regression
+
+- auto-continue: a model turn truncated at the output-token cap (`MAX_TOKENS`) that still emitted text is no longer misclassified as a completed turn, so auto-continue now finishes it (on the session's next touch or a boot scan). The tail-shape classifier read every final model-text event as complete; genai carries the distinction in `Candidate.FinishReason`, but ADK's storage row has no FinishReason column (`createEventFromStorageEvent` drops it) so a reloaded event couldn't see it. The eventlog overlay now stamps an *abnormal* finish reason into `CustomMetadata` at `AppendEvent` (only abnormal — never the empty zero value or a plain `STOP` — so normal turns are untouched), and the classifier consults that stamp; only `MAX_TOKENS` drives a continuation (`SAFETY`/`RECITATION`/… are recorded for audit but stay terminal). No ADK fork, no schema migration. Fixes [#582](https://github.com/go-steer/core-agent/issues/582). (#585)
+
+#### Feature
+
+- config: the zero-config default model is now `gemini-3.6-flash` (was `gemini-3.1-pro-preview-customtools`). It is a current-generation, generally-available flash model — the taskclass `frontier` tier — that combines server-side search built-ins with function tools out of the box, a better first impression than the prior 3.1-pro *preview* / custom-tools build, while satisfying Gemini's "3.0-or-later required when combining built-ins with function tools" constraint so zero-config users need not think about it. Override `model.name` for a pro-class model, or the `gemini-3.1-pro-preview-customtools` variant (prefers registered tools over raw bash) when you want that behavior; the default will revisit `gemini-3.6-pro` when it ships. Closes [#571](https://github.com/go-steer/core-agent/issues/571).
 
 ## [2.8.0-dev.6] — 2026-08-04
 

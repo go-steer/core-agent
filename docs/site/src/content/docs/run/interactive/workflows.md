@@ -180,7 +180,7 @@ A read-only agent for "explain this code" / "write me a docstring" tasks. No wri
 ```json
 {
   "version": 1,
-  "model": { "provider": "gemini", "name": "gemini-3.1-pro-preview-customtools" },
+  "model": { "provider": "gemini", "name": "gemini-3.6-flash" },
   "tools": {
     "disable": ["bash", "write_file", "edit_file", "delete_file"]
   },

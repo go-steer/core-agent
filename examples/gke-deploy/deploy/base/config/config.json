@@ -22,7 +22,6 @@
   "agent": {
     "display_name": "GKE Platform",
     "description": "Platform agent for managing GKE clusters",
-    "_auto_continue_comment": "Finish restart-interrupted turns automatically after a pod roll (v2.8, #539/#558). One attempt per interruption, crash-loop guarded via agent_boot_log, 1h freshness window. Pair with agent.max_turn_cost_usd if unattended spend is a concern. NOTE: requires an image built after #558 — the deployment's pinned digest must be bumped past the next dev tag for this to take effect; older binaries ignore the key silently.",
-    "auto_continue": { "enabled": true }
+    "_auto_continue_comment": "Restart-interrupted turns are finished automatically after a pod roll. Since v2.8/#559 this is ON BY DEFAULT for this deployment shape — a headless --no-repl daemon with --session-db — so no auto_continue block is needed to enable it (the daemon logs a one-line notice at boot). Pair with agent.max_turn_cost_usd if unattended spend is a concern; add \"auto_continue\": { \"enabled\": false } here to opt out, or freshness / retry_interval to tune. Requires an image built after #559."
   }
 }

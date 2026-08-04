@@ -603,7 +603,18 @@ func (h *handlers) doInterrupt(w http.ResponseWriter, r *http.Request, entry *En
 	if canceled {
 		// Best-effort audit row. Don't fail the request if the
 		// emission errors — the cancel already fired.
-		appendInterruptAudit(r.Context(), entry)
+		//
+		// Prefer a self-auditing registrant (#565): it appends the
+		// audit from inside its own turn loop, after the interrupted
+		// turn unwinds, so the write can't race the runner's in-flight
+		// session handle and get mislabeled as a stale-session error.
+		// Fall back to the out-of-band append for older registrants
+		// that don't implement InterruptSelfAuditor.
+		if sa, ok := entry.Agent.(InterruptSelfAuditor); ok {
+			sa.MarkInterruptPending()
+		} else {
+			appendInterruptAudit(r.Context(), entry)
+		}
 	} else {
 		w.Header().Set("X-Interrupted", "nothing-in-flight")
 	}
@@ -632,10 +643,21 @@ func appendInterruptAudit(ctx context.Context, entry *Entry) {
 	if err != nil {
 		return
 	}
+	_ = log.Service.AppendEvent(ctx, getResp.Session, NewInterruptAuditEvent())
+}
+
+// NewInterruptAuditEvent builds the eventlog row that records an
+// operator-initiated interrupt. Author + CustomMetadata identify the
+// source so a later audit query (or attach /events tail) can
+// distinguish operator cancels from any other ctx.Canceled flowing
+// through the agent loop. Shared by the handler's out-of-band fallback
+// (appendInterruptAudit) and by self-auditing registrants
+// (InterruptSelfAuditor) so the two paths can never drift (#565).
+func NewInterruptAuditEvent() *session.Event {
 	ev := session.NewEvent("attach-interrupt")
 	ev.Author = "attach/interrupt"
 	ev.CustomMetadata = map[string]any{"source": "operator"}
-	_ = log.Service.AppendEvent(ctx, getResp.Session, ev)
+	return ev
 }
 
 // readJSON decodes JSON into v with a size cap. Returns an error

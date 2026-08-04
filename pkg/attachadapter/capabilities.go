@@ -458,3 +458,13 @@ var ErrSubagentSpawnerUnavailable = errors.New("attachadapter: subagent spawner 
 func (ad *Adapter) AttachInterrupt() bool {
 	return ad.Agent().Interrupt()
 }
+
+// MarkInterruptPending implements attach.InterruptSelfAuditor. The
+// /interrupt handler calls it (instead of appending the audit row
+// out-of-band) so the audit is written from the agent's own turn loop
+// after the interrupted turn unwinds, dodging the OCC race that
+// mislabeled operator cancels as stale-session errors (#565). Forwards
+// to agent.MarkInterruptPending.
+func (ad *Adapter) MarkInterruptPending() {
+	ad.Agent().MarkInterruptPending()
+}

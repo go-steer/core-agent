@@ -263,6 +263,13 @@ type Agent struct {
 	// wrong shape for an ObservableCounter.
 	compactionsDone atomic.Int64
 	checkpointsDone atomic.Int64
+	// pendingInterruptAudit is set by MarkInterruptPending (the agent
+	// side of attach.InterruptSelfAuditor) when an operator interrupt
+	// fires, and drained in the post-turn cleanup once the interrupted
+	// turn has fully unwound — the one window with no live runner handle
+	// racing the audit write (#565). Atomic: set from the /interrupt
+	// handler goroutine, read/cleared from the turn goroutine.
+	pendingInterruptAudit atomic.Bool
 	// watchdogAlertCounter is the sync core_agent.watchdog.alerts
 	// instrument; counted in drainWatchdogAlerts.
 	watchdogAlertCounter metric.Int64Counter
@@ -1353,6 +1360,12 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		a.maybeMarkCompactionPending()
 		a.maybeEnforceCostCeiling()
 		a.drainWatchdogAlerts()
+		// Operator-interrupt audit (#565): if a /interrupt fired during
+		// this turn, append its audit row now — after the event stream
+		// drained and runCtx was cancelled above, so the write can't
+		// race the runner's in-flight session handle. No-op when nothing
+		// is pending.
+		a.drainInterruptAudit()
 		if a.onTurnEnd != nil {
 			a.onTurnEnd()
 		}

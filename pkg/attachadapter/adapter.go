@@ -303,6 +303,7 @@ var (
 	_ attach.AgentsProvider          = (*Adapter)(nil)
 	_ attach.StatusProvider          = (*Adapter)(nil)
 	_ attach.InterruptProvider       = (*Adapter)(nil)
+	_ attach.InterruptSelfAuditor    = (*Adapter)(nil)
 	_ attach.UsageProvider           = (*Adapter)(nil)
 	_ attach.ContextProvider         = (*Adapter)(nil)
 	_ attach.MemoryProvider          = (*Adapter)(nil)

@@ -127,6 +127,33 @@ type InterruptProvider interface {
 	AttachInterrupt() bool
 }
 
+// InterruptSelfAuditor is the optional capability a registrant
+// implements when it records the operator-interrupt audit event itself,
+// from inside its own serialized turn loop, instead of leaving the
+// /interrupt handler to append it out-of-band.
+//
+// The handler's fallback (appendInterruptAudit) does a
+// Get-then-AppendEvent on the live session row while the interrupted
+// turn is still flushing its final events. That extra write bumps the
+// row's last_update_time and can trip the runner's optimistic-
+// concurrency check mid-flush, so the operator's clean cancel surfaces
+// as an opaque "stale session error" instead of ctx.Canceled (#565).
+//
+// A registrant that implements this interface takes ownership of the
+// audit: MarkInterruptPending records the intent, and the registrant
+// appends the audit row once the interrupted turn unwinds — the one
+// window with no live runner handle racing the write. When a registrant
+// implements it, the /interrupt handler calls MarkInterruptPending and
+// skips its own append.
+type InterruptSelfAuditor interface {
+	// MarkInterruptPending records that an operator interrupt fired and
+	// an audit row should be appended once the current turn unwinds.
+	// Called from the /interrupt handler only after AttachInterrupt
+	// reported an in-flight turn was cancelled. Safe to call
+	// concurrently with the registrant's turn loop.
+	MarkInterruptPending()
+}
+
 // UsageInfo is the response shape of GET /sessions/.../usage. Backs
 // the remote TUI's /stats slash. PerModel is empty when only one model
 // has been used (no breakdown needed). PerTurn is one entry per model

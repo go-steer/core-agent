@@ -109,6 +109,71 @@ func TestIntegration_InterruptEndpoint_CancelsInFlight(t *testing.T) {
 	assertAuditRowPresent(t, h, "core-agent", "u", "s1")
 }
 
+// selfAuditingRegistrant is an interruptibleRegistrant that also
+// implements InterruptSelfAuditor — modelling attachadapter.Adapter,
+// which appends the audit from its own turn loop rather than letting the
+// handler write it out-of-band (#565).
+type selfAuditingRegistrant struct {
+	interruptibleRegistrant
+	marked atomic.Int32
+}
+
+func (s *selfAuditingRegistrant) MarkInterruptPending() { s.marked.Add(1) }
+
+// TestIntegration_InterruptEndpoint_SelfAuditorSkipsOutOfBandAppend is
+// the #565 handler-routing regression. When the registrant implements
+// InterruptSelfAuditor, doInterrupt must call MarkInterruptPending and
+// must NOT append the audit row out-of-band (that out-of-band write is
+// the one that raced the runner's in-flight session handle). The row is
+// the registrant's responsibility now, appended from its turn loop —
+// which this stub doesn't run, so no row must appear.
+//
+// Fails-first proof: revert doInterrupt to always call
+// appendInterruptAudit and this test trips (row present, mark not called).
+func TestIntegration_InterruptEndpoint_SelfAuditorSkipsOutOfBandAppend(t *testing.T) {
+	t.Parallel()
+	h, cleanupLog := openTestEventLog(t)
+	defer cleanupLog()
+
+	reg := NewSessionRegistry()
+	ag := &selfAuditingRegistrant{
+		interruptibleRegistrant: interruptibleRegistrant{
+			eventfulRegistrant: eventfulRegistrant{
+				stubRegistrant: stubRegistrant{app: "core-agent", user: "u", sid: "s1"},
+				handle:         h,
+			},
+		},
+	}
+	ag.canInterrupt.Store(true)
+	if _, err := reg.Register(ag); err != nil {
+		t.Fatal(err)
+	}
+
+	base, cleanupSrv := startTestServer(t, reg)
+	defer cleanupSrv()
+
+	if _, err := h.Service.Create(context.Background(), &session.CreateRequest{
+		AppName: "core-agent", UserID: "u", SessionID: "s1",
+	}); err != nil {
+		t.Fatalf("session Create: %v", err)
+	}
+
+	resp, err := http.Post(base+"/sessions/core-agent/s1/interrupt", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST interrupt: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d: %s", resp.StatusCode, body)
+	}
+
+	if got := ag.marked.Load(); got != 1 {
+		t.Errorf("MarkInterruptPending called %d times, want 1 (handler must route to the self-auditor)", got)
+	}
+	assertNoAuditRow(t, h, "core-agent", "u", "s1")
+}
+
 func TestIntegration_InterruptEndpoint_NothingInFlight(t *testing.T) {
 	t.Parallel()
 	h, cleanupLog := openTestEventLog(t)
@@ -241,4 +306,23 @@ func assertAuditRowPresent(t *testing.T, h *eventlog.Handle, app, user, sid stri
 		}
 	}
 	t.Errorf("no attach/interrupt audit row in session events")
+}
+
+// assertNoAuditRow is the inverse of assertAuditRowPresent: it fails if
+// any Author="attach/interrupt" row exists. Used to prove the handler
+// did NOT append out-of-band when the registrant self-audits (#565).
+func assertNoAuditRow(t *testing.T, h *eventlog.Handle, app, user, sid string) {
+	t.Helper()
+	getResp, err := h.Service.Get(context.Background(), &session.GetRequest{
+		AppName: app, UserID: user, SessionID: sid,
+	})
+	if err != nil {
+		t.Fatalf("session Get: %v", err)
+	}
+	for ev := range getResp.Session.Events().All() {
+		if ev.Author == "attach/interrupt" {
+			t.Errorf("out-of-band attach/interrupt audit row present, but the registrant self-audits (handler should not append)")
+			return
+		}
+	}
 }

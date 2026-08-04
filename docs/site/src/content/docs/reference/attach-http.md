@@ -132,6 +132,8 @@ All write endpoints cap request bodies at **8 KiB** (`operatorPostMaxBytes`).
 
 Any capability-missing mutation returns **501** (e.g. `/interrupt` without an `InterruptProvider`, `/wake` with a `target` on a daemon without wake-target routing).
 
+The `/interrupt` audit event (`Author=attach/interrupt`) is written by the agent from inside its own turn loop, *after* the interrupted turn finishes unwinding — so it lands on the `/events` stream shortly after the `200` response, not synchronously before it. This avoids racing the runner's in-flight session write, which otherwise surfaced the operator's clean cancel as a spurious stale-session turn error. A consumer that needs to confirm the audit row should tail `/events` rather than assume it is present the instant `/interrupt` returns.
+
 ## UsageMetadata schema
 
 `GET /sessions/{sid}/usage` (v2.7.0-dev.3+, [#222](https://github.com/go-steer/core-agent/issues/222)). Response type `attach.UsageInfo`:

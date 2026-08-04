@@ -201,7 +201,7 @@ Selects the LLM backend.
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `provider` | string | `""` (auto-detect) | One of `gemini`, `vertex`, `anthropic`, `anthropic-vertex`. Empty = auto-detect from env. |
-| `name` | string | `gemini-3.1-pro-preview-customtools` | Model ID. **Required.** For Gemini, version 3.0 or later is required when using the default tool suite — see [Providers → Gemini 3.0+ required](/concepts/providers/#gemini-30-required-when-combining-built-ins-with-function-tools). The default uses the `-customtools` variant, which is fine-tuned to prefer developer-defined tools over raw bash; same price, same context window. Override with the un-tuned `gemini-3.1-pro-preview` if you need behavior-baseline comparisons. |
+| `name` | string | `gemini-3.6-flash` | Model ID. **Required.** For Gemini, version 3.0 or later is required when using the default tool suite — see [Providers → Gemini 3.0+ required](/concepts/providers/#gemini-30-required-when-combining-built-ins-with-function-tools). The default is a current-generation, generally-available flash model that combines server-side search built-ins with function tools out of the box. Override with a pro-class model, or with the `gemini-3.1-pro-preview-customtools` variant (fine-tuned to prefer developer-defined tools over raw bash), when you want that behavior. |
 | `api_key` | string | `""` | Inline key for `provider: gemini`. Usually unset; read from `GOOGLE_API_KEY` / `GEMINI_API_KEY` at runtime. |
 | `vertex` | object | `null` | GCP project + region. Required when `provider: vertex`. |
 | `vertex.project` | string | — | GCP project ID. |
@@ -726,7 +726,7 @@ Worked example for a K8s deployment ConfigMap:
 ```json
 {
   "version": 1,
-  "model": { "provider": "vertex", "name": "gemini-3.1-pro-preview-customtools",
+  "model": { "provider": "vertex", "name": "gemini-3.6-flash",
              "vertex": { "project": "my-proj", "location": "us-central1" } },
   "attach": {
     "listen":            "0.0.0.0:7777",

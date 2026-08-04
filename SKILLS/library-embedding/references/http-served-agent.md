@@ -149,7 +149,7 @@ func (p *agentPool) Get(ctx context.Context, sessionID string) (*agent.Agent, er
     defer p.mu.Unlock()
     if a, ok := p.agents[sessionID]; ok { return a, nil }
 
-    model, err := p.provider.Model(ctx, "gemini-3.1-pro-preview-customtools")
+    model, err := p.provider.Model(ctx, "gemini-3.6-flash")
     if err != nil { return nil, err }
 
     tracker := usage.NewTracker()

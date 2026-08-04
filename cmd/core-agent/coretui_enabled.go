@@ -61,12 +61,13 @@ var pkgCoreElicitor coretui.Elicitor
 func availableModelIDs() []string {
 	return []string{
 		// Gemini 3.x — Google's flagship + supporting variants.
-		// -customtools variant is the DefaultConfig pick; prefers
-		// registered tools over raw bash. Same price/context as
-		// the bare variant; better behavior for coding-assistant.
+		// gemini-3.6-flash is the DefaultConfig pick (#571): current-gen
+		// GA flash that combines search built-ins with function tools.
+		// The 3.1-pro `-customtools` variant (prefers registered tools
+		// over raw bash) remains selectable for a pro-class override.
+		"gemini-3.6-flash",
 		"gemini-3.1-pro-preview-customtools",
 		"gemini-3.1-pro-preview",
-		"gemini-3.6-flash",
 		"gemini-3.5-flash",
 		"gemini-3.5-flash-lite",
 		"gemini-3-flash-preview",

@@ -183,7 +183,7 @@ func main() {
 
     provider, err := models.Resolve(nil)
     if err != nil { log.Fatal(err) }
-    model, err := provider.Model(ctx, "gemini-3.1-pro-preview-customtools")
+    model, err := provider.Model(ctx, "gemini-3.6-flash")
     if err != nil { log.Fatal(err) }
 
     goal := `Bootstrap the management team:

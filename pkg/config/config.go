@@ -226,7 +226,7 @@ type PathScopeAllowEntry struct {
 //
 // Provider: one of "gemini", "vertex", "anthropic". When empty, the resolver
 // auto-detects from the environment (see models.Resolve).
-// Name: a model ID, e.g. "gemini-3.1-pro-preview-customtools" or "claude-opus-4-7".
+// Name: a model ID, e.g. "gemini-3.6-flash" or "claude-opus-4-7".
 // APIKey: optional inline key for Provider="gemini"; usually unset and
 // read from GOOGLE_API_KEY at runtime.
 // Vertex: required when Provider="vertex"; project + location.
@@ -842,15 +842,19 @@ func DefaultConfig() *Config {
 		Version: SchemaVersion,
 		Model: ModelConfig{
 			// Provider intentionally empty — resolver auto-detects from env.
-			// `-customtools` is a Vertex behavioral variant of
-			// gemini-3.1-pro-preview fine-tuned to prefer developer-defined
-			// tools over raw shell — without it the model bypasses our
-			// structured grep / read_file / edit_file and shells out via
-			// bash, breaking the permission gate's coverage and never
-			// batching tool calls. Same pricing, same context window, same
-			// reasoning behavior. Override via Model.Name when a consumer
-			// wants the un-tuned variant for behavior-baseline comparisons.
-			Name: "gemini-3.1-pro-preview-customtools",
+			// gemini-3.6-flash is the zero-config default (#571): a
+			// current-generation, generally-available flash model (the
+			// taskclass `frontier` tier) that combines server-side search
+			// built-ins with function tools out of the box — a better
+			// first impression than the prior 3.1-pro *preview* /
+			// `-customtools` build. It satisfies Gemini's "3.0+ required
+			// when combining built-ins with function tools" constraint, so
+			// zero-config users need not think about it. Override via
+			// Model.Name for a pro-class model or the `-customtools`
+			// variant (which prefers registered tools over raw bash) when a
+			// consumer wants that behavior; revisit the default toward
+			// gemini-3.6-pro when it ships.
+			Name: "gemini-3.6-flash",
 		},
 		Permissions: PermissionsConfig{
 			Mode: PermissionModeAsk,

@@ -127,7 +127,7 @@ typically only on shutdown.
   "version": 1,
   "model": {
     "provider": "gemini",
-    "name": "gemini-3.1-pro-preview-customtools"
+    "name": "gemini-3.6-flash"
   },
   "permissions": {
     "mode": "allow",
@@ -225,7 +225,7 @@ Two endpoints from the same MCP server. The `gke-readonly` endpoint is the defau
   "version": 1,
   "model": {
     "provider": "gemini",
-    "name": "gemini-3.1-pro-preview-customtools"
+    "name": "gemini-3.6-flash"
   },
   "permissions": {
     "mode": "allow",
@@ -370,7 +370,7 @@ Only the read-only endpoint. Devteam structurally cannot mutate the cluster — 
   "version": 1,
   "model": {
     "provider": "gemini",
-    "name": "gemini-3.1-pro-preview-customtools"
+    "name": "gemini-3.6-flash"
   },
   "permissions": {
     "mode": "allow",
@@ -427,7 +427,7 @@ func main() {
     if err != nil {
         log.Fatalf("resolve provider: %v", err)
     }
-    model, err := provider.Model(ctx, "gemini-3.1-pro-preview-customtools")
+    model, err := provider.Model(ctx, "gemini-3.6-flash")
     if err != nil {
         log.Fatalf("get model: %v", err)
     }

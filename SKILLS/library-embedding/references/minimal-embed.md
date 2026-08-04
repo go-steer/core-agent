@@ -22,7 +22,7 @@ func main() {
     ctx := context.Background()
     provider, err := models.Resolve(nil)  // reads .agents/config.json
     if err != nil { log.Fatal(err) }
-    model, err := provider.Model(ctx, "gemini-3.1-pro-preview-customtools")
+    model, err := provider.Model(ctx, "gemini-3.6-flash")
     if err != nil { log.Fatal(err) }
 
     a, err := agent.New(model)

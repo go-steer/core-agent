@@ -45,11 +45,14 @@ An interrupted turn is visible in the committed tail of a session's branch-`""` 
 | User message with no following model event | Turn died before/during the first model call |
 | Model event whose parts end in unanswered functionCall(s) | Turn died mid-tool — #537's repair target |
 | A `kind: tool_tail_repair` synthesized response with no following model event | Turn died mid-tool, repair already ran, nothing continued it |
-| Model text event (final response) | Turn completed normally — nothing to do |
+| Model text event (final response), no abnormal finish reason | Turn completed normally — nothing to do |
+| Model text event stamped with a `MAX_TOKENS` finish reason | Turn was truncated at the output cap mid-answer — continue it |
 
 Detection = a single SQL/eventlog read of the last few events per session. `interruptedAt` = timestamp of the last committed event of the broken turn.
 
 One ambiguity: "user message with no model event" also matches *a user message that arrived while the daemon was down* (e.g. injected via a bridge that wrote directly to the DB). Both cases deserve a continuation turn, so the ambiguity is harmless.
+
+The one place tail *shape* is insufficient is the last row: a `MAX_TOKENS` truncation that still emitted text looks identical to a normal completion — both are a final model-text event. genai carries the distinction in `Candidate.FinishReason`, but ADK's storage row has no FinishReason column (`createEventFromStorageEvent` reconstructs the event without it), so a reloaded event can't see it. The fix (#582) piggy-backs on the one field ADK *does* round-trip — `CustomMetadata`: the eventlog overlay's `AppendEvent` stamps an *abnormal* finish reason into `CustomMetadata` under `FinishReasonMetadataKey` just before persist, and the classifier consults that stamp in the model-text arm. Only abnormal reasons are stamped (never the empty zero value or a plain `STOP`), so the ~99% normal-completion path is untouched and unstamped tails keep the "completed" default. Of the abnormal reasons, only `MAX_TOKENS` drives a continuation — the terminal-block reasons (`SAFETY`, `RECITATION`, `BLOCKLIST`, …) are recorded for audit but classify as completed, since a re-drive would only re-trigger the same block (they belong with `ErrorCode` finals as outcomes the user already saw). This mirrors the `CompactionMetadataKey` piggy-back the classifier already consults for compaction summaries.
 
 ## Continuation semantics
 

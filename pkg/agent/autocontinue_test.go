@@ -21,6 +21,8 @@ import (
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/session"
 	"google.golang.org/genai"
+
+	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 )
 
 // modelTextEvent is a completed final model turn.
@@ -48,6 +50,28 @@ func annotationEvent() *session.Event {
 func summaryEvent(text string) *session.Event {
 	ev := modelTextEvent(text)
 	ev.CustomMetadata = map[string]any{CompactionMetadataKey: CompactionEventTag}
+	return ev
+}
+
+// truncatedTextEvent is a model turn that emitted text but hit the output
+// cap: FinishReason MAX_TOKENS, stamped into CustomMetadata by the
+// eventlog overlay (#582). It must read as interrupted (resume-able).
+func truncatedTextEvent(text string) *session.Event {
+	ev := modelTextEvent(text)
+	ev.CustomMetadata = map[string]any{
+		eventlog.FinishReasonMetadataKey: string(genai.FinishReasonMaxTokens),
+	}
+	return ev
+}
+
+// stoppedTextEvent is a normally-completed model turn whose STOP reason
+// was stamped: it must still classify as completed (robustness against a
+// future overlay that records STOP too).
+func stoppedTextEvent(text string) *session.Event {
+	ev := modelTextEvent(text)
+	ev.CustomMetadata = map[string]any{
+		eventlog.FinishReasonMetadataKey: string(genai.FinishReasonStop),
+	}
 	return ev
 }
 
@@ -116,6 +140,26 @@ func TestClassifyInterruptedTail(t *testing.T) {
 		{
 			name:        "completed model turn",
 			events:      []*session.Event{userTextEvent("q"), modelTextEvent("done, here's the answer")},
+			interrupted: false,
+		},
+		{
+			// #582: a MAX_TOKENS truncation that still emitted text is NOT
+			// a completed turn — the eventlog stamps the reason and we
+			// resume it. Fails on pre-fix code, which ignores the stamp.
+			name: "max-tokens-truncated text tail is continued",
+			events: []*session.Event{
+				userTextEvent("write me something very long"),
+				truncatedTextEvent("here is the start of a very long ans"),
+			},
+			interrupted: true,
+		},
+		{
+			// A stamped STOP is a genuine completion — stays terminal.
+			name: "stamped STOP text tail is a completed turn",
+			events: []*session.Event{
+				userTextEvent("q"),
+				stoppedTextEvent("done"),
+			},
 			interrupted: false,
 		},
 		{

@@ -27,6 +27,9 @@ import (
 	"time"
 
 	"google.golang.org/adk/session"
+	"google.golang.org/genai"
+
+	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 )
 
 // AutoContinueOriginator is the turn-originator identity stamped on
@@ -71,7 +74,11 @@ func AutoContinueNote(interruptedAt time.Time) string {
 // turn). Detection is derived entirely from eventlog state — no
 // write-ahead marker exists or is needed; per-event persistence means
 // the tail shape IS the marker (docs/auto-continue-design.md
-// §Detection).
+// §Detection). The one place tail shape is insufficient is a MAX_TOKENS
+// output-cap truncation that still emitted text — indistinguishable from
+// a normal completion by shape alone — so the eventlog overlay stamps the
+// genai FinishReason into CustomMetadata and the hasText arm consults it
+// (#582).
 //
 // The classifier walks backward to the last *conversational* event on
 // the parent branch, skipping annotation rows: subagent branches,
@@ -89,7 +96,9 @@ func AutoContinueNote(interruptedAt time.Time) string {
 //     every call in the event is long-running (LongRunningToolIDs):
 //     ADK treats a turn ending in only long-running calls as final,
 //     with responses legitimately arriving in a later user turn.
-//   - anything else (model text)              → completed turn.
+//   - anything else (model text)              → completed turn,
+//     UNLESS a stamped MAX_TOKENS finish reason marks it truncated
+//     mid-task (then: interrupted — see incompleteFinish).
 //
 // Additional terminal shapes (never continued): an operator
 // interrupt-audit row anywhere after the tail (deliberate kill), an
@@ -193,6 +202,15 @@ func ClassifyInterruptedTail(events []*session.Event) (interruptedAt time.Time, 
 			}
 			return ev.Timestamp, true
 		case hasText:
+			// Normally a completed model turn — UNLESS the persisted
+			// finish reason says the turn stopped WITHOUT finishing (a
+			// MAX_TOKENS output-cap truncation that still emitted text).
+			// ADK's storage row drops FinishReason, so we read the copy
+			// the eventlog overlay stamps into CustomMetadata (#582). STOP
+			// and unset (legacy/unstamped) preserve the completed default.
+			if r, ok := ev.CustomMetadata[eventlog.FinishReasonMetadataKey].(string); ok && incompleteFinish(r) {
+				return ev.Timestamp, true
+			}
 			return time.Time{}, false // completed model turn
 		default:
 			// Agent-authored content with neither text nor tool parts
@@ -201,4 +219,18 @@ func ClassifyInterruptedTail(events []*session.Event) (interruptedAt time.Time, 
 		}
 	}
 	return time.Time{}, false
+}
+
+// incompleteFinish reports whether a persisted genai FinishReason string
+// (stamped by the eventlog overlay under eventlog.FinishReasonMetadataKey)
+// marks a model turn that stopped WITHOUT finishing its task and can be
+// safely re-driven. Only MAX_TOKENS qualifies: the model hit its output
+// cap mid-answer, so a continuation resumes exactly where it was cut.
+// STOP and unset (legacy/unstamped) → completed. The terminal-block
+// reasons (SAFETY, RECITATION, BLOCKLIST, PROHIBITED_CONTENT, SPII,
+// MALFORMED_FUNCTION_CALL) are deliberately NOT continued — a retry would
+// re-trigger the same block; they belong with ErrorCode as outcomes the
+// user already saw. Revisit per-reason if a concrete consumer appears.
+func incompleteFinish(reason string) bool {
+	return reason == string(genai.FinishReasonMaxTokens)
 }

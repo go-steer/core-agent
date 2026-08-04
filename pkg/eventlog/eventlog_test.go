@@ -104,6 +104,64 @@ func drain(t *testing.T, it func(yield func(Entry, error) bool)) []Entry {
 	return out
 }
 
+// TestAppendEvent_StampsAbnormalFinishReason proves the #582 fix: an
+// abnormal genai FinishReason is mirrored into CustomMetadata and
+// survives the persist round-trip (ADK's storage row has no FinishReason
+// column, so a reload would otherwise lose it), while a normal STOP /
+// unset turn is left unstamped to avoid noise on the common path. The
+// auto-continue classifier depends on this stamp to resume
+// MAX_TOKENS-truncated turns. Fails on pre-fix code, which never stamps.
+func TestAppendEvent_StampsAbnormalFinishReason(t *testing.T) {
+	h, cleanup := openTestHandle(t)
+	defer cleanup()
+	ctx := context.Background()
+	sess := mustCreateSession(t, h, "app", "user", "s1")
+
+	cases := []struct {
+		id        string
+		reason    genai.FinishReason
+		wantStamp string // "" = expect no stamp
+	}{
+		{id: "ev-max", reason: genai.FinishReasonMaxTokens, wantStamp: "MAX_TOKENS"},
+		{id: "ev-safety", reason: genai.FinishReasonSafety, wantStamp: "SAFETY"},
+		{id: "ev-stop", reason: genai.FinishReasonStop, wantStamp: ""},
+		{id: "ev-unset", reason: "", wantStamp: ""},
+	}
+	for _, tc := range cases {
+		ev := makeEvent(tc.id, "assistant", "", "partial answer")
+		ev.FinishReason = tc.reason
+		if err := h.Service.AppendEvent(ctx, sess, ev); err != nil {
+			t.Fatalf("AppendEvent %s: %v", tc.id, err)
+		}
+	}
+
+	resp, err := h.Service.Get(ctx, &session.GetRequest{AppName: "app", UserID: "user", SessionID: "s1"})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	want := map[string]string{}
+	for _, tc := range cases {
+		want[tc.id] = tc.wantStamp
+	}
+	seen := map[string]bool{}
+	for ev := range resp.Session.Events().All() {
+		exp, tracked := want[ev.ID]
+		if !tracked {
+			continue
+		}
+		seen[ev.ID] = true
+		got, _ := ev.CustomMetadata[FinishReasonMetadataKey].(string)
+		if got != exp {
+			t.Errorf("event %s: FinishReason stamp = %q, want %q", ev.ID, got, exp)
+		}
+	}
+	for id := range want {
+		if !seen[id] {
+			t.Errorf("event %s not returned by Get after append", id)
+		}
+	}
+}
+
 func TestOpen_Idempotent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

@@ -20,7 +20,19 @@ import (
 	"sync"
 
 	"google.golang.org/adk/session"
+	"google.golang.org/genai"
 )
+
+// FinishReasonMetadataKey is the CustomMetadata key under which
+// AppendEvent records a model turn's genai FinishReason before persist.
+// ADK's storage row has no FinishReason column
+// (createEventFromStorageEvent drops it), but it DOES round-trip
+// CustomMetadata — so stamping the reason here is what lets a reloaded
+// event distinguish a MAX_TOKENS truncation (resume-able) from a normal
+// STOP completion. Read by pkg/agent's auto-continue classifier (#582);
+// mirrors the CompactionMetadataKey piggy-back the classifier already
+// consults.
+const FinishReasonMetadataKey = "finish_reason"
 
 // service is the session.Service eventlog.Open returns. It wraps
 // ADK's database.SessionService unchanged for Get/List and
@@ -93,6 +105,7 @@ func (s *service) Delete(ctx context.Context, req *session.DeleteRequest) error 
 func (s *service) AppendEvent(ctx context.Context, sess session.Session, ev *session.Event) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	stampFinishReason(ev)
 	if err := s.inner.AppendEvent(ctx, sess, ev); err != nil {
 		return err
 	}
@@ -100,4 +113,27 @@ func (s *service) AppendEvent(ctx context.Context, sess session.Session, ev *ses
 		return fmt.Errorf("eventlog: overlay write after ADK AppendEvent: %w", err)
 	}
 	return nil
+}
+
+// stampFinishReason mirrors a model turn's abnormal genai FinishReason
+// into the event's CustomMetadata so it survives ADK's persist (see
+// FinishReasonMetadataKey). Only abnormal reasons are recorded: the zero
+// value is "" (not the UNSPECIFIED constant) and a plain STOP completion
+// needs no marker — the auto-continue classifier treats unstamped tails
+// as completed — so stamping either would only add noise to the 99% of
+// turns that finish normally. MAX_TOKENS, SAFETY, RECITATION, etc. are
+// kept: MAX_TOKENS drives a continuation (#582) and the rest are useful
+// audit signal.
+func stampFinishReason(ev *session.Event) {
+	if ev == nil {
+		return
+	}
+	switch ev.FinishReason {
+	case "", genai.FinishReasonUnspecified, genai.FinishReasonStop:
+		return
+	}
+	if ev.CustomMetadata == nil {
+		ev.CustomMetadata = map[string]any{}
+	}
+	ev.CustomMetadata[FinishReasonMetadataKey] = string(ev.FinishReason)
 }

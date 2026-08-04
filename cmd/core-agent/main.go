@@ -1478,58 +1478,23 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		// inside agent.New. Deferred to the post-construct hook.
 	}
 
-	// Auto-continue config (#539, #558): parsed once here, consumed by
-	// two triggers — the multi-session lazy/boot-scan path inside the
-	// attach block, and the --no-repl startup-session path below it.
-	// Same duration-string convention as session_idle_timeout: omitted
-	// freshness → default 1h; explicit "0s" → no window (always
-	// continue). Requires a durable eventlog — with none there is
-	// nothing to detect against. Interactive modes (REPL/TUI) never
-	// consume these: a human is present there by definition.
-	var autoContinueEnabled bool
-	autoContinueFreshness := time.Hour
-	var autoContinueRetry bool
-	autoContinueRetryInterval := 5 * time.Minute
-	if ac := cfg.Agent.AutoContinue; ac != nil && ac.Enabled {
-		switch {
-		case !cfg.Attach.MultiSession.Enabled && !noREPL:
-			// Mode check first: in a REPL/TUI/one-shot run, the
-			// missing-session-db message would point at the wrong knob.
-			fmt.Fprintln(os.Stderr, "core-agent: agent.auto_continue has no effect in this mode; it applies to multi-session daemons and --no-repl single-user daemons — ignoring")
-		case eventlogHandle == nil:
-			fmt.Fprintln(os.Stderr, "core-agent: agent.auto_continue requires --session-db (durable eventlog); ignoring")
-		default:
-			autoContinueEnabled = true
-			if raw := ac.Freshness; raw != "" {
-				d, perr := time.ParseDuration(raw)
-				if perr != nil {
-					fmt.Fprintf(os.Stderr, "core-agent: parse agent.auto_continue.freshness=%q: %v\n", raw, perr)
-					return runner.ExitConfigError
-				}
-				if d < 0 {
-					fmt.Fprintf(os.Stderr, "core-agent: agent.auto_continue.freshness=%q: must be >= 0 (\"0s\" disables the window)\n", raw)
-					return runner.ExitConfigError
-				}
-				autoContinueFreshness = d // 0 = disabled window, by design
-			}
-			// In-lifetime retry driver (#575 defect B). Default-on
-			// wherever auto-continue is enabled; an explicit
-			// retry:false keeps the one-shot-then-wait contract.
-			autoContinueRetry = ac.RetryEnabled()
-			if raw := ac.RetryInterval; raw != "" {
-				d, perr := time.ParseDuration(raw)
-				if perr != nil {
-					fmt.Fprintf(os.Stderr, "core-agent: parse agent.auto_continue.retry_interval=%q: %v\n", raw, perr)
-					return runner.ExitConfigError
-				}
-				if d <= 0 {
-					fmt.Fprintf(os.Stderr, "core-agent: agent.auto_continue.retry_interval=%q: must be > 0\n", raw)
-					return runner.ExitConfigError
-				}
-				autoContinueRetryInterval = d
-			}
-		}
+	// Auto-continue config (#539, #558, #559): resolved once here,
+	// consumed by two triggers — the multi-session lazy/boot-scan path
+	// inside the attach block, and the --no-repl startup-session path
+	// below it. resolveAutoContinue owns the precondition-gated default
+	// (unset → on for daemons with a durable eventlog, off elsewhere),
+	// the explicit-false opt-out, the explicit-true warn-and-ignore, and
+	// the freshness / retry-interval duration parsing. Interactive modes
+	// (REPL/TUI) never enable it: a human is present there by definition.
+	acRes, acErr := resolveAutoContinue(cfg.Agent.AutoContinue, cfg.Attach.MultiSession.Enabled, noREPL, eventlogHandle != nil, os.Stderr)
+	if acErr != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: %v\n", acErr)
+		return runner.ExitConfigError
 	}
+	autoContinueEnabled := acRes.enabled
+	autoContinueFreshness := acRes.freshness
+	autoContinueRetry := acRes.retry
+	autoContinueRetryInterval := acRes.retryInterval
 	// In-lifetime auto-continue retry driver lifecycle (#575 defect B).
 	// The driver(s) get a dedicated child context cancelled in the defer
 	// below, and the WaitGroup is joined there too. Registered AFTER the
@@ -2170,6 +2135,97 @@ func resolveGatePrompter(yolo bool, in *os.File, out io.Writer) permissions.Prom
 		return nil
 	}
 	return permissions.StdinPrompter(in, out)
+}
+
+// autoContinueResolution is the decided auto-continue enablement plus the
+// parsed freshness window and retry-driver settings, produced by
+// resolveAutoContinue and consumed by both the multi-session boot-scan
+// path and the --no-repl startup path.
+type autoContinueResolution struct {
+	enabled       bool
+	freshness     time.Duration
+	retry         bool
+	retryInterval time.Duration
+}
+
+// resolveAutoContinue decides whether restart-interrupted turns are
+// auto-continued (#539/#559), given the parsed config block and the run
+// context. The default — config left unset (nil block or nil enabled) —
+// is ON when the feature can apply: a multi-session daemon or a --no-repl
+// single-user daemon, with a durable eventlog. It is OFF, silently,
+// otherwise, so interactive REPL/TUI runs are never surprised by
+// unattended token spend. An explicit enabled:false is a hard opt-out; an
+// explicit enabled:true forces it on where it can apply and otherwise
+// warns and is ignored (the pre-#559 behavior). When enabled by default
+// (not by an explicit true) a one-line notice is emitted so the spend is
+// never invisible. Freshness / retry_interval overrides follow the same
+// duration-string convention as session_idle_timeout and are parsed only
+// when the feature ends up on; a parse or validation failure returns a
+// non-nil error (mapped to ExitConfigError by the caller).
+func resolveAutoContinue(ac *config.AutoContinueConfig, multiSession, noREPL, haveEventlog bool, stderr io.Writer) (autoContinueResolution, error) {
+	res := autoContinueResolution{freshness: time.Hour, retryInterval: 5 * time.Minute}
+	applies := (multiSession || noREPL) && haveEventlog
+
+	// Intent: an explicit enabled value wins; unset defaults to the
+	// precondition gate.
+	explicit := ac != nil && ac.Enabled != nil
+	want := applies
+	if explicit {
+		want = *ac.Enabled
+	}
+	if !want {
+		// Off: explicit opt-out, or unset in a mode where the feature
+		// cannot apply. The latter is intentionally silent — a REPL/TUI
+		// user has no reason to hear about a daemon feature.
+		return res, nil
+	}
+	if !applies {
+		// Reachable only via an explicit true (the default path set
+		// want=applies, so a false want already returned above).
+		// Preserve the pre-#559 warn-and-ignore, keeping the two
+		// distinct diagnostics; mode check first so the missing
+		// session-db message never points at the wrong knob.
+		switch {
+		case !multiSession && !noREPL:
+			fmt.Fprintln(stderr, "core-agent: agent.auto_continue has no effect in this mode; it applies to multi-session daemons and --no-repl single-user daemons — ignoring")
+		case !haveEventlog:
+			fmt.Fprintln(stderr, "core-agent: agent.auto_continue requires --session-db (durable eventlog); ignoring")
+		}
+		return res, nil
+	}
+
+	// On. Parse freshness / retry-interval overrides (nil block → all
+	// defaults, retry default-on).
+	res.enabled = true
+	if ac != nil && ac.Freshness != "" {
+		d, err := time.ParseDuration(ac.Freshness)
+		if err != nil {
+			return res, fmt.Errorf("parse agent.auto_continue.freshness=%q: %w", ac.Freshness, err)
+		}
+		if d < 0 {
+			return res, fmt.Errorf("agent.auto_continue.freshness=%q: must be >= 0 (\"0s\" disables the window)", ac.Freshness)
+		}
+		res.freshness = d // 0 = disabled window, by design
+	}
+	// In-lifetime retry driver (#575 defect B). Default-on wherever
+	// auto-continue is enabled — including the unset (nil block) default;
+	// an explicit retry:false keeps the one-shot-then-wait contract.
+	res.retry = ac == nil || ac.RetryEnabled()
+	if ac != nil && ac.RetryInterval != "" {
+		d, err := time.ParseDuration(ac.RetryInterval)
+		if err != nil {
+			return res, fmt.Errorf("parse agent.auto_continue.retry_interval=%q: %w", ac.RetryInterval, err)
+		}
+		if d <= 0 {
+			return res, fmt.Errorf("agent.auto_continue.retry_interval=%q: must be > 0", ac.RetryInterval)
+		}
+		res.retryInterval = d
+	}
+
+	if !explicit {
+		fmt.Fprintln(stderr, "core-agent: auto_continue on by default (multi-session/--no-repl + durable eventlog); set agent.auto_continue.enabled=false to opt out")
+	}
+	return res, nil
 }
 
 func persistTranscript(agentsDir, model, prompt string, tracker *usage.Tracker) {

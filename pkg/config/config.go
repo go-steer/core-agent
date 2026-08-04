@@ -389,11 +389,14 @@ type AgentConfig struct {
 	// where individual turns are reasonable but the session adds up.
 	MaxSessionCostUSD *float64 `json:"max_session_cost_usd,omitempty"`
 
-	// AutoContinue opts in to continuing restart-interrupted turns
-	// automatically (#539, docs/auto-continue-design.md). Nil/absent
-	// = disabled: a session interrupted mid-turn by a daemon restart
-	// resumes with intact history but waits for the next message.
-	// Applies to lazily-resumed multi-session agents; autonomous
+	// AutoContinue controls continuing restart-interrupted turns
+	// automatically (#539, #559, docs/auto-continue-design.md). Nil/absent
+	// leaves the feature at its precondition-gated default (on for a
+	// multi-session or --no-repl daemon with a durable eventlog, off
+	// elsewhere — see AutoContinueConfig.Enabled). A session interrupted
+	// mid-turn by a daemon restart resumes with intact history; whether it
+	// then finishes the turn or waits for the next message is what this
+	// controls. Applies to lazily-resumed multi-session agents; autonomous
 	// runs have their own checkpoint/resume machinery.
 	AutoContinue *AutoContinueConfig `json:"auto_continue,omitempty"`
 
@@ -419,9 +422,17 @@ type AgentConfig struct {
 // semantics, including the crash-loop breaker that ships with the
 // boot scan.
 type AutoContinueConfig struct {
-	// Enabled turns the feature on. False (or a nil parent pointer)
-	// keeps today's behavior: interrupted sessions resume inert.
-	Enabled bool `json:"enabled,omitempty"`
+	// Enabled turns the feature on. A *bool tristate (#559): nil (unset,
+	// or a nil parent pointer) means "on by default when the feature can
+	// apply" — i.e. a multi-session daemon or a --no-repl single-user
+	// daemon with a durable eventlog; interactive REPL/TUI and in-process
+	// library use are excluded by that precondition, so they never
+	// auto-continue by default. An explicit false is a hard opt-out; an
+	// explicit true forces it on (and, in a mode where it cannot apply,
+	// warns and is ignored). The precondition gate lives with the CLI
+	// wiring (resolveAutoContinue in cmd/core-agent) since config alone
+	// cannot see the run mode or eventlog presence.
+	Enabled *bool `json:"enabled,omitempty"`
 
 	// Freshness bounds how old an interruption may be and still get
 	// auto-continued, as a time.Duration string. Omitted/empty

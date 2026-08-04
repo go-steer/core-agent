@@ -425,20 +425,28 @@ Runtime tuning for the agent loop.
 
 ### `agent.auto_continue`
 
-Opt-in continuation of restart-interrupted turns ([design](https://github.com/go-steer/core-agent/blob/main/docs/auto-continue-design.md), #539/#558). When a daemon-hosted agent finds a fresh interrupted turn in its committed history — an unanswered user message, a dangling tool call, or a repaired-but-unconsumed tool result — it queues a synthesized system-note turn ("the previous turn was interrupted by a daemon restart… continue") instead of waiting for the next human message. Continuation turns are queued under the `core-agent/auto-continue` identity (visible in the audit log; if the note happens to drain into one turn with a concurrently-arriving human message, the human becomes the turn originator and the note text still marks the turn), guarded by the session run lock against double-continuation in shared-DB fleets, and spend under the session's normal cost ceilings. Self-healing (v2.8, #575): a continuation that fails transiently is retried in-lifetime up to the per-session cap (3 attempts / hour, minutes apart) rather than waiting for a reboot or a human message — `retry` controls this and is on by default when the feature is enabled. A true crash loop still bottoms out on the crash-loop breaker (3 attempting boots / 10 min → stand down). Deliberately-interrupted turns (`POST /interrupt`) are never resurrected.
+Automatic continuation of restart-interrupted turns ([design](https://github.com/go-steer/core-agent/blob/main/docs/auto-continue-design.md), #539/#558/#559). When a daemon-hosted agent finds a fresh interrupted turn in its committed history — an unanswered user message, a dangling tool call, or a repaired-but-unconsumed tool result — it queues a synthesized system-note turn ("the previous turn was interrupted by a daemon restart… continue") instead of waiting for the next human message. Continuation turns are queued under the `core-agent/auto-continue` identity (visible in the audit log; if the note happens to drain into one turn with a concurrently-arriving human message, the human becomes the turn originator and the note text still marks the turn), guarded by the session run lock against double-continuation in shared-DB fleets, and spend under the session's normal cost ceilings. Self-healing (v2.8, #575): a continuation that fails transiently is retried in-lifetime up to the per-session cap (3 attempts / hour, minutes apart) rather than waiting for a reboot or a human message — `retry` controls this and is on by default when the feature is enabled. A true crash loop still bottoms out on the crash-loop breaker (3 attempting boots / 10 min → stand down). Deliberately-interrupted turns (`POST /interrupt`) are never resurrected.
 
-Off by default; requires `--session-db` (there is nothing to detect against without a durable eventlog). Three triggers share the machinery: lazy resume on first touch (multi-session), a bounded boot-time scan over persisted sessions (multi-session), and the startup session of a headless `--no-repl` daemon (#558 — the `examples/gke-deploy` shape, checked once at boot). Interactive REPL/TUI modes never auto-continue — a human is present to re-ask. Autonomous runs are unaffected — they have their own checkpoint/resume machinery.
+**On by default when it can apply (#559):** a multi-session daemon or a headless `--no-repl` daemon, both with `--session-db` (there is nothing to detect against without a durable eventlog). It stays off — silently — for interactive REPL/TUI runs and in-process library use, so those callers are never surprised by unattended token spend; set `enabled: false` to opt out anywhere. When it turns on by default (rather than by an explicit `enabled: true`) the daemon logs a one-line notice naming the opt-out knob. Three triggers share the machinery: lazy resume on first touch (multi-session), a bounded boot-time scan over persisted sessions (multi-session), and the startup session of a headless `--no-repl` daemon (#558 — the `examples/gke-deploy` shape, checked once at boot). Autonomous runs are unaffected — they have their own checkpoint/resume machinery.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `enabled` | bool | `false` | Turn the feature on. |
+| `enabled` | bool (tristate) | *unset* | Tristate. Omit for the precondition-gated default (on for a multi-session or `--no-repl` daemon with `--session-db`, off elsewhere). `true` forces it on where it can apply (and warns-and-ignores where it cannot); `false` is a hard opt-out that survives the default flip. |
 | `freshness` | duration | `"1h"` | Only interruptions younger than this are continued; staler ones wait for the next real message. Explicit `"0s"` disables the window (always continue). |
 | `max_per_boot` | int | `10` | Caps how many sessions the boot-time scan continues in one daemon start, oldest interruption first; the rest are logged and resume on touch. The lazy-resume trigger ignores it. |
 | `retry` | bool | `true` | In-lifetime self-heal (#575): re-runs the guarded pass on `retry_interval` so a transiently-failed continuation recovers without a reboot. Still bounded by the per-session cap and the crash-loop breaker. Set `false` for the old one-shot-per-boot behaviour. |
 | `retry_interval` | duration | `"5m"` | How often the retry driver re-checks. Must be `> 0`. The per-session single-retry window (10 min) is the effective cadence regardless, so shorter intervals mostly just re-check sooner after a lock frees. |
 
+Opt out (the only line most daemons need, now that it defaults on):
+
 ```json
-{ "agent": { "auto_continue": { "enabled": true, "freshness": "1h", "retry": true, "retry_interval": "5m" } } }
+{ "agent": { "auto_continue": { "enabled": false } } }
+```
+
+Or tune the on-by-default behaviour — every field is optional:
+
+```json
+{ "agent": { "auto_continue": { "freshness": "1h", "max_per_boot": 10, "retry": true, "retry_interval": "5m" } } }
 ```
 
 ### System prompt layers (v2.8)

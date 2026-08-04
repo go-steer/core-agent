@@ -42,7 +42,7 @@ research + friction logs, or handover notes.
 
 - [`multi-session-design.md`](multi-session-design.md) — one daemon, many sessions: per-user auth + cross-session isolation + ACLs
 - [`session-resume-design.md`](session-resume-design.md) — transparent session resume on daemon restart
-- [`auto-continue-design.md`](auto-continue-design.md) — opt-in auto-continuation of restart-interrupted turns (detection from eventlog tails, crash-loop breaker)
+- [`auto-continue-design.md`](auto-continue-design.md) — auto-continuation of restart-interrupted turns, on by default for daemons since #559 (detection from eventlog tails, crash-loop breaker)
 - [`shared-memory-design.md`](shared-memory-design.md) — `Memory` interface + FTS5-over-eventlog in-tree + audit-derived recall + Redis AMS extras adapter
 
 ### Context, cost + model management

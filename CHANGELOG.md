@@ -16,11 +16,22 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+_No unreleased changes since [2.8.0-dev.6]._
+
+## [2.8.0-dev.6] — 2026-08-04
+
 ### Changes by Kind
 
 #### Bug or Regression
 
 - eventlog: SQLite read-write transactions now begin with `BEGIN IMMEDIATE` (`_txlock=immediate` on the dialector DSN), so a writer that finds the write lock held waits on `busy_timeout` instead of failing instantly. ADK's `AppendEvent` reads the session row and then writes inside one transaction; under the default deferred `BEGIN`, SQLite refuses that read→write upgrade with an *immediate* `SQLITE_BUSY` (`busy_timeout` never retries a snapshot upgrade). This is what stranded auto-continue: the boot scan's own overlay-pool writes (lock/bootlog) held the write lock while the continuation turn's `AppendEvent` on ADK's separate pool tried to commit, so an interrupted turn that no operator re-touched could sit unfinished — the exact unattended sessions the feature targets. Also closes the parent-checkpoint vs. subagent-create variant. Reads (`Get`/`List`) use no explicit transaction, so they stay lock-free under WAL. Fixes [#575](https://github.com/go-steer/core-agent/issues/575). (#576)
+- recipe/e2e: the GKE-troubleshoot demo's parent model reverts to `gemini-3.5-flash`. The `gemini-3.5-flash-lite` parent (#578) emitted a complete `plan` block on a watcher inject and then yielded the turn before executing any remediation, so automated incidents (no human to nudge) were silently abandoned; a live UAT proved prose-only prompt-hardening (#579) insufficient — flash-lite treats the plan as a terminal deliverable. The parent moves back to flash (live UAT: 13 turns, 16 tool calls, INCIDENT SUMMARY: RESOLVED) while the agentic-wrap sub-agent stays on flash-lite. (#580)
+- test: `TestAutoContinueRetryLoop_SelfHealsAfterTransientLock` now cancels and joins the retry-loop goroutine before the eventlog handle closes, fixing a `-race` data race introduced with #577 — the test launched `AutoContinueRetryLoop` with a bare `go` and a cancel-only cleanup, so a mid-tick lock acquisition raced the eventlog teardown (the loop's own doc mandated the join; production `main.go` already did it via a `WaitGroup`). Test-only; reproduced ~1/3 of `-count=5 -race` runs pre-fix, 30× clean after. (#581)
+
+#### Feature
+
+- auto-continue: interrupted turns are now finished automatically **by default** on daemons that can use the feature — a multi-session daemon or a headless `--no-repl` single-user daemon, both with a durable eventlog (`--session-db`). `agent.auto_continue.enabled` became a `*bool` tristate: omit it for the precondition-gated default (on for those daemons, off — silently — for interactive REPL/TUI runs and in-process library callers, which the precondition excludes so they never auto-continue by surprise), set an explicit `false` to opt out, or `true` to force it on (warned-and-ignored where it cannot apply). The daemon logs a one-line notice when it turns on by default. This flips the v2.8 opt-in / off-by-default posture now that the guard stack has had production soak. Closes [#559](https://github.com/go-steer/core-agent/issues/559). (#583)
+- auto-continue: a stranded continuation now self-heals in-lifetime. A background retry driver (`AutoContinueRetryLoop`, default-on wherever auto-continue is enabled; interval `agent.auto_continue.retry_interval`, default `5m`, opt out with `retry: false`) re-runs the guarded pass on a timer instead of waiting for a reboot or the next human message, so a transiently-failed continuation (momentary run-lock contention, a provider blip, a residual DB hiccup) recovers on a long-lived daemon. It stays bounded by the same crash-loop breaker and per-session cumulative cap, and — running off the daemon's own context — a continuation that kills the daemon kills the driver too, so only survivable failures ever re-fire. Outcome-aware boot-log accounting also refunds fleet lock-losers, so the N−1 daemons that lose the run lock while sharing one eventlog no longer each burn the shared per-session attempt cap. Fixes [#575](https://github.com/go-steer/core-agent/issues/575) (defect B). (#577)
 
 ## [2.8.0-dev.5] — 2026-08-01
 

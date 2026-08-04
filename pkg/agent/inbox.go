@@ -412,3 +412,18 @@ func (a *Agent) InboxArrived() <-chan struct{} {
 	}
 	return a.inbox.arrived()
 }
+
+// CloseInbox marks the agent's inbox closed so every subsequent
+// Inject / InjectAs fails with ErrInboxClosed instead of queuing into
+// a mailbox no live turn will ever drain. The wake-driven surfaces
+// (runner.WakeLoop) call this when their loop exits — both daemon
+// shutdown and per-session eviction cancel that loop's context — so a
+// post-death inject that raced past handler-level gating fails loudly
+// at the source rather than being acknowledged and silently lost
+// (#566). Idempotent and nil-safe.
+func (a *Agent) CloseInbox() {
+	if a == nil || a.inbox == nil {
+		return
+	}
+	a.inbox.close()
+}

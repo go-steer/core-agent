@@ -120,6 +120,34 @@ func TestInbox_PushAfterCloseErrors(t *testing.T) {
 	}
 }
 
+// #566: CloseInbox is the exported seam the wake-driven surfaces call
+// on loop exit; after it, an inject that raced past handler gating must
+// fail loudly rather than queue into a mailbox nobody drains.
+func TestAgent_CloseInbox_InjectFailsAfterClose(t *testing.T) {
+	t.Parallel()
+	prov := mock.NewEcho()
+	llm, err := prov.Model(context.Background(), "echo")
+	if err != nil {
+		t.Fatalf("provider.Model: %v", err)
+	}
+	a, err := New(llm)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := a.Inject("before close"); err != nil {
+		t.Fatalf("Inject before close should succeed; got %v", err)
+	}
+	a.CloseInbox()
+	if err := a.Inject("after close"); !errors.Is(err, ErrInboxClosed) {
+		t.Errorf("Inject after CloseInbox = %v, want ErrInboxClosed", err)
+	}
+	if err := a.InjectAs("after close", auth.Caller{Identity: "op@example.com"}); !errors.Is(err, ErrInboxClosed) {
+		t.Errorf("InjectAs after CloseInbox = %v, want ErrInboxClosed", err)
+	}
+	// Idempotent — a second close must not panic.
+	a.CloseInbox()
+}
+
 func TestPrependInboxMessages_FormatsBlock(t *testing.T) {
 	t.Parallel()
 	got := prependInboxMessages("what's next?", []string{

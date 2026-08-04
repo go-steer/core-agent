@@ -75,6 +75,14 @@ func WakeLoop(ctx context.Context, a *agent.Agent, opts WakeLoopOptions) {
 			fmt.Fprintf(os.Stderr, "core-agent: session %s turn: %v\n", a.SessionID(), err)
 		}
 	}
+	// The loop's ctx is cancelled by both daemon shutdown and
+	// per-session eviction (compose derives it from DaemonCtx and hands
+	// the cancel to the registry as cancelOnEvict). Closing the inbox on
+	// exit makes any inject that races past handler-level gating into an
+	// evicted/shut-down session fail loudly with ErrInboxClosed at the
+	// source, instead of being acknowledged and silently dropped into a
+	// mailbox nobody will drain (#566).
+	defer a.CloseInbox()
 	debugf("wake loop starting (session=%s model=%s)", a.SessionID(), opts.Model)
 	for {
 		select {

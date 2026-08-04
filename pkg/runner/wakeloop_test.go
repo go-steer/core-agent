@@ -16,6 +16,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +40,32 @@ func TestWakeLoop_ReturnsOnContextCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("WakeLoop did not return after ctx cancel")
+	}
+}
+
+// #566: when the loop's ctx is cancelled (daemon shutdown or per-session
+// eviction), WakeLoop must close the agent's inbox on the way out so a
+// post-death inject fails loudly with ErrInboxClosed instead of being
+// acknowledged and dropped into a mailbox nobody drains.
+func TestWakeLoop_ClosesInboxOnExit(t *testing.T) {
+	t.Parallel()
+	a := newEchoWakeAgent(t)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		WakeLoop(ctx, a, WakeLoopOptions{})
+		close(done)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WakeLoop did not return after ctx cancel")
+	}
+
+	if err := a.Inject("post-eviction inject"); !errors.Is(err, agent.ErrInboxClosed) {
+		t.Errorf("Inject after WakeLoop exit = %v, want ErrInboxClosed", err)
 	}
 }
 

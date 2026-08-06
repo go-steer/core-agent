@@ -7,7 +7,13 @@ Agentic Harness?
 
 **Status:** investigative (2026-06-03). Not a commitment to ship;
 this captures the architectural mapping + gap list so we can decide
-whether to pursue.
+whether to pursue. **Superseded (2026-08-05) for the full-replacement
+scope by `docs/hermes-replacement-design.md`** — this doc covered only
+the interactive Platform Agent and predates the k8s-lookout extraction
+and the corrected picture of Hermes (kanban / chat gateway /
+credential-isolation stack). Its Gap 1 (file-backed PeerRegistry),
+Gap 2 (`call_peer`), and Gap 3 (cron loader, now #202) carry forward;
+read the newer doc first.
 
 **TL;DR:** 80% reusable today via the v2 multi-file instruction
 loader (PR #98) and the existing peer-registration primitives

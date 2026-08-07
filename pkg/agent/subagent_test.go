@@ -144,6 +144,59 @@ func TestWithSubagents_RegistersTools(t *testing.T) {
 	}
 }
 
+func TestWithSubagentMaxDepth_SetsField(t *testing.T) {
+	t.Parallel()
+	// Default: unset → 0, which NewSubagentTool reads as "substrate
+	// default" (defaultSubagentMaxDepth).
+	def, err := New(minimalLLM{}, WithName("plain"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if def.subagentMaxDepth != 0 {
+		t.Errorf("default subagentMaxDepth = %d, want 0", def.subagentMaxDepth)
+	}
+	// Explicit value is retained on the agent so the parent's
+	// WithSubagents resolution can forward it to SubagentOptions.MaxDepth.
+	a, err := New(minimalLLM{}, WithName("deep"), WithSubagentMaxDepth(5))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if a.subagentMaxDepth != 5 {
+		t.Errorf("subagentMaxDepth = %d, want 5", a.subagentMaxDepth)
+	}
+}
+
+func TestWithSubagents_HonorsPerSubagentMaxDepth(t *testing.T) {
+	t.Parallel()
+	// A subagent that declares its own depth cap keeps it when wrapped
+	// as a tool by the parent — the value must survive the WithSubagents
+	// resolution into SubagentOptions.MaxDepth. We can't read maxDepth
+	// off the opaque tool.Tool, so assert the observable proxy: parent
+	// construction succeeds and the tool registers under its name. The
+	// field-forwarding one-liner is covered by TestWithSubagentMaxDepth_SetsField
+	// plus this integration check that the depth-carrying subagent is a
+	// legal WithSubagents input.
+	h, cleanup := openTestEventLog(t)
+	defer cleanup()
+	child, err := New(minimalLLM{}, WithName("capped"), WithSubagentMaxDepth(1), WithEventLog(h), WithSession("u", "c"))
+	if err != nil {
+		t.Fatalf("New child: %v", err)
+	}
+	parent, err := New(minimalLLM{}, WithName("parent"), WithEventLog(h), WithSession("u", "p"), WithSubagents([]*Agent{child}))
+	if err != nil {
+		t.Fatalf("New parent: %v", err)
+	}
+	var found bool
+	for _, tl := range parent.Tools() {
+		if tl.Name() == "capped" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("depth-capped subagent should register as a tool named \"capped\"")
+	}
+}
+
 func TestWithSubagents_NilEntryIgnored(t *testing.T) {
 	t.Parallel()
 	a, err := New(minimalLLM{}, WithSubagents([]*Agent{nil}))

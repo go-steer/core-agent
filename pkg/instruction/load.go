@@ -236,6 +236,48 @@ func LoadForSession(projectRoot, userRoot, callerIdentity, usersDir string, opts
 	return loaded, nil
 }
 
+// Expand resolves @include directives in an inline instruction body —
+// e.g. a declarative subagent's `instructions` field, which may be plain
+// prose or "@include upstream/cluster/SOUL.md". It applies the SAME
+// @include handling as Load: relative paths resolve against baseDir,
+// ensureWithinScope keeps every target under scopeRoot (so a subagent's
+// @include cannot escape the project root any more than the parent's
+// can), the depth cap and dedup apply, and each included file is
+// frontmatter-stripped + UTF-8-validated.
+//
+// The inline body itself is not a file, so it produces no Source; the
+// returned slice lists only the files pulled in by @include (empty when
+// body has none). A body with no @include directive is returned
+// unchanged. baseDir and scopeRoot are typically both the project root.
+//
+// Unlike Load, Expand does not read a primary file or scan AGENTS.d/ —
+// the caller already holds the text. This is the "resolve @include in a
+// string I already have" primitive; Load is the "walk the memory files"
+// primitive.
+func Expand(body, baseDir, scopeRoot string, opts ...Option) (string, []Source, error) {
+	var lo loadOptions
+	for _, o := range opts {
+		o(&lo)
+	}
+	// Match loadFile's ordering: interpolate the raw body before include
+	// resolution, so ${env:VAR} inside the inline text resolves and any
+	// @include lines it produces are then expanded. Included files get
+	// their own interpolation pass inside loadFile.
+	if lo.interp != nil {
+		body = lo.interp(body)
+	}
+	// depth 1: the inline body stands in for a primary file's body,
+	// which loadFile hands to processIncludes at depth+1 (== 1) after
+	// reading it at depth 0.
+	var sources []Source
+	visited := make(map[string]bool)
+	expanded, err := processIncludes(body, "subagent", baseDir, scopeRoot, 1, visited, &sources, lo.interp)
+	if err != nil {
+		return "", nil, err
+	}
+	return expanded, sources, nil
+}
+
 // ErrInvalidCallerIdentity is returned by LoadForSession when the
 // callerIdentity argument contains characters that could traverse out
 // of usersDir (path separators or ".."). Operators see this as a

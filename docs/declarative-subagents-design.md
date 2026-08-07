@@ -63,8 +63,12 @@ All three land on the same substrate: each subagent becomes a `tool.Tool`
 (`NewSubagentTool`, `pkg/agent/subagent.go:120`) the parent invokes *by name*,
 runs on its own baked-in LLM through a per-invocation runner against a
 branch-injecting view of the parent session, with a depth cap. Declarative
-subagents add **only** the config→`*Agent` construction glue in
-`cmd/core-agent/main.go`; nothing in `pkg/agent` changes.
+subagents are almost entirely config→`*Agent` construction glue in
+`cmd/core-agent/main.go`. The one `pkg/agent` addition is a small
+`WithSubagentMaxDepth` option so a per-subagent `MaxDepth` from config reaches
+`SubagentOptions.MaxDepth` instead of being validated and then silently
+dropped (`WithSubagents` otherwise always applies the substrate default). No
+substrate behavior changes.
 
 ## Detailed design
 
@@ -190,8 +194,11 @@ won on declarative-deploy ergonomics.
 
 - **`pkg/config`** — new `SubagentSpec` type + `Config.Subagents` field +
   `Validate` cases. Round-trip and validation tests.
-- **`pkg/agent`** — **none**. `WithSubagents` / `NewSubagentTool` /
-  `SubagentOptions` (`subagent.go:35-85`) are sufficient as-is.
+- **`pkg/agent`** — one small addition: `WithSubagentMaxDepth(n int)`, so a
+  per-subagent `MaxDepth` reaches `SubagentOptions.MaxDepth` at the parent's
+  `WithSubagents` resolution rather than being validated and silently dropped.
+  `WithSubagents` / `NewSubagentTool` / `SubagentOptions` (`subagent.go:35-85`)
+  are otherwise sufficient as-is; no substrate behavior changes.
 - **`pkg/mcp`** — **none** to signatures; the parent's single `mcp.Build`
   already returns per-server toolsets we filter by name.
 - **`pkg/skills`** — one small addition: a name-filtered view of the merged
@@ -249,8 +256,10 @@ full surface; an explicit `"mcp": []` grants none of that dimension.
 - **Phase 1 (PR γ.1 of #599)** — `SubagentSpec` + `Config.Subagents` +
   `Validate`; config round-trip tests. No wiring yet.
 - **Phase 2 (PR γ.2)** — `buildDeclaredSubagents` wiring for name / description /
-  instructions / model + `WithSubagents`; a scripted/echo-provider test asserting
-  the named tool is registered, invoked by name, and runs on its own model.
+  instructions / model / `max_depth` (via the new `WithSubagentMaxDepth`) +
+  `WithSubagents`; a scripted/echo-provider test asserting the named tool is
+  registered, invoked by name, inherits the parent model when unset, and runs on
+  its own model when declared.
 - **Phase 3 (PR γ.3)** — inline MCP + skills + tools filtering; a test asserting
   a subagent that names `gke-readonly` sees only that server's toolset (not the
   parent's `gke`), a subagent that names a skill subset sees only those, and a

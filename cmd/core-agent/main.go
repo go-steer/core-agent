@@ -1121,6 +1121,18 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		fmt.Fprintln(os.Stderr, "core-agent: system prompt replaced from file — the built-in harness contract (compaction framing, tool dispatch rules) is NOT included; tool-use degradation is on you")
 	}
 
+	// Declarative subagents (docs/declarative-subagents-design.md): build
+	// each config-declared subagent into a callable *agent.Agent before
+	// assembling the parent options, then register them via
+	// agent.WithSubagents below. Constructed after builtinTools/allToolsets
+	// are final so a subagent inherits the parent's full tool surface
+	// (γ.2 default); narrowing by inline refs lands in γ.3.
+	declaredSubagents, err := buildDeclaredSubagents(ctx, cfg, provider, projectRoot, builtinTools, allToolsets, envResolver.InterpolateFunc(), send)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: subagents: %v\n", err)
+		return runner.ExitConfigError
+	}
+
 	opts := []agent.Option{
 		agent.WithTools(builtinTools),
 		agent.WithToolsets(allToolsets),
@@ -1139,6 +1151,9 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		// window state from this same tracker so there's one source
 		// of truth.
 		agent.WithUsageTracker(tracker),
+	}
+	if len(declaredSubagents) > 0 {
+		opts = append(opts, agent.WithSubagents(declaredSubagents))
 	}
 	if replacePrompt != "" {
 		opts = append(opts, agent.WithInstruction(replacePrompt))

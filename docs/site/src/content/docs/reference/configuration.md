@@ -735,6 +735,70 @@ See [`fetch-url-design.md`](https://github.com/go-steer/core-agent/blob/main/doc
 
 ---
 
+## `alerts`
+
+Registers the webhook destinations the `alert` built-in is allowed to fire. Like `fetch_url`, the tool is **default-deny**: with no `targets` configured the `alert` tool is not registered at all, so the model can never notify an operator-unapproved endpoint. **SSRF is impossible by construction** — the tool has no arbitrary-URL argument. The model picks a target by *name* from this registry; an unknown name is rejected, not dialed.
+
+The tool lets a headless daemon escalate — incident summaries, "I finished / I'm stuck" pings, decision notifications — without shelling out or standing up a separate MCP server.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `targets` | object[] | `[]` | The registered destinations. Empty → the `alert` tool is not registered. See the per-target fields below. |
+| `rate_limit_per_target` | string | `""` | Optional cap applied independently to each target. Accepts `"30s"` (one every 30s), `"1/30s"`, `"5/min"`, `"100/hour"`. Empty → unlimited. In-memory only (per process; resets on restart). |
+
+Each entry in `targets`:
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `name` | string | — | **Required.** Unique per registry; `[A-Za-z0-9_-]`, 1–64 chars. This is the identifier the model fires and the string the [permissions gate](//#permissions) scopes on (`alert:<name>`). |
+| `kind` | string | `"webhook"` | Reserved for future transports; only `""`/`"webhook"` are accepted today. |
+| `url` | string | `""` | The destination URL (http/https). Mutually exclusive with `url_env` — set **exactly one**. |
+| `url_env` | string | `""` | Name of the env var holding the destination URL. Prefer this for secret webhook URLs (e.g. a Slack Incoming Webhook) so the secret lives in your secret manager, not this file. Resolved at call time. |
+| `template` | string | — | **Required.** Payload shape. Only `generic` ships today; `slack`, `discord`, and `pagerduty_events_v2` are declared but rejected at load with a "not yet implemented" error (Phase 2). |
+| `auth` | object | `null` | Optional auth header, resolved from env at call time (rotates without a restart). One of: `bearer_env` (→ `Authorization: Bearer <env>`), or `basic_env_user` + `basic_env_pass` (→ HTTP Basic). The model never sets auth — the operator picks what ships. |
+| `description` | string | `""` | Free text surfaced to the model in the tool description so it can match the right target to the situation. |
+
+The `generic` template posts `application/json`:
+
+```json
+{ "level": "critical", "summary": "…", "details": { "…": "…" } }
+```
+
+`details` is omitted when empty. No timestamp is included by design — the eventlog's `tool/alert` record is the authoritative time source.
+
+Worked example:
+
+```json
+{
+  "alerts": {
+    "rate_limit_per_target": "1/30s",
+    "targets": [
+      {
+        "name": "slack-oncall",
+        "url_env": "SLACK_ONCALL_WEBHOOK",
+        "template": "generic",
+        "description": "on-call channel; use for anything needing a human now"
+      },
+      {
+        "name": "audit-sink",
+        "url": "https://audit.internal.example.com/hook",
+        "template": "generic",
+        "auth": { "bearer_env": "AUDIT_SINK_TOKEN" },
+        "description": "append-only audit log; fire on every significant decision"
+      }
+    ]
+  }
+}
+```
+
+Per-target gating composes with the [permissions gate](//#permissions): write `permissions.allow: ["alert:slack-oncall"]` to let the agent fire only that target, or `["alert:*"]` for all. Auth material never appears in the tool arguments or the audited call — only the target name, level, summary, and details do, and the result carries just the status code and duration (never the response body).
+
+CLI convenience:
+
+- `--disable-tools=alert` — turns the tool off even when targets are configured.
+
+---
+
 ## `attach`
 
 Default values for the attach-mode listener and the peer-registration client. Every field below is also exposed as a `--attach-*` CLI flag: names follow the `--attach-<kebab-case-field>` convention (`unix_socket` → `--attach-unix-socket`, `peer_hub` → `--attach-peer-hub`, `register_to` → `--attach-register-to`, and so on). The flag wins when explicitly set, otherwise the config value applies, otherwise the zero value. This section exists for K8s-style deployments where the same settings would otherwise be repeated on every invocation.

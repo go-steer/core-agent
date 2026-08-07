@@ -16,7 +16,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
-_No unreleased changes since [2.8.0]._
+### Changes by Kind
+
+#### Feature
+- tools: new native `alert` built-in tool — a distroless-safe way for a headless daemon to fire escalations to operator-registered webhook targets without a shell or a separate MCP process. Targets are declared in the new `alerts.targets[]` config block (each a named `webhook` with `url`/`url_env`, a `template`, optional per-target `auth` resolved from env, and an LLM-facing `description`); the model fires a target **by name**, so SSRF is impossible by construction — there is no arbitrary-URL parameter. The tool is registered only when at least one target is configured (the `fetch_url` conditional-registration pattern) and is gated per target via `permissions.allow: ["alert:<name>"]`. An optional `alerts.rate_limit_per_target` (`"1/30s"`, `"5/min"`, `"30s"`, …) bounds each target independently to catch runaway escalation loops. Response status + duration are returned; the response body and all auth material stay out of the result and the eventlog. This Phase 1 ships the `generic` JSON-passthrough template; the `slack`/`discord`/`pagerduty_events_v2` templates are designed in `docs/alert-tool-design.md` and rejected at config-load time with a clear "not yet implemented" error until they land. Implements the tool the historical CHANGELOG/[#193](https://github.com/go-steer/core-agent/pull/193) design promised but never shipped. Part of [#593](https://github.com/go-steer/core-agent/issues/593).
 
 ## [2.8.0] — 2026-08-07
 

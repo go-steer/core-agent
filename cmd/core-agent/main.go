@@ -147,12 +147,20 @@ func main() {
 	noBackgroundAgents := flag.Bool("no-background-agents", false, "disable the spawn_agent / list_agents / check_agent / stop_agent tools (model can't spawn background subagents). Default: enabled.")
 	allowURLHost := flag.String("allow-url-host", "", "comma-separated host patterns appended to url_scope.allow for the fetch_url tool (e.g. \"github.com,*.googleapis.com\"). HTTPS only unless the pattern carries an http:// prefix. Disable the tool entirely with --disable-tools=fetch_url.")
 	var allowPathEntries []config.PathScopeAllowEntry
+	var contentDirEntries []string
 	flag.Func("allow-path", "grant file access to a path tree outside the project + user-home roots, e.g. --allow-path /home/me/sibling-repo:rw (repeatable). Explicit access is required: r, w, or rw (long forms read/write/readwrite accepted). Skip the permission prompt for matching paths; unmatched paths still prompt.", func(s string) error {
 		e, err := parseAllowPathSpec(s)
 		if err != nil {
 			return err
 		}
 		allowPathEntries = append(allowPathEntries, e)
+		return nil
+	})
+	flag.Func("agents-content-dir", "trust an external directory as an additional instruction/skill scope, so an unmodified external agent tree (e.g. a kube-agents checkout) can be consumed without vendoring it, e.g. --agents-content-dir ../kube-agents/agents/platform (repeatable). Relative paths resolve against the agents dir. Composes with config content_roots; precedence is project > content_roots (listed order) > home-agents > user. See docs/external-content-root-design.md.", func(s string) error {
+		if strings.TrimSpace(s) == "" {
+			return fmt.Errorf("--agents-content-dir requires a non-empty path")
+		}
+		contentDirEntries = append(contentDirEntries, s)
 		return nil
 	})
 	attachListen := flag.String("attach-listen", "", "enable attach-mode HTTP listener on this address (e.g. 127.0.0.1:7777). Requires --session-db. Non-loopback binds (:7777, 0.0.0.0:7777, ...) refuse to start without authentication — set --attach-token (or mTLS / enforced multi-session auth).")
@@ -213,7 +221,7 @@ func main() {
 		os.Exit(runner.ExitConfigError)
 	}
 
-	code := run(*prompt, *initialPrompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *compactionThreshold, *maxTurnCostUSD, *maxSessionCostUSD, *watchdogMode, *smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *mcpAgenticWrapLLM, *mcpAgenticWrapModel, *noContextCache, promptOpts{appendSystemPrompt: *appendSystemPrompt, systemPromptFile: *systemPromptFile},
+	code := run(*prompt, *initialPrompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, contentDirEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *compactionThreshold, *maxTurnCostUSD, *maxSessionCostUSD, *watchdogMode, *smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *mcpAgenticWrapLLM, *mcpAgenticWrapModel, *noContextCache, promptOpts{appendSystemPrompt: *appendSystemPrompt, systemPromptFile: *systemPromptFile},
 		attachOpts{
 			Listen:           *attachListen,
 			UnixSocket:       *attachUnixSocket,
@@ -388,7 +396,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 // comment at the otelShutdown defer (#538).
 const teardownStepTimeout = 3 * time.Second
 
-func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, compactionThreshold float64, maxTurnCostUSD, maxSessionCostUSD float64, watchdogMode, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache bool, promptCfg promptOpts, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
+func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, contentDirEntries []string, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, compactionThreshold float64, maxTurnCostUSD, maxSessionCostUSD float64, watchdogMode, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache bool, promptCfg promptOpts, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -683,6 +691,18 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	if agentsDir != "" {
 		projectRoot = filepath.Dir(agentsDir)
 	}
+	// External content roots (docs/external-content-root-design.md): config
+	// content_roots plus repeatable --agents-content-dir flags, merged CLI-
+	// after-config, resolved once relative to the agents dir (or cwd when the
+	// config was not discovered under an agents dir). Each becomes an
+	// additional trusted instruction/skill scope, threaded into every loader
+	// call below (startup + reload). Empty ⇒ nil ⇒ the loaders are a no-op,
+	// i.e. today's behavior exactly.
+	contentRootBase := agentsDir
+	if contentRootBase == "" {
+		contentRootBase = cwd
+	}
+	contentRoots := resolveContentRoots(cfg.ContentRoots, contentDirEntries, contentRootBase)
 	// LoadForSession is the multi-session-aware loader. With an empty
 	// callerIdentity (single-user / startup-time), it behaves
 	// identically to Load. The per-caller overlay path lights up when
@@ -690,6 +710,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// future session-creation flows pass the resolved Caller.Identity.
 	loaded, err := instruction.LoadForSession(projectRoot, coreHome, "", cfg.Attach.MultiSession.UsersDir,
 		instruction.WithHomeAgentsRoot(homeAgentsDir),
+		instruction.WithContentRoots(contentRoots),
 		instruction.WithInterpolator(envResolver.InterpolateFunc()))
 	if err != nil {
 		// Fatal: malformed @include / escaped path / missing target / non-UTF-8
@@ -890,6 +911,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	}
 	loadedSkills, skillsErr := skills.LoadAll(ctx, agentsDir, coreHome, gate,
 		skills.WithHomeAgentsSkillsDir(homeAgentsDir),
+		skills.WithContentRoots(contentRoots),
 		skills.WithInterpolator(envResolver.InterpolateFunc()))
 	if skillsErr != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: skills: %v\n", skillsErr)
@@ -1186,7 +1208,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			// agent itself) surfaces without a daemon restart. Cheap
 			// — a few file stats + reads of small files capped at
 			// 32 KiB each.
-			fresh, _ := instruction.Load(projectRoot, coreHome, instruction.WithHomeAgentsRoot(homeAgentsDir))
+			fresh, _ := instruction.Load(projectRoot, coreHome, instruction.WithHomeAgentsRoot(homeAgentsDir), instruction.WithContentRoots(contentRoots))
 			out := make([]attach.MemorySource, 0, len(fresh.Sources)+1)
 			// First row: which system-prompt layers are active (#459)
 			// so operators can see the assembled shape from /memory
@@ -1201,7 +1223,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			// Re-walk on every call so newly-dropped SKILL.md bundles
 			// surface without restart. The merge across project +
 			// user-global sources happens inside skills.LoadAll.
-			fresh, err := skills.LoadAll(ctx, agentsDir, coreHome, gate, skills.WithHomeAgentsSkillsDir(homeAgentsDir))
+			fresh, err := skills.LoadAll(ctx, agentsDir, coreHome, gate, skills.WithHomeAgentsSkillsDir(homeAgentsDir), skills.WithContentRoots(contentRoots))
 			if err != nil {
 				return nil
 			}
@@ -1262,12 +1284,12 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			// for now MCP comes back as a configuration-only re-read
 			// note.
 			out := attach.ReloadResponse{}
-			if _, err := instruction.Load(projectRoot, coreHome, instruction.WithHomeAgentsRoot(homeAgentsDir)); err != nil {
+			if _, err := instruction.Load(projectRoot, coreHome, instruction.WithHomeAgentsRoot(homeAgentsDir), instruction.WithContentRoots(contentRoots)); err != nil {
 				out.Errors = append(out.Errors, fmt.Sprintf("memory: %v", err))
 			} else {
 				out.Memory = true
 			}
-			if _, err := skills.LoadAll(ctx, agentsDir, coreHome, gate, skills.WithHomeAgentsSkillsDir(homeAgentsDir)); err != nil {
+			if _, err := skills.LoadAll(ctx, agentsDir, coreHome, gate, skills.WithHomeAgentsSkillsDir(homeAgentsDir), skills.WithContentRoots(contentRoots)); err != nil {
 				out.Errors = append(out.Errors, fmt.Sprintf("skills: %v", err))
 			} else {
 				out.Skills = true
@@ -1648,6 +1670,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 				ProjectRoot:           projectRoot,
 				UserRoot:              coreHome,
 				HomeAgentsDir:         homeAgentsDir,
+				ContentRoots:          contentRoots,
 				UsersDir:              cfg.Attach.MultiSession.UsersDir,
 				EnvInterp:             envResolver.InterpolateFunc(),
 				Registry:              attachReg,
@@ -1996,6 +2019,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			CoreHome:      coreHome,
 			HomeAgentsDir: homeAgentsDir,
 			ProjectRoot:   projectRoot,
+			ContentRoots:  contentRoots,
 			EnvInterp:     envResolver.InterpolateFunc(),
 			InitialPrompt: initialPrompt,
 		})

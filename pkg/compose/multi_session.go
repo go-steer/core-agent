@@ -115,6 +115,14 @@ type SessionFactoryDeps struct {
 	HomeAgentsDir  string
 	AgentsDir      string
 	UsersDir       string
+	// ContentRoots are operator-declared external directories trusted as
+	// additional instruction/skill scopes (config content_roots +
+	// --agents-content-dir), already resolved to absolute paths. Threaded
+	// into every per-session and attach-provider loader call so multi-
+	// session sessions see the same external content the daemon-wide
+	// startup load did. Empty = no external scopes (default). See
+	// docs/external-content-root-design.md.
+	ContentRoots []string
 	// EnvInterp is the ${env:VAR} interpolator wired from the daemon's
 	// env manifest (see pkg/agentenv, #322). May be nil when the
 	// bundle doesn't ship an env.yaml / env.json — loaders treat nil
@@ -303,6 +311,7 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 	// caller falls through to the daemon-wide instruction stack.
 	instr, err := instruction.LoadForSession(deps.ProjectRoot, deps.UserRoot, caller.Identity, deps.UsersDir,
 		instruction.WithHomeAgentsRoot(deps.HomeAgentsDir),
+		instruction.WithContentRoots(deps.ContentRoots),
 		instruction.WithInterpolator(deps.EnvInterp))
 	if err != nil {
 		broker.Close()
@@ -530,6 +539,7 @@ func attachProviderOpts(deps SessionFactoryDeps, _ *permissions.Gate, modelName 
 		opts = append(opts, attachadapter.WithMemoryProvider(func() []attach.MemorySource {
 			fresh, _ := instruction.Load(deps.ProjectRoot, deps.UserRoot,
 				instruction.WithHomeAgentsRoot(deps.HomeAgentsDir),
+				instruction.WithContentRoots(deps.ContentRoots),
 				instruction.WithInterpolator(deps.EnvInterp))
 			out := make([]attach.MemorySource, 0, len(fresh.Sources))
 			for _, s := range fresh.Sources {
@@ -543,6 +553,7 @@ func attachProviderOpts(deps SessionFactoryDeps, _ *permissions.Gate, modelName 
 		opts = append(opts, attachadapter.WithSkillsProvider(func() []attach.SkillInfo {
 			fresh, err := skills.LoadAll(deps.DaemonCtx, deps.AgentsDir, deps.UserRoot, deps.Template,
 				skills.WithHomeAgentsSkillsDir(deps.HomeAgentsDir),
+				skills.WithContentRoots(deps.ContentRoots),
 				skills.WithInterpolator(deps.EnvInterp))
 			if err != nil {
 				return nil

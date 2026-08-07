@@ -56,6 +56,11 @@ type tuiDeps struct {
 	CoreHome      string
 	HomeAgentsDir string
 	ProjectRoot   string
+	// ContentRoots are the resolved external content roots (config
+	// content_roots + --agents-content-dir), passed so the /reload path
+	// re-walks the same trusted scopes the startup load used — otherwise
+	// external memory/skills would silently drop from the TUI on reload.
+	ContentRoots []string
 	// EnvInterp is the ${env:VAR} interpolator wired from the daemon's
 	// env manifest (see pkg/agentenv, #322). May be nil when the
 	// bundle doesn't ship an env.yaml / env.json — loaders treat nil

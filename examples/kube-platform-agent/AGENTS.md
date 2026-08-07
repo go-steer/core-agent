@@ -40,7 +40,14 @@ overlay, this overlay wins.
 - **Glossary and reference docs.** The upstream `AGENTS.md` points at
   `/opt/defaults/docs/glossary.md`; here that content is `upstream/docs/glossary.md`
   (also `gcp-console-links.md`, `session_management.md`). Read on demand.
-- **Delegation to Cluster Agents** (single-cluster runtime debugging) is not
-  wired in this config-only recipe. It arrives as a declarative `cluster`
-  subagent in a follow-on increment; for now, handle fleet-level work yourself
-  and note where a Cluster Agent would take over.
+- **Delegation to the Cluster Agent.** Single-cluster runtime debugging is
+  wired as a read-only `cluster` subagent (a tool named `cluster`). When a task
+  is deep diagnosis of one named cluster — crash loops, OOMKills,
+  pending/unschedulable pods, image-pull or mount errors, DNS/connectivity
+  timeouts, autoscaling behavior, PVC/storage binding, observability gaps —
+  delegate it by calling `cluster` with the cluster name and the symptom. It
+  investigates read-only (it has only the `gke-readonly` MCP, never your
+  read-write `gke`) and returns a Root Cause Analysis plus a proposed manifest
+  patch; **you** own acting on that fix (the plan + GitOps proposal above).
+  Keep fleet-wide work, provisioning/lifecycle, RBAC/multi-tenancy, and GitOps
+  changes yourself — do not route those to `cluster`.

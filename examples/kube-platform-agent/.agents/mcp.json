@@ -14,6 +14,17 @@
         }
       }
     },
+    "gke-readonly": {
+      "transport": "http",
+      "url": "https://container.googleapis.com/mcp/read-only",
+      "auth": {
+        "google_oauth": {
+          "scopes": [
+            "https://www.googleapis.com/auth/cloud-platform.read-only"
+          ]
+        }
+      }
+    },
     "developer_knowledge": {
       "transport": "http",
       "url": "https://developerknowledge.googleapis.com/mcp",

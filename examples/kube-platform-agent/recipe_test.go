@@ -16,7 +16,8 @@
 // kube-platform-agent recipe (v2.9 Phase 0 / W5, epic #589). It proves
 // that core-agent's v2 loader can consume a vendored, unmodified snapshot
 // of the kube-agents Platform Agent — persona, governance SOPs, all 18
-// skills, and the translated MCP surface — WITHOUT any cloud credentials
+// skills, the translated MCP surface, and the read-only `cluster` subagent
+// it delegates to — WITHOUT any cloud credentials
 // or a live cluster. The live GKE run is a manual UAT documented in
 // README.md; this test guards the plumbing.
 //
@@ -29,6 +30,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -145,15 +147,17 @@ func TestSkillsLoad(t *testing.T) {
 }
 
 // TestMCPServersParse asserts the translated MCP surface parses and holds
-// exactly the two remote HTTP servers the recipe keeps — gke and
-// developer_knowledge — reachable over core-agent's native HTTP transport
-// (no node mcp-remote proxy, no dropped platform_control/agent_common).
+// the remote HTTP servers the recipe keeps — gke (read-write, for the
+// platform agent), gke-readonly (the read-only endpoint the cluster
+// subagent is scoped to), and developer_knowledge — all reachable over
+// core-agent's native HTTP transport (no node mcp-remote proxy, no dropped
+// platform_control/agent_common).
 func TestMCPServersParse(t *testing.T) {
 	servers, err := mcp.Load(agentsDir)
 	if err != nil {
 		t.Fatalf("mcp.Load: %v", err)
 	}
-	for _, want := range []string{"gke", "developer_knowledge"} {
+	for _, want := range []string{"gke", "gke-readonly", "developer_knowledge"} {
 		spec, ok := servers.Servers[want]
 		if !ok {
 			t.Errorf("mcp server %q not present", want)
@@ -167,6 +171,111 @@ func TestMCPServersParse(t *testing.T) {
 		if _, ok := servers.Servers[dropped]; ok {
 			t.Errorf("mcp server %q should have been dropped (Hermes-runtime-specific)", dropped)
 		}
+	}
+}
+
+// TestClusterSubagentDeclared asserts the recipe wires the read-only
+// `cluster` subagent (v2.9 PR B′): the platform agent delegates a single
+// cluster's diagnostics to a declarative subagent whose tool surface is
+// strictly narrower than its own. It pins the nil/list/empty scoping
+// contract as the recipe uses it — MCP scoped to the read-only servers
+// (never the read-write `gke`), skills explicitly granted none, tools
+// inherited — and cross-checks that every MCP the subagent names actually
+// exists in mcp.json, and that the vendored persona it @includes is present.
+func TestClusterSubagentDeclared(t *testing.T) {
+	cfg, err := config.Load(agentsDir)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if len(cfg.Subagents) != 1 {
+		t.Fatalf("expected exactly 1 subagent, got %d", len(cfg.Subagents))
+	}
+	sa := cfg.Subagents[0]
+	if sa.Name != "cluster" {
+		t.Errorf("subagent name = %q, want %q", sa.Name, "cluster")
+	}
+
+	// MCP: scoped (list) to the read-only surface — and crucially NOT the
+	// read-write `gke` the platform agent itself uses. This is the
+	// least-privilege payoff of declarative subagents.
+	wantMCP := map[string]bool{"gke-readonly": true, "developer_knowledge": true}
+	if len(sa.MCP) != len(wantMCP) {
+		t.Errorf("subagent mcp = %v, want %v", sa.MCP, wantMCP)
+	}
+	for _, name := range sa.MCP {
+		if !wantMCP[name] {
+			t.Errorf("subagent mcp includes unexpected server %q", name)
+		}
+		if name == "gke" {
+			t.Error("cluster subagent must NOT see the read-write gke server")
+		}
+	}
+
+	// Skills: explicit empty list → grant none (a single-cluster read-only
+	// SRE inherits none of the fleet/provisioning skills). Non-nil-but-empty
+	// is the "grant none" half of the contract; nil would mean "inherit".
+	if sa.Skills == nil {
+		t.Error("subagent skills is nil (would inherit); recipe grants none via []")
+	}
+	if len(sa.Skills) != 0 {
+		t.Errorf("subagent skills = %v, want none", sa.Skills)
+	}
+
+	// Tools: omitted → inherit the parent's built-ins (bash already disabled
+	// at the parent, so the subagent is shell-less too).
+	if sa.Tools != nil {
+		t.Errorf("subagent tools = %v, want nil (inherit)", sa.Tools)
+	}
+
+	// Own model, declared explicitly.
+	if sa.Model == nil {
+		t.Fatal("subagent has no model")
+	}
+	if sa.Model.Provider != "vertex" || sa.Model.Name != "gemini-3.5-flash" {
+		t.Errorf("subagent model = %s/%s, want vertex/gemini-3.5-flash", sa.Model.Provider, sa.Model.Name)
+	}
+
+	// Persona: @includes the vendored cluster SOUL, then overlays the
+	// core-agent runtime reconciliation.
+	if !strings.Contains(sa.Instructions, "@include upstream/cluster/SOUL.md") {
+		t.Error("subagent instructions do not @include the vendored cluster SOUL")
+	}
+	if !strings.Contains(sa.Instructions, "Runtime overlay (core-agent)") {
+		t.Error("subagent instructions missing the core-agent runtime overlay")
+	}
+
+	// Every MCP the subagent names must resolve against mcp.json — a typo
+	// here would only surface at daemon boot otherwise.
+	servers, err := mcp.Load(agentsDir)
+	if err != nil {
+		t.Fatalf("mcp.Load: %v", err)
+	}
+	for _, name := range sa.MCP {
+		if _, ok := servers.Servers[name]; !ok {
+			t.Errorf("subagent references mcp server %q not in mcp.json", name)
+		}
+	}
+
+	// The vendored persona it @includes must exist and carry the read-only
+	// boundary the whole scope relies on.
+	soul, err := os.ReadFile(filepath.Join(upstreamDir, "cluster", "SOUL.md"))
+	if err != nil {
+		t.Fatalf("read vendored cluster SOUL.md: %v", err)
+	}
+	if !strings.Contains(string(soul), "Read-Only Boundary") {
+		t.Error("vendored cluster SOUL.md missing its read-only boundary section")
+	}
+
+	// The subagent's @include must actually resolve at the recipe's project
+	// root the same way buildDeclaredSubagents expands it — a path typo here
+	// would otherwise only surface at daemon boot. instruction.Expand uses
+	// the project root as both base and scope root, exactly as the cmd path.
+	expanded, _, err := instruction.Expand(sa.Instructions, projectRoot, projectRoot)
+	if err != nil {
+		t.Fatalf("expand subagent instructions: %v", err)
+	}
+	if !strings.Contains(expanded, "Read-Only Boundary") {
+		t.Error("expanded subagent instructions did not pull in the vendored cluster SOUL")
 	}
 }
 
@@ -223,5 +332,26 @@ func TestHubConfigParses(t *testing.T) {
 	}
 	if !cfg.Attach.MultiSession.Enabled {
 		t.Error("hub config does not enable attach.multi_session")
+	}
+	// The cluster subagent must not drift out of the hub variant: an
+	// operator running the hub should get the *same* delegation surface,
+	// down to the scoped mcp/skills/tools least-privilege. Compare the
+	// whole Subagents block against the local config, not just the name —
+	// a hub subagent that silently regained the read-write `gke` server,
+	// or whose `skills` went nil (inherit-all), would otherwise slip by.
+	local := config.DefaultConfig()
+	localBody, err := os.ReadFile(filepath.Join(agentsDir, "config.json"))
+	if err != nil {
+		t.Fatalf("read config.json: %v", err)
+	}
+	if err := json.Unmarshal(localBody, local); err != nil {
+		t.Fatalf("parse config.json: %v", err)
+	}
+	if len(cfg.Subagents) != 1 || cfg.Subagents[0].Name != "cluster" {
+		t.Errorf("hub config subagents drifted from local: %+v", cfg.Subagents)
+	}
+	if !reflect.DeepEqual(cfg.Subagents, local.Subagents) {
+		t.Errorf("hub subagents block drifted from local:\n hub=%+v\nlocal=%+v",
+			cfg.Subagents, local.Subagents)
 	}
 }

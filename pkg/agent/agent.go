@@ -281,11 +281,15 @@ type Agent struct {
 	mode                 Mode
 	gate                 *permissions.Gate
 	bgMgr                SubagentManager
-	inbox                *inbox
-	wake                 *wakeSignal
-	tracker              *usage.Tracker
-	compactor            Compactor
-	checkpointer         Checkpointer
+	// subagentMaxDepth is this agent's recursion cap when wrapped as a
+	// subagent tool (set via WithSubagentMaxDepth). Read by a parent's
+	// WithSubagents resolution; 0 = substrate default.
+	subagentMaxDepth int
+	inbox            *inbox
+	wake             *wakeSignal
+	tracker          *usage.Tracker
+	compactor        Compactor
+	checkpointer     Checkpointer
 
 	// operatorEmit is the typed operator-event callback set by the
 	// broadcaster on first subscribe (see the attach package's broadcaster Subscribe).
@@ -371,19 +375,24 @@ type options struct {
 	sessionService      session.Service
 	eventLog            *eventlog.Handle
 	subagents           []*Agent
-	bgMgr               SubagentManager
-	gate                *permissions.Gate
-	tracker             *usage.Tracker
-	compactor           Compactor
-	checkpointer        Checkpointer
-	costCeiling         CostCeiling
-	watchdog            watchdog.Watchdog
-	onWatchdogAlert     func(watchdog.Alert)
-	onEvent             func(*session.Event)
-	onTurnEnd           func()
-	postConstruct       func(*Agent)
-	meterProvider       metric.MeterProvider
-	metricAgentName     string
+	// subagentMaxDepth is this agent's own recursion cap when it is
+	// wrapped as a subagent tool (WithSubagentMaxDepth). Read by the
+	// PARENT's WithSubagents resolution, not used when this agent runs
+	// as a parent. 0 = substrate default.
+	subagentMaxDepth int
+	bgMgr            SubagentManager
+	gate             *permissions.Gate
+	tracker          *usage.Tracker
+	compactor        Compactor
+	checkpointer     Checkpointer
+	costCeiling      CostCeiling
+	watchdog         watchdog.Watchdog
+	onWatchdogAlert  func(watchdog.Alert)
+	onEvent          func(*session.Event)
+	onTurnEnd        func()
+	postConstruct    func(*Agent)
+	meterProvider    metric.MeterProvider
+	metricAgentName  string
 }
 
 func defaultOptions() options {
@@ -524,15 +533,31 @@ func WithEventLog(h *eventlog.Handle) Option {
 // into the parent's next-turn LLM request, which preserves context
 // isolation while keeping the audit log unified.
 //
-// Each subagent's tool name comes from its own WithName value. Use
-// NewSubagentTool directly for per-subagent overrides (custom name,
-// description, depth cap, branch label).
+// Each subagent's tool name comes from its own WithName value, and its
+// recursion depth cap from its own WithSubagentMaxDepth value (default 2).
+// Use NewSubagentTool directly for the remaining per-subagent overrides
+// (custom tool name, description, branch label).
 //
 // Resolved at the end of New() so that the parent's session.Service
 // and session triple — set by other With* options — are captured
 // at the point the subagent tools are constructed.
 func WithSubagents(agents []*Agent) Option {
 	return func(o *options) { o.subagents = append(o.subagents, agents...) }
+}
+
+// WithSubagentMaxDepth sets the recursion depth cap applied when THIS
+// agent is exposed as a subagent tool via WithSubagents — the value
+// forwarded to SubagentOptions.MaxDepth at the parent's construction.
+// A subagent at depth >= this cap that is invoked from another subagent
+// gets an error result rather than being allowed to recurse.
+//
+// 0 (the default) means "use the substrate default" (NewSubagentTool's
+// defaultSubagentMaxDepth, currently 2). Declarative subagents thread
+// their config `max_depth` through this option so an operator-set value
+// is honored rather than silently dropped; a plain WithSubagents caller
+// who never sets it keeps the default.
+func WithSubagentMaxDepth(n int) Option {
+	return func(o *options) { o.subagentMaxDepth = n }
 }
 
 // WithBackgroundManager attaches a BackgroundAgentManager to the
@@ -716,6 +741,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		}
 		st, err := NewSubagentTool(SubagentOptions{
 			Inner:           sa,
+			MaxDepth:        sa.subagentMaxDepth, // 0 → NewSubagentTool default
 			ParentService:   parentSvc,
 			ParentAppName:   o.appName,
 			ParentUserID:    o.userID,
@@ -848,6 +874,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		model:                model,
 		modelName:            model.Name(),
 		mode:                 o.mode,
+		subagentMaxDepth:     o.subagentMaxDepth,
 		invocationHist:       invocationHist,
 		toolInstrumenter:     toolInstrumenter,
 		metricAgentName:      cmp.Or(o.metricAgentName, o.name),

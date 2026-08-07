@@ -58,6 +58,70 @@ func TestBuild_DefaultProducesNineTools(t *testing.T) {
 	}
 }
 
+func TestBuild_AlertRegisteredWhenTargetsConfigured(t *testing.T) {
+	t.Parallel()
+	cfg := config.DefaultConfig()
+	cfg.Alerts = config.AlertsConfig{
+		Targets: []config.AlertTarget{
+			{Name: "audit", URL: "https://example.com/hook", Template: config.AlertTemplateGeneric},
+		},
+	}
+	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
+	reg, err := Build(cfg, gate, "", Default())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !hasTool(reg.Tools, "alert") {
+		t.Errorf("alert tool should be registered when targets are configured; got %v", toolNames(reg))
+	}
+}
+
+func TestBuild_AlertSkippedWithoutTargets(t *testing.T) {
+	t.Parallel()
+	// DefaultConfig declares no alert targets, so even with the toggle
+	// on the tool must not register — mirrors fetch_url's no-allowlist
+	// behavior (the model never sees an alert with no destinations).
+	cfg := config.DefaultConfig()
+	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
+	reg, err := Build(cfg, gate, "", Default())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if hasTool(reg.Tools, "alert") {
+		t.Errorf("alert tool should NOT be registered without targets; got %v", toolNames(reg))
+	}
+}
+
+func TestBuild_AlertToggleOffSuppressesRegistration(t *testing.T) {
+	t.Parallel()
+	cfg := config.DefaultConfig()
+	cfg.Alerts = config.AlertsConfig{
+		Targets: []config.AlertTarget{
+			{Name: "audit", URL: "https://example.com/hook", Template: config.AlertTemplateGeneric},
+		},
+	}
+	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
+	b := Default()
+	if err := b.Disable("alert"); err != nil {
+		t.Fatalf("Disable(alert): %v", err)
+	}
+	reg, err := Build(cfg, gate, "", b)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if hasTool(reg.Tools, "alert") {
+		t.Errorf("alert tool should be suppressed when the toggle is off even with targets; got %v", toolNames(reg))
+	}
+}
+
+func toolNames(reg *Registry) []string {
+	out := make([]string, 0, len(reg.Tools))
+	for _, tl := range reg.Tools {
+		out = append(out, tl.Name())
+	}
+	return out
+}
+
 func TestBuild_SelectiveSubset(t *testing.T) {
 	t.Parallel()
 	cfg := config.DefaultConfig()
@@ -127,6 +191,7 @@ func TestBuiltinTools_Disable_KnownNames(t *testing.T) {
 		"grep":             func(b BuiltinTools) bool { return b.Grep },
 		"json_query":       func(b BuiltinTools) bool { return b.JSONQuery },
 		"fetch_url":        func(b BuiltinTools) bool { return b.FetchURL },
+		"alert":            func(b BuiltinTools) bool { return b.Alert },
 		"todo":             func(b BuiltinTools) bool { return b.Todo },
 		"record_plan":      func(b BuiltinTools) bool { return b.RecordPlan },
 		"sciontool_status": func(b BuiltinTools) bool { return b.SciontoolStatus },

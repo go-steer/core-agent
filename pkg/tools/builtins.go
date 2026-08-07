@@ -23,6 +23,7 @@ import (
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v2/pkg/tools/alert"
 )
 
 // BuiltinTools toggles core-agent's built-in tool suite. Each enabled
@@ -63,6 +64,7 @@ type BuiltinTools struct {
 	Grep          bool // Walk + RE2 regex per line
 	JSONQuery     bool // jq expression over JSON loaded from file or inline string
 	FetchURL      bool // HTTP GET against url_scope.allow; URL-allowlist enforced
+	Alert         bool // Fire an operator-registered webhook alert target
 	Todo          bool // In-process plan tracker
 	RecordPlan    bool // Plan-first artifact + gate-flag flip (record_plan)
 	// SciontoolStatus is enabled in the Default struct but Build only
@@ -88,6 +90,7 @@ var builtinToolNames = []string{
 	"grep",
 	"json_query",
 	"fetch_url",
+	"alert",
 	"todo",
 	"record_plan",
 	"sciontool_status",
@@ -132,6 +135,8 @@ func (b *BuiltinTools) Disable(name string) error {
 		b.JSONQuery = false
 	case "fetch_url":
 		b.FetchURL = false
+	case "alert":
+		b.Alert = false
 	case "todo":
 		b.Todo = false
 	case "record_plan":
@@ -165,7 +170,13 @@ func Default() BuiltinTools {
 		// with no allowlist gets no network-reaching tool, matching
 		// the default-deny posture in URLScopeConfig.
 		FetchURL: true,
-		Todo:     true,
+		// Alert is enabled in the Default struct but Build only
+		// registers it when cfg.Alerts.Targets is non-empty — a binary
+		// with no configured targets gets no escalation tool, matching
+		// the fetch_url conditional-registration pattern. SSRF-safe by
+		// construction: the model can only fire pre-registered targets.
+		Alert: true,
+		Todo:  true,
 		// RecordPlan is enabled in the Default struct but Build only
 		// registers it when an agentsDir is available AND
 		// permissions.require_plan_artifact is set — there's no point
@@ -284,6 +295,14 @@ func Build(cfg *config.Config, gate *permissions.Gate, agentsDir string, b Built
 		// from seeing a tool that would refuse every call.
 		{b.FetchURL && len(cfg.URLScope.Allow) > 0, "fetch_url", "HTTP GET against an operator-configured URL allowlist.", func() (tool.Tool, error) {
 			return NewFetchURLTool(gate, cfg), nil
+		}},
+		// alert is gated twice, mirroring fetch_url: the BuiltinTools
+		// toggle (b.Alert) and the target registry (len(cfg.Alerts.Targets)
+		// > 0). With no targets the tool isn't registered — the model
+		// never sees an `alert` in its schema, and SSRF is impossible by
+		// construction (no arbitrary-URL parameter; only named targets).
+		{b.Alert && len(cfg.Alerts.Targets) > 0, "alert", "Fire an operator-registered webhook alert target.", func() (tool.Tool, error) {
+			return alert.New(gate, cfg)
 		}},
 		{b.Todo, "todo", "Maintain an agent-facing todo list (list/add/set_status/clear).", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{

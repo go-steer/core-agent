@@ -49,6 +49,7 @@ type Config struct {
 	Mock        MockConfig        `json:"mock,omitempty"`
 	OTEL        OTELConfig        `json:"otel,omitempty"`
 	URLScope    URLScopeConfig    `json:"url_scope,omitempty"`
+	Alerts      AlertsConfig      `json:"alerts,omitempty"`
 	Attach      AttachConfig      `json:"attach,omitempty"`
 	Pricing     PricingFileConfig `json:"pricing,omitempty"`
 	UI          UIConfig          `json:"ui,omitempty"`
@@ -1035,6 +1036,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("config: unknown safety.small_tier_parent %q (want one of %q, %q, %q)", c.Safety.SmallTierParent, SmallTierParentWarn, SmallTierParentRefuse, SmallTierParentAllow)
 	}
 	if err := c.validateSubagents(); err != nil {
+		return err
+	}
+	if err := c.validateAlerts(); err != nil {
 		return err
 	}
 	if err := c.Hooks.Validate(); err != nil {

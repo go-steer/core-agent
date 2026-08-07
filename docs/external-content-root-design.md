@@ -163,8 +163,12 @@ The config-reload paths (`main.go:1163/1178/1239/1244`) get the same argument.
   a declared root still errors (confinement holds within the island).
 - **`pkg/skills`** — `WithContentRoots` option + `append` into `sources`. Test:
   a skill in an external root is discovered at the right precedence.
-- **`cmd/core-agent`** — flag parsing, path resolution, thread through loader call
-  sites (incl. reload).
+- **`cmd/core-agent`** — flag parsing, path resolution (`resolveContentRoots`),
+  thread through the six main.go loader sites (incl. reload) and the embedded-TUI
+  `/reload` callback (`tuiDeps.ContentRoots`).
+- **`pkg/compose`** — `SessionFactoryDeps.ContentRoots` threaded into the multi-
+  session factory's per-caller `LoadForSession` and the memory/skills attach
+  providers, so hub/multi-session sessions see the same external scopes.
 
 ## Config surface — full example
 
@@ -199,12 +203,23 @@ cmd wiring touch `cmd/core-agent/main.go` + `pkg/config/config.go` (shared with
   user). No config or cmd change; the options are exercised by unit tests, no
   in-repo caller yet — same slicing pattern as the declarative-subagents γ.1
   schema-only PR.
-- **PR ε.b (config + wiring)** — `Config.ContentRoots` + `Validate` +
-  round-trip test; `cmd/core-agent` resolves the roots relative to `agentsDir`,
-  adds the `--agents-content-dir` flag, and threads `WithContentRoots(...)` into
-  `instruction.LoadForSession` + `skills.LoadAll` (incl. the reload paths); an
-  end-to-end loader test against a fixture external tree. Sequenced **after
-  #593** to avoid rebase-thrash on the two shared files.
+- **PR ε.b (config + wiring) — SHIPPED** — `Config.ContentRoots` +
+  `Validate` (environment-free: rejects empty/whitespace entries, no on-disk
+  stat) + round-trip test; `cmd/core-agent` resolves the roots relative to
+  `agentsDir` (via the testable `resolveContentRoots` helper), adds the
+  repeatable `--agents-content-dir` flag, and threads `WithContentRoots(...)`
+  into **every** instruction/skills loader call across the two binaries' wiring:
+  the six `cmd/core-agent/main.go` sites (startup + REPL/attach reload), the
+  embedded-TUI `/reload` callback (`tuiDeps.ContentRoots`), and the three
+  `pkg/compose` multi-session-factory sites (`SessionFactoryDeps.ContentRoots`:
+  per-caller `LoadForSession` plus the memory/skills attach providers) — so
+  external content is honored uniformly in single-shot, interactive-TUI, and
+  hub/multi-session deployments. Tests: a `cmd` end-to-end test drives a fixture
+  external tree (config root + flag dir) through the real resolve → load seam,
+  and a `pkg/compose` test asserts a factory-created session's `AttachMemory` /
+  `AttachSkills` surface the external tree (fails if the provider threading is
+  dropped). Sequenced **after #593** ([#607]) to avoid rebase-thrash on the two
+  shared files; landed cleanly once it merged.
 - **PR B″** — the recipe gains a documented mode pointing `content_roots` at a
   real `kube-agents/agents/platform` checkout, replacing the copied skills and
   proving "run kube-agents with core-agent, unmodified."

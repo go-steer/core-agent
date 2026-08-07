@@ -157,6 +157,7 @@ Top-level shape, with all fields optional except `version` and `model.name`:
   "tool_output": { ... },
   "otel": { ... },
   "url_scope": { ... },
+  "content_roots": [ ... ],
   "attach": { ... }
 }
 ```
@@ -732,6 +733,32 @@ CLI conveniences (no config edit needed):
 - `--disable-tools=fetch_url` — turns the tool off even if an allowlist is configured.
 
 See [`fetch-url-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/fetch-url-design.md) for the full decision record.
+
+---
+
+## `content_roots` (v2.9+)
+
+A top-level array of **external directories to trust as additional instruction and skill scopes**. It lets a recipe run an *unmodified* external agent tree — a checkout of another repo's `agents/…` layout, for example — without vendoring a copy into `.agents/`. Nothing is added to the external tree; core-agent reads its `AGENTS.md` / `AGENTS.d/` and `skills/` in place.
+
+```json
+{
+  "version": 1,
+  "model": { "provider": "vertex", "name": "gemini-3.5-flash" },
+  "content_roots": ["../kube-agents/agents/platform"]
+}
+```
+
+- **Paths resolve relative to the agents dir** (the directory holding `config.json`), or the working directory when no `.agents/` was discovered. Absolute paths are used as-is.
+- **Each root is its own trusted scope.** An `@include` inside a root resolves *within* that root; `@include`s or symlinks that escape the root are still rejected. The operator opt-in relaxes only the ban on reaching *across* trees — not confinement within one.
+- **Ordering and precedence.** Instruction scopes **concatenate** in the order user → home-agents → **content_roots (listed order)** → project → per-caller, so external personas appear ahead of the project overlay. Skills follow **first-declarer-wins** at precedence **project > content_roots (listed order) > home-agents > user**, so a project skill shadows an external one of the same name.
+- **A missing root is a loud error** (an operator typo shouldn't silently shrink the system prompt); a root without a `skills/` subdirectory simply contributes no skills.
+- **MCP is not auto-loaded** from an external tree. Translate its servers once into the recipe's own `mcp.json`; the external tree stays untouched.
+
+CLI convenience (no config edit needed):
+
+- `--agents-content-dir <dir>` — repeatable; each value is an additional content root, merged after the config's `content_roots` and resolved the same way. Example: `core-agent -c .agents/config.json --agents-content-dir ../kube-agents/agents/platform`.
+
+See [`external-content-root-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/external-content-root-design.md) for the full decision record.
 
 ---
 

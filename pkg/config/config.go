@@ -56,6 +56,17 @@ type Config struct {
 	Compaction  CompactionConfig  `json:"compaction,omitempty"`
 	Session     SessionConfig     `json:"session,omitempty"`
 	Safety      SafetyConfig      `json:"safety,omitempty"`
+
+	// ContentRoots are operator-declared external directories trusted as
+	// additional instruction/skill scopes, so an unmodified external agent
+	// tree (e.g. a kube-agents checkout) can be consumed without vendoring a
+	// copy. Paths are resolved relative to the agents dir. Each root is loaded
+	// as its own trusted scope: instruction @include stays confined within the
+	// root, and skills compose at precedence project > content_roots (listed
+	// order) > home-agents > user. Empty = only the project root is trusted
+	// (today's behavior exactly). CLI: --agents-content-dir (repeatable),
+	// merged with this field. See docs/external-content-root-design.md.
+	ContentRoots []string `json:"content_roots,omitempty"`
 }
 
 // SafetyConfig carries operator-facing safety guardrails — things
@@ -1034,6 +1045,15 @@ func (c *Config) Validate() error {
 		// ok; "" defaults to warn.
 	default:
 		return fmt.Errorf("config: unknown safety.small_tier_parent %q (want one of %q, %q, %q)", c.Safety.SmallTierParent, SmallTierParentWarn, SmallTierParentRefuse, SmallTierParentAllow)
+	}
+	for i, root := range c.ContentRoots {
+		// Environment-free per the Validate contract: no existence/stat
+		// check here (the instruction loader errors loudly on a missing
+		// root at load time). We only reject entries that could never be
+		// a usable path — empty or whitespace-only.
+		if strings.TrimSpace(root) == "" {
+			return fmt.Errorf("config: content_roots[%d] is empty (each content root must be a non-empty path)", i)
+		}
 	}
 	if err := c.validateSubagents(); err != nil {
 		return err

@@ -85,7 +85,7 @@ Rotation: operator regenerates the refresh token via the bootstrap CLI, updates 
 
 ### Config surface
 
-New transport option `"streamable_http"` and new auth block `"oauth2"`:
+New transport option `"streamable_http"` and new auth block `"oauth2_direct"`. The kind is named `oauth2_direct` (not a bare `oauth2`) to match the credential-resolution taxonomy — see guardrail 6 in "Forward compatibility with credential-resolution (v2.8+)" below:
 
 ```jsonc
 {
@@ -95,7 +95,7 @@ New transport option `"streamable_http"` and new auth block `"oauth2"`:
       "transport": "streamable_http",
       "url": "https://mcp.slack.com/mcp",
       "auth": {
-        "oauth2": {
+        "oauth2_direct": {
           // Required — the OAuth 2.0 client identity registered with
           // the authorization server (e.g., created via Slack app
           // registration).
@@ -134,8 +134,8 @@ New transport option `"streamable_http"` and new auth block `"oauth2"`:
 
 Existing configs (`stdio` + `http` with `google_oauth` or unauth) keep working unchanged. Parser validation:
 
-- `oauth2` is valid only with `streamable_http` transport.
-- Cannot combine `oauth2` with `google_oauth` on the same server.
+- `oauth2_direct` is valid only with `streamable_http` transport.
+- Cannot combine `oauth2_direct` with `google_oauth` on the same server.
 - `client_id`, `client_secret_env`, `refresh_token_env`, `scopes` required.
 - If any of `authorization_endpoint` / `token_endpoint` are set, both must be set (partial-override rejected).
 
@@ -243,9 +243,9 @@ Caching TTL: infinity by default (metadata is treated as immutable). Add a confi
 ### `pkg/mcp/config.go`
 
 - Add `TransportStreamableHTTP = "streamable_http"` constant.
-- Extend `MCPAuth` with `OAuth2 *OAuth2Auth` field.
-- New `OAuth2Auth` struct matching the config surface above.
-- Parser: validate mutual exclusion (`oauth2` vs `google_oauth`), transport pairing, required fields.
+- Extend `MCPAuth` with `OAuth2Direct *OAuth2DirectAuth` field.
+- New `OAuth2DirectAuth` struct matching the config surface above.
+- Parser: validate mutual exclusion (`oauth2_direct` vs `google_oauth`), transport pairing, required fields.
 
 ### `pkg/mcp/lifecycle.go`
 
@@ -300,7 +300,7 @@ Operator's `mcp.json` with three servers demonstrating all supported combination
       "transport": "streamable_http",
       "url": "https://mcp.slack.com/mcp",
       "auth": {
-        "oauth2": {
+        "oauth2_direct": {
           "client_id": "1234567890.abcdefgh",
           "client_secret_env": "SLACK_APP_CLIENT_SECRET",
           "refresh_token_env": "SLACK_MCP_REFRESH_TOKEN",
@@ -443,6 +443,73 @@ Current pin: `github.com/modelcontextprotocol/go-sdk@v1.4.1`. Latest: `v1.6.1`.
 - **Hot rotation of refresh tokens** without daemon restart (OQ #1).
 - **Browser-open helper in the bootstrap CLI** (OQ #3 — opt-in if operators ask).
 - **A `/mcp/reconnect` slash command** to trigger a specific MCP server reconnect after fixing a token — currently requires full daemon restart.
+
+## Forward compatibility with credential-resolution (v2.8+)
+
+v2.7's OAuth support is deliberately **daemon-scope**: one refresh token per MCP server, one identity for every caller (OQ #4). That is the correct MVP shape — but the credential-resolution design ([`docs/mcp-credential-resolution-design.md`](./mcp-credential-resolution-design.md), originally v2.4, now re-scoped to v2.8+) layers per-caller 3LO credentials, shared named providers, and Google Auth Manager directly on top of this code.
+
+If ε.1 (issue [#190](https://github.com/go-steer/core-agent/issues/190)) lands with daemon-global state and single-token semantics baked in, v2.8+ becomes a rewrite. The eight constraints below keep it a **strictly additive extension**. They cost almost nothing to honor now and are gating for the ε.1 implementation.
+
+| # | Guardrail | Why |
+|---|-----------|-----|
+| 1 | Construct the outbound HTTP client behind a single `httpClientForServer(cfg)` seam | Lets v2.8+ swap in a per-caller `RoundTripper` without touching lifecycle wiring |
+| 2 | Preserve `auth.CallerFromContext(ctx)` through the OAuth wrapper — never strip the Caller from the request context | Per-caller providers need the Caller at transport time |
+| 3 | If v2.7 introduces any core-agent-owned token cache, key it by `(server, caller)` with `caller` pinned to the daemon identity today — don't build a cache that can't be re-keyed | v2.7 leans on the SDK's per-server `TokenSource`; the guardrail reserves the key shape for v2.8+'s `Registry` cache so per-caller keying is not a redesign |
+| 4 | Reserve `auth.provider: "<name>"` in the config schema; reject it for now with a clear "v2.8+" error | The named-provider variant lands as an addition, not a config migration |
+| 5 | Have `core-agent mcp oauth-bootstrap` record the consenting identity in its output | That identity becomes the Secret key when per-caller storage arrives |
+| 6 | Name the provider kind `oauth2_direct`, not `oauth2` | Matches the credential-resolution taxonomy; v2.8+ extends it with new fields, not a new kind |
+| 7 | Scope all per-server auth state to the server-registration struct — no package-level maps keyed by server name | Package-global state is what makes a per-caller retrofit miserable |
+| 8 | Keep credential resolution behind a `ctx`-taking seam — a `Resolve(ctx, …)`-shaped call — so the provider boundary carries the Caller by construction | G2 keeps the Caller *in* the request context (transport side); G8 keeps a `ctx` parameter *on the resolution path* so a per-caller provider can read it when it arrives |
+
+Guardrails 1–3, 7, 8 are internal wiring; 4–6 are config/CLI surface that becomes load-bearing for v2.8+.
+
+### Guardrail 6 — the provider kind is `oauth2_direct`
+
+The auth block is named `oauth2_direct` (never a bare `oauth2`) throughout this doc, to match the credential-resolution taxonomy: `docs/mcp-credential-resolution-design.md` defines an `oauth2_direct` provider (operator-held client_id/secret + refresh-token dance), and v2.7's block is precisely the daemon-wide instance of that provider kind.
+
+Naming them identically now keeps v2.8+ an extension of the *same* kind rather than a second, near-duplicate one — but the field set does evolve, and implementers should not read "same kind" as "identical schema": v2.7 stores one consenting identity's refresh token in `refresh_token_env`, whereas the per-caller v2.8+ variant swaps that for a caller-keyed `refresh_token_store` (SQLite/Postgres, see the credential-resolution doc) and adds a `caller_scoped` marker. Guardrail 6 fixes the *kind name*; the storage field graduating from env-var to keyed store is the expected additive change, not a new kind.
+
+### Mixed-provider deployment — the real-world shape
+
+Operators will run one daemon serving both a daemon-identity Google MCP and a (today daemon-wide, tomorrow per-caller) OAuth MCP. ε.1's tests **must** include this configuration:
+
+```jsonc
+{
+  "version": 1,
+  "servers": {
+    // Daemon-identity 2LO — GKE via Google ADC. Caller-agnostic now
+    // and forever; there is no per-user GKE token.
+    "gke": {
+      "transport": "http",
+      "url": "https://container.googleapis.com/mcp/read-only",
+      "auth": {
+        "google_oauth": {
+          "scopes": ["https://www.googleapis.com/auth/container.read-only"]
+        }
+      }
+    },
+    // Daemon-wide 3LO today; per-caller in v2.8+ (add `caller_scoped`
+    // and swap `refresh_token_env` for a caller-keyed `refresh_token_store`).
+    // Kind is `oauth2_direct` (guardrail 6). The refresh token belongs
+    // to one consenting identity — recorded by the bootstrap CLI
+    // (guardrail 5) so it can key per-caller storage later.
+    "slack": {
+      "transport": "streamable_http",
+      "url": "https://mcp.slack.com/mcp",
+      "auth": {
+        "oauth2_direct": {
+          "client_id": "1234567890.abcdefgh",
+          "client_secret_env": "SLACK_APP_CLIENT_SECRET",
+          "refresh_token_env": "SLACK_MCP_REFRESH_TOKEN",
+          "scopes": ["chat:write", "channels:history"]
+        }
+      }
+    }
+  }
+}
+```
+
+The named-provider form (`auth: { "provider": "slack_3lo" }`, guardrail 4) is reserved but not yet accepted — it arrives with the credential-resolution `auth_providers` block in v2.8+. Per-caller tokens on this shared daemon stay **out of scope for v2.7** (OQ #4, and the "Per-caller OAuth tokens" out-of-scope bullet above); these guardrails only guarantee that adding them later is not a rewrite.
 
 ## Dependencies and related work
 

@@ -40,18 +40,19 @@ resources:
 components:
   - ../../components/otel
 
-# Pin the composed example's daemon image to the v2.7.0 GA — the
-# first stable release carrying the OTEL_TRACES_EXPORTER env override
-# (PR #315, initially shipped in v2.7.0-dev.4) plus the OTel span-
-# duplication and Cloud Trace resource fixes from #333–#340.
-# The composed example overlay now pins the same 2.7.0 tag; the pin
-# is restated here so this overlay stays correct if the example's
-# moves. The watcher (ghcr.io/go-steer/lookout, from
-# go-steer/k8s-lookout) is pinned to the same tag as the composed
-# example overlay — v0.11.0+ is required against daemons ≥
-# 2.8.0-dev.1 (Content-Type on the bodyless POST /sessions; #383).
+# Pin the composed example's daemon image to the v2.8.0 GA — carries
+# the OTEL_TRACES_EXPORTER env override (PR #315, first shipped in
+# v2.7.0-dev.4), the OTel span-duplication and Cloud Trace resource
+# fixes from #333–#340, and v2.8.0's full metrics pipeline + Go
+# runtime instrumentation (#325/#338). The composed example overlay
+# now pins the same 2.8.0 tag; the pin is restated here so this overlay
+# stays correct if the example's moves. The watcher
+# (ghcr.io/go-steer/lookout, from go-steer/k8s-lookout) is pinned to
+# the same tag as the composed example overlay — v0.11.0+ is required
+# against daemons ≥ 2.8.0-dev.1 (Content-Type on the bodyless
+# POST /sessions; #383).
 images:
   - name: ghcr.io/go-steer/core-agent
-    newTag: "2.7.0"
+    newTag: "2.8.0"
   - name: ghcr.io/go-steer/lookout
     newTag: "v0.11.0"

@@ -1,6 +1,6 @@
-# v2.6 demo runbook — semi-autonomous Kubernetes triage on GKE
+# v2.8.0 demo runbook — semi-autonomous Kubernetes triage on GKE
 
-Step-by-step runbook for demonstrating the v2.6 k8s triage agent on a real GKE cluster. Structured so a human (or an agent) can execute it top-to-bottom with explicit commands, expected outputs, wait times, and recovery paths.
+Step-by-step runbook for demonstrating the v2.8.0 k8s triage agent on a real GKE cluster. Structured so a human (or an agent) can execute it top-to-bottom with explicit commands, expected outputs, wait times, and recovery paths.
 
 **Audience**: whoever's driving the demo — first-time or hundredth-time. Every command is copy-paste-executable; every checkpoint has a specific string to grep for; every wait has a duration.
 
@@ -15,7 +15,7 @@ Step-by-step runbook for demonstrating the v2.6 k8s triage agent on a real GKE c
 1. [Prerequisites](#prerequisites) — checkable one-liners
 2. [One-time setup](#one-time-setup) — cluster + secrets + deploy
 3. [Pre-flight rehearsal](#pre-flight-rehearsal) — 5-step sanity check before going live
-4. [Live demo runbook](#live-demo-runbook) — 6 scenes with commands
+4. [Live demo runbook](#live-demo-runbook) — 7 scenes with commands
 5. [Post-demo teardown](#post-demo-teardown) — clean up
 6. [Troubleshooting](#troubleshooting) — recovery from common failures
 7. [Agent-driven mode](#agent-driven-mode) — notes for an LLM executing this runbook
@@ -100,17 +100,17 @@ kubectl config current-context | grep -q "${CLUSTER_NAME}" \
 ### Container images
 
 ```bash
-# v2.7.0 images published on GHCR (should exist since we tagged v2.7.0).
-# Three images ship from this repo; the watcher ships from
+# v2.8.0 GA images published on GHCR (should exist since we tagged
+# v2.8.0). Three images ship from this repo; the watcher ships from
 # go-steer/k8s-lookout as ghcr.io/go-steer/lookout (its ENTRYPOINT is
 # `lookout watch`, a drop-in swap for the retired k8s-event-watcher
 # image). Watcher floor is v0.11.0: earlier releases don't send
 # Content-Type on the bodyless POST /sessions, which daemons ≥
 # 2.8.0-dev.1 reject with 415 (#383's CSRF guard).
 for img in core-agent core-agent-slim core-agent-tui; do
-  crane digest "ghcr.io/go-steer/${img}:2.7.0" >/dev/null 2>&1 \
-      && echo "✓ ghcr.io/go-steer/${img}:2.7.0 exists" \
-      || echo "✗ ghcr.io/go-steer/${img}:2.7.0 NOT found — check the release-images workflow ran"
+  crane digest "ghcr.io/go-steer/${img}:2.8.0" >/dev/null 2>&1 \
+      && echo "✓ ghcr.io/go-steer/${img}:2.8.0 exists" \
+      || echo "✗ ghcr.io/go-steer/${img}:2.8.0 NOT found — check the release-images workflow ran"
 done
 crane digest "ghcr.io/go-steer/lookout:v0.11.0" >/dev/null 2>&1 \
     && echo "✓ ghcr.io/go-steer/lookout:v0.11.0 exists" \
@@ -124,20 +124,20 @@ crane digest "ghcr.io/go-steer/lookout:v0.11.0" >/dev/null 2>&1 \
 Three ways to get it — pick one:
 
 ```bash
-# Option 1 (recommended): go install the v2.7.0 tag directly.
-# v2.7.0 is the first go-install-able tag (#327's /v2 module-path
+# Option 1 (recommended): go install the v2.8.0 GA tag directly.
+# v2.7.0 was the first go-install-able tag (#327's /v2 module-path
 # rewrite — Go's SIVE rule requires the /v2 suffix once major ≥ 2).
-# Historical v2.x tags stay uninstallable via `go install`; source
+# Pre-v2.7.0 tags stay uninstallable via `go install`; source
 # builds + container images were never affected.
-go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@v2.7.0
+go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@v2.8.0
 
 # Option 2: install from main (latest development; may include
-# post-v2.7.0 changes).
+# post-v2.8.0 changes).
 go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@main
 
 # Option 3: pull the published container image and extract the binary
-docker pull ghcr.io/go-steer/core-agent-tui:2.7.0
-CID=$(docker create ghcr.io/go-steer/core-agent-tui:2.7.0)
+docker pull ghcr.io/go-steer/core-agent-tui:2.8.0
+CID=$(docker create ghcr.io/go-steer/core-agent-tui:2.8.0)
 docker cp "${CID}:/usr/local/bin/binary" "${GOPATH:-$HOME/go}/bin/core-agent-tui"
 docker rm "${CID}"
 chmod +x "${GOPATH:-$HOME/go}/bin/core-agent-tui"
@@ -146,7 +146,7 @@ chmod +x "${GOPATH:-$HOME/go}/bin/core-agent-tui"
 which core-agent-tui \
     && echo "✓ core-agent-tui on PATH" \
     || (echo "✗ TUI not on PATH; ensure ${GOPATH:-$HOME/go}/bin is in \$PATH"; false)
-core-agent-tui --version | grep -q "v2.7\|main-" \
+core-agent-tui --version | grep -q "v2.8\|main-" \
     && echo "✓ TUI version looks right" \
     || echo "warning: version string unexpected (may still work)"
 ```
@@ -556,7 +556,7 @@ Click into the new session (arrow keys + Enter in TUI). Watch turns stream in re
    Final state: pod Running 1/1; no new events for 90s.
    ```
 
-**Say while it runs** (~4 min of streamed turns): "The agent is following a written reference — one of 12 that ship in v2.6, one per common k8s failure mode. Each reference has a fixed structure: diagnose steps, common-fixes table, when-to-escalate. Plan-first means before any mutating action, the agent records a written plan we can audit. That's happening in the eventlog you can query directly."
+**Say while it runs** (~4 min of streamed turns): "The agent is following a written reference — one of 12 that ship with this recipe, one per common k8s failure mode. Each reference has a fixed structure: diagnose steps, common-fixes table, when-to-escalate. Plan-first means before any mutating action, the agent records a written plan we can audit. That's happening in the eventlog you can query directly."
 
 **Verification** (Pane B after the agent finishes):
 
@@ -628,7 +628,7 @@ core-agent-tui http://127.0.0.1:7777 --token SRE_TOKEN
 
 **Verify resume**: the CrashLoopBackOff session should reappear (Status: idle → active after click-in). Conversation history intact from before the restart.
 
-**Say**: "Same session ID, same conversation, same ACL. Kubelet may have taken 15 seconds to recreate the pod but the agent's state — the diagnosis it had made, the plan it was about to record — all came back."
+**Say**: "Same session ID, same conversation, same ACL. Kubelet may have taken 15 seconds to recreate the pod but the agent's state — the diagnosis it had made, the plan it was about to record — all came back. Note what this scene needed: **me**. I reconnected the TUI, clicked back into the session. Session resume brings the state back; a human still drives the next turn. The next scene removes the human."
 
 Cleanup:
 
@@ -636,19 +636,64 @@ Cleanup:
 kubectl -n "${TARGET_NS}" delete pod demo-crash
 ```
 
-### Scene 6 — The honest roadmap (2 min)
+### Scene 6 — Auto-continue: the agent finishes its own turn across a restart (2-3 min)
 
-Say (no commands): "What you saw is v2.6, released a few days ago. The parts that make v2.7 fill out the picture:
+This is the v2.8.0 headline, and the sharp contrast with Scene 5. Session resume (Scene 5) restores a session's state so a **human** can pick it back up. **Auto-continue** goes further: if the daemon dies while the agent is mid-turn — a tool call streaming, a plan half-written — the *next* boot detects the interrupted turn and finishes it **autonomously**. No operator reconnects. No one clicks anything. And as of v2.8.0 it's **on by default** for this deployment shape — no config to set. (Design: [`docs/auto-continue-design.md`](../../docs/auto-continue-design.md); the state-persistence layer it builds on is [`docs/session-resume-design.md`](../../docs/session-resume-design.md).)
 
-- **Turnkey escalation to Slack / PagerDuty / webhook.** Today the agent writes an INCIDENT SUMMARY block to the eventlog; you'd wire a Cloud Logging sink or Kafka consumer to fan out to Slack. v2.7 adds a native `alert` tool with pre-registered targets — no shell, no external MCP required.
+**Why it's on with zero config here**: auto-continue defaults ON when the preconditions hold — a durable eventlog (`--session-db`) plus either a multi-session daemon or `--no-repl`. This recipe's daemon is all three (`multi_session.enabled: true`, `--no-repl`, `--session-db` on a PVC), so it inherits the default. An interactive REPL or an in-process library embedding never trips it. To opt out, set `agent.auto_continue.enabled: false`.
 
-- **Proactive scheduled operations.** v2.6 is reactive — it wakes on k8s events. v2.7 adds a cron-driven sibling: nightly compliance sweeps, hourly blueprint drift detection, weekly cost audits. Same architectural pattern, different signal source.
+**Setup**: fire an incident, then kill the pod *while the agent is mid-turn* — same timing as Scene 5, but this time **do not reconnect a TUI**. The point is that nobody has to.
 
-- **OAuth-authenticated MCP servers.** Slack's official MCP requires OAuth 2.0. v2.7 adds the client-side plumbing to consume it — plus every other RFC 8414-compliant MCP as they ship (Notion, GitHub, Linear).
+```bash
+# In Pane B — fire an incident that gives the agent a multi-step turn to be interrupted mid-flight
+kubectl -n "${TARGET_NS}" run demo-crash \
+    --image=busybox:1.36 \
+    --restart=Always \
+    --command -- sh -c 'echo starting; sleep 5; echo crashing on purpose; exit 1'
+```
 
-- **LLM-authored diagnostic tools via kode-gopher.** For diagnostics we don't have a purpose-built sensor for, the agent writes Go on the fly and executes in a sandbox. Combined with 5-8 pre-built sensors we ship for hot paths.
+Wait ~30-45s until Pane A shows the agent actively working the session (a tool call in flight, or a plan being written).
 
-All four are designed and tracked; implementation is ~4-5 weeks. That's the release that pushes this from 'reactive first-responder' to 'always-working platform agent.'"
+**Execute the restart — and then walk away from the keyboard**:
+
+```bash
+# In Pane B — kill the daemon pod mid-turn
+kubectl -n "${DEMO_NS}" delete pod -l app.kubernetes.io/name=core-agent
+```
+
+**Say while the pod recreates (~30s)**: "In Scene 5 I killed the pod and then *I* came back to resume. This time I'm not touching anything. When the new pod boots it scans the eventlog, sees a turn that was interrupted mid-flight, checks its guardrails — the turn is fresh enough, it hasn't already retried this interruption, it's under the per-session and cost caps, no crash-loop — and then it just... keeps going. Finishes the diagnosis, records the plan, applies the fix. The operator was never in the loop."
+
+**Verify the autonomous continuation** (Pane B — no TUI, just the daemon log):
+
+```bash
+# Watch the fresh pod pick the turn back up on its own. On boot the
+# daemon logs the default-on notice, then — once the boot scan finds
+# the mid-flight turn — an "auto-continue queued" line naming how long
+# ago the turn was interrupted.
+kubectl -n "${DEMO_NS}" logs -f deployment/core-agent | grep -i "auto-continue"
+# Expect (default-on notice): "auto_continue on by default (multi-session/--no-repl + durable eventlog) ..."
+# Expect (the resume itself):  "session <id>: auto-continue queued (turn interrupted <N>s ago)"
+```
+
+```bash
+# And confirm the incident actually got worked to completion with no human
+kubectl -n "${TARGET_NS}" get pods -l app=demo-crash
+# Then check the eventlog for the agent's own post-restart turns / INCIDENT SUMMARY.
+```
+
+**Say**: "That's the difference between *resilient* and *unattended*. Session resume means you don't lose work when a pod dies. Auto-continue means the work doesn't even pause — the agent picks up its own turn and drives it home. And because it's precondition-gated, it only ever fires where it's safe: a durable, headless or multi-session daemon. Your laptop REPL is never going to spend tokens behind your back."
+
+Cleanup:
+
+```bash
+kubectl -n "${TARGET_NS}" delete pod demo-crash --ignore-not-found
+```
+
+### Scene 7 — The honest roadmap (2 min)
+
+Say (no commands): "What you just saw is v2.8.0 GA, released today. v2.6 was the reactive first-responder; v2.7 filled it out — native `alert`-tool escalation to Slack/PagerDuty/webhook, cron-driven proactive operations (nightly compliance sweeps, drift detection, cost audits), OAuth-authenticated MCP servers, and LLM-authored diagnostic tools. v2.8.0 is the durability release: full OpenTelemetry metrics + traces so every turn is observable, the daemon's substrate extracted into reusable libraries (`pkg/compose`, `pkg/pricing`), attach-side per-caller cost rate limiting, and the auto-continue default-on you just watched.
+
+Where it goes next: v2.9 is the **one-contract-many-companions** direction — the same daemon contract fronted by purpose-built companion gateways (chat, and beyond), so this agent isn't just a k8s first-responder reachable over a TUI but a substrate you can put any interface in front of. That's the arc: reactive first-responder → always-working platform agent → embeddable substrate."
 
 ---
 
@@ -774,7 +819,7 @@ If reason is unexpected, adjust the demo scenario.
 
 ### Agent takes forever / doesn't finish
 
-The `gemini-2.5-flash` model may hit rate limits under repeated demos. Symptoms: turns visible but stalling. Recover:
+The `gemini-3.5-flash` model may hit rate limits under repeated demos. Symptoms: turns visible but stalling. Recover:
 
 ```bash
 # Check Vertex quotas in the Cloud Console under IAM & Admin → Quotas & System Limits
@@ -815,4 +860,4 @@ Constraints for the agent:
 - **When triggering the failure scenarios (Scenes 2 + 5), pause between the trigger and the verification** to give the agent time to react. `sleep 30` after the trigger; then check the TUI's session picker via `curl -s -H "Authorization: Bearer ${SRE_TOKEN}" http://127.0.0.1:7777/sessions | jq`.
 - **If the demo agent (running in-cluster) fails to auto-triage, that's not a runbook failure** — it's the demo failing. The runbook's job is to set up the conditions; the daemon's job is to react. Log both cases distinctly.
 
-This runbook itself is stable across v2.6 patch releases (`v2.6.x`). Version bumps that change the recipe or the triage skill shape may require updates — check `git log examples/gke-troubleshoot-agent/DEMO.md` before executing against a newer core-agent tag.
+This runbook itself is stable across v2.8.0 patch releases (`v2.8.x`). Version bumps that change the recipe or the triage skill shape may require updates — check `git log examples/gke-troubleshoot-agent/DEMO.md` before executing against a newer core-agent tag.

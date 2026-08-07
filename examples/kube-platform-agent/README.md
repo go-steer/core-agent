@@ -7,16 +7,22 @@ many companions" work (`docs/hermes-replacement-design.md`, epic #589): prove th
 v2 instruction loader can consume an *unmodified* snapshot of the upstream
 content, wired to the GKE MCP, with core-agent's plan-first gate and attach hub.
 
-Nothing here is added to the kube-agents tree. The loader-consumed content under
-`upstream/` is a faithful, unmodified snapshot (see `upstream/PROVENANCE.md`);
-everything Hermes-specific is either translated into core-agent config or
+Nothing here is added to the kube-agents tree. The Platform Agent's workspace
+instructions and all 18 skills are loaded **from a content root** — the vendored
+`upstream/` snapshot by default (a faithful, unmodified copy; see
+`upstream/PROVENANCE.md`), or a real kube-agents checkout when you point
+`content_roots` at one (see [Running against a live checkout](#running-against-a-live-checkout)).
+Everything Hermes-specific is either translated into core-agent config or
 documented as out of scope below.
 
 ## What you get
 
-- The full Platform Agent persona (`SOUL.md` + `AGENTS.md`), `@include`d verbatim
-  and reconciled to core-agent by a small overlay in `AGENTS.md`.
-- All 18 skills discovered by the v2 skills loader.
+- The Platform Agent workspace instructions loaded verbatim from the content root
+  and the `SOUL.md` persona `@include`d by the recipe's `AGENTS.md`, reconciled to
+  core-agent by a small overlay in the same file.
+- All 18 skills discovered by the v2 skills loader **from the content root** — no
+  copied skill tree under `.agents/` (that is what `content_roots` buys: the same
+  config runs the vendored snapshot or a live checkout unchanged).
 - The 10 governance SOPs + the bootstrap inventory scan, vendored and indexed for
   on-demand reading (not injected into every turn).
 - The remote Google MCPs — `gke` (read-write, for the platform agent),
@@ -33,35 +39,46 @@ documented as out of scope below.
 
 ```
 kube-platform-agent/
-  AGENTS.md              # persona (@include upstream/) + core-agent runtime overlay
+  AGENTS.md              # SOUL persona (@include) + core-agent runtime overlay
   AGENTS.d/
     50-governance.md     # on-demand index of the governance SOPs
-  upstream/              # faithful, UNMODIFIED snapshot (see PROVENANCE.md)
+  upstream/              # faithful, UNMODIFIED snapshot = the default content root
     SOUL.md AGENTS.md CAPABILITIES.md
+    skills/              # 18 skills (loaded via content_roots, not copied)
     governance/          # 10 SOPs + inventory.md
     docs/                # glossary, gcp-console-links, session_management
     cluster/             # read-only Cluster Agent persona (@include'd by the subagent)
     LICENSE PROVENANCE.md
   .agents/
-    config.json          # local REPL: model, plan-first policy, cluster subagent
+    config.json          # content_roots + model + plan-first policy + cluster subagent
     config.hub.json      # same + attach.multi_session (shared daemon)
     mcp.json             # gke + gke-readonly + developer_knowledge (native HTTP)
-    skills/              # 18 skills (copied here; see PROVENANCE.md)
   recipe_test.go         # loader-only validation (no creds, no cluster)
 ```
 
-The instruction files live at the recipe **root**, not under `.agents/`: the
-loader confines `@include` to the including file's scope root, and only a
-root-scoped `AGENTS.md` can reach the sibling `upstream/` snapshot. `.agents/`
-holds the config, MCP, and skills the loader keys to `<agentsDir>`.
+Two scoping rules shape this layout:
+
+- **Content root vs. project scope.** The workspace `AGENTS.md` and the whole
+  `skills/` tree are read from the content root (`content_roots: ["../upstream"]`),
+  so `.agents/` holds no copied skills — the same config runs the snapshot or a
+  live checkout. MCP is *not* auto-loaded from a content root, so `mcp.json` stays
+  in `.agents/` (the recipe translates the two Google MCPs once).
+- **Project-root instruction files.** `@include` and the `AGENTS.d/` scan are
+  confined to the including file's scope root, so the recipe's `AGENTS.md` +
+  `AGENTS.d/` live at the project **root** — that is the only scope from which
+  `@include upstream/SOUL.md` resolves. `SOUL.md` is `@include`d rather than read
+  from the content root because a content root auto-assembles only the workspace
+  `AGENTS.md`, and upstream splits its persona across `SOUL.md` / `AGENTS.md` /
+  `CAPABILITIES.md`.
 
 ## Component mapping (kube-agents → core-agent)
 
 | Upstream component | Verdict | Where it goes |
 |---|---|---|
-| `SOUL.md`, `AGENTS.md`, `CAPABILITIES.md` | **vendor** | `@include`d by `AGENTS.md` |
+| `AGENTS.md` (workspace) | **content root** | loaded from `content_roots` (snapshot or live checkout) |
+| `SOUL.md` | **vendor** | `@include`d by `AGENTS.md` (content roots auto-load only the workspace file) |
 | `governance/` (10 SOPs + `inventory.md`) | **vendor** | on-demand via `AGENTS.d/50-governance.md` |
-| 18 skills | **vendor** | `.agents/skills/` (script caveat below) |
+| 18 skills | **content root** | loaded from `content_roots`, not copied (script caveat below) |
 | MCP `gke`, `developer_knowledge` | **translate** | `.agents/mcp.json` native HTTP |
 | `agents/cluster/` (read-only Cluster Agent profile) | **vendor + subagent** | `cluster` declarative subagent in `.agents/config.json` (persona from `upstream/cluster/`) |
 | MCP `platform_control` (stdio Python) | **drop** | decomposed per-tool ↓ |
@@ -127,9 +144,10 @@ The point is **least privilege**, enforced by config rather than by persona alon
   `developer_knowledge`, never the read-write `gke` the platform agent itself
   uses. Its cluster reads physically cannot mutate.
 - **`skills` (empty → grant none)** — a single-cluster read-only SRE inherits none
-  of the platform's fleet/provisioning skills. (Its own domain diagnostic skills —
-  `gke-reliability`, `gke-storage`, … — live in `agents/cluster/skills/` upstream;
-  vendoring that second skill tree waits for the external-content-root increment.)
+  of the platform's fleet/provisioning skills. Its own domain diagnostic skills
+  (`gke-reliability`, `gke-storage`, …) live in `agents/cluster/skills/` upstream
+  and stay unwired — see [Cluster domain skills](#cluster-domain-skills) for the
+  content-root coupling that blocks them.
 - **`tools` (omitted → inherit)** — it inherits the parent's built-ins, which
   already have `bash` disabled and carry the same plan-first permission gate, so
   it cannot escalate.
@@ -139,6 +157,22 @@ reconciled to core-agent by a short inline overlay (there is no kanban dispatche
 or bash preflight here — the subagent returns its RCA directly in its reply). See
 [Reference → Declarative subagents](https://go-steer.github.io/core-agent/reference/configuration/#declarative-subagents-v29)
 for the full `subagents[]` schema and the nil/list/empty scoping contract.
+
+### Cluster domain skills
+
+The Cluster Agent ships its own diagnostic skills under `agents/cluster/skills/`
+(`gke-reliability`, `gke-storage`, `gke-workload-troubleshooting`, …). A subagent
+draws its skills by *scoping the parent's* loaded set, so to grant these the
+platform parent would first have to load them — which means declaring
+`agents/cluster` as a second content root. That does not work cleanly today: a
+content root couples skills with instructions, so adding `agents/cluster` would
+also fold its workspace `AGENTS.md` — *"one cluster only; never query or reason
+about other clusters or the fleet"* — into the **fleet** platform agent's own
+instructions, directly contradicting its mandate. Until a content root can
+contribute skills without its instructions (or subagents can load skills from a
+dedicated scope), the `cluster` subagent stays scoped to `skills: []` and relies
+on its persona plus the read-only MCP surface. This is a real limitation of the
+current content-root model, recorded in `docs/external-content-root-design.md`.
 
 ## Run it locally
 
@@ -175,14 +209,59 @@ non-loopback listener refuses to start without authentication. The Kubernetes
 deployment (namespace, KSA + Workload Identity, hub `Deployment`/`Service`) is a
 follow-on increment; this recipe is the runnable config it wraps.
 
+## Running against a live checkout
+
+By default the recipe loads its content from the vendored `upstream/` snapshot
+(`content_roots: ["../upstream"]`), so it runs with no external dependency. To run
+the Platform Agent's workspace instructions and skills from a **real, unmodified
+kube-agents checkout** instead — the whole point of the content-root model —
+**replace** the vendored root in the config with the checkout:
+
+```jsonc
+// .agents/config.json
+"content_roots": ["/path/to/kube-agents/agents/platform"],
+```
+
+Replace, don't append: `--agents-content-dir` (and additional `content_roots`
+entries) *layer after* the config's list — they don't override it — and skills
+resolve first-declarer-wins in listed order. A real checkout carries the same 18
+skill names as `upstream/`, so leaving `../upstream` ahead of it would shadow the
+checkout's skills entirely and load both workspace `AGENTS.md` files. Point the
+single content root at the checkout (drop `../upstream`) and the snapshot is out
+of the picture. Use `--agents-content-dir` when you want to *add* a root whose
+content does **not** collide with the snapshot — e.g. a scratch overlay layered
+on top — not to switch runtimes:
+
+```bash
+# adds a non-colliding extra root on top of the config's roots
+core-agent -c .agents/config.json --agents-content-dir /path/to/extra-overlay
+```
+
+The external tree is read **unmodified**: nothing is written into it, and the
+recipe adds nothing to it. Two things still come from this recipe rather than the
+checkout, by design:
+
+- **`SOUL.md`** — `@include`d from `upstream/SOUL.md` (a content root auto-loads
+  only the workspace `AGENTS.md`; keep the vendored `SOUL.md` in sync via
+  `upstream/PROVENANCE.md`, or drop it into your checkout's `AGENTS.md` as an
+  `@include` there).
+- **`governance/` and `docs/`** — read on demand by path relative to the recipe;
+  the on-demand `read_file` calls resolve against `upstream/`, not the external
+  checkout (a sandbox reads within the project, not an arbitrary external tree).
+
+Skills come entirely from the content root, so a live checkout's skill edits are
+picked up on the next load with no re-vendoring.
+
 ## Verify
 
 `recipe_test.go` is a hermetic, credential-free check that the loader can consume
-the bundle — persona assembly (the `@include` chain resolves), all 10 governance
-SOPs discoverable and indexed, all 18 skills loaded, the `gke` +
-`developer_knowledge` MCP servers parsed (and `platform_control` / `agent_common`
-absent), and the plan-first policy set. It runs in CI's `test-unit` presubmit and
-standalone:
+the bundle — persona assembly (the workspace file loads from the content root and
+the `SOUL.md` `@include` resolves), all 10 governance SOPs discoverable and
+indexed, all 18 skills loaded from the content root (and *no* copied
+`.agents/skills/` tree), a live-checkout content root honored via a fixture, the
+`gke` + `developer_knowledge` MCP servers parsed (and `platform_control` /
+`agent_common` absent), and the plan-first policy set. It runs in CI's
+`test-unit` presubmit and standalone:
 
 ```bash
 dev/tools/e2e-recipe-kube-platform-agent          # or:

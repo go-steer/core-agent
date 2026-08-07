@@ -49,13 +49,43 @@ const (
 	upstreamDir = "upstream"
 )
 
-// TestInstructionsLoad asserts the persona assembles: the @include chain
-// pulls in the vendored SOUL.md and AGENTS.md, the runtime overlay is
-// present, and the AGENTS.d governance index loads. A missing @include
-// target would make instruction.Load return an error here — that is the
-// primary "the loader can run this content" signal.
+// configuredContentRoots resolves the config's content_roots exactly as
+// cmd/core-agent does (relative entries against the agents dir, absolute
+// passthrough), so these loader tests exercise the *shipped* value rather
+// than a hard-coded copy of it. The recipe ships `["../upstream"]`, which
+// resolves to the vendored snapshot; pointing it (or --agents-content-dir)
+// at a live kube-agents checkout is the documented "live" mode.
+func configuredContentRoots(t *testing.T) []string {
+	t.Helper()
+	cfg, err := config.Load(agentsDir)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if len(cfg.ContentRoots) == 0 {
+		t.Fatal("config.content_roots is empty; the recipe must load its skills + workspace from a content root, not copies")
+	}
+	roots := make([]string, 0, len(cfg.ContentRoots))
+	for _, r := range cfg.ContentRoots {
+		if filepath.IsAbs(r) {
+			roots = append(roots, r)
+			continue
+		}
+		roots = append(roots, filepath.Join(agentsDir, r))
+	}
+	return roots
+}
+
+// TestInstructionsLoad asserts the persona assembles from the content root
+// plus the recipe's own scope: the upstream workspace `AGENTS.md` is loaded
+// verbatim from the content root (the vendored snapshot, or a live checkout),
+// the `SOUL.md` persona is pulled in by the project-root `@include`, the
+// runtime overlay is present, and the AGENTS.d governance index loads. A
+// missing content root or a broken @include target would make the loader
+// return an error here — that is the primary "the loader can run this
+// content" signal.
 func TestInstructionsLoad(t *testing.T) {
-	loaded, err := instruction.Load(projectRoot, "")
+	loaded, err := instruction.Load(projectRoot, "",
+		instruction.WithContentRoots(configuredContentRoots(t)))
 	if err != nil {
 		t.Fatalf("instruction.Load: %v", err)
 	}
@@ -63,9 +93,9 @@ func TestInstructionsLoad(t *testing.T) {
 		t.Fatal("instruction.Load returned empty instruction")
 	}
 	wantSubstrings := []string{
-		// vendored upstream/SOUL.md (@include)
+		// upstream/SOUL.md, pulled in by the project-root @include
 		"Platform Agent (Harness Custodian & Architect)",
-		// vendored upstream/AGENTS.md (@include)
+		// upstream/AGENTS.md workspace file, loaded from the content root
 		"AGENTS.md - Your Workspace",
 		// this recipe's overlay (project-root AGENTS.md)
 		"Runtime overlay (core-agent)",
@@ -120,9 +150,12 @@ func TestGovernanceSOPsDiscoverable(t *testing.T) {
 }
 
 // TestSkillsLoad asserts all 18 Platform Agent skills are discovered by
-// the v2 skills loader from the recipe's .agents/skills/.
+// the v2 skills loader from the content root — the recipe no longer copies
+// them under .agents/skills/, so a failure here means the content_roots
+// wiring (config → resolve → skills.WithContentRoots) regressed.
 func TestSkillsLoad(t *testing.T) {
-	got, err := skills.Load(context.Background(), agentsDir, nil)
+	got, err := skills.Load(context.Background(), agentsDir, nil,
+		skills.WithContentRoots(configuredContentRoots(t)))
 	if err != nil {
 		t.Fatalf("skills.Load: %v", err)
 	}
@@ -143,6 +176,168 @@ func TestSkillsLoad(t *testing.T) {
 		if !discovered[want] {
 			t.Errorf("skill %q not discovered", want)
 		}
+	}
+}
+
+// TestSkillsAreNotCopied guards the whole point of the content-root mode:
+// the recipe must NOT ship a copied .agents/skills/ tree. A stray copy would
+// silently win (project skills out-rank content roots), shadowing the
+// content root and defeating the "run kube-agents unmodified" story — so a
+// re-introduced copy is a regression, not a convenience.
+func TestSkillsAreNotCopied(t *testing.T) {
+	if info, err := os.Stat(filepath.Join(agentsDir, "skills")); err == nil {
+		t.Errorf(".agents/skills exists (%v); skills must load from the content root, not a copy", info.IsDir())
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat .agents/skills: %v", err)
+	}
+}
+
+// TestContentRootIsPlatformShaped asserts the default content root resolves
+// to a real platform-shaped tree — a workspace AGENTS.md and a skills/ dir —
+// so the loader tests above are exercising an actual snapshot, not an empty
+// directory that would make every "discovered" assertion vacuously pass.
+func TestContentRootIsPlatformShaped(t *testing.T) {
+	for _, root := range configuredContentRoots(t) {
+		if _, err := os.Stat(filepath.Join(root, "AGENTS.md")); err != nil {
+			t.Errorf("content root %q has no workspace AGENTS.md: %v", root, err)
+		}
+		info, err := os.Stat(filepath.Join(root, "skills"))
+		if err != nil || !info.IsDir() {
+			t.Errorf("content root %q has no skills/ dir: %v", root, err)
+		}
+	}
+}
+
+// TestExternalCheckoutMode is the live-mode proof: the recipe run against a
+// content root that is NOT the vendored snapshot (a stand-in for a real,
+// unmodified kube-agents checkout passed via --agents-content-dir) still
+// assembles correctly — the external workspace AGENTS.md and its skills load
+// verbatim, while the SOUL persona continues to come from the recipe's own
+// vendored @include (upstream splits persona across files a content root does
+// not auto-assemble). This is what makes "point content_roots at your
+// checkout" a supported mode rather than an accident of the snapshot's path.
+func TestExternalCheckoutMode(t *testing.T) {
+	// A minimal platform-shaped tree standing in for agents/platform in a
+	// real checkout: a workspace AGENTS.md and one skill under skills/.
+	ext := t.TempDir()
+	const workspaceMarker = "EXTERNAL_PLATFORM_WORKSPACE_MARKER"
+	if err := os.WriteFile(filepath.Join(ext, "AGENTS.md"), []byte("# "+workspaceMarker+"\n"), 0o644); err != nil {
+		t.Fatalf("write external AGENTS.md: %v", err)
+	}
+	skillDir := filepath.Join(ext, "skills", "gke-live-probe")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir external skill: %v", err)
+	}
+	skillBody := "---\nname: gke-live-probe\ndescription: a skill from the external checkout\n---\n\nbody\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillBody), 0o644); err != nil {
+		t.Fatalf("write external SKILL.md: %v", err)
+	}
+
+	// Instructions: the external workspace loads from the content root, and
+	// the vendored SOUL persona + this recipe's overlay still assemble.
+	loaded, err := instruction.Load(projectRoot, "",
+		instruction.WithContentRoots([]string{ext}))
+	if err != nil {
+		t.Fatalf("instruction.Load(external): %v", err)
+	}
+	if !strings.Contains(loaded.Instruction, workspaceMarker) {
+		t.Error("external workspace AGENTS.md not loaded from the content root")
+	}
+	if !strings.Contains(loaded.Instruction, "Platform Agent (Harness Custodian & Architect)") {
+		t.Error("vendored SOUL persona did not assemble in external mode")
+	}
+	if !strings.Contains(loaded.Instruction, "Runtime overlay (core-agent)") {
+		t.Error("recipe overlay missing in external mode")
+	}
+
+	// Skills: the external skill is discovered from the content root.
+	got, err := skills.Load(context.Background(), agentsDir, nil,
+		skills.WithContentRoots([]string{ext}))
+	if err != nil {
+		t.Fatalf("skills.Load(external): %v", err)
+	}
+	var sawExternal bool
+	for _, in := range got.Infos {
+		if in.Name == "gke-live-probe" {
+			sawExternal = true
+		}
+	}
+	if !sawExternal {
+		names := make([]string, 0, len(got.Infos))
+		for _, in := range got.Infos {
+			names = append(names, in.Name)
+		}
+		t.Errorf("external skill not discovered from the content root: %v", names)
+	}
+}
+
+// TestAppendedRootIsShadowedBySnapshot pins the exact loader behavior the
+// README's "Running against a live checkout" section warns about, so the docs
+// and the recipe can't drift apart: content roots layer in listed order and
+// skills resolve first-declarer-wins, so a second root APPENDED after the
+// vendored `../upstream` (the shape `--agents-content-dir` produces) is
+// SHADOWED on every colliding skill name — a real kube-agents checkout carries
+// the same 18 skill names as the snapshot, so appending it yields the snapshot's
+// skills, not the checkout's. That is why live mode must *replace* the config
+// root rather than append. If a future change made appended roots win (or the
+// recipe "helpfully" appended the checkout), this test fails and the README's
+// guidance would be wrong.
+func TestAppendedRootIsShadowedBySnapshot(t *testing.T) {
+	snapshot := configuredContentRoots(t) // ["…/upstream"], the vendored default
+
+	// A stand-in checkout that redefines an existing snapshot skill name with a
+	// distinguishing description, plus its own workspace file.
+	ext := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ext, "AGENTS.md"), []byte("# APPENDED_ROOT_WORKSPACE\n"), 0o644); err != nil {
+		t.Fatalf("write appended AGENTS.md: %v", err)
+	}
+	skillDir := filepath.Join(ext, "skills", "fleet-audit") // collides with upstream
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir appended skill: %v", err)
+	}
+	const appendedDesc = "APPENDED_ROOT_FLEET_AUDIT_SHOULD_BE_SHADOWED"
+	body := "---\nname: fleet-audit\ndescription: " + appendedDesc + "\n---\n\nbody\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write appended SKILL.md: %v", err)
+	}
+
+	// Append the checkout after the snapshot, exactly as --agents-content-dir does.
+	roots := append(append([]string{}, snapshot...), ext)
+
+	got, err := skills.Load(context.Background(), agentsDir, nil,
+		skills.WithContentRoots(roots))
+	if err != nil {
+		t.Fatalf("skills.Load(snapshot+appended): %v", err)
+	}
+	var fleetAuditDesc string
+	var found bool
+	for _, in := range got.Infos {
+		if in.Name == "fleet-audit" {
+			fleetAuditDesc = in.Description
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("fleet-audit skill not discovered from either root")
+	}
+	if fleetAuditDesc == appendedDesc {
+		t.Errorf("appended root's fleet-audit won (%q); the snapshot (first-declared) must shadow it — "+
+			"live mode must REPLACE ../upstream, not append", appendedDesc)
+	}
+
+	// And instructions concatenate rather than override: the appended workspace
+	// AND the snapshot workspace both land, which is the other half of why
+	// appending is the wrong way to switch runtimes.
+	loaded, err := instruction.Load(projectRoot, "",
+		instruction.WithContentRoots(roots))
+	if err != nil {
+		t.Fatalf("instruction.Load(snapshot+appended): %v", err)
+	}
+	if !strings.Contains(loaded.Instruction, "APPENDED_ROOT_WORKSPACE") {
+		t.Error("appended workspace did not load (expected it to concatenate)")
+	}
+	if !strings.Contains(loaded.Instruction, "AGENTS.md - Your Workspace") {
+		t.Error("snapshot workspace dropped when a root was appended (expected both to concatenate)")
 	}
 }
 
@@ -353,5 +548,16 @@ func TestHubConfigParses(t *testing.T) {
 	if !reflect.DeepEqual(cfg.Subagents, local.Subagents) {
 		t.Errorf("hub subagents block drifted from local:\n hub=%+v\nlocal=%+v",
 			cfg.Subagents, local.Subagents)
+	}
+	// The content root must not drift between the two configs either: the hub
+	// (multi_session) path threads content_roots through pkg/compose, so a hub
+	// that lost the root would silently serve sessions without the platform
+	// skills/workspace the local REPL loads. Require exact parity.
+	if !reflect.DeepEqual(cfg.ContentRoots, local.ContentRoots) {
+		t.Errorf("hub content_roots drifted from local: hub=%v local=%v",
+			cfg.ContentRoots, local.ContentRoots)
+	}
+	if len(cfg.ContentRoots) == 0 {
+		t.Error("hub config has no content_roots; sessions would load no skills/workspace")
 	}
 }

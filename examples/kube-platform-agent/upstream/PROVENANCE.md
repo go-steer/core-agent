@@ -13,22 +13,33 @@ instruction loader without a live kube-agents checkout.
 
 ## What is vendored, and where
 
-The `@include` directive and `AGENTS.d/` scan are confined to the **scope root**
-of the file that uses them — for a file loaded from `<project-root>/.agents/`
-that root is `.agents/` itself, so a `.agents/AGENTS.md` cannot reach a sibling
-`upstream/`. The recipe therefore puts its instruction files at the **project
-root** (`AGENTS.md` + `AGENTS.d/`), where the scope root is the project root and
-`@include upstream/…` resolves — the root-`AGENTS.md` layout the loader
-explicitly supports (Cursor / Antigravity / Hermes convention). Skills are read
-from `<agentsDir>/skills/` and cannot come from `upstream/`. So the snapshot is
-split:
+`upstream/` is a single-tree snapshot of `agents/platform/`, consumed as a
+**content root** (`content_roots: ["../upstream"]` in `.agents/config.json`):
+the loader reads the workspace `AGENTS.md` and the whole `skills/` tree from it
+directly, unmodified. Pointing that content root (or `--agents-content-dir`) at a
+real, unmodified kube-agents checkout is the recipe's "live" mode — this snapshot
+is the credential-free, CI-testable default.
+
+Two files are handled outside the content root, because of how the loaders scope:
+
+- **`SOUL.md`** is `@include`d by the project-root `AGENTS.md` rather than loaded
+  from the content root. A content root auto-assembles only the workspace
+  `AGENTS.md` (plus its `AGENTS.d/`), and upstream splits its persona across
+  `SOUL.md` / `AGENTS.md` / `CAPABILITIES.md` — so `SOUL.md` is the one persona
+  file the recipe vendors and includes directly. (`@include`/`AGENTS.d/` are
+  confined to the including file's scope root; the recipe's instruction files
+  live at the **project root** so `@include upstream/…` resolves.)
+- **`cluster/SOUL.md`** is `@include`d by the `cluster` declarative subagent
+  (subagent `@include`s are project-scoped, so they cannot reach a content root).
 
 | Upstream (`agents/platform/…`) | Here | Notes |
 |---|---|---|
-| `SOUL.md`, `AGENTS.md`, `CAPABILITIES.md` | `upstream/` | `@include`d by the project-root `AGENTS.md` |
+| `AGENTS.md` (workspace) | `upstream/AGENTS.md` | loaded from the content root, unmodified |
+| `skills/` (18 skills) | `upstream/skills/` | loaded from the content root, unmodified — no copy under `.agents/` |
+| `SOUL.md` | `upstream/SOUL.md` | `@include`d by the project-root `AGENTS.md` (see above) |
+| `CAPABILITIES.md` | `upstream/CAPABILITIES.md` | faithful reference snapshot (not currently loaded; upstream's `AGENTS.md` does not `@include` it) |
 | `governance/` (10 SOPs + `inventory.md`) | `upstream/governance/` | indexed on-demand by `AGENTS.d/50-governance.md` |
 | `docs/` (glossary, gcp-console-links, session_management) | `upstream/docs/` | reference, read on demand |
-| `skills/` (18 skills) | `.agents/skills/` | copied here, not to `upstream/`, because `skills.Load` is keyed to `<agentsDir>` and cannot reach `upstream/`. This is the one place the config-only recipe diverges from a single-tree snapshot; the external-content-root increment removes the copy. |
 | `../cluster/{SOUL,AGENTS,CAPABILITIES}.md` | `upstream/cluster/` | the read-only Cluster Agent persona. `SOUL.md` is `@include`d by the `cluster` declarative subagent in `.agents/config.json` and reconciled to core-agent's runtime by the subagent's inline overlay (no kanban dispatcher / bash preflight here); `AGENTS.md` and `CAPABILITIES.md` are vendored as faithful reference snapshots (the subagent's routing blurb is condensed from `CAPABILITIES.md` into its `description`). All three unmodified. |
 
 ## What is deliberately NOT vendored
@@ -49,14 +60,18 @@ their capabilities are mapped in `../README.md` (see "Component mapping"):
   workstream).
 - `agents/cluster/config.yaml`, `agents/cluster/skills/` — the Cluster Agent's
   Hermes config (translated into the `cluster` subagent block in
-  `.agents/config.json`) and its domain diagnostic skills (the config-only
-  recipe scopes the subagent's skills to none rather than vendoring a second
-  skill tree; the external-content-root increment can add them).
+  `.agents/config.json`) and its domain diagnostic skills. The subagent's skills
+  stay scoped to none: adding its live domain skills would mean declaring
+  `agents/cluster` as a second content root, but a content root couples skills
+  with instructions, and `cluster/AGENTS.md` (“one cluster only; never reason
+  about the fleet”) directly contradicts the platform parent's fleet mandate. See
+  the README's "Cluster domain skills" note for the coupling this exposes.
 
 Skill-local `scripts/*.py` (in `fleet-audit`, `github-issue-resolver`,
-`kube-agents-observability`, `submit-suggestion`) **are** carried along so each
-skill's `SKILL.md` and references stay intact and discoverable, but they cannot
-execute in the distroless brain image — see the README's script caveat.
+`kube-agents-observability`, `submit-suggestion`) **are** carried along under
+`upstream/skills/` so each skill's `SKILL.md` and references stay intact and
+discoverable, but they cannot execute in the distroless brain image — see the
+README's script caveat.
 
 ## Re-syncing
 

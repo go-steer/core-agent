@@ -119,6 +119,15 @@ type loadOptions struct {
 	// .agents/ dir, so descending into a nested .agents/ subdir
 	// would be nonsensical.
 	homeAgentsRoot string
+
+	// contentRoots are operator-declared external directories, each
+	// treated as an additional trusted instruction scope loaded just
+	// before the project scope (so their content concatenates ahead of
+	// the project's own AGENTS.md). Each root is its own scopeRoot, so an
+	// @include inside it is confined to that root — the cross-root ban is
+	// relaxed only for these explicitly-declared paths; an undeclared
+	// sibling still errors. Empty = no external scopes.
+	contentRoots []string
 }
 
 // WithInterpolator supplies a string transform applied to every loaded
@@ -137,6 +146,22 @@ func WithInterpolator(fn func(string) string) Option {
 // home-agents scope."
 func WithHomeAgentsRoot(dir string) Option {
 	return func(o *loadOptions) { o.homeAgentsRoot = dir }
+}
+
+// WithContentRoots supplies operator-declared external directories that
+// the loader trusts as additional instruction scopes, each loaded just
+// before the project scope (so external content concatenates ahead of
+// the project's own AGENTS.md; instruction scopes concatenate — they do
+// not override). Each root is its own scope root: an @include inside it
+// resolves within that root and cannot escape it, but the root itself
+// need not sit under projectRoot. This is the explicit, in-config
+// operator opt-in that relaxes only the cross-root @include ban —
+// undeclared "../" escapes and out-of-scope symlinks stay rejected.
+// A declared root that does not exist is a loud error (an operator typo
+// to surface), unlike the auto-discovered home-agents root. Empty is
+// legal and equals "no external scopes."
+func WithContentRoots(dirs []string) Option {
+	return func(o *loadOptions) { o.contentRoots = dirs }
 }
 
 // Load resolves the project + user memory files and returns the
@@ -206,6 +231,31 @@ func LoadForSession(projectRoot, userRoot, callerIdentity, usersDir string, opts
 			}
 		} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return loaded, fmt.Errorf("instruction: stat home-agents dir %q: %w", lo.homeAgentsRoot, err)
+		}
+	}
+
+	for _, root := range lo.contentRoots {
+		if root == "" {
+			continue
+		}
+		info, err := os.Stat(root)
+		if err != nil {
+			// A content root is explicitly operator-declared, so a
+			// missing or unreadable path is a typo to surface — not a
+			// silently-skipped auto-discovered scope (contrast the
+			// home-agents root above, which is discovered, not declared).
+			return loaded, fmt.Errorf("instruction: stat content root %q: %w", root, err)
+		}
+		if !info.IsDir() {
+			return loaded, fmt.Errorf("instruction: content root %q is not a directory", root)
+		}
+		// loadScope with the root as its OWN scopeRoot: @include targets
+		// inside the external tree are confined to that tree, exactly as
+		// ensureWithinScope confines the project scope to projectRoot.
+		// The shared visited set dedups identical files across scopes and
+		// prevents cross-scope include cycles.
+		if err := loadScope(root, "content", projectMemoryNames, &b, &loaded.Sources, &loaded.Searched, visited, lo.interp); err != nil {
+			return loaded, err
 		}
 	}
 

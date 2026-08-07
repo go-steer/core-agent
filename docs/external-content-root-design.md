@@ -185,12 +185,26 @@ Equivalent flag form: `core-agent -c .agents/config.json --agents-content-dir ..
 
 ## Implementation phases
 
-- **Phase 1 (PR ε.1 of #600)** — `Config.ContentRoots` + `Validate` + config
-  round-trip test. No loader change.
-- **Phase 2 (PR ε.2)** — `pkg/instruction` `WithContentRoots` + scope walk;
-  confinement tests (declared resolves; undeclared and in-island escapes reject).
-- **Phase 3 (PR ε.3)** — `pkg/skills` `WithContentRoots`; `cmd/core-agent`
-  wiring + flag; end-to-end loader test against a fixture external tree.
+The slices are grouped along the *collision boundary* with the in-flight alert
+tool ([#593](https://github.com/go-steer/core-agent/issues/593)) rather than the
+original per-package split: the two loader options touch only `pkg/instruction`
+and `pkg/skills` (zero overlap with #593) and ship first; the config field and
+cmd wiring touch `cmd/core-agent/main.go` + `pkg/config/config.go` (shared with
+#593) and land after it merges, so only one side rebases those two files.
+
+- **PR ε.a (loader options) — SHIPPED behind this slice** — `pkg/instruction`
+  `WithContentRoots` + scope walk (confinement tests: declared resolves;
+  undeclared and in-island `../`/symlink escapes reject; dedup across scopes) and
+  `pkg/skills` `WithContentRoots` (precedence project > content_roots > home >
+  user). No config or cmd change; the options are exercised by unit tests, no
+  in-repo caller yet — same slicing pattern as the declarative-subagents γ.1
+  schema-only PR.
+- **PR ε.b (config + wiring)** — `Config.ContentRoots` + `Validate` +
+  round-trip test; `cmd/core-agent` resolves the roots relative to `agentsDir`,
+  adds the `--agents-content-dir` flag, and threads `WithContentRoots(...)` into
+  `instruction.LoadForSession` + `skills.LoadAll` (incl. the reload paths); an
+  end-to-end loader test against a fixture external tree. Sequenced **after
+  #593** to avoid rebase-thrash on the two shared files.
 - **PR B″** — the recipe gains a documented mode pointing `content_roots` at a
   real `kube-agents/agents/platform` checkout, replacing the copied skills and
   proving "run kube-agents with core-agent, unmodified."

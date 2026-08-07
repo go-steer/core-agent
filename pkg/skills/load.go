@@ -86,6 +86,16 @@ type loadOptions struct {
 	// (typically $HOME/.agents/skills/) layered between the project
 	// source and the ~/.core-agent/skills/ source. Empty = skip.
 	homeAgentsSkillsDir string
+
+	// contentRoots are operator-declared external directories whose
+	// <root>/skills/ subtree composes into the overlay just AFTER the
+	// project source, so name-collision precedence is
+	// project > content_roots (listed order) > home-agents > user. A
+	// declared root with no skills/ subdir is silently skipped (the
+	// instruction loader already fails loudly on a genuinely-missing
+	// root, so a root that merely lacks skills/ is legitimate). Empty =
+	// no external skill sources.
+	contentRoots []string
 }
 
 // WithInterpolator supplies a string transform applied to every .md
@@ -105,6 +115,18 @@ func WithInterpolator(fn func(string) string) Option {
 // Empty is legal and equals "no home-agents source."
 func WithHomeAgentsSkillsDir(dir string) Option {
 	return func(o *loadOptions) { o.homeAgentsSkillsDir = dir }
+}
+
+// WithContentRoots supplies operator-declared external directories whose
+// <root>/skills/ subtrees compose into the skill overlay just after the
+// project source — so precedence on a name collision is
+// project > content_roots (in listed order) > home-agents > user. Unlike
+// instruction @include, skills are read from a directory FS (not
+// @include'd), so no scope-confinement relaxation is involved. A root
+// with no skills/ subdir is silently skipped. Empty is legal and equals
+// "no external skill sources."
+func WithContentRoots(dirs []string) Option {
+	return func(o *loadOptions) { o.contentRoots = dirs }
 }
 
 // Load discovers skills under agentsDir/skills/ only. A missing
@@ -153,9 +175,17 @@ func LoadAll(ctx context.Context, projectAgentsDir, userCoreHome string, gate *p
 
 	// Collect the open sources in precedence order (highest first).
 	// Any dir that's "" or missing is silently skipped.
-	sources := make([]fs.FS, 0, 3)
+	sources := make([]fs.FS, 0, 3+len(lo.contentRoots))
 	if primary, ok := openSkillsDir(projectAgentsDir); ok {
 		sources = append(sources, primary)
+	}
+	// Content roots slot just after the project source, in listed order,
+	// so project skills win a name collision, then each content root in
+	// turn, then home-agents, then user-global.
+	for _, root := range lo.contentRoots {
+		if extra, ok := openSkillsDir(root); ok {
+			sources = append(sources, extra)
+		}
 	}
 	if homeAgents, ok := openSkillsDir(lo.homeAgentsSkillsDir); ok {
 		sources = append(sources, homeAgents)

@@ -220,9 +220,31 @@ cmd wiring touch `cmd/core-agent/main.go` + `pkg/config/config.go` (shared with
   `AttachSkills` surface the external tree (fails if the provider threading is
   dropped). Sequenced **after #593** ([#607]) to avoid rebase-thrash on the two
   shared files; landed cleanly once it merged.
-- **PR B″** — the recipe gains a documented mode pointing `content_roots` at a
-  real `kube-agents/agents/platform` checkout, replacing the copied skills and
-  proving "run kube-agents with core-agent, unmodified."
+- **PR B″ — SHIPPED** — the kube-platform-agent recipe now loads its workspace
+  `AGENTS.md` and all 18 skills from a content root: `content_roots: ["../upstream"]`
+  by default (the 18 skills moved out of the copied `.agents/skills/` tree into the
+  faithful `upstream/` snapshot), and *replacing* that `content_roots` entry with a
+  real unmodified checkout runs it live instead. (`--agents-content-dir` layers
+  *after* the config list, so it adds a root rather than switching runtimes — the
+  README calls this out, since a checkout shares the snapshot's 18 skill names and
+  would otherwise be shadowed first-declarer-wins.) `SOUL.md` stays
+  `@include`d (a content root auto-assembles only the workspace `AGENTS.md`, and
+  upstream splits its persona across `SOUL.md`/`AGENTS.md`/`CAPABILITIES.md`).
+  Loader tests assert the content-root load, the *absence* of a copied skill tree,
+  and a live-checkout fixture root; `config.hub.json` carries the same
+  `content_roots` (exercising the `pkg/compose` threading).
+
+  **Finding (content-root instruction/skill coupling).** B″ wanted to grant the
+  read-only `cluster` subagent its own domain skills (`agents/cluster/skills/`:
+  `gke-reliability`, `gke-storage`, …). A subagent scopes the *parent's* loaded
+  skill set, so the platform parent would have to load them — i.e. declare
+  `agents/cluster` as a second content root. But a content root couples skills with
+  instructions: that would also fold `cluster/AGENTS.md` ("one cluster only; never
+  reason about the fleet") into the **fleet** platform agent, contradicting its
+  mandate. The cluster subagent therefore stays `skills: []`. This is the first
+  concrete consumer for either (a) a skills-only content-root mode, or (b) letting
+  a declarative subagent load skills from a dedicated scope — noted here for a
+  future increment, not built now.
 
 ## Open questions
 

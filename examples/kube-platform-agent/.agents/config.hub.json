@@ -4,6 +4,7 @@
     "provider": "vertex",
     "name": "gemini-3.5-flash"
   },
+  "content_roots": ["../upstream"],
   "permissions": {
     "mode": "yolo",
     "require_plan_artifact": true

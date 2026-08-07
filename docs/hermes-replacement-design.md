@@ -265,14 +265,16 @@ recipe hack:
   root, so the persona lives at the recipe root to reach a sibling
   `upstream/`. Running a genuinely **unmodified** kube-agents checkout
   (adding nothing to their tree) needs an **external content-root**
-  capability (operator-declared trusted roots). Follow-on.
+  capability (operator-declared trusted roots). Follow-on — designed in
+  `docs/external-content-root-design.md` (#600).
 - Hermes "profiles" (`platform`/`cluster`) map to core-agent subagents,
   but there is no **declarative subagent** config yet — subagents are Go
   code or runtime `spawn_agent` only. The `cluster` profile lands as a
-  declarative subagent (own model + read-only MCP scope). Follow-on.
+  declarative subagent (own model + read-only MCP scope). Follow-on —
+  designed in `docs/declarative-subagents-design.md` (#599).
 
-Both are general capabilities (useful beyond kube-agents); each gets its
-own design doc before code.
+Both are general capabilities (useful beyond kube-agents); each has its
+own design doc (above), reviewed before code.
 
 ### W6 — Small substrate carry-overs (from the June doc)
 

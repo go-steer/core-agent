@@ -10,7 +10,7 @@ Three composable pieces:
 2. **[`../../components/otel`](../../components/otel/)** — one-env-var component that flips `pkg/telemetry`'s exporter from `none` to `otlp` via `OTEL_TRACES_EXPORTER`. That's the only core-agent-specific knob.
 3. **[`instrumentation.yaml`](instrumentation.yaml)** — a GKE Managed OpenTelemetry `Instrumentation` CR. Empty selector, so it targets all Pods in the `agent-triage` namespace. GKE auto-injects a subset of standard OTel SDK env vars: `OTEL_EXPORTER_OTLP_ENDPOINT` (in-cluster managed collector), `OTEL_TRACES_EXPORTER`, `OTEL_METRIC_EXPORT_INTERVAL`, `K8S_POD_UID`, sampler config, and `OTEL_RESOURCE_ATTRIBUTES` with `k8s.pod.uid` (collector then attaches `k8s.namespace.name` etc. server-side). **`OTEL_SERVICE_NAME` is NOT auto-injected** — the component sets it explicitly on the daemon + watcher deployments.
 
-Images are pinned to `2.7.0-dev.4`, the first release carrying the env override ([PR #315](https://github.com/go-steer/core-agent/pull/315)).
+Images are pinned to `2.8.0` (the current GA). The `OTEL_TRACES_EXPORTER` env override this overlay relies on first shipped in `2.7.0-dev.4` ([PR #315](https://github.com/go-steer/core-agent/pull/315)); 2.8.0 adds the full metrics pipeline + Go runtime instrumentation ([#325](https://github.com/go-steer/core-agent/issues/325) / [#338](https://github.com/go-steer/core-agent/issues/338)).
 
 Off-GKE deployments use the same component with a different endpoint source — see [`components/otel/README.md` § Non-GKE](../../components/otel/README.md#non-gke-self-managed-collector-docker-etc).
 

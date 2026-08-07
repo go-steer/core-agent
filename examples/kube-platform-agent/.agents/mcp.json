@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "agentic_wrap_llm": true,
+  "agentic_wrap_model": "gemini-3.5-flash-lite",
+  "servers": {
+    "gke": {
+      "transport": "http",
+      "url": "https://container.googleapis.com/mcp",
+      "auth": {
+        "google_oauth": {
+          "scopes": [
+            "https://www.googleapis.com/auth/cloud-platform"
+          ]
+        }
+      }
+    },
+    "developer_knowledge": {
+      "transport": "http",
+      "url": "https://developerknowledge.googleapis.com/mcp",
+      "auth": {
+        "google_oauth": {
+          "scopes": [
+            "https://www.googleapis.com/auth/cloud-platform"
+          ]
+        }
+      }
+    }
+  }
+}

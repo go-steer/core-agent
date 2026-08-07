@@ -22,6 +22,12 @@ GKE incident-triage agent that fans out one investigator per service in parallel
 
 **Highlights:** parallel subagent fan-out · MCP server integration · read-only by design · multi-model routing tunable (Pro orchestrator + Flash investigators)
 
+### [`kube-platform-agent`](https://github.com/go-steer/core-agent/tree/main/examples/kube-platform-agent)
+
+Runs the [kube-agents](https://github.com/gke-labs/kube-agents) **Platform Agent** — its persona, 10 governance SOPs, and all 18 skills — on core-agent instead of Hermes, from a faithful *unmodified* snapshot vendored under `upstream/`. Translates the two remote Google MCPs (`gke`, `developer_knowledge`) to core-agent's native HTTP transport, disables `bash`, and gates every mutation behind `record_plan`. Ships a credential-free loader test (no cluster) as the validation. Use when you want to run kube-agents content on core-agent, or as the reference for porting a foreign agent framework's content onto the v2 loader.
+
+**Highlights:** unmodified upstream snapshot (`@include` + on-demand SOP index) · Hermes-runtime → core-agent component mapping documented · native-HTTP MCP translation · plan-first hub config · hermetic loader validation
+
 ### [`plan-first`](https://github.com/go-steer/core-agent/tree/main/examples/plan-first)
 
 Substrate-enforced plan-before-action. The agent must call `record_plan` before any `write_file`/`bash`/etc. tool call succeeds — read tools stay open during research. Ships three `config.json` variants (`ask` / `acceptEdits` / `yolo` × `require_plan_artifact`) so you pick the post-plan friction level. Use when you want the safety of a written plan before the agent touches anything.

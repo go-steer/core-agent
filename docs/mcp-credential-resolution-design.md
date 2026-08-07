@@ -1,12 +1,18 @@
 # Per-MCP-server credential resolution: pluggable providers + Auth Manager
 
-Design doc for v2.4's auth-wrapper layer: a pluggable
+Design doc for the v2.8+ auth-wrapper layer: a pluggable
 `CredentialProvider` interface that resolves outbound credentials
 per MCP server, with first-class support for caller-aware 3LO
 providers (Google's Agent Identity Auth Manager, OAuth2 direct).
 
-**Status:** proposed (2026-06-03). Awaiting approval before
-implementation. Sibling design to
+**Status:** proposed (2026-06-03); **re-scoped to v2.8+ (2026-08-07)**.
+Awaiting approval before implementation. Sequences *after* v2.7's
+daemon-scope OAuth
+([#190](https://github.com/go-steer/core-agent/issues/190)) lands with
+the forward-compatibility guardrails in
+[`docs/mcp-oauth-design.md`](./mcp-oauth-design.md) in place — this
+design is the strictly additive per-caller extension of that code, not
+a rewrite. Sibling design to
 [`docs/multi-session-design.md`](./multi-session-design.md)
 (task #12); independently valuable but composes naturally with
 multi-session's Caller propagation.
@@ -80,7 +86,7 @@ with caller-aware resolution is the unlock.
 - **OAuth flow UX / login-to-IDP.** Auth Manager owns the login
   flow on the GCP Console side; OAuth2 direct depends on the
   operator pre-seeding refresh tokens out-of-band. We don't
-  build a "log into GitHub from the TUI" experience in v2.4.
+  build a "log into GitHub from the TUI" experience in this increment.
 - **Managing Auth Manager provider configs.** Operators
   configure OAuth providers in the GCP Console / via `gcloud`.
   We consume the resulting provider IDs; we don't wrap the
@@ -89,7 +95,7 @@ with caller-aware resolution is the unlock.
   surfaces as MCP-call errors; alerting on systemic auth
   failures is the operator's observability concern.
 - **Per-MCP-server connection pools.** Same connection, different
-  injected credential per call. Deferred to v2.5.
+  injected credential per call. Deferred to a later increment.
 - **Per-provider rate limiting.** Auth Manager / OAuth2 have
   their own rate limits; we don't add a second layer.
 
@@ -213,7 +219,7 @@ tokens persisting longer than the session.
 
 ## Provider implementations
 
-Five providers ship in v2.4 (rough order of priority):
+Five providers ship across the v2.8+ increment (rough order of priority):
 
 ### `google_oauth` (legacy compat + 2LO)
 
@@ -584,7 +590,7 @@ without multi-session is almost certainly a config mistake.
   operator-facing guide covering all provider types.
 - `examples/mcp-auth-manager/` recipe showing the
   Auth Manager + multi-session combination end-to-end.
-- CHANGELOG v2.4 entry covering both Phase A-D of this design
+- CHANGELOG entry covering both Phase A-D of this design
   plus the multi-session pieces.
 
 ~500 LoC providers + ~300 LoC tests + ~500 LoC recipe + docs.
@@ -634,8 +640,8 @@ Total: ~3800 LoC across 4 PRs.
      operator ships separately."
    - "Ship a tiny CLI tool `core-agent oauth login --provider=<name>`
      that does the device-flow dance once and writes to the store."
-   Lean: ship the CLI in v2.5 (or as an extras binary); for
-   v2.4 document the manual path.
+   Lean: ship the CLI in a later increment (or as an extras
+   binary); for the initial v2.8+ increment document the manual path.
 
 6. **MCP servers that want raw caller identity, not a token.**
    Some MCP servers may want to authenticate the caller
@@ -674,7 +680,7 @@ Total: ~3800 LoC across 4 PRs.
   providers that operate on shared-secret schemes, use
   `subtle.ConstantTimeCompare` if we ever do server-side
   validation. (Not relevant for the outbound-injection case
-  in v2.4 but worth noting for adjacent work.)
+  in this increment but worth noting for adjacent work.)
 
 - **Provider config file mode.** Like `users.json` in the
   multi-session design, the `auth_providers` config — and any
@@ -702,7 +708,7 @@ Total: ~3800 LoC across 4 PRs.
   (every call resolves to the daemon's default identity, which
   defeats per-user attribution). Warn loudly at daemon startup.
 
-## Out of scope (deferred to v2.5 or beyond)
+## Out of scope (deferred beyond the initial v2.8+ increment)
 
 - OAuth flow UX (`core-agent oauth login --provider=<name>`)
   for `oauth2_direct` onboarding.
@@ -721,6 +727,14 @@ Total: ~3800 LoC across 4 PRs.
 
 ## Dependencies and related work
 
+- **[#190](https://github.com/go-steer/core-agent/issues/190) /
+  `docs/mcp-oauth-design.md`** — the v2.7 daemon-scope OAuth work is the
+  prerequisite. This design sequences *after* #190 lands with the eight
+  forward-compatibility guardrails (its "Forward compatibility with
+  credential-resolution (v2.8+)" section) in place; the `oauth2_direct`
+  provider here is the per-caller extension of #190's daemon-wide OAuth
+  block, and the `httpClientForServer` seam + ctx-Caller propagation +
+  keyed cache are what let it land additively.
 - **Task #12 / `docs/multi-session-design.md`** — sibling design.
   Phase 1's `Caller` plumbing is the prerequisite for 3LO
   providers; Phase 3's MCP context propagation is the contact
@@ -744,7 +758,7 @@ Total: ~3800 LoC across 4 PRs.
 - Phase C: 1-2 weeks (Auth Manager integration + recipe)
 - Phase D: 1 week (oauth2_direct + docs + reference recipe)
 
-~4-5 weeks of focused work. Realistic v2.4 release if
-sequenced after multi-session Phase 1 lands. Could be split
-across v2.4 (Phases A + B + C) and v2.5 (Phase D) if v2.4
-scope pressure builds.
+~4-5 weeks of focused work, sequenced after v2.7's daemon-scope
+OAuth (#190) and multi-session Phase 1 land. Could be split
+across releases (Phases A + B + C, then Phase D) if scope
+pressure builds.

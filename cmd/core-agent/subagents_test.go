@@ -18,15 +18,44 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/glebarez/sqlite"
+	adkagent "google.golang.org/adk/agent"
+	adktool "google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 	"github.com/go-steer/core-agent/v2/pkg/models/mock"
+	"github.com/go-steer/core-agent/v2/pkg/skills"
 )
+
+// fakeTool is a name-only adktool.Tool for exercising the built-in tool
+// name filter without constructing real tools.
+type fakeTool struct{ name string }
+
+func (f fakeTool) Name() string        { return f.name }
+func (f fakeTool) Description() string { return f.name + " (fake)" }
+func (f fakeTool) IsLongRunning() bool { return false }
+
+// fakeToolset is a name-only adktool.Toolset standing in for an MCP
+// server's toolset; identity is compared by Name in the assertions.
+type fakeToolset struct{ name string }
+
+func (f fakeToolset) Name() string { return f.name }
+func (f fakeToolset) Tools(adkagent.ReadonlyContext) ([]adktool.Tool, error) {
+	return nil, nil
+}
+
+func toolsetNames(tss []adktool.Toolset) []string {
+	out := make([]string, 0, len(tss))
+	for _, ts := range tss {
+		out = append(out, ts.Name())
+	}
+	return out
+}
 
 // identityInterp is the no-op interpolator: subagent tests don't exercise
 // ${env:...} substitution (covered by pkg/instruction), only the plumbing.
@@ -70,7 +99,7 @@ func TestBuildDeclaredSubagents_OwnModelAndIdentity(t *testing.T) {
 
 	subs, err := buildDeclaredSubagents(
 		context.Background(), cfg, mock.NewEcho(), t.TempDir(),
-		nil, nil, identityInterp, discard,
+		parentSurface{}, identityInterp, discard,
 	)
 	if err != nil {
 		t.Fatalf("buildDeclaredSubagents: %v", err)
@@ -105,7 +134,7 @@ func TestBuildDeclaredSubagents_InheritsParentModel(t *testing.T) {
 	}
 	subs, err := buildDeclaredSubagents(
 		context.Background(), cfg, mock.NewEcho(), t.TempDir(),
-		nil, nil, identityInterp, discard,
+		parentSurface{}, identityInterp, discard,
 	)
 	if err != nil {
 		t.Fatalf("buildDeclaredSubagents: %v", err)
@@ -125,7 +154,7 @@ func TestBuildDeclaredSubagents_NoneDeclared(t *testing.T) {
 	cfg := &config.Config{Model: config.ModelConfig{Provider: mock.ProviderEcho, Name: "echo"}}
 	subs, err := buildDeclaredSubagents(
 		context.Background(), cfg, mock.NewEcho(), t.TempDir(),
-		nil, nil, identityInterp, discard,
+		parentSurface{}, identityInterp, discard,
 	)
 	if err != nil {
 		t.Fatalf("buildDeclaredSubagents: %v", err)
@@ -151,7 +180,7 @@ func TestBuildDeclaredSubagents_RegisteredAsParentTool(t *testing.T) {
 	}
 	subs, err := buildDeclaredSubagents(
 		context.Background(), cfg, mock.NewEcho(), t.TempDir(),
-		nil, nil, identityInterp, discard,
+		parentSurface{}, identityInterp, discard,
 	)
 	if err != nil {
 		t.Fatalf("buildDeclaredSubagents: %v", err)
@@ -185,5 +214,214 @@ func TestBuildDeclaredSubagents_RegisteredAsParentTool(t *testing.T) {
 	}
 	if !found {
 		t.Error("declared subagent should register as a parent tool named \"cluster\"")
+	}
+}
+
+// --- γ.3: inline tools / mcp / skills filtering ---
+
+// TestResolveSubagentTools covers the nil=inherit / list=scope /
+// empty=grant-none / unknown=error contract for the built-in tool filter.
+func TestResolveSubagentTools(t *testing.T) {
+	t.Parallel()
+	parent := []adktool.Tool{fakeTool{"read_file"}, fakeTool{"bash"}, fakeTool{"write_file"}}
+
+	// nil → inherit the full registry (same instances).
+	got, err := resolveSubagentTools(config.SubagentSpec{Tools: nil}, parent)
+	if err != nil {
+		t.Fatalf("nil Tools: %v", err)
+	}
+	if len(got) != len(parent) {
+		t.Errorf("nil Tools should inherit all %d, got %d", len(parent), len(got))
+	}
+
+	// list → exactly those, in the order requested.
+	got, err = resolveSubagentTools(config.SubagentSpec{Tools: []string{"bash", "read_file"}}, parent)
+	if err != nil {
+		t.Fatalf("list Tools: %v", err)
+	}
+	if len(got) != 2 || got[0].Name() != "bash" || got[1].Name() != "read_file" {
+		t.Errorf("scoped tools = %v, want [bash read_file]", toolNames(got))
+	}
+
+	// empty (non-nil) → grant none.
+	got, err = resolveSubagentTools(config.SubagentSpec{Tools: []string{}}, parent)
+	if err != nil {
+		t.Fatalf("empty Tools: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("empty Tools should grant none, got %v", toolNames(got))
+	}
+
+	// unknown → fail loud.
+	if _, err := resolveSubagentTools(config.SubagentSpec{Tools: []string{"nope"}}, parent); err == nil {
+		t.Error("unknown tool should error")
+	}
+}
+
+func toolNames(ts []adktool.Tool) []string {
+	out := make([]string, 0, len(ts))
+	for _, t := range ts {
+		out = append(out, t.Name())
+	}
+	return out
+}
+
+// TestResolveSubagentToolsets_MCP covers MCP-server name selection: nil
+// inherits every started server (nil-toolset servers skipped), a list
+// selects by name, an unknown server errors, and an explicit empty list
+// grants none. Skills are left nil against an empty surface so only the
+// MCP dimension varies.
+func TestResolveSubagentToolsets_MCP(t *testing.T) {
+	t.Parallel()
+	surface := parentSurface{
+		mcpToolsets: []namedToolset{
+			{name: "gke", toolset: fakeToolset{"gke"}},
+			{name: "gke-readonly", toolset: fakeToolset{"gke-readonly"}},
+			{name: "broken", toolset: nil}, // started but failed → nil toolset
+		},
+	}
+
+	// nil → inherit every server that has a toolset (broken skipped).
+	out, desc, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{}, surface)
+	if err != nil {
+		t.Fatalf("nil MCP: %v", err)
+	}
+	if names := toolsetNames(out); len(names) != 2 || !strings.Contains(desc, "mcp=inherit") {
+		t.Errorf("nil MCP inherit = %v (desc %q), want [gke gke-readonly]", names, desc)
+	}
+
+	// list → only the named server.
+	out, _, err = resolveSubagentToolsets(context.Background(), config.SubagentSpec{MCP: []string{"gke-readonly"}}, surface)
+	if err != nil {
+		t.Fatalf("scoped MCP: %v", err)
+	}
+	if names := toolsetNames(out); len(names) != 1 || names[0] != "gke-readonly" {
+		t.Errorf("scoped MCP = %v, want [gke-readonly] (the read-only server only, not gke)", names)
+	}
+
+	// a named-but-broken server is not an error; it just contributes no
+	// toolset (same as the parent sees).
+	out, _, err = resolveSubagentToolsets(context.Background(), config.SubagentSpec{MCP: []string{"broken"}}, surface)
+	if err != nil {
+		t.Fatalf("broken MCP: %v", err)
+	}
+	if len(out) != 0 {
+		t.Errorf("broken server should contribute no toolset, got %v", toolsetNames(out))
+	}
+
+	// empty (non-nil) → grant none.
+	out, _, err = resolveSubagentToolsets(context.Background(), config.SubagentSpec{MCP: []string{}}, surface)
+	if err != nil {
+		t.Fatalf("empty MCP: %v", err)
+	}
+	if len(out) != 0 {
+		t.Errorf("empty MCP should grant none, got %v", toolsetNames(out))
+	}
+
+	// unknown → fail loud.
+	if _, _, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{MCP: []string{"nope"}}, surface); err == nil {
+		t.Error("unknown mcp server should error")
+	}
+}
+
+// writeSkill drops a minimal <dir>/skills/<name>/SKILL.md so skills.LoadAll
+// discovers a real skill, letting the skills dimension of
+// resolveSubagentToolsets run against a genuine skill.Source (not a stub).
+func writeSkill(t *testing.T, dir, name string) {
+	t.Helper()
+	skillDir := filepath.Join(dir, skills.SkillDirName, name)
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	body := "---\nname: " + name + "\ndescription: the " + name + " skill\n---\n\nbody for " + name
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+}
+
+// TestResolveSubagentToolsets_Skills covers the skills dimension end-to-end
+// through the wiring layer (not just skills.Scoped in isolation): nil
+// inherits the parent's skill toolset, a list scopes to a filtered view, and
+// an explicit empty list grants none — each reflected in both the returned
+// toolsets and the human-readable scope description.
+func TestResolveSubagentToolsets_Skills(t *testing.T) {
+	t.Parallel()
+	project := t.TempDir()
+	writeSkill(t, project, "alpha")
+	writeSkill(t, project, "beta")
+	loaded, err := skills.LoadAll(context.Background(), project, "", nil)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if loaded.Empty() {
+		t.Fatal("expected a non-empty skill surface")
+	}
+	surface := parentSurface{skills: loaded}
+
+	// nil → inherit the parent's (single) skill toolset.
+	out, desc, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{}, surface)
+	if err != nil {
+		t.Fatalf("nil Skills: %v", err)
+	}
+	if len(out) != 1 || !strings.Contains(desc, "skills=inherit") {
+		t.Errorf("nil Skills = %d toolsets (desc %q), want 1 inherited", len(out), desc)
+	}
+
+	// list → a scoped skill toolset is present, and the description names it.
+	out, desc, err = resolveSubagentToolsets(context.Background(), config.SubagentSpec{Skills: []string{"alpha"}}, surface)
+	if err != nil {
+		t.Fatalf("scoped Skills: %v", err)
+	}
+	if len(out) != 1 || !strings.Contains(desc, "skills=[alpha]") {
+		t.Errorf("scoped Skills = %d toolsets (desc %q), want 1 scoped to alpha", len(out), desc)
+	}
+
+	// empty (non-nil) → grant none: no skill toolset at all.
+	out, desc, err = resolveSubagentToolsets(context.Background(), config.SubagentSpec{Skills: []string{}}, surface)
+	if err != nil {
+		t.Fatalf("empty Skills: %v", err)
+	}
+	if len(out) != 0 || !strings.Contains(desc, "skills=[]") {
+		t.Errorf("empty Skills = %d toolsets (desc %q), want none", len(out), desc)
+	}
+
+	// unknown → fail loud.
+	if _, _, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{Skills: []string{"nope"}}, surface); err == nil {
+		t.Error("unknown skill should error")
+	}
+}
+
+// TestBuildDeclaredSubagents_ScopedToolsSurface is the end-to-end γ.3
+// check: a subagent that names a built-in tool subset is constructed with
+// exactly that subset (asserted via the parent-visible Tools() list on the
+// subagent itself).
+func TestBuildDeclaredSubagents_ScopedToolsSurface(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{
+		Model: config.ModelConfig{Provider: mock.ProviderEcho, Name: "echo"},
+		Subagents: []config.SubagentSpec{{
+			Name:  "reader",
+			Tools: []string{"read_file"},
+		}},
+	}
+	surface := parentSurface{
+		builtinTools: []adktool.Tool{fakeTool{"read_file"}, fakeTool{"bash"}},
+	}
+	subs, err := buildDeclaredSubagents(
+		context.Background(), cfg, mock.NewEcho(), t.TempDir(),
+		surface, identityInterp, discard,
+	)
+	if err != nil {
+		t.Fatalf("buildDeclaredSubagents: %v", err)
+	}
+	if len(subs) != 1 {
+		t.Fatalf("expected 1 subagent, got %d", len(subs))
+	}
+	var names []string
+	for _, tl := range subs[0].Tools() {
+		names = append(names, tl.Name())
+	}
+	if len(names) != 1 || names[0] != "read_file" {
+		t.Errorf("scoped subagent tools = %v, want [read_file] (bash excluded)", names)
 	}
 }

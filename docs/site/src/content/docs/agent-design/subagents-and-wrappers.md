@@ -2,10 +2,11 @@
 title: Subagents and wrappers
 ---
 
-Two ways to push work off the parent agent:
+Three ways to push work off the parent agent:
 
 - **Agentic tool wrappers** (`agentic_read_file`, `agentic_grep`, `agentic_research`, `agentic_fetch_url`) — synchronous, bounded, single-purpose. The parent calls them like any other tool; under the hood they spawn a focused subtask on a (typically cheaper) model and return only the digest. Raw tool output never enters the parent's context.
-- **Background subagents** (`spawn_agent`, `list_agents`, `check_agent`, `stop_agent`) — asynchronous, longer-running, multi-turn. The parent dispatches a goal; the subagent works in its own session until done; alerts and completion summaries land back in the parent's chat.
+- **Background subagents** (`spawn_agent`, `list_agents`, `check_agent`, `stop_agent`) — asynchronous, longer-running, multi-turn, decided at runtime. The parent dispatches a goal; the subagent works in its own session until done; alerts and completion summaries land back in the parent's chat.
+- **Declarative subagents** (`subagents[]` in `config.json`, v2.9+) — a fixed roster of named delegates authored ahead of time. Each becomes a named tool on the parent, with its own persona, model, and a name-scoped slice of the parent's tool/MCP/skill surface. Same in-process substrate as `spawn_agent`, but the roster ships in the config rather than being invented at runtime — so it deploys as one ConfigMap.
 
 This page covers when to use each, how to actually get the model to use them (the model-side adoption story is non-trivial), and the failure modes worth designing around.
 
@@ -184,6 +185,41 @@ A subagent that wakes periodically to check something, posts an alert if it sees
 - Alerts come through `report_alert` to the parent's inbox.
 
 See the [Autonomous quickstart](/run/autonomous/quickstart/) for a worked example.
+
+---
+
+## Declarative subagents: a fixed roster in config
+
+Background subagents are decided at runtime — the parent (or operator) picks a goal and spawns a worker on the fly. **Declarative subagents** invert that: you author a fixed roster in `config.json`, and each entry becomes a named tool the parent delegates to by name. Same in-process substrate (`agent.WithSubagents`); the difference is *when* the roster is decided.
+
+```jsonc
+{
+  "model": { "provider": "vertex", "name": "gemini-3.5-flash" },
+  "subagents": [
+    {
+      "name": "cluster",
+      "description": "Read-only cluster investigator. Delegate GKE reads here.",
+      "instructions": "@include ./personas/cluster.md",
+      "mcp": ["gke-readonly"],
+      "skills": ["fleet-audit"]
+    }
+  ]
+}
+```
+
+**When to reach for it over `spawn_agent`:**
+
+| Question | Answer |
+|---|---|
+| Is the set of delegates known ahead of time and stable? | Declarative roster |
+| Does the deployment need to be a single reproducible artifact (ConfigMap, image)? | Declarative roster |
+| Does each delegate need a *narrower* tool surface than the parent (least privilege)? | Declarative roster — scope its `tools`/`mcp`/`skills` |
+| Does the parent decide *at runtime* what to delegate, or spawn N-of-something? | `spawn_agent` |
+| Is it a one-off, ad-hoc task? | `spawn_agent` |
+
+**Least-privilege scoping.** Each of `tools`, `mcp`, and `skills` narrows one dimension of the parent's surface, following a nil / list / empty contract: **omit** the field to inherit the parent's full set, give a **non-empty list** to scope to exactly those names, or give an **empty list** (`[]`) to grant none of that dimension. This is the main design payoff over inheriting everything — a read-only `cluster` delegate can see `gke-readonly` while the parent keeps the read-write `gke` server, without a second MCP process or a nested config tree. Scoping reuses the parent's already-started MCP toolsets and a filtered view of its loaded skills (no re-walk), and every inherited tool keeps the parent's permission gate, so a subagent cannot escalate.
+
+See [Reference → Declarative subagents](/reference/configuration/#declarative-subagents-v29) for the full field schema, and [`examples/kube-platform-agent/`](https://github.com/go-steer/core-agent/tree/main/examples/kube-platform-agent) for a recipe that delegates GKE reads to a scoped `cluster` subagent.
 
 ---
 

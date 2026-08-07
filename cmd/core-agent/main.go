@@ -1124,10 +1124,21 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// Declarative subagents (docs/declarative-subagents-design.md): build
 	// each config-declared subagent into a callable *agent.Agent before
 	// assembling the parent options, then register them via
-	// agent.WithSubagents below. Constructed after builtinTools/allToolsets
-	// are final so a subagent inherits the parent's full tool surface
-	// (γ.2 default); narrowing by inline refs lands in γ.3.
-	declaredSubagents, err := buildDeclaredSubagents(ctx, cfg, provider, projectRoot, builtinTools, allToolsets, envResolver.InterpolateFunc(), send)
+	// agent.WithSubagents below. Constructed after builtinTools/mcpServers/
+	// loadedSkills are final so a subagent can inherit the parent's full
+	// surface whole (nil refs) or take a name-scoped subset (inline refs).
+	mcpNamed := make([]namedToolset, 0, len(mcpServers))
+	for _, s := range mcpServers {
+		if s == nil {
+			continue
+		}
+		mcpNamed = append(mcpNamed, namedToolset{name: s.Name, toolset: s.Toolset()})
+	}
+	declaredSubagents, err := buildDeclaredSubagents(ctx, cfg, provider, projectRoot, parentSurface{
+		builtinTools: builtinTools,
+		mcpToolsets:  mcpNamed,
+		skills:       loadedSkills,
+	}, envResolver.InterpolateFunc(), send)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: subagents: %v\n", err)
 		return runner.ExitConfigError

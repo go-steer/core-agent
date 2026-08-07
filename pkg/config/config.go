@@ -44,6 +44,7 @@ type Config struct {
 	Agent       AgentConfig       `json:"agent,omitempty"`
 	ToolOutput  ToolOutputConfig  `json:"tool_output,omitempty"`
 	Tools       ToolsConfig       `json:"tools,omitempty"`
+	Subagents   []SubagentSpec    `json:"subagents,omitempty"`
 	Hooks       hooks.Config      `json:"hooks,omitempty"`
 	Mock        MockConfig        `json:"mock,omitempty"`
 	OTEL        OTELConfig        `json:"otel,omitempty"`
@@ -507,6 +508,38 @@ type ToolOutputPerToolCaps struct {
 // --no-builtin-tools disables the entire suite and makes Disable moot.
 type ToolsConfig struct {
 	Disable []string `json:"disable,omitempty"`
+}
+
+// SubagentSpec declares one in-process subagent the parent agent may call
+// by name. Subagents are wired in cmd/core-agent onto the shipped subagent
+// substrate (agent.WithSubagents / agent.NewSubagentTool) — see
+// docs/declarative-subagents-design.md. This type is the on-disk schema;
+// it carries no runtime behavior.
+//
+// A subagent runs on its own Model (or the parent's, when Model is nil)
+// and its own Instructions (which support the @include directive). Its
+// tool surface is inline-referenced against the SHARED config, so the
+// whole recipe stays in one config.json + one mcp.json + one skills/ tree
+// (a single ConfigMap in a Kubernetes deploy):
+//
+//   - MCP names the servers from .agents/mcp.json the subagent may use.
+//   - Skills names the skills from .agents/skills/ it may use.
+//   - Tools is an allowlist of built-in tool names.
+//
+// When none of Tools/MCP/Skills is set, the subagent inherits the parent's
+// full surface: an operator-authored declarative subagent is a trusted
+// delegate, and it is still bound by the same permission gate (and
+// require_plan_artifact) as the parent, so it cannot escalate. Set an
+// explicit empty list (e.g. "mcp": []) to grant none of that dimension.
+type SubagentSpec struct {
+	Name         string       `json:"name"`
+	Description  string       `json:"description,omitempty"`
+	Instructions string       `json:"instructions,omitempty"`
+	Model        *ModelConfig `json:"model,omitempty"`
+	MaxDepth     int          `json:"max_depth,omitempty"`
+	Tools        []string     `json:"tools,omitempty"`
+	MCP          []string     `json:"mcp,omitempty"`
+	Skills       []string     `json:"skills,omitempty"`
 }
 
 // MockConfig configures the mock providers (echo, scripted) and the
@@ -1001,6 +1034,9 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("config: unknown safety.small_tier_parent %q (want one of %q, %q, %q)", c.Safety.SmallTierParent, SmallTierParentWarn, SmallTierParentRefuse, SmallTierParentAllow)
 	}
+	if err := c.validateSubagents(); err != nil {
+		return err
+	}
 	if err := c.Hooks.Validate(); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
@@ -1061,4 +1097,78 @@ func validAccessSpec(s string) bool {
 	default:
 		return false
 	}
+}
+
+// validateSubagents checks the declarative subagents[] block. Structural
+// only (per Validate's contract): names must be unique and tool-name-safe,
+// max_depth non-negative, an inline model (if set) must name a known
+// provider, and inline tool/mcp/skills refs must be non-empty strings.
+// Whether a referenced MCP server or skill actually exists is resolved at
+// wiring time in cmd/core-agent (it depends on the loaded mcp.json /
+// skills dir), not here.
+func (c *Config) validateSubagents() error {
+	seen := make(map[string]struct{}, len(c.Subagents))
+	for i, sa := range c.Subagents {
+		if sa.Name == "" {
+			return fmt.Errorf("config: subagents[%d].name is required", i)
+		}
+		if !validSubagentName(sa.Name) {
+			return fmt.Errorf("config: subagents[%d].name=%q must be [A-Za-z0-9_-]{1,64} (it becomes the tool name the parent calls)", i, sa.Name)
+		}
+		if _, dup := seen[sa.Name]; dup {
+			return fmt.Errorf("config: subagents[%d]: duplicate name %q", i, sa.Name)
+		}
+		seen[sa.Name] = struct{}{}
+		if sa.MaxDepth < 0 {
+			return fmt.Errorf("config: subagents[%d].max_depth=%d must be >= 0 (0 = substrate default)", i, sa.MaxDepth)
+		}
+		if sa.Model != nil {
+			if sa.Model.Name == "" {
+				return fmt.Errorf("config: subagents[%d].model.name is required when model is set", i)
+			}
+			switch sa.Model.Provider {
+			case "", ProviderGemini, ProviderVertex, ProviderAnthropic, ProviderAnthropicVertex, ProviderEcho, ProviderScripted:
+				// ok; "" means inherit the parent's auto-detected provider.
+			default:
+				return fmt.Errorf("config: subagents[%d].model.provider %q is unknown (want one of %q, %q, %q, %q, %q, %q)", i, sa.Model.Provider, ProviderGemini, ProviderVertex, ProviderAnthropic, ProviderAnthropicVertex, ProviderEcho, ProviderScripted)
+			}
+		}
+		for j, n := range sa.Tools {
+			if n == "" {
+				return fmt.Errorf("config: subagents[%d].tools[%d] is empty", i, j)
+			}
+		}
+		for j, n := range sa.MCP {
+			if n == "" {
+				return fmt.Errorf("config: subagents[%d].mcp[%d] is empty", i, j)
+			}
+		}
+		for j, n := range sa.Skills {
+			if n == "" {
+				return fmt.Errorf("config: subagents[%d].skills[%d] is empty", i, j)
+			}
+		}
+	}
+	return nil
+}
+
+// validSubagentName reports whether s is safe to register as a tool name
+// (the parent model calls a subagent by this name). Mirrors the hand-rolled
+// charset style of validNamedTheme; regexp is intentionally avoided to keep
+// this foundational package dependency-light.
+func validSubagentName(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }

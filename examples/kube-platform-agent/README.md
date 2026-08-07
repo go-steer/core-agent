@@ -19,8 +19,13 @@ documented as out of scope below.
 - All 18 skills discovered by the v2 skills loader.
 - The 10 governance SOPs + the bootstrap inventory scan, vendored and indexed for
   on-demand reading (not injected into every turn).
-- The two remote Google MCPs — `gke` and `developer_knowledge` — translated from
-  Hermes' node `mcp-remote` proxies to core-agent's native HTTP MCP transport.
+- The remote Google MCPs — `gke` (read-write, for the platform agent),
+  `gke-readonly` (the read-only endpoint the cluster subagent is scoped to), and
+  `developer_knowledge` — translated from Hermes' node `mcp-remote` proxies to
+  core-agent's native HTTP MCP transport.
+- A read-only **`cluster` subagent** the platform agent delegates single-cluster
+  diagnostics to — Hermes' per-cluster Cluster Agent profile, mapped to a
+  declarative subagent scoped to a strictly narrower tool surface (see below).
 - Plan-first safety: every mutation (including *all* MCP calls) is gated behind
   `record_plan`, and `bash` is disabled.
 
@@ -35,11 +40,12 @@ kube-platform-agent/
     SOUL.md AGENTS.md CAPABILITIES.md
     governance/          # 10 SOPs + inventory.md
     docs/                # glossary, gcp-console-links, session_management
+    cluster/             # read-only Cluster Agent persona (@include'd by the subagent)
     LICENSE PROVENANCE.md
   .agents/
-    config.json          # local REPL: model, plan-first policy
+    config.json          # local REPL: model, plan-first policy, cluster subagent
     config.hub.json      # same + attach.multi_session (shared daemon)
-    mcp.json             # gke + developer_knowledge (native HTTP)
+    mcp.json             # gke + gke-readonly + developer_knowledge (native HTTP)
     skills/              # 18 skills (copied here; see PROVENANCE.md)
   recipe_test.go         # loader-only validation (no creds, no cluster)
 ```
@@ -57,6 +63,7 @@ holds the config, MCP, and skills the loader keys to `<agentsDir>`.
 | `governance/` (10 SOPs + `inventory.md`) | **vendor** | on-demand via `AGENTS.d/50-governance.md` |
 | 18 skills | **vendor** | `.agents/skills/` (script caveat below) |
 | MCP `gke`, `developer_knowledge` | **translate** | `.agents/mcp.json` native HTTP |
+| `agents/cluster/` (read-only Cluster Agent profile) | **vendor + subagent** | `cluster` declarative subagent in `.agents/config.json` (persona from `upstream/cluster/`) |
 | MCP `platform_control` (stdio Python) | **drop** | decomposed per-tool ↓ |
 | MCP `agent_common` / `call_agent` (A2A) | **companion** | a peer/`call_peer` increment |
 | `cron/jobs.json` | **companion** | a scheduled-jobs increment |
@@ -92,6 +99,46 @@ plugin hook bus; the kanban delegation board (dropped by design — subagents an
 peers replace it); the script-first cron path (until the scheduled-jobs
 increment); and the byte-compatible `/v1/chat/completions` A2A wire shape (until a
 compat adapter). None block Phase 0.
+
+## The `cluster` subagent
+
+Hermes scaffolds a per-cluster **Cluster Agent** profile — a read-only SRE pinned
+to one cluster that the Platform Agent delegates deep diagnostics to via the
+kanban board. core-agent maps that to a **declarative subagent**: a fixed roster
+entry in `.agents/config.json` (`subagents[]`) that becomes a `cluster` tool the
+platform agent can call by name.
+
+```jsonc
+"subagents": [
+  {
+    "name": "cluster",
+    "description": "Read-only SRE scoped to exactly one named GKE cluster…",
+    "instructions": "@include upstream/cluster/SOUL.md\n\n## Runtime overlay (core-agent)\n…",
+    "model": { "provider": "vertex", "name": "gemini-3.5-flash" },
+    "mcp": ["gke-readonly", "developer_knowledge"],  // scoped: NOT the read-write gke
+    "skills": []                                     // grant none of the fleet skills
+  }
+]
+```
+
+The point is **least privilege**, enforced by config rather than by persona alone:
+
+- **`mcp` (list → scope)** — the subagent sees only `gke-readonly` and
+  `developer_knowledge`, never the read-write `gke` the platform agent itself
+  uses. Its cluster reads physically cannot mutate.
+- **`skills` (empty → grant none)** — a single-cluster read-only SRE inherits none
+  of the platform's fleet/provisioning skills. (Its own domain diagnostic skills —
+  `gke-reliability`, `gke-storage`, … — live in `agents/cluster/skills/` upstream;
+  vendoring that second skill tree waits for the external-content-root increment.)
+- **`tools` (omitted → inherit)** — it inherits the parent's built-ins, which
+  already have `bash` disabled and carry the same plan-first permission gate, so
+  it cannot escalate.
+
+The persona is the **unmodified** upstream `cluster/SOUL.md`, `@include`d and then
+reconciled to core-agent by a short inline overlay (there is no kanban dispatcher
+or bash preflight here — the subagent returns its RCA directly in its reply). See
+[Reference → Declarative subagents](https://go-steer.github.io/core-agent/reference/configuration/#declarative-subagents-v29)
+for the full `subagents[]` schema and the nil/list/empty scoping contract.
 
 ## Run it locally
 
@@ -148,11 +195,16 @@ A live GKE run is manual UAT — bring your own project and clusters.
 
 - **Model.** Edit the `model` object in `.agents/config.json` (any core-agent
   provider). Keep it in sync with `config.hub.json` if you run the hub too.
-- **Read-only fleet.** Point `gke` at `https://container.googleapis.com/mcp/read-only`
-  with the `container.read-only` scope in `mcp.json` for an investigate-only
-  variant.
-- **Add companions.** Delegation to per-cluster Cluster Agents and to chat/alert
-  companions arrives in later increments (declarative subagents, peers).
+- **Read-only fleet.** The `gke-readonly` server already points at
+  `https://container.googleapis.com/mcp/read-only`; to make the *platform* agent
+  investigate-only too, scope its own surface to it (or repoint `gke`) in
+  `mcp.json`.
+- **Tune the cluster subagent.** Widen or narrow its `mcp` / `skills` / `tools`
+  scope in `.agents/config.json`, or give it its own model. Add more roster
+  entries the same way (e.g. a `cost` or `security` delegate).
+- **Add companions.** Promoting the in-process `cluster` subagent to a remote
+  peer, and adding chat/alert companions, arrives in later increments (peers,
+  `call_peer`).
 
 ## Re-syncing the snapshot
 

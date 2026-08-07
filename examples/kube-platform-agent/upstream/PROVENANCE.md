@@ -29,6 +29,7 @@ split:
 | `governance/` (10 SOPs + `inventory.md`) | `upstream/governance/` | indexed on-demand by `AGENTS.d/50-governance.md` |
 | `docs/` (glossary, gcp-console-links, session_management) | `upstream/docs/` | reference, read on demand |
 | `skills/` (18 skills) | `.agents/skills/` | copied here, not to `upstream/`, because `skills.Load` is keyed to `<agentsDir>` and cannot reach `upstream/`. This is the one place the config-only recipe diverges from a single-tree snapshot; the external-content-root increment removes the copy. |
+| `../cluster/{SOUL,AGENTS,CAPABILITIES}.md` | `upstream/cluster/` | the read-only Cluster Agent persona. `SOUL.md` is `@include`d by the `cluster` declarative subagent in `.agents/config.json` and reconciled to core-agent's runtime by the subagent's inline overlay (no kanban dispatcher / bash preflight here); `AGENTS.md` and `CAPABILITIES.md` are vendored as faithful reference snapshots (the subagent's routing blurb is condensed from `CAPABILITIES.md` into its `description`). All three unmodified. |
 
 ## What is deliberately NOT vendored
 
@@ -44,7 +45,13 @@ their capabilities are mapped in `../README.md` (see "Component mapping"):
 - top-level `scripts/` (credential-proxy, relay-patches, token-broker,
   gitops-clone, session_kv, `platform_mcp_server.py`, `agent_common_server.py`) —
   moot under core-agent's distroless brain image.
-- `agents/chat/`, `agents/cluster/` — separate companions/increments.
+- `agents/chat/` — the Chat Agent companion (a separate `go-steer/switchboard`
+  workstream).
+- `agents/cluster/config.yaml`, `agents/cluster/skills/` — the Cluster Agent's
+  Hermes config (translated into the `cluster` subagent block in
+  `.agents/config.json`) and its domain diagnostic skills (the config-only
+  recipe scopes the subagent's skills to none rather than vendoring a second
+  skill tree; the external-content-root increment can add them).
 
 Skill-local `scripts/*.py` (in `fleet-audit`, `github-issue-resolver`,
 `kube-agents-observability`, `submit-suggestion`) **are** carried along so each

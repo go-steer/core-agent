@@ -162,9 +162,16 @@ parent loads MCP/skills once, and each subagent selects a subset **by name**:
   server lifecycle** (`CloseAll`/metrics stay single, at `main.go:883-889`).
   `.agents/mcp.json`'s server map *is* the registry the names resolve against;
   a read-only variant is just a second named server (`gke` + `gke-readonly`).
-- Skills load once into a merged toolset (`skills.LoadAll`, `load.go:140`).
-  Selecting `spec.Skills` needs a small **name filter** on that toolset — the one
-  genuinely new bit of `pkg/skills` surface (a filtered view, not a second load).
+- Skills load once into a merged toolset (`skills.LoadAll`, `load.go:140`). The
+  skill toolset is a **three-tool facade** (`list_skills` / `load_skill` /
+  `load_skill_resource`) over a `skill.Source` — individual skills are *data*,
+  not tools — so selecting `spec.Skills` is **not** a tool-name filter but a
+  **`skill.Source` filter**: `skills.Scoped(ctx, names)` (`pkg/skills/scope.go`)
+  wraps the parent's already-composed source in a `filteredSource` that lists
+  only the allowed skills and returns `skill.ErrSkillNotFound` for the rest,
+  then builds a fresh facade + reuses the parent's permission gate. This is the
+  one genuinely new bit of `pkg/skills` surface (a filtered view over the same
+  source — no second `LoadAll`, no filesystem re-walk).
 - `Tools` filters the parent's built-in registry by name.
 - `buildDeclaredSubagents` passes the filtered tools/toolsets as that subagent's
   own `WithTools`/`WithToolsets` at its `agent.New` — never leaking one subagent's
@@ -201,8 +208,11 @@ won on declarative-deploy ergonomics.
   are otherwise sufficient as-is; no substrate behavior changes.
 - **`pkg/mcp`** — **none** to signatures; the parent's single `mcp.Build`
   already returns per-server toolsets we filter by name.
-- **`pkg/skills`** — one small addition: a name-filtered view of the merged
-  skills toolset (no second `LoadAll`, no new keying).
+- **`pkg/skills`** — one small addition: `Skills.Scoped(ctx, names)`
+  (`scope.go`), a name-filtered view over the same composed `skill.Source` the
+  merged toolset was built from (no second `LoadAll`, no new keying). The scope
+  is a `filteredSource` — the facade's three tools stay, but `list_skills` /
+  `load_skill` see only the allowed skills.
 - **`cmd/core-agent`** — the real weight lives here: a new
   `buildDeclaredSubagents` helper that constructs each subagent's LLM,
   instruction, and (inline-scoped) tool surface by filtering the parent's already
@@ -253,17 +263,22 @@ full surface; an explicit `"mcp": []` grants none of that dimension.
 
 ## Implementation phases
 
-- **Phase 1 (PR γ.1 of #599)** — `SubagentSpec` + `Config.Subagents` +
+- **Phase 1 (PR γ.1 of #599)** — SHIPPED — `SubagentSpec` + `Config.Subagents` +
   `Validate`; config round-trip tests. No wiring yet.
-- **Phase 2 (PR γ.2)** — `buildDeclaredSubagents` wiring for name / description /
-  instructions / model / `max_depth` (via the new `WithSubagentMaxDepth`) +
-  `WithSubagents`; a scripted/echo-provider test asserting the named tool is
-  registered, invoked by name, inherits the parent model when unset, and runs on
-  its own model when declared.
-- **Phase 3 (PR γ.3)** — inline MCP + skills + tools filtering; a test asserting
-  a subagent that names `gke-readonly` sees only that server's toolset (not the
-  parent's `gke`), a subagent that names a skill subset sees only those, and a
-  no-scope subagent inherits the parent's full surface.
+- **Phase 2 (PR γ.2)** — SHIPPED — `buildDeclaredSubagents` wiring for name /
+  description / instructions / model / `max_depth` (via the new
+  `WithSubagentMaxDepth`) + `WithSubagents`; a scripted/echo-provider test
+  asserting the named tool is registered, invoked by name, inherits the parent
+  model when unset, and runs on its own model when declared.
+- **Phase 3 (PR γ.3)** — SHIPPED — inline MCP + skills + tools filtering:
+  `resolveSubagentTools` (built-in name filter) + `resolveSubagentToolsets`
+  (MCP by server name over the parent's already-started toolsets; skills via the
+  new `skills.Scoped` filtered `skill.Source`), each honoring the
+  nil=inherit / list=scope / empty=none contract. Tests assert a subagent that
+  names a subset of built-ins sees only those, MCP-by-name selects the named
+  server (broken servers skipped, unknown errors), a named skill subset hides
+  the rest (`filteredSource` → `ErrSkillNotFound`), and a no-scope subagent
+  inherits the parent's full surface.
 - **PR B′** — the kube-platform-agent recipe adopts a `cluster` subagent
   (persona `@include`d from a vendored `upstream/cluster/SOUL.md`, own model,
   GKE-read-only MCP scope). Config-only, in-process.

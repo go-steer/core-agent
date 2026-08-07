@@ -357,6 +357,40 @@ The subagent inherits the parent's gate wholesale: the same allow/deny lists, th
 
 **Teaching the model to use the spawn tools.** Just registering the tools isn't always enough — most models default to doing things synchronously. Drop a short paragraph into your project's `AGENTS.md` (or pass via `agent.WithExtraInstruction`, which composes with the layered baseline — v2.8) describing when background subagents are appropriate (monitoring, fan-out, long bounded delegations). See [Library API → Background subagents → Prompting patterns](/embed/api/#prompting-patterns) for a ready-to-paste system instruction.
 
+### Declarative subagents (v2.9+)
+
+A top-level `subagents` array declares a **fixed roster** of named delegates the parent can call by name — the config-driven counterpart to runtime `spawn_agent`. Each entry becomes a tool on the parent (named after the subagent), invoked like any other tool; the subagent runs headless in its own session on its own model and returns a digest. Unlike `spawn_agent`, the roster is authored ahead of time, so it deploys as part of a single `config.json` (one Kubernetes ConfigMap, for instance) rather than being decided at runtime.
+
+```jsonc
+{
+  "model": { "provider": "vertex", "name": "gemini-3.5-flash" },
+  "subagents": [
+    {
+      "name": "cluster",
+      "description": "Read-only cluster investigator. Delegate GKE reads here.",
+      "instructions": "@include ./personas/cluster.md",  // inline text or an @include chain
+      "model": { "provider": "vertex", "name": "gemini-3.5-flash" },  // omit to inherit the parent's model
+      "max_depth": 1,                     // recursion cap; 0 = substrate default
+      "tools": ["read_file", "grep"],     // built-in allowlist
+      "mcp": ["gke-readonly"],            // MCP servers by name (from mcp.json)
+      "skills": ["fleet-audit"]           // skills by name (from skills/)
+    }
+  ]
+}
+```
+
+**Fields.** `name` (unique, required) and `description` (required — the parent's model reads it to decide when to delegate). `instructions` is the subagent's persona, inline or an `@include` chain expanded through the same scope-confined loader the parent's memory uses; it lands in the user-instruction layer, so the harness contract stays intact beneath it. `model` is its own `ModelConfig` (resolved through the same provider path the parent uses) or omitted to inherit the parent's model. `max_depth` caps how deep this subagent may itself nest.
+
+**Tool-surface scoping — the nil / list / empty contract.** `tools`, `mcp`, and `skills` each narrow one dimension of the parent's surface, and each obeys the same three-way rule:
+
+| Field value | Meaning |
+|---|---|
+| **omitted** (nil) | **Inherit** the parent's full set for that dimension |
+| **non-empty list** | **Scope** to exactly the named entries (an unknown name is a fail-loud config error) |
+| **empty list** (`[]`) | **Grant none** of that dimension |
+
+So `"mcp": ["gke-readonly"]` gives the subagent only that one server's toolset (not the parent's `gke`), `"mcp": []` gives it no MCP at all, and omitting `mcp` lets it see every server the parent has. Scoping never re-runs `mcp.Build` or re-walks `skills/` — a scoped subagent reuses the parent's already-started MCP toolsets and a name-filtered view of the parent's loaded skills, and every inherited tool still carries the parent's permission gate, so a subagent cannot escalate past what the operator granted the parent.
+
 ### REPL keybindings (v1.3.0+)
 
 The bundled CLI's REPL recognizes Claude Code-style mid-turn interrupts:

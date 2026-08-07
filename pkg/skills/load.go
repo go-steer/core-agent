@@ -58,6 +58,14 @@ type Info struct {
 type Skills struct {
 	Toolset adktool.Toolset
 	Infos   []Info
+
+	// source is the composed skill.Source the Toolset was built over,
+	// retained so Scoped can build a name-filtered view for a declarative
+	// subagent without re-walking the filesystem. Nil when no skills were
+	// discovered. gate is the same permission gate LoadAll wrapped the
+	// full toolset with, so scoped toolsets stay gated identically.
+	source skill.Source
+	gate   *permissions.Gate
 }
 
 // Empty reports whether no skills were discovered.
@@ -191,7 +199,7 @@ func LoadAll(ctx context.Context, projectAgentsDir, userCoreHome string, gate *p
 	}
 	sort.Slice(infos, func(i, j int) bool { return infos[i].Name < infos[j].Name })
 
-	return Skills{Toolset: ts, Infos: infos}, nil
+	return Skills{Toolset: ts, Infos: infos, source: source, gate: gate}, nil
 }
 
 // openSkillsDir returns an fs.FS rooted at dir/skills/, plus a bool

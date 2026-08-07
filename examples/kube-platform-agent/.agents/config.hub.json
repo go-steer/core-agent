@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "model": {
+    "provider": "vertex",
+    "name": "gemini-3.5-flash"
+  },
+  "permissions": {
+    "mode": "yolo",
+    "require_plan_artifact": true
+  },
+  "tools": {
+    "disable": ["bash"]
+  },
+  "agent": {
+    "display_name": "kube-platform-agent",
+    "max_steps": 250
+  },
+  "attach": {
+    "listen": "0.0.0.0:7777",
+    "multi_session": {
+      "enabled": true,
+      "session_idle_timeout": "6h",
+      "auth": {
+        "kind": "bearer_table",
+        "table_file": "/etc/core-agent/users.json"
+      },
+      "admin_identities": ["platform-oncall@example.com"],
+      "proxy_identities": ["sa:kube-agents-chat"],
+      "default_identity": "anon",
+      "allow_anonymous": false
+    }
+  }
+}

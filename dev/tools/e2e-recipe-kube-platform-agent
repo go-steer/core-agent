@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Loader-only validation for the kube-platform-agent recipe (v2.9 Phase
+# 0 / W5, epic #589).
+#
+# Unlike e2e-recipe-gke-troubleshoot-agent, this needs NO kind cluster,
+# NO docker, and NO cloud credentials: it drives the same v2 loader the
+# daemon uses (instruction @include chain, skills discovery, MCP + config
+# parse) against the vendored snapshot and asserts it all resolves. The
+# same test also runs as part of CI's test-unit presubmit (go test ./...);
+# this wrapper is the discoverable, verbose, standalone entry point.
+set -euo pipefail
+. "$(dirname "$0")/common.sh"
+cd "$(repo_root)"
+
+exec go test -v -count=1 ./examples/kube-platform-agent/...

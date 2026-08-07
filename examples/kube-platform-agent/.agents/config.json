@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "model": {
+    "provider": "vertex",
+    "name": "gemini-3.5-flash"
+  },
+  "permissions": {
+    "mode": "yolo",
+    "require_plan_artifact": true
+  },
+  "tools": {
+    "disable": ["bash"]
+  },
+  "agent": {
+    "display_name": "kube-platform-agent",
+    "max_steps": 250
+  }
+}

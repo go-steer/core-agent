@@ -252,6 +252,28 @@ governance SOPs) into `.agents/` skills + `AGENTS.d/` overlays. The
 June doc showed this is largely drop-in via the v2 instruction loader
 (`@include`, `AGENTS.d/`, SKILL.md compatibility).
 
+**Shipped (Phase 0):** `examples/kube-platform-agent/` vendors a
+faithful, unmodified snapshot of `agents/platform/` (persona, 10
+governance SOPs + inventory scan, all 18 skills) and runs it on the v2
+loader + native-HTTP `gke`/`developer_knowledge` MCP + the attach hub,
+guarded by a credential-free loader test. Two facts surfaced during the
+port that the June "symlink a sibling checkout" sketch missed, and each
+becomes a small concrete-consumer-driven framework enabler rather than a
+recipe hack:
+
+- `@include`/`AGENTS.d` are confined to the *including file's* scope
+  root, so the persona lives at the recipe root to reach a sibling
+  `upstream/`. Running a genuinely **unmodified** kube-agents checkout
+  (adding nothing to their tree) needs an **external content-root**
+  capability (operator-declared trusted roots). Follow-on.
+- Hermes "profiles" (`platform`/`cluster`) map to core-agent subagents,
+  but there is no **declarative subagent** config yet — subagents are Go
+  code or runtime `spawn_agent` only. The `cluster` profile lands as a
+  declarative subagent (own model + read-only MCP scope). Follow-on.
+
+Both are general capabilities (useful beyond kube-agents); each gets its
+own design doc before code.
+
 ### W6 — Small substrate carry-overs (from the June doc)
 
 - **File-backed `PeerRegistry`** (Gap 1, ~50 LoC) — cross-restart peer
@@ -329,12 +351,18 @@ integration point.
 ## 7. Phased plan
 
 1. **Phase 0 — validation recipe + credential guardrails.**
-   `examples/kube-platform-agent/`: point core-agent at kube-agents'
-   existing `agents/platform/` content via the v2 loader; wire GKE MCP;
-   boot as attach hub. Proves the skill/persona port (W5) and the
-   provisioning path end-to-end, no new framework code. **Land PR #204
-   (W0 guardrails) here** so any subsequent OAuth code is
-   per-caller-ready. (Extends the June doc's Phase 1.)
+   `examples/kube-platform-agent/` (shipped): a vendored, unmodified
+   snapshot of `agents/platform/` on the v2 loader; native-HTTP GKE +
+   developer_knowledge MCP; plan-first gate; attach-hub config. Proves
+   the skill/persona port (W5) end-to-end with a credential-free loader
+   test — **no framework code in the config-only recipe itself.** The
+   port surfaced two small framework enablers (external content-root,
+   declarative subagents; see W5) that make the recipe run an
+   *unmodified* checkout and express profiles-as-subagents; each is a
+   concrete-consumer-driven follow-on with its own design doc, not a
+   Phase 0 blocker. **Land PR #204 (W0 guardrails) here** so any
+   subsequent OAuth code is per-caller-ready. (Extends the June doc's
+   Phase 1.)
 2. **Phase 1 — chat-gateway MVP (W1) + per-caller resolution (W0).**
    Slack first (Socket Mode), thread↔session routing, inbound inject +
    outbound SSE relay, `X-Asserted-Caller` stamping; land the

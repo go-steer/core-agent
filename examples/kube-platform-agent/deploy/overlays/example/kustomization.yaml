@@ -1,0 +1,71 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Example overlay. Copy this directory, edit these values for your
+# environment, and `kubectl apply -k <your-overlay-dir>`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# Teach the images transformer to also rewrite the OCI image VOLUME
+# reference (spec.template.spec.volumes[].image.reference), which its
+# default field list does not cover. With this, the `images:` block below
+# pins all three images — daemon, watcher, and content — uniformly.
+configurations:
+  - kustomizeconfig/images.yaml
+
+# Image pinning. Prefer a released semver (or a digest) over :latest so
+# operators get reproducible deploys.
+#
+# (A) TAG PINNING — the default. Repo images drop the leading `v`
+#     (GHCR tag "2.9.0", not "v2.9.0"); lookout keeps it ("v0.11.0").
+# (B) DIGEST PINNING — set `digest:` instead of `newTag:` for
+#     reproducibility-critical deploys (SBOM, cosign). Look up via
+#     `crane digest <ref>`.
+# (C) REGISTRY REMAPPING — set newName + newTag for private mirrors.
+images:
+  - name: ghcr.io/go-steer/core-agent
+    newTag: "2.9.0"
+  - name: ghcr.io/go-steer/lookout
+    newTag: "v0.11.0"
+  # The content image is built + pushed by you from
+  # deploy/content.Dockerfile (see the recipe README). This MUST be an
+  # immutable tag or (better) a digest — NOT :latest. The image volume
+  # uses pullPolicy: IfNotPresent, so a node that has cached an older
+  # :latest never re-pulls and the daemon silently serves stale recipe
+  # content after a rebuild. Bump this tag (or the digest) on every
+  # content change; use `digest:` for SBOM/cosign-critical deploys.
+  - name: ghcr.io/go-steer/kube-platform-agent-content
+    newTag: "v1"
+
+# GCP project + location for Vertex (Gemini).
+configMapGenerator:
+  - name: core-agent-gcp-env
+    behavior: merge
+    literals:
+      - GOOGLE_CLOUD_PROJECT=my-real-project
+      - GOOGLE_CLOUD_LOCATION=us-central1
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+# Set the watcher's --cluster-name (and any other watcher args) for this
+# cluster.
+patches:
+  - path: patch-watcher-cluster-name.yaml
+    target:
+      kind: Deployment
+      name: k8s-event-watcher

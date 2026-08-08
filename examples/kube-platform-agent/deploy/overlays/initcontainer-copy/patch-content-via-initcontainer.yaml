@@ -1,0 +1,59 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# JSON6902 patch: replace the OCI image volume with an emptyDir that an
+# initContainer fills from the SAME content image (busybox flavor). Use
+# on clusters below the image-volume floor (k8s < 1.33 / GKE < 1.35).
+#
+# The daemon container is untouched — it still mounts the volume named
+# "recipe-content" read-only at /opt/kube-platform-agent; only the
+# volume's SOURCE changes (image -> emptyDir), and the initContainer
+# copies the recipe tree in before the daemon starts.
+#
+# Index-based ops: /volumes/0 is recipe-content (first volume in
+# 50-deployment-daemon.yaml); initContainers/- appends after
+# install-users-json.
+
+# Turn recipe-content into a writable, then daemon-read-only, emptyDir.
+- op: replace
+  path: /spec/template/spec/volumes/0
+  value:
+    name: recipe-content
+    emptyDir:
+      sizeLimit: 16Mi
+
+# Copy the recipe tree out of the busybox-flavor content image into the
+# shared emptyDir. Only the four recipe entries are copied — NOT the
+# busybox base's own /bin, /usr, etc. The image ref here is rewritten by
+# the overlay's `images:` block (initContainers[].image is covered by the
+# default images transformer).
+- op: add
+  path: /spec/template/spec/initContainers/-
+  value:
+    name: install-content
+    image: ghcr.io/go-steer/kube-platform-agent-content:latest
+    command:
+      - cp
+      - -a
+      - /.agents
+      - /AGENTS.md
+      - /AGENTS.d
+      - /upstream
+      - /content/
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 65532
+    volumeMounts:
+      - name: recipe-content
+        mountPath: /content

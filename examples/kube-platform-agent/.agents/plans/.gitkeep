@@ -1,0 +1,12 @@
+# This directory is intentionally tracked (empty) so it exists as a mount
+# point in the OCI content image (deploy/content.Dockerfile COPYs .agents/).
+#
+# The deploy nests a writable `plans` emptyDir at
+# /opt/kube-platform-agent/.agents/plans, INSIDE the read-only image volume.
+# A read-only image layer cannot have a directory created in it at mount
+# time, so the mount point must already exist in the image — that's what
+# this file guarantees. At runtime the emptyDir shadows this file.
+#
+# record_plan derives plansDir = agentsDir + "/plans" and writes plan
+# artifacts here (see pkg/tools/record_plan.go). Locally the dir is created
+# on demand; in the read-only image volume it must be pre-baked.

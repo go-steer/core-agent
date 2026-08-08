@@ -1,0 +1,68 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Fallback overlay for clusters BELOW the OCI image-volume floor
+# (k8s < 1.33 / GKE < 1.35). Delivers the SAME content image as an
+# initContainer copy into a shared emptyDir instead of an image volume.
+# See docs/agent-content-distribution-design.md.
+#
+# Build the content image's busybox flavor for this overlay:
+#   docker build -f deploy/content.Dockerfile \
+#     --build-arg BASE=cgr.dev/chainguard/busybox \
+#     -t ghcr.io/go-steer/kube-platform-agent-content:<tag>-copy .
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# Pin images. The content image here must be the BUSYBOX-flavor build
+# (it needs `cp`); a FROM-scratch image has no cp and the initContainer
+# would fail. The default images transformer covers the initContainer's
+# `.image`, so no custom fieldSpec is needed for this overlay.
+images:
+  - name: ghcr.io/go-steer/core-agent
+    newTag: "2.9.0"
+  - name: ghcr.io/go-steer/lookout
+    newTag: "v0.11.0"
+  # Immutable tag (or digest), NOT :latest — the initContainer uses
+  # pullPolicy: IfNotPresent, so a cached :latest-copy would never
+  # re-pull and the daemon would serve stale content. Bump on every
+  # content change.
+  - name: ghcr.io/go-steer/kube-platform-agent-content
+    newTag: "v1-copy"
+
+configMapGenerator:
+  - name: core-agent-gcp-env
+    behavior: merge
+    literals:
+      - GOOGLE_CLOUD_PROJECT=my-real-project
+      - GOOGLE_CLOUD_LOCATION=us-central1
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+patches:
+  # Swap the image volume for the initContainer-copy delivery.
+  - path: patch-content-via-initcontainer.yaml
+    target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: core-agent
+  # Set the watcher's --cluster-name.
+  - path: patch-watcher-cluster-name.yaml
+    target:
+      kind: Deployment
+      name: k8s-event-watcher

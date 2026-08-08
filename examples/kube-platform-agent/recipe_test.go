@@ -561,3 +561,135 @@ func TestHubConfigParses(t *testing.T) {
 		t.Error("hub config has no content_roots; sessions would load no skills/workspace")
 	}
 }
+
+// TestDeployWatcherAuthWiring guards the cross-file auth invariant the K8s
+// deploy depends on. The lookout watcher POSTs incident injects under its
+// OWN bearer identity while asserting an admin owner, so two things must
+// agree across config.hub.json and the watcher manifest:
+//
+//  1. the watcher's identity ("sa:k8s-event-watcher") must be a
+//     proxy_identity — otherwise it may not assert X-Asserted-Caller and
+//     every inject is rejected;
+//  2. the manifest's --owner must be an admin_identity — otherwise incident
+//     sessions are owned by a non-admin (or an unknown identity).
+//
+// Both failures only surface at runtime as a 403 on the first event; this
+// is the only test that catches a drift between the two files.
+func TestDeployWatcherAuthWiring(t *testing.T) {
+	cfg := config.DefaultConfig()
+	body, err := os.ReadFile(filepath.Join(agentsDir, "config.hub.json"))
+	if err != nil {
+		t.Fatalf("read config.hub.json: %v", err)
+	}
+	if err := json.Unmarshal(body, cfg); err != nil {
+		t.Fatalf("parse config.hub.json: %v", err)
+	}
+	ms := cfg.Attach.MultiSession
+
+	const watcherIdentity = "sa:k8s-event-watcher"
+	if !sliceContains(ms.ProxyIdentities, watcherIdentity) {
+		t.Errorf("config.hub.json proxy_identities %v missing %q; the watcher could not assert an owner and every inject would 403",
+			ms.ProxyIdentities, watcherIdentity)
+	}
+
+	watcher, err := os.ReadFile(filepath.Join("deploy", "base", "51-deployment-watcher.yaml"))
+	if err != nil {
+		t.Fatalf("read watcher manifest: %v", err)
+	}
+	owner := manifestArgValue(string(watcher), "--owner=")
+	if owner == "" {
+		t.Fatal("watcher manifest has no --owner= arg")
+	}
+	if !sliceContains(ms.AdminIdentities, owner) {
+		t.Errorf("watcher --owner=%q is not an admin_identity %v; incident sessions would be owned by a non-admin",
+			owner, ms.AdminIdentities)
+	}
+	if !strings.Contains(string(watcher), "--token-env=WATCHER_TOKEN") {
+		t.Error("watcher manifest missing --token-env=WATCHER_TOKEN; the watcher would POST unauthenticated")
+	}
+}
+
+// TestDeployContentMountIsSelfConsistent guards that the daemon manifest's
+// -c path, the content-volume mountPath, the nested plans mount, the
+// content image build, and config.hub.json's content_roots all agree — so
+// the mounted recipe tree actually resolves at runtime the way the loader
+// test proves it does on disk. Any one of these drifting (e.g. the mount
+// path changing but not -c, or content.Dockerfile dropping upstream/)
+// yields a daemon that boots against an incomplete tree.
+func TestDeployContentMountIsSelfConsistent(t *testing.T) {
+	const mountPath = "/opt/kube-platform-agent"
+	const cfgPath = mountPath + "/.agents/config.hub.json"
+
+	daemonBytes, err := os.ReadFile(filepath.Join("deploy", "base", "50-deployment-daemon.yaml"))
+	if err != nil {
+		t.Fatalf("read daemon manifest: %v", err)
+	}
+	daemon := string(daemonBytes)
+	if !strings.Contains(daemon, cfgPath) {
+		t.Errorf("daemon -c does not point at %s", cfgPath)
+	}
+	if !strings.Contains(daemon, "mountPath: "+mountPath+"\n") {
+		t.Errorf("content volume not mounted at %s", mountPath)
+	}
+	// record_plan writes agentsDir+"/plans"; under a read-only content
+	// mount that only works if a writable volume nests there.
+	if !strings.Contains(daemon, "mountPath: "+mountPath+"/.agents/plans") {
+		t.Errorf("plans emptyDir not nested at %s/.agents/plans; record_plan would fail read-only", mountPath)
+	}
+	// The plans emptyDir nests INSIDE the read-only OCI image volume. A
+	// read-only image layer can't have a mount point created in it at mount
+	// time, so .agents/plans/ must be pre-baked into the content image (via
+	// COPY .agents/). If the recipe has no plans/ dir, the image lacks the
+	// mount point and the pod fails to start — unlike gke-troubleshoot's
+	// host-backed ConfigMap, where the runtime can create the nested dir.
+	if info, err := os.Stat(filepath.Join(agentsDir, "plans")); err != nil || !info.IsDir() {
+		t.Errorf(".agents/plans/ must exist as a directory so it is baked into the content image as the nested-mount point (err=%v); a read-only image volume cannot create it at mount time", err)
+	}
+
+	// content_roots ../upstream (relative to agentsDir) resolves to
+	// <mount>/upstream, so the content image MUST carry upstream/.
+	cfg := config.DefaultConfig()
+	body, err := os.ReadFile(filepath.Join(agentsDir, "config.hub.json"))
+	if err != nil {
+		t.Fatalf("read config.hub.json: %v", err)
+	}
+	if err := json.Unmarshal(body, cfg); err != nil {
+		t.Fatalf("parse config.hub.json: %v", err)
+	}
+	if len(cfg.ContentRoots) != 1 || cfg.ContentRoots[0] != "../upstream" {
+		t.Fatalf("content_roots %v; the deploy mount layout assumes exactly [../upstream]", cfg.ContentRoots)
+	}
+	dockerfile, err := os.ReadFile(filepath.Join("deploy", "content.Dockerfile"))
+	if err != nil {
+		t.Fatalf("read content.Dockerfile: %v", err)
+	}
+	for _, needed := range []string{"COPY .agents/", "COPY AGENTS.md", "COPY AGENTS.d/", "COPY upstream/"} {
+		if !strings.Contains(string(dockerfile), needed) {
+			t.Errorf("content.Dockerfile missing %q; the mounted tree would be incomplete", needed)
+		}
+	}
+}
+
+func sliceContains(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
+}
+
+// manifestArgValue extracts the value of a container arg like "--owner=foo"
+// from a manifest's YAML text, tolerating both quoted (- "--owner=foo") and
+// bare (- --owner=foo) list-item forms.
+func manifestArgValue(manifest, prefix string) string {
+	for _, line := range strings.Split(manifest, "\n") {
+		line = strings.TrimSpace(line)
+		line = strings.TrimPrefix(line, "- ")
+		line = strings.Trim(line, `"`)
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimPrefix(line, prefix)
+		}
+	}
+	return ""
+}

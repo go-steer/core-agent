@@ -39,7 +39,7 @@
         "table_file": "/etc/core-agent/users.json"
       },
       "admin_identities": ["platform-oncall@example.com"],
-      "proxy_identities": ["sa:kube-agents-chat"],
+      "proxy_identities": ["sa:kube-agents-chat", "sa:k8s-event-watcher"],
       "default_identity": "anon",
       "allow_anonymous": false
     }

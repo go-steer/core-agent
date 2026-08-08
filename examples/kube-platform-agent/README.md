@@ -205,9 +205,72 @@ core-agent -c .agents/config.hub.json \
 sets where it lands (and self-enables persistence). The listen address comes from
 the config's `attach.listen`. Before exposing the listener, populate the bearer
 table at the path named in the config (`/etc/core-agent/users.json`) — a
-non-loopback listener refuses to start without authentication. The Kubernetes
-deployment (namespace, KSA + Workload Identity, hub `Deployment`/`Service`) is a
-follow-on increment; this recipe is the runnable config it wraps.
+non-loopback listener refuses to start without authentication.
+
+## Deploy to GKE
+
+`deploy/` is a kustomize tree that runs the hub daemon plus the event watcher in
+a cluster. It reuses the [`gke-troubleshoot-agent`](../gke-troubleshoot-agent/)
+deploy shape — namespace, daemon `Deployment`/`Service`, the
+[lookout](https://github.com/go-steer/k8s-lookout) watcher + its RBAC, a
+session-db PVC, and the `users.json` initContainer — with one substitution: the
+recipe's content (~1.3 MiB of workspace + 18 skills + governance) is too large
+for a ConfigMap, so it ships as an **OCI image volume** instead of a flattened
+ConfigMap. See [`docs/agent-content-distribution-design.md`](../../docs/agent-content-distribution-design.md)
+for the full pattern.
+
+```
+deploy/
+  content.Dockerfile              # FROM-scratch content image (two flavors)
+  base/                           # namespace, SAs, RBAC, PVC, daemon, watcher, service
+  overlays/example/               # image-volume delivery (GKE 1.35+)  ← start here
+  overlays/initcontainer-copy/    # fallback for clusters below the image-volume floor
+```
+
+**1. Build + push the content image.** The daemon mounts the recipe directory
+from a `FROM scratch` OCI artifact, so content and the core-agent brain image
+have independent lifecycles (nothing recipe-specific is baked into
+`core-agent`). From this directory:
+
+```bash
+docker build -f deploy/content.Dockerfile \
+  -t ghcr.io/<you>/kube-platform-agent-content:v1 .
+docker push ghcr.io/<you>/kube-platform-agent-content:v1
+```
+
+For clusters below GKE 1.35 (no image-volume support), also build the
+busybox flavor for the initContainer-copy overlay:
+
+```bash
+docker build -f deploy/content.Dockerfile \
+  --build-arg BASE=cgr.dev/chainguard/busybox \
+  -t ghcr.io/<you>/kube-platform-agent-content:v1-copy .
+```
+
+**2. Create the two Secrets** (`core-agent-users`, `k8s-event-watcher-token`)
+out-of-band — see [`deploy/base/20-secrets-placeholder.md`](deploy/base/20-secrets-placeholder.md).
+The `users.json` identities must match `config.hub.json`: the watcher's
+`sa:k8s-event-watcher` is a `proxy_identity` that asserts the admin owner
+`platform-oncall@example.com`.
+
+**3. Bind Workload Identity** for the daemon KSA — see
+[`deploy/base/10-serviceaccount-daemon.yaml`](deploy/base/10-serviceaccount-daemon.yaml)
+for the roles (`aiplatform.user`, `mcp.toolUser`, `container.viewer`,
+`iam.serviceAccountUser` on the node SA).
+
+**4. Copy `overlays/example/`**, edit the `images:` pins (including the content
+image you pushed), the `core-agent-gcp-env` project/location, and the watcher's
+`--cluster-name`, then apply:
+
+```bash
+kubectl apply -k deploy/overlays/example
+```
+
+Operators (and the chat gateway companion) attach over the `core-agent` Service
+on `:7777`; expose it via internal LoadBalancer, IAP, or `kubectl port-forward`.
+Deploy a watcher into each additional cluster you want covered, pointing
+`--daemon-url` at this hub. The `cluster` subagent stays in-process in this
+increment; promoting it to a remote peer is a later step (W6).
 
 ## Running against a live checkout
 

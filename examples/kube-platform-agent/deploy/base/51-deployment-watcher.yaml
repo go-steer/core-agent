@@ -1,0 +1,105 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The event-watcher (`lookout watch` from go-steer/k8s-lookout). Watches
+# Kubernetes Events via the local kube-apiserver, filters + dedupes, and
+# POSTs matched events to the core-agent daemon's session inject
+# endpoint — turning cluster incidents into Platform Agent sessions.
+#
+# Runs as a SEPARATE Deployment (not a sidecar) so the two scale and
+# restart independently, and so additional watchers in remote clusters
+# follow the same template: copy this manifest, change --cluster-name +
+# --daemon-url, deploy into the remote cluster pointing at this daemon's
+# externally-reachable endpoint.
+#
+# AUTH: the watcher POSTs with a bearer token (WATCHER_TOKEN) whose
+# identity is "sa:k8s-event-watcher" — listed in config.hub.json's
+# multi_session.proxy_identities, so it may assert X-Asserted-Caller:
+# platform-oncall@example.com (an admin_identity) when creating incident
+# sessions. See deploy/base/20-secrets-placeholder.md.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-event-watcher
+  namespace: kube-platform
+  labels:
+    app.kubernetes.io/name: k8s-event-watcher
+    app.kubernetes.io/component: watcher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: k8s-event-watcher
+      app.kubernetes.io/component: watcher
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: k8s-event-watcher
+        app.kubernetes.io/component: watcher
+    spec:
+      serviceAccountName: k8s-event-watcher
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: watcher
+          # ENTRYPOINT is `lookout watch`. v0.11.0 is the floor for
+          # daemons >= 2.8.0-dev.1: earlier releases don't send
+          # Content-Type on the bodyless POST /sessions, which the
+          # daemon's CSRF guard rejects with 415.
+          image: ghcr.io/go-steer/lookout:v0.11.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--daemon-url=http://core-agent.kube-platform.svc.cluster.local:7777"
+            - "--token-env=WATCHER_TOKEN"
+            - "--mode=per-incident"
+            # The identity that owns incident sessions — an admin_identity
+            # in config.hub.json. The watcher asserts this via its proxy
+            # identity (sa:k8s-event-watcher).
+            - "--owner=platform-oncall@example.com"
+            # Overridden per cluster by deploy/overlays/example/.
+            - "--cluster-name=local"
+            - "--dedup-window=5m"
+            - "--in-cluster"
+            - "--metrics-addr=:9090"
+            - "--log-level=info"
+          env:
+            - name: WATCHER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: k8s-event-watcher-token
+                  key: token
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10

@@ -108,10 +108,17 @@ the auth volume never collides with the content volume.
 - A sanctioned, documented pattern for delivering a recipe directory to a
   distroless pod without embedding content in the `core-agent` image and without
   the ConfigMap size/flattening limits.
-- **Primary mechanism: OCI image volume** — content packaged as a
-  `FROM scratch` OCI artifact, mounted read-only via `volumes[].image`.
+- **Start with OCI image volume** as the reference mechanism — content packaged
+  as a `FROM scratch` OCI artifact, mounted read-only via `volumes[].image`. It
+  is the recommended default, *not* an exclusive choice: every mechanism below
+  realizes the same "mount the recipe directory whole" pattern and is fully
+  supported. The reference recipe leads with the image volume and documents the
+  others as drop-in overlays, so an operator picks the one that fits their
+  cluster.
 - Documented alternatives with when-to-use tradeoffs (ConfigMap, gcsfuse CSI,
-  derived recipe image, initContainer git-clone).
+  derived recipe image, initContainer copy). A `FROM scratch` **content image**
+  is the shared artifact behind two of them (image volume *and* initContainer
+  copy), so choosing a delivery mechanism rarely means rebuilding the content.
 - Zero `core-agent` code change; zero change to the recipe's *local* behavior
   (the same `config.json` runs on a laptop and in-cluster).
 - A reference implementation on the `kube-platform-agent` recipe (PR F).
@@ -133,14 +140,22 @@ the auth volume never collides with the content volume.
 | Mechanism | How | Size limit | Image build? | Cluster floor | When to use |
 |---|---|---|---|---|---|
 | **ConfigMap** (status quo) | flatten tree into `_`-keys, reconstitute via projected `items:` | **1 MiB**, keys no `/` | no | any | small recipes (≲ tens of files, < ~900 KiB) |
-| **OCI image volume** *(chosen)* | `FROM scratch` + `COPY` recipe dir; `volumes[].image` mounts it read-only | none (image) | yes (content-only) | k8s **1.33** beta / **GKE 1.35+** | content-heavy recipes; declarative + versioned + independent lifecycle |
+| **OCI image volume** *(starting point)* | `FROM scratch` + `COPY` recipe dir; `volumes[].image` mounts it read-only | none (image) | yes (content-only) | k8s **1.33** beta / **GKE 1.35+** | content-heavy recipes; declarative + versioned + independent lifecycle |
+| **initContainer copy** | run the **same** `FROM scratch` content image as an initContainer that `cp -a`'s its files into a shared `emptyDir` the daemon then mounts | none | reuses the content image | **any** | clusters below the image-volume floor; wants the same content artifact + no `core-agent` coupling and no runtime egress |
 | **gcsfuse CSI** | push recipe dir to a GCS bucket; mount via the GCS Fuse CSI driver | none | no | GKE (addon) | GCP-native, no image registry step; accept fuse perf/consistency + IAM setup |
-| **Derived recipe image** | `FROM core-agent` + `COPY` recipe dir; run that image | none (image) | yes (couples to base tag) | any | clusters below the image-volume floor; simplest universal fallback |
-| **initContainer git-clone** | initContainer clones the recipe repo into a shared `emptyDir` | none | no | any (needs egress) | "run an unmodified upstream checkout"; accept runtime GitHub dep + git image |
+| **Derived recipe image** | `FROM core-agent` + `COPY` recipe dir; run that image | none (image) | yes (couples to base tag) | any | want a single runnable image; accept coupling content to the `core-agent` base tag |
+| **initContainer git-clone** | initContainer clones the recipe repo into a shared `emptyDir` | none | no | any (needs egress) | specifically want an *unmodified upstream checkout* pulled at boot; accept runtime GitHub dep + git image |
 
-### Chosen: OCI image volume
+All of these deliver the same outcome — the recipe directory, whole, at a mount
+path — so they are interchangeable per cluster; the sections below detail the
+starting point and the most useful fallback (initContainer copy).
 
-Kubernetes [image volumes](https://kubernetes.io/docs/tasks/configure-pod-container/image-volumes/)
+### Starting point: OCI image volume
+
+We lead with the OCI image volume because it is the most declarative option and
+its content artifact is reused by the initContainer-copy fallback — but it is a
+default, not a lock-in. Kubernetes
+[image volumes](https://kubernetes.io/docs/tasks/configure-pod-container/image-volumes/)
 (KEP-4639) mount the filesystem of an OCI image directly into a pod, **read-only**,
 with no running container for it. Beta and on-by-default since k8s **1.33**;
 available on **GKE 1.35+**. The pod spec is fully declarative:
@@ -173,20 +188,64 @@ Why it wins for a content-heavy recipe:
 - **subPath + pull-secret support** work like any volume, so the `plans`
   emptyDir still nests and private registries still authenticate.
 
-Version-floor mitigation: for clusters below GKE 1.35, the **derived recipe
-image** (`FROM ghcr.io/go-steer/core-agent + COPY`) is the documented fallback —
-same content, shipped as one runnable image, at the cost of coupling the content
-to a base-image tag. We make image-volume the *base* and derived-image an
-*overlay*, so the floor is opt-out rather than a hard gate.
+Version-floor mitigation: for clusters below GKE 1.35 the preferred fallback is
+**initContainer copy** (next section) — it reuses the *identical* `FROM scratch`
+content image, so the content artifact is unchanged and there is still no
+coupling to the `core-agent` base tag; only the plumbing differs (an `emptyDir`
+the initContainer fills, instead of an image volume). The **derived recipe
+image** (`FROM ghcr.io/go-steer/core-agent + COPY`) remains a documented option
+for operators who specifically want a single runnable image and accept coupling
+the content to a base-image tag. Either way the image-volume path is the *base*
+overlay and the fallback is an opt-out overlay, so the floor is never a hard gate.
+
+### Fallback: initContainer copy (same content image, any cluster)
+
+On clusters below the image-volume floor, run the **same** content image as an
+initContainer whose only job is to copy its files into a shared `emptyDir` the
+daemon then mounts read-only at the content path:
+
+```yaml
+spec:
+  initContainers:
+    - name: install-content
+      image: ghcr.io/go-steer/kube-platform-agent-content:<tag-or-digest>
+      command: ["cp", "-a", "/.", "/content/"]   # image root -> shared volume
+      volumeMounts:
+        - name: recipe-content
+          mountPath: /content
+  containers:
+    - name: core-agent
+      volumeMounts:
+        - name: recipe-content
+          mountPath: /opt/kube-platform-agent
+          readOnly: true
+  volumes:
+    - name: recipe-content
+      emptyDir: {}
+```
+
+This keeps the content image as the single source of truth — the operator builds
+one artifact and picks the delivery mechanism per cluster. Caveat: a
+`FROM scratch` image has no shell or `cp`, so this variant needs a content image
+with a minimal busybox base (or a tiny `busybox` initContainer that mounts the
+content image *as an image volume* and copies from it — circular on old
+clusters). The pragmatic form is a **two-flavor content image**: the
+`FROM scratch` flavor for image-volume clusters and a `FROM busybox` flavor
+(same `COPY`, adds `cp`) for the initContainer-copy fallback. Both are built from
+one `content.Dockerfile` via a build arg; see the open question below.
 
 ### Building the content image
 
-`deploy/content.Dockerfile`:
+`deploy/content.Dockerfile` — one file, two flavors selected by a build arg. The
+`COPY` layers (the actual content) are identical; only the base differs, so the
+delivered files are byte-for-byte the same whichever flavor a cluster uses:
 
 ```dockerfile
 # Content-only OCI artifact for the kube-platform-agent recipe.
-# FROM scratch — no base image, no coupling to core-agent's tag.
-FROM scratch
+#   BASE=scratch  -> image-volume flavor (no base, no coupling to core-agent)
+#   BASE=busybox  -> initContainer-copy flavor (adds a shell + cp)
+ARG BASE=scratch
+FROM ${BASE}
 # The image root reproduces the recipe directory verbatim, so a pod that
 # mounts it at <mount> can run `core-agent -c <mount>/.agents/config.json`.
 COPY .agents/   /.agents/
@@ -194,6 +253,9 @@ COPY AGENTS.md  /AGENTS.md
 COPY AGENTS.d/  /AGENTS.d/
 COPY upstream/  /upstream/
 ```
+
+`docker build --build-arg BASE=scratch` for the image-volume path;
+`--build-arg BASE=busybox:1.36` for the initContainer-copy fallback.
 
 Notes:
 
@@ -214,7 +276,7 @@ Mount the content image at a **dedicated path** (not `/etc/core-agent`, which th
 auth volume uses):
 
 ```
-/opt/kube-platform-agent/              <- image volume (read-only)
+/opt/kube-platform-agent/              <- content mount (image volume or copied emptyDir), read-only
 ├── .agents/
 │   ├── config.json  (or config.hub.json via overlay)
 │   ├── mcp.json
@@ -286,13 +348,16 @@ The cluster-as-remote-peer half of PR F (W6 [#595]) remains deferred; the
 ## Open questions
 
 1. **Content-image build helper.** Ship `dev/tools/build-recipe-content-image`
-   (build + tag + optional push) or leave it to per-recipe `content.Dockerfile`
-   + a README `docker build`? Lean: a thin shared helper, since every
-   content-heavy recipe will want the same three steps.
+   (build both flavors + tag + optional push) or leave it to per-recipe
+   `content.Dockerfile` + a README `docker build`? Lean: a thin shared helper,
+   since every content-heavy recipe wants the same two-flavor build.
 2. **Prune unexecutable skill scripts from the content image?** Faithful mirror
    (ship them) vs. minimal image (drop the `~6` `scripts/*.py`). Lean: ship them
    — the size delta is small and the image should equal what the loader test
    validates.
-3. **Where does the base overlay draw the version-floor line?** image-volume as
-   base with derived-image as opt-out overlay (recommended, per the user's
-   choice of image volume as primary) vs. derived-image as the safe base.
+3. **Do we publish both content flavors by default, or build the busybox flavor
+   only on demand?** Both are cheap; leaning toward publishing both so the
+   image-volume base overlay and the initContainer-copy fallback overlay each
+   reference a ready tag. The base overlay uses image-volume, the fallback
+   overlay uses initContainer-copy, and derived-image stays a third documented
+   overlay — none is a hard gate.

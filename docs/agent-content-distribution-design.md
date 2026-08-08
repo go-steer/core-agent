@@ -225,14 +225,22 @@ spec:
 ```
 
 This keeps the content image as the single source of truth — the operator builds
-one artifact and picks the delivery mechanism per cluster. Caveat: a
-`FROM scratch` image has no shell or `cp`, so this variant needs a content image
-with a minimal busybox base (or a tiny `busybox` initContainer that mounts the
-content image *as an image volume* and copies from it — circular on old
-clusters). The pragmatic form is a **two-flavor content image**: the
-`FROM scratch` flavor for image-volume clusters and a `FROM busybox` flavor
-(same `COPY`, adds `cp`) for the initContainer-copy fallback. Both are built from
-one `content.Dockerfile` via a build arg; see the open question below.
+one artifact and picks the delivery mechanism per cluster.
+
+Caveat: the copy step needs a `cp` binary, which a `FROM scratch` image doesn't
+have. The pragmatic form is a **two-flavor content image** built from one
+`content.Dockerfile` (byte-identical `COPY` layers): the `FROM scratch` flavor
+for image-volume clusters, and a **minimal-base flavor that provides `cp`** for
+the copy fallback. For that base, prefer **Chainguard busybox**
+(`cgr.dev/chainguard/busybox`) over upstream `busybox`: it is Wolfi-based,
+continuously rebuilt to typically **zero known CVEs**, similar in size (~1–4 MB),
+and ships the `cp` applet. Distroless is *not* an option here — `distroless/static`
+and `distroless/base` carry no `cp`/shell at all, and the `distroless/*:debug`
+tags only add one by embedding busybox, so they are strictly larger with no
+security gain. (The copy image is also short-lived — it runs only as an
+initContainer and never sits alongside the daemon — so its attack surface is
+already minimal; Chainguard busybox is simply the strictly-better base at the
+same size.) Pin it by digest, same as the content and `core-agent` images.
 
 ### Building the content image
 
@@ -242,8 +250,8 @@ delivered files are byte-for-byte the same whichever flavor a cluster uses:
 
 ```dockerfile
 # Content-only OCI artifact for the kube-platform-agent recipe.
-#   BASE=scratch  -> image-volume flavor (no base, no coupling to core-agent)
-#   BASE=busybox  -> initContainer-copy flavor (adds a shell + cp)
+#   BASE=scratch                  -> image-volume flavor (no base, no coupling)
+#   BASE=cgr.dev/chainguard/busybox -> initContainer-copy flavor (provides cp)
 ARG BASE=scratch
 FROM ${BASE}
 # The image root reproduces the recipe directory verbatim, so a pod that
@@ -255,7 +263,8 @@ COPY upstream/  /upstream/
 ```
 
 `docker build --build-arg BASE=scratch` for the image-volume path;
-`--build-arg BASE=busybox:1.36` for the initContainer-copy fallback.
+`--build-arg BASE=cgr.dev/chainguard/busybox` (hardened, ~busybox-sized, has
+`cp`) for the initContainer-copy fallback.
 
 Notes:
 
@@ -355,8 +364,8 @@ The cluster-as-remote-peer half of PR F (W6 [#595]) remains deferred; the
    (ship them) vs. minimal image (drop the `~6` `scripts/*.py`). Lean: ship them
    — the size delta is small and the image should equal what the loader test
    validates.
-3. **Do we publish both content flavors by default, or build the busybox flavor
-   only on demand?** Both are cheap; leaning toward publishing both so the
+3. **Do we publish both content flavors by default, or build the Chainguard-base
+   copy flavor only on demand?** Both are cheap; leaning toward publishing both so the
    image-volume base overlay and the initContainer-copy fallback overlay each
    reference a ready tag. The base overlay uses image-volume, the fallback
    overlay uses initContainer-copy, and derived-image stays a third documented

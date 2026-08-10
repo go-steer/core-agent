@@ -313,7 +313,14 @@ const (
 	// (typically via a slash command). Retryable=false on this kind
 	// — the host should surface the message + halt automated retry.
 	TurnErrorCostCeiling = "cost_ceiling"
-	TurnErrorUnknown     = "unknown"
+	// TurnErrorWatchdog fires when the behavioral watchdog trips a
+	// Critical runaway signal under --watchdog=enforce (#623). Like the
+	// cost ceiling, the agent refuses new turns until the operator calls
+	// ResetWatchdog on the agent. Retryable=false — the host should
+	// surface the message + halt automated retry (an auto-continue
+	// re-drive would just re-trip the same loop).
+	TurnErrorWatchdog = "watchdog"
+	TurnErrorUnknown  = "unknown"
 )
 
 // TurnError is emitted on a pipeline failure that should reach the

@@ -339,8 +339,18 @@ type Agent struct {
 	// not wired. onWatchdogAlert is called for each alert returned by
 	// watchdog.Check in the post-turn hook; default nil = collect-only
 	// (alerts accumulate but never surface — useful for tests).
+	//
+	// watchdogEnforce (#623) turns a Critical alert into a hard halt:
+	// watchdogTripped blocks new Run calls (via preflightWatchdog)
+	// until the operator calls ResetWatchdog, and watchdogReason holds
+	// the operator-facing explanation for /stats-style surfaces. This
+	// mirrors the cost-ceiling kill switch (see watchdog.go +
+	// cost_ceiling.go for the shared contract).
 	watchdog        watchdog.Watchdog
 	onWatchdogAlert func(watchdog.Alert)
+	watchdogEnforce bool
+	watchdogTripped bool
+	watchdogReason  string
 
 	// Event hook (WithEventHook). Optional callbacks that observe
 	// session events as they stream (onEvent) and once per turn from
@@ -388,6 +398,7 @@ type options struct {
 	costCeiling      CostCeiling
 	watchdog         watchdog.Watchdog
 	onWatchdogAlert  func(watchdog.Alert)
+	watchdogEnforce  bool
 	onEvent          func(*session.Event)
 	onTurnEnd        func()
 	postConstruct    func(*Agent)
@@ -895,6 +906,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		costCeiling:          o.costCeiling,
 		watchdog:             o.watchdog,
 		onWatchdogAlert:      o.onWatchdogAlert,
+		watchdogEnforce:      o.watchdogEnforce,
 		onEvent:              o.onEvent,
 		onTurnEnd:            o.onTurnEnd,
 	}
@@ -1228,6 +1240,18 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 			// during a spend-cap incident, with no error.type series
 			// to alert on. Duration ~0 is accurate: the turn was
 			// refused before any work.
+			a.recordInvocation(0, err)
+			yield(nil, err)
+		}
+	}
+	// Watchdog pre-flight (#623). If a prior turn tripped a Critical
+	// runaway signal under --watchdog=enforce, refuse this turn at the
+	// top — same structural refusal as the cost ceiling. This is what
+	// actually breaks a tool-call loop: an auto-continue re-drive of the
+	// interrupted turn calls Run again and is refused here instead of
+	// re-issuing the looping call. Operator resumes via ResetWatchdog.
+	if err := a.preflightWatchdog(); err != nil {
+		return func(yield func(*session.Event, error) bool) {
 			a.recordInvocation(0, err)
 			yield(nil, err)
 		}

@@ -76,6 +76,13 @@ type Adapter struct {
 	// keeps the network traffic bounded.
 	usage usageCache
 
+	// status caches the remote's StatusReporter snapshot. Like usage,
+	// coretui pulls Status() on every render (view.go's status header);
+	// the cache + background refresh keep that render path off the
+	// network so a slow/wedged daemon can't stall the bubble-tea event
+	// loop. See capabilities.go.
+	status statusCache
+
 	// lastTurn snapshots the most recent turn's per-event
 	// UsageMetadata so coretui.UsageTracker.LastTurn() has something
 	// to surface in the per-turn footer's "Last turn" row. Captured

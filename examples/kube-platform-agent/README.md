@@ -20,18 +20,22 @@ documented as out of scope below.
 - The Platform Agent workspace instructions loaded verbatim from the content root
   and the `SOUL.md` persona `@include`d by the recipe's `AGENTS.md`, reconciled to
   core-agent by a small overlay in the same file.
-- All 18 skills discovered by the v2 skills loader **from the content root** — no
-  copied skill tree under `.agents/` (that is what `content_roots` buys: the same
-  config runs the vendored snapshot or a live checkout unchanged).
+- All 18 platform skills discovered by the v2 skills loader **from the content
+  root** — no copied platform-skill tree under `.agents/` (that is what
+  `content_roots` buys: the same config runs the vendored snapshot or a live
+  checkout unchanged). The six *cluster* domain-diagnostic skills the `cluster`
+  subagent carries are vendored separately under `.agents/skills/` (project
+  scope) — see [The `cluster` subagent](#the-cluster-subagent).
 - The 10 governance SOPs + the bootstrap inventory scan, vendored and indexed for
   on-demand reading (not injected into every turn).
-- The remote Google MCPs — `gke` (read-write, for the platform agent),
-  `gke-readonly` (the read-only endpoint the cluster subagent is scoped to), and
-  `developer_knowledge` — translated from Hermes' node `mcp-remote` proxies to
-  core-agent's native HTTP MCP transport.
+- The remote Google MCPs — a single **read-only** `gke` and `developer_knowledge`
+  — translated from Hermes' node `mcp-remote` proxies to core-agent's native HTTP
+  MCP transport. There is no read-write GKE endpoint: the platform agent is
+  **propose-only by construction**, not just by persona.
 - A read-only **`cluster` subagent** the platform agent delegates single-cluster
   diagnostics to — Hermes' per-cluster Cluster Agent profile, mapped to a
-  declarative subagent scoped to a strictly narrower tool surface (see below).
+  declarative subagent that carries the six GKE domain-diagnostic skills and is
+  scoped to the read-only MCP surface (see below).
 - Plan-first safety: every mutation (including *all* MCP calls) is gated behind
   `record_plan`, and `bash` is disabled.
 
@@ -52,17 +56,24 @@ kube-platform-agent/
   .agents/
     config.json          # content_roots + model + plan-first policy + cluster subagent
     config.hub.json      # same + attach.multi_session (shared daemon)
-    mcp.json             # gke + gke-readonly + developer_knowledge (native HTTP)
+    mcp.json             # read-only gke + developer_knowledge (native HTTP)
+    skills/              # 6 cluster domain skills (project scope; parent must load them)
   recipe_test.go         # loader-only validation (no creds, no cluster)
 ```
 
 Two scoping rules shape this layout:
 
 - **Content root vs. project scope.** The workspace `AGENTS.md` and the whole
-  `skills/` tree are read from the content root (`content_roots: ["../upstream"]`),
-  so `.agents/` holds no copied skills — the same config runs the snapshot or a
-  live checkout. MCP is *not* auto-loaded from a content root, so `mcp.json` stays
-  in `.agents/` (the recipe translates the two Google MCPs once).
+  platform `skills/` tree are read from the content root
+  (`content_roots: ["../upstream"]`), so `.agents/` holds no copied *platform*
+  skills — the same config runs the snapshot or a live checkout. The six *cluster*
+  domain skills are the deliberate exception: they live in `.agents/skills/`
+  (project scope) because a declarative subagent's skills must be a subset of the
+  parent's loaded set, and folding them into the content root would either corrupt
+  the `agents/platform` snapshot or drag the cluster persona into the parent — see
+  [The `cluster` subagent](#the-cluster-subagent). MCP is *not* auto-loaded from a
+  content root, so `mcp.json` stays in `.agents/` (the recipe translates the two
+  Google MCPs once).
 - **Project-root instruction files.** `@include` and the `AGENTS.d/` scan are
   confined to the including file's scope root, so the recipe's `AGENTS.md` +
   `AGENTS.d/` live at the project **root** — that is the only scope from which
@@ -80,7 +91,7 @@ Two scoping rules shape this layout:
 | `governance/` (10 SOPs + `inventory.md`) | **vendor** | on-demand via `AGENTS.d/50-governance.md` |
 | 18 skills | **content root** | loaded from `content_roots`, not copied (script caveat below) |
 | MCP `gke`, `developer_knowledge` | **translate** | `.agents/mcp.json` native HTTP |
-| `agents/cluster/` (read-only Cluster Agent profile) | **vendor + subagent** | `cluster` declarative subagent in `.agents/config.json` (persona from `upstream/cluster/`) |
+| `agents/cluster/` (read-only Cluster Agent profile) | **vendor + subagent** | `cluster` declarative subagent in `.agents/config.json` (persona from `upstream/cluster/`; six domain skills under `.agents/skills/`) |
 | MCP `platform_control` (stdio Python) | **drop** | decomposed per-tool ↓ |
 | MCP `agent_common` / `call_agent` (A2A) | **companion** | a peer/`call_peer` increment |
 | `cron/jobs.json` | **companion** | a scheduled-jobs increment |
@@ -117,6 +128,52 @@ peers replace it); the script-first cron path (until the scheduled-jobs
 increment); and the byte-compatible `/v1/chat/completions` A2A wire shape (until a
 compat adapter). None block Phase 0.
 
+### Live-UAT observations (2026-08)
+
+A first end-to-end incident run (a `FailedMount` from a mistyped Secret name,
+`gemini-3.5-flash` parent) surfaced four behaviors. The first confirmed a design
+choice to keep; the other three drove the fixes now shipped in this recipe:
+
+- **Project/cluster addressing works — keep the env overlay.** With
+  `.agents/env.yaml` declaring `GOOGLE_CLOUD_PROJECT` and the "Addressing GKE
+  resources" block in `AGENTS.md`, the agent resolved the cluster's location in a
+  **single** `list_clusters` call scoped to `projects/<project>/locations/-` and
+  fully-qualified every subsequent call — no project guessing, no `projects/-`
+  wildcards, no asking the operator. This eliminates the project-discovery thrash
+  that otherwise burns opening turns.
+- **Opening-turn filesystem scanning → fixed by positive-only framing.**
+  `gemini-3.5-flash` initially spent roughly half its calls scanning the container
+  filesystem (`list_dir /`, `/opt`, `/workspace`, …) and probing for Hermes
+  startup artifacts — *including the exact paths an earlier overlay named as
+  off-limits*. A **negative** "do not probe X" instruction reads as a to-do list
+  to this model, so the overlay's "Start on the task" bullet was rewritten to a
+  purely **positive** framing (everything you need is in this prompt; act on the
+  task, don't look around first) with the enumerated off-limits paths removed. A
+  stronger parent model or a tool-level guardrail remains the more robust option
+  if scanning recurs.
+- **The `cluster` subagent went unused → fixed by wiring its domain skills.** The
+  platform parent self-diagnosed and even read `upstream/cluster/{SOUL,AGENTS}.md`
+  by hand rather than delegating, partly because the subagent then carried
+  `skills: []` — no troubleshooting playbooks, so little upside to delegating. The
+  six GKE domain-diagnostic skills are now vendored under `.agents/skills/` and
+  scoped to the `cluster` subagent, and the overlay's delegation bullet was
+  sharpened to make delegation the cheaper path. See
+  [The `cluster` subagent](#the-cluster-subagent).
+- **Propose-only was persona-only → now enforced by the transport.** The platform
+  agent previously held a read-write `gke` MCP and, after recording a plan,
+  **directly patched the live Deployment**. The recipe now points the single `gke`
+  server at `https://container.googleapis.com/mcp/read-only`, so the mutating
+  verbs (`gke_patch_*`, `gke_create_*`, …) are not in the tool surface at all —
+  propose-only is enforced by construction, not persona. The GitOps write path
+  (proposing changes as a PR) lands in a later increment.
+
+Also note: with the minimal watcher ClusterRole, injects carry **no enrichment**
+(`enrichment_error stage=resolve` — the watcher SA can't `list pods`), so the
+agent gathers all context itself via the `gke` MCP. Granting the enricher's full
+read set or landing per-resource-`Forbidden` tolerance
+([k8s-lookout#192](https://github.com/go-steer/k8s-lookout/issues/192)) is the
+path to pre-baked enrichment; see [Deploy to GKE](#deploy-to-gke).
+
 ## The `cluster` subagent
 
 Hermes scaffolds a per-cluster **Cluster Agent** profile — a read-only SRE pinned
@@ -132,22 +189,28 @@ platform agent can call by name.
     "description": "Read-only SRE scoped to exactly one named GKE cluster…",
     "instructions": "@include upstream/cluster/SOUL.md\n\n## Runtime overlay (core-agent)\n…",
     "model": { "provider": "vertex", "name": "gemini-3.5-flash" },
-    "mcp": ["gke-readonly", "developer_knowledge"],  // scoped: NOT the read-write gke
-    "skills": []                                     // grant none of the fleet skills
+    "mcp": ["gke", "developer_knowledge"],           // the read-only GKE surface
+    "skills": [                                       // its six domain-diagnostic skills
+      "gke-workload-troubleshooting", "gke-observability", "gke-reliability",
+      "gke-storage", "gke-workload-scaling", "gke-workload-security"
+    ]
   }
 ]
 ```
 
 The point is **least privilege**, enforced by config rather than by persona alone:
 
-- **`mcp` (list → scope)** — the subagent sees only `gke-readonly` and
-  `developer_knowledge`, never the read-write `gke` the platform agent itself
-  uses. Its cluster reads physically cannot mutate.
-- **`skills` (empty → grant none)** — a single-cluster read-only SRE inherits none
-  of the platform's fleet/provisioning skills. Its own domain diagnostic skills
-  (`gke-reliability`, `gke-storage`, …) live in `agents/cluster/skills/` upstream
-  and stay unwired — see [Cluster domain skills](#cluster-domain-skills) for the
-  content-root coupling that blocks them.
+- **`mcp` (list → scope)** — the subagent sees `gke` and `developer_knowledge`.
+  Because the recipe collapsed GKE to a single **read-only** endpoint, sharing
+  `gke` with the parent grants no mutation: neither the parent nor the subagent
+  has a write path (there is no read-write variant to withhold).
+- **`skills` (list → grant this subset)** — the subagent carries exactly the six
+  GKE domain-diagnostic skills (`gke-workload-troubleshooting`, `gke-reliability`,
+  `gke-storage`, `gke-workload-scaling`, `gke-workload-security`,
+  `gke-observability`) and none of the platform's fleet/provisioning skills. These
+  are vendored under `.agents/skills/` so the parent loads them (a subagent's
+  skills are a subset of the parent's loaded set) — see
+  [Cluster domain skills](#cluster-domain-skills).
 - **`tools` (omitted → inherit)** — it inherits the parent's built-ins, which
   already have `bash` disabled and carry the same plan-first permission gate, so
   it cannot escalate.
@@ -163,16 +226,28 @@ for the full `subagents[]` schema and the nil/list/empty scoping contract.
 The Cluster Agent ships its own diagnostic skills under `agents/cluster/skills/`
 (`gke-reliability`, `gke-storage`, `gke-workload-troubleshooting`, …). A subagent
 draws its skills by *scoping the parent's* loaded set, so to grant these the
-platform parent would first have to load them — which means declaring
-`agents/cluster` as a second content root. That does not work cleanly today: a
-content root couples skills with instructions, so adding `agents/cluster` would
-also fold its workspace `AGENTS.md` — *"one cluster only; never query or reason
-about other clusters or the fleet"* — into the **fleet** platform agent's own
-instructions, directly contradicting its mandate. Until a content root can
-contribute skills without its instructions (or subagents can load skills from a
-dedicated scope), the `cluster` subagent stays scoped to `skills: []` and relies
-on its persona plus the read-only MCP surface. This is a real limitation of the
-current content-root model, recorded in `docs/external-content-root-design.md`.
+platform parent must first load them. This recipe vendors the six **unmodified**
+under `.agents/skills/` (project scope) — **not** under the `../upstream` content
+root — for two reasons:
+
+- **The content root couples skills with instructions.** Declaring `agents/cluster`
+  as a second content root would also fold its workspace `AGENTS.md` — *"one
+  cluster only; never query or reason about other clusters or the fleet"* — into
+  the **fleet** platform agent's own instructions, directly contradicting its
+  mandate. Project-scope placement (`.agents/skills/`) loads only the skills, not
+  that persona.
+- **`upstream/` must stay a faithful `agents/platform/` snapshot.** Copying cluster
+  skills into `upstream/skills/` would corrupt that invariant and break live-mode
+  parity (pointing the content root at a real `agents/platform` checkout would then
+  differ from the vendored tree).
+
+The residual trade — the platform parent also *sees* these six as invokable tools —
+is acceptable: they are troubleshooting SOPs, and the overlay `AGENTS.md` directs
+the parent to delegate single-cluster diagnosis to `cluster` rather than run them
+itself. Lifting the coupling entirely (a content root that contributes skills
+without its instructions, or a dedicated per-subagent skill scope) is still
+tracked in `docs/external-content-root-design.md`. See `upstream/PROVENANCE.md`
+for the exact provenance of the vendored six.
 
 ## Run it locally
 
@@ -320,11 +395,13 @@ picked up on the next load with no re-vendoring.
 `recipe_test.go` is a hermetic, credential-free check that the loader can consume
 the bundle — persona assembly (the workspace file loads from the content root and
 the `SOUL.md` `@include` resolves), all 10 governance SOPs discoverable and
-indexed, all 18 skills loaded from the content root (and *no* copied
-`.agents/skills/` tree), a live-checkout content root honored via a fixture, the
-`gke` + `developer_knowledge` MCP servers parsed (and `platform_control` /
-`agent_common` absent), and the plan-first policy set. It runs in CI's
-`test-unit` presubmit and standalone:
+indexed, the 18 platform skills loaded from the content root plus the six cluster
+domain skills from `.agents/skills/` (24 total; and *no* platform skill copied
+into `.agents/skills/`), a live-checkout content root honored via a fixture, the
+single read-only `gke` + `developer_knowledge` MCP servers parsed (and the old
+`gke-readonly` / `platform_control` / `agent_common` absent), the `cluster`
+subagent scoped to those skills and MCP servers, and the plan-first policy set. It
+runs in CI's `test-unit` presubmit and standalone:
 
 ```bash
 dev/tools/e2e-recipe-kube-platform-agent          # or:
@@ -337,10 +414,12 @@ A live GKE run is manual UAT — bring your own project and clusters.
 
 - **Model.** Edit the `model` object in `.agents/config.json` (any core-agent
   provider). Keep it in sync with `config.hub.json` if you run the hub too.
-- **Read-only fleet.** The `gke-readonly` server already points at
-  `https://container.googleapis.com/mcp/read-only`; to make the *platform* agent
-  investigate-only too, scope its own surface to it (or repoint `gke`) in
-  `mcp.json`.
+- **Read-only by default.** The single `gke` server points at
+  `https://container.googleapis.com/mcp/read-only`, so both the platform agent and
+  the `cluster` subagent are investigate-only. If you ever need a write path, add a
+  *separate* read-write `gke` server in `mcp.json` and scope it to the parent only
+  (never the `cluster` subagent) — but prefer the GitOps-PR write path when it
+  lands.
 - **Tune the cluster subagent.** Widen or narrow its `mcp` / `skills` / `tools`
   scope in `.agents/config.json`, or give it its own model. Add more roster
   entries the same way (e.g. a `cost` or `security` delegate).

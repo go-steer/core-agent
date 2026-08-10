@@ -15,8 +15,10 @@
 // Package kubeplatformagent_test is the loader-only validation for the
 // kube-platform-agent recipe (v2.9 Phase 0 / W5, epic #589). It proves
 // that core-agent's v2 loader can consume a vendored, unmodified snapshot
-// of the kube-agents Platform Agent — persona, governance SOPs, all 18
-// skills, the translated MCP surface, and the read-only `cluster` subagent
+// of the kube-agents Platform Agent — persona, governance SOPs, the 18
+// platform skills (from the content root), the six cluster domain skills the
+// read-only `cluster` subagent carries (vendored under `.agents/skills/`),
+// the translated read-only MCP surface, and the `cluster` subagent
 // it delegates to — WITHOUT any cloud credentials
 // or a live cluster. The live GKE run is a manual UAT documented in
 // README.md; this test guards the plumbing.
@@ -149,17 +151,35 @@ func TestGovernanceSOPsDiscoverable(t *testing.T) {
 	}
 }
 
-// TestSkillsLoad asserts all 18 Platform Agent skills are discovered by
-// the v2 skills loader from the content root — the recipe no longer copies
-// them under .agents/skills/, so a failure here means the content_roots
-// wiring (config → resolve → skills.WithContentRoots) regressed.
+// clusterSkills are the six GKE domain-diagnostic skills the read-only
+// `cluster` subagent carries. They are vendored under `.agents/skills/`
+// (project scope) rather than the `../upstream` content root: a declarative
+// subagent's `skills:` is a name-scoped subset of the *parent's* loaded set,
+// so the parent must load them, and dropping them into `upstream/` would
+// corrupt its faithful `agents/platform/` snapshot. See PROVENANCE.md.
+var clusterSkills = []string{
+	"gke-workload-troubleshooting",
+	"gke-observability",
+	"gke-reliability",
+	"gke-storage",
+	"gke-workload-scaling",
+	"gke-workload-security",
+}
+
+// TestSkillsLoad asserts the loader discovers the full skill surface the
+// recipe promises: the 18 Platform Agent skills from the `../upstream`
+// content root PLUS the six cluster domain skills vendored under
+// `.agents/skills/` (project scope). A failure here means either the
+// content_roots wiring (config → resolve → skills.WithContentRoots)
+// regressed, or a cluster skill went missing/renamed.
 func TestSkillsLoad(t *testing.T) {
 	got, err := skills.Load(context.Background(), agentsDir, nil,
 		skills.WithContentRoots(configuredContentRoots(t)))
 	if err != nil {
 		t.Fatalf("skills.Load: %v", err)
 	}
-	const wantCount = 18
+	const platformSkills = 18
+	wantCount := platformSkills + len(clusterSkills) // 24
 	if len(got.Infos) != wantCount {
 		names := make([]string, 0, len(got.Infos))
 		for _, in := range got.Infos {
@@ -167,28 +187,55 @@ func TestSkillsLoad(t *testing.T) {
 		}
 		t.Fatalf("discovered %d skills, want %d: %v", len(got.Infos), wantCount, names)
 	}
-	// Spot-check a few load-bearing skills by name.
+	// Spot-check a few load-bearing platform skills (content root) and every
+	// cluster skill (.agents/skills/) by name.
 	discovered := make(map[string]bool, len(got.Infos))
 	for _, in := range got.Infos {
 		discovered[in.Name] = true
 	}
 	for _, want := range []string{"gke-cluster-creator", "fleet-audit", "manage-cluster", "submit-suggestion"} {
 		if !discovered[want] {
-			t.Errorf("skill %q not discovered", want)
+			t.Errorf("platform skill %q not discovered from the content root", want)
+		}
+	}
+	for _, want := range clusterSkills {
+		if !discovered[want] {
+			t.Errorf("cluster skill %q not discovered from .agents/skills/", want)
 		}
 	}
 }
 
-// TestSkillsAreNotCopied guards the whole point of the content-root mode:
-// the recipe must NOT ship a copied .agents/skills/ tree. A stray copy would
-// silently win (project skills out-rank content roots), shadowing the
-// content root and defeating the "run kube-agents unmodified" story — so a
-// re-introduced copy is a regression, not a convenience.
-func TestSkillsAreNotCopied(t *testing.T) {
-	if info, err := os.Stat(filepath.Join(agentsDir, "skills")); err == nil {
-		t.Errorf(".agents/skills exists (%v); skills must load from the content root, not a copy", info.IsDir())
-	} else if !os.IsNotExist(err) {
-		t.Fatalf("stat .agents/skills: %v", err)
+// TestPlatformSkillsAreNotCopied guards the content-root half of the skill
+// story: the 18 Platform Agent skills must load from the `../upstream`
+// content root, never a copy under `.agents/skills/`. A project-scope copy
+// would silently win (project skills out-rank content roots), shadowing the
+// content root and defeating the "run kube-agents unmodified" story. The
+// `.agents/skills/` dir DOES exist now — but only for the six cluster domain
+// skills (see clusterSkills / PROVENANCE.md), so this test asserts the dir
+// holds *exactly* those six and no platform skill leaked into it.
+func TestPlatformSkillsAreNotCopied(t *testing.T) {
+	entries, err := os.ReadDir(filepath.Join(agentsDir, "skills"))
+	if err != nil {
+		t.Fatalf("read .agents/skills: %v", err)
+	}
+	want := make(map[string]bool, len(clusterSkills))
+	for _, n := range clusterSkills {
+		want[n] = true
+	}
+	got := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		got[e.Name()] = true
+		if !want[e.Name()] {
+			t.Errorf(".agents/skills/%s is not a cluster skill; the 18 platform skills must load from the content root, not a copy", e.Name())
+		}
+	}
+	for n := range want {
+		if !got[n] {
+			t.Errorf("cluster skill %q missing from .agents/skills/", n)
+		}
 	}
 }
 
@@ -342,17 +389,19 @@ func TestAppendedRootIsShadowedBySnapshot(t *testing.T) {
 }
 
 // TestMCPServersParse asserts the translated MCP surface parses and holds
-// the remote HTTP servers the recipe keeps — gke (read-write, for the
-// platform agent), gke-readonly (the read-only endpoint the cluster
-// subagent is scoped to), and developer_knowledge — all reachable over
-// core-agent's native HTTP transport (no node mcp-remote proxy, no dropped
-// platform_control/agent_common).
+// exactly the remote HTTP servers the recipe keeps — a single read-only
+// `gke` (there is no read-write GKE endpoint at all: propose-only is
+// enforced by the transport, not persona) and `developer_knowledge` — both
+// reachable over core-agent's native HTTP transport (no node mcp-remote
+// proxy, no dropped platform_control/agent_common). The old separate
+// `gke-readonly` server is gone: the parent and the `cluster` subagent share
+// the one read-only endpoint.
 func TestMCPServersParse(t *testing.T) {
 	servers, err := mcp.Load(agentsDir)
 	if err != nil {
 		t.Fatalf("mcp.Load: %v", err)
 	}
-	for _, want := range []string{"gke", "gke-readonly", "developer_knowledge"} {
+	for _, want := range []string{"gke", "developer_knowledge"} {
 		spec, ok := servers.Servers[want]
 		if !ok {
 			t.Errorf("mcp server %q not present", want)
@@ -361,6 +410,20 @@ func TestMCPServersParse(t *testing.T) {
 		if spec.Transport != "http" {
 			t.Errorf("mcp server %q transport = %q, want http", want, spec.Transport)
 		}
+	}
+	// The `gke` server must point at the read-only endpoint — this is the
+	// mechanism (not just the persona) that makes the platform agent
+	// propose-only. A regression back to the read-write endpoint would hand
+	// the agent live-mutation verbs again.
+	if gke, ok := servers.Servers["gke"]; ok {
+		const readOnlyURL = "https://container.googleapis.com/mcp/read-only"
+		if gke.URL != readOnlyURL {
+			t.Errorf("gke url = %q, want the read-only endpoint %q", gke.URL, readOnlyURL)
+		}
+	}
+	// The pre-split read-write endpoint must not linger under any name.
+	if _, ok := servers.Servers["gke-readonly"]; ok {
+		t.Error("mcp server \"gke-readonly\" should have been collapsed into the single read-only \"gke\"")
 	}
 	for _, dropped := range []string{"platform_control", "agent_common"} {
 		if _, ok := servers.Servers[dropped]; ok {
@@ -371,12 +434,14 @@ func TestMCPServersParse(t *testing.T) {
 
 // TestClusterSubagentDeclared asserts the recipe wires the read-only
 // `cluster` subagent (v2.9 PR B′): the platform agent delegates a single
-// cluster's diagnostics to a declarative subagent whose tool surface is
-// strictly narrower than its own. It pins the nil/list/empty scoping
-// contract as the recipe uses it — MCP scoped to the read-only servers
-// (never the read-write `gke`), skills explicitly granted none, tools
-// inherited — and cross-checks that every MCP the subagent names actually
-// exists in mcp.json, and that the vendored persona it @includes is present.
+// cluster's diagnostics to a declarative subagent scoped to the read-only
+// MCP surface and carrying the six GKE domain-diagnostic skills the parent
+// delegates rather than runs itself. It pins the scoping contract as the
+// recipe uses it — MCP scoped (list) to the read-only `gke` + knowledge
+// servers, skills scoped (list) to exactly the six cluster domain skills,
+// tools inherited — and cross-checks that every MCP the subagent names
+// actually exists in mcp.json, and that the vendored persona it @includes
+// is present.
 func TestClusterSubagentDeclared(t *testing.T) {
 	cfg, err := config.Load(agentsDir)
 	if err != nil {
@@ -390,10 +455,10 @@ func TestClusterSubagentDeclared(t *testing.T) {
 		t.Errorf("subagent name = %q, want %q", sa.Name, "cluster")
 	}
 
-	// MCP: scoped (list) to the read-only surface — and crucially NOT the
-	// read-write `gke` the platform agent itself uses. This is the
-	// least-privilege payoff of declarative subagents.
-	wantMCP := map[string]bool{"gke-readonly": true, "developer_knowledge": true}
+	// MCP: scoped (list) to the read-only surface. Since the recipe collapsed
+	// GKE to a single read-only endpoint, `gke` is safe for the subagent to
+	// share with the parent — there is no read-write variant to withhold.
+	wantMCP := map[string]bool{"gke": true, "developer_knowledge": true}
 	if len(sa.MCP) != len(wantMCP) {
 		t.Errorf("subagent mcp = %v, want %v", sa.MCP, wantMCP)
 	}
@@ -401,19 +466,26 @@ func TestClusterSubagentDeclared(t *testing.T) {
 		if !wantMCP[name] {
 			t.Errorf("subagent mcp includes unexpected server %q", name)
 		}
-		if name == "gke" {
-			t.Error("cluster subagent must NOT see the read-write gke server")
-		}
 	}
 
-	// Skills: explicit empty list → grant none (a single-cluster read-only
-	// SRE inherits none of the fleet/provisioning skills). Non-nil-but-empty
-	// is the "grant none" half of the contract; nil would mean "inherit".
+	// Skills: scoped (list) to exactly the six cluster domain skills — the
+	// specialist carries them; the parent delegates single-cluster diagnosis
+	// rather than running them itself. Non-nil-but-populated is the "grant
+	// this subset" half of the contract; nil would mean "inherit all".
 	if sa.Skills == nil {
-		t.Error("subagent skills is nil (would inherit); recipe grants none via []")
+		t.Error("subagent skills is nil (would inherit all); recipe grants the six cluster skills via a list")
 	}
-	if len(sa.Skills) != 0 {
-		t.Errorf("subagent skills = %v, want none", sa.Skills)
+	wantSkills := make(map[string]bool, len(clusterSkills))
+	for _, n := range clusterSkills {
+		wantSkills[n] = true
+	}
+	if len(sa.Skills) != len(wantSkills) {
+		t.Errorf("subagent skills = %v, want the six cluster skills %v", sa.Skills, clusterSkills)
+	}
+	for _, name := range sa.Skills {
+		if !wantSkills[name] {
+			t.Errorf("subagent skills includes unexpected skill %q", name)
+		}
 	}
 
 	// Tools: omitted → inherit the parent's built-ins (bash already disabled
@@ -448,6 +520,26 @@ func TestClusterSubagentDeclared(t *testing.T) {
 	for _, name := range sa.MCP {
 		if _, ok := servers.Servers[name]; !ok {
 			t.Errorf("subagent references mcp server %q not in mcp.json", name)
+		}
+	}
+
+	// Every skill the subagent names must resolve against the PARENT's loaded
+	// skill set — a declarative subagent's skills are a name-scoped subset of
+	// what the parent loads (surface.skills.Scoped), so a skill missing from
+	// the parent's set would silently drop from the subagent at boot. This is
+	// the invariant that forces the six cluster skills into `.agents/skills/`.
+	loadedSkills, err := skills.Load(context.Background(), agentsDir, nil,
+		skills.WithContentRoots(configuredContentRoots(t)))
+	if err != nil {
+		t.Fatalf("skills.Load: %v", err)
+	}
+	parentSkills := make(map[string]bool, len(loadedSkills.Infos))
+	for _, in := range loadedSkills.Infos {
+		parentSkills[in.Name] = true
+	}
+	for _, name := range sa.Skills {
+		if !parentSkills[name] {
+			t.Errorf("subagent scopes skill %q the parent does not load; declarative subagent skills must be a subset of the parent's loaded set", name)
 		}
 	}
 

@@ -42,6 +42,42 @@ Two files are handled outside the content root, because of how the loaders scope
 | `docs/` (glossary, gcp-console-links, session_management) | `upstream/docs/` | reference, read on demand |
 | `../cluster/{SOUL,AGENTS,CAPABILITIES}.md` | `upstream/cluster/` | the read-only Cluster Agent persona. `SOUL.md` is `@include`d by the `cluster` declarative subagent in `.agents/config.json` and reconciled to core-agent's runtime by the subagent's inline overlay (no kanban dispatcher / bash preflight here); `AGENTS.md` and `CAPABILITIES.md` are vendored as faithful reference snapshots (the subagent's routing blurb is condensed from `CAPABILITIES.md` into its `description`). All three unmodified. |
 
+## Cluster Agent domain skills (`.agents/skills/`)
+
+The `cluster` subagent's six domain diagnostic skills are vendored **unmodified**
+from `agents/cluster/skills/` (same repo/commit as above) — but into
+`.agents/skills/`, **not** under `upstream/`:
+
+| Upstream (`agents/cluster/skills/…`) | Here |
+|---|---|
+| `gke-workload-troubleshooting`, `gke-observability`, `gke-reliability`, `gke-storage`, `gke-workload-scaling`, `gke-workload-security` | `.agents/skills/<name>/` |
+
+Why `.agents/skills/` and not the `upstream/` content root:
+
+- **The framework requires the parent to load any skill a subagent uses.** A
+  declarative subagent's `skills:` is a *name-scoped subset of the parent's
+  loaded set* (`surface.skills.Scoped`) — there is no independent per-subagent
+  skill load — so these six must be in the parent's loaded skills for the
+  `cluster` subagent to reference them. `.agents/skills/` is the project-scope
+  source, loaded in both vendored and live modes.
+- **`upstream/` must stay a faithful `agents/platform/` snapshot.** Dropping
+  cluster skills into `upstream/skills/` would corrupt that invariant and break
+  live-mode parity (pointing the content root at a real `agents/platform`
+  checkout would then differ from the vendored tree).
+- **The content-root coupling is the reason they can't come from a second root.**
+  A content root couples skills *with instructions*: declaring `agents/cluster`
+  as a root would also concatenate `cluster/AGENTS.md` ("one cluster only; never
+  reason about the fleet") into the **platform parent's** prompt, contradicting
+  its fleet mandate. Project-scope placement loads only the skills, not that
+  persona. The residual trade — the parent also sees these six as invokable
+  tools — is acceptable: they are troubleshooting SOPs, and the overlay
+  `AGENTS.md` instructs the parent to delegate single-cluster diagnosis to
+  `cluster` rather than run them itself.
+
+`gke-workload-security` carries a `scripts/audit_cluster.sh`; like the platform
+skills' scripts (below) it is discoverable but cannot execute in the distroless
+brain image (bash is disabled).
+
 ## What is deliberately NOT vendored
 
 These are Hermes-runtime-specific and have no analog in core-agent's runtime;
@@ -58,14 +94,11 @@ their capabilities are mapped in `../README.md` (see "Component mapping"):
   moot under core-agent's distroless brain image.
 - `agents/chat/` — the Chat Agent companion (a separate `go-steer/switchboard`
   workstream).
-- `agents/cluster/config.yaml`, `agents/cluster/skills/` — the Cluster Agent's
-  Hermes config (translated into the `cluster` subagent block in
-  `.agents/config.json`) and its domain diagnostic skills. The subagent's skills
-  stay scoped to none: adding its live domain skills would mean declaring
-  `agents/cluster` as a second content root, but a content root couples skills
-  with instructions, and `cluster/AGENTS.md` (“one cluster only; never reason
-  about the fleet”) directly contradicts the platform parent's fleet mandate. See
-  the README's "Cluster domain skills" note for the coupling this exposes.
+- `agents/cluster/config.yaml` — the Cluster Agent's Hermes config, translated
+  into the `cluster` subagent block in `.agents/config.json` /
+  `.agents/config.hub.json` (model, MCP scope, description). Not vendored as a
+  file. (Its six domain diagnostic skills **are** now vendored — see the Cluster
+  Agent domain skills note below.)
 
 Skill-local `scripts/*.py` (in `fleet-audit`, `github-issue-resolver`,
 `kube-agents-observability`, `submit-suggestion`) **are** carried along under

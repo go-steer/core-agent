@@ -111,10 +111,17 @@ not a separate concept.
 final text as the tool result — i.e. the current `NewSubagentTool` behavior,
 reachable through the unified surface. Omitting it is fire-and-continue.
 
+Because a synchronous spawn **holds the parent turn open**, it carries its own,
+**tighter** default wall-clock cap (operator-tunable, distinct from the
+fire-and-continue default) so a slow subagent can't hang the parent
+indefinitely; on timeout the tool returns a **partial/timeout result** rather
+than blocking. As with all budgets, the override is tighten-only (D5).
+
 ### The trust boundary: `allow_adhoc`, off by default for daemons
 
 An operator switch (working name `subagents.allow_adhoc`, default **false** on
-daemons) governs whether the inline/ad-hoc form is accepted at all. When off,
+daemons, a single daemon-wide flag — D4) governs whether the inline/ad-hoc form
+is accepted at all. When off,
 `spawn_agent` **requires** an `agent:` reference to a configured spec; an inline
 persona is rejected at the tool boundary. When on (the interactive/dev default),
 both forms work.
@@ -145,11 +152,14 @@ shorthand; ad-hoc has nothing) with **one rule**:
 | `"small"` | the configured small-tier model (ties into the existing `--small-tier-parent` notion) |
 | a specific model | a named model / full `ModelConfig` |
 
-On a **referenced** spawn the spec's `model` is the default; an override to a
-*different specific* model is honored only if that model is in an operator
-allowlist (open question OQ2). On an **ad-hoc** spawn the parent picks from the
-same allowlist. `"small"` is always permitted (it's operator-configured by
-definition).
+On a **referenced** spawn the spec's `model` is the default. The *only*
+overridable values are `inherit` (omit) and `"small"` — a per-spawn cost knob
+(e.g. fan out this instance on the cheap tier). Overriding to a **specific**
+model is deliberately **not** allowed: it requires its own predefined spec. This
+removes the need for a model-override allowlist entirely and closes the
+model-escalation path (D2). On an **ad-hoc** spawn the parent likewise picks only
+`inherit` / `"small"`, or a specific model *if* `allow_adhoc` is on (ad-hoc is
+already parent-authored, so a specific model there is no additional escalation).
 
 ### 2. Narrowing-only overrides on a referenced spawn
 
@@ -158,7 +168,7 @@ The safe override set, applied on top of a referenced spec:
 | Field | Allowed | Rule |
 |---|---|---|
 | `goal` / task | always | the whole point of a spawn |
-| `model` | if permitted | inherit / `small` / allowlisted specific |
+| `model` | inherit / `small` only | a *specific* model requires its own spec (D2) |
 | `tools` | **subset only** | may *drop* tools the spec granted; may **never add** one it didn't |
 | budgets (`max_turns`, `max_cost_usd`, `max_wallclock_seconds`) | tighten only | may lower a cap, never raise it |
 
@@ -181,20 +191,29 @@ ids are what appear in `[Background reports]` and the catalog.
 Async results already arrive by push — `report_alert`/completion →
 `[Background reports]` prepended to the parent's next turn
 (`pkg/agent/background/report.go`). This is the model we keep and lean on. The
-poll tools become redundant and were the loop fuel in the UAT:
+poll tools become redundant and were the loop fuel in the UAT, so **both are
+removed as model tools** (D1):
 
-- **`list_agents`** — fold into the operator catalog (#627) + the pre-turn push
-  digest; **remove as a model tool.**
-- **`check_agent`** — a pull *does* have a legitimate niche (the parent
-  explicitly wants a status before deciding). Keep at most **one** narrow status
-  read, or replace it with an on-completion push and remove it too — settle in
-  OQ1. Whatever remains stays classified read-only (`IsReadOnlyToolName`, #624)
-  but must not be re-issuable in an auto-continue loop.
+- **`list_agents`** — removed; its content is served by the pre-turn push digest
+  (for the model) and the operator catalog #627 (for humans).
+- **`check_agent`** — removed. Push already covers fan-out coordination: the
+  parent receives a `[Background reports]` line as *each* instance finishes, so
+  "spawn N, synthesize when the last completes" works turn-by-turn with no
+  polling. The only thing a status *pull* adds is the ability to **block** on
+  progress — which is exactly what `wait: true` expresses. Removing it kills the
+  loop fuel outright.
 - **`stop_agent`** — stays (mutating, necessary).
 - **`spawn_agent`** — stays, now the single unified surface above.
 
-Net: the background family goes from four model tools toward **two** (`spawn_agent`
-+ `stop_agent`), with introspection served by push + the operator catalog.
+Net: the background family drops from **four model tools to two** (`spawn_agent`
++ `stop_agent`); introspection is push + operator catalog.
+
+**Escape hatch:** if a real consumer needs *synchronous mid-turn* status of
+already-running async spawns (without blocking on any one of them), add a single
+consolidated read (one call returning all instances' status, optional name
+filter) — not the two per-name pollers. It would be classified read-only
+(`IsReadOnlyToolName`, #624) and must be non-re-issuable under auto-continue.
+Deferred until a consumer demands it.
 
 ### 5. Discoverability (#627)
 
@@ -213,17 +232,16 @@ Two audiences, deliberately different:
 
 `NewSubagentTool` registers each declarative subagent as its *own* named tool
 today. Under the unified surface, sync delegation flows through
-`spawn_agent { agent, wait: true }` instead. Two migration options (OQ3):
+`spawn_agent { agent, wait: true }` instead.
 
-- **(a) Deprecate the per-spec named tools** — one surface, cleanest for the
-  "single surface" goal; the parent addresses subagents through `spawn_agent`'s
-  `agent` enum. Breaking for any config relying on the named tool.
-- **(b) Keep per-spec named tools as sync sugar** — they remain as a thin alias
-  for `spawn_agent { agent, wait: true }`; async is additive. Non-breaking, but
-  two ways to do the sync call.
-
-Lean: **(a)** for the stated single-surface goal, with a release note; revisit if
-a consumer depends on the named-tool shape.
+**Decision (D3): single surface, with a one-release compatibility shim.**
+`spawn_agent` becomes the one model-facing surface; sync is `wait: true`. The
+per-spec named tools are **kept as deprecated aliases through v2.9** (a thin
+forward to `spawn_agent { agent, wait: true }`, documented as legacy), so no
+existing config — notably the live kube-platform-agent recipe, which delegates to
+a named `cluster` tool — breaks on upgrade. In the same #626 train our own recipe
+migrates to `spawn_agent`; removal of the named-tool aliases targets **v2.10**
+with a release note. This reaches the single-surface goal without a hard break.
 
 ## Work breakdown
 
@@ -233,8 +251,9 @@ This doc is the keystone; the three issues execute against it:
    `wait` for sync, `allow_adhoc` gate, unified model resolution, narrowing
    overrides, instance identity. Predefined specs become spawnable async;
    ad-hoc becomes policy-gated.
-2. **#625** — fold the background tool family per §4 (remove `list_agents` as a
-   model tool; resolve `check_agent` per OQ1; land on `spawn_agent` + `stop_agent`).
+2. **#625** — fold the background tool family per §4 / D1 (remove both
+   `list_agents` and `check_agent` as model tools; land on `spawn_agent` +
+   `stop_agent`).
 3. **#627** — the operator catalog per §5 (`subagent` tool-source, `GET /subagents`,
    boot/`--print-config` dump); model-facing discovery is the `spawn_agent` enum.
 
@@ -242,18 +261,30 @@ Sequencing: this design lands with (or just ahead of) the #626 code; #625 and
 #627 follow as execution. Per-issue: `dev/ci/presubmits/*` green, adversarial
 review gate, `-race`, no Claude attribution.
 
-## Open questions
+## Resolved decisions
 
-1. **`check_agent` fate** — keep one narrow status-pull, or go push-only for
-   completion and remove it? (Loop-safety argues push-only; a parent that spawns
-   async and later needs a mid-flight status argues keep-one.)
-2. **Model-override allowlist** — where declared (top-level `subagents.models`?
-   per-spec `allow_model_override`?), and does `"small"` bypass it (proposed:
-   yes).
-3. **Named-tool migration** — deprecate per-spec named tools (a) vs. keep as sync
-   sugar (b).
-4. **`allow_adhoc` granularity** — a single daemon-wide switch, or per-parent /
-   per-depth? (Start daemon-wide; revisit if a consumer needs finer control.)
-5. **`wait: true` and budgets** — a synchronous spawn blocks the parent turn; does
-   the subagent's wall-clock cap need a distinct (tighter) default from the
-   fire-and-continue case to avoid a parent turn hanging on a slow subagent?
+- **D1 — Result delivery is push-only; both pollers removed.** `list_agents` and
+  `check_agent` are dropped as model tools (§4). Push covers fan-out
+  coordination; blocking is `wait: true`. Background family → `spawn_agent` +
+  `stop_agent`. A consolidated read is a deferred escape hatch, not shipped.
+- **D2 — No model-override allowlist.** Only `inherit`/`"small"` are overridable
+  at spawn (§1); a specific model requires its own predefined spec. This deletes
+  the allowlist and the model-escalation path.
+- **D3 — Single surface with a one-release compat shim.** `spawn_agent` is the
+  one surface (`wait: true` = sync); per-spec named tools remain deprecated
+  aliases through v2.9, removed in v2.10; our recipe migrates in-train (§"named
+  tool surface").
+- **D4 — `allow_adhoc` is a single daemon-wide switch,** off by default for
+  daemons, on for interactive/dev (§"trust boundary"). Per-parent/per-depth
+  granularity is revisited only if a consumer needs it.
+- **D5 — Sync spawns get a distinct tighter wall-clock default** (operator-tunable)
+  and return a partial/timeout result rather than hanging the parent turn
+  (§"sync vs async"); all budget overrides are tighten-only.
+
+## Still open (settle in implementation)
+
+- The concrete **default wall-clock values** for the sync vs. async caps (D5) —
+  pick against real subagent latencies during #626, not up front.
+- Exact **config key names** (`subagents.allow_adhoc`, the `wait`/`agent`/`model`
+  spawn args, the instance-id format) — pin when the config surface lands and
+  reconcile with `docs/declarative-subagents-design.md`.

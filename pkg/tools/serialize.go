@@ -49,7 +49,8 @@ import (
 // Deliberately excluded (i.e. classified mutating): bash (arbitrary
 // commands), write_file / edit_file / delete_file, todo (list state),
 // record_plan (gate state), sciontool_status (writes the sticky
-// status file).
+// status file), spawn_agent / stop_agent (mutate the background-agent
+// manager's state).
 var readOnlyBuiltins = map[string]bool{
 	"read_file":       true,
 	"read_many_files": true,
@@ -64,6 +65,17 @@ var readOnlyBuiltins = map[string]bool{
 	// edit in the same response for minutes (pre-#460 they ran
 	// concurrently, and should keep doing so).
 	"ask_user": true,
+	// Background-subagent introspection (pkg/agent/background): both only
+	// read the manager's tracked-subagent state, so they are safe to
+	// dispatch concurrently (#460) AND safe for auto-continue NOT to
+	// nudge re-issuing after an interruption (#624 — re-running a
+	// side-effect-free introspection call is exactly what turned an
+	// operator's stop+interrupt into a list_agents loop). Named here
+	// rather than declared on the tools because the eventlog records
+	// only a call's NAME, so post-interruption classification is
+	// name-based (see IsReadOnlyToolName).
+	"list_agents": true,
+	"check_agent": true,
 }
 
 // ReadOnlyHinter is the optional interface a tool implements to
@@ -83,6 +95,20 @@ func IsReadOnlyTool(t adktool.Tool) bool {
 		return h.ReadOnlyHint()
 	}
 	return readOnlyBuiltins[t.Name()]
+}
+
+// IsReadOnlyToolName reports whether a built-in tool NAME is classified
+// read-only. It consults only the builtin name table — the sole
+// classification available when all a caller holds is a recorded tool
+// name rather than a live tool object (e.g. the auto-continue classifier
+// reading interrupted calls back out of the eventlog, #624). It
+// therefore CANNOT see a server-declared MCP readOnlyHint (that lives on
+// the live tool object, not the name); an unknown or MCP-namespaced name
+// returns false, the fail-safe (mutating) default — for auto-continue
+// that means the continuation note keeps its re-issue nudge, the
+// conservative direction.
+func IsReadOnlyToolName(name string) bool {
+	return readOnlyBuiltins[name]
 }
 
 // MutationSerializer is the shared lock one agent's mutating tools

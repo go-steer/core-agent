@@ -172,6 +172,47 @@ func TestPrependInboxMessages_EmptyIsPassthrough(t *testing.T) {
 	}
 }
 
+// #624: auto-continue must detect already-queued operator input so it
+// can stand down (the operator's message drives the next turn) instead
+// of injecting a competing "continue the task" note into the same batch.
+func TestAgent_HasPendingOperatorInput(t *testing.T) {
+	t.Parallel()
+	prov := mock.NewEcho()
+	llm, err := prov.Model(context.Background(), "echo")
+	if err != nil {
+		t.Fatalf("provider.Model: %v", err)
+	}
+	a, err := New(llm)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if a.HasPendingOperatorInput() {
+		t.Fatal("empty inbox must report no operator input")
+	}
+	// A message injected by auto-continue itself is NOT operator input.
+	if err := a.InjectAs("[system note] The previous turn did not complete", auth.Caller{Identity: AutoContinueOriginator}); err != nil {
+		t.Fatalf("InjectAs auto-continue: %v", err)
+	}
+	if a.HasPendingOperatorInput() {
+		t.Fatal("an auto-continue note must not count as operator input")
+	}
+	// A real operator message (distinct identity) does count.
+	if err := a.InjectAs("stop", auth.Caller{Identity: "alice"}); err != nil {
+		t.Fatalf("InjectAs operator: %v", err)
+	}
+	if !a.HasPendingOperatorInput() {
+		t.Fatal("a queued operator message must count as operator input")
+	}
+	// A zero-identity (legacy Inject / single-user) message also counts.
+	a.DrainInbox()
+	if err := a.Inject("stop"); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	if !a.HasPendingOperatorInput() {
+		t.Fatal("a zero-identity operator message must count as operator input")
+	}
+}
+
 func TestAgent_Inject_RoundtripsToNextRun(t *testing.T) {
 	t.Parallel()
 	// Use the echo mock to make the model's first response observable:

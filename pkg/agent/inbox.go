@@ -390,6 +390,33 @@ func (a *Agent) PendingInboxCount() int {
 	return len(a.inbox.messages)
 }
 
+// HasPendingOperatorInput reports whether the inbox holds a queued
+// message from someone OTHER than auto-continue itself — real
+// operator/external input waiting to drive the next turn. Auto-continue
+// consults this to STAND DOWN (#624): if an operator has already queued
+// input (e.g. `stop`) while a turn was interrupted, that input must
+// drive the next turn on its own — injecting a "continue the task" note
+// into the same drained batch lets the note outrank the operator's stop
+// (the #624 race). Messages injected by auto-continue itself
+// (AutoContinueOriginator) are excluded so it never sees its own note as
+// operator input. Zero-identity messages (legacy Inject / single-user)
+// DO count — they are operator input without an attached identity.
+//
+// Returns false for nil agent / inbox.
+func (a *Agent) HasPendingOperatorInput() bool {
+	if a == nil || a.inbox == nil {
+		return false
+	}
+	a.inbox.mu.Lock()
+	defer a.inbox.mu.Unlock()
+	for _, m := range a.inbox.messages {
+		if m.caller.Identity != AutoContinueOriginator {
+			return true
+		}
+	}
+	return false
+}
+
 // InboxArrived returns a channel that fires when a new message has
 // been injected. The harness can use this to decide when to start
 // the next turn instead of polling — typical pattern:

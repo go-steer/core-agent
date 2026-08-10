@@ -84,6 +84,22 @@ func acModelEvent(text string, ts time.Time) *session.Event {
 	return ev
 }
 
+// acCallEvent is a model turn that ends in an unanswered functionCall
+// (a mid-tool interruption) — the shape whose continuation note carries
+// the "re-issue interrupted tool calls" nudge (#624).
+func acCallEvent(toolName string, ts time.Time) *session.Event {
+	ev := session.NewEvent("inv-call")
+	ev.Author = "core_agent"
+	ev.Timestamp = ts
+	ev.LLMResponse = adkmodel.LLMResponse{
+		Content: &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{
+			{Text: "calling a tool"},
+			{FunctionCall: &genai.FunctionCall{ID: "c1", Name: toolName}},
+		}},
+	}
+	return ev
+}
+
 // acAgent builds an agent bound to the seeded triple without starting
 // a wake loop, so the test can observe the inbox deterministically.
 func acAgent(t *testing.T, h *eventlog.Handle) *agent.Agent {
@@ -517,6 +533,63 @@ func TestMaybeAutoContinue_QueuesNoteForFreshInterruption(t *testing.T) {
 		t.Fatalf("run lock still held after maybeAutoContinue: %v", err)
 	}
 	lock.Release()
+}
+
+// #624 part (b): an operator who queued input (e.g. `stop`) while a turn
+// was interrupted must drive the next turn on their own — auto-continue
+// must NOT inject a competing "continue the task" note into the same
+// batch. Fails on pre-change code, which injects the note regardless.
+func TestMaybeAutoContinue_OperatorInputOutranksNote(t *testing.T) {
+	t.Parallel()
+	h := seedAC(t,
+		acUserEvent("do it", time.Now().Add(-5*time.Minute)),
+		acCallEvent("list_agents", time.Now().Add(-1*time.Minute)),
+	)
+	ag := acAgent(t, h)
+	// Operator typed `stop` (queued into the inbox) before auto-continue
+	// runs — mirrors the #624 UAT sequence (stop, then /interrupt).
+	if err := ag.InjectAs("stop", auth.Caller{Identity: acUser}); err != nil {
+		t.Fatalf("InjectAs stop: %v", err)
+	}
+	maybeAutoContinue(acDeps(h, time.Hour), auth.Caller{Identity: acUser}, acSID, ag)
+
+	msgs := ag.DrainInbox()
+	if len(msgs) != 1 {
+		t.Fatalf("inbox has %d messages, want only the operator's stop (no continuation note)", len(msgs))
+	}
+	if msgs[0] != "stop" {
+		t.Errorf("inbox[0] = %q, want the operator's %q", msgs[0], "stop")
+	}
+	for _, m := range msgs {
+		if strings.Contains(m, "previous turn did not complete") {
+			t.Errorf("a continuation note was injected alongside operator input: %q", m)
+		}
+	}
+}
+
+// #624 part (a): a tail interrupted mid read-only introspection call gets
+// a continuation note that does NOT nudge re-issuing it. Fails on
+// pre-change code, whose note always says "re-issue interrupted tool
+// calls".
+func TestMaybeAutoContinue_ReadOnlyInterruptedCallSoftensNote(t *testing.T) {
+	t.Parallel()
+	h := seedAC(t,
+		acUserEvent("what's running?", time.Now().Add(-5*time.Minute)),
+		acCallEvent("list_agents", time.Now().Add(-1*time.Minute)),
+	)
+	ag := acAgent(t, h)
+	maybeAutoContinue(acDeps(h, time.Hour), auth.Caller{Identity: acUser}, acSID, ag)
+
+	msgs := ag.DrainInbox()
+	if len(msgs) != 1 {
+		t.Fatalf("inbox has %d messages, want 1 continuation note", len(msgs))
+	}
+	if !strings.Contains(msgs[0], "previous turn did not complete") {
+		t.Errorf("note missing loop-breaker marker: %q", msgs[0])
+	}
+	if strings.Contains(msgs[0], "re-issue interrupted tool calls") {
+		t.Errorf("read-only interrupted call must not be nudged to re-issue: %q", msgs[0])
+	}
 }
 
 func TestMaybeAutoContinue_SkipsCompletedAndStaleAndLocked(t *testing.T) {

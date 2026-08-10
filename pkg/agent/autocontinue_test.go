@@ -15,6 +15,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -289,6 +290,110 @@ func TestClassifyInterruptedTail(t *testing.T) {
 			}
 			if got && at.IsZero() {
 				t.Error("interrupted but interruptedAt is zero — freshness window would misfire")
+			}
+		})
+	}
+}
+
+// #624: the classifier must surface the interrupted tail's tool-call
+// names (for the mid-tool shape only) so the caller can scope the
+// continuation note by classification.
+func TestClassifyInterruptedTailWithCalls_SurfacesCallNames(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		events      []*session.Event
+		interrupted bool
+		wantCalls   []string
+	}{
+		{
+			name: "mid-tool interruption surfaces every call name",
+			events: []*session.Event{
+				userTextEvent("do it"),
+				callEvent(defaultAgentName, "inv-1", nil,
+					&genai.FunctionCall{ID: "c1", Name: "list_agents"},
+					&genai.FunctionCall{ID: "c2", Name: "check_agent"},
+				),
+			},
+			interrupted: true,
+			wantCalls:   []string{"list_agents", "check_agent"},
+		},
+		{
+			name:        "unanswered user message has no interrupted calls",
+			events:      []*session.Event{modelTextEvent("earlier"), userTextEvent("hello?")},
+			interrupted: true,
+			wantCalls:   nil,
+		},
+		{
+			name: "committed tool response has no interrupted calls",
+			events: []*session.Event{
+				userTextEvent("do it"),
+				callEvent(defaultAgentName, "inv-1", nil, &genai.FunctionCall{ID: "c1", Name: "bash"}),
+				responseEvent(defaultAgentName, &genai.FunctionResponse{ID: "c1", Name: "bash"}),
+			},
+			interrupted: true,
+			wantCalls:   nil,
+		},
+		{
+			name:        "completed turn has no interrupted calls",
+			events:      []*session.Event{userTextEvent("q"), modelTextEvent("done")},
+			interrupted: false,
+			wantCalls:   nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, interrupted, calls := ClassifyInterruptedTailWithCalls(tc.events)
+			if interrupted != tc.interrupted {
+				t.Fatalf("interrupted = %v, want %v", interrupted, tc.interrupted)
+			}
+			if len(calls) != len(tc.wantCalls) {
+				t.Fatalf("calls = %v, want %v", calls, tc.wantCalls)
+			}
+			for i := range calls {
+				if calls[i] != tc.wantCalls[i] {
+					t.Fatalf("calls = %v, want %v", calls, tc.wantCalls)
+				}
+			}
+		})
+	}
+}
+
+// #624: the continuation note must NOT nudge re-issuing interrupted tool
+// calls when every one is read-only introspection — that reflexive
+// re-run is what turned an operator's stop+interrupt into a list_agents
+// loop. Any mutating or unknown call keeps the default (re-issue) note.
+func TestAutoContinueNoteFor_ScopesReissueByClassification(t *testing.T) {
+	t.Parallel()
+	const reissue = "re-issue interrupted tool calls"
+	at := time.Now()
+	cases := []struct {
+		name        string
+		calls       []string
+		wantReissue bool
+	}{
+		{"all read-only introspection", []string{"list_agents", "check_agent"}, false},
+		{"single read-only introspection", []string{"list_agents"}, false},
+		{"mutating call keeps the nudge", []string{"bash"}, true},
+		{"mixed read-only + mutating keeps the nudge", []string{"list_agents", "spawn_agent"}, true},
+		{"unknown name keeps the nudge (fail-safe)", []string{"some_mcp__tool"}, true},
+		{"no interrupted calls keeps the default note", nil, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			note := AutoContinueNoteFor(at, tc.calls)
+			if got := strings.Contains(note, reissue); got != tc.wantReissue {
+				t.Errorf("note contains %q = %v, want %v\nnote: %s", reissue, got, tc.wantReissue, note)
+			}
+			// Every variant must keep the loop-breaker marker and assert
+			// no unverifiable cause (#615), same contract as the default.
+			if !strings.Contains(note, autoContinueMarker) {
+				t.Errorf("note missing loop-breaker marker %q: %s", autoContinueMarker, note)
+			}
+			if strings.Contains(note, "daemon restart") {
+				t.Errorf("note must not claim a daemon restart: %s", note)
 			}
 		})
 	}

@@ -246,6 +246,17 @@ cmd wiring touch `cmd/core-agent/main.go` + `pkg/config/config.go` (shared with
   a declarative subagent load skills from a dedicated scope — noted here for a
   future increment, not built now.
 
+  **Update (2026-08-10).** ([#617](https://github.com/go-steer/core-agent/pull/617))
+  patched the immediate gap by vendoring the 6 cluster skills into the parent's
+  `.agents/skills/` and inline-scoping them onto the subagent — at the cost of
+  polluting the fleet parent's namespace and forking the skills from upstream.
+  The clean fix is option (b), now specified as the **per-subagent content root
+  (`root`)** increment in `docs/declarative-subagents-design.md`: a subagent
+  loads its own `AGENTS.md` + `skills/` + `mcp.json` from a dedicated trusted
+  scope, so `cluster/AGENTS.md` never reaches the fleet parent. The OCI
+  image-volume distribution model (PR F, #613) removed the single-ConfigMap
+  constraint that had made a per-subagent scope dir an anti-pattern.
+
 ## Open questions
 
 ### 1. Trusted-scope relaxation vs a separate loader path

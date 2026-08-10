@@ -893,7 +893,14 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			}
 		}
 	}
-	mcpServers, mcpToolsets, mcpErr := mcp.Build(ctx, agentsDir, homeAgentsDir, send, gate, makeMCPElicitor(), digestOpts)
+	// Construct the MCP elicitor ONCE and reuse it for both the parent and
+	// any rooted subagents' mcp.Build. makeMCPElicitor has a side effect in
+	// the TUI build — it stashes the constructed handle in the package-global
+	// pkgCoreElicitor that launchTUIv2 later attaches to the bubble-tea
+	// program — so calling it a second time would leave the TUI wired to a
+	// different elicitor than the servers actually captured.
+	mcpElicitor := makeMCPElicitor()
+	mcpServers, mcpToolsets, mcpErr := mcp.Build(ctx, agentsDir, homeAgentsDir, send, gate, mcpElicitor, digestOpts)
 	if mcpErr != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: mcp: %v\n", mcpErr)
 	}
@@ -902,13 +909,10 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// children were orphaned at exit and died only via stdio pipe
 	// closure, which leaves servers that ignore EOF running forever.
 	defer mcp.CloseAll(mcpServers)
-	if len(mcpServers) > 0 {
-		// Status gauge over the write-once server slice (#338).
-		if _, err := mcp.RegisterMetrics(otel.GetMeterProvider(), mcpServers); err != nil {
-			fmt.Fprintf(os.Stderr, "core-agent: metrics: register mcp observer: %v\n", err)
-			return runner.ExitConfigError
-		}
-	}
+	// Status-gauge registration is deferred until after rooted subagents
+	// stand up their own servers (below): mcp.RegisterMetrics creates a
+	// same-named ObservableGauge each call, so it must run ONCE over the
+	// combined parent + subagent-root slice (#338).
 	loadedSkills, skillsErr := skills.LoadAll(ctx, agentsDir, coreHome, gate,
 		skills.WithHomeAgentsSkillsDir(homeAgentsDir),
 		skills.WithContentRoots(contentRoots),
@@ -1156,14 +1160,36 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		}
 		mcpNamed = append(mcpNamed, namedToolset{name: s.Name, toolset: s.Toolset()})
 	}
-	declaredSubagents, err := buildDeclaredSubagents(ctx, cfg, provider, projectRoot, parentSurface{
+	declaredSubagents, subagentServers, err := buildDeclaredSubagents(ctx, cfg, provider, projectRoot, parentSurface{
 		builtinTools: builtinTools,
 		mcpToolsets:  mcpNamed,
 		skills:       loadedSkills,
-	}, envResolver.InterpolateFunc(), send)
+	}, subagentDeps{
+		gate:       gate,
+		elicitor:   mcpElicitor,
+		digestOpts: digestOpts,
+		interp:     envResolver.InterpolateFunc(),
+		send:       send,
+		rootBase:   contentRootBase,
+	})
+	// Terminate any stdio children the rooted subagents' servers own on the
+	// way out — set before the error check so a partial failure still cleans
+	// up whatever started (buildDeclaredSubagents returns them on error too).
+	defer mcp.CloseAll(subagentServers)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: subagents: %v\n", err)
 		return runner.ExitConfigError
+	}
+
+	// One status-gauge registration over every MCP server this process owns
+	// — parent plus rooted-subagent servers. RegisterMetrics registers a
+	// same-named ObservableGauge per call, so registering the combined slice
+	// exactly once avoids duplicate-instrument errors (#338).
+	if allServers := append(append([]*mcp.Server{}, mcpServers...), subagentServers...); len(allServers) > 0 {
+		if _, err := mcp.RegisterMetrics(otel.GetMeterProvider(), allServers); err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: metrics: register mcp observer: %v\n", err)
+			return runner.ExitConfigError
+		}
 	}
 
 	opts := []agent.Option{

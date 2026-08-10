@@ -65,6 +65,13 @@ func identityInterp(s string) string { return s }
 // emits — tests assert on returned agents, not on narration.
 func discard(string) {}
 
+// testDeps is the minimal subagentDeps for inline-path tests: identity
+// interpolator, discarded narration, no gate/elicitor/root (the rooted path
+// supplies those in its own tests).
+func testDeps() subagentDeps {
+	return subagentDeps{interp: identityInterp, send: discard}
+}
+
 // writeScript drops a one-turn JSONL transcript so the scripted provider
 // resolves without a real recording. resolveSubagentModel only needs the
 // provider to build; it never plays the turn back.
@@ -97,9 +104,9 @@ func TestBuildDeclaredSubagents_OwnModelAndIdentity(t *testing.T) {
 		}},
 	}
 
-	subs, err := buildDeclaredSubagents(
+	subs, _, err := buildDeclaredSubagents(
 		context.Background(), cfg, mock.NewEcho(), t.TempDir(),
-		parentSurface{}, identityInterp, discard,
+		parentSurface{}, testDeps(),
 	)
 	if err != nil {
 		t.Fatalf("buildDeclaredSubagents: %v", err)
@@ -132,9 +139,9 @@ func TestBuildDeclaredSubagents_InheritsParentModel(t *testing.T) {
 			Description: "inherits the parent model",
 		}},
 	}
-	subs, err := buildDeclaredSubagents(
+	subs, _, err := buildDeclaredSubagents(
 		context.Background(), cfg, mock.NewEcho(), t.TempDir(),
-		parentSurface{}, identityInterp, discard,
+		parentSurface{}, testDeps(),
 	)
 	if err != nil {
 		t.Fatalf("buildDeclaredSubagents: %v", err)
@@ -152,9 +159,9 @@ func TestBuildDeclaredSubagents_InheritsParentModel(t *testing.T) {
 func TestBuildDeclaredSubagents_NoneDeclared(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{Model: config.ModelConfig{Provider: mock.ProviderEcho, Name: "echo"}}
-	subs, err := buildDeclaredSubagents(
+	subs, _, err := buildDeclaredSubagents(
 		context.Background(), cfg, mock.NewEcho(), t.TempDir(),
-		parentSurface{}, identityInterp, discard,
+		parentSurface{}, testDeps(),
 	)
 	if err != nil {
 		t.Fatalf("buildDeclaredSubagents: %v", err)
@@ -178,9 +185,9 @@ func TestBuildDeclaredSubagents_RegisteredAsParentTool(t *testing.T) {
 			Description: "read-only cluster investigator",
 		}},
 	}
-	subs, err := buildDeclaredSubagents(
+	subs, _, err := buildDeclaredSubagents(
 		context.Background(), cfg, mock.NewEcho(), t.TempDir(),
-		parentSurface{}, identityInterp, discard,
+		parentSurface{}, testDeps(),
 	)
 	if err != nil {
 		t.Fatalf("buildDeclaredSubagents: %v", err)
@@ -407,9 +414,9 @@ func TestBuildDeclaredSubagents_ScopedToolsSurface(t *testing.T) {
 	surface := parentSurface{
 		builtinTools: []adktool.Tool{fakeTool{"read_file"}, fakeTool{"bash"}},
 	}
-	subs, err := buildDeclaredSubagents(
+	subs, _, err := buildDeclaredSubagents(
 		context.Background(), cfg, mock.NewEcho(), t.TempDir(),
-		surface, identityInterp, discard,
+		surface, testDeps(),
 	)
 	if err != nil {
 		t.Fatalf("buildDeclaredSubagents: %v", err)
@@ -423,5 +430,193 @@ func TestBuildDeclaredSubagents_ScopedToolsSurface(t *testing.T) {
 	}
 	if len(names) != 1 || names[0] != "read_file" {
 		t.Errorf("scoped subagent tools = %v, want [read_file] (bash excluded)", names)
+	}
+}
+
+// --- v2: per-subagent content root (spec.Root) ---
+
+// writeRootAGENTS drops <dir>/AGENTS.md so a subagent root has a persona to
+// auto-assemble from.
+func writeRootAGENTS(t *testing.T, dir, body string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write AGENTS.md: %v", err)
+	}
+}
+
+// TestRootedSubagentInstruction_AutoAssemble: with no inline Instructions, a
+// rooted subagent's persona is assembled from the root's own AGENTS.md.
+func TestRootedSubagentInstruction_AutoAssemble(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeRootAGENTS(t, root, "You are the cluster specialist.\n")
+
+	got, err := rootedSubagentInstruction(config.SubagentSpec{Name: "cluster", Root: root}, root, identityInterp)
+	if err != nil {
+		t.Fatalf("rootedSubagentInstruction: %v", err)
+	}
+	if !strings.Contains(got, "You are the cluster specialist.") {
+		t.Errorf("auto-assembled persona = %q, want it to include the root's AGENTS.md body", got)
+	}
+}
+
+// TestRootedSubagentInstruction_InlineOverrides: an inline Instructions field
+// takes precedence over the root's AGENTS.md (the root still supplies skills +
+// mcp, but the persona is operator-authored inline).
+func TestRootedSubagentInstruction_InlineOverrides(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeRootAGENTS(t, root, "AUTO-ASSEMBLED PERSONA — should not appear.\n")
+
+	got, err := rootedSubagentInstruction(
+		config.SubagentSpec{Name: "cluster", Root: root, Instructions: "INLINE PERSONA WINS."},
+		root, identityInterp,
+	)
+	if err != nil {
+		t.Fatalf("rootedSubagentInstruction: %v", err)
+	}
+	if got != "INLINE PERSONA WINS." {
+		t.Errorf("persona = %q, want the inline override (not the root's AGENTS.md)", got)
+	}
+	if strings.Contains(got, "AUTO-ASSEMBLED") {
+		t.Error("inline Instructions must override the root's AGENTS.md, not concatenate with it")
+	}
+}
+
+// TestLoadSubagentRoot_OwnSkills: a rooted subagent loads its OWN skills/ tree
+// — independent of the parent surface. The returned surface carries the root's
+// skills (both of them) and no MCP servers (the root has no mcp.json).
+func TestLoadSubagentRoot_OwnSkills(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeSkill(t, root, "rootalpha")
+	writeSkill(t, root, "rootbeta")
+
+	deps := subagentDeps{interp: identityInterp, send: discard, rootBase: t.TempDir()}
+	rootAbs, surface, servers, err := loadSubagentRoot(
+		context.Background(), config.SubagentSpec{Name: "cluster", Root: root}, deps,
+	)
+	if err != nil {
+		t.Fatalf("loadSubagentRoot: %v", err)
+	}
+	if rootAbs != filepath.Clean(root) {
+		t.Errorf("rootAbs = %q, want %q (absolute root passes through)", rootAbs, filepath.Clean(root))
+	}
+	if len(servers) != 0 {
+		t.Errorf("got %d MCP servers, want 0 (root has no mcp.json)", len(servers))
+	}
+	if surface.skills.Empty() {
+		t.Fatal("root's skills surface should be non-empty")
+	}
+	// nil Skills → the subagent inherits ALL of the root's skills (one toolset).
+	out, desc, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{Root: root}, surface)
+	if err != nil {
+		t.Fatalf("resolveSubagentToolsets (nil skills): %v", err)
+	}
+	if len(out) != 1 || !strings.Contains(desc, "skills=inherit") {
+		t.Errorf("nil Skills over root surface = %d toolsets (desc %q), want 1 (all root skills)", len(out), desc)
+	}
+	// A list scopes WITHIN the root.
+	if _, _, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{Root: root, Skills: []string{"rootalpha"}}, surface); err != nil {
+		t.Fatalf("scoped skills within root: %v", err)
+	}
+	// A name that isn't in the root fails loud — proving the scope is the
+	// root's own tree, not the parent's.
+	if _, _, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{Root: root, Skills: []string{"parentonly"}}, surface); err == nil {
+		t.Error("a skill absent from the root should error (root scope, not parent scope)")
+	}
+}
+
+// TestLoadSubagentRoot_RelativeResolvesAgainstBase: a relative spec.Root joins
+// deps.rootBase, mirroring content_roots resolution.
+func TestLoadSubagentRoot_RelativeResolvesAgainstBase(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	child := filepath.Join(base, "cluster")
+	writeRootAGENTS(t, child, "child persona\n")
+
+	deps := subagentDeps{interp: identityInterp, send: discard, rootBase: base}
+	rootAbs, _, _, err := loadSubagentRoot(
+		context.Background(), config.SubagentSpec{Name: "cluster", Root: "cluster"}, deps,
+	)
+	if err != nil {
+		t.Fatalf("loadSubagentRoot: %v", err)
+	}
+	if rootAbs != child {
+		t.Errorf("relative root resolved to %q, want %q (joined against rootBase)", rootAbs, child)
+	}
+}
+
+// TestLoadSubagentRoot_MissingRootErrors: an operator-declared root that does
+// not exist is a loud error, not a silently-empty scope.
+func TestLoadSubagentRoot_MissingRootErrors(t *testing.T) {
+	t.Parallel()
+	deps := subagentDeps{interp: identityInterp, send: discard, rootBase: t.TempDir()}
+	if _, _, _, err := loadSubagentRoot(
+		context.Background(),
+		config.SubagentSpec{Name: "cluster", Root: filepath.Join(t.TempDir(), "does-not-exist")},
+		deps,
+	); err == nil {
+		t.Error("a missing root should error (declared trust, so a typo must surface)")
+	}
+}
+
+// TestBuildDeclaredSubagents_RootedEndToEnd wires a rooted subagent through the
+// full builder: its persona comes from the root's AGENTS.md, its tools are the
+// named built-in subset (built-ins always resolve against the parent binary),
+// and no MCP servers are returned (the root has none).
+func TestBuildDeclaredSubagents_RootedEndToEnd(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeRootAGENTS(t, root, "rooted cluster persona\n")
+	writeSkill(t, root, "clusterskill")
+
+	cfg := &config.Config{
+		Model: config.ModelConfig{Provider: mock.ProviderEcho, Name: "echo"},
+		Subagents: []config.SubagentSpec{{
+			Name:  "cluster",
+			Root:  root,
+			Tools: []string{"read_file"},
+		}},
+	}
+	// Parent surface deliberately carries DIFFERENT built-ins so the tools
+	// filter is observable; the subagent must not pick up parent skills/mcp
+	// (it has a root), which this test confirms via the returned server slice
+	// and the scoped tool list.
+	surface := parentSurface{builtinTools: []adktool.Tool{fakeTool{"read_file"}, fakeTool{"bash"}}}
+
+	subs, servers, err := buildDeclaredSubagents(
+		context.Background(), cfg, mock.NewEcho(), t.TempDir(),
+		surface, subagentDeps{interp: identityInterp, send: discard, rootBase: t.TempDir()},
+	)
+	if err != nil {
+		t.Fatalf("buildDeclaredSubagents: %v", err)
+	}
+	if len(subs) != 1 {
+		t.Fatalf("expected 1 subagent, got %d", len(subs))
+	}
+	if len(servers) != 0 {
+		t.Errorf("rooted subagent with no mcp.json should return 0 servers, got %d", len(servers))
+	}
+	var names []string
+	for _, tl := range subs[0].Tools() {
+		names = append(names, tl.Name())
+	}
+	// read_file (scoped built-in) + list_skills/load_skill from the root's
+	// own skill toolset. Assert the built-in subset is exactly [read_file].
+	var hasReadFile, hasBash bool
+	for _, n := range names {
+		switch n {
+		case "read_file":
+			hasReadFile = true
+		case "bash":
+			hasBash = true
+		}
+	}
+	if !hasReadFile || hasBash {
+		t.Errorf("rooted subagent built-ins = %v, want read_file present and bash excluded", names)
 	}
 }

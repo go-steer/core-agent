@@ -121,6 +121,35 @@ func TestValidate_Subagents(t *testing.T) {
 			specs:   []SubagentSpec{{Name: "cluster", Tools: []string{""}}},
 			wantErr: true,
 		},
+		{
+			// root existence is a wiring-time check (needs the resolution
+			// base), so a plain relative path is structurally valid here.
+			name:    "relative root is valid",
+			specs:   []SubagentSpec{{Name: "cluster", Root: "../cluster"}},
+			wantErr: false,
+		},
+		{
+			name:    "absolute root is valid",
+			specs:   []SubagentSpec{{Name: "cluster", Root: "/recipes/cluster"}},
+			wantErr: false,
+		},
+		{
+			// a root combined with inline refs (which then filter WITHIN
+			// the root) and an inline persona override is legal.
+			name: "root with inline refs and instructions",
+			specs: []SubagentSpec{{
+				Name:         "cluster",
+				Root:         "../cluster",
+				Instructions: "You are a read-only cluster specialist.",
+				Skills:       []string{"gke-cluster-lifecycle"},
+			}},
+			wantErr: false,
+		},
+		{
+			name:    "whitespace-only root",
+			specs:   []SubagentSpec{{Name: "cluster", Root: "   "}},
+			wantErr: true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -154,6 +183,7 @@ func TestSubagents_JSONRoundTrip(t *testing.T) {
 			Tools:        []string{"read_file"},
 			MCP:          []string{"gke-readonly"},
 			Skills:       []string{"gke-cluster-lifecycle"},
+			Root:         "../cluster",
 		},
 	}
 	in := DefaultConfig()

@@ -17,6 +17,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	adkmodel "google.golang.org/adk/model"
@@ -25,7 +27,9 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/instruction"
+	"github.com/go-steer/core-agent/v2/pkg/mcp"
 	"github.com/go-steer/core-agent/v2/pkg/models"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
 	"github.com/go-steer/core-agent/v2/pkg/skills"
 )
 
@@ -58,6 +62,28 @@ type parentSurface struct {
 	skills skills.Skills
 }
 
+// subagentDeps bundles the process-scoped collaborators buildDeclaredSubagents
+// needs beyond the parent surface — chiefly to stand up a rooted subagent's
+// OWN mcp.json + skills/ + persona from a dedicated content root. They are the
+// same instances the parent used (one permission gate, one elicitor, one digest
+// config), so a rooted subagent's servers and skills are gated and digested
+// identically; it gains its own scope, never its own privileges.
+type subagentDeps struct {
+	// gate is the shared permission gate every subagent's tools run behind.
+	gate *permissions.Gate
+	// elicitor + digestOpts are handed to mcp.Build for a rooted subagent's
+	// own servers, matching the parent's MCP behavior exactly.
+	elicitor   mcp.ElicitorFn
+	digestOpts *mcp.DigestOptions
+	// interp substitutes ${env:VAR} in loaded instruction + skill bodies.
+	interp func(string) string
+	// send emits a startup line per subagent (and per rooted-MCP hiccup).
+	send func(string)
+	// rootBase resolves a relative spec.Root, mirroring content_roots: the
+	// agents dir when the config was discovered under one, else the cwd.
+	rootBase string
+}
+
 // buildDeclaredSubagents turns the config's declarative subagents[] block
 // into fully-constructed *agent.Agent values, ready to hand to the parent
 // via agent.WithSubagents. It is the one piece of glue that makes
@@ -67,19 +93,29 @@ type parentSurface struct {
 // Each subagent gets:
 //   - its own name / description (shown to the parent's model),
 //   - its own instruction — inline or an @include chain expanded through
-//     pkg/instruction, scope-confined to projectRoot exactly like the
-//     parent's memory,
+//     pkg/instruction, or (with a root) auto-assembled from the root's own
+//     AGENTS.md,
 //   - its own model (its ModelConfig, or the parent's when unset),
 //   - a recursion depth cap (spec.MaxDepth, honored via
 //     WithSubagentMaxDepth; 0 = substrate default), and
-//   - a tool surface: built-ins (spec.Tools), MCP servers (spec.MCP), and
-//     skills (spec.Skills) — each dimension inherited whole when the field
-//     is nil, name-scoped when it's a non-empty list, or granted none when
-//     it's an explicit empty list. Inline refs resolve by name against the
-//     shared parent surface; an inherited tool instance already carries
-//     the parent's permission gate, so a subagent cannot escalate.
+//   - a tool surface drawn from one of two sources. Inline (spec.Root
+//     unset) resolves MCP + skills by name against the SHARED parent
+//     surface — each dimension inherited whole when the field is nil,
+//     name-scoped when a non-empty list, or none when an explicit empty
+//     list. Rooted (spec.Root set) loads the subagent's OWN mcp.json and
+//     skills/ from a dedicated content root, then applies that same
+//     nil/list/empty contract WITHIN the root. Built-in tools (spec.Tools)
+//     always resolve against the parent registry — built-ins live in the
+//     binary, not a directory. Every tool instance carries the shared
+//     permission gate, so a subagent cannot escalate.
 //
-// Returns (nil, nil) when no subagents are declared — the caller then
+// Returns the subagents plus the MCP servers stood up for rooted subagents
+// (empty for the all-inline case). The caller owns their lifecycle: close
+// them on shutdown and fold them into the one RegisterMetrics call. On
+// error the already-started servers are still returned so the caller can
+// close them.
+//
+// Returns (nil, nil, nil) when no subagents are declared — the caller then
 // skips agent.WithSubagents entirely.
 func buildDeclaredSubagents(
 	ctx context.Context,
@@ -87,61 +123,166 @@ func buildDeclaredSubagents(
 	parentProvider models.Provider,
 	projectRoot string,
 	surface parentSurface,
-	interp func(string) string,
-	send func(string),
-) ([]*agent.Agent, error) {
+	deps subagentDeps,
+) ([]*agent.Agent, []*mcp.Server, error) {
 	if len(cfg.Subagents) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	subs := make([]*agent.Agent, 0, len(cfg.Subagents))
+	var rootedServers []*mcp.Server
 	for i, spec := range cfg.Subagents {
 		llm, err := resolveSubagentModel(ctx, cfg, parentProvider, spec)
 		if err != nil {
-			return nil, fmt.Errorf("subagents[%d] %q: model: %w", i, spec.Name, err)
+			return nil, rootedServers, fmt.Errorf("subagents[%d] %q: model: %w", i, spec.Name, err)
 		}
 
+		// Built-ins always resolve against the parent registry — they ship
+		// in the binary, not in any content root.
 		subTools, err := resolveSubagentTools(spec, surface.builtinTools)
 		if err != nil {
-			return nil, fmt.Errorf("subagents[%d] %q: tools: %w", i, spec.Name, err)
-		}
-		subToolsets, scopeDesc, err := resolveSubagentToolsets(ctx, spec, surface)
-		if err != nil {
-			return nil, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
+			return nil, rootedServers, fmt.Errorf("subagents[%d] %q: tools: %w", i, spec.Name, err)
 		}
 
-		opts := []agent.Option{
-			agent.WithName(spec.Name),
-			agent.WithDescription(spec.Description),
-			// A declarative subagent is invoked as a tool with no human
-			// reading its output in real time — run it headless, like
-			// the other in-tree spawn paths.
-			agent.WithMode(agent.ModeAutonomous),
-			agent.WithTools(subTools),
-			agent.WithToolsets(subToolsets),
-		}
-
-		if spec.Instructions != "" {
-			expanded, _, err := instruction.Expand(spec.Instructions, projectRoot, projectRoot, instruction.WithInterpolator(interp))
+		var (
+			subToolsets     []adktool.Toolset
+			userInstruction string
+			scopeDesc       string
+		)
+		if spec.Root != "" {
+			rootAbs, rootSurface, servers, err := loadSubagentRoot(ctx, spec, deps)
+			// servers may be non-nil even on a later error (skills load fails
+			// after mcp.Build succeeded) — collect them for shutdown either way.
+			rootedServers = append(rootedServers, servers...)
 			if err != nil {
-				return nil, fmt.Errorf("subagents[%d] %q: instructions: %w", i, spec.Name, err)
+				return nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
 			}
-			// Layer 4 (user memory), same slot the parent's AGENTS.md
-			// lands in — the harness contract (layers 1–3) stays intact
-			// beneath the subagent's persona.
-			opts = append(opts, agent.WithUserInstruction(expanded))
-		}
-		if spec.MaxDepth > 0 {
-			opts = append(opts, agent.WithSubagentMaxDepth(spec.MaxDepth))
+			subToolsets, scopeDesc, err = resolveSubagentToolsets(ctx, spec, rootSurface)
+			if err != nil {
+				return nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
+			}
+			userInstruction, err = rootedSubagentInstruction(spec, rootAbs, deps.interp)
+			if err != nil {
+				return nil, rootedServers, fmt.Errorf("subagents[%d] %q: instructions: %w", i, spec.Name, err)
+			}
+			scopeDesc = fmt.Sprintf("root=%s, %s", rootAbs, scopeDesc)
+		} else {
+			subToolsets, scopeDesc, err = resolveSubagentToolsets(ctx, spec, surface)
+			if err != nil {
+				return nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
+			}
+			if spec.Instructions != "" {
+				// Inline refs share the project scope: @include resolves
+				// against projectRoot exactly like the parent's memory.
+				userInstruction, _, err = instruction.Expand(spec.Instructions, projectRoot, projectRoot, instruction.WithInterpolator(deps.interp))
+				if err != nil {
+					return nil, rootedServers, fmt.Errorf("subagents[%d] %q: instructions: %w", i, spec.Name, err)
+				}
+			}
 		}
 
-		sub, err := agent.New(llm, opts...)
+		sub, err := assembleSubagent(spec, llm, userInstruction, subTools, subToolsets)
 		if err != nil {
-			return nil, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
+			return nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
 		}
 		subs = append(subs, sub)
-		send(fmt.Sprintf("subagent %q: model=%s, %s", spec.Name, llm.Name(), scopeDesc))
+		deps.send(fmt.Sprintf("subagent %q: model=%s, %s", spec.Name, llm.Name(), scopeDesc))
 	}
-	return subs, nil
+	return subs, rootedServers, nil
+}
+
+// assembleSubagent builds the *agent.Agent from a resolved model, persona,
+// and tool surface — the common tail shared by the inline and rooted paths.
+func assembleSubagent(spec config.SubagentSpec, llm adkmodel.LLM, userInstruction string, subTools []adktool.Tool, subToolsets []adktool.Toolset) (*agent.Agent, error) {
+	opts := []agent.Option{
+		agent.WithName(spec.Name),
+		agent.WithDescription(spec.Description),
+		// A declarative subagent is invoked as a tool with no human
+		// reading its output in real time — run it headless, like
+		// the other in-tree spawn paths.
+		agent.WithMode(agent.ModeAutonomous),
+		agent.WithTools(subTools),
+		agent.WithToolsets(subToolsets),
+	}
+	if userInstruction != "" {
+		// Layer 4 (user memory), same slot the parent's AGENTS.md lands in
+		// — the harness contract (layers 1–3) stays intact beneath the
+		// subagent's persona.
+		opts = append(opts, agent.WithUserInstruction(userInstruction))
+	}
+	if spec.MaxDepth > 0 {
+		opts = append(opts, agent.WithSubagentMaxDepth(spec.MaxDepth))
+	}
+	return agent.New(llm, opts...)
+}
+
+// loadSubagentRoot stands up a rooted subagent's OWN scope from a dedicated
+// content root: its mcp.json servers and skills/ tree, returned as a
+// parentSurface the shared resolveSubagentToolsets can scope exactly as it
+// scopes the inline path — the only difference is the surface is the root's,
+// not the parent's. A relative spec.Root resolves against deps.rootBase
+// (mirroring content_roots); an absolute path passes through. A missing or
+// non-directory root is a loud error: the operator declared it, so a typo
+// must surface rather than silently yield an empty scope.
+//
+// The MCP servers are returned (even when a later step errors) so the caller
+// can terminate their stdio children on shutdown. mcp.Build errors are
+// non-fatal, matching the parent: a down server surfaces as StatusError with
+// a nil toolset and is skipped by name selection.
+func loadSubagentRoot(ctx context.Context, spec config.SubagentSpec, deps subagentDeps) (string, parentSurface, []*mcp.Server, error) {
+	rootAbs := spec.Root
+	if !filepath.IsAbs(rootAbs) {
+		rootAbs = filepath.Join(deps.rootBase, rootAbs)
+	}
+	rootAbs = filepath.Clean(rootAbs)
+	info, err := os.Stat(rootAbs)
+	if err != nil {
+		return "", parentSurface{}, nil, fmt.Errorf("root: %w", err)
+	}
+	if !info.IsDir() {
+		return "", parentSurface{}, nil, fmt.Errorf("root %q is not a directory", rootAbs)
+	}
+
+	// Own MCP servers from <root>/mcp.json (no home-agents overlay — the
+	// root is self-contained, which is the point of an independent scope).
+	servers, _, mcpErr := mcp.Build(ctx, rootAbs, "", deps.send, deps.gate, deps.elicitor, deps.digestOpts)
+	if mcpErr != nil {
+		deps.send(fmt.Sprintf("subagent %q: mcp: %v", spec.Name, mcpErr))
+	}
+	named := make([]namedToolset, 0, len(servers))
+	for _, s := range servers {
+		if s == nil {
+			continue
+		}
+		named = append(named, namedToolset{name: s.Name, toolset: s.Toolset()})
+	}
+
+	// Own skills from <root>/skills/ (again no home/user overlay).
+	rootSkills, err := skills.LoadAll(ctx, rootAbs, "", deps.gate, skills.WithInterpolator(deps.interp))
+	if err != nil {
+		return "", parentSurface{}, servers, fmt.Errorf("skills: %w", err)
+	}
+
+	// builtinTools intentionally nil: resolveSubagentTools already resolved
+	// built-ins against the parent registry; resolveSubagentToolsets reads
+	// only mcpToolsets + skills from the surface.
+	return rootAbs, parentSurface{mcpToolsets: named, skills: rootSkills}, servers, nil
+}
+
+// rootedSubagentInstruction resolves a rooted subagent's persona. An inline
+// spec.Instructions overrides the root's memory files (with @include confined
+// to the root); otherwise the persona auto-assembles from the root's own
+// AGENTS.md + AGENTS.d/, loaded as a self-contained content root so an
+// @include cannot escape it.
+func rootedSubagentInstruction(spec config.SubagentSpec, rootAbs string, interp func(string) string) (string, error) {
+	if spec.Instructions != "" {
+		expanded, _, err := instruction.Expand(spec.Instructions, rootAbs, rootAbs, instruction.WithInterpolator(interp))
+		return expanded, err
+	}
+	loaded, err := instruction.Load("", "", instruction.WithContentRoots([]string{rootAbs}), instruction.WithInterpolator(interp))
+	if err != nil {
+		return "", err
+	}
+	return loaded.Instruction, nil
 }
 
 // resolveSubagentTools returns the built-in tool subset a subagent runs

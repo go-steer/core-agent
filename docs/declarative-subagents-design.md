@@ -1,6 +1,6 @@
 # Declarative subagents
 
-**Status:** accepted; implementing (2026-08-07). Target: **v2.9**. Tracking issue: [#599](https://github.com/go-steer/core-agent/issues/599). Supersedes the singular `subagent` config sketch in `docs/subagents-plan.md` (2026-05-15, itself superseded); complements the runtime-dynamic path in `docs/background-subagents-design.md`.
+**Status:** v1 (inline refs) SHIPPED (Phases 1–3, #602/#603/#605); v2 increment — per-subagent content root (`root`) — IMPLEMENTED 2026-08-10 (Phase 4 / PR G). Target: **v2.9**. Tracking issue: [#599](https://github.com/go-steer/core-agent/issues/599). Supersedes the singular `subagent` config sketch in `docs/subagents-plan.md` (2026-05-15, itself superseded); complements the runtime-dynamic path in `docs/background-subagents-design.md`.
 
 ## Motivation
 
@@ -90,10 +90,15 @@ type SubagentSpec struct {
 	Model        *ModelConfig `json:"model,omitempty"`        // nil = inherit parent
 	MaxDepth     int          `json:"max_depth,omitempty"`    // 0 = NewSubagentTool default (2)
 	Tools        []string     `json:"tools,omitempty"`        // built-in allowlist; unset = inherit
-	MCP          []string     `json:"mcp,omitempty"`          // server names from the shared mcp.json
-	Skills       []string     `json:"skills,omitempty"`       // skill names from the shared skills/
+	MCP          []string     `json:"mcp,omitempty"`          // server names (shared mcp.json, or the root's when Root is set)
+	Skills       []string     `json:"skills,omitempty"`       // skill names (shared skills/, or the root's when Root is set)
+	Root         string       `json:"root,omitempty"`         // v2 increment: a trusted dir the subagent loads as its OWN scope (see below)
 }
 ```
+
+The shipped v1 (Phases 1–3) is inline refs against the shared config; the
+`Root` field is the v2 increment specified in "Per-subagent content root
+(`root`)" below.
 
 The tool surface is **inline-referenced against the shared config** (open
 question 1, resolved → inline refs; see below), not a per-subagent directory:
@@ -261,6 +266,138 @@ The subagent selects its narrower surface inline, by name, from the shared confi
 A subagent that declares none of `tools`/`mcp`/`skills` inherits the parent's
 full surface; an explicit `"mcp": []` grants none of that dimension.
 
+## Per-subagent content root (`root`) — v2 increment
+
+**Status:** IMPLEMENTED (2026-08-10, Phase 4 / PR G). Target: **v2.9**. Adds one
+field; the v1 inline-ref surface above is unchanged and remains the default for
+the shared-namespace case.
+
+### Why revisit OQ1 now
+
+OQ1 rejected a per-subagent scope directory on a single constraint:
+kube-platform-agent deployed as one Kubernetes **ConfigMap**, so a flat
+single-tree recipe (one `config.json` + `mcp.json` + `skills/`) beat a nested
+`subagents/<name>/` tree. **PR F ([#613](https://github.com/go-steer/core-agent/pull/613),
+`ca47ad4`) removed that constraint.** Content now ships as an **OCI image
+volume** (`docs/agent-content-distribution-design.md`): the whole recipe
+directory is materialized read-only at a mount path, with no 1MiB ConfigMap
+ceiling and nested subdirectories as first-class citizens. A multi-tree
+layout — `agents/platform/` and `agents/cluster/` as siblings under one mounted
+image — is now the natural shape, not an anti-pattern. The premise OQ1 optimized
+for no longer holds.
+
+### The gap inline refs cannot close
+
+Inline refs scope a *subset of the parent's* loaded surface. Two things they
+cannot express:
+
+1. **A skill/server the parent must not have.** `skills`/`mcp` filter the
+   parent's `loadedSkills` / already-started servers, so a subagent cannot hold
+   a skill the parent doesn't also load.
+2. **Instruction/skill coupling in a content root**
+   (`external-content-root-design.md:237-247`, "Finding"). To grant the
+   read-only `cluster` subagent its `gke-reliability`/`gke-storage` skills via a
+   content root, the **fleet** parent would have to load `agents/cluster` — which
+   also folds `cluster/AGENTS.md` ("one cluster only; never reason about the
+   fleet") into the fleet parent's own prompt, contradicting its mandate. The
+   cluster subagent first shipped `skills: []`; [#617](https://github.com/go-steer/core-agent/pull/617)
+   then patched the gap by **vendoring** the 6 cluster skills into the parent's
+   `.agents/skills/` (parent now 24 skills) and inline-scoping them onto the
+   subagent. That works, but at the cost `root` is meant to remove: the fleet
+   parent's namespace now carries 6 cluster-only skills it should never reason
+   with, and they are vendored copies that drift from the upstream cluster tree.
+   The workaround succeeded only because skills could be split from
+   `cluster/AGENTS.md` — proving the coupling is the real defect. This is the
+   concrete consumer that reopens OQ1.
+
+### Design — a subagent is a content root plus inline runtime knobs
+
+Add one field, `Root string` (`json:"root"`). The clean split falls out of what
+actually belongs where:
+
+- **Runtime knobs stay inline** — `model`, `max_depth`, and the `tools`
+  built-in allowlist. These are *process* concerns (provider resolution, the
+  parent's gate, binary-resident tools); they cannot live in a directory.
+- **Content comes from the root** — `AGENTS.md` (persona), `skills/`, and
+  `mcp.json`. Private to the subagent; the parent loads none of it.
+
+When `root` is set (a subagent = one recipe subdirectory):
+
+- **Instructions:** auto-assemble `<root>/AGENTS.md`, with `@include` confined to
+  `root` as its own `scopeRoot` — exactly the trusted-scope walk a parent content
+  root uses (`external-content-root-design.md` conceptual model, `loadScope` with
+  the root as its own scope). Inline `instructions` still **overrides** when
+  present (an escape hatch for personas split across files, as upstream's
+  `SOUL.md`/`CAPABILITIES.md` are).
+- **Skills:** a dedicated `skills.LoadAll(ctx, root, "", gate, …)` builds the
+  subagent's **own** bundle, independent of the parent's. Inline `skills`, when
+  set, name-filter *within it* via the shipped `skills.Scoped`; nil = all skills
+  in the root.
+- **MCP:** a dedicated `mcp.Build(ctx, root, "", …)` starts the root's own
+  `mcp.json` servers. Inline `mcp`, when set, filter by name *within it*; nil =
+  all servers in the root. **This is the one real lifecycle cost:** a second
+  `mcp.Build` per root returns its own `[]*mcp.Server`, so `buildDeclaredSubagents`
+  must thread those back to the caller's single `mcp.CloseAll` +
+  `RegisterMetrics` path (`main.go:904-907`) rather than leaking them. (This is
+  the "per-subagent MCP lifecycle wiring" OQ1 flagged as the cost of a scope dir
+  — accepted now that a consumer needs it.)
+- **Tools:** always inline; built-ins live in the binary, not a directory.
+
+When `root` is **unset**, behavior is exactly as shipped — inline refs against
+the parent's shared surface. The two styles compose per subagent: a
+shared-namespace triager needs no root; an isolated specialist declares one.
+Note the reinterpretation: with `root` set, inline `mcp`/`skills` filter the
+*root's* surface, not the parent's, and parent inheritance for those dimensions
+is off.
+
+### Trust and security
+
+`root` is **operator-declared trust**, the same model as `content_roots` and
+`--agents-content-dir` (`external-content-root-design.md`): the path lives in the
+operator-authored `config.json`, so naming it *is* the trust declaration. It is
+therefore **not** confined to `projectRoot` — the sibling-tree example below
+(`root: "../cluster"`) deliberately resolves outside the parent's own tree, which
+a `projectRoot` containment check would forbid. A relative `root` resolves
+against the same base `content_roots` use (the agents dir when the config was
+discovered under one, else the cwd); an absolute path passes through. A missing
+or non-directory `root` is a **loud error**, not a silent empty scope — an
+operator typo must surface (contrast the auto-discovered home-agents scope, which
+is silently skipped when absent).
+
+*Within* the root the confinement is unchanged from the parent's: `@include` is
+scope-confined to the root (its own `scopeRoot`, so a subagent's include cannot
+escape it), skills read from a directory FS (no `@include`-into-prompt exfil
+vector), and `mcp.json` is operator-authored exactly like the parent's. A rooted
+subagent stays bound by the same `permissions.Gate` + `require_plan_artifact` as
+the parent — an independent *content* surface is not an escalation of
+*privilege*, and in practice it is narrower and read-only.
+
+### Full example — sibling recipe trees under one mounted image
+
+```jsonc
+// agents/platform/.agents/config.json  (the fleet parent)
+{
+  "version": 1,
+  "model": { "provider": "vertex", "name": "gemini-3.5-flash" },
+  "subagents": [
+    {
+      "name": "cluster",
+      "description": "Read-only investigation of a single GKE cluster.",
+      "model": { "provider": "vertex", "name": "gemini-3.5-flash" },
+      "max_depth": 2,
+      "tools": ["read_file", "grep"],   // built-ins — inline
+      "root": "../cluster"              // own scope: AGENTS.md + skills/ + mcp.json
+      // no "skills"/"mcp" → all of the root's skills and servers;
+      // "skills": ["gke-storage"] would filter within the root.
+    }
+  ]
+}
+```
+
+`../cluster/AGENTS.md` ("one cluster only"), `../cluster/skills/gke-*`, and
+`../cluster/mcp.json`'s read-only server all load into the `cluster` subagent
+alone. The fleet parent's prompt, skills, and servers stay clean.
+
 ## Implementation phases
 
 - **Phase 1 (PR γ.1 of #599)** — SHIPPED — `SubagentSpec` + `Config.Subagents` +
@@ -279,15 +416,44 @@ full surface; an explicit `"mcp": []` grants none of that dimension.
   server (broken servers skipped, unknown errors), a named skill subset hides
   the rest (`filteredSource` → `ErrSkillNotFound`), and a no-scope subagent
   inherits the parent's full surface.
-- **PR B′** — the kube-platform-agent recipe adopts a `cluster` subagent
-  (persona `@include`d from a vendored `upstream/cluster/SOUL.md`, own model,
-  GKE-read-only MCP scope). Config-only, in-process.
+- **PR B′** — SHIPPED ([#606](https://github.com/go-steer/core-agent/pull/606))
+  — the kube-platform-agent recipe adopts a `cluster` subagent (persona
+  `@include`d from a vendored `upstream/cluster/SOUL.md`, own model,
+  read-only MCP scope). Config-only, in-process.
+- **Phase 4 / PR G — per-subagent `root`** (v2 increment) — SHIPPED — added
+  `SubagentSpec.Root` + structural validation (whitespace-only rejected;
+  existence is a wiring-time check, since it depends on the resolution base
+  `Validate` has no access to). `buildDeclaredSubagents` gained a rooted branch —
+  `loadSubagentRoot` resolves the root (relative → the `content_roots` base) and
+  stands up its own `mcp.Build(ctx, root, "", …)` + `skills.LoadAll(ctx, root,
+  "", …)`, and `rootedSubagentInstruction` auto-assembles `<root>/AGENTS.md`
+  (inline `instructions` overriding). The extra `[]*mcp.Server` is threaded back
+  through `buildDeclaredSubagents`' return so `main.go` closes them via a second
+  `defer mcp.CloseAll` and folds them into ONE `RegisterMetrics` call over the
+  combined parent + subagent-root slice (a same-named `ObservableGauge` per call
+  requires a single registration). The shared `resolveSubagentToolsets` scopes
+  the root's surface with the identical nil=all / list=scope / empty=none
+  contract. Tests: a rooted subagent loads its own skills the parent lacks (an
+  absent-from-root skill errors, proving the scope is the root's, not the
+  parent's); `<root>/AGENTS.md` auto-assembles and inline `instructions`
+  overrides it; a relative root resolves against the base; a missing root is
+  rejected; the built-in subset is scoped from the parent binary; `-race`. The
+  kube-platform-agent `cluster` subagent migration to `root: "../cluster"`
+  (un-vendoring the 6 skills #617 copied into the parent tree) is deferred to a
+  follow-up recipe PR gated on live GKE UAT.
 
 Each PR carries `-race` tests and an adversarial-review section.
 
 ## Open questions
 
-### 1. Per-subagent tool surface: scope dir vs inline named refs — RESOLVED (inline refs)
+### 1. Per-subagent tool surface: scope dir vs inline named refs — RESOLVED (inline refs), REVISITED 2026-08-10 (add scope dir too)
+
+**Revisited 2026-08-10.** The scope-dir option this OQ deferred is now added as
+the `root` field — see "Per-subagent content root (`root`) — v2 increment". Inline
+refs remain the default for the shared-namespace case; `root` covers the
+isolation case OQ1's ConfigMap constraint had ruled out (that constraint was
+removed by the OCI-image-volume distribution model, PR F #613). The two coexist
+per subagent.
 
 Resolved 2026-08-07 in favor of **inline named refs** (`"mcp": ["gke-readonly"]`,
 `"skills": ["fleet-audit"]`, `"tools": ["read_file"]`). The decisive constraint is

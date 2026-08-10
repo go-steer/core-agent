@@ -529,20 +529,30 @@ type ToolsConfig struct {
 // it carries no runtime behavior.
 //
 // A subagent runs on its own Model (or the parent's, when Model is nil)
-// and its own Instructions (which support the @include directive). Its
-// tool surface is inline-referenced against the SHARED config, so the
-// whole recipe stays in one config.json + one mcp.json + one skills/ tree
-// (a single ConfigMap in a Kubernetes deploy):
+// and its own Instructions (which support the @include directive).
 //
-//   - MCP names the servers from .agents/mcp.json the subagent may use.
-//   - Skills names the skills from .agents/skills/ it may use.
-//   - Tools is an allowlist of built-in tool names.
+// There are two ways to give a subagent a tool surface:
 //
-// When none of Tools/MCP/Skills is set, the subagent inherits the parent's
-// full surface: an operator-authored declarative subagent is a trusted
-// delegate, and it is still bound by the same permission gate (and
-// require_plan_artifact) as the parent, so it cannot escalate. Set an
-// explicit empty list (e.g. "mcp": []) to grant none of that dimension.
+//   - Inline refs against the SHARED config (Root unset). MCP names servers
+//     from .agents/mcp.json, Skills names skills from .agents/skills/, Tools
+//     is a built-in allowlist. Each dimension inherits the parent's full
+//     surface when unset, selects a subset when a non-empty list, or grants
+//     none when an explicit empty list (e.g. "mcp": []). The whole recipe
+//     stays in one config.json + one mcp.json + one skills/ tree.
+//   - A dedicated content root (Root set). Root names a trusted directory
+//     the subagent loads as its OWN scope, independent of the parent: its
+//     persona auto-assembles from <root>/AGENTS.md (Instructions overrides),
+//     skills load from <root>/skills/, and MCP servers from <root>/mcp.json.
+//     The parent loads none of it — this is how a subagent gets a persona,
+//     skills, or servers the parent must NOT have (e.g. a read-only
+//     single-cluster specialist under a fleet parent). With Root set, MCP
+//     and Skills (when non-empty) filter WITHIN the root; Tools remains a
+//     built-in allowlist (built-ins live in the binary, not a directory).
+//     See docs/declarative-subagents-design.md, "Per-subagent content root".
+//
+// A declarative subagent is operator-authored and trusted, but still bound
+// by the same permission gate (and require_plan_artifact) as the parent, so
+// it cannot escalate.
 type SubagentSpec struct {
 	Name         string       `json:"name"`
 	Description  string       `json:"description,omitempty"`
@@ -552,6 +562,7 @@ type SubagentSpec struct {
 	Tools        []string     `json:"tools,omitempty"`
 	MCP          []string     `json:"mcp,omitempty"`
 	Skills       []string     `json:"skills,omitempty"`
+	Root         string       `json:"root,omitempty"`
 }
 
 // MockConfig configures the mock providers (echo, scripted) and the
@@ -1129,7 +1140,10 @@ func validAccessSpec(s string) bool {
 // provider, and inline tool/mcp/skills refs must be non-empty strings.
 // Whether a referenced MCP server or skill actually exists is resolved at
 // wiring time in cmd/core-agent (it depends on the loaded mcp.json /
-// skills dir), not here.
+// skills dir), not here. Likewise whether a `root` directory exists is a
+// wiring-time check (it depends on the resolution base, which Validate has
+// no access to) — here we only reject a whitespace-only path, which would
+// otherwise silently resolve to the base itself.
 func (c *Config) validateSubagents() error {
 	seen := make(map[string]struct{}, len(c.Subagents))
 	for i, sa := range c.Subagents {
@@ -1171,6 +1185,9 @@ func (c *Config) validateSubagents() error {
 			if n == "" {
 				return fmt.Errorf("config: subagents[%d].skills[%d] is empty", i, j)
 			}
+		}
+		if sa.Root != "" && strings.TrimSpace(sa.Root) == "" {
+			return fmt.Errorf("config: subagents[%d].root is whitespace-only (omit it, or name a real directory)", i)
 		}
 	}
 	return nil

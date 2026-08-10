@@ -374,7 +374,8 @@ A top-level `subagents` array declares a **fixed roster** of named delegates the
       "max_depth": 1,                     // recursion cap; 0 = substrate default
       "tools": ["read_file", "grep"],     // built-in allowlist
       "mcp": ["gke-readonly"],            // MCP servers by name (from mcp.json)
-      "skills": ["fleet-audit"]           // skills by name (from skills/)
+      "skills": ["fleet-audit"],          // skills by name (from skills/)
+      "root": "../cluster"                // optional: load own AGENTS.md + skills/ + mcp.json from a content root
     }
   ]
 }
@@ -391,6 +392,14 @@ A top-level `subagents` array declares a **fixed roster** of named delegates the
 | **empty list** (`[]`) | **Grant none** of that dimension |
 
 So `"mcp": ["gke-readonly"]` gives the subagent only that one server's toolset (not the parent's `gke`), `"mcp": []` gives it no MCP at all, and omitting `mcp` lets it see every server the parent has. Scoping never re-runs `mcp.Build` or re-walks `skills/` — a scoped subagent reuses the parent's already-started MCP toolsets and a name-filtered view of the parent's loaded skills, and every inherited tool still carries the parent's permission gate, so a subagent cannot escalate past what the operator granted the parent.
+
+**Independent content root — the `root` field.** Inline `tools`/`mcp`/`skills` can only *narrow* the parent's surface; they cannot give a subagent a persona, skill, or server the parent doesn't also load. When a delegate needs its **own** content — for least privilege (a skill the fleet parent must never reason with) or clean separation (sibling recipe trees under one image) — set `root` to a directory the subagent loads as its **own** scope:
+
+- **Instructions** auto-assemble from `<root>/AGENTS.md` (plus `<root>/AGENTS.d/`), with `@include` confined to the root. An inline `instructions` field still overrides.
+- **Skills** load from `<root>/skills/` via a dedicated walk — the subagent's own bundle, independent of the parent's.
+- **MCP servers** start from `<root>/mcp.json`, private to the subagent.
+
+With `root` set, the nil / list / empty contract for `mcp`/`skills` still applies but filters **within the root** (omit = all of the root's; a list scopes; `[]` grants none); `tools` remains a built-in allowlist resolved against the binary. A relative `root` resolves against the same base as [`content_roots`](#content_roots-v29) (the agents dir when the config was discovered under one, else the cwd); an absolute path passes through. `root` is operator-declared trust — it is **not** confined to the project root (the sibling-tree case needs `../cluster`) — but a missing or non-directory path is a **loud startup error**, and the subagent stays bound by the parent's permission gate: an independent *content* surface is never a *privilege* escalation.
 
 ### REPL keybindings (v1.3.0+)
 

@@ -106,6 +106,7 @@ const (
 	acSkippedLockErr                                   // AcquireLock failed for another reason
 	acSkippedNotInterrupted                            // tail re-classified clean under the lock
 	acSkippedStale                                     // interruption older than the freshness window
+	acSkippedOperatorInput                             // operator input already queued — it drives the next turn (#624)
 	acSkippedInjectErr                                 // inject itself failed
 )
 
@@ -116,9 +117,11 @@ func (o autoContinueOutcome) injected() bool { return o == acInjected }
 // refundable reports whether the write-ahead attempt charge should be
 // REFUNDED (narrowed out of the boot record) for this outcome. Only the
 // benign/contended skips qualify: a peer daemon holding the run lock
-// (the #575 fleet case — we made no attempt, another daemon will), or
-// the tail having gone clean or stale between the unlocked candidate
-// scan and the locked re-classification. Everything else stays charged:
+// (the #575 fleet case — we made no attempt, another daemon will), the
+// tail having gone clean or stale between the unlocked candidate scan
+// and the locked re-classification, or an operator having queued input
+// that will drive the next turn itself (#624 — no note was injected).
+// Everything else stays charged:
 // a queued note is a real attempt, and a failed resume/inject or an
 // unexpected lock error must stay counted because a PERSISTENT such
 // failure is a crash-loop vector that only the per-session cap can
@@ -127,7 +130,7 @@ func (o autoContinueOutcome) injected() bool { return o == acInjected }
 // conservative, which is the safe direction.
 func (o autoContinueOutcome) refundable() bool {
 	switch o {
-	case acSkippedLocked, acSkippedNotInterrupted, acSkippedStale:
+	case acSkippedLocked, acSkippedNotInterrupted, acSkippedStale, acSkippedOperatorInput:
 		return true
 	default:
 		return false
@@ -175,7 +178,7 @@ func lockClassifyInject(ctx context.Context, h *eventlog.Handle, ag *agent.Agent
 	}
 	defer func() { _ = lock.Release() }()
 
-	interruptedAt, interrupted := classifyTail(ctx, h, app, user, sid)
+	interruptedAt, interrupted, interruptedCalls := classifyTail(ctx, h, app, user, sid)
 	if !interrupted {
 		return acSkippedNotInterrupted
 	}
@@ -184,7 +187,17 @@ func lockClassifyInject(ctx context.Context, h *eventlog.Handle, ag *agent.Agent
 			sid, time.Since(interruptedAt).Round(time.Second), freshness)
 		return acSkippedStale
 	}
-	if err := ag.InjectAs(agent.AutoContinueNote(interruptedAt), auth.Caller{Identity: agent.AutoContinueOriginator}); err != nil {
+	// An operator already queued input while the turn was interrupted
+	// (the canonical case: they typed `stop`, then `/interrupt`). That
+	// input must drive the next turn on its own — injecting a "continue
+	// the task" note into the same drained batch would let the note
+	// outrank the operator's stop (#624). Stand down; the wake loop runs
+	// the operator's message as the next turn.
+	if ag.HasPendingOperatorInput() {
+		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: operator input already queued; standing down so it drives the next turn\n", sid)
+		return acSkippedOperatorInput
+	}
+	if err := ag.InjectAs(agent.AutoContinueNoteFor(interruptedAt, interruptedCalls), auth.Caller{Identity: agent.AutoContinueOriginator}); err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: inject: %v\n", sid, err)
 		return acSkippedInjectErr
 	}
@@ -197,7 +210,7 @@ func lockClassifyInject(ctx context.Context, h *eventlog.Handle, ag *agent.Agent
 // because this runs synchronously on resume/startup paths — a
 // full-session scan on a 100k-event session would break the "resume
 // stays fast" promise.
-func classifyTail(ctx context.Context, h *eventlog.Handle, app, user, sid string) (time.Time, bool) {
+func classifyTail(ctx context.Context, h *eventlog.Handle, app, user, sid string) (time.Time, bool, []string) {
 	resp, err := h.Service.Get(ctx, &session.GetRequest{
 		AppName:         app,
 		UserID:          user,
@@ -208,13 +221,13 @@ func classifyTail(ctx context.Context, h *eventlog.Handle, app, user, sid string
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: read session: %v\n", sid, err)
 		}
-		return time.Time{}, false
+		return time.Time{}, false, nil
 	}
 	var events []*session.Event
 	for ev := range resp.Session.Events().All() {
 		events = append(events, ev)
 	}
-	return agent.ClassifyInterruptedTail(events)
+	return agent.ClassifyInterruptedTailWithCalls(events)
 }
 
 // attemptGuards aggregates the boot-log-derived skip rules shared by
@@ -291,7 +304,7 @@ func AutoContinueStartupSession(ctx context.Context, h *eventlog.Handle, ag *age
 	// boot, and recording an "attempt" for a clean tail would burn
 	// the cumulative cap on healthy restarts, blocking a real
 	// interruption later.
-	interruptedAt, interrupted := classifyTail(ctx, h, app, user, sid)
+	interruptedAt, interrupted, _ := classifyTail(ctx, h, app, user, sid)
 	if !interrupted {
 		return
 	}
@@ -428,7 +441,7 @@ func AutoContinueBootScan(deps SessionFactoryDeps, maxPerBoot int) {
 		if !guards.allow(row.SessionID) {
 			continue
 		}
-		interruptedAt, interrupted := classifyTail(ctx, h, row.AppName, row.UserID, row.SessionID)
+		interruptedAt, interrupted, _ := classifyTail(ctx, h, row.AppName, row.UserID, row.SessionID)
 		if !interrupted {
 			continue
 		}

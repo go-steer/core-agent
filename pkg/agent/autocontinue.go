@@ -30,6 +30,7 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	"github.com/go-steer/core-agent/v2/pkg/tools"
 )
 
 // AutoContinueOriginator is the turn-originator identity stamped on
@@ -91,6 +92,57 @@ func AutoContinueNote(interruptedAt time.Time) string {
 		autoContinueMarker, interruptedAt.UTC().Format(time.RFC3339))
 }
 
+// autoContinueNoteReadOnly renders the continuation note for a tail
+// interrupted mid-tool where EVERY interrupted call is a read-only
+// introspection tool (#624). It drops the default note's "re-issue
+// interrupted tool calls" imperative: reflexively re-running a
+// side-effect-free read is exactly what turned an operator's
+// stop+interrupt into a list_agents loop. The model is told the
+// interrupted work had no side effects and to re-query only if it still
+// needs that data — so a genuine information need is still met, while a
+// polling call is not blindly re-issued. Still contains autoContinueMarker
+// (the loop-breaker grep) and, like the default, asserts no unverifiable
+// cause (#615).
+func autoContinueNoteReadOnly(interruptedAt time.Time) string {
+	return fmt.Sprintf("[system note] The %s (last committed at %s). "+
+		"The last committed events are in your history; any interrupted tool call has been answered with an interruption notice. "+
+		"The interrupted call(s) were read-only introspection with no side effects — do not reflexively re-run them; query again only if you still need that information to answer the operator's outstanding message. "+
+		"Answer the operator's outstanding message. If nothing remains to do, reply briefly to confirm.",
+		autoContinueMarker, interruptedAt.UTC().Format(time.RFC3339))
+}
+
+// AutoContinueNoteFor selects the continuation note appropriate to what
+// was interrupted (#624). When the tail died mid-tool and EVERY
+// interrupted call classifies read-only (tools.IsReadOnlyToolName), it
+// returns the read-only variant that does NOT nudge re-issuing them;
+// otherwise (a mutating or unknown interrupted call, or an interrupted
+// shape with no calls — a bare user message or a committed tool
+// response) it returns the default note, which still tells the model it
+// MAY re-issue. Classification is by tool metadata, never a note-local
+// name list: an unrecognized name falls to the default (keep the nudge),
+// the conservative direction.
+func AutoContinueNoteFor(interruptedAt time.Time, interruptedCalls []string) string {
+	if allReadOnlyCalls(interruptedCalls) {
+		return autoContinueNoteReadOnly(interruptedAt)
+	}
+	return AutoContinueNote(interruptedAt)
+}
+
+// allReadOnlyCalls reports whether names is non-empty and every entry
+// classifies read-only. Empty → false, so a no-calls interrupted shape
+// keeps the default note.
+func allReadOnlyCalls(names []string) bool {
+	if len(names) == 0 {
+		return false
+	}
+	for _, n := range names {
+		if !tools.IsReadOnlyToolName(n) {
+			return false
+		}
+	}
+	return true
+}
+
 // ClassifyInterruptedTail reports whether a session's committed
 // history ends in an interrupted turn, and when the interruption
 // happened (the timestamp of the last committed event of the broken
@@ -133,6 +185,24 @@ func AutoContinueNote(interruptedAt time.Time) string {
 // automatic attempt per interruption — the lazy-path crash-loop
 // bound).
 func ClassifyInterruptedTail(events []*session.Event) (interruptedAt time.Time, interrupted bool) {
+	at, interrupted, _ := classifyInterruptedTail(events)
+	return at, interrupted
+}
+
+// ClassifyInterruptedTailWithCalls is ClassifyInterruptedTail plus the
+// tool-call names of the interrupted tail (#624). interruptedCalls is
+// populated ONLY for a mid-tool interruption (the functionCall arm) —
+// the shape whose continuation note carries a "re-issue interrupted tool
+// calls" nudge — and lists every call name in that tail event. It is nil
+// for the other interrupted shapes (a bare unanswered user message, or a
+// committed functionResponse whose result is already in history), and nil
+// when the tail is not interrupted. Callers scope the continuation note
+// by classifying these names (see AutoContinueNoteFor).
+func ClassifyInterruptedTailWithCalls(events []*session.Event) (interruptedAt time.Time, interrupted bool, interruptedCalls []string) {
+	return classifyInterruptedTail(events)
+}
+
+func classifyInterruptedTail(events []*session.Event) (interruptedAt time.Time, interrupted bool, interruptedCalls []string) {
 	for i := len(events) - 1; i >= 0; i-- {
 		ev := events[i]
 		if ev == nil || ev.Branch != "" || ev.Partial {
@@ -142,13 +212,13 @@ func ClassifyInterruptedTail(events []*session.Event) (interruptedAt time.Time, 
 		// the cancelled turn left. The operator deliberately killed
 		// that work — resurrecting it would be exactly wrong.
 		if ev.Author == interruptAuditAuthor {
-			return time.Time{}, false
+			return time.Time{}, false, nil
 		}
 		// In-band model error final (safety block, quota, provider
 		// error surfaced as ErrorCode): the turn ENDED and the error
 		// was already delivered; there is nothing to continue.
 		if ev.ErrorCode != "" {
-			return time.Time{}, false
+			return time.Time{}, false, nil
 		}
 		if ev.Content == nil || ev.Content.Role == "" {
 			continue // annotation events (checkpoints, notes, audit rows)
@@ -163,7 +233,7 @@ func ClassifyInterruptedTail(events []*session.Event) (interruptedAt time.Time, 
 			// would misread the preceding tool-response event as an
 			// interrupted tail. Agent-authored → terminal.
 			if ev.Author != "user" {
-				return time.Time{}, false
+				return time.Time{}, false, nil
 			}
 			continue
 		}
@@ -175,11 +245,13 @@ func ClassifyInterruptedTail(events []*session.Event) (interruptedAt time.Time, 
 			longRunning[id] = true
 		}
 		var text strings.Builder
+		var callNames []string
 		for _, p := range ev.Content.Parts {
 			switch {
 			case p == nil:
 			case p.FunctionCall != nil:
 				hasCall = true
+				callNames = append(callNames, p.FunctionCall.Name)
 				if p.FunctionCall.Name == confirmationCallName {
 					hasConfirmation = true
 				}
@@ -199,23 +271,23 @@ func ClassifyInterruptedTail(events []*session.Event) (interruptedAt time.Time, 
 		// couldn't proceed anyway (tail repair deliberately leaves
 		// the parked original call unanswered).
 		if hasConfirmation {
-			return time.Time{}, false
+			return time.Time{}, false, nil
 		}
 		// SkipSummarization response = the turn's final event per
 		// ADK's Event.IsFinalResponse — a completed turn for library
 		// consumers using that flow.
 		if hasResp && ev.Actions.SkipSummarization {
-			return time.Time{}, false
+			return time.Time{}, false, nil
 		}
 
 		switch {
 		case hasResp:
-			return ev.Timestamp, true
+			return ev.Timestamp, true, nil
 		case hasCall:
 			if allCallsLongRunning {
-				return time.Time{}, false
+				return time.Time{}, false, nil
 			}
-			return ev.Timestamp, true
+			return ev.Timestamp, true, callNames
 		case ev.Author == "user":
 			// A prior continuation note that committed and then died:
 			// do NOT loop — one automatic attempt per interruption;
@@ -224,9 +296,9 @@ func ClassifyInterruptedTail(events []*session.Event) (interruptedAt time.Time, 
 			// still in flight across an upgrade isn't re-continued.
 			t := text.String()
 			if strings.Contains(t, autoContinueMarker) || strings.Contains(t, legacyAutoContinueMarker) {
-				return time.Time{}, false
+				return time.Time{}, false, nil
 			}
-			return ev.Timestamp, true
+			return ev.Timestamp, true, nil
 		case hasText:
 			// Normally a completed model turn — UNLESS the persisted
 			// finish reason says the turn stopped WITHOUT finishing (a
@@ -235,16 +307,16 @@ func ClassifyInterruptedTail(events []*session.Event) (interruptedAt time.Time, 
 			// the eventlog overlay stamps into CustomMetadata (#582). STOP
 			// and unset (legacy/unstamped) preserve the completed default.
 			if r, ok := ev.CustomMetadata[eventlog.FinishReasonMetadataKey].(string); ok && incompleteFinish(r) {
-				return ev.Timestamp, true
+				return ev.Timestamp, true, nil
 			}
-			return time.Time{}, false // completed model turn
+			return time.Time{}, false, nil // completed model turn
 		default:
 			// Agent-authored content with neither text nor tool parts
 			// (inline data only) — terminal model output.
-			return time.Time{}, false
+			return time.Time{}, false, nil
 		}
 	}
-	return time.Time{}, false
+	return time.Time{}, false, nil
 }
 
 // incompleteFinish reports whether a persisted genai FinishReason string

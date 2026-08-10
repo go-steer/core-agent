@@ -219,6 +219,23 @@ Background subagents are decided at runtime — the parent (or operator) picks a
 
 **Least-privilege scoping.** Each of `tools`, `mcp`, and `skills` narrows one dimension of the parent's surface, following a nil / list / empty contract: **omit** the field to inherit the parent's full set, give a **non-empty list** to scope to exactly those names, or give an **empty list** (`[]`) to grant none of that dimension. This is the main design payoff over inheriting everything — a read-only `cluster` delegate can see `gke-readonly` while the parent keeps the read-write `gke` server, without a second MCP process or a nested config tree. Scoping reuses the parent's already-started MCP toolsets and a filtered view of its loaded skills (no re-walk), and every inherited tool keeps the parent's permission gate, so a subagent cannot escalate.
 
+**Independent content with `root`.** Inline `tools`/`mcp`/`skills` can only *narrow* the parent's surface — a subagent can't hold a skill or server the parent doesn't also load. When a delegate needs its **own** persona, skills, or MCP servers that the parent must **not** have, point it at a content root:
+
+```jsonc
+{
+  "subagents": [
+    {
+      "name": "cluster",
+      "description": "Read-only investigation of a single GKE cluster.",
+      "tools": ["read_file", "grep"],   // built-ins — always inline
+      "root": "../cluster"              // own scope: AGENTS.md + skills/ + mcp.json
+    }
+  ]
+}
+```
+
+With `root` set, the subagent loads its persona from `<root>/AGENTS.md` (an inline `instructions` still overrides it), its skills from `<root>/skills/`, and its MCP servers from `<root>/mcp.json` — none of which the parent loads. The same nil / list / empty contract still applies, but now it filters **within the root**: omit `skills` to get all of the root's skills, or list a subset. Built-in `tools` stay inline (they live in the binary, not a directory). A relative `root` resolves like a [content root](/reference/configuration/) (against the agents dir, else the cwd); a missing directory is a loud startup error. This is what lets sibling recipe trees — `agents/platform/` (the fleet parent) and `agents/cluster/` (a read-only specialist) — ship under one mounted image with cleanly separated personas and skills.
+
 See [Reference → Declarative subagents](/reference/configuration/#declarative-subagents-v29) for the full field schema, and [`examples/kube-platform-agent/`](https://github.com/go-steer/core-agent/tree/main/examples/kube-platform-agent) for a recipe that delegates GKE reads to a scoped `cluster` subagent.
 
 ---

@@ -267,6 +267,18 @@ func TestClassifyInterruptedTail(t *testing.T) {
 			},
 			interrupted: false,
 		},
+		{
+			// Migration: a note committed by a pre-#615 binary carries the
+			// legacy "daemon restart" marker. The classifier must still
+			// recognize it so an in-flight note across an upgrade isn't
+			// re-continued into a loop.
+			name: "legacy-marker continuation note is not re-continued",
+			events: []*session.Event{
+				userTextEvent("hello?"),
+				userTextEvent("[system note] The previous turn was interrupted by a daemon restart at 2026-08-10T00:00:00Z. Continue the task."),
+			},
+			interrupted: false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

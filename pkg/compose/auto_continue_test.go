@@ -415,7 +415,7 @@ func TestAutoContinueStartupSession(t *testing.T) {
 		ag := acAgent(t, h) // triple = (core-agent, alice, sid-ac) via WithSession
 		AutoContinueStartupSession(ctx, h, ag, time.Hour)
 		msgs := ag.DrainInbox()
-		if len(msgs) != 1 || !strings.Contains(msgs[0], "interrupted by a daemon restart") {
+		if len(msgs) != 1 || !strings.Contains(msgs[0], "previous turn did not complete") {
 			t.Fatalf("inbox = %v, want the continuation note", msgs)
 		}
 		boots, _ := h.RecentBoots(ctx, time.Now().Add(-time.Minute))
@@ -501,8 +501,14 @@ func TestMaybeAutoContinue_QueuesNoteForFreshInterruption(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("inbox has %d messages, want 1 continuation note", len(msgs))
 	}
-	if !strings.Contains(msgs[0], "interrupted by a daemon restart") {
+	if !strings.Contains(msgs[0], "previous turn did not complete") {
 		t.Errorf("inbox message = %q, want the continuation system note", msgs[0])
+	}
+	// The note must NOT assert an unverifiable cause (#615): no "daemon
+	// restart" claim, even though this can fire from the in-lifetime
+	// retry loop with zero restarts.
+	if strings.Contains(msgs[0], "daemon restart") {
+		t.Errorf("inbox message = %q, must not claim a daemon restart", msgs[0])
 	}
 	// The run lock must be released again — a held lease would block
 	// autonomous resume and the next auto-continue attempt.

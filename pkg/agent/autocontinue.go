@@ -48,7 +48,23 @@ const AutoContinueOriginator = "core-agent/auto-continue"
 // = no further automatic attempts; a human message resets the state.
 // This is the lazy-path loop bound until the boot scan's full breaker
 // lands (design PR 2).
-const autoContinueMarker = "interrupted by a daemon restart"
+//
+// The marker is a neutral, cause-agnostic phrase (#615): the note must
+// not assert a "daemon restart" it cannot verify — the interruption is
+// inferred purely from tail shape and fires from in-lifetime retries
+// too, not just boots. It is deliberately decoupled from any wording
+// that names a cause so the human text can evolve without breaking the
+// loop-breaker. Kept lowercase (no leading article) so it matches as a
+// case-sensitive substring of the rendered, sentence-cased note.
+const autoContinueMarker = "previous turn did not complete"
+
+// legacyAutoContinueMarker is the pre-#615 marker phrasing. Recognized
+// by the classifier (never emitted) so a continuation note committed by
+// an older binary and still in flight across an upgrade is not
+// re-continued into a loop. Safe to drop once no such notes can remain
+// (past the freshness window + per-session cap after every daemon has
+// upgraded).
+const legacyAutoContinueMarker = "interrupted by a daemon restart"
 
 // interruptAuditAuthor is the Author pkg/attach stamps on the
 // contentless audit row appendInterruptAudit writes when an operator
@@ -57,14 +73,21 @@ const autoContinueMarker = "interrupted by a daemon restart"
 const interruptAuditAuthor = "attach/interrupt"
 
 // AutoContinueNote renders the synthesized continuation prompt. It is
-// a system note, not impersonated user text: the model is told what
-// happened and asked to pick the task back up. Must contain
-// autoContinueMarker (guarded by test).
+// a system note, not impersonated user text: the model is told what was
+// DETECTED and asked to pick the task back up. It describes what the
+// classifier actually observed — an unfinished turn — and does NOT claim
+// a cause (e.g. a daemon restart) it cannot verify: the same note fires
+// from lazy-resume, boot scan, startup-session, and the in-lifetime
+// retry loop, and interruption is inferred from tail shape alone (#615).
+// Must contain autoContinueMarker (guarded by test).
 func AutoContinueNote(interruptedAt time.Time) string {
-	return fmt.Sprintf("[system note] The previous turn was %s at %s. "+
+	// "The " + autoContinueMarker keeps the marker an exact case-sensitive
+	// substring of the rendered sentence, so the classifier's loop-breaker
+	// grep stays correct as the surrounding wording evolves.
+	return fmt.Sprintf("[system note] The %s (last committed at %s). "+
 		"The last committed events are in your history; any interrupted tool call has been answered with an interruption notice. "+
 		"Continue the task: re-issue interrupted tool calls if their results are still needed, then answer the user's outstanding message. "+
-		"If nothing remains to do, reply briefly acknowledging the restart.",
+		"If nothing remains to do, reply briefly to confirm.",
 		autoContinueMarker, interruptedAt.UTC().Format(time.RFC3339))
 }
 
@@ -196,8 +219,11 @@ func ClassifyInterruptedTail(events []*session.Event) (interruptedAt time.Time, 
 		case ev.Author == "user":
 			// A prior continuation note that committed and then died:
 			// do NOT loop — one automatic attempt per interruption;
-			// a real human message resets this.
-			if strings.Contains(text.String(), autoContinueMarker) {
+			// a real human message resets this. Recognize the legacy
+			// marker too so a note committed by a pre-#615 binary and
+			// still in flight across an upgrade isn't re-continued.
+			t := text.String()
+			if strings.Contains(t, autoContinueMarker) || strings.Contains(t, legacyAutoContinueMarker) {
 				return time.Time{}, false
 			}
 			return ev.Timestamp, true

@@ -197,7 +197,7 @@ Tune from your own usage — `/stats` shows current session cost; pick bounds at
 - **Cost ceiling** caps money regardless of why.
 - **Watchdog** (below) catches behavioral patterns (repeated identical tool calls) without waiting for the dollar count to add up.
 
-All three are complementary; the cost ceiling is off-by-default until configured; the watchdog defaults to warn-mode.
+All three are complementary; the cost ceiling is off-by-default until configured; the watchdog defaults to warn-mode (`--watchdog=enforce` upgrades it to a behavioral kill switch).
 
 ---
 
@@ -210,7 +210,10 @@ Compaction caps the *context* dimension. The cost ceiling caps the *dollar* dime
 | Mode | What it does |
 |---|---|
 | `--watchdog=warn` (default) | Observes the tool-call stream. When a signal trips, logs a structured alert to the operator via the normal status channel (`send()` callback for CLI; future SSE event for attach-mode). Does NOT pause the turn. |
+| `--watchdog=enforce` | Same detection as warn, but a Critical runaway signal (today: `repeated-tool-call`) **halts the agent**: it emits a `turn-error` (`kind=watchdog`, non-retryable) and refuses new turns until the operator clears it via `Agent.ResetWatchdog`. This is the hard behavioral backstop — an auto-continue re-drive of the interrupted turn is refused at pre-flight instead of re-issuing the looping call. |
 | `--watchdog=off` | No observation. |
+
+Enforce mode mirrors the cost ceiling's halt contract (above): post-turn detection sets a flag, the next `Run` refuses at pre-flight, and recovery is operator-driven (`Agent.ResetWatchdog`, which also resets the signal's run-length state). There is no automatic reset — a tripped watchdog is a "stop, get human attention" signal, not a throttle. Only Critical signals halt; a hypothetical future low-severity signal would stay advisory even under enforce.
 
 Future modes — `prompt` (pause turn + ask operator via the existing permissions prompter) and `auto` (call `Agent.SwapModel` to escalate to a frontier model without operator interaction) — are designed but deferred. Same for additional signals (tools-without-text, files-not-touched, context-growth-rate, cost-burn-rate) and an operator `/escalate` slash for manual model swaps.
 
@@ -243,11 +246,14 @@ a, err := agent.New(model,
     agent.WithWatchdog(w, func(alert watchdog.Alert) {
         log.Printf("watchdog: %s", alert)
     }),
+    agent.WithWatchdogEnforce(), // optional: halt on Critical runaway
     // ... other options
 )
 ```
 
 The `Watchdog` interface lets you plug in a custom implementation (same composability pattern as `Compactor` / `Checkpointer`). For most operators the default — `NewDefaultWatchdog()` with `RepeatedToolCallSignal(threshold=5)` wired in — is sufficient.
+
+Add `agent.WithWatchdogEnforce()` to promote it from observe-only to a kill switch: a Critical alert then trips `Agent`, and subsequent `Run` calls return an error satisfying `agent.IsWatchdogTripped(err)` until you call `a.ResetWatchdog()`. Query `a.WatchdogTripped()` for the `(bool, reason)` to surface in a `/stats`-style view.
 
 ---
 

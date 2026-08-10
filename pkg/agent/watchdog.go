@@ -24,11 +24,13 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/adk/session"
 
+	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/watchdog"
 )
 
@@ -47,6 +49,38 @@ func WithWatchdog(w watchdog.Watchdog, onAlert func(watchdog.Alert)) Option {
 		o.watchdog = w
 		o.onWatchdogAlert = onAlert
 	}
+}
+
+// WithWatchdogEnforce promotes the watchdog from observe-only ("warn"
+// mode) to a kill switch ("enforce" mode, #623). When set, a Critical
+// alert (today: the repeated-tool-call runaway signal) trips the agent:
+// it emits a watchdog turn-error and refuses subsequent turns until the
+// operator calls ResetWatchdog — the same halt contract as the cost
+// ceiling. No-op unless a watchdog is also wired via WithWatchdog. Warn-
+// mode alerts (non-Critical) never halt, even under enforce.
+func WithWatchdogEnforce() Option {
+	return func(o *options) {
+		o.watchdogEnforce = true
+	}
+}
+
+// watchdogError is returned by Agent.Run when a prior turn tripped the
+// watchdog under enforce mode and the operator hasn't reset it. Mirrors
+// costCeilingError: a distinct type so hosts can classify "operator must
+// reset" apart from retryable failures.
+type watchdogError struct {
+	reason string
+}
+
+func (e *watchdogError) Error() string { return e.reason }
+
+// IsWatchdogTripped reports whether err was returned by Run because a
+// prior turn tripped the behavioral watchdog under --watchdog=enforce.
+// Hosts use this to distinguish "operator must reset the watchdog" from
+// other Run errors that may warrant retry.
+func IsWatchdogTripped(err error) bool {
+	_, ok := err.(*watchdogError)
+	return ok
 }
 
 // observeToolCallsForWatchdog walks ev's content parts and feeds
@@ -116,12 +150,115 @@ func (a *Agent) drainWatchdogAlerts() {
 			))
 		}
 	}
-	if a.onWatchdogAlert == nil {
+	// Operator callback (the warn-mode surface). Runs regardless of
+	// enforce mode so operators still see the alert logged.
+	if a.onWatchdogAlert != nil {
+		for _, alert := range alerts {
+			a.onWatchdogAlert(alert)
+		}
+	}
+	// Enforce mode (#623): a Critical alert halts the agent. Kept after
+	// the callback so the operator sees the log line before the refusal,
+	// and outside the onWatchdogAlert==nil guard above so enforcement
+	// fires even when no warn-mode callback is wired.
+	if a.watchdogEnforce {
+		a.maybeTripWatchdog(alerts)
+	}
+}
+
+// maybeTripWatchdog halts the agent when any alert this turn is
+// Critical. Sets watchdogTripped + watchdogReason and emits a
+// watchdog turn-error, exactly mirroring maybeEnforceCostCeiling.
+// Idempotent: once tripped, later turns' drains are a no-op so we
+// don't re-emit. Non-Critical alerts never trip.
+func (a *Agent) maybeTripWatchdog(alerts []watchdog.Alert) {
+	if len(alerts) == 0 {
 		return
 	}
-	for _, alert := range alerts {
-		a.onWatchdogAlert(alert)
+	a.mu.Lock()
+	if a.watchdogTripped {
+		a.mu.Unlock()
+		return
 	}
+	a.mu.Unlock()
+
+	var trigger *watchdog.Alert
+	for i := range alerts {
+		if alerts[i].Severity == watchdog.SeverityCritical {
+			trigger = &alerts[i]
+			break
+		}
+	}
+	if trigger == nil {
+		return
+	}
+
+	reason := fmt.Sprintf(
+		"watchdog halted the agent (%s): %s Agent will refuse new turns until operator calls ResetWatchdog.",
+		trigger.Signal, trigger.Reason,
+	)
+	a.mu.Lock()
+	a.watchdogTripped = true
+	a.watchdogReason = reason
+	a.mu.Unlock()
+
+	a.emit(attach.EventTurnError, attach.TurnError{
+		Kind:      attach.TurnErrorWatchdog,
+		Code:      "watchdog",
+		Message:   reason,
+		Retryable: false, // operator must reset, not the host
+	})
+}
+
+// preflightWatchdog returns a non-nil watchdogError when a prior turn
+// tripped the watchdog under enforce mode and the operator hasn't
+// reset it. Called at the very top of Run, before any model calls —
+// the refusal is structural, so an auto-continue re-drive of the
+// looping turn is refused here rather than re-issuing the runaway call.
+func (a *Agent) preflightWatchdog() error {
+	if a == nil {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.watchdogTripped {
+		return nil
+	}
+	return &watchdogError{reason: a.watchdogReason}
+}
+
+// ResetWatchdog clears a tripped enforce-mode watchdog, letting the
+// agent accept new turns again. Typically wired to an operator slash
+// command after the operator has reviewed why the watchdog tripped.
+// Also resets the underlying watchdog's signal state so the next run
+// of identical calls has to build back up to the threshold. Safe to
+// call when nothing tripped — no-op in that case.
+func (a *Agent) ResetWatchdog() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.watchdogTripped = false
+	a.watchdogReason = ""
+	w := a.watchdog
+	a.mu.Unlock()
+	if w != nil {
+		w.Reset()
+	}
+}
+
+// WatchdogTripped reports whether the agent is currently blocking new
+// turns because the enforce-mode watchdog fired. Exposed for /stats and
+// similar surfaces so "why is the agent refusing my prompts?" has an
+// obvious answer. Returns (true, reason) when blocked; (false, "")
+// otherwise.
+func (a *Agent) WatchdogTripped() (bool, string) {
+	if a == nil {
+		return false, ""
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.watchdogTripped, a.watchdogReason
 }
 
 // serializeArgsForWatchdog produces a stable JSON serialization of

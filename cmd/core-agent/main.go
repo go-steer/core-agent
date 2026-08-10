@@ -188,7 +188,7 @@ func main() {
 	maxTurnCostUSD := flag.Float64("max-turn-cost-usd", 0, "per-turn spend ceiling in USD. When a single conversation turn's cumulative cost (across all model calls + subtask costs) meets or exceeds this value, the agent emits a structured turn-error (kind=cost_ceiling) and refuses new turns until the operator runs /resume-after-cost-ceiling. 0 = disabled (default). Defense against runaway tool-loops within one turn (e.g. issue #144). Pairs with --max-session-cost-usd; either or both can be set. Overrides config.agent.max_turn_cost_usd when set.")
 	maxSessionCostUSD := flag.Float64("max-session-cost-usd", 0, "session-level spend ceiling in USD. Cumulative across every turn including subtasks; same trip + refuse behavior as --max-turn-cost-usd. 0 = disabled (default). Useful for long-running autonomous deploys where per-turn cost is reasonable but the session total adds up. Overrides config.agent.max_session_cost_usd when set.")
 	smallTierParent := flag.String("small-tier-parent", "", "what to do when an interactive session starts on a small-tier parent model (Flash/Haiku-class). One of warn|refuse|allow. warn (default when unset) logs a one-line operator notice but proceeds; refuse exits with a config-error code; allow suppresses the check entirely. Skipped regardless when -p (one-shot), --yolo, or the model's tier doesn't classify. Per docs/model-selection-design.md / issue #121. Config-file equivalent: safety.small_tier_parent.")
-	watchdogMode := flag.String("watchdog", "warn", "behavioral watchdog mode (#123 PR 2). 'warn' = observe tool-call stream + log structured alerts to the operator when a runaway pattern is detected (e.g. 5 consecutive identical tool calls — the read_file loop from #144). 'off' = no observation. v1 ships warn-mode + one signal (repeated-tool-call); future modes (prompt, auto) and additional signals (tools-without-text, files-not-touched) are deferred per the design doc.")
+	watchdogMode := flag.String("watchdog", "warn", "behavioral watchdog mode (#123 PR 2). 'warn' = observe tool-call stream + log structured alerts to the operator when a runaway pattern is detected (e.g. 5 consecutive identical tool calls — the read_file loop from #144). 'enforce' = same detection, but a runaway trips a turn-error (kind=watchdog) and the agent refuses new turns until reset via Agent.ResetWatchdog (#623 — the hard backstop against tool loops an auto-continue re-drive would otherwise re-issue). 'off' = no observation. v1 ships warn/enforce + one signal (repeated-tool-call); future modes (prompt, auto) and additional signals (tools-without-text, files-not-touched) are deferred per the design doc.")
 	agenticTools := flag.Bool("agentic-tools", true, "register the agentic tool wrappers (agentic_read_file, agentic_fetch_url, agentic_grep, agentic_research) that route through a subtask so only the digest enters the parent's context (docs/context-management-design.md Mechanism B). On by default since v2.1; pass --agentic-tools=false to register only the bare tools.")
 	agenticSmallModel := flag.String("agentic-small-model", "", "small/cheap model ID the agentic_* wrappers should route subtasks to (e.g. gemini-3.5-flash-lite, claude-haiku-4-5). When empty, the provider's cheap-tier default is used (gemini-3.5-flash-lite for Gemini/Vertex, claude-haiku-4-5 for Anthropic); providers without a cheap tier (echo, scripted) fall through to inheriting the parent's model. Requires --agentic-tools.")
 	noMCPDigest := flag.Bool("no-mcp-digest", false, "disable the structural pkg/digest wrap around MCP tool responses (docs/digest-design.md). Default: enabled. When on, JSON-shaped MCP responses get a deterministic prune (identifier keys preserved, long strings truncated, arrays collapsed head+tail) before reaching the parent context; prose passthroughs are bounded. Also registers retrieve_raw as a built-in tool so the model can fetch back the un-digested payload when a digest looks suspicious. Kill switch for demos / debugging; leave on for production. Also gated per-project by cfg.MCP.AgenticWrap and per-server by mcp.json's agentic_never.")
@@ -1421,9 +1421,10 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		send(fmt.Sprintf("cost ceiling: per-turn=$%.4f per-session=$%.4f (refuses new turns when exceeded; clear via Agent.ResetCostCeiling)", ceiling.MaxTurnUSD, ceiling.MaxSessionUSD))
 	}
 	// Behavioral watchdog (#123 PR 2). Off when --watchdog=off;
-	// observe + log when --watchdog=warn (default). Alerts go to
-	// the operator via send(); future versions can route to SSE
-	// turn-error events or prompt the operator interactively.
+	// observe + log when --watchdog=warn (default); observe + halt on
+	// a Critical runaway when --watchdog=enforce (#623). Alerts go to
+	// the operator via send(); enforce additionally emits a turn-error
+	// (kind=watchdog) and refuses new turns until ResetWatchdog.
 	switch strings.ToLower(strings.TrimSpace(watchdogMode)) {
 	case "off":
 		// no-op
@@ -1433,8 +1434,17 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			send(fmt.Sprintf("watchdog %s", a.String()))
 		}))
 		send("watchdog: warn mode (observes tool-call stream; logs structured alerts on runaway patterns)")
+	case "enforce":
+		w := watchdog.NewDefaultWatchdog()
+		opts = append(opts,
+			agent.WithWatchdog(w, func(a watchdog.Alert) {
+				send(fmt.Sprintf("watchdog %s", a.String()))
+			}),
+			agent.WithWatchdogEnforce(),
+		)
+		send("watchdog: enforce mode (halts the agent on a runaway pattern; refuses new turns until cleared via Agent.ResetWatchdog)")
 	default:
-		log.Printf("invalid --watchdog mode %q (want warn|off)", watchdogMode)
+		log.Printf("invalid --watchdog mode %q (want warn|enforce|off)", watchdogMode)
 		return runner.ExitConfigError
 	}
 	if !noCheckpoint {

@@ -197,6 +197,19 @@ Default behavior (configurable):
      model (current: gemini-3.5-flash). Type /escalate to upgrade.
    ```
 
+1b. **Enforce mode** (`--watchdog=enforce`) — **SHIPPED (#623)**. The
+   halt variant, shipped ahead of the escalation modes below as the
+   interim behavioral backstop: a Critical signal (today only
+   `repeated-tool-call`) emits a `turn-error` (`kind=watchdog`) and
+   refuses subsequent turns until the operator calls
+   `Agent.ResetWatchdog`. It does **not** swap models — it stops, on
+   the same "get human attention" contract as the cost ceiling. This
+   matters most under `auto_continue` (#559): without a hard refusal,
+   the continuation note re-drives the interrupted (idempotent,
+   read-only) tool call and the loop survives an operator "stop"
+   (see #624). Enforce refuses that re-drive at pre-flight. The
+   escalation-oriented prompt/auto modes remain deferred.
+
 2. **Prompt mode** (`watchdog.action: prompt`): pause the run,
    ask the operator y/n to escalate, resume on either path.
 

@@ -31,9 +31,13 @@
 //     files-not-touched, rate-based growth) is mechanical — each
 //     signal is a small struct with an Observe/Check pair, the
 //     DefaultWatchdog just fans observations across them.
-//   - "Warn" mode only: alerts are logged to stderr by the agent
-//     wiring. No interactive prompt, no auto-escalation, no model
-//     swap.
+//   - "Warn" mode: alerts are logged to stderr by the agent wiring.
+//     No interactive prompt, no model swap.
+//   - "Enforce" mode (#623): a Critical alert halts the agent — the
+//     next turn is refused until the operator resets, mirroring the
+//     cost-ceiling kill switch. The signal detection is identical to
+//     warn mode; only the agent-side reaction differs (see
+//     pkg/agent/watchdog.go).
 //
 // Future scope (deferred — see design doc §"Piece 2"):
 //
@@ -60,8 +64,10 @@ import (
 )
 
 // Severity classifies the urgency of an alert. Warn is the operator-
-// visible-but-not-action-blocking level v1 emits; the others are
-// reserved for future modes that pause or escalate automatically.
+// visible-but-not-action-blocking level; Critical marks a runaway the
+// agent should act on — under --watchdog=enforce (#623) a Critical
+// alert halts the agent (refuses further turns until the operator
+// resets), while warn mode logs it like any other alert.
 type Severity string
 
 const (
@@ -261,8 +267,13 @@ func (s *RepeatedToolCallSignal) ObserveToolCall(tc ToolCall) *Alert {
 	if s.runLength >= s.Threshold && !s.tripped {
 		s.tripped = true
 		return &Alert{
-			Signal:   s.Name(),
-			Severity: SeverityWarn,
+			Signal: s.Name(),
+			// Critical: a run of identical calls is a genuine runaway,
+			// not advisory noise. Under --watchdog=enforce this halts
+			// the agent (#623); under warn mode it's logged like any
+			// other alert. Kept Critical regardless of mode so severity
+			// stays an intrinsic property of the pattern, not the wiring.
+			Severity: SeverityCritical,
 			Reason: fmt.Sprintf(
 				"agent has called %s with identical args %d times in a row — possible tool loop. Args: %s. If the agent is stuck, consider /interrupt and a different prompt phrasing. Cost ceiling (see --max-turn-cost-usd) is the hard backstop.",
 				tc.Name, s.runLength, truncate(tc.Args, 200),

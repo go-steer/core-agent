@@ -39,8 +39,11 @@ func TestRepeatedToolCallSignal_TripsAtThreshold(t *testing.T) {
 	if alert.Signal != "repeated-tool-call" {
 		t.Errorf("Signal = %q, want %q", alert.Signal, "repeated-tool-call")
 	}
-	if alert.Severity != SeverityWarn {
-		t.Errorf("Severity = %q, want %q", alert.Severity, SeverityWarn)
+	// Critical (#623): a run of identical calls is a genuine runaway,
+	// so the signal reports Critical severity — enforce mode halts on
+	// it, warn mode logs it.
+	if alert.Severity != SeverityCritical {
+		t.Errorf("Severity = %q, want %q", alert.Severity, SeverityCritical)
 	}
 	if !strings.Contains(alert.Reason, "read_file") {
 		t.Errorf("Reason should name the looping tool: %q", alert.Reason)

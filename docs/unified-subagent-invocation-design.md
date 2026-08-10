@@ -223,10 +223,26 @@ Two audiences, deliberately different:
   **enum of configured spec names** with their `Description`s — enough to route
   ("this is a triage → `cluster`") without a separate discovery tool. **No new
   model tool** (the "too many confusing tools" constraint).
-- **The operator** gets a real catalog: a `subagent` tool-source classification,
-  a `GET /subagents` attach endpoint, and a boot / `--print-config` dump listing
-  each configured spec (name, description, model, mcp/skills/root scope,
-  invocation policy). Operator-facing only.
+- **The operator** gets a real catalog on three surfaces, all in this repo:
+  - a `GET /subagents` attach endpoint (`pkg/attach`, cloning the `GET /peers`
+    handler pattern) — the **contract** every client reads;
+  - a **`/subagents` TUI slash command** wired through the existing
+    `coretui.SlashProvider` adapter (`coreAgentAdapter.SlashCommands`/`InvokeSlash`
+    in `cmd/core-agent/coretui_enabled.go`, alongside `/context`, `/usage`), with
+    the remote TUI adapter (`internal/coretuiremote`) proxying the endpoint;
+  - a boot / `--print-config` dump for the no-companion case.
+
+  Each lists every configured spec (name, description, model, mcp/skills/root
+  scope, invocation policy) plus a `subagent` tool-source classification.
+  Operator-facing only. The **bare REPL** (`pkg/runner/repl.go`) stays out — it is
+  deliberately `/exit`-only.
+
+**Naming note (touches #626):** the TUI already registers a singular
+**`/subagent`** command (aliases `/sub`) for *spawning* — currently **stubbed**
+(`coretui_enabled.go:895`, "flag parser … isn't wired"). #626 should finish
+wiring that spawn command onto the unified surface; #627 adds the plural
+**`/subagents`** for *listing*. Keep the singular=spawn / plural=list split
+explicit so the two don't collide.
 
 ## Relationship to the existing sync named-tool surface
 
@@ -250,12 +266,14 @@ This doc is the keystone; the three issues execute against it:
 1. **#626 (this)** — the unified `spawn_agent` surface: `agent:` reference form,
    `wait` for sync, `allow_adhoc` gate, unified model resolution, narrowing
    overrides, instance identity. Predefined specs become spawnable async;
-   ad-hoc becomes policy-gated.
+   ad-hoc becomes policy-gated. Also finish wiring the stubbed singular
+   `/subagent` TUI spawn command (`coretui_enabled.go:895`) onto this surface.
 2. **#625** — fold the background tool family per §4 / D1 (remove both
    `list_agents` and `check_agent` as model tools; land on `spawn_agent` +
    `stop_agent`).
 3. **#627** — the operator catalog per §5 (`subagent` tool-source, `GET /subagents`,
-   boot/`--print-config` dump); model-facing discovery is the `spawn_agent` enum.
+   the plural `/subagents` TUI slash command, boot/`--print-config` dump);
+   model-facing discovery is the `spawn_agent` enum, no new model tool.
 
 Sequencing: this design lands with (or just ahead of) the #626 code; #625 and
 #627 follow as execution. Per-issue: `dev/ci/presubmits/*` green, adversarial

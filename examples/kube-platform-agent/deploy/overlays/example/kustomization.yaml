@@ -31,7 +31,7 @@ configurations:
 # operators get reproducible deploys.
 #
 # (A) TAG PINNING — the default. Repo images drop the leading `v`
-#     (GHCR tag "2.9.0", not "v2.9.0"); lookout keeps it ("v0.11.0").
+#     (GHCR tag "2.9.0", not "v2.9.0"); lookout keeps it ("v0.17.0").
 # (B) DIGEST PINNING — set `digest:` instead of `newTag:` for
 #     reproducibility-critical deploys (SBOM, cosign). Look up via
 #     `crane digest <ref>`.
@@ -40,7 +40,7 @@ images:
   - name: ghcr.io/go-steer/core-agent
     newTag: "2.9.0"
   - name: ghcr.io/go-steer/lookout
-    newTag: "v0.11.0"
+    newTag: "v0.17.0"
   # The content image is built + pushed by you from
   # deploy/content.Dockerfile (see the recipe README). This MUST be an
   # immutable tag or (better) a digest — NOT :latest. The image volume
@@ -49,7 +49,7 @@ images:
   # content after a rebuild. Bump this tag (or the digest) on every
   # content change; use `digest:` for SBOM/cosign-critical deploys.
   - name: ghcr.io/go-steer/kube-platform-agent-content
-    newTag: "v1"
+    newTag: "v2"
 
 # GCP project + location for Vertex (Gemini).
 configMapGenerator:
@@ -68,4 +68,4 @@ patches:
   - path: patch-watcher-cluster-name.yaml
     target:
       kind: Deployment
-      name: k8s-event-watcher
+      name: lookout-watch

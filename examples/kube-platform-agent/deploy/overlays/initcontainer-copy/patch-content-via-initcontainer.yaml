@@ -34,10 +34,13 @@
       sizeLimit: 16Mi
 
 # Copy the recipe tree out of the busybox-flavor content image into the
-# shared emptyDir. Only the four recipe entries are copied — NOT the
-# busybox base's own /bin, /usr, etc. The image ref here is rewritten by
-# the overlay's `images:` block (initContainers[].image is covered by the
-# default images transformer).
+# shared emptyDir. Only the five recipe entries are copied — NOT the
+# busybox base's own /bin, /usr, etc. These MUST mirror the COPY layers in
+# deploy/content.Dockerfile: the `cluster/` tree is the `cluster` subagent's
+# content root (root: "../cluster"), so omitting it makes the daemon fail
+# to boot (subagent root path not found). The image ref here is rewritten
+# by the overlay's `images:` block (initContainers[].image is covered by
+# the default images transformer).
 - op: add
   path: /spec/template/spec/initContainers/-
   value:
@@ -50,6 +53,7 @@
       - /AGENTS.md
       - /AGENTS.d
       - /upstream
+      - /cluster
       - /content/
     securityContext:
       runAsNonRoot: true

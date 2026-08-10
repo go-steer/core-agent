@@ -24,10 +24,12 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# Default namespace for all namespaced resources, including the generated
-# ConfigMap. Cluster-scoped resources (ClusterRole, ClusterRoleBinding)
-# ignore this field.
-namespace: kube-platform
+# Namespacing is done by namespace-transformer.yaml (a builtin
+# NamespaceTransformer with unsetOnly: true), NOT the `namespace:`
+# shorthand — the shorthand would clobber the capacity Role/RoleBinding
+# (14/15), which must stay in kube-system. See that file for the rationale.
+transformers:
+  - namespace-transformer.yaml
 
 resources:
   - 00-namespace.yaml
@@ -35,11 +37,14 @@ resources:
   - 11-serviceaccount-watcher.yaml
   - 12-clusterrole-watcher.yaml
   - 13-clusterrolebinding-watcher.yaml
+  - 14-role-watcher-capacity.yaml
+  - 15-rolebinding-watcher-capacity.yaml
+  - 16-networkpolicy-watcher.yaml
   - 40-pvc.yaml
   - 50-deployment-daemon.yaml
   - 51-deployment-watcher.yaml
   - 60-service.yaml
-  # Secrets (core-agent-users, k8s-event-watcher-token) are created
+  # Secrets (core-agent-users, lookout-watch-token) are created
   # out-of-band per 20-secrets-placeholder.md.
 
 # GCP project + location for the Vertex AI client (Gemini). Consumed via

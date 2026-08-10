@@ -20,20 +20,11 @@
     {
       "name": "cluster",
       "description": "Read-only SRE scoped to exactly one named GKE cluster. Delegate a specific cluster's live runtime state and workload debugging here: crash loops, OOMKills, pending/unschedulable pods, image-pull and mount errors, connectivity/DNS timeouts, autoscaling (HPA/VPA/cluster-autoscaler) behavior, PVC/storage binding, and observability gaps. It performs read-only diagnostics and returns a grounded Root Cause Analysis plus a proposed manifest patch; it never mutates cluster state and never opens PRs. Do NOT route fleet-wide work, provisioning/lifecycle, RBAC/multi-tenancy, or GitOps changes here — those stay with the platform agent, which also owns acting on this agent's proposed fix.",
-      "instructions": "@include upstream/cluster/SOUL.md\n\n---\n\n## Runtime overlay (core-agent)\n\nYou run as an in-process subagent of the platform agent, not a Hermes kanban worker. Ignore the kanban / `$HERMES_KANBAN_TASK` / `cluster_preflight.sh` / `/opt/...` mechanics described in the persona above — those are Hermes-runtime specifics with no analog here. Instead: the platform agent delegates a single investigation to you as a tool call, and you return your Root Cause Analysis (and any proposed manifest patch) **directly in your reply** — that reply is your handoff. You have no shell (bash is disabled) and no GitOps write path; your cluster reads go through the read-only `gke` and `developer_knowledge` MCP servers. Your read-only boundary is unchanged: diagnose and report; the platform agent owns all remediation.",
       "model": {
         "provider": "vertex",
         "name": "gemini-3.5-flash"
       },
-      "mcp": ["gke", "developer_knowledge"],
-      "skills": [
-        "gke-workload-troubleshooting",
-        "gke-observability",
-        "gke-reliability",
-        "gke-storage",
-        "gke-workload-scaling",
-        "gke-workload-security"
-      ]
+      "root": "../cluster"
     }
   ]
 }

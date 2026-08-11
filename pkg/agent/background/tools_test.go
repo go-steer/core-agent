@@ -23,14 +23,14 @@ func TestNewBackgroundSpawnTools_RegistersAll(t *testing.T) {
 	t.Parallel()
 	mgr, _ := newFakeManager(t)
 	tools := NewSpawnTools(mgr)
-	if len(tools) != 4 {
-		t.Fatalf("expected 4 tools (spawn/list/check/stop); got %d", len(tools))
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 tools (spawn/stop); got %d", len(tools))
 	}
 	got := []string{}
 	for _, t := range tools {
 		got = append(got, t.Name())
 	}
-	want := []string{"spawn_agent", "list_agents", "check_agent", "stop_agent"}
+	want := []string{"spawn_agent", "stop_agent"}
 	for i, w := range want {
 		if got[i] != w {
 			t.Errorf("tools[%d] = %q, want %q", i, got[i], w)

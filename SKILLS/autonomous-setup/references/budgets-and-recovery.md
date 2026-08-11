@@ -122,7 +122,7 @@ For programmatic access (Go), the `eventlog` package exposes a `Stream` API: `Si
 
 - **Subtask cost rolls up to the parent's tracker** but doesn't have its own budget. If you want to bound subtask cost separately, use `agentic_*` wrappers with `--agentic-small-model` (sets the per-subtask model; budget bounded by `MaxTurns` per subtask, defaulting to 2-5 depending on wrapper).
 - **MCP server costs** are external to the model budget. If your MCP server hits a paid API (Tavily search, etc.), those costs aren't tracked. Set provider-side budgets.
-- **Background subagents** spawned via `spawn_agent` have their own budgets passed at spawn time. They don't share the parent's budget. List children with `list_agents` to audit.
+- **Background subagents** spawned via `spawn_agent` have their own budgets passed at spawn time. They don't share the parent's budget. Their completion summaries (including cost totals) are pushed back in the `[Background reports]` block; operators can also audit live instances via the attach hub / TUI.
 
 ## Diagnosing runaway cost
 

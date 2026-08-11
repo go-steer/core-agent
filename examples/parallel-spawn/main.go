@@ -156,7 +156,7 @@ func run() error {
 	parent, err := agent.New(parentLLM,
 		agent.WithName("parent"),
 		agent.WithExtraInstruction("you coordinate; fan independent work out to background subagents"),
-		agent.WithTools(background.NewSpawnTools(mgr)), // spawn/list/check/stop
+		agent.WithTools(background.NewSpawnTools(mgr)), // spawn_agent + stop_agent
 		agent.WithBackgroundManager(mgr),
 	)
 	if err != nil {

@@ -370,8 +370,8 @@ or remote). When invoked:
 
 1. Calls `spawner.Spawn(ctx, spec)`.
 2. Wraps the returned handle.
-3. Registers in `mgr.agents` so `list_agents`/`check_agent`/`stop_agent`
-   work uniformly.
+3. Registers in `mgr.agents` so `stop_agent` and the operator-facing
+   status surfaces (attach hub, TUI) work uniformly.
 4. Starts a goroutine draining `handle.Events()` → `Alert` push.
 
 Consumer wires it like ask_user:

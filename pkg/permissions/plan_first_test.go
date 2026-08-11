@@ -131,22 +131,6 @@ func TestPlanFirst_AllowsSkillIntrospection(t *testing.T) {
 	}
 }
 
-// list_agents and check_agent are read-only subagent introspection
-// registered directly by pkg/agent/background_tools.go — not via the
-// namespace wrapper. Exempt them individually.
-func TestPlanFirst_AllowsSubagentIntrospection(t *testing.T) {
-	t.Parallel()
-	g := New(Options{Mode: ModeYolo, RequirePlanArtifact: true})
-	for _, name := range []string{"list_agents", "check_agent"} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			if err := g.CheckGeneric(context.Background(), name, "any"); err != nil {
-				t.Errorf("%s should be exempt from plan-first gating, got: %v", name, err)
-			}
-		})
-	}
-}
-
 // mcp (the namespace) should NOT be exempt — MCP servers can expose
 // mutating tools, so plan-first must still apply. This locks in the
 // deliberate asymmetry vs the "skill" namespace above.

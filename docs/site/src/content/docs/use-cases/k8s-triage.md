@@ -133,8 +133,6 @@ typically only on shutdown.
     "mode": "allow",
     "allow": [
       "spawn_agent:*",
-      "list_agents:*",
-      "check_agent:*",
       "stop_agent:*"
     ]
   }
@@ -542,8 +540,8 @@ The alert flows back to `platform`'s inbox.
 [platform receives alert via inbox]
 > Alert is app-level per devteam classification. Acking devteam, no
 > operator escalation needed yet.
-> calling check_agent for devteam-prod-us-central1-acme-api — still healthy.
-> No further action.
+> latest [Background reports] show devteam-prod-us-central1-acme-api
+> still healthy. No further action.
 ```
 
 In a real deployment, `platform` would also POST the alert to PagerDuty / Slack / wherever. The skeleton above shows the routing decision; the actual alert delivery is a `report_alert` body the operator sees + a custom MCP tool would post externally.

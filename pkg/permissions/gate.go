@@ -135,10 +135,9 @@ type Gate struct {
 //     plan can be written; gating reads would deadlock the workflow.
 //   - record_plan itself — the escape valve. The tool whose call
 //     flips planRecorded can't itself be plan-gated.
-//   - Read-only introspection: enumerating available skills, listing
-//     background subagents, checking a subagent's status. These are
-//     the "what tools do I have?" questions the model reasonably
-//     asks before deciding what to plan.
+//   - Read-only introspection: enumerating available skills. This is
+//     the "what tools do I have?" question the model reasonably asks
+//     before deciding what to plan.
 //
 // Note on namespaces: skill tools (list_skills / load_skill /
 // load_skill_resource) and MCP tools are registered through
@@ -189,12 +188,6 @@ var planExemptTools = map[string]bool{
 	// namespace, this entry must be revisited — the exemption would
 	// silently cover it too.
 	"skill": true,
-
-	// Read-only subagent introspection (individual tool names,
-	// registered by pkg/agent/background_tools.go — not wrapped in
-	// a namespace-level toolset).
-	"list_agents": true,
-	"check_agent": true,
 }
 
 // Options configures a Gate at construction time. All fields are

@@ -152,7 +152,7 @@ a, err := agent.New(model,
 )
 ```
 
-The parent now has `spawn_agent`, `list_agents`, `check_agent`, `stop_agent`. The user's `AGENTS.md` (or in-prompt instruction) governs when to use them.
+The parent now has `spawn_agent` and `stop_agent` (subagent results are pushed back via the `[Background reports]` block; `spawn_agent { wait: true }` blocks inline). The user's `AGENTS.md` (or in-prompt instruction) governs when to use them.
 
 ## When NOT to use this skill
 

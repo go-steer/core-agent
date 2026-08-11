@@ -20,11 +20,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	adkmodel "google.golang.org/adk/model"
 	adktool "google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/agent/background"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/instruction"
 	"github.com/go-steer/core-agent/v2/pkg/mcp"
@@ -32,6 +34,14 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 	"github.com/go-steer/core-agent/v2/pkg/skills"
 )
+
+// defaultSyncWaitTimeout caps how long a synchronous spawn (spawn_agent
+// {wait: true}, #626/D5) holds the parent turn open before the tool returns
+// a partial/timeout result. Tighter than the async fire-and-continue
+// wall-clock budget: a slow subagent shouldn't hang the parent turn, and its
+// result is still delivered later by push. Chosen against typical subagent
+// latencies; revisit if real workloads need a different bound.
+const defaultSyncWaitTimeout = 5 * time.Minute
 
 // namedToolset pairs an MCP server's name with its already-started
 // toolset, so a scoped subagent can select servers by name. Built from
@@ -109,14 +119,17 @@ type subagentDeps struct {
 //     binary, not a directory. Every tool instance carries the shared
 //     permission gate, so a subagent cannot escalate.
 //
-// Returns the subagents plus the MCP servers stood up for rooted subagents
-// (empty for the all-inline case). The caller owns their lifecycle: close
-// them on shutdown and fold them into the one RegisterMetrics call. On
-// error the already-started servers are still returned so the caller can
-// close them.
+// Returns the subagents, the async-spawn templates (one per subagent, so
+// the same subagent the parent can call synchronously is also spawnable
+// by reference via spawn_agent {agent: "<name>"} — #626, wire with
+// background.Manager.SetSubagentTemplates), and the MCP servers stood up
+// for rooted subagents (empty for the all-inline case). The caller owns
+// the servers' lifecycle: close them on shutdown and fold them into the
+// one RegisterMetrics call. On error the already-started servers are
+// still returned so the caller can close them.
 //
-// Returns (nil, nil, nil) when no subagents are declared — the caller then
-// skips agent.WithSubagents entirely.
+// Returns (nil, nil, nil, nil) when no subagents are declared — the
+// caller then skips agent.WithSubagents entirely.
 func buildDeclaredSubagents(
 	ctx context.Context,
 	cfg *config.Config,
@@ -124,23 +137,30 @@ func buildDeclaredSubagents(
 	projectRoot string,
 	surface parentSurface,
 	deps subagentDeps,
-) ([]*agent.Agent, []*mcp.Server, error) {
+) ([]*agent.Agent, []background.SubagentTemplate, []*mcp.Server, error) {
 	if len(cfg.Subagents) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	subs := make([]*agent.Agent, 0, len(cfg.Subagents))
+	templates := make([]background.SubagentTemplate, 0, len(cfg.Subagents))
 	var rootedServers []*mcp.Server
 	for i, spec := range cfg.Subagents {
-		llm, err := resolveSubagentModel(ctx, cfg, parentProvider, spec)
+		// Resolve the provider + model name once; the sync path builds one
+		// LLM from it, the async template a fresh-LLM-per-spawn factory.
+		subProvider, modelName, err := resolveSubagentProvider(cfg, parentProvider, spec)
 		if err != nil {
-			return nil, rootedServers, fmt.Errorf("subagents[%d] %q: model: %w", i, spec.Name, err)
+			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: model: %w", i, spec.Name, err)
+		}
+		llm, err := subProvider.Model(ctx, modelName)
+		if err != nil {
+			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: model: %w", i, spec.Name, err)
 		}
 
 		// Built-ins always resolve against the parent registry — they ship
 		// in the binary, not in any content root.
 		subTools, err := resolveSubagentTools(spec, surface.builtinTools)
 		if err != nil {
-			return nil, rootedServers, fmt.Errorf("subagents[%d] %q: tools: %w", i, spec.Name, err)
+			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: tools: %w", i, spec.Name, err)
 		}
 
 		var (
@@ -154,40 +174,60 @@ func buildDeclaredSubagents(
 			// after mcp.Build succeeded) — collect them for shutdown either way.
 			rootedServers = append(rootedServers, servers...)
 			if err != nil {
-				return nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
+				return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
 			}
 			subToolsets, scopeDesc, err = resolveSubagentToolsets(ctx, spec, rootSurface)
 			if err != nil {
-				return nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
+				return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
 			}
 			userInstruction, err = rootedSubagentInstruction(spec, rootAbs, deps.interp)
 			if err != nil {
-				return nil, rootedServers, fmt.Errorf("subagents[%d] %q: instructions: %w", i, spec.Name, err)
+				return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: instructions: %w", i, spec.Name, err)
 			}
 			scopeDesc = fmt.Sprintf("root=%s, %s", rootAbs, scopeDesc)
 		} else {
 			subToolsets, scopeDesc, err = resolveSubagentToolsets(ctx, spec, surface)
 			if err != nil {
-				return nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
+				return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
 			}
 			if spec.Instructions != "" {
 				// Inline refs share the project scope: @include resolves
 				// against projectRoot exactly like the parent's memory.
 				userInstruction, _, err = instruction.Expand(spec.Instructions, projectRoot, projectRoot, instruction.WithInterpolator(deps.interp))
 				if err != nil {
-					return nil, rootedServers, fmt.Errorf("subagents[%d] %q: instructions: %w", i, spec.Name, err)
+					return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: instructions: %w", i, spec.Name, err)
 				}
 			}
 		}
 
 		sub, err := assembleSubagent(spec, llm, userInstruction, subTools, subToolsets)
 		if err != nil {
-			return nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
+			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
 		}
 		subs = append(subs, sub)
+
+		// The async-spawn twin (#626): same persona, model, and tool
+		// surface, resolved once here. ModelFactory rebuilds a fresh LLM
+		// per spawn (provider.Model caches transport, so cheap) so
+		// concurrent instances don't share one client; the toolsets ARE
+		// shared (stateless, process-long-lived handles). Capture the
+		// provider/name per iteration — the closure must not close over
+		// the loop variables.
+		p, mn := subProvider, modelName
+		templates = append(templates, background.SubagentTemplate{
+			Name:         spec.Name,
+			Description:  spec.Description,
+			ModelFactory: func(c context.Context) (adkmodel.LLM, error) { return p.Model(c, mn) },
+			ModelID:      mn,
+			Instruction:  userInstruction,
+			Tools:        subTools,
+			Toolsets:     subToolsets,
+			MaxDepth:     spec.MaxDepth,
+		})
+
 		deps.send(fmt.Sprintf("subagent %q: model=%s, %s", spec.Name, llm.Name(), scopeDesc))
 	}
-	return subs, rootedServers, nil
+	return subs, templates, rootedServers, nil
 }
 
 // assembleSubagent builds the *agent.Agent from a resolved model, persona,
@@ -374,19 +414,22 @@ func resolveSubagentToolsets(ctx context.Context, spec config.SubagentSpec, surf
 	return out, strings.Join(desc, ", "), nil
 }
 
-// resolveSubagentModel returns the LLM a subagent runs on: its own
-// ModelConfig when spec.Model is set, otherwise the parent's model built
-// from the parent's already-resolved provider. When the subagent declares
-// its own model, a provider is resolved for it through the same
-// models.Resolve path the parent used — so provider-specific config
-// (Vertex project/location, Anthropic-Vertex, scripted transcript) and
-// env auto-detection behave identically.
-func resolveSubagentModel(ctx context.Context, cfg *config.Config, parentProvider models.Provider, spec config.SubagentSpec) (adkmodel.LLM, error) {
+// resolveSubagentProvider returns the provider + model name a subagent
+// runs on: its own ModelConfig when spec.Model is set, otherwise the
+// parent's provider + model. When the subagent declares its own model, a
+// provider is resolved for it through the same models.Resolve path the
+// parent used — so provider-specific config (Vertex project/location,
+// Anthropic-Vertex, scripted transcript) and env auto-detection behave
+// identically.
+//
+// Returning the (provider, name) pair rather than a built LLM lets both
+// the synchronous path (build one LLM for the subagent-tool) and the
+// async template path (a factory that builds a fresh LLM per spawn, #626)
+// draw from the same resolution — provider.Model caches auth + transport
+// internally, so per-spawn calls are cheap.
+func resolveSubagentProvider(cfg *config.Config, parentProvider models.Provider, spec config.SubagentSpec) (models.Provider, string, error) {
 	if spec.Model == nil {
-		// Inherit: reuse the parent's provider, ask it for the parent's
-		// model. A fresh LLM instance (not the parent's *m*) keeps the
-		// subagent independent of any parent-side recorder wrapping.
-		return parentProvider.Model(ctx, cfg.Model.Name)
+		return parentProvider, cfg.Model.Name, nil
 	}
 	// Own model: shallow-copy cfg with the subagent's Model so
 	// models.Resolve reads the right provider + provider-specific
@@ -396,7 +439,7 @@ func resolveSubagentModel(ctx context.Context, cfg *config.Config, parentProvide
 	subCfg.Model = *spec.Model
 	p, err := models.Resolve(&subCfg)
 	if err != nil {
-		return nil, fmt.Errorf("resolve provider: %w", err)
+		return nil, "", fmt.Errorf("resolve provider: %w", err)
 	}
-	return p.Model(ctx, spec.Model.Name)
+	return p, spec.Model.Name, nil
 }

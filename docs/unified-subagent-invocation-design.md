@@ -299,10 +299,60 @@ review gate, `-race`, no Claude attribution.
   and return a partial/timeout result rather than hanging the parent turn
   (§"sync vs async"); all budget overrides are tighten-only.
 
+## Implementation status (#626)
+
+Landed in the #626 train, against this design:
+
+- **Async-by-reference for *declarative* subagents (option B).** The declarative
+  builder (`cmd/core-agent/subagents.go`) now emits, alongside each
+  `agent.WithSubagents` entry, a `background.SubagentTemplate` — a pre-resolved
+  persona + model *factory* + toolsets (MCP + skills), including a rooted
+  subagent's own content root. These are registered on the manager
+  (`Manager.SetSubagentTemplates`, broken out of construction to resolve the
+  builder-runs-after-manager ordering) so the *same* subagent the parent calls
+  synchronously via its named tool is also spawnable async by reference through
+  `spawn_agent {agent: "<name>"}`. MCP/skill toolsets are process-long-lived,
+  stateless handles shared across concurrent instances; each instance still gets
+  its own session, branch, and freshly-built LLM (via the factory). Both the sync
+  named tool (existing) and the async reference coexist — the D3 one-release
+  compat shim, no removal this increment.
+- **`wait: true` (synchronous spawn).** `spawn_agent {wait: true}` blocks the
+  turn on the subagent's completion and returns its completion report inline
+  (`Manager.awaitResult`), capped by a distinct, tighter sync wall-clock
+  (`WithSyncWaitTimeout`, default `5m` in `cmd/core-agent`, D5). On timeout or
+  parent-context cancellation the subagent keeps running and its result is pushed
+  on a later turn.
+- **Unified model resolution + narrowing-only overrides** on both the catalog
+  (`resolvePredefinedSpec`) and template (`SpawnTemplate`) reference paths:
+  goal replaceable; model inherit/`small` only (a specific model needs its own
+  spec, D2); budgets tighten-only. Template tool-narrowing is rejected with a
+  clear error (a rooted grant spans built-ins + MCP + skills — configure a
+  dedicated subagent instead).
+- **`allow_adhoc` gate** wired as `!noREPL` — off for the attach-only daemon
+  (`--no-repl`), on for interactive REPL and one-shot `-p` (preserves pre-#626
+  ad-hoc behavior). A dedicated config key is deferred (below).
+- **`/subagent` TUI spawn command** finished: singular `/subagent <name> <goal>`
+  spawns a *configured* subagent by name (fire-and-continue, non-blocking in
+  core-tui's synchronous Update loop) via `Manager.SpawnRef`; with no args it
+  lists configured names (`Manager.ReferenceNames`). Plural `/subagents` stays
+  the live-instance list (#627).
+
 ## Still open (settle in implementation)
 
-- The concrete **default wall-clock values** for the sync vs. async caps (D5) —
-  pick against real subagent latencies during #626, not up front.
-- Exact **config key names** (`subagents.allow_adhoc`, the `wait`/`agent`/`model`
-  spawn args, the instance-id format) — pin when the config surface lands and
-  reconcile with `docs/declarative-subagents-design.md`.
+- A dedicated **`subagents.allow_adhoc` config key** (D4). Currently the switch is
+  derived (`!noREPL`); a first-class config key + `--print-config` surfacing is
+  deferred until the config surface for `subagents[]` is revisited alongside
+  `docs/declarative-subagents-design.md`.
+- The **sync wall-clock default** is `5m` (an initial pick); revisit against real
+  subagent latencies once the recipe exercises `wait: true` under GKE UAT.
+- The **instance-id format** (`<name>-<n>`) is implemented; if a consumer needs
+  stable/addressable ids across restarts, reconcile then.
+- **Double-delivery on `wait: true`.** A subagent that completes always pushes its
+  completion alert to the parent inbox, so a *successful* synchronous wait surfaces
+  the result twice — inline from `awaitResult`, then again as a redundant
+  `[Background reports]` line on the next turn. Retroactive suppression by the
+  waiter is racy (the goroutine's `pushAlert` runs before it closes `done`, so the
+  waiter can never observe completion *before* the alert is queued). Deduping
+  synchronously-consumed completions — e.g. tagging the handle as "claimed by a
+  waiter" before the push decision, or having `shouldAlert` skip claimed handles —
+  is a follow-up; the current redundancy is noisy but not incorrect.

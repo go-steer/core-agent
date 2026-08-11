@@ -1046,10 +1046,28 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	var bgMgr *background.Manager
 	if !noBackgroundAgents {
 		var err error
+		// allow_adhoc gates inline-persona spawns (the model authoring a
+		// fresh system_prompt at spawn time). Off for the attach-only
+		// daemon (--no-repl), which has no operator steering it and should
+		// only spawn operator-vetted subagents; on for interactive REPL
+		// and one-shot -p runs, preserving the pre-#626 behavior where any
+		// spawn_agent call could author a persona inline. Referencing a
+		// preconfigured/declarative subagent by name works regardless.
+		allowAdhoc := !noREPL
+		// The small-tier model the "small" per-spawn model override resolves
+		// to — same resolution the agentic subtasks use below.
+		bgSmallModel := models.ResolveSmallModel(provider, agenticSmallModel)
 		bgMgr, err = background.NewManager(
 			background.WithProvider(provider, cfg.Model.Name),
 			background.WithGate(gate),
 			background.WithCatalog(builtinTools),
+			background.WithAllowAdhoc(allowAdhoc),
+			background.WithSmallModelID(bgSmallModel),
+			// A synchronous spawn (spawn_agent {wait: true}) holds the
+			// parent turn open, so cap it tighter than the async
+			// fire-and-continue wall-clock; on timeout the subagent keeps
+			// running and its result is pushed on a later turn (#626/D5).
+			background.WithSyncWaitTimeout(defaultSyncWaitTimeout),
 		)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: background agents: %v\n", err)
@@ -1160,7 +1178,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		}
 		mcpNamed = append(mcpNamed, namedToolset{name: s.Name, toolset: s.Toolset()})
 	}
-	declaredSubagents, subagentServers, err := buildDeclaredSubagents(ctx, cfg, provider, projectRoot, parentSurface{
+	declaredSubagents, subagentTemplates, subagentServers, err := buildDeclaredSubagents(ctx, cfg, provider, projectRoot, parentSurface{
 		builtinTools: builtinTools,
 		mcpToolsets:  mcpNamed,
 		skills:       loadedSkills,
@@ -1179,6 +1197,19 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: subagents: %v\n", err)
 		return runner.ExitConfigError
+	}
+
+	// Register the declarative subagents as async-spawn templates on the
+	// background manager, so the same subagent the parent can call
+	// synchronously (agent.WithSubagents, below) is also spawnable by
+	// reference via spawn_agent {agent: "<name>"} (#626, option B). Done
+	// here — after the builder produced them — because the manager (and
+	// its spawn tools) had to exist first.
+	if bgMgr != nil && len(subagentTemplates) > 0 {
+		if err := bgMgr.SetSubagentTemplates(subagentTemplates); err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: subagents: register async templates: %v\n", err)
+			return runner.ExitConfigError
+		}
 	}
 
 	// One status-gauge registration over every MCP server this process owns

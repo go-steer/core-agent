@@ -31,7 +31,7 @@ For attach-mode (`core-agent-tui` remote client) commands, see [Attach mode TUI]
 | `/tools` | | List the tools the agent has access to (built-ins + MCP + skills) |
 | `/skills` | | List loaded skills with their trigger descriptions |
 | `/mcp` | | List configured MCP servers and their status |
-| `/subagents` | `/sub` | List background subagents spawned this session |
+| `/subagents` | | List background subagents spawned this session, with live status |
 | `/memory` | | Show the resolved `AGENTS.md` chain (user-global + project) |
 
 ### Context management
@@ -68,7 +68,7 @@ Pattern grammar: `<tool>:<glob>` (e.g., `bash:git diff*`, `read_file:internal/**
 | Command | Aliases | Effect |
 |---|---|---|
 | `/btw <question>` | `/by-the-way` | Ask a one-shot context-grounded question. Answer appears in a dismissible modal; never lands in conversation history |
-| `/subagent <goal> [flags]` | `/sub` | Spawn a background subagent against a goal. Flags: `--name`, `--prompt`, `--tools`, `--extras`, `--max-turns`, `--max-cost`, `--max-wallclock`, `--scheduler` |
+| `/subagent <name> <goal>` | `/sub` | Spawn a **configured** subagent by name against a goal (fire-and-continue; its report arrives on a later turn). Run `/subagent` with no arguments to list configured names. Ad-hoc inline personas are not offered here — curate them as `subagents[]` in config |
 
 ### Theming + display
 

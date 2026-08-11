@@ -104,7 +104,7 @@ func TestBuildDeclaredSubagents_OwnModelAndIdentity(t *testing.T) {
 		}},
 	}
 
-	subs, _, err := buildDeclaredSubagents(
+	subs, _, _, err := buildDeclaredSubagents(
 		context.Background(), cfg, mock.NewEcho(), t.TempDir(),
 		parentSurface{}, testDeps(),
 	)
@@ -139,7 +139,7 @@ func TestBuildDeclaredSubagents_InheritsParentModel(t *testing.T) {
 			Description: "inherits the parent model",
 		}},
 	}
-	subs, _, err := buildDeclaredSubagents(
+	subs, _, _, err := buildDeclaredSubagents(
 		context.Background(), cfg, mock.NewEcho(), t.TempDir(),
 		parentSurface{}, testDeps(),
 	)
@@ -159,7 +159,7 @@ func TestBuildDeclaredSubagents_InheritsParentModel(t *testing.T) {
 func TestBuildDeclaredSubagents_NoneDeclared(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{Model: config.ModelConfig{Provider: mock.ProviderEcho, Name: "echo"}}
-	subs, _, err := buildDeclaredSubagents(
+	subs, _, _, err := buildDeclaredSubagents(
 		context.Background(), cfg, mock.NewEcho(), t.TempDir(),
 		parentSurface{}, testDeps(),
 	)
@@ -185,7 +185,7 @@ func TestBuildDeclaredSubagents_RegisteredAsParentTool(t *testing.T) {
 			Description: "read-only cluster investigator",
 		}},
 	}
-	subs, _, err := buildDeclaredSubagents(
+	subs, _, _, err := buildDeclaredSubagents(
 		context.Background(), cfg, mock.NewEcho(), t.TempDir(),
 		parentSurface{}, testDeps(),
 	)
@@ -414,7 +414,7 @@ func TestBuildDeclaredSubagents_ScopedToolsSurface(t *testing.T) {
 	surface := parentSurface{
 		builtinTools: []adktool.Tool{fakeTool{"read_file"}, fakeTool{"bash"}},
 	}
-	subs, _, err := buildDeclaredSubagents(
+	subs, _, _, err := buildDeclaredSubagents(
 		context.Background(), cfg, mock.NewEcho(), t.TempDir(),
 		surface, testDeps(),
 	)
@@ -588,7 +588,7 @@ func TestBuildDeclaredSubagents_RootedEndToEnd(t *testing.T) {
 	// and the scoped tool list.
 	surface := parentSurface{builtinTools: []adktool.Tool{fakeTool{"read_file"}, fakeTool{"bash"}}}
 
-	subs, servers, err := buildDeclaredSubagents(
+	subs, _, servers, err := buildDeclaredSubagents(
 		context.Background(), cfg, mock.NewEcho(), t.TempDir(),
 		surface, subagentDeps{interp: identityInterp, send: discard, rootBase: t.TempDir()},
 	)

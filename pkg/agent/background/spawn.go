@@ -273,6 +273,16 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 			agent.WithTools(all),
 			agent.WithSessionService(wrappedSvc),
 		)
+		// Inherit the parent's resolved MeterProvider so a spawned
+		// subagent's gen_ai.* instruments land in the SAME provider as
+		// the parent — otherwise agent.New falls back to the process
+		// global, and an embedder that passed a non-global provider to
+		// the parent would see subagent turns/tools vanish from their
+		// pipeline. In the daemon the parent's provider IS the global, so
+		// this is a no-op there. Nil-guarded for hand-constructed parents.
+		if mp := parent.MeterProvider(); mp != nil {
+			opts = append(opts, agent.WithMeterProvider(mp))
+		}
 		opts = append(opts, instrOpts...)
 		if len(toolsets) > 0 {
 			opts = append(opts, agent.WithToolsets(toolsets))

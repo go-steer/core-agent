@@ -269,7 +269,7 @@ Python / Kotlin / Go agents:
 
 | Metric | Type | Unit | Attributes | Source |
 |---|---|---|---|---|
-| `gen_ai.agent.invocation.duration` | Histogram (sync) | `s` | `gen_ai.agent.name`; `error.type` (failed turns only, `attach.ClassifyTurnError` kinds) | `Agent.Run` terminal cleanup |
+| `gen_ai.agent.invocation.duration` | Histogram (sync) | `s` | `gen_ai.agent.name`; `error.type` (failed turns only, `attach.ClassifyTurnError` kinds) | `Agent.Run` terminal cleanup, **plus the sync-subagent tool handler** — see "Subagent turns" below |
 | `gen_ai.tool.execution.duration` | Histogram (sync) | `s` | `gen_ai.tool.name`; `error.type` (failed calls only: `canceled`\|`timeout`\|`_OTHER`) | `tools.DurationInstrumenter` wrapper, outermost around serializer + gate — duration includes lock-wait and permission-prompt wait by design |
 
 The schema's other three histograms (`gen_ai.agent.request.size`,
@@ -277,6 +277,37 @@ The schema's other three histograms (`gen_ai.agent.request.size`,
 deliberately deferred: units/semantics are undocumented upstream and
 absent from adk-python's source — emitting a guess would create false
 cross-language compatibility. Revisit when ADK defines them.
+
+#### Subagent turns
+
+A subagent's turns land in `gen_ai.agent.invocation.duration` too, but
+the two subagent invocation paths reach the histogram differently:
+
+- **Async / background** (`spawn_agent`, declarative subagents driven by
+  `autonomous.Run`) run through the inner `*Agent.Run`, so the terminal
+  cleanup records normally. The series carries the bounded class-level
+  `gen_ai.agent.name=background_subagent` (via `WithMetricAgentName`) so a
+  model-chosen ad-hoc name can't accrete one series per invention on a
+  long-lived daemon.
+- **Sync** (`agent.WithSubagents` — the parent's model calls the subagent
+  as a tool) drives the inner ADK runner directly from
+  `NewSubagentTool`'s handler, bypassing the `*Agent.Run` wrapper. The
+  handler therefore records the invocation itself (against the inner
+  agent's own instrument, timed over the run, `error.type` on failure) —
+  otherwise a synchronously-invoked subagent's turns would silently never
+  appear in the histogram. The series carries the inner agent's own
+  `gen_ai.agent.name` (bounded by its configured name).
+
+**Provider inheritance.** Every subagent's instruments are built from a
+`MeterProvider` resolved at its `agent.New`: the explicit
+`WithMeterProvider`, else the process-global. The background spawn path
+threads the parent's resolved provider (`Agent.MeterProvider()`) into the
+spawned agent's `New`, so an embedder that hands core-agent a *non-global*
+provider still sees subagent turns/tools in its own pipeline instead of
+losing them to the global fallback. In the daemon the parent's provider is
+the global, so this is a no-op there. The sync path needs no such
+threading — the embedder constructs the inner `*Agent` directly and passes
+`WithMeterProvider` itself.
 
 ### Go runtime (otel-contrib, shipped with the MeterProvider)
 

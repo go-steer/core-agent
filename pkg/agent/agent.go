@@ -256,6 +256,13 @@ type Agent struct {
 	invocationHist   metric.Float64Histogram
 	toolInstrumenter *tools.DurationInstrumenter
 	metricAgentName  string
+	// meterProvider is the resolved MeterProvider these instruments were
+	// built from (WithMeterProvider, else the process-global at New).
+	// Stored so subagent construction sites can inherit it — a
+	// background spawn threads it into the spawned agent's New so an
+	// embedder's non-global provider propagates down the tree instead of
+	// silently falling back to the global.
+	meterProvider metric.MeterProvider
 	// compactionsDone / checkpointsDone are process-lifetime metric
 	// counters (#338), incremented on successful Compact/Checkpoint.
 	// Deliberately not derived from ContextStats: the eventlog scan
@@ -909,6 +916,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		invocationHist:       invocationHist,
 		toolInstrumenter:     toolInstrumenter,
 		metricAgentName:      cmp.Or(o.metricAgentName, o.name),
+		meterProvider:        mp,
 		watchdogAlertCounter: watchdogAlerts,
 		gate:                 o.gate,
 		bgMgr:                o.bgMgr,
@@ -962,6 +970,21 @@ func (a *Agent) SubagentNames() []string {
 	out := make([]string, len(a.subagentToolNames))
 	copy(out, a.subagentToolNames)
 	return out
+}
+
+// MeterProvider returns the resolved OTel MeterProvider the agent's
+// metric instruments were built from (the WithMeterProvider value, or
+// the process-global resolved at New). Subagent construction sites use
+// it to propagate an embedder's non-global provider down the tree — the
+// background spawn path threads it into the spawned agent so subagent
+// turns/tools land in the same provider as the parent rather than
+// silently falling back to the global. Nil only on a hand-constructed
+// Agent (tests); callers thread it conditionally.
+func (a *Agent) MeterProvider() metric.MeterProvider {
+	if a == nil {
+		return nil
+	}
+	return a.meterProvider
 }
 
 // AppName returns the AppName the agent was constructed with (the

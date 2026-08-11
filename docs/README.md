@@ -62,6 +62,7 @@ research + friction logs, or handover notes.
 - [`mcp-oauth-design.md`](mcp-oauth-design.md) — MCP Streamable HTTP transport + OAuth 2.0 client authentication
 - [`mcp-credential-resolution-design.md`](mcp-credential-resolution-design.md) — per-MCP-server credential resolution: pluggable providers + Auth Manager
 - [`code-mode-design.md`](code-mode-design.md) — Phase 1 in-process Go execution via Yaegi; project-symbol injection as the differentiator
+- [`tiered-tool-integration-design.md`](tiered-tool-integration-design.md) — tiered diagnostics: a small set of pre-built sensors (`k8s-sensors`) + long-tail LLM-authored Go via [kode-gopher](https://github.com/gke-demos/kode-gopher) (proposed, [#200](https://github.com/go-steer/core-agent/issues/200))
 
 ### Instructions, skills + discovery
 
@@ -74,6 +75,7 @@ research + friction logs, or handover notes.
 - [`alert-tool-design.md`](alert-tool-design.md) — native `alert` tool for headless escalation
 - [`plan-first-design.md`](plan-first-design.md) — gate-level "plan before action" enforcement
 - [`scheduled-monitoring-design.md`](scheduled-monitoring-design.md) — `Scheduler` primitive for paced autonomous loops; combines with `BackgroundAgentManager` for the K8s fleet-monitor topology
+- [`scheduled-ops-design.md`](scheduled-ops-design.md) — `core-agent-cron` companion sidecar firing scheduled prompts into the daemon for proactive autonomous ops (compliance sweeps, drift detection, capacity forecasts) (proposed, [#202](https://github.com/go-steer/core-agent/issues/202))
 
 ### Attach mode, remote + TUI
 

@@ -25,6 +25,7 @@ import (
 	"google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/attach"
 )
 
 // This file bridges the two subagent worlds (#626, option B): the
@@ -55,6 +56,12 @@ type SubagentTemplate struct {
 	Name string
 	// Description is the operator-facing summary (backs the #627 catalog).
 	Description string
+	// Root is the subagent's content root (its own AGENTS.md + mcp.json +
+	// skills/ tree), relative to the recipe as authored in config. Empty
+	// for an inline (non-rooted) declarative subagent. Display-only —
+	// surfaced in the #627 operator catalog so operators can see which
+	// subagents carry their own content bundle.
+	Root string
 	// ModelFactory builds a fresh LLM for each spawn — session isolation,
 	// same as the catalog path's provider.Model call. Required.
 	ModelFactory func(context.Context) (adkmodel.LLM, error)
@@ -256,4 +263,54 @@ func (m *Manager) ReferenceNames() []string {
 	names := append(m.TemplateNames(), m.PredefinedNames()...)
 	sort.Strings(names)
 	return names
+}
+
+// Catalog returns the configured-subagent roster (#627) — declarative
+// templates first (sync+async), then predefined catalog specs
+// (async-only), each sorted by name. This is what the daemon LOADED, as
+// opposed to Manager.List / ListSubagents (live spawned instances). Backs
+// the operator-facing surfaces: GET .../subagents (via the SubagentManager
+// interface's ListSubagentCatalog), the /subagent listing, and the boot
+// dump. Never nil.
+//
+// Modes records how each subagent can be invoked: declarative templates
+// are BOTH "sync" (a parent tool call, via agent.WithSubagents) and
+// "async" (spawn_agent {agent}); predefined catalog specs are "async" only
+// (spawn-by-reference, no synchronous tool).
+func (m *Manager) Catalog() []attach.SubagentCatalogInfo {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	templates := make([]attach.SubagentCatalogInfo, 0, len(m.templates))
+	for _, t := range m.templates {
+		templates = append(templates, attach.SubagentCatalogInfo{
+			Name:        t.Name,
+			Description: t.Description,
+			Model:       t.ModelID,
+			Root:        t.Root,
+			Modes:       []string{"sync", "async"},
+		})
+	}
+	sort.Slice(templates, func(i, j int) bool { return templates[i].Name < templates[j].Name })
+
+	predefined := make([]attach.SubagentCatalogInfo, 0, len(m.predefined))
+	for _, s := range m.predefined {
+		predefined = append(predefined, attach.SubagentCatalogInfo{
+			Name:  s.Name,
+			Model: s.ModelID,
+			Modes: []string{"async"},
+		})
+	}
+	sort.Slice(predefined, func(i, j int) bool { return predefined[i].Name < predefined[j].Name })
+
+	return append(templates, predefined...)
+}
+
+// ListSubagentCatalog implements the agent.SubagentManager seam's
+// operator-catalog method (#627): the configured roster in attach types,
+// so the adapter can serve GET .../subagents without importing this
+// package. Identical data to Catalog (which callers holding the concrete
+// *Manager may use directly).
+func (m *Manager) ListSubagentCatalog() []attach.SubagentCatalogInfo {
+	return m.Catalog()
 }

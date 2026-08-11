@@ -311,11 +311,15 @@ func (h *handlers) register(mux *http.ServeMux) {
 	h.routeSessionDrainGated(mux, "POST", "wake", auth.ActionSessionWrite, h.doWake)
 	h.routeSession(mux, "POST", "interrupt", auth.ActionSessionWrite, h.doInterrupt)
 
-	// Read-only state endpoints — feed the TUI's /tools, /subagents,
-	// /status slash commands. Pure projections over in-memory state;
-	// safe for ReadOnly mode (the read-only flag gates POSTs only).
+	// Read-only state endpoints — feed the TUI's /tools, /status, and
+	// subagent surfaces. Pure projections over in-memory state; safe for
+	// ReadOnly mode (the read-only flag gates POSTs only). Two subagent
+	// reads, deliberately distinct: /agents is "what's running" (live
+	// spawned instances), /subagents is "what's configured" (the roster
+	// the daemon loaded, spawnable by reference — #627).
 	h.routeSession(mux, "GET", "tools", auth.ActionSessionRead, h.doTools)
 	h.routeSession(mux, "GET", "agents", auth.ActionSessionRead, h.doAgents)
+	h.routeSession(mux, "GET", "subagents", auth.ActionSessionRead, h.doSubagents)
 	h.routeSession(mux, "GET", "status", auth.ActionSessionRead, h.doStatus)
 
 	// Operator-state read endpoints (usage / context / memory /
@@ -744,6 +748,20 @@ func (h *handlers) doAgents(w http.ResponseWriter, _ *http.Request, entry *Entry
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agents": out})
+}
+
+// doSubagents projects the CONFIGURED subagent roster (#627) — declarative
+// templates + predefined catalog specs the daemon loaded — as opposed to
+// doAgents' live/spawned instances. Empty list (never 501) when the agent
+// implements no SubagentCatalogProvider or no manager is wired.
+func (h *handlers) doSubagents(w http.ResponseWriter, _ *http.Request, entry *Entry) {
+	out := []SubagentCatalogInfo{}
+	if p, ok := entry.Agent.(SubagentCatalogProvider); ok {
+		if list := p.AttachSubagentCatalog(); list != nil {
+			out = list
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"subagents": out})
 }
 
 func (h *handlers) doStatus(w http.ResponseWriter, _ *http.Request, entry *Entry) {

@@ -301,6 +301,7 @@ var (
 
 	_ attach.ToolsProvider           = (*Adapter)(nil)
 	_ attach.AgentsProvider          = (*Adapter)(nil)
+	_ attach.SubagentCatalogProvider = (*Adapter)(nil)
 	_ attach.StatusProvider          = (*Adapter)(nil)
 	_ attach.InterruptProvider       = (*Adapter)(nil)
 	_ attach.InterruptSelfAuditor    = (*Adapter)(nil)

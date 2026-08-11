@@ -48,6 +48,13 @@ type SubagentManager interface {
 	// (attach.AgentsProvider).
 	ListSubagents() []attach.AgentInfo
 
+	// ListSubagentCatalog returns the CONFIGURED subagent roster —
+	// declarative templates + predefined catalog specs — as opposed to
+	// ListSubagents' live/spawned instances. Backs
+	// attachadapter.AttachSubagentCatalog (attach.SubagentCatalogProvider,
+	// #627).
+	ListSubagentCatalog() []attach.SubagentCatalogInfo
+
 	// SpawnSubagent spawns a subagent from an attach spec. Backs
 	// attachadapter.AttachSpawnSubagent (attach.SubagentSpawner).
 	SpawnSubagent(ctx context.Context, spec attach.SubagentSpec) (attach.SubagentSpawnResponse, error)

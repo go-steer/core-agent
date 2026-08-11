@@ -35,10 +35,11 @@ var ErrCapabilityNotRegistered = errors.New("attach: capability not registered o
 // TUI, an eventual WebUI, operator scripts — don't have to know a
 // Go type to reason about them.
 const (
-	ToolSourceBuiltin = "builtin"
-	ToolSourceMCP     = "mcp"
-	ToolSourceSkill   = "skill"
-	ToolSourceOther   = "other"
+	ToolSourceBuiltin  = "builtin"
+	ToolSourceMCP      = "mcp"
+	ToolSourceSkill    = "skill"
+	ToolSourceSubagent = "subagent"
+	ToolSourceOther    = "other"
 )
 
 // Agent run-states surfaced via GET /sessions/.../status. "running"
@@ -63,7 +64,7 @@ const (
 type ToolInfo struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
-	Source      string `json:"source"`           // builtin | mcp | skill | other
+	Source      string `json:"source"`           // builtin | mcp | skill | subagent | other
 	Server      string `json:"server,omitempty"` // MCP server attribution when Source=mcp
 	GateState   string `json:"gate_state,omitempty"`
 }
@@ -78,6 +79,20 @@ type AgentInfo struct {
 	StartedAt       time.Time `json:"started_at"`
 	ParentSessionID string    `json:"parent_session_id,omitempty"`
 	LastReport      string    `json:"last_report,omitempty"` // most recent report body, truncated
+}
+
+// SubagentCatalogInfo is one CONFIGURED subagent in the roster surfaced
+// via GET /sessions/.../subagents (#627) — what the daemon LOADED, as
+// opposed to what it has spawned (AgentInfo / GET .../agents, "what's
+// running"). Populated from the BackgroundAgentManager's catalog when one
+// is wired; empty list otherwise (e.g. --no-background-agents, where
+// nothing is spawnable by reference).
+type SubagentCatalogInfo struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Model       string   `json:"model,omitempty"` // resolved model id; empty only for a predefined spec that inherits the parent's
+	Root        string   `json:"root,omitempty"`  // own content root, when rooted
+	Modes       []string `json:"modes"`           // "sync" and/or "async"
 }
 
 // StatusInfo is the response shape of GET /sessions/.../status.
@@ -108,6 +123,16 @@ type ToolsProvider interface {
 // BackgroundAgentManager (if any).
 type AgentsProvider interface {
 	AttachAgents() []AgentInfo
+}
+
+// SubagentCatalogProvider is the optional capability for
+// GET /sessions/.../subagents (#627). Returns the CONFIGURED subagent
+// roster (declarative templates + predefined catalog specs) — distinct
+// from AgentsProvider, which returns live/spawned instances. Absence (or
+// a nil manager) reports an empty list rather than 501, matching the
+// other read-only projections.
+type SubagentCatalogProvider interface {
+	AttachSubagentCatalog() []SubagentCatalogInfo
 }
 
 // StatusProvider is the optional capability for GET /sessions/.../status.

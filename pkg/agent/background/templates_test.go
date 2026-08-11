@@ -106,6 +106,55 @@ func TestTemplateNames_Sorted(t *testing.T) {
 	}
 }
 
+func TestCatalog_TemplatesAndPredefined(t *testing.T) {
+	t.Parallel()
+	prov := &recordingProvider{llm: &stopRaceLLM{}}
+	mgr := newTemplateManager(t, prov, []SubagentTemplate{
+		{Name: "zebra", Description: "zzz", ModelID: "z-model", Root: "../zebra", ModelFactory: tmplFactory(prov, "z-model")},
+		{Name: "alpha", Description: "aaa", ModelFactory: tmplFactory(prov, "a-model")},
+	}, WithPredefinedSpecs([]Spec{{Name: "researcher", SystemPrompt: "p", ModelID: "r-model"}}))
+
+	cat := mgr.Catalog()
+	if len(cat) != 3 {
+		t.Fatalf("Catalog() len = %d, want 3 (2 templates + 1 predefined)", len(cat))
+	}
+
+	// Templates come first, sorted by name; predefined follow.
+	if cat[0].Name != "alpha" || cat[1].Name != "zebra" || cat[2].Name != "researcher" {
+		t.Fatalf("Catalog() order = [%s %s %s], want [alpha zebra researcher]", cat[0].Name, cat[1].Name, cat[2].Name)
+	}
+
+	// Templates are sync+async and carry description/model/root.
+	alpha := cat[0]
+	if alpha.Description != "aaa" || len(alpha.Modes) != 2 || alpha.Modes[0] != "sync" || alpha.Modes[1] != "async" {
+		t.Errorf("alpha = %+v, want description=aaa modes=[sync async]", alpha)
+	}
+	zebra := cat[1]
+	if zebra.Model != "z-model" || zebra.Root != "../zebra" {
+		t.Errorf("zebra = %+v, want model=z-model root=../zebra", zebra)
+	}
+
+	// Predefined specs are async-only, no sync tool, no root.
+	pre := cat[2]
+	if pre.Model != "r-model" || pre.Root != "" || len(pre.Modes) != 1 || pre.Modes[0] != "async" {
+		t.Errorf("researcher = %+v, want model=r-model root=\"\" modes=[async]", pre)
+	}
+
+	// ListSubagentCatalog (the interface seam) returns identical data.
+	if via := mgr.ListSubagentCatalog(); len(via) != len(cat) || via[0].Name != cat[0].Name {
+		t.Errorf("ListSubagentCatalog() disagrees with Catalog(): %v vs %v", via, cat)
+	}
+}
+
+func TestCatalog_Empty(t *testing.T) {
+	t.Parallel()
+	prov := &recordingProvider{llm: &stopRaceLLM{}}
+	mgr := newTemplateManager(t, prov, nil)
+	if cat := mgr.Catalog(); cat == nil || len(cat) != 0 {
+		t.Errorf("Catalog() = %v, want non-nil empty slice", cat)
+	}
+}
+
 func TestSpawnTemplate_UnknownReference(t *testing.T) {
 	t.Parallel()
 	prov := &recordingProvider{llm: &stopRaceLLM{}}

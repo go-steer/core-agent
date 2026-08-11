@@ -60,7 +60,7 @@ type StartupSummaryInputs struct {
 
 // FormatStartupSummary produces the config-summary block emitted at
 // daemon startup right after the config / instruction / MCP / skills
-// resolution completes. Six lines, one per topic, in the standard
+// resolution completes. Seven lines, one per topic, in the standard
 // core-agent: <topic>: <detail> shape. Callers wrap each returned line
 // with the `send` helper defined in run().
 //
@@ -70,7 +70,7 @@ type StartupSummaryInputs struct {
 // and the other established lines) — this is the "what did the
 // daemon actually load" answer that was silent before #212.
 func FormatStartupSummary(in StartupSummaryInputs) []string {
-	lines := make([]string, 0, 6)
+	lines := make([]string, 0, 7)
 
 	// 1. config: source + resolution path.
 	lines = append(lines, formatConfigLine(in.CfgPath, in.AgentsDir))
@@ -87,7 +87,12 @@ func FormatStartupSummary(in StartupSummaryInputs) []string {
 	// 5. skills: N loaded — names.
 	lines = append(lines, formatSkillsLine(in.LoadedSkills))
 
-	// 6. multi-session auth: kind, user count, admin/proxy lists.
+	// 6. subagents: N configured — the declarative roster (#627), so
+	//    operators can verify what the daemon loaded without grepping the
+	//    per-subagent boot lines.
+	lines = append(lines, formatSubagentsLine(in.Cfg))
+
+	// 7. multi-session auth: kind, user count, admin/proxy lists.
 	//    Reads users.json directly (LoadUsersFile) rather than
 	//    depending on the BuildMultiSessionAuthn call in the attach
 	//    branch — the summary must fire regardless of attach mode.
@@ -194,6 +199,30 @@ func formatSkillsLine(loaded skills.Skills) string {
 	}
 	sort.Strings(names)
 	return fmt.Sprintf("skills: %d loaded — %s", len(names), strings.Join(names, ", "))
+}
+
+func formatSubagentsLine(cfg *config.Config) string {
+	if cfg == nil || len(cfg.Subagents) == 0 {
+		return "subagents: 0 configured"
+	}
+	// Sort by name for deterministic output across restarts.
+	entries := make([]string, 0, len(cfg.Subagents))
+	for _, s := range cfg.Subagents {
+		desc := s.Name
+		attrs := make([]string, 0, 2)
+		if s.Model != nil && s.Model.Name != "" {
+			attrs = append(attrs, "model="+s.Model.Name)
+		}
+		if s.Root != "" {
+			attrs = append(attrs, "root="+s.Root)
+		}
+		if len(attrs) > 0 {
+			desc += " (" + strings.Join(attrs, ", ") + ")"
+		}
+		entries = append(entries, desc)
+	}
+	sort.Strings(entries)
+	return fmt.Sprintf("subagents: %d configured — %s", len(cfg.Subagents), strings.Join(entries, ", "))
 }
 
 func formatAuthLine(cfg *config.Config) string {

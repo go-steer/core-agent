@@ -36,8 +36,8 @@ var builtinToolNameSet = func() map[string]struct{} {
 
 // AttachTools implements attach.ToolsProvider. Returns the agent's
 // full tool catalog as ToolInfo entries with source classification
-// (builtin vs other) and the gate's pre-flight state per tool when
-// a gate was wired via agent.WithGate. MCP / skill attribution is
+// (builtin / subagent / other) and the gate's pre-flight state per tool
+// when a gate was wired via agent.WithGate. MCP / skill attribution is
 // "other" in v1 — distinguishing them at the slice level needs an
 // upstream metadata pass we haven't done yet.
 func (ad *Adapter) AttachTools() []attach.ToolInfo {
@@ -47,6 +47,17 @@ func (ad *Adapter) AttachTools() []attach.ToolInfo {
 	}
 	tools := a.Tools()
 	gate := a.Gate()
+	// Declarative subagents (#599) are registered as synchronous parent
+	// tools named after the subagent; classify them as "subagent" so
+	// operators can tell a `cluster` subagent apart from an ordinary
+	// built-in (#627). Sourced from the agent, not the background
+	// manager, so the classification holds even under
+	// --no-background-agents (which nils the manager but keeps the sync
+	// subagent tools).
+	subagentSet := map[string]struct{}{}
+	for _, n := range a.SubagentNames() {
+		subagentSet[n] = struct{}{}
+	}
 	out := make([]attach.ToolInfo, 0, len(tools))
 	for _, t := range tools {
 		name := t.Name()
@@ -55,7 +66,9 @@ func (ad *Adapter) AttachTools() []attach.ToolInfo {
 			Description: t.Description(),
 			Source:      attach.ToolSourceOther,
 		}
-		if _, ok := builtinToolNameSet[name]; ok {
+		if _, ok := subagentSet[name]; ok {
+			info.Source = attach.ToolSourceSubagent
+		} else if _, ok := builtinToolNameSet[name]; ok {
 			info.Source = attach.ToolSourceBuiltin
 		}
 		if gate != nil {
@@ -79,6 +92,25 @@ func (ad *Adapter) AttachAgents() []attach.AgentInfo {
 		return nil
 	}
 	return mgr.ListSubagents()
+}
+
+// AttachSubagentCatalog implements attach.SubagentCatalogProvider (#627).
+// Returns the CONFIGURED subagent roster — declarative templates +
+// predefined catalog specs the manager was wired with — distinct from
+// AttachAgents (live/spawned instances). Empty when no manager is wired
+// (e.g. --no-background-agents): nothing is spawnable by reference, so
+// the roster is empty; the sync subagent tools still appear in
+// AttachTools with source="subagent".
+func (ad *Adapter) AttachSubagentCatalog() []attach.SubagentCatalogInfo {
+	a := ad.Agent()
+	if a == nil {
+		return nil
+	}
+	mgr := a.BackgroundManager()
+	if mgr == nil {
+		return nil
+	}
+	return mgr.ListSubagentCatalog()
 }
 
 // AttachStatus implements attach.StatusProvider. V1 returns the agent's

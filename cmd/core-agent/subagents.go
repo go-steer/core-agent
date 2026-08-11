@@ -223,6 +223,7 @@ func buildDeclaredSubagents(
 			Tools:        subTools,
 			Toolsets:     subToolsets,
 			MaxDepth:     spec.MaxDepth,
+			Root:         spec.Root,
 		})
 
 		deps.send(fmt.Sprintf("subagent %q: model=%s, %s", spec.Name, llm.Name(), scopeDesc))

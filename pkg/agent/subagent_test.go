@@ -144,6 +144,46 @@ func TestWithSubagents_RegistersTools(t *testing.T) {
 	}
 }
 
+func TestSubagentNames_ReportsRegistered(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestEventLog(t)
+	defer cleanup()
+	r1, err := New(minimalLLM{}, WithName("research"), WithEventLog(h), WithSession("u", "s1"))
+	if err != nil {
+		t.Fatalf("New r1: %v", err)
+	}
+	r2, err := New(minimalLLM{}, WithName("planner"), WithEventLog(h), WithSession("u", "s2"))
+	if err != nil {
+		t.Fatalf("New r2: %v", err)
+	}
+	parent, err := New(minimalLLM{},
+		WithName("parent"),
+		WithEventLog(h),
+		WithSession("u", "p"),
+		WithSubagents([]*Agent{r1, r2}),
+	)
+	if err != nil {
+		t.Fatalf("New parent: %v", err)
+	}
+	got := map[string]bool{}
+	for _, n := range parent.SubagentNames() {
+		got[n] = true
+	}
+	if len(got) != 2 || !got["research"] || !got["planner"] {
+		t.Errorf("SubagentNames() = %v, want {research, planner}", parent.SubagentNames())
+	}
+
+	// An agent with no subagents reports none (not a subagent tool set
+	// that mistakenly includes built-ins).
+	plain, err := New(minimalLLM{}, WithName("plain"), WithEventLog(h), WithSession("u", "x"))
+	if err != nil {
+		t.Fatalf("New plain: %v", err)
+	}
+	if names := plain.SubagentNames(); len(names) != 0 {
+		t.Errorf("plain.SubagentNames() = %v, want empty", names)
+	}
+}
+
 func TestWithSubagentMaxDepth_SetsField(t *testing.T) {
 	t.Parallel()
 	// Default: unset → 0, which NewSubagentTool reads as "substrate

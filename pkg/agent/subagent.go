@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	adkagent "google.golang.org/adk/agent"
@@ -226,11 +227,25 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 
 		msg := genai.NewContentFromText(args.Request, genai.RoleUser)
 		var sb strings.Builder
+		// gen_ai.agent.invocation.duration (#338): the sync subagent
+		// drives the inner ADK runner directly here, bypassing the inner
+		// *Agent.Run wrapper that owns recordInvocation — so without this
+		// a synchronously-invoked subagent's turns never land in the
+		// histogram, unlike the async/background path (which runs through
+		// autonomous.Run → *Agent.Run). Record against the inner agent's
+		// own instrument (its metricAgentName, bounded by config), timed
+		// over the run only — the depth refusal and runner-build failure
+		// above are pre-turn, matching RunWithContents' validation-first
+		// posture. turnErr carries error.type on a failed run.
+		started := time.Now()
+		var turnErr error
+		defer func() { opts.Inner.recordInvocation(time.Since(started).Seconds(), turnErr) }()
 		for ev, err := range r.Run(childCtx, innerUserID, subagentSessionID, msg, adkagent.RunConfig{
 			StreamingMode: opts.Inner.streaming,
 		}) {
 			if err != nil {
-				return subagentResult{}, fmt.Errorf("subagent %q: run: %w", name, err)
+				turnErr = fmt.Errorf("subagent %q: run: %w", name, err)
+				return subagentResult{}, turnErr
 			}
 			collectFinalText(&sb, ev)
 		}

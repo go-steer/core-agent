@@ -126,7 +126,7 @@ See [Cost efficiency](/agent-design/cost-efficiency/) for more detailed cost-mod
 
 ## Background subagents: choreography patterns
 
-Background subagents are spawned via `spawn_agent` (the model can call it directly) or `/subagent <goal>` (operator-driven from the TUI). The parent gets back a subagent ID; the subagent runs in its own session; alerts and completion summaries flow back through the inbox.
+Background subagents are spawned via `spawn_agent` (the model can call it directly) or `/subagent <name> <goal>` (operator-driven from the TUI, referencing a configured subagent). The parent gets back a subagent ID; the subagent runs in its own session; alerts and completion summaries flow back through the inbox.
 
 ### Pattern 1 — worker
 
@@ -235,6 +235,17 @@ Background subagents are decided at runtime — the parent (or operator) picks a
 ```
 
 With `root` set, the subagent loads its persona from `<root>/AGENTS.md` (an inline `instructions` still overrides it), its skills from `<root>/skills/`, and its MCP servers from `<root>/mcp.json` — none of which the parent loads. The same nil / list / empty contract still applies, but now it filters **within the root**: omit `skills` to get all of the root's skills, or list a subset. Built-in `tools` stay inline (they live in the binary, not a directory). A relative `root` resolves like a [content root](/reference/configuration/) (against the agents dir, else the cwd); a missing directory is a loud startup error. This is what lets sibling recipe trees — `agents/platform/` (the fleet parent) and `agents/cluster/` (a read-only specialist) — ship under one mounted image with cleanly separated personas and skills.
+
+**Invoke it sync *or* async (v2.9+).** A declarative subagent isn't sync-only. Every roster entry — including a rooted one with its own MCP + skills — is also spawnable by reference through the unified `spawn_agent` surface, so the parent can choose per call:
+
+```jsonc
+spawn_agent { agent: "cluster", goal: "<a quick triage plan>" }             // async: fire-and-continue, report pushed later
+spawn_agent { agent: "cluster", goal: "...", wait: true }                   // sync: block this turn, return the result inline
+spawn_agent { agent: "cluster", goal: "triage pool A" }                     // fan out the same spec N times with different goals
+spawn_agent { agent: "cluster", goal: "...", model: "small" }              // narrow-only override: downshift the tier
+```
+
+`wait: true` reproduces the classic named-tool delegation (block, get the answer), capped by a tighter sync wall-clock so a slow subagent can't hang the parent turn — on timeout the subagent keeps running and its result is pushed later. Omitting `wait` is fire-and-continue: the parent handles other work and receives the subagent's report on a subsequent turn. Overrides are **narrowing-only** — you can drop the tier to `small` or tighten budgets, never widen the grant or name a different model (configure a dedicated spec for that). Operators can spawn the same roster by name from the TUI with `/subagent <name> <goal>`. See [Unified subagent invocation](https://github.com/go-steer/core-agent/blob/main/docs/unified-subagent-invocation-design.md) for the design.
 
 See [Reference → Declarative subagents](/reference/configuration/#declarative-subagents-v29) for the full field schema, and [`examples/kube-platform-agent/`](https://github.com/go-steer/core-agent/tree/main/examples/kube-platform-agent) for a recipe that delegates GKE reads to a scoped `cluster` subagent.
 

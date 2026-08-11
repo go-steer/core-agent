@@ -21,14 +21,52 @@ import (
 	"strings"
 	"time"
 
+	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
 	"github.com/go-steer/core-agent/v2/pkg/agent/internal/subsession"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
+
+// resolvedSpawn is a fully-resolved launch recipe — everything the
+// per-spawn goroutine needs after kind-specific resolution has run.
+// Two callers build it: Spawn, from a catalog Spec (tools resolved by
+// name against m.catalog, model built from m.provider); and
+// SpawnTemplate, from a predefined SubagentTemplate (tools + toolsets
+// pre-resolved by the declarative-subagent builder, model built from
+// the template's own factory). Both then funnel through launch, which
+// owns the shared reservation + goroutine machinery (#626).
+type resolvedSpawn struct {
+	// name is the per-instance name (Spec.Name, or a template's
+	// auto-derived "<spec>-<n>"). goal is the task.
+	name string
+	goal string
+	// instrOpts install the persona: WithExtraInstruction /
+	// WithInstruction for a catalog Spec, WithUserInstruction for a
+	// template (layer 4, matching the sync declarative path). Empty when
+	// the subagent carries no persona layer.
+	instrOpts []agent.Option
+	// tools are the built-in tools (already resolved to instances);
+	// toolsets are MCP + skills groups (nil for the catalog path, which
+	// has no toolset dimension). Both are shared, stateless handles safe
+	// to reuse across concurrent instances.
+	tools    []tool.Tool
+	toolsets []tool.Toolset
+	// buildModel builds a fresh LLM for this spawn. Called after the
+	// reservation so a Stop arriving during its (network) I/O still
+	// cancels cleanly (#366). priceModelID labels the model for /usage.
+	buildModel   func(context.Context) (adkmodel.LLM, error)
+	priceModelID string
+	// maxDepth caps the subagent's OWN nesting (0 = substrate default).
+	maxDepth int
+	// budgets + scheduler bound and pace the run.
+	budgets   Budgets
+	scheduler coretools.Scheduler
+}
 
 // Spawn launches a new background subagent under spec. parentBranch
 // is the branch the calling tool's context carries (typically empty
@@ -46,9 +84,60 @@ import (
 // parent. Once the goroutine is running, terminal errors land on the
 // handle (h.Err()) and a corresponding Alert is pushed.
 func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*Handle, error) {
+	if err := validateSpec(spec); err != nil {
+		return nil, err
+	}
+	// Resolve the catalog Spec's per-kind pieces: built-in tools by name,
+	// scheduler choice, and the model id (the spec's own when set — a
+	// predefined spec's configured model or a "small" downshift resolved
+	// at reference time, #626 — else the manager's, typically the
+	// parent's). These are fast + read-only, so they run before the
+	// reservation; the slow model build happens inside launch, after.
+	tools, err := m.resolveTools(append([]string{}, append(spec.Tools, spec.Extras...)...))
+	if err != nil {
+		return nil, err
+	}
+	sched, err := m.resolveScheduler(spec.Scheduler)
+	if err != nil {
+		return nil, err
+	}
+	resolvedModelID := m.modelID
+	if id := strings.TrimSpace(spec.ModelID); id != "" {
+		resolvedModelID = id
+	}
+	var instrOpts []agent.Option
+	if strings.TrimSpace(spec.SystemPrompt) != "" {
+		if spec.ReplaceSystemPrompt {
+			// Pre-#459 escape hatch: bare prompt, no harness layers.
+			instrOpts = []agent.Option{agent.WithInstruction(spec.SystemPrompt)}
+		} else {
+			instrOpts = []agent.Option{agent.WithExtraInstruction(spec.SystemPrompt)}
+		}
+	}
+	return m.launch(ctx, parentBranch, resolvedSpawn{
+		name:         spec.Name,
+		goal:         spec.Goal,
+		instrOpts:    instrOpts,
+		tools:        tools,
+		buildModel:   func(c context.Context) (adkmodel.LLM, error) { return m.provider.Model(c, resolvedModelID) },
+		priceModelID: resolvedModelID,
+		budgets:      mergeBudgets(m.defaultBudgets, spec.Budgets),
+		scheduler:    sched,
+	})
+}
+
+// launch reserves the subagent slot, builds a fresh LLM, and starts the
+// goroutine that runs autonomous.Run against rs.goal. It is the single
+// path both Spawn (catalog Spec) and SpawnTemplate (predefined template)
+// funnel through, so all the concurrency-safety fixes live in one place:
+// the depth + concurrency caps and same-name eviction under the lock, the
+// cancel registered before the handle becomes visible (#366), the
+// identity-checked rollback on a pre-launch model error (#488/#502), and
+// the shouldAlert suppression of a stale incarnation's terminal alert.
+func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSpawn) (*Handle, error) {
 	// Validation + caps + parent presence are all checked under the
-	// manager lock so a burst of concurrent Spawn calls can't all
-	// pass the cap check before any registers a handle.
+	// manager lock so a burst of concurrent launches can't all pass the
+	// cap check before any registers a handle.
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -59,85 +148,72 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 		m.mu.Unlock()
 		return nil, ErrNoParent
 	}
-	if err := validateSpec(spec); err != nil {
+	if err := validateSpawnName(rs.name); err != nil {
 		m.mu.Unlock()
 		return nil, err
+	}
+	if strings.TrimSpace(rs.goal) == "" {
+		m.mu.Unlock()
+		return nil, errors.New("background: goal is required")
 	}
 	if depth := subsession.CurrentDepth(ctx); depth >= m.maxDepth {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("%w (depth=%d, max=%d)", ErrDepthExceeded, depth, m.maxDepth)
 	}
-	if existing, exists := m.agents[spec.Name]; exists {
+	if existing, exists := m.agents[rs.name]; exists {
 		if existing.Status() == StatusRunning {
 			m.mu.Unlock()
-			return nil, fmt.Errorf("%w: %q", ErrSubagentExists, spec.Name)
+			return nil, fmt.Errorf("%w: %q", ErrSubagentExists, rs.name)
 		}
 		// The previous holder of this name reached a terminal state
 		// (completed / failed / stopped / deferred) — evict its handle
 		// so the name is reusable. Without the eviction a name was
 		// burned forever once its subagent finished, which broke
 		// re-spawn-with-same-name workflows.
-		delete(m.agents, spec.Name)
+		delete(m.agents, rs.name)
 	}
 	if m.maxConcurrent > 0 && m.runningCount() >= m.maxConcurrent {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("%w (running=%d, max=%d)", ErrTooManyConcurrent, m.runningCount(), m.maxConcurrent)
 	}
-	// Reserve the slot before we drop the lock so a concurrent Spawn
+	// Reserve the slot before we drop the lock so a concurrent launch
 	// of the same name (or contending for the last concurrency slot)
 	// sees us already registered.
-	branch := subsession.ComposeBranch(parentBranch, "bg."+spec.Name)
+	branch := subsession.ComposeBranch(parentBranch, "bg."+rs.name)
 	// Create the goroutine's cancellable context and register its
 	// cancel on the handle BEFORE the handle becomes visible in
-	// m.agents. Otherwise a Stop() arriving during the slow tool /
-	// scheduler / model resolution below (which can do network I/O)
-	// would find handle.cancel == nil, mark the subagent Stopped, and
-	// return — while the goroutine still launched and ran the full
-	// autonomous loop, burning budget under a "stopped" status (#366).
-	// With cancel registered up front, such a Stop() cancels goCtx, so
-	// when the goroutine launches autonomous.Run exits immediately and
-	// the status stays Stopped.
+	// m.agents. Otherwise a Stop() arriving during the slow model build
+	// below (which does network I/O) would find handle.cancel == nil,
+	// mark the subagent Stopped, and return — while the goroutine still
+	// launched and ran the full autonomous loop, burning budget under a
+	// "stopped" status (#366). With cancel registered up front, such a
+	// Stop() cancels goCtx, so when the goroutine launches autonomous.Run
+	// exits immediately and the status stays Stopped.
 	goCtx, cancel := context.WithCancel(contextWithoutCancel(ctx))
 	goCtx = subsession.WithDepth(goCtx, subsession.CurrentDepth(ctx)+1)
-	goCtx = permissions.WithSubagentSource(goCtx, spec.Name)
+	goCtx = permissions.WithSubagentSource(goCtx, rs.name)
 	handle := &Handle{
-		Name:      spec.Name,
+		Name:      rs.name,
 		Branch:    branch,
 		StartedAt: time.Now(),
 		status:    StatusRunning,
 		done:      make(chan struct{}),
 		cancel:    cancel,
 	}
-	m.agents[spec.Name] = handle
+	m.agents[rs.name] = handle
 	m.mu.Unlock()
 
-	// Resolve tools outside the lock — catalog is read-only after
-	// construction, so safe.
-	tools, err := m.resolveTools(append([]string{}, append(spec.Tools, spec.Extras...)...))
+	// Build a fresh LLM per subagent — see docs/background-subagents-design.md
+	// "LLM instance per subagent" for the rationale. For a catalog Spec this
+	// goes to the provider's Model factory (which caches auth handles + HTTP
+	// transport, so it's cheap); for a template it calls the declarative
+	// builder's factory (same provider.Model underneath). Done after the
+	// reservation so a Stop during its I/O cancels cleanly (#366).
+	subModel, err := rs.buildModel(ctx)
 	if err != nil {
 		// Undo the reservation since the goroutine never launches, and
 		// release the goroutine context we registered up front (#366).
-		m.abortSpawn(spec.Name, handle, cancel)
-		return nil, err
-	}
-
-	// Resolve the per-spawn scheduler choice. A nil scheduler is a
-	// valid outcome — it means "no between-turn pacing for this
-	// subagent" and the schedule_next_turn tool simply isn't
-	// registered.
-	sched, err := m.resolveScheduler(spec.Scheduler)
-	if err != nil {
-		m.abortSpawn(spec.Name, handle, cancel)
-		return nil, err
-	}
-
-	// Build a fresh LLM per subagent — see docs/background-subagents-design.md
-	// "LLM instance per subagent" for the rationale. Each call goes to the
-	// provider's Model factory, which caches auth handles and HTTP transport
-	// internally, so this is cheap.
-	subModel, err := m.provider.Model(ctx, m.modelID)
-	if err != nil {
-		m.abortSpawn(spec.Name, handle, cancel)
+		m.abortSpawn(rs.name, handle, cancel)
 		return nil, fmt.Errorf("background: build subagent model: %w", err)
 	}
 
@@ -154,53 +230,57 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 	// (and resumed/reported on) by its stable name, so its derived row
 	// is intentionally deterministic (unlike the parallel-tool-call
 	// subagent path in subagent.go, #364).
-	subSessionID := subsession.DeriveSessionID(parent.SessionID(), "bg."+spec.Name, "")
+	subSessionID := subsession.DeriveSessionID(parent.SessionID(), "bg."+rs.name, "")
 
-	// Per-spawn budgets: spec overrides default, default fills the
-	// rest. Zero values mean "no cap" for that dimension.
-	budgets := mergeBudgets(m.defaultBudgets, spec.Budgets)
+	name := rs.name
+	goal := rs.goal
+	sched := rs.scheduler
+	budgets := rs.budgets
+	priceModelID := rs.priceModelID
+	baseTools := rs.tools
+	toolsets := rs.toolsets
+	instrOpts := rs.instrOpts
+	maxDepth := rs.maxDepth
 
 	// Build phase: the autonomous driver hands us a done-tool we have
 	// to include alongside our subagent's tools + our own report
 	// tools. The Agent we build inside `build` runs in its own
 	// goroutine so the construction happens after the goroutine
 	// starts (autonomous.Run calls build).
-	subagentInstruction := spec.SystemPrompt
-	replacePrompt := spec.ReplaceSystemPrompt
-	subagentName := spec.Name
-	subagentGoal := spec.Goal
-
 	build := func(extraTools []tool.Tool) (*agent.Agent, error) {
 		// extraTools is the report_done tool the autonomous driver
 		// injected; merge it with our subagent's chosen tools and
 		// the always-on report_alert / report_completed tools.
-		all := make([]tool.Tool, 0, len(tools)+len(extraTools)+2)
-		all = append(all, tools...)
+		all := make([]tool.Tool, 0, len(baseTools)+len(extraTools)+2)
+		all = append(all, baseTools...)
 		all = append(all, extraTools...)
 		all = append(all,
-			newReportAlertTool(m, subagentName),
-			newReportCompletedTool(m, subagentName),
+			newReportAlertTool(m, name),
+			newReportCompletedTool(m, name),
 		)
-		instrOpt := agent.WithExtraInstruction(subagentInstruction)
-		if replacePrompt {
-			// Pre-#459 escape hatch: bare prompt, no harness layers.
-			instrOpt = agent.WithInstruction(subagentInstruction)
-		}
-		return agent.New(subModel,
+		opts := make([]agent.Option, 0, len(instrOpts)+9)
+		opts = append(opts,
 			agent.WithAppName(parent.AppName()),
-			agent.WithName(subagentName),
-			// subagentName is MODEL-CHOSEN — stamping it on the
-			// invocation histogram would accrete one series per
-			// invented name on a long-lived daemon. Metrics get the
-			// bounded class-level identity instead.
+			agent.WithName(name),
+			// name may be MODEL-CHOSEN (ad-hoc) — stamping it on the
+			// invocation histogram would accrete one series per invented
+			// name on a long-lived daemon. Metrics get the bounded
+			// class-level identity instead.
 			agent.WithMetricAgentName("background_subagent"),
 			agent.WithMode(agent.ModeAutonomous),
-			instrOpt,
 			agent.WithStreaming(parent.Streaming()),
 			agent.WithSession(parent.UserID(), subSessionID),
 			agent.WithTools(all),
 			agent.WithSessionService(wrappedSvc),
 		)
+		opts = append(opts, instrOpts...)
+		if len(toolsets) > 0 {
+			opts = append(opts, agent.WithToolsets(toolsets))
+		}
+		if maxDepth > 0 {
+			opts = append(opts, agent.WithSubagentMaxDepth(maxDepth))
+		}
+		return agent.New(subModel, opts...)
 	}
 
 	go func() {
@@ -233,10 +313,10 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 		// manager was constructed with a cheaper flash-tier model), so
 		// the per-model attribution in /usage stays accurate.
 		if parent.Tracker() != nil {
-			opts = append(opts, autonomous.WithTracker(parent.Tracker(), usage.PriceFor(m.modelID, nil)))
+			opts = append(opts, autonomous.WithTracker(parent.Tracker(), usage.PriceFor(priceModelID, nil)))
 		}
 
-		result, runErr := autonomous.Run(goCtx, build, subagentGoal, opts...)
+		result, runErr := autonomous.Run(goCtx, build, goal, opts...)
 
 		handle.mu.Lock()
 		handle.result = &result
@@ -283,11 +363,11 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 				text = "stopped: " + string(result.Reason)
 			}
 		}
-		if !m.shouldAlert(subagentName, handle) {
+		if !m.shouldAlert(name, handle) {
 			return
 		}
 		m.pushAlert(Alert{
-			From:      subagentName,
+			From:      name,
 			Text:      text,
 			Kind:      kind,
 			Timestamp: time.Now(),
@@ -353,19 +433,30 @@ func (m *Manager) unreserve(name string, handle *Handle) {
 	m.mu.Unlock()
 }
 
+// validateSpawnName rejects names that can't seed a branch label: empty,
+// whitespace-padded, or carrying separators that would confuse branch
+// parsing. Shared by validateSpec, validatePredefinedSpec, and launch.
+func validateSpawnName(name string) error {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return fmt.Errorf("background: subagent name is required")
+	}
+	if trimmed != name {
+		return fmt.Errorf("background: subagent name must not have leading/trailing whitespace: %q", name)
+	}
+	if strings.ContainsAny(trimmed, ". /") {
+		return fmt.Errorf("background: subagent name must not contain '.', '/' or spaces: %q", trimmed)
+	}
+	return nil
+}
+
 // validateSpec rejects invalid Spec values early. Names are required
 // and must be reasonable (no whitespace; no separators that would
-// confuse branch parsing).
+// confuse branch parsing); a catalog Spec also needs a SystemPrompt and
+// Goal (the per-spawn form always carries both).
 func validateSpec(spec Spec) error {
-	name := strings.TrimSpace(spec.Name)
-	if name == "" {
-		return fmt.Errorf("background: spec.Name is required")
-	}
-	if name != spec.Name {
-		return fmt.Errorf("background: spec.Name must not have leading/trailing whitespace: %q", spec.Name)
-	}
-	if strings.ContainsAny(name, ". /") {
-		return fmt.Errorf("background: spec.Name must not contain '.', '/' or spaces: %q", name)
+	if err := validateSpawnName(spec.Name); err != nil {
+		return err
 	}
 	if strings.TrimSpace(spec.SystemPrompt) == "" {
 		return fmt.Errorf("background: spec.SystemPrompt is required")

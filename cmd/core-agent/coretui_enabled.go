@@ -758,6 +758,43 @@ func (a *coreAgentAdapter) Subagents() []coretui.SubagentInfo {
 	return out
 }
 
+// invokeSubagentSpawn implements the singular /subagent command: spawn a
+// configured subagent (declarative template or catalog spec) by name with a
+// goal, fire-and-continue. With no args it lists the configured reference
+// names; the plural /subagents lists live instances (#627).
+func (a *coreAgentAdapter) invokeSubagentSpawn(ctx context.Context, args string) coretui.SlashResult {
+	mgr := background.ManagerOf(a.inner)
+	if mgr == nil {
+		return coretui.SlashResult{SystemMessage: "/subagent unavailable: background sub-agents are disabled (relaunch without --no-background-agents)."}
+	}
+	names := mgr.ReferenceNames()
+	trimmed := strings.TrimSpace(args)
+	if trimmed == "" {
+		if len(names) == 0 {
+			return coretui.SlashResult{SystemMessage: "/subagent: no configured sub-agents. Add a subagents[] entry to your config to spawn one by name."}
+		}
+		return coretui.SlashResult{SystemMessage: "usage: /subagent <name> <goal> — configured sub-agents: " + strings.Join(names, ", ")}
+	}
+	name, goal, _ := strings.Cut(trimmed, " ")
+	goal = strings.TrimSpace(goal)
+	if goal == "" {
+		return coretui.SlashResult{SystemMessage: fmt.Sprintf("/subagent %s: provide a goal — usage: /subagent <name> <goal>", name)}
+	}
+	h, err := mgr.SpawnRef(ctx, "", name, goal, background.RefOverrides{}, "")
+	switch {
+	case errors.Is(err, background.ErrUnknownSubagent):
+		avail := "none configured"
+		if len(names) > 0 {
+			avail = strings.Join(names, ", ")
+		}
+		return coretui.SlashResult{SystemMessage: fmt.Sprintf("/subagent: no configured sub-agent named %q. Available: %s", name, avail)}
+	case err != nil:
+		return coretui.SlashResult{SystemMessage: "/subagent failed: " + err.Error()}
+	default:
+		return coretui.SlashResult{SystemMessage: fmt.Sprintf("Spawned sub-agent %q (branch %s), running in the background — its report will appear on a later turn; use /subagents to check status.", h.Name, h.Branch)}
+	}
+}
+
 // Status satisfies coretui.StatusReporter. Wraps the agent's
 // AttachStatus snapshot so the status surface reflects deferred /
 // waiting / etc. state. Provider is sourced from the host config
@@ -832,7 +869,7 @@ func (a *coreAgentAdapter) SlashCommands() []coretui.SlashCommandSpec {
 		{
 			Name:        "subagent",
 			Aliases:     []string{"sub"},
-			Description: "spawn a background sub-agent: /subagent <goal> [--name=X --tools=Y --max-turns=N]",
+			Description: "spawn a configured background sub-agent by name: /subagent <name> <goal> (run /subagent with no args to list configured names)",
 		},
 	}
 	if a.inner.HasCompactor() {
@@ -888,13 +925,17 @@ func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (
 			ModalAnswer: &coretui.SideAnswer{Question: args, Answer: answer},
 		}, nil
 	case "subagent", "sub":
-		// Full flag parsing not yet wired into the core-tui adapter.
-		// Library callers can drive subagent spawn directly via
-		// BackgroundAgentManager.Spawn while we lift the slash flag
-		// parser.
-		return coretui.SlashResult{
-			SystemMessage: "/subagent requires a flag parser that isn't wired into the core-tui adapter yet.",
-		}, nil
+		// Singular /subagent = spawn a CONFIGURED subagent by name onto
+		// the unified async surface (#626). Plural /subagents = list
+		// live instances (Subagents()/#627). Operator-driven ad-hoc
+		// personas are intentionally not offered here — the operator
+		// curates specs in config; the command only references them.
+		//
+		// The spawn is fire-and-continue: SpawnRef launches the goroutine
+		// and returns immediately, so this stays non-blocking in core-tui's
+		// synchronous Update loop. The subagent's result arrives on a later
+		// turn as a [Background reports] line.
+		return a.invokeSubagentSpawn(ctx, args), nil
 	case "done", "checkpoint":
 		// Mirrors /compact's structure — Agent.Checkpoint runs the
 		// same summarizer machinery; differences are the tag value

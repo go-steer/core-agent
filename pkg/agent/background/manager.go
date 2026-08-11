@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -91,6 +92,37 @@ type Manager struct {
 	maxConcurrent    int
 	defaultBudgets   Budgets
 	defaultScheduler coretools.Scheduler
+
+	// predefined is the operator-curated roster the model can spawn by
+	// reference (spawn_agent {agent: "<name>"}), keyed by spec name.
+	// Templates: each carries a persona, tool grant, model, and budgets
+	// a reference spawn may only narrow. Read-only after construction.
+	predefined map[string]Spec
+	// templates is the richer roster of DECLARATIVE subagents — those with
+	// pre-resolved instruction + model factory + toolsets (MCP + skills),
+	// including rooted subagents with their own content root. Keyed by
+	// name; disjoint from predefined. Populated by the declarative-subagent
+	// builder via SetSubagentTemplates so the same subagent the parent can
+	// call synchronously (agent.WithSubagents) is also spawnable async by
+	// reference (#626, option B).
+	templates map[string]SubagentTemplate
+	// allowAdhoc gates inline-persona (ad-hoc) spawns. Off by default so
+	// an unattended daemon's model can only spawn operator-vetted specs.
+	allowAdhoc bool
+	// smallModelID backs the "small" model override; empty means the
+	// small tier isn't configured and "small" spawns are rejected.
+	smallModelID string
+	// syncWaitTimeout bounds how long a synchronous spawn (spawn_agent
+	// {wait: true}, #626/D5) may hold the parent turn open before the tool
+	// returns a partial/timeout result. Distinct from — and typically
+	// tighter than — a subagent's own fire-and-continue wall-clock budget:
+	// the subagent keeps running (its result later pushed), only the parent's
+	// wait is capped. Zero means wait indefinitely (until the subagent's own
+	// budget or the parent ctx ends it).
+	syncWaitTimeout time.Duration
+	// instanceSeq gives each predefined spec a monotonic instance
+	// counter for auto-derived names ("cluster-1", "cluster-2", ...).
+	instanceSeq map[string]int
 
 	agents  map[string]*Handle
 	alerts  chan Alert
@@ -240,6 +272,12 @@ type Spec struct {
 	Tools               []string
 	Extras              []string
 	Budgets             Budgets
+	// ModelID selects the model this subagent runs on. Empty means
+	// "inherit the manager's model" (m.modelID — typically the parent's).
+	// A predefined spec carries its operator-configured model here; a
+	// per-spawn "small" override rewrites it to the manager's small-tier
+	// model id (see resolvePredefinedSpec / WithSmallModelID, #626).
+	ModelID string
 	// Scheduler selects the between-turn scheduler the subagent's
 	// RunAutonomous loop honors. Valid values: "" or "default" (use
 	// the manager's WithDefaultScheduler — may itself be
@@ -262,6 +300,11 @@ type bgMgrConfig struct {
 	defaultBudgets   Budgets
 	defaultScheduler coretools.Scheduler
 	alertBuffer      int
+	predefined       []Spec
+	templates        []SubagentTemplate
+	allowAdhoc       bool
+	smallModelID     string
+	syncWaitTimeout  time.Duration
 }
 
 // WithProvider wires the model provider + model ID used to
@@ -331,6 +374,44 @@ func WithAlertBuffer(n int) ManagerOption {
 	return func(c *bgMgrConfig) { c.alertBuffer = n }
 }
 
+// WithPredefinedSpecs registers the operator-curated subagent roster
+// the parent's model can spawn by reference (spawn_agent {agent:
+// "<name>"}, #626). Each spec is a template: its SystemPrompt, tool
+// grant, model (Spec.ModelID), and budgets are what a reference spawn
+// inherits and may only narrow. Names must be unique and non-empty;
+// each spec needs a SystemPrompt (its persona). Goal may be empty — the
+// parent supplies the task per spawn. Duplicate or invalid specs make
+// NewManager return an error.
+func WithPredefinedSpecs(specs []Spec) ManagerOption {
+	return func(c *bgMgrConfig) { c.predefined = specs }
+}
+
+// WithAllowAdhoc permits inline-persona (ad-hoc) spawns — the parent's
+// model authoring a fresh system_prompt at spawn time rather than
+// referencing a predefined spec. Off by default (the daemon posture):
+// an unattended daemon should only spawn operator-vetted specs. Turn it
+// on for interactive/dev sessions where a human is steering.
+func WithAllowAdhoc(allow bool) ManagerOption {
+	return func(c *bgMgrConfig) { c.allowAdhoc = allow }
+}
+
+// WithSmallModelID sets the model id the "small" per-spawn model
+// override resolves to (D2). Without it, spawns requesting model:
+// "small" are rejected with ErrNoSmallModel.
+func WithSmallModelID(id string) ManagerOption {
+	return func(c *bgMgrConfig) { c.smallModelID = id }
+}
+
+// WithSyncWaitTimeout bounds how long a synchronous spawn (spawn_agent
+// {wait: true}, #626) holds the parent turn open before returning a
+// partial/timeout result. The subagent keeps running in the background
+// past the timeout (its result later pushed via [Background reports]); only
+// the parent's blocking wait is capped. Zero (the default) waits until the
+// subagent finishes on its own budget or the parent context is canceled.
+func WithSyncWaitTimeout(d time.Duration) ManagerOption {
+	return func(c *bgMgrConfig) { c.syncWaitTimeout = d }
+}
+
 // NewManager builds a manager from the supplied
 // options. Required: provider + modelID (WithProvider).
 // The parent agent reference is established later by
@@ -363,7 +444,17 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 		}
 		catalog[t.Name()] = t
 	}
-	return &Manager{
+	predefined := make(map[string]Spec, len(cfg.predefined))
+	for _, s := range cfg.predefined {
+		if err := validatePredefinedSpec(s); err != nil {
+			return nil, err
+		}
+		if _, dup := predefined[s.Name]; dup {
+			return nil, fmt.Errorf("background: duplicate predefined subagent name %q", s.Name)
+		}
+		predefined[s.Name] = s
+	}
+	m := &Manager{
 		provider:         cfg.provider,
 		modelID:          cfg.modelID,
 		gate:             cfg.gate,
@@ -372,9 +463,39 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 		maxConcurrent:    cfg.maxConcurrent,
 		defaultBudgets:   cfg.defaultBudgets,
 		defaultScheduler: cfg.defaultScheduler,
+		predefined:       predefined,
+		templates:        make(map[string]SubagentTemplate),
+		allowAdhoc:       cfg.allowAdhoc,
+		smallModelID:     cfg.smallModelID,
+		syncWaitTimeout:  cfg.syncWaitTimeout,
+		instanceSeq:      make(map[string]int),
 		agents:           make(map[string]*Handle),
 		alerts:           make(chan Alert, cfg.alertBuffer),
-	}, nil
+	}
+	// Declarative-subagent templates passed at construction (rare — most
+	// callers use SetSubagentTemplates because the builder runs after the
+	// manager exists). Validated + collision-checked the same way.
+	if len(cfg.templates) > 0 {
+		if err := m.SetSubagentTemplates(cfg.templates); err != nil {
+			return nil, err
+		}
+	}
+	return m, nil
+}
+
+// validatePredefinedSpec checks a roster entry at construction time.
+// Unlike validateSpec (the per-spawn check), Goal may be empty here — a
+// template spec typically has its goal supplied per spawn — but Name
+// and SystemPrompt are required, and Name must be branch-safe since it
+// seeds auto-derived instance names.
+func validatePredefinedSpec(spec Spec) error {
+	if err := validateSpawnName(spec.Name); err != nil {
+		return err
+	}
+	if strings.TrimSpace(spec.SystemPrompt) == "" {
+		return fmt.Errorf("background: predefined spec %q needs a SystemPrompt", spec.Name)
+	}
+	return nil
 }
 
 // ErrUnknownScheduler is wrapped and returned by Spawn when a

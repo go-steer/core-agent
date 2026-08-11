@@ -375,6 +375,52 @@ func TestFormatAuthLine(t *testing.T) {
 	}
 }
 
+func TestFormatSubagentsLine(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		cfg        *config.Config
+		wantSubstr []string
+	}{
+		{
+			name:       "nil cfg",
+			cfg:        nil,
+			wantSubstr: []string{"subagents: 0 configured"},
+		},
+		{
+			name:       "none configured",
+			cfg:        &config.Config{},
+			wantSubstr: []string{"subagents: 0 configured"},
+		},
+		{
+			name: "single subagent with model and root",
+			cfg: &config.Config{Subagents: []config.SubagentSpec{
+				{Name: "cluster", Model: &config.ModelConfig{Name: "gemini-3.5-flash"}, Root: "../cluster"},
+			}},
+			wantSubstr: []string{"subagents: 1 configured", "cluster (model=gemini-3.5-flash, root=../cluster)"},
+		},
+		{
+			name: "multiple subagents alphabetized",
+			cfg: &config.Config{Subagents: []config.SubagentSpec{
+				{Name: "zeta"},
+				{Name: "alpha", Model: &config.ModelConfig{Name: "gemini-3.5-flash"}},
+			}},
+			wantSubstr: []string{"subagents: 2 configured", "alpha (model=gemini-3.5-flash), zeta"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := formatSubagentsLine(tc.cfg)
+			for _, s := range tc.wantSubstr {
+				if !strings.Contains(got, s) {
+					t.Errorf("formatSubagentsLine: missing %q; got: %q", s, got)
+				}
+			}
+		})
+	}
+}
+
 // dummySkillToolset satisfies skills.Skills.Empty() != true check
 // (Empty() returns Toolset == nil, so any non-nil Toolset value works).
 // Implements the adktool.Toolset interface with no-op methods.

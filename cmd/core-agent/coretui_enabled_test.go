@@ -18,9 +18,12 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"google.golang.org/genai"
+
+	"github.com/go-steer/core-agent/v2/pkg/attach"
 )
 
 func TestSplitFunctionResponse_NoError(t *testing.T) {
@@ -132,6 +135,50 @@ func TestPreambleFor(t *testing.T) {
 			got := preambleFor(tc.name, tc.args)
 			if got != tc.expect {
 				t.Errorf("preambleFor(%q, %q) = %q, want %q", tc.name, tc.args, got, tc.expect)
+			}
+		})
+	}
+}
+
+func TestFormatSubagentCatalog(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		cat        []attach.SubagentCatalogInfo
+		wantSubstr []string
+	}{
+		{
+			name:       "empty roster",
+			cat:        nil,
+			wantSubstr: []string{"0 configured sub-agent(s)"},
+		},
+		{
+			name: "declarative subagent with model + root + modes + description",
+			cat: []attach.SubagentCatalogInfo{
+				{Name: "cluster", Model: "gemini-3.5-flash", Root: "../cluster", Modes: []string{"sync", "async"}, Description: "read-only cluster ops"},
+			},
+			wantSubstr: []string{
+				"1 configured sub-agent(s)",
+				"• cluster [model=gemini-3.5-flash, root=../cluster, sync+async] — read-only cluster ops",
+			},
+		},
+		{
+			name: "predefined spec: async-only, no root, empty model falls back to inherit",
+			cat: []attach.SubagentCatalogInfo{
+				{Name: "monitor", Modes: []string{"async"}},
+			},
+			wantSubstr: []string{"• monitor [model=inherit, async]"},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := formatSubagentCatalog(tc.cat)
+			for _, s := range tc.wantSubstr {
+				if !strings.Contains(got, s) {
+					t.Errorf("formatSubagentCatalog: missing %q; got:\n%s", s, got)
+				}
 			}
 		})
 	}

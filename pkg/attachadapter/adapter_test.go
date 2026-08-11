@@ -406,3 +406,63 @@ func TestAdapter_AttachCapabilities_ReportsWiredness(t *testing.T) {
 		t.Errorf("nil adapter report = %+v, want zero", got)
 	}
 }
+
+// fakeSubagentManager is a minimal agent.SubagentManager for exercising
+// the catalog projection without standing up a real background.Manager.
+type fakeSubagentManager struct {
+	catalog []attach.SubagentCatalogInfo
+	live    []attach.AgentInfo
+}
+
+func (f *fakeSubagentManager) AttachParent(*agent.Agent)            {}
+func (f *fakeSubagentManager) PrependPendingAlerts(p string) string { return p }
+func (f *fakeSubagentManager) ListSubagents() []attach.AgentInfo    { return f.live }
+func (f *fakeSubagentManager) ListSubagentCatalog() []attach.SubagentCatalogInfo {
+	return f.catalog
+}
+func (f *fakeSubagentManager) SpawnSubagent(context.Context, attach.SubagentSpec) (attach.SubagentSpawnResponse, error) {
+	return attach.SubagentSpawnResponse{}, nil
+}
+
+func TestAttachSubagentCatalog_NoManager_Empty(t *testing.T) {
+	t.Parallel()
+	ad := New(newEchoAgent(t))
+	if got := ad.AttachSubagentCatalog(); got != nil {
+		t.Errorf("AttachSubagentCatalog with no manager = %v, want nil", got)
+	}
+}
+
+func TestAttachSubagentCatalog_Wired_Delegates(t *testing.T) {
+	t.Parallel()
+	want := []attach.SubagentCatalogInfo{
+		{Name: "cluster", Description: "read-only GKE", Model: "gemini-3.5-flash", Root: "../cluster", Modes: []string{"sync", "async"}},
+	}
+	ad := New(newEchoAgent(t, agent.WithBackgroundManager(&fakeSubagentManager{catalog: want})))
+	got := ad.AttachSubagentCatalog()
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("AttachSubagentCatalog() = %+v, want %+v", got, want)
+	}
+}
+
+func TestAttachTools_ClassifiesSubagentSource(t *testing.T) {
+	t.Parallel()
+	child := newEchoAgent(t, agent.WithName("cluster"))
+	parent := newEchoAgent(t, agent.WithName("parent"), agent.WithSubagents([]*agent.Agent{child}))
+	ad := New(parent)
+
+	clusterSource := ""
+	found := false
+	for _, ti := range ad.AttachTools() {
+		if ti.Name == "cluster" {
+			clusterSource = ti.Source
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("cluster subagent tool absent from AttachTools()")
+	}
+	if clusterSource != attach.ToolSourceSubagent {
+		t.Errorf("cluster tool source = %q, want %q", clusterSource, attach.ToolSourceSubagent)
+	}
+}

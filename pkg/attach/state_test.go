@@ -28,14 +28,16 @@ import (
 // /tools, /agents, /status endpoints end-to-end.
 type richRegistrant struct {
 	stubRegistrant
-	tools  []ToolInfo
-	agents []AgentInfo
-	status StatusInfo
+	tools     []ToolInfo
+	agents    []AgentInfo
+	subagents []SubagentCatalogInfo
+	status    StatusInfo
 }
 
-func (r *richRegistrant) AttachTools() []ToolInfo   { return r.tools }
-func (r *richRegistrant) AttachAgents() []AgentInfo { return r.agents }
-func (r *richRegistrant) AttachStatus() StatusInfo  { return r.status }
+func (r *richRegistrant) AttachTools() []ToolInfo                      { return r.tools }
+func (r *richRegistrant) AttachAgents() []AgentInfo                    { return r.agents }
+func (r *richRegistrant) AttachSubagentCatalog() []SubagentCatalogInfo { return r.subagents }
+func (r *richRegistrant) AttachStatus() StatusInfo                     { return r.status }
 
 func TestIntegration_ToolsEndpoint(t *testing.T) {
 	t.Parallel()
@@ -140,6 +142,77 @@ func TestIntegration_AgentsEndpoint(t *testing.T) {
 	}
 	if got.Agents[0].Name != "monitor-1" || got.Agents[0].Status != "running" {
 		t.Errorf("agent 0: %+v", got.Agents[0])
+	}
+}
+
+func TestIntegration_SubagentsEndpoint(t *testing.T) {
+	t.Parallel()
+	reg := NewSessionRegistry()
+	ag := &richRegistrant{
+		stubRegistrant: stubRegistrant{app: "core-agent", user: "u", sid: "s1"},
+		subagents: []SubagentCatalogInfo{
+			{Name: "cluster", Description: "read-only cluster ops", Model: "gemini-3.5-flash", Root: "../cluster", Modes: []string{"sync", "async"}},
+			{Name: "monitor", Model: "gemini-3.5-flash", Modes: []string{"async"}},
+		},
+	}
+	if _, err := reg.Register(ag); err != nil {
+		t.Fatal(err)
+	}
+	base, cleanup := startTestServer(t, reg)
+	defer cleanup()
+
+	resp, err := http.Get(base + "/sessions/core-agent/s1/subagents")
+	if err != nil {
+		t.Fatalf("GET /subagents: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d: %s", resp.StatusCode, body)
+	}
+	var got struct {
+		Subagents []SubagentCatalogInfo `json:"subagents"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Subagents) != 2 {
+		t.Fatalf("len = %d, want 2", len(got.Subagents))
+	}
+	if got.Subagents[0].Name != "cluster" || got.Subagents[0].Root != "../cluster" {
+		t.Errorf("subagent 0: %+v", got.Subagents[0])
+	}
+	if len(got.Subagents[0].Modes) != 2 {
+		t.Errorf("subagent 0 modes = %v, want sync+async", got.Subagents[0].Modes)
+	}
+	if got.Subagents[1].Name != "monitor" || len(got.Subagents[1].Modes) != 1 {
+		t.Errorf("subagent 1: %+v", got.Subagents[1])
+	}
+}
+
+func TestIntegration_SubagentsEndpoint_NoProvider_EmptyList(t *testing.T) {
+	t.Parallel()
+	// stubRegistrant doesn't implement SubagentCatalogProvider — endpoint
+	// should still 200 with an empty list.
+	reg := NewSessionRegistry()
+	ag := &stubRegistrant{app: "core-agent", user: "u", sid: "s1"}
+	if _, err := reg.Register(ag); err != nil {
+		t.Fatal(err)
+	}
+	base, cleanup := startTestServer(t, reg)
+	defer cleanup()
+
+	resp, err := http.Get(base + "/sessions/core-agent/s1/subagents")
+	if err != nil {
+		t.Fatalf("GET /subagents: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != `{"subagents":[]}`+"\n" && string(body) != `{"subagents":[]}` {
+		t.Errorf("body = %q, want empty subagents list", body)
 	}
 }
 

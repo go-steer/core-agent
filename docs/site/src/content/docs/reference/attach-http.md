@@ -101,8 +101,9 @@ Every path suffix below appears under both `/sessions/{sid}/...` and `/sessions/
 | `/perms/stream` | SSE, `event: prompt`. **501** without `PromptBrokerProvider`. |
 | `/status` | `{"state":..., "model_name":..., "next_wake_at":..., "current_tool":...}` — never empty `state`. |
 | `/usage` | `UsageInfo` — see [UsageMetadata schema](#usagemetadata-schema) below. |
-| `/tools` | `{"tools":[{"name":..., "description":...}]}`. Empty when no provider. |
-| `/agents` | `{"agents":[{"name":..., "description":...}]}`. |
+| `/tools` | `{"tools":[{"name":..., "description":..., "source":...}]}`. Empty when no provider. `source` vocabulary is `builtin \| mcp \| skill \| subagent \| other`; declarative subagents wired as parent tools report `subagent`. (MCP- and skill-backed tools currently report `other` — per-source attribution for those is not yet emitted.) |
+| `/agents` | `{"agents":[{"name":..., "description":...}]}` — **live** spawned instances ("what's running"). |
+| `/subagents` | `{"subagents":[{"name":..., "description":..., "model":..., "root":..., "modes":[...]}]}` — the **configured** roster the daemon loaded ("what's spawnable by reference"), distinct from `/agents`. `modes` is `["sync","async"]` for declarative subagents (both a parent tool and `spawn_agent`-able) or `["async"]` for predefined specs. Empty when no provider. |
 | `/context` | `ContextInfo{compactions, checkpoints, chars_after_compaction, ...}`. |
 | `/memory` | `{"sources":[{"scope":..., "path":..., "bytes":...}]}` — the AGENTS.md chain. |
 | `/skills` | `{"skills":[{"name":..., "description":...}]}`. |

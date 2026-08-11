@@ -281,6 +281,10 @@ type Agent struct {
 	mode                 Mode
 	gate                 *permissions.Gate
 	bgMgr                SubagentManager
+	// subagentToolNames is the resolved name of each declarative subagent
+	// tool registered via WithSubagents. Read by SubagentNames() to drive
+	// the operator "subagent" tool-source classification (#627).
+	subagentToolNames []string
 	// subagentMaxDepth is this agent's recursion cap when wrapped as a
 	// subagent tool (set via WithSubagentMaxDepth). Read by a parent's
 	// WithSubagents resolution; 0 = substrate default.
@@ -385,6 +389,14 @@ type options struct {
 	sessionService      session.Service
 	eventLog            *eventlog.Handle
 	subagents           []*Agent
+	// subagentToolNames is the resolved tool name of each subagent
+	// registered via WithSubagents, captured during construction. Backs
+	// the parent's SubagentNames() accessor — which drives the "subagent"
+	// tool-source classification on operator surfaces (#627) — so the
+	// classification stays correct even when background spawning is off
+	// (--no-background-agents nils the manager, but the sync subagent
+	// tools still exist).
+	subagentToolNames []string
 	// subagentMaxDepth is this agent's own recursion cap when it is
 	// wrapped as a subagent tool (WithSubagentMaxDepth). Read by the
 	// PARENT's WithSubagents resolution, not used when this agent runs
@@ -768,6 +780,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 			return nil, fmt.Errorf("agent: WithSubagents: %w", err)
 		}
 		o.tools = append(o.tools, st)
+		o.subagentToolNames = append(o.subagentToolNames, st.Name())
 	}
 
 	// Register the mark_task_done built-in BEFORE llmagent.New —
@@ -891,6 +904,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		model:                model,
 		modelName:            model.Name(),
 		mode:                 o.mode,
+		subagentToolNames:    o.subagentToolNames,
 		subagentMaxDepth:     o.subagentMaxDepth,
 		invocationHist:       invocationHist,
 		toolInstrumenter:     toolInstrumenter,
@@ -933,6 +947,20 @@ func (a *Agent) Tools() []tool.Tool {
 	}
 	out := make([]tool.Tool, len(a.tools))
 	copy(out, a.tools)
+	return out
+}
+
+// SubagentNames returns the resolved tool names of the declarative
+// subagents registered via WithSubagents (empty when none). These are
+// synchronous parent-callable subagent tools; operator surfaces use the
+// set to classify their tool-source as "subagent" (#627), distinct from
+// ordinary built-ins. The result is a copy — callers may mutate it.
+func (a *Agent) SubagentNames() []string {
+	if a == nil || len(a.subagentToolNames) == 0 {
+		return nil
+	}
+	out := make([]string, len(a.subagentToolNames))
+	copy(out, a.subagentToolNames)
 	return out
 }
 

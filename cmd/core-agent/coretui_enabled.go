@@ -773,7 +773,7 @@ func (a *coreAgentAdapter) invokeSubagentSpawn(ctx context.Context, args string)
 		if len(names) == 0 {
 			return coretui.SlashResult{SystemMessage: "/subagent: no configured sub-agents. Add a subagents[] entry to your config to spawn one by name."}
 		}
-		return coretui.SlashResult{SystemMessage: "usage: /subagent <name> <goal> — configured sub-agents: " + strings.Join(names, ", ")}
+		return coretui.SlashResult{SystemMessage: formatSubagentCatalog(mgr.Catalog())}
 	}
 	name, goal, _ := strings.Cut(trimmed, " ")
 	goal = strings.TrimSpace(goal)
@@ -793,6 +793,36 @@ func (a *coreAgentAdapter) invokeSubagentSpawn(ctx context.Context, args string)
 	default:
 		return coretui.SlashResult{SystemMessage: fmt.Sprintf("Spawned sub-agent %q (branch %s), running in the background — its report will appear on a later turn; use /subagents to check status.", h.Name, h.Branch)}
 	}
+}
+
+// formatSubagentCatalog renders the configured-subagent roster (#627) for
+// the /subagent no-args listing: one line per subagent with its model,
+// content root, and invocation modes, so operators see what the daemon
+// loaded (and can spawn) without grepping the boot log. Distinct from
+// /subagents, which reports live instances.
+func formatSubagentCatalog(cat []attach.SubagentCatalogInfo) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d configured sub-agent(s) — spawn one with /subagent <name> <goal>:", len(cat))
+	for _, e := range cat {
+		attrs := make([]string, 0, 3)
+		model := e.Model
+		if model == "" {
+			model = "inherit"
+		}
+		attrs = append(attrs, "model="+model)
+		if e.Root != "" {
+			attrs = append(attrs, "root="+e.Root)
+		}
+		if len(e.Modes) > 0 {
+			attrs = append(attrs, strings.Join(e.Modes, "+"))
+		}
+		line := fmt.Sprintf("\n  • %s [%s]", e.Name, strings.Join(attrs, ", "))
+		if e.Description != "" {
+			line += " — " + e.Description
+		}
+		b.WriteString(line)
+	}
+	return b.String()
 }
 
 // Status satisfies coretui.StatusReporter. Wraps the agent's
@@ -869,7 +899,7 @@ func (a *coreAgentAdapter) SlashCommands() []coretui.SlashCommandSpec {
 		{
 			Name:        "subagent",
 			Aliases:     []string{"sub"},
-			Description: "spawn a configured background sub-agent by name: /subagent <name> <goal> (run /subagent with no args to list configured names)",
+			Description: "spawn a configured background sub-agent by name: /subagent <name> <goal> (run /subagent with no args to list the configured roster — model, root, modes)",
 		},
 	}
 	if a.inner.HasCompactor() {

@@ -147,7 +147,7 @@ Until then, the documented attach path for non-IAM gateways remains a wrapper ar
 | `/compact [focus]`, `/done [note]` | Trigger summarization or task-boundary checkpoints on the remote agent. The TUI shows an in-chat preamble row during the 5–30 s round-trip. |
 | `/btw <question>` | One-shot context-grounded side question. |
 | `/subagent <goal>` | Spawn a background subagent on the remote agent (requires `--no-background-agents=false` daemon side). |
-| `/tools`, `/subagents` | List the daemon's tool palette and active subagents. |
+| `/tools`, `/subagents` | List the daemon's tool palette and the configured subagent roster. `/tools` tags each entry's `source` (declarative subagents wired as parent tools show `subagent`; MCP/skill tools currently show `other`); `/subagents` shows the roster the daemon loaded — name, model, `root`, and `sync`/`async` modes — from `GET /subagents` (distinct from `/agents`, which lists *running* instances). |
 | `/interrupt` | Cancel the in-flight model turn on the remote. |
 | `/reconnect` | Force-reconnect the SSE stream (resumes from `?since=<lastSeq>` — lossless). |
 | `/wake` | Pierce a scheduler sleep on the remote. |

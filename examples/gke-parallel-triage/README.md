@@ -113,12 +113,13 @@ The substrate wires three things from these config files:
 | `config.json` permissions.allow | `permissions.Gate` pre-allows the GKE read tools + spawn family so the operator isn't prompted on every call. Mutating MCP tools (apply, patch, delete) aren't even exposed at the URL `/mcp/read-only`, so they can't be invoked. |
 | `AGENTS.md` | Prepended to the agent's system instructions. Tells the model the parallel-fan-out workflow it should follow for incident-shaped prompts. |
 
-Plus `core-agent` itself wires the `spawn_agent` / `list_agents` /
-`check_agent` / `stop_agent` tools through `BackgroundAgentManager`,
-gives subagents the same tool catalog as the parent (so investigators
-have GKE read tools), and runs them under per-spawn budgets (default
-5 turns / 60 s wall-clock — overridable via `max_turns` and
-`max_wallclock_seconds` args).
+Plus `core-agent` itself wires the `spawn_agent` / `stop_agent` tools
+through `BackgroundAgentManager`, gives subagents the same tool catalog
+as the parent (so investigators have GKE read tools), and runs them
+under per-spawn budgets (default 5 turns / 60 s wall-clock —
+overridable via `max_turns` and `max_wallclock_seconds` args). Each
+subagent's findings are pushed back to the parent automatically (the
+`[Background reports]` block on its next turn).
 
 ## Tuning
 

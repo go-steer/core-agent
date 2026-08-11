@@ -233,7 +233,7 @@ For most cases, `agent.NewDefaultCompactor()` and `agent.NewDefaultCheckpointer(
 
 **When:** your embedded agent should be able to spawn background work (long-running subagents, fan-out tasks).
 
-**Contract:** `BackgroundAgentManager` constructs subagents on demand; `NewBackgroundSpawnTools` adds `spawn_agent` / `list_agents` / `check_agent` / `stop_agent` tools to the parent.
+**Contract:** `BackgroundAgentManager` constructs subagents on demand; `NewBackgroundSpawnTools` adds `spawn_agent` / `stop_agent` tools to the parent. Subagent results are pushed back to the parent (the `[Background reports]` block on its next turn); `spawn_agent { wait: true }` blocks inline.
 
 **Minimal example:**
 
@@ -271,7 +271,7 @@ type RemoteAgentSpawner interface {
 }
 ```
 
-The parent calls `Spawn` when `spawn_agent` is invoked; the spawner is responsible for actually starting the agent in your runtime (K8s, Cloud Run, etc.) and returning a handle the parent can `check_agent` / `stop_agent` against.
+The parent calls `Spawn` when `spawn_agent` is invoked; the spawner is responsible for actually starting the agent in your runtime (K8s, Cloud Run, etc.) and returning a handle the parent can `stop_agent` against. Results flow back through the same alert pipeline (pushed to the parent's next turn).
 
 **Pattern (skeleton):**
 
@@ -284,7 +284,7 @@ func (s *k8sJobSpawner) Spawn(ctx context.Context, req agent.SpawnRequest) (agen
     // 1. Translate req (goal, budgets, etc.) to a Job spec
     // 2. Apply the Job
     // 3. Return a handle keyed on the Job name; the parent uses it
-    //    for check_agent / stop_agent
+    //    for stop_agent, and its Events() feed the push pipeline
 }
 
 bgMgr, err := agent.NewBackgroundAgentManager(

@@ -146,9 +146,9 @@ func (m *Manager) OnAlert(h func(Alert)) {
 }
 
 // Handle is the lifecycle record for one spawned subagent.
-// Exposed read-only via Manager.List / Manager.Get so the parent
-// model's check_agent tool can introspect status without reaching
-// into internal state.
+// Exposed read-only via Manager.List / Manager.Get so operator
+// surfaces (attach hub, TUI) and the stop_agent tool can introspect
+// status without reaching into internal state.
 type Handle struct {
 	Name      string
 	Branch    string
@@ -612,8 +612,8 @@ func (m *Manager) pushAlert(a Alert) {
 }
 
 // List returns all currently-tracked handles, sorted by start time.
-// Terminal handles remain in the list until Close (so check_agent
-// can return final status). Defensive copy of slice.
+// Terminal handles remain in the list until Close (so operator
+// surfaces can still report final status). Defensive copy of slice.
 func (m *Manager) List() []*Handle {
 	m.mu.Lock()
 	defer m.mu.Unlock()

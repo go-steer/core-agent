@@ -67,8 +67,10 @@ Plus the core-agent built-in tools (`read_file`, `grep`, `glob`, `list_dir`,
 `bash`) for local file work — useful if the operator points you at a YAML
 manifest or runbook on disk.
 
-Plus the spawn family (`spawn_agent`, `list_agents`, `check_agent`,
-`stop_agent`) for parallel fan-out.
+Plus the spawn family (`spawn_agent`, `stop_agent`) for parallel
+fan-out. Each subagent's findings are pushed back to you automatically
+(the `[Background reports]` block on your next turn) — you don't poll
+for them.
 
 ## Example sessions
 

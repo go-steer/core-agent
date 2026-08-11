@@ -311,12 +311,12 @@ func TestClassifyInterruptedTailWithCalls_SurfacesCallNames(t *testing.T) {
 			events: []*session.Event{
 				userTextEvent("do it"),
 				callEvent(defaultAgentName, "inv-1", nil,
-					&genai.FunctionCall{ID: "c1", Name: "list_agents"},
-					&genai.FunctionCall{ID: "c2", Name: "check_agent"},
+					&genai.FunctionCall{ID: "c1", Name: "read_file"},
+					&genai.FunctionCall{ID: "c2", Name: "grep"},
 				),
 			},
 			interrupted: true,
-			wantCalls:   []string{"list_agents", "check_agent"},
+			wantCalls:   []string{"read_file", "grep"},
 		},
 		{
 			name:        "unanswered user message has no interrupted calls",
@@ -361,9 +361,9 @@ func TestClassifyInterruptedTailWithCalls_SurfacesCallNames(t *testing.T) {
 }
 
 // #624: the continuation note must NOT nudge re-issuing interrupted tool
-// calls when every one is read-only introspection — that reflexive
-// re-run is what turned an operator's stop+interrupt into a list_agents
-// loop. Any mutating or unknown call keeps the default (re-issue) note.
+// calls when every one is read-only — that reflexive re-run is what
+// turned an operator's stop+interrupt into a runaway introspection loop.
+// Any mutating or unknown call keeps the default (re-issue) note.
 func TestAutoContinueNoteFor_ScopesReissueByClassification(t *testing.T) {
 	t.Parallel()
 	const reissue = "re-issue interrupted tool calls"
@@ -373,10 +373,10 @@ func TestAutoContinueNoteFor_ScopesReissueByClassification(t *testing.T) {
 		calls       []string
 		wantReissue bool
 	}{
-		{"all read-only introspection", []string{"list_agents", "check_agent"}, false},
-		{"single read-only introspection", []string{"list_agents"}, false},
+		{"all read-only", []string{"read_file", "grep"}, false},
+		{"single read-only", []string{"read_file"}, false},
 		{"mutating call keeps the nudge", []string{"bash"}, true},
-		{"mixed read-only + mutating keeps the nudge", []string{"list_agents", "spawn_agent"}, true},
+		{"mixed read-only + mutating keeps the nudge", []string{"read_file", "spawn_agent"}, true},
 		{"unknown name keeps the nudge (fail-safe)", []string{"some_mcp__tool"}, true},
 		{"no interrupted calls keeps the default note", nil, true},
 	}

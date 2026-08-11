@@ -176,8 +176,8 @@ type spawnRemoteAgentResult struct {
 // spawner. The handle's Events() channel is drained by a goroutine
 // the manager starts inside Spawn; events of Kind="alert" land on
 // the manager's alert channel under the subagent's name, and the
-// terminal handle status is recorded for list/check/stop uniformity
-// alongside in-process subagents.
+// terminal handle status is recorded for stop_agent + operator-surface
+// uniformity alongside in-process subagents.
 //
 // Pass nil for mgr to skip the alert + registry fan-in (alerts will
 // be dropped); typically you want both wired, especially for the
@@ -207,9 +207,9 @@ func NewSpawnRemoteAgentTool(spawner RemoteAgentSpawner, mgr *Manager) (tool.Too
 				Status: "error: " + err.Error(),
 			}, nil
 		}
-		// Register with the manager so list/check/stop see remote
-		// subagents alongside in-process ones, and drain events
-		// into the alert pipeline.
+		// Register with the manager so stop_agent + operator surfaces
+		// see remote subagents alongside in-process ones, and drain
+		// events into the alert pipeline.
 		if mgr != nil {
 			mgr.registerRemote(h, spec)
 		}
@@ -234,7 +234,7 @@ func NewSpawnRemoteAgentTool(spawner RemoteAgentSpawner, mgr *Manager) (tool.Too
 }
 
 // registerRemote inserts a remote handle into the manager's registry
-// (so list/check/stop work uniformly) and starts a fan-in goroutine
+// (so stop_agent + operator surfaces work uniformly) and starts a fan-in goroutine
 // that maps events from the remote into the alert channel. Called by
 // NewSpawnRemoteAgentTool's handler.
 func (m *Manager) registerRemote(rh RemoteAgentHandle, spec RemoteAgentSpec) {
@@ -317,7 +317,7 @@ func (m *Manager) fanInRemote(rh RemoteAgentHandle, bh *Handle, name string) {
 		}
 	}
 	// Channel closed without a terminal kind — treat as completed
-	// so list/check/stop converge.
+	// so stop_agent + operator surfaces converge.
 	finalize(StatusCompleted)
 }
 

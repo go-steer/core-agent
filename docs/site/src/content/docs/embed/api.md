@@ -726,14 +726,14 @@ a, _ := agent.New(m,
 )
 ```
 
-The parent's model now sees four extra tools:
+The parent's model now sees two extra tools:
 
 | Tool | Use |
 |---|---|
-| `spawn_agent` | Launch a new in-process background subagent (name, system prompt, goal, tools, optional budgets). |
-| `list_agents` | See every subagent the model has spawned and their current status. |
-| `check_agent` | Get detailed status + final result for one named subagent. |
+| `spawn_agent` | Launch a new in-process background subagent (name, system prompt, goal, tools, optional budgets). Pass `wait: true` to block the turn on its result. |
 | `stop_agent` | Cancel a running subagent. |
+
+There is deliberately no `list_agents`/`check_agent` poll tool: completed subagents **push** their results back to the parent (the `[Background reports]` block on its next turn), and `spawn_agent { wait: true }` covers the block-on-result case, so a poll loop is redundant. Operators inspect live instances out-of-band via the attach hub (`GET .../agents`) or the TUI.
 
 Each spawned subagent gets:
 
@@ -767,7 +767,7 @@ The bundled formatter `runner.FormatAlertLine(from, kind, text)` produces the sa
 
 ### Remote (out-of-process) subagents
 
-For subagents that should run elsewhere — gRPC to a remote agent server, K8s Jobs, Cloud Run, NATS-dispatched workers — implement `background.RemoteAgentSpawner` and pass it to `background.NewSpawnRemoteAgentTool`. The model gets a `spawn_remote_agent` tool with the same shape as `spawn_agent`; your spawner is responsible for transport + lifecycle. Events the consumer puts on the handle's `Events()` channel are mapped onto the same alert pipeline as in-process subagents, so `list_agents` / `check_agent` / `stop_agent` work uniformly.
+For subagents that should run elsewhere — gRPC to a remote agent server, K8s Jobs, Cloud Run, NATS-dispatched workers — implement `background.RemoteAgentSpawner` and pass it to `background.NewSpawnRemoteAgentTool`. The model gets a `spawn_remote_agent` tool with the same shape as `spawn_agent`; your spawner is responsible for transport + lifecycle. Events the consumer puts on the handle's `Events()` channel are mapped onto the same alert pipeline as in-process subagents, so the push-back path and `stop_agent` work uniformly.
 
 ```go
 type myK8sSpawner struct{ kubeconfig string }
@@ -785,7 +785,7 @@ When you don't want to wire a real spawner (headless / unattended / CI), use `ba
 
 ### Bundled CLI
 
-`core-agent` ships with all four spawn-related tools enabled by default. `--no-background-agents` disables them. The manager uses `provider` + `cfg.Model.Name` from your config, the same permissions gate as the rest of the CLI, and `tools.Default()` (minus `--disable-tools`) as the catalog of tools subagents may request.
+`core-agent` ships with both spawn-related tools (`spawn_agent`, `stop_agent`) enabled by default. `--no-background-agents` disables them. The manager uses `provider` + `cfg.Model.Name` from your config, the same permissions gate as the rest of the CLI, and `tools.Default()` (minus `--disable-tools`) as the catalog of tools subagents may request.
 
 `examples/background-monitor/` runs end-to-end with no credentials and exercises the full Spawn → terminal alert → pre-turn drain path against the echo mock provider.
 
@@ -796,8 +796,8 @@ Just registering the tools isn't enough — the model needs to know that backgro
 **System instruction nudge (the most reliable lever):**
 
 ```text
-You have access to four background-agent tools: spawn_agent,
-list_agents, check_agent, stop_agent. Use them when:
+You have access to two background-agent tools: spawn_agent and
+stop_agent. Use them when:
 
 - You're asked to monitor something continuously (a cluster, a queue,
   a log stream). Spawn one subagent per thing to monitor; they should
@@ -809,7 +809,8 @@ list_agents, check_agent, stop_agent. Use them when:
   report_alert; you synthesize after they finish.
 - A task would take many turns of your own time but is bounded and
   delegate-able (e.g. "summarize this 200-file directory"). Spawn
-  one subagent with a tight scope; check_agent for results.
+  one subagent with a tight scope; its result is pushed back to you
+  when it finishes, or pass wait: true to block on it inline.
 
 When you spawn a subagent, give it:
 - a clear, narrow system_prompt so it stays focused
@@ -819,8 +820,8 @@ When you spawn a subagent, give it:
   max_wallclock_seconds) — defaults are conservative.
 
 Subagent reports arrive automatically as a "[Background reports]"
-block prepended to your next turn. React to them or use check_agent
-to poll explicitly.
+block prepended to your next turn — you don't poll for them. If you
+must have a result before continuing, spawn with wait: true.
 
 Don't spawn a subagent for trivial work you can do in one or two
 turns yourself.
@@ -838,12 +839,13 @@ Drop that block into your `AGENTS.md` (or pass via `agent.WithExtraInstruction`,
 
 ```bash
 core-agent --provider=vertex -p "
-You're an orchestrator. Use spawn_agent to launch two background
-subagents: one named 'count-up' that counts from 1 to 5 then calls
-report_alert with the final number, and one named 'count-down' that
-counts from 10 to 6 then calls report_alert. Each should also call
-report_done when finished. Then call check_agent for both and tell
-me what they reported.
+You're an orchestrator. Use spawn_agent with wait: true to launch two
+background subagents one at a time: one named 'count-up' that counts
+from 1 to 5 then calls report_alert with the final number, and one
+named 'count-down' that counts from 10 to 6 then calls report_alert.
+Each should also call report_done when finished. Since you spawned
+them with wait: true you get each result inline; tell me what they
+reported.
 "
 ```
 

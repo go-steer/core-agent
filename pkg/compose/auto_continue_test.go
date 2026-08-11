@@ -543,7 +543,7 @@ func TestMaybeAutoContinue_OperatorInputOutranksNote(t *testing.T) {
 	t.Parallel()
 	h := seedAC(t,
 		acUserEvent("do it", time.Now().Add(-5*time.Minute)),
-		acCallEvent("list_agents", time.Now().Add(-1*time.Minute)),
+		acCallEvent("grep", time.Now().Add(-1*time.Minute)),
 	)
 	ag := acAgent(t, h)
 	// Operator typed `stop` (queued into the inbox) before auto-continue
@@ -567,15 +567,15 @@ func TestMaybeAutoContinue_OperatorInputOutranksNote(t *testing.T) {
 	}
 }
 
-// #624 part (a): a tail interrupted mid read-only introspection call gets
-// a continuation note that does NOT nudge re-issuing it. Fails on
+// #624 part (a): a tail interrupted mid read-only call gets a
+// continuation note that does NOT nudge re-issuing it. Fails on
 // pre-change code, whose note always says "re-issue interrupted tool
 // calls".
 func TestMaybeAutoContinue_ReadOnlyInterruptedCallSoftensNote(t *testing.T) {
 	t.Parallel()
 	h := seedAC(t,
-		acUserEvent("what's running?", time.Now().Add(-5*time.Minute)),
-		acCallEvent("list_agents", time.Now().Add(-1*time.Minute)),
+		acUserEvent("search the config", time.Now().Add(-5*time.Minute)),
+		acCallEvent("grep", time.Now().Add(-1*time.Minute)),
 	)
 	ag := acAgent(t, h)
 	maybeAutoContinue(acDeps(h, time.Hour), auth.Caller{Identity: acUser}, acSID, ag)

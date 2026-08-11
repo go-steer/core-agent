@@ -36,7 +36,7 @@ missing, so a partial-credential setup doesn't punish you.
 | `01-gemini-basic.sh` | Direct Gemini API auth + basic single turn | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
 | `02-vertex-basic.sh` | Vertex single turn — would catch v1.0.0-style `IncludeServerSideToolInvocations` regressions | `GOOGLE_CLOUD_PROJECT` + ADC |
 | `03-vertex-grounding.sh` | Vertex + `GoogleSearch` + `--session-db`: `↪ google_search:` lines in stdout + `gemini/google_search`-authored rows in eventlog | `GOOGLE_CLOUD_PROJECT` + ADC |
-| `04-background-spawn.sh` | Dynamic background subagents end-to-end (parent spawns two, both complete, `check_agent` returns terminal status) | `GOOGLE_CLOUD_PROJECT` + ADC |
+| `04-background-spawn.sh` | Dynamic background subagents end-to-end (parent spawns two with `wait: true`, both complete and return their output inline) | `GOOGLE_CLOUD_PROJECT` + ADC |
 | `05-headless-gate.sh` | Headless (no TTY) without `--yolo` produces the helpful `ErrNoPrompter` message pointing at `--yolo` and config | `GOOGLE_CLOUD_PROJECT` + ADC |
 | `06-inject-autonomous.sh` | `examples/autonomous-handle` runs end-to-end; verifies `StartAutonomous` → `Pause` → `Inject` → `Resume` → `Wait` lifecycle (v1.3.0) | none (uses echo mock) |
 | `07-mcp-google-oauth.sh` | Google OAuth (ADC access-token) wiring for remote MCP HTTP servers — uses the GKE remote MCP server as the real round-trip target | `GEMINI_API_KEY`/`GOOGLE_API_KEY` + `MCP_GOOGLE_OAUTH_SMOKE_PROJECT` + ADC |

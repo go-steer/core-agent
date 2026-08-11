@@ -596,8 +596,9 @@ parent's next turn sees:
 ```
 
 **5. The parent owns the topology lifecycle** — using the same
-`spawn_agent` tool family it can `list_agents`, `stop_agent`, or
-spawn replacements:
+`spawn_agent` tool family it can `stop_agent` or spawn replacements
+(child anomalies and completions arrive via the `[Background reports]`
+push, so no poll tool is needed to track them):
 
 ```
 operator: "we decommissioned cluster-B; stop monitoring it"

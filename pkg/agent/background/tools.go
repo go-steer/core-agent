@@ -247,107 +247,6 @@ func NewSpawnAgentTool(mgr *Manager) tool.Tool {
 	return t
 }
 
-// listAgentsResult is returned by list_agents: one row per registered
-// subagent regardless of state.
-type listAgentsResult struct {
-	Agents []agentSummary `json:"agents"`
-}
-
-type agentSummary struct {
-	Name      string `json:"name"`
-	Branch    string `json:"branch"`
-	Status    string `json:"status"`
-	StartedAt string `json:"started_at"`
-}
-
-// NewListAgentsTool returns a tool the parent's model can call to see
-// every subagent the manager has tracked (running + terminal). Empty
-// list when none have been spawned.
-func NewListAgentsTool(mgr *Manager) tool.Tool {
-	handler := func(_ tool.Context, _ struct{}) (listAgentsResult, error) {
-		all := mgr.List()
-		out := listAgentsResult{Agents: make([]agentSummary, 0, len(all))}
-		for _, h := range all {
-			out.Agents = append(out.Agents, agentSummary{
-				Name:      h.Name,
-				Branch:    h.Branch,
-				Status:    h.Status().String(),
-				StartedAt: h.StartedAt.Format(time.RFC3339),
-			})
-		}
-		return out, nil
-	}
-	t, err := functiontool.New(functiontool.Config{
-		Name:        "list_agents",
-		Description: "List every background subagent you've spawned, with current status. Use to introspect what's running before deciding whether to spawn more or stop existing ones.",
-	}, handler)
-	if err != nil {
-		panic("background: NewListAgentsTool: " + err.Error())
-	}
-	return t
-}
-
-type checkAgentArgs struct {
-	Name string `json:"name" jsonschema:"the name of the subagent you spawned earlier (from spawn_agent's result)"`
-}
-
-type checkAgentResult struct {
-	Name           string  `json:"name"`
-	Branch         string  `json:"branch"`
-	Status         string  `json:"status"`
-	StartedAt      string  `json:"started_at"`
-	FinalText      string  `json:"final_text,omitempty"`
-	StopReason     string  `json:"stop_reason,omitempty"`
-	Error          string  `json:"error,omitempty"`
-	Turns          int     `json:"turns,omitempty"`
-	InputTokens    int     `json:"input_tokens,omitempty"`
-	OutputTokens   int     `json:"output_tokens,omitempty"`
-	CostUSD        float64 `json:"cost_usd,omitempty"`
-	DurationSecond float64 `json:"duration_seconds,omitempty"`
-}
-
-// NewCheckAgentTool returns a tool the parent's model can call to
-// inspect one subagent's detailed status — including its terminal
-// result (final text, stop reason, totals) once it's finished.
-func NewCheckAgentTool(mgr *Manager) tool.Tool {
-	handler := func(_ tool.Context, args checkAgentArgs) (checkAgentResult, error) {
-		h, ok := mgr.Get(args.Name)
-		if !ok {
-			return checkAgentResult{
-				Name:   args.Name,
-				Status: "not_found",
-			}, nil
-		}
-		res := checkAgentResult{
-			Name:      h.Name,
-			Branch:    h.Branch,
-			Status:    h.Status().String(),
-			StartedAt: h.StartedAt.Format(time.RFC3339),
-		}
-		if r := h.Result(); r != nil {
-			res.FinalText = r.FinalText
-			res.StopReason = string(r.Reason)
-			res.Turns = r.Turns
-			res.InputTokens = r.InputTokens
-			res.OutputTokens = r.OutputTokens
-			res.CostUSD = r.CostUSD
-			res.DurationSecond = r.Duration.Seconds()
-		}
-		if err := h.Err(); err != nil {
-			res.Error = err.Error()
-		}
-		return res, nil
-	}
-	t, err := functiontool.New(functiontool.Config{
-		Name:        "check_agent",
-		Description: "Get detailed status for one background subagent. Returns final result + totals once the subagent has finished, or the running status otherwise.",
-	}, handler)
-	if err != nil {
-		panic("background: NewCheckAgentTool: " + err.Error())
-	}
-	return t
-}
-
 type stopAgentArgs struct {
 	Name string `json:"name" jsonschema:"the name of the subagent to stop"`
 }
@@ -386,19 +285,17 @@ func NewStopAgentTool(mgr *Manager) tool.Tool {
 	return t
 }
 
-// NewSpawnTools is a convenience that returns all four
-// model-facing background-agent tools in one slice, ready to pass
-// through agent.WithTools. The bundled CLI uses this to wire the
-// full suite atomically.
+// NewSpawnTools is a convenience that returns both model-facing
+// background-agent tools (spawn_agent + stop_agent) in one slice, ready
+// to pass through agent.WithTools. The bundled CLI uses this to wire the
+// suite atomically. Introspection (list/check) is intentionally NOT a
+// model tool: completed subagents push their results back to the parent
+// (the [Background reports] channel) and spawn_agent {wait:true} covers
+// blocking needs, so a poll loop is redundant. Operators inspect live
+// instances out-of-band via the attach hub / TUI.
 func NewSpawnTools(mgr *Manager) []tool.Tool {
 	return []tool.Tool{
 		NewSpawnAgentTool(mgr),
-		NewListAgentsTool(mgr),
-		NewCheckAgentTool(mgr),
 		NewStopAgentTool(mgr),
 	}
 }
-
-// ensure imports stay live when handler bodies don't reference them
-// directly in future edits.
-var _ = context.Background

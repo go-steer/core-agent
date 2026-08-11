@@ -65,17 +65,6 @@ var readOnlyBuiltins = map[string]bool{
 	// edit in the same response for minutes (pre-#460 they ran
 	// concurrently, and should keep doing so).
 	"ask_user": true,
-	// Background-subagent introspection (pkg/agent/background): both only
-	// read the manager's tracked-subagent state, so they are safe to
-	// dispatch concurrently (#460) AND safe for auto-continue NOT to
-	// nudge re-issuing after an interruption (#624 — re-running a
-	// side-effect-free introspection call is exactly what turned an
-	// operator's stop+interrupt into a list_agents loop). Named here
-	// rather than declared on the tools because the eventlog records
-	// only a call's NAME, so post-interruption classification is
-	// name-based (see IsReadOnlyToolName).
-	"list_agents": true,
-	"check_agent": true,
 }
 
 // ReadOnlyHinter is the optional interface a tool implements to

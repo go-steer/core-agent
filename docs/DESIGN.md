@@ -576,7 +576,7 @@ Each of these was considered and rejected for v1. The rationale matters because 
 > unshipped; check the Status line and the README/site first.
 
 **Subagents** — a `WithSubagents([]*Agent)` option that registers each subagent as a synthetic tool. Marker is in `agent/agent.go`. Reason for deferral: cogo doesn't have it yet, and the right shape depends on whether you want subagent-as-tool (Anthropic-style) or ADK's native sub-agent transfer. Pick the shape based on the first concrete consumer that needs it.
-**Status: SHIPPED.** Background subagents with branch isolation, budgets, and spawn/list/check/report tools live in `pkg/agent/background*.go`.
+**Status: SHIPPED.** Background subagents with branch isolation, budgets, and spawn/stop/report tools live in `pkg/agent/background*.go` (results are pushed back to the parent via `[Background reports]`; the earlier `list_agents`/`check_agent` poll tools were folded in #625).
 
 **Bubble Tea TUI** — would commit core-agent to a particular UI library and pull in ~30 transitive deps. Belongs in the consumer.
 **Status: SHIPPED (in the consumer, then adopted as default).** The TUI lives in the separate `go-steer/core-tui` module and is wired in as the default TTY surface via `internal/coretuiremote`; a `-tags no_tui` slim build drops it. The "particular UI library" concern was resolved by keeping the TUI out-of-tree behind an attach adapter.

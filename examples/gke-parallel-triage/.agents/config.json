@@ -23,8 +23,6 @@
       "gke.list_k8s_events:*",
       "gke.get_k8s_rollout_status:*",
       "spawn_agent:*",
-      "list_agents:*",
-      "check_agent:*",
       "stop_agent:*"
     ]
   },

@@ -5,7 +5,7 @@ title: Subagents and wrappers
 Three ways to push work off the parent agent:
 
 - **Agentic tool wrappers** (`agentic_read_file`, `agentic_grep`, `agentic_research`, `agentic_fetch_url`) — synchronous, bounded, single-purpose. The parent calls them like any other tool; under the hood they spawn a focused subtask on a (typically cheaper) model and return only the digest. Raw tool output never enters the parent's context.
-- **Background subagents** (`spawn_agent`, `list_agents`, `check_agent`, `stop_agent`) — asynchronous, longer-running, multi-turn, decided at runtime. The parent dispatches a goal; the subagent works in its own session until done; alerts and completion summaries land back in the parent's chat.
+- **Background subagents** (`spawn_agent`, `stop_agent`) — asynchronous, longer-running, multi-turn, decided at runtime. The parent dispatches a goal; the subagent works in its own session until done; alerts and completion summaries are **pushed** back into the parent's chat (the `[Background reports]` block on its next turn), so the parent doesn't poll. Need to block on a result inline? Use `spawn_agent { wait: true }`.
 - **Declarative subagents** (`subagents[]` in `config.json`, v2.9+) — a fixed roster of named delegates authored ahead of time. Each becomes a named tool on the parent, with its own persona, model, and a name-scoped slice of the parent's tool/MCP/skill surface. Same in-process substrate as `spawn_agent`, but the roster ships in the config rather than being invented at runtime — so it deploys as one ConfigMap.
 
 This page covers when to use each, how to actually get the model to use them (the model-side adoption story is non-trivial), and the failure modes worth designing around.
@@ -154,8 +154,8 @@ N subagents in parallel against related tasks. The parent collects their reports
 **Example:** "for each open PR, spawn a subagent to review it against our house style; when all reports come in, give me a ranked list of which need attention first."
 
 **Choreography:**
-- Parent spawns N subagents with `spawn_agent`, capturing each subagent ID.
-- Parent uses `check_agent <id>` to poll; OR waits passively and processes `report_alert` events as they arrive in the inbox.
+- Parent spawns N subagents with `spawn_agent`, capturing each subagent name.
+- Parent waits passively; each subagent's alerts and completion summary are pushed into the parent's next turn (the `[Background reports]` block) as they finish — no polling. To block on a single result inline, spawn it with `wait: true`.
 - After all N complete, parent synthesizes the reports into the operator-facing result.
 
 **Failure modes:** if any single subagent goes off-script, its budget cap stops it independently. The other subagents keep running. The parent collates whatever did succeed.
@@ -170,7 +170,7 @@ A subagent that itself spawns subagents. Often called "manager" or "coordinator.
 
 - Set tight budgets on the manager subagent. It shouldn't reason for 10 minutes before spawning its first child.
 - Use the `--max-turns` and `--max-cost` flags on `spawn_agent` to bound each level.
-- Audit the spawn tree via `list_agents` after the run.
+- Audit the spawn tree out-of-band via the attach hub's `GET .../agents` endpoint or the TUI (operator surfaces), not a model tool.
 
 ### Pattern 4 — scheduled monitor
 
@@ -269,7 +269,7 @@ The composition keeps the parent's context tiny (it just sees "spawned subagent,
 | Spawning a subagent for a 5-second task | The async overhead exceeds the work | Inline it; subagents are for tasks measured in minutes |
 | Letting the parent re-verify agentic_* digests by re-reading source | Defeats the wrapper's whole purpose | `AGENTS.md` rule to trust digests; see issue #59 |
 | Using `agentic_grep` on a cheap model for code precision tasks | Flash hallucinates citations; see #60 | Use a more capable model for grep/research; tighten turn budget |
-| Manager subagent with generous budgets at every level | Cost blowout; nested envelopes multiply | Tight budgets per level; audit with `list_agents` |
+| Manager subagent with generous budgets at every level | Cost blowout; nested envelopes multiply | Tight budgets per level; audit the spawn tree via the attach hub / TUI |
 | Spawning N subagents without budget caps | One runaway can consume the entire session budget | Always `--max-turns` + `--max-cost` per spawn |
 | Using subagents because they sound advanced | Adds complexity for no payoff if the task fits in the parent | Default to inline; subagents only when the use case justifies it |
 

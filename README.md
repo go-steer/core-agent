@@ -50,7 +50,7 @@ A production-grade Go substrate for multi-turn LLM agents, built on the [Google 
 - **Agent-card discovery**: opt-in `/.well-known/agent-card.json` endpoint describing name, description, skills, and required auth in the [A2A AgentCard](https://agent2agent.info/docs/concepts/agentcard/) shape so agent registries can index the binary.
 
 **Subagents**
-- In-process: `agent.WithSubagents([]*Agent)` for synchronous delegation; `background.NewManager` + `spawn_agent` / `list_agents` / `check_agent` / `stop_agent` for background subagents the model spawns at runtime.
+- In-process: `agent.WithSubagents([]*Agent)` for synchronous delegation; `background.NewManager` + `spawn_agent` / `stop_agent` for background subagents the model spawns at runtime (results are pushed back via `[Background reports]`; `spawn_agent { wait: true }` blocks inline).
 - Remote: `background.NewSpawnRemoteAgentTool` with a consumer-supplied `RemoteAgentSpawner` for out-of-process spawning (gRPC / K8s Jobs / Cloud Run).
 - Subagent events stream into the parent's audit log under a `Branch` label so the trail stays unified.
 

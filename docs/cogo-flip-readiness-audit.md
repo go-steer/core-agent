@@ -19,7 +19,7 @@ Flip is **mostly mechanical**. Three things to do on the core-agent side, everyt
 | MCP loaders + elicitor | `cogo/internal/mcp/` (config, lifecycle, namespace, elicitation) | `core-agent/mcp/` (same shape) | Already covered. |
 | Skills loader | `cogo/internal/skills/discovery.go` | `core-agent/skills/load.go` | Already covered. |
 | Permissions | `cogo/internal/permissions/` (gate, builtin_allow, recommend, policy, scope, verb, denylist, prompter) | Same files + `stdin.go`, `serialize.go`, snapshot support | Already covered (superset). |
-| Autonomous + subagents | None | `agent.RunAutonomous`, `BackgroundAgentManager`, spawn/list/check tools | Already covered; cogo gains them on flip. |
+| Autonomous + subagents | None | `agent.RunAutonomous`, `BackgroundAgentManager`, spawn/stop tools | Already covered; cogo gains them on flip. |
 | Config schema | Cogo has `UIConfig` (theme, mouse) that core-agent lacks | Core-agent has `Tools`, `Mock`, `Attach`, `Pricing` that cogo lacks | **Add `UIConfig` to `core-agent/config`** as part of the core-tui-default work (the chip switcher needs theme/mouse anyway). |
 | Model providers | `cogo/internal/models/gemini/` | `gemini`, `anthropic`, `mock` | Already covered (superset). |
 | Custom agent wrapper | `cogo/internal/agent/agent.go` mirrors `core-agent/agent/agent.go` (duplicate) | The real thing | **Delete cogo's wrapper on flip;** `cmd/cogo/main.go` calls `core-agent`'s `agent.New` directly with `WithAppName("cogo") + WithInstruction(cogoDefaults)`. |

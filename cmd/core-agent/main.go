@@ -144,7 +144,7 @@ func main() {
 	sessionDB := flag.Bool("session-db", false, "persist sessions + audit log to a durable database (default off; in-memory)")
 	sessionDBPath := flag.String("session-db-path", "", "override the database path used when --session-db is set (default: ~/.<binary>/sessions.db)")
 	yolo := flag.Bool("yolo", false, "bypass the permissions gate entirely (every tool call runs without approval). Equivalent to permissions.mode=\"yolo\" in config.")
-	noBackgroundAgents := flag.Bool("no-background-agents", false, "disable the spawn_agent / list_agents / check_agent / stop_agent tools (model can't spawn background subagents). Default: enabled.")
+	noBackgroundAgents := flag.Bool("no-background-agents", false, "disable the spawn_agent / stop_agent tools (model can't spawn background subagents). Default: enabled.")
 	allowURLHost := flag.String("allow-url-host", "", "comma-separated host patterns appended to url_scope.allow for the fetch_url tool (e.g. \"github.com,*.googleapis.com\"). HTTPS only unless the pattern carries an http:// prefix. Disable the tool entirely with --disable-tools=fetch_url.")
 	var allowPathEntries []config.PathScopeAllowEntry
 	var contentDirEntries []string

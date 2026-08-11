@@ -38,7 +38,7 @@ transcripts, no listeners. Exits 0.
 | Step | API |
 |---|---|
 | manager | `background.NewManager`, `WithProvider`, `WithDefaultBudgets`, `WithMaxConcurrent` |
-| tools on the parent | `background.NewSpawnTools` (spawn/list/check/stop) |
+| tools on the parent | `background.NewSpawnTools` (spawn_agent + stop_agent) |
 | wiring | `agent.WithBackgroundManager` (+ construction order in `Manager` docs) |
 | observe | `Manager.OnAlert` (non-consuming), `Manager.List`, `Handle.Done/Status` |
 | drain | `Agent.Run(ctx, "")` → `Manager.PrependPendingAlerts` internally |

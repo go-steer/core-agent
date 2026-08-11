@@ -24,7 +24,7 @@ platform (parent)
    └── devteam (application specialist)
 ```
 
-- **Parent (`platform`)** — governance + dispatching. NO direct tool access for the underlying domain (no `kubectl`, no AWS API, etc.). It only has spawn tools (`spawn_agent`, `list_agents`, `check_agent`, `stop_agent`). Its job: provision specialists, route alerts, decide cross-cutting concerns.
+- **Parent (`platform`)** — governance + dispatching. NO direct tool access for the underlying domain (no `kubectl`, no AWS API, etc.). It only has spawn tools (`spawn_agent`, `stop_agent`); specialists' findings are pushed back via the `[Background reports]` block. Its job: provision specialists, route alerts, decide cross-cutting concerns.
 
 - **Specialists (`operator`, `devteam`)** — focused tool surface for their scope. Spawned by the parent at runtime (one per cluster, one per tenant, etc.). Each runs in its own session with its own budget envelope.
 
@@ -108,8 +108,6 @@ The parent's `config.json` only allows the spawn tools:
     "mode": "allow",
     "allow": [
       "spawn_agent:*",
-      "list_agents:*",
-      "check_agent:*",
       "stop_agent:*"
     ]
   }
@@ -228,7 +226,7 @@ For larger fleets, the per-agent cost is bounded by budget caps; total cost scal
 | Specialists share one budget | One runaway specialist starves the others | Each specialist has its own budget. Parent has its own budget. |
 | Specialists alert without classification | Parent can't route; either picks wrong or escalates everything | Each alert names "app-level" vs "infra-level" vs "cross-cutting" in its body |
 | Coordinator is itself an LLM agent making fine-grained calls | Cost balloons | Parent should be HIGH-LEVEL: dispatch, route, restart. Fine-grained work is the specialist's job. |
-| Restart child on any failure | Audit log churns; transient failures masked | Replace only on persistent failure (≥ N consecutive). Use `list_agents` to see history. |
+| Restart child on any failure | Audit log churns; transient failures masked | Replace only on persistent failure (≥ N consecutive). Track each child's outcomes from the pushed `[Background reports]`. |
 | All specialists run the same model | Cost inefficient | Match model to specialist load. Lighter monitors → Flash; deeper investigators → Pro. |
 
 ## When NOT to use multi-agent

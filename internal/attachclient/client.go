@@ -81,26 +81,64 @@ func NewWithCredentials(parsed *ParsedURL, creds Credentials, timeout time.Durat
 	return &Client{
 		URL:         parsed,
 		Credentials: creds,
-		http:        newHTTPClient(parsed, timeout),
-		streamHTTP:  newHTTPClient(parsed, 0), // no timeout — SSE is long-lived
+		http:        newHTTPClient(parsed, timeout, 0),
+		// SSE is long-lived so it gets no whole-request Timeout — that
+		// would cut the body mid-stream on a quiet session. But it DOES
+		// get a response-header deadline (time-to-first-byte): without
+		// it, a daemon that accepts the TCP connection but never sends a
+		// response (its handler goroutine wedged) blocks the Stream /
+		// PromptStream connect — and thus the TUI's reconnect loop —
+		// forever. See streamResponseHeaderTimeout.
+		streamHTTP: newHTTPClient(parsed, 0, streamResponseHeaderTimeout),
 	}
 }
 
-// newHTTPClient wires up a Unix-socket-aware Transport when the URL
-// scheme is unix://. For http/https it returns a stock client.
-func newHTTPClient(p *ParsedURL, timeout time.Duration) *http.Client {
-	if p.Scheme == "unix" {
-		return &http.Client{
-			Timeout: timeout,
-			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-					var d net.Dialer
-					return d.DialContext(ctx, "unix", p.SocketPath)
-				},
-			},
-		}
+// streamResponseHeaderTimeout bounds the wait between finishing the SSE
+// request write and receiving the response headers. It does NOT limit
+// reading the response body, so live SSE frames minutes apart are fine;
+// it only guards the connect handshake so a wedged daemon can't hang the
+// reconnect loop indefinitely (the observed "246 bytes stuck unread in
+// the daemon's receive queue" failure mode). The caller's ctx remains
+// the cooperative-cancel signal for a healthy long-lived stream.
+const streamResponseHeaderTimeout = 30 * time.Second
+
+// newHTTPClient builds an http.Client for one attach endpoint. timeout
+// is the whole-request deadline (0 = none, used for SSE). respHeaderT is
+// the response-header (time-to-first-byte) deadline (0 = none); it's set
+// on the SSE client so a stalled daemon can't block the connect forever
+// while still allowing an unbounded body read afterward.
+//
+// The Transport is cloned from http.DefaultTransport so connection
+// pooling, proxy handling, and HTTP/2 behavior match the stock client;
+// a unix:// URL swaps in a socket-dialing DialContext and disables the
+// inherited proxy (a socket can't be proxied).
+func newHTTPClient(p *ParsedURL, timeout, respHeaderT time.Duration) *http.Client {
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if ok {
+		transport = transport.Clone()
+	} else {
+		transport = &http.Transport{}
 	}
-	return &http.Client{Timeout: timeout}
+	if respHeaderT > 0 {
+		transport.ResponseHeaderTimeout = respHeaderT
+	}
+	if p.Scheme == "unix" {
+		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", p.SocketPath)
+		}
+		// A unix socket can't be proxied. Cloning DefaultTransport pulls in
+		// Proxy: ProxyFromEnvironment, which — under a global HTTP_PROXY /
+		// ALL_PROXY that doesn't NO_PROXY the literal "unix" host — would
+		// reroute (or, for a socks5:// proxy, actively break) the socket
+		// dial. Pre-clone this branch used a bare Transport with nil Proxy;
+		// keep that behavior.
+		transport.Proxy = nil
+	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+	}
 }
 
 // auth stamps the wired Credentials' headers on req. Errors from

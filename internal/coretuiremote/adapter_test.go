@@ -312,6 +312,76 @@ func TestAdapter_Usage_CachedThenRefreshes(t *testing.T) {
 	}
 }
 
+// TestAdapter_Status_WarmCacheNeverBlocksRenderPath is the regression
+// guard for the idle-TUI hang: coretui pulls Status() from inside View()
+// on the bubble-tea event-loop goroutine, so once the cache is warm a
+// stalled daemon must NOT block the accessor — the warm path serves the
+// last-known-good value and refreshes in the background. Before the
+// stale-while-revalidate fix, Status() did an uncached synchronous
+// round-trip on every render and a wedged daemon froze the whole TUI
+// (keys + Ctrl+C dead).
+func TestAdapter_Status_WarmCacheNeverBlocksRenderPath(t *testing.T) {
+	t.Parallel()
+
+	stall := make(chan struct{}) // closed on cleanup to release any parked handler
+	var hits int
+	var mu sync.Mutex
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /sessions/{sid}/status", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		n := hits
+		mu.Unlock()
+		if n > 1 {
+			// Every call after the cold fetch hangs until teardown —
+			// the "daemon accepts but never replies" wedge.
+			select {
+			case <-stall:
+			case <-r.Context().Done():
+			}
+			return
+		}
+		_ = json.NewEncoder(w).Encode(attach.StatusInfo{State: "idle", ModelName: "claude-opus-4-7"})
+	})
+	srv := httptest.NewServer(mux)
+	// Cleanups run LIFO: release the parked handler (close stall) BEFORE
+	// srv.Close so Close doesn't spend 5s waiting on the wedged
+	// background-refresh connection.
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(stall) })
+
+	parsed, _ := attachclient.ParseURL(srv.URL + "/sessions/s1")
+	client := attachclient.New(parsed, "", 0)
+	a := New(client, "/sessions/s1")
+
+	// Cold fetch (synchronous, bounded) primes the cache with real data.
+	if got := a.Status(); got.ModelName != "claude-opus-4-7" {
+		t.Fatalf("cold Status = %+v, want model claude-opus-4-7", got)
+	}
+
+	// Let the cache go stale so the next read takes the background-
+	// refresh branch (which hits the now-wedged handler).
+	time.Sleep(statusCacheTTL + 50*time.Millisecond)
+
+	// Warm-but-stale reads must return promptly from cache even though
+	// the daemon is wedged. If Status() blocked on the network this
+	// would exceed the deadline and fail (that was the hang).
+	for i := 0; i < 3; i++ {
+		done := make(chan coretui.Status, 1)
+		go func() { done <- a.Status() }()
+		select {
+		case got := <-done:
+			if got.ModelName != "claude-opus-4-7" {
+				t.Errorf("warm Status[%d] = %+v, want cached model", i, got)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("Status() blocked on a wedged daemon (render path would freeze)")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // TestAdapter_LastTurn_FallsBackToUsageSnapshot pins the fix for the
 // observer-mode /stats "Last turn: 0" bug (companion to core-tui #57):
 // when the streaming Run/Events loop hasn't populated a.lastTurn (which

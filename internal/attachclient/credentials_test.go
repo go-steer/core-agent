@@ -256,7 +256,7 @@ func TestClient_auth_FallsBackToTokenWhenNoCredentials(t *testing.T) {
 	// constructed via direct struct literals (tests, future code)
 	// might set only Token. That path still works.
 	parsed, _ := ParseURL("http://localhost:7777")
-	c := &Client{URL: parsed, Token: "legacy-token", http: newHTTPClient(parsed, time.Second)}
+	c := &Client{URL: parsed, Token: "legacy-token", http: newHTTPClient(parsed, time.Second, 0)}
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
 	if err := c.auth(req); err != nil {
 		t.Fatalf("auth: %v", err)

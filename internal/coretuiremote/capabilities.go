@@ -31,17 +31,73 @@ import (
 
 // ===== Status / Tools / Subagents (read-only capabilities) =====
 
-// Status satisfies coretui.StatusReporter. State is "idle" by
-// default; the attach status endpoint doesn't yet distinguish
-// "running" / "deferred" (see pkg/agent's AttachStatus). Errors
-// fall back to a zero Status — the TUI shows "—" instead of stale
-// data.
+// Status satisfies coretui.StatusReporter. coretui pulls this on every
+// render (view.go's status header + AutoProviderTheme), so it must never
+// block on the network: a slow or wedged daemon would otherwise stall
+// the bubble-tea event loop inside View() and freeze the whole TUI
+// (keys + Ctrl+C included). We serve a cached snapshot immediately and
+// refresh it in the background (stale-while-revalidate): the accessor
+// returns the last-known-good value and, when the cache is stale, kicks
+// a single detached refresh. The first render before any refresh
+// completes shows the zero Status ("—" / "(model not set)"), which
+// self-heals within a refresh cycle.
+//
+// State is "idle" by default; the attach status endpoint doesn't yet
+// distinguish "running" / "deferred" (see pkg/agent's AttachStatus).
 func (a *Adapter) Status() coretui.Status {
-	info, err := a.client.Status(context.TODO(), a.sessionPath)
-	if err != nil {
-		return coretui.Status{}
+	a.status.mu.Lock()
+	switch {
+	case a.status.lastFetch.IsZero():
+		// Cold cache: fetch once synchronously (bounded) so the first
+		// render shows the real model/state instead of a placeholder.
+		// This is the only inline network call on the render path; every
+		// subsequent read is served from cache.
+		a.fetchStatusLocked()
+	case time.Since(a.status.lastFetch) >= statusCacheTTL && !a.status.refreshing:
+		// Warm but stale: refresh in the background and serve the
+		// last-known-good value now. The render goroutine never waits.
+		a.status.refreshing = true
+		go a.refreshStatus()
 	}
-	return coretui.Status{
+	cached := a.status.cached
+	a.status.mu.Unlock()
+	return cached
+}
+
+// fetchStatusLocked does the /status round-trip and updates the cache.
+// The caller must hold a.status.mu (cold-cache path only). Bounded by
+// cacheRefreshTimeout; on error the zero/last snapshot stays in place and
+// lastFetch is bumped so we don't hammer a down daemon on every render.
+func (a *Adapter) fetchStatusLocked() {
+	ctx, cancel := context.WithTimeout(context.Background(), cacheRefreshTimeout)
+	defer cancel()
+	info, err := a.client.Status(ctx, a.sessionPath)
+	a.status.lastFetch = time.Now()
+	if err != nil {
+		return
+	}
+	a.status.cached = coretui.Status{
+		ModelName: info.ModelName,
+		State:     info.State,
+	}
+}
+
+// refreshStatus fetches a fresh StatusReporter snapshot off the render
+// goroutine and updates the cache (stale-while-revalidate warm path).
+// Bounded by cacheRefreshTimeout so a wedged daemon can't keep the
+// refresh — and its in-flight guard — alive forever.
+func (a *Adapter) refreshStatus() {
+	ctx, cancel := context.WithTimeout(context.Background(), cacheRefreshTimeout)
+	defer cancel()
+	info, err := a.client.Status(ctx, a.sessionPath)
+	a.status.mu.Lock()
+	defer a.status.mu.Unlock()
+	a.status.refreshing = false
+	a.status.lastFetch = time.Now()
+	if err != nil {
+		return
+	}
+	a.status.cached = coretui.Status{
 		ModelName: info.ModelName,
 		State:     info.State,
 	}
@@ -98,7 +154,17 @@ func (a *Adapter) Subagents() []coretui.SubagentInfo {
 // would be wasteful; cache with a short TTL so /stats and the
 // per-turn footer stay close to fresh without amplifying traffic.
 
-const usageCacheTTL = 2 * time.Second
+const (
+	usageCacheTTL  = 2 * time.Second
+	statusCacheTTL = 2 * time.Second
+
+	// cacheRefreshTimeout bounds a single background cache refresh
+	// (status or usage) so a wedged daemon can't keep the refresh — and
+	// its in-flight guard — alive indefinitely. Shorter than the RPC
+	// client's own 30s Timeout so it wins, and independent of however
+	// the client was constructed.
+	cacheRefreshTimeout = 10 * time.Second
+)
 
 type usageCache struct {
 	mu            sync.Mutex
@@ -109,24 +175,85 @@ type usageCache struct {
 	lastTurnCost  float64
 	lastTurnModel string // keys usage.ContextWindowSizeFor from ContextWindowSize()
 	lastFetch     time.Time
+	refreshing    bool // a background refresh is in flight
 }
 
-// snapshot returns the cached usage, refreshing if the cache is
-// older than usageCacheTTL. The network call happens inline; if it
-// fails, the prior cache stays in effect (the TUI displays the
-// last-known-good value rather than flickering to zero).
+// statusCache holds the last-known-good StatusReporter snapshot plus the
+// stale-while-revalidate bookkeeping (see Status()).
+type statusCache struct {
+	mu         sync.Mutex
+	cached     coretui.Status
+	lastFetch  time.Time
+	refreshing bool
+}
+
+// snapshot returns the cached usage. It mirrors Status()'s freshness
+// policy: block once on the cold (first) fetch so the first render shows
+// real numbers, then stale-while-revalidate — serve the last-known-good
+// value immediately and kick a single detached refresh when stale. It
+// never does inline network I/O on the warm path — coretui pulls the
+// UsageTracker up to 8× per render, so a blocking fetch there would stall
+// the bubble-tea event loop whenever the daemon is slow.
+//
+// Cold-blocking rather than pure SWR because the reported wedge is a
+// steady-state/idle freeze (long after first paint): the one-time cold
+// fetch is a bounded startup cost, while every steady-state render is
+// served from cache and never blocks.
 func (a *Adapter) snapshot() (coretui.Usage, float64, int) {
 	a.usage.mu.Lock()
 	defer a.usage.mu.Unlock()
-	if !a.usage.lastFetch.IsZero() && time.Since(a.usage.lastFetch) < usageCacheTTL {
-		return a.usage.cached, a.usage.costUSD, a.usage.turns
+	switch {
+	case a.usage.lastFetch.IsZero():
+		// Cold cache: fetch once synchronously (bounded) so the first
+		// render shows real usage instead of zeros. Only inline network
+		// call on the render path; every subsequent read serves cache.
+		a.fetchUsageLocked()
+	case time.Since(a.usage.lastFetch) >= usageCacheTTL && !a.usage.refreshing:
+		// Warm but stale: refresh in the background, serve cache now.
+		a.usage.refreshing = true
+		go a.refreshUsage()
 	}
-	info, err := a.client.Usage(context.TODO(), a.sessionPath)
+	return a.usage.cached, a.usage.costUSD, a.usage.turns
+}
+
+// fetchUsageLocked does the /usage round-trip and updates the cache. The
+// caller must hold a.usage.mu (cold-cache path only). Bounded by
+// cacheRefreshTimeout; on error the prior snapshot stays in place and
+// lastFetch is bumped so we don't hammer a down daemon on every render.
+func (a *Adapter) fetchUsageLocked() {
+	ctx, cancel := context.WithTimeout(context.Background(), cacheRefreshTimeout)
+	defer cancel()
+	info, err := a.client.Usage(ctx, a.sessionPath)
+	a.usage.lastFetch = time.Now()
 	if err != nil {
-		// Bump lastFetch to throttle retries on persistent failure.
-		a.usage.lastFetch = time.Now()
-		return a.usage.cached, a.usage.costUSD, a.usage.turns
+		return
 	}
+	a.applyUsageInfoLocked(info)
+}
+
+// refreshUsage fetches a fresh /usage snapshot off the render goroutine
+// and updates the cache (stale-while-revalidate warm path). Bounded by
+// cacheRefreshTimeout. On error the prior cache stays in effect (last-
+// known-good rather than flickering to zero); lastFetch is bumped either
+// way to throttle retries to the TTL.
+func (a *Adapter) refreshUsage() {
+	ctx, cancel := context.WithTimeout(context.Background(), cacheRefreshTimeout)
+	defer cancel()
+	info, err := a.client.Usage(ctx, a.sessionPath)
+	a.usage.mu.Lock()
+	defer a.usage.mu.Unlock()
+	a.usage.refreshing = false
+	a.usage.lastFetch = time.Now()
+	if err != nil {
+		return
+	}
+	a.applyUsageInfoLocked(info)
+}
+
+// applyUsageInfoLocked projects a /usage response into the cache. The
+// caller must hold a.usage.mu. Shared by the cold (fetchUsageLocked) and
+// warm (refreshUsage) paths so both stay byte-for-byte identical.
+func (a *Adapter) applyUsageInfoLocked(info attach.UsageInfo) {
 	a.usage.cached = coretui.Usage{
 		InputTokens:  int(info.Overall.InputTokens),
 		OutputTokens: int(info.Overall.OutputTokens),
@@ -149,8 +276,6 @@ func (a *Adapter) snapshot() (coretui.Usage, float64, int) {
 		a.usage.lastTurnCost = last.CostUSD
 		a.usage.lastTurnModel = last.Model
 	}
-	a.usage.lastFetch = time.Now()
-	return a.usage.cached, a.usage.costUSD, a.usage.turns
 }
 
 // snapshotLastTurn returns the last per-turn entry from the cached

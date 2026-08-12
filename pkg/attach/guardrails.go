@@ -83,8 +83,8 @@ type GuardrailInfo struct {
 // WatchdogInfo reports the watchdog's configured posture and whether it
 // has halted the session.
 type WatchdogInfo struct {
-	// Mode is the resolved watchdog mode: "off", "warn" or "enforce".
-	// Only enforce can halt a session.
+	// Mode is the resolved watchdog mode: "off", "warn", "feedback" or
+	// "enforce". Only enforce can halt a session.
 	Mode string `json:"mode"`
 	// Tripped is true when a runaway pattern halted the agent and the
 	// operator hasn't reset it.

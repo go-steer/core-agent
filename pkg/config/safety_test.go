@@ -67,9 +67,12 @@ func TestValidate_SafetyWatchdog(t *testing.T) {
 		{"", false},
 		{WatchdogOff, false},
 		{WatchdogWarn, false},
+		{WatchdogFeedback, false},
 		{WatchdogEnforce, false},
 		{"enfroce", true}, // the typo an operator actually makes
+		{"feedbck", true}, // ditto for the #159 rung
 		{"prompt", true},  // designed-but-deferred mode — must error today
+		{"feedback ", true},
 		{"ENFORCE", true}, // case-sensitive guard, matching small_tier_parent
 		{"enforce ", true},
 	}
@@ -161,6 +164,7 @@ func TestSmallTierParentConstants_AreStable(t *testing.T) {
 		{SmallTierParentAllow, "allow"},
 		{WatchdogOff, "off"},
 		{WatchdogWarn, "warn"},
+		{WatchdogFeedback, "feedback"},
 		{WatchdogEnforce, "enforce"},
 		{BashSearchGateEnforce, "enforce"},
 		{BashSearchGateWarn, "warn"},

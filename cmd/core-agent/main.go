@@ -191,7 +191,7 @@ func main() {
 	maxTurnCostUSD := flag.Float64("max-turn-cost-usd", 0, "per-turn spend ceiling in USD. When a single conversation turn's cumulative cost (across all model calls + subtask costs) meets or exceeds this value, the agent emits a structured turn-error (kind=cost_ceiling) and refuses new turns until the operator resets it (/guardrail reset in the TUI, or POST /sessions/{id}/guardrails/reset over attach). 0 = disabled (default). Defense against runaway tool-loops within one turn (e.g. issue #144). Pairs with --max-session-cost-usd; either or both can be set. Overrides config.agent.max_turn_cost_usd when set.")
 	maxSessionCostUSD := flag.Float64("max-session-cost-usd", 0, fmt.Sprintf("session-level spend ceiling in USD. Cumulative across every turn including subtasks; same trip + refuse behavior as --max-turn-cost-usd. Useful for long-running autonomous deploys where per-turn cost is reasonable but the session total adds up. Overrides config.agent.max_session_cost_usd when set, including an explicit 0. When neither is set, unattended runs (-p, --no-repl, or a non-TTY stdin) default to $%.2f and interactive runs default to disabled (#642); pass --max-session-cost-usd=0 to opt an unattended run back out.", DefaultUnattendedSessionCostUSD))
 	smallTierParent := flag.String("small-tier-parent", "", "what to do when an interactive session starts on a small-tier parent model (Flash/Haiku-class). One of warn|refuse|allow. warn (default when unset) logs a one-line operator notice but proceeds; refuse exits with a config-error code; allow suppresses the check entirely. Skipped regardless when -p (one-shot), --yolo, or the model's tier doesn't classify. Per docs/model-selection-design.md / issue #121. Config-file equivalent: safety.small_tier_parent.")
-	watchdogMode := flag.String("watchdog", "", "behavioral watchdog mode (#123 PR 2). 'warn' = observe tool-call stream + log structured alerts to the operator when a runaway pattern is detected (e.g. 5 consecutive identical tool calls — the read_file loop from #144). 'enforce' = same detection, but a runaway trips a turn-error (kind=watchdog) and the agent refuses new turns until the operator resets it (/guardrail reset in the TUI, or POST /sessions/{id}/guardrails/reset over attach) (#623 — the hard backstop against tool loops an auto-continue re-drive would otherwise re-issue). 'off' = no observation. Empty (default) resolves per mode: 'enforce' for unattended runs (-p, --no-repl, or a non-TTY stdin — nobody is reading the warn-mode log there) and 'warn' for interactive REPL/TUI runs (#642). v1 ships warn/enforce + one signal (repeated-tool-call); future modes (prompt, auto) and additional signals (tools-without-text, files-not-touched) are deferred per the design doc. Config-file equivalent: safety.watchdog.")
+	watchdogMode := flag.String("watchdog", "", "behavioral watchdog mode (#123 PR 2). A ladder — each mode includes the one before it. 'warn' = observe tool-call stream + log structured alerts to the operator when a runaway pattern is detected (e.g. 5 consecutive identical tool calls — the read_file loop from #144). 'feedback' = same, plus the observation is injected into the model's next-turn context as a '[watchdog]' block, so the party actually making the looping call finds out about it (#159); a correction, not a backstop — nothing halts a model that reads it and loops anyway. 'enforce' = all of that, but a runaway also trips a turn-error (kind=watchdog) and the agent refuses new turns until the operator resets it (/guardrail reset in the TUI, or POST /sessions/{id}/guardrails/reset over attach) (#623 — the hard backstop against tool loops an auto-continue re-drive would otherwise re-issue). 'off' = no observation. Empty (default) resolves per mode: 'enforce' for unattended runs (-p, --no-repl, or a non-TTY stdin — nobody is reading the warn-mode log there) and 'warn' for interactive REPL/TUI runs (#642). One signal ships today (repeated-tool-call); future modes (prompt, auto) and additional signals (tools-without-text, files-not-touched) are deferred per the design doc. Config-file equivalent: safety.watchdog.")
 	bashSearchGate := flag.String("bash-search-gate", "", "what to do when the model runs a search-shaped shell command (grep/egrep/fgrep/rgrep/rg/ag/ack/fd/find) while the native grep/glob tools are registered (#158). 'enforce' (default) refuses the call with a structured error naming the native replacement — bash-as-grep is a training prior strong enough that the existing 'PREFERRED over bash grep' tool descriptions bounce off it (measured: one Gemini variant picked bash for search 15/27 times anyway), and a refusal is the only feedback the model gets at the moment it makes the wrong choice. 'warn' runs the command but attaches the same advice to the tool result. 'allow' disables the check. Piping into a search binary is never gated ('go test ./... | grep -v ok' filters a stream, which the native tool cannot do), and 'find' with an action predicate (-delete, -exec, ...) is a file operation rather than a lookup, so it passes. Tests, builds, git and every other bash use are untouched — this is the surgical version of --disable-tools=bash. Config-file equivalent: safety.bash_search_gate.")
 	agenticTools := flag.Bool("agentic-tools", true, "register the agentic tool wrappers (agentic_read_file, agentic_fetch_url, agentic_grep, agentic_research) that route through a subtask so only the digest enters the parent's context (docs/context-management-design.md Mechanism B). On by default since v2.1; pass --agentic-tools=false to register only the bare tools.")
 	agenticSmallModel := flag.String("agentic-small-model", "", "small/cheap model ID the agentic_* wrappers should route subtasks to (e.g. gemini-3.5-flash-lite, claude-haiku-4-5). When empty, the provider's cheap-tier default is used (gemini-3.5-flash-lite for Gemini/Vertex, claude-haiku-4-5 for Anthropic); providers without a cheap tier (echo, scripted) fall through to inheriting the parent's model. Requires --agentic-tools.")
@@ -1622,29 +1622,28 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		}
 		send(fmt.Sprintf("cost ceiling: per-turn=$%.4f per-session=%s [session ceiling from %s] (refuses new turns when exceeded; clear with /guardrail reset, or POST /sessions/{id}/guardrails/reset — a per-session trip needs +budget)", ceiling.MaxTurnUSD, sessionCeiling, guard.SessionCostSource))
 	}
-	// Behavioral watchdog (#123 PR 2). Off when resolved to "off";
-	// observe + log on "warn"; observe + halt on a Critical runaway on
-	// "enforce" (#623). Alerts go to the operator via send(); enforce
-	// additionally emits a turn-error (kind=watchdog) and refuses new
-	// turns until the operator resets it (/guardrail reset).
-	switch guard.Watchdog {
-	case config.WatchdogOff:
+	// Behavioral watchdog (#123 PR 2), a ladder rather than a set of
+	// alternatives: "warn" observes and logs to the operator, "feedback"
+	// adds the model-facing injection (#159), "enforce" adds the halt
+	// (#623). Options are accumulated in that order so the stronger
+	// modes can't drift from the weaker ones they contain.
+	if guard.Watchdog == config.WatchdogOff {
 		send(fmt.Sprintf("watchdog: off [%s] (no runaway-pattern observation)", guard.WatchdogSource))
-	case config.WatchdogWarn:
+	} else {
 		w := watchdog.NewDefaultWatchdog()
 		opts = append(opts, agent.WithWatchdog(w, func(a watchdog.Alert) {
 			send(fmt.Sprintf("watchdog %s", a.String()))
 		}))
-		send(fmt.Sprintf("watchdog: warn mode [%s] (observes tool-call stream; logs structured alerts on runaway patterns)", guard.WatchdogSource))
-	case config.WatchdogEnforce:
-		w := watchdog.NewDefaultWatchdog()
-		opts = append(opts,
-			agent.WithWatchdog(w, func(a watchdog.Alert) {
-				send(fmt.Sprintf("watchdog %s", a.String()))
-			}),
-			agent.WithWatchdogEnforce(),
-		)
-		send(fmt.Sprintf("watchdog: enforce mode [%s] (halts the agent on a runaway pattern; refuses new turns until cleared with /guardrail reset, or POST /sessions/{id}/guardrails/reset)", guard.WatchdogSource))
+		detail := "observes tool-call stream; logs structured alerts on runaway patterns"
+		if guard.Watchdog == config.WatchdogFeedback || guard.Watchdog == config.WatchdogEnforce {
+			opts = append(opts, agent.WithWatchdogFeedback())
+			detail += "; injects the observation into the model's next turn"
+		}
+		if guard.Watchdog == config.WatchdogEnforce {
+			opts = append(opts, agent.WithWatchdogEnforce())
+			detail += "; halts the agent and refuses new turns until cleared with /guardrail reset, or POST /sessions/{id}/guardrails/reset"
+		}
+		send(fmt.Sprintf("watchdog: %s mode [%s] (%s)", guard.Watchdog, guard.WatchdogSource, detail))
 	}
 	// Bash search gate (#158). Reported on every boot, including the
 	// default: "which guardrails are actually armed" is the question

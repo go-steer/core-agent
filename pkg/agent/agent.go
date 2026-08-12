@@ -376,11 +376,19 @@ type Agent struct {
 	// the operator-facing explanation for /stats-style surfaces. This
 	// mirrors the cost-ceiling kill switch (see watchdog.go +
 	// cost_ceiling.go for the shared contract).
-	watchdog        watchdog.Watchdog
-	onWatchdogAlert func(watchdog.Alert)
-	watchdogEnforce bool
-	watchdogTripped bool
-	watchdogReason  string
+	//
+	// watchdogFeedback (#159) routes the alert's model-facing Guidance
+	// into the next turn's prompt as a "[watchdog]" block; the queue
+	// holds alerts drained from the post-turn hook until a Run consumes
+	// them. Implied by enforce, which is why it is a separate bit from
+	// watchdogEnforce rather than a mode enum: the two compose.
+	watchdog         watchdog.Watchdog
+	onWatchdogAlert  func(watchdog.Alert)
+	watchdogEnforce  bool
+	watchdogFeedback bool
+	watchdogTripped  bool
+	watchdogReason   string
+	watchdogPending  []watchdog.Alert
 
 	// Event hook (WithEventHook). Optional callbacks that observe
 	// session events as they stream (onEvent) and once per turn from
@@ -437,6 +445,7 @@ type options struct {
 	watchdog         watchdog.Watchdog
 	onWatchdogAlert  func(watchdog.Alert)
 	watchdogEnforce  bool
+	watchdogFeedback bool
 	onEvent          func(*session.Event)
 	onTurnEnd        func()
 	postConstruct    func(*Agent)
@@ -963,6 +972,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		watchdog:             o.watchdog,
 		onWatchdogAlert:      o.onWatchdogAlert,
 		watchdogEnforce:      o.watchdogEnforce,
+		watchdogFeedback:     o.watchdogFeedback || o.watchdogEnforce,
 		onEvent:              o.onEvent,
 		onTurnEnd:            o.onTurnEnd,
 	}
@@ -1389,6 +1399,12 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// into the turn context below.
 	inboxTexts, inboxOriginator := a.drainInboxFull()
 	prompt = prependInboxMessages(prompt, inboxTexts)
+	// Watchdog feedback (#159) goes on last, so it reads first: it is an
+	// observation about the model's own immediately-preceding turn, and
+	// a correction buried under a page of inbox traffic is a correction
+	// the model can skim past. No-op unless feedback/enforce mode queued
+	// something.
+	prompt = a.prependWatchdogFeedback(prompt)
 	msg := genai.NewContentFromText(prompt, genai.RoleUser)
 
 	// Per-turn correlation handle: fresh prompt_id assigned at turn

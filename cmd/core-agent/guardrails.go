@@ -100,7 +100,7 @@ type guardrailInputs struct {
 // this" without re-deriving the precedence chain.
 type guardrailResolution struct {
 	// Watchdog is one of config.WatchdogOff / WatchdogWarn /
-	// WatchdogEnforce. Never empty.
+	// WatchdogFeedback / WatchdogEnforce. Never empty.
 	Watchdog       string
 	WatchdogSource string
 
@@ -147,21 +147,22 @@ func resolveGuardrails(in guardrailInputs) (guardrailResolution, error) {
 	norm := func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 	valid := func(s string) bool {
 		switch s {
-		case config.WatchdogOff, config.WatchdogWarn, config.WatchdogEnforce:
+		case config.WatchdogOff, config.WatchdogWarn, config.WatchdogFeedback, config.WatchdogEnforce:
 			return true
 		}
 		return false
 	}
+	modes := strings.Join([]string{config.WatchdogOff, config.WatchdogWarn, config.WatchdogFeedback, config.WatchdogEnforce}, "|")
 
 	switch flagMode, cfgMode := norm(in.WatchdogFlag), norm(in.WatchdogConfig); {
 	case flagMode != "":
 		if !valid(flagMode) {
-			return res, fmt.Errorf("invalid --watchdog mode %q (want %s|%s|%s)", in.WatchdogFlag, config.WatchdogOff, config.WatchdogWarn, config.WatchdogEnforce)
+			return res, fmt.Errorf("invalid --watchdog mode %q (want %s)", in.WatchdogFlag, modes)
 		}
 		res.Watchdog, res.WatchdogSource = flagMode, sourceFlag
 	case cfgMode != "":
 		if !valid(cfgMode) {
-			return res, fmt.Errorf("invalid safety.watchdog %q (want %s|%s|%s)", in.WatchdogConfig, config.WatchdogOff, config.WatchdogWarn, config.WatchdogEnforce)
+			return res, fmt.Errorf("invalid safety.watchdog %q (want %s)", in.WatchdogConfig, modes)
 		}
 		res.Watchdog, res.WatchdogSource = cfgMode, sourceConfig
 	case in.Unattended:

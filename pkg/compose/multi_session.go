@@ -174,7 +174,7 @@ type SessionFactoryDeps struct {
 
 	// WatchdogMode is the resolved behavioral-watchdog posture for
 	// every session this factory creates — one of config.WatchdogOff /
-	// WatchdogWarn / WatchdogEnforce. Empty is treated as Off so a
+	// WatchdogWarn / WatchdogFeedback / WatchdogEnforce. Empty is Off so a
 	// caller that predates this field keeps its old behavior (no
 	// watchdog on session-created agents).
 	//
@@ -522,12 +522,19 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 	// applied uniformly to every session-created agent (#642). Alerts
 	// carry the session ID so a pod log with many tenants stays
 	// attributable.
+	// The ladder is applied additively, matching cmd/core-agent: a
+	// stronger mode includes every weaker one. A daemon whose primary
+	// session corrects itself while its POST /sessions tenants loop
+	// silently is the #642 failure with a different label.
 	switch deps.WatchdogMode {
-	case config.WatchdogWarn, config.WatchdogEnforce:
+	case config.WatchdogWarn, config.WatchdogFeedback, config.WatchdogEnforce:
 		w := watchdog.NewDefaultWatchdog()
 		opts = append(opts, agent.WithWatchdog(w, func(a watchdog.Alert) {
 			fmt.Fprintf(os.Stderr, "core-agent: session %s watchdog %s\n", sid, a.String())
 		}))
+		if deps.WatchdogMode == config.WatchdogFeedback || deps.WatchdogMode == config.WatchdogEnforce {
+			opts = append(opts, agent.WithWatchdogFeedback())
+		}
 		if deps.WatchdogMode == config.WatchdogEnforce {
 			opts = append(opts, agent.WithWatchdogEnforce())
 		}

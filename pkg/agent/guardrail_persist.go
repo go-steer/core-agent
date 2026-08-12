@@ -60,6 +60,7 @@ import (
 	"google.golang.org/adk/session"
 
 	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v2/pkg/watchdog"
 )
 
 // queueGuardrailEvent enqueues a durable guardrail row and flushes
@@ -217,6 +218,21 @@ func (a *Agent) applyGuardrailState(st attach.GuardrailPersistedState) {
 	if st.WatchdogTripped && a.watchdogEnforce && a.watchdog != nil {
 		a.watchdogTripped = true
 		a.watchdogReason = st.WatchdogReason
+		// Feedback (#159) has to survive the restart too, or the
+		// durability this file provides is half a property: the halt
+		// comes back, the operator clears it, and the fresh process
+		// resumes a model that never learned why it was stopped —
+		// straight back into the loop. The in-memory queue died with
+		// the old process, so synthesize the observation from the
+		// persisted reason. Signal name marks it as reconstructed
+		// rather than freshly detected.
+		if a.watchdogFeedback {
+			a.watchdogPending = append(a.watchdogPending, watchdog.Alert{
+				Signal:   "restored-watchdog-halt",
+				Severity: watchdog.SeverityCritical,
+				Guidance: "An earlier turn in this session was halted by the runaway-behavior watchdog, and an operator has since cleared the halt. The halting observation was: " + st.WatchdogReason + " Do not resume the call pattern that caused it — change your approach before calling any tool again.",
+			})
+		}
 	}
 	if st.CostTripped && a.costCeiling.active() {
 		a.costCeilingExceeded = true

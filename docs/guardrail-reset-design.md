@@ -8,8 +8,10 @@ ceiling, who may do it, and what the caller sees.
 
 **Tracking issues:**
 [#666](https://github.com/go-steer/core-agent/issues/666) (operator-facing
-reset) and [#331](https://github.com/go-steer/core-agent/issues/331)
-(`/reset-ceiling` semantics).
+reset), [#331](https://github.com/go-steer/core-agent/issues/331)
+(`/reset-ceiling` semantics), and
+[#643](https://github.com/go-steer/core-agent/issues/643) (durable
+trip-state).
 
 ## Motivation
 
@@ -122,6 +124,87 @@ does not clutter the log.
 
 "Who un-halted the session that had blown its budget, and how much
 runway did they hand it?" is otherwise invisible in the transcript.
+
+Attribution is stamped by the handler from the authenticated context
+and is never read off the wire (`Caller` is `json:"-"`). A caller who
+could name themselves in the request body could name someone else
+instead, which is worse than no attribution at all.
+
+## Durability across a restart (#643)
+
+A halt that a restart clears is not a halt. Both trips originally
+lived only in the `Agent` struct, so a crash, an OOM kill, or a pod
+roll started a fresh process with the backstop disarmed — and the
+runaway-loop → crash → restart cycle the #623–#627 train exists to
+break could repeat indefinitely, each restart handing the loop a fresh
+budget. [#642](https://github.com/go-steer/core-agent/issues/642) made
+both backstops default-on for unattended runs, which is exactly the
+deployment shape a supervisor restarts.
+
+So the trip is a fact in the eventlog rather than a field in a struct.
+Two row kinds, folded forward on the next process:
+
+| Row | Author | Written when |
+| --- | --- | --- |
+| `guardrail-trip` | `agent/guardrail-trip` | a backstop halts the session |
+| `attach-guardrail-reset` | `attach/guardrail-reset` | an operator clears one |
+
+The reset row is the same row as the audit row above. Two rows meaning
+"the operator reset this" would be two things to keep in agreement.
+
+Four properties are load-bearing, and each is tested:
+
+- **The write is agent-side, and queued.** An out-of-band
+  Get-then-`AppendEvent` while the runner holds the session bumps
+  `last_update_time` and trips ADK's optimistic-concurrency check,
+  surfacing as an opaque stale-session error on the operator's turn
+  (the [#565](https://github.com/go-steer/core-agent/issues/565)
+  lesson). Rows queue and drain in windows where no turn is in flight,
+  on a background context — a row written *because* of a caller must
+  not be droppable *by* that caller hanging up.
+- **Restore is lazy and self-installing**, once per agent at the top
+  of the first `Run`, rather than wired per construction site. Every
+  path that builds an agent over an existing session gets the property
+  without remembering to ask for it. A wiring step an embedder can
+  forget is the same unenforced-safety-claim shape this milestone is
+  about.
+- **Config still wins.** A restored halt applies only where the
+  current process is configured to enforce it: no watchdog halt under
+  `--watchdog=warn`, no cost halt with no ceiling configured, and no
+  granted budget re-applied to a per-session bound that is now
+  disabled (that would silently *arm* a bound the operator never
+  asked for).
+- **Restore fails open, and retries.** An unreadable eventlog means no
+  restore: refusing every turn when the guardrail history can't be read
+  would turn a transient DB hiccup into a dead session, a worse outcome
+  than the window it covers. But the "already restored" latch is set on
+  *success* only, so a failed read is retried on the next turn. A
+  `sync.Once` here would mean one transient error at the wrong moment
+  disarms the backstop for the whole life of the process — the failure
+  mode this work exists to remove, reintroduced one layer up.
+
+The fold is last-writer-wins per guardrail (a trip is a latch, not a
+tally) while granted budget accumulates, because two resets that each
+hand over $5 have handed over $10. Malformed rows are skipped rather
+than failing the fold: refusing to restore *any* state because one row
+is unreadable would disarm the backstop, which is the opposite of what
+a durable halt is for.
+
+Persistence requires an eventlog (`WithEventLog`). Without one there
+is nowhere to write and nothing to restore, and in-memory behavior is
+unchanged.
+
+### The per-turn baseline bug this surfaced
+
+On a resumed session the usage tracker is rebuilt with the entire
+prior spend *before* the agent is constructed
+(`pkg/compose/multi_session.go`), but `turnStartCost` starts at zero —
+so the first turn's per-turn "delta" was the whole session history, and
+a per-turn ceiling could trip on a turn that had not yet cost a cent.
+The per-turn check is now gated on a baseline captured by a turn this
+process actually ran. The per-session check is untouched: it reads the
+accumulator directly, which is exactly what should carry across a
+resume.
 
 ## Surface
 

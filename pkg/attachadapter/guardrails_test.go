@@ -17,11 +17,16 @@ package attachadapter
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/glebarez/sqlite"
+	"google.golang.org/adk/session"
+
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
@@ -223,5 +228,74 @@ func TestAttachCapabilities_ReportsGuardrails(t *testing.T) {
 	armed := New(newEchoAgent(t, agent.WithCostCeiling(agent.CostCeiling{MaxTurnUSD: 1}))).AttachCapabilities()
 	if !armed.CostCeiling {
 		t.Error("CostCeiling = false with a $1 per-turn ceiling armed")
+	}
+}
+
+// The reset surface is the only writer of the durable reset row (#643 /
+// #331): both operator paths — the TUI's /guardrail and POST
+// /guardrails/reset — go through AttachResetGuardrail, so persisting
+// here is what keeps the two from drifting. Fails on pre-#643 code:
+// nothing wrote the row, so the halt came back on the next restart.
+func TestAttachResetGuardrail_PersistsOneRow(t *testing.T) {
+	t.Parallel()
+	h, err := eventlog.Open(context.Background(),
+		sqlite.Open(filepath.Join(t.TempDir(), "session.db")))
+	if err != nil {
+		t.Fatalf("eventlog.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+
+	tr := usage.NewTracker()
+	tr.Append("test", 12_000_000, 0, usage.Pricing{InputPerMTok: 1}) // $12 of $10
+	a := newEchoAgent(t,
+		agent.WithEventLog(h),
+		agent.WithSession("u", "s-reset-row"),
+		agent.WithUsageTracker(tr),
+		agent.WithCostCeiling(agent.CostCeiling{MaxSessionUSD: 10}),
+	)
+	if _, err := h.Service.Create(context.Background(), &session.CreateRequest{
+		AppName: a.AppName(), UserID: "u", SessionID: "s-reset-row",
+	}); err != nil {
+		t.Fatalf("session Create: %v", err)
+	}
+	for range a.Run(context.Background(), "hello") { //nolint:revive // drain
+	}
+	if tripped, _ := a.CostCeilingTripped(); !tripped {
+		t.Fatal("setup: ceiling did not trip")
+	}
+
+	resp, err := New(a).AttachResetGuardrail(attach.GuardrailResetRequest{
+		Guardrail:           attach.GuardrailCostCeiling,
+		AdditionalBudgetUSD: 5,
+		Caller:              "alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("AttachResetGuardrail: %v", err)
+	}
+	if len(resp.Reset) != 1 || resp.BudgetAddedUSD != 5 {
+		t.Fatalf("reset response = %+v, want the ceiling cleared and $5 added", resp)
+	}
+
+	getResp, err := h.Service.Get(context.Background(), &session.GetRequest{
+		AppName: a.AppName(), UserID: "u", SessionID: "s-reset-row",
+	})
+	if err != nil {
+		t.Fatalf("session Get: %v", err)
+	}
+	var rows int
+	for ev := range getResp.Session.Events().All() {
+		if ev.Author != attach.GuardrailResetEventAuthor {
+			continue
+		}
+		rows++
+		if ev.CustomMetadata["caller"] != "alice@example.com" {
+			t.Errorf("caller = %v, want the authenticated identity", ev.CustomMetadata["caller"])
+		}
+		if ev.CustomMetadata["budget_added_usd"] != 5.0 {
+			t.Errorf("budget_added_usd = %v, want 5", ev.CustomMetadata["budget_added_usd"])
+		}
+	}
+	if rows != 1 {
+		t.Errorf("durable reset rows = %d, want exactly 1 per operator action", rows)
 	}
 }

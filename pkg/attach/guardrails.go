@@ -128,6 +128,15 @@ type GuardrailResetRequest struct {
 	// meaning there, and quietly discarding it would let an operator
 	// believe they'd bought runway they hadn't.
 	AdditionalBudgetUSD float64 `json:"additional_budget_usd,omitempty"`
+
+	// Caller is the authenticated identity performing the reset,
+	// recorded on the persisted reset row (#643) so a post-incident
+	// review can answer "who handed this session more runway?".
+	//
+	// json:"-" deliberately: it is stamped by the handler from the auth
+	// context and never read off the wire. A client-supplied value
+	// would be an attribution a caller writes about themselves.
+	Caller string `json:"-"`
 }
 
 // GuardrailResetResponse reports what the reset actually did. The

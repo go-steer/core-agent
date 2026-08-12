@@ -15,13 +15,10 @@
 package attach
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
-
-	"google.golang.org/adk/session"
 
 	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
@@ -299,6 +296,16 @@ func (h *handlers) doGuardrailsReset(w http.ResponseWriter, r *http.Request, ent
 		http.Error(w, "additional_budget_usd: must be non-negative", http.StatusBadRequest)
 		return
 	}
+	// Attribution is stamped here, from the authenticated context —
+	// never read off the wire, where it would be a claim the caller
+	// makes about themselves. The capability persists it on the reset
+	// row (#643), which is also the audit trail (#331); the handler
+	// deliberately does NOT append out-of-band, because an out-of-band
+	// Get-then-Append can bump the live session row mid-turn and trip
+	// ADK's optimistic-concurrency check (the #565 lesson).
+	if c, ok := auth.CallerFromContext(r.Context()); ok {
+		body.Caller = c.Identity
+	}
 	resp, err := p.AttachResetGuardrail(body)
 	switch {
 	case errors.Is(err, ErrCapabilityNotRegistered):
@@ -320,66 +327,7 @@ func (h *handlers) doGuardrailsReset(w http.ResponseWriter, r *http.Request, ent
 	if resp.Reset == nil {
 		resp.Reset = []string{}
 	}
-	// Audit trail (#331 asked for one). "Who un-halted a session that
-	// had blown its budget, and how much runway did they hand it?" is
-	// exactly the question a post-incident review asks, and the reset
-	// is otherwise invisible in the transcript. Only a reset that DID
-	// something is recorded — a defensive no-op reset is noise.
-	if len(resp.Reset) > 0 || resp.BudgetAddedUSD > 0 {
-		// WithoutCancel, not r.Context(): the reset has ALREADY taken
-		// effect in the agent by this point, so a client that hangs up
-		// mid-response must not be able to suppress the record of it.
-		// The caller identity rides on the context values, which
-		// WithoutCancel preserves.
-		appendGuardrailResetAudit(context.WithoutCancel(r.Context()), entry, resp)
-	}
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// appendGuardrailResetAudit writes one eventlog row recording an
-// operator's guardrail reset. Best-effort, mirroring
-// appendInterruptAudit: an eventlog failure never fails the request —
-// the reset already took effect in the agent.
-func appendGuardrailResetAudit(ctx context.Context, entry *Entry, resp GuardrailResetResponse) {
-	log := entry.Agent.EventLog()
-	if log == nil {
-		return
-	}
-	getResp, err := log.Service.Get(ctx, &session.GetRequest{
-		AppName:   entry.AppName,
-		UserID:    entry.UserID,
-		SessionID: entry.SessionID,
-	})
-	if err != nil {
-		return
-	}
-	identity := ""
-	if c, ok := auth.CallerFromContext(ctx); ok {
-		identity = c.Identity
-	}
-	_ = log.Service.AppendEvent(ctx, getResp.Session,
-		NewGuardrailResetAuditEvent(identity, resp.Reset, resp.BudgetAddedUSD))
-}
-
-// NewGuardrailResetAuditEvent builds the eventlog row recording an
-// operator-initiated guardrail reset (#666). Author identifies the
-// source; CustomMetadata carries who did it, what was cleared, and how
-// much budget was added.
-func NewGuardrailResetAuditEvent(identity string, reset []string, budgetUSD float64) *session.Event {
-	ev := session.NewEvent("attach-guardrail-reset")
-	ev.Author = "attach/guardrail-reset"
-	meta := map[string]any{
-		"source": "operator",
-		"reset":  append([]string{}, reset...),
-	}
-	if identity != "" {
-		meta["caller"] = identity
-	}
-	if budgetUSD > 0 {
-		meta["budget_added_usd"] = budgetUSD
-	}
-	ev.CustomMetadata = meta
-	return ev
 }
 
 // doReload — POST /reload.

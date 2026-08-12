@@ -147,6 +147,15 @@ func (ad *Adapter) AttachResetGuardrail(req attach.GuardrailResetRequest) (attac
 		}
 	}
 
+	// Step 3 — persist. One row per operator action, written here rather
+	// than at each surface so the TUI's /guardrail and the HTTP endpoint
+	// leave the same trail, and so the agent (not an out-of-band caller)
+	// owns the append — see pkg/agent/guardrail_persist.go for why that
+	// matters. The row is both the #331 audit record and the state
+	// transition that keeps the halt cleared across a restart (#643).
+	// No-op when the reset cleared nothing and added nothing.
+	a.RecordGuardrailReset(resp.Reset, resp.BudgetAddedUSD, req.Caller)
+
 	resp.Guardrails = ad.AttachGuardrails()
 	resp.Message = guardrailResetMessage(resp)
 	return resp, nil

@@ -339,6 +339,12 @@ type Alert struct {
 // Built from the spawn_agent tool args by the tool handler.
 type Spec struct {
 	Name string
+	// Description is a one-line summary of what this subagent is for.
+	// Surfaced to the operator catalog (#627) and — for a predefined
+	// spec, which the parent can reference by name — into the
+	// spawn_agent schema the model routes from (#640). Optional, but a
+	// spec without one is harder for the parent to route to.
+	Description string
 	// SystemPrompt is the subagent's task-specific instruction.
 	// Since #459 it COMPOSES: the built agent gets the layered
 	// baseline (agent.CoreInstruction + provider quirks +

@@ -23,6 +23,7 @@ import (
 	adkmodel "google.golang.org/adk/model"
 
 	"github.com/go-steer/core-agent/v2/pkg/auth"
+	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
@@ -162,5 +163,47 @@ func TestReproduceAgent_HonorsDisableFlags(t *testing.T) {
 	}
 	if ag.Agent().HasCheckpointer() {
 		t.Errorf("HasCheckpointer() = true with NoCheckpoint=true, want false")
+	}
+}
+
+// TestReproduceAgent_WatchdogMode is the #642 wiring guard for the
+// surface the fix would otherwise miss: a multi-session daemon's
+// POST /sessions agents. Before this change SessionFactoryDeps had no
+// watchdog field at all, so every tenant session came up un-backstopped
+// even with --watchdog=enforce on the daemon — the primary session
+// halted on a runaway and the tenant sessions kept looping.
+func TestReproduceAgent_WatchdogMode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		mode string
+		want string
+	}{
+		{config.WatchdogEnforce, "enforce"},
+		{config.WatchdogWarn, "warn"},
+		{config.WatchdogOff, "off"},
+		{"", "off"}, // a caller predating the field keeps its old behavior
+	}
+	for _, tc := range tests {
+		t.Run("mode="+tc.mode, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+
+			ad, cancelSess, err := ReproduceAgent(SessionFactoryDeps{
+				DaemonCtx:    ctx,
+				Model:        stubLLM{},
+				Template:     permissions.New(permissions.Options{}),
+				WatchdogMode: tc.mode,
+			}, auth.Anonymous, "sid-wd-"+tc.mode, "created")
+			if err != nil {
+				t.Fatalf("ReproduceAgent: %v", err)
+			}
+			t.Cleanup(cancelSess)
+
+			if got := ad.Agent().WatchdogMode(); got != tc.want {
+				t.Errorf("session agent WatchdogMode() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

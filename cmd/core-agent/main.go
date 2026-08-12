@@ -186,9 +186,9 @@ func main() {
 	noCheckpoint := flag.Bool("no-checkpoint", false, "disable task-boundary checkpoints. /done slash + the model-facing mark_task_done tool are both removed. Use when running headless where the model shouldn't self-signal task completion, or when debugging an issue where you don't want auto-slicing in play.")
 	taskClass := flag.String("task", "", "operator-declared task class — picks a bundle of defaults (model tier, compaction threshold, agentic-tools posture, ask mode) tuned for the kind of work being done. One of: debug, implement, chat, research, review. Empty = no task class applied (substrate defaults). Explicit flags (--model, --ask, etc.) always win over the task profile. Per docs/model-selection-design.md / issue #123. Config-file equivalent: session.task_class.")
 	maxTurnCostUSD := flag.Float64("max-turn-cost-usd", 0, "per-turn spend ceiling in USD. When a single conversation turn's cumulative cost (across all model calls + subtask costs) meets or exceeds this value, the agent emits a structured turn-error (kind=cost_ceiling) and refuses new turns until the operator runs /resume-after-cost-ceiling. 0 = disabled (default). Defense against runaway tool-loops within one turn (e.g. issue #144). Pairs with --max-session-cost-usd; either or both can be set. Overrides config.agent.max_turn_cost_usd when set.")
-	maxSessionCostUSD := flag.Float64("max-session-cost-usd", 0, "session-level spend ceiling in USD. Cumulative across every turn including subtasks; same trip + refuse behavior as --max-turn-cost-usd. 0 = disabled (default). Useful for long-running autonomous deploys where per-turn cost is reasonable but the session total adds up. Overrides config.agent.max_session_cost_usd when set.")
+	maxSessionCostUSD := flag.Float64("max-session-cost-usd", 0, fmt.Sprintf("session-level spend ceiling in USD. Cumulative across every turn including subtasks; same trip + refuse behavior as --max-turn-cost-usd. Useful for long-running autonomous deploys where per-turn cost is reasonable but the session total adds up. Overrides config.agent.max_session_cost_usd when set, including an explicit 0. When neither is set, unattended runs (-p, --no-repl, or a non-TTY stdin) default to $%.2f and interactive runs default to disabled (#642); pass --max-session-cost-usd=0 to opt an unattended run back out.", DefaultUnattendedSessionCostUSD))
 	smallTierParent := flag.String("small-tier-parent", "", "what to do when an interactive session starts on a small-tier parent model (Flash/Haiku-class). One of warn|refuse|allow. warn (default when unset) logs a one-line operator notice but proceeds; refuse exits with a config-error code; allow suppresses the check entirely. Skipped regardless when -p (one-shot), --yolo, or the model's tier doesn't classify. Per docs/model-selection-design.md / issue #121. Config-file equivalent: safety.small_tier_parent.")
-	watchdogMode := flag.String("watchdog", "warn", "behavioral watchdog mode (#123 PR 2). 'warn' = observe tool-call stream + log structured alerts to the operator when a runaway pattern is detected (e.g. 5 consecutive identical tool calls — the read_file loop from #144). 'enforce' = same detection, but a runaway trips a turn-error (kind=watchdog) and the agent refuses new turns until reset via Agent.ResetWatchdog (#623 — the hard backstop against tool loops an auto-continue re-drive would otherwise re-issue). 'off' = no observation. v1 ships warn/enforce + one signal (repeated-tool-call); future modes (prompt, auto) and additional signals (tools-without-text, files-not-touched) are deferred per the design doc.")
+	watchdogMode := flag.String("watchdog", "", "behavioral watchdog mode (#123 PR 2). 'warn' = observe tool-call stream + log structured alerts to the operator when a runaway pattern is detected (e.g. 5 consecutive identical tool calls — the read_file loop from #144). 'enforce' = same detection, but a runaway trips a turn-error (kind=watchdog) and the agent refuses new turns until reset via Agent.ResetWatchdog (#623 — the hard backstop against tool loops an auto-continue re-drive would otherwise re-issue). 'off' = no observation. Empty (default) resolves per mode: 'enforce' for unattended runs (-p, --no-repl, or a non-TTY stdin — nobody is reading the warn-mode log there) and 'warn' for interactive REPL/TUI runs (#642). v1 ships warn/enforce + one signal (repeated-tool-call); future modes (prompt, auto) and additional signals (tools-without-text, files-not-touched) are deferred per the design doc. Config-file equivalent: safety.watchdog.")
 	agenticTools := flag.Bool("agentic-tools", true, "register the agentic tool wrappers (agentic_read_file, agentic_fetch_url, agentic_grep, agentic_research) that route through a subtask so only the digest enters the parent's context (docs/context-management-design.md Mechanism B). On by default since v2.1; pass --agentic-tools=false to register only the bare tools.")
 	agenticSmallModel := flag.String("agentic-small-model", "", "small/cheap model ID the agentic_* wrappers should route subtasks to (e.g. gemini-3.5-flash-lite, claude-haiku-4-5). When empty, the provider's cheap-tier default is used (gemini-3.5-flash-lite for Gemini/Vertex, claude-haiku-4-5 for Anthropic); providers without a cheap tier (echo, scripted) fall through to inheriting the parent's model. Requires --agentic-tools.")
 	noMCPDigest := flag.Bool("no-mcp-digest", false, "disable the structural pkg/digest wrap around MCP tool responses (docs/digest-design.md). Default: enabled. When on, JSON-shaped MCP responses get a deterministic prune (identifier keys preserved, long strings truncated, arrays collapsed head+tail) before reaching the parent context; prose passthroughs are bounded. Also registers retrieve_raw as a built-in tool so the model can fetch back the un-digested payload when a digest looks suspicious. Kill switch for demos / debugging; leave on for production. Also gated per-project by cfg.MCP.AgenticWrap and per-server by mcp.json's agentic_never.")
@@ -221,7 +221,16 @@ func main() {
 		os.Exit(runner.ExitConfigError)
 	}
 
-	code := run(*prompt, *initialPrompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, contentDirEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *compactionThreshold, *maxTurnCostUSD, *maxSessionCostUSD, *watchdogMode, *smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *mcpAgenticWrapLLM, *mcpAgenticWrapModel, *noContextCache, promptOpts{appendSystemPrompt: *appendSystemPrompt, systemPromptFile: *systemPromptFile},
+	code := run(*prompt, *initialPrompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, contentDirEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *compactionThreshold,
+		guardrailOpts{
+			watchdogMode:      *watchdogMode,
+			maxTurnCostUSD:    *maxTurnCostUSD,
+			maxSessionCostUSD: *maxSessionCostUSD,
+			// Explicit 0 means "no ceiling" and must beat the
+			// unattended default, so record presence, not value.
+			maxSessionCostSet: flagWasSet(flag.CommandLine, "max-session-cost-usd"),
+		},
+		*smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *mcpAgenticWrapLLM, *mcpAgenticWrapModel, *noContextCache, promptOpts{appendSystemPrompt: *appendSystemPrompt, systemPromptFile: *systemPromptFile},
 		attachOpts{
 			Listen:           *attachListen,
 			UnixSocket:       *attachUnixSocket,
@@ -396,7 +405,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 // comment at the otelShutdown defer (#538).
 const teardownStepTimeout = 3 * time.Second
 
-func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, contentDirEntries []string, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, compactionThreshold float64, maxTurnCostUSD, maxSessionCostUSD float64, watchdogMode, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache bool, promptCfg promptOpts, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
+func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, contentDirEntries []string, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, compactionThreshold float64, guardrails guardrailOpts, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache bool, promptCfg promptOpts, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -1431,41 +1440,64 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// /done slash; the model can self-signal task completion at
 	// natural boundaries, and the next Run drains the pending
 	// checkpoint by writing a richer handover record.
-	// Cost-ceiling kill switch (#145). CLI flags > config fields >
-	// config default (unset → disabled). Both bounds are independent;
-	// the agent enforces whichever is configured.
-	if maxTurnCostUSD > 0 {
-		cfg.Agent.MaxTurnCostUSD = &maxTurnCostUSD
+	// Runaway backstops: the behavioral watchdog (#123/#623) and the
+	// cost ceilings (#145). Resolution is a pure function so the
+	// per-mode default posture is table-tested — see guardrails.go.
+	//
+	// "Unattended" is the load-bearing input (#642): -p one-shot, a
+	// --no-repl daemon, or a piped stdin all mean nobody is watching
+	// the alert stream, so warn-mode is indistinguishable from off and
+	// an un-ceilinged session can spend without anyone noticing.
+	unattended := prompt != "" || noREPL || !term.IsTerminal(int(os.Stdin.Fd()))
+	guard, err := resolveGuardrails(guardrailInputs{
+		WatchdogFlag:       guardrails.watchdogMode,
+		WatchdogConfig:     cfg.Safety.Watchdog,
+		SessionCostFlag:    guardrails.maxSessionCostUSD,
+		SessionCostFlagSet: guardrails.maxSessionCostSet,
+		SessionCostConfig:  cfg.Agent.MaxSessionCostUSD,
+		Unattended:         unattended,
+	})
+	if err != nil {
+		log.Printf("%v", err)
+		return runner.ExitConfigError
 	}
-	if maxSessionCostUSD > 0 {
-		cfg.Agent.MaxSessionCostUSD = &maxSessionCostUSD
+	// Cost-ceiling kill switch (#145). CLI flag > config field >
+	// unattended default > disabled. The per-turn bound keeps its
+	// simpler "positive value wins" rule — it has no mode default, so
+	// an explicit 0 and an unset flag mean the same thing.
+	if guardrails.maxTurnCostUSD > 0 {
+		cfg.Agent.MaxTurnCostUSD = &guardrails.maxTurnCostUSD
 	}
-	ceiling := agent.CostCeiling{}
+	cfg.Agent.MaxSessionCostUSD = &guard.SessionCostUSD
+	ceiling := agent.CostCeiling{MaxSessionUSD: guard.SessionCostUSD}
 	if cfg.Agent.MaxTurnCostUSD != nil {
 		ceiling.MaxTurnUSD = *cfg.Agent.MaxTurnCostUSD
 	}
-	if cfg.Agent.MaxSessionCostUSD != nil {
-		ceiling.MaxSessionUSD = *cfg.Agent.MaxSessionCostUSD
-	}
 	if ceiling.MaxTurnUSD > 0 || ceiling.MaxSessionUSD > 0 {
 		opts = append(opts, agent.WithCostCeiling(ceiling))
-		send(fmt.Sprintf("cost ceiling: per-turn=$%.4f per-session=$%.4f (refuses new turns when exceeded; clear via Agent.ResetCostCeiling)", ceiling.MaxTurnUSD, ceiling.MaxSessionUSD))
+		// 0 means "no ceiling", so print that rather than "$0.0000",
+		// which reads like a ceiling that trips on the first token.
+		sessionCeiling := "disabled"
+		if ceiling.MaxSessionUSD > 0 {
+			sessionCeiling = fmt.Sprintf("$%.4f", ceiling.MaxSessionUSD)
+		}
+		send(fmt.Sprintf("cost ceiling: per-turn=$%.4f per-session=%s [session ceiling from %s] (refuses new turns when exceeded; clear via Agent.ResetCostCeiling)", ceiling.MaxTurnUSD, sessionCeiling, guard.SessionCostSource))
 	}
-	// Behavioral watchdog (#123 PR 2). Off when --watchdog=off;
-	// observe + log when --watchdog=warn (default); observe + halt on
-	// a Critical runaway when --watchdog=enforce (#623). Alerts go to
-	// the operator via send(); enforce additionally emits a turn-error
-	// (kind=watchdog) and refuses new turns until ResetWatchdog.
-	switch strings.ToLower(strings.TrimSpace(watchdogMode)) {
-	case "off":
-		// no-op
-	case "warn", "":
+	// Behavioral watchdog (#123 PR 2). Off when resolved to "off";
+	// observe + log on "warn"; observe + halt on a Critical runaway on
+	// "enforce" (#623). Alerts go to the operator via send(); enforce
+	// additionally emits a turn-error (kind=watchdog) and refuses new
+	// turns until ResetWatchdog.
+	switch guard.Watchdog {
+	case config.WatchdogOff:
+		send(fmt.Sprintf("watchdog: off [%s] (no runaway-pattern observation)", guard.WatchdogSource))
+	case config.WatchdogWarn:
 		w := watchdog.NewDefaultWatchdog()
 		opts = append(opts, agent.WithWatchdog(w, func(a watchdog.Alert) {
 			send(fmt.Sprintf("watchdog %s", a.String()))
 		}))
-		send("watchdog: warn mode (observes tool-call stream; logs structured alerts on runaway patterns)")
-	case "enforce":
+		send(fmt.Sprintf("watchdog: warn mode [%s] (observes tool-call stream; logs structured alerts on runaway patterns)", guard.WatchdogSource))
+	case config.WatchdogEnforce:
 		w := watchdog.NewDefaultWatchdog()
 		opts = append(opts,
 			agent.WithWatchdog(w, func(a watchdog.Alert) {
@@ -1473,10 +1505,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			}),
 			agent.WithWatchdogEnforce(),
 		)
-		send("watchdog: enforce mode (halts the agent on a runaway pattern; refuses new turns until cleared via Agent.ResetWatchdog)")
-	default:
-		log.Printf("invalid --watchdog mode %q (want warn|enforce|off)", watchdogMode)
-		return runner.ExitConfigError
+		send(fmt.Sprintf("watchdog: enforce mode [%s] (halts the agent on a runaway pattern; refuses new turns until cleared via Agent.ResetWatchdog)", guard.WatchdogSource))
 	}
 	if !noCheckpoint {
 		opts = append(opts, agent.WithCheckpointer(agent.NewDefaultCheckpointer()))
@@ -1744,6 +1773,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 				ACLStore:              aclStore,
 				NoCompact:             noCompact,
 				NoCheckpoint:          noCheckpoint,
+				WatchdogMode:          guard.Watchdog,
 				AutoContinueEnabled:   autoContinueEnabled,
 				AutoContinueFreshness: autoContinueFreshness,
 			}

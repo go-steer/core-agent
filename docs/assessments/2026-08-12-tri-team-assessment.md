@@ -256,6 +256,8 @@ and [**v3.0 — Flagship autonomous agent harness**](https://github.com/go-steer
 | [#648](https://github.com/go-steer/core-agent/issues/648) | `wait_and_verify` poll-until-condition primitive |
 | [#649](https://github.com/go-steer/core-agent/issues/649) | Second watchdog signal — arg-canonicalized + alternating-cycle |
 | [#650](https://github.com/go-steer/core-agent/issues/650) | Fix stale and over-claiming docs |
+| [#662](https://github.com/go-steer/core-agent/issues/662) | Ratchet `funlen`/`gocognit` so new god-methods can't land (config-only) |
+| [#663](https://github.com/go-steer/core-agent/issues/663) | Backfill `pkg/compose` boot-seam coverage |
 
 Also moved into v2.9: the Hermes epic [#589](https://github.com/go-steer/core-agent/issues/589)
 and work-streams #590/#591/#592/#595/#611; subagent issues #637/#638/#639;
@@ -273,7 +275,7 @@ guardrail issues #624/#159/#331; recipe issues #618/#620/#621/#160/#215/#158.
 | [#656](https://github.com/go-steer/core-agent/issues/656) | First-party core-agent-native persona library |
 | [#657](https://github.com/go-steer/core-agent/issues/657) | `edit_file` opt-in `replace_all` / multi-edit |
 | [#658](https://github.com/go-steer/core-agent/issues/658) | `/v1/responses` handler |
-| [#659](https://github.com/go-steer/core-agent/issues/659) | Method-complexity linters + `pkg/compose` coverage |
+| [#659](https://github.com/go-steer/core-agent/issues/659) | Make `Agent.Run()`'s pre-turn pipeline ordering explicit and testable |
 | [#202](https://github.com/go-steer/core-agent/issues/202) | Scheduled-ops cron sidecar (moved) |
 
 ---

@@ -116,8 +116,10 @@ func TestMaybeEnforceCostCeiling_PerTurn_Trips(t *testing.T) {
 	if !strings.Contains(reason, "$0.1500") || !strings.Contains(reason, "$0.1000") {
 		t.Errorf("reason should include both the spend ($0.1500) and the ceiling ($0.1000); got %q", reason)
 	}
-	if !strings.Contains(reason, "ResetCostCeiling") {
-		t.Errorf("reason should point operators at the reset mechanism; got %q", reason)
+	// The reason must name an affordance an operator can actually
+	// reach — a Go method name isn't one (#666).
+	if !strings.Contains(reason, "/guardrail reset") || !strings.Contains(reason, "guardrails/reset") {
+		t.Errorf("reason should point operators at the slash command and the endpoint; got %q", reason)
 	}
 }
 

@@ -168,7 +168,21 @@ Two bounds, both optional, both off by default:
 1. The post-turn hook computes session cost (from the usage tracker) and per-turn delta (against a snapshot taken at turn start).
 2. If either configured bound is met or exceeded, the agent emits a structured `turn-error` event with `kind=cost_ceiling`, message describing the spend + bound, and `retryable=false`.
 3. A flag is set; the next `Run` call returns the same error immediately without invoking the model.
-4. The host (TUI / programmatic consumer) must call `Agent.ResetCostCeiling()` to clear the flag and resume — typically wired to a slash command like `/resume-after-cost-ceiling`.
+4. The operator clears the flag to resume — `/guardrail reset` in the TUI, `POST /sessions/{id}/guardrails/reset` over attach ([#666](https://github.com/go-steer/core-agent/issues/666)), or `Agent.ResetCostCeiling()` when embedding the library.
+
+A **per-session** trip needs more than a bare reset. The accumulator is already at or past the ceiling, so clearing the flag alone re-trips on the very next turn — the reset surface refuses that case outright (HTTP **409**) and asks for `additional_budget_usd`, which RAISES the ceiling. It never zeroes the accumulator or restarts a spend window: `/usage`, the eventlog-derived cost, and the ceiling check all keep counting the same dollars, so a session that spent $12 still reports $12 after the operator hands it another $5 of runway. A **per-turn** trip needs no budget — the next turn starts from a fresh baseline.
+
+### Resetting a tripped guardrail
+
+Both backstops share one recovery surface ([#666](https://github.com/go-steer/core-agent/issues/666)):
+
+| Surface | Read state | Reset |
+|---|---|---|
+| In-process TUI | `/guardrail` | `/guardrail reset [watchdog\|cost_ceiling\|all] [+<usd>]` |
+| Attach HTTP | `GET /sessions/{id}/guardrails` | `POST /sessions/{id}/guardrails/reset` (body optional) |
+| Library | `Agent.WatchdogTripped()` / `Agent.CostCeilingTripped()` | `Agent.ResetWatchdog()` / `Agent.ResetCostCeiling()` + `Agent.AddSessionCostBudget(usd)` |
+
+`/guardrail` with no arguments prints what is armed, what tripped, why, and — when a bare reset would re-trip — how much budget to add. The reset is `SessionWrite`, not admin: the next thing an operator does after clearing a halt is `POST /inject`, which is itself `SessionWrite`, so gating the reset harder would buy no safety.
 
 ### Why "stop, get attention" instead of throttle
 
@@ -219,7 +233,7 @@ Compaction caps the *context* dimension. The cost ceiling caps the *dollar* dime
 | Mode | What it does |
 |---|---|
 | `warn` | Observes the tool-call stream. When a signal trips, logs a structured alert to the operator via the normal status channel (`send()` callback for CLI; future SSE event for attach-mode). Does NOT pause the turn. |
-| `enforce` | Same detection as warn, but a Critical runaway signal (today: `repeated-tool-call`) **halts the agent**: it emits a `turn-error` (`kind=watchdog`, non-retryable) and refuses new turns until the operator clears it via `Agent.ResetWatchdog`. This is the hard behavioral backstop — an auto-continue re-drive of the interrupted turn is refused at pre-flight instead of re-issuing the looping call. |
+| `enforce` | Same detection as warn, but a Critical runaway signal (today: `repeated-tool-call`) **halts the agent**: it emits a `turn-error` (`kind=watchdog`, non-retryable) and refuses new turns until the operator clears it (`/guardrail reset`, `POST /sessions/{id}/guardrails/reset`, or `Agent.ResetWatchdog` when embedding). This is the hard behavioral backstop — an auto-continue re-drive of the interrupted turn is refused at pre-flight instead of re-issuing the looping call. |
 | `off` | No observation. |
 
 ### Choosing the mode
@@ -236,7 +250,7 @@ With neither source set, the default is **`enforce` for unattended runs** (`-p`,
 
 The resolved mode applies to every agent the process hosts, including the sessions a multi-session daemon creates through `POST /sessions`. The startup line names the source it came from, e.g. `watchdog: enforce mode [unattended default]`.
 
-Enforce mode mirrors the cost ceiling's halt contract (above): post-turn detection sets a flag, the next `Run` refuses at pre-flight, and recovery is operator-driven (`Agent.ResetWatchdog`, which also resets the signal's run-length state). There is no automatic reset — a tripped watchdog is a "stop, get human attention" signal, not a throttle. Only Critical signals halt; a hypothetical future low-severity signal would stay advisory even under enforce.
+Enforce mode mirrors the cost ceiling's halt contract (above): post-turn detection sets a flag, the next `Run` refuses at pre-flight, and recovery is operator-driven (`/guardrail reset`, which also resets the signal's run-length state). There is no automatic reset — a tripped watchdog is a "stop, get human attention" signal, not a throttle. Only Critical signals halt; a hypothetical future low-severity signal would stay advisory even under enforce.
 
 Future modes — `prompt` (pause turn + ask operator via the existing permissions prompter) and `auto` (call `Agent.SwapModel` to escalate to a frontier model without operator interaction) — are designed but deferred. Same for additional signals (tools-without-text, files-not-touched, context-growth-rate, cost-burn-rate) and an operator `/escalate` slash for manual model swaps.
 
@@ -276,7 +290,7 @@ a, err := agent.New(model,
 
 The `Watchdog` interface lets you plug in a custom implementation (same composability pattern as `Compactor` / `Checkpointer`). For most operators the default — `NewDefaultWatchdog()` with `RepeatedToolCallSignal(threshold=5)` wired in — is sufficient.
 
-Add `agent.WithWatchdogEnforce()` to promote it from observe-only to a kill switch: a Critical alert then trips `Agent`, and subsequent `Run` calls return an error satisfying `agent.IsWatchdogTripped(err)` until you call `a.ResetWatchdog()`. Query `a.WatchdogTripped()` for the `(bool, reason)` to surface in a `/stats`-style view.
+Add `agent.WithWatchdogEnforce()` to promote it from observe-only to a kill switch: a Critical alert then trips `Agent`, and subsequent `Run` calls return an error satisfying `agent.IsWatchdogTripped(err)` until it is reset (`a.ResetWatchdog()` in-process; `/guardrail reset` or `POST /sessions/{id}/guardrails/reset` for operators). Query `a.WatchdogTripped()` for the `(bool, reason)` to surface in a `/stats`-style view.
 
 ---
 

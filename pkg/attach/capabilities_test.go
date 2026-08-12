@@ -77,9 +77,10 @@ func TestBuildFeatures_ServerAndEntryFlags(t *testing.T) {
 		featureMCP:          true,
 		featureSpecialists:  true,
 		featureInterrupt:    true,
-		// Reserved keys advertised as false so consumers see an
+		// Answered-"no" keys advertised as false so consumers see an
 		// explicit "no" rather than key absence.
 		featureCostCeiling:  false,
+		featureGuardrails:   false,
 		featureObserverMode: false,
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -105,9 +106,9 @@ func TestBuildFeatures_BareRegistrantOnlyServerFlags(t *testing.T) {
 			t.Errorf("bare registrant should not advertise %q, but got %v", key, got[key])
 		}
 	}
-	// Reserved keys are always advertised as false so clients know
+	// Always-answered keys are advertised as false so clients know
 	// the server understands them.
-	for _, key := range []string{featureCostCeiling, featureObserverMode} {
+	for _, key := range []string{featureCostCeiling, featureGuardrails, featureObserverMode} {
 		if got[key] != false {
 			t.Errorf("reserved key %q = %v, want false", key, got[key])
 		}

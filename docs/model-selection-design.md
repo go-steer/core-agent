@@ -201,8 +201,9 @@ Default behavior (configurable):
    halt variant, shipped ahead of the escalation modes below as the
    interim behavioral backstop: a Critical signal (today only
    `repeated-tool-call`) emits a `turn-error` (`kind=watchdog`) and
-   refuses subsequent turns until the operator calls
-   `Agent.ResetWatchdog`. It does **not** swap models — it stops, on
+   refuses subsequent turns until the operator resets it (`/guardrail
+   reset`, or `POST /sessions/{id}/guardrails/reset` — #666). It does
+   **not** swap models — it stops, on
    the same "get human attention" contract as the cost ceiling. This
    matters most under `auto_continue` (#559): without a hard refusal,
    the continuation note re-drives the interrupted (idempotent,

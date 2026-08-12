@@ -75,6 +75,13 @@ type CapabilityReport struct {
 	Specialists bool
 	// Interrupt: POST /interrupt reaches a live agent.
 	Interrupt bool
+	// Guardrails: GET /guardrails + POST /guardrails/reset are
+	// serviceable (#666).
+	Guardrails bool
+	// CostCeiling: a per-turn or per-session spend cap is armed, so
+	// a turn can actually be refused for spend. Not "the endpoint
+	// exists" — "the bound is on."
+	CostCeiling bool
 	// SlashCommands is the set of slash names actually serviceable
 	// ("compact", "done", "btw", "subagent", "replan"). Order is
 	// irrelevant; the frame builder sorts.
@@ -101,6 +108,17 @@ func buildFeatures(entry *Entry, serverFeatures map[string]bool) map[string]bool
 	for k, v := range serverFeatures {
 		out[k] = v
 	}
+	// Entry-scoped keys that are answered "no" rather than omitted:
+	// emitting them as false advertises "server understands the key
+	// name; the answer is no." Consumers that treat absent-key as off
+	// see the same behavior either way; consumers that distinguish
+	// absent from false get a truthful "no." Overwritten below when a
+	// capability says otherwise.
+	out[featureCostCeiling] = false
+	out[featureGuardrails] = false
+	// featureObserverMode has no capability interface yet — still a
+	// reserved key.
+	out[featureObserverMode] = false
 	if entry == nil || entry.Agent == nil {
 		return out
 	}
@@ -118,6 +136,12 @@ func buildFeatures(entry *Entry, serverFeatures map[string]bool) map[string]bool
 		if r.Interrupt {
 			out[featureInterrupt] = true
 		}
+		if r.Guardrails {
+			out[featureGuardrails] = true
+		}
+		if r.CostCeiling {
+			out[featureCostCeiling] = true
+		}
 	} else {
 		if _, ok := entry.Agent.(PromptBrokerProvider); ok {
 			out[featurePermsStream] = true
@@ -131,15 +155,15 @@ func buildFeatures(entry *Entry, serverFeatures map[string]bool) map[string]bool
 		if _, ok := entry.Agent.(InterruptProvider); ok {
 			out[featureInterrupt] = true
 		}
+		if p, ok := entry.Agent.(GuardrailProvider); ok {
+			out[featureGuardrails] = true
+			// cost_ceiling asks whether a bound is ARMED, which only
+			// the live state can answer — read it rather than
+			// inferring it from interface presence.
+			cc := p.AttachGuardrails().CostCeiling
+			out[featureCostCeiling] = cc.MaxTurnUSD > 0 || cc.MaxSessionUSD > 0
+		}
 	}
-	// featureCostCeiling + featureObserverMode are reserved keys —
-	// no capability interface for them today. Emitting them as false
-	// (rather than omitting) advertises "server understands the key
-	// name; the answer is no." Consumers that treat absent-key as
-	// off see the same behavior either way; consumers that
-	// distinguish absent from false get a truthful "no."
-	out[featureCostCeiling] = false
-	out[featureObserverMode] = false
 	return out
 }
 

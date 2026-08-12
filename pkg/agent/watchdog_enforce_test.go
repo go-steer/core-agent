@@ -89,8 +89,10 @@ func TestDrainWatchdogAlerts_EnforceTripsOnCritical(t *testing.T) {
 	if !strings.Contains(reason, "read_file") {
 		t.Errorf("reason should carry the alert reason; got %q", reason)
 	}
-	if !strings.Contains(reason, "ResetWatchdog") {
-		t.Errorf("reason should point the operator at the reset mechanism; got %q", reason)
+	// The reason must name an affordance an operator can actually
+	// reach — a Go method name isn't one (#666).
+	if !strings.Contains(reason, "/guardrail reset") || !strings.Contains(reason, "guardrails/reset") {
+		t.Errorf("reason should point the operator at the slash command and the endpoint; got %q", reason)
 	}
 	// A watchdog turn-error must have been emitted.
 	var found bool

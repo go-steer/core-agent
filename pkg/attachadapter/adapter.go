@@ -255,9 +255,11 @@ func (ad *Adapter) SetAttachEmitter(f func(eventType string, payload any)) {
 //   - mcp ⇔ an MCP snapshot fn was supplied (WithMCPProvider);
 //   - specialists / "subagent" ⇔ the agent carries a background
 //     manager (agent.WithBackgroundManager);
-//   - interrupt, "btw" ⇔ a live agent is wrapped (both are core
-//     agent capabilities — Interrupt and AskSideQuestion need no
-//     extra wiring);
+//   - interrupt, guardrails, "btw" ⇔ a live agent is wrapped (all
+//     three are core agent capabilities — Interrupt, the guardrail
+//     read/reset pair and AskSideQuestion need no extra wiring);
+//   - cost_ceiling ⇔ a per-turn or per-session spend cap is armed
+//     (#666 — a live-state read, not interface presence);
 //   - "compact" ⇔ agent.HasCompactor(); "done" ⇔ HasCheckpointer();
 //   - "replan" ⇔ a replanner fn was supplied (WithReplanner).
 func (ad *Adapter) AttachCapabilities() attach.CapabilityReport {
@@ -275,6 +277,8 @@ func (ad *Adapter) AttachCapabilities() attach.CapabilityReport {
 		return rep
 	}
 	rep.Interrupt = true
+	rep.Guardrails = true
+	rep.CostCeiling = guardrailCostCeilingArmed(a)
 	rep.SlashCommands = append(rep.SlashCommands, "btw")
 	if a.BackgroundManager() != nil {
 		rep.Specialists = true
@@ -321,4 +325,6 @@ var (
 	_ attach.CheckpointSlashProvider = (*Adapter)(nil)
 	_ attach.SideQueryProvider       = (*Adapter)(nil)
 	_ attach.SubagentSpawner         = (*Adapter)(nil)
+	_ attach.GuardrailProvider       = (*Adapter)(nil)
+	_ attach.GuardrailResetter       = (*Adapter)(nil)
 )

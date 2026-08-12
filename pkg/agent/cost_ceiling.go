@@ -52,6 +52,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/go-steer/core-agent/v2/pkg/attach"
@@ -110,6 +111,12 @@ func WithCostCeiling(c CostCeiling) Option {
 // operator slash command after the operator has reviewed why the
 // ceiling tripped. Safe to call even if no ceiling is configured
 // or no flag was set — no-op in that case.
+//
+// A bare reset is enough for a per-TURN trip: the next turn starts
+// from a fresh baseline. It is NOT enough for a per-SESSION trip —
+// the accumulator is already at or past the ceiling, so the very next
+// turn re-trips. Pair it with AddSessionCostBudget (see
+// WouldRetripCostCeiling) to hand the session real runway.
 func (a *Agent) ResetCostCeiling() {
 	if a == nil {
 		return
@@ -118,6 +125,78 @@ func (a *Agent) ResetCostCeiling() {
 	a.costCeilingExceeded = false
 	a.costCeilingReason = ""
 	a.mu.Unlock()
+}
+
+// CostCeilingLimits returns the ceilings currently in force, including
+// any runway added since construction via AddSessionCostBudget. Zero
+// fields mean that bound is disabled.
+func (a *Agent) CostCeilingLimits() CostCeiling {
+	if a == nil {
+		return CostCeiling{}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.costCeiling
+}
+
+// SessionCostUSD reports the session's cumulative spend as the ceiling
+// enforcement sees it — the same accumulator a per-session trip is
+// measured against. 0 when no usage tracker is wired.
+func (a *Agent) SessionCostUSD() float64 {
+	if a == nil || a.tracker == nil {
+		return 0
+	}
+	return a.tracker.Totals().CostUSD
+}
+
+// AddSessionCostBudget raises the per-session ceiling by usd and
+// returns the ceilings that result. This is the ONLY mutation the
+// reset surface offers, and deliberately so: the alternatives — zeroing
+// the accumulator, or restarting a spend "window" — would make
+// Agent.SessionCostUSD, /usage and the eventlog-derived cost disagree
+// about what the session actually spent. Raising the bar keeps every
+// dollar counted and still hands the operator runway.
+//
+// usd must be > 0. Raising a disabled (0) session ceiling is refused:
+// that would silently ARM a bound the operator never configured, which
+// is a tighter posture than they asked for, not a looser one.
+func (a *Agent) AddSessionCostBudget(usd float64) (CostCeiling, error) {
+	if a == nil {
+		return CostCeiling{}, errors.New("agent: nil agent")
+	}
+	if usd <= 0 {
+		return a.CostCeilingLimits(), fmt.Errorf("additional budget must be > 0, got %.4f", usd)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.costCeiling.MaxSessionUSD <= 0 {
+		return a.costCeiling, errors.New("no per-session cost ceiling is configured; nothing to raise")
+	}
+	a.costCeiling.MaxSessionUSD += usd
+	return a.costCeiling, nil
+}
+
+// WouldRetripCostCeiling reports whether clearing the trip flag right
+// now would be immediately undone — the session's accumulated spend is
+// already at or past the per-session ceiling, so the next turn's
+// enforcement pass trips again before the operator sees any progress.
+// Returns the spend and the ceiling so the caller can say so precisely.
+//
+// This is the check that keeps the reset affordance honest: offering a
+// button that provably does nothing is the same
+// state-a-property-you-don't-enforce pattern the reset exists to fix.
+func (a *Agent) WouldRetripCostCeiling() (retrip bool, spent, ceiling float64) {
+	if a == nil {
+		return false, 0, 0
+	}
+	spent = a.SessionCostUSD()
+	a.mu.Lock()
+	ceiling = a.costCeiling.MaxSessionUSD
+	a.mu.Unlock()
+	if ceiling <= 0 {
+		return false, spent, 0
+	}
+	return spent >= ceiling, spent, ceiling
 }
 
 // CostCeilingTripped reports whether the agent is currently blocking
@@ -155,32 +234,38 @@ func (a *Agent) CostCeilingTripped() (bool, string) {
 // Running at both points means a runaway turn is caught as early as the
 // available data allows, and always by the start of the following turn.
 func (a *Agent) maybeEnforceCostCeiling() {
-	if a == nil || a.tracker == nil || !a.costCeiling.active() {
+	if a == nil || a.tracker == nil {
 		return
 	}
+	// Snapshot the ceilings under the lock: AddSessionCostBudget can
+	// raise MaxSessionUSD at any time from an operator reset (#666).
 	a.mu.Lock()
 	if a.costCeilingExceeded {
 		// Already tripped — no need to re-check or re-emit.
 		a.mu.Unlock()
 		return
 	}
+	ceiling := a.costCeiling
 	turnStart := a.turnStartCost
 	a.mu.Unlock()
+	if !ceiling.active() {
+		return
+	}
 
 	sessionCost := a.tracker.Totals().CostUSD
 	turnCost := sessionCost - turnStart
 
 	var reason string
 	switch {
-	case a.costCeiling.MaxTurnUSD > 0 && turnCost >= a.costCeiling.MaxTurnUSD:
+	case ceiling.MaxTurnUSD > 0 && turnCost >= ceiling.MaxTurnUSD:
 		reason = fmt.Sprintf(
-			"per-turn cost ceiling exceeded: this turn cost $%.4f, ceiling is $%.4f. Agent will refuse new turns until operator calls ResetCostCeiling.",
-			turnCost, a.costCeiling.MaxTurnUSD,
+			"per-turn cost ceiling exceeded: this turn cost $%.4f, ceiling is $%.4f. Agent will refuse new turns until the operator resets it (/guardrail reset, or POST /sessions/{id}/guardrails/reset).",
+			turnCost, ceiling.MaxTurnUSD,
 		)
-	case a.costCeiling.MaxSessionUSD > 0 && sessionCost >= a.costCeiling.MaxSessionUSD:
+	case ceiling.MaxSessionUSD > 0 && sessionCost >= ceiling.MaxSessionUSD:
 		reason = fmt.Sprintf(
-			"per-session cost ceiling exceeded: session has cost $%.4f, ceiling is $%.4f. Agent will refuse new turns until operator calls ResetCostCeiling.",
-			sessionCost, a.costCeiling.MaxSessionUSD,
+			"per-session cost ceiling exceeded: session has cost $%.4f, ceiling is $%.4f. Agent will refuse new turns until the operator resets it WITH additional budget (/guardrail reset +N, or POST /sessions/{id}/guardrails/reset with additional_budget_usd) — a bare reset would re-trip on the next turn.",
+			sessionCost, ceiling.MaxSessionUSD,
 		)
 	default:
 		return
@@ -205,7 +290,7 @@ func (a *Agent) maybeEnforceCostCeiling() {
 // no ceiling is configured (avoid touching the tracker's mutex when
 // we'd ignore the value anyway).
 func (a *Agent) snapshotTurnStartCost() {
-	if a == nil || a.tracker == nil || !a.costCeiling.active() {
+	if a == nil || a.tracker == nil || !a.CostCeilingLimits().active() {
 		return
 	}
 	cost := a.tracker.Totals().CostUSD

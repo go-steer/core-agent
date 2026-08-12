@@ -152,10 +152,16 @@ const (
 	// /perms/stream + /perms/respond wiring on it.
 	featurePermsStream = "perms_stream"
 	// featureCostCeiling is true when the agent has a per-turn or
-	// per-session cost ceiling wired. Absent today (no capability
-	// interface); reserved for the follow-up that surfaces the
-	// setting to the client.
+	// per-session cost ceiling armed — i.e. a turn can actually be
+	// refused for spend. Sourced from the guardrail capability
+	// (#666); false, not absent, when no ceiling is configured.
 	featureCostCeiling = "cost_ceiling"
+	// featureGuardrails is true when GET /guardrails and POST
+	// /guardrails/reset are serviceable — the client can show a
+	// tripped-guardrail banner and offer the reset (#666). Distinct
+	// from cost_ceiling, which says whether a spend bound is armed;
+	// the guardrail surface also covers the behavioral watchdog.
+	featureGuardrails = "guardrails"
 	// featureObserverMode is true when the producer exposes a
 	// LiveAgent observer surface. Reserved for the observer-mode
 	// integration; absent today.

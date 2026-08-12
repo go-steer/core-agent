@@ -194,7 +194,7 @@ func (a *Agent) maybeTripWatchdog(alerts []watchdog.Alert) {
 	}
 
 	reason := fmt.Sprintf(
-		"watchdog halted the agent (%s): %s Agent will refuse new turns until operator calls ResetWatchdog.",
+		"watchdog halted the agent (%s): %s Agent will refuse new turns until the operator resets it (/guardrail reset, or POST /sessions/{id}/guardrails/reset).",
 		trigger.Signal, trigger.Reason,
 	)
 	a.mu.Lock()

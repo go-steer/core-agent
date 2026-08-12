@@ -50,6 +50,7 @@ research + friction logs, or handover notes.
 - [`context-management-design.md`](context-management-design.md) — compaction + micro-subagents + checkpoints + memory
 - [`pricing-design.md`](pricing-design.md) — extensible, current, honest per-model pricing
 - [`model-selection-design.md`](model-selection-design.md) — task-class model selection: operator hint + watchdog escalation
+- [`guardrail-reset-design.md`](guardrail-reset-design.md) — operator recovery from a tripped watchdog / cost ceiling: bump-not-wipe, `GET`+`POST /guardrails`, `/guardrail reset`
 - [`vertex-context-caching-design.md`](vertex-context-caching-design.md) — eager system-prompt context cache on Vertex
 - [`digest-design.md`](digest-design.md) — `pkg/digest` local digesting primitives
 - [`backlog-cost-stack-2026-07-14.md`](backlog-cost-stack-2026-07-14.md) — post-v2.7.0-dev.2 cost-reduction plan

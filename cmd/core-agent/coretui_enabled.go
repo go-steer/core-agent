@@ -23,6 +23,7 @@ import (
 	"iter"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -758,6 +759,54 @@ func (a *coreAgentAdapter) Subagents() []coretui.SubagentInfo {
 	return out
 }
 
+// invokeGuardrail implements /guardrail (#666).
+//
+//	/guardrail                             — state
+//	/guardrail reset                       — clear whatever tripped
+//	/guardrail reset cost_ceiling          — clear one
+//	/guardrail reset +5                    — clear + add $5 of session budget
+//	/guardrail reset cost_ceiling +5       — both
+//
+// Routed through the same attachadapter methods POST
+// /guardrails/reset uses, so the local slash and the remote endpoint
+// can't disagree about what a reset does — including the refusal when
+// the reset would immediately re-trip.
+func (a *coreAgentAdapter) invokeGuardrail(args string) coretui.SlashResult {
+	if args == "" {
+		return coretui.SlashResult{SystemMessage: attach.RenderGuardrails(a.attachAd.AttachGuardrails())}
+	}
+	fields := strings.Fields(args)
+	if !strings.EqualFold(fields[0], "reset") {
+		return coretui.SlashResult{SystemMessage: fmt.Sprintf(
+			"/guardrail: unknown subcommand %q — usage: /guardrail [reset [watchdog|cost_ceiling|all] [+<usd>]]", fields[0])}
+	}
+	req := attach.GuardrailResetRequest{}
+	for _, f := range fields[1:] {
+		switch {
+		case strings.HasPrefix(f, "+"):
+			usd, err := strconv.ParseFloat(strings.TrimPrefix(f, "+"), 64)
+			if err != nil || usd <= 0 {
+				return coretui.SlashResult{SystemMessage: fmt.Sprintf(
+					"/guardrail: %q is not a positive dollar amount — write it as +5 or +2.50", f)}
+			}
+			req.AdditionalBudgetUSD = usd
+		case f == attach.GuardrailWatchdog, f == attach.GuardrailCostCeiling, f == attach.GuardrailAll:
+			req.Guardrail = f
+		default:
+			return coretui.SlashResult{SystemMessage: fmt.Sprintf(
+				"/guardrail reset: unknown argument %q — expected watchdog, cost_ceiling, all, or +<usd>", f)}
+		}
+	}
+	resp, err := a.attachAd.AttachResetGuardrail(req)
+	if err != nil {
+		if errors.Is(err, attach.ErrGuardrailRetrip) {
+			return coretui.SlashResult{SystemMessage: "/guardrail reset refused: " + err.Error()}
+		}
+		return coretui.SlashResult{SystemMessage: "/guardrail reset failed: " + err.Error()}
+	}
+	return coretui.SlashResult{SystemMessage: resp.Message + "\n" + attach.RenderGuardrails(resp.Guardrails)}
+}
+
 // invokeSubagentSpawn implements the singular /subagent command: spawn a
 // configured subagent (declarative template or catalog spec) by name with a
 // goal, fire-and-continue. With no args it lists the configured reference
@@ -925,6 +974,15 @@ func (a *coreAgentAdapter) SlashCommands() []coretui.SlashCommandSpec {
 		Name:        "usage",
 		Description: "show cache-hit attribution + per-turn cost breakdown (companion to /stats)",
 	})
+	// /guardrail is registered unconditionally — the whole point of
+	// #666 is that an operator staring at "agent refuses new turns"
+	// can find the recovery command without knowing in advance which
+	// backstop is armed. With nothing armed it prints "running".
+	cmds = append(cmds, coretui.SlashCommandSpec{
+		Name:        "guardrail",
+		Aliases:     []string{"guardrails"},
+		Description: "show watchdog + cost-ceiling state; /guardrail reset [watchdog|cost_ceiling|all] [+<usd>] to clear a halt",
+	})
 	// /replan is registered unconditionally; the InvokeSlash case
 	// returns a friendly "plan-first gating isn't enabled" message
 	// when attachadapter.WithReplanner wasn't wired (operator's config has
@@ -1025,6 +1083,11 @@ func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (
 		return coretui.SlashResult{
 			SystemMessage: attach.RenderUsage(a.attachAd.AttachUsage()),
 		}, nil
+	case "guardrail", "guardrails":
+		// Bare /guardrail reads state; /guardrail reset [what] [+usd]
+		// clears a halt. Same adapter methods the REST endpoints call,
+		// so the local and remote surfaces can't drift.
+		return a.invokeGuardrail(strings.TrimSpace(args)), nil
 	case "compact", "summarize":
 		// NOTE: core-tui v0.5 calls InvokeSlash synchronously from
 		// its Update loop (see core-tui#10). The compactor's LLM call

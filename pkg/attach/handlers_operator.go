@@ -15,10 +15,13 @@
 package attach
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+
+	"google.golang.org/adk/session"
 
 	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
@@ -44,11 +47,21 @@ func (h *handlers) registerOperatorState(mux *http.ServeMux) {
 	h.routeSession(mux, "GET", "mcp", auth.ActionSessionRead, h.doMCP)
 	h.routeSession(mux, "GET", "pricing", auth.ActionSessionRead, h.doPricing)
 	h.routeSession(mux, "GET", "perms", auth.ActionSessionRead, h.doPerms)
+	h.routeSession(mux, "GET", "guardrails", auth.ActionSessionRead, h.doGuardrails)
 
 	// Mutation endpoints (PR A2): blocked by the ReadOnly middleware
 	// at the auth layer when ReadOnly=true (any non-GET is gated).
 	h.routeSession(mux, "POST", "perms/allow", auth.ActionSessionWrite, h.doPermsAllow)
 	h.routeSession(mux, "POST", "perms/deny", auth.ActionSessionWrite, h.doPermsDeny)
+	// guardrails/reset is ActionSessionWrite, not ActionSessionAdmin
+	// (#331): clearing a trip only lets the session accept turns
+	// again, and the very next thing the operator does is POST
+	// /inject — which is itself ActionSessionWrite. Gating the reset
+	// harder than the inject it precedes would buy no safety, only a
+	// second credential to route around. Unlimited (not
+	// routeSessionLimited): it's a local flag flip and cost-limiting
+	// the way OUT of a cost trip is a trap.
+	h.routeSession(mux, "POST", "guardrails/reset", auth.ActionSessionWrite, h.doGuardrailsReset)
 	// pricing/refresh is cost-limited (#463): it does a network
 	// fetch + catalog rebuild per call. pricing/set, perms/*, and
 	// reload stay unlimited — they're cheap local mutations. The
@@ -243,6 +256,132 @@ func (h *handlers) doPricingSet(w http.ResponseWriter, r *http.Request, entry *E
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// doGuardrails — GET /guardrails (#666). Read-only projection, so it
+// follows the 200-with-zero-value convention: a registrant with no
+// guardrail capability reports everything off and nothing tripped,
+// which is the truthful answer for an agent that has no backstops.
+func (h *handlers) doGuardrails(w http.ResponseWriter, _ *http.Request, entry *Entry) {
+	out := GuardrailInfo{}
+	if p, ok := entry.Agent.(GuardrailProvider); ok {
+		out = p.AttachGuardrails()
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// doGuardrailsReset — POST /guardrails/reset (#666).
+//
+// Status codes carry the whole contract:
+//
+//	200 — cleared (Reset lists what; Guardrails echoes the new state)
+//	400 — malformed body, unknown guardrail name, bad budget
+//	409 — the reset would provably re-trip; add budget (ErrGuardrailRetrip)
+//	501 — no reset capability wired
+func (h *handlers) doGuardrailsReset(w http.ResponseWriter, r *http.Request, entry *Entry) {
+	p, ok := entry.Agent.(GuardrailResetter)
+	if !ok {
+		http.Error(w, "guardrail reset capability not registered", http.StatusNotImplemented)
+		return
+	}
+	// An empty body is the common case — "clear whatever tripped" —
+	// so unlike the other operator POSTs this one tolerates it.
+	var body GuardrailResetRequest
+	if err := decodePOSTOptional(r, &body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	switch body.Guardrail {
+	case "", GuardrailAll, GuardrailWatchdog, GuardrailCostCeiling:
+	default:
+		http.Error(w, "guardrail: must be one of \"watchdog\", \"cost_ceiling\", \"all\"", http.StatusBadRequest)
+		return
+	}
+	if body.AdditionalBudgetUSD < 0 {
+		http.Error(w, "additional_budget_usd: must be non-negative", http.StatusBadRequest)
+		return
+	}
+	resp, err := p.AttachResetGuardrail(body)
+	switch {
+	case errors.Is(err, ErrCapabilityNotRegistered):
+		http.Error(w, "guardrail reset not registered on this OperatorView", http.StatusNotImplemented)
+		return
+	case errors.Is(err, ErrGuardrailRetrip):
+		// 409 carries the post-refusal state too, so the client can
+		// render "spent $X of $Y" without a follow-up GET.
+		writeJSON(w, http.StatusConflict, GuardrailResetResponse{
+			Reset:      []string{},
+			Guardrails: resp.Guardrails,
+			Message:    err.Error(),
+		})
+		return
+	case err != nil:
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if resp.Reset == nil {
+		resp.Reset = []string{}
+	}
+	// Audit trail (#331 asked for one). "Who un-halted a session that
+	// had blown its budget, and how much runway did they hand it?" is
+	// exactly the question a post-incident review asks, and the reset
+	// is otherwise invisible in the transcript. Only a reset that DID
+	// something is recorded — a defensive no-op reset is noise.
+	if len(resp.Reset) > 0 || resp.BudgetAddedUSD > 0 {
+		// WithoutCancel, not r.Context(): the reset has ALREADY taken
+		// effect in the agent by this point, so a client that hangs up
+		// mid-response must not be able to suppress the record of it.
+		// The caller identity rides on the context values, which
+		// WithoutCancel preserves.
+		appendGuardrailResetAudit(context.WithoutCancel(r.Context()), entry, resp)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// appendGuardrailResetAudit writes one eventlog row recording an
+// operator's guardrail reset. Best-effort, mirroring
+// appendInterruptAudit: an eventlog failure never fails the request —
+// the reset already took effect in the agent.
+func appendGuardrailResetAudit(ctx context.Context, entry *Entry, resp GuardrailResetResponse) {
+	log := entry.Agent.EventLog()
+	if log == nil {
+		return
+	}
+	getResp, err := log.Service.Get(ctx, &session.GetRequest{
+		AppName:   entry.AppName,
+		UserID:    entry.UserID,
+		SessionID: entry.SessionID,
+	})
+	if err != nil {
+		return
+	}
+	identity := ""
+	if c, ok := auth.CallerFromContext(ctx); ok {
+		identity = c.Identity
+	}
+	_ = log.Service.AppendEvent(ctx, getResp.Session,
+		NewGuardrailResetAuditEvent(identity, resp.Reset, resp.BudgetAddedUSD))
+}
+
+// NewGuardrailResetAuditEvent builds the eventlog row recording an
+// operator-initiated guardrail reset (#666). Author identifies the
+// source; CustomMetadata carries who did it, what was cleared, and how
+// much budget was added.
+func NewGuardrailResetAuditEvent(identity string, reset []string, budgetUSD float64) *session.Event {
+	ev := session.NewEvent("attach-guardrail-reset")
+	ev.Author = "attach/guardrail-reset"
+	meta := map[string]any{
+		"source": "operator",
+		"reset":  append([]string{}, reset...),
+	}
+	if identity != "" {
+		meta["caller"] = identity
+	}
+	if budgetUSD > 0 {
+		meta["budget_added_usd"] = budgetUSD
+	}
+	ev.CustomMetadata = meta
+	return ev
+}
+
 // doReload — POST /reload.
 
 func (h *handlers) doReload(w http.ResponseWriter, r *http.Request, entry *Entry) {
@@ -273,6 +412,23 @@ func decodePOST(r *http.Request, out any) error {
 	}
 	if len(raw) == 0 {
 		return errors.New("empty request body")
+	}
+	return json.Unmarshal(raw, out)
+}
+
+// decodePOSTOptional is decodePOST for endpoints whose every field is
+// optional: an absent body leaves out at its zero value rather than
+// erroring. Used by guardrails/reset, where "clear whatever tripped"
+// is the common request and demanding `{}` would be ceremony.
+func decodePOSTOptional(r *http.Request, out any) error {
+	body := http.MaxBytesReader(nil, r.Body, operatorPostMaxBytes)
+	defer func() { _ = body.Close() }()
+	raw, err := io.ReadAll(body)
+	if err != nil {
+		return err
+	}
+	if len(raw) == 0 {
+		return nil
 	}
 	return json.Unmarshal(raw, out)
 }

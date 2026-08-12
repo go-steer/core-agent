@@ -110,6 +110,7 @@ Every path suffix below appears under both `/sessions/{sid}/...` and `/sessions/
 | `/mcp` | `MCPInfo{servers:[...]}` — configured servers + status. |
 | `/pricing` | `PricingInfo{rate, last_refresh, ...}`. |
 | `/perms` | `PermsInfo{mode, allowed:[...], denied:[...], history:[...]}`. |
+| `/guardrails` | `GuardrailInfo{watchdog:{mode,tripped,reason}, cost_ceiling:{max_turn_usd,max_session_usd,session_cost_usd,tripped,reason,would_retrip}, halted}` — why the session is refusing turns, and whether a bare reset would re-trip ([#666](https://github.com/go-steer/core-agent/issues/666)). |
 
 ### Session write (`SessionWrite` — owner + contributor + admin)
 
@@ -125,6 +126,7 @@ All write endpoints cap request bodies at **8 KiB** (`operatorPostMaxBytes`).
 | `POST` | `/pricing/refresh` | — | `{"updated":..., "known_models":..., "last_refresh":..., "detail":...}` |
 | `POST` | `/pricing/set` | `{"model":..., "input_usd_per_mtok":..., "output_usd_per_mtok":...}` | **204** |
 | `POST` | `/reload` | — | `{"memory":..., "skills":..., "mcp":..., "errors":[...]}` |
+| `POST` | `/guardrails/reset` | `{"guardrail"?:"watchdog"\|"cost_ceiling"\|"all", "additional_budget_usd"?:float}` — **body optional** (absent = reset everything tripped) | `{"reset":[...], "budget_added_usd":..., "guardrails":{...}, "message":...}`; **409** when the reset would immediately re-trip (per-session spend already at the ceiling — add budget); **400** on an unknown guardrail name, a negative budget, or budget on a `watchdog`-scoped reset; **501** if no resetter |
 | `POST` | `/slash/compact` | `{"focus"?:...}` | `{"summary_event_id":..., "summary_text":..., "duration_ms":..., "skipped":bool}` |
 | `POST` | `/slash/done` | `{"note"?:...}` | `{"checkpoint_event_id":..., "summary_text":..., "task_note":..., "duration_ms":..., "skipped":bool}` |
 | `POST` | `/slash/btw` | `{"question":...}` | `{"answer":...}` |
@@ -222,7 +224,7 @@ The `since` cursor is monotonic per-session — the TUI's `/reconnect` slash sen
 
 The first frame on every `/events` stream is `event: capabilities` — the client advertises the wire contract before any state flows. The full field list lives in [the SSE spec](https://github.com/go-steer/core-tui/blob/main/docs/sse-event-stream-protocol.md#21-capabilities); the current additions are:
 
-- **`features`** — feature-flag map derived from live runtime state. Suggested keys: `multi_session`, `perms_stream`, `cost_ceiling`, `observer_mode`, `mcp`, `specialists`, `cross_daemon`, `interrupt`. Consumers treat absent keys as "off / unknown"; producers MAY add unknown keys.
+- **`features`** — feature-flag map derived from live runtime state. Suggested keys: `multi_session`, `perms_stream`, `cost_ceiling`, `guardrails`, `observer_mode`, `mcp`, `specialists`, `cross_daemon`, `interrupt`. `guardrails` means `GET /guardrails` + `POST /guardrails/reset` are serviceable; `cost_ceiling` means a per-turn or per-session spend bound is **armed** (a turn can actually be refused for spend), not merely that the key is understood. Consumers treat absent keys as "off / unknown"; producers MAY add unknown keys.
 - **`slash_commands`** — dynamic list of the slash names this agent's `POST /slash/<name>` will accept. Derived from capability-interface presence (`CompactSlashProvider` → `"compact"`, etc.). Clients render only what the connected agent supports.
 - **`agent`** — the producing agent's own identity: `{name, version, description, model, provider, url}`. Consolidates fields previously scattered across `/.well-known/agent-card.json`, `GET /status`, and the `server` banner.
 - **`caller_id`** — the resolved caller identity display hint. Canonical source: `GET /whoami`.
@@ -260,7 +262,7 @@ Consumers MUST tolerate unknown values and MUST NOT crash on missing keys.
 | **403** | Forbidden — `--attach-readonly` writes; delete of the bootstrap `"default"` session; cross-origin `Origin` header on a write (CSRF protection). |
 | **404** | Not found OR auth-deny (deliberately indistinguishable to avoid SID enumeration). |
 | **405** | Method not allowed — e.g. `POST /.well-known/agent-card.json`. |
-| **409** | Conflict — shortcut SID ambiguous across apps; `POST /sessions` on `ErrSessionExists`. |
+| **409** | Conflict — shortcut SID ambiguous across apps; `POST /sessions` on `ErrSessionExists`; `POST /guardrails/reset` when the reset would immediately re-trip. |
 | **412** | Precondition failed — session has no eventlog (SSE reader); no `InterruptProvider` (interrupt). |
 | **415** | Unsupported media type — state-changing request without `Content-Type: application/json` (CSRF protection). |
 | **500** | Internal error — factory failure on `POST /sessions`; second `DELETE` of a gone session. |

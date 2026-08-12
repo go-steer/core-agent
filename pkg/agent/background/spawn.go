@@ -32,6 +32,25 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
+// subagentDoneToolDescription replaces the autonomous driver's default
+// done-tool prose for spawned subagents (#641).
+//
+// The default asks for "a one-sentence detail explaining what you
+// accomplished", which is right for a top-level autonomous run whose
+// output a human reads directly. A subagent's caller is another MODEL:
+// its completion report is handed back as the spawn_agent tool result,
+// and a one-sentence status line leaves the parent with no findings, so
+// it redoes the work it delegated. Stating that the report is the
+// deliverable makes the useful content arrive by construction rather
+// than depending on how the subagent's persona happens to write.
+const subagentDoneToolDescription = "Signal that your goal is complete or that you cannot proceed any further. " +
+	"Call this with state=\"done\" and, in the detail, YOUR ACTUAL FINDINGS — the detail is handed " +
+	"back to the agent that delegated this task and is the only thing it is guaranteed to receive. " +
+	"Write the answer, the root-cause analysis, the proposed change, or the specific reason you " +
+	"stopped, with the evidence that supports it. Do not write a status line like \"investigated the " +
+	"issue and found the cause\": the delegating agent cannot see your work, so a summary of what you " +
+	"did forces it to redo it."
+
 // resolvedSpawn is a fully-resolved launch recipe — everything the
 // per-spawn goroutine needs after kind-specific resolution has run.
 // Two callers build it: Spawn, from a catalog Spec (tools resolved by
@@ -297,7 +316,14 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 		defer close(handle.done)
 		defer cancel()
 
-		opts := []autonomous.Option{}
+		// A subagent's completion report is a deliverable handed to
+		// another agent, not a status line for a human scanning a log.
+		// The driver's default prose asks for "a one-sentence detail",
+		// which is what produced the content-free "successfully diagnosed
+		// the issue" reports the parent then had to re-derive (#641).
+		opts := []autonomous.Option{
+			autonomous.WithDoneToolDescription(subagentDoneToolDescription),
+		}
 		if budgets.MaxTurns > 0 {
 			opts = append(opts, autonomous.WithMaxTurns(budgets.MaxTurns))
 		}
@@ -374,6 +400,15 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 			}
 		}
 		if !m.shouldAlert(name, handle) {
+			return
+		}
+		// A spawn_agent {wait: true} caller consumes this completion
+		// inline as its tool result, so pushing the terminal alert too
+		// would deliver the same outcome twice — once in the tool result
+		// and again as a "[Background reports]" line on the parent's next
+		// turn (#646). Skip it; the claim is marked consumed so a waiter
+		// that times out in this exact window still delivers the result.
+		if handle.takeSyncClaim() {
 			return
 		}
 		m.pushAlert(Alert{

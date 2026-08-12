@@ -61,14 +61,17 @@ func spawnResult(h *Handle, fallbackName string, err error) (spawnAgentResult, e
 // arrives later as a [Background reports] line) and the tool returns a
 // "running" status so the model knows the work is still in flight.
 //
-// Note: a subagent that completes always pushes its completion alert to the
-// parent inbox (the goroutine's pushAlert runs before it closes done, so a
-// waiter can't retroactively suppress it). A successful wait therefore
-// surfaces the result twice — inline here, and again as a redundant
-// [Background reports] line on the next turn. That's mildly noisy but not
-// incorrect; deduping consumed-synchronously completions is a follow-up
-// (see docs/unified-subagent-invocation-design.md, "Still open").
+// A completion consumed here is delivered exactly once (#646): the waiter
+// claims the handle before blocking, and the completion goroutine skips its
+// terminal [Background reports] alert when the claim is outstanding. A wait
+// that gives up (timeout or cancellation) releases the claim so the alert is
+// pushed as it would be for a fire-and-continue spawn.
 func (m *Manager) awaitResult(ctx context.Context, h *Handle) spawnAgentResult {
+	// Claim before blocking. A false return means the subagent was already
+	// terminal — its alert is already in flight and can't be suppressed, so
+	// the result is delivered inline AND as a report. That window is the
+	// microseconds between Spawn returning a handle and this call.
+	claimed := h.claimSync()
 	var timeout <-chan time.Time
 	if m.syncWaitTimeout > 0 {
 		timer := time.NewTimer(m.syncWaitTimeout)
@@ -77,35 +80,82 @@ func (m *Manager) awaitResult(ctx context.Context, h *Handle) spawnAgentResult {
 	}
 	select {
 	case <-h.Done():
-		res := spawnAgentResult{Name: h.Name, Branch: h.Branch, Status: h.Status().String()}
-		if err := h.Err(); err != nil {
-			res.Output = err.Error()
+		return completionResult(h)
+	case <-timeout:
+		if res, ok := m.abandonWait(h, claimed); !ok {
 			return res
 		}
-		if r := h.Result(); r != nil {
-			// Prefer the completion report (report_done's detail); fall
-			// back to the last assistant text for runs that ended without
-			// signalling completion (budget cap, deferral).
-			if r.DoneDetail != "" {
-				res.Output = r.DoneDetail
-			} else {
-				res.Output = r.FinalText
-			}
-		}
-		return res
-	case <-timeout:
 		return spawnAgentResult{
 			Name:   h.Name,
 			Branch: h.Branch,
 			Status: "running: wait timed out after " + m.syncWaitTimeout.String() + "; still running in background, result will be pushed",
 		}
 	case <-ctx.Done():
+		if res, ok := m.abandonWait(h, claimed); !ok {
+			return res
+		}
 		return spawnAgentResult{
 			Name:   h.Name,
 			Branch: h.Branch,
 			Status: "running: wait canceled; still running in background",
 		}
 	}
+}
+
+// abandonWait resolves the race between a waiter giving up and the
+// completion goroutine finishing. ok=true means the claim was released
+// cleanly and the caller should report "still running". ok=false means
+// the goroutine consumed the claim first and suppressed its alert on
+// this waiter's behalf, so the returned result must be delivered inline
+// or the outcome is lost entirely. The blocking receive is bounded: the
+// goroutine closes done immediately after the suppression check.
+func (m *Manager) abandonWait(h *Handle, claimed bool) (spawnAgentResult, bool) {
+	// The subagent may have finished in the very instant the wait gave up;
+	// select picks arbitrarily when two cases are ready at once. Prefer the
+	// result, which is already in hand. This also covers the completions
+	// that never alert at all (shouldAlert false — e.g. a stopped
+	// subagent), where "still running, result will be pushed" would be a
+	// promise nothing keeps.
+	select {
+	case <-h.Done():
+		return completionResult(h), false
+	default:
+	}
+	if !claimed || h.releaseSync() {
+		return spawnAgentResult{}, true
+	}
+	<-h.Done()
+	return completionResult(h), false
+}
+
+// completionResult renders a terminal handle as the synchronous spawn's
+// tool result.
+//
+// Output keeps the completion report as the primary deliverable — the
+// done-tool prose spawned subagents get (subagentDoneToolDescription)
+// tells them to put the findings there, which is the durable half of
+// #641. FinalText is carried alongside it whenever it adds something,
+// so a persona that answers in prose and then reports a one-line status
+// doesn't leave the parent with nothing but the status.
+func completionResult(h *Handle) spawnAgentResult {
+	res := spawnAgentResult{Name: h.Name, Branch: h.Branch, Status: h.Status().String()}
+	if err := h.Err(); err != nil {
+		res.Output = err.Error()
+		return res
+	}
+	r := h.Result()
+	if r == nil {
+		return res
+	}
+	res.Output = r.DoneDetail
+	if res.Output == "" {
+		// Ended without signalling completion (budget cap, deferral) —
+		// the last assistant text is all there is.
+		res.Output = r.FinalText
+	} else if r.FinalText != "" && r.FinalText != res.Output {
+		res.FinalText = r.FinalText
+	}
+	return res
 }
 
 // buildSpawnSpec turns spawn_agent args into a concrete Spec plus the
@@ -176,10 +226,21 @@ type spawnAgentResult struct {
 	Name   string `json:"name"`
 	Branch string `json:"branch"`
 	Status string `json:"status"`
-	// Output carries the subagent's final text on a synchronous spawn
-	// (wait: true) that ran to completion. Empty for fire-and-continue
-	// spawns and for a wait that timed out (the result is pushed later).
+	// Output is the subagent's deliverable on a synchronous spawn
+	// (wait: true) that ran to completion: its completion report, or its
+	// final text for a run that ended without signalling completion
+	// (budget cap, deferral). Empty for fire-and-continue spawns and for
+	// a wait that timed out (the result is pushed later).
 	Output string `json:"output,omitempty"`
+	// FinalText is the subagent's last assistant text, carried alongside
+	// Output when it says something Output doesn't (#641).
+	//
+	// Which of the two holds the substance depends on how the subagent's
+	// persona writes: some put the findings in the completion report,
+	// some answer in prose and then report a one-line status. Returning
+	// only the report is what made a parent re-derive an analysis it had
+	// just delegated, so both channels are surfaced.
+	FinalText string `json:"final_text,omitempty"`
 }
 
 // NewSpawnAgentTool returns a tool the parent's model can call to

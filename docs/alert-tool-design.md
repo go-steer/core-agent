@@ -2,7 +2,11 @@
 
 Design doc for a v2.7 addition to `pkg/tools`: a native, first-class `alert` built-in tool that lets a headless `core-agent` daemon fire escalations to webhooks (Slack Incoming Webhooks, Discord, PagerDuty Events v2, generic JSON endpoints) without shelling out or depending on an external MCP server. Distroless-safe.
 
-**Status:** proposed (2026-07-10). Awaiting approval before implementation. v2.7 candidate. Tracking issue: [#192](https://github.com/go-steer/core-agent/issues/192).
+**Status:** **partially shipped in v2.9** ([#593](https://github.com/go-steer/core-agent/issues/593), landed as #607) — not v2.7, and not all of it. Originally written as proposed (2026-07-10) against tracking issue [#192](https://github.com/go-steer/core-agent/issues/192).
+
+> **What actually shipped.** The tool, the config-driven named-target list, `url_env` resolution, per-target rate limiting, permission gating, and **one** template: `generic` (a JSON POST). `slack`, `discord` and `pagerduty_events_v2` are designed below and **rejected at config load** — `pkg/config/alerts.go` returns `template=%q is designed but not yet implemented` for all three, so a config naming one fails to boot rather than silently degrading. Everything this doc says about Slack attachment colors, Discord embeds and PagerDuty `dedup_key` / `event_action` is therefore a *specification for unwritten code*, not a description of the binary. To escalate to Slack or PagerDuty today, point a `generic` target at a receiver that fans out.
+>
+> The consumer recipe is wired: `examples/gke-troubleshoot-agent/` registers an `oncall` target on `ONCALL_WEBHOOK_URL` with `template: "generic"` under a `rate_limit_per_target: "10/min"` and its router skill calls `alert()` rather than the eventlog-only shape this doc was written against.
 
 ## Motivation
 
@@ -324,6 +328,8 @@ Parsed by a small helper that produces a `rate.Limiter` per target on registrati
 - Once alert tool ships: update the recipe's `.agents/config.json` with sample alert targets, update the router SKILL.md to prefer `alert()` over the current eventlog-only shape.
 - This is the ε.3-replacement PR of the v2.6 stack — files as v2.6.1 or v2.7 recipe update.
 
+**Done (v2.9, [#644](https://github.com/go-steer/core-agent/issues/644)):** the recipe carries one `oncall` target (`generic`, `url_env: ONCALL_WEBHOOK_URL`, `10/min`) fed by an optional `core-agent-alerts` Secret, and the router skill calls `alert()`. `examples/gke-troubleshoot-agent/recipe_test.go` pins the target so it can't silently regress to eventlog-only.
+
 ## Migration story
 
 Net-new feature. No migration.
@@ -451,8 +457,8 @@ Some webhook responses carry useful info (Slack returns the message timestamp fo
 
 ## Dependencies and related work
 
-- **[#186](https://github.com/go-steer/core-agent/issues/186) v2.6 k8s-event agent** — the immediate consumer. Once alert tool ships, the triage recipe gets updated with sample targets + the router calls `alert()` instead of the current eventlog-only pattern.
-- **[#190](https://github.com/go-steer/core-agent/issues/190) MCP Streamable HTTP + OAuth 2.0** — complementary, not dependent. Both ship in v2.7. Different escalation shapes: alert-tool is fire-and-forget, MCP-OAuth-Slack is two-way conversational.
+- **[#186](https://github.com/go-steer/core-agent/issues/186) v2.6 k8s-event agent** — the immediate consumer. Once alert tool ships, the triage recipe gets updated with sample targets + the router calls `alert()` instead of the current eventlog-only pattern. **Done in v2.9** (see above).
+- **[#190](https://github.com/go-steer/core-agent/issues/190) MCP Streamable HTTP + OAuth 2.0** — complementary, not dependent. Different escalation shapes: alert-tool is fire-and-forget, MCP-OAuth-Slack is two-way conversational. MCP-OAuth shipped in v2.7; the alert tool did not — it landed in v2.9.
 - **Slack Incoming Webhooks docs** — https://api.slack.com/messaging/webhooks
 - **PagerDuty Events API v2** — https://developer.pagerduty.com/docs/events-api-v2/trigger-events/
 - **Discord webhook shape** — https://discord.com/developers/docs/resources/webhook
@@ -464,3 +470,5 @@ Some webhook responses carry useful info (Slack returns the message timestamp fo
 - Phase 3 (docs + recipe + CHANGELOG): ~1 day
 
 ~5 days of focused work across 3 PRs. Smaller than MCP-OAuth. Ships in parallel; no dependency ordering with [#190](https://github.com/go-steer/core-agent/issues/190).
+
+**How it actually landed:** phases 1 and 3 shipped together in v2.9 (#607, then the recipe wiring in #644). Phase 2 — the service templates — has not been written; it is the only part of this doc still outstanding.

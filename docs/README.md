@@ -74,7 +74,7 @@ research + friction logs, or handover notes.
 ### Observability, safety + scheduling
 
 - [`metrics-design.md`](metrics-design.md) — OTel MeterProvider (primary) + Prometheus scrape (secondary)
-- [`alert-tool-design.md`](alert-tool-design.md) — native `alert` tool for headless escalation
+- [`alert-tool-design.md`](alert-tool-design.md) — native `alert` tool for headless escalation (*partially shipped* in v2.9: the tool + the `generic` template; the `slack` / `discord` / `pagerduty_events_v2` templates it specifies are rejected at config load)
 - [`plan-first-design.md`](plan-first-design.md) — gate-level "plan before action" enforcement
 - [`scheduled-monitoring-design.md`](scheduled-monitoring-design.md) — `Scheduler` primitive for paced autonomous loops; combines with `BackgroundAgentManager` for the K8s fleet-monitor topology
 - [`scheduled-ops-design.md`](scheduled-ops-design.md) — `core-agent-cron` companion sidecar firing scheduled prompts into the daemon for proactive autonomous ops (compliance sweeps, drift detection, capacity forecasts) (proposed, [#202](https://github.com/go-steer/core-agent/issues/202))
@@ -93,7 +93,7 @@ research + friction logs, or handover notes.
 ### Kubernetes + platform integrations
 
 - [`k8s-event-agent-design.md`](k8s-event-agent-design.md) — K8s-event-driven troubleshooting agent (watcher source now lives in [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout))
-- [`kube-agents-platform-fit.md`](kube-agents-platform-fit.md) — running `core-agent` as the `kube-agents` platform agent
+- [`kube-agents-platform-fit.md`](kube-agents-platform-fit.md) — running `core-agent` as the `kube-agents` platform agent (*superseded* for the full-replacement scope by `hermes-replacement-design.md`; its "80% reusable" is architectural fit, not deployability)
 - [`scion-core-agent-architecture.md`](scion-core-agent-architecture.md) — layered architecture for Scion-managed agent runtimes
 - [`ax-integration-audit.md`](ax-integration-audit.md) — gap audit for `extras/ax-agent/`; don't build a parallel coordinator
 

@@ -22,6 +22,19 @@ loader (PR #98) and the existing peer-registration primitives
 LoC if we accept that some pieces live in application-side code
 (which is where Hermes has them anyway).
 
+> **What "80%" measures (clarified 2026-08-12).** Architectural fit —
+> how much of the shape maps onto primitives that exist — not how much
+> of a Platform Agent you can deploy. Nothing was benchmarked or run
+> against a live `kube-agents` cluster for this doc. Re-checked at the
+> 2026-08-12 tri-team assessment, the peer fabric this number leans on
+> is still the thinnest part: `pkg/attach/peers.go` is an in-memory map
+> behind an `RWMutex` with no persistence (peers are lost on pod
+> restart), and `call_peer` does not exist. Read the 80% as "the
+> primitives are the right ones," and Gaps 1–3 below as still open —
+> Gap 3 (the cron loader) has a design doc
+> ([`scheduled-ops-design.md`](scheduled-ops-design.md), [#202](https://github.com/go-steer/core-agent/issues/202))
+> and no implementation; Gaps 1 and 2 have neither.
+
 ## Motivation
 
 We've shipped a substantial v2.X feature set (multi-file

@@ -18,9 +18,17 @@
 //
 // Five canonical classes (debug, implement, chat, research, review)
 // each map to a Profile that wraps a model-tier hint, compaction
-// threshold, agentic-tools posture, and ask-mode default. The CLI
-// applies the profile to whichever flags the operator left
-// unspecified — explicit flags always win.
+// threshold, agentic-tools posture, ask-mode default, a set of
+// built-in tools to drop, and a plan-first posture. The CLI applies
+// the profile to whichever flags the operator left unspecified —
+// explicit flags always win.
+//
+// The tool and plan-first fields (#160) are the class's opinion about
+// what the model should be *able* to do, not just how it should be
+// billed: the investigation-shaped classes (debug, research, review)
+// drop `bash` and require a recorded plan, because that is the shape
+// where the measured failures were — bash-as-grep on the first call,
+// zero plan sentences before the first mutation.
 //
 // Tier classification (frontier / mid / small) shares vocabulary
 // with pkg/modeltier but the resolution is per-provider here because
@@ -104,6 +112,35 @@ type Profile struct {
 	// AskMode is the desired permissions ask-mode default. Empty =
 	// don't override the operator / config setting.
 	AskMode string
+
+	// DisableTools names built-in tools this class drops from the
+	// default registration. Nil = register the usual suite.
+	//
+	// This is the profile's opinion, not the operator's: an operator
+	// who explicitly disables a tool (tools.disable / --disable-tools)
+	// is never overruled, and one who wants a profile-dropped tool
+	// back passes --enable-tools=<name>. See resolveProfileDisables
+	// in cmd/core-agent.
+	//
+	// Investigation-shaped classes drop `bash` because that is where
+	// the measured failure lives: in the 2026-06-10 debug session the
+	// model reached for `bash $ grep -rn` on call #1 with the native
+	// grep tool right there in the schema. #158's search gate refuses
+	// the search-shaped subset; this is the blunter version for the
+	// classes where the shell earns its keep least.
+	DisableTools []string
+
+	// RequirePlanArtifact turns plan-first gating on for this class —
+	// mutating tools stay denied until the model calls record_plan.
+	// False = leave permissions.require_plan_artifact as configured;
+	// the profile only ever turns the gate ON, never off, since an
+	// operator who put `true` in config meant it.
+	//
+	// Only honored when a .agents/ directory exists to persist plans
+	// into: record_plan doesn't register without one (see
+	// tools.Build), and a gate with no way to record a plan denies
+	// every mutating call for the life of the session.
+	RequirePlanArtifact bool
 }
 
 // canonical is the source-of-truth profile table. Numbers track the
@@ -118,6 +155,8 @@ func canonical() map[string]Profile {
 			AgenticToolsEnabled:  true,
 			UseAgenticSmallModel: true,
 			AskMode:              AskAuto,
+			DisableTools:         []string{"bash"},
+			RequirePlanArtifact:  true,
 		},
 		Implement: {
 			Tier:                 TierFrontier,
@@ -139,6 +178,8 @@ func canonical() map[string]Profile {
 			AgenticToolsEnabled:  true,
 			UseAgenticSmallModel: true,
 			AskMode:              AskAllow, // research is read-heavy; ask-mode noise is operator-hostile
+			DisableTools:         []string{"bash"},
+			RequirePlanArtifact:  true,
 		},
 		Review: {
 			Tier:                 TierFrontier,
@@ -146,6 +187,8 @@ func canonical() map[string]Profile {
 			AgenticToolsEnabled:  true,
 			UseAgenticSmallModel: true,
 			AskMode:              AskAuto,
+			DisableTools:         []string{"bash"},
+			RequirePlanArtifact:  true,
 		},
 	}
 }

@@ -168,6 +168,8 @@ The gate is **steering, not security**. It reads the command with the same shell
 
 The check runs before the permission mode is consulted, so `--yolo` does not wave it through — the posture an operator configured shouldn't depend on how permissive the session is. It's also inherited by every session a daemon derives, rather than re-defaulted per session.
 
+The blunt alternative is to not register `bash` at all, which is what the investigation-shaped [task classes](/concepts/context-management/#tools-and-plan-first-since-v29) do: `--task=debug|research|review` drops it. The two compose — `--task=debug --enable-tools=bash` puts the shell back and the gate still refuses `bash grep`.
+
 It refuses only what it can redirect. A recipe that puts `grep` in `tools.disable` and keeps `bash` gets no refusal for `bash grep`, because a refusal naming a tool the model can't call is a dead end — the same unenforceable-claim problem, pointed the other way. With neither `grep` nor `glob` registered the gate is inert, and the startup line says so: `bash search gate: enforce but INERT (…)`. Otherwise the line names the posture and the binaries actually covered, on every boot including the default, and the `bash` tool's own description switches from "prefer the structured tools" to "REFUSED" so the model learns the rule from the catalog instead of from an error.
 
 ## Optional lifecycle tools

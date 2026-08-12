@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -133,6 +134,8 @@ func main() {
 	providerOverride := flag.String("provider", "", "override model.provider (gemini|vertex|anthropic|anthropic-vertex|echo|scripted)")
 	noBuiltinTools := flag.Bool("no-builtin-tools", false, "disable the built-in tool suite ("+strings.Join(tools.BuiltinToolNames(), ", ")+")")
 	disableTools := flag.String("disable-tools", "", "comma-separated list of built-in tools to disable (e.g. bash,write_file). Composes with cfg.tools.disable; ignored when --no-builtin-tools is set.")
+	enableTools := flag.String("enable-tools", "", "comma-separated list of built-in tools to add back after a --task profile dropped them (e.g. --task=debug --enable-tools=bash). Cancels the profile's opinion only: it cannot re-enable a tool you turned off in cfg.tools.disable or --disable-tools, and asking for that combination is an error rather than a silent win for either side. Naming a tool the profile never dropped is a no-op.")
+	planFirst := flag.Bool("plan-first", false, "require the model to call record_plan before any mutating tool call (write_file / edit_file / delete_file / bash / fetch_url / spawn_agent). CLI mirror of permissions.require_plan_artifact, and the way to opt OUT of a task profile that turns the gate on: --task=debug --plan-first=false. Needs a .agents/ directory to persist plans into; without one record_plan cannot register and the gate would deny every mutating call with no way to clear it.")
 	scriptPath := flag.String("script", "", "JSONL transcript for --provider=scripted (overrides cfg.mock.script)")
 	scriptStrict := flag.Bool("script-strict", false, "scripted: assert each incoming request matches the recorded one (overrides cfg.mock.strict)")
 	recordTo := flag.String("record-to", "", "write a JSONL recording of all LLM turns to this path (overrides cfg.mock.record)")
@@ -231,6 +234,14 @@ func main() {
 			// unattended default, so record presence, not value.
 			maxSessionCostSet: flagWasSet(flag.CommandLine, "max-session-cost-usd"),
 			bashSearchGate:    *bashSearchGate,
+		},
+		toolProfileOpts{
+			enableTools: *enableTools,
+			planFirst:   *planFirst,
+			// --plan-first=false is the documented way out of a task
+			// profile that turns the gate on, so presence matters, not
+			// value.
+			planFirstSet: flagWasSet(flag.CommandLine, "plan-first"),
 		},
 		*smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *mcpAgenticWrapLLM, *mcpAgenticWrapModel, *noContextCache, promptOpts{appendSystemPrompt: *appendSystemPrompt, systemPromptFile: *systemPromptFile},
 		attachOpts{
@@ -407,7 +418,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 // comment at the otelShutdown defer (#538).
 const teardownStepTimeout = 3 * time.Second
 
-func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, contentDirEntries []string, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, compactionThreshold float64, guardrails guardrailOpts, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache bool, promptCfg promptOpts, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
+func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, contentDirEntries []string, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, compactionThreshold float64, guardrails guardrailOpts, toolProfile toolProfileOpts, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache bool, promptCfg promptOpts, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -514,6 +525,10 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	if taskClass != "" {
 		cfg.Session.TaskClass = taskClass
 	}
+	// taskProfile stays at its zero value when no class is declared,
+	// which is what makes the tool and plan-first resolution below
+	// safe to run unconditionally: an empty profile has no opinion.
+	var taskProfile taskclass.Profile
 	if cfg.Session.TaskClass != "" {
 		profile, ok := taskclass.Resolve(cfg.Session.TaskClass)
 		if !ok {
@@ -521,6 +536,20 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 				cfg.Session.TaskClass, taskclass.Classes())
 			return runner.ExitConfigError
 		}
+		taskProfile = profile
+	}
+	// Tools (#160): the profile's disables minus anything
+	// --enable-tools asked to keep, applied down at the built-in tool
+	// block. Run for every start, not just --task ones, so a typo'd or
+	// conflicting --enable-tools fails at boot rather than silently
+	// no-op'ing when no class happens to be declared.
+	profileDisables, err := resolveProfileDisables(taskProfile.DisableTools, cfg.Tools.Disable, splitList(disableTools), splitList(toolProfile.enableTools))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+		return runner.ExitConfigError
+	}
+	if cfg.Session.TaskClass != "" {
+		profile := taskProfile
 		// Pick the provider name for tier→model mapping. cfg.Model.Provider
 		// may be empty (auto-detect); fall back to env-based auto-detect.
 		providerForTier := cfg.Model.Provider
@@ -551,8 +580,61 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		if ask == "" && profile.AskMode != "" {
 			ask = profile.AskMode
 		}
-		fmt.Fprintf(os.Stderr, "core-agent: task class: %s → model=%s compaction-threshold=%.2f ask=%s (override individual knobs with --model / --compaction-threshold / --ask)\n",
-			cfg.Session.TaskClass, cfg.Model.Name, profile.CompactionThreshold, ask)
+		toolNote := "tools=default"
+		switch {
+		case noBuiltinTools:
+			// The profile's tool opinion is moot here; saying
+			// "default−bash" would imply the rest of the suite survived.
+			toolNote = "tools=none (--no-builtin-tools)"
+		case len(profileDisables) > 0:
+			toolNote = "tools=default−" + strings.Join(profileDisables, ",")
+		}
+		fmt.Fprintf(os.Stderr, "core-agent: task class: %s → model=%s compaction-threshold=%.2f ask=%s %s (override individual knobs with --model / --compaction-threshold / --ask / --enable-tools / --plan-first)\n",
+			cfg.Session.TaskClass, cfg.Model.Name, profile.CompactionThreshold, ask, toolNote)
+	}
+
+	// Plan-first (#160) is resolved for every run, not just --task
+	// ones, because the flag is also the CLI mirror of
+	// permissions.require_plan_artifact. The profile can only turn the
+	// gate on; --plan-first=false is the way out. Must land before
+	// permissions.FromConfig reads cfg.Permissions and before
+	// tools.Build decides whether to register record_plan.
+	// Whether record_plan will actually be in the catalog. tools.Build
+	// needs an agentsDir to write plans into and the built-in suite to
+	// be on; the operator can also have disabled the tool outright.
+	// Each of those turns plan-first from a stricter posture into a
+	// deadlock, so name the specific one rather than saying "off".
+	planBlocker := ""
+	switch {
+	case agentsDir == "":
+		planBlocker = "no .agents/ directory resolved, so record_plan has nowhere to write plans"
+	case noBuiltinTools:
+		planBlocker = "--no-builtin-tools drops record_plan along with the rest of the suite"
+	case slices.Contains(cfg.Tools.Disable, "record_plan"):
+		planBlocker = "record_plan is in cfg.tools.disable"
+	case slices.Contains(splitList(disableTools), "record_plan"):
+		planBlocker = "record_plan is in --disable-tools"
+	}
+	planOn, planSource := resolvePlanFirst(planFirstInputs{
+		Flag:          toolProfile.planFirst,
+		FlagSet:       toolProfile.planFirstSet,
+		Config:        cfg.Permissions.RequirePlanArtifact,
+		Profile:       taskProfile.RequirePlanArtifact,
+		CanRecordPlan: planBlocker == "",
+	})
+	cfg.Permissions.RequirePlanArtifact = planOn
+	switch {
+	case planSource == sourcePlanNoRecorder:
+		fmt.Fprintf(os.Stderr, "core-agent: plan-first: off — the %s profile asks for it, but %s\n", cfg.Session.TaskClass, planBlocker)
+	case planOn && planBlocker != "":
+		// Explicit operator intent, so we honor it rather than
+		// silently flipping it off — but with no record_plan, /replan
+		// only revokes and nothing grants, so every mutating tool call
+		// is denied for the life of the session. Say so at boot rather
+		// than letting the operator discover it one denial at a time.
+		fmt.Fprintf(os.Stderr, "core-agent: plan-first: on (%s) but %s — every mutating tool call will be denied with no way to clear the gate. Fix that, or pass --plan-first=false.\n", planSource, planBlocker)
+	case planOn:
+		fmt.Fprintf(os.Stderr, "core-agent: plan-first: on (%s) — mutating tools are denied until the model calls record_plan\n", planSource)
 	}
 
 	otelShutdown, err := telemetry.Setup(ctx, cfg.OTEL.Exporter)
@@ -998,6 +1080,16 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			}
 			if err := b.Disable(name); err != nil {
 				fmt.Fprintf(os.Stderr, "core-agent: --disable-tools: %v\n", err)
+				return runner.ExitConfigError
+			}
+		}
+		// Task-profile disables (#160) come last and are already
+		// filtered by --enable-tools. Names are profile-authored, so a
+		// failure here is a table bug, not operator input — surface it
+		// as such.
+		for _, name := range profileDisables {
+			if err := b.Disable(name); err != nil {
+				fmt.Fprintf(os.Stderr, "core-agent: task class %q profile: %v\n", cfg.Session.TaskClass, err)
 				return runner.ExitConfigError
 			}
 		}

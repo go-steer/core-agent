@@ -348,6 +348,12 @@ gate.ClearPlanRecorded() // /replan-like reset; pair with tools.RevokeLatestPlan
 
 `tools.Build` registers the `record_plan` tool only when `permissions.require_plan_artifact: true` AND `agentsDir != ""` (an inert record_plan with nowhere to write would be confusing). Library callers wanting plan-first should pass an `agentsDir` to `tools.Build`.
 
+#### CLI: `--plan-first` (v2.9+)
+
+`--plan-first` is the command-line mirror of `require_plan_artifact`, and `--plan-first=false` is how you opt out of a [task class](/concepts/context-management/#tools-and-plan-first-since-v29) that turns the gate on. Precedence: `--plan-first` (either value) > `require_plan_artifact: true` in config > the task-class default > off. The task class can only turn the gate **on** — an operator who wrote `true` in config is never overruled by a class default.
+
+The binary refuses to hand you a gate you can't clear. If `record_plan` won't register — no `.agents/` directory, `--no-builtin-tools`, or the tool sitting in `tools.disable` / `--disable-tools` — a task class's plan-first default is suppressed and startup says which of those it was. An explicit `--plan-first` or config `true` is still honored there, because you asked for it out loud, but startup warns that every mutating call will be denied with no way to clear the flag: `/replan` revokes a plan, it can't grant one.
+
 Full recipe: [`examples/plan-first/`](https://github.com/go-steer/core-agent/tree/main/examples/plan-first) ships three `config.json` variants (one per row of the composition table) plus an AGENTS.md priming the model on the workflow. Design: [`docs/plan-first-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/plan-first-design.md).
 
 ### Background subagent prompts (v1.2.0+)
@@ -515,7 +521,7 @@ Session-scoped defaults picked up on startup.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `task_class` | string | `""` | Operator-declared task class — picks a bundle of defaults (model tier, compaction threshold, agentic-tools posture, ask mode) tuned for the kind of work being done. One of `debug`, `implement`, `chat`, `research`, `review`. Empty = no task class (substrate defaults). Explicit config fields + CLI flags always win over the task-class profile. CLI: `--task`. See [Context management → Task class](/concepts/context-management/#task-class). |
+| `task_class` | string | `""` | Operator-declared task class — picks a bundle of defaults (model tier, compaction threshold, agentic-tools posture, ask mode, built-in tool set, plan-first posture) tuned for the kind of work being done. One of `debug`, `implement`, `chat`, `research`, `review`. Empty = no task class (substrate defaults). Explicit config fields + CLI flags always win over the task-class profile. CLI: `--task`. See [Context management → Task class](/concepts/context-management/#task-class). |
 
 ---
 
@@ -605,6 +611,8 @@ Example — keep everything except shell access:
 ```
 
 The `--disable-tools=bash,write_file` CLI flag composes with this list by union — anything disabled in either path is off. To turn the entire suite off, use `--no-builtin-tools` (which makes `tools.disable` and `--disable-tools` moot).
+
+A [task class](/concepts/context-management/#tools-and-plan-first-since-v29) can drop tools too — `--task=debug|research|review` removes `bash`. That is a *default*, so `--enable-tools=bash` puts it back. `--enable-tools` cancels the class's opinion only: it cannot re-enable something listed here or in `--disable-tools`, and passing both is a startup error rather than a silent win for either side. Naming a tool no class dropped is a no-op; naming a tool that doesn't exist fails at startup.
 
 ### `tools.wait_and_verify` (v2.9+)
 

@@ -88,13 +88,13 @@ Pass `--no-compact` for short headless one-shots where compaction would never fi
 
 Five classes ship today:
 
-| Class | Default model tier | Compaction threshold | Ask mode | When to use |
-|---|---|---|---|---|
-| `debug` | frontier (e.g. `claude-opus-4-7`, `gemini-3.6-flash`) | `0.65` | `auto` | Bug hunts, root-cause investigations, multi-file traces |
-| `implement` | frontier | `0.70` | `auto` | Feature work, multi-file refactors |
-| `chat` | mid (e.g. `claude-sonnet-4-6`, `gemini-3.5-flash`) | `0.85` | `auto` | Q&A, pairing, lightweight design discussion |
-| `research` | mid | `0.65` | `allow` | Read-heavy codebase exploration; `allow` keeps the ask-mode noise out of the way |
-| `review` | frontier | `0.75` | `auto` | PR / diff review |
+| Class | Default model tier | Compaction threshold | Ask mode | Tools | Plan-first | When to use |
+|---|---|---|---|---|---|---|
+| `debug` | frontier (e.g. `claude-opus-4-7`, `gemini-3.6-flash`) | `0.65` | `auto` | built-ins − `bash` | on | Bug hunts, root-cause investigations, multi-file traces |
+| `implement` | frontier | `0.70` | `auto` | built-ins | off | Feature work, multi-file refactors |
+| `chat` | mid (e.g. `claude-sonnet-4-6`, `gemini-3.5-flash`) | `0.85` | `auto` | built-ins | off | Q&A, pairing, lightweight design discussion |
+| `research` | mid | `0.65` | `allow` | built-ins − `bash` | on | Read-heavy codebase exploration; `allow` keeps the ask-mode noise out of the way |
+| `review` | frontier | `0.75` | `auto` | built-ins − `bash` | on | PR / diff review |
 
 Resolution per-provider:
 
@@ -109,6 +109,22 @@ Explicit per-knob flags always win over the class defaults:
 - `--model` (long-form alias of `-m`) pins the model — e.g. `--task=debug --model=gemini-3.6-flash` uses debug-mode defaults but a specific model. A model set in the config file (`model.name`) is likewise respected; `--task` only fills in the tier model when neither `--model` nor a config-file model is set.
 - `--compaction-threshold=<0..1>` pins the post-turn compaction trigger, overriding both the config-file `compaction.threshold` and the class default.
 - `--ask=off|stdin|auto` pins the ask-user mode; left unset, the class default applies.
+- `--enable-tools=<names>` adds back a built-in the class dropped — `--task=debug --enable-tools=bash` gives you the shell under debug defaults.
+- `--plan-first[=false]` pins plan-first gating; `--task=debug --plan-first=false` keeps the reduced tool set without the plan requirement.
+
+### Tools and plan-first (since v2.9)
+
+The three investigation-shaped classes — `debug`, `research`, `review` — drop `bash` from the built-in set and turn on [plan-first gating](/reference/configuration/#plan-first-gating-v23--require_plan_artifact). Both defaults come from the same measured session ([#160](https://github.com/go-steer/core-agent/issues/160)): the model reached for `bash $ grep -rn` on its first tool call with the native `grep` tool sitting in the schema, and emitted zero plan sentences before acting. `implement` keeps the shell because edit-then-test cycles need it and plan-first would gate the very edits the class exists to make; `chat` isn't investigation-shaped at all.
+
+Dropping `bash` is the blunt version of the [bash search gate](/concepts/tools/#the-bash-search-gate), which refuses only the search-shaped subset. They compose: `--task=debug --enable-tools=bash` puts the shell back and the search gate still refuses `bash grep`.
+
+Three things to know:
+
+- **`--enable-tools` cancels the profile, not your config.** It cannot re-enable a tool you turned off in `tools.disable` or `--disable-tools` — asking for both is a startup error rather than a silent win for either side. Naming a tool the class never dropped is a harmless no-op.
+- **Subagents inherit the reduction.** A declarative subagent draws from the parent's already-gated catalog, so `--task=debug` hardens the parent and its subagents together.
+- **Plan-first gates `fetch_url` and `spawn_agent` too**, not just writes. Under `--task=research` the model records a plan before its first fetch. That is the intended discipline, but it is a real behavior change for scripted research runs — `--plan-first=false` opts out.
+
+Plan-first needs somewhere to write plans. If no `.agents/` directory was resolved, `--no-builtin-tools` is set, or `record_plan` is disabled, the class default is **suppressed** with a startup line saying which of those it was — a plan-first gate with no `record_plan` denies every mutating call for the life of the session and nothing can clear it (`/replan` only revokes a plan; it can't grant one). An explicit `--plan-first` or `require_plan_artifact: true` is still honored in that situation, but startup warns.
 
 Config-file equivalent:
 

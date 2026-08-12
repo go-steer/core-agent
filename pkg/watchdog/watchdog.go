@@ -33,11 +33,18 @@
 //     DefaultWatchdog just fans observations across them.
 //   - "Warn" mode: alerts are logged to stderr by the agent wiring.
 //     No interactive prompt, no model swap.
-//   - "Enforce" mode (#623): a Critical alert halts the agent — the
-//     next turn is refused until the operator resets, mirroring the
-//     cost-ceiling kill switch. The signal detection is identical to
-//     warn mode; only the agent-side reaction differs (see
-//     pkg/agent/watchdog.go).
+//   - "Feedback" mode (#159): warn, plus the alert's model-facing
+//     Guidance is injected into the agent's next-turn context as a
+//     "[watchdog]" block. Detection is unchanged; the difference is
+//     who reads the observation. A warn-mode alert reaches an
+//     operator who may not be there, and even when they are, the
+//     model — the only party that can stop making the call — never
+//     learns it is looping.
+//   - "Enforce" mode (#623): feedback, plus a Critical alert halts
+//     the agent — the next turn is refused until the operator
+//     resets, mirroring the cost-ceiling kill switch. The signal
+//     detection is identical to warn mode; only the agent-side
+//     reaction differs (see pkg/agent/watchdog.go).
 //
 // Future scope (deferred — see design doc §"Piece 2"):
 //
@@ -75,14 +82,30 @@ const (
 	SeverityCritical Severity = "critical"
 )
 
-// Alert is what a triggered signal returns. Fields are operator-
-// facing — the agent's wiring logs Reason verbatim. Signal is the
-// stable string ID the rest of the system can dispatch on (future
-// "auto" mode picks behavior per signal).
+// Alert is what a triggered signal returns. Signal is the stable
+// string ID the rest of the system can dispatch on (future "auto"
+// mode picks behavior per signal).
+//
+// Reason and Guidance are the same observation addressed to two
+// different readers, and the split is load-bearing. Reason is
+// operator-facing — the agent's wiring logs it verbatim, and it may
+// name operator affordances ("/interrupt", "--max-turn-cost-usd")
+// that only a human at a terminal can act on. Guidance is model-
+// facing: what the *agent* should do differently on its next turn,
+// written as an instruction with no reference to operator controls,
+// because under --watchdog=feedback (#159) it is injected into the
+// model's next-turn context. An unattended daemon has no operator to
+// read Reason, so for it Guidance is the only half that does work.
+//
+// Guidance is optional. A third-party Signal that leaves it empty
+// still produces feedback — FormatFeedback falls back to Reason —
+// but the fallback carries operator advice the model can't take, so
+// built-in signals should always set it.
 type Alert struct {
 	Signal   string
 	Severity Severity
 	Reason   string
+	Guidance string
 }
 
 // ToolCall is the per-tool-call observation the watchdog needs.
@@ -278,6 +301,13 @@ func (s *RepeatedToolCallSignal) ObserveToolCall(tc ToolCall) *Alert {
 				"agent has called %s with identical args %d times in a row — possible tool loop. Args: %s. If the agent is stuck, consider /interrupt and a different prompt phrasing. Cost ceiling (see --max-turn-cost-usd) is the hard backstop.",
 				tc.Name, s.runLength, truncate(tc.Args, 200),
 			),
+			// Model-facing half. Deliberately says nothing about
+			// /interrupt or cost ceilings: the reader here is the
+			// agent, and the only lever it has is its own next call.
+			Guidance: fmt.Sprintf(
+				"You called %s %d times in a row with byte-identical arguments (%s). The same call with the same arguments returns the same result, so repeating it cannot make progress. Change the arguments, use a different tool, or — if you have no next step that differs — stop calling tools and say what you are stuck on. Do not repeat this call unchanged.",
+				tc.Name, s.runLength, truncate(tc.Args, 200),
+			),
 		}
 	}
 	return nil
@@ -314,6 +344,52 @@ func truncate(s string, maxLen int) string {
 	}
 	half := (maxLen - len(ellipsis)) / 2
 	return s[:half] + ellipsis + s[len(s)-half:]
+}
+
+// FeedbackHeader opens the block FormatFeedback renders. Exported so
+// hosts, tests and transcript tooling can find the boundary without
+// re-typing the literal.
+const FeedbackHeader = "[watchdog]"
+
+// FormatFeedback renders alerts as the model-facing block
+// --watchdog=feedback prepends to the next turn's prompt. Returns ""
+// for an empty slice so callers can skip the prepend cheaply.
+//
+// Two things the wording has to do. It must be unmistakably *about
+// the model's own last turn* rather than a message from the user —
+// a model that reads "you called grep 5 times" as a user complaint
+// will apologize instead of changing behavior. And it must carry an
+// instruction, not a description: the whole point of routing this to
+// the model is that a description of a loop is what it already had.
+//
+// Not a trust boundary. A user prompt can contain the literal
+// "[watchdog]" string, exactly as it can contain "[Inbox]" or
+// "[Background reports]"; this block is a steering signal, and
+// nothing downstream grants authority based on it.
+func FormatFeedback(alerts []Alert) string {
+	if len(alerts) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(FeedbackHeader)
+	b.WriteString(" Automated observation about your own previous turn — this is not a message from the user, and the user cannot see it.\n")
+	for _, a := range alerts {
+		text := a.Guidance
+		if text == "" {
+			// Third-party signal with no model-facing half. Reason is
+			// worse (it may name operator controls) but it is the
+			// observation, and dropping the alert entirely would make
+			// a custom signal silently inert under feedback mode.
+			text = a.Reason
+		}
+		b.WriteString("- ")
+		b.WriteString(a.Signal)
+		b.WriteString(": ")
+		b.WriteString(text)
+		b.WriteString("\n")
+	}
+	b.WriteString("Adjust your approach on this turn accordingly.")
+	return b.String()
 }
 
 // String implements fmt.Stringer for Alert so log lines stay

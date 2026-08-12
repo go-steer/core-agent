@@ -252,11 +252,32 @@ Compaction caps the *context* dimension. The cost ceiling caps the *dollar* dime
 
 ### Modes
 
+The modes are a ladder — each one includes everything the mode above it in this table does.
+
 | Mode | What it does |
 |---|---|
-| `warn` | Observes the tool-call stream. When a signal trips, logs a structured alert to the operator via the normal status channel (`send()` callback for CLI; future SSE event for attach-mode). Does NOT pause the turn. |
-| `enforce` | Same detection as warn, but a Critical runaway signal (today: `repeated-tool-call`) **halts the agent**: it emits a `turn-error` (`kind=watchdog`, non-retryable) and refuses new turns until the operator clears it (`/guardrail reset`, `POST /sessions/{id}/guardrails/reset`, or `Agent.ResetWatchdog` when embedding). This is the hard behavioral backstop — an auto-continue re-drive of the interrupted turn is refused at pre-flight instead of re-issuing the looping call. |
 | `off` | No observation. |
+| `warn` | Observes the tool-call stream. When a signal trips, logs a structured alert to the operator via the normal status channel (`send()` callback for CLI; future SSE event for attach-mode). Does NOT pause the turn, and does not tell the model anything. |
+| `feedback` | Warn, plus the observation is injected into the **model's** next-turn context as a `[watchdog]` block ([#159](https://github.com/go-steer/core-agent/issues/159)). A correction, not a backstop — nothing halts a model that reads the block and loops anyway. |
+| `enforce` | Feedback, plus a Critical runaway signal (today: `repeated-tool-call`) **halts the agent**: it emits a `turn-error` (`kind=watchdog`, non-retryable) and refuses new turns until the operator clears it (`/guardrail reset`, `POST /sessions/{id}/guardrails/reset`, or `Agent.ResetWatchdog` when embedding). This is the hard behavioral backstop — an auto-continue re-drive of the interrupted turn is refused at pre-flight instead of re-issuing the looping call. |
+
+### Feedback: telling the model what it is doing
+
+`warn` and `enforce` both route the observation to an operator — a log line, or a halt that waits for one. Neither tells the party actually choosing the next tool call. Under `feedback` and above, the next turn's prompt is prefixed with a block like:
+
+```text
+[watchdog] Automated observation about your own previous turn — this is not a message from the user, and the user cannot see it.
+- repeated-tool-call: You called read_file 5 times in a row with byte-identical arguments ({"path":"a.txt"}). The same call with the same arguments returns the same result, so repeating it cannot make progress. Change the arguments, use a different tool, or — if you have no next step that differs — stop calling tools and say what you are stuck on. Do not repeat this call unchanged.
+Adjust your approach on this turn accordingly.
+```
+
+Notes on the contract:
+
+- **`enforce` implies `feedback`.** An enforce halt is cleared by an operator reset, and the reset resumes a model whose context still ends in the loop it was halted for. Without the injection, the reset is a treadmill: the same five calls, the same halt, one operator round-trip later. `ResetWatchdog` therefore clears the halt but keeps the queued observation, and a halt [restored from the eventlog](#halts-survive-a-restart) after a restart re-synthesizes it from the persisted reason.
+- **`warn` is unchanged** and injects nothing. Feedback is its own rung precisely so turning it on is a decision, not a silent rewrite of the context every existing `warn` operator is already running.
+- **Two readers, two texts.** `watchdog.Alert.Reason` is operator-facing and may name operator controls (`/interrupt`, `--max-turn-cost-usd`); `Alert.Guidance` is model-facing and names none of them. A custom `Signal` that sets no `Guidance` falls back to `Reason`, so a third-party detector is never silently inert under feedback.
+- **Not a trust boundary.** The block is framed as an automated observation, but a user prompt can contain the literal string `[watchdog]`, exactly as it can contain `[Inbox]`. Treat it as steering, not authentication.
+- The queue is bounded (4 alerts, oldest dropped), and nothing is queued while the mode is below `feedback` — flipping the mode later can't deliver a stale backlog.
 
 ### Choosing the mode
 
@@ -270,7 +291,9 @@ The config field ([#660](https://github.com/go-steer/core-agent/issues/660)) exi
 
 With neither source set, the default is **`enforce` for unattended runs** (`-p`, `--no-repl`, or a non-TTY stdin) and **`warn` for interactive REPL/TUI runs** ([#642](https://github.com/go-steer/core-agent/issues/642)). The split is about who reads the alert: an interactive operator sees the warning and can hit Ctrl-C, so halting on their behalf is presumptuous. Nobody reads a daemon's warn-mode log in time, which made warn indistinguishable from off exactly where the backstop mattered. Pass `--watchdog=warn` (or set the config field) to restore observe-only on an unattended run.
 
-The resolved mode applies to every agent the process hosts, including the sessions a multi-session daemon creates through `POST /sessions`. The startup line names the source it came from, e.g. `watchdog: enforce mode [unattended default]`.
+The resolved mode applies to every agent the process hosts, including the sessions a multi-session daemon creates through `POST /sessions`. The startup line names the source it came from and what the mode actually does, e.g. `watchdog: enforce mode [unattended default] (…; injects the observation into the model's next turn; halts the agent and refuses new turns until cleared with /guardrail reset, …)`.
+
+`feedback` is the mode for a run where you want the agent to self-correct without a halt — an interactive session, or an autonomous job where stopping is more expensive than a few wasted turns. It is *weaker* than the unattended default, so an unattended run only gets it by asking for it explicitly.
 
 Enforce mode mirrors the cost ceiling's halt contract (above): post-turn detection sets a flag, the next `Run` refuses at pre-flight, and recovery is operator-driven (`/guardrail reset`, which also resets the signal's run-length state). There is no automatic reset — a tripped watchdog is a "stop, get human attention" signal, not a throttle. Only Critical signals halt; a hypothetical future low-severity signal would stay advisory even under enforce.
 

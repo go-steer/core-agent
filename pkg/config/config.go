@@ -98,9 +98,21 @@ type SafetyConfig struct {
 	// runaway-tool-loop backstop from #123/#623.
 	//
 	// Values: "off" (no observation), "warn" (observe the tool-call
-	// stream and log structured alerts, but never halt), "enforce"
-	// (same detection plus a turn-error of kind=watchdog; the agent
-	// refuses new turns until Agent.ResetWatchdog clears it).
+	// stream and log structured alerts, but never halt), "feedback"
+	// (same, plus the alert is injected into the model's next-turn
+	// context as a "[watchdog]" block so the party making the looping
+	// call finds out about it — #159), "enforce" (all of that plus a
+	// turn-error of kind=watchdog; the agent refuses new turns until
+	// Agent.ResetWatchdog clears it).
+	//
+	// The values form a ladder — each includes the one before it. In
+	// particular "enforce" injects too: an operator reset resumes a
+	// model whose context still ends in the loop it was halted for,
+	// and without the observation the next turn re-trips.
+	//
+	// "feedback" is a correction, not a backstop: nothing stops a model
+	// that reads the observation and loops anyway. Unattended runs want
+	// "enforce".
 	//
 	// Empty == unset, which resolves to a *mode-dependent* default:
 	// "enforce" for unattended runs (-p one-shot, --no-repl daemon,
@@ -112,7 +124,7 @@ type SafetyConfig struct {
 	// of relying on every invocation and deploy manifest remembering
 	// --watchdog=enforce (#660).
 	//
-	// CLI override: --watchdog=off|warn|enforce.
+	// CLI override: --watchdog=off|warn|feedback|enforce.
 	Watchdog string `json:"watchdog,omitempty"`
 
 	// BashSearchGate controls what happens when the model reaches for
@@ -1145,11 +1157,11 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("config: unknown safety.small_tier_parent %q (want one of %q, %q, %q)", c.Safety.SmallTierParent, SmallTierParentWarn, SmallTierParentRefuse, SmallTierParentAllow)
 	}
 	switch c.Safety.Watchdog {
-	case "", WatchdogOff, WatchdogWarn, WatchdogEnforce:
+	case "", WatchdogOff, WatchdogWarn, WatchdogFeedback, WatchdogEnforce:
 		// ok; "" resolves to the mode-dependent default (see
 		// SafetyConfig.Watchdog).
 	default:
-		return fmt.Errorf("config: unknown safety.watchdog %q (want one of %q, %q, %q)", c.Safety.Watchdog, WatchdogOff, WatchdogWarn, WatchdogEnforce)
+		return fmt.Errorf("config: unknown safety.watchdog %q (want one of %q, %q, %q, %q)", c.Safety.Watchdog, WatchdogOff, WatchdogWarn, WatchdogFeedback, WatchdogEnforce)
 	}
 	switch c.Safety.BashSearchGate {
 	case "", BashSearchGateEnforce, BashSearchGateWarn, BashSearchGateAllow:
@@ -1204,11 +1216,13 @@ const (
 
 // Watchdog mode constants. See SafetyConfig.Watchdog for behavior.
 // Exported so consumers (CLI, library, recipes) can reference the
-// canonical strings rather than re-spelling them.
+// canonical strings rather than re-spelling them. Listed weakest to
+// strongest; each mode includes the behavior of the one before it.
 const (
-	WatchdogOff     = "off"
-	WatchdogWarn    = "warn"
-	WatchdogEnforce = "enforce"
+	WatchdogOff      = "off"
+	WatchdogWarn     = "warn"
+	WatchdogFeedback = "feedback"
+	WatchdogEnforce  = "enforce"
 )
 
 // Bash search-gate mode constants. See SafetyConfig.BashSearchGate.

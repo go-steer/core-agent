@@ -64,6 +64,37 @@ func WithWatchdogEnforce() Option {
 	}
 }
 
+// WithWatchdogFeedback routes watchdog alerts back into the model's
+// next-turn context ("feedback" mode, #159): after a turn that tripped
+// a signal, the next Run prepends a "[watchdog]" block carrying each
+// alert's model-facing Guidance to the prompt.
+//
+// The warn-mode surface it extends reaches an operator — who, on an
+// unattended daemon, is not there, and who even at a terminal can only
+// interrupt a turn already in flight. The party that can stop making
+// the looping call is the model, and it never learned it was looping.
+//
+// Implied by WithWatchdogEnforce, which is deliberate rather than
+// incidental: an enforce-mode halt is cleared by an operator reset,
+// and a reset resumes a model whose context still ends in the loop it
+// was halted for. Without the injected observation, the very next turn
+// re-issues the same call and re-trips — the reset would be a treadmill.
+//
+// No-op unless a watchdog is also wired via WithWatchdog.
+func WithWatchdogFeedback() Option {
+	return func(o *options) {
+		o.watchdogFeedback = true
+	}
+}
+
+// maxPendingWatchdogFeedback caps the queue of alerts awaiting
+// injection. The queue drains on every Run, so it only grows when a
+// host observes turns without starting new ones; a bound keeps that
+// case from turning into an ever-growing prompt prefix. Oldest are
+// dropped: the newest observation describes the behavior the model is
+// about to repeat.
+const maxPendingWatchdogFeedback = 4
+
 // watchdogError is returned by Agent.Run when a prior turn tripped the
 // watchdog under enforce mode and the operator hasn't reset it. Mirrors
 // costCeilingError: a distinct type so hosts can classify "operator must
@@ -157,6 +188,13 @@ func (a *Agent) drainWatchdogAlerts() {
 			a.onWatchdogAlert(alert)
 		}
 	}
+	// Feedback mode (#159): queue the alerts for injection into the next
+	// turn's prompt. Outside the onWatchdogAlert==nil guard for the same
+	// reason enforcement is — the model-facing route must not depend on
+	// whether a host wired the operator-facing one.
+	if a.watchdogFeedback {
+		a.queueWatchdogFeedback(alerts)
+	}
 	// Enforce mode (#623): a Critical alert halts the agent. Kept after
 	// the callback so the operator sees the log line before the refusal,
 	// and outside the onWatchdogAlert==nil guard above so enforcement
@@ -164,6 +202,42 @@ func (a *Agent) drainWatchdogAlerts() {
 	if a.watchdogEnforce {
 		a.maybeTripWatchdog(alerts)
 	}
+}
+
+// queueWatchdogFeedback appends alerts to the pending-injection queue,
+// trimming to maxPendingWatchdogFeedback from the front.
+func (a *Agent) queueWatchdogFeedback(alerts []watchdog.Alert) {
+	if len(alerts) == 0 {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.watchdogPending = append(a.watchdogPending, alerts...)
+	if n := len(a.watchdogPending) - maxPendingWatchdogFeedback; n > 0 {
+		a.watchdogPending = a.watchdogPending[n:]
+	}
+}
+
+// prependWatchdogFeedback drains the pending queue and, when non-empty,
+// returns prompt with the "[watchdog]" block in front. Called from Run,
+// after the inbox and background-report prepends, so the correction
+// about the model's own last turn is the first thing it reads.
+//
+// Draining on read (rather than on turn success) means an observation
+// is delivered exactly once even if the turn it lands in fails. Losing
+// it in that case is the right trade: the signal describes behavior
+// several turns back by the time a retry lands, and a block that
+// re-appears every turn until some turn succeeds is a prompt leak.
+func (a *Agent) prependWatchdogFeedback(prompt string) string {
+	a.mu.Lock()
+	pending := a.watchdogPending
+	a.watchdogPending = nil
+	a.mu.Unlock()
+	block := watchdog.FormatFeedback(pending)
+	if block == "" {
+		return prompt
+	}
+	return block + "\n\n---\n\n" + prompt
 }
 
 // maybeTripWatchdog halts the agent when any alert this turn is
@@ -238,6 +312,12 @@ func (a *Agent) preflightWatchdog() error {
 // Also resets the underlying watchdog's signal state so the next run
 // of identical calls has to build back up to the threshold. Safe to
 // call when nothing tripped — no-op in that case.
+//
+// Deliberately does NOT drop queued feedback (#159). A reset resumes a
+// model whose context still ends in the loop it was halted for; the
+// queued observation is the only thing that stops the first post-reset
+// turn from re-issuing the same call. Clearing it here would make the
+// reset undo the correction along with the halt.
 func (a *Agent) ResetWatchdog() {
 	if a == nil {
 		return
@@ -268,7 +348,8 @@ func (a *Agent) WatchdogTripped() (bool, string) {
 
 // WatchdogMode reports the agent's configured watchdog posture as one
 // of the config.Watchdog* strings: "off" (no watchdog wired), "warn"
-// (observe and alert), or "enforce" (observe, alert, and halt).
+// (observe and alert), "feedback" (observe, alert, and tell the model
+// on its next turn), or "enforce" (all of that, and halt).
 //
 // Exposed because "is the backstop actually on?" is the question #642
 // exists to answer, and the answer must be checkable from outside the
@@ -286,6 +367,8 @@ func (a *Agent) WatchdogMode() string {
 		return "off"
 	case a.watchdogEnforce:
 		return "enforce"
+	case a.watchdogFeedback:
+		return "feedback"
 	default:
 		return "warn"
 	}

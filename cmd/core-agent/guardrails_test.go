@@ -17,6 +17,7 @@ package main
 import (
 	"flag"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
@@ -110,6 +111,29 @@ func TestResolveGuardrails_WatchdogPrecedence(t *testing.T) {
 			wantMode:   config.WatchdogEnforce,
 			wantSource: sourceFlag,
 		},
+		{
+			name:       "feedback is accepted from the flag",
+			in:         guardrailInputs{WatchdogFlag: config.WatchdogFeedback},
+			wantMode:   config.WatchdogFeedback,
+			wantSource: sourceFlag,
+		},
+		{
+			// A recipe that wants self-correction without a halt has to
+			// be able to say so in the file — #660's whole point.
+			name:       "feedback is accepted from config",
+			in:         guardrailInputs{WatchdogConfig: config.WatchdogFeedback},
+			wantMode:   config.WatchdogFeedback,
+			wantSource: sourceConfig,
+		},
+		{
+			// Feedback is weaker than the unattended default, and an
+			// operator asking for it explicitly gets it. The startup
+			// summary is what tells them what they gave up.
+			name:       "explicit feedback beats the unattended default",
+			in:         guardrailInputs{WatchdogFlag: config.WatchdogFeedback, Unattended: true},
+			wantMode:   config.WatchdogFeedback,
+			wantSource: sourceFlag,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -139,6 +163,18 @@ func TestResolveGuardrails_InvalidWatchdogValue(t *testing.T) {
 	}
 	if _, err := resolveGuardrails(guardrailInputs{WatchdogConfig: "enfroce"}); err == nil {
 		t.Error("safety.watchdog=enfroce: got nil error, want a config error")
+	}
+	// The error has to list every accepted mode. An operator who typo'd
+	// "feedbck" and reads a message offering only off|warn|enforce
+	// concludes the mode doesn't exist.
+	_, err := resolveGuardrails(guardrailInputs{WatchdogFlag: "feedbck"})
+	if err == nil {
+		t.Fatal("--watchdog=feedbck: got nil error, want a config error")
+	}
+	for _, mode := range []string{config.WatchdogOff, config.WatchdogWarn, config.WatchdogFeedback, config.WatchdogEnforce} {
+		if !strings.Contains(err.Error(), mode) {
+			t.Errorf("error message omits the %q mode: %v", mode, err)
+		}
 	}
 }
 

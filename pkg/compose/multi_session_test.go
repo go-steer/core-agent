@@ -180,6 +180,10 @@ func TestReproduceAgent_WatchdogMode(t *testing.T) {
 		want string
 	}{
 		{config.WatchdogEnforce, "enforce"},
+		// #159: a daemon whose primary session self-corrects while its
+		// tenant sessions loop silently is the same inheritance gap #642
+		// closed, wearing a different label.
+		{config.WatchdogFeedback, "feedback"},
 		{config.WatchdogWarn, "warn"},
 		{config.WatchdogOff, "off"},
 		{"", "off"}, // a caller predating the field keeps its old behavior

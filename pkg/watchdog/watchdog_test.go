@@ -272,3 +272,93 @@ func TestTruncate(t *testing.T) {
 		t.Errorf("truncate should insert ellipsis: %q", got)
 	}
 }
+
+// The two halves of an Alert address different readers, and the
+// operator half names controls a model cannot use. If Guidance ever
+// starts carrying "/interrupt" or a CLI flag, feedback mode is telling
+// the model to do something it has no way to do — which reads as
+// "I am blocked" rather than "change your next call".
+func TestRepeatedToolCallSignal_GuidanceIsModelFacing(t *testing.T) {
+	t.Parallel()
+	s := NewRepeatedToolCallSignal(2)
+	tc := ToolCall{Name: "grep", Args: `{"pattern":"Session stats:"}`}
+	s.ObserveToolCall(tc)
+	alert := s.ObserveToolCall(tc)
+	if alert == nil {
+		t.Fatal("should trip at threshold 2")
+	}
+	if alert.Guidance == "" {
+		t.Fatal("built-in signals must set the model-facing half")
+	}
+	if !strings.Contains(alert.Guidance, "grep") {
+		t.Errorf("Guidance should name the looping tool: %q", alert.Guidance)
+	}
+	for _, operatorOnly := range []string{"/interrupt", "--max-turn-cost-usd", "Cost ceiling", "operator"} {
+		if strings.Contains(alert.Guidance, operatorOnly) {
+			t.Errorf("Guidance names an operator control the model can't use (%q): %q", operatorOnly, alert.Guidance)
+		}
+	}
+	// The operator half keeps its operator affordances — this is a
+	// split, not a replacement.
+	if !strings.Contains(alert.Reason, "/interrupt") {
+		t.Errorf("Reason should keep the operator advice: %q", alert.Reason)
+	}
+}
+
+func TestFormatFeedback_EmptyIsEmpty(t *testing.T) {
+	t.Parallel()
+	if got := FormatFeedback(nil); got != "" {
+		t.Errorf("FormatFeedback(nil) = %q, want empty so callers can skip the prepend", got)
+	}
+	if got := FormatFeedback([]Alert{}); got != "" {
+		t.Errorf("FormatFeedback([]) = %q, want empty", got)
+	}
+}
+
+func TestFormatFeedback_RendersGuidanceAndFramesTheSource(t *testing.T) {
+	t.Parallel()
+	got := FormatFeedback([]Alert{
+		{Signal: "repeated-tool-call", Severity: SeverityCritical, Reason: "operator text", Guidance: "stop repeating read_file"},
+	})
+	if !strings.HasPrefix(got, FeedbackHeader) {
+		t.Errorf("block should open with %q: %q", FeedbackHeader, got)
+	}
+	if !strings.Contains(got, "stop repeating read_file") {
+		t.Errorf("block should carry the guidance: %q", got)
+	}
+	if strings.Contains(got, "operator text") {
+		t.Errorf("block leaked the operator-facing Reason when Guidance was set: %q", got)
+	}
+	if !strings.Contains(got, "not a message from the user") {
+		t.Errorf("block must disclaim user authorship or the model apologizes instead of correcting: %q", got)
+	}
+	if !strings.Contains(got, "repeated-tool-call") {
+		t.Errorf("block should name the signal: %q", got)
+	}
+}
+
+// A Signal is a public interface, so a consumer's own detector can
+// return an Alert with no Guidance. Dropping it would make that
+// detector silently inert under feedback mode — worse than delivering
+// the operator-shaped text.
+func TestFormatFeedback_FallsBackToReasonForThirdPartySignals(t *testing.T) {
+	t.Parallel()
+	got := FormatFeedback([]Alert{{Signal: "custom", Severity: SeverityWarn, Reason: "something odd happened"}})
+	if !strings.Contains(got, "something odd happened") {
+		t.Errorf("Guidance-less alert should fall back to Reason: %q", got)
+	}
+}
+
+func TestFormatFeedback_RendersEveryAlert(t *testing.T) {
+	t.Parallel()
+	got := FormatFeedback([]Alert{
+		{Signal: "a", Guidance: "first"},
+		{Signal: "b", Guidance: "second"},
+	})
+	if !strings.Contains(got, "first") || !strings.Contains(got, "second") {
+		t.Errorf("all alerts should render: %q", got)
+	}
+	if n := strings.Count(got, FeedbackHeader); n != 1 {
+		t.Errorf("header should appear once, got %d: %q", n, got)
+	}
+}

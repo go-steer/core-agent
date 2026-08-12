@@ -17,6 +17,7 @@ package agent
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/glebarez/sqlite"
@@ -117,6 +118,69 @@ func TestGuardrailPersist_WatchdogTripSurvivesRestart(t *testing.T) {
 		t.Error("restarted agent reports the watchdog as untripped")
 	} else if reason == "" {
 		t.Error("restored halt lost its reason; the operator gets no explanation")
+	}
+}
+
+// The #159 half of the same restart. The halt comes back, the operator
+// clears it — and the successor process's model has no memory of the
+// loop, because the feedback queue lived in the dead process. Without a
+// reconstructed observation the resumed turn re-issues the same call.
+//
+// Fails on pre-#159 code: applyGuardrailState restored the flag and the
+// reason and queued nothing, so the post-reset prompt was bare.
+func TestGuardrailPersist_WatchdogFeedbackSurvivesRestart(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestEventLog(t)
+	defer cleanup()
+	createTestSession(t, h, "core-agent", "u", "s-159-wd")
+
+	w := &fakeWatchdog{pending: []watchdog.Alert{{
+		Signal:   "repeated-tool-call",
+		Severity: watchdog.SeverityCritical,
+		Reason:   "looping on read_file 5x.",
+		Guidance: "You called read_file 5 times in a row.",
+	}}}
+	first, err := New(oneShotLLM{},
+		WithEventLog(h),
+		WithSession("u", "s-159-wd"),
+		WithWatchdog(w, nil),
+		WithWatchdogEnforce(),
+	)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	runTurnToCompletion(t, first)
+	if tripped, _ := first.WatchdogTripped(); !tripped {
+		t.Fatalf("watchdog should have tripped at the post-turn drain")
+	}
+
+	// The restart: fresh agent, fresh watchdog with nothing pending.
+	rec := &recordingLLM{}
+	second, err := New(rec,
+		WithEventLog(h),
+		WithSession("u", "s-159-wd"),
+		WithWatchdog(&fakeWatchdog{}, nil),
+		WithWatchdogEnforce(),
+	)
+	if err != nil {
+		t.Fatalf("agent.New (restart): %v", err)
+	}
+	// First turn is refused — that's #643 — and the refusal is what
+	// triggers the restore that queues the observation.
+	for range second.Run(context.Background(), "keep going") { //nolint:revive // draining the refusal
+	}
+	second.ResetWatchdog()
+	for _, err := range second.Run(context.Background(), "resumed") {
+		if err != nil {
+			t.Fatalf("post-reset turn: %v", err)
+		}
+	}
+	got := flattenText(rec.lastRequest().Contents)
+	if !strings.Contains(got, watchdog.FeedbackHeader) {
+		t.Fatalf("post-restart, post-reset turn carries no watchdog observation: %q", got)
+	}
+	if !strings.Contains(got, "read_file") {
+		t.Errorf("reconstructed observation lost the halting reason: %q", got)
 	}
 }
 

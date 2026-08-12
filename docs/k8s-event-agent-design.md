@@ -2,7 +2,11 @@
 
 Design doc for the v2.6 follow-up to session-resume (#178 / `docs/session-resume-design.md`): turn `core-agent` into a semi-autonomous k8s troubleshooting agent by wiring cluster events as a push-signal source, routing them into per-incident sessions, and applying structured playbooks with a fix-and-verify loop.
 
-**Status:** shipped in v2.6 (2026-07-10). Implemented across three merged PRs: ε.1 [#188](https://github.com/go-steer/core-agent/pull/188) (sidecar core binary), ε.2 [#189](https://github.com/go-steer/core-agent/pull/189) (triage router + references + deploy recipe + GET /sessions union), ε.4 (this PR: `k8s-event-watcher` container image published on GHCR + CHANGELOG + status flip). ε.3 (escalation MCP integration) was DROPPED from v2.6 because distroless kills `bash + curl`; native alert-tool escalation designed at `docs/alert-tool-design.md` ([#192](https://github.com/go-steer/core-agent/issues/192)) and Slack-MCP consumption at `docs/mcp-oauth-design.md` ([#190](https://github.com/go-steer/core-agent/issues/190)) both ship in v2.7. Operator-facing reference: `docs/site/content/docs/reference/troubleshooting-agent.md`. Tracking issue: [#186](https://github.com/go-steer/core-agent/issues/186).
+> **Moved (2026-07-24): the watcher is no longer in this repo.** Everything below describes the watcher as an in-tree binary at `cmd/k8s-event-watcher/` depending on `k8s.io/client-go`, which is how it shipped in v2.6 and is no longer true. The watcher moved to [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout) in that repo's M0 and `core-agent` then dropped its k8s dependencies entirely; the image is `ghcr.io/go-steer/lookout`, not `ghcr.io/go-steer/k8s-event-watcher`. Read this doc for the *design* — the event filter, the per-incident session routing, the dedup window, the escalation shape, all of which carry forward — and read the k8s-lookout repo for anything you intend to build or deploy. The recipe this doc describes is `examples/gke-troubleshoot-agent/`, which deploys the lookout image as its watcher; `examples/kube-platform-agent/` deploys the same watcher for the platform-agent shape. The open question in "`k8s-event-watcher` (new binary)" below about monorepo-vs-separate-repo was answered by the split: separate repo.
+>
+> One more correction to the status line: ε.3's replacement, the native `alert` tool, did not ship in v2.7. It shipped in v2.9 ([#593](https://github.com/go-steer/core-agent/issues/593)) with the `generic` webhook template only — `slack`, `discord` and `pagerduty_events_v2` are designed in `docs/alert-tool-design.md` and rejected at config load until they land.
+
+**Status:** shipped in v2.6 (2026-07-10), watcher since extracted (see the note above). Implemented across three merged PRs: ε.1 [#188](https://github.com/go-steer/core-agent/pull/188) (sidecar core binary), ε.2 [#189](https://github.com/go-steer/core-agent/pull/189) (triage router + references + deploy recipe + GET /sessions union), ε.4 (this PR: `k8s-event-watcher` container image published on GHCR + CHANGELOG + status flip). ε.3 (escalation MCP integration) was DROPPED from v2.6 because distroless kills `bash + curl`; native alert-tool escalation designed at `docs/alert-tool-design.md` ([#192](https://github.com/go-steer/core-agent/issues/192)) and Slack-MCP consumption at `docs/mcp-oauth-design.md` ([#190](https://github.com/go-steer/core-agent/issues/190)) both ship in v2.7. Operator-facing reference: `docs/site/content/docs/reference/troubleshooting-agent.md`. Tracking issue: [#186](https://github.com/go-steer/core-agent/issues/186).
 
 ## Motivation
 
@@ -452,9 +456,11 @@ Daemon-side observability is unchanged — every inject shows up in the eventlog
 
 ### `k8s-event-watcher` (new binary, `cmd/k8s-event-watcher/`)
 
+> **Historical.** Shipped this way in v2.6; extracted to [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout) in 2026-07 and no longer present in this repo. The image is `ghcr.io/go-steer/lookout`.
+
 New in-tree Go binary. Depends on `k8s.io/client-go`. ~300 LoC + client-go boilerplate. Own Dockerfile + release-image pipeline (published to `ghcr.io/go-steer/k8s-event-watcher:<tag>` alongside the existing `core-agent` images).
 
-Open: **should this be in `core-agent` monorepo or a separate repo?** In-tree is simpler for v2.6 (one release cycle, one CI). If the sidecar grows to include other signal sources (Cloud Monitoring, PagerDuty, etc.), split into `go-steer/agent-triggers` repo. Ask before deciding.
+Open: **should this be in `core-agent` monorepo or a separate repo?** In-tree is simpler for v2.6 (one release cycle, one CI). If the sidecar grows to include other signal sources (Cloud Monitoring, PagerDuty, etc.), split into `go-steer/agent-triggers` repo. Ask before deciding. **Answered:** separate repo — the split happened once the watcher grew enrichment beyond event forwarding.
 
 ### `docs/site/content/docs/reference/`
 
@@ -545,6 +551,8 @@ All 8 design questions were reviewed and resolved on 2026-07-02. Summary:
 
 **Resolved: in-tree in `core-agent` monorepo (`cmd/k8s-event-watcher/`).** Simpler CI, one release cycle, easy shared-code path. Split into a separate `go-steer/agent-triggers` repo when the second signal source (Cloud Monitoring, PagerDuty, etc.) ships, or when the sidecar accumulates >1000 LoC of k8s-specific code.
 
+**Re-resolved (2026-07-24): separate repo.** The split trigger fired — the watcher grew enrichment well past 1000 LoC of k8s-specific code — and it moved to [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout), not `agent-triggers`. `core-agent` dropped `k8s.io/client-go` with it.
+
 ### 2. Default owner identity
 
 **Resolved: single configured owner** (`--owner sre-oncall@example.com`). All incidents surface in one team's session list — the "one team is the audit trail" MVP shape. Label-driven routing (`--owner-label team`) and namespace-driven routing (`--owner-per-namespace ...`) ship as v2.7+ enhancements when operators demonstrate the need.
@@ -556,6 +564,8 @@ All 8 design questions were reviewed and resolved on 2026-07-02. Summary:
 ### 4. Fix-and-verify: prompt-pattern or dedicated tool
 
 **Resolved: prompt-pattern in v2.6.** Skills' body instructs the agent through the apply → wait → re-check → revert-if-worse loop using existing tools (`bash`, MCP calls, `spawn_agent`). If operator experience shows the prompt-pattern is flaky (agent skips the verify step, mis-parses results), a `wait_and_verify(predicate, timeout, interval)` tool ships in v2.7+. Migration cost is low because the pattern is already documented in skill bodies.
+
+**Update (v2.9):** the dedicated tool shipped, as `wait_and_verify` ([#648](https://github.com/go-steer/core-agent/issues/648)), with operator-set ceilings under `tools.wait_and_verify`. The prompt-pattern didn't fail the way this paragraph guessed it might. It failed harder: the "existing tools" it leans on include `bash`, and the recipe's distroless daemon sets `tools.disable: ["bash"]`, so the skill's `sleep 120, then re-check` step was not flaky — it was inexpressible, and the agent reported `RESOLVED` for verifications it never ran. `schedule_next_turn` is not a substitute because it *ends* the turn.
 
 ### 5. Multi-cluster shape
 

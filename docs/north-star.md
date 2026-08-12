@@ -7,7 +7,8 @@ quarterly and prune.
 > path" sections below are the mid-2026 pre-v2.0 snapshot and are now
 > largely **historical**: v2.0 shipped, and **v2.7.0 GA shipped
 > 2026-07-20** (first `go install`-able `/v2` release — E2E OTel, full
-> cost stack, multi-daemon fleet). Main is on `v2.8.0-dev`. The
+> cost stack, multi-daemon fleet). **v2.8.0 GA shipped 2026-08-07**;
+> main is on `v2.9.0-dev`. The
 > context-management quartet (compaction, micro-subagents,
 > task-boundary checkpoints, persistent memory) that this doc lists as
 > "designed, not built" has since landed. Treat the two goals and the
@@ -42,9 +43,13 @@ flagship consumer that validates (1) is actually good.
   history (`agent.Agent`, `agent.Run`).
 - Autonomous loop with token/cost/turn/wallclock budgets
   (`agent.RunAutonomous`).
-- Background subagents with branch isolation, alert channel,
-  spawn / list / check / report tools
-  (`BackgroundAgentManager`, `/subagent` slash).
+- Background subagents with branch isolation, alert channel, and
+  `spawn_agent` / `stop_agent` tools
+  (`BackgroundAgentManager`, `/subagent` slash). The 2026-05 snapshot
+  listed four tools (spawn / list / check / report); v2.9 folded the
+  poller pair away in [#625](https://github.com/go-steer/core-agent/issues/625)
+  because polling for a result is what drove the model into tool
+  loops — `spawn_agent{wait:true}` blocks instead.
 - Multi-provider (Anthropic, Vertex, Gemini, mock) via
   `models.Provider` + per-call provider resolution.
 - Durable session + crash-resume via `eventlog` (SQLite +

@@ -235,10 +235,10 @@ func TestWaitAndVerify_RefusesAMutatingTool(t *testing.T) {
 // override, and it is the only one.
 func TestWaitAndVerify_PollAllowAdmitsAnUnclassifiedTool(t *testing.T) {
 	t.Parallel()
-	target := &pollTarget{name: "gke__get_pod", readOnly: false, respond: readyAfter(1)}
-	v := newTestVerifier(t, WaitAndVerifyOptions{PollAllow: []string{"gke__get_pod"}}, target)
+	target := &pollTarget{name: "gke_get_pod", readOnly: false, respond: readyAfter(1)}
+	v := newTestVerifier(t, WaitAndVerifyOptions{PollAllow: []string{"gke_get_pod"}}, target)
 
-	res, err := v.run(nil, waitAndVerifyArgs{Tool: "gke__get_pod", ExpectContains: "Running"})
+	res, err := v.run(nil, waitAndVerifyArgs{Tool: "gke_get_pod", ExpectContains: "Running"})
 	if err != nil {
 		t.Fatalf("an allow-listed tool must be pollable: %v", err)
 	}
@@ -596,7 +596,7 @@ func TestWaitAndVerify_BoundsASingleHungPoll(t *testing.T) {
 // waiter has to look inside them rather than only the flat slice.
 func TestWaitAndVerify_ResolvesThroughAToolset(t *testing.T) {
 	t.Parallel()
-	target := &pollTarget{name: "gke__get_pod", readOnly: true, respond: readyAfter(1)}
+	target := &pollTarget{name: "gke_get_pod", readOnly: true, respond: readyAfter(1)}
 	built, err := NewWaitAndVerifyTool(config.DefaultConfig(), WaitAndVerifyOptions{})
 	if err != nil {
 		t.Fatalf("NewWaitAndVerifyTool: %v", err)
@@ -604,7 +604,7 @@ func TestWaitAndVerify_ResolvesThroughAToolset(t *testing.T) {
 	wv := built.(*waitAndVerifyTool)
 	wv.BindCatalog([]adktool.Tool{built}, []adktool.Toolset{&stubToolset{name: "gke", tools: []adktool.Tool{target}}})
 
-	res, err := wv.v.run(nil, waitAndVerifyArgs{Tool: "gke__get_pod", ExpectContains: "Running"})
+	res, err := wv.v.run(nil, waitAndVerifyArgs{Tool: "gke_get_pod", ExpectContains: "Running"})
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -649,7 +649,7 @@ func TestWaitAndVerifyOptionsFromConfig(t *testing.T) {
 	t.Parallel()
 	cfg := config.DefaultConfig()
 	cfg.Tools.WaitAndVerify = config.WaitAndVerifyConfig{
-		PollAllow:         []string{"gke__get_pod"},
+		PollAllow:         []string{"gke_get_pod"},
 		MaxTimeoutSeconds: 42,
 		MaxAttempts:       7,
 	}

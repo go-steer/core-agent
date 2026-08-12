@@ -28,7 +28,9 @@
 #   2. Binds five IAM roles the daemon needs:
 #        - roles/aiplatform.user               (call Gemini via Vertex API)
 #        - roles/mcp.toolUser                  (call GKE MCP tools at all)
-#        - roles/container.admin               (read + write cluster/workload state via MCP)
+#        - roles/container.viewer              (read cluster/workload state via the
+#                                                read-only GKE MCP endpoint; the agent
+#                                                is propose-only and never mutates)
 #        - roles/iam.serviceAccountUser        (impersonate node SA — required by
 #                                                GKE MCP's server-side chain; missing
 #                                                this gives 403 with no clear hint)
@@ -215,10 +217,12 @@ bind_project_role "roles/aiplatform.user"
 #     on the MCP call with no useful error hint about what's wrong.
 bind_project_role "roles/mcp.toolUser"
 
-# 2c. GKE cluster + workload administration. The full-access GKE MCP
-#     endpoint (`/mcp`) exercises admin-level operations for some fixes
-#     (rollout undo, deployment patches, node cordon/drain, etc.).
-bind_project_role "roles/container.admin"
+# 2c. Read GKE clusters + workloads. The recipe wires the read-only GKE
+#     MCP endpoint (`/mcp/read-only`), so the agent only ever issues
+#     get/list/describe/logs calls — `container.viewer` covers all of
+#     them. If you re-point `config/mcp.json` at the full-access `/mcp`
+#     endpoint, upgrade this to `roles/container.admin`.
+bind_project_role "roles/container.viewer"
 
 # 2d. Impersonate the node service account. Required by the GKE MCP's
 #     server-side chain. Bound on the SA resource, not the project.
@@ -242,7 +246,7 @@ else
     echo "The core-agent daemon's KSA can now:"
     echo "  - Call Gemini via the Vertex AI API"
     echo "  - Call the GKE MCP server + its tools"
-    echo "  - Administer GKE clusters + workloads"
+    echo "  - Read GKE clusters + workloads (read-only; no mutations)"
     echo "  - Impersonate the node SA (required by GKE MCP)"
     echo "  - Write spans to Cloud Trace (used by the OTel overlay only)"
     echo
@@ -251,7 +255,7 @@ else
     echo "Bindings applied:"
     echo "  - roles/aiplatform.user        on projects/${PROJECT_ID}"
     echo "  - roles/mcp.toolUser           on projects/${PROJECT_ID}"
-    echo "  - roles/container.admin        on projects/${PROJECT_ID}"
+    echo "  - roles/container.viewer       on projects/${PROJECT_ID}"
     echo "  - roles/cloudtrace.user        on projects/${PROJECT_ID}"
     echo "  - roles/iam.serviceAccountUser on ${NODE_SA}"
     echo "  All bound to member: ${KSA_PRINCIPAL}"

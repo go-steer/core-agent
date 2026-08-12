@@ -35,8 +35,8 @@ func TestValidate_WaitAndVerifyBounds(t *testing.T) {
 		{"explicit ceilings", WaitAndVerifyConfig{MaxTimeoutSeconds: 120, MaxAttempts: 20}, false},
 		{"negative timeout", WaitAndVerifyConfig{MaxTimeoutSeconds: -1}, true},
 		{"negative attempts", WaitAndVerifyConfig{MaxAttempts: -1}, true},
-		{"allow list", WaitAndVerifyConfig{PollAllow: []string{"gke__get_pod"}}, false},
-		{"empty allow entry", WaitAndVerifyConfig{PollAllow: []string{"gke__get_pod", ""}}, true},
+		{"allow list", WaitAndVerifyConfig{PollAllow: []string{"gke_get_pod"}}, false},
+		{"empty allow entry", WaitAndVerifyConfig{PollAllow: []string{"gke_get_pod", ""}}, true},
 		{"blank allow entry", WaitAndVerifyConfig{PollAllow: []string{"  "}}, true},
 	}
 	for _, tc := range cases {
@@ -60,7 +60,7 @@ func TestValidate_WaitAndVerifyBounds(t *testing.T) {
 func TestValidate_WaitAndVerifyEmptyAllowEntryNamesTheIndex(t *testing.T) {
 	t.Parallel()
 	c := DefaultConfig()
-	c.Tools.WaitAndVerify.PollAllow = []string{"gke__get_pod", ""}
+	c.Tools.WaitAndVerify.PollAllow = []string{"gke_get_pod", ""}
 	err := c.Validate()
 	if err == nil || !strings.Contains(err.Error(), "poll_allow[1]") {
 		t.Fatalf("Validate() = %v, want an error naming poll_allow[1]", err)
@@ -74,7 +74,7 @@ func TestWaitAndVerifyConfig_JSONRoundTrip(t *testing.T) {
 	const raw = `{
 	  "tools": {
 	    "wait_and_verify": {
-	      "poll_allow": ["gke__get_pod"],
+	      "poll_allow": ["gke_get_pod"],
 	      "max_timeout_seconds": 120,
 	      "max_attempts": 20
 	    }
@@ -85,8 +85,8 @@ func TestWaitAndVerifyConfig_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	wv := c.Tools.WaitAndVerify
-	if len(wv.PollAllow) != 1 || wv.PollAllow[0] != "gke__get_pod" {
-		t.Errorf("poll_allow = %v, want [gke__get_pod]", wv.PollAllow)
+	if len(wv.PollAllow) != 1 || wv.PollAllow[0] != "gke_get_pod" {
+		t.Errorf("poll_allow = %v, want [gke_get_pod]", wv.PollAllow)
 	}
 	if wv.MaxTimeoutSeconds != 120 || wv.MaxAttempts != 20 {
 		t.Errorf("ceilings = %d/%d, want 120/20", wv.MaxTimeoutSeconds, wv.MaxAttempts)

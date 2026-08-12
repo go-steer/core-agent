@@ -2,9 +2,11 @@
 title: Kubernetes troubleshooting agent
 ---
 
-Semi-autonomous Kubernetes triage running as `core-agent` inside your cluster. An event-watcher sidecar ([k8s-lookout](https://github.com/go-steer/k8s-lookout)'s `lookout watch`, deployed under the `k8s-event-watcher` name) streams filtered Events into per-incident sessions on the daemon; a router skill (`k8s-triage`) loads reason-specific references and drives the diagnose → fix → verify loop. In v2.6, incident summaries land in the eventlog for downstream consumption (turnkey Slack/webhook escalation lands in v2.7 via a native `alert` tool).
+Propose-only Kubernetes triage running as `core-agent` inside your cluster. An event-watcher sidecar ([k8s-lookout](https://github.com/go-steer/k8s-lookout)'s `lookout watch`, deployed under the `k8s-event-watcher` name) streams filtered Events into per-incident sessions on the daemon; a router skill (`k8s-triage`) loads reason-specific references and drives a **diagnose → verify → propose → escalate** loop. Every incident closes with a structured summary in the eventlog and, when it did not clear on its own, a page to the configured `oncall` alert target.
 
-Shipped in **v2.6**. Requires v2.4's multi-session substrate + v2.5's session-resume (both on by default in the recipe).
+The agent does not mutate the cluster, and that is a property of the configuration rather than of the prompt: the only MCP server wired in is GKE's **read-only** endpoint, `bash`/`write_file`/`edit_file`/`delete_file`/`fetch_url` are in `tools.disable`, and the daemon's KSA holds `roles/container.viewer`. There is no mutating verb in the catalog for a persona to reach for. Remediation is written into the incident summary as a proposal; a human applies it.
+
+Shipped in **v2.6**, re-scoped to propose-only in **v2.9**. Requires v2.4's multi-session substrate + v2.5's session-resume (both on by default in the recipe).
 
 Full recipe: `examples/gke-troubleshoot-agent/` in the repo. Design doc: `docs/k8s-event-agent-design.md`.
 
@@ -15,7 +17,8 @@ Full recipe: `examples/gke-troubleshoot-agent/` in the repo. Design doc: `docs/k
 ## When to use it
 
 - **You have a GKE (or any conformant Kubernetes) cluster** and want structured, auditable first-responder coverage for common failure modes without paging a human on every event.
-- **CrashLoopBackOff, ImagePullBackOff, OOMKilled, FailedMount, FailedScheduling, and probe failures cover 80% of your incidents** and you'd like the agent to handle them autonomously (with plan-first artifacts for audit) rather than posting a Slack digest for a human to act on.
+- **CrashLoopBackOff, ImagePullBackOff, OOMKilled, FailedMount, FailedScheduling, and probe failures cover 80% of your incidents** and you'd like the investigation done — evidence gathered, transients filtered out, a specific change proposed — before a human is paged, rather than paging on the raw event.
+- **You want an agent in the incident path but not in the mutation path.** This recipe's whole shape is "an agent may read anything and change nothing"; if you want autonomous remediation, this is the wrong starting point.
 - **You already run one long-lived `core-agent` daemon** (per the `examples/gke-deploy/` recipe) and want to layer an event-driven trigger on top.
 
 If none apply — you don't have K8s to triage, or you'd rather see events in your existing observability stack and page humans — skip this. The recipe adds a small sidecar container and a ClusterRole; not zero-cost.
@@ -42,11 +45,17 @@ Both talk multi-session bearer tokens; the sidecar authenticates as `sa:k8s-even
    an owned session and returns its SessionID.
 5. Sidecar POSTs /sessions/<sid>/inject with a structured JSON
    payload: {"kind":"k8s-event","reason":"CrashLoopBackOff",...}.
-6. Session's wake loop drives a turn. Agent invokes k8s-triage skill.
+6. Session's wake loop drives a turn. Agent calls record_plan — it
+   must: require_plan_artifact gates every gke MCP call, read-only
+   ones included. Then it invokes the k8s-triage skill.
 7. Skill's router loads references/CrashLoopBackOff.md.
-8. Agent diagnoses (fetches logs, checks exit code), proposes a fix
-   via record_plan, applies it via the GKE MCP, waits, verifies.
-9. Agent closes the incident with a structured summary in the eventlog.
+8. Agent diagnoses read-only (gke_get_k8s_logs, gke_describe_k8s_resource,
+   gke_list_k8s_events), then runs the reference's convergence check:
+   one wait_and_verify call polling a gke_* read tool.
+9. verified=true → RESOLVED (it cleared on its own; nothing was applied).
+   verified=false → UNRESOLVED + a proposed change from the reference's
+   remediation table + alert(target: "oncall").
+10. Agent closes the incident with a structured summary in the eventlog.
 ```
 
 Every incident gets its own session, its own audit trail, its own permission grants. Two concurrent incidents in different namespaces don't cross-contaminate.
@@ -56,22 +65,24 @@ Every incident gets its own session, its own audit trail, its own permission gra
 Triage guidance ships as **one router skill** with per-reason reference files loaded on demand via ADK's native `load_skill_resource` tool. The router owns:
 
 - Envelope framing (parse the inject payload, identify the incident triple)
+- Plan-first ordering (`record_plan` before the first MCP call)
 - Reference lookup (`load_skill_resource` with `resource_path: references/{reason}.md`)
-- Fix-and-verify loop enforcement
-- Escalation on budget exhaustion
-- Structured close-summary format
+- Convergence-check enforcement — `verified: true` is the only accepted basis for `RESOLVED`
+- Escalation on budget exhaustion, on an unmatched diagnosis, and on every non-self-healing incident
+- Structured close-summary format (Evidence / Proposal / Escalation lines)
 
 The reference files own:
 
-- Reason-specific diagnose steps
-- Common-fixes table (Symptom → Fix → Verify)
+- Reason-specific **read-only** diagnose steps, each naming the `gke_*` tool that answers it
+- A concrete `wait_and_verify(...)` convergence check for that failure mode
+- A remediation-proposal table (Evidence → Proposed change → Verify)
 - When-to-escalate guidance
 
 Shipped reference set covers the top 10 real-world failure modes:
 
 | Reason | Playbook covers |
 |---|---|
-| `CrashLoopBackOff` | Exit-code routing; log fetch; init-container timeouts; ConfigMap rollback; deployment undo |
+| `CrashLoopBackOff` | Exit-code routing; log fetch; init-container timeouts; proposals for ConfigMap rollback / deployment undo |
 | `ImagePullBackOff` / `ErrImagePull` | Registry auth; wrong tag; pull-secret misconfig; Docker Hub rate limits; GKE WI / Artifact Registry |
 | `OOMKilled` | Memory-limit tuning; JVM/Node.js heap sizing; leak vs spike detection |
 | `FailedMount` | PVC binding; StorageClass; RBAC on Secret/ConfigMap; zone mismatches; CSI driver |
@@ -87,13 +98,32 @@ Custom coverage: drop a new `references/<Reason>.md` into your overlay. Update t
 
 ## Configuration
 
-The recipe's `.agents/config.json` turns on the four features this use case needs:
+The recipe's config is where the propose-only claim is actually made true:
 
 ```json
 {
   "permissions": {
     "mode": "yolo",
     "require_plan_artifact": true
+  },
+  "tools": {
+    "disable": ["bash", "write_file", "edit_file", "delete_file", "fetch_url"],
+    "wait_and_verify": {
+      "poll_allow": [
+        "gke_get_k8s_resource", "gke_describe_k8s_resource",
+        "gke_list_k8s_events", "gke_get_k8s_rollout_status",
+        "gke_get_k8s_logs"
+      ],
+      "max_timeout_seconds": 300,
+      "max_attempts": 40
+    }
+  },
+  "alerts": {
+    "rate_limit_per_target": "10/min",
+    "targets": [
+      { "name": "oncall", "url_env": "ONCALL_WEBHOOK_URL", "template": "generic",
+        "description": "Page the on-call SRE…" }
+    ]
   },
   "attach": {
     "listen": "0.0.0.0:7777",
@@ -106,10 +136,15 @@ The recipe's `.agents/config.json` turns on the four features this use case need
 }
 ```
 
-- **`mode: yolo` + `require_plan_artifact: true`** — agent writes plans for every mutating action (audit trail) but doesn't wait for a human to approve. Right for autonomous first-responder posture.
+- **`mode: yolo` + `require_plan_artifact: true`** — a no-TTY daemon can't answer an approval prompt, so `yolo` is the only workable mode; `require_plan_artifact` is what puts a gate back. Plan-first covers MCP, so *every* `gke` call — including read-only ones — is denied until `record_plan` has run, and no cluster introspection happens before a plan is on disk. The flag is per-session and sticky, so it binds the first incident of a session; a plan per subsequent incident is convention (`AGENTS.md` + the skill's Step 0), not enforcement. Artifacts land in the ephemeral `plans` emptyDir at `/etc/core-agent/.agents/plans/plan-<seq>.md`.
+- **`tools.disable`** — removes the local ways to act on the world: the shell (absent from the distroless image anyway, but a disabled tool errors legibly instead of confusing the model), the three file-mutation tools, and `fetch_url` (arbitrary egress, including POSTs — `alert` is the sanctioned, target-allow-listed path).
+- **`tools.wait_and_verify.poll_allow`** — MCP tools never self-classify as read-only (ADK's adapter drops `readOnlyHint`), so `wait_and_verify` would refuse them all. This is the operator asserting these five `gke` reads only observe. Without it the convergence check — the only thing that can justify `RESOLVED` — is refused at every call. Names are the ones the model sees: `<server>_<tool>`, one underscore.
+- **`alerts.targets`** — the `alert` tool registers only when a target exists. `generic` is the only implemented template (a JSON POST); `slack` / `discord` / `pagerduty_events_v2` are rejected at config load. The URL comes from a Secret-backed env var and resolves at *call* time, so an unset webhook surfaces as a tool error on the first escalation, not at boot.
 - **`multi_session.enabled: true`** — each incident gets its own session.
 - **`session_idle_timeout: "6h"`** — resolved incidents evict from memory after 6h idle; sessions still resumable from disk if operators want to review.
 - **`proxy_identities`** — allows the sidecar to assert the on-call team's identity as session owner.
+
+The MCP side is one server, `gke`, pointed at `https://container.googleapis.com/mcp/read-only` with the `cloud-platform.read-only` OAuth scope, and `scripts/setup-wif.sh` binds `roles/container.viewer` rather than `roles/container.admin`. Re-pointing `mcp.json` at the full-access `/mcp` endpoint requires upgrading that IAM binding too — and puts you back to trusting the persona.
 
 ## Multi-cluster fleet
 
@@ -122,33 +157,34 @@ The recipe defaults to single-cluster (daemon + sidecar in the same cluster). To
 
 Every cluster's incidents surface in the same central daemon's session list, distinguishable by the `cluster` field.
 
-## Escalation in v2.6 (eventlog-based) — turnkey escalation ships v2.7
+## Escalation
 
-The v2.6 recipe closes every incident with a structured `INCIDENT SUMMARY: RESOLVED|UNRESOLVED|ESCALATED` block written to the eventlog. Operators consume via:
+Because the agent can't apply fixes, escalation is the normal ending for any incident that doesn't self-heal — not a fallback. It runs on two channels.
 
-- **Cloud Logging sink** filtering for `INCIDENT SUMMARY: UNRESOLVED` → Pub/Sub → Cloud Function → Slack. The GCP-native "route logs to notifications" pattern.
-- **`stern` or `kubectl logs -f`** during active development.
-- **Direct SQL** against the eventlog SQLite file for post-hoc analysis.
+**Push — the `alert` tool.** The router calls `alert(target: "oncall", level: "critical", summary: …, details: {…})` for every `UNRESOLVED` or `ESCALATED` incident. The `generic` template POSTs JSON; point `ONCALL_WEBHOOK_URL` at whatever ingests it (a Slack or Discord incoming webhook, an internal receiver, a Cloud Function that fans out to PagerDuty). The agent fires targets **by name** — there is no URL parameter — so a hallucinated destination is rejected rather than dialed, and `rate_limit_per_target` keeps an event storm from becoming a page storm.
 
-Why not a turnkey Slack MCP or webhook call in v2.6? Two independent gaps:
+**Pull — the eventlog.** Every incident also closes with a structured block:
 
-- The shipped image is **distroless** — no `bash`, no `curl`. The naïve "agent shells out to POST a webhook" pattern doesn't work.
-- Slack's official MCP requires **Streamable HTTP + OAuth 2.0**, which `pkg/mcp` doesn't support yet.
+```
+INCIDENT SUMMARY
+================
+Status: RESOLVED | UNRESOLVED | ESCALATED
+Root cause: <one line>
+Evidence: <the tool calls that support it>
+Proposal: <the change a human should apply, or "none">
+Escalation: <alert sent to oncall | not needed>
+```
 
-Both gaps are designed and tracked for v2.7:
+`RESOLVED` is reserved for the case where `wait_and_verify` observed the failure clear on its own. The agent took no action, so a resolution it didn't observe would be one it made up. Consume the eventlog via a Cloud Logging sink filtering for `INCIDENT SUMMARY`, `stern` during development, or direct SQL against the SQLite file on the PVC.
 
-- **Native `alert` tool** — config-driven webhook targets (Slack Incoming Webhook, Discord, PagerDuty Events v2, generic JSON), SSRF-safe by construction (operator pre-registers named targets), per-target rate limiting, audit through eventlog. Design: `docs/alert-tool-design.md`. Tracked: [#192](https://github.com/go-steer/core-agent/issues/192).
-- **MCP Streamable HTTP + OAuth 2.0** — enables consumption of Slack's official MCP (and other RFC 8414-compliant MCP servers as they ship). Design: `docs/mcp-oauth-design.md`. Tracked: [#190](https://github.com/go-steer/core-agent/issues/190).
-
-Once shipped, the recipe will grow an `alerts.targets[]` config section and the router will call `alert()` directly. Filed as a v2.7 recipe update.
-
-## What's not in v2.6 (other than escalation)
+## Not in scope
 
 Designed but explicitly deferred:
 
-- **`wait_and_verify(predicate, timeout, interval)` built-in tool.** For v2.6 fix-and-verify is a prompt pattern in the router. Revisit if operators report prompt-flakiness.
-- **Non-k8s signal sources** (Cloud Monitoring alerts, PagerDuty pages, generic webhooks). Same "sidecar POSTs to /inject" shape; will ship separately as parallel sidecars in v2.7+.
-- **Automatic PR generation for GitOps-flavored fixes** (Argo, Flux). The agent applies fixes directly today; a GitOps mode is v2.7+ material.
+- **Autonomous remediation.** Out of scope by design, not by omission — see the propose-only note at the top. A read-write variant means re-pointing `mcp.json` at `/mcp`, restoring `roles/container.admin`, and accepting that the safety story is back to being a prompt.
+- **Provider-shaped alert templates** (`slack`, `discord`, `pagerduty_events_v2`). Designed in `docs/alert-tool-design.md`; rejected at config load until they ship. Use `generic` plus a receiver that fans out.
+- **Non-k8s signal sources** (Cloud Monitoring alerts, PagerDuty pages, generic webhooks). Same "sidecar POSTs to /inject" shape; parallel sidecars.
+- **Automatic PR generation for GitOps-flavored fixes** (Argo, Flux). The natural next step for a propose-only agent: the proposal becomes a pull request instead of a summary line.
 - **Multi-cluster fleet coordinator** with unified session queries across N daemons. This is AX-integration territory.
 
 ## Recipe

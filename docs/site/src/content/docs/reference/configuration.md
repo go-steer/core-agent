@@ -609,7 +609,7 @@ The `--disable-tools=bash,write_file` CLI flag composes with this list by union 
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `poll_allow` | string[] | `[]` | Tools that may be polled despite not being classified read-only by the runtime. Use the name the **model** sees, i.e. namespaced for MCP (`gke__get_pod`, not `get_pod`). |
+| `poll_allow` | string[] | `[]` | Tools that may be polled despite not being classified read-only by the runtime. Use the name the **model** sees, i.e. namespaced for MCP: `<server>_<tool>`, joined by a **single** underscore (`gke_get_pod`, not `gke__get_pod` or `get_pod`). A name that matches nothing is not an error — the poll is simply refused at call time. |
 | `max_timeout_seconds` | int | `300` | Ceiling on the tool's `timeout_seconds` argument. A larger request is an error, not a silent clamp. |
 | `max_attempts` | int | `60` | Ceiling on the tool's `max_attempts` argument. |
 
@@ -619,7 +619,7 @@ The `--disable-tools=bash,write_file` CLI flag composes with this list by union 
 {
   "tools": {
     "wait_and_verify": {
-      "poll_allow": ["gke__get_pod", "gke__list_events"],
+      "poll_allow": ["gke_get_pod", "gke_list_events"],
       "max_timeout_seconds": 300,
       "max_attempts": 60
     }

@@ -5,10 +5,33 @@
     "provider": "vertex"
   },
   "permissions": {
-    "mode": "yolo"
+    "mode": "yolo",
+    "require_plan_artifact": true
   },
   "tools": {
-    "disable": ["bash"]
+    "disable": ["bash", "write_file", "edit_file", "delete_file", "fetch_url"],
+    "wait_and_verify": {
+      "poll_allow": [
+        "gke_get_k8s_resource",
+        "gke_describe_k8s_resource",
+        "gke_list_k8s_events",
+        "gke_get_k8s_rollout_status",
+        "gke_get_k8s_logs"
+      ],
+      "max_timeout_seconds": 300,
+      "max_attempts": 40
+    }
+  },
+  "alerts": {
+    "rate_limit_per_target": "10/min",
+    "targets": [
+      {
+        "name": "oncall",
+        "url_env": "ONCALL_WEBHOOK_URL",
+        "template": "generic",
+        "description": "Page the on-call SRE. Fire this for every UNRESOLVED or ESCALATED incident: the agent is propose-only, so a human has to apply the fix."
+      }
+    ]
   },
   "attach": {
     "listen": "0.0.0.0:7777",

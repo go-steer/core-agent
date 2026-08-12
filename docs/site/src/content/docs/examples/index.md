@@ -116,7 +116,7 @@ core-agent as a long-lived Cloud Run service: IAM-gated HTTPS, Vertex runtime se
 
 ### [`gke-troubleshoot-agent`](https://github.com/go-steer/core-agent/tree/main/examples/gke-troubleshoot-agent)
 
-Event-driven K8s triage: the daemon plus the event-watcher sidecar and a triage skill. The watcher ships from [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout) (`ghcr.io/go-steer/lookout`), drop-in with this recipe's manifests.
+Event-driven, **propose-only** K8s triage: the daemon plus the event-watcher sidecar and a triage skill that diagnoses through GKE's read-only MCP endpoint, verifies with `wait_and_verify`, proposes a fix, and pages on-call. It cannot mutate the cluster — enforced by the read-only endpoint, `tools.disable`, and `roles/container.viewer`, not by the persona. The watcher ships from [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout) (`ghcr.io/go-steer/lookout`), drop-in with this recipe's manifests.
 
 ## Testing & debugging
 

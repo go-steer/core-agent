@@ -9,34 +9,56 @@ Unhealthy events before firing so probe flapping doesn't drown triage.
 - Max turns: 6
 - Max wall time: 8 min
 
-## Diagnose
+## Diagnose (read-only)
 
 1. Get the pod's probe definitions:
-   `kubectl -n {namespace} get pod {name} -o jsonpath='{.spec.containers[?(@.name=="{container}")].livenessProbe}{.spec.containers[?(@.name=="{container}")].readinessProbe}{.spec.containers[?(@.name=="{container}")].startupProbe}'`
+   `gke_get_k8s_resource` (kind `Pod`) →
+   `spec.containers[?(@.name=="{container}")].livenessProbe` /
+   `.readinessProbe` / `.startupProbe`.
 
-2. Identify WHICH probe is failing from the events:
-   `kubectl -n {namespace} describe pod {name}` — Events section says e.g. `Liveness probe failed: HTTP probe failed with statuscode: 500`.
+2. Identify WHICH probe is failing:
+   `gke_list_k8s_events` scoped to `{namespace}` / `{name}` — the message
+   says e.g. `Liveness probe failed: HTTP probe failed with statuscode: 500`.
 
-3. Test the probe manually:
-   - HTTP: `kubectl -n {namespace} exec {name} -c {container} -- wget -qO- --timeout=2 http://localhost:<port><path>`
-   - TCP: `kubectl -n {namespace} exec {name} -c {container} -- nc -zv localhost <port>`
-   - exec: reproduce the exec command inline: `kubectl -n {namespace} exec {name} -c {container} -- <cmd>`
+3. See what the app says about it:
+   `gke_get_k8s_logs` for the container around the probe failures. A
+   probe returning 500 usually leaves a matching request log.
 
-4. Distinguish transient (once every N minutes) from persistent (every probe fails):
-   `kubectl -n {namespace} get events --field-selector involvedObject.name={name},reason=Unhealthy --sort-by='.lastTimestamp'`
+   You cannot exec into the container to reproduce the probe — no shell,
+   no exec tool. Reason from the probe spec, the event message and the
+   logs, and say so rather than implying you ran the probe yourself.
 
-## Common fixes
+4. Transient or persistent? Compare the event `count` and first/last
+   timestamps from step 2: every-probe failures and once-per-N-minutes
+   failures have different fixes.
 
-| Symptom | Fix | Verify (interval → check) |
+## Convergence check
+
+Probe failures during a slow start are the common false alarm — the pod
+becomes `Ready` a minute later on its own:
+
+```
+wait_and_verify(
+  tool:            "gke_get_k8s_resource",
+  args_json:       "{\"kind\": \"Pod\", \"namespace\": \"{namespace}\", \"name\": \"{name}\"}",
+  expect_jq:       "[.status.conditions[]? | select(.type == \"Ready\") | .status] | index(\"True\") != null",
+  interval_seconds: 15,
+  timeout_seconds: 180
+)
+```
+
+## Remediation proposals
+
+| Evidence | Proposed change | Verify (interval → check) |
 |---|---|---|
-| App is slow to start; startup probe timing out | Add / extend `startupProbe.failureThreshold` or `initialDelaySeconds`. Startup probes disable liveness/readiness until they pass — the right primitive for "container needs 90s to warm up." | 3m → pod Ready + no new Unhealthy events |
-| App has a real bug (probe endpoint returns 500) | Chain to `references/CrashLoopBackOff.md` — treat as application failure; the fix is a rollback or code change. | See CrashLoopBackOff. |
-| Probe misconfigured (wrong path, wrong port) | `kubectl edit deployment <controller>` → fix `livenessProbe.httpGet.path` or `port`. | 2m → probes pass |
-| Timeout too aggressive (`timeoutSeconds: 1` on a service that takes 800ms) | Raise `timeoutSeconds` to 3–5s. | 3m → no new Unhealthy events |
-| Downstream dependency is slow (probe hits an /health endpoint that depends on a DB) | Fix the dependency OR make the probe local-only (don't require deps to be healthy for liveness). Better probe design: readiness gates on deps, liveness only on process life. | 5m → probes stabilize |
+| App is slow to start; startup probe times out | Add or extend `startupProbe.failureThreshold` / `initialDelaySeconds` on `<controller>`. Startup probes suspend liveness/readiness until they pass — the right primitive for "needs 90s to warm up" | 3m → pod `Ready`, no new Unhealthy events |
+| Probe endpoint returns 500 (real app bug) | Chain to `references/CrashLoopBackOff.md` — treat it as an application failure; the change is a rollback or a code fix | See CrashLoopBackOff |
+| Probe misconfigured (wrong path or port vs. the container's actual listener) | Correct `livenessProbe.httpGet.path` / `.port` on `<controller>`; quote the port the container spec actually exposes | 2m → probes pass |
+| Timeout too aggressive (`timeoutSeconds: 1` against a ~800ms endpoint) | Raise `timeoutSeconds` to 3–5s | 3m → no new Unhealthy events |
+| Probe depends on a downstream service | Make liveness local-only (process life) and let readiness gate on dependencies; name both probes' current definitions | 5m → probes stabilize |
 
 ## When to escalate
 
-- Real application bug (probe endpoint is correct but the app can't serve it). Escalate to app team.
-- Probe is testing a real dependency that's down (chain investigation upstream).
-- Cluster-wide network issue causing probes to timeout for many pods (chain to `NetworkNotReady.md`).
+- Real application bug (the probe is correct but the app can't serve it). Escalate to the app team with the failing status code and log lines.
+- The probe tests a dependency that is itself down (chain the investigation upstream, then escalate).
+- Cluster-wide probe timeouts across many pods (chain to `NetworkNotReady.md`).

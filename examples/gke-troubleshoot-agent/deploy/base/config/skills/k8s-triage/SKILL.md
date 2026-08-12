@@ -3,8 +3,8 @@ name: k8s-triage
 description: |
   Handle a Kubernetes event inject shaped like
   {"kind": "k8s-event", "reason": "<Reason>", "namespace": "...", ...}.
-  Loads the reason-specific reference and drives the diagnose → fix
-  → verify loop for any k8s failure mode. Falls back to a generic
+  Loads the reason-specific reference and drives the diagnose → verify
+  → propose loop for any k8s failure mode. Falls back to a generic
   playbook (references/_fallback.md) for unknown reasons.
 ---
 
@@ -31,9 +31,20 @@ sidecar. The message body is a JSON payload with these fields:
 }
 ```
 
-Follow the four steps below **in order**. Do NOT skip to fixing before
-diagnosing; do NOT apply a fix without composing a `record_plan` when
-plan-first is enabled.
+Follow the four steps below **in order**. You have a read-only tool
+surface: the loop is diagnose → verify → propose, and the proposal is
+the deliverable a human or a pipeline applies.
+
+## Step 0 — record the plan first (or every MCP call is denied)
+
+This daemon runs with `require_plan_artifact: true`. Plan-first gating
+covers **MCP tools too**, not just writes — so `gke_get_k8s_resource`
+is denied until `record_plan` has been called once in the session.
+Once — the flag is sticky, so later incidents in the same session are
+not gated. Record one anyway: one plan artifact per incident is what
+makes the audit trail readable. AGENTS.md step 1 already has you doing
+this; if you reach a "plan required" error, call `record_plan` and
+continue. Do not treat it as a permission problem to report.
 
 ## Step 1 — load the reference
 
@@ -47,72 +58,100 @@ or custom reasons with generic k8s troubleshooting guidance.
 
 ## Step 2 — follow the reference
 
-Each reference has three sections in this order:
+Each reference has four sections in this order:
 
 1. **Budget** — max turns and wall-time budget for this incident. Track
-   it as you work. If you exceed budget without resolution, jump to
+   it as you work. If you exceed budget without a conclusion, jump to
    Step 4 (Close).
-2. **Diagnose** — a numbered list of checks. Run them all before
-   proposing any fix. If a step points to another reference
-   (e.g. "chain to `references/OOMKilled.md`"), load that file via
-   `load_skill_resource` and continue from its Diagnose section.
-3. **Common fixes** — a table of Symptom → Fix → Verify. Match the
-   diagnosis to a row; if no row matches, escalate rather than
-   guess.
+2. **Diagnose (read-only)** — a numbered list of checks, each naming the
+   `gke` MCP tool that answers it. Run them all before concluding
+   anything. If a step points to another reference (e.g. "chain to
+   `references/OOMKilled.md`"), load that file via `load_skill_resource`
+   and continue from its Diagnose section.
+3. **Convergence check** — the `wait_and_verify` call that decides
+   RESOLVED vs UNRESOLVED. See Step 3.
+4. **Remediation proposals** — a table of Evidence → Proposed change →
+   Verify. Match your diagnosis to a row; if no row matches, escalate
+   rather than guess. The Fix column is something you *write down*, not
+   something you apply.
 
-## Step 3 — fix-and-verify
+## Step 3 — verify before you conclude
 
-Before applying ANY mutating action:
+Some failures clear on their own: a registry blip ends, a node comes
+back, a rollout that was already in flight finishes. You cannot tell
+that apart from a hard failure without looking twice — so look twice,
+with one tool call:
 
-1. If the session has `require_plan_artifact: true` (check the mode via
-   `/mode` if unsure), call `record_plan` with:
-   - What you observed
-   - What fix you propose
-   - The verify criterion (from the reference table's Verify column)
-   - Rollback plan if verify fails
-2. Apply the fix (via the GKE MCP: `apply_manifest`, `patch_resource`,
-   `scale_deployment`, `rollout_undo`, etc.; or via `bash` +
-   `kubectl` if the MCP tool for that action doesn't exist).
-3. Wait for the fix to take effect with the `wait_and_verify` tool —
-   never with `bash sleep`, which this recipe's container has no shell
-   for. The reference row's Verify column reads `interval → check`,
-   which is exactly one call:
+```
+wait_and_verify(
+  tool:             "<a read-only tool from the reference's Verify column>",
+  args_json:        "{\"namespace\": \"...\", \"name\": \"...\"}",
+  expect_contains:  "<the string the check looks for>",
+  interval_seconds: 15,
+  timeout_seconds:  <the row's interval, in seconds>
+)
+```
 
-   ```
-   wait_and_verify(
-     tool:             "<the read-only tool that shows the check>",
-     args_json:        "{\"namespace\": \"...\", \"name\": \"...\"}",
-     expect_contains:  "<the string the check looks for>",
-     interval_seconds: 15,
-     timeout_seconds:  <the row's interval, in seconds>
-   )
-   ```
+The reference row's Verify column reads `interval → check`, which is
+exactly the two arguments above. The whole poll loop comes back as ONE
+tool result — attempts, elapsed time, and the last observation — so
+waiting three minutes costs one turn instead of one turn per look. Use
+`expect_jq` when the check is structural rather than a substring (e.g.
+`.status.phase == "Running"`).
 
-   The whole poll loop comes back as ONE tool result — attempts,
-   elapsed time, and the last observation — so waiting three minutes
-   costs one turn instead of one turn per look. Use `expect_jq` when
-   the check is structural rather than a substring (e.g.
-   `.status.phase == "Running"`).
+Rules for this step:
 
-   `wait_and_verify` refuses to poll anything it can't classify as
-   read-only, so it can never re-apply a fix in a loop. MCP servers
-   don't advertise that classification, so the operator must name the
-   pollable MCP tools in `tools.wait_and_verify.poll_allow`; if the
-   tool you need isn't there, ask for it rather than looping by hand.
-4. Re-run the Diagnose section from Step 2. Note which checks now pass.
-5. Decision:
-   - **All Diagnose checks pass** → Step 4 (Close, resolved).
-   - **Original checks pass but new events fired** → repeat Diagnose;
-     may indicate a cascade; may need to chain to another reference.
-   - **Still failing after 2 attempts** → revert the fix if possible
-     (`rollout_undo`, restore prior ConfigMap revision, etc.), then
-     jump to Step 4 (Close, unresolved).
+- **`verified: true` is the ONLY basis for `RESOLVED`.** The result
+  object is your evidence; quote its `attempts` / `elapsed_seconds` in
+  the summary.
+- **`verified: false` is a finding, not a failure.** It means "I watched
+  for N seconds and it did not converge" — exactly what an UNRESOLVED
+  incident needs to be credible. Include the last observation.
+- `wait_and_verify` refuses to poll anything it can't classify as
+  read-only, so it can never re-apply anything in a loop. MCP servers
+  don't advertise that classification, so the operator names the
+  pollable MCP tools in `tools.wait_and_verify.poll_allow`; this recipe
+  registers the five `gke` read tools. If the tool you need isn't
+  there, say so in the summary rather than looping by hand.
 
 ## Step 4 — close the incident
 
-Post a structured summary as your final message. Use this template
-verbatim so downstream tooling (Cloud Logging filters, future alert
-tool, future ticket MCPs) can parse it:
+Decide the status from the evidence you actually have:
+
+| Status | When |
+|---|---|
+| `RESOLVED` | `wait_and_verify` observed the failure clear. Nothing to apply. |
+| `UNRESOLVED` | It did not clear, and you have a concrete proposal from the reference table. |
+| `ESCALATED` | It did not clear and no row matched, or the fix is out of scope (infra, data-loss risk, cluster-wide). |
+
+**For UNRESOLVED and ESCALATED, call `alert` before you write the
+summary** — the eventlog is an audit trail, not a page:
+
+```
+alert(
+  target:  "oncall",
+  level:   "critical",        // "warning" for a degraded-but-serving workload
+  summary: "<reason> in <namespace>/<name> — <one line>",
+  details: {
+    "cluster":   "<cluster>",
+    "namespace": "<namespace>",
+    "name":      "<name>",
+    "uid":       "<uid>",
+    "reason":    "<reason>",
+    "status":    "UNRESOLVED",
+    "proposal":  "<the exact change you propose>",
+    "evidence":  "<what wait_and_verify observed>",
+    "session":   "<the /sessions/<sid> URL>"
+  }
+)
+```
+
+If the `alert` call fails (unset webhook, target refused), say so in the
+summary — a silent escalation failure is the worst outcome here.
+
+Then post the structured summary as your final message. Use this
+template verbatim so downstream tooling (Cloud Logging filters, ticket
+MCPs) can parse it:
 
 ```
 INCIDENT SUMMARY
@@ -123,37 +162,36 @@ Reason: {reason}
 Cluster: {cluster}
 Reference used: references/{reason}.md
 Root cause: <one line>
-Actions taken:
-  1. <action>  → <outcome>
-  2. <action>  → <outcome>
+Evidence:
+  1. <tool call>  → <what it showed>
+  2. wait_and_verify(<tool>, <condition>) → verified=<bool> after <n> attempts / <s>s
+Proposal: <the exact change a human should apply, or "none — resolved" / "none — escalated">
+Escalation: alert(oncall) sent | not sent (<why>)
 Final state: <one line — pod state, deployment status, or similar>
 Session URL: <the /sessions/<sid> URL a human operator can attach to>
 ```
 
-**Escalation in v2.6 (eventlog-based):** the summary IS the escalation.
-The eventlog block above is picked up by whatever downstream consumer
-the operator has wired (Cloud Logging sink filtering for
-`INCIDENT SUMMARY: UNRESOLVED`, `stern | grep` during dev, etc.).
-No MCP call to make from the skill.
+For UNRESOLVED / ESCALATED incidents, include EXTRA detail beyond the
+summary block:
 
-For UNRESOLVED / ESCALATED incidents, include EXTRA detail in your
-final message beyond the summary block above:
-- What was tried (verbose — every command + response).
-- What you'd try next if you had more budget / permissions.
+- What you checked (every tool call + what it returned).
+- What you'd check next if you had more budget.
 - Any suspected root cause you couldn't confirm.
-
-A native `alert` tool for turnkey Slack/PagerDuty/webhook escalation
-ships in v2.7 (design: `docs/alert-tool-design.md`). Once available,
-this skill will grow a step calling `alert(target: ..., level: ...)`
-before the eventlog summary. For now: eventlog only.
 
 ## Meta
 
-- **Never invent tool names.** If a reference names an MCP tool
-  you don't see in `/mcp`, degrade gracefully to `bash` + `kubectl`.
-- **Cluster scope.** The payload's `cluster` field is authoritative.
-  If the current MCP context doesn't match, switch context via
-  `gcloud container clusters get-credentials` before acting.
+- **Never invent tool names.** If a reference names a tool you don't see
+  in your registered toolset, use the closest read tool you do have; if
+  none covers the check, report that step as unavailable. There is no
+  shell to fall back to.
+- **Never claim an action you cannot take.** This agent has no write
+  path to the cluster. "Restarted the pod", "applied the patch",
+  "rolled back the deployment" are all false here — write them as
+  proposals.
+- **Cluster scope.** The payload's `cluster` field is authoritative and
+  must match the cluster named in AGENTS.md. If it doesn't, escalate:
+  you cannot switch context, and acting on the wrong cluster's data is
+  worse than not acting.
 - **Don't chase symptoms across pods.** A `CrashLoopBackOff` in pod A
   and a `FailedMount` in pod B are two incidents. Focus on the
   incident triple in the payload.

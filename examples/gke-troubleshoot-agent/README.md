@@ -1,10 +1,19 @@
 # GKE troubleshooting agent recipe
 
-Semi-autonomous Kubernetes triage agent for GKE. Runs `core-agent` as
+Propose-only Kubernetes triage agent for GKE. Runs `core-agent` as
 a long-lived daemon in your cluster, watches Kubernetes Events via a
 sidecar (k8s-lookout's `lookout watch`, deployed under the
 `k8s-event-watcher` name), and drives per-incident investigations
 using structured triage skills backed by the GKE MCP server.
+
+**The agent diagnoses, verifies, proposes, and escalates. It never
+mutates your cluster** — and that isn't a persona instruction, it's
+the configuration: the only MCP server wired in is the *read-only*
+GKE endpoint, `bash`/`write_file`/`edit_file`/`delete_file`/`fetch_url`
+are in `tools.disable`, and the KSA is bound to `roles/container.viewer`.
+There is no mutating verb anywhere in the daemon's tool catalog for a
+persona to talk itself into using. Remediation lands in the incident
+summary as a proposal, and a human applies it.
 
 This recipe layers on top of `../gke-deploy/` — the multi-session
 substrate and session-resume features that ship in v2.4 + v2.5. Read
@@ -33,13 +42,26 @@ apply here too.
    references (CrashLoopBackOff, ImagePullBackOff, OOMKilled,
    FailedMount, FailedScheduling, BackOff, Unhealthy,
    NetworkNotReady, NodeNotReady, Evicted) and drives the
-   diagnose → fix → verify loop.
+   diagnose → verify → propose → escalate loop.
 4. Full RBAC + IAM guidance (least-privilege ClusterRole for the
    watcher; documented GCP IAM roles for the daemon).
-5. GKE MCP server wired into `mcp.json` at `container.googleapis.com/mcp`
-   (full-access endpoint — the agent needs write for `rollout undo`,
-   `set image`, etc. gated by plan-first). Auth is `google_oauth`
-   using the daemon's KSA with the IAM bindings from setup step 3.
+5. GKE MCP server wired into `mcp.json` at
+   `container.googleapis.com/mcp/read-only` — the read-only endpoint,
+   so the mutating verbs are never exposed to the model in the first
+   place. Auth is `google_oauth` using the daemon's KSA with the IAM
+   bindings from setup step 4.
+6. Escalation via the native `alert` tool: one `oncall` target reading
+   its webhook URL from `ONCALL_WEBHOOK_URL`, rate-limited to 10/min.
+7. Plan-first enforcement (`require_plan_artifact: true`). Every `gke`
+   MCP call — including read-only ones — is denied until the agent has
+   called `record_plan`, so no cluster introspection happens before a
+   written plan exists. Scope caveat: the gate flag is **per session and
+   sticky**, so it binds the first incident of a session; subsequent
+   injects into the same session are unblocked and the per-incident plan
+   is convention (AGENTS.md + the skill's Step 0), not enforcement.
+   Artifacts land in the `plans` emptyDir at
+   `/etc/core-agent/.agents/plans/plan-<seq>.md` — ephemeral, read them
+   with `kubectl exec` or off the eventlog, not off the PVC.
 
 ## The end-to-end flow
 
@@ -55,29 +77,40 @@ apply here too.
                                      │    core-agent      │
                                      │  (daemon pod)      │
                                      │  ┌──────────────┐  │
-                                     │  │ k8s-triage   │  │
-                                     │  │   skill      │──┼──► GKE MCP
-                                     │  │  (router)    │  │    (diagnose + fix)
+                                     │  │ k8s-triage   │  │    GKE MCP
+                                     │  │   skill      │──┼──► /mcp/read-only
+                                     │  │  (router)    │  │    (diagnose only)
                                      │  └──────────────┘  │
                                      └────────────────────┘
                                                │
-                                               ▼ resolve or escalate
-                                     ┌────────────────────┐
-                                     │  eventlog (SQLite) │  ← v2.6 escalation
-                                     │  INCIDENT SUMMARY  │    path (tail via
-                                     │  blocks            │    Cloud Logging /
-                                     │                    │    stern for alerts;
-                                     │  Native alert tool │    turnkey escalation
-                                     │  → v2.7 (#192)     │    lands in v2.7)
-                                     └────────────────────┘
+                             ┌─────────────────┴────────────────┐
+                             ▼                                  ▼
+                   ┌────────────────────┐          ┌────────────────────┐
+                   │  eventlog (SQLite) │          │  alert tool        │
+                   │  INCIDENT SUMMARY  │          │  target: oncall    │
+                   │  + proposed fix    │          │  → ONCALL_WEBHOOK  │
+                   │  (audit trail)     │          │    _URL (10/min)   │
+                   └────────────────────┘          └────────────────────┘
+                                                              │
+                                                              ▼
+                                                    a human applies
+                                                    the proposed fix
 ```
 
 Every incident → one session → one audit trail. When the sidecar
 fires an inject, the daemon creates a per-incident session (via
 `POST /sessions` with `X-Asserted-Caller: sre-oncall@example.com`),
-the agent invokes the `k8s-triage` skill, the skill loads the
-reason-specific reference and executes it. Fix-and-verify is
-mandatory. On budget exhaustion the agent escalates.
+the agent calls `record_plan` (mandatory — plan-first gates every MCP
+call), invokes the `k8s-triage` skill, and the skill loads the
+reason-specific reference and executes it.
+
+Each reference ends the same way: a **convergence check** and a
+**remediation proposal**. The convergence check is a real
+`wait_and_verify` call against a `gke_*` read tool — that observation
+is the *only* thing that can produce `Status: RESOLVED`. If the
+failure hasn't cleared, the agent writes `UNRESOLVED` with a concrete
+proposal a human can apply, and fires `alert(target: "oncall", ...)`.
+Budget exhaustion escalates the same way.
 
 ## Prerequisites
 
@@ -136,6 +169,29 @@ chmod 0600 ~/.core-agent/sre-oncall.token
 rm /tmp/users.json
 ```
 
+Then the escalation webhook. `config.json` declares one alert target,
+`oncall`, whose URL comes from `ONCALL_WEBHOOK_URL`; the daemon reads
+it from an optional `core-agent-alerts` Secret:
+
+```bash
+kubectl -n agent-triage create secret generic core-agent-alerts \
+    --from-literal=ONCALL_WEBHOOK_URL='https://hooks.example.com/services/XXX'
+```
+
+The Secret is `optional: true` in the Deployment, so the pod still
+boots without it — but the target's URL is resolved at **call** time,
+so a missing value surfaces as a tool error the first time the agent
+tries to escalate (`alert: target "oncall": url_env
+"ONCALL_WEBHOOK_URL" is unset or empty`), not at startup. If you
+genuinely don't want escalation, delete the `alerts` block from
+`config.json` instead of leaving the URL unset — that unregisters the
+tool cleanly.
+
+The target uses the `generic` template: a JSON POST any webhook
+receiver can consume. `generic` is the only template the alert tool
+currently implements; provider-shaped payloads (Slack, PagerDuty
+Events v2) are rejected at config load.
+
 ### 3. Verify cluster + node-pool WIF (Standard clusters only)
 
 **Autopilot clusters**: WIF is on by default and every node pool uses
@@ -181,14 +237,23 @@ for Autopilot.)
 
 ### 4. Enable APIs + bind IAM roles for the daemon's KSA
 
-`scripts/setup-wif.sh` automates both. It enables the three GCP APIs
-the recipe needs and binds the four IAM roles that let the daemon:
+`scripts/setup-wif.sh` automates both. It enables the GCP APIs the
+recipe needs and binds the IAM roles that let the daemon:
 
 - Call Gemini via Vertex AI (`roles/aiplatform.user`)
 - Call GKE MCP tools (`roles/mcp.toolUser`)
-- Administer GKE clusters + workloads via the MCP (`roles/container.admin`)
+- **Read** GKE clusters + workloads via the MCP (`roles/container.viewer`)
 - Impersonate the node service account, which the GKE MCP's server-side
   chain requires (`roles/iam.serviceAccountUser` on the node SA)
+
+`container.viewer` — not `container.admin` — is the least-privilege
+grant that matches the read-only MCP endpoint this recipe wires. It is
+the outermost of the three layers that make "propose-only" true:
+IAM can't authorize a mutation, the read-only endpoint doesn't expose
+one, and `tools.disable` removes the local escape hatches. If you
+re-point `config/mcp.json` at the full-access `/mcp` endpoint, you must
+upgrade this binding to `roles/container.admin` — and you're back to
+trusting the persona.
 
 ```bash
 # Simplest — reads PROJECT_ID from your active gcloud config, uses recipe defaults.
@@ -207,7 +272,7 @@ DRY_RUN=true ./scripts/setup-wif.sh
 **Missing any one of the four roles gives a 403 at runtime with no
 clear indication of which is missing** — that's why the script binds
 all four together. `mcp.toolUser` alone doesn't work without
-`container.admin`; either project role alone doesn't work without the
+`container.viewer`; either project role alone doesn't work without the
 `iam.serviceAccountUser`-on-node-SA binding.
 
 <details>
@@ -229,7 +294,7 @@ gcloud services enable container.googleapis.com aiplatform.googleapis.com iamcre
     --project="${PROJECT_ID}"
 
 # Project-scoped role bindings
-for role in roles/aiplatform.user roles/mcp.toolUser roles/container.admin; do
+for role in roles/aiplatform.user roles/mcp.toolUser roles/container.viewer; do
   gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
       --member="${KSA_PRINCIPAL}" \
       --role="${role}" \
@@ -307,13 +372,22 @@ investigating. In your TUI you should see:
 
 1. A new session appear in the picker (namespace: triage-test,
    pod: test-crash-*, reason: CrashLoopBackOff).
-2. The agent invoking `k8s-triage` skill.
-3. The router calling `load_skill_resource` for
-   `references/CrashLoopBackOff.md`.
-4. The agent diagnosing (exit code 1, no stack trace, etc.) and
-   proposing a fix via `record_plan`.
-5. The agent applying the fix (or, if it decides the failure is
-   irrecoverable, posting a structured summary to the eventlog).
+2. The agent calling `record_plan` first — before any MCP call, which
+   plan-first would otherwise deny.
+3. The agent invoking the `k8s-triage` skill, and the router calling
+   `load_skill_resource` for `references/CrashLoopBackOff.md`.
+4. Read-only diagnosis: `gke_get_k8s_resource`, `gke_get_k8s_logs`
+   (previous container), `gke_list_k8s_events` — exit code 1, no
+   stack trace, restart count climbing.
+5. A `wait_and_verify` convergence check that does *not* pass (this
+   pod never recovers), followed by an `INCIDENT SUMMARY` with
+   `Status: UNRESOLVED`, a proposed fix, and an `alert` call to the
+   `oncall` target.
+
+Note step 5: `sh -c 'exit 1'` cannot self-heal, so a correct run here
+is `UNRESOLVED` + a proposal. If you ever see `RESOLVED` for this pod,
+that's a confabulation bug worth filing — `RESOLVED` is only legitimate
+when a `wait_and_verify` call actually observed the failure clear.
 
 Cleanup:
 
@@ -358,23 +432,36 @@ Every cluster's incidents surface in the same central daemon's
 session list, distinguishable by the `cluster` field. One TUI,
 one audit trail, one on-call rotation.
 
-## Escalation in v2.6 (eventlog-based)
+## Escalation
 
-Turnkey escalation (Slack/PagerDuty/webhook fire-and-forget) is
-**deferred to v2.7**. The distroless image ships with no `bash`
-or `curl`, so the naïve "agent shells out to POST a webhook"
-pattern doesn't work; a native, config-driven `alert` tool that
-fits distroless is designed at
-[`docs/alert-tool-design.md`](../../docs/alert-tool-design.md)
-and tracked at [#192](https://github.com/go-steer/core-agent/issues/192).
-Slack's official MCP consumption (Streamable HTTP + OAuth 2.0)
-is designed at
-[`docs/mcp-oauth-design.md`](../../docs/mcp-oauth-design.md) and
-tracked at [#190](https://github.com/go-steer/core-agent/issues/190).
-Both ship in v2.7.
+Because the agent can't apply fixes, escalation isn't a fallback path
+— it's the normal ending for any incident that doesn't self-heal.
+It happens on two channels at once.
 
-**Meanwhile, in v2.6**, the router closes every incident with a
-structured `INCIDENT SUMMARY` block written to the eventlog:
+**1. The `alert` tool (push).** `config.json` declares:
+
+```json
+"alerts": {
+  "rate_limit_per_target": "10/min",
+  "targets": [
+    { "name": "oncall", "url_env": "ONCALL_WEBHOOK_URL", "template": "generic",
+      "description": "Page the on-call SRE. ..." }
+  ]
+}
+```
+
+The router calls `alert(target: "oncall", level: "critical", summary:
+..., details: {...})` for every `UNRESOLVED` or `ESCALATED` incident.
+The `generic` template POSTs a JSON body — point `ONCALL_WEBHOOK_URL`
+at whatever ingests it (a Slack/Discord incoming webhook, an internal
+receiver, a Cloud Function that fans out to PagerDuty). The
+provider-specific templates named in the alert-tool design are *not*
+implemented; `slack`, `discord`, and `pagerduty_events_v2` are
+rejected at config load. Rate limiting is per target, so an event
+storm can't turn into a page storm.
+
+**2. The eventlog (pull / audit).** Every incident also closes with a
+structured `INCIDENT SUMMARY` block:
 
 ```
 INCIDENT SUMMARY
@@ -384,23 +471,30 @@ Incident: {namespace}/{name} ({uid})
 Reason: {reason}
 Cluster: {cluster}
 Root cause: <one line>
-Actions taken: 1. ... 2. ...
+Evidence: <the tool calls that support it>
+Proposal: <the change a human should apply, or "none">
+Escalation: <alert sent to oncall | not needed>
 Final state: <one line>
 ```
 
-Consume via any of:
+`Status: RESOLVED` is reserved for the case where a `wait_and_verify`
+call observed the failure clear on its own — the agent took no action,
+so a resolution it didn't verify is a resolution it made up.
+
+Consume the eventlog via any of:
 
 - **Cloud Logging sink** (GKE default: kubelet forwards pod stderr
   to Cloud Logging). Filter for `jsonPayload.message =~ "INCIDENT
-  SUMMARY"` and route to Pub/Sub → Cloud Function → Slack.
+  SUMMARY"` and route to Pub/Sub → Cloud Function → your tracker.
 - **`stern` or `kubectl logs -f`** during active triage development.
-- **Direct SQL** against the eventlog SQLite file (via
-  `kubectl exec` into the daemon pod, or by SSH'ing to the PVC).
+- **Direct SQL** against the eventlog SQLite file on the PVC (via
+  `kubectl exec` into the daemon pod).
 
-Once the alert tool ships in v2.7, the recipe will grow an
-`alerts.targets[]` config section and the router will call
-`alert()` directly — no eventlog scraping required. Filed as a
-follow-up recipe update in the v2.7 milestone.
+Slack's official MCP consumption (Streamable HTTP + OAuth 2.0) is
+designed at [`docs/mcp-oauth-design.md`](../../docs/mcp-oauth-design.md)
+and tracked at [#190](https://github.com/go-steer/core-agent/issues/190);
+wiring it here would add a second MCP server, which this recipe
+deliberately doesn't do.
 
 ## Customizing coverage
 

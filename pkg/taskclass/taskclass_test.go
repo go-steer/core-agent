@@ -15,6 +15,7 @@
 package taskclass_test
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/go-steer/core-agent/v2/pkg/taskclass"
@@ -113,6 +114,57 @@ func TestProfileThresholds_DesignDocTable(t *testing.T) {
 				t.Errorf("Resolve(%q).CompactionThreshold = %v, want %v", tc.class, p.CompactionThreshold, tc.want)
 			}
 		})
+	}
+}
+
+// The #160 half of the profile table: which classes drop tools and
+// which require a recorded plan. Same contract as the tier and
+// threshold tables above — changing a row here changes what every
+// --task=<x> user is allowed to do, so it has to be deliberate.
+func TestProfileToolsAndPlanFirst_DesignDocTable(t *testing.T) {
+	cases := []struct {
+		class     string
+		disable   []string
+		planFirst bool
+	}{
+		// Investigation-shaped: the model reads, thinks, then
+		// proposes. bash is the tool it provably picks wrong here
+		// (bash-as-grep, 15/27 in the measured session), and a
+		// recorded plan is the discipline that session was missing.
+		{"debug", []string{"bash"}, true},
+		{"research", []string{"bash"}, true},
+		{"review", []string{"bash"}, true},
+		// implement keeps the shell: edit-then-test cycles need it,
+		// and plan-first would gate the edits it exists to make.
+		{"implement", nil, false},
+		// chat isn't investigation-shaped at all.
+		{"chat", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.class, func(t *testing.T) {
+			p, ok := taskclass.Resolve(tc.class)
+			if !ok {
+				t.Fatalf("Resolve(%q) failed", tc.class)
+			}
+			if !slices.Equal(p.DisableTools, tc.disable) {
+				t.Errorf("Resolve(%q).DisableTools = %v, want %v", tc.class, p.DisableTools, tc.disable)
+			}
+			if p.RequirePlanArtifact != tc.planFirst {
+				t.Errorf("Resolve(%q).RequirePlanArtifact = %v, want %v", tc.class, p.RequirePlanArtifact, tc.planFirst)
+			}
+		})
+	}
+}
+
+// Resolve hands out a Profile by value, but DisableTools is a slice —
+// a caller that appended to it could corrupt the table for every
+// later lookup in the same process (the daemon resolves per session).
+func TestResolve_DisableToolsIsNotSharedAcrossCalls(t *testing.T) {
+	first, _ := taskclass.Resolve(taskclass.Debug)
+	first.DisableTools = append(first.DisableTools[:0], "write_file")
+	second, _ := taskclass.Resolve(taskclass.Debug)
+	if !slices.Equal(second.DisableTools, []string{"bash"}) {
+		t.Errorf("a caller mutating its copy changed the table: got %v, want [bash]", second.DisableTools)
 	}
 }
 

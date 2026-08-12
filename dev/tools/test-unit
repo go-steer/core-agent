@@ -27,7 +27,8 @@ cd "$(repo_root)"
 # floor sits ~1pt under the measured total at introduction (63.1% on
 # 2026-07-28) so ordinary fluctuation doesn't flake, while a change
 # that silently sheds a percent of coverage fails loudly here.
-COVERAGE_FLOOR="62.0"
+# Ratcheted to 67.0 on 2026-08-12 (#663 took the total to 68.1%).
+COVERAGE_FLOOR="67.0"
 
 go test -race -timeout 5m \
   -coverprofile=coverage.out -covermode=atomic \

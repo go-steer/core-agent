@@ -233,6 +233,20 @@ func TestFormatMCPLine(t *testing.T) {
 			},
 			wantSubstr: []string{"broken(failed)", "gke(ok)", "[1 failed"},
 		},
+		{
+			// The render loop guards against nil entries, but the sort
+			// above it dereferences .Name — so before the nils were
+			// filtered up front, this input panicked the startup
+			// summary instead of skipping the entry.
+			name:       "nil entries are skipped, not fatal",
+			servers:    []*mcp.Server{nil, {Name: "gke"}, nil},
+			wantSubstr: []string{"mcp: 1 server(s) loaded", "gke(ok)"},
+		},
+		{
+			name:       "all-nil reads as none loaded, without a dangling separator",
+			servers:    []*mcp.Server{nil},
+			wantSubstr: []string{"mcp: 0 servers loaded"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -418,6 +432,82 @@ func TestFormatSubagentsLine(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestFormatStartupSummary covers the assembly itself. The seven
+// per-topic formatters are each tested above; what this pins is that
+// FormatStartupSummary emits all seven, once, in the documented
+// order. A line dropped or reordered here is invisible to every test
+// above — and the block is the daemon's answer to "what did you
+// actually load", so a silently missing line is a startup summary
+// that lies by omission.
+func TestFormatStartupSummary(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfg := &config.Config{
+		Subagents: []config.SubagentSpec{{Name: "cluster", Root: "../cluster"}},
+	}
+	cfg.Model.Name = "gemini-3.5-flash"
+	// Deliberately not vertex: formatModelLine reads
+	// GOOGLE_CLOUD_PROJECT / _LOCATION for the vertex providers, and
+	// a golden that depends on ambient env isn't a golden.
+	cfg.Model.Provider = "gemini"
+
+	got := FormatStartupSummary(StartupSummaryInputs{
+		CfgPath:      filepath.Join(dir, "config.json"),
+		Cfg:          cfg,
+		AgentsDir:    dir,
+		ProviderName: "gemini",
+		MCPServers:   []*mcp.Server{{Name: "gke"}, {Name: "broken", Err: errors.New("connection refused")}},
+		LoadedSkills: skills.Skills{Infos: []skills.Info{{Name: "k8s-triage"}}, Toolset: dummySkillToolset{}},
+	})
+
+	want := []string{
+		"config: source=" + filepath.Join(dir, "config.json") + " (via -c)",
+		"agentsDir: " + dir + " (derived from filepath.Dir(-c))",
+		"model: gemini-3.5-flash provider=gemini",
+		"mcp: 2 server(s) loaded — broken(failed), gke(ok) [1 failed — see 'core-agent: mcp:' error lines above]",
+		"skills: 1 loaded — k8s-triage",
+		"subagents: 1 configured — cluster (root=../cluster)",
+		"multi-session auth: disabled (single-user mode; use --attach-token for bearer auth)",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d lines, want %d:\n%s", len(got), len(want), strings.Join(got, "\n"))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("line %d:\n got %q\nwant %q", i+1, got[i], want[i])
+		}
+	}
+}
+
+// TestFormatStartupSummary_DegradedInputs pins the shape when the
+// daemon booted with nothing configured. This is the path an
+// operator hits after a typo'd -c or a missing .agents/, so every
+// line has to still render and say what's absent rather than
+// panicking on the nil cfg.
+func TestFormatStartupSummary_DegradedInputs(t *testing.T) {
+	t.Parallel()
+
+	got := FormatStartupSummary(StartupSummaryInputs{})
+	if len(got) != 7 {
+		t.Fatalf("got %d lines, want 7:\n%s", len(got), strings.Join(got, "\n"))
+	}
+	want := []string{
+		"config: source=<none> (pure defaults; no -c and no .agents/ discovered)",
+		"agentsDir: <none> (record_plan / MCP / skills have no place to live)",
+		"model: <unknown> (nil cfg)",
+		"mcp: 0 servers loaded",
+		"skills: 0 loaded",
+		"subagents: 0 configured",
+		"multi-session auth: <disabled> (nil cfg)",
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("line %d:\n got %q\nwant %q", i+1, got[i], want[i])
+		}
 	}
 }
 

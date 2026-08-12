@@ -41,6 +41,17 @@ func (b *bareRegistrant) Inject(string) error                { return nil }
 func (b *bareRegistrant) InjectAs(string, auth.Caller) error { return nil }
 func (b *bareRegistrant) RequestWake()                       {}
 
+// agentRegistrant is a bareRegistrant that DOES expose a wrapped
+// agent, with a caller-chosen identity triple — lets a test put one
+// *agent.Agent behind two registry entries, which attachadapter
+// can't do (its triple comes from the agent).
+type agentRegistrant struct {
+	bareRegistrant
+	agent *agent.Agent
+}
+
+func (a *agentRegistrant) Agent() *agent.Agent { return a.agent }
+
 func TestRegistryTrackerProvider(t *testing.T) {
 	t.Parallel()
 
@@ -124,6 +135,67 @@ func TestRegistryTrackerProvider_SharedTrackerLastWins(t *testing.T) {
 	}
 	if got[0].SessionID != "0196-new" {
 		t.Errorf("session = %q, want the newest entry 0196-new", got[0].SessionID)
+	}
+}
+
+// TestRegistryAgents covers the sibling unwrapper that feeds
+// agent.RegisterMetrics. Its failure mode is quiet in both
+// directions: skip an agent and its metrics never get registered;
+// return a duplicate and the same agent is instrumented twice.
+func TestRegistryAgents(t *testing.T) {
+	t.Parallel()
+
+	reg := attach.NewSessionRegistry()
+	a := newTestAgent(t, "app", "u", "sess-a")
+	b := newTestAgent(t, "app", "u", "sess-b")
+	if _, err := reg.Register(attachadapter.New(a)); err != nil {
+		t.Fatalf("register a: %v", err)
+	}
+	if _, err := reg.Register(attachadapter.New(b)); err != nil {
+		t.Fatalf("register b: %v", err)
+	}
+	// One agent behind two registry entries. The registry rejects a
+	// duplicate identity triple, so this needs a registrant carrying
+	// its own triple — the shape a host gets when it re-registers a
+	// swapped agent under a fresh session id without unregistering
+	// the old entry. Pointer dedup is what stops RegisterMetrics
+	// instrumenting it twice.
+	if _, err := reg.Register(&agentRegistrant{bareRegistrant: bareRegistrant{session: "sess-a-again"}, agent: a}); err != nil {
+		t.Fatalf("re-register a under a fresh session: %v", err)
+	}
+	// A registrant that exposes no agent at all is skipped, not a
+	// panic and not a nil entry in the result.
+	if _, err := reg.Register(&bareRegistrant{session: "sess-bare"}); err != nil {
+		t.Fatalf("register bare: %v", err)
+	}
+
+	got := RegistryAgents(reg)
+	if len(got) != 2 {
+		t.Fatalf("got %d agents, want 2 (deduped, bare registrant skipped)", len(got))
+	}
+	seen := map[*agent.Agent]int{}
+	for _, x := range got {
+		if x == nil {
+			t.Fatal("nil agent in result")
+		}
+		seen[x]++
+	}
+	if seen[a] != 1 || seen[b] != 1 {
+		t.Errorf("agent occurrences: a=%d b=%d, want 1 each", seen[a], seen[b])
+	}
+}
+
+func TestRegistryAgents_NilRegistry(t *testing.T) {
+	t.Parallel()
+	if got := RegistryAgents(nil); got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+}
+
+func TestRegistryAgents_EmptyRegistry(t *testing.T) {
+	t.Parallel()
+	if got := RegistryAgents(attach.NewSessionRegistry()); len(got) != 0 {
+		t.Errorf("got %v, want no agents", got)
 	}
 }
 

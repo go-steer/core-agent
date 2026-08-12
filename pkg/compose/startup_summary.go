@@ -160,21 +160,25 @@ func formatModelLine(cfg *config.Config, providerName string) string {
 }
 
 func formatMCPLine(servers []*mcp.Server) string {
-	if len(servers) == 0 {
+	// Drop nils before sorting, not during the render loop: the
+	// comparator dereferences .Name, so a nil entry would panic the
+	// startup summary before the loop's guard could skip it.
+	sorted := make([]*mcp.Server, 0, len(servers))
+	for _, s := range servers {
+		if s != nil {
+			sorted = append(sorted, s)
+		}
+	}
+	if len(sorted) == 0 {
 		return "mcp: 0 servers loaded"
 	}
 	// Sort by name for deterministic output (operators grepping
 	// startup logs across sessions want stable order).
-	sorted := make([]*mcp.Server, len(servers))
-	copy(sorted, servers)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 
 	names := make([]string, 0, len(sorted))
 	failures := 0
 	for _, s := range sorted {
-		if s == nil {
-			continue
-		}
 		status := "ok"
 		if s.Err != nil {
 			status = "failed"

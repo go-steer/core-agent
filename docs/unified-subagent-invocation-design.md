@@ -347,12 +347,12 @@ Landed in the #626 train, against this design:
   subagent latencies once the recipe exercises `wait: true` under GKE UAT.
 - The **instance-id format** (`<name>-<n>`) is implemented; if a consumer needs
   stable/addressable ids across restarts, reconcile then.
-- **Double-delivery on `wait: true`.** A subagent that completes always pushes its
-  completion alert to the parent inbox, so a *successful* synchronous wait surfaces
-  the result twice — inline from `awaitResult`, then again as a redundant
-  `[Background reports]` line on the next turn. Retroactive suppression by the
-  waiter is racy (the goroutine's `pushAlert` runs before it closes `done`, so the
-  waiter can never observe completion *before* the alert is queued). Deduping
-  synchronously-consumed completions — e.g. tagging the handle as "claimed by a
-  waiter" before the push decision, or having `shouldAlert` skip claimed handles —
-  is a follow-up; the current redundancy is noisy but not incorrect.
+- **Double-delivery on `wait: true`** — *resolved (#646).* `awaitResult` now takes a
+  sync claim on the handle *before* it blocks, and the completion goroutine
+  consumes that claim in place of pushing its alert. Exactly one of the two wins:
+  the goroutine suppresses the redundant `[Background reports]` line, or a waiter
+  that times out / is canceled releases the claim so the alert takes the normal
+  async path. One window stays open by construction: a subagent that reaches a
+  terminal state *before* the waiter claims has already passed the suppression
+  check, so `claimSync` refuses and that (already-queued) alert is still delivered.
+  That is the safe direction — a duplicate, never a dropped result.

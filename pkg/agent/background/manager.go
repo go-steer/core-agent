@@ -160,6 +160,91 @@ type Handle struct {
 	err    error
 	cancel context.CancelFunc
 	done   chan struct{}
+	sync   syncClaim
+}
+
+// syncClaim tracks whether a spawn_agent {wait: true} caller is going
+// to consume this subagent's completion inline, so the completion
+// goroutine can skip the redundant terminal alert (#646). Without it a
+// successful synchronous spawn surfaces its result twice: once as the
+// tool result, and again as a "[Background reports]" line on the
+// parent's next turn.
+//
+// The three states exist to resolve the race between the waiter timing
+// out and the goroutine finishing. Both transitions happen under
+// Handle.mu, so exactly one of them wins:
+//
+//   - the goroutine wins → syncConsumed, alert suppressed, and a waiter
+//     that was mid-timeout learns it must deliver inline after all;
+//   - the waiter wins → syncNone, and the goroutine pushes the alert as
+//     it would for a fire-and-continue spawn.
+type syncClaim int
+
+const (
+	// syncNone: no synchronous waiter; terminal alerts go to the parent
+	// inbox as usual.
+	syncNone syncClaim = iota
+	// syncClaimed: a wait:true caller intends to consume the completion
+	// inline and has not yet given up.
+	syncClaimed
+	// syncConsumed: the completion goroutine honored a claim and skipped
+	// the terminal alert. The waiter MUST deliver the result inline.
+	syncConsumed
+)
+
+// claimSync registers a synchronous waiter's intent to consume this
+// subagent's completion inline. Returns false when the handle is
+// already terminal — the completion goroutine has passed the
+// suppression check, so its alert is already on its way and the waiter
+// must not assume it was suppressed.
+func (h *Handle) claimSync() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	select {
+	case <-h.done:
+		return false
+	default:
+	}
+	if h.sync != syncNone {
+		// A second concurrent waiter on the same handle can't happen via
+		// spawn_agent (one tool call owns one fresh handle), but SpawnRef
+		// hands handles to operator surfaces too. Leave the first claim.
+		return false
+	}
+	h.sync = syncClaimed
+	return true
+}
+
+// takeSyncClaim is called by the completion goroutine just before it
+// would push the terminal alert. It reports whether a synchronous
+// waiter claimed this completion, in which case the alert is skipped
+// and the claim is marked consumed so a racing timeout can tell that
+// the result was suppressed on its behalf.
+func (h *Handle) takeSyncClaim() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.sync != syncClaimed {
+		return false
+	}
+	h.sync = syncConsumed
+	return true
+}
+
+// releaseSync is called by a synchronous waiter that is giving up
+// (sync-wait timeout or parent cancellation). It returns true when the
+// claim was still outstanding — the completion, whenever it lands, will
+// alert normally. It returns false when the goroutine already consumed
+// the claim in the race window, meaning the alert was suppressed and
+// the waiter must deliver the result inline instead of reporting
+// "still running".
+func (h *Handle) releaseSync() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.sync == syncClaimed {
+		h.sync = syncNone
+		return true
+	}
+	return false
 }
 
 // Status is the lifecycle state of a background subagent.

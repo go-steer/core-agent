@@ -109,6 +109,23 @@ func textTurn(text string, in, out int32) scenarioFn {
 	}
 }
 
+// nonStreamingTextTurn models a turn from a NON-streaming agent: one
+// consolidated response, no partial chunks. textTurn always emits a
+// partial, which hid the fact that the driver's text collection was
+// partial-only (#641).
+func nonStreamingTextTurn(text string) scenarioFn {
+	return func(_ context.Context, _ *adkmodel.LLMRequest) []stubResp {
+		content := &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: text}}}
+		return []stubResp{
+			{resp: &adkmodel.LLMResponse{
+				Content:      content,
+				FinishReason: genai.FinishReasonStop,
+				TurnComplete: true,
+			}},
+		}
+	}
+}
+
 // cumulativeUsageTurn models Gemini's real streaming behaviour: the
 // partial chunk carries a running (cumulative) UsageMetadata and the
 // final TurnComplete chunk carries the per-turn total. A correct
@@ -707,6 +724,29 @@ func TestRunAutonomous_FinalTextIsLastTurnText(t *testing.T) {
 	}
 	if res.FinalText != "post-tool follow-up" {
 		t.Errorf("FinalText = %q, want %q (only the last turn's text)", res.FinalText, "post-tool follow-up")
+	}
+}
+
+// TestRunAutonomous_FinalTextWithoutStreaming pins that a non-streaming
+// run still reports its text. The driver used to accumulate only partial
+// (streaming) chunks, so an agent built with streaming off finished every
+// run with an empty FinalText — invisible for a top-level run whose
+// output the operator reads off the terminal, fatal for a background
+// subagent whose FinalText is the only thing its parent receives (#641).
+//
+// Fails on pre-fix code: FinalText comes back "".
+func TestRunAutonomous_FinalTextWithoutStreaming(t *testing.T) {
+	t.Parallel()
+	llm := &stubLLM{scenarios: []scenarioFn{
+		doneCallTurn("done"),
+		nonStreamingTextTurn("the answer is 42"),
+	}}
+	res, err := Run(context.Background(), buildAgent(llm, "no-stream"), "go")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.FinalText != "the answer is 42" {
+		t.Errorf("FinalText = %q, want %q", res.FinalText, "the answer is 42")
 	}
 }
 

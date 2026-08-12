@@ -426,8 +426,10 @@ type turnResult struct {
 
 func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan string, scheduleCh <-chan coretools.ScheduleEvent, cfg *autoConfig, turnNo int) (turnResult, error) {
 	var (
-		out turnResult
-		buf strings.Builder
+		out       turnResult
+		buf       strings.Builder
+		partials  strings.Builder
+		sawFinals bool
 	)
 
 	// Drain any stale done signal from a previous turn (defensive —
@@ -458,7 +460,7 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 	var tap usage.TurnTap
 	for ev, err := range a.Run(ctx, prompt) {
 		if err != nil {
-			out.text = buf.String()
+			out.text = collectedText(&buf, &partials, sawFinals)
 			return out, err
 		}
 		if ev == nil {
@@ -490,14 +492,29 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 				out.costUSD += cfg.pricing.CostUSDWithCache(uncached, turnUsage.CachedInputTokens, turnUsage.OutputTokens)
 			}
 		}
+		// Text collection follows the same discipline as
+		// agent.collectFinalText: prefer the consolidated non-partial
+		// events, because those are the ones ADK emits in BOTH streaming
+		// and non-streaming mode. Collecting only partials (as this did
+		// before) left FinalText permanently empty for a non-streaming
+		// agent, which in turn left a synchronous subagent spawn with no
+		// deliverable to return to its parent (#641). Partials are still
+		// accumulated as a fallback so a provider that emits no
+		// consolidated event can't regress to empty either.
 		if ev.Content != nil {
 			for _, p := range ev.Content.Parts {
-				if p == nil {
+				if p == nil || p.Text == "" {
 					continue
 				}
-				if p.Text != "" && ev.Partial {
-					buf.WriteString(p.Text)
+				if ev.Partial {
+					partials.WriteString(p.Text)
+					continue
 				}
+				sawFinals = true
+				if buf.Len() > 0 {
+					buf.WriteByte('\n')
+				}
+				buf.WriteString(p.Text)
 			}
 		}
 	}
@@ -525,8 +542,18 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 		}
 	}
 
-	out.text = buf.String()
+	out.text = collectedText(&buf, &partials, sawFinals)
 	return out, nil
+}
+
+// collectedText picks the turn's text: the consolidated non-partial
+// events when the run produced any, otherwise the accumulated streaming
+// partials. See the collection site for why both are tracked.
+func collectedText(finals, partials *strings.Builder, sawFinals bool) string {
+	if sawFinals {
+		return finals.String()
+	}
+	return partials.String()
 }
 
 // Option mutates Run configuration. Use the With*

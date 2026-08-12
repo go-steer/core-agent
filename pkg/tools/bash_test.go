@@ -15,6 +15,7 @@
 package tools
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -50,6 +51,143 @@ func TestBash_RefusesDenylist(t *testing.T) {
 	_, err := fn(tool.Context(nil), bashArgs{Command: "rm -rf /"})
 	if err == nil || !strings.Contains(err.Error(), "filesystem root") {
 		t.Errorf("expected denylist refusal, got %v", err)
+	}
+}
+
+// TestBash_RefusesSearchShapedByDefault pins the #158 default at the
+// tool boundary, not just inside the gate: a stock agent that reaches
+// for `grep -rn` gets an error naming the native tool instead of a
+// shell subprocess and a wrong-looking result set.
+func TestBash_RefusesSearchShapedByDefault(t *testing.T) {
+	t.Parallel()
+	cfg := config.DefaultConfig()
+	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
+	fn := bashFunc(gate, cfg)
+	_, err := fn(tool.Context(nil), bashArgs{Command: "grep -rn TODO ."})
+	if err == nil {
+		t.Fatal("bash ran a search-shaped command under the default gate")
+	}
+	if !strings.Contains(err.Error(), "native `grep` tool") {
+		t.Errorf("refusal must name the replacement, got: %v", err)
+	}
+}
+
+// In warn mode the command runs and the advice rides along on the
+// result. A notice that never reaches the model would make warn mode
+// indistinguishable from allow.
+func TestBash_WarnModeAttachesNotice(t *testing.T) {
+	t.Parallel()
+	cfg := config.DefaultConfig()
+	gate := permissions.New(permissions.Options{
+		Mode:           permissions.ModeYolo,
+		BashSearchGate: config.BashSearchGateWarn,
+	})
+	fn := bashFunc(gate, cfg)
+	res, err := fn(tool.Context(nil), bashArgs{Command: "grep -rn TODO /nonexistent-path-for-test"})
+	if err != nil {
+		t.Fatalf("warn mode must not refuse: %v", err)
+	}
+	// The grep exits non-zero on a missing path; the notice must survive
+	// that, because a failed bash-as-grep is exactly when the model most
+	// needs to be told there is a better tool.
+	if res.ExitCode == 0 {
+		t.Fatalf("expected a non-zero exit from grep on a missing path, got %d", res.ExitCode)
+	}
+	if !strings.Contains(res.Notice, "native `grep` tool") {
+		t.Errorf("notice = %q, want it to name the native tool", res.Notice)
+	}
+}
+
+func TestBash_NoNoticeOnOrdinaryCommands(t *testing.T) {
+	t.Parallel()
+	cfg := config.DefaultConfig()
+	gate := permissions.New(permissions.Options{
+		Mode:           permissions.ModeYolo,
+		BashSearchGate: config.BashSearchGateWarn,
+	})
+	fn := bashFunc(gate, cfg)
+	res, err := fn(tool.Context(nil), bashArgs{Command: "printf hello"})
+	if err != nil {
+		t.Fatalf("bash: %v", err)
+	}
+	if res.Notice != "" {
+		t.Errorf("notice = %q on a non-search command, want empty", res.Notice)
+	}
+}
+
+// The description has to agree with the gate. Advertising "prefer the
+// structured tools" while enforce mode refuses outright makes the model
+// spend a turn discovering the rule from an error.
+func TestBashDescription_TracksTheGate(t *testing.T) {
+	t.Parallel()
+	enforce := bashDescription(permissions.New(permissions.Options{BashSearchGate: config.BashSearchGateEnforce}))
+	if !strings.Contains(enforce, "REFUSED") {
+		t.Errorf("enforce-mode description doesn't mention the refusal: %s", enforce)
+	}
+	if !strings.Contains(enforce, "grep") || !strings.Contains(enforce, "find") {
+		t.Errorf("enforce-mode description doesn't name the gated verbs: %s", enforce)
+	}
+	for _, mode := range []string{config.BashSearchGateWarn, config.BashSearchGateAllow} {
+		got := bashDescription(permissions.New(permissions.Options{BashSearchGate: mode}))
+		if strings.Contains(got, "REFUSED") {
+			t.Errorf("%s-mode description claims a refusal that won't happen: %s", mode, got)
+		}
+	}
+	if got := bashDescription(nil); strings.Contains(got, "REFUSED") {
+		t.Errorf("nil gate should fall back to the advisory text: %s", got)
+	}
+
+	inert := permissions.New(permissions.Options{BashSearchGate: config.BashSearchGateEnforce})
+	inert.SetNativeSearchTools(map[string]bool{"grep": false, "glob": false})
+	if got := bashDescription(inert); strings.Contains(got, "REFUSED") {
+		t.Errorf("description threatens a refusal the gate can't make: %s", got)
+	}
+
+	// Half-registered: `glob` is gone, so the model must be sent at
+	// `grep` and nothing else. Naming a dropped tool in the redirect
+	// is the same unenforceable claim the gate exists to prevent.
+	grepOnly := permissions.New(permissions.Options{BashSearchGate: config.BashSearchGateEnforce})
+	grepOnly.SetNativeSearchTools(map[string]bool{"grep": true, "glob": false})
+	got := bashDescription(grepOnly)
+	_, refusal, ok := strings.Cut(got, "REFUSED here:")
+	if !ok {
+		t.Fatalf("grep-only build should still refuse the grep family: %s", got)
+	}
+	if !strings.Contains(refusal, "the native `grep` tool instead") {
+		t.Errorf("grep-only build should redirect at `grep` alone: %s", refusal)
+	}
+	if strings.Contains(refusal, "`glob`") {
+		t.Errorf("refusal names `glob`, which this build didn't register: %s", refusal)
+	}
+	if strings.Contains(refusal, "find") {
+		t.Errorf("refusal gates `find`, whose replacement (`glob`) is gone: %s", refusal)
+	}
+}
+
+// tools.Build is the wiring that makes the previous test's premise
+// true at runtime: it must tell the gate what it registered, or the
+// gate falls back to "assume registered" and refuses with no
+// replacement to name.
+func TestBuild_TellsGateWhichNativeSearchToolsExist(t *testing.T) {
+	t.Parallel()
+	cfg := config.DefaultConfig()
+	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
+	b := Default()
+	b.Grep = false
+	b.Glob = false
+	if _, err := Build(cfg, gate, "", b); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if err := gate.CheckBash(context.Background(), "grep -rn foo ."); err != nil {
+		t.Errorf("gate still refuses bash grep after a build that registered no native grep: %v", err)
+	}
+
+	full := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
+	if _, err := Build(cfg, full, "", Default()); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if err := full.CheckBash(context.Background(), "grep -rn foo ."); err == nil {
+		t.Error("default build registers grep, so bash grep should be refused")
 	}
 }
 

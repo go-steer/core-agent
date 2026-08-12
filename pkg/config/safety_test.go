@@ -103,6 +103,51 @@ func TestSafetyWatchdog_UnmarshalsFromJSON(t *testing.T) {
 	}
 }
 
+// Pin the safety.bash_search_gate validation accept set (#158). Pre-fix
+// this test fails to compile — there was no config field, so a recipe
+// could not turn the gate down at all and had to disable bash wholesale.
+func TestValidate_SafetyBashSearchGate(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		mode    string
+		wantErr bool
+	}{
+		{"", false},
+		{BashSearchGateEnforce, false},
+		{BashSearchGateWarn, false},
+		{BashSearchGateAllow, false},
+		{"off", true},   // the watchdog's vocabulary, not this one
+		{"deny", true},  // plausible synonym for enforce — must error
+		{"ALLOW", true}, // case-sensitive guard, matching watchdog
+		{"allow ", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.mode, func(t *testing.T) {
+			t.Parallel()
+			c := DefaultConfig()
+			c.Safety.BashSearchGate = tc.mode
+			err := c.Validate()
+			if tc.wantErr && err == nil {
+				t.Errorf("Validate() with bash_search_gate=%q: got nil, want error", tc.mode)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("Validate() with bash_search_gate=%q: got %v, want nil", tc.mode, err)
+			}
+		})
+	}
+}
+
+func TestSafetyBashSearchGate_UnmarshalsFromJSON(t *testing.T) {
+	t.Parallel()
+	var c Config
+	if err := json.Unmarshal([]byte(`{"safety":{"bash_search_gate":"warn"}}`), &c); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if c.Safety.BashSearchGate != BashSearchGateWarn {
+		t.Errorf("safety.bash_search_gate: got %q, want %q", c.Safety.BashSearchGate, BashSearchGateWarn)
+	}
+}
+
 // Canonical-constant sanity. These strings are what operators type
 // in their config and what the CLI flag accepts; a silent rename
 // would break every existing config file in the wild.
@@ -117,6 +162,9 @@ func TestSmallTierParentConstants_AreStable(t *testing.T) {
 		{WatchdogOff, "off"},
 		{WatchdogWarn, "warn"},
 		{WatchdogEnforce, "enforce"},
+		{BashSearchGateEnforce, "enforce"},
+		{BashSearchGateWarn, "warn"},
+		{BashSearchGateAllow, "allow"},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {

@@ -189,6 +189,7 @@ func main() {
 	maxSessionCostUSD := flag.Float64("max-session-cost-usd", 0, fmt.Sprintf("session-level spend ceiling in USD. Cumulative across every turn including subtasks; same trip + refuse behavior as --max-turn-cost-usd. Useful for long-running autonomous deploys where per-turn cost is reasonable but the session total adds up. Overrides config.agent.max_session_cost_usd when set, including an explicit 0. When neither is set, unattended runs (-p, --no-repl, or a non-TTY stdin) default to $%.2f and interactive runs default to disabled (#642); pass --max-session-cost-usd=0 to opt an unattended run back out.", DefaultUnattendedSessionCostUSD))
 	smallTierParent := flag.String("small-tier-parent", "", "what to do when an interactive session starts on a small-tier parent model (Flash/Haiku-class). One of warn|refuse|allow. warn (default when unset) logs a one-line operator notice but proceeds; refuse exits with a config-error code; allow suppresses the check entirely. Skipped regardless when -p (one-shot), --yolo, or the model's tier doesn't classify. Per docs/model-selection-design.md / issue #121. Config-file equivalent: safety.small_tier_parent.")
 	watchdogMode := flag.String("watchdog", "", "behavioral watchdog mode (#123 PR 2). 'warn' = observe tool-call stream + log structured alerts to the operator when a runaway pattern is detected (e.g. 5 consecutive identical tool calls — the read_file loop from #144). 'enforce' = same detection, but a runaway trips a turn-error (kind=watchdog) and the agent refuses new turns until the operator resets it (/guardrail reset in the TUI, or POST /sessions/{id}/guardrails/reset over attach) (#623 — the hard backstop against tool loops an auto-continue re-drive would otherwise re-issue). 'off' = no observation. Empty (default) resolves per mode: 'enforce' for unattended runs (-p, --no-repl, or a non-TTY stdin — nobody is reading the warn-mode log there) and 'warn' for interactive REPL/TUI runs (#642). v1 ships warn/enforce + one signal (repeated-tool-call); future modes (prompt, auto) and additional signals (tools-without-text, files-not-touched) are deferred per the design doc. Config-file equivalent: safety.watchdog.")
+	bashSearchGate := flag.String("bash-search-gate", "", "what to do when the model runs a search-shaped shell command (grep/egrep/fgrep/rgrep/rg/ag/ack/fd/find) while the native grep/glob tools are registered (#158). 'enforce' (default) refuses the call with a structured error naming the native replacement — bash-as-grep is a training prior strong enough that the existing 'PREFERRED over bash grep' tool descriptions bounce off it (measured: one Gemini variant picked bash for search 15/27 times anyway), and a refusal is the only feedback the model gets at the moment it makes the wrong choice. 'warn' runs the command but attaches the same advice to the tool result. 'allow' disables the check. Piping into a search binary is never gated ('go test ./... | grep -v ok' filters a stream, which the native tool cannot do), and 'find' with an action predicate (-delete, -exec, ...) is a file operation rather than a lookup, so it passes. Tests, builds, git and every other bash use are untouched — this is the surgical version of --disable-tools=bash. Config-file equivalent: safety.bash_search_gate.")
 	agenticTools := flag.Bool("agentic-tools", true, "register the agentic tool wrappers (agentic_read_file, agentic_fetch_url, agentic_grep, agentic_research) that route through a subtask so only the digest enters the parent's context (docs/context-management-design.md Mechanism B). On by default since v2.1; pass --agentic-tools=false to register only the bare tools.")
 	agenticSmallModel := flag.String("agentic-small-model", "", "small/cheap model ID the agentic_* wrappers should route subtasks to (e.g. gemini-3.5-flash-lite, claude-haiku-4-5). When empty, the provider's cheap-tier default is used (gemini-3.5-flash-lite for Gemini/Vertex, claude-haiku-4-5 for Anthropic); providers without a cheap tier (echo, scripted) fall through to inheriting the parent's model. Requires --agentic-tools.")
 	noMCPDigest := flag.Bool("no-mcp-digest", false, "disable the structural pkg/digest wrap around MCP tool responses (docs/digest-design.md). Default: enabled. When on, JSON-shaped MCP responses get a deterministic prune (identifier keys preserved, long strings truncated, arrays collapsed head+tail) before reaching the parent context; prose passthroughs are bounded. Also registers retrieve_raw as a built-in tool so the model can fetch back the un-digested payload when a digest looks suspicious. Kill switch for demos / debugging; leave on for production. Also gated per-project by cfg.MCP.AgenticWrap and per-server by mcp.json's agentic_never.")
@@ -229,6 +230,7 @@ func main() {
 			// Explicit 0 means "no ceiling" and must beat the
 			// unattended default, so record presence, not value.
 			maxSessionCostSet: flagWasSet(flag.CommandLine, "max-session-cost-usd"),
+			bashSearchGate:    *bashSearchGate,
 		},
 		*smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *mcpAgenticWrapLLM, *mcpAgenticWrapModel, *noContextCache, promptOpts{appendSystemPrompt: *appendSystemPrompt, systemPromptFile: *systemPromptFile},
 		attachOpts{
@@ -670,6 +672,20 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	if len(allowPathEntries) > 0 {
 		cfg.PathScope.AllowPaths = append(cfg.PathScope.AllowPaths, allowPathEntries...)
 	}
+	// Search-gate precedence: CLI --bash-search-gate > config
+	// safety.bash_search_gate > "enforce". Applied before FromConfig
+	// so the constructed Gate and --print-config agree, and validated
+	// here because the flag path never goes through config.Validate.
+	if guardrails.bashSearchGate != "" {
+		switch guardrails.bashSearchGate {
+		case config.BashSearchGateEnforce, config.BashSearchGateWarn, config.BashSearchGateAllow:
+			cfg.Safety.BashSearchGate = guardrails.bashSearchGate
+		default:
+			fmt.Fprintf(os.Stderr, "core-agent: --bash-search-gate: unknown value %q (want one of %q, %q, %q)\n",
+				guardrails.bashSearchGate, config.BashSearchGateEnforce, config.BashSearchGateWarn, config.BashSearchGateAllow)
+			return runner.ExitConfigError
+		}
+	}
 	prompter := resolveGatePrompter(yolo, os.Stdin, os.Stderr)
 	template, err := permissions.FromConfig(cfg, cwd, coreHome, prompter)
 	if err != nil {
@@ -991,6 +1007,12 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			return runner.ExitConfigError
 		}
 		builtinTools = reg.Tools
+		// Build taught the *derived* gate which native search tools
+		// exist (#158). Sessions created later through POST /sessions
+		// derive from the template, not from this gate, and a session
+		// gate that didn't know would fall back to "assume registered"
+		// and refuse a bash grep by naming a tool this build dropped.
+		template.SetNativeSearchTools(gate.NativeSearchTools())
 	}
 
 	askTool, err := resolveAskUserTool(ask, os.Stdin, os.Stderr)
@@ -1531,6 +1553,39 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			agent.WithWatchdogEnforce(),
 		)
 		send(fmt.Sprintf("watchdog: enforce mode [%s] (halts the agent on a runaway pattern; refuses new turns until cleared with /guardrail reset, or POST /sessions/{id}/guardrails/reset)", guard.WatchdogSource))
+	}
+	// Bash search gate (#158). Reported on every boot, including the
+	// default: "which guardrails are actually armed" is the question
+	// this milestone exists to make answerable, and a posture that
+	// only prints when weakened is one an operator has to infer.
+	// Silent when bash isn't registered at all — there is nothing to
+	// gate, and a line about it would be its own small false claim.
+	if hasToolNamed(builtinTools, "bash") {
+		// The binary list is read back off the gate rather than
+		// hand-kept, so it reflects both the gated set and the natives
+		// this build actually registered — the line can't advertise a
+		// bigger gate than the one that's armed. Empty means enforce
+		// would refuse nothing, which is worth saying out loud.
+		active := gate.ActiveSearchBinaries()
+		gated := strings.Join(active, "/")
+		// Name the natives this build kept rather than a literal
+		// "grep/glob": with only one of them registered the other half
+		// of that phrase is advice the operator can't follow.
+		nativeList := gate.ActiveNativeSearchTools()
+		natives := strings.Join(nativeList, "/") + " tool"
+		if len(nativeList) > 1 {
+			natives += "s"
+		}
+		switch {
+		case gate.BashSearchGate() == config.BashSearchGateAllow:
+			send("bash search gate: allow (search-shaped bash commands are not gated)")
+		case len(active) == 0:
+			send(fmt.Sprintf("bash search gate: %s but INERT (no native grep/glob tool is registered, so there is nothing to redirect a search-shaped bash command to)", gate.BashSearchGate()))
+		case gate.BashSearchGate() == config.BashSearchGateWarn:
+			send(fmt.Sprintf("bash search gate: warn (bash %s still run, but the result carries a pointer to the native %s)", gated, natives))
+		default:
+			send(fmt.Sprintf("bash search gate: enforce (bash %s refused; use the native %s. --bash-search-gate=allow to disable)", gated, natives))
+		}
 	}
 	if !noCheckpoint {
 		opts = append(opts, agent.WithCheckpointer(agent.NewDefaultCheckpointer()))
@@ -2275,6 +2330,18 @@ func resolveColor(mode string, w io.Writer) (bool, error) {
 // agent's stdin is a TTY (interactive REPL or pty-backed run) and
 // tools.RefusePrompter otherwise — so the model gets a clear "no
 // user available" tool result and adapts in headless/piped runs.
+// hasToolNamed reports whether the assembled tool slice contains a
+// tool with the given name. Used to keep boot lines honest about
+// guardrails that only apply to a tool the run actually registered.
+func hasToolNamed(ts []adktool.Tool, name string) bool {
+	for _, t := range ts {
+		if t != nil && t.Name() == name {
+			return true
+		}
+	}
+	return false
+}
+
 func resolveAskUserTool(mode string, in io.Reader, out io.Writer) (adktool.Tool, error) {
 	var prompter tools.Prompter
 	switch mode {

@@ -148,4 +148,4 @@ The recipe READMEs (`examples/<name>/README.md`) each cover their own compositio
 
 - **Want help picking?** [Getting started](/run/getting-started/) walks the same decision tree end-to-end.
 - **Building something new?** The patterns in [Agent design](/agent-design/) generalize across these examples — start there for prompt + tool-description guidance.
-- **Idea for a recipe?** Open a [GitHub discussion](https://github.com/go-steer/core-agent/discussions). Recipes ship as PRs against `examples/`.
+- **Idea for a recipe?** Open a [GitHub discussion](https://github.com/go-steer/core-agent/discussions). Recipes ship as PRs against `examples/`. CI discovers every recipe automatically and fails the build if the skill content names a tool or a CLI the recipe's own config can't produce — a `kubectl` runbook in a recipe that disables `bash` is a build break, not a runtime surprise. See [Contributing](https://github.com/go-steer/core-agent/blob/main/CONTRIBUTING.md#config-only-recipes).

@@ -89,6 +89,17 @@ Every source file carries the full Apache 2.0 header attributed to Google LLC:
 - Acceptance test plans live in [`docs/`](./docs) — `acceptance-m1.md`, `acceptance-m2.md`, etc. Each milestone gets its own plan; the plan is written before the work starts and verified before tagging.
 - A new feature without a test is not done. A new bug fix without a regression test makes it easy for the bug to come back.
 
+#### Config-only recipes
+
+A recipe under `examples/` is validated by two things:
+
+- **Its own `recipe_test.go`** — a credential-free loader test asserting the recipe's specific claims (see `examples/gke-troubleshoot-agent/recipe_test.go`). No cluster, no LLM, no cloud creds; it runs in the normal `test-unit` presubmit.
+- **`examples/internal/recipecheck`** — an *executability* gate that discovers every config root under `examples/` automatically and fails on any tool or CLI the skill content names that the recipe's own config cannot produce. A new recipe is covered the day it lands; you do not register it anywhere.
+
+The second exists because structure-only validation let a recipe ship a `kubectl` runbook while its own `tools.disable` list removed `bash` (#644). If your recipe trips it, fix the content or the config — don't add a waiver. Waivers are for vendored content the repo deliberately does not edit, they require a written reason, and the waived count is logged on every run.
+
+It scans skill trees only. `AGENTS.md` is excluded because a hardened persona states its limits by naming them ("no `kubectl`, no `gcloud`"), so scanning it flags correct recipes — which means a promise made *in the persona* is still on you to check. Write skill-content limits without naming a CLI ("there is no shell to fall back to") and the checker stays quiet.
+
 ## Project layout
 
 - `cmd/core-agent/` — reference CLI binary.

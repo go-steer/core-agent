@@ -64,10 +64,14 @@ same turn until you have emitted the closing `INCIDENT SUMMARY`.
 
    In the SAME turn, immediately call `record_plan` with the same content. This is
    not optional bookkeeping: **this daemon runs with `require_plan_artifact: true`,
-   and every `gke` MCP call — including the read-only ones — is denied until
-   `record_plan` has been called.** The plan you write at this point is a
-   hypothesis from the payload; you will revise it as evidence arrives by calling
-   `record_plan` again (each call writes the next `plan-<seq>.md`).
+   so on the first incident of a session every `gke` MCP call — including the
+   read-only ones — is denied until `record_plan` has been called.** The gate flag
+   is per-session and sticky, so on later injects nothing will stop you from
+   skipping this step: record a plan anyway. One plan artifact per incident is the
+   audit trail, and the plan is what forces you to name the project and cluster
+   before you call anything. The plan you write here is a hypothesis from the
+   payload; revise it as evidence arrives by calling `record_plan` again (each call
+   writes the next `plan-<seq>.md`).
 
 2. **Call `list_skills`** — still the same turn — to discover the `k8s-triage` skill. Invoke it; it routes to the reason-specific reference for the failure.
 
@@ -96,8 +100,8 @@ same turn until you have emitted the closing `INCIDENT SUMMARY`.
   matches a condition (or the budget expires). This is how you observe convergence
   without spending a turn per look, and it is the only legitimate way to say a
   state was reached. The pollable `gke` tools are the five named in
-  `tools.wait_and_verify.poll_allow`; the tool tells you the list if you ask for
-  one that isn't there.
+  `tools.wait_and_verify.poll_allow`; if you name a tool that doesn't exist, the
+  error enumerates every tool you *can* poll.
 - **`record_plan`** — writes your plan to `/etc/core-agent/.agents/plans/plan-<seq>.md`
   and unblocks the MCP calls. Call it again to revise; each call is a new artifact.
 - **`alert`** — fires a pre-registered escalation target. One target is registered:

@@ -40,9 +40,11 @@ the deliverable a human or a pipeline applies.
 This daemon runs with `require_plan_artifact: true`. Plan-first gating
 covers **MCP tools too**, not just writes — so `gke_get_k8s_resource`
 is denied until `record_plan` has been called once in the session.
-AGENTS.md step 1 already has you doing this; if you somehow reach a
-"plan required" error, call `record_plan` and continue. Do not treat it
-as a permission problem to report.
+Once — the flag is sticky, so later incidents in the same session are
+not gated. Record one anyway: one plan artifact per incident is what
+makes the audit trail readable. AGENTS.md step 1 already has you doing
+this; if you reach a "plan required" error, call `record_plan` and
+continue. Do not treat it as a permission problem to report.
 
 ## Step 1 — load the reference
 

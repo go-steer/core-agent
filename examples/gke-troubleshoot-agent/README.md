@@ -54,8 +54,14 @@ apply here too.
    its webhook URL from `ONCALL_WEBHOOK_URL`, rate-limited to 10/min.
 7. Plan-first enforcement (`require_plan_artifact: true`). Every `gke`
    MCP call — including read-only ones — is denied until the agent has
-   called `record_plan`, so each incident leaves a written plan on the
-   PVC before any cluster introspection happens.
+   called `record_plan`, so no cluster introspection happens before a
+   written plan exists. Scope caveat: the gate flag is **per session and
+   sticky**, so it binds the first incident of a session; subsequent
+   injects into the same session are unblocked and the per-incident plan
+   is convention (AGENTS.md + the skill's Step 0), not enforcement.
+   Artifacts land in the `plans` emptyDir at
+   `/etc/core-agent/.agents/plans/plan-<seq>.md` — ephemeral, read them
+   with `kubectl exec` or off the eventlog, not off the PVC.
 
 ## The end-to-end flow
 

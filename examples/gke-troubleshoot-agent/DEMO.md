@@ -535,9 +535,11 @@ Click into the new session (arrow keys + Enter in TUI). Watch turns stream in re
 
 **What the audience sees**:
 
-1. Agent calls `record_plan` **first** — it has to. The daemon runs with
-   `require_plan_artifact: true`, and every `gke` MCP call, including the
-   read-only ones, is denied until a plan exists on disk:
+1. Agent calls `record_plan` **first** — on a fresh session it has to. The
+   daemon runs with `require_plan_artifact: true`, and every `gke` MCP call,
+   including the read-only ones, is denied until a plan exists on disk. (The
+   flag is per-session and sticky: demo this on the session's *first*
+   incident, or the gate is already satisfied and the point doesn't land.)
    ```
    Incident: default/demo-webapp-... ImagePullBackOff
    Plan: load the ImagePullBackOff reference, confirm the image ref from

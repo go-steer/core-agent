@@ -176,7 +176,16 @@ A cost-ceiling trip almost always means *something is wrong* — a tool-call loo
 
 ### Defaults and posture
 
-Both bounds are **off by default** to avoid surprising existing operators with new refusals. Two recommended starting postures:
+The per-turn bound is **off by default**. The per-session bound is **off for interactive runs and `$10.00` for unattended runs** — `-p` one-shot, a `--no-repl` daemon, or any run whose stdin isn't a TTY ([#642](https://github.com/go-steer/core-agent/issues/642)). An unattended agent has nobody watching the spend, so "off until configured" meant every deploy that forgot the flag ran unbounded.
+
+To opt an unattended run back out, say so explicitly — an explicit `0` from either source beats the default:
+
+```bash
+core-agent -p "..." --max-session-cost-usd=0        # flag
+# or  "agent": { "max_session_cost_usd": 0 }        # config
+```
+
+Two recommended starting postures:
 
 ```bash
 # Interactive desktop / dev — bound a single turn so a runaway can't
@@ -197,7 +206,7 @@ Tune from your own usage — `/stats` shows current session cost; pick bounds at
 - **Cost ceiling** caps money regardless of why.
 - **Watchdog** (below) catches behavioral patterns (repeated identical tool calls) without waiting for the dollar count to add up.
 
-All three are complementary; the cost ceiling is off-by-default until configured; the watchdog defaults to warn-mode (`--watchdog=enforce` upgrades it to a behavioral kill switch).
+All three are complementary. Both the session cost ceiling and the watchdog resolve their default by mode: active backstops when unattended, advisory when an operator is at the keyboard.
 
 ---
 
@@ -209,9 +218,23 @@ Compaction caps the *context* dimension. The cost ceiling caps the *dollar* dime
 
 | Mode | What it does |
 |---|---|
-| `--watchdog=warn` (default) | Observes the tool-call stream. When a signal trips, logs a structured alert to the operator via the normal status channel (`send()` callback for CLI; future SSE event for attach-mode). Does NOT pause the turn. |
-| `--watchdog=enforce` | Same detection as warn, but a Critical runaway signal (today: `repeated-tool-call`) **halts the agent**: it emits a `turn-error` (`kind=watchdog`, non-retryable) and refuses new turns until the operator clears it via `Agent.ResetWatchdog`. This is the hard behavioral backstop — an auto-continue re-drive of the interrupted turn is refused at pre-flight instead of re-issuing the looping call. |
-| `--watchdog=off` | No observation. |
+| `warn` | Observes the tool-call stream. When a signal trips, logs a structured alert to the operator via the normal status channel (`send()` callback for CLI; future SSE event for attach-mode). Does NOT pause the turn. |
+| `enforce` | Same detection as warn, but a Critical runaway signal (today: `repeated-tool-call`) **halts the agent**: it emits a `turn-error` (`kind=watchdog`, non-retryable) and refuses new turns until the operator clears it via `Agent.ResetWatchdog`. This is the hard behavioral backstop — an auto-continue re-drive of the interrupted turn is refused at pre-flight instead of re-issuing the looping call. |
+| `off` | No observation. |
+
+### Choosing the mode
+
+Precedence is `--watchdog` > `safety.watchdog` > a mode-dependent default, mirroring `--small-tier-parent` / `safety.small_tier_parent`:
+
+```json
+{ "safety": { "watchdog": "enforce" } }
+```
+
+The config field ([#660](https://github.com/go-steer/core-agent/issues/660)) exists so a recipe is a self-contained unit — before it, `--watchdog` was CLI-only, so a hardened recipe still depended on every deploy manifest and every `core-agent -c ...` invocation remembering the flag by hand.
+
+With neither source set, the default is **`enforce` for unattended runs** (`-p`, `--no-repl`, or a non-TTY stdin) and **`warn` for interactive REPL/TUI runs** ([#642](https://github.com/go-steer/core-agent/issues/642)). The split is about who reads the alert: an interactive operator sees the warning and can hit Ctrl-C, so halting on their behalf is presumptuous. Nobody reads a daemon's warn-mode log in time, which made warn indistinguishable from off exactly where the backstop mattered. Pass `--watchdog=warn` (or set the config field) to restore observe-only on an unattended run.
+
+The resolved mode applies to every agent the process hosts, including the sessions a multi-session daemon creates through `POST /sessions`. The startup line names the source it came from, e.g. `watchdog: enforce mode [unattended default]`.
 
 Enforce mode mirrors the cost ceiling's halt contract (above): post-turn detection sets a flag, the next `Run` refuses at pre-flight, and recovery is operator-driven (`Agent.ResetWatchdog`, which also resets the signal's run-length state). There is no automatic reset — a tripped watchdog is a "stop, get human attention" signal, not a throttle. Only Critical signals halt; a hypothetical future low-severity signal would stay advisory even under enforce.
 

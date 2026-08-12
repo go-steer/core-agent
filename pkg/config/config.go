@@ -71,8 +71,9 @@ type Config struct {
 
 // SafetyConfig carries operator-facing safety guardrails — things
 // that are NOT permission gates (those live in PermissionsConfig)
-// but rather "the operator probably misconfigured something" checks.
-// Today: just the small-tier-parent guard (#121).
+// but rather "the operator probably misconfigured something" checks
+// and runaway backstops: the small-tier-parent guard (#121) and the
+// behavioral watchdog mode (#660).
 type SafetyConfig struct {
 	// SmallTierParent controls what happens when an interactive
 	// session starts on a small-tier parent model (Flash/Haiku-class).
@@ -92,6 +93,27 @@ type SafetyConfig struct {
 	//
 	// CLI override: --small-tier-parent=warn|refuse|allow.
 	SmallTierParent string `json:"small_tier_parent,omitempty"`
+
+	// Watchdog selects the behavioral watchdog's posture — the
+	// runaway-tool-loop backstop from #123/#623.
+	//
+	// Values: "off" (no observation), "warn" (observe the tool-call
+	// stream and log structured alerts, but never halt), "enforce"
+	// (same detection plus a turn-error of kind=watchdog; the agent
+	// refuses new turns until Agent.ResetWatchdog clears it).
+	//
+	// Empty == unset, which resolves to a *mode-dependent* default:
+	// "enforce" for unattended runs (-p one-shot, --no-repl daemon,
+	// or a non-TTY stdin) and "warn" for interactive REPL/TUI runs.
+	// An unattended daemon has no operator watching the alert stream,
+	// so observe-and-log is not a backstop there (#642).
+	//
+	// This field exists so a recipe can ship its own backstop instead
+	// of relying on every invocation and deploy manifest remembering
+	// --watchdog=enforce (#660).
+	//
+	// CLI override: --watchdog=off|warn|enforce.
+	Watchdog string `json:"watchdog,omitempty"`
 }
 
 // SessionConfig carries per-session presets — currently just the
@@ -1057,6 +1079,13 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("config: unknown safety.small_tier_parent %q (want one of %q, %q, %q)", c.Safety.SmallTierParent, SmallTierParentWarn, SmallTierParentRefuse, SmallTierParentAllow)
 	}
+	switch c.Safety.Watchdog {
+	case "", WatchdogOff, WatchdogWarn, WatchdogEnforce:
+		// ok; "" resolves to the mode-dependent default (see
+		// SafetyConfig.Watchdog).
+	default:
+		return fmt.Errorf("config: unknown safety.watchdog %q (want one of %q, %q, %q)", c.Safety.Watchdog, WatchdogOff, WatchdogWarn, WatchdogEnforce)
+	}
 	for i, root := range c.ContentRoots {
 		// Environment-free per the Validate contract: no existence/stat
 		// check here (the instruction loader errors loudly on a missing
@@ -1099,6 +1128,15 @@ const (
 	SmallTierParentWarn   = "warn"
 	SmallTierParentRefuse = "refuse"
 	SmallTierParentAllow  = "allow"
+)
+
+// Watchdog mode constants. See SafetyConfig.Watchdog for behavior.
+// Exported so consumers (CLI, library, recipes) can reference the
+// canonical strings rather than re-spelling them.
+const (
+	WatchdogOff     = "off"
+	WatchdogWarn    = "warn"
+	WatchdogEnforce = "enforce"
 )
 
 // validNamedTheme accepts the shape core-tui's BuiltinThemes

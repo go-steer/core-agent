@@ -38,6 +38,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/runner"
 	"github.com/go-steer/core-agent/v2/pkg/skills"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
+	"github.com/go-steer/core-agent/v2/pkg/watchdog"
 )
 
 // BuildMultiSessionAuthn translates the operator's
@@ -169,6 +170,21 @@ type SessionFactoryDeps struct {
 	// agent under it.
 	NoCompact    bool
 	NoCheckpoint bool
+
+	// WatchdogMode is the resolved behavioral-watchdog posture for
+	// every session this factory creates — one of config.WatchdogOff /
+	// WatchdogWarn / WatchdogEnforce. Empty is treated as Off so a
+	// caller that predates this field keeps its old behavior (no
+	// watchdog on session-created agents).
+	//
+	// A multi-session daemon is the paradigm unattended deployment, so
+	// leaving its POST /sessions agents un-watchdogged made the #642
+	// safe-default hollow: the primary session halted on a runaway and
+	// every tenant session kept looping. Alerts go to daemon stderr —
+	// per-tenant alert-sink routing is still deferred (see the type
+	// doc), but "the operator can see it in the pod log" beats "no
+	// signal at all", and enforce mode does not depend on the sink.
+	WatchdogMode string
 
 	// Customize, when non-nil, runs at the top of every session
 	// construction — POST /sessions creations AND lazy resumes — with
@@ -416,6 +432,20 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 		}
 		if ceiling.MaxTurnUSD > 0 || ceiling.MaxSessionUSD > 0 {
 			opts = append(opts, agent.WithCostCeiling(ceiling))
+		}
+	}
+	// Behavioral watchdog (#123/#623), resolved once by the CLI and
+	// applied uniformly to every session-created agent (#642). Alerts
+	// carry the session ID so a pod log with many tenants stays
+	// attributable.
+	switch deps.WatchdogMode {
+	case config.WatchdogWarn, config.WatchdogEnforce:
+		w := watchdog.NewDefaultWatchdog()
+		opts = append(opts, agent.WithWatchdog(w, func(a watchdog.Alert) {
+			fmt.Fprintf(os.Stderr, "core-agent: session %s watchdog %s\n", sid, a.String())
+		}))
+		if deps.WatchdogMode == config.WatchdogEnforce {
+			opts = append(opts, agent.WithWatchdogEnforce())
 		}
 	}
 

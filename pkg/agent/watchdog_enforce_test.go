@@ -333,3 +333,44 @@ func TestRun_WatchdogWarn_DoesNotRefuse(t *testing.T) {
 		t.Errorf("warn mode should still have dispatched the alert")
 	}
 }
+
+// TestWatchdogMode reports the resolved posture for each wiring
+// combination. The accessor is what lets a caller outside pkg/agent
+// verify "the backstop is actually on" — the question #642 flipped a
+// default to answer — so a refactor that drops WithWatchdogEnforce on
+// some construction path fails a test instead of silently shipping an
+// un-backstopped daemon.
+func TestWatchdogMode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		opts []Option
+		want string
+	}{
+		{"no watchdog wired", nil, "off"},
+		{"observe only", []Option{WithWatchdog(&fakeWatchdog{}, nil)}, "warn"},
+		{"observe and halt", []Option{WithWatchdog(&fakeWatchdog{}, nil), WithWatchdogEnforce()}, "enforce"},
+		// Enforce without a watchdog is a no-op per WithWatchdogEnforce's
+		// contract, so the reported mode must stay "off" rather than
+		// claiming a backstop that cannot fire.
+		{"enforce without a watchdog", []Option{WithWatchdogEnforce()}, "off"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, err := New(oneShotLLM{}, append([]Option{WithSession("u-wdm", "s-wdm")}, tc.opts...)...)
+			if err != nil {
+				t.Fatalf("agent.New: %v", err)
+			}
+			if got := a.WatchdogMode(); got != tc.want {
+				t.Errorf("WatchdogMode() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	var nilAgent *Agent
+	if got := nilAgent.WatchdogMode(); got != "off" {
+		t.Errorf("nil agent WatchdogMode() = %q, want %q", got, "off")
+	}
+}

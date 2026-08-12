@@ -261,6 +261,31 @@ func (a *Agent) WatchdogTripped() (bool, string) {
 	return a.watchdogTripped, a.watchdogReason
 }
 
+// WatchdogMode reports the agent's configured watchdog posture as one
+// of the config.Watchdog* strings: "off" (no watchdog wired), "warn"
+// (observe and alert), or "enforce" (observe, alert, and halt).
+//
+// Exposed because "is the backstop actually on?" is the question #642
+// exists to answer, and the answer must be checkable from outside the
+// package — by the startup summary, by operator surfaces, and by the
+// wiring tests that keep a future refactor from quietly dropping the
+// WithWatchdogEnforce option on a daemon's session-created agents.
+func (a *Agent) WatchdogMode() string {
+	if a == nil {
+		return "off"
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch {
+	case a.watchdog == nil:
+		return "off"
+	case a.watchdogEnforce:
+		return "enforce"
+	default:
+		return "warn"
+	}
+}
+
 // serializeArgsForWatchdog produces a stable JSON serialization of
 // args. Sorted map keys come for free with encoding/json on
 // map[string]any (it sorts alphabetically). On marshal failure,

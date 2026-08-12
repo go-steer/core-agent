@@ -64,7 +64,7 @@ Fix-and-verify needs a wait in the middle: apply the change, let the system conv
 
 ```text
 wait_and_verify(
-  tool:             "gke__get_pod",
+  tool:             "gke_get_pod",
   args_json:        "{\"namespace\": \"prod\", \"name\": \"api-7d9f\"}",
   expect_jq:        ".status.phase == \"Running\"",
   interval_seconds: 15,

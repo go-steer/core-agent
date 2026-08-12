@@ -121,10 +121,11 @@ spec:
             # warning. This demo runs gemini-3.5-flash as the parent
             # (config.json). We tried the cheaper gemini-3.5-flash-lite
             # parent (~$0.05/session vs ~$0.24) but it does not drive the
-            # recipe's multi-step remediation loop: on a watcher inject it
+            # recipe's multi-step triage loop: on a watcher inject it
             # emits the mandated plan block and then ENDS the turn without
-            # executing (write_file -> list_skills -> gke-mcp -> INCIDENT
-            # SUMMARY), so incidents were abandoned after planning. Prompt
+            # executing (record_plan -> list_skills -> gke MCP reads ->
+            # wait_and_verify -> INCIDENT SUMMARY), so incidents were
+            # abandoned after planning. Prompt
             # hardening (the "one continuous turn" framing in AGENTS.md)
             # did not move it — the lite model treats the plan as a
             # terminal deliverable. gemini-3.5-flash executes the loop.
@@ -159,6 +160,21 @@ spec:
             #      or GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION env vars)
             - configMapRef:
                 name: core-agent-gcp-env
+            # Escalation webhook for config.json's alerts.targets[0]
+            # ("oncall", url_env: ONCALL_WEBHOOK_URL). Optional so the
+            # recipe deploys without it: the alert tool is registered
+            # either way (registration keys off alerts.targets, not off
+            # the env var), and an unset URL fails at CALL time with
+            # `alert: target "oncall": url_env "ONCALL_WEBHOOK_URL" is
+            # unset or empty` — which the agent is instructed to report
+            # in the INCIDENT SUMMARY. A required secretRef would
+            # instead block the pod from starting at all.
+            #
+            #   kubectl -n agent-triage create secret generic core-agent-alerts \
+            #     --from-literal=ONCALL_WEBHOOK_URL='https://…'
+            - secretRef:
+                name: core-agent-alerts
+                optional: true
           ports:
             - name: attach
               containerPort: 7777

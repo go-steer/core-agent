@@ -288,7 +288,7 @@ func TestBuild_WaitAndVerifyRegistersAndDisables(t *testing.T) {
 func TestBuild_WaitAndVerifyCarriesTheConfiguredBounds(t *testing.T) {
 	t.Parallel()
 	cfg := config.DefaultConfig()
-	cfg.Tools.WaitAndVerify = config.WaitAndVerifyConfig{PollAllow: []string{"gke__get_pod"}, MaxAttempts: 5}
+	cfg.Tools.WaitAndVerify = config.WaitAndVerifyConfig{PollAllow: []string{"gke_get_pod"}, MaxAttempts: 5}
 	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
 
 	reg, err := Build(cfg, gate, "", Default())
@@ -300,7 +300,7 @@ func TestBuild_WaitAndVerifyCarriesTheConfiguredBounds(t *testing.T) {
 			continue
 		}
 		v := tl.(*waitAndVerifyTool).v
-		if !v.allow["gke__get_pod"] || v.opts.MaxAttempts != 5 {
+		if !v.allow["gke_get_pod"] || v.opts.MaxAttempts != 5 {
 			t.Errorf("built tool bounds = %+v / allow=%v, want the configured ones", v.opts, v.allow)
 		}
 		return

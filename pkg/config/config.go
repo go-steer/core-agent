@@ -556,7 +556,7 @@ type WaitAndVerifyConfig struct {
 	// tool here is the operator asserting it only observes state.
 	//
 	// Names are the ones the model sees, i.e. namespaced for MCP
-	// ("gke__get_pod" and not "get_pod").
+	// ("gke_get_pod" and not "get_pod").
 	PollAllow []string `json:"poll_allow,omitempty"`
 
 	// MaxTimeoutSeconds caps the total wall clock one wait may spend.

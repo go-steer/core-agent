@@ -8,6 +8,8 @@ Trigger-and-revert recipes for Event reasons other than `ImagePullBackOff` (whic
 
 Each scenario is a single `kubectl` command to trigger and a single `rollout undo` (or equivalent) to revert.
 
+**The revert is yours to run.** The agent is propose-only: it diagnoses through the read-only GKE MCP endpoint, runs a `wait_and_verify` convergence check, and writes the proposed remediation into its `INCIDENT SUMMARY` plus an `alert` to the `oncall` target. Compare its proposal against the **Revert** line below — that's the scoring rubric for each scenario. None of these failures self-heal, so a correct run ends `UNRESOLVED`, never `RESOLVED`.
+
 ---
 
 ## OOM on startup — productcatalogservice

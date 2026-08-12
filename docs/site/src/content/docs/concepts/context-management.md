@@ -184,6 +184,12 @@ Both backstops share one recovery surface ([#666](https://github.com/go-steer/co
 
 `/guardrail` with no arguments prints what is armed, what tripped, why, and — when a bare reset would re-trip — how much budget to add. The reset is `SessionWrite`, not admin: the next thing an operator does after clearing a halt is `POST /inject`, which is itself `SessionWrite`, so gating the reset harder would buy no safety.
 
+#### Halts survive a restart
+
+A halt that a restart clears is not a halt. Since v2.9.0-dev ([#643](https://github.com/go-steer/core-agent/issues/643)) both trips — and the operator resets that clear them — are written to the eventlog and folded forward by the next process over the same session. A crash, an OOM kill, or a pod roll no longer hands a runaway loop a fresh budget, which matters most for exactly the unattended deployments [#642](https://github.com/go-steer/core-agent/issues/642) turned these backstops on for. Budget an operator granted before the restart is preserved too, so a resumed session doesn't re-halt at the old bar.
+
+Restored state never overrules live configuration: a daemon restarted with `--watchdog=warn` does not resurrect an enforce-mode halt, and granted budget is not applied to a per-session ceiling that is no longer configured. Restore also fails *open* — if the guardrail history can't be read, the session runs rather than being bricked by a transient database error. Durability requires a session store (`--session-db` / `WithEventLog`); with no eventlog, behavior is unchanged.
+
 ### Why "stop, get attention" instead of throttle
 
 A cost-ceiling trip almost always means *something is wrong* — a tool-call loop ([#144](https://github.com/go-steer/core-agent/issues/144)), a model going off the rails, an unexpectedly expensive prompt. Auto-resume would just continue burning budget. The explicit operator reset forces a human look-in.

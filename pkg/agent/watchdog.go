@@ -202,6 +202,11 @@ func (a *Agent) maybeTripWatchdog(alerts []watchdog.Alert) {
 	a.watchdogReason = reason
 	a.mu.Unlock()
 
+	// Durable halt (#643). This is the trip that most needs to survive
+	// a restart: a runaway loop that ends in an OOM kill is exactly the
+	// shape that would otherwise resume looping in the next pod.
+	a.queueGuardrailEvent(attach.NewGuardrailTripEvent(attach.GuardrailWatchdog, reason))
+
 	a.emit(attach.EventTurnError, attach.TurnError{
 		Kind:      attach.TurnErrorWatchdog,
 		Code:      "watchdog",

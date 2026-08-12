@@ -247,6 +247,7 @@ func (a *Agent) maybeEnforceCostCeiling() {
 	}
 	ceiling := a.costCeiling
 	turnStart := a.turnStartCost
+	turnStartSet := a.turnStartCostSet
 	a.mu.Unlock()
 	if !ceiling.active() {
 		return
@@ -257,7 +258,15 @@ func (a *Agent) maybeEnforceCostCeiling() {
 
 	var reason string
 	switch {
-	case ceiling.MaxTurnUSD > 0 && turnCost >= ceiling.MaxTurnUSD:
+	// The per-turn check needs a baseline from a turn this process
+	// actually ran (#643). On a resumed session the tracker is rebuilt
+	// with the entire prior spend before the first Run, so with a zero
+	// baseline the first turn's "delta" is the whole session history —
+	// enough to trip a per-turn ceiling for a turn that has not yet
+	// cost a cent. The per-SESSION check below is unaffected: it reads
+	// the accumulator directly, which is exactly what should carry
+	// across a restart.
+	case turnStartSet && ceiling.MaxTurnUSD > 0 && turnCost >= ceiling.MaxTurnUSD:
 		reason = fmt.Sprintf(
 			"per-turn cost ceiling exceeded: this turn cost $%.4f, ceiling is $%.4f. Agent will refuse new turns until the operator resets it (/guardrail reset, or POST /sessions/{id}/guardrails/reset).",
 			turnCost, ceiling.MaxTurnUSD,
@@ -275,6 +284,10 @@ func (a *Agent) maybeEnforceCostCeiling() {
 	a.costCeilingExceeded = true
 	a.costCeilingReason = reason
 	a.mu.Unlock()
+
+	// Durable halt (#643): the trip outlives this process, so a crash
+	// or pod roll can't hand the runaway a fresh budget.
+	a.queueGuardrailEvent(attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, reason))
 
 	a.emit(attach.EventTurnError, attach.TurnError{
 		Kind:      attach.TurnErrorCostCeiling,
@@ -296,6 +309,7 @@ func (a *Agent) snapshotTurnStartCost() {
 	cost := a.tracker.Totals().CostUSD
 	a.mu.Lock()
 	a.turnStartCost = cost
+	a.turnStartCostSet = true
 	a.mu.Unlock()
 }
 

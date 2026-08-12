@@ -25,9 +25,7 @@ import (
 	"sync"
 	"testing"
 
-	"google.golang.org/adk/session"
-
-	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
 
 // guardrailRegistrant is a stubRegistrant that also answers the
@@ -296,32 +294,21 @@ func TestNewGuardrailResetAuditEvent(t *testing.T) {
 	}
 }
 
-// guardrailEventfulRegistrant is a guardrailRegistrant with a real
-// eventlog behind it, so the audit write has somewhere to land.
-type guardrailEventfulRegistrant struct {
-	guardrailRegistrant
-	handle *eventlog.Handle
-}
-
-func (g *guardrailEventfulRegistrant) EventLog() *eventlog.Handle { return g.handle }
-
-// The reset takes effect in the agent BEFORE the audit row is written,
-// so a client that hangs up in between must not be able to erase the
-// record of it — otherwise the one caller with a motive to hide a
-// budget bump is the one who can. Fails before the WithoutCancel fix:
-// the canceled request context propagates into the eventlog Get and
-// the row is silently skipped.
-func TestGuardrailsReset_AuditSurvivesClientDisconnect(t *testing.T) {
+// The reset takes effect in the agent before the row recording it is
+// written, so the one caller with a motive to hide a budget bump — the
+// caller making it — must not be able to erase the record by hanging
+// up. The write now happens agent-side on a background context
+// (pkg/agent.drainGuardrailEvents), so nothing the request context does
+// can reach it; what remains testable here is that the handler still
+// runs the reset to completion for a peer that has already gone away.
+func TestGuardrailsReset_CompletesAfterClientDisconnect(t *testing.T) {
 	t.Parallel()
-	handle, cleanup := openTestEventLog(t)
-	t.Cleanup(cleanup)
-	appendTestEvent(t, handle, "core-agent", "u1", "s1", "hello")
-
-	ag := &guardrailEventfulRegistrant{handle: handle}
-	ag.app, ag.user, ag.sid = "core-agent", "u1", "s1"
-	ag.resp = GuardrailResetResponse{
-		Reset:          []string{GuardrailCostCeiling},
-		BudgetAddedUSD: 5,
+	ag := &guardrailRegistrant{
+		stubRegistrant: stubRegistrant{app: "core-agent", user: "u1", sid: "s1"},
+		resp: GuardrailResetResponse{
+			Reset:          []string{GuardrailCostCeiling},
+			BudgetAddedUSD: 5,
+		},
 	}
 	reg := NewSessionRegistry()
 	if _, err := reg.Register(ag); err != nil {
@@ -344,23 +331,46 @@ func TestGuardrailsReset_AuditSurvivesClientDisconnect(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
-	getResp, err := handle.Service.Get(context.Background(), &session.GetRequest{
-		AppName: "core-agent", UserID: "u1", SessionID: "s1",
-	})
+	if got := ag.request(); got == nil {
+		t.Fatal("reset was not dispatched to the provider")
+	} else if got.AdditionalBudgetUSD != 5 {
+		t.Errorf("additional_budget_usd = %v, want 5", got.AdditionalBudgetUSD)
+	}
+}
+
+// Attribution is stamped from the authenticated context, never read off
+// the wire: a caller who could name themselves in the request body
+// could name someone else instead, which is worse than no attribution.
+func TestGuardrailsReset_StampsAuthenticatedCaller(t *testing.T) {
+	t.Parallel()
+	ag := &guardrailRegistrant{
+		stubRegistrant: stubRegistrant{app: "core-agent", user: "u1", sid: "s1"},
+		resp:           GuardrailResetResponse{Reset: []string{GuardrailWatchdog}},
+	}
+	reg := NewSessionRegistry()
+	if _, err := reg.Register(ag); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := reg.Lookup(context.Background(), "core-agent", "s1")
 	if err != nil {
-		t.Fatalf("session Get: %v", err)
+		t.Fatal(err)
 	}
-	var found bool
-	for ev := range getResp.Session.Events().All() {
-		if ev.Author == "attach/guardrail-reset" {
-			found = true
-			if ev.CustomMetadata["budget_added_usd"] != 5.0 {
-				t.Errorf("budget_added_usd = %v, want 5", ev.CustomMetadata["budget_added_usd"])
-			}
-		}
+
+	ctx := auth.WithCaller(context.Background(), auth.Caller{Identity: "alice@example.com"})
+	req := httptest.NewRequest(http.MethodPost, "/sessions/core-agent/u1/s1/guardrails/reset",
+		strings.NewReader(`{"caller":"root@example.com"}`)).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	(&handlers{reg: reg, pool: newBroadcasterPool()}).doGuardrailsReset(rec, req, entry)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
-	if !found {
-		t.Error("no attach/guardrail-reset audit row after a disconnected reset")
+	got := ag.request()
+	if got == nil {
+		t.Fatal("reset was not dispatched to the provider")
+	}
+	if got.Caller != "alice@example.com" {
+		t.Errorf("Caller = %q, want the authenticated identity (a wire-supplied caller must be ignored)", got.Caller)
 	}
 }
 

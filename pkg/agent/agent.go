@@ -346,6 +346,25 @@ type Agent struct {
 	costCeilingExceeded bool
 	costCeilingReason   string
 
+	// turnStartCostSet records that at least one turn has run in THIS
+	// process, so turnStartCost is a real baseline rather than the
+	// zero value. It gates the per-turn check only (#643): on a resumed
+	// session the tracker is rebuilt with the whole session's spend
+	// before the first Run, so a zero baseline would make the first
+	// turn's "delta" the entire history and trip the per-turn ceiling
+	// for a turn that hasn't cost anything yet.
+	turnStartCostSet bool
+
+	// Durable guardrail state (#643). pendingGuardrailEvents queues
+	// trip/reset rows for a window with no turn in flight;
+	// guardrailRestored latches the eventlog fold so it applies at
+	// most once — on SUCCESS, deliberately not a sync.Once, so a
+	// transient read failure retries on the next turn instead of
+	// disarming the backstop for the rest of the process's life.
+	// See guardrail_persist.go.
+	pendingGuardrailEvents []*session.Event
+	guardrailRestored      bool
+
 	// Watchdog (#123 PR 2). Optional behavioral observer; nil when
 	// not wired. onWatchdogAlert is called for each alert returned by
 	// watchdog.Check in the post-turn hook; default nil = collect-only
@@ -1261,6 +1280,12 @@ func (a *Agent) Model() adkmodel.LLM {
 // first (internal state changes); inbox goes second (external
 // input, closer to the prompt logically); then the original prompt.
 func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event, error] {
+	// Durable guardrail restore (#643), before anything can refuse or
+	// permit this turn. A halt that a restart clears is not a halt:
+	// without this, a runaway that trips the watchdog and then kills
+	// the pod comes back to a disarmed backstop and loops again. Runs
+	// at most once per agent; no-op without an eventlog.
+	a.ensureGuardrailsRestored(ctx)
 	// Settle-time cost-ceiling enforcement (#362). The prior turn's
 	// post-turn hook already ran maybeEnforceCostCeiling, but in
 	// harness-driven deployments the harness calls tracker.Append for
@@ -1276,6 +1301,12 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// the prior turn's true cost. Idempotent + a no-op when no ceiling
 	// is configured, so this is cheap on the common path.
 	a.maybeEnforceCostCeiling()
+	// Flush any guardrail row the pass above just queued (#643). No
+	// turn is in flight yet, so this is a safe write window — and it
+	// must happen before the pre-flights below, which return early and
+	// would otherwise leave the trip unrecorded until some later turn
+	// that pre-flight will never allow to start.
+	a.drainGuardrailEvents()
 	// Cost-ceiling pre-flight (#145). If a prior turn tripped the
 	// configured per-turn / per-session spend cap, refuse this turn
 	// at the very top — before any tracker writes, model calls, or
@@ -1474,6 +1505,11 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		// race the runner's in-flight session handle. No-op when nothing
 		// is pending.
 		a.drainInterruptAudit()
+		// Durable guardrail rows (#643) for anything the two hooks
+		// above just tripped. Same window and same reasoning as the
+		// interrupt audit: the stream has drained and runCtx is
+		// cancelled, so this write can't race the runner.
+		a.drainGuardrailEvents()
 		if a.onTurnEnd != nil {
 			a.onTurnEnd()
 		}

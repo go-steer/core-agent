@@ -237,6 +237,14 @@ func Build(cfg *config.Config, gate *permissions.Gate, agentsDir string, b Built
 	}
 	store := NewTodoStore()
 
+	// Tell the gate which native search tools this build registers, so
+	// the bash search gate (#158) only refuses a shape it can actually
+	// redirect. A recipe that drops `grep` from the catalog and keeps
+	// `bash` would otherwise get a refusal naming a tool the model
+	// cannot call. Set before the specs are constructed because the
+	// bash tool's own description reads it back.
+	gate.SetNativeSearchTools(map[string]bool{"grep": b.Grep, "glob": b.Glob})
+
 	type spec struct {
 		on   bool
 		name string
@@ -281,7 +289,7 @@ func Build(cfg *config.Config, gate *permissions.Gate, agentsDir string, b Built
 		}},
 		{b.Bash, "bash", "Run a shell command and return its output.", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{
-				Name: "bash", Description: "Execute a shell command via /bin/sh -c with a timeout. For code investigation (reading files, searching source, listing directories), prefer the structured `read_file`, `grep`, `glob`, `list_dir` tools — they honor the permission gate and per-tool output caps. Use this tool for actions those tools cannot perform: builds, tests, git, formatters, package managers, and other shell-native workflows.",
+				Name: "bash", Description: bashDescription(gate),
 			}, bashFunc(gate, cfg))
 		}},
 		{b.Glob, "glob", "Find files by basename pattern.", func() (tool.Tool, error) {

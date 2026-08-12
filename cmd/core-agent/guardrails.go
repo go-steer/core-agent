@@ -49,6 +49,11 @@ type guardrailOpts struct {
 	// maxSessionCostSet — 0 is a meaningful explicit value.
 	maxSessionCostUSD float64
 	maxSessionCostSet bool
+	// bashSearchGate is --bash-search-gate; empty == unset, which
+	// leaves config (then the "enforce" default) to decide. Unlike
+	// the watchdog this has no mode-dependent resolution: bash-as-grep
+	// is the wrong call whether or not an operator is watching.
+	bashSearchGate string
 }
 
 // flagWasSet reports whether name was present on the command line, as

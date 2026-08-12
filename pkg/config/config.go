@@ -114,6 +114,38 @@ type SafetyConfig struct {
 	//
 	// CLI override: --watchdog=off|warn|enforce.
 	Watchdog string `json:"watchdog,omitempty"`
+
+	// BashSearchGate controls what happens when the model reaches for
+	// a search-shaped shell command — `grep -rn foo .`, `find . -name
+	// '*.go'`, `rg`, `ag`, `ack`, `fd` — while the native `grep` /
+	// `glob` tools are registered to do the same job.
+	//
+	// Bash-as-grep is a training prior strong enough that advisory
+	// tool-description hints bounce off it: probe data in
+	// docs/gemini-tier1-followup-plan.md measured a Gemini variant
+	// picking `bash` for search 15/27 times with the structured tools
+	// right there in its catalog, and the description literally saying
+	// "PREFERRED over bash grep". A description is read once at
+	// registration and never reinforced; a refusal is in-context,
+	// immediate, and names the tool to use instead (#158).
+	//
+	// Values: "enforce" (default) refuses the call with a structured
+	// error naming the native equivalent; "warn" runs the command but
+	// attaches a notice to the tool result; "allow" disables the check.
+	// Empty == "enforce".
+	//
+	// This is a steering control, not a security boundary: it refuses
+	// a *shape*, and only the shape a model reaches for by reflex.
+	// Everything else bash can do — tests, builds, git, formatters —
+	// is untouched, which is the point. `--disable-tools=bash` is the
+	// blunt version and it takes `go test` with it.
+	//
+	// The gate only refuses what it can redirect. Disable `grep` and
+	// `glob` here in tools.disable and it goes inert rather than
+	// refusing with a pointer to tools that aren't in the catalog.
+	//
+	// CLI override: --bash-search-gate=enforce|warn|allow.
+	BashSearchGate string `json:"bash_search_gate,omitempty"`
 }
 
 // SessionConfig carries per-session presets — currently just the
@@ -1119,6 +1151,13 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("config: unknown safety.watchdog %q (want one of %q, %q, %q)", c.Safety.Watchdog, WatchdogOff, WatchdogWarn, WatchdogEnforce)
 	}
+	switch c.Safety.BashSearchGate {
+	case "", BashSearchGateEnforce, BashSearchGateWarn, BashSearchGateAllow:
+		// ok; "" defaults to enforce (see SafetyConfig.BashSearchGate).
+	default:
+		return fmt.Errorf("config: unknown safety.bash_search_gate %q (want one of %q, %q, %q)",
+			c.Safety.BashSearchGate, BashSearchGateEnforce, BashSearchGateWarn, BashSearchGateAllow)
+	}
 	for i, root := range c.ContentRoots {
 		// Environment-free per the Validate contract: no existence/stat
 		// check here (the instruction loader errors loudly on a missing
@@ -1170,6 +1209,13 @@ const (
 	WatchdogOff     = "off"
 	WatchdogWarn    = "warn"
 	WatchdogEnforce = "enforce"
+)
+
+// Bash search-gate mode constants. See SafetyConfig.BashSearchGate.
+const (
+	BashSearchGateEnforce = "enforce"
+	BashSearchGateWarn    = "warn"
+	BashSearchGateAllow   = "allow"
 )
 
 // validNamedTheme accepts the shape core-tui's BuiltinThemes

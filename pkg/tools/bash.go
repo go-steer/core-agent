@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 
 	"google.golang.org/adk/tool"
@@ -37,6 +38,50 @@ type bashResult struct {
 	Stdout   string `json:"stdout"`
 	Stderr   string `json:"stderr"`
 	TimedOut bool   `json:"timed_out,omitempty"`
+	// Notice carries advisory feedback about the command itself,
+	// distinct from anything the command printed. Currently only the
+	// search gate in "warn" mode (#158) sets it: the command ran, and
+	// this says there was a better tool for it. Omitted when empty so
+	// the common result shape is unchanged.
+	Notice string `json:"notice,omitempty"`
+}
+
+// bashDescription renders the model-facing description, which has to
+// match what the gate will actually do. "Prefer the structured tools"
+// is accurate in warn/allow mode and an understatement in enforce mode,
+// where a `grep -rn` is refused outright — and a model that learns the
+// rule from a refusal has already spent a turn learning it (#158).
+func bashDescription(gate *permissions.Gate) string {
+	const base = "Execute a shell command via /bin/sh -c with a timeout. For code investigation " +
+		"(reading files, searching source, listing directories), prefer the structured `read_file`, " +
+		"`grep`, `glob`, `list_dir` tools — they honor the permission gate and per-tool output caps. " +
+		"Use this tool for actions those tools cannot perform: builds, tests, git, formatters, " +
+		"package managers, and other shell-native workflows."
+	if gate == nil || gate.BashSearchGate() != config.BashSearchGateEnforce {
+		return base
+	}
+	gated := gate.ActiveSearchBinaries()
+	if len(gated) == 0 {
+		// Enforce with no native tool to redirect to: the gate refuses
+		// nothing, so the description must not threaten a refusal.
+		return base
+	}
+	// Name only the natives this build registered: a description that
+	// says "use `glob`" when glob was disabled sends the model at a
+	// tool that isn't there.
+	natives := gate.ActiveNativeSearchTools()
+	for i, n := range natives {
+		natives[i] = "`" + n + "`"
+	}
+	nativePhrase := strings.Join(natives, " / ") + " tool"
+	if len(natives) > 1 {
+		nativePhrase += "s"
+	}
+	return base + " Search-shaped commands are REFUSED here: a command whose verb is " +
+		strings.Join(gated, "/") +
+		" must go through the native " + nativePhrase +
+		" instead. Piping into one of those " +
+		"(`go test ./... | grep -v ok`) is fine — that filters a stream rather than searching a tree."
 }
 
 const defaultBashTimeout = 30 * time.Second
@@ -69,6 +114,11 @@ func bashFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[bash
 		if err := gate.CheckBash(ctx, in.Command); err != nil {
 			return bashResult{}, err
 		}
+		// Resolved before the command runs so a timeout or a non-zero
+		// exit still carries the advice — those are exactly the
+		// outcomes a bash-as-grep call produces (#158's session opened
+		// with a grep that matched nothing and a find that exited 123).
+		notice := gate.BashSearchNotice(ctx, in.Command)
 		timeout := defaultBashTimeout
 		if in.TimeoutSeconds > 0 {
 			timeout = time.Duration(in.TimeoutSeconds) * time.Second
@@ -122,6 +172,7 @@ func bashFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[bash
 			Stdout:   Truncate(stdout.String(), caps.bytes, caps.lines),
 			Stderr:   Truncate(stderr.String(), caps.bytes, caps.lines),
 			TimedOut: timedOut,
+			Notice:   notice,
 		}
 		if timedOut {
 			return out, fmt.Errorf("bash: timed out after %s", timeout)

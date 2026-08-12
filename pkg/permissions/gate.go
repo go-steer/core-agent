@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -125,6 +126,22 @@ type Gate struct {
 	// See docs/plan-first-design.md.
 	requirePlanArtifact bool
 	planRecorded        bool
+
+	// bashSearchGate is the resolved search-gate posture ("enforce" |
+	// "warn" | "allow"). Immutable after New, so it needs no lock and
+	// is inherited as-is by DeriveForSession sub-gates. See
+	// searchgate.go and #158.
+	bashSearchGate string
+	// nativeSearchTools, when non-nil, is the set of native tool names
+	// the host actually registered ("grep", "glob"). The search gate's
+	// whole value is that its refusal names a replacement, so a build
+	// that dropped `grep` from the catalog must not be told to use it —
+	// that would be the same unenforceable-claim failure the gate exists
+	// to prevent, pointed the other way. Set once by tools.Build before
+	// the gate serves any call; nil means "assume registered", so a host
+	// that wires tools by hand keeps the gate rather than silently
+	// disarming it.
+	nativeSearchTools map[string]bool
 }
 
 // planExemptTools is the set of tool names that bypass the plan-
@@ -215,6 +232,14 @@ type Options struct {
 	// the plan-first pre-check; once a plan is recorded, the mode's
 	// usual semantics resume. See docs/plan-first-design.md.
 	RequirePlanArtifact bool
+
+	// BashSearchGate selects what CheckBash does with a search-shaped
+	// command (`grep -rn foo .`, `find . -name '*.go'`) while native
+	// grep/glob tools exist: "enforce" (default) refuses with a
+	// structured error naming the replacement, "warn" allows it and
+	// lets the caller surface a notice, "allow" disables the check.
+	// Empty == "enforce". See searchgate.go and #158.
+	BashSearchGate string
 }
 
 // New builds a Gate from the supplied options. The Mode defaults to
@@ -229,6 +254,9 @@ func New(opts Options) *Gate {
 	if opts.Scope == nil {
 		opts.Scope, _ = NewPathScope("", "", nil)
 	}
+	if opts.BashSearchGate == "" {
+		opts.BashSearchGate = config.BashSearchGateEnforce
+	}
 	return &Gate{
 		mode:                opts.Mode,
 		policy:              opts.Policy,
@@ -239,6 +267,7 @@ func New(opts Options) *Gate {
 		sessionAllowTools:   make(map[string]struct{}),
 		sessionAllowVerbs:   make(map[string]struct{}),
 		requirePlanArtifact: opts.RequirePlanArtifact,
+		bashSearchGate:      opts.BashSearchGate,
 	}
 }
 
@@ -292,6 +321,7 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 		Scope:               scope,
 		Prompter:            prompter,
 		RequirePlanArtifact: cfg.Permissions.RequirePlanArtifact,
+		BashSearchGate:      cfg.Safety.BashSearchGate,
 	}), nil
 }
 
@@ -364,6 +394,11 @@ func (template *Gate) DeriveForSession(sessionID string, prompter Prompter) *Gat
 		sessionAllowTools:   make(map[string]struct{}),
 		sessionAllowVerbs:   make(map[string]struct{}),
 		requirePlanArtifact: template.requirePlanArtifact,
+		// Inherited, not defaulted: a sub-gate that dropped this would
+		// leave the search gate off for every daemon-created session
+		// while --print-config still reported it on.
+		bashSearchGate:    template.bashSearchGate,
+		nativeSearchTools: template.nativeSearchTools,
 	}
 }
 
@@ -549,17 +584,108 @@ func sessionToolKey(namespace, tool string) string {
 // CheckBash gates a bash invocation. The built-in denylist is checked
 // first; it is not overridable by config, but it is best-effort
 // defense-in-depth, NOT a security boundary — a small pattern set that
-// is trivially evadable (see denylist.go). After that, policy + mode
-// determine whether the call needs a prompt. For a real bash boundary,
-// run in allow/ask mode with an explicit allowlist rather than relying
-// on the denylist.
+// is trivially evadable (see denylist.go). Then the search gate (#158)
+// refuses search-shaped commands in enforce mode. After that, policy +
+// mode determine whether the call needs a prompt. For a real bash
+// boundary, run in allow/ask mode with an explicit allowlist rather
+// than relying on the denylist.
 func (g *Gate) CheckBash(ctx context.Context, command string) error {
 	g = g.resolveSessionGate(ctx)
 	command = strings.TrimSpace(command)
 	if denied, reason := IsBashDenied(command); denied {
 		return fmt.Errorf("bash refused: %s", reason)
 	}
+	if g.bashSearchGate == config.BashSearchGateEnforce {
+		if binary, native, hit := SearchShapedCommand(command); hit && g.nativeRegistered(native) {
+			return fmt.Errorf("bash refused: %s", SearchGateMessage(binary, native))
+		}
+	}
 	return g.gateRequest(ctx, PromptKindBash, "bash", command, "bash", command, "bash")
+}
+
+// BashSearchGate reports the resolved search-gate posture.
+func (g *Gate) BashSearchGate() string { return g.bashSearchGate }
+
+// SetNativeSearchTools tells the gate which native search tools the
+// host registered, keyed by tool name ("grep", "glob"). Called by
+// tools.Build at construction time, before the gate serves a call, so
+// no lock is taken — mirrors SetPrompter / SetGrantStore.
+func (g *Gate) SetNativeSearchTools(registered map[string]bool) {
+	g.nativeSearchTools = registered
+}
+
+// NativeSearchTools returns what SetNativeSearchTools was given, so a
+// host that built its catalog against a derived gate can forward the
+// same knowledge to the template every later session derives from.
+func (g *Gate) NativeSearchTools() map[string]bool { return g.nativeSearchTools }
+
+func (g *Gate) nativeRegistered(name string) bool {
+	if g.nativeSearchTools == nil {
+		return true
+	}
+	return g.nativeSearchTools[name]
+}
+
+// ActiveSearchBinaries lists the search binaries this gate would
+// actually act on — the gated set minus any whose native replacement
+// isn't registered. Empty means the gate is inert no matter what the
+// posture says, which is a thing operator-facing output should be able
+// to state plainly rather than let an operator infer.
+func (g *Gate) ActiveSearchBinaries() []string {
+	out := make([]string, 0, len(searchBinaries))
+	for _, name := range SearchGatedBinaries() {
+		if g.nativeRegistered(searchBinaries[name]) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// ActiveNativeSearchTools lists the native tools ActiveSearchBinaries
+// would redirect to, deduped and sorted. Operator- and model-facing
+// text uses this rather than a literal "grep/glob" so a build that
+// registered only one of them doesn't advertise the other.
+func (g *Gate) ActiveNativeSearchTools() []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, name := range g.ActiveSearchBinaries() {
+		native := searchBinaries[name]
+		if seen[native] {
+			continue
+		}
+		seen[native] = true
+		out = append(out, native)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// BashSearchNotice returns the advisory text for a search-shaped
+// command in "warn" mode, or "" when the gate is not in warn mode or
+// the command isn't search-shaped.
+//
+// Warn mode needs a channel back to the model, and the tool result is
+// the one that already exists and is guaranteed in-context on the very
+// next inference — the whole point of #158 is feedback at the moment
+// of the wrong choice, and a notice delivered a turn later is a notice
+// delivered after the model has already built on the result. Callers
+// (the bash tool) attach this to their output; CheckBash itself stays
+// a pure allow/deny so hooks and other callers are unaffected.
+//
+// Resolves the ctx session gate for the same reason CheckBash does:
+// in a multi-session daemon the shared bash tool closes over the
+// daemon's gate, and the advice has to come from the gate that would
+// have made the decision.
+func (g *Gate) BashSearchNotice(ctx context.Context, command string) string {
+	g = g.resolveSessionGate(ctx)
+	if g.bashSearchGate != config.BashSearchGateWarn {
+		return ""
+	}
+	binary, native, hit := SearchShapedCommand(strings.TrimSpace(command))
+	if !hit || !g.nativeRegistered(native) {
+		return ""
+	}
+	return SearchGateMessage(binary, native)
 }
 
 // CheckFileRead gates a read-only file operation. An allow-list

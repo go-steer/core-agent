@@ -25,7 +25,7 @@ Tools are grouped by domain — files, search, shell, data + network, planning, 
 | Tool | Purpose | Key parameters |
 |---|---|---|
 | `glob` | Walk `path` (default `.`) and return file paths whose basename matches a `filepath.Match` pattern (e.g. `*.go`). Skips hidden + vendored directories. | `pattern`, `path?` |
-| `grep` | Walk `path` and return matching lines for an RE2 regex. Recursive on directories; single-file mode for files. Returns structured `{path, line, text}` matches the model can pipe into follow-up tool calls without re-parsing. **Preferred over `bash grep` / `bash rg` / `bash find` for code search.** | `pattern`, `path?` |
+| `grep` | Walk `path` and return matching lines for an RE2 regex. Recursive on directories; single-file mode for files. Returns structured `{path, line, text}` matches the model can pipe into follow-up tool calls without re-parsing. **Preferred over `bash grep` / `bash rg` / `bash find` for code search** — and since v2.9 that preference is enforced by [the bash search gate](#the-bash-search-gate) rather than left to the model. | `pattern`, `path?` |
 
 ### Data + network
 
@@ -38,7 +38,7 @@ Tools are grouped by domain — files, search, shell, data + network, planning, 
 
 | Tool | Purpose | Key parameters |
 |---|---|---|
-| `bash` | `/bin/sh -c` with a per-call timeout and a denylist of dangerous commands. **Use only for actions the structured tools can't perform**: builds, tests, git, formatters, package managers. The descriptions of `read_file`, `grep`, `glob`, `list_dir`, `stat`, `delete_file` all instruct the model to prefer them over the corresponding `bash` invocation so it doesn't fall back to the shell for things the structured tools handle. | `command`, `timeout?` |
+| `bash` | `/bin/sh -c` with a per-call timeout and a denylist of dangerous commands. **Use only for actions the structured tools can't perform**: builds, tests, git, formatters, package managers. The descriptions of `read_file`, `grep`, `glob`, `list_dir`, `stat`, `delete_file` all instruct the model to prefer them over the corresponding `bash` invocation — and for search specifically that preference is *enforced*, not requested: see [the bash search gate](#the-bash-search-gate). | `command`, `timeout?` |
 
 ### Planning
 
@@ -134,6 +134,42 @@ The gate also enforces two cross-cutting scopes — both default-deny, both conf
 - **`path_scope.allow` / `deny`** — restricts which paths every file tool (`read_file`, `write_file`, `edit_file`, `delete_file`, `list_dir`, `glob`, `grep`, `stat`, `read_many_files`) can touch. Default: project root only.
 - **`url_scope.allow`** — restricts which URLs `fetch_url` can reach. Default: empty allowlist means `fetch_url` is not registered at all.
 
+## The bash search gate
+
+Tool descriptions tell the model to prefer `grep` / `glob` over the shell. Measured against real sessions, that instruction lost 15 times out of 27: the model reached for `grep -rn` anyway, got a wall of untruncated text or a non-zero exit, and kept going. One session opened with three bash-as-grep calls in its first four and ran 164 turns and $5.41 without producing a diagnosis. Since v2.9 ([#158](https://github.com/go-steer/core-agent/issues/158)) the preference is enforced rather than requested.
+
+By default, a `bash` call whose command is **search-shaped** is refused with an error naming the tool to use instead:
+
+```text
+bash refused: `grep` is a search-shaped command; use the native `grep` tool
+instead. It returns structured {path, line, text} matches, honors the
+permission gate and the path scope, and applies per-tool output caps. Piping
+into a search binary is unaffected — `go test ./... | grep -v ok` filters a
+stream, which the native tool does not do. Operator override:
+safety.bash_search_gate = "warn" or "allow" (CLI: --bash-search-gate).
+```
+
+Search-shaped means the command's verb is `grep`, `egrep`, `fgrep`, `rgrep`, `rg`, `ag`, or `ack` (→ the `grep` tool), or `find` or `fd` (→ the `glob` tool), including via an absolute path like `/usr/bin/grep`. The gate looks through `;`, `&&`, `||`, subshells, and blocks, so `make build && grep -rn TODO .` is refused on the right-hand side.
+
+Two shapes are deliberately **not** gated, because the native tools genuinely can't replace them:
+
+- **Piped searches.** In `go test ./... | grep -v ok` the grep filters a stream, not a file tree. Refusing it would refuse work that has no alternative — and a gate that blocks legitimate commands gets turned off, which is worse than not having one.
+- **`find` with an action predicate.** `find . -name '*.tmp' -delete` is a file operation; `glob` only lists. The carve-out uses the same predicate list (`-exec`, `-delete`, `-fprintf`, …) the permission gate already uses to decide that a `find` needs approval.
+
+| `safety.bash_search_gate` | Behavior |
+|---|---|
+| `enforce` *(default)* | Refuse the call. The model gets the error above and, in practice, reissues as a `grep` tool call. |
+| `warn` | Run the command, and attach the same advice to the result as a `notice` field. Use when you want the telemetry without changing behavior. |
+| `allow` | Disable the check entirely. |
+
+CLI: `--bash-search-gate=enforce|warn|allow`, which overrides the config field.
+
+The gate is **steering, not security**. It reads the command with the same shell parser as the [safe-command](/concepts/permissions/) check and fails *open* on anything it can't resolve literally — `$TOOL -rn foo .`, `eval`, `sh -c '...'` all pass through. Anyone trying to evade it can; the point is to stop a model from taking the wrong path by habit, and a false refusal on a real build command costs more than a missed nudge. For an actual boundary, drop `bash` from the catalog with `tools.disable`.
+
+The check runs before the permission mode is consulted, so `--yolo` does not wave it through — the posture an operator configured shouldn't depend on how permissive the session is. It's also inherited by every session a daemon derives, rather than re-defaulted per session.
+
+It refuses only what it can redirect. A recipe that puts `grep` in `tools.disable` and keeps `bash` gets no refusal for `bash grep`, because a refusal naming a tool the model can't call is a dead end — the same unenforceable-claim problem, pointed the other way. With neither `grep` nor `glob` registered the gate is inert, and the startup line says so: `bash search gate: enforce but INERT (…)`. Otherwise the line names the posture and the binaries actually covered, on every boot including the default, and the `bash` tool's own description switches from "prefer the structured tools" to "REFUSED" so the model learns the rule from the catalog instead of from an error.
+
 ## Optional lifecycle tools
 
 These are registered conditionally based on agent construction. They're not in the `BuiltinTools` struct because their presence depends on which `agent.New` options were passed.
@@ -202,3 +238,5 @@ For late binding to the constructed `*Agent` (when a custom tool needs to call b
 A tool's description text shows up verbatim in the system prompt the model sees. `core-agent`'s built-in descriptions are deliberately prescriptive — they tell the model not just what the tool does but **when to prefer it over alternatives** ("use `grep` instead of `bash grep`", "use `read_many_files` instead of parallel `read_file` calls", "use `agentic_read_file` when the file might be large"). The prescriptive framing is what keeps the model from defaulting to `bash` for everything.
 
 If you're authoring your own tools, mirror this pattern: a description that says only "Search files for a pattern" loses the model. One that says "Search files for a pattern. **Use this instead of `bash grep`** when investigating source code — the output is structured and the gate sees the call" wins the routing decision at every turn.
+
+That said, a description is still advisory, and measured against a Gemini variant the search hint lost 15 times out of 27. Where a routing preference actually matters, back it with a gate that refuses the alternative — that's what [the bash search gate](#the-bash-search-gate) does, and the `bash` description changes to say "REFUSED" when it's armed, because a description that undersells the runtime costs the model a turn to discover the real rule.

@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	adkmodel "google.golang.org/adk/model"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/agent/background"
+	"github.com/go-steer/core-agent/v2/pkg/compose"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/instruction"
 	"github.com/go-steer/core-agent/v2/pkg/mcp"
@@ -42,6 +44,160 @@ import (
 // result is still delivered later by push. Chosen against typical subagent
 // latencies; revisit if real workloads need a different bound.
 const defaultSyncWaitTimeout = 5 * time.Minute
+
+// sessionBackgroundRecipe captures everything the daemon knows about
+// background subagents at startup, so each multi-session session can
+// stand up its OWN background.Manager from it (#637). The zero value is
+// inert: factory() returns nil, and compose then wires no manager at
+// all — which is exactly what --no-background-agents should produce.
+//
+// It lives here rather than in pkg/compose so compose keeps no
+// dependency on pkg/agent/background: the daemon already owns the
+// provider, the small-model id, the ad-hoc policy and the resolved
+// declarative templates, and hands compose one closure.
+type sessionBackgroundRecipe struct {
+	provider     models.Provider
+	smallModelID string
+	allowAdhoc   bool
+	syncWait     time.Duration
+	// spawnToolNames are the DAEMON-bound spawn tools baked into the
+	// shared builtin list. They must be stripped from every session's
+	// surface and replaced with session-bound ones, or the session's
+	// spawns would run on the daemon manager (daemon-wide gate, wrong
+	// parent, cross-tenant alert channel).
+	spawnToolNames map[string]struct{}
+	// templates are the declarative subagents, pre-resolved once at
+	// startup. Safe to share across managers: each spawn builds a fresh
+	// LLM from the template's ModelFactory, and toolsets are stateless
+	// process-lifetime handles.
+	templates []background.SubagentTemplate
+	// live tracks the managers currently handed out, so daemon shutdown
+	// can drain them alongside the daemon's own.
+	live *sessionManagerSet
+}
+
+// sessionManagerSet tracks the live per-session managers so daemon
+// shutdown drains them the way it drains the daemon's own: cancel every
+// subagent, wait out the bounded window, log the stragglers. Without it
+// a SIGTERM would tear in-flight session subagents down mid-tool-call —
+// their goroutines run under context.WithoutCancel, so only a Close
+// reaches them, and a session's Close is otherwise wired to eviction
+// alone. Entries are removed on eviction so a long-lived daemon's set
+// tracks live sessions, not every session it ever created.
+type sessionManagerSet struct {
+	mu   sync.Mutex
+	live map[*background.Manager]struct{}
+}
+
+func newSessionManagerSet() *sessionManagerSet {
+	return &sessionManagerSet{live: make(map[*background.Manager]struct{})}
+}
+
+func (s *sessionManagerSet) add(m *background.Manager) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.live[m] = struct{}{}
+}
+
+// len reports how many managers are currently tracked.
+func (s *sessionManagerSet) len() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.live)
+}
+
+func (s *sessionManagerSet) remove(m *background.Manager) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.live, m)
+}
+
+// closeAll drains every live manager concurrently, so total shutdown
+// latency stays one Close window rather than one per session. Close is
+// idempotent, so racing with an eviction that is closing the same
+// manager is safe.
+func (s *sessionManagerSet) closeAll() {
+	s.mu.Lock()
+	mgrs := make([]*background.Manager, 0, len(s.live))
+	for m := range s.live {
+		mgrs = append(mgrs, m)
+	}
+	clear(s.live)
+	s.mu.Unlock()
+
+	var wg sync.WaitGroup
+	for _, m := range mgrs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := m.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "core-agent: shutdown: session subagents: %v\n", err)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// factory adapts the recipe into the compose seam. Returns nil when the
+// daemon has no provider for background work, which leaves the
+// pre-#637 behavior in place.
+func (r sessionBackgroundRecipe) factory() compose.SessionBackgroundFactory {
+	if r.provider == nil {
+		return nil
+	}
+	return func(scope compose.SessionScope) (compose.SessionSubagents, error) {
+		// The catalog a subagent may draw from is the session's own tool
+		// surface MINUS the spawn tools, matching the daemon manager's
+		// posture (its catalog was snapshotted before its spawn tools
+		// were appended) — a subagent must not spawn subagents by
+		// picking the spawn tool out of the catalog.
+		base := make([]adktool.Tool, 0, len(scope.Tools))
+		for _, t := range scope.Tools {
+			if t == nil {
+				continue
+			}
+			if _, isSpawn := r.spawnToolNames[t.Name()]; isSpawn {
+				continue
+			}
+			base = append(base, t)
+		}
+		mgr, err := background.NewManager(
+			background.WithProvider(r.provider, scope.ModelName),
+			// THIS session's sub-gate, so its subagents inherit its mode,
+			// approvals and plan-first state instead of the daemon's.
+			background.WithGate(scope.Gate),
+			background.WithCatalog(base),
+			background.WithAllowAdhoc(r.allowAdhoc),
+			background.WithSmallModelID(r.smallModelID),
+			background.WithSyncWaitTimeout(r.syncWait),
+		)
+		if err != nil {
+			return compose.SessionSubagents{}, err
+		}
+		if len(r.templates) > 0 {
+			if err := mgr.SetSubagentTemplates(r.templates); err != nil {
+				_ = mgr.Close()
+				return compose.SessionSubagents{}, fmt.Errorf("register async templates: %w", err)
+			}
+		}
+		sid := scope.SessionID
+		if r.live != nil {
+			r.live.add(mgr)
+		}
+		return compose.SessionSubagents{
+			Manager: mgr,
+			Tools:   append(base, background.NewSpawnTools(mgr)...),
+			Close: func() {
+				if r.live != nil {
+					r.live.remove(mgr)
+				}
+				if err := mgr.Close(); err != nil {
+					fmt.Fprintf(os.Stderr, "core-agent: session %s subagents: %v\n", sid, err)
+				}
+			},
+		}, nil
+	}
+}
 
 // namedToolset pairs an MCP server's name with its already-started
 // toolset, so a scoped subagent can select servers by name. Built from

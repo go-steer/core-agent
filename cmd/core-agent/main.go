@@ -1053,6 +1053,10 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// WithBackgroundManager; the agent's pre-turn alert drain
 	// surfaces background reports to the parent's model.
 	var bgMgr *background.Manager
+	// bgRecipe carries the same recipe down to every multi-session
+	// session so each gets its OWN manager (#637). Stays zero (and so
+	// inert) under --no-background-agents.
+	var bgRecipe sessionBackgroundRecipe
 	if !noBackgroundAgents {
 		var err error
 		// allow_adhoc gates inline-persona spawns (the model authoring a
@@ -1091,7 +1095,26 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 				fmt.Fprintf(os.Stderr, "core-agent: shutdown: %v\n", err)
 			}
 		}()
-		builtinTools = append(builtinTools, background.NewSpawnTools(bgMgr)...)
+		spawnTools := background.NewSpawnTools(bgMgr)
+		builtinTools = append(builtinTools, spawnTools...)
+		bgRecipe = sessionBackgroundRecipe{
+			provider:       provider,
+			smallModelID:   bgSmallModel,
+			allowAdhoc:     allowAdhoc,
+			syncWait:       defaultSyncWaitTimeout,
+			spawnToolNames: make(map[string]struct{}, len(spawnTools)),
+			live:           newSessionManagerSet(),
+		}
+		defer func() {
+			// Multi-session sessions each own a manager; drain them on the
+			// way out exactly like the daemon's own above, so a SIGTERM
+			// cancels their in-flight subagents instead of dropping them
+			// mid-tool-call at process exit.
+			bgRecipe.live.closeAll()
+		}()
+		for _, t := range spawnTools {
+			bgRecipe.spawnToolNames[t.Name()] = struct{}{}
+		}
 	}
 
 	// retrieve_raw built-in: model-facing escape hatch to fetch back
@@ -1219,6 +1242,8 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			fmt.Fprintf(os.Stderr, "core-agent: subagents: register async templates: %v\n", err)
 			return runner.ExitConfigError
 		}
+		// Same roster for every multi-session session's own manager.
+		bgRecipe.templates = subagentTemplates
 	}
 
 	// One status-gauge registration over every MCP server this process owns
@@ -1746,8 +1771,10 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		// stamp the new session's ACL.Owner. v0 spike: substrate
 		// essentials only (tools, eventlog, per-session sub-gate, per-
 		// caller instruction overlay, per-session prompter). Operator
-		// features (BackgroundManager, Compactor, Watchdog, etc.) are
-		// not yet wired into on-demand sessions; document follow-up.
+		// features have since been wired: Compactor / Checkpointer /
+		// CostCeiling, Watchdog, and a per-session BackgroundManager
+		// (#637). The deferrals that remain are listed on
+		// compose.SessionFactoryDeps.
 		var sessionFactory attach.SessionFactory
 		var sessionResumer attach.SessionResumer
 		var autoContinueBootScan func()
@@ -1776,6 +1803,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 				WatchdogMode:          guard.Watchdog,
 				AutoContinueEnabled:   autoContinueEnabled,
 				AutoContinueFreshness: autoContinueFreshness,
+				SessionBackground:     bgRecipe.factory(),
 			}
 			sessionFactory = compose.BuildSessionFactory(factoryDeps)
 			// Session resume: reconstructs sessions persisted in

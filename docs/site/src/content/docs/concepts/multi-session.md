@@ -151,6 +151,7 @@ When multi-session is enabled, each session gets a derived sub-gate with its own
 - **Approval audit** (`approvals`) — per-session interactive-decision log.
 - **Permission mode** — alice toggling to `yolo` via TUI chip doesn't change bob's session's mode.
 - **Prompter** — each session's UI hooks (TUI broker, HTTP prompt stream) are independent.
+- **Background subagents** — each session gets its own subagent manager, so a subagent spawned from alice's session runs behind alice's sub-gate, branches off alice's session in the eventlog, and reports back into alice's turn. `GET /sessions/{sid}/subagents` returns that session's roster, and evicting the session tears its subagents down. (Before v2.9 a daemon-created session had no manager at all: `spawn_agent` was present but bound to the daemon's, so the roster read empty and spawns ran under the daemon-wide gate.)
 
 **What's still daemon-wide** (by design — operator model is "one config, many users"):
 - `permissions.allow` / `permissions.deny` patterns from config

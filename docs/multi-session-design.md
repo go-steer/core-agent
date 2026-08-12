@@ -471,6 +471,19 @@ spawned by user A's session is gated by user A's session-gate;
 its grants don't leak to user B. Correct behavior; no fix
 needed once sub-gates land.
 
+**Shipped (#637):** that inheritance only holds if the session
+has its OWN manager. The v0 factory wired none, so a
+daemon-created session carried the daemon's spawn tools — bound
+to the daemon-wide manager, and therefore the daemon-wide gate.
+`SessionFactoryDeps.SessionBackground` now builds one manager per
+session (daemon-bound spawn tools stripped and replaced with
+session-bound ones), and eviction closes it: spawn goroutines run
+under `context.WithoutCancel`, so nothing else stops them. A
+shared manager was rejected for four reasons — `AttachParent` is
+last-writer-wins, the alert channel would multiplex across
+tenants, the gate would be the daemon's, and the subagent
+listings would return the cross-tenant union.
+
 ### Eventlog + session.Service
 
 **Today:** already isolated by sessionID. No change needed.

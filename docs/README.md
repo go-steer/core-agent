@@ -105,6 +105,8 @@ research + friction logs, or handover notes.
 
 ## Audits, strategy + handover notes
 
+- [`assessments/`](assessments/) — dated whole-project assessments (strengths, gaps, premise-vs-shipped-reality) and the milestones they seeded
+  - [`assessments/2026-08-12-tri-team-assessment.md`](assessments/2026-08-12-tri-team-assessment.md) — advocate/critic/arbitrator review of code quality, subagents, autonomy, SRE fitness + coding ability; seeded the v2.9 and v3.0 milestones
 - [`cogo-core-agent-integration.md`](cogo-core-agent-integration.md) — cogo + core-agent integration strategy (Option C, sequenced through A)
 - [`cogo-flip-readiness-audit.md`](cogo-flip-readiness-audit.md) — cogo → core-agent flip readiness audit (2026-05-26)
 - [`pkg-reorg-option-1.md`](pkg-reorg-option-1.md) — lifting public packages into `pkg/`

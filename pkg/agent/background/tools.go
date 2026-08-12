@@ -300,13 +300,27 @@ func NewSpawnAgentTool(mgr *Manager) tool.Tool {
 	}
 	t, err := functiontool.New(functiontool.Config{
 		Name:        "spawn_agent",
-		Description: "Spawn an in-process background subagent that runs in parallel with you. Prefer referencing a preconfigured subagent by name via the 'agent' field and supplying its 'goal' (optionally a quick plan) — its persona, tools, model, and budgets are already set by the operator, and you may only narrow them. Authoring an ad-hoc subagent inline (system_prompt + tools) is only possible when the operator enabled ad-hoc spawns. The subagent runs autonomously; you'll receive its updates as '[Background reports]' lines prepended to your next turn when it calls report_alert or finishes. Use this for tasks that should run continuously (monitoring) or in parallel (independent fan-out work). Do NOT list 'schedule_next_turn', 'report_done', 'report_alert', or 'report_completed' in the tools field — those are auto-wired into every subagent by the runtime; listing them is a no-op (silently skipped).",
+		Description: spawnAgentDescription,
 	}, handler)
 	if err != nil {
 		panic("background: NewSpawnAgentTool: " + err.Error())
 	}
-	return t
+	// The roster wrapper folds the configured subagents into the schema
+	// the model sees (#640). It must wrap rather than be baked into the
+	// description above: the roster isn't known until
+	// SetSubagentTemplates runs, which is after construction.
+	return rosterTool{inner: t, mgr: mgr}
 }
+
+// spawnAgentDescription is the static half of spawn_agent's model-facing
+// description; rosterTool appends the live roster to it (#640).
+const spawnAgentDescription = "Spawn an in-process background subagent that runs in parallel with you. " +
+	"Prefer referencing a preconfigured subagent by name via the 'agent' field and supplying its 'goal' (optionally a quick plan) — its persona, tools, model, and budgets are already set by the operator, and you may only narrow them. " +
+	"When a configured subagent covers the task, delegate to it instead of doing the work yourself: it exists because the operator scoped it for exactly this. " +
+	"Authoring an ad-hoc subagent inline (system_prompt + tools) is only possible when the operator enabled ad-hoc spawns. " +
+	"The subagent runs autonomously; you'll receive its updates as '[Background reports]' lines prepended to your next turn when it calls report_alert or finishes. " +
+	"Use this for tasks that should run continuously (monitoring) or in parallel (independent fan-out work). " +
+	"Do NOT list 'schedule_next_turn', 'report_done', 'report_alert', or 'report_completed' in the tools field — those are auto-wired into every subagent by the runtime; listing them is a no-op (silently skipped)."
 
 type stopAgentArgs struct {
 	Name string `json:"name" jsonschema:"the name of the subagent to stop"`

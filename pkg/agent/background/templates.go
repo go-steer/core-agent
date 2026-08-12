@@ -296,9 +296,10 @@ func (m *Manager) Catalog() []attach.SubagentCatalogInfo {
 	predefined := make([]attach.SubagentCatalogInfo, 0, len(m.predefined))
 	for _, s := range m.predefined {
 		predefined = append(predefined, attach.SubagentCatalogInfo{
-			Name:  s.Name,
-			Model: s.ModelID,
-			Modes: []string{"async"},
+			Name:        s.Name,
+			Description: s.Description,
+			Model:       s.ModelID,
+			Modes:       []string{"async"},
 		})
 	}
 	sort.Slice(predefined, func(i, j int) bool { return predefined[i].Name < predefined[j].Name })

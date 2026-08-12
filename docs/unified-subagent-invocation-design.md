@@ -223,6 +223,14 @@ Two audiences, deliberately different:
   **enum of configured spec names** with their `Description`s — enough to route
   ("this is a triage → `cluster`") without a separate discovery tool. **No new
   model tool** (the "too many confusing tools" constraint).
+  *Shipped in #640:* the roster is rendered at `Declaration()` time by a
+  `rosterTool` wrapper around `spawn_agent`, not at construction — the tools are
+  built before `SetSubagentTemplates` registers the declarative subagents, so a
+  construction-time snapshot would miss exactly the entries that matter. Names
+  and descriptions go into the tool description; the `agent` enum is applied
+  only when ad-hoc spawning is **off**, since an ad-hoc spawn legitimately
+  leaves `agent` empty. Both halves read the same `Manager.Catalog` the
+  operator surfaces use.
 - **The operator** gets a real catalog on three surfaces, all in this repo:
   - a `GET /subagents` attach endpoint (`pkg/attach`, cloning the `GET /peers`
     handler pattern) — the **contract** every client reads;

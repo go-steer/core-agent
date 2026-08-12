@@ -94,11 +94,12 @@ func BuildMultiSessionAuthn(cfg config.MultiSessionConfig) (auth.Authenticator, 
 // overlay, per-session prompter, plus Compactor / Checkpointer /
 // CostCeiling (these are pure config, so per-session reconstruction
 // is trivial and the alternative was /compact and /done erroring on
-// every session-created agent). Features that need per-session
-// scoping decisions the daemon doesn't yet make (BackgroundManager
-// sharing, Watchdog alert-sink routing, agentic tool wrappers, MCP
-// custom auth) remain deferred — sessions created via POST /sessions
-// see the substrate without them.
+// every session-created agent). Background subagents are wired
+// per-session too since #637 (see SessionBackground). Features that
+// need per-session scoping decisions the daemon doesn't yet make
+// (Watchdog alert-sink routing, agentic tool wrappers, MCP custom
+// auth) remain deferred — sessions created via POST /sessions see the
+// substrate without them.
 type SessionFactoryDeps struct {
 	// DaemonCtx is the daemon's lifetime context — every per-session
 	// wake loop spawned by the factory uses it as the cancellation
@@ -206,6 +207,60 @@ type SessionFactoryDeps struct {
 	// a hook keyed on Labels would silently build a different
 	// session shape on lazy resume than it did at creation.
 	Customize SessionCustomizer
+
+	// SessionBackground, when non-nil, gives every session its OWN
+	// background-subagent manager (#637). Called once per construction,
+	// after Customize has settled the session's model and tools.
+	//
+	// Leave nil to keep the pre-#637 behavior (no manager on
+	// session-created agents); the daemon leaves it nil when
+	// --no-background-agents is set.
+	SessionBackground SessionBackgroundFactory
+}
+
+// SessionBackgroundFactory is SessionFactoryDeps.SessionBackground — it
+// builds the background-subagent surface for ONE session.
+//
+// Per-session, not one shared daemon-wide manager, because sharing
+// breaks four ways at once:
+//
+//   - AttachParent is last-writer-wins, so every session's subagents
+//     would branch off whichever session was constructed last — wrong
+//     (app, user, sid) triple, wrong eventlog branch.
+//   - One alert channel is multiplexed across tenants, so tenant A's
+//     "[Background reports]" block can land in tenant B's turn.
+//   - The shared manager carries the DAEMON-WIDE gate, so a session's
+//     subagents would run outside that session's own mode, approvals
+//     and plan-first state.
+//   - ListSubagents / ListSubagentCatalog would return the union across
+//     every tenant.
+//
+// The returned Tools, when non-nil, REPLACE the session's tool list:
+// deps.BuiltinTools carries the daemon-bound spawn tools, and leaving
+// them in place would route this session's spawns back into the shared
+// daemon manager. Close is invoked on eviction — spawned subagents run
+// under context.WithoutCancel, so nothing else terminates them.
+type SessionBackgroundFactory func(scope SessionScope) (SessionSubagents, error)
+
+// SessionScope is the settled per-session context a
+// SessionBackgroundFactory builds against: the identity the session
+// belongs to, the sub-gate its tools run behind, and the model + tool
+// surface Customize left in place.
+type SessionScope struct {
+	SessionID string
+	Caller    auth.Caller
+	Gate      *permissions.Gate
+	ModelName string
+	Tools     []adktool.Tool
+}
+
+// SessionSubagents is a SessionBackgroundFactory's output: the manager
+// to wire via agent.WithBackgroundManager, an optional replacement tool
+// list, and the teardown hook eviction runs.
+type SessionSubagents struct {
+	Manager agent.SubagentManager
+	Tools   []adktool.Tool
+	Close   func()
 }
 
 // SessionCustomizer is SessionFactoryDeps.Customize — the per-caller
@@ -334,6 +389,34 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 		return nil, nil, fmt.Errorf("load per-caller instructions: %w", err)
 	}
 
+	// This session's OWN background-subagent manager (#637): built after
+	// Customize has settled the model + tools, and before agent.New so
+	// its replacement spawn tools are the ones the agent registers.
+	var (
+		bgClose func()
+		bgOpts  []agent.Option
+	)
+	if deps.SessionBackground != nil {
+		sub, err := deps.SessionBackground(SessionScope{
+			SessionID: sid,
+			Caller:    caller,
+			Gate:      sessionGate,
+			ModelName: cust.Model.Name(),
+			Tools:     cust.Tools,
+		})
+		if err != nil {
+			broker.Close()
+			return nil, nil, fmt.Errorf("build session subagents: %w", err)
+		}
+		if sub.Tools != nil {
+			cust.Tools = sub.Tools
+		}
+		bgClose = sub.Close
+		if sub.Manager != nil {
+			bgOpts = append(bgOpts, agent.WithBackgroundManager(sub.Manager))
+		}
+	}
+
 	opts := []agent.Option{
 		agent.WithTools(cust.Tools),
 		agent.WithToolsets(cust.Toolsets),
@@ -341,6 +424,7 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 		agent.WithGate(sessionGate),
 		agent.WithSession(caller.Identity, sid),
 	}
+	opts = append(opts, bgOpts...)
 	// Per-session adapter options: the prompt broker plus the
 	// AttachXProvider closures that power the operator-state slashes
 	// (/memory, /skills, /mcp, /pricing). Without the providers the
@@ -452,6 +536,9 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 	ag, err := agent.New(cust.Model, opts...)
 	if err != nil {
 		broker.Close()
+		if bgClose != nil {
+			bgClose()
+		}
 		return nil, nil, fmt.Errorf("agent.New: %w", err)
 	}
 	ad := attachadapter.New(ag, adOpts...)
@@ -488,7 +575,18 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 		Model:   cust.Model.Name(),
 		Pricing: pricingRate,
 	})
-	return ad, cancelOnEvict, nil
+	if bgClose == nil {
+		return ad, cancelOnEvict, nil
+	}
+	// Eviction must also tear down the session's subagents: their
+	// goroutines run under context.WithoutCancel, so cancelling the wake
+	// loop leaves them running against a session nobody can reach. The
+	// wait runs off the caller's goroutine so one wedged subagent can't
+	// stall the registry's eviction sweep across every other tenant.
+	return ad, func() {
+		cancelOnEvict()
+		go bgClose()
+	}, nil
 }
 
 // BuildSessionResumer wires the attach server's SessionResumer.

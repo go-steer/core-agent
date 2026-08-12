@@ -65,6 +65,7 @@ type BuiltinTools struct {
 	JSONQuery     bool // jq expression over JSON loaded from file or inline string
 	FetchURL      bool // HTTP GET against url_scope.allow; URL-allowlist enforced
 	Alert         bool // Fire an operator-registered webhook alert target
+	WaitAndVerify bool // Poll a read-only tool until a condition holds (#648)
 	Todo          bool // In-process plan tracker
 	RecordPlan    bool // Plan-first artifact + gate-flag flip (record_plan)
 	// SciontoolStatus is enabled in the Default struct but Build only
@@ -91,6 +92,7 @@ var builtinToolNames = []string{
 	"json_query",
 	"fetch_url",
 	"alert",
+	"wait_and_verify",
 	"todo",
 	"record_plan",
 	"sciontool_status",
@@ -137,6 +139,8 @@ func (b *BuiltinTools) Disable(name string) error {
 		b.FetchURL = false
 	case "alert":
 		b.Alert = false
+	case "wait_and_verify":
+		b.WaitAndVerify = false
 	case "todo":
 		b.Todo = false
 	case "record_plan":
@@ -176,7 +180,12 @@ func Default() BuiltinTools {
 		// the fetch_url conditional-registration pattern. SSRF-safe by
 		// construction: the model can only fire pre-registered targets.
 		Alert: true,
-		Todo:  true,
+		// WaitAndVerify is unconditional: unlike fetch_url and alert it
+		// needs no operator-supplied registry to be useful (polling
+		// read_file or stat works out of the box), and the bounds it
+		// enforces have safe defaults.
+		WaitAndVerify: true,
+		Todo:          true,
 		// RecordPlan is enabled in the Default struct but Build only
 		// registers it when an agentsDir is available AND
 		// permissions.require_plan_artifact is set — there's no point
@@ -303,6 +312,15 @@ func Build(cfg *config.Config, gate *permissions.Gate, agentsDir string, b Built
 		// construction (no arbitrary-URL parameter; only named targets).
 		{b.Alert && len(cfg.Alerts.Targets) > 0, "alert", "Fire an operator-registered webhook alert target.", func() (tool.Tool, error) {
 			return alert.New(gate, cfg)
+		}},
+		// wait_and_verify is inert until something binds a tool
+		// catalog to it (tools.BindCatalogs, called from agent.New).
+		// Registering it anyway is deliberate: the binding is the
+		// runtime's job, and a host that forgets it gets an explicit
+		// "no tool catalog is bound" error instead of a tool that
+		// silently vanished from the model's schema.
+		{b.WaitAndVerify, WaitAndVerifyToolName, "Poll a read-only tool until its result satisfies a condition.", func() (tool.Tool, error) {
+			return NewWaitAndVerifyTool(cfg, WaitAndVerifyOptionsFromConfig(cfg))
 		}},
 		{b.Todo, "todo", "Maintain an agent-facing todo list (list/add/set_status/clear).", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{

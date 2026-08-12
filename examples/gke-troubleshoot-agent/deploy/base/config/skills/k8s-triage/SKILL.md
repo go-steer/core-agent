@@ -73,7 +73,32 @@ Before applying ANY mutating action:
 2. Apply the fix (via the GKE MCP: `apply_manifest`, `patch_resource`,
    `scale_deployment`, `rollout_undo`, etc.; or via `bash` +
    `kubectl` if the MCP tool for that action doesn't exist).
-3. Sleep the verify interval named in the reference row.
+3. Wait for the fix to take effect with the `wait_and_verify` tool —
+   never with `bash sleep`, which this recipe's container has no shell
+   for. The reference row's Verify column reads `interval → check`,
+   which is exactly one call:
+
+   ```
+   wait_and_verify(
+     tool:             "<the read-only tool that shows the check>",
+     args_json:        "{\"namespace\": \"...\", \"name\": \"...\"}",
+     expect_contains:  "<the string the check looks for>",
+     interval_seconds: 15,
+     timeout_seconds:  <the row's interval, in seconds>
+   )
+   ```
+
+   The whole poll loop comes back as ONE tool result — attempts,
+   elapsed time, and the last observation — so waiting three minutes
+   costs one turn instead of one turn per look. Use `expect_jq` when
+   the check is structural rather than a substring (e.g.
+   `.status.phase == "Running"`).
+
+   `wait_and_verify` refuses to poll anything it can't classify as
+   read-only, so it can never re-apply a fix in a loop. MCP servers
+   don't advertise that classification, so the operator must name the
+   pollable MCP tools in `tools.wait_and_verify.poll_allow`; if the
+   tool you need isn't there, ask for it rather than looping by hand.
 4. Re-run the Diagnose section from Step 2. Note which checks now pass.
 5. Decision:
    - **All Diagnose checks pass** → Step 4 (Close, resolved).

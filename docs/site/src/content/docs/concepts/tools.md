@@ -46,11 +46,50 @@ Tools are grouped by domain — files, search, shell, data + network, planning, 
 |---|---|---|
 | `todo` | In-process plan tracker. Actions: `list`, `add`, `set_status`, `clear`. Underlying `TodoStore` is exposed via `Registry.Todo` so a TUI can render plan progress (the in-process TUI's `/todo` slash command uses this). | `action`, `id?`, `text?`, `status?` |
 
+### Verification
+
+| Tool | Purpose | Key parameters |
+|---|---|---|
+| `wait_and_verify` | Poll another tool until its result satisfies a condition, or a bounded budget expires. Closed-loop fix-and-verify without a shell — see below. | `tool`, `args_json?`, `expect_jq?` / `expect_contains?` / `expect_not_contains?`, `interval_seconds?`, `timeout_seconds?`, `max_attempts?` |
+
 ### Runtime integration
 
 | Tool | Purpose | Key parameters |
 |---|---|---|
 | `sciontool_status` | Signal a sticky lifecycle event (`ask_user`, `blocked`, `task_completed`, `limits_exceeded`) to a Scion hub. Registered only when the `sciontool` binary is on `PATH` — outside a Scion container the tool is hidden from the model rather than exposed as a subprocess no-op. See [Scion adapter](/reference/scion-adapter/). | `status_type`, `message` |
+
+## `wait_and_verify` (v2.9+) — bounded poll-until-condition
+
+Fix-and-verify needs a wait in the middle: apply the change, let the system converge, confirm the new state. Doing that with `bash sleep` needs a shell the distroless recipes deliberately don't have, and doing it by re-checking across turns costs a full prompt per look — so agents skipped it and asserted success instead. `wait_and_verify` collapses the whole loop into one tool call and one tool result:
+
+```text
+wait_and_verify(
+  tool:             "gke__get_pod",
+  args_json:        "{\"namespace\": \"prod\", \"name\": \"api-7d9f\"}",
+  expect_jq:        ".status.phase == \"Running\"",
+  interval_seconds: 15,
+  timeout_seconds:  180
+)
+```
+
+```json
+{
+  "verified": true, "outcome": "verified", "attempts": 5,
+  "interval_seconds": 15, "elapsed_seconds": 61.2,
+  "condition": "expect_jq=.status.phase == \"Running\"",
+  "observations": [{"attempt": 1, "at_seconds": 0, "matched": false}, "..."]
+}
+```
+
+Three properties are enforced by the runtime rather than asked for in a prompt:
+
+- **No shell.** Pure Go, so it works wherever the binary does — including `distroless/static-debian12:nonroot` with `tools.disable: ["bash"]`.
+- **Bounded.** Wall clock and attempt count both capped, with operator ceilings ([`tools.wait_and_verify`](/reference/configuration/#toolswait_and_verify-v29)) the model can't raise; a request past the ceiling is an error, not a silent clamp. Token cost is bounded by construction: N polls, one result.
+- **Read-only by construction.** It refuses to poll anything not classified read-only — a loop that could call `write_file` sixty times is an amplifier, not a verifier. `wait_and_verify` itself and `ask_user` are refused unconditionally. MCP tools need an explicit `poll_allow` entry, because ADK's MCP adapter doesn't surface the server's `readOnlyHint`.
+
+An unverified wait is **not** an error: it returns `verified: false` with `outcome` of `timeout` / `attempts_exhausted` / `canceled` plus the observation trail, because "it never became Ready in three minutes" is a finding the model should report rather than a failure it should retry. A poll that errors is treated as transient and retried; a malformed `expect_jq` aborts on the first attempt instead of burning the budget.
+
+For waits longer than a turn is worth, use [`schedule_next_turn`](#schedule_next_turn) to come back later and `wait_and_verify` to confirm cheaply on arrival. Full rationale: [`docs/wait-and-verify-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/wait-and-verify-design.md).
 
 ## Toggling individual tools
 

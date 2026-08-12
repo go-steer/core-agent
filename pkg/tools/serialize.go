@@ -60,6 +60,13 @@ var readOnlyBuiltins = map[string]bool{
 	"grep":            true,
 	"json_query":      true,
 	"fetch_url":       true, // GET-only network read; no local state
+	// wait_and_verify only ever calls tools that are themselves
+	// classified read-only (#648), so the waiter inherits the class.
+	// Naming it here also gets the auto-continue classifier (#624)
+	// right: an interrupted wait should NOT be reflexively re-issued —
+	// restarting a five-minute poll the operator just interrupted is
+	// the opposite of what they asked for.
+	"wait_and_verify": true,
 	// ask_user mutates nothing and blocks at HUMAN timescale — if it
 	// held the mutation lock, one open question would stall every
 	// edit in the same response for minutes (pre-#460 they ran

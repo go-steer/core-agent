@@ -143,6 +143,7 @@ write/exec tools deny.
 | `write_file`, `edit_file`, `delete_file` | **yes** | mutation |
 | `bash` | **yes** | mutation / exec |
 | `record_plan` | no (always allowed) | the escape valve |
+| `wait_and_verify` (v2.9) | no | read-only by construction — it refuses to poll a tool the runtime can't classify read-only, and each poll re-enters the polled tool's own gate check, so an MCP poll is plan-gated exactly as a direct MCP call is |
 | Spawn family (`spawn_agent`, etc.) | **yes** | a subagent can do arbitrary work |
 | MCP tools | TBD — see Open Questions | depends on operator's MCP server posture |
 

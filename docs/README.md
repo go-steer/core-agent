@@ -58,6 +58,7 @@ research + friction logs, or handover notes.
 ### MCP, tools + code mode
 
 - [`fetch-url-design.md`](fetch-url-design.md) — `fetch_url` built-in (HTTP GET, no JS, no POST) + `URLScopeConfig` allow/deny grammar
+- [`wait-and-verify-design.md`](wait-and-verify-design.md) — `wait_and_verify` built-in: bounded, read-only poll-until-condition for closed-loop fix-and-verify without a shell ([#648](https://github.com/go-steer/core-agent/issues/648))
 - [`agentic-mcp-design.md`](agentic-mcp-design.md) — transparent agentic wrapping for MCP tool calls
 - [`bidirectional-mcp-design.md`](bidirectional-mcp-design.md) — core-agent exposes itself as an MCP server (agent-as-tool default; tool-palette opt-in)
 - [`mcp-oauth-design.md`](mcp-oauth-design.md) — MCP Streamable HTTP transport + OAuth 2.0 client authentication

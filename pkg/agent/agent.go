@@ -822,6 +822,18 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		o.tools = append(o.tools, NewMarkTaskDoneTool(func() *Agent { return agentRef }))
 	}
 
+	// Tools that call other tools (wait_and_verify, #648) need the
+	// assembled catalog, which isn't known until every registration
+	// above has landed. Collect the binders here — BEFORE the wrappers
+	// go on, since none of them forward BindCatalog — and hand them
+	// the WRAPPED slices below, so a polled call traverses exactly the
+	// layers a direct model call would.
+	//
+	// Binding here rather than at each construction site is the same
+	// argument as #643's lazy guardrail restore: a wiring step an
+	// embedder can forget is a capability that silently isn't there.
+	catalogBinders := tools.CatalogBinders(o.tools)
+
 	// Mutating-tool serialization (#460): read-only tools keep ADK's
 	// concurrent dispatch; state-mutating tools share one per-agent
 	// lock so parallel writes can never race and corrupt state — the
@@ -853,6 +865,9 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 	for i, ts := range o.toolsets {
 		o.toolsets[i] = toolInstrumenter.InstrumentToolset(ts)
 	}
+
+	// The catalog is final now: hand it to the binders collected above.
+	tools.BindCatalogs(catalogBinders, o.tools, o.toolsets)
 	invocationHist, err := newInvocationHistogram(mp)
 	if err != nil {
 		return nil, fmt.Errorf("agent: invocation histogram: %w", err)

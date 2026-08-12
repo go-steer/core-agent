@@ -176,7 +176,7 @@ func New(model adkmodel.LLM, opts ...agent.Option) (*agent.Agent, error) {
 
 ## Built-in tools
 
-The `pkg/tools` package ships a built-in baseline suitable for any agent that acts on its workspace: file (`read_file`, `read_many_files`, `write_file`, `edit_file`, `delete_file`, `stat`, `list_dir`), search (`glob`, `grep`), data + network (`json_query`, `fetch_url`), shell (`bash`), planning (`todo`, opt-in `record_plan`), and interactive prompting (opt-in `ask_user`). All route through `permissions.Gate` (so the bash denylist and path-scope checks apply), and all honor the per-tool output caps from `cfg.ToolOutput`.
+The `pkg/tools` package ships a built-in baseline suitable for any agent that acts on its workspace: file (`read_file`, `read_many_files`, `write_file`, `edit_file`, `delete_file`, `stat`, `list_dir`), search (`glob`, `grep`), data + network (`json_query`, `fetch_url`), shell (`bash`), planning (`todo`, opt-in `record_plan`), verification (`wait_and_verify`), and interactive prompting (opt-in `ask_user`). All route through `permissions.Gate` (so the bash denylist and path-scope checks apply), and all honor the per-tool output caps from `cfg.ToolOutput`.
 
 See [Built-in tools](/concepts/tools/) for the full catalog with per-tool parameters, permission interactions, and the optional lifecycle tools (`mark_task_done`, `ask_user`, `schedule_next_turn`).
 

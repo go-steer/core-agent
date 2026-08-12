@@ -277,6 +277,13 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 	// gets from agent.New — subtasks usually run read-only subsets,
 	// but the invariant must hold wherever a model response fans out.
 	var subMutationMu tools.MutationSerializer
+	// Same catalog late-binding the parent gets in New (#648): a
+	// subtask handed wait_and_verify polls its OWN tool subset, not the
+	// parent's, so the refusal to poll a mutating tool is evaluated
+	// against what this subtask can actually reach.
+	subBinders := tools.CatalogBinders(spec.Tools)
+	subTools := a.toolInstrumenter.Instrument(tools.SerializeMutating(spec.Tools, &subMutationMu))
+	tools.BindCatalogs(subBinders, subTools, nil)
 	subInner, err := llmagent.New(llmagent.Config{
 		Name:        "subtask_" + spec.Name,
 		Model:       subModel,
@@ -285,7 +292,7 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 		// Timed outside the serializer, same as the parent's tools in
 		// New — subtask tool calls land in the shared
 		// gen_ai.tool.execution.duration histogram (#338).
-		Tools: a.toolInstrumenter.Instrument(tools.SerializeMutating(spec.Tools, &subMutationMu)),
+		Tools: subTools,
 	})
 	if err != nil {
 		return SubtaskResult{}, fmt.Errorf("agent: RunSubtask: build llmagent: %w", err)

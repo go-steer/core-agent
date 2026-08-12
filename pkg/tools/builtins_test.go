@@ -30,7 +30,7 @@ func TestDefault_AllOn(t *testing.T) {
 	}
 }
 
-func TestBuild_DefaultProducesNineTools(t *testing.T) {
+func TestBuild_DefaultProducesTheBuiltinSet(t *testing.T) {
 	t.Parallel()
 	cfg := config.DefaultConfig()
 	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
@@ -40,13 +40,13 @@ func TestBuild_DefaultProducesNineTools(t *testing.T) {
 	}
 	// Count varies with host: sciontool_status is added when
 	// `sciontool` is on PATH. Assert on the always-on set instead.
-	if len(reg.Tools) < 12 || len(reg.Tools) > 13 {
-		t.Fatalf("expected 12 or 13 tools, got %d", len(reg.Tools))
+	if len(reg.Tools) < 13 || len(reg.Tools) > 14 {
+		t.Fatalf("expected 13 or 14 tools, got %d", len(reg.Tools))
 	}
 	if reg.Todo == nil {
 		t.Errorf("Registry.Todo should always be non-nil")
 	}
-	wantNames := []string{"read_file", "read_many_files", "write_file", "edit_file", "delete_file", "stat", "list_dir", "bash", "glob", "grep", "json_query", "todo"}
+	wantNames := []string{"read_file", "read_many_files", "write_file", "edit_file", "delete_file", "stat", "list_dir", "bash", "glob", "grep", "json_query", "wait_and_verify", "todo"}
 	got := make(map[string]bool, len(reg.Tools))
 	for _, tl := range reg.Tools {
 		got[tl.Name()] = true
@@ -192,6 +192,7 @@ func TestBuiltinTools_Disable_KnownNames(t *testing.T) {
 		"json_query":       func(b BuiltinTools) bool { return b.JSONQuery },
 		"fetch_url":        func(b BuiltinTools) bool { return b.FetchURL },
 		"alert":            func(b BuiltinTools) bool { return b.Alert },
+		"wait_and_verify":  func(b BuiltinTools) bool { return b.WaitAndVerify },
 		"todo":             func(b BuiltinTools) bool { return b.Todo },
 		"record_plan":      func(b BuiltinTools) bool { return b.RecordPlan },
 		"sciontool_status": func(b BuiltinTools) bool { return b.SciontoolStatus },
@@ -251,4 +252,58 @@ func TestBuiltinTools_Disable_Idempotent(t *testing.T) {
 	if b.Bash {
 		t.Errorf("Bash should still be off after double-disable")
 	}
+}
+
+// wait_and_verify registers unconditionally (unlike fetch_url and
+// alert, which need an operator-supplied registry to be useful) and
+// disables like any other builtin.
+func TestBuild_WaitAndVerifyRegistersAndDisables(t *testing.T) {
+	t.Parallel()
+	cfg := config.DefaultConfig()
+	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
+
+	reg, err := Build(cfg, gate, "", Default())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !hasTool(reg.Tools, WaitAndVerifyToolName) {
+		t.Fatalf("wait_and_verify missing from the default registry")
+	}
+
+	b := Default()
+	if err := b.Disable(WaitAndVerifyToolName); err != nil {
+		t.Fatalf("Disable: %v", err)
+	}
+	reg, err = Build(cfg, gate, "", b)
+	if err != nil {
+		t.Fatalf("Build (disabled): %v", err)
+	}
+	if hasTool(reg.Tools, WaitAndVerifyToolName) {
+		t.Error("wait_and_verify survived tools.disable")
+	}
+}
+
+// The operator's poll_allow list has to reach the built tool, or the
+// config is decoration.
+func TestBuild_WaitAndVerifyCarriesTheConfiguredBounds(t *testing.T) {
+	t.Parallel()
+	cfg := config.DefaultConfig()
+	cfg.Tools.WaitAndVerify = config.WaitAndVerifyConfig{PollAllow: []string{"gke__get_pod"}, MaxAttempts: 5}
+	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
+
+	reg, err := Build(cfg, gate, "", Default())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	for _, tl := range reg.Tools {
+		if tl.Name() != WaitAndVerifyToolName {
+			continue
+		}
+		v := tl.(*waitAndVerifyTool).v
+		if !v.allow["gke__get_pod"] || v.opts.MaxAttempts != 5 {
+			t.Errorf("built tool bounds = %+v / allow=%v, want the configured ones", v.opts, v.allow)
+		}
+		return
+	}
+	t.Fatal("wait_and_verify not registered")
 }

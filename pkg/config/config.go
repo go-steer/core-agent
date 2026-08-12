@@ -541,7 +541,32 @@ type ToolOutputPerToolCaps struct {
 // The CLI's --disable-tools flag composes with this list by union;
 // --no-builtin-tools disables the entire suite and makes Disable moot.
 type ToolsConfig struct {
-	Disable []string `json:"disable,omitempty"`
+	Disable       []string            `json:"disable,omitempty"`
+	WaitAndVerify WaitAndVerifyConfig `json:"wait_and_verify,omitempty"`
+}
+
+// WaitAndVerifyConfig bounds the wait_and_verify poll loop (#648).
+// Zero values mean the built-in defaults; see pkg/tools.
+type WaitAndVerifyConfig struct {
+	// PollAllow names tools that may be polled despite not being
+	// classified read-only by the runtime. This exists for MCP: ADK's
+	// MCP adapter does not surface the server's readOnlyHint
+	// annotation, so every MCP tool lands on the fail-safe "mutating"
+	// side of tools.IsReadOnlyTool and would be refused. Listing a
+	// tool here is the operator asserting it only observes state.
+	//
+	// Names are the ones the model sees, i.e. namespaced for MCP
+	// ("gke__get_pod" and not "get_pod").
+	PollAllow []string `json:"poll_allow,omitempty"`
+
+	// MaxTimeoutSeconds caps the total wall clock one wait may spend.
+	// Default 300. A call asking for more is rejected rather than
+	// silently shortened.
+	MaxTimeoutSeconds int `json:"max_timeout_seconds,omitempty"`
+
+	// MaxAttempts caps how many times one wait may call its target.
+	// Default 60.
+	MaxAttempts int `json:"max_attempts,omitempty"`
 }
 
 // SubagentSpec declares one in-process subagent the parent agent may call
@@ -1040,6 +1065,14 @@ func (c *Config) Validate() error {
 	for tier, v := range c.Compaction.ThresholdByTier {
 		if v <= 0 || v >= 1 {
 			return fmt.Errorf("config: compaction.threshold_by_tier[%q]=%v must be in (0, 1) exclusive", tier, v)
+		}
+	}
+	if wv := c.Tools.WaitAndVerify; wv.MaxTimeoutSeconds < 0 || wv.MaxAttempts < 0 {
+		return fmt.Errorf("config: tools.wait_and_verify: max_timeout_seconds (%d) and max_attempts (%d) must be >= 0 (0 = built-in default)", wv.MaxTimeoutSeconds, wv.MaxAttempts)
+	}
+	for i, n := range c.Tools.WaitAndVerify.PollAllow {
+		if strings.TrimSpace(n) == "" {
+			return fmt.Errorf("config: tools.wait_and_verify.poll_allow[%d] is empty", i)
 		}
 	}
 	if c.Agent.MaxTurnCostUSD != nil {

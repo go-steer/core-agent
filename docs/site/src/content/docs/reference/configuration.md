@@ -590,7 +590,8 @@ Controls which built-in tools are wired into the bundled CLI. Defaults to the fu
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `disable` | string[] | `[]` | Built-in tool names to turn off. Valid: `bash`, `read_file`, `read_many_files`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `todo`. Unknown names cause a startup error. |
+| `disable` | string[] | `[]` | Built-in tool names to turn off. Valid: `bash`, `read_file`, `read_many_files`, `write_file`, `edit_file`, `delete_file`, `stat`, `list_dir`, `glob`, `grep`, `json_query`, `fetch_url`, `alert`, `wait_and_verify`, `todo`, `record_plan`, `sciontool_status`. Unknown names cause a startup error. |
+| `wait_and_verify` | object | `{}` | Bounds for the [`wait_and_verify`](/concepts/tools/#wait_and_verify-v29--bounded-poll-until-condition) poll loop. See below. |
 
 Example — keep everything except shell access:
 
@@ -603,6 +604,30 @@ Example — keep everything except shell access:
 ```
 
 The `--disable-tools=bash,write_file` CLI flag composes with this list by union — anything disabled in either path is off. To turn the entire suite off, use `--no-builtin-tools` (which makes `tools.disable` and `--disable-tools` moot).
+
+### `tools.wait_and_verify` (v2.9+)
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `poll_allow` | string[] | `[]` | Tools that may be polled despite not being classified read-only by the runtime. Use the name the **model** sees, i.e. namespaced for MCP (`gke__get_pod`, not `get_pod`). |
+| `max_timeout_seconds` | int | `300` | Ceiling on the tool's `timeout_seconds` argument. A larger request is an error, not a silent clamp. |
+| `max_attempts` | int | `60` | Ceiling on the tool's `max_attempts` argument. |
+
+`wait_and_verify` refuses to poll anything the runtime can't classify as read-only, so it can never turn one approved call into sixty mutations. ADK's MCP adapter does not surface the server's `readOnlyHint` annotation, so **every MCP tool classifies as mutating** — `poll_allow` is the operator's explicit, per-tool assertion that a given MCP tool only observes state:
+
+```json
+{
+  "tools": {
+    "wait_and_verify": {
+      "poll_allow": ["gke__get_pod", "gke__list_events"],
+      "max_timeout_seconds": 300,
+      "max_attempts": 60
+    }
+  }
+}
+```
+
+Polling adds no authority: each attempt dispatches through the same permission gate, path scope, URL scope, plan-first gating and output caps a direct model call would hit.
 
 ---
 

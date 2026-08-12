@@ -248,7 +248,7 @@ All three are complementary. Both the session cost ceiling and the watchdog reso
 
 ## Watchdog (behavioral observer — since v2.5)
 
-Compaction caps the *context* dimension. The cost ceiling caps the *dollar* dimension. The watchdog catches the *behavioral* dimension — a session going off-rails (e.g. an agent stuck calling `read_file` on the same path five times in a row, the [#144](https://github.com/go-steer/core-agent/issues/144) pattern) before the dollar count gets large enough to trip the cost ceiling.
+Compaction caps the *context* dimension. The cost ceiling caps the *dollar* dimension. The watchdog catches the *behavioral* dimension — a session going off-rails (an agent stuck calling `read_file` on the same path five times in a row, the [#144](https://github.com/go-steer/core-agent/issues/144) pattern, or cycling between two calls forever) before the dollar count gets large enough to trip the cost ceiling.
 
 ### Modes
 
@@ -297,15 +297,24 @@ The resolved mode applies to every agent the process hosts, including the sessio
 
 Enforce mode mirrors the cost ceiling's halt contract (above): post-turn detection sets a flag, the next `Run` refuses at pre-flight, and recovery is operator-driven (`/guardrail reset`, which also resets the signal's run-length state). There is no automatic reset — a tripped watchdog is a "stop, get human attention" signal, not a throttle. Only Critical signals halt; a hypothetical future low-severity signal would stay advisory even under enforce.
 
-Future modes — `prompt` (pause turn + ask operator via the existing permissions prompter) and `auto` (call `Agent.SwapModel` to escalate to a frontier model without operator interaction) — are designed but deferred. Same for additional signals (tools-without-text, files-not-touched, context-growth-rate, cost-burn-rate) and an operator `/escalate` slash for manual model swaps.
+Future modes — `prompt` (pause turn + ask operator via the existing permissions prompter) and `auto` (call `Agent.SwapModel` to escalate to a frontier model without operator interaction) — are designed but deferred. Same for the remaining designed signals (tools-without-text, files-not-touched, context-growth-rate, cost-burn-rate), semantic loop detection ("these two calls ask the same question differently"), and an operator `/escalate` slash for manual model swaps.
 
-### v1 signal: repeated identical tool calls
+### Signals
 
-One signal ships in v1: `repeated-tool-call`, threshold 5. Trips when the same `(tool name, JSON-serialized args)` pair appears five times in a row. Catches the runaway loop pattern from [#144](https://github.com/go-steer/core-agent/issues/144) and similar shapes.
+Two loop detectors ship, both `Critical` — so both halt under `enforce` and both reach the model under `feedback`.
 
-- "Consecutive" is the keyword — `a → b → a → b → a` doesn't trip (no run of identical calls); `a → a → a → a → a` does.
-- Args comparison is literal-string. Calls with semantically-equivalent but textually-different args (e.g. `"main.go"` vs `"/workspace/main.go"`) aren't detected as repeats. Tool-specific canonicalization is a future enhancement.
-- One alert per stuck pattern, not one per tool call past the threshold — operators get a single notice, not flood.
+| Signal | Trips when | Catches |
+|---|---|---|
+| `repeated-tool-call` | The same tool is called 5 times in a row with equivalent args | The `read_file` loop from [#144](https://github.com/go-steer/core-agent/issues/144) |
+| `alternating-tool-cycle` | The same sequence of 2–4 calls repeats 3 times with identical args each lap | The `list_agents → check_agent` loop that survived `stop` *and* `/interrupt` in the [PR #622](https://github.com/go-steer/core-agent/pull/622) GKE UAT |
+
+Both were added because the v1 detector documented its own evasions ([#649](https://github.com/go-steer/core-agent/issues/649)): "consecutive" means a run of one call, so wedging a second call into the loop hid it, and literal-string arg comparison meant `main.go` and `/workspace/main.go` read as two different calls.
+
+- **Args are path-canonicalized, narrowly.** Values under path-shaped keys (`path`, `file_path`, `dir`, `target`, …) are cleaned, so `main.go`, `./main.go` and `dir/../main.go` are one call; the consecutive detector additionally treats `/workspace/main.go` and `main.go` as one, since a genuine path suffix on a component boundary is the same file. `a/doc.go` and `b/doc.go` stay distinct — a basename match would false-positive on every repo with repeated filenames. Non-path values (a `grep` pattern, a `bash` command) are never normalized even when they look like paths.
+- **One alert per stuck pattern**, not one per call past the threshold — including across rotations, so `a → b → a → b` doesn't alert twice for presenting as `b → a` on the next call.
+- **A pure repeat only raises one alert.** The cycle detector skips blocks made of a single repeated call, so `a → a → a → a → a → a` is `repeated-tool-call` alone.
+- **Two laps is not a cycle.** Read-grep-read-grep is ordinary exploration. Three laps with byte-identical arguments each time is not: nothing in the inputs changed, so nothing in the results can have.
+- **The known false positive is a hand-rolled polling loop** written as alternating tool calls. That is what [`wait_and_verify`](/concepts/tools/#wait_and_verify-v29--bounded-poll-until-condition) exists for; an embedder who wants the pattern anyway can construct `watchdog.DefaultWatchdog` with their own signal list.
 
 ### Composition
 

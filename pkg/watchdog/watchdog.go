@@ -25,8 +25,11 @@
 // v1 scope (this PR):
 //
 //   - Watchdog interface + Alert / Signal / Telemetry types.
-//   - DefaultWatchdog implementing one signal — repeated identical
-//     tool calls (the read_file loop pattern from #144 + family).
+//   - DefaultWatchdog implementing two loop detectors: repeated
+//     identical tool calls (the read_file loop pattern from #144 +
+//     family) and, since #649, alternating cycles (a → b → a → b) plus
+//     path-canonicalized argument comparison, which are the two
+//     evasions the v1 detector documented and could not catch.
 //     The shape is built so adding signals (tools-without-text,
 //     files-not-touched, rate-based growth) is mechanical — each
 //     signal is a small struct with an Observe/Check pair, the
@@ -49,7 +52,9 @@
 // Future scope (deferred — see design doc §"Piece 2"):
 //
 //   - Additional signals: tools-without-text, files-not-touched,
-//     context-growth-rate, cost-burn-rate.
+//     context-growth-rate, cost-burn-rate. Semantic (rather than
+//     syntactic) loop detection — "these two calls ask the same
+//     question differently" — is v3.0 scope.
 //   - "Prompt" mode: pause turn, ask operator y/n via the existing
 //     permissions prompter, resume on either path.
 //   - "Auto" mode: invoke Agent.SwapModel (also unshipped) to
@@ -111,12 +116,10 @@ type Alert struct {
 // ToolCall is the per-tool-call observation the watchdog needs.
 // Name is the canonical tool name (e.g. "read_file",
 // "mcp.gke.list_clusters"). Args is the JSON-serialized argument
-// blob — compared as a literal string by the v1 repeated-tool-call
-// detector, which means semantically-equivalent calls with
-// different arg formatting (e.g. relative vs absolute file paths)
-// are treated as distinct. Tool-specific canonicalization is a
-// future enhancement; for v1 the framing fix in #147 already
-// reduces the probability of the alternating-path subcase.
+// blob, passed through as the caller produced it: the detectors
+// canonicalize path-shaped values themselves (#649, canonical.go)
+// rather than requiring every caller to agree on a normal form, and a
+// third-party Watchdog implementation still sees the raw args.
 type ToolCall struct {
 	Name string
 	Args string
@@ -184,17 +187,23 @@ type Signal interface {
 }
 
 // NewDefaultWatchdog returns a DefaultWatchdog wired with the
-// default v1 signal set:
+// default signal set:
 //
-//   - RepeatedToolCall (threshold 5): N consecutive identical
-//     (name, args) tool calls.
+//   - RepeatedToolCall (threshold 5): 5 consecutive calls to the same
+//     tool with path-canonicalized-identical args.
+//   - AlternatingCycle (period ≤ 4, 3 laps): the same short sequence
+//     of calls repeated three times — the a → b → a → b shape the
+//     repeat detector structurally cannot see (#649).
 //
-// Operators wanting different thresholds construct DefaultWatchdog
-// directly with a custom signal list.
+// Both are Critical, so both halt under --watchdog=enforce and both
+// reach the model under --watchdog=feedback. Operators wanting
+// different thresholds — or only one of the two — construct
+// DefaultWatchdog directly with a custom signal list.
 func NewDefaultWatchdog() *DefaultWatchdog {
 	return &DefaultWatchdog{
 		signals: []Signal{
 			NewRepeatedToolCallSignal(5),
+			NewAlternatingCycleSignal(DefaultCycleMaxPeriod, DefaultCycleRepeats),
 		},
 	}
 }
@@ -245,12 +254,12 @@ func (w *DefaultWatchdog) Reset() {
 // thing") without flagging legitimate patterns like
 // alternating-tool exploration loops.
 //
-// Caveat from #144: args comparison is literal-string. Tool calls
-// with semantically-equivalent but textually-different args (e.g.
-// "main.go" vs "/workspace/main.go") won't be detected as repeats.
-// Tool-specific canonicalization is a future enhancement; v1
-// pairs with #147's inbox framing fix to reduce the probability of
-// that subcase reaching the watchdog at all.
+// Args comparison is path-canonicalized (#649, see canonical.go),
+// not literal-string as in v1: "main.go", "./main.go" and
+// "/workspace/main.go" are one call, because an agent re-reading one
+// file under three spellings is as stuck as one re-reading it under
+// the same spelling. Everything else still compares exactly — a
+// detector that generalizes too eagerly halts legitimate work.
 type RepeatedToolCallSignal struct {
 	Threshold int
 
@@ -320,14 +329,15 @@ func (s *RepeatedToolCallSignal) Reset() {
 	s.tripped = false
 }
 
-// matches reports whether tc is the same (name, args) as the
-// run's lastCall. Returns false when there is no run in flight
+// matches reports whether tc is the same call as the run's lastCall,
+// comparing args through argsEquivalent so path spellings of one file
+// don't split a run. Returns false when there is no run in flight
 // (runLength == 0).
 func (s *RepeatedToolCallSignal) matches(tc ToolCall) bool {
 	if s.runLength == 0 {
 		return false
 	}
-	return s.lastCall.Name == tc.Name && s.lastCall.Args == tc.Args
+	return s.lastCall.Name == tc.Name && argsEquivalent(s.lastCall.Args, tc.Args)
 }
 
 // truncate caps s at maxLen, replacing the middle with "…" so the

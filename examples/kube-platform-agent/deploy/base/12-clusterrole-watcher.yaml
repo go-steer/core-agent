@@ -14,7 +14,7 @@
 
 # Enrichment-complete ClusterRole for the lookout-watch (`lookout
 # watch`), VENDORED VERBATIM from go-steer/k8s-lookout
-# deploy/12-clusterrole-watcher.yaml @ v0.17.0 — the canonical,
+# deploy/12-clusterrole-watcher.yaml @ v0.18.0 — the canonical,
 # guardian-tested (pkg/checks/state/rbac_test.go) rule set. The ONLY
 # change from upstream is metadata.name (suffixed "-kube-platform" so
 # this recipe's cluster-scoped objects don't collide with a bare upstream

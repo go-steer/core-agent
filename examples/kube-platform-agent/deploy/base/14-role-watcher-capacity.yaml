@@ -16,7 +16,7 @@
 # --sources=…,capacity): the sentinel polls the cluster-autoscaler's
 # status ConfigMap in kube-system for per-nodegroup health/backoff and
 # the cloudProviderTarget-vs-ready gap. Vendored from go-steer/k8s-lookout
-# deploy/14-role-watcher-capacity.yaml @ v0.17.0; the ONLY changes are
+# deploy/14-role-watcher-capacity.yaml @ v0.18.0; the ONLY changes are
 # metadata.name (suffixed "-kube-platform" — this Role lives in the
 # SHARED kube-system namespace, so it is suffixed to coexist with any
 # other recipe's capacity Role there).

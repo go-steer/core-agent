@@ -1,5 +1,42 @@
 # kube-agents Platform Agent, on core-agent
 
+> [!IMPORTANT]
+> **This recipe is frozen as a portability case study — it is not the recommended
+> starting point for a new agent.** ([#704](https://github.com/go-steer/core-agent/issues/704))
+>
+> It set out to prove that core-agent's v2 loader can run an *unmodified* snapshot
+> of a third-party (Hermes) agent's content. **It proved that**: content roots,
+> `@include`, per-subagent content roots, the skills loader, declarative subagents,
+> the read-only MCP surface, plan-first, the attach hub, the OCI content image, and
+> the lookout integration all work against foreign content.
+>
+> What live UAT showed is a narrower and more interesting result:
+>
+> **The mechanics port. Identity does not.** The imported persona is a Hermes
+> *kanban worker* — "accept a task → loop until done → file a completion report →
+> exit." That identity comes along with the markdown, and reconciling it from a
+> core-agent overlay fails at exactly the moments that matter, because the overlaid
+> content speaks last. In practice the agent confabulated verification it had never
+> run, forced a general question into a canned completion report, and looped where
+> "done" was unreachable. Sharpest case: [#703](https://github.com/go-steer/core-agent/issues/703)
+> — `cluster/AGENTS.md` correctly tells the subagent to return its RCA in its reply,
+> and *loses* to a skill's Step 5 telling it to withhold the RCA and file a kanban
+> card, because skills load at the point of use and therefore speak last. That one
+> step is patched here (see `upstream/PROVENANCE.md`) so the frozen artifact is not
+> a broken one; the rest of the imported content is left as it is, because it is the
+> evidence.
+>
+> **If you are building a GKE platform agent, author the persona for this runtime**
+> — identity → equipment → conduct, not role → lifecycle. Track the native example
+> in [#704](https://github.com/go-steer/core-agent/issues/704).
+>
+> **What is still worth taking from here:** `deploy/` is persona-independent and
+> production-shaped — kustomize base + two content-delivery overlays, Workload
+> Identity Federation, the vendored enrichment-complete lookout RBAC, and a
+> default-deny NetworkPolicy. Copy it.
+>
+> The recipe stays deployable and CI-covered. It is frozen, not deprecated.
+
 This recipe runs the [kube-agents](https://github.com/gke-labs/kube-agents)
 **Platform Agent** — its persona, governance playbooks, and all 18 skills — on
 core-agent's v2 runtime instead of Hermes. It is Phase 0 of the "one contract,
@@ -182,7 +219,7 @@ ClusterRole verbatim (`deploy/base/12-clusterrole-watcher.yaml`), so incident
 injects arrive pre-warmed with the correlated bundle. That role includes a
 cluster-wide `secrets: list` grant (the expiry source's §11 tradeoff); it is
 `list`-only, paired with a default-deny `NetworkPolicy`
-(`deploy/base/16-networkpolicy-watcher.yaml`), and on the pinned `lookout:v0.17.0`
+(`deploy/base/16-networkpolicy-watcher.yaml`), and on the pinned `lookout:v0.18.0`
 image a narrower operator copy degrades to a `skipped=` partial rather than
 hard-failing ([k8s-lookout#192](https://github.com/go-steer/k8s-lookout/issues/192)).
 See [Deploy to GKE](#deploy-to-gke) for the RBAC breakdown and how to narrow it.
@@ -350,7 +387,7 @@ for the roles (`aiplatform.user`, `mcp.toolUser`, `container.viewer`,
 
 **Watcher RBAC.** `deploy/base/12-clusterrole-watcher.yaml` is lookout's
 **enrichment-complete** ClusterRole, vendored verbatim from
-[k8s-lookout](https://github.com/go-steer/k8s-lookout) `deploy/12` @ `v0.17.0`
+[k8s-lookout](https://github.com/go-steer/k8s-lookout) `deploy/12` @ `v0.18.0`
 (only the object name is suffixed `-kube-platform` so it coexists with
 gke-troubleshoot-agent's copy). It is read-only (`get`/`list`/`watch` only, no
 write verbs) and grants exactly the reads lookout's enrichment + `--sources=auto`

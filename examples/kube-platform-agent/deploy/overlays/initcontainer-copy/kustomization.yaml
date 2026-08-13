@@ -35,7 +35,7 @@ images:
   - name: ghcr.io/go-steer/core-agent
     newTag: "2.9.0"
   - name: ghcr.io/go-steer/lookout
-    newTag: "v0.17.0"
+    newTag: "v0.18.0"
   # Immutable tag (or digest), NOT :latest — the initContainer uses
   # pullPolicy: IfNotPresent, so a cached :latest-copy would never
   # re-pull and the daemon would serve stale content. Bump on every

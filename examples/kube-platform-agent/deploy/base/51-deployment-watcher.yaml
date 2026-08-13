@@ -55,9 +55,10 @@ spec:
       containers:
         - name: watcher
           # ENTRYPOINT is `lookout watch`. This recipe tracks the current
-          # lookout release, v0.17.0, which retired the k8s-event-watcher
-          # transition naming (lookout#205/#206) — every resource here is
-          # named `lookout-watch` to match. Capability floors that still
+          # lookout release, v0.18.0. Naming came from v0.17.0, which
+          # retired the k8s-event-watcher transition naming
+          # (lookout#205/#206) — every resource here is named
+          # `lookout-watch` to match. Capability floors that still
           # matter: v0.14.0 first carried per-resource-Forbidden tolerance
           # (k8s-lookout#192), so if an operator narrows the ClusterRole
           # (12-clusterrole-watcher.yaml), enrichment degrades to a
@@ -77,7 +78,26 @@ spec:
           # an explicit --sources list per upstream's shipped manifest; for
           # post-mortem history add --store on a volume (see k8s-lookout
           # deploy/51-deployment-watcher.yaml).
-          image: ghcr.io/go-steer/lookout:v0.17.0
+          #
+          # v0.18.0 adds two behaviors this recipe gets for free, both on
+          # by default and neither needing a flag or an RBAC grant:
+          #   - image-pull failures are classified by the kubelet's error
+          #     rather than by reason, and the RETRYABLE ones (registry
+          #     429/quota, 5xx, timeout, reset) must reach
+          #     --imagepull-transient-min-count (3) before firing
+          #     (lookout#213/#216). Terminal causes — bad tag, denied, no
+          #     space — and unrecognized ones still fire on the first
+          #     event, so a genuinely broken image is as loud as before.
+          #   - watchboard warnings reattach to a live incident sharing
+          #     their ancestor (lookout#220) instead of accumulating in a
+          #     parallel digest, so the symptoms of an open incident land
+          #     in the session already working it.
+          # Its third feature, multi-cluster (--clusters/--clusters-from,
+          # lookout#208), is opt-in and NOT used here: one sentinel per
+          # cluster stays the recommended shape, and the multi-cluster
+          # path needs a Fleet-capable build plus cloud IAM this
+          # deployment's k8s RBAC does not cover.
+          image: ghcr.io/go-steer/lookout:v0.18.0
           imagePullPolicy: IfNotPresent
           args:
             - "--daemon-url=http://core-agent.kube-platform.svc.cluster.local:7777"

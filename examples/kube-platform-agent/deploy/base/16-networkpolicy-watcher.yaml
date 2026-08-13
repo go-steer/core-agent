@@ -15,7 +15,7 @@
 # Default-deny ingress for the watcher pod (#87), the paired mitigation
 # for the cluster-wide `secrets: list` grant in 12-clusterrole-watcher.yaml.
 # Vendored from go-steer/k8s-lookout deploy/16-networkpolicy-watcher.yaml
-# @ v0.17.0; the ONLY change is metadata.namespace (kube-platform, this
+# @ v0.18.0; the ONLY change is metadata.namespace (kube-platform, this
 # recipe's namespace, not upstream's agent-triage). The name stays bare
 # ("lookout-watch") — a NetworkPolicy is namespaced, so it does not
 # collide with gke-troubleshoot-agent's copy in its own namespace.

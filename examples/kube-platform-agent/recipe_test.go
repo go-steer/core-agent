@@ -28,8 +28,10 @@
 package kubeplatformagent_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -261,6 +263,65 @@ func TestClusterSkillsLiveUnderSubagentRoot(t *testing.T) {
 	}
 	for n := range want {
 		t.Errorf("cluster skill %q missing from cluster/skills/", n)
+	}
+}
+
+// TestClusterRuntimeContentHasNoDeadKanbanHandoff guards #703. The `cluster`
+// subagent's ONLY channel back to the platform parent is its report, and no
+// kanban tool is registered in this runtime (cluster/mcp.json declares the
+// read-only `gke` + `developer_knowledge` HTTP servers and nothing else). So a
+// runtime instruction to hand off via `kanban_complete` — or to keep the RCA
+// *out* of the reply — directs the agent to discard the investigation it just
+// finished. Observed live in GKE UAT as content-free handoffs.
+//
+// Scope is deliberately the RUNTIME content root only (cluster/AGENTS.md and
+// cluster/skills/). cluster/SOUL.md is an unmodified vendored persona whose §6
+// describes the Hermes kanban lifecycle by design, and upstream/ is a faithful
+// snapshot — both are evidence for the portability case study (#704) and are
+// reconciled by the overlay in cluster/AGENTS.md rather than edited. What must
+// not survive is a *skill* re-asserting the dead channel, because skills load
+// at the point of use and so speak last.
+func TestClusterRuntimeContentHasNoDeadKanbanHandoff(t *testing.T) {
+	// Instructions that route the deliverable somewhere it cannot go.
+	banned := []string{"kanban_complete", "kanban_block", "kanban_show"}
+
+	skillsDir := filepath.Join(clusterRoot, "skills")
+	err := filepath.WalkDir(skillsDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || filepath.Ext(path) != ".md" {
+			return nil
+		}
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		rel, _ := filepath.Rel(clusterRoot, path)
+		for _, tok := range banned {
+			if bytes.Contains(body, []byte(tok)) {
+				t.Errorf("%s instructs the cluster subagent to use %s, but no kanban tool "+
+					"is registered in this runtime — its report is the only channel to the "+
+					"parent (#703). Rewrite the step to put the RCA in the report.", rel, tok)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk cluster/skills: %v", err)
+	}
+
+	// The overlay must claim precedence, or a vendored skill's instructions win
+	// on proximity — that is exactly how #703 slipped through with a correct
+	// overlay already in place.
+	overlay, err := os.ReadFile(filepath.Join(clusterRoot, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read cluster/AGENTS.md: %v", err)
+	}
+	if !bytes.Contains(overlay, []byte("this overlay wins")) {
+		t.Error("cluster/AGENTS.md must state that the core-agent overlay overrides " +
+			"conflicting skill-level instructions; without it a vendored skill loaded " +
+			"at the point of use is the most proximate instruction (#703)")
 	}
 }
 
@@ -994,17 +1055,21 @@ func TestDeployWatcherCapacityAndNetworkPolicy(t *testing.T) {
 	}
 }
 
-// TestDeployWatcherImageFloor pins the lookout image at v0.17.0 (#618,
+// TestDeployWatcherImageFloor pins the lookout image at v0.18.0 (#618,
 // #621) across every place it is declared — the base Deployment and both
 // overlays — so a bump in one spot can't silently leave another behind.
-// v0.17.0 is the current release and the one that retired the
-// k8s-event-watcher transition naming (lookout#205/#206), which is why
-// every resource in this recipe is named lookout-watch. v0.14.0 remains
-// the capability floor — it carries per-resource-Forbidden tolerance
-// (k8s-lookout#192): a narrowed role degrades to a partial bundle instead
-// of hard-failing enrichment.
+// v0.18.0 is the current release; the naming this recipe uses came from
+// v0.17.0, which retired the k8s-event-watcher transition naming
+// (lookout#205/#206), which is why every resource here is named
+// lookout-watch. v0.14.0 remains the capability floor — it carries
+// per-resource-Forbidden tolerance (k8s-lookout#192): a narrowed role
+// degrades to a partial bundle instead of hard-failing enrichment.
+//
+// The vendored RBAC (12/14/15/16) is byte-identical across v0.17.0 and
+// v0.18.0 — that release changed only the watcher binary, so bumping the
+// image needs no re-vendor.
 func TestDeployWatcherImageFloor(t *testing.T) {
-	const wantTag = "v0.17.0"
+	const wantTag = "v0.18.0"
 	const lookout = "ghcr.io/go-steer/lookout"
 
 	base, err := os.ReadFile(filepath.Join("deploy", "base", "51-deployment-watcher.yaml"))

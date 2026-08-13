@@ -61,7 +61,30 @@ to load a single cluster skill or persona line.
 | `agents/cluster/SOUL.md` | `cluster/SOUL.md` | unmodified copy of the persona; `@include`d by `cluster/AGENTS.md`. |
 | — | `cluster/AGENTS.md` | `@include SOUL.md` + a core-agent **runtime overlay** reconciling the Hermes persona (no kanban dispatcher, no `cluster_preflight.sh`, no bash/GitOps; return the RCA directly; reads via the read-only `gke` + `developer_knowledge` MCP). |
 | `agents/cluster/config.yaml` (MCP block) | `cluster/mcp.json` | translated to core-agent's native HTTP MCP: read-only `gke` (`…/mcp/read-only`) + `developer_knowledge`, `agentic_wrap_llm: true`. |
-| `agents/cluster/skills/` (6 skills) | `cluster/skills/<name>/` | unmodified: `gke-workload-troubleshooting`, `gke-observability`, `gke-reliability`, `gke-storage`, `gke-workload-scaling`, `gke-workload-security`. |
+| `agents/cluster/skills/` (6 skills) | `cluster/skills/<name>/` | `gke-observability`, `gke-reliability`, `gke-storage`, `gke-workload-scaling`, `gke-workload-security` are **unmodified**. `gke-workload-troubleshooting` carries **one modification** — see below. |
+
+**The one modified skill.** `cluster/skills/gke-workload-troubleshooting/SKILL.md`
+Step 5 is rewritten. Upstream routes the handoff through
+`kanban_complete(summary=…, metadata={root_cause, evidence, proposed_patch})` and
+instructs the agent that its "final chat reply is only a brief acknowledgement —
+never the RCA or patch." Neither holds here: no kanban tool is registered in this
+runtime, and a subagent's report is its **only** channel to the parent. Followed
+verbatim, the step directs the agent to discard the investigation it just
+completed — observed live as content-free handoffs in GKE UAT (core-agent #703).
+
+`cluster/AGENTS.md`'s overlay already said to return the RCA directly, but it lost
+to the skill: skills load **at the point of use**, so Step 5 is the most proximate
+instruction at exactly the moment the agent decides what to report. That is the
+portability finding this recipe exists to record — **an overlay cannot reliably
+out-argue instructions embedded in the content it overlays** — and it is why the
+skill is patched rather than reconciled from a distance. The overlay was also
+strengthened to claim precedence over skill-level kanban mechanics.
+
+The other five skills are untouched — none of them mentions kanban. Note there is
+no vendored copy of the six skills to diff against: `upstream/cluster/` snapshots
+only the three persona files (`SOUL.md`, `AGENTS.md`, `CAPABILITIES.md`), so the
+comparison baseline for a re-sync is `agents/cluster/skills/` in a kube-agents
+checkout, not anything in this tree.
 
 Why a dedicated `cluster/` tree rather than reusing `upstream/`:
 

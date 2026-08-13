@@ -1489,6 +1489,9 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 			// hook. No-op when no watchdog is wired.
 			if a.watchdog != nil && ev != nil {
 				a.observeToolCallsForWatchdog(ev, watchdogSeen)
+				// Tool *outcomes* (#639), for signals that read them.
+				// Same event, same dedup set, separate key space.
+				a.observeToolResultsForWatchdog(ev, watchdogSeen)
 			}
 			// Digest-savings observation. Walk FunctionResponse
 			// parts for the `savings` sidecar the MCP digest wrap

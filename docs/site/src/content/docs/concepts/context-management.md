@@ -259,7 +259,7 @@ The modes are a ladder — each one includes everything the mode above it in thi
 | `off` | No observation. |
 | `warn` | Observes the tool-call stream. When a signal trips, logs a structured alert to the operator via the normal status channel (`send()` callback for CLI; future SSE event for attach-mode). Does NOT pause the turn, and does not tell the model anything. |
 | `feedback` | Warn, plus the observation is injected into the **model's** next-turn context as a `[watchdog]` block ([#159](https://github.com/go-steer/core-agent/issues/159)). A correction, not a backstop — nothing halts a model that reads the block and loops anyway. |
-| `enforce` | Feedback, plus a Critical runaway signal (today: `repeated-tool-call`) **halts the agent**: it emits a `turn-error` (`kind=watchdog`, non-retryable) and refuses new turns until the operator clears it (`/guardrail reset`, `POST /sessions/{id}/guardrails/reset`, or `Agent.ResetWatchdog` when embedding). This is the hard behavioral backstop — an auto-continue re-drive of the interrupted turn is refused at pre-flight instead of re-issuing the looping call. |
+| `enforce` | Feedback, plus a Critical runaway signal (today: `repeated-tool-call` or `alternating-tool-cycle` — *not* the Warn-level `tool-failure-streak`) **halts the agent**: it emits a `turn-error` (`kind=watchdog`, non-retryable) and refuses new turns until the operator clears it (`/guardrail reset`, `POST /sessions/{id}/guardrails/reset`, or `Agent.ResetWatchdog` when embedding). This is the hard behavioral backstop — an auto-continue re-drive of the interrupted turn is refused at pre-flight instead of re-issuing the looping call. |
 
 ### Feedback: telling the model what it is doing
 
@@ -301,12 +301,13 @@ Future modes — `prompt` (pause turn + ask operator via the existing permission
 
 ### Signals
 
-Two loop detectors ship, both `Critical` — so both halt under `enforce` and both reach the model under `feedback`.
+Three signals ship. The two loop detectors are `Critical` — they halt under `enforce` and reach the model under `feedback`. The failure-streak signal is `Warn`: it never halts, in any mode.
 
-| Signal | Trips when | Catches |
-|---|---|---|
-| `repeated-tool-call` | The same tool is called 5 times in a row with equivalent args | The `read_file` loop from [#144](https://github.com/go-steer/core-agent/issues/144) |
-| `alternating-tool-cycle` | The same sequence of 2–4 calls repeats 3 times with identical args each lap | The `list_agents → check_agent` loop that survived `stop` *and* `/interrupt` in the [PR #622](https://github.com/go-steer/core-agent/pull/622) GKE UAT |
+| Signal | Severity | Trips when | Catches |
+|---|---|---|---|
+| `repeated-tool-call` | Critical | The same tool is called 5 times in a row with equivalent args | The `read_file` loop from [#144](https://github.com/go-steer/core-agent/issues/144) |
+| `alternating-tool-cycle` | Critical | The same sequence of 2–4 calls repeats 3 times with identical args each lap | The `list_agents → check_agent` loop that survived `stop` *and* `/interrupt` in the [PR #622](https://github.com/go-steer/core-agent/pull/622) GKE UAT |
+| `tool-failure-streak` | Warn | 3 tool calls in a row all return errors, with none succeeding in between | An agent with no tool-verified evidence about anything — the state it was in when it reported an incident "fully resolved" in the same UAT ([#639](https://github.com/go-steer/core-agent/issues/639)) |
 
 Both were added because the v1 detector documented its own evasions ([#649](https://github.com/go-steer/core-agent/issues/649)): "consecutive" means a run of one call, so wedging a second call into the loop hid it, and literal-string arg comparison meant `main.go` and `/workspace/main.go` read as two different calls.
 
@@ -315,6 +316,18 @@ Both were added because the v1 detector documented its own evasions ([#649](http
 - **A pure repeat only raises one alert.** The cycle detector skips blocks made of a single repeated call, so `a → a → a → a → a → a` is `repeated-tool-call` alone.
 - **Two laps is not a cycle.** Read-grep-read-grep is ordinary exploration. Three laps with byte-identical arguments each time is not: nothing in the inputs changed, so nothing in the results can have.
 - **The known false positive is a hand-rolled polling loop** written as alternating tool calls. That is what [`wait_and_verify`](/concepts/tools/#wait_and_verify-v29--bounded-poll-until-condition) exists for; an embedder who wants the pattern anyway can construct `watchdog.DefaultWatchdog` with their own signal list.
+
+#### `tool-failure-streak` (v2.9+)
+
+Every other signal reads tool *calls*. This one reads outcomes, because the failure it exists for is invisible from calls alone: in the [PR #622](https://github.com/go-steer/core-agent/pull/622) GKE UAT an agent that could not reach its cluster at all reported the incident resolved — "everything is in tip-top shape" — with nothing having verified anything. The calls looked normal; the results were the story.
+
+What it detects is deliberately narrow and objective — a run of calls that all came back as errors, with none succeeding in between. No prose is inspected. A detector that tried to recognize an over-confident *claim* would be a heuristic about English wearing the costume of a runtime guarantee, which is the defect class this release exists to remove. So this closes the **evidence** half of [#639](https://github.com/go-steer/core-agent/issues/639), not the honesty half: it tells a model that has been failing every call that it has verified nothing, at the point where it is most likely to start narrating instead of reporting. It cannot detect a confident conclusion drawn from tools that all succeeded and said nothing useful.
+
+- **Warn, never Critical.** Under `enforce` — the unattended default since [#642](https://github.com/go-steer/core-agent/issues/642) — a Critical alert halts the agent. Halting three denials into a legitimate RBAC probe would make the backstop the outage. A failure streak is an evidence problem, so it goes to the operator log and, under `feedback`, to the model's own next turn. Runaway *behavior* is already Critical via the loop detectors.
+- **One success resets the run**, and re-arms the alert. One success is evidence, and evidence is the thing being counted.
+- **One alert per streak**, like the loop detectors — under `feedback` a re-emitting signal is a prompt leak.
+- **Success and failure follow ADK's convention**: a reserved `error` key inside the function response. The agent flattens it at the bridge, so the watchdog never has to know a provider's response shape.
+- **Tool outcomes are an optional observation.** A custom `Watchdog` sees them only if it implements `watchdog.ToolResultObserver`; the `Watchdog` interface itself is unchanged, so a third-party implementation doesn't break to gain a signal it may not want.
 
 ### Composition
 

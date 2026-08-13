@@ -530,6 +530,77 @@ func TestLoadSubagentRoot_OwnSkills(t *testing.T) {
 	}
 }
 
+// TestRootInventory_DistinguishesEmptyRoot: the rooted subagent's boot line
+// must report what the root actually yielded. The mcp=/skills= scoping fields
+// read IDENTICALLY for a root with skills and a root without — so without the
+// counts, a misnamed `skill/` directory boots clean and silent and the
+// subagent runs persona-only, surfacing much later as a specialist that
+// mysteriously can't do its job.
+func TestRootInventory_DistinguishesEmptyRoot(t *testing.T) {
+	t.Parallel()
+
+	load := func(root string) (parentSurface, string) {
+		t.Helper()
+		deps := subagentDeps{interp: identityInterp, send: discard, rootBase: t.TempDir()}
+		_, surface, _, err := loadSubagentRoot(
+			context.Background(), config.SubagentSpec{Name: "cluster", Root: root}, deps,
+		)
+		if err != nil {
+			t.Fatalf("loadSubagentRoot(%s): %v", root, err)
+		}
+		_, scope, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{Root: root}, surface)
+		if err != nil {
+			t.Fatalf("resolveSubagentToolsets(%s): %v", root, err)
+		}
+		return surface, scope
+	}
+
+	populated := t.TempDir()
+	writeSkill(t, populated, "rootalpha")
+	writeSkill(t, populated, "rootbeta")
+
+	// Persona but no skills/ tree — the silent-boot case.
+	bare := t.TempDir()
+	writeRootAGENTS(t, bare, "persona only\n")
+
+	popSurface, popScope := load(populated)
+	bareSurface, bareScope := load(bare)
+
+	// Precondition: the scoping fields alone cannot tell these apart.
+	if !strings.Contains(popScope, "skills=inherit") || !strings.Contains(bareScope, "skills=inherit") {
+		t.Fatalf("both scopes should read skills=inherit, got %q and %q", popScope, bareScope)
+	}
+
+	gotPop, gotBare := rootInventory(popSurface), rootInventory(bareSurface)
+	if want := "skills: 2 loaded"; !strings.Contains(gotPop, want) {
+		t.Errorf("populated root inventory = %q, want it to contain %q", gotPop, want)
+	}
+	if want := "skills: 0 loaded"; !strings.Contains(gotBare, want) {
+		t.Errorf("bare root inventory = %q, want it to contain %q", gotBare, want)
+	}
+	if want := "mcp: 0 server(s)"; !strings.Contains(gotBare, want) {
+		t.Errorf("bare root inventory = %q, want it to contain %q (no mcp.json)", gotBare, want)
+	}
+	if gotPop == gotBare {
+		t.Errorf("inventory must distinguish a populated root from a bare one; both = %q", gotPop)
+	}
+}
+
+// TestRootInventory_ReportsDownServers: a server that is configured but failed
+// to start is listed with a nil toolset. The boot line must say so rather than
+// counting it as healthy — "mcp: 2 server(s)" with both down looks the same as
+// two working ones otherwise.
+func TestRootInventory_ReportsDownServers(t *testing.T) {
+	t.Parallel()
+	got := rootInventory(parentSurface{mcpToolsets: []namedToolset{
+		{name: "gke", toolset: fakeToolset{"gke"}},
+		{name: "developer_knowledge", toolset: nil},
+	}})
+	if !strings.Contains(got, "mcp: 2 server(s)") || !strings.Contains(got, "1 down") {
+		t.Errorf("inventory = %q, want 2 servers with 1 reported down", got)
+	}
+}
+
 // TestLoadSubagentRoot_RelativeResolvesAgainstBase: a relative spec.Root joins
 // deps.rootBase, mirroring content_roots resolution.
 func TestLoadSubagentRoot_RelativeResolvesAgainstBase(t *testing.T) {

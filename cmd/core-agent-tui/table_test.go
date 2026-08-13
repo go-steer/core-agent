@@ -174,6 +174,60 @@ func TestElide(t *testing.T) {
 	}
 }
 
+// TestElideWideRunes pins the double-width case. elide budgets in
+// display columns but walks runes, and a CJK or emoji cell has two
+// columns per rune: trimming by rune count overflows the column (the
+// same crooked table this file exists to fix) and, once the []rune
+// conversion has no spare capacity, indexes past the end and panics
+// the render.
+func TestElideWideRunes(t *testing.T) {
+	var subjects []string
+	for _, unit := range []string{"東", "🚀", "한", "é"} {
+		for n := 1; n <= 20; n++ {
+			subjects = append(subjects,
+				strings.Repeat(unit, n),
+				"x"+strings.Repeat(unit, n),
+				strings.Repeat(unit, n)+"@example.com",
+			)
+		}
+	}
+	for _, s := range subjects {
+		for w := 1; w <= 44; w++ {
+			for _, middle := range []bool{false, true} {
+				got := elide(s, w, middle) // must not panic
+				if gw := lipgloss.Width(got); gw > w {
+					t.Fatalf("elide(%q, %d, %v) = %q, width %d over budget", s, w, middle, got, gw)
+				}
+				if strings.ContainsRune(got, 0) {
+					t.Fatalf("elide(%q, %d, %v) = %q, read past the end of the string", s, w, middle, got)
+				}
+			}
+		}
+	}
+}
+
+// TestRenderRowAlignmentWideRunes is the same defect seen from the
+// table: one row with a non-ASCII user ID or peer name must not run
+// wider than its ASCII neighbour, or the columns stop lining up with
+// their headers again.
+func TestRenderRowAlignmentWideRunes(t *testing.T) {
+	now := time.Now()
+	rows := []pickerEntry{
+		{SessionID: "019ffc11-155a-759d-b149-08d0c1a5e54c", App: "core-agent", User: "platform-oncall@example.com", Origin: "local"},
+		{SessionID: "019ffc11-16eb-7a61-a670-d8275bb524af", App: "core-agent", User: "運用担当者@example.com", Origin: "peer-東"},
+	}
+	for _, avail := range []int{30, 40, 60, 76, 100, 140} {
+		cols, widths := fitColumns(pickerColumns(), rows, now, avail)
+		want := lipgloss.Width(renderRow(cols, widths, headerCells(cols)))
+		for _, r := range rows {
+			line := renderRow(cols, widths, rowCells(cols, r, now))
+			if got := lipgloss.Width(line); got != want {
+				t.Errorf("avail=%d: row width %d, header width %d\n%q", avail, got, want, line)
+			}
+		}
+	}
+}
+
 func TestAgeLabel(t *testing.T) {
 	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {

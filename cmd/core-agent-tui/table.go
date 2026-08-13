@@ -224,6 +224,12 @@ func rowCells(cols []pickerColumn, e pickerEntry, now time.Time) []string {
 // elide trims s to w display columns, marking the cut with "…".
 // middle keeps the head and the tail (session IDs); otherwise the tail
 // goes.
+//
+// The budget is display columns, not runes. A CJK user ID or an emoji
+// in a peer name is two columns per rune, so slicing r[:w-1] both
+// overflows the column — the exact defect this file exists to fix —
+// and indexes past the end of the rune slice, which panics the render
+// once the conversion has no spare capacity.
 func elide(s string, w int, middle bool) string {
 	if w <= 0 {
 		return ""
@@ -231,16 +237,48 @@ func elide(s string, w int, middle bool) string {
 	if lipgloss.Width(s) <= w {
 		return s
 	}
-	r := []rune(s)
 	if w == 1 {
 		return "…"
 	}
+	r := []rune(s)
+	budget := w - 1 // the "…" costs a column
 	if !middle {
-		return string(r[:w-1]) + "…"
+		return string(r[:fitPrefix(r, budget)]) + "…"
 	}
-	head := (w - 1) / 2
-	tail := w - 1 - head
+	head := fitPrefix(r, budget/2)
+	// Measure the tail against what the head actually spent and take
+	// it from the runes the head didn't, so the two ends can't
+	// overlap on a string of zero-width marks.
+	tail := fitSuffix(r[head:], budget-lipgloss.Width(string(r[:head])))
 	return string(r[:head]) + "…" + string(r[len(r)-tail:])
+}
+
+// fitPrefix / fitSuffix report how many runes of r fit in w display
+// columns, counting from the front / the back. Measuring per rune with
+// the same lipgloss.Width the layout uses keeps the trim and the column
+// arithmetic from disagreeing.
+func fitPrefix(r []rune, w int) int {
+	used, n := 0, 0
+	for ; n < len(r); n++ {
+		cw := lipgloss.Width(string(r[n]))
+		if used+cw > w {
+			break
+		}
+		used += cw
+	}
+	return n
+}
+
+func fitSuffix(r []rune, w int) int {
+	used, n := 0, 0
+	for ; n < len(r); n++ {
+		cw := lipgloss.Width(string(r[len(r)-1-n]))
+		if used+cw > w {
+			break
+		}
+		used += cw
+	}
+	return n
 }
 
 func pad(n int) string {

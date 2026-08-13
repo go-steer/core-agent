@@ -100,9 +100,14 @@ func TestConfigEnforcesProposeOnly(t *testing.T) {
 		t.Errorf("permissions.mode = %q, want %q (a no-TTY daemon cannot answer a prompt)",
 			cfg.Permissions.Mode, config.PermissionModeYolo)
 	}
-	if !cfg.Permissions.RequirePlanArtifact {
-		t.Error("permissions.require_plan_artifact = false, want true; " +
-			"plan-first is what forces a written plan before any gke MCP call")
+	// The property, not the spelling: either permissions.plan_mode:
+	// "required" or the deprecated require_plan_artifact bool satisfies
+	// this, and advisory mode deliberately does not — it records the
+	// artifact but blocks nothing.
+	if !cfg.Permissions.PlanGateArmed() {
+		t.Errorf("plan gate not armed (plan_mode resolved to %q); "+
+			"plan-first is what forces a written plan before any gke MCP call",
+			cfg.Permissions.ResolvedPlanMode())
 	}
 
 	disabled := make(map[string]bool, len(cfg.Tools.Disable))

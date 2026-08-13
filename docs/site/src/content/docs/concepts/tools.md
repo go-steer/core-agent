@@ -6,7 +6,7 @@ The model-facing tool catalog `core-agent` registers by default, plus the option
 
 ## The built-in catalog
 
-Tools are grouped by domain — files, search, shell, data + network, planning, and interactive prompting. Each is configurable via the `BuiltinTools` struct in `pkg/tools` (library callers) or the `--disable-tools` flag / `tools.disable` config field (CLI users). Every call routes through the [permission gate](/concepts/permissions/) under the `tool` namespace — denying a tool by pattern keeps it from running even if it's registered. Three tools are conditionally registered: `fetch_url` only when `url_scope.allow` has at least one entry, `record_plan` only when `permissions.RequirePlanArtifact` is on (see [Plan-first enforcement](/concepts/permissions/#plan-first-enforcement)), and `sciontool_status` only when the `sciontool` binary is on `PATH`.
+Tools are grouped by domain — files, search, shell, data + network, planning, and interactive prompting. Each is configurable via the `BuiltinTools` struct in `pkg/tools` (library callers) or the `--disable-tools` flag / `tools.disable` config field (CLI users). Every call routes through the [permission gate](/concepts/permissions/) under the `tool` namespace — denying a tool by pattern keeps it from running even if it's registered. Three tools are conditionally registered: `fetch_url` only when `url_scope.allow` has at least one entry, `record_plan` only when [`permissions.plan_mode`](/reference/configuration/#plan-mode-v29--plan_mode) is `advisory` or `required`, and `sciontool_status` only when the `sciontool` binary is on `PATH`.
 
 ### File system
 
@@ -45,6 +45,7 @@ Tools are grouped by domain — files, search, shell, data + network, planning, 
 | Tool | Purpose | Key parameters |
 |---|---|---|
 | `todo` | In-process plan tracker. Actions: `list`, `add`, `set_status`, `clear`. Underlying `TodoStore` is exposed via `Registry.Todo` so a TUI can render plan progress (the in-process TUI's `/todo` slash command uses this). | `action`, `id?`, `text?`, `status?` |
+| `record_plan` | Writes the turn's plan to `.agents/plans/plan-<seq>.md` for the operator's audit trail. Registered only under [`plan_mode`](/reference/configuration/#plan-mode-v29--plan_mode) `advisory` or `required`; under `required` it also satisfies the gate's plan pre-check. Its **description is mode-aware** — under `required` it tells the model that mutating calls are denied until the plan is on file; under `advisory` it says the opposite, so the model records and proceeds instead of stalling for an approval nobody will send. | `plan` |
 
 ### Verification
 

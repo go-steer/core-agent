@@ -172,9 +172,14 @@ func WithReloader(fn func(ctx context.Context) attach.ReloadResponse) Option {
 // (typically `tools.RevokeLatestPlan(gate, agentsDir)`). Without
 // this option the slash returns 501 / "capability not registered".
 //
-// Wire only when plan-first gating is active (config
-// permissions.require_plan_artifact: true). Wiring it under other
-// configs is a no-op but harmless. Formerly agent.WithAttachReplanner.
+// Wiring it under `plan_mode: "advisory"` or `"off"` is harmless —
+// there is no gate flag set, so the closure archives whatever
+// artifact exists (or reports none) and blocks nothing. The CLI
+// wires it unconditionally for that reason; the closure's own
+// response text is what distinguishes the modes, since telling an
+// operator "the next mutating call will be denied" when advisory
+// mode will deny nothing is the same unenforced-claim bug the mode
+// exists to avoid. Formerly agent.WithAttachReplanner.
 func WithReplanner(fn func(ctx context.Context, req attach.ReplanRequest) (attach.ReplanResponse, error)) Option {
 	return func(ad *Adapter) { ad.replanFn = fn }
 }

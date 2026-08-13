@@ -16,8 +16,11 @@ package permissions
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/go-steer/core-agent/v2/pkg/config"
 )
 
 // Plan-first denies mutating tools before record_plan is called,
@@ -227,6 +230,57 @@ func TestPlanFirst_GatesUnknownToolByName(t *testing.T) {
 			t.Parallel()
 			if err := g.CheckGeneric(context.Background(), name, "args"); err == nil {
 				t.Errorf("%s should be plan-gated (not in exempt list)", name)
+			}
+		})
+	}
+}
+
+// The #215 property, asserted through FromConfig rather than the
+// Options struct — the wiring is where the two spellings can drift,
+// and an advisory recipe that silently denies its first write_file is
+// exactly the failure mode the mode exists to remove. Pre-fix,
+// FromConfig read the raw require_plan_artifact bool, so the advisory
+// row left the gate disarmed for the wrong reason (nobody had set the
+// bool) rather than because ResolvedPlanMode said advisory — and the
+// "advisory outranks the deprecated bool" row failed outright.
+func TestFromConfig_ArmsTheGateOnlyInRequiredMode(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		mode      string
+		legacy    bool
+		wantArmed bool
+	}{
+		{"unset", "", false, false},
+		{"off", config.PlanModeOff, false, false},
+		{"advisory", config.PlanModeAdvisory, false, false},
+		{"required", config.PlanModeRequired, false, true},
+		{"deprecated bool", "", true, true},
+		{"advisory outranks the deprecated bool", config.PlanModeAdvisory, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.DefaultConfig()
+			cfg.Permissions.Mode = string(ModeYolo)
+			cfg.Permissions.PlanMode = tc.mode
+			cfg.Permissions.RequirePlanArtifact = tc.legacy //nolint:staticcheck // SA1019: the fold-forward is what's under test
+			root := t.TempDir()
+			g, err := FromConfig(cfg, root, root, nil)
+			if err != nil {
+				t.Fatalf("FromConfig: %v", err)
+			}
+			if got := g.PlanRequired(); got != tc.wantArmed {
+				t.Fatalf("PlanRequired() = %v, want %v", got, tc.wantArmed)
+			}
+			// And the behaviour, not just the flag: an un-planned
+			// mutating call is denied iff the gate is armed.
+			err = g.CheckFileWrite(context.Background(), "write_file", filepath.Join(root, "x"))
+			if tc.wantArmed && err == nil {
+				t.Error("armed gate allowed write_file with no plan recorded")
+			}
+			if !tc.wantArmed && err != nil {
+				t.Errorf("unarmed gate denied write_file: %v", err)
 			}
 		})
 	}

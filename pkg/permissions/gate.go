@@ -316,11 +316,14 @@ func FromConfig(cfg *config.Config, projectRoot, userRoot string, prompter Promp
 		mode = ModeAsk
 	}
 	return New(Options{
-		Mode:                mode,
-		Policy:              policy,
-		Scope:               scope,
-		Prompter:            prompter,
-		RequirePlanArtifact: cfg.Permissions.RequirePlanArtifact,
+		Mode:     mode,
+		Policy:   policy,
+		Scope:    scope,
+		Prompter: prompter,
+		// PlanGateArmed, not the raw RequirePlanArtifact bool: advisory
+		// mode registers record_plan and persists the artifact but must
+		// never deny a mutating call on plan state.
+		RequirePlanArtifact: cfg.Permissions.PlanGateArmed(),
 		BashSearchGate:      cfg.Safety.BashSearchGate,
 	}), nil
 }

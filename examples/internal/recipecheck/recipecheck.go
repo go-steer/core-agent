@@ -405,9 +405,9 @@ func notRegisteredReason(name string, cfg *config.Config) string {
 	case "alert":
 		return "alert only registers when alerts.targets is non-empty; this recipe registers no target"
 	case "record_plan":
-		if !cfg.Permissions.RequirePlanArtifact {
-			return "record_plan only registers when permissions.require_plan_artifact is true; " +
-				"without it there is no gate flag to flip, so a skill telling the model to call it is dead instruction"
+		if !cfg.Permissions.PlanToolRegistered() {
+			return "record_plan only registers when permissions.plan_mode is \"advisory\" or \"required\"; " +
+				"without it there is no plan artifact and no gate flag to flip, so a skill telling the model to call it is dead instruction"
 		}
 		return "record_plan also needs a resolved agents dir to persist plans into"
 	case "sciontool_status":

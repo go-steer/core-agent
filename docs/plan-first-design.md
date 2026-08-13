@@ -4,11 +4,14 @@ Design doc for a substrate primitive that **enforces** the
 plan-first workflow — write a plan, present it, get approval — rather
 than relying on AGENTS.md prompting alone.
 
-**Status:** SHIPPED (gate enforcement; header updated 2026-07-29 —
-the doc below is the original proposal). Plan-first mode with
-`require_plan_artifact` enforcement landed and is documented on the
-site; the residual unshipped slice is the advisory/soft variant
-tracked in [#215](https://github.com/go-steer/core-agent/issues/215).
+**Status:** SHIPPED (header updated 2026-08-13 — the doc below is the
+original proposal). Gate enforcement landed in v2.3 behind
+`require_plan_artifact`; the advisory/soft variant
+([#215](https://github.com/go-steer/core-agent/issues/215)) landed in
+v2.9 and replaced that bool with the three-valued
+`permissions.plan_mode`. See
+[Implementation notes](#implementation-notes-2026-08-13-215) at the
+bottom for what the shipped shape actually is.
 
 ## Motivation
 
@@ -452,3 +455,52 @@ so operators pick by uncommenting.
   out-of-context once approved, but it's worth surfacing on
   `/compact` so the post-compaction context reminds the model
   what was approved.
+
+## Implementation notes (2026-08-13, #215)
+
+The advisory variant this doc left unshipped landed in v2.9. It
+replaced the boolean with a three-valued mode, because the bool
+conflated two things the advisory case needs apart:
+
+| `permissions.plan_mode` | `record_plan` registered | gate armed |
+|---|---|---|
+| `off` (default) | no | no |
+| `advisory` | yes | no |
+| `required` | yes | yes |
+
+- **One reader, not two synced fields.** `PermissionsConfig` grew
+  `PlanMode string` alongside the now-deprecated
+  `RequirePlanArtifact bool`, but nothing reads either field
+  directly. `ResolvedPlanMode()` folds them (mode wins; the bool
+  means `required`), and the two predicates every consumer actually
+  calls are `PlanToolRegistered()` (registration) and
+  `PlanGateArmed()` (enforcement). Keeping two fields *in sync* is
+  the exact drift this milestone is about, so there is deliberately
+  no sync — `cmd/core-agent` writes `PlanMode` and zeroes the bool
+  once resolution is done.
+- **`Validate` rejects the one genuinely ambiguous pair.**
+  `plan_mode: "off"` next to `require_plan_artifact: true` is a
+  half-finished migration where either reading leaves an operator
+  wrong about whether the gate is armed, so it is an error rather
+  than a silent winner. `advisory`/`required` alongside the old bool
+  is legal — mode just outranks it.
+- **The tool description is mode-aware.** Under `required`,
+  `record_plan`'s description tells the model its mutating calls
+  will be denied until the plan is on file. Under `advisory` it says
+  the opposite, explicitly, so the model records the plan and
+  carries it out in the same turn. Telling a model a gate exists
+  when none does makes it stall for an approval nobody is coming to
+  give — the inverse of, and the same bug class as, claiming a
+  safety property the runtime doesn't enforce. `/replan`'s response
+  text is switched on the same state for the same reason.
+- **CLI.** `--plan-mode=off|advisory|required` supersedes
+  `--plan-first`, which is retained as a deprecated alias meaning
+  `required` (and `--plan-first=false` meaning `off`). Precedence,
+  highest first: `--plan-mode`, `--plan-first`,
+  `permissions.plan_mode`, `permissions.require_plan_artifact`, the
+  task profile's plan-first default. The resolved mode and the
+  source that won are printed at startup.
+- **Advisory does not weaken `required`.** The gate reads
+  `PlanGateArmed()`, so the only mode that can ever set
+  `permissions.Gate.RequirePlanArtifact` is `required`; the artifact
+  is written identically in both modes.

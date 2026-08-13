@@ -4,6 +4,6 @@
   "version": 1,
   "permissions": {
     "mode": "yolo",
-    "require_plan_artifact": true
+    "plan_mode": "required"
   }
 }

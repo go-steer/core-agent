@@ -983,12 +983,13 @@ func (a *coreAgentAdapter) SlashCommands() []coretui.SlashCommandSpec {
 		Aliases:     []string{"guardrails"},
 		Description: "show watchdog + cost-ceiling state; /guardrail reset [watchdog|cost_ceiling|all] [+<usd>] to clear a halt",
 	})
-	// /replan is registered unconditionally; the InvokeSlash case
-	// returns a friendly "plan-first gating isn't enabled" message
-	// when attachadapter.WithReplanner wasn't wired (operator's config has
-	// require_plan_artifact: false). That's a clearer operator
-	// experience than hiding the command and surfacing "unknown
-	// command" when they expect it from the recipe docs.
+	// /replan is registered unconditionally, and so is the replanner
+	// behind it — the closure reports "no active plan to revoke" under
+	// plan_mode off/advisory rather than 501-ing, since advisory still
+	// produces artifacts worth archiving. The InvokeSlash case keeps a
+	// friendly message for a host that wired no replanner at all,
+	// which is a clearer operator experience than hiding the command
+	// and surfacing "unknown command" when the recipe docs promise it.
 	cmds = append(cmds, coretui.SlashCommandSpec{
 		Name:        "replan",
 		Description: "revoke the current plan; archive plan-N.md to plan-N-revoked.md; force the agent to record_plan again (plan-first mode only)",
@@ -1127,7 +1128,7 @@ func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (
 		if err != nil {
 			if errors.Is(err, attach.ErrCapabilityNotRegistered) {
 				return coretui.SlashResult{
-					SystemMessage: "/replan unavailable: plan-first gating isn't enabled (set permissions.require_plan_artifact: true in .agents/config.json).",
+					SystemMessage: "/replan unavailable: this session has no replan capability registered.",
 				}, nil
 			}
 			return coretui.SlashResult{SystemMessage: "/replan failed: " + err.Error()}, nil

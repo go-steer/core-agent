@@ -135,7 +135,8 @@ func main() {
 	noBuiltinTools := flag.Bool("no-builtin-tools", false, "disable the built-in tool suite ("+strings.Join(tools.BuiltinToolNames(), ", ")+")")
 	disableTools := flag.String("disable-tools", "", "comma-separated list of built-in tools to disable (e.g. bash,write_file). Composes with cfg.tools.disable; ignored when --no-builtin-tools is set.")
 	enableTools := flag.String("enable-tools", "", "comma-separated list of built-in tools to add back after a --task profile dropped them (e.g. --task=debug --enable-tools=bash). Cancels the profile's opinion only: it cannot re-enable a tool you turned off in cfg.tools.disable or --disable-tools, and asking for that combination is an error rather than a silent win for either side. Naming a tool the profile never dropped is a no-op.")
-	planFirst := flag.Bool("plan-first", false, "require the model to call record_plan before any mutating tool call (write_file / edit_file / delete_file / bash / fetch_url / spawn_agent). CLI mirror of permissions.require_plan_artifact, and the way to opt OUT of a task profile that turns the gate on: --task=debug --plan-first=false. Needs a .agents/ directory to persist plans into; without one record_plan cannot register and the gate would deny every mutating call with no way to clear it.")
+	planMode := flag.String("plan-mode", "", "what record_plan does: off (not registered) | advisory (registered, plan artifact persists to .agents/plans/, nothing is ever blocked on it) | required (advisory plus the gate: mutating tool calls — write_file / edit_file / delete_file / bash / fetch_url / spawn_agent — are denied until the model calls record_plan). CLI mirror of permissions.plan_mode, and the way to override a task profile that turns the gate on: --task=debug --plan-mode=advisory. Needs a .agents/ directory to persist plans into; without one record_plan cannot register, which makes advisory inert and required a deadlock.")
+	planFirst := flag.Bool("plan-first", false, "deprecated two-state spelling of --plan-mode: true == --plan-mode=required, false == --plan-mode=off. Cannot express advisory. --plan-mode wins when both are passed.")
 	scriptPath := flag.String("script", "", "JSONL transcript for --provider=scripted (overrides cfg.mock.script)")
 	scriptStrict := flag.Bool("script-strict", false, "scripted: assert each incoming request matches the recorded one (overrides cfg.mock.strict)")
 	recordTo := flag.String("record-to", "", "write a JSONL recording of all LLM turns to this path (overrides cfg.mock.record)")
@@ -242,6 +243,7 @@ func main() {
 			// profile that turns the gate on, so presence matters, not
 			// value.
 			planFirstSet: flagWasSet(flag.CommandLine, "plan-first"),
+			planMode:     *planMode,
 		},
 		*smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *mcpAgenticWrapLLM, *mcpAgenticWrapModel, *noContextCache, promptOpts{appendSystemPrompt: *appendSystemPrompt, systemPromptFile: *systemPromptFile},
 		attachOpts{
@@ -615,26 +617,42 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	case slices.Contains(splitList(disableTools), "record_plan"):
 		planBlocker = "record_plan is in --disable-tools"
 	}
-	planOn, planSource := resolvePlanFirst(planFirstInputs{
-		Flag:          toolProfile.planFirst,
-		FlagSet:       toolProfile.planFirstSet,
-		Config:        cfg.Permissions.RequirePlanArtifact,
-		Profile:       taskProfile.RequirePlanArtifact,
-		CanRecordPlan: planBlocker == "",
+	if err := validatePlanModeFlag(toolProfile.planMode); err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+		return runner.ExitConfigError
+	}
+	planMode, planSource := resolvePlanMode(planModeInputs{
+		FlagMode:       toolProfile.planMode,
+		Flag:           toolProfile.planFirst,
+		FlagSet:        toolProfile.planFirstSet,
+		ConfigSet:      cfg.Permissions.PlanModeSet(),
+		ConfigResolved: cfg.Permissions.ResolvedPlanMode(),
+		ConfigSpelling: cfg.Permissions.PlanModeSpelling(),
+		Profile:        taskProfile.RequirePlanArtifact,
+		CanRecordPlan:  planBlocker == "",
 	})
-	cfg.Permissions.RequirePlanArtifact = planOn
+	// Collapse to PlanMode alone, so nothing downstream can read the
+	// pre-resolution value and disagree with ResolvedPlanMode.
+	cfg.Permissions.NormalizePlanMode(planMode)
 	switch {
 	case planSource == sourcePlanNoRecorder:
-		fmt.Fprintf(os.Stderr, "core-agent: plan-first: off — the %s profile asks for it, but %s\n", cfg.Session.TaskClass, planBlocker)
-	case planOn && planBlocker != "":
+		fmt.Fprintf(os.Stderr, "core-agent: plan mode: off — the %s profile asks for plan-first, but %s\n", cfg.Session.TaskClass, planBlocker)
+	case planMode == config.PlanModeRequired && planBlocker != "":
 		// Explicit operator intent, so we honor it rather than
 		// silently flipping it off — but with no record_plan, /replan
 		// only revokes and nothing grants, so every mutating tool call
 		// is denied for the life of the session. Say so at boot rather
 		// than letting the operator discover it one denial at a time.
-		fmt.Fprintf(os.Stderr, "core-agent: plan-first: on (%s) but %s — every mutating tool call will be denied with no way to clear the gate. Fix that, or pass --plan-first=false.\n", planSource, planBlocker)
-	case planOn:
-		fmt.Fprintf(os.Stderr, "core-agent: plan-first: on (%s) — mutating tools are denied until the model calls record_plan\n", planSource)
+		fmt.Fprintf(os.Stderr, "core-agent: plan mode: required (%s) but %s — every mutating tool call will be denied with no way to clear the gate. Fix that, or pass --plan-mode=advisory.\n", planSource, planBlocker)
+	case planMode == config.PlanModeRequired:
+		fmt.Fprintf(os.Stderr, "core-agent: plan mode: required (%s) — mutating tools are denied until the model calls record_plan\n", planSource)
+	case planMode == config.PlanModeAdvisory && planBlocker != "":
+		// Advisory can't deadlock, but it can be inert, which looks
+		// identical to "working" until an operator goes looking for
+		// an audit trail that was never written.
+		fmt.Fprintf(os.Stderr, "core-agent: plan mode: advisory (%s) but %s — no plan artifact will be written.\n", planSource, planBlocker)
+	case planMode == config.PlanModeAdvisory:
+		fmt.Fprintf(os.Stderr, "core-agent: plan mode: advisory (%s) — record_plan is registered and its artifact persists to .agents/plans/, but no tool call is blocked on it\n", planSource)
 	}
 
 	otelShutdown, err := telemetry.Setup(ctx, cfg.OTEL.Exporter)
@@ -1510,11 +1528,10 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			return out
 		}),
 		attachadapter.WithReplanner(func(_ context.Context, _ attach.ReplanRequest) (attach.ReplanResponse, error) {
-			// Wired unconditionally; the agent-side handler 501s
-			// the slash when require_plan_artifact is off
-			// (RevokeLatestPlan returns "" with no error and the
+			// Wired unconditionally; with plan_mode off,
+			// RevokeLatestPlan returns "" with no error and the
 			// gate flag was never set, so the response just says
-			// "no plan to revoke").
+			// "no plan to revoke".
 			if agentsDir == "" {
 				return attach.ReplanResponse{
 					Message: "/replan unavailable: no .agents/ directory resolved (plan artifacts have nowhere to live)",
@@ -1528,10 +1545,16 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 				ArchivedPath:  archived,
 				PlanWasActive: archived != "",
 			}
-			if archived == "" {
+			switch {
+			case archived == "":
 				resp.Message = "/replan: no active plan to revoke (gate flag is clear)."
-			} else {
+			case gate.PlanRequired():
 				resp.Message = fmt.Sprintf("Plan revoked. Archived to %s. The next mutating tool call will be denied until the agent calls record_plan again.", archived)
+			default:
+				// Advisory mode: the artifact is archived, but promising
+				// a denial that will never come is the claim-the-runtime-
+				// doesn't-enforce bug this mode exists to avoid.
+				resp.Message = fmt.Sprintf("Plan revoked. Archived to %s. plan_mode is advisory, so no tool call is blocked — ask the agent to record a new plan if you want a fresh artifact.", archived)
 			}
 			return resp, nil
 		}),

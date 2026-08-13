@@ -28,9 +28,12 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
 
+// newCfgWithPlanFirst sets the *deprecated* bool on purpose: the whole
+// point of keeping it is that an old config still registers the tool,
+// and only a test that reads it can prove that.
 func newCfgWithPlanFirst(on bool) *config.Config {
 	cfg := config.DefaultConfig()
-	cfg.Permissions.RequirePlanArtifact = on
+	cfg.Permissions.RequirePlanArtifact = on //nolint:staticcheck // SA1019: exercising the deprecated spelling is the test
 	return cfg
 }
 
@@ -411,5 +414,106 @@ func TestRecordPlan_BuildRegistersWhenConfigEnables(t *testing.T) {
 	}
 	if hasTool(regNoDir.Tools, "record_plan") {
 		t.Error("record_plan should NOT register when agentsDir is empty")
+	}
+}
+
+func newCfgWithPlanMode(mode string) *config.Config {
+	cfg := config.DefaultConfig()
+	cfg.Permissions.PlanMode = mode
+	return cfg
+}
+
+// The #215 registration matrix. Advisory is the case the two-state
+// bool could not express: the tool registers and the artifact lands,
+// but nothing is gated on it. Pre-fix, the advisory row registered
+// nothing, so the "audit trail without the ceremony" mode was
+// unreachable.
+func TestRecordPlan_BuildRegistersAcrossPlanModes(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	cases := []struct {
+		mode string
+		want bool
+	}{
+		{config.PlanModeOff, false},
+		{config.PlanModeAdvisory, true},
+		{config.PlanModeRequired, true},
+		{"", false}, // unset, with the deprecated bool also unset
+	}
+	for _, tc := range cases {
+		t.Run("mode="+tc.mode, func(t *testing.T) {
+			t.Parallel()
+			// A gate per subtest: Build mutates the one it's handed
+			// (SetNativeSearchTools), so sharing one across parallel
+			// rows is a data race.
+			gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
+			reg, err := Build(newCfgWithPlanMode(tc.mode), gate, dir, Default())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := hasTool(reg.Tools, "record_plan"); got != tc.want {
+				t.Errorf("record_plan registered = %v, want %v for plan_mode=%q", got, tc.want, tc.mode)
+			}
+		})
+	}
+}
+
+// Advisory mode must not tell the model its next mutating call will be
+// denied — nothing will deny it. A model that believes in a gate that
+// isn't there stops and waits for an approval nobody is going to give.
+func TestRecordPlan_DescriptionMatchesWhetherTheGateIsArmed(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	armed, err := RecordPlan(permissions.New(permissions.Options{RequirePlanArtifact: true}), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(armed.Description(), "denied") {
+		t.Errorf("required-mode description should warn about denial, got: %s", armed.Description())
+	}
+
+	advisory, err := RecordPlan(permissions.New(permissions.Options{}), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc := advisory.Description()
+	if strings.Contains(desc, "denied") {
+		t.Errorf("advisory-mode description promises a denial the gate will never issue: %s", desc)
+	}
+	if !strings.Contains(desc, "gating is OFF") {
+		t.Errorf("advisory-mode description should say the gate is off, got: %s", desc)
+	}
+	// Both spellings must still describe what the tool does and where
+	// the artifact lands — the split is about the gate, not the tool.
+	for _, d := range []string{armed.Description(), desc} {
+		if !strings.Contains(d, ".agents/plans/plan-<seq>.md") {
+			t.Errorf("description drops the artifact path: %s", d)
+		}
+	}
+}
+
+// Advisory mode still writes the artifact and still flips the gate's
+// (now inert) flag — the write path is shared, and a mode that
+// silently skipped the file would defeat the entire point.
+func TestRecordPlan_AdvisoryModeStillPersistsTheArtifact(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
+	if gate.PlanRequired() {
+		t.Fatal("gate should not be armed in this fixture")
+	}
+
+	res, err := invokeRecordPlan(t, gate, dir, "## Goal\nTriage the alert.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(res.Path)
+	if err != nil {
+		t.Fatalf("advisory mode wrote no artifact: %v", err)
+	}
+	if !strings.Contains(string(body), "Triage the alert.") {
+		t.Errorf("artifact does not contain the plan: %s", body)
 	}
 }

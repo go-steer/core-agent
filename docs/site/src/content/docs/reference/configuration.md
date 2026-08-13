@@ -248,6 +248,8 @@ Configures the permission gate that consults every tool call. See [Permissions](
 | `deny` | string[] | `[]` | Denylist patterns. Always wins over allow. |
 | `use_builtin_allow` | bool | `true` | Include the built-in read-only bundle in the effective allowlist (reads, greps, `list_dir`, `git status` / `git diff`, etc.). Prefix-matched bash entries only auto-allow single literal simple commands — chained/piped/redirected commands and dangerous `find` predicates (`-exec`, `-delete`, …) still prompt; see [Permissions → Safe-command guard](/concepts/permissions/#safe-command-guard-on-bash-prefix-rules). Turn off if you want to allowlist every tool from scratch. |
 | `builtin_allow_extras` | string[] | `[]` | Names of additional built-in bundles to fold into the effective allowlist (e.g. `["testing", "linting"]`). See `permissions.Bundles` in the Go source for the current catalog; also configurable interactively via the `/allow-bundle` slash. |
+| `plan_mode` | string | `off` | One of `off`, `advisory`, `required`. Whether `record_plan` is registered, and whether mutating tools are gated on it. See [Plan mode](#plan-mode-v29--plan_mode). CLI: `--plan-mode`. |
+| `require_plan_artifact` | bool | `false` | **Deprecated** (v2.9) — the two-state spelling of `plan_mode`; `true` == `plan_mode: "required"`. Cannot express `advisory`. Removed in the next major. |
 
 Example:
 
@@ -287,9 +289,51 @@ The prompter is auto-wired when stdin is a TTY. Non-TTY callers (piped stdin, CI
 
 `--yolo` forces the gate into `yolo` mode regardless of `config.permissions.mode`. Equivalent to setting `permissions.mode: "yolo"` in config; takes precedence at the call site so you don't have to edit config to unblock a one-off scripted run. Library callers achieve the same with `permissions.Options{Mode: permissions.ModeYolo}`.
 
-### Plan-first gating (v2.3+) — `require_plan_artifact`
+### Plan mode (v2.9+) — `plan_mode`
 
-Setting `permissions.require_plan_artifact: true` turns on **substrate-enforced plan-before-action**. The gate denies mutating tool calls (`write_file`/`edit_file`/`delete_file`/`bash`, `fetch_url`, the `spawn_agent` family, and all MCP tools) until the model has called the `record_plan` built-in tool. Read tools (`read_file`/`read_many_files`/`stat`/`list_dir`/`glob`/`grep`/`json_query`/`todo`) and `record_plan` itself remain allowed so research happens normally and the model has an escape valve. `fetch_url` is deliberately **plan-gated** (v2.8+): it is network egress with a model-controlled URL — an exfiltration channel — so it only unlocks once a plan is recorded, like every other action tool.
+`record_plan` does two separable things: it **persists a plan artifact** to `.agents/plans/plan-<seq>.md` (pure audit value), and it **clears the plan-first gate** that blocks mutating tools. Until v2.9 both were behind one bool, so you could not get the audit trail without the two-turn ceremony — an autonomous triage or alert-response agent had to turn the whole feature off and lose the artifact with it. `permissions.plan_mode` separates them:
+
+| `plan_mode` | `record_plan` registered? | artifact written? | mutating tools gated? |
+|---|---|---|---|
+| `"off"` (default) | no | no | no |
+| `"advisory"` | yes | yes | **no** |
+| `"required"` | yes | yes | yes |
+
+```json
+{
+  "version": 1,
+  "permissions": {
+    "mode": "yolo",
+    "plan_mode": "advisory"
+  }
+}
+```
+
+Advisory mode is *the plan is generated and auto-approved*: the model records what it intends to do, the operator gets the artifact, and nothing stalls waiting for approval. Nothing in the runtime makes the model call `record_plan` in advisory mode — prompting it is the recipe's job (AGENTS.md or a skill). A workable shape:
+
+```markdown
+## Response protocol
+
+Every inject-triggered turn MUST start with a `record_plan` call containing:
+1. **Diagnosis** — what's failing, one sentence.
+2. **Root cause hypothesis** — one sentence.
+3. **Planned actions** — the specific tool calls you intend to make, in order.
+4. **Verification** — how you'll confirm it worked.
+
+Then carry the plan out in the same turn. Nothing is blocking on the plan; do not stop and wait for approval.
+```
+
+The `record_plan` tool description is mode-aware, so in advisory mode the model is told the gate is off rather than being warned about a denial that will never happen.
+
+#### Migration from `require_plan_artifact`
+
+`permissions.require_plan_artifact` is **deprecated** and removed in the next major. It still works: `true` means `plan_mode: "required"`, and absent/`false` means "no opinion" (fall through to `plan_mode`, then the task class, then off). `plan_mode` wins when both are set — except `plan_mode: "off"` alongside `require_plan_artifact: true`, which is a half-done migration and fails at config load rather than silently picking a winner.
+
+Library callers: read the resolved value through `cfg.Permissions.ResolvedPlanMode()`, or the two predicates `PlanToolRegistered()` / `PlanGateArmed()`. Reading either raw field is how the two spellings drift.
+
+### Plan-first gating (v2.3+) — `plan_mode: "required"`
+
+Setting `permissions.plan_mode: "required"` turns on **substrate-enforced plan-before-action**. The gate denies mutating tool calls (`write_file`/`edit_file`/`delete_file`/`bash`, `fetch_url`, the `spawn_agent` family, and all MCP tools) until the model has called the `record_plan` built-in tool. Read tools (`read_file`/`read_many_files`/`stat`/`list_dir`/`glob`/`grep`/`json_query`/`todo`) and `record_plan` itself remain allowed so research happens normally and the model has an escape valve. `fetch_url` is deliberately **plan-gated** (v2.8+): it is network egress with a model-controlled URL — an exfiltration channel — so it only unlocks once a plan is recorded, like every other action tool.
 
 Once `record_plan(plan: <markdown>)` is called, the plan is written to `.agents/plans/plan-<seq>.md` and the gate's `planRecorded` flag flips. From that point on, the configured `mode` resumes its usual semantics — see the composition table below.
 
@@ -298,7 +342,7 @@ Once `record_plan(plan: <markdown>)` is called, the plan is written to `.agents/
   "version": 1,
   "permissions": {
     "mode": "ask",
-    "require_plan_artifact": true,
+    "plan_mode": "required",
     "allow": ["read_file", "read_many_files", "grep", "glob", "list_dir", "stat", "json_query", "todo"]
   }
 }
@@ -310,9 +354,9 @@ Plan-first composes with every existing mode. Pick the post-plan friction level 
 
 | Composition | Behavior after `record_plan` |
 |---|---|
-| `ask` + `require_plan_artifact` | writes prompt per call ("approve each step") |
-| `acceptEdits` + `require_plan_artifact` | writes auto-allow, bash still prompts |
-| `yolo` + `require_plan_artifact` | everything auto-allows ("just tell me the plan") |
+| `ask` + `plan_mode: "required"` | writes prompt per call ("approve each step") |
+| `acceptEdits` + `plan_mode: "required"` | writes auto-allow, bash still prompts |
+| `yolo` + `plan_mode: "required"` | everything auto-allows ("just tell me the plan") |
 
 The third row is the "we just want to know the plan, then go" case — no new mode value needed; `yolo`'s "no prompts" promise still holds *after* the plan; the only deny is the one-time gate before the plan exists.
 
@@ -346,15 +390,21 @@ gate.IsPlanRecorded() // → true
 gate.ClearPlanRecorded() // /replan-like reset; pair with tools.RevokeLatestPlan to also archive
 ```
 
-`tools.Build` registers the `record_plan` tool only when `permissions.require_plan_artifact: true` AND `agentsDir != ""` (an inert record_plan with nowhere to write would be confusing). Library callers wanting plan-first should pass an `agentsDir` to `tools.Build`.
+`tools.Build` registers the `record_plan` tool only when `permissions.plan_mode` is `"advisory"` or `"required"` AND `agentsDir != ""` (an inert record_plan with nowhere to write would be confusing). Library callers wanting plan artifacts should pass an `agentsDir` to `tools.Build`.
 
-#### CLI: `--plan-first` (v2.9+)
+#### CLI: `--plan-mode` (v2.9+)
 
-`--plan-first` is the command-line mirror of `require_plan_artifact`, and `--plan-first=false` is how you opt out of a [task class](/concepts/context-management/#tools-and-plan-first-since-v29) that turns the gate on. Precedence: `--plan-first` (either value) > `require_plan_artifact: true` in config > the task-class default > off. The task class can only turn the gate **on** — an operator who wrote `true` in config is never overruled by a class default.
+`--plan-mode=off|advisory|required` is the command-line mirror of `permissions.plan_mode`, and it is how you override a [task class](/concepts/context-management/#tools-and-plan-first-since-v29) that turns the gate on: `--task=debug --plan-mode=advisory` keeps the audit artifact and drops the ceremony.
 
-The binary refuses to hand you a gate you can't clear. If `record_plan` won't register — no `.agents/` directory, `--no-builtin-tools`, or the tool sitting in `tools.disable` / `--disable-tools` — a task class's plan-first default is suppressed and startup says which of those it was. An explicit `--plan-first` or config `true` is still honored there, because you asked for it out loud, but startup warns that every mutating call will be denied with no way to clear the flag: `/replan` revokes a plan, it can't grant one.
+Precedence, strongest first: `--plan-mode` > `--plan-first` (either value) > `permissions.plan_mode` > `require_plan_artifact: true` > the task-class default > off. Each deprecated spelling sits directly under its replacement, so an old config keeps behaving the way it did and either flag still beats config. The task class can only reach `"required"` — an operator who wrote a mode in config is never overruled by a class default.
 
-Full recipe: [`examples/plan-first/`](https://github.com/go-steer/core-agent/tree/main/examples/plan-first) ships three `config.json` variants (one per row of the composition table) plus an AGENTS.md priming the model on the workflow. Design: [`docs/plan-first-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/plan-first-design.md).
+`--plan-first` is **deprecated**: it can only say `required` (`true`) or `off` (`false`). `--plan-mode` wins when both are passed, so a script can migrate without a flag-day.
+
+The binary refuses to hand you a gate you can't clear. If `record_plan` won't register — no `.agents/` directory, `--no-builtin-tools`, or the tool sitting in `tools.disable` / `--disable-tools` — a task class's plan-first default is suppressed and startup says which of those it was. An explicit `--plan-mode=required` / `--plan-first` / config `true` is still honored there, because you asked for it out loud, but startup warns that every mutating call will be denied with no way to clear the flag: `/replan` revokes a plan, it can't grant one. Advisory mode can't deadlock, but it can be *inert* under the same conditions — no `record_plan`, no artifact — so startup says that too.
+
+`/replan` stays available in advisory mode — it archives the latest artifact — but its response says so rather than promising a denial: advisory arms no gate, so nothing is blocked while the agent redrafts.
+
+Full recipe: [`examples/plan-first/`](https://github.com/go-steer/core-agent/tree/main/examples/plan-first) ships four `config.json` variants (one per row of the composition table, plus an advisory one) and an AGENTS.md priming the model on the workflow. Design: [`docs/plan-first-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/plan-first-design.md).
 
 ### Background subagent prompts (v1.2.0+)
 

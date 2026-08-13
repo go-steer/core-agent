@@ -721,9 +721,11 @@ type SubagentSpawner interface {
 // ReplanProvider is the optional capability for
 // POST /sessions/.../slash/replan. Implementations clear the gate's
 // plan-recorded flag and archive the latest plan artifact to
-// plan-<N>-revoked.md. Wired by binaries that set up plan-first
-// gating (require_plan_artifact: true); binaries without plan-first
-// support don't register this capability and the route 501s.
+// plan-<N>-revoked.md. Binaries without plan-first support don't
+// register this capability and the route 501s. Registration does not
+// depend on permissions.plan_mode: under "advisory" (or off) there is
+// no gate flag set, so the same closure archives whatever artifact
+// exists and reports that nothing was blocked.
 type ReplanProvider interface {
 	AttachReplan(ctx context.Context, req ReplanRequest) (ReplanResponse, error)
 }

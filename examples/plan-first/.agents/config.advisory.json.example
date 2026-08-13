@@ -1,0 +1,20 @@
+{
+  "_comment": "Variant: 'record the plan, don't wait for anyone'. plan_mode=advisory registers record_plan and persists the artifact exactly like the required variants, but the gate is NOT armed — no tool call is ever denied for a missing plan. Use for unattended / scheduled runs where you want the reasoning on file but there is no operator to approve it: an armed gate with no approver just stalls the turn. To use: rename this to config.json (overwriting the default ask variant).",
+
+  "version": 1,
+  "permissions": {
+    "mode": "acceptEdits",
+    "plan_mode": "advisory",
+    "allow": [
+      "read_file",
+      "read_many_files",
+      "stat",
+      "list_dir",
+      "glob",
+      "grep",
+      "json_query",
+      "fetch_url",
+      "todo"
+    ]
+  }
+}

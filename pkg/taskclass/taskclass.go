@@ -132,7 +132,8 @@ type Profile struct {
 
 	// RequirePlanArtifact turns plan-first gating on for this class —
 	// mutating tools stay denied until the model calls record_plan.
-	// False = leave permissions.require_plan_artifact as configured;
+	// It maps to permissions.plan_mode: "required".
+	// False = leave permissions.plan_mode as configured;
 	// the profile only ever turns the gate ON, never off, since an
 	// operator who put `true` in config meant it.
 	//

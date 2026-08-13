@@ -168,7 +168,7 @@ func isSubagentSpawnerUnavailable(err error) bool {
 func (h *handlers) doSlashReplan(w http.ResponseWriter, r *http.Request, entry *Entry) {
 	p, ok := entry.Agent.(ReplanProvider)
 	if !ok {
-		http.Error(w, "replan capability not registered (set permissions.require_plan_artifact: true to enable plan-first gating)", http.StatusNotImplemented)
+		http.Error(w, "replan capability not registered (the host binary wired no replanner; core-agent wires one whenever an .agents/ directory resolved)", http.StatusNotImplemented)
 		return
 	}
 	var req ReplanRequest

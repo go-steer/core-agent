@@ -172,24 +172,8 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 
 	for {
 		// Pre-turn budget checks.
-		if cfg.maxWallclock > 0 && time.Since(startedAt) >= cfg.maxWallclock {
-			result.Reason = StopReasonWallclockExceeded
-			break
-		}
-		if cfg.maxTurns > 0 && result.Turns >= cfg.maxTurns {
-			result.Reason = StopReasonMaxTurns
-			break
-		}
-		if cfg.maxInputTokens > 0 && result.InputTokens >= cfg.maxInputTokens {
-			result.Reason = StopReasonMaxTokens
-			break
-		}
-		if cfg.maxOutputTokens > 0 && result.OutputTokens >= cfg.maxOutputTokens {
-			result.Reason = StopReasonMaxTokens
-			break
-		}
-		if cfg.maxCostUSD > 0 && result.CostUSD >= cfg.maxCostUSD {
-			result.Reason = StopReasonMaxCost
+		if reason := budgetStop(&cfg, &result, time.Since(startedAt)); reason != "" {
+			result.Reason = reason
 			break
 		}
 		if err := ctx.Err(); err != nil {
@@ -227,7 +211,7 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 			turnCtx, cancel = context.WithTimeout(ctx, cfg.perTurnTimeout)
 		}
 
-		turnRes, turnErr := runOneTurn(turnCtx, a, prompt, doneCh, scheduleCh, &cfg, result.Turns+1)
+		turnRes, turnErr := runOneTurn(turnCtx, a, prompt, doneCh, scheduleCh, &cfg, result.Turns+1, result.CostUSD)
 		if cancel != nil {
 			cancel()
 		}
@@ -279,6 +263,18 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 		if turnRes.doneSignaled {
 			result.Reason = StopReasonCompleted
 			result.DoneDetail = turnRes.doneDetail
+			break
+		}
+
+		// A turn the max-cost bound cut short (#729). Same stop reason
+		// as the between-turn check — to every consumer this is one
+		// budget outcome, just detected earlier — and the same break,
+		// so the run's FinalText (already rolled up above) carries
+		// whatever the model had established to the caller. Ranked
+		// below done: a turn that both finished the work and crossed
+		// the bound finished the work.
+		if turnRes.costCapped {
+			result.Reason = StopReasonMaxCost
 			break
 		}
 
@@ -409,14 +405,27 @@ type turnResult struct {
 	doneDetail       string
 	scheduleSignaled bool
 	scheduleEvent    coretools.ScheduleEvent
+	// costCapped is set when WithMaxCost was reached partway through
+	// this turn and the driver stopped draining events rather than
+	// letting the turn spend past the bound. See the enforcement site
+	// in runOneTurn and #729.
+	costCapped bool
 }
 
-func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan string, scheduleCh <-chan coretools.ScheduleEvent, cfg *autoConfig, turnNo int) (turnResult, error) {
+// runOneTurn drives one turn of the agent loop. priorCostUSD is the
+// spend the run has already accumulated across previous turns; it is
+// the baseline the in-turn WithMaxCost check adds this turn's spend
+// to, so the bound covers the run as a whole rather than each turn
+// independently.
+func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan string, scheduleCh <-chan coretools.ScheduleEvent, cfg *autoConfig, turnNo int, priorCostUSD float64) (turnResult, error) {
 	var (
 		out       turnResult
 		buf       strings.Builder
 		partials  strings.Builder
 		sawFinals bool
+		// See the in-turn cost check at the bottom of the event loop.
+		doneToolNames   = cfg.doneToolNames()
+		deferredForDone bool
 	)
 
 	// Drain any stale done signal from a previous turn (defensive —
@@ -455,6 +464,20 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 		}
 		if cfg.progress != nil {
 			cfg.progress(turnNo, ev)
+		}
+		// We are already over the cost bound and only still here to let
+		// the done tool run (see the check at the bottom of the loop).
+		// The moment it has, stop — otherwise the runner would issue
+		// one more model call to narrate a run that is already over.
+		if deferredForDone {
+			select {
+			case detail := <-doneCh:
+				out.doneSignaled = true
+				out.doneDetail = detail
+				out.text = collectedText(&buf, &partials, sawFinals)
+				return out, nil
+			default:
+			}
 		}
 		tap.Observe(ev)
 		if turnUsage, ok := tap.Commit(ev); ok {
@@ -504,6 +527,39 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 				buf.WriteString(p.Text)
 			}
 		}
+
+		// In-turn WithMaxCost enforcement (#729). The between-turn
+		// budget checks at the top of the loop only run at a turn
+		// boundary, and a single turn is an unbounded tool loop — the
+		// #144 shape spends indefinitely without ever reaching one. So
+		// check the bound where the spend actually lands: right after
+		// each committed model call. Placed at the bottom of the body
+		// so this event's text is collected first; the tripping call's
+		// output is part of what the parent receives.
+		//
+		// Breaking the range is the whole mechanism: yield returns
+		// false, agent.Run's tapped iterator returns, and its cleanup
+		// cancels the per-turn context. Deliberately NOT Interrupt() —
+		// that records an operator-interrupt audit row, and this is a
+		// budget stop, not an operator one.
+		if cfg.maxCostUSD > 0 && priorCostUSD+out.costUSD >= cfg.maxCostUSD {
+			// One exception, taken at most once: if the call that
+			// crossed the bound is the model handing back its result,
+			// breaking here would drop the answer on the floor and
+			// report a budget stop instead — the exact failure #728
+			// exists to prevent, arriving through a different door.
+			// The tool hasn't run yet (it executes after this event),
+			// so let the loop take one more step and the done signal
+			// wins below. Bounded by deferredForDone: a model that
+			// keeps emitting done calls can't extend the turn twice.
+			if !deferredForDone && callsAnyTool(ev, doneToolNames) {
+				deferredForDone = true
+				continue
+			}
+			out.costCapped = true
+			log.Printf("autonomous: turn %d stopped mid-turn: cost $%.4f reached the $%.4f max-cost bound", turnNo, priorCostUSD+out.costUSD, cfg.maxCostUSD)
+			break
+		}
 	}
 
 	// The done signal lives on doneCh because only a successful tool
@@ -531,6 +587,50 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 
 	out.text = collectedText(&buf, &partials, sawFinals)
 	return out, nil
+}
+
+// callsAnyTool reports whether ev carries a FunctionCall to one of
+// names. Case-insensitive: the names are ours, but the call comes
+// from a model.
+func callsAnyTool(ev *session.Event, names []string) bool {
+	if ev == nil || ev.Content == nil {
+		return false
+	}
+	for _, p := range ev.Content.Parts {
+		if p == nil || p.FunctionCall == nil {
+			continue
+		}
+		for _, n := range names {
+			if strings.EqualFold(p.FunctionCall.Name, n) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// budgetStop reports the first configured budget the run has already
+// exhausted, or "" when it may take another turn. Evaluated at a turn
+// boundary; the in-turn half of the cost bound lives in runOneTurn.
+//
+// Shared by Run and Resume so the two drivers can't drift on which
+// caps exist or in what order they bind — they were separate copies
+// of the same five checks, which is one copy too many for something
+// whose whole job is to be the thing that stops a runaway.
+func budgetStop(cfg *autoConfig, result *RunResult, elapsed time.Duration) StopReason {
+	switch {
+	case cfg.maxWallclock > 0 && elapsed >= cfg.maxWallclock:
+		return StopReasonWallclockExceeded
+	case cfg.maxTurns > 0 && result.Turns >= cfg.maxTurns:
+		return StopReasonMaxTurns
+	case cfg.maxInputTokens > 0 && result.InputTokens >= cfg.maxInputTokens:
+		return StopReasonMaxTokens
+	case cfg.maxOutputTokens > 0 && result.OutputTokens >= cfg.maxOutputTokens:
+		return StopReasonMaxTokens
+	case cfg.maxCostUSD > 0 && result.CostUSD >= cfg.maxCostUSD:
+		return StopReasonMaxCost
+	}
+	return ""
 }
 
 // collectedText picks the turn's text: the consolidated non-partial

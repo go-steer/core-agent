@@ -386,8 +386,19 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 		// the subagent's own model ID (may differ from parent when the
 		// manager was constructed with a cheaper flash-tier model), so
 		// the per-model attribution in /usage stays accurate.
+		//
+		// Pricing goes on whether or not the parent has a tracker
+		// (#729). The driver computes the run's cost from it, and
+		// budgets.MaxCost is checked against that number — so a
+		// tracker-less parent used to hand its subagents a MaxCost the
+		// driver could never evaluate, because every turn priced out
+		// at exactly $0. A budget that silently doesn't apply is worse
+		// than no budget: the caller believes the delegation is bounded.
+		price := usage.PriceFor(priceModelID, nil)
 		if parent.Tracker() != nil {
-			opts = append(opts, autonomous.WithTracker(parent.Tracker(), usage.PriceFor(priceModelID, nil)))
+			opts = append(opts, autonomous.WithTracker(parent.Tracker(), price))
+		} else {
+			opts = append(opts, autonomous.WithPricing(price))
 		}
 
 		result, runErr := autonomous.Run(goCtx, build, goal, opts...)

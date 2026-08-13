@@ -68,6 +68,13 @@ FROM ${BASE}
 # deployment overrides content_roots in config.hub.json and can drop
 # upstream/ from the image (see the recipe README).
 #
+# cluster/ is the `cluster` subagent's OWN content root (issue #621): its
+# AGENTS.md persona, its six GKE domain skills under cluster/skills/, and
+# its read-only cluster/mcp.json. The subagent's config declares
+# `"root": "../cluster"`, which resolves against the mounted agents dir
+# (<mount>/.agents) to <mount>/cluster — so this tree MUST ship in the
+# image or the subagent boots with no skills/persona.
+#
 # .agents/ includes an (empty) plans/ directory. That is deliberate: the
 # image-volume overlay nests a writable `plans` emptyDir at
 # .agents/plans INSIDE this read-only mount, and a read-only image layer
@@ -77,3 +84,4 @@ COPY .agents/   /.agents/
 COPY AGENTS.md  /AGENTS.md
 COPY AGENTS.d/  /AGENTS.d/
 COPY upstream/  /upstream/
+COPY cluster/   /cluster/

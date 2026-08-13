@@ -12,19 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# ClusterRole + Binding names are suffixed with "-kube-platform" so this
-# recipe's cluster-scoped objects can coexist with a bare upstream lookout
-# install (which uses the plain "lookout-watch" name) in the same cluster
-# — cluster-scoped objects share one namespace.
+# Binds the watcher's ServiceAccount (lookout-watch in kube-platform)
+# to the kube-system capacity Role (14-role-watcher-capacity.yaml). Only
+# needed with --sources=…,capacity. Vendored from go-steer/k8s-lookout
+# deploy/15-rolebinding-watcher-capacity.yaml @ v0.18.0; changed from
+# upstream: metadata.name + roleRef.name (suffixed "-kube-platform" to
+# match the Role) and the subject namespace (kube-platform, this recipe's
+# namespace, not upstream's agent-triage).
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
-  name: lookout-watch-kube-platform
+  name: lookout-watch-capacity-kube-platform
+  namespace: kube-system
 subjects:
   - kind: ServiceAccount
     name: lookout-watch
     namespace: kube-platform
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: lookout-watch-kube-platform
+  kind: Role
+  name: lookout-watch-capacity-kube-platform

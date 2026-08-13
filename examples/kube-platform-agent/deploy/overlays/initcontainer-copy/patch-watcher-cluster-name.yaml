@@ -17,7 +17,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: k8s-event-watcher
+  name: lookout-watch
   namespace: kube-platform
 spec:
   template:

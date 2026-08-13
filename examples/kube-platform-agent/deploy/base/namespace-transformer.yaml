@@ -1,0 +1,32 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Namespaces every resource that does NOT already declare one into
+# kube-platform. We use the builtin NamespaceTransformer with
+# `unsetOnly: true` INSTEAD of kustomization.yaml's `namespace:` shorthand
+# on purpose: the shorthand CLOBBERS every namespaced resource, which would
+# rewrite the capacity Role/RoleBinding (14/15) from kube-system to
+# kube-platform. Those two must stay in kube-system — that is where the
+# cluster-autoscaler-status ConfigMap they grant read access to lives — or
+# the watcher's `capacity` source silently 403s. `unsetOnly` fills in
+# kube-platform for the resources that leave namespace unset (the SAs, PVC,
+# Deployments, Service, and the generated ConfigMap) while preserving every
+# explicit namespace (kube-platform on those objects; kube-system on 14/15;
+# and the RoleBinding subject namespaces).
+apiVersion: builtin
+kind: NamespaceTransformer
+metadata:
+  name: kube-platform-namespace
+  namespace: kube-platform
+unsetOnly: true

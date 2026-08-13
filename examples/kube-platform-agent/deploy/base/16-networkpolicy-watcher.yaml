@@ -1,0 +1,62 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Default-deny ingress for the watcher pod (#87), the paired mitigation
+# for the cluster-wide `secrets: list` grant in 12-clusterrole-watcher.yaml.
+# Vendored from go-steer/k8s-lookout deploy/16-networkpolicy-watcher.yaml
+# @ v0.18.0; the ONLY change is metadata.namespace (kube-platform, this
+# recipe's namespace, not upstream's agent-triage). The name stays bare
+# ("lookout-watch") — a NetworkPolicy is namespaced, so it does not
+# collide with gke-troubleshoot-agent's copy in its own namespace.
+#
+# The watcher is a privileged reader (its ServiceAccount can list Secret
+# values cluster-wide — §11 tradeoff in deploy/12), so co-tenant pods get
+# no network path to it: it serves nothing but /metrics + /healthz on
+# :9090, and even that is an incident-topology map (per-namespace
+# failure-class counters) a co-tenant should not be able to scrape.
+#
+# The single allow rule admits scrapers from THIS namespace only.
+# Cluster monitoring that runs elsewhere (typical: a monitoring or
+# gmp-system namespace) must be admitted explicitly — uncomment and
+# adjust the namespaceSelector block. If your CNI does not enforce
+# NetworkPolicy, this manifest is inert; the RBAC tradeoff note in
+# deploy/12 still applies.
+#
+# Egress is deliberately unrestricted: the watcher dials the K8s API
+# server, the core-agent daemon (--daemon-url), and cloud APIs, whose
+# addresses are environment-specific; a wrong egress pin here fails
+# closed in exactly the incidents the watcher exists to catch.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lookout-watch
+  namespace: kube-platform
+  labels:
+    app.kubernetes.io/name: lookout-watch
+    app.kubernetes.io/component: watcher
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: lookout-watch
+      app.kubernetes.io/component: watcher
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: {} # scrapers in this namespace
+        # - namespaceSelector:
+        #     matchLabels:
+        #       kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9090

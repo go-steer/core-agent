@@ -24,41 +24,80 @@
 # externally-reachable endpoint.
 #
 # AUTH: the watcher POSTs with a bearer token (WATCHER_TOKEN) whose
-# identity is "sa:k8s-event-watcher" — listed in config.hub.json's
+# identity is "sa:lookout-watch" — listed in config.hub.json's
 # multi_session.proxy_identities, so it may assert X-Asserted-Caller:
 # platform-oncall@example.com (an admin_identity) when creating incident
 # sessions. See deploy/base/20-secrets-placeholder.md.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: k8s-event-watcher
+  name: lookout-watch
   namespace: kube-platform
   labels:
-    app.kubernetes.io/name: k8s-event-watcher
+    app.kubernetes.io/name: lookout-watch
     app.kubernetes.io/component: watcher
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: k8s-event-watcher
+      app.kubernetes.io/name: lookout-watch
       app.kubernetes.io/component: watcher
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: k8s-event-watcher
+        app.kubernetes.io/name: lookout-watch
         app.kubernetes.io/component: watcher
     spec:
-      serviceAccountName: k8s-event-watcher
+      serviceAccountName: lookout-watch
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
       containers:
         - name: watcher
-          # ENTRYPOINT is `lookout watch`. v0.11.0 is the floor for
-          # daemons >= 2.8.0-dev.1: earlier releases don't send
-          # Content-Type on the bodyless POST /sessions, which the
-          # daemon's CSRF guard rejects with 415.
-          image: ghcr.io/go-steer/lookout:v0.11.0
+          # ENTRYPOINT is `lookout watch`. This recipe tracks the current
+          # lookout release, v0.18.0. Naming came from v0.17.0, which
+          # retired the k8s-event-watcher transition naming
+          # (lookout#205/#206) — every resource here is named
+          # `lookout-watch` to match. Capability floors that still
+          # matter: v0.14.0 first carried per-resource-Forbidden tolerance
+          # (k8s-lookout#192), so if an operator narrows the ClusterRole
+          # (12-clusterrole-watcher.yaml), enrichment degrades to a
+          # documented `skipped=` partial instead of hard-failing the whole
+          # LoadCluster pass; v0.11.0 remains the hard floor for the CSRF
+          # Content-Type fix — earlier releases don't send Content-Type on
+          # the bodyless POST /sessions, which the daemon's CSRF guard
+          # rejects with 415.
+          #
+          # No --sources / --storm pinned: the args below ride the binary
+          # defaults (--sources=auto --storm=auto), which probe this
+          # deployment's RBAC at startup and enable every source it
+          # supports — with the enrichment-complete ClusterRole applied
+          # (12/14), that lights up enrichment + storm correlation without
+          # pinning (and stays portable across platforms that deny a grant,
+          # e.g. GKE Autopilot vs nodes/proxy). For strict fail-fast, pin
+          # an explicit --sources list per upstream's shipped manifest; for
+          # post-mortem history add --store on a volume (see k8s-lookout
+          # deploy/51-deployment-watcher.yaml).
+          #
+          # v0.18.0 adds two behaviors this recipe gets for free, both on
+          # by default and neither needing a flag or an RBAC grant:
+          #   - image-pull failures are classified by the kubelet's error
+          #     rather than by reason, and the RETRYABLE ones (registry
+          #     429/quota, 5xx, timeout, reset) must reach
+          #     --imagepull-transient-min-count (3) before firing
+          #     (lookout#213/#216). Terminal causes — bad tag, denied, no
+          #     space — and unrecognized ones still fire on the first
+          #     event, so a genuinely broken image is as loud as before.
+          #   - watchboard warnings reattach to a live incident sharing
+          #     their ancestor (lookout#220) instead of accumulating in a
+          #     parallel digest, so the symptoms of an open incident land
+          #     in the session already working it.
+          # Its third feature, multi-cluster (--clusters/--clusters-from,
+          # lookout#208), is opt-in and NOT used here: one sentinel per
+          # cluster stays the recommended shape, and the multi-cluster
+          # path needs a Fleet-capable build plus cloud IAM this
+          # deployment's k8s RBAC does not cover.
+          image: ghcr.io/go-steer/lookout:v0.18.0
           imagePullPolicy: IfNotPresent
           args:
             - "--daemon-url=http://core-agent.kube-platform.svc.cluster.local:7777"
@@ -66,7 +105,7 @@ spec:
             - "--mode=per-incident"
             # The identity that owns incident sessions — an admin_identity
             # in config.hub.json. The watcher asserts this via its proxy
-            # identity (sa:k8s-event-watcher).
+            # identity (sa:lookout-watch).
             - "--owner=platform-oncall@example.com"
             # Overridden per cluster by deploy/overlays/example/.
             - "--cluster-name=local"
@@ -78,7 +117,7 @@ spec:
             - name: WATCHER_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: k8s-event-watcher-token
+                  name: lookout-watch-token
                   key: token
           ports:
             - name: metrics

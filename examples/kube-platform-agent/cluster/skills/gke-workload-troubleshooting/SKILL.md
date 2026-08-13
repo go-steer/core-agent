@@ -150,23 +150,29 @@ kubectl get networkpolicies -n <workload_namespace> -o yaml
 
 ---
 
-### Step 5: Record RCA & Proposed Correction on the Kanban Task
+### Step 5: Report the RCA & proposed correction
 
-As a Cluster Agent you operate under a strict **read-only** boundary: **do not apply patches directly to the cluster, and do not open Pull Requests yourself.** The GitOps write path (`submit-suggestion`) is owned exclusively by the Platform Agent. You also **never pass context back through your chat reply** — you communicate only through the kanban task you were spawned on.
+<!-- core-agent deviation: this step is the ONE modification to the six
+     otherwise-unmodified cluster skills. Upstream routed the handoff
+     through a kanban card and told the agent to keep the RCA *out* of its
+     reply. No such tool is registered in this runtime and the report is
+     the only channel to the parent, so following upstream verbatim
+     discards the entire investigation. The upstream text and the full
+     rationale are in upstream/PROVENANCE.md; see also the frozen-recipe
+     note in README.md. -->
+
+You operate under a strict **read-only** boundary: **do not apply patches directly to the cluster, and do not open Pull Requests yourself.** The GitOps write path (`submit-suggestion`) is owned exclusively by the Platform Agent. Your job ends at a clear explanation and a concrete proposed fix.
+
+**Your report is how that work reaches the parent — so put it all in the report.**
 
 1. Synthesize the root cause analysis (e.g. _"payment-api is failing with exit code 137 because its memory limit is set to 256Mi while actual usage spiked to 270Mi"_), grounded in the exact diagnostic evidence you collected.
 2. Generate the corrected YAML manifest patch (e.g. increase memory limits, add missing Secret mounts, or add tolerations for Spot nodes).
-3. **Complete the task with a structured handoff** — put the RCA and proposed patch in `metadata`:
+3. **Write all three into your final report**, structured as:
 
-   ```
-   kanban_complete(
-     summary="<concise root cause>",
-     metadata={
-       "root_cause": "...",
-       "evidence": ["<quoted event/log/spec excerpts>"],
-       "proposed_patch": "<YAML>"
-     }
-   )
-   ```
+   - **Root cause** — one or two sentences, specific and causal.
+   - **Evidence** — the quoted event/log/spec excerpts and which `gke_*` reads produced them.
+   - **Proposed patch** — the YAML, ready for the parent to hand off.
 
-   (If you cannot proceed — missing input, ambiguous scope — call `kanban_block(kind="needs_input", ...)` instead.) Your final chat reply is only a brief acknowledgement — never the RCA or patch. The Platform Agent reads the completed card and decides whether to open/update a Pull Request via `submit-suggestion`; do not duplicate an existing PR.
+Do **not** end with a bare status line like "diagnosed the issue" — a summary without the analysis leaves the parent with nothing to act on, and it will redo your work. If you could not determine the cause, say exactly that and report what you ruled out; a documented dead end is a real result, a confident guess is not.
+
+The Platform Agent reads your report and decides whether to open or update a Pull Request via `submit-suggestion`; do not duplicate an existing PR.

@@ -17,8 +17,8 @@
 // that core-agent's v2 loader can consume a vendored, unmodified snapshot
 // of the kube-agents Platform Agent — persona, governance SOPs, the 18
 // platform skills (from the content root), the six cluster domain skills the
-// read-only `cluster` subagent carries (vendored under `.agents/skills/`),
-// the translated read-only MCP surface, and the `cluster` subagent
+// read-only `cluster` subagent loads from its OWN `../cluster` content root
+// (#621), the translated read-only MCP surface, and the `cluster` subagent
 // it delegates to — WITHOUT any cloud credentials
 // or a live cluster. The live GKE run is a manual UAT documented in
 // README.md; this test guards the plumbing.
@@ -28,13 +28,17 @@
 package kubeplatformagent_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/instruction"
@@ -49,6 +53,12 @@ const (
 	projectRoot = "."
 	agentsDir   = ".agents"
 	upstreamDir = "upstream"
+	// clusterRoot is the `cluster` subagent's own content root (#621): its
+	// AGENTS.md persona, cluster/skills/ (the six domain skills), and
+	// cluster/mcp.json. The subagent config declares `"root": "../cluster"`,
+	// which the daemon resolves against the agents dir; this test resolves the
+	// same tree relative to the package dir.
+	clusterRoot = "cluster"
 )
 
 // configuredContentRoots resolves the config's content_roots exactly as
@@ -152,11 +162,11 @@ func TestGovernanceSOPsDiscoverable(t *testing.T) {
 }
 
 // clusterSkills are the six GKE domain-diagnostic skills the read-only
-// `cluster` subagent carries. They are vendored under `.agents/skills/`
-// (project scope) rather than the `../upstream` content root: a declarative
-// subagent's `skills:` is a name-scoped subset of the *parent's* loaded set,
-// so the parent must load them, and dropping them into `upstream/` would
-// corrupt its faithful `agents/platform/` snapshot. See PROVENANCE.md.
+// `cluster` subagent carries. Since #621 they live under the subagent's OWN
+// content root (cluster/skills/), loaded independently of the parent via the
+// per-subagent `root` feature (#619) — NOT vendored into the parent's
+// `.agents/skills/` (which they were before, only because the old declarative
+// subagent could scope skills but not load its own). See PROVENANCE.md.
 var clusterSkills = []string{
 	"gke-workload-troubleshooting",
 	"gke-observability",
@@ -166,12 +176,13 @@ var clusterSkills = []string{
 	"gke-workload-security",
 }
 
-// TestSkillsLoad asserts the loader discovers the full skill surface the
-// recipe promises: the 18 Platform Agent skills from the `../upstream`
-// content root PLUS the six cluster domain skills vendored under
-// `.agents/skills/` (project scope). A failure here means either the
-// content_roots wiring (config → resolve → skills.WithContentRoots)
-// regressed, or a cluster skill went missing/renamed.
+// TestSkillsLoad asserts the parent (platform) agent discovers exactly the 18
+// Platform Agent skills from the `../upstream` content root — and NOT the six
+// cluster domain skills, which since #621 load only into the `cluster`
+// subagent from its own root. A failure here means either the content_roots
+// wiring (config → resolve → skills.WithContentRoots) regressed, a platform
+// skill went missing/renamed, or a cluster skill leaked back into the parent
+// surface (the pollution #621 removed).
 func TestSkillsLoad(t *testing.T) {
 	got, err := skills.Load(context.Background(), agentsDir, nil,
 		skills.WithContentRoots(configuredContentRoots(t)))
@@ -179,63 +190,138 @@ func TestSkillsLoad(t *testing.T) {
 		t.Fatalf("skills.Load: %v", err)
 	}
 	const platformSkills = 18
-	wantCount := platformSkills + len(clusterSkills) // 24
-	if len(got.Infos) != wantCount {
+	if len(got.Infos) != platformSkills {
 		names := make([]string, 0, len(got.Infos))
 		for _, in := range got.Infos {
 			names = append(names, in.Name)
 		}
-		t.Fatalf("discovered %d skills, want %d: %v", len(got.Infos), wantCount, names)
+		t.Fatalf("parent discovered %d skills, want %d (the 18 platform skills; the six cluster skills load from the subagent's own root, not the parent): %v",
+			len(got.Infos), platformSkills, names)
 	}
-	// Spot-check a few load-bearing platform skills (content root) and every
-	// cluster skill (.agents/skills/) by name.
 	discovered := make(map[string]bool, len(got.Infos))
 	for _, in := range got.Infos {
 		discovered[in.Name] = true
 	}
+	// Spot-check a few load-bearing platform skills from the content root.
 	for _, want := range []string{"gke-cluster-creator", "fleet-audit", "manage-cluster", "submit-suggestion"} {
 		if !discovered[want] {
 			t.Errorf("platform skill %q not discovered from the content root", want)
 		}
 	}
-	for _, want := range clusterSkills {
-		if !discovered[want] {
-			t.Errorf("cluster skill %q not discovered from .agents/skills/", want)
+	// The six cluster skills must NOT be in the parent's set — #621 moved them
+	// out of `.agents/skills/` into the cluster subagent's own root. A copy
+	// lingering in the parent would out-rank the content root and reintroduce
+	// the namespace pollution the migration removed.
+	for _, notWant := range clusterSkills {
+		if discovered[notWant] {
+			t.Errorf("cluster skill %q loaded into the PARENT surface; after #621 it must live only under cluster/skills/", notWant)
 		}
 	}
 }
 
-// TestPlatformSkillsAreNotCopied guards the content-root half of the skill
-// story: the 18 Platform Agent skills must load from the `../upstream`
-// content root, never a copy under `.agents/skills/`. A project-scope copy
-// would silently win (project skills out-rank content roots), shadowing the
-// content root and defeating the "run kube-agents unmodified" story. The
-// `.agents/skills/` dir DOES exist now — but only for the six cluster domain
-// skills (see clusterSkills / PROVENANCE.md), so this test asserts the dir
-// holds *exactly* those six and no platform skill leaked into it.
-func TestPlatformSkillsAreNotCopied(t *testing.T) {
-	entries, err := os.ReadDir(filepath.Join(agentsDir, "skills"))
+// TestClusterSkillsLiveUnderSubagentRoot guards the #621 migration: the six
+// cluster domain skills load from the `cluster` subagent's OWN content root
+// (cluster/skills/), NOT a copy under the parent's `.agents/skills/`. Two
+// invariants:
+//
+//  1. The parent project scope carries no vendored skills — `.agents/skills/`
+//     is absent or empty. A skill left there would out-rank the content root
+//     (project skills win) and reintroduce the parent-surface pollution #621
+//     removed. (An empty dir is fine — git does not track it, so a fresh
+//     checkout has no `.agents/skills/` at all.)
+//  2. The cluster root carries exactly the six cluster skills, loaded the same
+//     way loadSubagentRoot does (skills.Load against the root dir).
+func TestClusterSkillsLiveUnderSubagentRoot(t *testing.T) {
+	if entries, err := os.ReadDir(filepath.Join(agentsDir, "skills")); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				t.Errorf(".agents/skills/%s exists; after #621 the parent must carry no vendored skills (they live under cluster/skills/)", e.Name())
+			}
+		}
+	}
+
+	got, err := skills.Load(context.Background(), clusterRoot, nil)
 	if err != nil {
-		t.Fatalf("read .agents/skills: %v", err)
+		t.Fatalf("skills.Load(cluster root): %v", err)
 	}
 	want := make(map[string]bool, len(clusterSkills))
 	for _, n := range clusterSkills {
 		want[n] = true
 	}
-	got := make(map[string]bool, len(entries))
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
+	if len(got.Infos) != len(clusterSkills) {
+		names := make([]string, 0, len(got.Infos))
+		for _, in := range got.Infos {
+			names = append(names, in.Name)
 		}
-		got[e.Name()] = true
-		if !want[e.Name()] {
-			t.Errorf(".agents/skills/%s is not a cluster skill; the 18 platform skills must load from the content root, not a copy", e.Name())
+		t.Fatalf("cluster root discovered %d skills, want the six cluster skills: %v", len(got.Infos), names)
+	}
+	for _, in := range got.Infos {
+		if !want[in.Name] {
+			t.Errorf("cluster/skills/ has unexpected skill %q", in.Name)
 		}
+		delete(want, in.Name)
 	}
 	for n := range want {
-		if !got[n] {
-			t.Errorf("cluster skill %q missing from .agents/skills/", n)
+		t.Errorf("cluster skill %q missing from cluster/skills/", n)
+	}
+}
+
+// TestClusterRuntimeContentHasNoDeadKanbanHandoff guards #703. The `cluster`
+// subagent's ONLY channel back to the platform parent is its report, and no
+// kanban tool is registered in this runtime (cluster/mcp.json declares the
+// read-only `gke` + `developer_knowledge` HTTP servers and nothing else). So a
+// runtime instruction to hand off via `kanban_complete` — or to keep the RCA
+// *out* of the reply — directs the agent to discard the investigation it just
+// finished. Observed live in GKE UAT as content-free handoffs.
+//
+// Scope is deliberately the RUNTIME content root only (cluster/AGENTS.md and
+// cluster/skills/). cluster/SOUL.md is an unmodified vendored persona whose §6
+// describes the Hermes kanban lifecycle by design, and upstream/ is a faithful
+// snapshot — both are evidence for the portability case study (#704) and are
+// reconciled by the overlay in cluster/AGENTS.md rather than edited. What must
+// not survive is a *skill* re-asserting the dead channel, because skills load
+// at the point of use and so speak last.
+func TestClusterRuntimeContentHasNoDeadKanbanHandoff(t *testing.T) {
+	// Instructions that route the deliverable somewhere it cannot go.
+	banned := []string{"kanban_complete", "kanban_block", "kanban_show"}
+
+	skillsDir := filepath.Join(clusterRoot, "skills")
+	err := filepath.WalkDir(skillsDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
+		if d.IsDir() || filepath.Ext(path) != ".md" {
+			return nil
+		}
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		rel, _ := filepath.Rel(clusterRoot, path)
+		for _, tok := range banned {
+			if bytes.Contains(body, []byte(tok)) {
+				t.Errorf("%s instructs the cluster subagent to use %s, but no kanban tool "+
+					"is registered in this runtime — its report is the only channel to the "+
+					"parent (#703). Rewrite the step to put the RCA in the report.", rel, tok)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk cluster/skills: %v", err)
+	}
+
+	// The overlay must claim precedence, or a vendored skill's instructions win
+	// on proximity — that is exactly how #703 slipped through with a correct
+	// overlay already in place.
+	overlay, err := os.ReadFile(filepath.Join(clusterRoot, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read cluster/AGENTS.md: %v", err)
+	}
+	if !bytes.Contains(overlay, []byte("this overlay wins")) {
+		t.Error("cluster/AGENTS.md must state that the core-agent overlay overrides " +
+			"conflicting skill-level instructions; without it a vendored skill loaded " +
+			"at the point of use is the most proximate instruction (#703)")
 	}
 }
 
@@ -433,15 +519,14 @@ func TestMCPServersParse(t *testing.T) {
 }
 
 // TestClusterSubagentDeclared asserts the recipe wires the read-only
-// `cluster` subagent (v2.9 PR B′): the platform agent delegates a single
-// cluster's diagnostics to a declarative subagent scoped to the read-only
-// MCP surface and carrying the six GKE domain-diagnostic skills the parent
-// delegates rather than runs itself. It pins the scoping contract as the
-// recipe uses it — MCP scoped (list) to the read-only `gke` + knowledge
-// servers, skills scoped (list) to exactly the six cluster domain skills,
-// tools inherited — and cross-checks that every MCP the subagent names
-// actually exists in mcp.json, and that the vendored persona it @includes
-// is present.
+// `cluster` subagent (v2.9 PR B′, migrated to a per-subagent content root in
+// #621): the platform agent delegates a single cluster's diagnostics to a
+// declarative subagent that loads its OWN persona + skills + MCP from a
+// dedicated `../cluster` root, independent of the parent's shared surface. It
+// pins that the config uses `root` (not the old inline skills/mcp scoping),
+// that the root resolves to a real tree, and that the tree carries the
+// read-only propose-only surface (persona read-only boundary, six domain
+// skills, and a read-only `gke` endpoint).
 func TestClusterSubagentDeclared(t *testing.T) {
 	cfg, err := config.Load(agentsDir)
 	if err != nil {
@@ -455,37 +540,26 @@ func TestClusterSubagentDeclared(t *testing.T) {
 		t.Errorf("subagent name = %q, want %q", sa.Name, "cluster")
 	}
 
-	// MCP: scoped (list) to the read-only surface. Since the recipe collapsed
-	// GKE to a single read-only endpoint, `gke` is safe for the subagent to
-	// share with the parent — there is no read-write variant to withhold.
-	wantMCP := map[string]bool{"gke": true, "developer_knowledge": true}
-	if len(sa.MCP) != len(wantMCP) {
-		t.Errorf("subagent mcp = %v, want %v", sa.MCP, wantMCP)
-	}
-	for _, name := range sa.MCP {
-		if !wantMCP[name] {
-			t.Errorf("subagent mcp includes unexpected server %q", name)
-		}
+	// #621: the subagent loads its own persona/skills/MCP from a dedicated
+	// content root instead of scoping the parent's shared surface. `root` is
+	// resolved against the agents dir, so "../cluster" is a sibling of
+	// `.agents/`.
+	if sa.Root != "../cluster" {
+		t.Errorf("subagent root = %q, want ../cluster (#621 per-subagent content root)", sa.Root)
 	}
 
-	// Skills: scoped (list) to exactly the six cluster domain skills — the
-	// specialist carries them; the parent delegates single-cluster diagnosis
-	// rather than running them itself. Non-nil-but-populated is the "grant
-	// this subset" half of the contract; nil would mean "inherit all".
-	if sa.Skills == nil {
-		t.Error("subagent skills is nil (would inherit all); recipe grants the six cluster skills via a list")
+	// The old inline shared-surface fields must be gone — the root supplies
+	// them now. A lingering skills/mcp list or inline instructions would mean
+	// the migration is half-done (the parent would still have to vendor those
+	// skills), which is exactly what #621 removes.
+	if sa.Skills != nil {
+		t.Errorf("subagent skills = %v, want nil (loaded from the root, not scoped from the parent)", sa.Skills)
 	}
-	wantSkills := make(map[string]bool, len(clusterSkills))
-	for _, n := range clusterSkills {
-		wantSkills[n] = true
+	if sa.MCP != nil {
+		t.Errorf("subagent mcp = %v, want nil (loaded from cluster/mcp.json)", sa.MCP)
 	}
-	if len(sa.Skills) != len(wantSkills) {
-		t.Errorf("subagent skills = %v, want the six cluster skills %v", sa.Skills, clusterSkills)
-	}
-	for _, name := range sa.Skills {
-		if !wantSkills[name] {
-			t.Errorf("subagent skills includes unexpected skill %q", name)
-		}
+	if sa.Instructions != "" {
+		t.Error("subagent has inline instructions; the persona must auto-assemble from cluster/AGENTS.md")
 	}
 
 	// Tools: omitted → inherit the parent's built-ins (bash already disabled
@@ -502,67 +576,58 @@ func TestClusterSubagentDeclared(t *testing.T) {
 		t.Errorf("subagent model = %s/%s, want vertex/gemini-3.5-flash", sa.Model.Provider, sa.Model.Name)
 	}
 
-	// Persona: @includes the vendored cluster SOUL, then overlays the
-	// core-agent runtime reconciliation.
-	if !strings.Contains(sa.Instructions, "@include upstream/cluster/SOUL.md") {
-		t.Error("subagent instructions do not @include the vendored cluster SOUL")
-	}
-	if !strings.Contains(sa.Instructions, "Runtime overlay (core-agent)") {
-		t.Error("subagent instructions missing the core-agent runtime overlay")
+	// The root must resolve to a real directory relative to the agents dir,
+	// exactly as loadSubagentRoot does (base = agents dir). A typo here would
+	// otherwise only surface at daemon boot.
+	rootAbs := filepath.Join(agentsDir, sa.Root)
+	if info, err := os.Stat(rootAbs); err != nil || !info.IsDir() {
+		t.Fatalf("subagent root %q does not resolve to a directory (%v)", rootAbs, err)
 	}
 
-	// Every MCP the subagent names must resolve against mcp.json — a typo
-	// here would only surface at daemon boot otherwise.
-	servers, err := mcp.Load(agentsDir)
+	// Persona: the root's AGENTS.md auto-assembles (rootedSubagentInstruction
+	// with no inline instructions loads <root>/AGENTS.md), pulls in the
+	// vendored SOUL's read-only boundary via a root-scoped @include, and
+	// overlays the core-agent runtime reconciliation.
+	loaded, err := instruction.Load("", "",
+		instruction.WithContentRoots([]string{rootAbs}))
 	if err != nil {
-		t.Fatalf("mcp.Load: %v", err)
+		t.Fatalf("instruction.Load(cluster root): %v", err)
 	}
-	for _, name := range sa.MCP {
-		if _, ok := servers.Servers[name]; !ok {
-			t.Errorf("subagent references mcp server %q not in mcp.json", name)
+	if !strings.Contains(loaded.Instruction, "Read-Only Boundary") {
+		t.Error("cluster root persona missing the read-only boundary (cluster/SOUL.md @include did not resolve)")
+	}
+	if !strings.Contains(loaded.Instruction, "Runtime overlay (core-agent)") {
+		t.Error("cluster root persona missing the core-agent runtime overlay")
+	}
+
+	// Skills: the root carries the six cluster domain skills (loaded the same
+	// way loadSubagentRoot does). Depth-checked by
+	// TestClusterSkillsLiveUnderSubagentRoot; count spot-check here.
+	clSkills, err := skills.Load(context.Background(), clusterRoot, nil)
+	if err != nil {
+		t.Fatalf("skills.Load(cluster root): %v", err)
+	}
+	if len(clSkills.Infos) != len(clusterSkills) {
+		t.Errorf("cluster root has %d skills, want %d", len(clSkills.Infos), len(clusterSkills))
+	}
+
+	// MCP: the root's own mcp.json carries the read-only `gke` + knowledge
+	// servers. The propose-only posture (#617 finding 2) is enforced by the
+	// transport — the endpoint must stay the read-only variant across the move.
+	clMCP, err := mcp.Load(clusterRoot)
+	if err != nil {
+		t.Fatalf("mcp.Load(cluster root): %v", err)
+	}
+	for _, want := range []string{"gke", "developer_knowledge"} {
+		if _, ok := clMCP.Servers[want]; !ok {
+			t.Errorf("cluster/mcp.json missing server %q", want)
 		}
 	}
-
-	// Every skill the subagent names must resolve against the PARENT's loaded
-	// skill set — a declarative subagent's skills are a name-scoped subset of
-	// what the parent loads (surface.skills.Scoped), so a skill missing from
-	// the parent's set would silently drop from the subagent at boot. This is
-	// the invariant that forces the six cluster skills into `.agents/skills/`.
-	loadedSkills, err := skills.Load(context.Background(), agentsDir, nil,
-		skills.WithContentRoots(configuredContentRoots(t)))
-	if err != nil {
-		t.Fatalf("skills.Load: %v", err)
-	}
-	parentSkills := make(map[string]bool, len(loadedSkills.Infos))
-	for _, in := range loadedSkills.Infos {
-		parentSkills[in.Name] = true
-	}
-	for _, name := range sa.Skills {
-		if !parentSkills[name] {
-			t.Errorf("subagent scopes skill %q the parent does not load; declarative subagent skills must be a subset of the parent's loaded set", name)
+	if gke, ok := clMCP.Servers["gke"]; ok {
+		const readOnlyURL = "https://container.googleapis.com/mcp/read-only"
+		if gke.URL != readOnlyURL {
+			t.Errorf("cluster gke url = %q, want the read-only endpoint %q", gke.URL, readOnlyURL)
 		}
-	}
-
-	// The vendored persona it @includes must exist and carry the read-only
-	// boundary the whole scope relies on.
-	soul, err := os.ReadFile(filepath.Join(upstreamDir, "cluster", "SOUL.md"))
-	if err != nil {
-		t.Fatalf("read vendored cluster SOUL.md: %v", err)
-	}
-	if !strings.Contains(string(soul), "Read-Only Boundary") {
-		t.Error("vendored cluster SOUL.md missing its read-only boundary section")
-	}
-
-	// The subagent's @include must actually resolve at the recipe's project
-	// root the same way buildDeclaredSubagents expands it — a path typo here
-	// would otherwise only surface at daemon boot. instruction.Expand uses
-	// the project root as both base and scope root, exactly as the cmd path.
-	expanded, _, err := instruction.Expand(sa.Instructions, projectRoot, projectRoot)
-	if err != nil {
-		t.Fatalf("expand subagent instructions: %v", err)
-	}
-	if !strings.Contains(expanded, "Read-Only Boundary") {
-		t.Error("expanded subagent instructions did not pull in the vendored cluster SOUL")
 	}
 }
 
@@ -624,10 +689,11 @@ func TestHubConfigParses(t *testing.T) {
 	}
 	// The cluster subagent must not drift out of the hub variant: an
 	// operator running the hub should get the *same* delegation surface,
-	// down to the scoped mcp/skills/tools least-privilege. Compare the
+	// down to the `root` that supplies its persona/skills/MCP. Compare the
 	// whole Subagents block against the local config, not just the name —
-	// a hub subagent that silently regained the read-write `gke` server,
-	// or whose `skills` went nil (inherit-all), would otherwise slip by.
+	// a hub subagent that lost its `root` (falling back to the parent
+	// surface), or regained an inline read-write scoping, would otherwise
+	// slip by.
 	local := config.DefaultConfig()
 	localBody, err := os.ReadFile(filepath.Join(agentsDir, "config.json"))
 	if err != nil {
@@ -661,7 +727,7 @@ func TestHubConfigParses(t *testing.T) {
 // OWN bearer identity while asserting an admin owner, so two things must
 // agree across config.hub.json and the watcher manifest:
 //
-//  1. the watcher's identity ("sa:k8s-event-watcher") must be a
+//  1. the watcher's identity ("sa:lookout-watch") must be a
 //     proxy_identity — otherwise it may not assert X-Asserted-Caller and
 //     every inject is rejected;
 //  2. the manifest's --owner must be an admin_identity — otherwise incident
@@ -680,7 +746,7 @@ func TestDeployWatcherAuthWiring(t *testing.T) {
 	}
 	ms := cfg.Attach.MultiSession
 
-	const watcherIdentity = "sa:k8s-event-watcher"
+	const watcherIdentity = "sa:lookout-watch"
 	if !sliceContains(ms.ProxyIdentities, watcherIdentity) {
 		t.Errorf("config.hub.json proxy_identities %v missing %q; the watcher could not assert an owner and every inject would 403",
 			ms.ProxyIdentities, watcherIdentity)
@@ -757,11 +823,296 @@ func TestDeployContentMountIsSelfConsistent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read content.Dockerfile: %v", err)
 	}
-	for _, needed := range []string{"COPY .agents/", "COPY AGENTS.md", "COPY AGENTS.d/", "COPY upstream/"} {
+	// cluster/ is the `cluster` subagent's own content root (#621); the
+	// subagent's `root: "../cluster"` resolves to <mount>/cluster, so the
+	// image must carry it or the subagent boots with no skills/persona.
+	for _, needed := range []string{"COPY .agents/", "COPY AGENTS.md", "COPY AGENTS.d/", "COPY upstream/", "COPY cluster/"} {
 		if !strings.Contains(string(dockerfile), needed) {
 			t.Errorf("content.Dockerfile missing %q; the mounted tree would be incomplete", needed)
 		}
 	}
+
+	// The initcontainer-copy overlay (fallback for clusters below the
+	// image-volume floor) fills the same mount by `cp`-ing the tree out of
+	// the content image. Its source list MUST mirror the Dockerfile COPY
+	// layers above, or the daemon boots against an incomplete tree there
+	// even though the image-volume overlay is fine. In particular, dropping
+	// /cluster crashes startup (subagent root path not found), not just a
+	// degraded subagent — this guards that regression.
+	initPatch, err := os.ReadFile(filepath.Join("deploy", "overlays", "initcontainer-copy", "patch-content-via-initcontainer.yaml"))
+	if err != nil {
+		t.Fatalf("read initcontainer-copy patch: %v", err)
+	}
+	for _, src := range []string{"- /.agents", "- /AGENTS.md", "- /AGENTS.d", "- /upstream", "- /cluster"} {
+		if !strings.Contains(string(initPatch), src+"\n") {
+			t.Errorf("initcontainer-copy patch does not cp %q; its emptyDir would be missing that tree (must mirror content.Dockerfile COPY layers)", strings.TrimPrefix(src, "- "))
+		}
+	}
+}
+
+// This daemon is headless (--no-repl) and runs auto-continue by default, so
+// nobody is tailing stdout when a tool loop starts and auto-continue keeps
+// re-driving the interrupted turn. The default --watchdog=warn only LOGS a
+// runaway; only --watchdog=enforce (#623) trips a kind=watchdog turn-error and
+// refuses new turns, which is what actually stops the re-drive loop. Live UAT
+// hit exactly this: a runaway burned tokens under warn mode. Pin the flag so
+// the recipe can't silently regress to warn.
+func TestDeployDaemonEnforcesWatchdog(t *testing.T) {
+	daemon, err := os.ReadFile(filepath.Join("deploy", "base", "50-deployment-daemon.yaml"))
+	if err != nil {
+		t.Fatalf("read daemon manifest: %v", err)
+	}
+	// Match the arg-list item form (`- "--watchdog=enforce"`), not the bare
+	// string — the explanatory comment above the arg also contains
+	// "--watchdog=enforce", so a substring check would pass on the prose even
+	// if the actual flag were removed.
+	if !strings.Contains(string(daemon), "- \"--watchdog=enforce\"") {
+		t.Errorf("daemon must pass --watchdog=enforce as an arg; without it a headless auto-continue daemon re-drives a runaway tool loop indefinitely (only warn-logs it)")
+	}
+}
+
+// --- deploy RBAC parsing (issue #618) ---------------------------------------
+
+type policyRule struct {
+	APIGroups     []string `yaml:"apiGroups"`
+	Resources     []string `yaml:"resources"`
+	ResourceNames []string `yaml:"resourceNames"`
+	Verbs         []string `yaml:"verbs"`
+}
+
+type rbacObject struct {
+	Kind     string `yaml:"kind"`
+	Metadata struct {
+		Name      string `yaml:"name"`
+		Namespace string `yaml:"namespace"`
+	} `yaml:"metadata"`
+	Rules    []policyRule `yaml:"rules"`
+	Subjects []struct {
+		Kind      string `yaml:"kind"`
+		Name      string `yaml:"name"`
+		Namespace string `yaml:"namespace"`
+	} `yaml:"subjects"`
+	RoleRef struct {
+		Kind string `yaml:"kind"`
+		Name string `yaml:"name"`
+	} `yaml:"roleRef"`
+}
+
+func loadRBAC(t *testing.T, name string) rbacObject {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("deploy", "base", name))
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	var obj rbacObject
+	if err := yaml.Unmarshal(body, &obj); err != nil {
+		t.Fatalf("parse %s: %v", name, err)
+	}
+	return obj
+}
+
+// grants reports whether the role grants verb on (group, resource).
+func (r rbacObject) grants(group, resource, verb string) bool {
+	for _, rule := range r.Rules {
+		if !sliceContains(rule.APIGroups, group) || !sliceContains(rule.Resources, resource) {
+			continue
+		}
+		if sliceContains(rule.Verbs, verb) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestDeployWatcherClusterRoleEnrichmentComplete pins the #618 fix: the
+// vendored watcher ClusterRole must grant the reads lookout enrichment
+// performs, or every incident inject regresses to `enrichment_error
+// stage=resolve` (the M4-drill / #618 symptom). It also pins the two
+// invariants the grant must NOT cross: the recipe's suffixed object name
+// (so it coexists with gke-troubleshoot-agent) and read-only verbs only
+// (a watcher that could write would break the propose-only posture).
+//
+// This is the bug-fix test — it FAILS against the pre-#618 minimal role
+// (events + pods:get only), which granted no `list` and none of the
+// workload/secrets/log reads asserted below.
+func TestDeployWatcherClusterRoleEnrichmentComplete(t *testing.T) {
+	role := loadRBAC(t, "12-clusterrole-watcher.yaml")
+
+	if role.Kind != "ClusterRole" {
+		t.Fatalf("12-clusterrole-watcher.yaml kind = %q, want ClusterRole", role.Kind)
+	}
+	// Suffixed name so it coexists with gke-troubleshoot-agent's bare
+	// "lookout-watch" ClusterRole (cluster-scoped objects share a
+	// namespace); the binding (13) roleRef must match this.
+	if role.Metadata.Name != "lookout-watch-kube-platform" {
+		t.Errorf("ClusterRole name = %q, want lookout-watch-kube-platform", role.Metadata.Name)
+	}
+
+	// The reads enrichment (DESIGN.md §7.6) needs on both paths. Each of
+	// these is absent from the pre-#618 minimal role, so this slice is the
+	// bug-fix assertion.
+	type need struct{ group, resource, verb string }
+	for _, n := range []need{
+		{"", "pods", "list"},                           // scoped-list fallback (old role had get only)
+		{"", "pods/log", "get"},                        // triage logs distillation
+		{"apps", "deployments", "list"},                // scoped-list fallback
+		{"apps", "deployments", "get"},                 // live-path top-owner GET
+		{"apps", "replicasets", "get"},                 // live-path top-owner GET
+		{"apps", "statefulsets", "get"},                // live-path top-owner GET
+		{"apps", "daemonsets", "list"},                 // scoped-list fallback
+		{"batch", "jobs", "list"},                      // scoped-list fallback + workload source
+		{"", "services", "list"},                       // edges section
+		{"", "configmaps", "list"},                     // edges section
+		{"", "secrets", "list"},                        // expiry source + edges (§11 tradeoff)
+		{"rbac.authorization.k8s.io", "roles", "list"}, // edges RBAC checks
+	} {
+		if !role.grants(n.group, n.resource, n.verb) {
+			t.Errorf("ClusterRole does not grant %q on {group:%q resource:%q}; enrichment would fail",
+				n.verb, n.group, n.resource)
+		}
+	}
+
+	// Read-only: no write verb anywhere, and secrets granted `list` only
+	// (never get/watch — no resident informer cache of secret material).
+	writeVerbs := map[string]bool{"create": true, "update": true, "patch": true, "delete": true, "deletecollection": true}
+	for _, rule := range role.Rules {
+		for _, v := range rule.Verbs {
+			if writeVerbs[v] {
+				t.Errorf("ClusterRole grants write verb %q on %v; the watcher must be read-only", v, rule.Resources)
+			}
+			if sliceContains(rule.Resources, "secrets") && v != "list" {
+				t.Errorf("ClusterRole grants %q on secrets; only `list` is allowed (§11)", v)
+			}
+		}
+	}
+}
+
+// TestDeployWatcherCapacityAndNetworkPolicy pins the optimal-config
+// additions (#618): the kube-system capacity Role/RoleBinding and the
+// default-deny NetworkPolicy that mitigates the cluster-wide secrets
+// grant. It checks they are wired into the base kustomization and that
+// the binding's subject + roleRef stay self-consistent across files.
+func TestDeployWatcherCapacityAndNetworkPolicy(t *testing.T) {
+	kustomize, err := os.ReadFile(filepath.Join("deploy", "base", "kustomization.yaml"))
+	if err != nil {
+		t.Fatalf("read base kustomization: %v", err)
+	}
+	for _, f := range []string{
+		"14-role-watcher-capacity.yaml",
+		"15-rolebinding-watcher-capacity.yaml",
+		"16-networkpolicy-watcher.yaml",
+	} {
+		if !strings.Contains(string(kustomize), f) {
+			t.Errorf("base kustomization does not list %q", f)
+		}
+	}
+
+	// The capacity Role/RoleBinding (14/15) live in kube-system, but every
+	// other resource belongs to kube-platform. The base MUST namespace them
+	// via the unsetOnly NamespaceTransformer, NOT the `namespace:` shorthand:
+	// the shorthand clobbers explicit namespaces and would silently rewrite
+	// 14/15 to kube-platform, where the cluster-autoscaler-status ConfigMap
+	// they read does not exist — the capacity source would 403 at runtime and
+	// never surface on disk. This guards that fix.
+	if strings.Contains(string(kustomize), "\nnamespace: kube-platform") {
+		t.Error("base kustomization uses the `namespace:` shorthand; it clobbers the kube-system capacity RBAC into kube-platform — use the unsetOnly NamespaceTransformer")
+	}
+	if !strings.Contains(string(kustomize), "namespace-transformer.yaml") {
+		t.Error("base kustomization does not reference namespace-transformer.yaml")
+	}
+	nst, err := os.ReadFile(filepath.Join("deploy", "base", "namespace-transformer.yaml"))
+	if err != nil {
+		t.Fatalf("read namespace-transformer.yaml: %v", err)
+	}
+	if !strings.Contains(string(nst), "unsetOnly: true") {
+		t.Error("namespace-transformer.yaml must set unsetOnly: true to preserve the kube-system capacity RBAC's explicit namespace")
+	}
+
+	capRole := loadRBAC(t, "14-role-watcher-capacity.yaml")
+	if capRole.Kind != "Role" || capRole.Metadata.Namespace != "kube-system" {
+		t.Errorf("capacity Role kind/ns = %q/%q, want Role/kube-system", capRole.Kind, capRole.Metadata.Namespace)
+	}
+	if !capRole.grants("", "configmaps", "get") || !capRole.grants("", "configmaps", "list") {
+		t.Error("capacity Role must grant get+list on configmaps (cluster-autoscaler-status poll)")
+	}
+
+	capBind := loadRBAC(t, "15-rolebinding-watcher-capacity.yaml")
+	if capBind.Kind != "RoleBinding" || capBind.Metadata.Namespace != "kube-system" {
+		t.Errorf("capacity RoleBinding kind/ns = %q/%q, want RoleBinding/kube-system", capBind.Kind, capBind.Metadata.Namespace)
+	}
+	if capBind.RoleRef.Name != capRole.Metadata.Name {
+		t.Errorf("capacity RoleBinding roleRef %q != Role name %q", capBind.RoleRef.Name, capRole.Metadata.Name)
+	}
+	if len(capBind.Subjects) != 1 ||
+		capBind.Subjects[0].Name != "lookout-watch" ||
+		capBind.Subjects[0].Namespace != "kube-platform" {
+		t.Errorf("capacity RoleBinding subject = %+v, want SA lookout-watch/kube-platform", capBind.Subjects)
+	}
+
+	np := loadRBAC(t, "16-networkpolicy-watcher.yaml")
+	if np.Kind != "NetworkPolicy" || np.Metadata.Namespace != "kube-platform" {
+		t.Errorf("NetworkPolicy kind/ns = %q/%q, want NetworkPolicy/kube-platform", np.Kind, np.Metadata.Namespace)
+	}
+}
+
+// TestDeployWatcherImageFloor pins the lookout image at v0.18.0 (#618,
+// #621) across every place it is declared — the base Deployment and both
+// overlays — so a bump in one spot can't silently leave another behind.
+// v0.18.0 is the current release; the naming this recipe uses came from
+// v0.17.0, which retired the k8s-event-watcher transition naming
+// (lookout#205/#206), which is why every resource here is named
+// lookout-watch. v0.14.0 remains the capability floor — it carries
+// per-resource-Forbidden tolerance (k8s-lookout#192): a narrowed role
+// degrades to a partial bundle instead of hard-failing enrichment.
+//
+// The vendored RBAC (12/14/15/16) is byte-identical across v0.17.0 and
+// v0.18.0 — that release changed only the watcher binary, so bumping the
+// image needs no re-vendor.
+func TestDeployWatcherImageFloor(t *testing.T) {
+	const wantTag = "v0.18.0"
+	const lookout = "ghcr.io/go-steer/lookout"
+
+	base, err := os.ReadFile(filepath.Join("deploy", "base", "51-deployment-watcher.yaml"))
+	if err != nil {
+		t.Fatalf("read watcher manifest: %v", err)
+	}
+	if !strings.Contains(string(base), "image: "+lookout+":"+wantTag) {
+		t.Errorf("base 51-deployment-watcher.yaml does not pin %s:%s", lookout, wantTag)
+	}
+
+	for _, overlay := range []string{"example", "initcontainer-copy"} {
+		path := filepath.Join("deploy", "overlays", overlay, "kustomization.yaml")
+		got := kustomizeImageTag(t, path, lookout)
+		if got != wantTag {
+			t.Errorf("overlay %s pins %s newTag %q, want %q", overlay, lookout, got, wantTag)
+		}
+	}
+}
+
+// kustomizeImageTag returns the newTag pinned for image in a kustomization
+// file's images: block ("" if the image or its newTag is absent).
+func kustomizeImageTag(t *testing.T, path, image string) string {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	lines := strings.Split(string(body), "\n")
+	for i, line := range lines {
+		if !strings.Contains(line, "name: "+image) {
+			continue
+		}
+		for j := i + 1; j < len(lines); j++ {
+			l := strings.TrimSpace(lines[j])
+			if strings.HasPrefix(l, "- name:") {
+				break // next image entry; no newTag found for this one
+			}
+			if strings.HasPrefix(l, "newTag:") {
+				return strings.Trim(strings.TrimSpace(strings.TrimPrefix(l, "newTag:")), `"`)
+			}
+		}
+	}
+	return ""
 }
 
 func sliceContains(xs []string, want string) bool {

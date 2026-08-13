@@ -30,4 +30,4 @@ and bind the daemon KSA's Workload Identity roles (see
 The watcher Deployment is a template. To cover another cluster, deploy a
 second watcher into it with `--cluster-name=<that-cluster>` and
 `--daemon-url=https://<this-daemon-external-endpoint>:7777`, plus a copy
-of the `k8s-event-watcher-token` Secret. The hub daemon stays single.
+of the `lookout-watch-token` Secret. The hub daemon stays single.

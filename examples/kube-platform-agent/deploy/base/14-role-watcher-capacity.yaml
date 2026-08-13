@@ -1,0 +1,51 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Capacity source (DESIGN.md §10.1 sub-source 2, enabled via
+# --sources=…,capacity): the sentinel polls the cluster-autoscaler's
+# status ConfigMap in kube-system for per-nodegroup health/backoff and
+# the cloudProviderTarget-vs-ready gap. Vendored from go-steer/k8s-lookout
+# deploy/14-role-watcher-capacity.yaml @ v0.18.0; the ONLY changes are
+# metadata.name (suffixed "-kube-platform" — this Role lives in the
+# SHARED kube-system namespace, so it is suffixed to coexist with any
+# other recipe's capacity Role there).
+#
+# A namespaced Role — NOT a ClusterRole rule — on purpose: this is the
+# source's only read outside the informer grants the ClusterRole
+# already carries (events, pods, nodes), and it is one named object in
+# one namespace. The `get` rule is pinned with resourceNames to exactly
+# that object; `list` cannot be name-scoped in RBAC (resourceNames
+# does not apply to list), so it is granted un-named — still confined
+# to kube-system by the Role itself. The source's §11 startup probe
+# declares the get as name-scoped, so this Role satisfies it exactly.
+#
+# Harmless when the capacity source is disabled; required when
+# enabled — verified loudly at startup, never a silently idle poll.
+# Under `--sources=auto` (the binary's default) this Role is what the
+# capacity candidate's probe checks: absent, the source is skipped
+# with a loud line pointing here; named explicitly in --sources, the
+# absence is a fatal startup error.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: lookout-watch-capacity-kube-platform
+  namespace: kube-system
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["cluster-autoscaler-status"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["list"]

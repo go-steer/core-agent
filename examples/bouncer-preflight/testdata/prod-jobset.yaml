@@ -1,0 +1,72 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# A stand-in for the completed production workload bouncer.py picks up
+# off the cluster: a four-slice MaxText/JAX JobSet on v5e-256, already
+# Completed. The preflight derived from it must clamp to ONE slice
+# while preserving the 16x16 topology and the per-slice gang size.
+apiVersion: jobset.x-k8s.io/v1alpha2
+kind: JobSet
+metadata:
+  name: maxtext-v5e-256-4slice
+  namespace: prod-training
+  labels:
+    workload: maxtext
+spec:
+  replicatedJobs:
+    - name: slice
+      replicas: 4
+      template:
+        spec:
+          parallelism: 64
+          completions: 64
+          completionMode: Indexed
+          backoffLimit: 0
+          template:
+            metadata:
+              labels:
+                cloud.google.com/gke-tpu-accelerator: tpu-v5-lite-podslice
+                cloud.google.com/gke-tpu-topology: 16x16
+            spec:
+              serviceAccountName: prod-training-sa
+              restartPolicy: Never
+              nodeSelector:
+                cloud.google.com/gke-tpu-accelerator: tpu-v5-lite-podslice
+                cloud.google.com/gke-tpu-topology: 16x16
+              containers:
+                - name: jax
+                  image: us-docker.pkg.dev/example/maxtext:prod-2026-08-01
+                  command: ["bash", "-c"]
+                  args:
+                    - |
+                      python3 MaxText/train.py MaxText/configs/base.yml \
+                        steps=40000 \
+                        dataset_path=gs://example-prod-corpus/c4 \
+                        base_output_directory=gs://example-prod-checkpoints/maxtext
+                  resources:
+                    limits:
+                      google.com/tpu: 4
+                  volumeMounts:
+                    - name: corpus
+                      mountPath: /data
+              volumes:
+                - name: corpus
+                  csi:
+                    driver: gcsfuse.csi.storage.gke.io
+                    volumeAttributes:
+                      bucketName: example-prod-corpus
+status:
+  conditions:
+    - type: Completed
+      status: "True"

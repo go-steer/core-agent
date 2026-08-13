@@ -378,27 +378,7 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 		finalStatus := handle.status
 		handle.mu.Unlock()
 
-		kind := "completed"
-		text := result.DoneDetail
-		switch finalStatus {
-		case StatusCompleted:
-			if text == "" {
-				text = "(no detail provided)"
-			}
-		case StatusStopped:
-			kind = "stopped"
-			text = "stopped by parent"
-		case StatusDeferred:
-			kind = "deferred"
-			text = "stopped: " + string(result.Reason)
-		case StatusFailed:
-			kind = "failed"
-			if runErr != nil {
-				text = runErr.Error()
-			} else {
-				text = "stopped: " + string(result.Reason)
-			}
-		}
+		kind, text := terminalAlertText(finalStatus, result, runErr)
 		if !m.shouldAlert(name, handle) {
 			return
 		}
@@ -420,6 +400,63 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 	}()
 
 	return handle, nil
+}
+
+// terminalAlertText renders a finished subagent's outcome as the
+// (kind, text) pair its terminal [Background reports] alert carries.
+//
+// This is the async twin of completionResult (pkg/agent/background/
+// tools.go) and must stay in step with it: a spawn_agent {wait: true}
+// whose wait times out is delivered HERE instead, so anything only the
+// sync path renders is unreachable exactly when the subagent took long
+// enough to be worth waiting for. That was #691 — the alert read
+// DoneDetail alone, so a 6-minute subagent's findings reached the
+// parent as the one-line status "successfully diagnosed the issue and
+// provided the patch" (no patch included), and the parent re-derived
+// the whole diagnosis over 91 turns and $1.31.
+//
+// The two renderings differ only in shape, not content: the tool result
+// has two JSON fields, an alert has one text blob, so the same
+// supplementary text is appended under the sync path's field name
+// rather than beside it.
+func terminalAlertText(status Status, result autonomous.RunResult, runErr error) (kind, text string) {
+	kind, text = "completed", result.DoneDetail
+	switch status {
+	case StatusStopped:
+		// An explicit parent Stop: the parent asked for this and the
+		// run was cancelled mid-thought, so partial text is noise.
+		return "stopped", "stopped by parent"
+	case StatusDeferred:
+		kind = "deferred"
+		text = "stopped: " + string(result.Reason)
+	case StatusFailed:
+		kind = "failed"
+		if runErr != nil {
+			text = runErr.Error()
+		} else {
+			text = "stopped: " + string(result.Reason)
+		}
+	}
+	// Whatever the outcome line says, the work itself still has to
+	// reach the parent. A budget-capped or failed subagent never calls
+	// report_done, so its last assistant text is the ONLY record of
+	// what it found.
+	if status != StatusCompleted && result.DoneDetail != "" && result.DoneDetail != text {
+		text += "\n\n" + result.DoneDetail
+	}
+	if result.FinalText != "" && result.FinalText != text && !strings.Contains(text, result.FinalText) {
+		if text == "" {
+			text = result.FinalText
+		} else {
+			// Same field name the sync tool result uses, so the two
+			// surfaces are one thing a model has to understand.
+			text += "\n\nfinal_text: " + result.FinalText
+		}
+	}
+	if text == "" {
+		text = "(no detail provided)"
+	}
+	return kind, text
 }
 
 // shouldAlert reports whether handle's terminal alert should still

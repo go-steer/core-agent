@@ -838,16 +838,22 @@ func (m *Manager) runningCount() int {
 //   - schedule_next_turn: registered by RunAutonomous whenever
 //     WithScheduler is set on the child (which it is, by default,
 //     when WithDefaultScheduler is configured).
-//   - report_done: registered by RunAutonomous always (the loop's
-//     termination signal).
-//   - report_alert / report_completed: registered by the manager in
-//     background_spawn.go so the child can push back to the parent.
-var autoWiredSubagentTools = map[string]struct{}{
-	"schedule_next_turn": {},
-	"report_done":        {},
-	"report_alert":       {},
-	"report_completed":   {},
-}
+//   - return_result, plus its report_done / report_completed /
+//     mark_task_done aliases: registered by RunAutonomous always (the
+//     loop's termination signal, #728).
+//   - report_alert: registered by the manager in spawn.go so the child
+//     can push back to the parent mid-run.
+var autoWiredSubagentTools = func() map[string]struct{} {
+	m := map[string]struct{}{
+		"schedule_next_turn":             {},
+		autonomous.DefaultReturnToolName: {},
+		"report_alert":                   {},
+	}
+	for _, alias := range subagentReturnToolAliases {
+		m[alias] = struct{}{}
+	}
+	return m
+}()
 
 // resolveTools maps spec.Tools + spec.Extras to actual tool.Tool
 // instances by Name() lookup in the catalog. Unknown names return

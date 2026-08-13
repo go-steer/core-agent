@@ -399,6 +399,12 @@ func assembleSubagent(spec config.SubagentSpec, llm adkmodel.LLM, userInstructio
 		agent.WithMode(agent.ModeAutonomous),
 		agent.WithTools(subTools),
 		agent.WithToolsets(subToolsets),
+		// #727: the same return contract the async spawn path installs.
+		// A subagent reached as a tool has no return tool at all — its
+		// last message IS the value — so the contract is rendered
+		// without one rather than naming a gesture that doesn't exist
+		// here. Same roster, same instruction, either way it's reached.
+		agent.WithExtraInstruction(agent.SubagentReturnContract("")),
 	}
 	if userInstruction != "" {
 		// Layer 4 (user memory), same slot the parent's AGENTS.md lands in

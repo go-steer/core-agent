@@ -413,9 +413,10 @@ func TestResolveTools_LooksUpByName(t *testing.T) {
 
 func TestResolveTools_SkipsAutoWiredNames(t *testing.T) {
 	t.Parallel()
-	// The runtime auto-wires schedule_next_turn / report_done /
-	// report_alert / report_completed into every subagent, so a model
-	// listing them in spec.Tools must NOT fail (and must not duplicate
+	// The runtime auto-wires schedule_next_turn / report_alert /
+	// return_result (+ its report_done / report_completed /
+	// mark_task_done aliases) into every subagent, so a model listing
+	// them in spec.Tools must NOT fail (and must not duplicate
 	// either). Asserts:
 	//   - auto-wired names are accepted (no ErrUnknownTool)
 	//   - they're dropped from the returned slice (auto-wired instance
@@ -431,7 +432,8 @@ func TestResolveTools_SkipsAutoWiredNames(t *testing.T) {
 	}
 	got, err := mgr.resolveTools([]string{
 		"schedule_next_turn", "report_done", "report_alert",
-		"report_completed", "custom_inspector",
+		"report_completed", "mark_task_done", "return_result",
+		"custom_inspector",
 	})
 	if err != nil {
 		t.Fatalf("resolveTools: %v", err)

@@ -33,7 +33,8 @@ import (
 )
 
 // subagentDoneToolDescription replaces the autonomous driver's default
-// done-tool prose for spawned subagents (#641).
+// done-tool prose for spawned subagents (#641, restated for the
+// result-style return tool in #728).
 //
 // The default asks for "a one-sentence detail explaining what you
 // accomplished", which is right for a top-level autonomous run whose
@@ -43,13 +44,40 @@ import (
 // it redoes the work it delegated. Stating that the report is the
 // deliverable makes the useful content arrive by construction rather
 // than depending on how the subagent's persona happens to write.
-const subagentDoneToolDescription = "Signal that your goal is complete or that you cannot proceed any further. " +
-	"Call this with state=\"done\" and, in the detail, YOUR ACTUAL FINDINGS — the detail is handed " +
-	"back to the agent that delegated this task and is the only thing it is guaranteed to receive. " +
-	"Write the answer, the root-cause analysis, the proposed change, or the specific reason you " +
-	"stopped, with the evidence that supports it. Do not write a status line like \"investigated the " +
-	"issue and found the cause\": the delegating agent cannot see your work, so a summary of what you " +
-	"did forces it to redo it."
+const subagentDoneToolDescription = "Return your result to the agent that delegated this task, and finish. " +
+	"Put YOUR ACTUAL FINDINGS in the result argument — it is handed back to the delegating agent and " +
+	"is the only thing it is guaranteed to receive. Write the answer, the root-cause analysis, the " +
+	"proposed change, or the specific reason you stopped, with the evidence that supports it. Do not " +
+	"write a status line like \"investigated the issue and found the cause\": the delegating agent " +
+	"cannot see your work, so a summary of what you did forces it to redo it."
+
+// subagentReturnToolAliases are the additional names wired to the same
+// return signal as return_result (#728).
+//
+// Each one is a name a subagent's model has actually reached for:
+//
+//   - report_done — the autonomous driver's historical done tool, and
+//     the name every existing subagent prompt in the wild names.
+//   - report_completed — used to be a SEPARATE tool that pushed a
+//     "completed" alert to the parent WITHOUT ending the loop, whose
+//     own description told the model to "call report_done separately
+//     to actually terminate". Calling it now returns, which is what a
+//     model calling it always meant. The parent still gets a
+//     "completed" alert: the terminal alert fired by the goroutine
+//     wrapper in launch covers it.
+//   - mark_task_done — the PARENT's checkpoint tool, deliberately not
+//     registered on subagents (subtask.go). In the 2026-08-13 GKE UAT
+//     the cluster subagent reached for it anyway, got tool-not-found,
+//     and never recovered onto a real done tool: it had the answer and
+//     no way to hand it back.
+var subagentReturnToolAliases = []string{"report_done", "report_completed", "mark_task_done"}
+
+// subagentReturnContract is the #727 instruction block, rendered for
+// the async path — which does have a return tool, unlike a declarative
+// subagent invoked synchronously as a parent tool. Both paths render
+// from agent.SubagentReturnContract so the same declared subagent can't
+// be told two different things depending on how it was reached.
+var subagentReturnContract = agent.SubagentReturnContract(autonomous.DefaultReturnToolName)
 
 // resolvedSpawn is a fully-resolved launch recipe — everything the
 // per-spawn goroutine needs after kind-specific resolution has run.
@@ -267,16 +295,18 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 	// goroutine so the construction happens after the goroutine
 	// starts (autonomous.Run calls build).
 	build := func(extraTools []tool.Tool) (*agent.Agent, error) {
-		// extraTools is the report_done tool the autonomous driver
-		// injected; merge it with our subagent's chosen tools and
-		// the always-on report_alert / report_completed tools.
-		all := make([]tool.Tool, 0, len(baseTools)+len(extraTools)+2)
+		// extraTools is the return_result tool (plus its aliases) the
+		// autonomous driver injected; merge it with our subagent's
+		// chosen tools and the always-on report_alert tool.
+		//
+		// report_completed used to be built here as its own tool. It
+		// is now one of the driver's return aliases (#728) so calling
+		// it actually returns, instead of acking and leaving the loop
+		// to re-drive the model past its own answer.
+		all := make([]tool.Tool, 0, len(baseTools)+len(extraTools)+1)
 		all = append(all, baseTools...)
 		all = append(all, extraTools...)
-		all = append(all,
-			newReportAlertTool(m, name),
-			newReportCompletedTool(m, name),
-		)
+		all = append(all, newReportAlertTool(m, name))
 		opts := make([]agent.Option, 0, len(instrOpts)+9)
 		opts = append(opts,
 			agent.WithAppName(parent.AppName()),
@@ -303,6 +333,11 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 			opts = append(opts, agent.WithMeterProvider(mp))
 		}
 		opts = append(opts, instrOpts...)
+		// AFTER instrOpts: WithExtraInstruction appends in call order,
+		// and a spec's persona may itself be installed via
+		// WithInstruction (which replaces layers 1-3). Appending last
+		// keeps the return contract present under either arrangement.
+		opts = append(opts, agent.WithExtraInstruction(subagentReturnContract))
 		if len(toolsets) > 0 {
 			opts = append(opts, agent.WithToolsets(toolsets))
 		}
@@ -322,7 +357,10 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 		// which is what produced the content-free "successfully diagnosed
 		// the issue" reports the parent then had to re-derive (#641).
 		opts := []autonomous.Option{
-			autonomous.WithDoneToolDescription(subagentDoneToolDescription),
+			autonomous.WithReturnTool(autonomous.ReturnToolConfig{
+				Aliases:     subagentReturnToolAliases,
+				Description: subagentDoneToolDescription,
+			}),
 		}
 		if budgets.MaxTurns > 0 {
 			opts = append(opts, autonomous.WithMaxTurns(budgets.MaxTurns))
@@ -439,8 +477,9 @@ func terminalAlertText(status Status, result autonomous.RunResult, runErr error)
 	}
 	// Whatever the outcome line says, the work itself still has to
 	// reach the parent. A budget-capped or failed subagent never calls
-	// report_done, so its last assistant text is the ONLY record of
-	// what it found.
+	// return_result, so its last assistant text is the ONLY record of
+	// what it found — which is why subagentReturnContract tells it so
+	// in the instruction rather than only in that tool's description.
 	if status != StatusCompleted && result.DoneDetail != "" && result.DoneDetail != text {
 		text += "\n\n" + result.DoneDetail
 	}

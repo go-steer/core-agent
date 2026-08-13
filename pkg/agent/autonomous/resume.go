@@ -132,23 +132,12 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 	// Done-tool registration mirrors Run so the model has
 	// the same termination gesture available on resume.
 	doneCh := make(chan string, 1)
-	doneTool, err := coretools.NewLifecycleTool(coretools.LifecycleOptions{
-		Name:          cfg.doneToolName,
-		Description:   cfg.doneToolDescription,
-		AllowedStates: []string{"done"},
-		Handler: func(_ context.Context, ev coretools.LifecycleEvent) error {
-			select {
-			case doneCh <- ev.Detail:
-			default:
-			}
-			return nil
-		},
-	})
+	doneTools, err := buildDoneTools(&cfg, doneCh)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("agent: Resume: build done tool: %w", err)
 	}
 
-	extras := []tool.Tool{doneTool}
+	extras := append([]tool.Tool(nil), doneTools...)
 	var scheduleCh <-chan coretools.ScheduleEvent
 	if cfg.scheduler != nil {
 		schTool, ch, err := coretools.NewScheduleTool(coretools.ScheduleOptions{

@@ -74,6 +74,32 @@ type Stream interface {
 	Close() error
 }
 
+// BranchLister is an OPTIONAL Stream extension: report the distinct
+// branch labels that exist under a query's filters, without hydrating
+// a single event.
+//
+// It answers "what ran here?", which the Since/Watch pair can only
+// answer by reading every row and looking at the branch column. The
+// caller that needs it is the attach layer's subagent-events endpoint:
+// a subagent declared as "cluster" writes its turns under the branch
+// the runner minted for the instance ("bg.cluster-1"), so resolving a
+// name to its branches means asking the log which branches are there
+// (go-steer/core-agent#694).
+//
+// Not part of Stream itself — adding a method to a published interface
+// breaks every implementation outside this repo. Type-assert for it
+// and degrade when it's absent:
+//
+//	if bl, ok := stream.(eventlog.BranchLister); ok { ... }
+//
+// Honors the same QueryOptions as Since, including WithLimit (a cap on
+// the number of DISTINCT labels returned, not on rows scanned). Labels
+// come back sorted, and the empty branch — the parent session's own
+// turns — is omitted.
+type BranchLister interface {
+	Branches(ctx context.Context, opts ...QueryOption) ([]string, error)
+}
+
 // Entry is one row from the event log: the assigned seq plus the
 // underlying ADK session.Event (loaded via the paired
 // session.Service).

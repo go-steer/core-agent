@@ -491,6 +491,36 @@ func (s *gormStream) LatestSeq(ctx context.Context, opts ...QueryOption) (int64,
 	return maxSeq, nil
 }
 
+// Branches implements BranchLister: the distinct branch labels
+// visible under the same filters Since/Watch honor, sorted, with the
+// empty branch (the session's own turns) left out.
+//
+// A single indexed SELECT DISTINCT over the branch column — no event
+// hydration, which is what makes it usable on the request path where
+// scanning a long session's rows to collect its branch labels would
+// not be. WithLimit caps the number of labels returned.
+func (s *gormStream) Branches(ctx context.Context, opts ...QueryOption) ([]string, error) {
+	if s.closed.Load() {
+		return nil, ErrClosed
+	}
+	q := queryOpts{}
+	for _, o := range opts {
+		o(&q)
+	}
+	tx := applyQueryFilters(s.db.WithContext(ctx).Model(&agentEventRow{}), q).
+		Where("branch <> ''").
+		Distinct("branch").
+		Order("branch ASC")
+	if q.limit > 0 {
+		tx = tx.Limit(q.limit)
+	}
+	var branches []string
+	if err := tx.Pluck("branch", &branches).Error; err != nil {
+		return nil, fmt.Errorf("eventlog: query distinct branches: %w", err)
+	}
+	return branches, nil
+}
+
 // NthNewestSeq returns the seq of the row `offset` places behind the
 // newest row visible under the same filters Since/Watch honor
 // (offset 0 = the newest row), or 0 when fewer than offset+1 rows

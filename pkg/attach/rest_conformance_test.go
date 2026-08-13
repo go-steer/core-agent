@@ -28,6 +28,8 @@ import (
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/session"
 	"google.golang.org/genai"
+
+	"github.com/go-steer/core-agent/v2/internal/subagentlog"
 )
 
 // REST-response conformance tests (#536). The SSE event shapes have
@@ -168,7 +170,7 @@ func TestConformance_RESTSubagentEventsV1(t *testing.T) {
 	resp := SubagentEventsResponse{
 		Agent:           "cluster",
 		ParentSessionID: "s-1a2b3c",
-		Branches:        subagentBranchPrefixes("cluster"),
+		Branches:        subagentlog.BranchPrefixes("cluster"),
 		Events: []Frame{{
 			Seq: 41,
 			Event: &session.Event{
@@ -203,7 +205,7 @@ func TestConformance_RESTSubagentEventsV1_EmptyIsArrayNotNull(t *testing.T) {
 	t.Parallel()
 	body, err := json.Marshal(SubagentEventsResponse{
 		Agent:    "cluster",
-		Branches: subagentBranchPrefixes("cluster"),
+		Branches: subagentlog.BranchPrefixes("cluster"),
 		Events:   []Frame{},
 	})
 	if err != nil {

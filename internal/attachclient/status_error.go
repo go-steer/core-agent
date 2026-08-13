@@ -72,3 +72,30 @@ func (e *httpStatusError) PermanentStreamErr() bool {
 		e.statusCode == http.StatusUnauthorized ||
 		e.statusCode == http.StatusForbidden
 }
+
+// SubagentNotFoundError is the typed form of the 404 that
+// GET /sessions/<sid>/agents/<name>/events returns for a name that
+// resolves to nothing. Available carries the names that WOULD have
+// resolved.
+//
+// Deliberately NOT an httpStatusError: this 404 is an answer about the
+// name asked for, not a statement about the session, so it must not be
+// classified as a permanent stream error — a mistyped /subagents query
+// shouldn't tear down the attach stream.
+type SubagentNotFoundError struct {
+	// Name is the subagent name that was queried.
+	Name string
+	// Available lists the subagent names that do resolve in this
+	// session. Empty means no subagent has run here at all.
+	Available []string
+	// Message is the server's own phrasing, kept so the reason
+	// ("no turns recorded ...") survives the projection.
+	Message string
+}
+
+func (e *SubagentNotFoundError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	return fmt.Sprintf("no such subagent %q", e.Name)
+}

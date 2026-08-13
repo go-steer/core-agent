@@ -19,13 +19,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/go-steer/core-agent/v2/internal/subagentlog"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 )
 
@@ -277,6 +281,68 @@ func (c *Client) Agents(ctx context.Context, sessionPath string) ([]attach.Agent
 		return nil, err
 	}
 	return out.Agents, nil
+}
+
+// SubagentEvents calls GET <base>/sessions/<sid>/agents/<name>/events —
+// one subagent's inner turns, paged from the seq cursor `since` (0 for
+// the whole history). limit <= 0 leaves the page size to the server.
+//
+// A name the server can't resolve comes back as a
+// *SubagentNotFoundError carrying the names that would have resolved,
+// not as an empty page: "no such subagent" and "this subagent recorded
+// no turns" are different answers, and collapsing them is the failure
+// #694 fixed server-side. Any other non-2xx stays an httpStatusError.
+func (c *Client) SubagentEvents(ctx context.Context, sessionPath, name string, since int64, limit int) (attach.SubagentEventsResponse, error) {
+	// Validate before the name becomes a path segment. The server
+	// rejects the same set with a 400, but a name carrying "/" or a
+	// dot segment would reshape the URL on the way there — "..", for
+	// one, walks the request off this session's subtree and into a
+	// mux redirect. Cheaper and clearer to refuse it here.
+	if err := subagentlog.ValidateName(name); err != nil {
+		return attach.SubagentEventsResponse{}, err
+	}
+	q := url.Values{}
+	if since > 0 {
+		q.Set("since", strconv.FormatInt(since, 10))
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	suffix := sessionPath + "/agents/" + url.PathEscape(name) + "/events"
+	if len(q) > 0 {
+		suffix += "?" + q.Encode()
+	}
+	var out attach.SubagentEventsResponse
+	if err := c.doJSON(ctx, http.MethodGet, suffix, nil, &out); err != nil {
+		if nf, ok := subagentNotFound(name, err); ok {
+			return attach.SubagentEventsResponse{}, nf
+		}
+		return attach.SubagentEventsResponse{}, err
+	}
+	return out, nil
+}
+
+// subagentNotFound recognises the 404 shape doSubagentEvents writes for
+// an unresolvable name and projects it into a typed error.
+//
+// A 404 whose body ISN'T that shape is left alone: it means the session
+// itself is gone (or something else answered), which is a transport
+// condition the caller should keep treating as one — including the
+// PermanentStreamErr classification httpStatusError carries.
+func subagentNotFound(name string, err error) (*SubagentNotFoundError, bool) {
+	var se *httpStatusError
+	if !errors.As(err, &se) || se.statusCode != http.StatusNotFound {
+		return nil, false
+	}
+	var body attach.SubagentNotFoundResponse
+	if json.Unmarshal([]byte(se.body), &body) != nil || body.Agent == "" {
+		return nil, false
+	}
+	return &SubagentNotFoundError{
+		Name:      name,
+		Available: body.Available,
+		Message:   body.Error,
+	}, true
 }
 
 // Status calls GET <base>/sessions/<sid>/status.

@@ -226,24 +226,8 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 	for {
 		// Pre-turn budget checks — applied to the cumulative
 		// (resumed + newly-accumulated) totals.
-		if cfg.maxWallclock > 0 && time.Since(startedAt) >= cfg.maxWallclock {
-			result.Reason = StopReasonWallclockExceeded
-			break
-		}
-		if cfg.maxTurns > 0 && result.Turns >= cfg.maxTurns {
-			result.Reason = StopReasonMaxTurns
-			break
-		}
-		if cfg.maxInputTokens > 0 && result.InputTokens >= cfg.maxInputTokens {
-			result.Reason = StopReasonMaxTokens
-			break
-		}
-		if cfg.maxOutputTokens > 0 && result.OutputTokens >= cfg.maxOutputTokens {
-			result.Reason = StopReasonMaxTokens
-			break
-		}
-		if cfg.maxCostUSD > 0 && result.CostUSD >= cfg.maxCostUSD {
-			result.Reason = StopReasonMaxCost
+		if reason := budgetStop(&cfg, &result, time.Since(startedAt)); reason != "" {
+			result.Reason = reason
 			break
 		}
 		if err := ctx.Err(); err != nil {
@@ -258,7 +242,7 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 		if cfg.perTurnTimeout > 0 {
 			turnCtx, cancel = context.WithTimeout(ctx, cfg.perTurnTimeout)
 		}
-		turnRes, turnErr := runOneTurn(turnCtx, a, prompt, doneCh, scheduleCh, &cfg, result.Turns+1)
+		turnRes, turnErr := runOneTurn(turnCtx, a, prompt, doneCh, scheduleCh, &cfg, result.Turns+1, result.CostUSD)
 		if cancel != nil {
 			cancel()
 		}
@@ -300,6 +284,15 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 		if turnRes.doneSignaled {
 			result.Reason = StopReasonCompleted
 			result.DoneDetail = turnRes.doneDetail
+			break
+		}
+
+		// Max-cost bound hit partway through the turn (#729). Same
+		// handling as Run; see the comment there. result.CostUSD was
+		// seeded from the checkpoint, so a resumed run's bound still
+		// covers the delegation as a whole, not just this process.
+		if turnRes.costCapped {
+			result.Reason = StopReasonMaxCost
 			break
 		}
 

@@ -209,6 +209,23 @@ func buildDoneTools(cfg *autoConfig, doneCh chan string) ([]tool.Tool, error) {
 	return out, nil
 }
 
+// doneToolNames lists every name the model can end the run through:
+// the lifecycle tool's single name on the legacy path, or the primary
+// plus every alias on the result path. Used by the in-turn cost bound
+// to recognize the one call it must not cut off (#729).
+func (c *autoConfig) doneToolNames() []string {
+	if c.returnTool == nil {
+		return []string{c.doneToolName}
+	}
+	out := []string{c.returnToolName()}
+	for _, a := range c.returnTool.Aliases {
+		if a = strings.TrimSpace(a); a != "" {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 // returnToolName resolves the primary return-tool name, preferring an
 // explicit WithDoneToolName override so the existing collision escape
 // hatch keeps working on the result-style path too.

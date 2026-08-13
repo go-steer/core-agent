@@ -74,7 +74,7 @@ Marker-phrase detection ("look for TASK_COMPLETE in the text") is **not** suppor
 | `WithMaxWallclock(d)` | Total wall-clock duration. |
 | `WithPerTurnTimeout(d)` | Per-turn `context.WithTimeout`; one rogue turn can't stall the run. |
 
-Budgets are evaluated between turns. A turn already in flight when the cap fires runs to completion (or to per-turn timeout) before the driver stops.
+Budgets are evaluated between turns, with one exception: `WithMaxCost` is also checked **inside** a turn, after each model call. A single turn is an unbounded tool loop, so a between-turn-only spend cap sits idle through exactly the runaway it exists to stop. When the bound is crossed mid-turn the driver stops draining the turn, and the run ends with `max_cost_exceeded` carrying whatever text the model had produced up to that point. Every other cap is still evaluated at a turn boundary: a turn already in flight when one of those fires runs to completion (or to per-turn timeout) before the driver stops.
 
 ### Surviving the context wall on long runs
 

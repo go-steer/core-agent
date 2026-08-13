@@ -14,9 +14,14 @@
 
 # golangci-lint v2 config for core-agent.
 #
-# Conservative starting set: keeps the noise low while catching real bugs.
-# Add stricter linters (revive, depguard, exhaustruct, etc.) once the
+# Conservative set: keeps the noise low while catching real bugs. Add
+# stricter linters (revive, depguard, exhaustruct, etc.) once the
 # baseline is clean and we have a feel for what's worth enforcing.
+#
+# Two of the enabled linters — funlen and gocognit — are a *ratchet*
+# rather than a standard, and their thresholds are meant to be lowered
+# over time and never raised. See the "Complexity ratchet" block under
+# `linters.settings` before touching them.
 #
 # Run with:   dev/tools/lint-go
 # Auto-fix:   dev/tools/lint-go --fix
@@ -49,6 +54,14 @@ linters:
     # Security.
     - gosec          # OWASP-style checks (nosec via // #nosec)
 
+    # Complexity ratchet (#662). These are NOT a style standard — the
+    # thresholds are pinned to today's worst in-tree function, so
+    # existing code passes untouched and only something *worse* than
+    # anything we have now can land. See `settings.funlen` below for
+    # the measured numbers and how to re-measure.
+    - funlen         # function length: physical lines + statement count
+    - gocognit       # cognitive complexity (nesting-weighted, not gocyclo)
+
   exclusions:
     # Generated code shouldn't fail the lint.
     generated: lax
@@ -67,6 +80,24 @@ linters:
       # silence "always returns nil" style noise inside our wrapper.
       - path: mcp/
         text: "(unparam|S1009)"
+      # The one complexity-ratchet exemption, and the reason the
+      # thresholds below can be as tight as they are: cmd/core-agent's
+      # `run` is a 1228-line / 642-statement / 374-cognitive-complexity
+      # outlier — 5x worse than the next function in the tree on every
+      # metric. Pinning the thresholds above IT would leave a fence at
+      # 1229 lines, which forbids nothing anyone would ever write by
+      # accident. So `run` is named here, once, next to the numbers it
+      # distorts, and everything else gets a fence that actually holds.
+      #
+      # Deliberately narrower than a per-file exclusion: this matches
+      # the single function, so a *new* god-method elsewhere in
+      # main.go still fails. Delete this rule when #685 decomposes
+      # `run`; the thresholds below drop with it.
+      - path: cmd/core-agent/main\.go
+        text: "(Function 'run'|of func `run`)"
+        linters:
+          - funlen
+          - gocognit
       # Lifted from go-steer/cogo per docs/embedded-tui-design-v2.md
       # (PR 1 + parity amend). The cogo attribution is preserved as
       # explicit provenance — both projects are go-steer org with the
@@ -98,6 +129,49 @@ linters:
         - fmt.Fprint
         - (*os.File).Close
         - os.Remove
+    # --- Complexity ratchet (#662) ----------------------------------
+    #
+    # A ratchet, not a standard. Every threshold is the *measured
+    # maximum in the tree on the day it was set*, so the whole existing
+    # codebase passes with zero changes and the only thing that can
+    # fail is a function worse than anything we already have. Length is
+    # not itself a defect; unbounded growth is.
+    #
+    # Measured 2026-08-13 at commit 4ac5efb, excluding cmd/core-agent's
+    # `run` (see the exclusion rule above):
+    #
+    #   funlen lines       254   dev/uat/scheduled-monitor `run`,
+    #                            pkg/agent/autonomous/resume.go `Resume`
+    #   funlen statements  145   pkg/agent/autonomous/resume.go `Resume`
+    #   gocognit           110   internal/coretuiremote `(*Adapter).Events`
+    #
+    # Ratchet DOWN as hotspots get refactored — never up. #659 lands
+    # the next notch (it decomposes Agent.Run's pre-turn pipeline and
+    # its acceptance criteria include lowering these). #685 removes
+    # the `run` exemption, which should take these to roughly
+    # 155 / 95 / 96.
+    #
+    # To re-measure: set lines/statements/min-complexity to 1, run
+    # `dev/tools/lint-go`, and take the max reported value per metric.
+    # Two gotchas, both of which will silently under-report:
+    #   - funlen reports *either* the line or the statement violation
+    #     per function, not both, so measure them in separate runs with
+    #     the other limit set very high.
+    #   - `issues.uniq-by-line` (on by default) keeps one issue per
+    #     source line, so a funlen finding is dropped whenever gocognit
+    #     or `unused` already fired on the same declaration. Set it
+    #     false while measuring.
+    funlen:
+      lines: 254
+      statements: 145
+      # Comment lines don't count toward the limit: this is a fence
+      # against logic accreting, and documenting a function should
+      # never push it over.
+      ignore-comments: true
+    gocognit:
+      # Reports when complexity is strictly greater than this, so the
+      # current worst function sits exactly at the line.
+      min-complexity: 110
     gocritic:
       disabled-checks:
         # "ifElseChain" pushes us toward switch statements that aren't

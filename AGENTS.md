@@ -90,6 +90,14 @@ needs no network and no API keys.
   `dev/tools/lint-go` enforces this on `.go` files; for new shell /
   YAML / Python files, run `dev/tools/add-license-headers` (idempotent;
   also normalizes any older SPDX-style headers to the canonical form).
+- **The complexity thresholds only go down.** `dev/tools/lint-go`
+  runs `funlen` and `gocognit` as a *ratchet*: each threshold in
+  `dev/tools/.golangci.yml` is pinned to the worst function in the tree
+  on the day it was set, so it forbids nothing that exists and only
+  catches something new that is worse. If your function trips it,
+  split the function — raising the number is never the fix, and the
+  one exemption (`cmd/core-agent`'s `run`, tracked in #685) is named
+  in the config rather than scattered as `//nolint`.
 - **Small, self-contained commits with informative bodies.** Subject
   lines follow Conventional Commits (`feat:`, `fix:`, `docs:`,
   `chore:`, `refactor:`, `test:`, `ci:`, `build:`). Bodies explain

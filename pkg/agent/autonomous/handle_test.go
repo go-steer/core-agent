@@ -235,10 +235,15 @@ func TestAutonomousHandle_PauseHaltsBeforeNextTurn(t *testing.T) {
 
 func TestAutonomousHandle_PauseIdempotent(t *testing.T) {
 	t.Parallel()
+	// Same shape as StopUnblocksPause: the four control calls below are
+	// all errors on a terminated run, so the run must be unable to
+	// terminate while they happen. Turn 1 holds long enough for the
+	// first Pause to land mid-turn; turn 2 blocks until Stop cancels
+	// the context, which also covers the second Resume racing a run
+	// that would otherwise have completed.
 	llm := &stubLLM{scenarios: []scenarioFn{
-		textTurn("t", 1, 1),
-		doneCallTurn("ok"),
-		textTurn("done", 1, 1),
+		delayedTextTurn("t", 100*time.Millisecond),
+		blockUntilCanceled(),
 	}}
 	h, err := Start(context.Background(), buildAgent(llm, "h-pause-idem"), "g", WithMaxTurns(0))
 	if err != nil {
@@ -259,11 +264,41 @@ func TestAutonomousHandle_PauseIdempotent(t *testing.T) {
 	}
 }
 
+// delayedTextTurn is textTurn with the terminal response held back, so
+// a test can be sure a control call (Pause, Inject, ...) lands while
+// the turn is still running rather than racing its completion.
+func delayedTextTurn(text string, delay time.Duration) scenarioFn {
+	inner := textTurn(text, 1, 1)
+	return func(ctx context.Context, req *adkmodel.LLMRequest) []stubResp {
+		out := inner(ctx, req)
+		if len(out) > 0 {
+			out[len(out)-1].delay = delay
+		}
+		return out
+	}
+}
+
+// blockUntilCanceled never completes on its own: the run can only leave
+// this turn when its context is cancelled. Gives a test a run that is
+// guaranteed still live, without depending on how fast the loop is.
+func blockUntilCanceled() scenarioFn {
+	return func(ctx context.Context, _ *adkmodel.LLMRequest) []stubResp {
+		<-ctx.Done()
+		return []stubResp{{err: ctx.Err()}}
+	}
+}
+
 func TestAutonomousHandle_StopUnblocksPause(t *testing.T) {
 	t.Parallel()
+	// Turn 1 is slow enough that Pause lands while it is still in
+	// flight, and turn 2 blocks until the run's context is cancelled.
+	// Both are load-bearing: with two instant turns the loop could burn
+	// through its scenarios and terminate on "out of scenarios" before
+	// the main goroutine reached Pause, which then failed the test with
+	// "run already terminated" on a busy CI runner.
 	llm := &stubLLM{scenarios: []scenarioFn{
-		textTurn("t1", 1, 1),
-		textTurn("t2", 1, 1),
+		delayedTextTurn("t1", 100*time.Millisecond),
+		blockUntilCanceled(),
 	}}
 	h, err := Start(context.Background(), buildAgent(llm, "h-stop-paused"), "g", WithMaxTurns(0))
 	if err != nil {

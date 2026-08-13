@@ -53,6 +53,12 @@ Tools are grouped by domain — files, search, shell, data + network, planning, 
 |---|---|---|
 | `wait_and_verify` | Poll another tool until its result satisfies a condition, or a bounded budget expires. Closed-loop fix-and-verify without a shell — see below. | `tool`, `args_json?`, `expect_jq?` / `expect_contains?` / `expect_not_contains?`, `interval_seconds?`, `timeout_seconds?`, `max_attempts?` |
 
+### Delegation
+
+| Tool | Purpose | Key parameters |
+|---|---|---|
+| `call_peer` | Hand a self-contained prompt to another core-agent daemon registered with this hub's [peer registry](/reference/attach-http/#peer--hub-endpoints), and return its answer. **Off by default**, and registered only on a peer hub — see below. | `peer`, `prompt` |
+
 ### Runtime integration
 
 | Tool | Purpose | Key parameters |
@@ -91,6 +97,35 @@ Three properties are enforced by the runtime rather than asked for in a prompt:
 An unverified wait is **not** an error: it returns `verified: false` with `outcome` of `timeout` / `attempts_exhausted` / `canceled` plus the observation trail, because "it never became Ready in three minutes" is a finding the model should report rather than a failure it should retry. A poll that errors is treated as transient and retried; a malformed `expect_jq` aborts on the first attempt instead of burning the budget.
 
 For waits longer than a turn is worth, use [`schedule_next_turn`](#schedule_next_turn) to come back later and `wait_and_verify` to confirm cheaply on arrival. Full rationale: [`docs/wait-and-verify-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/wait-and-verify-design.md).
+
+## `call_peer` (v2.9+) — named delegation to a peer agent
+
+A fleet of daemons that can see each other but can't talk to each other isn't a fleet. `POST /peers` and `GET /peers` have made the roster visible since v2.7; `call_peer` ([#595](https://github.com/go-steer/core-agent/issues/595)) is the turn-level counterpart — one tool that lets a model ask a named peer a question and use the answer in the same turn.
+
+```text
+call_peer(
+  peer:   "operator-prod-1",
+  prompt: "How many nodes are Ready in the prod-1 node pool right now?"
+)
+```
+
+```json
+{
+  "peer": "operator-prod-1", "session_id": "s-8f21",
+  "response": "prod-1 has 12 nodes, all Ready.", "duration_ms": 4180
+}
+```
+
+Enable it under [`tools.call_peer`](/reference/configuration/#toolscall_peer-v29). It requires attach mode plus `--attach-peer-hub`; enabling it anywhere else is a startup error, not a tool that registers and then fails every call.
+
+The safety properties are structural, not prompted:
+
+- **The model can't name a destination.** The arguments are a peer *name* and a prompt — there is no URL parameter to inject into. Names resolve against the live peer registry only, so an untrusted instruction to call a cloud-metadata endpoint resolves to nothing; the error just lists the registered peers. Same shape as the [`alert`](/reference/configuration/#alerts) tool's named channels.
+- **No credential is model-visible.** The bearer token comes from `token_env` in the daemon's environment and never enters the schema, the arguments, or the transcript. Configured-but-unset fails the call instead of going out anonymously.
+- **Every call is bounded.** One operator-set deadline covering session creation through turn end, and one response-byte cap after which the tool stops reading and flags `truncated`. A peer that streams forever costs the caller its timeout, not its context window.
+- **Gated per peer.** The permission key is `call_peer:<peer-name>`, so `--deny call_peer:prod-*` works like any other tool pattern, and renaming the tool moves the key with it. Declarative subagents draw from the parent's already-gated catalog, so one parent-level policy hardens both.
+
+Each call opens a **fresh session** on the peer, so concurrent callers can't interleave prompts into one transcript — which makes `attach.multi_session.enabled` a requirement on the *peer* (a peer without it returns 501, and the tool tells you so). The delegated turn stays in the peer's own event log under the returned `session_id`; the caller gets the answer, and the audit trail lives where the work happened. Wire-level detail: [attach HTTP → Calling a peer from the model](/reference/attach-http/#calling-a-peer-from-the-model-call_peer).
 
 ## Toggling individual tools
 

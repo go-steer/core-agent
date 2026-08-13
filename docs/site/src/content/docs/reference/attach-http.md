@@ -216,6 +216,21 @@ The registry is in-memory by default: a hub restart drops every registration, an
 - **It fails loudly.** A state file that exists but can't be read, or a directory that can't be written, fails startup instead of quietly running in-memory. Individual malformed *lines* are the exception: they're skipped with a warning, since those peers re-register within a heartbeat.
 - Setting the flag without `--attach-peer-hub` is a startup error, not a no-op.
 
+### Calling a peer from the model (`call_peer`)
+
+The endpoints above make the fleet *visible*; [`tools.call_peer`](/reference/configuration/#toolscall_peer-v29) ([#595](https://github.com/go-steer/core-agent/issues/595)) makes it *reachable* from a turn. Enabling it on a hub gives the model one delegation tool whose only destination source is the registry described here — it takes a peer `name` and a `prompt`, never a URL. `enabled: true` without both attach mode and `--attach-peer-hub` fails startup, so the tool never exists in a process that couldn't resolve a destination anyway.
+
+What a call does on the wire, against the peer's own attach server:
+
+1. `POST /sessions` — a **fresh session per call**. Concurrent callers can't interleave prompts into one transcript, and the reply is unambiguously the answer to this request. The peer must therefore have `attach.multi_session.enabled`; without it the peer answers **501** and the tool appends that fix to the error.
+2. `GET /sessions/{app}/{sid}/events` — subscribed **before** the prompt goes in. `turn-complete` is a live typed frame and is not replayed from the event log, so a stream opened after the inject can miss the turn end entirely.
+3. `POST /sessions/{app}/{sid}/inject` — the prompt.
+4. Read until turn end (typed `turn-complete`, ADK's `TurnComplete`, or a final non-partial model event with no tool call), then return the peer's text plus the `session_id`, so an operator can go read the delegated turn in the peer's event log.
+
+Bounds are the caller's, not the peer's: one `timeout_seconds` deadline spanning all four steps, and one `max_response_bytes` cap after which the tool stops reading and flags `truncated`. A `turn-error` frame from the peer is surfaced with its kind and message intact rather than flattened into "the call failed".
+
+Authentication uses the peer's transport auth — a bearer token read from `token_env` in the *hub's* environment. It is never part of the tool schema or the arguments, so it cannot leak into a transcript, and a configured-but-unset variable is an error rather than an anonymous request.
+
 ## Non-session routes
 
 | Method | Path | Auth | Purpose |

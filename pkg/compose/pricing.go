@@ -56,6 +56,13 @@ func DescribeRefresh(w io.Writer, out pricing.RefreshOutcome) {
 // per-model rate map operators put under model.pricing) into the
 // pkg/pricing wire shape. nil-safe; an empty map means "no
 // cfg override, fall through to the file + builtin layers".
+//
+// Must stay field-for-field in step with pkg/usage's cfgToOverride,
+// which performs the same translation on the path taken when no
+// catalog has been installed (tests + library consumers). A field
+// carried by one and dropped by the other means the same config
+// prices a turn differently under test than it does in the daemon.
+// TestCfgOverride_MatchesTheNoCatalogPath enforces the agreement.
 func CfgToCatalogOverride(m config.PricingMap) map[string]pricing.ModelRates {
 	if len(m) == 0 {
 		return nil
@@ -63,8 +70,9 @@ func CfgToCatalogOverride(m config.PricingMap) map[string]pricing.ModelRates {
 	out := make(map[string]pricing.ModelRates, len(m))
 	for k, v := range m {
 		out[k] = pricing.ModelRates{
-			InputPerMTok:  v.InputPerMTok,
-			OutputPerMTok: v.OutputPerMTok,
+			InputPerMTok:       v.InputPerMTok,
+			CachedInputPerMTok: v.CachedInputPerMTok,
+			OutputPerMTok:      v.OutputPerMTok,
 		}
 	}
 	return out
@@ -147,6 +155,13 @@ func summarizeRefreshOutcome(out pricing.RefreshOutcome) string {
 				out.StaleAge.Round(time.Hour), out.NetworkError)
 		}
 		return fmt.Sprintf("Refresh failed: %v (no cache to fall back to)", out.NetworkError)
+	case out.Skipped:
+		// Unreachable from RefreshPricing, which forces MinInterval
+		// to -1s. Present so the four shapes stay in step with
+		// DescribeRefresh: without it a skipped refresh falls into
+		// the default arm and reports "updated N models from
+		// upstream" for a call that fetched nothing.
+		return fmt.Sprintf("Refresh: cache is still current (%d models); no fetch needed", out.ModelCount)
 	case out.NotModified:
 		return fmt.Sprintf("Refresh: upstream unchanged (cache still authoritative, %d models)", out.ModelCount)
 	default:

@@ -286,24 +286,6 @@ func TestSubagentEvents_Pagination(t *testing.T) {
 	}
 }
 
-// TestSubagentEvents_LimitClamped verifies an over-large ?limit= is
-// clamped instead of honored — the endpoint must not be a lever for
-// dumping the whole log in one request.
-func TestSubagentEvents_LimitClamped(t *testing.T) {
-	t.Parallel()
-	if got := parseSubagentEventsLimit("999999"); got != subagentEventsMaxLimit {
-		t.Errorf("parseSubagentEventsLimit(999999) = %d, want %d", got, subagentEventsMaxLimit)
-	}
-	for _, in := range []string{"", "0", "-3", "abc"} {
-		if got := parseSubagentEventsLimit(in); got != subagentEventsDefaultLimit {
-			t.Errorf("parseSubagentEventsLimit(%q) = %d, want default %d", in, got, subagentEventsDefaultLimit)
-		}
-	}
-	if got := parseSubagentEventsLimit(" 7 "); got != 7 {
-		t.Errorf("parseSubagentEventsLimit(\" 7 \") = %d, want 7", got)
-	}
-}
-
 // TestSubagentEvents_DeclaredNameMatchesSpawnedInstance is #694's
 // first defect: the background manager mints instance names
 // ("%s-%d", background.nextInstanceName), so a subagent DECLARED as
@@ -447,49 +429,6 @@ func TestSubagentEvents_KnownButSilentIsEmptyNot404(t *testing.T) {
 	miss := getSubagentMiss(t, base+"/sessions/core-agent/s1/agents/nobody/events")
 	if want := []string{"fresh", "never-run"}; !sameIDs(miss.Available, want) {
 		t.Errorf("available = %v, want %v", miss.Available, want)
-	}
-}
-
-// TestStripInstanceSuffix pins which suffixes are an instance counter
-// and which are part of the declared name — the line between
-// resolving "cluster" to "bg.cluster-1" and silently folding a
-// distinct "kube-platform" into a query for "kube".
-func TestStripInstanceSuffix(t *testing.T) {
-	t.Parallel()
-	for in, want := range map[string]string{
-		"cluster":       "cluster",
-		"cluster-1":     "cluster",
-		"cluster-12":    "cluster",
-		"cluster-probe": "cluster-probe",
-		"kube-platform": "kube-platform",
-		"cluster-1a":    "cluster-1a",
-		"cluster-":      "cluster-",
-		"-1":            "-1",
-		"a-1-2":         "a-1",
-	} {
-		if got := stripInstanceSuffix(in); got != want {
-			t.Errorf("stripInstanceSuffix(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
-// TestSplitBranchLabel checks the launch prefix comes off and only the
-// top-level segment is kept, whichever separator the runner used.
-func TestSplitBranchLabel(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct{ branch, launch, label string }{
-		{"cluster", "", "cluster"},
-		{"bg.cluster-1", "bg.", "cluster-1"},
-		{"bg.cluster-1.bg.probe", "bg.", "cluster-1"},
-		{"sub.audit", "sub.", "audit"},
-		{"remote.edge/child", "remote.", "edge"},
-		{"bgx.cluster", "", "bgx"},
-	} {
-		launch, label := splitBranchLabel(tc.branch)
-		if launch != tc.launch || label != tc.label {
-			t.Errorf("splitBranchLabel(%q) = (%q, %q), want (%q, %q)",
-				tc.branch, launch, label, tc.launch, tc.label)
-		}
 	}
 }
 

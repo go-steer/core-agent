@@ -32,6 +32,8 @@ import (
 
 	coretui "github.com/go-steer/core-tui/tui"
 
+	"github.com/go-steer/core-agent/v2/internal/coretuievent"
+	"github.com/go-steer/core-agent/v2/internal/subagentlog"
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/agent/background"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
@@ -757,6 +759,86 @@ func (a *coreAgentAdapter) Subagents() []coretui.SubagentInfo {
 		out = append(out, entry)
 	}
 	return out
+}
+
+// SubagentEvents satisfies coretui.SubagentEventReader (core-tui
+// v0.18.0) — the `/subagents <name>` turn-log overlay and the live
+// tail under a running sync subagent's tool row.
+//
+// The in-process TUI reads the event log directly; the remote adapter
+// gets the same answer over
+// GET /sessions/<sid>/agents/<name>/events. Both go through
+// internal/subagentlog, because "which branch spellings does this name
+// resolve to" is exactly the question the two must not answer
+// differently (#694).
+//
+// A session started without --session-db has no log to read, so the
+// capability reports every name as unknown rather than painting an
+// empty turn list that looks like a subagent doing nothing.
+func (a *coreAgentAdapter) SubagentEvents(ctx context.Context, name string, since int64) (coretui.SubagentEventPage, error) {
+	if err := subagentlog.ValidateName(name); err != nil {
+		return coretui.SubagentEventPage{}, err
+	}
+	elog := a.inner.EventLog()
+	if elog == nil || elog.Stream == nil {
+		return coretui.SubagentEventPage{}, fmt.Errorf(
+			"this session has no event log; subagent turn history requires --session-db")
+	}
+	tree := subagentlog.Tree{
+		AppName:   a.inner.AppName(),
+		UserID:    a.inner.UserID(),
+		SessionID: a.inner.SessionID(),
+	}
+	q := subagentlog.Resolve(ctx, elog.Stream, tree, name, a.subagentRoster())
+	if !q.Known {
+		return coretui.SubagentEventPage{}, &coretui.SubagentNotFoundError{
+			Name:      name,
+			Available: q.Available,
+		}
+	}
+	page := subagentlog.Read(ctx, elog.Stream, tree, q, since, 0)
+	out := coretui.SubagentEventPage{
+		NextSince: page.NextSince,
+		Truncated: page.Truncated,
+		Events:    make([]coretui.SubagentEvent, 0, len(page.Events)),
+	}
+	for _, e := range page.Events {
+		ev, ok := coretuievent.Subagent(e.Seq, e.Event)
+		if !ok {
+			continue
+		}
+		out.Events = append(out.Events, ev)
+	}
+	return out, nil
+}
+
+// Compile-time check: core-tui discovers this capability by asserting
+// on Options.Agent, so a rename or a signature drift would degrade
+// silently to "this host has no turn log" — /subagents <name> would
+// just stop drilling down, with no build error and no runtime
+// complaint.
+var _ coretui.SubagentEventReader = (*coreAgentAdapter)(nil)
+
+// subagentRoster collects the names this session knows about outside
+// the log — live spawned instances, plus whatever the config declares
+// as spawnable. Both only widen an answer: a name either list carries
+// is real even before it has written a turn.
+//
+// Deliberately routed through the same two attach providers the HTTP
+// handler consults rather than the background manager directly, so the
+// two surfaces can't drift on which names count as real.
+func (a *coreAgentAdapter) subagentRoster() subagentlog.Roster {
+	var r subagentlog.Roster
+	if a.attachAd == nil {
+		return r
+	}
+	for _, ai := range a.attachAd.AttachAgents() {
+		r.Instances = append(r.Instances, ai.Name)
+	}
+	for _, s := range a.attachAd.AttachSubagentCatalog() {
+		r.Declared = append(r.Declared, s.Name)
+	}
+	return r
 }
 
 // invokeGuardrail implements /guardrail (#666).

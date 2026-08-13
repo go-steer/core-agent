@@ -41,6 +41,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 
 	"github.com/go-steer/core-agent/v2/internal/attachclient"
+	"github.com/go-steer/core-agent/v2/internal/coretuievent"
 )
 
 // Adapter wraps an attachclient.Client to satisfy coretui.Agent and
@@ -799,48 +800,14 @@ func usageFromGenai(meta *genai.GenerateContentResponseUsageMetadata) *coretui.U
 	return &coretui.Usage{InputTokens: in, OutputTokens: out}
 }
 
-// toolCallFromPart projects a genai function-call into a
-// coretui.ToolCall. ID is the function-call ID the model emits
-// (used by core-tui to dedup partial + final echoes of the same
-// call across streamed events).
-func toolCallFromPart(p *genai.Part) coretui.ToolCall {
-	tc := coretui.ToolCall{
-		ID:   p.FunctionCall.ID,
-		Name: p.FunctionCall.Name,
-	}
-	if len(p.FunctionCall.Args) > 0 {
-		tc.Args = make(map[string]any, len(p.FunctionCall.Args))
-		for k, v := range p.FunctionCall.Args {
-			tc.Args[k] = v
-		}
-	}
-	return tc
-}
+// toolCallFromPart / toolResultFromPart project genai function
+// traffic into coretui's shapes. Thin aliases over
+// internal/coretuievent, which the in-process TUI shares — the two
+// hosts must summarize a tool row identically, and the subagent turn
+// log renders through the same pair.
+func toolCallFromPart(p *genai.Part) coretui.ToolCall { return coretuievent.ToolCall(p) }
 
-// toolResultFromPart projects a genai function-response. Error
-// strings come from a conventional "error" key in the response map;
-// everything else is preserved verbatim so core-tui's per-tool
-// renderers can pick the relevant fields (`content` for read_file,
-// `stdout`/`stderr` for bash, etc.).
-func toolResultFromPart(p *genai.Part) coretui.ToolResult {
-	tr := coretui.ToolResult{
-		ID:   p.FunctionResponse.ID,
-		Name: p.FunctionResponse.Name,
-	}
-	if p.FunctionResponse.Response == nil {
-		return tr
-	}
-	tr.Response = make(map[string]any, len(p.FunctionResponse.Response))
-	for k, v := range p.FunctionResponse.Response {
-		tr.Response[k] = v
-		if k == "error" {
-			if s, ok := v.(string); ok {
-				tr.Error = s
-			}
-		}
-	}
-	return tr
-}
+func toolResultFromPart(p *genai.Part) coretui.ToolResult { return coretuievent.ToolResult(p) }
 
 // usageFromMetadata extracts the per-event usage delta (when the
 // remote stamped it) into a coretui.Usage plus cost+model. Returns

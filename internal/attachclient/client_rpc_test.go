@@ -36,6 +36,7 @@ import (
 	"github.com/glebarez/sqlite"
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/session"
+	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
@@ -541,6 +542,150 @@ func TestClientSessionReadsAndWrites(t *testing.T) {
 	}
 	if err := h.client.Wake(ctx, path); err != nil {
 		t.Fatalf("Wake: %v", err)
+	}
+}
+
+// ---- /agents/<name>/events ------------------------------------------
+
+// appendBranchedEvent writes one event into the harness's session
+// tagged with branch, mirroring what the subagent runners do: they
+// wrap the PARENT's session.Service so the child's turns land in the
+// same database under a Branch label.
+func (h *rpcHarness) appendBranchedEvent(t *testing.T, branch, id, text string) {
+	t.Helper()
+	ctx := context.Background()
+	app, user, sid := h.adapter.AppName(), h.adapter.UserID(), h.adapter.SessionID()
+	got, err := h.handle.Service.Get(ctx, &session.GetRequest{
+		AppName: app, UserID: user, SessionID: sid,
+	})
+	if err != nil || got == nil || got.Session == nil {
+		if _, cerr := h.handle.Service.Create(ctx, &session.CreateRequest{
+			AppName: app, UserID: user, SessionID: sid,
+		}); cerr != nil {
+			t.Fatalf("session Create: %v", cerr)
+		}
+		got, err = h.handle.Service.Get(ctx, &session.GetRequest{
+			AppName: app, UserID: user, SessionID: sid,
+		})
+		if err != nil {
+			t.Fatalf("session Get: %v", err)
+		}
+	}
+	ev := session.NewEvent(id)
+	ev.Author = "cluster"
+	ev.Branch = branch
+	ev.LLMResponse = adkmodel.LLMResponse{
+		Content: &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: text}}},
+	}
+	if err := h.handle.Service.AppendEvent(ctx, got.Session, ev); err != nil {
+		t.Fatalf("AppendEvent(%s): %v", id, err)
+	}
+}
+
+// TestClientSubagentEvents_RoundTrip drives the turn-log read the
+// remote TUI's drill-down sits on: a subagent DECLARED as "cluster"
+// wrote its turns under the instance branch "bg.cluster-1", and the
+// operator only knows the declared name.
+func TestClientSubagentEvents_RoundTrip(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{})
+	ctx := context.Background()
+	path := h.sessionPath()
+
+	h.appendBranchedEvent(t, "bg.cluster-1", "sa-1", "listing nodes")
+	h.appendBranchedEvent(t, "bg.cluster-1", "sa-2", "3 nodes ready")
+
+	resp, err := h.client.SubagentEvents(ctx, path, "cluster", 0, 0)
+	if err != nil {
+		t.Fatalf("SubagentEvents: %v", err)
+	}
+	if len(resp.Events) != 2 {
+		t.Fatalf("got %d events, want 2 (%+v)", len(resp.Events), resp.Events)
+	}
+	if resp.NextSince == 0 {
+		t.Error("NextSince = 0, want a resume cursor")
+	}
+
+	// The cursor is honored: resuming from it yields nothing new,
+	// which is what makes the once-a-second tail cheap.
+	next, err := h.client.SubagentEvents(ctx, path, "cluster", resp.NextSince, 0)
+	if err != nil {
+		t.Fatalf("SubagentEvents(since=%d): %v", resp.NextSince, err)
+	}
+	if len(next.Events) != 0 {
+		t.Errorf("resume returned %d events, want 0", len(next.Events))
+	}
+}
+
+// TestClientSubagentEvents_UnknownNameIsTyped is the #694 contract at
+// the client boundary: a name that resolves to nothing must arrive as
+// a *SubagentNotFoundError carrying the alternatives, not as a generic
+// 404 — and must NOT classify as a permanent stream error, since a
+// mistyped /subagents query has nothing to do with the session's
+// health.
+func TestClientSubagentEvents_UnknownNameIsTyped(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{})
+	h.appendBranchedEvent(t, "bg.cluster-1", "sa-1", "listing nodes")
+
+	_, err := h.client.SubagentEvents(context.Background(), h.sessionPath(), "clustr", 0, 0)
+	if err == nil {
+		t.Fatal("SubagentEvents(clustr) should error")
+	}
+	var nf *SubagentNotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("err = %v (%T), want *SubagentNotFoundError", err, err)
+	}
+	if nf.Name != "clustr" {
+		t.Errorf("Name = %q, want clustr", nf.Name)
+	}
+	if len(nf.Available) == 0 || nf.Available[0] != "cluster" {
+		t.Errorf("Available = %v, want [cluster]", nf.Available)
+	}
+	var se *httpStatusError
+	if errors.As(err, &se) {
+		t.Error("a not-found NAME must not surface as an httpStatusError — it would classify as a permanent stream error and tear down the attach stream")
+	}
+}
+
+// TestClientSubagentEvents_RejectsPathShapedNames stops a name from
+// reshaping the URL it becomes a segment of. ".." in particular walks
+// the request off this session's subtree into a mux redirect, so it
+// must not reach the wire at all.
+func TestClientSubagentEvents_RejectsPathShapedNames(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{})
+	for _, bad := range []string{"", "..", "a/b", "a b"} {
+		_, err := h.client.SubagentEvents(context.Background(), h.sessionPath(), bad, 0, 0)
+		if err == nil {
+			t.Errorf("SubagentEvents(%q) = nil error, want a rejection", bad)
+		}
+	}
+}
+
+// TestClientSubagentEvents_MissingSessionStaysTransportError guards
+// the other side of that line: a 404 for the SESSION is a transport
+// condition, so it must keep its httpStatusError classification rather
+// than being swallowed as "no such subagent".
+func TestClientSubagentEvents_MissingSessionStaysTransportError(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{})
+
+	_, err := h.client.SubagentEvents(context.Background(),
+		"/sessions/"+h.adapter.AppName()+"/absent", "cluster", 0, 0)
+	if err == nil {
+		t.Fatal("SubagentEvents against a missing session should error")
+	}
+	var nf *SubagentNotFoundError
+	if errors.As(err, &nf) {
+		t.Fatalf("session 404 was misread as a subagent not-found: %v", err)
+	}
+	var se *httpStatusError
+	if !errors.As(err, &se) {
+		t.Fatalf("err = %v (%T), want *httpStatusError", err, err)
+	}
+	if !se.PermanentStreamErr() {
+		t.Error("a session 404 must still classify as permanent")
 	}
 }
 

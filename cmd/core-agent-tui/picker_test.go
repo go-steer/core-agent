@@ -15,9 +15,16 @@
 package main
 
 import (
+	"regexp"
+	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/google/uuid"
+
+	"github.com/go-steer/core-agent/v2/internal/attachclient"
 )
 
 // keyPress builds a KeyPressMsg for a printable rune ('j', 'k', 'q', …).
@@ -163,6 +170,161 @@ func TestPickerSessionCreated(t *testing.T) {
 	if m2.error == "" {
 		t.Fatalf("create error not surfaced")
 	}
+}
+
+// v7ID builds a UUIDv7 whose embedded timestamp is exactly ms, so the
+// ordering tests can lay sessions out on a timeline without waiting.
+func v7ID(t *testing.T, ms int64) string {
+	t.Helper()
+	var b [16]byte
+	for i := 0; i < 6; i++ {
+		b[i] = byte(ms >> (40 - 8*i))
+	}
+	b[6] = 0x70 | (b[6] & 0x0f) // version 7
+	b[8] = 0x80 | (b[8] & 0x3f) // RFC 9562 variant
+	u, err := uuid.FromBytes(b[:])
+	if err != nil {
+		t.Fatalf("FromBytes: %v", err)
+	}
+	return u.String()
+}
+
+func TestUUIDv7Time(t *testing.T) {
+	want := time.UnixMilli(1_770_000_000_000).UTC()
+	got, ok := uuidV7Time(v7ID(t, want.UnixMilli()))
+	if !ok {
+		t.Fatalf("v7 ID not decoded")
+	}
+	if !got.Equal(want) {
+		t.Errorf("uuidV7Time = %v, want %v", got.UTC(), want)
+	}
+	// Non-v7 IDs aren't an error — listeners may hand out anything,
+	// including a v4 UUID from the uuid.NewString fallback path.
+	for _, id := range []string{"default", "", "not-a-uuid", uuid.New().String()} {
+		if _, ok := uuidV7Time(id); ok {
+			t.Errorf("uuidV7Time(%q) reported a creation time", id)
+		}
+	}
+}
+
+func TestOrderEntriesNewestFirst(t *testing.T) {
+	base := int64(1_770_000_000_000)
+	oldest := v7ID(t, base)
+	middle := v7ID(t, base+60_000)
+	newest := v7ID(t, base+120_000)
+
+	got := orderEntries([]pickerEntry{
+		{SessionID: middle, App: "core-agent", Origin: "local"},
+		{SessionID: oldest, App: "core-agent", Origin: "peer-1"},
+		{Kind: kindCreate, Origin: "local"},
+		{SessionID: newest, App: "core-agent", Origin: "local"},
+	})
+
+	want := []string{"", newest, middle, oldest}
+	for i, w := range want {
+		if got[i].SessionID != w {
+			t.Fatalf("row %d = %q, want %q (full order: %v)", i, got[i].SessionID, w, ids(got))
+		}
+	}
+	if got[0].Kind != kindCreate {
+		t.Errorf("+ New session sentinel is not pinned to the top")
+	}
+	if !got[1].CreatedAt.Equal(time.UnixMilli(base + 120_000)) {
+		t.Errorf("CreatedAt not stamped from the session ID: %v", got[1].CreatedAt)
+	}
+}
+
+func TestOrderEntriesFallsBackToLastTouched(t *testing.T) {
+	base := int64(1_770_000_000_000)
+	v7 := v7ID(t, base)
+	created := time.UnixMilli(base)
+
+	got := orderEntries([]pickerEntry{
+		{SessionID: "no-timestamps", App: "core-agent"},
+		{SessionID: v7, App: "core-agent"},
+		// Hand-picked ID, but the listener reports activity after the
+		// v7 session was created, so it belongs above it.
+		{SessionID: "default", App: "core-agent", LastTouchedAt: created.Add(time.Hour)},
+	})
+
+	want := []string{"default", v7, "no-timestamps"}
+	for i, w := range want {
+		if got[i].SessionID != w {
+			t.Fatalf("row %d = %q, want %q (full order: %v)", i, got[i].SessionID, w, ids(got))
+		}
+	}
+}
+
+// TestOrderEntriesIsStable pins the fix for the real complaint: the
+// same set of sessions must come back in the same order every
+// refresh, whatever order the local + peer fetches happened to
+// produce.
+func TestOrderEntriesIsStable(t *testing.T) {
+	base := int64(1_770_000_000_000)
+	rows := []pickerEntry{
+		{Kind: kindCreate},
+		{SessionID: v7ID(t, base), App: "a", Origin: "peer-1"},
+		{SessionID: v7ID(t, base+1000), App: "b", Origin: "local"},
+		{SessionID: "default", App: "a", Origin: "local"},
+		{SessionID: v7ID(t, base+2000), App: "a", Origin: "peer-2"},
+	}
+	first := ids(orderEntries(rows))
+	shuffled := []pickerEntry{rows[3], rows[4], rows[0], rows[2], rows[1]}
+	if second := ids(orderEntries(shuffled)); !slices.Equal(first, second) {
+		t.Errorf("order depends on fetch order:\n first: %v\nsecond: %v", first, second)
+	}
+}
+
+func TestPickerViewAlignsColumns(t *testing.T) {
+	base := int64(1_770_000_000_000)
+	parsed, err := attachclient.ParseURL("http://127.0.0.1:7777")
+	if err != nil {
+		t.Fatalf("ParseURL: %v", err)
+	}
+	m := pickerModel{client: attachclient.New(parsed, "", time.Second), width: 100, height: 24, loading: true}
+	m, _ = m.UpdateInner(pickerSessionsLoadedMsg{sessions: []pickerEntry{
+		{Kind: kindCreate, Origin: "local"},
+		{SessionID: v7ID(t, base), App: "core-agent", User: "platform-oncall@example.com", Origin: "local"},
+		{SessionID: v7ID(t, base+1000), App: "core-agent", User: "u", Origin: "peer-west"},
+	}})
+
+	var header string
+	var rows []string
+	for _, line := range strings.Split(stripANSI(m.View()), "\n") {
+		switch {
+		case strings.Contains(line, "SESSION") && strings.Contains(line, "ORIGIN"):
+			header = line
+		case strings.Contains(line, "local") && strings.Contains(line, "core-agent"),
+			strings.Contains(line, "peer-west"):
+			rows = append(rows, line)
+		}
+	}
+	if header == "" || len(rows) != 2 {
+		t.Fatalf("unexpected view shape:\n%s", stripANSI(m.View()))
+	}
+	want := displayIndex(header, "USER")
+	for _, r := range rows {
+		// Cells start where their header starts, whatever the row's
+		// content length.
+		if got := displayIndex(r, "platform-oncall@example.com"); got >= 0 && got != want {
+			t.Errorf("USER cell at column %d, header at %d\nheader: %q\nrow:    %q", got, want, header, r)
+		}
+	}
+}
+
+// ansiRE matches the SGR sequences lipgloss wraps styled cells in;
+// column positions are only meaningful once they're gone.
+var ansiRE = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
+
+// ids projects session IDs for order assertions.
+func ids(entries []pickerEntry) []string {
+	out := make([]string, len(entries))
+	for i, e := range entries {
+		out[i] = e.SessionID
+	}
+	return out
 }
 
 // errFake is a sentinel error for load/create failure paths.

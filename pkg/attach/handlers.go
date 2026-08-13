@@ -321,6 +321,12 @@ func (h *handlers) register(mux *http.ServeMux) {
 	h.routeSession(mux, "GET", "agents", auth.ActionSessionRead, h.doAgents)
 	h.routeSession(mux, "GET", "subagents", auth.ActionSessionRead, h.doSubagents)
 	h.routeSession(mux, "GET", "status", auth.ActionSessionRead, h.doStatus)
+	// A subagent's persisted inner turns (#638) — the read path for
+	// "why did that subagent loop?", which /agents (status only) and
+	// the parent-scoped /events SSE stream both leave unanswerable.
+	// Not in pollingReadRe: this is a one-shot diagnostic, not a
+	// status-bar poll, so it keeps its traces.
+	h.routeSession(mux, "GET", "agents/{name}/events", auth.ActionSessionRead, h.doSubagentEvents)
 
 	// Operator-state read endpoints (usage / context / memory /
 	// skills / mcp / pricing); see handlers_operator.go.

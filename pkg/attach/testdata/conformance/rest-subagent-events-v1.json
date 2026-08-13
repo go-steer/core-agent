@@ -1,0 +1,54 @@
+{
+  "agent": "cluster",
+  "parent_session_id": "s-1a2b3c",
+  "branches": [
+    "cluster",
+    "bg.cluster",
+    "sub.cluster",
+    "remote.cluster"
+  ],
+  "events": [
+    {
+      "seq": 41,
+      "event": {
+        "Content": {
+          "parts": [
+            {
+              "text": "listing nodes in cluster prod-1"
+            }
+          ],
+          "role": "model"
+        },
+        "CitationMetadata": null,
+        "GroundingMetadata": null,
+        "UsageMetadata": null,
+        "CustomMetadata": null,
+        "LogprobsResult": null,
+        "ModelVersion": "",
+        "Partial": false,
+        "TurnComplete": false,
+        "Interrupted": false,
+        "ErrorCode": "",
+        "ErrorMessage": "",
+        "FinishReason": "",
+        "AvgLogprobs": 0,
+        "ID": "e-7f3a",
+        "Timestamp": "2026-08-12T09:15:00Z",
+        "InvocationID": "inv-1",
+        "Branch": "bg.cluster",
+        "Author": "cluster",
+        "Actions": {
+          "StateDelta": null,
+          "ArtifactDelta": null,
+          "RequestedToolConfirmations": null,
+          "SkipSummarization": false,
+          "TransferToAgent": "",
+          "Escalate": false
+        },
+        "LongRunningToolIDs": null
+      }
+    }
+  ],
+  "next_since": 41,
+  "truncated": true
+}

@@ -24,6 +24,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	adkmodel "google.golang.org/adk/model"
+	"google.golang.org/adk/session"
+	"google.golang.org/genai"
 )
 
 // REST-response conformance tests (#536). The SSE event shapes have
@@ -145,6 +149,68 @@ func TestConformance_RESTSessionsListV1_LiveHandlerAgreesWithFixture(t *testing.
 	fixtureKeys := sortedKeys(fixture[0])
 	if !reflect.DeepEqual(liveKeys, fixtureKeys) {
 		t.Errorf("live row field names %v != fixture field names %v — update the fixture (new REST-shape version) and rest_conformance_test.go together", liveKeys, fixtureKeys)
+	}
+}
+
+// TestConformance_RESTSubagentEventsV1 pins the subagent turn-history
+// envelope (#638). Its Frame rows reuse the SSE frame shape, which is
+// already fixture-pinned, so the value here is the envelope around
+// them: the paging contract (next_since/truncated) is the part a
+// client gets silently wrong, and `branches` is a normative statement
+// about which launch-path spellings the server searched — a client
+// that renders it tells the operator why an empty list is empty.
+func TestConformance_RESTSubagentEventsV1(t *testing.T) {
+	t.Parallel()
+	// A truncated page: the operator asked for more turns than the
+	// limit allowed, so next_since is a resume cursor, not the end.
+	// Populating both flags is what pins their names — neither is
+	// omitempty, but a rename would otherwise sail past the tests.
+	resp := SubagentEventsResponse{
+		Agent:           "cluster",
+		ParentSessionID: "s-1a2b3c",
+		Branches:        subagentBranchPrefixes("cluster"),
+		Events: []Frame{{
+			Seq: 41,
+			Event: &session.Event{
+				ID:           "e-7f3a",
+				InvocationID: "inv-1",
+				Author:       "cluster",
+				Branch:       "bg.cluster",
+				Timestamp:    time.Date(2026, 8, 12, 9, 15, 0, 0, time.UTC),
+				LLMResponse: adkmodel.LLMResponse{
+					Content: &genai.Content{
+						Role:  genai.RoleModel,
+						Parts: []*genai.Part{{Text: "listing nodes in cluster prod-1"}},
+					},
+				},
+			},
+		}},
+		NextSince: 41,
+		Truncated: true,
+	}
+	assertMatchesConformanceFixture(t,
+		"testdata/conformance/rest-subagent-events-v1.json",
+		resp)
+}
+
+// TestConformance_RESTSubagentEventsV1_EmptyIsArrayNotNull pins the
+// no-turns body: an unknown or never-run subagent answers 200 with
+// `"events": []`, not null and not 404 (the log, not the manager, is
+// the source of truth). Same `[]`-vs-null client breaker as the
+// sessions list, and it hinges on the same explicit-empty-slice
+// idiom in doSubagentEvents.
+func TestConformance_RESTSubagentEventsV1_EmptyIsArrayNotNull(t *testing.T) {
+	t.Parallel()
+	body, err := json.Marshal(SubagentEventsResponse{
+		Agent:    "cluster",
+		Branches: subagentBranchPrefixes("cluster"),
+		Events:   []Frame{},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(body), `"events":[]`) {
+		t.Errorf("empty body = %s, want an empty events array (never null)", body)
 	}
 }
 

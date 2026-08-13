@@ -171,6 +171,7 @@ A subagent that itself spawns subagents. Often called "manager" or "coordinator.
 - Set tight budgets on the manager subagent. It shouldn't reason for 10 minutes before spawning its first child.
 - Use the `--max-turns` and `--max-cost` flags on `spawn_agent` to bound each level.
 - Audit the spawn tree out-of-band via the attach hub's `GET .../agents` endpoint or the TUI (operator surfaces), not a model tool.
+- When one of them misbehaves, read its turns: `GET .../agents/{name}/events` returns that subagent's persisted inner turns, nested descendants included. `/agents` tells you a subagent is running and what it last reported; this is how you see *why* it looped.
 
 ### Pattern 4 — scheduled monitor
 

@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -80,12 +81,13 @@ func (m pickerModel) refreshCmd() tea.Cmd {
 		}
 		for _, s := range local {
 			out = append(out, pickerEntry{
-				App:         s.App,
-				User:        s.User,
-				SessionID:   s.SessionID,
-				HasEventLog: s.HasEventLog,
-				Endpoint:    client.URL.BaseURL,
-				Origin:      "local",
+				App:           s.App,
+				User:          s.User,
+				SessionID:     s.SessionID,
+				HasEventLog:   s.HasEventLog,
+				Endpoint:      client.URL.BaseURL,
+				Origin:        "local",
+				LastTouchedAt: s.LastTouchedAt,
 			})
 		}
 		// Peers: best-effort. 404 (no peer-registration) is fine.
@@ -124,12 +126,13 @@ func fetchPeerSessions(parent context.Context, peers []attachclient.PeerDescript
 			}
 			for _, s := range sessions {
 				out = append(out, pickerEntry{
-					App:         s.App,
-					User:        s.User,
-					SessionID:   s.SessionID,
-					HasEventLog: s.HasEventLog,
-					Endpoint:    p.Endpoint,
-					Origin:      p.Name,
+					App:           s.App,
+					User:          s.User,
+					SessionID:     s.SessionID,
+					HasEventLog:   s.HasEventLog,
+					Endpoint:      p.Endpoint,
+					Origin:        p.Name,
+					LastTouchedAt: s.LastTouchedAt,
 				})
 			}
 			results <- result{out}
@@ -147,6 +150,49 @@ func fetchPeerSessions(parent context.Context, peers []attachclient.PeerDescript
 	return all
 }
 
+// orderEntries stamps each row's creation time (decoded from a
+// UUIDv7 session ID) and sorts the list newest-first, with the
+// "+ New session" sentinel pinned to the top.
+//
+// Before this the order was whatever the fetch produced: the
+// listener's in-memory half sorted by (app, user, sessionID), its
+// persisted-ACL half appended in store order, then each peer's rows
+// appended in goroutine-completion order — i.e. grouped by where a
+// session came from, and not stable between refreshes once peers are
+// in play. Operators reach for the session they just left, so recency
+// is the useful axis; grouping by origin is what the ORIGIN column is
+// for.
+//
+// Rows whose creation time can't be recovered fall back to the
+// listener's last-activity stamp, and rows with neither sort to the
+// bottom in (app, session ID) order so they at least stay put.
+func orderEntries(entries []pickerEntry) []pickerEntry {
+	out := make([]pickerEntry, len(entries))
+	copy(out, entries)
+	for i := range out {
+		if out[i].CreatedAt.IsZero() {
+			if t, ok := uuidV7Time(out[i].SessionID); ok {
+				out[i].CreatedAt = t
+			}
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if (a.Kind == kindCreate) != (b.Kind == kindCreate) {
+			return a.Kind == kindCreate
+		}
+		ta, tb := a.sortTime(), b.sortTime()
+		if !ta.Equal(tb) {
+			return ta.After(tb) // newest first; zero time sinks
+		}
+		if a.App != b.App {
+			return a.App < b.App
+		}
+		return a.SessionID < b.SessionID
+	})
+	return out
+}
+
 // UpdateInner is the picker's Update. Returns the (possibly mutated)
 // picker plus a tea.Cmd. The root model checks .selected after each
 // Update to detect a session pick.
@@ -158,7 +204,7 @@ func (m pickerModel) UpdateInner(msg tea.Msg) (pickerModel, tea.Cmd) {
 			m.error = msg.err.Error()
 		} else {
 			m.error = ""
-			m.entries = msg.sessions
+			m.entries = orderEntries(msg.sessions)
 			if m.cursor >= len(m.entries) {
 				m.cursor = 0
 			}
@@ -259,11 +305,28 @@ func (m pickerModel) View() string {
 				realCount++
 			}
 		}
+		// Every row is indented by the gutter ("  ") plus the cursor
+		// column ("▸ "), so the table gets what's left.
+		const gutter = 4
+		avail := m.width - gutter
+		if m.width <= 0 {
+			avail = 80 - gutter // pre-WindowSizeMsg render
+		}
+		if avail < 20 {
+			avail = 20
+		}
+
+		// Keys live in the footer; the hint just says what's on
+		// screen and in what order. Elided rather than wrapped so a
+		// narrow terminal doesn't reflow the table down the screen.
 		body.WriteString("\n  ")
-		body.WriteString(styleHint.Render(fmt.Sprintf("%d session(s) — ↑/↓ to navigate · Enter to attach (or create) · r to refresh · q to quit", realCount)))
+		body.WriteString(styleHint.Render(elide(fmt.Sprintf("%d session(s) · newest first", realCount), avail, false)))
 		body.WriteString("\n\n")
-		fmt.Fprintf(&body, "  %-30s %-30s %-20s %s\n", "SESSION", "APP", "USER", "ORIGIN")
-		fmt.Fprintf(&body, "  %s\n", strings.Repeat("─", min(m.width-4, 90)))
+		now := time.Now()
+		cols, widths := fitColumns(pickerColumns(), m.entries, now, avail)
+
+		body.WriteString("    " + styleTableHeader.Render(renderRow(cols, widths, headerCells(cols))) + "\n")
+		fmt.Fprintf(&body, "    %s\n", strings.Repeat("─", min(tableWidth(widths), avail)))
 		for i, e := range m.entries {
 			cursor := "  "
 			var line string
@@ -279,7 +342,7 @@ func (m pickerModel) View() string {
 					line = lipgloss.NewStyle().Foreground(colorAccent).Render(label)
 				}
 			} else {
-				line = fmt.Sprintf("%-30s %-30s %-20s %s", e.SessionID, e.App, e.User, e.Origin)
+				line = renderRow(cols, widths, rowCells(cols, e, now))
 				if i == m.cursor {
 					cursor = "▸ "
 					line = lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render(line)

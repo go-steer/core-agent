@@ -46,4 +46,10 @@ var (
 	styleHint = lipgloss.NewStyle().
 			Foreground(colorMuted).
 			Italic(true)
+	// Column headers sit above data rows that are already dense;
+	// muted keeps them legible as labels without competing with the
+	// session IDs underneath.
+	styleTableHeader = lipgloss.NewStyle().
+				Foreground(colorMuted).
+				Bold(true)
 )

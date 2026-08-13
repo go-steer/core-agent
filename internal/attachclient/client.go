@@ -168,6 +168,14 @@ type SessionDescriptor struct {
 	User        string `json:"user"`
 	SessionID   string `json:"sessionID"`
 	HasEventLog bool   `json:"has_event_log"`
+	// Status is "active" (live in the listener's registry) or "idle"
+	// (known only from the persisted ACL store — attaching triggers a
+	// lazy resume, so the first frame costs more).
+	Status string `json:"status"`
+	// LastTouchedAt is the server's last-activity stamp. Omitted by
+	// listeners that don't track it, hence the zero-value check at
+	// every read site.
+	LastTouchedAt time.Time `json:"last_touched_at"`
 }
 
 // ListSessions calls GET <base>/sessions.

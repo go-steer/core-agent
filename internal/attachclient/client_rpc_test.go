@@ -209,8 +209,21 @@ func TestClientListSessions_AgainstRealServer(t *testing.T) {
 		SessionID:   testSID,
 		HasEventLog: true,
 	}
-	if got[0] != want {
-		t.Errorf("ListSessions[0] = %+v, want %+v", got[0], want)
+	// Zero the server-clock fields before comparing the identity half;
+	// they're asserted separately below.
+	row := got[0]
+	status, touched := row.Status, row.LastTouchedAt
+	row.Status, row.LastTouchedAt = "", time.Time{}
+	if row != want {
+		t.Errorf("ListSessions[0] = %+v, want %+v", row, want)
+	}
+	// The picker orders and labels rows off these two, so a listener
+	// that reports them must survive the round-trip.
+	if status != "active" {
+		t.Errorf("Status = %q, want %q", status, "active")
+	}
+	if touched.IsZero() {
+		t.Errorf("LastTouchedAt not decoded from the /sessions row")
 	}
 }
 

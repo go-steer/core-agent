@@ -14,6 +14,12 @@
 
 package main
 
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
+
 // Bubble-tea message + entry types for the pre-coretui picker. The
 // chat-side message types (frame / inject-ack / etc.) live with the
 // adapter now (internal/coretuiremote) — this file is whatever the
@@ -62,6 +68,40 @@ type pickerEntry struct {
 	HasEventLog bool
 	Endpoint    string // listener URL (peer endpoint or "")
 	Origin      string // "local" | peer name
+
+	// CreatedAt is decoded from a UUIDv7 SessionID by orderEntries;
+	// zero when the ID isn't a v7 UUID (hand-picked IDs like
+	// "default", or a listener on the uuid.NewString fallback).
+	CreatedAt time.Time
+	// LastTouchedAt is the listener's last-activity stamp, when it
+	// reports one. Used as the ordering fallback for rows with no
+	// decodable creation time.
+	LastTouchedAt time.Time
+}
+
+// sortTime is the row's ordering key: creation time when the session
+// ID carries one, else last activity. Zero means "unknown", which
+// sorts to the bottom.
+func (e pickerEntry) sortTime() time.Time {
+	if !e.CreatedAt.IsZero() {
+		return e.CreatedAt
+	}
+	return e.LastTouchedAt
+}
+
+// uuidV7Time decodes the creation timestamp from a UUIDv7 — the first
+// 48 bits are Unix milliseconds (RFC 9562 §5.7). Returns false for any
+// other UUID version or an unparseable ID, which the caller treats as
+// "creation time unknown" rather than an error: session IDs are
+// opaque by contract and a listener is free to hand out non-UUIDs.
+func uuidV7Time(id string) (time.Time, bool) {
+	u, err := uuid.Parse(id)
+	if err != nil || u.Version() != 7 {
+		return time.Time{}, false
+	}
+	ms := int64(u[0])<<40 | int64(u[1])<<32 | int64(u[2])<<24 |
+		int64(u[3])<<16 | int64(u[4])<<8 | int64(u[5])
+	return time.UnixMilli(ms), true
 }
 
 // sessionPath returns the relative attach path the entry corresponds

@@ -683,6 +683,53 @@ type ToolOutputPerToolCaps struct {
 type ToolsConfig struct {
 	Disable       []string            `json:"disable,omitempty"`
 	WaitAndVerify WaitAndVerifyConfig `json:"wait_and_verify,omitempty"`
+	CallPeer      CallPeerConfig      `json:"call_peer,omitempty"`
+}
+
+// CallPeerConfig configures the `call_peer` built-in — named
+// delegation to another core-agent daemon registered with this one's
+// peer hub (#595, docs/kube-agents-platform-fit.md Gap 2).
+//
+// Off by default, and Enabled alone is not enough: the daemon must
+// also be running as a peer hub (--attach-peer-hub), because the
+// registry is the only place the tool will accept a destination from.
+// Asking for the tool without a hub is a startup error, not a silently
+// inert tool.
+type CallPeerConfig struct {
+	// Enabled registers the tool. Absent it, a hub daemon can still be
+	// registered WITH by peers; it just can't call them.
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Name renames the tool (default "call_peer"). Recipes with their
+	// own vocabulary for delegation can match it. Note the permission
+	// key follows the name: rename to "ask_operator" and the allow
+	// pattern becomes "ask_operator:<peer>".
+	Name string `json:"name,omitempty"`
+
+	// Description replaces the model-facing description. Use it to
+	// pin the prompt shape a fleet expects ("always name the cluster
+	// and the namespace"); the built-in text explains the mechanics
+	// but knows nothing about the deployment.
+	Description string `json:"description,omitempty"`
+
+	// TokenEnv names the env var holding the bearer token this agent
+	// presents to peers. Empty means unauthenticated calls, which only
+	// makes sense when the peers themselves run without
+	// attach.token_env. Named-but-empty at call time is an error, not
+	// an anonymous request.
+	TokenEnv string `json:"token_env,omitempty"`
+
+	// TimeoutSeconds bounds one delegated call end to end. Default 120;
+	// ceiling 900. The callee runs a full agent turn, so this is not an
+	// HTTP timeout — but it must stay short enough that a wedged peer
+	// can't pin this agent's turn open indefinitely.
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+
+	// MaxResponseBytes caps how much of the peer's answer enters this
+	// agent's context. Default 16384. Over the cap the answer is cut
+	// and flagged truncated; the peer's session ID comes back either
+	// way, so the full transcript stays reachable.
+	MaxResponseBytes int `json:"max_response_bytes,omitempty"`
 }
 
 // WaitAndVerifyConfig bounds the wait_and_verify poll loop (#648).
@@ -1303,6 +1350,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := c.validateAlerts(); err != nil {
+		return err
+	}
+	if err := c.validateCallPeer(); err != nil {
 		return err
 	}
 	if err := c.Hooks.Validate(); err != nil {

@@ -649,6 +649,7 @@ Controls which built-in tools are wired into the bundled CLI. Defaults to the fu
 |---|---|---|---|
 | `disable` | string[] | `[]` | Built-in tool names to turn off. Valid: `bash`, `read_file`, `read_many_files`, `write_file`, `edit_file`, `delete_file`, `stat`, `list_dir`, `glob`, `grep`, `json_query`, `fetch_url`, `alert`, `wait_and_verify`, `todo`, `record_plan`, `sciontool_status`. Unknown names cause a startup error. |
 | `wait_and_verify` | object | `{}` | Bounds for the [`wait_and_verify`](/concepts/tools/#wait_and_verify-v29--bounded-poll-until-condition) poll loop. See below. |
+| `call_peer` | object | `{}` | Off by default. Delegation to peer agents registered with this daemon's peer hub. See below. |
 
 Example — keep everything except shell access:
 
@@ -687,6 +688,41 @@ A [task class](/concepts/context-management/#tools-and-plan-first-since-v29) can
 ```
 
 Polling adds no authority: each attempt dispatches through the same permission gate, path scope, URL scope, plan-first gating and output caps a direct model call would hit.
+
+### `tools.call_peer` (v2.9+)
+
+Registers a `call_peer` tool that hands a self-contained prompt to another core-agent daemon and returns its answer. Off by default, and it refuses to boot outside a [peer hub](/reference/attach-http/#peer-registry): `enabled: true` without `--attach-listen`/`--attach-unix-socket` **and** `--attach-peer-hub` is a startup error rather than a tool that registers and then fails every call.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | bool | `false` | Wire the tool in. Requires attach mode plus `--attach-peer-hub`. |
+| `name` | string | `call_peer` | Rename the model-facing tool. Must be `[A-Za-z_][A-Za-z0-9_]{0,63}` — it becomes a function name in the model's schema, which rules out hyphens and dots. Renaming moves the permission key with it (see below). |
+| `description` | string | *(generated)* | Override the tool description. The default tells the model the roster is dynamic and that calling with an empty peer name returns the current list. |
+| `token_env` | string | `""` | Environment variable holding the bearer token for peer daemons. If set and the variable is unset or empty, the call fails rather than going out anonymously. |
+| `timeout_seconds` | int | `120` | Per-call deadline, covering session creation through turn end. Ceiling `900`; a larger value is a config error, not a clamp. |
+| `max_response_bytes` | int | `16384` | Cap on the peer's answer. Past the cap the tool stops reading and returns `truncated: true`. |
+
+```json
+{
+  "tools": {
+    "call_peer": {
+      "enabled": true,
+      "token_env": "PEER_TOKEN",
+      "timeout_seconds": 120
+    }
+  }
+}
+```
+
+Three properties are true by construction rather than by instruction:
+
+- **The model cannot name a destination.** `call_peer` takes `peer` and `prompt` — no URL, no host, no port. The only place a destination comes from is the hub's peer registry, so a prompt-injected "call `http://169.254.169.254/…`" resolves to nothing and the error lists the registered peers. This is the same shape as the [`alert`](/concepts/tools/#alert) tool's named-channel argument.
+- **No credential is model-visible.** The bearer token comes from `token_env` in the daemon's environment; it never appears in the tool schema, the arguments, or the transcript.
+- **Every call is bounded.** One deadline and one byte cap, both operator-set, both enforced in the tool rather than left to the peer's good behaviour.
+
+Each call opens a **fresh session** on the peer via `POST /sessions`, so two callers can't interleave prompts into one transcript, and the peer's reply is unambiguously the answer to this request. That makes `attach.multi_session.enabled` a hard requirement **on the peer** — a peer without it answers `501`, and the tool appends the fix to the error. The delegated turn lives in the peer's own event log under the returned `session_id`, which the result carries so an operator can go read it.
+
+Delegation is gated per peer. The permission key is `call_peer:<peer-name>`, so `--deny call_peer:prod-*` or an allow-list works the way it does for any other tool, and a `name` override moves the key with it (`ask_operator:ops`). Declarative subagents inherit the tool from the parent's already-gated catalog, so one parent-level policy covers the parent and its subagents together.
 
 ---
 

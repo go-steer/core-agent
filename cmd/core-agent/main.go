@@ -1137,6 +1137,35 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		builtinTools = append(builtinTools, askTool)
 	}
 
+	// call_peer (#595): named delegation to another daemon registered
+	// with this one's peer hub. Registered here, but the registry it
+	// reads is constructed further down inside the attach block — hence
+	// the closure over peerReg, the same late-binding shape the agentic
+	// wrappers use for *Agent.
+	//
+	// The tool only accepts a destination the hub registry knows, so
+	// "enabled but not a hub" is a tool that can never do anything.
+	// Refuse the boot instead of registering an inert tool the model
+	// will keep trying: a claim the runtime can't honor is exactly the
+	// failure class the v2.9 milestone is closing.
+	var peerReg *attach.PeerRegistry
+	if cfg.Tools.CallPeer.Enabled {
+		switch {
+		case attachCfg.Listen == "" && attachCfg.UnixSocket == "":
+			fmt.Fprintln(os.Stderr, "core-agent: tools.call_peer.enabled requires attach mode (--attach-listen or --attach-unix-socket)")
+			return runner.ExitConfigError
+		case !attachCfg.PeerHub:
+			fmt.Fprintln(os.Stderr, "core-agent: tools.call_peer.enabled requires --attach-peer-hub (the peer registry is the only place call_peer will accept a destination from)")
+			return runner.ExitConfigError
+		}
+		cpTool, err := compose.BuildCallPeerTool(gate, cfg, func() *attach.PeerRegistry { return peerReg })
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: call_peer: %v\n", err)
+			return runner.ExitConfigError
+		}
+		builtinTools = append(builtinTools, cpTool)
+	}
+
 	// Daily pricing refresh (PR B): pull LiteLLM's pricing JSON
 	// into ~/.core-agent/pricing.json's external section. Skipped
 	// when --no-pricing-refresh is set, when cfg.pricing.refresh is
@@ -1922,7 +1951,8 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			fmt.Fprintln(os.Stderr, "core-agent: --attach-peer-state-file requires --attach-peer-hub (nothing else writes peer state)")
 			return runner.ExitConfigError
 		}
-		var peerReg *attach.PeerRegistry
+		// peerReg is declared above, next to the tool catalog: the
+		// call_peer tool closes over it and is built before we get here.
 		if attachCfg.PeerHub {
 			if attachCfg.PeerStateFile != "" {
 				// Fail the boot rather than fall back to in-memory:

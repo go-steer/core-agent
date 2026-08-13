@@ -231,8 +231,11 @@ func (a *Agent) CostCeilingTripped() (bool, string) {
 //     turn's main-model cost AFTER the post-turn hook, so only this
 //     settle-time pass sees the full per-turn spend (#362).
 //
-// Running at both points means a runaway turn is caught as early as the
-// available data allows, and always by the start of the following turn.
+// ...and, since #720, from Run's event tap while the turn is still
+// running — see enforceCostCeilingInTurn. Both boundary call sites are
+// kept: the tap only fires on events, so the last append of a turn
+// (and anything a harness appends after the stream drains) still needs
+// a post-turn and a settle-time pass behind it.
 func (a *Agent) maybeEnforceCostCeiling() {
 	if a == nil || a.tracker == nil {
 		return
@@ -295,6 +298,48 @@ func (a *Agent) maybeEnforceCostCeiling() {
 		Message:   reason,
 		Retryable: false, // operator must reset, not the host
 	})
+}
+
+// enforceCostCeilingInTurn is the in-turn arm of the cost ceiling
+// (#720). It runs from Run's event tap and halts a turn that is still
+// spending, rather than waiting for a boundary the turn may never
+// reach.
+//
+// Why a third call site. Both boundary checks fire between turns, and
+// a runaway is a loop INSIDE one turn: the model emits a tool call,
+// the flow runs it and calls the model again, all within a single Run.
+// The tracker grows on every one of those model calls — ADK's
+// streaming aggregator marks each call's final chunk TurnComplete, so
+// the harness's usage.TurnTap commits per call — so the spend is
+// visible in real time while both boundary checks sit idle. #362
+// already found boundary-only enforcement insufficient and worked
+// around it by re-checking at the top of the FOLLOWING Run, which
+// still cannot help a turn that is still running. --max-turn-cost-usd
+// is documented as the hard backstop for exactly this shape (the
+// watchdog's own alert text points operators at it), so it has to be
+// able to fire during the turn it is capping.
+//
+// A trip cancels the turn in flight via Interrupt, which only cancels
+// the per-turn context — it does not mark an operator-interrupt audit,
+// so the halt is recorded as a cost-ceiling trip and not mislabeled.
+//
+// Cheap when unarmed: one uncontended lock read decides it, so a
+// session with no ceiling configured (the default) pays nothing per
+// event beyond that.
+func (a *Agent) enforceCostCeilingInTurn() {
+	if a == nil || a.tracker == nil {
+		return
+	}
+	a.mu.Lock()
+	armed := a.costCeiling.active() && !a.costCeilingExceeded
+	a.mu.Unlock()
+	if !armed {
+		return
+	}
+	a.maybeEnforceCostCeiling()
+	if exceeded, _ := a.CostCeilingTripped(); exceeded {
+		a.Interrupt()
+	}
 }
 
 // snapshotTurnStartCost captures the current session cost so the

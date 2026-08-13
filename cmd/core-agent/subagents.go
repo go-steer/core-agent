@@ -184,7 +184,7 @@ func buildDeclaredSubagents(
 			if err != nil {
 				return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: instructions: %w", i, spec.Name, err)
 			}
-			scopeDesc = fmt.Sprintf("root=%s, %s", rootAbs, scopeDesc)
+			scopeDesc = fmt.Sprintf("root=%s (%s), %s", rootAbs, rootInventory(rootSurface), scopeDesc)
 		} else {
 			subToolsets, scopeDesc, err = resolveSubagentToolsets(ctx, spec, surface)
 			if err != nil {
@@ -307,6 +307,30 @@ func loadSubagentRoot(ctx context.Context, spec config.SubagentSpec, deps subage
 	// built-ins against the parent registry; resolveSubagentToolsets reads
 	// only mcpToolsets + skills from the surface.
 	return rootAbs, parentSurface{mcpToolsets: named, skills: rootSkills}, servers, nil
+}
+
+// rootInventory reports what a content root actually yielded — server and
+// skill counts — for the rooted subagent's boot line.
+//
+// This is not redundant with the mcp=/skills= fields printed beside it: those
+// describe the *scoping policy* (inherit the root's surface whole, or take a
+// named subset) and read identically whether the root supplied six skills or
+// none. Without a count, a misnamed `skill/` directory or an absent mcp.json
+// boots clean and silent, and the subagent runs persona-only — the failure
+// only shows up later as a subagent that mysteriously can't do its job. The
+// parent gets the same courtesy from compose's "skills: N loaded" line.
+func rootInventory(surface parentSurface) string {
+	down := 0
+	for _, s := range surface.mcpToolsets {
+		if s.toolset == nil {
+			down++
+		}
+	}
+	mcpDesc := fmt.Sprintf("mcp: %d server(s)", len(surface.mcpToolsets))
+	if down > 0 {
+		mcpDesc += fmt.Sprintf(", %d down", down)
+	}
+	return fmt.Sprintf("%s, skills: %d loaded", mcpDesc, len(surface.skills.Infos))
 }
 
 // rootedSubagentInstruction resolves a rooted subagent's persona. An inline

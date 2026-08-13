@@ -78,6 +78,11 @@ type PeerRegistry struct {
 	byID   map[string]*Peer
 	byName map[string]*Peer
 
+	// persister is nil unless the hub was built with a state file
+	// (#595). persistSeq orders snapshots — see snapshotLocked.
+	persister  *peerPersister
+	persistSeq uint64
+
 	pruneCancel context.CancelFunc
 	pruneStop   chan struct{}
 }
@@ -115,6 +120,54 @@ func NewPeerRegistry(opts ...PeerRegistryOption) *PeerRegistry {
 	r.pruneStop = make(chan struct{})
 	go r.pruneLoop(ctx)
 	return r
+}
+
+// NewPeerRegistryWithState is NewPeerRegistry backed by a durable
+// state file (#595): registrations are snapshotted to path on every
+// mutation and reloaded on startup, so a hub restart doesn't blank
+// the fleet for a heartbeat interval.
+//
+// Returns an error when path exists but can't be read, or when the
+// first snapshot can't be written — a missing file is a first start,
+// not a failure. This is why the sketch in #595 (a WithPersistFile
+// option) isn't what shipped: an option can't report that loading
+// failed, and a hub that silently comes up empty while configured
+// for durability is exactly the class of claimed-but-unenforced
+// property this milestone is closing. Malformed individual lines are
+// a softer failure and are skipped with a warning; see loadPeerState.
+//
+// The initial write is deliberate rather than lazy: it surfaces an
+// unwritable directory at startup instead of at the first
+// registration, when the only witness would be a log line.
+func NewPeerRegistryWithState(path string, opts ...PeerRegistryOption) (*PeerRegistry, error) {
+	if path == "" {
+		return nil, fmt.Errorf("attach: peer state file path is required")
+	}
+	r := NewPeerRegistry(opts...)
+	loaded, err := loadPeerState(path, r.now())
+	if err != nil {
+		_ = r.Close()
+		return nil, err
+	}
+	r.mu.Lock()
+	for _, p := range loaded {
+		// Name collisions can only come from a hand-edited file;
+		// last-line-wins matches the in-memory upsert-on-name rule.
+		if existing, ok := r.byName[p.Name]; ok {
+			delete(r.byID, existing.RegistrationID)
+		}
+		r.byID[p.RegistrationID] = p
+		r.byName[p.Name] = p
+	}
+	r.persister = &peerPersister{path: path}
+	snap := r.snapshotLocked()
+	r.mu.Unlock()
+
+	if err := r.persister.write(snap); err != nil {
+		_ = r.Close()
+		return nil, err
+	}
+	return r, nil
 }
 
 // Close stops the prune goroutine. Idempotent.
@@ -196,7 +249,6 @@ func (r *PeerRegistry) RegisterOwned(req RegisterRequest, owner string) (*Peer, 
 	now := r.now()
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	// Upsert on Name: if a peer with this name already exists, drop
 	// the old registration ID and issue a fresh one. Keeps the
@@ -207,6 +259,7 @@ func (r *PeerRegistry) RegisterOwned(req RegisterRequest, owner string) (*Peer, 
 
 	id, err := newRegistrationID()
 	if err != nil {
+		r.mu.Unlock()
 		return nil, err
 	}
 	p := &Peer{
@@ -221,6 +274,10 @@ func (r *PeerRegistry) RegisterOwned(req RegisterRequest, owner string) (*Peer, 
 	}
 	r.byID[id] = p
 	r.byName[req.Name] = p
+	snap := r.snapshotLocked()
+	r.mu.Unlock()
+
+	r.persist(snap)
 	return p, nil
 }
 
@@ -229,15 +286,23 @@ func (r *PeerRegistry) RegisterOwned(req RegisterRequest, owner string) (*Peer, 
 // re-Register on this error).
 func (r *PeerRegistry) Heartbeat(id string) (*Peer, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	p, ok := r.byID[id]
 	if !ok {
+		r.mu.Unlock()
 		return nil, fmt.Errorf("%w: %s", ErrPeerNotFound, id)
 	}
 	now := r.now()
 	ttl := p.LeaseExpiresAt.Sub(p.LastHeartbeat)
 	p.LastHeartbeat = now
 	p.LeaseExpiresAt = now.Add(ttl)
+	// Heartbeats are persisted too, not just registrations: the
+	// reload drops leases that have already expired, so a snapshot
+	// with stale expiry times would discard exactly the peers that
+	// have been alive the longest.
+	snap := r.snapshotLocked()
+	r.mu.Unlock()
+
+	r.persist(snap)
 	return p, nil
 }
 
@@ -260,13 +325,17 @@ func (r *PeerRegistry) Lookup(id string) (*Peer, bool) {
 // graceful shutdown paths idempotent.
 func (r *PeerRegistry) Deregister(id string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	p, ok := r.byID[id]
 	if !ok {
+		r.mu.Unlock()
 		return
 	}
 	delete(r.byID, id)
 	delete(r.byName, p.Name)
+	snap := r.snapshotLocked()
+	r.mu.Unlock()
+
+	r.persist(snap)
 }
 
 // List returns a sorted snapshot of every live peer. labelMatch, if
@@ -304,7 +373,6 @@ func (r *PeerRegistry) Len() int {
 func (r *PeerRegistry) Prune() int {
 	now := r.now()
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	pruned := 0
 	for id, p := range r.byID {
 		if p.LeaseExpiresAt.Before(now) {
@@ -312,6 +380,18 @@ func (r *PeerRegistry) Prune() int {
 			delete(r.byName, p.Name)
 			pruned++
 		}
+	}
+	// Only snapshot when something changed — the prune loop ticks
+	// every 5s for the life of the daemon, and an idle hub shouldn't
+	// rewrite its state file 17,000 times a day.
+	var snap peerSnapshot
+	if pruned > 0 {
+		snap = r.snapshotLocked()
+	}
+	r.mu.Unlock()
+
+	if pruned > 0 {
+		r.persist(snap)
 	}
 	return pruned
 }

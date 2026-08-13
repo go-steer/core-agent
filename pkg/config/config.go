@@ -919,6 +919,15 @@ type AttachConfig struct {
 	// PeerHub turns on the peer-registration endpoints on this listener.
 	PeerHub bool `json:"peer_hub,omitempty"`
 
+	// PeerStateFile makes the hub's peer registry durable across
+	// restarts (#595): registrations are snapshotted here on every
+	// change and reloaded at startup, so a hub restart doesn't blank
+	// the fleet until every peer's next heartbeat fails. Ignored
+	// unless PeerHub is set. Put it on a volume that outlives the
+	// pod; the file holds registration IDs, so it is written 0600 and
+	// wants a directory to match. Empty keeps the registry in-memory.
+	PeerStateFile string `json:"peer_state_file,omitempty"`
+
 	// Peer-side: this agent registers with a remote hub.
 	RegisterTo       string `json:"register_to,omitempty"`       // hub URL
 	RegisterEndpoint string `json:"register_endpoint,omitempty"` // expanded via os.ExpandEnv

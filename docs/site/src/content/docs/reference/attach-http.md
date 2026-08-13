@@ -204,6 +204,18 @@ Registered only when `Options.PeerRegistry` is non-nil (daemon launched with `--
 | `POST` | `/peers/{id}/heartbeat` | — | **200** `Peer` (extended lease); **404** unknown id. |
 | `DELETE` | `/peers/{id}` | — | **204** on success; **403** when the caller is neither the owner nor an admin; **204** (idempotent) on unknown id. **401** anonymous (multi-session). |
 
+### Durable peer state
+
+The registry is in-memory by default: a hub restart drops every registration, and each peer stays invisible until its next heartbeat fails and it re-registers — a 20–60s window in which "who's in the fleet?" answers wrong rather than slowly.
+
+`--attach-peer-state-file` / `attach.peer_state_file` ([#595](https://github.com/go-steer/core-agent/issues/595)) snapshots the registry to a JSONL file on every register, heartbeat, deregister, and prune, and reloads it at startup. Notes that matter in a deployment:
+
+- **Leases are honored across the restart.** An entry whose lease expired while the hub was down is dropped on load, not resurrected — a dead peer briefly reported as live is a worse answer than a live peer briefly missing.
+- **The file is a capability store.** It holds registration IDs, which are what `DELETE /peers/{id}` authenticates with. Written `0600`; give the directory the same treatment, and prefer a volume that outlives the pod.
+- **Ownership survives.** The owner recorded at registration is persisted alongside each peer, so the owner/admin checks on `DELETE` and on `registration_id` visibility behave the same before and after a restart. (The wire shape deliberately never exposes `owner`; the file format is separate from it for exactly this reason.)
+- **It fails loudly.** A state file that exists but can't be read, or a directory that can't be written, fails startup instead of quietly running in-memory. Individual malformed *lines* are the exception: they're skipped with a warning, since those peers re-register within a heartbeat.
+- Setting the flag without `--attach-peer-hub` is a startup error, not a no-op.
+
 ## Non-session routes
 
 | Method | Path | Auth | Purpose |

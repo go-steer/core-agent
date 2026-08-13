@@ -1480,6 +1480,14 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 				promptTokens = int(ev.UsageMetadata.PromptTokenCount)
 				completionTokens = int(ev.UsageMetadata.CandidatesTokenCount)
 			}
+			// Cost-ceiling enforcement while the turn is still running
+			// (#720). A runaway loops inside one turn and the tracker
+			// grows on every model call within it, so the two boundary
+			// checks (post-turn hook, and #362's settle-time pass at
+			// the top of the next Run) both sit idle through exactly
+			// the spend they exist to cap. No-op when no ceiling is
+			// configured.
+			a.enforceCostCeilingInTurn()
 			if err != nil {
 				turnErr = err
 			}

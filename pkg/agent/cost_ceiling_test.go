@@ -17,9 +17,12 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"iter"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/genai"
@@ -310,5 +313,116 @@ func TestPreflightCostCeiling_FlagReturnsTypedError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "$5.00") {
 		t.Errorf("error message should include the reason; got %q", err.Error())
+	}
+}
+
+// burnLoopLLM is a runaway inside ONE turn: every model call answers
+// with the same tool call and reports its own usage, exactly as ADK's
+// streaming aggregator delivers it (each model call's final chunk
+// carries TurnComplete plus that call's UsageMetadata). Honours ctx so
+// a ceiling trip actually truncates the loop, the way a real client
+// would.
+type burnLoopLLM struct {
+	perCallIn, perCallOut int32
+
+	mu    sync.Mutex
+	calls int
+}
+
+func (*burnLoopLLM) Name() string { return "burn-loop" }
+func (l *burnLoopLLM) GenerateContent(ctx context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		if err := ctx.Err(); err != nil {
+			yield(nil, err)
+			return
+		}
+		l.mu.Lock()
+		l.calls++
+		n := l.calls
+		l.mu.Unlock()
+		yield(&adkmodel.LLMResponse{
+			Content: &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{
+				FunctionCall: &genai.FunctionCall{
+					ID:   fmt.Sprintf("burn_%d", n),
+					Name: "todo",
+					Args: map[string]any{"i": n},
+				},
+			}}},
+			UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:     l.perCallIn,
+				CandidatesTokenCount: l.perCallOut,
+			},
+			TurnComplete: true,
+		}, nil)
+	}
+}
+
+// TestRun_CostCeiling_HaltsAnIntraTurnBurn is the #720 regression.
+//
+// Enforcement ran only at turn boundaries: the post-turn hook, and
+// #362's settle-time re-check at the top of the NEXT Run. A runaway is
+// a loop inside ONE turn, and the tracker grows on every model call
+// within it, so both boundary checks sit idle through exactly the
+// spend they exist to cap — and a turn that never terminates never
+// reaches either. --max-turn-cost-usd is documented as the hard
+// backstop for this shape (the watchdog's own alert text points
+// operators at it), so it has to fire during the turn it is capping.
+//
+// Drives the real Run loop behind a harness-shaped tracker tap
+// (usage.TurnTap, the same discipline pkg/runner uses), because the
+// bug is timing in Run, not the decision logic the unit tests above
+// already cover.
+func TestRun_CostCeiling_HaltsAnIntraTurnBurn(t *testing.T) {
+	t.Parallel()
+
+	// $10/MTok input × 1000 tokens = $0.01 per model call, against a
+	// $0.05 per-turn ceiling: the trip lands on call 5 of an otherwise
+	// unbounded loop.
+	pricing := usage.Pricing{InputPerMTok: 10}
+	tr := usage.NewTracker()
+	llm := &burnLoopLLM{perCallIn: 1000}
+
+	a, err := New(llm,
+		WithSession("u-cc-burn", "s-cc-burn"),
+		WithUsageTracker(tr),
+		WithCostCeiling(CostCeiling{MaxTurnUSD: 0.05}),
+	)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+
+	// Harness-shaped tap: commit per TurnComplete, exactly as
+	// pkg/runner.tapTracker does.
+	var tap usage.TurnTap
+	for ev, err := range a.Run(ctx, "go") {
+		_ = err // the halt surfaces as a cancellation
+		tap.Observe(ev)
+		if u, ok := tap.Commit(ev); ok {
+			tr.AppendUsage(llm.Name(), u, pricing)
+		}
+	}
+	if ctx.Err() != nil {
+		t.Fatal("the turn burned until the deadline: the ceiling never halted it")
+	}
+
+	llm.mu.Lock()
+	calls := llm.calls
+	llm.mu.Unlock()
+
+	tripped, reason := a.CostCeilingTripped()
+	if !tripped {
+		t.Fatalf("ceiling never tripped after %d model calls costing $%.4f", calls, tr.Totals().CostUSD)
+	}
+	if !strings.Contains(reason, "per-turn") {
+		t.Errorf("trip reason = %q, want the per-turn ceiling", reason)
+	}
+	t.Logf("halted after %d model calls, $%.4f spent", calls, tr.Totals().CostUSD)
+	// Generous bound: the point is that the loop stops soon after the
+	// ceiling is crossed, not that it stops on an exact call.
+	if calls > 10 {
+		t.Errorf("loop ran %d model calls past a ceiling crossed at ~5: enforcement is still waiting for a turn boundary", calls)
 	}
 }

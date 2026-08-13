@@ -170,7 +170,7 @@ The 2026-06-08 smoke that motivated this guard burned ~$80 across three sessions
 
 ## Cost ceiling (kill switch — since v2.5)
 
-Compaction and watchdog signals catch *behavioral* runaway (context fill, repeated tool calls). They don't bound the *outcome* — a model can produce many tool calls in a single turn before any post-turn check fires. The cost ceiling is the dollar-denominated guard for that case.
+Compaction and watchdog signals catch *behavioral* runaway (context fill, repeated tool calls). They don't bound the *outcome* — a model can produce many tool calls in a single turn. The cost ceiling is the dollar-denominated guard for that case, and since [#720](https://github.com/go-steer/core-agent/issues/720) it is checked *during* the turn rather than only after it.
 
 Two bounds, both optional, both off by default:
 
@@ -181,10 +181,12 @@ Two bounds, both optional, both off by default:
 
 ### What happens when a ceiling trips
 
-1. The post-turn hook computes session cost (from the usage tracker) and per-turn delta (against a snapshot taken at turn start).
+1. Session cost (from the usage tracker) and per-turn delta (against a snapshot taken at turn start) are computed **as the turn runs**, on each event, and again at the turn boundary.
 2. If either configured bound is met or exceeded, the agent emits a structured `turn-error` event with `kind=cost_ceiling`, message describing the spend + bound, and `retryable=false`.
-3. A flag is set; the next `Run` call returns the same error immediately without invoking the model.
+3. The turn in flight is cancelled, and a flag is set; the next `Run` call returns the same error immediately without invoking the model.
 4. The operator clears the flag to resume — `/guardrail reset` in the TUI, `POST /sessions/{id}/guardrails/reset` over attach ([#666](https://github.com/go-steer/core-agent/issues/666)), or `Agent.ResetCostCeiling()` when embedding the library.
+
+Checking in-turn is what makes this a backstop rather than a receipt. A runaway is a loop *inside* one turn — model, tool, model, tool — and the tracker grows on every model call within it. Through v2.9.0-dev.0 enforcement ran only at turn boundaries (the post-turn hook, plus [#362](https://github.com/go-steer/core-agent/issues/362)'s settle-time re-check at the top of the *next* turn), so a single runaway turn was capped only after it had finished spending, and a turn that never terminated was never capped at all. Note the consequence: crossing a ceiling now kills the turn in progress and discards its partial answer, the same as an operator `/interrupt`. That is the intended trade for a bound whose whole job is to stop spending.
 
 A **per-session** trip needs more than a bare reset. The accumulator is already at or past the ceiling, so clearing the flag alone re-trips on the very next turn — the reset surface refuses that case outright (HTTP **409**) and asks for `additional_budget_usd`, which RAISES the ceiling. It never zeroes the accumulator or restarts a spend window: `/usage`, the eventlog-derived cost, and the ceiling check all keep counting the same dollars, so a session that spent $12 still reports $12 after the operator hands it another $5 of runway. A **per-turn** trip needs no budget — the next turn starts from a fresh baseline.
 

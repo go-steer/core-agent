@@ -30,9 +30,9 @@ Runs the [kube-agents](https://github.com/gke-labs/kube-agents) **Platform Agent
 
 ### [`plan-first`](https://github.com/go-steer/core-agent/tree/main/examples/plan-first)
 
-Substrate-enforced plan-before-action. The agent must call `record_plan` before any `write_file`/`bash`/etc. tool call succeeds — read tools stay open during research. Ships three `config.json` variants (`ask` / `acceptEdits` / `yolo` × `require_plan_artifact`) so you pick the post-plan friction level. Use when you want the safety of a written plan before the agent touches anything.
+Substrate-enforced plan-before-action. The agent must call `record_plan` before any `write_file`/`bash`/etc. tool call succeeds — read tools stay open during research. Ships four `config.json` variants: `ask` / `acceptEdits` / `yolo` × `plan_mode: "required"` so you pick the post-plan friction level, plus a `plan_mode: "advisory"` one that records the plan artifact without arming the gate (for unattended runs with nobody to approve). Use when you want the safety of a written plan before the agent touches anything.
 
-**Highlights:** gate-level enforcement (not just AGENTS.md convention) · plan artifacts on disk under `.agents/plans/` · `/replan` slash to revoke + redraft · composes with every existing mode
+**Highlights:** gate-level enforcement (not just AGENTS.md convention) · advisory mode for audit-without-blocking · plan artifacts on disk under `.agents/plans/` · `/replan` slash to revoke + redraft · composes with every existing mode
 
 ### [`gke-deploy`](https://github.com/go-steer/core-agent/tree/main/examples/gke-deploy)
 
@@ -137,7 +137,7 @@ cp examples/plan-first/.agents/AGENTS.md \
    <your-project>/.agents/AGENTS.d/00-plan-first.md
 
 # Merge plan-first's permissions into the existing config.json
-# (require_plan_artifact: true + read-tool allowlist)
+# (plan_mode: "required" + read-tool allowlist)
 ```
 
 The recipe READMEs (`examples/<name>/README.md`) each cover their own composition + tuning notes — read those before forking.

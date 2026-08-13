@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/tools"
 )
 
@@ -37,8 +38,14 @@ type toolProfileOpts struct {
 	// --plan-first=false is how an operator opts out of a profile
 	// that turns the gate on, so it must be distinguishable from the
 	// flag sitting at its default.
+	//
+	// Deprecated alongside permissions.require_plan_artifact: it can
+	// only say off/required. --plan-mode is the three-way spelling.
 	planFirst    bool
 	planFirstSet bool
+	// planMode is --plan-mode: off | advisory | required. Empty means
+	// the operator didn't pass it.
+	planMode string
 }
 
 // splitList parses a comma-separated CLI list, dropping empties and
@@ -99,18 +106,30 @@ func resolveProfileDisables(profileDisable, configDisable, flagDisable []string,
 	return out, nil
 }
 
-// planFirstInputs is everything resolvePlanFirst needs. Split out for
+// planModeInputs is everything resolvePlanMode needs. Split out for
 // the same reason guardrailInputs is: the precedence chain is worth a
 // table test, not an inline conditional nobody exercises.
-type planFirstInputs struct {
-	// Flag is --plan-first and FlagSet reports whether the operator
-	// typed it. Both values are meaningful when set.
+type planModeInputs struct {
+	// FlagMode is --plan-mode verbatim; "" means the operator didn't
+	// pass it. Already validated against the three constants by the
+	// caller, so an unknown value never reaches here.
+	FlagMode string
+	// Flag is the deprecated --plan-first and FlagSet reports whether
+	// the operator typed it. Both values are meaningful when set:
+	// true == required, false == off.
 	Flag    bool
 	FlagSet bool
-	// Config is permissions.require_plan_artifact. A bool can't tell
-	// "false" from "absent", so only true is load-bearing here — the
-	// profile is what fills the gap.
-	Config bool
+	// ConfigSet, ConfigResolved and ConfigSpelling come from
+	// PermissionsConfig.PlanModeSet / ResolvedPlanMode /
+	// PlanModeSpelling — the config half of the chain, already folded
+	// by the one type that owns both spellings. Deliberately not the
+	// two raw fields: a second place that knows plan_mode outranks
+	// require_plan_artifact is a second place that can get it wrong.
+	// ConfigSet is what distinguishes "the operator wrote off" from
+	// "the operator said nothing", which ConfigResolved alone cannot.
+	ConfigSet      bool
+	ConfigResolved string
+	ConfigSpelling string
 	// Profile is the task class's RequirePlanArtifact.
 	Profile bool
 	// CanRecordPlan reports that record_plan will actually be
@@ -118,7 +137,7 @@ type planFirstInputs struct {
 	// persist plans into, the built-in suite is on, and nothing
 	// disabled the tool.
 	//
-	// It gates the profile's opinion because plan-first without
+	// It gates the profile's opinion because required-without-
 	// record_plan is a deadlock, not a stricter posture: every
 	// mutating call is denied for the life of the session and nothing
 	// can clear the flag (/replan only revokes a plan, it can't grant
@@ -127,34 +146,68 @@ type planFirstInputs struct {
 	CanRecordPlan bool
 }
 
-// Sources reported by resolvePlanFirst, so the startup line can say
+// Sources reported by resolvePlanMode, so the startup line can say
 // which input won without re-deriving the chain.
 const (
+	sourcePlanModeFlag   = "--plan-mode flag"
 	sourcePlanFlag       = "--plan-first flag"
+	sourcePlanConfigMode = "permissions.plan_mode config"
 	sourcePlanConfig     = "permissions.require_plan_artifact config"
 	sourcePlanProfile    = "task profile"
 	sourcePlanNoRecorder = "task profile (suppressed: record_plan won't register)"
 	sourcePlanUnset      = "unset"
 )
 
-// resolvePlanFirst decides whether plan-first gating is on.
-//
-// Precedence: --plan-first (either value) > require_plan_artifact:
-// true in config > the task profile > off. The profile can only turn
-// the gate on; an operator who wrote `true` in config is never
-// overruled by a class default, and one who wants it off passes
-// --plan-first=false.
-func resolvePlanFirst(in planFirstInputs) (on bool, source string) {
-	switch {
-	case in.FlagSet:
-		return in.Flag, sourcePlanFlag
-	case in.Config:
-		return true, sourcePlanConfig
-	case in.Profile && in.CanRecordPlan:
-		return true, sourcePlanProfile
-	case in.Profile:
-		return false, sourcePlanNoRecorder
+// validatePlanModeFlag rejects an unknown --plan-mode value. The flag
+// path never reaches config.Validate, and resolvePlanMode takes the
+// flag's word for it, so without this a typo (`--plan-mode=advisery`)
+// would sail through and land in cfg.Permissions.PlanMode as a value
+// ResolvedPlanMode reads as "off" — a silently disabled gate, which is
+// the failure mode this whole area exists to remove. Empty is fine: it
+// means the operator didn't pass the flag.
+func validatePlanModeFlag(v string) error {
+	switch v {
+	case "", config.PlanModeOff, config.PlanModeAdvisory, config.PlanModeRequired:
+		return nil
 	default:
-		return false, sourcePlanUnset
+		return fmt.Errorf("--plan-mode: unknown value %q (want one of %q, %q, %q)",
+			v, config.PlanModeOff, config.PlanModeAdvisory, config.PlanModeRequired)
+	}
+}
+
+// resolvePlanMode decides the effective plan mode (#215).
+//
+// Precedence: --plan-mode > --plan-first (either value) >
+// permissions.plan_mode > require_plan_artifact: true > the task
+// profile > off. Both deprecated spellings sit directly under their
+// replacement so a config that carries the old field keeps behaving
+// the way it did, and either CLI flag still overrides config.
+//
+// The profile can only reach "required"; an operator who wrote a mode
+// in config is never overruled by a class default, and one who wants
+// the gate off passes --plan-mode=off (or the old --plan-first=false).
+func resolvePlanMode(in planModeInputs) (mode string, source string) {
+	switch {
+	case in.FlagMode != "":
+		return in.FlagMode, sourcePlanModeFlag
+	case in.FlagSet:
+		if in.Flag {
+			return config.PlanModeRequired, sourcePlanFlag
+		}
+		return config.PlanModeOff, sourcePlanFlag
+	case in.ConfigSet:
+		// Derived from the spelling rather than matched against it: a
+		// literal comparison here would silently mislabel the source
+		// if PlanModeSpelling ever grew a value. The two
+		// sourcePlanConfig* constants are what this produces today.
+		return in.ConfigResolved, "permissions." + in.ConfigSpelling + " config"
+	case in.Profile && in.CanRecordPlan:
+		return config.PlanModeRequired, sourcePlanProfile
+	case in.Profile:
+		// Downgrade to advisory rather than off would be worse than
+		// useless: without record_plan there is no artifact either.
+		return config.PlanModeOff, sourcePlanNoRecorder
+	default:
+		return config.PlanModeOff, sourcePlanUnset
 	}
 }

@@ -1,6 +1,6 @@
 ---
 title: Plan-first workflows
-description: Require the agent to record a plan artifact before it can edit — useful for review-first workflows and change-management-heavy environments.
+description: Have the agent record a plan artifact before it edits — enforced as a hard precondition, or advisory for unattended runs.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -13,19 +13,33 @@ is cheaper to catch than a bad diff.
 
 ## How it works
 
-`core-agent`'s permission gate has a **plan-first** posture: the model
-must call the `record_plan` tool with a written plan before any
-mutating tool (`write_file`, `edit_file`, `delete_file`, `bash` with
-non-read-only commands) is allowed. The gate refuses those tool calls
-until the plan is on file.
+`core-agent` has a **plan-first** posture with two strengths, picked
+via `permissions.plan_mode`:
+
+- **`required`** — the permission gate refuses every mutating tool
+  (`write_file`, `edit_file`, `delete_file`, `bash` with non-read-only
+  commands, `spawn_agent`, MCP writes) until the model has called
+  `record_plan` for the current turn. The plan is a *precondition*.
+- **`advisory`** — `record_plan` is registered and the artifact is
+  persisted exactly the same way, but nothing is blocked. The plan is
+  an *audit trail*: the agent records what it's about to do and then
+  does it in the same turn.
+
+Reach for `required` when a human is genuinely going to read the plan
+before the diff lands. Reach for `advisory` for unattended runs where
+you want the reasoning on file but there is nobody to approve it — an
+armed gate with no approver just stalls the run.
 
 <Aside type="tip">
-Turn it on with `permissions.RequirePlanArtifact: true` in the library
-API, or `--require-plan` on the CLI.
+Turn it on with `permissions.plan_mode: "required"` (or `"advisory"`)
+in config, `Permissions.PlanMode` in the library API, or
+`--plan-mode=required|advisory` on the CLI. The older
+`permissions.require_plan_artifact: true` bool still works and means
+`required`, but it is deprecated — it cannot express `advisory`.
 </Aside>
 
 ## Where the details live
 
-- **[Permissions → Plan-first enforcement](/concepts/permissions/#plan-first-enforcement)** — the gate contract, refusal shape, escape hatches.
-- **[Built-in tools → `record_plan`](/concepts/tools/#recording-plans)** — the tool the model calls, its schema, the artifact format.
+- **[Configuration → Plan mode](/reference/configuration/#plan-mode-v29--plan_mode)** — the mode table, composition with `permissions.mode`, migration off the deprecated bool.
+- **[Built-in tools → Planning](/concepts/tools/#planning)** — the `record_plan` tool the model calls, its schema, and its mode-aware description.
 - **[Agent design → System instructions](/agent-design/system-instructions/)** — how to phrase the `AGENTS.md` so the model reaches for a plan naturally.

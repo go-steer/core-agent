@@ -52,10 +52,25 @@ type recordPlanResult struct {
 	Message  string `json:"message"`
 }
 
+// Description prose, split so advisory mode doesn't tell the model
+// its next call will be denied when nothing will deny it (#215). A
+// model that believes a gate exists behaves as though it does —
+// stalling for an approval that isn't coming — which is the same
+// state-a-property-the-runtime-doesn't-enforce bug in reverse.
+const (
+	recordPlanDescCommon = "Plan is free-form markdown — typical shape: goal, files to change, approach, risks, test plan, out of scope. The plan is persisted to .agents/plans/plan-<seq>.md and visible to the operator in chat. To revise an existing plan, just call record_plan again — each call writes a new plan file with the next sequence number."
+
+	recordPlanDescRequired = "Record the agent's implementation plan as a markdown artifact and unblock mutating tools. Plan-first gating is ON: call this BEFORE any write_file / edit_file / delete_file / bash / spawn_agent call, or those calls are denied with a 'plan required' error. " + recordPlanDescCommon
+
+	recordPlanDescAdvisory = "Record the agent's implementation plan as a markdown artifact for the operator's audit trail. Plan-first gating is OFF — no tool call is blocked on this, so record the plan and then carry it out in the same turn rather than stopping to wait for approval. " + recordPlanDescCommon
+)
+
 // RecordPlan returns the built-in record_plan tool. Calling it with
 // a non-empty plan writes the plan to `<agentsDir>/plans/plan-<seq>.md`
 // and flips the gate's `planRecorded` flag, which unblocks mutating
-// tool calls when RequirePlanArtifact is set.
+// tool calls when the gate is armed (permissions.plan_mode=required).
+// In advisory mode the artifact is the whole point and the flag is
+// inert — nothing consults it.
 //
 // The tool is ALWAYS allowed regardless of gate mode or
 // planRecorded state — it's the escape valve from plan-first
@@ -72,9 +87,13 @@ func RecordPlan(gate *permissions.Gate, agentsDir string) (tool.Tool, error) {
 	if agentsDir == "" {
 		return nil, errors.New("tools.RecordPlan: agentsDir is required (set --agents-dir or run inside an .agents/ workspace)")
 	}
+	desc := recordPlanDescAdvisory
+	if gate.PlanRequired() {
+		desc = recordPlanDescRequired
+	}
 	return functiontool.New(functiontool.Config{
 		Name:        "record_plan",
-		Description: "Record the agent's implementation plan as a markdown artifact and unblock mutating tools when plan-first gating is enabled. Call this BEFORE any write_file / edit_file / delete_file / bash / spawn_agent call when require_plan_artifact is on; otherwise those calls are denied with a 'plan required' error. Plan is free-form markdown — typical shape: goal, files to change, approach, risks, test plan, out of scope. The plan is persisted to .agents/plans/plan-<seq>.md and visible to the operator in chat. To revise an existing plan, just call record_plan again — each call writes a new plan file with the next sequence number.",
+		Description: desc,
 	}, recordPlanFunc(gate, agentsDir))
 }
 

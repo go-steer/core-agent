@@ -578,8 +578,10 @@ func TestConfigPolicy(t *testing.T) {
 	if cfg.Permissions.Mode != config.PermissionModeYolo {
 		t.Errorf("permissions.mode = %q, want %q", cfg.Permissions.Mode, config.PermissionModeYolo)
 	}
-	if !cfg.Permissions.RequirePlanArtifact {
-		t.Error("permissions.require_plan_artifact = false, want true (plan-first gate)")
+	// The property, not the spelling — either plan_mode: "required" or
+	// the deprecated bool arms the gate; advisory does not.
+	if !cfg.Permissions.PlanGateArmed() {
+		t.Errorf("plan gate not armed (plan_mode resolved to %q), want required", cfg.Permissions.ResolvedPlanMode())
 	}
 	var bashDisabled bool
 	for _, name := range cfg.Tools.Disable {
@@ -610,9 +612,9 @@ func TestHubConfigParses(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("config.hub.json failed validation: %v", err)
 	}
-	if cfg.Permissions.Mode != config.PermissionModeYolo || !cfg.Permissions.RequirePlanArtifact {
-		t.Errorf("hub config policy drifted from local: mode=%q require_plan_artifact=%v",
-			cfg.Permissions.Mode, cfg.Permissions.RequirePlanArtifact)
+	if cfg.Permissions.Mode != config.PermissionModeYolo || !cfg.Permissions.PlanGateArmed() {
+		t.Errorf("hub config policy drifted from local: mode=%q plan_mode=%q",
+			cfg.Permissions.Mode, cfg.Permissions.ResolvedPlanMode())
 	}
 	if cfg.Attach.Listen == "" {
 		t.Error("hub config has no attach.listen")

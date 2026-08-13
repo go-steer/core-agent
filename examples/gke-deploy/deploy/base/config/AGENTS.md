@@ -22,7 +22,7 @@ LoadBalancer.
 ## Operational notes
 
 - Session DB at `/opt/data/sessions.db` (10Gi PVC).
-- Plans (if `permissions.require_plan_artifact: true`) at
+- Plans (if `permissions.plan_mode` is `"advisory"` or `"required"`) at
   `/opt/data/.agents/plans/`.
 - Reload config after editing the overlay via `/reload` slash.
 

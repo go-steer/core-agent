@@ -4,7 +4,7 @@
   "version": 1,
   "permissions": {
     "mode": "acceptEdits",
-    "require_plan_artifact": true,
+    "plan_mode": "required",
     "allow": [
       "read_file",
       "read_many_files",

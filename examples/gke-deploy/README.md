@@ -94,7 +94,7 @@ Two opt-in integrations layered on top of the core deploy:
 | No cluster mutation | KSA principal has `container.clusterViewer` only — the agent can read cluster + workload state but cannot mutate. Add `roles/container.developer` (and call the non-read-only MCP endpoint) if you need write capability. |
 | No GCP project beyond Vertex + GKE | GSA roles are tight. Add specific roles (e.g. `cloudsql.client`, `monitoring.viewer`) only when a use case calls for them. |
 | One replica only | Session DB on `ReadWriteOnce` PVC — multi-replica needs `ReadWriteMany` storage + multi-session daemon (task #12, v2.4). |
-| Plan-first OFF by default | Simpler first-run; operator flips `permissions.require_plan_artifact: true` in the ConfigMap to enable. |
+| Plan-first OFF by default | Simpler first-run; operator sets `permissions.plan_mode: "required"` in the ConfigMap to enable (or `"advisory"` to record the plan artifact without gating). |
 | One operator's perspective | Single-session daemon for v2.3. Per-user sessions land in v2.4 (PR #105). |
 | ~~No auto-continue after a pod roll~~ | `agent.auto_continue` covers this recipe's single-user `--no-repl` shape and, since #559, is **on by default** for it (a headless daemon with `--session-db`) — no config needed, so this recipe's config.json no longer sets it: a turn interrupted by a pod roll is finished automatically on the next boot, self-healing on a timer if the first attempt fails, crash-loop guarded. The daemon logs a one-line notice at boot. Opt out with `"auto_continue": { "enabled": false }` under `agent`. ⚠️ Requires the recipe's pinned image digest to be built after #559 — an older binary treats the feature as off. See [Restarts and shutdown](https://go-steer.github.io/core-agent/reference/restarts-and-shutdown/). |
 
@@ -351,7 +351,7 @@ Edit `config.json` permissions block:
 ```json
 "permissions": {
   "mode": "ask",
-  "require_plan_artifact": true,
+  "plan_mode": "required",
   "allow": [...]
 }
 ```
@@ -428,7 +428,7 @@ done
 
 ## Compose with the rest of the substrate
 
-- **Plan-first** (`examples/plan-first/`): set `require_plan_artifact: true` in this recipe's `config.json`; gate-level enforcement of "record_plan before any mutating tool."
+- **Plan-first** (`examples/plan-first/`): set `plan_mode: "required"` in this recipe's `config.json`; gate-level enforcement of "record_plan before any mutating tool." Use `"advisory"` if nobody is attached to approve — the artifact is still written, but nothing is blocked on it.
 - **Parallel investigation** (`examples/gke-parallel-triage/`): the GKE MCP server is already wired here; the AGENTS.md priming is what makes the agent fan out. Drop the relevant guidance into a new `.agents/AGENTS.d/00-triage.md` overlay.
 - **Multi-file instructions** (v2.3 loader): add `.agents/AGENTS.d/*.md` overlays for role-specialized priming. Files load lexically after the primary AGENTS.md.
 - **kube-agents Platform Agent** shape (see `docs/kube-agents-platform-fit.md`): this recipe is the runtime layer; layering the kube-agents `SOUL.md` + governance SOPs gives you a platform-agent deployment.

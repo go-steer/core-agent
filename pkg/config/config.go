@@ -421,15 +421,111 @@ type PermissionsConfig struct {
 	// permissions. Known bundles: see permissions.KnownBundles().
 	BuiltinAllowExtras []string `json:"builtin_allow_extras,omitempty"`
 
-	// RequirePlanArtifact enables the plan-first gating pre-check:
-	// mutating tool calls (write/edit/delete/bash, spawn family,
-	// MCP tools) are denied until the model calls the record_plan
-	// tool. Read-only tools and record_plan itself remain allowed
-	// so research happens normally. Composes with every Mode —
-	// even ModeYolo denies before a plan is recorded; once
-	// recorded, the mode's usual semantics resume.
-	// See docs/plan-first-design.md.
+	// RequirePlanArtifact is the deprecated two-state spelling of
+	// PlanMode: true means PlanModeRequired, absent/false means "no
+	// opinion" (PlanMode, then the task profile, then off). It cannot
+	// express PlanModeAdvisory, which is why PlanMode exists.
+	//
+	// Read it through ResolvedPlanMode rather than directly — a
+	// consumer switching on this bool sees "off" for an advisory run
+	// and would skip registering record_plan.
+	//
+	// Deprecated: set PlanMode instead. Removed in the next major.
 	RequirePlanArtifact bool `json:"require_plan_artifact,omitempty"`
+
+	// PlanMode controls the two things record_plan does — persist a
+	// plan artifact, and gate mutating tools on one existing —
+	// independently, because operators need them independently
+	// (#215).
+	//
+	//   "off"       record_plan is not registered; no artifact, no gate.
+	//   "advisory"  record_plan IS registered and the artifact persists
+	//               to .agents/plans/plan-N.md, but NO mutating call is
+	//               ever blocked on plan state. The audit surface
+	//               without the two-turn ceremony — the shape an
+	//               autonomous triage or alert-response agent wants.
+	//   "required"  advisory plus the plan-first gating pre-check:
+	//               mutating tool calls (write/edit/delete/bash, spawn
+	//               family, MCP tools) are denied until the model calls
+	//               record_plan. Read-only tools and record_plan itself
+	//               remain allowed so research happens normally.
+	//               Composes with every Mode — even ModeYolo denies
+	//               before a plan is recorded; once recorded, the
+	//               mode's usual semantics resume.
+	//
+	// Empty means unset: ResolvedPlanMode falls back to
+	// RequirePlanArtifact, then to off. Prompting the model to
+	// actually call record_plan in advisory mode is the recipe's job
+	// (AGENTS.md / skill instructions) — the runtime only guarantees
+	// the tool is there and the artifact lands.
+	// See docs/plan-first-design.md.
+	PlanMode string `json:"plan_mode,omitempty"`
+}
+
+// ResolvedPlanMode reports the effective plan mode, folding the
+// deprecated RequirePlanArtifact bool forward. This is the ONLY
+// supported way to ask "is record_plan registered" or "is the gate
+// armed" — reading either field raw is how the two spellings drift.
+//
+// PlanMode wins when set, since it is the more expressive field and an
+// operator who wrote it meant it. An unknown value can't reach here:
+// Validate rejects it at load.
+func (p PermissionsConfig) ResolvedPlanMode() string {
+	switch p.PlanMode {
+	case PlanModeOff, PlanModeAdvisory, PlanModeRequired:
+		return p.PlanMode
+	}
+	if p.RequirePlanArtifact {
+		return PlanModeRequired
+	}
+	return PlanModeOff
+}
+
+// PlanToolRegistered reports whether record_plan should be registered
+// for this config. True in both advisory and required — the artifact is
+// the point of advisory mode.
+func (p PermissionsConfig) PlanToolRegistered() bool {
+	return p.ResolvedPlanMode() != PlanModeOff
+}
+
+// PlanGateArmed reports whether mutating tool calls are denied until a
+// plan is recorded. True in required mode only.
+func (p PermissionsConfig) PlanGateArmed() bool {
+	return p.ResolvedPlanMode() == PlanModeRequired
+}
+
+// PlanModeSet reports whether the config expressed an opinion about
+// plan mode at all, in either spelling. Distinct from
+// ResolvedPlanMode() != PlanModeOff, which cannot tell "the operator
+// wrote off" from "the operator said nothing" — a precedence chain
+// with a task-class default underneath it needs that difference.
+func (p PermissionsConfig) PlanModeSet() bool {
+	return p.PlanMode != "" || p.RequirePlanArtifact
+}
+
+// PlanModeSpelling reports which field supplied the resolved mode:
+// "plan_mode", "require_plan_artifact", or "" when neither was set.
+// Only for operator-facing provenance messages; behavior must come
+// from ResolvedPlanMode and its two predicates.
+func (p PermissionsConfig) PlanModeSpelling() string {
+	switch {
+	case p.PlanMode != "":
+		return "plan_mode"
+	case p.RequirePlanArtifact:
+		return "require_plan_artifact"
+	default:
+		return ""
+	}
+}
+
+// NormalizePlanMode collapses the two spellings into PlanMode alone
+// and clears the deprecated bool, making PlanMode the single source of
+// truth for everything downstream. Call it once, after CLI flags have
+// been folded in. Keeping two fields *in sync* is the drift this whole
+// pair exists to prevent, so nothing re-reads the bool afterwards.
+func (p *PermissionsConfig) NormalizePlanMode(mode string) {
+	p.PlanMode = mode
+	p.RequirePlanArtifact = false
 }
 
 // AgentConfig tunes runtime agent behavior.
@@ -1170,6 +1266,21 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("config: unknown safety.bash_search_gate %q (want one of %q, %q, %q)",
 			c.Safety.BashSearchGate, BashSearchGateEnforce, BashSearchGateWarn, BashSearchGateAllow)
 	}
+	switch c.Permissions.PlanMode {
+	case "", PlanModeOff, PlanModeAdvisory, PlanModeRequired:
+		// ok; "" falls back to require_plan_artifact then off
+		// (see PermissionsConfig.ResolvedPlanMode).
+	default:
+		return fmt.Errorf("config: unknown permissions.plan_mode %q (want one of %q, %q, %q)",
+			c.Permissions.PlanMode, PlanModeOff, PlanModeAdvisory, PlanModeRequired)
+	}
+	// A config that says both "off" and "true" is a migration left
+	// half-done; guessing which one the operator meant is how a gate
+	// silently disarms. Make them say it once.
+	if c.Permissions.PlanMode == PlanModeOff && c.Permissions.RequirePlanArtifact {
+		return fmt.Errorf("config: permissions.plan_mode=%q contradicts the deprecated permissions.require_plan_artifact=true (drop require_plan_artifact, or set plan_mode=%q)",
+			PlanModeOff, PlanModeRequired)
+	}
 	for i, root := range c.ContentRoots {
 		// Environment-free per the Validate contract: no existence/stat
 		// check here (the instruction loader errors loudly on a missing
@@ -1230,6 +1341,14 @@ const (
 	BashSearchGateEnforce = "enforce"
 	BashSearchGateWarn    = "warn"
 	BashSearchGateAllow   = "allow"
+)
+
+// Plan-mode constants. See PermissionsConfig.PlanMode for behavior.
+// Listed weakest to strongest; each includes the one before it.
+const (
+	PlanModeOff      = "off"
+	PlanModeAdvisory = "advisory"
+	PlanModeRequired = "required"
 )
 
 // validNamedTheme accepts the shape core-tui's BuiltinThemes

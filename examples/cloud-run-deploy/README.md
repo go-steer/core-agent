@@ -433,7 +433,7 @@ Edit `.agents/config.json` permissions block:
 ```json
 "permissions": {
   "mode": "ask",
-  "require_plan_artifact": true,
+  "plan_mode": "required",
   "allow": [...]
 }
 ```
@@ -595,9 +595,11 @@ gcloud artifacts repositories delete cloud-run-source-deploy \
 
 ## Compose with the rest of the substrate
 
-- **Plan-first** (`examples/plan-first/`): set `require_plan_artifact: true`
+- **Plan-first** (`examples/plan-first/`): set `plan_mode: "required"`
   in this recipe's `config.json`; gate-level enforcement of
-  "record_plan before any mutating tool."
+  "record_plan before any mutating tool." Use `"advisory"` instead if
+  nobody is attached to approve — the plan artifact is still written,
+  but no call is blocked on it.
 - **GKE** (`examples/gke-deploy/`): the same `.agents/` bundle works
   on GKE if you outgrow Cloud Run's per-request timeout or want a
   real PVC for the session DB.

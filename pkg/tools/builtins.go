@@ -188,10 +188,11 @@ func Default() BuiltinTools {
 		Todo:          true,
 		// RecordPlan is enabled in the Default struct but Build only
 		// registers it when an agentsDir is available AND
-		// permissions.require_plan_artifact is set — there's no point
-		// exposing record_plan to the model when the gate doesn't
-		// require it (the call would just be noise). The agentsDir
-		// requirement is structural (plans need somewhere to live).
+		// permissions.plan_mode is advisory or required — there's no
+		// point exposing record_plan to the model when the operator
+		// asked for neither the artifact nor the gate (the call would
+		// just be noise). The agentsDir requirement is structural
+		// (plans need somewhere to live).
 		RecordPlan: true,
 		// SciontoolStatus is enabled here but Build only registers it
 		// when `sciontool` is on PATH (inside a Scion container).
@@ -335,13 +336,14 @@ func Build(cfg *config.Config, gate *permissions.Gate, agentsDir string, b Built
 				Name: "todo", Description: "Maintain a short todo list visible to the user. Actions: list, add, set_status, clear.",
 			}, todoFunc(store))
 		}},
-		// record_plan is registered only when (a) the operator
-		// asked for it via permissions.require_plan_artifact AND
+		// record_plan is registered only when (a) the operator asked
+		// for it via permissions.plan_mode (advisory OR required —
+		// advisory mode wants the artifact without the gate) AND
 		// (b) we have an agentsDir to persist plans into. Otherwise
-		// the tool would either be inert (no gate flag to flip) or
-		// broken (nowhere to write). Skipping registration is
-		// cleaner than registering a no-op.
-		{b.RecordPlan && cfg.Permissions.RequirePlanArtifact && agentsDir != "", "record_plan", "Record the agent's plan and unblock plan-first gating.", func() (tool.Tool, error) {
+		// the tool would either be inert (no artifact wanted, no gate
+		// to flip) or broken (nowhere to write). Skipping registration
+		// is cleaner than registering a no-op.
+		{b.RecordPlan && cfg.Permissions.PlanToolRegistered() && agentsDir != "", "record_plan", "Record the agent's plan and unblock plan-first gating.", func() (tool.Tool, error) {
 			return RecordPlan(gate, agentsDir)
 		}},
 		// sciontool_status is registered only when `sciontool` is

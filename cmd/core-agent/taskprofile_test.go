@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/taskclass"
 	"github.com/go-steer/core-agent/v2/pkg/tools"
 )
@@ -149,49 +150,57 @@ func TestResolveProfileDisables_ConflictErrorNamesTheOtherSource(t *testing.T) {
 	}
 }
 
-func TestResolvePlanFirst(t *testing.T) {
+func TestResolvePlanMode(t *testing.T) {
 	t.Parallel()
 
+	// cfgMode / cfgLegacy are fed through the real config.PermissionsConfig
+	// accessors rather than hand-built planModeInputs fields, so this
+	// table exercises the same fold main.go uses. A test that hardcoded
+	// the triple could pass with the two spellings disagreeing.
 	cases := []struct {
 		name       string
-		in         planFirstInputs
-		wantOn     bool
+		in         planModeInputs
+		cfgMode    string
+		cfgLegacy  bool
+		wantMode   string
 		wantSource string
 	}{
 		{
 			name:       "nothing set",
-			in:         planFirstInputs{CanRecordPlan: true},
-			wantOn:     false,
+			in:         planModeInputs{CanRecordPlan: true},
+			wantMode:   config.PlanModeOff,
 			wantSource: sourcePlanUnset,
 		},
 		{
 			name:       "profile turns it on",
-			in:         planFirstInputs{Profile: true, CanRecordPlan: true},
-			wantOn:     true,
+			in:         planModeInputs{Profile: true, CanRecordPlan: true},
+			wantMode:   config.PlanModeRequired,
 			wantSource: sourcePlanProfile,
 		},
 		{
-			name:       "config turns it on without a task class",
-			in:         planFirstInputs{Config: true, CanRecordPlan: true},
-			wantOn:     true,
+			name:       "deprecated config bool turns it on without a task class",
+			in:         planModeInputs{CanRecordPlan: true},
+			cfgLegacy:  true,
+			wantMode:   config.PlanModeRequired,
 			wantSource: sourcePlanConfig,
 		},
 		{
-			name:       "explicit false beats the profile",
-			in:         planFirstInputs{Flag: false, FlagSet: true, Profile: true, CanRecordPlan: true},
-			wantOn:     false,
+			name:       "explicit --plan-first=false beats the profile",
+			in:         planModeInputs{Flag: false, FlagSet: true, Profile: true, CanRecordPlan: true},
+			wantMode:   config.PlanModeOff,
 			wantSource: sourcePlanFlag,
 		},
 		{
-			name:       "explicit false beats the config",
-			in:         planFirstInputs{Flag: false, FlagSet: true, Config: true, CanRecordPlan: true},
-			wantOn:     false,
+			name:       "explicit --plan-first=false beats the config",
+			in:         planModeInputs{Flag: false, FlagSet: true, CanRecordPlan: true},
+			cfgLegacy:  true,
+			wantMode:   config.PlanModeOff,
 			wantSource: sourcePlanFlag,
 		},
 		{
-			name:       "explicit true with no task class or config",
-			in:         planFirstInputs{Flag: true, FlagSet: true, CanRecordPlan: true},
-			wantOn:     true,
+			name:       "explicit --plan-first with no task class or config",
+			in:         planModeInputs{Flag: true, FlagSet: true, CanRecordPlan: true},
+			wantMode:   config.PlanModeRequired,
 			wantSource: sourcePlanFlag,
 		},
 		{
@@ -200,32 +209,117 @@ func TestResolvePlanFirst(t *testing.T) {
 			// profile-driven gate here would deny every mutating call
 			// for the life of the session with no way to clear it.
 			name:       "profile is suppressed when record_plan cannot register",
-			in:         planFirstInputs{Profile: true, CanRecordPlan: false},
-			wantOn:     false,
+			in:         planModeInputs{Profile: true, CanRecordPlan: false},
+			wantMode:   config.PlanModeOff,
 			wantSource: sourcePlanNoRecorder,
 		},
 		{
 			// Explicit operator intent is still honored — main.go
 			// warns loudly rather than second-guessing it.
-			name:       "explicit true is honored even without record_plan",
-			in:         planFirstInputs{Flag: true, FlagSet: true, CanRecordPlan: false},
-			wantOn:     true,
+			name:       "explicit --plan-first is honored even without record_plan",
+			in:         planModeInputs{Flag: true, FlagSet: true, CanRecordPlan: false},
+			wantMode:   config.PlanModeRequired,
 			wantSource: sourcePlanFlag,
 		},
 		{
-			name:       "config true is honored even without record_plan",
-			in:         planFirstInputs{Config: true, CanRecordPlan: false},
-			wantOn:     true,
+			name:       "deprecated config bool is honored even without record_plan",
+			in:         planModeInputs{CanRecordPlan: false},
+			cfgLegacy:  true,
+			wantMode:   config.PlanModeRequired,
 			wantSource: sourcePlanConfig,
+		},
+
+		// --- #215: the three-way mode ---
+		{
+			name:       "config advisory with no flags",
+			in:         planModeInputs{CanRecordPlan: true},
+			cfgMode:    config.PlanModeAdvisory,
+			wantMode:   config.PlanModeAdvisory,
+			wantSource: sourcePlanConfigMode,
+		},
+		{
+			// The whole point of the issue: a recipe that wants the
+			// audit artifact must be able to keep it while overriding a
+			// task profile that would otherwise arm the gate.
+			name:       "config advisory beats the task profile",
+			in:         planModeInputs{Profile: true, CanRecordPlan: true},
+			cfgMode:    config.PlanModeAdvisory,
+			wantMode:   config.PlanModeAdvisory,
+			wantSource: sourcePlanConfigMode,
+		},
+		{
+			name:       "config off beats the task profile",
+			in:         planModeInputs{Profile: true, CanRecordPlan: true},
+			cfgMode:    config.PlanModeOff,
+			wantMode:   config.PlanModeOff,
+			wantSource: sourcePlanConfigMode,
+		},
+		{
+			name:       "--plan-mode beats config",
+			in:         planModeInputs{FlagMode: config.PlanModeAdvisory, CanRecordPlan: true},
+			cfgMode:    config.PlanModeRequired,
+			wantMode:   config.PlanModeAdvisory,
+			wantSource: sourcePlanModeFlag,
+		},
+		{
+			name:       "--plan-mode beats the deprecated config bool",
+			in:         planModeInputs{FlagMode: config.PlanModeAdvisory, CanRecordPlan: true},
+			cfgLegacy:  true,
+			wantMode:   config.PlanModeAdvisory,
+			wantSource: sourcePlanModeFlag,
+		},
+		{
+			// Both flags passed: the expressive one wins, so a script
+			// migrating to --plan-mode can leave the old flag in place
+			// during the transition without silently losing advisory.
+			name:       "--plan-mode beats --plan-first",
+			in:         planModeInputs{FlagMode: config.PlanModeAdvisory, Flag: true, FlagSet: true, CanRecordPlan: true},
+			wantMode:   config.PlanModeAdvisory,
+			wantSource: sourcePlanModeFlag,
+		},
+		{
+			name:       "--plan-mode=off beats everything",
+			in:         planModeInputs{FlagMode: config.PlanModeOff, Flag: true, FlagSet: true, Profile: true, CanRecordPlan: true},
+			cfgMode:    config.PlanModeRequired,
+			cfgLegacy:  true,
+			wantMode:   config.PlanModeOff,
+			wantSource: sourcePlanModeFlag,
+		},
+		{
+			// Advisory can't deadlock — nothing is ever denied — so it
+			// is honored rather than suppressed. main.go warns that the
+			// artifact won't be written.
+			name:       "advisory is honored even without record_plan",
+			in:         planModeInputs{CanRecordPlan: false},
+			cfgMode:    config.PlanModeAdvisory,
+			wantMode:   config.PlanModeAdvisory,
+			wantSource: sourcePlanConfigMode,
+		},
+		{
+			// The deprecated bool sits UNDER plan_mode, so a config
+			// carrying both required-via-bool and advisory-via-mode
+			// resolves advisory. (Validate rejects the one genuinely
+			// contradictory pair, plan_mode=off + bool true.)
+			name:       "plan_mode outranks the deprecated bool",
+			in:         planModeInputs{CanRecordPlan: true},
+			cfgMode:    config.PlanModeAdvisory,
+			cfgLegacy:  true,
+			wantMode:   config.PlanModeAdvisory,
+			wantSource: sourcePlanConfigMode,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			on, source := resolvePlanFirst(tc.in)
-			if on != tc.wantOn || source != tc.wantSource {
-				t.Errorf("resolvePlanFirst = (%v, %q), want (%v, %q)", on, source, tc.wantOn, tc.wantSource)
+			perms := config.PermissionsConfig{PlanMode: tc.cfgMode, RequirePlanArtifact: tc.cfgLegacy} //nolint:staticcheck // SA1019: the deprecated spelling is half of what's under test
+			in := tc.in
+			in.ConfigSet = perms.PlanModeSet()
+			in.ConfigResolved = perms.ResolvedPlanMode()
+			in.ConfigSpelling = perms.PlanModeSpelling()
+			mode, source := resolvePlanMode(in)
+			if mode != tc.wantMode || source != tc.wantSource {
+				t.Errorf("resolvePlanMode = (%q, %q), want (%q, %q)", mode, source, tc.wantMode, tc.wantSource)
 			}
 		})
 	}
@@ -254,6 +348,46 @@ func TestPlanFirstFlag_ExplicitFalseIsDistinguishable(t *testing.T) {
 	}
 	if !flagWasSet(build([]string{"--plan-first"}), "plan-first") {
 		t.Error("--plan-first reported as unset")
+	}
+}
+
+// A --plan-mode typo must be a startup error, not a silently-off gate.
+// resolvePlanMode passes the flag value straight through, so the only
+// thing standing between `--plan-mode=advisery` and a config field
+// ResolvedPlanMode reads as "off" is this check. The parity half keeps
+// the flag and config.Validate accepting the same set — the two
+// validators drifting is how a value works in a config file and fails
+// on the command line, or worse, the reverse.
+func TestValidatePlanModeFlag(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		v       string
+		wantErr bool
+	}{
+		{"", false}, // not passed
+		{config.PlanModeOff, false},
+		{config.PlanModeAdvisory, false},
+		{config.PlanModeRequired, false},
+		{"advisery", true},
+		{"Advisory", true},
+		{"true", true},
+		{"on", true},
+	}
+	for _, tc := range cases {
+		t.Run("value="+tc.v, func(t *testing.T) {
+			t.Parallel()
+			err := validatePlanModeFlag(tc.v)
+			if tc.wantErr != (err != nil) {
+				t.Fatalf("validatePlanModeFlag(%q) = %v, wantErr %v", tc.v, err, tc.wantErr)
+			}
+			// Parity: config.Validate must agree about this value.
+			cfg := config.DefaultConfig()
+			cfg.Permissions.PlanMode = tc.v
+			cfgErr := cfg.Validate()
+			if (err != nil) != (cfgErr != nil) {
+				t.Errorf("plan_mode=%q: flag err=%v but config.Validate err=%v — the two validators disagree", tc.v, err, cfgErr)
+			}
+		})
 	}
 }
 

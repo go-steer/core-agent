@@ -15,9 +15,10 @@ for the full design rationale.
 
 ```
 .agents/
-├── config.json                          # default: mode=ask + require_plan_artifact
+├── config.json                          # default: mode=ask + plan_mode=required
 ├── config.acceptedits.json.example      # variant: writes auto-allow after plan, bash still prompts
 ├── config.yolo.json.example             # variant: everything auto-allows after plan
+├── config.advisory.json.example         # variant: plan is recorded but nothing is blocked
 └── AGENTS.md                            # primes the model on the plan-first workflow
 ```
 
@@ -59,11 +60,35 @@ cp .agents/config.acceptedits.json.example .agents/config.json
 
 # "just tell me the plan, then go" — everything auto-allows after plan
 cp .agents/config.yolo.json.example .agents/config.json
+
+# "record the plan, don't wait for anyone" — audit trail, gate NOT armed
+cp .agents/config.advisory.json.example .agents/config.json
 ```
 
 Use the `yolo` variant when you've worked with the agent enough to
 trust it end-to-end past the plan, or for batch automation where
 the plan IS the human approval and what follows is mechanical.
+
+### `required` vs `advisory`
+
+The first three variants all set `plan_mode: "required"` and differ
+only in the *permission* mode that applies after the plan lands. The
+fourth changes the plan posture itself:
+
+| `plan_mode` | `record_plan` registered | Mutating call with no plan |
+|---|---|---|
+| `required` | yes | **denied** until `record_plan` is called |
+| `advisory` | yes | proceeds — the plan is an audit artifact, not a gate |
+| `off` (default outside this recipe) | no | proceeds |
+
+Pick `required` when a human really is going to read the plan before
+the diff lands. Pick `advisory` for unattended or scheduled runs where
+you want the reasoning on file but nobody is on the other end to
+approve it — an armed gate with no approver just stalls the turn, and
+the agent stops mid-task waiting for a signal that never arrives.
+Advisory mode also tells the model so: the `record_plan` description
+is mode-aware and, under `advisory`, explicitly says no call is
+blocked on the plan.
 
 ## Run
 
@@ -106,7 +131,7 @@ cp examples/plan-first/.agents/AGENTS.md \
    <your-project>/.agents/AGENTS.d/00-plan-first.md
 ```
 
-Then add `permissions.require_plan_artifact: true` (and the
+Then add `permissions.plan_mode: "required"` (and the
 pre-allow list for read tools) to your existing `.agents/config.json`.
 The v2.3 instruction loader (`@include` + `AGENTS.d/`) loads your
 existing AGENTS.md as the primary file and the plan-first guidance
@@ -154,7 +179,9 @@ in — they make excellent PR descriptions).
   in one terminal, then `core-agent-tui http://localhost:7777` in
   another. Both surfaces share the same gate state — a `/replan` on
   either side resets both.
-- **Scheduled monitoring**: `agent.RunAutonomous` + `require_plan_artifact: true`
-  + a scheduler gives "scheduled task records plan, operator
-  reviews on next attach, approves via /replan-or-let-it-proceed."
-  See `examples/scheduled-monitor` for the substrate pattern.
+- **Scheduled monitoring**: `agent.RunAutonomous` + `plan_mode: "advisory"`
+  + a scheduler gives "scheduled task records its plan, then carries
+  it out; the operator reads the plan artifact after the fact." Use
+  `"required"` here only if someone will actually be attached to
+  approve — otherwise the run stalls on the gate. See
+  `examples/scheduled-monitor` for the substrate pattern.

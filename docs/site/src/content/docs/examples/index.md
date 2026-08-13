@@ -62,6 +62,12 @@ Parent + subagent end-to-end with no LLM credentials — two scripted-mock provi
 
 The standard built-in tools (`read_file`, `list_dir`, `bash`, …) wired into an interactive chat. Closest to "what the CLI does, but you own the binary."
 
+### [`bouncer-preflight`](https://github.com/go-steer/core-agent/tree/main/examples/bouncer-preflight)
+
+Ports the generator + checker pair of [gke-demos/bouncer](https://github.com/gke-demos/bouncer) — a Python `google-adk` system that derives verified single-slice TPU preflight smoke tests from completed GKE production workloads — onto core-agent as a **library**, with the upstream prompts copied verbatim. Shows the four things a config recipe can't express: a **jail** for model-authored shell (`bwrap` + `sudo -u agent-runner` registered as the *only* shell, with the built-in `bash` never wired in), **structured output inverted into a tool** (`output_schema=CheckerResult` becomes `report_verdict(success, details)`, fail-closed when never called), an **agent calling an agent synchronously** for a typed result (replacing `subprocess.Popen(["adk","run","checker"])` + a `"success: True"` stdout grep), and a **model decorator** (the upstream `BaseApiClient.async_request` retry monkeypatch becomes an `adkmodel.LLM` wrapper). Hermetic end-to-end: two scripted transcripts plus a fake `kubectl`, no credentials. Use as the reference for porting a foreign Python agent framework onto the Go substrate, or for any agent that must contain the shell it hands the model.
+
+**Highlights:** verbatim upstream prompts (a test fails if one names a tool the port doesn't register) · bwrap jail asserted flag-by-flag · structured-output-as-tool with fail-closed default · in-process typed hand-off between two agents · `pkg/`-only imports · `autonomous.Run` turn/wallclock/cost budgets · one event log across both agents
+
 ---
 
 ## Autonomous (headless) patterns

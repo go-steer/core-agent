@@ -1,0 +1,20 @@
+# Scripted checker transcript. Replayed when the generator calls
+# save_if_validated, which runs the checker agent in-process:
+#
+#   1. read the candidate the generator saved
+#   2. submit_candidate_preflight — the one privileged action;
+#      it always applies the manifest the generator saved
+#   3-5. watch, read logs, clean up (fake kubectl)
+#   6. save the verified manifest to the library
+#   7. report_verdict  <-- the structured-output replacement; its Go
+#      signature is the schema, so the generator gets a typed verdict
+#      instead of grepping a subprocess's stdout for "success: True"
+#   8. closing summary
+{"responses":[{"Content":{"parts":[{"functionCall":{"name":"read_candidate_manifest","args":{}}}],"role":"model"},"TurnComplete":true,"FinishReason":"STOP"}]}
+{"responses":[{"Content":{"parts":[{"text":"Single-slice Job, 16x16 preserved, 64-pod gang, synthetic data. Submitting it."},{"functionCall":{"name":"submit_candidate_preflight","args":{}}}],"role":"model"},"TurnComplete":true,"FinishReason":"STOP"}]}
+{"responses":[{"Content":{"parts":[{"functionCall":{"name":"sandbox_run_command","args":{"command":"kubectl get pods -n test-preflight -l job-name=preflight-maxtext-v5e-256"}}}],"role":"model"},"TurnComplete":true,"FinishReason":"STOP"}]}
+{"responses":[{"Content":{"parts":[{"functionCall":{"name":"sandbox_run_command","args":{"command":"kubectl logs -n test-preflight job/preflight-maxtext-v5e-256 | tail -n 40"}}}],"role":"model"},"TurnComplete":true,"FinishReason":"STOP"}]}
+{"responses":[{"Content":{"parts":[{"text":"The logs prove JAX initialized 256 physical TPU devices and completed step 1 — no SIGABRT, no CPU fallback. Cleaning up before I report."},{"functionCall":{"name":"sandbox_run_command","args":{"command":"kubectl delete job -n test-preflight preflight-maxtext-v5e-256 --ignore-not-found"}}}],"role":"model"},"TurnComplete":true,"FinishReason":"STOP"}]}
+{"responses":[{"Content":{"parts":[{"functionCall":{"name":"save_derived_preflight_to_library","args":{"name":"maxtext-v5e-256-16x16","target_label":"tpu-v5-lite-podslice/16x16","features":["jax","maxtext","v5e-256","16x16","single-slice"],"metadata":"verified: jax.devices() = 256, one training step completed, pod exited 0"}}}],"role":"model"},"TurnComplete":true,"FinishReason":"STOP"}]}
+{"responses":[{"Content":{"parts":[{"functionCall":{"name":"report_verdict","args":{"success":true,"details":"Job completed with exit code 0. Logs show 'jax.devices() = 256 (TpuDevice)' and 'completed step 1/1', so the framework genuinely initialized the TPU slice. Workload deleted."}}}],"role":"model"},"TurnComplete":true,"FinishReason":"STOP"}]}
+{"responses":[{"Content":{"parts":[{"text":"Verified and saved: maxtext-v5e-256-16x16."}],"role":"model"},"TurnComplete":true,"FinishReason":"STOP"}]}

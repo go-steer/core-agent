@@ -175,6 +175,7 @@ func main() {
 	attachTokenEnv := flag.String("attach-token", "", "env var name holding the bearer token clients must present in Authorization: Bearer <token>. Empty disables bearer-token auth.")
 	attachReadonly := flag.Bool("attach-readonly", false, "attach-mode: disable POST /inject and /wake. Read endpoints (GET /sessions, GET /events) remain open.")
 	attachPeerHub := flag.Bool("attach-peer-hub", false, "enable peer-registration endpoints (POST/GET /peers + heartbeat) on the attach listener — this agent becomes a discovery hub for other peers.")
+	attachPeerStateFile := flag.String("attach-peer-state-file", "", "make the peer registry durable across restarts by snapshotting it to this JSONL file (requires --attach-peer-hub). Reloaded at startup, so a hub restart doesn't blank the fleet until every peer re-registers. Holds registration IDs: written 0600, put it on a volume that outlives the pod.")
 	attachRegisterTo := flag.String("attach-register-to", "", "register this agent with a remote attach hub at this URL (e.g. https://hub.default.svc:7777). Heartbeats automatically. Requires --attach-listen so the hub records a reachable endpoint.")
 	attachRegisterName := flag.String("attach-register-name", "", "name to register with the hub. Defaults to hostname.")
 	attachRegisterEndpoint := flag.String("attach-register-endpoint", "", "endpoint to publish to the hub (e.g. https://${POD_IP}:7777). Required when --attach-register-to is set; this agent's own --attach-listen value is NOT used since it may bind 0.0.0.0 and the hub can't reach that.")
@@ -255,6 +256,7 @@ func main() {
 			TokenEnv:         *attachTokenEnv,
 			ReadOnly:         *attachReadonly,
 			PeerHub:          *attachPeerHub,
+			PeerStateFile:    *attachPeerStateFile,
 			RegisterTo:       *attachRegisterTo,
 			RegisterName:     *attachRegisterName,
 			RegisterEndpoint: *attachRegisterEndpoint,
@@ -408,6 +410,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	overlayStr("attach-token", &opts.TokenEnv, fromCfg.TokenEnv)
 	overlayBool("attach-readonly", &opts.ReadOnly, fromCfg.ReadOnly)
 	overlayBool("attach-peer-hub", &opts.PeerHub, fromCfg.PeerHub)
+	overlayStr("attach-peer-state-file", &opts.PeerStateFile, fromCfg.PeerStateFile)
 	overlayStr("attach-register-to", &opts.RegisterTo, fromCfg.RegisterTo)
 	overlayStr("attach-register-endpoint", &opts.RegisterEndpoint, fromCfg.RegisterEndpoint)
 	overlayStr("attach-register-name", &opts.RegisterName, fromCfg.RegisterName)
@@ -1912,9 +1915,27 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 				return runner.ExitConfigError
 			}
 		}
+		// A state file without a hub is a misconfiguration worth
+		// refusing rather than ignoring: the operator asked for
+		// durable peer state on a daemon that never registers any.
+		if attachCfg.PeerStateFile != "" && !attachCfg.PeerHub {
+			fmt.Fprintln(os.Stderr, "core-agent: --attach-peer-state-file requires --attach-peer-hub (nothing else writes peer state)")
+			return runner.ExitConfigError
+		}
 		var peerReg *attach.PeerRegistry
 		if attachCfg.PeerHub {
-			peerReg = attach.NewPeerRegistry()
+			if attachCfg.PeerStateFile != "" {
+				// Fail the boot rather than fall back to in-memory:
+				// silently dropping durability the operator configured
+				// is worse than not starting (#595).
+				peerReg, err = attach.NewPeerRegistryWithState(attachCfg.PeerStateFile)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "core-agent: peer state: %v\n", err)
+					return runner.ExitConfigError
+				}
+			} else {
+				peerReg = attach.NewPeerRegistry()
+			}
 			defer func() { _ = peerReg.Close() }()
 		}
 		cardConfig, err := resolveAgentCardConfig(agentsDir, cardCfg, cfg.Agent.Description)

@@ -39,6 +39,7 @@ type AttachOptions struct {
 	TokenEnv         string
 	ReadOnly         bool
 	PeerHub          bool
+	PeerStateFile    string
 	RegisterTo       string
 	RegisterName     string
 	RegisterEndpoint string
@@ -68,6 +69,7 @@ func BuildAttachOptions(cfg config.AttachConfig) AttachOptions {
 		TokenEnv:         expandEnvOrKeep(cfg.TokenEnv),
 		ReadOnly:         cfg.ReadOnly,
 		PeerHub:          cfg.PeerHub,
+		PeerStateFile:    expandEnvOrKeep(cfg.PeerStateFile),
 		RegisterTo:       expandEnvOrKeep(cfg.RegisterTo),
 		RegisterName:     expandEnvOrKeep(cfg.RegisterName),
 		RegisterEndpoint: expandEnvOrKeep(cfg.RegisterEndpoint),

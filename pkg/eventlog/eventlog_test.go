@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -415,6 +416,65 @@ func TestSince_WithAnyBranchPrefix(t *testing.T) {
 	)
 	if !repeated["e-sync"] || !repeated["e-unrelated"] {
 		t.Errorf("repeated WithBranchPrefix did not OR: %v", repeated)
+	}
+}
+
+// TestBranches covers the BranchLister extension (#694): the distinct
+// branch labels under a query's scope, which is how the attach layer
+// resolves a declared subagent name to the instance-suffixed branch
+// the runner actually wrote.
+func TestBranches(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestHandle(t)
+	defer cleanup()
+	ctx := context.Background()
+	parent := mustCreateSession(t, h, "app", "user", "sess1")
+	child := mustCreateSession(t, h, "app", "user", "sess1:sub:bg.cluster-1")
+	other := mustCreateSession(t, h, "app", "user", "sess2")
+
+	rows := []struct {
+		id, branch string
+		sess       session.Session
+	}{
+		{"e-root", "", parent},   // the parent's own turns: not a branch
+		{"e-root-2", "", parent}, // duplicate, to prove DISTINCT
+		{"e-inst", "bg.cluster-1", child},
+		{"e-inst-2", "bg.cluster-1", child},
+		{"e-nested", "bg.cluster-1.bg.probe", child},
+		{"e-sync", "audit", parent},
+		{"e-elsewhere", "bg.stranger", other}, // different session tree
+	}
+	for _, r := range rows {
+		if err := h.Service.AppendEvent(ctx, r.sess, makeEvent(r.id, "x", r.branch, r.id)); err != nil {
+			t.Fatalf("AppendEvent %s: %v", r.id, err)
+		}
+	}
+
+	bl, ok := h.Stream.(BranchLister)
+	if !ok {
+		t.Fatalf("%T does not implement BranchLister", h.Stream)
+	}
+	got, err := bl.Branches(ctx, WithSessionTree("app", "user", "sess1"))
+	if err != nil {
+		t.Fatalf("Branches: %v", err)
+	}
+	want := []string{"audit", "bg.cluster-1", "bg.cluster-1.bg.probe"}
+	if !slices.Equal(got, want) {
+		t.Errorf("Branches = %v, want %v (sorted, deduped, no empty branch, one session tree)", got, want)
+	}
+
+	// WithLimit caps the labels returned rather than being ignored.
+	if got, err := bl.Branches(ctx, WithSessionTree("app", "user", "sess1"), WithLimit(2)); err != nil {
+		t.Fatalf("Branches(limit): %v", err)
+	} else if len(got) != 2 {
+		t.Errorf("Branches(limit 2) = %v, want 2 labels", got)
+	}
+
+	// A session with nothing branched reports nothing, not an error.
+	if got, err := bl.Branches(ctx, ForSession("app", "user", "sess3")); err != nil {
+		t.Fatalf("Branches(empty): %v", err)
+	} else if len(got) != 0 {
+		t.Errorf("Branches(empty session) = %v, want none", got)
 	}
 }
 

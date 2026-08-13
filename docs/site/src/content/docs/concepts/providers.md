@@ -224,7 +224,19 @@ Startup log line confirms the wiring:
 core-agent: context cache: enabled (ttl=6h0m0s, model=gemini-3.5-flash)
 ```
 
-Any Vertex `Caches.*` RPC failure degrades to running uncached — the session never fails because of a cache error. Failures are logged with `core-agent-vertexcache:` prefix so operators can spot them.
+Any Vertex `Caches.*` RPC failure degrades to running uncached — the session never fails because of a cache error. Failures are logged with a `core-agent-vertexcache:` prefix so operators can spot them.
+
+A failed cache creation is retried on a bounded backoff (15s, 30s, 1m, 2m, 4m — six attempts over roughly eight minutes), driven by later turns rather than a background timer. This matters most on a freshly deployed daemon whose Workload Identity binding hasn't propagated yet: the first `Caches.Create` gets `403 PERMISSION_DENIED`, and without the retry the agent would pay full input price for the rest of its life over a permissions problem that resolved itself in the first two minutes. Look for:
+
+```
+core-agent-vertexcache: Caches.Create failed (attempt 1 of 6; retrying no sooner than 15s from now): ...
+```
+
+Once the budget is spent the manager gives up for good — a genuinely misconfigured project is not retried forever — and says so:
+
+```
+core-agent-vertexcache: Caches.Create failed 6 times (giving up; agent will run uncached for its lifetime): ...
+```
 
 ---
 

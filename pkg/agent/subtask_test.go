@@ -364,3 +364,109 @@ func TestRunSubtask_NoSessionLeakIntoParent(t *testing.T) {
 		}
 	}
 }
+
+// TestRunSubtask_SkipParentUsageLeavesTrackerAlone pins the other half
+// of #717: when the agent running the subtask isn't the one that should
+// be billed, the roll-up into ITS tracker and ContextStats counters is
+// suppressed — while SubtaskResult still carries the real figures so
+// the caller (and the OTel span built from them) loses nothing.
+//
+// The MCP digest wrap is the motivating caller: its LLMFallback closure
+// is bound to the primary agent at boot but fires for whichever session
+// made the MCP call, so billing the running agent charged every
+// session's digests to the primary and counted them against the
+// primary's cost ceiling.
+func TestRunSubtask_SkipParentUsageLeavesTrackerAlone(t *testing.T) {
+	t.Parallel()
+	llm := &captureLLM{
+		response:     "digested",
+		inputTokens:  int32(500),
+		outputTokens: int32(50),
+	}
+	tracker := usage.NewTracker()
+	a, err := New(llm, WithUsageTracker(tracker))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := a.RunSubtask(context.Background(), SubtaskSpec{
+		Name:            "mcp_digest",
+		SystemPrompt:    "you are a digesting subtask",
+		UserMessage:     "summarize this payload",
+		SkipParentUsage: true,
+	})
+	if err != nil {
+		t.Fatalf("RunSubtask: %v", err)
+	}
+
+	if got := tracker.Totals().Turns; got != 0 {
+		t.Errorf("tracker recorded %d turn(s) with SkipParentUsage; want 0 — this agent isn't the one being billed", got)
+	}
+	if a.subtaskCount != 0 {
+		t.Errorf("subtaskCount = %d with SkipParentUsage, want 0", a.subtaskCount)
+	}
+	// Suppressing the roll-up must not suppress the accounting: the
+	// result is how the calling session learns what it owes.
+	if res.InputTokens <= 0 && res.OutputTokens <= 0 {
+		t.Errorf("SubtaskResult lost its token figures: in=%d out=%d", res.InputTokens, res.OutputTokens)
+	}
+}
+
+// TestRunSubtask_DoesNotSeeSiblingHistory: two subtasks sharing a Name
+// must not share a session row. SubtaskSpec.UserMessage is documented
+// as "the operator's first user message in the subtask's brand-new
+// session", but the derived row used to be keyed on the stable name
+// alone — so with AutoCreateSession the second invocation reopened the
+// first's row and inherited its history (#717).
+//
+// Two live costs: every subsequent digest re-sent the previous
+// digest's payload as context, and once the MCP wrap routed every
+// session's digests through one shared agent, concurrent invocations
+// contended on a single row.
+func TestRunSubtask_DoesNotSeeSiblingHistory(t *testing.T) {
+	t.Parallel()
+	llm := &captureLLM{response: "digested"}
+	a, err := New(llm)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	spec := func(msg string) SubtaskSpec {
+		return SubtaskSpec{
+			Name:         "mcp_digest",
+			SystemPrompt: "you are a digesting subtask",
+			UserMessage:  msg,
+		}
+	}
+	if _, err := a.RunSubtask(context.Background(), spec("FIRST PAYLOAD sentinel-alpha")); err != nil {
+		t.Fatalf("first RunSubtask: %v", err)
+	}
+	llm.reqs = nil // only inspect the second invocation's request
+	if _, err := a.RunSubtask(context.Background(), spec("SECOND PAYLOAD sentinel-beta")); err != nil {
+		t.Fatalf("second RunSubtask: %v", err)
+	}
+
+	req := llm.lastRequest()
+	if req == nil {
+		t.Fatalf("model wasn't called on the second subtask")
+	}
+	var sb strings.Builder
+	for _, c := range req.Contents {
+		if c == nil {
+			continue
+		}
+		for _, p := range c.Parts {
+			if p != nil && p.Text != "" {
+				sb.WriteString(p.Text)
+				sb.WriteByte('\n')
+			}
+		}
+	}
+	combined := sb.String()
+	if strings.Contains(combined, "sentinel-alpha") {
+		t.Errorf("second subtask inherited the first's history; each invocation needs its own row:\n%s", combined)
+	}
+	if !strings.Contains(combined, "sentinel-beta") {
+		t.Errorf("second subtask's own user message missing from request: %q", combined)
+	}
+}

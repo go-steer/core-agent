@@ -82,7 +82,44 @@ func (a *Agent) observeToolSavings(ev *session.Event) {
 			continue
 		}
 		a.tracker.AppendDigestSavings(rec)
+		a.chargeDigestSubagent(rec)
 	}
+}
+
+// chargeDigestSubagent bills an agentic-wrap digest to THIS session —
+// the one whose tool call triggered it.
+//
+// AppendDigestSavings alone is not enough. It accumulates into the
+// tracker's separate `digestSavings` block, and Totals() walks only
+// `turns` — so the digest's spend never reached the session's totals
+// and never counted against its cost ceiling
+// (maybeEnforceCostCeiling reads Totals().CostUSD).
+//
+// Meanwhile the subtask itself runs on the primary agent, because the
+// MCP wrap's LLMFallback closure is bound at boot. Before #717 that
+// side did the roll-up, so the charge landed as real turns on the
+// primary session regardless of who caused it. RunSubtask now sets
+// SkipParentUsage there, and this is the other half: the calling
+// agent appends the turn to its own tracker.
+//
+// Exactly one of the two fires for any given digest, in both
+// single-session and multi-session mode, so there is no double count.
+//
+// Structural and passthrough paths carry no subagent model and are
+// skipped — they spend no tokens.
+func (a *Agent) chargeDigestSubagent(rec usage.DigestSavingsRecord) {
+	if rec.SubagentModel == "" {
+		return
+	}
+	if rec.SubagentInputTokens <= 0 && rec.SubagentOutputTokens <= 0 {
+		return
+	}
+	u := usage.TurnUsage{
+		InputTokens:  rec.SubagentInputTokens,
+		OutputTokens: rec.SubagentOutputTokens,
+	}
+	a.tracker.AppendUsage(rec.SubagentModel, u, usage.PriceFor(rec.SubagentModel, nil))
+	a.recordSubtaskUsage(rec.SubagentInputTokens, rec.SubagentOutputTokens, rec.SubagentCostUSD)
 }
 
 // extractSavingsRecord pulls a DigestSavingsRecord out of one Content

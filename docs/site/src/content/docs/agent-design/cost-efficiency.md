@@ -120,6 +120,8 @@ Digest savings (vs. no-digest baseline):
 
 Labeled "vs. no-digest baseline" because these are hypothetical — what the session WOULD have cost without the wrap layer, not a reduction in real spend (real spend is `/stats`).
 
+The agentic path's own subagent bill is real spend, and it lands on the session whose tool call triggered it: a turn on the subagent's model in that session's `/stats`, counting against that session's `--cost-ceiling`. So an idle-looking session can show small-tier turns it never prompted — those are its own MCP digests.
+
 ---
 
 ## Lever 3 — Prompt caching

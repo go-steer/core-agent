@@ -17,12 +17,15 @@ package compose
 import (
 	"context"
 	"errors"
+	"iter"
 	"strings"
 	"testing"
 
 	adkmodel "google.golang.org/adk/model"
+	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
 // failingProvider resolves no models. Stands in for a misconfigured
@@ -45,6 +48,28 @@ func (countingProvider) Name() string { return "counting" }
 func (p *countingProvider) Model(context.Context, string) (adkmodel.LLM, error) {
 	p.calls++
 	return p.inner, nil
+}
+
+// meteredLLM answers once with a complete turn AND reports token
+// usage. The echo mock backing newTestAgent reports none, which makes
+// any "was this billed?" assertion vacuous.
+type meteredLLM struct{}
+
+func (meteredLLM) Name() string { return "metered" }
+func (meteredLLM) GenerateContent(context.Context, *adkmodel.LLMRequest, bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		yield(&adkmodel.LLMResponse{
+			Content: &genai.Content{
+				Role:  "model",
+				Parts: []*genai.Part{{Text: "digested"}},
+			},
+			UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:     500,
+				CandidatesTokenCount: 50,
+			},
+			TurnComplete: true,
+		}, nil)
+	}
 }
 
 func TestBuildMCPDigestLLMFallback_UnboundAgent(t *testing.T) {
@@ -151,5 +176,62 @@ func TestBuildMCPDigestLLMFallback_DigestsThroughTheSubtask(t *testing.T) {
 	}
 	if res.SubagentModel != "small-model" {
 		t.Errorf("SubagentModel = %q, want the configured digest model", res.SubagentModel)
+	}
+}
+
+// TestBuildMCPDigestLLMFallback_ReportsParentModelWhenInheriting: with
+// no cheap tier configured the subtask runs on the parent's model, and
+// the sidecar has to say so.
+//
+// Post-#717 the sidecar is the only channel by which a digest's cost
+// reaches a session's ledger — the running agent no longer bills
+// itself — and pkg/mcp drops the token fields entirely when
+// SubagentModel is empty. So an empty value here isn't cosmetic; it
+// silently loses the spend.
+func TestBuildMCPDigestLLMFallback_ReportsParentModelWhenInheriting(t *testing.T) {
+	t.Parallel()
+
+	a := newTestAgent(t, "app", "u", "sess-digest-inherit-model")
+	fn := BuildMCPDigestLLMFallback(&a, nil, "")
+
+	res, err := fn(context.Background(), []byte(`{"pods":[{"name":"api-7d9"}]}`))
+	if err != nil {
+		t.Fatalf("fallback: %v", err)
+	}
+	if res.SubagentModel == "" {
+		t.Error("SubagentModel is empty on the inherit-model path; the digest's cost would never be billed to any session")
+	}
+	if want := a.ModelName(); res.SubagentModel != want {
+		t.Errorf("SubagentModel = %q, want the parent's model %q — that's what actually spent the tokens", res.SubagentModel, want)
+	}
+}
+
+// TestBuildMCPDigestLLMFallback_DoesNotBillTheBoundAgent pins the
+// compose-side half of #717: the closure captures the PRIMARY agent
+// (late-bound at boot), but it fires for whichever session made the
+// MCP call. Billing the bound agent charged every session's digests to
+// the primary and counted them against the primary's cost ceiling.
+func TestBuildMCPDigestLLMFallback_DoesNotBillTheBoundAgent(t *testing.T) {
+	t.Parallel()
+
+	tr := usage.NewTracker()
+	// meteredLLM, not the echo mock: the echo mock reports no
+	// UsageMetadata, so RunSubtask has nothing to append and the
+	// assertion below would hold whether or not SkipParentUsage is set.
+	a, err := agent.New(meteredLLM{},
+		agent.WithAppName("app"),
+		agent.WithSession("u", "sess-digest-nobill"),
+		agent.WithUsageTracker(tr),
+	)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	fn := BuildMCPDigestLLMFallback(&a, nil, "small-model")
+
+	if _, err := fn(context.Background(), []byte(`{"pods":[{"name":"api-7d9"}]}`)); err != nil {
+		t.Fatalf("fallback: %v", err)
+	}
+	if got := tr.Totals().Turns; got != 0 {
+		t.Errorf("bound agent's tracker recorded %d turn(s); want 0 — the calling session picks the cost up from the savings sidecar", got)
 	}
 }

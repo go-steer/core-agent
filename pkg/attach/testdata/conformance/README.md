@@ -41,6 +41,7 @@ with the old fixture kept frozen.
 | `rest-sessions-list-v1.json` | `GET /sessions` (the `{"sessions": [...]}` envelope; one `active` + one `idle` row) | v1 |
 | `rest-create-session-v1.json` | `POST /sessions` → 201 body | v1 |
 | `rest-whoami-v1.json` | `GET /whoami` (asserted-proxy variant — populates the `omitempty` fields) | v1 |
+| `rest-subagent-events-v1.json` | `GET /sessions/{app}/{sid}/agents/{name}/events` (a truncated page — populates `next_since` + `truncated`) | v1 |
 
 Pinned by `rest_conformance_test.go`; add new REST fixtures there
 following the same construct-marshal-diff pattern (plus, where a

@@ -308,6 +308,116 @@ func TestSince_WithBranchPrefixFilters(t *testing.T) {
 	}
 }
 
+// TestSince_WithAnyBranchPrefix covers the OR group (#638): one
+// subagent name maps to several branch spellings depending on the
+// launch path, so the union has to be expressible in a single query.
+// Also pins the two properties that make the union safe — the OR
+// group stays AND'd with the other filters (parenthesized), and LIKE
+// metacharacters in a prefix are literals, not wildcards.
+func TestSince_WithAnyBranchPrefix(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestHandle(t)
+	defer cleanup()
+	sess := mustCreateSession(t, h, "app", "user", "sess1")
+	other := mustCreateSession(t, h, "app", "user", "sess2")
+	ctx := context.Background()
+
+	rows := []struct {
+		id, branch string
+		sess       session.Session
+	}{
+		{"e-sync", "worker", sess},
+		{"e-bg", "bg.worker", sess},
+		{"e-bg-nested", "bg.worker.bg.child", sess},
+		{"e-sibling", "bg.workerly", sess},
+		{"e-unrelated", "bg.other", sess},
+		{"e-wrong-session", "bg.worker", other},
+		{"e-underscore", "bg.gke_cluster.child", sess},
+		{"e-underscore-decoy", "bg.gkeXcluster.child", sess},
+		{"e-bang", "bg.a!b.child", sess},
+	}
+	for _, r := range rows {
+		if err := h.Service.AppendEvent(ctx, r.sess, makeEvent(r.id, "x", r.branch, r.id)); err != nil {
+			t.Fatalf("AppendEvent %s: %v", r.id, err)
+		}
+	}
+
+	collect := func(opts ...QueryOption) map[string]bool {
+		t.Helper()
+		got := map[string]bool{}
+		for _, e := range drain(t, h.Stream.Since(ctx, 0, opts...)) {
+			got[e.Event.ID] = true
+		}
+		return got
+	}
+
+	got := collect(
+		ForSession("app", "user", "sess1"),
+		WithAnyBranchPrefix("worker", "bg.worker"),
+	)
+	for _, id := range []string{"e-sync", "e-bg", "e-bg-nested"} {
+		if !got[id] {
+			t.Errorf("WithAnyBranchPrefix missed %q", id)
+		}
+	}
+	for _, id := range []string{"e-sibling", "e-unrelated", "e-underscore-decoy"} {
+		if got[id] {
+			t.Errorf("WithAnyBranchPrefix leaked %q", id)
+		}
+	}
+	// The OR group must not escape its parens and swallow ForSession:
+	// sess2 carries an identically-branched event.
+	if got["e-wrong-session"] {
+		t.Errorf("WithAnyBranchPrefix leaked across sessions — OR group is not parenthesized")
+	}
+
+	// '_' is LIKE's single-character wildcard; escaping keeps it literal.
+	underscore := collect(
+		ForSession("app", "user", "sess1"),
+		WithAnyBranchPrefix("bg.gke_cluster"),
+	)
+	if !underscore["e-underscore"] || underscore["e-underscore-decoy"] {
+		t.Errorf("underscore prefix matched %v; want only e-underscore", underscore)
+	}
+
+	// The escape character itself must round-trip: a prefix holding a
+	// literal '!' has to be doubled, or LIKE reads it as escaping the
+	// next character and the real subtree goes missing.
+	if bang := collect(
+		ForSession("app", "user", "sess1"),
+		WithAnyBranchPrefix("bg.a!b"),
+	); !bang["e-bang"] {
+		t.Errorf("prefix with a literal '!' matched %v; want e-bang", bang)
+	}
+
+	// '%' likewise: a caller passing it gets nothing, not everything.
+	if wild := collect(
+		ForSession("app", "user", "sess1"),
+		WithAnyBranchPrefix("%"),
+	); len(wild) != 0 {
+		t.Errorf("'%%' prefix matched %v; want no rows", wild)
+	}
+
+	// Empty prefixes are dropped rather than widening the query.
+	if empty := collect(
+		ForSession("app", "user", "sess1"),
+		WithAnyBranchPrefix("", "bg.worker"),
+	); empty["e-unrelated"] || !empty["e-bg"] {
+		t.Errorf("empty prefix widened the query: %v", empty)
+	}
+
+	// Repeated WithBranchPrefix accumulates (it delegates to
+	// WithAnyBranchPrefix) rather than last-one-wins.
+	repeated := collect(
+		ForSession("app", "user", "sess1"),
+		WithBranchPrefix("worker"),
+		WithBranchPrefix("bg.other"),
+	)
+	if !repeated["e-sync"] || !repeated["e-unrelated"] {
+		t.Errorf("repeated WithBranchPrefix did not OR: %v", repeated)
+	}
+}
+
 func TestSince_WithAuthorAndLimit(t *testing.T) {
 	t.Parallel()
 	h, cleanup := openTestHandle(t)

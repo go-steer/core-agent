@@ -546,18 +546,9 @@ func applyQueryFilters(tx *gorm.DB, q queryOpts) *gorm.DB {
 			tx = tx.Where("session_id = ?", q.sessionID)
 		}
 	}
-	if q.branchPrefix != "" {
-		// Match exact prefix or prefix followed by separator. ADK
-		// uses '.' for branch separators (per its docstring:
-		// agent_1.agent_2.agent_3); accept either join character so
-		// callers passing "parent" match "parent.child" as well as
-		// "parent/child".
-		tx = tx.Where(
-			"branch = ? OR branch LIKE ? OR branch LIKE ?",
-			q.branchPrefix,
-			q.branchPrefix+".%",
-			q.branchPrefix+"/%",
-		)
+	if len(q.branchPrefixes) > 0 {
+		sql, args := branchPrefixClause(q.branchPrefixes)
+		tx = tx.Where(sql, args...)
 	}
 	if q.author != "" {
 		tx = tx.Where("author = ?", q.author)
@@ -566,6 +557,57 @@ func applyQueryFilters(tx *gorm.DB, q queryOpts) *gorm.DB {
 		tx = tx.Where("author LIKE ?", "%"+q.authorSuffix)
 	}
 	return tx
+}
+
+// branchPrefixEscape is the LIKE escape character for the branch
+// filter. Deliberately NOT the conventional backslash: the escape
+// char is embedded in the SQL text as a string literal, and backslash
+// is itself special inside string literals on MySQL (which needs
+// ESCAPE '\\') but not on Postgres with standard_conforming_strings
+// (which rejects '\\' as a two-character escape). '!' has no special
+// meaning in a string literal on any driver we open, so one spelling
+// works everywhere. escapeLike doubles it when it appears in the
+// prefix itself.
+const branchPrefixEscape = "!"
+
+// escapeLike neutralizes the LIKE metacharacters in a literal so it
+// matches itself and nothing else. Without it a subagent named
+// "gke_cluster" would match branches like "gkeXcluster.child" ('_' is
+// LIKE's single-character wildcard), and a caller who passed "%" would
+// silently widen the query to every branch in the session tree.
+func escapeLike(s string) string {
+	r := strings.NewReplacer(
+		branchPrefixEscape, branchPrefixEscape+branchPrefixEscape,
+		"%", branchPrefixEscape+"%",
+		"_", branchPrefixEscape+"_",
+	)
+	return r.Replace(s)
+}
+
+// branchPrefixClause builds the OR group for WithAnyBranchPrefix: for
+// each prefix, an exact-branch match plus the two separator-joined
+// descendant forms. ADK uses '.' for branch separators (per its
+// docstring: agent_1.agent_2.agent_3); '/' is accepted too so a caller
+// passing "parent" matches "parent/child" as well as "parent.child".
+//
+// Returns the parenthesized SQL and its bound args. GORM does wrap an
+// OR-bearing Where fragment for us today, but the clause is AND'd with
+// the session and author filters and an unwrapped chain of ORs would
+// swallow them — too sharp an edge to leave resting on a detail of the
+// query builder.
+func branchPrefixClause(prefixes []string) (string, []any) {
+	clauses := make([]string, 0, len(prefixes)*3)
+	args := make([]any, 0, len(prefixes)*3)
+	for _, p := range prefixes {
+		esc := escapeLike(p)
+		clauses = append(clauses,
+			"branch = ?",
+			"branch LIKE ? ESCAPE '"+branchPrefixEscape+"'",
+			"branch LIKE ? ESCAPE '"+branchPrefixEscape+"'",
+		)
+		args = append(args, p, esc+".%", esc+"/%")
+	}
+	return "(" + strings.Join(clauses, " OR ") + ")", args
 }
 
 // queryRows runs the SELECT against agent_eventlog with all filters

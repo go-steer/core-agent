@@ -229,7 +229,7 @@ type queryOpts struct {
 	appName, userID, sessionID string
 	treeAppName, treeUserID    string
 	treeParentID               string
-	branchPrefix               string
+	branchPrefixes             []string
 	author                     string
 	authorSuffix               string
 	limit                      int
@@ -268,8 +268,35 @@ func WithSessionTree(appName, userID, parentSessionID string) QueryOption {
 // WithBranchPrefix matches events whose Branch field begins with
 // prefix. Use to scope queries to a subagent subtree once Phase 4 of
 // the eventlog plan ships subagent runners that set Branch.
+//
+// Repeated calls accumulate and are OR'd together — see
+// WithAnyBranchPrefix, which this delegates to.
 func WithBranchPrefix(prefix string) QueryOption {
-	return func(q *queryOpts) { q.branchPrefix = prefix }
+	return WithAnyBranchPrefix(prefix)
+}
+
+// WithAnyBranchPrefix matches events whose Branch begins with ANY of
+// the supplied prefixes (an OR group, AND'd with the other filters).
+//
+// One subagent is reachable under several branch spellings depending
+// on how it was launched — a sync subagent tool tags its events with
+// the bare name, the background runner with "bg.<name>", RunSubtask
+// with "sub.<name>", the remote runner with "remote.<name>" — so an
+// operator asking "what did subagent X do?" needs the union, not a
+// single prefix (#638).
+//
+// Empty prefixes are dropped: a caller building the list from
+// user input can't accidentally widen the query to everything by
+// passing "". LIKE metacharacters ('%', '_') in a prefix are escaped,
+// so a prefix matches literally and only the intended subtree.
+func WithAnyBranchPrefix(prefixes ...string) QueryOption {
+	return func(q *queryOpts) {
+		for _, p := range prefixes {
+			if p != "" {
+				q.branchPrefixes = append(q.branchPrefixes, p)
+			}
+		}
+	}
 }
 
 // WithAuthor matches events emitted by a specific author. The

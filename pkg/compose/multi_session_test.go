@@ -17,10 +17,14 @@ package compose
 import (
 	"context"
 	"errors"
+	"fmt"
 	"iter"
+	"sync"
 	"testing"
+	"time"
 
 	adkmodel "google.golang.org/adk/model"
+	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/auth"
 	"github.com/go-steer/core-agent/v2/pkg/config"
@@ -210,4 +214,78 @@ func TestReproduceAgent_WatchdogMode(t *testing.T) {
 			}
 		})
 	}
+}
+
+// loopingStubLLM answers every invocation with the same tool call and
+// honours ctx cancellation, so an enforce-mode halt truncates it.
+type loopingStubLLM struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (*loopingStubLLM) Name() string { return "looping-stub" }
+func (l *loopingStubLLM) GenerateContent(ctx context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		if err := ctx.Err(); err != nil {
+			yield(nil, err)
+			return
+		}
+		l.mu.Lock()
+		l.calls++
+		n := l.calls
+		l.mu.Unlock()
+		yield(&adkmodel.LLMResponse{
+			Content: &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{
+				FunctionCall: &genai.FunctionCall{
+					ID:   fmt.Sprintf("call_%d", n),
+					Name: "todo",
+					Args: map[string]any{"action": "list"},
+				},
+			}}},
+		}, nil)
+	}
+}
+
+// TestReproduceAgent_WatchdogEnforceActuallyHalts closes the gap that
+// let #705 be filed against a surface that WAS wired: the sibling test
+// above asserts only that WatchdogMode() reads back "enforce", which a
+// mode string can satisfy while nothing ever halts. Here a tenant
+// session created through the factory drives a real looping model and
+// has to stop on its own.
+//
+// The bound is what matters. Without an in-turn drain this loop never
+// terminates — the halt only ever arrives at a turn boundary the model
+// never reaches — so the failure mode is a hang, caught by the deadline.
+func TestReproduceAgent_WatchdogEnforceActuallyHalts(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	llm := &loopingStubLLM{}
+	ad, cancelSess, err := ReproduceAgent(SessionFactoryDeps{
+		DaemonCtx:    ctx,
+		Model:        llm,
+		Template:     permissions.New(permissions.Options{}),
+		WatchdogMode: config.WatchdogEnforce,
+	}, auth.Anonymous, "sid-wd-halts", "created")
+	if err != nil {
+		t.Fatalf("ReproduceAgent: %v", err)
+	}
+	t.Cleanup(cancelSess)
+
+	runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
+	t.Cleanup(runCancel)
+	for _, err := range ad.Agent().Run(runCtx, "go") {
+		_ = err // the halt surfaces as a cancellation
+	}
+	if runCtx.Err() != nil {
+		t.Fatal("the tenant session looped until the deadline: enforce never halted it")
+	}
+
+	tripped, reason := ad.Agent().WatchdogTripped()
+	if !tripped {
+		t.Fatalf("tenant session did not trip after %d identical tool calls", llm.calls)
+	}
+	t.Logf("halted after %d model invocations: %s", llm.calls, reason)
 }

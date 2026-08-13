@@ -1488,10 +1488,20 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 			// the watchdog so its signals can fire on the post-turn
 			// hook. No-op when no watchdog is wired.
 			if a.watchdog != nil && ev != nil {
-				a.observeToolCallsForWatchdog(ev, watchdogSeen)
+				observed := a.observeToolCallsForWatchdog(ev, watchdogSeen)
 				// Tool *outcomes* (#639), for signals that read them.
 				// Same event, same dedup set, separate key space.
-				a.observeToolResultsForWatchdog(ev, watchdogSeen)
+				observed = a.observeToolResultsForWatchdog(ev, watchdogSeen) || observed
+				// Enforce mode halts a loop WHILE it loops (#705). A
+				// tool-call loop inside one turn never reaches the
+				// post-turn drain below, so a boundary-only backstop
+				// cannot fire on the shape it exists to catch. Gated on
+				// a fresh observation — nothing can newly trip without
+				// one, and streaming turns emit far more text deltas
+				// than tool calls.
+				if observed {
+					a.enforceWatchdogInTurn()
+				}
 			}
 			// Digest-savings observation. Walk FunctionResponse
 			// parts for the `savings` sidecar the MCP digest wrap

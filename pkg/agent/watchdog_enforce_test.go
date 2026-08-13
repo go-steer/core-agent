@@ -17,9 +17,14 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
+	"iter"
 	"strings"
 	"sync"
 	"testing"
+
+	adkmodel "google.golang.org/adk/model"
+	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/watchdog"
@@ -374,5 +379,102 @@ func TestWatchdogMode(t *testing.T) {
 	var nilAgent *Agent
 	if got := nilAgent.WatchdogMode(); got != "off" {
 		t.Errorf("nil agent WatchdogMode() = %q, want %q", got, "off")
+	}
+}
+
+// loopingLLM answers every invocation with the same tool call — the
+// shape a tool-calling flow produces when the model loops INSIDE one
+// turn. It honours ctx cancellation the way a real model client does,
+// so an enforce-mode halt actually truncates the loop.
+type loopingLLM struct {
+	calls int
+
+	mu          sync.Mutex
+	invocations int
+}
+
+func (l *loopingLLM) Name() string { return "looping" }
+func (l *loopingLLM) GenerateContent(ctx context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		if err := ctx.Err(); err != nil {
+			yield(nil, err)
+			return
+		}
+		l.mu.Lock()
+		l.invocations++
+		n := l.invocations
+		l.mu.Unlock()
+		// One identical tool call per invocation, all inside a single
+		// Run — the flow stops draining the model stream at the first
+		// FunctionCall, executes it, and calls the model again.
+		if n <= l.calls {
+			yield(&adkmodel.LLMResponse{
+				Content: &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{
+					FunctionCall: &genai.FunctionCall{
+						ID:   fmt.Sprintf("call_%d", n),
+						Name: "todo",
+						Args: map[string]any{"action": "list"},
+					},
+				}}},
+			}, nil)
+			return
+		}
+		yield(&adkmodel.LLMResponse{
+			Content:      &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "done"}}},
+			TurnComplete: true,
+		}, nil)
+	}
+}
+
+// TestRun_WatchdogEnforce_HaltsAnIntraTurnLoop is the #705 regression.
+//
+// Every other enforce test drives a fakeWatchdog that hands back a
+// canned alert, and every one of them checks the trip only after Run
+// has returned. That left the shipped configuration — a real
+// DefaultWatchdog, real repeated tool calls — covered nowhere, and hid
+// a structural gap: alerts were drained only from the post-turn hook,
+// so a loop inside a single turn never tripped anything. An unattended
+// daemon whose agent loops within one long turn burned budget with no
+// halt and no log line, while the boot line advertised "halts the
+// agent".
+//
+// Asserted at the point that matters: the halt lands mid-turn and cuts
+// the loop short, rather than arriving after the turn it should have
+// stopped.
+func TestRun_WatchdogEnforce_HaltsAnIntraTurnLoop(t *testing.T) {
+	t.Parallel()
+
+	// 40 calls, threshold 5: pre-fix every one of them runs and the
+	// trip lands after the fact; post-fix the run stops just past the
+	// threshold.
+	const attempted = 40
+	llm := &loopingLLM{calls: attempted}
+	a, err := New(llm,
+		WithSession("u-wd-loop", "s-wd-loop"),
+		WithWatchdog(watchdog.NewDefaultWatchdog(), nil),
+		WithWatchdogEnforce(),
+	)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+
+	for _, err := range a.Run(context.Background(), "go") {
+		_ = err // the halt surfaces as a cancellation; not the subject
+	}
+
+	tripped, reason := a.WatchdogTripped()
+	if !tripped {
+		t.Fatal("identical tool calls in one turn did not trip enforce")
+	}
+	if !strings.Contains(reason, "repeated-tool-call") {
+		t.Errorf("trip reason = %q, want the repeated-tool-call signal", reason)
+	}
+
+	llm.mu.Lock()
+	invocations := llm.invocations
+	llm.mu.Unlock()
+	t.Logf("model invocations before halt: %d of %d", invocations, attempted)
+	if invocations >= attempted {
+		t.Errorf("model ran all %d loop iterations before the watchdog halted it: a turn-boundary-only backstop cannot stop an intra-turn loop", invocations)
 	}
 }

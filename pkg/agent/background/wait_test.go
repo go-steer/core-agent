@@ -16,6 +16,7 @@ package background
 
 import (
 	"context"
+	"errors"
 	"iter"
 	"strings"
 	"sync/atomic"
@@ -24,6 +25,8 @@ import (
 
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/genai"
+
+	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
 )
 
 // gateLLM blocks inside GenerateContent until release is closed, so a test
@@ -163,4 +166,172 @@ func TestAwaitResult_ParentCancel(t *testing.T) {
 	}
 	close(gate.release)
 	waitDone(t, h)
+}
+
+// gatedCompletingLLM holds its first generation until release is closed,
+// then reports done with detail and answers with finalText — the shape of
+// a subagent that outruns the sync-wait cap and still has real findings to
+// hand back.
+type gatedCompletingLLM struct {
+	release   chan struct{}
+	detail    string
+	finalText string
+	called    atomic.Bool
+}
+
+func (*gatedCompletingLLM) Name() string { return "gated-completing" }
+func (l *gatedCompletingLLM) GenerateContent(ctx context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		if l.called.Swap(true) {
+			content := &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: l.finalText}}}
+			yield(&adkmodel.LLMResponse{Content: content, FinishReason: genai.FinishReasonStop, TurnComplete: true}, nil)
+			return
+		}
+		select {
+		case <-l.release:
+		case <-ctx.Done():
+			return
+		}
+		fc := &genai.FunctionCall{Name: "report_done", Args: map[string]any{"state": "done", "detail": l.detail}}
+		content := &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{FunctionCall: fc}}}
+		yield(&adkmodel.LLMResponse{Content: content, FinishReason: genai.FinishReasonStop, TurnComplete: true}, nil)
+	}
+}
+
+// TestTerminalAlert_CarriesFinalTextAfterSyncWaitTimeout is the #691
+// regression gate. #667 made a synchronous spawn return the subagent's
+// actual output, but only on the path where the wait completes: once
+// abandonWait releases the claim, delivery moves to the terminal alert,
+// which rendered DoneDetail alone. So the fix vanished exactly when the
+// subagent took long enough to be worth waiting for. In the field a
+// 6m21s subagent's diagnosis reached the parent as a one-line status
+// claiming a patch it never included, and the parent redid the whole
+// investigation over 91 turns and $1.31.
+func TestTerminalAlert_CarriesFinalTextAfterSyncWaitTimeout(t *testing.T) {
+	t.Parallel()
+	const (
+		detail    = "diagnosed the FailedMount and provided the proposed patch"
+		finalText = "Root cause: secretName typo smtp-credentials-typo; patch: set secretName to smtp-credentials"
+	)
+	gate := &gatedCompletingLLM{release: make(chan struct{}), detail: detail, finalText: finalText}
+	prov := &recordingProvider{llm: gate}
+	mgr := newTemplateManager(t, prov, []SubagentTemplate{{
+		Name:         "cluster",
+		Instruction:  "triage",
+		ModelFactory: tmplFactory(prov, "cluster-model"),
+		ModelID:      "cluster-model",
+	}}, WithDefaultBudgets(Budgets{MaxTurns: 2}), WithSyncWaitTimeout(5*time.Millisecond))
+	attachEchoParent(t, mgr)
+	defer mgr.Close()
+
+	h, err := mgr.SpawnTemplate(context.Background(), "", "cluster", RefOverrides{Goal: "g"}, "")
+	if err != nil {
+		t.Fatalf("SpawnTemplate: %v", err)
+	}
+	if res := mgr.awaitResult(context.Background(), h); !strings.HasPrefix(res.Status, "running") {
+		t.Fatalf("status = %q, want the wait to have timed out (the whole point of this test)", res.Status)
+	}
+
+	// The wait gave up; delivery is now the async terminal alert's job.
+	close(gate.release)
+	waitDone(t, h)
+
+	alerts := drainAlerts(mgr, 2*time.Second)
+	var completed *Alert
+	for i := range alerts {
+		if alerts[i].Kind == "completed" {
+			completed = &alerts[i]
+		}
+	}
+	if completed == nil {
+		t.Fatalf("no completed alert delivered after an abandoned wait; got %+v", alerts)
+	}
+	if !strings.Contains(completed.Text, detail) {
+		t.Errorf("alert text = %q, want it to contain the completion detail %q", completed.Text, detail)
+	}
+	if !strings.Contains(completed.Text, finalText) {
+		t.Errorf("alert text = %q, want it to carry the subagent's final text %q — the deliverable is unreachable without it", completed.Text, finalText)
+	}
+}
+
+// TestTerminalAlertText_Rendering pins the (kind, text) pairs directly,
+// including the outcomes no live-run test reaches cheaply: a
+// budget-capped subagent whose findings live only in its last assistant
+// text, and a failure that still has something to report.
+func TestTerminalAlertText_Rendering(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		status   Status
+		result   autonomous.RunResult
+		runErr   error
+		wantKind string
+		wantText string
+	}{
+		{
+			name:     "completed with both",
+			status:   StatusCompleted,
+			result:   autonomous.RunResult{DoneDetail: "fixed it", FinalText: "here is how"},
+			wantKind: "completed",
+			wantText: "fixed it\n\nfinal_text: here is how",
+		},
+		{
+			name:     "completed with a redundant final text",
+			status:   StatusCompleted,
+			result:   autonomous.RunResult{DoneDetail: "fixed it", FinalText: "fixed it"},
+			wantKind: "completed",
+			wantText: "fixed it",
+		},
+		{
+			name:     "completed with no detail falls back to final text",
+			status:   StatusCompleted,
+			result:   autonomous.RunResult{FinalText: "here is how"},
+			wantKind: "completed",
+			wantText: "here is how",
+		},
+		{
+			name:     "completed with nothing at all",
+			status:   StatusCompleted,
+			wantKind: "completed",
+			wantText: "(no detail provided)",
+		},
+		{
+			// A budget cap never calls report_done, so the last
+			// assistant text is the entire record of the work.
+			name:     "deferred keeps the reason and the findings",
+			status:   StatusDeferred,
+			result:   autonomous.RunResult{Reason: autonomous.StopReasonMaxTurns, FinalText: "got as far as the Secret"},
+			wantKind: "deferred",
+			wantText: "stopped: max_turns_exceeded\n\nfinal_text: got as far as the Secret",
+		},
+		{
+			name:     "failed keeps the error and the findings",
+			status:   StatusFailed,
+			result:   autonomous.RunResult{FinalText: "got as far as the Secret"},
+			runErr:   errors.New("provider exploded"),
+			wantKind: "failed",
+			wantText: "provider exploded\n\nfinal_text: got as far as the Secret",
+		},
+		{
+			// An explicit parent Stop: the parent asked for this, and
+			// a cancelled mid-thought is not a finding.
+			name:     "stopped stays terse",
+			status:   StatusStopped,
+			result:   autonomous.RunResult{FinalText: "half a sentence"},
+			wantKind: "stopped",
+			wantText: "stopped by parent",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			kind, text := terminalAlertText(tc.status, tc.result, tc.runErr)
+			if kind != tc.wantKind {
+				t.Errorf("kind = %q, want %q", kind, tc.wantKind)
+			}
+			if text != tc.wantText {
+				t.Errorf("text = %q, want %q", text, tc.wantText)
+			}
+		})
+	}
 }

@@ -320,6 +320,17 @@ formats:
 <original user prompt>
 ```
 
+A **terminal** alert (`completed` / `deferred` / `failed`) carries the
+subagent's completion report and, when it adds something the report
+doesn't, its last assistant text appended as `final_text: <text>` —
+the same two pieces `spawn_agent { wait: true }` returns inline as
+`output` + `final_text`. That symmetry is load-bearing: an abandoned
+sync wait falls back to this path, so anything only the inline
+rendering carried would be unreachable for exactly the subagents that
+ran long enough to time out (#691). A `stopped` alert stays terse —
+the parent asked for the stop, and a cancelled mid-thought is not a
+finding.
+
 For interactive REPL, the runner also displays alerts inline as they
 arrive via a goroutine listening on `Alerts()` and writing to the
 info stream with the `↪` sigil under a `bg/` author prefix — reuses

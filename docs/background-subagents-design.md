@@ -3,6 +3,17 @@
 Design doc for the v1.2.0 milestone. Untracked sibling to
 `docs/cogo-core-agent-integration.md` and `docs/docsy-migration-notes.md`.
 
+> **Superseded in part (v2.9).** The two-tool completion protocol below —
+> `report_alert` for findings plus a separate `report_completed` that
+> acknowledged without ending the run — is replaced by a single
+> `return_result(result)` tool that delivers the payload *and*
+> terminates, registered under the `report_done` / `report_completed` /
+> `mark_task_done` aliases. See
+> [`subagent-return-contract-design.md`](subagent-return-contract-design.md).
+> The `list_agents` / `check_agent` poll tools referenced below were
+> removed in v2.9 (#625). Everything else here still describes the
+> shipped implementation.
+
 ## Context
 
 Two related capabilities for monitoring use cases (canonical example: a

@@ -56,7 +56,7 @@ func TestReportTool_ConstructorsReturnNonNil(t *testing.T) {
 	if newReportAlertTool(mgr, "x").Name() != "report_alert" {
 		t.Errorf("report_alert name mismatch")
 	}
-	if newReportCompletedTool(mgr, "x").Name() != "report_completed" {
-		t.Errorf("report_completed name mismatch")
-	}
+	// report_completed is no longer built here — it's an alias of the
+	// driver's return tool (#728). See
+	// TestSubagentReturnToolAliases_CoverTheNamesModelsReachFor.
 }

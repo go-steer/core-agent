@@ -320,7 +320,7 @@ const spawnAgentDescription = "Spawn an in-process background subagent that runs
 	"Authoring an ad-hoc subagent inline (system_prompt + tools) is only possible when the operator enabled ad-hoc spawns. " +
 	"The subagent runs autonomously; you'll receive its updates as '[Background reports]' lines prepended to your next turn when it calls report_alert or finishes. " +
 	"Use this for tasks that should run continuously (monitoring) or in parallel (independent fan-out work). " +
-	"Do NOT list 'schedule_next_turn', 'report_done', 'report_alert', or 'report_completed' in the tools field — those are auto-wired into every subagent by the runtime; listing them is a no-op (silently skipped)."
+	"Do NOT list 'schedule_next_turn', 'report_alert', 'return_result', or its aliases 'report_done' / 'report_completed' / 'mark_task_done' in the tools field — those are auto-wired into every subagent by the runtime; listing them is a no-op (silently skipped)."
 
 type stopAgentArgs struct {
 	Name string `json:"name" jsonschema:"the name of the subagent to stop"`

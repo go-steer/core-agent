@@ -37,6 +37,7 @@ research + friction logs, or handover notes.
 - [`scion-harness-improvements-design.md`](scion-harness-improvements-design.md) — `Agent.Inject` + `AutonomousHandle` + mid-turn REPL interrupt
 - [`gemini-tier1-followup-plan.md`](gemini-tier1-followup-plan.md) — parallelism mandate, tool-description rewrites, `read_many_files`
 - [`scion-research-demo-design.md`](scion-research-demo-design.md) — Scion `RemoteAgentSpawner` reference + parallel-research demo
+- [`subagent-return-contract-design.md`](subagent-return-contract-design.md) — how a subagent hands a value back: `return_result`, terminating loops for bounded delegations, typed stop reasons
 
 ### Sessions, durability + multi-tenancy
 

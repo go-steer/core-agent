@@ -22,7 +22,7 @@ import (
 )
 
 // reportArgs is the JSON shape the spawned subagent's model sees when
-// it calls report_alert or report_completed. A single message string.
+// it calls report_alert. A single message string.
 type reportArgs struct {
 	Text string `json:"text" jsonschema:"a one-paragraph message describing the alert or completion"`
 }
@@ -61,33 +61,16 @@ func newReportAlertTool(mgr *Manager, from string) tool.Tool {
 	return t
 }
 
-// newReportCompletedTool builds a per-subagent report_completed tool.
-// Mirrors report_alert but is used by the subagent to declare it has
-// finished its goal. Calling this is functionally equivalent to the
-// autonomous driver's report_done tool, except the message is also
-// surfaced as a "completed" Alert to the parent — the driver's
-// terminal-state Alert is fired by the goroutine wrapper in Spawn
-// when RunAutonomous returns, so calling report_completed is the
-// model's "let the parent know what I did" signal, not a hard
-// termination call (use report_done for that).
-func newReportCompletedTool(mgr *Manager, from string) tool.Tool {
-	t, err := functiontool.New(functiontool.Config{
-		Name:        "report_completed",
-		Description: "Tell the parent agent that you've finished your goal. The text becomes a user-visible completion report. Call report_done separately to actually terminate the autonomous loop.",
-	}, func(_ tool.Context, args reportArgs) (reportResult, error) {
-		mgr.pushAlert(Alert{
-			From:      from,
-			Text:      args.Text,
-			Kind:      "completed",
-			Timestamp: time.Now(),
-		})
-		return reportResult{OK: true}, nil
-	})
-	if err != nil {
-		panic("background: newReportCompletedTool: " + err.Error())
-	}
-	return t
-}
+// report_completed used to be built here as a tool of its own. It
+// pushed a "completed" Alert to the parent and returned ok WITHOUT
+// ending the run — its own description told the model to "call
+// report_done separately to actually terminate the autonomous loop".
+// Splitting a delegation's return across two tool calls meant a model
+// that announced it was finished was then handed "continue" and ran on
+// past its own answer (#728). The name is now an alias of the driver's
+// return tool (subagentReturnToolAliases), so calling it returns. The
+// parent still receives a "completed" alert — the terminal alert fired
+// by launch's goroutine wrapper covers it.
 
 // PrependPendingAlerts drains every pending alert from the manager's
 // channel (non-blocking) and, when non-empty, returns prompt with a

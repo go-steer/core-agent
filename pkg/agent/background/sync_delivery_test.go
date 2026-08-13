@@ -61,12 +61,14 @@ func (l *findingsThenSummaryLLM) GenerateContent(_ context.Context, _ *adkmodel.
 	}
 }
 
-// declCapturingLLM records the tool declarations it is offered, so a test
-// can assert on the prompt surface a spawned subagent actually sees. It
-// completes on the first call so the run terminates promptly.
+// declCapturingLLM records the tool declarations and system instruction
+// it is offered, so a test can assert on the prompt surface a spawned
+// subagent actually sees. It completes on the first call so the run
+// terminates promptly.
 type declCapturingLLM struct {
 	mu    sync.Mutex
 	decls map[string]string
+	sys   string
 }
 
 func (*declCapturingLLM) Name() string { return "decl-capturing" }
@@ -87,6 +89,15 @@ func (l *declCapturingLLM) GenerateContent(_ context.Context, req *adkmodel.LLMR
 				}
 			}
 		}
+		if si := req.Config.SystemInstruction; si != nil {
+			var b strings.Builder
+			for _, p := range si.Parts {
+				if p != nil {
+					b.WriteString(p.Text)
+				}
+			}
+			l.sys = b.String()
+		}
 	}
 	l.mu.Unlock()
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
@@ -100,6 +111,12 @@ func (l *declCapturingLLM) declaration(name string) (string, bool) {
 	defer l.mu.Unlock()
 	d, ok := l.decls[name]
 	return d, ok
+}
+
+func (l *declCapturingLLM) systemInstruction() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.sys
 }
 
 // TestAwaitResult_CarriesFinalTextAlongsideReport is one half of #641: a

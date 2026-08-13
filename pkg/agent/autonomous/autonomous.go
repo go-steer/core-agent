@@ -85,20 +85,7 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 	}
 
 	doneCh := make(chan string, 1)
-	doneTool, err := coretools.NewLifecycleTool(coretools.LifecycleOptions{
-		Name:          cfg.doneToolName,
-		Description:   cfg.doneToolDescription,
-		AllowedStates: []string{"done"},
-		Handler: func(_ context.Context, ev coretools.LifecycleEvent) error {
-			select {
-			case doneCh <- ev.Detail:
-			default:
-				// Already signaled; treat the second call as a no-op
-				// rather than blocking the tool handler.
-			}
-			return nil
-		},
-	})
+	doneTools, err := buildDoneTools(&cfg, doneCh)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("agent: Run: build done tool: %w", err)
 	}
@@ -107,7 +94,7 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 	// via WithScheduler. Loops without a scheduler never see the tool,
 	// so the model can't emit schedule intent the driver doesn't know
 	// how to honor.
-	extras := []tool.Tool{doneTool}
+	extras := append([]tool.Tool(nil), doneTools...)
 	var scheduleCh <-chan coretools.ScheduleEvent
 	if cfg.scheduler != nil {
 		schTool, ch, err := coretools.NewScheduleTool(coretools.ScheduleOptions{
@@ -583,7 +570,9 @@ type autoConfig struct {
 	maxWallclock            time.Duration
 	perTurnTimeout          time.Duration
 	doneToolName            string
+	doneToolNameExplicit    bool
 	doneToolDescription     string
+	returnTool              *ReturnToolConfig
 	continuationPrompt      string
 	tracker                 *usage.Tracker
 	pricing                 usage.Pricing
@@ -663,6 +652,7 @@ func WithDoneToolName(name string) Option {
 	return func(c *autoConfig) {
 		if name = strings.TrimSpace(name); name != "" {
 			c.doneToolName = name
+			c.doneToolNameExplicit = true
 		}
 	}
 }

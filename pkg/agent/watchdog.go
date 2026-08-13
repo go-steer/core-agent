@@ -135,10 +135,11 @@ func IsWatchdogTripped(err error) bool {
 // be skipping the observation entirely, which silently weakens
 // the signal. Better to compare on the placeholder than miss
 // observations.
-func (a *Agent) observeToolCallsForWatchdog(ev *session.Event, seen map[string]struct{}) {
+func (a *Agent) observeToolCallsForWatchdog(ev *session.Event, seen map[string]struct{}) bool {
 	if a.watchdog == nil || ev == nil || ev.Content == nil {
-		return
+		return false
 	}
+	observed := false
 	for _, p := range ev.Content.Parts {
 		if p == nil || p.FunctionCall == nil {
 			continue
@@ -152,11 +153,13 @@ func (a *Agent) observeToolCallsForWatchdog(ev *session.Event, seen map[string]s
 			continue
 		}
 		seen[key] = struct{}{}
+		observed = true
 		a.watchdog.ObserveToolCall(watchdog.ToolCall{
 			Name: p.FunctionCall.Name,
 			Args: args,
 		})
 	}
+	return observed
 }
 
 // observeToolResultsForWatchdog walks ev's content parts and feeds any
@@ -177,14 +180,15 @@ func (a *Agent) observeToolCallsForWatchdog(ev *session.Event, seen map[string]s
 // same-error parallel calls within one turn; that is the safe
 // direction to be wrong in, since undercounting delays an advisory
 // alert while overcounting fires it on work that was fine.
-func (a *Agent) observeToolResultsForWatchdog(ev *session.Event, seen map[string]struct{}) {
+func (a *Agent) observeToolResultsForWatchdog(ev *session.Event, seen map[string]struct{}) bool {
 	if ev == nil || ev.Content == nil {
-		return
+		return false
 	}
 	obs, ok := a.watchdog.(watchdog.ToolResultObserver)
 	if !ok {
-		return
+		return false
 	}
+	observed := false
 	for _, p := range ev.Content.Parts {
 		if p == nil || p.FunctionResponse == nil {
 			continue
@@ -198,11 +202,13 @@ func (a *Agent) observeToolResultsForWatchdog(ev *session.Event, seen map[string
 			continue
 		}
 		seen[key] = struct{}{}
+		observed = true
 		obs.ObserveToolResult(watchdog.ToolResult{
 			Name:  p.FunctionResponse.Name,
 			Error: errText,
 		})
 	}
+	return observed
 }
 
 // toolResponseError extracts the tool error from an ADK function
@@ -273,6 +279,63 @@ func (a *Agent) drainWatchdogAlerts() {
 	// fires even when no warn-mode callback is wired.
 	if a.watchdogEnforce {
 		a.maybeTripWatchdog(alerts)
+	}
+}
+
+// enforceWatchdogInTurn is the in-turn arm of enforce mode (#705). It
+// runs from Run's event tap, right after the tool-call/result
+// observations, and halts a turn that is looping WHILE it loops.
+//
+// Why a second call site. Until this, every watchdog decision happened
+// at a turn boundary: observations accumulated during the turn and
+// drainWatchdogAlerts ran from the post-turn cleanup. That is fine for
+// a loop spread across turns — turn N trips, turn N+1 is refused at
+// preflight. It is useless for a loop INSIDE one turn, which is the
+// shape the tool-calling flow actually produces: the model emits a
+// tool call, the flow executes it and calls the model again, all
+// within a single Run. An agent stuck in that inner loop never reaches
+// the post-turn hook, so the backstop that the boot line advertises as
+// "halts the agent" cannot fire at all, and nothing is logged either.
+// The cost ceiling has the same structural blind spot and needed its
+// own out-of-band re-check to work around it (#362, see Run).
+//
+// Called only when an observation actually landed this event (see the
+// bool the observe helpers return): a signal can only newly trip on a
+// new observation, so re-checking on every text delta of a streaming
+// turn would be pure mutex traffic.
+//
+// Enforce only. Below enforce nothing halts, so nothing is drained
+// early: warn's contract is an operator log line and feedback queues
+// the observation for the NEXT turn's prompt, so draining either one
+// sooner would only change when a human or the model reads it. Under
+// enforce those two surfaces do fire earlier, which is the point —
+// the log line should precede the halt it explains. Legacy timing for
+// them: warn's contract is an operator log line, and feedback queues
+// the observation for the NEXT turn's prompt, so draining early would
+// change when the model sees its own correction. Enforce's contract is
+// "stop", and stopping is worth doing at the first opportunity.
+//
+// Interrupt() is the same mechanism an operator /interrupt uses, so the
+// turn unwinds through the ordinary cancelled-runCtx path: the event
+// stream ends, cleanup runs, and the post-turn drain is a no-op because
+// Check() already emptied the buffer and maybeTripWatchdog is
+// idempotent. It does NOT set pendingInterruptAudit — that flag is
+// only raised by MarkInterruptPending from the attach handler — so a
+// watchdog halt is never mislabeled as an operator interrupt.
+func (a *Agent) enforceWatchdogInTurn() {
+	if a == nil || a.watchdog == nil || !a.watchdogEnforce {
+		return
+	}
+	// Already halted: the Interrupt below has fired and the turn is
+	// unwinding. Re-draining would be harmless but re-interrupting a
+	// turn whose cancel has been cleared is pointless work on every
+	// remaining event in the stream.
+	if tripped, _ := a.WatchdogTripped(); tripped {
+		return
+	}
+	a.drainWatchdogAlerts()
+	if tripped, _ := a.WatchdogTripped(); tripped {
+		a.Interrupt()
 	}
 }
 

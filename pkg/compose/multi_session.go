@@ -95,11 +95,12 @@ func BuildMultiSessionAuthn(cfg config.MultiSessionConfig) (auth.Authenticator, 
 // CostCeiling (these are pure config, so per-session reconstruction
 // is trivial and the alternative was /compact and /done erroring on
 // every session-created agent). Background subagents are wired
-// per-session too since #637 (see SessionBackground). Features that
-// need per-session scoping decisions the daemon doesn't yet make
-// (Watchdog alert-sink routing, agentic tool wrappers, MCP custom
-// auth) remain deferred — sessions created via POST /sessions see the
-// substrate without them.
+// per-session too since #637 (see SessionBackground), and the
+// behavioral watchdog since #665 (see WatchdogMode — every mode on the
+// ladder, alerts routed to the daemon log). Features that need
+// per-session scoping decisions the daemon doesn't yet make (agentic
+// tool wrappers, MCP custom auth) remain deferred — sessions created
+// via POST /sessions see the substrate without them.
 type SessionFactoryDeps struct {
 	// DaemonCtx is the daemon's lifetime context — every per-session
 	// wake loop spawned by the factory uses it as the cancellation

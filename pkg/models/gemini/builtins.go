@@ -368,7 +368,9 @@ func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequ
 	// Only runs on non-cached turns — once the cache is stamped
 	// (cachedTurn=true) req.Config.Tools has been nil'd by the strip
 	// above, so there's nothing meaningful to seed anyway; and Init
-	// is at-most-once internally so post-first-turn calls are cheap.
+	// short-circuits internally (already-initializing / active, or a
+	// failed attempt serving its retry backoff) so the repeat calls
+	// are cheap — and they're what drives the #707 retry schedule.
 	if !cachedTurn && l.cacheInit != nil && req.Config != nil {
 		l.cacheInit(ctx, req.Config.SystemInstruction, req.Config.Tools)
 	}

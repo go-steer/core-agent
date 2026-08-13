@@ -191,9 +191,17 @@ a Vertex issue without editing config).
 Every failure path degrades to "no cache" for the affected turn,
 never breaks the session:
 
-- **`caches.Create` fails**: logged, agent runs uncached for its
-  lifetime. No retry loop in v1 (retries hide real problems from
-  operators; the structured log is enough).
+- **`caches.Create` fails**: logged, and the turn runs uncached. Since
+  #707 the attempt is retried on a bounded backoff (15s / 30s / 1m /
+  2m / 4m, ~7.75 minutes across six attempts) driven by later turns'
+  `Init` calls, not a background timer; only after the budget is spent
+  does the agent run uncached for its lifetime. v1 had no retry loop at
+  all on the theory that retries hide real problems from operators, but
+  a 403 during Workload-Identity propagation is a real problem that
+  fixes itself in minutes, and paying full input price for the daemon's
+  whole life is the wrong answer to it. The bound preserves the
+  original intent: a genuinely misconfigured project still stops
+  retrying and still gets a loud log line.
 - **`caches.Get`/`Update` returns NotFound mid-session** (backend
   reaped early or another process deleted): logged, cache handle
   cleared, agent runs uncached for remaining turns.

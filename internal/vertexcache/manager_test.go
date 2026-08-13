@@ -195,27 +195,29 @@ func TestManager_InitHappyPath(t *testing.T) {
 }
 
 // TestManager_InitError degrades cleanly: Create returns an error,
-// state goes to Failed, Name returns "" forever, and callers can
-// still use the manager (no panics, no unbounded retries).
+// Name returns "" (uncached, no panic), and callers can keep using the
+// manager. Since #707 the failure is retried on a bounded schedule
+// rather than being permanent, so the assertion here is that nothing
+// retries *within the backoff* — the give-up path is
+// TestInit_RealErrorGivesUpAfterRetryBudget.
 func TestManager_InitError(t *testing.T) {
 	t.Parallel()
 	fake := &fakeCaches{createErr: errors.New("boom")}
 	m := NewManager(fake, "gemini-2.5-flash", Options{Logger: discardLogger()})
 
 	m.Init(context.Background(), &genai.Content{Parts: []*genai.Part{{Text: "sys"}}}, nil)
-	waitFor(t, testWait, func() bool { return m.Snapshot().Failed })
+	waitFor(t, testWait, func() bool { return fake.createCount.Load() == 1 })
 
 	if got := m.Name(context.Background()); got != "" {
 		t.Errorf("Name after failed Init = %q, want empty (degrade to uncached)", got)
 	}
-	// Design contract: Init is at-most-once; re-Init doesn't retry
-	// after a hard failure (the operator log line is the signal).
+	// Re-Init inside the backoff window must not fire a second RPC.
 	m.Init(context.Background(), &genai.Content{Parts: []*genai.Part{{Text: "sys"}}}, nil)
 	// Give any spurious background goroutine a chance to run before
 	// we assert.
 	time.Sleep(20 * time.Millisecond)
 	if fake.createCount.Load() != 1 {
-		t.Errorf("Create called %d times after failed retry, want 1 (at-most-once)", fake.createCount.Load())
+		t.Errorf("Create called %d times inside the backoff, want 1", fake.createCount.Load())
 	}
 }
 
@@ -494,23 +496,114 @@ func TestInit_TransientCancelRetriesInsteadOfStickyFail(t *testing.T) {
 	}
 }
 
-// TestInit_RealErrorStaysSticky pins the counterpart: a genuine
-// Create failure (bad model, permission denied, ...) keeps the
-// documented sticky stateFailed — a later Init must NOT hammer the
-// API with doomed retries.
-func TestInit_RealErrorStaysSticky(t *testing.T) {
-	t.Parallel()
-	f := &fakeCaches{createErr: errors.New("permission denied")}
+// fakeClock is a manually advanced clock for the #707 retry-backoff
+// tests, so they assert on the schedule instead of sleeping through it.
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *fakeClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+// setCreateErr flips the injected Create error mid-test, so a retry can
+// find the API healthy again.
+func (f *fakeCaches) setCreateErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.createErr = err
+}
+
+// newRetryManager builds a Manager on a fake clock with a two-entry
+// backoff schedule (so three Create attempts total).
+func newRetryManager(f *fakeCaches) (*Manager, *fakeClock) {
+	clk := &fakeClock{t: time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)}
 	m := NewManager(f, "gemini-3.1-pro", Options{Logger: discardLogger()})
+	m.now = clk.now
+	m.retryBackoff = []time.Duration{15 * time.Second, 30 * time.Second}
+	return m, clk
+}
+
+// TestInit_PermissionDeniedRecoversOnRetry is the #707 regression gate.
+// A live GKE daemon came up before its Workload-Identity binding had
+// propagated, Caches.Create returned 403, and the pre-fix sticky
+// stateFailed meant the session paid full input price for all 365K of
+// its billed input tokens — for the daemon's entire life, long after
+// IAM had settled. A later Init past the backoff must retry and
+// succeed.
+//
+// Pre-fix this fails at the final Snapshot: state is stateFailed and no
+// second Create is ever issued.
+func TestInit_PermissionDeniedRecoversOnRetry(t *testing.T) {
+	t.Parallel()
+	f := &fakeCaches{createErr: errors.New("rpc error: code = PermissionDenied desc = 403")}
+	m, clk := newRetryManager(f)
 	sys := &genai.Content{Parts: []*genai.Part{{Text: "sys"}}}
 
 	m.Init(context.Background(), sys, nil)
-	waitFor(t, testWait, func() bool { return m.Snapshot().Failed })
+	waitFor(t, testWait, func() bool { return f.createCount.Load() == 1 })
+	if snap := m.Snapshot(); snap.Failed {
+		t.Fatal("Snapshot().Failed = true after one 403; want a pending retry, not a lifetime sentence")
+	}
 
-	m.Init(context.Background(), sys, nil) // must no-op
+	// Still inside the first backoff: a busy daemon's next turn must
+	// not re-issue the doomed RPC.
+	m.Init(context.Background(), sys, nil)
 	time.Sleep(20 * time.Millisecond)
 	if got := f.createCount.Load(); got != 1 {
-		t.Errorf("createCount = %d, want 1 (sticky failure must not retry)", got)
+		t.Fatalf("createCount = %d during backoff, want 1 (backoff not honored)", got)
+	}
+
+	// IAM propagates; the next turn past the backoff picks it up.
+	f.setCreateErr(nil)
+	clk.advance(16 * time.Second)
+	m.Init(context.Background(), sys, nil)
+	waitFor(t, testWait, func() bool { return m.Snapshot().Active })
+
+	if got := f.createCount.Load(); got != 2 {
+		t.Errorf("createCount = %d, want 2", got)
+	}
+	m.mu.Lock()
+	failures := m.initFailures
+	m.mu.Unlock()
+	if failures != 0 {
+		t.Errorf("initFailures = %d after a successful retry, want 0 (history must reset)", failures)
+	}
+}
+
+// TestInit_RealErrorGivesUpAfterRetryBudget pins the property the old
+// sticky failure existed to protect: a genuinely misconfigured project
+// is not hammered forever. Retries are bounded by the backoff schedule,
+// and the attempt after the last one is permanent.
+func TestInit_RealErrorGivesUpAfterRetryBudget(t *testing.T) {
+	t.Parallel()
+	f := &fakeCaches{createErr: errors.New("permission denied")}
+	m, clk := newRetryManager(f) // 2 retries => 3 attempts
+	sys := &genai.Content{Parts: []*genai.Part{{Text: "sys"}}}
+
+	for i, wait := range []time.Duration{0, 16 * time.Second, 31 * time.Second} {
+		clk.advance(wait)
+		m.Init(context.Background(), sys, nil)
+		want := int32(i + 1)
+		waitFor(t, testWait, func() bool { return f.createCount.Load() == want })
+	}
+	waitFor(t, testWait, func() bool { return m.Snapshot().Failed })
+
+	// Budget spent: no further attempt, however long we wait.
+	clk.advance(time.Hour)
+	m.Init(context.Background(), sys, nil)
+	time.Sleep(20 * time.Millisecond)
+	if got := f.createCount.Load(); got != 3 {
+		t.Errorf("createCount = %d, want 3 (a spent retry budget must stay spent)", got)
 	}
 }
 

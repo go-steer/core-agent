@@ -235,10 +235,15 @@ func TestAutonomousHandle_PauseHaltsBeforeNextTurn(t *testing.T) {
 
 func TestAutonomousHandle_PauseIdempotent(t *testing.T) {
 	t.Parallel()
+	// Same shape as StopUnblocksPause: the four control calls below are
+	// all errors on a terminated run, so the run must be unable to
+	// terminate while they happen. Turn 1 holds long enough for the
+	// first Pause to land mid-turn; turn 2 blocks until Stop cancels
+	// the context, which also covers the second Resume racing a run
+	// that would otherwise have completed.
 	llm := &stubLLM{scenarios: []scenarioFn{
-		textTurn("t", 1, 1),
-		doneCallTurn("ok"),
-		textTurn("done", 1, 1),
+		delayedTextTurn("t", 100*time.Millisecond),
+		blockUntilCanceled(),
 	}}
 	h, err := Start(context.Background(), buildAgent(llm, "h-pause-idem"), "g", WithMaxTurns(0))
 	if err != nil {

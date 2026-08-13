@@ -48,6 +48,10 @@
 //     resets, mirroring the cost-ceiling kill switch. The signal
 //     detection is identical to warn mode; only the agent-side
 //     reaction differs (see pkg/agent/watchdog.go).
+//   - Tool *outcome* observation (#639) via the optional
+//     ToolResultObserver extension — see failure.go. Kept optional
+//     rather than folded into Watchdog so a third-party
+//     implementation doesn't break to gain one signal.
 //
 // Future scope (deferred — see design doc §"Piece 2"):
 //
@@ -194,16 +198,21 @@ type Signal interface {
 //   - AlternatingCycle (period ≤ 4, 3 laps): the same short sequence
 //     of calls repeated three times — the a → b → a → b shape the
 //     repeat detector structurally cannot see (#649).
+//   - ToolFailureStreak (3 in a row): every call erroring with none
+//     succeeding in between, i.e. an agent with no verified evidence
+//     about anything (#639).
 //
-// Both are Critical, so both halt under --watchdog=enforce and both
-// reach the model under --watchdog=feedback. Operators wanting
-// different thresholds — or only one of the two — construct
-// DefaultWatchdog directly with a custom signal list.
+// The two loop signals are Critical, so both halt under
+// --watchdog=enforce. The failure streak is Warn: it never halts, and
+// reaches the operator log plus — under --watchdog=feedback — the
+// model's own next turn. Operators wanting different thresholds, or a
+// subset, construct DefaultWatchdog directly with a custom signal list.
 func NewDefaultWatchdog() *DefaultWatchdog {
 	return &DefaultWatchdog{
 		signals: []Signal{
 			NewRepeatedToolCallSignal(5),
 			NewAlternatingCycleSignal(DefaultCycleMaxPeriod, DefaultCycleRepeats),
+			NewToolFailureStreakSignal(DefaultFailureStreak),
 		},
 	}
 }

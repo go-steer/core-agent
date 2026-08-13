@@ -159,6 +159,78 @@ func (a *Agent) observeToolCallsForWatchdog(ev *session.Event, seen map[string]s
 	}
 }
 
+// observeToolResultsForWatchdog walks ev's content parts and feeds any
+// function-response parts to the wired watchdog, when it implements
+// the optional watchdog.ToolResultObserver extension (#639). A
+// watchdog that only counts calls is left alone.
+//
+// Success vs failure follows ADK's convention (base_flow.go): a tool
+// error is a reserved "error" key inside FunctionResponse.Response.
+// Flattening it here means the watchdog never has to know a provider's
+// response shape, and one place decides what "failed" means.
+//
+// Shares the per-turn dedup set with call observation, under a
+// distinct key prefix — the same streaming aggregator that re-emits a
+// FunctionCall part re-emits its FunctionResponse, and a double-
+// counted failure would trip the streak signal at half its threshold.
+// A response with no ID falls back to name+error, which collapses
+// same-error parallel calls within one turn; that is the safe
+// direction to be wrong in, since undercounting delays an advisory
+// alert while overcounting fires it on work that was fine.
+func (a *Agent) observeToolResultsForWatchdog(ev *session.Event, seen map[string]struct{}) {
+	if ev == nil || ev.Content == nil {
+		return
+	}
+	obs, ok := a.watchdog.(watchdog.ToolResultObserver)
+	if !ok {
+		return
+	}
+	for _, p := range ev.Content.Parts {
+		if p == nil || p.FunctionResponse == nil {
+			continue
+		}
+		errText := toolResponseError(p.FunctionResponse.Response)
+		key := "result\x00" + p.FunctionResponse.ID
+		if p.FunctionResponse.ID == "" {
+			key = "result\x00" + p.FunctionResponse.Name + "\x00" + errText
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		obs.ObserveToolResult(watchdog.ToolResult{
+			Name:  p.FunctionResponse.Name,
+			Error: errText,
+		})
+	}
+}
+
+// toolResponseError extracts the tool error from an ADK function
+// response, returning "" for a successful call. Mirrors the split the
+// TUI adapter does for rendering; both read the same reserved key.
+//
+// A non-string, non-error value under "error" still counts as a
+// failure — a tool that returns a structured error object is failing,
+// and treating an unrecognized shape as success would silently drop
+// exactly the observations this signal exists to make.
+func toolResponseError(resp map[string]any) string {
+	v, ok := resp["error"]
+	if !ok || v == nil {
+		return ""
+	}
+	switch e := v.(type) {
+	case string:
+		if e == "" {
+			return ""
+		}
+		return e
+	case error:
+		return e.Error()
+	default:
+		return fmt.Sprintf("%v", e)
+	}
+}
+
 // drainWatchdogAlerts is the post-turn hook entry point. Pulls any
 // alerts the watchdog accumulated during the just-ended turn and
 // dispatches them to the configured onWatchdogAlert callback. No-op

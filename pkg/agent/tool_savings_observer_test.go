@@ -247,3 +247,68 @@ func TestObserveToolSavings_MultipleResponsePartsAllCounted(t *testing.T) {
 		t.Errorf("StructuralTokensSaved = %d, want 1800 (2 × 900)", got.StructuralTokensSaved)
 	}
 }
+
+// TestObserveToolSavings_AgenticPathChargesSessionTotals pins the
+// half of #717 that puts the digest's spend on the CALLING session's
+// books. AppendDigestSavings alone was not enough: it writes to the
+// tracker's separate digestSavings block, while Totals() walks only
+// `turns` — and maybeEnforceCostCeiling reads Totals().CostUSD. So a
+// session could drive unbounded digest spend that never showed in its
+// own totals and never counted against its ceiling.
+func TestObserveToolSavings_AgenticPathChargesSessionTotals(t *testing.T) {
+	t.Parallel()
+	a := &Agent{tracker: usage.NewTracker()}
+	ev := mkFuncResponseEvent("gke_get_pods", map[string]any{
+		"path":                   "llm_fallback",
+		"original_tokens_est":    float64(8000),
+		"digest_tokens_est":      float64(200),
+		"subagent_model":         "gemini-2.5-flash",
+		"subagent_input_tokens":  float64(400),
+		"subagent_output_tokens": float64(80),
+	})
+
+	a.observeToolSavings(ev)
+
+	totals := a.tracker.Totals()
+	if totals.Turns != 1 {
+		t.Fatalf("Totals().Turns = %d, want 1 — the digest must reach the session's turn ledger, not just the savings block", totals.Turns)
+	}
+	if totals.InputTokens != 400 || totals.OutputTokens != 80 {
+		t.Errorf("Totals() tokens = in %d / out %d, want in 400 / out 80", totals.InputTokens, totals.OutputTokens)
+	}
+	// The turn must be attributed to the SUBAGENT's model, so
+	// TotalsByModel still separates cheap digest spend from parent spend.
+	byModel := a.tracker.TotalsByModel()
+	if _, ok := byModel["gemini-2.5-flash"]; !ok {
+		t.Errorf("TotalsByModel missing the subagent model; got %v", byModel)
+	}
+	// ContextStats' subtask counters follow the same session.
+	if a.subtaskCount != 1 {
+		t.Errorf("subtaskCount = %d, want 1", a.subtaskCount)
+	}
+}
+
+// TestObserveToolSavings_NonAgenticPathsDoNotCharge: structural and
+// passthrough digests spend no subagent tokens, so they must not
+// manufacture a turn (which would inflate the session's cost ceiling
+// pressure with work that never happened).
+func TestObserveToolSavings_NonAgenticPathsDoNotCharge(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{"structural_json", "passthrough"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			a := &Agent{tracker: usage.NewTracker()}
+			a.observeToolSavings(mkFuncResponseEvent("gke_get_pods", map[string]any{
+				"path":                path,
+				"original_tokens_est": float64(8000),
+				"digest_tokens_est":   float64(200),
+			}))
+			if got := a.tracker.Totals().Turns; got != 0 {
+				t.Errorf("%s path produced %d turn(s), want 0", path, got)
+			}
+			if a.subtaskCount != 0 {
+				t.Errorf("%s path incremented subtaskCount to %d, want 0", path, a.subtaskCount)
+			}
+		})
+	}
+}

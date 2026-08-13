@@ -248,6 +248,7 @@ Opt-in. When the structural pruner can't reduce a response below the threshold �
 - **CLI**: `--mcp-agentic-wrap-llm=true` enables the path. `--mcp-agentic-wrap-model=<id>` overrides the subagent model just for MCP (falls through to `--agentic-small-model` → provider default → parent-inherit).
 - **Per-project**: `agentic_wrap_llm: true` and `agentic_wrap_model: "<id>"` in `.agents/mcp.json` mirror the CLI flags. Either source enabling turns it on.
 - **Cost profile**: the subagent pays a small-tier bill (e.g. `gemini-3.5-flash-lite`: ~$0.30/M input, $0.03/M cached, $2.50/M output). Break-even after one subsequent turn where the digest replaces the raw response in history resend.
+- **Attribution**: the subagent's spend is billed to the session whose tool call triggered the digest — it appears in that session's `/stats` turns and counts against its `--cost-ceiling`. In multi-session mode each session carries its own digests; before v2.9 they all landed on the primary session's ledger.
 
 ```json
 {

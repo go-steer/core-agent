@@ -65,9 +65,10 @@ const mcpDigestSubagentSystemPrompt = "You are a digesting subtask. Summarize th
 // modelID is resolved up-front so it appears in the startup log; the
 // closure caches the adkmodel.LLM on first invocation and reuses it.
 // Empty modelID → subagent inherits the parent's model (functionally
-// correct, no cost win). SubagentModel on the returned result mirrors
-// modelID verbatim so display-side pricing lookup uses the resolved
-// tier, not the parent.
+// correct, no cost win). SubagentModel on the returned result carries
+// the model that actually ran — modelID when set, else the parent's —
+// so display-side pricing lookup uses the resolved tier and the
+// session-side billing in observeToolSavings has something to charge.
 func BuildMCPDigestLLMFallback(
 	agentRef **agent.Agent,
 	provider models.Provider,
@@ -118,12 +119,33 @@ func BuildMCPDigestLLMFallback(
 			span.SetAttributes(attribute.String("gen_ai.system", provider.Name()))
 		}
 
+		// SkipParentUsage because `a` is the PRIMARY agent, bound once
+		// at boot — not the agent whose session made the MCP call.
+		// Billing it here charged every session's digests to the
+		// primary session and counted them against the primary's cost
+		// ceiling (#717). The calling session picks the cost up from
+		// the `savings` sidecar on the tool result instead, which puts
+		// it on the right books AND under the right ceiling.
+		// Effective model name for the savings sidecar. Empty modelID
+		// means the subtask inherits the parent's model, and RunSubtask
+		// runs it on `a` — so `a.ModelName()` is the model that actually
+		// spent the tokens. Reporting it matters post-#717: the sidecar
+		// is now the ONLY channel by which the digest's cost reaches a
+		// session's ledger, and pkg/mcp omits the token fields entirely
+		// when SubagentModel is empty. Leaving it blank would drop the
+		// inherit-model case's spend on the floor.
+		effectiveModel := modelID
+		if effectiveModel == "" {
+			effectiveModel = a.ModelName()
+		}
+
 		res, err := a.RunSubtask(spanCtx, agent.SubtaskSpec{
-			Name:         "mcp_digest",
-			SystemPrompt: mcpDigestSubagentSystemPrompt,
-			UserMessage:  string(raw),
-			Model:        m,
-			Budgets:      agent.SubtaskBudgets{MaxTurns: 2},
+			Name:            "mcp_digest",
+			SystemPrompt:    mcpDigestSubagentSystemPrompt,
+			UserMessage:     string(raw),
+			Model:           m,
+			Budgets:         agent.SubtaskBudgets{MaxTurns: 2},
+			SkipParentUsage: true,
 		})
 		if err != nil {
 			return mcp.LLMFallbackResult{}, err
@@ -138,7 +160,7 @@ func BuildMCPDigestLLMFallback(
 		)
 		return mcp.LLMFallbackResult{
 			Text:                 res.Digest,
-			SubagentModel:        modelID,
+			SubagentModel:        effectiveModel,
 			SubagentInputTokens:  res.InputTokens,
 			SubagentOutputTokens: res.OutputTokens,
 		}, nil

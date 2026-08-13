@@ -53,6 +53,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"google.golang.org/genai"
 
 	adkagent "google.golang.org/adk/agent"
@@ -107,6 +108,26 @@ type SubtaskSpec struct {
 	// Budgets caps the subtask's resource use. Zero fields fall
 	// back to SubtaskBudgetDefaults.
 	Budgets SubtaskBudgets
+
+	// SkipParentUsage suppresses the roll-up of this subtask's cost
+	// into the *running* agent's usage.Tracker and ContextStats
+	// counters. The subtask's own SubtaskResult still carries full
+	// token + cost figures, so callers lose nothing.
+	//
+	// Set this when the agent executing the subtask is NOT the agent
+	// that should be billed. The MCP digest wrap is the motivating
+	// case (#717): its LLMFallback closure is bound to the primary
+	// agent at boot, but it fires on behalf of whichever session made
+	// the MCP call. Rolling up here would bill the primary session for
+	// every other session's digests — and, because
+	// maybeEnforceCostCeiling reads the tracker, could trip the
+	// primary's cost ceiling on traffic it never generated.
+	//
+	// The correct session recovers the cost from the `savings` sidecar
+	// riding on the tool result (pkg/agent/tool_savings_observer.go),
+	// so suppressing here moves the charge onto the right books rather
+	// than dropping it.
+	SkipParentUsage bool
 }
 
 // SubtaskBudgets caps subtask cost in three dimensions. Whichever
@@ -303,10 +324,22 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 	// session.Service rows. Branch label keeps the audit log
 	// correlated to the parent.
 	branch := subsession.ComposeBranch("", "sub."+spec.Name)
-	// No invocation-unique component: a subtask is addressed by its
-	// stable name, so its derived row is intentionally deterministic
-	// (unlike the parallel-tool-call subagent path in subagent.go, #364).
-	subSessionID := subsession.DeriveSessionID(a.sessionID, "sub."+spec.Name, "")
+	// Invocation-unique component, matching the parallel-tool-call
+	// subagent path (subagent.go, #364). This row used to be derived
+	// from the subtask's stable name alone, which contradicted this
+	// type's own contract — UserMessage is documented as "the
+	// operator's first user message in the subtask's brand-new
+	// session," but with AutoCreateSession on a shared session.Service
+	// the second invocation of a given subtask name reopened the first
+	// one's row and inherited its history.
+	//
+	// Two costs, both observed live (#717): every subsequent digest
+	// re-sent the previous digest's payload as context, and once the
+	// MCP wrap started routing every session's digests through one
+	// shared agent, concurrent invocations contended on a single row.
+	// The branch label still carries the stable name, so audit
+	// correlation is unaffected.
+	subSessionID := subsession.DeriveSessionID(a.sessionID, "sub."+spec.Name, uuid.NewString())
 
 	// Use the UNWRAPPED parent session service (a.sessionService,
 	// not the compactingService the runner uses). The subtask has
@@ -385,11 +418,17 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 			// still flow into SubtaskResult/ContextStats.
 			totalIn += u.InputTokens
 			totalOut += u.OutputTokens
-			if a.tracker != nil {
-				modelName := subModel.Name()
-				pricing := usage.PriceFor(modelName, nil)
+			// Cost is computed either way so SubtaskResult (and the
+			// OTel span attributes built from it) stay populated;
+			// SkipParentUsage only suppresses the roll-up into THIS
+			// agent's tracker, not the accounting itself.
+			modelName := subModel.Name()
+			pricing := usage.PriceFor(modelName, nil)
+			if a.tracker != nil && !spec.SkipParentUsage {
 				turn := a.tracker.AppendUsage(modelName, u, pricing)
 				totalCostUSD += turn.CostUSD
+			} else {
+				totalCostUSD += pricing.CostUSD(u.InputTokens, u.OutputTokens)
 			}
 		}
 		if ev.TurnComplete {
@@ -428,7 +467,9 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 	// natural-finish case; we use turnsUsed to distinguish.)
 	truncated := !turnComplete || (turnsUsed >= maxTurns && !lastEventWasTurnComplete(turnsUsed, maxTurns))
 
-	a.recordSubtaskUsage(totalIn, totalOut, totalCostUSD)
+	if !spec.SkipParentUsage {
+		a.recordSubtaskUsage(totalIn, totalOut, totalCostUSD)
+	}
 
 	return SubtaskResult{
 		Name:         spec.Name,

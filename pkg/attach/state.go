@@ -88,11 +88,16 @@ type AgentInfo struct {
 // is wired; empty list otherwise (e.g. --no-background-agents, where
 // nothing is spawnable by reference).
 type SubagentCatalogInfo struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description,omitempty"`
-	Model       string   `json:"model,omitempty"` // resolved model id; empty only for a predefined spec that inherits the parent's
-	Root        string   `json:"root,omitempty"`  // own content root, when rooted
-	Modes       []string `json:"modes"`           // "sync" and/or "async"
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Model       string `json:"model,omitempty"` // resolved model id; empty only for a predefined spec that inherits the parent's
+	Root        string `json:"root,omitempty"`  // own content root, when rooted
+	// Modes is how this subagent can be invoked ON THIS SESSION: always
+	// "async" (spawn_agent by reference), plus "sync" only when this
+	// session's agent also carries it as a parent tool. A session created
+	// via POST /sessions gets the background manager but not the
+	// synchronous subagent tools, so its entries are async-only (#741).
+	Modes []string `json:"modes"`
 }
 
 // StatusInfo is the response shape of GET /sessions/.../status.

@@ -67,6 +67,17 @@ Dry-run the composer locally to preview the notes for a tag before pushing:
 less /tmp/notes.md
 ```
 
+## The Go toolchain images build on
+
+`release-images.yml` builds every image on `golang:<version>-alpine`, where `<version>` comes from **`go.mod`'s `toolchain` directive** — not the `go` directive, which is only the language compatibility floor. Stdlib CVEs are fixed by toolchain patch releases, so that distinction decides whether a published image ships a vulnerable standard library ([#736](https://github.com/go-steer/core-agent/issues/736)).
+
+Two checks keep it honest, and both read the same resolver ([`dev/tools/verify-go-toolchain`](../dev/tools/verify-go-toolchain)):
+
+- **Before merge** — the `go toolchain` check verifies that both Dockerfiles' `ARG GO_VERSION` defaults and the release workflow agree with `go.mod`. Run it locally with `dev/ci/presubmits/verify-go-toolchain`.
+- **Before publish** — the release workflow builds `linux/amd64`, exports the image filesystem, and asserts the binary's recorded Go version matches `go.mod` and that its stdlib carries no advisories. This runs *before* the push, so a mismatch fails the release instead of shipping.
+
+If the publish-time check reports stdlib advisories, bump `toolchain` in `go.mod` to the current patch release and re-tag; nothing else in the tree needs to change. Source-mode `govulncheck` (CI's `vuln` job) will not catch this class on its own — it scans with whatever toolchain the runner resolves, not the one the image is built with.
+
 ## Verify a release locally
 
 ```bash

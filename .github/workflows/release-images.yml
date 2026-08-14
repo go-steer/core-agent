@@ -89,18 +89,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Extract Go version from go.mod so the build container always
-      # tracks the project's pinned version. Bumping go.mod
+      # Resolve the Go toolchain from go.mod so the build container
+      # always tracks the project's pinned version. Bumping go.mod
       # automatically bumps the build image — no second-source-of-
       # truth that can drift.
-      - name: Extract Go version from go.mod
+      #
+      # This MUST go through dev/tools/verify-go-toolchain: the inline
+      # grep that used to live here read the `go` directive (the
+      # language compatibility floor, 1.26.4) rather than `toolchain`
+      # (what we build with, 1.26.6), so published images were compiled
+      # against a stdlib CI had already moved off (#736).
+      - name: Resolve the Go toolchain from go.mod
         id: go-version
         run: |
-          GO_VERSION=$(grep -E '^go [0-9]+\.[0-9]+(\.[0-9]+)?$' go.mod | awk '{print $2}')
-          if [[ -z "$GO_VERSION" ]]; then
-            echo "::error::Could not extract Go version from go.mod" >&2
-            exit 1
-          fi
+          GO_VERSION="$(dev/tools/verify-go-toolchain --print)"
           echo "version=${GO_VERSION}" >> "$GITHUB_OUTPUT"
           echo "Building against Go ${GO_VERSION}"
 
@@ -201,6 +203,62 @@ jobs:
             VERSION="main-$(git rev-parse --short HEAD)"
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      # Gate on the ARTIFACT, before anything is published.
+      #
+      # Everything above only proves we *asked* for the right compiler.
+      # This builds linux/amd64 to a local export and checks what the
+      # binary actually says: the Go version recorded in its build info
+      # must match go.mod, and its stdlib must carry no advisories.
+      # Source-mode govulncheck (the `vuln` job in ci.yml) cannot cover
+      # this — it scans the source tree with whatever toolchain is on
+      # the runner, not the one the image was built with.
+      #
+      # amd64 alone is enough: the builder stage is pinned to
+      # $BUILDPLATFORM and cross-compiles, so every platform in the
+      # matrix comes out of the *same* golang:<version>-alpine
+      # toolchain — only GOARCH differs. Building arm64 here too would
+      # pay for a QEMU compile before the push step could reuse it.
+      #
+      # The amd64 layers land in the buildx builder's local cache, so
+      # the multi-arch push below reuses them and only pays for arm64.
+      # Export outside the workspace: `context: .` has no .dockerignore
+      # to shield it, so an in-tree export would land in the next
+      # build's `COPY . .` — busting the cache and making the image we
+      # publish a different build from the one we just verified.
+      - name: Build linux/amd64 for verification
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: false
+          outputs: type=local,dest=${{ runner.temp }}/toolchain-scan
+          build-args: |
+            GO_VERSION=${{ steps.go-version.outputs.version }}
+            VARIANT=${{ matrix.variant }}
+            BUILD_TAGS=${{ matrix.build_tags }}
+            VERSION=${{ steps.version.outputs.version }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
+          cache-from: type=gha,scope=${{ matrix.image_name }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
+
+      - name: Verify the shipped toolchain
+        run: |
+          # Single-platform exports land at the export root; multi-
+          # platform ones nest under <os>_<arch>/. Find it either way.
+          BINARY=$(find "${RUNNER_TEMP}/toolchain-scan" -type f \
+                        -path '*/usr/local/bin/binary' | sed -n '1p')
+          if [[ -z "$BINARY" ]]; then
+            echo "::error::no binary in the exported image filesystem" >&2
+            exit 1
+          fi
+          dev/tools/verify-go-toolchain --binary "$BINARY"
 
       # Build + push multi-arch image. type=gha cache speeds up
       # iterative builds substantially — the Go module download +

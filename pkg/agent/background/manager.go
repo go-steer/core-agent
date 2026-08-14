@@ -394,8 +394,9 @@ type Spec struct {
 // A BOUNDED delegation is handed one task and is done when it stops
 // working: the first turn that ends without the model asking for
 // another tool ends the run, and its last message is the deliverable.
-// No done tool is registered — there is one way out and the model
-// cannot forget to take it.
+// The return tool is registered too and ranked above that (#745), so a
+// model that calls it hands back a curated result instead — but a model
+// that forgets still ends, which is the property that matters.
 //
 // A STANDING worker is a loop that watches something. A turn that
 // produces only text is a status report, so the driver feeds it the

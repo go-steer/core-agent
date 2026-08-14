@@ -83,6 +83,23 @@ lose the result:
    the observed failure was precisely ambiguity between three
    near-synonymous names.
 
+   **Amended 2026-08-14 ([#745](https://github.com/go-steer/core-agent/issues/745)):
+   bounded registers the return tool too.** The half of this decision
+   that holds is that natural termination *is* a completion signal for
+   a bounded delegation — nothing can hang by being forgotten. The half
+   that did not survive contact is "no done tool": bounded is the
+   default for declarative-subagent spawns, so dropping the tool left
+   the #728 alias net covering only the path models rarely take. In the
+   2026-08-14 GKE UAT a bounded `cluster` finished its RCA, called
+   `mark_task_done`, and was told it had hallucinated the tool — the
+   ambiguity this decision meant to remove, reappearing as an absence.
+   The two signals do not compete because the loop ranks them: a done
+   signal breaks first, a natural end second. So the tool is the
+   preferred exit (a curated result) and the natural end is the
+   backstop (a scraped last message). Only the genuinely tool-less path
+   — a declarative subagent invoked synchronously as a parent tool —
+   still renders the no-tool form of the contract.
+
 3. **A stop condition on the existing driver, not a second driver.**
    `stopOnNaturalEnd` in `autoConfig`, checked beside
    `turnRes.doneSignaled`. This inherits retry policy,
@@ -173,6 +190,7 @@ lose the result:
 | 3 | #730 | 2 | `madeToolCalls` + `stopOnNaturalEnd`; bounded spawns drop the done tool; typed stop reason |
 | 4 | #731 | 3 | Retain the last *substantive* turn's text |
 | 5 | #732 | — | Self-spawn guard |
+| 6 | #745 | 3 | Amends PR 3: bounded spawns get the return tool back, ranked above the natural end |
 
 PR 2 has no code dependency on PR 1 but is sequenced after it so the
 train lands in one rebase order.

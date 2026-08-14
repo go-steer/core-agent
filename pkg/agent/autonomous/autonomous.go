@@ -879,13 +879,18 @@ func WithMaxCost(usd float64) Option {
 // a status report, and the loop feeds it the continuation prompt and
 // keeps going until a budget or an explicit done signal fires.
 //
-// It also suppresses the done/return tool entirely: with one
+// On its own it suppresses the done/return tool entirely: with one
 // termination path there is nothing for the model to choose between,
 // and no way to leave the loop running by forgetting to call
-// something. Consumers that want the model to hand back a curated
-// result rather than its last message should use WithReturnTool
-// instead — the two are alternatives, and setting both leaves the
-// return tool unregistered.
+// something.
+//
+// Pair it with WithReturnTool and the tool IS registered (#745): the
+// two are not alternatives but a preference order. A model that calls
+// the tool hands back a curated result and ends; a model that just
+// stops still ends, with its last message as the result. Nothing can
+// hang, because the natural end never stops being a termination path.
+// Bounded-without-a-return-tool remains the right shape only where the
+// model genuinely has no gesture available.
 func WithStopOnNaturalEnd() Option {
 	return func(c *autoConfig) { c.stopOnNaturalEnd = true }
 }

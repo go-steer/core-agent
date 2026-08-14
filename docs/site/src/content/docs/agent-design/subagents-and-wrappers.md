@@ -256,9 +256,13 @@ The inline result carries the subagent's completion report as `output`, plus its
 
 A spawned subagent is one of two things, and they want opposite termination rules.
 
-A **bounded delegation** is handed one task. `agent.Run` is already a terminating loop — model, tool, model, until the model stops asking for tools — and for a subagent with a deliverable, that *is* completion. So the run ends there and the turn's last message is the deliverable. No return tool is registered: there is one way out and the model cannot forget to take it. This is the default.
+A **bounded delegation** is handed one task. `agent.Run` is already a terminating loop — model, tool, model, until the model stops asking for tools — and for a subagent with a deliverable, that *is* completion. So the run ends there and the turn's last message is the deliverable. This is the default.
 
-A **standing worker** is a loop that watches something. A turn with no tool calls means *idle*, not *finished*, so the driver injects the continuation prompt and keeps going until a budget fires, the scheduler defers it, or the model calls `return_result(result)` — registered under the aliases `report_done`, `report_completed` and `mark_task_done` so any name it reaches for both delivers the payload and ends the run. An empty result is refused with a corrective ack rather than terminating the delegation with nothing in hand.
+A **standing worker** is a loop that watches something. A turn with no tool calls means *idle*, not *finished*, so the driver injects the continuation prompt and keeps going until a budget fires, the scheduler defers it, or the model calls the return tool.
+
+Both get `return_result(result)` — registered under the aliases `report_done`, `report_completed` and `mark_task_done` so any name the model reaches for both delivers the payload and ends the run. An empty result is refused with a corrective ack rather than terminating the delegation with nothing in hand. For a standing worker the tool is the only way out short of a budget; for a bounded one it is the *preferred* way out, ranked above the natural end, so a model that calls it returns a curated result instead of whatever text it happened to stop on. A bounded delegation that never calls it still ends — nothing can hang by being forgotten.
+
+Bounded briefly shipped without the return tool, on the argument that one exit is simpler than two. Because bounded is the default, that left the alias net covering only the path models rarely take: a GKE triage subagent finished its analysis, called `mark_task_done`, and was told it had hallucinated the tool. Two exits are fine when they are ordered.
 
 Which one you get is derived from the scheduler: a subagent that can ask to be re-run later (`scheduler: "sleep"`, `"exit_on_defer"`, or a manager-level default scheduler) is standing; everything else is bounded. Embedders can override it explicitly with `Spec.Mode` / `SubagentTemplate.Mode` (`background.ModeBounded` / `background.ModeStanding`).
 

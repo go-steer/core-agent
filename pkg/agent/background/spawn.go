@@ -73,17 +73,13 @@ const subagentDoneToolDescription = "Return your result to the agent that delega
 var subagentReturnToolAliases = []string{"report_done", "report_completed", "mark_task_done"}
 
 // subagentReturnContract is the #727 instruction block, rendered for
-// the async path — which does have a return tool, unlike a declarative
-// subagent invoked synchronously as a parent tool. Both paths render
-// from agent.SubagentReturnContract so the same declared subagent can't
-// be told two different things depending on how it was reached.
+// every spawned subagent — bounded and standing alike, since #745 gave
+// both a return tool. A declarative subagent invoked synchronously as a
+// parent tool has none and renders the last-message form instead
+// (cmd/core-agent/subagents.go). Both paths render from
+// agent.SubagentReturnContract so the same declared subagent can't be
+// told two different things depending on how it was reached.
 var subagentReturnContract = agent.SubagentReturnContract(autonomous.DefaultReturnToolName)
-
-// boundedReturnContract is the same block for a bounded delegation,
-// which registers no return tool: it terminates when the model stops
-// asking for tools, so the contract points at the last message
-// instead of a tool call (#730).
-var boundedReturnContract = agent.SubagentReturnContract("")
 
 // resolvedSpawn is a fully-resolved launch recipe — everything the
 // per-spawn goroutine needs after kind-specific resolution has run.
@@ -379,16 +375,12 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 		// and a spec's persona may itself be installed via
 		// WithInstruction (which replaces layers 1-3). Appending last
 		// keeps the return contract present under either arrangement.
-		contract := subagentReturnContract
-		if bounded {
-			// A bounded delegation has no return tool to name, so it
-			// gets the last-message form of the same contract — telling
-			// it to call a tool that isn't registered is the #641 shape
-			// (reached for mark_task_done, got tool-not-found, never
-			// recovered) with a new name.
-			contract = boundedReturnContract
-		}
-		opts = append(opts, agent.WithExtraInstruction(contract))
+		// Both modes name the return tool: bounded registers it too as
+		// of #745, so the contract's tool-naming form is accurate on
+		// every spawned path. (A declarative subagent invoked
+		// synchronously as a parent tool still has none, and renders
+		// the last-message form in cmd/core-agent/subagents.go.)
+		opts = append(opts, agent.WithExtraInstruction(subagentReturnContract))
 		if len(toolsets) > 0 {
 			opts = append(opts, agent.WithToolsets(toolsets))
 		}
@@ -408,17 +400,25 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 		// which is what produced the content-free "successfully diagnosed
 		// the issue" reports the parent then had to re-derive (#641).
 		//
-		// A bounded delegation takes the other path (#730): it ends
-		// when the model stops calling tools, so it registers no
-		// return tool at all and there is nothing to describe.
-		var opts []autonomous.Option
+		// A bounded delegation adds the other termination rule on top
+		// (#730): it also ends when the model stops calling tools, so
+		// forgetting the return tool cannot hang the run.
+		//
+		// It gets the return tool all the same (#745). #730 dropped it
+		// from bounded runs on the argument that one exit is simpler
+		// than two, which took the aliases with it — and bounded is the
+		// default for declarative-subagent spawns, so the #728 alias net
+		// covered only the path models rarely take. In the 2026-08-14
+		// GKE UAT a bounded `cluster` called mark_task_done with a
+		// finished RCA and was told it had hallucinated the tool. The
+		// two rules are ordered, not competing: a call returns a curated
+		// result, silence still ends the run.
+		opts := []autonomous.Option{autonomous.WithReturnTool(autonomous.ReturnToolConfig{
+			Aliases:     subagentReturnToolAliases,
+			Description: subagentDoneToolDescription,
+		})}
 		if bounded {
 			opts = append(opts, autonomous.WithStopOnNaturalEnd())
-		} else {
-			opts = append(opts, autonomous.WithReturnTool(autonomous.ReturnToolConfig{
-				Aliases:     subagentReturnToolAliases,
-				Description: subagentDoneToolDescription,
-			}))
 		}
 		if budgets.MaxTurns > 0 {
 			opts = append(opts, autonomous.WithMaxTurns(budgets.MaxTurns))

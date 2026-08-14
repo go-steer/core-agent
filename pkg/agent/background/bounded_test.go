@@ -77,6 +77,28 @@ func (l *toolThenAnswerLLM) GenerateContent(_ context.Context, _ *adkmodel.LLMRe
 	}
 }
 
+// returnThenDegradeLLM is answerThenDegradeLLM with an actual return
+// call on turn 1, using the alias the 2026-08-14 UAT model reached for.
+// Every later turn degrades, so a run that does not stop at the return
+// call hands back the status line instead of the findings.
+type returnThenDegradeLLM struct {
+	turn atomic.Int32
+}
+
+func (*returnThenDegradeLLM) Name() string { return "return-then-degrade" }
+
+func (l *returnThenDegradeLLM) GenerateContent(_ context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	first := l.turn.Add(1) == 1
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		content := &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: boundedDegrade}}}
+		if first {
+			fc := &genai.FunctionCall{Name: "mark_task_done", Args: map[string]any{"result": boundedRCA}}
+			content = &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{FunctionCall: fc}}}
+		}
+		yield(&adkmodel.LLMResponse{Content: content, FinishReason: genai.FinishReasonStop, TurnComplete: true}, nil)
+	}
+}
+
 // TestBounded_StopsAtTheAnswerInsteadOfDegrading is the #730 acceptance
 // test, and the whole train's reason for existing.
 //
@@ -163,14 +185,19 @@ func TestBounded_ToolUsingTurnStillTerminates(t *testing.T) {
 	}
 }
 
-// TestBounded_OffersNoReturnTool pins decision 3 of the fix: one
-// termination path. A bounded delegation ends by running out of work,
-// so registering a return tool alongside it would put two ways out in
-// front of the model — and a tool it can forget to call.
+// TestBounded_OffersTheReturnToolAndItsAliases is #745, and it reverses
+// decision 3 of #730 on purpose.
 //
-// Fails on pre-fix code: every spawn was offered return_result plus
-// three aliases.
-func TestBounded_OffersNoReturnTool(t *testing.T) {
+// #730 dropped the return tool from bounded runs on the argument that
+// one exit is simpler than two. Bounded is the DEFAULT for
+// declarative-subagent spawns, so that left the #728 alias net covering
+// only the path models rarely take: in the 2026-08-14 GKE UAT a bounded
+// `cluster` finished its RCA, called mark_task_done, and was told it
+// had hallucinated the tool. Two exits are fine when they are ordered —
+// a call returns a curated result, silence still ends the run.
+//
+// Fails on pre-fix code: no bounded spawn was offered any of these.
+func TestBounded_OffersTheReturnToolAndItsAliases(t *testing.T) {
 	t.Parallel()
 	capture := &declCapturingLLM{}
 	prov := &recordingProvider{llm: capture}
@@ -190,8 +217,8 @@ func TestBounded_OffersNoReturnTool(t *testing.T) {
 	waitDone(t, h)
 
 	for _, name := range append([]string{"return_result"}, subagentReturnToolAliases...) {
-		if _, ok := capture.declaration(name); ok {
-			t.Errorf("bounded delegation was offered %q; it terminates by running out of tool calls", name)
+		if _, ok := capture.declaration(name); !ok {
+			t.Errorf("bounded delegation was not offered %q; the #728 alias net has to cover the default path", name)
 		}
 	}
 	// report_alert is not a termination gesture and stays.
@@ -200,12 +227,53 @@ func TestBounded_OffersNoReturnTool(t *testing.T) {
 	}
 }
 
-// TestBounded_ContractPointsAtTheLastMessage is the instruction half of
-// the same decision: with no return tool to name, the contract has to
-// tell the subagent that its last message is the deliverable. Telling
-// it to call a tool that isn't registered is the #641 failure (reached
-// for mark_task_done, got tool-not-found, never recovered) rebuilt.
-func TestBounded_ContractPointsAtTheLastMessage(t *testing.T) {
+// TestBounded_ReturnToolCallHandsBackTheResult is the behavioural half:
+// the alias the UAT model reached for now ends the run and its payload
+// is what the parent receives, instead of a scraped last message.
+func TestBounded_ReturnToolCallHandsBackTheResult(t *testing.T) {
+	t.Parallel()
+	prov := &recordingProvider{llm: &returnThenDegradeLLM{}}
+	mgr := newTemplateManager(t, prov, []SubagentTemplate{{
+		Name:         "cluster",
+		Instruction:  "triage",
+		ModelFactory: tmplFactory(prov, "cluster-model"),
+		ModelID:      "cluster-model",
+	}}, WithDefaultBudgets(Budgets{MaxTurns: 4}), WithSyncWaitTimeout(10*time.Second))
+	attachEchoParent(t, mgr)
+	defer mgr.Close()
+
+	h, err := mgr.SpawnTemplate(context.Background(), "", "cluster", RefOverrides{Goal: "triage emailservice"}, "")
+	if err != nil {
+		t.Fatalf("SpawnTemplate: %v", err)
+	}
+	res := mgr.awaitResult(context.Background(), h)
+
+	if res.Status != "completed" {
+		t.Errorf("status = %q, want completed", res.Status)
+	}
+	if res.StopReason != StopNatural {
+		t.Errorf("stop_reason = %q, want %q", res.StopReason, StopNatural)
+	}
+	if !strings.Contains(res.Output, "does-not-exist:v0-demo-break") {
+		t.Errorf("output = %q, want the result the subagent returned", res.Output)
+	}
+	if strings.Contains(res.Output, boundedDegrade) {
+		t.Errorf("output = %q: the return call did not end the run", res.Output)
+	}
+	if r := h.Result(); r == nil {
+		t.Fatal("no RunResult")
+	} else if r.Turns != 1 {
+		t.Errorf("turns = %d, want 1 — the return call ended the run on the first turn", r.Turns)
+	}
+}
+
+// TestBounded_ContractNamesTheReturnTool is the instruction half. Now
+// that bounded registers the tool, the contract must name it — and the
+// last-message clause stays as the backstop for the run that ends
+// without one. Telling a subagent to call a tool that isn't registered
+// is the #641 failure (reached for mark_task_done, got tool-not-found,
+// never recovered); so is withholding one it is going to reach for.
+func TestBounded_ContractNamesTheReturnTool(t *testing.T) {
 	t.Parallel()
 	capture := &declCapturingLLM{}
 	prov := &recordingProvider{llm: capture}
@@ -225,11 +293,11 @@ func TestBounded_ContractPointsAtTheLastMessage(t *testing.T) {
 	waitDone(t, h)
 
 	sys := capture.systemInstruction()
-	if !strings.Contains(sys, "LAST message is the findings") {
-		t.Errorf("bounded contract does not point at the last message; got:\n%s", sys)
+	if !strings.Contains(sys, "`return_result`") {
+		t.Errorf("bounded contract does not name the tool the subagent now has; got:\n%s", sys)
 	}
-	if strings.Contains(sys, "return_result") {
-		t.Errorf("bounded contract names a tool the subagent does not have; got:\n%s", sys)
+	if !strings.Contains(sys, "LAST message") {
+		t.Errorf("bounded contract dropped the last-message backstop; got:\n%s", sys)
 	}
 	if !strings.Contains(sys, "triage") {
 		t.Error("the subagent's own persona was lost")

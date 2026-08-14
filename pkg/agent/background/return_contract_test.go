@@ -58,11 +58,11 @@ func (l *returningLLM) GenerateContent(_ context.Context, _ *adkmodel.LLMRequest
 // of the four names it might plausibly reach for must end the run and
 // hand its findings to the parent.
 //
-// Runs in ModeStanding because since #730 that is the mode the return
-// tool belongs to: a bounded delegation registers no return tool at all
-// (it ends by running out of tool calls), so there is no alias set to
-// get wrong. The aliases still matter for a standing worker, whose only
-// way out short of a budget IS the tool.
+// Runs in ModeStanding, where the tool is the only way out short of a
+// budget. Bounded carries the identical alias set as of #745 — see
+// TestBounded_OffersTheReturnToolAndItsAliases and
+// TestBounded_ReturnToolCallHandsBackTheResult, which cover it there —
+// and between #730 and #745 it carried none at all.
 //
 // Fails on pre-fix code for three of the four:
 //

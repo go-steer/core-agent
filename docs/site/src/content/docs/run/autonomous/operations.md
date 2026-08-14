@@ -66,7 +66,9 @@ Marker-phrase detection ("look for TASK_COMPLETE in the text") is **not** suppor
 
 **`WithStopOnNaturalEnd` — the other termination rule (v2.9+).** `agent.Run` is already a terminating loop: it drives model → tool → model until the model stops asking for tools. The driver's contribution on top is to inject the continuation prompt and run it again, which is right for a worker that watches something — a turn with no tool calls means *idle*, not *finished* — and wrong for a task with a deliverable, which then runs past its own answer.
 
-Set `WithStopOnNaturalEnd()` and the run ends at the first turn whose last model response asks for no tool, reporting `completed` with that turn's text as `DoneDetail`. It also registers **no** done or return tool: one termination path, nothing for the model to choose between and nothing it can forget to call. The two are alternatives — with `WithStopOnNaturalEnd` set, `WithReturnTool` is not wired.
+Set `WithStopOnNaturalEnd()` and the run ends at the first turn whose last model response asks for no tool, reporting `completed` with that turn's text as `DoneDetail`. On its own it registers **no** done or return tool: one termination path, nothing for the model to choose between and nothing it can forget to call.
+
+Pair it with `WithReturnTool` and the tool **is** registered (v2.9+). The two are not alternatives but a preference order: a model that calls the tool hands back a curated result and ends; a model that just stops still ends, with its last message as the result. Nothing can hang, because the natural end never stops being a termination path — so the pairing is the better default whenever the model has a name it might reach for.
 
 This is what `pkg/agent/background` uses for a bounded delegation; see [Subagents](/agent-design/subagents-and-wrappers/#how-a-delegation-ends-v29).
 

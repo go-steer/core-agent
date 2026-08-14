@@ -121,7 +121,8 @@ const emptyReturnAck = "rejected: result is required — write your actual findi
 //
 // Returns the lifecycle-style done tool unless WithReturnTool was set,
 // in which case it returns the result-style return tool followed by
-// one tool per alias.
+// one tool per alias — or nothing at all for a bounded run that asked
+// for no return tool.
 func buildDoneTools(cfg *autoConfig, doneCh chan string) ([]tool.Tool, error) {
 	signal := func(detail string) {
 		select {
@@ -132,10 +133,19 @@ func buildDoneTools(cfg *autoConfig, doneCh chan string) ([]tool.Tool, error) {
 		}
 	}
 
-	// A bounded delegation terminates by running out of work, so there
-	// is no done tool to register and nothing for the model to choose
-	// between (#730).
-	if cfg.stopOnNaturalEnd {
+	// A bounded delegation terminates by running out of work, so on its
+	// own it needs no done tool: there is nothing for the model to
+	// choose between and nothing it can forget to call (#730).
+	//
+	// WithReturnTool alongside it is not a contradiction but a request
+	// for both, and it wins here (#745). The two terminations do not
+	// compete — the loop ranks a done signal above a natural end
+	// (autonomous.go) — so the tool becomes the preferred exit, with a
+	// curated result instead of a scraped last message, and natural end
+	// stays as the backstop for a model that simply stops. What the
+	// bounded-only path avoids is a run that hangs because the model
+	// never called the tool, and that property is untouched.
+	if cfg.stopOnNaturalEnd && cfg.returnTool == nil {
 		return nil, nil
 	}
 
@@ -221,11 +231,11 @@ func buildDoneTools(cfg *autoConfig, doneCh chan string) ([]tool.Tool, error) {
 // plus every alias on the result path. Used by the in-turn cost bound
 // to recognize the one call it must not cut off (#729).
 func (c *autoConfig) doneToolNames() []string {
-	if c.stopOnNaturalEnd {
-		// No done tool is registered, so no call can be one.
-		return nil
-	}
 	if c.returnTool == nil {
+		if c.stopOnNaturalEnd {
+			// No done tool is registered, so no call can be one.
+			return nil
+		}
 		return []string{c.doneToolName}
 	}
 	out := []string{c.returnToolName()}

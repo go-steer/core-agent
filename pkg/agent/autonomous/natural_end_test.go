@@ -19,7 +19,9 @@ import (
 	"sync/atomic"
 	"testing"
 
+	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/tool"
+	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 )
@@ -102,10 +104,10 @@ func TestRunAutonomous_StopOnNaturalEndAfterAToolCall(t *testing.T) {
 	}
 }
 
-// One termination path: with WithStopOnNaturalEnd there is no done or
-// return tool to register, so nothing for the model to choose between
-// and nothing it can forget to call.
-func TestRunAutonomous_StopOnNaturalEndRegistersNoDoneTool(t *testing.T) {
+// One termination path: WithStopOnNaturalEnd on its own registers no
+// done or return tool, so there is nothing for the model to choose
+// between and nothing it can forget to call.
+func TestRunAutonomous_StopOnNaturalEndAloneRegistersNoDoneTool(t *testing.T) {
 	t.Parallel()
 	var extras []tool.Tool
 	llm := &stubLLM{scenarios: []scenarioFn{textTurn("done", 1, 1)}}
@@ -115,15 +117,89 @@ func TestRunAutonomous_StopOnNaturalEndRegistersNoDoneTool(t *testing.T) {
 	}
 	if _, err := Run(context.Background(), build, "go",
 		WithStopOnNaturalEnd(),
-		// Set alongside the return tool on purpose: the two are
-		// alternatives, and natural-end wins rather than silently
-		// wiring both ways out.
-		WithReturnTool(ReturnToolConfig{Aliases: []string{"report_done"}}),
 		WithMaxTurns(1)); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	for _, tl := range extras {
-		t.Errorf("driver injected %q; a bounded run has no return tool", tl.Name())
+		t.Errorf("driver injected %q; a bounded run that asked for no return tool has none", tl.Name())
+	}
+}
+
+// ...but a caller that sets BOTH gets the return tool (#745). #730 read
+// the pair as alternatives and left the tool unregistered, which is how
+// the #728 alias net came to cover only the standing path while bounded
+// — the default for declarative-subagent spawns — had no return gesture
+// at all.
+func TestRunAutonomous_StopOnNaturalEndKeepsAnExplicitReturnTool(t *testing.T) {
+	t.Parallel()
+	var extras []tool.Tool
+	llm := &stubLLM{scenarios: []scenarioFn{textTurn("done", 1, 1)}}
+	build := func(in []tool.Tool) (*agent.Agent, error) {
+		extras = in
+		return buildAgent(llm, "bounded-with-return")(in)
+	}
+	if _, err := Run(context.Background(), build, "go",
+		WithStopOnNaturalEnd(),
+		WithReturnTool(ReturnToolConfig{Aliases: []string{"report_done", "mark_task_done"}}),
+		WithMaxTurns(1)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := make(map[string]bool, len(extras))
+	for _, tl := range extras {
+		got[tl.Name()] = true
+	}
+	for _, want := range []string{"return_result", "report_done", "mark_task_done"} {
+		if !got[want] {
+			t.Errorf("bounded run was not offered %q; injected %v", want, toolNames(extras))
+		}
+	}
+}
+
+// The loop half of the same fix: calling the return tool in a bounded
+// run ends it with the curated result, rather than the natural end
+// scraping whatever text happened to follow.
+//
+// Fails on pre-fix code: mark_task_done was never registered, so the
+// call came back as tool-not-found — the exact frame the 2026-08-14 GKE
+// UAT recorded — and the run limped to its natural end a turn later.
+func TestRunAutonomous_BoundedReturnToolEndsTheRun(t *testing.T) {
+	t.Parallel()
+	llm := &stubLLM{scenarios: []scenarioFn{
+		returnCallTurn("mark_task_done", "RCA: bad image tag on emailservice"),
+		// Only reached if the return call failed to end the run.
+		textTurn("standing by", 1, 1),
+	}}
+	res, err := Run(context.Background(), buildAgent(llm, "bounded-return-ends"), "go",
+		WithStopOnNaturalEnd(),
+		WithReturnTool(ReturnToolConfig{Aliases: []string{"report_done", "mark_task_done"}}),
+		WithMaxTurns(5))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Reason != StopReasonCompleted {
+		t.Errorf("Reason = %q, want %q", res.Reason, StopReasonCompleted)
+	}
+	if res.DoneDetail != "RCA: bad image tag on emailservice" {
+		t.Errorf("DoneDetail = %q, want the returned result", res.DoneDetail)
+	}
+	if res.Turns != 1 {
+		t.Errorf("Turns = %d, want 1 — the return call ended the run", res.Turns)
+	}
+}
+
+// returnCallTurn yields a single response calling the named return tool
+// (or one of its aliases) with a result payload.
+func returnCallTurn(name, result string) scenarioFn {
+	return func(_ context.Context, _ *adkmodel.LLMRequest) []stubResp {
+		fc := &genai.FunctionCall{Name: name, Args: map[string]any{"result": result}}
+		content := &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{FunctionCall: fc}}}
+		return []stubResp{
+			{resp: &adkmodel.LLMResponse{
+				Content:      content,
+				TurnComplete: true,
+				FinishReason: genai.FinishReasonStop,
+			}},
+		}
 	}
 }
 

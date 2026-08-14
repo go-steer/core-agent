@@ -147,7 +147,7 @@ Rules:
 When multi-session is enabled, each session gets a derived sub-gate with its own:
 
 - **Permission grants** (`sessionAllow` / `sessionAllowTools` / `sessionAllowVerbs`) — alice's `/allow write_file allow-session` doesn't grant bob's session anything.
-- **Plan-first flag** (`planRecorded`) — alice's `record_plan` doesn't unblock bob's mutating tools.
+- **Plan-first flag** (`planRecorded`) — alice's `record_plan` doesn't unblock bob's mutating tools. `POST /sessions/{sid}/slash/replan` revokes against that session's sub-gate and archives only the plan that session recorded; alice's `/replan` names bob's newer artifact and leaves it alone, since `.agents/plans/` is process-global. (Before v2.9 the hub left this closure unwired, so every session-created `/replan` answered `501` and only the daemon's own startup session could revoke.)
 - **Approval audit** (`approvals`) — per-session interactive-decision log.
 - **Permission mode** — alice toggling to `yolo` via TUI chip doesn't change bob's session's mode.
 - **Prompter** — each session's UI hooks (TUI broker, HTTP prompt stream) are independent.

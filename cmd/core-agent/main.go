@@ -1599,60 +1599,16 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			out.Errors = append(out.Errors, "mcp: live server restart requires daemon restart (tracked for v2.3)")
 			return out
 		}),
-		attachadapter.WithReplanner(func(_ context.Context, _ attach.ReplanRequest) (attach.ReplanResponse, error) {
-			// Wired unconditionally; with plan_mode off,
-			// RevokeLatestPlan returns "" with no error and the
-			// gate flag was never set, so the response just says
-			// "no plan to revoke".
-			if agentsDir == "" {
-				return attach.ReplanResponse{
-					Message: "/replan unavailable: no .agents/ directory resolved (plan artifacts have nowhere to live)",
-				}, nil
+		// agentRef is late-bound by WithPostConstruct, so the owner is
+		// read at /replan time rather than captured here (#763 moved
+		// the body to attachadapter so the multi-session hub can wire
+		// the same handler instead of 501ing).
+		attachadapter.WithReplanner(attachadapter.ReplanHandler(gate, agentsDir, func() tools.PlanOwner {
+			if agentRef == nil {
+				return tools.PlanOwner{}
 			}
-			// Scope the revocation to this agent's own plan (#747).
-			// A background subagent that recorded a plan holds the
-			// highest sequence number, so the owner-blind spelling
-			// archived the specialist's notes and left the plan the
-			// operator was rejecting active. agentRef is late-bound
-			// by WithPostConstruct; a nil owner degrades to the old
-			// newest-wins behavior, which is the right fallback for
-			// a /replan that somehow beat construction.
-			var owner tools.PlanOwner
-			if agentRef != nil {
-				owner = tools.PlanOwner{Agent: agentRef.AgentName(), Session: agentRef.SessionID()}
-			}
-			archived, err := tools.RevokePlanBy(gate, agentsDir, owner)
-			if err != nil {
-				return attach.ReplanResponse{}, err
-			}
-			resp := attach.ReplanResponse{
-				ArchivedPath:  archived,
-				PlanWasActive: archived != "",
-			}
-			actives := tools.ActivePlans(agentsDir)
-			switch {
-			case archived == "" && len(actives) > 0:
-				// Somebody's plan is active, just not this agent's.
-				// Saying "no active plan" here would read as "the
-				// directory is empty" and hide a plan the operator may
-				// well want to look at. Report the artifact's own
-				// attribution rather than asserting "another agent" —
-				// the commonest way to land here is the same agent in
-				// an earlier session, after a daemon restart.
-				resp.Message = fmt.Sprintf("/replan: this agent has no active plan to revoke — %s was left alone (%s). The gate flag is clear.",
-					filepath.Base(actives[0].Path), describePlanOwner(actives[0]))
-			case archived == "":
-				resp.Message = "/replan: no active plan to revoke (gate flag is clear)."
-			case gate.PlanRequired():
-				resp.Message = fmt.Sprintf("Plan revoked. Archived to %s. The next mutating tool call will be denied until the agent calls record_plan again.", archived)
-			default:
-				// Advisory mode: the artifact is archived, but promising
-				// a denial that will never come is the claim-the-runtime-
-				// doesn't-enforce bug this mode exists to avoid.
-				resp.Message = fmt.Sprintf("Plan revoked. Archived to %s. plan_mode is advisory, so no tool call is blocked — ask the agent to record a new plan if you want a fresh artifact.", archived)
-			}
-			return resp, nil
-		}),
+			return tools.PlanOwner{Agent: agentRef.AgentName(), Session: agentRef.SessionID()}
+		})),
 		attachadapter.WithMCPProvider(func() attach.MCPInfo {
 			servers := make([]attach.MCPServerInfo, 0, len(mcpServers))
 			for _, s := range mcpServers {
@@ -2633,24 +2589,6 @@ func resolveGatePrompter(yolo bool, in *os.File, out io.Writer) permissions.Prom
 // short enough that a wedged session can't hold SIGTERM open past a
 // container runtime's own kill grace period.
 const wakeLoopDrainTimeout = 5 * time.Second
-
-// describePlanOwner renders a plan artifact's frontmatter attribution
-// for the /replan message that reports a plan it declined to archive
-// (#747). It states what the file says rather than inferring: "another
-// agent" would be a guess, and the likeliest way to reach this branch
-// is the same agent in an earlier session after a daemon restart.
-func describePlanOwner(p tools.PlanInfo) string {
-	switch {
-	case p.Agent != "" && p.Session != "":
-		return fmt.Sprintf("recorded by %q in session %s", p.Agent, p.Session)
-	case p.Agent != "":
-		return fmt.Sprintf("recorded by %q", p.Agent)
-	case p.Session != "":
-		return fmt.Sprintf("recorded in session %s", p.Session)
-	default:
-		return "it records no author, though another plan here does"
-	}
-}
 
 // autoContinueResolution is the decided auto-continue enablement plus the
 // parsed freshness window and retry-driver settings, produced by

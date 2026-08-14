@@ -37,6 +37,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 	"github.com/go-steer/core-agent/v2/pkg/runner"
 	"github.com/go-steer/core-agent/v2/pkg/skills"
+	"github.com/go-steer/core-agent/v2/pkg/tools"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 	"github.com/go-steer/core-agent/v2/pkg/watchdog"
 )
@@ -443,7 +444,9 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 	// the underlying state is wired correctly into the agent
 	// (toolsets include MCP, instructions are loaded, etc.) — the
 	// slashes just have nothing to look at.
-	adOpts := append(attachProviderOpts(deps, sessionGate, cust.Model.Name(), pricingRate),
+	// /replan is wired after agent.New below, where the agent whose
+	// name and session ID identify its plan actually exists.
+	adOpts := append(attachProviderOpts(deps, cust.Model.Name(), pricingRate),
 		attachadapter.WithPromptBroker(broker))
 	if deps.EventlogHandle != nil {
 		opts = append(opts, agent.WithEventLog(deps.EventlogHandle))
@@ -559,6 +562,18 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 		}
 		return nil, nil, fmt.Errorf("agent.New: %w", err)
 	}
+	// /replan, against this session's own sub-gate (#763). The hub left
+	// this closure unwired, so every session-created /replan answered
+	// 501 — survivable until a recipe ran plan_mode "required" under
+	// the hub, where the gate can then be armed by a tenant who has no
+	// way to revoke it. Owner scoping matters more here than in the
+	// single-session CLI: <agentsDir>/plans/ is process-global while
+	// the gate is per-session, so an owner-blind revoke would archive
+	// whichever tenant planned most recently.
+	adOpts = append(adOpts, attachadapter.WithReplanner(
+		attachadapter.ReplanHandler(sessionGate, deps.AgentsDir, func() tools.PlanOwner {
+			return tools.PlanOwner{Agent: ag.AgentName(), Session: ag.SessionID()}
+		})))
 	ad := attachadapter.New(ag, adOpts...)
 	// Operator-visible log line that mirrors the startup-time
 	// "--no-repl: attach-only mode, session <sid>" message so the
@@ -675,17 +690,16 @@ func (r *sessionResumer) Resume(ctx context.Context, app, sid string) (attach.Re
 // main.go so the per-session /memory, /skills, /pricing, /mcp slashes
 // return real data instead of empty placeholders.
 //
-// Mutating closures (RefreshPricer, PricingSetter, Reloader,
-// Replanner) are deferred — they need careful per-session threading
-// (Replanner uses the per-session gate; PricingSetter writes the
-// user's config file daemon-wide; Reloader's MCP-restart story is
-// itself unresolved upstream). Sessions can observe state via the
-// providers; mutation slashes 501 until wired in a follow-up.
+// Replanner is NOT here — it needs the constructed agent to name the
+// plan's owner, so ReproduceAgent appends it after agent.New (#763).
 //
-// sessionGate is the derived sub-gate; threaded here so the
-// soon-to-arrive Replanner closure picks it up without expanding the
-// deps signature when it lands.
-func attachProviderOpts(deps SessionFactoryDeps, _ *permissions.Gate, modelName string, rate usage.Pricing) []attachadapter.Option {
+// The remaining mutating closures (RefreshPricer, PricingSetter,
+// Reloader) are still deferred — those blockers are about scope, not
+// threading: PricingSetter writes the user's config file daemon-wide,
+// and Reloader's MCP-restart story is itself unresolved upstream.
+// Sessions can observe that state via the providers; those slashes 501
+// until wired in a follow-up.
+func attachProviderOpts(deps SessionFactoryDeps, modelName string, rate usage.Pricing) []attachadapter.Option {
 	var opts []attachadapter.Option
 
 	if deps.ProjectRoot != "" || deps.UserRoot != "" {

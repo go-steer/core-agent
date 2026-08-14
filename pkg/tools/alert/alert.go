@@ -74,9 +74,10 @@ var validLevels = map[string]struct{}{
 	"resolved": {},
 }
 
-// New builds the alert tool from cfg's target registry. The caller
-// (pkg/tools.Build) only invokes this when cfg.Alerts.Targets is
-// non-empty, so the model never sees an `alert` with no destinations.
+// New builds the alert tool from cfg's target registry, keeping only the
+// targets this process can actually deliver to (see PartitionTargets).
+// The caller (pkg/tools.Build) gates registration on HasLiveTarget, so
+// the model never sees an `alert` with no reachable destinations.
 func New(gate *permissions.Gate, cfg *config.Config) (tool.Tool, error) {
 	return newTool(gate, cfg, os.Getenv, time.Now, nil)
 }
@@ -111,9 +112,16 @@ func newHandler(gate *permissions.Gate, cfg *config.Config, getenv func(string) 
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-	targets := make(map[string]config.AlertTarget, len(cfg.Alerts.Targets))
-	order := make([]string, 0, len(cfg.Alerts.Targets))
-	for _, t := range cfg.Alerts.Targets {
+	// Only deliverable targets reach the model. See partitionTargets:
+	// a target whose env is unset can never fire, and listing it in the
+	// description is a promise the deployment cannot keep.
+	live, dead := partitionTargets(cfg, getenv)
+	if len(live) == 0 {
+		return nil, fmt.Errorf("alert: no deliverable targets (%s)", strings.Join(deadReasons(dead), "; "))
+	}
+	targets := make(map[string]config.AlertTarget, len(live))
+	order := make([]string, 0, len(live))
+	for _, t := range live {
 		targets[t.Name] = t
 		order = append(order, t.Name)
 	}
@@ -214,6 +222,78 @@ func (h *handler) run(ctx tool.Context, in Args) (Result, error) {
 	return Result{Target: in.Target, StatusCode: resp.StatusCode, DurationMs: dur.Milliseconds()}, nil
 }
 
+// DeadTarget is a configured target this process cannot deliver to,
+// paired with the operator-facing reason.
+type DeadTarget struct {
+	Name   string
+	Reason string
+}
+
+// PartitionTargets splits cfg's registry into the targets this process
+// can actually fire and those it cannot.
+//
+// A target whose url_env (or auth env) is unset can never deliver: a
+// process's environment is fixed at exec time, so "unset now" means
+// "unset for this process's whole life" — a Secret edit needs a pod
+// restart either way. Registering it anyway hands the model an
+// escalation path that fails at the one moment it is needed. A live
+// 2026-08-14 run called `alert` at the end of an incident it could not
+// resolve and learned only then that nobody had been paged; the target
+// had been advertised in the tool description all along.
+//
+// Same rule as the built-in descriptions (#759), one layer down: never
+// name a capability the deployment doesn't have.
+func PartitionTargets(cfg *config.Config) (live []config.AlertTarget, dead []DeadTarget) {
+	return partitionTargets(cfg, os.Getenv)
+}
+
+// HasLiveTarget reports whether any configured target can be delivered
+// to. pkg/tools.Build uses it as the second half of `alert`'s
+// registration gate, so a build whose every target is unresolvable
+// registers no alert tool at all rather than one that cannot fire.
+func HasLiveTarget(cfg *config.Config) bool {
+	live, _ := PartitionTargets(cfg)
+	return len(live) > 0
+}
+
+func partitionTargets(cfg *config.Config, getenv func(string) string) (live []config.AlertTarget, dead []DeadTarget) {
+	if cfg == nil {
+		return nil, nil
+	}
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	for _, t := range cfg.Alerts.Targets {
+		if reason := undeliverable(t, getenv); reason != "" {
+			dead = append(dead, DeadTarget{Name: t.Name, Reason: reason})
+			continue
+		}
+		live = append(live, t)
+	}
+	return live, dead
+}
+
+// undeliverable returns why t cannot be fired in this environment, or
+// "" when it can. It resolves exactly what run() resolves — the URL and
+// the auth material — so a target that passes here fails only for
+// reasons the network owns.
+func undeliverable(t config.AlertTarget, getenv func(string) string) string {
+	if _, err := resolveURL(t, getenv); err != nil {
+		return fmt.Sprintf("url_env %q is unset or empty", t.URLEnv)
+	}
+	return authEnvMissing(t.Auth, getenv)
+}
+
+// deadReasons renders dead targets as "name: reason" for a single-line
+// error or log message, in registry order.
+func deadReasons(dead []DeadTarget) []string {
+	out := make([]string, 0, len(dead))
+	for _, d := range dead {
+		out = append(out, d.Name+": "+d.Reason)
+	}
+	return out
+}
+
 // resolveURL returns the target's destination, reading url_env from the
 // environment when the literal url is not set. (validateAlerts guarantees
 // exactly one of the two is non-empty.)
@@ -235,22 +315,42 @@ func applyAuth(req *http.Request, a *config.AlertAuth, getenv func(string) strin
 	if a == nil {
 		return nil
 	}
+	// Checked here as well as at registration: registration decides
+	// what the model may see, this decides what actually goes on the
+	// wire. A target that lost its env between the two (os.Unsetenv in
+	// an embedding host) must fail closed, not send unauthenticated.
+	if missing := authEnvMissing(a, getenv); missing != "" {
+		return errors.New("alert: " + missing)
+	}
 	switch {
 	case a.BearerEnv != "":
-		tok := strings.TrimSpace(getenv(a.BearerEnv))
-		if tok == "" {
-			return fmt.Errorf("alert: auth.bearer_env %q is unset or empty", a.BearerEnv)
-		}
-		req.Header.Set("Authorization", "Bearer "+tok)
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(getenv(a.BearerEnv)))
 	case a.BasicEnvUser != "":
-		user := getenv(a.BasicEnvUser)
-		pass := getenv(a.BasicEnvPass)
-		if user == "" || pass == "" {
-			return errors.New("alert: auth.basic_env_user/basic_env_pass resolve to empty")
-		}
-		req.SetBasicAuth(user, pass)
+		req.SetBasicAuth(getenv(a.BasicEnvUser), getenv(a.BasicEnvPass))
 	}
 	return nil
+}
+
+// authEnvMissing returns a description of the unresolvable auth
+// material, or "" when there is none to resolve or all of it resolves.
+// Single source of truth for the condition, so the registration check
+// and the call path cannot drift into advertising a target that then
+// refuses to send.
+func authEnvMissing(a *config.AlertAuth, getenv func(string) string) string {
+	if a == nil {
+		return ""
+	}
+	switch {
+	case a.BearerEnv != "":
+		if strings.TrimSpace(getenv(a.BearerEnv)) == "" {
+			return fmt.Sprintf("auth.bearer_env %q is unset or empty", a.BearerEnv)
+		}
+	case a.BasicEnvUser != "":
+		if getenv(a.BasicEnvUser) == "" || getenv(a.BasicEnvPass) == "" {
+			return "auth.basic_env_user/basic_env_pass resolve to empty"
+		}
+	}
+	return ""
 }
 
 // buildDescription renders the tool's LLM-facing description, enumerating

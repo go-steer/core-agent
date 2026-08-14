@@ -125,7 +125,11 @@ Decide the status from the evidence you actually have:
 | `ESCALATED` | It did not clear and no row matched, or the fix is out of scope (infra, data-loss risk, cluster-wide). |
 
 **For UNRESOLVED and ESCALATED, call `alert` before you write the
-summary** — the eventlog is an audit trail, not a page:
+summary** — the eventlog is an audit trail, not a page. If `alert` is
+not in your tool list at all, this deployment has no escalation webhook
+configured; skip straight to the summary and record `Escalation: not
+sent (no alert target configured)`. Do not treat its absence as a
+reason to stop or to retry.
 
 ```
 alert(
@@ -146,8 +150,10 @@ alert(
 )
 ```
 
-If the `alert` call fails (unset webhook, target refused), say so in the
-summary — a silent escalation failure is the worst outcome here.
+If the `alert` call fails (target refused, receiver down), say so in the
+summary — a silent escalation failure is the worst outcome here. The
+summary is then the only hand-off, so make it complete enough to act on
+without you.
 
 Then post the structured summary as your final message. Use this
 template verbatim so downstream tooling (Cloud Logging filters, ticket

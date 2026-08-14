@@ -33,6 +33,7 @@ Tools are grouped by domain — files, search, shell, data + network, planning, 
 |---|---|---|
 | `json_query` | Run a jq expression against JSON loaded from a file or supplied inline. | `expression`, `path?` or `data?` |
 | `fetch_url` | HTTP GET against an operator-configured allowlist. **Default-deny**: not registered at all when `cfg.URLScope.Allow` is empty, so the model never sees a tool that would refuse every call. Built-in SSRF guard: link-local/cloud-metadata IPs are always blocked, loopback/private ranges require an exact-host allowlist entry, and resolved IPs are pinned through to the dial (DNS-rebinding defense) — see [`url_scope`](/reference/configuration/#url_scope). | `url` |
+| `alert` | POST to an operator-registered webhook target — escalation, incident summaries, "I'm stuck" pings — without a shell or a separate MCP server. **SSRF-impossible by construction**: no URL parameter; the model picks a target by *name*. Same default-deny shape as `fetch_url`, and targets whose env-supplied URL or token is unset are [dropped at startup](/reference/configuration/#undeliverable-targets-are-dropped-at-startup) rather than advertised. See [`alerts`](/reference/configuration/#alerts). | `target`, `level`, `summary`, `details?` |
 
 ### Shell
 
@@ -184,6 +185,8 @@ Disabling a tool also rewrites what the *remaining* tools tell the model about t
 The rule applies to the built-in catalog only. Tools wired outside `tools.Build` — `spawn_agent`, MCP tools — are unknown rather than absent, so references to them are always kept.
 
 `spawn_agent` follows the same rule from the other side: its `tools` parameter used to carry a fixed example (`… glob, grep, bash, todo …`), and now lists the names the manager's catalog will actually resolve — built-ins, MCP tools, and skills alike. A name the model reads there is a name the spawn will accept.
+
+`alert` applies the rule *inside* a tool: a configured target whose `url_env` isn't set in this process can never deliver, so it is dropped from the target list the description enumerates, and a build where no target survives registers no `alert` tool at all. See [Undeliverable targets are dropped at startup](/reference/configuration/#undeliverable-targets-are-dropped-at-startup).
 
 ## Output truncation
 

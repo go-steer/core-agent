@@ -280,10 +280,11 @@ kubectl -n "${DEMO_NS}" create secret generic k8s-event-watcher-token \
 
 # Escalation webhook. config.json declares one alert target, `oncall`,
 # whose URL comes from ONCALL_WEBHOOK_URL. The Deployment mounts this
-# Secret with `optional: true`, so the pod boots either way — but the
-# URL resolves at CALL time, so a missing value only surfaces when the
-# agent first tries to escalate. Point it at a throwaway receiver
-# (webhook.site, a Slack incoming webhook, whatever) for the demo.
+# Secret with `optional: true`, so the pod boots either way — but an
+# unset URL means the target is dropped at startup and the `alert` tool
+# is not registered at all, so the demo's escalation step won't happen.
+# Point it at a throwaway receiver (webhook.site, a Slack incoming
+# webhook, whatever) so you can see the page land.
 kubectl -n "${DEMO_NS}" create secret generic core-agent-alerts \
     --from-literal=ONCALL_WEBHOOK_URL="${ONCALL_WEBHOOK_URL:-https://webhook.site/replace-me}"
 

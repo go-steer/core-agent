@@ -151,13 +151,126 @@ func TestRun_URLEnvResolved(t *testing.T) {
 	}
 }
 
-func TestRun_URLEnvUnset(t *testing.T) {
+// TestNewHandler_URLEnvUnsetIsNotRegistered pins the fix for the
+// 2026-08-14 run where the agent finished an unresolved incident, called
+// `alert`, and only then learned that PLATFORM_AGENT_ALERT_WEBHOOK was
+// unset — nobody had been paged. An unresolvable target must never be
+// advertised in the first place.
+func TestNewHandler_URLEnvUnsetIsNotRegistered(t *testing.T) {
 	t.Parallel()
 	cfg := cfgWith(config.AlertTarget{Name: "slack", URLEnv: "TEST_HOOK_URL", Template: config.AlertTemplateGeneric})
-	h, _ := newHandler(yoloGate(t), cfg, func(string) string { return "" }, nil, http.DefaultClient)
-	_, err := h.run(tool.Context(nil), Args{Target: "slack", Level: "info", Summary: "hi"})
+	_, err := newHandler(yoloGate(t), cfg, func(string) string { return "" }, nil, http.DefaultClient)
+	if err == nil {
+		t.Fatal("newHandler succeeded with an unresolvable sole target; want an error so tools.Build registers no alert tool")
+	}
+	for _, want := range []string{"no deliverable targets", "slack", "TEST_HOOK_URL"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, want it to mention %q", err, want)
+		}
+	}
+}
+
+// TestNewHandler_DropsDeadTargetKeepsLive covers the mixed registry: the
+// live target still works, the dead one is gone from both the routing
+// table and the description the model reads.
+func TestNewHandler_DropsDeadTargetKeepsLive(t *testing.T) {
+	t.Parallel()
+	var got captured
+	srv := mockServer(t, 200, "ok", &got)
+	cfg := cfgWith(
+		config.AlertTarget{Name: "audit", URL: srv.URL, Template: config.AlertTemplateGeneric, Description: "log it"},
+		config.AlertTarget{Name: "oncall", URLEnv: "MISSING_HOOK_URL", Template: config.AlertTemplateGeneric, Description: "page the on-call SRE"},
+	)
+	h, err := newHandler(yoloGate(t), cfg, func(string) string { return "" }, nil, srv.Client())
+	if err != nil {
+		t.Fatalf("newHandler: %v", err)
+	}
+	if _, dead := h.targets["oncall"]; dead {
+		t.Error("dead target 'oncall' is still routable")
+	}
+	if _, live := h.targets["audit"]; !live {
+		t.Error("live target 'audit' was dropped")
+	}
+	desc := buildDescription(h.order, h.targets)
+	if strings.Contains(desc, "oncall") {
+		t.Errorf("description still advertises the undeliverable target:\n%s", desc)
+	}
+	if !strings.Contains(desc, "audit") {
+		t.Errorf("description dropped the deliverable target:\n%s", desc)
+	}
+	// And the model gets a routing error, not a silent no-op, if it asks
+	// for the dropped name anyway (e.g. from an AGENTS.md that names it).
+	if _, err := h.run(tool.Context(nil), Args{Target: "oncall", Level: "critical", Summary: "hi"}); err == nil ||
+		!strings.Contains(err.Error(), "unknown target") {
+		t.Errorf("err = %v, want unknown target error for the dropped target", err)
+	}
+}
+
+// TestRun_URLEnvLostAfterBuild is the fail-closed half: registration
+// resolves env once, but run() resolves it again, so a host that unsets
+// the variable mid-process gets an error rather than a POST to "".
+func TestRun_URLEnvLostAfterBuild(t *testing.T) {
+	t.Parallel()
+	srv := mockServer(t, 200, "ok", new(captured))
+	cfg := cfgWith(config.AlertTarget{Name: "slack", URLEnv: "TEST_HOOK_URL", Template: config.AlertTemplateGeneric})
+	present := true
+	env := func(k string) string {
+		if k == "TEST_HOOK_URL" && present {
+			return srv.URL
+		}
+		return ""
+	}
+	h, err := newHandler(yoloGate(t), cfg, env, nil, srv.Client())
+	if err != nil {
+		t.Fatalf("newHandler: %v", err)
+	}
+	present = false
+	_, err = h.run(tool.Context(nil), Args{Target: "slack", Level: "info", Summary: "hi"})
 	if err == nil || !strings.Contains(err.Error(), "url_env") {
 		t.Errorf("err = %v, want url_env unset error", err)
+	}
+}
+
+func TestHasLiveTarget(t *testing.T) {
+	t.Parallel()
+	// No cfg, no targets, and an unresolvable-only registry all mean the
+	// alert tool must not be registered at all.
+	if HasLiveTarget(nil) {
+		t.Error("HasLiveTarget(nil) = true, want false")
+	}
+	if HasLiveTarget(cfgWith()) {
+		t.Error("HasLiveTarget(no targets) = true, want false")
+	}
+	dead := cfgWith(config.AlertTarget{Name: "oncall", URLEnv: "CORE_AGENT_TEST_UNSET_HOOK", Template: config.AlertTemplateGeneric})
+	if HasLiveTarget(dead) {
+		t.Error("HasLiveTarget(unset url_env) = true, want false")
+	}
+	// A literal url needs no environment, so it is live anywhere.
+	if !HasLiveTarget(cfgWith(config.AlertTarget{Name: "audit", URL: "https://example.com", Template: config.AlertTemplateGeneric})) {
+		t.Error("HasLiveTarget(literal url) = false, want true")
+	}
+}
+
+func TestPartitionTargets_ReasonNamesTheEnvVar(t *testing.T) {
+	t.Parallel()
+	cfg := cfgWith(
+		config.AlertTarget{Name: "oncall", URLEnv: "MISSING_HOOK_URL", Template: config.AlertTemplateGeneric},
+		config.AlertTarget{Name: "pd", URL: "https://example.com", Template: config.AlertTemplateGeneric, Auth: &config.AlertAuth{BearerEnv: "MISSING_PD_TOKEN"}},
+	)
+	live, dead := partitionTargets(cfg, func(string) string { return "" })
+	if len(live) != 0 {
+		t.Errorf("live = %v, want none", live)
+	}
+	if len(dead) != 2 {
+		t.Fatalf("dead = %v, want 2", dead)
+	}
+	// The operator's next action is "set this variable", so the variable
+	// has to be in the message.
+	if dead[0].Name != "oncall" || !strings.Contains(dead[0].Reason, "MISSING_HOOK_URL") {
+		t.Errorf("dead[0] = %+v, want oncall naming MISSING_HOOK_URL", dead[0])
+	}
+	if dead[1].Name != "pd" || !strings.Contains(dead[1].Reason, "MISSING_PD_TOKEN") {
+		t.Errorf("dead[1] = %+v, want pd naming MISSING_PD_TOKEN", dead[1])
 	}
 }
 
@@ -204,13 +317,43 @@ func TestRun_BasicAuth(t *testing.T) {
 	}
 }
 
-func TestRun_BearerEnvUnset(t *testing.T) {
+// TestNewHandler_BearerEnvUnsetIsNotRegistered: a target whose URL
+// resolves but whose token doesn't is just as undeliverable as one with
+// no URL — it would 401, or worse, and only at escalation time.
+func TestNewHandler_BearerEnvUnsetIsNotRegistered(t *testing.T) {
+	t.Parallel()
+	srv := mockServer(t, 200, "ok", new(captured))
+	cfg := cfgWith(config.AlertTarget{Name: "pd", URL: srv.URL, Template: config.AlertTemplateGeneric, Auth: &config.AlertAuth{BearerEnv: "PD_TOKEN"}})
+	_, err := newHandler(yoloGate(t), cfg, func(string) string { return "" }, nil, srv.Client())
+	if err == nil {
+		t.Fatal("newHandler succeeded with an unresolvable bearer token; want an error")
+	}
+	if !strings.Contains(err.Error(), "bearer_env") || !strings.Contains(err.Error(), "PD_TOKEN") {
+		t.Errorf("err = %q, want it to name bearer_env PD_TOKEN", err)
+	}
+}
+
+// TestRun_BearerEnvLostAfterBuild: the call path re-resolves auth, so a
+// token that disappears after registration fails closed instead of
+// sending the alert unauthenticated.
+func TestRun_BearerEnvLostAfterBuild(t *testing.T) {
 	t.Parallel()
 	var got captured
 	srv := mockServer(t, 200, "ok", &got)
 	cfg := cfgWith(config.AlertTarget{Name: "pd", URL: srv.URL, Template: config.AlertTemplateGeneric, Auth: &config.AlertAuth{BearerEnv: "PD_TOKEN"}})
-	h, _ := newHandler(yoloGate(t), cfg, func(string) string { return "" }, nil, srv.Client())
-	_, err := h.run(tool.Context(nil), Args{Target: "pd", Level: "info", Summary: "hi"})
+	present := true
+	env := func(k string) string {
+		if k == "PD_TOKEN" && present {
+			return "s3cr3t"
+		}
+		return ""
+	}
+	h, err := newHandler(yoloGate(t), cfg, env, nil, srv.Client())
+	if err != nil {
+		t.Fatalf("newHandler: %v", err)
+	}
+	present = false
+	_, err = h.run(tool.Context(nil), Args{Target: "pd", Level: "info", Summary: "hi"})
 	if err == nil || !strings.Contains(err.Error(), "bearer_env") {
 		t.Errorf("err = %v, want bearer_env unset error", err)
 	}

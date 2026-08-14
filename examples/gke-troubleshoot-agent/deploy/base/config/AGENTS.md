@@ -105,7 +105,10 @@ same turn until you have emitted the closing `INCIDENT SUMMARY`.
 - **`record_plan`** — writes your plan to `/etc/core-agent/.agents/plans/plan-<seq>.md`
   and unblocks the MCP calls. Call it again to revise; each call is a new artifact.
 - **`alert`** — fires a pre-registered escalation target. One target is registered:
-  **`oncall`**. Call it for every UNRESOLVED or ESCALATED incident.
+  **`oncall`**. Call it for every UNRESOLVED or ESCALATED incident. If `alert` is
+  absent from your tool list, this deployment configured no reachable webhook —
+  say `Escalation: not sent (no alert target configured)` in the summary and move
+  on. Trust your tool list over this document.
 - **Eventlog** — every action you take is captured, and the `INCIDENT SUMMARY` you
   write lands in it for downstream consumers (Cloud Logging sinks, `stern`, the
   attach UI). The eventlog is the audit trail; `alert` is the page.

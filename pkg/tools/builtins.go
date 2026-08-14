@@ -175,10 +175,12 @@ func Default() BuiltinTools {
 		// the default-deny posture in URLScopeConfig.
 		FetchURL: true,
 		// Alert is enabled in the Default struct but Build only
-		// registers it when cfg.Alerts.Targets is non-empty — a binary
-		// with no configured targets gets no escalation tool, matching
-		// the fetch_url conditional-registration pattern. SSRF-safe by
-		// construction: the model can only fire pre-registered targets.
+		// registers it when at least one configured target is actually
+		// deliverable (alert.HasLiveTarget) — a binary with no targets,
+		// or whose every target's url_env is unset, gets no escalation
+		// tool, matching the fetch_url conditional-registration pattern.
+		// SSRF-safe by construction: the model can only fire
+		// pre-registered targets.
 		Alert: true,
 		// WaitAndVerify is unconditional: unlike fetch_url and alert it
 		// needs no operator-supplied registry to be useful (polling
@@ -336,11 +338,18 @@ func Build(cfg *config.Config, gate *permissions.Gate, agentsDir string, b Built
 			return NewFetchURLTool(gate, cfg), nil
 		}},
 		// alert is gated twice, mirroring fetch_url: the BuiltinTools
-		// toggle (b.Alert) and the target registry (len(cfg.Alerts.Targets)
-		// > 0). With no targets the tool isn't registered — the model
-		// never sees an `alert` in its schema, and SSRF is impossible by
-		// construction (no arbitrary-URL parameter; only named targets).
-		{b.Alert && len(cfg.Alerts.Targets) > 0, "alert", "Fire an operator-registered webhook alert target.", func() (tool.Tool, error) {
+		// toggle (b.Alert) and the target registry. With no targets the
+		// tool isn't registered — the model never sees an `alert` in its
+		// schema, and SSRF is impossible by construction (no
+		// arbitrary-URL parameter; only named targets).
+		//
+		// HasLiveTarget, not len(cfg.Alerts.Targets) > 0: a target whose
+		// url_env is unset in this process can never fire, and an
+		// escalation path that only fails at the moment it is needed is
+		// worse than none. alert.New drops those targets from the
+		// description too; this handles the case where every target is
+		// dead. cmd/core-agent warns per dropped target at boot.
+		{b.Alert && alert.HasLiveTarget(cfg), "alert", "Fire an operator-registered webhook alert target.", func() (tool.Tool, error) {
 			return alert.New(gate, cfg)
 		}},
 		// wait_and_verify is inert until something binds a tool

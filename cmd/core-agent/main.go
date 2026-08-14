@@ -67,6 +67,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/taskclass"
 	"github.com/go-steer/core-agent/v2/pkg/telemetry"
 	"github.com/go-steer/core-agent/v2/pkg/tools"
+	"github.com/go-steer/core-agent/v2/pkg/tools/alert"
 	"github.com/go-steer/core-agent/v2/pkg/transcript"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 	"github.com/go-steer/core-agent/v2/pkg/watchdog"
@@ -1112,6 +1113,22 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			if err := b.Disable(name); err != nil {
 				fmt.Fprintf(os.Stderr, "core-agent: task class %q profile: %v\n", cfg.Session.TaskClass, err)
 				return runner.ExitConfigError
+			}
+		}
+		// An alert target whose url_env (or auth env) is unset in this
+		// process can never deliver, so Build drops it from the tool
+		// rather than advertise an escalation path that fails at the one
+		// moment it matters. That is a silent narrowing of what the
+		// operator configured, so say it out loud — this line is often
+		// the only warning before an incident goes unpaged.
+		if b.Alert {
+			if _, dead := alert.PartitionTargets(cfg); len(dead) > 0 {
+				for _, d := range dead {
+					fmt.Fprintf(os.Stderr, "core-agent: alerts: target %q is not deliverable (%s); dropped from the alert tool\n", d.Name, d.Reason)
+				}
+				if !alert.HasLiveTarget(cfg) {
+					fmt.Fprintf(os.Stderr, "core-agent: alerts: no deliverable targets; the alert tool is NOT registered — the agent has no escalation path\n")
+				}
 			}
 		}
 		reg, err := tools.Build(cfg, gate, agentsDir, b)

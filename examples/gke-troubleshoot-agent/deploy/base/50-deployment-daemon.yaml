@@ -162,12 +162,18 @@ spec:
                 name: core-agent-gcp-env
             # Escalation webhook for config.json's alerts.targets[0]
             # ("oncall", url_env: ONCALL_WEBHOOK_URL). Optional so the
-            # recipe deploys without it: the alert tool is registered
-            # either way (registration keys off alerts.targets, not off
-            # the env var), and an unset URL fails at CALL time with
-            # `alert: target "oncall": url_env "ONCALL_WEBHOOK_URL" is
-            # unset or empty` — which the agent is instructed to report
-            # in the INCIDENT SUMMARY. A required secretRef would
+            # recipe deploys without it — but then there is NO escalation
+            # path: an unresolvable target is dropped at startup and, as
+            # the only target here, that means no `alert` tool at all.
+            # Look for this line in the daemon's logs:
+            #
+            #   core-agent: alerts: target "oncall" is not deliverable
+            #     (url_env "ONCALL_WEBHOOK_URL" is unset or empty);
+            #     dropped from the alert tool
+            #
+            # The agent then reports "Escalation: not sent (no alert
+            # target configured)" in its INCIDENT SUMMARY instead of
+            # believing it paged someone. A required secretRef would
             # instead block the pod from starting at all.
             #
             #   kubectl -n agent-triage create secret generic core-agent-alerts \

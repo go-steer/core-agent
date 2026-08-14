@@ -352,6 +352,18 @@ func registeredBuiltins(cfg *config.Config, agentsDir string) (map[string]bool, 
 	for _, t := range reg.Tools {
 		out[t.Name()] = true
 	}
+	// One deliberate divergence from boot: Build also drops alert targets
+	// whose url_env is unset in the CURRENT process, so a recipe checked
+	// on a laptop or in CI — neither of which has the deployment's
+	// webhook Secret — would report `alert` unreachable for every recipe
+	// that configures one. That is a property of the checking
+	// environment, not of the recipe. This check answers "is the recipe
+	// self-consistent", so registering a target is enough; whether the
+	// Secret is mounted is the deployment's problem, and cmd/core-agent
+	// warns about it at boot.
+	if b.Alert && len(cfg.Alerts.Targets) > 0 {
+		out["alert"] = true
+	}
 	return out, nil
 }
 

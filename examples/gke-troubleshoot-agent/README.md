@@ -179,13 +179,23 @@ kubectl -n agent-triage create secret generic core-agent-alerts \
 ```
 
 The Secret is `optional: true` in the Deployment, so the pod still
-boots without it — but the target's URL is resolved at **call** time,
-so a missing value surfaces as a tool error the first time the agent
-tries to escalate (`alert: target "oncall": url_env
-"ONCALL_WEBHOOK_URL" is unset or empty`), not at startup. If you
-genuinely don't want escalation, delete the `alerts` block from
-`config.json` instead of leaving the URL unset — that unregisters the
-tool cleanly.
+boots without it — but then the agent has **no escalation path at
+all**. A target whose `url_env` is unset can never deliver (a process's
+environment is fixed at exec time), so the daemon drops it at startup
+and, since `oncall` is the only target, registers no `alert` tool.
+Watch for this at boot:
+
+```
+core-agent: alerts: target "oncall" is not deliverable (url_env "ONCALL_WEBHOOK_URL" is unset or empty); dropped from the alert tool
+core-agent: alerts: no deliverable targets; the alert tool is NOT registered — the agent has no escalation path
+```
+
+That is deliberate: the alternative is an agent that believes it paged
+someone. Without the tool, the triage skill falls back to
+`Escalation: not sent (no alert target configured)` in the `INCIDENT
+SUMMARY`, which is a hand-off a human can act on. If you genuinely
+don't want escalation, delete the `alerts` block from `config.json` —
+same outcome, stated on purpose.
 
 The target uses the `generic` template: a JSON POST any webhook
 receiver can consume. `generic` is the only template the alert tool

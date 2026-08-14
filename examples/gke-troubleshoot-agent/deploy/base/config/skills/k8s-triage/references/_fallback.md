@@ -66,7 +66,9 @@ worth proposing. Each is something a human applies:
 ## When to escalate (probably right away)
 
 Unknown reasons deserve conservative escalation. Call
-`alert(target: "oncall", ...)` and include:
+`alert(target: "oncall", ...)` — or, if `alert` isn't in your tool list,
+put the same content in the `INCIDENT SUMMARY` and mark
+`Escalation: not sent (no alert target configured)`. Either way include:
 
 - The specific `reason` string that hit fallback.
 - Whether it's cluster-wide, namespace-wide, or single-pod (step 3).

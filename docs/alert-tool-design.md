@@ -51,7 +51,7 @@ Operator declares a set of named targets in `.agents/config.json` under a new `a
 
 - **`name`** — the identifier the agent uses. Alphanumeric + `-` + `_`.
 - **`kind`** — always `webhook` in v2.7. Placeholder for future kinds (`smtp`, `pagerduty_api_v2` with polling, etc.).
-- **`url` OR `url_env`** — the destination URL, either literal or pulled from an env var. Prefer `url_env` for anything with a token in the URL (Slack Incoming Webhooks include the token in the path).
+- **`url` OR `url_env`** — the destination URL, either literal or pulled from an env var. Prefer `url_env` for anything with a token in the URL (Slack Incoming Webhooks include the token in the path). A target whose `url_env` (or `auth` env) is unset when the process starts is **dropped from the registry at startup** rather than advertised — see [Undeliverable targets](#undeliverable-targets-v29).
 - **`template`** — how to format the body: `slack`, `discord`, `pagerduty_events_v2`, or `generic`.
 - **`auth`** (optional) — for targets that need it. `{"bearer_env": "..."}` or `{"basic_env_user": "...", "basic_env_pass": "..."}`.
 - **`description`** — human-readable hint for the LLM. Surfaces in the tool's schema so the agent knows what each target is for.
@@ -199,6 +199,20 @@ Validation:
 - If `kind == "webhook"` and no template matches, reject at load time.
 - Names unique across the target set.
 - `rate_limit_per_target` parses via `time.ParseDuration` (single duration = 1 alert per that duration) OR `N/duration` for N-per-duration.
+
+Validation is deliberately *structural only* — it never reads the environment, because a config file is valid or not independently of where it runs. The environment check happens at registration instead:
+
+### Undeliverable targets (v2.9)
+
+**Shipped.** The original design resolved `url_env` and `auth` env purely at call time, on the reasoning that a rotated Secret should be picked up without a restart. The rotation argument is right; the *registration* consequence was wrong.
+
+A live 2026-08-14 run made it concrete. The deployment configured an `oncall` target reading `PLATFORM_AGENT_ALERT_WEBHOOK`, the Secret was never mounted, and the agent — which had `alert` in its schema and an `AGENTS.md` telling it to escalate — worked an incident to `UNRESOLVED`, called `alert`, and only then discovered nobody had been paged. Its own hand-off said it: *"The escalation webhook failed to deliver … so nobody has been paged — this report is the only hand-off."* The failure landed at the one moment the capability mattered.
+
+A process's environment is fixed at exec time, so "unset at startup" already means "unset for this process's whole life"; the rotation case only covers a *changed* value, never an absent one. So `newHandler` now partitions the registry (`PartitionTargets`): unresolvable targets are dropped from the routing table and from the description the model reads, and `pkg/tools.Build` gates registration on `alert.HasLiveTarget(cfg)` so a build where none survive registers no `alert` tool at all. `cmd/core-agent` prints one stderr line per dropped target naming the env var. The call path still re-resolves both URL and auth, so rotation keeps working and a variable that disappears mid-process fails closed.
+
+Same rule as the built-in description cross-references ([#759](https://github.com/go-steer/core-agent/pull/759)), one layer down: never name a capability the deployment doesn't have.
+
+Two things this deliberately does *not* do. It does not fail the boot — alerting stays optional, and a daemon that can still triage is worth more than one that won't start. And it does not reach into a recipe's prose: an `AGENTS.md` that says "escalate via `alert`" survives the tool's absence, so recipes need their own fallback wording (the `gke-troubleshoot-agent` skill now carries one).
 
 ### Tool implementation
 

@@ -92,6 +92,59 @@ func TestBuild_AlertSkippedWithoutTargets(t *testing.T) {
 	}
 }
 
+// TestBuild_AlertSkippedWhenEveryTargetIsUndeliverable is the
+// registration half of the 2026-08-14 finding: the deployment configured
+// an `oncall` target reading PLATFORM_AGENT_ALERT_WEBHOOK, never mounted
+// the Secret, and the agent learned that only after an unresolved
+// incident had already ended. A process's environment is fixed at exec
+// time, so "unset now" means "unset for this whole process" — the tool
+// must not register at all rather than advertise a page that can't fire.
+func TestBuild_AlertSkippedWhenEveryTargetIsUndeliverable(t *testing.T) {
+	t.Parallel()
+	cfg := config.DefaultConfig()
+	cfg.Alerts = config.AlertsConfig{
+		Targets: []config.AlertTarget{
+			// Deliberately not t.Setenv: the point is that it is unset.
+			{Name: "oncall", URLEnv: "CORE_AGENT_TEST_UNSET_WEBHOOK", Template: config.AlertTemplateGeneric},
+		},
+	}
+	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
+	reg, err := Build(cfg, gate, "", Default())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if hasTool(reg.Tools, "alert") {
+		t.Errorf("alert should NOT be registered when its only target's url_env is unset; got %v", toolNames(reg))
+	}
+	// And the catalog #759 hands to description text must agree, so no
+	// other tool's description can point at an alert that isn't there.
+	if gate.HasTool("alert") {
+		t.Error("gate catalog reports alert as registered; descriptions would cross-reference a missing tool")
+	}
+}
+
+// TestBuild_AlertRegisteredWhenURLEnvIsSet is the control: same shape,
+// env present, tool registers. Without it the test above would still
+// pass if url_env targets never registered at all.
+func TestBuild_AlertRegisteredWhenURLEnvIsSet(t *testing.T) {
+	// No t.Parallel: t.Setenv forbids it.
+	t.Setenv("CORE_AGENT_TEST_SET_WEBHOOK", "https://example.com/hook")
+	cfg := config.DefaultConfig()
+	cfg.Alerts = config.AlertsConfig{
+		Targets: []config.AlertTarget{
+			{Name: "oncall", URLEnv: "CORE_AGENT_TEST_SET_WEBHOOK", Template: config.AlertTemplateGeneric},
+		},
+	}
+	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo})
+	reg, err := Build(cfg, gate, "", Default())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !hasTool(reg.Tools, "alert") {
+		t.Errorf("alert should be registered when its url_env resolves; got %v", toolNames(reg))
+	}
+}
+
 func TestBuild_AlertToggleOffSuppressesRegistration(t *testing.T) {
 	t.Parallel()
 	cfg := config.DefaultConfig()

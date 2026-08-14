@@ -22,6 +22,8 @@ import (
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"google.golang.org/adk/tool"
+	"google.golang.org/adk/tool/functiontool"
 	"google.golang.org/genai"
 )
 
@@ -159,6 +161,127 @@ func TestBuildParams_ToolDeclarations(t *testing.T) {
 	}
 	if _, ok := tool.InputSchema.Properties.(map[string]any)["q"]; !ok {
 		t.Errorf("expected `q` in properties: %+v", tool.InputSchema.Properties)
+	}
+}
+
+// ADK's functiontool.New derives a declaration from the Go args struct
+// and populates ParametersJsonSchema, leaving the typed Parameters field
+// nil. Reading only Parameters advertised every ADK tool to Claude as
+// {"type":"object","properties":{}}: the model saw a name and a
+// description but no arguments, so it guessed argument names and every
+// call came back "unexpected additional properties".
+func TestBuildParams_ToolDeclarations_ParametersJsonSchema(t *testing.T) {
+	t.Parallel()
+	cfg := &genai.GenerateContentConfig{
+		Tools: []*genai.Tool{{
+			FunctionDeclarations: []*genai.FunctionDeclaration{{
+				Name:        "wait_and_verify",
+				Description: "Poll a tool until a condition holds",
+				ParametersJsonSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"tool":      map[string]any{"type": "string", "description": "tool to poll"},
+						"args_json": map[string]any{"type": "string"},
+						"expect_jq": map[string]any{"type": "string"},
+					},
+					"required":             []any{"tool"},
+					"additionalProperties": false,
+				},
+			}},
+		}},
+	}
+	p, err := buildParams("claude-opus-4-7", nil, cfg, false, BuiltinTools{})
+	if err != nil {
+		t.Fatalf("buildParams: %v", err)
+	}
+	if len(p.Tools) != 1 {
+		t.Fatalf("tools = %+v", p.Tools)
+	}
+	tool := p.Tools[0].OfTool
+	if tool == nil {
+		t.Fatalf("tool = %+v", p.Tools[0])
+	}
+	if !reflect.DeepEqual(tool.InputSchema.Required, []string{"tool"}) {
+		t.Errorf("required = %v, want [tool]", tool.InputSchema.Required)
+	}
+	props, ok := tool.InputSchema.Properties.(map[string]any)
+	if !ok {
+		t.Fatalf("properties = %T, want map", tool.InputSchema.Properties)
+	}
+	for _, name := range []string{"tool", "args_json", "expect_jq"} {
+		if _, ok := props[name]; !ok {
+			t.Errorf("property %q missing from input schema: %+v", name, props)
+		}
+	}
+
+	// Assert on the wire bytes, not just the struct: ExtraFields is
+	// merged into the same JSON object as the typed fields, so a key
+	// carried in both places would emit a duplicate.
+	raw, err := json.Marshal(tool.InputSchema)
+	if err != nil {
+		t.Fatalf("marshal input schema: %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("unmarshal input schema: %v", err)
+	}
+	if wire["type"] != "object" {
+		t.Errorf("wire type = %v, want object (%s)", wire["type"], raw)
+	}
+	if wire["additionalProperties"] != false {
+		t.Errorf("additionalProperties not carried through: %s", raw)
+	}
+	if n := bytes.Count(raw, []byte(`"type":"object"`)); n != 1 {
+		t.Errorf("root \"type\" emitted %d times, want 1: %s", n, raw)
+	}
+	if n := bytes.Count(raw, []byte(`"required":`)); n != 1 {
+		t.Errorf("\"required\" emitted %d times, want 1: %s", n, raw)
+	}
+}
+
+// The fixture above hard-codes which field ADK populates. This one
+// pins that assumption to the real generator: build a tool the way
+// every tool in pkg/tools is built and follow its declaration all the
+// way to the wire. If a future ADK release switches to the typed
+// Parameters field this still passes; if the declaration stops
+// carrying parameters at all, it fails.
+func TestBuildParams_ToolDeclarations_RealADKTool(t *testing.T) {
+	t.Parallel()
+	type args struct {
+		Tool     string `json:"tool"`
+		ArgsJSON string `json:"args_json,omitempty"`
+	}
+	ft, err := functiontool.New(
+		functiontool.Config{Name: "probe", Description: "probe"},
+		func(ctx tool.Context, in args) (map[string]any, error) { return nil, nil },
+	)
+	if err != nil {
+		t.Fatalf("functiontool.New: %v", err)
+	}
+	declarer, ok := ft.(interface {
+		Declaration() *genai.FunctionDeclaration
+	})
+	if !ok {
+		t.Fatalf("ADK tool %T does not expose Declaration()", ft)
+	}
+	decl := declarer.Declaration()
+	if decl == nil {
+		t.Fatal("ADK tool has no declaration")
+	}
+	p, err := buildParams("claude-opus-4-7", nil, &genai.GenerateContentConfig{
+		Tools: []*genai.Tool{{FunctionDeclarations: []*genai.FunctionDeclaration{decl}}},
+	}, false, BuiltinTools{})
+	if err != nil {
+		t.Fatalf("buildParams: %v", err)
+	}
+	props, ok := p.Tools[0].OfTool.InputSchema.Properties.(map[string]any)
+	if !ok {
+		t.Fatalf("properties = %T, want map", p.Tools[0].OfTool.InputSchema.Properties)
+	}
+	for _, name := range []string{"tool", "args_json"} {
+		if _, ok := props[name]; !ok {
+			t.Errorf("property %q missing: Claude would be shown a tool with no arguments (%+v)", name, props)
+		}
 	}
 }
 

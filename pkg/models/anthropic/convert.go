@@ -380,7 +380,8 @@ func toolsParam(cfg *genai.GenerateContentConfig) ([]anthropic.ToolUnionParam, e
 			if fd.Description != "" {
 				tool.Description = anthropic.String(fd.Description)
 			}
-			if fd.Parameters != nil {
+			switch {
+			case fd.Parameters != nil:
 				props, required, err := schemaToInput(fd.Parameters)
 				if err != nil {
 					return nil, fmt.Errorf("anthropic: tool %q: %w", fd.Name, err)
@@ -389,7 +390,17 @@ func toolsParam(cfg *genai.GenerateContentConfig) ([]anthropic.ToolUnionParam, e
 					Properties: props,
 					Required:   required,
 				}
-			} else {
+			case fd.ParametersJsonSchema != nil:
+				props, required, extra, err := jsonSchemaToInput(fd.ParametersJsonSchema)
+				if err != nil {
+					return nil, fmt.Errorf("anthropic: tool %q: %w", fd.Name, err)
+				}
+				tool.InputSchema = anthropic.ToolInputSchemaParam{
+					Properties:  props,
+					Required:    required,
+					ExtraFields: extra,
+				}
+			default:
 				// Anthropic requires a non-nil InputSchema; an empty
 				// object is the canonical "no parameters" shape.
 				tool.InputSchema = anthropic.ToolInputSchemaParam{
@@ -430,6 +441,62 @@ func schemaToInput(s *genai.Schema) (map[string]any, []string, error) {
 		}
 	}
 	return props, required, nil
+}
+
+// jsonSchemaToInput projects a genai.FunctionDeclaration's
+// ParametersJsonSchema — an opaque `any` holding an already-valid JSON
+// Schema — into the (Properties, Required, ExtraFields) triple
+// Anthropic's ToolInputSchemaParam expects.
+//
+// This is the path every ADK-built tool takes: functiontool.New derives
+// the declaration from the Go args struct and populates
+// ParametersJsonSchema, leaving the typed Parameters field nil. Without
+// this branch such tools reach the wire as
+// {"type":"object","properties":{}} — the model is shown a tool's name
+// and description but none of its parameters, so it guesses argument
+// names and every call is rejected by schema validation.
+//
+// Unlike schemaToInput there is no type normalization to do: the value
+// is JSON Schema already, not a marshaled genai.Schema, so its types
+// are draft 2020-12 spellings. Keys other than the three that map onto
+// typed fields ("type" is always object for a tool input) are carried
+// through verbatim as ExtraFields, which is what preserves
+// "additionalProperties": false and any "$defs" the generator emitted.
+func jsonSchemaToInput(js any) (map[string]any, []string, map[string]any, error) {
+	raw, err := json.Marshal(js)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("marshal parametersJsonSchema: %w", err)
+	}
+	var generic map[string]any
+	if err := json.Unmarshal(raw, &generic); err != nil {
+		return nil, nil, nil, fmt.Errorf("unmarshal parametersJsonSchema: %w", err)
+	}
+	props := map[string]any{}
+	if p, ok := generic["properties"].(map[string]any); ok {
+		props = p
+	}
+	var required []string
+	if r, ok := generic["required"].([]any); ok {
+		for _, v := range r {
+			if s, ok := v.(string); ok {
+				required = append(required, s)
+			}
+		}
+	}
+	var extra map[string]any
+	for k, v := range generic {
+		switch k {
+		case "type", "properties", "required":
+			// Carried by ToolInputSchemaParam's typed fields;
+			// re-emitting them here would duplicate the JSON keys.
+		default:
+			if extra == nil {
+				extra = map[string]any{}
+			}
+			extra[k] = v
+		}
+	}
+	return props, required, extra, nil
 }
 
 // normalizeSchemaTypes rewrites genai.Type enum spellings into JSON

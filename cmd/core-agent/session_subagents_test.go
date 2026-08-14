@@ -381,6 +381,71 @@ func TestSessionBackgroundRecipe_TemplateSpawnToolsBindToTheSessionManager(t *te
 	}
 }
 
+// TestSessionBackgroundRecipe_CatalogModesMatchTheSessionToolSurface is
+// the operator-visible half of the same split. A multi-session session is
+// handed the manager (so spawn_agent works) but never the synchronous
+// subagent tools — compose.ReproduceAgent does not call
+// agent.WithSubagents — so its /subagents listing must report async-only.
+// The daemon's own parent, built from the SAME shared roster but with the
+// sync tool wired, still reports sync+async. Before this, Catalog
+// hardcoded sync+async for every template, so the 2026-08-13 GKE UAT had
+// a session advertising a "cluster" tool its /tools listing did not carry
+// and its model was never offered (#741).
+func TestSessionBackgroundRecipe_CatalogModesMatchTheSessionToolSurface(t *testing.T) {
+	t.Parallel()
+	r, daemonSpawn := testRecipe(t, []background.SubagentTemplate{clusterTemplate()})
+
+	sub, err := r.factory()(compose.SessionScope{
+		SessionID: "sid-modes",
+		Gate:      permissions.New(permissions.Options{}),
+		ModelName: "echo",
+		Tools:     append([]tool.Tool{bgStubTool(t, "read_file")}, daemonSpawn...),
+	})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	t.Cleanup(sub.Close)
+
+	// The session parent's shape, as ReproduceAgent builds it.
+	if _, err := agent.New(mustEchoModel(t), agent.WithBackgroundManager(sub.Manager.(*background.Manager))); err != nil {
+		t.Fatalf("agent.New(session parent): %v", err)
+	}
+	cat := sub.Manager.ListSubagentCatalog()
+	if len(cat) != 1 || cat[0].Name != "cluster" {
+		t.Fatalf("session catalog = %+v, want [cluster]", cat)
+	}
+	if got := strings.Join(cat[0].Modes, "+"); got != "async" {
+		t.Errorf("session cluster modes = %q, want \"async\" — this session's model has no cluster tool to call", got)
+	}
+
+	// Same roster, daemon-shaped parent: the sync tool IS wired there.
+	daemonMgr, err := background.NewManager(background.WithProvider(mock.NewEcho(), "echo"))
+	if err != nil {
+		t.Fatalf("NewManager(daemon): %v", err)
+	}
+	t.Cleanup(func() { _ = daemonMgr.Close() })
+	if err := daemonMgr.SetSubagentTemplates([]background.SubagentTemplate{clusterTemplate()}); err != nil {
+		t.Fatalf("SetSubagentTemplates: %v", err)
+	}
+	kid, err := agent.New(mustEchoModel(t), agent.WithName("cluster"))
+	if err != nil {
+		t.Fatalf("agent.New(cluster): %v", err)
+	}
+	if _, err := agent.New(mustEchoModel(t),
+		agent.WithBackgroundManager(daemonMgr),
+		agent.WithSubagents([]*agent.Agent{kid}),
+	); err != nil {
+		t.Fatalf("agent.New(daemon parent): %v", err)
+	}
+	dcat := daemonMgr.ListSubagentCatalog()
+	if len(dcat) != 1 {
+		t.Fatalf("daemon catalog = %+v, want [cluster]", dcat)
+	}
+	if got := strings.Join(dcat[0].Modes, "+"); got != "sync+async" {
+		t.Errorf("daemon cluster modes = %q, want \"sync+async\" — the daemon parent does carry the tool", got)
+	}
+}
+
 func mustEchoModel(t *testing.T) adkmodel.LLM {
 	t.Helper()
 	m, err := mock.NewEcho().Model(context.Background(), "echo")

@@ -112,6 +112,39 @@ func TestTemplateNames_Sorted(t *testing.T) {
 	}
 }
 
+// attachSyncParent wires a parent that carries mgr AND exposes names as
+// synchronous subagent tools (agent.WithSubagents) — the shape main.go
+// builds for the daemon's own agent, where a declarative subagent is
+// reachable both ways.
+func attachSyncParent(t *testing.T, mgr *Manager, names ...string) *agent.Agent {
+	t.Helper()
+	kids := make([]*agent.Agent, 0, len(names))
+	for _, n := range names {
+		kid, err := agent.New(echoLLM(t), agent.WithName(n))
+		if err != nil {
+			t.Fatalf("agent.New(%s): %v", n, err)
+		}
+		kids = append(kids, kid)
+	}
+	parent, err := agent.New(echoLLM(t), agent.WithBackgroundManager(mgr), agent.WithSubagents(kids))
+	if err != nil {
+		t.Fatalf("agent.New(parent): %v", err)
+	}
+	if got := parent.SubagentNames(); len(got) != len(names) {
+		t.Fatalf("parent SubagentNames() = %v, want %v — the fixture no longer wires sync tools", got, names)
+	}
+	return parent
+}
+
+func echoLLM(t *testing.T) adkmodel.LLM {
+	t.Helper()
+	llm, err := mock.NewEcho().Model(context.Background(), "echo")
+	if err != nil {
+		t.Fatalf("mock echo Model: %v", err)
+	}
+	return llm
+}
+
 func TestCatalog_TemplatesAndPredefined(t *testing.T) {
 	t.Parallel()
 	prov := &recordingProvider{llm: &stopRaceLLM{}}
@@ -119,6 +152,7 @@ func TestCatalog_TemplatesAndPredefined(t *testing.T) {
 		{Name: "zebra", Description: "zzz", ModelID: "z-model", Root: "../zebra", ModelFactory: tmplFactory(prov, "z-model")},
 		{Name: "alpha", Description: "aaa", ModelFactory: tmplFactory(prov, "a-model")},
 	}, WithPredefinedSpecs([]Spec{{Name: "researcher", SystemPrompt: "p", ModelID: "r-model"}}))
+	attachSyncParent(t, mgr, "alpha", "zebra")
 
 	cat := mgr.Catalog()
 	if len(cat) != 3 {
@@ -150,6 +184,73 @@ func TestCatalog_TemplatesAndPredefined(t *testing.T) {
 	if via := mgr.ListSubagentCatalog(); len(via) != len(cat) || via[0].Name != cat[0].Name {
 		t.Errorf("ListSubagentCatalog() disagrees with Catalog(): %v vs %v", via, cat)
 	}
+}
+
+// TestCatalog_ModesFollowTheParentToolSurface: "sync" is a claim about
+// the parent, not about the template. A manager whose parent carries it
+// (WithBackgroundManager) but was never given the synchronous subagent
+// tools (WithSubagents) must report async-only — that parent's model
+// cannot call the subagent, only spawn it by reference. This is every
+// multi-session session: compose.ReproduceAgent wires the manager and
+// nothing else, so the old hardcoded sync+async had /subagents
+// advertising a tool /tools did not list (#741).
+func TestCatalog_ModesFollowTheParentToolSurface(t *testing.T) {
+	t.Parallel()
+	roster := func() []SubagentTemplate {
+		prov := &recordingProvider{llm: &stopRaceLLM{}}
+		return []SubagentTemplate{{Name: "cluster", ModelFactory: tmplFactory(prov, "c-model")}}
+	}
+
+	t.Run("async only when the parent has no sync tool", func(t *testing.T) {
+		t.Parallel()
+		prov := &recordingProvider{llm: &stopRaceLLM{}}
+		mgr := newTemplateManager(t, prov, roster())
+		attachEchoParent(t, mgr) // WithBackgroundManager, no WithSubagents
+		cat := mgr.Catalog()
+		if len(cat) != 1 {
+			t.Fatalf("Catalog() = %+v, want 1 entry", cat)
+		}
+		if !slices.Equal(cat[0].Modes, []string{"async"}) {
+			t.Errorf("cluster modes = %v, want [async] — the parent was never offered a cluster tool", cat[0].Modes)
+		}
+	})
+
+	t.Run("sync when the parent exposes it", func(t *testing.T) {
+		t.Parallel()
+		prov := &recordingProvider{llm: &stopRaceLLM{}}
+		mgr := newTemplateManager(t, prov, roster())
+		attachSyncParent(t, mgr, "cluster")
+		cat := mgr.Catalog()
+		if len(cat) != 1 {
+			t.Fatalf("Catalog() = %+v, want 1 entry", cat)
+		}
+		if !slices.Equal(cat[0].Modes, []string{"sync", "async"}) {
+			t.Errorf("cluster modes = %v, want [sync async]", cat[0].Modes)
+		}
+	})
+
+	t.Run("a sync tool that is not a template does not invent one", func(t *testing.T) {
+		t.Parallel()
+		prov := &recordingProvider{llm: &stopRaceLLM{}}
+		mgr := newTemplateManager(t, prov, roster())
+		attachSyncParent(t, mgr, "reviewer")
+		cat := mgr.Catalog()
+		if len(cat) != 1 || cat[0].Name != "cluster" {
+			t.Fatalf("Catalog() = %+v, want just the cluster template", cat)
+		}
+		if !slices.Equal(cat[0].Modes, []string{"async"}) {
+			t.Errorf("cluster modes = %v, want [async] — a differently-named sync tool must not mark it sync", cat[0].Modes)
+		}
+	})
+
+	t.Run("no parent attached", func(t *testing.T) {
+		t.Parallel()
+		prov := &recordingProvider{llm: &stopRaceLLM{}}
+		mgr := newTemplateManager(t, prov, roster())
+		if cat := mgr.Catalog(); len(cat) != 1 || !slices.Equal(cat[0].Modes, []string{"async"}) {
+			t.Errorf("Catalog() = %+v, want cluster async-only before any agent.New wires a parent", cat)
+		}
+	})
 }
 
 func TestCatalog_Empty(t *testing.T) {

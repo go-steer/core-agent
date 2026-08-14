@@ -346,30 +346,63 @@ func (m *Manager) ReferenceNames() []string {
 	return names
 }
 
+// syncSubagentNames indexes the subagents the attached parent exposes as
+// a synchronous, parent-callable tool (agent.WithSubagents). Empty when
+// no parent is attached yet, and — the case this exists for — when the
+// parent was handed the manager but not the sync tools:
+// compose.ReproduceAgent wires each multi-session session with
+// WithBackgroundManager and no WithSubagents, so a session can reach a
+// declarative subagent by reference only. Reporting those as "sync" told
+// operators about a tool the session's model was never offered; in the
+// 2026-08-13 GKE UAT /subagents claimed sync+async on a session whose
+// /tools listing had no such tool (#741).
+func (m *Manager) syncSubagentNames() map[string]struct{} {
+	names := m.Parent().SubagentNames() // nil-safe on both hops
+	if len(names) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		set[n] = struct{}{}
+	}
+	return set
+}
+
 // Catalog returns the configured-subagent roster (#627) — declarative
-// templates first (sync+async), then predefined catalog specs
-// (async-only), each sorted by name. This is what the daemon LOADED, as
+// templates first, then predefined catalog specs (async-only), each
+// sorted by name. This is what the daemon LOADED, as
 // opposed to Manager.List / ListSubagents (live spawned instances). Backs
 // the operator-facing surfaces: GET .../subagents (via the SubagentManager
 // interface's ListSubagentCatalog), the /subagent listing, and the boot
 // dump. Never nil.
 //
-// Modes records how each subagent can be invoked: declarative templates
-// are BOTH "sync" (a parent tool call, via agent.WithSubagents) and
-// "async" (spawn_agent {agent}); predefined catalog specs are "async" only
-// (spawn-by-reference, no synchronous tool).
+// Modes records how each subagent can actually be invoked HERE, on this
+// manager's parent. Every declarative template is "async" (spawn_agent
+// {agent}); it is additionally "sync" only when the attached parent
+// exposes it as a tool, which is a property of that parent's
+// WithSubagents set, not of the template. Predefined catalog specs are
+// always "async" only (spawn-by-reference, no synchronous tool).
 func (m *Manager) Catalog() []attach.SubagentCatalogInfo {
+	// Read before taking m.mu: Parent() locks, and SubagentNames() is a
+	// call out of this package, which we'd rather not make under our own
+	// lock.
+	sync := m.syncSubagentNames()
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	templates := make([]attach.SubagentCatalogInfo, 0, len(m.templates))
 	for _, t := range m.templates {
+		modes := []string{"async"}
+		if _, ok := sync[t.Name]; ok {
+			modes = []string{"sync", "async"}
+		}
 		templates = append(templates, attach.SubagentCatalogInfo{
 			Name:        t.Name,
 			Description: t.Description,
 			Model:       t.ModelID,
 			Root:        t.Root,
-			Modes:       []string{"sync", "async"},
+			Modes:       modes,
 		})
 	}
 	sort.Slice(templates, func(i, j int) bool { return templates[i].Name < templates[j].Name })

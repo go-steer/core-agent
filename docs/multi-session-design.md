@@ -499,6 +499,19 @@ on first write so the shared roster is never mutated. Matching by
 name keeps the operator's scoping intact: no template ever gains
 a spawn tool its spec didn't grant.
 
+A second follow-up covers the operator's view of the same split.
+`compose.ReproduceAgent` wires a session with the background
+manager but not `agent.WithSubagents`, so a daemon-created session
+can reach a declarative subagent only by reference — while
+`Manager.Catalog` reported a hardcoded `["sync","async"]` for
+every template, on every manager. `GET /subagents` therefore
+advertised a synchronous tool that the session's `/tools` listing
+did not carry and its model was never offered. `Catalog` now
+derives the modes from the attached parent's `SubagentNames()`,
+so "sync" is a claim about THIS session's tool surface rather
+than about the template. Making `ReproduceAgent` wire the sync
+subagents is the separate half, still open.
+
 ### Eventlog + session.Service
 
 **Today:** already isolated by sessionID. No change needed.

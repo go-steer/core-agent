@@ -36,17 +36,35 @@ func budgetsFromArgs(args spawnAgentArgs) Budgets {
 	}
 }
 
+// refusedSpawn shapes a launch that never happened.
+//
+// The refusal goes into the result twice, on purpose. Status carries
+// the "error: ..." prose the model reads and adapts to — that half is
+// the errors-as-results contract this tool has always had. Error
+// carries the same text under ADK's reserved key, which is what every
+// consumer downstream of the model reads to tell a failed call from a
+// successful one: the flow traces the call as failed, the watchdog
+// counts it against the failure streak, and both TUIs draw ✗ with the
+// reason instead of rendering a refusal exactly like a launch (#746).
+func refusedSpawn(name string, err error) spawnAgentResult {
+	return spawnAgentResult{
+		Name:   name,
+		Status: "error: " + err.Error(),
+		Error:  err.Error(),
+	}
+}
+
 // spawnResult shapes a launch outcome into the tool's result. A nil
 // error yields the running handle's identity; ErrNoParent propagates as
 // a Go error (a developer wiring bug, not model-adaptable); any other
-// error is surfaced as an "error: ..." status under fallbackName so the
-// model can adjust and retry.
+// error is surfaced as a refusal under fallbackName so the model can
+// adjust and retry.
 func spawnResult(h *Handle, fallbackName string, err error) (spawnAgentResult, error) {
 	if err != nil {
 		if err == ErrNoParent {
 			return spawnAgentResult{}, err
 		}
-		return spawnAgentResult{Name: fallbackName, Status: "error: " + err.Error()}, nil
+		return refusedSpawn(fallbackName, err), nil
 	}
 	return spawnAgentResult{
 		Name:   h.Name,
@@ -237,6 +255,20 @@ type spawnAgentResult struct {
 	Name   string `json:"name"`
 	Branch string `json:"branch"`
 	Status string `json:"status"`
+	// Error is the refusal text for a spawn that never launched —
+	// invalid spec, depth or concurrency cap, unknown reference, a
+	// self-spawn (#742). Empty for every launch that happened,
+	// including one whose subagent later failed: this field is about
+	// the CALL, not the run's outcome (that is StopReason).
+	//
+	// It exists because the errors-as-results contract above hides the
+	// failure from everything except the model: a refusal and a launch
+	// were the same shape, so the TUI drew "↳ branch, name, status" for
+	// both and an operator watching the 2026-08-14 UAT read a refused
+	// self-spawn as a subagent that had started (#746). "error" is
+	// ADK's reserved key for exactly this, so populating it lights up
+	// the failure affordance every consumer already has.
+	Error string `json:"error,omitempty"`
 	// Output is the subagent's deliverable on a synchronous spawn
 	// (wait: true) that ran to completion: its completion report, or its
 	// final text for a run that ended without signalling completion
@@ -302,7 +334,7 @@ func NewSpawnAgentTool(mgr *Manager) tool.Tool {
 				// Resolution errors (unknown reference, ad-hoc disabled,
 				// non-narrowing override) are surfaced as a result so the
 				// model can adapt.
-				return spawnAgentResult{Name: name, Status: "error: " + err.Error()}, nil
+				return refusedSpawn(name, err), nil
 			}
 			h, err = mgr.Spawn(toolCtx, parentBranch, spec)
 		}
@@ -347,6 +379,10 @@ type stopAgentArgs struct {
 type stopAgentResult struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
+	// Error mirrors spawnAgentResult.Error: a stop that didn't happen
+	// (unknown name) is a failed call, and saying so under the reserved
+	// key is what keeps it from rendering as a stop that did (#746).
+	Error string `json:"error,omitempty"`
 }
 
 // NewStopAgentTool returns a tool the parent's model can call to
@@ -359,6 +395,7 @@ func NewStopAgentTool(mgr *Manager) tool.Tool {
 			return stopAgentResult{
 				Name:   args.Name,
 				Status: "error: " + err.Error(),
+				Error:  err.Error(),
 			}, nil
 		}
 		h, _ := mgr.Get(args.Name)

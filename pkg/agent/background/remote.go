@@ -169,6 +169,11 @@ type spawnRemoteAgentResult struct {
 	Name   string `json:"name"`
 	ID     string `json:"id"`
 	Status string `json:"status"`
+	// Error mirrors spawnAgentResult.Error — a substrate that refused
+	// the launch is a failed call, and the in-process twin's fix (#746)
+	// is only half a fix if the remote one still reports a refusal in
+	// the same shape as a running Job.
+	Error string `json:"error,omitempty"`
 }
 
 // NewSpawnRemoteAgentTool returns a tool the parent's model can call
@@ -205,6 +210,7 @@ func NewSpawnRemoteAgentTool(spawner RemoteAgentSpawner, mgr *Manager) (tool.Too
 			return spawnRemoteAgentResult{
 				Name:   args.Name,
 				Status: "error: " + err.Error(),
+				Error:  err.Error(),
 			}, nil
 		}
 		// Register with the manager so stop_agent + operator surfaces

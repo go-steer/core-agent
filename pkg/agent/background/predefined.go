@@ -133,6 +133,10 @@ func (m *Manager) resolvePredefinedSpec(name string, ov RefOverrides) (Spec, err
 	}
 
 	spec := base // struct copy; slices are shared but we reassign, never mutate in place
+	// Remember which configured subagent this came from. The caller
+	// overwrites Name with a per-instance name, and the self-spawn
+	// guard needs the declaration (#732).
+	spec.Ref = name
 
 	// Goal: replace when supplied.
 	if g := strings.TrimSpace(ov.Goal); g != "" {

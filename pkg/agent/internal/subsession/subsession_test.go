@@ -85,6 +85,56 @@ func TestCurrentDepth_DefaultsZeroAndReadsContext(t *testing.T) {
 	}
 }
 
+func TestLineage_TracksTheSubagentsOnTheStack(t *testing.T) {
+	t.Parallel()
+	root := context.Background()
+	if got := Lineage(root); len(got) != 0 {
+		t.Errorf("top-level lineage = %v, want empty", got)
+	}
+	if InLineage(root, "cluster") {
+		t.Error("InLineage said we're inside a subagent at the top level")
+	}
+
+	cluster := WithLineage(root, "cluster")
+	if !InLineage(cluster, "cluster") {
+		t.Error("InLineage(cluster) = false inside cluster")
+	}
+	if InLineage(cluster, "gitops") {
+		t.Error("InLineage(gitops) = true inside cluster — only the stack counts")
+	}
+	// An ancestor further up still counts: a cycle is recursion however
+	// many subagents it goes through.
+	nested := WithLineage(cluster, "gitops")
+	if !InLineage(nested, "cluster") || !InLineage(nested, "gitops") {
+		t.Errorf("lineage = %v, want both ancestors", Lineage(nested))
+	}
+
+	// An empty name is dropped rather than recorded: "" would otherwise
+	// make every unnamed subagent look like the same one.
+	if got := Lineage(WithLineage(root, "  ")); len(got) != 0 {
+		t.Errorf("lineage after an empty name = %v, want empty", got)
+	}
+	if InLineage(nested, "") {
+		t.Error("InLineage(\"\") = true — an unnamed subagent matches nothing")
+	}
+}
+
+// Siblings derive from one parent context. Appending in place would let
+// the first sibling's name land in the backing array the second one
+// then writes over — or worse, reads.
+func TestWithLineage_SiblingsDontShareBackingArray(t *testing.T) {
+	t.Parallel()
+	parent := WithLineage(context.Background(), "cluster")
+	a := WithLineage(parent, "gitops")
+	b := WithLineage(parent, "capacity")
+	if got := Lineage(a); len(got) != 2 || got[1] != "gitops" {
+		t.Errorf("first sibling's lineage = %v, want [cluster gitops]", got)
+	}
+	if got := Lineage(b); len(got) != 2 || got[1] != "capacity" {
+		t.Errorf("second sibling's lineage = %v, want [cluster capacity]", got)
+	}
+}
+
 // TestDeriveSessionID covers the standalone-construction and
 // no-invocation-component edges: the parent prefix and invocation
 // suffix are each dropped when empty, so deterministic name-addressed

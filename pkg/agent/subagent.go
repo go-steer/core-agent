@@ -224,6 +224,12 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 		// further subagent calls from inside this one see the
 		// incremented count.
 		childCtx := subsession.WithDepth(toolCtx, subsession.CurrentDepth(toolCtx)+1)
+		// Record which subagent we're inside so a spawn_agent call made
+		// from in here can't re-launch this same subagent asynchronously
+		// (#732). A declarative subagent is reachable both ways — as a
+		// parent tool call and by reference — under one name, so the
+		// guard has to see the synchronous half of the stack too.
+		childCtx = subsession.WithLineage(childCtx, name)
 
 		msg := genai.NewContentFromText(args.Request, genai.RoleUser)
 		var sb strings.Builder

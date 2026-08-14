@@ -300,6 +300,7 @@ func (m *Manager) SpawnTemplate(ctx context.Context, parentBranch, name string, 
 
 	return m.launch(ctx, parentBranch, resolvedSpawn{
 		name:         m.nextInstanceName(name, explicitName),
+		specName:     name,
 		goal:         goal,
 		instrOpts:    instrOpts,
 		tools:        tmpl.Tools,

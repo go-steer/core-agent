@@ -379,6 +379,13 @@ type Spec struct {
 	// Mode selects how the subagent's loop terminates. Empty derives
 	// it from Scheduler; see Mode.
 	Mode Mode
+	// Ref is the predefined-spec name this spec was resolved from, set
+	// by the reference path (resolvePredefinedSpec) and empty for an
+	// ad-hoc, inline-authored one. Name is rewritten to a per-instance
+	// name before the spawn ("triage-2"), so Ref is what survives to
+	// say WHICH configured subagent is running — the self-spawn guard
+	// matches on it (#732).
+	Ref string
 }
 
 // Mode distinguishes the two things "background subagent" has always
@@ -660,6 +667,12 @@ var ErrSubagentExists = errors.New("background: subagent with this name already 
 // ErrDepthExceeded is returned by Spawn when the calling context is
 // already at the max subagent depth.
 var ErrDepthExceeded = errors.New("background: max subagent depth exceeded")
+
+// ErrSelfSpawn is returned by Spawn when a subagent tries to spawn a
+// subagent it is itself an instance of. Recursion at depth 1 sits
+// inside any sensible depth cap, so the cap can't see it: what stops it
+// is the declared-name lineage the spawn context carries (#732).
+var ErrSelfSpawn = errors.New("background: a subagent may not spawn itself")
 
 // ErrTooManyConcurrent is returned by Spawn when the manager already
 // has MaxConcurrent running subagents.

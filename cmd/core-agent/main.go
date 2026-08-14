@@ -1054,6 +1054,12 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// so ReportDrift can see every reference the bundle actually made.
 	// Warnings only — never blocks startup.
 	if envResolver != nil {
+		// Config refers to env vars by NAME (alerts.targets[].url_env,
+		// attach.token_env, auth.bearer_env) and never flows through
+		// Interpolate, so ReportDrift can't see those references on its
+		// own — it would call a var used only by an alert target
+		// unreferenced. Feed them in first.
+		envResolver.NoteConfigRefs(cfg.EnvRefs())
 		for _, w := range envResolver.ReportDrift() {
 			send(w)
 		}

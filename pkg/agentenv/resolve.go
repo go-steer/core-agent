@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -44,14 +45,15 @@ type Resolver struct {
 	sens     map[string]struct{} // names flagged sensitive: true; read-only after NewResolver
 	errs     []error             // required-var-missing errors; read-only after NewResolver
 
-	// mu guards seenRefs, the only field mutated after construction.
-	// The same resolver's InterpolateFunc is shared across sessions
-	// (pkg/compose captures it into SessionFactoryDeps.EnvInterp),
+	// mu guards seenRefs and cfgRefs, the only fields mutated after
+	// construction. The same resolver's InterpolateFunc is shared across
+	// sessions (pkg/compose captures it into SessionFactoryDeps.EnvInterp),
 	// so concurrent POST /sessions -> ReproduceAgent -> Interpolate can
 	// write seenRefs from multiple goroutines at once. Without this lock
 	// that's a data race (guaranteed -race failure, panic under load).
 	mu       sync.Mutex
 	seenRefs map[string]struct{} // names encountered during interpolation
+	cfgRefs  map[string]struct{} // names a *_env config field refers to
 }
 
 // NewResolver builds a Resolver from a parsed manifest and an env-var
@@ -74,6 +76,7 @@ func NewResolver(manifest *Manifest, lookup func(name string) (string, bool)) *R
 		values:   make(map[string]string, len(manifest.Env)),
 		sens:     make(map[string]struct{}),
 		seenRefs: make(map[string]struct{}),
+		cfgRefs:  make(map[string]struct{}),
 	}
 	for _, e := range manifest.Env {
 		val, ok := lookup(e.Name)
@@ -149,6 +152,41 @@ func (r *Resolver) InterpolateFunc() func(string) string {
 	return r.Interpolate
 }
 
+// NoteConfigRefs records env-var names the CONFIG refers to by name —
+// the `*_env` fields (alerts.targets[].url_env, attach.token_env,
+// auth.bearer_env, …) whose value is a var name rather than a secret.
+//
+// These never reach Interpolate: config is parsed by pkg/config and
+// resolved late by whichever component owns the field, so it never flows
+// through this resolver. Without this call ReportDrift sees only
+// ${env:NAME} references in bundle text and reports a config-only var as
+// unreferenced — which is how the kube-platform-native deployment came
+// to warn that nothing referenced PLATFORM_AGENT_ALERT_WEBHOOK while the
+// alert target was reading it by name.
+//
+// Recorded separately from seenRefs rather than folded in, so the
+// undeclared-reference warning can name the right convention: telling an
+// operator to add `${env:FOO}` to their manifest when FOO is a
+// bearer_env would send them looking for a bundle reference that does
+// not exist.
+//
+// Nil-safe and idempotent. Callers pass (*config.Config).EnvRefs().
+func (r *Resolver) NoteConfigRefs(names []string) {
+	if r == nil || len(names) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.cfgRefs == nil {
+		r.cfgRefs = make(map[string]struct{}, len(names))
+	}
+	for _, n := range names {
+		if n = strings.TrimSpace(n); n != "" {
+			r.cfgRefs[n] = struct{}{}
+		}
+	}
+}
+
 // IsSensitive reports whether the named var is marked sensitive in the
 // manifest. Used by log-sanitization paths that already redact certain
 // values (mcp.json headers, /stats surfaces) to also redact env-var
@@ -189,13 +227,19 @@ func (r *Resolver) SensitiveValues() []string {
 //   - "unreferenced declaration: FOO declared in manifest but not
 //     referenced anywhere" — leftover from a refactor.
 //
+// A name counts as referenced if EITHER convention reaches it: a
+// ${env:NAME} in bundle text (recorded by Interpolate) or a `*_env`
+// config field naming it (recorded by NoteConfigRefs). The undeclared
+// warning names whichever convention actually made the reference, so the
+// operator is pointed at the file they'd have to edit.
+//
 // Both are advisory (per the #322 issue: warn, not error). The daemon
 // keeps running; the recipe author sees the warnings and cleans up on
 // their next iteration.
 //
 // Callers must invoke ReportDrift AFTER all bundle files have flowed
-// through Interpolate at least once; earlier invocation reports every
-// declaration as unreferenced.
+// through Interpolate at least once AND after NoteConfigRefs; earlier
+// invocation reports every declaration as unreferenced.
 func (r *Resolver) ReportDrift() []string {
 	if r == nil {
 		return nil
@@ -207,35 +251,59 @@ func (r *Resolver) ReportDrift() []string {
 		declared[e.Name] = struct{}{}
 	}
 
-	// Snapshot seenRefs under the lock so a concurrent Interpolate can't
-	// mutate the map while we range over it (see the Resolver.mu note).
-	seen := r.snapshotSeenRefs()
+	// Snapshot both reference sets under the lock so a concurrent
+	// Interpolate can't mutate a map while we range over it (see the
+	// Resolver.mu note).
+	seen, cfg := r.snapshotRefs()
 
-	// Undeclared references: seen during interpolation but not in the
-	// manifest. Ambient system env vars (HOME, PATH, etc.) that the
-	// bundle happens to reference count as undeclared — arguably the
-	// right behavior, since the recipe author should be explicit about
-	// what environmental context the bundle assumes.
+	// Undeclared references: referenced but not in the manifest. Ambient
+	// system env vars (HOME, PATH, etc.) that the bundle happens to
+	// reference count as undeclared — arguably the right behavior, since
+	// the recipe author should be explicit about what environmental
+	// context the bundle assumes.
+	//
+	// Reported per convention. A name reached both ways is reported once,
+	// as a bundle reference: that is the one the operator can see by
+	// grepping the bundle, and the config field will be right next to it
+	// in their head anyway.
 	undeclared := make([]string, 0)
+	undeclaredCfg := make([]string, 0)
 	for name := range seen {
 		if _, ok := declared[name]; !ok {
 			undeclared = append(undeclared, name)
 		}
 	}
+	for name := range cfg {
+		if _, ok := declared[name]; ok {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		undeclaredCfg = append(undeclaredCfg, name)
+	}
 	sort.Strings(undeclared)
+	sort.Strings(undeclaredCfg)
 	for _, name := range undeclared {
 		warnings = append(warnings, fmt.Sprintf("agentenv: ${env:%s} is referenced but not declared in the manifest", name))
 	}
+	for _, name := range undeclaredCfg {
+		warnings = append(warnings, fmt.Sprintf("agentenv: config names env var %q (a *_env field) but it is not declared in the manifest", name))
+	}
 
-	// Unreferenced declarations: in the manifest but never seen. Common
-	// during recipe evolution — a var got renamed but the old entry
-	// stayed behind, or a bundle used to reference it and no longer
-	// does.
+	// Unreferenced declarations: in the manifest but reached by neither
+	// convention. Common during recipe evolution — a var got renamed but
+	// the old entry stayed behind, or a bundle used to reference it and
+	// no longer does.
 	unref := make([]string, 0)
 	for name := range declared {
-		if _, ok := seen[name]; !ok {
-			unref = append(unref, name)
+		if _, ok := seen[name]; ok {
+			continue
 		}
+		if _, ok := cfg[name]; ok {
+			continue
+		}
+		unref = append(unref, name)
 	}
 	sort.Strings(unref)
 	for _, name := range unref {
@@ -245,17 +313,21 @@ func (r *Resolver) ReportDrift() []string {
 	return warnings
 }
 
-// snapshotSeenRefs returns a copy of the interpolation-seen set taken
-// under the lock, so callers can range over it without racing a
-// concurrent Interpolate.
-func (r *Resolver) snapshotSeenRefs() map[string]struct{} {
+// snapshotRefs returns copies of both reference sets taken under the
+// lock, so callers can range over them without racing a concurrent
+// Interpolate or NoteConfigRefs.
+func (r *Resolver) snapshotRefs() (seen, cfg map[string]struct{}) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make(map[string]struct{}, len(r.seenRefs))
+	seen = make(map[string]struct{}, len(r.seenRefs))
 	for name := range r.seenRefs {
-		out[name] = struct{}{}
+		seen[name] = struct{}{}
 	}
-	return out
+	cfg = make(map[string]struct{}, len(r.cfgRefs))
+	for name := range r.cfgRefs {
+		cfg[name] = struct{}{}
+	}
+	return seen, cfg
 }
 
 // describeUsage builds a short hint string for the "required var

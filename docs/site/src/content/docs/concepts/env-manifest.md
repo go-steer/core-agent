@@ -99,9 +99,33 @@ The daemon runs the manifest through three phases at startup:
 2. **Required-var check** — every entry with `required: true` must have a value in the process env. Missing → fatal error, daemon exits with `ExitConfigError`. Errors are batched (all missing vars listed at once), not fail-first, so operators see everything to fix in one round-trip.
 3. **Drift diagnostics (warn only)** — after all bundle files have been loaded and interpolated:
    - Names referenced via `${env:NAME}` but not declared in the manifest surface as `"${env:NAME} is referenced but not declared in the manifest"`.
-   - Names declared in the manifest but never referenced anywhere surface as `"manifest declares X but nothing in the bundle references it"`.
+   - Names named by a `*_env` config field but not declared in the manifest surface as `` "config names env var \"X\" (a *_env field) but it is not declared in the manifest" ``.
+   - Names declared in the manifest but reached by neither route surface as `"manifest declares X but nothing in the bundle references it"`.
 
 Both drift diagnostics are advisory. The daemon keeps running; the recipe author sees the warnings and cleans up on their next iteration.
+
+### The two ways a bundle consumes an env var
+
+`${env:NAME}` is not the only reference the drift check counts, because it is not the only way the bundle reaches the environment:
+
+| Convention | Where | What it does | When it resolves |
+| --- | --- | --- | --- |
+| `${env:NAME}` | AGENTS.md, skills, `mcp.json` values | splices the **value** into text the model reads | once, at load |
+| a `*_env` config field | `config.json` | hands the **name** to the component that owns the field | late, at use |
+
+The second exists because some values must not be spliced. `alerts.targets[].url_env` is re-read on every fire, so rotating the Secret needs no restart, and the webhook URL never lands in the in-memory config that log and status surfaces can echo. Config is parsed by `pkg/config` and never flows through the interpolator, so writing `"url": "${env:MY_WEBHOOK}"` does not work — it isn't expanded, and the URL validator rejects the literal for having no scheme.
+
+The fields that name an env var are, today:
+
+- `alerts.targets[].url_env`
+- `alerts.targets[].auth.bearer_env`
+- `alerts.targets[].auth.basic_env_user` / `basic_env_pass`
+- `attach.token_env`
+- `tools.call_peer.token_env`
+
+Both routes count as a reference, so declaring a var in `env.yaml` and using it only from config is not drift. Before this landed it was reported as unreferenced — a live `kube-platform-native` deployment warned that nothing referenced `PLATFORM_AGENT_ALERT_WEBHOOK` while an alert target was reading it by name.
+
+Discovery is by JSON-tag convention (`*_env`), not a hand-maintained list, so a new `*_env` field is picked up with no wiring. The corollary: an env-name field tagged something else — `webhook_secret`, `token_var` — is invisible to the check. Name new fields with the suffix.
 
 ---
 

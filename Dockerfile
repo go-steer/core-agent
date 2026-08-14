@@ -9,9 +9,11 @@
 #                 ~5MB smaller; omits the embedded bubble-tea TUI for
 #                 headless-only deployments).
 #
-# The Go toolchain version is passed in from `go.mod` via GO_VERSION,
-# so the build image automatically tracks the project's Go version
-# without a hardcoded duplicate that can drift.
+# The Go toolchain version is passed in from `go.mod`'s `toolchain`
+# directive via GO_VERSION, so the build image automatically tracks the
+# project's Go version without a hardcoded duplicate that can drift.
+# The ARG default below is only used by a bare `docker build`;
+# dev/ci/presubmits/verify-go-toolchain keeps it in sync with go.mod.
 #
 # Final stage is gcr.io/distroless/static-debian12:nonroot. We can use
 # the "static" variant (not "base") because all Cgo-flavored
@@ -31,7 +33,7 @@
 # Alpine base for a smaller (~150MB vs ~900MB) builder image — faster
 # CI cold-cache pulls. CGO_ENABLED=0 below means we don't care about
 # the builder's libc (musl vs glibc); we only ship the binary.
-ARG GO_VERSION=1.26.3
+ARG GO_VERSION=1.26.6
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS builder
 
 WORKDIR /src

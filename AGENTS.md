@@ -166,7 +166,7 @@ Conventions worth knowing at agent prompt time:
 - **Run presubmits before every push.** `dev/ci/presubmits/*` are the
   same scripts CI runs. A green local run is the same green run as
   remote CI — skipping them ships preventable red builds. Full sweep:
-  `dev/ci/presubmits/{build,lint-go,test-unit,verify-go-format,verify-mod-tidy,vet,verify-vuln}`.
+  `dev/ci/presubmits/{build,lint-go,test-unit,verify-go-format,verify-mod-tidy,vet,verify-vuln,verify-go-toolchain}`.
 - **Adversarial review gate before every PR.** Before `gh pr create`
   on any change touching Go code: run a skeptic subagent over the
   staged diff (correctness, races, API misuse — verified against

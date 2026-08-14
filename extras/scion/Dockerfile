@@ -43,7 +43,9 @@
 # scion-base is available locally; override for a pinned tag or
 # registry-qualified image.
 ARG BASE_IMAGE=scion-base:latest
-ARG GO_VERSION=1.26.3
+# Tracks go.mod's `toolchain` directive; kept in sync by
+# dev/ci/presubmits/verify-go-toolchain.
+ARG GO_VERSION=1.26.6
 ARG BUILDPLATFORM=linux/amd64
 
 # ---- Builder stage ----

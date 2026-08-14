@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# One source of truth for "which Go toolchain does this project build
+# with", and the checks that keep every consumer of that answer honest.
+#
+# go.mod carries two versions and they mean different things:
+#
+#   go 1.26.4         — the language compatibility floor.
+#   toolchain go1.26.6 — the toolchain we actually build with.
+#
+# Stdlib CVEs are fixed by toolchain patch releases, so the second line
+# is the one that decides whether a shipped binary is vulnerable. Read
+# the first one by mistake and CI stays green while the published image
+# ships a stdlib that govulncheck already knows about.
+#
+# Modes:
+#
+#   verify-go-toolchain              # static: everything agrees with go.mod
+#   verify-go-toolchain --print      # emit the version (e.g. 1.26.6)
+#   verify-go-toolchain --binary P   # a built binary carries that toolchain,
+#                                    # and its stdlib has no advisories
+
+set -euo pipefail
+. "$(dirname "$0")/common.sh"
+cd "$(repo_root)"
+
+# Dockerfiles whose `ARG GO_VERSION=` default must track go.mod. The
+# default only applies to a local `docker build` with no --build-arg —
+# the release workflow passes the version explicitly — but a stale
+# default silently hands a contributor a months-old compiler.
+DOCKERFILES=(Dockerfile extras/scion/Dockerfile)
+
+# The release workflow must resolve the toolchain through THIS script.
+# It used to grep go.mod inline, read the `go` directive, and publish
+# images built on the compatibility floor (#736).
+RELEASE_WORKFLOW=.github/workflows/release-images.yml
+
+usage() {
+  cat <<'EOF'
+Usage: dev/tools/verify-go-toolchain [--print | --binary <path>]
+
+  (no flags)        verify go.mod, the Dockerfiles, and the release
+                    workflow all agree on the Go toolchain
+  --print           print the toolchain version (e.g. 1.26.6)
+  --binary <path>   verify a built binary was compiled with that
+                    toolchain and carries no stdlib advisories
+EOF
+}
+
+# Resolve the toolchain version, without the `go` prefix (1.26.6).
+#
+# Prefer the `toolchain` directive; fall back to the `go` directive,
+# which is what go.mod looks like when the two would be identical
+# (`go mod tidy` drops a toolchain line that adds nothing).
+resolve_toolchain() {
+  local version
+  version=$(grep -oE '^toolchain go[0-9]+\.[0-9]+(\.[0-9]+)?$' go.mod \
+            | sed -n '1p' | sed 's/^toolchain go//')
+  if [[ -z "$version" ]]; then
+    version=$(grep -oE '^go [0-9]+\.[0-9]+(\.[0-9]+)?$' go.mod \
+              | sed -n '1p' | awk '{print $2}')
+  fi
+  if [[ -z "$version" ]]; then
+    echo "verify-go-toolchain: no toolchain or go directive in go.mod" >&2
+    return 1
+  fi
+  echo "$version"
+}
+
+# Static check: every place that names a Go version agrees with go.mod.
+verify_static() {
+  local expected="$1"
+  local failed=0
+
+  local dockerfile actual
+  for dockerfile in "${DOCKERFILES[@]}"; do
+    actual=$(grep -oE '^ARG GO_VERSION=[^ ]+$' "$dockerfile" \
+             | sed -n '1p' | sed 's/^ARG GO_VERSION=//')
+    if [[ -z "$actual" ]]; then
+      echo "verify-go-toolchain: ${dockerfile} has no 'ARG GO_VERSION=' default" >&2
+      failed=1
+      continue
+    fi
+    if [[ "$actual" != "$expected" ]]; then
+      cat >&2 <<EOF
+verify-go-toolchain: ${dockerfile} builds on a different Go than go.mod.
+
+  go.mod toolchain:  ${expected}
+  ARG GO_VERSION:    ${actual}
+
+Fix the Dockerfile default:
+  ARG GO_VERSION=${expected}
+EOF
+      failed=1
+    fi
+  done
+
+  if ! grep -q 'verify-go-toolchain --print' "$RELEASE_WORKFLOW"; then
+    cat >&2 <<EOF
+verify-go-toolchain: ${RELEASE_WORKFLOW} no longer resolves the Go
+version through dev/tools/verify-go-toolchain --print.
+
+An inline \`grep ... go.mod\` there is how #736 happened: it read the
+\`go\` directive (the compatibility floor) instead of \`toolchain\`, so
+published images were built on a stdlib that CI had already moved off.
+EOF
+    failed=1
+  fi
+
+  if [[ "$failed" -ne 0 ]]; then
+    return 1
+  fi
+  echo "verify-go-toolchain: OK (go${expected} everywhere)"
+}
+
+# Binary check: what actually got compiled, not what we asked for.
+verify_binary() {
+  local expected="$1"
+  local binary="$2"
+
+  if [[ ! -f "$binary" ]]; then
+    echo "verify-go-toolchain: no such binary: ${binary}" >&2
+    return 1
+  fi
+
+  # `go version <bin>` prints one line: "<path>: go1.26.6". (The -m
+  # form dumps the whole module table, and `head -1` on that many lines
+  # SIGPIPEs the go command under `set -o pipefail`.)
+  local actual
+  actual=$(go version "$binary" | awk '{print $2}' | sed 's/^go//')
+  if [[ "$actual" != "$expected" ]]; then
+    cat >&2 <<EOF
+verify-go-toolchain: ${binary} was built with the wrong Go.
+
+  go.mod toolchain:  ${expected}
+  binary reports:    ${actual}
+
+The builder image is the usual culprit — check the GO_VERSION build-arg
+reaching the Dockerfile. The official golang images set
+GOTOOLCHAIN=local, so go.mod's toolchain directive will NOT rescue a
+build that starts from the wrong base image.
+EOF
+    return 1
+  fi
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "verify-go-toolchain: jq is required for the stdlib scan" >&2
+    return 1
+  fi
+  ensure_tool govulncheck golang.org/x/vuln/cmd/govulncheck@latest
+
+  # Scan the artifact, not the source tree. Binary mode is coarser than
+  # source mode — no call-graph reachability — so it over-reports for
+  # third-party modules (today: 15 x/crypto + x/net findings that source
+  # mode correctly rules unreachable). Filter to stdlib, which is the
+  # class this check exists for and the one binary mode judges exactly:
+  # the stdlib version comes from the binary's own build info.
+  #
+  # JSON mode exits 0 even when it finds something, so a non-zero exit
+  # here is a real failure (bad path, no vuln database, ...).
+  local report stdlib_findings
+  report=$(govulncheck -format=json -mode=binary "$binary")
+  stdlib_findings=$(echo "$report" | jq -rs \
+    '[.[] | select(.finding) | .finding
+       | select([.trace[]?.module] | index("stdlib")) | .osv]
+     | unique | .[]')
+
+  if [[ -n "$stdlib_findings" ]]; then
+    cat >&2 <<EOF
+verify-go-toolchain: go${expected} ships stdlib advisories:
+
+$(echo "$stdlib_findings" | sed 's|^|  https://pkg.go.dev/vuln/|')
+
+Bump the toolchain directive in go.mod to the current patch release and
+re-run. Source-mode govulncheck (dev/tools/verify-vuln) will not catch
+this on its own — it scans with whatever toolchain is on PATH, which in
+CI is the newest 1.x, not the one we pin.
+EOF
+    return 1
+  fi
+
+  echo "verify-go-toolchain: OK (${binary} built with go${expected}, no stdlib advisories)"
+}
+
+main() {
+  local mode=static binary=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --print)  mode=print; shift ;;
+      --binary) mode=binary; binary="${2:-}"; shift 2 ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "Unknown flag: $1" >&2; usage >&2; exit 2 ;;
+    esac
+  done
+
+  local expected
+  expected=$(resolve_toolchain)
+
+  case "$mode" in
+    print)  echo "$expected" ;;
+    static) verify_static "$expected" ;;
+    binary)
+      if [[ -z "$binary" ]]; then
+        echo "verify-go-toolchain: --binary needs a path" >&2
+        exit 2
+      fi
+      verify_binary "$expected" "$binary"
+      ;;
+  esac
+}
+
+main "$@"

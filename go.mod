@@ -2,7 +2,7 @@ module github.com/go-steer/core-agent/v2
 
 go 1.26.4
 
-toolchain go1.26.5
+toolchain go1.26.6
 
 require (
 	charm.land/bubbletea/v2 v2.0.6

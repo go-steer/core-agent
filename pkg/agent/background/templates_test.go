@@ -17,10 +17,16 @@ package background
 import (
 	"context"
 	"errors"
+	"iter"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	adkmodel "google.golang.org/adk/model"
+	"google.golang.org/adk/tool"
+	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/models/mock"
@@ -352,6 +358,183 @@ func TestReferenceNames_MergesTemplatesAndPredefined(t *testing.T) {
 	if len(got) != 2 || got[0] != "alpha" || got[1] != "zeta" {
 		t.Errorf("ReferenceNames() = %v, want [alpha zeta]", got)
 	}
+}
+
+// declRecordingLLM captures the tool declarations it is offered on its
+// first turn, then ends the run by returning plain text (a bounded
+// delegation terminates when the model stops asking for tools). The
+// captured spawn_agent description is the fingerprint of WHICH manager
+// that tool is bound to: rosterTool renders the live roster of its own
+// manager into the declaration (#640).
+type declRecordingLLM struct {
+	mu       sync.Mutex
+	seen     []string
+	spawnDoc string
+}
+
+func (*declRecordingLLM) Name() string { return "decl-recording" }
+
+func (l *declRecordingLLM) GenerateContent(_ context.Context, req *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	if req != nil && req.Config != nil {
+		l.mu.Lock()
+		for _, gt := range req.Config.Tools {
+			for _, fd := range gt.FunctionDeclarations {
+				l.seen = append(l.seen, fd.Name)
+				if fd.Name == "spawn_agent" {
+					l.spawnDoc = fd.Description
+				}
+			}
+		}
+		l.mu.Unlock()
+	}
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		content := &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "done"}}}
+		yield(&adkmodel.LLMResponse{Content: content, FinishReason: genai.FinishReasonStop, TurnComplete: true}, nil)
+	}
+}
+
+func (l *declRecordingLLM) snapshot() ([]string, string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.seen), l.spawnDoc
+}
+
+// spawnDeclaration renders the spawn_agent declaration out of a resolved
+// tool list — the same roster fingerprint declRecordingLLM captures, read
+// directly rather than through a run.
+func spawnDocFromTools(t *testing.T, tools []tool.Tool) string {
+	t.Helper()
+	for _, tl := range tools {
+		if tl == nil || tl.Name() != "spawn_agent" {
+			continue
+		}
+		rn, ok := tl.(runnableTool)
+		if !ok {
+			t.Fatalf("spawn_agent is %T, not runnable", tl)
+		}
+		decl := rn.Declaration()
+		if decl == nil {
+			t.Fatal("spawn_agent Declaration() = nil")
+		}
+		return decl.Description
+	}
+	t.Fatal("no spawn_agent in tool list")
+	return ""
+}
+
+// TestSetSubagentTemplates_RebindsSpawnToolsToThisManager is the
+// multi-session tenancy gate. A declarative subagent's Tools are resolved
+// once at daemon startup and therefore carry the DAEMON manager's spawn
+// tools; the same roster is then registered on every session's own
+// manager. Unless installation rebinds them, a session's subagent spawns
+// onto the daemon manager — wrong gate, wrong parent, wrong tenant's alert
+// channel (the 2026-08-13 GKE UAT: a session's bg.cluster-1 put
+// bg.cluster-2 on the daemon's "default" session).
+func TestSetSubagentTemplates_RebindsSpawnToolsToThisManager(t *testing.T) {
+	t.Parallel()
+	rec := &declRecordingLLM{}
+	prov := &recordingProvider{llm: rec}
+
+	// The daemon manager's roster names only "daemon-only", so its spawn
+	// tools' declarations are distinguishable from the session's.
+	daemon := newTemplateManager(t, prov, nil,
+		WithPredefinedSpecs([]Spec{{Name: "daemon-only", SystemPrompt: "p", Description: "the daemon's own catalog entry"}}))
+	defer daemon.Close()
+
+	// One shared roster, resolved against the daemon's tool surface —
+	// exactly what cmd/core-agent hands every session's manager.
+	shared := []SubagentTemplate{{
+		Name:         "cluster",
+		Description:  "read-only GKE triage for one cluster",
+		Instruction:  "triage",
+		ModelFactory: tmplFactory(prov, "cluster-model"),
+		ModelID:      "cluster-model",
+		Tools:        NewSpawnTools(daemon),
+	}}
+	session := newTemplateManager(t, prov, shared, WithDefaultBudgets(Budgets{MaxTurns: 1}))
+	attachEchoParent(t, session)
+	defer session.Close()
+
+	h, err := session.SpawnTemplate(context.Background(), "", "cluster", RefOverrides{Goal: "g"}, "")
+	if err != nil {
+		t.Fatalf("SpawnTemplate: %v", err)
+	}
+	waitDone(t, h)
+
+	seen, spawnDoc := rec.snapshot()
+	if !slices.Contains(seen, "spawn_agent") {
+		t.Fatalf("the spawned subagent was never offered spawn_agent (saw %v) — this fixture no longer exercises the rebind", seen)
+	}
+	if !strings.Contains(spawnDoc, "cluster — read-only GKE triage for one cluster") {
+		t.Errorf("the subagent's spawn_agent is still bound to the DAEMON manager — its declaration carries no session roster:\n%s", spawnDoc)
+	}
+	if strings.Contains(spawnDoc, "daemon-only") {
+		t.Errorf("the subagent's spawn_agent still advertises the daemon catalog:\n%s", spawnDoc)
+	}
+
+	// Registration must not write through into the caller's slice: it is
+	// shared with the daemon manager and every other session.
+	if doc := spawnDocFromTools(t, shared[0].Tools); !strings.Contains(doc, "daemon-only") {
+		t.Errorf("SetSubagentTemplates mutated the shared template's Tools in place; the daemon's own roster is gone:\n%s", doc)
+	}
+}
+
+// TestRebindSpawnTools_PreservesOperatorScoping: the rebind replaces
+// spawn tools that are already present, and adds none. A subagent whose
+// `tools` allowlist excluded spawn_agent must not acquire one by being
+// registered on a manager.
+func TestRebindSpawnTools_PreservesOperatorScoping(t *testing.T) {
+	t.Parallel()
+	prov := &recordingProvider{llm: &stopRaceLLM{}}
+	daemon := newTemplateManager(t, prov, nil)
+	defer daemon.Close()
+	session := newTemplateManager(t, prov, nil,
+		WithPredefinedSpecs([]Spec{{Name: "session-only", SystemPrompt: "p"}}))
+	defer session.Close()
+
+	t.Run("no spawn tools stays that way", func(t *testing.T) {
+		in := []tool.Tool{newNamedStubTool(t, "read_file")}
+		out := rebindSpawnTools(in, session.ownSpawnTools())
+		if len(out) != 1 || out[0].Name() != "read_file" {
+			t.Fatalf("out = %v, want the input unchanged", toolNames(out))
+		}
+	})
+
+	t.Run("partial grant is not widened", func(t *testing.T) {
+		in := []tool.Tool{newNamedStubTool(t, "read_file"), NewStopAgentTool(daemon)}
+		out := rebindSpawnTools(in, session.ownSpawnTools())
+		if got := toolNames(out); !slices.Equal(got, []string{"read_file", "stop_agent"}) {
+			t.Fatalf("out = %v, want [read_file stop_agent] — order and membership preserved", got)
+		}
+	})
+
+	t.Run("empty and nil pass through", func(t *testing.T) {
+		if out := rebindSpawnTools(nil, session.ownSpawnTools()); out != nil {
+			t.Errorf("rebindSpawnTools(nil) = %v, want nil", toolNames(out))
+		}
+	})
+
+	t.Run("spawn_agent is rebound", func(t *testing.T) {
+		in := NewSpawnTools(daemon)
+		out := rebindSpawnTools(in, session.ownSpawnTools())
+		if got := toolNames(out); !slices.Equal(got, []string{"spawn_agent", "stop_agent"}) {
+			t.Fatalf("out = %v, want [spawn_agent stop_agent]", got)
+		}
+		if doc := spawnDocFromTools(t, out); !strings.Contains(doc, "session-only") {
+			t.Errorf("rebound spawn_agent does not carry the session roster:\n%s", doc)
+		}
+		if doc := spawnDocFromTools(t, in); strings.Contains(doc, "session-only") {
+			t.Error("rebindSpawnTools mutated its input slice")
+		}
+	})
+}
+
+func toolNames(ts []tool.Tool) []string {
+	out := make([]string, 0, len(ts))
+	for _, t := range ts {
+		out = append(out, t.Name())
+	}
+	return out
 }
 
 // TestSpawnAgentTool_RoutingRationale documents why NewSpawnAgentTool must

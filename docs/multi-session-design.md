@@ -484,6 +484,21 @@ last-writer-wins, the alert channel would multiplex across
 tenants, the gate would be the daemon's, and the subagent
 listings would return the cross-tenant union.
 
+**Shipped (follow-up):** #637 stripped the daemon-bound spawn
+tools from the session PARENT's surface, but a declarative
+subagent carries its own resolved tool list, and that list is
+resolved once at startup against a builtin registry that already
+holds the daemon manager's spawn tools (`main.go` appends
+`NewSpawnTools` before it builds the subagents). The recipe then
+registers that one shared roster on every session's manager, so
+a session's subagent held a `spawn_agent` pointing back at the
+daemon manager — the same four-way breakage, one level down.
+`Manager.SetSubagentTemplates` now rebinds each template's spawn
+tools, by name, to the manager installing them, copying the slice
+on first write so the shared roster is never mutated. Matching by
+name keeps the operator's scoping intact: no template ever gains
+a spawn tool its spec didn't grant.
+
 ### Eventlog + session.Service
 
 **Today:** already isolated by sessionID. No change needed.

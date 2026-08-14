@@ -16,7 +16,9 @@ package main
 
 import (
 	"context"
+	"iter"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +27,7 @@ import (
 	"google.golang.org/adk/tool/functiontool"
 	"google.golang.org/genai"
 
+	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/agent/background"
 	"github.com/go-steer/core-agent/v2/pkg/compose"
 	"github.com/go-steer/core-agent/v2/pkg/models/mock"
@@ -261,6 +264,130 @@ func TestSessionBackgroundRecipe_SpawnToolsAreNotSpawnable(t *testing.T) {
 	}); err == nil || strings.Contains(err.Error(), "unknown tool") {
 		t.Errorf("Spawn with tools=[read_file] error = %v, want the session's ordinary built-ins to be in the catalog", err)
 	}
+}
+
+// declToolsLLM captures the tool declarations it is offered on its first
+// turn, then ends the run by returning plain text. The captured
+// spawn_agent description is the fingerprint of WHICH manager that tool
+// is bound to: since #640 the declaration renders its own manager's live
+// roster.
+type declToolsLLM struct {
+	mu       sync.Mutex
+	spawnDoc string
+	sawSpawn bool
+}
+
+func (*declToolsLLM) Name() string { return "decl-tools" }
+
+func (l *declToolsLLM) GenerateContent(_ context.Context, req *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	if req != nil && req.Config != nil {
+		l.mu.Lock()
+		for _, gt := range req.Config.Tools {
+			for _, fd := range gt.FunctionDeclarations {
+				if fd.Name == "spawn_agent" {
+					l.sawSpawn, l.spawnDoc = true, fd.Description
+				}
+			}
+		}
+		l.mu.Unlock()
+	}
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		content := &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "done"}}}
+		yield(&adkmodel.LLMResponse{Content: content, FinishReason: genai.FinishReasonStop, TurnComplete: true}, nil)
+	}
+}
+
+func (l *declToolsLLM) snapshot() (bool, string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.sawSpawn, l.spawnDoc
+}
+
+// TestSessionBackgroundRecipe_TemplateSpawnToolsBindToTheSessionManager
+// closes the leak one level below TestSessionBackgroundRecipe_BindsSpawn-
+// ToolsToTheSessionManager. That test covers the tools handed to the
+// session's PARENT; this one covers the tools a declarative subagent
+// carries. buildDeclaredSubagents resolves a subagent's Tools ONCE at
+// startup, against a builtin list that already holds the daemon manager's
+// spawn tools (main.go appends NewSpawnTools before it builds them), and
+// the recipe then registers that one shared roster on every session's own
+// manager. Unbound, a session's subagent spawns onto the DAEMON manager:
+// daemon-wide gate, the daemon's parent instead of the session's, and
+// "[Background reports]" landing in another tenant's turn — the four-way
+// breakage the per-session manager exists to prevent, reached one level
+// down. Observed in the 2026-08-13 GKE UAT, where a session's bg.cluster-1
+// spawned bg.cluster-2 onto the daemon's "default" session.
+func TestSessionBackgroundRecipe_TemplateSpawnToolsBindToTheSessionManager(t *testing.T) {
+	t.Parallel()
+	r, daemonSpawn := testRecipe(t, nil)
+
+	// The daemon manager carries no roster of its own, so "cluster" in a
+	// spawn_agent description can only have come from the session manager.
+	if got := spawnToolDescription(t, daemonSpawn, "spawn_agent"); strings.Contains(got, "cluster") {
+		t.Fatalf("daemon spawn_agent already lists cluster; the fingerprint this test relies on is invalid")
+	}
+
+	rec := &declToolsLLM{}
+	tmpl := clusterTemplate()
+	tmpl.ModelFactory = func(context.Context) (adkmodel.LLM, error) { return rec, nil }
+	// The daemon-bound tool surface buildDeclaredSubagents bakes in.
+	tmpl.Tools = append([]tool.Tool{bgStubTool(t, "read_file")}, daemonSpawn...)
+	shared := []background.SubagentTemplate{tmpl}
+	r.templates = shared
+
+	sub, err := r.factory()(compose.SessionScope{
+		SessionID: "sid-tmpl",
+		// Unattended: an ask-mode gate refuses to run at all.
+		Gate:      permissions.New(permissions.Options{Mode: permissions.ModeYolo}),
+		ModelName: "echo",
+		Tools:     append([]tool.Tool{bgStubTool(t, "read_file")}, daemonSpawn...),
+	})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	t.Cleanup(sub.Close)
+
+	mgr, ok := sub.Manager.(*background.Manager)
+	if !ok {
+		t.Fatalf("manager is %T, want *background.Manager", sub.Manager)
+	}
+	// A parent agent gives Spawn a session service to branch from.
+	if _, err := agent.New(mustEchoModel(t), agent.WithBackgroundManager(mgr)); err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+
+	h, err := mgr.SpawnTemplate(context.Background(), "", "cluster", background.RefOverrides{Goal: "triage"}, "")
+	if err != nil {
+		t.Fatalf("SpawnTemplate: %v", err)
+	}
+	select {
+	case <-h.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("subagent goroutine didn't finish")
+	}
+
+	sawSpawn, doc := rec.snapshot()
+	if !sawSpawn {
+		t.Fatalf("the spawned subagent was never offered spawn_agent; this fixture no longer exercises the binding")
+	}
+	if !strings.Contains(doc, "cluster") {
+		t.Errorf("the subagent's spawn_agent carries no session roster — it is still bound to the DAEMON manager:\n%s", doc)
+	}
+
+	// The roster is shared across every session, so registration must not
+	// write through into it.
+	if got := spawnToolDescription(t, shared[0].Tools, "spawn_agent"); strings.Contains(got, "cluster") {
+		t.Errorf("registration mutated the shared template's Tools in place; the next session inherits this one's manager:\n%s", got)
+	}
+}
+
+func mustEchoModel(t *testing.T) adkmodel.LLM {
+	t.Helper()
+	m, err := mock.NewEcho().Model(context.Background(), "echo")
+	if err != nil {
+		t.Fatalf("mock echo Model: %v", err)
+	}
+	return m
 }
 
 // TestSessionManagerSet_ClosesLiveManagersOnShutdown: the daemon's own

@@ -40,7 +40,6 @@ permissions:
   pull-requests: write
 
 env:
-  GO_VERSION: '1.26'
   BRANCH: bot/pricing-regen
 
 jobs:
@@ -49,9 +48,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
+      - uses: ./.github/actions/go-toolchain
 
       - name: Regenerate builtin.go from LiteLLM
         run: go run ./dev/regen-builtin-pricing

@@ -43,9 +43,6 @@ permissions:
   contents: read
   id-token: write # google-github-actions/auth (harmless when skipped)
 
-env:
-  GO_VERSION: '1.26'
-
 jobs:
   e2e-real-provider:
     runs-on: ubuntu-latest
@@ -59,9 +56,7 @@ jobs:
       CLOUD_ML_REGION: ${{ secrets.CLOUD_ML_REGION }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
+      - uses: ./.github/actions/go-toolchain
 
       - name: Authenticate to Google Cloud
         if: env.HAS_GCP_KEY == 'true'

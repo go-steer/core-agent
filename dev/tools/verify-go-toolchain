@@ -13,23 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# One source of truth for "which Go toolchain does this project build
-# with", and the checks that keep every consumer of that answer honest.
-#
-# go.mod carries two versions and they mean different things:
-#
-#   go 1.26.4         — the language compatibility floor.
-#   toolchain go1.26.6 — the toolchain we actually build with.
-#
-# Stdlib CVEs are fixed by toolchain patch releases, so the second line
-# is the one that decides whether a shipped binary is vulnerable. Read
-# the first one by mistake and CI stays green while the published image
-# ships a stdlib that govulncheck already knows about.
+# The checks that keep every consumer of "which Go toolchain does this
+# project build with" honest. The answer itself comes from
+# common.sh's resolve_toolchain, which reads go.mod's `toolchain`
+# directive rather than its `go` directive — see the comment there for
+# why the distinction decides whether a shipped binary is vulnerable.
 #
 # Modes:
 #
 #   verify-go-toolchain              # static: everything agrees with go.mod
 #   verify-go-toolchain --print      # emit the version (e.g. 1.26.6)
+#   verify-go-toolchain --running    # the go on PATH IS that toolchain
 #   verify-go-toolchain --binary P   # a built binary carries that toolchain,
 #                                    # and its stdlib has no advisories
 
@@ -43,41 +37,27 @@ cd "$(repo_root)"
 # default silently hands a contributor a months-old compiler.
 DOCKERFILES=(Dockerfile extras/scion/Dockerfile)
 
-# The release workflow must resolve the toolchain through THIS script.
-# It used to grep go.mod inline, read the `go` directive, and publish
-# images built on the compatibility floor (#736).
-RELEASE_WORKFLOW=.github/workflows/release-images.yml
+# Every workflow gets its Go through this composite action, which
+# resolves the version through THIS script and then verifies what it
+# actually installed. A workflow reaching for actions/setup-go directly
+# is how a floating version gets back in: the release workflow used to
+# grep go.mod inline and read the `go` directive, publishing images
+# built on the compatibility floor (#736), and CI used to ask for the
+# newest 1.26.x on purpose, which scans a stdlib we never ship.
+GO_ACTION=.github/actions/go-toolchain/action.yml
+GO_ACTION_REF=./.github/actions/go-toolchain
 
 usage() {
   cat <<'EOF'
-Usage: dev/tools/verify-go-toolchain [--print | --binary <path>]
+Usage: dev/tools/verify-go-toolchain [--print | --running | --binary <path>]
 
-  (no flags)        verify go.mod, the Dockerfiles, and the release
-                    workflow all agree on the Go toolchain
+  (no flags)        verify go.mod, the Dockerfiles, and the workflows
+                    all agree on the Go toolchain
   --print           print the toolchain version (e.g. 1.26.6)
+  --running         verify the go command on PATH reports that toolchain
   --binary <path>   verify a built binary was compiled with that
                     toolchain and carries no stdlib advisories
 EOF
-}
-
-# Resolve the toolchain version, without the `go` prefix (1.26.6).
-#
-# Prefer the `toolchain` directive; fall back to the `go` directive,
-# which is what go.mod looks like when the two would be identical
-# (`go mod tidy` drops a toolchain line that adds nothing).
-resolve_toolchain() {
-  local version
-  version=$(grep -oE '^toolchain go[0-9]+\.[0-9]+(\.[0-9]+)?$' go.mod \
-            | sed -n '1p' | sed 's/^toolchain go//')
-  if [[ -z "$version" ]]; then
-    version=$(grep -oE '^go [0-9]+\.[0-9]+(\.[0-9]+)?$' go.mod \
-              | sed -n '1p' | awk '{print $2}')
-  fi
-  if [[ -z "$version" ]]; then
-    echo "verify-go-toolchain: no toolchain or go directive in go.mod" >&2
-    return 1
-  fi
-  echo "$version"
 }
 
 # Static check: every place that names a Go version agrees with go.mod.
@@ -108,14 +88,76 @@ EOF
     fi
   done
 
-  if ! grep -q 'verify-go-toolchain --print' "$RELEASE_WORKFLOW"; then
-    cat >&2 <<EOF
-verify-go-toolchain: ${RELEASE_WORKFLOW} no longer resolves the Go
-version through dev/tools/verify-go-toolchain --print.
+  local missing
+  for missing in 'verify-go-toolchain --print' 'verify-go-toolchain --running'; do
+    if ! grep -q -- "$missing" "$GO_ACTION"; then
+      cat >&2 <<EOF
+verify-go-toolchain: ${GO_ACTION} no longer runs
+\`dev/tools/${missing}\`.
 
-An inline \`grep ... go.mod\` there is how #736 happened: it read the
-\`go\` directive (the compatibility floor) instead of \`toolchain\`, so
-published images were built on a stdlib that CI had already moved off.
+That action is what makes "CI builds what we ship" checkable rather
+than assumed: --print resolves the version from the \`toolchain\`
+directive (not the \`go\` compatibility floor, which is how #736
+happened), and --running confirms the job got what it asked for.
+EOF
+      failed=1
+    fi
+  done
+
+  # Grep, not a YAML parse: this check runs in its own workflow with no
+  # Go and no Python guaranteed, and "does the string appear" is the
+  # whole question.
+  local offenders
+  offenders=$(grep -rln 'uses:[[:space:]]*actions/setup-go' .github/workflows || true)
+  if [[ -n "$offenders" ]]; then
+    cat >&2 <<EOF
+verify-go-toolchain: these workflows call actions/setup-go directly:
+
+$(echo "$offenders" | sed 's|^|  |')
+
+Use the composite action instead, so the version comes from go.mod's
+toolchain directive and is verified after install:
+
+  - uses: ${GO_ACTION_REF}
+
+A bare setup-go with a floating \`go-version\` is what let source-mode
+govulncheck pass against a stdlib newer than the one we ship.
+EOF
+    failed=1
+  fi
+
+  # `^go ` anchored against go.mod is the signature of reading the
+  # compatibility floor. Both instances found so far — release.yml's
+  # awk over the `go` directive and the kind E2E's `grep -E '^go
+  # [0-9]...'` — built artifacts one patch behind what we ship.
+  # resolve_toolchain is the only place that pattern belongs; this file
+  # is excluded because the pattern it greps for is itself the pattern.
+  offenders=$(grep -rln -- '\^go \[0-9\]\|/\^go /' dev .github \
+              | grep -vE '^(dev/tools/common.sh|dev/tools/verify-go-toolchain)$' || true)
+  if [[ -n "$offenders" ]]; then
+    cat >&2 <<EOF
+verify-go-toolchain: these files parse go.mod's \`go\` directive inline:
+
+$(echo "$offenders" | sed 's|^|  |')
+
+That is the language compatibility floor, not the toolchain we build
+with — reading it is how #736 shipped images with a stdlib CI had
+already moved off. Shell callers should use resolve_toolchain (from
+dev/tools/common.sh); workflows should use ${GO_ACTION_REF}.
+EOF
+    failed=1
+  fi
+
+  offenders=$(grep -rln '^\s*GO_VERSION:' .github/workflows || true)
+  if [[ -n "$offenders" ]]; then
+    cat >&2 <<EOF
+verify-go-toolchain: these workflows still define a GO_VERSION env:
+
+$(echo "$offenders" | sed 's|^|  |')
+
+There is one source of truth for the Go version and it is go.mod. Read
+it with ${GO_ACTION_REF} (its \`version\` output carries the resolved
+value for build-args and the like).
 EOF
     failed=1
   fi
@@ -124,6 +166,46 @@ EOF
     return 1
   fi
   echo "verify-go-toolchain: OK (go${expected} everywhere)"
+}
+
+# Running check: the toolchain this job will actually invoke.
+#
+# The static check compares strings in files; this one asks the go
+# command. It is the answer that matters for anything that reports
+# against the standard library — source-mode govulncheck above all,
+# which judges stdlib advisories by the version of the toolchain
+# running it, not by anything in go.mod.
+#
+# Note that common.sh has already exported GOTOOLCHAIN, so a mismatch
+# here is not "your Go is old" — it means something overrode the pin, or
+# the go command failed to honor it.
+verify_running() {
+  local expected="$1"
+
+  if ! command -v go >/dev/null 2>&1; then
+    echo "verify-go-toolchain: no go command on PATH" >&2
+    return 1
+  fi
+
+  local actual
+  actual=$(go env GOVERSION | sed 's/^go//')
+  if [[ "$actual" != "$expected" ]]; then
+    cat >&2 <<EOF
+verify-go-toolchain: the go command on PATH is not the pinned toolchain.
+
+  go.mod toolchain:  ${expected}
+  go env GOVERSION:  ${actual}
+  GOTOOLCHAIN:       ${GOTOOLCHAIN:-<unset>}
+
+Anything this job reports about the standard library would be about a
+stdlib we do not ship. If ${actual} is what we should be shipping, bump
+the toolchain directive in go.mod (and let the Dockerfile check tell you
+what else follows).
+EOF
+    return 1
+  fi
+
+  echo "verify-go-toolchain: OK (running go${actual})"
 }
 
 # Binary check: what actually got compiled, not what we asked for.
@@ -185,9 +267,10 @@ verify-go-toolchain: go${expected} ships stdlib advisories:
 $(echo "$stdlib_findings" | sed 's|^|  https://pkg.go.dev/vuln/|')
 
 Bump the toolchain directive in go.mod to the current patch release and
-re-run. Source-mode govulncheck (dev/tools/verify-vuln) will not catch
-this on its own — it scans with whatever toolchain is on PATH, which in
-CI is the newest 1.x, not the one we pin.
+re-run. Source-mode govulncheck (dev/tools/verify-vuln) scans with the
+toolchain on PATH, which common.sh and the go-toolchain composite action
+now pin to this same version — so the two checks agree, and neither one
+is reporting about a stdlib nobody ships.
 EOF
     return 1
   fi
@@ -199,8 +282,9 @@ main() {
   local mode=static binary=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --print)  mode=print; shift ;;
-      --binary) mode=binary; binary="${2:-}"; shift 2 ;;
+      --print)   mode=print; shift ;;
+      --running) mode=running; shift ;;
+      --binary)  mode=binary; binary="${2:-}"; shift 2 ;;
       -h|--help) usage; exit 0 ;;
       *) echo "Unknown flag: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -210,8 +294,9 @@ main() {
   expected=$(resolve_toolchain)
 
   case "$mode" in
-    print)  echo "$expected" ;;
-    static) verify_static "$expected" ;;
+    print)   echo "$expected" ;;
+    running) verify_running "$expected" ;;
+    static)  verify_static "$expected" ;;
     binary)
       if [[ -z "$binary" ]]; then
         echo "verify-go-toolchain: --binary needs a path" >&2

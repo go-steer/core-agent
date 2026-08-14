@@ -87,24 +87,27 @@ jobs:
       # docs for exactly this "reproduce release from a different
       # tree" scenario. HEAD still points at the tag commit, so the
       # binary's -X version stamp is correct.
+      #
+      # `.github/actions/` and `dev/tools/` come along for the same
+      # reason: the Go setup below is a local composite action that
+      # shells out to dev/tools/verify-go-toolchain, and neither
+      # existed before #744. Note that go.mod is deliberately NOT
+      # overlaid — a republished tag must build with the toolchain
+      # that tag pinned, not with main's.
       - name: Overlay release helpers from main (retroactive-tag mode)
         if: ${{ inputs.tag != '' }}
         run: |
           set -euo pipefail
           git fetch --no-tags --depth=1 origin main
-          git checkout origin/main -- dev/release/ .goreleaser.yml CHANGELOG.md
+          git checkout origin/main -- \
+            dev/release/ dev/tools/ .github/actions/ .goreleaser.yml CHANGELOG.md
 
-      # Same go-version-from-go.mod pattern as release-images.yml.
-      - name: Extract Go version from go.mod
-        id: go-version
-        run: |
-          version=$(awk '/^go / { print $2; exit }' go.mod)
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ steps.go-version.outputs.version }}
+      # This step used to awk go.mod's `go` directive — the
+      # compatibility floor, not the toolchain we build with. That is
+      # #736 verbatim, sitting in the workflow that publishes the
+      # binaries. The composite action reads the `toolchain` directive
+      # and verifies what it installed.
+      - uses: ./.github/actions/go-toolchain
 
       # Pricing freshness guard: refuse to release if the tagged
       # commit's pkg/pricing/builtin.go doesn't match what

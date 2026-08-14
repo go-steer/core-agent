@@ -197,6 +197,11 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 		CostUSD:      latest.CostUSD,
 		FinalText:    latest.FinalText,
 	}
+	// Carried across the restart rather than re-derived: a resumed run
+	// that forgot the pre-crash FinalText came from a tool-using turn
+	// would let the first idle turn after the restart overwrite it,
+	// which is #731 with an extra step.
+	haveSubstantive := latest.FinalTextSubstantive
 
 	// Use the resume goal-of-record from the checkpoint when we
 	// have one; otherwise fall back to the empty string so audit
@@ -211,15 +216,16 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 		// checkpoint on exactly the shutdown path where it matters
 		// most (#365).
 		emitFinalCheckpointDetached(ctx, a, checkpointPayload{
-			Turn:               result.Turns,
-			InputTokens:        result.InputTokens,
-			OutputTokens:       result.OutputTokens,
-			CostUSD:            result.CostUSD,
-			Goal:               goal,
-			ContinuationPrompt: cfg.continuationPrompt,
-			StopReason:         string(reason),
-			DoneDetail:         result.DoneDetail,
-			FinalText:          result.FinalText,
+			Turn:                 result.Turns,
+			InputTokens:          result.InputTokens,
+			OutputTokens:         result.OutputTokens,
+			CostUSD:              result.CostUSD,
+			Goal:                 goal,
+			ContinuationPrompt:   cfg.continuationPrompt,
+			StopReason:           string(reason),
+			DoneDetail:           result.DoneDetail,
+			FinalText:            result.FinalText,
+			FinalTextSubstantive: haveSubstantive,
 		})
 	}
 
@@ -251,8 +257,9 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 		result.OutputTokens += turnRes.outputTokens
 		result.CostUSD += turnRes.costUSD
 		result.Turns++
-		if turnRes.text != "" {
+		if keepFinalText(turnRes.text, turnRes.usedTools, haveSubstantive) {
 			result.FinalText = turnRes.text
+			haveSubstantive = haveSubstantive || turnRes.usedTools
 		}
 
 		if turnErr != nil {
@@ -271,7 +278,7 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 				continue
 			case SkipTurn:
 				prompt = cfg.continuationPrompt
-				_ = emitCheckpoint(ctx, a, perTurnCheckpoint(result, goal, cfg.continuationPrompt))
+				_ = emitCheckpoint(ctx, a, perTurnCheckpoint(result, goal, cfg.continuationPrompt, haveSubstantive))
 				continue
 			default:
 				result.Reason = StopReasonRetryAborted
@@ -314,7 +321,7 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 					ev.WakeAt = ceiling
 				}
 			}
-			_ = emitCheckpoint(ctx, a, scheduleCheckpoint(result, goal, cfg.continuationPrompt, ev))
+			_ = emitCheckpoint(ctx, a, scheduleCheckpoint(result, goal, cfg.continuationPrompt, ev, haveSubstantive))
 			schedCtx := coretools.ContextWithWake(ctx, a.WakeRequested())
 			serr := cfg.scheduler.BeforeNextTurn(schedCtx, ev)
 			switch {
@@ -342,7 +349,7 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 			}
 		}
 
-		_ = emitCheckpoint(ctx, a, perTurnCheckpoint(result, goal, cfg.continuationPrompt))
+		_ = emitCheckpoint(ctx, a, perTurnCheckpoint(result, goal, cfg.continuationPrompt, haveSubstantive))
 		prompt = cfg.continuationPrompt
 	}
 

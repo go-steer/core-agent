@@ -382,7 +382,7 @@ func TestScheduleCheckpoint_RoundTrip(t *testing.T) {
 		WakeAt:     time.Now().Add(time.Minute).UTC().Truncate(time.Second),
 		NextPrompt: "rescan",
 	}
-	cp := scheduleCheckpoint(RunResult{Turns: 3}, "the goal", "continue", ev)
+	cp := scheduleCheckpoint(RunResult{Turns: 3}, "the goal", "continue", ev, false)
 	if cp.NextWakeAt.IsZero() {
 		t.Fatalf("scheduleCheckpoint did not propagate WakeAt")
 	}

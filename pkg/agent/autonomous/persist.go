@@ -44,16 +44,25 @@ const checkpointAuthorSuffix = "/autonomous"
 // final checkpoint emitted on loop exit sets it to one of the
 // StopReason values.
 type checkpointPayload struct {
-	Turn               int       `json:"turn"`
-	InputTokens        int       `json:"input_tokens"`
-	OutputTokens       int       `json:"output_tokens"`
-	CostUSD            float64   `json:"cost_usd"`
-	Goal               string    `json:"goal"`
-	ContinuationPrompt string    `json:"continuation_prompt"`
-	StopReason         string    `json:"stop_reason,omitempty"`
-	DoneDetail         string    `json:"done_detail,omitempty"`
-	FinalText          string    `json:"final_text,omitempty"`
-	NextWakeAt         time.Time `json:"next_wake_at,omitempty"`
+	Turn               int     `json:"turn"`
+	InputTokens        int     `json:"input_tokens"`
+	OutputTokens       int     `json:"output_tokens"`
+	CostUSD            float64 `json:"cost_usd"`
+	Goal               string  `json:"goal"`
+	ContinuationPrompt string  `json:"continuation_prompt"`
+	StopReason         string  `json:"stop_reason,omitempty"`
+	DoneDetail         string  `json:"done_detail,omitempty"`
+	FinalText          string  `json:"final_text,omitempty"`
+	// FinalTextSubstantive records whether FinalText came from a turn
+	// that used tools (#731). Carried across the checkpoint so a
+	// resumed run knows whether a tool-less turn is allowed to replace
+	// it; without it, Resume would re-derive "nothing substantive yet"
+	// and the first idle turn after a restart would undo the fix.
+	// Absent from pre-v2.9 checkpoints, which decode to false — the
+	// safe direction, since it only permits an overwrite that the old
+	// code would have made unconditionally.
+	FinalTextSubstantive bool      `json:"final_text_substantive,omitempty"`
+	NextWakeAt           time.Time `json:"next_wake_at,omitempty"`
 }
 
 // toMap projects the typed payload into the untyped map[string]any
@@ -69,6 +78,9 @@ func (p checkpointPayload) toMap() map[string]any {
 		"stop_reason":         p.StopReason,
 		"done_detail":         p.DoneDetail,
 		"final_text":          p.FinalText,
+	}
+	if p.FinalTextSubstantive {
+		m["final_text_substantive"] = true
 	}
 	if !p.NextWakeAt.IsZero() {
 		m["next_wake_at"] = p.NextWakeAt.UTC().Format(time.RFC3339)
@@ -107,6 +119,10 @@ func checkpointFromMap(m map[string]any) checkpointPayload {
 		s, _ := m[k].(string)
 		return s
 	}
+	getBool := func(k string) bool {
+		b, _ := m[k].(bool)
+		return b
+	}
 	getTime := func(k string) time.Time {
 		switch v := m[k].(type) {
 		case string:
@@ -124,16 +140,17 @@ func checkpointFromMap(m map[string]any) checkpointPayload {
 		return time.Time{}
 	}
 	return checkpointPayload{
-		Turn:               getInt("turn"),
-		InputTokens:        getInt("input_tokens"),
-		OutputTokens:       getInt("output_tokens"),
-		CostUSD:            getFloat("cost_usd"),
-		Goal:               getStr("goal"),
-		ContinuationPrompt: getStr("continuation_prompt"),
-		StopReason:         getStr("stop_reason"),
-		DoneDetail:         getStr("done_detail"),
-		FinalText:          getStr("final_text"),
-		NextWakeAt:         getTime("next_wake_at"),
+		Turn:                 getInt("turn"),
+		InputTokens:          getInt("input_tokens"),
+		OutputTokens:         getInt("output_tokens"),
+		CostUSD:              getFloat("cost_usd"),
+		Goal:                 getStr("goal"),
+		ContinuationPrompt:   getStr("continuation_prompt"),
+		StopReason:           getStr("stop_reason"),
+		DoneDetail:           getStr("done_detail"),
+		FinalText:            getStr("final_text"),
+		FinalTextSubstantive: getBool("final_text_substantive"),
+		NextWakeAt:           getTime("next_wake_at"),
 	}
 }
 

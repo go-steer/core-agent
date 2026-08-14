@@ -106,6 +106,19 @@ type scheduleResult struct {
 	WakeAt string `json:"wake_at,omitempty"`
 }
 
+// ScheduleToolName resolves the effective function name of the
+// schedule tool from a possibly-empty ScheduleOptions.Name — the same
+// resolution NewScheduleTool applies. A caller that has to recognize
+// the tool's calls in an event stream (the autonomous driver does, to
+// tell its own bookkeeping apart from real work) can't get the name
+// from the override alone, since the common case leaves it empty.
+func ScheduleToolName(override string) string {
+	if n := strings.TrimSpace(override); n != "" {
+		return n
+	}
+	return defaultScheduleName
+}
+
 // NewScheduleTool returns the schedule_next_turn tool plus a channel
 // the autonomous driver consumes after each turn. The tool emits one
 // event per successful call; rejected calls (validation failures,
@@ -121,10 +134,7 @@ type scheduleResult struct {
 // Returns an error only when opts is invalid (currently: never; all
 // options have sensible zero-value defaults).
 func NewScheduleTool(opts ScheduleOptions) (tool.Tool, <-chan ScheduleEvent, error) {
-	name := opts.Name
-	if name == "" {
-		name = defaultScheduleName
-	}
+	name := ScheduleToolName(opts.Name)
 	desc := opts.Description
 	if desc == "" {
 		desc = defaultScheduleDescription

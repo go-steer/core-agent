@@ -16,11 +16,15 @@ package agent
 
 import (
 	"context"
+	"iter"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/glebarez/sqlite"
+	adkmodel "google.golang.org/adk/model"
+	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent/internal/subsession"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
@@ -141,6 +145,83 @@ func TestWithSubagents_RegistersTools(t *testing.T) {
 		if !names[want] {
 			t.Errorf("WithSubagents should have added %q tool; have %v", want, names)
 		}
+	}
+}
+
+// callThenStopLLM asks for one tool by name, then answers when the
+// result comes back. Enough to drive a parent through one subagent
+// invocation.
+type callThenStopLLM struct {
+	tool  string
+	calls int
+	mu    sync.Mutex
+}
+
+func (*callThenStopLLM) Name() string { return "call-then-stop" }
+
+func (l *callThenStopLLM) GenerateContent(_ context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	l.mu.Lock()
+	l.calls++
+	first := l.calls == 1
+	l.mu.Unlock()
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		content := &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "done"}}}
+		if first {
+			fc := &genai.FunctionCall{Name: l.tool, Args: map[string]any{"request": "go"}}
+			content = &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{FunctionCall: fc}}}
+		}
+		yield(&adkmodel.LLMResponse{Content: content, FinishReason: genai.FinishReasonStop, TurnComplete: true}, nil)
+	}
+}
+
+// lineageRecordingLLM notes which subagents the context says it is
+// running inside of.
+type lineageRecordingLLM struct {
+	mu   sync.Mutex
+	seen []string
+}
+
+func (*lineageRecordingLLM) Name() string { return "lineage-recorder" }
+
+func (l *lineageRecordingLLM) GenerateContent(ctx context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	l.mu.Lock()
+	l.seen = append(l.seen, subsession.Lineage(ctx)...)
+	l.mu.Unlock()
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		content := &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "looked"}}}
+		yield(&adkmodel.LLMResponse{Content: content, FinishReason: genai.FinishReasonStop, TurnComplete: true}, nil)
+	}
+}
+
+// A declarative subagent is reachable two ways under one name — as a
+// parent tool call and by reference from spawn_agent — so the
+// synchronous half of the stack has to be recorded too, or a subagent
+// invoked as a tool can turn around and spawn itself asynchronously
+// (#732).
+func TestSubagentTool_RecordsItsNameInTheLineage(t *testing.T) {
+	t.Parallel()
+	h, cleanup := openTestEventLog(t)
+	defer cleanup()
+	inner := &lineageRecordingLLM{}
+	child, err := New(inner, WithName("cluster"), WithEventLog(h), WithSession("u", "c"))
+	if err != nil {
+		t.Fatalf("New child: %v", err)
+	}
+	parent, err := New(&callThenStopLLM{tool: "cluster"},
+		WithName("parent"), WithEventLog(h), WithSession("u", "p"),
+		WithSubagents([]*Agent{child}))
+	if err != nil {
+		t.Fatalf("New parent: %v", err)
+	}
+	for _, err := range parent.Run(context.Background(), "delegate it") {
+		if err != nil {
+			t.Fatalf("parent.Run: %v", err)
+		}
+	}
+	inner.mu.Lock()
+	defer inner.mu.Unlock()
+	if len(inner.seen) != 1 || inner.seen[0] != "cluster" {
+		t.Errorf("lineage inside the subagent = %v, want [cluster]", inner.seen)
 	}
 }
 

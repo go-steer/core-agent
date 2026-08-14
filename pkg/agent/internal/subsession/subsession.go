@@ -92,6 +92,61 @@ func WithDepth(ctx context.Context, n int) context.Context {
 	return context.WithValue(ctx, depthKey{}, n)
 }
 
+// lineageKey carries the DECLARED names of the subagents currently on
+// the stack — the spec/template a subagent was built from, not its
+// per-instance name. Depth answers "how deep are we"; lineage answers
+// "which subagents are we inside of", which is what a self-spawn check
+// needs: in the 2026-08-13 GKE UAT the cluster subagent spawned itself
+// with a byte-identical goal at depth 1, comfortably inside a cap of 2
+// (#732).
+type lineageKey struct{}
+
+// Lineage returns the declared names of the subagents enclosing the
+// current execution, outermost first. Nil at the top level. The
+// returned slice must not be modified — it is shared with every context
+// derived from this one.
+func Lineage(ctx context.Context) []string {
+	v, _ := ctx.Value(lineageKey{}).([]string)
+	return v
+}
+
+// WithLineage returns a context noting that execution has descended
+// into the subagent declared as name. An empty name returns ctx
+// unchanged: an unnamed subagent can't be recognized on the way back
+// down, and recording "" would make every other unnamed one look like
+// the same subagent.
+func WithLineage(ctx context.Context, name string) context.Context {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ctx
+	}
+	prev := Lineage(ctx)
+	// Copied rather than appended in place: sibling subagents derive
+	// their contexts from the same parent, and append would let one of
+	// them write its own name into a slice the others still read.
+	next := make([]string, len(prev)+1)
+	copy(next, prev)
+	next[len(prev)] = name
+	return context.WithValue(ctx, lineageKey{}, next)
+}
+
+// InLineage reports whether the subagent declared as name is already on
+// the stack — i.e. spawning it again would be recursion. Matching is
+// exact (after trimming), the same way names resolve against the
+// template and predefined-spec maps.
+func InLineage(ctx context.Context, name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	for _, n := range Lineage(ctx) {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
 // BranchInjectingService wraps a session.Service so every appended event
 // picks up Branch before landing in storage. The CRUD methods pass through
 // unchanged. This is how a subagent's events end up tagged for the audit

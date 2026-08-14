@@ -98,6 +98,13 @@ type resolvedSpawn struct {
 	// auto-derived "<spec>-<n>"). goal is the task.
 	name string
 	goal string
+	// specName is the DECLARED name behind the instance: the template
+	// or predefined-spec this spawn references ("cluster" for instance
+	// "cluster-2"), or the instance name itself for an ad-hoc spec,
+	// which has no declaration to point back to. It is what the
+	// self-spawn guard matches on — instance names are unique by
+	// construction, so matching those would catch nothing (#732).
+	specName string
 	// instrOpts install the persona: WithExtraInstruction /
 	// WithInstruction for a catalog Spec, WithUserInstruction for a
 	// template (layer 4, matching the sync declarative path). Empty when
@@ -170,8 +177,16 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 			instrOpts = []agent.Option{agent.WithExtraInstruction(spec.SystemPrompt)}
 		}
 	}
+	// Ref is set by resolvePredefinedSpec and survives the caller's
+	// rewrite of Name to a per-instance name; an ad-hoc spec has none,
+	// and its own name is the closest thing to a declaration it has.
+	specName := strings.TrimSpace(spec.Ref)
+	if specName == "" {
+		specName = spec.Name
+	}
 	return m.launch(ctx, parentBranch, resolvedSpawn{
 		name:         spec.Name,
+		specName:     specName,
 		goal:         spec.Goal,
 		instrOpts:    instrOpts,
 		tools:        tools,
@@ -217,6 +232,17 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 		m.mu.Unlock()
 		return nil, fmt.Errorf("%w (depth=%d, max=%d)", ErrDepthExceeded, depth, m.maxDepth)
 	}
+	// No depth cap can catch recursion that stays shallow: the observed
+	// failure was a subagent spawning ITSELF at depth 1, under a cap of
+	// 2, with a byte-identical goal — two agents investigating the same
+	// incident and both billing the parent (#732). The lineage check is
+	// structural and matches on the declared name, so "cluster-1"
+	// spawning "cluster-2" is caught even though the instance names
+	// differ.
+	if subsession.InLineage(ctx, rs.specName) {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("%w: %q is already running as an ancestor of this spawn — do the work in this run, or delegate to a different subagent", ErrSelfSpawn, rs.specName)
+	}
 	if existing, exists := m.agents[rs.name]; exists {
 		if existing.Status() == StatusRunning {
 			m.mu.Unlock()
@@ -248,6 +274,9 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 	// exits immediately and the status stays Stopped.
 	goCtx, cancel := context.WithCancel(contextWithoutCancel(ctx))
 	goCtx = subsession.WithDepth(goCtx, subsession.CurrentDepth(ctx)+1)
+	// Record the declaration, not the instance: what a nested spawn is
+	// checked against is "which subagents am I inside of" (#732).
+	goCtx = subsession.WithLineage(goCtx, rs.specName)
 	goCtx = permissions.WithSubagentSource(goCtx, rs.name)
 	handle := &Handle{
 		Name:      rs.name,

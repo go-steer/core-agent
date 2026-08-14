@@ -168,6 +168,8 @@ A subagent that itself spawns subagents. Often called "manager" or "coordinator.
 
 **Caveats:** depth tracking is the operator's responsibility. Subagent A spawning subagent B spawning subagent C means three nested budget envelopes; you can run into cost-blowout situations if each level has generous budgets. Mitigations:
 
+- A subagent cannot spawn *itself*. `spawn_agent` refuses a reference to any configured subagent already running as an ancestor of the call and tells the model why, so it reroutes onto doing the work rather than retrying. The match is on the configured name, not the instance name — `cluster-1` asking for another `cluster` is refused. This is a separate bound from the depth cap, which by definition can't see recursion that stays shallow: a subagent respawning itself sits at depth 1 under any cap.
+
 - Set tight budgets on the manager subagent. It shouldn't reason for 10 minutes before spawning its first child.
 - Use the `--max-turns` and `--max-cost` flags on `spawn_agent` to bound each level.
 - Audit the spawn tree out-of-band via the attach hub's `GET .../agents` endpoint or the TUI (operator surfaces), not a model tool.

@@ -132,6 +132,13 @@ func buildDoneTools(cfg *autoConfig, doneCh chan string) ([]tool.Tool, error) {
 		}
 	}
 
+	// A bounded delegation terminates by running out of work, so there
+	// is no done tool to register and nothing for the model to choose
+	// between (#730).
+	if cfg.stopOnNaturalEnd {
+		return nil, nil
+	}
+
 	if cfg.returnTool == nil {
 		t, err := coretools.NewLifecycleTool(coretools.LifecycleOptions{
 			Name:          cfg.doneToolName,
@@ -214,6 +221,10 @@ func buildDoneTools(cfg *autoConfig, doneCh chan string) ([]tool.Tool, error) {
 // plus every alias on the result path. Used by the in-turn cost bound
 // to recognize the one call it must not cut off (#729).
 func (c *autoConfig) doneToolNames() []string {
+	if c.stopOnNaturalEnd {
+		// No done tool is registered, so no call can be one.
+		return nil
+	}
 	if c.returnTool == nil {
 		return []string{c.doneToolName}
 	}

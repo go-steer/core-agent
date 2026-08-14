@@ -139,6 +139,9 @@ func TestAwaitResult_CarriesFinalTextAlongsideReport(t *testing.T) {
 		Instruction:  "triage",
 		ModelFactory: tmplFactory(prov, "cluster-model"),
 		ModelID:      "cluster-model",
+		// Standing: this scenario terminates through report_done,
+		// which only a standing worker is offered since #730.
+		Mode: ModeStanding,
 	}}, WithDefaultBudgets(Budgets{MaxTurns: 4}), WithSyncWaitTimeout(10*time.Second))
 	attachEchoParent(t, mgr)
 	defer mgr.Close()
@@ -174,6 +177,9 @@ func TestAwaitResult_NoDuplicateFinalText(t *testing.T) {
 		Instruction:  "triage",
 		ModelFactory: tmplFactory(prov, "cluster-model"),
 		ModelID:      "cluster-model",
+		// Standing: this scenario terminates through report_done,
+		// which only a standing worker is offered since #730.
+		Mode: ModeStanding,
 	}}, WithDefaultBudgets(Budgets{MaxTurns: 1}), WithSyncWaitTimeout(10*time.Second))
 	attachEchoParent(t, mgr)
 	defer mgr.Close()
@@ -205,6 +211,9 @@ func TestSpawnedSubagent_DoneToolAsksForTheDeliverable(t *testing.T) {
 		Instruction:  "triage",
 		ModelFactory: tmplFactory(prov, "cluster-model"),
 		ModelID:      "cluster-model",
+		// Standing: this scenario terminates through report_done,
+		// which only a standing worker is offered since #730.
+		Mode: ModeStanding,
 	}}, WithDefaultBudgets(Budgets{MaxTurns: 1}))
 	attachEchoParent(t, mgr)
 	defer mgr.Close()
@@ -255,6 +264,9 @@ func TestAwaitResult_SuppressesRedundantBackgroundReport(t *testing.T) {
 		Instruction:  "triage",
 		ModelFactory: tmplFactory(prov, "cluster-model"),
 		ModelID:      "cluster-model",
+		// Standing: this scenario terminates through report_done,
+		// which only a standing worker is offered since #730.
+		Mode: ModeStanding,
 	}}, WithDefaultBudgets(Budgets{MaxTurns: 2}), WithSyncWaitTimeout(10*time.Second))
 	attachEchoParent(t, mgr)
 	defer mgr.Close()
@@ -286,6 +298,9 @@ func TestSpawn_AsyncStillReportsCompletion(t *testing.T) {
 		Instruction:  "triage",
 		ModelFactory: tmplFactory(prov, "cluster-model"),
 		ModelID:      "cluster-model",
+		// Standing: this scenario terminates through report_done,
+		// which only a standing worker is offered since #730.
+		Mode: ModeStanding,
 	}}, WithDefaultBudgets(Budgets{MaxTurns: 2}))
 	attachEchoParent(t, mgr)
 	defer mgr.Close()

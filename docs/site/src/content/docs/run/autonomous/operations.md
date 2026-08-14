@@ -62,6 +62,12 @@ The driver registers a single-purpose `tools.LifecycleTool` named `report_done`.
 
 Marker-phrase detection ("look for TASK_COMPLETE in the text") is **not** supported and not recommended — the model can hallucinate the marker. Tool-based termination is unambiguous.
 
+**`WithStopOnNaturalEnd` — the other termination rule (v2.9+).** `agent.Run` is already a terminating loop: it drives model → tool → model until the model stops asking for tools. The driver's contribution on top is to inject the continuation prompt and run it again, which is right for a worker that watches something — a turn with no tool calls means *idle*, not *finished* — and wrong for a task with a deliverable, which then runs past its own answer.
+
+Set `WithStopOnNaturalEnd()` and the run ends at the first turn whose last model response asks for no tool, reporting `completed` with that turn's text as `DoneDetail`. It also registers **no** done or return tool: one termination path, nothing for the model to choose between and nothing it can forget to call. The two are alternatives — with `WithStopOnNaturalEnd` set, `WithReturnTool` is not wired.
+
+This is what `pkg/agent/background` uses for a bounded delegation; see [Subagents](/agent-design/subagents-and-wrappers/#how-a-delegation-ends-v29).
+
 ---
 
 ## Budgets

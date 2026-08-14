@@ -376,7 +376,39 @@ type Spec struct {
 	// (orchestrator-managed exit), "none" (no scheduler — the
 	// schedule_next_turn tool won't be registered for this subagent).
 	Scheduler string
+	// Mode selects how the subagent's loop terminates. Empty derives
+	// it from Scheduler; see Mode.
+	Mode Mode
 }
+
+// Mode distinguishes the two things "background subagent" has always
+// meant, which want opposite termination rules (#730).
+//
+// A BOUNDED delegation is handed one task and is done when it stops
+// working: the first turn that ends without the model asking for
+// another tool ends the run, and its last message is the deliverable.
+// No done tool is registered — there is one way out and the model
+// cannot forget to take it.
+//
+// A STANDING worker is a loop that watches something. A turn that
+// produces only text is a status report, so the driver feeds it the
+// continuation prompt and keeps going until a budget fires, the
+// scheduler defers it, or it calls the return tool. This is the
+// pre-#730 behavior, unchanged.
+type Mode string
+
+const (
+	// ModeAuto derives the mode: standing when a scheduler is
+	// installed (an agent that asks to be re-run later is by
+	// definition not finished when it stops talking), bounded
+	// otherwise. This is the zero value, and the default for every
+	// spawn that doesn't say.
+	ModeAuto Mode = ""
+	// ModeBounded forces the one-task delegation contract.
+	ModeBounded Mode = "bounded"
+	// ModeStanding forces the watch-loop contract.
+	ModeStanding Mode = "standing"
+)
 
 // ManagerOption configures NewManager.
 type ManagerOption func(*bgMgrConfig)

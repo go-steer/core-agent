@@ -83,6 +83,9 @@ type SubagentTemplate struct {
 	// Scheduler is the between-turn scheduler choice ("" = manager
 	// default); see resolveScheduler for the accepted values.
 	Scheduler string
+	// Mode selects how the run terminates. Empty derives it from the
+	// resolved Scheduler; see Mode.
+	Mode Mode
 }
 
 // WithSubagentTemplates registers the declarative-subagent roster at
@@ -134,6 +137,11 @@ func validateTemplate(t SubagentTemplate) error {
 	}
 	if t.ModelFactory == nil {
 		return fmt.Errorf("background: subagent template %q needs a ModelFactory", t.Name)
+	}
+	switch t.Mode {
+	case ModeAuto, ModeBounded, ModeStanding:
+	default:
+		return fmt.Errorf("background: subagent template %q has unknown Mode %q (want %q, %q, or empty)", t.Name, t.Mode, ModeBounded, ModeStanding)
 	}
 	return nil
 }
@@ -229,6 +237,7 @@ func (m *Manager) SpawnTemplate(ctx context.Context, parentBranch, name string, 
 		maxDepth:     tmpl.MaxDepth,
 		budgets:      tightenBudgets(mergeBudgets(m.defaultBudgets, tmpl.Budgets), ov.Budgets),
 		scheduler:    sched,
+		mode:         tmpl.Mode,
 	})
 }
 

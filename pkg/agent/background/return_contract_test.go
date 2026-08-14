@@ -58,6 +58,12 @@ func (l *returningLLM) GenerateContent(_ context.Context, _ *adkmodel.LLMRequest
 // of the four names it might plausibly reach for must end the run and
 // hand its findings to the parent.
 //
+// Runs in ModeStanding because since #730 that is the mode the return
+// tool belongs to: a bounded delegation registers no return tool at all
+// (it ends by running out of tool calls), so there is no alias set to
+// get wrong. The aliases still matter for a standing worker, whose only
+// way out short of a budget IS the tool.
+//
 // Fails on pre-fix code for three of the four:
 //
 //   - report_completed pushed a "completed" alert and returned ok
@@ -92,6 +98,7 @@ func TestSubagentReturn_EveryAliasEndsTheRunWithItsPayload(t *testing.T) {
 				Instruction:  "triage",
 				ModelFactory: tmplFactory(prov, "cluster-model"),
 				ModelID:      "cluster-model",
+				Mode:         ModeStanding,
 			}}, WithDefaultBudgets(Budgets{MaxTurns: 4}), WithSyncWaitTimeout(10*time.Second))
 			attachEchoParent(t, mgr)
 			defer mgr.Close()
@@ -114,7 +121,8 @@ func TestSubagentReturn_EveryAliasEndsTheRunWithItsPayload(t *testing.T) {
 
 // TestSubagentReturn_ToolsAreOfferedUnderEveryAlias pins the declared
 // surface: a model reaching for any of these names must find it, since
-// picking the wrong one is the failure #728 exists to remove.
+// picking the wrong one is the failure #728 exists to remove. Standing
+// mode, for the reason above: bounded delegations declare none of them.
 func TestSubagentReturn_ToolsAreOfferedUnderEveryAlias(t *testing.T) {
 	t.Parallel()
 	capture := &declCapturingLLM{}
@@ -124,6 +132,7 @@ func TestSubagentReturn_ToolsAreOfferedUnderEveryAlias(t *testing.T) {
 		Instruction:  "triage",
 		ModelFactory: tmplFactory(prov, "cluster-model"),
 		ModelID:      "cluster-model",
+		Mode:         ModeStanding,
 	}}, WithDefaultBudgets(Budgets{MaxTurns: 1}))
 	attachEchoParent(t, mgr)
 	defer mgr.Close()
@@ -157,6 +166,9 @@ func TestSubagentReturn_ToolsAreOfferedUnderEveryAlias(t *testing.T) {
 // Fails on pre-fix code: the framing lived only in the done tool's
 // description (#641), so a subagent that never read or called that tool
 // never learned its output was a return value.
+//
+// Standing mode, so the contract names the return tool; the bounded
+// form of the same assertion is in bounded_test.go.
 func TestSubagentReturn_ContractIsInTheInstruction(t *testing.T) {
 	t.Parallel()
 	capture := &declCapturingLLM{}
@@ -166,6 +178,7 @@ func TestSubagentReturn_ContractIsInTheInstruction(t *testing.T) {
 		Instruction:  "triage",
 		ModelFactory: tmplFactory(prov, "cluster-model"),
 		ModelID:      "cluster-model",
+		Mode:         ModeStanding,
 	}}, WithDefaultBudgets(Budgets{MaxTurns: 1}))
 	attachEchoParent(t, mgr)
 	defer mgr.Close()
@@ -201,7 +214,8 @@ func TestSubagentReturn_ContractIsInTheInstruction(t *testing.T) {
 // hostile arrangement: replace_system_prompt swaps out instruction
 // layers 1–3 wholesale. The return contract is a property of being a
 // delegation, not of the harness baseline, so it has to hold for a
-// subagent running a bare operator-authored prompt too.
+// subagent running a bare operator-authored prompt too. Standing mode,
+// so the tool-naming form of the contract is the one under test.
 func TestSubagentReturn_ContractSurvivesReplaceSystemPrompt(t *testing.T) {
 	t.Parallel()
 	capture := &declCapturingLLM{}
@@ -219,6 +233,7 @@ func TestSubagentReturn_ContractSurvivesReplaceSystemPrompt(t *testing.T) {
 		SystemPrompt:        "you are a bare prompt",
 		ReplaceSystemPrompt: true,
 		Goal:                "g",
+		Mode:                ModeStanding,
 	})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)

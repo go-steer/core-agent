@@ -296,6 +296,13 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 			break
 		}
 
+		// Natural end of a bounded delegation (#730); see Run.
+		if cfg.stopOnNaturalEnd && !turnRes.requestedTools && !turnRes.scheduleSignaled {
+			result.Reason = StopReasonCompleted
+			result.DoneDetail = turnRes.text
+			break
+		}
+
 		// Schedule emission — same wiring as Run so a
 		// resumed daemon continues honoring schedule_next_turn calls
 		// across restarts.

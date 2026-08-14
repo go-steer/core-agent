@@ -21,6 +21,8 @@ import (
 
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
+
+	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
 )
 
 // budgetsFromArgs reads the per-spawn budget caps off the tool args.
@@ -138,12 +140,21 @@ func (m *Manager) abandonWait(h *Handle, claimed bool) (spawnAgentResult, bool) 
 // so a persona that answers in prose and then reports a one-line status
 // doesn't leave the parent with nothing but the status.
 func completionResult(h *Handle) spawnAgentResult {
-	res := spawnAgentResult{Name: h.Name, Branch: h.Branch, Status: h.Status().String()}
-	if err := h.Err(); err != nil {
-		res.Output = err.Error()
+	status := h.Status()
+	res := spawnAgentResult{Name: h.Name, Branch: h.Branch, Status: status.String()}
+	runErr := h.Err()
+	r := h.Result()
+	if r != nil || runErr != nil {
+		var reason autonomous.StopReason
+		if r != nil {
+			reason = r.Reason
+		}
+		res.StopReason = stopClass(status, reason, runErr)
+	}
+	if runErr != nil {
+		res.Output = runErr.Error()
 		return res
 	}
-	r := h.Result()
 	if r == nil {
 		return res
 	}
@@ -218,7 +229,7 @@ type spawnAgentArgs struct {
 	MaxTurns            int      `json:"max_turns,omitempty" jsonschema:"tighten the per-subagent turn cap (may only lower a preconfigured subagent's cap)"`
 	MaxCostUSD          float64  `json:"max_cost_usd,omitempty" jsonschema:"tighten the per-subagent dollar cap (may only lower a preconfigured subagent's cap)"`
 	MaxWallclockSeconds int      `json:"max_wallclock_seconds,omitempty" jsonschema:"tighten the per-subagent wall-clock cap (may only lower a preconfigured subagent's cap)"`
-	Scheduler           string   `json:"scheduler,omitempty" jsonschema:"ad-hoc only: between-turn scheduler for this subagent. Values: 'default' (use the manager's default — typical), 'sleep' (in-process goroutine sleep — long-lived daemon shape), 'exit_on_defer' (exit cleanly so an orchestrator like k8s CronJob restarts at the wake-time), 'none' (no scheduler — schedule_next_turn unavailable, useful for one-shot triage subagents). Default: 'default'."`
+	Scheduler           string   `json:"scheduler,omitempty" jsonschema:"ad-hoc only: between-turn scheduler for this subagent. Values: 'default' (use the manager's default — typical), 'sleep' (in-process goroutine sleep — long-lived daemon shape), 'exit_on_defer' (exit cleanly so an orchestrator like k8s CronJob restarts at the wake-time), 'none' (no scheduler — schedule_next_turn unavailable, useful for one-shot triage subagents). Default: 'default'. This also picks how the subagent stops: with a scheduler it is a standing worker that keeps looping until a budget or an explicit return; without one it is a bounded delegation that finishes as soon as it stops calling tools."`
 	Wait                bool     `json:"wait,omitempty" jsonschema:"set true to run the subagent synchronously: block this turn until it finishes and return its final output inline (like a direct delegation). Omit (the default) to fire-and-continue — the subagent runs in the background and its result is pushed to a later turn. A synchronous wait is capped by a tighter wall-clock; on timeout the subagent keeps running in the background and its result is pushed later."`
 }
 
@@ -241,6 +252,13 @@ type spawnAgentResult struct {
 	// only the report is what made a parent re-derive an analysis it had
 	// just delegated, so both channels are surfaced.
 	FinalText string `json:"final_text,omitempty"`
+	// StopReason says whether Output is a finished result or a partial:
+	// "natural" (the subagent finished), "max_steps" / "budget" (it ran
+	// out of room — re-ask with what is missing), "deferred" (it will
+	// resume on its own), "stopped", or "error". Empty for a
+	// fire-and-continue spawn and for a wait that timed out, neither of
+	// which has an outcome yet. See StopClass.
+	StopReason StopClass `json:"stop_reason,omitempty"`
 }
 
 // NewSpawnAgentTool returns a tool the parent's model can call to

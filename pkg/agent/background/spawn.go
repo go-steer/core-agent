@@ -79,6 +79,12 @@ var subagentReturnToolAliases = []string{"report_done", "report_completed", "mar
 // be told two different things depending on how it was reached.
 var subagentReturnContract = agent.SubagentReturnContract(autonomous.DefaultReturnToolName)
 
+// boundedReturnContract is the same block for a bounded delegation,
+// which registers no return tool: it terminates when the model stops
+// asking for tools, so the contract points at the last message
+// instead of a tool call (#730).
+var boundedReturnContract = agent.SubagentReturnContract("")
+
 // resolvedSpawn is a fully-resolved launch recipe — everything the
 // per-spawn goroutine needs after kind-specific resolution has run.
 // Two callers build it: Spawn, from a catalog Spec (tools resolved by
@@ -113,6 +119,9 @@ type resolvedSpawn struct {
 	// budgets + scheduler bound and pace the run.
 	budgets   Budgets
 	scheduler coretools.Scheduler
+	// mode is the termination contract, already resolved past
+	// ModeAuto by the time launch reads it.
+	mode Mode
 }
 
 // Spawn launches a new background subagent under spec. parentBranch
@@ -170,6 +179,7 @@ func (m *Manager) Spawn(ctx context.Context, parentBranch string, spec Spec) (*H
 		priceModelID: resolvedModelID,
 		budgets:      mergeBudgets(m.defaultBudgets, spec.Budgets),
 		scheduler:    sched,
+		mode:         spec.Mode,
 	})
 }
 
@@ -288,6 +298,9 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 	toolsets := rs.toolsets
 	instrOpts := rs.instrOpts
 	maxDepth := rs.maxDepth
+	// Resolved here rather than in the two callers so ModeAuto's rule
+	// has exactly one implementation (#730).
+	bounded := resolveMode(rs.mode, rs.scheduler) != ModeStanding
 
 	// Build phase: the autonomous driver hands us a done-tool we have
 	// to include alongside our subagent's tools + our own report
@@ -337,7 +350,16 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 		// and a spec's persona may itself be installed via
 		// WithInstruction (which replaces layers 1-3). Appending last
 		// keeps the return contract present under either arrangement.
-		opts = append(opts, agent.WithExtraInstruction(subagentReturnContract))
+		contract := subagentReturnContract
+		if bounded {
+			// A bounded delegation has no return tool to name, so it
+			// gets the last-message form of the same contract — telling
+			// it to call a tool that isn't registered is the #641 shape
+			// (reached for mark_task_done, got tool-not-found, never
+			// recovered) with a new name.
+			contract = boundedReturnContract
+		}
+		opts = append(opts, agent.WithExtraInstruction(contract))
 		if len(toolsets) > 0 {
 			opts = append(opts, agent.WithToolsets(toolsets))
 		}
@@ -356,11 +378,18 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 		// The driver's default prose asks for "a one-sentence detail",
 		// which is what produced the content-free "successfully diagnosed
 		// the issue" reports the parent then had to re-derive (#641).
-		opts := []autonomous.Option{
-			autonomous.WithReturnTool(autonomous.ReturnToolConfig{
+		//
+		// A bounded delegation takes the other path (#730): it ends
+		// when the model stops calling tools, so it registers no
+		// return tool at all and there is nothing to describe.
+		var opts []autonomous.Option
+		if bounded {
+			opts = append(opts, autonomous.WithStopOnNaturalEnd())
+		} else {
+			opts = append(opts, autonomous.WithReturnTool(autonomous.ReturnToolConfig{
 				Aliases:     subagentReturnToolAliases,
 				Description: subagentDoneToolDescription,
-			}),
+			}))
 		}
 		if budgets.MaxTurns > 0 {
 			opts = append(opts, autonomous.WithMaxTurns(budgets.MaxTurns))
@@ -506,7 +535,96 @@ func terminalAlertText(status Status, result autonomous.RunResult, runErr error)
 	if text == "" {
 		text = "(no detail provided)"
 	}
+	// Machine-readable outcome, last so it can't be mistaken for part
+	// of the deliverable. The async twin of spawnAgentResult.StopReason
+	// (#730): a parent reading an alert has to make the same
+	// finished-vs-partial call as one reading a sync tool result.
+	//
+	// Rendered only when the stop was NOT a natural end. Every alert
+	// lands in the parent's next prompt as one bullet, so a trailer on
+	// the common case is pure noise — and it loses nothing: `kind`
+	// already separates completed from failed/deferred/stopped, so the
+	// only ambiguity left is *inside* completed, and those are exactly
+	// the classes that still get annotated. No trailer under
+	// kind=completed therefore means "natural", unambiguously.
+	//
+	// The sync path (spawnAgentResult.StopReason) always populates it:
+	// a JSON field costs nothing and machine readers shouldn't infer.
+	if class := stopClass(status, result.Reason, runErr); class != StopNatural {
+		text += "\n\nstop_reason: " + string(class)
+	}
 	return kind, text
+}
+
+// StopClass is the machine-readable answer to the one question a
+// delegating agent has to answer about a returned result: is this
+// finished, or is it a partial (#730)?
+//
+// Removing the "continue" re-drive from a bounded delegation means a
+// subagent that runs out of room hands back what it has. That is the
+// right contract — the parent holds the goal and can re-ask with
+// specifics, which a blind "continue" injected inside the subagent
+// cannot — but only if the parent can tell the two apart. Prose in a
+// text blob is not sufficient.
+type StopClass string
+
+const (
+	// StopNatural: the subagent finished — it stopped asking for tools
+	// (bounded) or signalled completion (standing). The output is the
+	// deliverable.
+	StopNatural StopClass = "natural"
+	// StopMaxSteps: the turn cap fired. A partial; re-ask with what is
+	// still missing, or raise MaxTurns.
+	StopMaxSteps StopClass = "max_steps"
+	// StopBudget: a cost, token, or wall-clock bound fired. A partial.
+	StopBudget StopClass = "budget"
+	// StopDeferred: the subagent scheduled its own next turn and will
+	// resume. Not a partial to re-ask — it isn't done with the loop.
+	StopDeferred StopClass = "deferred"
+	// StopStopped: the parent (or operator) stopped it. Whatever text
+	// exists was cut mid-thought.
+	StopStopped StopClass = "stopped"
+	// StopError: the run failed, was cancelled, or exhausted its retry
+	// policy.
+	StopError StopClass = "error"
+)
+
+// stopClass classifies a terminal run. Status is consulted first,
+// because the launch goroutine has already resolved the cases where
+// status carries information the reason does not: an explicit Stop and
+// a context cancellation reach the driver as the same StopReason but
+// mean different things to the parent, and a run that failed is a
+// failure whatever reason it recorded on the way out.
+func stopClass(status Status, reason autonomous.StopReason, runErr error) StopClass {
+	switch status {
+	case StatusStopped:
+		return StopStopped
+	case StatusCompleted:
+		return StopNatural
+	case StatusFailed:
+		return StopError
+	}
+	if runErr != nil {
+		return StopError
+	}
+	switch reason {
+	case autonomous.StopReasonCompleted:
+		return StopNatural
+	case autonomous.StopReasonMaxTurns:
+		return StopMaxSteps
+	case autonomous.StopReasonMaxCost,
+		autonomous.StopReasonMaxTokens,
+		autonomous.StopReasonWallclockExceeded:
+		return StopBudget
+	case autonomous.StopReasonDeferred:
+		return StopDeferred
+	default:
+		// StopReasonContextCancelled, StopReasonRetryAborted, and any
+		// reason added later: the run did not reach an ending of its
+		// own. Erring toward "error" keeps a parent from treating an
+		// unrecognized outcome as a finished result.
+		return StopError
+	}
 }
 
 // shouldAlert reports whether handle's terminal alert should still
@@ -596,7 +714,25 @@ func validateSpec(spec Spec) error {
 	if strings.TrimSpace(spec.Goal) == "" {
 		return fmt.Errorf("background: spec.Goal is required")
 	}
+	switch spec.Mode {
+	case ModeAuto, ModeBounded, ModeStanding:
+	default:
+		return fmt.Errorf("background: unknown spec.Mode %q (want %q, %q, or empty)", spec.Mode, ModeBounded, ModeStanding)
+	}
 	return nil
+}
+
+// resolveMode applies ModeAuto's rule: a subagent that can ask to be
+// re-run later is a standing worker; everything else is a bounded
+// delegation. Explicit modes pass through.
+func resolveMode(mode Mode, sched coretools.Scheduler) Mode {
+	if mode != ModeAuto {
+		return mode
+	}
+	if sched != nil {
+		return ModeStanding
+	}
+	return ModeBounded
 }
 
 // mergeBudgets returns a budget that uses spec's non-zero values and

@@ -370,11 +370,23 @@ Plans persist to `<project-root>/.agents/plans/plan-<seq>.md` with monotonically
 | `.agents/plans/plan-2-revoked.md` | operator `/replan`'d this one |
 | `.agents/plans/plan-3.md` | currently active plan |
 
+Since v2.9 each artifact opens with a small YAML block naming its author — `plan:`, plus `agent:` and `session:` when the handler ran inside an invocation. One `.agents/plans/` directory is shared by a parent and its declarative subagents, and by every tenant in [multi-session](/concepts/multi-session/) mode, so without attribution the directory is a pile of anonymous markdown. Keys are omitted rather than emitted empty.
+
+```yaml
+---
+plan: 2
+agent: "cluster"
+session: "s-8f21"
+---
+```
+
 Add `.agents/plans/` to `.gitignore` if you don't want plans checked in. Or do check them in — they make excellent PR descriptions.
 
 #### `/replan` slash command
 
-Available in both the in-process TUI (`core-agent`) and the remote TUI (`core-agent-tui`). Optional reason argument: `/replan reconsider scope`. Effects: archive latest plan → clear gate flag → next mutating call gates again. Operator typically types a follow-up prompt explaining the rejection so the next `record_plan` reflects the new direction.
+Available in both the in-process TUI (`core-agent`) and the remote TUI (`core-agent-tui`). Optional reason argument: `/replan reconsider scope`. Effects: archive this agent and session's active plan → clear gate flag → next mutating call gates again. Operator typically types a follow-up prompt explaining the rejection so the next `record_plan` reflects the new direction.
+
+The scoping matters once a subagent is in the picture: before v2.9 the command took whichever artifact had the highest sequence, so a subagent's `plan-2` was revoked instead of the operator's `plan-1`. Now a newer plan belonging to someone else is named in the response and left alone, and a directory where no plan carries attribution (written before v2.9) still falls back to newest-wins. Either way the gate flag clears.
 
 #### Library callers
 
@@ -388,7 +400,14 @@ gate := permissions.New(permissions.Options{
 // ... after record_plan tool fires its handler ...
 gate.IsPlanRecorded() // → true
 gate.ClearPlanRecorded() // /replan-like reset; pair with tools.RevokeLatestPlan to also archive
+
+// Owner-scoped revocation (v2.9+) — what the CLI's /replan uses. The zero
+// PlanOwner is newest-wins, so RevokeLatestPlan is just RevokePlanBy(…, {}).
+tools.RevokePlanBy(gate, agentsDir, tools.PlanOwner{Agent: "core_agent", Session: sid})
+tools.ActivePlans(agentsDir) // []PlanInfo{Path, Sequence, Agent, Session}, newest first
 ```
+
+If your host wires tools by hand rather than through `tools.Build`, call `gate.RegisterPlanGatedTools(names...)` with what you registered. That set is what `record_plan`'s result names back to the model; a gate nobody told stays in the "unknown" state and the message declines to enumerate rather than claiming nothing is gated. The gate drops plan-exempt names itself, so hand over the whole catalog.
 
 `tools.Build` registers the `record_plan` tool only when `permissions.plan_mode` is `"advisory"` or `"required"` AND `agentsDir != ""` (an inert record_plan with nowhere to write would be confusing). Library callers wanting plan artifacts should pass an `agentsDir` to `tools.Build`.
 

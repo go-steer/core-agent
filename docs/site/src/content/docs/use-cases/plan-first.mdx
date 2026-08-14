@@ -16,10 +16,13 @@ is cheaper to catch than a bad diff.
 `core-agent` has a **plan-first** posture with two strengths, picked
 via `permissions.plan_mode`:
 
-- **`required`** — the permission gate refuses every mutating tool
-  (`write_file`, `edit_file`, `delete_file`, `bash` with non-read-only
-  commands, `spawn_agent`, MCP writes) until the model has called
+- **`required`** — the permission gate refuses every non-exempt tool
+  (`write_file`, `edit_file`, `delete_file`, `bash`, and the whole
+  `mcp` namespace — reads included, since the gate sees the namespace,
+  not the server's own read/write split) until the model has called
   `record_plan` for the current turn. The plan is a *precondition*.
+  Reads through the built-in file and search tools stay exempt so the
+  model can gather what it needs to write a plan worth reviewing.
 - **`advisory`** — `record_plan` is registered and the artifact is
   persisted exactly the same way, but nothing is blocked. The plan is
   an *audit trail*: the agent records what it's about to do and then
@@ -42,4 +45,5 @@ in config, `Permissions.PlanMode` in the library API, or
 
 - **[Configuration → Plan mode](/reference/configuration/#plan-mode-v29--plan_mode)** — the mode table, composition with `permissions.mode`, migration off the deprecated bool.
 - **[Built-in tools → Planning](/concepts/tools/#planning)** — the `record_plan` tool the model calls, its schema, and its mode-aware description.
+- **[Built-in tools → `record_plan`](/concepts/tools/#record_plan--what-the-result-says-and-who-wrote-the-artifact)** — what the result tells the model it unblocked, the artifact's author frontmatter, and how `/replan` picks which plan to revoke.
 - **[Agent design → System instructions](/agent-design/system-instructions/)** — how to phrase the `AGENTS.md` so the model reaches for a plan naturally.

@@ -504,3 +504,76 @@ conflated two things the advisory case needs apart:
   `PlanGateArmed()`, so the only mode that can ever set
   `permissions.Gate.RequirePlanArtifact` is `required`; the artifact
   is written identically in both modes.
+
+## Implementation notes (2026-08-14, #747)
+
+The 2026-08-14 GKE UAT ran a recipe with `plan_mode: required`,
+every mutating built-in disabled, and one read-only MCP server. A
+parent and its declarative subagent each recorded a plan in one
+incident. Three things the plan surface said were not what
+happened, and all three were the same shape — reporting a design
+instead of the run.
+
+- **The result names the gate it actually armed.** `record_plan`
+  answered "Mutating tools are now unblocked for this session"
+  unconditionally: a category the recipe had emptied, while saying
+  nothing about the `gke` MCP surface the plan really unblocked
+  (`mcp` is deliberately not plan-exempt). It was also mode-blind,
+  telling advisory sessions about an unblock that cannot happen —
+  the result-path half of the bug the #215 description split fixed
+  one surface earlier.
+
+  The fix mirrors `SetNativeSearchTools` / `ActiveSearchBinaries`
+  (#158): `tools.Build`, `GateToolset` and `peer.New` each call
+  `gate.RegisterPlanGatedTools(...)` with the names they registered,
+  the gate drops the plan-exempt ones, and the message renders from
+  mode plus that set. `PlanGatedTools()` returns a `known` bool, so
+  a host that wires tools by hand gets prose that declines to
+  enumerate rather than a confident empty list — "unknown" must not
+  collapse into "none".
+
+  Note the set reflects what the gate is actually asked about. The
+  `spawn_agent` family is described as plan-gated in this doc and in
+  `--plan-mode`'s help, but nothing routes it through the gate, so
+  it does not appear. That gap is real and tracked separately; the
+  message's job is to report the runtime, not the intention.
+
+- **Every artifact says who wrote it.** Plans now open with a YAML
+  frontmatter block carrying `plan`, `agent` and `session`. Without
+  it a plans directory is anonymous markdown — the UAT's `plan-1.md`
+  and `plan-2.md` had nothing on disk distinguishing parent from
+  subagent, and multi-session makes it worse (the gate flag is
+  per-session, `<agentsDir>/plans/` is process-global, so concurrent
+  tenants interleave into one sequence). Filenames are unchanged:
+  the sequence is load-bearing for `nextPlanSeq` / `LatestActivePlan`.
+  No timestamp — the file's mtime carries it, and a clock would make
+  every artifact test non-deterministic.
+
+- **`/replan` archives the operator's plan, not the newest one.**
+  `RevokeLatestPlan` took max-sequence, which with a subagent in
+  play is the subagent's: an operator rejecting the parent's
+  delegation was filing the specialist's investigation notes and
+  leaving the plan they meant to reject active. `RevokePlanBy(gate,
+  agentsDir, PlanOwner{Agent, Session})` scopes the revocation;
+  `RevokeLatestPlan` is kept as the zero-owner spelling with its
+  historical semantics intact.
+
+  When the owner has no active plan the gate flag still clears —
+  /replan's contract is "the next mutating call needs a fresh plan",
+  and that has to hold whether or not there was an artifact to file.
+  A plans directory with no attribution at all falls back to
+  newest-wins so an upgrade mid-incident doesn't read as "you have
+  no plan"; a directory with a *mix* gets the strict answer, because
+  once some artifact can say who wrote it, silently revoking one
+  that can't is the guess this change exists to stop making.
+
+  Scoping is on agent *and* session, which costs one case: a daemon
+  restart mints a new session, so a `/replan` afterwards will not
+  archive the plan the previous session recorded. Session is kept
+  anyway, because background subagents run under their own session
+  IDs in the same process and the plans directory is shared — it is
+  the field that separates them from the parent, not just tenants
+  from each other. The declining message reports the artifact's own
+  frontmatter (`describePlanOwner`) rather than asserting "another
+  agent", so the restart case reads as what it is and the operator
+  can see whose plan is sitting there.

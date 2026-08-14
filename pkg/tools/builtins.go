@@ -355,6 +355,16 @@ func Build(cfg *config.Config, gate *permissions.Gate, agentsDir string, b Built
 		{b.SciontoolStatus && sciontoolOnPath(), "sciontool_status", "Signal a sticky lifecycle event to Scion.", NewSciontoolStatusTool},
 	}
 
+	// Tell the gate every built-in this build registered, so record_plan
+	// can name the set plan-first gating actually covers rather than
+	// assert "mutating tools" at a recipe that disabled all of them
+	// (#747). The gate drops the plan-exempt names itself — Build
+	// declares what it registered, the gate decides what that means.
+	// Called unconditionally, including when the loop below registers
+	// nothing plan-gated: "the gate is inert in this build" is a true
+	// answer and only a host that spoke can give it.
+	registered := make([]string, 0, len(specs))
+
 	out := &Registry{Todo: store}
 	for _, s := range specs {
 		if !s.on {
@@ -365,6 +375,8 @@ func Build(cfg *config.Config, gate *permissions.Gate, agentsDir string, b Built
 			return nil, fmt.Errorf("tools: build %s: %w", s.name, err)
 		}
 		out.Tools = append(out.Tools, t)
+		registered = append(registered, s.name)
 	}
+	gate.RegisterPlanGatedTools(registered...)
 	return out, nil
 }

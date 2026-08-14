@@ -51,6 +51,7 @@ Both run a summarizer LLM call (5-15s); the next turn picks up from the summary 
 | `/allow <pattern>` | | Add an allow pattern to the live gate (and to `.agents/config.json` if writable) |
 | `/deny <pattern>` | | Add a deny pattern (deny wins over allow) |
 | `/allow bundle:<name>` | | Apply a pre-defined allow bundle (e.g., `dev_tools`) |
+| `/replan` | | Revoke the active plan artifact and re-arm plan-first gating, so the next mutating call is denied until a fresh `record_plan`. Since v2.9 it archives **this** agent and session's plan — a subagent's or another tenant's newer plan is named and left alone. The gate flag clears either way |
 
 Pattern grammar: `<tool>:<glob>` (e.g., `bash:git diff*`, `read_file:internal/**`). See [Permissions](/concepts/permissions/).
 

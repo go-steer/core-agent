@@ -267,3 +267,121 @@ env:
 		t.Errorf("unexpected drift warnings: %v", warnings)
 	}
 }
+
+// TestReportDriftConfigRefCountsAsReferenced is the regression guard for
+// the false positive observed live on 2026-08-14: a var declared in
+// .agents/env.yaml and consumed ONLY by an alerts.targets[].url_env
+// field was reported as "nothing in the bundle references it", because
+// config never flows through Interpolate. NoteConfigRefs is the second
+// reference channel; a name reached through it must not be called
+// unreferenced.
+func TestReportDriftConfigRefCountsAsReferenced(t *testing.T) {
+	t.Parallel()
+	m := &Manifest{Env: []Entry{
+		{Name: "PLATFORM_AGENT_ALERT_WEBHOOK"},
+		{Name: "TRULY_UNREFERENCED"},
+	}}
+	r := NewResolver(m, mkLookup(nil))
+
+	// The bundle references neither; only the config names the webhook.
+	r.NoteConfigRefs([]string{"PLATFORM_AGENT_ALERT_WEBHOOK"})
+
+	joined := strings.Join(r.ReportDrift(), "\n")
+	if strings.Contains(joined, "PLATFORM_AGENT_ALERT_WEBHOOK") {
+		t.Errorf("config-referenced var reported as drift; got %q", joined)
+	}
+	if !strings.Contains(joined, "TRULY_UNREFERENCED") {
+		t.Errorf("want unreferenced warning for TRULY_UNREFERENCED; got %q", joined)
+	}
+}
+
+// TestReportDriftUndeclaredConfigRefNamesTheConvention covers the other
+// half of the check, which did not exist before: a *_env field naming a
+// var the manifest never declares is drift too — and the warning must
+// not send the operator looking for a ${env:...} that is in no file.
+func TestReportDriftUndeclaredConfigRefNamesTheConvention(t *testing.T) {
+	t.Parallel()
+	r := NewResolver(&Manifest{Env: []Entry{{Name: "DECLARED"}}}, mkLookup(nil))
+	_ = r.Interpolate("${env:DECLARED}")
+	r.NoteConfigRefs([]string{"SNEAKY_TOKEN"})
+
+	joined := strings.Join(r.ReportDrift(), "\n")
+	if !strings.Contains(joined, "SNEAKY_TOKEN") {
+		t.Fatalf("want a warning for the undeclared config ref; got %q", joined)
+	}
+	if !strings.Contains(joined, "*_env") {
+		t.Errorf("warning should name the config convention, not ${env:}; got %q", joined)
+	}
+	if strings.Contains(joined, "${env:SNEAKY_TOKEN}") {
+		t.Errorf("warning points at a bundle reference that does not exist; got %q", joined)
+	}
+}
+
+// TestReportDriftBothConventionsReportsOnce guards against a name
+// reached by BOTH channels producing two undeclared warnings for one var.
+func TestReportDriftBothConventionsReportsOnce(t *testing.T) {
+	t.Parallel()
+	r := NewResolver(&Manifest{}, mkLookup(nil))
+	_ = r.Interpolate("${env:SHARED}")
+	r.NoteConfigRefs([]string{"SHARED"})
+
+	warnings := r.ReportDrift()
+	var n int
+	for _, w := range warnings {
+		if strings.Contains(w, "SHARED") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("want exactly 1 warning for SHARED, got %d: %v", n, warnings)
+	}
+	if !strings.Contains(strings.Join(warnings, "\n"), "${env:SHARED}") {
+		t.Errorf("a name reached both ways should report as the bundle reference; got %v", warnings)
+	}
+}
+
+func TestNoteConfigRefsNilSafeAndIdempotent(t *testing.T) {
+	t.Parallel()
+	var nilResolver *Resolver
+	nilResolver.NoteConfigRefs([]string{"X"}) // must not panic
+
+	r := NewResolver(&Manifest{Env: []Entry{{Name: "A"}}}, mkLookup(nil))
+	r.NoteConfigRefs(nil)
+	r.NoteConfigRefs([]string{})
+	r.NoteConfigRefs([]string{"  ", ""}) // blanks are not references
+	if joined := strings.Join(r.ReportDrift(), "\n"); !strings.Contains(joined, `"A"`) {
+		t.Errorf("blank names should not mark anything referenced; got %q", joined)
+	}
+	r.NoteConfigRefs([]string{"A"})
+	r.NoteConfigRefs([]string{"A"})
+	if warnings := r.ReportDrift(); len(warnings) != 0 {
+		t.Errorf("repeat NoteConfigRefs should be idempotent; got %v", warnings)
+	}
+}
+
+// TestNoteConfigRefsConcurrent extends the #371 race guard to the second
+// reference set: cfgRefs shares the mutex with seenRefs, and ReportDrift
+// now ranges over both.
+func TestNoteConfigRefsConcurrent(t *testing.T) {
+	t.Parallel()
+	r := NewResolver(&Manifest{Env: []Entry{{Name: "DECLARED", Default: "d"}}}, mkLookup(nil))
+
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			r.NoteConfigRefs([]string{fmt.Sprintf("CFG_%d", i)})
+			_ = r.Interpolate(fmt.Sprintf("${env:BUNDLE_%d}", i))
+			_ = r.ReportDrift()
+		}(i)
+	}
+	wg.Wait()
+
+	joined := strings.Join(r.ReportDrift(), "\n")
+	for i := 0; i < 32; i++ {
+		if !strings.Contains(joined, fmt.Sprintf("CFG_%d", i)) {
+			t.Errorf("CFG_%d lost from cfgRefs; drift = %q", i, joined)
+		}
+	}
+}

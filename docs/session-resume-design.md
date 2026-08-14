@@ -417,6 +417,8 @@ return ag, cancelOnEvict, nil  // caller hands cancelOnEvict to registerWithACL
 
 The existing wake loop code is unchanged — it already selects on `<-ctx.Done()`. Cleanup is automatic.
 
+**Amended (#751): cancellation is not a join.** "Cleanup is automatic" holds for the *goroutine* — it does return — but the sketch above keeps no handle on it, so nothing downstream can distinguish a loop that has been signalled from one that has returned, and a signalled loop may still be mid-query against the eventlog. Any caller that tears down what the loops read must cancel, wait, *then* tear down. `SessionFactoryDeps.WakeLoops` (a `*compose.WakeLoopGroup`) is that join point: the factory registers every loop it spawns, and `WaitFor(timeout)` reports whether they all returned. The daemon derives its own cancel for the factory and drains for 5s before closing the eventlog handle — it cannot rely on the outermost `defer stop()`, which is registered first and therefore runs *after* `defer handle.Close()`. The join is intentionally absent from the eviction path (item 3 above): the sweep is cross-tenant, and blocking it on one session's in-flight turn is the trade `bgClose` already rejects. Eviction signals; shutdown joins.
+
 ### 5. Migration tool for existing v2.4 sessions
 
 **Resolved: ship a two-mode `core-agent admin backfill-acl` command in Phase 4. Operators on fresh v2.5 don't need it; v2.4 → v2.5 upgrades use it once.**

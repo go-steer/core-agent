@@ -2034,8 +2034,28 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		var sessionResumer attach.SessionResumer
 		var autoContinueBootScan func()
 		if cfg.Attach.MultiSession.Enabled {
+			// Wake loops query the eventlog handle, and `defer
+			// handle.Close()` was registered ~200 lines above this
+			// point — so on any return from run() it fires while the
+			// loops are still live, and the outermost `defer stop()`
+			// that would have signalled them fires later still. Give
+			// the factory its own cancel and join the loops here:
+			// deferred later than Close means LIFO runs it first
+			// (#751). A loop still running after the drain window is
+			// reported rather than swallowed — the alternative
+			// symptom is a SQLite error on a closing connection with
+			// nothing attached to explain it.
+			wakeLoops := &compose.WakeLoopGroup{}
+			wakeCtx, cancelWakeLoops := context.WithCancel(ctx)
+			defer func() {
+				cancelWakeLoops()
+				if !wakeLoops.WaitFor(wakeLoopDrainTimeout) {
+					fmt.Fprintf(os.Stderr, "core-agent: shutdown: session wake loops still running after %s; closing the session db anyway\n", wakeLoopDrainTimeout)
+				}
+			}()
 			factoryDeps := compose.SessionFactoryDeps{
-				DaemonCtx:             ctx,
+				DaemonCtx:             wakeCtx,
+				WakeLoops:             wakeLoops,
 				Model:                 m,
 				Template:              template,
 				PricingRate:           pricingRate,
@@ -2578,6 +2598,13 @@ func resolveGatePrompter(yolo bool, in *os.File, out io.Writer) permissions.Prom
 	}
 	return permissions.StdinPrompter(in, out)
 }
+
+// wakeLoopDrainTimeout bounds how long daemon shutdown waits for
+// per-session wake loops to return before closing the eventlog handle
+// they query (#751). Generous enough for a turn that is finishing up,
+// short enough that a wedged session can't hold SIGTERM open past a
+// container runtime's own kill grace period.
+const wakeLoopDrainTimeout = 5 * time.Second
 
 // describePlanOwner renders a plan artifact's frontmatter attribution
 // for the /replan message that reports a plan it declined to archive

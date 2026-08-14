@@ -194,6 +194,18 @@ delegate; it is still bound by the same `permissions.Gate` + `require_plan_artif
 as the parent, so inheriting cannot escalate. Set an explicit empty list
 (`"mcp": []`) to grant none of a dimension.
 
+**One carve-out: the spawn tools (#748, 2026-08-14).** Inheriting `tools`
+grants everything in the parent's registry *except* `spawn_agent` and
+`stop_agent`. Omitting `tools:` says "give me the parent's hardening", not
+"give me its authority to build a fleet", and the sibling ad-hoc path had
+already made this call: `sessionBackgroundRecipe.factory` strips the spawn
+tools from the catalog it hands each session's `background.Manager`, so a
+subagent can't pick a spawn tool out of the catalog either. Which path built
+the tool list shouldn't decide whether a subagent can delegate. A spec that
+names them in `tools:` still gets them — that's the deliberate
+orchestrator-subagent case — and the startup line says `spawn=withheld`
+whenever the carve-out fired, so the remedy is visible at boot.
+
 This keeps the recipe in one `config.json` + one `mcp.json` + one `skills/` tree
 (a single ConfigMap) and avoids inventing per-agent registries in
 `pkg/mcp`/`pkg/skills`. The rejected alternative — a per-subagent scope directory
@@ -264,7 +276,8 @@ The subagent selects its narrower surface inline, by name, from the shared confi
 ```
 
 A subagent that declares none of `tools`/`mcp`/`skills` inherits the parent's
-full surface; an explicit `"mcp": []` grants none of that dimension.
+full surface minus the spawn tools (#748); an explicit `"mcp": []` grants none
+of that dimension.
 
 ## Per-subagent content root (`root`) — v2 increment
 
@@ -480,6 +493,17 @@ this default is an explicit threading step in `buildDeclaredSubagents` (see
 mutation still flows through the same `permissions.Gate` and
 `require_plan_artifact` as the parent, so inheriting the full surface cannot
 escalate privilege.
+
+**Amended 2026-08-14 (#748).** (a) still holds for every dimension, with the
+spawn tools carved out of what `tools: nil` inherits. The gate argument in (b)
+is why inheritance is safe *for privilege*, and it stayed true — but delegation
+isn't a privilege the gate scores. A subagent holding `spawn_agent` doesn't do
+anything the gate would refuse; it starts another agent, which the gate has no
+opinion about. The live UAT that surfaced this had an inheriting `cluster`
+specialist try to delegate its own investigation to a second `cluster`; #742's
+lineage guard refused that one call, but only because it was a *self*-spawn.
+Two specialists on the roster and the same reflex fans out unbounded from a
+spec that never asked to delegate.
 
 ### 3. Model inheritance ergonomics
 

@@ -272,8 +272,10 @@ type subagentDeps struct {
 //     skills/ from a dedicated content root, then applies that same
 //     nil/list/empty contract WITHIN the root. Built-in tools (spec.Tools)
 //     always resolve against the parent registry — built-ins live in the
-//     binary, not a directory. Every tool instance carries the shared
-//     permission gate, so a subagent cannot escalate.
+//     binary, not a directory — minus the spawn tools, which inheritance
+//     withholds and only an explicit tools: list grants (#748). Every tool
+//     instance carries the shared permission gate, so a subagent cannot
+//     escalate.
 //
 // Returns the subagents, the async-spawn templates (one per subagent, so
 // the same subagent the parent can call synchronously is also spawnable
@@ -313,8 +315,9 @@ func buildDeclaredSubagents(
 		}
 
 		// Built-ins always resolve against the parent registry — they ship
-		// in the binary, not in any content root.
-		subTools, err := resolveSubagentTools(spec, surface.builtinTools)
+		// in the binary, not in any content root. droppedTools is the
+		// spawn-tool carve-out (#748), reported on the boot line below.
+		subTools, droppedTools, err := resolveSubagentTools(spec, surface.builtinTools)
 		if err != nil {
 			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: tools: %w", i, spec.Name, err)
 		}
@@ -382,6 +385,12 @@ func buildDeclaredSubagents(
 			Root:         spec.Root,
 		})
 
+		if len(droppedTools) > 0 {
+			// Say out loud what inheritance withheld, so an operator who
+			// wants a delegating subagent learns the remedy at boot rather
+			// than from a refused spawn_agent call mid-run.
+			scopeDesc += fmt.Sprintf(", spawn=withheld (%s; list them in tools: to grant)", strings.Join(droppedTools, "+"))
+		}
 		deps.send(fmt.Sprintf("subagent %q: model=%s, %s", spec.Name, llm.Name(), scopeDesc))
 	}
 	return subs, templates, rootedServers, nil
@@ -512,15 +521,43 @@ func rootedSubagentInstruction(spec config.SubagentSpec, rootAbs string, interp 
 	return loaded.Instruction, nil
 }
 
+// spawnToolCarveOut is what an inheriting subagent does NOT get: the
+// delegation surface. See resolveSubagentTools.
+var spawnToolCarveOut = func() map[string]struct{} {
+	m := make(map[string]struct{}, 2)
+	for _, n := range background.SpawnToolNames() {
+		m[n] = struct{}{}
+	}
+	return m
+}()
+
 // resolveSubagentTools returns the built-in tool subset a subagent runs
 // with. Per the nil-vs-empty contract (pinned by config's
 // TestSubagents_EmptyVsOmittedRefs): a nil spec.Tools inherits the
-// parent's full registry; a non-nil list selects those tools by name; an
+// parent's registry; a non-nil list selects those tools by name; an
 // explicit empty list grants none. An unknown name is a config error
 // (fail loud rather than silently dropping a tool the operator asked for).
-func resolveSubagentTools(spec config.SubagentSpec, parent []adktool.Tool) ([]adktool.Tool, error) {
+//
+// Inheritance has one carve-out: the spawn tools (#748). Omitting
+// `tools:` says "give me the parent's hardening", not "give me the
+// parent's authority to build a fleet" — and the sibling ad-hoc path has
+// withheld them from its catalog since it was written (see factory()
+// above, which strips r.spawnToolNames for the same reason). Delegation
+// stays available to a spec that asks for it by name, which is the
+// deliberate orchestrator-subagent case; the returned dropped names let
+// the caller say so in the startup summary, since a carve-out invisible
+// at boot is one an operator rediscovers from a live run.
+func resolveSubagentTools(spec config.SubagentSpec, parent []adktool.Tool) (tools []adktool.Tool, dropped []string, err error) {
 	if spec.Tools == nil {
-		return parent, nil
+		out := make([]adktool.Tool, 0, len(parent))
+		for _, t := range parent {
+			if _, isSpawn := spawnToolCarveOut[t.Name()]; isSpawn {
+				dropped = append(dropped, t.Name())
+				continue
+			}
+			out = append(out, t)
+		}
+		return out, dropped, nil
 	}
 	byName := make(map[string]adktool.Tool, len(parent))
 	for _, t := range parent {
@@ -530,11 +567,11 @@ func resolveSubagentTools(spec config.SubagentSpec, parent []adktool.Tool) ([]ad
 	for _, name := range spec.Tools {
 		t, ok := byName[name]
 		if !ok {
-			return nil, fmt.Errorf("unknown tool %q (not among the %d built-in tools)", name, len(parent))
+			return nil, nil, fmt.Errorf("unknown tool %q (not among the %d built-in tools)", name, len(parent))
 		}
 		out = append(out, t)
 	}
-	return out, nil
+	return out, nil, nil
 }
 
 // resolveSubagentToolsets assembles a subagent's MCP + skills toolsets

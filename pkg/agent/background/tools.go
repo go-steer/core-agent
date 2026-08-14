@@ -232,9 +232,10 @@ func buildSpawnSpec(mgr *Manager, args spawnAgentArgs) (Spec, string, error) {
 }
 
 // spawnAgentArgs is the JSON shape the parent's model sees when it
-// calls spawn_agent. The catalog-known tool names available today
-// are listed in the description (read_file, write_file, edit_file,
-// list_dir, glob, grep, bash, todo) — the model may also list any
+// calls spawn_agent. The `tools` description names no tools itself:
+// rosterTool.Declaration appends this build's real grantable catalog
+// (see withGrantableTools), because a hard-coded example lists names a
+// distroless build never registered. The model may also list any
 // MCP-namespaced tool or skill name in extras.
 type spawnAgentArgs struct {
 	Agent               string   `json:"agent,omitempty" jsonschema:"name of a preconfigured subagent to spawn (the preferred form). Its persona, tools, model, and budgets are already set; you supply the goal and may only narrow the rest (drop tools, tighten budgets, downshift model to 'small'). Leave empty only to author an ad-hoc subagent inline, which requires system_prompt and is disabled unless the operator enabled ad-hoc spawns."`
@@ -242,7 +243,7 @@ type spawnAgentArgs struct {
 	SystemPrompt        string   `json:"system_prompt,omitempty" jsonschema:"ad-hoc only: the subagent's system instruction. Ignored when 'agent' references a preconfigured subagent (its persona is fixed)."`
 	Goal                string   `json:"goal" jsonschema:"the task the subagent should accomplish, written as a single instruction"`
 	Model               string   `json:"model,omitempty" jsonschema:"optional model override: omit to inherit (the preconfigured subagent's model, or the parent's), or 'small' to downshift to the small tier. A specific model is not selectable here — configure a dedicated subagent for that."`
-	Tools               []string `json:"tools,omitempty" jsonschema:"tool names to grant. For a preconfigured 'agent' this may only NARROW its grant (a subset — unlisted tools are dropped). For an ad-hoc subagent these are the built-in tools it may use (e.g. read_file, list_dir, glob, grep, bash, todo, write_file, edit_file). Unknown names error at spawn time."`
+	Tools               []string `json:"tools,omitempty" jsonschema:"tool names to grant. For a preconfigured 'agent' this may only NARROW its grant (a subset — unlisted tools are dropped). For an ad-hoc subagent these are the built-in tools it may use. Unknown names error at spawn time."`
 	Extras              []string `json:"extras,omitempty" jsonschema:"ad-hoc only: additional tool names beyond the built-ins (e.g. MCP tools like kubectl_get, or skill names). Looked up in the same catalog as tools."`
 	MaxTurns            int      `json:"max_turns,omitempty" jsonschema:"tighten the per-subagent turn cap (may only lower a preconfigured subagent's cap)"`
 	MaxCostUSD          float64  `json:"max_cost_usd,omitempty" jsonschema:"tighten the per-subagent dollar cap (may only lower a preconfigured subagent's cap)"`

@@ -66,10 +66,36 @@ type recordPlanResult struct {
 const (
 	recordPlanDescCommon = "Plan is free-form markdown — typical shape: goal, files to change, approach, risks, test plan, out of scope. The plan is persisted to .agents/plans/plan-<seq>.md and visible to the operator in chat. To revise an existing plan, just call record_plan again — each call writes a new plan file with the next sequence number."
 
-	recordPlanDescRequired = "Record the agent's implementation plan as a markdown artifact and unblock mutating tools. Plan-first gating is ON: call this BEFORE any write_file / edit_file / delete_file / bash / spawn_agent call, or those calls are denied with a 'plan required' error. " + recordPlanDescCommon
-
 	recordPlanDescAdvisory = "Record the agent's implementation plan as a markdown artifact for the operator's audit trail. Plan-first gating is OFF — no tool call is blocked on this, so record the plan and then carry it out in the same turn rather than stopping to wait for approval. " + recordPlanDescCommon
 )
+
+// recordPlanDescRequired names the tools the gate will actually deny.
+// Listing one this build didn't register is the #215 bug in a third
+// form: not a gate the model wrongly believes in, but a tool it
+// wrongly believes it has. On a distroless deploy "call this BEFORE
+// any ... bash call" describes a constraint on nothing.
+//
+// spawn_agent stays unconditional — it isn't part of tools.Build's
+// catalog, so gate.HasTool cannot tell "absent" from "unknown" for it
+// and must not be asked.
+//
+// Deliberately NOT gate.PlanGatedTools() (#747), which the result
+// message uses: that set is registered after Build's ctor loop, and
+// the MCP namespaces join it later still (GateToolset), so at the
+// moment this description is baked it would name a set that is merely
+// incomplete — a worse failure than the narrower claim made here.
+func recordPlanDescRequired(gate *permissions.Gate) string {
+	gated := make([]string, 0, 5)
+	for _, n := range []string{"write_file", "edit_file", "delete_file", "bash"} {
+		if gate.HasTool(n) {
+			gated = append(gated, n)
+		}
+	}
+	gated = append(gated, "spawn_agent")
+	return "Record the agent's implementation plan as a markdown artifact and unblock mutating tools. " +
+		"Plan-first gating is ON: call this BEFORE any " + strings.Join(gated, " / ") +
+		" call, or those calls are denied with a 'plan required' error. " + recordPlanDescCommon
+}
 
 // RecordPlan returns the built-in record_plan tool. Calling it with
 // a non-empty plan writes the plan to `<agentsDir>/plans/plan-<seq>.md`
@@ -95,7 +121,7 @@ func RecordPlan(gate *permissions.Gate, agentsDir string) (tool.Tool, error) {
 	}
 	desc := recordPlanDescAdvisory
 	if gate.PlanRequired() {
-		desc = recordPlanDescRequired
+		desc = recordPlanDescRequired(gate)
 	}
 	return functiontool.New(functiontool.Config{
 		Name:        "record_plan",

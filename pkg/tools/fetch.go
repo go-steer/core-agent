@@ -65,8 +65,10 @@ type fetchURLResult struct {
 func NewFetchURLTool(gate *permissions.Gate, cfg *config.Config) tool.Tool {
 	t, err := functiontool.New(
 		functiontool.Config{
-			Name:        "fetch_url",
-			Description: "Fetch a URL via HTTP GET. Returns body, status, content-type, and final-URL after redirects. URLs must be in the operator's url_scope.allow list (typical: GitHub API, GCP APIs, internal cluster services). HTTPS by default; http:// only when explicitly allowed. Use this instead of `bash curl` so the URL + status land structured in the eventlog and the per-host header config can inject auth tokens for you. Body is capped (default 64KB) — pass max_bytes to override up to url_scope.max_body_bytes. Each redirect target is re-checked against the allowlist; a redirect to a denied host is an error, not a silent follow. Link-local/cloud-metadata addresses (169.254.0.0/16, fe80::/10) are always refused; loopback and private-range addresses are refused unless the exact host appears in url_scope.allow (a wildcard entry does not unlock them).",
+			Name: "fetch_url",
+			Description: "Fetch a URL via HTTP GET. Returns body, status, content-type, and final-URL after redirects. URLs must be in the operator's url_scope.allow list (typical: GitHub API, GCP APIs, internal cluster services). HTTPS by default; http:// only when explicitly allowed. The URL + status land structured in the eventlog, and the per-host header config can inject auth tokens for you." +
+				whenTool(gate.HasTool("bash"), " Use this instead of `bash curl`.") +
+				" Body is capped (default 64KB) — pass max_bytes to override up to url_scope.max_body_bytes. Each redirect target is re-checked against the allowlist; a redirect to a denied host is an error, not a silent follow. Link-local/cloud-metadata addresses (169.254.0.0/16, fe80::/10) are always refused; loopback and private-range addresses are refused unless the exact host appears in url_scope.allow (a wildcard entry does not unlock them).",
 		},
 		fetchURLFunc(gate, cfg),
 	)

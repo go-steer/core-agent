@@ -200,6 +200,22 @@ func Default() BuiltinTools {
 	}
 }
 
+// whenTool returns note only when the cross-referenced tool is
+// registered in this build, and "" otherwise. Use it for any clause in
+// a model-facing description that names another tool: the sentence has
+// to earn its place by being actionable, and "PREFERRED over `bash
+// rm`" is not actionable in a container with no shell — it's a claim
+// the model may act on and then have to unlearn.
+//
+// note carries its own leading space so call sites read as
+// concatenation onto a complete base sentence.
+func whenTool(present bool, note string) string {
+	if !present {
+		return ""
+	}
+	return note
+}
+
 // Registry is the assembled built-in tool set returned by Build.
 //
 // Tools is the slice you pass to agent.WithTools(...).
@@ -255,12 +271,14 @@ func Build(cfg *config.Config, gate *permissions.Gate, agentsDir string, b Built
 	specs := []spec{
 		{b.ReadFile, "read_file", "Read a file from disk and return its contents.", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{
-				Name: "read_file", Description: "Read a file from disk. Honors offset/limit for large files. PREFERRED over `bash cat`/`bash head`/`bash tail` for reading source files — honors output truncation and the permission gate.",
+				Name: "read_file", Description: "Read a file from disk. Honors offset/limit for large files, output truncation, and the permission gate." +
+					whenTool(gate.HasTool("bash"), " PREFERRED over `bash cat`/`bash head`/`bash tail` for reading source files."),
 			}, readFileFunc(gate, cfg))
 		}},
 		{b.ReadManyFiles, "read_many_files", "Read multiple files in a single call (explicit paths and/or glob pattern).", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{
-				Name: "read_many_files", Description: "Read multiple files in a single call. Pass `paths` (explicit list) and/or `pattern` (basename glob, walked from `path` root; defaults to '.'). PREFERRED over multiple parallel `read_file` calls when you already know the set of files you need — saves turns and is the canonical way to fan-out reads. Useful when investigating a feature spread across several files, comparing implementations, or pulling context for an edit. Gate denials, missing files, and directories surface as entries with `skipped: \"<reason>\"` so the batch never aborts on one bad path.",
+				Name: "read_many_files", Description: "Read multiple files in a single call. Pass `paths` (explicit list) and/or `pattern` (basename glob, walked from `path` root; defaults to '.'). The canonical way to fan out reads when you already know the set of files you need — saves turns. Useful when investigating a feature spread across several files, comparing implementations, or pulling context for an edit. Gate denials, missing files, and directories surface as entries with `skipped: \"<reason>\"` so the batch never aborts on one bad path." +
+					whenTool(gate.HasTool("read_file"), " PREFERRED over multiple parallel `read_file` calls."),
 			}, readManyFilesFunc(gate, cfg))
 		}},
 		{b.WriteFile, "write_file", "Write or overwrite a file with the given content.", func() (tool.Tool, error) {
@@ -275,12 +293,14 @@ func Build(cfg *config.Config, gate *permissions.Gate, agentsDir string, b Built
 		}},
 		{b.DeleteFile, "delete_file", "Remove a regular file.", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{
-				Name: "delete_file", Description: "Remove a regular file. Idempotent — deleting a missing file is a no-op success. Refuses to delete directories. PREFERRED over `bash rm` — honors the permission gate (CheckFileWrite) and the path scope. Useful for cleaning up baseline / scratch files between scheduled-monitor cycles, log rotation, etc.",
+				Name: "delete_file", Description: "Remove a regular file. Idempotent — deleting a missing file is a no-op success. Refuses to delete directories. Honors the permission gate (CheckFileWrite) and the path scope. Useful for cleaning up baseline / scratch files between scheduled-monitor cycles, log rotation, etc." +
+					whenTool(gate.HasTool("bash"), " PREFERRED over `bash rm`."),
 			}, deleteFileFunc(gate))
 		}},
 		{b.Stat, "stat", "Get metadata (size, mtime, mode, is_dir) for a single path.", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{
-				Name: "stat", Description: "Return metadata for a single file or directory: size, mtime (RFC3339 UTC), mode, is_dir. A missing path returns {exists: false} rather than an error — use for \"has this been written yet?\" checks without exception handling. PREFERRED over `bash stat`/`bash ls -l` — honors the permission gate and doesn't spawn a subprocess.",
+				Name: "stat", Description: "Return metadata for a single file or directory: size, mtime (RFC3339 UTC), mode, is_dir. A missing path returns {exists: false} rather than an error — use for \"has this been written yet?\" checks without exception handling. Honors the permission gate." +
+					whenTool(gate.HasTool("bash"), " PREFERRED over `bash stat`/`bash ls -l` — doesn't spawn a subprocess."),
 			}, statFunc(gate))
 		}},
 		{b.ListDir, "list_dir", "List entries of a directory.", func() (tool.Tool, error) {
@@ -300,7 +320,8 @@ func Build(cfg *config.Config, gate *permissions.Gate, agentsDir string, b Built
 		}},
 		{b.Grep, "grep", "Search file contents for a regex.", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{
-				Name: "grep", Description: "Walk path (default '.') and return matching lines for the supplied RE2 regex. Recursive on directories; single-file mode when path points at a file. Skips hidden / vendored directories. PREFERRED over `bash grep`/`bash rg`/`bash find` for code search — honors the permission gate, per-tool output caps, and returns structured `{path, line, text}` matches the model can pipe into follow-up tool calls without re-parsing.",
+				Name: "grep", Description: "Walk path (default '.') and return matching lines for the supplied RE2 regex. Recursive on directories; single-file mode when path points at a file. Skips hidden / vendored directories. Honors the permission gate and per-tool output caps, and returns structured `{path, line, text}` matches you can pipe into follow-up tool calls without re-parsing." +
+					whenTool(gate.HasTool("bash"), " PREFERRED over `bash grep`/`bash rg`/`bash find` for code search."),
 			}, grepFunc(gate, cfg))
 		}},
 		{b.JSONQuery, "json_query", "Run a jq expression against JSON loaded from a file or supplied inline.", func() (tool.Tool, error) {
@@ -329,7 +350,9 @@ func Build(cfg *config.Config, gate *permissions.Gate, agentsDir string, b Built
 		// "no tool catalog is bound" error instead of a tool that
 		// silently vanished from the model's schema.
 		{b.WaitAndVerify, WaitAndVerifyToolName, "Poll a read-only tool until its result satisfies a condition.", func() (tool.Tool, error) {
-			return NewWaitAndVerifyTool(cfg, WaitAndVerifyOptionsFromConfig(cfg))
+			opts := WaitAndVerifyOptionsFromConfig(cfg)
+			opts.BashRegistered = gate.HasTool("bash")
+			return NewWaitAndVerifyTool(cfg, opts)
 		}},
 		{b.Todo, "todo", "Maintain an agent-facing todo list (list/add/set_status/clear).", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{
@@ -354,6 +377,27 @@ func Build(cfg *config.Config, gate *permissions.Gate, agentsDir string, b Built
 		// pattern (both are also `on && something_else` gated).
 		{b.SciontoolStatus && sciontoolOnPath(), "sciontool_status", "Signal a sticky lifecycle event to Scion.", NewSciontoolStatusTool},
 	}
+
+	// Tell the gate what this build registers, so description text can
+	// drop cross-references to tools that aren't here. Descriptions
+	// routinely name other tools ("PREFERRED over `bash cat`", "call
+	// this BEFORE any write_file / bash call"); on a distroless deploy
+	// with no shell those sentences assert a capability the model
+	// doesn't have, and it spends turns discovering that. Same failure
+	// the search gate's ActiveNativeSearchTools already guards against,
+	// pointed the other way.
+	//
+	// Derived from specs rather than from BuiltinTools so the
+	// conditionally-registered tools (fetch_url, alert, record_plan,
+	// sciontool_status) are reported by what actually happens, not by
+	// the toggle alone — the map can't drift from the `on` expression
+	// because it IS the `on` expression. Must run before the ctor
+	// loop below: that's where descriptions are baked.
+	catalog := make(map[string]bool, len(specs))
+	for _, s := range specs {
+		catalog[s.name] = s.on
+	}
+	gate.SetRegisteredTools(catalog)
 
 	// Tell the gate every built-in this build registered, so record_plan
 	// can name the set plan-first gating actually covers rather than

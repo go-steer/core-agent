@@ -420,6 +420,8 @@ The driver registers a single-purpose `tools.LifecycleTool` (state="done") under
 
 Marker-phrase detection ("look for TASK_COMPLETE in the text") is not supported and not recommended — the model can hallucinate the marker. Tool-based termination is unambiguous.
 
+`WithStopOnNaturalEnd()` (v2.9+) selects the other rule: end at the first turn whose last model response asks for no tool, reporting `completed` with that turn's text as `DoneDetail`, and register no done tool at all. Right for a bounded task with a deliverable — `agent.Run` already terminates, and re-driving it with `"continue"` runs the model past its own answer. Leave it unset for a standing worker, where a text-only turn means idle rather than finished.
+
 ### Budgets
 
 | Option | Caps |
@@ -740,8 +742,10 @@ Each spawned subagent gets:
 - A **fresh `model.LLM`** built from the same provider + modelID (sidesteps any unknowns around concurrent streaming on a shared SDK client).
 - A **derived session row** (`<parent>:sub:bg.<name>`) so concurrent goroutines don't race ADK's optimistic-concurrency check.
 - A **branch label** (`bg.<name>` at the root, `<parent_branch>.bg.<name>` when nested) so eventlog queries by `WithBranchPrefix("bg.")` find them.
-- A **`report_alert`** tool for mid-run findings, and a **`return_result`** tool that hands a value back and ends the run, both injected automatically. `return_result` is also registered under the aliases `report_done`, `report_completed` and `mark_task_done` — all four are the same tool, so a model that reaches for any of those names returns cleanly instead of acking and being re-driven past its own answer (v2.9).
-- A **return contract** in its system instruction: its output is a value returned to the agent that delegated the task, `return_result` is how it's handed back, and on any other termination path (budget cap, watchdog halt, natural stop) its *last* message is what the parent receives.
+- A **`report_alert`** tool for mid-run findings, injected automatically.
+- A **termination rule picked by mode** (v2.9). A *bounded* delegation — the default, and what you get without a scheduler — ends as soon as the model stops calling tools, and registers no return tool: one way out, which it cannot forget to take. A *standing* worker keeps looping and ends on a budget, a deferral, or `return_result(result)`, which is also registered under the aliases `report_done`, `report_completed` and `mark_task_done` so any name the model reaches for returns cleanly. Override the derivation with `Spec.Mode` / `SubagentTemplate.Mode` (`background.ModeBounded` / `background.ModeStanding`).
+- A **return contract** in its system instruction: its output is a value returned to the agent that delegated the task, and on any termination path that isn't a return-tool call (budget cap, watchdog halt, natural stop) its *last* message is what the parent receives.
+- A **machine-readable `stop_reason`** — `natural`, `max_steps`, `budget`, `deferred`, `stopped`, `error` — so the parent can tell a finished result from a partial and re-ask with specifics instead of guessing from prose. Always set on the `spawn_agent` result; spelled out in a pushed report only when it isn't `natural`, since the report's kind already separates completed from failed/deferred/stopped.
 - The **parent's permission gate**, inherited by reference. Subagent prompts include `[<subagent-name>]` source attribution; concurrent prompts serialize through a mutex.
 
 ### Reports flowing back to the parent
@@ -801,7 +805,8 @@ You have access to two background-agent tools: spawn_agent and
 stop_agent. Use them when:
 
 - You're asked to monitor something continuously (a cluster, a queue,
-  a log stream). Spawn one subagent per thing to monitor; they should
+  a log stream). Spawn one subagent per thing to monitor, with
+  scheduler: "sleep" so it paces itself between checks; they should
   call report_alert when they find something noteworthy and
   return_result when their goal is satisfied.
 - You're asked to fan out independent work that can run in parallel

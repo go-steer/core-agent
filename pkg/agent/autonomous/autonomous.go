@@ -27,6 +27,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/adk/session"
 	"google.golang.org/adk/tool"
+	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -278,6 +279,28 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 			break
 		}
 
+		// Natural end of a bounded delegation (#730): the model stopped
+		// asking for tools, so it has finished the task it was handed.
+		// Its last message is the deliverable. Ranked below the two
+		// checks above because both describe a stop the model didn't
+		// choose, and below done because a run that signalled done is
+		// done for that reason.
+		//
+		// Off by default: for a standing worker a text-only turn is a
+		// status report, not an ending, and the loop keeps going.
+		//
+		// Ranked *below* an explicit schedule_next_turn (checked just
+		// after, and skipped here) even though report_done outranks
+		// one: done is a choice the model made, natural end is
+		// inferred from the absence of a choice, and an inference
+		// must not override the model asking in so many words to be
+		// woken again.
+		if cfg.stopOnNaturalEnd && !turnRes.requestedTools && !turnRes.scheduleSignaled {
+			result.Reason = StopReasonCompleted
+			result.DoneDetail = turnRes.text
+			break
+		}
+
 		// Schedule emission: if the model called schedule_next_turn
 		// AND a scheduler is wired, hand the event off to the
 		// scheduler between turns. report_done already won above if
@@ -405,6 +428,15 @@ type turnResult struct {
 	doneDetail       string
 	scheduleSignaled bool
 	scheduleEvent    coretools.ScheduleEvent
+	// requestedTools records whether the model's LAST response in this
+	// turn asked for a tool. False means the tool loop ran itself out
+	// — the model had nothing left to call — which for a bounded
+	// delegation is the completion signal (#730).
+	//
+	// Deliberately the last response, not "any tool call this turn":
+	// a turn that used a tool at any point is the normal case, so the
+	// cumulative reading would never fire.
+	requestedTools bool
 	// costCapped is set when WithMaxCost was reached partway through
 	// this turn and the driver stopped draining events rather than
 	// letting the turn spend past the bound. See the enforcement site
@@ -528,6 +560,17 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 			}
 		}
 
+		// Track whether the model is still asking for tools. Only
+		// consolidated model-role events count: partials are chunks of
+		// a response still being assembled, and function-RESPONSE
+		// events come back with the user role. Overwriting per model
+		// response (rather than OR-ing across the turn) is what makes
+		// this mean "the last response asked for a tool" — see the
+		// requestedTools doc comment.
+		if !ev.Partial && ev.Content != nil && ev.Content.Role == genai.RoleModel {
+			out.requestedTools = hasFunctionCall(ev)
+		}
+
 		// In-turn WithMaxCost enforcement (#729). The between-turn
 		// budget checks at the top of the loop only run at a turn
 		// boundary, and a single turn is an unbounded tool loop — the
@@ -587,6 +630,19 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 
 	out.text = collectedText(&buf, &partials, sawFinals)
 	return out, nil
+}
+
+// hasFunctionCall reports whether ev carries any FunctionCall part.
+func hasFunctionCall(ev *session.Event) bool {
+	if ev == nil || ev.Content == nil {
+		return false
+	}
+	for _, p := range ev.Content.Parts {
+		if p != nil && p.FunctionCall != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // callsAnyTool reports whether ev carries a FunctionCall to one of
@@ -673,6 +729,7 @@ type autoConfig struct {
 	doneToolNameExplicit    bool
 	doneToolDescription     string
 	returnTool              *ReturnToolConfig
+	stopOnNaturalEnd        bool
 	continuationPrompt      string
 	tracker                 *usage.Tracker
 	pricing                 usage.Pricing
@@ -729,6 +786,27 @@ func WithMaxTokens(input, output int) Option {
 // the recorded UsageMetadata being priced via the same Pricing.
 func WithMaxCost(usd float64) Option {
 	return func(c *autoConfig) { c.maxCostUSD = usd }
+}
+
+// WithStopOnNaturalEnd makes the loop stop the first time a turn ends
+// without the model asking for another tool, reporting
+// StopReasonCompleted with the turn's text as the result (#730).
+//
+// This is the termination rule for a BOUNDED delegation — a subagent
+// handed one task, which is done when it stops working. The default
+// (standing worker) is the opposite: a turn that produces only text is
+// a status report, and the loop feeds it the continuation prompt and
+// keeps going until a budget or an explicit done signal fires.
+//
+// It also suppresses the done/return tool entirely: with one
+// termination path there is nothing for the model to choose between,
+// and no way to leave the loop running by forgetting to call
+// something. Consumers that want the model to hand back a curated
+// result rather than its last message should use WithReturnTool
+// instead — the two are alternatives, and setting both leaves the
+// return tool unregistered.
+func WithStopOnNaturalEnd() Option {
+	return func(c *autoConfig) { c.stopOnNaturalEnd = true }
 }
 
 // WithMaxWallclock caps the wall-clock duration of the run, measured

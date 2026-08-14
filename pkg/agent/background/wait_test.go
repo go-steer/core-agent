@@ -88,6 +88,9 @@ func TestAwaitResult_ReturnsFinalOutput(t *testing.T) {
 		Instruction:  "triage",
 		ModelFactory: tmplFactory(prov, "cluster-model"),
 		ModelID:      "cluster-model",
+		// Standing: this scenario terminates through report_done,
+		// which only a standing worker is offered since #730.
+		Mode: ModeStanding,
 	}}, WithDefaultBudgets(Budgets{MaxTurns: 2}), WithSyncWaitTimeout(5*time.Second))
 	attachEchoParent(t, mgr)
 	defer mgr.Close()
@@ -220,6 +223,9 @@ func TestTerminalAlert_CarriesFinalTextAfterSyncWaitTimeout(t *testing.T) {
 		Instruction:  "triage",
 		ModelFactory: tmplFactory(prov, "cluster-model"),
 		ModelID:      "cluster-model",
+		// Standing: this LLM terminates by calling report_done, which
+		// only a standing worker is offered since #730.
+		Mode: ModeStanding,
 	}}, WithDefaultBudgets(Budgets{MaxTurns: 2}), WithSyncWaitTimeout(5*time.Millisecond))
 	attachEchoParent(t, mgr)
 	defer mgr.Close()
@@ -257,7 +263,12 @@ func TestTerminalAlert_CarriesFinalTextAfterSyncWaitTimeout(t *testing.T) {
 // TestTerminalAlertText_Rendering pins the (kind, text) pairs directly,
 // including the outcomes no live-run test reaches cheaply: a
 // budget-capped subagent whose findings live only in its last assistant
-// text, and a failure that still has something to report.
+// text, and a failure that still has something to report. Every
+// A rendering ends with the machine-readable stop_reason line (#730)
+// only when the stop was not a natural end: `kind` already separates
+// completed from failed/deferred/stopped, so a bare completed alert
+// means natural and the trailer would be noise on every bullet in the
+// parent's prompt.
 func TestTerminalAlertText_Rendering(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -302,7 +313,7 @@ func TestTerminalAlertText_Rendering(t *testing.T) {
 			status:   StatusDeferred,
 			result:   autonomous.RunResult{Reason: autonomous.StopReasonMaxTurns, FinalText: "got as far as the Secret"},
 			wantKind: "deferred",
-			wantText: "stopped: max_turns_exceeded\n\nfinal_text: got as far as the Secret",
+			wantText: "stopped: max_turns_exceeded\n\nfinal_text: got as far as the Secret\n\nstop_reason: max_steps",
 		},
 		{
 			name:     "failed keeps the error and the findings",
@@ -310,7 +321,7 @@ func TestTerminalAlertText_Rendering(t *testing.T) {
 			result:   autonomous.RunResult{FinalText: "got as far as the Secret"},
 			runErr:   errors.New("provider exploded"),
 			wantKind: "failed",
-			wantText: "provider exploded\n\nfinal_text: got as far as the Secret",
+			wantText: "provider exploded\n\nfinal_text: got as far as the Secret\n\nstop_reason: error",
 		},
 		{
 			// An explicit parent Stop: the parent asked for this, and

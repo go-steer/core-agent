@@ -66,9 +66,20 @@ func availableModelIDs() []string {
 		// Gemini 3.x — Google's flagship + supporting variants.
 		// gemini-3.6-flash is the DefaultConfig pick (#571): current-gen
 		// GA flash that combines search built-ins with function tools.
+		//
+		// ORDER IS BEHAVIOR, not presentation: core-tui's picker opens
+		// on index 0 (newModelPickerDialog returns {idx: 0} — it does
+		// NOT preselect the active model), and `enter` both switches
+		// and persists via PersistModelChoice. So entry 0 is what a
+		// reflexive /model+enter durably lands on. gemini-3.6-flash
+		// keeps that slot; gemini-3.7-flash is newer and cheaper per
+		// output token but has not run this project's UATs, so it sits
+		// one line down — reachable, not the accidental default.
+		//
 		// The 3.1-pro `-customtools` variant (prefers registered tools
 		// over raw bash) remains selectable for a pro-class override.
 		"gemini-3.6-flash",
+		"gemini-3.7-flash",
 		"gemini-3.1-pro-preview-customtools",
 		"gemini-3.1-pro-preview",
 		"gemini-3.5-flash",

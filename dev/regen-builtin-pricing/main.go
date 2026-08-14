@@ -78,6 +78,7 @@ var allowlist = []string{
 	// if Google adds a pro-line entry back to LiteLLM, add it here
 	// (the regen tool logs skipped-but-listed models to stderr,
 	// which is how we'd notice).
+	"gemini-3.7-flash",
 	"gemini-3.6-flash",
 	"gemini-3.5-flash",
 	"gemini-3.5-flash-lite",

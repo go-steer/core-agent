@@ -122,6 +122,10 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 	startedAt := time.Now()
 	prompt := goal
 	result := RunResult{}
+	// Whether result.FinalText currently holds the text of a turn that
+	// used tools. Once it does, a later tool-less turn can't displace
+	// it — see keepFinalText (#731).
+	haveSubstantive := false
 
 	// core_agent.autonomous.runs (#338): one point per run, recorded
 	// via defer because the loop has many exit sites and no single
@@ -159,15 +163,16 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 		// checkpoint on exactly the shutdown path where it matters
 		// most (#365).
 		emitFinalCheckpointDetached(ctx, a, checkpointPayload{
-			Turn:               result.Turns,
-			InputTokens:        result.InputTokens,
-			OutputTokens:       result.OutputTokens,
-			CostUSD:            result.CostUSD,
-			Goal:               goal,
-			ContinuationPrompt: cfg.continuationPrompt,
-			StopReason:         string(reason),
-			DoneDetail:         result.DoneDetail,
-			FinalText:          result.FinalText,
+			Turn:                 result.Turns,
+			InputTokens:          result.InputTokens,
+			OutputTokens:         result.OutputTokens,
+			CostUSD:              result.CostUSD,
+			Goal:                 goal,
+			ContinuationPrompt:   cfg.continuationPrompt,
+			StopReason:           string(reason),
+			DoneDetail:           result.DoneDetail,
+			FinalText:            result.FinalText,
+			FinalTextSubstantive: haveSubstantive,
 		})
 	}
 
@@ -222,8 +227,9 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 		result.OutputTokens += turnRes.outputTokens
 		result.CostUSD += turnRes.costUSD
 		result.Turns++
-		if turnRes.text != "" {
+		if keepFinalText(turnRes.text, turnRes.usedTools, haveSubstantive) {
 			result.FinalText = turnRes.text
+			haveSubstantive = haveSubstantive || turnRes.usedTools
 		}
 
 		if turnErr != nil {
@@ -251,7 +257,7 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 				// Move on to the continuation prompt as if the turn
 				// had completed without producing a done signal.
 				prompt = cfg.continuationPrompt
-				_ = emitCheckpoint(ctx, a, perTurnCheckpoint(result, goal, cfg.continuationPrompt))
+				_ = emitCheckpoint(ctx, a, perTurnCheckpoint(result, goal, cfg.continuationPrompt, haveSubstantive))
 				continue
 			default:
 				result.Reason = StopReasonRetryAborted
@@ -322,7 +328,7 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 
 			// Per-turn checkpoint with next_wake_at populated so a
 			// crash mid-defer can resume to the right wake-time.
-			_ = emitCheckpoint(ctx, a, scheduleCheckpoint(result, goal, cfg.continuationPrompt, ev))
+			_ = emitCheckpoint(ctx, a, scheduleCheckpoint(result, goal, cfg.continuationPrompt, ev, haveSubstantive))
 
 			// Plumb the agent's wake channel through to the scheduler
 			// so SleepScheduler interrupts its sleep on an external
@@ -367,7 +373,7 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 		// turn. Per-turn emission is the cursor Resume
 		// continues from; a no-checkpoint run can still resume from
 		// turn 0 if its session has events but no checkpoints.
-		_ = emitCheckpoint(ctx, a, perTurnCheckpoint(result, goal, cfg.continuationPrompt))
+		_ = emitCheckpoint(ctx, a, perTurnCheckpoint(result, goal, cfg.continuationPrompt, haveSubstantive))
 
 		prompt = cfg.continuationPrompt
 	}
@@ -382,15 +388,16 @@ deferredExit:
 // after a successful (non-done, non-error) turn. Shared between the
 // SkipTurn retry path and the normal continuation path so emissions
 // stay consistent.
-func perTurnCheckpoint(result RunResult, goal, continuation string) checkpointPayload {
+func perTurnCheckpoint(result RunResult, goal, continuation string, substantive bool) checkpointPayload {
 	return checkpointPayload{
-		Turn:               result.Turns,
-		InputTokens:        result.InputTokens,
-		OutputTokens:       result.OutputTokens,
-		CostUSD:            result.CostUSD,
-		Goal:               goal,
-		ContinuationPrompt: continuation,
-		FinalText:          result.FinalText,
+		Turn:                 result.Turns,
+		InputTokens:          result.InputTokens,
+		OutputTokens:         result.OutputTokens,
+		CostUSD:              result.CostUSD,
+		Goal:                 goal,
+		ContinuationPrompt:   continuation,
+		FinalText:            result.FinalText,
+		FinalTextSubstantive: substantive,
 	}
 }
 
@@ -400,20 +407,21 @@ func perTurnCheckpoint(result RunResult, goal, continuation string) checkpointPa
 // prompt is intentionally the scheduler-supplied NextPrompt when
 // present so resume picks the same prompt the scheduler-honored run
 // would have used.
-func scheduleCheckpoint(result RunResult, goal, fallbackContinuation string, ev coretools.ScheduleEvent) checkpointPayload {
+func scheduleCheckpoint(result RunResult, goal, fallbackContinuation string, ev coretools.ScheduleEvent, substantive bool) checkpointPayload {
 	continuation := ev.NextPrompt
 	if continuation == "" {
 		continuation = fallbackContinuation
 	}
 	return checkpointPayload{
-		Turn:               result.Turns,
-		InputTokens:        result.InputTokens,
-		OutputTokens:       result.OutputTokens,
-		CostUSD:            result.CostUSD,
-		Goal:               goal,
-		ContinuationPrompt: continuation,
-		FinalText:          result.FinalText,
-		NextWakeAt:         ev.WakeAt,
+		Turn:                 result.Turns,
+		InputTokens:          result.InputTokens,
+		OutputTokens:         result.OutputTokens,
+		CostUSD:              result.CostUSD,
+		Goal:                 goal,
+		ContinuationPrompt:   continuation,
+		FinalText:            result.FinalText,
+		NextWakeAt:           ev.WakeAt,
+		FinalTextSubstantive: substantive,
 	}
 }
 
@@ -437,6 +445,13 @@ type turnResult struct {
 	// a turn that used a tool at any point is the normal case, so the
 	// cumulative reading would never fire.
 	requestedTools bool
+	// usedTools is the cumulative reading requestedTools deliberately
+	// isn't: it records whether the model asked for a tool at ANY
+	// point in the turn. Wrong as a termination test, exactly right as
+	// a substantiveness test (#731) — a turn that ran tools looked at
+	// the world, and its text is worth keeping over a later turn that
+	// only narrated having nothing left to do.
+	usedTools bool
 	// costCapped is set when WithMaxCost was reached partway through
 	// this turn and the driver stopped draining events rather than
 	// letting the turn spend past the bound. See the enforcement site
@@ -458,6 +473,13 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 		// See the in-turn cost check at the bottom of the event loop.
 		doneToolNames   = cfg.doneToolNames()
 		deferredForDone bool
+		// Tools the driver injected itself. They don't count towards
+		// usedTools: calling one is a control-plane gesture, not a
+		// look at the world, and a scheduled worker calls
+		// schedule_next_turn on every idle turn — counting it would
+		// mark every turn substantive and undo #731 for exactly the
+		// population that keeps the re-drive loop.
+		driverTools = append(append([]string(nil), doneToolNames...), coretools.ScheduleToolName(cfg.scheduleToolName))
 	)
 
 	// Drain any stale done signal from a previous turn (defensive —
@@ -569,6 +591,12 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 		// requestedTools doc comment.
 		if !ev.Partial && ev.Content != nil && ev.Content.Role == genai.RoleModel {
 			out.requestedTools = hasFunctionCall(ev)
+			// The same events, OR-ed instead of overwritten: "did the
+			// model do any work this turn" (#731). Scanned over the
+			// same guard so the two readings can never disagree about
+			// which events counted, but skipping the driver's own
+			// tools — see driverTools.
+			out.usedTools = out.usedTools || hasFunctionCallExcept(ev, driverTools)
 		}
 
 		// In-turn WithMaxCost enforcement (#729). The between-turn
@@ -630,6 +658,59 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 
 	out.text = collectedText(&buf, &partials, sawFinals)
 	return out, nil
+}
+
+// keepFinalText reports whether this turn's text should replace the
+// run's FinalText (#731).
+//
+// FinalText is not cosmetic: it is the fallback return value on every
+// path where the model never got to call a done tool — a budget cap, a
+// watchdog halt, a provider failure — which are exactly the paths where
+// the parent most needs to know what the subagent found. Overwriting it
+// on every turn made it "the last thing the subagent said", which under
+// a re-drive loop is reliably the *worst* thing it said: substantive
+// turns come early, trailing turns narrate having nothing left to do.
+// In the 2026-08-13 GKE UAT the root cause and patch landed on turn 3
+// and the returned FinalText was "standing by in a healthy, inactive
+// state".
+//
+// So a turn that used a tool wins, and a turn that didn't cannot
+// displace one that did. The haveSubstantive fallback keeps a tool-less
+// run — a pure-reasoning agent, or one whose tools are all disabled —
+// on last-wins, where iterative refinement really does make the newest
+// text the best one. Without it those runs would freeze on turn 1
+// forever.
+func keepFinalText(turnText string, turnUsedTools, haveSubstantive bool) bool {
+	if turnText == "" {
+		return false
+	}
+	return turnUsedTools || !haveSubstantive
+}
+
+// hasFunctionCallExcept reports whether ev calls any tool other than
+// the named ones. Used to tell work (a tool that looks at the world)
+// from bookkeeping (the driver's own done/schedule tools) when deciding
+// whether a turn was substantive (#731).
+func hasFunctionCallExcept(ev *session.Event, ignore []string) bool {
+	if ev == nil || ev.Content == nil {
+		return false
+	}
+	for _, p := range ev.Content.Parts {
+		if p == nil || p.FunctionCall == nil {
+			continue
+		}
+		skip := false
+		for _, n := range ignore {
+			if n != "" && strings.EqualFold(p.FunctionCall.Name, n) {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			return true
+		}
+	}
+	return false
 }
 
 // hasFunctionCall reports whether ev carries any FunctionCall part.
@@ -1005,8 +1086,16 @@ const (
 type RunResult struct {
 	// Reason explains why the loop stopped.
 	Reason StopReason
-	// FinalText is the accumulated streaming text from the last turn
-	// that produced any output.
+	// FinalText is the accumulated streaming text from the last
+	// *substantive* turn — the last turn that both produced output and
+	// used a tool. A turn that only produced text cannot displace it
+	// (#731): FinalText is the fallback return value wherever
+	// DoneDetail is absent, and under a re-drive loop the trailing
+	// turns are the model narrating that it has nothing left to do, so
+	// last-wins reliably returned the worst thing the run said.
+	//
+	// A run that never used a tool at all keeps last-wins, since for a
+	// pure-reasoning loop the newest text really is the best one.
 	FinalText string
 	// Turns is the number of turns the driver actually executed
 	// (including failed ones that were retried or skipped).

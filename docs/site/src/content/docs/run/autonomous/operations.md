@@ -46,6 +46,8 @@ res, err := autonomous.Run(ctx, build,
 
 The driver returns a structured `RunResult{Reason, Turns, InputTokens, OutputTokens, CostUSD, Duration, FinalText, DoneDetail}` plus any error.
 
+`FinalText` is the text of the last **substantive** turn — the last one that both produced output and called a tool (v2.9+; before that, simply the last turn that produced any output). It is the fallback return value wherever `DoneDetail` is absent, which is every path where the model never got to signal completion: a budget cap, a watchdog halt, a provider failure. Under a re-drive loop the trailing turns are the model narrating that it has nothing left to do, so last-wins reliably surfaced the *worst* thing the run said. A run that never calls a tool at all keeps last-wins, since for a pure-reasoning loop the newest text really is the best one.
+
 ---
 
 ## Constructor pattern

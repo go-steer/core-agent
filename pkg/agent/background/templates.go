@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -105,7 +106,13 @@ func WithSubagentTemplates(ts []SubagentTemplate) ManagerOption {
 // ModelFactory, be unique among themselves, and not collide with a
 // predefined (catalog) spec name. Returns an error without mutating
 // state when any check fails.
+//
+// Each template's Tools are rebound to THIS manager (see
+// rebindSpawnTools) as they are installed, so one shared roster can be
+// registered on many managers — which is exactly what a multi-session
+// daemon does.
 func (m *Manager) SetSubagentTemplates(ts []SubagentTemplate) error {
+	mine := m.ownSpawnTools()
 	next := make(map[string]SubagentTemplate, len(ts))
 	for _, t := range ts {
 		if err := validateTemplate(t); err != nil {
@@ -114,6 +121,7 @@ func (m *Manager) SetSubagentTemplates(ts []SubagentTemplate) error {
 		if _, dup := next[t.Name]; dup {
 			return fmt.Errorf("background: duplicate subagent template name %q", t.Name)
 		}
+		t.Tools = rebindSpawnTools(t.Tools, mine)
 		next[t.Name] = t
 	}
 	m.mu.Lock()
@@ -125,6 +133,70 @@ func (m *Manager) SetSubagentTemplates(ts []SubagentTemplate) error {
 	}
 	m.templates = next
 	return nil
+}
+
+// ownSpawnTools indexes this manager's spawn tools by name, for
+// rebindSpawnTools. Built once per SetSubagentTemplates call: the tools
+// are stateless wrappers over the manager, so every template can share
+// one instance the way the parent's tool surface does.
+func (m *Manager) ownSpawnTools() map[string]tool.Tool {
+	tools := NewSpawnTools(m)
+	mine := make(map[string]tool.Tool, len(tools))
+	for _, t := range tools {
+		mine[t.Name()] = t
+	}
+	return mine
+}
+
+// rebindSpawnTools returns in with every tool whose name is in mine —
+// the installing manager's own spawn tools — replaced by that one. in
+// itself is never mutated.
+//
+// A declarative subagent's Tools are resolved ONCE, at daemon startup,
+// against the parent's built-in registry — which by then already carries
+// the daemon manager's spawn tools (cmd/core-agent/main.go appends
+// NewSpawnTools before it builds the subagents). A multi-session daemon
+// then registers that one shared roster on every session's OWN manager,
+// so without this rebind a session's subagent holds a spawn_agent
+// pointing back at the DAEMON manager: its spawns would run under the
+// daemon-wide gate, branch off the daemon's parent rather than the
+// session's, and push their "[Background reports]" into another tenant's
+// turn. That is the same four-way breakage the per-session manager exists
+// to prevent (see compose.SessionBackgroundFactory), reached one level
+// down — and it is not theoretical: in the 2026-08-13 GKE UAT a session's
+// bg.cluster-1 spawned bg.cluster-2 onto the daemon's "default" session.
+//
+// Matching is by tool NAME against this manager's own spawn tools, which
+// keeps the operator's scoping intact: a template whose spec listed no
+// spawn tool gains none, and one that listed only spawn_agent does not
+// also acquire stop_agent. The names are unambiguous — nothing but
+// NewSpawnTools registers them.
+func rebindSpawnTools(in []tool.Tool, mine map[string]tool.Tool) []tool.Tool {
+	if len(in) == 0 {
+		return in
+	}
+	var out []tool.Tool
+	for i, t := range in {
+		if t == nil {
+			continue
+		}
+		repl, ok := mine[t.Name()]
+		if !ok {
+			continue
+		}
+		if out == nil {
+			// Copy on first write: the caller's slice is shared with every
+			// other manager this roster is registered on, so rebinding in
+			// place would hand the last-registered manager's tools to all
+			// of them.
+			out = slices.Clone(in)
+		}
+		out[i] = repl
+	}
+	if out == nil {
+		return in
+	}
+	return out
 }
 
 // validateTemplate checks a declarative-subagent template. Name must be

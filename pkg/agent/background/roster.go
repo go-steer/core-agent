@@ -88,16 +88,22 @@ func (r rosterTool) Declaration() *genai.FunctionDeclaration {
 		return nil
 	}
 	roster := r.mgr.Catalog()
-	if len(roster) == 0 {
+	grantable := r.mgr.GrantableToolNames()
+	if len(roster) == 0 && len(grantable) == 0 {
 		// Nothing configured: leave the shipped declaration untouched
 		// rather than telling the model "the roster is empty", which
 		// reads as a fault rather than a deployment without subagents.
 		return decl
 	}
 	clone := *decl
-	clone.Description = decl.Description + "\n\n" + rosterBlock(roster)
+	if len(roster) > 0 {
+		clone.Description = decl.Description + "\n\n" + rosterBlock(roster)
+	}
 	if schema, ok := decl.ParametersJsonSchema.(*jsonschema.Schema); ok {
-		clone.ParametersJsonSchema = withRosterEnum(schema, roster, r.mgr.AllowAdhoc())
+		if len(roster) > 0 {
+			schema = withRosterEnum(schema, roster, r.mgr.AllowAdhoc())
+		}
+		clone.ParametersJsonSchema = withGrantableTools(schema, grantable)
 	}
 	return &clone
 }
@@ -175,5 +181,42 @@ func withRosterEnum(in *jsonschema.Schema, roster []attach.SubagentCatalogInfo, 
 		agentProp.Enum = enum
 	}
 	schema.Properties["agent"] = &agentProp
+	return &schema
+}
+
+// withGrantableTools returns a copy of the spawn_agent parameter schema
+// whose `tools` property names the catalog this build actually has,
+// replacing the shipped hard-coded example.
+//
+// The example listed `bash`, `write_file` and friends unconditionally.
+// On a build that dropped them the model reads a name, passes it, and
+// resolveTools rejects it with ErrUnknownTool — a spawn spent learning
+// what the description could have told it. Same rule tools.Build
+// applies to the built-in descriptions; spawn_agent needs its own
+// because it lives outside that catalog.
+//
+// Structural copy only, matching withRosterEnum: the top-level schema,
+// its Properties map, and the one rewritten property are cloned.
+func withGrantableTools(in *jsonschema.Schema, grantable []string) *jsonschema.Schema {
+	if in == nil || len(grantable) == 0 {
+		return in
+	}
+	prop, ok := in.Properties["tools"]
+	if !ok || prop == nil {
+		return in
+	}
+	schema := *in
+	schema.Properties = make(map[string]*jsonschema.Schema, len(in.Properties))
+	for k, v := range in.Properties {
+		schema.Properties[k] = v
+	}
+	toolsProp := *prop
+	// Named for both fields: resolveTools looks `tools` and `extras` up
+	// in one catalog, so scoping the list to "built-in tools" would
+	// mislabel the MCP and skill names it also contains.
+	toolsProp.Description = strings.TrimSpace(prop.Description) +
+		" Grantable names in this build (tools and extras draw from one catalog): " +
+		strings.Join(grantable, ", ") + "."
+	schema.Properties["tools"] = &toolsProp
 	return &schema
 }

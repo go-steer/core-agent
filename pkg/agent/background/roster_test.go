@@ -73,6 +73,19 @@ func agentProperty(t *testing.T, decl *genai.FunctionDeclaration) *jsonschema.Sc
 	return prop
 }
 
+func toolsProperty(t *testing.T, decl *genai.FunctionDeclaration) *jsonschema.Schema {
+	t.Helper()
+	schema, ok := decl.ParametersJsonSchema.(*jsonschema.Schema)
+	if !ok || schema == nil {
+		t.Fatalf("ParametersJsonSchema is %T, want *jsonschema.Schema", decl.ParametersJsonSchema)
+	}
+	prop := schema.Properties["tools"]
+	if prop == nil {
+		t.Fatal("spawn_agent schema has no 'tools' property")
+	}
+	return prop
+}
+
 func enumStrings(t *testing.T, s *jsonschema.Schema) []string {
 	t.Helper()
 	out := make([]string, 0, len(s.Enum))
@@ -199,6 +212,70 @@ func TestSpawnAgentSchema_UnchangedWithoutSubagents(t *testing.T) {
 	}
 }
 
+// TestSpawnAgentSchema_ToolsNamesTheRealCatalog is the cross-reference
+// acceptance test for `tools`: the parameter description must name the
+// tools this build registered, not a shipped example.
+//
+// Fails on pre-fix code: the jsonschema tag carried a static
+// "(e.g. read_file, list_dir, glob, grep, bash, todo, write_file,
+// edit_file)". On the distroless daemon — which disables every shell
+// tool — the model reads `bash`, grants it, and resolveTools rejects
+// the spawn with ErrUnknownTool: a whole subagent spent learning what
+// the description could have said.
+func TestSpawnAgentSchema_ToolsNamesTheRealCatalog(t *testing.T) {
+	t.Parallel()
+	prov := &recordingProvider{llm: &completingLLM{detail: "d"}}
+	mgr := newTemplateManager(t, prov, rosterTemplates(prov),
+		WithCatalog([]tool.Tool{
+			newNamedStubTool(t, "read_file"),
+			newNamedStubTool(t, "custom_inspector"),
+			// Auto-wired: resolveTools accepts it but drops it, so it is
+			// not something the model grants — it must not be advertised.
+			newNamedStubTool(t, "report_alert"),
+		}))
+	defer mgr.Close()
+
+	desc := toolsProperty(t, spawnDeclaration(t, mgr)).Description
+	if want := "Grantable names in this build (tools and extras draw from one catalog): custom_inspector, read_file."; !strings.Contains(desc, want) {
+		t.Errorf("tools description is missing %q:\n%s", want, desc)
+	}
+	for _, absent := range []string{"bash", "write_file", "report_alert"} {
+		if strings.Contains(desc, absent) {
+			t.Errorf("tools description names %q, which this build cannot grant:\n%s", absent, desc)
+		}
+	}
+}
+
+// TestSpawnAgentSchema_ToolsNamedWithoutSubagents covers the shape the
+// distroless daemon actually ships in: a tool catalog but no configured
+// subagents. The roster rewrite is skipped there, and the grantable
+// rewrite must still run — otherwise the one deployment that most needs
+// an accurate catalog is the one that never gets it.
+func TestSpawnAgentSchema_ToolsNamedWithoutSubagents(t *testing.T) {
+	t.Parallel()
+	prov := &recordingProvider{llm: &completingLLM{detail: "d"}}
+	mgr, err := NewManager(
+		WithProvider(prov, "parent-model"),
+		WithCatalog([]tool.Tool{newNamedStubTool(t, "read_file")}),
+	)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer mgr.Close()
+
+	decl := spawnDeclaration(t, mgr)
+	if want := "Grantable names in this build (tools and extras draw from one catalog): read_file."; !strings.Contains(toolsProperty(t, decl).Description, want) {
+		t.Errorf("tools description is missing %q:\n%s", want, toolsProperty(t, decl).Description)
+	}
+	// The roster half stays untouched: no subagents are configured.
+	if decl.Description != spawnAgentDescription {
+		t.Errorf("description was rewritten with no subagents configured:\n%s", decl.Description)
+	}
+	if got := agentProperty(t, decl); len(got.Enum) != 0 {
+		t.Errorf("agent enum = %v with no subagents configured, want none", got.Enum)
+	}
+}
+
 // TestSpawnAgentDeclaration_DoesNotMutateSharedSchema is the correctness
 // guard on the rewrite. functiontool caches one resolved schema and
 // returns the same pointer every call, so a rewrite that wrote through
@@ -207,7 +284,8 @@ func TestSpawnAgentSchema_UnchangedWithoutSubagents(t *testing.T) {
 func TestSpawnAgentDeclaration_DoesNotMutateSharedSchema(t *testing.T) {
 	t.Parallel()
 	prov := &recordingProvider{llm: &completingLLM{detail: "d"}}
-	mgr := newTemplateManager(t, prov, rosterTemplates(prov))
+	mgr := newTemplateManager(t, prov, rosterTemplates(prov),
+		WithCatalog([]tool.Tool{newNamedStubTool(t, "read_file")}))
 	defer mgr.Close()
 
 	wrapper, ok := NewSpawnAgentTool(mgr).(rosterTool)
@@ -227,6 +305,9 @@ func TestSpawnAgentDeclaration_DoesNotMutateSharedSchema(t *testing.T) {
 	if got := enumStrings(t, agentProperty(t, second)); strings.Join(got, ",") != "cluster,docs" {
 		t.Errorf("second call's enum = %v, want [cluster docs]", got)
 	}
+	if strings.Count(toolsProperty(t, second).Description, "Grantable names in this build") != 1 {
+		t.Errorf("want exactly one grantable-catalog sentence on the second call:\n%s", toolsProperty(t, second).Description)
+	}
 
 	base := inner.Declaration()
 	if base.Description != spawnAgentDescription {
@@ -238,6 +319,9 @@ func TestSpawnAgentDeclaration_DoesNotMutateSharedSchema(t *testing.T) {
 	}
 	if prop := baseSchema.Properties["agent"]; prop == nil || len(prop.Enum) != 0 {
 		t.Errorf("the wrapped tool's shared schema now carries an enum: %+v", prop)
+	}
+	if prop := baseSchema.Properties["tools"]; prop == nil || strings.Contains(prop.Description, "Grantable names in this build") {
+		t.Errorf("the wrapped tool's shared 'tools' description was mutated: %+v", prop)
 	}
 }
 

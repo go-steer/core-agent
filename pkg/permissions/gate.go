@@ -163,6 +163,24 @@ type Gate struct {
 	// that wires tools by hand keeps the gate rather than silently
 	// disarming it.
 	nativeSearchTools map[string]bool
+	// registeredTools, when non-nil, is the set of built-in tool names
+	// this build actually registered. It exists for model-facing
+	// DESCRIPTION text, not for gating: descriptions routinely
+	// cross-reference other tools ("PREFERRED over `bash cat`", "call
+	// this BEFORE any write_file / bash call"), and on a build that
+	// dropped those tools the sentence is worse than noise — it asserts
+	// a capability the model does not have. A distroless deployment
+	// with no shell is the standard case.
+	//
+	// Same contract as nativeSearchTools: set once by tools.Build
+	// before the gate serves a call, and nil means "assume registered"
+	// so a host that wires tools by hand keeps today's text verbatim.
+	//
+	// SCOPE: only tools.Build's own catalog. Tools wired elsewhere
+	// (spawn_agent, MCP tools) are absent from the map and must not be
+	// filtered through it — HasTool would report them missing when
+	// they are merely unknown.
+	registeredTools map[string]bool
 }
 
 // planExemptTools is the set of tool names that bypass the plan-
@@ -423,6 +441,7 @@ func (template *Gate) DeriveForSession(sessionID string, prompter Prompter) *Gat
 		// while --print-config still reported it on.
 		bashSearchGate:    template.bashSearchGate,
 		nativeSearchTools: template.nativeSearchTools,
+		registeredTools:   template.registeredTools,
 		// Also inherited: the catalog is daemon-wide, so a sub-gate
 		// that dropped this would make record_plan stop naming what it
 		// unblocked for exactly the sessions an operator is watching.
@@ -706,6 +725,37 @@ func (g *Gate) SetNativeSearchTools(registered map[string]bool) {
 // host that built its catalog against a derived gate can forward the
 // same knowledge to the template every later session derives from.
 func (g *Gate) NativeSearchTools() map[string]bool { return g.nativeSearchTools }
+
+// SetRegisteredTools tells the gate which built-in tools the host
+// registered, so description text can drop cross-references to tools
+// that aren't there. Same timing contract as SetNativeSearchTools:
+// called by tools.Build at construction, before the gate serves a
+// call, so no lock is taken.
+func (g *Gate) SetRegisteredTools(registered map[string]bool) {
+	g.registeredTools = registered
+}
+
+// RegisteredTools returns what SetRegisteredTools was given, so a host
+// that built its catalog against a derived gate can forward the same
+// knowledge to the template every later session derives from.
+func (g *Gate) RegisteredTools() map[string]bool { return g.registeredTools }
+
+// HasTool reports whether name is registered in this build, for
+// description text that would otherwise point the model at a tool it
+// cannot call. Unset map means "assume registered" — an unconfigured
+// gate must not silently strip every cross-reference.
+//
+// Only ask about tools tools.Build registers; see registeredTools.
+func (g *Gate) HasTool(name string) bool {
+	// Nil-receiver-safe: bashDescription and friends already tolerate a
+	// nil gate, and "assume registered" is the same answer an unset map
+	// gives — a description must never lose text just because a caller
+	// wired tools without a gate.
+	if g == nil || g.registeredTools == nil {
+		return true
+	}
+	return g.registeredTools[name]
+}
 
 func (g *Gate) nativeRegistered(name string) bool {
 	if g.nativeSearchTools == nil {

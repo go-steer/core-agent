@@ -177,6 +177,14 @@ reg, err := tools.Build(cfg, gate, b)
 
 `tools.BuiltinToolNames()` returns the canonical list in struct order — useful for `--help` generation and config validation.
 
+### Descriptions follow the catalog
+
+Disabling a tool also rewrites what the *remaining* tools tell the model about themselves. Descriptions cross-reference each other — `read_file` is "PREFERRED over `bash cat`", `record_plan` in [required mode](/reference/configuration/#plan-mode-v29--plan_mode) says "call this BEFORE any `write_file` / `edit_file` / `bash` call" — and a sentence naming a tool that isn't registered is worse than no sentence: it asserts a capability the model doesn't have, and the model spends turns discovering that. On a distroless deploy with `tools.disable: ["bash"]` every shell cross-reference drops out, and `bash`'s own redirect names only the structured tools that were actually built.
+
+The rule applies to the built-in catalog only. Tools wired outside `tools.Build` — `spawn_agent`, MCP tools — are unknown rather than absent, so references to them are always kept.
+
+`spawn_agent` follows the same rule from the other side: its `tools` parameter used to carry a fixed example (`… glob, grep, bash, todo …`), and now lists the names the manager's catalog will actually resolve — built-ins, MCP tools, and skills alike. A name the model reads there is a name the spawn will accept.
+
 ## Output truncation
 
 Every tool's output is capped per-call by `cfg.MaxBytes` and `cfg.MaxLines` (see [Configuration](/reference/configuration/)). When a result hits the cap, the response includes a `truncated: true` flag and the model sees only the head — preventing a single oversize `grep` or `bash` output from blowing the context window.

@@ -923,6 +923,30 @@ func (m *Manager) resolveTools(names []string) ([]tool.Tool, error) {
 	return out, nil
 }
 
+// GrantableToolNames returns the sorted names an ad-hoc subagent's
+// `tools` list may draw from — exactly the set resolveTools accepts,
+// minus the auto-wired names it silently drops.
+//
+// It exists so spawn_agent's own parameter description can name the
+// real catalog instead of a hard-coded example. The shipped example
+// listed `bash`, which on a distroless build is a name the model can
+// pass and resolveTools will then reject with ErrUnknownTool — a
+// wasted spawn to learn something the description could have said.
+func (m *Manager) GrantableToolNames() []string {
+	if m == nil {
+		return nil
+	}
+	out := make([]string, 0, len(m.catalog))
+	for n := range m.catalog {
+		if _, autoWired := autoWiredSubagentTools[n]; autoWired {
+			continue
+		}
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Compile-time check that *Manager satisfies the core seam.
 var _ agent.SubagentManager = (*Manager)(nil)
 

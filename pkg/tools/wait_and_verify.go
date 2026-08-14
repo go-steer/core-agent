@@ -138,6 +138,18 @@ type WaitAndVerifyOptions struct {
 	MaxTimeout time.Duration
 	// MaxAttempts caps max_attempts. Zero means defaultWaitMaxAttempts.
 	MaxAttempts int
+	// BashRegistered reports whether this build registered the `bash`
+	// tool, so the description can drop its "PREFERRED over `bash
+	// sleep`" comparison when there is no shell to prefer it over.
+	// Description-only; it has no effect on what may be polled.
+	//
+	// Unlike the gate-carried catalog the other tools consult, this is
+	// an explicit field: wait_and_verify is constructed without a gate
+	// (see NewWaitAndVerifyTool), and threading one in just to read a
+	// description flag would be a wider change than the text is worth.
+	// tools.Build sets it from gate.HasTool("bash"); a host wiring the
+	// tool by hand leaves it false and gets the shell-free wording.
+	BashRegistered bool
 }
 
 // neverPollable names tools that stay unpollable no matter what the
@@ -264,8 +276,9 @@ func NewWaitAndVerifyTool(cfg *config.Config, opts WaitAndVerifyOptions) (adktoo
 		Name: WaitAndVerifyToolName,
 		Description: "Poll a read-only tool until its result satisfies a condition, or until a bounded budget expires. " +
 			"Use this for fix-and-verify: after applying a change, poll the tool that observes the state (pod status, endpoint health, a file's contents) until it converges. " +
-			"PREFERRED over `bash sleep` + a re-check (which needs a shell you may not have) and over polling yourself across several turns (which pays full prompt cost per attempt — this collapses every attempt into one result). " +
-			"Returns verified plus the attempt-by-attempt evidence; cite it rather than asserting a fix worked.",
+			"PREFERRED over polling yourself across several turns (which pays full prompt cost per attempt — this collapses every attempt into one result)." +
+			whenTool(opts.BashRegistered, " Also PREFERRED over `bash sleep` + a re-check.") +
+			" Returns verified plus the attempt-by-attempt evidence; cite it rather than asserting a fix worked.",
 	}, v.run)
 	if err != nil {
 		return nil, fmt.Errorf("tools: wait_and_verify: %w", err)

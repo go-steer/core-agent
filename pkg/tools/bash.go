@@ -52,11 +52,28 @@ type bashResult struct {
 // where a `grep -rn` is refused outright — and a model that learns the
 // rule from a refusal has already spent a turn learning it (#158).
 func bashDescription(gate *permissions.Gate) string {
-	const base = "Execute a shell command via /bin/sh -c with a timeout. For code investigation " +
-		"(reading files, searching source, listing directories), prefer the structured `read_file`, " +
-		"`grep`, `glob`, `list_dir` tools — they honor the permission gate and per-tool output caps. " +
-		"Use this tool for actions those tools cannot perform: builds, tests, git, formatters, " +
-		"package managers, and other shell-native workflows."
+	const opening = "Execute a shell command via /bin/sh -c with a timeout."
+	const closing = " Use this tool for actions the structured tools cannot perform: builds, " +
+		"tests, git, formatters, package managers, and other shell-native workflows."
+
+	// Name only the structured tools this build registered. The
+	// redirect is the whole point of the sentence, so pointing at a
+	// tool that isn't in the catalog is worse than saying nothing —
+	// same rule the enforce branch below already follows for the
+	// native search tools.
+	var structured []string
+	for _, n := range []string{"read_file", "grep", "glob", "list_dir"} {
+		if gate.HasTool(n) {
+			structured = append(structured, "`"+n+"`")
+		}
+	}
+	base := opening
+	if len(structured) > 0 {
+		base += " For code investigation (reading files, searching source, listing directories), " +
+			"prefer the structured " + strings.Join(structured, ", ") +
+			" tools — they honor the permission gate and per-tool output caps."
+	}
+	base += closing
 	if gate == nil || gate.BashSearchGate() != config.BashSearchGateEnforce {
 		return base
 	}

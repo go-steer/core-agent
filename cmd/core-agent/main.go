@@ -1126,6 +1126,11 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		// gate that didn't know would fall back to "assume registered"
 		// and refuse a bash grep by naming a tool this build dropped.
 		template.SetNativeSearchTools(gate.NativeSearchTools())
+		// Same forwarding, same reason, for the description catalog:
+		// a session gate that didn't know would fall back to "assume
+		// registered" and hand the model a `bash cat` comparison in a
+		// container with no shell.
+		template.SetRegisteredTools(gate.RegisteredTools())
 	}
 
 	askTool, err := resolveAskUserTool(ask, os.Stdin, os.Stderr)

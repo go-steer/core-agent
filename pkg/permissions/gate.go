@@ -127,6 +127,27 @@ type Gate struct {
 	requirePlanArtifact bool
 	planRecorded        bool
 
+	// planGatedTools, when non-nil, is the set of tool names the host
+	// registered that planFirstDenial would actually deny before a plan
+	// exists. Populated additively by RegisterPlanGatedTools —
+	// tools.Build for the built-ins, GateToolset for each namespaced
+	// toolset — because the gate is constructed long before anyone
+	// knows which catalog it will serve.
+	//
+	// The reason it exists is the same one behind nativeSearchTools:
+	// operator- and model-facing text should be able to state what this
+	// build gates rather than recite a category the config may have
+	// emptied. record_plan used to answer "mutating tools are now
+	// unblocked" unconditionally, which in the 2026-08-14 GKE recipe was
+	// wrong twice over — bash/write_file/edit_file/delete_file were all
+	// disabled, and what the plan actually unblocked was the entire
+	// `gke` MCP read surface (#747).
+	//
+	// nil means "no host ever said", which is not the same as "nothing
+	// is gated": a library caller that wires tools by hand gets prose
+	// that declines to enumerate rather than a confident empty list.
+	planGatedTools map[string]bool
+
 	// bashSearchGate is the resolved search-gate posture ("enforce" |
 	// "warn" | "allow"). Immutable after New, so it needs no lock and
 	// is inherited as-is by DeriveForSession sub-gates. See
@@ -402,7 +423,71 @@ func (template *Gate) DeriveForSession(sessionID string, prompter Prompter) *Gat
 		// while --print-config still reported it on.
 		bashSearchGate:    template.bashSearchGate,
 		nativeSearchTools: template.nativeSearchTools,
+		// Also inherited: the catalog is daemon-wide, so a sub-gate
+		// that dropped this would make record_plan stop naming what it
+		// unblocked for exactly the sessions an operator is watching.
+		planGatedTools: template.planGatedToolSet(),
 	}
+}
+
+// planGatedToolSet returns the raw set under lock, for DeriveForSession.
+// Shares the map by reference: registration happens at startup, before
+// any session is derived, and RegisterPlanGatedTools copy-on-writes so
+// a late registration can't race a reader.
+func (g *Gate) planGatedToolSet() map[string]bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.planGatedTools
+}
+
+// RegisterPlanGatedTools tells the gate which tool names this build
+// actually registered, so operator- and model-facing text can name the
+// set plan-first gating covers instead of asserting a category (#747).
+// Names in planExemptTools are dropped — the caller declares what it
+// registered and the gate decides what that means, the same split
+// SetNativeSearchTools uses.
+//
+// Additive, and safe to call more than once: the built-ins land at
+// tools.Build time and each namespaced toolset (mcp, skill) registers
+// as it is wrapped, which happens at several points during startup.
+// Calling it with no names still marks the set as known — that is how
+// a host says "I registered nothing plan-gated", which is a true and
+// useful thing for record_plan to be able to report.
+func (g *Gate) RegisterPlanGatedTools(names ...string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	// Copy-on-write: DeriveForSession hands the map out by reference.
+	next := make(map[string]bool, len(g.planGatedTools)+len(names))
+	for k, v := range g.planGatedTools {
+		next[k] = v
+	}
+	for _, n := range names {
+		if n == "" || planExemptTools[n] {
+			continue
+		}
+		next[n] = true
+	}
+	g.planGatedTools = next
+}
+
+// PlanGatedTools returns the registered plan-gated tool names, sorted.
+// known is false when no host ever called RegisterPlanGatedTools, which
+// callers must render as "can't say" rather than "nothing" — see the
+// field comment. known is true with an empty slice when the host did
+// call it and every name it registered was exempt.
+func (g *Gate) PlanGatedTools() (names []string, known bool) {
+	g.mu.Lock()
+	set := g.planGatedTools
+	g.mu.Unlock()
+	if set == nil {
+		return nil, false
+	}
+	out := make([]string, 0, len(set))
+	for n := range set {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out, true
 }
 
 // SessionID returns the session identifier this gate was derived for,

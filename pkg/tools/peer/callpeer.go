@@ -210,6 +210,11 @@ func newHandler(gate *permissions.Gate, cfg *config.Config, dir Directory, geten
 	if h.description == "" {
 		h.description = defaultDescription(h.toolName)
 	}
+	// call_peer runs through CheckGeneric under its configured name, so
+	// plan-first gating denies it before a plan exists. Say so, or
+	// record_plan can't name it among what the plan unblocked (#747) —
+	// and the name is operator-configurable, so nothing else can.
+	gate.RegisterPlanGatedTools(h.toolName)
 	return h, nil
 }
 

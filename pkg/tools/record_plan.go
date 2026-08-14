@@ -50,6 +50,12 @@ type recordPlanResult struct {
 	Path     string `json:"path"`
 	Sequence int    `json:"sequence"`
 	Message  string `json:"message"`
+	// Agent and Session echo the attribution written into the
+	// artifact's frontmatter, so the model's own transcript records
+	// which plan is its own. Empty when the host ran the handler
+	// without an invocation context (library callers, tests).
+	Agent   string `json:"agent,omitempty"`
+	Session string `json:"session,omitempty"`
 }
 
 // Description prose, split so advisory mode doesn't tell the model
@@ -117,16 +123,93 @@ func recordPlanFunc(gate *permissions.Gate, agentsDir string) functiontool.Func[
 		if !strings.HasSuffix(body, "\n") {
 			body += "\n"
 		}
-		if err := atomicWriteFile(path, []byte(body), 0o644); err != nil {
+		owner := planOwnerFromContext(ctx)
+		artifact := planFrontmatter(seq, owner) + body
+		if err := atomicWriteFile(path, []byte(artifact), 0o644); err != nil {
 			return recordPlanResult{}, fmt.Errorf("record_plan: write %s: %w", path, err)
 		}
 		markPlanRecorded(ctx, gate)
 		return recordPlanResult{
 			Path:     path,
 			Sequence: seq,
-			Message:  fmt.Sprintf("Plan recorded at %s. Mutating tools are now unblocked for this session. The operator can revoke via /replan, which clears the gate flag and forces a redraft.", path),
+			Message:  planRecordedMessage(gate, path),
+			Agent:    owner.Agent,
+			Session:  owner.Session,
 		}, nil
 	}
+}
+
+// planRecordedMessage renders what record_plan tells the model it just
+// did. Three things it must not do, all learned the hard way (#747):
+//
+//   - Claim an unblock in advisory mode. Nothing was ever blocked, and
+//     a model that believes a gate exists behaves as though it does.
+//     This is the result-path half of the description split above
+//     (#215), which fixed the same bug one surface earlier.
+//   - Name a category instead of the tools. The 2026-08-14 GKE recipe
+//     disabled bash / write_file / edit_file / delete_file, so "mutating
+//     tools are now unblocked" named an empty set while saying nothing
+//     about what the plan really unblocked: the whole `gke` MCP read
+//     surface, which is deliberately not plan-exempt.
+//   - Enumerate a set it doesn't have. A host that wires tools by hand
+//     never calls RegisterPlanGatedTools, and inventing "nothing is
+//     gated" for it would be the same unenforceable claim pointed the
+//     other way. Unknown gets prose that doesn't enumerate.
+func planRecordedMessage(gate *permissions.Gate, path string) string {
+	const revoke = "The operator can revoke via /replan, which archives the artifact"
+	if !gate.PlanRequired() {
+		return fmt.Sprintf("Plan recorded at %s. plan_mode is advisory: no tool call was ever blocked on this plan and none becomes callable because of it — the artifact is the operator's audit trail, so carry the plan out in this turn rather than waiting for approval. %s and asks for a redraft.", path, revoke)
+	}
+	gated, known := gate.PlanGatedTools()
+	switch {
+	case !known:
+		return fmt.Sprintf("Plan recorded at %s. Plan-first gating is on: the tool calls it was denying are now unblocked for this session. %s, clears the gate flag, and forces a redraft.", path, revoke)
+	case len(gated) == 0:
+		return fmt.Sprintf("Plan recorded at %s. Plan-first gating is on, but this build registered no plan-gated tools — nothing was blocked and nothing is unblocked; the artifact is the only effect. %s, clears the gate flag, and forces a redraft.", path, revoke)
+	default:
+		return fmt.Sprintf("Plan recorded at %s. Now unblocked for this session: %s. %s, clears the gate flag, and forces a redraft.", path, strings.Join(gated, ", "), revoke)
+	}
+}
+
+// planFrontmatter is the YAML block prepended to every plan artifact.
+//
+// Without it a plans directory is a pile of anonymous markdown: the
+// 2026-08-14 UAT had a parent and its declarative subagent write plan-1
+// and plan-2 into one directory in one incident, and nothing on disk
+// said which was which. Worse in multi-session, where the gate flag is
+// per-session but <agentsDir>/plans/ is process-global, so concurrent
+// tenants interleave into one sequence.
+//
+// Values are emitted as double-quoted YAML scalars because agent names
+// come from operator config and a bare `agent: foo: bar` would not
+// parse. Keys are omitted rather than emitted empty so a reader can
+// tell "no attribution recorded" from "recorded as empty". No
+// timestamp: the file's mtime already carries it, and a clock in here
+// would make every artifact test non-deterministic.
+func planFrontmatter(seq int, owner PlanOwner) string {
+	var b strings.Builder
+	b.WriteString("---\n")
+	fmt.Fprintf(&b, "plan: %d\n", seq)
+	if owner.Agent != "" {
+		fmt.Fprintf(&b, "agent: %q\n", owner.Agent)
+	}
+	if owner.Session != "" {
+		fmt.Fprintf(&b, "session: %q\n", owner.Session)
+	}
+	b.WriteString("---\n\n")
+	return b.String()
+}
+
+// planOwnerFromContext reads the recording agent and session off the
+// invocation context. A nil ctx (library callers, unit tests that drive
+// the handler directly) yields the zero owner, which planFrontmatter
+// renders as no attribution — same guard rationale as
+// permissions.SessionGateFromContext.
+func planOwnerFromContext(ctx tool.Context) PlanOwner {
+	if ctx == nil {
+		return PlanOwner{}
+	}
+	return PlanOwner{Agent: ctx.AgentName(), Session: ctx.SessionID()}
 }
 
 // markPlanRecorded routes the plan-recorded flip through the per-
@@ -188,23 +271,64 @@ func nextPlanSeq(plansDir string) (int, error) {
 	return max + 1, nil
 }
 
-// LatestActivePlan returns the path of the highest-sequence non-
-// revoked plan in <agentsDir>/plans/, or empty string if none.
-// Used by /replan to find what to archive.
-func LatestActivePlan(agentsDir string) string {
+// PlanOwner identifies who recorded a plan. It is both what
+// record_plan stamps into the artifact's frontmatter and the selector
+// /replan uses to find the plan the operator actually meant.
+//
+// The zero value matches everything, which is what keeps
+// RevokeLatestPlan's historical "newest wins" semantics intact for
+// callers that don't care.
+type PlanOwner struct {
+	// Agent is the recording agent's name (tool.Context.AgentName) —
+	// "core_agent" for the root, the subagent's declared name for a
+	// background subagent. This is the field that separates a parent's
+	// plan from its specialist's.
+	Agent string
+	// Session is the recording agent's session ID. Separates concurrent
+	// tenants in a multi-session daemon, where the plan gate is per-
+	// session but <agentsDir>/plans/ is process-global.
+	Session string
+}
+
+func (o PlanOwner) empty() bool { return o.Agent == "" && o.Session == "" }
+
+// matches reports whether p was recorded by this owner. An empty field
+// on the owner is a wildcard: {Agent: "x"} matches every plan agent "x"
+// recorded regardless of session.
+func (o PlanOwner) matches(p PlanInfo) bool {
+	if o.Agent != "" && p.Agent != o.Agent {
+		return false
+	}
+	if o.Session != "" && p.Session != o.Session {
+		return false
+	}
+	return true
+}
+
+// PlanInfo is one active plan artifact plus whatever attribution its
+// frontmatter carried. Agent and Session are empty for artifacts
+// written before frontmatter existed (#747) — see ActivePlans.
+type PlanInfo struct {
+	Path     string
+	Sequence int
+	Agent    string
+	Session  string
+}
+
+// ActivePlans returns every non-revoked plan in <agentsDir>/plans/,
+// newest sequence first, with frontmatter attribution parsed. Exposed
+// so a host can render "who planned what" without re-deriving the
+// naming scheme.
+func ActivePlans(agentsDir string) []PlanInfo {
 	if agentsDir == "" {
-		return ""
+		return nil
 	}
 	plansDir := filepath.Join(agentsDir, recordPlanDir)
 	entries, err := os.ReadDir(plansDir)
 	if err != nil {
-		return ""
+		return nil
 	}
-	type p struct {
-		seq  int
-		name string
-	}
-	var actives []p
+	var actives []PlanInfo
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -222,13 +346,103 @@ func LatestActivePlan(agentsDir string) string {
 		if err != nil {
 			continue
 		}
-		actives = append(actives, p{seq: n, name: name})
+		path := filepath.Join(plansDir, name)
+		info := PlanInfo{Path: path, Sequence: n}
+		// An unreadable artifact is still an active plan — losing it
+		// from the list would make /replan skip past it to someone
+		// else's, which is the bug this whole change is about.
+		if raw, err := os.ReadFile(path); err == nil {
+			info.Agent, info.Session = parsePlanFrontmatter(raw)
+		}
+		actives = append(actives, info)
 	}
+	sort.Slice(actives, func(i, j int) bool { return actives[i].Sequence > actives[j].Sequence })
+	return actives
+}
+
+// parsePlanFrontmatter pulls agent + session out of the leading YAML
+// block planFrontmatter wrote. Deliberately not a YAML parser: the
+// block is machine-written and single-level, and pulling in a parser
+// to read two strings would be the larger risk. Anything that doesn't
+// look like our block yields empty strings, which callers read as "no
+// attribution" — the pre-#747 artifact shape.
+func parsePlanFrontmatter(raw []byte) (agent, session string) {
+	text := string(raw)
+	if !strings.HasPrefix(text, "---\n") {
+		return "", ""
+	}
+	rest := text[len("---\n"):]
+	end := strings.Index(rest, "\n---")
+	if end < 0 {
+		return "", ""
+	}
+	for _, line := range strings.Split(rest[:end], "\n") {
+		key, val, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		val = strings.TrimSpace(val)
+		if unquoted, err := strconv.Unquote(val); err == nil {
+			val = unquoted
+		}
+		switch strings.TrimSpace(key) {
+		case "agent":
+			agent = val
+		case "session":
+			session = val
+		}
+	}
+	return agent, session
+}
+
+// LatestActivePlan returns the path of the highest-sequence non-
+// revoked plan in <agentsDir>/plans/, or empty string if none.
+//
+// Owner-blind: with a parent and a subagent both planning, this is the
+// subagent's. Use LatestPlanBy when you mean a particular author —
+// this spelling is kept for callers that genuinely want "the newest
+// artifact on disk", such as reporting one in a message.
+func LatestActivePlan(agentsDir string) string {
+	actives := ActivePlans(agentsDir)
 	if len(actives) == 0 {
 		return ""
 	}
-	sort.Slice(actives, func(i, j int) bool { return actives[i].seq > actives[j].seq })
-	return filepath.Join(plansDir, actives[0].name)
+	return actives[0].Path
+}
+
+// LatestPlanBy returns the highest-sequence active plan recorded by
+// owner, or empty string if that author has none.
+//
+// The zero owner means "any", and returns LatestActivePlan.
+//
+// Back-compat: when no active plan carries attribution at all — a
+// plans directory written before #747 — the newest is returned even
+// for a non-empty owner, because "the operator upgraded mid-incident"
+// should not read as "you have no plan". A directory with a MIX of
+// attributed and anonymous plans gets the strict answer: once some
+// artifact can say who wrote it, silently revoking one that can't is
+// the guess this function exists to stop making.
+func LatestPlanBy(agentsDir string, owner PlanOwner) string {
+	actives := ActivePlans(agentsDir)
+	if len(actives) == 0 {
+		return ""
+	}
+	if owner.empty() {
+		return actives[0].Path
+	}
+	attributed := false
+	for _, p := range actives {
+		if p.Agent != "" || p.Session != "" {
+			attributed = true
+		}
+		if owner.matches(p) {
+			return p.Path
+		}
+	}
+	if !attributed {
+		return actives[0].Path
+	}
+	return ""
 }
 
 // RevokeLatestPlan renames `<agentsDir>/plans/plan-<seq>.md` to
@@ -240,8 +454,27 @@ func LatestActivePlan(agentsDir string) string {
 // was nothing to revoke; the gate flag is still cleared in case it
 // was set out of band.
 func RevokeLatestPlan(gate *permissions.Gate, agentsDir string) (string, error) {
+	return RevokePlanBy(gate, agentsDir, PlanOwner{})
+}
+
+// RevokePlanBy is RevokeLatestPlan scoped to an author. It archives
+// the highest-sequence active plan that owner recorded and clears the
+// gate flag; the zero owner reproduces RevokeLatestPlan exactly.
+//
+// This exists because "latest" is the wrong plan as soon as anything
+// else in the process plans too (#747). With a parent and a background
+// subagent both recording, the newest artifact is the subagent's, so an
+// operator rejecting the parent's approach was archiving the
+// specialist's investigation notes and leaving the plan they meant to
+// reject in place.
+//
+// An empty return with a nil error means owner had no active plan. The
+// gate flag is cleared either way — /replan's contract is "the next
+// mutating call needs a fresh plan", and that must hold whether or not
+// there was an artifact to file.
+func RevokePlanBy(gate *permissions.Gate, agentsDir string, owner PlanOwner) (string, error) {
 	defer gate.ClearPlanRecorded()
-	latest := LatestActivePlan(agentsDir)
+	latest := LatestPlanBy(agentsDir, owner)
 	if latest == "" {
 		return "", nil
 	}

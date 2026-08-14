@@ -1166,6 +1166,18 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		builtinTools = append(builtinTools, cpTool)
 	}
 
+	// Forward the plan-gated catalog to the template, the same reason
+	// SetNativeSearchTools is forwarded above (#158): sessions created
+	// through POST /sessions derive from the template, not from this
+	// gate, and a session gate that didn't know would make record_plan
+	// decline to name what the plan unblocked in exactly the multi-
+	// session deployments where someone other than the prompter reads
+	// the artifact. Placed after call_peer so every registrar that runs
+	// during boot — mcp.Build, tools.Build, peer.New — has spoken.
+	if names, known := gate.PlanGatedTools(); known {
+		template.RegisterPlanGatedTools(names...)
+	}
+
 	// Daily pricing refresh (PR B): pull LiteLLM's pricing JSON
 	// into ~/.core-agent/pricing.json's external section. Skipped
 	// when --no-pricing-refresh is set, when cfg.pricing.refresh is
@@ -1569,7 +1581,19 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 					Message: "/replan unavailable: no .agents/ directory resolved (plan artifacts have nowhere to live)",
 				}, nil
 			}
-			archived, err := tools.RevokeLatestPlan(gate, agentsDir)
+			// Scope the revocation to this agent's own plan (#747).
+			// A background subagent that recorded a plan holds the
+			// highest sequence number, so the owner-blind spelling
+			// archived the specialist's notes and left the plan the
+			// operator was rejecting active. agentRef is late-bound
+			// by WithPostConstruct; a nil owner degrades to the old
+			// newest-wins behavior, which is the right fallback for
+			// a /replan that somehow beat construction.
+			var owner tools.PlanOwner
+			if agentRef != nil {
+				owner = tools.PlanOwner{Agent: agentRef.AgentName(), Session: agentRef.SessionID()}
+			}
+			archived, err := tools.RevokePlanBy(gate, agentsDir, owner)
 			if err != nil {
 				return attach.ReplanResponse{}, err
 			}
@@ -1577,7 +1601,18 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 				ArchivedPath:  archived,
 				PlanWasActive: archived != "",
 			}
+			actives := tools.ActivePlans(agentsDir)
 			switch {
+			case archived == "" && len(actives) > 0:
+				// Somebody's plan is active, just not this agent's.
+				// Saying "no active plan" here would read as "the
+				// directory is empty" and hide a plan the operator may
+				// well want to look at. Report the artifact's own
+				// attribution rather than asserting "another agent" —
+				// the commonest way to land here is the same agent in
+				// an earlier session, after a daemon restart.
+				resp.Message = fmt.Sprintf("/replan: this agent has no active plan to revoke — %s was left alone (%s). The gate flag is clear.",
+					filepath.Base(actives[0].Path), describePlanOwner(actives[0]))
 			case archived == "":
 				resp.Message = "/replan: no active plan to revoke (gate flag is clear)."
 			case gate.PlanRequired():
@@ -2542,6 +2577,24 @@ func resolveGatePrompter(yolo bool, in *os.File, out io.Writer) permissions.Prom
 		return nil
 	}
 	return permissions.StdinPrompter(in, out)
+}
+
+// describePlanOwner renders a plan artifact's frontmatter attribution
+// for the /replan message that reports a plan it declined to archive
+// (#747). It states what the file says rather than inferring: "another
+// agent" would be a guess, and the likeliest way to reach this branch
+// is the same agent in an earlier session after a daemon restart.
+func describePlanOwner(p tools.PlanInfo) string {
+	switch {
+	case p.Agent != "" && p.Session != "":
+		return fmt.Sprintf("recorded by %q in session %s", p.Agent, p.Session)
+	case p.Agent != "":
+		return fmt.Sprintf("recorded by %q", p.Agent)
+	case p.Session != "":
+		return fmt.Sprintf("recorded in session %s", p.Session)
+	default:
+		return "it records no author, though another plan here does"
+	}
 }
 
 // autoContinueResolution is the decided auto-continue enablement plus the

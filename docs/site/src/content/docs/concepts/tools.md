@@ -45,7 +45,7 @@ Tools are grouped by domain — files, search, shell, data + network, planning, 
 | Tool | Purpose | Key parameters |
 |---|---|---|
 | `todo` | In-process plan tracker. Actions: `list`, `add`, `set_status`, `clear`. Underlying `TodoStore` is exposed via `Registry.Todo` so a TUI can render plan progress (the in-process TUI's `/todo` slash command uses this). | `action`, `id?`, `text?`, `status?` |
-| `record_plan` | Writes the turn's plan to `.agents/plans/plan-<seq>.md` for the operator's audit trail. Registered only under [`plan_mode`](/reference/configuration/#plan-mode-v29--plan_mode) `advisory` or `required`; under `required` it also satisfies the gate's plan pre-check. Its **description is mode-aware** — under `required` it tells the model that mutating calls are denied until the plan is on file; under `advisory` it says the opposite, so the model records and proceeds instead of stalling for an approval nobody will send. | `plan` |
+| `record_plan` | Writes the turn's plan to `.agents/plans/plan-<seq>.md` for the operator's audit trail. Registered only under [`plan_mode`](/reference/configuration/#plan-mode-v29--plan_mode) `advisory` or `required`; under `required` it also satisfies the gate's plan pre-check. Its **description is mode-aware** — under `required` it tells the model that mutating calls are denied until the plan is on file; under `advisory` it says the opposite, so the model records and proceeds instead of stalling for an approval nobody will send. Since v2.9 its **result** is mode-aware too, and names the tools this build actually gates — see below. | `plan` |
 
 ### Verification
 
@@ -126,6 +126,37 @@ The safety properties are structural, not prompted:
 - **Gated per peer.** The permission key is `call_peer:<peer-name>`, so `--deny call_peer:prod-*` works like any other tool pattern, and renaming the tool moves the key with it. Declarative subagents draw from the parent's already-gated catalog, so one parent-level policy hardens both.
 
 Each call opens a **fresh session** on the peer, so concurrent callers can't interleave prompts into one transcript — which makes `attach.multi_session.enabled` a requirement on the *peer* (a peer without it returns 501, and the tool tells you so). The delegated turn stays in the peer's own event log under the returned `session_id`; the caller gets the answer, and the audit trail lives where the work happened. Wire-level detail: [attach HTTP → Calling a peer from the model](/reference/attach-http/#calling-a-peer-from-the-model-call_peer).
+
+## `record_plan` — what the result says, and who wrote the artifact
+
+`record_plan` is the plan-first escape valve: it writes the turn's plan to `.agents/plans/plan-<seq>.md` and, under `plan_mode: required`, flips the flag the gate checks. Three things about it changed in v2.9 ([#747](https://github.com/go-steer/core-agent/issues/747)), all found in a live GKE run where the recipe had `bash`, `write_file`, `edit_file` and `delete_file` disabled and reached the cluster through an `gke` MCP server instead.
+
+**The result names the tools this build actually gates.** The old message said "mutating tools are now unblocked for this session" unconditionally. In that run it was wrong twice: none of the tools it implied were registered at all, and the surface the plan really unblocked — the whole `gke` MCP namespace, which is deliberately *not* plan-exempt — went unmentioned. The message now reports the runtime instead of a category:
+
+| Situation | What the model is told |
+| --- | --- |
+| `plan_mode: required`, gated set known | `Now unblocked for this session: gke, fetch_url.` |
+| `plan_mode: required`, nothing gated | `…this build registered no plan-gated tools — nothing was blocked and nothing is unblocked; the artifact is the only effect.` |
+| `plan_mode: required`, no host ever reported a catalog | `…the tool calls it was denying are now unblocked for this session.` — declines to enumerate rather than claim an empty set |
+| `plan_mode: advisory` | `…no tool call was ever blocked on this plan and none becomes callable because of it — carry the plan out in this turn rather than waiting for approval.` |
+
+The set is reported by whoever registers tools — the built-in catalog, each namespaced toolset (`mcp`, and `skill` which the gate drops as exempt), and `call_peer` under its operator-chosen name. Library callers that wire tools by hand register nothing and get the third row: **unknown is not the same as none**, the same three-state contract the [bash search gate](#the-bash-search-gate) uses.
+
+**Every artifact says who wrote it.** Plans now open with a small YAML block:
+
+```yaml
+---
+plan: 2
+agent: "cluster"
+session: "s-8f21"
+---
+```
+
+A parent and its [declarative subagent](/agent-design/subagents-and-wrappers/) write into one `.agents/plans/` directory and share one sequence, and in [multi-session](/concepts/multi-session/) mode the gate flag is per-session while the directory is process-global — so before this, concurrent tenants produced a pile of anonymous markdown. Keys are omitted rather than emitted empty, so "no attribution recorded" is distinguishable from "recorded as empty".
+
+**`/replan` archives the operator's own plan.** The [`/replan`](/run/interactive/slash-reference/#permissions) command used to archive whichever artifact had the highest sequence number, which after a subagent recorded plan-2 meant the operator revoked the subagent's plan and left the parent's in place. It is now scoped to the agent and session it was issued from, falling back to the newest artifact when no plan carries attribution (pre-v2.9 directories). If the newest plan belongs to someone else, the command says so and leaves it alone — and the gate flag clears either way, so the safety contract holds even when there was nothing to file.
+
+Full rationale: [`docs/plan-first-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/plan-first-design.md).
 
 ## Toggling individual tools
 

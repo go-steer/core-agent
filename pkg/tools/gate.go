@@ -51,6 +51,12 @@ func GateToolset(ts adktool.Toolset, gate *permissions.Gate, namespace string) a
 	if ts == nil || gate == nil {
 		return ts
 	}
+	// The namespace IS the name planFirstDenial sees for every tool in
+	// this toolset (Run below checks with gt.namespace), so registering
+	// it is what lets record_plan report "mcp" as plan-gated instead of
+	// staying silent about the surface that was actually blocked (#747).
+	// Exempt namespaces — "skill" — are dropped by the gate.
+	gate.RegisterPlanGatedTools(namespace)
 	return &gatedToolset{inner: ts, gate: gate, namespace: namespace}
 }
 

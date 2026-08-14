@@ -128,13 +128,26 @@ func acDeps(h *eventlog.Handle, freshness time.Duration) SessionFactoryDeps {
 func scanDeps(t *testing.T, h *eventlog.Handle) SessionFactoryDeps {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
+	// Cancel AND join. Cleanups run LIFO and openAC's h.Close() is
+	// registered before this one, so this fires first — but cancelling
+	// the daemon context only signals the wake loops the scan's resumes
+	// started, and a signalled loop can still be mid-query against the
+	// handle Close is about to tear down (#751). The join is what makes
+	// the ordering real rather than probable.
+	wakeLoops := &WakeLoopGroup{}
+	t.Cleanup(func() {
+		cancel()
+		if !wakeLoops.WaitFor(30 * time.Second) {
+			t.Error("wake loops did not return within 30s of daemon-context cancel; closing the eventlog under them would race")
+		}
+	})
 	store, err := attach.NewSessionACLStore(context.Background(), h.DB)
 	if err != nil {
 		t.Fatalf("NewSessionACLStore: %v", err)
 	}
 	deps := SessionFactoryDeps{
 		DaemonCtx:             ctx,
+		WakeLoops:             wakeLoops,
 		Model:                 stubLLM{},
 		Template:              permissions.New(permissions.Options{}),
 		EventlogHandle:        h,

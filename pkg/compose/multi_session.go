@@ -107,6 +107,16 @@ type SessionFactoryDeps struct {
 	// signal so SIGTERM / Ctrl-C ends them cleanly. Required.
 	DaemonCtx context.Context
 
+	// WakeLoops, when non-nil, is the join point for the wake loops
+	// this factory starts: cancelling DaemonCtx only *signals* them,
+	// and a signalled loop can still be mid-query against the
+	// eventlog. A caller that tears down what those loops read —
+	// closing the eventlog handle at daemon shutdown, or in a test —
+	// should cancel, then WaitFor, then tear down (#751).
+	//
+	// Optional: nil means "no join point", the pre-#751 behavior.
+	WakeLoops *WakeLoopGroup
+
 	Model          adkmodel.LLM
 	Template       *permissions.Gate
 	BuiltinTools   []adktool.Tool
@@ -578,11 +588,18 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 		maybeAutoContinue(deps, caller, sid, ag)
 	}
 	loopCtx, cancelOnEvict := context.WithCancel(deps.DaemonCtx)
-	go runner.WakeLoop(loopCtx, ag, runner.WakeLoopOptions{
-		Tracker: sessionTracker,
-		Model:   cust.Model.Name(),
-		Pricing: pricingRate,
-	})
+	// Register before the `go` so a WaitFor that races this
+	// construction can't see a count of zero and report a drain that
+	// never happened (#751).
+	deps.WakeLoops.add()
+	go func() {
+		defer deps.WakeLoops.done()
+		runner.WakeLoop(loopCtx, ag, runner.WakeLoopOptions{
+			Tracker: sessionTracker,
+			Model:   cust.Model.Name(),
+			Pricing: pricingRate,
+		})
+	}()
 	if bgClose == nil {
 		return ad, cancelOnEvict, nil
 	}

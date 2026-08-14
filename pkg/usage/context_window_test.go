@@ -25,6 +25,7 @@ func TestContextWindowSizeFor(t *testing.T) {
 		{"gemini-3.5-flash-customtools", 1_000_000},
 		{"gemini-3.5-pro", 1_000_000},
 		{"gemini-3.5-flash", 1_000_000},
+		{"gemini-3.7-flash", 1_000_000},      // newer top of the flash line
 		{"gemini-3.6-flash", 1_000_000},      // taskclass frontier default (#530)
 		{"gemini-3.5-flash-lite", 1_000_000}, // taskclass small default
 		{"GEMINI-3.5-FLASH-LITE", 1_000_000}, // case-insensitive like modeltier/pricing

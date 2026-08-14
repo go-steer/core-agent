@@ -170,6 +170,8 @@ A subagent that itself spawns subagents. Often called "manager" or "coordinator.
 
 - A subagent cannot spawn *itself*. `spawn_agent` refuses a reference to any configured subagent already running as an ancestor of the call and tells the model why, so it reroutes onto doing the work rather than retrying. The match is on the configured name, not the instance name — `cluster-1` asking for another `cluster` is refused. This is a separate bound from the depth cap, which by definition can't see recursion that stays shallow: a subagent respawning itself sits at depth 1 under any cap.
 
+- A refused spawn reads as a refusal (v2.9+). Every refusal — self-spawn, an unknown subagent name, the concurrency cap, ad-hoc spawns being disabled — comes back as the tool's *result* rather than a transport error, so the model can adapt to it. Since v2.9 the result also sets the conventional `error` field, which is what makes the refusal visible to everyone else: the tool row renders `✗` with the reason in both TUIs instead of looking like a launch that happened, the OTel tool span is marked failed, and the [watchdog's](/concepts/context-management/#watchdog-behavioral-observer--since-v25) tool-failure-streak signal counts it. The same applies to `stop_agent` on a name that isn't running.
+
 - Set tight budgets on the manager subagent. It shouldn't reason for 10 minutes before spawning its first child.
 - Use the `--max-turns` and `--max-cost` flags on `spawn_agent` to bound each level.
 - Audit the spawn tree out-of-band via the attach hub's `GET .../agents` endpoint or the TUI (operator surfaces), not a model tool.

@@ -59,6 +59,18 @@ small manager type.
   effectively shares one gate. With four targeted mitigations to
   make this safe in practice (see Permissions below). Bounded-subset
   grants with parent-as-arbiter is deferred to v1.3+.
+- **A refusal is reported twice, on purpose (amended 2026-08-14,
+  #746).** Spawn and stop failures come back as the tool's *result*
+  rather than a Go error, so the model reads them in conversation
+  context and adapts. What that contract missed is that the model is
+  not the only reader: a refusal had the same `{name, branch, status}`
+  shape as a launch, with the failure buried in a status string, so
+  the TUIs drew a refused self-spawn exactly like a subagent that had
+  started. The refusal text now also goes in the result's `error`
+  field — ADK's reserved key for a failed call — which the flow's
+  tool span, the watchdog's failure-streak signal, and both TUIs
+  already read. `status` keeps its `error: ...` prose verbatim, so
+  nothing about the model's half changes.
 - **Fresh `model.LLM` per spawn.** Each subagent calls
   `provider.Model(ctx, modelID)` to get its own client. Sidesteps any
   concurrent-streaming safety questions in the genai/anthropic SDKs.

@@ -71,12 +71,13 @@ less /tmp/notes.md
 
 `release-images.yml` builds every image on `golang:<version>-alpine`, where `<version>` comes from **`go.mod`'s `toolchain` directive** — not the `go` directive, which is only the language compatibility floor. Stdlib CVEs are fixed by toolchain patch releases, so that distinction decides whether a published image ships a vulnerable standard library ([#736](https://github.com/go-steer/core-agent/issues/736)).
 
-Two checks keep it honest, and both read the same resolver ([`dev/tools/verify-go-toolchain`](../dev/tools/verify-go-toolchain)):
+Three checks keep it honest, and all of them read the same resolver ([`dev/tools/verify-go-toolchain`](../dev/tools/verify-go-toolchain), backed by `resolve_toolchain` in [`dev/tools/common.sh`](../dev/tools/common.sh)):
 
-- **Before merge** — the `go toolchain` check verifies that both Dockerfiles' `ARG GO_VERSION` defaults and the release workflow agree with `go.mod`. Run it locally with `dev/ci/presubmits/verify-go-toolchain`.
+- **Before merge** — the `go toolchain` check verifies that both Dockerfiles' `ARG GO_VERSION` defaults agree with `go.mod`, that no workflow reaches for `actions/setup-go` directly or defines its own `GO_VERSION`, and that the composite action still resolves and verifies through this script. Run it locally with `dev/ci/presubmits/verify-go-toolchain`.
+- **In every job** — [`.github/actions/go-toolchain`](../.github/actions/go-toolchain/action.yml) installs exactly the pinned toolchain, exports `GOTOOLCHAIN` job-wide, and then runs `verify-go-toolchain --running`, which fails the job unless `go env GOVERSION` reports that version. Sourcing `dev/tools/common.sh` applies the same pin locally, so a contributor's presubmit run scans the stdlib we ship rather than whichever patch release they happen to have installed.
 - **Before publish** — the release workflow builds `linux/amd64`, exports the image filesystem, and asserts the binary's recorded Go version matches `go.mod` and that its stdlib carries no advisories. This runs *before* the push, so a mismatch fails the release instead of shipping.
 
-If the publish-time check reports stdlib advisories, bump `toolchain` in `go.mod` to the current patch release and re-tag; nothing else in the tree needs to change. Source-mode `govulncheck` (CI's `vuln` job) will not catch this class on its own — it scans with whatever toolchain the runner resolves, not the one the image is built with.
+If the publish-time check reports stdlib advisories, bump `toolchain` in `go.mod` to the current patch release and re-tag; nothing else in the tree needs to change. Source-mode `govulncheck` (CI's `vuln` job) used to be no help on this class, because it scanned with whatever toolchain the runner resolved — deliberately the *newest* 1.x, which is not what the image is built with. With the pin in place both scans now describe the same stdlib, though the binary check remains the authority: the official `golang` images set `GOTOOLCHAIN=local`, so a build that starts from the wrong base image is only visible in the artifact.
 
 ## Verify a release locally
 

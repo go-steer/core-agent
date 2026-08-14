@@ -19,15 +19,79 @@
 #   . "$(dirname "$0")/common.sh"
 #
 # Provides:
-#   repo_root        — absolute path to the git working tree root
-#   ensure_tool      — go install <pkg>@<ver> if the binary isn't on PATH
-#   run_step         — run a command + print a "▸ name" header (for ci aggregator)
+#   repo_root          — absolute path to the git working tree root
+#   resolve_toolchain  — the Go version go.mod pins us to (e.g. 1.26.6)
+#   ensure_tool        — go install <pkg>@<ver> if the binary isn't on PATH
+#   run_step           — run a command + print a "▸ name" header (for ci aggregator)
+#
+# Sourcing this also exports GOTOOLCHAIN, pinning every go command these
+# scripts run to the toolchain go.mod names. See pin_toolchain below.
 
 set -euo pipefail
 
 repo_root() {
   git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel
 }
+
+# resolve_toolchain — print the Go toolchain version go.mod pins us to,
+# without the `go` prefix (1.26.6).
+#
+# go.mod carries two versions and they mean different things:
+#
+#   go 1.26.4          — the language compatibility floor.
+#   toolchain go1.26.6 — the toolchain we actually build with.
+#
+# Stdlib CVEs are fixed by toolchain patch releases, so the second line
+# is the one that decides whether a shipped binary is vulnerable. Read
+# the first one by mistake and CI stays green while the published image
+# ships a stdlib that govulncheck already knows about (#736). This is
+# the one place that distinction is encoded; everything else calls here.
+#
+# Falls back to the `go` directive, which is what go.mod looks like when
+# the two would be identical (`go mod tidy` drops a toolchain line that
+# adds nothing).
+resolve_toolchain() {
+  local gomod version
+  gomod="$(repo_root)/go.mod"
+  version=$(grep -oE '^toolchain go[0-9]+\.[0-9]+(\.[0-9]+)?$' "$gomod" \
+            | sed -n '1p' | sed 's/^toolchain go//')
+  if [[ -z "$version" ]]; then
+    version=$(grep -oE '^go [0-9]+\.[0-9]+(\.[0-9]+)?$' "$gomod" \
+              | sed -n '1p' | awk '{print $2}')
+  fi
+  if [[ -z "$version" ]]; then
+    echo "resolve_toolchain: no toolchain or go directive in ${gomod}" >&2
+    return 1
+  fi
+  echo "$version"
+}
+
+# pin_toolchain — export GOTOOLCHAIN=go<pinned> unless the caller has
+# already chosen one.
+#
+# GOTOOLCHAIN=auto (the default) treats go.mod's toolchain directive as
+# a *minimum*: a machine with a newer patch release keeps using it. That
+# is the wrong direction for the checks these scripts run — source-mode
+# govulncheck reports against the stdlib of the toolchain running it, so
+# a developer or CI runner one patch ahead of what we ship scans a
+# stdlib nobody will ever download and reports green either way. Naming
+# the version exactly makes every local run and every CI job agree with
+# the release artifacts.
+#
+# A caller who sets GOTOOLCHAIN explicitly (`local` in a hermetic or
+# offline builder, most likely) is left alone — that's a deliberate
+# choice, and silently overriding it would trade one surprise for
+# another.
+pin_toolchain() {
+  if [[ -n "${GOTOOLCHAIN:-}" ]]; then
+    return 0
+  fi
+  local version
+  version=$(resolve_toolchain) || return 1
+  export GOTOOLCHAIN="go${version}"
+}
+
+pin_toolchain
 
 # ensure_tool <bin-name> <go-install-target>
 #

@@ -67,9 +67,6 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  GO_VERSION: '1.26'
-
 # Each job below is a thin wrapper over a script under
 # dev/ci/presubmits/. The same script is what `dev/tools/ci` runs
 # locally, so a green local run is the same green run as remote CI.
@@ -81,10 +78,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: ./.github/actions/go-toolchain
         with:
-          go-version: ${{ env.GO_VERSION }}
-          check-latest: true
           # setup-go@v5 caches ~/go/pkg/mod + ~/.cache/go-build using a
           # key derived from go.sum. Letting it own those paths avoids
           # the `tar: File exists` collision an explicit actions/cache@v4
@@ -117,10 +112,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: ./.github/actions/go-toolchain
         with:
-          go-version: ${{ env.GO_VERSION }}
-          check-latest: true
           # setup-go@v5 owns the Go module + build caches.
           cache-dependency-path: '**/go.sum'
       # No actions/cache step for ~/.cache/golangci-lint:
@@ -141,10 +134,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          check-latest: true
+      - uses: ./.github/actions/go-toolchain
       - name: Verify tidy
         run: dev/ci/presubmits/verify-mod-tidy
 
@@ -153,10 +143,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          check-latest: true
+      - uses: ./.github/actions/go-toolchain
       - name: Vuln scan
         run: dev/ci/presubmits/verify-vuln
 

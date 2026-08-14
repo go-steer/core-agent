@@ -1,0 +1,78 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Set up Go toolchain
+description: >
+  Install exactly the Go named by go.mod's `toolchain` directive, and
+  verify that is the one the job will actually run.
+
+# Why this exists instead of a bare `actions/setup-go`:
+#
+# Every job used to ask for a floating `go-version: '1.26'` with
+# `check-latest: true` — deliberately the NEWEST patch release, which is
+# not the one we ship. Source-mode govulncheck reports against the
+# stdlib of the toolchain running it, so a stdlib CVE fixed in a patch
+# newer than our pinned `toolchain` scanned green in CI while every
+# published binary still carried the hole. That is #736's failure mode
+# on the source side: the binary check added there catches it at release
+# time, but CI is where it should have been caught.
+#
+# Resolution goes through `dev/tools/verify-go-toolchain --print` rather
+# than setup-go's `go-version-file: go.mod`, because go.mod carries two
+# versions that mean different things and reading the wrong one is
+# precisely the bug: `go 1.26.4` is the language floor, `toolchain
+# go1.26.6` is what we build with. One script owns that distinction.
+#
+# The `--running` step is the part that can't be argued with. Whatever
+# the runner had preinstalled, whatever setup-go decided to honor, the
+# job proceeds only if the go command it will invoke reports the pinned
+# version.
+
+inputs:
+  cache-dependency-path:
+    description: Passed through to actions/setup-go (module cache key).
+    required: false
+    default: ''
+
+outputs:
+  version:
+    description: The pinned toolchain version, without the `go` prefix (e.g. 1.26.6).
+    value: ${{ steps.resolve.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve the Go toolchain from go.mod
+      id: resolve
+      shell: bash
+      run: |
+        set -euo pipefail
+        version="$(dev/tools/verify-go-toolchain --print)"
+        echo "version=${version}" >> "$GITHUB_OUTPUT"
+        # Job-wide, so the pin also covers the ad-hoc `run: go ...`
+        # steps that never source dev/tools/common.sh. GOTOOLCHAIN
+        # names an exact toolchain, where go.mod's directive is only a
+        # minimum — the difference is what let a runner one patch ahead
+        # scan a stdlib we never ship.
+        echo "GOTOOLCHAIN=go${version}" >> "$GITHUB_ENV"
+        echo "Pinned Go toolchain: ${version}"
+
+    - uses: actions/setup-go@v5
+      with:
+        go-version: ${{ steps.resolve.outputs.version }}
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}
+
+    - name: Verify the running toolchain
+      shell: bash
+      run: dev/tools/verify-go-toolchain --running

@@ -98,13 +98,11 @@ jobs:
       # grep that used to live here read the `go` directive (the
       # language compatibility floor, 1.26.4) rather than `toolchain`
       # (what we build with, 1.26.6), so published images were compiled
-      # against a stdlib CI had already moved off (#736).
-      - name: Resolve the Go toolchain from go.mod
+      # against a stdlib CI had already moved off (#736). The action's
+      # `version` output is that resolution; it also installs the same
+      # toolchain for the binary inspection step further down.
+      - uses: ./.github/actions/go-toolchain
         id: go-version
-        run: |
-          GO_VERSION="$(dev/tools/verify-go-toolchain --print)"
-          echo "version=${GO_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Building against Go ${GO_VERSION}"
 
       # QEMU enables building linux/arm64 images on the linux/amd64
       # runner. Without this, buildx --platform fails for non-native
@@ -242,11 +240,6 @@ jobs:
             COMMIT=${{ github.sha }}
             BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
           cache-from: type=gha,scope=${{ matrix.image_name }}
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-          check-latest: true
 
       - name: Verify the shipped toolchain
         run: |

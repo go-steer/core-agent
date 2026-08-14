@@ -213,6 +213,15 @@ func TestSubagents_JSONRoundTrip(t *testing.T) {
 // json.Unmarshal that difference survives as non-nil-empty vs nil — which is
 // what wiring-time (cmd/core-agent) branches on. `omitempty` only affects the
 // write path, so it cannot erase an operator-authored empty list on read.
+//
+// What "inherit" then GRANTS is wiring-time policy, not a config-load
+// property, and for tools: it has one carve-out — the spawn tools are
+// withheld from an inheriting subagent and only an explicit list grants
+// them (#748). That is pinned next to the code that does it:
+// cmd/core-agent's TestResolveSubagentTools_SpawnCarveOut and
+// TestBuildDeclaredSubagents_SpawnCarveOutReachesBothTwins. Here the only
+// claim is the one this package owns: nil and empty must stay
+// distinguishable, or neither policy can be expressed.
 func TestSubagents_EmptyVsOmittedRefs(t *testing.T) {
 	t.Parallel()
 	const body = `{

@@ -18,6 +18,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -26,6 +27,7 @@ import (
 	adktool "google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/agent/background"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 	"github.com/go-steer/core-agent/v2/pkg/models/mock"
@@ -233,16 +235,19 @@ func TestResolveSubagentTools(t *testing.T) {
 	parent := []adktool.Tool{fakeTool{"read_file"}, fakeTool{"bash"}, fakeTool{"write_file"}}
 
 	// nil → inherit the full registry (same instances).
-	got, err := resolveSubagentTools(config.SubagentSpec{Tools: nil}, parent)
+	got, dropped, err := resolveSubagentTools(config.SubagentSpec{Tools: nil}, parent)
 	if err != nil {
 		t.Fatalf("nil Tools: %v", err)
 	}
 	if len(got) != len(parent) {
 		t.Errorf("nil Tools should inherit all %d, got %d", len(parent), len(got))
 	}
+	if len(dropped) != 0 {
+		t.Errorf("dropped = %v, want none — a registry without spawn tools loses nothing to the carve-out", dropped)
+	}
 
 	// list → exactly those, in the order requested.
-	got, err = resolveSubagentTools(config.SubagentSpec{Tools: []string{"bash", "read_file"}}, parent)
+	got, _, err = resolveSubagentTools(config.SubagentSpec{Tools: []string{"bash", "read_file"}}, parent)
 	if err != nil {
 		t.Fatalf("list Tools: %v", err)
 	}
@@ -251,7 +256,7 @@ func TestResolveSubagentTools(t *testing.T) {
 	}
 
 	// empty (non-nil) → grant none.
-	got, err = resolveSubagentTools(config.SubagentSpec{Tools: []string{}}, parent)
+	got, _, err = resolveSubagentTools(config.SubagentSpec{Tools: []string{}}, parent)
 	if err != nil {
 		t.Fatalf("empty Tools: %v", err)
 	}
@@ -260,8 +265,56 @@ func TestResolveSubagentTools(t *testing.T) {
 	}
 
 	// unknown → fail loud.
-	if _, err := resolveSubagentTools(config.SubagentSpec{Tools: []string{"nope"}}, parent); err == nil {
+	if _, _, err := resolveSubagentTools(config.SubagentSpec{Tools: []string{"nope"}}, parent); err == nil {
 		t.Error("unknown tool should error")
+	}
+}
+
+// TestResolveSubagentTools_SpawnCarveOut is the #748 regression at the
+// unit level: inheriting the parent's registry must not inherit its
+// authority to delegate. The sibling ad-hoc path (factory(), which
+// strips r.spawnToolNames from the catalog it hands each session's
+// manager) has withheld the same two tools since it was written; which
+// path built the list should not decide whether a subagent can build a
+// fleet.
+//
+// Fails on pre-fix code: nil Tools returned the parent slice verbatim,
+// spawn_agent and stop_agent included.
+func TestResolveSubagentTools_SpawnCarveOut(t *testing.T) {
+	t.Parallel()
+	parent := []adktool.Tool{
+		fakeTool{"read_file"},
+		fakeTool{background.SpawnAgentToolName},
+		fakeTool{"bash"},
+		fakeTool{background.StopAgentToolName},
+	}
+
+	// tools: omitted → everything EXCEPT the delegation surface.
+	got, dropped, err := resolveSubagentTools(config.SubagentSpec{Tools: nil}, parent)
+	if err != nil {
+		t.Fatalf("nil Tools: %v", err)
+	}
+	if names := toolNames(got); !slices.Equal(names, []string{"read_file", "bash"}) {
+		t.Errorf("inherited tools = %v, want [read_file bash] — inheriting the parent's hardening is not inheriting its delegation surface", names)
+	}
+	if !slices.Equal(dropped, []string{background.SpawnAgentToolName, background.StopAgentToolName}) {
+		t.Errorf("dropped = %v, want both spawn tools reported so the boot line can say so", dropped)
+	}
+
+	// tools: listed explicitly → the deliberate orchestrator-subagent
+	// case still works. The carve-out is about what inheritance means,
+	// not about a tool an operator may never grant.
+	got, dropped, err = resolveSubagentTools(config.SubagentSpec{
+		Tools: []string{"read_file", background.SpawnAgentToolName},
+	}, parent)
+	if err != nil {
+		t.Fatalf("explicit Tools: %v", err)
+	}
+	if names := toolNames(got); !slices.Equal(names, []string{"read_file", background.SpawnAgentToolName}) {
+		t.Errorf("explicit tools = %v, want [read_file spawn_agent]", names)
+	}
+	if len(dropped) != 0 {
+		t.Errorf("dropped = %v, want none — an explicit list drops nothing", dropped)
 	}
 }
 
@@ -583,6 +636,119 @@ func TestRootInventory_DistinguishesEmptyRoot(t *testing.T) {
 	}
 	if gotPop == gotBare {
 		t.Errorf("inventory must distinguish a populated root from a bare one; both = %q", gotPop)
+	}
+}
+
+// TestBuildDeclaredSubagents_SpawnCarveOutReachesBothTwins is the #748
+// regression where it was observed: the live GKE UAT of main-81020e9 had
+// the `cluster` specialist — a spec with no tools: key — call
+// spawn_agent to delegate its own investigation to another `cluster`.
+// #742's lineage guard refused that particular call, but the guard is a
+// backstop for a tool the subagent should not have been holding, and it
+// only covers SELF-spawn: with two specialists on the roster, one could
+// delegate to the other, unbounded, from a spec that never asked to.
+//
+// Both twins are asserted because they are built from the same resolved
+// slice and either one leaking is the whole bug: the sync subagent-tool
+// the parent calls, and the async template spawn_agent {agent: "..."}
+// spawns. The boot line is asserted too — a carve-out an operator can't
+// see at startup is one they rediscover from a refused call mid-run.
+//
+// Fails on pre-fix code: both surfaces carry spawn_agent + stop_agent,
+// and the boot line says only "tools=inherit".
+func TestBuildDeclaredSubagents_SpawnCarveOutReachesBothTwins(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{
+		Model: config.ModelConfig{Provider: mock.ProviderEcho, Name: "echo"},
+		Subagents: []config.SubagentSpec{{
+			Name:        "cluster",
+			Description: "read-only cluster investigator",
+			// No Tools key: "inherit the parent's hardening".
+		}},
+	}
+	// The parent's registry as main.go assembles it: built-ins with the
+	// spawn tools appended (main.go:1262).
+	surface := parentSurface{builtinTools: []adktool.Tool{
+		fakeTool{"read_file"},
+		fakeTool{"bash"},
+		fakeTool{background.SpawnAgentToolName},
+		fakeTool{background.StopAgentToolName},
+	}}
+	var lines []string
+	deps := subagentDeps{interp: identityInterp, send: func(s string) { lines = append(lines, s) }}
+
+	subs, templates, _, err := buildDeclaredSubagents(
+		context.Background(), cfg, mock.NewEcho(), t.TempDir(), surface, deps,
+	)
+	if err != nil {
+		t.Fatalf("buildDeclaredSubagents: %v", err)
+	}
+	if len(subs) != 1 || len(templates) != 1 {
+		t.Fatalf("got %d subagents / %d templates, want 1 each", len(subs), len(templates))
+	}
+
+	for _, tc := range []struct {
+		twin  string
+		tools []adktool.Tool
+	}{
+		{"sync subagent-tool", subs[0].Tools()},
+		{"async spawn template", templates[0].Tools},
+	} {
+		names := toolNames(tc.tools)
+		for _, banned := range background.SpawnToolNames() {
+			if slices.Contains(names, banned) {
+				t.Errorf("%s holds %q; tools: was omitted, so delegation was never asked for (got %v)", tc.twin, banned, names)
+			}
+		}
+		for _, want := range []string{"read_file", "bash"} {
+			if !slices.Contains(names, want) {
+				t.Errorf("%s lost %q — the carve-out must take the spawn tools and nothing else (got %v)", tc.twin, want, names)
+			}
+		}
+	}
+
+	if len(lines) != 1 || !strings.Contains(lines[0], "spawn=withheld") {
+		t.Errorf("boot lines = %q, want one line reporting spawn=withheld", lines)
+	}
+}
+
+// TestBuildDeclaredSubagents_ExplicitSpawnToolsStillGranted is the other
+// half of #748: the carve-out changes what INHERITANCE means, not what an
+// operator may grant. A spec that names the spawn tools gets them, which
+// is how a deliberate orchestrator subagent is written.
+func TestBuildDeclaredSubagents_ExplicitSpawnToolsStillGranted(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{
+		Model: config.ModelConfig{Provider: mock.ProviderEcho, Name: "echo"},
+		Subagents: []config.SubagentSpec{{
+			Name:  "orchestrator",
+			Tools: []string{"read_file", background.SpawnAgentToolName},
+		}},
+	}
+	surface := parentSurface{builtinTools: []adktool.Tool{
+		fakeTool{"read_file"},
+		fakeTool{"bash"},
+		fakeTool{background.SpawnAgentToolName},
+		fakeTool{background.StopAgentToolName},
+	}}
+	var lines []string
+	deps := subagentDeps{interp: identityInterp, send: func(s string) { lines = append(lines, s) }}
+
+	subs, _, _, err := buildDeclaredSubagents(
+		context.Background(), cfg, mock.NewEcho(), t.TempDir(), surface, deps,
+	)
+	if err != nil {
+		t.Fatalf("buildDeclaredSubagents: %v", err)
+	}
+	names := toolNames(subs[0].Tools())
+	if !slices.Contains(names, background.SpawnAgentToolName) {
+		t.Errorf("orchestrator tools = %v, want spawn_agent — an explicit grant must survive the carve-out", names)
+	}
+	if slices.Contains(names, background.StopAgentToolName) {
+		t.Errorf("orchestrator tools = %v, want no stop_agent — the list is the whole grant", names)
+	}
+	if len(lines) != 1 || strings.Contains(lines[0], "spawn=withheld") {
+		t.Errorf("boot lines = %q, want no withheld note when nothing was withheld", lines)
 	}
 }
 

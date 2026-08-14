@@ -317,7 +317,7 @@ func NewSpawnAgentTool(mgr *Manager) tool.Tool {
 		return mgr.awaitResult(toolCtx, h), nil
 	}
 	t, err := functiontool.New(functiontool.Config{
-		Name:        "spawn_agent",
+		Name:        SpawnAgentToolName,
 		Description: spawnAgentDescription,
 	}, handler)
 	if err != nil {
@@ -369,13 +369,30 @@ func NewStopAgentTool(mgr *Manager) tool.Tool {
 		return stopAgentResult{Name: args.Name, Status: st}, nil
 	}
 	t, err := functiontool.New(functiontool.Config{
-		Name:        "stop_agent",
+		Name:        StopAgentToolName,
 		Description: "Stop a running background subagent. The subagent's goroutine exits at its next checkpoint; its terminal status becomes 'stopped'.",
 	}, handler)
 	if err != nil {
 		panic("background: NewStopAgentTool: " + err.Error())
 	}
 	return t
+}
+
+// The model-facing names of the two delegation tools. Exported because
+// the delegation surface is something a caller has to be able to reason
+// about by name: the CLI carves these out of what a subagent inherits so
+// a subagent doesn't get a delegation surface it never asked for (#748).
+const (
+	SpawnAgentToolName = "spawn_agent"
+	StopAgentToolName  = "stop_agent"
+)
+
+// SpawnToolNames returns the names NewSpawnTools registers, for callers
+// that need to filter a tool slice rather than build one — chiefly the
+// CLI, which withholds the delegation surface from subagents that
+// inherit the parent's registry wholesale (#748).
+func SpawnToolNames() []string {
+	return []string{SpawnAgentToolName, StopAgentToolName}
 }
 
 // NewSpawnTools is a convenience that returns both model-facing

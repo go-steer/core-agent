@@ -107,7 +107,7 @@ Why this shape:
 
 What this *doesn't* express:
 
-- Cost models, rate limits, caching policies — all live elsewhere (`usage/`, retry not yet implemented, opt-in `WithCacheSystem` per provider).
+- Cost models, rate limits, caching policies — all live elsewhere (`usage/`, retry not yet implemented, `WithPromptCache` per provider).
 - Streaming preferences — controlled by `agent.RunConfig` and the LLM implementation, not the Provider.
 - Multi-modal support — the `model.LLM` interface ADK exposes is genai-shaped, so any provider that wants images / audio has to convert to/from genai's Part types. The Anthropic adapter currently handles only text + tool round-trip; image support is a deferred item (see "Open questions" below).
 
@@ -182,9 +182,11 @@ Anthropic's API requires `MaxTokens`; there's no implicit default. If `Config.Ma
 
 #### Prompt caching
 
-Off by default. Construct the Provider with `WithCacheSystem(true)` to opt in — adds an ephemeral `cache_control` to the last system block, so repeated turns with the same system prompt get the prompt-caching discount.
+**On by default since #714.** Every Provider starts from `DefaultCacheOptions()` — an ephemeral `cache_control` on the last system block, plus rolling breakpoints over the tail of the conversation (up to the API's 4 markers total, 16 blocks apart). The system marker earns the discount on the stable tools+persona prefix; the history markers keep a replayed transcript from being re-billed in full every turn.
 
-Why opt-in: the cache write costs more than a normal request. If the system prompt changes between turns (which is the *default* for many use cases — agents that mutate their own instructions, agents that load fresh context per turn), caching loses money. Consumers who know their system prompt is stable should turn it on.
+Why on: the write premium (1.25× at the 5-minute TTL) breaks even on the second request carrying the same prefix, and the agentic loop issues that request seconds later. The shape that loses is a one-shot whose prefix never recurs, which is the rare one — and core-agent's own one-shots (summarizer, checkpointer, `/btw`, tight-budget subtasks) opt out per request via `models.WithoutPromptCache(ctx)`.
+
+Turning it off: `WithPromptCache(CacheOptions{})` for a library consumer, `model.anthropic.prompt_cache.enabled=false` in config, or `--no-prompt-cache` on the CLI. `WithCacheSystem` is deprecated but keeps its original all-or-nothing meaning: `WithCacheSystem(false)` still means no caching at all. Full rationale, including the prefix-stability audit, in `docs/anthropic-prompt-caching-design.md`.
 
 ### Things the adapter explicitly doesn't do (yet)
 
@@ -588,7 +590,7 @@ Each of these was considered and rejected for v1. The rationale matters because 
 **Status: PARTIALLY SHIPPED.** A broad slash-command set ships in the TUI/attach surface; the substrate loop itself still stays UI-agnostic.
 
 **Anthropic feature coverage** — extended thinking, structured outputs, server-side tools, vision, prompt caching beyond the simple `WithCacheSystem` toggle. All require small, well-bounded additions to the Anthropic adapter. None block v1 use.
-**Status: PARTIAL.** Prompt caching and `WithWebSearch` server-side tool are wired; **extended thinking is NOT round-tripped and currently breaks tool loops on thinking-default models — see the correctness cleanup milestone.** Vision/structured-outputs remain unshipped.
+**Status: PARTIAL.** Prompt caching is wired end to end (system + rolling history breakpoints, on by default, #714) as is the `WithWebSearch` server-side tool; **extended thinking is NOT round-tripped and currently breaks tool loops on thinking-default models — see the correctness cleanup milestone.** Vision/structured-outputs remain unshipped.
 
 **Auto-detection for `anthropic-vertex`** — env-var overlap with Vertex Gemini makes this risky. Possible solution: fire only when `ANTHROPIC_VERTEX_PROJECT_ID` is set without `GOOGLE_API_KEY`. Worth doing once the env semantics are designed deliberately, not as a follow-on.
 

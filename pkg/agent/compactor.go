@@ -28,6 +28,7 @@ import (
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/session"
 
+	"github.com/go-steer/core-agent/v2/pkg/models"
 	"github.com/go-steer/core-agent/v2/pkg/modeltier"
 )
 
@@ -371,6 +372,13 @@ func (a *Agent) runSummarizer(ctx context.Context, spec summarizerSpec) (summari
 		},
 		// Tools intentionally nil — summarization is tool-less.
 	}
+
+	// No prompt cache for this call. Its prefix — no tools, the
+	// summarizer's own system instruction, a window that has just moved
+	// — is shared with nothing else in the process, so a cache entry
+	// would be written at the 1.25x premium and never read. See
+	// models.WithoutPromptCache.
+	ctx = models.WithoutPromptCache(ctx)
 
 	start := time.Now()
 	var b strings.Builder

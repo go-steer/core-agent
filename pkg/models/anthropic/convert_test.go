@@ -31,7 +31,7 @@ func TestBuildParams_TextOnly(t *testing.T) {
 	t.Parallel()
 	p, err := buildParams("claude-opus-4-7", []*genai.Content{
 		{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "hi"}}},
-	}, nil, false, BuiltinTools{})
+	}, nil, CacheOptions{}, BuiltinTools{})
 	if err != nil {
 		t.Fatalf("buildParams: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestBuildParams_SystemExtractedAndCached(t *testing.T) {
 	cfg := &genai.GenerateContentConfig{
 		SystemInstruction: &genai.Content{Parts: []*genai.Part{{Text: "be terse"}}},
 	}
-	p, err := buildParams("claude-opus-4-7", nil, cfg, true, BuiltinTools{})
+	p, err := buildParams("claude-opus-4-7", nil, cfg, CacheOptions{System: true}, BuiltinTools{})
 	if err != nil {
 		t.Fatalf("buildParams: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestBuildParams_RoleMapping(t *testing.T) {
 	p, err := buildParams("claude-opus-4-7", []*genai.Content{
 		{Role: genai.RoleUser, Parts: []*genai.Part{{Text: "q"}}},
 		{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "a"}}},
-	}, nil, false, BuiltinTools{})
+	}, nil, CacheOptions{}, BuiltinTools{})
 	if err != nil {
 		t.Fatalf("buildParams: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestBuildParams_ToolRoundTrip(t *testing.T) {
 			}},
 		}},
 	}
-	p, err := buildParams("claude-opus-4-7", contents, nil, false, BuiltinTools{})
+	p, err := buildParams("claude-opus-4-7", contents, nil, CacheOptions{}, BuiltinTools{})
 	if err != nil {
 		t.Fatalf("buildParams: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestBuildParams_ToolDeclarations(t *testing.T) {
 			}},
 		}},
 	}
-	p, err := buildParams("claude-opus-4-7", nil, cfg, false, BuiltinTools{})
+	p, err := buildParams("claude-opus-4-7", nil, cfg, CacheOptions{}, BuiltinTools{})
 	if err != nil {
 		t.Fatalf("buildParams: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestBuildParams_ToolDeclarations_ParametersJsonSchema(t *testing.T) {
 			}},
 		}},
 	}
-	p, err := buildParams("claude-opus-4-7", nil, cfg, false, BuiltinTools{})
+	p, err := buildParams("claude-opus-4-7", nil, cfg, CacheOptions{}, BuiltinTools{})
 	if err != nil {
 		t.Fatalf("buildParams: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestBuildParams_ToolDeclarations_RealADKTool(t *testing.T) {
 	}
 	p, err := buildParams("claude-opus-4-7", nil, &genai.GenerateContentConfig{
 		Tools: []*genai.Tool{{FunctionDeclarations: []*genai.FunctionDeclaration{decl}}},
-	}, false, BuiltinTools{})
+	}, CacheOptions{}, BuiltinTools{})
 	if err != nil {
 		t.Fatalf("buildParams: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestBuildParams_ToolDeclarations_RealADKTool(t *testing.T) {
 func TestBuildParams_MaxTokensOverride(t *testing.T) {
 	t.Parallel()
 	cfg := &genai.GenerateContentConfig{MaxOutputTokens: 2048}
-	p, _ := buildParams("claude-opus-4-7", nil, cfg, false, BuiltinTools{})
+	p, _ := buildParams("claude-opus-4-7", nil, cfg, CacheOptions{}, BuiltinTools{})
 	if p.MaxTokens != 2048 {
 		t.Errorf("MaxTokens = %d, want 2048", p.MaxTokens)
 	}
@@ -552,7 +552,7 @@ func TestBuildParams_GenerationConfigMapped(t *testing.T) {
 			TopK:          genai.Ptr[float32](40),
 			StopSequences: []string{"END", "STOP"},
 		}
-		p, err := buildParams("claude-opus-4-7", contents, cfg, false, BuiltinTools{})
+		p, err := buildParams("claude-opus-4-7", contents, cfg, CacheOptions{}, BuiltinTools{})
 		if err != nil {
 			t.Fatalf("buildParams: %v", err)
 		}
@@ -572,7 +572,7 @@ func TestBuildParams_GenerationConfigMapped(t *testing.T) {
 
 	t.Run("unset config leaves params unset", func(t *testing.T) {
 		t.Parallel()
-		p, err := buildParams("claude-opus-4-7", contents, nil, false, BuiltinTools{})
+		p, err := buildParams("claude-opus-4-7", contents, nil, CacheOptions{}, BuiltinTools{})
 		if err != nil {
 			t.Fatalf("buildParams: %v", err)
 		}
@@ -652,7 +652,7 @@ func TestBuildParams_GenerationConfigMapped(t *testing.T) {
 			cfg := &genai.GenerateContentConfig{
 				ToolConfig: &genai.ToolConfig{FunctionCallingConfig: tt.fcc},
 			}
-			p, err := buildParams("claude-opus-4-7", contents, cfg, false, BuiltinTools{})
+			p, err := buildParams("claude-opus-4-7", contents, cfg, CacheOptions{}, BuiltinTools{})
 			if err != nil {
 				t.Fatalf("buildParams: %v", err)
 			}
@@ -665,7 +665,7 @@ func TestBuildParams_GenerationConfigMapped(t *testing.T) {
 		cfg := &genai.GenerateContentConfig{
 			ThinkingConfig: &genai.ThinkingConfig{ThinkingBudget: genai.Ptr[int32](2048)},
 		}
-		p, err := buildParams("claude-opus-4-7", contents, cfg, false, BuiltinTools{})
+		p, err := buildParams("claude-opus-4-7", contents, cfg, CacheOptions{}, BuiltinTools{})
 		if err != nil {
 			t.Fatalf("buildParams: %v", err)
 		}
@@ -679,7 +679,7 @@ func TestBuildParams_GenerationConfigMapped(t *testing.T) {
 		cfg := &genai.GenerateContentConfig{
 			ThinkingConfig: &genai.ThinkingConfig{ThinkingBudget: genai.Ptr[int32](0)},
 		}
-		p, err := buildParams("claude-opus-4-7", contents, cfg, false, BuiltinTools{})
+		p, err := buildParams("claude-opus-4-7", contents, cfg, CacheOptions{}, BuiltinTools{})
 		if err != nil {
 			t.Fatalf("buildParams: %v", err)
 		}

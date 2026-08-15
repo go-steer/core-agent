@@ -202,6 +202,7 @@ func main() {
 	mcpAgenticWrapLLM := flag.Bool("mcp-agentic-wrap-llm", false, "enable the LLM subagent second-chance path for MCP responses the structural pruner can't reduce below threshold (docs/agentic-mcp-design.md #223). Default off — opt-in until the operator has confirmed the cost trade-off works for their MCP surface. Layered on top of --no-mcp-digest: structural runs first regardless, and the LLM subagent only fires when structural leaves the response above threshold. Config-file equivalent: mcp.json's agentic_wrap_llm.")
 	mcpAgenticWrapModel := flag.String("mcp-agentic-wrap-model", "", "MCP-specific small-model override for the --mcp-agentic-wrap-llm subagent. When empty, falls through to --agentic-small-model, then to the provider's cheap-tier default. Motivation: MCP responses can be shaped differently enough from built-in-tool wrappers that one tier works well for one surface but not the other. Requires --mcp-agentic-wrap-llm. Config-file equivalent: mcp.json's agentic_wrap_model.")
 	noContextCache := flag.Bool("no-context-cache", false, "disable Vertex explicit context caching for the stable request prefix (system instruction + tools). Default: enabled on Vertex. When on, the daemon creates a CachedContent resource after turn 1 and stamps it onto every subsequent GenerateContent call so the prefix bills at ~10%% of the input rate. Kill switch for demos / debugging Vertex issues; leave on for production. See docs/vertex-context-caching-design.md. Also gated per-project by cfg.Model.Vertex.ContextCache.enabled.")
+	noPromptCache := flag.Bool("no-prompt-cache", false, "disable Anthropic prompt caching (cache_control breakpoints on the system prefix and the conversation tail). Default: enabled on the anthropic and anthropic-vertex providers. When on, the repeated prefix bills at ~10%% of the input rate instead of full price, at the cost of a 1.25x premium on the tokens each entry stores. Distinct from --no-context-cache, which is the Vertex/Gemini CachedContent resource; the two providers' mechanisms share nothing. Kill switch for debugging or for workloads whose prefix changes every call. See docs/anthropic-prompt-caching-design.md. Also gated per-project by cfg.model.anthropic.prompt_cache.enabled.")
 
 	// Agent-card discovery (docs/agent-card-design.md). All optional —
 	// either the .agents/agent-card.json file or the CLI flags must
@@ -247,7 +248,7 @@ func main() {
 			planFirstSet: flagWasSet(flag.CommandLine, "plan-first"),
 			planMode:     *planMode,
 		},
-		*smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *mcpAgenticWrapLLM, *mcpAgenticWrapModel, *noContextCache, promptOpts{appendSystemPrompt: *appendSystemPrompt, systemPromptFile: *systemPromptFile},
+		*smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *mcpAgenticWrapLLM, *mcpAgenticWrapModel, *noContextCache, *noPromptCache, promptOpts{appendSystemPrompt: *appendSystemPrompt, systemPromptFile: *systemPromptFile},
 		attachOpts{
 			Listen:           *attachListen,
 			UnixSocket:       *attachUnixSocket,
@@ -424,7 +425,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 // comment at the otelShutdown defer (#538).
 const teardownStepTimeout = 3 * time.Second
 
-func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, contentDirEntries []string, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, compactionThreshold float64, guardrails guardrailOpts, toolProfile toolProfileOpts, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache bool, promptCfg promptOpts, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
+func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, contentDirEntries []string, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, compactionThreshold float64, guardrails guardrailOpts, toolProfile toolProfileOpts, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache, noPromptCache bool, promptCfg promptOpts, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -731,6 +732,15 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			defer cancel()
 			contextCacheManager.Delete(shCtx)
 		}()
+	}
+
+	// Anthropic prompt caching (#714). Same wiring-order constraint as
+	// the context cache above: Model() copies the policy into the LLM
+	// it builds, so the kill switch has to land first. The config gate
+	// was already applied inside models.Resolve; this only layers the
+	// CLI flag on top.
+	if status, _ := compose.MaybeWirePromptCache(provider, noPromptCache); status != "" {
+		fmt.Fprintln(os.Stderr, "core-agent: "+status)
 	}
 
 	m, err := provider.Model(ctx, cfg.Model.Name)
@@ -1425,6 +1435,8 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		interp:     envResolver.InterpolateFunc(),
 		send:       send,
 		rootBase:   contentRootBase,
+
+		noPromptCache: noPromptCache,
 	})
 	// Terminate any stdio children the rooted subagents' servers own on the
 	// way out — set before the error check so a partial failure still cleans

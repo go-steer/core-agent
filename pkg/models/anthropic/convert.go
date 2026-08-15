@@ -28,10 +28,10 @@ import (
 // tools come from Config.Tools (the ADK's req.Tools map is unused —
 // the Gemini backend ignores it too, real tool decls live on Config).
 //
-// cacheSystem opts in to prompt caching on the last system block.
+// cache selects which prompt-cache breakpoints the request carries.
 // builtins enables Anthropic's server-side tools (e.g. web_search) by
 // appending them to the request's Tools slice after the function decls.
-func buildParams(modelID string, contents []*genai.Content, cfg *genai.GenerateContentConfig, cacheSystem bool, builtins BuiltinTools) (anthropic.MessageNewParams, error) {
+func buildParams(modelID string, contents []*genai.Content, cfg *genai.GenerateContentConfig, cache CacheOptions, builtins BuiltinTools) (anthropic.MessageNewParams, error) {
 	if modelID == "" {
 		modelID = DefaultModel
 	}
@@ -41,7 +41,7 @@ func buildParams(modelID string, contents []*genai.Content, cfg *genai.GenerateC
 		MaxTokens: int64(maxTokens(cfg)),
 	}
 
-	system := systemBlocks(cfg, cacheSystem)
+	system := systemBlocks(cfg)
 	if len(system) > 0 {
 		params.System = system
 	}
@@ -64,6 +64,12 @@ func buildParams(modelID string, contents []*genai.Content, cfg *genai.GenerateC
 	}
 
 	applyGenerationConfig(&params, cfg)
+
+	// Last, so the markers land on the request as the API will render
+	// it — tools → system → messages — and so nothing downstream can
+	// append a block after a breakpoint and silently move the cached
+	// prefix boundary.
+	applyCacheBreakpoints(&params, cache)
 
 	return params, nil
 }
@@ -138,10 +144,10 @@ func maxTokens(cfg *genai.GenerateContentConfig) int {
 }
 
 // systemBlocks extracts the system instruction from a genai config.
-// Returns nil when there's no system content. When cacheSystem is true,
-// the last block carries an ephemeral CacheControl marker so repeated
-// turns with the same system prompt benefit from prompt caching.
-func systemBlocks(cfg *genai.GenerateContentConfig, cacheSystem bool) []anthropic.TextBlockParam {
+// Returns nil when there's no system content. Cache markers are not
+// applied here — applyCacheBreakpoints stamps the whole request once
+// it is fully assembled.
+func systemBlocks(cfg *genai.GenerateContentConfig) []anthropic.TextBlockParam {
 	if cfg == nil || cfg.SystemInstruction == nil {
 		return nil
 	}
@@ -151,17 +157,6 @@ func systemBlocks(cfg *genai.GenerateContentConfig, cacheSystem bool) []anthropi
 			continue
 		}
 		out = append(out, anthropic.TextBlockParam{Text: p.Text})
-	}
-	if cacheSystem && len(out) > 0 {
-		// Default (5-minute) ephemeral TTL. The cost meter prices the
-		// resulting cache_creation_input_tokens at
-		// pricing.Rates.CacheCreationInputPerMTok, which is the
-		// 5-minute rate (1.25x base input) and the only write rate the
-		// catalog carries. Anthropic's 1-hour TTL bills 2x base input:
-		// switching this call to a 1h cache_control without adding a
-		// second rate to the catalog silently undercharges every cached
-		// turn by 37.5%.
-		out[len(out)-1].CacheControl = anthropic.NewCacheControlEphemeralParam()
 	}
 	return out
 }

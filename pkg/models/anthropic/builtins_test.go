@@ -93,7 +93,7 @@ func TestBuildParams_AppendsWebSearchToTools(t *testing.T) {
 			}},
 		}},
 	}
-	p, err := buildParams("claude-opus-4-7", nil, cfg, false, BuiltinTools{WebSearch: true})
+	p, err := buildParams("claude-opus-4-7", nil, cfg, CacheOptions{}, BuiltinTools{WebSearch: true})
 	if err != nil {
 		t.Fatalf("buildParams: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestBuildParams_NoBuiltinsWhenAllOff(t *testing.T) {
 			FunctionDeclarations: []*genai.FunctionDeclaration{{Name: "search"}},
 		}},
 	}
-	p, err := buildParams("claude-opus-4-7", nil, cfg, false, BuiltinTools{})
+	p, err := buildParams("claude-opus-4-7", nil, cfg, CacheOptions{}, BuiltinTools{})
 	if err != nil {
 		t.Fatalf("buildParams: %v", err)
 	}

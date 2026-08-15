@@ -23,6 +23,8 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/genai"
+
+	"github.com/go-steer/core-agent/v2/pkg/models"
 )
 
 // maxPauseTurnContinuations bounds how many times GenerateContent
@@ -37,10 +39,10 @@ const maxPauseTurnContinuations = 4
 // One llm corresponds to one model ID; the Provider mints a fresh
 // instance per Model() call.
 type llm struct {
-	client      anthropic.Client
-	modelID     string
-	cacheSystem bool
-	builtins    BuiltinTools
+	client   anthropic.Client
+	modelID  string
+	cache    CacheOptions
+	builtins BuiltinTools
 }
 
 // Name reports the model ID — used by ADK telemetry and the runner.
@@ -58,7 +60,14 @@ func (l *llm) Name() string { return l.modelID }
 // fragment (#533). Errors are yielded inline and stop the iteration.
 func (l *llm) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
-		params, err := buildParams(req.Model, req.Contents, req.Config, l.cacheSystem, l.builtins)
+		// One llm serves both the agentic loop and the one-shot side
+		// calls (summarizer, checkpointer, /btw), so the opt-out is read
+		// per request rather than baked in at construction.
+		cache := l.cache
+		if models.PromptCacheSuppressed(ctx) {
+			cache = CacheOptions{}
+		}
+		params, err := buildParams(req.Model, req.Contents, req.Config, cache, l.builtins)
 		if err != nil {
 			yield(nil, fmt.Errorf("anthropic: build request: %w", err))
 			return
@@ -135,6 +144,12 @@ func (l *llm) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, str
 					// web_search_tool_result blocks the API needs) and
 					// re-issue; the server resumes where it left off.
 					params.Messages = append(params.Messages, final.ToParam())
+					// The replayed turn lands after every marker
+					// buildParams placed, so re-place them: otherwise
+					// the server-tool blocks it carries are re-sent at
+					// full rate and the tail marker drifts out of the
+					// next request's lookback window.
+					reapplyCacheBreakpoints(&params, cache)
 					continue
 				}
 				// Cap reached: surface what we have instead of spinning.

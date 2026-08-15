@@ -274,8 +274,58 @@ ANTHROPIC_API_KEY=... core-agent --provider anthropic --model claude-opus-4-7 -p
 - **System prompt** from `genai.GenerateContentConfig.SystemInstruction` is extracted and lifted to Anthropic's top-level `System` field (Anthropic separates system from messages, unlike Gemini).
 - **`MaxTokens`** defaults to 16,384 if not set on the request. Override with `Config.MaxOutputTokens`.
 - **Stop reasons** map to genai `FinishReason` as: `end_turn`/`stop_sequence`/`tool_use` → `STOP`, `max_tokens` → `MAX_TOKENS`, `refusal` → `SAFETY`.
-- **Prompt caching** is opt-in and, today, **library-only**. Constructing the provider yourself with `anthropic.WithCacheSystem(true)` marks the last system block with an ephemeral `cache_control`; there is no config field or CLI flag for it, so a daemon launched with `--provider anthropic` never sets it. Off by default — enable it only once you've confirmed the system prompt is stable across turns, otherwise you pay the cache-write premium for nothing. Covering the growing message history (where the real savings are) is tracked in [#714](https://github.com/go-steer/core-agent/issues/714).
+- **Prompt caching** is **on by default** on both `anthropic` and `anthropic-vertex` ([#714](https://github.com/go-steer/core-agent/issues/714)). See [Prompt caching](#prompt-caching) below.
 - **Cache accounting** works regardless of the above, because Anthropic also caches *automatically* on the first-party and Claude Platform on AWS endpoints. All three input buckets are reported: total prompt as `PromptTokenCount`, cache reads as `CachedContentTokenCount`, and cache **writes** on `LLMResponse.CustomMetadata` under `cache_creation_input_tokens` — genai's usage struct has only two input fields, and writes bill at a premium (1.25× input) rather than a discount, so folding them into either existing bucket would misprice the turn. `pkg/usage` reads the sidecar and surfaces it as `input_tokens_cache_write` ([#263](https://github.com/go-steer/core-agent/issues/263)).
+
+### Prompt caching
+
+Anthropic prompt caching is **on by default** for both providers in the family. It is a different mechanism from [Vertex context caching](#context-caching) above — there is no cache resource to create, just `cache_control` markers on the ordinary Messages request — so the two share no config and no kill switch.
+
+The cache is a byte-exact **prefix** match over the rendered request, in the order tools → system → messages. core-agent places markers in two places:
+
+| Marker | Covers | Why |
+|---|---|---|
+| System | The tool schemas + the whole system prompt | Identical for every turn *and* every session on the same build, so it keeps paying off across restarts |
+| Rolling history | The conversation up to the current end | The runner replays the whole transcript each turn, so turn N+1's prefix is turn N's entire prompt |
+
+History markers are placed backward from the end, 16 content blocks apart, up to the API's limit of 4 markers per request (the system marker takes one of the 4). The spacing matters: a breakpoint only searches back 20 content blocks for an existing entry, and one agentic step can append more than that when the model fans out parallel tool calls. Without intermediate markers the chain to the previous turn's entry breaks, the read misses, and the message history is re-written at the write premium. The spacing tolerates a turn that appends up to 52 content blocks — roughly a 26-wide parallel tool fan-out; beyond that the message cache misses for one turn and re-warms on the next (the system marker keeps reading throughout).
+
+| Knob | Where | Default |
+|---|---|---|
+| Kill switch | `--no-prompt-cache` CLI flag | off (caching ON) |
+| Per-project enable | `model.anthropic.prompt_cache.enabled` | `true` (nil = on) |
+
+```json
+{
+  "model": {
+    "provider": "anthropic",
+    "name": "claude-opus-4-7",
+    "anthropic": {
+      "prompt_cache": { "enabled": false }
+    }
+  }
+}
+```
+
+A subagent that declares its own `model` resolves its own provider; it inherits the parent's `prompt_cache` setting unless its own model block sets one, and `--no-prompt-cache` applies to it too.
+
+Startup line:
+
+```
+core-agent: prompt cache: enabled (5m ttl, system + rolling history breakpoints)
+```
+
+**Economics.** Cache reads bill at ~10% of the input rate; cache **writes** bill at 125% of it. Break-even is two requests carrying the same prefix — which the agentic loop clears within seconds of turn 1.
+
+The shape that loses is a call whose prefix never recurs, so core-agent opts those out automatically: the compaction summarizer, the checkpointer, the `/btw` side question, and any subtask running on a budget of two turns or fewer (the `agentic_*` wrappers and the MCP LLM-digest fallback). Their prefixes diverge from the loop's at the first block, so nothing can read what they would write.
+
+One shape stays on and pays a bounded tax: a turn that makes exactly **one** model call after more than five minutes idle — a plain conversational reply in an attach session with a human at the keyboard. Its entry has expired, so it writes at 1.25× and reads nothing (~$0.12 on a 100K-token transcript at Opus rates). If that is most of your workload, run with `--no-prompt-cache`.
+
+**From Go.** A library consumer gets the same defaults from `anthropic.New` / `anthropic.NewVertex`. Override with `anthropic.WithPromptCache(anthropic.CacheOptions{...})` at construction, or `Provider.SetPromptCache` before the first `Model()` call. Pass a zero `CacheOptions` to turn everything off. `models.WithoutPromptCache(ctx)` suppresses caching for one request. The older `WithCacheSystem` is deprecated; it keeps its original all-or-nothing meaning, so `WithCacheSystem(false)` still means no caching at all.
+
+**What invalidates it.** Anything that changes an earlier byte: a compaction or checkpoint (which rewrites the head of the history by design), a change to the system prompt or the agent's name/description, and — the one that can bite mid-session — an MCP server whose `tools/list` response changes. Tool schemas render before the system block, so a server that reorders its tools, reconnects with a different set, or edits a description invalidates every marker in the request.
+
+**TTL.** Markers use Anthropic's default 5-minute TTL. The 1-hour TTL is not exposed: it bills writes at 2× base input where the 5-minute one bills 1.25×, and the rate catalog carries a single write rate, so shipping it today would understate every cached turn by 37.5%. Tracked in [#770](https://github.com/go-steer/core-agent/issues/770).
 
 ### Built-in tools
 

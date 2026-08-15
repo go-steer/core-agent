@@ -214,9 +214,16 @@ type DigestMethodsInfo struct {
 // UsageTotals mirrors usage.Totals in a JSON-friendly shape.
 //
 // InputTokens is the total effective prompt size and already includes
-// InputTokensCached (Gemini semantics — see usage.Turn docstring).
-// InputTokensUncached = InputTokens - InputTokensCached and is emitted
-// as a convenience so operators don't have to do the subtraction.
+// both InputTokensCached and InputTokensCacheWrite (Gemini semantics —
+// see usage.Turn docstring). The three input buckets are disjoint:
+// InputTokensUncached = InputTokens - InputTokensCached -
+// InputTokensCacheWrite, emitted as a convenience so operators don't
+// have to do the subtraction.
+//
+// InputTokensCacheWrite is the premium-rated bucket: tokens spent
+// establishing a prompt-cache entry (Anthropic's
+// cache_creation_input_tokens). Always zero for providers that don't
+// bill cache writes per token, which is why it carries omitempty.
 //
 // CostUSD is the daemon's own cost estimate with the cached-vs-uncached
 // rate split applied. CostUSDUncachedReference is what CostUSD would
@@ -229,6 +236,7 @@ type DigestMethodsInfo struct {
 type UsageTotals struct {
 	InputTokens              int64   `json:"input_tokens"`
 	InputTokensCached        int64   `json:"input_tokens_cached,omitempty"`
+	InputTokensCacheWrite    int64   `json:"input_tokens_cache_write,omitempty"`
 	InputTokensUncached      int64   `json:"input_tokens_uncached,omitempty"`
 	OutputTokens             int64   `json:"output_tokens"`
 	ThoughtsTokens           int64   `json:"thoughts_tokens,omitempty"`
@@ -247,6 +255,7 @@ type UsageTurn struct {
 	Model                    string    `json:"model,omitempty"`
 	InputTokens              int64     `json:"input_tokens"`
 	InputTokensCached        int64     `json:"input_tokens_cached,omitempty"`
+	InputTokensCacheWrite    int64     `json:"input_tokens_cache_write,omitempty"`
 	InputTokensUncached      int64     `json:"input_tokens_uncached,omitempty"`
 	OutputTokens             int64     `json:"output_tokens"`
 	ThoughtsTokens           int64     `json:"thoughts_tokens,omitempty"`
@@ -361,11 +370,19 @@ type PricingInfo struct {
 // PricingInfo.Source, not here — one field per snapshot avoids
 // implying the ModelPricing block would carry per-entry sources if
 // PricingInfo ever grows to return multiple models.
+// CacheWriteUSDPerMTok is the premium charged for input tokens that
+// WRITE a cache entry, as opposed to CachedUSDPerMTok's discount for
+// reading one (#263). Omitted for providers that don't bill writes per
+// token. It belongs on the rate card because it is a rate that does
+// charging: without it an operator who sees an unexpected cost, runs
+// /pricing to check, and finds only in/out/cache-read has no way to
+// confirm a configured `cache_creation_input_per_mtok` took effect.
 type ModelPricing struct {
-	InputUSDPerMTok  float64   `json:"input_usd_per_mtok"`
-	OutputUSDPerMTok float64   `json:"output_usd_per_mtok"`
-	CachedUSDPerMTok float64   `json:"cached_usd_per_mtok,omitempty"`
-	UpdatedAt        time.Time `json:"updated_at,omitempty"`
+	InputUSDPerMTok      float64   `json:"input_usd_per_mtok"`
+	OutputUSDPerMTok     float64   `json:"output_usd_per_mtok"`
+	CachedUSDPerMTok     float64   `json:"cached_usd_per_mtok,omitempty"`
+	CacheWriteUSDPerMTok float64   `json:"cache_write_usd_per_mtok,omitempty"`
+	UpdatedAt            time.Time `json:"updated_at,omitempty"`
 }
 
 // UsageProvider is the optional capability for GET /sessions/.../usage.

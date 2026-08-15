@@ -116,11 +116,12 @@ type liteLLMEntry struct {
 // Ordering is stable across regens (alphabetical on name) so diffs
 // stay reviewable.
 type generatedEntry struct {
-	Name               string
-	InputPerMTok       float64
-	CachedInputPerMTok float64
-	OutputPerMTok      float64
-	Provider           string
+	Name                      string
+	InputPerMTok              float64
+	CachedInputPerMTok        float64
+	CacheCreationInputPerMTok float64
+	OutputPerMTok             float64
+	Provider                  string
 }
 
 func main() {
@@ -252,6 +253,12 @@ func filter(all map[string]liteLLMEntry, allow []string) ([]generatedEntry, []st
 		if e.CacheReadInputTokenCost != nil && *e.CacheReadInputTokenCost > 0 {
 			out.CachedInputPerMTok = round6(*e.CacheReadInputTokenCost * million)
 		}
+		// Cache-WRITE rate (Anthropic's cache_creation_input_tokens).
+		// Absent for models without prompt-cache writes; zero is
+		// LiteLLM's "not supported" placeholder, same as the read rate.
+		if e.CacheCreationInputTokenCost != nil && *e.CacheCreationInputTokenCost > 0 {
+			out.CacheCreationInputPerMTok = round6(*e.CacheCreationInputTokenCost * million)
+		}
 		kept = append(kept, out)
 	}
 	sort.Slice(kept, func(i, j int) bool { return kept[i].Name < kept[j].Name })
@@ -283,14 +290,20 @@ func renderEntry(e generatedEntry, updatedAt time.Time) string {
 	if e.Provider != "" {
 		prov = fmt.Sprintf(" // %s", e.Provider)
 	}
+	// Optional rate fields are emitted only when present so rows for
+	// models without prompt caching stay short and the diff between
+	// regens stays readable.
+	fields := []string{fmt.Sprintf("InputPerMTok: %v", e.InputPerMTok)}
 	if e.CachedInputPerMTok > 0 {
-		return fmt.Sprintf(
-			"\t%q: {InputPerMTok: %v, CachedInputPerMTok: %v, OutputPerMTok: %v, UpdatedAt: %s},%s\n",
-			e.Name, e.InputPerMTok, e.CachedInputPerMTok, e.OutputPerMTok, tsLit, prov)
+		fields = append(fields, fmt.Sprintf("CachedInputPerMTok: %v", e.CachedInputPerMTok))
 	}
-	return fmt.Sprintf(
-		"\t%q: {InputPerMTok: %v, OutputPerMTok: %v, UpdatedAt: %s},%s\n",
-		e.Name, e.InputPerMTok, e.OutputPerMTok, tsLit, prov)
+	if e.CacheCreationInputPerMTok > 0 {
+		fields = append(fields, fmt.Sprintf("CacheCreationInputPerMTok: %v", e.CacheCreationInputPerMTok))
+	}
+	fields = append(fields,
+		fmt.Sprintf("OutputPerMTok: %v", e.OutputPerMTok),
+		fmt.Sprintf("UpdatedAt: %s", tsLit))
+	return fmt.Sprintf("\t%q: {%s},%s\n", e.Name, strings.Join(fields, ", "), prov)
 }
 
 func fileHeader(updatedAt time.Time, source string) string {

@@ -16,6 +16,7 @@ package attachadapter
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"reflect"
 	"sort"
@@ -261,6 +262,84 @@ func TestUsageTotalsToAttach_UncachedMathIsHonest(t *testing.T) {
 	got2 := usageTotalsToAttach(usage.Totals{Turns: 1, InputTokens: 100, OutputTokens: 10})
 	if got2.InputTokensCached != 0 || got2.InputTokensUncached != 100 {
 		t.Errorf("cold-only case: %+v", got2)
+	}
+}
+
+// TestAttachUsage_CacheWriteTokensAreTheirOwnBucket is the wire spec
+// for #263: a turn that wrote cache entries must report those tokens as
+// input_tokens_cache_write and must NOT leave them in
+// input_tokens_uncached, where an operator reading the snapshot would
+// price them at the base input rate.
+func TestAttachUsage_CacheWriteTokensAreTheirOwnBucket(t *testing.T) {
+	t.Parallel()
+	tr := usage.NewTracker()
+	// Claude-shaped rates: writes cost 1.25x input, reads 0.1x.
+	p := usage.Pricing{
+		InputPerMTok:              5.00,
+		CachedInputPerMTok:        0.50,
+		CacheCreationInputPerMTok: 6.25,
+		OutputPerMTok:             25.00,
+	}
+	// One cache-warming turn: 1k fresh + 20k read + 4k written = 25k prompt.
+	tr.AppendUsage("claude-opus-5", usage.TurnUsage{
+		InputTokens:              25_000,
+		CachedInputTokens:        20_000,
+		CacheCreationInputTokens: 4_000,
+		OutputTokens:             500,
+	}, p)
+
+	ad := New(newEchoAgent(t, agent.WithUsageTracker(tr)))
+	info := ad.AttachUsage()
+
+	for _, tc := range []struct {
+		field string
+		got   int64
+		want  int64
+	}{
+		{"InputTokens", info.Overall.InputTokens, 25_000},
+		{"InputTokensCached", info.Overall.InputTokensCached, 20_000},
+		{"InputTokensCacheWrite", info.Overall.InputTokensCacheWrite, 4_000},
+		{"InputTokensUncached", info.Overall.InputTokensUncached, 1_000},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("Overall.%s = %d, want %d", tc.field, tc.got, tc.want)
+		}
+	}
+	// The three buckets are disjoint and account for the whole prompt.
+	if sum := info.Overall.InputTokensCached + info.Overall.InputTokensCacheWrite +
+		info.Overall.InputTokensUncached; sum != info.Overall.InputTokens {
+		t.Errorf("buckets sum to %d, want InputTokens = %d", sum, info.Overall.InputTokens)
+	}
+
+	if len(info.PerTurn) != 1 {
+		t.Fatalf("len(PerTurn) = %d, want 1", len(info.PerTurn))
+	}
+	turn := info.PerTurn[0]
+	if turn.InputTokensCacheWrite != 4_000 || turn.InputTokensUncached != 1_000 {
+		t.Errorf("PerTurn[0] buckets = write:%d uncached:%d, want 4000/1000",
+			turn.InputTokensCacheWrite, turn.InputTokensUncached)
+	}
+	// Cost carries the write premium: 1k*5 + 20k*0.5 + 4k*6.25 + 500*25.
+	wantCost := (0.001 * 5.00) + (0.020 * 0.50) + (0.004 * 6.25) + (0.0005 * 25.00)
+	if math.Abs(turn.CostUSD-wantCost) > 1e-9 {
+		t.Errorf("PerTurn[0].CostUSD = %f, want %f", turn.CostUSD, wantCost)
+	}
+
+	// Wire keys, so a rename breaks here rather than in a consumer.
+	raw, err := json.Marshal(turn)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"input_tokens_cache_write":4000`) {
+		t.Errorf("per-turn JSON missing input_tokens_cache_write: %s", raw)
+	}
+	// omitempty: turns that wrote nothing don't grow the payload.
+	cold, err := json.Marshal(turnToAttach(1, usage.Turn{InputTokens: 100, OutputTokens: 10}, 0))
+	if err != nil {
+		t.Fatalf("marshal cold: %v", err)
+	}
+	if strings.Contains(string(cold), "input_tokens_cache_write") {
+		t.Errorf("cold turn JSON should omit input_tokens_cache_write: %s", cold)
 	}
 }
 

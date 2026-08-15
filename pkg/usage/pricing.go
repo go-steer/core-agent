@@ -26,14 +26,21 @@ import (
 // per million tokens (the same unit upstream providers publish public
 // list rates in). CachedInputPerMTok is the reduced rate applied to
 // prompt-cache-hit input tokens — Gemini charges 25% of the base input
-// rate for both implicit and explicit caches. A zero Pricing carries
+// rate for both implicit and explicit caches.
+// CacheCreationInputPerMTok is the PREMIUM rate applied to input tokens
+// that write a cache entry (Anthropic's cache_creation_input_tokens,
+// 1.25x base input); zero for providers that don't bill writes
+// separately. Like pricing.Rates.CacheCreationInputPerMTok it holds the
+// 5-minute-TTL rate only — see that field's doc before adding a 1-hour
+// TTL anywhere. A zero Pricing carries
 // no useful pricing — callers should distinguish "rate unknown" from
 // "free" (e.g. echo models). See pricing.Rates / pricing.Catalog for
 // the layered resolution behind PriceFor.
 type Pricing struct {
-	InputPerMTok       float64
-	CachedInputPerMTok float64
-	OutputPerMTok      float64
+	InputPerMTok              float64
+	CachedInputPerMTok        float64
+	CacheCreationInputPerMTok float64
+	OutputPerMTok             float64
 	// UpdatedAt is when the rate was last verified against its
 	// source. Threads through from pkg/pricing.Rates so /pricing
 	// can surface staleness. Zero when unknown.
@@ -143,11 +150,12 @@ func PriceFor(modelID string, cfg *config.Config) Pricing {
 // aggregation can tell "rate unknown" apart from "genuinely free".
 func ratesToPricing(r pricing.Rates, found bool) Pricing {
 	return Pricing{
-		InputPerMTok:       r.InputPerMTok,
-		CachedInputPerMTok: r.CachedInputPerMTok,
-		OutputPerMTok:      r.OutputPerMTok,
-		UpdatedAt:          r.UpdatedAt,
-		Unpriced:           !found,
+		InputPerMTok:              r.InputPerMTok,
+		CachedInputPerMTok:        r.CachedInputPerMTok,
+		CacheCreationInputPerMTok: r.CacheCreationInputPerMTok,
+		OutputPerMTok:             r.OutputPerMTok,
+		UpdatedAt:                 r.UpdatedAt,
+		Unpriced:                  !found,
 	}
 }
 
@@ -160,9 +168,10 @@ func cfgToOverride(cfg *config.Config) map[string]pricing.ModelRates {
 	out := make(map[string]pricing.ModelRates, len(cfg.Model.Pricing))
 	for k, v := range cfg.Model.Pricing {
 		out[k] = pricing.ModelRates{
-			InputPerMTok:       v.InputPerMTok,
-			CachedInputPerMTok: v.CachedInputPerMTok,
-			OutputPerMTok:      v.OutputPerMTok,
+			InputPerMTok:              v.InputPerMTok,
+			CachedInputPerMTok:        v.CachedInputPerMTok,
+			CacheCreationInputPerMTok: v.CacheCreationInputPerMTok,
+			OutputPerMTok:             v.OutputPerMTok,
 		}
 	}
 	return out
@@ -181,13 +190,46 @@ func (p Pricing) CostUSD(inputTokens, outputTokens int) float64 {
 // at CachedInputPerMTok. When CachedInputPerMTok is zero (rate unknown)
 // cached tokens fall back to InputPerMTok so the estimate never
 // silently drops to zero cost for cached input.
+//
+// Providers that also report cache-WRITE tokens should call
+// CostUSDWithCacheWrites; this signature has no bucket for them, so
+// callers fold them into uncached and understate the bill (#263).
 func (p Pricing) CostUSDWithCache(uncachedInputTokens, cachedInputTokens, outputTokens int) float64 {
+	return p.CostUSDWithCacheWrites(uncachedInputTokens, cachedInputTokens, 0, outputTokens)
+}
+
+// CostUSDForTurn prices one turn's full token breakdown, applying
+// TurnUsage.Clamped first so the three input buckets are disjoint and
+// non-negative. This is the one place turn cost is defined: Tracker's
+// AppendUsage and the tracker-less fallbacks in pkg/agent all route
+// through it so a cache-warming turn can't be priced two different
+// ways depending on which call site saw it.
+func (p Pricing) CostUSDForTurn(u TurnUsage) float64 {
+	c := u.Clamped()
+	return p.CostUSDWithCacheWrites(
+		c.UncachedInputTokens(), c.CachedInputTokens, c.CacheCreationInputTokens, c.OutputTokens)
+}
+
+// CostUSDWithCacheWrites is CostUSDWithCache plus the cache-write
+// bucket, billed at CacheCreationInputPerMTok.
+//
+// The three input buckets must be disjoint: pass uncached = total
+// prompt - cache reads - cache writes. Both cache rates fall back to
+// InputPerMTok when unknown, so a model missing from the catalog
+// degrades to the old understated number rather than billing cache
+// traffic as free.
+func (p Pricing) CostUSDWithCacheWrites(uncachedInputTokens, cacheReadTokens, cacheWriteTokens, outputTokens int) float64 {
 	const million = 1_000_000.0
-	cachedRate := p.CachedInputPerMTok
-	if cachedRate == 0 {
-		cachedRate = p.InputPerMTok
+	readRate := p.CachedInputPerMTok
+	if readRate == 0 {
+		readRate = p.InputPerMTok
+	}
+	writeRate := p.CacheCreationInputPerMTok
+	if writeRate == 0 {
+		writeRate = p.InputPerMTok
 	}
 	return (float64(uncachedInputTokens)/million)*p.InputPerMTok +
-		(float64(cachedInputTokens)/million)*cachedRate +
+		(float64(cacheReadTokens)/million)*readRate +
+		(float64(cacheWriteTokens)/million)*writeRate +
 		(float64(outputTokens)/million)*p.OutputPerMTok
 }

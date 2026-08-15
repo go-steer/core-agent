@@ -1183,11 +1183,12 @@ func (a *Agent) SetOperatorEventEmitter(f func(eventType string, payload any)) {
 		// duplicate the pricing catalog lookup.
 		if last, ok := a.tracker.Last(); ok {
 			update.LastTurn = &attach.UsageLastTurn{
-				TokensIn:       last.InputTokens,
-				TokensInCached: last.CachedInputTokens,
-				TokensOut:      last.OutputTokens,
-				CostUSD:        last.CostUSD,
-				Model:          last.Model,
+				TokensIn:           last.InputTokens,
+				TokensInCached:     last.CachedInputTokens,
+				TokensInCacheWrite: last.CacheCreationInputTokens,
+				TokensOut:          last.OutputTokens,
+				CostUSD:            last.CostUSD,
+				Model:              last.Model,
 			}
 		}
 		a.emit(attach.EventUsageUpdate, update)

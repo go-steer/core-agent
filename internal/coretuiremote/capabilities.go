@@ -1266,6 +1266,11 @@ func renderPricingInfo(info attach.PricingInfo) string {
 		if info.Current.CachedUSDPerMTok > 0 {
 			fmt.Fprintf(&sb, " / $%.4f cache-read", info.Current.CachedUSDPerMTok)
 		}
+		// The write premium is a rate that does charging, so it belongs
+		// on the card next to the read discount (#263).
+		if info.Current.CacheWriteUSDPerMTok > 0 {
+			fmt.Fprintf(&sb, " / $%.4f cache-write", info.Current.CacheWriteUSDPerMTok)
+		}
 		if !info.Current.UpdatedAt.IsZero() {
 			fmt.Fprintf(&sb, " (updated %s)", info.Current.UpdatedAt.Format("2006-01-02"))
 		}

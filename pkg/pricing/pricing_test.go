@@ -16,8 +16,10 @@ package pricing
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -271,6 +273,93 @@ func TestRates_CostUSDWithCache(t *testing.T) {
 	want2 := 0.5*1.0 + 0.5*1.0 + 0.1*2.0
 	if got2 != want2 {
 		t.Errorf("CostUSDWithCache (fallback) = %v, want %v", got2, want2)
+	}
+}
+
+// TestRates_CostUSDWithCacheWrites pins the third input bucket (#263).
+// Cache WRITES are a premium, not a discount — billing them at the base
+// input rate (what CostUSDWithCache does, since it has no bucket for
+// them) understates every cache-warming turn.
+func TestRates_CostUSDWithCacheWrites(t *testing.T) {
+	t.Parallel()
+	// Claude-shaped: reads 0.1x input, writes 1.25x input (5-minute TTL).
+	r := Rates{
+		InputPerMTok:              5.0,
+		CachedInputPerMTok:        0.5,
+		CacheCreationInputPerMTok: 6.25,
+		OutputPerMTok:             25.0,
+	}
+	got := r.CostUSDWithCacheWrites(1_000, 20_000, 4_000, 500)
+	want := 0.001*5.0 + 0.020*0.5 + 0.004*6.25 + 0.0005*25.0
+	if math.Abs(got-want) > 1e-12 {
+		t.Errorf("CostUSDWithCacheWrites = %v, want %v", got, want)
+	}
+	// The bug this replaces: folding writes into the uncached bucket.
+	if undercount := r.CostUSDWithCache(1_000+4_000, 20_000, 500); undercount >= got {
+		t.Errorf("writes-as-uncached (%v) should be cheaper than the real bill (%v)", undercount, got)
+	}
+
+	// Fallback: write rate absent → writes bill at the base input rate,
+	// i.e. exactly the pre-#263 number. Degrading to the old understated
+	// estimate beats billing cache writes as free.
+	r2 := Rates{InputPerMTok: 5.0, CachedInputPerMTok: 0.5, OutputPerMTok: 25.0}
+	if got2, want2 := r2.CostUSDWithCacheWrites(1_000, 20_000, 4_000, 500),
+		r2.CostUSDWithCache(5_000, 20_000, 500); math.Abs(got2-want2) > 1e-12 {
+		t.Errorf("unknown write rate = %v, want input-rate fallback %v", got2, want2)
+	}
+	// Zero writes must be byte-for-byte the CostUSDWithCache answer, so
+	// the new bucket can't perturb Gemini/Vertex cost.
+	if a, b := r.CostUSDWithCacheWrites(1_000, 20_000, 0, 500), r.CostUSDWithCache(1_000, 20_000, 500); a != b {
+		t.Errorf("zero-write path = %v, want %v", a, b)
+	}
+}
+
+// TestModelRates_CacheCreationInputPerMTokRoundTrip guards the on-disk
+// field name so an operator's write-rate override reaches Rates.
+func TestModelRates_CacheCreationInputPerMTokRoundTrip(t *testing.T) {
+	t.Parallel()
+	userHome := t.TempDir()
+	if err := SaveUserFile(userHome, &UserFile{
+		Version: 1,
+		Manual: &ManualSection{Models: map[string]ModelRates{
+			"my-model": {InputPerMTok: 2, CachedInputPerMTok: 0.2, CacheCreationInputPerMTok: 2.5, OutputPerMTok: 4},
+		}},
+	}); err != nil {
+		t.Fatalf("SaveUserFile: %v", err)
+	}
+	c, err := NewCatalog(Options{UserHome: userHome})
+	if err != nil {
+		t.Fatalf("NewCatalog: %v", err)
+	}
+	r, ok := c.Lookup("my-model")
+	if !ok {
+		t.Fatal("lookup missing")
+	}
+	if r.CacheCreationInputPerMTok != 2.5 {
+		t.Errorf("CacheCreationInputPerMTok = %v, want 2.5", r.CacheCreationInputPerMTok)
+	}
+}
+
+// TestBuiltin_ClaudeHasCacheWriteRate guards the regenerated table:
+// every Anthropic row must carry a write rate above its input rate, or
+// cache-warming turns silently fall back to the pre-#263 undercount on
+// air-gapped daemons. Non-Anthropic rows are exempt — Gemini doesn't
+// bill cache writes per token, it bills cache storage per hour.
+func TestBuiltin_ClaudeHasCacheWriteRate(t *testing.T) {
+	t.Parallel()
+	var seen int
+	for name, r := range builtin {
+		if !strings.HasPrefix(name, "claude-") {
+			continue
+		}
+		seen++
+		if r.CacheCreationInputPerMTok <= r.InputPerMTok {
+			t.Errorf("builtin %q write rate (%v) <= input rate (%v) — writes are a 1.25x premium",
+				name, r.CacheCreationInputPerMTok, r.InputPerMTok)
+		}
+	}
+	if seen == 0 {
+		t.Error("no claude-* rows in builtin; this guard is not testing anything")
 	}
 }
 

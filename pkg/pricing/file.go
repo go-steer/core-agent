@@ -35,10 +35,11 @@ const SchemaVersion = 1
 // spelling regardless of whether they live in pricing.json or in
 // .agents/config.json's `model.pricing` override map.
 type ModelRates struct {
-	InputPerMTok       float64   `json:"input_per_mtok,omitempty"`
-	CachedInputPerMTok float64   `json:"cached_input_per_mtok,omitempty"`
-	OutputPerMTok      float64   `json:"output_per_mtok,omitempty"`
-	UpdatedAt          time.Time `json:"updated_at,omitempty"`
+	InputPerMTok              float64   `json:"input_per_mtok,omitempty"`
+	CachedInputPerMTok        float64   `json:"cached_input_per_mtok,omitempty"`
+	CacheCreationInputPerMTok float64   `json:"cache_creation_input_per_mtok,omitempty"`
+	OutputPerMTok             float64   `json:"output_per_mtok,omitempty"`
+	UpdatedAt                 time.Time `json:"updated_at,omitempty"`
 }
 
 // Rates converts the JSON-tagged wire form into the Catalog's Rates

@@ -70,9 +70,10 @@ func CfgToCatalogOverride(m config.PricingMap) map[string]pricing.ModelRates {
 	out := make(map[string]pricing.ModelRates, len(m))
 	for k, v := range m {
 		out[k] = pricing.ModelRates{
-			InputPerMTok:       v.InputPerMTok,
-			CachedInputPerMTok: v.CachedInputPerMTok,
-			OutputPerMTok:      v.OutputPerMTok,
+			InputPerMTok:              v.InputPerMTok,
+			CachedInputPerMTok:        v.CachedInputPerMTok,
+			CacheCreationInputPerMTok: v.CacheCreationInputPerMTok,
+			OutputPerMTok:             v.OutputPerMTok,
 		}
 	}
 	return out
@@ -130,18 +131,30 @@ func SetPricing(cfg *config.Config, agentsDir, coreHome, model string, inputPerM
 		uf.Manual.Models = make(map[string]pricing.ModelRates)
 	}
 	key := strings.ToLower(strings.TrimSpace(model))
-	uf.Manual.Models[key] = pricing.ModelRates{
-		InputPerMTok:  inputPerMTok,
-		OutputPerMTok: outputPerMTok,
-	}
+	// Update in place rather than replacing the entry: /pricing set
+	// takes only the base input+output rates, and an entry can also
+	// carry cache read/write rates that were hand-edited into the
+	// manual section (the documented home for them). Overwriting the
+	// whole struct silently reverted an Anthropic model to the
+	// pre-#263 undercount the next time an operator bumped its base
+	// rate — a cost regression with no message and no diff.
+	entry := uf.Manual.Models[key]
+	entry.InputPerMTok = inputPerMTok
+	entry.OutputPerMTok = outputPerMTok
+	uf.Manual.Models[key] = entry
 	if err := pricing.SaveUserFile(coreHome, uf); err != nil {
 		return "", fmt.Errorf("save user pricing file: %w", err)
 	}
 	if err := RebuildPricingCatalog(cfg, agentsDir, coreHome); err != nil {
 		return "", fmt.Errorf("rebuild catalog: %w", err)
 	}
-	return fmt.Sprintf("Set %s = $%g/M in · $%g/M out (saved to ~/.core-agent/pricing.json manual section, applied to live catalog)",
-		key, inputPerMTok, outputPerMTok), nil
+	kept := ""
+	if entry.CachedInputPerMTok > 0 || entry.CacheCreationInputPerMTok > 0 {
+		kept = fmt.Sprintf(" · kept cache rates ($%g/M read · $%g/M write)",
+			entry.CachedInputPerMTok, entry.CacheCreationInputPerMTok)
+	}
+	return fmt.Sprintf("Set %s = $%g/M in · $%g/M out%s (saved to ~/.core-agent/pricing.json manual section, applied to live catalog)",
+		key, inputPerMTok, outputPerMTok, kept), nil
 }
 
 // summarizeRefreshOutcome renders the same four-shape outcome as

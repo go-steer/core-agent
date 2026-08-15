@@ -129,6 +129,7 @@ func TestRegisterMetrics_TokenTypeBreakdown(t *testing.T) {
 	tracker := NewTracker()
 	tracker.AppendUsage("m", TurnUsage{
 		InputTokens: 100, OutputTokens: 50, CachedInputTokens: 30,
+		CacheCreationInputTokens: 20,
 		// ThoughtsTokens + ToolUseTokens deliberately zero — those
 		// series must NOT appear.
 	}, Pricing{})
@@ -158,6 +159,10 @@ func TestRegisterMetrics_TokenTypeBreakdown(t *testing.T) {
 		TokenTypeInput:  100,
 		TokenTypeOutput: 50,
 		TokenTypeCached: 30,
+		// Cache WRITES are their own series: disjoint from `cached`
+		// and billed at a premium, so a dashboard netting cache ROI
+		// needs them separable (#263).
+		TokenTypeCacheWrite: 20,
 	}
 	for k, v := range wantSeen {
 		if got := seen[k]; got != v {

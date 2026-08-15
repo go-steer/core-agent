@@ -549,11 +549,10 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 				rec := cfg.tracker.AppendUsage(modelName, turnUsage, cfg.pricing)
 				out.costUSD += rec.CostUSD
 			} else if !cfg.pricing.IsZero() {
-				uncached := turnUsage.InputTokens - turnUsage.CachedInputTokens
-				if uncached < 0 {
-					uncached = 0
-				}
-				out.costUSD += cfg.pricing.CostUSDWithCache(uncached, turnUsage.CachedInputTokens, turnUsage.OutputTokens)
+				// Same pricing function the tracker applies, so a
+				// cache-warming turn costs the same whether or not a
+				// tracker happens to be wired.
+				out.costUSD += cfg.pricing.CostUSDForTurn(turnUsage)
 			}
 		}
 		// Text collection follows the same discipline as

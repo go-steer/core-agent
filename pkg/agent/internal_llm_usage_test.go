@@ -139,6 +139,69 @@ func TestAskSideQuestion_RecordsUsageInTracker(t *testing.T) {
 	}
 }
 
+// TestInternalLLM_RecordsCacheWriteBucket pins #263 on the internal-LLM
+// path. Compaction feeds the whole conversation to the summarizer, so
+// it is typically the largest cache WRITE of a session — and the write
+// count rides on CustomMetadata, not UsageMetadata. A tap that reads
+// only UsageMetadata drops it into the uncached remainder and bills it
+// at 1x instead of the 1.25x Anthropic charges, pricing the identical
+// provider turn differently depending on whether it arrived through
+// Agent.Run or runSummarizer.
+func TestInternalLLM_RecordsCacheWriteBucket(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		call func(*Agent) error
+		opt  Option
+	}{
+		{
+			name: "compact",
+			opt:  WithCompactor(NewDefaultCompactor()),
+			call: func(a *Agent) error { _, err := a.Compact(context.Background(), "focus"); return err },
+		},
+		{
+			name: "side question",
+			call: func(a *Agent) error {
+				_, err := a.AskSideQuestion(context.Background(), "what was that file again?")
+				return err
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tr := usage.NewTracker()
+			llm := &captureLLM{
+				response:         "# Current state\nProject in flight.",
+				inputTokens:      1000, // total prompt, writes included
+				outputTokens:     200,
+				cacheWriteTokens: 900,
+			}
+			opts := []Option{WithUsageTracker(tr)}
+			if tc.opt != nil {
+				opts = append(opts, tc.opt)
+			}
+			a, err := New(llm, opts...)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			plantEvent(t, a, genai.RoleUser, "make me a thing")
+
+			if err := tc.call(a); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+
+			totals := tr.Totals()
+			if totals.CacheCreationInputTokens != 900 {
+				t.Errorf("CacheCreationInputTokens = %d, want 900 — the sidecar didn't reach the tracker",
+					totals.CacheCreationInputTokens)
+			}
+			if got := totals.UncachedInputTokens(); got != 100 {
+				t.Errorf("UncachedInputTokens() = %d, want 100 — written tokens are billed at a premium, not at the input rate", got)
+			}
+		})
+	}
+}
+
 func TestRecordInternalLLMUsage_NilSafe(t *testing.T) {
 	t.Parallel()
 	// All no-op paths: nil receiver, nil tracker, nil model, zero
@@ -146,16 +209,16 @@ func TestRecordInternalLLMUsage_NilSafe(t *testing.T) {
 	// per-turn-deferred cleanup paths where a panic would tear down
 	// the agent.
 	var nilAgent *Agent
-	nilAgent.recordInternalLLMUsage(100, 50, nil)
+	nilAgent.recordInternalLLMUsage(100, 50, nil, nil)
 
-	(&Agent{}).recordInternalLLMUsage(100, 50, nil)                         // nil tracker
-	(&Agent{tracker: usage.NewTracker()}).recordInternalLLMUsage(0, 0, nil) // zero tokens
-	(&Agent{tracker: usage.NewTracker()}).recordInternalLLMUsage(1, 1, nil) // nil model
+	(&Agent{}).recordInternalLLMUsage(100, 50, nil, nil)                         // nil tracker
+	(&Agent{tracker: usage.NewTracker()}).recordInternalLLMUsage(0, 0, nil, nil) // zero tokens
+	(&Agent{tracker: usage.NewTracker()}).recordInternalLLMUsage(1, 1, nil, nil) // nil model
 
 	// Sanity: with both wired AND non-zero tokens, the call appends.
 	tr := usage.NewTracker()
 	a := &Agent{tracker: tr, model: &captureLLM{}}
-	a.recordInternalLLMUsage(10, 2, nil)
+	a.recordInternalLLMUsage(10, 2, nil, nil)
 	if got := tr.Totals().Turns; got != 1 {
 		t.Errorf("Turns = %d, want 1 after wired + non-zero call", got)
 	}

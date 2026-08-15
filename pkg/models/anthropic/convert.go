@@ -153,6 +153,14 @@ func systemBlocks(cfg *genai.GenerateContentConfig, cacheSystem bool) []anthropi
 		out = append(out, anthropic.TextBlockParam{Text: p.Text})
 	}
 	if cacheSystem && len(out) > 0 {
+		// Default (5-minute) ephemeral TTL. The cost meter prices the
+		// resulting cache_creation_input_tokens at
+		// pricing.Rates.CacheCreationInputPerMTok, which is the
+		// 5-minute rate (1.25x base input) and the only write rate the
+		// catalog carries. Anthropic's 1-hour TTL bills 2x base input:
+		// switching this call to a 1h cache_control without adding a
+		// second rate to the catalog silently undercharges every cached
+		// turn by 37.5%.
 		out[len(out)-1].CacheControl = anthropic.NewCacheControlEphemeralParam()
 	}
 	return out

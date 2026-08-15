@@ -120,11 +120,18 @@ const (
 
 // Token-type attribute values. Match the Turn breakdown fields.
 const (
-	TokenTypeInput   = "input"
-	TokenTypeOutput  = "output"
-	TokenTypeCached  = "cached"
-	TokenTypeThought = "thoughts"
-	TokenTypeToolUse = "tool_use"
+	TokenTypeInput  = "input"
+	TokenTypeOutput = "output"
+	TokenTypeCached = "cached"
+	// TokenTypeCacheWrite is input tokens that WROTE a cache entry,
+	// billed at a premium rather than the cached discount (#263). Its
+	// own series because it is disjoint from both `input` (which here
+	// carries the whole prompt) and `cached`, and because the spend it
+	// represents is what a dashboard tracking cache ROI has to net
+	// against the savings on `cached`.
+	TokenTypeCacheWrite = "cache_write"
+	TokenTypeThought    = "thoughts"
+	TokenTypeToolUse    = "tool_use"
 )
 
 // RegisterOption tunes RegisterMetrics.
@@ -252,6 +259,7 @@ func RegisterMetrics(mp metric.MeterProvider, tp TrackerProvider, opts ...Regist
 		observeToken(o, tokens, modelAttrs, TokenTypeInput, totals.InputTokens)
 		observeToken(o, tokens, modelAttrs, TokenTypeOutput, totals.OutputTokens)
 		observeToken(o, tokens, modelAttrs, TokenTypeCached, totals.CachedInputTokens)
+		observeToken(o, tokens, modelAttrs, TokenTypeCacheWrite, totals.CacheCreationInputTokens)
 		observeToken(o, tokens, modelAttrs, TokenTypeThought, totals.ThoughtsTokens)
 		observeToken(o, tokens, modelAttrs, TokenTypeToolUse, totals.ToolUseTokens)
 	}
@@ -386,6 +394,7 @@ func (a *aggregatedObserver) observe(
 			agg.Turns += totals.Turns
 			agg.InputTokens += totals.InputTokens
 			agg.CachedInputTokens += totals.CachedInputTokens
+			agg.CacheCreationInputTokens += totals.CacheCreationInputTokens
 			agg.OutputTokens += totals.OutputTokens
 			agg.ThoughtsTokens += totals.ThoughtsTokens
 			agg.ToolUseTokens += totals.ToolUseTokens

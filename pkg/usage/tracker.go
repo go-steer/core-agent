@@ -32,17 +32,26 @@ import (
 // matches PromptTokenCount, which already includes any cache-hit tokens
 // (google.golang.org/genai types.go: "the total effective prompt size
 // meaning this includes the number of tokens in the cached content").
-// CachedInputTokens is therefore a subset of InputTokens, not an
-// addition to it. Uncached = InputTokens - CachedInputTokens.
+// CachedInputTokens and CacheCreationInputTokens are therefore both
+// subsets of InputTokens, not additions to it, and they never overlap
+// with each other. Uncached = InputTokens - CachedInputTokens -
+// CacheCreationInputTokens.
+//
+// CacheCreationInputTokens is the write bucket: tokens this turn spent
+// establishing a cache entry, billed at a premium (Anthropic charges
+// 1.25x base input on the 5-minute TTL, 2x on the 1-hour TTL). Zero for
+// providers that don't bill writes separately — Gemini's explicit
+// caches charge per-hour storage, not per written token.
 type Turn struct {
-	Model             string
-	InputTokens       int
-	CachedInputTokens int
-	OutputTokens      int
-	ThoughtsTokens    int
-	ToolUseTokens     int
-	CostUSD           float64
-	At                time.Time
+	Model                    string
+	InputTokens              int
+	CachedInputTokens        int
+	CacheCreationInputTokens int
+	OutputTokens             int
+	ThoughtsTokens           int
+	ToolUseTokens            int
+	CostUSD                  float64
+	At                       time.Time
 	// Unpriced is true when the model had no rate in the pricing
 	// catalog, so CostUSD is 0 because the price is unknown rather
 	// than because the model is free. Threads through from the
@@ -56,24 +65,76 @@ type Turn struct {
 // their per-response metadata into this shape (see
 // TurnUsageFromGenaiMetadata for the Gemini/Vertex path).
 type TurnUsage struct {
-	InputTokens       int
-	CachedInputTokens int
-	OutputTokens      int
-	ThoughtsTokens    int
-	ToolUseTokens     int
+	InputTokens              int
+	CachedInputTokens        int
+	CacheCreationInputTokens int
+	OutputTokens             int
+	ThoughtsTokens           int
+	ToolUseTokens            int
+}
+
+// Clamped returns u with the two cache buckets forced inside
+// InputTokens, so the uncached remainder can never go negative.
+// Defensive against provider quirks where a cache counter over-reports;
+// reads are clamped first and writes get whatever room is left, so a
+// contradictory pair can only shrink the premium-rated write bucket —
+// an under-estimate, never a phantom charge.
+//
+// Applied by Tracker.AppendUsage and by Pricing.CostUSDForTurn, so
+// tracker-backed and tracker-less call sites agree on what a turn cost.
+func (u TurnUsage) Clamped() TurnUsage {
+	if u.CachedInputTokens > u.InputTokens {
+		u.CachedInputTokens = u.InputTokens
+	}
+	if u.CachedInputTokens < 0 {
+		u.CachedInputTokens = 0
+	}
+	if room := u.InputTokens - u.CachedInputTokens; u.CacheCreationInputTokens > room {
+		u.CacheCreationInputTokens = room
+	}
+	if u.CacheCreationInputTokens < 0 {
+		u.CacheCreationInputTokens = 0
+	}
+	return u
+}
+
+// UncachedInputTokens is the fresh-input remainder: the prompt minus
+// what was served from cache and minus what was written to cache. Never
+// negative (the buckets are clamped first).
+func (u TurnUsage) UncachedInputTokens() int {
+	c := u.Clamped()
+	n := c.InputTokens - c.CachedInputTokens - c.CacheCreationInputTokens
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
+// UncachedInputTokens is the turn's fresh-input remainder: the prompt
+// minus cache reads minus cache writes. Never negative. Wire
+// projections use it instead of open-coding the subtraction, which is
+// how the cache-write bucket got double-counted into "uncached" before
+// #263.
+func (t Turn) UncachedInputTokens() int {
+	n := t.InputTokens - t.CachedInputTokens - t.CacheCreationInputTokens
+	if n < 0 {
+		return 0
+	}
+	return n
 }
 
 // Totals aggregates a slice of Turns. Cached / thoughts / tool-use
 // mirror the Turn fields so callers projecting Totals into wire
 // formats can render every dimension without walking All().
 type Totals struct {
-	Turns             int
-	InputTokens       int
-	CachedInputTokens int
-	OutputTokens      int
-	ThoughtsTokens    int
-	ToolUseTokens     int
-	CostUSD           float64
+	Turns                    int
+	InputTokens              int
+	CachedInputTokens        int
+	CacheCreationInputTokens int
+	OutputTokens             int
+	ThoughtsTokens           int
+	ToolUseTokens            int
+	CostUSD                  float64
 	// UnpricedTurns counts turns whose model had no catalog rate, so
 	// their contribution to CostUSD was 0 for lack of a price rather
 	// than because the model is free. When > 0, CostUSD is a lower
@@ -81,6 +142,16 @@ type Totals struct {
 	// "$X.YY+" or a "$—" marker) rather than presenting it as exact.
 	// See #368.
 	UnpricedTurns int
+}
+
+// UncachedInputTokens is the session's fresh-input remainder — the
+// aggregate counterpart to Turn.UncachedInputTokens.
+func (t Totals) UncachedInputTokens() int {
+	n := t.InputTokens - t.CachedInputTokens - t.CacheCreationInputTokens
+	if n < 0 {
+		return 0
+	}
+	return n
 }
 
 // Tracker accumulates per-turn usage for one session.
@@ -173,28 +244,26 @@ func (t *Tracker) Append(model string, inputTokens, outputTokens int, p Pricing)
 }
 
 // AppendUsage records one turn's usage with the full per-field
-// breakdown. CachedInputTokens > InputTokens is clamped to InputTokens
-// (defensive against occasional provider quirks where the cached
-// counter over-reports; the input/uncached math must stay non-negative
-// downstream). Cost applies CostUSDWithCache when any cache hits are
-// present so the cached-vs-uncached rate split is reflected in the
-// stored Turn.
+// breakdown. Cost applies CostUSDWithCacheWrites so all three input
+// buckets — uncached, cache-read, cache-write — are billed at their own
+// rates in the stored Turn.
+//
+// The cache buckets are clamped into InputTokens — see
+// TurnUsage.Clamped for why and in what order.
 func (t *Tracker) AppendUsage(model string, u TurnUsage, p Pricing) Turn {
-	if u.CachedInputTokens > u.InputTokens {
-		u.CachedInputTokens = u.InputTokens
-	}
-	uncached := u.InputTokens - u.CachedInputTokens
-	cost := p.CostUSDWithCache(uncached, u.CachedInputTokens, u.OutputTokens)
+	u = u.Clamped()
+	cost := p.CostUSDForTurn(u)
 	turn := Turn{
-		Model:             model,
-		InputTokens:       u.InputTokens,
-		CachedInputTokens: u.CachedInputTokens,
-		OutputTokens:      u.OutputTokens,
-		ThoughtsTokens:    u.ThoughtsTokens,
-		ToolUseTokens:     u.ToolUseTokens,
-		CostUSD:           cost,
-		At:                time.Now(),
-		Unpriced:          p.Unpriced,
+		Model:                    model,
+		InputTokens:              u.InputTokens,
+		CachedInputTokens:        u.CachedInputTokens,
+		CacheCreationInputTokens: u.CacheCreationInputTokens,
+		OutputTokens:             u.OutputTokens,
+		ThoughtsTokens:           u.ThoughtsTokens,
+		ToolUseTokens:            u.ToolUseTokens,
+		CostUSD:                  cost,
+		At:                       time.Now(),
+		Unpriced:                 p.Unpriced,
 	}
 	t.mu.Lock()
 	t.turns = append(t.turns, turn)
@@ -224,6 +293,7 @@ func (t *Tracker) Totals() Totals {
 	for _, x := range t.turns {
 		out.InputTokens += x.InputTokens
 		out.CachedInputTokens += x.CachedInputTokens
+		out.CacheCreationInputTokens += x.CacheCreationInputTokens
 		out.OutputTokens += x.OutputTokens
 		out.ThoughtsTokens += x.ThoughtsTokens
 		out.ToolUseTokens += x.ToolUseTokens
@@ -253,6 +323,7 @@ func (t *Tracker) TotalsByModel() map[string]Totals {
 		cur.Turns++
 		cur.InputTokens += x.InputTokens
 		cur.CachedInputTokens += x.CachedInputTokens
+		cur.CacheCreationInputTokens += x.CacheCreationInputTokens
 		cur.OutputTokens += x.OutputTokens
 		cur.ThoughtsTokens += x.ThoughtsTokens
 		cur.ToolUseTokens += x.ToolUseTokens

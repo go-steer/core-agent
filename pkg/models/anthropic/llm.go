@@ -146,8 +146,13 @@ func (l *llm) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, str
 			yield(&adkmodel.LLMResponse{
 				Content:       &genai.Content{Role: genai.RoleModel, Parts: parts},
 				UsageMetadata: usageMetadata(usage),
-				FinishReason:  mapStopReason(final.StopReason),
-				TurnComplete:  true,
+				// Cache-write tokens have no home in genai's
+				// UsageMetadata; they ride the CustomMetadata sidecar
+				// so the tracker can bill them at the write premium
+				// instead of the base input rate (#263).
+				CustomMetadata: cacheCreationMetadata(usage),
+				FinishReason:   mapStopReason(final.StopReason),
+				TurnComplete:   true,
 			}, nil)
 			return
 		}

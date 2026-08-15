@@ -24,6 +24,13 @@ import (
 // finalResponseFromMessage builds the terminal LLMResponse from a fully-
 // accumulated Anthropic Message. Tool-use blocks are surfaced as
 // FunctionCall parts so the ADK runner can dispatch them.
+//
+// Only tests call it today — llm.go assembles the terminal response
+// inline because the pause_turn loop concatenates parts across several
+// Messages. Any caller that revives it for a real yield must also stamp
+// cacheCreationMetadata(msg.Usage) onto CustomMetadata; the three
+// buckets returned here can't carry the cache-write count, and dropping
+// it silently bills written tokens at the base input rate (#263).
 func finalResponseFromMessage(msg *anthropic.Message) (*genai.Content, genai.FinishReason, *genai.GenerateContentResponseUsageMetadata) {
 	content := &genai.Content{Role: genai.RoleModel, Parts: contentPartsFromMessage(msg)}
 	return content, mapStopReason(msg.StopReason), usageMetadata(msg.Usage)
@@ -117,16 +124,11 @@ func usageMetadata(u anthropic.Usage) *genai.GenerateContentResponseUsageMetadat
 	// letting /usage's input_tokens_cached / cost_usd_uncached_reference
 	// render Anthropic cache savings the same way Gemini's do.
 	//
-	// KNOWN GAP (Slice B follow-up, tracked separately): cache_creation
-	// tokens are billed at 125% of input rate but the tracker's
-	// CostUSDWithCache path bills them at 1× (they fold into the
-	// uncached-input bucket). Cost is UNDERCOUNTED on cache-warming
-	// turns by roughly (cache_creation_tokens × input_rate × 0.25).
-	// Fixing this needs a new Rates.CacheCreationInputPerMTok field, a
-	// CostUSDWithCache signature bump, and a sidecar for
-	// cache_creation token counts (genai UsageMetadata has no place
-	// to carry them). Steady-state cache-hit turns (where
-	// cache_creation == 0) are unaffected.
+	// genai's shape has no third bucket, so the cache_creation count
+	// rides out-of-band on the response's CustomMetadata — see
+	// cacheCreationMetadata. Without it the tracker folds written
+	// tokens into uncached input and undercounts every cache-warming
+	// turn by the write premium (#263).
 	totalInput := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 	return &genai.GenerateContentResponseUsageMetadata{
 		PromptTokenCount:        int32(totalInput),                  // #nosec G115 -- token counts won't overflow int32
@@ -135,6 +137,34 @@ func usageMetadata(u anthropic.Usage) *genai.GenerateContentResponseUsageMetadat
 		TotalTokenCount:         int32(totalInput + u.OutputTokens), // #nosec G115 -- token counts won't overflow int32
 	}
 }
+
+// cacheCreationMetadata returns the CustomMetadata sidecar carrying the
+// turn's cache_creation_input_tokens, or nil when the turn wrote no
+// cache entries (the overwhelmingly common case — don't stamp an
+// all-zero map onto every event).
+//
+// usage.TurnUsageFromMetadata reads this back to bill the write bucket
+// at its own premium rate. CustomMetadata is used because it is the one
+// per-event field that survives ADK's persist round-trip, so a session
+// rebuilt from the eventlog reconstructs the same cost the live run
+// reported.
+//
+// The key is spelled literally rather than imported so a model provider
+// doesn't take a build dependency on the accounting layer for one
+// string; TestCacheCreationMetadata_Shape asserts it against
+// usage.CacheCreationTokensMetadataKey, so a rename on either side is a
+// test failure, not a silent revert to the undercount.
+func cacheCreationMetadata(u anthropic.Usage) map[string]any {
+	if u.CacheCreationInputTokens <= 0 {
+		return nil
+	}
+	return map[string]any{
+		cacheCreationTokensMetadataKey: u.CacheCreationInputTokens,
+	}
+}
+
+// cacheCreationTokensMetadataKey mirrors usage.CacheCreationTokensMetadataKey.
+const cacheCreationTokensMetadataKey = "cache_creation_input_tokens"
 
 // addUsage folds one request's usage buckets into a running total so
 // the terminal UsageMetadata of a pause_turn continuation loop reflects

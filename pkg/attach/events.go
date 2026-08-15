@@ -256,12 +256,19 @@ type UsageUpdate struct {
 // row without a follow-up round-trip. Cached input is surfaced when
 // present so future TUI iterations can render a "· 8k cached" tag
 // alongside the base tokens.
+//
+// TokensInCached and TokensInCacheWrite are disjoint subsets of
+// TokensIn (the third subset, the uncached remainder, is TokensIn minus
+// both). A client that renders only the cached tag on an Anthropic turn
+// shows a split that doesn't add up, which is why the write bucket
+// ships alongside it rather than waiting for a consumer (#263).
 type UsageLastTurn struct {
-	TokensIn       int     `json:"tokens_in"`
-	TokensInCached int     `json:"tokens_in_cached,omitempty"`
-	TokensOut      int     `json:"tokens_out"`
-	CostUSD        float64 `json:"cost_usd"`
-	Model          string  `json:"model,omitempty"`
+	TokensIn           int     `json:"tokens_in"`
+	TokensInCached     int     `json:"tokens_in_cached,omitempty"`
+	TokensInCacheWrite int     `json:"tokens_in_cache_write,omitempty"`
+	TokensOut          int     `json:"tokens_out"`
+	CostUSD            float64 `json:"cost_usd"`
+	Model              string  `json:"model,omitempty"`
 }
 
 // UsageByModel is one model's bucket inside UsageUpdate.ByModel.

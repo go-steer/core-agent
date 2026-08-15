@@ -211,7 +211,7 @@ exist; everything else uses `core_agent.*`.
 
 | Metric | Type | Unit | Attributes | Source |
 |---|---|---|---|---|
-| `gen_ai.client.token.usage` | ObservableCounter | `{token}` | `gen_ai.token.type` = input\|output\|cached\|thoughts\|tool_use, `gen_ai.request.model` | `Tracker.TotalsByModel()` |
+| `gen_ai.client.token.usage` | ObservableCounter | `{token}` | `gen_ai.token.type` = input\|output\|cached\|cache_write\|thoughts\|tool_use, `gen_ai.request.model` | `Tracker.TotalsByModel()` |
 | `gen_ai.client.operation.duration` | ObservableGauge | `s` | `gen_ai.request.model` | derived from `Tracker.Duration()` per session (v1: session-level; v2: per-turn as sync histogram) |
 
 ### core-agent-specific — session + cost

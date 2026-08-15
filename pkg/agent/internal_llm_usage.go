@@ -43,7 +43,14 @@ import (
 // then default to zero and the caller silently loses the cache
 // attribution — no cost regression because CostUSDWithCache falls back
 // to InputPerMTok when cached is zero.
-func (a *Agent) recordInternalLLMUsage(promptTokens, completionTokens int, meta *genai.GenerateContentResponseUsageMetadata) {
+//
+// custom is the same response's CustomMetadata, carrying the cache-WRITE
+// bucket genai's usage struct has no field for (#263). Passing it
+// matters most here: the summarizer's prompt is the whole conversation,
+// which makes compaction the single largest cache-write of a session.
+// Dropping it would price the identical Anthropic turn differently
+// depending on whether it arrived via Agent.Run or runSummarizer.
+func (a *Agent) recordInternalLLMUsage(promptTokens, completionTokens int, meta *genai.GenerateContentResponseUsageMetadata, custom map[string]any) {
 	if a == nil || a.tracker == nil {
 		return
 	}
@@ -54,7 +61,7 @@ func (a *Agent) recordInternalLLMUsage(promptTokens, completionTokens int, meta 
 		return
 	}
 	modelName := a.model.Name()
-	turnUsage := usage.TurnUsageFromGenaiMetadata(meta)
+	turnUsage := usage.TurnUsageFromMetadata(meta, custom)
 	if turnUsage.InputTokens == 0 {
 		turnUsage.InputTokens = promptTokens
 	}

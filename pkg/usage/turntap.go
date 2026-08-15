@@ -61,14 +61,15 @@ type TurnTap struct {
 	last TurnUsage
 }
 
-// Observe updates the last-seen usage from ev.UsageMetadata. Ignores
-// events without UsageMetadata (and nil events); safe to call for
-// every event in the iterator.
+// Observe updates the last-seen usage from ev.UsageMetadata, plus the
+// cache-write sidecar on ev.CustomMetadata. Ignores events without
+// UsageMetadata (and nil events); safe to call for every event in the
+// iterator.
 func (t *TurnTap) Observe(ev *session.Event) {
 	if ev == nil || ev.UsageMetadata == nil {
 		return
 	}
-	t.last = TurnUsageFromGenaiMetadata(ev.UsageMetadata)
+	t.last = TurnUsageFromMetadata(ev.UsageMetadata, ev.CustomMetadata)
 }
 
 // Commit returns (per-turn totals, true) exactly when ev is a

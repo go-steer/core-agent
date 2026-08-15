@@ -67,6 +67,80 @@ func TestRenderUsage_WithCacheSavings(t *testing.T) {
 	}
 }
 
+// TestRenderUsage_CacheWriteBucketIsVisible pins that the third input
+// bucket (#263) reaches the operator's eyes. cached / cache-write /
+// uncached are disjoint subsets of the input total, so a renderer that
+// prints only two of them shows a line that doesn't add up — the
+// numbers below would read "in 25,000 (20,000 cached / 1,000
+// uncached)", silently losing 4,000 tokens billed at a premium.
+func TestRenderUsage_CacheWriteBucketIsVisible(t *testing.T) {
+	t.Parallel()
+	info := UsageInfo{
+		Overall: UsageTotals{
+			Turns:                 1,
+			InputTokens:           25_000,
+			InputTokensCached:     20_000,
+			InputTokensCacheWrite: 4_000,
+			InputTokensUncached:   1_000,
+			OutputTokens:          500,
+			CostUSD:               0.0525,
+		},
+		PerModel: map[string]UsageTotals{
+			"claude-opus-5": {
+				Turns: 1, InputTokens: 25_000, InputTokensCached: 20_000,
+				InputTokensCacheWrite: 4_000, InputTokensUncached: 1_000, CostUSD: 0.0525,
+			},
+		},
+		PerTurn: []UsageTurn{
+			{Turn: 1, At: time.Date(2026, 8, 15, 10, 0, 0, 0, time.UTC), Model: "claude-opus-5",
+				InputTokens: 25_000, InputTokensCached: 20_000, InputTokensCacheWrite: 4_000,
+				InputTokensUncached: 1_000, OutputTokens: 500, CostUSD: 0.0525},
+		},
+	}
+	got := RenderUsage(info)
+	for _, section := range []string{"Session totals", "Per model", "Per turn"} {
+		if !strings.Contains(got, section) {
+			t.Fatalf("missing %q section:\n%s", section, got)
+		}
+	}
+	// One clause per section: totals, per-model row, per-turn row.
+	if n := strings.Count(got, "4,000 cache-write"); n != 3 {
+		t.Errorf("cache-write clause appears %d times, want 3 (totals + per-model + per-turn):\n%s", n, got)
+	}
+	// The totals line must still account for every input token.
+	totals := extractLineWith(t, got, "turn(s) · in 25,000")
+	if !strings.Contains(totals, "(20,000 cached / 4,000 cache-write / 1,000 uncached)") {
+		t.Errorf("totals line doesn't add up: %q", totals)
+	}
+}
+
+// TestRenderUsage_NoCacheWritesRendersAsBefore pins that providers that
+// don't bill writes per token (every Gemini/Vertex session) see byte-
+// identical output — the new clause is omitted, not zero-filled.
+func TestRenderUsage_NoCacheWritesRendersAsBefore(t *testing.T) {
+	t.Parallel()
+	info := UsageInfo{
+		Overall: UsageTotals{
+			Turns: 1, InputTokens: 10_000, InputTokensCached: 8_000,
+			InputTokensUncached: 2_000, OutputTokens: 500, CostUSD: 0.01,
+		},
+		PerModel: map[string]UsageTotals{
+			"gemini-3.5-flash": {Turns: 1, InputTokens: 10_000, InputTokensCached: 8_000, CostUSD: 0.01},
+		},
+		PerTurn: []UsageTurn{
+			{Turn: 1, At: time.Date(2026, 8, 15, 10, 0, 0, 0, time.UTC), Model: "gemini-3.5-flash",
+				InputTokens: 10_000, InputTokensCached: 8_000, OutputTokens: 500, CostUSD: 0.01},
+		},
+	}
+	got := RenderUsage(info)
+	if strings.Contains(got, "cache-write") {
+		t.Errorf("no writes reported, but the clause rendered:\n%s", got)
+	}
+	if !strings.Contains(got, "(8,000 cached / 2,000 uncached)") {
+		t.Errorf("totals line changed shape for a write-free provider:\n%s", got)
+	}
+}
+
 func TestRenderUsage_NoSavingsWhenReferenceEqualsActual(t *testing.T) {
 	t.Parallel()
 	// Sessions with no cache hits: uncached-ref == actual, so the

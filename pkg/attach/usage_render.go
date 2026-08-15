@@ -38,6 +38,10 @@ import (
 //	Per turn
 //	  #<n> <hh:mm:ss> <model> · in <in> (<cached> cached) · out <out> · $<cost>
 //
+// A provider that bills cache WRITES separately (Anthropic) adds a
+// "<n> cache-write" clause to each input breakdown; see
+// cacheWriteClause. Providers that don't render exactly as before.
+//
 // Numbers use grouping commas + fixed 4-decimal dollar amounts to
 // match the existing /stats formatting so operators can eyeball the
 // two side-by-side without unit-conversion friction.
@@ -49,10 +53,11 @@ func RenderUsage(info UsageInfo) string {
 	if info.Overall.Turns == 0 {
 		sb.WriteString("  (no turns recorded yet)\n")
 	} else {
-		fmt.Fprintf(&sb, "  %d turn(s) · in %s (%s cached / %s uncached) · out %s\n",
+		fmt.Fprintf(&sb, "  %d turn(s) · in %s (%s cached%s / %s uncached) · out %s\n",
 			info.Overall.Turns,
 			commas(info.Overall.InputTokens),
 			commas(info.Overall.InputTokensCached),
+			cacheWriteClause(info.Overall.InputTokensCacheWrite),
 			commas(info.Overall.InputTokensUncached),
 			commas(info.Overall.OutputTokens),
 		)
@@ -73,8 +78,9 @@ func RenderUsage(info UsageInfo) string {
 	if len(info.PerModel) > 0 {
 		sb.WriteString("\nPer model\n")
 		for name, t := range info.PerModel {
-			fmt.Fprintf(&sb, "  %s: %d turn(s) · in %s (%s cached) · $%.4f",
-				name, t.Turns, commas(t.InputTokens), commas(t.InputTokensCached), t.CostUSD)
+			fmt.Fprintf(&sb, "  %s: %d turn(s) · in %s (%s cached%s) · $%.4f",
+				name, t.Turns, commas(t.InputTokens), commas(t.InputTokensCached),
+				cacheWriteClause(t.InputTokensCacheWrite), t.CostUSD)
 			if t.CostUSDUncachedReference > t.CostUSD {
 				fmt.Fprintf(&sb, "  (ref $%.4f)", t.CostUSDUncachedReference)
 			}
@@ -98,8 +104,9 @@ func RenderUsage(info UsageInfo) string {
 		for _, t := range info.PerTurn[start:] {
 			fmt.Fprintf(&sb, "  #%d %s %s · in %s",
 				t.Turn, t.At.Format(time.TimeOnly), abbrevModel(t.Model), commas(t.InputTokens))
-			if t.InputTokensCached > 0 {
-				fmt.Fprintf(&sb, " (%s cached)", commas(t.InputTokensCached))
+			if t.InputTokensCached > 0 || t.InputTokensCacheWrite > 0 {
+				fmt.Fprintf(&sb, " (%s cached%s)",
+					commas(t.InputTokensCached), cacheWriteClause(t.InputTokensCacheWrite))
 			}
 			fmt.Fprintf(&sb, " · out %s · $%.4f\n",
 				commas(t.OutputTokens), t.CostUSD)
@@ -107,6 +114,22 @@ func RenderUsage(info UsageInfo) string {
 	}
 
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// cacheWriteClause renders the cache-WRITE bucket as a clause to append
+// after the cached count, or "" when the provider reported none.
+//
+// It has to appear somewhere: cached, cache-write and uncached are
+// three disjoint subsets of the input total (#263), so omitting the
+// middle one leaves the line visibly failing to add up — an Anthropic
+// session showed "in 12,450 (8,320 cached / 130 uncached)" with 4,000
+// tokens unaccounted for. Empty for every provider that doesn't bill
+// writes per token, so Gemini output is byte-identical to before.
+func cacheWriteClause(n int64) string {
+	if n <= 0 {
+		return ""
+	}
+	return " / " + commas(n) + " cache-write"
 }
 
 // commas renders an int64 with thousands separators. Small helper

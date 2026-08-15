@@ -15,27 +15,101 @@
 package usage
 
 import (
+	"encoding/json"
+
 	"google.golang.org/genai"
 )
 
+// CacheCreationTokensMetadataKey is the LLMResponse.CustomMetadata key
+// under which a provider reports the turn's cache-WRITE token count —
+// tokens billed at a premium for establishing a cache entry rather than
+// at the base input rate.
+//
+// Why a CustomMetadata sidecar and not a UsageMetadata field: genai's
+// GenerateContentResponseUsageMetadata models Gemini's two input
+// buckets (total prompt + cache reads) and has nowhere to put a third.
+// CustomMetadata is the one per-event map that survives ADK's persist
+// round-trip, which is what lets usage.Rebuild reconstruct correct cost
+// from a reloaded eventlog — pkg/eventlog piggy-backs the same
+// mechanism for FinishReason, for the same reason.
+//
+// Written by pkg/models/anthropic (from cache_creation_input_tokens);
+// read by TurnUsageFromMetadata. The value is an int64 when freshly
+// stamped and a float64 or json.Number after a JSON round-trip, so
+// readers must accept all three — see cacheCreationTokens.
+const CacheCreationTokensMetadataKey = "cache_creation_input_tokens"
+
 // TurnUsageFromGenaiMetadata projects one genai UsageMetadata block
-// into the provider-independent TurnUsage shape. All Gemini/Vertex tap
-// sites use this to get identical field extraction — call it once per
-// event with UsageMetadata != nil, overwriting the "last seen" turn
-// snapshot (matching the existing lastIn/lastOut overwrite pattern).
+// into the provider-independent TurnUsage shape.
 //
 // PromptTokenCount is the total effective prompt size and already
 // includes cache-hit tokens (see the Turn docstring in tracker.go).
 // Returns a zero TurnUsage for a nil input.
+//
+// This signature has no access to the cache-write sidecar, so turns
+// that wrote cache entries come back with CacheCreationInputTokens == 0
+// and their cost is understated by the write premium. Callers holding
+// an *session.Event or *model.LLMResponse should use
+// TurnUsageFromMetadata and pass CustomMetadata through.
 func TurnUsageFromGenaiMetadata(u *genai.GenerateContentResponseUsageMetadata) TurnUsage {
+	return TurnUsageFromMetadata(u, nil)
+}
+
+// TurnUsageFromMetadata projects one turn's genai UsageMetadata plus
+// the provider's CustomMetadata sidecar into TurnUsage. All tap sites
+// use this so field extraction — including the cache-write bucket
+// providers can only report out-of-band — stays identical: call it once
+// per event with UsageMetadata != nil, overwriting the "last seen" turn
+// snapshot (matching the existing lastIn/lastOut overwrite pattern).
+//
+// custom may be nil; the cache-write bucket then reads zero, which is
+// correct for every provider that doesn't bill writes separately.
+func TurnUsageFromMetadata(u *genai.GenerateContentResponseUsageMetadata, custom map[string]any) TurnUsage {
 	if u == nil {
 		return TurnUsage{}
 	}
 	return TurnUsage{
-		InputTokens:       int(u.PromptTokenCount),
-		CachedInputTokens: int(u.CachedContentTokenCount),
-		OutputTokens:      int(u.CandidatesTokenCount),
-		ThoughtsTokens:    int(u.ThoughtsTokenCount),
-		ToolUseTokens:     int(u.ToolUsePromptTokenCount),
+		InputTokens:              int(u.PromptTokenCount),
+		CachedInputTokens:        int(u.CachedContentTokenCount),
+		CacheCreationInputTokens: cacheCreationTokens(custom),
+		OutputTokens:             int(u.CandidatesTokenCount),
+		ThoughtsTokens:           int(u.ThoughtsTokenCount),
+		ToolUseTokens:            int(u.ToolUsePromptTokenCount),
 	}
+}
+
+// cacheCreationTokens reads the cache-write count out of a
+// CustomMetadata map. Accepts every numeric shape the value can arrive
+// in: the int64 the provider stamps in-process, the float64 a Go JSON
+// decode produces, and json.Number when the decoder was configured for
+// it. Anything else — absent key, wrong type, negative count — reads as
+// zero, which degrades to the pre-#263 accounting rather than to a
+// bogus charge.
+func cacheCreationTokens(custom map[string]any) int {
+	if len(custom) == 0 {
+		return 0
+	}
+	var n int
+	switch v := custom[CacheCreationTokensMetadataKey].(type) {
+	case int:
+		n = v
+	case int32:
+		n = int(v)
+	case int64:
+		n = int(v)
+	case float64:
+		n = int(v)
+	case json.Number:
+		i, err := v.Int64()
+		if err != nil {
+			return 0
+		}
+		n = int(i)
+	default:
+		return 0
+	}
+	if n < 0 {
+		return 0
+	}
+	return n
 }

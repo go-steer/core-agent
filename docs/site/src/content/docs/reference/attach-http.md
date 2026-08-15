@@ -149,7 +149,8 @@ The `/interrupt` audit event (`Author=attach/interrupt`) is written by the agent
   "overall": {
     "input_tokens": 12450,
     "input_tokens_cached": 8320,
-    "input_tokens_uncached": 4130,
+    "input_tokens_cache_write": 4000,
+    "input_tokens_uncached": 130,
     "output_tokens": 1890,
     "thoughts_tokens": 420,
     "turns": 5,
@@ -186,6 +187,7 @@ The `/interrupt` audit event (`Author=attach/interrupt`) is written by the agent
 Field notes:
 
 - **`overall` / `per_model`** — cumulative totals + per-model breakdown. `_cached` / `_uncached` split lets you compute the cache-savings percentage as `1 - cost_usd / cost_usd_uncached_reference`.
+- **`input_tokens_cached` / `input_tokens_cache_write` / `input_tokens_uncached`** — three **disjoint** subsets of `input_tokens`; they sum to it. `_cache_write` is tokens billed at a premium for *establishing* a cache entry (Anthropic's `cache_creation_input_tokens`: 1.25× the base input rate), as opposed to `_cached`, which is the discounted *read* of an existing entry. Providers that don't bill writes per token (Gemini/Vertex charge cache storage per hour instead) report `0`, and the key is omitted (v2.9+, [#263](https://github.com/go-steer/core-agent/issues/263)).
 - **`per_turn`** — the v2.7-dev.3 addition. Submission-ordered list, `turn` is 1-based. `total_tokens` matches Google's `UsageMetadata.TotalTokenCount` convention.
 - **`ts`** — RFC3339. Marks the model call, not the operator submission.
 - **`tool_use_tokens`** — Anthropic-specific; 0 for Gemini providers.

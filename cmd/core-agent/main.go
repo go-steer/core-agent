@@ -1541,10 +1541,11 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			}
 			if !currentRate.IsZero() {
 				info.Current = &attach.ModelPricing{
-					InputUSDPerMTok:  currentRate.InputPerMTok,
-					OutputUSDPerMTok: currentRate.OutputPerMTok,
-					CachedUSDPerMTok: currentRate.CachedInputPerMTok,
-					UpdatedAt:        currentRate.UpdatedAt,
+					InputUSDPerMTok:      currentRate.InputPerMTok,
+					OutputUSDPerMTok:     currentRate.OutputPerMTok,
+					CachedUSDPerMTok:     currentRate.CachedInputPerMTok,
+					CacheWriteUSDPerMTok: currentRate.CacheCreationInputPerMTok,
+					UpdatedAt:            currentRate.UpdatedAt,
 				}
 			}
 			return info

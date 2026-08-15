@@ -94,7 +94,7 @@ func RebuildTrackerFromEvents(
 		if ev == nil || ev.UsageMetadata == nil {
 			continue
 		}
-		u := TurnUsageFromGenaiMetadata(ev.UsageMetadata)
+		u := TurnUsageFromMetadata(ev.UsageMetadata, ev.CustomMetadata)
 		if u.InputTokens == 0 && u.OutputTokens == 0 {
 			// Vertex occasionally emits a UsageMetadata block with
 			// zero token counts on error paths. Skip — appending

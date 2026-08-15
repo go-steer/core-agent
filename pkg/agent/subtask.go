@@ -428,7 +428,13 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 				turn := a.tracker.AppendUsage(modelName, u, pricing)
 				totalCostUSD += turn.CostUSD
 			} else {
-				totalCostUSD += pricing.CostUSD(u.InputTokens, u.OutputTokens)
+				// CostUSDForTurn, not CostUSD: the latter bills the
+				// whole prompt at the base input rate, so a subtask
+				// whose parent has no tracker (or that set
+				// SkipParentUsage) used to be priced as if nothing had
+				// been cached — overcharging reads and undercharging
+				// writes relative to the tracker path.
+				totalCostUSD += pricing.CostUSDForTurn(u)
 			}
 		}
 		if ev.TurnComplete {

@@ -395,10 +395,15 @@ type AnthropicConfig struct {
 // PricingConfig overrides the built-in price table for cost estimation.
 // CachedInputPerMTok is the rate for prompt-cache-hit input tokens; when
 // zero, cache hits are billed at InputPerMTok (no assumed discount).
+// CacheCreationInputPerMTok is the rate for input tokens that WRITE a
+// cache entry (Anthropic's cache_creation_input_tokens, a premium over
+// base input); when zero, written tokens are billed at InputPerMTok,
+// which understates the real bill.
 type PricingConfig struct {
-	InputPerMTok       float64 `json:"input_per_mtok,omitempty"`
-	CachedInputPerMTok float64 `json:"cached_input_per_mtok,omitempty"`
-	OutputPerMTok      float64 `json:"output_per_mtok,omitempty"`
+	InputPerMTok              float64 `json:"input_per_mtok,omitempty"`
+	CachedInputPerMTok        float64 `json:"cached_input_per_mtok,omitempty"`
+	CacheCreationInputPerMTok float64 `json:"cache_creation_input_per_mtok,omitempty"`
+	OutputPerMTok             float64 `json:"output_per_mtok,omitempty"`
 }
 
 // PermissionsConfig configures the permission gate.

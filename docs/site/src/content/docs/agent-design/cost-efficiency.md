@@ -150,7 +150,8 @@ $ curl -s http://<daemon>/sessions/<sid>/usage | jq '.overall'
 {
   "input_tokens": 181449,
   "input_tokens_cached": 143937,
-  "input_tokens_uncached": 37512,
+  "input_tokens_cache_write": 12000,
+  "input_tokens_uncached": 25512,
   "output_tokens": 1405,
   "turns": 10,
   "cost_usd": 0.077,
@@ -159,6 +160,8 @@ $ curl -s http://<daemon>/sessions/<sid>/usage | jq '.overall'
 ```
 
 The cached-vs-uncached rate split relies on `Pricing.CachedInputPerMTok` being set for your model. When it's not set, the daemon falls back to charging cached tokens at the full input rate — safer than silently pretending cached tokens are free, but it means `cost_usd_uncached_reference` will equal `cost_usd` even when `input_tokens_cached` is non-zero. Set your model's cache rate via `.agents/pricing.json` or `~/.core-agent/pricing.json` using the `cached_input_per_mtok` field. Rates vary by model — for example, `gemini-3.5-flash` charges 10% of input for cache reads (`$0.15/M`), older Gemini families used 25%.
+
+**Cache writes are a third bucket, not a discount.** Anthropic bills the tokens that *establish* a cache entry at a premium — 1.25× the base input rate on the 5-minute TTL, 2× on the 1-hour one — and reports them separately from cache reads. `input_tokens`, `input_tokens_cached` (reads), and `input_tokens_cache_write` are disjoint: uncached is the remainder after subtracting both. Before v2.9 written tokens fell into the uncached remainder and were billed at 1×, understating every cache-warming turn by the premium ([#263](https://github.com/go-steer/core-agent/issues/263)). The write rate lives in the same pricing files under `cache_creation_input_per_mtok`; it ships populated in the builtin table for every Claude model, and an unset rate degrades to the base input rate (the old understated number) rather than to free. Gemini/Vertex don't bill writes per token — they bill cache *storage* per hour — so their rows leave it unset and the wire field is omitted.
 
 ### The important caveat: implicit caching is opportunistic
 

@@ -214,6 +214,8 @@ Selects the LLM backend.
 | `anthropic.vertex.location` | string | — | Region (e.g. `us-east5`). Falls back to `CLOUD_ML_REGION` then `GOOGLE_CLOUD_LOCATION`. |
 | `pricing` | map | `{}` | Per-model rate overrides keyed by model name (case-insensitive). Survives `/model` switches mid-session — every model the operator routes to can carry its own rates. |
 | `pricing.<model>.input_per_mtok` | float | — | USD per 1M input tokens for `<model>`. |
+| `pricing.<model>.cached_input_per_mtok` | float | — | USD per 1M cache-**read** tokens (the discounted rate for reusing a cached prefix). Unset bills cache reads at `input_per_mtok`. |
+| `pricing.<model>.cache_creation_input_per_mtok` | float | — | USD per 1M cache-**write** tokens (the premium for establishing a cache entry — 1.25× input on Anthropic's 5-minute TTL). Unset bills writes at `input_per_mtok`. |
 | `pricing.<model>.output_per_mtok` | float | — | USD per 1M output tokens for `<model>`. |
 
 Pricing resolves through a layered chain: this `model.pricing` map → `.agents/pricing.json` (project-local) → `~/.core-agent/pricing.json` (user-global; auto-fetched + manual sections) → compiled-in fallback → longest-prefix match → "$—" (rate unknown).
@@ -226,7 +228,7 @@ Example:
     "name": "gemini-3.1-pro-preview",
     "pricing": {
       "gemini-3.1-pro-preview":     {"input_per_mtok": 1.25, "output_per_mtok": 5.00},
-      "claude-opus-4-7":            {"input_per_mtok": 15.0, "output_per_mtok": 75.0},
+      "claude-opus-4-7":            {"input_per_mtok": 15.0, "cached_input_per_mtok": 1.50, "cache_creation_input_per_mtok": 18.75, "output_per_mtok": 75.0},
       "internal-fine-tuned-v3":     {"input_per_mtok": 0.50, "output_per_mtok": 2.00}
     }
   }

@@ -363,6 +363,51 @@ func TestSetPricing_AppliesImmediatelyAndPersists(t *testing.T) {
 	}
 }
 
+// TestSetPricing_PreservesCacheRates pins that bumping a model's base
+// rates doesn't silently drop its cache rates. /pricing set takes only
+// input+output, but the manual section is the documented home for
+// `cached_input_per_mtok` and `cache_creation_input_per_mtok` (#263) —
+// replacing the whole entry reverted Anthropic models to the
+// pre-#263 undercount with no message and no diff.
+func TestSetPricing_PreservesCacheRates(t *testing.T) {
+	installCatalogGuard(t)
+
+	coreHome := t.TempDir()
+	cfg := &config.Config{}
+	if err := pricing.SaveUserFile(coreHome, &pricing.UserFile{
+		Version: 1,
+		Manual: &pricing.ManualSection{Models: map[string]pricing.ModelRates{
+			"claude-opus-5": {
+				InputPerMTok:              4,
+				CachedInputPerMTok:        0.5,
+				CacheCreationInputPerMTok: 6.25,
+				OutputPerMTok:             20,
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("SaveUserFile: %v", err)
+	}
+
+	msg, err := SetPricing(cfg, t.TempDir(), coreHome, "claude-opus-5", 5, 25)
+	if err != nil {
+		t.Fatalf("SetPricing: %v", err)
+	}
+
+	got := usage.PriceFor("claude-opus-5", cfg)
+	if got.InputPerMTok != 5 || got.OutputPerMTok != 25 {
+		t.Errorf("base rates = %v/%v, want 5/25", got.InputPerMTok, got.OutputPerMTok)
+	}
+	if got.CachedInputPerMTok != 0.5 || got.CacheCreationInputPerMTok != 6.25 {
+		t.Errorf("cache rates = read %v / write %v, want 0.5 / 6.25 — /pricing set clobbered them",
+			got.CachedInputPerMTok, got.CacheCreationInputPerMTok)
+	}
+	// And the operator is told, so a preserved rate isn't a surprise
+	// the next time they read the file.
+	if !strings.Contains(msg, "kept cache rates") {
+		t.Errorf("summary = %q, want it to mention the preserved cache rates", msg)
+	}
+}
+
 func TestSetPricing_ManualRateSurvivesARefresh(t *testing.T) {
 	installCatalogGuard(t)
 

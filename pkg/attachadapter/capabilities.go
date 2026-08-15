@@ -244,13 +244,14 @@ func (ad *Adapter) AttachContext() attach.ContextInfo {
 // on per-turn rate lookups the Totals shape doesn't carry.
 func usageTotalsToAttach(t usage.Totals) attach.UsageTotals {
 	return attach.UsageTotals{
-		InputTokens:         int64(t.InputTokens),
-		InputTokensCached:   int64(t.CachedInputTokens),
-		InputTokensUncached: int64(t.InputTokens - t.CachedInputTokens),
-		OutputTokens:        int64(t.OutputTokens),
-		ThoughtsTokens:      int64(t.ThoughtsTokens),
-		Turns:               t.Turns,
-		CostUSD:             t.CostUSD,
+		InputTokens:           int64(t.InputTokens),
+		InputTokensCached:     int64(t.CachedInputTokens),
+		InputTokensCacheWrite: int64(t.CacheCreationInputTokens),
+		InputTokensUncached:   int64(t.UncachedInputTokens()),
+		OutputTokens:          int64(t.OutputTokens),
+		ThoughtsTokens:        int64(t.ThoughtsTokens),
+		Turns:                 t.Turns,
+		CostUSD:               t.CostUSD,
 	}
 }
 
@@ -265,7 +266,8 @@ func turnToAttach(turnIdx int, t usage.Turn, uncachedRef float64) attach.UsageTu
 		Model:                    t.Model,
 		InputTokens:              int64(t.InputTokens),
 		InputTokensCached:        int64(t.CachedInputTokens),
-		InputTokensUncached:      int64(t.InputTokens - t.CachedInputTokens),
+		InputTokensCacheWrite:    int64(t.CacheCreationInputTokens),
+		InputTokensUncached:      int64(t.UncachedInputTokens()),
 		OutputTokens:             int64(t.OutputTokens),
 		ThoughtsTokens:           int64(t.ThoughtsTokens),
 		ToolUseTokens:            int64(t.ToolUseTokens),

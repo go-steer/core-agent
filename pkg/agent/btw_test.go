@@ -23,6 +23,8 @@ import (
 
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/genai"
+
+	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
 // captureLLM is a tiny adkmodel.LLM that records every request it's
@@ -37,6 +39,10 @@ type captureLLM struct {
 	err          error
 	inputTokens  int32 // optional: include in UsageMetadata on the response
 	outputTokens int32 // optional: include in UsageMetadata on the response
+	// cacheWriteTokens, when > 0, is reported the way the Anthropic
+	// adapter reports it: on CustomMetadata, since genai's usage struct
+	// has no third input bucket (#263). It is a SUBSET of inputTokens.
+	cacheWriteTokens int64
 }
 
 func (l *captureLLM) Name() string { return "capture" }
@@ -48,6 +54,7 @@ func (l *captureLLM) GenerateContent(_ context.Context, req *adkmodel.LLMRequest
 	err := l.err
 	in := l.inputTokens
 	out := l.outputTokens
+	writes := l.cacheWriteTokens
 	l.mu.Unlock()
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
 		if err != nil {
@@ -64,6 +71,9 @@ func (l *captureLLM) GenerateContent(_ context.Context, req *adkmodel.LLMRequest
 				CandidatesTokenCount: out,
 				TotalTokenCount:      in + out,
 			}
+		}
+		if writes > 0 {
+			r.CustomMetadata = map[string]any{usage.CacheCreationTokensMetadataKey: writes}
 		}
 		yield(r, nil)
 	}

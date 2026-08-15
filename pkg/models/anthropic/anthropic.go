@@ -67,20 +67,71 @@ func init() {
 // only the embedded client differs. name carries which one this is so
 // telemetry and Resolve() see the right identity.
 type Provider struct {
-	name        string
-	client      anthropic.Client
-	cacheSystem bool
-	builtins    BuiltinTools
+	name     string
+	client   anthropic.Client
+	cache    CacheOptions
+	builtins BuiltinTools
 }
 
 // Option configures a Provider at construction.
 type Option func(*Provider)
 
-// WithCacheSystem enables prompt caching on the last system block by
-// default. Off by default — turn it on once you've confirmed the
-// system prompt is stable across turns (otherwise the cache write
-// premium is paid for nothing).
-func WithCacheSystem(on bool) Option { return func(p *Provider) { p.cacheSystem = on } }
+// WithCacheSystem caches the last system block and nothing else.
+//
+// Deprecated: use WithPromptCache. This option predates the history
+// breakpoints and keeps its original all-or-nothing meaning — it
+// REPLACES the policy rather than editing one field, so
+// WithCacheSystem(false) still means "no caching at all", the way it did
+// when system blocks were the only thing that could be marked. A caller
+// who wrote it to avoid the write premium keeps that outcome instead of
+// silently acquiring rolling history breakpoints.
+func WithCacheSystem(on bool) Option {
+	return func(p *Provider) { p.cache = CacheOptions{System: on} }
+}
+
+// WithPromptCache sets the whole prompt-caching policy, replacing
+// DefaultCacheOptions. Pass a zero CacheOptions to turn caching off —
+// worth doing for a request shape whose prefix varies every call, where
+// the write premium buys reads that never come.
+func WithPromptCache(o CacheOptions) Option { return func(p *Provider) { p.cache = o } }
+
+// CacheOptions selects which parts of a request carry Anthropic
+// cache_control breakpoints. Both halves are prefix-cached by the same
+// mechanism; they're separable because they fail differently — System
+// is worthless if the instruction carries a per-turn timestamp, History
+// is worthless for one-shot calls that never replay a prefix.
+//
+// The zero value disables caching entirely.
+type CacheOptions struct {
+	// System marks the last system block. Since the render order is
+	// tools → system → messages, that one marker caches the tool
+	// schemas and the system prompt together.
+	System bool
+	// History places rolling breakpoints over the tail of the
+	// conversation so a growing transcript is re-read at the cache
+	// rate instead of re-billed in full every turn (#714).
+	History bool
+}
+
+// Enabled reports whether any breakpoint would be placed.
+func (o CacheOptions) Enabled() bool { return o.System || o.History }
+
+// DefaultCacheOptions is what every constructor starts from: cache the
+// stable prefix and the conversation tail. On by default because the
+// break-even is two requests against a 5-minute TTL and core-agent's
+// agentic loop issues its second request seconds after the first — the
+// shape that loses (a single request whose prefix is never seen again)
+// is the rare one, and it is the one an operator can turn off.
+func DefaultCacheOptions() CacheOptions { return CacheOptions{System: true, History: true} }
+
+// cacheOptionsFromConfig maps the config block onto the policy. Absent
+// block → the defaults; explicit enabled=false → off.
+func cacheOptionsFromConfig(cfg *config.Config) CacheOptions {
+	if cfg != nil && cfg.Model.Anthropic != nil && !cfg.Model.Anthropic.PromptCache.IsEnabled() {
+		return CacheOptions{}
+	}
+	return DefaultCacheOptions()
+}
 
 // New constructs a Provider with the given API key (first-party
 // api.anthropic.com). Pass options to tune behavior. Empty key falls
@@ -95,6 +146,7 @@ func New(apiKey string, opts ...Option) (*Provider, error) {
 	p := &Provider{
 		name:     config.ProviderAnthropic,
 		client:   anthropic.NewClient(option.WithAPIKey(apiKey)),
+		cache:    DefaultCacheOptions(),
 		builtins: DefaultBuiltinTools(),
 	}
 	for _, opt := range opts {
@@ -123,17 +175,29 @@ func (p *Provider) Model(_ context.Context, modelID string) (adkmodel.LLM, error
 		modelID = DefaultModel
 	}
 	return &llm{
-		client:      p.client,
-		modelID:     modelID,
-		cacheSystem: p.cacheSystem,
-		builtins:    p.builtins,
+		client:   p.client,
+		modelID:  modelID,
+		cache:    p.cache,
+		builtins: p.builtins,
 	}, nil
 }
+
+// SetPromptCache installs the caching policy after construction. Exists
+// for the daemon's wiring order: the provider comes out of the registry
+// (models.Resolve, which sees only config) before the CLI kill switch
+// can be applied, and Model() copies the policy into each LLM it
+// builds. Call it before the first Model() call — like the Gemini
+// provider's cache hooks, it is startup wiring, not a live control.
+func (p *Provider) SetPromptCache(o CacheOptions) { p.cache = o }
+
+// PromptCache reports the currently installed policy. Lets a host log
+// what it wired without keeping its own copy.
+func (p *Provider) PromptCache() CacheOptions { return p.cache }
 
 func newProvider(cfg *config.Config) (models.Provider, error) {
 	key := ""
 	if cfg.Model.Anthropic != nil {
 		key = cfg.Model.Anthropic.APIKey
 	}
-	return New(key)
+	return New(key, WithPromptCache(cacheOptionsFromConfig(cfg)))
 }

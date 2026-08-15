@@ -128,6 +128,15 @@ The agentic path's own subagent bill is real spend, and it lands on the session 
 
 Both Anthropic and Google support prompt caching: stable prefix content is hashed and a cached version reduces input-token billing for subsequent turns. The agent's system instruction + the early turns of a session are usually the cache hot path.
 
+The two families get there differently, and both are **on by default**:
+
+| Provider | Mechanism | Kill switch |
+|---|---|---|
+| `anthropic`, `anthropic-vertex` | `cache_control` breakpoints on the request: one on the system prefix, plus rolling markers over the conversation tail. No cache resource. | `--no-prompt-cache`, `model.anthropic.prompt_cache.enabled` |
+| `vertex` (Gemini) | An explicit `CachedContent` resource created after turn 1 and stamped onto later requests, on top of Vertex's opportunistic implicit cache. | `--no-context-cache`, `model.vertex.context_cache.enabled` |
+
+The Anthropic side is what makes long sessions affordable on Claude: the runner replays the whole transcript every turn, so without breakpoints past the system block the transcript is re-billed at full rate on each turn and input cost grows quadratically with session length. Details and the invalidation rules are in [Providers → Prompt caching](/concepts/providers/#prompt-caching).
+
 ### What helps cache hits
 
 - **Stable `AGENTS.md`.** Every word counts as cache material. Editing `AGENTS.md` mid-session invalidates the cache.
@@ -139,7 +148,10 @@ Both Anthropic and Google support prompt caching: stable prefix content is hashe
 
 - **Switching models mid-session** (e.g., `/model gemini-2.5-flash` after starting on Pro). The cache is per-model.
 - **Adding/removing MCP servers via `/reload`.** Tool schemas change → cache invalidates.
-- **`/compact`** triggers a model call that DOES warm the cache for the next turn. Just be aware: the compaction itself isn't cached (first time the model sees the summarization prompt + full history), but subsequent turns hit the post-summary cache cleanly.
+- **`/compact`** triggers a model call that DOES warm the cache for the next turn. Just be aware: the compaction itself isn't cached (first time the model sees the summarization prompt + full history), but subsequent turns hit the post-summary cache cleanly. On Anthropic the summarizer call also declines to *write* an entry — its prefix is shared with nothing else, so the write premium would buy a read that never comes. Same for the checkpointer, `/btw`, and the two-turn subtasks behind the `agentic_*` wrappers.
+- **A compaction or checkpoint rewrites the head of the history**, so on Anthropic the first turn after one is a full re-write of the message cache. Tools and system survive it.
+- **Idling more than five minutes between single-call turns.** Anthropic entries live 5 minutes, so a lone conversational reply after a long pause writes a fresh entry (1.25x) and reads nothing. Turns that call tools are unaffected — their second request lands seconds later.
+- **Fanning out more than ~26 parallel tool calls in one turn.** That appends more content blocks than the marker chain can reach back over, so the message cache misses for that turn and re-warms on the next.
 
 ### What's measurable
 
@@ -171,7 +183,9 @@ Vertex implicit caching (the default-on prefix cache on Gemini) is designed for 
 
 Practical consequence: `input_tokens_cached` on `/usage` reports **what Vertex chose to cache post-hoc**, not a savings floor you can plan around. Two turns of an identical prompt shape within seconds usually hit the cache; the same two turns 10 minutes apart may not. The `cost_usd_uncached_reference` delta is honest as a "here's what today's turn saved" number — treat it as informational, not as forecasted ROI.
 
-For **deterministic** cache savings, use [explicit context caching](https://cloud.google.com/vertex-ai/generative-ai/docs/context-cache/context-cache-overview) — you create a `CachedContent` resource with a settable TTL and reference it in requests. That's on the roadmap ([issue #221](https://github.com/go-steer/core-agent/issues/221)); the implicit path is what ships today.
+This caveat is Gemini-specific. Anthropic prompt caching is explicit in both directions: core-agent asks for the entry with a `cache_control` marker, and the response reports exactly what was read and what was written. There is no opportunistic layer to reason about — a read either hits the marked prefix or it doesn't.
+
+For **deterministic** cache savings on Vertex, core-agent ships [explicit context caching](https://cloud.google.com/vertex-ai/generative-ai/docs/context-cache/context-cache-overview) — a `CachedContent` resource with a settable TTL, created after turn 1 and referenced by later requests ([#221](https://github.com/go-steer/core-agent/issues/221)). It is on by default; see [Providers → Context caching](/concepts/providers/#context-caching).
 
 ---
 

@@ -66,7 +66,7 @@ import (
 // (cache_creation_input_token_cost). Anthropic's 1-hour TTL costs 2x
 // base input, so a caller that starts requesting `ttl: "1h"` at the
 // cache_control site would be undercharged by 37.5% against this field;
-// see the note at pkg/models/anthropic.systemBlocks. Adding 1h support
+// see the note at pkg/models/anthropic.applyCacheBreakpoints. Adding 1h support
 // means adding a second rate here, not reusing this one. Gemini has no
 // equivalent bucket:
 // its explicit caches bill storage per hour, not per written token, so

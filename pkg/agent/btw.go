@@ -24,6 +24,8 @@ import (
 
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/session"
+
+	"github.com/go-steer/core-agent/v2/pkg/models"
 )
 
 // AskSideQuestion runs one tool-less LLM call that sees the agent's
@@ -74,6 +76,12 @@ func (a *Agent) AskSideQuestion(ctx context.Context, question string) (string, e
 		// info only. Caller's responsibility to surface "I don't know"
 		// when the answer isn't in history.
 	}
+
+	// A side question is a one-shot: tool-less, no system instruction,
+	// and the appended question makes the prefix unique to this call.
+	// Writing a prompt-cache entry for it would cost the 1.25x write
+	// premium for a read that never comes.
+	ctx = models.WithoutPromptCache(ctx)
 
 	// Capture usage and commit once after the loop — see
 	// recordInternalLLMUsage's docstring for the shape. /btw was the

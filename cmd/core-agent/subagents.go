@@ -248,6 +248,11 @@ type subagentDeps struct {
 	// rootBase resolves a relative spec.Root, mirroring content_roots: the
 	// agents dir when the config was discovered under one, else the cwd.
 	rootBase string
+	// noPromptCache is the parent's --no-prompt-cache kill switch. A
+	// subagent with its own model resolves its own provider, which never
+	// sees the parent's CLI flags, so it has to be carried here for the
+	// switch to mean "off everywhere" rather than "off for the parent".
+	noPromptCache bool
 }
 
 // buildDeclaredSubagents turns the config's declarative subagents[] block
@@ -305,7 +310,7 @@ func buildDeclaredSubagents(
 	for i, spec := range cfg.Subagents {
 		// Resolve the provider + model name once; the sync path builds one
 		// LLM from it, the async template a fresh-LLM-per-spawn factory.
-		subProvider, modelName, err := resolveSubagentProvider(cfg, parentProvider, spec)
+		subProvider, modelName, err := resolveSubagentProvider(cfg, parentProvider, spec, deps.noPromptCache, deps.send)
 		if err != nil {
 			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: model: %w", i, spec.Name, err)
 		}
@@ -651,8 +656,9 @@ func resolveSubagentToolsets(ctx context.Context, spec config.SubagentSpec, surf
 // async template path (a factory that builds a fresh LLM per spawn, #626)
 // draw from the same resolution — provider.Model caches auth + transport
 // internally, so per-spawn calls are cheap.
-func resolveSubagentProvider(cfg *config.Config, parentProvider models.Provider, spec config.SubagentSpec) (models.Provider, string, error) {
+func resolveSubagentProvider(cfg *config.Config, parentProvider models.Provider, spec config.SubagentSpec, noPromptCache bool, send func(string)) (models.Provider, string, error) {
 	if spec.Model == nil {
+		// The parent provider already went through MaybeWirePromptCache.
 		return parentProvider, cfg.Model.Name, nil
 	}
 	// Own model: shallow-copy cfg with the subagent's Model so
@@ -661,9 +667,41 @@ func resolveSubagentProvider(cfg *config.Config, parentProvider models.Provider,
 	// cfg by value, which Resolve does not mutate.
 	subCfg := *cfg
 	subCfg.Model = *spec.Model
+	// Overwriting Model also drops the parent's prompt_cache setting,
+	// since that block hangs off model.anthropic. An operator who turned
+	// caching off project-wide means it for the whole process, so
+	// inherit it — unless the subagent's own model block says otherwise,
+	// which is a deliberate per-subagent override.
+	subCfg.Model.Anthropic = inheritPromptCache(cfg.Model.Anthropic, spec.Model.Anthropic)
 	p, err := models.Resolve(&subCfg)
 	if err != nil {
 		return nil, "", fmt.Errorf("resolve provider: %w", err)
 	}
+	// Announce only a deviation: the daemon already printed its own
+	// prompt-cache line, and repeating "enabled" once per declared
+	// subagent is noise on every default run.
+	if status, enabled := compose.MaybeWirePromptCache(p, noPromptCache); status != "" && !enabled && send != nil {
+		send(fmt.Sprintf("subagent %q: %s", spec.Name, status))
+	}
 	return p, spec.Model.Name, nil
+}
+
+// inheritPromptCache returns the subagent's Anthropic block with the
+// parent's prompt_cache filled in where the subagent didn't set one.
+// Returns sub unchanged when there is nothing to inherit, and never
+// mutates either input — subCfg is a shallow copy, so writing through
+// the parent's pointer would corrupt the real config.
+func inheritPromptCache(parent, sub *config.AnthropicConfig) *config.AnthropicConfig {
+	if parent == nil || parent.PromptCache == nil {
+		return sub
+	}
+	if sub == nil {
+		return &config.AnthropicConfig{PromptCache: parent.PromptCache}
+	}
+	if sub.PromptCache != nil {
+		return sub
+	}
+	merged := *sub
+	merged.PromptCache = parent.PromptCache
+	return &merged
 }

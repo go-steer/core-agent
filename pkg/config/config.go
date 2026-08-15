@@ -387,9 +387,48 @@ func (c *ContextCacheConfig) IsEnabled() bool {
 // provider family. APIKey is used by the first-party "anthropic"
 // provider (api.anthropic.com); Vertex is used by "anthropic-vertex"
 // (Claude served via Google Vertex AI).
+//
+// PromptCache toggles Anthropic prompt caching (cache_control
+// breakpoints on the stable prefix and the conversation tail). When nil
+// or Enabled != false, caching is ON. Unlike Vertex context caching
+// this needs no separate resource — the breakpoints ride the ordinary
+// Messages request — so it applies to both backends in the family.
+// See docs/anthropic-prompt-caching-design.md.
 type AnthropicConfig struct {
-	APIKey string        `json:"api_key,omitempty"`
-	Vertex *VertexConfig `json:"vertex,omitempty"`
+	APIKey      string             `json:"api_key,omitempty"`
+	Vertex      *VertexConfig      `json:"vertex,omitempty"`
+	PromptCache *PromptCacheConfig `json:"prompt_cache,omitempty"`
+}
+
+// PromptCacheConfig tunes Anthropic prompt caching. An empty struct
+// enables caching with the defaults, matching ContextCacheConfig's
+// shape so the two provider families read the same way in a config
+// file.
+//
+// Enabled is a pointer so "unset" (default ON) is distinguishable from
+// an explicit "off". The --no-prompt-cache CLI flag takes precedence
+// over both.
+//
+// No TTL knob: Anthropic offers a 5-minute and a 1-hour breakpoint TTL,
+// but the 1-hour one bills cache writes at 2x base input where the
+// 5-minute one bills 1.25x, and the rate catalog carries a single write
+// rate (the 5-minute one — see pricing.Rates.CacheCreationInputPerMTok).
+// Exposing the 1h TTL before the second rate exists would understate
+// every cached turn by 37.5%, so it waits for #770.
+type PromptCacheConfig struct {
+	// Enabled defaults to true (nil = ON). Set to false to disable
+	// caching for this provider.
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
+// IsEnabled reports whether prompt caching should be turned on given
+// this config. Nil receiver → true (default ON when the block is absent
+// from config.json).
+func (c *PromptCacheConfig) IsEnabled() bool {
+	if c == nil || c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
 }
 
 // PricingConfig overrides the built-in price table for cost estimation.

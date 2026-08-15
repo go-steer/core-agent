@@ -63,6 +63,7 @@ import (
 	"google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent/internal/subsession"
+	"github.com/go-steer/core-agent/v2/pkg/models"
 	"github.com/go-steer/core-agent/v2/pkg/tools"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
@@ -359,6 +360,20 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 	})
 	if err != nil {
 		return SubtaskResult{}, fmt.Errorf("agent: RunSubtask: build runner: %w", err)
+	}
+
+	// A tight-budget subtask loses money on prompt caching (#714).
+	// Its session ID is invocation-unique, so the prefix never recurs
+	// across calls, and with a 2-turn budget the terminal turn writes
+	// the wrapper's whole reason for existing — a large tool_result —
+	// at the 1.25x premium for a read that never comes. That write
+	// exceeds the one read the first turn's small prefix earns
+	// whenever the result is more than ~2.6x the prompt, which is the
+	// normal case for agentic_read_file / agentic_grep and for the MCP
+	// digest fallback. Subtasks with a longer budget replay their
+	// prefix enough times to pay it back, so they keep caching.
+	if maxTurns <= 2 {
+		ctx = models.WithoutPromptCache(ctx)
 	}
 
 	// Wall-clock budget via context; turn budget tracked in the

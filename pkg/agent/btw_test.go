@@ -24,6 +24,7 @@ import (
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/genai"
 
+	"github.com/go-steer/core-agent/v2/pkg/models"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
@@ -43,13 +44,18 @@ type captureLLM struct {
 	// adapter reports it: on CustomMetadata, since genai's usage struct
 	// has no third input bucket (#263). It is a SUBSET of inputTokens.
 	cacheWriteTokens int64
+	// noPromptCache records, per request, whether the caller marked its
+	// context as a one-shot (models.WithoutPromptCache). Parallel to
+	// reqs.
+	noPromptCache []bool
 }
 
 func (l *captureLLM) Name() string { return "capture" }
 
-func (l *captureLLM) GenerateContent(_ context.Context, req *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+func (l *captureLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
 	l.mu.Lock()
 	l.reqs = append(l.reqs, req)
+	l.noPromptCache = append(l.noPromptCache, models.PromptCacheSuppressed(ctx))
 	resp := l.response
 	err := l.err
 	in := l.inputTokens

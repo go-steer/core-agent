@@ -67,6 +67,7 @@ func NewVertex(ctx context.Context, project, region string, opts ...Option) (*Pr
 	p := &Provider{
 		name:     config.ProviderAnthropicVertex,
 		client:   anthropic.NewClient(vertex.WithCredentials(ctx, region, project, creds)),
+		cache:    DefaultCacheOptions(),
 		builtins: DefaultBuiltinTools(),
 	}
 	for _, opt := range opts {
@@ -93,7 +94,10 @@ func newVertexProvider(cfg *config.Config) (models.Provider, error) {
 	if region == "" {
 		region = firstNonEmpty(os.Getenv(EnvVertexRegion), os.Getenv("GOOGLE_CLOUD_LOCATION"), DefaultVertexRegion)
 	}
-	return NewVertex(context.Background(), project, region)
+	// Prompt caching is available on Claude-via-Vertex exactly as it is
+	// first-party (the breakpoints ride the ordinary request; there is
+	// no cache resource to create), so the same config gate applies.
+	return NewVertex(context.Background(), project, region, WithPromptCache(cacheOptionsFromConfig(cfg)))
 }
 
 func firstNonEmpty(values ...string) string {

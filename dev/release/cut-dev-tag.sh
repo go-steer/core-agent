@@ -57,16 +57,25 @@ echo "── Preflight: release guards ─────────────�
 # Guard 1: pricing catalog freshness. Same command release.yml runs.
 # Skips if the regen tool isn't present (pre-#259 checkouts) so
 # retroactive dev-tag operators aren't blocked.
+#
+# --check compares RATES only: it ignores the UpdatedAt stamps the
+# generator rewrites on every run, so cutting a tag on a day you
+# didn't happen to regenerate is no longer an error. It also writes
+# nothing, so this guard no longer dirties the worktree on its way
+# past. Verdict is on stdout; a non-zero exit means the check failed
+# to run, and `set -e` aborts the cut.
 if [[ -d "dev/regen-builtin-pricing" ]]; then
-  go run ./dev/regen-builtin-pricing >/dev/null
-  if ! git diff --quiet pkg/pricing/builtin.go; then
-    echo "error: pkg/pricing/builtin.go is stale vs LiteLLM's current catalog." >&2
+  PRICING_VERDICT="$(go run ./dev/regen-builtin-pricing --check)"
+  if [[ "$PRICING_VERDICT" == "drift=true" ]]; then
     echo "" >&2
-    echo "Remediation: commit the diff (or discard if the drift is intentional)," >&2
-    echo "then re-run this script." >&2
+    echo "error: pkg/pricing/builtin.go carries rates that no longer match LiteLLM." >&2
     echo "" >&2
-    echo "Diff:" >&2
-    git --no-pager diff pkg/pricing/builtin.go >&2
+    echo "Remediation: run 'go run ./dev/regen-builtin-pricing', commit the diff" >&2
+    echo "(or discard if the drift is intentional), then re-run this script." >&2
+    exit 1
+  fi
+  if [[ "$PRICING_VERDICT" != "drift=false" ]]; then
+    echo "error: unexpected --check output: ${PRICING_VERDICT}" >&2
     exit 1
   fi
   echo "  pricing freshness: OK"

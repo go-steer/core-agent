@@ -23,7 +23,20 @@ jobs:
     # review-gate is a required check, an unexempted bot PR would sit
     # at "Expected" forever. A skipped job satisfies branch
     # protection, so bot PRs merge normally.
-    if: github.event.pull_request.user.login != 'github-actions[bot]'
+    #
+    # go-steer-bot[bot] is the GitHub App pricing-regen authenticates
+    # as; the org forbids GITHUB_TOKEN from opening PRs, and
+    # GITHUB_TOKEN PRs never trigger required checks anyway. Adding a
+    # bot here is a deliberate act: it lets that identity land Go
+    # changes without the skeptic pass, so only add automation whose
+    # output is machine-generated and verified in-workflow.
+    #
+    # Deliberately an explicit allowlist, not `user.type == 'Bot'` —
+    # otherwise any third-party bot installed later (Dependabot,
+    # Renovate) would silently inherit the exemption.
+    if: >-
+      !contains(fromJSON('["github-actions[bot]", "go-steer-bot[bot]"]'),
+      github.event.pull_request.user.login)
     runs-on: ubuntu-latest
     steps:
       - name: Require adversarial-review section on Go-touching PRs

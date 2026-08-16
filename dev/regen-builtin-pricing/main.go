@@ -37,12 +37,30 @@
 //	# Preview to stdout without writing:
 //	go run ./dev/regen-builtin-pricing --stdout
 //
+//	# Ask "have any RATES moved?" without writing anything:
+//	go run ./dev/regen-builtin-pricing --check
+//
+// --check reports its answer on STDOUT as a single line, either
+// `drift=true` or `drift=false`, and exits 0 either way. Human-readable
+// detail (which models moved, and how) goes to stderr. A non-zero exit
+// from --check always means the generator itself failed — bad JSON,
+// unreachable network, unreadable --out.
+//
+// Drift is deliberately NOT signalled through the exit code, because
+// `go run` collapses every non-zero child status to 1: a program that
+// exits 2 makes `go run` print "exit status 2" and then exit 1 itself.
+// All four callers invoke this through `go run`, so an exit-code
+// convention would make a failed fetch indistinguishable from a real
+// price change — and the weekly workflow would open a pull request
+// every time GitHub's egress hiccuped.
+//
 // Ownership: regenerate before every release. Review the diff — the
 // allowlist is stable but LiteLLM occasionally shifts rates. Commit
 // both the regenerated builtin.go and any allowlist changes together.
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -51,6 +69,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -131,7 +150,14 @@ func main() {
 		"path to write generated builtin.go (default: pkg/pricing/builtin.go relative to cwd)")
 	toStdout := flag.Bool("stdout", false,
 		"print generated file to stdout instead of writing to --out")
+	check := flag.Bool("check", false,
+		"write nothing; exit 1 if --out's rates differ from LiteLLM's current "+
+			"catalog. UpdatedAt stamps are ignored, so a merely-old file is not drift")
 	flag.Parse()
+
+	if *check && *toStdout {
+		die("--check and --stdout are mutually exclusive")
+	}
 
 	body, err := load(*source)
 	if err != nil {
@@ -162,6 +188,10 @@ func main() {
 		die("render: %v", err)
 	}
 
+	if *check {
+		checkDrift(*outPath, src)
+		return
+	}
 	if *toStdout {
 		if _, err := os.Stdout.Write(src); err != nil {
 			die("write stdout: %v", err)
@@ -173,6 +203,126 @@ func main() {
 	}
 	fmt.Fprintf(os.Stderr, "regen-builtin-pricing: wrote %d entries to %s (UpdatedAt=%s)\n",
 		len(kept), *outPath, now.Format("2006-01-02"))
+}
+
+// --- drift checking (--check) --------------------------------------
+//
+// Every regen stamps time.Now() onto every entry, so `git diff` against
+// the committed builtin.go reports a change on any day the file wasn't
+// regenerated — even when LiteLLM hasn't moved a single rate. Four
+// callers (pricing-regen.yml, release.yml, and the two cut-*-tag.sh
+// scripts) used that diff as their drift signal, which meant they were
+// really testing the calendar: the weekly workflow would have opened a
+// no-op PR every Monday, and the release guards fire unless you regen
+// and commit on the same UTC day you tag. --check compares the
+// rate-bearing content with the timestamps normalized away.
+
+var (
+	// UpdatedAt literals: time.Date(2026, 8, 16, 0, 0, 0, 0, time.UTC).
+	reUpdatedAt = regexp.MustCompile(`time\.Date\(\d{4}, \d{1,2}, \d{1,2}, 0, 0, 0, 0, time\.UTC\)`)
+	// Header line: "// Regenerated 2026-08-16 from https://...". The
+	// source is normalized away along with the date so that checking a
+	// pinned local snapshot (--check --source=/tmp/litellm.json) doesn't
+	// report drift purely because the provenance string differs from
+	// the committed file's URL.
+	reHeaderLine = regexp.MustCompile(`(?m)^// Regenerated \d{4}-\d{2}-\d{2} from .*$`)
+	// gofmt column-aligns the map literal, so one entry gaining a digit
+	// re-pads every row in the block. Without collapsing runs of spaces
+	// the report blames a dozen models whose rates never moved.
+	// Indentation is a tab, so rows keep their leading whitespace.
+	reRunOfSpaces = regexp.MustCompile(`  +`)
+	// One rendered row: `\t"model": {…},` plus its optional // provider
+	// comment. Capture group 2 is everything after the model name.
+	reEntryLine = regexp.MustCompile(`(?m)^\t"([^"]+)": (\{[^}]*\},.*)$`)
+)
+
+// normalize strips the two things that change on every regen regardless
+// of upstream rates — the per-entry UpdatedAt and the header's
+// "Regenerated" date — plus gofmt's alignment padding.
+func normalize(src []byte) []byte {
+	src = reUpdatedAt.ReplaceAll(src, []byte("time.Date(<UPDATED-AT>)"))
+	src = reHeaderLine.ReplaceAll(src, []byte("// Regenerated <DATE> from <SOURCE>."))
+	return reRunOfSpaces.ReplaceAll(src, []byte(" "))
+}
+
+// checkDrift compares freshly generated source against what is on disk
+// at outPath. The verdict goes to stdout as `drift=true` / `drift=false`
+// for callers to branch on; the itemized explanation goes to stderr for
+// humans reading CI logs. Genuine failures exit non-zero via die, which
+// is what callers must treat as "could not determine".
+func checkDrift(outPath string, generated []byte) {
+	existing, err := os.ReadFile(outPath) //nolint:gosec // caller-supplied path
+	if err != nil {
+		die("read %s for --check: %v", outPath, err)
+	}
+	want, got := normalize(generated), normalize(existing)
+	if bytes.Equal(want, got) {
+		fmt.Fprintf(os.Stderr,
+			"regen-builtin-pricing: %s is up to date — rates match LiteLLM (UpdatedAt ignored)\n",
+			outPath)
+		fmt.Println("drift=false")
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		"regen-builtin-pricing: %s is stale — LiteLLM rates have moved.\n\n", outPath)
+	lines := diffEntries(got, want)
+	if len(lines) == 0 {
+		// Non-empty diff with no per-entry change means the header or
+		// the accessor block moved (e.g. the generator's own template
+		// changed). Still drift; just not something we can itemize.
+		lines = []string{"(change is outside the rate table — regenerate and review the diff)"}
+	}
+	for _, l := range lines {
+		fmt.Fprintf(os.Stderr, "  %s\n", l)
+	}
+	fmt.Fprintf(os.Stderr, "\nRefresh with: go run ./dev/regen-builtin-pricing\n")
+	fmt.Println("drift=true")
+}
+
+// diffEntries itemizes per-model differences between two normalized
+// renderings, so CI logs name the models whose rates moved instead of
+// dumping a whole-file diff.
+func diffEntries(oldSrc, newSrc []byte) []string {
+	oldE, newE := entryMap(oldSrc), entryMap(newSrc)
+	names := make(map[string]struct{}, len(oldE)+len(newE))
+	for n := range oldE {
+		names[n] = struct{}{}
+	}
+	for n := range newE {
+		names[n] = struct{}{}
+	}
+	sorted := make([]string, 0, len(names))
+	for n := range names {
+		sorted = append(sorted, n)
+	}
+	sort.Strings(sorted)
+
+	var out []string
+	for _, n := range sorted {
+		o, inOld := oldE[n]
+		w, inNew := newE[n]
+		switch {
+		case inOld && !inNew:
+			out = append(out, fmt.Sprintf("removed %s: %s", n, o))
+		case !inOld && inNew:
+			out = append(out, fmt.Sprintf("added   %s: %s", n, w))
+		case o != w:
+			out = append(out,
+				fmt.Sprintf("changed %s:", n),
+				fmt.Sprintf("    was %s", o),
+				fmt.Sprintf("    now %s", w))
+		}
+	}
+	return out
+}
+
+// entryMap indexes a normalized rendering by model name.
+func entryMap(src []byte) map[string]string {
+	out := map[string]string{}
+	for _, m := range reEntryLine.FindAllSubmatch(src, -1) {
+		out[string(m[1])] = string(m[2])
+	}
+	return out
 }
 
 // load reads the LiteLLM JSON from either a local path or an http(s)
@@ -361,6 +511,10 @@ func defaultOutPath() string {
 	return filepath.Join("pkg", "pricing", "builtin.go")
 }
 
+// die reports a generator failure. Any non-zero exit means "the
+// generator could not run" — never "rates drifted", which --check
+// reports on stdout instead. See the --check note at the top of this
+// file for why the exit code can't carry that distinction.
 func die(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "regen-builtin-pricing: "+format+"\n", args...)
 	os.Exit(1)

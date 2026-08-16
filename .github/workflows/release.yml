@@ -126,17 +126,23 @@ jobs:
         if: ${{ !inputs.dry_run && inputs.tag == '' }}
         run: |
           set -euo pipefail
-          go run ./dev/regen-builtin-pricing
-          if ! git diff --quiet pkg/pricing/builtin.go; then
-            echo "::error::pkg/pricing/builtin.go is stale vs LiteLLM's current catalog."
+          # --check compares RATES and ignores UpdatedAt stamps, so this
+          # no longer fires merely because the tag is being cut on a
+          # different day from the last regen. The verdict is on stdout
+          # (see the generator's --check note); a non-zero exit means
+          # the check itself failed and `set -e` stops the release.
+          verdict="$(go run ./dev/regen-builtin-pricing --check)"
+          if [[ "$verdict" == "drift=true" ]]; then
+            echo "::error::pkg/pricing/builtin.go carries rates that no longer match LiteLLM (details above)."
             echo ""
             echo "Remediation:"
             echo "  1. Merge the open auto-PR from bot/pricing-regen (if any), OR"
             echo "  2. Run \`go run ./dev/regen-builtin-pricing\` locally, commit, push."
             echo "  3. Retag and re-push the tag."
-            echo ""
-            echo "Diff:"
-            git --no-pager diff pkg/pricing/builtin.go
+            exit 1
+          fi
+          if [[ "$verdict" != "drift=false" ]]; then
+            echo "::error::unexpected --check output: ${verdict}"
             exit 1
           fi
 

@@ -96,7 +96,7 @@ DO NOT poll children yourself between scheduled wakes — that's what schedule_n
 
 func main() {
 	provider := flag.String("provider", "vertex", "model provider: vertex | anthropic-vertex | anthropic | gemini")
-	model := flag.String("model", "", "model name (default chosen per provider — gemini-3.6-flash for vertex, claude-opus-4-7 for anthropic-vertex)")
+	model := flag.String("model", "", "model name (default chosen per provider — gemini-3.6-flash for vertex, claude-opus-5 for anthropic-vertex)")
 	goal := flag.String("goal", defaultGoal, "the operator's prompt — what the supervisor should accomplish")
 	maxWallclock := flag.Duration("max-wallclock", 2*time.Hour, "hard cap on the supervisor's total wallclock")
 	maxTurns := flag.Int("max-turns", 200, "hard cap on the supervisor's turn count")
@@ -148,7 +148,7 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 	cfg := config.DefaultConfig()
 	cfg.Model.Provider = providerName
 	if modelName == "" && (providerName == "anthropic-vertex" || providerName == "anthropic") {
-		modelName = "claude-opus-4-7"
+		modelName = "claude-opus-5"
 	}
 	if modelName != "" {
 		cfg.Model.Name = modelName

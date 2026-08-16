@@ -90,9 +90,9 @@ Five classes ship today:
 
 | Class | Default model tier | Compaction threshold | Ask mode | Tools | Plan-first | When to use |
 |---|---|---|---|---|---|---|
-| `debug` | frontier (e.g. `claude-opus-4-7`, `gemini-3.6-flash`) | `0.65` | `auto` | built-ins − `bash` | on | Bug hunts, root-cause investigations, multi-file traces |
+| `debug` | frontier (e.g. `claude-opus-5`, `gemini-3.6-flash`) | `0.65` | `auto` | built-ins − `bash` | on | Bug hunts, root-cause investigations, multi-file traces |
 | `implement` | frontier | `0.70` | `auto` | built-ins | off | Feature work, multi-file refactors |
-| `chat` | mid (e.g. `claude-sonnet-4-6`, `gemini-3.5-flash`) | `0.85` | `auto` | built-ins | off | Q&A, pairing, lightweight design discussion |
+| `chat` | mid (e.g. `claude-sonnet-5`, `gemini-3.5-flash`) | `0.85` | `auto` | built-ins | off | Q&A, pairing, lightweight design discussion |
 | `research` | mid | `0.65` | `allow` | built-ins − `bash` | on | Read-heavy codebase exploration; `allow` keeps the ask-mode noise out of the way |
 | `review` | frontier | `0.75` | `auto` | built-ins − `bash` | on | PR / diff review |
 
@@ -100,8 +100,8 @@ Resolution per-provider:
 
 | Tier | Gemini / Vertex | Anthropic |
 |---|---|---|
-| frontier | `gemini-3.6-flash` | `claude-opus-4-7` |
-| mid | `gemini-3.5-flash` | `claude-sonnet-4-6` |
+| frontier | `gemini-3.6-flash` | `claude-opus-5` |
+| mid | `gemini-3.5-flash` | `claude-sonnet-5` |
 | small | `gemini-3.5-flash-lite` | `claude-haiku-4-5` |
 
 Explicit per-knob flags always win over the class defaults:
@@ -383,7 +383,7 @@ core-agent
 core-agent --agentic-small-model gemini-2.5-flash
 
 # Pin subtasks to the parent's model (disable the cheap-tier default)
-core-agent --model claude-opus-4-7 --agentic-small-model claude-opus-4-7
+core-agent --model claude-opus-5 --agentic-small-model claude-opus-5
 
 # Opt out — register only the bare tools
 core-agent --agentic-tools=false

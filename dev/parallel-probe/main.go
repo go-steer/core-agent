@@ -76,7 +76,7 @@ func main() {
 	if *modelFlag != "" {
 		cfg.Model.Name = *modelFlag
 	} else if *providerFlag == config.ProviderAnthropic || *providerFlag == config.ProviderAnthropicVertex {
-		cfg.Model.Name = "claude-opus-4-7"
+		cfg.Model.Name = "claude-opus-5"
 	}
 	cfg.Permissions.Mode = config.PermissionModeYolo
 

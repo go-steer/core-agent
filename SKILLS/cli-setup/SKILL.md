@@ -50,7 +50,7 @@ The minimal `.agents/config.json`:
   "version": 1,
   "model": {
     "provider": "anthropic-vertex",
-    "name": "claude-opus-4-7"
+    "name": "claude-opus-5"
   }
 }
 ```
@@ -66,9 +66,9 @@ Pick the provider based on what credentials the user has. Don't auto-detect from
 
 Model picks:
 
-- **Coding-heavy work:** Claude Opus 4.7 OR `gemini-3.1-pro-preview-customtools` (the customtools variant prefers function-tools over raw shell; recommended for coding agents).
-- **Lighter Q&A, doc explanation:** Claude Sonnet 4.6 OR `gemini-2.5-flash` (both much cheaper).
-- **Mixed:** `claude-opus-4-7` parent + `--agentic-tools --agentic-small-model claude-haiku-4-5` for cost-efficient tool work.
+- **Coding-heavy work:** `claude-opus-5` OR `gemini-3.1-pro-preview-customtools` (the customtools variant prefers function-tools over raw shell; recommended for coding agents).
+- **Lighter Q&A, doc explanation:** `claude-sonnet-5` OR `gemini-3.5-flash-lite` (both much cheaper).
+- **Mixed:** `claude-opus-5` parent + `--agentic-tools --agentic-small-model claude-haiku-4-5` for cost-efficient tool work.
 
 ## Procedure: `AGENTS.md`
 

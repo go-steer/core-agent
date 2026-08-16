@@ -130,9 +130,9 @@ Each task class maps to a tuple:
 
 | Task class | Default model | Compaction threshold | Agentic tools | Ask mode |
 |---|---|---|---|---|
-| `debug` | frontier (e.g. `claude-opus-4-7`, `gemini-3.6-flash`) | 0.65 | on (with `agentic-small-model`) | `auto` |
+| `debug` | frontier (e.g. `claude-opus-5`, `gemini-3.6-flash`) | 0.65 | on (with `agentic-small-model`) | `auto` |
 | `implement` | frontier | 0.7 | on (with `agentic-small-model`) | `auto` |
-| `chat` | mid (e.g. `claude-sonnet-4-6`, `gemini-3.5-flash`) | 0.85 | on (no small-model split) | `auto` |
+| `chat` | mid (e.g. `claude-sonnet-5`, `gemini-3.5-flash`) | 0.85 | on (no small-model split) | `auto` |
 | `research` | mid | 0.65 | on (with `agentic-small-model`) | `allow` |
 | `review` | frontier | 0.75 | on (with `agentic-small-model`) | `auto` |
 | (unset) | provider default | 0.85 (`DefaultCompactionThreshold`) | on (PR #118) | provider default |

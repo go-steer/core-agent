@@ -305,7 +305,7 @@ type PathScopeAllowEntry struct {
 //
 // Provider: one of "gemini", "vertex", "anthropic". When empty, the resolver
 // auto-detects from the environment (see models.Resolve).
-// Name: a model ID, e.g. "gemini-3.6-flash" or "claude-opus-4-7".
+// Name: a model ID, e.g. "gemini-3.6-flash" or "claude-opus-5".
 // APIKey: optional inline key for Provider="gemini"; usually unset and
 // read from GOOGLE_API_KEY at runtime.
 // Vertex: required when Provider="vertex"; project + location.

@@ -15,15 +15,34 @@
 // Generator for pkg/pricing/builtin.go.
 //
 // Reads BerriAI/litellm's model_prices_and_context_window.json (from
-// the URL by default, or a local file via --source), filters to the
-// curated allowlist below, and emits a fresh builtin.go with a
-// generation-time UpdatedAt on every entry.
+// the URL by default, or a local file via --source), selects the
+// Gemini and Anthropic models that can actually drive an agent loop,
+// and emits a fresh builtin.go carrying their rates, their context
+// windows, and a generation-time UpdatedAt on every entry.
+//
+// Selection is a RULE, not a list — see eligible() below. There used
+// to be a hand-curated `allowlist` here, and it had no discovery path:
+// the generator warned about listed-but-missing models, so a model
+// nobody had thought to add was invisible forever. That is how six
+// models reachable from the /model picker (both Gemini 2.5 entries,
+// the two 3.1 pro variants, gemini-3-flash-preview and
+// gemini-3.1-flash-image-preview) ended up with no builtin rate at
+// all — which silently disables the --max-*-cost-usd ceilings, since
+// an unpriced model contributes $0 to every budget check.
 //
 // Motivation: issue #259 showed that hand-authored builtin rates
 // drift silently — the demo's gemini-3.5-flash entry was 20× too low
 // on input, 30× too low on output. Regenerating from LiteLLM removes
 // that class of drift; the UpdatedAt field lets operators see how
 // old the current builtin snapshot is.
+//
+// Context windows ride along in the same file for the same reason.
+// pkg/usage's hand-maintained table said gemini-2.5-pro held
+// 2,000,000 input tokens (a carry-over from Gemini 1.5 Pro) when the
+// real cap is 1,048,576, so mid-tier compaction was scheduled to fire
+// at ~1.3M — past a hard limit the session would have died on first.
+// LiteLLM publishes max_input_tokens for every model we select, so
+// the number is now generated rather than remembered.
 //
 // Usage:
 //
@@ -54,9 +73,14 @@
 // price change — and the weekly workflow would open a pull request
 // every time GitHub's egress hiccuped.
 //
-// Ownership: regenerate before every release. Review the diff — the
-// allowlist is stable but LiteLLM occasionally shifts rates. Commit
-// both the regenerated builtin.go and any allowlist changes together.
+// Ownership: regenerate before every release, and REVIEW THE DIFF.
+// Because selection is a rule, a regen can add or remove models on
+// its own — not just move rates. `added` / `removed` lines in the
+// --check report are the ones to read carefully: an addition means
+// LiteLLM started publishing a model that satisfies eligible(), and a
+// removal means one was deprecated upstream or lost its tool-calling
+// flag. Both are usually correct and occasionally are upstream
+// mistakes.
 package main
 
 import (
@@ -70,6 +94,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -80,58 +105,65 @@ import (
 // generator's job is precisely to be a point-in-time snapshot.
 const defaultLiteLLMSource = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 
-// allowlist names the models to include in the generated builtin.
-// Curated for the demo + common alternatives operators reach for.
-// Entries missing from LiteLLM at regen time are silently skipped
-// (logged to stderr) — better than a compile break when a name gets
-// renamed upstream.
-//
-// Grow this list conservatively: every entry becomes an "we vouch
-// for this rate at generation time" claim baked into the binary.
-// When a model gets deprecated by its provider, remove it here and
-// regenerate.
-var allowlist = []string{
-	// Gemini 3.x — the demo's primary family. 3.6-flash and
-	// 3.5-flash are the taskclass frontier/mid defaults (#530/#531)
-	// so their absence here would leave the default models unpriced;
-	// if Google adds a pro-line entry back to LiteLLM, add it here
-	// (the regen tool logs skipped-but-listed models to stderr,
-	// which is how we'd notice).
-	"gemini-3.7-flash",
-	"gemini-3.6-flash",
-	"gemini-3.5-flash",
-	"gemini-3.5-flash-lite",
-	"gemini-3.1-flash-lite",
+// familyPrefixes limits selection to the two providers core-agent has
+// adapters for. LiteLLM carries ~3000 entries across every router and
+// reseller on the market; pricing a model we cannot resolve buys
+// nothing and makes the diff unreadable.
+var familyPrefixes = []string{"gemini-", "claude-"}
 
-	// Anthropic Claude 4/5 — common alternative. Every taskclass
-	// tier default MUST appear here: builtin is the air-gapped /
-	// refresh-failed pricing floor, and an unpriced default leaves
-	// --max-*-cost-usd ceilings silently inert exactly where
-	// daemons run unattended. Pinned by pricing's
-	// TestBuiltin_CoversTaskclassTierDefaults.
-	"claude-opus-4-8",
-	"claude-opus-5",
-	"claude-fable-5",
-	"claude-sonnet-5",
-	"claude-sonnet-4-6",
-	"claude-haiku-4-5",
-	"claude-opus-4-7",
+// nameExclusions drops models that pass every metadata check but are
+// not general-purpose chat agents. Each needs a name rule because
+// LiteLLM's own fields do not distinguish them: `mode` is "chat",
+// `supports_function_calling` is true, and the modality arrays look
+// exactly like a real chat model's. Keep the reason string — it is
+// what a future reader needs to decide whether the rule still earns
+// its place.
+var nameExclusions = []struct{ Pattern, Why string }{
+	{"-latest", "floating alias — identity AND price move underneath a pinned config, " +
+		"and pkg/models/gemini's geminiMajorVersion() reads 0 from it, which makes " +
+		"builtinsCompatible drop search grounding on every turn"},
+	{"exp-", "unversioned experimental build; no stability promise from the provider"},
+	{"computer-use", "computer-use model — a different tool surface, not an agent-loop chat model"},
+	{"robotics", "embodied-reasoning model; not a chat agent"},
+	{":", "provider-versioned id (Bedrock-style `…-v1:0`) that leaked into LiteLLM's " +
+		"unprefixed namespace; the bare id is already selected"},
 }
 
 // liteLLMEntry mirrors the subset of LiteLLM's schema the generator
-// consumes. LiteLLM's full entry has ~30 fields (context window,
-// modality flags, endpoint hints); we only care about the cost
-// scalars + a stability signal to filter garbage.
+// consumes. LiteLLM's full entry has ~30 fields; we take the cost
+// scalars, the context window, and the handful of capability signals
+// eligible() screens on.
 type liteLLMEntry struct {
 	InputCostPerToken           *float64 `json:"input_cost_per_token,omitempty"`
 	OutputCostPerToken          *float64 `json:"output_cost_per_token,omitempty"`
 	CacheReadInputTokenCost     *float64 `json:"cache_read_input_token_cost,omitempty"`
 	CacheCreationInputTokenCost *float64 `json:"cache_creation_input_token_cost,omitempty"`
+	MaxInputTokens              *int     `json:"max_input_tokens,omitempty"`
 	Mode                        string   `json:"mode,omitempty"`
 	LiteLLMProvider             string   `json:"litellm_provider,omitempty"`
+
+	// SupportsFunctionCalling is a POINTER on purpose. It is absent on
+	// roughly 40% of LiteLLM's catalog, and absent must mean "unknown",
+	// not "false" — decoding into a plain bool would silently drop
+	// every model whose entry predates the flag.
+	SupportsFunctionCalling *bool `json:"supports_function_calling,omitempty"`
+
+	// DeprecationDate is an ISO date. Set on 15 entries today, every
+	// one of them already in the past.
+	DeprecationDate string `json:"deprecation_date,omitempty"`
+
+	// SupportedOutputModalities catches the text-to-speech models that
+	// declare mode "chat" (gemini-2.5-pro-preview-tts emits ["audio"]).
+	// Nil on every Anthropic entry, so it can only ever exclude.
+	SupportedOutputModalities []string `json:"supported_output_modalities,omitempty"`
+
+	// SupportedEndpoints catches the Live/realtime variants
+	// (gemini-3.1-flash-live-preview is ["/v1/realtime"]), which speak
+	// a bidi protocol our transport does not. Also nil on Anthropic.
+	SupportedEndpoints []string `json:"supported_endpoints,omitempty"`
 }
 
-// generatedEntry is what we render into the output file's map literal.
+// generatedEntry is what we render into the output file's map literals.
 // Ordering is stable across regens (alphabetical on name) so diffs
 // stay reviewable.
 type generatedEntry struct {
@@ -140,6 +172,7 @@ type generatedEntry struct {
 	CachedInputPerMTok        float64
 	CacheCreationInputPerMTok float64
 	OutputPerMTok             float64
+	ContextWindowTokens       int
 	Provider                  string
 }
 
@@ -151,8 +184,9 @@ func main() {
 	toStdout := flag.Bool("stdout", false,
 		"print generated file to stdout instead of writing to --out")
 	check := flag.Bool("check", false,
-		"write nothing; exit 1 if --out's rates differ from LiteLLM's current "+
-			"catalog. UpdatedAt stamps are ignored, so a merely-old file is not drift")
+		"write nothing; print drift=true/drift=false on stdout depending on whether "+
+			"--out matches LiteLLM's current catalog. UpdatedAt stamps are ignored, "+
+			"so a merely-old file is not drift")
 	flag.Parse()
 
 	if *check && *toStdout {
@@ -167,23 +201,33 @@ func main() {
 	if err != nil {
 		die("parse: %v", err)
 	}
-	kept, missing := filter(all, allowlist)
-	if len(missing) > 0 {
-		fmt.Fprintf(os.Stderr, "regen-builtin-pricing: %d allowlist entries not in LiteLLM (skipping): %s\n",
-			len(missing), strings.Join(missing, ", "))
-	}
-	if len(kept) == 0 {
-		die("no allowlist models matched — LiteLLM schema may have shifted or the allowlist needs updating")
-	}
-
-	// UpdatedAt for the whole batch. LiteLLM doesn't publish per-entry
-	// timestamps, so every entry in one regen shares the same
+	// UpdatedAt for the whole batch, and the "today" that
+	// deprecation_date is measured against. LiteLLM doesn't publish
+	// per-entry timestamps, so every entry in one regen shares the same
 	// verified-at date. Truncate to date-only (drop wall-clock time)
 	// so identical regens on the same day produce identical output —
-	// keeps diffs meaningful.
+	// keeps diffs meaningful, and keeps --check stable within a day.
 	now := time.Now().UTC().Truncate(24 * time.Hour)
-	source_ := *source
-	src, err := render(kept, now, source_)
+
+	kept, rejected := selectModels(all, now)
+	if len(kept) == 0 {
+		die("no models satisfied eligible() — LiteLLM's schema has probably shifted; " +
+			"inspect --source and the field names on liteLLMEntry before assuming the catalog emptied")
+	}
+	// Rejections are the discovery channel the old allowlist lacked: a
+	// model that ALMOST qualifies (new family prefix, a flag upstream
+	// hasn't set yet) shows up here instead of vanishing. Only the
+	// near-misses are worth printing — the ~3000 entries filtered out
+	// by family or mode would bury them.
+	if len(rejected) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"regen-builtin-pricing: %d Gemini/Anthropic entries rejected:\n", len(rejected))
+		for _, r := range rejected {
+			fmt.Fprintf(os.Stderr, "  %-44s %s\n", r.Name, r.Why)
+		}
+	}
+
+	src, err := render(kept, now, *source)
 	if err != nil {
 		die("render: %v", err)
 	}
@@ -231,10 +275,22 @@ var (
 	// the report blames a dozen models whose rates never moved.
 	// Indentation is a tab, so rows keep their leading whitespace.
 	reRunOfSpaces = regexp.MustCompile(`  +`)
-	// One rendered row: `\t"model": {…},` plus its optional // provider
-	// comment. Capture group 2 is everything after the model name.
+	// One rendered rate row: `\t"model": {…},` plus its optional
+	// // provider comment. Capture group 2 is everything after the name.
 	reEntryLine = regexp.MustCompile(`(?m)^\t"([^"]+)": (\{[^}]*\},.*)$`)
+	// One rendered window row: `\t"model": 1048576,`. Matched
+	// separately from the rate row so a window-only change still gets
+	// itemized instead of falling through to the "change is outside the
+	// rate table" catch-all.
+	reWindowLine = regexp.MustCompile(`(?m)^\t"([^"]+)": (\d+),$`)
 )
+
+// windowKeySuffix namespaces window rows inside entryMap so a model
+// present in both generated maps doesn't have one row overwrite the
+// other. It reads as part of the label in the --check report:
+//
+//	changed gemini-2.5-pro (context window):
+const windowKeySuffix = " (context window)"
 
 // normalize strips the two things that change on every regen regardless
 // of upstream rates — the per-entry UpdatedAt and the header's
@@ -316,11 +372,15 @@ func diffEntries(oldSrc, newSrc []byte) []string {
 	return out
 }
 
-// entryMap indexes a normalized rendering by model name.
+// entryMap indexes a normalized rendering by model name, covering both
+// generated maps. Window rows are suffixed so they occupy their own key.
 func entryMap(src []byte) map[string]string {
 	out := map[string]string{}
 	for _, m := range reEntryLine.FindAllSubmatch(src, -1) {
 		out[string(m[1])] = string(m[2])
+	}
+	for _, m := range reWindowLine.FindAllSubmatch(src, -1) {
+		out[string(m[1])+windowKeySuffix] = string(m[2])
 	}
 	return out
 }
@@ -367,30 +427,95 @@ func parse(body []byte) (map[string]liteLLMEntry, error) {
 	return out, nil
 }
 
-// filter picks the entries in allowlist that have usable cost data,
-// returning the kept entries + the names that weren't found. Missing
-// entries are reported so the operator regenerating knows their
-// allowlist has drifted.
-func filter(all map[string]liteLLMEntry, allow []string) ([]generatedEntry, []string) {
+// rejection records a Gemini/Anthropic entry that eligible() turned
+// down, and why. Printed to stderr on every regen so the reason a
+// model is absent is discoverable without re-deriving the predicate.
+type rejection struct{ Name, Why string }
+
+// eligible reports whether LiteLLM entry `name` should be baked into
+// builtin.go, and if not, why. The bar is "core-agent could resolve
+// this id and drive an agent loop with it".
+//
+// `family` reports whether the name was in scope at all — entries that
+// fail it are not near-misses worth reporting, they are the other 2900
+// models in the catalog.
+func eligible(name string, e liteLLMEntry, today time.Time) (ok bool, family bool, why string) {
+	// Provider-prefixed keys ("vertex_ai/gemini-3.5-flash",
+	// "openrouter/google/…") name the same models through routers we
+	// don't speak. core-agent's model ids are unprefixed.
+	if strings.Contains(name, "/") {
+		return false, false, ""
+	}
+	inFamily := false
+	for _, p := range familyPrefixes {
+		if strings.HasPrefix(name, p) {
+			inFamily = true
+			break
+		}
+	}
+	if !inFamily {
+		return false, false, ""
+	}
+
+	if e.Mode != "chat" {
+		return false, true, fmt.Sprintf("mode is %q, not \"chat\"", e.Mode)
+	}
+	// Absent means unknown, not false — see the field comment.
+	if e.SupportsFunctionCalling == nil {
+		return false, true, "supports_function_calling not published; cannot confirm it can run tools"
+	}
+	if !*e.SupportsFunctionCalling {
+		return false, true, "supports_function_calling is false; cannot drive an agent loop"
+	}
+	if e.InputCostPerToken == nil || e.OutputCostPerToken == nil {
+		return false, true, "missing input/output cost fields"
+	}
+	if *e.InputCostPerToken == 0 && *e.OutputCostPerToken == 0 {
+		return false, true, "zero cost (LiteLLM's not-published placeholder)"
+	}
+	if e.MaxInputTokens == nil || *e.MaxInputTokens <= 0 {
+		return false, true, "no max_input_tokens; compaction would have no window to threshold against"
+	}
+	if e.DeprecationDate != "" {
+		// Unparseable dates are treated as "not deprecated" rather than
+		// dropping a live model over an upstream formatting change.
+		if d, err := time.Parse("2006-01-02", e.DeprecationDate); err == nil && !d.After(today) {
+			return false, true, "deprecated upstream on " + e.DeprecationDate
+		}
+	}
+	if e.SupportedOutputModalities != nil && !slices.Contains(e.SupportedOutputModalities, "text") {
+		return false, true, fmt.Sprintf("emits %v, not text", e.SupportedOutputModalities)
+	}
+	if e.SupportedEndpoints != nil && !slices.Contains(e.SupportedEndpoints, "/v1/chat/completions") {
+		return false, true, fmt.Sprintf("endpoints %v exclude /v1/chat/completions", e.SupportedEndpoints)
+	}
+	for _, x := range nameExclusions {
+		if strings.Contains(name, x.Pattern) {
+			return false, true, fmt.Sprintf("name contains %q: %s", x.Pattern, x.Why)
+		}
+	}
+	return true, true, ""
+}
+
+// selectModels applies eligible() across the whole catalog, returning
+// the entries to render plus the in-family near-misses and why each
+// was turned down. Both slices come back sorted by name so regens are
+// byte-identical given the same input.
+func selectModels(all map[string]liteLLMEntry, today time.Time) ([]generatedEntry, []rejection) {
 	var kept []generatedEntry
-	var missing []string
+	var rejected []rejection
 	const million = 1_000_000.0
-	for _, name := range allow {
-		e, ok := all[name]
+	for name, e := range all {
+		ok, family, why := eligible(name, e, today)
 		if !ok {
-			missing = append(missing, name)
-			continue
-		}
-		if e.InputCostPerToken == nil || e.OutputCostPerToken == nil {
-			missing = append(missing, name+" (missing cost fields)")
-			continue
-		}
-		if *e.InputCostPerToken == 0 && *e.OutputCostPerToken == 0 {
-			missing = append(missing, name+" (zero cost)")
+			if family {
+				rejected = append(rejected, rejection{Name: name, Why: why})
+			}
 			continue
 		}
 		out := generatedEntry{
-			Name: name,
+			Name:                name,
+			ContextWindowTokens: *e.MaxInputTokens,
 			// Round to 6 decimals so binary-repr artifacts from
 			// per-token → per-Mtok multiplication (0.0000001 * 1M
 			// producing 0.09999999999999999 instead of 0.1) don't
@@ -412,7 +537,8 @@ func filter(all map[string]liteLLMEntry, allow []string) ([]generatedEntry, []st
 		kept = append(kept, out)
 	}
 	sort.Slice(kept, func(i, j int) bool { return kept[i].Name < kept[j].Name })
-	return kept, missing
+	sort.Slice(rejected, func(i, j int) bool { return rejected[i].Name < rejected[j].Name })
+	return kept, rejected
 }
 
 // render produces the final gofmt'd builtin.go source. Header
@@ -424,6 +550,12 @@ func render(kept []generatedEntry, updatedAt time.Time, source string) ([]byte, 
 	sb.WriteString("var builtin = map[string]Rates{\n")
 	for _, e := range kept {
 		sb.WriteString(renderEntry(e, updatedAt))
+	}
+	sb.WriteString("}\n\n")
+	sb.WriteString(contextWindowDoc)
+	sb.WriteString("var builtinContextWindows = map[string]int{\n")
+	for _, e := range kept {
+		fmt.Fprintf(&sb, "\t%q: %d,\n", e.Name, e.ContextWindowTokens)
 	}
 	sb.WriteString("}\n\n")
 	sb.WriteString(builtinAccessor)
@@ -476,7 +608,12 @@ func fileHeader(updatedAt time.Time, source string) string {
 // Regenerated %s from %s.
 //
 // To refresh: %sgo run ./dev/regen-builtin-pricing%s
-// Curate the allowlist in dev/regen-builtin-pricing/main.go.
+//
+// Membership is a rule, not a list: every Gemini and Anthropic model
+// in LiteLLM's catalog that is mode="chat", supports function calling,
+// carries a published price and window, and is not deprecated. See
+// eligible() in dev/regen-builtin-pricing/main.go — adjust the rule
+// there, never this file.
 //
 // Issue #259 context: this file used to be hand-authored, drifted
 // silently, and shipped rates that were off by 20-30x during the
@@ -492,12 +629,54 @@ import "time"
 `, updatedAt.Format("2006-01-02"), source, "`", "`")
 }
 
+// contextWindowDoc documents the generated window table in the output
+// file. LiteLLM's max_input_tokens is the authority here: the
+// hand-maintained substring table in pkg/usage had gemini-2.5-pro at
+// 2,000,000 (Gemini 1.5 Pro's number) against a real 1,048,576 cap.
+const contextWindowDoc = `// builtinContextWindows is the max INPUT window per model, in tokens,
+// straight from LiteLLM's max_input_tokens. Consumed by
+// usage.ContextWindowSizeFor, which prefers an exact hit here over its
+// substring fallback — the fallback still has to answer for operator
+// ids that never appear in LiteLLM (long-context "-1m" suffixes,
+// Vertex publication names), but for anything we ship a rate for, the
+// number is generated rather than remembered.
+//
+// Note these are INPUT windows, not total: a model with a 1,048,576
+// input cap may accept fewer once its max_output_tokens reservation is
+// subtracted. Compaction thresholds are fractions of this number, so
+// erring toward the input cap keeps the trigger conservative.
+`
+
 const builtinAccessor = `// Builtin returns a defensive copy of the compiled-in table. Used
 // by tests + by tools that want to inspect what shipped (e.g. a
 // future ` + "`/pricing list builtin`" + ` view).
 func Builtin() map[string]Rates {
 	out := make(map[string]Rates, len(builtin))
 	for k, v := range builtin {
+		out[k] = v
+	}
+	return out
+}
+
+// BuiltinContextWindow returns the compiled-in max input window for
+// modelID and whether one is known. Keys are lowercase, matching the
+// rest of this package's case-insensitive lookup contract; callers
+// holding an operator-typed id should lower it first.
+//
+// Separate from Rates because a context window is a capability, not a
+// price: operator pricing overrides (.agents/pricing.json, ` + "`/pricing set`" + `)
+// must not be able to move a model's window, and a model can be
+// repriced without its window changing.
+func BuiltinContextWindow(modelID string) (int, bool) {
+	n, ok := builtinContextWindows[modelID]
+	return n, ok
+}
+
+// BuiltinContextWindows returns a defensive copy of the whole window
+// table, for tests and cross-table invariant checks.
+func BuiltinContextWindows() map[string]int {
+	out := make(map[string]int, len(builtinContextWindows))
+	for k, v := range builtinContextWindows {
 		out[k] = v
 	}
 	return out

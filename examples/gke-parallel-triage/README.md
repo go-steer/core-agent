@@ -55,7 +55,7 @@ registration, eventlog, attach mode, etc.).
    higher per-turn spend):
 
    ```json
-   "model": { "provider": "anthropic-vertex", "name": "claude-sonnet-4-6" }
+   "model": { "provider": "anthropic-vertex", "name": "claude-sonnet-5" }
    ```
 
 4. **A GKE cluster you can read.** The agent will only inspect what your

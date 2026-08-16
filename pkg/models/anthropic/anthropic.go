@@ -40,8 +40,16 @@ import (
 )
 
 // DefaultModel is used when LLMRequest.Model is empty. We follow the
-// claude-api skill's guidance and default to the most capable Opus.
-const DefaultModel = "claude-opus-4-7"
+// claude-api skill's guidance and default to the most capable Opus —
+// the LATEST one, per the policy documented on taskclass.ModelForTier.
+// Not the Mythos-class tier above it (claude-fable-5 / claude-mythos-5),
+// which costs 2x and isn't a general-purpose default.
+//
+// Pinned to taskclass.ModelForTier("anthropic", "frontier") by
+// TestDefaultModel_MatchesFrontierTier: an operator who sets
+// --task=implement and one who sets nothing should land on the same
+// model, or the task-class flag reads as a silent downgrade.
+const DefaultModel = "claude-opus-5"
 
 // DefaultSmallModelID is the Anthropic cheap-tier model used by default
 // for agentic subtasks when the operator hasn't pinned one with

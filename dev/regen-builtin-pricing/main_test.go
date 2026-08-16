@@ -24,30 +24,132 @@ import (
 )
 
 // canned LiteLLM-shaped JSON. Keeps the test hermetic — no network,
-// no fixture files. Rates are deliberately chosen to exercise the
-// binary-repr rounding path (0.00000015 * 1_000_000 = 0.14999... in
-// naive float math).
+// no fixture files. Every entry is a real shape from the upstream
+// catalog, minted with a name that can't collide with a model we
+// actually ship so the fixture never has to be re-tuned when LiteLLM
+// moves. Rates on gemini-9.1-flash exercise the binary-repr rounding
+// path (0.00000015 * 1_000_000 = 0.14999... in naive float math).
 const cannedLiteLLM = `{
-  "model-with-cache": {
+  "gemini-9.1-flash": {
+    "mode": "chat",
+    "supports_function_calling": true,
+    "max_input_tokens": 1048576,
     "input_cost_per_token": 0.0000015,
     "output_cost_per_token": 0.000009,
     "cache_read_input_token_cost": 0.00000015,
+    "supported_output_modalities": ["text"],
+    "supported_endpoints": ["/v1/chat/completions"],
     "litellm_provider": "fake-vertex"
   },
-  "model-without-cache": {
+  "claude-quill-9": {
+    "mode": "chat",
+    "supports_function_calling": true,
+    "max_input_tokens": 200000,
     "input_cost_per_token": 0.000001,
     "output_cost_per_token": 0.000005,
     "litellm_provider": "fake-anthropic"
   },
-  "model-with-zero-cost": {
-    "input_cost_per_token": 0,
-    "output_cost_per_token": 0
+  "claude-quill-9-sunsetting": {
+    "mode": "chat",
+    "supports_function_calling": true,
+    "max_input_tokens": 200000,
+    "input_cost_per_token": 0.000001,
+    "output_cost_per_token": 0.000005,
+    "deprecation_date": "2030-01-01",
+    "litellm_provider": "fake-anthropic"
   },
-  "unrelated-model-not-in-allowlist": {
+  "claude-quill-8-retired": {
+    "mode": "chat",
+    "supports_function_calling": true,
+    "max_input_tokens": 200000,
+    "input_cost_per_token": 0.000001,
+    "output_cost_per_token": 0.000005,
+    "deprecation_date": "2020-01-01",
+    "litellm_provider": "fake-anthropic"
+  },
+  "gemini-9.1-flash-latest": {
+    "mode": "chat",
+    "supports_function_calling": true,
+    "max_input_tokens": 1048576,
+    "input_cost_per_token": 0.0000015,
+    "output_cost_per_token": 0.000009,
+    "litellm_provider": "fake-vertex"
+  },
+  "gemini-9.1-flash-tts": {
+    "mode": "chat",
+    "supports_function_calling": true,
+    "max_input_tokens": 1048576,
+    "input_cost_per_token": 0.0000015,
+    "output_cost_per_token": 0.000009,
+    "supported_output_modalities": ["audio"],
+    "litellm_provider": "fake-vertex"
+  },
+  "gemini-9.1-flash-live": {
+    "mode": "chat",
+    "supports_function_calling": true,
+    "max_input_tokens": 1048576,
+    "input_cost_per_token": 0.0000015,
+    "output_cost_per_token": 0.000009,
+    "supported_endpoints": ["/v1/realtime"],
+    "litellm_provider": "fake-vertex"
+  },
+  "gemini-9-embedding": {
+    "mode": "embedding",
+    "max_input_tokens": 2048,
+    "input_cost_per_token": 0.0000001,
+    "output_cost_per_token": 0,
+    "litellm_provider": "fake-vertex"
+  },
+  "gemini-9.1-flash-noflag": {
+    "mode": "chat",
+    "max_input_tokens": 1048576,
+    "input_cost_per_token": 0.0000015,
+    "output_cost_per_token": 0.000009,
+    "litellm_provider": "fake-vertex"
+  },
+  "gemini-9.1-flash-notools": {
+    "mode": "chat",
+    "supports_function_calling": false,
+    "max_input_tokens": 1048576,
+    "input_cost_per_token": 0.0000015,
+    "output_cost_per_token": 0.000009,
+    "litellm_provider": "fake-vertex"
+  },
+  "claude-quill-9-unpriced": {
+    "mode": "chat",
+    "supports_function_calling": true,
+    "max_input_tokens": 200000,
+    "input_cost_per_token": 0,
+    "output_cost_per_token": 0,
+    "litellm_provider": "fake-anthropic"
+  },
+  "claude-quill-9-nowindow": {
+    "mode": "chat",
+    "supports_function_calling": true,
+    "input_cost_per_token": 0.000001,
+    "output_cost_per_token": 0.000005,
+    "litellm_provider": "fake-anthropic"
+  },
+  "vertex_ai/gemini-9.1-flash": {
+    "mode": "chat",
+    "supports_function_calling": true,
+    "max_input_tokens": 1048576,
+    "input_cost_per_token": 0.0000015,
+    "output_cost_per_token": 0.000009,
+    "litellm_provider": "fake-vertex"
+  },
+  "not-a-model-we-adapt": {
+    "mode": "chat",
+    "supports_function_calling": true,
+    "max_input_tokens": 400000,
     "input_cost_per_token": 0.5,
     "output_cost_per_token": 1
   }
 }`
+
+// today is the clock selectModels is given in these tests. Fixed so a
+// deprecation_date assertion can't flip when the suite runs.
+var today = time.Date(2026, time.August, 16, 0, 0, 0, 0, time.UTC)
 
 func TestParse_MalformedEntryIsDropped(t *testing.T) {
 	t.Parallel()
@@ -64,60 +166,137 @@ func TestParse_MalformedEntryIsDropped(t *testing.T) {
 	}
 }
 
-func TestFilter_KeepsAllowedDropsMissingAndZero(t *testing.T) {
+// TestSelectModels_KeepsTheChatToolCallingSet is the headline test for
+// the predicate that replaced the hand-curated allowlist.
+//
+// The allowlist had no discovery path — the generator only reported
+// models that were LISTED but missing upstream, so a model nobody had
+// thought to add stayed invisible. Six models reachable from the
+// /model picker shipped with no rate that way, which does not merely
+// under-report cost: an unpriced model contributes $0 to every budget
+// check, so --max-turn-cost-usd and --max-session-cost-usd were inert
+// for anyone who picked one.
+func TestSelectModels_KeepsTheChatToolCallingSet(t *testing.T) {
 	t.Parallel()
 	all, err := parse([]byte(cannedLiteLLM))
 	if err != nil {
 		t.Fatalf("parse canned: %v", err)
 	}
-	allow := []string{
-		"model-with-cache",
-		"model-without-cache",
-		"model-with-zero-cost", // must be reported missing
-		"absent-model",         // must be reported missing
-	}
-	kept, missing := filter(all, allow)
+	kept, rejected := selectModels(all, today)
 
-	if len(kept) != 2 {
-		t.Fatalf("kept %d, want 2: %+v", len(kept), kept)
+	var names []string
+	for _, e := range kept {
+		names = append(names, e.Name)
 	}
-	// Kept entries are sorted by name.
-	if kept[0].Name != "model-with-cache" || kept[1].Name != "model-without-cache" {
-		t.Errorf("kept order wrong: %+v", kept)
+	want := []string{"claude-quill-9", "claude-quill-9-sunsetting", "gemini-9.1-flash"}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Fatalf("kept %v, want %v (sorted by name)", names, want)
 	}
 
 	// Verify the binary-repr rounding actually fired: 0.00000015 * 1e6
 	// = 0.15000000000000002 in naive float; round6 must snap it to 0.15.
-	if kept[0].CachedInputPerMTok != 0.15 {
-		t.Errorf("cached rate not rounded cleanly: %v (want 0.15)", kept[0].CachedInputPerMTok)
+	flash := kept[2]
+	if flash.CachedInputPerMTok != 0.15 {
+		t.Errorf("cached rate not rounded cleanly: %v (want 0.15)", flash.CachedInputPerMTok)
 	}
-	if kept[0].InputPerMTok != 1.5 || kept[0].OutputPerMTok != 9 {
-		t.Errorf("input/output rates wrong: %+v", kept[0])
+	if flash.InputPerMTok != 1.5 || flash.OutputPerMTok != 9 {
+		t.Errorf("input/output rates wrong: %+v", flash)
+	}
+	// The window rides along from max_input_tokens — the whole reason
+	// the second generated map exists.
+	if flash.ContextWindowTokens != 1_048_576 {
+		t.Errorf("context window = %d, want 1048576", flash.ContextWindowTokens)
+	}
+	// Model without cache: CachedInputPerMTok stays 0 and the generator
+	// emits the shorter literal (no cache field). Format check below.
+	if kept[0].CachedInputPerMTok != 0 {
+		t.Errorf("no-cache entry should have zero cached rate: %+v", kept[0])
 	}
 
-	// Model without cache: CachedInputPerMTok stays 0 and the
-	// generator emits the shorter literal (no cache field). We assert
-	// on the input field only here — the format check lives below.
-	if kept[1].CachedInputPerMTok != 0 {
-		t.Errorf("no-cache entry should have zero cached rate: %+v", kept[1])
+	// A future deprecation_date is not a deprecation. Dropping those
+	// would pull a model operators are actively running.
+	if kept[1].Name != "claude-quill-9-sunsetting" {
+		t.Errorf("a future deprecation_date should not exclude a model: %v", names)
 	}
 
-	// Both zero-cost and absent-from-catalog must be reported so
-	// operators regenerating notice the allowlist has drifted.
-	missingJoined := strings.Join(missing, ",")
-	if !strings.Contains(missingJoined, "absent-model") {
-		t.Errorf("missing report should include absent-model: %v", missing)
+	// Out-of-family entries are silently skipped, not reported: the
+	// other ~3000 models in the catalog would bury the near-misses.
+	for _, r := range rejected {
+		if r.Name == "not-a-model-we-adapt" || r.Name == "vertex_ai/gemini-9.1-flash" {
+			t.Errorf("%q is out of family and should not appear in the rejection report", r.Name)
+		}
 	}
-	if !strings.Contains(missingJoined, "model-with-zero-cost") {
-		t.Errorf("missing report should include zero-cost model: %v", missing)
+}
+
+// TestSelectModels_ReportsWhyEachNearMissWasDropped pins the discovery
+// channel the allowlist lacked. Every in-family rejection has to come
+// back with a reason a reader can act on, because "why isn't model X in
+// the table" is otherwise only answerable by re-deriving the predicate
+// by hand.
+func TestSelectModels_ReportsWhyEachNearMissWasDropped(t *testing.T) {
+	t.Parallel()
+	all, err := parse([]byte(cannedLiteLLM))
+	if err != nil {
+		t.Fatalf("parse canned: %v", err)
+	}
+	_, rejected := selectModels(all, today)
+
+	got := map[string]string{}
+	for _, r := range rejected {
+		if r.Why == "" {
+			t.Errorf("rejection of %q carries no reason", r.Name)
+		}
+		got[r.Name] = r.Why
+	}
+
+	for _, tc := range []struct{ name, wantSubstring string }{
+		{"claude-quill-8-retired", "deprecated upstream on 2020-01-01"},
+		{"gemini-9.1-flash-latest", `name contains "-latest"`},
+		{"gemini-9.1-flash-tts", "not text"},
+		{"gemini-9.1-flash-live", "/v1/realtime"},
+		{"gemini-9-embedding", `mode is "embedding"`},
+		{"gemini-9.1-flash-noflag", "supports_function_calling not published"},
+		{"gemini-9.1-flash-notools", "supports_function_calling is false"},
+		{"claude-quill-9-unpriced", "zero cost"},
+		{"claude-quill-9-nowindow", "no max_input_tokens"},
+	} {
+		why, ok := got[tc.name]
+		if !ok {
+			t.Errorf("%q was not reported as a rejection at all", tc.name)
+			continue
+		}
+		if !strings.Contains(why, tc.wantSubstring) {
+			t.Errorf("rejection of %q = %q, want it to mention %q", tc.name, why, tc.wantSubstring)
+		}
+	}
+}
+
+// TestEligible_AbsentFunctionCallingFlagIsNotFalse pins the pointer on
+// liteLLMEntry.SupportsFunctionCalling. LiteLLM omits the flag on a
+// large share of the catalog, and decoding it into a plain bool would
+// read every omission as an explicit "false" — the two cases need
+// different reasons in the report, and conflating them would hide a
+// whole class of models behind a claim upstream never made.
+func TestEligible_AbsentFunctionCallingFlagIsNotFalse(t *testing.T) {
+	t.Parallel()
+	all, err := parse([]byte(cannedLiteLLM))
+	if err != nil {
+		t.Fatalf("parse canned: %v", err)
+	}
+	if got := all["gemini-9.1-flash-noflag"].SupportsFunctionCalling; got != nil {
+		t.Errorf("absent flag decoded as %v, want nil", *got)
+	}
+	f := all["gemini-9.1-flash-notools"].SupportsFunctionCalling
+	if f == nil || *f {
+		t.Errorf("explicit false decoded as %v, want a non-nil false", f)
 	}
 }
 
 func TestRender_ProducesCompilableGoWithExpectedShape(t *testing.T) {
 	t.Parallel()
 	kept := []generatedEntry{
-		{Name: "cached-model", InputPerMTok: 1.5, CachedInputPerMTok: 0.15, OutputPerMTok: 9, Provider: "fake"},
-		{Name: "no-cache-model", InputPerMTok: 1, OutputPerMTok: 5, Provider: "fake"},
+		{Name: "cached-model", InputPerMTok: 1.5, CachedInputPerMTok: 0.15, OutputPerMTok: 9, ContextWindowTokens: 1_048_576, Provider: "fake"},
+		{Name: "no-cache-model", InputPerMTok: 1, OutputPerMTok: 5, ContextWindowTokens: 200_000, Provider: "fake"},
 	}
 	when := time.Date(2026, 7, 16, 12, 34, 56, 0, time.UTC)
 	src, err := render(kept, when, "test-source")
@@ -160,6 +339,24 @@ func TestRender_ProducesCompilableGoWithExpectedShape(t *testing.T) {
 	if strings.Contains(got, "12, 34, 56") {
 		t.Errorf("wall-clock leaked into output — same-day regens will produce diff noise")
 	}
+	// The second map — context windows — must be emitted for the same
+	// models, or usage.ContextWindowSizeFor silently falls back to its
+	// coarse substring table for whatever is missing.
+	winIdx := strings.Index(got, "var builtinContextWindows = map[string]int{")
+	if winIdx < 0 {
+		t.Fatalf("context-window map missing:\n%s", got)
+	}
+	// gofmt column-aligns the map, so match on the row's parts rather
+	// than pinning whitespace.
+	windows := got[winIdx:]
+	for _, want := range []string{`"cached-model":`, "1048576,", `"no-cache-model":`, "200000,"} {
+		if !strings.Contains(windows, want) {
+			t.Errorf("context-window map missing %s:\n%s", want, windows)
+		}
+	}
+	if !strings.Contains(got, "func BuiltinContextWindow(modelID string) (int, bool)") {
+		t.Errorf("BuiltinContextWindow accessor missing:\n%s", got)
+	}
 }
 
 func TestRound6_HandlesBinaryReprArtifacts(t *testing.T) {
@@ -199,9 +396,9 @@ func renderDay(t *testing.T, entries []generatedEntry, y int, m time.Month, d in
 // which is what the alignment test below needs.
 func threeEntries() []generatedEntry {
 	return []generatedEntry{
-		{Name: "aaa", InputPerMTok: 1, OutputPerMTok: 2, Provider: "fake"},
-		{Name: "bbb", InputPerMTok: 3, OutputPerMTok: 4, Provider: "fake"},
-		{Name: "ccc", InputPerMTok: 5, OutputPerMTok: 6, Provider: "fake"},
+		{Name: "aaa", InputPerMTok: 1, OutputPerMTok: 2, ContextWindowTokens: 200_000, Provider: "fake"},
+		{Name: "bbb", InputPerMTok: 3, OutputPerMTok: 4, ContextWindowTokens: 200_000, Provider: "fake"},
+		{Name: "ccc", InputPerMTok: 5, OutputPerMTok: 6, ContextWindowTokens: 200_000, Provider: "fake"},
 	}
 }
 
@@ -270,6 +467,34 @@ func TestNormalize_RateChangeIsStillDrift(t *testing.T) {
 	}
 }
 
+// A context window that moves with no rate change is still drift, and
+// it has to be itemized by name rather than falling through to the
+// "change is outside the rate table" catch-all — a widened window
+// pushes the compaction trigger out, and a reviewer needs to be told
+// which model rather than sent to read the whole file. Window rows are
+// namespaced inside entryMap so they don't collide with the rate row
+// for the same model.
+func TestDiffEntries_ContextWindowChangeIsItemized(t *testing.T) {
+	t.Parallel()
+	before := renderDay(t, threeEntries(), 2026, time.August, 15)
+
+	rewindowed := threeEntries()
+	rewindowed[1].ContextWindowTokens = 1_048_576 // bbb: 200000 -> 1048576
+	after := renderDay(t, rewindowed, 2026, time.August, 15)
+
+	if bytes.Equal(normalize(before), normalize(after)) {
+		t.Fatal("a changed context window was normalized away")
+	}
+	joined := strings.Join(diffEntries(normalize(before), normalize(after)), "\n")
+	if !strings.Contains(joined, "changed bbb"+windowKeySuffix) {
+		t.Errorf("window change not itemized by model:\n%s", joined)
+	}
+	// The rate row for bbb didn't move, so it must not be blamed.
+	if strings.Contains(joined, "changed bbb:") {
+		t.Errorf("window change leaked into the rate row report:\n%s", joined)
+	}
+}
+
 // gofmt column-aligns the map literal, so one entry gaining digits
 // re-pads its neighbours' trailing comments. Without collapsing runs of
 // spaces the report blames models whose rates never moved — noise that
@@ -302,9 +527,9 @@ func TestDiffEntries_ReportsAddedAndRemoved(t *testing.T) {
 	// Drop "bbb", append "ddd" — filter() emits sorted output, so the
 	// rendered table stays in name order.
 	churned := []generatedEntry{
-		{Name: "aaa", InputPerMTok: 1, OutputPerMTok: 2, Provider: "fake"},
-		{Name: "ccc", InputPerMTok: 5, OutputPerMTok: 6, Provider: "fake"},
-		{Name: "ddd", InputPerMTok: 7, OutputPerMTok: 8, Provider: "fake"},
+		{Name: "aaa", InputPerMTok: 1, OutputPerMTok: 2, ContextWindowTokens: 200_000, Provider: "fake"},
+		{Name: "ccc", InputPerMTok: 5, OutputPerMTok: 6, ContextWindowTokens: 200_000, Provider: "fake"},
+		{Name: "ddd", InputPerMTok: 7, OutputPerMTok: 8, ContextWindowTokens: 200_000, Provider: "fake"},
 	}
 	after := renderDay(t, churned, 2026, time.August, 15)
 

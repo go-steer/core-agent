@@ -43,6 +43,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/instruction"
 	"github.com/go-steer/core-agent/v2/pkg/mcp"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v2/pkg/pricing"
 	"github.com/go-steer/core-agent/v2/pkg/skills"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
@@ -55,59 +56,147 @@ import (
 // in launchTUIv2.
 var pkgCoreElicitor coretui.Elicitor
 
-// availableModelIDs is the hardcoded candidate list the /model
-// picker surfaces — both Gemini and Anthropic families since
-// core-agent supports both providers. Kept here rather than
-// promoted to a public function on agent.Agent because it's pure
-// UI policy. When the host grows a real model catalog this can
-// move to a Provider-driven enumeration.
+// pickerHead names the model IDs pinned to the top of the /model
+// picker, in this order, ahead of the derived remainder.
+//
+// ORDER IS BEHAVIOR, not presentation: core-tui's picker opens on
+// index 0 (newModelPickerDialog returns {idx: 0} — it does NOT
+// preselect the active model), and `enter` both switches and persists
+// via PersistModelChoice. So entry 0 is what a reflexive /model+enter
+// durably lands on. gemini-3.6-flash keeps that slot because it is the
+// DefaultConfig pick (#571); gemini-3.7-flash is newer and cheaper per
+// output token but has not run this project's UATs, so it sits one
+// line down — reachable, not the accidental default.
+//
+// A head entry that falls out of the pricing catalog is dropped rather
+// than surfaced unpriced; the list then shifts and
+// TestAvailableModelIDs_HeadOrder fails, so the slot gets re-pinned
+// deliberately rather than silently inherited by whatever sorts first.
+var pickerHead = []string{
+	"gemini-3.6-flash",
+	"gemini-3.7-flash",
+}
+
+// pickerMinMajor is the per-family generation cutoff for the picker.
+// Older models stay fully usable via --model / config.model.name and
+// stay priced in pkg/pricing — they just don't clutter a 19-line
+// dialog. Gemini < 3 can't mix server-side built-ins with function
+// declarations (see pkg/models/gemini's builtinsCompatible), so on the
+// 2.5 line the research task class literally cannot search; Claude < 4
+// is the pre-thinking-default generation.
+var pickerMinMajor = map[string]int{
+	"gemini": 3,
+	"claude": 4,
+}
+
+// availableModelIDs is the candidate list the /model picker surfaces.
+//
+// DERIVED, not hand-listed: the set is pricing.Builtin() — itself
+// generated from LiteLLM's catalog by dev/regen-builtin-pricing —
+// narrowed by the rules below. The hand-maintained list this replaced
+// had drifted into surfacing six models with no rate in the catalog,
+// which showed as `$—` in the TUI and, worse, made max_turn_cost_usd /
+// max_session_cost_usd silently inert for anyone who picked one: an
+// unpriced turn costs 0, and a budget cap on 0 never trips.
+//
+// Deriving it means the picker cannot outrun the pricing table again,
+// and a Monday pricing regen that adds a model makes it selectable
+// with no second edit. Exclusions:
+//
+//   - Below the per-family generation cutoff (see pickerMinMajor).
+//   - Date-pinned aliases (claude-opus-4-7-20260416) — same model as
+//     the bare id, twice the picker rows.
+//   - The Mythos-class tier's duplicate ids (claude-mythos-5,
+//     claude-mythos-preview): LiteLLM publishes that tier three times
+//     at identical rates. claude-fable-5 is the one we surface.
+//
+// Note this drops the "-1m" long-context variants the old list carried:
+// Opus 4.6+ and Sonnet 4.6+ ship a 1M window with no suffix (see
+// usage.ContextWindowSizeFor), so those rows offered nothing the bare
+// id doesn't. Still typeable for the earlier 4.x models that need them.
+//
+// Kept here rather than promoted to a public function on agent.Agent
+// because the narrowing is UI policy; the catalog underneath is not.
 func availableModelIDs() []string {
-	return []string{
-		// Gemini 3.x — Google's flagship + supporting variants.
-		// gemini-3.6-flash is the DefaultConfig pick (#571): current-gen
-		// GA flash that combines search built-ins with function tools.
-		//
-		// ORDER IS BEHAVIOR, not presentation: core-tui's picker opens
-		// on index 0 (newModelPickerDialog returns {idx: 0} — it does
-		// NOT preselect the active model), and `enter` both switches
-		// and persists via PersistModelChoice. So entry 0 is what a
-		// reflexive /model+enter durably lands on. gemini-3.6-flash
-		// keeps that slot; gemini-3.7-flash is newer and cheaper per
-		// output token but has not run this project's UATs, so it sits
-		// one line down — reachable, not the accidental default.
-		//
-		// The 3.1-pro `-customtools` variant (prefers registered tools
-		// over raw bash) remains selectable for a pro-class override.
-		"gemini-3.6-flash",
-		"gemini-3.7-flash",
-		"gemini-3.1-pro-preview-customtools",
-		"gemini-3.1-pro-preview",
-		"gemini-3.5-flash",
-		"gemini-3.5-flash-lite",
-		"gemini-3-flash-preview",
-		"gemini-3.1-flash-lite-preview",
-		"gemini-3.1-flash-image-preview",
-		// Gemini 2.5 — kept around for accounts still on prior
-		// generation.
-		"gemini-2.5-pro",
-		"gemini-2.5-flash",
-		// Anthropic Claude 5 family — thinking-default models
-		// (the #357 round-trip path). Fable is the Mythos-class
-		// tier above Opus. Same provider routing as the 4.x line.
-		"claude-fable-5",
-		"claude-opus-5",
-		"claude-sonnet-5",
-		// Anthropic Claude 4.x — opus / sonnet / haiku across the
-		// 200K and 1M context tiers. Resolved through the
-		// "anthropic" or "anthropic-vertex" provider in the host
-		// config; the adapter routes the swap through the
-		// configured provider.
-		"claude-opus-4-7",
-		"claude-opus-4-7-1m",
-		"claude-sonnet-4-6",
-		"claude-sonnet-4-6-1m",
-		"claude-haiku-4-5",
+	priced := pricing.Builtin()
+
+	head := make([]string, 0, len(pickerHead))
+	pinned := make(map[string]bool, len(pickerHead))
+	for _, id := range pickerHead {
+		if _, ok := priced[id]; !ok {
+			continue
+		}
+		head = append(head, id)
+		pinned[id] = true
 	}
+
+	var gemini, claude []string
+	for id := range priced {
+		if pinned[id] || !pickerEligible(id) {
+			continue
+		}
+		if strings.HasPrefix(id, "gemini-") {
+			gemini = append(gemini, id)
+		} else {
+			claude = append(claude, id)
+		}
+	}
+	// Alphabetical within family, deliberately not "newest first": a
+	// lexical sort is only a recency proxy until the first two-digit
+	// minor ships (gemini-3.10 sorts below gemini-3.9), and a picker
+	// whose order silently inverts is worse than one that never
+	// claimed to be ordered by recency. The recommended models are
+	// pinned above; below that it's a lookup list.
+	sort.Strings(gemini)
+	sort.Strings(claude)
+
+	out := make([]string, 0, len(head)+len(gemini)+len(claude))
+	out = append(out, head...)
+	out = append(out, gemini...)
+	return append(out, claude...)
+}
+
+// pickerEligible reports whether a priced model ID belongs in the
+// picker's derived remainder. See availableModelIDs for the rationale
+// behind each rule.
+func pickerEligible(id string) bool {
+	if strings.Contains(id, "claude-mythos") {
+		return false
+	}
+	fields := strings.Split(id, "-")
+	major := -1
+	for _, f := range fields {
+		// A date pin is the only 8-digit field these ids carry.
+		if len(f) == 8 && isAllDigits(f) {
+			return false
+		}
+		if major < 0 && len(f) > 0 && f[0] >= '0' && f[0] <= '9' {
+			// "3.6" → 3, "4" → 4. ParseInt on the pre-dot prefix
+			// rather than the whole field so minors don't matter.
+			n, err := strconv.Atoi(strings.SplitN(f, ".", 2)[0])
+			if err != nil {
+				return false
+			}
+			major = n
+		}
+	}
+	cutoff, ok := pickerMinMajor[fields[0]]
+	if !ok {
+		// A family the cutoff table doesn't know about. Surface it —
+		// it is priced, so it is at least budget-safe, and a silent
+		// drop would hide a newly supported provider.
+		return true
+	}
+	return major >= cutoff
+}
+
+func isAllDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return len(s) > 0
 }
 
 // launchTUIv2 is the core-tui-backed alternative to launchTUI. Same
@@ -619,8 +708,8 @@ func (a *coreAgentAdapter) PendingInboxCount() int { return a.inner.PendingInbox
 // WakeRequested satisfies coretui.WakeRequester (R-WAKE-1).
 func (a *coreAgentAdapter) WakeRequested() <-chan struct{} { return a.inner.WakeRequested() }
 
-// AvailableModels satisfies coretui.ModelSwapper. Returns the
-// hardcoded Gemini 3.x catalog (see availableModelIDs comment).
+// AvailableModels satisfies coretui.ModelSwapper. Returns the priced
+// current-generation catalog (see availableModelIDs comment).
 func (a *coreAgentAdapter) AvailableModels() []coretui.ModelInfo {
 	ids := availableModelIDs()
 	out := make([]coretui.ModelInfo, 0, len(ids))

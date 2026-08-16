@@ -245,7 +245,7 @@ core-agent-vertexcache: Caches.Create failed 6 times (giving up; agent will run 
 Native ADK `model.LLM` adapter for Claude. ADK Go ships only Gemini and Apigee out of the box; this is one of `core-agent`'s two new pieces of code (the other is the same adapter pointed at Vertex AI — see below).
 
 | Provider name | `anthropic` |
-| Default model | `claude-opus-4-7` |
+| Default model | `claude-opus-5` |
 | Auth | API key |
 | Env vars | `ANTHROPIC_API_KEY` |
 | Config block | `model.anthropic.api_key` (overrides env) |
@@ -256,7 +256,7 @@ Native ADK `model.LLM` adapter for Claude. ADK Go ships only Gemini and Apigee o
 {
   "model": {
     "provider": "anthropic",
-    "name": "claude-opus-4-7"
+    "name": "claude-opus-5"
   }
 }
 ```
@@ -264,7 +264,7 @@ Native ADK `model.LLM` adapter for Claude. ADK Go ships only Gemini and Apigee o
 ### CLI
 
 ```bash
-ANTHROPIC_API_KEY=... core-agent --provider anthropic --model claude-opus-4-7 -p "ping"
+ANTHROPIC_API_KEY=... core-agent --provider anthropic --model claude-opus-5 -p "ping"
 ```
 
 ### Adapter behavior
@@ -299,7 +299,7 @@ History markers are placed backward from the end, 16 content blocks apart, up to
 {
   "model": {
     "provider": "anthropic",
-    "name": "claude-opus-4-7",
+    "name": "claude-opus-5",
     "anthropic": {
       "prompt_cache": { "enabled": false }
     }
@@ -353,9 +353,9 @@ The same options apply to `anthropic.NewVertex(...)`. Other Anthropic server-sid
 ### Notes
 
 - Get a key at [console.anthropic.com](https://console.anthropic.com).
-- The current default model is `claude-opus-4-7`. Override per-call with `--model` or `cfg.Model.Name`.
+- The current default model is `claude-opus-5`. Override per-call with `--model` or `cfg.Model.Name`.
 - Claude 5-generation models (`claude-sonnet-5`, `claude-opus-5`, `claude-fable-5`) are fully supported as of v2.8: thinking-default tool loops round-trip correctly (thinking blocks are replayed with signatures intact), builtin pricing ships for all three, and they appear in the TUI's `/model` picker.
-- Pricing entries for Claude models are intentionally absent from `usage.PriceFor` today — `usage.Tracker.Append` will record zero cost for Claude turns. Override per-model via `cfg.Model.Pricing`.
+- Builtin pricing ships for every chat/tool-calling Claude model in the LiteLLM catalog, including the cache read and cache write rates, so `usage.Tracker.Append` records real cost for Claude turns out of the box. Override per-model via `cfg.Model.Pricing`; a model with no builtin entry still resolves by longest-prefix match (`claude-opus-4-7-1m` picks up `claude-opus-4-7`'s rates) and only falls through to zero cost if nothing matches at all.
 
 ---
 
@@ -364,7 +364,7 @@ The same options apply to `anthropic.NewVertex(...)`. Other Anthropic server-sid
 Same adapter as `anthropic`, but the underlying client is constructed against Google Vertex AI. Use this when you want Claude but already have GCP infrastructure: ADC for auth, GCP billing, GCP IAM and compliance posture, no separate Anthropic API key to manage.
 
 | Provider name | `anthropic-vertex` |
-| Default model | `claude-opus-4-7` (Vertex sometimes wants a date-suffixed variant) |
+| Default model | `claude-opus-5` (Vertex sometimes wants a date-suffixed variant) |
 | Auth | ADC + GCP project + region |
 | Env vars | `ANTHROPIC_VERTEX_PROJECT_ID` (or `GOOGLE_CLOUD_PROJECT`), `CLOUD_ML_REGION` (or `GOOGLE_CLOUD_LOCATION`) |
 | Config block | `model.anthropic.vertex.{project,location}` |
@@ -375,7 +375,7 @@ Same adapter as `anthropic`, but the underlying client is constructed against Go
 {
   "model": {
     "provider": "anthropic-vertex",
-    "name": "claude-opus-4-7",
+    "name": "claude-opus-5",
     "anthropic": {
       "vertex": {
         "project": "my-gcp-project",
@@ -392,7 +392,7 @@ Same adapter as `anthropic`, but the underlying client is constructed against Go
 gcloud auth application-default login
 ANTHROPIC_VERTEX_PROJECT_ID=my-gcp-project \
   CLOUD_ML_REGION=us-east5 \
-  core-agent --provider anthropic-vertex --model claude-opus-4-7 -p "ping"
+  core-agent --provider anthropic-vertex --model claude-opus-5 -p "ping"
 ```
 
 ### Notes

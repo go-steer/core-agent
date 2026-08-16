@@ -23,11 +23,11 @@ import (
 )
 
 // TestBuiltinModelsKnownToCompanionTables pins the invariant that the
-// four hand-maintained model tables move together.
+// model tables move together.
 //
-// pricing.Builtin is the curated list of models this project actually
-// expects to run (dev/regen-builtin-pricing's allowlist), so it is the
-// natural source of truth. The other two tables answer the same
+// pricing.Builtin is generated from LiteLLM by dev/regen-builtin-pricing
+// and holds every Gemini/Anthropic model this project will run, so it is
+// the natural source of truth. The other two tables answer the same
 // operator-typed id — and both fail OPEN rather than loudly:
 //
 //   - modeltier.Classify returns "" for an unknown model, which drops
@@ -39,16 +39,21 @@ import (
 //     session.
 //
 // Neither surfaces at startup; you find out when a long session dies on
-// a provider context-length error. Adding a model to the pricing
-// allowlist and forgetting the companions is therefore a live defect
-// this test converts into a build failure.
+// a provider context-length error. A weekly regen that newly qualifies a
+// model, with the companions left behind, is therefore a live defect
+// this test converts into a build failure — and it runs inside
+// pricing-regen.yml before the auto-PR opens, so the bad state never
+// reaches a branch.
 //
 // SCOPE: this checks one direction only — priced => classified+sized.
 // The reverse (a model the tier/window tables match but pricing does
 // not, so cost tracking reports 0 and max_turn_cost_usd never trips)
 // cannot be enumerated here: both companions are substring matchers,
-// not lists. Known unpriced ids reachable from the /model picker today
-// are the four `-preview` entries in availableModelIDs.
+// not lists, so there is no set to walk. The one place it mattered —
+// the /model picker, which used to be hand-listed and had drifted to
+// six unpriced entries — is closed by construction instead: the picker
+// now derives from this table (see availableModelIDs), with
+// TestAvailableModelIDs_AllPriced in cmd/core-agent pinning it there.
 func TestBuiltinModelsKnownToCompanionTables(t *testing.T) {
 	for id := range pricing.Builtin() {
 		t.Run(id, func(t *testing.T) {
@@ -62,5 +67,48 @@ func TestBuiltinModelsKnownToCompanionTables(t *testing.T) {
 					"add a case to pkg/usage/context_window.go", id)
 			}
 		})
+	}
+}
+
+// TestBuiltinTablesHaveMatchingKeys pins the two generated maps to each
+// other. They are emitted from one pass over one filtered slice, so
+// they can only diverge if someone hand-edits the DO-NOT-EDIT file —
+// and a rate row with no window row would silently drop that model back
+// onto usage's coarse substring fallback, which is the exact failure
+// the window table was generated to end.
+func TestBuiltinTablesHaveMatchingKeys(t *testing.T) {
+	rates, windows := pricing.Builtin(), pricing.BuiltinContextWindows()
+	for id := range rates {
+		if _, ok := windows[id]; !ok {
+			t.Errorf("%q has a rate but no context window — regenerate with "+
+				"`go run ./dev/regen-builtin-pricing`", id)
+		}
+	}
+	for id := range windows {
+		if _, ok := rates[id]; !ok {
+			t.Errorf("%q has a context window but no rate — regenerate with "+
+				"`go run ./dev/regen-builtin-pricing`", id)
+		}
+	}
+}
+
+// TestBuiltinContextWindowsArePlausible catches a schema shift upstream
+// turning max_input_tokens into something that is not a token count.
+// The generator refuses to emit a non-positive window, so the interesting
+// bound is the upper one: a window an order of magnitude past anything
+// shipping today would push compaction triggers out past the point the
+// provider hard-fails, and the symptom is a dead long session rather
+// than a failed build.
+func TestBuiltinContextWindowsArePlausible(t *testing.T) {
+	const (
+		floor   = 100_000    // no current Gemini/Anthropic chat model is smaller
+		ceiling = 20_000_000 // ~10x the largest window on offer in 2026
+	)
+	for id, n := range pricing.BuiltinContextWindows() {
+		if n < floor || n > ceiling {
+			t.Errorf("BuiltinContextWindow(%q) = %d, outside the plausible "+
+				"[%d, %d] range — check LiteLLM's max_input_tokens for a "+
+				"units change", id, n, floor, ceiling)
+		}
 	}
 }

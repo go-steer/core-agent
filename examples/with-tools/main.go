@@ -67,7 +67,7 @@ func addTool() adktool.Tool {
 func main() {
 	cfg := config.DefaultConfig()
 	cfg.Model.Provider = config.ProviderAnthropic
-	cfg.Model.Name = "claude-opus-4-7"
+	cfg.Model.Name = "claude-opus-5"
 	cfg.Permissions.Mode = config.PermissionModeYolo // skip prompts in the example
 
 	provider, err := models.Resolve(cfg)

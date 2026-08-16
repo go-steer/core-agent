@@ -493,8 +493,8 @@ func TestAdapter_ContextWindow_ResolvesFromPerTurnModel(t *testing.T) {
 	client := attachclient.New(parsed, "", 0)
 	a := New(client, "/sessions/s1")
 
-	if got := a.ContextWindowSize(); got != 1_000_000 {
-		t.Errorf("ContextWindowSize = %d, want 1_000_000 (gemini-3.5-flash cap)", got)
+	if got := a.ContextWindowSize(); got != 1_048_576 {
+		t.Errorf("ContextWindowSize = %d, want 1_048_576 (gemini-3.5-flash cap)", got)
 	}
 	if got := a.ContextWindowUsed(); got != 20049 {
 		t.Errorf("ContextWindowUsed = %d, want 20049 (last per-turn InputTokens)", got)

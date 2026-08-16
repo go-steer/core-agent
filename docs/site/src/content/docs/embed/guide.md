@@ -463,7 +463,7 @@ func (s *server) getOrCreate(sid string) *agent.Agent {
 func main() {
     cfg := config.DefaultConfig()
     cfg.Model.Provider = config.ProviderAnthropic
-    cfg.Model.Name = "claude-opus-4-7"
+    cfg.Model.Name = "claude-opus-5"
     cfg.Permissions.Mode = config.PermissionModeAsk
 
     provider, err := models.Resolve(cfg)

@@ -27,7 +27,8 @@
 # so the tool loop exercises the #357 thinking round-trip live, which
 # is this script's highest-value regression guard). Projects without
 # Claude 5-gen Model Garden access should override with
-# ANTHROPIC_SMOKE_MODEL=claude-opus-4-7 (the adapter's DefaultModel).
+# ANTHROPIC_SMOKE_MODEL=claude-opus-4-7 (an earlier-gen Opus; the
+# adapter's DefaultModel is claude-opus-5, also Claude 5-gen).
 
 set -euo pipefail
 source "$(dirname "$0")/_common.sh"

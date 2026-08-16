@@ -147,7 +147,7 @@ The two common adjustments:
 ```json
 {
   "version": 1,
-  "model": { "provider": "anthropic-vertex", "name": "claude-opus-4-7" },
+  "model": { "provider": "anthropic-vertex", "name": "claude-opus-5" },
   "permissions": {
     "mode": "allow",
     "allow": [

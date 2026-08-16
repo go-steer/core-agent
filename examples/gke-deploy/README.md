@@ -332,7 +332,7 @@ Edit `30-configmap.yaml`'s `config.json` to swap the model provider:
 ```json
 "model": {
   "provider": "anthropic-vertex",
-  "name": "claude-opus-4-7",
+  "name": "claude-opus-5",
   "anthropic": {
     "vertex": {
       "project": "YOUR_PROJECT",

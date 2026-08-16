@@ -24,8 +24,11 @@ name: pricing-regen
 # v2.7.0-dev.3 demo drive. This workflow guarantees at least one
 # regen attempt per week without a human remembering.
 #
-# The generator + allowlist live in dev/regen-builtin-pricing/. Bump
-# the allowlist there when a new model family should ship built-in.
+# The generator lives in dev/regen-builtin-pricing/. Membership is a
+# RULE, not a list — every chat-mode, tool-calling, priced, non-deprecated
+# Gemini/Anthropic model in the catalog ships built-in — so a regen can
+# add or remove models on its own, not just move rates. Adjust eligible()
+# there to change what qualifies.
 
 on:
   schedule:
@@ -53,8 +56,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/go-toolchain
 
-      # Short-circuit if no RATE moved. LiteLLM's catalog shifts
-      # slowly; most weeks this workflow exits here.
+      # Short-circuit if nothing generated moved — rates, context
+      # windows, or the set of models that qualifies. LiteLLM's catalog
+      # shifts slowly; most weeks this workflow exits here.
       #
       # This used to regenerate first and then test `git diff --quiet`.
       # That was really a test of the calendar, not of pricing: the
@@ -68,7 +72,7 @@ jobs:
       # child status to 1, so a failed LiteLLM fetch would otherwise be
       # indistinguishable from a real price change. Any non-zero exit
       # here means the generator broke, and `set -e` fails the step.
-      - name: Detect rate drift
+      - name: Detect catalog drift
         id: drift
         run: |
           set -euo pipefail
@@ -84,8 +88,16 @@ jobs:
 
       # Pre-validate the regenerated file. If lint/tests fail on the
       # new output, we'd rather fail the workflow than open a bad PR.
-      # Reviewer then sees the alert and either fixes the generator
-      # or curates the allowlist.
+      # Reviewer then sees the alert and either fixes the generator or
+      # tightens eligible().
+      #
+      # This is load-bearing now that membership is a rule: a model that
+      # newly qualifies arrives with no pkg/modeltier tier and no
+      # pkg/usage window fallback, and pricing's
+      # TestBuiltinModelsKnownToCompanionTables fails here rather than
+      # letting an unclassified model reach the /model picker (which
+      # derives from this table) with its compaction threshold
+      # defaulting to the universal 0.85.
       - name: Verify regen (lint + unit tests)
         if: steps.drift.outputs.drift == 'true'
         run: |
@@ -146,21 +158,24 @@ jobs:
             chore(pricing): regenerate builtin.go from LiteLLM (${{ steps.meta.outputs.date }})
 
             Automated regeneration by .github/workflows/pricing-regen.yml.
-            Curate the allowlist in dev/regen-builtin-pricing/main.go.
+            Membership is a rule — adjust eligible() in
+            dev/regen-builtin-pricing/main.go.
           title: 'chore(pricing): regenerate builtin.go from LiteLLM (${{ steps.meta.outputs.date }})'
           body: |
             Automated pricing regen — LiteLLM's `model_prices_and_context_window.json` shifted since the last time `pkg/pricing/builtin.go` was regenerated.
 
             **Regen date**: ${{ steps.meta.outputs.date }}
             **Source**: https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
-            **Allowlist**: `dev/regen-builtin-pricing/main.go` (edit + re-run to add/remove models)
+            **Membership rule**: `eligible()` in `dev/regen-builtin-pricing/main.go` (edit + re-run to change what qualifies)
 
             ## Review checklist
 
-            - [ ] Diff on `pkg/pricing/builtin.go` is only rate/date changes (no spurious formatting churn)
+            - [ ] **New and removed models are intentional.** Membership is a rule, not a list, so this diff can add or drop whole models — not just move numbers. For each added key: is it a real GA/preview id an operator would plausibly pin, or catalog noise that `eligible()` should be excluding? For each removed key: upstream deprecated it or pulled it, and nothing in-tree still names it (`git grep` the id — task-class defaults, recipes, docs and UAT scripts all hardcode model ids). Adding a model also puts it in front of operators: the `/model` picker derives from this table, and shows anything at or above its per-family generation cutoff (`pickerEligible` in `cmd/core-agent/coretui_enabled.go`).
+            - [ ] Diff on `pkg/pricing/builtin.go` is confined to the two generated maps (no spurious formatting churn)
             - [ ] Any rate change that halves or doubles is real (spot-check the provider's public pricing page — LiteLLM has occasionally shipped bad entries)
+            - [ ] Context-window changes in `builtinContextWindows` are real. These drive compaction thresholds: a window that grows makes compaction fire later, and an over-large one lets a session run past a cap the provider hard-fails on.
             - [ ] `UpdatedAt` dates on all entries are today
-            - [ ] If any model was dropped from LiteLLM upstream, the workflow's stderr surfaces it — bump the allowlist or accept the removal
+            - [ ] The workflow log's rejection report ("N Gemini/Anthropic entries rejected") lists nothing that should have been kept — a model can vanish from this table because upstream stopped publishing its price or window, not only because it was deprecated
 
             ## Verification
 

@@ -235,10 +235,18 @@ func Providers() []string {
 //
 // The table embeds knowledge that also lives in pkg/modeltier's
 // reverse direction (model → tier). When a new model ships, both
-// need bumping. Worth a check at release time; not worth fusing
-// into one table (the two directions have different shape needs:
-// modeltier wants substring matching, taskclass wants
-// canonical-string outputs).
+// need bumping. Not worth fusing into one table (the two directions
+// have different shape needs: modeltier wants substring matching,
+// taskclass wants canonical-string outputs).
+//
+// POLICY: each entry names the LATEST model in its line. Picking Opus
+// means picking the newest Opus, not whichever Opus was current when
+// the line was last edited. That is not enforceable from LiteLLM —
+// the catalog has no recency field, and auto-promoting would ship an
+// un-UAT'd model to every operator on a Monday regen — so it is
+// enforced instead by TestModelForTier_ReturnsLatestInLine, which
+// fails the build when pricing.Builtin() contains a newer model in the
+// same line than the one returned here.
 func ModelForTier(provider, tier string) string {
 	switch provider {
 	case "gemini", "vertex":
@@ -271,10 +279,19 @@ func ModelForTier(provider, tier string) string {
 	case "anthropic", "anthropic-vertex":
 		switch tier {
 		case TierFrontier:
-			return "claude-opus-4-7"
+			// Latest in the Opus line. Deliberately Opus and not the
+			// Mythos-class tier (claude-fable-5 / claude-mythos-5),
+			// which sits above Opus at 2x the rate — "frontier" is the
+			// top of the general-purpose line, not the most expensive
+			// model on offer.
+			return "claude-opus-5"
 		case TierMid:
-			return "claude-sonnet-4-6"
+			return "claude-sonnet-5"
 		case TierSmall:
+			// claude-haiku-4-5 is still the latest Haiku — no
+			// 5-generation Haiku has shipped. Moves in lockstep with
+			// pkg/models/anthropic's DefaultSmallModelID; pinned by
+			// TestModelForTier_ConsistentWithSmallModelDefaulters.
 			return "claude-haiku-4-5"
 		}
 	}

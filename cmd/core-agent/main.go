@@ -55,7 +55,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/instruction"
 	"github.com/go-steer/core-agent/v2/pkg/mcp"
 	"github.com/go-steer/core-agent/v2/pkg/models"
-	_ "github.com/go-steer/core-agent/v2/pkg/models/anthropic"
+	"github.com/go-steer/core-agent/v2/pkg/models/anthropic"
 	"github.com/go-steer/core-agent/v2/pkg/models/gemini"
 	_ "github.com/go-steer/core-agent/v2/pkg/models/mock"
 	"github.com/go-steer/core-agent/v2/pkg/modeltier"
@@ -917,7 +917,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		// table (e.g. echo / scripted in tests).
 		suggested := taskclass.ModelForTier(provider.Name(), taskclass.TierFrontier)
 		if suggested == "" {
-			suggested = "claude-opus-4-7"
+			suggested = anthropic.DefaultModel
 		}
 		notice := fmt.Sprintf(
 			"%s is a small-tier model. Small-tier models work well as subtask workers (--agentic-small-model) but loop and stall as the parent for long interactive sessions. Consider a frontier or mid-tier model for the parent — e.g. --model %s --agentic-small-model %s.",

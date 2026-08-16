@@ -181,10 +181,10 @@ func TestModelForTier(t *testing.T) {
 		{"vertex", "small", "gemini-3.5-flash-lite"},
 
 		// Anthropic family.
-		{"anthropic", "frontier", "claude-opus-4-7"},
-		{"anthropic", "mid", "claude-sonnet-4-6"},
+		{"anthropic", "frontier", "claude-opus-5"},
+		{"anthropic", "mid", "claude-sonnet-5"},
 		{"anthropic", "small", "claude-haiku-4-5"},
-		{"anthropic-vertex", "frontier", "claude-opus-4-7"},
+		{"anthropic-vertex", "frontier", "claude-opus-5"},
 
 		// Negative cases — caller falls through to whatever model
 		// would've been chosen without --task.

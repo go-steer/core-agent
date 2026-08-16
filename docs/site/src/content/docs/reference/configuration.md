@@ -171,7 +171,7 @@ A minimal viable config:
   "version": 1,
   "model": {
     "provider": "anthropic",
-    "name": "claude-opus-4-7"
+    "name": "claude-opus-5"
   }
 }
 ```
@@ -230,7 +230,7 @@ Example:
     "name": "gemini-3.1-pro-preview",
     "pricing": {
       "gemini-3.1-pro-preview":     {"input_per_mtok": 1.25, "output_per_mtok": 5.00},
-      "claude-opus-4-7":            {"input_per_mtok": 15.0, "cached_input_per_mtok": 1.50, "cache_creation_input_per_mtok": 18.75, "output_per_mtok": 75.0},
+      "claude-opus-5":              {"input_per_mtok": 15.0, "cached_input_per_mtok": 1.50, "cache_creation_input_per_mtok": 18.75, "output_per_mtok": 75.0},
       "internal-fine-tuned-v3":     {"input_per_mtok": 0.50, "output_per_mtok": 2.00}
     }
   }
@@ -1107,7 +1107,7 @@ Every invocation prints a compact one-line-per-item summary to stderr right afte
 ```
 core-agent: config: source=/home/me/proj/.agents/config.json (via .agents/ discovery)
 core-agent: agentsDir: /home/me/proj/.agents
-core-agent: model: claude-opus-4-7 provider=anthropic-vertex
+core-agent: model: claude-opus-5 provider=anthropic-vertex
 core-agent: mcp: 2 server(s) loaded — github(ok), grafana(ok)
 core-agent: skills: 3 loaded — code-review, security-review, incident-triage
 ```

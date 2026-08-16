@@ -190,10 +190,10 @@ Turning it off: `WithPromptCache(CacheOptions{})` for a library consumer, `model
 
 ### Things the adapter explicitly doesn't do (yet)
 
-- **Extended / adaptive thinking** — `claude-opus-4-7` defaults to no thinking. We don't expose `Thinking` config. Adding it is a future M3+ item, controlled by genai's `ThinkingConfig` field if/when ADK starts using it.
+- **Extended / adaptive thinking** — `claude-opus-5` defaults to no thinking. We don't expose `Thinking` config. Adding it is a future M3+ item, controlled by genai's `ThinkingConfig` field if/when ADK starts using it.
 - **Server-side tools** (`web_search`, `code_execution`) — we don't surface them to genai callers because there's no genai equivalent.
 - **Vision / inline data** — `Part.InlineData` is currently dropped during conversion. Adding image support means mapping to Anthropic's `ImageBlockParam` (base64 PNG/JPG/etc.).
-- **Stop sequences, temperature, top_p** — Opus 4.7 rejects `temperature`/`top_p`/`top_k`, so we don't pass them. Stop sequences could be plumbed through `Config.StopSequences` in a future change.
+- **Stop sequences, temperature, top_p** — current Opus (4.7 onward, including Opus 5) rejects `temperature`/`top_p`/`top_k`, so we don't pass them. Stop sequences could be plumbed through `Config.StopSequences` in a future change.
 - **Structured outputs** — `output_config.format` not exposed.
 - **Citations** — not exposed.
 
@@ -232,7 +232,7 @@ The fix is mechanical: we call `google.FindDefaultCredentials` ourselves, surfac
 
 Vertex sometimes serves Claude under date-suffixed IDs like `claude-opus-4-5@20251101`. The bare alias often works but isn't guaranteed. We pass `req.Model` (or `cfg.Model.Name`) verbatim to the SDK, which puts it directly into the Vertex URL path. Users get to provide whatever Vertex accepts.
 
-`DefaultModel` is `claude-opus-4-7` in both backends — good for first-party, may need an override for Vertex.
+`DefaultModel` is `claude-opus-5` in both backends — good for first-party, may need an override for Vertex.
 
 ### Auto-detection deliberately off
 

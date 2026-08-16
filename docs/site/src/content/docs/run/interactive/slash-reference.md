@@ -107,6 +107,12 @@ Esc and Ctrl+C-once both cancel the current model turn. The turn unwinds cleanly
 
 You can keep typing during a turn. Each Enter queues your input to the agent's inbox. When the current turn finishes, the agent auto-continues with the queued entries prefixed by a `↻` user message; the model decides whether to adapt the current task or capture each note with the `todo` tool. A soft cap of 10 consecutive auto-continues prevents runaway chains. The queue panel between chat and input mirrors what's pending; press Esc to dismiss queued entries.
 
+### What `/model` lists — and what it doesn't
+
+The candidate list is derived, not hand-maintained. It is the builtin pricing table (generated weekly from LiteLLM: every chat-capable, tool-calling, non-deprecated Gemini and Anthropic model) narrowed to the current generations — Gemini 3.x and newer, Claude 4.x and newer — with date-suffixed aliases (`claude-opus-4-7-20260416`) and the Mythos-class tier dropped as duplicates of the ids above them. The two entries at the top are the pinned defaults; the rest sort alphabetically within each family.
+
+Narrowing the picker does **not** narrow what you can run. Anything the provider accepts still works via `--model <id>` or `model.name` in `.agents/config.json`, including older generations, date-pinned ids, and `-1m` long-context variants. Cost tracking follows: an id with no exact pricing row resolves by longest-prefix match, so `claude-opus-4-7-1m` bills at `claude-opus-4-7`'s rates. The picker is a curated short list for the common case, not an allowlist.
+
 ### Long-running slashes
 
 `/compact`, `/done`, and `/btw` all fire LLM calls and take 5-15 seconds. The bottom toast (`▸ /<name> running…`) shows for the duration; an in-chat preamble row (`ℹ Capturing checkpoint summary…`, etc.) lands immediately so the dead time is visible. The final result message (success or error) appears below the preamble when the work completes.

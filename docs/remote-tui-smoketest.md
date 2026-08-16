@@ -174,7 +174,7 @@ branch.
 - [ ] `/deny tool.delete_file` adds the deny pattern.
 - [ ] `/pricing refresh` triggers a LiteLLM fetch and reports the
       outcome (updated / unchanged + model count).
-- [ ] `/pricing set claude-opus-4-7 15 75` applies a manual rate;
+- [ ] `/pricing set claude-opus-5 15 75` applies a manual rate;
       subsequent `/pricing` shows the new rate.te
 - [ ] `/reload` re-walks memory + skills + MCP; per-surface
       success flags surface in the result.

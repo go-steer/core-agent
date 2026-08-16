@@ -122,8 +122,17 @@ jobs:
       #
       # An App installation token is a distinct identity subject to
       # neither restriction, and it expires in ~1h so nothing
-      # long-lived sits in the job. Keep the app-id/private-key as
+      # long-lived sits in the job. Keep the client-id/private-key as
       # ORG-level secrets — other go-steer repos share this app.
+      #
+      # client-id, not app-id: the action deprecated app-id in favour
+      # of client-id, and the two are DIFFERENT fields on the app, not
+      # one renamed. App ID is the short sequential integer; Client ID
+      # is the opaque "Iv23li…" string the app's other auth flows
+      # already use, and it's what goes in the signed JWT's issuer
+      # claim. Pointing client-id at GOSTEER_BOT_APP_ID fails auth.
+      # (Neither value is actually confidential — only the private key
+      # is. They live in secrets because the app-id already did.)
       #
       # Deliberately NOT gated on drift. Most weeks there is none, so
       # gating it would leave the credentials unexercised until the one
@@ -136,7 +145,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets.GOSTEER_BOT_APP_ID }}
+          client-id: ${{ secrets.GOSTEER_BOT_CLIENT_ID }}
           private-key: ${{ secrets.GOSTEER_BOT_PRIVATE_KEY }}
 
       # peter-evans/create-pull-request handles the branch/push/PR

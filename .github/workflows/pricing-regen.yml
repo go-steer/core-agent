@@ -112,8 +112,15 @@ jobs:
       # neither restriction, and it expires in ~1h so nothing
       # long-lived sits in the job. Keep the app-id/private-key as
       # ORG-level secrets — other go-steer repos share this app.
+      #
+      # Deliberately NOT gated on drift. Most weeks there is none, so
+      # gating it would leave the credentials unexercised until the one
+      # run that actually needs them — and a rotated-out private key or
+      # an app uninstalled from this repo would surface as a failure on
+      # the day there is finally something to ship. Minting on every run
+      # makes the weekly job a live credential check; the token costs
+      # nothing and expires in ~1h whether or not it gets used.
       - name: Mint App token
-        if: steps.drift.outputs.drift == 'true'
         id: app-token
         uses: actions/create-github-app-token@v3
         with:

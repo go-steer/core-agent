@@ -81,14 +81,20 @@ NAMESPACE="${NAMESPACE:-agent-triage}"
 # stayed green, because it pinned a pre-guard core-agent:2.6.0.
 # Set DAEMON_IMAGE to a published tag to smoke that tag instead.
 DAEMON_IMAGE="${DAEMON_IMAGE:-}"
-# The watcher migrated to go-steer/k8s-lookout's published image: a
-# multicall binary whose container ENTRYPOINT is `lookout watch`,
-# drop-in image-swap compatible with the retired
-# ghcr.io/go-steer/k8s-event-watcher image. Keep this pin current:
-# an old watcher pin hides daemon↔watcher protocol skew (and vice
-# versa — v0.8.0 through v0.10.0 lack the Content-Type fix the
+# The watcher ships from go-steer/k8s-lookout: a multicall binary
+# whose container ENTRYPOINT is `lookout watch`. Keep this pin
+# current: an old watcher pin hides daemon↔watcher protocol skew (and
+# vice versa — v0.8.0 through v0.10.0 lack the Content-Type fix the
 # current daemon's CSRF guard requires).
-WATCHER_IMAGE="${WATCHER_IMAGE:-ghcr.io/go-steer/lookout:v0.11.0}"
+#
+# The pin is NOT a free-swap knob below v0.17.0: that release retired
+# the `k8s-event-watcher` transition naming this recipe was born with
+# (Kubernetes resource names → `lookout-watch`, token Secret →
+# `lookout-watch-token`, metric prefix `k8s_event_watcher_*` →
+# `lookout_*`, stderr prefix → `lookout watch:`). The manifests, the
+# users.json identity, and the metric grep below all speak the new
+# names, so pinning back to v0.16.0 or older fails this e2e.
+WATCHER_IMAGE="${WATCHER_IMAGE:-ghcr.io/go-steer/lookout:v0.21.0}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-180s}"
 # Seconds allowed for the whole event → inject → echo-turn pipeline
 # (phase 9). Typical pass is ~30-60s; the long pole is kubelet's first
@@ -124,7 +130,7 @@ cleanup() {
         kubectl -n "$NAMESPACE" logs deployment/core-agent --tail=100 --all-containers=true 2>&1 || true
         echo ""
         echo "--- watcher logs ---"
-        kubectl -n "$NAMESPACE" logs deployment/k8s-event-watcher --tail=50 2>&1 || true
+        kubectl -n "$NAMESPACE" logs deployment/lookout-watch --tail=50 2>&1 || true
         echo "=== END DIAGNOSTICS ==="
     fi
     if [[ -n "$PF_PID" ]]; then
@@ -236,7 +242,7 @@ cat > "$USERS_JSON" <<EOF
   "users": [
     { "identity": "sre-oncall@example.com", "token": "$SRE_TOKEN" },
     { "identity": "bob@example.com",        "token": "$BOB_TOKEN" },
-    { "identity": "sa:k8s-event-watcher",   "token": "$WATCHER_TOKEN" }
+    { "identity": "sa:lookout-watch",       "token": "$WATCHER_TOKEN" }
   ]
 }
 EOF
@@ -244,7 +250,7 @@ chmod 0600 "$USERS_JSON"
 
 kubectl -n "$NAMESPACE" create secret generic core-agent-users \
     --from-file=users.json="$USERS_JSON"
-kubectl -n "$NAMESPACE" create secret generic k8s-event-watcher-token \
+kubectl -n "$NAMESPACE" create secret generic lookout-watch-token \
     --from-literal=token="$WATCHER_TOKEN"
 
 # --- phase 5: apply overlay -------------------------------------------
@@ -255,7 +261,7 @@ kubectl apply -k "$OVERLAY_DIR"
 echo "▸ wait for rollouts ($ROLLOUT_TIMEOUT max)"
 kubectl -n "$NAMESPACE" rollout status deployment/core-agent \
     --timeout="$ROLLOUT_TIMEOUT"
-kubectl -n "$NAMESPACE" rollout status deployment/k8s-event-watcher \
+kubectl -n "$NAMESPACE" rollout status deployment/lookout-watch \
     --timeout="$ROLLOUT_TIMEOUT"
 
 # --- phase 6: probe attach listener -----------------------------------
@@ -360,7 +366,7 @@ done
 
 echo "▸ verify ConfigMap + Secret presence in $NAMESPACE"
 kubectl -n "$NAMESPACE" get cm core-agent-agents core-agent-gcp-env >/dev/null
-kubectl -n "$NAMESPACE" get secret core-agent-users k8s-event-watcher-token >/dev/null
+kubectl -n "$NAMESPACE" get secret core-agent-users lookout-watch-token >/dev/null
 
 # Confirm the ConfigMaps landed in the RIGHT namespace (namespace-
 # regression bug #6baae3c would put them in `default`).
@@ -378,11 +384,34 @@ fi
 # k8s-lookout pkg/engine/filter.go defaultReasons). lookout is running
 # with --mode=per-incident, so on first BackOff it POSTs /sessions
 # (asserting X-Asserted-Caller=--owner, allowed because users.json's
-# sa:k8s-event-watcher is in the recipe's proxy_identities) and then
+# sa:lookout-watch is in the recipe's proxy_identities) and then
 # POSTs the incident payload to /sessions/<sid>/inject. The daemon's
 # wake loop drains the inject into one echo-provider turn, so the
 # session's eventlog ends up with a user event carrying the payload
 # AND a model event mirroring it back.
+#
+# Why this trigger still fires on the FIRST event despite lookout's
+# debounces (v0.16.0 + v0.18.0), which is the non-obvious part:
+#   - lookout canonicalizes a `BackOff` event by its MESSAGE, not its
+#     reason. "Back-off pulling image ..." → the ImagePullBackOff
+#     family; "Back-off restarting failed container ..." → the
+#     CrashLoopBackOff family. This pod is the former, so
+#     --backoff-min-count (v0.16.0's crash-loop debounce, default 3)
+#     never applies to it.
+#   - the image-pull family has its own gate,
+#     --imagepull-transient-min-count (v0.18.0, default 3), but it
+#     only holds failures whose kubelet cause is classified
+#     RETRYABLE (registry 429/quota, 5xx, i/o timeout, connection
+#     reset). A nonexistent repo yields a terminal cause
+#     (`manifest unknown` / `denied` / `401`), and an unrecognized
+#     cause is treated as terminal too, so both fire immediately.
+# The one environment that would flip this is a sandbox with black-
+# holed egress to ghcr.io: `i/o timeout` classifies retryable, and
+# the pod would be held until Event.Count reaches 3. That shows up
+# here as a PIPELINE_TIMEOUT failure with the pod stuck in
+# ErrImagePull — raise PIPELINE_TIMEOUT or run the watcher with
+# --imagepull-transient-min-count=1 rather than assuming a
+# regression.
 echo "▸ pipeline: create broken-image pod (BackOff event source)"
 SCRATCH_NS="e2e-pipeline"
 BROKEN_POD="broken-image-pod"
@@ -405,7 +434,7 @@ while (( SECONDS < pipeline_deadline )); do
     # (pod restarting, apiserver blip) must count as "not found yet"
     # and retry — under set -euo pipefail it otherwise kills the
     # whole run mid-poll (#488).
-    SID="$(kubectl -n "$NAMESPACE" logs deployment/k8s-event-watcher --tail=300 2>/dev/null \
+    SID="$(kubectl -n "$NAMESPACE" logs deployment/lookout-watch --tail=300 2>/dev/null \
         | sed -n "s|.*fire BackOff pod=${SCRATCH_NS}/${BROKEN_POD} → sid=\([^ ]*\).*|\1|p" \
         | tail -1 || true)"
     [[ -n "$SID" ]] && break
@@ -416,24 +445,53 @@ if [[ -z "$SID" ]]; then
     echo "--- scratch-namespace events ---" >&2
     kubectl -n "$SCRATCH_NS" get events --sort-by='.lastTimestamp' 2>&1 | tail -10 >&2
     echo "--- watcher logs ---" >&2
-    kubectl -n "$NAMESPACE" logs deployment/k8s-event-watcher --tail=50 >&2 2>&1 || true
+    kubectl -n "$NAMESPACE" logs deployment/lookout-watch --tail=50 >&2 2>&1 || true
     exit 1
 fi
 echo "  lookout fired: sid=$SID"
 
+# (a2) Enrichment evidence, watcher-side. This is a REGRESSION GUARD on
+# deploy/base/12-clusterrole-watcher.yaml, and it is the only assertion
+# in this script that can see that role: every other check here passes
+# with the pre-#618-shaped role (events + `pods: get`), because lookout
+# still fires, still injects, still increments the counter, and the
+# payload still names the pod — it just carries an
+# `enrichment_error stage=resolve` trailer where the bundle should be.
+# lookout logs one line per enrichment, immediately before the fire
+# line:
+#   enrich <ns>/<pod>: <N>B (outcome=ok|failed, sections=<n>, ...)
+# `outcome=failed` here means the ClusterRole cannot satisfy
+# enrichment's scoped-list pass.
+echo "▸ pipeline: verify enrichment succeeded (ClusterRole regression guard)"
+enrich_line="$(kubectl -n "$NAMESPACE" logs deployment/lookout-watch --tail=300 2>/dev/null \
+    | grep -F "enrich ${SCRATCH_NS}/${BROKEN_POD}:" | tail -1 || true)"
+if [[ "$enrich_line" != *"outcome=ok"* ]]; then
+    echo "e2e: lookout enrichment did not succeed for ${SCRATCH_NS}/${BROKEN_POD}" >&2
+    echo "     got: ${enrich_line:-<no enrich line logged>}" >&2
+    echo "     Most likely cause: deploy/base/12-clusterrole-watcher.yaml no" >&2
+    echo "     longer grants what enrichment's scoped-list pass needs. That" >&2
+    echo "     pass LISTs the incident pod and its owner chain; with \`get\`" >&2
+    echo "     alone it resolves nothing and every inject degrades to an" >&2
+    echo "     enrichment_error trailer instead of a bundle." >&2
+    echo "--- watcher logs ---" >&2
+    kubectl -n "$NAMESPACE" logs deployment/lookout-watch --tail=40 >&2 2>&1 || true
+    exit 1
+fi
+echo "  enrichment ok: ${enrich_line#*enrich }"
+
 # Cross-check the watcher's own counter (the DEMO.md troubleshooting
 # metric): filter+dedup survivors that were POSTed to the daemon.
 echo "▸ pipeline: verify watcher injected counter (:9090 metrics)"
-kubectl -n "$NAMESPACE" port-forward deployment/k8s-event-watcher \
+kubectl -n "$NAMESPACE" port-forward deployment/lookout-watch \
     19090:9090 >/dev/null 2>&1 &
 PF2_PID=$!
 sleep 3
 if ! curl -sS --max-time 5 http://127.0.0.1:19090/metrics 2>/dev/null \
-    | grep 'k8s_event_watcher_events_injected_total' \
+    | grep 'lookout_events_injected_total' \
     | grep -q 'reason="BackOff"'; then
     echo "e2e: watcher metrics missing events_injected_total{reason=\"BackOff\"}" >&2
     curl -sS --max-time 5 http://127.0.0.1:19090/metrics 2>/dev/null \
-        | grep 'k8s_event_watcher' | head -20 >&2 || true
+        | grep 'lookout_' | head -20 >&2 || true
     exit 1
 fi
 kill "$PF2_PID" 2>/dev/null || true
@@ -501,7 +559,59 @@ if [[ "$verdict" != "ok" ]]; then
     echo "--- /sessions ---" >&2
     cat "$SCRATCH_DIR/sessions-after.json" >&2
     echo "--- watcher logs ---" >&2
-    kubectl -n "$NAMESPACE" logs deployment/k8s-event-watcher --tail=30 >&2 2>&1 || true
+    kubectl -n "$NAMESPACE" logs deployment/lookout-watch --tail=30 >&2 2>&1 || true
+    exit 1
+fi
+
+# (c) The bundle reached the CONSUMER, not just the emitter. (a2) reads
+# lookout's own log line, which proves the bundle was built; this reads
+# the user frame the daemon actually stored, which proves it survived
+# the inject and is what the model was handed. Enrichment renders a
+# logfmt head carrying `sections=<names>`, and records any failure as a
+# schema-stable `enrichment_error stage=<stage>` trailer — so a payload
+# with the trailer, or without the head, is a payload the triage skill
+# has to work without.
+#
+# Extraction failures are separated from assertion failures on purpose.
+# The `sections=` check below is POSITIVE, so an empty extraction can
+# never read as a pass — but it would read as the wrong diagnosis ("no
+# bundle head" when the truth is "jq never parsed the stream"). So jq's
+# stderr is kept, its exit status is checked instead of being swallowed
+# by `|| true`, and an empty result is its own named failure.
+echo "▸ pipeline: verify the enrichment bundle reached the session"
+if ! sed -n 's/^data: //p' "$SCRATCH_DIR/pipeline-events.sse" \
+    | jq -rs --arg pod "$BROKEN_POD" '
+        [ .[] | objects
+              | (.event? // empty) | objects
+              | (.Content? // empty) | objects
+              | select((.role // "") == "user")
+              | ((.parts // []) | map(.text // "") | join(" "))
+              | select(contains($pod)) ] | join("\n")' \
+    > "$SCRATCH_DIR/inject-payload.txt"; then
+    echo "e2e: could not parse the SSE replay for ${BROKEN_POD} (jq failed)" >&2
+    echo "     This is a harness fault, not a recipe fault — the assertions" >&2
+    echo "     below never ran. First 10 data frames:" >&2
+    sed -n 's/^data: //p' "$SCRATCH_DIR/pipeline-events.sse" | head -10 >&2
+    exit 1
+fi
+if [[ ! -s "$SCRATCH_DIR/inject-payload.txt" ]]; then
+    echo "e2e: the SSE replay carries no user frame naming ${BROKEN_POD}" >&2
+    echo "     The inject reached the daemon (checked above), so either the" >&2
+    echo "     eventlog frame shape changed or the payload stopped naming" >&2
+    echo "     the pod — either way the bundle assertions cannot run." >&2
+    exit 1
+fi
+if grep -q 'enrichment_error' "$SCRATCH_DIR/inject-payload.txt"; then
+    echo "e2e: injected payload carries an enrichment_error trailer" >&2
+    grep -o 'enrichment_error[^"]*' "$SCRATCH_DIR/inject-payload.txt" | head -5 >&2
+    echo "     See deploy/base/12-clusterrole-watcher.yaml — the watcher's" >&2
+    echo "     RBAC is the usual cause." >&2
+    exit 1
+fi
+if ! grep -q 'sections=' "$SCRATCH_DIR/inject-payload.txt"; then
+    echo "e2e: injected payload has no enrichment bundle head (sections=)" >&2
+    echo "--- injected payload ---" >&2
+    head -20 "$SCRATCH_DIR/inject-payload.txt" >&2
     exit 1
 fi
 

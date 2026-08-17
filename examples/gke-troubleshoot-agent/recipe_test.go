@@ -37,6 +37,8 @@ import (
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/mcp"
 	"github.com/go-steer/core-agent/v2/pkg/skills"
@@ -521,4 +523,327 @@ func skillContent(t *testing.T) string {
 // at somewhere editable.
 func lineAt(text string, idx int) string {
 	return "line " + strconv.Itoa(strings.Count(text[:idx], "\n")+1)
+}
+
+// ---------------------------------------------------------------------
+// Watcher pin + watcher RBAC
+//
+// The two invariants this recipe depends on that nothing else checks.
+// #680's image-pin gate covers neither: `imagepin.go` scopes its rules
+// to the core-agent daemon images, so the lookout tag is outside it.
+// ---------------------------------------------------------------------
+
+// watcherImage is the sentinel this recipe deploys, and wantWatcherTag
+// the release every declaration of it must agree on.
+//
+// v0.17.0 is a FLOOR, not a preference: it retired the
+// `k8s-event-watcher` transition naming, so the resource names in
+// deploy/base/, the `sa:lookout-watch` proxy identity, and the e2e's
+// `lookout_*` metric assertion all assume it. Bump this constant and
+// the four sites below together.
+const (
+	watcherImage   = "ghcr.io/go-steer/lookout"
+	wantWatcherTag = "v0.21.0"
+)
+
+// TestWatcherImagePinIsConsistent asserts the four DEPLOY sites that
+// name a lookout release agree: the base Deployment, both overlays'
+// kustomize image transforms, and the e2e's WATCHER_IMAGE default.
+// They are edited by hand, in two languages and three YAML shapes, and
+// a partial bump deploys one version while the e2e certifies another —
+// the failure this recipe's sibling has had a test for since it froze
+// its own pin.
+//
+// The docs are covered separately by TestWatcherTagInDocsIsCurrent;
+// keep the two together when bumping.
+func TestWatcherImagePinIsConsistent(t *testing.T) {
+	base := readRecipeFile(t, filepath.Join("deploy", "base", "51-deployment-watcher.yaml"))
+	if want := "image: " + watcherImage + ":" + wantWatcherTag; !strings.Contains(base, want) {
+		t.Errorf("base 51-deployment-watcher.yaml does not pin %q", want)
+	}
+
+	for _, overlay := range []string{"example", "example-otel"} {
+		path := filepath.Join("deploy", "overlays", overlay, "kustomization.yaml")
+		if got := kustomizeImageTag(t, path, watcherImage); got != wantWatcherTag {
+			t.Errorf("overlay %s pins %s newTag %q, want %q", overlay, watcherImage, got, wantWatcherTag)
+		}
+	}
+
+	// The e2e default is the fourth site and the easily-forgotten one:
+	// it lives outside this directory.
+	e2ePath := filepath.Join("..", "..", "dev", "tools", "e2e-recipe-gke-troubleshoot-agent")
+	e2e := readRecipeFile(t, e2ePath)
+	want := `WATCHER_IMAGE="${WATCHER_IMAGE:-` + watcherImage + ":" + wantWatcherTag + `}"`
+	if !strings.Contains(e2e, want) {
+		t.Errorf("%s does not default WATCHER_IMAGE to %s:%s", e2ePath, watcherImage, wantWatcherTag)
+	}
+}
+
+// watcherTagDocs are the documents that quote this recipe's lookout
+// release to a reader, relative to this package. A stale one is not
+// merely an out-of-date sentence: DEMO.md's preflight SHELLS OUT
+// (`crane digest ghcr.io/go-steer/lookout:<tag>`), so a missed bump
+// hands an operator a command that verifies a tag the recipe no longer
+// deploys — and the site pages are what a copier reads before they ever
+// open a manifest.
+//
+// Precedent for asserting prose against one source of truth is #674's
+// TestPublishedFindingCountsMatchTheDocs. The frozen sibling recipe's
+// TestDeployWatcherImageFloor is docs-blind in the same way this test
+// used to be; that is left alone deliberately (#704 froze the recipe,
+// so its docs cannot go stale), but the two matchers below are the
+// whole mechanism if it ever needs one.
+var watcherTagDocs = []string{
+	"README.md",
+	"DEMO.md",
+	filepath.Join("..", "..", "README.md"),
+	filepath.Join("..", "..", "docs", "site", "src", "content", "docs", "reference", "troubleshooting-agent.md"),
+	filepath.Join("..", "..", "docs", "site", "src", "content", "docs", "examples", "index.md"),
+}
+
+// The two shapes a doc names the pin in: a full image reference, and
+// the prose "pins/pinned <tag>" (backticked or not). Deliberately NOT
+// matched: "pinning back below `v0.17.0`" and the other floor mentions,
+// which are history and must stay put across a bump.
+var (
+	watcherImageRefRe = regexp.MustCompile(`ghcr\.io/go-steer/lookout:(v[0-9]+\.[0-9]+\.[0-9]+)`)
+	watcherPinProseRe = regexp.MustCompile("pin(?:s|ned) `?(v[0-9]+\\.[0-9]+\\.[0-9]+)`?")
+)
+
+// TestWatcherTagInDocsIsCurrent holds every reader-facing statement of
+// the pin to wantWatcherTag. Each doc must state it at least once, so a
+// bump that edits only the manifests fails here, and a doc that quietly
+// drops its pin sentence fails too rather than passing vacuously.
+func TestWatcherTagInDocsIsCurrent(t *testing.T) {
+	for _, path := range watcherTagDocs {
+		t.Run(filepath.ToSlash(path), func(t *testing.T) {
+			body := readRecipeFile(t, path)
+
+			var found int
+			for _, re := range []*regexp.Regexp{watcherImageRefRe, watcherPinProseRe} {
+				for _, m := range re.FindAllStringSubmatch(body, -1) {
+					found++
+					if m[1] != wantWatcherTag {
+						t.Errorf("names lookout %s, want %s (in %q)", m[1], wantWatcherTag, m[0])
+					}
+				}
+			}
+			if found == 0 {
+				t.Errorf("states no lookout pin at all; it is listed in watcherTagDocs because it "+
+					"quoted %s — restore the statement or drop the file from the list", wantWatcherTag)
+			}
+		})
+	}
+}
+
+// kustomizeImageTag returns the newTag pinned for image in a
+// kustomization file's images: block — "" when the image is absent,
+// carries no newTag, or appears only in a commented-out alternative.
+func kustomizeImageTag(t *testing.T, path, image string) string {
+	t.Helper()
+	lines := strings.Split(readRecipeFile(t, path), "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue // commented-out digest / mirror example
+		}
+		if !strings.Contains(line, "name: "+image) {
+			continue
+		}
+		for j := i + 1; j < len(lines); j++ {
+			l := strings.TrimSpace(lines[j])
+			if strings.HasPrefix(l, "- name:") {
+				break // next image entry; this one has no newTag
+			}
+			if strings.HasPrefix(l, "newTag:") {
+				return strings.Trim(strings.TrimSpace(strings.TrimPrefix(l, "newTag:")), `"`)
+			}
+		}
+	}
+	return ""
+}
+
+// enrichmentListRequirements mirrors
+// state.LoadClusterListRequirements() in go-steer/k8s-lookout as of
+// v0.21.0 (pkg/checks/state/cluster.go) — every group/resource the
+// scoped-list enrichment pass reads, in the naming form --enrich-lists
+// uses.
+//
+// It is a hand-copied literal because this repo does not depend on
+// lookout and should not start: the coupling is a container image, not
+// a Go import. Upstream guards its own shipped role against this list
+// with an RBAC test; TestWatcherRBACMatchesEnrichLists is the
+// equivalent for our NARROWED copy, and a lookout bump that changes
+// the list surfaces here as a mismatch to reconcile by hand.
+var enrichmentListRequirements = []string{
+	"pods",
+	"nodes",
+	"deployments.apps",
+	"replicasets.apps",
+	"statefulsets.apps",
+	"daemonsets.apps",
+	"jobs.batch",
+	"cronjobs.batch",
+	"services",
+	"endpointslices.discovery.k8s.io",
+	"ingresses.networking.k8s.io",
+	"configmaps",
+	"secrets",
+	"serviceaccounts",
+	"rolebindings.rbac.authorization.k8s.io",
+	"roles.rbac.authorization.k8s.io",
+	"clusterrolebindings.rbac.authorization.k8s.io",
+	"clusterroles.rbac.authorization.k8s.io",
+}
+
+// withheldEnrichmentLists are the enrichment reads this recipe
+// deliberately does not grant: exactly one, for a security reason —
+// `list` on Secrets returns their VALUES, cluster-wide.
+var withheldEnrichmentLists = []string{"secrets"}
+
+// TestWatcherRBACMatchesEnrichLists ties three things that drift
+// independently into one assertion: the ClusterRole's `list` grants,
+// the `--enrich-lists` subtraction the Deployment declares, and the
+// documented withheld set. Any two agreeing while the third does not
+// is a real deployment defect — either enrichment issues LISTs the API
+// server rejects, or the recipe declares a gap it does not have.
+func TestWatcherRBACMatchesEnrichLists(t *testing.T) {
+	granted := watcherRoleVerbSets(t)
+
+	withheld := map[string]bool{}
+	for _, r := range withheldEnrichmentLists {
+		withheld[r] = true
+	}
+	for _, req := range enrichmentListRequirements {
+		switch hasList := granted[req]["list"]; {
+		case withheld[req] && hasList:
+			t.Errorf("ClusterRole grants list on %q, which --enrich-lists subtracts: grant it or stop subtracting it", req)
+		case !withheld[req] && !hasList:
+			t.Errorf("ClusterRole does not grant list on %q, an enrichment list requirement: "+
+				"grant it, or add it to withheldEnrichmentLists AND to --enrich-lists", req)
+		}
+	}
+
+	// The Deployment must declare exactly the withheld set, so the pass
+	// deselects it up front instead of discovering it through a 403.
+	args := watcherDeploymentArgs(t)
+	wantFlag := "--enrich-lists=all"
+	for _, r := range withheldEnrichmentLists {
+		wantFlag += ",-" + r
+	}
+	if !sliceHas(args, wantFlag) {
+		t.Errorf("watcher args %v do not carry %q", args, wantFlag)
+	}
+
+	// The single verb narrowing the role's header leans on. Everything
+	// downstream — recovery tracking off, every informer-backed source
+	// off, --storm resolving off — follows from this one fact, so
+	// assert the fact rather than the consequences.
+	for res, verbs := range granted {
+		if verbs["watch"] && res != "events" {
+			t.Errorf("ClusterRole grants watch on %q; the only watch in this role may be on events "+
+				"(a watch verb turns on informer-backed sources this recipe defers)", res)
+		}
+	}
+	if !granted["events"]["watch"] {
+		t.Error("ClusterRole does not grant watch on events — the primary informer target")
+	}
+
+	// A ClusterRole has one namespace: the cluster. This one is
+	// NARROWER than lookout's shipped role, so under the bare name
+	// `kubectl apply -k` would silently downgrade a plain lookout
+	// install sharing the cluster.
+	role := readRecipeFile(t, filepath.Join("deploy", "base", "12-clusterrole-watcher.yaml"))
+	if !strings.Contains(role, "name: lookout-watch-gke-troubleshoot") {
+		t.Error("the watcher ClusterRole must be suffixed -gke-troubleshoot so it cannot collide with a plain lookout install")
+	}
+}
+
+// watcherRoleVerbSets parses 12-clusterrole-watcher.yaml into
+// resource → verb set, keyed the way --enrich-lists names things
+// ("secrets", "deployments.apps", …). Subresources ("pods/log") get
+// their own key and simply never match a requirement.
+func watcherRoleVerbSets(t *testing.T) map[string]map[string]bool {
+	t.Helper()
+	var role struct {
+		Rules []struct {
+			APIGroups []string `yaml:"apiGroups"`
+			Resources []string `yaml:"resources"`
+			Verbs     []string `yaml:"verbs"`
+		} `yaml:"rules"`
+	}
+	if err := yaml.Unmarshal([]byte(readRecipeFile(t,
+		filepath.Join("deploy", "base", "12-clusterrole-watcher.yaml"))), &role); err != nil {
+		t.Fatalf("parse ClusterRole: %v", err)
+	}
+	if len(role.Rules) == 0 {
+		t.Fatal("ClusterRole parsed with no rules")
+	}
+	out := map[string]map[string]bool{}
+	for _, rule := range role.Rules {
+		for _, group := range rule.APIGroups {
+			for _, res := range rule.Resources {
+				key := res
+				if group != "" {
+					key = res + "." + group
+				}
+				if out[key] == nil {
+					out[key] = map[string]bool{}
+				}
+				for _, v := range rule.Verbs {
+					out[key][v] = true
+				}
+			}
+		}
+	}
+	return out
+}
+
+// watcherDeploymentArgs returns the watcher container's args from
+// 51-deployment-watcher.yaml.
+func watcherDeploymentArgs(t *testing.T) []string {
+	t.Helper()
+	var dep struct {
+		Spec struct {
+			Template struct {
+				Spec struct {
+					Containers []struct {
+						Name string   `yaml:"name"`
+						Args []string `yaml:"args"`
+					} `yaml:"containers"`
+				} `yaml:"spec"`
+			} `yaml:"template"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal([]byte(readRecipeFile(t,
+		filepath.Join("deploy", "base", "51-deployment-watcher.yaml"))), &dep); err != nil {
+		t.Fatalf("parse watcher Deployment: %v", err)
+	}
+	for _, c := range dep.Spec.Template.Spec.Containers {
+		if c.Name == "watcher" {
+			return c.Args
+		}
+	}
+	t.Fatal(`watcher Deployment has no container named "watcher"`)
+	return nil
+}
+
+// readRecipeFile reads a file relative to the recipe dir (the package
+// dir is `go test`'s working directory), failing the test.
+func readRecipeFile(t *testing.T, path string) string {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(body)
+}
+
+// sliceHas reports whether xs contains want.
+func sliceHas(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
 }

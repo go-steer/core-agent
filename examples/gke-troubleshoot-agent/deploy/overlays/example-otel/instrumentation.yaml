@@ -23,7 +23,7 @@
 #
 # Empty selector = all Pods in this namespace. That's what we want
 # for the demo overlay — the only Pods in `agent-triage` are the
-# core-agent daemon and the k8s-event-watcher, both of which we
+# core-agent daemon and the lookout-watch sidecar, both of which we
 # want traces from.
 #
 # Tune sampling / resource attrs / prompt+response capture by

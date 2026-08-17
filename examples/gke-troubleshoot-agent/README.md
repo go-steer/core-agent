@@ -3,7 +3,7 @@
 Propose-only Kubernetes triage agent for GKE. Runs `core-agent` as
 a long-lived daemon in your cluster, watches Kubernetes Events via a
 sidecar (k8s-lookout's `lookout watch`, deployed under the
-`k8s-event-watcher` name), and drives per-incident investigations
+`lookout-watch` name), and drives per-incident investigations
 using structured triage skills backed by the GKE MCP server.
 
 **The agent diagnoses, verifies, proposes, and escalates. It never
@@ -30,21 +30,60 @@ apply here too.
 
 1. A `core-agent` Deployment (multi-session enabled, plan-first on,
    session-resume-enabled) exposed as an in-cluster Service.
-2. A `k8s-event-watcher` Deployment (sidecar; runs alongside the
+2. A `lookout-watch` Deployment (sidecar; runs alongside the
    daemon in the same cluster) watching Events via client-go
-   informer. It runs `ghcr.io/go-steer/lookout:v0.11.0` — the
+   informer. It runs `ghcr.io/go-steer/lookout:v0.21.0` — the
    watcher's source lives in
-   [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout),
-   and its image is a drop-in swap for the retired
-   `ghcr.io/go-steer/k8s-event-watcher` image (same flags, same
-   RBAC, same Deployment shape).
+   [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout).
+   Every Kubernetes object here reads as lookout: v0.17.0 retired the
+   `k8s-event-watcher` transition naming this recipe was born with, so
+   the Deployment, ServiceAccount, the `lookout-watch-token` Secret and
+   the `lookout_*` metric prefix are all `lookout-watch`-named now. The
+   two cluster-scoped objects go one step further and are named
+   `lookout-watch-gke-troubleshoot` — a ClusterRole has exactly one
+   namespace, the cluster, and this recipe's is a *narrowed* copy of
+   lookout's shipped role, so under the bare name `kubectl apply -k`
+   would silently overwrite a coexisting lookout install's role.
+   (`kube-platform-agent` already uses that suffix convention.) An
+   in-place upgrade from an older copy of this recipe creates the
+   new-named resources alongside the old ones — after cutover, delete
+   the old set (`k8s-event-watcher*` and/or bare-named
+   `clusterrole/lookout-watch` + `clusterrolebinding/lookout-watch`),
+   or redeploy fresh.
 3. The `k8s-triage` skill — a router that loads reason-specific
    references (CrashLoopBackOff, ImagePullBackOff, OOMKilled,
    FailedMount, FailedScheduling, BackOff, Unhealthy,
    NetworkNotReady, NodeNotReady, Evicted) and drives the
    diagnose → verify → propose → escalate loop.
 4. Full RBAC + IAM guidance (least-privilege ClusterRole for the
-   watcher; documented GCP IAM roles for the daemon).
+   watcher; documented GCP IAM roles for the daemon). The watcher's
+   ClusterRole is read-only (`get`/`list`/`watch` only) but it is no
+   longer just events + `pods: get`: lookout's enrichment resolves an
+   incident pod through its owner chain with one namespace-scoped
+   *list* pass, so with `get` alone that pass saw zero objects and
+   every inject arrived carrying an `enrichment_error stage=resolve`
+   trailer instead of a warm bundle. It now grants `list` on
+   seventeen of the eighteen kinds lookout's enrichment lists, plus
+   `get` on `pods/log`. Exactly one requirement is withheld: `list`
+   on **Secrets**, which returns secret values cluster-wide and is
+   not a grant a propose-only demo recipe should ask for. That gap is
+   declared up front by the Deployment's `--enrich-lists=all,-secrets`
+   rather than discovered per-incident through a rejected LIST, so
+   enrichment renders a `skipped=secrets` partial and never a
+   failure; `TestWatcherRBACMatchesEnrichLists` in `recipe_test.go`
+   asserts the role and that flag against each other. The other
+   narrowing is verbs, not kinds: the only `watch` in the file is on
+   events, which is what keeps lookout's recovery-clearance injects
+   and `--storm` correlation off — both probe `list`+`watch` on pods
+   at startup. What keeps the extra *sources* off is the Deployment's
+   `--sources=k8s-events` pin, not the verbs; see the header of
+   `deploy/base/12-clusterrole-watcher.yaml` for why that distinction
+   matters. That header also names the one grant here that carries
+   real risk — `get` on `pods/log`, cluster-wide, over logs that
+   routinely carry credentials and PII — and why it is kept anyway.
+   **If you are upgrading an existing deployment, re-apply the
+   ClusterRole**; a stale one leaves enrichment failing exactly as
+   before.
 5. GKE MCP server wired into `mcp.json` at
    `container.googleapis.com/mcp/read-only` — the read-only endpoint,
    so the mutating verbs are never exposed to the model in the first
@@ -67,7 +106,7 @@ apply here too.
 
 ```
    ┌──────────────────┐    watch     ┌────────────────────┐
-   │  kube-apiserver  │ ◄─────────── │ k8s-event-watcher  │
+   │  kube-apiserver  │ ◄─────────── │   lookout-watch    │
    │   (Events API)   │              │  (sidecar pod)     │
    └──────────────────┘              └─────────┬──────────┘
                                                │ POST /sessions +
@@ -157,7 +196,7 @@ cat > /tmp/users.json <<EOF
   "version": 1,
   "users": [
     { "identity": "sre-oncall@example.com", "token": "$(openssl rand -hex 32)" },
-    { "identity": "sa:k8s-event-watcher",   "token": "$(openssl rand -hex 32)" }
+    { "identity": "sa:lookout-watch",       "token": "$(openssl rand -hex 32)" }
   ]
 }
 EOF
@@ -166,8 +205,8 @@ chmod 0600 /tmp/users.json
 kubectl -n agent-triage create secret generic core-agent-users \
     --from-file=users.json=/tmp/users.json
 
-kubectl -n agent-triage create secret generic k8s-event-watcher-token \
-    --from-literal=token="$(jq -r '.users[]|select(.identity=="sa:k8s-event-watcher")|.token' /tmp/users.json)"
+kubectl -n agent-triage create secret generic lookout-watch-token \
+    --from-literal=token="$(jq -r '.users[]|select(.identity=="sa:lookout-watch")|.token' /tmp/users.json)"
 
 # Save sre-oncall's token separately — this is what YOU'll use to
 # attach a TUI:
@@ -357,7 +396,7 @@ PROJECT_ID=other-project ./scripts/setup-wif.sh
 cd examples/gke-troubleshoot-agent/deploy/overlays/prod
 kubectl apply -k .
 kubectl -n agent-triage rollout status deployment core-agent
-kubectl -n agent-triage rollout status deployment k8s-event-watcher
+kubectl -n agent-triage rollout status deployment lookout-watch
 ```
 
 ### 6. Attach a TUI
@@ -578,6 +617,15 @@ saturation, degradation, expiry, capacity, token-burn), storm
 correlation (`--storm=`), an on-disk occurrence store (`--store=`),
 and a `-gke` image flavor with cloud-provider sources compiled in.
 See that repo's README and deploy manifests to opt in.
+
+Opting in takes two edits, not one. `--sources=k8s-events` in
+`deploy/base/51-deployment-watcher.yaml` is what holds the extra
+sources back: lookout builds only the sources the set names, so an
+unnamed one is never constructed and reads nothing regardless of RBAC.
+Widening the flag therefore also means widening
+`deploy/base/12-clusterrole-watcher.yaml`, which grants nothing beyond
+what enrichment needs — otherwise the new source either fails its
+startup access probe or logs its own absence.
 
 ## Related
 

@@ -11,29 +11,138 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-# Minimum-necessary ClusterRole for the k8s-event-watcher sidecar.
-# The sidecar only OBSERVES cluster state — never modifies it. All
-# mutations happen through the core-agent daemon's MCP tool calls,
-# authorized by the daemon's own ServiceAccount.
 #
-# What the sidecar needs:
-#   - list/watch events — the primary informer target
-#   - get pods       — status enrichment for inject payloads (owner
-#                       ref, container statuses); design doc §"Sidecar
-#                       CLI" mentions this optional GET path
+# ClusterRole for the lookout-watch sidecar. Read-only: every verb in
+# this file is `get`, `list` or `watch`. All mutations happen through
+# the core-agent daemon's MCP tool calls, authorized by the daemon's
+# own ServiceAccount.
 #
-# What the sidecar deliberately does NOT get:
-#   - patch/update/delete on anything — sidecar is read-only
-#   - secrets — sidecar never reads workload secrets
+# NAME: suffixed `-gke-troubleshoot` (the convention kube-platform-agent
+# already uses) because this is a NARROWED copy of lookout's shipped
+# `deploy/12-clusterrole-watcher.yaml@v0.21.0`, not a vendored one, and
+# a ClusterRole has exactly one namespace — the cluster. Under the bare
+# `lookout-watch` name, `kubectl apply -k` against a cluster already
+# running lookout would silently overwrite that install's role with
+# this narrower one, disabling its sources with no error.
+#
+# ---- WHAT KEEPS THE SOURCE SET SMALL IS `--sources`, NOT THE VERBS ----
+#
+# 51-deployment-watcher.yaml pins `--sources=k8s-events`. That pin is
+# the guard. lookout builds only the sources named in the set; one that
+# is not named is never constructed and reads nothing, whatever this
+# file grants. Do NOT reason in the other direction — "we only granted
+# `list`, so nothing else can run" is false, and upstream disproves it:
+# `pkg/sources/expiry` declares secrets/serviceaccounts/webhook-configs
+# `list` with no `watch` at all, and `pkg/sources/saturation` declares
+# nodes/pods `list` (plus metrics.k8s.io). Neither is constructible here
+# because `--sources` does not name it (and saturation additionally
+# needs metrics.k8s.io, which this file does not grant). Widening
+# `--sources` without re-reading this file is the mistake this comment
+# exists to prevent.
+#
+# The pin's one behavioral effect today is dropping `ingress`, which
+# needs only the events grant and so would come on under
+# `--sources=auto`. That is right for this recipe: the k8s-triage skill
+# ships no ingress reference, and ingress events in the stream would
+# make the recipe's e2e non-deterministic.
+#
+# ---- the two narrowings this file itself makes ----
+#
+# 1. THE ONLY `watch` IN THIS FILE IS ON EVENTS. Everything else is
+#    `get`/`list`. Two things upstream gates on verbs rather than on
+#    `--sources`, and both are off because of that rule:
+#      - lookout's recovery-clearance tracking (DESIGN.md §7.4, the
+#        `kind=resolved` follow-up inject) probes pods list+watch
+#        (`internal/watch/wiring.go` `recoveryAccess`), so it is
+#        DISABLED and says so loudly at startup. This recipe's
+#        verification story is the agent's own `wait_and_verify` tool.
+#      - `--storm`'s topology graph probes pods/nodes/replicasets
+#        list+watch (`internal/watch/graphfeed.go` `graphAccess`), so
+#        `--storm=auto` would resolve off here even without the
+#        `--storm=off` pin.
+#
+# 2. `list` ON SECRETS IS WITHHELD, and it is the only one of lookout's
+#    18 enrichment list requirements that is. That grant returns secret
+#    VALUES cluster-wide; it is the broadest rule in lookout's shipped
+#    file, and it is not one a propose-only demo recipe should ask an
+#    operator to accept. The cost is bounded and documented upstream
+#    (lookout#192): enrichment renders a secret-free partial with
+#    `skipped=secrets` on the bundle head, never a failure. Because the
+#    gap is known ahead of time, 51-deployment-watcher.yaml declares it
+#    with `--enrich-lists=all,-secrets` rather than letting the pass
+#    discover it through a rejected LIST — that flag value and the
+#    rules below are asserted against each other by
+#    TestWatcherRBACMatchesEnrichLists in recipe_test.go, which is this
+#    tree's stand-in for upstream's own deploy/12-vs-requirements test.
+#
+# Every other enrichment list requirement IS granted, nodes,
+# endpointslices and serviceaccounts included. Withholding them bought
+# nothing: they are cheap metadata reads (node and endpoint topology is
+# effectively public in-cluster; `serviceaccounts` list returns names
+# and secret *references*, never values), and the only effect was a
+# bundle silently missing sections.
+#
+# ---- the one grant that does carry real risk ----
+#
+# `get` on `pods/log`, cluster-wide. Pod logs routinely carry
+# credentials, tokens and PII, and this role can read all of them. It is
+# kept because it is genuinely required — the bundle's logs section is
+# the evidence the triage skill reasons from, and enrichment's most
+# useful section is empty without it — so this is a deliberate trade,
+# not an oversight. If your clusters cannot accept it, scope the
+# watcher to a namespaced Role in your overlay.
+#
+# What is NOT granted at all: nodes/proxy, metrics.k8s.io, HPAs,
+# poddisruptionbudgets, Gateway API, webhook configurations and
+# cert-manager. Those serve lookout's other sources only — they are not
+# enrichment list requirements — and this recipe points at that
+# capability set rather than adopting it.
+#
+# And, unconditionally: no patch/update/delete on anything.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: k8s-event-watcher
+  name: lookout-watch-gke-troubleshoot
 rules:
   - apiGroups: [""]
+    # The primary informer target, and the only `watch` in this file.
     resources: ["events"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
+    # `get` for the inject payload's own status enrichment (owner ref,
+    # container statuses); `list` because enrichment resolves the
+    # incident pod through one namespace-scoped LIST pass, and with
+    # `get` alone that pass listed zero objects and every inject
+    # carried `enrichment_error stage=resolve` instead of a bundle.
     resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    # Enrichment distills the target pods' logs into the bundle.
+    resources: ["pods/log"]
     verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list"]
+  - apiGroups: ["apps"]
+    # The owner chain enrichment resolves an incident pod through.
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    # The bundle's edges section (reference-integrity checks).
+    # `list` only — ConfigMap values never leave lookout's emitter
+    # unsanitized, and only metadata + content hashes are ingested.
+    resources: ["services", "configmaps", "serviceaccounts"]
+    verbs: ["list"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["list"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["list"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    # Edges again: subject / roleRef existence checks, names only.
+    resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+    verbs: ["list"]

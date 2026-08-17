@@ -12,15 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Cluster-scoped, so the name is suffixed `-gke-troubleshoot` (the same
+# convention kube-platform-agent uses): 12's ClusterRole is a NARROWED
+# copy of lookout's shipped `deploy/12-clusterrole-watcher.yaml`, and
+# cluster-scoped objects have one namespace — the cluster. Sharing the
+# bare `lookout-watch` name with a plain lookout install would let
+# `kubectl apply -k` here silently strip that install's grants. The
+# ServiceAccount (11) keeps the bare name: it is namespaced, so it
+# cannot collide.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: k8s-event-watcher
+  name: lookout-watch-gke-troubleshoot
 subjects:
   - kind: ServiceAccount
-    name: k8s-event-watcher
+    name: lookout-watch
     namespace: agent-triage
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: k8s-event-watcher
+  name: lookout-watch-gke-troubleshoot

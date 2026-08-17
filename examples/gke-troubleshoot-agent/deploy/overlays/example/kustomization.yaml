@@ -63,15 +63,23 @@ images:
   - name: ghcr.io/go-steer/core-agent
     newTag: "2.9.0-dev.1"
   # The watcher ships from go-steer/k8s-lookout; its tags keep the
-  # leading `v` (e.g. "v0.11.0"), unlike this repo's images.
-  # v0.11.0 is the interop floor for every daemon from 2.8.0-dev.1
-  # onwards, this overlay's 2.9.0-dev.1 included: earlier lookout
-  # releases don't send Content-Type on the bodyless POST /sessions,
-  # which the daemon's #383 CSRF guard rejects with 415. It is a floor,
-  # not a ceiling — newer lookout releases work; see the recipe README
-  # before bumping, since the watcher's ClusterRole travels with it.
+  # leading `v` (e.g. "v0.21.0"), unlike this repo's images.
+  #
+  # Two floors stack under this pin, and the SECOND one is hard:
+  #   - v0.11.0 is the interop floor for every daemon from 2.8.0-dev.1
+  #     onwards, this overlay's 2.9.0-dev.1 included: earlier lookout
+  #     releases don't send Content-Type on the bodyless POST /sessions,
+  #     which the daemon's #383 CSRF guard rejects with 415.
+  #   - v0.17.0 is where lookout retired the `k8s-event-watcher`
+  #     transition naming. The base manifests name every resource
+  #     `lookout-watch` and read the `lookout-watch-token` Secret, so a
+  #     pin below v0.17.0 does not merely age this overlay — it breaks
+  #     it outright (the patch target below would match nothing).
+  #
+  # Newer lookout releases work; see the recipe README before bumping,
+  # since the watcher's ClusterRole travels with it.
   - name: ghcr.io/go-steer/lookout
-    newTag: "v0.11.0"
+    newTag: "v0.21.0"
 
   # (B) example — digest pinning (uncomment + comment out (A) above).
   # The core-agent-version marker below belongs to the entry directly
@@ -120,4 +128,4 @@ patches:
   - path: patch-watcher-cluster-name.yaml
     target:
       kind: Deployment
-      name: k8s-event-watcher
+      name: lookout-watch

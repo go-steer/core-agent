@@ -4,12 +4,12 @@ Opt-in kustomize component that switches core-agent's exporter from `none` to `o
 
 ## What it does
 
-Patches both the `core-agent` and `k8s-event-watcher` containers with:
+Patches the daemon's `core-agent` container and the watcher Deployment's `watcher` container (the Deployment is named `lookout-watch`; its container is not) with:
 
 | Var | Value | Purpose |
 |---|---|---|
 | `OTEL_TRACES_EXPORTER` | `otlp` | Overrides `otel.exporter` from the base `config.json` (default `none`). See [PR #315](https://github.com/go-steer/core-agent/pull/315). |
-| `OTEL_SERVICE_NAME` | `core-agent` / `k8s-event-watcher` | GKE Managed OTel's `Instrumentation` CR does NOT auto-inject this ([docs](https://docs.cloud.google.com/kubernetes-engine/docs/concepts/managed-otel-gke#environment_variables)); without it, spans surface as `unknown_service:<binary>` in Cloud Trace. |
+| `OTEL_SERVICE_NAME` | `core-agent` / `lookout-watch` | GKE Managed OTel's `Instrumentation` CR does NOT auto-inject this ([docs](https://docs.cloud.google.com/kubernetes-engine/docs/concepts/managed-otel-gke#environment_variables)). For the **daemon**, without it spans surface as `unknown_service:<binary>` in Cloud Trace. For the **watcher**, lookout has defaulted its own spans to `service.name=lookout` since v0.21.0, so this is not a fix for a broken name — it is a deliberate override, so the service name in Cloud Trace matches the Deployment an operator greps for rather than the binary. |
 
 **GOOGLE_CLOUD_PROJECT** (for the `gcp.project_id` resource attribute Cloud Trace requires) is already wired via the base's `envFrom` reference to the `core-agent-gcp-env` ConfigMap. `pkg/telemetry.Setup` reads it and passes to ADK via `WithGcpResourceProject` so the resource attribute is stamped correctly.
 

@@ -14,19 +14,27 @@
 
 # Same shape as daemon-env.yaml but for the watcher. Sets the two
 # vars GKE Managed OTel's Instrumentation CR does NOT inject:
-# OTEL_TRACES_EXPORTER (flips the exporter on — pkg/telemetry.Setup
-# defaults to "none" from cfg.OTEL.Exporter) and OTEL_SERVICE_NAME
-# (docs confirm auto-inject skips this).
+# OTEL_TRACES_EXPORTER (flips the exporter on — the watcher's
+# --otel-exporter defaults to "none") and OTEL_SERVICE_NAME (docs
+# confirm auto-inject skips this).
 #
-# Without OTEL_SERVICE_NAME the watcher's spans show up in Cloud
-# Trace as "unknown_service:lookout" (the binary shipped by
-# go-steer/k8s-lookout); setting it explicitly keeps the service
-# name matched to the Deployment so operators can filter by
-# service.name=k8s-event-watcher cleanly.
+# Since lookout v0.21.0 the watcher's spans default to
+# service.name=lookout rather than the SDK's "unknown_service:lookout"
+# placeholder, so this is no longer a fix for a broken name — it is a
+# deliberate override that matches the service name to the Deployment,
+# so an operator filtering Cloud Trace by workload gets the same string
+# from both directions. OTEL_SERVICE_NAME still wins over the binary's
+# default.
+#
+# The endpoint is NOT set here: GKE Managed OTel's Instrumentation CR
+# injects OTEL_EXPORTER_OTLP_ENDPOINT. Off-GKE, lookout v0.21.0 falls
+# back to the OTel spec default (http://localhost:4318) instead of
+# silently building no exporter at all, which is what it did through
+# v0.20.0 — a boot line claiming OTLP and zero spans.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: k8s-event-watcher
+  name: lookout-watch
 spec:
   template:
     spec:
@@ -36,4 +44,4 @@ spec:
             - name: OTEL_TRACES_EXPORTER
               value: "otlp"
             - name: OTEL_SERVICE_NAME
-              value: "k8s-event-watcher"
+              value: "lookout-watch"

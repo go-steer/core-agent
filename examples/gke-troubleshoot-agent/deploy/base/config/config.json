@@ -43,7 +43,7 @@
         "table_file": "/etc/core-agent/users.json"
       },
       "admin_identities": ["sre-oncall@example.com"],
-      "proxy_identities": ["sa:k8s-event-watcher"],
+      "proxy_identities": ["sa:lookout-watch"],
       "default_identity": "anon",
       "allow_anonymous": false
     }

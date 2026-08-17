@@ -44,18 +44,47 @@ var policies = map[string]recipecheck.Policy{
 	//
 	// They fail the check for real: they are Hermes content, written to
 	// be run with a shell, and this recipe disables `bash`. That is the
-	// #644 bug in a second recipe, and it is a design call rather than a
-	// mechanical fix — filed as #674 (accept / enable bash / ship a
-	// translation overlay).
+	// #644 bug in a second recipe, and it was a design call rather than a
+	// mechanical fix. #674 decided it: **accept the gap and disclose it**,
+	// over the two alternatives it weighed.
+	//
+	//   - Enabling `bash` fixes nothing — the brain image is distroless,
+	//     so a shell finds no kubectl/gcloud to run, and it would give up
+	//     propose-only-by-construction (#617/#621) to convert a fact CI
+	//     can see offline into a runtime "command not found".
+	//   - A translation overlay (map each kubectl/gcloud step onto a
+	//     read-only `gke` MCP call) covers a minority of the steps: 40 of
+	//     the 99 CLI findings are mutations, executions or interactive
+	//     channels, which a read-only endpoint cannot serve BY
+	//     CONSTRUCTION — no claim about its tool list required. Which of
+	//     the remaining reads it serves is not decidable offline, since an
+	//     MCP tool list needs a live dial. So the best case is a table
+	//     covering well under half the steps, unverifiable in CI, over
+	//     content the recipe has stopped maintaining (#704).
+	//
+	// Two arguments deliberately NOT made, because this tree contradicts
+	// them: that an overlay is structurally too weak to override a skill
+	// (the CI-enforced #703 fix is itself an overlay-precedence claim —
+	// recipe_test.go requires "this overlay wins" in cluster/AGENTS.md);
+	// and that an overlay is worthless because it removes no findings here
+	// (that judges runtime behavior by a static gate — #622's own #703 fix
+	// removed none either).
+	//
+	// The disclosure lives in the recipe README under "What does not
+	// execute", which is the resolution's deliverable — not this comment.
 	//
 	// Waived, not ignored: Check still produces every finding, the test
 	// logs how many were waived, and WaiveMinFindings puts a floor under
-	// each tree so a waiver cannot quietly become a blindfold. That is the
-	// #766 failure mode itself — ../cluster/skills/ was covered by a glob
-	// while nothing walked it — and a floor is what makes it loud. The
-	// floors are floors, not ratchets: they sit well under the 120 and 68
-	// findings the trees produce today, so a vendoring bump can move the
-	// count without touching this file, but a tree going dark cannot.
+	// each tree so a waiver cannot quietly become a blindfold. #766 is why:
+	// when the six cluster skills moved under a subagent root they fell out
+	// of the walk entirely and NO glob claimed them — the stale entry was
+	// `skills/`, pointing at the emptied .agents/skills/, and only this
+	// WaiveReason's prose still described both trees. The floors are
+	// floors, not ratchets: they sit under the 120 and 68 findings the
+	// trees produce today, so a vendoring bump can move the count without
+	// touching this file, but a tree going dark cannot. The counts
+	// themselves are pinned next to the prose that quotes them, by
+	// kube-platform-agent's TestPublishedFindingCountsMatchTheDocs.
 	"kube-platform-agent/.agents": {
 		WaiveFileGlobs: []string{"../upstream/skills/", "../cluster/skills/"},
 		WaiveMinFindings: map[string]int{
@@ -65,7 +94,12 @@ var policies = map[string]recipecheck.Policy{
 		WaiveReason: "../upstream/skills/ (18 skills, 120 findings, loaded by the parent via content_roots) " +
 			"and ../cluster/skills/ (6 skills, 68 findings, loaded by the `cluster` subagent from its own " +
 			"root) are byte-for-byte snapshots of gke-labs/kube-agents content; editing them would defeat " +
-			"the recipe's no-drift guarantee. Resolution tracked in #674.",
+			"the recipe's no-drift guarantee. #674 resolved this as accept-and-disclose: enabling `bash` " +
+			"buys nothing (distroless image, no kubectl/gcloud for a shell to find), and an AGENTS.d " +
+			"translation overlay reaches a minority of the steps — 40 of the 99 CLI findings are mutations " +
+			"or executions a read-only endpoint cannot serve by construction, and whether it serves the " +
+			"remaining reads is not decidable without a live dial. The gap is stated in the recipe README " +
+			"under \"What does not execute\".",
 	},
 }
 

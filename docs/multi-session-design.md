@@ -15,6 +15,15 @@ disagree (e.g., the shim approach for `Inject`, the bug fix in
 `pkg/tools/gate.go` that γ surfaced), the reference page reflects
 what shipped.
 
+**Successor:** the `bearer_table` authenticator described below is
+the only one that shipped, and a static token→identity table doesn't
+scale in production.
+[`go-steer/purser`](https://github.com/go-steer/purser)'s
+[`docs/DESIGN.md`](https://github.com/go-steer/purser/blob/main/docs/DESIGN.md)
+proposes extracting `pkg/auth` into that shared module and deriving
+identity from SPIFFE SVIDs, standard-CA client certificates, and OIDC
+instead. Read it alongside this doc before changing `pkg/auth`.
+
 ## Motivation
 
 Today the typical core-agent deployment is **one process per

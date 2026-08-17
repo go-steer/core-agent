@@ -16,6 +16,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+_No unreleased changes since [2.9.0-dev.1]._
+
+## [2.9.0-dev.1] — 2026-08-16
+
 ### Breaking Changes
 
 - **The Gemini defaults move to `gemini-3.7-flash`.** The zero-config default (`config.DefaultConfig`, what a run with no `--model` and no `model.name` gets) and `taskclass.ModelForTier("gemini"|"vertex", frontier)` both change from `gemini-3.6-flash`. The `/model` picker's first entry follows, because entry 0 is what a reflexive `/model`+`enter` durably lands on; 3.6-flash stays pinned directly beneath it as the one-keystroke fallback. 3.7-flash is half the price of the model it replaces ($0.75/$3.75 per MTok against $1.50/$7.50) on the same 1M window and the same `frontier` compaction threshold, so cost ceilings and compaction triggers do not shift underneath a run. Mid and small are unchanged (`gemini-3.5-flash`, `gemini-3.5-flash-lite`). This promotion clears the last entry out of `deferredPromotions`, which had held it since the model tables were unified — [#579](https://github.com/go-steer/core-agent/issues/579)/[#580](https://github.com/go-steer/core-agent/issues/580) are the precedent for what an un-UAT'd frontier bump costs, and a live GKE UAT is still the gate this promotion is measured against. Pin the old behavior with `--model gemini-3.6-flash` or `model.name` in `.agents/config.json`; both ids remain priced, classified and selectable. `extras/scion`'s `extra-large` alias and the bundled examples follow the default.

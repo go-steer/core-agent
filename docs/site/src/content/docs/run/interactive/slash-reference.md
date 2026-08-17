@@ -88,20 +88,59 @@ Pattern grammar: `<tool>:<glob>` (e.g., `bash:git diff*`, `read_file:internal/**
 |---|---|
 | **Enter** | Submit input (or run slash command). Mid-turn: queue the input for after the current turn finishes |
 | **Shift+Enter** | Insert a newline in the input (multi-line prompts) |
-| **Esc** | Contextual: dismiss a modal if one's open; otherwise interrupt the in-flight turn |
-| **Ctrl+C** (once) | Cancel the in-flight turn (same as `/interrupt`) |
+| **Esc** | Contextual — backs out of the innermost thing first: dismiss a modal, close the help sheet, return focus to the composer if the transcript has it, then interrupt the in-flight turn. See [Cancellation semantics](#cancellation-semantics) |
+| **Ctrl+C** (once) | Cancel the in-flight turn (same as `/interrupt`) — unconditional, never absorbed by focus or a modal |
 | **Ctrl+C** (twice within 1s) | Quit the TUI |
 | **Ctrl+D** | EOF — quit the TUI |
 | **PgUp / PgDn** | Scroll the scrollback up / down |
 | **Ctrl+E** | Open `$EDITOR` with the current input buffer (fallback: `$VISUAL` → `vi`) |
+| **Ctrl+B** | Toggle the header / sidebar |
+| **Ctrl+G** | Open the model picker (same as `/model`) |
+| **Ctrl+X** | Expand the selected tool call (args + response detail) |
+| **?** | Toggle the keybinding cheat sheet (same as `/keys`) |
+
+### Transcript focus
+
+The transcript takes the keyboard, so you can select, fold, and copy a single item instead of scrolling a wall of text. Press **Tab** to move focus out of the composer; **Enter** or **Esc** hands it back.
+
+| Key | Effect |
+|---|---|
+| **Tab** | Move the keyboard between the composer and the transcript |
+| **↑ / ↓** (or **k** / **j**) | Move the selection one item at a time |
+| **Space** | Fold / unfold the selected item |
+| **Shift+↑ / Shift+↓** | Scroll a line at a time *inside* a long item |
+| **Shift+← / Shift+→** | Pan sideways over a wide table or diff (content that doesn't wrap) |
+| **y** | Copy the selected item to the clipboard |
+| **c** | Copy just the code blocks in the selected item |
+| **g / G** | Jump to the first / last item (**G** resumes following the stream) |
+| **Enter** / **Esc** | Return focus to the composer (mid-turn, this Esc does *not* also cancel the turn — see [Cancellation semantics](#cancellation-semantics)) |
 
 ---
 
 ## Behavior notes
 
+### Where a copy actually lands
+
+`y` and `c` write to two clipboards, because a terminal session has two machines in it and neither one is a fallback for the other:
+
+- An **OSC 52 escape** goes to the terminal emulator you are sitting in front of. This is the one that works over SSH, but many terminals decline it — Terminal.app has never implemented it, iTerm2 has it behind an off-by-default preference, and some web/relay terminals strip it in transit. The protocol has no acknowledgement, so nothing can tell you it was dropped.
+- A **host clipboard write** goes to the machine the process is running on, using whichever helper is installed: `pbcopy` (macOS), `wl-copy` (Wayland), `xclip` / `xsel` (X11), or `clip.exe` (Windows and WSL). This one reports a result.
+
+The footer tells you which succeeded. `copied 24 lines` means the host write confirmed. `copied 24 lines · osc52` means only the escape went out — either the box has no clipboard helper (a headless server, typically) or none is installed. `copied 24 lines · osc52 only (…)` means a helper was found and failed, with the reason.
+
+For `core-agent-tui` in attach mode the host write is the useful one: that process runs on your laptop even when the agent is in a pod elsewhere.
+
+### Untrusted tool output is escaped
+
+Tool arguments, tool responses, file content, and bash stdout/stderr are stripped of ANSI escape sequences and have their remaining control bytes rendered as visible `\xNN` before anything reaches your terminal. A file containing `ESC[2J` shows you the bytes instead of clearing your screen. Tab and newline pass through untouched; SGR color in captured command output is dropped rather than shown as literal escape text.
+
 ### Cancellation semantics
 
-Esc and Ctrl+C-once both cancel the current model turn. The turn unwinds cleanly — any tool call in flight runs to completion (you can't kill it from the operator side), but no new model call fires. The session continues; you can type a follow-up immediately.
+Ctrl+C-once always cancels the current model turn. Esc cancels it *only when nothing else is open*: Esc is a back-out key, and it dismisses the innermost surface first — a modal, then the help sheet, then transcript focus — and reaches the turn only once none of those apply.
+
+That ordering has one consequence worth knowing before you need it. **If you pressed Tab to read something in the transcript while a turn is running, the first Esc returns focus to the composer and the turn keeps going.** A second Esc cancels it. If you want the turn stopped regardless of where the keyboard is, use Ctrl+C — it is never absorbed by focus or by an open modal.
+
+Either way the turn unwinds cleanly: any tool call in flight runs to completion (you can't kill it from the operator side), but no new model call fires. The session continues; you can type a follow-up immediately.
 
 ### Typing while the agent is working
 

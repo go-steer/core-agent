@@ -210,6 +210,19 @@ func run(ctx context.Context, args []string, token, authMode, theme, alias strin
 			Wordmark:      wordmark,
 			AgentIdentity: identity,
 		},
+		// The attach client is the case this matters most for: the
+		// daemon runs wherever it runs, but THIS process runs on the
+		// operator's laptop, so a local helper (pbcopy / wl-copy /
+		// xclip / xsel / clip.exe) writes the clipboard the operator
+		// will actually paste from.
+		//
+		// Additive to the OSC 52 escape core-tui already emits, not a
+		// fallback for it — the two target different machines, and the
+		// host write is the only one that can report a result. Nil when
+		// no helper resolves (a headless box), which is identical to
+		// leaving the field unset, so no build tag and no clipboard
+		// dependency in the module graph.
+		ClipboardWriter: coretui.SystemClipboardWriter(),
 	}
 	return coretui.Run(ctx, opts)
 }

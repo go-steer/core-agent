@@ -280,13 +280,21 @@ The strip between the scrollback and the input box renders any operator messages
 |---|---|
 | **Enter** | Submit input (or run slash command). Mid-turn: queue for after current turn finishes. |
 | **Shift+Enter** | Insert a newline in the input |
-| **Esc** | Contextual: dismiss a modal if one's open; otherwise interrupt the in-flight turn. |
-| **Ctrl+C** (once) | Cancel the in-flight turn |
+| **Esc** | Contextual — backs out of the innermost surface first: a modal, the help sheet, transcript focus, and only then the in-flight turn. |
+| **Ctrl+C** (once) | Cancel the in-flight turn — unconditional, never absorbed by focus or a modal |
 | **Ctrl+C** (twice within 1s) | Quit the TUI |
 | **Ctrl+D** | EOF — quit the TUI |
 | **PgUp / PgDn** | Scroll the scrollback |
 | **Ctrl+E** | Open `$EDITOR` with the current input buffer (fallback: `$VISUAL` → `vi`) |
 | **r** (in picker) | Refresh the session list |
+
+### Transcript focus
+
+Same bindings as the in-process TUI — see [Slash reference → Transcript focus](/run/interactive/slash-reference/#transcript-focus) for the full table. **Tab** moves the keyboard out of the composer and into the transcript, `↑`/`↓` move a per-item selection, **Space** folds the selected item, `Shift+←`/`Shift+→` pan a wide diff, and **y** / **c** copy the item / just its code. **Enter** or **Esc** hands the keyboard back.
+
+Focus is a mode, and Esc backs out of it before it reaches anything else. If you Tab into the transcript while a turn is running, the first Esc only returns focus to the composer — the turn keeps going, and a second Esc cancels it. Ctrl+C cancels from anywhere.
+
+Copies go out twice: an OSC 52 escape aimed at your terminal emulator, and a native clipboard write on the machine running the process. In attach mode that second one is the interesting one — `core-agent-tui` runs on your laptop even when the agent is in a pod on the other side of the network, so `pbcopy` / `wl-copy` / `xclip` / `xsel` / `clip.exe` writes the clipboard you will actually paste from. The footer reads `copied N lines` when the host write confirmed and `copied N lines · osc52` when only the escape went out (no clipboard helper on this machine).
 
 ## Read-only mode
 

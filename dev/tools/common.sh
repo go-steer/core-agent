@@ -49,15 +49,32 @@ repo_root() {
 #
 # Falls back to the `go` directive, which is what go.mod looks like when
 # the two would be identical (`go mod tidy` drops a toolchain line that
-# adds nothing).
+# adds nothing — that is the shape this repo has had since core-tui
+# v0.20.0 raised the `go` directive to meet the toolchain). A real CVE
+# bump is strictly ahead of the `go` directive, so tidy keeps the
+# toolchain line and the first branch takes over again.
+#
+# The `|| true` on each pipeline is load-bearing, not defensive noise:
+# this file runs under `set -euo pipefail`, so a grep that matches
+# nothing fails the pipeline, and a bare `version=$(...)` assignment
+# with a non-zero status aborts the function under errexit — before the
+# fallback below can run. That bug was invisible for as long as the
+# `toolchain` grep always matched. Covered by
+# `verify-go-toolchain --self-test`.
+#
+# Usage: resolve_toolchain [go.mod path]   (defaults to the repo's)
 resolve_toolchain() {
   local gomod version
-  gomod="$(repo_root)/go.mod"
+  gomod="${1:-$(repo_root)/go.mod}"
+  if [[ ! -f "$gomod" ]]; then
+    echo "resolve_toolchain: no such file: ${gomod}" >&2
+    return 1
+  fi
   version=$(grep -oE '^toolchain go[0-9]+\.[0-9]+(\.[0-9]+)?$' "$gomod" \
-            | sed -n '1p' | sed 's/^toolchain go//')
+            | sed -n '1p' | sed 's/^toolchain go//' || true)
   if [[ -z "$version" ]]; then
     version=$(grep -oE '^go [0-9]+\.[0-9]+(\.[0-9]+)?$' "$gomod" \
-              | sed -n '1p' | awk '{print $2}')
+              | sed -n '1p' | awk '{print $2}' || true)
   fi
   if [[ -z "$version" ]]; then
     echo "resolve_toolchain: no toolchain or go directive in ${gomod}" >&2

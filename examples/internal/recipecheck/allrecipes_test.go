@@ -28,11 +28,17 @@ const examplesDir = "../.."
 // map is checked with zero waivers — which is the state every recipe
 // should be able to reach.
 var policies = map[string]recipecheck.Policy{
-	// kube-platform-agent loads BOTH of its skill trees as deliberately
-	// unmodified vendored snapshots of gke-labs/kube-agents content —
-	// the 18 upstream/skills via content_roots, and the six GKE
-	// domain-diagnostic skills under .agents/skills that #617 vendored
-	// for the `cluster` subagent (moving to cluster/skills in #621).
+	// kube-platform-agent loads two skill trees, both deliberately
+	// unmodified snapshots of gke-labs/kube-agents content:
+	//
+	//   - ../upstream/skills/ — the 18 kube-agents skills the parent
+	//     loads via content_roots.
+	//   - ../cluster/skills/  — the six GKE domain-diagnostic skills the
+	//     `cluster` subagent loads from its own content root
+	//     (subagents[0].root, #621). #617 had vendored these into the
+	//     parent's .agents/skills/; that directory no longer exists, and
+	//     between #621 and #766 this tree was scanned by nothing at all.
+	//
 	// "No copied tree to drift" is the recipe's whole thesis, so
 	// rewriting them into propose-only playbooks would defeat it.
 	//
@@ -40,15 +46,26 @@ var policies = map[string]recipecheck.Policy{
 	// be run with a shell, and this recipe disables `bash`. That is the
 	// #644 bug in a second recipe, and it is a design call rather than a
 	// mechanical fix — filed as #674 (accept / enable bash / ship a
-	// translation overlay), blocked behind the held PR #622.
+	// translation overlay).
 	//
-	// Waived, not ignored: Check still produces every finding and the
-	// test logs how many were waived, so the number moves visibly if the
-	// snapshot grows.
+	// Waived, not ignored: Check still produces every finding, the test
+	// logs how many were waived, and WaiveMinFindings puts a floor under
+	// each tree so a waiver cannot quietly become a blindfold. That is the
+	// #766 failure mode itself — ../cluster/skills/ was covered by a glob
+	// while nothing walked it — and a floor is what makes it loud. The
+	// floors are floors, not ratchets: they sit well under the 120 and 68
+	// findings the trees produce today, so a vendoring bump can move the
+	// count without touching this file, but a tree going dark cannot.
 	"kube-platform-agent/.agents": {
-		WaiveFileGlobs: []string{"skills/", "../upstream/skills/"},
-		WaiveReason: "both skill trees are byte-for-byte snapshots of gke-labs/kube-agents content; " +
-			"editing them would defeat the recipe's no-drift guarantee. Resolution tracked in #674.",
+		WaiveFileGlobs: []string{"../upstream/skills/", "../cluster/skills/"},
+		WaiveMinFindings: map[string]int{
+			"../upstream/skills/": 90,
+			"../cluster/skills/":  50,
+		},
+		WaiveReason: "../upstream/skills/ (18 skills, 120 findings, loaded by the parent via content_roots) " +
+			"and ../cluster/skills/ (6 skills, 68 findings, loaded by the `cluster` subagent from its own " +
+			"root) are byte-for-byte snapshots of gke-labs/kube-agents content; editing them would defeat " +
+			"the recipe's no-drift guarantee. Resolution tracked in #674.",
 	},
 }
 

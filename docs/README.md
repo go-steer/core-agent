@@ -45,6 +45,7 @@ research + friction logs, or handover notes.
 - [`session-resume-design.md`](session-resume-design.md) — transparent session resume on daemon restart
 - [`auto-continue-design.md`](auto-continue-design.md) — auto-continuation of restart-interrupted turns, on by default for daemons since #559 (detection from eventlog tails, crash-loop breaker)
 - [`shared-memory-design.md`](shared-memory-design.md) — `Memory` interface + FTS5-over-eventlog in-tree + audit-derived recall + Redis AMS extras adapter
+- [`purser/docs/DESIGN.md`](https://github.com/go-steer/purser/blob/main/docs/DESIGN.md) — **lives in [go-steer/purser](https://github.com/go-steer/purser)**: extracting `pkg/auth` into a shared module so identity comes from SPIFFE SVIDs, standard-CA client certs, and OIDC instead of the static bearer table (proposed)
 
 ### Context, cost + model management
 

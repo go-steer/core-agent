@@ -107,18 +107,23 @@ kubectl config current-context | grep -q "${CLUSTER_NAME}" \
 # 2.9.0-dev.1 images published on GHCR — the tag the example overlays
 # pin. Three images ship from this repo; the watcher ships from
 # go-steer/k8s-lookout as ghcr.io/go-steer/lookout (its ENTRYPOINT is
-# `lookout watch`, a drop-in swap for the retired k8s-event-watcher
-# image). Watcher floor is v0.11.0: earlier releases don't send
+# `lookout watch`).
+#
+# Watcher floor is v0.17.0, and the recipe pins v0.21.0. Two separate
+# floors stack here: v0.11.0 is where the watcher started sending
 # Content-Type on the bodyless POST /sessions, which daemons ≥
-# 2.8.0-dev.1 reject with 415 (#383's CSRF guard).
+# 2.8.0-dev.1 reject with 415 without it (#383's CSRF guard); v0.17.0
+# is where lookout retired the `k8s-event-watcher` transition naming,
+# which is what every Kubernetes object and metric name in this
+# runbook now assumes.
 for img in core-agent core-agent-slim core-agent-tui; do
   crane digest "ghcr.io/go-steer/${img}:2.9.0-dev.1" >/dev/null 2>&1 \
       && echo "✓ ghcr.io/go-steer/${img}:2.9.0-dev.1 exists" \
       || echo "✗ ghcr.io/go-steer/${img}:2.9.0-dev.1 NOT found — check the release-images workflow ran"
 done
-crane digest "ghcr.io/go-steer/lookout:v0.11.0" >/dev/null 2>&1 \
-    && echo "✓ ghcr.io/go-steer/lookout:v0.11.0 exists" \
-    || echo "✗ ghcr.io/go-steer/lookout:v0.11.0 NOT found — check the k8s-lookout release"
+crane digest "ghcr.io/go-steer/lookout:v0.21.0" >/dev/null 2>&1 \
+    && echo "✓ ghcr.io/go-steer/lookout:v0.21.0 exists" \
+    || echo "✗ ghcr.io/go-steer/lookout:v0.21.0 NOT found — check the k8s-lookout release"
 ```
 
 (If `crane` isn't installed, skip this — the deploy will fail loudly if an image is missing.)
@@ -267,7 +272,7 @@ cat > "${DEMO_DIR}/users.json" <<EOF
   "users": [
     { "identity": "sre-oncall@example.com", "token": "${SRE_TOKEN}" },
     { "identity": "bob@example.com",        "token": "${BOB_TOKEN}"  },
-    { "identity": "sa:k8s-event-watcher",   "token": "${WATCHER_TOKEN}" }
+    { "identity": "sa:lookout-watch",       "token": "${WATCHER_TOKEN}" }
   ]
 }
 EOF
@@ -277,7 +282,7 @@ chmod 0600 "${DEMO_DIR}/users.json"
 kubectl -n "${DEMO_NS}" create secret generic core-agent-users \
     --from-file=users.json="${DEMO_DIR}/users.json"
 
-kubectl -n "${DEMO_NS}" create secret generic k8s-event-watcher-token \
+kubectl -n "${DEMO_NS}" create secret generic lookout-watch-token \
     --from-literal=token="${WATCHER_TOKEN}"
 
 # Escalation webhook. config.json declares one alert target, `oncall`,
@@ -330,7 +335,7 @@ Now that the Secrets exist, apply the full recipe overlay. Kustomize creates the
 # Applies everything except the namespace (created in step 1) — SAs,
 # ClusterRole/ClusterRoleBinding, PVC, both ConfigMaps (agents tree +
 # GCP env vars), Service, and both Deployments (core-agent daemon +
-# k8s-event-watcher).
+# lookout-watch).
 kubectl apply -k "${DEMO_OVERLAY_DIR}"
 
 # Sanity-check what actually landed. All expected names must appear
@@ -338,7 +343,7 @@ kubectl apply -k "${DEMO_OVERLAY_DIR}"
 # hang on FailedMount / crash on Vertex init.
 kubectl -n "${DEMO_NS}" get cm core-agent-agents core-agent-gcp-env \
     && echo "✓ ConfigMaps present"
-kubectl -n "${DEMO_NS}" get secret core-agent-users k8s-event-watcher-token \
+kubectl -n "${DEMO_NS}" get secret core-agent-users lookout-watch-token \
     && echo "✓ Secrets present"
 ```
 
@@ -346,7 +351,7 @@ kubectl -n "${DEMO_NS}" get secret core-agent-users k8s-event-watcher-token \
 
 ```bash
 kubectl -n "${DEMO_NS}" rollout status deployment/core-agent --timeout=180s
-kubectl -n "${DEMO_NS}" rollout status deployment/k8s-event-watcher --timeout=180s
+kubectl -n "${DEMO_NS}" rollout status deployment/lookout-watch --timeout=180s
 
 # Sanity check: both pods Running + Ready
 kubectl -n "${DEMO_NS}" get pods
@@ -354,7 +359,7 @@ kubectl -n "${DEMO_NS}" get pods
 # Expected:
 # NAME                                READY   STATUS    RESTARTS   AGE
 # core-agent-<hash>                   1/1     Running   0          Xs
-# k8s-event-watcher-<hash>            1/1     Running   0          Xs
+# lookout-watch-<hash>                1/1     Running   0          Xs
 ```
 
 If ANY pod is not `1/1 Running`, jump to [Troubleshooting](#troubleshooting) before continuing.
@@ -430,10 +435,10 @@ You should see:
 
 If the TUI hangs or errors, check `kubectl -n "${DEMO_NS}" logs deployment/core-agent --tail=50`.
 
-### 4. Verify k8s-event-watcher is watching
+### 4. Verify lookout-watch is watching
 
 ```bash
-kubectl -n "${DEMO_NS}" logs deployment/k8s-event-watcher --tail=20
+kubectl -n "${DEMO_NS}" logs deployment/lookout-watch --tail=20
 # Expect: "starting on cluster \"<name>\" → daemon http://core-agent..."
 # Should NOT show connection errors to the daemon
 ```
@@ -484,7 +489,7 @@ Total wall-clock: ~15 min. Each scene has a duration, setup commands, execution 
 **Terminal layout**: three panes visible to audience.
 - Pane A: TUI attached as `sre-oncall@example.com` (SRE_TOKEN)
 - Pane B: kubectl scratch pane
-- Pane C: `kubectl -n "${DEMO_NS}" logs deployment/k8s-event-watcher -f` (live watcher log)
+- Pane C: `kubectl -n "${DEMO_NS}" logs deployment/lookout-watch -f` (live watcher log)
 
 ```bash
 # Pane B — verify starting state
@@ -492,7 +497,7 @@ kubectl -n "${DEMO_NS}" get pods
 kubectl get ns
 ```
 
-**Say**: "This is a live GKE cluster. Two pods in the `agent-triage` namespace: `core-agent` is the LLM-driven agent daemon; `k8s-event-watcher` is the sidecar (k8s-lookout's `lookout watch`) that turns Kubernetes Events into agent injects. My TUI is attached over port-forward with an SRE oncall bearer token. Session list is empty — nothing's wrong yet."
+**Say**: "This is a live GKE cluster. Two pods in the `agent-triage` namespace: `core-agent` is the LLM-driven agent daemon; `lookout-watch` is the sidecar (k8s-lookout's `lookout watch`) that turns Kubernetes Events into agent injects. My TUI is attached over port-forward with an SRE oncall bearer token. Session list is empty — nothing's wrong yet."
 
 ```bash
 # Pane A — show TUI session list (empty)
@@ -528,8 +533,8 @@ kubectl -n "${TARGET_NS}" set image deployment/demo-webapp \
 kubectl -n "${TARGET_NS}" get events --field-selector reason=Failed --sort-by='.lastTimestamp' | tail -3
 
 # Watcher counters (namespace of the DAEMON, not the target workload)
-kubectl -n "${DEMO_NS}" port-forward deployment/k8s-event-watcher 9090:9090 &
-curl -s http://localhost:9090/metrics | grep -E "k8s_event_watcher_events_(seen|injected)_total"
+kubectl -n "${DEMO_NS}" port-forward deployment/lookout-watch 9090:9090 &
+curl -s http://localhost:9090/metrics | grep -E "lookout_events_(seen|injected)_total"
 ```
 
 ### Scene 3 — Agent auto-triages (4-5 min)
@@ -807,7 +812,7 @@ gcloud projects get-iam-policy "${PROJECT_ID}" \
 # Expect: roles/aiplatform.user
 ```
 
-### `k8s-event-watcher` logs "connection refused" to daemon
+### `lookout-watch` logs "connection refused" to daemon
 
 Daemon isn't up yet OR its Service isn't routing. Check:
 
@@ -838,7 +843,7 @@ If they differ, the Secret was created with old tokens. Rerun setup step 3.
 ### Agent doesn't fire on the injected failure
 
 Two possibilities:
-1. **Sidecar didn't see the event**. The watcher is silent on successful inject (fixed by [#212](https://github.com/go-steer/core-agent/issues/212)), so check the metrics endpoint instead: `kubectl -n "${DEMO_NS}" port-forward deployment/k8s-event-watcher 9090:9090 & sleep 2 && curl -s http://localhost:9090/metrics | grep -E "watcher_(events_(seen|injected|deduped)|inject_errors)_total"`. If `seen` incremented but neither `injected` nor `deduped` did, the event was filtered out by the reason allow-list. If `inject_errors` incremented, the daemon POST failed (check the watcher log for the error line). If nothing incremented, the k8s event never landed — check `kubectl -n "${TARGET_NS}" get events` directly.
+1. **Sidecar didn't see the event**. The watcher is silent on successful inject (fixed by [#212](https://github.com/go-steer/core-agent/issues/212)), so check the metrics endpoint instead: `kubectl -n "${DEMO_NS}" port-forward deployment/lookout-watch 9090:9090 & sleep 2 && curl -s http://localhost:9090/metrics | grep -E "lookout_(events_(seen|injected|deduped)|inject_errors)_total"`. If `seen` incremented but neither `injected` nor `deduped` did, the event was filtered out by the reason allow-list. If `inject_errors` incremented, the daemon POST failed (check the watcher log for the error line). If nothing incremented, the k8s event never landed — check `kubectl -n "${TARGET_NS}" get events` directly.
 2. **Sidecar saw + injected but daemon rejected**. Check daemon logs: `kubectl -n "${DEMO_NS}" logs deployment/core-agent --tail=100 | grep -i inject`.
 
 If neither log shows the event, the failure hasn't emitted the expected `reason`. Check what reason kubelet actually used:
@@ -892,4 +897,4 @@ Constraints for the agent:
 - **When triggering the failure scenarios (Scenes 2 + 5), pause between the trigger and the verification** to give the agent time to react. `sleep 30` after the trigger; then check the TUI's session picker via `curl -s -H "Authorization: Bearer ${SRE_TOKEN}" http://127.0.0.1:7777/sessions | jq`.
 - **If the demo agent (running in-cluster) fails to auto-triage, that's not a runbook failure** — it's the demo failing. The runbook's job is to set up the conditions; the daemon's job is to react. Log both cases distinctly.
 
-This runbook tracks the tag the example overlays pin (`2.9.0-dev.1` today) and is stable across patch releases in that line. Version bumps that change the recipe or the triage skill shape may require updates — check `git log examples/gke-troubleshoot-agent/DEMO.md` before executing against a newer core-agent tag. If you repin the overlays, repin the preflight blocks above with them; prose pins are outside the reach of the `TestOverlayPinsSatisfyRecipeConfig` gate.
+This runbook tracks the tag the example overlays pin (`2.9.0-dev.1` today) and is stable across patch releases in that line. Version bumps that change the recipe or the triage skill shape may require updates — check `git log examples/gke-troubleshoot-agent/DEMO.md` before executing against a newer core-agent tag. If you repin the overlays, repin the preflight blocks above with them: the **daemon** tag in this prose is outside the reach of the `TestOverlayPinsSatisfyRecipeConfig` gate. The **watcher** tag is not — `TestWatcherTagInDocsIsCurrent` holds every `ghcr.io/go-steer/lookout:<tag>` in this file, including the `crane digest` preflight, to the tag the recipe deploys.

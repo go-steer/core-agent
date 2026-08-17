@@ -54,8 +54,11 @@ spec:
         runAsUser: 65532
       containers:
         - name: watcher
-          # ENTRYPOINT is `lookout watch`. This recipe tracks the current
-          # lookout release, v0.18.0. Naming came from v0.17.0, which
+          # ENTRYPOINT is `lookout watch`. This recipe is pinned to
+          # lookout v0.18.0 and DELIBERATELY DOES NOT TRACK LATEST — it
+          # is a frozen portability case study (#704), so the skew
+          # against examples/gke-troubleshoot-agent (which does track
+          # latest) is intentional, not drift. Naming came from v0.17.0, which
           # retired the k8s-event-watcher transition naming
           # (lookout#205/#206) — every resource here is named
           # `lookout-watch` to match. Capability floors that still

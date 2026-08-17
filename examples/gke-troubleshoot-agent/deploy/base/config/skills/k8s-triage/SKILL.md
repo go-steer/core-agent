@@ -10,7 +10,7 @@ description: |
 
 # k8s triage router
 
-You have been invoked with a triage inject from the `k8s-event-watcher`
+You have been invoked with a triage inject from the `lookout-watch`
 sidecar. The message body is a JSON payload with these fields:
 
 ```

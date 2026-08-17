@@ -24,7 +24,7 @@
 #     "no exporter" (config.json default: "none") to OTLP. Load-bearing
 #     off-GKE; harmless-redundant on GKE (CR also injects it).
 #
-#   - OTEL_SERVICE_NAME — set to "core-agent" and "k8s-event-watcher"
+#   - OTEL_SERVICE_NAME — set to "core-agent" and "lookout-watch"
 #     respectively. GKE Managed OTel's Instrumentation CR explicitly
 #     does NOT inject this (verified against
 #     https://docs.cloud.google.com/kubernetes-engine/docs/concepts/managed-otel-gke#environment_variables),
@@ -49,4 +49,4 @@ patches:
   - path: watcher-env.yaml
     target:
       kind: Deployment
-      name: k8s-event-watcher
+      name: lookout-watch

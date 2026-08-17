@@ -39,7 +39,7 @@ resources:
   - 50-deployment-daemon.yaml
   - 51-deployment-watcher.yaml
   - 60-service.yaml
-  # Secrets (core-agent-users, k8s-event-watcher-token) are NOT in the
+  # Secrets (core-agent-users, lookout-watch-token) are NOT in the
   # kustomization — they're created out-of-band per the instructions
   # in 20-secrets-placeholder.md.
 

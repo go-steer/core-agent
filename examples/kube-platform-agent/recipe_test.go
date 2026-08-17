@@ -1061,12 +1061,21 @@ func TestDeployWatcherCapacityAndNetworkPolicy(t *testing.T) {
 // TestDeployWatcherImageFloor pins the lookout image at v0.18.0 (#618,
 // #621) across every place it is declared — the base Deployment and both
 // overlays — so a bump in one spot can't silently leave another behind.
-// v0.18.0 is the current release; the naming this recipe uses came from
-// v0.17.0, which retired the k8s-event-watcher transition naming
-// (lookout#205/#206), which is why every resource here is named
-// lookout-watch. v0.14.0 remains the capability floor — it carries
-// per-resource-Forbidden tolerance (k8s-lookout#192): a narrowed role
-// degrades to a partial bundle instead of hard-failing enrichment.
+// The naming this recipe uses came from v0.17.0, which retired the
+// k8s-event-watcher transition naming (lookout#205/#206), which is why
+// every resource here is named lookout-watch. v0.14.0 remains the
+// capability floor — it carries per-resource-Forbidden tolerance
+// (k8s-lookout#192): a narrowed role degrades to a partial bundle
+// instead of hard-failing enrichment.
+//
+// DELIBERATELY FROZEN — this pin does NOT track lookout's latest.
+// This recipe is a portability case study (#704): its value is that it
+// is a fixed, reproducible port of kube-agents content onto core-agent,
+// so the version skew against examples/gke-troubleshoot-agent (which
+// DOES track latest) is intentional and is not drift to "fix". Do not
+// bump this tag as part of a routine lookout upgrade; bump it only with
+// a reason of its own, and re-vendor the RBAC (12/14/15/16) against the
+// new release when you do.
 //
 // The vendored RBAC (12/14/15/16) is byte-identical across v0.17.0 and
 // v0.18.0 — that release changed only the watcher binary, so bumping the

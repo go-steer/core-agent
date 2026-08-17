@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Sets the k8s-event-watcher's --cluster-name flag so every inject
+# Sets the lookout-watch Deployment's --cluster-name flag so every inject
 # payload identifies which cluster it came from. Essential when one
 # daemon serves multiple sidecars in different clusters.
 #
@@ -21,7 +21,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: k8s-event-watcher
+  name: lookout-watch
 spec:
   template:
     spec:

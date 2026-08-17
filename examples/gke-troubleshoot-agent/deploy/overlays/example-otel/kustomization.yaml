@@ -58,11 +58,17 @@ components:
 # and an inherited one are both caught.
 #
 # The watcher (ghcr.io/go-steer/lookout, from go-steer/k8s-lookout) is
-# pinned to the same tag as the composed example overlay — v0.11.0+ is
-# required against daemons ≥ 2.8.0-dev.1 (Content-Type on the bodyless
-# POST /sessions; #383).
+# pinned to the same tag as the composed example overlay. Two floors
+# stack: v0.11.0+ is required against daemons ≥ 2.8.0-dev.1
+# (Content-Type on the bodyless POST /sessions; #383), and v0.17.0+ is
+# required by the base manifests' `lookout-watch` resource names, which
+# that release introduced when it retired the `k8s-event-watcher`
+# transition naming. v0.21.0 also fixes OTLP export building no
+# exporter at all when no endpoint env var is set — directly relevant
+# to this overlay, which relies on the Instrumentation CR to inject
+# OTEL_EXPORTER_OTLP_ENDPOINT.
 images:
   - name: ghcr.io/go-steer/core-agent
     newTag: "2.9.0-dev.1"
   - name: ghcr.io/go-steer/lookout
-    newTag: "v0.11.0"
+    newTag: "v0.21.0"

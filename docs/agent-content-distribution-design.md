@@ -316,7 +316,8 @@ Path resolution, all satisfied by the single whole-tree mount:
 ### Watcher (event-driven path)
 
 Reused verbatim from gke-troubleshoot, config swapped: the **lookout** watcher
-(`ghcr.io/go-steer/lookout:v0.11.0`, `51-deployment-watcher.yaml`) runs as a
+(`ghcr.io/go-steer/lookout`, `51-deployment-watcher.yaml` — that manifest is the
+pin of record, since the two recipes now track different lookout releases) runs as a
 separate Deployment with its own SA + ClusterRole + ClusterRoleBinding, POSTs
 matched K8s Events to the daemon Service `:7777` with a `WATCHER_TOKEN` Secret.
 Nothing about the watcher depends on how the *daemon's* content is delivered, so

@@ -30,8 +30,8 @@ From this overlay directory:
 kubectl create ns agent-triage
 kubectl -n agent-triage create secret generic core-agent-users \
     --from-file=users.json=/path/to/users.json
-kubectl -n agent-triage create secret generic k8s-event-watcher-token \
-    --from-literal=token="$(jq -r '.users[]|select(.identity=="sa:k8s-event-watcher")|.token' /path/to/users.json)"
+kubectl -n agent-triage create secret generic lookout-watch-token \
+    --from-literal=token="$(jq -r '.users[]|select(.identity=="sa:lookout-watch")|.token' /path/to/users.json)"
 
 # 2. Bind GCP IAM roles to the daemon's KSA via WIF for GKE direct binding
 #    (see ../../README.md §"GCP IAM setup")

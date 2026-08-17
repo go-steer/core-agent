@@ -14,8 +14,8 @@
 
 name: Set up Go toolchain
 description: >
-  Install exactly the Go named by go.mod's `toolchain` directive, and
-  verify that is the one the job will actually run.
+  Install exactly the Go that go.mod pins us to, resolved the one
+  correct way, and verify that is the one the job will actually run.
 
 # Why this exists instead of a bare `actions/setup-go`:
 #
@@ -29,10 +29,13 @@ description: >
 # time, but CI is where it should have been caught.
 #
 # Resolution goes through `dev/tools/verify-go-toolchain --print` rather
-# than setup-go's `go-version-file: go.mod`, because go.mod carries two
+# than setup-go's `go-version-file: go.mod`, because go.mod can carry two
 # versions that mean different things and reading the wrong one is
-# precisely the bug: `go 1.26.4` is the language floor, `toolchain
-# go1.26.6` is what we build with. One script owns that distinction.
+# precisely the bug: a `go` directive is the language floor, a
+# `toolchain` directive is what we build with. One script owns that
+# distinction — including the case where there is no `toolchain` line at
+# all, because `go mod tidy` deletes one that would only repeat the `go`
+# directive. See resolve_toolchain in dev/tools/common.sh.
 #
 # The `--running` step is the part that can't be argued with. Whatever
 # the runner had preinstalled, whatever setup-go decided to honor, the

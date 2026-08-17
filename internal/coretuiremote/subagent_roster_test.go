@@ -167,6 +167,56 @@ func TestSubagents_RefreshAdoptsNewRoster(t *testing.T) {
 	}
 }
 
+// TestSubagents_ColdErrorIsNotCachedAsData — the failure mode a naive
+// TTL cache makes WORSE than no cache at all.
+//
+// Attach while the daemon is mid-restart and the very first GET /agents
+// fails. There is nothing to serve, so the sidebar says "no subagents
+// running" — which is not "we don't know yet", it is a false statement
+// about a live system. If the cache treats that failed fetch as a
+// completed fetch, the lie is pinned for the full TTL: the uncached
+// code this replaced was wrong for one poll, and a TTL-only cache would
+// be wrong for five seconds. Recovery must track the cold-retry
+// interval instead.
+func TestSubagents_ColdErrorIsNotCachedAsData(t *testing.T) {
+	t.Parallel()
+	rs := startRosterServer(t)
+	rs.setAgents([]attach.AgentInfo{{Name: "watcher", Status: "running"}})
+	rs.setFail(true)
+	a := newRosterAdapter(t, rs)
+
+	if got := a.Subagents(); len(got) != 0 {
+		t.Fatalf("cold error: got %+v, want no rows (nothing known yet)", got)
+	}
+	// A failed fetch must not be recorded as good data, or the full TTL
+	// applies to it.
+	a.subagents.mu.Lock()
+	haveGood := a.subagents.haveGood
+	a.subagents.mu.Unlock()
+	if haveGood {
+		t.Fatal("a failed cold fetch was recorded as a good roster")
+	}
+
+	// Daemon recovers. Budget is comfortably under subagentsCacheTTL:
+	// passing at ~subagentsCacheTTL is the regression, not a pass.
+	rs.setFail(false)
+	const budget = 2 * time.Second
+	if budget >= subagentsCacheTTL {
+		t.Fatalf("test budget %v must stay under the %v TTL to be meaningful",
+			budget, subagentsCacheTTL)
+	}
+	start := time.Now()
+	for time.Since(start) < budget {
+		if got := a.Subagents(); len(got) == 1 && got[0].Name == "watcher" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("roster still empty %v after the daemon recovered; "+
+		"the cold-path error is being served as data until the %v TTL lapses",
+		budget, subagentsCacheTTL)
+}
+
 // waitForRefreshDone blocks until the in-flight background refresh
 // clears its guard, so the assertion after it isn't racing the fetch.
 func waitForRefreshDone(t *testing.T, a *Adapter) {

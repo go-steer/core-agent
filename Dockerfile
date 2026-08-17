@@ -9,9 +9,12 @@
 #                 ~5MB smaller; omits the embedded bubble-tea TUI for
 #                 headless-only deployments).
 #
-# The Go toolchain version is passed in from `go.mod`'s `toolchain`
-# directive via GO_VERSION, so the build image automatically tracks the
-# project's Go version without a hardcoded duplicate that can drift.
+# The Go toolchain version is passed in from `go.mod` via GO_VERSION —
+# resolved by dev/tools/common.sh's resolve_toolchain, which prefers the
+# `toolchain` directive and falls back to the `go` directive when tidy
+# has dropped a toolchain line that would only repeat it. So the build
+# image automatically tracks the project's Go version without a
+# hardcoded duplicate that can drift.
 # The ARG default below is only used by a bare `docker build`;
 # dev/ci/presubmits/verify-go-toolchain keeps it in sync with go.mod.
 #

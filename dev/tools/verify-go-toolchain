@@ -15,17 +15,20 @@
 
 # The checks that keep every consumer of "which Go toolchain does this
 # project build with" honest. The answer itself comes from
-# common.sh's resolve_toolchain, which reads go.mod's `toolchain`
-# directive rather than its `go` directive — see the comment there for
-# why the distinction decides whether a shipped binary is vulnerable.
+# common.sh's resolve_toolchain, which prefers go.mod's `toolchain`
+# directive over its `go` directive — see the comment there for why the
+# distinction decides whether a shipped binary is vulnerable, and for
+# why the `go`-directive fallback is the branch we take today.
 #
 # Modes:
 #
 #   verify-go-toolchain              # static: everything agrees with go.mod
+#                                    # (runs --self-test first)
 #   verify-go-toolchain --print      # emit the version (e.g. 1.26.6)
 #   verify-go-toolchain --running    # the go on PATH IS that toolchain
 #   verify-go-toolchain --binary P   # a built binary carries that toolchain,
 #                                    # and its stdlib has no advisories
+#   verify-go-toolchain --self-test  # resolve_toolchain itself, on fixtures
 
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
@@ -52,12 +55,91 @@ usage() {
 Usage: dev/tools/verify-go-toolchain [--print | --running | --binary <path>]
 
   (no flags)        verify go.mod, the Dockerfiles, and the workflows
-                    all agree on the Go toolchain
+                    all agree on the Go toolchain (runs --self-test too)
   --print           print the toolchain version (e.g. 1.26.6)
   --running         verify the go command on PATH reports that toolchain
   --binary <path>   verify a built binary was compiled with that
                     toolchain and carries no stdlib advisories
+  --self-test       exercise resolve_toolchain against fixture go.mod
+                    files, including the `go`-directive fallback
 EOF
+}
+
+# Self-test: resolve_toolchain against fixture go.mod files.
+#
+# The rest of this script trusts resolve_toolchain to answer "which Go do
+# we ship". Nothing checked resolve_toolchain, and its two branches are
+# mutually exclusive, so whichever one the repo's own go.mod does not
+# take has zero coverage — which is exactly how the fallback branch sat
+# broken under `set -euo pipefail` from the day it was written until the
+# day go.mod first needed it (a grep that matches nothing fails the
+# pipeline, and the failing assignment aborted the function under
+# errexit). Fixtures make both branches reachable regardless of what the
+# repo's go.mod happens to look like this week.
+self_test() {
+  local tmp failed=0
+  tmp="$(mktemp -d)"
+  # shellcheck disable=SC2064  # expand $tmp now, not at trap time
+  trap "rm -rf '$tmp'" RETURN
+
+  printf 'module x\n\ngo 1.26.4\n\ntoolchain go1.26.6\n' > "$tmp/both.mod"
+  printf 'module x\n\ngo 1.26.6\n'                        > "$tmp/gonly.mod"
+  printf 'module x\n'                                     > "$tmp/neither.mod"
+
+  local got
+  # The toolchain directive wins when both are present. This is #736's
+  # whole property: the `go` directive is the compatibility floor.
+  got="$(resolve_toolchain "$tmp/both.mod")"
+  if [[ "$got" != "1.26.6" ]]; then
+    echo "self-test: both directives -> got '${got}', want '1.26.6'" >&2
+    failed=1
+  fi
+
+  # The fallback branch, as a plain statement rather than a command
+  # substitution. Every call site today happens to launder errexit away
+  # (`$(...)` subshells, `|| return 1`), which is the only reason the
+  # broken version stayed invisible; `resolve_toolchain > file` is the
+  # form dev/README.md advertises and the form that used to abort.
+  local rc=0
+  bash -c '
+    set -euo pipefail
+    . "$1"
+    resolve_toolchain "$2" > "$3"
+  ' _ "$(dirname "$0")/common.sh" "$tmp/gonly.mod" "$tmp/out" 2>/dev/null || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    echo "self-test: go-directive fallback aborted (exit ${rc})" >&2
+    failed=1
+  elif [[ "$(cat "$tmp/out" 2>/dev/null || true)" != "1.26.6" ]]; then
+    echo "self-test: go-directive fallback -> got '$(cat "$tmp/out" 2>/dev/null || true)', want '1.26.6'" >&2
+    failed=1
+  fi
+
+  # Same fallback under `shopt -s inherit_errexit`, which propagates
+  # errexit into command substitutions and so re-exposes the bug at
+  # every call site that currently launders it.
+  got="$(bash -c '
+    set -euo pipefail
+    shopt -s inherit_errexit
+    . "$1"
+    resolve_toolchain "$2"
+  ' _ "$(dirname "$0")/common.sh" "$tmp/gonly.mod" 2>/dev/null || true)"
+  if [[ "$got" != "1.26.6" ]]; then
+    echo "self-test: fallback under inherit_errexit -> got '${got}', want '1.26.6'" >&2
+    failed=1
+  fi
+
+  # Neither directive is a hard error, not a silent empty string: an
+  # empty version would sail through as GOTOOLCHAIN=go and compare
+  # unequal to every real version downstream.
+  if resolve_toolchain "$tmp/neither.mod" >/dev/null 2>&1; then
+    echo "self-test: go.mod with no directives should have failed" >&2
+    failed=1
+  fi
+
+  if [[ "$failed" -ne 0 ]]; then
+    return 1
+  fi
+  echo "verify-go-toolchain: OK (resolve_toolchain self-test)"
 }
 
 # Static check: every place that names a Go version agrees with go.mod.
@@ -96,9 +178,10 @@ verify-go-toolchain: ${GO_ACTION} no longer runs
 \`dev/tools/${missing}\`.
 
 That action is what makes "CI builds what we ship" checkable rather
-than assumed: --print resolves the version from the \`toolchain\`
-directive (not the \`go\` compatibility floor, which is how #736
-happened), and --running confirms the job got what it asked for.
+than assumed: --print resolves the version through resolve_toolchain,
+which prefers the \`toolchain\` directive over the \`go\` compatibility
+floor (reading the floor is how #736 happened), and --running confirms
+the job got what it asked for.
 EOF
       failed=1
     fi
@@ -198,9 +281,10 @@ verify-go-toolchain: the go command on PATH is not the pinned toolchain.
   GOTOOLCHAIN:       ${GOTOOLCHAIN:-<unset>}
 
 Anything this job reports about the standard library would be about a
-stdlib we do not ship. If ${actual} is what we should be shipping, bump
-the toolchain directive in go.mod (and let the Dockerfile check tell you
-what else follows).
+stdlib we do not ship. If ${actual} is what we should be shipping, set
+\`toolchain go${actual}\` in go.mod — adding the line if it isn't there,
+which it won't be while it would only repeat the \`go\` directive — and
+let the Dockerfile check tell you what else follows.
 EOF
     return 1
   fi
@@ -266,8 +350,11 @@ verify-go-toolchain: go${expected} ships stdlib advisories:
 
 $(echo "$stdlib_findings" | sed 's|^|  https://pkg.go.dev/vuln/|')
 
-Bump the toolchain directive in go.mod to the current patch release and
-re-run. Source-mode govulncheck (dev/tools/verify-vuln) scans with the
+Set \`toolchain go<patch>\` in go.mod to the current patch release and
+re-run — add the line if go.mod has none, which is the tidy'd shape
+whenever the toolchain would only repeat the \`go\` directive. A real
+patch bump is ahead of that floor, so \`go mod tidy\` keeps it.
+Source-mode govulncheck (dev/tools/verify-vuln) scans with the
 toolchain on PATH, which common.sh and the go-toolchain composite action
 now pin to this same version — so the two checks agree, and neither one
 is reporting about a stdlib nobody ships.
@@ -282,13 +369,19 @@ main() {
   local mode=static binary=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --print)   mode=print; shift ;;
-      --running) mode=running; shift ;;
-      --binary)  mode=binary; binary="${2:-}"; shift 2 ;;
+      --print)     mode=print; shift ;;
+      --running)   mode=running; shift ;;
+      --binary)    mode=binary; binary="${2:-}"; shift 2 ;;
+      --self-test) mode=self-test; shift ;;
       -h|--help) usage; exit 0 ;;
       *) echo "Unknown flag: $1" >&2; usage >&2; exit 2 ;;
     esac
   done
+
+  if [[ "$mode" == self-test ]]; then
+    self_test
+    return
+  fi
 
   local expected
   expected=$(resolve_toolchain)
@@ -296,7 +389,7 @@ main() {
   case "$mode" in
     print)   echo "$expected" ;;
     running) verify_running "$expected" ;;
-    static)  verify_static "$expected" ;;
+    static)  self_test && verify_static "$expected" ;;
     binary)
       if [[ -z "$binary" ]]; then
         echo "verify-go-toolchain: --binary needs a path" >&2

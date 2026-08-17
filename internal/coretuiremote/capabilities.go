@@ -44,6 +44,15 @@ import (
 //
 // State is "idle" by default; the attach status endpoint doesn't yet
 // distinguish "running" / "deferred" (see pkg/agent's AttachStatus).
+//
+// Known shape defect, tracked in #781 and NOT fixed here: a failed cold
+// fetch bumps lastFetch while leaving cached zero, so the placeholder is
+// served for a full TTL before anything retries. Cosmetic on this
+// surface — the zero Status renders as an obviously-absent "—" and
+// self-heals in 2s — but Subagents() below, which copied this shape,
+// renders its zero value as the affirmative claim "no subagents
+// running", so it carries a haveGood flag and a short cold-retry
+// interval instead. #781 is about lifting that treatment up here.
 func (a *Adapter) Status() coretui.Status {
 	a.status.mu.Lock()
 	switch {
@@ -148,14 +157,35 @@ func (a *Adapter) Tools() []coretui.ToolInfo {
 //     sidebar assert there were no subagents while subagents were
 //     running. Invisible when only /subagents called this; a once-a-
 //     second surface makes it a flicker the operator will see.
+//
+// The roster is the one cached surface here whose content is a live
+// claim rather than a label. A stale Status renders as an obviously
+// absent placeholder ("—" / "(model not set)"); a stale-or-empty roster
+// renders as the affirmative sentence "no subagents running". That
+// asymmetry drives two decisions below: haveGood, which refuses to
+// treat a failed fetch as data, and subagentsColdRetryTTL, which keeps
+// the "I don't know yet" window short. It also bounds what caching can
+// do — a permanently unreachable daemon pins the last good roster
+// indefinitely with no staleness marker in core-tui's sidebar. That is
+// the same bargain Status() and the usage cache already make, and the
+// attach client's own disconnect handling is the surface that tells the
+// operator the link is gone.
 func (a *Adapter) Subagents() []coretui.SubagentInfo {
 	a.subagents.mu.Lock()
+	// Until a fetch has actually succeeded, retry on the short cold
+	// interval: serving "no subagents running" for a full TTL because
+	// one request failed is worse than the uncached code this replaced,
+	// which at least re-asked immediately.
+	ttl := subagentsCacheTTL
+	if !a.subagents.haveGood {
+		ttl = subagentsColdRetryTTL
+	}
 	switch {
 	case a.subagents.lastFetch.IsZero():
 		// Cold cache: fetch once inline (bounded) so the first sidebar
 		// paint shows the real roster rather than "none running".
 		a.fetchSubagentsLocked()
-	case time.Since(a.subagents.lastFetch) >= subagentsCacheTTL && !a.subagents.refreshing:
+	case time.Since(a.subagents.lastFetch) >= ttl && !a.subagents.refreshing:
 		a.subagents.refreshing = true
 		go a.refreshSubagents()
 	}
@@ -166,30 +196,54 @@ func (a *Adapter) Subagents() []coretui.SubagentInfo {
 
 // subagentCache holds the last-known-good subagent roster plus the
 // stale-while-revalidate bookkeeping (see Subagents()).
+//
+// haveGood is deliberately separate from lastFetch: lastFetch answers
+// "when did we last ASK", which is what rate-limits a down daemon, and
+// haveGood answers "is cached real data", which is what decides whether
+// the roster we serve is a fact or a default. Collapsing the two — the
+// shape Status() and the usage cache still use — makes a failed cold
+// fetch indistinguishable from a successful empty one.
 type subagentCache struct {
 	mu         sync.Mutex
 	cached     []coretui.SubagentInfo
+	haveGood   bool
 	lastFetch  time.Time
 	refreshing bool
 }
 
 // fetchSubagentsLocked does the /agents round-trip and updates the
 // cache. The caller must hold a.subagents.mu (cold-cache path only).
+//
+// This is the package's only lock held across a network call, so it is
+// worth saying why it is safe rather than a repeat of the #630 / #69
+// event-loop freeze: nothing here runs on bubbletea's Update/View
+// goroutine. core-tui calls SubagentLister only from hostSnapshot's
+// tea.Cmd, and core-tui's own TestView_NeverCallsHost enforces that no
+// host capability is reachable from View(). Two concurrent cold callers
+// therefore serialize on a background goroutine — one server hit, the
+// second returning as soon as the first completes — and the UI keeps
+// painting throughout. The lock is what makes "one cold fetch, not N"
+// true; dropping it to fetch outside the mutex would trade a bounded
+// background wait for a request stampede.
 func (a *Adapter) fetchSubagentsLocked() {
 	ctx, cancel := context.WithTimeout(context.Background(), cacheRefreshTimeout)
 	defer cancel()
 	infos, err := a.client.Agents(ctx, a.sessionPath)
 	a.subagents.lastFetch = time.Now()
 	if err != nil {
+		// Leave cached/haveGood alone. A failed fetch is not evidence
+		// that no subagents are running; lastFetch still moves so the
+		// cold-retry interval, not this call site, paces the retries.
 		return
 	}
 	a.subagents.cached = subagentsToCoreTui(infos)
+	a.subagents.haveGood = true
 }
 
 // refreshSubagents fetches a fresh roster off the caller's goroutine
 // (stale-while-revalidate warm path). On error the prior roster stays
-// in effect; lastFetch is bumped either way so a down daemon is
-// retried at the TTL rather than on every call.
+// in effect; lastFetch is bumped either way so a down daemon is retried
+// at the applicable interval rather than on every call.
 func (a *Adapter) refreshSubagents() {
 	ctx, cancel := context.WithTimeout(context.Background(), cacheRefreshTimeout)
 	defer cancel()
@@ -202,6 +256,7 @@ func (a *Adapter) refreshSubagents() {
 		return
 	}
 	a.subagents.cached = subagentsToCoreTui(infos)
+	a.subagents.haveGood = true
 }
 
 // subagentsToCoreTui projects an /agents response into core-tui's
@@ -237,7 +292,27 @@ const (
 	// while core-tui's sidebar pulls it once a second — a 2s TTL there
 	// would still be ~30 round-trips a minute for data that is
 	// typically identical every time.
+	//
+	// The TTL is measured from when a fetch COMPLETES, not when it was
+	// issued, so worst-case staleness of a served roster is
+	// subagentsCacheTTL + cacheRefreshTimeout = 15s, not 5s: a refresh
+	// that starts at the TTL boundary and then times out leaves the
+	// previous value in place for the whole 10s it was in flight. That
+	// is the deliberate trade — a stale roster beats a blocked snapshot
+	// cycle — but 5s is the floor, not the ceiling.
 	subagentsCacheTTL = 5 * time.Second
+
+	// subagentsColdRetryTTL is the retry interval used while the cache
+	// holds no successful fetch yet (see Subagents()). It exists because
+	// the alternative shapes are both wrong: retrying inline on every
+	// call re-hammers a down daemon from the snapshot goroutine, and
+	// applying the full subagentsCacheTTL suppresses recovery for 5s
+	// while the sidebar asserts "no subagents running" — a claim that is
+	// false rather than merely stale. Short enough that a daemon coming
+	// back mid-restart is picked up faster than the uncached code this
+	// replaced managed, long enough that a genuinely down daemon sees a
+	// handful of requests a second at worst, off the caller's goroutine.
+	subagentsColdRetryTTL = 250 * time.Millisecond
 
 	// cacheRefreshTimeout bounds a single background cache refresh
 	// (status or usage) so a wedged daemon can't keep the refresh — and

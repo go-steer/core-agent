@@ -29,7 +29,7 @@ Outside a Scion container (no `sciontool` on `PATH`) the sticky-state tool isn't
 
 ```json
 {
-  "model": {"provider": "gemini", "name": "gemini-3.6-flash"},
+  "model": {"provider": "gemini", "name": "gemini-3.7-flash"},
   "hooks": {
     "tool-start":   [{"command": "sciontool hook --dialect=core-agent"}],
     "tool-end":     [{"command": "sciontool hook --dialect=core-agent"}],

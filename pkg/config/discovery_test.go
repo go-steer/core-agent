@@ -177,7 +177,7 @@ func TestLoad_MissingFileReturnsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Model.Name != "gemini-3.6-flash" {
+	if cfg.Model.Name != "gemini-3.7-flash" {
 		t.Fatalf("expected default model name, got %q", cfg.Model.Name)
 	}
 }

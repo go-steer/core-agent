@@ -34,7 +34,7 @@ A single 0.85 threshold worked for frontier-tier models (Opus, Pro) but fired fa
 
 | Tier | Default trigger | Examples |
 |---|---|---|
-| `frontier` | `0.85` (unchanged) | `claude-opus-4-*`, `gemini-3.x-pro`, `gemini-3.6-flash` |
+| `frontier` | `0.85` (unchanged) | `claude-opus-4-*`, `gemini-3.x-pro`, `gemini-3.7-flash`, `gemini-3.6-flash` |
 | `mid` | `0.65` | `claude-sonnet-4-*`, `gemini-3.5-flash`, `gemini-2.5-pro` |
 | `small` | `0.35` | `claude-haiku-4-*`, `gemini-3.5-flash-lite`, `gemini-3.1-flash`, `gemini-2.5-flash` |
 
@@ -90,7 +90,7 @@ Five classes ship today:
 
 | Class | Default model tier | Compaction threshold | Ask mode | Tools | Plan-first | When to use |
 |---|---|---|---|---|---|---|
-| `debug` | frontier (e.g. `claude-opus-5`, `gemini-3.6-flash`) | `0.65` | `auto` | built-ins − `bash` | on | Bug hunts, root-cause investigations, multi-file traces |
+| `debug` | frontier (e.g. `claude-opus-5`, `gemini-3.7-flash`) | `0.65` | `auto` | built-ins − `bash` | on | Bug hunts, root-cause investigations, multi-file traces |
 | `implement` | frontier | `0.70` | `auto` | built-ins | off | Feature work, multi-file refactors |
 | `chat` | mid (e.g. `claude-sonnet-5`, `gemini-3.5-flash`) | `0.85` | `auto` | built-ins | off | Q&A, pairing, lightweight design discussion |
 | `research` | mid | `0.65` | `allow` | built-ins − `bash` | on | Read-heavy codebase exploration; `allow` keeps the ask-mode noise out of the way |
@@ -100,13 +100,13 @@ Resolution per-provider:
 
 | Tier | Gemini / Vertex | Anthropic |
 |---|---|---|
-| frontier | `gemini-3.6-flash` | `claude-opus-5` |
+| frontier | `gemini-3.7-flash` | `claude-opus-5` |
 | mid | `gemini-3.5-flash` | `claude-sonnet-5` |
 | small | `gemini-3.5-flash-lite` | `claude-haiku-4-5` |
 
 Explicit per-knob flags always win over the class defaults:
 
-- `--model` (long-form alias of `-m`) pins the model — e.g. `--task=debug --model=gemini-3.6-flash` uses debug-mode defaults but a specific model. A model set in the config file (`model.name`) is likewise respected; `--task` only fills in the tier model when neither `--model` nor a config-file model is set.
+- `--model` (long-form alias of `-m`) pins the model — e.g. `--task=debug --model=gemini-3.7-flash` uses debug-mode defaults but a specific model. A model set in the config file (`model.name`) is likewise respected; `--task` only fills in the tier model when neither `--model` nor a config-file model is set.
 - `--compaction-threshold=<0..1>` pins the post-turn compaction trigger, overriding both the config-file `compaction.threshold` and the class default.
 - `--ask=off|stdin|auto` pins the ask-user mode; left unset, the class default applies.
 - `--enable-tools=<names>` adds back a built-in the class dropped — `--task=debug --enable-tools=bash` gives you the shell under debug defaults.
@@ -148,7 +148,7 @@ The `--task` flag picks a sensible model tier for each class, but explicit `--mo
 core-agent: small-tier parent: gemini-2.5-flash is a small-tier model. Small-tier
   models work well as subtask workers (--agentic-small-model) but loop and stall
   as the parent for long interactive sessions. Consider a frontier or mid-tier
-  model for the parent — e.g. --model gemini-3.6-flash --agentic-small-model
+  model for the parent — e.g. --model gemini-3.7-flash --agentic-small-model
   gemini-2.5-flash. Pass --small-tier-parent=allow to suppress this notice.
 ```
 

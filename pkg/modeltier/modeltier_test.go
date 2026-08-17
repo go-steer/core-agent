@@ -52,9 +52,9 @@ func TestClassify(t *testing.T) {
 		// agentic-strong.
 		{"gemini-3.1-pro-preview-customtools", modeltier.TierFrontier},
 		{"gemini-3.5-pro", modeltier.TierFrontier},
-		{"gemini-3.7-flash", modeltier.TierFrontier},         // newer top of the flash line
+		{"gemini-3.7-flash", modeltier.TierFrontier},         // taskclass frontier default
 		{"gemini-3.7-flash-08-2026", modeltier.TierFrontier}, // dated snapshot
-		{"gemini-3.6-flash", modeltier.TierFrontier},         // taskclass frontier default
+		{"gemini-3.6-flash", modeltier.TierFrontier},         // previous frontier default
 		{"gemini-3.6-flash-06-2026", modeltier.TierFrontier}, // dated snapshot
 		{"gemini-3.5-flash", modeltier.TierMid},
 		{"gemini-3.5-flash-05-2026", modeltier.TierMid}, // dated snapshot

@@ -63,18 +63,20 @@ var pkgCoreElicitor coretui.Elicitor
 // index 0 (newModelPickerDialog returns {idx: 0} — it does NOT
 // preselect the active model), and `enter` both switches and persists
 // via PersistModelChoice. So entry 0 is what a reflexive /model+enter
-// durably lands on. gemini-3.6-flash keeps that slot because it is the
-// DefaultConfig pick (#571); gemini-3.7-flash is newer and cheaper per
-// output token but has not run this project's UATs, so it sits one
-// line down — reachable, not the accidental default.
+// durably lands on, and it therefore tracks the DefaultConfig pick
+// (#571) rather than merely being "the newest thing we know about".
+// gemini-3.7-flash took both slots when it was promoted off the
+// deferral list; gemini-3.6-flash stays pinned one line down because
+// it was the previous default and is the obvious fallback if 3.7
+// misbehaves — reachable without leaving the dialog.
 //
 // A head entry that falls out of the pricing catalog is dropped rather
 // than surfaced unpriced; the list then shifts and
 // TestAvailableModelIDs_HeadOrder fails, so the slot gets re-pinned
 // deliberately rather than silently inherited by whatever sorts first.
 var pickerHead = []string{
-	"gemini-3.6-flash",
 	"gemini-3.7-flash",
+	"gemini-3.6-flash",
 }
 
 // pickerMinMajor is the per-family generation cutoff for the picker.

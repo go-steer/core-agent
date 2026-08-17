@@ -67,7 +67,7 @@ func main() {
     if err != nil {
         log.Fatalf("resolve provider: %v", err)
     }
-    model, err := provider.Model(ctx, "gemini-3.6-flash")
+    model, err := provider.Model(ctx, "gemini-3.7-flash")
     if err != nil {
         log.Fatalf("get model: %v", err)
     }

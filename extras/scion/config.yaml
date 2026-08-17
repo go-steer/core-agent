@@ -59,7 +59,7 @@ model_aliases:
   small: "gemini-3.5-flash-lite"
   medium: "gemini-3.5-flash-lite"
   large: "gemini-3.5-flash"
-  extra-large: "gemini-3.6-flash"
+  extra-large: "gemini-3.7-flash"
 
 mcp:
   global_config_file: .agents/mcp.json

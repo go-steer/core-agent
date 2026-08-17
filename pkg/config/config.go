@@ -305,7 +305,7 @@ type PathScopeAllowEntry struct {
 //
 // Provider: one of "gemini", "vertex", "anthropic". When empty, the resolver
 // auto-detects from the environment (see models.Resolve).
-// Name: a model ID, e.g. "gemini-3.6-flash" or "claude-opus-5".
+// Name: a model ID, e.g. "gemini-3.7-flash" or "claude-opus-5".
 // APIKey: optional inline key for Provider="gemini"; usually unset and
 // read from GOOGLE_API_KEY at runtime.
 // Vertex: required when Provider="vertex"; project + location.
@@ -1185,7 +1185,7 @@ func DefaultConfig() *Config {
 		Version: SchemaVersion,
 		Model: ModelConfig{
 			// Provider intentionally empty — resolver auto-detects from env.
-			// gemini-3.6-flash is the zero-config default (#571): a
+			// gemini-3.7-flash is the zero-config default (#571): a
 			// current-generation, generally-available flash model (the
 			// taskclass `frontier` tier) that combines server-side search
 			// built-ins with function tools out of the box — a better
@@ -1197,7 +1197,15 @@ func DefaultConfig() *Config {
 			// variant (which prefers registered tools over raw bash) when a
 			// consumer wants that behavior; revisit the default toward
 			// gemini-3.6-pro when it ships.
-			Name: "gemini-3.6-flash",
+			//
+			// Tracks the frontier tier deliberately — this and
+			// ModelForTier("gemini", frontier) answer the same question
+			// ("what do we pick when nobody said") and were bumped
+			// together off 3.6-flash. Not pinned by a test: the comment
+			// above contemplates moving this one to a pro-class model
+			// while the tier stays flash-first, and a hard coupling
+			// would block that.
+			Name: "gemini-3.7-flash",
 		},
 		Permissions: PermissionsConfig{
 			Mode: PermissionModeAsk,

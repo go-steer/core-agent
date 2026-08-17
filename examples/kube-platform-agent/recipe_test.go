@@ -31,15 +31,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/go-steer/core-agent/v2/examples/internal/recipecheck"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/instruction"
 	"github.com/go-steer/core-agent/v2/pkg/mcp"
@@ -1122,6 +1125,228 @@ func sliceContains(xs []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// mutatingCLI matches a CLI invocation that a READ-ONLY endpoint cannot
+// serve, whatever its tool list turns out to contain: it writes, executes,
+// or opens an interactive channel. Membership is decided by the verb, not
+// by any claim about which MCP tools exist — that is the whole point, and
+// it is why the README's surviving argument against a translation overlay
+// needs no live dial to stand up.
+//
+// `get-credentials` is in the set because it writes a kubeconfig (and is
+// inert here anyway, with no kubectl to consume it); `curl -i` is the
+// POST probe that runs inside a `kubectl exec`.
+var mutatingCLI = regexp.MustCompile(
+	`kubectl +(-n +[a-z0-9-]+ +)?(apply|create|delete|patch|edit|scale|autoscale|label|annotate|exec|port-forward|cp|drain|cordon|uncordon|rollout|set|taint)\b` +
+		`|gcloud +[a-z-]+ +[a-z-]+ +(update|create|delete|resize|upgrade|get-credentials)\b` +
+		`|gcloud +container +backup-restore +[a-z-]+ +create\b` +
+		`|gcloud +node-pools +create\b` +
+		`|gcloud +iam +service-accounts +add-iam-policy-binding\b` +
+		`|curl +-i`)
+
+// publishedCounts are the recipecheck finding counts the README's
+// "What does not execute" section and the Astro site's examples page state
+// as prose. They are asserted against the live checker below.
+//
+// Why this test exists: #674 resolved the vendored-content executability
+// gap as accept-and-disclose, and a disclosure whose numbers are wrong is
+// worse than none. Nine figures across two documents had no guard but the
+// recipecheck waiver's own WaiveMinFindings, which are deliberately floors
+// (90/68 against 120/68) — they catch a tree going dark, which was #766,
+// and by construction cannot catch a re-sync that moves a count. That is
+// #766's own lesson ("an assertion whose subject can silently disappear is
+// worse than no assertion") reappearing one level up, in prose.
+//
+// Deliberately NOT guarded: CHANGELOG.md. A changelog entry is a
+// point-in-time record that gets frozen into a release section at tag
+// time; pinning it would mean editing published release notes whenever the
+// snapshot is re-synced.
+type findingCounts struct {
+	total, upstream, cluster    int
+	bash, kubectl, gcloud, curl int
+	alert, doubleUnderscore     int
+	cli, mutatingCLI            int
+}
+
+var publishedCounts = findingCounts{
+	total: 188, upstream: 120, cluster: 68,
+	bash: 84, kubectl: 59, gcloud: 39, curl: 1,
+	alert: 3, doubleUnderscore: 2,
+	cli: 99, mutatingCLI: 40,
+}
+
+// TestPublishedFindingCountsMatchTheDocs fails when the recipe's prose
+// disagrees with the checker it cites (#674).
+//
+// Two halves, and both matter: the counts have to be true of the tree
+// today, AND the documents have to actually carry them. A re-sync of
+// upstream/ that moves a number should fail here naming the files to
+// update, rather than leaving three documents quietly asserting a
+// measurement nobody re-took.
+func TestPublishedFindingCountsMatchTheDocs(t *testing.T) {
+	// ".." is the examples/ tree — the same root allrecipes_test.go walks,
+	// so the Recipe.Name and the relative Finding.File paths match the ones
+	// the waiver's globs are written against.
+	recipes, err := recipecheck.Discover("..")
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	var recipe recipecheck.Recipe
+	for _, r := range recipes {
+		if r.Name == "kube-platform-agent/.agents" {
+			recipe = r
+		}
+	}
+	if recipe.Dir == "" {
+		t.Fatalf("recipecheck.Discover did not find kube-platform-agent/.agents in %v", recipes)
+	}
+
+	// An empty Policy waives nothing; waiving only marks a finding, so the
+	// SET is identical to what allrecipes_test.go sees. Deriving the counts
+	// here rather than importing that policy keeps this test independent of
+	// the waiver's own bookkeeping.
+	findings, err := recipecheck.Check(recipe, recipecheck.Policy{})
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+
+	var got findingCounts
+	for _, f := range findings {
+		got.total++
+		switch {
+		case strings.HasPrefix(f.File, "../upstream/"):
+			got.upstream++
+		case strings.HasPrefix(f.File, "../cluster/"):
+			got.cluster++
+		default:
+			t.Errorf("finding in an unexpected tree: %s", f)
+		}
+		switch f.Name {
+		case "bash":
+			got.bash++
+		case "kubectl":
+			got.kubectl++
+		case "gcloud":
+			got.gcloud++
+		case "curl":
+			got.curl++
+		case "alert":
+			got.alert++
+		case "acme__fleet":
+			got.doubleUnderscore++
+		default:
+			t.Errorf("finding names something the README does not account for: %s", f)
+		}
+		if f.Name == "kubectl" || f.Name == "gcloud" || f.Name == "curl" {
+			got.cli++
+			line, readErr := sourceLine(filepath.Join(recipe.Dir, f.File), f.Line)
+			if readErr != nil {
+				t.Fatalf("read %s:%d: %v", f.File, f.Line, readErr)
+			}
+			if mutatingCLI.MatchString(line) {
+				got.mutatingCLI++
+			}
+		}
+	}
+
+	if got != publishedCounts {
+		t.Errorf("recipecheck finding counts moved.\n got: %+v\nwant: %+v\n"+
+			"Update publishedCounts here AND the prose in README.md "+
+			"(\"What does not execute\") and "+
+			"docs/site/src/content/docs/examples/index.md that quotes it.", got, publishedCounts)
+	}
+
+	// The documents must carry the numbers, not merely be consistent with
+	// them in spirit. Phrases are matched against a whitespace-collapsed
+	// copy so that reflowing a paragraph doesn't fail the build; changing a
+	// figure does.
+	//
+	// Occurrences are COUNTED, not merely detected. A figure quoted in n
+	// places has to be right in all n: the README states its totals three
+	// times (the freeze banner up top, the measurement paragraph, and the
+	// line under the table), and presence-matching lets a re-sync fix two
+	// of them, go green, and leave the banner — the paragraph most readers
+	// actually get to — asserting last quarter's number. An added or
+	// dropped mention is a deliberate edit, so failing on it is correct;
+	// the fix is to move `want` here in the same commit.
+	for _, doc := range []struct {
+		path    string
+		phrases []phraseCount
+	}{
+		{
+			path: "README.md",
+			phrases: []phraseCount{
+				{"183 of the 188 findings", 1, "banner (total, shell-gap share)"},
+				{"**188 findings** today — 120 in `upstream/skills/`", 1, "total, upstream"},
+				{"68 in `cluster/skills/`", 1, "cluster"},
+				{"| a ` ```bash ` fence | 84 |", 1, "bash"},
+				{"| `kubectl` | 59 |", 1, "kubectl"},
+				{"| `gcloud` | 39 |", 1, "gcloud"},
+				{"| `curl` | 1 |", 1, "curl"},
+				{"| `alert` | 3 |", 1, "alert"},
+				{"| `acme__fleet` | 2 |", 1, "doubleUnderscore"},
+				{"183 of the 188", 2, "total, shell-gap share (banner + under the table)"},
+				{"40 of those 99 CLI steps", 1, "mutatingCLI, cli"},
+			},
+		},
+		{
+			path: filepath.Join("..", "..", "docs", "site", "src", "content", "docs", "examples", "index.md"),
+			phrases: []phraseCount{
+				{"183 of the 188 findings", 1, "total, shell-gap share"},
+				{"40 of the 99", 1, "mutatingCLI, cli"},
+			},
+		},
+	} {
+		// Relative: `go test` runs a test binary with the package's own
+		// source directory as its working directory, whatever directory
+		// `go test` itself was invoked from. Verified from both the repo
+		// root and this package.
+		body, err := os.ReadFile(doc.path)
+		if err != nil {
+			t.Fatalf("read %s: %v", doc.path, err)
+		}
+		flat := strings.Join(strings.Fields(string(body)), " ")
+		for _, p := range doc.phrases {
+			got := strings.Count(flat, strings.Join(strings.Fields(p.text), " "))
+			switch got {
+			case p.want:
+			case 0:
+				t.Errorf("%s: %q is gone (wanted %d occurrence(s)). Either a "+
+					"published figure went stale, or the sentence was reworded — "+
+					"if the latter, re-pin the new wording here. It states: %s.",
+					doc.path, p.text, p.want, p.pins)
+			default:
+				t.Errorf("%s: %q appears %d time(s), want %d. A mention was added "+
+					"or dropped, or one of several copies of this figure was "+
+					"updated and the others were not — every copy has to move "+
+					"together. It states: %s.",
+					doc.path, p.text, got, p.want, p.pins)
+			}
+		}
+	}
+}
+
+// phraseCount is one published figure, and how many places the document is
+// expected to say it. `pins` names the publishedCounts field(s) the phrase
+// quotes, so a failure says which line of the struct to reconcile.
+type phraseCount struct {
+	text string
+	want int
+	pins string
+}
+
+// sourceLine returns the 1-indexed line of a file.
+func sourceLine(path string, n int) (string, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Split(string(body), "\n")
+	if n < 1 || n > len(lines) {
+		return "", fmt.Errorf("line %d out of range (%d lines)", n, len(lines))
+	}
+	return lines[n-1], nil
 }
 
 // manifestArgValue extracts the value of a container arg like "--owner=foo"

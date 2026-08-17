@@ -269,7 +269,8 @@ COPY upstream/  /upstream/
 Notes:
 
 - Ship the **loader-consumed set**. The carried-but-unexecutable skill
-  `scripts/*.py` (~6 of the 18 skills) can't run under distroless anyway
+  `scripts/` (4 of the 18 platform skills carry `*.py`; one of the six
+  `cluster/` skills carries a `*.sh`) can't run under distroless anyway
   (documented gap in the recipe README); whether to prune them from the content
   image is a size optimization, not a correctness question — default to
   *shipping them* so the image is a faithful mirror of the recipe dir the loader

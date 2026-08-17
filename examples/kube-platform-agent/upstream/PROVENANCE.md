@@ -137,8 +137,9 @@ their capabilities are mapped in `../README.md` (see "Component mapping"):
 Skill-local `scripts/*.py` (in `fleet-audit`, `github-issue-resolver`,
 `kube-agents-observability`, `submit-suggestion`) **are** carried along under
 `upstream/skills/` so each skill's `SKILL.md` and references stay intact and
-discoverable, but they cannot execute in the distroless brain image — see the
-README's script caveat.
+discoverable, but they cannot execute in the distroless brain image — see
+"[What does not execute](../README.md#what-does-not-execute)" in the recipe
+README, which inventories these four alongside `cluster/`'s `audit_cluster.sh`.
 
 ## Re-syncing
 

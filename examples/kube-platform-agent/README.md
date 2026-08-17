@@ -26,6 +26,14 @@
 > a broken one; the rest of the imported content is left as it is, because it is the
 > evidence.
 >
+> The same result shows up one level down, in the *steps*. 183 of the 188 findings
+> the executability checker reports against this recipe are imported skill steps
+> that run `kubectl` or `gcloud` in a ` ```bash ` fence — and this runtime has no
+> shell. That gap is **accepted and documented, not fixed**
+> ([#674](https://github.com/go-steer/core-agent/issues/674)); read
+> [What does not execute](#what-does-not-execute) before you deploy this, because
+> it changes what the agent's output means.
+>
 > **If you are building a GKE platform agent, author the persona for this runtime**
 > — identity → equipment → conduct, not role → lifecycle. Track the native example
 > in [#704](https://github.com/go-steer/core-agent/issues/704).
@@ -75,7 +83,185 @@ documented as out of scope below.
   skills, and read-only MCP surface from a dedicated content root (`cluster/`),
   independent of the platform parent (see below).
 - Plan-first safety: every mutation (including *all* MCP calls) is gated behind
-  `record_plan`, and `bash` is disabled.
+  `record_plan`, and `bash` is disabled — which is also why a large share of the
+  imported skill steps cannot run at all; see
+  [What does not execute](#what-does-not-execute) next.
+
+## What does not execute
+
+**The vendored skill content tells the agent to run `kubectl` and `gcloud`, and
+this recipe has no shell.** That is a real, accepted gap, and it is the first thing
+to understand about running this recipe — it changes what the agent's output means.
+
+The content is Hermes content, and Hermes ran it with a shell. Here,
+`.agents/config.json` sets `"tools": {"disable": ["bash"]}`, and the brain image is
+distroless (`gcr.io/distroless/static-debian12:nonroot`) — so there is no `kubectl`
+and no `gcloud` binary in it either. Steps written as shell commands therefore have
+no execution path, in either tree.
+
+`examples/internal/recipecheck` (the executability gate from
+[#645](https://github.com/go-steer/core-agent/issues/645)) measures this rather
+than leaving it to impression. The recipe produces **188 findings** today — 120 in
+`upstream/skills/` (the 18 platform skills the parent loads) and 68 in
+`cluster/skills/` (the six domain skills the `cluster` subagent loads):
+
+| Named in content | Findings | What it is |
+|---|---:|---|
+| a ` ```bash ` fence | 84 | a code fence whose contents are meant to be run |
+| `kubectl` | 59 | in executable position — the command plus an argv |
+| `gcloud` | 39 | same |
+| `curl` | 1 | same (inside a `kubectl exec … -- curl …` connectivity probe) |
+| `alert` | 3 | the built-in, unregistered here because `alerts.targets` is empty — but all three hits are the English word in prose ("alert the on-call engineer"), which the checker's built-in rule deliberately cannot tell apart |
+| `acme__fleet` | 2 | a double-underscore token, which no MCP name can ever match — both hits are a GitOps workspace *directory* name, not a tool call |
+
+So 183 of the 188 are the shell gap. The other five are the checker's coarse rules
+firing on prose and on a path; they are left in the count rather than surgically
+excluded, because per-finding waivers on a vendored tree rot faster than a
+tree-level one.
+
+### What the runtime actually does with those steps
+
+Nothing automatic — and it is worth being exact about this, because "core-agent
+reads them as proposals" is the comfortable version and it is not quite true.
+
+There is no translation layer. `bash` is simply absent from the tool catalog, and a
+`kubectl` line inside a `SKILL.md` is markdown the model reads, not an instruction
+the runtime intercepts, rewrites, or refuses. What happens next is the model's
+call, steered by two standing rules in the recipe's own overlays (`AGENTS.md`,
+`cluster/AGENTS.md`): *no shell — inspect GKE state through the read-only `gke`
+MCP*, and *the proposal is the deliverable*.
+
+- **When it works** — which is what live UAT showed for the *read* steps — the
+  model treats the step as **intent**: it substitutes the equivalent read-only
+  `gke_*` MCP call, or it hands the command to the operator inside its plan and
+  final report. A `kubectl apply` step becomes a proposed manifest patch, which is
+  the outcome the recipe is built for.
+- **When it does not**, nothing throws. An uncalled tool raises no error, so the
+  failure is a silent skip: the step contributes nothing and the turn continues as
+  if it had. The concerning end of that is a *confabulated* result — the agent
+  reporting the conclusion a verification step was supposed to establish, without
+  having run anything. To be precise about the evidence: that behavior is recorded
+  in [#639](https://github.com/go-steer/core-agent/issues/639), but its observed
+  trigger there was a parent that could not reach its `cluster` subagent, not a
+  skipped `kubectl` step. The inference that a silently skipped shell step invites
+  the same failure is ours; it is not a run we have on tape. The parent overlay's
+  "report only what you verified; propose, don't claim a fix" rule exists because
+  of #639, and it is one instruction competing with a step that arrives at the
+  point of use.
+
+Practical consequence: **treat this recipe's output as proposals to check, not as
+verified state.** Any claim it makes about live cluster state is only as good as
+the `gke_*` reads it cites.
+
+### Why the gap is accepted, and not the two alternatives
+
+[#674](https://github.com/go-steer/core-agent/issues/674) offered three ways out —
+accept it, enable `bash`, or ship a translation overlay. The reasoning for the
+first:
+
+**Enabling `bash` fixes nothing.** It is the obvious move and it is empty: the
+brain image is distroless, so a shell would find no `kubectl` and no `gcloud` to
+run. Every finding above would turn from "the tool is not in the catalog" — a fact
+CI can see today, offline — into "command not found" at turn 12, which CI cannot.
+It would also give up propose-only *by construction*, the property
+[#617](https://github.com/go-steer/core-agent/issues/617) and
+[#621](https://github.com/go-steer/core-agent/issues/621) were built to establish:
+this recipe carries a single read-only `gke` MCP precisely so that mutation is not
+expressible, and a shell is a second, unpoliced surface. Strictly worse on both
+counts.
+
+**A translation overlay cannot translate the steps that matter.** The proposal was
+to leave `upstream/` pristine and add an `AGENTS.d/` layer mapping each
+`gcloud`/`kubectl` step onto the equivalent read-only `gke` MCP call. It is the
+better of the two alternatives, and the reason it still loses is arithmetic rather
+than architecture.
+
+**40 of those 99 CLI steps are mutations, executions, or interactive channels** —
+`kubectl apply` (6), `kubectl exec` (5), `gcloud container clusters update` (11),
+`gcloud container node-pools update`, `gcloud container backup-restore … create`
+(4), `kubectl scale` / `create` / `label` / `annotate` / `autoscale` /
+`port-forward`, `gcloud iam service-accounts add-iam-policy-binding`,
+`gcloud container clusters get-credentials`, and a `curl -X POST` probe run inside
+a `kubectl exec`. **A read-only endpoint cannot serve any of them, by
+construction** — that is a property of the endpoint, not a claim about which tools
+its catalog happens to contain, so it needs no live dial to establish. For every
+one of those 40, the overlay's only honest instruction is "propose this rather than
+run it" — which is what the overlay already says today, in one line, without a
+mapping table. (Count and classification are pinned by
+`TestPublishedFindingCountsMatchTheDocs`; the classifying regex is in
+`recipe_test.go`, so the figure is reproducible rather than asserted.)
+
+That leaves 59 read steps. Some are plainly mappable — `kubectl get pods`,
+`gcloud container clusters describe` — and some plainly are not
+(`gcloud config get-value project` is local CLI state, not an API). Which of the
+rest the read-only `gke` endpoint actually serves is **not decidable here**:
+`recipecheck` cannot enumerate an MCP server's tools without dialing it, and recipe
+tests run with no credentials. So the best case for a translation overlay is a
+table that covers well under half the steps, whose correct entries cannot be
+confirmed offline, for content this recipe has stopped maintaining.
+
+Two arguments that look like they belong here, and don't:
+
+- *"An overlay is structurally too weak to beat a skill step."* Tempting, and this
+  repo does not believe it. The CI-enforced fix for
+  [#703](https://github.com/go-steer/core-agent/issues/703) is itself an overlay
+  precedence claim — `recipe_test.go` fails the build unless `cluster/AGENTS.md`
+  contains "this overlay wins" — and the "when it works" case above is entirely
+  the work of two system-prompt overlays. #703 was not a positional defeat: the
+  losing instruction was restated four times in `cluster/SOUL.md`, which
+  `cluster/AGENTS.md` `@include`s and which therefore sits in the *same* system
+  prompt. That was a self-contradictory prompt, not proof that overlays lose to
+  skills.
+- *"It would not remove a single `recipecheck` finding."* True and irrelevant —
+  it judges a proposal about runtime behavior by a static-content gate. By that
+  standard #622's own #703 fix scored zero too.
+
+The honest summary is narrower than "option 3 is wrong": a translation overlay
+would help with a minority of the steps, could not be verified without a live GKE
+run, and buys less than the one line of overlay prose already in place. On a recipe
+frozen as a case study ([#704](https://github.com/go-steer/core-agent/issues/704)),
+that is not a trade worth making. On a **new** GKE agent it is the wrong question
+entirely — you would author steps that name the tools the runtime has, which is
+exactly what the freeze recommends.
+
+So the gap stays — stated here, where a reader meets it before deploying, rather
+than discovered at turn 12.
+
+### How the gap stays visible
+
+`recipecheck` **waives** these two trees; it does not ignore them. `Check` still
+produces every finding and the test logs the waived count on every run. Two guards
+sit on top of that, and they do different jobs:
+
+- **`WaiveMinFindings` floors** (90 for `upstream/skills/`, 50 for
+  `cluster/skills/`, against today's 120 and 68) catch a *tree going dark*. That is
+  the lesson of [#766](https://github.com/go-steer/core-agent/issues/766): when the
+  six cluster skills moved under a subagent root they fell out of the checker's
+  walk entirely, no glob claimed them, and only the waiver's prose went on
+  describing both trees. Be clear about what a floor does and does not do — it is
+  25% of slack, not a count, so `upstream/` could shed a quarter of its findings
+  and stay green. That is deliberate: the floor exists so a re-vendor can move
+  numbers freely while a disappearance cannot.
+- **`TestPublishedFindingCountsMatchTheDocs`** (in `recipe_test.go`) is the count.
+  It re-derives every figure quoted in this section from the live checker, asserts
+  each against a pinned constant, and then asserts this README and the Astro
+  examples page literally contain them. A re-sync that moves a number fails the
+  build naming the files to update, instead of leaving prose asserting a
+  measurement nobody re-took.
+
+### The five skills with unrunnable `scripts/`
+
+The same gap in a second form, and in both trees. Four `upstream/` skills
+(`fleet-audit`, `github-issue-resolver`, `kube-agents-observability`,
+`submit-suggestion`) carry `scripts/*.py`, and one `cluster/` skill
+(`gke-workload-security`) carries `scripts/audit_cluster.sh`. The loader discovers
+and validates each `SKILL.md` fine, but none of the scripts **can execute** in the
+distroless brain image — no Python, no shell to launch either one with. That is a
+routing decision, not a dead end: read-only fleet/observability work moves to
+`../k8s-lookout` (the dataplane-intelligence service with cluster access), and the
+GitOps write path moves to a GitHub MCP plus the write-path increment.
+`recipe_test.go` asserts skill *discovery*, not script execution; `upstream/PROVENANCE.md`
+records the same inventory from the vendoring side.
 
 ## Layout
 
@@ -130,7 +316,7 @@ Two scoping rules shape this layout:
 | `AGENTS.md` (workspace) | **content root** | loaded from `content_roots` (snapshot or live checkout) |
 | `SOUL.md` | **vendor** | `@include`d by `AGENTS.md` (content roots auto-load only the workspace file) |
 | `governance/` (10 SOPs + `inventory.md`) | **vendor** | on-demand via `AGENTS.d/50-governance.md` |
-| 18 skills | **content root** | loaded from `content_roots`, not copied (script caveat below) |
+| 18 skills | **content root** | loaded from `content_roots`, not copied (they name a shell this runtime lacks — see [What does not execute](#what-does-not-execute)) |
 | MCP `gke`, `developer_knowledge` | **translate** | `.agents/mcp.json` native HTTP |
 | `agents/cluster/` (read-only Cluster Agent profile) | **vendor + subagent** | `cluster` declarative subagent in `.agents/config.json` with `"root": "../cluster"` — its own persona, six domain skills, and read-only MCP loaded from the sibling `cluster/` content root |
 | MCP `platform_control` (stdio Python) | **drop** | decomposed per-tool ↓ |
@@ -150,24 +336,17 @@ Two scoping rules shape this layout:
   the distroless brain has no `kubectl` / `gcloud`. A future
   Config-Connector-diagnostics MCP (or a `../k8s-lookout` query path) closes this.
 
-### Skill-script caveat
-
-Four skills (`fleet-audit`, `github-issue-resolver`, `kube-agents-observability`,
-`submit-suggestion`) carry `scripts/*.py`. The loader discovers and validates
-their `SKILL.md` fine, but the scripts **cannot execute** in the distroless brain
-image. That is a routing decision, not a dead end: read-only fleet/observability
-work moves to `../k8s-lookout` (the dataplane-intelligence service with cluster
-access), and the GitOps write path moves to a GitHub MCP +
-the write-path increment. The validation test asserts skill *discovery*, not
-script execution.
-
 ### Known gaps off Hermes
 
-Config-Connector / KCC in-container diagnostics and audit-log search (above); the
-plugin hook bus; the kanban delegation board (dropped by design — subagents and
-peers replace it); the script-first cron path (until the scheduled-jobs
-increment); and the byte-compatible `/v1/chat/completions` A2A wire shape (until a
-compat adapter). None block Phase 0.
+The largest one has its own section: the imported skill steps that name `kubectl`
+and `gcloud` under a runtime with no shell, and the four skills whose `scripts/*.py`
+cannot run — see [What does not execute](#what-does-not-execute).
+
+Beyond that: Config-Connector / KCC in-container diagnostics and audit-log search
+(above); the plugin hook bus; the kanban delegation board (dropped by design —
+subagents and peers replace it); the script-first cron path (until the
+scheduled-jobs increment); and the byte-compatible `/v1/chat/completions` A2A wire
+shape (until a compat adapter). None block Phase 0.
 
 ### Live-UAT observations (2026-08)
 
@@ -478,6 +657,16 @@ It runs in CI's `test-unit` presubmit and standalone:
 ```bash
 dev/tools/e2e-recipe-kube-platform-agent          # or:
 go test ./examples/kube-platform-agent/...
+```
+
+A second, cross-recipe gate — `examples/internal/recipecheck` — checks
+*executability* rather than structure: for every recipe it walks the skill content
+and fails on any tool or CLI the content names that the recipe's own config cannot
+produce. This recipe's two vendored trees are waived there, deliberately and
+loudly; see [How the gap stays visible](#how-the-gap-stays-visible).
+
+```bash
+go test ./examples/internal/recipecheck/...
 ```
 
 A live GKE run is manual UAT — bring your own project and clusters.

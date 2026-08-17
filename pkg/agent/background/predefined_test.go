@@ -178,7 +178,7 @@ func TestResolvePredefinedSpec_ModelOverride(t *testing.T) {
 	}
 
 	// A specific model is rejected (D2).
-	if _, err := mgr.resolvePredefinedSpec("cluster", RefOverrides{Model: "gemini-3.5-pro"}); !errors.Is(err, ErrModelNotOverridable) {
+	if _, err := mgr.resolvePredefinedSpec("cluster", RefOverrides{Model: "some-specific-model"}); !errors.Is(err, ErrModelNotOverridable) {
 		t.Errorf("specific model override err = %v, want ErrModelNotOverridable", err)
 	}
 

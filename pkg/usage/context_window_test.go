@@ -29,7 +29,12 @@ func TestContextWindowSizeFor(t *testing.T) {
 	}{
 		// Fallback tier: ids LiteLLM does not publish.
 		{"gemini-3.5-flash-customtools", 1_000_000},
-		{"gemini-3.5-pro", 1_000_000},
+		// Vertex publication name — one of the two shapes the fallback
+		// exists for. Deliberately not a bare catalog id: an id LiteLLM
+		// does publish would land in the generated table at 2^20 the
+		// moment the next regen picks it up, and the case would be
+		// testing the wrong tier.
+		{"publishers/google/models/gemini-3-pro", 1_000_000},
 		// Generated tier: exact 2^20, not the fallback's round number.
 		{"gemini-3.5-flash", 1_048_576},
 		{"gemini-3.7-flash", 1_048_576},      // taskclass frontier default

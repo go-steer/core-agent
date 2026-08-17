@@ -146,7 +146,7 @@ func Classify(modelID string) string {
 	// returns its 0 sentinel).
 	case containsAny(m, "gemini-3.7-flash", "gemini-3.6-flash"):
 		return TierFrontier
-	case containsAny(m, "gemini-3-pro", "gemini-3.1-pro", "gemini-3.5-pro"):
+	case containsAny(m, "gemini-3-pro", "gemini-3.1-pro"):
 		return TierFrontier
 	// gemini-3.5-flash was Google's headline agentic release at I/O
 	// 2026 (May 20, 2026). Beats gemini-3.1-pro on agent + coding

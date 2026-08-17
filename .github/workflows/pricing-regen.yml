@@ -156,6 +156,14 @@ jobs:
       # NB: the PR author is go-steer-bot[bot], which review-gate.yml
       # exempts by name. Renaming the app means updating that
       # allowlist too, or the gate hard-fails on this PR.
+      #
+      # author/committer are set explicitly because the action defaults
+      # author to ${{ github.actor }} — on a schedule event that
+      # resolves to a human, so the abandoned 2026-08-10 regen commit
+      # (660fc40) carried a maintainer's name on a diff they never saw.
+      # Attribute machine commits to the machine. The trailing [bot] and
+      # the numeric id are both load-bearing: that exact form is what
+      # GitHub links back to the app's account.
       - name: Open / update auto-PR
         if: steps.drift.outputs.drift == 'true'
         uses: peter-evans/create-pull-request@v7
@@ -163,6 +171,8 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           branch: ${{ env.BRANCH }}
           base: main
+          author: 'go-steer-bot[bot] <317684643+go-steer-bot[bot]@users.noreply.github.com>'
+          committer: 'go-steer-bot[bot] <317684643+go-steer-bot[bot]@users.noreply.github.com>'
           commit-message: |
             chore(pricing): regenerate builtin.go from LiteLLM (${{ steps.meta.outputs.date }})
 

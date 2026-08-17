@@ -15,6 +15,10 @@
 package recipecheck_test
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/go-steer/core-agent/v2/examples/internal/recipecheck"
@@ -22,6 +26,10 @@ import (
 
 // examplesDir is the examples/ tree, relative to this package.
 const examplesDir = "../.."
+
+// changelogPath is the repo's CHANGELOG.md — the offline oracle for
+// which versions have actually been released. See ReleasedVersions.
+const changelogPath = examplesDir + "/../CHANGELOG.md"
 
 // policies overrides the default Policy for specific config roots, keyed
 // by the Recipe.Name that Discover produces. A recipe absent from this
@@ -135,4 +143,136 @@ func TestEverySkillNamedToolIsReachable(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestOverlayPinsSatisfyRecipeConfig is the deploy-time counterpart
+// (#680). TestEverySkillNamedToolIsReachable asks whether the content
+// is executable against the config; this asks whether the config is
+// executable against the image the manifests actually ship.
+//
+// Both recipes were wrong when this landed, in two different ways a
+// single-rule check would have missed: gke-troubleshoot-agent pinned
+// 2.8.0 under a config rebuilt on v2.9's `alerts` and
+// `tools.wait_and_verify` (#644 one layer down — pkg/config ignores
+// unknown keys, so that daemon boots clean and registers neither tool),
+// and kube-platform-agent pinned "2.9.0", a version this repo has never
+// cut, so the Pod could not even pull.
+//
+// Discovery-driven for the same reason as the test above: a recipe that
+// gains manifests, or moves them, is covered without anyone editing
+// this file.
+func TestOverlayPinsSatisfyRecipeConfig(t *testing.T) {
+	released, err := recipecheck.ReleasedVersions(changelogPath)
+	if err != nil {
+		t.Fatalf("ReleasedVersions(%s): %v", changelogPath, err)
+	}
+	recipes, err := recipecheck.Discover(examplesDir)
+	if err != nil {
+		t.Fatalf("Discover(%s): %v", examplesDir, err)
+	}
+	for _, r := range recipes {
+		t.Run(r.Name, func(t *testing.T) {
+			findings, err := recipecheck.CheckDeployPins(examplesDir, r, released)
+			if err != nil {
+				t.Fatalf("CheckDeployPins: %v", err)
+			}
+			for _, f := range findings {
+				t.Errorf("%s", f)
+			}
+		})
+	}
+}
+
+// TestOverlayPinsSurviveTheGAFold is the regression for the way this
+// check would otherwise have broken itself at the next GA.
+//
+// dev/release/cut-ga-tag.sh folds every pre-release section since the
+// last GA into the new GA entry and deletes those sections. So the
+// moment v2.9.0 is cut, `## [2.9.0-dev.1]` stops existing — and every
+// recipe pinned to 2.9.0-dev.1 (all four overlays today) would start
+// failing TestOverlayPinsSatisfyRecipeConfig with "not a version this
+// repo has released". On the release commit. In the required `test`
+// job. On main. That is not a hypothetical shape: the current CHANGELOG
+// has zero dev sections for 2.8.0, 2.7.0 or any earlier GA, because they
+// were all folded exactly this way.
+//
+// Rather than assert against a hand-written fixture that could drift
+// from what the script does, this runs the script's own fold — the
+// python3 heredoc, lifted out and fed the real CHANGELOG — and then runs
+// the whole gate against the result.
+func TestOverlayPinsSurviveTheGAFold(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		// cut-ga-tag.sh needs python3 too, so a machine without it cannot
+		// cut a release anyway. TestFoldTrailerMatchesReleaseScript still
+		// runs and still catches the trailer wording drifting.
+		t.Skipf("python3 not available: %v", err)
+	}
+	fold := foldScript(t)
+
+	folded := filepath.Join(t.TempDir(), "CHANGELOG.md")
+	original, err := os.ReadFile(changelogPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", changelogPath, err)
+	}
+	if err := os.WriteFile(folded, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(python, "-", folded, "v2.9.0", "2026-09-01")
+	cmd.Stdin = strings.NewReader(fold)
+	if out, runErr := cmd.CombinedOutput(); runErr != nil {
+		t.Fatalf("running cut-ga-tag.sh's fold: %v\n%s", runErr, out)
+	}
+
+	body, err := os.ReadFile(folded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "## [2.9.0-dev.1]") {
+		t.Fatal("the fold left the pre-release section in place; this test is no longer " +
+			"exercising the case it was written for")
+	}
+
+	released, err := recipecheck.ReleasedVersions(folded)
+	if err != nil {
+		t.Fatalf("ReleasedVersions on a folded changelog: %v", err)
+	}
+	recipes, err := recipecheck.Discover(examplesDir)
+	if err != nil {
+		t.Fatalf("Discover(%s): %v", examplesDir, err)
+	}
+	for _, r := range recipes {
+		findings, err := recipecheck.CheckDeployPins(examplesDir, r, released)
+		if err != nil {
+			t.Fatalf("%s: CheckDeployPins: %v", r.Name, err)
+		}
+		for _, f := range findings {
+			t.Errorf("after the v2.9.0 GA fold, %s", f)
+		}
+	}
+}
+
+// foldScript lifts the python3 heredoc out of cut-ga-tag.sh. The
+// surrounding bash is preflight — a pricing-drift check and git tag
+// sequencing — that has nothing to do with the changelog and everything
+// to do with the network and the git history.
+func foldScript(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(examplesDir, "..", "dev", "release", "cut-ga-tag.sh")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	const open = "python3 - \"$CHANGELOG\" \"$TAG\" \"$TODAY\" <<'PY'\n"
+	_, rest, ok := strings.Cut(string(body), open)
+	if !ok {
+		t.Fatalf("%s no longer invokes its fold as %q, so this test cannot run it. "+
+			"Re-point it at however the fold is invoked now — the property under test "+
+			"(a folded changelog must still satisfy the pin gate) has not changed.", path, open)
+	}
+	script, _, ok := strings.Cut(rest, "\nPY\n")
+	if !ok {
+		t.Fatalf("%s: unterminated python heredoc", path)
+	}
+	return script
 }

@@ -1,6 +1,8 @@
-# v2.8.0 demo runbook — propose-only Kubernetes triage on GKE
+# Demo runbook — propose-only Kubernetes triage on GKE
 
-Step-by-step runbook for demonstrating the v2.8.0 k8s triage agent on a real GKE cluster. Structured so a human (or an agent) can execute it top-to-bottom with explicit commands, expected outputs, wait times, and recovery paths.
+Step-by-step runbook for demonstrating the k8s triage agent on a real GKE cluster. Structured so a human (or an agent) can execute it top-to-bottom with explicit commands, expected outputs, wait times, and recovery paths.
+
+**Daemon version**: this runbook targets `2.9.0-dev.1`, the tag the example overlays pin. It is not a preference — the recipe's `config.json` uses `alerts` and `tools.wait_and_verify`, which the 2.8.0 GA daemon silently drops rather than rejects, so Scene 6's `wait_and_verify` convergence check and Scene 7's `alert` page do not exist on an older image ([#680](https://github.com/go-steer/core-agent/issues/680)). The narration in the closing scene still names v2.6/v2.7/v2.8 as releases in the arc; those are history, not the image you are running.
 
 **What the agent does**: diagnose → verify → propose → escalate. It reads cluster state through the read-only GKE MCP endpoint, checks whether the failure clears on its own, writes a proposed remediation into the incident summary, and pages on-call. It never mutates the cluster — enforced by configuration (read-only MCP endpoint, `tools.disable`, `roles/container.viewer`), not by prompt. Scene 3 is where that lands with an audience: the human applies the fix the agent proposed.
 
@@ -102,17 +104,17 @@ kubectl config current-context | grep -q "${CLUSTER_NAME}" \
 ### Container images
 
 ```bash
-# v2.8.0 GA images published on GHCR (should exist since we tagged
-# v2.8.0). Three images ship from this repo; the watcher ships from
+# 2.9.0-dev.1 images published on GHCR — the tag the example overlays
+# pin. Three images ship from this repo; the watcher ships from
 # go-steer/k8s-lookout as ghcr.io/go-steer/lookout (its ENTRYPOINT is
 # `lookout watch`, a drop-in swap for the retired k8s-event-watcher
 # image). Watcher floor is v0.11.0: earlier releases don't send
 # Content-Type on the bodyless POST /sessions, which daemons ≥
 # 2.8.0-dev.1 reject with 415 (#383's CSRF guard).
 for img in core-agent core-agent-slim core-agent-tui; do
-  crane digest "ghcr.io/go-steer/${img}:2.8.0" >/dev/null 2>&1 \
-      && echo "✓ ghcr.io/go-steer/${img}:2.8.0 exists" \
-      || echo "✗ ghcr.io/go-steer/${img}:2.8.0 NOT found — check the release-images workflow ran"
+  crane digest "ghcr.io/go-steer/${img}:2.9.0-dev.1" >/dev/null 2>&1 \
+      && echo "✓ ghcr.io/go-steer/${img}:2.9.0-dev.1 exists" \
+      || echo "✗ ghcr.io/go-steer/${img}:2.9.0-dev.1 NOT found — check the release-images workflow ran"
 done
 crane digest "ghcr.io/go-steer/lookout:v0.11.0" >/dev/null 2>&1 \
     && echo "✓ ghcr.io/go-steer/lookout:v0.11.0 exists" \
@@ -126,20 +128,20 @@ crane digest "ghcr.io/go-steer/lookout:v0.11.0" >/dev/null 2>&1 \
 Three ways to get it — pick one:
 
 ```bash
-# Option 1 (recommended): go install the v2.8.0 GA tag directly.
+# Option 1 (recommended): go install the tag the overlays pin.
 # v2.7.0 was the first go-install-able tag (#327's /v2 module-path
 # rewrite — Go's SIVE rule requires the /v2 suffix once major ≥ 2).
 # Pre-v2.7.0 tags stay uninstallable via `go install`; source
 # builds + container images were never affected.
-go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@v2.8.0
+go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@v2.9.0-dev.1
 
 # Option 2: install from main (latest development; may include
-# post-v2.8.0 changes).
+# post-v2.9.0-dev.1 changes).
 go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@main
 
 # Option 3: pull the published container image and extract the binary
-docker pull ghcr.io/go-steer/core-agent-tui:2.8.0
-CID=$(docker create ghcr.io/go-steer/core-agent-tui:2.8.0)
+docker pull ghcr.io/go-steer/core-agent-tui:2.9.0-dev.1
+CID=$(docker create ghcr.io/go-steer/core-agent-tui:2.9.0-dev.1)
 docker cp "${CID}:/usr/local/bin/binary" "${GOPATH:-$HOME/go}/bin/core-agent-tui"
 docker rm "${CID}"
 chmod +x "${GOPATH:-$HOME/go}/bin/core-agent-tui"
@@ -148,7 +150,7 @@ chmod +x "${GOPATH:-$HOME/go}/bin/core-agent-tui"
 which core-agent-tui \
     && echo "✓ core-agent-tui on PATH" \
     || (echo "✗ TUI not on PATH; ensure ${GOPATH:-$HOME/go}/bin is in \$PATH"; false)
-core-agent-tui --version | grep -q "v2.8\|main-" \
+core-agent-tui --version | grep -q "v2.9\|main-" \
     && echo "✓ TUI version looks right" \
     || echo "warning: version string unexpected (may still work)"
 ```
@@ -890,4 +892,4 @@ Constraints for the agent:
 - **When triggering the failure scenarios (Scenes 2 + 5), pause between the trigger and the verification** to give the agent time to react. `sleep 30` after the trigger; then check the TUI's session picker via `curl -s -H "Authorization: Bearer ${SRE_TOKEN}" http://127.0.0.1:7777/sessions | jq`.
 - **If the demo agent (running in-cluster) fails to auto-triage, that's not a runbook failure** — it's the demo failing. The runbook's job is to set up the conditions; the daemon's job is to react. Log both cases distinctly.
 
-This runbook itself is stable across v2.8.0 patch releases (`v2.8.x`). Version bumps that change the recipe or the triage skill shape may require updates — check `git log examples/gke-troubleshoot-agent/DEMO.md` before executing against a newer core-agent tag.
+This runbook tracks the tag the example overlays pin (`2.9.0-dev.1` today) and is stable across patch releases in that line. Version bumps that change the recipe or the triage skill shape may require updates — check `git log examples/gke-troubleshoot-agent/DEMO.md` before executing against a newer core-agent tag. If you repin the overlays, repin the preflight blocks above with them; prose pins are outside the reach of the `TestOverlayPinsSatisfyRecipeConfig` gate.

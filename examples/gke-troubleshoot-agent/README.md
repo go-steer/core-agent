@@ -123,6 +123,14 @@ Budget exhaustion escalates the same way.
   aiplatform.googleapis.com`).
 - The GKE MCP server accessible from your cluster (usually is by
   default: `mcp.googleapis.com`).
+- **A core-agent daemon image ≥ `2.9.0-dev.1`.** The example overlays
+  pin it; if you repin, do not go below it. `config.json` uses `alerts`
+  and `tools.wait_and_verify`, and an older daemon does **not** reject
+  that config — `pkg/config` ignores unknown keys, so it boots clean,
+  drops both blocks, registers neither the `alert` nor the
+  `wait_and_verify` tool, and then runs a triage skill that tells the
+  model to call them. The failure looks like a confused agent, not a
+  version error ([#680](https://github.com/go-steer/core-agent/issues/680)).
 
 ## Setup
 
@@ -515,6 +523,47 @@ overlay's `configMapGenerator` to include it, add a matching
 `kubectl apply -k`. The router falls through to `_fallback.md` for
 any reason without a specific reference, so you can add coverage
 incrementally.
+
+### When to stop adding files to the ConfigMap
+
+This recipe ships its whole `.agents/` tree — `config.json`,
+`AGENTS.md`, `mcp.json`, and the `k8s-triage` skill with its
+references — as a **single flat ConfigMap**, projected into the daemon
+Pod. That is the right mechanism at this size (~14 small files) and it
+is why the recipe needs no image build and no registry of its own. It
+does not scale, and the two limits bite in a specific order:
+
+1. **Keys can't contain `/`.** A ConfigMap key is a flat name, so every
+   file in the tree needs its own `configMapGenerator` entry *and* a
+   matching `items:` entry in the Deployment's projected volume, with
+   the path re-created by hand. Around a few dozen files this stops
+   being editable — you are maintaining the directory structure twice,
+   in two places, with no check that they agree.
+2. **1 MiB total.** ConfigMaps have a hard ceiling on the sum of all
+   values. You will usually hit limit 1 first, but limit 2 is the one
+   that fails at `kubectl apply` time with no partial success. For
+   scale: `kube-platform-agent`'s upstream content tree is ~692 KiB of
+   loader-consumed content (~1.3 MiB counting the carried scripts) —
+   over the ceiling on its own.
+
+If you are past either limit, switch mechanisms rather than fighting
+this one. The reference implementation is
+[`../kube-platform-agent/`](../kube-platform-agent/), which distributes
+its content as an **OCI image volume**: the tree is packaged as a
+`FROM scratch` image and mounted read-only via `volumes[].image`, so
+there is no size limit, no hand-flattening, and the content is
+versioned and pulled like any other image. That recipe also ships an
+`initcontainer-copy` overlay for clusters whose Kubernetes version
+predates image volumes. The trade-off is real and is why this recipe
+has not switched: you now own a content image — a build, a push, and a
+tag bump on every content change.
+
+[`docs/agent-content-distribution-design.md`](../../docs/agent-content-distribution-design.md)
+covers both, plus the alternatives (gcsfuse CSI, a derived recipe
+image, initContainer git-clone) and when each one is the right answer
+([#611](https://github.com/go-steer/core-agent/issues/611)).
+
+### Watching more failure modes
 
 For failure modes you want the sidecar to WATCH but currently
 doesn't: edit the watcher's `--reason` flag to add the reason to

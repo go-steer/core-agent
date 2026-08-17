@@ -17,16 +17,33 @@
 # in at /etc/core-agent/.agents/. The CMD is set so a bare
 # `gcloud run deploy --source .` works without any --args plumbing.
 #
-# Pinned to the :main rolling tag (latest main commit) until v2.4.0
-# ships. v2.3.1 predates several features this recipe relies on:
+# Pinned to the current GA. This used to read `:main` — the rolling
+# latest-commit tag — under a note to "sweep back to a semver tag once
+# v2.4.0 cuts"; five releases cut and the note stayed, which is the
+# drift #680 is about. A rolling tag also means two builds of this
+# Dockerfile a week apart produce different daemons with no record of
+# which, so it is the wrong default for a recipe people copy.
+#
+# 2.8.0 clears everything this recipe relies on. v2.3.1 did not:
 #   - agent-card endpoint at /.well-known/agent-card.json (cef0d1b)
 #   - X-Attach-Token side-channel header for gateway-fronted auth (#141)
 #     — required so the TUI can use --auth=google-id-token without
 #     fighting Cloud Run for the Authorization header.
-# Sweep back to a semver tag (FROM ghcr.io/go-steer/core-agent:2.4.0)
-# once the release cuts. Multi-arch (amd64 + arm64) and Sigstore-
-# signed from the go-steer/core-agent repo's release workflow.
-FROM ghcr.io/go-steer/core-agent:main
+# This recipe's config uses nothing that needs a v2.9 daemon, so the
+# newest GA is the right floor; the recipes that pin higher do so
+# because their configs force it. Multi-arch (amd64 + arm64) and
+# Sigstore-signed from the go-steer/core-agent repo's release workflow.
+#
+# TestOverlayPinsSatisfyRecipeConfig (examples/internal/recipecheck)
+# reads this FROM, and scripts/deploy-from-prebuilt-image.sh's default
+# IMAGE_REF alongside it: a Dockerfile and a deploy script are deploy
+# artifacts too, and a recipe with no manifests would otherwise have had
+# no pin under check at all. The check enforces that the tag names a
+# release this repo actually cut and that it can be ordered — a floating
+# `:main`, which is what sat here for five releases, fails on the second
+# rule whether or not the config needs a specific daemon. Keep the two
+# defaults in step when bumping.
+FROM ghcr.io/go-steer/core-agent:2.8.0
 
 # Bake the .agents/ bundle into the image. config.json sets the
 # model provider and permissions; AGENTS.md primes the agent's

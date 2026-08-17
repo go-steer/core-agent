@@ -28,7 +28,8 @@
 #
 # Optional env vars (defaults shown):
 #   SERVICE_NAME       — Cloud Run service name (default: core-agent)
-#   IMAGE_TAG          — published core-agent tag (default: 2.3.1)
+#   IMAGE_REF          — full daemon image ref (default: ghcr.io/go-steer/core-agent:2.8.0)
+#   IMAGE_TAG          — published core-agent tag (default: 2.8.0)
 #   AR_REPO            — Artifact Registry repository (default: core-agent)
 #   AGENTS_DIR         — local .agents/ bundle to upload (default: ../.agents)
 #   RUNNER_SA          — service account name (default: core-agent-runner)
@@ -40,19 +41,28 @@ set -euo pipefail
 : "${REGION:?must set REGION (e.g. us-central1)}"
 
 SERVICE_NAME="${SERVICE_NAME:-core-agent}"
-# Default: track the :main rolling tag until v2.4.0 ships. The
-# :2.3.1 tag predates several features this recipe relies on:
+# Default: the current GA. This used to default to the :main
+# rolling tag "until v2.4.0 ships"; five releases shipped and the
+# default stayed, which meant two runs of this script a week apart
+# deployed different daemons with no record of which (#680).
+# The :2.3.1 tag predates several features this recipe relies on:
 #   - agent-card endpoint at /.well-known/agent-card.json (cef0d1b)
 #   - X-Attach-Token side-channel header for gateway-fronted auth
 #     (#141) — required so the operator's TUI can use
 #     --auth=google-id-token without fighting Cloud Run for the
 #     Authorization header.
-# Sweep back to a pinned semver (e.g. 2.4.0) for production
-# deploys once a release cuts including the above. IMAGE_REF
-# takes precedence; IMAGE_TAG is the fallback and is also what
-# gets used as the destination tag in AR.
-IMAGE_REF="${IMAGE_REF:-ghcr.io/go-steer/core-agent:main}"
-IMAGE_TAG="${IMAGE_TAG:-main}"
+# For SBOM/cosign-critical deploys, override with a digest:
+# IMAGE_REF takes precedence; IMAGE_TAG is the fallback and is also
+# what gets used as the destination tag in AR.
+#
+# The IMAGE_REF default below is checked by
+# TestOverlayPinsSatisfyRecipeConfig (examples/internal/recipecheck):
+# it must name a release this repo cut, and it must be orderable — a
+# floating tag fails. An override supplied at run time is by definition
+# invisible to a static check; the default is what the repo ships and
+# what most people who run this script deploy.
+IMAGE_REF="${IMAGE_REF:-ghcr.io/go-steer/core-agent:2.8.0}"
+IMAGE_TAG="${IMAGE_TAG:-2.8.0}"
 AR_REPO="${AR_REPO:-core-agent}"
 AGENTS_DIR="${AGENTS_DIR:-$(cd "$(dirname "$0")/.." && pwd)/.agents}"
 RUNNER_SA="${RUNNER_SA:-core-agent-runner}"

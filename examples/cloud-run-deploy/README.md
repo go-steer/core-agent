@@ -139,7 +139,7 @@ do it manually here.
 - `docker` (Path A only — for the pull/retag/push of the published image)
 - `core-agent-tui` for attaching:
   ```bash
-  go install github.com/go-steer/core-agent/cmd/core-agent-tui@latest
+  go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@latest
   ```
 
 ## Path B: quickstart (`gcloud run deploy --source .`)
@@ -211,7 +211,7 @@ The script is idempotent and shows what it's doing as it goes. It:
 
 1. Enables APIs
 2. Creates the Artifact Registry repo (if missing)
-3. Pulls `ghcr.io/go-steer/core-agent:main` (override via `IMAGE_REF=...` for a pinned digest), retags, pushes to AR
+3. Pulls `ghcr.io/go-steer/core-agent:2.8.0` (override via `IMAGE_REF=...` for a newer tag or a digest), retags, pushes to AR
 4. Creates the runtime service account + grants `roles/aiplatform.user`
 5. Uploads `.agents/config.json` and `.agents/AGENTS.md` to Secret
    Manager as `core-agent-config-json` and `core-agent-agents-md`
@@ -310,14 +310,15 @@ at startup — same env-var-name-indirection pattern as the daemon's
 
 ### TUI binary version
 
-`--auth=google-id-token` and `--auth=google-id-token` shipped in PR #143 (post-v2.3.1). Until
-v2.4.0 cuts, build the TUI binary from main:
+`--auth=google-id-token` shipped in PR #143 (post-v2.3.1) and has been in every
+release since, so a released tag is enough — no main build needed:
 
 ```bash
-go install github.com/go-steer/core-agent/cmd/core-agent-tui@main
+go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@v2.8.0
 ```
 
-Once v2.4.0 ships, the `@latest` pseudo-version works.
+Note the `/v2` in the module path: it became mandatory in v2.7.0 (Go's SIVE rule
+once major ≥ 2), and pre-v2.7.0 tags are not `go install`-able at all.
 
 ### Posture A vs Posture B
 
@@ -448,11 +449,14 @@ If you don't need the in-process TUI (you only attach via remote
 or change `IMAGE_TAG` to a slim variant in Path A's script:
 
 ```dockerfile
-ARG CORE_AGENT_VERSION=2.3.1
+ARG CORE_AGENT_VERSION=2.8.0
 FROM ghcr.io/go-steer/core-agent-slim:${CORE_AGENT_VERSION}
 ```
 
-~5MB smaller; same attach API.
+~5MB smaller; same attach API. The `ARG` default is substituted before
+the #680 pin check reads the `FROM`, so this form is checked exactly
+like a literal tag — put a released semver in the default, not a
+floating tag, and not nothing.
 
 ### Persistent session DB (Cloud Run Volumes)
 
@@ -616,11 +620,11 @@ Verify the image you're running (applies to both paths — Path A
 mirrors the published image bit-for-bit; Path B layers on top of it):
 
 ```bash
-docker pull ghcr.io/go-steer/core-agent:2.3.1
-docker run --rm ghcr.io/go-steer/core-agent:2.3.1 --version
-# expect: core-agent v2.3.1 (commit ..., built ...)
+docker pull ghcr.io/go-steer/core-agent:2.8.0
+docker run --rm ghcr.io/go-steer/core-agent:2.8.0 --version
+# expect: core-agent v2.8.0 (commit ..., built ...)
 
-cosign verify ghcr.io/go-steer/core-agent:2.3.1 \
+cosign verify ghcr.io/go-steer/core-agent:2.8.0 \
   --certificate-identity-regexp '^https://github.com/go-steer/core-agent' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
@@ -630,7 +634,7 @@ deploys:
 
 ```bash
 docker buildx imagetools inspect \
-  ${REGION}-docker.pkg.dev/${PROJECT_ID}/core-agent/core-agent:2.3.1 \
+  ${REGION}-docker.pkg.dev/${PROJECT_ID}/core-agent/core-agent:2.8.0 \
   | grep Digest
 # Use the digest as IMAGE_TAG in the script for fully-pinned deploys.
 ```

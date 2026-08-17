@@ -120,6 +120,19 @@
 // frontmatter for the declared name, since the list keys on names and not
 // paths; until a recipe uses it, over-reporting is the fail-loud
 // direction and a dead file in a content root is worth a finding anyway.
+//
+// # The deploy-time counterpart
+//
+// Everything above asks whether the recipe's content is executable against
+// the tool surface its config produces — on the daemon this repo builds
+// today. minversion.go and imagepin.go ask the other half: whether the
+// image the recipe's manifests actually ship can produce that surface at
+// all (#680). It is the same bug one layer down. pkg/config has no
+// DisallowUnknownFields, so a daemon older than a config feature does not
+// fail on it; it boots clean, drops the block, and hands the model a skill
+// naming tools that were never registered — which is exactly what this
+// package's checks are blind to, because they run against HEAD's registry
+// and not against the pinned tag's. See CheckDeployPins.
 package recipecheck
 
 import (

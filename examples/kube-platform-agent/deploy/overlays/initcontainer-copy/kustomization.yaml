@@ -27,13 +27,19 @@ kind: Kustomization
 resources:
   - ../../base
 
-# Pin images. The content image here must be the BUSYBOX-flavor build
-# (it needs `cp`); a FROM-scratch image has no cp and the initContainer
-# would fail. The default images transformer covers the initContainer's
+# Pin images. The daemon floor is 2.9.0-dev.1, for the reason spelled
+# out in ../example/kustomization.yaml: the recipe's config uses
+# `content_roots` and a rooted subagent, which an older daemon drops
+# silently instead of rejecting (#680). This slot previously read
+# "2.9.0", which was never published.
+#
+# The content image here must be the BUSYBOX-flavor build (it needs
+# `cp`); a FROM-scratch image has no cp and the initContainer would
+# fail. The default images transformer covers the initContainer's
 # `.image`, so no custom fieldSpec is needed for this overlay.
 images:
   - name: ghcr.io/go-steer/core-agent
-    newTag: "2.9.0"
+    newTag: "2.9.0-dev.1"
   - name: ghcr.io/go-steer/lookout
     newTag: "v0.18.0"
   # Immutable tag (or digest), NOT :latest — the initContainer uses

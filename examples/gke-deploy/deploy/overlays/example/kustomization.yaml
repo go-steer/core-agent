@@ -70,19 +70,23 @@ patches:
 #
 # namespace: my-namespace
 
-# Pin a specific image tag (the base currently uses a main-build
-# digest pending the next release tag — see base/50-deployment.yaml
-# for context). Override with a semver tag once one is published, or
-# with a different digest, or with the slim variant. Prefer `digest:`
+# Pin a specific image tag. The base pins the current GA (2.8.0 — see
+# base/50-deployment.yaml for why that is the floor); override here
+# with a newer tag, a digest, or the slim variant. Prefer `digest:`
 # over `newTag:` when pinning to a hash — kustomize uses different
 # fields for the two (and `newTag: "sha256-...sig"` is a common
 # foot-gun: that tag refers to the cosign signature artifact, not the
-# image itself).
+# image itself). If you pin by digest, record the release it came from
+# in a `# core-agent-version: <release>` comment: a digest carries no
+# version, and that comment is how the #680 pin check can still tell
+# whether the image clears this recipe's config floor.
 #
 # images:
 #   - name: ghcr.io/go-steer/core-agent
-#     newTag: "2.4.0"
-#     # or pin by digest:
+#     newTag: "2.8.0"
+#     # or pin by digest — the marker goes on the entry, which is how
+#     # the check tells a live pin from an example like this one:
+#     # core-agent-version: 2.8.0
 #     # digest: "sha256:<hash>"
 #   # To switch to the slim variant (no embedded TUI, ~5MB smaller):
 #   #   newName: ghcr.io/go-steer/core-agent-slim

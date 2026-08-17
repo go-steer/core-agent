@@ -1,0 +1,215 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: lookout-pin-check
+
+# Weekly + on-demand check that the gke-troubleshoot-agent recipe's pin
+# of the upstream watcher image (ghcr.io/go-steer/lookout) is still
+# current. Opens an auto-PR carrying the rewrite plus upstream's release
+# notes when it isn't. Fixed branch name (bot/lookout-pin-check) so
+# re-runs update the existing PR rather than stacking dupes.
+#
+# Motivation: issue #787. Nothing detected when that pin went stale. It
+# sat at v0.11.0 for ten upstream releases, straight through a breaking
+# rename, and what finally caught it was a person reading a manifest.
+# #788 fixed the skew and added the in-tree consistency guards; this is
+# the part that covers the NEXT ten releases.
+#
+# The tool lives in dev/lookout-pin-check/, and everywhere the tag is
+# written down is declared in internal/imagepin/lookout.go. Opting a
+# recipe out takes TWO things, and either one alone is a hard error:
+# name the recipe in Tracked.Frozen in that same file (the exemption),
+# AND attach a `pin-frozen: <reason>` comment to each of its pins (the
+# explanation, where an operator editing the manifest will see it).
+# examples/kube-platform-agent has both (#704).
+#
+# Deliberately NOT merged with the #680 recipe gate in
+# examples/internal/recipecheck. That one asks "can this daemon run
+# this config?", is offline, and runs in test-unit on every PR. This one
+# has to call another repo, so it runs weekly and out of band. They
+# share the pin walker, not the schedule.
+
+on:
+  schedule:
+    # Tuesdays at 06:23 UTC. A different day and hour from
+    # pricing-regen (Mondays 09:07) so two auto-PR jobs never contend
+    # for the same App installation token, and a non-zero minute to stay
+    # out of GHA's minute-0 scheduling spike.
+    - cron: '23 6 * * 2'
+  workflow_dispatch:
+
+# GITHUB_TOKEN is only used to check the repo out and to raise the
+# anonymous rate limit on the upstream releases read. The branch push
+# and the PR both go through the go-steer-bot App token minted below,
+# which carries its own contents+pull-requests write.
+permissions:
+  contents: read
+
+env:
+  BRANCH: bot/lookout-pin-check
+  BODY_FILE: lookout-pin-pr-body.md
+  # The drift check writes its upstream resolution here and the rewrite
+  # replays it. Resolving once is what keeps the two steps talking about
+  # the same release; see the rewrite step.
+  UPSTREAM_FILE: lookout-upstream.json
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/go-toolchain
+
+      # Short-circuit when the pin is current. Most weeks this workflow
+      # exits here.
+      #
+      # --check writes nothing and answers on stdout. Drift is NOT
+      # signalled by exit status: `go run` collapses every non-zero
+      # child status to 1, so an unreachable GitHub API would otherwise
+      # be indistinguishable from a real upstream release. Any non-zero
+      # exit here means the tool broke, and `set -e` fails the step —
+      # which is the correct outcome, because a check that cannot reach
+      # upstream has not established that the pin is current.
+      - name: Detect pin drift
+        id: drift
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          verdict="$(go run ./dev/lookout-pin-check --check \
+            --resolved="${RUNNER_TEMP}/${UPSTREAM_FILE}")"
+          case "$verdict" in
+            drift=true|drift=false) echo "$verdict" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::unexpected --check output: ${verdict}"; exit 1 ;;
+          esac
+
+      # Rewrite mode edits the pins in place, then re-scans the tree it
+      # just wrote and confirms every non-frozen site reads the new tag.
+      # If any single site fails to rewrite cleanly it restores the
+      # originals and exits non-zero: a partial bump — manifests moved,
+      # documents not — is worse than no bump, and it is exactly the
+      # shape of skew this whole issue is about.
+      #
+      # The rewritten tree, not a version string, is what makes this
+      # reviewable: the diff is the change, and it is what puts the kind
+      # e2e (e2e-recipe-gke-troubleshoot.yml, which triggers on
+      # examples/gke-troubleshoot-agent/**) on the resulting PR pulling
+      # the new image for real.
+      #
+      # It replays the resolution the drift step captured rather than
+      # asking upstream a second time. Two live calls minutes apart can
+      # disagree — a release cut between them would write the tree to a
+      # tag the verdict never evaluated — and one PR whose title, diff
+      # and body disagree about which release this is costs more to
+      # untangle than a stale answer ever would. No network here, so no
+      # token either.
+      - name: Rewrite the pins
+        id: bump
+        if: steps.drift.outputs.drift == 'true'
+        run: |
+          set -euo pipefail
+          out="$(go run ./dev/lookout-pin-check \
+            --releases="${RUNNER_TEMP}/${UPSTREAM_FILE}" \
+            --pr-body="${RUNNER_TEMP}/${BODY_FILE}")"
+          case "$out" in
+            tag=v*) echo "$out" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::unexpected rewrite output: ${out}"; exit 1 ;;
+          esac
+
+      # Pre-validate the rewritten tree. If lint or tests fail on it,
+      # fail the workflow rather than open a bad PR.
+      #
+      # This is load-bearing rather than belt-and-braces: test-unit runs
+      # the recipe's own TestWatcherImagePinIsConsistent and
+      # TestWatcherTagInDocsIsCurrent, which hold the manifests, the e2e
+      # harness and five documents to a single tag. A rewrite that
+      # missed one goes red here.
+      - name: Verify the rewrite (lint + unit tests)
+        if: steps.drift.outputs.drift == 'true'
+        run: |
+          bash dev/ci/presubmits/lint-go
+          bash dev/ci/presubmits/test-unit
+
+      # Authenticate as the go-steer-bot GitHub App rather than with
+      # GITHUB_TOKEN. Two independent reasons, both fatal:
+      #
+      #   1. The go-steer org forbids GITHUB_TOKEN from creating pull
+      #      requests, and a repo can't override an org-level denial.
+      #   2. Pushes made with GITHUB_TOKEN never trigger workflow runs
+      #      (GitHub's loop guard). main requires status checks, so a
+      #      GITHUB_TOKEN-authored PR would sit unmergeable forever with
+      #      every check stuck at "Expected" — and on this PR in
+      #      particular the kind e2e is the whole point.
+      #
+      # client-id, not app-id: the action deprecated app-id in favour of
+      # client-id, and the two are DIFFERENT fields on the app, not one
+      # renamed. Pointing client-id at an App ID fails auth. Keep both
+      # secrets at ORG level — other go-steer repos share this app.
+      #
+      # Deliberately NOT gated on drift. Most weeks there is none, so
+      # gating it would leave the credentials unexercised until the one
+      # run that actually needs them, and a rotated-out private key
+      # would surface on the day there is finally something to ship.
+      # Minting every run makes this a live credential check; the token
+      # expires in ~1h whether or not it gets used.
+      - name: Mint App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.GOSTEER_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.GOSTEER_BOT_PRIVATE_KEY }}
+
+      # peter-evans/create-pull-request handles the branch/push/PR
+      # lifecycle idempotently: if BRANCH already exists as an open PR,
+      # it force-updates the branch and the PR head refreshes.
+      #
+      # NB: the PR author is go-steer-bot[bot], which review-gate.yml
+      # exempts by name. Renaming the app means updating that allowlist
+      # too, or the gate hard-fails on this PR.
+      #
+      # author/committer are set explicitly because the action defaults
+      # author to ${{ github.actor }} — on a schedule event that
+      # resolves to a human, and a machine commit must not carry a
+      # maintainer's name on a diff they never saw. The trailing [bot]
+      # and the numeric id are both load-bearing: that exact form is
+      # what GitHub links back to the app's account.
+      #
+      # The body comes from a FILE the tool wrote, not from a template
+      # here, because it carries upstream's release notes for every
+      # intervening release — the material a reviewer needs and the
+      # thing a two-line template would leave them to go find.
+      - name: Open / update auto-PR
+        if: steps.drift.outputs.drift == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          branch: ${{ env.BRANCH }}
+          base: main
+          author: 'go-steer-bot[bot] <317684643+go-steer-bot[bot]@users.noreply.github.com>'
+          committer: 'go-steer-bot[bot] <317684643+go-steer-bot[bot]@users.noreply.github.com>'
+          commit-message: |
+            chore(examples): bump the lookout watcher pin to ${{ steps.bump.outputs.tag }}
+
+            Automated bump by .github/workflows/lookout-pin-check.yml.
+            Every declaration is listed in internal/imagepin/lookout.go.
+            A recipe opts out by being named in Tracked.Frozen there AND
+            carrying a `pin-frozen:` marker on each of its pins; either
+            one without the other is an error, not an exemption.
+          title: 'chore(examples): bump the lookout watcher pin to ${{ steps.bump.outputs.tag }}'
+          body-path: ${{ runner.temp }}/${{ env.BODY_FILE }}
+          labels: |
+            dependencies
+            automated
+          delete-branch: false

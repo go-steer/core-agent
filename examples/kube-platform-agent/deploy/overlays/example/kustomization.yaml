@@ -57,6 +57,8 @@ configurations:
 images:
   - name: ghcr.io/go-steer/core-agent
     newTag: "2.9.0-dev.1"
+  # pin-frozen: #704 — portability case study, does not track lookout's
+  # latest release. dev/lookout-pin-check leaves this alone.
   - name: ghcr.io/go-steer/lookout
     newTag: "v0.18.0"
   # The content image is built + pushed by you from

@@ -78,6 +78,50 @@ Docs-only PRs (`**/*.md`) are handled by the companion `ci-docs.yml`
 workflow, which emits the same four check names trivially-green so
 branch protection is satisfied without running the full Go pipeline.
 
+## Scheduled automation
+
+Two weekly jobs keep generated or externally-owned values from drifting
+silently. Both follow the same shape, and a third should copy it:
+
+| Workflow | Schedule | Tool | Answers |
+|----------|----------|------|---------|
+| `pricing-regen.yml` | Mondays 09:07 UTC | `dev/regen-builtin-pricing` | have LiteLLM's rates or context windows moved? |
+| `lookout-pin-check.yml` | Tuesdays 06:23 UTC | `dev/lookout-pin-check` | is the recipe's pin of `ghcr.io/go-steer/lookout` still upstream's current release? |
+
+The shared conventions, each of which exists because of a specific
+failure:
+
+- **`--check` reports on stdout, not through the exit code.** Exactly
+  `drift=true` or `drift=false`, and exit 0 either way. A non-zero exit
+  always means the tool broke. Both are invoked via `go run`, which
+  collapses every non-zero child status to 1 — so an exit-code
+  convention would make a network hiccup indistinguishable from real
+  drift, and the job would open a pull request on nothing.
+- **Default mode writes the change.** The auto-PR carries a real diff,
+  so it is reviewable and so path-filtered workflows (the recipe's kind
+  e2e, for one) actually run on it.
+- **Presubmits run on the rewritten tree before the PR opens.** A
+  generator that produces something lint or tests reject should fail
+  the workflow, not open a bad pull request.
+- **The App token is minted unconditionally.** Most weeks there is no
+  drift; gating the mint would leave the credentials unexercised until
+  the one run that needs them.
+
+Run either locally the same way CI does:
+
+```
+go run ./dev/regen-builtin-pricing --check
+go run ./dev/lookout-pin-check --check
+```
+
+`dev/lookout-pin-check` additionally takes `--releases=<file.json>` to
+replay a captured release list with no network at all, which is how its
+own tests and any offline reproduction work, and `--resolved=<file.json>`
+to write out what a live run resolved. The workflow uses the pair to
+resolve upstream exactly once: the `--check` step records its answer and
+the rewrite step replays it, so a release cut between the two steps
+cannot leave the tree written to a tag the drift verdict never saw.
+
 ## License headers
 
 Every source file carries the full Apache 2.0 header at the top,

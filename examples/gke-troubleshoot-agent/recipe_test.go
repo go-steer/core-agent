@@ -39,6 +39,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/go-steer/core-agent/v2/internal/imagepin"
+
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/mcp"
 	"github.com/go-steer/core-agent/v2/pkg/skills"
@@ -529,22 +531,30 @@ func lineAt(text string, idx int) string {
 // Watcher pin + watcher RBAC
 //
 // The two invariants this recipe depends on that nothing else checks.
-// #680's image-pin gate covers neither: `imagepin.go` scopes its rules
-// to the core-agent daemon images, so the lookout tag is outside it.
+// #680's image-pin gate covers neither: recipecheck scopes its rules to
+// the core-agent daemon family, so the lookout tag is outside it.
+//
+// The declaration these tests read — the image name, the documents, the
+// two matchers — is internal/imagepin's [imagepin.Lookout], shared with
+// dev/lookout-pin-check (#787). Two gates, one declaration: the weekly
+// job rewrites exactly the sites this test then holds to a single tag,
+// which is what makes a bump either complete or red.
 // ---------------------------------------------------------------------
 
-// watcherImage is the sentinel this recipe deploys, and wantWatcherTag
-// the release every declaration of it must agree on.
+// wantWatcherTag is the release every declaration of the watcher image
+// must agree on. It is the in-tree oracle, deliberately a plain
+// constant: the whole point is that a human (or the weekly job) has to
+// edit it and take the diff.
 //
 // v0.17.0 is a FLOOR, not a preference: it retired the
 // `k8s-event-watcher` transition naming, so the resource names in
 // deploy/base/, the `sa:lookout-watch` proxy identity, and the e2e's
 // `lookout_*` metric assertion all assume it. Bump this constant and
 // the four sites below together.
-const (
-	watcherImage   = "ghcr.io/go-steer/lookout"
-	wantWatcherTag = "v0.21.0"
-)
+const wantWatcherTag = "v0.21.0"
+
+// watcherImage is the sentinel this recipe deploys.
+var watcherImage = imagepin.Lookout.Family.Names()[0]
 
 // TestWatcherImagePinIsConsistent asserts the four DEPLOY sites that
 // name a lookout release agree: the base Deployment, both overlays'
@@ -580,47 +590,58 @@ func TestWatcherImagePinIsConsistent(t *testing.T) {
 }
 
 // watcherTagDocs are the documents that quote this recipe's lookout
-// release to a reader, relative to this package. A stale one is not
-// merely an out-of-date sentence: DEMO.md's preflight SHELLS OUT
-// (`crane digest ghcr.io/go-steer/lookout:<tag>`), so a missed bump
-// hands an operator a command that verifies a tag the recipe no longer
-// deploys — and the site pages are what a copier reads before they ever
-// open a manifest.
+// release to a reader, rebased from imagepin.Lookout's repo-relative
+// list onto this package. A stale one is not merely an out-of-date
+// sentence: DEMO.md's preflight SHELLS OUT (`crane digest
+// ghcr.io/go-steer/lookout:<tag>`), so a missed bump hands an operator
+// a command that verifies a tag the recipe no longer deploys — and the
+// site pages are what a copier reads before they ever open a manifest.
+//
+// Reading the list from the shared declaration rather than restating it
+// is what keeps this test and the weekly rewriter honest about each
+// other: a document added to one is added to both, and non-vacuity —
+// "this file still states the pin at least once" — is asserted HERE,
+// offline, because the rewriter deliberately skips a site it cannot
+// find rather than failing a weekly job on an editorial change.
 //
 // Precedent for asserting prose against one source of truth is #674's
 // TestPublishedFindingCountsMatchTheDocs. The frozen sibling recipe's
 // TestDeployWatcherImageFloor is docs-blind in the same way this test
 // used to be; that is left alone deliberately (#704 froze the recipe,
-// so its docs cannot go stale), but the two matchers below are the
-// whole mechanism if it ever needs one.
-var watcherTagDocs = []string{
-	"README.md",
-	"DEMO.md",
-	filepath.Join("..", "..", "README.md"),
-	filepath.Join("..", "..", "docs", "site", "src", "content", "docs", "reference", "troubleshooting-agent.md"),
-	filepath.Join("..", "..", "docs", "site", "src", "content", "docs", "examples", "index.md"),
-}
+// so its docs cannot go stale).
+var watcherTagDocs = recipeRelativeDocs()
 
-// The two shapes a doc names the pin in: a full image reference, and
-// the prose "pins/pinned <tag>" (backticked or not). Deliberately NOT
-// matched: "pinning back below `v0.17.0`" and the other floor mentions,
-// which are history and must stay put across a bump.
-var (
-	watcherImageRefRe = regexp.MustCompile(`ghcr\.io/go-steer/lookout:(v[0-9]+\.[0-9]+\.[0-9]+)`)
-	watcherPinProseRe = regexp.MustCompile("pin(?:s|ned) `?(v[0-9]+\\.[0-9]+\\.[0-9]+)`?")
-)
+func recipeRelativeDocs() []string {
+	out := make([]string, 0, len(imagepin.Lookout.Docs))
+	for _, doc := range imagepin.Lookout.Docs {
+		rel := filepath.FromSlash(doc)
+		if after, ok := strings.CutPrefix(doc, "examples/gke-troubleshoot-agent/"); ok {
+			rel = filepath.FromSlash(after)
+		} else {
+			rel = filepath.Join("..", "..", rel)
+		}
+		out = append(out, rel)
+	}
+	return out
+}
 
 // TestWatcherTagInDocsIsCurrent holds every reader-facing statement of
 // the pin to wantWatcherTag. Each doc must state it at least once, so a
 // bump that edits only the manifests fails here, and a doc that quietly
 // drops its pin sentence fails too rather than passing vacuously.
+//
+// The two shapes a doc names the pin in — a full image reference, and
+// the prose "pins/pinned <tag>" — come from the shared declaration.
+// Deliberately NOT matched by either: "pinning back below `v0.17.0`"
+// and the other floor mentions, which are history and must stay put
+// across a bump.
 func TestWatcherTagInDocsIsCurrent(t *testing.T) {
 	for _, path := range watcherTagDocs {
 		t.Run(filepath.ToSlash(path), func(t *testing.T) {
 			body := readRecipeFile(t, path)
 
 			var found int
-			for _, re := range []*regexp.Regexp{watcherImageRefRe, watcherPinProseRe} {
+			for _, re := range []*regexp.Regexp{imagepin.Lookout.ImageRefRe, imagepin.Lookout.ProseRe} {
 				for _, m := range re.FindAllStringSubmatch(body, -1) {
 					found++
 					if m[1] != wantWatcherTag {
@@ -633,6 +654,50 @@ func TestWatcherTagInDocsIsCurrent(t *testing.T) {
 					"quoted %s — restore the statement or drop the file from the list", wantWatcherTag)
 			}
 		})
+	}
+}
+
+// TestLookoutFreezeDeclarationsAgreeWithTheTree runs the shared
+// enumeration over the real repository and asserts it does not error.
+//
+// The only thing that can make it error is the freeze contract
+// disagreeing with the tree: a `pin-frozen:` marker under a recipe
+// that Tracked.Frozen does not name, or a recipe Tracked.Frozen names
+// that carries no usable marker. Both are ordinary consequences of
+// ordinary edits — renaming or deleting a frozen recipe, or tidying a
+// comment block during an unrelated manifest cleanup — and neither is
+// otherwise reachable from any test that runs on a pull request.
+//
+// Without this, the first thing to notice would be the weekly job, and
+// the way it would notice is by failing BEFORE it resolves anything:
+// no drift report, every Tuesday, until somebody investigates a red
+// scheduled run that produced no output. That is the worst available
+// failure mode for a gate, so the contract is checked here instead,
+// offline, on the PR that breaks it. This test needs no network: it
+// reads the declaration and the tree, never upstream.
+func TestLookoutFreezeDeclarationsAgreeWithTheTree(t *testing.T) {
+	t.Parallel()
+	repoRoot := filepath.Join("..", "..")
+	sites, err := imagepin.Lookout.Sites(repoRoot)
+	if err != nil {
+		t.Fatalf("imagepin.Lookout.Sites: %v", err)
+	}
+	// Non-vacuity: an enumeration that found nothing would pass the
+	// assertion above while proving nothing about the contract.
+	if len(sites) == 0 {
+		t.Fatal("enumerated no lookout declarations at all; the walk is not reaching the tree, " +
+			"so the freeze contract above was never exercised")
+	}
+	var frozen int
+	for _, s := range sites {
+		if s.Frozen {
+			frozen++
+		}
+	}
+	if frozen == 0 {
+		t.Error("no declaration is frozen, so the declared/marker agreement this test exists " +
+			"to check went untested — if the last frozen recipe is gone, drop it from " +
+			"imagepin.Lookout.Frozen and delete this assertion")
 	}
 }
 

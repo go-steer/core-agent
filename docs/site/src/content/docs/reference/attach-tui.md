@@ -288,6 +288,12 @@ The strip between the scrollback and the input box renders any operator messages
 | **Ctrl+E** | Open `$EDITOR` with the current input buffer (fallback: `$VISUAL` → `vi`) |
 | **r** (in picker) | Refresh the session list |
 
+### Transcript focus
+
+Same bindings as the in-process TUI — see [Slash reference → Transcript focus](/run/interactive/slash-reference/#transcript-focus) for the full table. **Tab** moves the keyboard out of the composer and into the transcript, `↑`/`↓` move a per-item selection, **Space** folds the selected item, `Shift+←`/`Shift+→` pan a wide diff, and **y** / **c** copy the item / just its code.
+
+Copies go out twice: an OSC 52 escape aimed at your terminal emulator, and a native clipboard write on the machine running the process. In attach mode that second one is the interesting one — `core-agent-tui` runs on your laptop even when the agent is in a pod on the other side of the network, so `pbcopy` / `wl-copy` / `xclip` / `xsel` / `clip.exe` writes the clipboard you will actually paste from. The footer reads `copied N lines` when the host write confirmed and `copied N lines · osc52` when only the escape went out (no clipboard helper on this machine).
+
 ## Read-only mode
 
 When connected to a listener started with `--attach-readonly`, the TUI still works for everything except writes:

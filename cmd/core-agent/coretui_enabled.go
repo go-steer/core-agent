@@ -330,6 +330,21 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 			}
 			return config.PersistThemeChoice(deps.AgentsDir, name)
 		},
+		// ClipboardWriter is the host half of a transcript copy
+		// (`y` / `c`), ADDITIVE to the OSC 52 escape core-tui already
+		// emits — never a replacement. The escape targets the machine
+		// the operator is sitting at; the writer targets the machine
+		// this process runs on, and only the writer can report whether
+		// anything landed, which is what turns the footer's "copied N
+		// lines" from a claim into an observation.
+		//
+		// SystemClipboardWriter resolves a helper (pbcopy / wl-copy /
+		// xclip / xsel / clip.exe) once here and returns nil when the
+		// box has none — a headless server, typically. A nil hook is
+		// indistinguishable from leaving the field unset, so this needs
+		// no build tag and adds no clipboard dependency to our module
+		// graph (it is os/exec underneath).
+		ClipboardWriter: coretui.SystemClipboardWriter(),
 	}
 
 	// Wire the Reloader + PricingController bindings on the

@@ -16,7 +16,9 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
-_No unreleased changes since [2.9.0-dev.1]._
+#### Feature
+
+- TUI: bump `core-tui` v0.18.0 → v0.20.0 and wire `Options.ClipboardWriter` on both the in-process TUI and `core-agent-tui`. **The transcript takes the keyboard**: `tab` moves focus between composer and transcript, `↑`/`↓`/`k`/`j` move a per-item selection, `space` folds the selected item, `shift+←`/`shift+→` pan over content that doesn't wrap, `g`/`G` jump to the first/last item, and `y`/`c` copy the item (or just the code in it). Copies now go to the **host clipboard** as well as over OSC 52 — `SystemClipboardWriter()` resolves `pbcopy` / `wl-copy` / `xclip` / `xsel` / `clip.exe` at startup, which for `core-agent-tui` means the operator's own laptop even when the daemon is elsewhere; the footer drops the `· osc52` qualifier once a host write is confirmed, so "copied N lines" is an observation rather than a claim. **Every remaining host capability call moved off the Bubble Tea event loop** (`SwitchModel`, `Reload`, pricing `Refresh`, `Sessions`, `Subagents`, `SlashCommands`), with bounded contexts where the signature takes one, and the `/model` `/switch` `/theme` pickers now snapshot their list once at open, filter as you type, and open on the row in use. **Untrusted tool output is escaped before it reaches the terminal** — tool args, responses, file content and bash stdout/stderr take one `ansi.Strip` + `\xNN` pass, so a file full of raw escapes can no longer clear the screen or retitle the window. Markdown and syntax highlighting follow the active theme, modals fit a short terminal and scroll, and a resize no longer re-runs Glamour over the whole history. Alongside the bump, `coretuiremote`'s subagent roster is now stale-while-revalidate cached: core-tui folded `SubagentLister` into the once-a-second host snapshot, which turned an operator-initiated read into a standing 1 Hz uncached HTTP poll whose nil-on-error return made the sidebar claim "none running" on any dropped request. ([#778](https://github.com/go-steer/core-agent/issues/778))
 
 ## [2.9.0-dev.1] — 2026-08-16
 

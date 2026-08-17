@@ -94,10 +94,45 @@ Pattern grammar: `<tool>:<glob>` (e.g., `bash:git diff*`, `read_file:internal/**
 | **Ctrl+D** | EOF — quit the TUI |
 | **PgUp / PgDn** | Scroll the scrollback up / down |
 | **Ctrl+E** | Open `$EDITOR` with the current input buffer (fallback: `$VISUAL` → `vi`) |
+| **Ctrl+B** | Toggle the header / sidebar |
+| **Ctrl+G** | Open the model picker (same as `/model`) |
+| **Ctrl+X** | Expand the selected tool call (args + response detail) |
+| **?** | Toggle the keybinding cheat sheet (same as `/keys`) |
+
+### Transcript focus
+
+The transcript takes the keyboard, so you can select, fold, and copy a single item instead of scrolling a wall of text. Press **Tab** to move focus out of the composer; **Enter** or **Esc** hands it back.
+
+| Key | Effect |
+|---|---|
+| **Tab** | Move the keyboard between the composer and the transcript |
+| **↑ / ↓** (or **k** / **j**) | Move the selection one item at a time |
+| **Space** | Fold / unfold the selected item |
+| **Shift+↑ / Shift+↓** | Scroll a line at a time *inside* a long item |
+| **Shift+← / Shift+→** | Pan sideways over a wide table or diff (content that doesn't wrap) |
+| **y** | Copy the selected item to the clipboard |
+| **c** | Copy just the code blocks in the selected item |
+| **g / G** | Jump to the first / last item (**G** resumes following the stream) |
+| **Enter** / **Esc** | Return focus to the composer |
 
 ---
 
 ## Behavior notes
+
+### Where a copy actually lands
+
+`y` and `c` write to two clipboards, because a terminal session has two machines in it and neither one is a fallback for the other:
+
+- An **OSC 52 escape** goes to the terminal emulator you are sitting in front of. This is the one that works over SSH, but many terminals decline it — Terminal.app has never implemented it, iTerm2 has it behind an off-by-default preference, and some web/relay terminals strip it in transit. The protocol has no acknowledgement, so nothing can tell you it was dropped.
+- A **host clipboard write** goes to the machine the process is running on, using whichever helper is installed: `pbcopy` (macOS), `wl-copy` (Wayland), `xclip` / `xsel` (X11), or `clip.exe` (Windows and WSL). This one reports a result.
+
+The footer tells you which succeeded. `copied 24 lines` means the host write confirmed. `copied 24 lines · osc52` means only the escape went out — either the box has no clipboard helper (a headless server, typically) or none is installed. `copied 24 lines · osc52 only (…)` means a helper was found and failed, with the reason.
+
+For `core-agent-tui` in attach mode the host write is the useful one: that process runs on your laptop even when the agent is in a pod elsewhere.
+
+### Untrusted tool output is escaped
+
+Tool arguments, tool responses, file content, and bash stdout/stderr are stripped of ANSI escape sequences and have their remaining control bytes rendered as visible `\xNN` before anything reaches your terminal. A file containing `ESC[2J` shows you the bytes instead of clearing your screen. Tab and newline pass through untouched; SGR color in captured command output is dropped rather than shown as literal escape text.
 
 ### Cancellation semantics
 

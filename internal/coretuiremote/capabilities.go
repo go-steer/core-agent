@@ -129,12 +129,85 @@ func (a *Adapter) Tools() []coretui.ToolInfo {
 	return out
 }
 
-// Subagents satisfies coretui.SubagentLister. Backs /subagents.
+// Subagents satisfies coretui.SubagentLister. Backs /subagents AND —
+// since core-tui v0.20.0 — the sidebar's subagent roster, which
+// core-tui refreshes from hostSnapshot once a second (host_snapshot.go).
+//
+// That promotion from "operator typed /subagents" to "1 Hz, forever" is
+// why this is cached the same stale-while-revalidate way Status() and
+// the usage tracker are. Three things it buys:
+//
+//   - One GET /agents per subagentsCacheTTL instead of one per second
+//     per attached operator.
+//   - A bounded refresh (cacheRefreshTimeout) rather than the client's
+//     30s RPC deadline, so a wedged daemon delays the NEXT snapshot
+//     cycle — which also carries the status header — by 10s, not 30s.
+//   - Last-known-good on a transient error. The uncached version
+//     returned nil, and core-tui reads a nil slice from a wired
+//     SubagentLister as "none running": one dropped request made the
+//     sidebar assert there were no subagents while subagents were
+//     running. Invisible when only /subagents called this; a once-a-
+//     second surface makes it a flicker the operator will see.
 func (a *Adapter) Subagents() []coretui.SubagentInfo {
-	infos, err := a.client.Agents(context.TODO(), a.sessionPath)
-	if err != nil {
-		return nil
+	a.subagents.mu.Lock()
+	switch {
+	case a.subagents.lastFetch.IsZero():
+		// Cold cache: fetch once inline (bounded) so the first sidebar
+		// paint shows the real roster rather than "none running".
+		a.fetchSubagentsLocked()
+	case time.Since(a.subagents.lastFetch) >= subagentsCacheTTL && !a.subagents.refreshing:
+		a.subagents.refreshing = true
+		go a.refreshSubagents()
 	}
+	cached := a.subagents.cached
+	a.subagents.mu.Unlock()
+	return cached
+}
+
+// subagentCache holds the last-known-good subagent roster plus the
+// stale-while-revalidate bookkeeping (see Subagents()).
+type subagentCache struct {
+	mu         sync.Mutex
+	cached     []coretui.SubagentInfo
+	lastFetch  time.Time
+	refreshing bool
+}
+
+// fetchSubagentsLocked does the /agents round-trip and updates the
+// cache. The caller must hold a.subagents.mu (cold-cache path only).
+func (a *Adapter) fetchSubagentsLocked() {
+	ctx, cancel := context.WithTimeout(context.Background(), cacheRefreshTimeout)
+	defer cancel()
+	infos, err := a.client.Agents(ctx, a.sessionPath)
+	a.subagents.lastFetch = time.Now()
+	if err != nil {
+		return
+	}
+	a.subagents.cached = subagentsToCoreTui(infos)
+}
+
+// refreshSubagents fetches a fresh roster off the caller's goroutine
+// (stale-while-revalidate warm path). On error the prior roster stays
+// in effect; lastFetch is bumped either way so a down daemon is
+// retried at the TTL rather than on every call.
+func (a *Adapter) refreshSubagents() {
+	ctx, cancel := context.WithTimeout(context.Background(), cacheRefreshTimeout)
+	defer cancel()
+	infos, err := a.client.Agents(ctx, a.sessionPath)
+	a.subagents.mu.Lock()
+	defer a.subagents.mu.Unlock()
+	a.subagents.refreshing = false
+	a.subagents.lastFetch = time.Now()
+	if err != nil {
+		return
+	}
+	a.subagents.cached = subagentsToCoreTui(infos)
+}
+
+// subagentsToCoreTui projects an /agents response into core-tui's
+// roster shape. Always returns a non-nil slice so an empty roster
+// caches as "none running" rather than re-reading as a cold cache.
+func subagentsToCoreTui(infos []attach.AgentInfo) []coretui.SubagentInfo {
 	out := make([]coretui.SubagentInfo, 0, len(infos))
 	for _, ai := range infos {
 		out = append(out, coretui.SubagentInfo{
@@ -157,6 +230,14 @@ func (a *Adapter) Subagents() []coretui.SubagentInfo {
 const (
 	usageCacheTTL  = 2 * time.Second
 	statusCacheTTL = 2 * time.Second
+
+	// subagentsCacheTTL bounds the subagent-roster cache. Longer than
+	// the status/usage TTLs because the roster changes on a human
+	// timescale (a subagent is spawned, runs for a while, finishes),
+	// while core-tui's sidebar pulls it once a second — a 2s TTL there
+	// would still be ~30 round-trips a minute for data that is
+	// typically identical every time.
+	subagentsCacheTTL = 5 * time.Second
 
 	// cacheRefreshTimeout bounds a single background cache refresh
 	// (status or usage) so a wedged daemon can't keep the refresh — and

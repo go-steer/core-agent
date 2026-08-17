@@ -288,7 +288,7 @@ func TestSpawnTemplate_RejectsNonNarrowingOverrides(t *testing.T) {
 		t.Error("tools override: want error, got nil")
 	}
 	// A specific model is rejected (D2).
-	if _, err := mgr.SpawnTemplate(context.Background(), "", "cluster", RefOverrides{Goal: "g", Model: "gemini-3.5-pro"}, ""); !errors.Is(err, ErrModelNotOverridable) {
+	if _, err := mgr.SpawnTemplate(context.Background(), "", "cluster", RefOverrides{Goal: "g", Model: "some-specific-model"}, ""); !errors.Is(err, ErrModelNotOverridable) {
 		t.Errorf("specific model err = %v, want ErrModelNotOverridable", err)
 	}
 }

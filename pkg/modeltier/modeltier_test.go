@@ -51,7 +51,7 @@ func TestClassify(t *testing.T) {
 		// 3.x flashes remain small-tier — no evidence they're
 		// agentic-strong.
 		{"gemini-3.1-pro-preview-customtools", modeltier.TierFrontier},
-		{"gemini-3.5-pro", modeltier.TierFrontier},
+		{"gemini-3-pro-preview", modeltier.TierFrontier},
 		{"gemini-3.7-flash", modeltier.TierFrontier},         // taskclass frontier default
 		{"gemini-3.7-flash-08-2026", modeltier.TierFrontier}, // dated snapshot
 		{"gemini-3.6-flash", modeltier.TierFrontier},         // previous frontier default
@@ -163,7 +163,7 @@ func TestIsSmall(t *testing.T) {
 		// warning on 3.5-flash can drop that flag once this ships.
 		{"gemini-3.5-flash", false},
 		{"gemini-3.6-flash", false},
-		{"gemini-3.5-pro", false},
+		{"gemini-3-pro-preview", false},
 		{"gemini-2.5-pro", false},
 		{"claude-opus-4-7", false},
 		{"claude-opus-4-8", false},

@@ -8,6 +8,10 @@ The agent does not mutate the cluster, and that is a property of the configurati
 
 Shipped in **v2.6**, re-scoped to propose-only in **v2.9**. Requires v2.4's multi-session substrate + v2.5's session-resume (both on by default in the recipe).
 
+:::caution[Minimum daemon image: `2.9.0-dev.1`]
+The recipe's `config.json` uses `alerts` and `tools.wait_and_verify`, both new in v2.9. An older daemon does **not** reject that config: `pkg/config` ignores unknown keys, so it boots clean, drops both blocks, registers neither the `alert` nor the `wait_and_verify` tool, and then runs a triage skill that instructs the model to call them. There is no version error to read — the symptom is an agent that can never reach RESOLVED and never pages. The example overlays pin the floor, and a repo test ([#680](https://github.com/go-steer/core-agent/issues/680)) fails the build if any overlay drops below it or pins a tag that was never published.
+:::
+
 Full recipe: `examples/gke-troubleshoot-agent/` in the repo. Design doc: `docs/k8s-event-agent-design.md`.
 
 > **Note:** the watcher ships from [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout) as `ghcr.io/go-steer/lookout` (the recipe pins `v0.11.0` — the floor for daemons ≥ 2.8.0-dev.1, whose CSRF guard (#383) requires `Content-Type: application/json` on the watcher's bodyless `POST /sessions`). The image's entrypoint is `lookout watch`, a drop-in swap for the retired `ghcr.io/go-steer/k8s-event-watcher` image — same flags, RBAC, and Deployment shape. k8s-lookout also offers a `-gke` image flavor and a richer `--sources=` capability set beyond what this recipe uses. Every PR touching this recipe (or the daemon's Go source) runs a kind-based CI e2e that builds the daemon from the PR's checkout, deploys it against the pinned watcher image, and asserts the full pipeline: a broken pod's `BackOff` event → lookout's per-incident inject → a completed daemon turn.
@@ -95,6 +99,8 @@ Shipped reference set covers the top 10 real-world failure modes:
 | `_fallback` | Generic playbook for unknown reasons — meta-fixes + conservative escalation |
 
 Custom coverage: drop a new `references/<Reason>.md` into your overlay. Update the ConfigMap generator and the daemon's projected-volume `items:` list. No SKILL.md changes; the router auto-falls-through.
+
+**Know where this mechanism stops.** This recipe ships its whole `.agents/` tree as one flat ConfigMap, which is right at its size (~14 small files) and is why it needs no image build. ConfigMap keys can't contain `/`, so every file costs a generator entry *and* a hand-written `items:` path — unmaintainable past a few dozen files — and the total is capped at **1 MiB**. Past either limit, switch mechanisms rather than fighting this one: [`kube-platform-agent`](https://github.com/go-steer/core-agent/tree/main/examples/kube-platform-agent) is the reference, distributing ~1.3 MiB of content as a read-only **OCI image volume** (`volumes[].image`) with an initContainer-copy overlay for older clusters. The trade is that you then own a content image: a build, a push, and a tag bump per content change. `docs/agent-content-distribution-design.md` covers both and the alternatives ([#611](https://github.com/go-steer/core-agent/issues/611)).
 
 ## Configuration
 

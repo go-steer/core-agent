@@ -40,19 +40,29 @@ resources:
 components:
   - ../../components/otel
 
-# Pin the composed example's daemon image to the v2.8.0 GA — carries
-# the OTEL_TRACES_EXPORTER env override (PR #315, first shipped in
-# v2.7.0-dev.4), the OTel span-duplication and Cloud Trace resource
-# fixes from #333–#340, and v2.8.0's full metrics pipeline + Go
-# runtime instrumentation (#325/#338). The composed example overlay
-# now pins the same 2.8.0 tag; the pin is restated here so this overlay
-# stays correct if the example's moves. The watcher
-# (ghcr.io/go-steer/lookout, from go-steer/k8s-lookout) is pinned to
-# the same tag as the composed example overlay — v0.11.0+ is required
-# against daemons ≥ 2.8.0-dev.1 (Content-Type on the bodyless
+# Pin the composed example's daemon image to 2.9.0-dev.1 — the same
+# floor ../example carries, and for the same reason: the recipe's
+# config.json uses `alerts` and `tools.wait_and_verify`, which the
+# 2.8.0 GA daemon silently drops rather than rejects (see the long
+# note in ../example/kustomization.yaml, and #680). It also carries
+# everything the OTel path needs: the OTEL_TRACES_EXPORTER env
+# override (PR #315, first shipped in v2.7.0-dev.4), the OTel
+# span-duplication and Cloud Trace resource fixes from #333–#340, and
+# v2.8.0's full metrics pipeline + Go runtime instrumentation
+# (#325/#338).
+#
+# The pin is restated here rather than inherited so this overlay stays
+# correct on its own terms if ../example's moves. Both must satisfy the
+# floor; TestOverlayPinsSatisfyRecipeConfig checks each overlay
+# independently and resolves through `resources:`, so a restated pin
+# and an inherited one are both caught.
+#
+# The watcher (ghcr.io/go-steer/lookout, from go-steer/k8s-lookout) is
+# pinned to the same tag as the composed example overlay — v0.11.0+ is
+# required against daemons ≥ 2.8.0-dev.1 (Content-Type on the bodyless
 # POST /sessions; #383).
 images:
   - name: ghcr.io/go-steer/core-agent
-    newTag: "2.8.0"
+    newTag: "2.9.0-dev.1"
   - name: ghcr.io/go-steer/lookout
     newTag: "v0.11.0"

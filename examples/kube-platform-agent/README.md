@@ -525,6 +525,15 @@ for a ConfigMap, so it ships as an **OCI image volume** instead of a flattened
 ConfigMap. See [`docs/agent-content-distribution-design.md`](../../docs/agent-content-distribution-design.md)
 for the full pattern.
 
+**Minimum daemon image: `2.9.0-dev.1`.** `.agents/config.json` uses
+`content_roots` and a `subagents` entry with its own `root` — neither exists
+before v2.9. An older daemon does not reject that config: `pkg/config` ignores
+unknown keys, so it boots with no `cluster` subagent and none of the upstream
+skill content, and the recipe silently stops being the recipe. Both overlays
+pin this floor; `TestOverlayPinsSatisfyRecipeConfig` enforces it, and also that
+the pinned tag names a release that was actually published
+([#680](https://github.com/go-steer/core-agent/issues/680)).
+
 ```
 deploy/
   content.Dockerfile              # FROM-scratch content image (two flavors)

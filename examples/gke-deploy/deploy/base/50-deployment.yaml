@@ -119,19 +119,43 @@ spec:
 
       containers:
         - name: core-agent
-          # Pinned to a main-build digest until the next release tag
-          # ships. The v2.3.1 image predates the agent-card endpoint
-          # (cef0d1b), so the discovery wiring on this Deployment
-          # (a2a-protocol.org/agent-card annotation + agent.description
-          # in config.json) would be no-op against :2.3.1 — the
-          # /.well-known/agent-card.json route wouldn't register and
-          # would 404. This digest is from main HEAD with the endpoint
-          # in place. Sweep this + every other recipe back to a
-          # semver tag (:2.4.0 or whatever ships) once the next
-          # release is cut. Multi-arch (amd64 + arm64) so node-pool
-          # architecture is automatic. Verify with
-          # `cosign verify ghcr.io/go-steer/core-agent@sha256:...`.
-          image: ghcr.io/go-steer/core-agent@sha256:4a0da4d9a36dc6918b851fa48461520b474e4faefdaf16d2135a34bb60c5d7dd
+          # Pinned to the current GA. This slot used to hold a main-build
+          # digest with a note to "sweep back to a semver tag once the
+          # next release is cut" — five releases came and went, and an
+          # untraceable main digest is exactly the drift #680 is about.
+          #
+          # 2.8.0 is the floor that matters here for a concrete reason:
+          # v2.3.1 predates the agent-card endpoint (cef0d1b), so this
+          # Deployment's discovery wiring (the a2a-protocol.org/agent-card
+          # annotation + agent.description in config.json) would be a
+          # no-op against :2.3.1 — /.well-known/agent-card.json wouldn't
+          # register and would 404.
+          #
+          # This recipe's config uses nothing that needs a v2.9 daemon, so
+          # the newest GA is the right default; the gke-troubleshoot and
+          # kube-platform recipes pin higher because their configs force
+          # it. Multi-arch (amd64 + arm64) so node-pool architecture is
+          # automatic.
+          #
+          # Why a tag and not a digest, given that a digest is the
+          # stronger pin: the digest that used to be here was not 2.8.0's
+          # — it was a main build from before v2.4.0, which is why it had
+          # a sweep-back note attached. Replacing it with 2.8.0's digest
+          # means resolving the tag against ghcr.io, which the tree
+          # cannot do for you, and writing down a hash nobody reviewing
+          # the diff can check. A released tag is honest about what it is.
+          # For SBOM/cosign-critical deploys, do the resolution yourself:
+          #
+          #   crane digest ghcr.io/go-steer/core-agent:2.8.0
+          #   cosign verify ghcr.io/go-steer/core-agent@sha256:...
+          #
+          # and when you swap the digest in, keep a
+          # `# core-agent-version: 2.8.0` comment on the line above it.
+          # The #680 pin check reads this `image:` field (the overlay
+          # ships no `images:` transformer entry, so this IS the pin) and
+          # that comment is the only way it can tell which release a
+          # digest resolved from.
+          image: ghcr.io/go-steer/core-agent:2.8.0
           imagePullPolicy: IfNotPresent
 
           args:

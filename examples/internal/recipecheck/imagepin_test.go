@@ -519,6 +519,34 @@ func TestCheckDeployPinsInDockerfile(t *testing.T) {
 	}
 }
 
+// TestCheckDeployPinsIgnoresOtherImageFamilies pins the boundary that
+// the shared walker made possible to cross by accident.
+//
+// The discovery half now lives in internal/imagepin and is scoped by an
+// image family the caller supplies; this check must keep supplying the
+// DAEMON family. An overlay that pins only the third-party watcher is,
+// to this gate, an overlay with no daemon pin at all — and a version
+// judgment applied to somebody else's release train would be nonsense
+// (v0.21.0 is not a core-agent release, so rule 1 would report it as
+// unpublished).
+func TestCheckDeployPinsIgnoresOtherImageFamilies(t *testing.T) {
+	t.Parallel()
+	watcherOnly := "resources:\n  - ../../base\n" +
+		"images:\n  - name: ghcr.io/go-steer/lookout\n    newTag: \"v0.21.0\"\n"
+	examples, r := writeRecipe(t, gatedConfig, watcherOnly)
+	findings, err := recipecheck.CheckDeployPins(examples, r, releasedForTest(t))
+	if err != nil {
+		t.Fatalf("CheckDeployPins: %v", err)
+	}
+	joined := joinFindings(findings)
+	if !strings.Contains(joined, "no core-agent image pin") {
+		t.Fatalf("want the no-daemon-pin finding, got:\n%s", joined)
+	}
+	if strings.Contains(joined, "v0.21.0") {
+		t.Fatalf("the watcher pin was judged as if it were a daemon release:\n%s", joined)
+	}
+}
+
 func joinFindings(fs []recipecheck.VersionFinding) string {
 	var b strings.Builder
 	for _, f := range fs {

@@ -178,7 +178,8 @@ Conventions worth knowing at agent prompt time:
   documentation, not a gate; this exact failure shipped in a
   downstream release. Enforced by this convention plus the
   `review-gate` **required** CI check (Go-touching PRs fail without
-  the section; docs-only and pricing-regen-bot PRs exempt).
+  the section; docs-only PRs and PRs authored by `go-steer-bot[bot]`
+  — the weekly `pricing-regen` and `lookout-pin-check` jobs — exempt).
   Optionally, copy `dev/claude/settings-review-gate.json` to your
   local `.claude/settings.json` for a Claude Code hook that blocks
   `gh pr create` at the terminal before CI ever sees it. Evidence it

@@ -2,7 +2,7 @@
   "version": 1,
   "model": {
     "provider": "vertex",
-    "name": "gemini-3.6-flash"
+    "name": "gemini-3.7-flash"
   },
   "_comment_model": "model.vertex is omitted by design — core-agent's Vertex provider reads GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION from the environment at runtime. The deploy command sets both, so config.json doesn't need to know either. NOTE: GOOGLE_CLOUD_LOCATION is the *Vertex API location*, not the Cloud Run region — they're independent. For global-only models (gemini-3.1-pro-preview-*, etc.) set GOOGLE_CLOUD_LOCATION=global. For regional models (gemini-2.5-pro/flash in a specific region) set it to that region (e.g. us-central1). The Cloud Run service's --region flag controls where the SERVICE runs, separately.",
   "permissions": {

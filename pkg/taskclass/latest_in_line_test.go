@@ -38,15 +38,10 @@ type deferredPromotion struct {
 
 // deferredPromotions is keyed by the model ModelForTier currently
 // returns.
-var deferredPromotions = map[string]deferredPromotion{
-	"gemini-3.6-flash": {
-		Newer: "gemini-3.7-flash",
-		Why: "cheaper per output token and newer, but it has not run a " +
-			"live GKE UAT. #579 shipped an un-UAT'd frontier bump on the " +
-			"strength of the spec sheet and #580 had to revert it after " +
-			"the parent stopped mid-plan. Promote once the UAT passes.",
-	},
-}
+// Empty is the healthy state: it means every tier default is the newest
+// model in its line. The gemini-3.6-flash → gemini-3.7-flash entry that
+// lived here was resolved by promotion, not by expiry.
+var deferredPromotions = map[string]deferredPromotion{}
 
 // TestModelForTier_ReturnsLatestInLine enforces the policy documented on
 // ModelForTier: a tier default names the LATEST model in its line.
@@ -62,7 +57,7 @@ var deferredPromotions = map[string]deferredPromotion{
 // priced).
 //
 // SHARED LINES: for Gemini the tiers are separated by generation, not by
-// line — frontier is gemini-3.6-flash and mid is gemini-3.5-flash, both
+// line — frontier is gemini-3.7-flash and mid is gemini-3.5-flash, both
 // on the "flash" line. Applying the rule to the lower tier would demand
 // that mid and frontier be the same model. So a line is checked once,
 // at the highest tier that claims it; lower tiers sharing that line are

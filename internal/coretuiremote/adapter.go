@@ -729,8 +729,18 @@ func (a *Adapter) RequestWake() {
 // The passed-in ctx carries coretui's 5s bound — long enough for a
 // healthy attach round-trip, short enough that a hung endpoint
 // surfaces as an error row instead of a silent stall.
+// hold=true (the v1.5.0 default): ESC parks the loop as well as
+// killing the turn, so the daemon's wake loop / scheduler /
+// auto-continue can't restart the work the operator just stopped. The
+// TUI's own send path is Inject, which releases the hold implicitly,
+// so an operator who interrupts and then types is never stuck —
+// they're steering, which is the whole point.
+//
+// stopSubagents=false: background subagents keep running. Killing them
+// isn't resumable, so it stays an explicit choice (POST
+// /agents/{name}/stop, or the flag on a scripted interrupt).
 func (a *Adapter) Interrupt(ctx context.Context) error {
-	_, err := a.client.Interrupt(ctx, a.sessionPath)
+	_, err := a.client.Interrupt(ctx, a.sessionPath, true /* hold */, false /* stopSubagents */)
 	return err
 }
 

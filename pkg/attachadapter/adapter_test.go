@@ -491,6 +491,7 @@ func TestAdapter_AttachCapabilities_ReportsWiredness(t *testing.T) {
 type fakeSubagentManager struct {
 	catalog []attach.SubagentCatalogInfo
 	live    []attach.AgentInfo
+	stopped []string
 }
 
 func (f *fakeSubagentManager) AttachParent(*agent.Agent)            {}
@@ -501,6 +502,19 @@ func (f *fakeSubagentManager) ListSubagentCatalog() []attach.SubagentCatalogInfo
 }
 func (f *fakeSubagentManager) SpawnSubagent(context.Context, attach.SubagentSpec) (attach.SubagentSpawnResponse, error) {
 	return attach.SubagentSpawnResponse{}, nil
+}
+
+// StopSubagent reports success only for a name in `live`, mirroring
+// the real manager's "no such subagent" (false, nil) answer.
+func (f *fakeSubagentManager) StopSubagent(name string) (bool, error) {
+	for _, a := range f.live {
+		if a.Name != name {
+			continue
+		}
+		f.stopped = append(f.stopped, name)
+		return true, nil
+	}
+	return false, nil
 }
 
 func TestAttachSubagentCatalog_NoManager_Empty(t *testing.T) {

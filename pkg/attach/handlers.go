@@ -310,6 +310,9 @@ func (h *handlers) register(mux *http.ServeMux) {
 	h.routeSessionDrainGated(mux, "POST", "inject", auth.ActionSessionWrite, h.doInject)
 	h.routeSessionDrainGated(mux, "POST", "wake", auth.ActionSessionWrite, h.doWake)
 	h.routeSession(mux, "POST", "interrupt", auth.ActionSessionWrite, h.doInterrupt)
+	// v1.5.0 hold surface — /pause, /resume, /agents/{name}/stop;
+	// see handlers_pause.go.
+	h.registerPause(mux)
 
 	// Read-only state endpoints — feed the TUI's /tools, /status, and
 	// subagent surfaces. Pure projections over in-memory state; safe for
@@ -578,22 +581,32 @@ func (h *handlers) doWake(w http.ResponseWriter, r *http.Request, entry *Entry) 
 	})
 }
 
-// --- /interrupt — cancel the in-flight turn -----------------------------
+// --- /interrupt — stop the in-flight turn, and hold the loop ------------
 //
-// Operator-driven cancel of whatever the agent is doing right now.
-// Used by the TUI's ESC keybinding (when input is empty + a turn is
-// in flight) and by scripted operators via curl. The agent's session,
-// event log, registered subagents, and attach registration all
-// survive the cancel — only the in-flight model call is interrupted.
+// Operator-driven stop of whatever the agent is doing right now. Used
+// by the TUI's ESC keybinding and by scripted operators via curl. The
+// agent's session, event log, registered subagents, and attach
+// registration all survive — only the in-flight model call is
+// interrupted.
 //
-// Response:
-//   - 200 OK with `{interrupted: true, session: <sid>}` — there was
-//     something in flight and the cancel fired.
-//   - 200 OK with `{interrupted: false, session: <sid>}` + header
-//     `X-Interrupted: nothing-in-flight` — agent is idle; no-op.
-//   - 412 Precondition Failed — agent doesn't implement
-//     InterruptProvider (older runtime; nothing to cancel from
-//     the server's perspective).
+// As of protocol v1.5.0 an interrupt also PARKS the loop by default
+// (body `{"hold": false}` opts out, restoring the pre-v1.5.0
+// cancel-and-carry-on behavior). Holding is what makes the operator's
+// stop stick: without it the wake loop, the autonomous scheduler, or
+// auto-continue would start a fresh turn moments later and the
+// operator would watch the thing they just killed resume itself. The
+// parked loop waits for POST /resume — or for any operator /inject,
+// which resumes implicitly so the long-standing interrupt-then-inject
+// client pattern behaves exactly as it did before.
+//
+// Response (InterruptResponse):
+//   - 200 OK `{interrupted, paused, running_subagents, ...}` — see
+//     pause.go. interrupted=false + header
+//     `X-Interrupted: nothing-in-flight` when the agent was idle; with
+//     hold that is still a state change, so paused is true.
+//   - 412 Precondition Failed — agent implements neither
+//     PauseController nor InterruptProvider (older runtime; nothing to
+//     cancel from the server's perspective).
 //   - 403 Forbidden — when --attach-readonly is set; gated at the
 //     middleware layer along with /inject and /wake.
 //
@@ -604,12 +617,51 @@ func (h *handlers) doWake(w http.ResponseWriter, r *http.Request, entry *Entry) 
 // ctx.Canceled response.
 
 func (h *handlers) doInterrupt(w http.ResponseWriter, r *http.Request, entry *Entry) {
-	ip, ok := entry.Agent.(InterruptProvider)
-	if !ok {
+	var req InterruptRequest
+	// Body is optional; an empty POST is the v1.5.0 default (hold).
+	if r.ContentLength > 0 {
+		if err := readJSON(r, &req, pauseMaxBytes); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	hold := req.Hold == nil || *req.Hold
+
+	pc, hasPause := entry.Agent.(PauseController)
+	ip, hasInterrupt := entry.Agent.(InterruptProvider)
+	if !hasPause && !hasInterrupt {
 		http.Error(w, "interrupt: this agent does not implement InterruptProvider (older runtime?)", http.StatusPreconditionFailed)
 		return
 	}
-	canceled := ip.AttachInterrupt()
+
+	// heldViaController: the hold path armed the audit row itself.
+	heldViaController := hold && hasPause
+	var canceled, paused bool
+	switch {
+	case heldViaController:
+		// One call so the cancel and the hold are atomic with respect
+		// to each other: a wake racing the interrupt can't slip a fresh
+		// turn in between them.
+		canceled, paused = pc.AttachInterruptHold("")
+	case hold:
+		// Registrant predates PauseController. Cancel anyway rather
+		// than 501 — a stop that half-lands beats no stop — but say so
+		// on the wire so a client rendering "paused" doesn't lie.
+		w.Header().Set("X-Hold", "unsupported")
+		canceled = ip.AttachInterrupt()
+	default:
+		canceled = ip.AttachInterrupt()
+	}
+	// Report the gate's ACTUAL state rather than this branch's intent.
+	// An agent parked by an earlier /pause is still parked after a
+	// {"hold": false} cancel — that flag declines to ADD a hold, it
+	// doesn't lift one — and a client rendering its banner from this
+	// response would otherwise clear it and show a running agent whose
+	// loop is stopped.
+	if hasPause {
+		paused = pc.AttachPauseState().Paused
+	}
+
 	if canceled {
 		// Best-effort audit row. Don't fail the request if the
 		// emission errors — the cancel already fired.
@@ -620,18 +672,53 @@ func (h *handlers) doInterrupt(w http.ResponseWriter, r *http.Request, entry *En
 		// session handle and get mislabeled as a stale-session error.
 		// Fall back to the out-of-band append for older registrants
 		// that don't implement InterruptSelfAuditor.
+		//
+		// AttachInterruptHold arms the pending row itself, before it
+		// fires the cancel — the ordering matters (see
+		// Agent.InterruptAndHold), so don't re-arm it here.
 		if sa, ok := entry.Agent.(InterruptSelfAuditor); ok {
-			sa.MarkInterruptPending()
+			if !heldViaController {
+				sa.MarkInterruptPending()
+			}
 		} else {
 			appendInterruptAudit(r.Context(), entry)
 		}
 	} else {
 		w.Header().Set("X-Interrupted", "nothing-in-flight")
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"interrupted": canceled,
-		"session":     entry.SessionID,
-	})
+
+	resp := InterruptResponse{
+		Session:     entry.SessionID,
+		Interrupted: canceled,
+		Paused:      paused,
+	}
+	if req.StopSubagents {
+		resp.StoppedSubagents = stopAllSubagents(entry)
+	}
+	resp.RunningSubagents = runningSubagents(entry)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// stopAllSubagents stops every running background subagent, for
+// /interrupt's `stop_subagents` flag. Best-effort per subagent: one
+// that errors (or finished between the list and the stop) is skipped
+// rather than failing the whole interrupt — the parent cancel has
+// already landed and the response's running_subagents shows whatever
+// survived.
+func stopAllSubagents(entry *Entry) []RunningSubagent {
+	st, ok := entry.Agent.(AgentStopper)
+	if !ok {
+		return nil
+	}
+	var out []RunningSubagent
+	for _, sa := range runningSubagents(entry) {
+		stopped, err := st.AttachStopAgent(sa.Name)
+		if err != nil || !stopped {
+			continue
+		}
+		out = append(out, sa)
+	}
+	return out
 }
 
 // appendInterruptAudit writes one event row recording the operator's
@@ -779,6 +866,19 @@ func (h *handlers) doStatus(w http.ResponseWriter, _ *http.Request, entry *Entry
 	// special-case "missing" vs "idle".
 	if out.State == "" {
 		out.State = AgentStateIdle
+	}
+	// Pause is projected here rather than left to each StatusProvider:
+	// the gate lives on the agent, so folding it in centrally means a
+	// registrant can't report "idle" while the loop is actually parked
+	// (which is what a paused agent looked like before v1.5.0). A
+	// StatusProvider that already reported paused keeps its own fields.
+	if pc, ok := entry.Agent.(PauseController); ok && out.State != AgentStatePaused {
+		if st := pc.AttachPauseState(); st.Paused {
+			out.State = AgentStatePaused
+			out.PausedSince = st.Since
+			out.PauseReason = st.Reason
+			out.Interrupted = st.Interrupted
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }

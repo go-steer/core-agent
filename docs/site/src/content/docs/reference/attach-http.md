@@ -76,6 +76,7 @@ Most callers can use the shortcut. Multi-app daemons (rare — `attach.multi_app
 | `WWW-Authenticate: Bearer realm="attach"` | response | 401, transport layer. |
 | `WWW-Authenticate: Bearer realm="attach-multisession"` | response | 401, per-caller layer (bad proxy assertion). |
 | `X-Interrupted: nothing-in-flight` | response | `POST /interrupt` when the agent is idle. |
+| `X-Hold: unsupported` | response | `POST /interrupt` with `hold` (the default) against an agent that has no `PauseController`. The turn was still cancelled; the loop was not parked. |
 | `Content-Type: text/event-stream` | response | SSE endpoints (`/events`, `/perms/stream`). |
 | `X-Accel-Buffering: no`, `Cache-Control: no-cache` | response | SSE headers ensuring proxies don't buffer. |
 
@@ -121,7 +122,10 @@ All write endpoints cap request bodies at **8 KiB** (`operatorPostMaxBytes`).
 |---|---|---|---|
 | `POST` | `/inject` | `{"message":"..."}` (empty → **400**) | `{"injected":..., "session":...}`; **503** + `Retry-After` during daemon shutdown (message would die with the in-memory inbox — redeliver after restart) |
 | `POST` | `/wake` | `{"target"?:..., "prompt"?:...}` (both optional) | `{"woken":..., "prompt":...}`; **501** if `target` set; **503** + `Retry-After` during daemon shutdown |
-| `POST` | `/interrupt` | — | `{"interrupted":bool, "session":...}`; **412** if agent lacks `InterruptProvider`; `X-Interrupted: nothing-in-flight` header when idle; writes audit event `Author=attach/interrupt` |
+| `POST` | `/interrupt` | `{"hold"?:bool, "stop_subagents"?:bool}` — **body optional**, absent = `{"hold":true}` | `{"interrupted":bool, "paused":bool, "running_subagents":[...], "stopped_subagents":[...], "session":...}`; **412** if agent implements neither `PauseController` nor `InterruptProvider`; `X-Interrupted: nothing-in-flight` header when idle; `X-Hold: unsupported` when the agent can't park; writes audit event `Author=attach/interrupt` |
+| `POST` | `/pause` | `{"reason"?:...}` — **body optional** | `{"paused":bool, "transitioned":bool, "state":"paused", "paused_since":..., "pause_reason":..., "session":...}`; **501** if no `PauseController` |
+| `POST` | `/resume` | `{"mode"?:"steer"\|"continue"\|"abandon", "steer"?:...}` — **body optional** (absent = `continue`) | `{"resumed":bool, "mode":..., "state":..., "session":...}`; **400** on an unknown mode or `mode=steer` with no text; **501** if no `PauseController`; **503** + `Retry-After` during daemon shutdown |
+| `POST` | `/agents/{name}/stop` | — | `{"agent":..., "stopped":true, "session":...}`; **404** when no subagent by that name is running; **501** if no `AgentStopper` |
 | `POST` | `/perms/allow` / `/perms/deny` | `{"patterns":[...]}` (empty → **400**) | **204**; **501** if no controller |
 | `POST` | `/perms/respond` | `{"id":..., "decision":...}` | `{"acknowledged":true}`; **404** on unknown id |
 | `POST` | `/pricing/refresh` | — | `{"updated":..., "known_models":..., "last_refresh":..., "detail":...}` |
@@ -134,9 +138,31 @@ All write endpoints cap request bodies at **8 KiB** (`operatorPostMaxBytes`).
 | `POST` | `/slash/subagent` | `SubagentSpec{name, goal, ...}` | `{"name":..., "started_at":...}` |
 | `POST` | `/slash/replan` | `{"reason"?:...}` | `{"archived_path":..., "plan_was_active":..., "message":...}` |
 
-Any capability-missing mutation returns **501** (e.g. `/interrupt` without an `InterruptProvider`, `/wake` with a `target` on a daemon without wake-target routing).
+Any capability-missing mutation returns **501** (e.g. `/pause` or `/resume` without a `PauseController`, `/wake` with a `target` on a daemon without wake-target routing). `/interrupt` is the exception: it predates the convention and answers **412**.
 
 Guardrail trips and resets are **durable** (v2.9.0-dev, [#643](https://github.com/go-steer/core-agent/issues/643)). A trip appends a `guardrail-trip` event (`Author=agent/guardrail-trip`) and a successful reset appends `attach-guardrail-reset` (`Author=attach/guardrail-reset`, carrying `caller`, `reset`, and `budget_added_usd`); a process that restarts against the same session folds those rows forward, so a halted session comes back halted and a cleared one comes back cleared. Like `/interrupt`'s audit row these are written by the agent from its own turn loop rather than synchronously inside the request, so tail `/events` rather than assuming the row exists the instant the reset returns. Caller attribution is stamped from the authenticated identity — a `caller` field in the request body is ignored. Restored state is always subject to the *current* process's configuration: a daemon restarted with `--watchdog=warn` does not resurrect an enforce-mode halt, and granted budget is not applied to a per-session ceiling that is no longer configured. Requires an eventlog; with no session store the endpoints behave exactly as before.
+
+### Interrupt, pause, and resume (protocol 1.5.0)
+
+`POST /interrupt` **parks the loop by default**. Cancelling the in-flight turn alone was never enough to stop an autonomous agent: the wake loop, the scheduler, or auto-continue would drive a fresh turn seconds later, and the operator's stop read as having done nothing. With the hold, the agent enters a real `paused` state — `GET /status` reports `state: "paused"` with `paused_since` / `pause_reason` / `interrupted` — and starts no new turn until it is resumed. Send `{"hold": false}` for the pre-v1.5.0 cancel-and-carry-on behavior.
+
+Three ways out of a park, matching Esc-then-answer in an interactive session:
+
+| Disposition | Call | Effect |
+|---|---|---|
+| Steer | `POST /resume {"steer":"..."}` | Queues the instruction under interrupt framing (the model is told its last turn was killed by an operator, so it doesn't silently redo the abandoned work), opens the gate, wakes the loop. |
+| Continue | `POST /resume` (empty body) | Queues a carry-on note, opens the gate, wakes the loop. |
+| Abandon | `POST /resume {"mode":"abandon"}` | Opens the gate and injects nothing; the agent stays quiet until something else drives it. |
+
+`POST /inject` also releases a hold implicitly (auto-continue's own notes excluded — a timer must not un-park a loop a human parked). So the long-standing interrupt-then-inject client pattern behaves exactly as it did before protocol 1.5.0, and a TUI whose send path is `/inject` needs no resume call to steer.
+
+`POST /pause` is the same park **without** killing an in-flight turn — "stop after this one". A turn already running has no safe suspend point inside a model call, and reporting `paused` while tokens keep burning would be a lie, so the running turn finishes and the *next* one is what waits.
+
+Both are idempotent: a second `/pause` returns `paused: true, transitioned: false`, and resuming an agent that isn't paused is a `200` with `resumed: false`, so two operator surfaces racing the same click don't produce a spurious failure. The first cause of a pause wins — a plain `/pause` landing on top of an operator interrupt doesn't erase the fact that work was cancelled.
+
+Interrupting the parent **does not stop background subagents**: their runs aren't resumable, so killing them stays an explicit choice. Every `/interrupt` response lists what's still running in `running_subagents`; `{"stop_subagents": true}` stops them all, and `POST /agents/{name}/stop` stops one by name.
+
+Clients watching `/events` see a `pause` frame on every transition (`{"state":"paused"|"resumed", "reason":..., "interrupted":bool, "mode":..., "at":...}`), emitted by the agent rather than the handler, so a park triggered in-process (an embedded TUI, a library caller) reaches remote operators identically.
 
 The `/interrupt` audit event (`Author=attach/interrupt`) is written by the agent from inside its own turn loop, *after* the interrupted turn finishes unwinding — so it lands on the `/events` stream shortly after the `200` response, not synchronously before it. This avoids racing the runner's in-flight session write, which otherwise surfaced the operator's clean cancel as a spurious stale-session turn error. A consumer that needs to confirm the audit row should tail `/events` rather than assume it is present the instant `/interrupt` returns.
 
@@ -256,7 +282,7 @@ The `since` cursor is monotonic per-session — the TUI's `/reconnect` slash sen
 
 The first frame on every `/events` stream is `event: capabilities` — the client advertises the wire contract before any state flows. The full field list lives in [the SSE spec](https://github.com/go-steer/core-tui/blob/main/docs/sse-event-stream-protocol.md#21-capabilities); the current additions are:
 
-- **`features`** — feature-flag map derived from live runtime state. Suggested keys: `multi_session`, `perms_stream`, `cost_ceiling`, `guardrails`, `observer_mode`, `mcp`, `specialists`, `cross_daemon`, `interrupt`. `guardrails` means `GET /guardrails` + `POST /guardrails/reset` are serviceable; `cost_ceiling` means a per-turn or per-session spend bound is **armed** (a turn can actually be refused for spend), not merely that the key is understood. Consumers treat absent keys as "off / unknown"; producers MAY add unknown keys.
+- **`features`** — feature-flag map derived from live runtime state. Suggested keys: `multi_session`, `perms_stream`, `cost_ceiling`, `guardrails`, `observer_mode`, `mcp`, `specialists`, `cross_daemon`, `interrupt`, `pause`. `guardrails` means `GET /guardrails` + `POST /guardrails/reset` are serviceable; `cost_ceiling` means a per-turn or per-session spend bound is **armed** (a turn can actually be refused for spend), not merely that the key is understood. Consumers treat absent keys as "off / unknown"; producers MAY add unknown keys.
 - **`slash_commands`** — dynamic list of the slash names this agent's `POST /slash/<name>` will accept. Derived from capability-interface presence (`CompactSlashProvider` → `"compact"`, etc.). Clients render only what the connected agent supports.
 - **`agent`** — the producing agent's own identity: `{name, version, description, model, provider, url}`. Consolidates fields previously scattered across `/.well-known/agent-card.json`, `GET /status`, and the `server` banner.
 - **`caller_id`** — the resolved caller identity display hint. Canonical source: `GET /whoami`.
@@ -289,13 +315,13 @@ Consumers MUST tolerate unknown values and MUST NOT crash on missing keys.
 | **201** | Created — `POST /sessions`, `POST /peers`. |
 | **204** | No content — successful DELETEs, `POST /perms/allow` etc. |
 | **301** | Redirect — `/ui` → `/ui/`. |
-| **400** | Bad request — empty required field (message, patterns, ...). |
+| **400** | Bad request — empty required field (message, patterns, ...); unknown `/resume` mode, or `mode=steer` with no text. |
 | **401** | Unauthenticated — missing / wrong bearer token; bad proxy assertion. |
 | **403** | Forbidden — `--attach-readonly` writes; delete of the bootstrap `"default"` session; cross-origin `Origin` header on a write (CSRF protection). |
-| **404** | Not found OR auth-deny (deliberately indistinguishable to avoid SID enumeration). |
+| **404** | Not found OR auth-deny (deliberately indistinguishable to avoid SID enumeration); `POST /agents/{name}/stop` for a subagent that isn't running. |
 | **405** | Method not allowed — e.g. `POST /.well-known/agent-card.json`. |
 | **409** | Conflict — shortcut SID ambiguous across apps; `POST /sessions` on `ErrSessionExists`; `POST /guardrails/reset` when the reset would immediately re-trip. |
-| **412** | Precondition failed — session has no eventlog (SSE reader); no `InterruptProvider` (interrupt). |
+| **412** | Precondition failed — session has no eventlog (SSE reader); neither `PauseController` nor `InterruptProvider` (interrupt). |
 | **415** | Unsupported media type — state-changing request without `Content-Type: application/json` (CSRF protection). |
 | **500** | Internal error — factory failure on `POST /sessions`; second `DELETE` of a gone session. |
 | **501** | Not implemented — capability provider absent (`SessionFactory`, `InterruptProvider`, `PromptBrokerProvider`, wake `target`, etc.). |
@@ -309,7 +335,8 @@ Consumers MUST tolerate unknown values and MUST NOT crash on missing keys.
 | `POST /sessions` | **No** — every call spins a fresh session. |
 | `POST /peers` | Effectively **yes** — name-based upsert extends the lease of an existing peer. |
 | `POST /perms/respond` | **No** — second respond for the same prompt → **404** (`ErrPromptNotFound`). |
-| `POST /interrupt` | Trivially idempotent — extra calls set `X-Interrupted: nothing-in-flight`. |
+| `POST /interrupt` | Idempotent in effect — the loop ends up cancelled and parked either way. Repeat calls while the cancelled turn is still unwinding keep reporting `interrupted: true` (the interrupt did land); once it's idle they set `X-Interrupted: nothing-in-flight`. |
+| `POST /pause` / `POST /resume` | Idempotent — `transitioned` / `resumed` report whether *this* call changed anything, so a redundant press is a quiet `200`. |
 
 ## See also
 

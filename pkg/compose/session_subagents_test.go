@@ -50,6 +50,8 @@ func (m *stubManager) SpawnSubagent(context.Context, attach.SubagentSpec) (attac
 	return attach.SubagentSpawnResponse{}, errors.New("stubManager: not spawnable")
 }
 
+func (m *stubManager) StopSubagent(string) (bool, error) { return false, nil }
+
 // attachToolNames projects the operator-facing tool list down to names,
 // so a tool-replacement assertion reads off the same surface an operator
 // would see on GET /sessions/<sid>/tools.

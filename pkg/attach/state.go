@@ -44,9 +44,10 @@ const (
 
 // Agent run-states surfaced via GET /sessions/.../status. "running"
 // covers any active turn; "deferred" means the scheduler is sleeping
-// the agent until NextWakeAt; "paused" means the autonomous loop was
-// explicitly paused (future, via /pause); "idle" means the agent is
-// alive but not currently turning.
+// the agent until NextWakeAt; "paused" means the loop was explicitly
+// parked by an operator (POST /pause, or POST /interrupt, which holds
+// by default as of v1.5.0) and will start no new turn until a resume;
+// "idle" means the agent is alive but not currently turning.
 const (
 	AgentStateRunning  = "running"
 	AgentStateDeferred = "deferred"
@@ -69,13 +70,24 @@ type ToolInfo struct {
 	GateState   string `json:"gate_state,omitempty"`
 }
 
+// SUBagent statuses carried on AgentInfo.Status — the string form of
+// background.Status. Distinct from the AgentState* set above, which
+// describes the SESSION's loop rather than one spawned subagent.
+const (
+	AgentStatusRunning   = "running"
+	AgentStatusCompleted = "completed"
+	AgentStatusFailed    = "failed"
+	AgentStatusStopped   = "stopped"
+	AgentStatusDeferred  = "deferred"
+)
+
 // AgentInfo is one background subagent the parent agent knows about,
 // surfaced via GET /sessions/.../agents. Populated from the
 // BackgroundAgentManager when one is wired; empty list otherwise.
 type AgentInfo struct {
 	ID              string    `json:"id"`
 	Name            string    `json:"name"`
-	Status          string    `json:"status"` // running | done | failed | paused
+	Status          string    `json:"status"` // AgentStatus*: running | completed | failed | stopped | deferred
 	StartedAt       time.Time `json:"started_at"`
 	ParentSessionID string    `json:"parent_session_id,omitempty"`
 	LastReport      string    `json:"last_report,omitempty"` // most recent report body, truncated
@@ -103,11 +115,20 @@ type SubagentCatalogInfo struct {
 // StatusInfo is the response shape of GET /sessions/.../status.
 // ModelName is what the TUI's usage panel labels with; the rest is
 // agent-loop introspection useful for the /status slash command.
+//
+// The three pause fields (v1.5.0) are populated when State=paused.
+// Interrupted is the one an operator actually reads first: it says
+// whether a turn was killed on the way into this pause, or whether the
+// loop simply isn't allowed to start one.
 type StatusInfo struct {
 	State       string    `json:"state"` // running | deferred | paused | idle
 	ModelName   string    `json:"model_name,omitempty"`
 	NextWakeAt  time.Time `json:"next_wake_at,omitempty"` // populated when State=deferred
 	CurrentTool string    `json:"current_tool,omitempty"` // populated when State=running and a tool is in flight
+
+	PausedSince time.Time `json:"paused_since,omitempty"` // populated when State=paused
+	PauseReason string    `json:"pause_reason,omitempty"` // populated when State=paused
+	Interrupted bool      `json:"interrupted,omitempty"`  // a turn was cancelled entering the pause
 }
 
 // ToolsProvider is the optional capability a Registrant can implement

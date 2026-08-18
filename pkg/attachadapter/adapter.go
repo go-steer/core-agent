@@ -282,6 +282,7 @@ func (ad *Adapter) AttachCapabilities() attach.CapabilityReport {
 		return rep
 	}
 	rep.Interrupt = true
+	rep.Pause = true
 	rep.Guardrails = true
 	rep.CostCeiling = guardrailCostCeilingArmed(a)
 	rep.SlashCommands = append(rep.SlashCommands, "btw")

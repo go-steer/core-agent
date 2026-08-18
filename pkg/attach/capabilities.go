@@ -75,6 +75,11 @@ type CapabilityReport struct {
 	Specialists bool
 	// Interrupt: POST /interrupt reaches a live agent.
 	Interrupt bool
+	// Pause: POST /pause + /resume are serviceable, and /interrupt
+	// parks the loop rather than only cancelling the turn (v1.5.0).
+	// Clients gate their steer-prompt UI on this — an ESC that can't
+	// hold shouldn't offer "what do you want me to do instead?".
+	Pause bool
 	// Guardrails: GET /guardrails + POST /guardrails/reset are
 	// serviceable (#666).
 	Guardrails bool
@@ -136,6 +141,9 @@ func buildFeatures(entry *Entry, serverFeatures map[string]bool) map[string]bool
 		if r.Interrupt {
 			out[featureInterrupt] = true
 		}
+		if r.Pause {
+			out[featurePause] = true
+		}
 		if r.Guardrails {
 			out[featureGuardrails] = true
 		}
@@ -154,6 +162,9 @@ func buildFeatures(entry *Entry, serverFeatures map[string]bool) map[string]bool
 		}
 		if _, ok := entry.Agent.(InterruptProvider); ok {
 			out[featureInterrupt] = true
+		}
+		if _, ok := entry.Agent.(PauseController); ok {
+			out[featurePause] = true
 		}
 		if p, ok := entry.Agent.(GuardrailProvider); ok {
 			out[featureGuardrails] = true

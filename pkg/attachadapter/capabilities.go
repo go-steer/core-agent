@@ -113,20 +113,30 @@ func (ad *Adapter) AttachSubagentCatalog() []attach.SubagentCatalogInfo {
 	return mgr.ListSubagentCatalog()
 }
 
-// AttachStatus implements attach.StatusProvider. V1 returns the agent's
-// model name + a coarse "idle" state — finer-grained state (running /
-// deferred / paused) would require run-loop instrumentation that
-// hasn't been wired yet; the design doc captures pause/resume + state
-// mutation as v3 work.
+// AttachStatus implements attach.StatusProvider. Returns the agent's
+// model name plus its coarse state: "paused" when an operator has
+// parked the loop (v1.5.0), "idle" otherwise. "running" / "deferred"
+// still need run-loop instrumentation that hasn't been wired.
 func (ad *Adapter) AttachStatus() attach.StatusInfo {
 	a := ad.Agent()
 	if a == nil {
 		return attach.StatusInfo{}
 	}
-	return attach.StatusInfo{
+	out := attach.StatusInfo{
 		State:     attach.AgentStateIdle,
 		ModelName: a.ModelName(),
 	}
+	// Reported from the adapter as well as centrally in the /status
+	// handler: in-process consumers (the embedded TUI holds the adapter
+	// directly, no HTTP hop) would otherwise be told "idle" about a
+	// parked loop.
+	if st := a.PauseState(); st.Paused {
+		out.State = attach.AgentStatePaused
+		out.PausedSince = st.Since
+		out.PauseReason = st.Reason
+		out.Interrupted = st.Interrupted
+	}
+	return out
 }
 
 // AttachUsage implements attach.UsageProvider. Returns the agent's

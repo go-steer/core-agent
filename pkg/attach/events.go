@@ -66,6 +66,13 @@ const (
 	EventTurnComplete = "turn-complete"
 	EventTurnError    = "turn-error"
 
+	// EventPause (v1.5.0) reports the session's pause gate opening or
+	// closing. Emitted for every transition regardless of which client
+	// caused it, so a second TUI — or mast-web watching alongside one —
+	// learns that someone else parked the agent without polling
+	// /status.
+	EventPause = "pause"
+
 	// EventAgent is the legacy event type carrying ADK session.Event
 	// payloads (stream-chunk / tool-call / tool-result are all
 	// multiplexed onto this one event today). Kept for back-compat
@@ -294,6 +301,53 @@ type InboxEvent struct {
 	PromptID string    `json:"prompt_id"`
 	QueuedAt time.Time `json:"queued_at,omitempty"`
 }
+
+// Pause states carried on PauseEvent.State (v1.5.0).
+const (
+	PauseStatePaused  = "paused"
+	PauseStateResumed = "resumed"
+)
+
+// PauseEvent fires when the session's pause gate closes or opens —
+// docs/operator-interrupt-design.md. Consumers render a banner from it
+// and (for a TUI) switch the input line into "what do you want me to do
+// instead?" mode.
+//
+// Interrupted distinguishes the two ways in: true when a turn was
+// actually cancelled on the way to this pause, false for a plain
+// /pause or an /interrupt that landed while the agent was idle. That's
+// the difference between "your work was killed" and "the loop just
+// won't start", which is the first thing an operator asks.
+//
+// Mode is set only on a resumed event and echoes the disposition the
+// operator chose ("steer" / "continue" / "abandon"), so a second client
+// watching the stream can render what happened rather than just that
+// something did.
+type PauseEvent struct {
+	State       string    `json:"state"`
+	Reason      string    `json:"reason,omitempty"`
+	Interrupted bool      `json:"interrupted,omitempty"`
+	Mode        string    `json:"mode,omitempty"`
+	At          time.Time `json:"at"`
+}
+
+// Resume modes: the disposition an operator picks when reopening the
+// pause gate. Carried on ResumeRequest.Mode over the wire and echoed
+// back on PauseEvent.Mode.
+const (
+	// ResumeModeSteer resumes with the operator's new instruction
+	// injected under interrupt framing. Implied when Steer is non-empty
+	// and Mode is omitted.
+	ResumeModeSteer = "steer"
+	// ResumeModeContinue resumes with a "carry on where you left off"
+	// note and no new instruction. Implied when Steer is empty and Mode
+	// is omitted.
+	ResumeModeContinue = "continue"
+	// ResumeModeAbandon opens the gate without injecting anything and
+	// without waking the loop: the interrupted work is dropped and the
+	// agent goes quiet until something else drives it.
+	ResumeModeAbandon = "abandon"
+)
 
 // TurnComplete fires once per turn after the last stream-chunk for
 // that turn and before the next turn's events.

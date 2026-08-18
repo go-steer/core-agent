@@ -247,6 +247,50 @@ func FormatAutoContinueInbox(messages []string) string {
 	return b.String()
 }
 
+// FormatInterruptSteer frames the instruction an operator typed in
+// answer to "what do you want me to do instead?" after interrupting a
+// turn. Sibling of FormatAutoContinueInbox, and deliberately blunter:
+// auto-continue is guessing that the model should carry on, whereas
+// here a human explicitly stopped the model and said something. The
+// last line exists because the default failure mode of a resumed model
+// is to quietly go back to what it was doing and mention the operator's
+// note in passing.
+//
+// Returns "" for empty text so callers can fall back to
+// FormatInterruptContinue.
+func FormatInterruptSteer(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("[The operator interrupted you]\n")
+	b.WriteString("You were stopped mid-task by a human operator, who then said:\n")
+	b.WriteString("- ")
+	b.WriteString(text)
+	b.WriteString("\n\n")
+	b.WriteString("Follow the operator's instruction. If it supersedes what you were doing, drop the old approach; if it adjusts it, adapt your next step. Do not silently resume the interrupted work.")
+	return b.String()
+}
+
+// FormatInterruptContinue frames a resume that carries no new
+// instruction — the operator stopped the model, looked, and said carry
+// on. Distinct from AutoContinueNoteFor because the interruption here
+// was deliberate and human, so the model shouldn't treat the stop
+// itself as a signal that something went wrong.
+//
+// The re-check line is the load-bearing one: tail repair (#537) patches
+// a dangling functionCall into a well-formed history, but the real-world
+// EFFECT of a cancelled bash or write_file is genuinely unknown, and a
+// model that assumes completion will happily build on a half-applied
+// change.
+func FormatInterruptContinue() string {
+	return "[The operator interrupted you, then told you to carry on]\n" +
+		"A human operator stopped you mid-task and has now resumed you with no new instructions. " +
+		"Pick up where you left off.\n\n" +
+		"Your last tool call may have been cancelled part-way through — re-check its state before assuming it completed."
+}
+
 // Inject queues message on the agent's inbox. The next call to
 // Agent.Run will drain pending messages, format them as an "[Inbox]"
 // block, and prepend the block to the prompt the model sees.
@@ -290,6 +334,15 @@ func (a *Agent) Inject(message string) error {
 // docs/multi-session-design.md "the turn answers the most recent
 // ask"). Same prompt_id correlation, same SSE events as Inject.
 func (a *Agent) InjectAs(message string, caller auth.Caller) error {
+	return a.injectAs(message, caller, true /* releaseHold */)
+}
+
+// injectAs is the queue-and-notify core. releaseHold=false queues
+// WITHOUT opening the pause gate, for callers that open it themselves
+// afterwards — ResumeWith needs the message on the queue before the
+// gate opens, so the turn the resume releases can't start ahead of the
+// instruction that was meant to shape it.
+func (a *Agent) injectAs(message string, caller auth.Caller, releaseHold bool) error {
 	if a == nil {
 		return errors.New("agent: nil receiver")
 	}
@@ -309,6 +362,21 @@ func (a *Agent) InjectAs(message string, caller auth.Caller) error {
 		PromptID: id,
 		QueuedAt: time.Now().UTC(),
 	})
+	// Operator input releases a pause hold. Injecting while parked is
+	// how an operator answers the "what do you want me to do instead?"
+	// prompt, so it has to open the gate — otherwise the message sits
+	// in an inbox nothing will drain. This is also what keeps the
+	// long-standing API pattern (POST /interrupt then POST /inject)
+	// behaviorally identical now that interrupt holds by default.
+	//
+	// Auto-continue's own notes are excluded: a timer-driven "carry on
+	// with the task" must never un-park a loop a human deliberately
+	// parked. That's the pause-side sibling of the #624 stand-down
+	// (see HasPendingOperatorInput), and pkg/compose additionally has
+	// auto-continue skip the inject entirely while paused.
+	if releaseHold && caller.Identity != AutoContinueOriginator {
+		a.Resume()
+	}
 	// Operator input should also pierce any active sleep — the
 	// scheduler selects on WakeRequested() alongside its sleep
 	// timer, so this lands as an immediate wake.

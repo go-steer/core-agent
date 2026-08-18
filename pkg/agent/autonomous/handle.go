@@ -231,6 +231,14 @@ func (h *Handle) Pause() error {
 	h.mu.Unlock()
 
 	if a != nil {
+		// Mirror onto the agent's own pause gate so the two can't
+		// disagree: the gate is what GET /sessions/.../status projects
+		// and what a TUI banner renders, and a Handle-only pause would
+		// leave every operator surface reporting a running agent whose
+		// loop is quietly parked in beforeTurn. Belt and braces on the
+		// blocking side too — beforeTurn holds the loop, Agent.Run holds
+		// anything else driving the same agent.
+		a.Pause(agent.PauseReasonOperatorPause)
 		_ = emitNoteEvent(h.runCtx, a, "paused", "autonomous run paused")
 	}
 	return nil
@@ -260,6 +268,11 @@ func (h *Handle) Resume() error {
 	h.mu.Unlock()
 
 	if a != nil {
+		// Release the mirrored agent gate (see Pause). Resume means
+		// resume: if an operator had ALSO parked the agent directly over
+		// attach, this clears that hold too rather than leaving the loop
+		// stuck behind a second gate they can't see from here.
+		a.Resume()
 		_ = emitNoteEvent(h.runCtx, a, "resumed", "autonomous run resumed")
 	}
 	return nil

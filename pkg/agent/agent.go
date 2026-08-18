@@ -314,10 +314,18 @@ type Agent struct {
 	// mu guards cancelInFlight + compactionPending + checkpoint
 	// flags + subtask counters. Held only across short store-and-
 	// clear operations; never across an LLM call.
-	mu                    sync.Mutex
-	cancelInFlight        context.CancelFunc
-	cancelInFlightGen     uint64 // generation of the currently-registered cancel (0 = none)
-	cancelSeq             uint64 // monotonic issuer for cancel generations (#359)
+	mu                sync.Mutex
+	cancelInFlight    context.CancelFunc
+	cancelInFlightGen uint64 // generation of the currently-registered cancel (0 = none)
+	cancelSeq         uint64 // monotonic issuer for cancel generations (#359)
+	// Pause gate (see pause.go + docs/operator-interrupt-design.md).
+	// pauseCh non-nil IS the "paused" signal; Run blocks on it before
+	// starting a turn and Resume closes it. The rest is the operator-
+	// facing projection surfaced through PauseState.
+	pauseCh               chan struct{}
+	pauseSince            time.Time
+	pauseReason           string
+	pauseInterrupted      bool
 	compactionPending     bool
 	compactionFailures    int    // consecutive failed auto-compactions; drives backoff (#356)
 	compactionCooldown    int    // turns to skip before the next auto-compaction attempt (#356)
@@ -1306,6 +1314,20 @@ func (a *Agent) Model() adkmodel.LLM {
 // first (internal state changes); inbox goes second (external
 // input, closer to the prompt logically); then the original prompt.
 func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event, error] {
+	// Pause gate, first thing (see pause.go). A parked agent starts no
+	// turn — and, just as importantly, drains no inbox: the steer an
+	// operator typed while parked has to survive until the turn that
+	// resume starts. Blocking here rather than in each driver is what
+	// makes one gate cover the wake loop, the autonomous loop, and the
+	// REPL at once; attach handlers never call Run, so /resume,
+	// /inject, /status, /btw and the SSE stream stay responsive while
+	// parked. Returns only when the gate opens or ctx dies.
+	if err := a.awaitResume(ctx); err != nil {
+		return func(yield func(*session.Event, error) bool) {
+			a.recordInvocation(0, err)
+			yield(nil, err)
+		}
+	}
 	// Durable guardrail restore (#643), before anything can refuse or
 	// permit this turn. A halt that a restart clears is not a halt:
 	// without this, a runaway that trips the watchdog and then kills
@@ -1755,8 +1777,22 @@ func freshSessionID() (string, error) {
 // Interrupt cancels the in-flight turn (if any) by invoking the
 // stored cancel func. Returns true if there was something to cancel
 // (a turn was in flight when called), false if the agent was idle
-// (no-op). Safe for concurrent callers; the cancel is single-shot
-// per turn — a second Interrupt during the same turn is a no-op.
+// (no-op). Safe for concurrent callers.
+//
+// Repeatable for as long as the turn is actually alive: the cancel
+// func stays registered until the turn's own gen-keyed
+// clearCancelInFlight fires from cleanup, so a second Interrupt while
+// the first is still unwinding reports true again instead of "nothing
+// in flight". It used to clear the func itself, which meant an
+// operator whose first cancel didn't bite promptly — a tool ignoring
+// its context, a model call mid-retry — pressed again and was told the
+// agent was idle while it visibly kept working. context.CancelFunc is
+// idempotent, so the repeat cancel costs nothing.
+//
+// Note this also keeps turnInFlight() true through the unwind, so
+// Compact / Checkpoint keep refusing their mid-turn boundary writes
+// (#355) until the turn has genuinely finished flushing — which is the
+// window those refusals exist to protect.
 //
 // Cancellation propagates through context.Canceled to the in-flight
 // model call. The agent's tools (bash, fetch_url, etc.) cancel
@@ -1765,14 +1801,16 @@ func freshSessionID() (string, error) {
 // already-accumulated content and exits. Sessions, the event log,
 // background subagents, and the attach registry all survive
 // untouched.
+//
+// Interrupt cancels but does not hold: the driver is free to start
+// another turn on the next wake. Use InterruptAndHold for the operator
+// "stop and wait for my next instruction" gesture (see pause.go).
 func (a *Agent) Interrupt() bool {
 	if a == nil {
 		return false
 	}
 	a.mu.Lock()
 	cancel := a.cancelInFlight
-	a.cancelInFlight = nil
-	a.cancelInFlightGen = 0
 	a.mu.Unlock()
 	if cancel == nil {
 		return false

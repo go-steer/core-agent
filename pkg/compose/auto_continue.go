@@ -107,6 +107,7 @@ const (
 	acSkippedNotInterrupted                            // tail re-classified clean under the lock
 	acSkippedStale                                     // interruption older than the freshness window
 	acSkippedOperatorInput                             // operator input already queued — it drives the next turn (#624)
+	acSkippedPaused                                    // operator parked the loop; resume drives the next turn
 	acSkippedInjectErr                                 // inject itself failed
 )
 
@@ -120,7 +121,9 @@ func (o autoContinueOutcome) injected() bool { return o == acInjected }
 // (the #575 fleet case — we made no attempt, another daemon will), the
 // tail having gone clean or stale between the unlocked candidate scan
 // and the locked re-classification, or an operator having queued input
-// that will drive the next turn itself (#624 — no note was injected).
+// that will drive the next turn itself (#624 — no note was injected),
+// or the session being parked by an operator (no note was injected and
+// the operator's resume drives the next turn).
 // Everything else stays charged:
 // a queued note is a real attempt, and a failed resume/inject or an
 // unexpected lock error must stay counted because a PERSISTENT such
@@ -130,7 +133,7 @@ func (o autoContinueOutcome) injected() bool { return o == acInjected }
 // conservative, which is the safe direction.
 func (o autoContinueOutcome) refundable() bool {
 	switch o {
-	case acSkippedLocked, acSkippedNotInterrupted, acSkippedStale, acSkippedOperatorInput:
+	case acSkippedLocked, acSkippedNotInterrupted, acSkippedStale, acSkippedOperatorInput, acSkippedPaused:
 		return true
 	default:
 		return false
@@ -196,6 +199,18 @@ func lockClassifyInject(ctx context.Context, h *eventlog.Handle, ag *agent.Agent
 	if ag.HasPendingOperatorInput() {
 		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: operator input already queued; standing down so it drives the next turn\n", sid)
 		return acSkippedOperatorInput
+	}
+	// An operator parked the loop (POST /interrupt holds by default, and
+	// POST /pause holds outright — docs/operator-interrupt-design.md).
+	// Paused means "start nothing until I say so", and auto-continue is
+	// the one caller that would otherwise argue: its note goes in via
+	// InjectAs, which skips the implicit resume for
+	// AutoContinueOriginator but still queues a message that the
+	// operator's eventual resume would then drain alongside their steer.
+	// Stand down entirely — resume synthesizes its own framing.
+	if ag.Paused() {
+		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: session is paused; standing down until the operator resumes\n", sid)
+		return acSkippedPaused
 	}
 	if err := ag.InjectAs(agent.AutoContinueNoteFor(interruptedAt, interruptedCalls), auth.Caller{Identity: agent.AutoContinueOriginator}); err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: inject: %v\n", sid, err)

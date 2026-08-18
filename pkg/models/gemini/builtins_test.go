@@ -22,6 +22,8 @@ import (
 
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/genai"
+
+	"github.com/go-steer/core-agent/v2/pkg/models"
 )
 
 func TestDefaultBuiltinTools(t *testing.T) {
@@ -390,6 +392,55 @@ func TestBuiltinsLLM_WithoutBuiltinsReturnsInner(t *testing.T) {
 	}
 	if req2.Config == nil || len(req2.Config.Tools) == 0 {
 		t.Errorf("wrapper should still inject builtins; got %v", req2.Config)
+	}
+}
+
+// A caller that marks its context with models.WithoutBuiltins gets
+// EXACTLY the tools it put on the request: no server-side built-ins
+// appended, no cache reference stamped, and no cache seeded from a
+// request that carries neither a system instruction nor tools.
+//
+// The /btw side question is the caller this exists for. It is
+// documented as tool-less, and before this it wasn't: a nil Config
+// (which is how it was built) is the very thing the wrapper fills in
+// with google_search + url_context.
+func TestBuiltinsLLM_WithoutBuiltinsContext_SuppressesInjectionAndCache(t *testing.T) {
+	t.Parallel()
+
+	initCalls := 0
+	wrapped := &builtinsLLM{
+		inner:     &fakeLLM{},
+		builtins:  DefaultBuiltinTools().asTools(),
+		cacheInit: func(context.Context, *genai.Content, []*genai.Tool) { initCalls++ },
+		cacheName: func(context.Context) string { return "projects/p/locations/l/cachedContents/abc" },
+	}
+
+	ctx := models.WithoutBuiltins(context.Background())
+	req := &adkmodel.LLMRequest{Config: &genai.GenerateContentConfig{}}
+	for range wrapped.GenerateContent(ctx, req, false) {
+	}
+
+	if len(req.Config.Tools) != 0 {
+		t.Errorf("Tools = %d, want 0 — the suppressed request must reach the model tool-less",
+			len(req.Config.Tools))
+	}
+	if req.Config.CachedContent != "" {
+		t.Errorf("CachedContent = %q, want empty — a request that already carries the whole "+
+			"history must not also reference a cache", req.Config.CachedContent)
+	}
+	if initCalls != 0 {
+		t.Errorf("cacheInit fired %d times; seeding a cache from a system-instruction-less, "+
+			"tool-less side question would poison every later turn", initCalls)
+	}
+
+	// Sanity: the same wrapper still injects and stamps on an
+	// unsuppressed call, so the test is pinning the marker and not a
+	// wrapper that stopped working.
+	plain := &adkmodel.LLMRequest{Config: &genai.GenerateContentConfig{}}
+	for range wrapped.GenerateContent(context.Background(), plain, false) {
+	}
+	if plain.Config.CachedContent == "" {
+		t.Error("unsuppressed call didn't stamp the cache reference")
 	}
 }
 

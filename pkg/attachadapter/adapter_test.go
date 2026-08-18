@@ -17,11 +17,16 @@ package attachadapter
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"iter"
 	"math"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
+
+	adkmodel "google.golang.org/adk/model"
+	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
@@ -349,6 +354,84 @@ func TestAttachInterrupt_IdleAgentReturnsFalse(t *testing.T) {
 	if ad.AttachInterrupt() {
 		t.Errorf("AttachInterrupt on idle agent returned true, want false")
 	}
+}
+
+// silentLLM answers every request with no text — the shape a provider
+// produces when it declines (safety block, empty candidate list).
+// finish, when set, is the provider's stated reason.
+type silentLLM struct{ finish genai.FinishReason }
+
+func (silentLLM) Name() string { return "silent" }
+
+func (l silentLLM) GenerateContent(_ context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		yield(&adkmodel.LLMResponse{
+			Content:      &genai.Content{Role: genai.RoleModel},
+			TurnComplete: true,
+			FinishReason: l.finish,
+		}, nil)
+	}
+}
+
+// TestAttachAskSideQuestion_EmptyAnswerCrossesThePackageBoundary is
+// the seam that makes the /btw 200-with-empty response possible:
+// pkg/attach can't import pkg/agent, so the adapter has to restate the
+// agent's typed empty-answer error in the wire package's vocabulary.
+// If this translation is lost the handler sees an unrecognized error
+// and answers 500 — the "infra error instead of an answer" symptom.
+func TestAttachAskSideQuestion_EmptyAnswerCrossesThePackageBoundary(t *testing.T) {
+	t.Parallel()
+	a, err := agent.New(silentLLM{finish: genai.FinishReasonSafety})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	ad := New(a)
+
+	answer, err := ad.AttachAskSideQuestion(context.Background(), "why did that fail?")
+	if answer != "" {
+		t.Errorf("answer = %q, want empty", answer)
+	}
+	var empty *attach.SideQueryEmptyError
+	if !errors.As(err, &empty) {
+		t.Fatalf("err = %v (%T), want *attach.SideQueryEmptyError", err, err)
+	}
+	if empty.Detail != "finish_reason=SAFETY" {
+		t.Errorf("Detail = %q, want the provider's stated reason", empty.Detail)
+	}
+	// The agent-side type must NOT leak across: pkg/attach classifies
+	// on its own error, and a caller that only knows the wire package
+	// has to be able to tell empty from broken.
+	var agentSide *agent.SideQuestionEmptyError
+	if errors.As(err, &agentSide) {
+		t.Error("the agent-side error leaked through the adapter untranslated")
+	}
+}
+
+// A genuine provider failure must stay a failure — the translation
+// above must not swallow errors into a quiet "no answer".
+func TestAttachAskSideQuestion_ProviderErrorPassesThrough(t *testing.T) {
+	t.Parallel()
+	boom := errors.New("dial tcp: connection refused")
+	a, err := agent.New(&erroringLLM{err: boom})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	_, err = New(a).AttachAskSideQuestion(context.Background(), "still there?")
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the provider error", err)
+	}
+	var empty *attach.SideQueryEmptyError
+	if errors.As(err, &empty) {
+		t.Error("a provider error was misreported as an empty answer")
+	}
+}
+
+type erroringLLM struct{ err error }
+
+func (erroringLLM) Name() string { return "erroring" }
+
+func (l *erroringLLM) GenerateContent(_ context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) { yield(nil, l.err) }
 }
 
 func TestAttachSpawnSubagent_NoManager_ReturnsSentinel(t *testing.T) {

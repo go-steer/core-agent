@@ -26,6 +26,8 @@ import (
 
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/genai"
+
+	"github.com/go-steer/core-agent/v2/pkg/models"
 )
 
 // BuiltinTools toggles Gemini's server-side built-in tools surfaced
@@ -303,13 +305,20 @@ func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequ
 	// eviction on a long-lived daemon). Without the snapshot the
 	// uncached retry would go to the model missing its system
 	// instruction + tools — worse than the original failure.
+	// One-shot callers (the /btw side question) opt out of BOTH the
+	// built-ins append and the cache stamping for this request only —
+	// see models.WithoutBuiltins. Checked once here and threaded
+	// through the three blocks below rather than re-read, so a request
+	// can't come out half-suppressed.
+	noBuiltins := models.BuiltinsSuppressed(ctx)
+
 	cachedTurn := false
 	var (
 		savedSystemInstruction *genai.Content
 		savedTools             []*genai.Tool
 		savedToolConfig        *genai.ToolConfig
 	)
-	if l.cacheName != nil {
+	if !noBuiltins && l.cacheName != nil {
 		if name := l.cacheName(ctx); name != "" {
 			if req.Config == nil {
 				req.Config = &genai.GenerateContentConfig{}
@@ -324,7 +333,7 @@ func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequ
 			cachedTurn = true
 		}
 	}
-	if !cachedTurn && len(l.builtins) > 0 && l.builtinsCompatible(req) {
+	if !noBuiltins && !cachedTurn && len(l.builtins) > 0 && l.builtinsCompatible(req) {
 		if req.Config == nil {
 			req.Config = &genai.GenerateContentConfig{}
 		}
@@ -371,7 +380,14 @@ func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequ
 	// short-circuits internally (already-initializing / active, or a
 	// failed attempt serving its retry backoff) so the repeat calls
 	// are cheap — and they're what drives the #707 retry schedule.
-	if !cachedTurn && l.cacheInit != nil && req.Config != nil {
+	//
+	// Suppressed requests are skipped too, and that's load-bearing
+	// rather than incidental: a /btw request carries no system
+	// instruction and no tools, so seeding the cache from one would
+	// create a cache the agentic loop's turns then run against with
+	// neither — the strip-on-cached-turn block above nils exactly the
+	// fields the cache is supposed to supply.
+	if !noBuiltins && !cachedTurn && l.cacheInit != nil && req.Config != nil {
 		l.cacheInit(ctx, req.Config.SystemInstruction, req.Config.Tools)
 	}
 
@@ -805,7 +821,15 @@ func isUsableResponse(resp *adkmodel.LLMResponse) bool {
 // race, streaming truncation, provisional-throughput mismatch). A
 // second attempt often succeeds; a persistent pattern signals a
 // deeper Vertex-side issue worth escalating.
-var ErrEmptyResponse = errors.New("gemini: model returned no usable content with no finish reason and no error — likely a silent safety filter, streaming truncation, or transient Vertex fault; retrying often succeeds")
+//
+// It wraps models.ErrEmptyResponse so a caller can recognize "the
+// model said nothing" without importing this adapter. One-shot callers
+// need that: for /btw the empty answer IS the result, and rendering
+// this sentence at an operator who asked a question would be the
+// infra-error-instead-of-an-answer bug all over again.
+var ErrEmptyResponse = fmt.Errorf(
+	"gemini: model returned no usable content with no finish reason and no error — likely a silent safety filter, streaming truncation, or transient Vertex fault; retrying often succeeds (%w)",
+	models.ErrEmptyResponse)
 
 // adkEmptyResponseError is the literal error text ADK's streaming
 // aggregator (google.golang.org/adk/internal/llminternal) and

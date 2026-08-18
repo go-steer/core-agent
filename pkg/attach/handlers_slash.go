@@ -15,6 +15,7 @@
 package attach
 
 import (
+	"errors"
 	"net/http"
 )
 
@@ -97,6 +98,15 @@ func (h *handlers) doSlashBtw(w http.ResponseWriter, r *http.Request, entry *Ent
 	}
 	answer, err := p.AttachAskSideQuestion(r.Context(), req.Question)
 	if err != nil {
+		// "The model had nothing to say" is an outcome, not a failure.
+		// Returning it as a 500 is what made /btw look broken: a
+		// thought-only or safety-blocked response rendered identically
+		// to a dead endpoint, with no detail to tell them apart.
+		var empty *SideQueryEmptyError
+		if errors.As(err, &empty) {
+			writeJSON(w, http.StatusOK, SideQueryResponse{Empty: true, Detail: empty.Detail})
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

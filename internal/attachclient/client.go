@@ -38,11 +38,12 @@ import (
 // http.Client (Unix-socket-aware when the URL scheme is unix://).
 // Safe for concurrent use.
 //
-// Two HTTP clients live inside: `http` for short-lived RPC calls
-// with a request timeout, and `streamHTTP` for SSE — no timeout,
-// because the stream body stays open for as long as the agent runs
-// and minutes can pass between frames. A single client with a Timeout
-// would cut the SSE body mid-response on long model turns; the
+// Three HTTP clients live inside: `http` for short-lived RPC calls
+// with a request timeout, `slowHTTP` for the cost-bearing slash
+// endpoints that block on a model call, and `streamHTTP` for SSE — no
+// timeout, because the stream body stays open for as long as the agent
+// runs and minutes can pass between frames. A single client with a
+// Timeout would cut the SSE body mid-response on long model turns; the
 // symptom is "stream ended: <nil>" reconnect-loops in the UI.
 type Client struct {
 	URL *ParsedURL
@@ -57,6 +58,7 @@ type Client struct {
 	Credentials Credentials
 
 	http       *http.Client
+	slowHTTP   *http.Client
 	streamHTTP *http.Client
 }
 
@@ -82,10 +84,17 @@ func NewWithCredentials(parsed *ParsedURL, creds Credentials, timeout time.Durat
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
+	slow := slowRPCTimeout
+	if timeout > slow {
+		// An operator who asked for a longer RPC deadline than our slow
+		// floor meant it; never shorten what they configured.
+		slow = timeout
+	}
 	return &Client{
 		URL:         parsed,
 		Credentials: creds,
 		http:        newHTTPClient(parsed, timeout, 0),
+		slowHTTP:    newHTTPClient(parsed, slow, 0),
 		// SSE is long-lived so it gets no whole-request Timeout — that
 		// would cut the body mid-stream on a quiet session. But it DOES
 		// get a response-header deadline (time-to-first-byte): without
@@ -105,6 +114,21 @@ func NewWithCredentials(parsed *ParsedURL, creds Credentials, timeout time.Durat
 // the daemon's receive queue" failure mode). The caller's ctx remains
 // the cooperative-cancel signal for a healthy long-lived stream.
 const streamResponseHeaderTimeout = 30 * time.Second
+
+// slowRPCTimeout is the whole-request deadline for the /slash/*
+// endpoints. They are synchronous by design — the POST blocks while
+// the daemon runs a model call — so the ordinary 30s RPC deadline is
+// not a safety net for them, it's a bug: a side question over a long
+// history on a thinking model routinely takes longer, and the client
+// tearing the request down surfaces as "context deadline exceeded".
+// That is the infra-error-instead-of-an-answer symptom /btw was
+// reported for, and /compact and /done are slower still.
+//
+// Five minutes is a backstop against a wedged daemon, not a working
+// deadline: the operator can already abandon an in-flight slash from
+// the TUI (ESC cancels the request context), and that path is the one
+// meant to be used.
+const slowRPCTimeout = 5 * time.Minute
 
 // newHTTPClient builds an http.Client for one attach endpoint. timeout
 // is the whole-request deadline (0 = none, used for SSE). respHeaderT is
@@ -517,13 +541,17 @@ func (c *Client) SlashDone(ctx context.Context, sessionPath, note string) (attac
 // SlashBtw calls POST <base>/sessions/<sid>/slash/btw. Synchronous.
 // Backs the remote TUI's /btw slash. The answer renders as a
 // dismissible overlay (no event-log persistence).
-func (c *Client) SlashBtw(ctx context.Context, sessionPath, question string) (string, error) {
+//
+// Returns the whole response rather than just the text: an answered
+// call and an empty one are both 200s (protocol 1.5.0), and the caller
+// needs Empty + Detail to tell the operator which one happened.
+func (c *Client) SlashBtw(ctx context.Context, sessionPath, question string) (attach.SideQueryResponse, error) {
 	var out attach.SideQueryResponse
 	if err := c.doJSON(ctx, http.MethodPost, sessionPath+"/slash/btw",
 		attach.SideQueryRequest{Question: question}, &out); err != nil {
-		return "", err
+		return attach.SideQueryResponse{}, err
 	}
-	return out.Answer, nil
+	return out, nil
 }
 
 // SlashSubagent calls POST <base>/sessions/<sid>/slash/subagent.
@@ -818,7 +846,11 @@ func (c *Client) doJSON(ctx context.Context, method, suffix string, body, out an
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(resp.Body)
-		return &httpStatusError{op: fmt.Sprintf("%s %s", method, suffix), statusCode: resp.StatusCode, body: string(b)}
+		return asRateLimit(&httpStatusError{
+			op:         fmt.Sprintf("%s %s", method, suffix),
+			statusCode: resp.StatusCode,
+			body:       string(b),
+		}, resp.Header)
 	}
 	if out == nil {
 		return nil
@@ -853,5 +885,20 @@ func (c *Client) do(ctx context.Context, method, suffix string, body any) (*http
 	if err := c.auth(req); err != nil {
 		return nil, fmt.Errorf("auth: %w", err)
 	}
-	return c.http.Do(req)
+	return c.httpFor(suffix).Do(req)
+}
+
+// httpFor picks the RPC client whose whole-request deadline suits the
+// endpoint: the long one for /slash/* (each blocks on a model call —
+// see slowRPCTimeout), the ordinary one for everything else.
+//
+// Keyed on the path segment rather than a per-method flag so a slash
+// endpoint added later gets the right deadline without anyone
+// remembering to opt it in. Reads and small mutations stay on the
+// short deadline, where a hang IS a failure worth surfacing fast.
+func (c *Client) httpFor(suffix string) *http.Client {
+	if c.slowHTTP != nil && strings.Contains(suffix, "/slash/") {
+		return c.slowHTTP
+	}
+	return c.http
 }

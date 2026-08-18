@@ -17,6 +17,7 @@ package attach
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -708,6 +709,55 @@ type ReplanResponse struct {
 // SideQueryResponse carries the agent's answer text.
 type SideQueryResponse struct {
 	Answer string `json:"answer"`
+	// Empty reports that the call SUCCEEDED and the model produced no
+	// text — a thought-only response, a safety block, a bare STOP. It
+	// is not a failure and doesn't come back as one (protocol 1.5.0):
+	// a 500 here is reserved for the model call actually failing, so
+	// surfaces can render "no answer" inline instead of an error
+	// modal that says nothing about what happened.
+	Empty bool `json:"empty,omitempty"`
+	// Detail is the provider's explanation when it gave one —
+	// "finish_reason=SAFETY", "error=RESOURCE_EXHAUSTED: ...". Free-
+	// form and often absent. Only meaningful alongside Empty.
+	Detail string `json:"detail,omitempty"`
+}
+
+// AnswerText is the operator-facing rendering of a side-question
+// result: the answer when there is one, and otherwise an explicit
+// "no answer" line carrying whatever reason the provider gave.
+//
+// Lives on the wire type so the in-process TUI and the remote TUI
+// can't drift on the phrasing — an operator switching between
+// `core-agent --tui` and an attached `core-agent-tui` should see the
+// same words for the same outcome.
+func (r SideQueryResponse) AnswerText() string {
+	if answer := strings.TrimSpace(r.Answer); answer != "" {
+		return answer
+	}
+	if r.Detail != "" {
+		return "(no answer — " + r.Detail + ")"
+	}
+	return "(no answer — the model returned no text)"
+}
+
+// SideQueryEmptyError is what a SideQueryProvider returns when the
+// model answered with no text. The handler turns it into a 200 +
+// {"answer":"", "empty":true, "detail":...} rather than a 500.
+//
+// Declared here rather than matched on the agent package's own error
+// so pkg/attach stays free of an import cycle and third-party
+// registrants can produce the same wire shape.
+type SideQueryEmptyError struct {
+	// Detail is the provider's reason, if any. See
+	// SideQueryResponse.Detail.
+	Detail string
+}
+
+func (e *SideQueryEmptyError) Error() string {
+	if e == nil || e.Detail == "" {
+		return "side query: model returned no text"
+	}
+	return "side query: model returned no text (" + e.Detail + ")"
 }
 
 // SubagentSpec is the POST body for /slash/subagent. Mirrors

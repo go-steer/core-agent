@@ -138,7 +138,7 @@ func (a *Adapter) Tools() []coretui.ToolInfo {
 	return out
 }
 
-// Subagents satisfies coretui.SubagentLister. Backs /subagents AND —
+// Subagents is the roster half of coretui.SubagentReporter. Backs /subagents AND —
 // since core-tui v0.20.0 — the sidebar's subagent roster, which
 // core-tui refreshes from hostSnapshot once a second (host_snapshot.go).
 //
@@ -153,7 +153,7 @@ func (a *Adapter) Tools() []coretui.ToolInfo {
 //     cycle — which also carries the status header — by 10s, not 30s.
 //   - Last-known-good on a transient error. The uncached version
 //     returned nil, and core-tui reads a nil slice from a wired
-//     SubagentLister as "none running": one dropped request made the
+//     SubagentReporter as "none running": one dropped request made the
 //     sidebar assert there were no subagents while subagents were
 //     running. Invisible when only /subagents called this; a once-a-
 //     second surface makes it a flicker the operator will see.
@@ -217,7 +217,7 @@ type subagentCache struct {
 // This is the package's only lock held across a network call, so it is
 // worth saying why it is safe rather than a repeat of the #630 / #69
 // event-loop freeze: nothing here runs on bubbletea's Update/View
-// goroutine. core-tui calls SubagentLister only from hostSnapshot's
+// goroutine. core-tui calls SubagentReporter only from hostSnapshot's
 // tea.Cmd, and core-tui's own TestView_NeverCallsHost enforces that no
 // host capability is reachable from View(). Two concurrent cold callers
 // therefore serialize on a background goroutine — one server hit, the
@@ -1086,7 +1086,7 @@ func resolvePathOnClient(client *attachclient.Client, sessionID string) (string,
 
 // ===== Slash dispatch =====
 //
-// coretui's SlashProvider / AsyncSlashProviderWithPreamble hooks
+// coretui's SlashProvider / AsyncSlashProvider hooks
 // let the host register additional slash commands. The remote
 // adapter surfaces /compact, /done, /btw, /subagent (async) plus
 // /context, /pricing, /reload, /perms (sync read endpoints).
@@ -1112,7 +1112,7 @@ func (a *Adapter) SlashCommands() []coretui.SlashCommandSpec {
 // InvokeSlash satisfies coretui.SlashProvider for the synchronous
 // (read-only) slash commands. The async slashes (/compact, /done,
 // /btw, /subagent) flow through InvokeSlashAsync below; coretui's
-// dispatch checks AsyncSlashProviderWithPreamble first.
+// dispatch checks AsyncSlashProvider first.
 func (a *Adapter) InvokeSlash(ctx context.Context, name, args string) (coretui.SlashResult, error) {
 	switch name {
 	case "context":
@@ -1189,10 +1189,11 @@ func (a *Adapter) InvokeSlash(ctx context.Context, name, args string) (coretui.S
 	return coretui.SlashResult{}, fmt.Errorf("unknown slash: %s", name)
 }
 
-// InvokeSlashAsync satisfies coretui.AsyncSlashProviderWithPreamble.
-// Returns immediately with the preamble string (rendered in-chat
-// while the slash dispatches); writes the eventual result to the
-// returned channel.
+// InvokeSlashAsync satisfies coretui.AsyncSlashProvider (core-tui
+// v0.21.0 folded the former AsyncSlashProviderWithPreamble into the
+// bare interface). Returns immediately with the preamble string
+// (rendered in-chat while the slash dispatches); writes the eventual
+// result to the returned channel.
 func (a *Adapter) InvokeSlashAsync(ctx context.Context, name, args string) (string, <-chan coretui.SlashResultOrErr) {
 	ch := make(chan coretui.SlashResultOrErr, 1)
 
@@ -1227,6 +1228,13 @@ func (a *Adapter) InvokeSlashAsync(ctx context.Context, name, args string) (stri
 	}()
 	return preamble, ch
 }
+
+// Compile-time check: core-tui discovers the async slash path by type
+// assertion, so a drift here degrades silently to the synchronous
+// InvokeSlash and freezes the TUI for the length of a remote /btw or
+// /compact. v0.21.0 renamed this interface without a build error,
+// which is why it is pinned now.
+var _ coretui.AsyncSlashProvider = (*Adapter)(nil)
 
 // invokeAsyncSlash routes the four async slashes to their attach
 // endpoints. The /btw answer renders as a modal (R-CMD-5) so it

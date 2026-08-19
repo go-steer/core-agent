@@ -25,7 +25,7 @@ import (
 //
 // The read itself (which branch spellings a name resolves to, how a
 // page is cut) lives in internal/subagentlog, shared with the
-// in-process TUI's coretui.SubagentEventReader. This file is the HTTP
+// in-process TUI's coretui.SubagentReporter. This file is the HTTP
 // shim over it: request parsing, the two wire shapes, status codes.
 // See that package's doc comment for why subagent turns need a
 // retrieval path at all.

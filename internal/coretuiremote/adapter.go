@@ -84,8 +84,8 @@ type Adapter struct {
 	// loop. See capabilities.go.
 	status statusCache
 
-	// subagents caches the remote's SubagentLister roster. core-tui
-	// v0.20.0 folded SubagentLister into the same once-a-second
+	// subagents caches the remote's SubagentReporter roster. core-tui
+	// v0.20.0 folded that roster read into the same once-a-second
 	// hostSnapshot refresh that already drove Status/UsageTracker, so
 	// this read went from "operator typed /subagents" to a standing
 	// 1 Hz poll — same cache treatment, same reason. See capabilities.go.

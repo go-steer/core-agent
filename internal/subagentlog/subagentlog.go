@@ -33,7 +33,7 @@
 // The logic lives here rather than in pkg/attach because it has two
 // callers with nothing else in common: the HTTP endpoint
 // GET /sessions/{id}/agents/{name}/events, and the in-process TUI's
-// coretui.SubagentEventReader, which has no HTTP layer to go through.
+// coretui.SubagentReporter, which has no HTTP layer to go through.
 // Name resolution in particular must not be duplicated — the two
 // surfaces disagreeing about which spellings of a name resolve is
 // precisely the failure #694 was about.

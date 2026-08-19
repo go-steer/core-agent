@@ -851,7 +851,7 @@ func (a *coreAgentAdapter) Tools() []coretui.ToolInfo {
 	return out
 }
 
-// Subagents satisfies coretui.SubagentLister (R-SUB-1). Reads the
+// Subagents is the roster half of coretui.SubagentReporter (R-SUB-1). Reads the
 // BackgroundAgentManager's live handles and reports each one's
 // real status (running / completed / failed / stopped) via
 // BackgroundHandle.Status — the manager keeps terminal handles in
@@ -878,8 +878,8 @@ func (a *coreAgentAdapter) Subagents() []coretui.SubagentInfo {
 	return out
 }
 
-// SubagentEvents satisfies coretui.SubagentEventReader (core-tui
-// v0.18.0) — the `/subagents <name>` turn-log overlay and the live
+// SubagentEvents is the turn-log half of coretui.SubagentReporter
+// (core-tui v0.18.0) — the `/subagents <name>` overlay and the live
 // tail under a running sync subagent's tool row.
 //
 // The in-process TUI reads the event log directly; the remote adapter
@@ -934,7 +934,11 @@ func (a *coreAgentAdapter) SubagentEvents(ctx context.Context, name string, sinc
 // silently to "this host has no turn log" — /subagents <name> would
 // just stop drilling down, with no build error and no runtime
 // complaint.
-var _ coretui.SubagentEventReader = (*coreAgentAdapter)(nil)
+//
+// core-tui v0.21.0 merged SubagentLister and SubagentEventReader into
+// SubagentReporter, so this one assertion now covers both Subagents()
+// and SubagentEvents().
+var _ coretui.SubagentReporter = (*coreAgentAdapter)(nil)
 
 // subagentRoster collects the names this session knows about outside
 // the log — live spawned instances, plus whatever the config declares
@@ -1357,8 +1361,10 @@ func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (
 	return coretui.SlashResult{}, fmt.Errorf("unknown slash: %s", name)
 }
 
-// InvokeSlashAsync satisfies coretui.AsyncSlashProviderWithPreamble
-// (core-tui v0.6.3, issue #16 / our #55). The synchronous
+// InvokeSlashAsync satisfies coretui.AsyncSlashProvider (core-tui
+// v0.6.3, issue #16 / our #55; v0.21.0 folded the former
+// AsyncSlashProviderWithPreamble into the bare interface, so the
+// preamble return is no longer an opt-in variant). The synchronous
 // InvokeSlash above runs inside core-tui's Update loop and freezes
 // the TUI for the duration of any slash that does network I/O
 // (/btw, /compact, /subagent all take 1-10s on a real model). The
@@ -1387,6 +1393,14 @@ func (a *coreAgentAdapter) InvokeSlashAsync(ctx context.Context, name, args stri
 	}()
 	return preamble, ch
 }
+
+// Compile-time check: core-tui discovers the async slash path by
+// asserting on Options.Agent, so a drift here degrades silently to
+// the synchronous InvokeSlash — which still works, but freezes the
+// TUI for the 1-10s a real /btw or /compact takes. v0.21.0 renamed
+// this interface out from under us without a build error, which is
+// the argument for pinning it the way SubagentReporter is pinned.
+var _ coretui.AsyncSlashProvider = (*coreAgentAdapter)(nil)
 
 // preambleFor returns the chat-visible "this is running" row for
 // async slashes whose wall-clock makes the bottom toast easy to
@@ -1563,6 +1577,29 @@ func (c *coreMCPElicitor) elicit(ctx context.Context, serverName string, req *mc
 	}
 	result, err := c.inner.Elicit(ctx, serverName, cReq)
 	if err != nil {
+		// core-tui v0.21.0 split "I could not draw this" out of the
+		// Action enum and into the error return: an unrenderable
+		// request now comes back as ErrElicitUnsupported paired with
+		// a placeholder ElicitActionCancel, where v0.20.0 reported a
+		// plain ElicitActionDecline and a nil error.
+		//
+		// Forwarding that as an error would turn what used to be a
+		// clean protocol answer into a JSON-RPC failure on the
+		// calling server's goroutine. MCP already has a word for
+		// "nobody is going to fill this in" — decline — and it is
+		// what DeclineHandler (pkg/mcp/elicitation.go) returns for
+		// the neighbouring case of no interactive UI at all. A form
+		// this TUI cannot draw is the same answer arrived at later,
+		// so it gets the same wire value and the operator gets
+		// core-tui's transcript row explaining which part was
+		// undrawable.
+		//
+		// Every other error — a cancelled context above all — still
+		// propagates, because those really are failures to carry the
+		// request out rather than answers to it.
+		if errors.Is(err, coretui.ErrElicitUnsupported) {
+			return &mcpsdk.ElicitResult{Action: "decline"}, nil
+		}
 		return &mcpsdk.ElicitResult{Action: "cancel"}, err
 	}
 	out := &mcpsdk.ElicitResult{

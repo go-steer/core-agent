@@ -58,4 +58,10 @@ type SubagentManager interface {
 	// SpawnSubagent spawns a subagent from an attach spec. Backs
 	// attachadapter.AttachSpawnSubagent (attach.SubagentSpawner).
 	SpawnSubagent(ctx context.Context, spec attach.SubagentSpec) (attach.SubagentSpawnResponse, error)
+
+	// StopSubagent stops one live subagent by name, reporting whether
+	// there was one to stop. Backs attachadapter.AttachStopAgent
+	// (attach.AgentStopper) — the operator route for a runaway
+	// subagent, which interrupting the PARENT can't reach.
+	StopSubagent(name string) (bool, error)
 }

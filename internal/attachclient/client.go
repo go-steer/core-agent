@@ -558,22 +558,58 @@ func (c *Client) Wake(ctx context.Context, sessionPath string) error {
 // Interrupted reports whether there was an in-flight turn to cancel
 // (server-side); false means the agent was idle and the call was a
 // no-op. The TUI distinguishes these for its "nothing to interrupt"
-// toast vs. "turn cancelled" rendering.
-type InterruptResponse struct {
-	Interrupted bool   `json:"interrupted"`
-	Session     string `json:"session"`
-}
+// toast vs. "turn cancelled" rendering. Paused reports whether the
+// loop is now parked (protocol v1.5.0).
+//
+// Alias rather than a second declaration: this used to be a hand-copy
+// of the server shape, which is how it silently missed every field
+// v1.5.0 added.
+type InterruptResponse = attach.InterruptResponse
 
 // Interrupt calls POST <base>/sessions/<sid>/interrupt to cancel the
-// in-flight turn on that session. The returned InterruptResponse
-// reports whether something was actually cancelled.
-func (c *Client) Interrupt(ctx context.Context, sessionPath string) (InterruptResponse, error) {
+// in-flight turn on that session and park the loop. The returned
+// InterruptResponse reports whether something was actually cancelled
+// and whether the agent is now paused.
+//
+// hold=false asks for the pre-v1.5.0 cancel-and-carry-on behavior
+// (no park). stopSubagents additionally stops every running background
+// subagent — off by default, since subagent runs aren't resumable.
+func (c *Client) Interrupt(ctx context.Context, sessionPath string, hold, stopSubagents bool) (InterruptResponse, error) {
 	var out InterruptResponse
-	if err := c.doJSON(ctx, http.MethodPost, sessionPath+"/interrupt",
-		map[string]string{}, &out); err != nil {
+	body := attach.InterruptRequest{Hold: &hold, StopSubagents: stopSubagents}
+	if err := c.doJSON(ctx, http.MethodPost, sessionPath+"/interrupt", body, &out); err != nil {
 		return InterruptResponse{}, err
 	}
 	return out, nil
+}
+
+// Pause calls POST <base>/sessions/<sid>/pause — park the loop without
+// touching an in-flight turn ("stop after this one").
+func (c *Client) Pause(ctx context.Context, sessionPath, reason string) (attach.PauseResponse, error) {
+	var out attach.PauseResponse
+	if err := c.doJSON(ctx, http.MethodPost, sessionPath+"/pause",
+		attach.PauseRequest{Reason: reason}, &out); err != nil {
+		return attach.PauseResponse{}, err
+	}
+	return out, nil
+}
+
+// Resume calls POST <base>/sessions/<sid>/resume with the operator's
+// disposition. An empty req is a plain "carry on".
+func (c *Client) Resume(ctx context.Context, sessionPath string, req attach.ResumeRequest) (attach.ResumeResponse, error) {
+	var out attach.ResumeResponse
+	if err := c.doJSON(ctx, http.MethodPost, sessionPath+"/resume", req, &out); err != nil {
+		return attach.ResumeResponse{}, err
+	}
+	return out, nil
+}
+
+// StopAgent calls POST <base>/sessions/<sid>/agents/<name>/stop —
+// stop one runaway background subagent, which interrupting the parent
+// can't reach.
+func (c *Client) StopAgent(ctx context.Context, sessionPath, name string) error {
+	return c.doJSON(ctx, http.MethodPost,
+		sessionPath+"/agents/"+url.PathEscape(name)+"/stop", map[string]string{}, nil)
 }
 
 // ---- SSE stream ----
@@ -682,6 +718,12 @@ func parseStreamFrame(eventType, raw string) (attach.Frame, bool) {
 		return attach.Frame{Type: eventType, TypedData: &p}, true
 	case attach.EventInbox:
 		var p attach.InboxEvent
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			return attach.Frame{}, false
+		}
+		return attach.Frame{Type: eventType, TypedData: &p}, true
+	case attach.EventPause:
+		var p attach.PauseEvent
 		if err := json.Unmarshal([]byte(raw), &p); err != nil {
 			return attach.Frame{}, false
 		}

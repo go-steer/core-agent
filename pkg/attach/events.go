@@ -55,7 +55,17 @@ import "time"
 // Caller.Identity). Enables backend-agnostic clients (mast-web) to
 // render without a code change per producer. Also spec'd an optional
 // `capabilities` merge field on status-update for future hot changes.
-const protocolVersion = "1.4.0"
+//
+// v1.5.0 (operator interrupt/steer, docs/operator-interrupt-design.md):
+// new `pause` event type reporting the session's pause gate opening and
+// closing; new POST /sessions/.../pause + /resume endpoints; POST
+// /interrupt gained an optional request body (`hold`, `stop_subagents`)
+// and richer response; GET /status can now report state="paused" plus
+// `paused_since` / `pause_reason` / `interrupted`. Fully additive — a
+// 1.4.0 client sees the pre-existing shapes unchanged, and an empty
+// /interrupt body keeps working (though its DEFAULT behavior now holds
+// the loop; see the endpoint docs).
+const protocolVersion = "1.5.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (
@@ -95,6 +105,7 @@ var supportedEventTypes = []string{
 	EventInbox,
 	EventTurnComplete,
 	EventTurnError,
+	EventPause,
 	"stream-chunk",
 	"tool-call",
 	"tool-result",
@@ -187,6 +198,13 @@ const (
 	// featureInterrupt is true when the agent implements
 	// InterruptProvider — clients gate ESC → cancel wiring on it.
 	featureInterrupt = "interrupt"
+	// featurePause is true when the agent implements PauseController
+	// (v1.5.0): POST /pause + /resume work, and /interrupt parks the
+	// loop instead of only cancelling the turn. Clients gate their
+	// "what do you want me to do instead?" prompt on it — offering a
+	// steer against a producer that can't hold would promise a park
+	// that never happens.
+	featurePause = "pause"
 )
 
 // AgentIdentity is the capabilities.agent block — the producer's

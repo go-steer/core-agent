@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -474,13 +475,13 @@ func TestClientPromptStream_NoBrokerIs501(t *testing.T) {
 	}
 }
 
-// ---- /interrupt ------------------------------------------------------
+// ---- /interrupt, /pause, /resume --------------------------------------
 
 func TestClientInterrupt_IdleAgent(t *testing.T) {
 	t.Parallel()
 	h := newRPCHarness(t, harnessConfig{})
 
-	resp, err := h.client.Interrupt(context.Background(), h.sessionPath())
+	resp, err := h.client.Interrupt(context.Background(), h.sessionPath(), false /* hold */, false)
 	if err != nil {
 		t.Fatalf("Interrupt: %v", err)
 	}
@@ -489,6 +490,246 @@ func TestClientInterrupt_IdleAgent(t *testing.T) {
 	}
 	if resp.Session != testSID {
 		t.Errorf("Session = %q, want %q", resp.Session, testSID)
+	}
+	if resp.Paused {
+		t.Error("Paused = true with hold=false, want false (opt-out of the v1.5.0 park)")
+	}
+}
+
+// An interrupt against an IDLE agent still parks it. The operator meant
+// "stop"; without the hold the next scheduler tick, wake, or
+// auto-continue drives a turn seconds later and the stop reads as
+// having done nothing — which is the reported symptom this whole
+// surface exists to fix.
+func TestClientInterrupt_HoldParksIdleAgent(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{})
+	ctx := context.Background()
+	path := h.sessionPath()
+
+	resp, err := h.client.Interrupt(ctx, path, true /* hold */, false)
+	if err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	if resp.Interrupted {
+		t.Error("Interrupted = true on an idle agent, want false")
+	}
+	if !resp.Paused {
+		t.Fatal("Paused = false after hold interrupt, want true")
+	}
+
+	status, err := h.client.Status(ctx, path)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.State != attach.AgentStatePaused {
+		t.Errorf("Status.State = %q, want %q", status.State, attach.AgentStatePaused)
+	}
+	if status.PauseReason == "" {
+		t.Error("Status.PauseReason is empty, want the operator-interrupt reason")
+	}
+	if status.PausedSince.IsZero() {
+		t.Error("Status.PausedSince is zero, want the park timestamp")
+	}
+	if status.Interrupted {
+		t.Error("Status.Interrupted = true, want false (nothing was in flight to kill)")
+	}
+}
+
+func TestClientPauseResume_RoundTrip(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{})
+	ctx := context.Background()
+	path := h.sessionPath()
+
+	pr, err := h.client.Pause(ctx, path, "maintenance")
+	if err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if !pr.Paused || !pr.Transitioned {
+		t.Fatalf("Pause = %+v, want paused+transitioned", pr)
+	}
+	if pr.Reason != "maintenance" {
+		t.Errorf("Pause.Reason = %q, want %q", pr.Reason, "maintenance")
+	}
+
+	// Second pause is idempotent: still paused, but not this call's
+	// doing — a client can stay quiet on a redundant press.
+	again, err := h.client.Pause(ctx, path, "maintenance")
+	if err != nil {
+		t.Fatalf("Pause (repeat): %v", err)
+	}
+	if !again.Paused || again.Transitioned {
+		t.Errorf("repeat Pause = %+v, want paused=true transitioned=false", again)
+	}
+
+	rr, err := h.client.Resume(ctx, path, attach.ResumeRequest{Steer: "check the pods instead"})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if !rr.Resumed {
+		t.Error("Resumed = false, want true")
+	}
+	if rr.Mode != attach.ResumeModeSteer {
+		t.Errorf("Mode = %q, want %q (defaulted from non-empty steer)", rr.Mode, attach.ResumeModeSteer)
+	}
+	if rr.State != attach.AgentStateIdle {
+		t.Errorf("State = %q, want %q", rr.State, attach.AgentStateIdle)
+	}
+
+	// Resuming an agent that isn't paused is a 200 no-op, not an error:
+	// two operator surfaces racing the same click shouldn't produce a
+	// spurious failure.
+	noop, err := h.client.Resume(ctx, path, attach.ResumeRequest{})
+	if err != nil {
+		t.Fatalf("Resume (not paused): %v", err)
+	}
+	if noop.Resumed {
+		t.Error("Resumed = true on an unpaused agent, want false")
+	}
+	if noop.Mode != attach.ResumeModeContinue {
+		t.Errorf("Mode = %q, want %q (defaulted from empty steer)", noop.Mode, attach.ResumeModeContinue)
+	}
+}
+
+// The steer text has to reach the inbox, framed — a resume that opens
+// the gate but drops the operator's instruction is the failure mode
+// that makes the whole park pointless.
+func TestClientResume_QueuesFramedSteer(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{})
+	ctx := context.Background()
+	path := h.sessionPath()
+
+	if _, err := h.client.Pause(ctx, path, ""); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if _, err := h.client.Resume(ctx, path, attach.ResumeRequest{Steer: "look at node pressure"}); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	queued := h.adapter.Agent().DrainInbox()
+	if len(queued) != 1 {
+		t.Fatalf("inbox has %d messages, want 1: %q", len(queued), queued)
+	}
+	if !strings.Contains(queued[0], "look at node pressure") {
+		t.Errorf("queued message %q does not carry the steer text", queued[0])
+	}
+	if !strings.Contains(queued[0], "interrupted") {
+		t.Errorf("queued message %q is not interrupt-framed; the model would treat the "+
+			"cancelled turn as a normal gap and re-run it", queued[0])
+	}
+}
+
+func TestClientResume_RejectsUnknownMode(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{})
+
+	_, err := h.client.Resume(context.Background(), h.sessionPath(),
+		attach.ResumeRequest{Mode: "sideways"})
+	var se *httpStatusError
+	if !errors.As(err, &se) {
+		t.Fatalf("err = %v (%T), want *httpStatusError", err, err)
+	}
+	if se.statusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", se.statusCode)
+	}
+}
+
+// Park and release have to reach a WATCHING client, not just the one
+// that pressed the button. A second operator surface (mast-web next to
+// a TUI) renders the steer prompt off this frame; without it, one
+// client shows "paused" and the other keeps drawing a running turn.
+//
+// This is also the end-to-end proof that the emit path survives the
+// hops: agent.emitPause -> broadcaster.Emit -> SSE frame -> the
+// client's typed decoder.
+func TestClientStream_PauseFramesReachTheStream(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	path := h.sessionPath()
+
+	frames, err := h.client.Stream(ctx, path, 0)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	// Drain the boot frames so the pause events below are the next
+	// typed frames we care about; the reader loop skips anything else
+	// anyway, this just keeps the buffered channel moving.
+	if first, ok := <-frames; !ok || first.Type != attach.EventCapabilities {
+		t.Fatalf("first frame = %+v (open=%v), want capabilities", first, ok)
+	}
+
+	if _, err := h.client.Pause(ctx, path, "maintenance"); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	paused := nextPauseFrame(t, frames)
+	if paused.State != attach.PauseStatePaused {
+		t.Errorf("pause frame State = %q, want %q", paused.State, attach.PauseStatePaused)
+	}
+	if paused.Reason != "maintenance" {
+		t.Errorf("pause frame Reason = %q, want %q", paused.Reason, "maintenance")
+	}
+	if paused.Interrupted {
+		t.Error("pause frame Interrupted = true for a plain pause, want false")
+	}
+	if paused.At.IsZero() {
+		t.Error("pause frame At is zero, want the park timestamp")
+	}
+
+	if _, err := h.client.Resume(ctx, path, attach.ResumeRequest{Steer: "drain node-3 first"}); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	resumed := nextPauseFrame(t, frames)
+	if resumed.State != attach.PauseStateResumed {
+		t.Errorf("resume frame State = %q, want %q", resumed.State, attach.PauseStateResumed)
+	}
+	if resumed.Mode != attach.ResumeModeSteer {
+		t.Errorf("resume frame Mode = %q, want %q — a watching client renders what the "+
+			"operator chose, not just that something changed", resumed.Mode, attach.ResumeModeSteer)
+	}
+}
+
+// nextPauseFrame reads until the next typed `pause` frame, skipping the
+// status/usage boot frames and any live-tail eventlog frames.
+func nextPauseFrame(t *testing.T, frames <-chan attach.Frame) *attach.PauseEvent {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case frame, ok := <-frames:
+			if !ok {
+				t.Fatal("stream closed before a pause frame arrived")
+			}
+			if frame.Type != attach.EventPause {
+				continue
+			}
+			p, isPause := frame.TypedData.(*attach.PauseEvent)
+			if !isPause || p == nil {
+				t.Fatalf("pause frame TypedData = %T, want *attach.PauseEvent", frame.TypedData)
+			}
+			return p
+		case <-deadline:
+			t.Fatal("timed out waiting for a pause frame")
+			return nil
+		}
+	}
+}
+
+func TestClientStopAgent_NoSuchSubagent(t *testing.T) {
+	t.Parallel()
+	h := newRPCHarness(t, harnessConfig{})
+
+	err := h.client.StopAgent(context.Background(), h.sessionPath(), "ghost")
+	var se *httpStatusError
+	if !errors.As(err, &se) {
+		t.Fatalf("err = %v (%T), want *httpStatusError", err, err)
+	}
+	if se.statusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 (an operator aiming at a runaway needs to know they missed)", se.statusCode)
 	}
 }
 

@@ -978,6 +978,31 @@ func (m *Manager) ListSubagents() []attach.AgentInfo {
 	return out
 }
 
+// StopSubagent implements agent.SubagentManager. Thin wrapper over
+// Stop that separates "no such subagent" (false, nil — a 404 for the
+// operator, who aimed at a name that isn't running) from a real
+// failure (an error). Stopping an already-stopped subagent is a no-op
+// that still reports true: the handle is still registered, so the
+// operator's intent was satisfied.
+func (m *Manager) StopSubagent(name string) (bool, error) {
+	if m == nil {
+		return false, nil
+	}
+	m.mu.Lock()
+	_, ok := m.agents[name]
+	m.mu.Unlock()
+	if !ok {
+		return false, nil
+	}
+	// Small window between the lookup and the stop: if the handle is
+	// unregistered in between, Stop's not-found error is the same
+	// "nothing to stop" answer, so report it as such rather than a 500.
+	if err := m.Stop(name); err != nil {
+		return false, nil //nolint:nilerr // not-found is the only failure Stop returns
+	}
+	return true, nil
+}
+
 // SpawnSubagent implements agent.SubagentManager. Translates an attach
 // spec into a background Spec and delegates to Spawn; backs
 // attachadapter.AttachSpawnSubagent.

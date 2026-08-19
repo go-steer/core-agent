@@ -718,12 +718,12 @@ func (c *Client) Stream(ctx context.Context, sessionPath string, since int64) (<
 // parseStreamFrame dispatches a single data block by SSE event type.
 // Legacy frames ("agent" or empty event) unmarshal into the full
 // attach.Frame shape (carries seq + ADK session.Event). Typed events
-// (status-update / usage-update / inbox / turn-complete / turn-error /
-// capabilities) unmarshal into the matching payload struct, which is
-// stashed on attach.Frame.TypedData with Type set so consumers can
-// dispatch downstream. Returns false for parse errors or unknown
-// event types — the consumer (coretuiremote) tolerates either as
-// no-op so unknown SSE event names don't crash the stream.
+// (status-update / usage-update / inbox / pause / wake / turn-complete
+// / turn-error / capabilities) unmarshal into the matching payload
+// struct, which is stashed on attach.Frame.TypedData with Type set so
+// consumers can dispatch downstream. Returns false for parse errors or
+// unknown event types — the consumer (coretuiremote) tolerates either
+// as a no-op so unknown SSE event names don't crash the stream.
 func parseStreamFrame(eventType, raw string) (attach.Frame, bool) {
 	switch eventType {
 	case "", attach.EventAgent:
@@ -758,6 +758,12 @@ func parseStreamFrame(eventType, raw string) (attach.Frame, bool) {
 		return attach.Frame{Type: eventType, TypedData: &p}, true
 	case attach.EventPause:
 		var p attach.PauseEvent
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			return attach.Frame{}, false
+		}
+		return attach.Frame{Type: eventType, TypedData: &p}, true
+	case attach.EventWake:
+		var p attach.WakeEvent
 		if err := json.Unmarshal([]byte(raw), &p); err != nil {
 			return attach.Frame{}, false
 		}

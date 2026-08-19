@@ -56,6 +56,7 @@ var (
 	_ coretui.InjectableAgent   = (*Adapter)(nil) // Inject
 	_ coretui.LiveAgent         = (*Adapter)(nil) // Events — observer mode is THE attach-mode path
 	_ coretui.RemoteInterrupter = (*Adapter)(nil) // Interrupt
+	_ coretui.WakeRequester     = (*Adapter)(nil) // WakeRequested — fed by `wake` SSE frames (#802)
 
 	// tui/capabilities.go
 	_ coretui.SessionSwitcher      = (*Adapter)(nil) // Sessions, SwitchToSession
@@ -81,11 +82,6 @@ var (
 
 // Deliberately NOT implemented by *Adapter — each absence is a
 // decision, not an oversight:
-//
-//   - coretui.WakeRequester: added by #802. The adapter has a
-//     RequestWake() method that does not satisfy the interface
-//     (core-tui wants WakeRequested() <-chan struct{}), so the guard
-//     would not compile today. #802 owns both the fix and the line.
 //
 //   - coretui.ModelSwapper: the model is the daemon's choice, not the
 //     attached operator's. /model against a remote session would have

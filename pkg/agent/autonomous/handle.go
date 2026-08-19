@@ -323,11 +323,15 @@ func (h *Handle) InjectAs(message string, caller auth.Caller) error {
 }
 
 // RequestWake fires the underlying agent's wake signal, interrupting
-// any active scheduler sleep. Pairs with Inject for "operator nudged
-// the loop, wake now" semantics; Inject already calls RequestWake
-// internally, so this is for the alert-arrival case (or any other
-// signal that doesn't carry a message). No-op when the agent hasn't
-// been constructed yet.
+// any active scheduler sleep, and publishes a `wake` event to attached
+// operators (#802). Pairs with Inject for "operator nudged the loop,
+// wake now" semantics; Inject already fires the same signal internally
+// (deliberately without the event — the inject has its own frame), so
+// this is for the alert-arrival case, or any other signal that doesn't
+// carry a message. This is the door a host wires a
+// BackgroundAgentManager.Alerts() drain to; dev/uat/scheduled-monitor
+// is the worked example. No-op when the agent hasn't been constructed
+// yet.
 func (h *Handle) RequestWake() {
 	h.mu.Lock()
 	a := h.agent

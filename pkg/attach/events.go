@@ -72,7 +72,17 @@ import "time"
 // doesn't implement the capability, when titling is off, and before the
 // first turn lands, so every client needs the pre-1.6.0 fallback to the
 // session ID regardless of the version it negotiated. Fully additive.
-const protocolVersion = "1.6.0"
+//
+// v1.7.0 (#802): new `wake` event type reporting that the agent's wake
+// signal fired — an operator called POST /wake, or a host wired
+// Agent.RequestWake to something (a background alert, say). Emitted
+// from the agent (like `pause`), so a wake that never touches a handler
+// still reaches remote operators. A client detects it by looking for
+// "wake" in the capabilities frame's `event_types`; a pre-1.7.0 daemon
+// omits it and the consumer simply never gets the signal, which is what
+// every client saw before this version. Fully additive — an older
+// client drops the unknown event name per spec §3.
+const protocolVersion = "1.7.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (
@@ -89,6 +99,26 @@ const (
 	// learns that someone else parked the agent without polling
 	// /status.
 	EventPause = "pause"
+
+	// EventWake (v1.7.0) reports that the session's wake signal fired:
+	// something out-of-band decided the loop should look at the world
+	// again. In a stock daemon that means an operator's POST /wake; the
+	// other producer is a host that calls Agent.RequestWake itself,
+	// which is how a background alert is meant to wake a sleeping
+	// supervisor (see dev/uat/scheduled-monitor). No in-tree code wires
+	// that up for you, so do not read this event as "an alert arrived".
+	//
+	// It is an ATTENTION signal, not a state change: there is no
+	// matching "unwake", and nothing to reconcile on reconnect.
+	//
+	// Deliberately NOT emitted for the wake that Inject fires
+	// internally: that one already has its own frame on the wire (the
+	// `inbox` queued event), and emitting both would make every
+	// operator-typed prompt raise a "something needs you" notice about
+	// the operator's own typing. POST /wake carrying a `prompt` is the
+	// one case that produces both, because it is an inject and an
+	// explicit wake request in the same call.
+	EventWake = "wake"
 
 	// EventAgent is the legacy event type carrying ADK session.Event
 	// payloads (stream-chunk / tool-call / tool-result are all
@@ -113,6 +143,7 @@ var supportedEventTypes = []string{
 	EventTurnComplete,
 	EventTurnError,
 	EventPause,
+	EventWake,
 	"stream-chunk",
 	"tool-call",
 	"tool-result",
@@ -354,6 +385,27 @@ type PauseEvent struct {
 	Interrupted bool      `json:"interrupted,omitempty"`
 	Mode        string    `json:"mode,omitempty"`
 	At          time.Time `json:"at"`
+}
+
+// WakeEvent fires when the agent's wake signal is raised (v1.7.0) —
+// see EventWake for which wakes qualify. Carried on the `wake` SSE
+// event.
+//
+// The payload is deliberately just a timestamp. A wake carries no
+// state a consumer can render: the thing that woke the loop reports
+// itself through its own frames (an alert arrives as an `inbox` event,
+// a subagent's result as `agent` events, the resulting work as
+// `status-update` / `turn-complete`). What the wake adds is "look now",
+// and the only thing worth attaching to that is when. A `reason` field
+// nothing on this side can fill would be a promise to consumers that
+// the producer cannot keep.
+//
+// Coalescing: none is promised in either direction. The agent's own
+// wake channel is buffered-1 and drops a fire that lands while one is
+// already pending, so two wakes microseconds apart may produce one
+// frame or two. Consumers must treat this as an edge, not a count.
+type WakeEvent struct {
+	At time.Time `json:"at"`
 }
 
 // Resume modes: the disposition an operator picks when reopening the

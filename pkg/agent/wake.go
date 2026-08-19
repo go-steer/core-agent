@@ -14,6 +14,12 @@
 
 package agent
 
+import (
+	"time"
+
+	"github.com/go-steer/core-agent/v2/pkg/attach"
+)
+
 // wakeSignal multiplexes an arbitrary number of "wake the loop"
 // triggers into a single buffered channel the autonomous driver's
 // scheduler can select on. Buffer 1 with non-blocking send means
@@ -57,27 +63,57 @@ func (w *wakeSignal) channel() <-chan struct{} {
 	return w.ch
 }
 
-// RequestWake fires the agent's wake signal. Used by:
+// RequestWake fires the agent's wake signal AND publishes a `wake`
+// event to connected operators. Callers, as the tree actually stands:
 //
-//   - BackgroundAgentManager (via a driver-side goroutine) to wake a
-//     sleeping supervisor as soon as a child alert arrives, instead of
-//     waiting for the supervisor's next scheduled wake.
-//   - The future attach-mode `POST /sessions/<id>/wake` endpoint, when
-//     an operator outside the process wants an immediate rescan.
-//   - Operator input via Agent.Inject — Inject calls RequestWake
-//     internally so a typed command also pierces an active sleep.
+//   - The attach-mode `POST /sessions/<id>/wake` endpoint, when an
+//     operator outside the process wants an immediate rescan. This is
+//     the only caller in cmd/ or pkg/ that a shipped binary reaches.
+//   - autonomous.Handle.RequestWake, the host-facing door. Nothing
+//     in-tree wires it to anything; the intended shape is a driver-side
+//     goroutine on BackgroundAgentManager.Alerts() so a child alert
+//     wakes a sleeping supervisor instead of waiting for its next
+//     scheduled wake. dev/uat/scheduled-monitor does exactly that and
+//     is the worked example.
+//   - ResumeWith(mode, "", caller) with no message — reachable from a
+//     library caller only. `POST /resume` never takes it: attachadapter
+//     frames a message for both steer and continue, and a non-empty
+//     message short-circuits ResumeWith before the wake.
+//
+// Operator input via Agent.Inject fires the signal too, but through
+// the unexported path — it deliberately does NOT publish the event.
+// See injectAs.
+//
+// The event is published here rather than from the attach handler for
+// the same reason emitPause is: an attached operator has to see every
+// wake, and the wake paths above are mostly NOT HTTP ones — the host
+// wiring and the library call never touch a handler, and putting the
+// emit in the handler would make them invisible to exactly the remote
+// operator who can't see the process (#802). Publishing is also the
+// only way an operator surface can learn about a wake at all: the wake
+// CHANNEL is single-consumer with a buffer of one, so a second
+// subscriber would steal wakes from the autonomous scheduler that the
+// channel exists to interrupt.
+//
+// emit is a no-op with no operator transport wired, and the attach
+// broadcaster's fan-out is non-blocking per subscriber, so this stays
+// safe to call from a hot path. It is also safe to call while the loop
+// is running: nothing here takes the agent's state lock.
 //
 // No-op when the agent has no wake signal (defensive: hand-constructed
-// Agent structs used in tests don't necessarily wire one up).
+// Agent structs used in tests don't necessarily wire one up) — but the
+// event still publishes, because "something asked for a wake" is true
+// regardless of whether a scheduler was listening.
 func (a *Agent) RequestWake() {
 	if a == nil {
 		return
 	}
 	a.wake.fire()
+	a.emit(attach.EventWake, attach.WakeEvent{At: time.Now().UTC()})
 }
 
 // WakeRequested returns a channel that fires whenever RequestWake (or
-// Inject, which calls RequestWake internally) is invoked. The
+// Inject, which fires the same signal internally) is invoked. The
 // autonomous driver attaches this channel to the context it passes to
 // Scheduler.BeforeNextTurn so SleepScheduler can select on it
 // alongside its sleep timer and ctx.Done. Buffered(1) coalesced

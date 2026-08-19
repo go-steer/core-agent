@@ -150,7 +150,6 @@ Until then, the documented attach path for non-IAM gateways remains a wrapper ar
 | `/tools`, `/subagents` | List the daemon's tool palette and the configured subagent roster. `/tools` tags each entry's `source` (declarative subagents wired as parent tools show `subagent`; MCP/skill tools currently show `other`); `/subagents` shows the roster the daemon loaded — name, model, `root`, and `sync`/`async` modes — from `GET /subagents` (distinct from `/agents`, which lists *running* instances). |
 | `/interrupt` | Cancel the in-flight model turn on the remote. |
 | `/reconnect` | Force-reconnect the SSE stream (resumes from `?since=<lastSeq>` — lossless). |
-| `/wake` | Pierce a scheduler sleep on the remote. |
 | `/sessions` | Pop back to the startup session picker (kills the TUI, re-launches). |
 | `/switch [<sid>]`, `/sess` | Detach + reattach to a different session **in place**. Bare form opens an in-chat picker (local + peer sessions fanned in parallel via `GET /peers` → per-peer `GET /sessions`; peer rows tagged `[peer:<name>]`); `/switch <sid>` direct-jumps to a local session. Chat wipes; local SSE reader closes; the outgoing daemon session keeps running for later re-attach. |
 | `/new` | POST `/sessions` on the current daemon (per-caller bearer auth, ACL-isolated) and detach + reattach to the fresh session in place. Companion to `/switch` for the "I need a clean slate" flow. |
@@ -301,13 +300,14 @@ Copies go out twice: an OSC 52 escape aimed at your terminal emulator, and a nat
 When connected to a listener started with `--attach-readonly`, the TUI still works for everything except writes:
 
 - ✅ Session enumeration, live tail, observer mode, `/tools`, `/stats`, `/context`, `/memory`, `/skills`, `/mcp`, `/perms`, `/transcript`
-- ❌ Sending messages (typing + Enter), `/wake`, `/inject`, `/interrupt`, `/allow`, `/deny`, `/reload`, `/compact`, `/done`, `/subagent`, `/pricing refresh|set`
+- ❌ Sending messages (typing + Enter), `/inject`, `/interrupt`, `/allow`, `/deny`, `/reload`, `/compact`, `/done`, `/subagent`, `/pricing refresh|set`
 
 Writes surface as red `✗` error lines in the scrollback (the server returns 403; the TUI shows the error rather than failing silently).
 
 ## Composition
 
 - **Live stream**: SSE over `GET /sessions/<sid>/events`. Lossless replay via `?since=<seq>` so reconnects don't lose history. The adapter exposes [`coretui.LiveAgent`](https://github.com/go-steer/core-tui/blob/main/tui/agent.go) — core-tui's optional capability for hosts whose agent is observed via a continuous event stream rather than driven by per-turn `Run` calls.
+- **Wake notifications**: the adapter exposes [`coretui.WakeRequester`](https://github.com/go-steer/core-tui/blob/main/tui/agent.go), fed by the daemon's [`wake` SSE frame](/reference/attach-http/#wake-notifications-protocol-170) — so another operator's `POST /wake`, or a host that wired `Agent.RequestWake` to a background alert, now reaches an attached TUI the same way it reaches a local one. core-tui answers with a toast **and** a permanent `system` row; see the caution on the HTTP reference for why that row's copy over-claims on a bare `POST /wake`. Requires a daemon speaking attach protocol 1.7.0 or later; older daemons send no frame and nothing appears ([#802](https://github.com/go-steer/core-agent/issues/802)). There is deliberately no `/wake` slash: nothing in the TUI ever needed to *ask* the remote to wake — typing a message does that — and the capability is a notification the daemon pushes, not a command the operator sends.
 - **Hub-and-spoke**: when the launch URL targets a peer-registration hub, the picker fans `GET /sessions` calls in parallel across the hub + every registered peer, with a 5-second per-peer timeout so a slow peer doesn't block the list.
 - **Permissions bridge**: a background goroutine subscribes to `GET /perms/stream` (SSE) for pending prompts; each frame becomes a modal; the operator's decision posts to `POST /perms/respond` and the daemon's blocked `AskApproval` call unblocks.
 - **Usage panel**: feeds from the same `CustomMetadata.input_tokens` / `output_tokens` shape that `usage.Tracker` consumes for headless runs. Updates on every model event.

@@ -106,6 +106,29 @@ func TestParseStreamFrame_Inbox(t *testing.T) {
 	}
 }
 
+func TestParseStreamFrame_Wake(t *testing.T) {
+	// Protocol 1.7.0 (#802). The payload is only a timestamp, so the
+	// thing worth pinning is that the event NAME is routed at all: an
+	// unrouted name falls through to the default arm and is dropped as
+	// forward-compat noise, which is indistinguishable from a daemon
+	// that never emitted one.
+	raw := `{"at":"2026-08-19T10:00:00Z"}`
+	frame, ok := parseStreamFrame(attach.EventWake, raw)
+	if !ok {
+		t.Fatalf("parseStreamFrame returned !ok — wake frames are being dropped")
+	}
+	if frame.Type != attach.EventWake {
+		t.Errorf("Type = %q, want %q", frame.Type, attach.EventWake)
+	}
+	p, isWake := frame.TypedData.(*attach.WakeEvent)
+	if !isWake || p == nil {
+		t.Fatalf("TypedData = %T (%v), want *attach.WakeEvent non-nil", frame.TypedData, frame.TypedData)
+	}
+	if p.At.IsZero() {
+		t.Errorf("At not parsed from %q", raw)
+	}
+}
+
 func TestParseStreamFrame_TurnComplete_CostDeferred(t *testing.T) {
 	// v1.1.0 cost-deferred case: cost_usd is omitted from the wire,
 	// CostUSD remains nil — caller treats nil as "see next usage-update."

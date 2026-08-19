@@ -38,6 +38,31 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 )
 
+// consumeTypedFrame handles one typed (non-legacy) SSE frame on behalf
+// of the Run / Events read loops. Most frames project straight into a
+// coretui.Event via translateTypedFrame; the ones that drive an
+// adapter-side capability instead of the chat transcript are absorbed
+// here and reported as "nothing to yield".
+//
+// `wake` is the first of those (#802). core-tui consumes it through the
+// WakeRequester channel, not through the event stream, because it is
+// an out-of-band attention signal rather than something that belongs in
+// the transcript — coretui.Event has no field for it and inventing a
+// synthetic text row would put "a subagent finished" in the middle of
+// the model's output.
+//
+// Kept as a method next to the pure projection function so the loops
+// have exactly one call site per frame and a future side-effecting
+// frame type has an obvious home rather than a second special case
+// inlined in two loops.
+func (a *Adapter) consumeTypedFrame(frame attach.Frame) (coretui.Event, bool) {
+	if frame.Type == attach.EventWake {
+		a.signalWake()
+		return coretui.Event{}, false
+	}
+	return translateTypedFrame(frame)
+}
+
 // translateTypedFrame projects an attach.Frame carrying a typed
 // SSE payload (StatusUpdate / UsageUpdate / InboxEvent /
 // TurnComplete / TurnError / Capabilities) into a coretui.Event

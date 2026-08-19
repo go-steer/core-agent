@@ -213,6 +213,74 @@ func TestIntegration_SlashBtw(t *testing.T) {
 	}
 }
 
+// An empty answer is a successful call whose result happens to be
+// nothing. Returning it as a 500 (what a provider error gets) told
+// every operator surface "the daemon is broken" when the truth was
+// "the model declined to answer" — and gave them no way to tell those
+// two apart.
+func TestIntegration_SlashBtw_EmptyAnswerIs200(t *testing.T) {
+	t.Parallel()
+	reg := NewSessionRegistry()
+	ag := &operatorSlashRegistrant{
+		stubRegistrant: stubRegistrant{app: "core-agent", user: "u", sid: "s1"},
+		btwErr:         &SideQueryEmptyError{Detail: "finish_reason=SAFETY"},
+	}
+	if _, err := reg.Register(ag); err != nil {
+		t.Fatal(err)
+	}
+	base, cleanup := startTestServer(t, reg)
+	defer cleanup()
+
+	body, _ := json.Marshal(SideQueryRequest{Question: "why did that tool fail?"})
+	resp, err := http.Post(base+"/sessions/core-agent/s1/slash/btw", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var got SideQueryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.Empty {
+		t.Error("empty = false, want true")
+	}
+	if got.Detail != "finish_reason=SAFETY" {
+		t.Errorf("detail = %q, want the provider's reason", got.Detail)
+	}
+	if want := "(no answer — finish_reason=SAFETY)"; got.AnswerText() != want {
+		t.Errorf("AnswerText() = %q, want %q", got.AnswerText(), want)
+	}
+}
+
+// A real provider failure still fails. Guards the fix above from
+// swallowing genuine errors into a quiet "no answer".
+func TestIntegration_SlashBtw_ProviderErrorIs500(t *testing.T) {
+	t.Parallel()
+	reg := NewSessionRegistry()
+	ag := &operatorSlashRegistrant{
+		stubRegistrant: stubRegistrant{app: "core-agent", user: "u", sid: "s1"},
+		btwErr:         errors.New("dial tcp: connection refused"),
+	}
+	if _, err := reg.Register(ag); err != nil {
+		t.Fatal(err)
+	}
+	base, cleanup := startTestServer(t, reg)
+	defer cleanup()
+
+	body, _ := json.Marshal(SideQueryRequest{Question: "still there?"})
+	resp, err := http.Post(base+"/sessions/core-agent/s1/slash/btw", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
 func TestIntegration_SlashBtw_EmptyQuestion_400(t *testing.T) {
 	t.Parallel()
 	reg := NewSessionRegistry()

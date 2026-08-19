@@ -1205,6 +1205,18 @@ func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (
 	case "btw", "by-the-way":
 		answer, err := a.inner.AskSideQuestion(ctx, args)
 		if err != nil {
+			// "The model said nothing" is an answer, not a failure —
+			// same rule the attach handler applies for remote clients
+			// (protocol 1.5.0). Rendering it as Err would put an error
+			// modal in front of an operator whose question simply came
+			// back empty, with no hint as to why.
+			var empty *agent.SideQuestionEmptyError
+			if errors.As(err, &empty) {
+				text := attach.SideQueryResponse{Empty: true, Detail: empty.Detail}.AnswerText()
+				return coretui.SlashResult{
+					ModalAnswer: &coretui.SideAnswer{Question: args, Answer: text},
+				}, nil
+			}
 			return coretui.SlashResult{
 				ModalAnswer: &coretui.SideAnswer{Question: args, Err: err},
 			}, nil

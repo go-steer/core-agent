@@ -134,7 +134,7 @@ All write endpoints cap request bodies at **8 KiB** (`operatorPostMaxBytes`).
 | `POST` | `/guardrails/reset` | `{"guardrail"?:"watchdog"\|"cost_ceiling"\|"all", "additional_budget_usd"?:float}` — **body optional** (absent = reset everything tripped) | `{"reset":[...], "budget_added_usd":..., "guardrails":{...}, "message":...}`; **409** when the reset would immediately re-trip (per-session spend already at the ceiling — add budget); **400** on an unknown guardrail name, a negative budget, or budget on a `watchdog`-scoped reset; **501** if no resetter |
 | `POST` | `/slash/compact` | `{"focus"?:...}` | `{"summary_event_id":..., "summary_text":..., "duration_ms":..., "skipped":bool}` |
 | `POST` | `/slash/done` | `{"note"?:...}` | `{"checkpoint_event_id":..., "summary_text":..., "task_note":..., "duration_ms":..., "skipped":bool}` |
-| `POST` | `/slash/btw` | `{"question":...}` | `{"answer":...}` |
+| `POST` | `/slash/btw` | `{"question":...}` | `{"answer":..., "empty"?:bool, "detail"?:...}` — see [Side questions](#side-questions-slashbtw) |
 | `POST` | `/slash/subagent` | `SubagentSpec{name, goal, ...}` | `{"name":..., "started_at":...}` |
 | `POST` | `/slash/replan` | `{"reason"?:...}` | `{"archived_path":..., "plan_was_active":..., "message":...}` |
 
@@ -165,6 +165,44 @@ Interrupting the parent **does not stop background subagents**: their runs aren'
 Clients watching `/events` see a `pause` frame on every transition (`{"state":"paused"|"resumed", "reason":..., "interrupted":bool, "mode":..., "at":...}`), emitted by the agent rather than the handler, so a park triggered in-process (an embedded TUI, a library caller) reaches remote operators identically.
 
 The `/interrupt` audit event (`Author=attach/interrupt`) is written by the agent from inside its own turn loop, *after* the interrupted turn finishes unwinding — so it lands on the `/events` stream shortly after the `200` response, not synchronously before it. This avoids racing the runner's in-flight session write, which otherwise surfaced the operator's clean cancel as a spurious stale-session turn error. A consumer that needs to confirm the audit row should tail `/events` rather than assume it is present the instant `/interrupt` returns.
+
+### Side questions (`/slash/btw`)
+
+A side question is answered **outside** the session's turn loop: it runs
+one model call over a read-only copy of the conversation, persists
+nothing to the event log, and never interrupts an in-flight turn. It is
+the "ask about what's happening without touching what's happening"
+channel.
+
+The request is deliberately tool-less — no tool declarations, no
+provider builtins (search, code execution), no context-cache seeding. A
+side question that could call tools would take actions the operator
+didn't ask for, and seeding a cache from a request that carries no
+system instruction would poison every later turn in the session.
+
+The daemon prepends a short session-status preamble (state, model, turn
+count, session cost, inbox depth, running subagents) to the question, so
+"what are you doing?" and "how much has this cost?" are answerable
+without the model having to guess from the transcript.
+
+**An empty answer is a `200`, not a `500`.** When the model returns no
+text — a safety block, an empty candidate list, a bare finish reason —
+the response is `{"empty": true, "detail": "finish_reason=SAFETY"}` with
+no `answer`. `detail` carries the provider's own stated reason when
+there is one (`error=<code>: <msg>` or `finish_reason=<X>`) and is
+omitted when there isn't. Only genuine failures (transport, auth,
+provider error) are `500`s, so a client can tell "the model declined"
+apart from "the daemon is broken" — the two used to be indistinguishable.
+
+The five `/slash/*` endpoints run unbounded model work per request, so
+they sit behind the per-caller cost limiter (10/min, burst 5). Over the
+limit is a **429** with `Retry-After` and
+`{"error":"rate limited","retry_after_seconds":N}`. They are also
+synchronous — the POST blocks for the whole model call — so a client
+must give them a deadline that fits a slow model over a long history,
+not its ordinary RPC timeout. The bundled clients allow 5 minutes for
+`/slash/*` (and keep the shorter deadline for everything else); cancel
+the request context to abandon one early.
 
 ## UsageMetadata schema
 
@@ -323,6 +361,7 @@ Consumers MUST tolerate unknown values and MUST NOT crash on missing keys.
 | **409** | Conflict — shortcut SID ambiguous across apps; `POST /sessions` on `ErrSessionExists`; `POST /guardrails/reset` when the reset would immediately re-trip. |
 | **412** | Precondition failed — session has no eventlog (SSE reader); neither `PauseController` nor `InterruptProvider` (interrupt). |
 | **415** | Unsupported media type — state-changing request without `Content-Type: application/json` (CSRF protection). |
+| **429** | Rate limited — the per-caller cost limiter on `/slash/*` (10/min, burst 5). Carries `Retry-After` and `{"error":"rate limited","retry_after_seconds":N}`; retryable. |
 | **500** | Internal error — factory failure on `POST /sessions`; second `DELETE` of a gone session. |
 | **501** | Not implemented — capability provider absent (`SessionFactory`, `InterruptProvider`, `PromptBrokerProvider`, wake `target`, etc.). |
 

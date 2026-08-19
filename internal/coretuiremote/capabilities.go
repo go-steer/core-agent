@@ -1253,11 +1253,14 @@ func (a *Adapter) invokeAsyncSlash(ctx context.Context, name, args string) (core
 		if question == "" {
 			return coretui.SlashResult{SystemMessage: "/btw: question required"}, nil
 		}
-		answer, err := a.client.SlashBtw(ctx, a.sessionPath, question)
+		resp, err := a.client.SlashBtw(ctx, a.sessionPath, question)
 		if err != nil {
 			return coretui.SlashResult{ModalAnswer: &coretui.SideAnswer{Question: question, Err: err}}, nil
 		}
-		return coretui.SlashResult{ModalAnswer: &coretui.SideAnswer{Question: question, Answer: answer}}, nil
+		return coretui.SlashResult{ModalAnswer: &coretui.SideAnswer{
+			Question: question,
+			Answer:   resp.AnswerText(),
+		}}, nil
 
 	case "subagent":
 		spec, err := parseSubagentSpec(args)

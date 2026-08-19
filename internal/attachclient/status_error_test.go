@@ -15,7 +15,10 @@
 package attachclient
 
 import (
+	"errors"
+	"net/http"
 	"testing"
+	"time"
 )
 
 // TestHTTPStatusError_ErrorPreservesFormat guards the on-the-wire
@@ -59,6 +62,90 @@ func TestHTTPStatusError_PermanentClassification(t *testing.T) {
 		if got := e.PermanentStreamErr(); got != tc.want {
 			t.Errorf("status %d: PermanentStreamErr() = %v, want %v", tc.code, got, tc.want)
 		}
+	}
+}
+
+// TestAsRateLimit_PromotesOnly429 pins the promotion rule: a 429
+// becomes the typed rate-limit error carrying the server's
+// Retry-After; every other status stays exactly the error it was, so
+// no existing classification changes shape.
+func TestAsRateLimit_PromotesOnly429(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		code        int
+		retryAfter  string
+		wantPromote bool
+		wantDelay   time.Duration
+		wantMessage string
+	}{
+		{
+			name:        "429 with Retry-After",
+			code:        429,
+			retryAfter:  "6",
+			wantPromote: true,
+			wantDelay:   6 * time.Second,
+			wantMessage: "btw: rate limited by the daemon — retry in 6s",
+		},
+		{
+			name:        "429 without Retry-After",
+			code:        429,
+			wantPromote: true,
+			wantMessage: "btw: rate limited by the daemon — try again shortly",
+		},
+		{
+			name:        "429 with unparseable Retry-After",
+			code:        429,
+			retryAfter:  "Wed, 21 Oct 2026 07:28:00 GMT",
+			wantPromote: true,
+			wantMessage: "btw: rate limited by the daemon — try again shortly",
+		},
+		{name: "500 is untouched", code: 500},
+		{name: "404 is untouched", code: 404},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			base := &httpStatusError{op: "btw", statusCode: tc.code, body: "{}"}
+			h := http.Header{}
+			if tc.retryAfter != "" {
+				h.Set("Retry-After", tc.retryAfter)
+			}
+			got := asRateLimit(base, h)
+
+			var rl *RateLimitError
+			if !errors.As(got, &rl) {
+				if tc.wantPromote {
+					t.Fatalf("status %d was not promoted to *RateLimitError", tc.code)
+				}
+				if got != error(base) {
+					t.Errorf("status %d: error was rewritten to %v, want the original", tc.code, got)
+				}
+				return
+			}
+			if !tc.wantPromote {
+				t.Fatalf("status %d was promoted to *RateLimitError, want untouched", tc.code)
+			}
+			if rl.RetryAfter != tc.wantDelay {
+				t.Errorf("RetryAfter = %v, want %v", rl.RetryAfter, tc.wantDelay)
+			}
+			if rl.Error() != tc.wantMessage {
+				t.Errorf("Error() = %q, want %q", rl.Error(), tc.wantMessage)
+			}
+			// The status classification must survive the promotion —
+			// the stream's permanent-vs-transient check unwraps to the
+			// embedded httpStatusError.
+			var base2 *httpStatusError
+			if !errors.As(got, &base2) {
+				t.Fatal("promoted error no longer unwraps to *httpStatusError")
+			}
+			if base2.statusCode != 429 {
+				t.Errorf("unwrapped statusCode = %d, want 429", base2.statusCode)
+			}
+			if base2.PermanentStreamErr() {
+				t.Error("a rate limit must stay retryable")
+			}
+		})
 	}
 }
 

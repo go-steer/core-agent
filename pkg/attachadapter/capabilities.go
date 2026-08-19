@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/digest"
 	corebuiltins "github.com/go-steer/core-agent/v2/pkg/tools"
@@ -463,12 +464,24 @@ func (ad *Adapter) AttachCheckpoint(ctx context.Context, note string) (attach.Ch
 // AttachAskSideQuestion implements attach.SideQueryProvider. Wraps
 // agent.AskSideQuestion (the /btw side-channel that doesn't persist
 // to the event log).
+//
+// The agent's empty-answer error is translated into the wire package's
+// equivalent so the handler can answer 200 + empty:true without
+// pkg/attach importing pkg/agent (which imports it).
 func (ad *Adapter) AttachAskSideQuestion(ctx context.Context, question string) (string, error) {
 	a := ad.Agent()
 	if a == nil {
 		return "", nil
 	}
-	return a.AskSideQuestion(ctx, question)
+	answer, err := a.AskSideQuestion(ctx, question)
+	if err != nil {
+		var empty *agent.SideQuestionEmptyError
+		if errors.As(err, &empty) {
+			return "", &attach.SideQueryEmptyError{Detail: empty.Detail}
+		}
+		return "", err
+	}
+	return answer, nil
 }
 
 // AttachSpawnSubagent implements attach.SubagentSpawner. Delegates

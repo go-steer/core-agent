@@ -23,7 +23,30 @@ import (
 
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/genai"
+
+	"github.com/go-steer/core-agent/v2/pkg/models"
 )
+
+// TestErrEmptyResponse_WrapsTheSharedSentinel is the seam that lets a
+// caller outside this package recognize "the model said nothing"
+// without importing the Gemini adapter. /btw depends on it: an empty
+// response has to become an empty ANSWER there, and pkg/agent can't
+// match on this package's error. The adapter prose is free to change;
+// the wrap is not.
+func TestErrEmptyResponse_WrapsTheSharedSentinel(t *testing.T) {
+	t.Parallel()
+	if !errors.Is(ErrEmptyResponse, models.ErrEmptyResponse) {
+		t.Fatal("ErrEmptyResponse no longer wraps models.ErrEmptyResponse")
+	}
+	// Still recognizable as itself — the retry path matches on this.
+	wrapped := fmt.Errorf("generate: %w", ErrEmptyResponse)
+	if !errors.Is(wrapped, ErrEmptyResponse) || !errors.Is(wrapped, models.ErrEmptyResponse) {
+		t.Error("wrapping broke one of the two identities")
+	}
+	if !strings.Contains(ErrEmptyResponse.Error(), "silent safety filter") {
+		t.Error("the operator-facing diagnosis was lost from the message")
+	}
+}
 
 // mkResponse builds a small LLMResponse fixture; fields default to
 // empty so tests can build the "empty response" shape by passing

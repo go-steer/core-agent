@@ -16,7 +16,11 @@ package attachclient
 
 import (
 	"fmt"
+	"math"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 )
 
 // httpStatusError wraps a non-2xx HTTP response with the status code
@@ -71,6 +75,49 @@ func (e *httpStatusError) PermanentStreamErr() bool {
 	return e.statusCode == http.StatusNotFound ||
 		e.statusCode == http.StatusUnauthorized ||
 		e.statusCode == http.StatusForbidden
+}
+
+// RateLimitError is the typed form of the daemon's 429. The attach
+// server's cost limiter (10/min, burst 5) sits in front of the
+// cost-bearing operator endpoints, so a few quick /btw questions in a
+// row hit it — and rendered as a bare "status 429: {...}" that reads
+// as a broken daemon rather than as "you're going too fast".
+//
+// Wraps the underlying httpStatusError, so callers that classify on
+// the status code (errors.As on *httpStatusError, the stream's
+// permanent-vs-transient check) keep working unchanged.
+type RateLimitError struct {
+	*httpStatusError
+	// RetryAfter is the server's Retry-After, rounded to whole
+	// seconds. Zero when the header was absent or unparseable — the
+	// message then just says the request was rate limited.
+	RetryAfter time.Duration
+}
+
+func (e *RateLimitError) Error() string {
+	if e == nil {
+		return "rate limited"
+	}
+	if e.RetryAfter <= 0 {
+		return fmt.Sprintf("%s: rate limited by the daemon — try again shortly", e.op)
+	}
+	return fmt.Sprintf("%s: rate limited by the daemon — retry in %ds",
+		e.op, int(math.Ceil(e.RetryAfter.Seconds())))
+}
+
+func (e *RateLimitError) Unwrap() error { return e.httpStatusError }
+
+// asRateLimit promotes a 429 into a RateLimitError, reading the
+// server's Retry-After. Any other status passes through untouched.
+func asRateLimit(base *httpStatusError, h http.Header) error {
+	if base == nil || base.statusCode != http.StatusTooManyRequests {
+		return base
+	}
+	out := &RateLimitError{httpStatusError: base}
+	if secs, err := strconv.Atoi(strings.TrimSpace(h.Get("Retry-After"))); err == nil && secs > 0 {
+		out.RetryAfter = time.Duration(secs) * time.Second
+	}
+	return out
 }
 
 // SubagentNotFoundError is the typed form of the 404 that

@@ -154,8 +154,7 @@ func TestAgent_Interrupt_NoOpWhenIdle(t *testing.T) {
 	if got := a.Interrupt(); got {
 		t.Errorf("Interrupt on idle agent returned true, want false")
 	}
-	// Second call also a no-op (defensive; the underlying cancel
-	// was already nilled out by the first call).
+	// Second call also a no-op — there was never a cancel to store.
 	if got := a.Interrupt(); got {
 		t.Errorf("second Interrupt on idle agent returned true, want false")
 	}
@@ -194,9 +193,51 @@ func TestAgent_Interrupt_CancelsInFlightContext(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 		t.Errorf("turnCtx not canceled within 100ms of Interrupt")
 	}
-	// And the stored cancel is now cleared — a second Interrupt
-	// is a no-op.
+	// Repeatable while the turn is still registered: an operator whose
+	// first cancel hasn't visibly bitten yet (a tool ignoring its ctx, a
+	// model call mid-retry) presses again and must be told the interrupt
+	// landed — not "nothing in flight". Interrupt used to nil the stored
+	// cancel itself, so this returned false.
+	if got := a.Interrupt(); !got {
+		t.Errorf("second Interrupt during an unwinding turn returned false; want true (cancel stays registered until the turn's own cleanup)")
+	}
+	// The turn's gen-keyed cleanup is what actually deregisters it.
+	a.clearCancelInFlight(a.cancelInFlightGen)
 	if got := a.Interrupt(); got {
-		t.Errorf("second Interrupt returned true; want stored cancel cleared after first")
+		t.Errorf("Interrupt after clearCancelInFlight returned true, want false")
+	}
+}
+
+// TestAgent_Interrupt_TurnInFlightSurvivesUnwind pins the deliberate
+// side effect of keeping the cancel registered: turnInFlight stays true
+// through the unwind, so Compact / Checkpoint keep refusing their
+// mid-turn boundary writes (#355) during exactly the window those
+// refusals protect. Before the fix, an interrupt made the agent look
+// idle instantly and a /compact could land while the runner was still
+// flushing.
+func TestAgent_Interrupt_TurnInFlightSurvivesUnwind(t *testing.T) {
+	t.Parallel()
+
+	provider := mock.NewEcho()
+	m, err := provider.Model(context.Background(), "echo")
+	if err != nil {
+		t.Fatalf("model: %v", err)
+	}
+	a, err := New(m)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+
+	_, turnCancel := context.WithCancel(context.Background())
+	gen := a.setCancelInFlight(turnCancel)
+	if !a.Interrupt() {
+		t.Fatalf("Interrupt returned false with a cancel registered")
+	}
+	if !a.turnInFlight() {
+		t.Errorf("turnInFlight false immediately after Interrupt; want true until the turn unwinds")
+	}
+	a.clearCancelInFlight(gen)
+	if a.turnInFlight() {
+		t.Errorf("turnInFlight true after the turn's cleanup ran")
 	}
 }

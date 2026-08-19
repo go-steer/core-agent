@@ -15,6 +15,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"log"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/auth"
@@ -41,10 +43,21 @@ import (
 // mixed callers, the LAST message's caller becomes the turn
 // originator per docs/multi-session-design.md (the turn answers the
 // most recent ask).
+//
+// spanCtx is the OpenTelemetry span context that was active on the
+// injecting call's context, captured at InjectAsContext time. It is
+// the ONLY thing that survives the inject handler's span: the handler
+// returns as soon as the message is queued, so a turn that answers the
+// inject minutes later can't be a child of it. Instead the turn span
+// carries one LINK per drained inject that had a valid span context
+// (see turnspan.go). Zero value (invalid SpanContext) means the inject
+// arrived with no trace context — CLI, tests, out-of-band callers, or
+// tracing simply switched off — and contributes no link.
 type inboxMessage struct {
-	id     string
-	text   string
-	caller auth.Caller
+	id      string
+	text    string
+	caller  auth.Caller
+	spanCtx trace.SpanContext
 }
 
 // newPromptID returns a new prompt_id. UUID v7 is sortable by
@@ -105,15 +118,17 @@ var ErrInboxClosed = errors.New("agent: inbox closed")
 // downstream `inbox` event carrying the correlation handle.
 //
 // caller is the originator stamped on the message; zero value means
-// "no attached identity" (legacy Inject path).
-func (q *inbox) push(msg string, caller auth.Caller) (string, error) {
+// "no attached identity" (legacy Inject path). spanCtx is the trace
+// context of the injecting call, zero (invalid) when the inject
+// carried none.
+func (q *inbox) push(msg string, caller auth.Caller, spanCtx trace.SpanContext) (string, error) {
 	id := newPromptID()
 	q.mu.Lock()
 	if q.closed {
 		q.mu.Unlock()
 		return "", ErrInboxClosed
 	}
-	q.messages = append(q.messages, inboxMessage{id: id, text: msg, caller: caller})
+	q.messages = append(q.messages, inboxMessage{id: id, text: msg, caller: caller, spanCtx: spanCtx})
 	if len(q.messages) > defaultInboxCap {
 		// Drop oldest with a logged warning so a stuck producer
 		// can't deadlock the agent.
@@ -315,6 +330,11 @@ func FormatInterruptContinue() string {
 // multi-session deployment) should use InjectAs instead — the caller
 // is threaded into the turn context so the eventlog metadata sidecar
 // and per-caller MCP path see who triggered the turn.
+//
+// Inject carries no trace context. Callers on an HTTP request path
+// (the attach /inject and /wake handlers, an orchestrator's RPC
+// server) should use InjectAsContext so the turn that answers the
+// inject can be linked back to the injecting span.
 func (a *Agent) Inject(message string) error {
 	return a.InjectAs(message, auth.Caller{})
 }
@@ -333,8 +353,32 @@ func (a *Agent) Inject(message string) error {
 // caller wins as the turn originator (per
 // docs/multi-session-design.md "the turn answers the most recent
 // ask"). Same prompt_id correlation, same SSE events as Inject.
+//
+// InjectAs carries no trace context; see InjectAsContext.
 func (a *Agent) InjectAs(message string, caller auth.Caller) error {
-	return a.injectAs(message, caller, true /* releaseHold */)
+	return a.InjectAsContext(context.Background(), message, caller)
+}
+
+// InjectAsContext is InjectAs plus the injecting call's context, so
+// the queued message remembers the OpenTelemetry span that produced
+// it. Everything else is identical — same queue, same prompt_id, same
+// SSE events, same last-caller-wins originator rule.
+//
+// ctx is used ONLY to read the active span context. It is deliberately
+// not stored, not used for cancellation, and not consulted for the
+// caller identity (pass that explicitly): an inbox message outlives
+// the request that queued it by design, so keeping the request's
+// context alive on the queue would be a lifetime bug.
+//
+// Why a link and not a parent: the injecting request returns as soon
+// as the message is queued, so its span has already ended by the time
+// a turn drains the inbox — and one turn can drain SEVERAL injects, so
+// there is no single parent to pick. The agent loop therefore attaches
+// one span LINK per drained inject that carried a valid span context
+// to the turn span it starts (see turnspan.go). Injects with no trace
+// context are a clean no-op.
+func (a *Agent) InjectAsContext(ctx context.Context, message string, caller auth.Caller) error {
+	return a.injectAs(ctx, message, caller, true /* releaseHold */)
 }
 
 // injectAs is the queue-and-notify core. releaseHold=false queues
@@ -342,7 +386,12 @@ func (a *Agent) InjectAs(message string, caller auth.Caller) error {
 // afterwards — ResumeWith needs the message on the queue before the
 // gate opens, so the turn the resume releases can't start ahead of the
 // instruction that was meant to shape it.
-func (a *Agent) injectAs(message string, caller auth.Caller, releaseHold bool) error {
+//
+// ctx supplies the trace context stamped on the queued message.
+// Reading it is a plain context-value lookup that returns a value
+// type, so the capture allocates nothing and costs nothing extra when
+// tracing is off (the returned SpanContext is simply invalid).
+func (a *Agent) injectAs(ctx context.Context, message string, caller auth.Caller, releaseHold bool) error {
 	if a == nil {
 		return errors.New("agent: nil receiver")
 	}
@@ -353,7 +402,7 @@ func (a *Agent) injectAs(message string, caller auth.Caller, releaseHold bool) e
 		// do, for example) we don't want to panic.
 		return errors.New("agent: inbox not initialised (construct via agent.New)")
 	}
-	id, err := a.inbox.push(message, caller)
+	id, err := a.inbox.push(message, caller, trace.SpanContextFromContext(ctx))
 	if err != nil {
 		return err
 	}
@@ -408,8 +457,28 @@ func (a *Agent) injectAs(message string, caller auth.Caller, releaseHold bool) e
 // public DrainInbox shape is preserved for external harnesses that
 // only care about the text payloads.
 func (a *Agent) DrainInbox() []string {
-	texts, _ := a.drainInboxFull()
-	return texts
+	return a.drainInboxFull().texts
+}
+
+// inboxDrain is one pre-turn inbox drain, as Agent.Run consumes it.
+// A struct rather than a widening tuple: the drain already carries
+// three independent facts about the batch and the turn-span links
+// made it four.
+type inboxDrain struct {
+	// texts are the drained message bodies in arrival order.
+	texts []string
+	// originator is the last non-empty caller in the batch — the
+	// turn's originator per docs/multi-session-design.md ("the turn
+	// answers the most recent ask"). Zero when nothing carried an
+	// identity.
+	originator auth.Caller
+	// links are the span links for the turn span, at most
+	// maxTurnSpanLinks of them (see inboxTraceLinks).
+	links []trace.Link
+	// linkedInjects is how many drained messages carried a valid
+	// trace context, BEFORE the link cap is applied. Recorded as a
+	// span attribute so a capped batch is still countable.
+	linkedInjects int
 }
 
 // drainInboxFull is the internal drain variant used by Agent.Run to
@@ -419,29 +488,33 @@ func (a *Agent) DrainInbox() []string {
 // ask"). Zero originator when no message carried an identity — the
 // caller then runs the turn without wrapping the context.
 //
+// Also returns the turn-span links derived from the batch's captured
+// trace contexts (see inboxTraceLinks). Empty for a batch where
+// nothing was traced.
+//
 // Emits the same `inbox`/dequeued events DrainInbox emits, so the
 // public-method side effect is preserved.
-func (a *Agent) drainInboxFull() ([]string, auth.Caller) {
+func (a *Agent) drainInboxFull() inboxDrain {
 	if a == nil || a.inbox == nil {
-		return nil, auth.Caller{}
+		return inboxDrain{}
 	}
 	msgs := a.inbox.drain()
 	if len(msgs) == 0 {
-		return nil, auth.Caller{}
+		return inboxDrain{}
 	}
-	var originator auth.Caller
-	out := make([]string, len(msgs))
+	d := inboxDrain{texts: make([]string, len(msgs))}
 	for i, m := range msgs {
 		a.Emit(attach.EventInbox, attach.InboxEvent{
 			State:    attach.InboxStateDequeued,
 			PromptID: m.id,
 		})
-		out[i] = m.text
+		d.texts[i] = m.text
 		if m.caller.Identity != "" {
-			originator = m.caller // last-write-wins
+			d.originator = m.caller // last-write-wins
 		}
 	}
-	return out, originator
+	d.links, d.linkedInjects = inboxTraceLinks(msgs)
+	return d
 }
 
 // PendingInboxCount peeks at the inbox without draining it. Useful

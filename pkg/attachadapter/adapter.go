@@ -222,6 +222,13 @@ func (ad *Adapter) InjectAs(message string, caller auth.Caller) error {
 	return ad.Agent().InjectAs(message, caller)
 }
 
+// InjectAsContext implements attach.ContextInjector — InjectAs plus
+// the injecting request's context, so the turn that drains the message
+// can link back to the span that queued it.
+func (ad *Adapter) InjectAsContext(ctx context.Context, message string, caller auth.Caller) error {
+	return ad.Agent().InjectAsContext(ctx, message, caller)
+}
+
 // RequestWake implements attach.Registrant.
 func (ad *Adapter) RequestWake() { ad.Agent().RequestWake() }
 
@@ -304,6 +311,7 @@ func (ad *Adapter) AttachCapabilities() attach.CapabilityReport {
 // "capability not registered" in production — keep the full list.
 var (
 	_ attach.Registrant          = (*Adapter)(nil)
+	_ attach.ContextInjector     = (*Adapter)(nil)
 	_ attach.DescriptionProvider = (*Adapter)(nil)
 	_ attach.OperatorEventTarget = (*Adapter)(nil)
 	_ attach.EmitTarget          = (*Adapter)(nil) //nolint:staticcheck // deprecation-cycle conformance

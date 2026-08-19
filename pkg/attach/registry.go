@@ -115,6 +115,37 @@ type Registrant interface {
 	RequestWake()
 }
 
+// ContextInjector is the optional capability a registrant implements
+// when it can carry the injecting request's context — specifically its
+// OpenTelemetry span context — onto the queued inbox message.
+//
+// The write handlers (POST /inject, POST /wake with a prompt) prefer
+// it over Registrant.InjectAs so that the turn which eventually drains
+// the message can link back to the request that queued it. Without it
+// the trace ends at the handler: the handler returns as soon as the
+// message is queued and its span closes, while the turn starts minutes
+// later on the agent loop with no parent to inherit.
+//
+// Optional rather than a method on Registrant on purpose. Registrant
+// is exported API; widening it would break every out-of-tree
+// implementation for a telemetry improvement. Registrants that don't
+// implement it fall back to InjectAs and simply produce no link —
+// exactly the pre-existing behavior.
+type ContextInjector interface {
+	InjectAsContext(ctx context.Context, message string, caller auth.Caller) error
+}
+
+// injectWithContext queues message on reg, preferring the
+// context-carrying path when the registrant supports it. Shared by the
+// /inject and /wake handlers so both operator write paths produce the
+// same trace linkage.
+func injectWithContext(ctx context.Context, reg Registrant, message string, caller auth.Caller) error {
+	if ci, ok := reg.(ContextInjector); ok {
+		return ci.InjectAsContext(ctx, message, caller)
+	}
+	return reg.InjectAs(message, caller)
+}
+
 // SessionRegistry holds every session exposed over attach — hosts
 // wrap their *agent.Agent in attachadapter.New and Register the
 // adapter (agent.WithSessionRegistry was removed in #443). Keys by the full

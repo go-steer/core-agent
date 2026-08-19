@@ -119,6 +119,30 @@ type Adapter struct {
 	// non-blocking send drops cleanly.
 	reconnectKick chan struct{}
 
+	// wakeCh carries the daemon's `wake` SSE frames (protocol 1.7.0,
+	// #802) to core-tui's WakeRequester subscription. Written by the
+	// frame loops with a non-blocking send, read by exactly one
+	// consumer: the tea.Cmd core-tui re-arms after every wake.
+	//
+	// Buffered 1, drop-on-full, and never closed:
+	//
+	//   - Buffered so the SSE read loop can hand off a wake while
+	//     core-tui is between listener re-arms, which is the common
+	//     case rather than a rare one (the Cmd is only listening
+	//     during the window between receives).
+	//   - Non-blocking because the alternative is letting an absent or
+	//     wedged TUI consumer stall the loop that also carries model
+	//     output. Dropping a redundant "look now" is strictly better
+	//     than freezing the stream that would show what to look at.
+	//   - Dropping is the same guarantee local mode already gives:
+	//     agent.wakeSignal is itself buffered-1 drop-on-full, so
+	//     coalescing under a burst is the semantics core-tui is
+	//     written against ("makes no promise about coalescing").
+	//   - Never closed because the adapter outlives no lifecycle event
+	//     that would justify it, and core-tui's listener treats a
+	//     closed channel as "subscription over, permanently."
+	wakeCh chan struct{}
+
 	// injectErrs is a buffered channel for surfacing Inject failures
 	// into the chat scrollback as RoleError rows via the LiveAgent
 	// Events iterator. Without this, an inject that fails (daemon
@@ -204,6 +228,7 @@ func New(client *attachclient.Client, sessionPath string) *Adapter {
 		connectedAt:   time.Now(),
 		reconnectKick: make(chan struct{}, 1),
 		injectErrs:    make(chan error, 8),
+		wakeCh:        make(chan struct{}, 1),
 	}
 }
 
@@ -377,7 +402,7 @@ func (a *Adapter) Run(ctx context.Context, prompt string) iter.Seq2[coretui.Even
 				// Capabilities is forward-compat — ignored for now,
 				// consumed by future RemoteTransport=Auto negotiation.
 				if frame.Type != "" && frame.Type != attach.EventAgent {
-					if ev, ok := translateTypedFrame(frame); ok {
+					if ev, ok := a.consumeTypedFrame(frame); ok {
 						if !yield(ev, nil) {
 							return
 						}
@@ -583,7 +608,7 @@ func (a *Adapter) Events(ctx context.Context) iter.Seq2[coretui.Event, error] {
 					// real-time status / usage / inbox / turn-error
 					// without polling.
 					if frame.Type != "" && frame.Type != attach.EventAgent {
-						if ev, ok := translateTypedFrame(frame); ok {
+						if ev, ok := a.consumeTypedFrame(frame); ok {
 							debugf("Events: yielding typed %s", frame.Type)
 							if !yield(ev, nil) {
 								return
@@ -709,12 +734,42 @@ func (a *Adapter) Inject(message string) error {
 	return err
 }
 
-// RequestWake satisfies coretui.WakeRequester. Wired so the
-// operator's /wake slash works.
-func (a *Adapter) RequestWake() {
-	// Fire-and-forget — wake doesn't return useful state and
-	// coretui's interface is void.
-	_ = a.client.Wake(context.TODO(), a.sessionPath)
+// WakeRequested implements coretui.WakeRequester: the channel core-tui
+// subscribes to at startup, one receive per "the agent wants the
+// operator's attention" signal (a background subagent finishing, an
+// alert landing, another operator's POST /wake). Each receive renders a
+// transient toast.
+//
+// The signal originates on the daemon, so what arrives here is a `wake`
+// SSE frame (attach protocol 1.7.0) rather than an in-process channel
+// send — see signalWake and the frame loops in Run/Events. Against a
+// pre-1.7.0 daemon no frame ever arrives and the channel simply stays
+// quiet, which is the behavior every attached operator has had until
+// now; the capability is not gated on the negotiated version because
+// core-tui subscribes once at startup, before the capabilities frame
+// that would answer the question has been read.
+//
+// Nil on a zero-value Adapter (New always allocates); core-tui's
+// listener handles a nil channel by declining the subscription.
+func (a *Adapter) WakeRequested() <-chan struct{} {
+	if a == nil {
+		return nil
+	}
+	return a.wakeCh
+}
+
+// signalWake delivers one wake to the WakeRequested subscriber.
+// Non-blocking: with a wake already pending, or with nobody subscribed
+// at all, the signal is dropped rather than parking the SSE read loop
+// that carries every other frame. See the wakeCh field comment for why
+// dropping is the correct trade here.
+func (a *Adapter) signalWake() {
+	select {
+	case a.wakeCh <- struct{}{}:
+		debugf("wake: signalled")
+	default:
+		debugf("wake: dropped (one already pending or no consumer)")
+	}
 }
 
 // Interrupt satisfies coretui.RemoteInterrupter — dispatches the

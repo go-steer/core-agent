@@ -121,7 +121,7 @@ All write endpoints cap request bodies at **8 KiB** (`operatorPostMaxBytes`).
 | Method | Path suffix | Request | Response |
 |---|---|---|---|
 | `POST` | `/inject` | `{"message":"..."}` (empty → **400**) | `{"injected":..., "session":...}`; **503** + `Retry-After` during daemon shutdown (message would die with the in-memory inbox — redeliver after restart) |
-| `POST` | `/wake` | `{"target"?:..., "prompt"?:...}` (both optional) | `{"woken":..., "prompt":...}`; **501** if `target` set; **503** + `Retry-After` during daemon shutdown |
+| `POST` | `/wake` | `{"target"?:..., "prompt"?:...}` (both optional) | `{"woken":..., "prompt":...}`; **501** if `target` set; **503** + `Retry-After` during daemon shutdown. Emits a `wake` frame to everyone watching `/events` (protocol 1.7.0 — see [Wake notifications](#wake-notifications-protocol-170)) |
 | `POST` | `/interrupt` | `{"hold"?:bool, "stop_subagents"?:bool}` — **body optional**, absent = `{"hold":true}` | `{"interrupted":bool, "paused":bool, "running_subagents":[...], "stopped_subagents":[...], "session":...}`; **412** if agent implements neither `PauseController` nor `InterruptProvider`; `X-Interrupted: nothing-in-flight` header when idle; `X-Hold: unsupported` when the agent can't park; writes audit event `Author=attach/interrupt` |
 | `POST` | `/pause` | `{"reason"?:...}` — **body optional** | `{"paused":bool, "transitioned":bool, "state":"paused", "paused_since":..., "pause_reason":..., "session":...}`; **501** if no `PauseController` |
 | `POST` | `/resume` | `{"mode"?:"steer"\|"continue"\|"abandon", "steer"?:...}` — **body optional** (absent = `continue`) | `{"resumed":bool, "mode":..., "state":..., "session":...}`; **400** on an unknown mode or `mode=steer` with no text; **501** if no `PauseController`; **503** + `Retry-After` during daemon shutdown |
@@ -165,6 +165,30 @@ Interrupting the parent **does not stop background subagents**: their runs aren'
 Clients watching `/events` see a `pause` frame on every transition (`{"state":"paused"|"resumed", "reason":..., "interrupted":bool, "mode":..., "at":...}`), emitted by the agent rather than the handler, so a park triggered in-process (an embedded TUI, a library caller) reaches remote operators identically.
 
 The `/interrupt` audit event (`Author=attach/interrupt`) is written by the agent from inside its own turn loop, *after* the interrupted turn finishes unwinding — so it lands on the `/events` stream shortly after the `200` response, not synchronously before it. This avoids racing the runner's in-flight session write, which otherwise surfaced the operator's clean cancel as a spurious stale-session turn error. A consumer that needs to confirm the audit row should tail `/events` rather than assume it is present the instant `/interrupt` returns.
+
+### Wake notifications (protocol 1.7.0)
+
+A **wake** is the agent's wake signal firing: something out-of-band decided the loop should look at the world again. In a local session that signal is an in-process channel; over attach it is a `wake` frame on `/events` ([#802](https://github.com/go-steer/core-agent/issues/802)):
+
+```
+event: wake
+data: {"at":"2026-08-19T14:32:05.117Z"}
+```
+
+**Who produces one.** In a stock daemon, exactly one thing: `POST /wake`. The other producer is a host that calls `Agent.RequestWake` (or `autonomous.Handle.RequestWake`) itself — which is how a background-manager alert is *meant* to wake a sleeping supervisor, and `dev/uat/scheduled-monitor` is the worked example, but nothing in `cmd/` or `pkg/` wires that up for you. Do not build a consumer that assumes a wake means an alert is sitting in the inbox.
+
+Four more things are worth knowing before you build on it:
+
+- **It is an edge, not a state.** There is no matching "unwake" and nothing to reconcile on reconnect. The payload is only `at` because the thing that did the waking reports itself through its own frames — an alert as `inbox`, a subagent's work as `agent` events, the resulting turn as `status-update` / `turn-complete`. A wake adds "look now" and nothing else.
+- **`POST /inject` deliberately does not produce one**, even though it fires the same signal internally. The inject already announces itself as an `inbox` frame, and a wake on top would make every prompt an operator types raise an attention notice about their own typing. `POST /wake` carrying a `prompt` is the one call that produces both, because it is an inject and an explicit wake request at once.
+- **Coalescing is not promised in either direction.** The agent's wake signal is a one-slot channel that drops a fire while one is pending, and consumers should do the same rather than count frames.
+- **It is emitted by the agent, not the handler** — the same choice `pause` makes. The non-HTTP producers above never touch a handler, and putting the emit there would hide them from exactly the operator who cannot see the process.
+
+Detect it the normal way: look for `"wake"` in the `capabilities` frame's `event_types`. A pre-1.7.0 daemon omits it and never sends the frame, so a client written against 1.7.0 degrades to no notifications rather than to an error — which is exactly what every attached operator got before this version existed, because the TUI's side of the wiring never matched the interface it claimed to implement.
+
+:::caution[What core-tui renders today]
+core-tui v0.22.0 answers a wake with a toast **and** a permanent `system` row reading *"Wake signal received — an external alert (typically a background subagent's report) is waiting in the inbox."* That copy is right for the alert-wired host case and wrong for a bare `POST /wake`, where no alert exists. The payload carries no `reason` a consumer could branch on — and cannot, because `coretui.WakeRequester` is a `<-chan struct{}` with no payload — so the copy has to be generalised on the core-tui side. Local sessions have rendered the same row for the same reason since the capability landed; attach mode is reaching parity with it, not introducing it.
+:::
 
 ### Side questions (`/slash/btw`)
 

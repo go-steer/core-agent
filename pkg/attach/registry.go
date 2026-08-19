@@ -112,6 +112,13 @@ type Registrant interface {
 
 	// RequestWake fires the agent's wake signal without queuing a
 	// message. Used by POST /wake.
+	//
+	// Implementations SHOULD also publish an EventWake (WakeEvent) to
+	// the operator-event transport so attached clients see the wake;
+	// *agent.Agent does, and that is what makes protocol 1.7.0's `wake`
+	// frame appear. A registrant that doesn't publish still returns 200
+	// from /wake — it just looks, to every attached operator, exactly
+	// like a pre-1.7.0 daemon.
 	RequestWake()
 }
 

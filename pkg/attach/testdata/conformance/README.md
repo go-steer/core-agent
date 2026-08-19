@@ -24,6 +24,15 @@ follow their own convention — see "REST response fixtures" below.
 |---|---|---|
 | `capabilities-v1.4.0.json` | `capabilities` | 1.4.0 |
 | `status-update-with-capabilities-v1.4.0.json` | `status-update` merge frame carrying an embedded `capabilities` hot-update | 1.4.0 |
+| `wake-v1.7.0.json` | `wake` — the agent's wake signal fired (`POST /wake`, or a host calling `Agent.RequestWake` on e.g. a background alert) | 1.7.0 |
+
+`wake` is an *edge*, not a state: there is no matching "unwake" and
+nothing to reconcile on reconnect. The payload is only `at` because no
+wake carries state a consumer could render — the thing that did the
+waking reports itself through its own frames. Neither side promises
+coalescing; two wakes microseconds apart may arrive as one frame or
+two. A consumer must not assume a wake means an alert is waiting: in a
+stock daemon the only producer is `POST /wake`.
 
 ## REST response fixtures
 

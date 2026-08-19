@@ -18,7 +18,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"slices"
 	"testing"
+	"time"
 )
 
 // Conformance tests — the runtime types marshal to the exact byte
@@ -101,6 +103,32 @@ func TestConformance_StatusUpdateWithCapabilitiesV1_4_0(t *testing.T) {
 	assertMatchesConformanceFixture(t,
 		"testdata/conformance/status-update-with-capabilities-v1.4.0.json",
 		update)
+}
+
+func TestConformance_WakeV1_7_0(t *testing.T) {
+	t.Parallel()
+	// #802. Timestamp carries sub-second precision and an explicit
+	// zone so the fixture can't be read as sanctioning a fixed
+	// second-granularity layout — it's RFC 3339, parse it.
+	at, err := time.Parse(time.RFC3339Nano, "2026-08-19T14:32:05.117Z")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	assertMatchesConformanceFixture(t,
+		"testdata/conformance/wake-v1.7.0.json",
+		WakeEvent{At: at})
+}
+
+// TestSupportedEventTypes_AdvertisesWake pins the advertisement, which
+// is the half of a new event type that is easy to forget and invisible
+// when missing: a consumer that feature-detects on the capabilities
+// frame's event_types would keep taking its pre-1.7.0 path against a
+// server that does emit the frame.
+func TestSupportedEventTypes_AdvertisesWake(t *testing.T) {
+	t.Parallel()
+	if !slices.Contains(supportedEventTypes, EventWake) {
+		t.Errorf("supportedEventTypes = %v, missing %q", supportedEventTypes, EventWake)
+	}
 }
 
 // assertMatchesConformanceFixture marshals v, canonicalizes both the

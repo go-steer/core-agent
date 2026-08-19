@@ -429,7 +429,14 @@ func (a *Agent) injectAs(ctx context.Context, message string, caller auth.Caller
 	// Operator input should also pierce any active sleep — the
 	// scheduler selects on WakeRequested() alongside its sleep
 	// timer, so this lands as an immediate wake.
-	a.RequestWake()
+	//
+	// Fires the signal directly rather than through RequestWake so no
+	// `wake` event goes out (#802): this inject already published an
+	// `inbox`/queued event a few lines up, and a second frame saying
+	// "something wants your attention" about the operator's own typed
+	// prompt is noise on every single message. RequestWake is for the
+	// wakes nothing else on the wire accounts for.
+	a.wake.fire()
 	return nil
 }
 

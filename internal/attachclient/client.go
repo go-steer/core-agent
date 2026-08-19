@@ -204,6 +204,12 @@ type SessionDescriptor struct {
 	// listeners that don't track it, hence the zero-value check at
 	// every read site.
 	LastTouchedAt time.Time `json:"last_touched_at"`
+	// Title is the short operator-facing label for the session, derived
+	// from its first prompt. Empty against a listener older than
+	// protocol 1.6.0, against a session whose first turn hasn't landed
+	// yet, and against a host that disabled titling — every read site
+	// needs a fallback to the ID.
+	Title string `json:"title"`
 }
 
 // ListSessions calls GET <base>/sessions.

@@ -147,6 +147,38 @@ func TestSessions_DisplayFallback(t *testing.T) {
 	}
 }
 
+// TestSessions_TitleTakesThePrimaryLine — a titled row leads with the
+// title and demotes the app/sid to the description; an untitled row is
+// unchanged from the pre-#808 shape. Both rows matter: the picker is
+// going to show a mix of them for as long as any session predates its
+// first turn.
+func TestSessions_TitleTakesThePrimaryLine(t *testing.T) {
+	t.Parallel()
+	fs := startSessionsServer(t)
+	fs.list = []attachclient.SessionDescriptor{
+		{App: "core-agent", SessionID: "one", Title: "Debug the payment webhook retries"},
+		{App: "core-agent", SessionID: "two"},
+	}
+	a := newTestAdapter(t, fs, "/sessions/core-agent/one")
+
+	got := a.Sessions()
+	if len(got) != 2 {
+		t.Fatalf("Sessions() len = %d, want 2", len(got))
+	}
+	if got[0].Display != "Debug the payment webhook retries" {
+		t.Errorf("titled row Display = %q, want the title", got[0].Display)
+	}
+	if got[0].Description != "core-agent/one" {
+		t.Errorf("titled row Description = %q, want the identity to survive on the second line", got[0].Description)
+	}
+	if got[1].Display != "core-agent/two" {
+		t.Errorf("untitled row Display = %q, want the app/sid fallback", got[1].Display)
+	}
+	if got[1].Description != "" {
+		t.Errorf("untitled row Description = %q, want empty — the identity is already on the primary line", got[1].Description)
+	}
+}
+
 // TestSessions_NilOnEnumerationError — GET /sessions 500 returns
 // nil (not error) so the picker renders cleanly with an "empty" body.
 func TestSessions_NilOnEnumerationError(t *testing.T) {

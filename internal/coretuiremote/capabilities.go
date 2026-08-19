@@ -805,14 +805,20 @@ func (a *Adapter) Sessions() []coretui.SessionInfo {
 	newMap := make(map[string]string, len(descs))
 	out := make([]coretui.SessionInfo, 0, len(descs))
 	for _, d := range descs {
-		display := d.SessionID
-		if d.App != "" {
-			display = d.App + "/" + d.SessionID
+		identity := sessionIdentity(d)
+		display, desc := identity, ""
+		if d.Title != "" {
+			// The title takes the primary line and the identity moves
+			// to the secondary one: an operator picking a session
+			// recognises it by what it is doing, but still needs the
+			// triple to confirm they picked the right one.
+			display, desc = d.Title, identity
 		}
 		out = append(out, coretui.SessionInfo{
-			ID:      d.SessionID,
-			Display: display,
-			Current: d.SessionID == curSID,
+			ID:          d.SessionID,
+			Display:     display,
+			Description: desc,
+			Current:     d.SessionID == curSID,
 		})
 		newMap[d.SessionID] = "" // "" = local
 	}
@@ -835,6 +841,19 @@ func (a *Adapter) Sessions() []coretui.SessionInfo {
 	a.mu.Unlock()
 
 	return out
+}
+
+// sessionIdentity renders a descriptor's addressable name — "app/sid",
+// or the bare SID when the listener didn't report an app. This was the
+// whole of the picker's primary line before titles existed (#808), and
+// it remains the fallback for any session that has no title: one older
+// than the feature, one whose first turn hasn't landed, or one on a host
+// that turned titling off.
+func sessionIdentity(d attachclient.SessionDescriptor) string {
+	if d.App != "" {
+		return d.App + "/" + d.SessionID
+	}
+	return d.SessionID
 }
 
 // peerRow is one enumerated peer session plus the endpoint that
@@ -880,9 +899,15 @@ func (a *Adapter) enumeratePeers(peers []attachclient.PeerDescriptor) []peerRow 
 				return
 			}
 			for _, d := range descs {
-				display := d.SessionID
-				if d.App != "" {
-					display = d.App + "/" + d.SessionID
+				identity := sessionIdentity(d)
+				display, desc := identity, p.Endpoint
+				if d.Title != "" {
+					// Same trade as the local rows, except the
+					// secondary line is already spoken for by the
+					// endpoint — so the identity joins it there
+					// rather than displacing it.
+					display = d.Title
+					desc = identity + " · " + p.Endpoint
 				}
 				peerLabel := p.Name
 				if peerLabel == "" {
@@ -892,7 +917,7 @@ func (a *Adapter) enumeratePeers(peers []attachclient.PeerDescriptor) []peerRow 
 					info: coretui.SessionInfo{
 						ID:          d.SessionID,
 						Display:     "[peer:" + peerLabel + "] " + display,
-						Description: p.Endpoint,
+						Description: desc,
 					},
 					endpoint: p.Endpoint,
 				})

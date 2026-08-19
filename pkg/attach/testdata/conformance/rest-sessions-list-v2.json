@@ -1,0 +1,21 @@
+{
+  "sessions": [
+    {
+      "app": "core-agent",
+      "user": "alice@example.com",
+      "sessionID": "s-1a2b3c",
+      "has_event_log": true,
+      "status": "active",
+      "last_touched_at": "2026-07-30T12:34:56.789012345+02:00",
+      "title": "Debug the payment webhook retries"
+    },
+    {
+      "app": "core-agent",
+      "user": "alice@example.com",
+      "sessionID": "s-9z8y7x",
+      "has_event_log": true,
+      "status": "idle",
+      "last_touched_at": "2026-07-29T08:00:00Z"
+    }
+  ]
+}

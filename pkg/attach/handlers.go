@@ -367,12 +367,38 @@ type sessionDescriptor struct {
 	// comes from the persisted ACL row. Zero when neither
 	// source has it.
 	LastTouchedAt time.Time `json:"last_touched_at,omitempty"`
+	// Title is the short operator-facing label for this session —
+	// what a picker shows instead of the ID (#808). Derived from
+	// the session's first prompt, or set by hand. Sourced from the
+	// live registrant via SessionTitleProvider for active sessions
+	// and from the persisted ACL row for idle ones.
+	//
+	// Omitted when empty rather than sent as "": a client that
+	// distinguishes the two would otherwise have to treat a
+	// pre-title session and a deliberately-blank one identically,
+	// and the correct rendering for "no title" is the ID.
+	Title string `json:"title,omitempty"`
 }
 
 const (
 	sessionStatusActive = "active"
 	sessionStatusIdle   = "idle"
 )
+
+// entryTitle reads a live session's title through the optional
+// SessionTitleProvider capability. Registrants that don't implement it
+// (every pre-#808 host) report no title and their rows fall back to the
+// ID, which is what the picker did before titles existed.
+func entryTitle(e *Entry) string {
+	if e == nil || e.Agent == nil {
+		return ""
+	}
+	p, ok := e.Agent.(SessionTitleProvider)
+	if !ok {
+		return ""
+	}
+	return p.SessionTitle()
+}
 
 func (h *handlers) listSessions(w http.ResponseWriter, r *http.Request) {
 	// In-memory half — sessions currently registered. This is
@@ -401,6 +427,7 @@ func (h *handlers) listSessions(w http.ResponseWriter, r *http.Request) {
 			HasEventLog:   e.Agent.EventLog() != nil,
 			Status:        sessionStatusActive,
 			LastTouchedAt: e.LastTouchedAt(),
+			Title:         entryTitle(e),
 		})
 	}
 	// Persisted-only half — sessions the caller can read that
@@ -423,6 +450,7 @@ func (h *handlers) listSessions(w http.ResponseWriter, r *http.Request) {
 						HasEventLog:   true, // sessions in the ACL store were created with eventlog wired
 						Status:        sessionStatusIdle,
 						LastTouchedAt: row.LastTouchedAt,
+						Title:         row.Title,
 					})
 				}
 			}

@@ -24,6 +24,7 @@ agent.display_name
 agent.max_session_cost_usd
 agent.max_steps
 agent.max_turn_cost_usd
+agent.session_title
 agent.system_prompt_file
 alerts.rate_limit_per_target
 alerts.targets[].auth.basic_env_pass

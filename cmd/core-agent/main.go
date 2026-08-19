@@ -38,6 +38,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"go.opentelemetry.io/otel"
 	"golang.org/x/term"
+	adkmodel "google.golang.org/adk/model"
 	adktool "google.golang.org/adk/tool"
 
 	"github.com/go-steer/core-agent/v2/internal/version"
@@ -1495,6 +1496,37 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	if len(declaredSubagents) > 0 {
 		opts = append(opts, agent.WithSubagents(declaredSubagents))
 	}
+	// Session titling (#808): one cheap-tier call turns the remote
+	// session picker from a list of UUIDs into a list of work. The
+	// agent only generates when a model is handed to it — deciding
+	// that a provider with no cheap tier should pay parent-model rates
+	// for a six-word label is a call about someone's bill, so it is
+	// made here rather than inside pkg/agent. We decline it: no cheap
+	// tier means the title falls back to the head of the operator's
+	// own prompt, which costs nothing and still distinguishes sessions.
+	//
+	// Held in a variable rather than appended inline: the multi-session
+	// factory below hands the same model to every session it builds,
+	// and building it once is the difference between one client and one
+	// per session.
+	var titleModel adkmodel.LLM
+	switch {
+	case cfg.Agent.SessionTitle != nil && !*cfg.Agent.SessionTitle:
+		opts = append(opts, agent.WithoutSessionTitle())
+	default:
+		if titleModelID := models.ResolveSmallModel(provider, agenticSmallModel); titleModelID != "" {
+			built, err := provider.Model(ctx, titleModelID)
+			if err != nil {
+				// Not fatal: a session with a prompt-derived title is
+				// a far better outcome than a daemon that won't start
+				// because it couldn't build a model for its labels.
+				fmt.Fprintf(os.Stderr, "core-agent: session titles: %v (falling back to the prompt head)\n", err)
+			} else {
+				titleModel = built
+				opts = append(opts, agent.WithTitleModel(titleModel))
+			}
+		}
+	}
 	if replacePrompt != "" {
 		opts = append(opts, agent.WithInstruction(replacePrompt))
 	}
@@ -2054,6 +2086,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 				DaemonCtx:             wakeCtx,
 				WakeLoops:             wakeLoops,
 				Model:                 m,
+				TitleModel:            titleModel,
 				Template:              template,
 				PricingRate:           pricingRate,
 				AgentsDir:             agentsDir,

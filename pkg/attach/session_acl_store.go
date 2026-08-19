@@ -40,7 +40,25 @@ type SessionACLStore interface {
 	// RegisterOwned at session-creation time. Idempotent — re-Put
 	// of the same triple updates LastTouchedAt and any changed
 	// ACL fields.
+	//
+	// An empty row.Title preserves whatever title is already
+	// stored rather than clearing it. Put's callers are ACL
+	// callers: they know the owner and the viewer list and have
+	// no idea what the session is called, so a whole-row upsert
+	// from one of them would silently erase a title on any path
+	// that re-registers an existing triple. Clearing a title is
+	// SetTitle's job, with "" as the explicit argument.
 	Put(ctx context.Context, row SessionACLRow) error
+
+	// SetTitle writes the session's short operator-facing label
+	// (#808) without disturbing the rest of the row. Empty title
+	// clears it — unlike Put, here "" is an instruction.
+	//
+	// Returns ErrSessionACLNotFound when no row exists for the
+	// triple. That is the normal case for a session registered
+	// without an owner (in-memory only, no ACL row), so callers
+	// that title every session should treat it as benign.
+	SetTitle(ctx context.Context, app, user, sid, title string) error
 
 	// Get returns the persisted ACL row for the triple. Returns
 	// ErrSessionACLNotFound when no row exists (typical case for
@@ -106,6 +124,15 @@ type SessionACLRow struct {
 	Contributors  []string
 	CreatedAt     time.Time
 	LastTouchedAt time.Time
+	// Title is the session's short operator-facing label (#808).
+	// Persisted so an idle session — evicted, or known only from
+	// this store after a restart — still has a name in the picker;
+	// without it a session would lose its title exactly when the
+	// operator most needs one to find it again.
+	//
+	// Put treats an empty Title as "don't touch", not "clear": see
+	// its doc comment.
+	Title string
 }
 
 // ACL returns the auth.SessionACL view of the row — what the
@@ -146,6 +173,7 @@ type sessionACLRow struct {
 	ContributorsJSON string    `gorm:"type:text"`
 	CreatedAt        time.Time `gorm:"not null"`
 	LastTouchedAt    time.Time `gorm:"not null;index:idx_session_acl_last_touched"`
+	Title            string    `gorm:"type:text"`
 }
 
 func (sessionACLRow) TableName() string { return "agent_session_acl" }
@@ -206,11 +234,40 @@ func (s *gormSessionACLStore) Put(ctx context.Context, row SessionACLRow) error 
 		ContributorsJSON: contributors,
 		CreatedAt:        row.CreatedAt,
 		LastTouchedAt:    row.LastTouchedAt,
+		Title:            row.Title,
 	}
 	// GORM's Save upserts when the primary key is set — handles
 	// both first-insert and re-Put-of-same-triple cleanly.
-	if err := s.db.WithContext(ctx).Save(&internal).Error; err != nil {
+	db := s.db.WithContext(ctx)
+	if row.Title == "" {
+		// Whole-row upsert with no title supplied would blank an
+		// existing one. Omitting the column leaves a stored title
+		// alone on update and writes the zero value on insert,
+		// which is what both cases want. See the interface doc.
+		db = db.Omit("Title")
+	}
+	if err := db.Save(&internal).Error; err != nil {
 		return fmt.Errorf("attach: SessionACLStore.Put: %w", err)
+	}
+	return nil
+}
+
+func (s *gormSessionACLStore) SetTitle(ctx context.Context, app, user, sid, title string) error {
+	if app == "" || sid == "" {
+		return fmt.Errorf("attach: SessionACLStore.SetTitle: app and sid are required (got app=%q sid=%q)", app, sid)
+	}
+	res := s.db.WithContext(ctx).
+		Model(&sessionACLRow{}).
+		Where("app_name = ? AND user_id = ? AND session_id = ?", app, user, sid).
+		Update("title", title)
+	if res.Error != nil {
+		return fmt.Errorf("attach: SessionACLStore.SetTitle: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		// Distinguish "no such session" from "wrote it" so a caller
+		// that cares can branch; the automatic titling path does not
+		// and swallows this.
+		return ErrSessionACLNotFound
 	}
 	return nil
 }
@@ -356,6 +413,7 @@ func rowFromInternal(r sessionACLRow) SessionACLRow {
 		Contributors:  decodeStringSlice(r.ContributorsJSON),
 		CreatedAt:     r.CreatedAt,
 		LastTouchedAt: r.LastTouchedAt,
+		Title:         r.Title,
 	}
 }
 

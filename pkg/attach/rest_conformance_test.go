@@ -82,6 +82,45 @@ func TestConformance_RESTSessionsListV1(t *testing.T) {
 		resp)
 }
 
+// TestConformance_RESTSessionsListV2 pins the same envelope one
+// wire-shape version on: rows gained an optional `title` (protocol
+// 1.6.0, #808). The v1 test above stays exactly as it was and keeps
+// passing — a descriptor with no title marshals to the v1 shape, which
+// is the whole claim `omitempty` makes here.
+//
+// The two rows are deliberately asymmetric: the titled row pins the
+// field name, and the untitled one pins its ABSENCE. A client must
+// treat a missing `title` as "fall back to the session ID", and it will
+// meet missing titles constantly — against a pre-1.6.0 daemon, before a
+// session's first turn lands, and wherever titling is switched off.
+func TestConformance_RESTSessionsListV2(t *testing.T) {
+	t.Parallel()
+	resp := map[string]any{
+		"sessions": []sessionDescriptor{
+			{
+				AppName:       "core-agent",
+				UserID:        "alice@example.com",
+				SessionID:     "s-1a2b3c",
+				HasEventLog:   true,
+				Status:        sessionStatusActive,
+				LastTouchedAt: time.Date(2026, 7, 30, 12, 34, 56, 789012345, time.FixedZone("", 2*60*60)),
+				Title:         "Debug the payment webhook retries",
+			},
+			{
+				AppName:       "core-agent",
+				UserID:        "alice@example.com",
+				SessionID:     "s-9z8y7x",
+				HasEventLog:   true,
+				Status:        sessionStatusIdle,
+				LastTouchedAt: time.Date(2026, 7, 29, 8, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	assertMatchesConformanceFixture(t,
+		"testdata/conformance/rest-sessions-list-v2.json",
+		resp)
+}
+
 func TestConformance_RESTCreateSessionV1(t *testing.T) {
 	t.Parallel()
 	resp := createSessionResponse{
@@ -111,7 +150,7 @@ func TestConformance_RESTWhoAmIV1(t *testing.T) {
 		resp)
 }
 
-// TestConformance_RESTSessionsListV1_LiveHandlerAgreesWithFixture
+// TestConformance_RESTSessionsListV2_LiveHandlerAgreesWithFixture
 // drives the REAL listSessions handler and checks its response
 // against the fixture's key structure — the envelope key and the
 // per-row field-name set. The struct-construction test above pins
@@ -122,10 +161,19 @@ func TestConformance_RESTWhoAmIV1(t *testing.T) {
 // the exact #536 failure class, one layer up. Values (timestamps,
 // ids) intentionally aren't compared: the fixture's are canonical
 // examples, the live ones are whatever the harness produced.
-func TestConformance_RESTSessionsListV1_LiveHandlerAgreesWithFixture(t *testing.T) {
+//
+// The registrant implements SessionTitleProvider so the live row
+// carries a `title` and matches the fixture's first row key-for-key.
+// That makes this a probe of the capability plumbing too: drop the
+// type assertion in entryTitle and the key sets diverge here.
+func TestConformance_RESTSessionsListV2_LiveHandlerAgreesWithFixture(t *testing.T) {
 	t.Parallel()
 	reg := NewSessionRegistryWithStore(newTestACLStore(t))
-	if _, err := reg.RegisterOwned(&stubRegistrant{app: "core-agent", user: "alice@example.com", sid: "s-live"}, "alice@example.com"); err != nil {
+	titled := &titledRegistrant{
+		stubRegistrant: &stubRegistrant{app: "core-agent", user: "alice@example.com", sid: "s-live"},
+		title:          "Debug the payment webhook retries",
+	}
+	if _, err := reg.RegisterOwned(titled, "alice@example.com"); err != nil {
 		t.Fatalf("RegisterOwned: %v", err)
 	}
 	h := &handlers{reg: reg, pool: newBroadcasterPool()}
@@ -138,7 +186,7 @@ func TestConformance_RESTSessionsListV1_LiveHandlerAgreesWithFixture(t *testing.
 	}
 
 	live := decodeSessionsEnvelope(t, rr.Body.Bytes(), "live handler")
-	fixtureBytes, err := os.ReadFile("testdata/conformance/rest-sessions-list-v1.json")
+	fixtureBytes, err := os.ReadFile("testdata/conformance/rest-sessions-list-v2.json")
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}

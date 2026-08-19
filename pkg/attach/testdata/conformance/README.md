@@ -39,6 +39,7 @@ with the old fixture kept frozen.
 | File | Endpoint | Since |
 |---|---|---|
 | `rest-sessions-list-v1.json` | `GET /sessions` (the `{"sessions": [...]}` envelope; one `active` + one `idle` row) | v1 |
+| `rest-sessions-list-v2.json` | `GET /sessions` with the optional `title` on rows (protocol 1.6.0, #808) — the titled row pins the field name, the untitled one pins its absence | v2 |
 | `rest-create-session-v1.json` | `POST /sessions` → 201 body | v1 |
 | `rest-whoami-v1.json` | `GET /whoami` (asserted-proxy variant — populates the `omitempty` fields) | v1 |
 | `rest-subagent-events-v1.json` | `GET /sessions/{app}/{sid}/agents/{name}/events` (a truncated page — populates `next_since` + `truncated`) | v1 |
@@ -47,6 +48,12 @@ Pinned by `rest_conformance_test.go`; add new REST fixtures there
 following the same construct-marshal-diff pattern (plus, where a
 handler assembles its envelope inline, a live-handler key-set test —
 see the sessions-list pair).
+
+`title` is `omitempty`: a row without one is a session that has no
+title, not a session whose title is `""`. Clients fall back to the
+session ID, which is what they showed before v2 existed — and they will
+take that path often (pre-1.6.0 daemons, sessions before their first
+turn, deployments with titling switched off).
 
 Timestamp fields (`last_touched_at`) are RFC 3339 with arbitrary
 sub-second precision and zone offset — active rows carry the

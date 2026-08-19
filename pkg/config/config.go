@@ -619,6 +619,18 @@ type AgentConfig struct {
 	// runs have their own checkpoint/resume machinery.
 	AutoContinue *AutoContinueConfig `json:"auto_continue,omitempty"`
 
+	// SessionTitle controls whether each session gets a short label
+	// derived from its first prompt, so a session picker lists work
+	// instead of IDs (#808). Nil/absent = on: the cost is one
+	// cheap-tier call per session, and a picker full of UUIDs is not
+	// a picker. Set false to turn the call off — the session keeps
+	// whatever an operator names it by hand, so this disables
+	// inference, not titles.
+	//
+	// Pointer for the usual reason: absent has to be distinguishable
+	// from a deliberate false.
+	SessionTitle *bool `json:"session_title,omitempty"`
+
 	// DisplayName overrides the brand line at the top of the TUI. By
 	// default the TUI shows the AppName (e.g. "core-agent"); set this
 	// to give the agent a human-friendly identity ("Triage Bot",

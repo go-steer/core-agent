@@ -366,6 +366,18 @@ func (ad *Adapter) AttachMCP() attach.MCPInfo {
 	return ad.mcpFn()
 }
 
+// SessionTitle implements attach.SessionTitleProvider. Unprefixed,
+// unlike its neighbours, because it forwards a method of the same name
+// on the agent rather than projecting adapter-local state — and because
+// the attach interface names the method for what a session has, not for
+// where it is read from.
+//
+// Empty until the first turn's generation lands (or an operator renames
+// the session); GET /sessions omits the field rather than sending "".
+func (ad *Adapter) SessionTitle() string {
+	return ad.Agent().SessionTitle()
+}
+
 // AttachPricing implements attach.PricingProvider.
 func (ad *Adapter) AttachPricing() attach.PricingInfo {
 	if ad == nil || ad.pricingFn == nil {

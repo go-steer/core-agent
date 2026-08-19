@@ -147,6 +147,76 @@ func TestSessions_DisplayFallback(t *testing.T) {
 	}
 }
 
+// TestSessions_TitleTakesThePrimaryLine — a titled row leads with the
+// title and demotes the app/sid to the description; an untitled row is
+// unchanged from the pre-#808 shape. Both rows matter: the picker is
+// going to show a mix of them for as long as any session predates its
+// first turn.
+func TestSessions_TitleTakesThePrimaryLine(t *testing.T) {
+	t.Parallel()
+	fs := startSessionsServer(t)
+	fs.list = []attachclient.SessionDescriptor{
+		{App: "core-agent", SessionID: "one", Title: "Debug the payment webhook retries"},
+		{App: "core-agent", SessionID: "two"},
+	}
+	a := newTestAdapter(t, fs, "/sessions/core-agent/one")
+
+	got := a.Sessions()
+	if len(got) != 2 {
+		t.Fatalf("Sessions() len = %d, want 2", len(got))
+	}
+	if got[0].Display != "Debug the payment webhook retries" {
+		t.Errorf("titled row Display = %q, want the title", got[0].Display)
+	}
+	if got[0].Description != "core-agent/one" {
+		t.Errorf("titled row Description = %q, want the identity to survive on the second line", got[0].Description)
+	}
+	if got[1].Display != "core-agent/two" {
+		t.Errorf("untitled row Display = %q, want the app/sid fallback", got[1].Display)
+	}
+	if got[1].Description != "" {
+		t.Errorf("untitled row Description = %q, want empty — the identity is already on the primary line", got[1].Description)
+	}
+}
+
+// TestSessions_TitleFromTheWireIsSanitized — the title is a string
+// another process put on the wire, so the producer's normalization is
+// not a guarantee this process holds. A newline splits the picker cell
+// and a CSI sequence repaints the dialog around it; neither needs a
+// hostile peer, just an older producer or an odd paste.
+func TestSessions_TitleFromTheWireIsSanitized(t *testing.T) {
+	t.Parallel()
+	fs := startSessionsServer(t)
+	fs.list = []attachclient.SessionDescriptor{
+		{App: "core-agent", SessionID: "one", Title: "Debug\r\nthe \x1b[2Jretries"},
+		{App: "core-agent", SessionID: "two", Title: strings.Repeat("x", 400)},
+		{App: "core-agent", SessionID: "three", Title: "\x00\x01\x02"},
+	}
+	a := newTestAdapter(t, fs, "/sessions/core-agent/one")
+
+	got := a.Sessions()
+	if len(got) != 3 {
+		t.Fatalf("Sessions() len = %d, want 3", len(got))
+	}
+	if got[0].Display != "Debug the [2Jretries" {
+		t.Errorf("Display = %q, want the newlines collapsed and the escape byte gone", got[0].Display)
+	}
+	if strings.ContainsAny(got[0].Display, "\r\n\x1b") {
+		t.Errorf("Display = %q, still carries a control character", got[0].Display)
+	}
+	if n := len([]rune(got[1].Display)); n > sessionTitleDisplayMax {
+		t.Errorf("overlong Display = %d runes, want <= %d", n, sessionTitleDisplayMax)
+	}
+	// Nothing legible left means the row falls back to the identity
+	// rather than rendering a blank primary line.
+	if got[2].Display != "core-agent/three" {
+		t.Errorf("all-control Display = %q, want the identity fallback", got[2].Display)
+	}
+	if got[2].Description != "" {
+		t.Errorf("all-control Description = %q, want empty", got[2].Description)
+	}
+}
+
 // TestSessions_NilOnEnumerationError — GET /sessions 500 returns
 // nil (not error) so the picker renders cleanly with an "empty" body.
 func TestSessions_NilOnEnumerationError(t *testing.T) {

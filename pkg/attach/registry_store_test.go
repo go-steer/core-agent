@@ -118,6 +118,8 @@ func (*failingStore) Delete(context.Context, string, string, string) error { ret
 
 func (*failingStore) Touch(context.Context, string, string, string, time.Time) error { return nil }
 
+func (*failingStore) SetTitle(context.Context, string, string, string, string) error { return nil }
+
 func (*failingStore) ListByOwner(context.Context, string) ([]SessionACLRow, error) { return nil, nil }
 
 func (*failingStore) ListVisibleTo(context.Context, auth.Caller) ([]SessionACLRow, error) {

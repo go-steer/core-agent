@@ -65,7 +65,14 @@ import "time"
 // 1.4.0 client sees the pre-existing shapes unchanged, and an empty
 // /interrupt body keeps working (though its DEFAULT behavior now holds
 // the loop; see the endpoint docs).
-const protocolVersion = "1.5.0"
+//
+// v1.6.0 (#808): GET /sessions rows carry an optional `title` — a short
+// operator-facing label derived from the session's first prompt, so a
+// session picker lists work rather than IDs. Omitted when the host
+// doesn't implement the capability, when titling is off, and before the
+// first turn lands, so every client needs the pre-1.6.0 fallback to the
+// session ID regardless of the version it negotiated. Fully additive.
+const protocolVersion = "1.6.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (

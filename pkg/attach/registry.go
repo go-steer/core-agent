@@ -828,7 +828,10 @@ func (r *SessionRegistry) TouchEntry(appName, sessionID string) {
 //
 // When aclStore is wired, the last-touched value at eviction time
 // is persisted to the ACL row so GET /sessions and future resume
-// see an accurate "last active" timestamp. Persistence is
+// see an accurate "last active" timestamp. The session title goes
+// with it, if the registrant has one: an evicted session is
+// answered from the row from here on, so this is the last point
+// at which the title is still readable. Persistence is
 // best-effort: a store error is logged upstream but doesn't block
 // eviction (the in-memory removal is the correctness-critical
 // half; the DB row is metadata).
@@ -876,6 +879,20 @@ func (r *SessionRegistry) EvictBefore(cutoff time.Time) int {
 			// stays; only LastTouchedAt bumps. Silent on error —
 			// the in-memory eviction already succeeded.
 			_ = store.Touch(context.Background(), c.key.App, c.key.User, c.key.SID, time.Unix(0, c.lastTouchedNs))
+			// And the title (#808), for the same reason: this is
+			// the moment the session stops being answerable from
+			// memory, so it is the last chance to write down what
+			// the row could not otherwise know. Skipped when the
+			// registrant has no title — SetTitle's "" clears, and
+			// an untitled eviction must not wipe a title an
+			// operator set by hand earlier.
+			//
+			// ErrSessionACLNotFound is the expected answer for a
+			// session registered without an owner (in-memory only,
+			// no row to write to), hence the discard.
+			if title := entryTitle(c.entry); title != "" {
+				_ = store.SetTitle(context.Background(), c.key.App, c.key.User, c.key.SID, title)
+			}
 		}
 	}
 	return len(evicted)

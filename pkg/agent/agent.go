@@ -302,6 +302,20 @@ type Agent struct {
 	compactor        Compactor
 	checkpointer     Checkpointer
 
+	// Session title (see session_title.go). titleModel is the cheap-tier
+	// model titling prefers, nil to use the parent's. titleAttempted is
+	// the one-shot latch: generation fires at most once per session, so
+	// a provider outage costs one wasted call rather than one per turn.
+	// titleMu is its own lock rather than the general mu below because
+	// the attach layer reads the title from an HTTP handler while a turn
+	// goroutine may be writing it, and mu is held across paths titling
+	// has no business blocking on.
+	titleMu        sync.Mutex
+	sessionTitle   string
+	titleAttempted bool
+	titleModel     adkmodel.LLM
+	titleDisabled  bool
+
 	// operatorEmit is the typed operator-event callback set by the
 	// broadcaster on first subscribe (see the attach package's broadcaster Subscribe).
 	// Nil when no SSE client is connected — the emit() helper drops
@@ -459,6 +473,8 @@ type options struct {
 	postConstruct    func(*Agent)
 	meterProvider    metric.MeterProvider
 	metricAgentName  string
+	titleModel       adkmodel.LLM
+	titleDisabled    bool
 }
 
 func defaultOptions() options {
@@ -983,6 +999,8 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		watchdogFeedback:     o.watchdogFeedback || o.watchdogEnforce,
 		onEvent:              o.onEvent,
 		onTurnEnd:            o.onTurnEnd,
+		titleModel:           o.titleModel,
+		titleDisabled:        o.titleDisabled,
 	}
 	if a.bgMgr != nil {
 		a.bgMgr.AttachParent(a)
@@ -1411,6 +1429,12 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// can compute the per-turn delta. No-op when no ceiling is
 	// configured.
 	a.snapshotTurnStartCost()
+	// Capture the operator's own text before the prepends below bury it
+	// under alerts, inbox framing, and watchdog feedback. That raw text
+	// is what the session gets named after (session_title.go) — naming a
+	// session after a watchdog observation would be worse than not
+	// naming it at all.
+	rawPrompt := prompt
 	if a.bgMgr != nil {
 		prompt = a.bgMgr.PrependPendingAlerts(prompt)
 	}
@@ -1424,6 +1448,15 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// up further down.
 	drained := a.drainInboxFull()
 	prompt = prependInboxMessages(prompt, drained.texts)
+	// Name the session off whichever of the two carried the operator's
+	// actual request. A daemon-driven turn arrives as Run("") with the
+	// text in the inbox, so keying only on the prompt argument would
+	// leave every attach-mode session — the ones with a picker to show
+	// them in — permanently unnamed. Fires at most once per session and
+	// runs off this goroutine.
+	if src := titleSource(rawPrompt, drained.texts); src != "" {
+		a.maybeTitleSession(ctx, src)
+	}
 	// Watchdog feedback (#159) goes on last, so it reads first: it is an
 	// observation about the model's own immediately-preceding turn, and
 	// a correction buried under a page of inbox traffic is a correction

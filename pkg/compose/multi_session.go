@@ -118,7 +118,13 @@ type SessionFactoryDeps struct {
 	// Optional: nil means "no join point", the pre-#751 behavior.
 	WakeLoops *WakeLoopGroup
 
-	Model          adkmodel.LLM
+	Model adkmodel.LLM
+	// TitleModel is the cheap-tier model each session names itself
+	// with (#808). Optional: nil means sessions fall back to a title
+	// derived from the head of their first prompt, with no LLM call.
+	// Multi-session daemons are where titles earn their keep — this is
+	// the deployment whose picker has more than one row in it.
+	TitleModel     adkmodel.LLM
 	Template       *permissions.Gate
 	BuiltinTools   []adktool.Tool
 	Toolsets       []adktool.Toolset
@@ -437,6 +443,15 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 		agent.WithSession(caller.Identity, sid),
 	}
 	opts = append(opts, bgOpts...)
+	// Session titling (#808). Config wins over a wired model, so an
+	// operator who turned titles off in config gets no LLM call even
+	// from a host that handed a title model down anyway.
+	switch {
+	case deps.Cfg != nil && deps.Cfg.Agent.SessionTitle != nil && !*deps.Cfg.Agent.SessionTitle:
+		opts = append(opts, agent.WithoutSessionTitle())
+	case deps.TitleModel != nil:
+		opts = append(opts, agent.WithTitleModel(deps.TitleModel))
+	}
 	// Per-session adapter options: the prompt broker plus the
 	// AttachXProvider closures that power the operator-state slashes
 	// (/memory, /skills, /mcp, /pricing). Without the providers the

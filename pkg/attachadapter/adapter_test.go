@@ -210,6 +210,31 @@ func TestAttachUsage_NoTracker(t *testing.T) {
 	}
 }
 
+// TestSessionTitle forwards to the wrapped agent and holds the same
+// nil-safety line every capability method does — the attach layer
+// reaches this through a type assertion on a value it did not
+// construct, so a nil receiver has to answer rather than panic inside
+// an HTTP handler.
+func TestSessionTitle(t *testing.T) {
+	t.Parallel()
+	ad := New(newEchoAgent(t))
+	if got := ad.SessionTitle(); got != "" {
+		t.Errorf("fresh session title = %q, want empty", got)
+	}
+	ad.Agent().SetSessionTitle("Rotate the staging certs")
+	if got, want := ad.SessionTitle(), "Rotate the staging certs"; got != want {
+		t.Errorf("SessionTitle = %q, want %q", got, want)
+	}
+
+	var nilAd *Adapter
+	if got := nilAd.SessionTitle(); got != "" {
+		t.Errorf("nil-adapter SessionTitle = %q, want empty", got)
+	}
+	if got := New(nil).SessionTitle(); got != "" {
+		t.Errorf("nil-agent SessionTitle = %q, want empty", got)
+	}
+}
+
 // TestAttachUsage_PerModelWhenMultipleModels covers the mixed-model
 // path (parent frontier + subtask flash). PerModel must be populated
 // and CostUSDUncachedReference must roll up per-model too.

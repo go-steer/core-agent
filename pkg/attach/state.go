@@ -437,6 +437,20 @@ type DescriptionProvider interface {
 	Description() string
 }
 
+// SessionTitleProvider is the optional capability the GET /sessions
+// handler consults for a session's short operator-facing label — the
+// title line of a picker row, as against the ID that identifies it
+// (#808). Returns "" when the session has no title, which is the
+// correct answer for a registrant that never generated one; the field
+// is omitted from the wire and clients fall back to the ID.
+//
+// Distinct from DescriptionProvider, which is per-AGENT ("what this
+// agent does", fed to the discovery card). This is per-SESSION ("what
+// this particular conversation is about") and changes with the work.
+type SessionTitleProvider interface {
+	SessionTitle() string
+}
+
 // MCPProvider is the optional capability for GET /sessions/.../mcp.
 type MCPProvider interface {
 	AttachMCP() MCPInfo

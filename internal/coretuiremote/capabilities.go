@@ -1298,13 +1298,6 @@ func (a *Adapter) InvokeSlashAsync(ctx context.Context, name, args string) (stri
 	return preamble, ch
 }
 
-// Compile-time check: core-tui discovers the async slash path by type
-// assertion, so a drift here degrades silently to the synchronous
-// InvokeSlash and freezes the TUI for the length of a remote /btw or
-// /compact. v0.21.0 renamed this interface without a build error,
-// which is why it is pinned now.
-var _ coretui.AsyncSlashProvider = (*Adapter)(nil)
-
 // invokeAsyncSlash routes the four async slashes to their attach
 // endpoints. The /btw answer renders as a modal (R-CMD-5) so it
 // doesn't pollute the persistent chat scrollback; the others

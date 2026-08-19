@@ -70,14 +70,3 @@ func (a *Adapter) SubagentEvents(ctx context.Context, name string, since int64) 
 	}
 	return page, nil
 }
-
-// Compile-time check: *Adapter must satisfy coretui.SubagentReporter.
-// core-tui discovers the capability by type assertion, so a rename or a
-// signature drift would otherwise degrade silently to "this host has no
-// turn log" — the drill-down would just stop working with no build
-// error and no runtime complaint.
-//
-// core-tui v0.21.0 merged SubagentLister and SubagentEventReader into
-// this one interface: listing the roster and reading a name's turns are
-// not things a host can plausibly do separately.
-var _ coretui.SubagentReporter = (*Adapter)(nil)

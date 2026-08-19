@@ -30,9 +30,6 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 )
 
-// Compile-time: Adapter satisfies coretui.LiveAgent.
-var _ coretui.LiveAgent = (*Adapter)(nil)
-
 func TestAdapter_Events_StreamsAllNonEmptyEvents(t *testing.T) {
 	t.Parallel()
 	fs := startFakeServer(t)

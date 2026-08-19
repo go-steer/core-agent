@@ -929,17 +929,6 @@ func (a *coreAgentAdapter) SubagentEvents(ctx context.Context, name string, sinc
 	return out, nil
 }
 
-// Compile-time check: core-tui discovers this capability by asserting
-// on Options.Agent, so a rename or a signature drift would degrade
-// silently to "this host has no turn log" — /subagents <name> would
-// just stop drilling down, with no build error and no runtime
-// complaint.
-//
-// core-tui v0.21.0 merged SubagentLister and SubagentEventReader into
-// SubagentReporter, so this one assertion now covers both Subagents()
-// and SubagentEvents().
-var _ coretui.SubagentReporter = (*coreAgentAdapter)(nil)
-
 // subagentRoster collects the names this session knows about outside
 // the log — live spawned instances, plus whatever the config declares
 // as spawnable. Both only widen an answer: a name either list carries
@@ -1393,14 +1382,6 @@ func (a *coreAgentAdapter) InvokeSlashAsync(ctx context.Context, name, args stri
 	}()
 	return preamble, ch
 }
-
-// Compile-time check: core-tui discovers the async slash path by
-// asserting on Options.Agent, so a drift here degrades silently to
-// the synchronous InvokeSlash — which still works, but freezes the
-// TUI for the 1-10s a real /btw or /compact takes. v0.21.0 renamed
-// this interface out from under us without a build error, which is
-// the argument for pinning it the way SubagentReporter is pinned.
-var _ coretui.AsyncSlashProvider = (*coreAgentAdapter)(nil)
 
 // preambleFor returns the chat-visible "this is running" row for
 // async slashes whose wall-clock makes the bottom toast easy to

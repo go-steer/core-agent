@@ -267,6 +267,14 @@ func (s *gormSessionACLStore) SetTitle(ctx context.Context, app, user, sid, titl
 		// Distinguish "no such session" from "wrote it" so a caller
 		// that cares can branch; the automatic titling path does not
 		// and swallows this.
+		//
+		// Reading zero as "no row" assumes a driver that reports
+		// matched rows. SQLite and Postgres do, and SQLite is the only
+		// driver wired in-tree; MySQL without CLIENT_FOUND_ROWS reports
+		// *changed* rows, so re-writing a title to its current value
+		// would land here and read as a missing session. Revisit if a
+		// MySQL driver is ever added — the fix is a Get before the
+		// Update, which is not worth a round-trip today.
 		return ErrSessionACLNotFound
 	}
 	return nil

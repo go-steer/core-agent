@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	coretui "github.com/go-steer/core-tui/tui"
 
@@ -807,12 +808,12 @@ func (a *Adapter) Sessions() []coretui.SessionInfo {
 	for _, d := range descs {
 		identity := sessionIdentity(d)
 		display, desc := identity, ""
-		if d.Title != "" {
+		if title := sessionTitleForDisplay(d.Title); title != "" {
 			// The title takes the primary line and the identity moves
 			// to the secondary one: an operator picking a session
 			// recognises it by what it is doing, but still needs the
 			// triple to confirm they picked the right one.
-			display, desc = d.Title, identity
+			display, desc = title, identity
 		}
 		out = append(out, coretui.SessionInfo{
 			ID:          d.SessionID,
@@ -854,6 +855,49 @@ func sessionIdentity(d attachclient.SessionDescriptor) string {
 		return d.App + "/" + d.SessionID
 	}
 	return d.SessionID
+}
+
+// sessionTitleDisplayMax caps a title at render time. The producer
+// already caps what it generates, but this is a wire field from another
+// process and the cap here is the one that protects this picker.
+const sessionTitleDisplayMax = 80
+
+// sessionTitleForDisplay makes a wire-supplied title safe to put in a
+// one-line picker cell. The producing daemon normalizes what it
+// generates, but a title arriving over HTTP — from a peer daemon in
+// multi-daemon mode above all — is text this process did not write and
+// cannot assume was normalized by a version of the code it has read. A
+// newline splits the cell, a CSI sequence repaints the rest of the
+// dialog, and neither needs anything more hostile than an old producer
+// or an operator who pasted something odd into a rename.
+//
+// Returns "" for a title with nothing legible left, which puts the row
+// back on the identity fallback.
+func sessionTitleForDisplay(title string) string {
+	if title == "" {
+		return ""
+	}
+	title = strings.Map(func(r rune) rune {
+		// Whitespace controls are word separators before they are
+		// control characters — dropping the newline out of "Debug\nthe
+		// retries" welds two words into one. Fields() below collapses
+		// the runs.
+		if unicode.IsSpace(r) {
+			return ' '
+		}
+		// Everything else non-printing goes, rather than becoming a
+		// space: an escape byte separates nothing, and substituting
+		// lets a padded string push the identity off the line.
+		if unicode.IsControl(r) || !unicode.IsPrint(r) {
+			return -1
+		}
+		return r
+	}, title)
+	title = strings.Join(strings.Fields(title), " ")
+	if r := []rune(title); len(r) > sessionTitleDisplayMax {
+		title = strings.TrimRight(string(r[:sessionTitleDisplayMax-1]), " ") + "…"
+	}
+	return title
 }
 
 // peerRow is one enumerated peer session plus the endpoint that
@@ -901,12 +945,12 @@ func (a *Adapter) enumeratePeers(peers []attachclient.PeerDescriptor) []peerRow 
 			for _, d := range descs {
 				identity := sessionIdentity(d)
 				display, desc := identity, p.Endpoint
-				if d.Title != "" {
+				if title := sessionTitleForDisplay(d.Title); title != "" {
 					// Same trade as the local rows, except the
 					// secondary line is already spoken for by the
 					// endpoint — so the identity joins it there
 					// rather than displacing it.
-					display = d.Title
+					display = title
 					desc = identity + " · " + p.Endpoint
 				}
 				peerLabel := p.Name

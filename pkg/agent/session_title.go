@@ -45,10 +45,18 @@ const (
 	titleMaxRunes = 60
 
 	// titleMaxTokens bounds the generation call's output. A title is a
-	// handful of words; anything longer is the model ignoring the
-	// instruction, and we would rather pay for six words and truncate
-	// than pay for a paragraph.
-	titleMaxTokens = 40
+	// handful of words, so this is generous by two orders of magnitude
+	// on purpose: on Gemini 2.5+ the thinking tokens come out of the
+	// same budget, and a cap tight enough to fit only the answer is a
+	// cap the model can exhaust before it has written anything. That
+	// failure mode is silent — an empty response falls back to the
+	// prompt head — so titling would simply never appear to work.
+	// Setting ThinkingConfig{ThinkingBudget: 0} instead would be the
+	// precise fix, except that some models reject a zero budget
+	// outright, which trades a silent degrade for a hard error. The
+	// visible cap is titleMaxRunes; this one only bounds the bill, and
+	// a few hundred cheap-tier tokens once per session is not a bill.
+	titleMaxTokens = 256
 
 	// titleTimeout bounds the generation call. The title is a nicety
 	// riding alongside a real turn — it must never be the reason a turn
@@ -300,9 +308,11 @@ func normalizeTitle(s string) string {
 	s = strings.TrimPrefix(s, "Title:")
 	s = strings.TrimPrefix(s, "title:")
 	s = strings.TrimSpace(s)
-	s = strings.Trim(s, "*_`")
-	s = strings.Trim(s, `"'`)
-	s = strings.TrimSpace(s)
+	// One cutset rather than quotes-then-emphasis, because the model
+	// picks the nesting order and we do not: `**"A Title"**` and
+	// `"**A Title**"` are equally likely, and two ordered passes strip
+	// only the one whose order they happen to match.
+	s = strings.Trim(s, "*_`\"' ")
 	// Control characters (including a stray tab or CR) would break the
 	// cell's layout; a space is the harmless substitution.
 	s = strings.Map(func(r rune) rune {
@@ -354,11 +364,22 @@ func truncateRunes(s string, n int) string {
 	// The ellipsis costs a rune, so it comes out of the budget rather
 	// than being added on top of it — n is a cap on what is rendered,
 	// and a "cap" that the capping itself exceeds is not one.
-	cut := string(r[:n-1])
+	cut := r[:n-1]
 	// Prefer cutting at a word boundary when one is close enough that
-	// the result doesn't lose most of the last word's context.
-	if i := strings.LastIndex(cut, " "); i > n/2 {
-		cut = cut[:i]
+	// the result doesn't lose most of the last word's context. Measured
+	// in runes, not bytes: strings.LastIndex would hand back a byte
+	// offset to compare against a rune budget, and for anything
+	// non-ASCII that offset is several times the rune count — so the
+	// "close enough" test passes on cuts that throw away most of the
+	// title.
+	for i := len(cut) - 1; i >= 0; i-- {
+		if cut[i] != ' ' {
+			continue
+		}
+		if i > n/2 {
+			cut = cut[:i]
+		}
+		break
 	}
-	return strings.TrimRight(cut, " ") + "…"
+	return strings.TrimRight(string(cut), " ") + "…"
 }

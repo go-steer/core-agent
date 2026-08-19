@@ -38,6 +38,10 @@ func TestNormalizeTitle(t *testing.T) {
 		{"plain", "Fix the retry backoff", "Fix the retry backoff"},
 		{"quoted", `"Fix the retry backoff"`, "Fix the retry backoff"},
 		{"bolded", "**Fix the retry backoff**", "Fix the retry backoff"},
+		// The model picks the nesting order, so both have to come out
+		// the same — two ordered trim passes strip only one of them.
+		{"bolded inside quotes", `"**Fix the retry backoff**"`, "Fix the retry backoff"},
+		{"quoted inside bold", `**"Fix the retry backoff"**`, "Fix the retry backoff"},
 		{"labeled", "Title: Fix the retry backoff", "Fix the retry backoff"},
 		{"trailing period", "Fix the retry backoff.", "Fix the retry backoff"},
 		{"explained", "Fix the retry backoff\n\nThis title summarizes the user's request.", "Fix the retry backoff"},
@@ -79,6 +83,32 @@ func TestNormalizeTitle_CapsLength(t *testing.T) {
 	}
 	if n := len([]rune(got)); n > titleMaxRunes {
 		t.Errorf("multi-byte length = %d runes, want <= %d", n, titleMaxRunes)
+	}
+}
+
+// The word-boundary cut is measured in runes. A byte offset compared
+// against a rune budget passes the "close enough" test on cuts that
+// throw most of the title away — for three-byte runes the offset runs
+// triple the rune count, so a boundary a third of the way in reads as
+// two thirds of the way in.
+func TestTruncateRunes_WordBoundaryIsMeasuredInRunes(t *testing.T) {
+	t.Parallel()
+	// Twelve wide runes, a space, then enough to force a cut. The only
+	// space sits at rune 12 of a 60-rune budget — well under half, so
+	// the boundary must be rejected and the cut taken at the cap.
+	in := strings.Repeat("日", 12) + " " + strings.Repeat("本", 80)
+	got := truncateRunes(in, titleMaxRunes)
+	if n := len([]rune(got)); n > titleMaxRunes {
+		t.Fatalf("length = %d runes, want <= %d", n, titleMaxRunes)
+	}
+	if n := len([]rune(got)); n < titleMaxRunes/2 {
+		t.Errorf("length = %d runes (%q), want most of the budget used — a byte offset was compared against a rune budget", n, got)
+	}
+
+	// The boundary is still honored when it really is past halfway.
+	ascii := strings.Repeat("a", 40) + " " + strings.Repeat("b", 40)
+	if got := truncateRunes(ascii, titleMaxRunes); strings.Contains(got, "b") {
+		t.Errorf("truncateRunes(ascii) = %q, want the cut at the space", got)
 	}
 }
 

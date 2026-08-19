@@ -16,6 +16,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+_No unreleased changes since [2.9.0-dev.3]._
+
+## [2.9.0-dev.3] — 2026-08-19
+
 ### Breaking Changes
 
 - **`POST /interrupt` now holds the agent by default, and the attach protocol goes 1.4.0 → 1.5.0.** An empty body is still valid and still cancels the in-flight turn — but the agent now *parks* afterwards instead of walking straight into the next turn, because "cancel this turn and let the scheduler start another one" was never what the stop button meant. Restore the old fire-and-forget behavior with `{"hold": false}`. The response body gains the pause state and the list of subagents still running, and against a pre-1.5.0 registrant a hold degrades rather than 501s: the turn is still cancelled and the response carries `X-Hold: unsupported` with `paused: false`, on the reasoning that a stop which half-lands beats no stop at all. `attachclient.InterruptResponse` stops being a hand-copied struct and becomes an alias of the server type — the copy is exactly how it silently missed every field this change added, so anyone who had reached into the local copy's fields gets them from the server declaration now. ([#794](https://github.com/go-steer/core-agent/pull/794))

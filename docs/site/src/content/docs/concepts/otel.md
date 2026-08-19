@@ -3,7 +3,7 @@ title: OpenTelemetry
 ---
 
 
-`core-agent` emits [OpenTelemetry](https://opentelemetry.io) traces via ADK's built-in instrumentation plus a small set of custom spans around MCP tool calls and the [structural pruner](/concepts/mcp/#agentic-wrap). Traces let you attribute cost, latency, and errors across model calls, tool invocations, and pruning passes without adding a logging middleware.
+`core-agent` emits [OpenTelemetry](https://opentelemetry.io) traces via ADK's built-in instrumentation plus a small set of custom spans — one per agent turn, and around MCP tool calls and the [structural pruner](/concepts/mcp/#agentic-wrap). Traces let you attribute cost, latency, and errors across model calls, tool invocations, and pruning passes without adding a logging middleware.
 
 Configuration lives in `.agents/config.json` under the `otel:` key, with standard OpenTelemetry SDK env vars available as per-process overrides. The daemon speaks OTLP over HTTP or gRPC — point it at any OTLP-compatible collector (self-hosted OpenTelemetry Collector, [GKE Managed OpenTelemetry](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/managed-otel-gke), Jaeger, Honeycomb, etc.).
 
@@ -49,19 +49,25 @@ All standard OpenTelemetry SDK env vars work — sampling (`OTEL_TRACES_SAMPLER`
 A typical tool call from a session produces this hierarchy:
 
 ```
-adk.invoke_agent                        (root, from ADK)
-├── adk.call_llm                        (planner LLM call)
-└── mcp.tool_call                       {tool.name, tool.server, tool.call_id}
-    ├── mcp.http_call                   (otelhttp on the MCP transport, HTTP servers only)
-    └── digest.process                  {digest.strategy, digest.input_bytes, digest.output_bytes}
-          └── subagent.llm_call         (agentic strategy only)
-                {model, input_tokens, output_tokens, savings.tokens_dropped}
+agent.turn                              (root — core-agent's own turn span)
+└── invoke_agent <agent>                (ADK's agent span, e.g. "invoke_agent core_agent")
+    ├── generate_content <model>        (planner LLM call)
+    └── mcp.tool_call                   {tool.name, tool.server, tool.call_id}
+        ├── mcp.http_call               (otelhttp on the MCP transport, HTTP servers only)
+        └── digest.process              {digest.strategy, digest.input_bytes, digest.output_bytes}
+              └── subagent.llm_call     (agentic strategy only)
+                    {model, input_tokens, output_tokens, savings.tokens_dropped}
 ```
+
+`agent.turn` is core-agent's own span around one turn of `Agent.Run`. It exists because ADK's `invoke_agent` inherits whatever parent is on the context it's handed — on the daemon's wake loop that context has no span, so before `agent.turn` every turn started a fresh, parentless trace with nothing tying it to whatever asked for it. Opening our own span on the per-turn context makes ADK's the child, gives the turn a stable name to query on, and provides somewhere to hang the inject links described under [distributed tracing](#distributed-tracing-across-binaries).
 
 Key attributes:
 
 | Attribute | Where | Meaning |
 |---|---|---|
+| `gen_ai.conversation.id` | `agent.turn`, `invoke_agent` | Session ID. The one attribute that selects every span of a session — see [common queries](#common-queries). |
+| `gen_ai.agent.name` | `agent.turn`, `invoke_agent` | The agent's name. |
+| `core_agent.inbox.linked_injects` | `agent.turn` | How many injects this turn drained that carried a trace context. Absent when none did. Counts before the 32-link cap, so it can exceed the number of links on the span. |
 | `tool.name` | `mcp.tool_call` | Fully-qualified tool name, e.g. `gke.list_clusters`. |
 | `tool.server` | `mcp.tool_call` | The MCP server namespace. |
 | `digest.strategy` | `digest.process` | `structural` \| `agentic` \| `passthrough`. |
@@ -73,6 +79,8 @@ Key attributes:
 ---
 
 ## Common queries
+
+**Pull every span for one session.** Filter on `gen_ai.conversation.id = <session id>`. Both `agent.turn` and ADK's `invoke_agent` carry it, so this is the query that reconstructs "what did this session actually do", across however many separate turn traces it produced.
 
 **Attribute cost to a specific MCP server.** Group `subagent.llm_call` by parent `mcp.tool_call.tool.server` and sum `input_tokens + output_tokens`. Answers "which MCP server is driving the LLM bill this week?"
 
@@ -94,42 +102,75 @@ When several agent binaries run alongside each other — daemon + event-watcher 
 - **Attach server** wraps the router in `otelhttp.NewHandler` (`pkg/attach/server.go`) — every inbound HTTP request extracts `traceparent` if present, becomes a root or child span, and the trace context flows into every downstream operation the request touches.
 - **MCP client** wraps the outbound transport in `otelhttp.NewTransport` (`pkg/mcp/lifecycle.go`) — the `mcp.http_call` span you see in the span tree above rides on that transport, and MCP servers that speak OTel see the parent trace.
 - **LLM calls** are instrumented on both Gemini-family backends, by different mechanisms. On Vertex AI, the genai SDK builds its HTTP client through `cloud.google.com/go/auth/httptransport`, whose default telemetry already wraps the transport in `otelhttp` — the daemon adds nothing. On the direct Gemini API (API-key auth), genai would fall back to an untraced client, so the provider supplies an `otelhttp`-wrapped one explicitly (`pkg/models/gemini/gemini.go`). Either way the outbound `generateContent` call shows up as an `HTTP POST` client span under `generate_content <model>` and carries `traceparent`.
-- **The event-watcher sidecar** (`lookout watch`, shipped from [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout) as `ghcr.io/go-steer/lookout` and deployed under the `lookout-watch` name) initializes the same OTel SDK at startup and wraps its outbound HTTP client so a `POST /sessions/{sid}/inject` from the sidecar starts a trace on the watcher, propagates via `traceparent`, and the daemon's `otelhttp.Handler` extracts it into the request context. The inject → session-turn → tool-call → MCP-call chain becomes one trace across two processes.
+- **The event-watcher sidecar** (`lookout watch`, shipped from [go-steer/k8s-lookout](https://github.com/go-steer/k8s-lookout) as `ghcr.io/go-steer/lookout` and deployed under the `lookout-watch` name) initializes the same OTel SDK at startup and wraps its outbound HTTP client so a `POST /sessions/{sid}/inject` from the sidecar starts a trace on the watcher, propagates via `traceparent`, and the daemon's `otelhttp.Handler` extracts it into the request context. The inject hop is one trace across two processes: the daemon's `POST /sessions/{sid}/inject` server span is a genuine child of the watcher's client span.
+
+### An inject and the turn it causes are two traces, joined by a link
+
+This is the part that surprises people, so it's worth stating plainly: **the turn is not on the inject's trace, and that is correct.**
+
+An inject is asynchronous. `POST /inject` queues the message on the agent's inbox and returns `200` immediately — the handler's span ends there, typically milliseconds later. The turn that answers the message starts whenever the agent loop next drains the inbox, which may be seconds or minutes later, on a different goroutine, driven by the daemon's own loop context. There is no live span left to be a child of. Worse, injects **batch**: an agent that is mid-turn accumulates every inject that arrives, and the next turn drains them all at once. A parent-child edge would have to pick one of them and misattribute the whole turn to it.
+
+So core-agent uses [span links](https://opentelemetry.io/docs/concepts/signals/traces/#span-links), which exist for exactly this asynchronous fan-in shape. The turn opens its own trace rooted at `agent.turn`, and attaches **one link per drained inject** that arrived with a valid trace context. Following a link in your backend jumps from the turn to the watcher-side request that asked for it, and every inject in a batch keeps its own edge.
+
+Details worth knowing:
+
+- Injects that carry no trace context — the CLI, library callers, `core-agent-tui`, auto-continue's own notes, anything queued while tracing was off — contribute no link. The turn span is still there; it just has none.
+- Links are capped at **32 per turn** (the inbox itself holds up to 256). The most recent injects win, since the last caller in a batch is the turn's originator. `core_agent.inbox.linked_injects` records the pre-cap count.
+- `POST /wake` with a `prompt` is an inject and behaves identically. `POST /resume` with a steer message does **not** link today — its API takes no context.
 
 ### End-to-end span tree
 
-A full triage inject on GKE with the OTel overlay applied produces roughly:
+A full triage inject on GKE with the OTel overlay applied produces roughly this — note the three separate traces:
 
 ```
-POST /sessions                              (root — watcher creating session, otelhttp client span)
-POST /sessions/{sid}/inject                 (root — watcher's inject call)
-invoke_agent core_agent                     (root — daemon's ADK-emitted turn span)
-├── HTTP POST                               (otelhttp on outbound calls)
-├── generate_content <model>                (ADK-emitted LLM call, e.g. "generate_content gemini-3.5-flash")
-│   └── HTTP POST                           (otelhttp on the genai HTTP client → Vertex / Gemini)
-├── execute_tool <tool_name>                (per tool call, e.g. "execute_tool gke_get_k8s_resource")
-├── mcp.tool_call                           (our custom span wrapping the MCP round-trip)
-│   ├── mcp.http_call                       (otelhttp on MCP HTTP transport)
-│   └── digest.process                      (response digest / prune)
-│         └── subagent.llm_call             (agentic wrap only — --mcp-agentic-wrap-llm=true)
-└── tools/call <tool_name>                  (MCP server's own instrumentation; may appear as separate root)
+── trace A (watcher) ──────────────────────────────────────────
+HTTP POST                                   (root — watcher's inject call, service.name=lookout-watch)
+└── POST /sessions/{sid}/inject             (daemon's attach server span, service.name=core-agent)
+
+── trace B (the turn) ─────────────────────────────────────────
+agent.turn                                  (root — core-agent's turn span)
+│     ↳ link → the "POST /sessions/{sid}/inject" span in trace A (one per drained inject)
+└── invoke_agent core_agent                 (ADK-emitted agent span)
+    ├── generate_content <model>            (ADK-emitted LLM call, e.g. "generate_content gemini-3.7-flash")
+    │   └── HTTP POST                       (otelhttp on the genai HTTP client → Vertex / Gemini)
+    ├── execute_tool <tool_name>            (per tool call, e.g. "execute_tool gke_get_k8s_resource")
+    ├── invoke_agent <subagent>             (a spawned subagent's turn, nested in-process)
+    ├── mcp.tool_call                       (our custom span wrapping the MCP round-trip)
+    │   ├── mcp.http_call                   (otelhttp on MCP HTTP transport)
+    │   └── digest.process                  (response digest / prune)
+    │         └── subagent.llm_call         (agentic wrap only — --mcp-agentic-wrap-llm=true)
+    └── tools/call <tool_name>              (MCP server's own instrumentation; may appear as a separate root)
+
+── trace C (session creation, if the watcher created one) ─────
+HTTP POST → POST /sessions                  (watcher creating the session, same two-span shape as A)
 ```
 
 Attach-server spans use the `METHOD PATH` naming convention (from `otelhttp.WithSpanNameFormatter` in `pkg/attach/server.go`), so what shows up in your backend is literally `POST /sessions/019f8075.../inject` — not a semantic-name like `attach.inject`. Filter / query by path prefix if you want to isolate all inject events, or by the `http.route` attribute if your backend surfaces it.
 
 ### Verifying it works
 
-In Cloud Trace, filter by `service.name = "core-agent"` and open one trace. You should see:
+Everything below is verified against live data from a GKE cluster running the OTel overlay.
 
-- Root spans from the watcher (`POST /sessions/...`) and daemon (`invoke_agent core_agent`, `POST /sessions/{sid}/inject`).
-- Cross-binary stitching: `traceparent` propagation from watcher → daemon should make the watcher's `POST /sessions/{sid}/inject` a child of the corresponding daemon-side span (or vice versa depending on which side started the trace).
+**Do not filter by service name on the Cloud Trace v1 REST API.** `filter=%2Bservice_name:core-agent` returns zero traces even on a cluster that is exporting correctly — that filter keys off Cloud Trace's legacy per-trace service concept, not the OTel `service.name` resource attribute the collector writes. (This caveat is about the v1 REST API specifically; the console's own service facet is untested here.) Filter on span attributes instead:
+
+| Goal | Filter |
+|---|---|
+| The inject hops | `url.path:/sessions/<sid>/inject` |
+| The turns for one session | `gen_ai.conversation.id:<sid>` |
+| Everything from one namespace | `k8s.namespace.name:<ns>` |
+
+What you should see:
+
+- Two spans on the inject trace: the watcher's client span (`service.name=lookout-watch`) with the daemon's `POST /sessions/{sid}/inject` as its **child** (`service.name=core-agent`). That parent-child edge across processes is the propagation check — if it's missing, `traceparent` really isn't getting through.
+- A separate trace rooted at `agent.turn`, carrying a **link** to that inject span, with `invoke_agent core_agent` and the whole tool/model waterfall beneath it. Separate is expected; see the section above.
 - `HTTP POST` spans under `generate_content` show the outbound Vertex calls are instrumented.
 
-If daemon spans appear on separate traces from the watcher's, `traceparent` isn't propagating — likely causes:
+Troubleshooting, in the order worth checking:
 
-- Watcher didn't have `OTEL_TRACES_EXPORTER=otlp` set (spans get recorded but dropped).
-- A reverse proxy or load balancer between the two is stripping `traceparent` (rare — most cloud LBs pass it through).
-- The daemon's attach listener isn't going through `otelhttp.NewHandler` (only happens if `attach.listen` is disabled — the wrap is unconditional otherwise).
+- **`agent.turn` and the watcher's spans are on different traces.** Normal and correct — that's the async inject boundary, not a bug. Check the turn span's links, not its parent.
+- **The turn span has no links.** The inject reached the daemon without a trace context. Either the watcher isn't exporting (`OTEL_TRACES_EXPORTER=otlp` unset in the sidecar — spans get recorded and dropped), something between the two is stripping `traceparent` (rare; most cloud LBs pass it through), or the message was injected by something that isn't the watcher (TUI, CLI, auto-continue), which never had a trace context to pass.
+- **`POST /sessions/{sid}/inject` is a root instead of the watcher's child.** Now `traceparent` really is being lost on the wire. Same two causes as above, minus the "it wasn't the watcher" case.
+- **No daemon spans at all.** The attach listener isn't going through `otelhttp.NewHandler` (only happens if `attach.listen` is disabled — the wrap is unconditional otherwise), or the daemon's exporter is off / misconfigured. Check the daemon log for `otel-export:` lines; see [Pitfalls](#pitfalls).
 
 ---
 

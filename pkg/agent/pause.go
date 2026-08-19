@@ -166,12 +166,18 @@ func (a *Agent) ResumeWithMode(mode string) bool {
 // idempotent case, not a failure. A queued message is still queued and
 // woken in that case: an operator whose resume raced someone else's
 // still gets their instruction delivered.
+//
+// ResumeWith takes no context, so a resume-steer message carries no
+// trace context and contributes no link to the turn it shapes (unlike
+// InjectAsContext). Deliberate for now: changing this exported
+// signature would break every caller, and the resume path is not the
+// one the cross-process watcher→daemon story runs through.
 func (a *Agent) ResumeWith(mode, message string, caller auth.Caller) (bool, error) {
 	if a == nil {
 		return false, errors.New("agent: nil receiver")
 	}
 	if message != "" {
-		if err := a.injectAs(message, caller, false /* releaseHold */); err != nil {
+		if err := a.injectAs(context.Background(), message, caller, false /* releaseHold */); err != nil {
 			return false, err
 		}
 	}

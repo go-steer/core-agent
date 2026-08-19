@@ -527,7 +527,11 @@ func (h *handlers) doInject(w http.ResponseWriter, r *http.Request, entry *Entry
 		return
 	}
 	caller, _ := auth.CallerFromContext(r.Context())
-	if err := entry.Agent.InjectAs(req.Message, caller); err != nil {
+	// Pass the request context, not just the caller: it carries the
+	// span context otelhttp extracted from the inbound `traceparent`,
+	// which is the only handle the eventual turn has on the request
+	// that queued the message. See ContextInjector.
+	if err := injectWithContext(r.Context(), entry.Agent, req.Message, caller); err != nil {
 		http.Error(w, fmt.Sprintf("inject: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -569,7 +573,9 @@ func (h *handlers) doWake(w http.ResponseWriter, r *http.Request, entry *Entry) 
 	}
 	if req.Prompt != "" {
 		caller, _ := auth.CallerFromContext(r.Context())
-		if err := entry.Agent.InjectAs(req.Prompt, caller); err != nil {
+		// Same trace-context handoff as doInject — a wake carrying a
+		// prompt is an inject.
+		if err := injectWithContext(r.Context(), entry.Agent, req.Prompt, caller); err != nil {
 			http.Error(w, fmt.Sprintf("wake: inject prompt: %v", err), http.StatusInternalServerError)
 			return
 		}

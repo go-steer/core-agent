@@ -1419,9 +1419,11 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// turn originator from the drained batch. Routing through this
 	// helper keeps the SSE event stream consistent with what /inject
 	// produced on the way in AND lets us thread the caller identity
-	// into the turn context below.
-	inboxTexts, inboxOriginator := a.drainInboxFull()
-	prompt = prependInboxMessages(prompt, inboxTexts)
+	// into the turn context below. It also hands back the OTel span
+	// links for the injects in this batch, which the turn span picks
+	// up further down.
+	drained := a.drainInboxFull()
+	prompt = prependInboxMessages(prompt, drained.texts)
 	// Watchdog feedback (#159) goes on last, so it reads first: it is an
 	// observation about the model's own immediately-preceding turn, and
 	// a correction buried under a page of inbox traffic is a correction
@@ -1461,8 +1463,8 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// propagates via context-value inheritance, so the no-inbox-
 	// originator + ctx-caller case (an attach handler calling Run
 	// directly with the request context) Just Works.
-	if inboxOriginator.Identity != "" {
-		runCtx = auth.WithCaller(runCtx, inboxOriginator)
+	if drained.originator.Identity != "" {
+		runCtx = auth.WithCaller(runCtx, drained.originator)
 	}
 	// Thread the per-session gate onto runCtx so tool wrappers
 	// constructed against the daemon-wide template gate (every MCP
@@ -1478,6 +1480,14 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// permissions.WithSessionGate(nil) is a no-op so the guard is
 	// covered by the helper.
 	runCtx = permissions.WithSessionGate(runCtx, a.gate)
+	// Open core-agent's own turn span LAST, so it sits on the fully
+	// layered per-turn context that goes to runner.Run. Two things
+	// follow from that ordering: ADK's `invoke_agent <name>` span
+	// inherits it as parent (ADK reads the parent off the context we
+	// hand it — see turnspan.go), and the injects this turn is
+	// answering are attached to it as span links. Closed in the
+	// cleanup hook below. No-op cost when tracing is off.
+	runCtx, endTurnSpan := startTurnSpan(runCtx, a.sessionID, a.agentName, drained)
 	cancelGen := a.setCancelInFlight(cancel)
 	inner := a.runner.Run(runCtx, a.userID, a.sessionID, msg, adkagent.RunConfig{
 		StreamingMode: a.streaming,
@@ -1566,6 +1576,14 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		// fully drained, so nothing still depends on runCtx (#359).
 		cancel()
 		a.clearCancelInFlight(cancelGen)
+		// Close the turn span here, in the same window as the cancel:
+		// the event stream has fully drained, so every child span ADK
+		// and the tool layer opened is already closed. The post-turn
+		// hooks below (checkpoint/compaction marking, watchdog drain,
+		// audit writes) are bookkeeping about the turn rather than
+		// part of it, and several of them deliberately run on a
+		// detached context, so they stay outside the span.
+		endTurnSpan(turnErr)
 		// Post-turn hooks. Order matters: mark_task_done flag
 		// promotion first (it's the operator-visible signal); then
 		// the threshold check. Either can flag a pending cleanup

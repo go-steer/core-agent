@@ -24,7 +24,7 @@ import (
 	"github.com/go-steer/core-agent/v2/internal/coretuievent"
 )
 
-// SubagentEvents satisfies coretui.SubagentEventReader (core-tui
+// SubagentEvents is the turn-log half of coretui.SubagentReporter (core-tui
 // v0.18.0) over GET /sessions/<sid>/agents/<name>/events. Backs the
 // `/subagents <name>` drill-down overlay and the live tail that grows
 // under a running sync subagent's tool row.
@@ -71,9 +71,13 @@ func (a *Adapter) SubagentEvents(ctx context.Context, name string, since int64) 
 	return page, nil
 }
 
-// Compile-time check: *Adapter must satisfy coretui.SubagentEventReader.
+// Compile-time check: *Adapter must satisfy coretui.SubagentReporter.
 // core-tui discovers the capability by type assertion, so a rename or a
 // signature drift would otherwise degrade silently to "this host has no
 // turn log" — the drill-down would just stop working with no build
 // error and no runtime complaint.
-var _ coretui.SubagentEventReader = (*Adapter)(nil)
+//
+// core-tui v0.21.0 merged SubagentLister and SubagentEventReader into
+// this one interface: listing the roster and reading a name's turns are
+// not things a host can plausibly do separately.
+var _ coretui.SubagentReporter = (*Adapter)(nil)

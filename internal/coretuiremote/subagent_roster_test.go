@@ -81,7 +81,7 @@ func newRosterAdapter(t *testing.T, rs *rosterServer) *Adapter {
 }
 
 // TestSubagents_CachesAcrossHostSnapshotPolls — core-tui v0.20.0 pulls
-// SubagentLister from hostSnapshot once a second, so an uncached
+// SubagentReporter from hostSnapshot once a second, so an uncached
 // Subagents() would be one HTTP round-trip per second forever. Every
 // call inside the TTL must be served from cache.
 func TestSubagents_CachesAcrossHostSnapshotPolls(t *testing.T) {
@@ -104,7 +104,7 @@ func TestSubagents_CachesAcrossHostSnapshotPolls(t *testing.T) {
 }
 
 // TestSubagents_TransientErrorKeepsLastKnownGood — a nil return from a
-// WIRED SubagentLister reads as "none running" in core-tui's sidebar,
+// WIRED SubagentReporter reads as "none running" in core-tui's sidebar,
 // so a single dropped request used to make the TUI assert there were
 // no subagents while subagents were running. On a once-a-second
 // surface that is a visible flicker; the cache must hold the last good

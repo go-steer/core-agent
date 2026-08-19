@@ -73,7 +73,7 @@ func (h *handlers) registerOperatorState(mux *http.ServeMux) {
 	// the operator stares at silence until the handler returns. The
 	// in-chat preamble row is the remote TUI's responsibility (it
 	// renders the same preamble at dispatch as the in-process TUI's
-	// AsyncSlashProviderWithPreamble path).
+	// AsyncSlashProvider path).
 	//
 	// All five run unbounded model work per request, so each runs
 	// behind the per-caller cost limiter (#463). The limiter fires

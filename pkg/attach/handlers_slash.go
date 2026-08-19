@@ -25,7 +25,7 @@ import (
 // POST blocks until the operation completes (5–30s typical).
 //
 // The remote TUI renders the in-chat preamble at dispatch (same as
-// the in-process AsyncSlashProviderWithPreamble path) so the
+// the in-process AsyncSlashProvider path) so the
 // operator gets immediate feedback while the round-trip is in
 // flight. We don't try to deliver the result via SSE for v1; the
 // HTTP response body carries it and the in-flight preamble + the

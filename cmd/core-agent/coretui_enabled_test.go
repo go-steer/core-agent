@@ -94,7 +94,7 @@ func TestSplitFunctionResponse_NonStringError(t *testing.T) {
 }
 
 // TestPreambleFor pins the chat-visible "running…" rows that
-// AsyncSlashProviderWithPreamble surfaces at dispatch (core-tui
+// AsyncSlashProvider surfaces at dispatch (core-tui
 // v0.6.3, issue #55). Unknown slashes return "" so they fall
 // through to bare-async behavior; classified slashes echo the
 // arg when supplied so the row confirms the command parsed

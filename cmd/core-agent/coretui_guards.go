@@ -62,6 +62,18 @@ var (
 	_ coretui.InjectableAgent = (*coreAgentAdapter)(nil) // Inject
 	_ coretui.InboxDrainer    = (*coreAgentAdapter)(nil) // DrainInbox, PendingInboxCount
 	_ coretui.WakeRequester   = (*coreAgentAdapter)(nil) // WakeRequested
+	//
+	// RemoteInterrupter was listed below as deliberately-not-implemented
+	// until #803, on the grounds that coreAgentAdapter's Interrupt() bool
+	// could not satisfy it. That was the defect, not a decision: the
+	// method claimed conformance in a doc comment, satisfied nothing, and
+	// rode six core-tui pin bumps (v0.15.0, where the interface landed,
+	// through v0.22.0) because no line like this one existed to object.
+	// The signature is now Interrupt(context.Context) error and this
+	// compiles. Kept as prose because an auditor diffing against #810
+	// should find out where the entry went rather than assume it was
+	// dropped.
+	_ coretui.RemoteInterrupter = (*coreAgentAdapter)(nil) // Interrupt
 
 	// tui/capabilities.go
 	_ coretui.ModelSwapper         = (*coreAgentAdapter)(nil) // AvailableModels, SwitchModel
@@ -89,11 +101,6 @@ var (
 
 // Deliberately NOT implemented by the local host — each absence is a
 // decision, not an oversight:
-//
-//   - coretui.RemoteInterrupter: added by #803. coreAgentAdapter has
-//     an Interrupt() bool that satisfies nothing (core-tui wants
-//     Interrupt(context.Context) error), so the guard would not
-//     compile today. #803 owns both the fix and the line.
 //
 //   - coretui.LiveAgent: local mode IS the per-turn Run path. Events()
 //     would take precedence over Run and silently disable it (see the

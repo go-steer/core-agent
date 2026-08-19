@@ -79,7 +79,8 @@ Four defects on top of the missing state machine:
 
 ### ESC and mid-turn slashes don't reach the agent
 
-Both defects are in core-tui (v0.20.0), consumed here as a module pin.
+Both defects were in core-tui (v0.20.0 at the time of writing; the pin
+is now v0.22.0), consumed here as a module pin.
 
 5. **Every slash typed during a locally-driven turn is swallowed.**
    In `tui/update.go` the Enter handler checks `state == stateStreaming`
@@ -95,13 +96,30 @@ Both defects are in core-tui (v0.20.0), consumed here as a module pin.
    LiveAgent/observer mode the TUI is in idle state, and there is no
    `RemoteInterrupter` arm on ESC. The Claude Code reflex silently
    does nothing; the operator has to know to type `/interrupt`.
-   And at idle in *local* mode, `/interrupt` prints "no turn in
+   And at idle in *local* mode, `/interrupt` printed "no turn in
    flight" regardless, because the local adapter's
-   `Interrupt() bool` (`cmd/core-agent/coretui_enabled.go:709`) does
+   `Interrupt() bool` in `cmd/core-agent/coretui_enabled.go` did
    not satisfy `coretui.RemoteInterrupter`'s `Interrupt(ctx) error`.
-   Its doc comment claims it "satisfies coretui.Interruptible" — an
-   interface that no longer exists anywhere in core-tui v0.20.0. The
-   method currently satisfies nothing and is never called.
+   Its doc comment claimed it "satisfies coretui.Interruptible" — an
+   interface that has never existed in any core-tui release. The
+   method satisfied nothing and was never called.
+
+   **The adapter half is resolved** by
+   [#803](https://github.com/go-steer/core-agent/issues/803): it is
+   now `Interrupt(ctx context.Context) error`, pinned by a
+   `var _ coretui.RemoteInterrupter` guard in
+   `cmd/core-agent/coretui_guards.go` — the exhaustive per-adapter
+   guard list from [#810](https://github.com/go-steer/core-agent/pull/810),
+   not a line next to the method — and `false` from
+   `agent.Agent.Interrupt` maps to an error so core-tui doesn't report
+   a cancel that didn't happen. That is a correctness fix, not an
+   operator-facing one on its own: the local gate is checked first and
+   moves in lockstep with `stateStreaming`, so the capability arm is
+   still only reached at idle or during the post-`finalizeTurn`
+   unwind. **The ESC arm is still open** on the core-tui side
+   ([core-tui#260](https://github.com/go-steer/core-tui/issues/260)),
+   and it is the half that makes the fix pay — its cascade dispatches
+   through `RemoteInterrupter` unconditionally.
 
 ### `/btw` returns blanks and infra errors
 

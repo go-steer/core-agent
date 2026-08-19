@@ -705,8 +705,67 @@ func (a *coreAgentAdapter) Run(ctx context.Context, prompt string) iter.Seq2[cor
 	}
 }
 
-// Interrupt satisfies coretui.Interruptible.
-func (a *coreAgentAdapter) Interrupt() bool { return a.inner.Interrupt() }
+// Interrupt satisfies coretui.RemoteInterrupter (core-tui v0.15.0),
+// wiring the operator's /interrupt slash to the in-process agent's
+// per-turn cancel.
+//
+// It used to be spelled `Interrupt() bool` under a doc comment
+// claiming it satisfied "coretui.Interruptible" — an interface that
+// has never existed in any core-tui release (#803). Nothing checked
+// the claim, so the method satisfied nothing and core-tui's type
+// assertion declined in silence. This comment is not the contract —
+// the compile guard in coretui_guards.go is, and it is what makes the
+// sentence above safe to write.
+//
+// What this does and does not buy locally, stated plainly, because
+// overstating it would repeat the mistake being fixed. core-tui only
+// consults RemoteInterrupter when the local gate declines — see
+// tui/slash_builtin.go, which checks `state == stateStreaming &&
+// cancelTurn != nil` first and reaches the capability only after
+// that fails. In this host the two move together (submitTurn sets
+// both; finalizeTurn clears both) and coreAgentAdapter is not a
+// LiveAgent, so locally this arm is reached at idle, or in the window
+// where the TUI has finalized a turn that `inner` is still unwinding
+// — Agent.Interrupt is deliberately repeatable there and reports
+// true. The turn-stopping win is therefore small today; the change is
+// worth making because a capability method that satisfies nothing is
+// a defect regardless, and because core-tui#260's ESC cascade
+// dispatches through RemoteInterrupter unconditionally, so local mode
+// stays a no-op under it until this shape is right.
+//
+// Error semantics: `agent.Agent.Interrupt` returns true when a turn
+// was in flight and got cancelled, false when the agent was idle. We
+// map false to an error rather than nil because core-tui's contract
+// reads nil as "the cancel landed" — it prints "remote turn
+// cancelled" and calls endLiveStretch() — and we have no business
+// claiming a cancel that did not happen. The cost is visible and
+// accepted: at idle the operator now gets core-tui's "cancelling
+// remote turn…" placeholder followed by a red RoleError row saying
+// "no turn in flight", where before there was one plain system row
+// with the same text. Two honest rows beat one row plus a lie, and
+// the placeholder's remote-flavoured wording is core-tui's to fix.
+//
+// ctx is intentionally unused: the in-process cancel is a local
+// function-pointer call with no I/O to bound, so there is nothing for
+// core-tui's 5s deadline to guard. (Contrast coretuiremote.Adapter,
+// which spends ctx on an HTTP round-trip to the daemon.) The
+// parameter stays because the interface requires it.
+//
+// Cancel-only, no hold: the attach adapter asks the daemon for
+// hold=true because a daemon has a wake loop that would restart the
+// work. Here the re-drive path that would justify a hold is not
+// armed — core-tui runs auto-continue off turnDoneMsg, while a
+// cancelled turn lands on turnCancelledMsg and goes only to
+// maybeDrainQueue, which starts prompts the operator typed
+// themselves. Holding would add a pause state they then have to
+// clear. Background subagents keep running either way, same as the
+// attach adapter's stopSubagents=false.
+func (a *coreAgentAdapter) Interrupt(_ context.Context) error {
+	if a.inner.Interrupt() {
+		return nil
+	}
+	return errors.New("no turn in flight")
+}
 
 // Inject satisfies coretui.InjectableAgent (R-CHAT-11).
 func (a *coreAgentAdapter) Inject(message string) error { return a.inner.Inject(message) }

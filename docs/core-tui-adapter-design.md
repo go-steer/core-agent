@@ -68,7 +68,7 @@ Each `MIGRATION.md` §3.2 row maps to one of:
 | core-tui interface | core-agent source | Binding |
 |---|---|---|
 | `tui.Agent.Run` | `agent.Agent.Run` | Wrap |
-| `Interruptible.Interrupt` | `agent.Agent.Interrupt` | Wrap |
+| `RemoteInterrupter.Interrupt` | `agent.Agent.Interrupt` | Wrap |
 | `ToolLister.Tools` | `agent.Agent.Tools` | Wrap |
 | `SubagentLister.Subagents` | `agent.Agent.BackgroundManager().Subagents()` | Wrap |
 | `StatusReporter.Status` | `agent.Agent.AttachStatus` | Wrap |
@@ -81,6 +81,17 @@ Each `MIGRATION.md` §3.2 row maps to one of:
 | `PermissionPrompter` (TUI-provided) | wired into `gate.SetPrompter` | Wire |
 | `Elicitor` (TUI-provided) | wired into each MCP server's elicit callback | Wire |
 | `UserPrompter` (TUI-provided) | (no use today; pre-wire for future tools) | Optional |
+
+The interrupt row said `Interruptible.Interrupt` until
+[#803](https://github.com/go-steer/core-agent/issues/803). No core-tui
+release has ever exported an `Interruptible`; the capability that
+matches this binding is `RemoteInterrupter`,
+`Interrupt(ctx context.Context) error`, which landed in core-tui
+v0.15.0 — after this table was written. The wrong name was copied from
+here into the adapter's doc comment, where it read as a conformance
+claim that nothing checked, and the binding shipped as
+`Interrupt() bool` satisfying nothing through six core-tui pin bumps.
+Corrected so the table can't seed it again.
 
 ## 4. Gap resolutions
 

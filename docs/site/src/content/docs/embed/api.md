@@ -546,7 +546,7 @@ go func() {
     }
 }()
 
-// Each turn the model sees:
+// A turn that carries a prompt of its own:
 //   [Inbox]
 //   - <queued message 1>
 //   - <queued message 2>
@@ -555,6 +555,23 @@ go func() {
 //
 //   <prompt argument from Run()>
 ```
+
+When `Run` is called with an empty prompt — the shape every wake-driven surface uses, including the daemon's `POST /inject` path and `runner.WakeLoop` — the queued bundle *is* the turn, and the block carries handling guidance instead of a bare list:
+
+```
+[Inbox]
+- <queued message 1>
+- <queued message 2>
+
+How to handle the bundle:
+- Variants of the same ask or signal → treat as ONE; don't re-do work per message.
+- Corroborating detail on something you already handled → acknowledge it and move on; do not re-open the work.
+- Mid-task adjustments → adapt your next step.
+- Separate asks during an active task → capture with `todo`, continue what you were doing.
+- After a completed task (the latest message is a checkpoint summary) → treat the bundle as the next request and respond once.
+```
+
+The split is deliberate. A model reading several queued messages with no other instruction defaults to treating each as its own piece of work — which is how two corroborating alerts about an already-resolved incident turned into a 22-call tool loop. When the operator *did* type something, that text is the ask, so the guidance stays out of its way: "treat the bundle as the next request and respond once" would compete with the request sitting right below the separator.
 
 The inbox is per-agent (not per-manager) so consumers without a `background.Manager` get it for free. Drop-oldest backpressure at 256 messages keeps a stuck consumer from deadlocking the agent. `Agent.InboxArrived() <-chan struct{}` exposes a 1-buffer notify channel for harnesses that want to wake on input instead of polling:
 

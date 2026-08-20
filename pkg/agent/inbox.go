@@ -210,11 +210,40 @@ func truncateForLog(msg string) string {
 // prompt unchanged. Format mirrors the BackgroundAgentManager alert
 // block from v1.2.0 so consumer tooling can find both boundaries
 // with the same approach.
-func prependInboxMessages(prompt string, messages []string) string {
+//
+// bundleIsTheTurn says whether the operator supplied any text of their
+// own for this turn, and it selects the framing (#697). It is NOT the
+// same question as "is prompt empty": Agent.Run prepends background
+// alerts before this call, so a wake-driven turn carrying a subagent
+// report arrives here with a non-empty prompt and still has nobody
+// asking anything. Callers pass the operator's raw text, before any
+// prepends.
+//
+//   - Operator text present: the inbox is side context and the
+//     operator's own prompt is the ask, so the bare list is right —
+//     bundle guidance ("respond once to the bundle") would compete
+//     with the thing the operator actually typed.
+//   - No operator text (the daemon's Run(ctx, "") after an inject,
+//     the REPL's wake-driven turn): the bundle IS the turn, so it gets
+//     the same handling guidance the TUI's auto-continue flow has had
+//     since #144. Injected machine signals arrive on this path, and
+//     without the guidance they were read as N independent asks — the
+//     #697 failure, where two corroborating blast-radius alerts about
+//     an already-resolved incident drove a 22-call tool loop.
+func prependInboxMessages(prompt string, messages []string, bundleIsTheTurn bool) string {
 	if len(messages) == 0 {
 		return prompt
 	}
-	return formatInboxForPrompt(messages) + "\n\n---\n\n" + prompt
+	block := formatInboxForPrompt(messages)
+	if bundleIsTheTurn {
+		block = formatInboxBundle("[Inbox]", messages)
+	}
+	if strings.TrimSpace(prompt) == "" {
+		// Nothing below, so no separator: a trailing "---" with empty
+		// space under it reads as a truncated prompt.
+		return block
+	}
+	return block + "\n\n---\n\n" + prompt
 }
 
 // formatInboxForPrompt renders one message per line under an
@@ -232,53 +261,79 @@ func formatInboxForPrompt(messages []string) string {
 	return b.String()
 }
 
-// FormatAutoContinueInbox renders messages with the system-note
-// framing used by the TUI's "auto-continue from queued input"
-// flow (see docs/operator-input-design.md). The framing tells the
-// model these notes arrived while it was working and gives it
-// explicit branches for the cases that show up in practice — most
-// importantly the dedup case (operators frequently re-phrase the
-// same ask while waiting) and the post-completion case (the prior
-// turn ended with mark_task_done, so there's no "current task" to
-// adapt).
+// inboxHandlingGuidance is the branch list appended to a queued bundle
+// that is itself the turn. Shared verbatim by every such surface —
+// keeping one copy is the point, since the two that existed drifted
+// (#697: the TUI's auto-continue flow had the v2 branches, the daemon's
+// inject path had none, and machine signals only ever arrive on the
+// second one).
 //
 // Iteration history:
 //
-//   - v1 (PR-α): "If any of these change the current task, adapt
-//     your next step. If they're separate requests, use the `todo`
-//     tool to capture them and continue what you were doing." Both
-//     branches assumed an active task to "continue" — false after
-//     mark_task_done. Bundle of similar asks got handled as N
+//   - v1 (PR-α): "If any of these change the current task, adapt your
+//     next step. If they're separate requests, use the `todo` tool to
+//     capture them and continue what you were doing." Both branches
+//     assumed an active task to "continue" — false after
+//     mark_task_done. A bundle of similar asks got handled as N
 //     separate tasks (issue #144's read_file loop pattern).
 //   - v2 (#144): explicit branches for (a) variants-of-the-same-ask
 //     dedup, (b) mid-task adjustments, (c) separate asks during an
-//     active task, (d) post-completion bundles. The post-completion
-//     branch tells the model to treat the bundle as the next
-//     operator request and respond once.
-//
-// Returns "" when messages is empty (caller should not auto-
-// continue in that case). Format intentionally differs from
-// formatInboxForPrompt (which prepends to an operator-typed prompt)
-// because auto-continue turns have no operator prompt to prepend
-// to — the formatted block IS the user message for the new turn.
-func FormatAutoContinueInbox(messages []string) string {
+//     active task, (d) post-completion bundles.
+//   - v3 (#697): reworded off "notes"/"operator" and onto "messages",
+//     because the surface that needed this most is machine signals,
+//     which are neither notes nor asks; added the corroboration branch,
+//     which is the specific shape a watcher produces — a second signal
+//     about something already handled, which reads as new work unless
+//     the model is told otherwise.
+const inboxHandlingGuidance = "How to handle the bundle:\n" +
+	"- Variants of the same ask or signal → treat as ONE; don't re-do work per message.\n" +
+	"- Corroborating detail on something you already handled → acknowledge it and move on; do not re-open the work.\n" +
+	"- Mid-task adjustments → adapt your next step.\n" +
+	"- Separate asks during an active task → capture with `todo`, continue what you were doing.\n" +
+	"- After a completed task (the latest message is a checkpoint summary) → treat the bundle as the next request and respond once."
+
+// formatInboxBundle renders messages under header as a bullet list
+// followed by inboxHandlingGuidance. Returns "" for an empty bundle.
+// The header is the caller's because it is the one part that legitimately
+// differs by surface: "[Inbox]" is the stable, greppable, documented
+// name of the daemon block, while the TUI's auto-continue turn says
+// where its notes came from.
+func formatInboxBundle(header string, messages []string) string {
 	if len(messages) == 0 {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("[Operator notes queued while you were working]\n")
+	b.WriteString(header)
+	b.WriteByte('\n')
 	for _, m := range messages {
 		b.WriteString("- ")
 		b.WriteString(m)
 		b.WriteByte('\n')
 	}
 	b.WriteByte('\n')
-	b.WriteString("How to handle the bundle:\n")
-	b.WriteString("- Variants of the same ask → treat as ONE ask; don't re-do work per note.\n")
-	b.WriteString("- Mid-task adjustments → adapt your next step.\n")
-	b.WriteString("- Separate asks during an active task → capture with `todo`, continue what you were doing.\n")
-	b.WriteString("- After a completed task (the latest message is a checkpoint summary) → treat the bundle as the next operator request and respond once.")
+	b.WriteString(inboxHandlingGuidance)
 	return b.String()
+}
+
+// FormatAutoContinueInbox renders messages with the system-note
+// framing used by the TUI's "auto-continue from queued input"
+// flow (see docs/operator-input-design.md). The framing tells the
+// model these notes arrived while it was working and gives it the
+// explicit branches in inboxHandlingGuidance — most importantly the
+// dedup case (operators frequently re-phrase the same ask while
+// waiting) and the post-completion case (the prior turn ended with
+// mark_task_done, so there's no "current task" to adapt).
+//
+// Only the header is this flow's own: these notes really are an
+// operator's, and saying so is worth a line, whereas the daemon's
+// block carries machine signals under the stable "[Inbox]" name.
+// Everything below the bullets is shared with the daemon path, so the
+// two can no longer drift (#697).
+//
+// Returns "" when messages is empty (caller should not auto-continue
+// in that case).
+func FormatAutoContinueInbox(messages []string) string {
+	return formatInboxBundle("[Operator notes queued while you were working]", messages)
 }
 
 // FormatInterruptSteer frames the instruction an operator typed in

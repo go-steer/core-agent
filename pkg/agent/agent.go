@@ -1453,7 +1453,12 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// links for the injects in this batch, which the turn span picks
 	// up further down.
 	drained := a.drainInboxFull()
-	prompt = prependInboxMessages(prompt, drained.texts)
+	// rawPrompt, not prompt: the alert prepend above may already have
+	// filled prompt in, and a wake-driven turn that happens to carry a
+	// subagent report still has no operator asking anything. Whether
+	// the operator typed something is what picks the inbox framing
+	// (#697) — see prependInboxMessages.
+	prompt = prependInboxMessages(prompt, drained.texts, strings.TrimSpace(rawPrompt) == "")
 	// Name the session off whichever of the two carried the operator's
 	// actual request. A daemon-driven turn arrives as Run("") with the
 	// text in the inbox, so keying only on the prompt argument would

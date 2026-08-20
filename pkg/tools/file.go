@@ -56,8 +56,14 @@ type writeFileResult struct {
 
 type editFileArgs struct {
 	Path      string `json:"path"`
-	OldString string `json:"old_string" jsonschema:"exact string to replace; must occur exactly once"`
+	OldString string `json:"old_string" jsonschema:"exact string to replace; must occur exactly once unless replace_all is true"`
 	NewString string `json:"new_string" jsonschema:"replacement string"`
+	// ReplaceAll opts out of the uniqueness requirement. It is a
+	// separate argument rather than the default because the failure it
+	// suppresses is the useful one: a snippet that matches in two places
+	// usually means the model has not read enough of the file to know
+	// which one it wants, and silently editing both hides that.
+	ReplaceAll bool `json:"replace_all,omitempty" jsonschema:"replace EVERY occurrence instead of failing when old_string is not unique. Default false. Only set this when you intend to change all of them."`
 }
 
 type editFileResult struct {
@@ -167,15 +173,36 @@ func editFileFunc(gate *permissions.Gate) functiontool.Func[editFileArgs, editFi
 		if count == 0 {
 			return editFileResult{}, fmt.Errorf("edit_file: old_string not found in %s", path)
 		}
-		if count > 1 {
-			return editFileResult{}, fmt.Errorf("edit_file: old_string appears %d times in %s; provide a unique snippet", count, path)
+		// Ambiguity is refused by default, and the refusal names the way
+		// out: without it the model's only visible options are to widen
+		// the snippet or to give up, and a capability it cannot see is a
+		// capability it does not have (#759/#762).
+		if count > 1 && !in.ReplaceAll {
+			return editFileResult{}, fmt.Errorf("edit_file: old_string appears %d times in %s; provide a unique snippet, or pass replace_all=true to change all %d", count, path, count)
 		}
-		updated := strings.Replace(body, in.OldString, in.NewString, 1)
+		n := 1
+		if in.ReplaceAll {
+			n = count
+		}
+		updated := strings.Replace(body, in.OldString, in.NewString, n)
 		if err := atomicWrite(path, []byte(updated), 0o644); err != nil {
 			return editFileResult{}, fmt.Errorf("edit_file: %w", err)
 		}
-		return editFileResult{Status: "edited " + path, Replacements: 1}, nil
+		return editFileResult{Status: editedStatus(path, n), Replacements: n}, nil
 	}
+}
+
+// editedStatus spells the occurrence count into the status line for a
+// replace_all edit. Replacements already carries the number, but the
+// status is the part a model reliably reads, and "how many did that
+// touch" is exactly what the caller could not know before asking — a
+// count larger than expected is the signal that the snippet was too
+// broad, and it is worth surfacing where it will be seen.
+func editedStatus(path string, n int) string {
+	if n == 1 {
+		return "edited " + path
+	}
+	return fmt.Sprintf("edited %s (%d occurrences)", path, n)
 }
 
 func listDirFunc(gate *permissions.Gate, cfg *config.Config) functiontool.Func[listDirArgs, listDirResult] {

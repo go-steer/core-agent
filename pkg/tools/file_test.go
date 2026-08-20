@@ -137,7 +137,160 @@ func TestEditFile_AmbiguousMatch(t *testing.T) {
 	fn := editFileFunc(gate)
 	_, err := fn(tool.Context(nil), editFileArgs{Path: path, OldString: "foo", NewString: "bar"})
 	if err == nil || !strings.Contains(err.Error(), "appears 3 times") {
-		t.Errorf("expected ambiguity error, got %v", err)
+		t.Fatalf("expected ambiguity error, got %v", err)
+	}
+	// The refusal has to name the way out. A model whose only visible
+	// options are "widen the snippet" or "give up" will not discover
+	// replace_all, and a capability it cannot see is one it does not
+	// have (#759/#762, pointed the other way).
+	if !strings.Contains(err.Error(), "replace_all") {
+		t.Errorf("ambiguity error does not mention replace_all: %v", err)
+	}
+	if body, _ := os.ReadFile(path); string(body) != "foo foo foo" {
+		t.Errorf("a refused edit still touched the file: %q", string(body))
+	}
+}
+
+func TestEditFile_ReplaceAllChangesEveryOccurrence(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "edit.txt")
+	if err := os.WriteFile(path, []byte("foo bar foo baz foo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gate := gateFor(t, dir)
+	fn := editFileFunc(gate)
+	res, err := fn(tool.Context(nil), editFileArgs{
+		Path: path, OldString: "foo", NewString: "qux", ReplaceAll: true,
+	})
+	if err != nil {
+		t.Fatalf("edit_file: %v", err)
+	}
+	if res.Replacements != 3 {
+		t.Errorf("replacements = %d, want 3", res.Replacements)
+	}
+	// The count the caller could not know before asking belongs where a
+	// model reliably reads it, not only in a sibling field.
+	if !strings.Contains(res.Status, "3 occurrences") {
+		t.Errorf("status = %q, want it to name the occurrence count", res.Status)
+	}
+	body, _ := os.ReadFile(path)
+	if string(body) != "qux bar qux baz qux\n" {
+		t.Errorf("after edit = %q", string(body))
+	}
+}
+
+// replace_all is an opt-out of the uniqueness CHECK, not a mode switch:
+// a unique match must behave exactly as it does without the flag, so a
+// model that sets it defensively on every edit gets no surprises.
+func TestEditFile_ReplaceAllOnAUniqueMatchIsAnOrdinaryEdit(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "edit.txt")
+	if err := os.WriteFile(path, []byte("alpha BETA gamma\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gate := gateFor(t, dir)
+	fn := editFileFunc(gate)
+	res, err := fn(tool.Context(nil), editFileArgs{
+		Path: path, OldString: "BETA", NewString: "delta", ReplaceAll: true,
+	})
+	if err != nil {
+		t.Fatalf("edit_file: %v", err)
+	}
+	if res.Replacements != 1 {
+		t.Errorf("replacements = %d, want 1", res.Replacements)
+	}
+	if res.Status != "edited "+path {
+		t.Errorf("status = %q, want the plain single-edit status", res.Status)
+	}
+	body, _ := os.ReadFile(path)
+	if string(body) != "alpha delta gamma\n" {
+		t.Errorf("after edit = %q", string(body))
+	}
+}
+
+// A missing string is an error in both modes. replace_all relaxes "must
+// occur exactly once" to "must occur at least once" — it does not turn
+// a no-op into a success, which would let a rename report done while
+// changing nothing.
+func TestEditFile_ReplaceAllStillFailsOnNoMatch(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "edit.txt")
+	if err := os.WriteFile(path, []byte("alpha beta\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gate := gateFor(t, dir)
+	fn := editFileFunc(gate)
+	_, err := fn(tool.Context(nil), editFileArgs{
+		Path: path, OldString: "gamma", NewString: "delta", ReplaceAll: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected a not-found error, got %v", err)
+	}
+	if body, _ := os.ReadFile(path); string(body) != "alpha beta\n" {
+		t.Errorf("a failed edit still touched the file: %q", string(body))
+	}
+}
+
+// Overlapping matches are consumed left to right by strings.Replace, so
+// "aa" in "aaaa" is two replacements and not three. Pinned because it
+// is the one place the count in the result could plausibly disagree
+// with what the caller expects, and the result is what they will act on.
+func TestEditFile_ReplaceAllCountsNonOverlappingMatches(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "edit.txt")
+	if err := os.WriteFile(path, []byte("aaaa"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gate := gateFor(t, dir)
+	fn := editFileFunc(gate)
+	res, err := fn(tool.Context(nil), editFileArgs{
+		Path: path, OldString: "aa", NewString: "b", ReplaceAll: true,
+	})
+	if err != nil {
+		t.Fatalf("edit_file: %v", err)
+	}
+	if res.Replacements != 2 {
+		t.Errorf("replacements = %d, want 2", res.Replacements)
+	}
+	if body, _ := os.ReadFile(path); string(body) != "bb" {
+		t.Errorf("after edit = %q, want %q", string(body), "bb")
+	}
+}
+
+// replace_all does not reach past the permission gate. Same guard as
+// every other write, asserted here because a new argument on a gated
+// tool is exactly where a bypass would hide. The gate is consulted
+// before old_string is ever counted, so this holds no matter how many
+// occurrences the target has.
+//
+// Uses 'allow' mode rather than the yolo gate the other tests share:
+// yolo deliberately permits out-of-scope writes (see
+// Gate.promptForPath), so it cannot tell "the check ran and passed"
+// from "the check never ran".
+func TestEditFile_ReplaceAllStillHonorsTheGate(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("foo foo"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scope, err := permissions.NewPathScope(dir, "", nil) // scoped to dir, not to outside
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := permissions.New(permissions.Options{Mode: permissions.ModeAllow, Scope: scope})
+	fn := editFileFunc(gate)
+	if _, err := fn(tool.Context(nil), editFileArgs{
+		Path: outside, OldString: "foo", NewString: "bar", ReplaceAll: true,
+	}); err == nil {
+		t.Fatal("edit_file wrote outside the path scope with replace_all set")
+	}
+	if body, _ := os.ReadFile(outside); string(body) != "foo foo" {
+		t.Errorf("out-of-scope file was modified: %q", string(body))
 	}
 }
 

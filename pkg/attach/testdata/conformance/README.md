@@ -52,6 +52,7 @@ with the old fixture kept frozen.
 | `rest-create-session-v1.json` | `POST /sessions` → 201 body | v1 |
 | `rest-whoami-v1.json` | `GET /whoami` (asserted-proxy variant — populates the `omitempty` fields) | v1 |
 | `rest-subagent-events-v1.json` | `GET /sessions/{app}/{sid}/agents/{name}/events` (a truncated page — populates `next_since` + `truncated`) | v1 |
+| `rest-session-acl-v1.json` | `GET` / `PATCH /sessions/{app}/{sid}/acl` → 200 body (protocol 1.10.0, #797) | v1 |
 
 Pinned by `rest_conformance_test.go`; add new REST fixtures there
 following the same construct-marshal-diff pattern (plus, where a
@@ -63,6 +64,15 @@ title, not a session whose title is `""`. Clients fall back to the
 session ID, which is what they showed before v2 existed — and they will
 take that path often (pre-1.6.0 daemons, sessions before their first
 turn, deployments with titling switched off).
+
+`viewers` and `contributors` on the ACL fixture are the opposite
+convention to `title`: always present, `[]` rather than `null` when
+empty. This is the one endpoint whose entire job is reporting who is on
+the ACL, and an owner-only ACL — the shape every new session starts
+with — is the common case, not an edge, so a client should not need a
+nil check to walk it. The request body of `PATCH` is a different shape
+and deliberately unpinned: there, an *omitted* list means "leave this
+one alone" and `[]` means "clear it", which is what makes it a PATCH.
 
 Timestamp fields (`last_touched_at`) are RFC 3339 with arbitrary
 sub-second precision and zone offset — active rows carry the

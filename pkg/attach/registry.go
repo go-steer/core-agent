@@ -223,13 +223,25 @@ type Entry struct {
 	// reference; lifetime is the registrant's, not the registry's.
 	Agent Registrant
 
-	// ACL governs which Callers may interact with this session in a
+	// acl governs which Callers may interact with this session in a
 	// multi-session deployment. Zero value (empty Owner / nil slices)
 	// means "no owner" — only Admin Callers may access it, which is
 	// the documented behavior for legacy sessions registered via
 	// Register (vs. RegisterOwned). See
 	// docs/multi-session-design.md §"Migration story".
-	ACL auth.SessionACL
+	//
+	// Read through CurrentACL, written through setACL, and held as an
+	// atomic pointer rather than a plain field because PATCH
+	// /sessions/.../acl amends it on a live session (#797) while every
+	// in-flight request is reading it to authorize itself. It used to
+	// be an exported field, safe only because nothing ever wrote it
+	// after registration; making it mutable without the indirection
+	// would be a data race on the authorization decision itself.
+	//
+	// Never mutate a stored value in place — setACL always stores a
+	// freshly built ACL, which is what lets readers hold the loaded
+	// value without copying it.
+	acl atomic.Pointer[auth.SessionACL]
 
 	// lastTouchedNs is Unix nanoseconds of the last "activity" on
 	// this entry: a memory-hit Lookup, an event pumped by the
@@ -264,6 +276,40 @@ type Entry struct {
 	// registering a bare stubRegistrant, resumer's registerResumed
 	// path when cancel wasn't threaded).
 	cancelOnEvict context.CancelFunc
+}
+
+// CurrentACL returns the entry's ACL as of this instant. Safe for
+// concurrent use, and the only correct way to read the ACL of a live
+// session: PATCH /sessions/.../acl can replace it under a concurrent
+// request (#797).
+//
+// The identity lists are copied, so a caller may keep or sort the
+// result without disturbing the entry. Zero value when the session
+// was registered unowned (legacy Register) — which grants nothing to
+// any non-Admin Caller, per Authorize.
+func (e *Entry) CurrentACL() auth.SessionACL {
+	acl := e.acl.Load()
+	if acl == nil {
+		return auth.SessionACL{}
+	}
+	return auth.SessionACL{
+		Owner:        acl.Owner,
+		Viewers:      append([]string(nil), acl.Viewers...),
+		Contributors: append([]string(nil), acl.Contributors...),
+	}
+}
+
+// setACL replaces the entry's ACL. Unexported: an ACL change has to
+// reach the persisted row too, or it silently un-does itself at the
+// next daemon restart, so SessionRegistry.AmendACL is the entrypoint
+// and this is its in-memory half.
+//
+// Stores a normalized copy rather than the caller's value — readers
+// hold the loaded ACL without copying it, so the stored value must
+// never be reachable for mutation from anywhere else.
+func (e *Entry) setACL(acl auth.SessionACL) {
+	normalized := acl.Normalized()
+	e.acl.Store(&normalized)
 }
 
 // LastTouchedAt returns the entry's last-touched wall time. Safe for
@@ -342,6 +388,13 @@ var ErrSessionExists = errors.New("attach: session already registered")
 // matching entry exists.
 var ErrSessionNotFound = errors.New("attach: session not found")
 
+// ErrACLOwnerNotTransferable is returned by AmendACL when the amended
+// ACL names a different Owner. Ownership transfer is a decision with
+// no undo from the losing side, so it is refused rather than performed
+// — see AmendACL for the reasoning, and note that the HTTP surface
+// maps this to 400 rather than 500.
+var ErrACLOwnerNotTransferable = errors.New("attach: session owner is not transferable")
+
 // ErrAmbiguousSession is returned by LookupSingle when more than one
 // registered session shares the same SessionID across different
 // apps — the caller must use the qualified two-segment form.
@@ -384,10 +437,27 @@ func (r *SessionRegistry) RegisterOwned(ag Registrant, owner string) (*Entry, er
 // the Registrant (e.g., tests, admin-only utility sessions) can
 // safely pass nil.
 func (r *SessionRegistry) RegisterOwnedWithCancel(ag Registrant, owner string, cancelOnEvict context.CancelFunc) (*Entry, error) {
-	if owner == "" {
+	return r.RegisterOwnedWithACL(ag, auth.SessionACL{Owner: owner}, cancelOnEvict)
+}
+
+// RegisterOwnedWithACL is RegisterOwnedWithCancel for a caller that
+// knows more than the owner at creation time — a session opened on
+// behalf of an incident channel whose responders should be able to
+// answer it, say (#797). Viewers get read; Contributors get read +
+// write; only the Owner (and any Admin) may amend the ACL afterwards.
+//
+// The identity lists are normalized (trimmed, de-duplicated, empties
+// dropped) before they are stored or persisted, so the ACL that
+// authorizes later requests is the one a GET /sessions/.../acl reports
+// rather than whatever spelling arrived.
+//
+// Owner must be non-empty — pass Register if you intentionally want an
+// unowned (admin-only-accessible) session.
+func (r *SessionRegistry) RegisterOwnedWithACL(ag Registrant, acl auth.SessionACL, cancelOnEvict context.CancelFunc) (*Entry, error) {
+	if acl.Owner == "" {
 		return nil, errors.New("attach: RegisterOwned: owner identity is required (use Register for legacy unowned sessions)")
 	}
-	return r.registerWithACL(ag, auth.SessionACL{Owner: owner}, cancelOnEvict)
+	return r.registerWithACL(ag, acl.Normalized(), cancelOnEvict)
 }
 
 func (r *SessionRegistry) registerWithACL(ag Registrant, acl auth.SessionACL, cancelOnEvict context.CancelFunc) (*Entry, error) {
@@ -409,10 +479,10 @@ func (r *SessionRegistry) registerWithACL(ag Registrant, acl auth.SessionACL, ca
 		UserID:        key.User,
 		SessionID:     key.SID,
 		Agent:         ag,
-		ACL:           acl,
 		regSeq:        r.regSeq,
 		cancelOnEvict: cancelOnEvict,
 	}
+	e.setACL(acl)
 	e.touch() // seed lastTouchedNs so the very first sweep doesn't fire on a brand-new entry
 	r.byTriple[key] = e
 	// Persist the ACL row when a store is wired AND the ACL has
@@ -501,6 +571,89 @@ func (r *SessionRegistry) HardDelete(ctx context.Context, appName, userID, sessi
 		}
 	}
 	return nil
+}
+
+// AmendACL rewrites the ACL of a registered session, in memory and on
+// disk, and returns what was stored (normalized: trimmed,
+// de-duplicated, empties dropped). Backs PATCH
+// /sessions/{app}/{sid}/acl (#797), whose caller has already passed
+// ActionSessionAdmin against the ACL being amended.
+//
+// The amendment is expressed as a function rather than a value because
+// PATCH is a read-modify-write: an omitted list means "leave that one
+// alone", so the new ACL is a function of the current one. Handing the
+// registry a pre-computed value would put the read outside the lock,
+// and two concurrent PATCHes — one setting viewers, one setting
+// contributors — would each carry the other's field forward from a
+// stale snapshot and silently drop one of the two edits. On an
+// authorization decision that is not an acceptable race, so amend runs
+// under r.mu against the live ACL.
+//
+// amend must therefore be pure and fast: no locking, no I/O, no
+// re-entry into the registry. It receives a copy, so mutating the
+// slices it is handed is safe.
+//
+// Owner is not transferable here — amend must return the session's
+// current owner (or the zero value, which is read as "unchanged").
+// A different one is ErrACLOwnerNotTransferable rather than a silent
+// no-op, because handing a session to someone else is a decision with
+// no undo from the losing side (the old owner immediately fails
+// ActionSessionAdmin and can't take it back), and because the
+// persisted row's owner index is what GET /sessions resolves an idle
+// session's visibility from. If ownership transfer ever ships it
+// should be its own verb.
+//
+// The in-memory swap happens first and is rolled back if persistence
+// fails, mirroring registerWithACL: an ACL that authorizes live
+// requests but vanishes at the next restart is worse than a failed
+// PATCH, because nothing surfaces the divergence until the session
+// resumes and a responder is silently 404'd.
+//
+// A session with no owner (legacy Register) has no persisted row by
+// design, so its amended ACL stays in memory only — the same
+// "ACL row exists ⟺ session is resumable" invariant registerWithACL
+// keeps.
+//
+// Returns ErrSessionNotFound when the triple isn't registered.
+func (r *SessionRegistry) AmendACL(ctx context.Context, appName, userID, sessionID string, amend func(auth.SessionACL) auth.SessionACL) (auth.SessionACL, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := tripleKey{App: appName, User: userID, SID: sessionID}
+	e, ok := r.byTriple[key]
+	if !ok {
+		return auth.SessionACL{}, fmt.Errorf("%w: %s/%s/%s", ErrSessionNotFound, appName, userID, sessionID)
+	}
+	prev := e.CurrentACL()
+	next := amend(prev).Normalized()
+	if next.Owner == "" {
+		next.Owner = prev.Owner
+	}
+	if next.Owner != prev.Owner {
+		return auth.SessionACL{}, fmt.Errorf("%w: session owner is %q, got %q — send the current owner or omit the field", ErrACLOwnerNotTransferable, prev.Owner, next.Owner)
+	}
+	e.setACL(next)
+	if r.aclStore == nil || next.Owner == "" {
+		return next, nil
+	}
+	// Carry the existing row's CreatedAt / LastTouchedAt forward:
+	// Put is a whole-row upsert that stamps now() over a zero value,
+	// so writing without them would make every ACL edit look like a
+	// brand-new session and re-sort the operator's GET /sessions.
+	// Title is left zero on purpose — Put reads empty as "don't
+	// touch", which is exactly right here.
+	row := SessionACLRow{AppName: key.App, UserID: key.User, SessionID: key.SID}
+	if existing, err := r.aclStore.Get(ctx, key.App, key.User, key.SID); err == nil {
+		row.CreatedAt = existing.CreatedAt
+		row.LastTouchedAt = existing.LastTouchedAt
+	}
+	row.Owner = next.Owner
+	row.Viewers = next.Viewers
+	row.Contributors = next.Contributors
+	if err := r.aclStore.Put(ctx, row); err != nil {
+		e.setACL(prev)
+		return auth.SessionACL{}, fmt.Errorf("attach: persist session ACL: %w", err)
+	}
+	return next, nil
 }
 
 // Lookup returns the entry for the qualified (appName, sessionID) form.
@@ -720,10 +873,10 @@ func (r *SessionRegistry) registerResumed(ag Registrant, acl auth.SessionACL, ca
 		UserID:        key.User,
 		SessionID:     key.SID,
 		Agent:         ag,
-		ACL:           acl,
 		regSeq:        r.regSeq,
 		cancelOnEvict: cancelOnEvict,
 	}
+	e.setACL(acl)
 	e.touch() // seed lastTouchedNs — matches the initial-touch behavior of registerWithACL
 	r.byTriple[key] = e
 	// Persist a fresh LastTouchedAt on resume so GET /sessions
@@ -782,7 +935,7 @@ func (r *SessionRegistry) ListAuthorized(c auth.Caller) []*Entry {
 	all := r.List()
 	out := make([]*Entry, 0, len(all))
 	for _, e := range all {
-		if auth.Authorize(c, auth.ActionSessionRead, e.ACL) {
+		if auth.Authorize(c, auth.ActionSessionRead, e.CurrentACL()) {
 			out = append(out, e)
 		}
 	}

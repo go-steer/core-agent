@@ -15,6 +15,7 @@
 package auth_test
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/go-steer/core-agent/v2/pkg/auth"
@@ -128,5 +129,108 @@ func TestAction_String(t *testing.T) {
 		if got := a.String(); got != want {
 			t.Errorf("Action(%d).String() = %q, want %q", a, got, want)
 		}
+	}
+}
+
+// TestSessionACL_Normalized covers the cleanup applied wherever an ACL
+// crosses a trust boundary. The stakes are higher than they look:
+// Authorize matches identities exactly, so a trailing space on a
+// pasted identity yields an ACL that reads correct and denies anyway —
+// and a denial surfaces as 404 rather than 403 (deliberately), which
+// is the hardest possible shape to debug from the client side.
+func TestSessionACL_Normalized(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   auth.SessionACL
+		want auth.SessionACL
+	}{
+		{
+			name: "zero value round-trips",
+		},
+		{
+			name: "trims, drops empties, de-duplicates, keeps order",
+			in: auth.SessionACL{
+				Owner:        "owner@example.com",
+				Viewers:      []string{" b@example.com", "a@example.com ", "", "   ", "b@example.com"},
+				Contributors: []string{"c@example.com"},
+			},
+			want: auth.SessionACL{
+				Owner:        "owner@example.com",
+				Viewers:      []string{"b@example.com", "a@example.com"},
+				Contributors: []string{"c@example.com"},
+			},
+		},
+		{
+			// A list that is nothing but junk is not a grant, and
+			// leaving "" in it would sit in the persisted row looking
+			// like one.
+			name: "all-empty list collapses to nil",
+			in:   auth.SessionACL{Viewers: []string{"", "  "}},
+		},
+		{
+			// nil vs. []string{} matters: the store round-trips these
+			// lists through JSON, and flipping between `null` and `[]`
+			// would churn the persisted row on every write.
+			name: "empty list stays nil",
+			in:   auth.SessionACL{Contributors: []string{}},
+		},
+		{
+			// Owner is one value with direct caller-facing errors, and
+			// may legitimately be a synthetic identity whose spelling
+			// is the operator's business.
+			name: "owner is left exactly as supplied",
+			in:   auth.SessionACL{Owner: "  spaced@example.com  "},
+			want: auth.SessionACL{Owner: "  spaced@example.com  "},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := tc.in.Normalized()
+			if got.Owner != tc.want.Owner {
+				t.Errorf("Owner = %q, want %q", got.Owner, tc.want.Owner)
+			}
+			if !slices.Equal(got.Viewers, tc.want.Viewers) {
+				t.Errorf("Viewers = %#v, want %#v", got.Viewers, tc.want.Viewers)
+			}
+			if !slices.Equal(got.Contributors, tc.want.Contributors) {
+				t.Errorf("Contributors = %#v, want %#v", got.Contributors, tc.want.Contributors)
+			}
+			if (got.Viewers == nil) != (tc.want.Viewers == nil) {
+				t.Errorf("Viewers nil-ness = %v, want %v", got.Viewers == nil, tc.want.Viewers == nil)
+			}
+			if (got.Contributors == nil) != (tc.want.Contributors == nil) {
+				t.Errorf("Contributors nil-ness = %v, want %v", got.Contributors == nil, tc.want.Contributors == nil)
+			}
+		})
+	}
+}
+
+// TestSessionACL_NormalizedDoesNotAliasReceiver — the registry stores
+// the normalized value and lets readers hold it without copying, so a
+// shared backing array would let a caller mutate a live ACL after the
+// fact.
+func TestSessionACL_NormalizedDoesNotAliasReceiver(t *testing.T) {
+	t.Parallel()
+	src := auth.SessionACL{Viewers: []string{"a@example.com", "b@example.com"}}
+	got := src.Normalized()
+	src.Viewers[0] = "mallory@example.com"
+	if got.Viewers[0] != "a@example.com" {
+		t.Errorf("Viewers[0] = %q; Normalized must not share a backing array with the receiver", got.Viewers[0])
+	}
+}
+
+// TestSessionACL_NormalizedIsWhatAuthorizeSees ties the cleanup to the
+// thing it exists to protect.
+func TestSessionACL_NormalizedIsWhatAuthorizeSees(t *testing.T) {
+	t.Parallel()
+	raw := auth.SessionACL{Owner: "owner@example.com", Contributors: []string{" oncall@example.com "}}
+	caller := auth.Caller{Identity: "oncall@example.com"}
+	if auth.Authorize(caller, auth.ActionSessionWrite, raw) {
+		t.Fatal("precondition: an untrimmed identity is expected to be denied — that is the bug Normalized prevents")
+	}
+	if !auth.Authorize(caller, auth.ActionSessionWrite, raw.Normalized()) {
+		t.Error("after Normalized the contributor must be allowed")
 	}
 }

@@ -90,6 +90,16 @@ jobs:
         run: dev/ci/presubmits/vet
       - name: Build
         run: dev/ci/presubmits/build
+      # The core-tui capability-guard lists are exhaustive against the
+      # core-tui go.mod pins (#812). A step in `test` rather than its own
+      # workflow: it needs the module cache this job already downloads,
+      # and it inherits an existing *required* check instead of adding a
+      # new name branch protection would have to be taught. Nothing in
+      # this workflow's `paths-ignore` can affect the answer — it is
+      # decided by go.mod and by two .go files, both of which re-arm the
+      # full pipeline.
+      - name: Capability guards
+        run: dev/ci/presubmits/verify-coretui-guards
       - name: Test
         # Provider-gated tests (anthropic-vertex) skip cleanly in CI
         # without GCP creds — see models/anthropic/vertex_test.go.

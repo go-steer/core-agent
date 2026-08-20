@@ -34,6 +34,8 @@ dev/
 │   ├── fix-go-format      # gofmt -s -w + goimports -w (auto-fix)
 │   ├── verify-mod-tidy    # `go mod tidy` clean check
 │   ├── verify-vuln        # govulncheck ./...
+│   ├── verify-go-toolchain # every named Go version agrees with go.mod
+│   ├── verify-coretui-guards # capability guards vs the pinned core-tui
 │   ├── add-license-headers # bulk-applier for SPDX + copyright headers
 │   ├── common.sh          # shared bash helpers (ensure_tool, run_step)
 │   └── .golangci.yml      # linter config
@@ -45,6 +47,8 @@ dev/
         ├── lint-go        # → dev/tools/lint-go
         ├── verify-go-format
         ├── verify-mod-tidy
+        ├── verify-go-toolchain
+        ├── verify-coretui-guards
         └── verify-vuln
 ```
 
@@ -59,6 +63,57 @@ dev/
 
 That's it — the delegator pattern means the GitHub workflow never has
 to know what the check actually does.
+
+A check with real logic puts that logic in a Go program under `dev/`
+rather than in the bash — `dev/lookout-pin-check` and
+`dev/coretui-guard-check` are the two — and the `dev/tools/` script
+becomes a `go run` wrapper over it. (`lookout-pin-check` predates the
+convention and is still invoked straight from its own scheduled
+workflow; `verify-coretui-guards` is the wrapped shape.) Go programs
+there are part of the main module, so `go build ./...`, `go vet` and
+`go test` cover them like anything else.
+
+## The core-tui capability gate
+
+`dev/tools/verify-coretui-guards` (tool: `dev/coretui-guard-check`)
+enumerates the exported interfaces of `github.com/go-steer/core-tui/tui`
+**at the version `go.mod` resolves to** and requires each of the repo's
+two TUI hosts to account for every one of them. A capability is
+accounted for when it is either:
+
+- **guarded** — a `var _ coretui.X = (*T)(nil)` line in the host's guard
+  file (`cmd/core-agent/coretui_guards.go` for the local `--tui` host,
+  `internal/coretuiremote/guards.go` for attach mode); or
+- **declined** — a `//coretui:declined X` directive in that file's
+  trailing comment, immediately followed by prose naming `coretui.X` and
+  saying why this host does not implement it.
+
+Both halves of a decline are required. The directive is what the gate
+counts; the bullet is the decision, and the gate refuses a directive
+whose following prose names a different interface, so a rename cannot
+leave one pointing at the other. The guard files are also the *only*
+place either may appear — a guard next to its method is a hard error
+that points back here.
+
+Why it exists (#812): the guards make core-tui adding a **method** to an
+interface we name a build failure. Nothing made core-tui adding a whole
+new **interface** anything at all — core-tui feature-detects by type
+assertion with no error and no log, so an unimplemented capability is
+simply absent.
+
+```bash
+dev/tools/verify-coretui-guards           # the gate
+dev/tools/verify-coretui-guards --print   # the interface x adapter matrix
+```
+
+Run `--print` when picking up a core-tui bump; it is the audit table,
+and `UNACCOUNTED` in a column is what the gate fails on. What it does
+**not** catch: a decline whose reason has quietly stopped being true
+while the interface still exists (the [#811](https://github.com/go-steer/core-agent/pull/811)
+case, where a capability became implementable). Proving that needs a
+type-check of the host, not a comparison of two lists; the gate catches
+the after-effect — a decline left in place once the guard lands — as a
+contradiction.
 
 ## CI on PRs
 

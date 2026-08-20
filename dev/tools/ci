@@ -47,6 +47,7 @@ STEPS=(
   "format          dev/tools/verify-go-format"
   "vet             dev/tools/vet"
   "build           dev/tools/build"
+  "coretui-guards  dev/tools/verify-coretui-guards"
   "lint            dev/tools/lint-go"
   "mod-tidy        dev/tools/verify-mod-tidy"
   "test            dev/tools/test-unit"

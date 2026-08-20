@@ -81,19 +81,30 @@ var (
 )
 
 // Deliberately NOT implemented by *Adapter — each absence is a
-// decision, not an oversight:
+// decision, not an oversight.
 //
+// Each decision carries a `//coretui:declined <Interface>` directive.
+// The directive is what dev/tools/verify-coretui-guards counts when it
+// checks this list against the core-tui go.mod pins; the bullet under
+// it is the decision itself, and the gate requires the two to name the
+// same interface so neither can be renamed out from under the other.
+// Every exported core-tui interface has to be either guarded above or
+// declined here (#812).
+//
+//coretui:declined ModelSwapper
 //   - coretui.ModelSwapper: the model is the daemon's choice, not the
 //     attached operator's. /model against a remote session would have
 //     to mutate server-side state for every other attached client;
 //     the attach protocol deliberately exposes no such endpoint.
 //
+//coretui:declined InboxDrainer
 //   - coretui.InboxDrainer: auto-continue is driven by the DAEMON's
 //     own inbox loop on the far side of the wire, not by the TUI.
 //     Draining it from here would race the daemon's own drain and
 //     steal messages out of the running turn. Local mode (which owns
 //     its runner in-process) is the one that implements this.
 //
+//coretui:declined PermanentStreamError
 //   - coretui.PermanentStreamError: implemented, but by the error
 //     values this adapter propagates rather than by the adapter —
 //     see internal/attachclient's httpStatusError. That package
@@ -102,6 +113,9 @@ var (
 //     structural mirror in status_error_test.go rather than a line
 //     here.
 //
+//coretui:declined Asker
+//coretui:declined Elicitor
+//coretui:declined PermissionPrompter
 //   - coretui.Asker / coretui.Elicitor / coretui.PermissionPrompter:
 //     not host-implemented interfaces at all. core-tui ships the
 //     concrete types (NewAsker / NewElicitor / NewPrompter) and a host

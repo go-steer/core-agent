@@ -62,6 +62,7 @@ type Adapter struct {
 	// state without the host rebuilding the adapter.
 	memoryFn     func() []attach.MemorySource
 	skillsFn     func() []attach.SkillInfo
+	skillToolsFn func() []attach.ToolInfo
 	mcpFn        func() attach.MCPInfo
 	pricingFn    func() attach.PricingInfo
 	refreshFn    func(ctx context.Context) (attach.PricingRefreshResponse, error)
@@ -125,8 +126,21 @@ func WithSkillsProvider(fn func() []attach.SkillInfo) Option {
 	return func(ad *Adapter) { ad.skillsFn = fn }
 }
 
+// WithSkillToolsProvider wires a snapshot func naming the TOOLS the
+// skill toolset exposes — list_skills / load_skill / the rest — as
+// opposed to WithSkillsProvider, which names the installed skills.
+// AttachTools folds these into /sessions/<sid>/tools with
+// source="skill"; without it they are invisible there, because skills
+// reach the agent as a toolset and never enter agent.Tools() (#767).
+// Project a skills.Skills' ToolInfos(); nil = skill tools are omitted.
+func WithSkillToolsProvider(fn func() []attach.ToolInfo) Option {
+	return func(ad *Adapter) { ad.skillToolsFn = fn }
+}
+
 // WithMCPProvider wires a snapshot func for /sessions/<sid>/mcp
-// (backs /mcp). Formerly agent.WithAttachMCPProvider.
+// (backs /mcp). Also the source AttachTools attributes MCP tools from,
+// so /tools and /mcp cannot disagree about which server owns what.
+// Formerly agent.WithAttachMCPProvider.
 func WithMCPProvider(fn func() attach.MCPInfo) Option {
 	return func(ad *Adapter) { ad.mcpFn = fn }
 }

@@ -37,10 +37,25 @@ var builtinToolNameSet = func() map[string]struct{} {
 
 // AttachTools implements attach.ToolsProvider. Returns the agent's
 // full tool catalog as ToolInfo entries with source classification
-// (builtin / subagent / other) and the gate's pre-flight state per tool
-// when a gate was wired via agent.WithGate. MCP / skill attribution is
-// "other" in v1 — distinguishing them at the slice level needs an
-// upstream metadata pass we haven't done yet.
+// (builtin / subagent / mcp / skill / other), MCP server attribution,
+// and the gate's pre-flight state per tool when a gate was wired via
+// agent.WithGate.
+//
+// The catalog comes from three places because the agent holds it in
+// three places (#767). agent.Tools() carries built-ins and the
+// synchronous subagent tools. MCP tools and skill tools reach the
+// agent as TOOLSETS — agent.WithToolsets, never agent.WithTools — so
+// they are not in agent.Tools() at all and were previously missing
+// from this endpoint entirely, not merely misclassified. They are
+// folded in from the snapshot providers instead of by enumerating the
+// live toolsets, which is a deliberate trade: the MCP snapshot is
+// materialized once at startup (mcp.Server.ToolInfos), so /tools stays
+// a pure in-memory read rather than fanning out a tools/list round-trip
+// per server on an operator keystroke — and it cannot disagree with
+// what /mcp reports, since both read the same snapshot.
+//
+// Unwired providers omit their section rather than erroring: an
+// embedder with no MCP wiring has no MCP tools to report.
 func (ad *Adapter) AttachTools() []attach.ToolInfo {
 	a := ad.Agent()
 	if a == nil {
@@ -60,6 +75,33 @@ func (ad *Adapter) AttachTools() []attach.ToolInfo {
 		subagentSet[n] = struct{}{}
 	}
 	out := make([]attach.ToolInfo, 0, len(tools))
+	seen := make(map[string]struct{}, len(tools))
+	// gateKey is the name the POLICY matches on, which is not always
+	// the tool's own name. Toolset tools go through
+	// tools.GateToolset, whose Run calls CheckToolCall with the
+	// NAMESPACE ("mcp" / "skill") as the tool name — the per-tool half
+	// only keys session grants. Projecting ToolGateState off the
+	// underlying name would therefore report a state the gate will
+	// never apply: an `mcp:*` deny rule would render as "prompted" on
+	// every MCP row.
+	add := func(info attach.ToolInfo, gateKey string) {
+		// First writer wins. agent.Tools() goes first, so a built-in
+		// keeps its classification against an identically-named tool
+		// from a provider. MCP tools are server-namespaced on the way
+		// in (pkg/mcp wraps each server with its own prefix), so a
+		// genuine collision means two providers claiming one name —
+		// listing it twice would make the endpoint's own name column
+		// ambiguous, which is worse than picking the agent's view.
+		if _, dup := seen[info.Name]; dup {
+			return
+		}
+		seen[info.Name] = struct{}{}
+		if gate != nil {
+			info.GateState = gate.ToolGateState(gateKey)
+		}
+		out = append(out, info)
+	}
+
 	for _, t := range tools {
 		name := t.Name()
 		info := attach.ToolInfo{
@@ -72,13 +114,43 @@ func (ad *Adapter) AttachTools() []attach.ToolInfo {
 		} else if _, ok := builtinToolNameSet[name]; ok {
 			info.Source = attach.ToolSourceBuiltin
 		}
-		if gate != nil {
-			info.GateState = gate.ToolGateState(name)
+		add(info, name)
+	}
+
+	if ad.mcpFn != nil {
+		for _, srv := range ad.mcpFn().Servers {
+			for _, t := range srv.Tools {
+				add(attach.ToolInfo{
+					Name:        t.Name,
+					Description: t.Description,
+					Source:      attach.ToolSourceMCP,
+					Server:      srv.Name,
+				}, mcpGateNamespace)
+			}
 		}
-		out = append(out, info)
+	}
+
+	if ad.skillToolsFn != nil {
+		for _, t := range ad.skillToolsFn() {
+			add(attach.ToolInfo{
+				Name:        t.Name,
+				Description: t.Description,
+				Source:      attach.ToolSourceSkill,
+			}, skillGateNamespace)
+		}
 	}
 	return out
 }
+
+// Gate namespaces the toolset wrappers register under — the literals
+// passed to tools.GateToolset by pkg/mcp and pkg/skills. Duplicated
+// rather than imported because pulling pkg/mcp into pkg/attachadapter
+// for two strings would drag an MCP client dependency into every
+// embedder that wraps an agent.
+const (
+	mcpGateNamespace   = "mcp"
+	skillGateNamespace = "skill"
+)
 
 // AttachAgents implements attach.AgentsProvider. Returns the live
 // background subagents from the agent's SubagentManager, or an

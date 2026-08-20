@@ -1040,20 +1040,29 @@ func (a *coreAgentAdapter) AddBuiltinAllowExtra(bundleName string) error {
 }
 
 // Tools satisfies coretui.ToolLister. Routes through the agent's
-// AttachTools accessor so the Source field reflects the agent's
-// own classification (builtin vs other — MCP/skill differentiation
-// lands in attach when the agent grows per-tool provenance). The
-// GateState field is computed by AttachTools using the same gate
-// the live calls consult, so /tools and the actual approval
-// behavior stay consistent.
+// AttachTools accessor so the Source field reflects the agent's own
+// classification (builtin / subagent / mcp / skill / other, #767). The
+// GateState field is computed by AttachTools using the same gate the
+// live calls consult, so /tools and the actual approval behavior stay
+// consistent.
+//
+// The Server flattening mirrors internal/coretuiremote's adapter
+// exactly: coretui.ToolInfo has one Source column, so an MCP tool
+// shows its server there rather than the bare word "mcp". Keeping the
+// two adapters identical is the point — the embedded TUI and a remote
+// one attached to the same daemon must not render /tools differently.
 func (a *coreAgentAdapter) Tools() []coretui.ToolInfo {
 	raw := a.attachAd.AttachTools()
 	out := make([]coretui.ToolInfo, 0, len(raw))
 	for _, t := range raw {
+		source := t.Source
+		if t.Server != "" {
+			source = t.Server
+		}
 		out = append(out, coretui.ToolInfo{
 			Name:        t.Name,
 			Description: t.Description,
-			Source:      t.Source,
+			Source:      source,
 			GateState:   t.GateState,
 		})
 	}

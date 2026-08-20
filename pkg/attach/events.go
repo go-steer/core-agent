@@ -95,7 +95,16 @@ import "time"
 // prints the kind verbatim). It is still a behavior change for
 // this one input — a client keying a retry affordance off `retryable`
 // stops offering one after an interrupt, which is the point.
-const protocolVersion = "1.8.0"
+//
+// v1.9.0 (#768): GET /sessions/{sid}/subagents rows carry an optional
+// `tools` — the subagent's configured tool grant, in the same ToolInfo
+// shape and `source` vocabulary as GET /tools. Same additive shape as
+// v1.6.0's `title`: a pre-1.9.0 daemon omits the key, and so does a
+// 1.9.0 daemon for a subagent granted no tools, so a client cannot read
+// absence as "this specialist has nothing" — it has to fall back to
+// showing the roster without a grant, exactly as it did before. It
+// lists what was configured, not what the runtime wires on top.
+const protocolVersion = "1.9.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (

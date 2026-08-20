@@ -27,6 +27,7 @@ import (
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
+	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
 )
 
 // This file bridges the two subagent worlds (#626, option B): the
@@ -77,6 +78,14 @@ type SubagentTemplate struct {
 	// Toolsets are the MCP + skills groups. Process-long-lived, stateless
 	// handles — shared across concurrent instances of the template.
 	Toolsets []tool.Toolset
+	// ToolsetTools names what Toolsets expose, for the operator catalog
+	// (#768). A tool.Toolset is opaque here: enumerating it needs a stub
+	// ReadonlyContext, may reach a live MCP server, and tells us nothing
+	// about which server a tool came from — so the builder, which knows
+	// both, snapshots the answer at registration and Catalog stays a pure
+	// in-memory projection. Optional: a template built without it simply
+	// reports its built-in tools.
+	ToolsetTools []attach.ToolInfo
 	// MaxDepth caps the subagent's OWN nesting (0 = substrate default).
 	MaxDepth int
 	// Budgets bound each async run; per-spawn overrides may only tighten.
@@ -404,6 +413,7 @@ func (m *Manager) Catalog() []attach.SubagentCatalogInfo {
 			Model:       t.ModelID,
 			Root:        t.Root,
 			Modes:       modes,
+			Tools:       templateToolInfos(t),
 		})
 	}
 	sort.Slice(templates, func(i, j int) bool { return templates[i].Name < templates[j].Name })
@@ -415,11 +425,122 @@ func (m *Manager) Catalog() []attach.SubagentCatalogInfo {
 			Description: s.Description,
 			Model:       s.ModelID,
 			Modes:       []string{"async"},
+			Tools:       m.specToolInfos(s),
 		})
 	}
 	sort.Slice(predefined, func(i, j int) bool { return predefined[i].Name < predefined[j].Name })
 
 	return append(templates, predefined...)
+}
+
+// builtinToolNameSet indexes the canonical built-in roster for source
+// classification. Deliberately the SAME rule pkg/attachadapter applies
+// to GET .../tools, so the session-wide tool list and a subagent's own
+// cannot disagree about what "builtin" means — including the wart that
+// harness tools registered outside that roster (the spawn tools, the
+// agentic wrappers) classify as "other" in both places.
+var builtinToolNameSet = func() map[string]struct{} {
+	names := coretools.BuiltinToolNames()
+	out := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		out[n] = struct{}{}
+	}
+	return out
+}()
+
+func classifyBuiltin(name string) string {
+	if _, ok := builtinToolNameSet[name]; ok {
+		return attach.ToolSourceBuiltin
+	}
+	return attach.ToolSourceOther
+}
+
+// toolInfoSet accumulates catalog tool rows, first writer wins. The
+// dedupe matters because a name can arrive twice — a spec listing the
+// same tool in Tools and Extras, or an MCP server whose prefix collides
+// with a built-in — and two rows under one name make the list's own key
+// ambiguous for any client that indexes by it. Same rule, same reason,
+// as AttachTools (#767).
+type toolInfoSet struct {
+	out  []attach.ToolInfo
+	seen map[string]struct{}
+}
+
+func (s *toolInfoSet) add(info attach.ToolInfo) {
+	if info.Name == "" {
+		return
+	}
+	if s.seen == nil {
+		s.seen = map[string]struct{}{}
+	}
+	if _, dup := s.seen[info.Name]; dup {
+		return
+	}
+	s.seen[info.Name] = struct{}{}
+	s.out = append(s.out, info)
+}
+
+// sorted returns the rows by name, or nil when there are none — an
+// omitted `tools` key reads as "no grant recorded", which is what an
+// empty grant is.
+func (s *toolInfoSet) sorted() []attach.ToolInfo {
+	if len(s.out) == 0 {
+		return nil
+	}
+	sort.Slice(s.out, func(i, j int) bool { return s.out[i].Name < s.out[j].Name })
+	return s.out
+}
+
+// templateToolInfos projects a declarative subagent's configured tool
+// surface (#768). Built-ins come from the resolved instances the
+// template already holds; MCP and skill tools come from the builder's
+// registration-time snapshot, because a tool.Toolset cannot be
+// enumerated here without a stub context and a possible round-trip to a
+// live server (see SubagentTemplate.ToolsetTools).
+func templateToolInfos(t SubagentTemplate) []attach.ToolInfo {
+	var set toolInfoSet
+	for _, tl := range t.Tools {
+		if tl == nil {
+			continue
+		}
+		set.add(attach.ToolInfo{
+			Name:        tl.Name(),
+			Description: tl.Description(),
+			Source:      classifyBuiltin(tl.Name()),
+		})
+	}
+	for _, ti := range t.ToolsetTools {
+		set.add(ti)
+	}
+	return set.sorted()
+}
+
+// specToolInfos projects a predefined catalog spec's grant. A spec
+// carries tool NAMES, resolved against the manager's catalog at spawn
+// time, so descriptions are looked up the same way here.
+//
+// A name the catalog doesn't know is still listed, with no description.
+// It is a misconfiguration — Spawn will refuse the spec with
+// ErrUnknownTool — and dropping it silently would leave the operator
+// reading a roster that looks fine next to a subagent that cannot start.
+//
+// Auto-wired names are skipped: resolveTools drops them too, because the
+// runtime registers the real implementations itself.
+//
+// Caller holds m.mu.
+func (m *Manager) specToolInfos(s Spec) []attach.ToolInfo {
+	var set toolInfoSet
+	for _, n := range append(append([]string{}, s.Tools...), s.Extras...) {
+		if _, autoWired := autoWiredSubagentTools[n]; autoWired {
+			continue
+		}
+		info := attach.ToolInfo{Name: n, Source: classifyBuiltin(n)}
+		if t, ok := m.catalog[n]; ok && t != nil {
+			info.Description = t.Description()
+		}
+		set.add(info)
+	}
+	return set.sorted()
 }
 
 // ListSubagentCatalog implements the agent.SubagentManager seam's

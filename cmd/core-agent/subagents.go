@@ -28,6 +28,7 @@ import (
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/agent/background"
+	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/compose"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/instruction"
@@ -207,6 +208,11 @@ func (r sessionBackgroundRecipe) factory() compose.SessionBackgroundFactory {
 type namedToolset struct {
 	name    string
 	toolset adktool.Toolset
+	// infos is the server's startup tool snapshot (mcp.Server.ToolInfos),
+	// carried alongside so a subagent's operator catalog can name the
+	// tools it inherited and which server they came from (#768) without
+	// re-enumerating a live toolset. Empty for a server that failed.
+	infos []mcp.ToolInfo
 }
 
 // parentSurface is the parent agent's fully-resolved tool surface, handed
@@ -328,7 +334,7 @@ func buildDeclaredSubagents(
 		}
 
 		var (
-			subToolsets     []adktool.Toolset
+			subToolsets     subagentToolsets
 			userInstruction string
 			scopeDesc       string
 		)
@@ -340,20 +346,22 @@ func buildDeclaredSubagents(
 			if err != nil {
 				return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
 			}
-			subToolsets, scopeDesc, err = resolveSubagentToolsets(ctx, spec, rootSurface)
+			subToolsets, err = resolveSubagentToolsets(ctx, spec, rootSurface)
 			if err != nil {
 				return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
 			}
+			scopeDesc = subToolsets.desc
 			userInstruction, err = rootedSubagentInstruction(spec, rootAbs, deps.interp)
 			if err != nil {
 				return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: instructions: %w", i, spec.Name, err)
 			}
 			scopeDesc = fmt.Sprintf("root=%s (%s), %s", rootAbs, rootInventory(rootSurface), scopeDesc)
 		} else {
-			subToolsets, scopeDesc, err = resolveSubagentToolsets(ctx, spec, surface)
+			subToolsets, err = resolveSubagentToolsets(ctx, spec, surface)
 			if err != nil {
 				return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
 			}
+			scopeDesc = subToolsets.desc
 			if spec.Instructions != "" {
 				// Inline refs share the project scope: @include resolves
 				// against projectRoot exactly like the parent's memory.
@@ -364,7 +372,7 @@ func buildDeclaredSubagents(
 			}
 		}
 
-		sub, err := assembleSubagent(spec, llm, userInstruction, subTools, subToolsets)
+		sub, err := assembleSubagent(spec, llm, userInstruction, subTools, subToolsets.sets)
 		if err != nil {
 			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: %w", i, spec.Name, err)
 		}
@@ -385,7 +393,8 @@ func buildDeclaredSubagents(
 			ModelID:      mn,
 			Instruction:  userInstruction,
 			Tools:        subTools,
-			Toolsets:     subToolsets,
+			Toolsets:     subToolsets.sets,
+			ToolsetTools: subToolsets.infos,
 			MaxDepth:     spec.MaxDepth,
 			Root:         spec.Root,
 		})
@@ -470,7 +479,7 @@ func loadSubagentRoot(ctx context.Context, spec config.SubagentSpec, deps subage
 		if s == nil {
 			continue
 		}
-		named = append(named, namedToolset{name: s.Name, toolset: s.Toolset()})
+		named = append(named, namedToolset{name: s.Name, toolset: s.Toolset(), infos: s.ToolInfos})
 	}
 
 	// Own skills from <root>/skills/ (again no home/user overlay).
@@ -579,13 +588,44 @@ func resolveSubagentTools(spec config.SubagentSpec, parent []adktool.Tool) (tool
 	return out, nil, nil
 }
 
+// subagentToolsets is what resolveSubagentToolsets produces: the
+// toolsets themselves, a snapshot naming the tools inside them, and a
+// short human-readable scope line for the startup log.
+type subagentToolsets struct {
+	sets []adktool.Toolset
+	// infos names every tool the sets expose, classified by source and —
+	// for MCP — attributed to its server. Captured here, at resolution
+	// time, because this is the only place that knows which toolset came
+	// from which server; downstream (background.Catalog, GET
+	// .../subagents) a tool.Toolset is opaque (#768).
+	infos []attach.ToolInfo
+	desc  string
+}
+
 // resolveSubagentToolsets assembles a subagent's MCP + skills toolsets
 // from the shared parent surface, honoring the same nil=inherit /
-// list=scope / empty=none contract per dimension. It also returns a short
-// human-readable scope description for the startup log.
-func resolveSubagentToolsets(ctx context.Context, spec config.SubagentSpec, surface parentSurface) ([]adktool.Toolset, string, error) {
-	var out []adktool.Toolset
+// list=scope / empty=none contract per dimension.
+func resolveSubagentToolsets(ctx context.Context, spec config.SubagentSpec, surface parentSurface) (subagentToolsets, error) {
+	var out subagentToolsets
 	var desc []string
+
+	// take records both halves at once: a toolset the subagent runs with,
+	// and the operator-visible names inside it. A failed server has a nil
+	// toolset and no infos, so it contributes neither.
+	take := func(s namedToolset) {
+		if s.toolset == nil {
+			return
+		}
+		out.sets = append(out.sets, s.toolset)
+		for _, ti := range s.infos {
+			out.infos = append(out.infos, attach.ToolInfo{
+				Name:        ti.Name,
+				Description: ti.Description,
+				Source:      attach.ToolSourceMCP,
+				Server:      s.name,
+			})
+		}
+	}
 
 	// MCP: reuse each already-started server's toolset — never a second
 	// mcp.Build. A named server that exists but failed to start has a nil
@@ -594,9 +634,7 @@ func resolveSubagentToolsets(ctx context.Context, spec config.SubagentSpec, surf
 	switch spec.MCP {
 	case nil:
 		for _, s := range surface.mcpToolsets {
-			if s.toolset != nil {
-				out = append(out, s.toolset)
-			}
+			take(s)
 		}
 		desc = append(desc, "mcp=inherit")
 	default:
@@ -607,30 +645,40 @@ func resolveSubagentToolsets(ctx context.Context, spec config.SubagentSpec, surf
 		for _, name := range spec.MCP {
 			s, ok := byName[name]
 			if !ok {
-				return nil, "", fmt.Errorf("mcp: unknown server %q (not in mcp.json)", name)
+				return subagentToolsets{}, fmt.Errorf("mcp: unknown server %q (not in mcp.json)", name)
 			}
-			if s.toolset != nil {
-				out = append(out, s.toolset)
-			}
+			take(s)
 		}
 		desc = append(desc, fmt.Sprintf("mcp=[%s]", strings.Join(spec.MCP, " ")))
 	}
 
-	// Skills: inherit the full toolset, or a name-scoped view.
+	// Skills: inherit the full toolset, or a name-scoped view. The tools
+	// are the bundle's fixed trio (list_skills / load_skill / ...), not
+	// one per skill — scoping changes which skills those tools can reach,
+	// not the tool list.
+	takeSkills := func(b skills.Skills) {
+		if b.Empty() {
+			return
+		}
+		out.sets = append(out.sets, b.Toolset)
+		for _, ti := range b.ToolInfos() {
+			out.infos = append(out.infos, attach.ToolInfo{
+				Name:        ti.Name,
+				Description: ti.Description,
+				Source:      attach.ToolSourceSkill,
+			})
+		}
+	}
 	switch spec.Skills {
 	case nil:
-		if !surface.skills.Empty() {
-			out = append(out, surface.skills.Toolset)
-		}
+		takeSkills(surface.skills)
 		desc = append(desc, "skills=inherit")
 	default:
 		scoped, err := surface.skills.Scoped(ctx, spec.Skills)
 		if err != nil {
-			return nil, "", err
+			return subagentToolsets{}, err
 		}
-		if !scoped.Empty() {
-			out = append(out, scoped.Toolset)
-		}
+		takeSkills(scoped)
 		desc = append(desc, fmt.Sprintf("skills=[%s]", strings.Join(spec.Skills, " ")))
 	}
 
@@ -640,7 +688,8 @@ func resolveSubagentToolsets(ctx context.Context, spec config.SubagentSpec, surf
 		desc = append(desc, fmt.Sprintf("tools=[%s]", strings.Join(spec.Tools, " ")))
 	}
 
-	return out, strings.Join(desc, ", "), nil
+	out.desc = strings.Join(desc, ", ")
+	return out, nil
 }
 
 // resolveSubagentProvider returns the provider + model name a subagent

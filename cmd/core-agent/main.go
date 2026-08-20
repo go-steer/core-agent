@@ -1429,7 +1429,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		if s == nil {
 			continue
 		}
-		mcpNamed = append(mcpNamed, namedToolset{name: s.Name, toolset: s.Toolset()})
+		mcpNamed = append(mcpNamed, namedToolset{name: s.Name, toolset: s.Toolset(), infos: s.ToolInfos})
 	}
 	declaredSubagents, subagentTemplates, subagentServers, err := buildDeclaredSubagents(ctx, cfg, provider, projectRoot, parentSurface{
 		builtinTools: builtinTools,

@@ -238,6 +238,26 @@ func TestConformance_RESTSessionTitleV1_ClearedAndUnpersisted(t *testing.T) {
 	}
 }
 
+// TestConformance_RESTInjectV1 pins the POST /sessions/{sid}/inject
+// body, which gained `woke` in protocol 1.10.0 (#698).
+//
+// The fixture is the DEFERRED case on purpose: false is the value a
+// client has to be able to read, and pinning the shape that carries it
+// is what stops `woke` from ever acquiring an omitempty (which would
+// make "did not wake" indistinguishable from a pre-1.10.0 daemon that
+// always did).
+func TestConformance_RESTInjectV1(t *testing.T) {
+	t.Parallel()
+	resp := InjectResponse{
+		Injected: "second alert corroborates the first",
+		Session:  "s-incident-4412",
+		Woke:     false,
+	}
+	assertMatchesConformanceFixture(t,
+		"testdata/conformance/rest-inject-v1.json",
+		resp)
+}
+
 func TestConformance_RESTWhoAmIV1(t *testing.T) {
 	t.Parallel()
 	// The asserted-proxy variant exercises every field: admin and

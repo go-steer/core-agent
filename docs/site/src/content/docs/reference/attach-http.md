@@ -122,7 +122,7 @@ All write endpoints cap request bodies at **8 KiB** (`operatorPostMaxBytes`).
 
 | Method | Path suffix | Request | Response |
 |---|---|---|---|
-| `POST` | `/inject` | `{"message":"..."}` (empty → **400**) | `{"injected":..., "session":...}`; **503** + `Retry-After` during daemon shutdown (message would die with the in-memory inbox — redeliver after restart) |
+| `POST` | `/inject` | `{"message":"...", "wake"?:bool}` (empty message → **400**; `wake` defaults to **true**) | `{"injected":..., "session":..., "woke":bool}` ([fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-inject-v1.json)); **501** on `"wake": false` if the agent can't defer — see [Queuing context without a turn](#queuing-context-without-a-turn-protocol-1100); **503** + `Retry-After` during daemon shutdown (message would die with the in-memory inbox — redeliver after restart) |
 | `POST` | `/wake` | `{"target"?:..., "prompt"?:...}` (both optional) | `{"woken":..., "prompt":...}`; **501** if `target` set; **503** + `Retry-After` during daemon shutdown. Emits a `wake` frame to everyone watching `/events` (protocol 1.7.0 — see [Wake notifications](#wake-notifications-protocol-170)) |
 | `POST` | `/interrupt` | `{"hold"?:bool, "stop_subagents"?:bool}` — **body optional**, absent = `{"hold":true}` | `{"interrupted":bool, "paused":bool, "running_subagents":[...], "stopped_subagents":[...], "session":...}`; **412** if agent implements neither `PauseController` nor `InterruptProvider`; `X-Interrupted: nothing-in-flight` header when idle; `X-Hold: unsupported` when the agent can't park; writes audit event `Author=attach/interrupt` |
 | `POST` | `/pause` | `{"reason"?:...}` — **body optional** | `{"paused":bool, "transitioned":bool, "state":"paused", "paused_since":..., "pause_reason":..., "session":...}`; **501** if no `PauseController` |
@@ -216,6 +216,29 @@ The remote TUI wraps it as `/title <name>`.
 **501** means the agent registered no title-setting capability. Unlike the 404 that masks an authorization denial, this one is safe to feature-detect on: reaching it means the caller was already authorized for the session.
 
 Renaming needs `SessionWrite`, not `SessionAdmin`. A title is a display label, not an authorization fact — it grants nothing and reveals nothing the row didn't already carry — and the people who should be able to fix a wrong name are the people working in the session. A contributor can already `/inject`, which is a strictly larger power.
+
+### Queuing context without a turn (protocol 1.10.0)
+
+`POST /inject` has always done two things at once: queue the message **and** wake the agent. `"wake": false` splits them.
+
+```bash
+curl -sS -X POST http://127.0.0.1:7777/sessions/s-4412/inject \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"second alert corroborates the first","wake":false}'
+# {"injected":"second alert corroborates the first","session":"s-4412","woke":false}
+```
+
+The message is appended to the inbox, published as the usual `inbox`/queued frame, and read by the next turn — but nothing here *causes* that turn. It does not pierce a sleep and it does not un-park a paused loop.
+
+**Who this is for: machine producers.** An alert watcher's signals arrive on their own clock, and each one used to drive its own turn. Two corroborating alerts two minutes apart meant two wakes, the second landing while the agent was still working the first. Queued, they drain together as a single `[Inbox]` block on whatever turn happens next. Operator input should keep waking — that is what the default is for.
+
+**There is no promptness guarantee, and that is not a hedge.** An autonomous loop reaches the message on its own sleep timer; an operator-driven session reaches it when the operator next says something; a parked session reaches it when it is resumed. If the message needs to be acted on, send it without `wake: false`.
+
+**`woke` comes back on both paths.** Its absence means a pre-1.10.0 daemon, which always woke — so a client can tell "this daemon deferred" from "this daemon doesn't know how to."
+
+**501** means the agent registered no deferral capability. The request is refused rather than quietly upgraded to a waking inject: a silent upgrade would hand back exactly the preemption the caller asked to avoid, behind a 200 that says nothing went wrong.
+
+Omitting `wake`, or sending `true`, is the historical behavior in every respect — the flag is a tristate so no pre-1.10.0 client changes meaning.
 
 ### Interrupt, pause, and resume (protocol 1.5.0)
 
@@ -501,6 +524,7 @@ Consumers MUST tolerate unknown values and MUST NOT crash on missing keys.
 | `PATCH /sessions/{sid}/acl` | **Yes** — the listed fields are replaced, not merged, so replaying the same body lands on the same ACL. |
 | `POST /perms/respond` | **No** — second respond for the same prompt → **404** (`ErrPromptNotFound`). |
 | `POST /sessions/{sid}/title` | **Yes** — the title is replaced, so replaying the same body lands on the same name. |
+| `POST /sessions/{sid}/inject` | **No** — every call queues another message. Redelivery after a `503` is the deliberate exception: a duplicate in the inbox beats a silently lost signal. `"wake": false` doesn't change this. |
 | `POST /interrupt` | Idempotent in effect — the loop ends up cancelled and parked either way. Repeat calls while the cancelled turn is still unwinding keep reporting `interrupted: true` (the interrupt did land); once it's idle they set `X-Interrupted: nothing-in-flight`. |
 | `POST /pause` / `POST /resume` | Idempotent — `transitioned` / `resumed` report whether *this* call changed anything, so a redundant press is a quiet `200`. |
 

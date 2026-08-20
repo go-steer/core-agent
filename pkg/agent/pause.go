@@ -177,7 +177,7 @@ func (a *Agent) ResumeWith(mode, message string, caller auth.Caller) (bool, erro
 		return false, errors.New("agent: nil receiver")
 	}
 	if message != "" {
-		if err := a.injectAs(context.Background(), message, caller, false /* releaseHold */); err != nil {
+		if err := a.injectAs(context.Background(), message, caller, injectMode{wake: true}); err != nil {
 			return false, err
 		}
 	}

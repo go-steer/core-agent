@@ -144,6 +144,22 @@ import "time"
 // which — unlike the 404 an unauthorized caller gets — is safe to
 // feature-detect on, since reaching it means the caller was already
 // authorized for the session.
+//
+// v1.10.0 (#698) also gives POST /sessions/{sid}/inject an optional
+// `wake` flag. Omitted or true keeps the historical delivery — queue
+// the message AND wake, so it preempts a sleep and un-parks a paused
+// loop. False queues only: the message is appended, published as the
+// usual `inbox`/queued event, and drained by whatever turn happens
+// next, but nothing here causes that turn. There is deliberately NO
+// promptness guarantee — an autonomous loop reaches the message on its
+// own sleep timer, an operator-driven session when the operator next
+// says something, a parked session when it is resumed — so a caller
+// that needs the message acted on must not send false. The 200 gains a
+// `woke` field on BOTH paths, so a client can confirm which delivery it
+// got; its absence means a pre-1.10.0 daemon, which always woke. A
+// registrant without the deferral capability answers 501 rather than
+// waking anyway, since a silent upgrade to a wake would hand back the
+// exact preemption the caller asked to avoid.
 const protocolVersion = "1.10.0"
 
 // SSE event-type names per the protocol spec (section 2).

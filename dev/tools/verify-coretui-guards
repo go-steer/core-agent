@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Every exported core-tui capability interface, at the version go.mod
+# pins, is accounted for by each TUI host in this repo — either
+# implemented and pinned with a `var _` guard, or declined with a
+# `//coretui:declined` directive and a reason.
+#
+# The guards themselves (#810) already make core-tui adding a METHOD to
+# an interface we name a build failure. What nothing caught before this
+# is core-tui adding a whole new interface: it lands in neither list, no
+# host implements it, and core-tui's type-assertion feature detection
+# means the capability is simply absent with no error and no log. See
+# #812, and dev/coretui-guard-check/main.go for the mechanism.
+#
+# Modes:
+#
+#   verify-coretui-guards           # verify (this is what CI runs)
+#   verify-coretui-guards --print   # dump the interface x adapter matrix
+#
+# Deliberately NOT `go vet`-shaped or a unit test: it has to run the go
+# command to resolve the pinned core-tui, and it reads the guard files
+# as source so that `-tags no_tui` cannot change its answer.
+
+set -euo pipefail
+. "$(dirname "$0")/common.sh"
+cd "$(repo_root)"
+
+exec go run ./dev/coretui-guard-check "$@"

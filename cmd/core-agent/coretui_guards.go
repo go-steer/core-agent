@@ -100,21 +100,34 @@ var (
 )
 
 // Deliberately NOT implemented by the local host — each absence is a
-// decision, not an oversight:
+// decision, not an oversight.
 //
+// Each decision carries a `//coretui:declined <Interface>` directive.
+// The directive is what dev/tools/verify-coretui-guards counts when it
+// checks this list against the core-tui go.mod pins; the bullet under
+// it is the decision itself, and the gate requires the two to name the
+// same interface so neither can be renamed out from under the other.
+// Every exported core-tui interface has to be either guarded above or
+// declined here (#812).
+//
+//coretui:declined LiveAgent
 //   - coretui.LiveAgent: local mode IS the per-turn Run path. Events()
 //     would take precedence over Run and silently disable it (see the
 //     precedence note on coretui.LiveAgent); the autonomous-daemon
 //     stream it exists for is coretuiremote's job.
 //
+//coretui:declined SessionSwitcher
 //   - coretui.SessionSwitcher: /session switching enumerates sessions
 //     over the attach protocol, which is attach mode's surface. The
 //     in-process host owns exactly one session for its lifetime.
 //
+//coretui:declined PermanentStreamError
 //   - coretui.PermanentStreamError: an error-value interface, not a
 //     host one, and only meaningful for a reconnecting remote stream.
 //     Nothing in local mode can raise it.
 //
+//coretui:declined PermissionPrompter
+//coretui:declined Elicitor
 //   - coretui.PermissionPrompter / coretui.Elicitor: not
 //     host-implemented interfaces. core-tui ships the concrete types
 //     and launchTUIv2 wires instances into the interface-typed Options
@@ -126,6 +139,7 @@ var (
 //     as an mcp.ElicitorFn — so neither is a coretui implementation to
 //     guard.
 //
+//coretui:declined Asker
 //   - coretui.Asker: same shape as the two above (core-tui ships
 //     NewAsker), but Options.Asker is not wired anywhere in this repo
 //     yet. It wants an ask-the-user tool behind it, which is a feature

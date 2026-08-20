@@ -166,7 +166,20 @@ Conventions worth knowing at agent prompt time:
 - **Run presubmits before every push.** `dev/ci/presubmits/*` are the
   same scripts CI runs. A green local run is the same green run as
   remote CI — skipping them ships preventable red builds. Full sweep:
-  `dev/ci/presubmits/{build,lint-go,test-unit,verify-go-format,verify-mod-tidy,vet,verify-vuln,verify-go-toolchain}`.
+  `dev/ci/presubmits/{build,lint-go,test-unit,verify-go-format,verify-mod-tidy,vet,verify-vuln,verify-go-toolchain,verify-coretui-guards}`.
+- **Bumping the `core-tui` pin is not just a `go.mod` edit.** Every
+  exported interface in `github.com/go-steer/core-tui/tui` must be
+  accounted for by both TUI hosts — implemented and pinned with a
+  `var _ coretui.X = (*T)(nil)` guard, or declined with a
+  `//coretui:declined X` directive plus the reason, in
+  `cmd/core-agent/coretui_guards.go` (local `--tui`) and
+  `internal/coretuiremote/guards.go` (attach mode). Nowhere else.
+  `dev/ci/presubmits/verify-coretui-guards` enforces it against the
+  pinned version and `--print` dumps the interface × adapter matrix;
+  see [`dev/README.md`](./dev/README.md#the-core-tui-capability-gate).
+  The guards catch a changed method signature at compile time; the gate
+  catches the capability that appeared and nobody noticed, which is
+  silent otherwise because core-tui feature-detects by type assertion.
 - **Adversarial review gate before every PR.** Before `gh pr create`
   on any change touching Go code: run a skeptic subagent over the
   staged diff (correctness, races, API misuse — verified against

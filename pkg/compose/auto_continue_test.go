@@ -16,8 +16,10 @@ package compose
 
 import (
 	"context"
+	"iter"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,6 +30,7 @@ import (
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v2/pkg/attachadapter"
 	"github.com/go-steer/core-agent/v2/pkg/auth"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
@@ -433,6 +436,117 @@ func TestAutoContinueRetryLoop_SelfHealsAfterTransientLock(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// blockingLLM holds a turn open: GenerateContent closes entered (once)
+// and then blocks until release is closed. That gives a test a real turn
+// in flight with a channel handshake instead of a sleep — the agent's
+// cancel-in-flight registration happens before the runner is driven, so
+// once entered fires, Agent.TurnInFlight is true and stays true until
+// the response below has been yielded and drained.
+type blockingLLM struct {
+	enteredOnce sync.Once
+	entered     chan struct{}
+	release     chan struct{}
+}
+
+func newBlockingLLM() *blockingLLM {
+	return &blockingLLM{entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (*blockingLLM) Name() string { return "blocking" }
+
+func (l *blockingLLM) GenerateContent(ctx context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		l.enteredOnce.Do(func() { close(l.entered) })
+		select {
+		case <-l.release:
+		case <-ctx.Done():
+			return
+		}
+		yield(&adkmodel.LLMResponse{
+			Content:      &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "the long answer, at last"}}},
+			FinishReason: genai.FinishReasonStop,
+			TurnComplete: true,
+		}, nil)
+	}
+}
+
+// TestAutoContinueBootScan_SkipsSessionWithLocalTurnInFlight is the #796
+// gate. The in-lifetime retry driver re-runs this exact pass on a timer,
+// and a session that is MID-TURN presents the same committed tail as one
+// that was interrupted: the user's message with no model reply yet. Live
+// evidence from a v2.9.0-dev daemon shows a ~22s generation declared
+// interrupted 10s in, a continuation note queued on the inbox, and a
+// duplicate reply the moment the real turn finished.
+//
+// Fails-first: pre-fix, lockClassifyInject consults only the tail (plus
+// the run lock, which an ordinary attach/wake-loop turn does not hold),
+// so the in-flight subtest gets the continuation note injected.
+func TestAutoContinueBootScan_SkipsSessionWithLocalTurnInFlight(t *testing.T) {
+	t.Parallel()
+	const sid = "sid-live"
+
+	// scanWithTurn seeds one session whose committed tail is an
+	// unanswered user message, registers a real agent for it, optionally
+	// starts a turn that is still generating, runs the pass the retry
+	// driver runs, and reports what landed in the inbox.
+	scanWithTurn := func(t *testing.T, inFlight bool) []string {
+		t.Helper()
+		h := openAC(t)
+		seedACSession(t, h, sid, acUserEvent("write me a long answer", time.Now()))
+		deps := scanDeps(t, h)
+		putACLRow(t, deps.ACLStore, sid)
+
+		llm := newBlockingLLM()
+		ag, err := agent.New(llm,
+			agent.WithEventLog(h),
+			agent.WithSession(acUser, sid),
+			agent.WithoutSessionTitle())
+		if err != nil {
+			t.Fatalf("agent.New: %v", err)
+		}
+		// Register the live agent so the scan's Lookup returns THIS
+		// object rather than resuming a fresh one — the multi-session
+		// daemon shape, where the session answering a chat message is
+		// already in memory.
+		if _, err := deps.Registry.RegisterOwned(attachadapter.New(ag), acUser); err != nil {
+			t.Fatalf("RegisterOwned: %v", err)
+		}
+
+		if inFlight {
+			turnDone := make(chan struct{})
+			go func() {
+				defer close(turnDone)
+				for range ag.Run(context.Background(), "write me a long answer") { //nolint:revive // an empty body IS the drain
+				}
+			}()
+			// Registered last, so LIFO runs it FIRST — ahead of
+			// scanDeps' daemon-context join and openAC's handle close.
+			// The turn is therefore fully unwound before the DB it is
+			// writing to is torn down.
+			t.Cleanup(func() { close(llm.release); <-turnDone })
+			<-llm.entered // the turn is now generating
+		}
+
+		AutoContinueBootScan(deps, 10)
+		return ag.DrainInbox()
+	}
+
+	t.Run("turn still generating gets no continuation note", func(t *testing.T) {
+		t.Parallel()
+		if msgs := scanWithTurn(t, true); len(msgs) != 0 {
+			t.Errorf("inbox = %v, want empty — the session is mid-turn, not interrupted; a note here is the duplicate reply", msgs)
+		}
+	})
+
+	t.Run("same tail with no turn running is still continued", func(t *testing.T) {
+		t.Parallel()
+		msgs := scanWithTurn(t, false)
+		if len(msgs) != 1 || !strings.Contains(msgs[0], "previous turn did not complete") {
+			t.Fatalf("inbox = %v, want the continuation note — a genuinely interrupted turn must still be found", msgs)
+		}
+	})
 }
 
 func TestAutoContinueStartupSession(t *testing.T) {

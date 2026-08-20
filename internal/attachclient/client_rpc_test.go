@@ -784,6 +784,15 @@ func TestClientSessionReadsAndWrites(t *testing.T) {
 	if err := h.client.Wake(ctx, path); err != nil {
 		t.Fatalf("Wake: %v", err)
 	}
+	// End-to-end proof for {"wake": false} (#698): client, handler and
+	// adapter all have to agree, and the adapter is the layer where a
+	// missing forward turns into a 501 that only shows up in production.
+	if err := h.client.QueueContext(ctx, path, "deferred context"); err != nil {
+		t.Fatalf("QueueContext: %v", err)
+	}
+	if n := h.adapter.Agent().PendingInboxCount(); n != 2 {
+		t.Errorf("agent inbox holds %d messages, want the injected one plus the deferred one", n)
+	}
 }
 
 // ---- /agents/<name>/events ------------------------------------------

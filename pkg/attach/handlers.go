@@ -538,18 +538,57 @@ func (h *handlers) streamEvents(w http.ResponseWriter, r *http.Request, entry *E
 	debugf("/events %s/%s channel closed (subscriber dropped or ctx done)", entry.AppName, entry.SessionID)
 }
 
-type injectRequest struct {
+// InjectRequest is the body of POST /sessions/{sid}/inject.
+// Exported so in-tree clients build it from the server's own type
+// rather than a hand-rolled map — the drift that let the client miss
+// every field a protocol bump added.
+type InjectRequest struct {
 	Message string `json:"message"`
+	// Wake chooses between the two deliveries (#698). true, and
+	// omitted, is the historical one: queue and wake, so the message
+	// preempts a sleep and un-parks a paused loop. false queues only
+	// — the message drains on whatever turn happens next and causes
+	// none itself.
+	//
+	// A tristate pointer, not a bool, so that omitting the field
+	// keeps today's behavior rather than silently flipping every
+	// pre-1.10.0 client's injects to deferred (the *bool precedent
+	// from #559). Nothing distinguishes an explicit true from an
+	// omission — the distinction that matters is "said nothing" vs
+	// "said false".
+	Wake *bool `json:"wake,omitempty"`
+}
+
+// InjectResponse is the 200 body of POST /sessions/{sid}/inject.
+//
+// Woke has no `omitempty`: false is the informative value, and a key
+// that disappears exactly when it says something is a key clients read
+// wrong. Its absence means a pre-1.10.0 daemon, which always woke.
+type InjectResponse struct {
+	Injected string `json:"injected"`
+	Session  string `json:"session"`
+	Woke     bool   `json:"woke"`
 }
 
 func (h *handlers) doInject(w http.ResponseWriter, r *http.Request, entry *Entry) {
-	var req injectRequest
+	var req InjectRequest
 	if err := readJSON(r, &req, injectMaxBytes); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if req.Message == "" {
 		http.Error(w, "inject: message is required", http.StatusBadRequest)
+		return
+	}
+	wake := req.Wake == nil || *req.Wake
+	// Feature-detect before anything observable happens. A registrant
+	// that can't defer must not be handed the message anyway on the
+	// waking path: the caller asked for the one behavior it can't get,
+	// and a 200 that woke the agent would be a lie about the only thing
+	// they specified.
+	deferred, canDefer := entry.Agent.(DeferredInjector)
+	if !wake && !canDefer {
+		http.Error(w, `inject: this session cannot queue without waking; retry without "wake": false`, http.StatusNotImplemented)
 		return
 	}
 	// Second drain check, AFTER the body read: the route-level gate
@@ -566,13 +605,24 @@ func (h *handlers) doInject(w http.ResponseWriter, r *http.Request, entry *Entry
 	// span context otelhttp extracted from the inbound `traceparent`,
 	// which is the only handle the eventual turn has on the request
 	// that queued the message. See ContextInjector.
-	if err := injectWithContext(r.Context(), entry.Agent, req.Message, caller); err != nil {
+	var err error
+	if wake {
+		err = injectWithContext(r.Context(), entry.Agent, req.Message, caller)
+	} else {
+		err = deferred.QueueAsContext(r.Context(), req.Message, caller)
+	}
+	if err != nil {
 		http.Error(w, fmt.Sprintf("inject: %v", err), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"injected": req.Message,
-		"session":  entry.SessionID,
+	// `woke` is reported on both paths, not just the deferred one, so a
+	// client can confirm which delivery it got instead of inferring it
+	// from a field's absence — and so a pre-1.10.0 daemon, which omits
+	// the key entirely, is distinguishable from one that deferred.
+	writeJSON(w, http.StatusOK, InjectResponse{
+		Injected: req.Message,
+		Session:  entry.SessionID,
+		Woke:     wake,
 	})
 }
 

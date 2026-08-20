@@ -53,11 +53,21 @@ import (
 // (see turnspan.go). Zero value (invalid SpanContext) means the inject
 // arrived with no trace context — CLI, tests, out-of-band callers, or
 // tracing simply switched off — and contributes no link.
+//
+// quiet marks a message queued by QueueAsContext (POST /inject with
+// {"wake": false}, #698): filed for the next turn, whenever that turn
+// happens, without preempting the one running or piercing a sleep. It
+// is remembered per message rather than being purely a property of the
+// push because two later decisions depend on it — see push (no
+// InboxArrived signal) and HasPendingOperatorInput (a message that
+// won't drive a turn must not make auto-continue stand down waiting
+// for one).
 type inboxMessage struct {
 	id      string
 	text    string
 	caller  auth.Caller
 	spanCtx trace.SpanContext
+	quiet   bool
 }
 
 // newPromptID returns a new prompt_id. UUID v7 is sortable by
@@ -121,14 +131,20 @@ var ErrInboxClosed = errors.New("agent: inbox closed")
 // "no attached identity" (legacy Inject path). spanCtx is the trace
 // context of the injecting call, zero (invalid) when the inject
 // carried none.
-func (q *inbox) push(msg string, caller auth.Caller, spanCtx trace.SpanContext) (string, error) {
+//
+// quiet suppresses the notify signal. InboxArrived is the harness-side
+// analogue of the wake signal — the documented pattern is to start a
+// turn when it fires — so a message that deliberately does not wake the
+// agent must not drive one through the side door either. It is still
+// appended, still counted, and still drained by the next turn.
+func (q *inbox) push(msg string, caller auth.Caller, spanCtx trace.SpanContext, quiet bool) (string, error) {
 	id := newPromptID()
 	q.mu.Lock()
 	if q.closed {
 		q.mu.Unlock()
 		return "", ErrInboxClosed
 	}
-	q.messages = append(q.messages, inboxMessage{id: id, text: msg, caller: caller, spanCtx: spanCtx})
+	q.messages = append(q.messages, inboxMessage{id: id, text: msg, caller: caller, spanCtx: spanCtx, quiet: quiet})
 	if len(q.messages) > defaultInboxCap {
 		// Drop oldest with a logged warning so a stuck producer
 		// can't deadlock the agent.
@@ -138,6 +154,9 @@ func (q *inbox) push(msg string, caller auth.Caller, spanCtx trace.SpanContext) 
 			dropped.id, truncateForLog(dropped.text))
 	}
 	q.mu.Unlock()
+	if quiet {
+		return id, nil
+	}
 	// Non-blocking signal. If a notification is already buffered
 	// (consumer hasn't drained yet), drop the redundant signal.
 	select {
@@ -378,20 +397,63 @@ func (a *Agent) InjectAs(message string, caller auth.Caller) error {
 // to the turn span it starts (see turnspan.go). Injects with no trace
 // context are a clean no-op.
 func (a *Agent) InjectAsContext(ctx context.Context, message string, caller auth.Caller) error {
-	return a.injectAs(ctx, message, caller, true /* releaseHold */)
+	return a.injectAs(ctx, message, caller, injectMode{releaseHold: true, wake: true})
 }
 
-// injectAs is the queue-and-notify core. releaseHold=false queues
-// WITHOUT opening the pause gate, for callers that open it themselves
-// afterwards — ResumeWith needs the message on the queue before the
-// gate opens, so the turn the resume releases can't start ahead of the
-// instruction that was meant to shape it.
+// QueueAsContext files a message for the agent to read on its next
+// turn WITHOUT causing that turn (#698). It is InjectAsContext minus
+// the two things that make an inject preemptive: it does not fire the
+// wake signal, and it does not open a pause gate an operator closed.
+// Everything else is identical — same queue, same prompt_id, same
+// `inbox`/queued event, same caller and trace-context handling, same
+// drain path, same last-caller-wins originator rule.
+//
+// This is the "file this away" primitive behind POST /inject with
+// {"wake": false}. Its use case is a machine producer — an alert
+// watcher, a monitoring hook — that has corroborating context worth
+// having but no claim on the agent's attention right now. Before it,
+// every such message drove its own turn: two watcher signals two
+// minutes apart meant two wakes, the second landing while the agent
+// was still working the first. Queued, they drain together as one
+// block on whatever turn happens next.
+//
+// It makes NO promptness guarantee, and callers must treat that
+// literally. The message is drained by the next turn, but nothing here
+// causes a next turn: an autonomous loop reaches one on its own sleep
+// timer, an operator-driven session reaches one when the operator says
+// something, and a session that is parked reaches one when it is
+// resumed. If the message needs to be acted on, inject it normally.
+//
+// Zero-value caller and the ctx rules are exactly InjectAsContext's;
+// see there.
+func (a *Agent) QueueAsContext(ctx context.Context, message string, caller auth.Caller) error {
+	return a.injectAs(ctx, message, caller, injectMode{})
+}
+
+// injectMode carries the two axes on which the queue-and-notify core
+// varies. Both default to the quiet, non-preemptive setting so a
+// zero value is the QueueAsContext behavior; the ordinary inject
+// path opts into both.
+type injectMode struct {
+	// releaseHold opens a pause gate the message should un-park.
+	// False for callers that open it themselves afterwards —
+	// ResumeWith needs the message on the queue before the gate
+	// opens, so the turn the resume releases can't start ahead of
+	// the instruction that was meant to shape it — and for
+	// QueueAsContext, where the whole point is not to un-park.
+	releaseHold bool
+	// wake fires the wake signal so the message preempts a sleep.
+	// False for QueueAsContext (#698).
+	wake bool
+}
+
+// injectAs is the queue-and-notify core.
 //
 // ctx supplies the trace context stamped on the queued message.
 // Reading it is a plain context-value lookup that returns a value
 // type, so the capture allocates nothing and costs nothing extra when
 // tracing is off (the returned SpanContext is simply invalid).
-func (a *Agent) injectAs(ctx context.Context, message string, caller auth.Caller, releaseHold bool) error {
+func (a *Agent) injectAs(ctx context.Context, message string, caller auth.Caller, mode injectMode) error {
 	if a == nil {
 		return errors.New("agent: nil receiver")
 	}
@@ -402,7 +464,7 @@ func (a *Agent) injectAs(ctx context.Context, message string, caller auth.Caller
 		// do, for example) we don't want to panic.
 		return errors.New("agent: inbox not initialised (construct via agent.New)")
 	}
-	id, err := a.inbox.push(message, caller, trace.SpanContextFromContext(ctx))
+	id, err := a.inbox.push(message, caller, trace.SpanContextFromContext(ctx), !mode.wake)
 	if err != nil {
 		return err
 	}
@@ -423,7 +485,7 @@ func (a *Agent) injectAs(ctx context.Context, message string, caller auth.Caller
 	// parked. That's the pause-side sibling of the #624 stand-down
 	// (see HasPendingOperatorInput), and pkg/compose additionally has
 	// auto-continue skip the inject entirely while paused.
-	if releaseHold && caller.Identity != AutoContinueOriginator {
+	if mode.releaseHold && caller.Identity != AutoContinueOriginator {
 		a.Resume()
 	}
 	// Operator input should also pierce any active sleep — the
@@ -436,7 +498,14 @@ func (a *Agent) injectAs(ctx context.Context, message string, caller auth.Caller
 	// "something wants your attention" about the operator's own typed
 	// prompt is noise on every single message. RequestWake is for the
 	// wakes nothing else on the wire accounts for.
-	a.wake.fire()
+	//
+	// Skipped entirely by QueueAsContext: not waking IS the feature
+	// there. The `inbox`/queued event above still goes out, so a
+	// deferred message is visible to attached operators the moment it
+	// lands — it just doesn't interrupt anything.
+	if mode.wake {
+		a.wake.fire()
+	}
 	return nil
 }
 
@@ -477,7 +546,8 @@ type inboxDrain struct {
 	// originator is the last non-empty caller in the batch — the
 	// turn's originator per docs/multi-session-design.md ("the turn
 	// answers the most recent ask"). Zero when nothing carried an
-	// identity.
+	// identity. Deferred messages (#698) yield to waking ones; see
+	// drainInboxFull.
 	originator auth.Caller
 	// links are the span links for the turn span, at most
 	// maxTurnSpanLinks of them (see inboxTraceLinks).
@@ -495,6 +565,15 @@ type inboxDrain struct {
 // ask"). Zero originator when no message carried an identity — the
 // caller then runs the turn without wrapping the context.
 //
+// Deferred messages (#698) lose to waking ones regardless of arrival
+// order, because they are not asks. Without that, a watcher quietly
+// filing context in the seconds between an operator's inject and the
+// turn it caused would take over as originator — and the originator is
+// what stamps eventlog attribution and picks the per-caller MCP
+// credentials, so the operator's turn would run as the watcher. A
+// batch that is entirely deferred still attributes to its last
+// identity: there, the machine producer IS the only ask.
+//
 // Also returns the turn-span links derived from the batch's captured
 // trace contexts (see inboxTraceLinks). Empty for a batch where
 // nothing was traced.
@@ -510,15 +589,23 @@ func (a *Agent) drainInboxFull() inboxDrain {
 		return inboxDrain{}
 	}
 	d := inboxDrain{texts: make([]string, len(msgs))}
+	var deferredCaller auth.Caller
 	for i, m := range msgs {
 		a.Emit(attach.EventInbox, attach.InboxEvent{
 			State:    attach.InboxStateDequeued,
 			PromptID: m.id,
 		})
 		d.texts[i] = m.text
-		if m.caller.Identity != "" {
+		switch {
+		case m.caller.Identity == "":
+		case m.quiet:
+			deferredCaller = m.caller // only used if nothing woke
+		default:
 			d.originator = m.caller // last-write-wins
 		}
+	}
+	if d.originator.Identity == "" {
+		d.originator = deferredCaller
 	}
 	d.links, d.linkedInjects = inboxTraceLinks(msgs)
 	return d
@@ -550,6 +637,16 @@ func (a *Agent) PendingInboxCount() int {
 // operator input. Zero-identity messages (legacy Inject / single-user)
 // DO count — they are operator input without an attached identity.
 //
+// Messages queued by QueueAsContext (#698) are excluded too, for the
+// same reason auto-continue consults this at all: the stand-down is
+// worth it only because the queued input is ITSELF about to drive a
+// turn. A deferred message explicitly is not — standing down for one
+// would leave an interrupted session with nothing to re-drive it and
+// the deferred context undrained, which is the opposite of both
+// features' intent. Auto-continue proceeds, and its turn drains the
+// deferred message alongside its own note, which is exactly the
+// batching {"wake": false} exists to get.
+//
 // Returns false for nil agent / inbox.
 func (a *Agent) HasPendingOperatorInput() bool {
 	if a == nil || a.inbox == nil {
@@ -558,6 +655,9 @@ func (a *Agent) HasPendingOperatorInput() bool {
 	a.inbox.mu.Lock()
 	defer a.inbox.mu.Unlock()
 	for _, m := range a.inbox.messages {
+		if m.quiet {
+			continue
+		}
 		if m.caller.Identity != AutoContinueOriginator {
 			return true
 		}

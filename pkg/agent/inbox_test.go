@@ -33,7 +33,7 @@ func TestInbox_PushDrainOrder(t *testing.T) {
 	t.Parallel()
 	q := newInbox()
 	for _, m := range []string{"one", "two", "three"} {
-		if _, err := q.push(m, auth.Caller{}, trace.SpanContext{}); err != nil {
+		if _, err := q.push(m, auth.Caller{}, trace.SpanContext{}, false); err != nil {
 			t.Fatalf("push %q: %v", m, err)
 		}
 	}
@@ -64,7 +64,7 @@ func TestInbox_NotifyFiresOnPush(t *testing.T) {
 		t.Fatal("notify channel should be empty before any push")
 	default:
 	}
-	if _, err := q.push("hello", auth.Caller{}, trace.SpanContext{}); err != nil {
+	if _, err := q.push("hello", auth.Caller{}, trace.SpanContext{}, false); err != nil {
 		t.Fatalf("push: %v", err)
 	}
 	select {
@@ -82,7 +82,7 @@ func TestInbox_NotifyCoalesces(t *testing.T) {
 	// notification per push" semantic would deadlock.
 	q := newInbox()
 	for i := 0; i < 5; i++ {
-		_, _ = q.push("x", auth.Caller{}, trace.SpanContext{})
+		_, _ = q.push("x", auth.Caller{}, trace.SpanContext{}, false)
 	}
 	// First consumer drain sees one notification.
 	<-q.arrived()
@@ -103,7 +103,7 @@ func TestInbox_DropOldestWhenCapExceeded(t *testing.T) {
 	q := newInbox()
 	// Push one over the cap to trigger drop-oldest.
 	for i := 0; i < defaultInboxCap+1; i++ {
-		_, _ = q.push("msg", auth.Caller{}, trace.SpanContext{})
+		_, _ = q.push("msg", auth.Caller{}, trace.SpanContext{}, false)
 	}
 	got := q.drain()
 	if len(got) != defaultInboxCap {
@@ -116,7 +116,7 @@ func TestInbox_PushAfterCloseErrors(t *testing.T) {
 	t.Parallel()
 	q := newInbox()
 	q.close()
-	_, err := q.push("hello", auth.Caller{}, trace.SpanContext{})
+	_, err := q.push("hello", auth.Caller{}, trace.SpanContext{}, false)
 	if !errors.Is(err, ErrInboxClosed) {
 		t.Errorf("expected ErrInboxClosed after close; got %v", err)
 	}

@@ -600,6 +600,27 @@ func (c *Client) Inject(ctx context.Context, sessionPath, message string) error 
 		map[string]string{"message": message}, nil)
 }
 
+// QueueContext calls POST <base>/sessions/<sid>/inject with
+// {"wake": false} — file the message for the next turn without causing
+// one (#698). Use it for context the agent should have but need not
+// act on now; use Inject when the message needs a turn.
+//
+// Separate method rather than a bool on Inject: the two are different
+// promises, not a variation on one, and a bool parameter at every call
+// site would read as `Inject(ctx, path, msg, false)` with nothing on
+// the line saying what false means. It also keeps Inject's signature
+// stable for the callers that have it.
+//
+// Returns an error on a daemon older than protocol 1.10.0 or a
+// registrant without the capability (both answer 501) — deliberately
+// not degraded to a waking inject, which would deliver exactly the
+// preemption the caller asked to avoid.
+func (c *Client) QueueContext(ctx context.Context, sessionPath, message string) error {
+	wake := false
+	return c.doJSON(ctx, http.MethodPost, sessionPath+"/inject",
+		attach.InjectRequest{Message: message, Wake: &wake}, nil)
+}
+
 // Wake calls POST <base>/sessions/<sid>/wake.
 func (c *Client) Wake(ctx context.Context, sessionPath string) error {
 	return c.doJSON(ctx, http.MethodPost, sessionPath+"/wake",

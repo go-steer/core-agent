@@ -243,6 +243,18 @@ func (ad *Adapter) InjectAsContext(ctx context.Context, message string, caller a
 	return ad.Agent().InjectAsContext(ctx, message, caller)
 }
 
+// QueueAsContext implements attach.DeferredInjector — InjectAsContext
+// minus the wake, backing POST /inject with {"wake": false} (#698).
+//
+// It has to be here, not only on *agent.Agent: this adapter is what
+// hosts register with the attach registry, so the handler's capability
+// assertion runs against the Adapter. Forwarding the waking half and
+// not this one would answer every deferred inject with 501 while every
+// direct-agent test still passed.
+func (ad *Adapter) QueueAsContext(ctx context.Context, message string, caller auth.Caller) error {
+	return ad.Agent().QueueAsContext(ctx, message, caller)
+}
+
 // RequestWake implements attach.Registrant.
 func (ad *Adapter) RequestWake() { ad.Agent().RequestWake() }
 
@@ -326,6 +338,7 @@ func (ad *Adapter) AttachCapabilities() attach.CapabilityReport {
 var (
 	_ attach.Registrant          = (*Adapter)(nil)
 	_ attach.ContextInjector     = (*Adapter)(nil)
+	_ attach.DeferredInjector    = (*Adapter)(nil)
 	_ attach.DescriptionProvider = (*Adapter)(nil)
 	_ attach.OperatorEventTarget = (*Adapter)(nil)
 	_ attach.EmitTarget          = (*Adapter)(nil) //nolint:staticcheck // deprecation-cycle conformance

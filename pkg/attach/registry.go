@@ -142,6 +142,37 @@ type ContextInjector interface {
 	InjectAsContext(ctx context.Context, message string, caller auth.Caller) error
 }
 
+// DeferredInjector is the optional capability behind POST /inject with
+// {"wake": false} (#698): file a message for the next turn without
+// causing one.
+//
+// Every other write on the session preempts. Inject wakes, wake wakes,
+// interrupt stops — there is no way to say "here is context, read it
+// when you get to it." That is the wrong shape for a machine producer
+// like an alert watcher, whose corroborating signals arrive on their
+// own clock and each drove a separate turn, the later ones landing on
+// an agent still working the earlier ones.
+//
+// It EMBEDS ContextInjector rather than standing alone: a registrant
+// that can defer can necessarily also inject normally, and requiring
+// both together means the handler's two paths can't disagree about
+// trace linkage.
+//
+// Optional for the same reason ContextInjector is — Registrant is
+// exported API and widening it would break out-of-tree
+// implementations. A registrant without it gets 501 for wake:false and
+// is unaffected otherwise. Unlike the ContextInjector fallback there is
+// no silent degrade: quietly waking a caller who asked not to would
+// hand back the preemption they were trying to avoid, under a 200.
+type DeferredInjector interface {
+	ContextInjector
+
+	// QueueAsContext queues message without firing the wake signal and
+	// without releasing a pause hold. See Agent.QueueAsContext — in
+	// particular, it makes no promptness guarantee.
+	QueueAsContext(ctx context.Context, message string, caller auth.Caller) error
+}
+
 // injectWithContext queues message on reg, preferring the
 // context-carrying path when the registrant supports it. Shared by the
 // /inject and /wake handlers so both operator write paths produce the

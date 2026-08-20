@@ -30,6 +30,7 @@ import (
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
+	"github.com/go-steer/core-agent/v2/pkg/auth"
 	"github.com/go-steer/core-agent/v2/pkg/models/mock"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
@@ -261,6 +262,38 @@ func TestSetSessionTitle(t *testing.T) {
 	var nilAd *Adapter
 	nilAd.SetSessionTitle("x")    // must not panic
 	New(nil).SetSessionTitle("x") // must not panic
+}
+
+// The adapter, not *agent.Agent, is what hosts register with the
+// attach registry, so the handler's DeferredInjector assertion runs
+// against it. Asserted THROUGH the interface and read back off the
+// agent: an adapter that forwarded only the waking half would answer
+// every {"wake": false} inject with 501 in production while a
+// direct-agent test stayed green.
+func TestQueueAsContext(t *testing.T) {
+	t.Parallel()
+	ad := New(newEchoAgent(t))
+
+	var deferrer attach.DeferredInjector = ad
+	if err := deferrer.QueueAsContext(context.Background(), "node pool drained", auth.Caller{Identity: "watcher"}); err != nil {
+		t.Fatalf("QueueAsContext: %v", err)
+	}
+	if n := ad.Agent().PendingInboxCount(); n != 1 {
+		t.Fatalf("agent PendingInboxCount = %d, want the message queued on the agent itself", n)
+	}
+	select {
+	case <-ad.Agent().WakeRequested():
+		t.Error("the deferred path woke the agent")
+	default:
+	}
+
+	var nilAd *Adapter
+	if err := nilAd.QueueAsContext(context.Background(), "x", auth.Caller{}); err == nil {
+		t.Error("QueueAsContext on a nil adapter returned no error")
+	}
+	if err := New(nil).QueueAsContext(context.Background(), "x", auth.Caller{}); err == nil {
+		t.Error("QueueAsContext on an adapter over a nil agent returned no error")
+	}
 }
 
 // TestAttachUsage_PerModelWhenMultipleModels covers the mixed-model

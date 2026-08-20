@@ -134,7 +134,7 @@ The two families get there differently, and both are **on by default**:
 
 | Provider | Mechanism | Kill switch |
 |---|---|---|
-| `anthropic`, `anthropic-vertex` | `cache_control` breakpoints on the request: one on the system prefix, plus rolling markers over the conversation tail. No cache resource. | `--no-prompt-cache`, `model.anthropic.prompt_cache.enabled` |
+| `anthropic`, `anthropic-vertex` | `cache_control` breakpoints on the request: one on the system prefix, plus rolling markers over the conversation tail. No cache resource. | `--no-prompt-cache`, `model.anthropic.prompt_cache.enabled`, `--prompt-cache-ttl` / `model.anthropic.prompt_cache.ttl` (`5m` or `1h`) |
 | `vertex` (Gemini) | An explicit `CachedContent` resource created after turn 1 and stamped onto later requests, on top of Vertex's opportunistic implicit cache. | `--no-context-cache`, `model.vertex.context_cache.enabled` |
 
 The Anthropic side is what makes long sessions affordable on Claude: the runner replays the whole transcript every turn, so without breakpoints past the system block the transcript is re-billed at full rate on each turn and input cost grows quadratically with session length. Details and the invalidation rules are in [Providers → Prompt caching](/concepts/providers/#prompt-caching).

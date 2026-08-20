@@ -49,7 +49,7 @@ func anthropicSubagentCfg(t *testing.T, parentPromptCache, subPromptCache *confi
 
 func promptCacheOf(t *testing.T, cfg *config.Config, spec config.SubagentSpec, noPromptCache bool) anthropic.CacheOptions {
 	t.Helper()
-	p, _, err := resolveSubagentProvider(cfg, nil, spec, noPromptCache, func(string) {})
+	p, _, err := resolveSubagentProvider(cfg, nil, spec, noPromptCache, "", func(string) {})
 	if err != nil {
 		t.Fatalf("resolveSubagentProvider: %v", err)
 	}

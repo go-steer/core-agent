@@ -73,6 +73,7 @@ mock.script
 mock.strict
 model.anthropic.api_key
 model.anthropic.prompt_cache.enabled
+model.anthropic.prompt_cache.ttl
 model.anthropic.vertex.context_cache.enabled
 model.anthropic.vertex.context_cache.refresh
 model.anthropic.vertex.context_cache.ttl
@@ -80,6 +81,7 @@ model.anthropic.vertex.location
 model.anthropic.vertex.project
 model.api_key
 model.name
+model.pricing{}.cache_creation_1h_input_per_mtok
 model.pricing{}.cache_creation_input_per_mtok
 model.pricing{}.cached_input_per_mtok
 model.pricing{}.input_per_mtok
@@ -117,6 +119,7 @@ subagents[].max_depth
 subagents[].mcp
 subagents[].model.anthropic.api_key
 subagents[].model.anthropic.prompt_cache.enabled
+subagents[].model.anthropic.prompt_cache.ttl
 subagents[].model.anthropic.vertex.context_cache.enabled
 subagents[].model.anthropic.vertex.context_cache.refresh
 subagents[].model.anthropic.vertex.context_cache.ttl
@@ -124,6 +127,7 @@ subagents[].model.anthropic.vertex.location
 subagents[].model.anthropic.vertex.project
 subagents[].model.api_key
 subagents[].model.name
+subagents[].model.pricing{}.cache_creation_1h_input_per_mtok
 subagents[].model.pricing{}.cache_creation_input_per_mtok
 subagents[].model.pricing{}.cached_input_per_mtok
 subagents[].model.pricing{}.input_per_mtok

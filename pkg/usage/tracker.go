@@ -68,9 +68,20 @@ type TurnUsage struct {
 	InputTokens              int
 	CachedInputTokens        int
 	CacheCreationInputTokens int
-	OutputTokens             int
-	ThoughtsTokens           int
-	ToolUseTokens            int
+	// CacheCreation1hInputTokens is the share of
+	// CacheCreationInputTokens written at a 1-hour breakpoint TTL
+	// rather than the default 5-minute one — a SUBSET of the write
+	// bucket, not a fourth input bucket. Anthropic bills it at 2x base
+	// input against the 5-minute TTL's 1.25x and reports the split on
+	// the response, so a mixed-TTL request has a right answer to bill
+	// rather than a guess (#770).
+	//
+	// Zero for every provider that offers one TTL or none, which
+	// prices exactly as it did before.
+	CacheCreation1hInputTokens int
+	OutputTokens               int
+	ThoughtsTokens             int
+	ToolUseTokens              int
 }
 
 // Clamped returns u with the two cache buckets forced inside
@@ -79,6 +90,12 @@ type TurnUsage struct {
 // reads are clamped first and writes get whatever room is left, so a
 // contradictory pair can only shrink the premium-rated write bucket —
 // an under-estimate, never a phantom charge.
+//
+// CacheCreation1hInputTokens is clamped last, into the write bucket it
+// is a subset of, for the same reason and in the same direction: the
+// 1-hour share is the dearer of the two TTLs, so an over-report shrinks
+// to what the write bucket can hold rather than billing tokens the turn
+// never wrote.
 //
 // Applied by Tracker.AppendUsage and by Pricing.CostUSDForTurn, so
 // tracker-backed and tracker-less call sites agree on what a turn cost.
@@ -94,6 +111,12 @@ func (u TurnUsage) Clamped() TurnUsage {
 	}
 	if u.CacheCreationInputTokens < 0 {
 		u.CacheCreationInputTokens = 0
+	}
+	if u.CacheCreation1hInputTokens > u.CacheCreationInputTokens {
+		u.CacheCreation1hInputTokens = u.CacheCreationInputTokens
+	}
+	if u.CacheCreation1hInputTokens < 0 {
+		u.CacheCreation1hInputTokens = 0
 	}
 	return u
 }
@@ -195,6 +218,11 @@ type DigestSavingsRecord struct {
 	// subagent actually spent instead of a flat uncached one (#771).
 	SubagentCachedInputTokens        int
 	SubagentCacheCreationInputTokens int
+
+	// SubagentCacheCreation1hInputTokens is the 1-hour-TTL share of
+	// the write bucket — a SUBSET of the field above, priced at 2x
+	// base input rather than 1.25x (#770).
+	SubagentCacheCreation1hInputTokens int
 }
 
 // SubagentTurn rebuilds the [TurnUsage] the digest subagent spent, for
@@ -203,10 +231,11 @@ type DigestSavingsRecord struct {
 // write bucket rather than invent a negative uncached remainder.
 func (r DigestSavingsRecord) SubagentTurn() TurnUsage {
 	return TurnUsage{
-		InputTokens:              r.SubagentInputTokens,
-		CachedInputTokens:        r.SubagentCachedInputTokens,
-		CacheCreationInputTokens: r.SubagentCacheCreationInputTokens,
-		OutputTokens:             r.SubagentOutputTokens,
+		InputTokens:                r.SubagentInputTokens,
+		CachedInputTokens:          r.SubagentCachedInputTokens,
+		CacheCreationInputTokens:   r.SubagentCacheCreationInputTokens,
+		CacheCreation1hInputTokens: r.SubagentCacheCreation1hInputTokens,
+		OutputTokens:               r.SubagentOutputTokens,
 	}.Clamped()
 }
 

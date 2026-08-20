@@ -294,6 +294,7 @@ History markers are placed backward from the end, 16 content blocks apart, up to
 |---|---|---|
 | Kill switch | `--no-prompt-cache` CLI flag | off (caching ON) |
 | Per-project enable | `model.anthropic.prompt_cache.enabled` | `true` (nil = on) |
+| Entry lifetime | `model.anthropic.prompt_cache.ttl`, or `--prompt-cache-ttl` | `5m` |
 
 ```json
 {
@@ -315,11 +316,27 @@ Startup line:
 core-agent: prompt cache: enabled (5m ttl, system + rolling history breakpoints)
 ```
 
+#### Entry lifetime
+
+`ttl` is `5m` (the API default) or `1h`; anything else is a config error at load. `--prompt-cache-ttl` overrides the config for one run — the same checkout wants `5m` under a human at the keyboard and `1h` under a cron that wakes every 20 minutes — and applies to declarative subagents too. The kill switch outranks it: `--no-prompt-cache` with a TTL set still means no caching.
+
+The choice is arithmetic, not preference. A 1-hour write bills at **2×** the input rate against the 5-minute one's 1.25×, and both read at ~10%. Paying the extra 0.75× is worth it only when an entry that would have expired at five minutes gets read at least once more inside the hour:
+
+| Gap between turns | Cheaper |
+|---|---|
+| Under 5 minutes | `5m` — the entry survives either way, so the 1h premium buys nothing |
+| 5 minutes to an hour, and the prefix recurs | `1h` — one avoided re-write more than pays the premium |
+| Over an hour, or a prefix that never recurs | `5m`, or `--no-prompt-cache` |
+
+Both rates are billed correctly: the response reports the write split per TTL, and `pkg/pricing` carries a separate 1-hour write rate per model ([#770](https://github.com/go-steer/core-agent/issues/770)). A turn that mixes them — possible when a longer-lived entry is refreshed alongside a fresh one — is priced bucket by bucket rather than at one blended rate.
+
+Leaving the default in place keeps the request bytes identical to a pre-`ttl` build, so upgrading does not orphan the entries the previous build wrote.
+
 **Economics.** Cache reads bill at ~10% of the input rate; cache **writes** bill at 125% of it. Break-even is two requests carrying the same prefix — which the agentic loop clears within seconds of turn 1.
 
 The shape that loses is a call whose prefix never recurs, so core-agent opts those out automatically: the compaction summarizer, the checkpointer, the `/btw` side question, and any subtask running on a budget of two turns or fewer (the `agentic_*` wrappers and the MCP LLM-digest fallback). Their prefixes diverge from the loop's at the first block, so nothing can read what they would write.
 
-One shape stays on and pays a bounded tax: a turn that makes exactly **one** model call after more than five minutes idle — a plain conversational reply in an attach session with a human at the keyboard. Its entry has expired, so it writes at 1.25× and reads nothing (~$0.12 on a 100K-token transcript at Opus rates). If that is most of your workload, run with `--no-prompt-cache`.
+One shape stays on and pays a bounded tax: a turn that makes exactly **one** model call after more than five minutes idle — a plain conversational reply in an attach session with a human at the keyboard. Its entry has expired, so it writes at 1.25× and reads nothing (~$0.12 on a 100K-token transcript at Opus rates). If that is most of your workload, `--prompt-cache-ttl=1h` turns those misses into reads for a 0.75× premium on the writes that remain; `--no-prompt-cache` is the answer when the prefix never recurs at all.
 
 **From Go.** A library consumer gets the same defaults from `anthropic.New` / `anthropic.NewVertex`. Override with `anthropic.WithPromptCache(anthropic.CacheOptions{...})` at construction, or `Provider.SetPromptCache` before the first `Model()` call. Pass a zero `CacheOptions` to turn everything off. `models.WithoutPromptCache(ctx)` suppresses caching for one request. The older `WithCacheSystem` is deprecated; it keeps its original all-or-nothing meaning, so `WithCacheSystem(false)` still means no caching at all.
 

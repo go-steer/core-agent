@@ -15,6 +15,7 @@
 package compose
 
 import (
+	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/models"
 	"github.com/go-steer/core-agent/v2/pkg/models/anthropic"
 )
@@ -37,6 +38,21 @@ import (
 // print: the daemon announces its own provider either way, while a
 // per-subagent provider only announces a deviation from the default.
 func MaybeWirePromptCache(provider models.Provider, noPromptCache bool) (status string, enabled bool) {
+	return MaybeWirePromptCacheTTL(provider, noPromptCache, "")
+}
+
+// MaybeWirePromptCacheTTL is MaybeWirePromptCache plus the breakpoint
+// TTL override behind --prompt-cache-ttl: config.PromptCacheTTL5m,
+// config.PromptCacheTTL1h, or "" to keep whatever the config gate
+// already put on the provider.
+//
+// The TTL is a launch-time property more often than a repo-level one —
+// the same checkout run interactively wants 5m and run from cron wants
+// 1h — which is why it gets a flag and not just a config key. The 1-hour
+// breakpoint bills writes at 2x base input against 5m's 1.25x, so it
+// pays only when consecutive turns are more than five minutes apart
+// (#770).
+func MaybeWirePromptCacheTTL(provider models.Provider, noPromptCache bool, ttl string) (status string, enabled bool) {
 	p, ok := provider.(*anthropic.Provider)
 	if !ok {
 		return "", false
@@ -45,11 +61,20 @@ func MaybeWirePromptCache(provider models.Provider, noPromptCache bool) (status 
 		p.SetPromptCache(anthropic.CacheOptions{})
 		return "prompt cache: disabled (--no-prompt-cache)", false
 	}
-	if !p.PromptCache().Enabled() {
+	opts := p.PromptCache()
+	if !opts.Enabled() {
 		// The registry constructor already read the config gate; say so
 		// rather than re-deriving it, so the line can't drift from what
 		// the provider actually carries.
 		return "prompt cache: disabled (cfg.model.anthropic.prompt_cache.enabled=false)", false
 	}
-	return "prompt cache: enabled (5m ttl, system + rolling history breakpoints)", true
+	if ttl != "" {
+		opts.TTL = ttl
+		p.SetPromptCache(opts)
+	}
+	effective := config.PromptCacheTTL5m
+	if opts.TTL == config.PromptCacheTTL1h {
+		effective = config.PromptCacheTTL1h
+	}
+	return "prompt cache: enabled (" + effective + " ttl, system + rolling history breakpoints)", true
 }

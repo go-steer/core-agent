@@ -55,9 +55,11 @@ Budget: 4 total, system first, history takes the rest.
 | CLI | `--no-prompt-cache` | off (caching on) |
 | Per request | `models.WithoutPromptCache(ctx)` | not set |
 
+Entry lifetime is a separate axis, added by #770: `model.anthropic.prompt_cache.ttl` / `--prompt-cache-ttl`, `5m` (default) or `1h`. The kill switch outranks it in the off direction.
+
 Default-on, because the agentic loop issues its second request seconds after the first and clears the two-request break-even immediately. The shape that loses — a single request whose prefix never recurs — is the rare one, and it is the one an operator can disable.
 
-One shape does pay a bounded tax under the default: a turn that makes exactly *one* model call (a plain conversational reply, no tools) more than five minutes after the previous one. Its entry has expired, so it writes at 1.25× and reads nothing — about $0.12 on a 100K-token transcript at Opus rates. An attach session with a human at the keyboard hits this on every long pause. It is the same gap #770 tracks from the TTL side; until then, an operator whose workload is mostly idle-gap single-call turns should reach for `--no-prompt-cache`.
+One shape does pay a bounded tax under the default: a turn that makes exactly *one* model call (a plain conversational reply, no tools) more than five minutes after the previous one. Its entry has expired, so it writes at 1.25× and reads nothing — about $0.12 on a 100K-token transcript at Opus rates. An attach session with a human at the keyboard hits this on every long pause. #770 closed the TTL side of that gap: `--prompt-cache-ttl=1h` keeps the entry alive across the pause for a 0.75× premium on the writes that remain, which pays for itself the first time the longer-lived entry is read. `--no-prompt-cache` remains the answer when the prefix never recurs at all.
 
 `--no-prompt-cache` is a **new** flag rather than a broadening of `--no-context-cache`. The latter is genuinely Vertex-specific: it controls a `CachedContent` resource with a TTL, a create/refresh lifecycle, and a delete at shutdown. Anthropic prompt caching has none of that. Overloading one flag onto both would leave it misdescribing whichever provider the operator is actually running.
 
@@ -81,7 +83,7 @@ A subagent that declares its own `model` resolves its own provider through `mode
 
 ## What was deliberately left out
 
-**The 1-hour TTL.** `pricing.Rates.CacheCreationInputPerMTok` is a single scalar holding the 5-minute rate (1.25×), which is also the only one LiteLLM publishes. The 1-hour TTL bills 2×, and `cache_creation_input_tokens` on the response does not say which TTL produced it. Shipping the knob before a second rate exists would understate every cached turn by 37.5% — reproducing the exact defect #263 had just fixed. Tracked in [#770](https://github.com/go-steer/core-agent/issues/770), where it matters most: a long-lived `--serve` daemon whose turns are minutes apart lets every 5-minute entry expire between turns, paying the write premium and never collecting the read discount.
+**The 1-hour TTL — since shipped as [#770](https://github.com/go-steer/core-agent/issues/770).** It was held back here because `pricing.Rates.CacheCreationInputPerMTok` was a single scalar holding the 5-minute rate (1.25×) and the 1-hour TTL bills 2×, so exposing the knob would have understated every cached turn by 37.5% — reproducing the exact defect #263 had just fixed. Both halves of that objection turned out to be answerable rather than permanent: LiteLLM does publish `cache_creation_input_token_cost_above_1hr`, and the response *does* say which TTL produced the writes (`usage.cache_creation.ephemeral_1h_input_tokens` / `ephemeral_5m_input_tokens`), so there is a right answer to bill rather than a guess about what the request asked for. `Rates` now carries a second write rate and `TurnUsage` a 1-hour subset of the write bucket. See "Entry lifetime" above.
 
 **Minimum-prefix awareness.** Anthropic won't cache a prefix below a model-dependent minimum (512 tokens on Opus 5, 1024 on Opus 4.8 and Sonnet 5, 2048 on Opus 4.7, 4096 on Opus 4.6 and Haiku 4.5). Below it the marker is simply ignored: no error, no cost. Machinery to predict the threshold would add a model-version table to maintain in exchange for nothing measurable. Worth knowing that the minimum is not monotonic across generations, and that the highest of them lands on `claude-haiku-4-5` — core-agent's default small-model tier — so a short subtask prompt genuinely won't cache there.
 
@@ -112,7 +114,7 @@ Two latent invalidators are worth knowing about because they are one line away r
 | Request assembly | `pkg/models/anthropic/convert.go` (`buildParams`) |
 | Per-request opt-out | `pkg/models/promptcache.go`; set in `pkg/agent/compactor.go`, `pkg/agent/btw.go`, `pkg/agent/subtask.go` |
 | Re-marking a grown request | `pkg/models/anthropic/cache.go` (`reapplyCacheBreakpoints`), called from `llm.go`'s pause_turn loop |
-| CLI kill switch | `cmd/core-agent/main.go` (`--no-prompt-cache`), `pkg/compose/prompt_cache.go` |
+| CLI kill switch + TTL | `cmd/core-agent/main.go` (`--no-prompt-cache`, `--prompt-cache-ttl`), `pkg/compose/prompt_cache.go` |
 | Subagent plumbing | `cmd/core-agent/subagents.go` (`resolveSubagentProvider`, `inheritPromptCache`) |
 | Config schema | `pkg/config/config.go` (`PromptCacheConfig`) |
 | Cost accounting | `pkg/pricing/pricing.go`, `pkg/usage` (see #263) |

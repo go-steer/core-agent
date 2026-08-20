@@ -83,6 +83,11 @@ type LLMFallbackResult struct {
 	// prompt at the uncached rate (#771).
 	SubagentCachedInputTokens        int
 	SubagentCacheCreationInputTokens int
+
+	// SubagentCacheCreation1hInputTokens is the 1-hour-TTL share of
+	// the write bucket — a SUBSET of the field above, priced at 2x
+	// base input instead of 1.25x (#770).
+	SubagentCacheCreation1hInputTokens int
 }
 
 // DigestOptions configures how Build wraps MCP tool responses through
@@ -312,11 +317,12 @@ func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 	// Zero-valued when LLMFallback is nil OR the router doesn't take
 	// the fallback path.
 	var (
-		fbModel      string
-		fbIn         int
-		fbCachedIn   int
-		fbCacheWrite int
-		fbOut        int
+		fbModel        string
+		fbIn           int
+		fbCachedIn     int
+		fbCacheWrite   int
+		fbCacheWrite1h int
+		fbOut          int
 	)
 	var digestLLM func(context.Context, []byte) (string, error)
 	if d.opts.LLMFallback != nil {
@@ -329,6 +335,7 @@ func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 			fbIn = r.SubagentInputTokens
 			fbCachedIn = r.SubagentCachedInputTokens
 			fbCacheWrite = r.SubagentCacheCreationInputTokens
+			fbCacheWrite1h = r.SubagentCacheCreation1hInputTokens
 			fbOut = r.SubagentOutputTokens
 			return r.Text, nil
 		}
@@ -358,6 +365,7 @@ func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 		res.Savings.SubagentInputTokens = fbIn
 		res.Savings.SubagentCachedInputTokens = fbCachedIn
 		res.Savings.SubagentCacheCreationInputTokens = fbCacheWrite
+		res.Savings.SubagentCacheCreation1hInputTokens = fbCacheWrite1h
 		res.Savings.SubagentOutputTokens = fbOut
 	}
 
@@ -405,6 +413,7 @@ func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 			// daemon wrote this" for anyone reading a recording later.
 			sv["subagent_cached_input_tokens"] = res.Savings.SubagentCachedInputTokens
 			sv["subagent_cache_creation_input_tokens"] = res.Savings.SubagentCacheCreationInputTokens
+			sv["subagent_cache_creation_1h_input_tokens"] = res.Savings.SubagentCacheCreation1hInputTokens
 		}
 		out["savings"] = sv
 	}

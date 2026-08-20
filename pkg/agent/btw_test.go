@@ -50,6 +50,10 @@ type captureLLM struct {
 	// adapter reports it: on CustomMetadata, since genai's usage struct
 	// has no third input bucket (#263). It is a SUBSET of inputTokens.
 	cacheWriteTokens int64
+	// cacheWrite1hTokens, when > 0, is the share of cacheWriteTokens
+	// that went to a 1-hour breakpoint (#770). It is a SUBSET of
+	// cacheWriteTokens, which is itself a subset of inputTokens.
+	cacheWrite1hTokens int64
 	// noPromptCache records, per request, whether the caller marked its
 	// context as a one-shot (models.WithoutPromptCache). Parallel to
 	// reqs.
@@ -75,6 +79,7 @@ func (l *captureLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMReque
 	out := l.outputTokens
 	cached := l.cachedInputTokens
 	writes := l.cacheWriteTokens
+	writes1h := l.cacheWrite1hTokens
 	finish := l.finishReason
 	l.mu.Unlock()
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
@@ -97,6 +102,9 @@ func (l *captureLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMReque
 		}
 		if writes > 0 {
 			r.CustomMetadata = map[string]any{usage.CacheCreationTokensMetadataKey: writes}
+			if writes1h > 0 {
+				r.CustomMetadata[usage.CacheCreation1hTokensMetadataKey] = writes1h
+			}
 		}
 		yield(r, nil)
 	}

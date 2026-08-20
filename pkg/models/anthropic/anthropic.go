@@ -119,10 +119,33 @@ type CacheOptions struct {
 	// conversation so a growing transcript is re-read at the cache
 	// rate instead of re-billed in full every turn (#714).
 	History bool
+
+	// TTL is the breakpoint lifetime: config.PromptCacheTTL5m (the
+	// zero value's meaning) or config.PromptCacheTTL1h. The 1-hour
+	// TTL bills writes at 2x base input against the 5-minute TTL's
+	// 1.25x, so it only pays when turns are further than five minutes
+	// apart — see config.PromptCacheConfig.TTL. Both are priced, and
+	// the response reports which one each write used, so the ledger is
+	// right either way (#770).
+	//
+	// Any other value is treated as 5m; see cacheControl.
+	TTL string
 }
 
 // Enabled reports whether any breakpoint would be placed.
 func (o CacheOptions) Enabled() bool { return o.System || o.History }
+
+// cacheControl is the marker every breakpoint in this request carries.
+// One TTL per request: Anthropic permits mixing, but a mixed request
+// would make "which breakpoint expired" depend on marker position, and
+// there is no use case in the loop for the two policies at once.
+func (o CacheOptions) cacheControl() anthropic.CacheControlEphemeralParam {
+	cc := anthropic.NewCacheControlEphemeralParam()
+	if o.TTL == config.PromptCacheTTL1h {
+		cc.TTL = anthropic.CacheControlEphemeralTTLTTL1h
+	}
+	return cc
+}
 
 // DefaultCacheOptions is what every constructor starts from: cache the
 // stable prefix and the conversation tail. On by default because the
@@ -130,15 +153,23 @@ func (o CacheOptions) Enabled() bool { return o.System || o.History }
 // agentic loop issues its second request seconds after the first — the
 // shape that loses (a single request whose prefix is never seen again)
 // is the rare one, and it is the one an operator can turn off.
-func DefaultCacheOptions() CacheOptions { return CacheOptions{System: true, History: true} }
+func DefaultCacheOptions() CacheOptions {
+	return CacheOptions{System: true, History: true, TTL: config.PromptCacheTTL5m}
+}
 
 // cacheOptionsFromConfig maps the config block onto the policy. Absent
 // block → the defaults; explicit enabled=false → off.
 func cacheOptionsFromConfig(cfg *config.Config) CacheOptions {
-	if cfg != nil && cfg.Model.Anthropic != nil && !cfg.Model.Anthropic.PromptCache.IsEnabled() {
+	if cfg == nil || cfg.Model.Anthropic == nil {
+		return DefaultCacheOptions()
+	}
+	pc := cfg.Model.Anthropic.PromptCache
+	if !pc.IsEnabled() {
 		return CacheOptions{}
 	}
-	return DefaultCacheOptions()
+	o := DefaultCacheOptions()
+	o.TTL = pc.CacheTTL()
+	return o
 }
 
 // New constructs a Provider with the given API key (first-party

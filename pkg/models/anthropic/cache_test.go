@@ -268,7 +268,7 @@ func TestMarkHistoryBreakpoints_SkipsThinkingBlocks(t *testing.T) {
 			anthropic.NewThinkingBlock("sig", "pondering"),
 		},
 	}}
-	if got := markHistoryBreakpoints(msgs, 4); got != 1 {
+	if got := markHistoryBreakpoints(msgs, 4, anthropic.NewCacheControlEphemeralParam()); got != 1 {
 		t.Fatalf("placed = %d, want 1", got)
 	}
 	if msgs[0].Content[1].GetCacheControl() != nil {
@@ -285,7 +285,7 @@ func TestMarkHistoryBreakpoints_ZeroBudget(t *testing.T) {
 		Role:    anthropic.MessageParamRoleUser,
 		Content: []anthropic.ContentBlockParamUnion{anthropic.NewTextBlock("hi")},
 	}}
-	if got := markHistoryBreakpoints(msgs, 0); got != 0 {
+	if got := markHistoryBreakpoints(msgs, 0, anthropic.NewCacheControlEphemeralParam()); got != 0 {
 		t.Errorf("placed = %d with a zero budget, want 0", got)
 	}
 	if cc := msgs[0].Content[0].GetCacheControl(); cc != nil && cc.Type != "" {
@@ -301,7 +301,7 @@ func TestMarkHistoryBreakpoints_ZeroBudget(t *testing.T) {
 func TestSetCacheControl_MutatesThroughAUnionCopy(t *testing.T) {
 	t.Parallel()
 	blocks := []anthropic.ContentBlockParamUnion{anthropic.NewTextBlock("hi")}
-	if !setCacheControl(blocks[0]) {
+	if !setCacheControl(blocks[0], anthropic.NewCacheControlEphemeralParam()) {
 		t.Fatal("setCacheControl reported a text block as unmarkable")
 	}
 	if cc := blocks[0].GetCacheControl(); cc == nil || cc.Type == "" {

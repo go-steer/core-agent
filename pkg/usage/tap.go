@@ -39,6 +39,22 @@ import (
 // readers must accept all three — see cacheCreationTokens.
 const CacheCreationTokensMetadataKey = "cache_creation_input_tokens"
 
+// CacheCreation1hTokensMetadataKey is the CustomMetadata key under
+// which a provider reports how much of CacheCreationTokensMetadataKey
+// was written at a 1-hour breakpoint TTL rather than the default
+// 5-minute one — a SUBSET of that count, billed at 2x base input
+// instead of 1.25x (#770).
+//
+// Absent for every provider that offers one cache TTL or none, and
+// absent from recordings made before #770; both read as zero, which
+// prices the whole write bucket at the 5-minute rate exactly as before.
+//
+// Written by pkg/models/anthropic (from
+// usage.cache_creation.ephemeral_1h_input_tokens); read by
+// TurnUsageFromMetadata. Same numeric-shape caveat as
+// CacheCreationTokensMetadataKey.
+const CacheCreation1hTokensMetadataKey = "cache_creation_1h_input_tokens"
+
 // TurnUsageFromGenaiMetadata projects one genai UsageMetadata block
 // into the provider-independent TurnUsage shape.
 //
@@ -62,19 +78,20 @@ func TurnUsageFromGenaiMetadata(u *genai.GenerateContentResponseUsageMetadata) T
 // per event with UsageMetadata != nil, overwriting the "last seen" turn
 // snapshot (matching the existing lastIn/lastOut overwrite pattern).
 //
-// custom may be nil; the cache-write bucket then reads zero, which is
+// custom may be nil; the cache-write buckets then read zero, which is
 // correct for every provider that doesn't bill writes separately.
 func TurnUsageFromMetadata(u *genai.GenerateContentResponseUsageMetadata, custom map[string]any) TurnUsage {
 	if u == nil {
 		return TurnUsage{}
 	}
 	return TurnUsage{
-		InputTokens:              int(u.PromptTokenCount),
-		CachedInputTokens:        int(u.CachedContentTokenCount),
-		CacheCreationInputTokens: cacheCreationTokens(custom),
-		OutputTokens:             int(u.CandidatesTokenCount),
-		ThoughtsTokens:           int(u.ThoughtsTokenCount),
-		ToolUseTokens:            int(u.ToolUsePromptTokenCount),
+		InputTokens:                int(u.PromptTokenCount),
+		CachedInputTokens:          int(u.CachedContentTokenCount),
+		CacheCreationInputTokens:   cacheCreationTokens(custom),
+		CacheCreation1hInputTokens: cacheCreation1hTokens(custom),
+		OutputTokens:               int(u.CandidatesTokenCount),
+		ThoughtsTokens:             int(u.ThoughtsTokenCount),
+		ToolUseTokens:              int(u.ToolUsePromptTokenCount),
 	}
 }
 
@@ -86,11 +103,23 @@ func TurnUsageFromMetadata(u *genai.GenerateContentResponseUsageMetadata, custom
 // zero, which degrades to the pre-#263 accounting rather than to a
 // bogus charge.
 func cacheCreationTokens(custom map[string]any) int {
+	return metadataTokens(custom, CacheCreationTokensMetadataKey)
+}
+
+// cacheCreation1hTokens reads the 1-hour-TTL share of the cache-write
+// count. Not clamped against the total here — TurnUsage.Clamped owns
+// that invariant, and applies it to every construction path rather than
+// just this one.
+func cacheCreation1hTokens(custom map[string]any) int {
+	return metadataTokens(custom, CacheCreation1hTokensMetadataKey)
+}
+
+func metadataTokens(custom map[string]any, key string) int {
 	if len(custom) == 0 {
 		return 0
 	}
 	var n int
-	switch v := custom[CacheCreationTokensMetadataKey].(type) {
+	switch v := custom[key].(type) {
 	case int:
 		n = v
 	case int32:

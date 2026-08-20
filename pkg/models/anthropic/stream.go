@@ -154,28 +154,45 @@ func usageMetadata(u anthropic.Usage) *genai.GenerateContentResponseUsageMetadat
 // string; TestCacheCreationMetadata_Shape asserts it against
 // usage.CacheCreationTokensMetadataKey, so a rename on either side is a
 // test failure, not a silent revert to the undercount.
+// The 1-hour share rides alongside the total whenever the response
+// reports one. It is a SUBSET of the total, not a fourth bucket, and it
+// is omitted at zero for the same reason the whole map is: the 5-minute
+// TTL is the default, so most turns have nothing to say here and an
+// absent key already means "all writes at 5m" (#770).
 func cacheCreationMetadata(u anthropic.Usage) map[string]any {
 	if u.CacheCreationInputTokens <= 0 {
 		return nil
 	}
-	return map[string]any{
+	m := map[string]any{
 		cacheCreationTokensMetadataKey: u.CacheCreationInputTokens,
 	}
+	if n := u.CacheCreation.Ephemeral1hInputTokens; n > 0 {
+		m[cacheCreation1hTokensMetadataKey] = n
+	}
+	return m
 }
 
 // cacheCreationTokensMetadataKey mirrors usage.CacheCreationTokensMetadataKey.
 const cacheCreationTokensMetadataKey = "cache_creation_input_tokens"
 
+// cacheCreation1hTokensMetadataKey mirrors usage.CacheCreation1hTokensMetadataKey.
+const cacheCreation1hTokensMetadataKey = "cache_creation_1h_input_tokens"
+
 // addUsage folds one request's usage buckets into a running total so
 // the terminal UsageMetadata of a pause_turn continuation loop reflects
 // the spend of every request in the turn. Only the four token buckets
 // usageMetadata reads are summed — the fold stays consistent with the
-// three-input-bucket mapping documented above.
+// three-input-bucket mapping documented above — plus the per-TTL split
+// of the write bucket, which cacheCreationMetadata reads. Missing that
+// last line would leave a continuation loop's 1-hour writes priced at
+// the 5-minute rate.
 func addUsage(dst *anthropic.Usage, src anthropic.Usage) {
 	dst.InputTokens += src.InputTokens
 	dst.OutputTokens += src.OutputTokens
 	dst.CacheReadInputTokens += src.CacheReadInputTokens
 	dst.CacheCreationInputTokens += src.CacheCreationInputTokens
+	dst.CacheCreation.Ephemeral1hInputTokens += src.CacheCreation.Ephemeral1hInputTokens
+	dst.CacheCreation.Ephemeral5mInputTokens += src.CacheCreation.Ephemeral5mInputTokens
 }
 
 // decodeArgs unmarshals Anthropic's tool-input JSON into the

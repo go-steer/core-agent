@@ -169,8 +169,9 @@ func BuildMCPDigestLLMFallback(
 			// purpose, so a historical digest re-prices when rates
 			// change. Dropping the buckets here is what made that
 			// re-pricing bill the whole prompt as uncached (#771).
-			SubagentCachedInputTokens:        res.CachedInputTokens,
-			SubagentCacheCreationInputTokens: res.CacheCreationInputTokens,
+			SubagentCachedInputTokens:          res.CachedInputTokens,
+			SubagentCacheCreationInputTokens:   res.CacheCreationInputTokens,
+			SubagentCacheCreation1hInputTokens: res.CacheCreation1hInputTokens,
 		}, nil
 	}
 }

@@ -233,3 +233,69 @@ func TestSavings_TheCacheBucketsReachTheRecordAtAll(t *testing.T) {
 			rec.SubagentCacheCreationInputTokens)
 	}
 }
+
+// #770 extends the same sidecar with the 1-hour write share. A daemon
+// configured for the 1-hour breakpoint writes at twice the base input
+// rate rather than 1.25x, so a digest whose writes were all 1h and is
+// billed at the 5m rate undercharges the paying session by 37.5% of
+// its write bucket — the exact defect class #771 just closed, pointing
+// the same way.
+func TestSavings_AOneHourDigestIsNotBilledAtTheFiveMinuteRate(t *testing.T) {
+	t.Parallel()
+	sidecar := cacheSidecar(10_000, 0, 10_000, 100)
+	sidecar["subagent_cache_creation_1h_input_tokens"] = float64(10_000)
+
+	a := &Agent{tracker: usage.NewTracker()}
+	a.observeToolSavings(mkFuncResponseEvent("gke_get_pods", sidecar))
+
+	p := usage.PriceFor(digestModel, nil)
+	if p.IsZero() || p.CacheCreation1hInputPerMTok == 0 {
+		t.Skipf("%s carries no builtin 1h write rate", digestModel)
+	}
+	want := p.CostUSDForTurn(usage.TurnUsage{
+		InputTokens:                10_000,
+		CacheCreationInputTokens:   10_000,
+		CacheCreation1hInputTokens: 10_000,
+		OutputTokens:               100,
+	})
+	at5m := p.CostUSDForTurn(usage.TurnUsage{
+		InputTokens:              10_000,
+		CacheCreationInputTokens: 10_000,
+		OutputTokens:             100,
+	})
+
+	got := a.tracker.DigestSavings().AgenticSubagentCostUSD
+	if !closeEnough(got, want) {
+		t.Errorf("AgenticSubagentCostUSD = %.9f, want %.9f (the 1h write rate)", got, want)
+	}
+	if !(got > at5m) {
+		t.Errorf("cost %.9f is not above the all-5m figure %.9f, so the 1h premium went unbilled",
+			got, at5m)
+	}
+	if totals := a.tracker.Totals(); !closeEnough(totals.CostUSD, want) {
+		t.Errorf("Totals().CostUSD = %.9f, want %.9f — the ceiling reads this number",
+			totals.CostUSD, want)
+	}
+}
+
+// The extractor is the only thing standing between the sidecar key and
+// the record; the test above would still pass if it dropped the key on
+// an unpriced model.
+func TestSavings_TheOneHourShareReachesTheRecord(t *testing.T) {
+	t.Parallel()
+	sidecar := cacheSidecar(10_000, 0, 500, 100)
+	sidecar["subagent_cache_creation_1h_input_tokens"] = float64(300)
+
+	rec, ok := extractSavingsRecord(mkFuncResponseEvent("gke_get_pods", sidecar).Content.Parts[0])
+	if !ok {
+		t.Fatal("extractSavingsRecord found no sidecar")
+	}
+	if rec.SubagentCacheCreation1hInputTokens != 300 {
+		t.Errorf("SubagentCacheCreation1hInputTokens = %d, want 300",
+			rec.SubagentCacheCreation1hInputTokens)
+	}
+	if rec.SubagentCacheCreationInputTokens != 500 {
+		t.Errorf("the total write bucket read back as %d, want 500 — the 1h count is a "+
+			"subset of it, not a fourth bucket", rec.SubagentCacheCreationInputTokens)
+	}
+}

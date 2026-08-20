@@ -204,6 +204,7 @@ func main() {
 	mcpAgenticWrapLLM := flag.Bool("mcp-agentic-wrap-llm", false, "enable the LLM subagent second-chance path for MCP responses the structural pruner can't reduce below threshold (docs/agentic-mcp-design.md #223). Default off — opt-in until the operator has confirmed the cost trade-off works for their MCP surface. Layered on top of --no-mcp-digest: structural runs first regardless, and the LLM subagent only fires when structural leaves the response above threshold. Config-file equivalent: mcp.json's agentic_wrap_llm.")
 	mcpAgenticWrapModel := flag.String("mcp-agentic-wrap-model", "", "MCP-specific small-model override for the --mcp-agentic-wrap-llm subagent. When empty, falls through to --agentic-small-model, then to the provider's cheap-tier default. Motivation: MCP responses can be shaped differently enough from built-in-tool wrappers that one tier works well for one surface but not the other. Requires --mcp-agentic-wrap-llm. Config-file equivalent: mcp.json's agentic_wrap_model.")
 	noContextCache := flag.Bool("no-context-cache", false, "disable Vertex explicit context caching for the stable request prefix (system instruction + tools). Default: enabled on Vertex. When on, the daemon creates a CachedContent resource after turn 1 and stamps it onto every subsequent GenerateContent call so the prefix bills at ~10%% of the input rate. Kill switch for demos / debugging Vertex issues; leave on for production. See docs/vertex-context-caching-design.md. Also gated per-project by cfg.Model.Vertex.ContextCache.enabled.")
+	promptCacheTTL := flag.String("prompt-cache-ttl", "", "Anthropic prompt-cache breakpoint lifetime: \"5m\" (default) or \"1h\". The 1-hour breakpoint bills cache writes at 2x the base input rate where the 5-minute one bills 1.25x, so it pays only when consecutive turns are routinely more than five minutes apart — an operator approving each tool call, a cron-driven run, a human-paced review. A tight agentic loop refreshes the 5-minute window on every turn and should leave this alone. Both TTLs are priced separately and the response reports which one each write used, so the cost ledger is accurate either way. Ignored when --no-prompt-cache is set or the provider isn't Anthropic. Config-file equivalent: cfg.model.anthropic.prompt_cache.ttl.")
 	noPromptCache := flag.Bool("no-prompt-cache", false, "disable Anthropic prompt caching (cache_control breakpoints on the system prefix and the conversation tail). Default: enabled on the anthropic and anthropic-vertex providers. When on, the repeated prefix bills at ~10%% of the input rate instead of full price, at the cost of a 1.25x premium on the tokens each entry stores. Distinct from --no-context-cache, which is the Vertex/Gemini CachedContent resource; the two providers' mechanisms share nothing. Kill switch for debugging or for workloads whose prefix changes every call. See docs/anthropic-prompt-caching-design.md. Also gated per-project by cfg.model.anthropic.prompt_cache.enabled.")
 
 	// Agent-card discovery (docs/agent-card-design.md). All optional —
@@ -231,6 +232,11 @@ func main() {
 		os.Exit(runner.ExitConfigError)
 	}
 
+	if err := validatePromptCacheTTL(*promptCacheTTL); err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+		os.Exit(runner.ExitConfigError)
+	}
+
 	code := run(*prompt, *initialPrompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, contentDirEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *compactionThreshold,
 		subagentOpts{syncWait: *subagentSyncWait},
 		guardrailOpts{
@@ -251,7 +257,7 @@ func main() {
 			planFirstSet: flagWasSet(flag.CommandLine, "plan-first"),
 			planMode:     *planMode,
 		},
-		*smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *mcpAgenticWrapLLM, *mcpAgenticWrapModel, *noContextCache, *noPromptCache, promptOpts{appendSystemPrompt: *appendSystemPrompt, systemPromptFile: *systemPromptFile},
+		*smallTierParent, *agenticTools, *agenticSmallModel, *noMCPDigest, *mcpAgenticWrapLLM, *mcpAgenticWrapModel, *noContextCache, *noPromptCache, *promptCacheTTL, promptOpts{appendSystemPrompt: *appendSystemPrompt, systemPromptFile: *systemPromptFile},
 		attachOpts{
 			Listen:           *attachListen,
 			UnixSocket:       *attachUnixSocket,
@@ -422,13 +428,28 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 	return opts
 }
 
+// validatePromptCacheTTL rejects an unknown --prompt-cache-ttl rather
+// than falling back to the 5-minute default. The two values differ by
+// 60% on write cost, so an operator who typed "1hr" or "3600s" has a
+// budget expectation this run would quietly fail to meet — and they
+// would only find out on the invoice. Mirrors the config-side check in
+// config.Validate, which guards the same value arriving from a file.
+func validatePromptCacheTTL(ttl string) error {
+	switch ttl {
+	case "", config.PromptCacheTTL5m, config.PromptCacheTTL1h:
+		return nil
+	default:
+		return fmt.Errorf("--prompt-cache-ttl %q must be %q or %q", ttl, config.PromptCacheTTL5m, config.PromptCacheTTL1h)
+	}
+}
+
 // teardownStepTimeout bounds each individual shutdown defer in run()
 // that talks to something external (OTLP flush, Prometheus/metrics
 // shutdown, Vertex context-cache delete). See the teardown-budget
 // comment at the otelShutdown defer (#538).
 const teardownStepTimeout = 3 * time.Second
 
-func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, contentDirEntries []string, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, compactionThreshold float64, subagentCfg subagentOpts, guardrails guardrailOpts, toolProfile toolProfileOpts, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache, noPromptCache bool, promptCfg promptOpts, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
+func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, contentDirEntries []string, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, compactionThreshold float64, subagentCfg subagentOpts, guardrails guardrailOpts, toolProfile toolProfileOpts, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache, noPromptCache bool, promptCacheTTL string, promptCfg promptOpts, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -748,7 +769,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// it builds, so the kill switch has to land first. The config gate
 	// was already applied inside models.Resolve; this only layers the
 	// CLI flag on top.
-	if status, _ := compose.MaybeWirePromptCache(provider, noPromptCache); status != "" {
+	if status, _ := compose.MaybeWirePromptCacheTTL(provider, noPromptCache, promptCacheTTL); status != "" {
 		fmt.Fprintln(os.Stderr, "core-agent: "+status)
 	}
 
@@ -1477,7 +1498,8 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		send:       send,
 		rootBase:   contentRootBase,
 
-		noPromptCache: noPromptCache,
+		noPromptCache:  noPromptCache,
+		promptCacheTTL: promptCacheTTL,
 	})
 	// Terminate any stdio children the rooted subagents' servers own on the
 	// way out — set before the error check so a partial failure still cleans

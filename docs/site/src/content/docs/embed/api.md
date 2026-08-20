@@ -571,6 +571,28 @@ for {
 
 The bundled Scion adapter uses exactly this pattern — see `extras/scion-agent/main.go`.
 
+### Wake signals: one driver, any number of observers
+
+`Agent.RequestWake()` (and `Inject`, which fires the same signal internally) says "something happened, re-check state". Two ways to hear it, and picking the wrong one loses wakes silently:
+
+- **`Agent.WakeRequested() <-chan struct{}`** is the **driver's** channel. It is the same buffered-1 channel on every call, which is what lets a scheduler re-attach it per turn — `tools.ContextWithWake` plumbs it to `SleepScheduler`, and `runner.WakeLoop` / the REPL select on it. Because it is one channel, two concurrent readers of it take turns: each wake reaches exactly one of them. An agent has one driver, so that is fine for the driver.
+- **`Agent.SubscribeWake() (<-chan struct{}, func())`** is for everything else — a TUI toast, a metrics hook, a notifier. Each call returns an **independent** buffered-1, drop-on-full channel plus an unsubscribe func; every wake fans out to all of them, so an observer never steals the driver's wake. Call the unsubscribe when the observer goes away; it deregisters the channel (it does not close it, so a `select` on a stale one just goes quiet).
+
+Both coalesce per channel: a burst between drains is one pending notification, and a wake fired before you start reading is latched, not lost. Subscribe early — a `SubscribeWake` channel only latches wakes fired after it exists, so anything fired between the agent going live and the subscription being taken is missed.
+
+```go
+wakes, unsubscribe := a.SubscribeWake()
+defer unsubscribe()
+for {
+    select {
+    case <-ctx.Done():
+        return
+    case <-wakes:
+        notifyOperator()   // the driver got its own copy
+    }
+}
+```
+
 ### `autonomous.Start` + `autonomous.Handle`
 
 Programmatic control over an autonomous run. `autonomous.Start` launches the loop in a goroutine and returns a handle:

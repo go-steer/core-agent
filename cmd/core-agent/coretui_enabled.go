@@ -25,6 +25,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -235,7 +236,21 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 		attachAd: ad,
 		deps:     deps,
 		ctxBuild: ctx,
+		wakeRel:  &wakeReleases{},
 	}
+	// Release the session's wake subscriptions when the TUI exits, so
+	// a `--tui` session that ends doesn't leave channels registered
+	// on an agent's fan-out with nothing draining them. Covers the
+	// successors `/model` swaps in, which share wrapped.wakeRel. The
+	// agent usually dies with the process here; the discipline matters
+	// for the hosts that keep one alive past a detach.
+	defer wrapped.closeWake()
+	// Subscribe now rather than waiting for core-tui's first re-arm.
+	// buildAttachedAgent has already registered the session with the
+	// attach registry, so `POST /sessions/<id>/wake` and `/inject` are
+	// live from here; a wake in that window latches into the
+	// subscription and the toast fires once the TUI is up.
+	_ = wrapped.WakeRequested()
 
 	// Notifier — host-side channel for framework-initiated chat rows
 	// (MCP transport state changes, shutdown notices, etc — see
@@ -631,6 +646,74 @@ type coreAgentAdapter struct {
 	reload         func() (coretui.ReloadResult, error)
 	refreshPricing func(context.Context) (string, error)
 	setPricing     func(modelID string, in, out float64) (string, error)
+
+	// The adapter's own wake subscription — see WakeRequested. Lazily
+	// taken on the first call and released by closeWake; wakeOnce
+	// guards both fields, so the adapter must not be copied (go vet's
+	// copylocks enforces that, and both construction sites already
+	// take the address).
+	wakeOnce  sync.Once
+	wakeCh    <-chan struct{}
+	wakeUnsub func()
+	// wakeRel is shared by every adapter in one TUI session — the one
+	// launchTUIv2 builds and each successor SwitchModel returns — so
+	// that a single closeWake at the end releases all of their
+	// subscriptions. See wakeReleases. Nil in tests that build a bare
+	// adapter; every method that touches it is nil-safe.
+	wakeRel *wakeReleases
+}
+
+// wakeReleases collects the unsubscribe funcs of every wake
+// subscription taken during one TUI session.
+//
+// It exists because `/model` replaces the adapter: SwitchModel builds
+// a whole new agent and returns a new *coreAgentAdapter, core-tui
+// stores it in m.opts.Agent, and the NEXT wake re-arms wakeListener
+// against that one — tui/update.go calls m.wakeListener() after every
+// wakeMsg and tui/agentcmd.go reads m.opts.Agent fresh each time. So a
+// session that swaps models can take a subscription on an adapter
+// launchTUIv2 never sees, and only the first adapter is in scope for
+// its deferred teardown. Registering here gives every one of them a
+// release path.
+//
+// Once closeAll has run the group is closed for good: a subscription
+// registered afterwards is released immediately, which keeps the
+// post-teardown guarantee ("no live subscription survives the TUI")
+// true even if a late re-arm slips in during shutdown.
+type wakeReleases struct {
+	mu     sync.Mutex
+	fns    []func()
+	closed bool
+}
+
+func (r *wakeReleases) add(fn func()) {
+	if r == nil || fn == nil {
+		return
+	}
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		fn()
+		return
+	}
+	r.fns = append(r.fns, fn)
+	r.mu.Unlock()
+}
+
+func (r *wakeReleases) closeAll() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	fns := r.fns
+	r.fns = nil
+	r.closed = true
+	r.mu.Unlock()
+	// Outside the lock: an unsubscribe takes the agent's fan-out
+	// mutex, and add is reachable from core-tui's goroutines.
+	for _, fn := range fns {
+		fn()
+	}
 }
 
 // Run satisfies coretui.Agent. Translates each *session.Event from
@@ -782,7 +865,69 @@ func (a *coreAgentAdapter) DrainInbox() []string   { return a.inner.DrainInbox()
 func (a *coreAgentAdapter) PendingInboxCount() int { return a.inner.PendingInboxCount() }
 
 // WakeRequested satisfies coretui.WakeRequester (R-WAKE-1).
-func (a *coreAgentAdapter) WakeRequested() <-chan struct{} { return a.inner.WakeRequested() }
+//
+// This used to be `return a.inner.WakeRequested()` — the agent's own
+// channel, handed straight to core-tui. That channel is buffered-1
+// and delivers each value to exactly ONE receiver, and its other
+// receiver is the driver: pkg/runner's loops, or the SleepScheduler
+// the autonomous driver parks in. So a local wake either pierced the
+// sleep or raised the toast, whichever side reached the channel
+// first, never reliably both, and the loss was silent in each
+// direction — a sleep that should have been interrupted just ran to
+// term; a toast that should have appeared just didn't (#813). This
+// hazard is the reason #802 fed the attach adapter from a `wake` SSE
+// frame instead of subscribing.
+//
+// The fix is agent-side: *agent.Agent.SubscribeWake hands out an
+// independent buffered-1, drop-on-full channel per subscriber and
+// fans every wake out to all of them, so the toast and the driver no
+// longer consume each other. That also puts this adapter on the same
+// contract shape as internal/coretuiremote.Adapter, whose wakeCh has
+// always been its own buffered-1 channel — same semantics, two feeds
+// (in-process fan-out here, SSE frame there).
+//
+// Subscribed lazily and exactly once, then the SAME channel forever:
+// core-tui re-invokes this after every wake to re-arm its listener
+// (tui/agentcmd.go), so minting a subscription per call would leak
+// one per wake.
+//
+// Lazy rather than eager because an adapter is not always a listener:
+// SwitchModel returns one per `/model`, and core-tui asks it for a
+// channel only if a wake actually arrives afterwards. launchTUIv2
+// primes its own adapter's subscription eagerly, before the TUI
+// starts, so a wake that lands in the window between session
+// registration and core-tui's first re-arm is latched rather than
+// missed. Each subscription taken here registers with the session's
+// wakeReleases, which is what gives the SwitchModel successors a
+// teardown path.
+func (a *coreAgentAdapter) WakeRequested() <-chan struct{} {
+	a.wakeOnce.Do(func() {
+		a.wakeCh, a.wakeUnsub = a.inner.SubscribeWake()
+		a.wakeRel.add(a.wakeUnsub)
+	})
+	return a.wakeCh
+}
+
+// closeWake ends the session's wake subscriptions: this adapter's, and
+// every one taken by the adapters SwitchModel spawned from it (they
+// share wakeRel). Called by launchTUIv2 on the way out; without it the
+// agent's fan-out retains channels nobody reads for the rest of the
+// process.
+//
+// The empty Do is the interlock, not a no-op: if a WakeRequested is
+// in flight on another goroutine this blocks until it finishes (and
+// then unsubscribes it), and if none ever ran it claims the once so a
+// late call on THIS adapter can't subscribe after teardown. A late
+// call on a successor adapter is caught by the group instead, which
+// releases anything registered after closeAll. Idempotent — every
+// unsubscribe func is itself once-guarded.
+func (a *coreAgentAdapter) closeWake() {
+	a.wakeOnce.Do(func() {})
+	if a.wakeUnsub != nil {
+		a.wakeUnsub()
+	}
+	a.wakeRel.closeAll()
+}
 
 // AvailableModels satisfies coretui.ModelSwapper. Returns the priced
 // current-generation catalog (see availableModelIDs comment).
@@ -826,6 +971,11 @@ func (a *coreAgentAdapter) SwitchModel(modelID string) (coretui.Agent, error) {
 		reload:         a.reload,
 		refreshPricing: a.refreshPricing,
 		setPricing:     a.setPricing,
+		// Same release group as this adapter: core-tui re-arms its
+		// wake listener against whatever is in m.opts.Agent, which
+		// after the swap is the adapter below, so its subscription
+		// needs to reach launchTUIv2's teardown too (#813).
+		wakeRel: a.wakeRel,
 	}, nil
 }
 

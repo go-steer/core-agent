@@ -130,8 +130,14 @@ func TestBounded_StopsAtTheAnswerInsteadOfDegrading(t *testing.T) {
 	if res.Status != "completed" {
 		t.Errorf("status = %q, want completed — running out of tool calls IS completion for a bounded delegation", res.Status)
 	}
-	if res.StopReason != StopNatural {
-		t.Errorf("stop_reason = %q, want %q", res.StopReason, StopNatural)
+	// #710 narrowed what "natural" claims. Running out of tool calls
+	// still ends the run and the answer is still the output, but the
+	// subagent never asserted it was done, so the class says so —
+	// see TestBounded_ReturnToolCallHandsBackTheResult for the
+	// contrast, where the same LLM calls the return tool and gets
+	// StopNatural.
+	if res.StopReason != StopNoReturn {
+		t.Errorf("stop_reason = %q, want %q", res.StopReason, StopNoReturn)
 	}
 	if !strings.Contains(res.Output, "does-not-exist:v0-demo-break") {
 		t.Errorf("output = %q, want the answer from turn 1", res.Output)
@@ -172,8 +178,8 @@ func TestBounded_ToolUsingTurnStillTerminates(t *testing.T) {
 	}
 	res := mgr.awaitResult(context.Background(), h)
 
-	if res.StopReason != StopNatural {
-		t.Errorf("stop_reason = %q, want %q — the tool call was mid-turn, the turn still ended with an answer", res.StopReason, StopNatural)
+	if res.StopReason != StopNoReturn {
+		t.Errorf("stop_reason = %q, want %q — the tool call was mid-turn, the turn still ended with an answer and no return call", res.StopReason, StopNoReturn)
 	}
 	if !strings.Contains(res.Output, "does-not-exist:v0-demo-break") {
 		t.Errorf("output = %q, want the answer", res.Output)

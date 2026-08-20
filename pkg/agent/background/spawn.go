@@ -577,9 +577,14 @@ func terminalAlertText(status Status, result autonomous.RunResult, runErr error)
 	// the classes that still get annotated. No trailer under
 	// kind=completed therefore means "natural", unambiguously.
 	//
+	// no_return is inside completed and DOES get one (#710): the alert
+	// otherwise reads as a finished report, which is precisely the
+	// thing a subagent that stopped to ask a question should not be
+	// able to look like.
+	//
 	// The sync path (spawnAgentResult.StopReason) always populates it:
 	// a JSON field costs nothing and machine readers shouldn't infer.
-	if class := stopClass(status, result.Reason, runErr); class != StopNatural {
+	if class := stopClass(status, result.Reason, runErr, result.Returned); class != StopNatural {
 		text += "\n\nstop_reason: " + string(class)
 	}
 	return kind, text
@@ -598,10 +603,27 @@ func terminalAlertText(status Status, result autonomous.RunResult, runErr error)
 type StopClass string
 
 const (
-	// StopNatural: the subagent finished — it stopped asking for tools
-	// (bounded) or signalled completion (standing). The output is the
-	// deliverable.
+	// StopNatural: the subagent signalled completion by calling its
+	// return tool. The output is the deliverable, and somebody said so.
 	StopNatural StopClass = "natural"
+	// StopNoReturn: the subagent's loop ended because it stopped asking
+	// for tools, without ever calling return_result (#710).
+	//
+	// Not an error, and not necessarily a partial: for a persona that
+	// answers in prose, the last message IS the answer. What it means
+	// is that nothing asserted the goal was met — which is also what a
+	// subagent that trailed off mid-task looks like, and what one that
+	// ended by asking a question looks like. The live GKE run that
+	// filed this returned "Please let me know if you would like me to
+	// continue and audit any of the other clusters" as a synchronous
+	// spawn's result; in an unattended session nobody was ever going to
+	// answer, and the parent redid the investigation itself after
+	// paying $1.33 for the delegation.
+	//
+	// Separating it from StopNatural is the whole fix: the parent can
+	// check whether the text answers the goal before building on it,
+	// which is a judgment it can only make if it knows to make it.
+	StopNoReturn StopClass = "no_return"
 	// StopMaxSteps: the turn cap fired. A partial; re-ask with what is
 	// still missing, or raise MaxTurns.
 	StopMaxSteps StopClass = "max_steps"
@@ -624,12 +646,20 @@ const (
 // a context cancellation reach the driver as the same StopReason but
 // mean different things to the parent, and a run that failed is a
 // failure whatever reason it recorded on the way out.
-func stopClass(status Status, reason autonomous.StopReason, runErr error) StopClass {
+// returned says whether the model ended the run through its return
+// tool (autonomous.RunResult.Returned). It only ever distinguishes
+// StopNatural from StopNoReturn — every other class describes a stop
+// the model didn't choose, so how it would have finished is moot.
+func stopClass(status Status, reason autonomous.StopReason, runErr error, returned bool) StopClass {
+	natural := StopNatural
+	if !returned {
+		natural = StopNoReturn
+	}
 	switch status {
 	case StatusStopped:
 		return StopStopped
 	case StatusCompleted:
-		return StopNatural
+		return natural
 	case StatusFailed:
 		return StopError
 	}
@@ -638,7 +668,7 @@ func stopClass(status Status, reason autonomous.StopReason, runErr error) StopCl
 	}
 	switch reason {
 	case autonomous.StopReasonCompleted:
-		return StopNatural
+		return natural
 	case autonomous.StopReasonMaxTurns:
 		return StopMaxSteps
 	case autonomous.StopReasonMaxCost,

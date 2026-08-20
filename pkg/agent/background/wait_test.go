@@ -282,27 +282,30 @@ func TestTerminalAlertText_Rendering(t *testing.T) {
 		{
 			name:     "completed with both",
 			status:   StatusCompleted,
-			result:   autonomous.RunResult{DoneDetail: "fixed it", FinalText: "here is how"},
+			result:   autonomous.RunResult{DoneDetail: "fixed it", FinalText: "here is how", Returned: true},
 			wantKind: "completed",
 			wantText: "fixed it\n\nfinal_text: here is how",
 		},
 		{
 			name:     "completed with a redundant final text",
 			status:   StatusCompleted,
-			result:   autonomous.RunResult{DoneDetail: "fixed it", FinalText: "fixed it"},
+			result:   autonomous.RunResult{DoneDetail: "fixed it", FinalText: "fixed it", Returned: true},
 			wantKind: "completed",
 			wantText: "fixed it",
 		},
 		{
+			// Returned: the subagent called its return tool and the
+			// payload happened to be empty, so the last text stands in.
 			name:     "completed with no detail falls back to final text",
 			status:   StatusCompleted,
-			result:   autonomous.RunResult{FinalText: "here is how"},
+			result:   autonomous.RunResult{FinalText: "here is how", Returned: true},
 			wantKind: "completed",
 			wantText: "here is how",
 		},
 		{
 			name:     "completed with nothing at all",
 			status:   StatusCompleted,
+			result:   autonomous.RunResult{Returned: true},
 			wantKind: "completed",
 			wantText: "(no detail provided)",
 		},

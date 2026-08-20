@@ -116,6 +116,25 @@ type ServerSpec struct {
 	Headers      map[string]string `json:"headers,omitempty"`       // http
 	Auth         *AuthSpec         `json:"auth,omitempty"`          // http
 	AgenticNever bool              `json:"agentic_never,omitempty"` // skip digest wrap for this server
+
+	// ReadOnly declares that nothing this server exposes can mutate
+	// state — typically because it is mounted at a provider's
+	// read-only endpoint (the GKE MCP server's
+	// container.googleapis.com/mcp/read-only, say). Every tool
+	// sourced from the server then classifies read-only
+	// (tools.ReadOnlyHinter), which is what lets `wait_and_verify`
+	// poll it and what keeps plan-first mode from treating a `list`
+	// call as a mutation.
+	//
+	// A server-declared per-tool `readOnlyHint` still wins where the
+	// upstream adapter surfaces one, so a server that marks a subset
+	// keeps its own answer for those tools.
+	//
+	// This is an OPERATOR assertion about an endpoint they chose, not
+	// a claim the server made about itself. That is the reason it is
+	// allowed to relax plan-first gating: it carries the same
+	// authority as the config that turned plan-first on.
+	ReadOnly bool `json:"read_only,omitempty"`
 }
 
 // AuthSpec selects an authentication strategy for an HTTP MCP server.

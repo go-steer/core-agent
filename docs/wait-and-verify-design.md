@@ -103,6 +103,8 @@ The tool resolves its target from the agent's own catalog and applies `tools.IsR
 
 Names are the ones the *model* sees, i.e. namespaced (`gke_get_pod`, not `get_pod`). This is a config-level, operator-signed statement that a named tool is safe to call repeatedly — it is not a model-reachable knob, and it is per-tool rather than per-server on purpose. When ADK grows `readOnlyHint` passthrough, `poll_allow` becomes an override rather than a requirement.
 
+**Update (#693).** The per-server case arrived anyway, from the other direction: `read_only: true` on a `ServerSpec` in `mcp.json` classifies every tool that server exposes, so a provider's `/mcp/read-only` endpoint no longer needs each of its tools named here. `poll_allow` keeps its per-tool shape and its reason for existing — one read-only tool on a server that also mutates — and it stays the more specific of the two. Both are the same kind of statement (an operator vouching for something the runtime can't check); `read_only` just scopes it to the endpoint the operator actually chose, which is the unit they know to be true.
+
 `wait_and_verify` adds **no new authority**: each poll dispatches through the same wrapper stack a direct model call takes, so the permission gate, path scope, URL scope, plan-first gating and output caps all apply unchanged. In particular, polling an MCP tool before `record_plan` is denied under `require_plan_artifact`, same as calling it directly.
 
 ## Wiring: late catalog binding

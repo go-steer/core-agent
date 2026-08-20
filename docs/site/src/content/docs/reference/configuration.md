@@ -716,6 +716,8 @@ A [task class](/concepts/context-management/#tools-and-plan-first-since-v29) can
 }
 ```
 
+If the whole server is read-only — a provider's `/mcp/read-only` endpoint, say — declare it once with [`read_only: true`](/concepts/mcp/#read-only-servers) in `mcp.json` instead of listing each tool here. That classifies every tool the server exposes, so `poll_allow` is for the per-tool case: a read-only tool on a server that also mutates.
+
 Polling adds no authority: each attempt dispatches through the same permission gate, path scope, URL scope, plan-first gating and output caps a direct model call would hit.
 
 ### `tools.call_peer` (v2.9+)

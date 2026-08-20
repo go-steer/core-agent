@@ -44,17 +44,20 @@ type runnable interface {
 //   - keeps function names within Gemini's `[A-Za-z0-9_]{1,64}`
 //     constraint (so `.` as a separator is not an option)
 type namespacedToolset struct {
-	inner  tool.Toolset
-	prefix string
+	inner    tool.Toolset
+	prefix   string
+	readOnly bool // ServerSpec.ReadOnly — stamped onto every tool
 }
 
 // withNamespace prefixes every tool name in inner with prefix + "_".
-// Returns inner unchanged if prefix is empty.
-func withNamespace(inner tool.Toolset, prefix string) tool.Toolset {
+// Returns inner unchanged if prefix is empty. readOnly is the server's
+// ServerSpec.ReadOnly declaration, applied to every tool that doesn't
+// declare its own dispatch class.
+func withNamespace(inner tool.Toolset, prefix string, readOnly bool) tool.Toolset {
 	if inner == nil || prefix == "" {
 		return inner
 	}
-	return &namespacedToolset{inner: inner, prefix: sanitizePrefix(prefix)}
+	return &namespacedToolset{inner: inner, prefix: sanitizePrefix(prefix), readOnly: readOnly}
 }
 
 func (n *namespacedToolset) Name() string {
@@ -71,14 +74,15 @@ func (n *namespacedToolset) Tools(ctx agent.ReadonlyContext) ([]tool.Tool, error
 	}
 	out := make([]tool.Tool, 0, len(upstream))
 	for _, t := range upstream {
-		out = append(out, renamedTool{inner: t, prefix: n.prefix})
+		out = append(out, renamedTool{inner: t, prefix: n.prefix, readOnly: n.readOnly})
 	}
 	return out, nil
 }
 
 type renamedTool struct {
-	inner  tool.Tool
-	prefix string
+	inner    tool.Tool
+	prefix   string
+	readOnly bool
 }
 
 func (r renamedTool) Name() string        { return r.prefix + "_" + r.inner.Name() }
@@ -167,14 +171,24 @@ func (e simpleErr) Error() string { return string(e) }
 // Compile-time assertion that tool.Context is still a context.Context.
 var _ context.Context = (tool.Context)(nil)
 
-// ReadOnlyHint forwards the wrapped tool's dispatch-class
-// declaration when it makes one (tools.ReadOnlyHinter, #460). ADK's
-// mcptoolset does not surface the MCP readOnlyHint annotation today,
-// so in practice MCP tools classify as mutating (the fail-safe
-// default) until it does — this forward keeps the seam ready.
-func (r *renamedTool) ReadOnlyHint() bool {
+// ReadOnlyHint reports this tool's dispatch class (tools.ReadOnlyHinter,
+// #460). Order of authority: the upstream tool's own declaration when
+// it makes one, then the server's ServerSpec.ReadOnly, then the
+// fail-safe default of mutating. Per-tool beats per-server so a
+// server that annotates a subset keeps its own answer for those tools.
+//
+// ADK's mcptoolset does not surface the MCP readOnlyHint annotation
+// today, so in practice the server-level declaration is the only live
+// source; the forward keeps the seam ready for when it does.
+//
+// VALUE receiver, deliberately. Tools() yields renamedTool values, so
+// a pointer receiver would leave the method out of the interface's
+// method set and every type assertion against ReadOnlyHinter would
+// miss — which is exactly how this forward sat dead from #460 until
+// #693.
+func (r renamedTool) ReadOnlyHint() bool {
 	if h, ok := r.inner.(interface{ ReadOnlyHint() bool }); ok {
 		return h.ReadOnlyHint()
 	}
-	return false
+	return r.readOnly
 }

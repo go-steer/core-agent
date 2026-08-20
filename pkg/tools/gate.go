@@ -151,7 +151,19 @@ func (gt *gatedTool) Run(ctx adktool.Context, args any) (map[string]any, error) 
 	// grant per underlying tool ("<namespace>/<tool>"), so trusting one
 	// MCP tool for the session doesn't trust every MCP tool from every
 	// server (#379). Policy allow/deny still matches on the namespace.
-	if err := gt.gate.CheckToolCall(ctx, gt.namespace, gt.inner.Name(), summarizeRequest(gt.inner.Name(), args)); err != nil {
+	//
+	// Read-only tools take the CheckReadOnlyToolCall sibling, which
+	// differs in exactly one way: plan-first doesn't gate it. The gate
+	// can't work this out for itself here — the toolName it sees is the
+	// namespace ("mcp"), never the underlying tool — so the wrapper,
+	// which holds the live tool, has to classify and say so (#693).
+	// IsReadOnlyTool is fail-safe mutating, so a toolset that declares
+	// nothing gets exactly the pre-#693 behavior.
+	check := gt.gate.CheckToolCall
+	if IsReadOnlyTool(gt.inner) {
+		check = gt.gate.CheckReadOnlyToolCall
+	}
+	if err := check(ctx, gt.namespace, gt.inner.Name(), summarizeRequest(gt.inner.Name(), args)); err != nil {
 		return nil, err
 	}
 	return rn.Run(ctx, args)

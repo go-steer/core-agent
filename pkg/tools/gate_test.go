@@ -15,6 +15,8 @@
 package tools
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"google.golang.org/adk/model"
@@ -76,5 +78,85 @@ func TestGatedTool_ProcessRequest_PacksWrapperNotInner(t *testing.T) {
 	}
 	if got := req.Config.Tools[0].FunctionDeclarations[0].Name; got != "list_clusters" {
 		t.Errorf("declared name = %q, want list_clusters", got)
+	}
+}
+
+// readOnlyInnerTool is a namespaced tool that declares its dispatch
+// class — the shape an MCP tool has once its server carries
+// `"read_only": true` in mcp.json (#693).
+type readOnlyInnerTool struct {
+	fakeInnerTool
+	readOnly bool
+}
+
+func (r *readOnlyInnerTool) ReadOnlyHint() bool { return r.readOnly }
+
+// TestGatedTool_PlanFirstExemptsReadOnlyCalls is the plan-first half of
+// #693. The gate can't classify a namespaced call on its own: the
+// toolName it sees is the namespace ("mcp"), never the underlying tool,
+// and "mcp" is deliberately absent from planExemptTools because a
+// server can expose anything. So the wrapper — which holds the live
+// tool — classifies and routes to the read-only sibling.
+//
+// Mode is Yolo on purpose: plan-first is checked BEFORE mode, so Yolo
+// isolates the plan-first denial from every other reason a call could
+// be refused.
+func TestGatedTool_PlanFirstExemptsReadOnlyCalls(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		readOnly  bool
+		wantAllow bool
+	}{
+		{"read-only server call is research, not mutation", true, true},
+		{"undeclared call stays gated", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			gate := permissions.New(permissions.Options{
+				Mode:                permissions.ModeYolo,
+				RequirePlanArtifact: true,
+			})
+			inner := &readOnlyInnerTool{
+				fakeInnerTool: fakeInnerTool{name: "get_pod"},
+				readOnly:      tc.readOnly,
+			}
+			gt := &gatedTool{inner: inner, gate: gate, namespace: "mcp"}
+
+			_, err := gt.Run(&planToolCtx{Context: context.Background()}, map[string]any{})
+			if tc.wantAllow && err != nil {
+				t.Errorf("read-only call denied under plan-first: %v", err)
+			}
+			if !tc.wantAllow {
+				if err == nil {
+					t.Fatal("mutating call allowed before a plan was recorded")
+				}
+				if !strings.Contains(err.Error(), "plan-first") {
+					t.Errorf("denial should cite plan-first, got %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestGatedTool_ReadOnlyDoesNotBypassPolicy pins the blast radius. The
+// classification relaxes plan-first and NOTHING else — a deny pattern
+// still denies a read-only MCP tool, or `read_only: true` would become
+// an accidental allowlist bypass.
+func TestGatedTool_ReadOnlyDoesNotBypassPolicy(t *testing.T) {
+	t.Parallel()
+	policy, err := permissions.NewPolicy(nil, []string{"mcp:*"})
+	if err != nil {
+		t.Fatalf("NewPolicy: %v", err)
+	}
+	gate := permissions.New(permissions.Options{Mode: permissions.ModeYolo, Policy: policy})
+	inner := &readOnlyInnerTool{
+		fakeInnerTool: fakeInnerTool{name: "get_pod"},
+		readOnly:      true,
+	}
+	gt := &gatedTool{inner: inner, gate: gate, namespace: "mcp"}
+
+	if _, err := gt.Run(&planToolCtx{Context: context.Background()}, map[string]any{}); err == nil {
+		t.Fatal("a read-only tool escaped a deny policy — read_only is not an allowlist")
 	}
 }

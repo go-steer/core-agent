@@ -365,3 +365,27 @@ func TestLoadAll_EmptyPathsSkipped(t *testing.T) {
 		t.Errorf("got %+v", got.Servers)
 	}
 }
+
+// TestLoad_ReadOnlyServerParses pins the mcp.json spelling of the #693
+// declaration. Absence is the fail-safe: a server that says nothing is
+// mutating, which is the pre-#693 behavior for every existing config.
+func TestLoad_ReadOnlyServerParses(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	body := `{"version":1,"servers":{` +
+		`"gke":{"transport":"http","url":"https://container.googleapis.com/mcp/read-only","read_only":true},` +
+		`"gke_rw":{"transport":"http","url":"https://container.googleapis.com/mcp"}}}`
+	if err := os.WriteFile(filepath.Join(dir, MCPFileName), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Servers["gke"].ReadOnly {
+		t.Errorf(`"read_only":true did not parse: %+v`, got.Servers["gke"])
+	}
+	if got.Servers["gke_rw"].ReadOnly {
+		t.Errorf("a server that declared nothing came back read-only — the default must be mutating")
+	}
+}

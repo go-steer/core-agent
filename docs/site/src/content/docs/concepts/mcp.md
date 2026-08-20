@@ -59,6 +59,8 @@ Top-level fields:
 | `url` | `transport: http` | Streamable HTTP endpoint. |
 | `headers` | optional, http | Custom headers. Values support `${env:NAME}` interpolation — useful for `Authorization: Bearer ${env:TOKEN}`. |
 | `auth` | optional, http | Selects an authentication strategy that manages tokens for you instead of static headers. See [Authentication](#authentication) below. |
+| `read_only` | optional | Declares that nothing this server exposes can mutate state. See [Read-only servers](#read-only-servers) below. Default `false`. |
+| `agentic_never` | optional | Opts this server out of the [digest wrap](#structural-digest-wrap---no-mcp-digest). Default `false`. |
 
 Validation runs at config load time. A server that mixes transports (e.g. both `command` and `url`) is rejected with a clear error before the agent starts.
 
@@ -154,6 +156,40 @@ Audience-scoped ID-token auth (Cloud Run / IAP / custom-OIDC services) is not ye
 - Keeps function names within Gemini's `[A-Za-z0-9_]{1,64}` constraint (a `.` separator wouldn't pass)
 
 Sanitization rule: keep `[A-Za-z0-9_]`, replace everything else with `_`. So `my-server` → `my_server_<tool>`, `file.system` → `file_system_<tool>`.
+
+---
+
+## Read-only servers
+
+Several providers publish a read-only endpoint alongside the full one — the GKE MCP server's `container.googleapis.com/mcp/read-only`, say. `core-agent` can't tell the difference by looking: the MCP protocol has a per-tool `readOnlyHint` annotation, but ADK's MCP adapter doesn't surface it, so every MCP tool lands on the fail-safe *mutating* side of the runtime's dispatch classifier.
+
+`read_only: true` is how you say what you already know:
+
+```json
+{
+  "version": 1,
+  "servers": {
+    "gke": {
+      "transport": "http",
+      "url":       "https://container.googleapis.com/mcp/read-only",
+      "read_only": true
+    }
+  }
+}
+```
+
+Every tool from that server then classifies read-only, which changes three things:
+
+- **`wait_and_verify` can poll it.** The waiter refuses to poll anything classified mutating, because polling repeats the call up to `max_attempts` times. Before `read_only`, the only way to poll an MCP tool was to name each one in `tools.wait_and_verify.poll_allow`; a whole read-only server no longer needs that list.
+- **Its calls run concurrently.** Mutating tools serialize on a per-agent lock so two edits can't interleave. Reads don't need it, so a batch of `get`/`list` calls in one turn now overlaps.
+- **Plan-first mode stops treating a `list` as a mutation.** Under `permissions.require_plan_artifact`, mutating calls are denied until `record_plan` runs. The gate sees only the namespace (`mcp`) and never the underlying tool name, so before this every MCP call was gated — including the research the model needs to *write* the plan. Read-only calls are now exempt, the same way built-in `grep` and `read_file` always have been.
+
+What it does **not** change: allow/deny patterns, permission mode, and prompting all behave identically. A read-only MCP tool in `ask` mode still asks, and a `deny` pattern still denies it. `read_only` is a dispatch-class declaration, not an allowlist.
+
+Two guardrails worth knowing:
+
+- **Per-tool beats per-server.** If a server ever does annotate a tool's own `readOnlyHint`, that answer wins for that tool — a server-level declaration can't launder a tool that says it mutates.
+- **It is an operator assertion, not a server claim.** Nothing verifies it; you are vouching for an endpoint you chose. That is exactly why it carries enough authority to relax plan-first — it comes from the same config that turned plan-first on. Point it at a read/write URL and you have disabled a safety property by hand.
 
 ---
 

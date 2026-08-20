@@ -93,7 +93,7 @@ Three properties are enforced by the runtime rather than asked for in a prompt:
 
 - **No shell.** Pure Go, so it works wherever the binary does — including `distroless/static-debian12:nonroot` with `tools.disable: ["bash"]`.
 - **Bounded.** Wall clock and attempt count both capped, with operator ceilings ([`tools.wait_and_verify`](/reference/configuration/#toolswait_and_verify-v29)) the model can't raise; a request past the ceiling is an error, not a silent clamp. Token cost is bounded by construction: N polls, one result.
-- **Read-only by construction.** It refuses to poll anything not classified read-only — a loop that could call `write_file` sixty times is an amplifier, not a verifier. `wait_and_verify` itself and `ask_user` are refused unconditionally. MCP tools need an explicit `poll_allow` entry, because ADK's MCP adapter doesn't surface the server's `readOnlyHint`.
+- **Read-only by construction.** It refuses to poll anything not classified read-only — a loop that could call `write_file` sixty times is an amplifier, not a verifier. `wait_and_verify` itself and `ask_user` are refused unconditionally. MCP tools need either a [`read_only: true`](/concepts/mcp/#read-only-servers) server in `mcp.json` or an explicit `poll_allow` entry, because ADK's MCP adapter doesn't surface the server's `readOnlyHint`.
 
 An unverified wait is **not** an error: it returns `verified: false` with `outcome` of `timeout` / `attempts_exhausted` / `canceled` plus the observation trail, because "it never became Ready in three minutes" is a finding the model should report rather than a failure it should retry. A poll that errors is treated as transient and retried; a malformed `expect_jq` aborts on the first attempt instead of burning the budget.
 

@@ -593,3 +593,52 @@ instead of the run.
   frontmatter (`describePlanOwner`) rather than asserting "another
   agent", so the restart case reads as what it is and the operator
   can see whose plan is sitting there.
+
+## Implementation notes (2026-08-20, #693)
+
+Open question 1 ("MCP tools — gate or not?") is resolved, and the
+answer is the third option the question dismissed as out of scope for
+v1, arrived at from the config side rather than the protocol side.
+
+The lean held for two releases: gate everything. It bit in exactly the
+way anticipated. Under `plan_mode: required`, a recipe whose only
+surface is a read-only MCP server can't call `list_clusters` to learn
+what it would plan *about* — the research a plan is made of is denied
+until the plan exists. The gate isn't being conservative here so much
+as blind: `gatedTool.Run` checks with the namespace (`"mcp"`), never
+the underlying tool name, so it cannot tell `get_pod` from
+`delete_pod` even in principle. A per-tool allowlist in the gate's
+config, the second option, would have papered over that by asking the
+operator to re-state per tool what they already know per endpoint.
+
+What shipped instead: `read_only: true` on the `ServerSpec` in
+`mcp.json`. Every tool from that server carries the read-only dispatch
+class (`tools.ReadOnlyHinter`), `pkg/tools`' gate wrapper classifies
+each call with `IsReadOnlyTool` and routes read-only ones to the new
+`Gate.CheckReadOnlyToolCall`, and `planFirstDenial` exempts them. The
+classification is one thing declared once and consumed in three places
+— plan-first, the mutation serializer, and `wait_and_verify`'s
+poll refusal — rather than a plan-first-shaped exemption list.
+
+Two properties worth keeping if this is ever revisited:
+
+- **The exemption is per *call*, not per name.** No entry is added to
+  `planExemptTools`; a name table cannot express this, because the
+  name is `"mcp"` for every tool from every server. That is also why
+  `CheckReadOnlyToolCall` is a sibling of `CheckToolCall` rather than
+  a new field on the gate: the fact travels with the call.
+
+- **It relaxes plan-first and nothing else.** Policy allow/deny,
+  permission mode and prompting are untouched — a read-only MCP tool
+  in ask mode still asks. `read_only` had to be allowed to move
+  plan-first (a safety property) because it is an *operator*
+  assertion about an endpoint they chose, carrying the same authority
+  as the config that turned plan-first on; it is not a claim the
+  server made about itself, and nothing verifies it. Letting it also
+  move allow/deny would have made it an allowlist bypass, which is a
+  different and much larger grant.
+
+The table row above still describes `wait_and_verify` correctly: an
+MCP poll re-enters the polled tool's own gate check, so it is
+plan-gated exactly as a direct call is — which now means exempt on a
+`read_only` server and gated everywhere else.

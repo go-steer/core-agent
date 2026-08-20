@@ -50,11 +50,11 @@ func TestSanitizePrefix(t *testing.T) {
 
 func TestWithNamespace_NilSafe(t *testing.T) {
 	t.Parallel()
-	if got := withNamespace(nil, "x"); got != nil {
+	if got := withNamespace(nil, "x", false); got != nil {
 		t.Errorf("nil toolset should pass through, got %v", got)
 	}
 	stub := newInMemoryToolset(t)
-	if got := withNamespace(stub, ""); got != stub {
+	if got := withNamespace(stub, "", false); got != stub {
 		t.Errorf("empty prefix should pass through")
 	}
 }
@@ -62,7 +62,7 @@ func TestWithNamespace_NilSafe(t *testing.T) {
 func TestWithNamespace_PrefixesToolNames(t *testing.T) {
 	t.Parallel()
 	inner := newInMemoryToolset(t)
-	wrapped := withNamespace(inner, "demo")
+	wrapped := withNamespace(inner, "demo", false)
 
 	tools, err := wrapped.Tools(asReadonly(context.Background()))
 	if err != nil {
@@ -83,7 +83,7 @@ func TestWithNamespace_PrefixesToolNames(t *testing.T) {
 func TestWithNamespace_NameDescriptionLongRunningPassthrough(t *testing.T) {
 	t.Parallel()
 	inner := newInMemoryToolset(t)
-	wrapped := withNamespace(inner, "demo")
+	wrapped := withNamespace(inner, "demo", false)
 
 	tools, err := wrapped.Tools(asReadonly(context.Background()))
 	if err != nil {
@@ -102,7 +102,7 @@ func TestWithNamespace_NameDescriptionLongRunningPassthrough(t *testing.T) {
 func TestRenamedTool_DeclarationFromInner(t *testing.T) {
 	t.Parallel()
 	inner := newInMemoryToolset(t)
-	wrapped := withNamespace(inner, "demo")
+	wrapped := withNamespace(inner, "demo", false)
 	tools, err := wrapped.Tools(asReadonly(context.Background()))
 	if err != nil {
 		t.Fatal(err)
@@ -133,7 +133,7 @@ func TestRenamedTool_ProcessRequest_PacksWrapper(t *testing.T) {
 	// the model would see the un-namespaced declaration AND ADK's
 	// call-back dispatch would bypass the namespace prefix.
 	inner := newInMemoryToolset(t)
-	wrapped := withNamespace(inner, "demo")
+	wrapped := withNamespace(inner, "demo", false)
 	tools, err := wrapped.Tools(asReadonly(context.Background()))
 	if err != nil {
 		t.Fatal(err)
@@ -241,7 +241,7 @@ var _ agent.ReadonlyContext = asReadonly(context.Background())
 func TestRenamedTool_Run_StampsLatencyMS(t *testing.T) {
 	t.Parallel()
 	inner := newInMemoryToolset(t)
-	wrapped := withNamespace(inner, "demo")
+	wrapped := withNamespace(inner, "demo", false)
 	tools, err := wrapped.Tools(asReadonly(context.Background()))
 	if err != nil {
 		t.Fatalf("Tools: %v", err)

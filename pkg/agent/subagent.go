@@ -29,6 +29,7 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent/internal/subsession"
+	"github.com/go-steer/core-agent/v2/pkg/permissions"
 )
 
 // SubagentOptions configures NewSubagentTool. Inner is required;
@@ -83,11 +84,37 @@ type SubagentOptions struct {
 	ParentAppName   string
 	ParentUserID    string
 	ParentSessionID string
+
+	// Gate, when non-nil, is consulted before the subagent runs — so
+	// plan-first, the allow/deny policy and the ask prompt apply to
+	// the act of delegating and not only to what the delegate does
+	// once it is running (#758).
+	//
+	// The lookup is deliberately made under the SAME policy bucket the
+	// asynchronous door uses: a declarative subagent is reachable both
+	// as this tool and as `spawn_agent {agent: "<name>"}`, and an
+	// operator who wrote `deny: ["spawn_agent:cluster"]` meant that
+	// `cluster` does not run — not that it does not run through one of
+	// the two doors. So the rule is matched as
+	// `spawn_agent:<subagent-name>` whichever door the model picked.
+	//
+	// agent.WithSubagents fills this in from the parent's
+	// agent.WithGate. Consumers calling NewSubagentTool directly pass
+	// their own; nil leaves the tool ungated, which is what a host that
+	// wired no gate anywhere already has everywhere else.
+	Gate *permissions.Gate
 }
 
 const (
 	defaultSubagentMaxDepth = 2
 	defaultSubagentDesc     = "Run a focused subagent and return its result. Pass the request as a single string."
+
+	// subagentGateBucket is the policy bucket delegation is matched
+	// under, for both this synchronous door and background's
+	// spawn_agent. Duplicated as a literal rather than imported from
+	// pkg/agent/background, which imports this package. See
+	// SubagentOptions.Gate for why the two doors share one bucket.
+	subagentGateBucket = "spawn_agent"
 )
 
 // subagentArgs is the JSON shape the parent's model sees on every
@@ -182,10 +209,27 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 		// tool.Context embeds agent.ReadonlyContext which embeds
 		// context.Context, so we can read context values and pass
 		// it to runner.Run directly.
+		//
+		// Depth is checked before the gate deliberately: it is the
+		// cheaper refusal and the one the caller cannot approve away,
+		// so asking a human to authorize a delegation the next line
+		// would refuse anyway is pure prompt noise.
 		if depth := subsession.CurrentDepth(toolCtx); depth >= maxDepth {
 			return subagentResult{
 				Result: fmt.Sprintf("subagent %q refused: depth limit reached (%d)", name, maxDepth),
 			}, nil
+		}
+		// Gate the delegation itself (#758). Unlike the depth refusal
+		// above — a runtime condition the model is expected to route
+		// around, so it reads better as a result — a permission denial
+		// propagates as a Go error, which is what every other gated
+		// tool in the tree does (see pkg/tools/fetch.go) and what makes
+		// the flow trace, the watchdog and both TUIs treat it as the
+		// failed call it is.
+		if opts.Gate != nil {
+			if err := opts.Gate.CheckToolCall(toolCtx, subagentGateBucket, name, name); err != nil {
+				return subagentResult{}, err
+			}
 		}
 		// Wrap the parent's session.Service so every event the
 		// inner runner appends gets the right Branch before

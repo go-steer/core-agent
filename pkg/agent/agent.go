@@ -664,9 +664,14 @@ func WithBackgroundManager(mgr SubagentManager) Option {
 // it, the /tools endpoint reports an empty gate_state per tool and
 // the TUI's auditing column is blank.
 //
-// This is metadata-only — the gate that actually mediates tool calls
-// is still the one wired into the tool constructors themselves. The
-// agent does not call this gate; it just exposes a read-only view.
+// Metadata-only with one exception. The gate that mediates tool calls
+// is normally the one wired into the tool constructors themselves, and
+// the agent just exposes a read-only view of this one — but the
+// subagent tools materialized by WithSubagents are constructed HERE,
+// with no other constructor for a caller to wire a gate into, so they
+// get this one (#758). Delegation is gated under the `spawn_agent`
+// policy bucket regardless of which door the model used; see
+// SubagentOptions.Gate.
 func WithGate(g *permissions.Gate) Option {
 	return func(o *options) { o.gate = g }
 }
@@ -830,6 +835,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		st, err := NewSubagentTool(SubagentOptions{
 			Inner:           sa,
 			MaxDepth:        sa.subagentMaxDepth, // 0 → NewSubagentTool default
+			Gate:            o.gate,
 			ParentService:   parentSvc,
 			ParentAppName:   o.appName,
 			ParentUserID:    o.userID,

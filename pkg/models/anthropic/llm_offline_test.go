@@ -561,3 +561,176 @@ func TestGenerateContent_OfflineNoStream_TerminalOnly(t *testing.T) {
 		t.Errorf("terminal content = %+v, want full accumulated \"Hello world\"", final.Content)
 	}
 }
+
+// modelEchoSSEFixture builds a minimal one-text-block stream whose
+// message_start echoes echoed as the serving model. Separate from
+// messagesSSEFixture so a test can make the echoed model differ from
+// the requested one — the case that distinguishes "we stamped what we
+// asked for" from "we stamped what actually served the turn".
+func modelEchoSSEFixture(echoed string) string {
+	return `event: message_start
+data: {"type":"message_start","message":{"id":"msg_echo_01","type":"message","role":"assistant","model":"` + echoed + `","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":11,"output_tokens":1}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":3}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+}
+
+// TestGenerateContent_TerminalCarriesModelVersion pins #756: the
+// terminal response must name the model that served it. Without it the
+// turn reaches pkg/usage unattributed and RebuildTrackerFromEvents
+// prices it against defaultModel — so on a multi-tier session every
+// Anthropic turn is rebuilt at the primary model's rate. Partials are
+// deliberately left unstamped: they carry no UsageMetadata, so nothing
+// prices them.
+func TestGenerateContent_TerminalCarriesModelVersion(t *testing.T) {
+	t.Parallel()
+	l, _ := newOfflineLLM(t, "claude-test", messagesSSEFixture)
+
+	var final *adkmodel.LLMResponse
+	for resp, err := range l.GenerateContent(context.Background(), &adkmodel.LLMRequest{
+		Contents: userText("hi"),
+	}, true) {
+		if err != nil {
+			t.Fatalf("GenerateContent yielded error: %v", err)
+		}
+		if resp.Partial {
+			if resp.ModelVersion != "" {
+				t.Errorf("partial carries ModelVersion %q, want empty (nothing prices a partial)", resp.ModelVersion)
+			}
+			continue
+		}
+		final = resp
+	}
+
+	if final == nil {
+		t.Fatal("no terminal (TurnComplete) response was yielded")
+	}
+	if final.ModelVersion != "claude-test" {
+		t.Errorf("terminal ModelVersion = %q, want %q — an unattributed turn is priced against defaultModel (#756)",
+			final.ModelVersion, "claude-test")
+	}
+}
+
+// TestGenerateContent_ModelVersionPrefersServerEcho pins the half a
+// live check can't see: an alias and its snapshot normally agree, so a
+// test that requests a concrete model passes whether or not the echo
+// path works. Here they deliberately differ — the server resolved the
+// alias to a dated snapshot, and the snapshot is the one that was
+// billed.
+func TestGenerateContent_ModelVersionPrefersServerEcho(t *testing.T) {
+	t.Parallel()
+	const (
+		requested = "claude-sonnet-4-5-latest"
+		served    = "claude-sonnet-4-5-20250929"
+	)
+	l, captured := newOfflineLLM(t, requested, modelEchoSSEFixture(served))
+
+	var final *adkmodel.LLMResponse
+	for resp, err := range l.GenerateContent(context.Background(), &adkmodel.LLMRequest{
+		Contents: userText("hi"),
+	}, true) {
+		if err != nil {
+			t.Fatalf("GenerateContent yielded error: %v", err)
+		}
+		if !resp.Partial {
+			final = resp
+		}
+	}
+
+	// The request still asks for the alias — the fix reads the
+	// response, it doesn't rewrite what we send.
+	if got := captured.body["model"]; got != requested {
+		t.Errorf("request model = %v, want %q", got, requested)
+	}
+	if final == nil {
+		t.Fatal("no terminal (TurnComplete) response was yielded")
+	}
+	if final.ModelVersion != served {
+		t.Errorf("terminal ModelVersion = %q, want the served snapshot %q — pricing an alias-requested turn against the alias is the same class of mistake as pricing it against defaultModel",
+			final.ModelVersion, served)
+	}
+}
+
+// TestGenerateContent_ModelVersionAcrossPauseTurn pins that a turn
+// spanning several requests is still attributed. The continuation loop
+// rebuilds `final` per request, so the stamp comes from the LAST
+// response — which is the one that closed the turn.
+func TestGenerateContent_ModelVersionAcrossPauseTurn(t *testing.T) {
+	t.Parallel()
+	l, _ := newOfflineLLMSeq(t, "claude-test",
+		[]string{pauseTurnSSEFixture, webSearchDoneSSEFixture})
+
+	var final *adkmodel.LLMResponse
+	for resp, err := range l.GenerateContent(context.Background(), &adkmodel.LLMRequest{
+		Contents: userText("what's the latest Go release?"),
+	}, true) {
+		if err != nil {
+			t.Fatalf("GenerateContent yielded error: %v", err)
+		}
+		if !resp.Partial {
+			final = resp
+		}
+	}
+
+	if final == nil {
+		t.Fatal("no terminal (TurnComplete) response was yielded")
+	}
+	if final.ModelVersion != "claude-test" {
+		t.Errorf("terminal ModelVersion = %q, want claude-test — a multi-request turn must still be attributed", final.ModelVersion)
+	}
+}
+
+// TestResponseModel covers the fallback directly: the API marks
+// `model` required on a Message, so an empty echo means the stream
+// died before message_start ever accumulated. Attributing that to the
+// model we asked for beats attributing it to nothing, which is what
+// sends it to defaultModel.
+func TestResponseModel(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		final     *sdk.Message
+		requested sdk.Model
+		want      string
+	}{
+		{"echo wins", &sdk.Message{Model: "served-snapshot"}, "requested-alias", "served-snapshot"},
+		{"empty echo falls back", &sdk.Message{}, "requested-alias", "requested-alias"},
+		{"nil message falls back", nil, "requested-alias", "requested-alias"},
+		{"nothing to report", &sdk.Message{}, "", ""},
+		// A resource path is not a pricing key: Catalog's
+		// longest-prefix fallback matches nothing under it, so the
+		// turn would cost $0. The requested ID is what the catalog
+		// is keyed for.
+		{
+			"resource-path echo falls back",
+			&sdk.Message{Model: "projects/p/locations/us-east5/publishers/anthropic/models/claude-opus-4-5"},
+			"claude-opus-4-5@20251101",
+			"claude-opus-4-5@20251101",
+		},
+		// The Vertex publication shape IS keyable — `claude-opus-4-5`
+		// is a prefix of it — so the echo is kept.
+		{"vertex @version echo wins", &sdk.Message{Model: "claude-opus-4-5@20251101"}, "claude-opus-4-5", "claude-opus-4-5@20251101"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := responseModel(tc.final, tc.requested); got != tc.want {
+				t.Errorf("responseModel = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

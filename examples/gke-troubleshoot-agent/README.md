@@ -510,12 +510,13 @@ It happens on two channels at once.
 The router calls `alert(target: "oncall", level: "critical", summary:
 ..., details: {...})` for every `UNRESOLVED` or `ESCALATED` incident.
 The `generic` template POSTs a JSON body — point `ONCALL_WEBHOOK_URL`
-at whatever ingests it (a Slack/Discord incoming webhook, an internal
-receiver, a Cloud Function that fans out to PagerDuty). The
-provider-specific templates named in the alert-tool design are *not*
-implemented; `slack`, `discord`, and `pagerduty_events_v2` are
-rejected at config load. Rate limiting is per target, so an event
-storm can't turn into a page storm.
+at whatever ingests it (an internal receiver, a Cloud Function that
+fans out). It stays `generic` here because the recipe cannot know what
+you point it at; if you know, switch the target's `template` to
+`slack`, `discord` or `pagerduty_events_v2` and it will render that
+platform's own format instead, or to `switchboard` to land in a chat
+thread a human can reply into. Rate limiting is per target, so an
+event storm can't turn into a page storm.
 
 **2. The eventlog (pull / audit).** Every incident also closes with a
 structured `INCIDENT SUMMARY` block:

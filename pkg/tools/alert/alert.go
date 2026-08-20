@@ -177,7 +177,7 @@ func (h *handler) run(ctx tool.Context, in Args) (Result, error) {
 		return Result{}, fmt.Errorf("alert: rate-limited on target %q (wait for the window to refill or fire a different target)", in.Target)
 	}
 
-	out, err := renderTemplate(tgt, in, sessionOf(ctx))
+	out, err := renderTemplate(tgt, in, renderEnv{session: sessionOf(ctx), getenv: h.getenv})
 	if err != nil {
 		return Result{}, fmt.Errorf("alert: render template %q: %w", tgt.Template, err)
 	}
@@ -204,7 +204,15 @@ func (h *handler) run(ctx tool.Context, in Args) (Result, error) {
 		req.Header.Set(k, v)
 	}
 	req.Header.Set("Content-Type", out.contentType)
-	if err := applyAuth(req, tgt.Auth, h.getenv); err != nil {
+	auth := tgt.Auth
+	if out.omitAuthHeader {
+		// The template put the credential in the body and already failed
+		// closed if it could not resolve it, so there is nothing left for
+		// applyAuth to add — and adding it would send the same secret a
+		// second time under a header the destination does not read.
+		auth = nil
+	}
+	if err := applyAuth(req, auth, h.getenv); err != nil {
 		return Result{}, err
 	}
 

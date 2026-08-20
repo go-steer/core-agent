@@ -966,9 +966,9 @@ Each entry in `targets`:
 | `kind` | string | `"webhook"` | Reserved for future transports; only `""`/`"webhook"` are accepted today. |
 | `url` | string | `""` | The destination URL (http/https). Mutually exclusive with `url_env` — set **exactly one**. |
 | `url_env` | string | `""` | Name of the env var holding the destination URL. Prefer this for secret webhook URLs (e.g. a Slack Incoming Webhook) so the secret lives in your secret manager, not this file. Checked at startup (an unset value drops the target) and re-resolved at call time. |
-| `template` | string | — | **Required.** Payload shape. `generic` and `switchboard` ship; `slack`, `discord`, and `pagerduty_events_v2` are declared but rejected at load with a "not yet implemented" error (Phase 2). |
+| `template` | string | — | **Required.** Payload shape: `generic`, [`switchboard`](#the-switchboard-template), or one of the three [service templates](#the-service-templates) `slack` / `discord` / `pagerduty_events_v2`. Anything else is rejected at load. |
 | `conversation` | string | `""` | **Required for `switchboard`, rejected for every other template.** The gateway's conversation key — for Slack a channel ID (`C0123`) or `channel:thread_ts` to post into an existing thread. Routing config, so it lives here rather than in the model's arguments. A literal, not a `*_env`: a conversation key is not a secret. |
-| `auth` | object | `null` | Optional auth header, resolved from env at call time (rotates without a restart). One of: `bearer_env` (→ `Authorization: Bearer <env>`), or `basic_env_user` + `basic_env_pass` (→ HTTP Basic). The model never sets auth — the operator picks what ships. Required (as `bearer_env`) for `switchboard`. |
+| `auth` | object | `null` | Optional auth header, resolved from env at call time (rotates without a restart). One of: `bearer_env` (→ `Authorization: Bearer <env>`), or `basic_env_user` + `basic_env_pass` (→ HTTP Basic). The model never sets auth — the operator picks what ships. **Required as `bearer_env`** for `switchboard` (its ingress token) and for `pagerduty_events_v2` (the integration's routing key, which is sent in the *body* — no `Authorization` header goes out for that template). `slack` and `discord` normally need no `auth` at all: the Incoming Webhook URL is the credential. |
 | `description` | string | `""` | Free text surfaced to the model in the tool description so it can match the right target to the situation. |
 
 The `generic` template posts `application/json`:
@@ -987,7 +987,7 @@ The `generic` template posts `application/json`:
 { "conversation": "C0123", "text": "**[critical]** checkout-svc has no healthy endpoints\n- `cluster`: prod-us-east\n- `incident`: INC-42" }
 ```
 
-It is a **destination class, not a service format**. One template covers every platform the gateway bridges — Slack and Google Chat today, more later — because the gateway owns the per-platform translation. So `text` is plain CommonMark: the level in bold, then one bullet per `details` entry with the key in backticks, sorted so the same alert produces the same body every time. Non-string detail values are rendered as compact JSON.
+It is a **destination class, not a service format**, which is what separates it from the [`slack` template](#the-service-templates) rather than duplicating it. One template covers every platform the gateway bridges — Slack and Google Chat today, more later — because the gateway owns the per-platform translation. So `text` is plain CommonMark: the level in bold, then one bullet per `details` entry with the key in backticks, sorted so the same alert produces the same body every time. Non-string detail values are rendered as compact JSON.
 
 What routing through the gateway buys over a direct webhook post:
 
@@ -1015,6 +1015,60 @@ Two things the load-time validator insists on, because neither can be supplied l
 
 The tool stays fire-and-forget either way: it posts and reports the status code. Nothing in core-agent listens for the reply — a reply comes back through the attach API's `POST /sessions/{sid}/inject`, and the responder needs to be a **contributor** on that session to use it (see [Multi-session → ACLs](/concepts/multi-session/)).
 
+### The service templates
+
+`slack`, `discord` and `pagerduty_events_v2` post directly at one platform, in that platform's own wire format. They are the counterpart to `switchboard`, not a duplicate of it: a direct post reaches a channel or an incident queue and nothing comes back, whereas the gateway gives you a thread a human can reply into. Pick a service template when the destination *is* the notification; pick `switchboard` when the escalation should start a conversation.
+
+All three take the same `level` / `summary` / `details` the model already passes, and all three render `details` in **sorted key order**, so two identical alerts produce identical bytes.
+
+**`slack`** — [Block Kit](https://api.slack.com/block-kit) at an Incoming Webhook. A `header` block carries `[level] summary`; `details` become two-column `section` fields, ten per section:
+
+```json
+{
+  "text": "[warning] checkout-svc unresolved past budget",
+  "blocks": [
+    { "type": "header", "text": { "type": "plain_text", "text": "[warning] checkout-svc unresolved past budget" } },
+    { "type": "section", "fields": [
+      { "type": "mrkdwn", "text": "*attempts:*\n3" },
+      { "type": "mrkdwn", "text": "*cluster:*\nprod-us-east" }
+    ] }
+  ]
+}
+```
+
+`text` is set as well as `blocks` because Slack uses it for the phone-notification preview — a blocks-only message previews as "This content can't be displayed". Detail keys and values are entity-escaped (`&`, `<`, `>`): they are model-supplied data, and an unescaped `<` opens a Slack link that swallows the rest of the value, so a perfectly ordinary `<none>` would render as nothing at all.
+
+**`discord`** — one webhook embed, colour-coded by level (blue / amber / red / green for `info` / `warning` / `critical` / `resolved`). `details` become inline fields. A summary too long for the 256-character embed title is kept in full in the `description` rather than cut:
+
+```json
+{ "embeds": [ { "title": "[critical] checkout-svc has no healthy endpoints", "color": 15158332,
+  "fields": [ { "name": "cluster", "value": "prod-us-east", "inline": true } ] } ] }
+```
+
+**`pagerduty_events_v2`** — an [Events API v2](https://developer.pagerduty.com/docs/events-api-v2/trigger-events/) enqueue at `https://events.pagerduty.com/v2/enqueue`:
+
+```json
+{
+  "routing_key": "<from auth.bearer_env>",
+  "event_action": "trigger",
+  "dedup_key": "INC-42",
+  "payload": {
+    "summary": "checkout-svc has no healthy endpoints",
+    "source": "prod-us-east/checkout-svc",
+    "severity": "critical",
+    "custom_details": { "replicas": 0 }
+  }
+}
+```
+
+Three things worth knowing before you wire it:
+
+- **The routing key goes in the body.** Events v2 never reads `Authorization`, so core-agent doesn't send one for this template — the key you put in `auth.bearer_env` is written to `routing_key` and nowhere else. It is still `auth.bearer_env` rather than a field of its own so that an unset key **drops the target at startup** under the rule below; PagerDuty is the last destination that should be advertised to a model and then silently unable to page.
+- **`level: "resolved"` needs `details.dedup_key`.** It becomes `event_action: "resolve"`, and PagerDuty has no way to know which incident to close without the key the triggering alert used. The tool keeps no state between calls, so the caller supplies it; omitting it is a tool error naming the field, not a rejected page.
+- **Two details are promoted.** `details.source` becomes `payload.source` (PagerDuty requires the field; it defaults to `core-agent`) and `details.dedup_key` becomes the top-level `dedup_key`. Both are removed from `custom_details` once promoted.
+
+Every field these templates emit is capped at the limit the service documents — Slack's 150-character header and 50 blocks, Discord's 25 fields and 6000 characters, PagerDuty's 1024-character summary — counted in characters, not bytes. Exceeding one is a rejection of the whole message, so the truncation happens here rather than at the destination; when details are dropped to fit, the message says how many.
+
 Worked example:
 
 ```json
@@ -1025,8 +1079,15 @@ Worked example:
       {
         "name": "slack-oncall",
         "url_env": "SLACK_ONCALL_WEBHOOK",
-        "template": "generic",
+        "template": "slack",
         "description": "on-call channel; use for anything needing a human now"
+      },
+      {
+        "name": "pagerduty",
+        "url": "https://events.pagerduty.com/v2/enqueue",
+        "template": "pagerduty_events_v2",
+        "auth": { "bearer_env": "PAGERDUTY_ROUTING_KEY" },
+        "description": "pages the on-call engineer; use ONLY for a genuinely critical, human-required incident"
       },
       {
         "name": "audit-sink",

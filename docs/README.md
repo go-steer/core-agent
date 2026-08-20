@@ -76,7 +76,7 @@ research + friction logs, or handover notes.
 ### Observability, safety + scheduling
 
 - [`metrics-design.md`](metrics-design.md) — OTel MeterProvider (primary) + Prometheus scrape (secondary)
-- [`alert-tool-design.md`](alert-tool-design.md) — native `alert` tool for headless escalation (*partially shipped* in v2.9: the tool + the `generic` template; the `slack` / `discord` / `pagerduty_events_v2` templates it specifies are rejected at config load)
+- [`alert-tool-design.md`](alert-tool-design.md) — native `alert` tool for headless escalation (*shipped* in v2.9, with one addition the doc did not anticipate: the `switchboard` destination class alongside `generic`, `slack`, `discord` and `pagerduty_events_v2`)
 - [`plan-first-design.md`](plan-first-design.md) — gate-level "plan before action" enforcement
 - [`scheduled-monitoring-design.md`](scheduled-monitoring-design.md) — `Scheduler` primitive for paced autonomous loops; combines with `BackgroundAgentManager` for the K8s fleet-monitor topology
 - [`scheduled-ops-design.md`](scheduled-ops-design.md) — `core-agent-cron` companion sidecar firing scheduled prompts into the daemon for proactive autonomous ops (compliance sweeps, drift detection, capacity forecasts) (proposed, [#202](https://github.com/go-steer/core-agent/issues/202))

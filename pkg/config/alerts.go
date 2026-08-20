@@ -23,18 +23,18 @@ import (
 	"unicode"
 )
 
-// Alert template kinds. Two ship: "generic" (a raw JSON pass-through)
-// and "switchboard" (the go-steer/switchboard chat gateway's outbound
-// message API). The service-specific templates are designed in
-// docs/alert-tool-design.md and land in a follow-up (ε.2); the constants
-// are declared now so the validator can give a precise "designed but not
-// yet implemented" error instead of "unknown".
+// Alert template kinds, all of them implemented in pkg/tools/alert.
 //
-// "switchboard" is a destination CLASS, not a service format: switchboard
-// bridges Slack and Google Chat today and more later, translating one
-// markdown body per platform, so one template covers all of them. The
-// planned "slack" template is the different thing — Block Kit posted
-// straight at an Incoming Webhook, with no thread to reply into.
+// "generic" is a raw JSON pass-through for a bespoke receiver. "slack",
+// "discord" and "pagerduty_events_v2" are service formats: one platform
+// each, posted straight at that platform's webhook.
+//
+// "switchboard" is the odd one out — a destination CLASS, not a service
+// format. The go-steer/switchboard chat gateway bridges Slack and Google
+// Chat today and more later, translating one markdown body per platform,
+// so one template covers all of them and the message lands in a thread a
+// human can reply in. The "slack" template is the different thing: Block
+// Kit fired into a channel, fire-and-forget, with nothing coming back.
 const (
 	AlertTemplateGeneric           = "generic"
 	AlertTemplateSwitchboard       = "switchboard"
@@ -42,6 +42,22 @@ const (
 	AlertTemplateDiscord           = "discord"
 	AlertTemplatePagerDutyEventsV2 = "pagerduty_events_v2"
 )
+
+// AlertTemplates is every template validateAlerts accepts, in the order
+// error messages list them. pkg/tools/alert ranges over it to prove its
+// renderer knows each one: a template the config layer admits and the
+// renderer does not is a daemon that boots and then fails at the moment
+// the alert is fired.
+var AlertTemplates = []string{
+	AlertTemplateGeneric,
+	AlertTemplateSwitchboard,
+	AlertTemplateSlack,
+	AlertTemplateDiscord,
+	AlertTemplatePagerDutyEventsV2,
+}
+
+// alertTemplateList renders AlertTemplates for an error message.
+var alertTemplateList = `"` + strings.Join(AlertTemplates, `", "`) + `"`
 
 // AlertsConfig declares the named webhook targets the native `alert`
 // tool (pkg/tools/alert) can fire, plus an optional per-target rate
@@ -174,12 +190,24 @@ func (c *Config) validateAlerts() error {
 			if t.Auth == nil || t.Auth.BearerEnv == "" {
 				return fmt.Errorf("config: alerts.targets[%d] (%q): template=%q requires auth.bearer_env (switchboard's ingress token, deliberately distinct from the daemon token; its ingress refuses every unauthenticated post)", i, t.Name, t.Template)
 			}
+		case AlertTemplateSlack, AlertTemplateDiscord:
+			// Nothing extra: the Incoming Webhook URL is the whole
+			// credential and the whole destination, which is why these
+			// two normally carry no auth block at all.
+		case AlertTemplatePagerDutyEventsV2:
+			// The routing key is the integration's identity AND its
+			// credential, and Events v2 reads it from the body — so it is
+			// required here for the same reason switchboard's token is:
+			// without it the target can only ever be rejected, and being
+			// a *_env it is also what drops the target at startup when
+			// the Secret is missing.
+			if t.Auth == nil || t.Auth.BearerEnv == "" {
+				return fmt.Errorf("config: alerts.targets[%d] (%q): template=%q requires auth.bearer_env (the PagerDuty integration's routing key; it is sent in the request body, not as a bearer token)", i, t.Name, t.Template)
+			}
 		case "":
-			return fmt.Errorf("config: alerts.targets[%d] (%q): template is required (want %q or %q)", i, t.Name, AlertTemplateGeneric, AlertTemplateSwitchboard)
-		case AlertTemplateSlack, AlertTemplateDiscord, AlertTemplatePagerDutyEventsV2:
-			return fmt.Errorf("config: alerts.targets[%d] (%q): template=%q is designed but not yet implemented (this release ships %q and %q; slack/discord/pagerduty_events_v2 land in a follow-up — see docs/alert-tool-design.md)", i, t.Name, t.Template, AlertTemplateGeneric, AlertTemplateSwitchboard)
+			return fmt.Errorf("config: alerts.targets[%d] (%q): template is required (want one of %s)", i, t.Name, alertTemplateList)
 		default:
-			return fmt.Errorf("config: alerts.targets[%d] (%q): template=%q is unknown (want %q or %q)", i, t.Name, t.Template, AlertTemplateGeneric, AlertTemplateSwitchboard)
+			return fmt.Errorf("config: alerts.targets[%d] (%q): template=%q is unknown (want one of %s)", i, t.Name, t.Template, alertTemplateList)
 		}
 
 		// Refused rather than ignored: a conversation on a template that

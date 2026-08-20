@@ -258,11 +258,12 @@ func TestSwitchboardText_KeyOrderIsStable(t *testing.T) {
 }
 
 // TestRenderTemplate_UnknownTemplateStillRejected keeps the
-// defense-in-depth arm honest now that the switch has two live cases.
+// defense-in-depth arm honest now that every template the validator
+// accepts has a live case.
 func TestRenderTemplate_UnknownTemplateStillRejected(t *testing.T) {
 	t.Parallel()
-	_, err := renderTemplate(config.AlertTarget{Name: "a", Template: config.AlertTemplateSlack}, Args{Level: "info", Summary: "s"}, "s-1")
+	_, err := renderTemplate(config.AlertTarget{Name: "a", Template: "opsgenie"}, Args{Level: "info", Summary: "s"}, renderEnv{session: "s-1"})
 	if err == nil || !strings.Contains(err.Error(), "not implemented") {
-		t.Errorf("renderTemplate(slack) = %v, want a not-implemented error", err)
+		t.Errorf("renderTemplate(opsgenie) = %v, want a not-implemented error", err)
 	}
 }

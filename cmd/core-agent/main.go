@@ -479,6 +479,12 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		return runner.ExitConfigError
 	}
 	envResolver := agentenv.NewResolver(envManifest, os.LookupEnv)
+	// #712: watch loaded content for ${env:...} placeholders that survive
+	// the interpolation pass. envInterp is the ONE interpolator every
+	// content loader in this process gets — see newEnvInterpolator for
+	// why it must be non-nil even when envResolver is nil. The boot line
+	// it feeds is emitted after the subagents are built, below.
+	envInterp, envResidual := newEnvInterpolator(envResolver)
 	if errs := envResolver.Errors(); len(errs) > 0 {
 		for _, e := range errs {
 			fmt.Fprintf(os.Stderr, "core-agent: %v\n", e)
@@ -851,7 +857,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	loaded, err := instruction.LoadForSession(projectRoot, coreHome, "", cfg.Attach.MultiSession.UsersDir,
 		instruction.WithHomeAgentsRoot(homeAgentsDir),
 		instruction.WithContentRoots(contentRoots),
-		instruction.WithInterpolator(envResolver.InterpolateFunc()))
+		instruction.WithInterpolator(envInterp))
 	if err != nil {
 		// Fatal: malformed @include / escaped path / missing target / non-UTF-8
 		// content indicates a config bug. Silently shipping a degraded prompt
@@ -1056,7 +1062,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	loadedSkills, skillsErr := skills.LoadAll(ctx, agentsDir, coreHome, gate,
 		skills.WithHomeAgentsSkillsDir(homeAgentsDir),
 		skills.WithContentRoots(contentRoots),
-		skills.WithInterpolator(envResolver.InterpolateFunc()))
+		skills.WithInterpolator(envInterp))
 	if skillsErr != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: skills: %v\n", skillsErr)
 	}
@@ -1433,7 +1439,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		gate:       gate,
 		elicitor:   mcpElicitor,
 		digestOpts: digestOpts,
-		interp:     envResolver.InterpolateFunc(),
+		interp:     envInterp,
 		send:       send,
 		rootBase:   contentRootBase,
 
@@ -1446,6 +1452,18 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: subagents: %v\n", err)
 		return runner.ExitConfigError
+	}
+
+	// #712: say out loud that the persona still contains ${env:...}
+	// markers. Emitted HERE, later than the ReportDrift block above,
+	// because a rooted subagent loads its own AGENTS.md and skills/ from
+	// a content root and that only just happened — the live evidence in
+	// the issue came from exactly that shape. Warning, not fatal: the
+	// same literal appears legitimately in content that documents the
+	// feature (see ResidualRefs.Warning). Anything that survived is
+	// named verbatim so an operator can grep their bundle for it.
+	if w := envResidual.Warning(agentsDir); w != "" {
+		send(w)
 	}
 
 	// Register the declarative subagents as async-spawn templates on the
@@ -2100,7 +2118,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 				HomeAgentsDir:         homeAgentsDir,
 				ContentRoots:          contentRoots,
 				UsersDir:              cfg.Attach.MultiSession.UsersDir,
-				EnvInterp:             envResolver.InterpolateFunc(),
+				EnvInterp:             envInterp,
 				Registry:              attachReg,
 				ACLStore:              aclStore,
 				NoCompact:             noCompact,
@@ -2450,7 +2468,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			HomeAgentsDir: homeAgentsDir,
 			ProjectRoot:   projectRoot,
 			ContentRoots:  contentRoots,
-			EnvInterp:     envResolver.InterpolateFunc(),
+			EnvInterp:     envInterp,
 			InitialPrompt: initialPrompt,
 		})
 		if err != nil {

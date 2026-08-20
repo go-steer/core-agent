@@ -246,6 +246,12 @@ func TestConformance_RESTSessionTitleV1_ClearedAndUnpersisted(t *testing.T) {
 // is what stops `woke` from ever acquiring an omitempty (which would
 // make "did not wake" indistinguishable from a pre-1.10.0 daemon that
 // always did).
+//
+// It is now also the shape a daemon returns when it cannot name a
+// prompt_id — a registrant without IdentifyingInjector (#840). Kept
+// frozen: a client that can read this body must keep working, since
+// the capability is optional and the key's absence is a live case, not
+// a legacy one.
 func TestConformance_RESTInjectV1(t *testing.T) {
 	t.Parallel()
 	resp := InjectResponse{
@@ -256,6 +262,56 @@ func TestConformance_RESTInjectV1(t *testing.T) {
 	assertMatchesConformanceFixture(t,
 		"testdata/conformance/rest-inject-v1.json",
 		resp)
+}
+
+// TestConformance_RESTInjectV2 pins the same body with `prompt_id`
+// populated (#840) — the shape every in-tree host actually produces,
+// since attachadapter implements the capability.
+//
+// A second fixture rather than an edit to v1: the two are both live
+// answers from a conforming daemon, and a client has to handle each.
+// Pinning only the populated one would let the key quietly become
+// mandatory, which would break a host wrapping a registrant that
+// cannot name ids.
+func TestConformance_RESTInjectV2(t *testing.T) {
+	t.Parallel()
+	resp := InjectResponse{
+		Injected: "second alert corroborates the first",
+		Session:  "s-incident-4412",
+		Woke:     false,
+		PromptID: "0199c3a1-6b2e-7f04-9c11-2d8ae4f01b73",
+	}
+	assertMatchesConformanceFixture(t,
+		"testdata/conformance/rest-inject-v2.json",
+		resp)
+}
+
+// TestConformance_RESTWakeV1 pins POST /sessions/{sid}/wake, whose
+// body was a hand-rolled map literal until #840 gave it a type. The
+// fixture is what makes that retyping provably wire-identical: `woken`
+// and `prompt` keep their names AND `prompt` keeps its presence on an
+// empty value, which an accidental omitempty would silently drop.
+func TestConformance_RESTWakeV1(t *testing.T) {
+	t.Parallel()
+	resp := WakeResponse{
+		Woken:    "s-incident-4412",
+		Prompt:   "rescan the node pool",
+		PromptID: "0199c3a1-6b2e-7f04-9c11-2d8ae4f01b73",
+	}
+	assertMatchesConformanceFixture(t,
+		"testdata/conformance/rest-wake-v1.json",
+		resp)
+
+	// A bare wake still carries `prompt`, empty — the pre-#840 map
+	// literal always emitted the key, and a client reading it as
+	// "the prompt that was queued" must not see it vanish.
+	raw, err := json.Marshal(WakeResponse{Woken: "s-1"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got, want := string(raw), `{"woken":"s-1","prompt":""}`; got != want {
+		t.Errorf("bare wake marshals to %s\nwant                  %s", got, want)
+	}
 }
 
 func TestConformance_RESTWhoAmIV1(t *testing.T) {

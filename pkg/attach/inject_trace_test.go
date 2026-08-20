@@ -173,8 +173,12 @@ func TestWake_PropagatesTraceContextToRegistrant(t *testing.T) {
 func TestInjectWithContext_FallsBackForPlainRegistrants(t *testing.T) {
 	t.Parallel()
 	ag := &stubRegistrant{app: "a", user: "u", sid: "s"}
-	if err := injectWithContext(context.Background(), ag, "hello", auth.Caller{Identity: "op"}); err != nil {
+	id, err := injectWithContext(context.Background(), ag, "hello", auth.Caller{Identity: "op"})
+	if err != nil {
 		t.Fatalf("injectWithContext: %v", err)
+	}
+	if id != "" {
+		t.Errorf("prompt id = %q, want empty for a registrant that can't name one", id)
 	}
 	if len(ag.injectedAs) != 1 || ag.injectedAs[0].message != "hello" {
 		t.Fatalf("injectedAs = %v, want one \"hello\"", ag.injectedAs)

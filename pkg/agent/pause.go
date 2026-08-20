@@ -177,7 +177,13 @@ func (a *Agent) ResumeWith(mode, message string, caller auth.Caller) (bool, erro
 		return false, errors.New("agent: nil receiver")
 	}
 	if message != "" {
-		if err := a.injectAs(context.Background(), message, caller, injectMode{wake: true}); err != nil {
+		// The prompt_id is dropped here on purpose: ResumeWith's
+		// exported signature already returns (bool, error), and a
+		// resume-steer is answered on the /resume response, which has
+		// no field for it. A caller that needs the id can inject the
+		// framed text itself with InjectAsContextWithID and then
+		// resume.
+		if _, err := a.injectAs(context.Background(), message, caller, injectMode{wake: true}); err != nil {
 			return false, err
 		}
 	}

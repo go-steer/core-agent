@@ -195,6 +195,13 @@ var GatedFeatures = []GatedFeature{
 			"An older daemon drops it and the subagent boots with no instructions and no skills",
 	},
 	{
+		Path: "subagents[].budgets",
+		Min:  "2.9.0-dev.4",
+		Why: "a per-delegation turn/cost/wall-clock cap honored on both doors the subagent " +
+			"is reachable through (#713). An older daemon drops the block and runs the " +
+			"subagent uncapped while the config reads as though it were bounded",
+	},
+	{
 		Path: "content_roots",
 		Min:  "2.9.0-dev.1",
 		Why: "extra instruction/skill trees loaded from outside the agents dir (#610). " +

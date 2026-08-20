@@ -15,6 +15,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -141,6 +142,43 @@ type SubagentOptions struct {
 	// subagents, and a subagent is denied the spawn tool), so every
 	// in-tree deployment is a single level.
 	ParentTracker *usage.Tracker
+
+	// Budgets bounds one delegation. Zero dimensions are unbounded,
+	// which is what this door has always been.
+	Budgets SubagentBudgets
+}
+
+// SubagentBudgets caps one synchronous delegation along the same three
+// dimensions the asynchronous door bounds a spawned run with
+// (background.Budgets). Zero means unbounded on that dimension.
+//
+// It is declared here rather than imported because pkg/agent/background
+// imports pkg/agent, not the other way round; cmd/core-agent fills both
+// from one config.SubagentBudgets so an operator's declared cap binds
+// whichever door the subagent is reached through.
+//
+// A cap that fires does not fail the tool call. Whatever the subagent
+// produced is returned, labelled as a partial and naming the cap that
+// stopped it — discarding a partial makes the parent pay twice for work
+// it already bought (#691), and the parent holds the goal, so it is the
+// one that can re-ask with specifics (#730).
+type SubagentBudgets struct {
+	// MaxTurns caps the subagent's OWN model turns — its tool/model
+	// loop, not the parent's turn count.
+	MaxTurns int
+	// MaxCostUSD caps the dollars one delegation may spend, priced per
+	// turn exactly as the session ledger prices it. Enforcement needs a
+	// cost signal on this door, which is why it could not exist before
+	// the turns were billed at all (#713).
+	//
+	// A model the pricing catalog does not know prices at zero, so this
+	// dimension never binds for it — the same property the asynchronous
+	// door's MaxCost has. MaxTurns is the dimension that holds
+	// regardless of pricing data, so a cost cap is worth pairing with
+	// one.
+	MaxCostUSD float64
+	// MaxWallclock caps elapsed time from the start of the delegation.
+	MaxWallclock time.Duration
 }
 
 const (
@@ -357,18 +395,86 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 		// would both double-count tokens and inflate the turn count
 		// (#353). Observe every event, commit once on TurnComplete.
 		var tap usage.TurnTap
-		for ev, err := range r.Run(childCtx, innerUserID, subagentSessionID, msg, adkagent.RunConfig{
+
+		// Budget enforcement (SubagentOptions.Budgets). ADK's
+		// runner.RunConfig has no turn or cost cap — only StreamingMode
+		// and SaveInputBlobsAsArtifacts — so all three dimensions are
+		// counted here, the same way pkg/agent/subtask.go counts them
+		// for the agentic wrappers.
+		//
+		// Wall-clock is the one the runner can enforce for us: it rides
+		// a derived context, and its expiry surfaces as an error on the
+		// range, distinguished from a real failure below.
+		runCtx := childCtx
+		if opts.Budgets.MaxWallclock > 0 {
+			var cancel context.CancelFunc
+			runCtx, cancel = context.WithTimeout(childCtx, opts.Budgets.MaxWallclock)
+			defer cancel()
+		}
+		var (
+			turns    int
+			spentUSD float64
+			// stopReason is non-empty once a cap has fired. It reads as
+			// prose because its only reader is the parent's model.
+			stopReason string
+			// price is fixed for the whole delegation: one subagent, one
+			// model. Looked up once so the per-turn path is arithmetic.
+			price = usage.PriceFor(innerModelName, nil)
+		)
+		for ev, err := range r.Run(runCtx, innerUserID, subagentSessionID, msg, adkagent.RunConfig{
 			StreamingMode: opts.Inner.streaming,
 		}) {
 			if err != nil {
+				// Our own wall-clock cap, not a failure: the deadline is
+				// on runCtx, and childCtx being live is what separates it
+				// from the parent's turn being cancelled out from under
+				// the delegation.
+				if opts.Budgets.MaxWallclock > 0 && errors.Is(runCtx.Err(), context.DeadlineExceeded) && childCtx.Err() == nil {
+					stopReason = fmt.Sprintf("wall-clock budget of %s", opts.Budgets.MaxWallclock)
+					break
+				}
 				turnErr = fmt.Errorf("subagent %q: run: %w", name, err)
 				return subagentResult{}, turnErr
 			}
 			collectFinalText(&sb, ev)
 			tap.Observe(ev)
-			if u, ok := tap.Commit(ev); ok && billTo != nil && innerModelName != "" {
-				billTo.AppendUsage(innerModelName, u, usage.PriceFor(innerModelName, nil))
+			u, ok := tap.Commit(ev)
+			if !ok {
+				continue
 			}
+			turns++
+			if billTo != nil && innerModelName != "" {
+				billTo.AppendUsage(innerModelName, u, price)
+			}
+			// Priced whether or not there is a tracker: a cost cap is a
+			// safety limit, and it has to hold for a host that wired no
+			// ledger just as much as for one that did.
+			spentUSD += price.CostUSDForTurn(u)
+
+			// Caps are checked AFTER the turn is billed, so the turn
+			// that trips a cap is still on the books. Checked here
+			// rather than at the top of the loop because a turn arrives
+			// as many events and only the committing one is a turn.
+			if opts.Budgets.MaxTurns > 0 && turns >= opts.Budgets.MaxTurns {
+				stopReason = fmt.Sprintf("turn budget of %d", opts.Budgets.MaxTurns)
+				break
+			}
+			if opts.Budgets.MaxCostUSD > 0 && spentUSD >= opts.Budgets.MaxCostUSD {
+				stopReason = fmt.Sprintf("cost budget of $%.4f (spent $%.4f)", opts.Budgets.MaxCostUSD, spentUSD)
+				break
+			}
+		}
+		// A runner that ends its iteration cleanly on a cancelled context
+		// rather than yielding the error would otherwise hand back a
+		// truncated result with nothing saying so. The label is the whole
+		// point of the cap, so it does not depend on which of the two the
+		// runner does.
+		if stopReason == "" && opts.Budgets.MaxWallclock > 0 &&
+			errors.Is(runCtx.Err(), context.DeadlineExceeded) && childCtx.Err() == nil {
+			stopReason = fmt.Sprintf("wall-clock budget of %s", opts.Budgets.MaxWallclock)
+		}
+		if stopReason != "" {
+			return subagentResult{Result: subagentPartial(sb.String(), name, stopReason)}, nil
 		}
 		return subagentResult{Result: sb.String()}, nil
 	}
@@ -377,6 +483,28 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 		Name:        name,
 		Description: desc,
 	}, handler)
+}
+
+// subagentPartial labels a delegation that a budget cut short, so the
+// parent's model knows the text in its hands is unfinished and what to
+// do about it.
+//
+// The wording carries a guidance clause for the same reason
+// spawn_agent's stop_reason does (#710): the reader is a language model,
+// and a bare label two lines down does not steer it. The prefix goes
+// FIRST — a model reading a long result skims the head, and the fact
+// that the work is incomplete changes how it should read everything
+// after it.
+func subagentPartial(text, name, reason string) string {
+	header := fmt.Sprintf("[partial result: subagent %q hit its %s and was stopped. "+
+		"Treat what follows as unfinished: check it against what you asked for, and either "+
+		"re-delegate the remaining part with specifics or finish it yourself.]", name, reason)
+	if strings.TrimSpace(text) == "" {
+		// Nothing was produced at all. Saying so plainly beats handing
+		// back a header describing content that isn't there.
+		return header + "\n\nThe subagent produced no output before it was stopped."
+	}
+	return header + "\n\n" + text
 }
 
 // collectFinalText walks one event's content and appends any final

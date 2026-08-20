@@ -457,7 +457,12 @@ A top-level `subagents` array declares a **fixed roster** of named delegates the
       "tools": ["read_file", "grep"],     // built-in allowlist
       "mcp": ["gke-readonly"],            // MCP servers by name (from mcp.json)
       "skills": ["fleet-audit"],          // skills by name (from skills/)
-      "root": "../cluster"                // optional: load own AGENTS.md + skills/ + mcp.json from a content root
+      "root": "../cluster",               // optional: load own AGENTS.md + skills/ + mcp.json from a content root
+      "budgets": {                        // optional: bound one delegation, on both doors
+        "max_turns": 20,
+        "max_cost_usd": 0.5,
+        "max_wallclock_seconds": 300
+      }
     }
   ]
 }
@@ -484,6 +489,20 @@ So `"mcp": ["gke-readonly"]` gives the subagent only that one server's toolset (
 - **MCP servers** start from `<root>/mcp.json`, private to the subagent.
 
 With `root` set, the nil / list / empty contract for `mcp`/`skills` still applies but filters **within the root** (omit = all of the root's; a list scopes; `[]` grants none); `tools` remains a built-in allowlist resolved against the binary. A relative `root` resolves against the same base as [`content_roots`](#content_roots-v29) (the agents dir when the config was discovered under one, else the cwd); an absolute path passes through. `root` is operator-declared trust — it is **not** confined to the project root (the sibling-tree case needs `../cluster`) — but a missing or non-directory path is a **loud startup error**, and the subagent stays bound by the parent's permission gate: an independent *content* surface is never a *privilege* escalation.
+
+**Bounding one delegation — the `budgets` block (v2.9+).** A declared subagent is reachable two ways: as a tool the parent calls, and as `spawn_agent { agent: "cluster" }`. `budgets` caps one delegation along three independent dimensions and is honored on **both** doors, because a cap that binds only the door the operator didn't use is worse than no cap — the config reads as though the subagent were bounded.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `max_turns` | int | unset | The subagent's **own** model turns, not the parent's. |
+| `max_cost_usd` | float | unset | Priced per turn exactly as the session ledger prices it, under the subagent's own model. |
+| `max_wallclock_seconds` | int | unset | Measured from the start of the delegation. |
+
+Each dimension is independent, and `0` (or an omitted field) means **no declared cap**: the asynchronous door then falls back to the manager's defaults (50 turns / $1 / 10m), and the synchronous door stays unbounded, which is what it has always been. Negative values are a config error rather than being clamped — `0` already means "no cap", so clamping a typo would leave the subagent uncapped while the config said otherwise. A per-spawn `spawn_agent` override may only **tighten** what is declared here.
+
+**A cap that fires does not fail the delegation.** Whatever the subagent produced is returned to the parent, labelled as a partial and naming the cap that stopped it, with a line telling the parent what to do next — re-delegate the remainder with specifics, or finish it itself. Discarding the partial would make the parent pay twice for work it already bought, and the parent is the one holding the goal.
+
+Budgets are the per-delegate complement to the session-wide ceilings: `--max-turn-cost-usd` and `--max-session-cost-usd` bound the whole tree (delegated turns count toward them since v2.9), while `budgets` stops one wandering delegate before it eats that allowance.
 
 ### REPL keybindings (v1.3.0+)
 

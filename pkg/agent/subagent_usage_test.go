@@ -19,6 +19,7 @@ import (
 	"iter"
 	"sync"
 	"testing"
+	"time"
 
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/tool"
@@ -38,6 +39,10 @@ import (
 type meteredLLM struct {
 	name   string
 	script [][]*adkmodel.LLMResponse
+	// delay, when set, stalls each call before it yields anything —
+	// honoring ctx, so a wall-clock budget on the run can cut it short
+	// (subagent_budget_test.go).
+	delay time.Duration
 
 	mu    sync.Mutex
 	calls int
@@ -45,12 +50,20 @@ type meteredLLM struct {
 
 func (l *meteredLLM) Name() string { return l.name }
 
-func (l *meteredLLM) GenerateContent(_ context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+func (l *meteredLLM) GenerateContent(ctx context.Context, _ *adkmodel.LLMRequest, _ bool) iter.Seq2[*adkmodel.LLMResponse, error] {
 	l.mu.Lock()
 	n := l.calls
 	l.calls++
 	l.mu.Unlock()
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		if l.delay > 0 {
+			select {
+			case <-time.After(l.delay):
+			case <-ctx.Done():
+				yield(nil, ctx.Err())
+				return
+			}
+		}
 		if n >= len(l.script) {
 			// Past the script: a plain final turn with no usage, so a
 			// surplus call can never be mistaken for billed spend.

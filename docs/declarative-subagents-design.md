@@ -93,8 +93,24 @@ type SubagentSpec struct {
 	MCP          []string     `json:"mcp,omitempty"`          // server names (shared mcp.json, or the root's when Root is set)
 	Skills       []string     `json:"skills,omitempty"`       // skill names (shared skills/, or the root's when Root is set)
 	Root         string       `json:"root,omitempty"`         // v2 increment: a trusted dir the subagent loads as its OWN scope (see below)
+
+	Budgets *SubagentBudgets `json:"budgets,omitempty"` // nil = no declared cap; honored on BOTH doors (#713)
+}
+
+type SubagentBudgets struct {
+	MaxTurns            int     `json:"max_turns,omitempty"`             // the subagent's own model turns
+	MaxCostUSD          float64 `json:"max_cost_usd,omitempty"`          // priced per turn, under the subagent's model
+	MaxWallclockSeconds int     `json:"max_wallclock_seconds,omitempty"` // from the start of the delegation
 }
 ```
+
+`Budgets` projects onto both twins — `agent.SubagentBudgets` for the
+synchronous tool door, `background.Budgets` on the `SubagentTemplate` for
+the spawn door — because the same subagent is reachable either way and a
+cap that binds only one of them reads, in the config, as though it bound
+both (the #759/#762 antipattern). Zero leaves the spawn door on the
+manager's defaults and the tool door unbounded. A cap that fires returns
+the partial, labelled, rather than failing the call.
 
 The shipped v1 (Phases 1–3) is inline refs against the shared config; the
 `Root` field is the v2 increment specified in "Per-subagent content root

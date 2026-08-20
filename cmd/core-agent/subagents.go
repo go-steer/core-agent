@@ -445,6 +445,10 @@ func buildDeclaredSubagents(
 			ToolsetTools: subToolsets.infos,
 			MaxDepth:     spec.MaxDepth,
 			Root:         spec.Root,
+			// The declared cap binds this door too. Zero leaves the
+			// manager's defaults (50 turns / $1 / 10m) in place via
+			// mergeBudgets; a per-spawn override may only tighten.
+			Budgets: asyncBudgets(spec.Budgets),
 		})
 
 		if len(droppedTools) > 0 {
@@ -486,7 +490,41 @@ func assembleSubagent(spec config.SubagentSpec, llm adkmodel.LLM, userInstructio
 	if spec.MaxDepth > 0 {
 		opts = append(opts, agent.WithSubagentMaxDepth(spec.MaxDepth))
 	}
+	if spec.Budgets != nil {
+		opts = append(opts, agent.WithSubagentBudgets(syncBudgets(spec.Budgets)))
+	}
 	return agent.New(llm, opts...)
+}
+
+// syncBudgets and asyncBudgets project one declared config.SubagentBudgets
+// onto the two doors the same subagent is reachable through. They exist as
+// a pair, next to each other, because the failure this guards against is
+// one of them being forgotten: a cap that binds only the door the operator
+// didn't use is worse than no cap, since the config says the subagent is
+// bounded (#759/#762 — don't advertise what you can't do).
+//
+// Nil (no budgets block) is the identity: the sync door stays unbounded,
+// and the async door keeps falling back to the manager's defaults.
+func syncBudgets(b *config.SubagentBudgets) agent.SubagentBudgets {
+	if b == nil {
+		return agent.SubagentBudgets{}
+	}
+	return agent.SubagentBudgets{
+		MaxTurns:     b.MaxTurns,
+		MaxCostUSD:   b.MaxCostUSD,
+		MaxWallclock: time.Duration(b.MaxWallclockSeconds) * time.Second,
+	}
+}
+
+func asyncBudgets(b *config.SubagentBudgets) background.Budgets {
+	if b == nil {
+		return background.Budgets{}
+	}
+	return background.Budgets{
+		MaxTurns:     b.MaxTurns,
+		MaxCost:      b.MaxCostUSD,
+		MaxWallclock: time.Duration(b.MaxWallclockSeconds) * time.Second,
+	}
 }
 
 // loadSubagentRoot stands up a rooted subagent's OWN scope from a dedicated

@@ -129,6 +129,46 @@ func TestValidate_Subagents(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "budgets on all three dimensions",
+			specs: []SubagentSpec{{
+				Name:    "cluster",
+				Budgets: &SubagentBudgets{MaxTurns: 20, MaxCostUSD: 0.5, MaxWallclockSeconds: 300},
+			}},
+			wantErr: false,
+		},
+		{
+			// Every dimension is independent; an operator who only cares
+			// about the bill sets one.
+			name:    "partial budgets",
+			specs:   []SubagentSpec{{Name: "cluster", Budgets: &SubagentBudgets{MaxCostUSD: 0.25}}},
+			wantErr: false,
+		},
+		{
+			// An empty block is not an error, just no declared cap —
+			// same as omitting it.
+			name:    "empty budgets block",
+			specs:   []SubagentSpec{{Name: "cluster", Budgets: &SubagentBudgets{}}},
+			wantErr: false,
+		},
+		{
+			// Rejected rather than clamped: 0 already means "no cap", so
+			// clamping a typo'd -1 would leave the subagent uncapped
+			// while the config reads as though it were bounded.
+			name:    "negative max_turns",
+			specs:   []SubagentSpec{{Name: "cluster", Budgets: &SubagentBudgets{MaxTurns: -1}}},
+			wantErr: true,
+		},
+		{
+			name:    "negative max_cost_usd",
+			specs:   []SubagentSpec{{Name: "cluster", Budgets: &SubagentBudgets{MaxCostUSD: -0.5}}},
+			wantErr: true,
+		},
+		{
+			name:    "negative max_wallclock_seconds",
+			specs:   []SubagentSpec{{Name: "cluster", Budgets: &SubagentBudgets{MaxWallclockSeconds: -30}}},
+			wantErr: true,
+		},
+		{
 			name:    "absolute root is valid",
 			specs:   []SubagentSpec{{Name: "cluster", Root: "/recipes/cluster"}},
 			wantErr: false,

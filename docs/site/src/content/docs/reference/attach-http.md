@@ -89,7 +89,9 @@ No cookies — the listener is stateless per request. Identity is re-derived fro
 | Method | Path | Action | Request | Response |
 |---|---|---|---|---|
 | `GET` | `/sessions` | `SessionList` (always OK, ACL-filtered) | — | **200** `{"sessions":[{"app":..., "user":..., "sessionID":..., "has_event_log":bool, "status":"active"\|"idle", "last_touched_at":..., "title":...}]}` — union of in-memory (`active`) + persisted-idle rows. Note the field is `sessionID`, not `session_id` — pin against the [conformance fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-sessions-list-v2.json). `last_touched_at` is RFC 3339 with arbitrary precision and zone offset (parse, don't pattern-match); the zero value `0001-01-01T00:00:00Z` means never-touched. `title` (protocol 1.6.0) is a short label derived from the session's first prompt; it is **omitted** for pre-1.6.0 daemons, for sessions whose first turn hasn't landed, and where titling is off — render the session ID when it's absent. |
-| `POST` | `/sessions` | Authenticated caller | — | **201** `{"app":..., "user":..., "sessionID":..., "url":...}` ([fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-create-session-v1.json)). **501** when the daemon lacks a `SessionFactory`; **401** anonymous; **409** on `ErrSessionExists`. Caller stamped as ACL Owner. Deliberately ungated during daemon shutdown: the ACL row is durable, so a session created in that window resumes normally after the restart — but it is usable only then. |
+| `POST` | `/sessions` | Authenticated caller | `{"viewers"?:[...], "contributors"?:[...]}` — **body optional** (absent = owner-only ACL, the pre-1.10.0 behavior) | **201** `{"app":..., "user":..., "sessionID":..., "url":...}` ([fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-create-session-v1.json)). **501** when the daemon lacks a `SessionFactory`; **401** anonymous; **409** on `ErrSessionExists`; **400** on a malformed body or an `owner` field. Caller stamped as ACL Owner — `owner` is **rejected**, not honoured, so a caller can't hand a session to someone else (see [Session ACLs](#session-acls-protocol-1100)). The body is parsed *before* the session factory runs, so a rejected one leaves no half-built session behind. Deliberately ungated during daemon shutdown: the ACL row is durable, so a session created in that window resumes normally after the restart — but it is usable only then. |
+| `GET` | `/sessions/{sid}/acl` and `/sessions/{app}/{sid}/acl` | `SessionAdmin` | — | **200** `{"owner":..., "viewers":[...], "contributors":[...]}` ([fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-session-acl-v1.json)). Both lists are **always present** — `[]`, never `null`. **404** on not-found OR auth-deny (masked), so a viewer or contributor cannot read the roster of who else is on the session. |
+| `PATCH` | `/sessions/{sid}/acl` and `/sessions/{app}/{sid}/acl` | `SessionAdmin` | `{"owner"?:..., "viewers"?:[...], "contributors"?:[...]}` | **200** with the same shape as `GET`, reporting the ACL as stored. An **omitted** list is left unchanged; `[]` clears it. **400** on a malformed/absent body or an `owner` that differs from the current one — `""` included (ownership is not transferable here); **404** on not-found OR auth-deny; **500** if persistence fails, in which case the in-memory ACL is rolled back. |
 | `DELETE` | `/sessions/{sid}` and `/sessions/{app}/{sid}` | `SessionAdmin` | — | **204** on success. **403** on the bootstrap `"default"` session. **404** on not-found OR auth-deny (masked). **NOT idempotent** — second call returns **500** wrapping `ErrSessionNotFound`. |
 
 ### Session read (`SessionRead` — all owner/contributor/viewer OK)
@@ -141,6 +143,31 @@ All write endpoints cap request bodies at **8 KiB** (`operatorPostMaxBytes`).
 Any capability-missing mutation returns **501** (e.g. `/pause` or `/resume` without a `PauseController`, `/wake` with a `target` on a daemon without wake-target routing). `/interrupt` is the exception: it predates the convention and answers **412**.
 
 Guardrail trips and resets are **durable** (v2.9.0-dev, [#643](https://github.com/go-steer/core-agent/issues/643)). A trip appends a `guardrail-trip` event (`Author=agent/guardrail-trip`) and a successful reset appends `attach-guardrail-reset` (`Author=attach/guardrail-reset`, carrying `caller`, `reset`, and `budget_added_usd`); a process that restarts against the same session folds those rows forward, so a halted session comes back halted and a cleared one comes back cleared. Like `/interrupt`'s audit row these are written by the agent from its own turn loop rather than synchronously inside the request, so tail `/events` rather than assuming the row exists the instant the reset returns. Caller attribution is stamped from the authenticated identity — a `caller` field in the request body is ignored. Restored state is always subject to the *current* process's configuration: a daemon restarted with `--watchdog=warn` does not resurrect an enforce-mode halt, and granted budget is not applied to a per-session ceiling that is no longer configured. Requires an eventlog; with no session store the endpoints behave exactly as before.
+
+### Session ACLs (protocol 1.10.0)
+
+A session's ACL is `owner` plus two lists — `viewers` (read) and `contributors` (read + write). The [authorization matrix](#auth-model) above has enforced all three since multi-session shipped, but until protocol 1.10.0 the lists were settable *nowhere* over HTTP: `POST /sessions` stamped the caller as `owner` and there was no route to amend anything ([#797](https://github.com/go-steer/core-agent/issues/797)). The only reachable ACL was owner-plus-admins, and a second participant got a **404** with no request that could change it.
+
+Two ways to set them, because the two answer different questions:
+
+| When you know | Call |
+|---|---|
+| At creation — the audience is a property of the work (an agent opening a session about an incident knows the on-call group) | `POST /sessions {"contributors":["oncall@example.com"]}` |
+| Later — the individual isn't known until it happens (adding a specific responder mid-incident) | `PATCH /sessions/{sid}/acl {"contributors":[...]}` |
+
+`PATCH` semantics, precisely: an **omitted** list is left alone, and `[]` clears it. That distinction is the reason this is a `PATCH` and not a `PUT` — without it, adding a contributor would silently wipe the viewers.
+
+Both verbs require `SessionAdmin`, so in practice the **owner or an admin**. The read is gated as hard as the write on purpose: the ACL names the other people on a session, and a contributor being able to enumerate their co-responders is a disclosure the endpoint has no reason to make. It also means a contributor cannot widen the ACL — otherwise the first identity you add could add everyone else.
+
+`owner` is accepted on both endpoints **only so it can be refused** with a `400` — including `""`, which is a transfer to nobody. Ownership is not transferable here: the persisted owner index is what makes an idle session visible to its owner, so a transfer would take the session away from the losing side with no way back. Sending the *current* owner is fine, so a client that `GET`s the document, edits it, and `PATCH`es the whole thing back doesn't have to strip the field. Dropping the field silently was the alternative, and it is the same invisible-failure shape #797 was filed about.
+
+Identities are normalized on the way in — trimmed, empties dropped, duplicates removed, caller order preserved — and the response reports what was actually stored. Identity matching is exact, so an untrimmed pasted address would produce an ACL that reads correct and denies anyway, surfacing as a **404** that looks nothing like a typo.
+
+Concurrent `PATCH`es are safe to interleave: the merge of your body onto the current ACL happens inside the registry lock, not in the handler, so two callers amending different lists at the same moment both land. (Doing the read first and the write second would let each one carry the other's untouched list forward from a stale snapshot, and one edit would disappear behind a `200`.)
+
+A `PATCH` on a session with a durable ACL row writes through to it, and a failed write is a **500** with the in-memory ACL rolled back — reporting `200` for an ACL that evaporates at the next restart is worse than failing, because the caller stops retrying. A legacy unowned session (registered without an owner) is amended in memory only: "ACL row exists ⟺ session is resumable" is a load-bearing invariant, and quietly making such a session resumable is a different lifecycle than the operator configured.
+
+A pre-1.10.0 daemon answers both paths with **404** — the same answer it gives an unauthorized caller — so feature-detect on the negotiated `protocol_version`, not by probing.
 
 ### Interrupt, pause, and resume (protocol 1.5.0)
 
@@ -403,7 +430,7 @@ Consumers MUST tolerate unknown values and MUST NOT crash on missing keys.
 | **201** | Created — `POST /sessions`, `POST /peers`. |
 | **204** | No content — successful DELETEs, `POST /perms/allow` etc. |
 | **301** | Redirect — `/ui` → `/ui/`. |
-| **400** | Bad request — empty required field (message, patterns, ...); unknown `/resume` mode, or `mode=steer` with no text. |
+| **400** | Bad request — empty required field (message, patterns, ...); unknown `/resume` mode, or `mode=steer` with no text; an `owner` field on `PATCH /acl` or `POST /sessions` that isn't the current owner (`""` included). |
 | **401** | Unauthenticated — missing / wrong bearer token; bad proxy assertion. |
 | **403** | Forbidden — `--attach-readonly` writes; delete of the bootstrap `"default"` session; cross-origin `Origin` header on a write (CSRF protection). |
 | **404** | Not found OR auth-deny (deliberately indistinguishable to avoid SID enumeration); `POST /agents/{name}/stop` for a subagent that isn't running. |
@@ -412,7 +439,7 @@ Consumers MUST tolerate unknown values and MUST NOT crash on missing keys.
 | **412** | Precondition failed — session has no eventlog (SSE reader); neither `PauseController` nor `InterruptProvider` (interrupt). |
 | **415** | Unsupported media type — state-changing request without `Content-Type: application/json` (CSRF protection). |
 | **429** | Rate limited — the per-caller cost limiter on `/slash/*` (10/min, burst 5). Carries `Retry-After` and `{"error":"rate limited","retry_after_seconds":N}`; retryable. |
-| **500** | Internal error — factory failure on `POST /sessions`; second `DELETE` of a gone session. |
+| **500** | Internal error — factory failure on `POST /sessions`; second `DELETE` of a gone session; a `PATCH /acl` whose persistence failed (the in-memory ACL is rolled back, so a retry is safe). |
 | **501** | Not implemented — capability provider absent (`SessionFactory`, `InterruptProvider`, `PromptBrokerProvider`, wake `target`, etc.). |
 
 ## Idempotency
@@ -423,6 +450,7 @@ Consumers MUST tolerate unknown values and MUST NOT crash on missing keys.
 | `DELETE /peers/{id}` | **Yes** — unknown id also **204** (owner/admin only; **403** otherwise). |
 | `POST /sessions` | **No** — every call spins a fresh session. |
 | `POST /peers` | Effectively **yes** — name-based upsert extends the lease of an existing peer. |
+| `PATCH /sessions/{sid}/acl` | **Yes** — the listed fields are replaced, not merged, so replaying the same body lands on the same ACL. |
 | `POST /perms/respond` | **No** — second respond for the same prompt → **404** (`ErrPromptNotFound`). |
 | `POST /interrupt` | Idempotent in effect — the loop ends up cancelled and parked either way. Repeat calls while the cancelled turn is still unwinding keep reporting `interrupted: true` (the interrupt did land); once it's idle they set `X-Interrupted: nothing-in-flight`. |
 | `POST /pause` / `POST /resume` | Idempotent — `transitioned` / `resumed` report whether *this* call changed anything, so a redundant press is a quiet `200`. |

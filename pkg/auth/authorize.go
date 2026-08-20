@@ -14,6 +14,8 @@
 
 package auth
 
+import "strings"
+
 // Action enumerates the authorization decisions the multi-session
 // attach layer makes. The matrix is intentionally small in α.1; finer
 // scoping (per-tool, per-MCP-server, per-session-sub-area) is deferred
@@ -77,6 +79,62 @@ type SessionACL struct {
 	Owner        string
 	Viewers      []string
 	Contributors []string
+}
+
+// Normalized returns a copy of the ACL with the identity lists
+// cleaned up: each entry space-trimmed, empties dropped, duplicates
+// removed (first occurrence wins, so the caller's order survives),
+// and the slices freshly allocated so the result shares no backing
+// array with the receiver.
+//
+// Applied wherever an ACL crosses a trust boundary — the registry's
+// register/amend entrypoints, and through them the HTTP surface that
+// feeds them. The cleanup is not cosmetic: containsIdentity matches
+// exactly, so a trailing space on a pasted identity produces an ACL
+// that reads correct and denies anyway, and a denial here surfaces as
+// 404 rather than 403 (deliberately — see Authorize), which is the
+// hardest possible shape to debug from the client side. Dropping
+// empties matters more: an ACL is compared against Caller.Identity,
+// and while Authorize refuses an empty identity outright, a "" in a
+// list is still a rule that can never match and would sit in the
+// persisted row looking like a grant.
+//
+// Owner is left exactly as supplied. It is one value rather than a
+// list, its caller-facing errors are direct, and it may legitimately
+// be a synthetic identity whose spelling is the operator's business.
+//
+// Nil-preserving: a nil list normalizes to nil rather than an empty
+// slice, so a round-trip through the store's JSON encoding doesn't
+// flip between `null` and `[]`.
+func (a SessionACL) Normalized() SessionACL {
+	return SessionACL{
+		Owner:        a.Owner,
+		Viewers:      normalizeIdentities(a.Viewers),
+		Contributors: normalizeIdentities(a.Contributors),
+	}
+}
+
+func normalizeIdentities(xs []string) []string {
+	if len(xs) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(xs))
+	out := make([]string, 0, len(xs))
+	for _, x := range xs {
+		x = strings.TrimSpace(x)
+		if x == "" {
+			continue
+		}
+		if _, dup := seen[x]; dup {
+			continue
+		}
+		seen[x] = struct{}{}
+		out = append(out, x)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // Authorize reports whether c may perform a against the given session

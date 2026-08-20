@@ -30,6 +30,7 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/internal/subagentlog"
+	"github.com/go-steer/core-agent/v2/pkg/auth"
 )
 
 // REST-response conformance tests (#536). The SSE event shapes have
@@ -132,6 +133,41 @@ func TestConformance_RESTCreateSessionV1(t *testing.T) {
 	assertMatchesConformanceFixture(t,
 		"testdata/conformance/rest-create-session-v1.json",
 		resp)
+}
+
+// TestConformance_RESTSessionACLV1 pins the GET/PATCH
+// /sessions/{sid}/acl response (#797). Both lists are present and
+// non-empty in the fixture, because this is the one endpoint whose
+// entire job is reporting who is on the ACL — a client that had to
+// distinguish a missing key from an empty list would be guessing about
+// authorization, so the handler always emits `[]` rather than `null`
+// and the second test below pins that.
+func TestConformance_RESTSessionACLV1(t *testing.T) {
+	t.Parallel()
+	resp := aclResponse(auth.SessionACL{
+		Owner:        "lookout@example.com",
+		Viewers:      []string{"sre-readonly@example.com"},
+		Contributors: []string{"oncall@example.com", "incident-bot@example.com"},
+	})
+	assertMatchesConformanceFixture(t,
+		"testdata/conformance/rest-session-acl-v1.json",
+		resp)
+}
+
+// TestConformance_RESTSessionACLV1_EmptyListsAreArrays is the half the
+// fixture can't show. Normalized() reports an absent list as nil, which
+// marshals to `null`; a client iterating the response would then need a
+// nil check on the happy path of a brand-new session, whose ACL is
+// owner-only by construction. That is the common case, not the edge.
+func TestConformance_RESTSessionACLV1_EmptyListsAreArrays(t *testing.T) {
+	t.Parallel()
+	raw, err := json.Marshal(aclResponse(auth.SessionACL{Owner: "alice@example.com"}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got, want := string(raw), `{"owner":"alice@example.com","viewers":[],"contributors":[]}`; got != want {
+		t.Errorf("owner-only ACL marshals to %s\nwant                            %s", got, want)
+	}
 }
 
 func TestConformance_RESTWhoAmIV1(t *testing.T) {

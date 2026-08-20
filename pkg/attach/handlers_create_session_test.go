@@ -55,7 +55,18 @@ func (f *factoryStub) Factory() SessionFactory {
 
 func newCreateRequest(t *testing.T, caller auth.Caller) (*http.Request, *httptest.ResponseRecorder) {
 	t.Helper()
-	r := httptest.NewRequest(http.MethodPost, "/sessions", strings.NewReader(""))
+	return newCreateRequestBody(t, caller, "")
+}
+
+// newCreateRequestBody is newCreateRequest with an explicit body. The
+// body is optional on this endpoint (#797), so every existing caller
+// of newCreateRequest doubles as the no-body regression test.
+func newCreateRequestBody(t *testing.T, caller auth.Caller, body string) (*http.Request, *httptest.ResponseRecorder) {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodPost, "/sessions", strings.NewReader(body))
+	if body != "" {
+		r.Header.Set("Content-Type", "application/json")
+	}
 	if caller.Identity != "" {
 		r = r.WithContext(auth.WithCaller(r.Context(), caller))
 	}
@@ -128,7 +139,7 @@ func TestCreateSession_HappyPathStampsOwner(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("registry should have 1 entry, got %d", len(entries))
 	}
-	if got := entries[0].ACL.Owner; got != "alice@example.com" {
+	if got := entries[0].CurrentACL().Owner; got != "alice@example.com" {
 		t.Errorf("ACL.Owner: got %q, want %q (handler must call RegisterOwned with the caller)", got, "alice@example.com")
 	}
 	// And confirm the factory saw alice.
@@ -170,6 +181,83 @@ func TestCreateSession_FactoryNilReturnsAlso500(t *testing.T) {
 	h.createSession(rr, r)
 	if rr.Code != http.StatusInternalServerError {
 		t.Errorf("nil registrant: expected 500, got %d", rr.Code)
+	}
+}
+
+// TestCreateSession_BodyStampsACL — the creator usually knows its
+// audience at creation time, and stamping it here is the difference
+// between the first reply landing and it 404ing until somebody
+// remembers to PATCH the ACL (#797).
+func TestCreateSession_BodyStampsACL(t *testing.T) {
+	t.Parallel()
+	fs := &factoryStub{produce: func(_ auth.Caller) Registrant {
+		return &stubRegistrant{app: "core-agent", user: "u", sid: "sess-acl"}
+	}}
+	reg := NewSessionRegistry()
+	h := &handlers{reg: reg, pool: newBroadcasterPool(), factory: fs.Factory()}
+
+	r, rr := newCreateRequestBody(t, auth.Caller{Identity: "lookout@example.com"},
+		`{"viewers":["watch@example.com"],"contributors":["  oncall@example.com  ","oncall@example.com"]}`)
+	h.createSession(rr, r)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+
+	acl := reg.List()[0].CurrentACL()
+	if acl.Owner != "lookout@example.com" {
+		t.Errorf("Owner = %q, want the authenticated caller", acl.Owner)
+	}
+	if len(acl.Viewers) != 1 || acl.Viewers[0] != "watch@example.com" {
+		t.Errorf("Viewers = %v", acl.Viewers)
+	}
+	// Normalized on the way in: the ACL is matched exactly, so an
+	// untrimmed identity would read correct and deny anyway.
+	if len(acl.Contributors) != 1 || acl.Contributors[0] != "oncall@example.com" {
+		t.Errorf("Contributors = %v, want [oncall@example.com] trimmed and de-duplicated", acl.Contributors)
+	}
+}
+
+// TestCreateSession_BodyRejectsOwner — the field exists on the wire
+// shape only so it can be refused. Honouring it would let any caller
+// hand a session to someone else; dropping it silently would let the
+// caller believe it had.
+func TestCreateSession_BodyRejectsOwner(t *testing.T) {
+	t.Parallel()
+	fs := &factoryStub{produce: func(_ auth.Caller) Registrant {
+		return &stubRegistrant{app: "core-agent", user: "u", sid: "sess-owner"}
+	}}
+	reg := NewSessionRegistry()
+	h := &handlers{reg: reg, pool: newBroadcasterPool(), factory: fs.Factory()}
+
+	r, rr := newCreateRequestBody(t, auth.Caller{Identity: "alice@example.com"}, `{"owner":"bob@example.com"}`)
+	h.createSession(rr, r)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	if len(fs.calls) != 0 {
+		t.Errorf("factory ran %d times; a rejected body must not leave a constructed agent and a live wake loop behind", len(fs.calls))
+	}
+	if len(reg.List()) != 0 {
+		t.Errorf("registry has %d entries after a rejected body, want 0", len(reg.List()))
+	}
+}
+
+// TestCreateSession_MalformedBodyReturns400 — same ordering guarantee
+// as the owner case, for the plainer failure.
+func TestCreateSession_MalformedBodyReturns400(t *testing.T) {
+	t.Parallel()
+	fs := &factoryStub{produce: func(_ auth.Caller) Registrant {
+		return &stubRegistrant{app: "core-agent", user: "u", sid: "sess-bad"}
+	}}
+	h := &handlers{reg: NewSessionRegistry(), pool: newBroadcasterPool(), factory: fs.Factory()}
+
+	r, rr := newCreateRequestBody(t, auth.Caller{Identity: "alice@example.com"}, `{"viewers":`)
+	h.createSession(rr, r)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	if len(fs.calls) != 0 {
+		t.Errorf("factory ran %d times on a malformed body, want 0", len(fs.calls))
 	}
 }
 

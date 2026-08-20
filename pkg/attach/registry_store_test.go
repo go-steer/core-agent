@@ -72,8 +72,8 @@ func TestRegisterOwned_NilStoreIsBackwardCompat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterOwned with nil store: %v", err)
 	}
-	if entry.ACL.Owner != "alice@example.com" {
-		t.Errorf("in-memory ACL.Owner: got %q", entry.ACL.Owner)
+	if entry.CurrentACL().Owner != "alice@example.com" {
+		t.Errorf("in-memory ACL.Owner: got %q", entry.CurrentACL().Owner)
 	}
 }
 

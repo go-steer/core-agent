@@ -104,7 +104,21 @@ import "time"
 // absence as "this specialist has nothing" — it has to fall back to
 // showing the roster without a grant, exactly as it did before. It
 // lists what was configured, not what the runtime wires on top.
-const protocolVersion = "1.9.0"
+//
+// v1.10.0 (#797): new GET + PATCH /sessions/{sid}/acl endpoints, and
+// POST /sessions gained an optional request body carrying `viewers` /
+// `contributors` for the new session's ACL. Until now a session's
+// Viewers and Contributors were enforced everywhere but settable
+// nowhere over HTTP, so the only reachable ACL was "owner plus
+// admins" and a second participant was 404'd with no request that
+// could change it. Additive in the same way v1.5.0's new endpoints
+// were: no existing shape moves, and POST /sessions with no body
+// behaves exactly as before (the body is optional, and an absent one
+// yields the owner-only ACL that was the sole outcome previously). A
+// pre-1.10.0 daemon answers the new paths with 404, which is also
+// what it answers an unauthorized caller, so a client must read the
+// negotiated version rather than probing.
+const protocolVersion = "1.10.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (

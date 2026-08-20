@@ -28,7 +28,7 @@ func TestAuthorize_DisabledIsAlwaysAllow(t *testing.T) {
 	// deployments), authorize must short-circuit to allow regardless
 	// of Caller or ACL — preserves the α.1 no-behavior-change posture.
 	h := &handlers{enforceACL: false}
-	entry := &Entry{ACL: auth.SessionACL{Owner: "owner@example.com"}}
+	entry := entryWithACL(auth.SessionACL{Owner: "owner@example.com"})
 	rr := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	// Stranger context — would deny under enforcement.
@@ -42,7 +42,7 @@ func TestAuthorize_DisabledIsAlwaysAllow(t *testing.T) {
 func TestAuthorize_OwnerSeesOwnSession(t *testing.T) {
 	t.Parallel()
 	h := &handlers{enforceACL: true}
-	entry := &Entry{ACL: auth.SessionACL{Owner: "owner@example.com"}}
+	entry := entryWithACL(auth.SessionACL{Owner: "owner@example.com"})
 	rr := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r = r.WithContext(auth.WithCaller(r.Context(), auth.Caller{Identity: "owner@example.com"}))
@@ -63,7 +63,7 @@ func TestAuthorize_StrangerGets404NotForbidden(t *testing.T) {
 	// surfaces as 404, not 403 — an attacker can't distinguish "you
 	// don't have access" from "this session doesn't exist."
 	h := &handlers{enforceACL: true}
-	entry := &Entry{ACL: auth.SessionACL{Owner: "owner@example.com"}}
+	entry := entryWithACL(auth.SessionACL{Owner: "owner@example.com"})
 	rr := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r = r.WithContext(auth.WithCaller(r.Context(), auth.Caller{Identity: "stranger@example.com"}))
@@ -79,10 +79,10 @@ func TestAuthorize_StrangerGets404NotForbidden(t *testing.T) {
 func TestAuthorize_ContributorWriteAllowedAdminDenied(t *testing.T) {
 	t.Parallel()
 	h := &handlers{enforceACL: true}
-	entry := &Entry{ACL: auth.SessionACL{
+	entry := entryWithACL(auth.SessionACL{
 		Owner:        "owner@example.com",
 		Contributors: []string{"contrib@example.com"},
-	}}
+	})
 	rr := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r = r.WithContext(auth.WithCaller(r.Context(), auth.Caller{Identity: "contrib@example.com"}))
@@ -102,10 +102,10 @@ func TestAuthorize_ContributorWriteAllowedAdminDenied(t *testing.T) {
 func TestAuthorize_ViewerReadOnly(t *testing.T) {
 	t.Parallel()
 	h := &handlers{enforceACL: true}
-	entry := &Entry{ACL: auth.SessionACL{
+	entry := entryWithACL(auth.SessionACL{
 		Owner:   "owner@example.com",
 		Viewers: []string{"viewer@example.com"},
-	}}
+	})
 	rr := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r = r.WithContext(auth.WithCaller(r.Context(), auth.Caller{Identity: "viewer@example.com"}))
@@ -124,7 +124,7 @@ func TestAuthorize_AdminBypassesEverything(t *testing.T) {
 	h := &handlers{enforceACL: true}
 	// Unowned legacy entry (Owner="") — even this should grant Admin
 	// access, since Admin trumps the ACL check.
-	entry := &Entry{ACL: auth.SessionACL{}}
+	entry := entryWithACL(auth.SessionACL{})
 	rr := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r = r.WithContext(auth.WithCaller(r.Context(), auth.Caller{Identity: "ops@example.com", Admin: true}))
@@ -132,4 +132,14 @@ func TestAuthorize_AdminBypassesEverything(t *testing.T) {
 	if !h.authorize(rr, r, entry, auth.ActionSessionAdmin) {
 		t.Error("admin must bypass every ACL check, including for legacy unowned sessions")
 	}
+}
+
+// entryWithACL builds a bare Entry carrying acl. Entry.acl is
+// unexported and written through setACL (#797) so that a live PATCH
+// can't race the authorization reads, which means white-box tests
+// can't reach it with a composite literal any more.
+func entryWithACL(acl auth.SessionACL) *Entry {
+	e := &Entry{}
+	e.setACL(acl)
+	return e
 }

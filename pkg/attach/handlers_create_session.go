@@ -46,12 +46,22 @@ type createSessionResponse struct {
 // are rejected with 401 — an unowned session is not creatable via
 // this path (legacy Register exists for the daemon's own startup).
 //
-// 501 when SessionFactory is not configured (older deployments that
-// don't support on-demand creation). 500 when the factory itself
-// errors. 409 when the factory returns a Registrant whose
-// (app, user, sid) triple is already registered — a stale
-// SessionID race that almost certainly means the factory's
-// generator is buggy.
+// The request body is OPTIONAL and, when present, may carry `viewers`
+// and `contributors` for the new session's ACL (#797). A creator
+// generally knows its audience at creation time — an agent opening a
+// session about an incident knows which on-call group should be able
+// to answer it — and stamping them here means the first reply works
+// rather than 404ing until somebody remembers to PATCH the ACL.
+// `owner` is rejected rather than honoured: the Owner is always the
+// authenticated caller, and a body that appeared to set someone else
+// would be a security-relevant lie.
+//
+// 400 on a malformed body or an `owner` field. 501 when SessionFactory
+// is not configured (older deployments that don't support on-demand
+// creation). 500 when the factory itself errors. 409 when the factory
+// returns a Registrant whose (app, user, sid) triple is already
+// registered — a stale SessionID race that almost certainly means the
+// factory's generator is buggy.
 func (h *handlers) createSession(w http.ResponseWriter, r *http.Request) {
 	if h.factory == nil {
 		http.Error(w, "POST /sessions not supported: this daemon does not have a SessionFactory configured", http.StatusNotImplemented)
@@ -65,6 +75,26 @@ func (h *handlers) createSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST /sessions requires an authenticated caller (none on request context)", http.StatusUnauthorized)
 		return
 	}
+	// Parsed before the factory runs: a rejected body must not leave a
+	// constructed agent and a live wake loop behind.
+	var req sessionACLRequest
+	if err := decodePOSTOptional(r, &req); err != nil {
+		http.Error(w, fmt.Sprintf("create session: %v", err), http.StatusBadRequest)
+		return
+	}
+	// Owner is the authenticated caller, full stop. Refused rather than
+	// ignored: a caller that sent someone else's identity has a wrong
+	// model of this endpoint, and silently overriding it would let that
+	// model survive. There is no live ACL to compare against here (the
+	// session doesn't exist yet), so unlike PATCH this check can't be
+	// deferred to the registry.
+	if req.Owner != nil && *req.Owner != caller.Identity {
+		http.Error(w, fmt.Sprintf(
+			"create session: owner is not settable (the new session is owned by the authenticated caller %q, request said %q); omit the field",
+			caller.Identity, *req.Owner), http.StatusBadRequest)
+		return
+	}
+	acl := req.apply(auth.SessionACL{Owner: caller.Identity})
 
 	ag, cancelOnEvict, err := h.factory(r.Context(), caller)
 	if err != nil {
@@ -79,7 +109,7 @@ func (h *handlers) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entry, err := h.reg.RegisterOwnedWithCancel(ag, caller.Identity, cancelOnEvict)
+	entry, err := h.reg.RegisterOwnedWithACL(ag, acl, cancelOnEvict)
 	if err != nil {
 		// Registration failed — cancel the factory's wake loop so
 		// it doesn't leak. Wake-loop goroutine started before this

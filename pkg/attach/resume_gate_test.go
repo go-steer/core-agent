@@ -76,8 +76,8 @@ func TestRegistry_LookupGated_DenyBlocksResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lookupGated (allow): %v", err)
 	}
-	if entry.ACL.Owner != "alice@example.com" {
-		t.Errorf("resumed ACL.Owner = %q, want alice@example.com", entry.ACL.Owner)
+	if entry.CurrentACL().Owner != "alice@example.com" {
+		t.Errorf("resumed ACL.Owner = %q, want alice@example.com", entry.CurrentACL().Owner)
 	}
 	if seen.Owner != "alice@example.com" {
 		t.Errorf("gate saw row owner %q, want the persisted alice row", seen.Owner)

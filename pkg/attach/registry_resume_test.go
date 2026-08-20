@@ -87,8 +87,8 @@ func TestRegistry_Lookup_ResumerHit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lookup: %v", err)
 	}
-	if got.ACL.Owner != "alice@example.com" {
-		t.Errorf("ACL.Owner: got %q, want alice@example.com", got.ACL.Owner)
+	if got.CurrentACL().Owner != "alice@example.com" {
+		t.Errorf("ACL.Owner: got %q, want alice@example.com", got.CurrentACL().Owner)
 	}
 	// Subsequent Lookup is a cache hit — no second resumer call.
 	if _, err := reg.Lookup(context.Background(), "core-agent", "sess-x"); err != nil {
@@ -147,8 +147,8 @@ func TestRegistry_LookupSingle_ResumerHit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LookupSingle: %v", err)
 	}
-	if got.ACL.Owner != "bob@example.com" {
-		t.Errorf("ACL.Owner: got %q, want bob@example.com", got.ACL.Owner)
+	if got.CurrentACL().Owner != "bob@example.com" {
+		t.Errorf("ACL.Owner: got %q, want bob@example.com", got.CurrentACL().Owner)
 	}
 }
 
@@ -270,8 +270,8 @@ func TestRegistry_Resume_RegistersResumedEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second Lookup: %v", err)
 	}
-	if got.ACL.Owner != "alice@example.com" {
-		t.Errorf("ACL.Owner: got %q", got.ACL.Owner)
+	if got.CurrentACL().Owner != "alice@example.com" {
+		t.Errorf("ACL.Owner: got %q", got.CurrentACL().Owner)
 	}
 }
 

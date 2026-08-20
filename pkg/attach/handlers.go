@@ -120,7 +120,7 @@ func (h *handlers) authorize(w http.ResponseWriter, r *http.Request, entry *Entr
 		return true
 	}
 	c, _ := auth.CallerFromContext(r.Context())
-	if auth.Authorize(c, action, entry.ACL) {
+	if auth.Authorize(c, action, entry.CurrentACL()) {
 		return true
 	}
 	// Same body the lookup-not-found path uses so a 404 from the auth
@@ -330,6 +330,10 @@ func (h *handlers) register(mux *http.ServeMux) {
 	// Not in pollingReadRe: this is a one-shot diagnostic, not a
 	// status-bar poll, so it keeps its traces.
 	h.routeSession(mux, "GET", "agents/{name}/events", auth.ActionSessionRead, h.doSubagentEvents)
+
+	// GET + PATCH /acl — read and amend who else may reach this
+	// session (#797); see handlers_acl.go.
+	h.registerSessionACL(mux)
 
 	// Operator-state read endpoints (usage / context / memory /
 	// skills / mcp / pricing); see handlers_operator.go.

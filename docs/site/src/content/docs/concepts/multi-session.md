@@ -95,6 +95,20 @@ Every session has an ACL with three roles. Authorization is per-action, not per-
 
 **Denied requests return 404, not 403.** This is intentional — hiding the existence of unauthorized sessions prevents an attacker from enumerating session IDs through differential responses. Audit logs on the server side capture the real reason.
 
+### Setting the ACL
+
+The owner and admins can populate the two lists over HTTP, either at creation or afterwards:
+
+```http
+POST /sessions                                → {"viewers": [...], "contributors": [...]}
+PATCH /sessions/{sid}/acl                     → {"viewers": [...], "contributors": [...]}
+GET   /sessions/{sid}/acl                     → {"owner":..., "viewers": [...], "contributors": [...]}
+```
+
+Both verbs on `/acl` require `SessionAdmin`, including the read — the ACL names the other people on a session, so a contributor listing their co-responders is a disclosure with no reason to happen. On `PATCH`, an **omitted** list is left alone and `[]` clears it; ownership is not transferable through either endpoint. Full semantics in the [attach HTTP reference](/reference/attach-http/#session-acls-protocol-1100).
+
+Before protocol 1.10.0 there was no such route: the lists were enforced everywhere but settable nowhere, so every session was effectively owner-plus-admins.
+
 ### Anonymous and default identity
 
 - `default_identity` (default `"anon"`) — the Caller stamped on requests that don't carry a credential. Used by single-user mode (where it's the only identity) and as the AllowAnonymous fallback when multi-session is on.

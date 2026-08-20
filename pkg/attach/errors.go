@@ -21,6 +21,33 @@ import (
 	"strings"
 )
 
+// SelfClassifyingError is implemented by an error that already knows
+// which protocol kind it should be reported as. ClassifyTurnError
+// consults it before every heuristic below, so such an error is never
+// left hoping its prose happens to contain one of the substrings the
+// classifier scans for.
+//
+// It exists because the dependency only runs one way: the packages
+// that raise these errors import pkg/attach to emit events, so
+// pkg/attach cannot import them back and a type switch here is
+// impossible. The interface inverts that — the raiser declares its
+// kind, this package keeps ownership of the vocabulary.
+//
+// Implemented in-tree by the two guardrail refusals (#818): before
+// them, `cost_ceiling` and `watchdog` were the only kinds in the enum
+// that no classifier path could produce, so a turn refused by a
+// tripped guardrail recorded `error.type: unknown` on
+// gen_ai.agent.invocation.duration — the two outcomes an operator most
+// wants on a dashboard were the two that arrived unlabelled.
+type SelfClassifyingError interface {
+	error
+
+	// AsTurnError returns the payload to report for this error. It
+	// should match whatever the raiser emits for the same condition
+	// on the wire, so the two readings of one event agree.
+	AsTurnError() TurnError
+}
+
 // ClassifyTurnError maps a raw error from a turn to a TurnError
 // payload conforming to the SSE event-stream protocol's kind enum
 // (spec section 2.6). Most of what reaches it comes off the model
@@ -40,6 +67,15 @@ import (
 func ClassifyTurnError(err error) TurnError {
 	if err == nil {
 		return TurnError{Kind: TurnErrorUnknown, Message: "nil error", Retryable: false}
+	}
+
+	// An error that carries its own classification wins over every
+	// heuristic below, including the context checks: it knows, and
+	// they guess. errors.As rather than a direct assertion so a
+	// wrapped one still counts.
+	var self SelfClassifyingError
+	if errors.As(err, &self) {
+		return self.AsTurnError()
 	}
 
 	// Context errors come through unwrapped from cancellation /

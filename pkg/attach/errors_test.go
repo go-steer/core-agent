@@ -158,6 +158,46 @@ func TestClassifyTurnError_Kinds(t *testing.T) {
 // it, which is the in-tree evidence that a wrapper can sit in front
 // of it. A classifier keyed on == would miss those. Fails on pre-fix
 // code, which returned transient_network / retryable=true for both.
+// selfKindedErr is a stand-in for the guardrail refusals in pkg/agent,
+// which this package cannot import (they import it).
+type selfKindedErr struct{ msg string }
+
+func (e *selfKindedErr) Error() string { return e.msg }
+func (e *selfKindedErr) AsTurnError() TurnError {
+	return TurnError{Kind: TurnErrorCostCeiling, Code: "cost_ceiling", Message: e.msg, Retryable: false}
+}
+
+// TestClassifyTurnError_SelfClassifyingWins pins the precedence (#818).
+// The declared kind must beat both the substring heuristics and the
+// context checks, or an error that knows its own answer still gets
+// guessed at.
+func TestClassifyTurnError_SelfClassifyingWins(t *testing.T) {
+	t.Parallel()
+
+	// Prose that the heuristics WOULD classify as transient_network /
+	// retryable. Guardrail reasons carry arbitrary operator- and
+	// trigger-supplied text, so this collision is not hypothetical.
+	trap := &selfKindedErr{msg: "halted: upstream unavailable, connection reset while looping"}
+	if got := ClassifyTurnError(trap); got.Kind != TurnErrorCostCeiling || got.Retryable {
+		t.Errorf("ClassifyTurnError = %+v, want kind=%s retryable=false — the substring scan overrode a declared kind",
+			got, TurnErrorCostCeiling)
+	}
+
+	// Wrapped, and wrapped around a context error whose branch runs
+	// before the string switch.
+	wrapped := fmt.Errorf("agent: run turn: %w", trap)
+	if got := ClassifyTurnError(wrapped); got.Kind != TurnErrorCostCeiling {
+		t.Errorf("wrapped: Kind = %q, want %q", got.Kind, TurnErrorCostCeiling)
+	}
+
+	// The interface must not swallow ordinary errors: anything that
+	// doesn't implement it still goes through the heuristics.
+	if got := ClassifyTurnError(errors.New("503 unavailable")); got.Kind != TurnErrorTransientNet {
+		t.Errorf("plain error: Kind = %q, want %q — the new branch must not capture non-implementers",
+			got.Kind, TurnErrorTransientNet)
+	}
+}
+
 func TestClassifyTurnError_CanceledIsNotRetryable(t *testing.T) {
 	t.Parallel()
 

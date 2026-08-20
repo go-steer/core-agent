@@ -20,15 +20,24 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
-// Alert template kinds. This release (#593 ε.1) ships "generic" only —
-// a raw JSON pass-through. The service-specific templates are designed
-// in docs/alert-tool-design.md and land in a follow-up (ε.2); the
-// constants are declared now so the validator can give a precise
-// "designed but not yet implemented" error instead of "unknown".
+// Alert template kinds. Two ship: "generic" (a raw JSON pass-through)
+// and "switchboard" (the go-steer/switchboard chat gateway's outbound
+// message API). The service-specific templates are designed in
+// docs/alert-tool-design.md and land in a follow-up (ε.2); the constants
+// are declared now so the validator can give a precise "designed but not
+// yet implemented" error instead of "unknown".
+//
+// "switchboard" is a destination CLASS, not a service format: switchboard
+// bridges Slack and Google Chat today and more later, translating one
+// markdown body per platform, so one template covers all of them. The
+// planned "slack" template is the different thing — Block Kit posted
+// straight at an Incoming Webhook, with no thread to reply into.
 const (
 	AlertTemplateGeneric           = "generic"
+	AlertTemplateSwitchboard       = "switchboard"
 	AlertTemplateSlack             = "slack"
 	AlertTemplateDiscord           = "discord"
 	AlertTemplatePagerDutyEventsV2 = "pagerduty_events_v2"
@@ -72,6 +81,18 @@ type AlertTarget struct {
 	URLEnv string `json:"url_env,omitempty"`
 	// Template selects the wire format (see AlertTemplate* constants).
 	Template string `json:"template"`
+	// Conversation is the destination conversation, for templates that
+	// address one: required by "switchboard", rejected by every other
+	// template so a field that would silently do nothing cannot be set.
+	//
+	// It is the gateway's platform-specific conversation key — for Slack
+	// a channel ID ("C0123") or "channel:thread_ts" to post into an
+	// existing thread. Routing config, like the URL, so it lives beside
+	// the URL rather than in the model's arguments: the same reason the
+	// tool has no arbitrary-URL parameter, one level in. A literal (no
+	// *_env sibling) because a conversation key is not a secret — unlike
+	// a Slack Incoming Webhook URL, which carries its token in the path.
+	Conversation string `json:"conversation,omitempty"`
 	// Auth is optional per-target auth material, resolved from env at
 	// call time. Absent = no auth headers (the Slack Incoming Webhook
 	// case — the token is already in the URL).
@@ -136,13 +157,36 @@ func (c *Config) validateAlerts() error {
 
 		switch t.Template {
 		case AlertTemplateGeneric:
-			// ok — the only template implemented in this release.
+			// ok.
+		case AlertTemplateSwitchboard:
+			// The gateway needs somewhere to put the message and a token
+			// to be let in at all, and neither can be supplied later:
+			// the model has no say in either, and switchboard's ingress
+			// refuses to start without a token, so a target missing one
+			// is an escalation path that can only 401 at 3am. Both are
+			// structural, so both fail the load rather than the fire.
+			if t.Conversation == "" {
+				return fmt.Errorf("config: alerts.targets[%d] (%q): template=%q requires conversation (the gateway's conversation key — for Slack a channel ID like \"C0123\", or \"channel:thread_ts\" to post into a thread)", i, t.Name, t.Template)
+			}
+			if hasBlankOrControl(t.Conversation) {
+				return fmt.Errorf("config: alerts.targets[%d] (%q): conversation=%q must not contain whitespace or control characters (it is an opaque platform key, never prose)", i, t.Name, t.Conversation)
+			}
+			if t.Auth == nil || t.Auth.BearerEnv == "" {
+				return fmt.Errorf("config: alerts.targets[%d] (%q): template=%q requires auth.bearer_env (switchboard's ingress token, deliberately distinct from the daemon token; its ingress refuses every unauthenticated post)", i, t.Name, t.Template)
+			}
 		case "":
-			return fmt.Errorf("config: alerts.targets[%d] (%q): template is required (want %q)", i, t.Name, AlertTemplateGeneric)
+			return fmt.Errorf("config: alerts.targets[%d] (%q): template is required (want %q or %q)", i, t.Name, AlertTemplateGeneric, AlertTemplateSwitchboard)
 		case AlertTemplateSlack, AlertTemplateDiscord, AlertTemplatePagerDutyEventsV2:
-			return fmt.Errorf("config: alerts.targets[%d] (%q): template=%q is designed but not yet implemented (this release ships %q; slack/discord/pagerduty_events_v2 land in a follow-up — see docs/alert-tool-design.md)", i, t.Name, t.Template, AlertTemplateGeneric)
+			return fmt.Errorf("config: alerts.targets[%d] (%q): template=%q is designed but not yet implemented (this release ships %q and %q; slack/discord/pagerduty_events_v2 land in a follow-up — see docs/alert-tool-design.md)", i, t.Name, t.Template, AlertTemplateGeneric, AlertTemplateSwitchboard)
 		default:
-			return fmt.Errorf("config: alerts.targets[%d] (%q): template=%q is unknown (want %q)", i, t.Name, t.Template, AlertTemplateGeneric)
+			return fmt.Errorf("config: alerts.targets[%d] (%q): template=%q is unknown (want %q or %q)", i, t.Name, t.Template, AlertTemplateGeneric, AlertTemplateSwitchboard)
+		}
+
+		// Refused rather than ignored: a conversation on a template that
+		// cannot address one is a config that reads like it routes
+		// somewhere and does not.
+		if t.Conversation != "" && t.Template != AlertTemplateSwitchboard {
+			return fmt.Errorf("config: alerts.targets[%d] (%q): conversation is only meaningful for template=%q, not %q", i, t.Name, AlertTemplateSwitchboard, t.Template)
 		}
 
 		if a := t.Auth; a != nil {
@@ -186,6 +230,20 @@ func validAlertName(s string) bool {
 		}
 	}
 	return true
+}
+
+// hasBlankOrControl reports whether s holds whitespace or a control
+// character. Mirrors the check switchboard's ingress runs on a
+// conversation key, so a typo'd key fails the boot here instead of
+// returning 400 from the gateway during the incident it was meant to
+// escalate.
+func hasBlankOrControl(s string) bool {
+	for _, r := range s {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return true
+		}
+	}
+	return false
 }
 
 // ParseAlertRateLimit parses an alerts.rate_limit_per_target spec into a

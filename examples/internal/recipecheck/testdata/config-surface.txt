@@ -30,6 +30,7 @@ alerts.rate_limit_per_target
 alerts.targets[].auth.basic_env_pass
 alerts.targets[].auth.basic_env_user
 alerts.targets[].auth.bearer_env
+alerts.targets[].conversation
 alerts.targets[].description
 alerts.targets[].kind
 alerts.targets[].name

@@ -184,6 +184,22 @@ type SubtaskResult struct {
 	OutputTokens int
 	CostUSD      float64
 
+	// CachedInputTokens / CacheCreationInputTokens are the two cache
+	// buckets inside InputTokens, summed across the subtask's turns
+	// and already clamped ([usage.TurnUsage.Clamped]).
+	//
+	// Reported rather than left implicit because CostUSD does not
+	// survive every hop a subtask's numbers take. The MCP digest wrap
+	// carries token counts across a JSON sidecar and re-prices on the
+	// far side; without the buckets that re-pricing bills the whole
+	// prompt at the uncached rate, which on Anthropic is wrong by up
+	// to 25% and moves the session cost ceiling with it (#771).
+	// Anything re-deriving cost from this struct should feed all four
+	// numbers to [usage.Pricing.CostUSDForTurn] rather than reach for
+	// CostUSD's two-argument sibling.
+	CachedInputTokens        int
+	CacheCreationInputTokens int
+
 	// Duration is wall-clock time spent in the subtask. Useful
 	// for the "fresh-context is fast" claim — typical subtask
 	// completes in <2s on a flash-tier model.
@@ -385,13 +401,20 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 	start := time.Now()
 
 	var (
-		digest       strings.Builder
-		totalIn      int
-		totalOut     int
-		totalCostUSD float64
-		turnsUsed    int
-		turnComplete bool
-		runErr       error
+		digest  strings.Builder
+		totalIn int
+		// The two cache buckets are summed alongside the raw input
+		// count, not derived from it. A caller that re-prices from
+		// InputTokens/OutputTokens alone bills every input token at the
+		// uncached rate, which is off by up to 25% on Anthropic in
+		// whichever direction the dominant bucket points (#771).
+		totalCachedIn   int
+		totalCacheWrite int
+		totalOut        int
+		totalCostUSD    float64
+		turnsUsed       int
+		turnComplete    bool
+		runErr          error
 	)
 	// Per-turn usage bookkeeping via the shared TurnTap discipline:
 	// overwrite last-seen UsageMetadata per event, commit once on
@@ -431,8 +454,15 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 			// pricing comes from the subtask's model name. When
 			// the parent has no tracker wired, the local totals
 			// still flow into SubtaskResult/ContextStats.
-			totalIn += u.InputTokens
-			totalOut += u.OutputTokens
+			// Clamped first, for the same reason AppendUsage and
+			// CostUSDForTurn clamp: a provider that over-reports a cache
+			// counter must not push the uncached remainder negative once
+			// these sums are re-assembled downstream.
+			c := u.Clamped()
+			totalIn += c.InputTokens
+			totalCachedIn += c.CachedInputTokens
+			totalCacheWrite += c.CacheCreationInputTokens
+			totalOut += c.OutputTokens
 			// Cost is computed either way so SubtaskResult (and the
 			// OTel span attributes built from it) stay populated;
 			// SkipParentUsage only suppresses the roll-up into THIS
@@ -469,14 +499,16 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 	// accumulated up to the cap).
 	if errors.Is(runErr, context.DeadlineExceeded) || errors.Is(subCtx.Err(), context.DeadlineExceeded) {
 		return SubtaskResult{
-			Name:         spec.Name,
-			Digest:       strings.TrimSpace(digest.String()),
-			Truncated:    true,
-			InputTokens:  totalIn,
-			OutputTokens: totalOut,
-			CostUSD:      totalCostUSD,
-			Duration:     elapsed,
-			TurnsUsed:    turnsUsed,
+			Name:                     spec.Name,
+			Digest:                   strings.TrimSpace(digest.String()),
+			Truncated:                true,
+			InputTokens:              totalIn,
+			CachedInputTokens:        totalCachedIn,
+			CacheCreationInputTokens: totalCacheWrite,
+			OutputTokens:             totalOut,
+			CostUSD:                  totalCostUSD,
+			Duration:                 elapsed,
+			TurnsUsed:                turnsUsed,
 		}, nil
 	}
 	if runErr != nil {
@@ -493,14 +525,16 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 	}
 
 	return SubtaskResult{
-		Name:         spec.Name,
-		Digest:       strings.TrimSpace(digest.String()),
-		Truncated:    truncated && strings.TrimSpace(digest.String()) == "",
-		InputTokens:  totalIn,
-		OutputTokens: totalOut,
-		CostUSD:      totalCostUSD,
-		Duration:     elapsed,
-		TurnsUsed:    turnsUsed,
+		Name:                     spec.Name,
+		Digest:                   strings.TrimSpace(digest.String()),
+		Truncated:                truncated && strings.TrimSpace(digest.String()) == "",
+		InputTokens:              totalIn,
+		CachedInputTokens:        totalCachedIn,
+		CacheCreationInputTokens: totalCacheWrite,
+		OutputTokens:             totalOut,
+		CostUSD:                  totalCostUSD,
+		Duration:                 elapsed,
+		TurnsUsed:                turnsUsed,
 	}, nil
 }
 

@@ -74,6 +74,15 @@ type LLMFallbackResult struct {
 	SubagentModel        string
 	SubagentInputTokens  int
 	SubagentOutputTokens int
+
+	// The two cache buckets inside SubagentInputTokens. Optional in
+	// the sense that a fallback with no cache activity leaves them
+	// zero, which prices identically to omitting them — but a
+	// fallback that DOES read or write a cache must report them, or
+	// the session that pays for this digest re-prices the whole
+	// prompt at the uncached rate (#771).
+	SubagentCachedInputTokens        int
+	SubagentCacheCreationInputTokens int
 }
 
 // DigestOptions configures how Build wraps MCP tool responses through
@@ -303,9 +312,11 @@ func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 	// Zero-valued when LLMFallback is nil OR the router doesn't take
 	// the fallback path.
 	var (
-		fbModel string
-		fbIn    int
-		fbOut   int
+		fbModel      string
+		fbIn         int
+		fbCachedIn   int
+		fbCacheWrite int
+		fbOut        int
 	)
 	var digestLLM func(context.Context, []byte) (string, error)
 	if d.opts.LLMFallback != nil {
@@ -316,6 +327,8 @@ func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 			}
 			fbModel = r.SubagentModel
 			fbIn = r.SubagentInputTokens
+			fbCachedIn = r.SubagentCachedInputTokens
+			fbCacheWrite = r.SubagentCacheCreationInputTokens
 			fbOut = r.SubagentOutputTokens
 			return r.Text, nil
 		}
@@ -343,6 +356,8 @@ func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 	if res.Savings != nil && res.Method == digest.MethodLLMFallback {
 		res.Savings.SubagentModel = fbModel
 		res.Savings.SubagentInputTokens = fbIn
+		res.Savings.SubagentCachedInputTokens = fbCachedIn
+		res.Savings.SubagentCacheCreationInputTokens = fbCacheWrite
 		res.Savings.SubagentOutputTokens = fbOut
 	}
 
@@ -381,6 +396,15 @@ func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 			sv["subagent_model"] = res.Savings.SubagentModel
 			sv["subagent_input_tokens"] = res.Savings.SubagentInputTokens
 			sv["subagent_output_tokens"] = res.Savings.SubagentOutputTokens
+			// Written even when zero. This sidecar is the only channel
+			// by which the digest's spend reaches the calling session's
+			// ledger (#717), and the reader has to price a turn, not a
+			// token count — an absent bucket and an empty one price the
+			// same, but a producer that emits the pair only sometimes
+			// makes "no cache activity" indistinguishable from "an older
+			// daemon wrote this" for anyone reading a recording later.
+			sv["subagent_cached_input_tokens"] = res.Savings.SubagentCachedInputTokens
+			sv["subagent_cache_creation_input_tokens"] = res.Savings.SubagentCacheCreationInputTokens
 		}
 		out["savings"] = sv
 	}

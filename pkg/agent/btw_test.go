@@ -42,6 +42,10 @@ type captureLLM struct {
 	err          error
 	inputTokens  int32 // optional: include in UsageMetadata on the response
 	outputTokens int32 // optional: include in UsageMetadata on the response
+	// cachedInputTokens, when > 0, is the cache-READ bucket, reported
+	// where every adapter reports it: genai's CachedContentTokenCount.
+	// It is a SUBSET of inputTokens.
+	cachedInputTokens int32
 	// cacheWriteTokens, when > 0, is reported the way the Anthropic
 	// adapter reports it: on CustomMetadata, since genai's usage struct
 	// has no third input bucket (#263). It is a SUBSET of inputTokens.
@@ -69,6 +73,7 @@ func (l *captureLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMReque
 	err := l.err
 	in := l.inputTokens
 	out := l.outputTokens
+	cached := l.cachedInputTokens
 	writes := l.cacheWriteTokens
 	finish := l.finishReason
 	l.mu.Unlock()
@@ -84,9 +89,10 @@ func (l *captureLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMReque
 		}
 		if in > 0 || out > 0 {
 			r.UsageMetadata = &genai.GenerateContentResponseUsageMetadata{
-				PromptTokenCount:     in,
-				CandidatesTokenCount: out,
-				TotalTokenCount:      in + out,
+				PromptTokenCount:        in,
+				CachedContentTokenCount: cached,
+				CandidatesTokenCount:    out,
+				TotalTokenCount:         in + out,
 			}
 		}
 		if writes > 0 {

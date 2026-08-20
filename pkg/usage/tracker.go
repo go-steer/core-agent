@@ -189,6 +189,25 @@ type DigestSavingsRecord struct {
 	SubagentInputTokens  int
 	SubagentOutputTokens int
 	SubagentCostUSD      float64
+
+	// The two cache buckets inside SubagentInputTokens, so a caller
+	// charging this record to a session can rebuild the TurnUsage the
+	// subagent actually spent instead of a flat uncached one (#771).
+	SubagentCachedInputTokens        int
+	SubagentCacheCreationInputTokens int
+}
+
+// SubagentTurn rebuilds the [TurnUsage] the digest subagent spent, for
+// callers that need to price or append it. Clamped, so a sidecar
+// carrying contradictory buckets can only shrink the premium-rated
+// write bucket rather than invent a negative uncached remainder.
+func (r DigestSavingsRecord) SubagentTurn() TurnUsage {
+	return TurnUsage{
+		InputTokens:              r.SubagentInputTokens,
+		CachedInputTokens:        r.SubagentCachedInputTokens,
+		CacheCreationInputTokens: r.SubagentCacheCreationInputTokens,
+		OutputTokens:             r.SubagentOutputTokens,
+	}.Clamped()
 }
 
 // DigestSavingsTotals is the cumulative session view rendered by

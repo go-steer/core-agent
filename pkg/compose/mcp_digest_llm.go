@@ -163,6 +163,14 @@ func BuildMCPDigestLLMFallback(
 			SubagentModel:        effectiveModel,
 			SubagentInputTokens:  res.InputTokens,
 			SubagentOutputTokens: res.OutputTokens,
+			// The buckets travel with the counts. RunSubtask already
+			// priced this correctly with CostUSDForTurn, but that figure
+			// does not cross the sidecar — the far side re-prices, on
+			// purpose, so a historical digest re-prices when rates
+			// change. Dropping the buckets here is what made that
+			// re-pricing bill the whole prompt as uncached (#771).
+			SubagentCachedInputTokens:        res.CachedInputTokens,
+			SubagentCacheCreationInputTokens: res.CacheCreationInputTokens,
 		}, nil
 	}
 }

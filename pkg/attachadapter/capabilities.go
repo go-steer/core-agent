@@ -451,6 +451,22 @@ func (ad *Adapter) SessionTitle() string {
 	return ad.Agent().SessionTitle()
 }
 
+// SetSessionTitle implements attach.SessionTitleSetter — the write half
+// of the same capability, backing POST /sessions/{sid}/title.
+//
+// It has to be here, not only on *agent.Agent: this adapter is what
+// gets registered with the attach registry, so the handler's type
+// assertion runs against the Adapter. A read half that forwards and a
+// write half that doesn't would answer every rename with 501 while
+// every direct-agent test still passed.
+//
+// Setting "" clears the title and re-arms automatic generation; the
+// agent normalizes, which is why the handler reads the title back
+// rather than echoing the request.
+func (ad *Adapter) SetSessionTitle(title string) {
+	ad.Agent().SetSessionTitle(title)
+}
+
 // AttachPricing implements attach.PricingProvider.
 func (ad *Adapter) AttachPricing() attach.PricingInfo {
 	if ad == nil || ad.pricingFn == nil {

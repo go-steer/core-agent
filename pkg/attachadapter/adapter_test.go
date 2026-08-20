@@ -235,6 +235,34 @@ func TestSessionTitle(t *testing.T) {
 	}
 }
 
+// TestSetSessionTitle is the write half, and it is the half a compile
+// guard alone doesn't cover: the adapter is what gets registered with
+// the attach registry, so POST /sessions/{sid}/title asserts
+// SessionTitleSetter against *this* type, and a forward that went
+// nowhere would answer 200 while the title never changed. The clear
+// case is checked because "" is a real instruction (it re-arms
+// automatic titling), not a no-op the forward may skip.
+func TestSetSessionTitle(t *testing.T) {
+	t.Parallel()
+	ad := New(newEchoAgent(t))
+
+	var setter attach.SessionTitleSetter = ad
+	setter.SetSessionTitle("  Bisect the latency spike  ")
+	// Read through the agent, not the adapter, so the assertion can't
+	// be satisfied by adapter-local state the agent never saw.
+	if got, want := ad.Agent().SessionTitle(), "Bisect the latency spike"; got != want {
+		t.Errorf("agent title after SetSessionTitle = %q, want %q (normalized)", got, want)
+	}
+	setter.SetSessionTitle("")
+	if got := ad.Agent().SessionTitle(); got != "" {
+		t.Errorf("agent title after a clear = %q, want empty", got)
+	}
+
+	var nilAd *Adapter
+	nilAd.SetSessionTitle("x")    // must not panic
+	New(nil).SetSessionTitle("x") // must not panic
+}
+
 // TestAttachUsage_PerModelWhenMultipleModels covers the mixed-model
 // path (parent frontier + subtask flash). PerModel must be populated
 // and CostUSDUncachedReference must roll up per-model too.

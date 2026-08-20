@@ -343,6 +343,7 @@ var (
 	_ attach.SkillsProvider          = (*Adapter)(nil)
 	_ attach.MCPProvider             = (*Adapter)(nil)
 	_ attach.SessionTitleProvider    = (*Adapter)(nil)
+	_ attach.SessionTitleSetter      = (*Adapter)(nil)
 	_ attach.PricingProvider         = (*Adapter)(nil)
 	_ attach.PermsProvider           = (*Adapter)(nil)
 	_ attach.PermsController         = (*Adapter)(nil)

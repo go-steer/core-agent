@@ -506,6 +506,24 @@ func (c *Client) Reload(ctx context.Context, sessionPath string) (attach.ReloadR
 	return out, nil
 }
 
+// SetSessionTitle calls POST <base>/sessions/<sid>/title. Backs the
+// remote TUI's /title slash. Passing "" clears the title, which for
+// an *agent.Agent also re-arms automatic generation on the next turn.
+//
+// Takes the title by value rather than by pointer even though the wire
+// field is a pointer: "don't send a title" is not a request any caller
+// of this method wants to make (the daemon 400s it), so the pointer
+// exists to catch a malformed body, not to give Go callers a third
+// state to reason about.
+func (c *Client) SetSessionTitle(ctx context.Context, sessionPath, title string) (attach.SessionTitleResponse, error) {
+	var out attach.SessionTitleResponse
+	if err := c.doJSON(ctx, http.MethodPost, sessionPath+"/title",
+		attach.SessionTitleRequest{Title: &title}, &out); err != nil {
+		return attach.SessionTitleResponse{}, err
+	}
+	return out, nil
+}
+
 // Replan calls POST <base>/sessions/<sid>/slash/replan. Backs the
 // remote TUI's /replan slash. Reason is the optional free-text
 // the operator typed after /replan; today it's surfaced in the

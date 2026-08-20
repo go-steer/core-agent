@@ -175,6 +175,23 @@ func allReadOnlyCalls(names []string) bool {
 //     UNLESS a stamped MAX_TOKENS finish reason marks it truncated
 //     mid-task (then: interrupted — see incompleteFinish).
 //
+// KNOWN LIMITATION — "interrupted" vs "in progress" (#796). Every arm
+// above reads committed history and nothing else, so an interrupted turn
+// and a turn that is STILL RUNNING are the same tail: a session whose
+// user message has committed and whose model reply has not classifies
+// interrupted whether the generation died or is thirty seconds into a
+// long answer. This is not fixable here — no shape in the eventlog
+// distinguishes the two, and a time-based guess ("a user event newer
+// than N seconds is probably still running") would be exactly that, a
+// guess, in a position where being wrong duplicates a reply. Liveness is
+// a fact the running process holds, not one history records, so callers
+// that might run concurrently with a turn must consult it: check
+// Agent.TurnInFlight before acting on an interrupted verdict (pkg/compose's
+// lockClassifyInject does, for all three auto-continue triggers). On the
+// boot path the ambiguity cannot arise — after a restart nothing is in
+// flight — which is why the in-lifetime retry driver was the caller that
+// found this.
+//
 // Additional terminal shapes (never continued): an operator
 // interrupt-audit row anywhere after the tail (deliberate kill), an
 // ErrorCode final (the turn ended with an error the user already

@@ -1889,11 +1889,40 @@ func (a *Agent) setCancelInFlight(cancel context.CancelFunc) uint64 {
 	return a.cancelInFlightGen
 }
 
+// TurnInFlight reports whether a Run turn is currently executing on
+// this agent — the same signal Interrupt() acts on, exported so callers
+// that must not act on a session mid-turn can ask instead of guessing.
+//
+// The guarantee it carries is narrow but exact: registration happens in
+// Run before runner.Run is handed the turn's message, and the clear
+// happens in the post-drain cleanup, after the last event has been
+// yielded (and therefore committed). Every event the RUNNER writes for
+// the turn — the user message that opens it included — is thus written
+// inside the interval where this reports true. That is what lets
+// pkg/compose's auto-continue tell "the tail is an unanswered user
+// message because the turn was interrupted" from "…because the turn is
+// still generating" (#796), which the tail shape alone cannot
+// distinguish (see ClassifyInterruptedTail). Events Run commits BEFORE
+// registration are outside the interval — today that is #537's tail
+// repair, which writes synthesized responses for a turn that was
+// already interrupted, so a reader that sees them and no in-flight turn
+// draws the same conclusion it would have drawn a moment earlier.
+//
+// It is per-Agent, and therefore per-session, and it knows only about
+// turns THIS process is driving: a turn running in a peer daemon
+// against a shared eventlog reports false here. Cross-daemon exclusion
+// is the eventlog run lock's job (eventlog.Handle.AcquireLock), not
+// this method's.
+//
+// Returns false for a nil agent.
+func (a *Agent) TurnInFlight() bool { return a.turnInFlight() }
+
 // turnInFlight reports whether a Run turn is currently executing on
 // this agent. A turn registers its cancel func via setCancelInFlight
 // once it starts driving the runner and clears it on cleanup, so a
 // non-nil cancelInFlight is the in-flight signal. Used by Compact /
-// Checkpoint to refuse mid-turn boundary writes (#355).
+// Checkpoint to refuse mid-turn boundary writes (#355) and, via the
+// exported TurnInFlight above, by auto-continue (#796).
 func (a *Agent) turnInFlight() bool {
 	if a == nil {
 		return false

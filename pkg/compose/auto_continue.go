@@ -106,6 +106,7 @@ const (
 	acSkippedLockErr                                   // AcquireLock failed for another reason
 	acSkippedNotInterrupted                            // tail re-classified clean under the lock
 	acSkippedStale                                     // interruption older than the freshness window
+	acSkippedTurnInFlight                              // a local turn is generating the answer right now (#796)
 	acSkippedOperatorInput                             // operator input already queued — it drives the next turn (#624)
 	acSkippedPaused                                    // operator parked the loop; resume drives the next turn
 	acSkippedInjectErr                                 // inject itself failed
@@ -120,7 +121,9 @@ func (o autoContinueOutcome) injected() bool { return o == acInjected }
 // benign/contended skips qualify: a peer daemon holding the run lock
 // (the #575 fleet case — we made no attempt, another daemon will), the
 // tail having gone clean or stale between the unlocked candidate scan
-// and the locked re-classification, or an operator having queued input
+// and the locked re-classification, a local turn already generating the
+// answer (#796 — no note was injected and the turn will commit its own
+// reply), or an operator having queued input
 // that will drive the next turn itself (#624 — no note was injected),
 // or the session being parked by an operator (no note was injected and
 // the operator's resume drives the next turn).
@@ -133,7 +136,7 @@ func (o autoContinueOutcome) injected() bool { return o == acInjected }
 // conservative, which is the safe direction.
 func (o autoContinueOutcome) refundable() bool {
 	switch o {
-	case acSkippedLocked, acSkippedNotInterrupted, acSkippedStale, acSkippedOperatorInput, acSkippedPaused:
+	case acSkippedLocked, acSkippedNotInterrupted, acSkippedStale, acSkippedTurnInFlight, acSkippedOperatorInput, acSkippedPaused:
 		return true
 	default:
 		return false
@@ -157,8 +160,10 @@ func deferAutoContinueInject(ctx context.Context) bool {
 
 // lockClassifyInject is the shared core: take the session run lock
 // (fleet mutual exclusion — skip on ErrSessionLocked), classify the
-// committed tail under it, apply the freshness window, inject the
-// synthesized note. Every skip path returns silently or with one stderr
+// committed tail under it, apply the freshness window, stand down on
+// live local agent state the tail cannot show (a turn already
+// generating — #796, queued operator input — #624, an operator pause),
+// then inject the synthesized note. Every skip path returns silently or with one stderr
 // line; callers must never fail because auto-continue couldn't run. The
 // returned outcome lets the boot scan account only real attempts.
 func lockClassifyInject(ctx context.Context, h *eventlog.Handle, ag *agent.Agent, app, user, sid string, freshness time.Duration) autoContinueOutcome {
@@ -189,6 +194,44 @@ func lockClassifyInject(ctx context.Context, h *eventlog.Handle, ag *agent.Agent
 		fmt.Fprintf(os.Stderr, "core-agent: session %s: interrupted turn is %s old (> freshness %s); waiting for the next message\n",
 			sid, time.Since(interruptedAt).Round(time.Second), freshness)
 		return acSkippedStale
+	}
+	// The "interrupted" tail may be a turn that is still generating
+	// (#796). ClassifyInterruptedTail reads committed history, where an
+	// unanswered user message looks the same whether the turn died or is
+	// twenty seconds into a long answer — so on the boot path, where
+	// nothing can be in flight, the verdict is sound, and on the
+	// in-lifetime retry path it is the common case: the retry driver
+	// re-runs this pass on a timer, so any turn a tick happens to land
+	// inside got a continuation note queued behind the answer it was
+	// still producing, which then ran as a second reply. Exposure scales
+	// with turn duration over the interval, not with being slower than
+	// it: the reported case was a ~22-second generation, well inside any
+	// plausible interval, that a tick simply landed in.
+	//
+	// The run lock above does not cover this. It is fleet mutual
+	// exclusion, and the only local caller that takes it is
+	// autonomous.Resume — an ordinary attach-driven or wake-loop turn
+	// holds no lease, so a session busy answering a message acquires the
+	// lock here without contention.
+	//
+	// Agent.TurnInFlight is the fact the lock isn't: the agent driving
+	// the turn is this process's own object, and registration brackets
+	// every event the runner commits for the turn. Checked AFTER
+	// classification deliberately — a turn that starts between the two
+	// reads is then caught by this check rather than injected against,
+	// where the reverse order would clear the check and classify the
+	// user message the new turn just committed.
+	//
+	// In-process only, and that is the honest scope: a peer daemon's turn
+	// against a shared eventlog reports false here. Nothing regresses
+	// versus today (that case is already unguarded, and the fleet run
+	// lock only covers the auto-continue/autonomous callers that take
+	// it), and the bug reported is single-daemon. A durable in-flight
+	// signal is the fix if the cross-daemon shape ever appears in the
+	// wild.
+	if ag.TurnInFlight() {
+		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: a turn is already running; standing down (the tail is mid-turn, not interrupted)\n", sid)
+		return acSkippedTurnInFlight
 	}
 	// An operator already queued input while the turn was interrupted
 	// (the canonical case: they typed `stop`, then `/interrupt`). That

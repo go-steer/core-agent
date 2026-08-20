@@ -241,3 +241,42 @@ func TestAgent_Interrupt_TurnInFlightSurvivesUnwind(t *testing.T) {
 		t.Errorf("turnInFlight true after the turn's cleanup ran")
 	}
 }
+
+// TestAgent_TurnInFlight_ExportedTracksRegistration pins the exported
+// accessor #796 added: pkg/compose's auto-continue asks it whether a
+// session's "unanswered user message" tail is an interrupted turn or one
+// still generating, so it has to track the same registration Interrupt
+// acts on — including on a nil receiver, which the auto-continue call
+// sites can reach for a hand-constructed agent.
+func TestAgent_TurnInFlight_ExportedTracksRegistration(t *testing.T) {
+	t.Parallel()
+
+	var nilAgent *Agent
+	if nilAgent.TurnInFlight() {
+		t.Errorf("TurnInFlight on a nil agent = true, want false")
+	}
+
+	provider := mock.NewEcho()
+	m, err := provider.Model(context.Background(), "echo")
+	if err != nil {
+		t.Fatalf("model: %v", err)
+	}
+	a, err := New(m)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+
+	if a.TurnInFlight() {
+		t.Errorf("TurnInFlight = true on a fresh agent, want false")
+	}
+	_, turnCancel := context.WithCancel(context.Background())
+	defer turnCancel()
+	gen := a.setCancelInFlight(turnCancel)
+	if !a.TurnInFlight() {
+		t.Errorf("TurnInFlight = false with a turn registered, want true")
+	}
+	a.clearCancelInFlight(gen)
+	if a.TurnInFlight() {
+		t.Errorf("TurnInFlight = true after the turn's cleanup ran, want false")
+	}
+}

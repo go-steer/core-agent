@@ -111,6 +111,19 @@ type SubagentCatalogInfo struct {
 	// via POST /sessions gets the background manager but not the
 	// synchronous subagent tools, so its entries are async-only (#741).
 	Modes []string `json:"modes"`
+	// Tools is the subagent's CONFIGURED tool grant, sorted by name and
+	// classified the same way GET .../tools classifies the parent's
+	// (#767): builtin / mcp / skill / other, with MCP server attribution.
+	// It answers "can this specialist actually reach kubectl?" — the
+	// question an operator asks immediately after "what specialists
+	// exist?" (#768).
+	//
+	// Configured, not effective: the loop-control tools every spawned
+	// subagent gets wired regardless (return_result, report_alert,
+	// schedule_next_turn) are absent, because they are a property of the
+	// runtime rather than of this subagent's configuration. Empty for a
+	// subagent granted no tools at all.
+	Tools []ToolInfo `json:"tools,omitempty"`
 }
 
 // StatusInfo is the response shape of GET /sessions/.../status.

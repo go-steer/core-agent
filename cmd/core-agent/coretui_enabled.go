@@ -1254,16 +1254,48 @@ func (a *coreAgentAdapter) invokeSubagentSpawn(ctx context.Context, args string)
 	}
 }
 
+// summarizeToolSources renders a subagent's tool grant as a count with
+// a per-source breakdown ("12 tools: 6 builtin, 5 mcp, 1 skill"), for
+// the roster line. A roster is the wrong place for 12 tool names, but a
+// bare count is the wrong answer too: "does this specialist reach MCP
+// at all?" is the question the line has to settle, and only the
+// breakdown settles it (#768).
+func summarizeToolSources(tools []attach.ToolInfo) string {
+	counts := map[string]int{}
+	for _, t := range tools {
+		src := t.Source
+		if src == "" {
+			src = attach.ToolSourceOther
+		}
+		counts[src]++
+	}
+	// Fixed order, so two subagents' lines are read against each other
+	// rather than against whichever source happened to sort first.
+	var parts []string
+	for _, src := range []string{
+		attach.ToolSourceBuiltin,
+		attach.ToolSourceMCP,
+		attach.ToolSourceSkill,
+		attach.ToolSourceSubagent,
+		attach.ToolSourceOther,
+	} {
+		if n := counts[src]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, src))
+		}
+	}
+	return fmt.Sprintf("%d tools: %s", len(tools), strings.Join(parts, ", "))
+}
+
 // formatSubagentCatalog renders the configured-subagent roster (#627) for
 // the /subagent no-args listing: one line per subagent with its model,
-// content root, and invocation modes, so operators see what the daemon
-// loaded (and can spawn) without grepping the boot log. Distinct from
-// /subagents, which reports live instances.
+// content root, invocation modes, and tool grant (#768), so operators
+// see what the daemon loaded (and can spawn) without grepping the boot
+// log. Distinct from /subagents, which reports live instances.
 func formatSubagentCatalog(cat []attach.SubagentCatalogInfo) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d configured sub-agent(s) — spawn one with /subagent <name> <goal>:", len(cat))
 	for _, e := range cat {
-		attrs := make([]string, 0, 3)
+		attrs := make([]string, 0, 4)
 		model := e.Model
 		if model == "" {
 			model = "inherit"
@@ -1274,6 +1306,14 @@ func formatSubagentCatalog(cat []attach.SubagentCatalogInfo) string {
 		}
 		if len(e.Modes) > 0 {
 			attrs = append(attrs, strings.Join(e.Modes, "+"))
+		}
+		// "no tools" is said out loud rather than omitted: a specialist
+		// with an empty grant looks identical to one whose grant simply
+		// wasn't rendered, and the two mean opposite things.
+		if len(e.Tools) > 0 {
+			attrs = append(attrs, summarizeToolSources(e.Tools))
+		} else {
+			attrs = append(attrs, "no tools")
 		}
 		line := fmt.Sprintf("\n  • %s [%s]", e.Name, strings.Join(attrs, ", "))
 		if e.Description != "" {

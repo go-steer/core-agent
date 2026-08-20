@@ -159,7 +159,7 @@ func TestFormatSubagentCatalog(t *testing.T) {
 			},
 			wantSubstr: []string{
 				"1 configured sub-agent(s)",
-				"• cluster [model=gemini-3.5-flash, root=../cluster, sync+async] — read-only cluster ops",
+				"• cluster [model=gemini-3.5-flash, root=../cluster, sync+async, no tools] — read-only cluster ops",
 			},
 		},
 		{
@@ -167,7 +167,32 @@ func TestFormatSubagentCatalog(t *testing.T) {
 			cat: []attach.SubagentCatalogInfo{
 				{Name: "monitor", Modes: []string{"async"}},
 			},
-			wantSubstr: []string{"• monitor [model=inherit, async]"},
+			wantSubstr: []string{"• monitor [model=inherit, async, no tools]"},
+		},
+		{
+			// #768: the roster line has to settle "does this specialist
+			// reach MCP at all?", which a bare count would not. Fixed
+			// source order, so two lines are read against each other.
+			name: "tool grant renders as a per-source breakdown",
+			cat: []attach.SubagentCatalogInfo{
+				{Name: "cluster", Modes: []string{"async"}, Tools: []attach.ToolInfo{
+					{Name: "read_file", Source: attach.ToolSourceBuiltin},
+					{Name: "gke_get_pod", Source: attach.ToolSourceMCP, Server: "gke"},
+					{Name: "gke_list_clusters", Source: attach.ToolSourceMCP, Server: "gke"},
+					{Name: "list_skills", Source: attach.ToolSourceSkill},
+				}},
+			},
+			wantSubstr: []string{"• cluster [model=inherit, async, 4 tools: 1 builtin, 2 mcp, 1 skill]"},
+		},
+		{
+			// A source the vocabulary doesn't cover (or an unset one)
+			// still has to be counted, or the total stops matching the
+			// breakdown and the line reads as a bug.
+			name: "unclassified tools count as other",
+			cat: []attach.SubagentCatalogInfo{
+				{Name: "helper", Modes: []string{"async"}, Tools: []attach.ToolInfo{{Name: "spawn_agent"}}},
+			},
+			wantSubstr: []string{"1 tools: 1 other"},
 		},
 	}
 	for _, tc := range cases {

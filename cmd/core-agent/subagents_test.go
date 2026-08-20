@@ -28,8 +28,10 @@ import (
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/agent/background"
+	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
+	"github.com/go-steer/core-agent/v2/pkg/mcp"
 	"github.com/go-steer/core-agent/v2/pkg/models/mock"
 	"github.com/go-steer/core-agent/v2/pkg/skills"
 )
@@ -342,44 +344,44 @@ func TestResolveSubagentToolsets_MCP(t *testing.T) {
 	}
 
 	// nil → inherit every server that has a toolset (broken skipped).
-	out, desc, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{}, surface)
+	res, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{}, surface)
 	if err != nil {
 		t.Fatalf("nil MCP: %v", err)
 	}
-	if names := toolsetNames(out); len(names) != 2 || !strings.Contains(desc, "mcp=inherit") {
-		t.Errorf("nil MCP inherit = %v (desc %q), want [gke gke-readonly]", names, desc)
+	if names := toolsetNames(res.sets); len(names) != 2 || !strings.Contains(res.desc, "mcp=inherit") {
+		t.Errorf("nil MCP inherit = %v (desc %q), want [gke gke-readonly]", names, res.desc)
 	}
 
 	// list → only the named server.
-	out, _, err = resolveSubagentToolsets(context.Background(), config.SubagentSpec{MCP: []string{"gke-readonly"}}, surface)
+	res, err = resolveSubagentToolsets(context.Background(), config.SubagentSpec{MCP: []string{"gke-readonly"}}, surface)
 	if err != nil {
 		t.Fatalf("scoped MCP: %v", err)
 	}
-	if names := toolsetNames(out); len(names) != 1 || names[0] != "gke-readonly" {
+	if names := toolsetNames(res.sets); len(names) != 1 || names[0] != "gke-readonly" {
 		t.Errorf("scoped MCP = %v, want [gke-readonly] (the read-only server only, not gke)", names)
 	}
 
 	// a named-but-broken server is not an error; it just contributes no
 	// toolset (same as the parent sees).
-	out, _, err = resolveSubagentToolsets(context.Background(), config.SubagentSpec{MCP: []string{"broken"}}, surface)
+	res, err = resolveSubagentToolsets(context.Background(), config.SubagentSpec{MCP: []string{"broken"}}, surface)
 	if err != nil {
 		t.Fatalf("broken MCP: %v", err)
 	}
-	if len(out) != 0 {
-		t.Errorf("broken server should contribute no toolset, got %v", toolsetNames(out))
+	if len(res.sets) != 0 {
+		t.Errorf("broken server should contribute no toolset, got %v", toolsetNames(res.sets))
 	}
 
 	// empty (non-nil) → grant none.
-	out, _, err = resolveSubagentToolsets(context.Background(), config.SubagentSpec{MCP: []string{}}, surface)
+	res, err = resolveSubagentToolsets(context.Background(), config.SubagentSpec{MCP: []string{}}, surface)
 	if err != nil {
 		t.Fatalf("empty MCP: %v", err)
 	}
-	if len(out) != 0 {
-		t.Errorf("empty MCP should grant none, got %v", toolsetNames(out))
+	if len(res.sets) != 0 {
+		t.Errorf("empty MCP should grant none, got %v", toolsetNames(res.sets))
 	}
 
 	// unknown → fail loud.
-	if _, _, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{MCP: []string{"nope"}}, surface); err == nil {
+	if _, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{MCP: []string{"nope"}}, surface); err == nil {
 		t.Error("unknown mcp server should error")
 	}
 }
@@ -419,34 +421,34 @@ func TestResolveSubagentToolsets_Skills(t *testing.T) {
 	surface := parentSurface{skills: loaded}
 
 	// nil → inherit the parent's (single) skill toolset.
-	out, desc, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{}, surface)
+	res, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{}, surface)
 	if err != nil {
 		t.Fatalf("nil Skills: %v", err)
 	}
-	if len(out) != 1 || !strings.Contains(desc, "skills=inherit") {
-		t.Errorf("nil Skills = %d toolsets (desc %q), want 1 inherited", len(out), desc)
+	if len(res.sets) != 1 || !strings.Contains(res.desc, "skills=inherit") {
+		t.Errorf("nil Skills = %d toolsets (desc %q), want 1 inherited", len(res.sets), res.desc)
 	}
 
 	// list → a scoped skill toolset is present, and the description names it.
-	out, desc, err = resolveSubagentToolsets(context.Background(), config.SubagentSpec{Skills: []string{"alpha"}}, surface)
+	res, err = resolveSubagentToolsets(context.Background(), config.SubagentSpec{Skills: []string{"alpha"}}, surface)
 	if err != nil {
 		t.Fatalf("scoped Skills: %v", err)
 	}
-	if len(out) != 1 || !strings.Contains(desc, "skills=[alpha]") {
-		t.Errorf("scoped Skills = %d toolsets (desc %q), want 1 scoped to alpha", len(out), desc)
+	if len(res.sets) != 1 || !strings.Contains(res.desc, "skills=[alpha]") {
+		t.Errorf("scoped Skills = %d toolsets (desc %q), want 1 scoped to alpha", len(res.sets), res.desc)
 	}
 
 	// empty (non-nil) → grant none: no skill toolset at all.
-	out, desc, err = resolveSubagentToolsets(context.Background(), config.SubagentSpec{Skills: []string{}}, surface)
+	res, err = resolveSubagentToolsets(context.Background(), config.SubagentSpec{Skills: []string{}}, surface)
 	if err != nil {
 		t.Fatalf("empty Skills: %v", err)
 	}
-	if len(out) != 0 || !strings.Contains(desc, "skills=[]") {
-		t.Errorf("empty Skills = %d toolsets (desc %q), want none", len(out), desc)
+	if len(res.sets) != 0 || !strings.Contains(res.desc, "skills=[]") {
+		t.Errorf("empty Skills = %d toolsets (desc %q), want none", len(res.sets), res.desc)
 	}
 
 	// unknown → fail loud.
-	if _, _, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{Skills: []string{"nope"}}, surface); err == nil {
+	if _, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{Skills: []string{"nope"}}, surface); err == nil {
 		t.Error("unknown skill should error")
 	}
 }
@@ -565,20 +567,20 @@ func TestLoadSubagentRoot_OwnSkills(t *testing.T) {
 		t.Fatal("root's skills surface should be non-empty")
 	}
 	// nil Skills → the subagent inherits ALL of the root's skills (one toolset).
-	out, desc, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{Root: root}, surface)
+	res, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{Root: root}, surface)
 	if err != nil {
 		t.Fatalf("resolveSubagentToolsets (nil skills): %v", err)
 	}
-	if len(out) != 1 || !strings.Contains(desc, "skills=inherit") {
-		t.Errorf("nil Skills over root surface = %d toolsets (desc %q), want 1 (all root skills)", len(out), desc)
+	if len(res.sets) != 1 || !strings.Contains(res.desc, "skills=inherit") {
+		t.Errorf("nil Skills over root surface = %d toolsets (desc %q), want 1 (all root skills)", len(res.sets), res.desc)
 	}
 	// A list scopes WITHIN the root.
-	if _, _, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{Root: root, Skills: []string{"rootalpha"}}, surface); err != nil {
+	if _, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{Root: root, Skills: []string{"rootalpha"}}, surface); err != nil {
 		t.Fatalf("scoped skills within root: %v", err)
 	}
 	// A name that isn't in the root fails loud — proving the scope is the
 	// root's own tree, not the parent's.
-	if _, _, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{Root: root, Skills: []string{"parentonly"}}, surface); err == nil {
+	if _, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{Root: root, Skills: []string{"parentonly"}}, surface); err == nil {
 		t.Error("a skill absent from the root should error (root scope, not parent scope)")
 	}
 }
@@ -601,11 +603,11 @@ func TestRootInventory_DistinguishesEmptyRoot(t *testing.T) {
 		if err != nil {
 			t.Fatalf("loadSubagentRoot(%s): %v", root, err)
 		}
-		_, scope, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{Root: root}, surface)
+		res, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{Root: root}, surface)
 		if err != nil {
 			t.Fatalf("resolveSubagentToolsets(%s): %v", root, err)
 		}
-		return surface, scope
+		return surface, res.desc
 	}
 
 	populated := t.TempDir()
@@ -855,5 +857,151 @@ func TestBuildDeclaredSubagents_RootedEndToEnd(t *testing.T) {
 	}
 	if !hasReadFile || hasBash {
 		t.Errorf("rooted subagent built-ins = %v, want read_file present and bash excluded", names)
+	}
+}
+
+// TestResolveSubagentToolsets_InfosNameTheToolsInside is the #768
+// snapshot: this is the only layer that knows which toolset came from
+// which MCP server, so it has to record the answer. Downstream —
+// background.Catalog, GET .../subagents — a tool.Toolset is opaque, and
+// a lost server name is not recoverable from a tool name (which is
+// exactly the prefix-splitting guesswork #767 removed from /tools).
+func TestResolveSubagentToolsets_InfosNameTheToolsInside(t *testing.T) {
+	t.Parallel()
+	project := t.TempDir()
+	writeSkill(t, project, "alpha")
+	loaded, err := skills.LoadAll(context.Background(), project, "", nil)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	surface := parentSurface{
+		mcpToolsets: []namedToolset{
+			{name: "gke", toolset: fakeToolset{"gke"}, infos: []mcp.ToolInfo{
+				{Name: "gke_list_clusters", Description: "list clusters"},
+				{Name: "gke_get_pod", Description: "get a pod"},
+			}},
+			// Started but failed: nil toolset, and no infos to contribute.
+			{name: "broken", toolset: nil, infos: []mcp.ToolInfo{{Name: "phantom"}}},
+		},
+		skills: loaded,
+	}
+
+	res, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{}, surface)
+	if err != nil {
+		t.Fatalf("resolveSubagentToolsets: %v", err)
+	}
+
+	byName := map[string]attach.ToolInfo{}
+	for _, ti := range res.infos {
+		byName[ti.Name] = ti
+	}
+	if got := byName["gke_list_clusters"]; got.Source != attach.ToolSourceMCP || got.Server != "gke" || got.Description == "" {
+		t.Errorf("gke_list_clusters = %+v, want source=mcp server=gke with a description", got)
+	}
+	if _, ok := byName["phantom"]; ok {
+		t.Error("a failed server contributed a tool the subagent cannot call")
+	}
+	// The skill toolset exposes its fixed trio, not one tool per skill.
+	if got, ok := byName["list_skills"]; !ok || got.Source != attach.ToolSourceSkill {
+		t.Errorf("list_skills = %+v (present=%v), want source=skill", got, ok)
+	}
+	if _, ok := byName["alpha"]; ok {
+		t.Error("the SKILL alpha was reported as a tool; the model calls load_skill, not alpha")
+	}
+}
+
+// TestResolveSubagentToolsets_InfosFollowTheScope: the snapshot must
+// describe what this subagent got, not what the parent has. A subagent
+// scoped to no MCP and no skills reporting the parent's roster would be
+// worse than reporting nothing — it is a confident wrong answer to
+// "what can this specialist reach?".
+func TestResolveSubagentToolsets_InfosFollowTheScope(t *testing.T) {
+	t.Parallel()
+	project := t.TempDir()
+	writeSkill(t, project, "alpha")
+	loaded, err := skills.LoadAll(context.Background(), project, "", nil)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	surface := parentSurface{
+		mcpToolsets: []namedToolset{
+			{name: "gke", toolset: fakeToolset{"gke"}, infos: []mcp.ToolInfo{{Name: "gke_get_pod"}}},
+			{name: "fs", toolset: fakeToolset{"fs"}, infos: []mcp.ToolInfo{{Name: "fs_read_file"}}},
+		},
+		skills: loaded,
+	}
+
+	// Scoped to one server, no skills.
+	res, err := resolveSubagentToolsets(context.Background(), config.SubagentSpec{
+		MCP:    []string{"fs"},
+		Skills: []string{},
+	}, surface)
+	if err != nil {
+		t.Fatalf("scoped: %v", err)
+	}
+	if len(res.infos) != 1 || res.infos[0].Name != "fs_read_file" {
+		t.Fatalf("scoped infos = %+v, want only fs_read_file", res.infos)
+	}
+
+	// Granted nothing at all: no infos, not the parent's.
+	res, err = resolveSubagentToolsets(context.Background(), config.SubagentSpec{
+		MCP:    []string{},
+		Skills: []string{},
+	}, surface)
+	if err != nil {
+		t.Fatalf("empty: %v", err)
+	}
+	if len(res.infos) != 0 {
+		t.Errorf("ungranted subagent reported %+v, want nothing", res.infos)
+	}
+}
+
+// TestBuildDeclaredSubagents_TemplateCarriesToolsetSnapshot closes the
+// loop: the async template the builder hands the manager must carry the
+// snapshot, or Catalog() reports built-ins only and the MCP/skill half
+// of #768 silently never ships.
+func TestBuildDeclaredSubagents_TemplateCarriesToolsetSnapshot(t *testing.T) {
+	t.Parallel()
+	project := t.TempDir()
+	writeSkill(t, project, "alpha")
+	loaded, err := skills.LoadAll(context.Background(), project, "", nil)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	cfg := &config.Config{
+		Model: config.ModelConfig{Provider: mock.ProviderEcho, Name: "echo"},
+		Subagents: []config.SubagentSpec{{
+			Name:  "cluster",
+			Tools: []string{"read_file"},
+		}},
+	}
+	surface := parentSurface{
+		builtinTools: []adktool.Tool{fakeTool{"read_file"}},
+		mcpToolsets: []namedToolset{
+			{name: "gke", toolset: fakeToolset{"gke"}, infos: []mcp.ToolInfo{{Name: "gke_get_pod", Description: "get a pod"}}},
+		},
+		skills: loaded,
+	}
+
+	_, templates, _, err := buildDeclaredSubagents(
+		context.Background(), cfg, mock.NewEcho(), t.TempDir(), surface, testDeps(),
+	)
+	if err != nil {
+		t.Fatalf("buildDeclaredSubagents: %v", err)
+	}
+	if len(templates) != 1 {
+		t.Fatalf("expected 1 template, got %d", len(templates))
+	}
+	var sawMCP, sawSkill bool
+	for _, ti := range templates[0].ToolsetTools {
+		switch ti.Source {
+		case attach.ToolSourceMCP:
+			sawMCP = ti.Name == "gke_get_pod" && ti.Server == "gke"
+		case attach.ToolSourceSkill:
+			sawSkill = true
+		}
+	}
+	if !sawMCP || !sawSkill {
+		t.Errorf("template ToolsetTools = %+v, want the gke MCP tool (attributed) and the skill tools", templates[0].ToolsetTools)
 	}
 }

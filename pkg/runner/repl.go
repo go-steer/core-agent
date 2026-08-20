@@ -239,19 +239,25 @@ func replCore(ctx context.Context, a *agent.Agent, m adkmodel.LLM, initialPrompt
 				return ExitOK, nil
 			}
 		case <-a.WakeRequested():
-			// An external Inject (typically via attach-mode's
-			// POST /inject) queued a message in the agent's inbox
-			// AND fired wake. Run a turn with an empty prompt;
-			// Agent.Run's pre-turn drain prepends every queued
-			// inbox message via formatInboxForPrompt, so the
-			// model sees them as a "[Inbox]" block. The local
-			// "> " prompt we just printed is left in place — the
-			// model output renders below it, then the next loop
-			// iteration writes a fresh "> ".
+			// Something out-of-band queued work for the agent AND
+			// fired wake: an external Inject (typically attach-mode's
+			// POST /inject) landing a message in the inbox, or a
+			// background subagent reporting (#780). Run a turn with
+			// an empty prompt; Agent.Run's pre-turn drains prepend
+			// both — inbox messages via formatInboxForPrompt as an
+			// "[Inbox]" block, subagent alerts as "[Background
+			// reports]". The local "> " prompt we just printed is
+			// left in place — the model output renders below it,
+			// then the next loop iteration writes a fresh "> ".
+			//
+			// The line below deliberately doesn't name which source
+			// woke us: the wake signal fans in and carries no reason,
+			// so naming one would be a guess, and the prepended block
+			// says which it was a moment later anyway.
 			prompt = ""
 			isWake = true
 			fmt.Fprintln(stderr, "")
-			fmt.Fprintln(stderr, paint("[wake] inbox arrived — processing", ansiCyan, colorOn))
+			fmt.Fprintln(stderr, paint("[wake] pending work arrived — processing", ansiCyan, colorOn))
 		}
 
 		// User has typed something useful — reset the between-turn

@@ -15,7 +15,7 @@ Tools are grouped by domain — files, search, shell, data + network, planning, 
 | `read_file` | Read a file with optional `offset` / `limit` for large files. | `path`, `offset?`, `limit?` |
 | `read_many_files` | Read a batch in one call. Per-file failures surface as `skipped: "<reason>"` entries — the batch never aborts. **Preferred over parallel `read_file` calls when the file set is known up front.** | `paths?`, `pattern?`, `path?` |
 | `write_file` | Atomic create-or-overwrite. Asks for confirmation in `ask` mode. | `path`, `content` |
-| `edit_file` | Replace exactly one occurrence of `old_string` with `new_string`. Fails if the string appears zero or multiple times. | `path`, `old_string`, `new_string` |
+| `edit_file` | Replace exactly one occurrence of `old_string` with `new_string`. Fails if the string appears zero times, or more than once unless `replace_all: true` (v2.9+) — the refusal names the match count and the flag, so a rename is one call instead of a widening game. | `path`, `old_string`, `new_string`, `replace_all?` |
 | `delete_file` | Idempotent removal of a regular file. Refuses directories. **Preferred over `bash rm`** — honors the gate's `CheckFileWrite` and the path scope. | `path` |
 | `stat` | Metadata: `size`, `mtime` (RFC3339 UTC), `mode`, `is_dir`. Missing path returns `{exists: false}` instead of erroring — use for "has this been written yet?" without exception handling. | `path` |
 | `list_dir` | Sorted directory listing. | `path` |

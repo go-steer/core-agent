@@ -288,9 +288,9 @@ func Build(cfg *config.Config, gate *permissions.Gate, agentsDir string, b Built
 				Name: "write_file", Description: "Create or overwrite a file. Asks for confirmation in 'ask' mode.",
 			}, writeFileFunc(gate))
 		}},
-		{b.EditFile, "edit_file", "Replace one occurrence of an exact string in a file.", func() (tool.Tool, error) {
+		{b.EditFile, "edit_file", "Replace an exact string in a file — one occurrence, or all of them with replace_all.", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{
-				Name: "edit_file", Description: "Replace exactly one occurrence of old_string with new_string in path.",
+				Name: "edit_file", Description: "Replace exactly one occurrence of old_string with new_string in path. If old_string is not unique the edit is refused, naming the number of matches — widen the snippet until it is unique, or pass replace_all=true to change every occurrence at once (the right move for a rename, the wrong one when you meant a single site).",
 			}, editFileFunc(gate))
 		}},
 		{b.DeleteFile, "delete_file", "Remove a regular file.", func() (tool.Tool, error) {

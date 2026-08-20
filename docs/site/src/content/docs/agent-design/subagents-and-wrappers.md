@@ -298,6 +298,14 @@ Before v2.9 that held only for the spawn door. A subagent installed as a **named
 
 Two consequences worth knowing. Delegated turns append *during* the parent's turn, so an attached operator sees `usage-update` frames arrive mid-turn (spawned subagents already behaved this way). And a session resumed lazily from the event log replays the parent's own row only, so delegated spend is not restored into the rebuilt tracker — the same limitation `spawn_agent` has always had.
 
+The parent's ceiling stops the *tree*; it does not stop one delegate from eating the whole allowance before the parent gets another turn. That's what a per-subagent `budgets` block is for — `max_turns`, `max_cost_usd`, `max_wallclock_seconds`, declared once and honored on both doors:
+
+```jsonc
+{ "name": "cluster", "description": "…", "budgets": { "max_turns": 20, "max_cost_usd": 0.5 } }
+```
+
+A cap that fires hands the parent whatever the subagent produced, labelled as a partial and naming the cap — the same contract a `max_steps` spawn ends on, for the same reason: the parent holds the goal and can re-ask with specifics, where a discarded partial makes it pay twice. Omitted, the spawn door falls back to the manager's defaults (50 turns / $1 / 10m) and the tool door stays unbounded. See [Reference → Declarative subagents](/reference/configuration/#declarative-subagents-v29).
+
 See [Reference → Declarative subagents](/reference/configuration/#declarative-subagents-v29) for the full field schema, and [`examples/kube-platform-agent/`](https://github.com/go-steer/core-agent/tree/main/examples/kube-platform-agent) for a recipe that delegates GKE reads to a scoped `cluster` subagent.
 
 ---
@@ -321,7 +329,7 @@ The composition keeps the parent's context tiny (it just sees "spawned subagent,
 | Letting the parent re-verify agentic_* digests by re-reading source | Defeats the wrapper's whole purpose | `AGENTS.md` rule to trust digests; see issue #59 |
 | Using `agentic_grep` on a cheap model for code precision tasks | Flash hallucinates citations; see #60 | Use a more capable model for grep/research; tighten turn budget |
 | Manager subagent with generous budgets at every level | Cost blowout; nested envelopes multiply | Tight budgets per level; audit the spawn tree via the attach hub / TUI |
-| Spawning N subagents without budget caps | One runaway can consume the entire session budget | Always `--max-turns` + `--max-cost` per spawn |
+| Spawning N subagents without budget caps | One runaway can consume the entire session budget | Always `--max-turns` + `--max-cost` per spawn; for a declared roster, a `budgets` block per subagent |
 | Using subagents because they sound advanced | Adds complexity for no payoff if the task fits in the parent | Default to inline; subagents only when the use case justifies it |
 
 ---

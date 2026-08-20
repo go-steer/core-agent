@@ -142,6 +142,20 @@ func TestRequiredVersion(t *testing.T) {
 			want: "2.9.0-dev.1",
 		},
 		{
+			// A cap the daemon silently drops is worse than no cap: the
+			// operator reads the config and believes the delegation is
+			// bounded.
+			name: "a subagent budget needs the release that honors it",
+			cfg: config.Config{Subagents: []config.SubagentSpec{
+				{Name: "a"}, {Name: "b", Budgets: &config.SubagentBudgets{MaxTurns: 8}}}},
+			want: "2.9.0-dev.4",
+		},
+		{
+			name: "a subagent with no budgets block asserts nothing about caps",
+			cfg:  config.Config{Subagents: []config.SubagentSpec{{Name: "a"}}},
+			want: "2.9.0-dev.1", // the roster itself, not the cap
+		},
+		{
 			// The rule is PRESENCE, not non-zeroness. pkg/config made
 			// auto_continue.enabled a *bool precisely so an explicit
 			// opt-out could be told from an absent block (#559); an older

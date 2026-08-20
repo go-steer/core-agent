@@ -705,7 +705,7 @@ The derived-session shape gives strong context isolation by construction — the
 
 ### Per-subagent options
 
-For finer control (custom name, description, depth cap, branch label) call `agent.NewSubagentTool` directly:
+For finer control (custom name, description, depth cap, branch label, budgets) call `agent.NewSubagentTool` directly:
 
 ```go
 researchTool, _ := agent.NewSubagentTool(agent.SubagentOptions{
@@ -740,6 +740,26 @@ Two properties worth knowing:
 
 - The roll-up happens **during** the parent's turn, from inside the tool call, so an attached client sees `usage-update` frames mid-turn — the same shape the asynchronous `spawn_agent` door already produced.
 - A subagent's events live in a derived session row, and `usage.RebuildTrackerFromEvents` replays only the parent row, so delegated spend is **not** restored when a session is lazily resumed. Same limitation as `spawn_agent`.
+
+### Bounding one delegation
+
+`agent.SubagentBudgets` caps a single delegation along three independent dimensions. The zero value is unbounded, which is what this door has always been.
+
+```go
+agent.WithSubagentBudgets(agent.SubagentBudgets{
+    MaxTurns:     20,               // the subagent's OWN model turns
+    MaxCostUSD:   0.5,              // priced per turn, under the subagent's model
+    MaxWallclock: 5 * time.Minute,  // from the start of the delegation
+})
+```
+
+Set it on the **subagent**, not the parent — like `WithSubagentMaxDepth`, the cap is a property of the delegate, and a parent with several subagents needs a different one for each. `WithSubagents` forwards it to `SubagentOptions.Budgets`; a direct `NewSubagentTool` consumer sets that field. `a.DelegationBudgets()` reads back what was declared.
+
+ADK's `runner.RunConfig` has no turn or cost cap — only `StreamingMode` and `SaveInputBlobsAsArtifacts` — so turns and dollars are counted in the tool handler (the cost cap needs the roll-up above to exist at all). Wall-clock rides a derived context.
+
+A cap that fires **does not fail the tool call**. Whatever the subagent produced is returned, prefixed with a label naming the cap and telling the parent to re-delegate the remainder or finish it itself. Discarding the partial makes the parent pay twice for work it already bought.
+
+The CLI's declarative roster reaches the same three dimensions through a per-subagent `budgets` block, which is projected onto both this door and the `spawn_agent` one — see [Reference → Declarative subagents](/reference/configuration/#declarative-subagents-v29).
 
 ---
 

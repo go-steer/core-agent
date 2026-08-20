@@ -941,6 +941,39 @@ type SubagentSpec struct {
 	MCP          []string     `json:"mcp,omitempty"`
 	Skills       []string     `json:"skills,omitempty"`
 	Root         string       `json:"root,omitempty"`
+
+	// Budgets bounds one delegation to this subagent. Honored on BOTH
+	// doors the subagent is reachable through — as a parent tool call
+	// and by spawn_agent reference — because a cap that binds only one
+	// of them is worse than none: the operator reads the config and
+	// believes the subagent is bounded.
+	//
+	// Zero/omitted means "no declared cap": the async door then falls
+	// back to the manager's defaults (50 turns / $1 / 10m), and the
+	// synchronous door stays unbounded, which is what it has always
+	// been. A per-spawn override may only tighten what is declared here.
+	Budgets *SubagentBudgets `json:"budgets,omitempty"`
+}
+
+// SubagentBudgets caps one delegation. Field names mirror spawn_agent's
+// tool arguments (max_turns / max_cost_usd / max_wallclock_seconds) so an
+// operator reading a recipe and a model reading the tool schema are
+// looking at the same three dimensions under the same three names.
+//
+// Each dimension is independent and each zero value means unset. Turns
+// are the subagent's own model turns, not the parent's; the dollar cap is
+// evaluated against the same per-turn pricing the session ledger uses;
+// wall-clock is measured from the start of the delegation.
+//
+// A cap that fires does not fail the delegation. Whatever the subagent
+// produced up to that point is returned, labelled as a partial and naming
+// the cap that stopped it — the parent holds the goal and can re-ask with
+// specifics, where a discarded partial makes it pay twice for the same
+// work (#691).
+type SubagentBudgets struct {
+	MaxTurns            int     `json:"max_turns,omitempty"`
+	MaxCostUSD          float64 `json:"max_cost_usd,omitempty"`
+	MaxWallclockSeconds int     `json:"max_wallclock_seconds,omitempty"`
 }
 
 // MockConfig configures the mock providers (echo, scripted) and the
@@ -1659,6 +1692,20 @@ func (c *Config) validateSubagents() error {
 		}
 		if sa.Root != "" && strings.TrimSpace(sa.Root) == "" {
 			return fmt.Errorf("config: subagents[%d].root is whitespace-only (omit it, or name a real directory)", i)
+		}
+		if b := sa.Budgets; b != nil {
+			// Negative is rejected rather than clamped: every dimension
+			// treats 0 as "unset", so a clamp would turn a typo'd -1 into
+			// an uncapped subagent the operator believes is bounded.
+			if b.MaxTurns < 0 {
+				return fmt.Errorf("config: subagents[%d].budgets.max_turns=%d must be >= 0 (0 = no declared cap)", i, b.MaxTurns)
+			}
+			if b.MaxCostUSD < 0 {
+				return fmt.Errorf("config: subagents[%d].budgets.max_cost_usd=%v must be >= 0 (0 = no declared cap)", i, b.MaxCostUSD)
+			}
+			if b.MaxWallclockSeconds < 0 {
+				return fmt.Errorf("config: subagents[%d].budgets.max_wallclock_seconds=%d must be >= 0 (0 = no declared cap)", i, b.MaxWallclockSeconds)
+			}
 		}
 	}
 	return nil

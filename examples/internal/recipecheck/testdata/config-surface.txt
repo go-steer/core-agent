@@ -113,6 +113,9 @@ safety.bash_search_gate
 safety.small_tier_parent
 safety.watchdog
 session.task_class
+subagents[].budgets.max_cost_usd
+subagents[].budgets.max_turns
+subagents[].budgets.max_wallclock_seconds
 subagents[].description
 subagents[].instructions
 subagents[].max_depth

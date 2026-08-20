@@ -296,11 +296,15 @@ type Agent struct {
 	// subagent tool (set via WithSubagentMaxDepth). Read by a parent's
 	// WithSubagents resolution; 0 = substrate default.
 	subagentMaxDepth int
-	inbox            *inbox
-	wake             *wakeSignal
-	tracker          *usage.Tracker
-	compactor        Compactor
-	checkpointer     Checkpointer
+	// subagentBudgets bounds one delegation to this agent when it is
+	// wrapped as a subagent tool (set via WithSubagentBudgets). Read by
+	// a parent's WithSubagents resolution; zero = unbounded.
+	subagentBudgets SubagentBudgets
+	inbox           *inbox
+	wake            *wakeSignal
+	tracker         *usage.Tracker
+	compactor       Compactor
+	checkpointer    Checkpointer
 
 	// Session title (see session_title.go). titleModel is the cheap-tier
 	// model titling prefers, nil to use the parent's. titleAttempted is
@@ -458,6 +462,11 @@ type options struct {
 	// PARENT's WithSubagents resolution, not used when this agent runs
 	// as a parent. 0 = substrate default.
 	subagentMaxDepth int
+	// subagentBudgets is this agent's own per-delegation cap when it is
+	// wrapped as a subagent tool (WithSubagentBudgets). Like
+	// subagentMaxDepth, it is read by the PARENT at construction and is
+	// inert when this agent runs as a parent.
+	subagentBudgets  SubagentBudgets
 	bgMgr            SubagentManager
 	gate             *permissions.Gate
 	tracker          *usage.Tracker
@@ -640,6 +649,24 @@ func WithSubagents(agents []*Agent) Option {
 // who never sets it keeps the default.
 func WithSubagentMaxDepth(n int) Option {
 	return func(o *options) { o.subagentMaxDepth = n }
+}
+
+// WithSubagentBudgets bounds one delegation to THIS agent when it is
+// exposed as a subagent tool via WithSubagents — the value forwarded to
+// SubagentOptions.Budgets at the parent's construction. A cap that fires
+// returns whatever the subagent produced, labelled as a partial.
+//
+// It lives on the subagent rather than on the parent for the same reason
+// WithSubagentMaxDepth does: the cap is a property of the delegate, and a
+// parent with several subagents needs a different one for each.
+//
+// The zero value leaves every dimension unbounded, which is what this
+// door has always been. Declarative subagents thread their config
+// `budgets` block through this option and through the async twin's
+// SubagentTemplate.Budgets, so one declared cap binds whichever door the
+// subagent is reached through.
+func WithSubagentBudgets(b SubagentBudgets) Option {
+	return func(o *options) { o.subagentBudgets = b }
 }
 
 // WithBackgroundManager attaches a BackgroundAgentManager to the
@@ -835,6 +862,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		st, err := NewSubagentTool(SubagentOptions{
 			Inner:           sa,
 			MaxDepth:        sa.subagentMaxDepth, // 0 → NewSubagentTool default
+			Budgets:         sa.subagentBudgets,  // zero → unbounded
 			Gate:            o.gate,
 			ParentTracker:   o.tracker, // bill delegated turns to the parent (#713)
 			ParentService:   parentSvc,
@@ -987,6 +1015,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 		mode:                 o.mode,
 		subagentToolNames:    o.subagentToolNames,
 		subagentMaxDepth:     o.subagentMaxDepth,
+		subagentBudgets:      o.subagentBudgets,
 		invocationHist:       invocationHist,
 		toolInstrumenter:     toolInstrumenter,
 		metricAgentName:      cmp.Or(o.metricAgentName, o.name),
@@ -1033,6 +1062,21 @@ func (a *Agent) Tools() []tool.Tool {
 	out := make([]tool.Tool, len(a.tools))
 	copy(out, a.tools)
 	return out
+}
+
+// DelegationBudgets returns the caps that bound one delegation TO this
+// agent when a parent exposes it as a subagent tool — what
+// WithSubagentBudgets set. Zero dimensions are unbounded.
+//
+// It reads back what was declared, not what a run has spent. The
+// asynchronous twin's caps live on its background.SubagentTemplate;
+// cmd/core-agent fills both from one config block, and this accessor is
+// what lets a test assert the pair did not drift.
+func (a *Agent) DelegationBudgets() SubagentBudgets {
+	if a == nil {
+		return SubagentBudgets{}
+	}
+	return a.subagentBudgets
 }
 
 // SubagentNames returns the resolved tool names of the declarative

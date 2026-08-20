@@ -21,6 +21,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	adkagent "google.golang.org/adk/agent"
@@ -1003,5 +1004,68 @@ func TestBuildDeclaredSubagents_TemplateCarriesToolsetSnapshot(t *testing.T) {
 	}
 	if !sawMCP || !sawSkill {
 		t.Errorf("template ToolsetTools = %+v, want the gke MCP tool (attributed) and the skill tools", templates[0].ToolsetTools)
+	}
+}
+
+// TestBuildDeclaredSubagents_BudgetsReachBothTwins is the #713 gap-1
+// wiring test. One subagent is reachable two ways — as a parent tool call
+// and by spawn_agent reference — and a cap that binds only one of them is
+// worse than no cap at all: the config says the subagent is bounded, so
+// nobody goes looking (#759/#762). The two projections live side by side
+// in subagents.go for the same reason this asserts them together.
+func TestBuildDeclaredSubagents_BudgetsReachBothTwins(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{
+		Model: config.ModelConfig{Provider: mock.ProviderEcho, Name: "echo"},
+		Subagents: []config.SubagentSpec{{
+			Name: "cluster",
+			Budgets: &config.SubagentBudgets{
+				MaxTurns:            12,
+				MaxCostUSD:          0.4,
+				MaxWallclockSeconds: 90,
+			},
+		}},
+	}
+	subs, templates, _, err := buildDeclaredSubagents(
+		context.Background(), cfg, mock.NewEcho(), t.TempDir(), parentSurface{}, testDeps(),
+	)
+	if err != nil {
+		t.Fatalf("buildDeclaredSubagents: %v", err)
+	}
+	if len(subs) != 1 || len(templates) != 1 {
+		t.Fatalf("got %d subagents / %d templates, want 1 each", len(subs), len(templates))
+	}
+
+	wantSync := agent.SubagentBudgets{MaxTurns: 12, MaxCostUSD: 0.4, MaxWallclock: 90 * time.Second}
+	if got := subs[0].DelegationBudgets(); got != wantSync {
+		t.Errorf("sync subagent-tool budgets = %+v, want %+v", got, wantSync)
+	}
+	wantAsync := background.Budgets{MaxTurns: 12, MaxCost: 0.4, MaxWallclock: 90 * time.Second}
+	if got := templates[0].Budgets; got != wantAsync {
+		t.Errorf("async spawn template budgets = %+v, want %+v", got, wantAsync)
+	}
+}
+
+// TestBuildDeclaredSubagents_NoBudgetsLeavesBothDoorsAtTheirDefault: an
+// omitted block is not a cap of zero. The sync door stays unbounded (what
+// it has always been) and the async door keeps falling back to the
+// manager's defaults, which mergeBudgets applies only to zero fields.
+func TestBuildDeclaredSubagents_NoBudgetsLeavesBothDoorsAtTheirDefault(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{
+		Model:     config.ModelConfig{Provider: mock.ProviderEcho, Name: "echo"},
+		Subagents: []config.SubagentSpec{{Name: "cluster"}},
+	}
+	subs, templates, _, err := buildDeclaredSubagents(
+		context.Background(), cfg, mock.NewEcho(), t.TempDir(), parentSurface{}, testDeps(),
+	)
+	if err != nil {
+		t.Fatalf("buildDeclaredSubagents: %v", err)
+	}
+	if got := subs[0].DelegationBudgets(); got != (agent.SubagentBudgets{}) {
+		t.Errorf("sync subagent-tool budgets = %+v, want zero (unbounded)", got)
+	}
+	if got := templates[0].Budgets; got != (background.Budgets{}) {
+		t.Errorf("async spawn template budgets = %+v, want zero (manager defaults apply)", got)
 	}
 }

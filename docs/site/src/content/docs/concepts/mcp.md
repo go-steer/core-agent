@@ -218,9 +218,11 @@ The model sees a synthetic tool response:
 
 The `call_id` is the escape hatch — the model can pass it to the built-in `retrieve_raw(call_id)` tool to fetch the un-digested payload when a digest looks suspicious. `retrieve_raw` is registered whenever the wrap is on AND a Store is wired (which happens automatically when `--session-db` is on).
 
+Since v2.9 the same wrap also covers four built-ins — `read_many_files`, `grep`, `glob`, `list_dir` — so a 54 KB filesystem walk and a 54 KB MCP response cost the same. See [Tools → Digested survey tools](/concepts/tools/#digested-survey-tools-v29) for which built-ins are in the set and why `read_file` and `bash` are not.
+
 ### Configuration
 
-- **CLI kill switch**: `--no-mcp-digest` disables the wrap layer entirely. `retrieve_raw` is not registered.
+- **CLI kill switch**: `--no-mcp-digest` disables the wrap layer entirely — both halves, MCP and built-in. `retrieve_raw` is not registered.
 - **Per-project**: `agentic_wrap: false` (top-level in `.agents/mcp.json`) has the same effect as the CLI kill switch, scoped to that project.
 - **Per-project threshold**: `agentic_wrap_threshold: 8000` (bytes). Responses below this bypass the router. Default 8000 (~2000 tokens).
 - **Per-server escape hatch**: `agentic_never: true` on any `ServerSpec` opts that server out of digesting. Use for debug-sensitive or known-tiny servers where the digest hurts more than it helps.

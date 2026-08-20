@@ -287,6 +287,22 @@ Cost rolls up to the parent's `usage.Tracker` so `/stats` reflects subtask spend
 
 Tools declared in `.agents/mcp.json` are namespaced under the server name (`mcp.<server>.<tool>`). They route through the same permission gate under that namespace, with the same pattern grammar. The model sees them alongside built-ins; nothing in the catalog distinguishes built-in from MCP at the model interface. See [MCP servers](/concepts/mcp/) for the declaration schema.
 
+## Digested survey tools (v2.9+)
+
+Four built-ins go through the same [structural digest wrap](/concepts/mcp/#structural-digest-wrap---no-mcp-digest) as MCP responses: `read_many_files`, `grep`, `glob`, and `list_dir`. Above 8000 bytes their response is replaced by a digest plus a `call_id`, exactly as an MCP response would be, and the raw payload goes to the store for `retrieve_raw`.
+
+The rule for membership is *survey*: these four answer "what is out there" over a set the model named loosely — a glob, a directory, a pattern. A survey answer is useful in summary, and the model has an obvious way to narrow it, so the trade is cheap in both directions. Before v2.9 a `read_many_files {pattern: "*"}` over a content root put its entire walk into context verbatim and left it there for every remaining turn of the session; a `gke_get_k8s_resource` returning the same bytes did not. Nothing in the tool surface signalled the difference.
+
+Notably **not** digested:
+
+- **`read_file`** — the narrowing move itself. Digesting a survey is only safe because "then read the one file you actually want" is a cheap next step. `read_file` is also what precedes `edit_file`, which matches `old_string` exactly; a truncated copy of a file the model is about to edit trades a few thousand tokens for a failed edit.
+- **`bash`** — output the model routinely needs verbatim (a diff, a stack trace, an exit banner), with no structure the JSON pruner can exploit.
+- **`json_query`** — the model already narrowed. Pruning a `jq` result second-guesses the extraction that was the point of the call.
+
+Two behaviours differ from the MCP wrap. Responses **under** the threshold are returned unchanged rather than re-shaped into the synthetic map — digesting is a cost intervention, so it stays invisible until there is a cost. And a digest that came out no smaller than the payload it replaced is discarded in favour of the original.
+
+The same `--no-mcp-digest` switch turns this off; despite the name it governs the whole digest layer, because the digest is only safe while `retrieve_raw` can undo it.
+
 ## `retrieve_raw` — digest escape hatch
 
 | Tool | Purpose | Params |

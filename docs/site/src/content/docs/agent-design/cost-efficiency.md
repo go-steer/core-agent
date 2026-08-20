@@ -108,6 +108,8 @@ For short headless one-shots (`core-agent -p "..."`) compaction and checkpoints 
 
 MCP tool responses go through their own dedicated wrap layer (see [MCP reference → Structural digest wrap](/concepts/mcp/#structural-digest-wrap---no-mcp-digest)). The structural pruner ships default-on: JSON-shaped MCP responses get identifier-preserving compression before reaching the parent's context, and prose passthroughs are bounded at 64 KiB. This is the biggest cost lever for sessions that use MCP-heavy servers (GKE, GitHub, Linear, filesystem) — a 13-row `gke_list_clusters` table burns ~2k tokens raw and ~200 tokens digested, and MCP-heavy sessions typically hit that on every turn.
 
+Since v2.9 the same wrap covers the survey-shaped built-ins — `read_many_files`, `grep`, `glob`, `list_dir` (see [Tools → Digested survey tools](/concepts/tools/#digested-survey-tools-v29)). On an uncached session that closes the largest remaining line item: a `read_many_files {pattern: "*"}` over a content root used to enter context at ~14k tokens and be resent on every turn after it, which in one measured GKE session was ~40% of the billed input.
+
 The `--mcp-agentic-wrap-llm` opt-in adds a small-tier LLM subagent for responses the structural pruner can't reduce (prose, malformed JSON, JSON that's structurally minimal). Cost profile mirrors the `agentic_*` wrappers — subagent pays Flash/Haiku rates, parent-side savings run 90-95% of gross for typical GKE-shape responses. Enable via CLI or `mcp.json`.
 
 The cumulative effect surfaces in `/context` under **Digest savings**:

@@ -200,7 +200,7 @@ func main() {
 	bashSearchGate := flag.String("bash-search-gate", "", "what to do when the model runs a search-shaped shell command (grep/egrep/fgrep/rgrep/rg/ag/ack/fd/find) while the native grep/glob tools are registered (#158). 'enforce' (default) refuses the call with a structured error naming the native replacement — bash-as-grep is a training prior strong enough that the existing 'PREFERRED over bash grep' tool descriptions bounce off it (measured: one Gemini variant picked bash for search 15/27 times anyway), and a refusal is the only feedback the model gets at the moment it makes the wrong choice. 'warn' runs the command but attaches the same advice to the tool result. 'allow' disables the check. Piping into a search binary is never gated ('go test ./... | grep -v ok' filters a stream, which the native tool cannot do), and 'find' with an action predicate (-delete, -exec, ...) is a file operation rather than a lookup, so it passes. Tests, builds, git and every other bash use are untouched — this is the surgical version of --disable-tools=bash. Config-file equivalent: safety.bash_search_gate.")
 	agenticTools := flag.Bool("agentic-tools", true, "register the agentic tool wrappers (agentic_read_file, agentic_fetch_url, agentic_grep, agentic_research) that route through a subtask so only the digest enters the parent's context (docs/context-management-design.md Mechanism B). On by default since v2.1; pass --agentic-tools=false to register only the bare tools.")
 	agenticSmallModel := flag.String("agentic-small-model", "", "small/cheap model ID the agentic_* wrappers should route subtasks to (e.g. gemini-3.5-flash-lite, claude-haiku-4-5). When empty, the provider's cheap-tier default is used (gemini-3.5-flash-lite for Gemini/Vertex, claude-haiku-4-5 for Anthropic); providers without a cheap tier (echo, scripted) fall through to inheriting the parent's model. Requires --agentic-tools.")
-	noMCPDigest := flag.Bool("no-mcp-digest", false, "disable the structural pkg/digest wrap around MCP tool responses (docs/digest-design.md). Default: enabled. When on, JSON-shaped MCP responses get a deterministic prune (identifier keys preserved, long strings truncated, arrays collapsed head+tail) before reaching the parent context; prose passthroughs are bounded. Also registers retrieve_raw as a built-in tool so the model can fetch back the un-digested payload when a digest looks suspicious. Kill switch for demos / debugging; leave on for production. Also gated per-project by cfg.MCP.AgenticWrap and per-server by mcp.json's agentic_never.")
+	noMCPDigest := flag.Bool("no-mcp-digest", false, "disable the structural pkg/digest wrap around MCP tool responses (docs/digest-design.md). Default: enabled. When on, JSON-shaped MCP responses get a deterministic prune (identifier keys preserved, long strings truncated, arrays collapsed head+tail) before reaching the parent context; prose passthroughs are bounded. Also registers retrieve_raw as a built-in tool so the model can fetch back the un-digested payload when a digest looks suspicious. Despite the name this switch governs the whole digest layer: the same wrap covers the survey-shaped built-ins (read_many_files, grep, glob, list_dir) once their response clears the threshold, so a filesystem read and an MCP call cost the same for the same payload size. Kill switch for demos / debugging; leave on for production. The MCP half is additionally gated per-project by cfg.MCP.AgenticWrap and per-server by mcp.json's agentic_never.")
 	mcpAgenticWrapLLM := flag.Bool("mcp-agentic-wrap-llm", false, "enable the LLM subagent second-chance path for MCP responses the structural pruner can't reduce below threshold (docs/agentic-mcp-design.md #223). Default off — opt-in until the operator has confirmed the cost trade-off works for their MCP surface. Layered on top of --no-mcp-digest: structural runs first regardless, and the LLM subagent only fires when structural leaves the response above threshold. Config-file equivalent: mcp.json's agentic_wrap_llm.")
 	mcpAgenticWrapModel := flag.String("mcp-agentic-wrap-model", "", "MCP-specific small-model override for the --mcp-agentic-wrap-llm subagent. When empty, falls through to --agentic-small-model, then to the provider's cheap-tier default. Motivation: MCP responses can be shaped differently enough from built-in-tool wrappers that one tier works well for one surface but not the other. Requires --mcp-agentic-wrap-llm. Config-file equivalent: mcp.json's agentic_wrap_model.")
 	noContextCache := flag.Bool("no-context-cache", false, "disable Vertex explicit context caching for the stable request prefix (system instruction + tools). Default: enabled on Vertex. When on, the daemon creates a CachedContent resource after turn 1 and stamps it onto every subsequent GenerateContent call so the prefix bills at ~10%% of the input rate. Kill switch for demos / debugging Vertex issues; leave on for production. See docs/vertex-context-caching-design.md. Also gated per-project by cfg.Model.Vertex.ContextCache.enabled.")
@@ -1394,6 +1394,31 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			return runner.ExitConfigError
 		}
 		builtinTools = append(builtinTools, agTools...)
+	}
+
+	// Built-in digest wrap (#706). Survey-shaped built-ins
+	// (read_many_files, grep, glob, list_dir) return their payload
+	// through pkg/digest once it clears the threshold, so a
+	// `read_many_files {pattern: "*"}` over a content root costs a
+	// digest plus a call_id instead of 54KB that then rides in the
+	// context for every remaining turn of the session.
+	//
+	// Gated on digestStore rather than on a switch of its own: the
+	// digest is only safe because retrieve_raw can undo it, and
+	// retrieve_raw is registered on exactly this condition. One
+	// switch, --no-mcp-digest, turns off the whole layer.
+	//
+	// Applied HERE, after BuildAgenticTools, on purpose. The agentic
+	// wrappers pull grep / list_dir / glob out of builtinTools by
+	// name and run them inside a subtask whose entire job is to read
+	// the raw output and summarize it. Wrapping before that point
+	// would hand the subtask a digest — a second compression of an
+	// already-compressed payload, with no retrieve_raw in the
+	// subtask's toolset to undo it. Wrapping after leaves the
+	// agentic wrappers holding the unwrapped inner tools they
+	// captured, and swaps only the parent-facing copies.
+	if digestStore != nil {
+		builtinTools = tools.NewDigester(&tools.DigestOptions{Store: digestStore}).Wrap(builtinTools)
 	}
 
 	// System-prompt layer resolution (#459): memory enters as layer 4

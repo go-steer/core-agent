@@ -728,8 +728,18 @@ parent, _ := agent.New(model,
 ### What's deferred
 
 - **Default research-safe tool subset.** The inner agent's tool list is whatever you construct it with; we don't auto-restrict to read-only tools. Add per-subagent gates if your subagent shouldn't have write access.
-- **Token / cost rollup** from subagent runs into the parent's `usage.Tracker`. Defer until a consumer asks.
 - **`--enable-subagent` CLI flag.** Library-only feature for v1.
+
+### Cost of a delegated turn
+
+Every model turn a subagent takes is appended to the **parent's** `usage.Tracker` as it completes, priced by the subagent's own model — so a delegated turn shows up in `/usage`, in `/stats`, and under `--max-turn-cost-usd` / `--max-session-cost-usd`. `WithSubagents` wires this from the parent's `WithUsageTracker`; a consumer calling `NewSubagentTool` directly sets `SubagentOptions.ParentTracker` (it falls back to the inner agent's own tracker, then to no accounting at all).
+
+The subagent's turns are attributed to *its* model name, not the parent's, so a subagent running a cheaper tier reports as its own row in the per-model breakdown.
+
+Two properties worth knowing:
+
+- The roll-up happens **during** the parent's turn, from inside the tool call, so an attached client sees `usage-update` frames mid-turn — the same shape the asynchronous `spawn_agent` door already produced.
+- A subagent's events live in a derived session row, and `usage.RebuildTrackerFromEvents` replays only the parent row, so delegated spend is **not** restored when a session is lazily resumed. Same limitation as `spawn_agent`.
 
 ---
 

@@ -30,6 +30,7 @@ import (
 
 	"github.com/go-steer/core-agent/v2/pkg/agent/internal/subsession"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
+	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
 // SubagentOptions configures NewSubagentTool. Inner is required;
@@ -103,6 +104,43 @@ type SubagentOptions struct {
 	// their own; nil leaves the tool ungated, which is what a host that
 	// wired no gate anywhere already has everywhere else.
 	Gate *permissions.Gate
+
+	// ParentTracker is the usage.Tracker the DELEGATING agent bills
+	// to. Every model turn the subagent takes is appended to it,
+	// priced by the subagent's own model — so a delegated turn lands
+	// in /usage, in /stats, and, most importantly, under the session
+	// and per-turn cost ceilings.
+	//
+	// It has to be the parent's rather than Inner's, and it has to be
+	// passed in rather than read off Inner, because a subagent
+	// assembled declaratively is constructed with no tracker at all
+	// (cmd/core-agent/subagents.go wires a model, a persona and a tool
+	// surface, nothing else). Inner.Tracker() is nil in every
+	// in-tree deployment.
+	//
+	// Why the tool has to do this itself: in library mode *Agent.Run
+	// does not append usage — the harness consuming its event iterator
+	// does (pkg/runner/headless.go, pkg/runner/wakeloop.go). A
+	// subagent invoked as a tool runs on its OWN ADK runner inside
+	// this handler, so its events never reach that iterator and no
+	// harness can see them. The asynchronous door solves the same
+	// problem the same way, one layer up
+	// (pkg/agent/background/spawn.go rolls a spawned run into
+	// parent.Tracker()).
+	//
+	// agent.WithSubagents fills this in from the parent's
+	// agent.WithUsageTracker. Nil leaves the spend unaccounted, which
+	// is what a host that wired no tracker anywhere already has
+	// everywhere else.
+	//
+	// The roll-up is one level: it resolves at construction, so a
+	// subagent that was itself built with WithSubagents bills ITS
+	// subagents to whatever tracker IT held at the time — nil, for a
+	// child assembled without one. That gap is library-only; the
+	// declarative roster is flat (config.SubagentSpec has no nested
+	// subagents, and a subagent is denied the spawn tool), so every
+	// in-tree deployment is a single level.
+	ParentTracker *usage.Tracker
 }
 
 const (
@@ -189,6 +227,28 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 	innerAgent := opts.Inner.inner
 	innerAppName := firstNonEmpty(opts.ParentAppName, opts.Inner.AppName())
 	innerUserID := firstNonEmpty(opts.ParentUserID, opts.Inner.UserID())
+	// The model name the delegated turns are priced and attributed
+	// under. Captured once: Agent.model is set by New and never
+	// reassigned, and a declarative subagent commonly runs a cheaper
+	// tier than its parent, so per-model attribution in /usage only
+	// stays honest if the SUBAGENT's model labels the row.
+	//
+	// Empty (an Agent built with a nil model) disables the roll-up
+	// rather than filing the spend under "": a nameless bucket in
+	// /usage prices at zero and reads as a bug in the ledger. Such an
+	// agent cannot serve a turn anyway — the runner below fails first.
+	var innerModelName string
+	if m := opts.Inner.Model(); m != nil {
+		innerModelName = m.Name()
+	}
+	// The parent's tracker wins; Inner's is the fallback for a
+	// consumer who called NewSubagentTool directly and wired the
+	// tracker onto the subagent instead. Both nil is the honest "no
+	// ledger anywhere" case and the roll-up is skipped.
+	billTo := opts.ParentTracker
+	if billTo == nil {
+		billTo = opts.Inner.Tracker()
+	}
 	// The subagent runs in its own session row derived from the
 	// parent's so two concurrent runners don't trip ADK's
 	// stale-session optimistic-concurrency check. Events still land
@@ -290,6 +350,13 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 		started := time.Now()
 		var turnErr error
 		defer func() { opts.Inner.recordInvocation(time.Since(started).Seconds(), turnErr) }()
+		// Bill the delegated turns to the parent (see
+		// SubagentOptions.ParentTracker). TurnTap is the shared
+		// discipline for this: Gemini's UsageMetadata is cumulative
+		// across the chunks of one model turn, so appending per event
+		// would both double-count tokens and inflate the turn count
+		// (#353). Observe every event, commit once on TurnComplete.
+		var tap usage.TurnTap
 		for ev, err := range r.Run(childCtx, innerUserID, subagentSessionID, msg, adkagent.RunConfig{
 			StreamingMode: opts.Inner.streaming,
 		}) {
@@ -298,6 +365,10 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 				return subagentResult{}, turnErr
 			}
 			collectFinalText(&sb, ev)
+			tap.Observe(ev)
+			if u, ok := tap.Commit(ev); ok && billTo != nil && innerModelName != "" {
+				billTo.AppendUsage(innerModelName, u, usage.PriceFor(innerModelName, nil))
+			}
 		}
 		return subagentResult{Result: sb.String()}, nil
 	}

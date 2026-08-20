@@ -290,6 +290,14 @@ If you force `ModeBounded` onto a subagent that *does* have a scheduler, an expl
 
 **The parent discovers the roster from the schema, not from its persona (v2.9+).** `spawn_agent`'s description lists every configured subagent as `name — description`, and `agent` is constrained to an enum of exactly those names (the enum is dropped when the operator enabled ad-hoc spawns, since an ad-hoc spawn leaves `agent` empty). So a parent persona that never mentions `cluster` can still route a cluster-scoped task to it, and a persona reused across fleets picks up each fleet's roster without editing. Write each `description` as *when to delegate here* — it is the only routing signal the parent gets.
 
+### What a delegation costs (v2.9+)
+
+Whichever door a subagent came through, **its tokens are the parent's tokens**. Every model turn a subagent takes is appended to the parent's usage tracker as it completes — priced by the *subagent's* own model, so a roster that routes cheap work to a cheap tier still reads honestly in the per-model breakdown — and it shows up in `/usage`, in `/stats`, and under `--max-turn-cost-usd` and `--max-session-cost-usd`. That is what makes the cost ceilings a real backstop for an unattended run: the parent's ceiling covers the whole tree beneath it, not just the turns the parent itself took.
+
+Before v2.9 that held only for the spawn door. A subagent installed as a **named tool** ran on its own runner inside the parent's tool call, and its spend landed in no ledger at all: not the parent's, not its own. One that wandered for twenty turns cost real money and moved the session total by zero. (`spawn_agent { wait: true }` was never this case — it blocks on a background run, which was already billed.)
+
+Two consequences worth knowing. Delegated turns append *during* the parent's turn, so an attached operator sees `usage-update` frames arrive mid-turn (spawned subagents already behaved this way). And a session resumed lazily from the event log replays the parent's own row only, so delegated spend is not restored into the rebuilt tracker — the same limitation `spawn_agent` has always had.
+
 See [Reference → Declarative subagents](/reference/configuration/#declarative-subagents-v29) for the full field schema, and [`examples/kube-platform-agent/`](https://github.com/go-steer/core-agent/tree/main/examples/kube-platform-agent) for a recipe that delegates GKE reads to a scoped `cluster` subagent.
 
 ---

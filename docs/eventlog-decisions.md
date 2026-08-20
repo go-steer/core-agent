@@ -239,7 +239,7 @@ Per ADK's contents-processor branch filter, when the subagent's runner builds it
 - **Default research-safe tools** (read_file, list_dir, todo) for the subagent. The original plan suggested this — Claude Code's pattern. We didn't add it; the inner agent's tool list is whatever the consumer constructs it with. Easy to add in a follow-up if a CLI wants it.
 - **`--enable-subagent` CLI flag.** Library-only feature for v1. The CLI doesn't auto-construct subagents.
 - **Cross-session audit queries** that span parent + derived sub-sessions in one go. `WithBranchPrefix` across sessions is the workaround; a `WithSessionTree(parentID)` option could land in a follow-up.
-- **Token / cost rollup** from subagent runs into the parent's `usage.Tracker`. The subagent's runner has its own internal tracking; surfacing it back through the tool result is non-trivial. Defer.
+- **Token / cost rollup** from subagent runs into the parent's `usage.Tracker`. The subagent's runner has its own internal tracking; surfacing it back through the tool result is non-trivial. Defer. *(Shipped later: `SubagentOptions.ParentTracker`, filled in by `WithSubagents`, appends each delegated model turn to the parent's tracker as it completes — priced by the subagent's own model, so no tool-result channel was needed after all. See #713.)*
 - **`agent.NewSubagentTool` in `tools/`** package per the original plan. See "decisions" for why agent/.
 - **Refresh of `docs/subagents-plan.md`.** The old plan documented an `agenttool`-wrapped design; now superseded. Worth a follow-up to either delete or rewrite that doc to reflect the shipped design — the design has fundamentally changed.
 

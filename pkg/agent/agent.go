@@ -836,6 +836,7 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 			Inner:           sa,
 			MaxDepth:        sa.subagentMaxDepth, // 0 → NewSubagentTool default
 			Gate:            o.gate,
+			ParentTracker:   o.tracker, // bill delegated turns to the parent (#713)
 			ParentService:   parentSvc,
 			ParentAppName:   o.appName,
 			ParentUserID:    o.userID,

@@ -740,6 +740,36 @@ type ToolsConfig struct {
 	Disable       []string            `json:"disable,omitempty"`
 	WaitAndVerify WaitAndVerifyConfig `json:"wait_and_verify,omitempty"`
 	CallPeer      CallPeerConfig      `json:"call_peer,omitempty"`
+	SpawnAgent    SpawnAgentConfig    `json:"spawn_agent,omitempty"`
+}
+
+// SpawnAgentConfig tunes the `spawn_agent` built-in — in-process
+// delegation to a subagent (#626). It sits beside CallPeerConfig
+// because the two are the same shape of thing: a delegation tool whose
+// blocking form has to be bounded so a slow callee can't pin the
+// parent's turn open.
+//
+// The subagents themselves are declared in the top-level `subagents`
+// array; this is only the tool's own knobs.
+type SpawnAgentConfig struct {
+	// SyncWaitTimeout bounds how long `spawn_agent {wait: true}` holds
+	// the parent's turn open, as a time.Duration string ("10m").
+	// Omitted/empty keeps the 5m default.
+	//
+	// The cap is on the *wait*, not on the subagent: past it the tool
+	// returns and the subagent keeps running, its result delivered on
+	// a later turn as a pushed report. So raising this trades parent
+	// latency for the parent seeing the answer in the turn that asked
+	// for it — which is what a deep diagnostic wants, since a parent
+	// that gets a timeout tends to redo the work itself (#692).
+	//
+	// An explicit "0s" removes the cap: the wait then ends when the
+	// subagent finishes on its own turn/wallclock budget, or when the
+	// parent's context is canceled. That is a real setting for a
+	// recipe with tight per-subagent budgets, not a way to hang — but
+	// it does mean the subagent's budgets are the only bound left.
+	// Negative is rejected.
+	SyncWaitTimeout string `json:"sync_wait_timeout,omitempty"`
 }
 
 // CallPeerConfig configures the `call_peer` built-in — named

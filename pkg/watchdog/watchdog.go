@@ -48,6 +48,11 @@
 //     resets, mirroring the cost-ceiling kill switch. The signal
 //     detection is identical to warn mode; only the agent-side
 //     reaction differs (see pkg/agent/watchdog.go).
+//   - A third loop detector (#702): windowed density, for the shape
+//     between the first two — mostly one repeated call, with
+//     occasional other calls interleaved, which resets the repeat
+//     detector's run and reads to the cycle detector as the repeat
+//     detector's job. See dominant.go.
 //   - Tool *outcome* observation (#639) via the optional
 //     ToolResultObserver extension — see failure.go. Kept optional
 //     rather than folded into Watchdog so a third-party
@@ -190,6 +195,12 @@ type Signal interface {
 	Reset()
 }
 
+// DefaultRepeatThreshold is the consecutive-run length that trips
+// RepeatedToolCallSignal in the default signal set. Exported because
+// DominantToolCallSignal defers to that detector and has to know where
+// its territory starts — see DominantToolCallSignal.DeferRun.
+const DefaultRepeatThreshold = 5
+
 // NewDefaultWatchdog returns a DefaultWatchdog wired with the
 // default signal set:
 //
@@ -198,11 +209,15 @@ type Signal interface {
 //   - AlternatingCycle (period ≤ 4, 3 laps): the same short sequence
 //     of calls repeated three times — the a → b → a → b shape the
 //     repeat detector structurally cannot see (#649).
+//   - DominantToolCall (8 of the last 12): one call dominating recent
+//     activity even though interleaves keep breaking its run — the
+//     shape that falls between the two detectors above and that
+//     neither converges on quickly (#702).
 //   - ToolFailureStreak (3 in a row): every call erroring with none
 //     succeeding in between, i.e. an agent with no verified evidence
 //     about anything (#639).
 //
-// The two loop signals are Critical, so both halt under
+// The three loop signals are Critical, so all halt under
 // --watchdog=enforce. The failure streak is Warn: it never halts, and
 // reaches the operator log plus — under --watchdog=feedback — the
 // model's own next turn. Operators wanting different thresholds, or a
@@ -210,8 +225,10 @@ type Signal interface {
 func NewDefaultWatchdog() *DefaultWatchdog {
 	return &DefaultWatchdog{
 		signals: []Signal{
-			NewRepeatedToolCallSignal(5),
+			NewRepeatedToolCallSignal(DefaultRepeatThreshold),
 			NewAlternatingCycleSignal(DefaultCycleMaxPeriod, DefaultCycleRepeats),
+			NewDominantToolCallSignal(DefaultDominantWindow, DefaultDominantThreshold,
+				DefaultDominantDeferRun, DefaultDominantDeferPeriod),
 			NewToolFailureStreakSignal(DefaultFailureStreak),
 		},
 	}

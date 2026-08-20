@@ -104,6 +104,14 @@ jobs:
         # Provider-gated tests (anthropic-vertex) skip cleanly in CI
         # without GCP creds — see models/anthropic/vertex_test.go.
         run: dev/ci/presubmits/test-unit
+      # The credential-free examples still run and exit 0 (#852). A step
+      # in `test` for the same reasons as the guards above: it needs the
+      # module cache this job already has, and it inherits an existing
+      # *required* check rather than adding a name branch protection
+      # would have to be taught. The whole set is ~5s including the
+      # build, so it does not need a paths filter of its own.
+      - name: Examples smoke
+        run: dev/ci/presubmits/examples-smoke
       - name: Coverage summary
         run: |
           echo "## Coverage" >> "$GITHUB_STEP_SUMMARY"

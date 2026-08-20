@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Build and run every example program marked runnable, and fail on any
+# that does not exit 0.
+#
+# `go build ./...` proves the examples compile; nothing proved they
+# still run. examples/parallel-spawn had been exiting 1 for some time
+# while its README advertised "Exits 0", and it was found by hand
+# during unrelated work rather than by a check (#852, #476).
+#
+# The runnable set and the reason each excluded example is excluded
+# live in examples/internal/smokeset, whose own test requires every
+# examples/*/main.go to appear in one column or the other — so a new
+# example cannot be silently uncovered.
+#
+# Modes:
+#
+#   examples-smoke           # build and run (this is what CI runs)
+#   examples-smoke --print   # dump the disposition table
+#
+# No credentials and no arguments are passed: every runnable example
+# defaults to the scripted mock provider and opts into a real one
+# behind a flag this never passes. Provider keys present in the
+# environment are dropped, so the answer does not depend on whose
+# machine it runs on.
+
+set -euo pipefail
+. "$(dirname "$0")/common.sh"
+cd "$(repo_root)"
+
+# The runner lives under examples/internal/smokerun, not dev/: the
+# manifest is an internal package of the examples tree, and Go's
+# internal rule refuses an import from dev/.
+exec go run ./examples/internal/smokerun "$@"

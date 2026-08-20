@@ -217,6 +217,20 @@ When `ask` mode prompts the user, the `Prompter` returns one of:
 
 When `agent.WithBackgroundManager` is wired, every spawned background subagent **inherits the parent's gate by reference**. That has three consequences worth knowing:
 
+**The spawn itself is gated too (v2.9+).** `spawn_agent` and `spawn_remote_agent` call the gate before anything launches, so plan-first, the allow/deny policy, and the ask prompt all apply to *creating* a subagent — not just to what it does afterwards. Before v2.9 the gate governed only the second half, which under `plan_mode: "required"` meant a parent with no plan recorded was told `spawn_agent` would be denied, called it, and it ran.
+
+The key a rule matches is **the subagent being launched**, not the goal (a goal is fresh prose every call, so no rule could match it twice):
+
+```
+spawn_agent:cluster       one preconfigured subagent
+spawn_agent:ad-hoc:*      any inline-persona spawn, whatever the model names it
+spawn_agent:*             all delegation
+```
+
+**One rule covers both doors.** A declarative subagent is reachable two ways — `spawn_agent {agent: "cluster"}` and, because `agent.WithSubagents` also registers it as a parent tool, a direct `cluster(request: …)` call. Both are matched under the `spawn_agent` bucket, so `deny: ["spawn_agent:cluster"]` means `cluster` does not run, not that it does not run asynchronously. (Library callers wiring `agent.NewSubagentTool` themselves pass the gate via `SubagentOptions.Gate`; `agent.WithSubagents` fills it in from `agent.WithGate`.)
+
+`stop_agent` is deliberately **not** gated in any mode. It cancels, so every denial of it leaves running exactly what the model was trying to halt. To hand a subagent delegation without cancellation — or neither — withhold the tools rather than gating them (`subagents[].tools`, which already withholds both by default).
+
 1. **Session-level approvals apply tree-wide.** If you approve `DecisionAllowSessionTool` for `bash` while a subagent is asking, every subagent (including future siblings) gets the same grant for the rest of the session. The gate has no per-subagent allow-state today; the whole tree shares one map.
 
 2. **Prompts include source attribution.** `permissions.PromptRequest` carries a `Source` field that `StdinPrompter` renders in the heading: `[<subagent-name>] bash wants to run: ...`. So when a subagent triggers a prompt, you know which one is asking. Empty `Source` (the parent's own tool calls) renders unchanged. The gate populates `Source` from a context value `permissions.WithSubagentSource(ctx, name)` that the spawn machinery stamps on every subagent's ctx.

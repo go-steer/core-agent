@@ -36,6 +36,83 @@ func budgetsFromArgs(args spawnAgentArgs) Budgets {
 	}
 }
 
+// spawnTargetName is the subagent a spawn_agent call is about: the
+// preconfigured reference when one is named, the caller-supplied
+// instance name otherwise (the ad-hoc path, where Name is mandatory).
+// Used for both the gate key and the refusal's Name, so a refused call
+// names the same thing a successful one would have.
+func spawnTargetName(args spawnAgentArgs) string {
+	if ref := strings.TrimSpace(args.Agent); ref != "" {
+		return ref
+	}
+	return strings.TrimSpace(args.Name)
+}
+
+// spawnGateKey is the policy pattern / prompt detail for a spawn_agent
+// call. It is the subagent being launched, not the goal: the goal is
+// free prose the model writes fresh every call, so a policy keyed on it
+// could never match twice, whereas the reference is operator-authored
+// and stable — `--deny spawn_agent:cluster` withholds one preconfigured
+// subagent, `--allow spawn_agent:*` restores the pre-#758 behaviour
+// wholesale.
+//
+// Ad-hoc spawns are keyed under an "ad-hoc:" prefix rather than by bare
+// name. An ad-hoc name is model-chosen, so a rule naming one grants
+// nothing an adversarial model can't sidestep by picking a different
+// name; the prefix is what makes the useful rule expressible —
+// `--deny spawn_agent:ad-hoc:*` refuses inline personas while leaving
+// the operator's catalog spawnable. (allow_adhoc already defaults off;
+// this is the second lever, for a build that wants ad-hoc on for one
+// operator and off by policy for another.)
+func spawnGateKey(args spawnAgentArgs) string {
+	if ref := strings.TrimSpace(args.Agent); ref != "" {
+		return ref
+	}
+	if n := strings.TrimSpace(args.Name); n != "" {
+		return "ad-hoc:" + n
+	}
+	return "ad-hoc:"
+}
+
+// checkSpawn routes a spawn through the parent's permission gate before
+// anything is launched (#758).
+//
+// Until this existed the gate governed only what a subagent went on to
+// do, never the act of creating one — so under plan_mode=required a
+// parent that had recorded no plan was told by record_plan's own
+// description that spawn_agent would be denied, called it, and it ran.
+// The enforcement was also inverted relative to the plan-first design's
+// Q3: a child with MCP tools had to record its own plan before its
+// first call, while conjuring the child was free.
+//
+// CheckGeneric rather than CheckToolCall: the latter keys policy lookups
+// on a namespace, which would make the pattern `tool:spawn_agent` and
+// leave `--deny spawn_agent:*` — the form every other built-in uses and
+// the one the issue asked for — matching nothing.
+//
+// A nil gate means the host wired no gate at all, in which case nothing
+// else in the process is gated either and refusing here would be the
+// only enforcement in a build that asked for none.
+func (m *Manager) checkSpawn(ctx context.Context, toolName, key string) error {
+	if m == nil || m.gate == nil {
+		return nil
+	}
+	return m.gate.CheckGeneric(ctx, toolName, key)
+}
+
+// registerPlanGated tells the gate this build registered a spawn tool,
+// so record_plan's result can name it among what a plan unblocks (#747).
+// Done here rather than at the CLI's wiring site because the spawn tools
+// are built from several places — the daemon, and each POST /sessions
+// scope against its own derived gate — and a registration that lives at
+// one of them is missing from the others.
+func (m *Manager) registerPlanGated(toolName string) {
+	if m == nil || m.gate == nil {
+		return
+	}
+	m.gate.RegisterPlanGatedTools(toolName)
+}
+
 // refusedSpawn shapes a launch that never happened.
 //
 // The refusal goes into the result twice, on purpose. Status carries
@@ -315,6 +392,24 @@ type spawnAgentResult struct {
 // configuration problems.
 func NewSpawnAgentTool(mgr *Manager) tool.Tool {
 	handler := func(toolCtx tool.Context, args spawnAgentArgs) (spawnAgentResult, error) {
+		// Gate the spawn before resolving it. A denial is a refusal, not
+		// a Go error, for the same reason every other failed launch here
+		// is one: the model can act on it (record the plan, pick a
+		// different subagent, do the work itself), and refusedSpawn is
+		// what keeps it from rendering as a subagent that started (#746).
+		//
+		// Before resolution, unlike the synchronous door in
+		// pkg/agent, which checks its depth limit first. There the
+		// cheap refusal is one branch above the gate and skipping the
+		// prompt is free; here resolution and launch are the same call
+		// on the template path (SpawnTemplate), so gating after it
+		// would mean asking permission for a subagent that has already
+		// started. The cost is that an unresolvable reference can
+		// prompt before it is refused — rare, since the roster enum
+		// (#640) constrains what the model can name.
+		if err := mgr.checkSpawn(toolCtx, SpawnAgentToolName, spawnGateKey(args)); err != nil {
+			return refusedSpawn(spawnTargetName(args), err), nil
+		}
 		parentBranch := toolCtx.Branch()
 
 		var (
@@ -363,6 +458,7 @@ func NewSpawnAgentTool(mgr *Manager) tool.Tool {
 	if err != nil {
 		panic("background: NewSpawnAgentTool: " + err.Error())
 	}
+	mgr.registerPlanGated(SpawnAgentToolName)
 	// The roster wrapper folds the configured subagents into the schema
 	// the model sees (#640). It must wrap rather than be baked into the
 	// description above: the roster isn't known until
@@ -397,6 +493,18 @@ type stopAgentResult struct {
 // cancel a running subagent. No-op if the subagent already terminal.
 // Returns an error result (not a tool failure) when the name is
 // unknown so the model can adapt.
+//
+// Deliberately NOT gated, unlike its twin (#758). The prose the issue
+// set out to make true said "spawn_agent family", but stop_agent is
+// pure de-escalation: it starts nothing, spends nothing, and touches
+// nothing outside this process — every denial of it leaves a runaway
+// subagent running that the model was trying to halt. Plan-exempting it
+// would fix only the plan_mode=required case; in `allow` mode a config
+// without an explicit stop_agent entry would still be unable to stop
+// anything, which is the inversion pointed the other way. An operator
+// who genuinely wants delegation without cancellation withholds the
+// tool (#748) rather than gating it. The docs were corrected to say
+// spawn_agent instead of the family.
 func NewStopAgentTool(mgr *Manager) tool.Tool {
 	handler := func(_ tool.Context, args stopAgentArgs) (stopAgentResult, error) {
 		if err := mgr.Stop(args.Name); err != nil {

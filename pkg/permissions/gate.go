@@ -207,11 +207,19 @@ type Gate struct {
 // exempt the namespace.
 //
 // Anything not in this set (write_file/edit_file/delete_file/bash,
-// fetch_url, spawn_agent family, every MCP tool) is plan-gated. This
-// matches the original design's Q1 ("gate everything by default;
-// per-server allowlist later if it bites") and Q3 ("subagents inherit
-// the parent's planRecorded flag — gate spawn family so subagents only
-// run under an approved plan").
+// fetch_url, spawn_agent, spawn_remote_agent, every MCP tool) is
+// plan-gated. This matches the original design's Q1 ("gate everything
+// by default; per-server allowlist later if it bites") and Q3
+// ("subagents inherit the parent's planRecorded flag — gate spawn
+// family so subagents only run under an approved plan").
+//
+// This paragraph was aspirational until #758: pkg/agent/background
+// consulted no gate at all, so under plan_mode=required a model was
+// told spawn_agent would be denied, called it, and it ran. The spawn
+// doors call CheckGeneric now. stop_agent, which the earlier wording
+// swept in as "spawn_agent family", is deliberately NOT gated: it
+// cancels, so every denial of it leaves running exactly what the model
+// was trying to stop. See NewStopAgentTool for the full argument.
 //
 // fetch_url is deliberately NOT exempt (#385): it is network egress,
 // and an outbound GET whose URL the model controls is an exfiltration

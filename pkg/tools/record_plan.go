@@ -77,7 +77,12 @@ const (
 //
 // spawn_agent stays unconditional — it isn't part of tools.Build's
 // catalog, so gate.HasTool cannot tell "absent" from "unknown" for it
-// and must not be asked.
+// and must not be asked. Since #758 the claim is also true: the spawn
+// door calls the gate, so on a build that registers it the denial this
+// sentence promises is the denial the model gets. Until then this line
+// was the #215 bug in its third form — the reason #758 was filed — and
+// it is left unconditional only because the alternative is to say
+// nothing about delegation in the mode where delegation matters most.
 //
 // Deliberately NOT gate.PlanGatedTools() (#747), which the result
 // message uses: that set is registered after Build's ctor loop, and

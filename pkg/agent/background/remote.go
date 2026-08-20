@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -192,6 +193,19 @@ func NewSpawnRemoteAgentTool(spawner RemoteAgentSpawner, mgr *Manager) (tool.Too
 		return nil, ErrNoSpawner
 	}
 	handler := func(toolCtx tool.Context, args spawnRemoteAgentArgs) (spawnRemoteAgentResult, error) {
+		// Same gate as the in-process door (#758) — gating only
+		// spawn_agent would leave the escape hatch open, and this one
+		// launches work on a substrate the parent's gate can't reach
+		// once it is running. Every remote spawn is ad-hoc by shape
+		// (system_prompt, no catalog reference), so the key carries the
+		// same "ad-hoc:" prefix its in-process equivalent does.
+		if err := mgr.checkSpawn(toolCtx, spawnRemoteAgentToolName, "ad-hoc:"+strings.TrimSpace(args.Name)); err != nil {
+			return spawnRemoteAgentResult{
+				Name:   args.Name,
+				Status: "error: " + err.Error(),
+				Error:  err.Error(),
+			}, nil
+		}
 		spec := RemoteAgentSpec{
 			ID:           args.Name,
 			Name:         args.Name,
@@ -230,14 +244,21 @@ func NewSpawnRemoteAgentTool(spawner RemoteAgentSpawner, mgr *Manager) (tool.Too
 		}, nil
 	}
 	t, err := functiontool.New(functiontool.Config{
-		Name:        "spawn_remote_agent",
+		Name:        spawnRemoteAgentToolName,
 		Description: "Spawn an out-of-process subagent via the consumer-configured RemoteAgentSpawner (e.g. a K8s Job, gRPC remote agent, Cloud Run job). Same model-facing shape as spawn_agent; the actual subagent runs elsewhere. Use when you need substrate-specific isolation, scale-out beyond this process, or hardware/permission boundaries the in-process spawner can't provide.",
 	}, handler)
 	if err != nil {
 		return nil, err
 	}
+	mgr.registerPlanGated(spawnRemoteAgentToolName)
 	return t, nil
 }
+
+// spawnRemoteAgentToolName is the model-facing name of the remote spawn
+// door. Unexported (unlike SpawnAgentToolName/StopAgentToolName, which
+// the CLI filters by) because nothing outside this package builds the
+// remote tool without also holding the constructor.
+const spawnRemoteAgentToolName = "spawn_remote_agent"
 
 // registerRemote inserts a remote handle into the manager's registry
 // (so stop_agent + operator surfaces work uniformly) and starts a fan-in goroutine

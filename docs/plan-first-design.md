@@ -147,7 +147,8 @@ write/exec tools deny.
 | `bash` | **yes** | mutation / exec |
 | `record_plan` | no (always allowed) | the escape valve |
 | `wait_and_verify` (v2.9) | no | read-only by construction — it refuses to poll a tool the runtime can't classify read-only, and each poll re-enters the polled tool's own gate check, so an MCP poll is plan-gated exactly as a direct MCP call is |
-| Spawn family (`spawn_agent`, etc.) | **yes** | a subagent can do arbitrary work |
+| `spawn_agent`, `spawn_remote_agent` | **yes** | a subagent can do arbitrary work |
+| `stop_agent` | no | cancels; a denial leaves running what the model was trying to stop (#758) |
 | MCP tools | TBD — see Open Questions | depends on operator's MCP server posture |
 
 ### Config surface
@@ -404,6 +405,18 @@ want them separated.
   fan-out (matches `gke-parallel-triage` orchestration shape).
   Per-subagent re-planning was rejected as adding indirection
   without an operator benefit.
+
+  *Implemented in #758, three releases after it was written.* Until
+  then the flag was inherited but the spawn itself was ungated, which
+  made the enforcement the exact inverse of the intent: a child whose
+  tools were MCP-namespaced had to record its own plan before its
+  first call (`mcp` is not plan-exempt), while creating the child was
+  free. The 2026-08-19 GKE traces show both halves in one stack —
+  `record_plan` (parent, voluntary) → `spawn_agent` (ungated) →
+  `record_plan` (child, forced). `spawn_agent` and
+  `spawn_remote_agent` now call `gate.CheckGeneric`, so the parent's
+  plan is a precondition of the fan-out rather than a hope about it.
+  `stop_agent` is excluded — see the classification table.
 - **Q4 — storage path:** `.agents/plans/<sid>-<seq>.md` always.
   Project-scoped artifacts go in `.agents/`, regardless of
   whether `--session-db` is set.
@@ -532,11 +545,14 @@ instead of the run.
   enumerate rather than a confident empty list — "unknown" must not
   collapse into "none".
 
-  Note the set reflects what the gate is actually asked about. The
-  `spawn_agent` family is described as plan-gated in this doc and in
-  `--plan-mode`'s help, but nothing routes it through the gate, so
-  it does not appear. That gap is real and tracked separately; the
-  message's job is to report the runtime, not the intention.
+  Note the set reflects what the gate is actually asked about. When
+  this was written `spawn_agent` was described as plan-gated in this
+  doc and in `--plan-mode`'s help but routed through no gate, so it
+  did not appear — the message reporting the runtime rather than the
+  intention is what made the gap legible, and it was tracked and
+  closed as #758. The spawn tools register themselves with the gate
+  when they are built, so they now appear in the message on any build
+  that wires a background manager.
 
 - **Every artifact says who wrote it.** Plans now open with a YAML
   frontmatter block carrying `plan`, `agent` and `session`. Without

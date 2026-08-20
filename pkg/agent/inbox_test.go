@@ -155,7 +155,7 @@ func TestPrependInboxMessages_FormatsBlock(t *testing.T) {
 	got := prependInboxMessages("what's next?", []string{
 		"deadline moved up to 14:00",
 		"pause file writes until further notice",
-	})
+	}, false)
 	want := "[Inbox]\n" +
 		"- deadline moved up to 14:00\n" +
 		"- pause file writes until further notice" +
@@ -168,7 +168,7 @@ func TestPrependInboxMessages_FormatsBlock(t *testing.T) {
 
 func TestPrependInboxMessages_EmptyIsPassthrough(t *testing.T) {
 	t.Parallel()
-	got := prependInboxMessages("hello", nil)
+	got := prependInboxMessages("hello", nil, false)
 	if got != "hello" {
 		t.Errorf("empty inbox should pass prompt through unchanged; got %q", got)
 	}
@@ -400,13 +400,18 @@ func TestFormatAutoContinueInbox_MultipleMessages(t *testing.T) {
 // "variants of the same ask → treat as ONE" so a bundle of
 // semantically-similar queued asks doesn't trigger N sequential
 // tasks (the read_file loop pattern the bug filed against).
+//
+// "per note" became "per message" in v3 (#697): the same guidance now
+// serves the daemon's inject path, where the bundle is machine signals
+// and calling them notes would be wrong. The guard is on the branch,
+// not on the noun.
 func TestFormatAutoContinueInbox_HasDedupNudge(t *testing.T) {
 	t.Parallel()
 	got := FormatAutoContinueInbox([]string{"ask A", "ask B"})
 	for _, want := range []string{
 		"Variants of the same ask",
 		"treat as ONE",
-		"don't re-do work per note",
+		"don't re-do work per message",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("dedup nudge phrase %q missing from framing:\n%s", want, got)

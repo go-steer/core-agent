@@ -230,7 +230,7 @@ curl -sS -X POST http://127.0.0.1:7777/sessions/s-4412/inject \
 
 The message is appended to the inbox, published as the usual `inbox`/queued frame, and read by the next turn — but nothing here *causes* that turn. It does not pierce a sleep and it does not un-park a paused loop.
 
-**Who this is for: machine producers.** An alert watcher's signals arrive on their own clock, and each one used to drive its own turn. Two corroborating alerts two minutes apart meant two wakes, the second landing while the agent was still working the first. Queued, they drain together as a single `[Inbox]` block on whatever turn happens next. Operator input should keep waking — that is what the default is for.
+**Who this is for: machine producers.** An alert watcher's signals arrive on their own clock, and each one used to drive its own turn. Two corroborating alerts two minutes apart meant two wakes, the second landing while the agent was still working the first. Queued, they drain together as a single `[Inbox]` block on whatever turn happens next — and because a wake-driven turn has no operator prompt of its own, that block carries [bundle-handling guidance](/embed/api/#agentinjectmessage--queue-a-message-for-the-next-turn) telling the model to treat variants as one and to acknowledge, rather than re-open, corroboration on work it already finished. Operator input should keep waking — that is what the default is for.
 
 **There is no promptness guarantee, and that is not a hedge.** An autonomous loop reaches the message on its own sleep timer; an operator-driven session reaches it when the operator next says something; a parked session reaches it when it is resumed. If the message needs to be acted on, send it without `wake: false`.
 

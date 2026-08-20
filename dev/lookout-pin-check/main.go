@@ -43,13 +43,21 @@
 //	go run ./dev/lookout-pin-check --check --resolved=/tmp/upstream.json
 //	go run ./dev/lookout-pin-check --releases=/tmp/upstream.json
 //
-// # --check reports on stdout, not through the exit code
+//	# Has a frozen pin outlived its review date?
+//	go run ./dev/lookout-pin-check --check-freezes --releases=/tmp/upstream.json
+//
+//	# Leave a markdown report where a human will see it (any mode):
+//	go run ./dev/lookout-pin-check --check --summary="$GITHUB_STEP_SUMMARY"
+//
+// # The verdicts report on stdout, not through the exit code
 //
 // --check prints exactly one line on stdout, `drift=true` or
-// `drift=false`, and exits 0 either way. Everything a human reads goes
-// to stderr. A non-zero exit ALWAYS means the tool itself failed —
-// unreachable API, unreadable tree, a declaration that no longer
-// matches anything.
+// `drift=false`, and exits 0 either way. --check-freezes is the same
+// shape for the second question: `freeze-review=ok` or
+// `freeze-review=overdue`, one line, exit 0. Everything a human reads
+// goes to stderr, or to --summary. A non-zero exit ALWAYS means the tool
+// itself failed — unreachable API, unreadable tree, a declaration that
+// no longer matches anything.
 //
 // The exit code cannot carry the verdict because the caller runs this
 // through `go run`, and `go run` collapses every non-zero child status
@@ -68,6 +76,28 @@
 // shared half — where is this image declared, and what tag does the
 // declaration carry — lives in internal/imagepin, parameterised by
 // image family, so there is exactly one pin walker in the repo.
+//
+// # A freeze has a shelf life
+//
+// A recipe can opt out of the bump: it is named in Tracked.Frozen and
+// each of its pins carries a `pin-frozen: <why> (review: YYYY-MM-DD)`
+// marker. Both halves are required, and so is the date.
+//
+// The date exists because "frozen" used to mean "forever, silently"
+// (#791). On a week where every live pin was current, this job exited 0
+// with drift=false and said nothing at all, while a frozen recipe fell
+// another release behind — the shape of #787's original failure, a pin
+// nobody was told about, differing only in that somebody meant it once.
+// Two things close that: --summary reports the freezes on EVERY run,
+// including clean ones, and --check-freezes goes overdue when the date
+// passes.
+//
+// A lapsed review never bumps anything and never opens a pull request.
+// It cannot: whether a case study should start tracking upstream again
+// is a question about what the study is for, which no rewrite answers.
+// The workflow runs the freeze check LAST, after the bump PR, so an
+// overdue review can never block the mechanism that keeps the other
+// pins current.
 //
 // # Scope: the watcher image only
 //
@@ -88,8 +118,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/go-steer/core-agent/v2/internal/imagepin"
 )
@@ -107,10 +139,25 @@ func main() {
 			"later run reasons about the same release this one did")
 	prBody := flag.String("pr-body", "",
 		"path to write a pull-request body describing the bump (rewrite mode only)")
+	checkFreezes := flag.Bool("check-freezes", false,
+		"write nothing; print freeze-review=ok/freeze-review=overdue on stdout depending on "+
+			"whether any frozen pin has outlived the review date its marker committed to")
+	summaryPath := flag.String("summary", "",
+		"path to APPEND a markdown report to, in any mode — the frozen pins and their review "+
+			"dates included, whether or not anything drifted (point it at $GITHUB_STEP_SUMMARY)")
 	flag.Parse()
 
 	if *check && *prBody != "" {
 		die("--check writes nothing, so --pr-body has nothing to describe")
+	}
+	// One question per invocation. Both modes own stdout entirely, and a
+	// caller reading two verdicts off one stream could not tell which
+	// line answered which question.
+	if *check && *checkFreezes {
+		die("--check and --check-freezes each answer on stdout; run one at a time")
+	}
+	if *checkFreezes && *prBody != "" {
+		die("--check-freezes writes nothing, so --pr-body has nothing to describe")
 	}
 	absRoot, err := filepath.Abs(*root)
 	if err != nil {
@@ -147,9 +194,25 @@ func main() {
 		}
 	}
 
+	now := time.Now().UTC()
 	result := classify(sites, upstream.Target.Tag)
-	report(tracked, upstream, result)
+	report(tracked, upstream, result, now)
 
+	// Written before either verdict returns, and in rewrite mode too, so
+	// the frozen pins are visible on EVERY run. That is the point of the
+	// file: a tree whose live pins are all current used to say nothing at
+	// all, and a freeze nobody is reminded of is a freeze nobody revisits
+	// (#791).
+	if *summaryPath != "" {
+		if err := appendSummary(*summaryPath, tracked, upstream, result, now); err != nil {
+			die("write --summary %s: %v", *summaryPath, err)
+		}
+	}
+
+	if *checkFreezes {
+		fmt.Println(freezeVerdict(result, now))
+		return
+	}
 	if *check {
 		fmt.Println(verdict(result))
 		return
@@ -232,6 +295,77 @@ func verdict(r scanResult) string {
 	return "drift=false"
 }
 
+// freezeVerdict is --check-freezes's whole stdout contract: one line,
+// either `freeze-review=ok` or `freeze-review=overdue`.
+//
+// It is a SECOND question, deliberately not folded into `drift`. A
+// frozen pin must never be rewritten, so answering drift=true for one
+// would send the weekly job into a rewrite that produces an empty diff
+// and a pull request about nothing. And the two want different
+// responses: drift opens a PR, a lapsed review asks a human whether the
+// freeze still holds — a question no rewrite can answer.
+//
+// Like --check, it reports on stdout and exits 0. A non-zero exit still
+// only ever means the tool itself failed.
+func freezeVerdict(r scanResult, now time.Time) string {
+	if len(r.overdueFreezes(now)) > 0 {
+		return "freeze-review=overdue"
+	}
+	return "freeze-review=ok"
+}
+
+// overdueFreezes are the freeze groups whose review date has passed,
+// sorted by group. One entry per recipe, not per site: the review is a
+// decision about the recipe, and naming the same lapse three times is
+// how a report becomes something people skim past.
+func (r scanResult) overdueFreezes(now time.Time) []freezeGroup {
+	var out []freezeGroup
+	for _, g := range r.freezeGroups() {
+		if g.overdue(now) {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+// freezeGroup is one frozen recipe, folded from its sites.
+type freezeGroup struct {
+	group  string
+	reason string
+	review time.Time
+	tags   []string
+	sites  int
+}
+
+func (g freezeGroup) overdue(now time.Time) bool {
+	return imagepin.ReviewLapsed(g.review, now)
+}
+
+// freezeGroups folds the frozen sites into one row per recipe, sorted by
+// group, with the distinct tags each pins.
+func (r scanResult) freezeGroups() []freezeGroup {
+	byGroup := map[string]*freezeGroup{}
+	var order []string
+	for _, s := range r.frozen {
+		g, ok := byGroup[s.Group]
+		if !ok {
+			g = &freezeGroup{group: s.Group, reason: s.FrozenReason, review: s.FrozenReview}
+			byGroup[s.Group] = g
+			order = append(order, s.Group)
+		}
+		g.sites++
+		if !slices.Contains(g.tags, s.Tag) {
+			g.tags = append(g.tags, s.Tag)
+		}
+	}
+	sort.Strings(order)
+	out := make([]freezeGroup, 0, len(order))
+	for _, name := range order {
+		out = append(out, *byGroup[name])
+	}
+	return out
+}
+
 // currentTags are the distinct tags the non-frozen sites carry, oldest
 // first. More than one means the tree is internally inconsistent, which
 // is worth saying out loud.
@@ -256,7 +390,7 @@ func (r scanResult) currentTags() []string {
 }
 
 // report writes the human-readable half to stderr.
-func report(t *imagepin.Tracked, upstream upstreamState, r scanResult) {
+func report(t *imagepin.Tracked, upstream upstreamState, r scanResult, now time.Time) {
 	say("upstream %s: latest published release with a pullable image is %s",
 		t.UpstreamRepo, upstream.Target.Tag)
 	for _, s := range upstream.Skipped {
@@ -275,7 +409,17 @@ func report(t *imagepin.Tracked, upstream upstreamState, r scanResult) {
 	for _, s := range r.frozen {
 		say("  frozen  %s:%d  %s %s (%s)", s.Path, s.Line, s.Kind, s.Tag, s.FrozenReason)
 	}
+	for _, g := range r.overdueFreezes(now) {
+		say("  OVERDUE %s is frozen at %s and its review date (%s) has passed — decide whether "+
+			"the freeze still holds, then either move the date on or drop it from Tracked.Frozen",
+			g.group, strings.Join(g.tags, ", "), g.review.Format(reviewDateLayout))
+	}
 }
+
+// reviewDateLayout is the spelling a review date is written and reported
+// in. Same layout imagepin parses; stated here so the report does not
+// reach into that package for a format string.
+const reviewDateLayout = "2006-01-02"
 
 // rewrite applies the bump and then re-reads the tree to confirm it
 // took, restoring every touched file if it did not.

@@ -101,10 +101,13 @@ spec:
           # path needs a Fleet-capable build plus cloud IAM this
           # deployment's k8s RBAC does not cover.
           #
-          # pin-frozen: #704 — this recipe is a portability case study
-          # and deliberately does NOT track lookout's latest release.
-          # dev/lookout-pin-check leaves it alone; TestDeployWatcherImageFloor
-          # is the in-tree oracle for this tag.
+          # pin-frozen: #704 — portability case study (review: 2027-02-01)
+          # This recipe deliberately does NOT track lookout's latest
+          # release, so dev/lookout-pin-check leaves the tag alone;
+          # TestDeployWatcherImageFloor is the in-tree oracle for it. The
+          # review date is when someone should ask whether the freeze
+          # still holds — the weekly job reports a lapse, it never bumps
+          # a frozen pin.
           image: ghcr.io/go-steer/lookout:v0.18.0
           imagePullPolicy: IfNotPresent
           args:

@@ -690,8 +690,22 @@ func TestLookoutFreezeDeclarationsAgreeWithTheTree(t *testing.T) {
 	}
 	var frozen int
 	for _, s := range sites {
-		if s.Frozen {
-			frozen++
+		if !s.Frozen {
+			continue
+		}
+		frozen++
+		// A freeze is a decision with a shelf life (#791). Sites() already
+		// refuses a marker with no parseable review date, so this cannot
+		// fail while that rule holds — which is the point: it is the
+		// assertion that notices if the rule is ever relaxed, and it is
+		// deliberately NOT a check that the date has passed. Whether a
+		// freeze is overdue depends on what day it is, and a test that
+		// goes red on a Tuesday for a tree nobody touched is a test people
+		// delete. That question belongs to the weekly job, which is where
+		// --check-freezes answers it.
+		if s.FrozenReview.IsZero() {
+			t.Errorf("%s:%d is frozen with no review date, so the freeze is permanent and "+
+				"nothing will ever ask whether it still holds", s.Path, s.Line)
 		}
 	}
 	if frozen == 0 {

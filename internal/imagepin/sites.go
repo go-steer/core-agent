@@ -30,6 +30,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -73,12 +74,43 @@ type Site struct {
 	// Frozen is set on every site in a group where a pin declared
 	// itself frozen. See [Tracked.FrozenMarker].
 	Frozen bool
-	// FrozenReason is the text the marker carried.
+	// FrozenReason is the text the marker carried, review clause and all.
 	FrozenReason string
+	// FrozenReview is the date the marker says the freeze should be
+	// looked at again, at UTC midnight. Never the zero time on a site
+	// that survived [Tracked.Sites] with Frozen set: a marker with no
+	// parseable review date does not freeze anything, it errors.
+	FrozenReview time.Time
 
 	// start/end bound the TAG ITSELF within the file, so a rewrite
 	// touches nothing else on the line.
 	start, end int
+	// frozenProblem records a marker that plainly meant to freeze this
+	// pin but cannot be honoured, so [Tracked.resolveFreezes] can say
+	// which way it is malformed instead of "no marker was found".
+	frozenProblem string
+}
+
+// FreezeOverdue reports whether the freeze on this site has outlived the
+// review date its marker committed to.
+func (s Site) FreezeOverdue(now time.Time) bool {
+	return s.Frozen && ReviewLapsed(s.FrozenReview, now)
+}
+
+// ReviewLapsed reports whether now is past the end of the review date.
+//
+// The comparison is by DATE in UTC, not by instant: a review date is
+// something a person wrote in a comment, so "2027-02-01" means the whole
+// of that day and the freeze goes overdue on the 2nd. Comparing instants
+// would call it overdue from one second past midnight in a timezone
+// nobody chose. A zero review date never lapses — it cannot occur on a
+// frozen site (see [reviewClause]), and defaulting the unset case to
+// "overdue" would turn any future caller's oversight into a red job.
+func ReviewLapsed(review, now time.Time) bool {
+	if review.IsZero() {
+		return false
+	}
+	return now.UTC().After(review.AddDate(0, 0, 1).Add(-time.Nanosecond))
 }
 
 func (s Site) String() string {
@@ -166,8 +198,33 @@ type Tracked struct {
 	// reason, or one whose reason is an angle-bracketed placeholder,
 	// does not count: an unexplained freeze is how a gate rots, and a
 	// `<why>` placeholder is a worked example rather than a decision.
+	//
+	// The reason must also carry a review date — see [reviewClause].
 	FrozenMarker *regexp.Regexp
 }
+
+// reviewClause matches the review date a freeze reason has to carry,
+// e.g. `pin-frozen: #704 — portability case study (review: 2027-02-01)`.
+//
+// A freeze with no expiry is the failure this whole package exists to
+// close, wearing a different hat. #787 was a pin nobody was told about;
+// a permanent freeze is a pin nobody will be told about again, differing
+// only in that somebody meant it once. The date does not un-freeze
+// anything and never opens a pull request — [Site.FreezeOverdue] is
+// reported by the weekly job, and reporting is the whole of it. What it
+// buys is that "frozen" means "until someone looks again" rather than
+// "forever, silently", and that the person who has to look was named a
+// date by the person who froze it.
+//
+// The parentheses are optional so the clause can end a sentence
+// naturally, but the date shape is not: it goes through time.Parse, so a
+// month or day out of range is rejected rather than rounded.
+var reviewClause = regexp.MustCompile(`(?i)\breview:[ \t]*(\d{4}-\d{2}-\d{2})\b`)
+
+// reviewDateLayout is the one accepted spelling. ISO order, so the dates
+// sort as strings and no reader has to guess whether 02-01 is February
+// or January.
+const reviewDateLayout = "2006-01-02"
 
 // placeholderReason matches an angle-bracketed fill-in-the-blank.
 //
@@ -176,20 +233,45 @@ type Tracked struct {
 // instructions for using this mechanism from being an instance of it.
 var placeholderReason = regexp.MustCompile(`<[^<>]*>`)
 
+// freeze is one parsed pin-frozen marker.
+type freeze struct {
+	reason string
+	review time.Time
+	// problem is set when the marker is unmistakably a freeze — a real
+	// reason, not a placeholder — but is not usable as one. Carrying it
+	// rather than discarding the marker is what lets the error say "this
+	// freeze has no review date" instead of the misleading "no marker
+	// was found", which sends the reader looking for a comment that is
+	// right there in front of them.
+	problem string
+}
+
 // frozenIn adapts FrozenMarker to the marker-matching callback shape.
-func (t *Tracked) frozenIn(comment string) (string, bool) {
+func (t *Tracked) frozenIn(comment string) (freeze, bool) {
 	if t.FrozenMarker == nil {
-		return "", false
+		return freeze{}, false
 	}
 	m := t.FrozenMarker.FindStringSubmatch(comment)
 	if m == nil {
-		return "", false
+		return freeze{}, false
 	}
 	reason := strings.TrimSpace(m[1])
 	if reason == "" || placeholderReason.MatchString(reason) {
-		return "", false
+		return freeze{}, false
 	}
-	return reason, true
+	f := freeze{reason: reason}
+	d := reviewClause.FindStringSubmatch(reason)
+	if d == nil {
+		f.problem = "carries no `review: YYYY-MM-DD` clause"
+		return f, true
+	}
+	review, err := time.Parse(reviewDateLayout, d[1])
+	if err != nil {
+		f.problem = fmt.Sprintf("review date %q is not a real date in YYYY-MM-DD form", d[1])
+		return f, true
+	}
+	f.review = review
+	return f, true
 }
 
 // Sites returns every declaration of t's tag under repoRoot, sorted by
@@ -368,6 +450,18 @@ func (t *Tracked) resolveFreezes(sites []Site) ([]Site, error) {
 			"comment must never be able to exempt the pin below it on its own",
 			strings.Join(stray, "\n  "))
 	}
+	// Checked BEFORE the missing-marker sweep, because a malformed marker
+	// would otherwise be reported as an absent one and send the reader
+	// hunting for a comment that is sitting right there.
+	if bad := malformedMarkers(sites); len(bad) > 0 {
+		return nil, fmt.Errorf("imagepin: pin-frozen marker with no usable review date:\n  %s\n"+
+			"A freeze is a decision with a shelf life, not a permanent exemption: without a date "+
+			"the pin goes stale silently and nobody is ever told, which is the failure this "+
+			"tracking exists to close. End the reason with `(review: YYYY-MM-DD)` — the date is "+
+			"when someone should ask whether the freeze still holds, and letting it lapse is "+
+			"reported by the weekly job, never an automatic bump",
+			strings.Join(bad, "\n  "))
+	}
 	if dead := undeclaredReasons(sites, declared, reason); len(dead) > 0 {
 		return nil, fmt.Errorf("imagepin: declared frozen in Tracked.Frozen, but no usable "+
 			"pin-frozen marker was found:\n  %s\nA frozen pin has to say why where an operator "+
@@ -378,18 +472,32 @@ func (t *Tracked) resolveFreezes(sites []Site) ([]Site, error) {
 			strings.Join(dead, "\n  "))
 	}
 	for i := range sites {
-		if why := reason[sites[i].Group]; why != "" {
+		if f, ok := reason[sites[i].Group]; ok {
 			sites[i].Frozen = true
-			sites[i].FrozenReason = why
+			sites[i].FrozenReason = f.reason
+			sites[i].FrozenReview = f.review
 		}
 	}
 	return sites, nil
 }
 
+// malformedMarkers names every marker that meant to freeze a pin and
+// cannot, so the error can point at the line rather than the recipe.
+func malformedMarkers(sites []Site) []string {
+	var out []string
+	for _, s := range sites {
+		if s.frozenProblem != "" {
+			out = append(out, fmt.Sprintf("%s:%d — %s (reason given: %q)",
+				s.Path, s.Line, s.frozenProblem, s.FrozenReason))
+		}
+	}
+	return out
+}
+
 // partitionMarkers splits the markers found into the reason each
 // declared group gets, and the ones sitting where nothing declared them.
-func partitionMarkers(sites []Site, declared map[string]bool) (map[string]string, []string) {
-	reason := map[string]string{}
+func partitionMarkers(sites []Site, declared map[string]bool) (map[string]freeze, []string) {
+	reason := map[string]freeze{}
 	var stray []string
 	for _, s := range sites {
 		if !s.Frozen {
@@ -400,8 +508,16 @@ func partitionMarkers(sites []Site, declared map[string]bool) (map[string]string
 				"given: %q)", s.Path, s.Line, s.Group, s.FrozenReason))
 			continue
 		}
-		if reason[s.Group] == "" {
-			reason[s.Group] = s.FrozenReason
+		// A malformed marker is deliberately NOT recorded as the group's
+		// reason. Letting it through would freeze the recipe on the
+		// strength of a marker the very next check is about to reject,
+		// and a group whose only marker is broken must not read as
+		// explained.
+		if s.frozenProblem != "" {
+			continue
+		}
+		if _, seen := reason[s.Group]; !seen {
+			reason[s.Group] = freeze{reason: s.FrozenReason, review: s.FrozenReview}
 		}
 	}
 	return reason, stray
@@ -410,14 +526,14 @@ func partitionMarkers(sites []Site, declared map[string]bool) (map[string]string
 // undeclaredReasons names every declared-frozen group that no marker
 // explained, distinguishing "the pins are there and say nothing" from
 // "there are no pins here at all", because the fixes differ.
-func undeclaredReasons(sites []Site, declared map[string]bool, reason map[string]string) []string {
+func undeclaredReasons(sites []Site, declared map[string]bool, reason map[string]freeze) []string {
 	found := map[string]int{}
 	for _, s := range sites {
 		found[s.Group]++
 	}
 	var out []string
 	for _, g := range sortedKeys(declared) {
-		if reason[g] != "" {
+		if _, ok := reason[g]; ok {
 			continue
 		}
 		if n := found[g]; n > 0 {
@@ -567,11 +683,12 @@ func (t *Tracked) kustomizeSites(rel string, body []byte, lines []int) ([]Site, 
 			return nil, fmt.Errorf("imagepin: %s: cannot locate newTag %q at line %d",
 				rel, tagNode.Value, tagNode.Line)
 		}
-		why, frozen := t.frozenIn(entryComments(entry))
+		f, frozen := t.frozenIn(entryComments(entry))
 		out = append(out, Site{
 			Kind: KindKustomizeTag, Tag: tagNode.Value, Text: "newTag: " + tagNode.Value,
-			Frozen: frozen, FrozenReason: why,
-			start: start, end: start + len(tagNode.Value),
+			Frozen: frozen, FrozenReason: f.reason, FrozenReview: f.review,
+			frozenProblem: f.problem,
+			start:         start, end: start + len(tagNode.Value),
 		})
 	}
 	return out, nil
@@ -603,11 +720,12 @@ func (t *Tracked) refSites(body []byte) []Site {
 			continue
 		}
 		start := loc[1] - len(tag)
-		why, frozen := t.frozenIn(CommentMarkerAboveText(body, loc[0]))
+		f, frozen := t.frozenIn(CommentMarkerAboveText(body, loc[0]))
 		out = append(out, Site{
 			Kind: KindImageRef, Tag: tag, Text: ref,
-			Frozen: frozen, FrozenReason: why,
-			start: start, end: loc[1],
+			Frozen: frozen, FrozenReason: f.reason, FrozenReview: f.review,
+			frozenProblem: f.problem,
+			start:         start, end: loc[1],
 		})
 	}
 	return out

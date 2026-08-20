@@ -375,6 +375,8 @@ Two consequences worth knowing. A cancel and a **timeout** are now on opposite s
 
 The same value rides `error.type` on the `gen_ai.agent.invocation.duration` metric where metrics are enabled, so a dashboard keyed on a `transient_network` rate stops counting deliberate stops as network failures on a daemon carrying this change.
 
+**Guardrail-refused turns are labelled (v2.9.0-dev, [#818](https://github.com/go-steer/core-agent/issues/818)).** A turn refused at the top by an already-tripped guardrail emits no frame of its own — it points back at the `cost_ceiling` / `watchdog` frame from the trip that halted the session — but it *is* recorded on `gen_ai.agent.invocation.duration`. Before this change that record carried `error.type: unknown`: the classifier is substring-based and a guardrail reason matches none of its patterns, so `cost_ceiling` and `watchdog` were the only kinds in the table above that no classifier path could produce, and the spend-cap and runaway series went dark during exactly the incidents they exist for. Refusals now carry their own kind. Nothing on the wire changes.
+
 ### Protocol version negotiation
 
 The `capabilities` frame carries the server's `protocol_version`, but a client can also fail fast *before* opening the stream. On the `/events` request a client MAY declare the version it speaks with the `?protocol=<semver>` query param or the `X-Attach-Protocol-Version` header (the query param wins when both are present). The server:

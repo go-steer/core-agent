@@ -105,6 +105,36 @@ type watchdogError struct {
 
 func (e *watchdogError) Error() string { return e.reason }
 
+// AsTurnError reports a watchdog refusal as the watchdog kind rather
+// than letting the substring classifier guess from the reason. Mirrors
+// costCeilingError.AsTurnError and exists for the same reason (#818):
+// the reason text matches none of the classifier's needles, so a
+// refused turn recorded `error.type: unknown` — and the watchdog case
+// is worse than the ceiling's, because the reason embeds arbitrary
+// trigger prose, which made the recorded kind a lottery over whatever
+// a runaway happened to be looping on.
+// Nil-receiver safe for the same reason as costCeilingError's.
+func (e *watchdogError) AsTurnError() attach.TurnError {
+	if e == nil {
+		return watchdogTurnError("")
+	}
+	return watchdogTurnError(e.reason)
+}
+
+// watchdogTurnError is the one construction site for the watchdog
+// payload — shared by the trip emit and the refusal classification
+// above so the two cannot drift apart.
+func watchdogTurnError(reason string) attach.TurnError {
+	return attach.TurnError{
+		Kind:      attach.TurnErrorWatchdog,
+		Code:      "watchdog",
+		Message:   reason,
+		Retryable: false, // operator must reset, not the host
+	}
+}
+
+var _ attach.SelfClassifyingError = (*watchdogError)(nil)
+
 // IsWatchdogTripped reports whether err was returned by Run because a
 // prior turn tripped the behavioral watchdog under --watchdog=enforce.
 // Hosts use this to distinguish "operator must reset the watchdog" from
@@ -416,12 +446,7 @@ func (a *Agent) maybeTripWatchdog(alerts []watchdog.Alert) {
 	// shape that would otherwise resume looping in the next pod.
 	a.queueGuardrailEvent(attach.NewGuardrailTripEvent(attach.GuardrailWatchdog, reason))
 
-	a.emit(attach.EventTurnError, attach.TurnError{
-		Kind:      attach.TurnErrorWatchdog,
-		Code:      "watchdog",
-		Message:   reason,
-		Retryable: false, // operator must reset, not the host
-	})
+	a.emit(attach.EventTurnError, watchdogTurnError(reason))
 }
 
 // preflightWatchdog returns a non-nil watchdogError when a prior turn

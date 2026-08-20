@@ -89,6 +89,42 @@ type costCeilingError struct {
 
 func (e *costCeilingError) Error() string { return e.reason }
 
+// AsTurnError reports a ceiling refusal as the cost_ceiling kind
+// instead of leaving pkg/attach to infer one from the reason prose.
+// The classifier is substring-based and the reason matches none of its
+// needles, so before this a refused turn recorded `error.type: unknown`
+// on gen_ai.agent.invocation.duration — the spend-cap series went dark
+// during exactly the incident it exists for (#818).
+//
+// The payload is the same one maybeEnforceCostCeiling puts on the wire
+// when the ceiling first trips, so the trip and the refusals that
+// follow it read identically.
+// Nil-receiver safe on purpose: both producers return a literal nil
+// rather than a typed-nil pointer, so this is unreachable today, but
+// the caller is ClassifyTurnError running inside Run's deferred
+// cleanup — a panic there takes down the turn's teardown, which is a
+// steep price for the classic typed-nil-in-an-error-chain slip.
+func (e *costCeilingError) AsTurnError() attach.TurnError {
+	if e == nil {
+		return costCeilingTurnError("")
+	}
+	return costCeilingTurnError(e.reason)
+}
+
+// costCeilingTurnError is the one construction site for the
+// cost_ceiling payload — shared by the trip emit and by the refusal
+// classification above so the two cannot drift apart.
+func costCeilingTurnError(reason string) attach.TurnError {
+	return attach.TurnError{
+		Kind:      attach.TurnErrorCostCeiling,
+		Code:      "cost_ceiling",
+		Message:   reason,
+		Retryable: false, // operator must reset, not the host
+	}
+}
+
+var _ attach.SelfClassifyingError = (*costCeilingError)(nil)
+
 // IsCostCeilingExceeded returns true when err was returned by Run
 // because a previous turn tripped a configured cost ceiling.
 // Operators / hosts use this to distinguish "operator must reset the
@@ -292,12 +328,7 @@ func (a *Agent) maybeEnforceCostCeiling() {
 	// or pod roll can't hand the runaway a fresh budget.
 	a.queueGuardrailEvent(attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, reason))
 
-	a.emit(attach.EventTurnError, attach.TurnError{
-		Kind:      attach.TurnErrorCostCeiling,
-		Code:      "cost_ceiling",
-		Message:   reason,
-		Retryable: false, // operator must reset, not the host
-	})
+	a.emit(attach.EventTurnError, costCeilingTurnError(reason))
 }
 
 // enforceCostCeilingInTurn is the in-turn arm of the cost ceiling

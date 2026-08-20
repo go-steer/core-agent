@@ -30,6 +30,78 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
 
+// ===== Shared stale-while-revalidate bookkeeping =====
+
+// swrState is the freshness bookkeeping every cached read-only
+// capability in this file shares: the status header, the usage footer
+// and the subagent roster. It is embedded rather than duplicated
+// because the three caches had drifted — #778 fixed a cold-fetch bug in
+// the roster's copy and left the other two with the original shape, and
+// #781 was filed on exactly that divergence.
+//
+// haveGood is deliberately separate from lastFetch. lastFetch answers
+// "when did we last ASK", which is what rate-limits a down daemon;
+// haveGood answers "is cached real data", which is what decides whether
+// the value we serve is a fact or a placeholder. Collapsing the two —
+// the shape all three caches started with — makes a failed cold fetch
+// indistinguishable from a successful empty one, so the placeholder is
+// served for a full TTL before anything retries.
+type swrState struct {
+	mu         sync.Mutex
+	haveGood   bool
+	lastFetch  time.Time
+	refreshing bool
+}
+
+// swrAction is what a cache accessor should do on this call.
+type swrAction int
+
+const (
+	// swrServeCache: the cached value is fresh enough; no I/O.
+	swrServeCache swrAction = iota
+	// swrFetchInline: nothing has ever been fetched, so there is no
+	// value to serve. Fetch once on the caller's goroutine (bounded by
+	// cacheRefreshTimeout) so the first paint shows real data.
+	swrFetchInline
+	// swrRefresh: stale. Serve the cached value now and revalidate on a
+	// detached goroutine — the caller must not block.
+	swrRefresh
+)
+
+// next decides this call's action and, for swrRefresh, claims the
+// in-flight guard so only one detached refresh is ever running. The
+// caller must hold s.mu.
+//
+// ttl is the steady-state interval; while no successful fetch has
+// landed, coldRetryTTL applies instead (never longer than ttl). That
+// window is the one where the cached value is a placeholder rather than
+// data, so it is the one worth leaving as briefly as possible.
+func (s *swrState) next(ttl time.Duration) swrAction {
+	if !s.haveGood {
+		ttl = min(ttl, coldRetryTTL)
+	}
+	switch {
+	case s.lastFetch.IsZero():
+		return swrFetchInline
+	case time.Since(s.lastFetch) >= ttl && !s.refreshing:
+		s.refreshing = true
+		return swrRefresh
+	default:
+		return swrServeCache
+	}
+}
+
+// fetched records a completed fetch attempt. The caller must hold s.mu.
+// lastFetch moves either way — that is what paces retries against a down
+// daemon — but only a successful fetch promotes the cache to holding
+// real data.
+func (s *swrState) fetched(ok bool) {
+	s.lastFetch = time.Now()
+	if ok {
+		s.haveGood = true
+	}
+}
+
 // ===== Status / Tools / Subagents (read-only capabilities) =====
 
 // Status satisfies coretui.StatusReporter. coretui pulls this on every
@@ -46,28 +118,25 @@ import (
 // State is "idle" by default; the attach status endpoint doesn't yet
 // distinguish "running" / "deferred" (see pkg/agent's AttachStatus).
 //
-// Known shape defect, tracked in #781 and NOT fixed here: a failed cold
-// fetch bumps lastFetch while leaving cached zero, so the placeholder is
-// served for a full TTL before anything retries. Cosmetic on this
-// surface — the zero Status renders as an obviously-absent "—" and
-// self-heals in 2s — but Subagents() below, which copied this shape,
-// renders its zero value as the affirmative claim "no subagents
-// running", so it carries a haveGood flag and a short cold-retry
-// interval instead. #781 is about lifting that treatment up here.
+// A failed cold fetch is not treated as data (#781): the zero Status is
+// a placeholder, not a report that the daemon has no model, so the cache
+// stays on the short cold-retry interval until a fetch actually succeeds
+// rather than pinning "—" for a full TTL. Same swrState the roster and
+// the usage footer use.
 func (a *Adapter) Status() coretui.Status {
 	a.status.mu.Lock()
-	switch {
-	case a.status.lastFetch.IsZero():
+	switch a.status.next(statusCacheTTL) {
+	case swrFetchInline:
 		// Cold cache: fetch once synchronously (bounded) so the first
 		// render shows the real model/state instead of a placeholder.
 		// This is the only inline network call on the render path; every
 		// subsequent read is served from cache.
 		a.fetchStatusLocked()
-	case time.Since(a.status.lastFetch) >= statusCacheTTL && !a.status.refreshing:
+	case swrRefresh:
 		// Warm but stale: refresh in the background and serve the
 		// last-known-good value now. The render goroutine never waits.
-		a.status.refreshing = true
 		go a.refreshStatus()
+	case swrServeCache:
 	}
 	cached := a.status.cached
 	a.status.mu.Unlock()
@@ -76,13 +145,15 @@ func (a *Adapter) Status() coretui.Status {
 
 // fetchStatusLocked does the /status round-trip and updates the cache.
 // The caller must hold a.status.mu (cold-cache path only). Bounded by
-// cacheRefreshTimeout; on error the zero/last snapshot stays in place and
-// lastFetch is bumped so we don't hammer a down daemon on every render.
+// cacheRefreshTimeout; on error the zero/last snapshot stays in place
+// and lastFetch is bumped so we don't hammer a down daemon on every
+// render — at the steady-state TTL once anything good has landed, at
+// coldRetryTTL until then.
 func (a *Adapter) fetchStatusLocked() {
 	ctx, cancel := context.WithTimeout(context.Background(), cacheRefreshTimeout)
 	defer cancel()
 	info, err := a.client.Status(ctx, a.sessionPath)
-	a.status.lastFetch = time.Now()
+	a.status.fetched(err == nil)
 	if err != nil {
 		return
 	}
@@ -103,7 +174,7 @@ func (a *Adapter) refreshStatus() {
 	a.status.mu.Lock()
 	defer a.status.mu.Unlock()
 	a.status.refreshing = false
-	a.status.lastFetch = time.Now()
+	a.status.fetched(err == nil)
 	if err != nil {
 		return
 	}
@@ -163,32 +234,29 @@ func (a *Adapter) Tools() []coretui.ToolInfo {
 // claim rather than a label. A stale Status renders as an obviously
 // absent placeholder ("—" / "(model not set)"); a stale-or-empty roster
 // renders as the affirmative sentence "no subagents running". That
-// asymmetry drives two decisions below: haveGood, which refuses to
-// treat a failed fetch as data, and subagentsColdRetryTTL, which keeps
-// the "I don't know yet" window short. It also bounds what caching can
-// do — a permanently unreachable daemon pins the last good roster
+// asymmetry is what first drove swrState's two protections — haveGood,
+// which refuses to treat a failed fetch as data, and coldRetryTTL, which
+// keeps the "I don't know yet" window short — though as of #781 all
+// three caches share them. It also bounds what caching can do: a
+// permanently unreachable daemon pins the last good roster
 // indefinitely with no staleness marker in core-tui's sidebar. That is
 // the same bargain Status() and the usage cache already make, and the
 // attach client's own disconnect handling is the surface that tells the
 // operator the link is gone.
 func (a *Adapter) Subagents() []coretui.SubagentInfo {
 	a.subagents.mu.Lock()
-	// Until a fetch has actually succeeded, retry on the short cold
-	// interval: serving "no subagents running" for a full TTL because
-	// one request failed is worse than the uncached code this replaced,
-	// which at least re-asked immediately.
-	ttl := subagentsCacheTTL
-	if !a.subagents.haveGood {
-		ttl = subagentsColdRetryTTL
-	}
-	switch {
-	case a.subagents.lastFetch.IsZero():
+	// Until a fetch has actually succeeded, swrState retries on the
+	// short cold interval: serving "no subagents running" for a full TTL
+	// because one request failed is worse than the uncached code this
+	// replaced, which at least re-asked immediately.
+	switch a.subagents.next(subagentsCacheTTL) {
+	case swrFetchInline:
 		// Cold cache: fetch once inline (bounded) so the first sidebar
 		// paint shows the real roster rather than "none running".
 		a.fetchSubagentsLocked()
-	case time.Since(a.subagents.lastFetch) >= ttl && !a.subagents.refreshing:
-		a.subagents.refreshing = true
+	case swrRefresh:
 		go a.refreshSubagents()
+	case swrServeCache:
 	}
 	cached := a.subagents.cached
 	a.subagents.mu.Unlock()
@@ -196,28 +264,19 @@ func (a *Adapter) Subagents() []coretui.SubagentInfo {
 }
 
 // subagentCache holds the last-known-good subagent roster plus the
-// stale-while-revalidate bookkeeping (see Subagents()).
-//
-// haveGood is deliberately separate from lastFetch: lastFetch answers
-// "when did we last ASK", which is what rate-limits a down daemon, and
-// haveGood answers "is cached real data", which is what decides whether
-// the roster we serve is a fact or a default. Collapsing the two — the
-// shape Status() and the usage cache still use — makes a failed cold
-// fetch indistinguishable from a successful empty one.
+// shared stale-while-revalidate bookkeeping (see Subagents()).
 type subagentCache struct {
-	mu         sync.Mutex
-	cached     []coretui.SubagentInfo
-	haveGood   bool
-	lastFetch  time.Time
-	refreshing bool
+	swrState
+	cached []coretui.SubagentInfo
 }
 
 // fetchSubagentsLocked does the /agents round-trip and updates the
 // cache. The caller must hold a.subagents.mu (cold-cache path only).
 //
-// This is the package's only lock held across a network call, so it is
-// worth saying why it is safe rather than a repeat of the #630 / #69
-// event-loop freeze: nothing here runs on bubbletea's Update/View
+// All three cold-cache paths in this file hold their cache lock across
+// the round-trip, so it is worth saying once why that is safe rather
+// than a repeat of the #630 / #69 event-loop freeze: nothing here runs
+// on bubbletea's Update/View
 // goroutine. core-tui calls SubagentReporter only from hostSnapshot's
 // tea.Cmd, and core-tui's own TestView_NeverCallsHost enforces that no
 // host capability is reachable from View(). Two concurrent cold callers
@@ -230,15 +289,14 @@ func (a *Adapter) fetchSubagentsLocked() {
 	ctx, cancel := context.WithTimeout(context.Background(), cacheRefreshTimeout)
 	defer cancel()
 	infos, err := a.client.Agents(ctx, a.sessionPath)
-	a.subagents.lastFetch = time.Now()
+	a.subagents.fetched(err == nil)
 	if err != nil {
-		// Leave cached/haveGood alone. A failed fetch is not evidence
-		// that no subagents are running; lastFetch still moves so the
-		// cold-retry interval, not this call site, paces the retries.
+		// Leave cached alone. A failed fetch is not evidence that no
+		// subagents are running; lastFetch still moves so the cold-retry
+		// interval, not this call site, paces the retries.
 		return
 	}
 	a.subagents.cached = subagentsToCoreTui(infos)
-	a.subagents.haveGood = true
 }
 
 // refreshSubagents fetches a fresh roster off the caller's goroutine
@@ -252,12 +310,11 @@ func (a *Adapter) refreshSubagents() {
 	a.subagents.mu.Lock()
 	defer a.subagents.mu.Unlock()
 	a.subagents.refreshing = false
-	a.subagents.lastFetch = time.Now()
+	a.subagents.fetched(err == nil)
 	if err != nil {
 		return
 	}
 	a.subagents.cached = subagentsToCoreTui(infos)
-	a.subagents.haveGood = true
 }
 
 // subagentsToCoreTui projects an /agents response into core-tui's
@@ -303,17 +360,28 @@ const (
 	// cycle — but 5s is the floor, not the ceiling.
 	subagentsCacheTTL = 5 * time.Second
 
-	// subagentsColdRetryTTL is the retry interval used while the cache
-	// holds no successful fetch yet (see Subagents()). It exists because
-	// the alternative shapes are both wrong: retrying inline on every
-	// call re-hammers a down daemon from the snapshot goroutine, and
-	// applying the full subagentsCacheTTL suppresses recovery for 5s
-	// while the sidebar asserts "no subagents running" — a claim that is
-	// false rather than merely stale. Short enough that a daemon coming
-	// back mid-restart is picked up faster than the uncached code this
-	// replaced managed, long enough that a genuinely down daemon sees a
-	// handful of requests a second at worst, off the caller's goroutine.
-	subagentsColdRetryTTL = 250 * time.Millisecond
+	// coldRetryTTL is the retry interval every cache here uses while it
+	// holds no successful fetch yet (see swrState.next). It exists
+	// because the alternative shapes are both wrong: retrying inline on
+	// every call re-hammers a down daemon from the render goroutine, and
+	// applying the full TTL suppresses recovery for seconds while the
+	// surface shows a placeholder — which on the roster is the
+	// affirmative claim "no subagents running", false rather than merely
+	// stale. Short enough that a daemon coming back mid-restart is
+	// picked up faster than the uncached code this replaced managed,
+	// long enough that a genuinely down daemon sees a handful of
+	// requests a second at worst, off the caller's goroutine.
+	//
+	// #781 extended this from the roster to all three caches, which
+	// triples the worst case: a daemon that is down when the operator
+	// attaches and never comes back is asked ~4×/s per surface rather
+	// than once. Bounded three ways — the per-cache in-flight guard
+	// means at most one request per surface is outstanding, every one is
+	// off the render goroutine, and the state ends at the first success.
+	// Attaching to a daemon that is down for the whole session is not
+	// the case worth optimising; recovering promptly from one that is
+	// down for the first second is.
+	coldRetryTTL = 250 * time.Millisecond
 
 	// cacheRefreshTimeout bounds a single background cache refresh
 	// (status or usage) so a wedged daemon can't keep the refresh — and
@@ -324,24 +392,20 @@ const (
 )
 
 type usageCache struct {
-	mu            sync.Mutex
+	swrState
 	cached        coretui.Usage
 	costUSD       float64
 	turns         int
 	lastTurn      coretui.Usage // from Overall.PerTurn[-1]; used as fallback in LastTurn()
 	lastTurnCost  float64
 	lastTurnModel string // keys usage.ContextWindowSizeFor from ContextWindowSize()
-	lastFetch     time.Time
-	refreshing    bool // a background refresh is in flight
 }
 
 // statusCache holds the last-known-good StatusReporter snapshot plus the
-// stale-while-revalidate bookkeeping (see Status()).
+// shared stale-while-revalidate bookkeeping (see Status()).
 type statusCache struct {
-	mu         sync.Mutex
-	cached     coretui.Status
-	lastFetch  time.Time
-	refreshing bool
+	swrState
+	cached coretui.Status
 }
 
 // snapshot returns the cached usage. It mirrors Status()'s freshness
@@ -359,16 +423,16 @@ type statusCache struct {
 func (a *Adapter) snapshot() (coretui.Usage, float64, int) {
 	a.usage.mu.Lock()
 	defer a.usage.mu.Unlock()
-	switch {
-	case a.usage.lastFetch.IsZero():
+	switch a.usage.next(usageCacheTTL) {
+	case swrFetchInline:
 		// Cold cache: fetch once synchronously (bounded) so the first
 		// render shows real usage instead of zeros. Only inline network
 		// call on the render path; every subsequent read serves cache.
 		a.fetchUsageLocked()
-	case time.Since(a.usage.lastFetch) >= usageCacheTTL && !a.usage.refreshing:
+	case swrRefresh:
 		// Warm but stale: refresh in the background, serve cache now.
-		a.usage.refreshing = true
 		go a.refreshUsage()
+	case swrServeCache:
 	}
 	return a.usage.cached, a.usage.costUSD, a.usage.turns
 }
@@ -376,12 +440,14 @@ func (a *Adapter) snapshot() (coretui.Usage, float64, int) {
 // fetchUsageLocked does the /usage round-trip and updates the cache. The
 // caller must hold a.usage.mu (cold-cache path only). Bounded by
 // cacheRefreshTimeout; on error the prior snapshot stays in place and
-// lastFetch is bumped so we don't hammer a down daemon on every render.
+// lastFetch is bumped so we don't hammer a down daemon on every render
+// — at the steady-state TTL once anything good has landed, at
+// coldRetryTTL until then.
 func (a *Adapter) fetchUsageLocked() {
 	ctx, cancel := context.WithTimeout(context.Background(), cacheRefreshTimeout)
 	defer cancel()
 	info, err := a.client.Usage(ctx, a.sessionPath)
-	a.usage.lastFetch = time.Now()
+	a.usage.fetched(err == nil)
 	if err != nil {
 		return
 	}
@@ -400,7 +466,7 @@ func (a *Adapter) refreshUsage() {
 	a.usage.mu.Lock()
 	defer a.usage.mu.Unlock()
 	a.usage.refreshing = false
-	a.usage.lastFetch = time.Now()
+	a.usage.fetched(err == nil)
 	if err != nil {
 		return
 	}

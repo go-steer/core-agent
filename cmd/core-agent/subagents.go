@@ -42,9 +42,53 @@ import (
 // {wait: true}, #626/D5) holds the parent turn open before the tool returns
 // a partial/timeout result. Tighter than the async fire-and-continue
 // wall-clock budget: a slow subagent shouldn't hang the parent turn, and its
-// result is still delivered later by push. Chosen against typical subagent
-// latencies; revisit if real workloads need a different bound.
+// result is still delivered later by push.
+//
+// It is a default and no longer a ceiling: --subagent-sync-wait and
+// tools.spawn_agent.sync_wait_timeout both override it (#692). Five
+// minutes covers typical subagent latencies, and a deep cluster
+// diagnostic against a remote API is not typical.
 const defaultSyncWaitTimeout = 5 * time.Minute
+
+// subagentOpts carries the subagent-tuning flags into run(), following
+// guardrailOpts/toolProfileOpts rather than adding another positional
+// parameter to a signature #685 already calls out.
+type subagentOpts struct {
+	// syncWait is --subagent-sync-wait as the operator typed it;
+	// empty == unset, which lets config then the built-in default
+	// decide. Kept as the raw string so the parse error can name the
+	// flag that carried the bad value.
+	syncWait string
+}
+
+// resolveSyncWaitTimeout picks the synchronous-spawn cap from, in
+// order: the --subagent-sync-wait flag, tools.spawn_agent.sync_wait_timeout,
+// then defaultSyncWaitTimeout. Flag beats config, as everywhere else.
+//
+// An explicit "0s" is honored as "no cap" rather than promoted back to
+// the default: background.WithSyncWaitTimeout(0) means wait until the
+// subagent finishes on its own budget, and silently overriding that
+// would leave an operator with no way to express it. Negative durations
+// are rejected — there is nothing they could sensibly mean, and
+// time.Duration would carry one straight into an already-expired
+// context.
+func resolveSyncWaitTimeout(flagVal string, cfg *config.Config) (time.Duration, error) {
+	raw, source := flagVal, "--subagent-sync-wait"
+	if raw == "" && cfg != nil {
+		raw, source = cfg.Tools.SpawnAgent.SyncWaitTimeout, "tools.spawn_agent.sync_wait_timeout"
+	}
+	if strings.TrimSpace(raw) == "" {
+		return defaultSyncWaitTimeout, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s=%q: %w", source, raw, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("%s=%q: must be >= 0 (0 = no cap, omit the field for the %s default)", source, raw, defaultSyncWaitTimeout)
+	}
+	return d, nil
+}
 
 // sessionBackgroundRecipe captures everything the daemon knows about
 // background subagents at startup, so each multi-session session can

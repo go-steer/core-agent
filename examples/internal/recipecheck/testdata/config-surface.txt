@@ -148,6 +148,7 @@ tools.call_peer.name
 tools.call_peer.timeout_seconds
 tools.call_peer.token_env
 tools.disable
+tools.spawn_agent.sync_wait_timeout
 tools.wait_and_verify.max_attempts
 tools.wait_and_verify.max_timeout_seconds
 tools.wait_and_verify.poll_allow

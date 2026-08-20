@@ -678,6 +678,7 @@ Controls which built-in tools are wired into the bundled CLI. Defaults to the fu
 | `disable` | string[] | `[]` | Built-in tool names to turn off. Valid: `bash`, `read_file`, `read_many_files`, `write_file`, `edit_file`, `delete_file`, `stat`, `list_dir`, `glob`, `grep`, `json_query`, `fetch_url`, `alert`, `wait_and_verify`, `todo`, `record_plan`, `sciontool_status`. Unknown names cause a startup error. |
 | `wait_and_verify` | object | `{}` | Bounds for the [`wait_and_verify`](/concepts/tools/#wait_and_verify-v29--bounded-poll-until-condition) poll loop. See below. |
 | `call_peer` | object | `{}` | Off by default. Delegation to peer agents registered with this daemon's peer hub. See below. |
+| `spawn_agent` | object | `{}` | Bounds for the `spawn_agent` built-in's blocking form. See below. |
 
 Example — keep everything except shell access:
 
@@ -751,6 +752,30 @@ Three properties are true by construction rather than by instruction:
 Each call opens a **fresh session** on the peer via `POST /sessions`, so two callers can't interleave prompts into one transcript, and the peer's reply is unambiguously the answer to this request. That makes `attach.multi_session.enabled` a hard requirement **on the peer** — a peer without it answers `501`, and the tool appends the fix to the error. The delegated turn lives in the peer's own event log under the returned `session_id`, which the result carries so an operator can go read it.
 
 Delegation is gated per peer. The permission key is `call_peer:<peer-name>`, so `--deny call_peer:prod-*` or an allow-list works the way it does for any other tool, and a `name` override moves the key with it (`ask_operator:ops`). Declarative subagents inherit the tool from the parent's already-gated catalog, so one parent-level policy covers the parent and its subagents together.
+
+### `tools.spawn_agent` (v2.9+)
+
+Knobs for the `spawn_agent` built-in itself. The subagents it can reach are declared in the top-level [`subagents`](#declarative-subagents-v29) array; this section only bounds the tool. Disable the tool entirely with `--no-background-agents`.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `sync_wait_timeout` | string | `5m` | How long `spawn_agent {wait: true}` holds the parent's turn open, as a duration string. `"0s"` removes the cap. Negative is a config error. |
+
+```json
+{
+  "tools": {
+    "spawn_agent": {
+      "sync_wait_timeout": "15m"
+    }
+  }
+}
+```
+
+The cap is on the **wait**, not on the subagent. When it fires the tool returns and the subagent keeps running; its result arrives on a later turn as a pushed report. So the setting trades parent latency against whether the parent sees the answer in the turn that asked for it — and a parent handed a timeout tends to redo the work itself rather than wait, which is the expensive outcome. Five minutes fits typical subagent latencies; a deep diagnostic against a remote API, with hundreds of milliseconds per call and large payloads, routinely runs longer.
+
+`"0s"` is honored as *no cap* rather than snapped back to the default: the wait then ends when the subagent finishes on its own turn and wall-clock budgets, or when the parent's context is canceled. That is a reasonable choice for a recipe whose subagents carry tight budgets of their own, and a poor one otherwise — those budgets become the only bound left.
+
+CLI equivalent: `--subagent-sync-wait=15m`, which beats the config field. Both apply to the daemon's own manager and to every per-tenant manager a multi-session daemon stands up, so a tenant session can't drift from the daemon's cap.
 
 ---
 

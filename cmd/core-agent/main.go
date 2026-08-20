@@ -151,6 +151,7 @@ func main() {
 	sessionDBPath := flag.String("session-db-path", "", "override the database path used when --session-db is set (default: ~/.<binary>/sessions.db)")
 	yolo := flag.Bool("yolo", false, "bypass the permissions gate entirely (every tool call runs without approval). Equivalent to permissions.mode=\"yolo\" in config.")
 	noBackgroundAgents := flag.Bool("no-background-agents", false, "disable the spawn_agent / stop_agent tools (model can't spawn background subagents). Default: enabled.")
+	subagentSyncWait := flag.String("subagent-sync-wait", "", "how long spawn_agent {wait: true} holds the parent's turn open, as a duration (\"10m\"). Default 5m. The cap is on the wait, not the subagent: past it the tool returns and the subagent's result arrives later as a pushed report. Raise it for deep diagnostics, where a parent that gets a timeout tends to redo the work itself. \"0s\" removes the cap and leaves the subagent's own turn/wallclock budgets as the only bound. Config-file equivalent: tools.spawn_agent.sync_wait_timeout.")
 	allowURLHost := flag.String("allow-url-host", "", "comma-separated host patterns appended to url_scope.allow for the fetch_url tool (e.g. \"github.com,*.googleapis.com\"). HTTPS only unless the pattern carries an http:// prefix. Disable the tool entirely with --disable-tools=fetch_url.")
 	var allowPathEntries []config.PathScopeAllowEntry
 	var contentDirEntries []string
@@ -231,6 +232,7 @@ func main() {
 	}
 
 	code := run(*prompt, *initialPrompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, contentDirEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *compactionThreshold,
+		subagentOpts{syncWait: *subagentSyncWait},
 		guardrailOpts{
 			watchdogMode:      *watchdogMode,
 			maxTurnCostUSD:    *maxTurnCostUSD,
@@ -426,7 +428,7 @@ func mergeAttachOpts(opts attachOpts, cfg config.AttachConfig, flagSet *flag.Fla
 // comment at the otelShutdown defer (#538).
 const teardownStepTimeout = 3 * time.Second
 
-func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, contentDirEntries []string, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, compactionThreshold float64, guardrails guardrailOpts, toolProfile toolProfileOpts, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache, noPromptCache bool, promptCfg promptOpts, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
+func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, contentDirEntries []string, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, compactionThreshold float64, subagentCfg subagentOpts, guardrails guardrailOpts, toolProfile toolProfileOpts, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache, noPromptCache bool, promptCfg promptOpts, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -1291,6 +1293,13 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		// The small-tier model the "small" per-spawn model override resolves
 		// to — same resolution the agentic subtasks use below.
 		bgSmallModel := models.ResolveSmallModel(provider, agenticSmallModel)
+		// Resolved once and reused for the multi-session recipe below,
+		// so a per-tenant manager can't drift from the daemon's own cap.
+		syncWait, swErr := resolveSyncWaitTimeout(subagentCfg.syncWait, cfg)
+		if swErr != nil {
+			fmt.Fprintf(os.Stderr, "core-agent: %v\n", swErr)
+			return runner.ExitConfigError
+		}
 		bgMgr, err = background.NewManager(
 			background.WithProvider(provider, cfg.Model.Name),
 			background.WithGate(gate),
@@ -1301,7 +1310,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			// parent turn open, so cap it tighter than the async
 			// fire-and-continue wall-clock; on timeout the subagent keeps
 			// running and its result is pushed on a later turn (#626/D5).
-			background.WithSyncWaitTimeout(defaultSyncWaitTimeout),
+			background.WithSyncWaitTimeout(syncWait),
 		)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: background agents: %v\n", err)
@@ -1322,7 +1331,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			provider:       provider,
 			smallModelID:   bgSmallModel,
 			allowAdhoc:     allowAdhoc,
-			syncWait:       defaultSyncWaitTimeout,
+			syncWait:       syncWait,
 			spawnToolNames: make(map[string]struct{}, len(spawnTools)),
 			live:           newSessionManagerSet(),
 		}

@@ -773,7 +773,7 @@ The parent's model now sees two extra tools:
 
 | Tool | Use |
 |---|---|
-| `spawn_agent` | Launch a new in-process background subagent (name, system prompt, goal, tools, optional budgets). Pass `wait: true` to block the turn on its result. |
+| `spawn_agent` | Launch a new in-process background subagent (name, system prompt, goal, tools, optional budgets). Pass `wait: true` to block the turn on its result — bounded by `background.WithSyncWaitTimeout` (the CLI defaults it to 5m; see [`tools.spawn_agent`](/reference/configuration/#toolsspawn_agent-v29)). |
 | `stop_agent` | Cancel a running subagent. |
 
 There is deliberately no `list_agents`/`check_agent` poll tool: completed subagents **push** their results back to the parent (the `[Background reports]` block on its next turn), and `spawn_agent { wait: true }` covers the block-on-result case, so a poll loop is redundant. Operators inspect live instances out-of-band via the attach hub (`GET .../agents`) or the TUI.

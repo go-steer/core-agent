@@ -4,7 +4,7 @@ Design doc for a v2.7 addition to `pkg/tools`: a native, first-class `alert` bui
 
 **Status:** **partially shipped in v2.9** ([#593](https://github.com/go-steer/core-agent/issues/593), landed as #607) — not v2.7, and not all of it. Originally written as proposed (2026-07-10) against tracking issue [#192](https://github.com/go-steer/core-agent/issues/192).
 
-> **What actually shipped.** The tool, the config-driven named-target list, `url_env` resolution, per-target rate limiting, permission gating, and **one** template: `generic` (a JSON POST). `slack`, `discord` and `pagerduty_events_v2` are designed below and **rejected at config load** — `pkg/config/alerts.go` returns `template=%q is designed but not yet implemented` for all three, so a config naming one fails to boot rather than silently degrading. Everything this doc says about Slack attachment colors, Discord embeds and PagerDuty `dedup_key` / `event_action` is therefore a *specification for unwritten code*, not a description of the binary. To escalate to Slack or PagerDuty today, point a `generic` target at a receiver that fans out.
+> **What actually shipped.** The tool, the config-driven named-target list, `url_env` resolution, per-target rate limiting, permission gating, and **two** templates: `generic` (a JSON POST) and `switchboard` ([#798](https://github.com/go-steer/core-agent/issues/798) — the chat-gateway destination class, see [The `switchboard` template](#the-switchboard-template-798) below). `slack`, `discord` and `pagerduty_events_v2` are designed below and **rejected at config load** — `pkg/config/alerts.go` returns `template=%q is designed but not yet implemented` for all three, so a config naming one fails to boot rather than silently degrading. Everything this doc says about Slack attachment colors, Discord embeds and PagerDuty `dedup_key` / `event_action` is therefore a *specification for unwritten code*, not a description of the binary. To escalate to Slack or PagerDuty today, point a `generic` target at a receiver that fans out — or, for Slack and Google Chat specifically, route through switchboard.
 >
 > The consumer recipe is wired: `examples/gke-troubleshoot-agent/` registers an `oncall` target on `ONCALL_WEBHOOK_URL` with `template: "generic"` under a `rate_limit_per_target: "10/min"` and its router skill calls `alert()` rather than the eventlog-only shape this doc was written against.
 
@@ -37,7 +37,7 @@ A **native, config-driven `alert` tool** solves all three:
 ## Non-goals (v2.7)
 
 - **Arbitrary HTTP client tool.** `alert` is deliberately narrower than a generic `http_post` — the operator's target registry is the allow-list. If operators want general HTTP, they wire an MCP server for that.
-- **Two-way conversations.** `alert` is fire-and-forget. If the operator wants the agent to LISTEN for replies (Slack thread replies, Discord DMs), that's an MCP integration, not an alert-tool feature.
+- **Two-way conversations.** `alert` is fire-and-forget. If the operator wants the agent to LISTEN for replies (Slack thread replies, Discord DMs), that's an MCP integration, not an alert-tool feature. *(Still true after the [`switchboard` template](#the-switchboard-template-798). It names the session in a header so the gateway can route a reply into `POST /sessions/{sid}/inject`; the tool itself still posts and returns a status code.)*
 - **Alert routing rules** ("critical → pagerduty, warning → slack"). Keep the tool dumb — the agent picks the target explicitly. Routing rules can live in the caller's prompt.
 - **Cross-daemon alert dedup.** In-memory rate-limit dedup only. A daemon restart resets the rate-limit budget.
 - **Retry-until-success queuing.** Best-effort delivery. Failed alerts are logged + surface as tool errors to the agent; the agent decides whether to retry, chain to another target, or give up.
@@ -139,6 +139,29 @@ Per-`template` body formatting turns the tool's flat args into the target servic
 
 New templates land as small PRs; the built-in registry lives in `pkg/tools/alert/templates/`.
 
+### The `switchboard` template (#798)
+
+**Shipped.** `switchboard` posts to [go-steer/switchboard](https://github.com/go-steer/switchboard)'s outbound message API (`POST /v1/messages`) rather than at a chat platform directly:
+
+```json
+{ "conversation": "C0123", "text": "**[critical]** checkout-svc has no healthy endpoints\n- `cluster`: prod-us-east" }
+```
+
+It is a **destination class, not a service format**, and that is what distinguishes it from the `slack` template specified above. `slack` is Block Kit fired at an Incoming Webhook: one platform, one wire format, fire-and-forget into a channel. `switchboard` is one template for *every* platform the gateway bridges — Slack and Google Chat today, more later — because the gateway already owns the per-platform translation, chunking and rendering. So the body is plain CommonMark and the formatting decisions stay in the process that knows the platform.
+
+Three properties follow from routing through the gateway that a direct webhook cannot have: the message lands in a thread the gateway can address later (edit, append, roll over); a human can reply and have the reply routed somewhere useful; and the caller-identity assertion the gateway performs stays intact.
+
+**Config.** Two fields are required and both are checked at load, because neither can be supplied later:
+
+- `conversation` — the gateway's conversation key. New field on `AlertTarget`, rejected on any other template so a field that would silently do nothing cannot be set. It is routing configuration, like the URL, which is why it is not a tool argument: same reason there is no arbitrary-URL parameter, one level in. A literal rather than a `*_env` sibling, because a conversation key is not a secret (unlike a Slack Incoming Webhook URL, which carries its token in the path).
+- `auth.bearer_env` — switchboard's ingress token, reusing the existing auth surface. Its ingress refuses to *start* without a token, so a target lacking one is an escalation path that can only 401. Being a `*_env`, an unset value also drops the target at startup under the rule below.
+
+**The session id rides a header.** `X-Agent-Session: <session id>` names the session the alert was fired from, so the gateway can bind the thread it creates back to that session and route a human's reply into it instead of into a fresh session with none of the incident context. A header rather than a body field for one concrete reason: switchboard's ingress decodes with `DisallowUnknownFields` — a deliberate choice on its side — so an unrecognised body field is a `400` from every deployed gateway, not a field it ignores. A header is the part of an HTTP request that is *defined* to be ignorable when unknown, so one binary talks to a gateway that reads it and one that doesn't, with no version negotiation. Switchboard already accepts caller metadata this way (`Idempotency-Key`). Only this template sends it; a session id is internal routing detail and a third-party webhook has no reason to learn one.
+
+**This does not reopen the two-way-conversation non-goal.** The tool still posts and reports a status code; nothing here listens. Naming the session is what lets a *separate*, already-existing inbound path — `POST /sessions/{sid}/inject`, gated on `SessionACL.Contributors` ([#797](https://github.com/go-steer/core-agent/issues/797)) — deliver the reply. The alert tool's half stays fire-and-forget.
+
+**Why not a translating shim.** A sidecar converting `{level, summary, details}` into `{conversation, text}` is three more things to deploy, monitor and explain, in order to avoid a small template in the place templates already live — and it would put a box in the architecture diagram that exists only because two of our own components disagree about a payload.
+
 ### Rate limiting
 
 Per-target token bucket. Default: 1 alert per 30 seconds per target (configurable via `alerts.rate_limit_per_target`). Exceeded → tool returns a structured error so the agent knows "you're being rate-limited on this target"; agent decides whether to try another target or defer.
@@ -176,13 +199,14 @@ type AlertsConfig struct {
 }
 
 type AlertTarget struct {
-    Name        string          `json:"name"`
-    Kind        string          `json:"kind"`         // "webhook"
-    URL         string          `json:"url,omitempty"`
-    URLEnv      string          `json:"url_env,omitempty"`
-    Template    string          `json:"template"`     // slack|discord|pagerduty_events_v2|generic
-    Auth        *AlertAuth      `json:"auth,omitempty"`
-    Description string          `json:"description,omitempty"`
+    Name         string     `json:"name"`
+    Kind         string     `json:"kind"`         // "webhook"
+    URL          string     `json:"url,omitempty"`
+    URLEnv       string     `json:"url_env,omitempty"`
+    Template     string     `json:"template"`     // generic|switchboard|slack|discord|pagerduty_events_v2
+    Conversation string     `json:"conversation,omitempty"` // switchboard only
+    Auth         *AlertAuth `json:"auth,omitempty"`
+    Description  string     `json:"description,omitempty"`
 }
 
 type AlertAuth struct {
@@ -197,6 +221,8 @@ Validation:
 - Exactly one of `url` / `url_env` set.
 - `template` is one of the known values.
 - If `kind == "webhook"` and no template matches, reject at load time.
+- `conversation` is required by `switchboard` (and must hold no whitespace or control characters, mirroring the gateway's own check) and rejected by every other template.
+- `auth.bearer_env` is required by `switchboard`.
 - Names unique across the target set.
 - `rate_limit_per_target` parses via `time.ParseDuration` (single duration = 1 alert per that duration) OR `N/duration` for N-per-duration.
 

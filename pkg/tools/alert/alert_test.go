@@ -33,6 +33,7 @@ type captured struct {
 	method      string
 	contentType string
 	authHeader  string
+	header      http.Header
 	body        []byte
 }
 
@@ -46,6 +47,7 @@ func mockServer(t *testing.T, status int, reply string, got *captured) *httptest
 			method:      r.Method,
 			contentType: r.Header.Get("Content-Type"),
 			authHeader:  r.Header.Get("Authorization"),
+			header:      r.Header.Clone(),
 			body:        body,
 		}
 		w.WriteHeader(status)

@@ -177,7 +177,7 @@ func (h *handler) run(ctx tool.Context, in Args) (Result, error) {
 		return Result{}, fmt.Errorf("alert: rate-limited on target %q (wait for the window to refill or fire a different target)", in.Target)
 	}
 
-	body, contentType, err := renderTemplate(tgt.Template, in)
+	out, err := renderTemplate(tgt, in, sessionOf(ctx))
 	if err != nil {
 		return Result{}, fmt.Errorf("alert: render template %q: %w", tgt.Template, err)
 	}
@@ -193,11 +193,17 @@ func (h *handler) run(ctx tool.Context, in Args) (Result, error) {
 	if parent == nil {
 		parent = context.Background()
 	}
-	req, err := http.NewRequestWithContext(parent, http.MethodPost, dest, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(parent, http.MethodPost, dest, bytes.NewReader(out.body))
 	if err != nil {
 		return Result{}, fmt.Errorf("alert: build request: %w", err)
 	}
-	req.Header.Set("Content-Type", contentType)
+	// Template headers first, then the two the caller owns: a template
+	// cannot shadow its own Content-Type, and none of them can shadow
+	// the operator's Authorization.
+	for k, v := range out.header {
+		req.Header.Set(k, v)
+	}
+	req.Header.Set("Content-Type", out.contentType)
 	if err := applyAuth(req, tgt.Auth, h.getenv); err != nil {
 		return Result{}, err
 	}
@@ -220,6 +226,17 @@ func (h *handler) run(ctx tool.Context, in Args) (Result, error) {
 	}
 
 	return Result{Target: in.Target, StatusCode: resp.StatusCode, DurationMs: dur.Milliseconds()}, nil
+}
+
+// sessionOf returns the session the tool call is running in, or "" when
+// the invocation does not name one. tool.Context is an interface and
+// some tests pass a nil one, so the guard is load-bearing rather than
+// defensive.
+func sessionOf(ctx tool.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	return ctx.SessionID()
 }
 
 // DeadTarget is a configured target this process cannot deliver to,

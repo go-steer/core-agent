@@ -966,8 +966,9 @@ Each entry in `targets`:
 | `kind` | string | `"webhook"` | Reserved for future transports; only `""`/`"webhook"` are accepted today. |
 | `url` | string | `""` | The destination URL (http/https). Mutually exclusive with `url_env` — set **exactly one**. |
 | `url_env` | string | `""` | Name of the env var holding the destination URL. Prefer this for secret webhook URLs (e.g. a Slack Incoming Webhook) so the secret lives in your secret manager, not this file. Checked at startup (an unset value drops the target) and re-resolved at call time. |
-| `template` | string | — | **Required.** Payload shape. Only `generic` ships today; `slack`, `discord`, and `pagerduty_events_v2` are declared but rejected at load with a "not yet implemented" error (Phase 2). |
-| `auth` | object | `null` | Optional auth header, resolved from env at call time (rotates without a restart). One of: `bearer_env` (→ `Authorization: Bearer <env>`), or `basic_env_user` + `basic_env_pass` (→ HTTP Basic). The model never sets auth — the operator picks what ships. |
+| `template` | string | — | **Required.** Payload shape. `generic` and `switchboard` ship; `slack`, `discord`, and `pagerduty_events_v2` are declared but rejected at load with a "not yet implemented" error (Phase 2). |
+| `conversation` | string | `""` | **Required for `switchboard`, rejected for every other template.** The gateway's conversation key — for Slack a channel ID (`C0123`) or `channel:thread_ts` to post into an existing thread. Routing config, so it lives here rather than in the model's arguments. A literal, not a `*_env`: a conversation key is not a secret. |
+| `auth` | object | `null` | Optional auth header, resolved from env at call time (rotates without a restart). One of: `bearer_env` (→ `Authorization: Bearer <env>`), or `basic_env_user` + `basic_env_pass` (→ HTTP Basic). The model never sets auth — the operator picks what ships. Required (as `bearer_env`) for `switchboard`. |
 | `description` | string | `""` | Free text surfaced to the model in the tool description so it can match the right target to the situation. |
 
 The `generic` template posts `application/json`:
@@ -977,6 +978,42 @@ The `generic` template posts `application/json`:
 ```
 
 `details` is omitted when empty. No timestamp is included by design — the eventlog's `tool/alert` record is the authoritative time source.
+
+### The `switchboard` template
+
+`switchboard` posts to [go-steer/switchboard](https://github.com/go-steer/switchboard)'s outbound message API (`POST /v1/messages`) instead of straight at a chat platform:
+
+```json
+{ "conversation": "C0123", "text": "**[critical]** checkout-svc has no healthy endpoints\n- `cluster`: prod-us-east\n- `incident`: INC-42" }
+```
+
+It is a **destination class, not a service format**. One template covers every platform the gateway bridges — Slack and Google Chat today, more later — because the gateway owns the per-platform translation. So `text` is plain CommonMark: the level in bold, then one bullet per `details` entry with the key in backticks, sorted so the same alert produces the same body every time. Non-string detail values are rendered as compact JSON.
+
+What routing through the gateway buys over a direct webhook post:
+
+- the message lands in a **thread the gateway can address later** — edit it, append to it, roll it over as an incident develops;
+- platform rendering, chunking and markdown translation are solved there once, for every platform;
+- a human can **reply**, and the reply is routed back into a session rather than into a channel nobody is reading.
+
+That last one is why the POST also carries an **`X-Agent-Session: <session id>`** header naming the session the alert was fired from, so the gateway can bind the thread it creates to that session. It is a header rather than a body field because switchboard's ingress decodes strictly (an unrecognised body field is a `400`, not a no-op), and an HTTP header is the part of a request that is defined to be ignorable when unknown — so the same binary talks to a gateway that reads it and one that doesn't. Only the `switchboard` template sends it; a third-party webhook has no business learning a session id.
+
+Two things the load-time validator insists on, because neither can be supplied later and both otherwise fail at 3am:
+
+- **`conversation`** — the gateway needs somewhere to put the message, and the model has no say in where that is. Whitespace and control characters are rejected: it is an opaque platform key, and switchboard rejects those too.
+- **`auth.bearer_env`** — switchboard's ingress refuses to start without a token, so a target without one can only ever `401`. That token is deliberately distinct from the daemon token: different direction, different trust. Because it is a `*_env`, an unset value also **drops the target at startup** under the rule below.
+
+```json
+{
+  "name": "sre-chat",
+  "url_env": "SWITCHBOARD_URL",
+  "template": "switchboard",
+  "conversation": "C0123",
+  "auth": { "bearer_env": "SWITCHBOARD_INGRESS_TOKEN" },
+  "description": "the #sre-oncall thread; a human can reply here and the reply comes back into this session"
+}
+```
+
+The tool stays fire-and-forget either way: it posts and reports the status code. Nothing in core-agent listens for the reply — a reply comes back through the attach API's `POST /sessions/{sid}/inject`, and the responder needs to be a **contributor** on that session to use it (see [Multi-session → ACLs](/concepts/multi-session/)).
 
 Worked example:
 

@@ -43,6 +43,14 @@ func TestValidateAlerts_Valid(t *testing.T) {
 			{Name: "a", URL: "https://a.example.com", Template: AlertTemplateGeneric},
 			{Name: "b", URL: "https://b.example.com", Template: AlertTemplateGeneric},
 		}},
+		"switchboard": {Targets: []AlertTarget{
+			{Name: "chat", URL: "https://switchboard.internal/v1/messages", Template: AlertTemplateSwitchboard,
+				Conversation: "C0123", Auth: &AlertAuth{BearerEnv: "SWITCHBOARD_TOKEN"}},
+		}},
+		"switchboard into an existing thread": {Targets: []AlertTarget{
+			{Name: "chat", URLEnv: "SWITCHBOARD_URL", Template: AlertTemplateSwitchboard,
+				Conversation: "C0123:1723742401.001900", Auth: &AlertAuth{BearerEnv: "SWITCHBOARD_TOKEN"}},
+		}},
 		"rate limit N/window": {
 			Targets:            []AlertTarget{{Name: "a", URL: "https://a.example.com", Template: AlertTemplateGeneric}},
 			RateLimitPerTarget: "5/min",
@@ -132,6 +140,36 @@ func TestValidateAlerts_Invalid(t *testing.T) {
 		"auth empty block": {
 			AlertsConfig{Targets: []AlertTarget{{Name: "a", URL: "https://x", Template: AlertTemplateGeneric, Auth: &AlertAuth{}}}},
 			"auth is set but empty",
+		},
+		"switchboard without a conversation": {
+			AlertsConfig{Targets: []AlertTarget{
+				{Name: "chat", URL: "https://x", Template: AlertTemplateSwitchboard, Auth: &AlertAuth{BearerEnv: "T"}},
+			}},
+			"requires conversation",
+		},
+		"switchboard conversation with whitespace": {
+			AlertsConfig{Targets: []AlertTarget{
+				{Name: "chat", URL: "https://x", Template: AlertTemplateSwitchboard, Conversation: "C0123 oops", Auth: &AlertAuth{BearerEnv: "T"}},
+			}},
+			"whitespace or control characters",
+		},
+		"switchboard without a bearer token": {
+			AlertsConfig{Targets: []AlertTarget{
+				{Name: "chat", URL: "https://x", Template: AlertTemplateSwitchboard, Conversation: "C0123"},
+			}},
+			"requires auth.bearer_env",
+		},
+		"switchboard with basic auth instead of a bearer": {
+			AlertsConfig{Targets: []AlertTarget{
+				{Name: "chat", URL: "https://x", Template: AlertTemplateSwitchboard, Conversation: "C0123", Auth: &AlertAuth{BasicEnvUser: "U", BasicEnvPass: "P"}},
+			}},
+			"requires auth.bearer_env",
+		},
+		"conversation on a generic target": {
+			AlertsConfig{Targets: []AlertTarget{
+				{Name: "a", URL: "https://x", Template: AlertTemplateGeneric, Conversation: "C0123"},
+			}},
+			"conversation is only meaningful",
 		},
 		"bad rate limit": {
 			AlertsConfig{

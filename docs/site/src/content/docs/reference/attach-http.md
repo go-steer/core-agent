@@ -164,6 +164,8 @@ Interrupting the parent **does not stop background subagents**: their runs aren'
 
 Clients watching `/events` see a `pause` frame on every transition (`{"state":"paused"|"resumed", "reason":..., "interrupted":bool, "mode":..., "at":...}`), emitted by the agent rather than the handler, so a park triggered in-process (an embedded TUI, a library caller) reaches remote operators identically.
 
+The cancelled turn ends with a `turn-error` frame of `kind: "canceled"`, `retryable: false` (protocol 1.8.0 — see [`turn-error` kinds](#turn-error-kinds)). A pre-1.8.0 daemon reports the same cancel as `transient_network` / `retryable: true`, so a client that offers a retry off that flag will offer to re-run the work the operator just stopped — check `protocol_version` before wiring one.
+
 The `/interrupt` audit event (`Author=attach/interrupt`) is written by the agent from inside its own turn loop, *after* the interrupted turn finishes unwinding — so it lands on the `/events` stream shortly after the `200` response, not synchronously before it. This avoids racing the runner's in-flight session write, which otherwise surfaced the operator's clean cancel as a spurious stale-session turn error. A consumer that needs to confirm the audit row should tail `/events` rather than assume it is present the instant `/interrupt` returns.
 
 ### Wake notifications (protocol 1.7.0)
@@ -350,6 +352,28 @@ The first frame on every `/events` stream is `event: capabilities` — the clien
 - **`caller_id`** — the resolved caller identity display hint. Canonical source: `GET /whoami`.
 
 `status-update` also carries an optional `capabilities` field (merge semantics) for future hot updates — no producer emits it today, but consumers MUST tolerate its absence and MUST merge (not replace) when it does arrive.
+
+### `turn-error` kinds
+
+A failed turn ends with `event: turn-error` carrying `{kind, code?, message, retryable, hint?}`. `kind` is an open enum — the spec requires consumers to **treat an unrecognized value as `unknown`**, and no in-tree consumer switches on it exhaustively, so a producer can add one without breaking a reader — and `retryable` is the one decision the payload asks a client to make:
+
+| `kind` | `retryable` | Raised by |
+|---|---|---|
+| `config_error` | false | Malformed request or provider config — a URL that won't parse, `INVALID_ARGUMENT`, `FAILED_PRECONDITION`, 400. |
+| `auth_error` | false | IAM / credentials / OAuth failure (401, 403, `PERMISSION_DENIED`). |
+| `model_not_found` | false | Model name / location mismatch (404, `NOT_FOUND`). |
+| `rate_limited` | true | Quota or rate limit (429, `RESOURCE_EXHAUSTED`). |
+| `transient_network` | true | Unreachable or timed-out upstream (502/503/504, `UNAVAILABLE`, **and a model call that hit its deadline**). |
+| `cost_ceiling` | false | A configured per-turn or per-session spend bound tripped. The operator must reset it. |
+| `watchdog` | false | The behavioral watchdog tripped a Critical runaway signal under `--watchdog=enforce`. The operator must reset it. |
+| `canceled` | false | The turn's context was cancelled — see below (protocol 1.8.0). |
+| `unknown` | false | Anything the classifier couldn't categorize. `message` still carries the upstream text. |
+
+**`canceled` (protocol 1.8.0, [#816](https://github.com/go-steer/core-agent/issues/816)).** Every cancel is a deliberate stop: `POST /interrupt`, the TUI's Esc, a parent-context cancel at daemon shutdown, or a guardrail cutting the turn short in flight. Re-running the work is the opposite of what was asked for, so `retryable` is false and a client that wires a retry prompt off the flag must not offer one. Before 1.8.0 these arrived as `transient_network` / `retryable: true` — self-contradicting next to their own `code: "CANCELED"`, and enough to make a retry-offering client undo an operator's stop. A client built against a pre-1.8.0 daemon is required by the spec to treat the value it doesn't recognise as `unknown`; core-tui v0.22.0 (the pinned client) maps only an *empty* kind to `unknown` and otherwise prints the string it was given, gating its `↻ retryable` line on the boolean, so it renders the new value correctly with no client change.
+
+Two consequences worth knowing. A cancel and a **timeout** are now on opposite sides of the flag: `context.DeadlineExceeded` stays `transient_network` / retryable, because nobody asked for it. And an in-flight guardrail halt produces **two** `turn-error` frames — the guardrail's own (`cost_ceiling` or `watchdog`, carrying the operator-facing reason) followed by the `canceled` for the cut turn — so read the first one for *why*; that pairing predates 1.8.0 and only the second frame's `kind` changes.
+
+The same value rides `error.type` on the `gen_ai.agent.invocation.duration` metric where metrics are enabled, so a dashboard keyed on a `transient_network` rate stops counting deliberate stops as network failures on a daemon carrying this change.
 
 ### Protocol version negotiation
 

@@ -21,9 +21,11 @@ import (
 	"strings"
 )
 
-// ClassifyTurnError maps a raw error from the model-call path to a
-// TurnError payload conforming to the SSE event-stream protocol's
-// kind enum (spec section 2.6).
+// ClassifyTurnError maps a raw error from a turn to a TurnError
+// payload conforming to the SSE event-stream protocol's kind enum
+// (spec section 2.6). Most of what reaches it comes off the model
+// call, but not all — the turn's own context surfaces here too — so
+// "the model failed" is not a safe reading of every result.
 //
 // Classification is string-based rather than type-based because the
 // genai / ADK / Vertex / Anthropic clients each wrap upstream
@@ -51,12 +53,16 @@ func ClassifyTurnError(err error) TurnError {
 			Retryable: true,
 		}
 	}
+	// A cancel is a deliberate stop, never a failure to retry: an
+	// operator interrupt, a shutdown, or a guardrail cutting the turn
+	// short. Note the asymmetry with the deadline above — that one is
+	// retryable because nobody asked for it (#816).
 	if errors.Is(err, context.Canceled) {
 		return TurnError{
-			Kind:      TurnErrorTransientNet,
+			Kind:      TurnErrorCanceled,
 			Code:      "CANCELED",
-			Message:   "model call canceled",
-			Retryable: true,
+			Message:   "turn canceled",
+			Retryable: false,
 		}
 	}
 

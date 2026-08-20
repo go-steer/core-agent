@@ -17,6 +17,9 @@ package attach
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -101,10 +104,10 @@ func TestClassifyTurnError_Kinds(t *testing.T) {
 			wantRetry: true,
 		},
 		{
-			name:      "transient_network from context canceled",
+			name:      "canceled from context canceled",
 			err:       context.Canceled,
-			wantKind:  TurnErrorTransientNet,
-			wantRetry: true,
+			wantKind:  TurnErrorCanceled,
+			wantRetry: false,
 		},
 		{
 			name:      "unknown for novel errors",
@@ -138,6 +141,109 @@ func TestClassifyTurnError_Kinds(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestClassifyTurnError_CanceledIsNotRetryable is the #816 regression
+// pin. A cancelled turn is a deliberate stop — an operator interrupt,
+// a shutdown, a guardrail cutting the turn short — and `retryable` is
+// the one decision the protocol asks a client to make off this
+// payload, so answering "yes, try again" is the wrong answer in the
+// case where trying again undoes what was asked for. The same value
+// rides `error.type` on gen_ai.agent.invocation.duration, where it
+// used to inflate the transient-network rate with deliberate stops.
+//
+// The wrapped case is covered because a cancel does not necessarily
+// arrive bare — pkg/runner/repl.go and pkg/agent/autonomous both
+// errors.Is-check the error a turn hands back rather than comparing
+// it, which is the in-tree evidence that a wrapper can sit in front
+// of it. A classifier keyed on == would miss those. Fails on pre-fix
+// code, which returned transient_network / retryable=true for both.
+func TestClassifyTurnError_CanceledIsNotRetryable(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{name: "bare", err: context.Canceled},
+		{name: "wrapped", err: fmt.Errorf("agent: run turn: %w", context.Canceled)},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := ClassifyTurnError(tc.err)
+			if got.Kind != TurnErrorCanceled {
+				t.Errorf("Kind = %q, want %q (full: %+v)", got.Kind, TurnErrorCanceled, got)
+			}
+			if got.Retryable {
+				t.Errorf("Retryable = true, want false — a client keying a retry prompt off this would offer to re-run work the operator stopped (full: %+v)", got)
+			}
+			if got.Code != "CANCELED" {
+				t.Errorf("Code = %q, want %q", got.Code, "CANCELED")
+			}
+			// The cancel is not necessarily at the model call — the
+			// turn's own context can surface it — so the message must
+			// not name one.
+			if strings.Contains(strings.ToLower(got.Message), "model call") {
+				t.Errorf("Message = %q, should not attribute the cancel to the model call", got.Message)
+			}
+		})
+	}
+
+	// The neighbouring branch must NOT move: a turn that ran out of
+	// time is retryable, and a fix that flipped every context error to
+	// non-retryable would pass the assertions above while breaking the
+	// case they were meant to leave alone.
+	if got := ClassifyTurnError(context.DeadlineExceeded); got.Kind != TurnErrorTransientNet || !got.Retryable {
+		t.Errorf("DeadlineExceeded = %+v, want kind=%s retryable=true", got, TurnErrorTransientNet)
+	}
+}
+
+// TestProtocolVersion_CoversCanceledKind pins the version half of the
+// change. A new `kind` value is not a new event type, so
+// supportedEventTypes is deliberately unchanged and there is nothing on
+// the capabilities frame a consumer could feature-detect — the only
+// signal that a daemon may emit `canceled` is protocol_version, which
+// makes forgetting the bump silent. Asserted as a floor rather than an
+// equality so a later additive minor doesn't have to edit this test to
+// stay green.
+func TestProtocolVersion_CoversCanceledKind(t *testing.T) {
+	t.Parallel()
+	major, minor, ok := protocolMajorMinor(protocolVersion)
+	if !ok {
+		t.Fatalf("protocolVersion = %q, not parseable as major.minor", protocolVersion)
+	}
+	if major != 1 || minor < 8 {
+		t.Errorf("protocolVersion = %q, want >= 1.8.0 (the canceled turn-error kind, #816)", protocolVersion)
+	}
+	if slices.Contains(supportedEventTypes, TurnErrorCanceled) {
+		t.Errorf("supportedEventTypes = %v: %q is a turn-error kind, not an event type", supportedEventTypes, TurnErrorCanceled)
+	}
+}
+
+// protocolMajorMinor parses "1.8.0" into (1, 8). Test-local: the
+// server's own negotiation only ever compares majors (minors are
+// additive by contract), so there is no production need for this.
+func protocolMajorMinor(version string) (int, int, bool) {
+	major, ok := protocolMajor(version)
+	if !ok {
+		return 0, 0, false
+	}
+	v := strings.TrimPrefix(strings.TrimSpace(version), "v")
+	dot := strings.Index(v, ".")
+	if dot < 0 {
+		return major, 0, true
+	}
+	rest := v[dot+1:]
+	if end := strings.IndexAny(rest, ".-+"); end >= 0 {
+		rest = rest[:end]
+	}
+	minor, err := strconv.Atoi(rest)
+	if err != nil || minor < 0 {
+		return 0, 0, false
+	}
+	return major, minor, true
 }
 
 func TestClassifyTurnError_FirstSentenceTrim(t *testing.T) {

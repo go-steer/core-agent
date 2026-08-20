@@ -82,7 +82,20 @@ import "time"
 // omits it and the consumer simply never gets the signal, which is what
 // every client saw before this version. Fully additive — an older
 // client drops the unknown event name per spec §3.
-const protocolVersion = "1.7.0"
+//
+// v1.8.0 (#816): new `canceled` value in the turn-error `kind` enum
+// (§2.6), carrying `retryable: false`. A cancelled turn used to be
+// reported as `transient_network` / `retryable: true`, which told a
+// client to offer a re-run of the work an operator had just
+// deliberately stopped. Additive in the same way `cost_ceiling` and
+// `watchdog` were: no new event type, no new field, and the spec
+// already requires consumers to treat an unrecognized kind as
+// `unknown`, so an older client has a defined fallback rather than
+// undefined behavior (core-tui v0.22.0, the pinned client, in fact
+// prints the kind verbatim). It is still a behavior change for
+// this one input — a client keying a retry affordance off `retryable`
+// stops offering one after an interrupt, which is the point.
+const protocolVersion = "1.8.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (
@@ -464,6 +477,17 @@ const (
 	// surface the message + halt automated retry (an auto-continue
 	// re-drive would just re-trip the same loop).
 	TurnErrorWatchdog = "watchdog"
+	// TurnErrorCanceled fires when the turn's context was cancelled
+	// (#816): an operator interrupt (POST /interrupt, the TUI's ESC),
+	// a parent-context cancel at shutdown, or a guardrail halting the
+	// turn in flight — that last one via Interrupt, so it emits its
+	// own cost_ceiling / watchdog turn-error first and this one for
+	// the cut turn second. Every one of those is a deliberate stop,
+	// so Retryable=false: re-running the work is the opposite of what
+	// was asked for. Distinct from a context.DeadlineExceeded, which
+	// stays transient_network and retryable — a call that ran out of
+	// time is worth another try.
+	TurnErrorCanceled = "canceled"
 	TurnErrorUnknown  = "unknown"
 )
 

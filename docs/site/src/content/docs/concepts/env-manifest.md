@@ -7,6 +7,8 @@ Agent bundles that ship in containers, pods, or systemd units frequently need de
 
 Bundles without a manifest keep working unchanged — the mechanism is opt-in. Only bundles that ship an `env.yaml` (or `env.json`) get manifest-driven validation and interpolation.
 
+**In `AGENTS.md` and skill files, `${env:VAR}` does nothing without a manifest.** There is no ambient-env fallback there for a bundle that ships no `env.yaml`: the placeholder is handed to the model as literal text. (`mcp.json` is the exception — its `env` / `headers` values have always interpolated straight from the process env, with or without a manifest.) The instruction-side behaviour is the opt-in working as designed, but it is easy to walk into by accident, so the daemon [says so at boot](#surviving-placeholders) whenever loaded content still contains `${env:…}` placeholders after the load.
+
 ---
 
 ## Quick start
@@ -85,7 +87,7 @@ Syntax rules:
 
 - `${env:NAME}` — matches when `NAME` starts with a letter or underscore, followed by letters/digits/underscores.
 - Unset non-declared vars fall through to the ambient process env (via `os.Getenv`), then resolve to empty string. Undeclared references surface as drift warnings at boot (see below).
-- Anything that doesn't match the syntax (`${envFOO}`, `$env:FOO}`, `${env :FOO}`) passes through as literal text.
+- Anything that doesn't match the syntax (`${envFOO}`, `$env:FOO}`, `${env :FOO}`) passes through as literal text. A near-miss that still opens with `${env:` — `${env:my-var}`, `${env:2FA_TOKEN}` — is reported at boot (see below), because a hyphen or a leading digit in the name is far more likely to be a typo than a deliberate literal.
 
 Interpolation runs once per file at daemon startup (or `/reload`). It's not dynamic — changing an env var while the daemon is running has no effect on already-loaded prompts until the daemon restarts.
 
@@ -93,7 +95,7 @@ Interpolation runs once per file at daemon startup (or `/reload`). It's not dyna
 
 ## Boot-time validation
 
-The daemon runs the manifest through three phases at startup:
+The daemon runs the manifest through four phases at startup:
 
 1. **Schema validation** — parses the file, rejects malformed entries (empty names, duplicates, invalid identifiers).
 2. **Required-var check** — every entry with `required: true` must have a value in the process env. Missing → fatal error, daemon exits with `ExitConfigError`. Errors are batched (all missing vars listed at once), not fail-first, so operators see everything to fix in one round-trip.
@@ -101,8 +103,28 @@ The daemon runs the manifest through three phases at startup:
    - Names referenced via `${env:NAME}` but not declared in the manifest surface as `"${env:NAME} is referenced but not declared in the manifest"`.
    - Names named by a `*_env` config field but not declared in the manifest surface as `` "config names env var \"X\" (a *_env field) but it is not declared in the manifest" ``.
    - Names declared in the manifest but reached by neither route surface as `"manifest declares X but nothing in the bundle references it"`.
+4. **Surviving placeholders (warn only)** — see below. This one runs even when there is no manifest at all, because that is the case it exists for.
 
-Both drift diagnostics are advisory. The daemon keeps running; the recipe author sees the warnings and cleans up on their next iteration.
+Drift diagnostics and the surviving-placeholder check are advisory. The daemon keeps running; the recipe author sees the warnings and cleans up on their next iteration.
+
+### Surviving placeholders
+
+Once every instruction file, skill, and subagent content root has loaded, the daemon checks the loaded text for `${env:…}` placeholders that are still there. (`mcp.json` is not in scope: its values interpolate unconditionally, so nothing can survive that pass for lack of a manifest.) Anything it finds would reach the model verbatim, so it is named on stderr with the rest of the startup lines:
+
+```
+core-agent: agentenv: 2 ${env:...} placeholder(s) survived loading and will reach the
+  model as literal text: ${env:GKE_CLUSTER}, ${env:GOOGLE_CLOUD_PROJECT} — no env.yaml
+  or env.json in /app/.agents, so interpolation is OFF
+```
+
+Two situations produce it:
+
+- **No manifest.** Interpolation never ran. The remedy is to add `env.yaml` declaring those names — or to delete the placeholders if the bundle wasn't meant to use the mechanism.
+- **A manifest is active, but a placeholder doesn't match the `${env:NAME}` syntax.** Interpolation ran and skipped it. The warning says so, and the remedy is to fix the name.
+
+The check reads the loaded *content* rather than inferring from the manifest's absence, so a bundle that ships no manifest and references nothing stays silent — which is most bundles.
+
+It is a warning, not a fatal error, because `${env:...}` shows up legitimately as literal text in content that documents the feature — a skill whose reference file quotes an example `mcp.json` is a real and correct thing to ship. If your persona is one of those, the line is noise you can ignore; there is no suppression flag, and adding one would recreate the silence this exists to break.
 
 ### The two ways a bundle consumes an env var
 
@@ -143,7 +165,7 @@ For MCP header values that carry tokens, the existing `mcp.json` redaction alrea
 
 ## Backwards compatibility
 
-- Bundles without `env.yaml` / `env.json` behave exactly as before #322 landed: no interpolation happens, no validation runs, no drift warnings. Existing operators are unaffected.
+- Bundles without `env.yaml` / `env.json` behave exactly as before #322 landed: no interpolation happens, no validation runs, no drift warnings. Existing operators are unaffected. The one thing that changed since is the [surviving-placeholder warning](#surviving-placeholders) — a boot line only, and only for bundles whose content actually contains `${env:` markers.
 - `mcp.json`'s pre-existing `${env:VAR}` support in Env / Headers keeps working identically. The regex + resolver moved to `pkg/agentenv` internally but the semantics are preserved.
 - Adopting the mechanism is a per-bundle opt-in: drop a manifest, replace literals with `${env:VAR}` references, populate env at deploy time.
 

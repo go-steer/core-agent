@@ -846,7 +846,7 @@ Console mode prints span JSON to stderr — useful for local debugging. OTLP mod
 
 ### `otel.metrics`
 
-Metrics run on a separate pipeline from traces (the daemon builds its own MeterProvider — ADK-go has none). Off by default.
+Metrics run on a separate pipeline from traces (the daemon builds its own MeterProvider — ADK-go has none). Off by default. See the [Metrics concept page](/concepts/metrics/) for the instrument inventory, PromQL samples, and caveats.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|

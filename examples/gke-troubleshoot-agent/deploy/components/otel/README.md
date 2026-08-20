@@ -1,6 +1,6 @@
 # OTel enablement component
 
-Opt-in kustomize component that switches core-agent's exporter from `none` to `otlp` and sets the service name for both the daemon and watcher containers. Deliberately narrow — two env vars per binary, both required, neither auto-injected by GKE Managed OpenTelemetry's `Instrumentation` CR.
+Opt-in kustomize component that switches core-agent's exporters from `none` to `otlp` and sets the service name for both the daemon and watcher containers. Deliberately narrow — a handful of env vars, none of them auto-injected off GKE.
 
 ## What it does
 
@@ -9,7 +9,10 @@ Patches the daemon's `core-agent` container and the watcher Deployment's `watche
 | Var | Value | Purpose |
 |---|---|---|
 | `OTEL_TRACES_EXPORTER` | `otlp` | Overrides `otel.exporter` from the base `config.json` (default `none`). See [PR #315](https://github.com/go-steer/core-agent/pull/315). |
+| `OTEL_METRICS_EXPORTER` | `otlp` (daemon only) | Overrides `otel.metrics.exporter` (default `none`). **Metrics are a separate pipeline with a separate switch** — ADK-go has no `MeterProvider`, so `pkg/telemetry.SetupMetrics` builds its own and reads its own var. Setting only `OTEL_TRACES_EXPORTER` gets you spans and no metrics. Not set on the watcher: lookout publishes `lookout_*` through its own Prometheus endpoint (`--metrics-addr`), not OTLP. |
 | `OTEL_SERVICE_NAME` | `core-agent` / `lookout-watch` | GKE Managed OTel's `Instrumentation` CR does NOT auto-inject this ([docs](https://docs.cloud.google.com/kubernetes-engine/docs/concepts/managed-otel-gke#environment_variables)). For the **daemon**, without it spans surface as `unknown_service:<binary>` in Cloud Trace. For the **watcher**, lookout has defaulted its own spans to `service.name=lookout` since v0.21.0, so this is not a fix for a broken name — it is a deliberate override, so the service name in Cloud Trace matches the Deployment an operator greps for rather than the binary. |
+
+What the daemon then exports: per-session GenAI token/cost meters, two ADK-schema latency histograms, the `core_agent.*` subsystem meters, and Go runtime metrics. Full inventory, PromQL samples, and caveats: [Metrics](https://go-steer.github.io/core-agent/concepts/metrics/).
 
 **GOOGLE_CLOUD_PROJECT** (for the `gcp.project_id` resource attribute Cloud Trace requires) is already wired via the base's `envFrom` reference to the `core-agent-gcp-env` ConfigMap. `pkg/telemetry.Setup` reads it and passes to ADK via `WithGcpResourceProject` so the resource attribute is stamped correctly.
 
@@ -34,14 +37,22 @@ See [`overlays/example-otel/`](../../overlays/example-otel/) for the canonical s
 
 Cluster prereqs (one-time, before the overlay applies):
 
-    gcloud services enable cloudtrace.googleapis.com telemetry.googleapis.com
+    gcloud services enable cloudtrace.googleapis.com monitoring.googleapis.com \
+      telemetry.googleapis.com
     gcloud container clusters update <CLUSTER> --location=<REGION> \
       --managed-otel-scope=COLLECTION_AND_INSTRUMENTATION_COMPONENTS
     gcloud projects add-iam-policy-binding <PROJECT> \
       --member="serviceAccount:<POD-SA>" \
       --role="roles/cloudtrace.user"
+    gcloud projects add-iam-policy-binding <PROJECT> \
+      --member="serviceAccount:<POD-SA>" \
+      --role="roles/monitoring.metricWriter"
+
+`monitoring.googleapis.com` + `roles/monitoring.metricWriter` are the metrics half; `cloudtrace.googleapis.com` + `roles/cloudtrace.user` are the traces half. Both are inert if the corresponding exporter is off. `scripts/setup-wif.sh` applies all four for you.
 
 Requires GKE control plane `1.34.1-gke.2178000` or later, gcloud `551.0.0` or later.
+
+> **Not yet verified live.** The traces path is confirmed end-to-end against a real GKE cluster. The metrics path is confirmed locally (Prometheus scrape + unit tests) but **OTLP metrics reaching Cloud Monitoring from a live cluster has not been observed** — the prerequisites above are documented from the Cloud Monitoring API's requirements, not from a run. Tracked in [#554](https://github.com/go-steer/core-agent/issues/554).
 
 ## Non-GKE (self-managed Collector, Docker, etc.)
 

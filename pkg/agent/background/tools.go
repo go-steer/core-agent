@@ -248,10 +248,13 @@ func completionResult(h *Handle) spawnAgentResult {
 	r := h.Result()
 	if r != nil || runErr != nil {
 		var reason autonomous.StopReason
+		var returned bool
 		if r != nil {
 			reason = r.Reason
+			returned = r.Returned
 		}
-		res.StopReason = stopClass(status, reason, runErr)
+		res.StopReason = stopClass(status, reason, runErr, returned)
+		res.Guidance = stopGuidance(res.StopReason)
 	}
 	if runErr != nil {
 		res.Output = runErr.Error()
@@ -370,12 +373,55 @@ type spawnAgentResult struct {
 	// just delegated, so both channels are surfaced.
 	FinalText string `json:"final_text,omitempty"`
 	// StopReason says whether Output is a finished result or a partial:
-	// "natural" (the subagent finished), "max_steps" / "budget" (it ran
-	// out of room — re-ask with what is missing), "deferred" (it will
-	// resume on its own), "stopped", or "error". Empty for a
-	// fire-and-continue spawn and for a wait that timed out, neither of
-	// which has an outcome yet. See StopClass.
+	// "natural" (the subagent returned a result), "no_return" (its loop
+	// ended without one — check the text answers the goal), "max_steps"
+	// / "budget" (it ran out of room — re-ask with what is missing),
+	// "deferred" (it will resume on its own), "stopped", or "error".
+	// Empty for a fire-and-continue spawn and for a wait that timed out,
+	// neither of which has an outcome yet. See StopClass.
 	StopReason StopClass `json:"stop_reason,omitempty"`
+	// Guidance is one line telling the parent what a non-finished
+	// outcome means for its next move. Empty when StopReason is
+	// "natural", and empty when there is no outcome yet.
+	//
+	// It exists because StopReason alone lost the argument in practice
+	// (#710): a well-formed JSON object whose `output` reads like a
+	// finished report gets treated as one, and an enum value two fields
+	// down does not stop that — especially when the value is a word
+	// like "deferred" that sounds benign. The parent is a language
+	// model; the field that changes its behavior is the one written in
+	// language.
+	Guidance string `json:"guidance,omitempty"`
+}
+
+// stopGuidance is the parent-facing instruction for a stop class,
+// empty for the finished case.
+//
+// Deliberately not a re-drive. The obvious alternative — nudge the
+// subagent once with "no operator is available, finish or say what
+// blocked you" — is the "continue" re-drive that #730 removed from
+// bounded delegation on purpose: the parent holds the goal and can
+// re-ask with specifics, which a blind continuation injected inside the
+// subagent cannot. Nor is a non-finished outcome turned into a tool
+// error, because that discards the partial, which is #691's failure
+// (the parent re-derived a diagnosis it had already paid for).
+func stopGuidance(class StopClass) string {
+	switch class {
+	case StopNoReturn:
+		return "the subagent's loop ended without it returning a result, so this is its last message rather than a deliverable. " +
+			"Check that it answers the goal before building on it — if it trails off, or asks a question, nobody is going to answer it. " +
+			"Re-ask with the specifics that are missing, or do the work yourself."
+	case StopMaxSteps, StopBudget:
+		return "this is a partial: the subagent ran out of room before finishing. Re-ask with what is still missing, or raise its budget."
+	case StopDeferred:
+		return "the subagent scheduled its own next turn and is not done. Do not treat this as the answer; its result arrives later."
+	case StopStopped:
+		return "the subagent was stopped mid-thought, so any text here was cut off."
+	case StopError:
+		return "the subagent failed. Whatever text is here is incidental, not a result."
+	default:
+		return ""
+	}
 }
 
 // NewSpawnAgentTool returns a tool the parent's model can call to

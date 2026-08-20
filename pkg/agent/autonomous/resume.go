@@ -291,6 +291,11 @@ func Resume(ctx context.Context, build ResumeBuildFunc, ref SessionRef, opts ...
 		if turnRes.doneSignaled {
 			result.Reason = StopReasonCompleted
 			result.DoneDetail = turnRes.doneDetail
+			// Same as Run: only an explicit return counts (#710). A
+			// resumed run offers the identical termination gesture, so
+			// it has to report the identical fact about which one was
+			// used.
+			result.Returned = true
 			break
 		}
 

@@ -270,6 +270,9 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 		if turnRes.doneSignaled {
 			result.Reason = StopReasonCompleted
 			result.DoneDetail = turnRes.doneDetail
+			// The only path that sets this: the model chose to hand
+			// something back (#710).
+			result.Returned = true
 			break
 		}
 
@@ -1114,9 +1117,32 @@ type RunResult struct {
 	// Duration is the wall-clock time from Run entry to
 	// loop exit.
 	Duration time.Duration
-	// DoneDetail is the detail string the model passed to the done
-	// tool when Reason==StopReasonCompleted.
+	// DoneDetail is the result the model handed back through the done
+	// or return tool. Under WithStopOnNaturalEnd it is ALSO set from a
+	// turn that simply stopped calling tools, which is a different
+	// thing wearing the same field — see Returned.
 	DoneDetail string
+	// Returned reports whether the run ended because the model invoked
+	// the done/return tool, as opposed to any other path that reports
+	// StopReasonCompleted.
+	//
+	// The distinction is the delegation's return contract (#710).
+	// WithStopOnNaturalEnd makes "the model stopped asking for tools"
+	// a termination path, and it reports StopReasonCompleted with the
+	// turn's text as DoneDetail — so a subagent that trails off, or
+	// ends by asking a question nobody is there to answer, is
+	// indistinguishable by Reason alone from one that deliberately
+	// handed back a curated result. In the live GKE run that filed
+	// this, the "deliverable" was "Please let me know if you would
+	// like me to continue", and the parent redid the whole
+	// investigation itself.
+	//
+	// False therefore does not mean the text is worthless — for many
+	// personas the prose IS the answer — it means nobody asserted that
+	// it is. Consumers that care (pkg/agent/background renders it as
+	// the "no_return" stop class) should treat it as "verify this
+	// answers the goal", not as an error.
+	Returned bool
 	// NextWakeAt is set when Reason==StopReasonDeferred — the
 	// scheduler returned ErrSchedulerDefer and the loop exited
 	// cleanly with a wake-time persisted to the eventlog. Whatever
@@ -1129,7 +1155,12 @@ type RunResult struct {
 type StopReason string
 
 const (
-	// StopReasonCompleted means the model called the done tool.
+	// StopReasonCompleted means the run reached an ending of its own:
+	// the model called the done tool, or — under WithStopOnNaturalEnd
+	// — a turn ended without asking for another tool. RunResult.Returned
+	// separates the two, and a delegating caller should read it: the
+	// second form covers a subagent that trailed off or stopped to ask
+	// a question (#710).
 	StopReasonCompleted StopReason = "completed"
 	// StopReasonMaxTurns means WithMaxTurns was hit.
 	StopReasonMaxTurns StopReason = "max_turns_exceeded"

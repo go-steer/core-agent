@@ -43,8 +43,6 @@ import (
 	"sync"
 	"time"
 
-	adkmodel "google.golang.org/adk/model"
-
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 	"github.com/go-steer/core-agent/v2/pkg/agent/background"
 	"github.com/go-steer/core-agent/v2/pkg/models/mock"
@@ -64,30 +62,13 @@ const parentScript = `{"request":{"Contents":[{"parts":[{"text":"investigate log
 `
 
 // childScript is the transcript EVERY spawned child replays (each
-// spawn gets a fresh cursor via freshScriptProvider below): round 1
+// spawn gets its own cursor via mock.NewScriptedPerCall): round 1
 // calls the autonomous driver's report_done lifecycle tool; round 2
 // is the final text after the tool result lands. The done detail is
 // what surfaces as the "completed" report text on the parent side.
 const childScript = `{"request":{"Contents":[{"parts":[{"text":"(child goal)"}],"role":"user"}]},"responses":[{"Content":{"parts":[{"functionCall":{"name":"report_done","args":{"state":"done","detail":"area scanned; nothing anomalous found"}}}],"role":"model"},"TurnComplete":true,"FinishReason":"STOP"}]}
 {"request":{"Contents":[{"parts":[{"text":"(child goal)"}],"role":"user"}]},"responses":[{"Content":{"parts":[{"text":"Scan complete."}],"role":"model"},"TurnComplete":true,"FinishReason":"STOP"}]}
 `
-
-// freshScriptProvider is a tiny models.Provider that returns a FRESH
-// scripted replay per Model call. The manager asks its provider for
-// one LLM per spawn, so this gives every child its own script cursor
-// — three concurrent children never race over shared replay state
-// (mock.NewScripted's own Provider hands out one shared LLM).
-type freshScriptProvider struct{ path string }
-
-func (p freshScriptProvider) Name() string { return "scripted-per-spawn" }
-
-func (p freshScriptProvider) Model(ctx context.Context, modelID string) (adkmodel.LLM, error) {
-	sp, err := mock.NewScripted(p.path, false)
-	if err != nil {
-		return nil, err
-	}
-	return sp.Model(ctx, modelID)
-}
 
 func main() {
 	if err := run(); err != nil {
@@ -121,6 +102,14 @@ func run() error {
 	if err := os.WriteFile(childPath, []byte(childScript), 0o600); err != nil {
 		return err
 	}
+	// NewScriptedPerCall, not NewScripted: the manager asks its
+	// provider for one LLM per spawn, and each child has to replay
+	// this transcript from ITS OWN turn 0. A shared replay would hand
+	// the three children one cursor between them.
+	childProvider, err := mock.NewScriptedPerCall(childPath, false)
+	if err != nil {
+		return err
+	}
 
 	// The manager owns every spawned child: provider, concurrency
 	// cap, budgets. Construction order matters: manager first, spawn
@@ -128,8 +117,16 @@ func run() error {
 	// wired — agent.New stamps the parent back-reference onto the
 	// manager.
 	mgr, err := background.NewManager(
-		background.WithProvider(freshScriptProvider{path: childPath}, "scripted"),
+		background.WithProvider(childProvider, "scripted"),
 		background.WithMaxConcurrent(4),
+		// The three children here are ad-hoc: the parent's model
+		// authors each system_prompt at spawn time. That is OFF by
+		// default, because an unattended daemon should only spawn
+		// operator-vetted specs — a daemon fans out by NAME instead
+		// (`spawn_agent{agent: "recon-logs"}` against a subagent
+		// declared in config). This example opts in so the fan-out
+		// gesture, not the roster wiring, is what you read.
+		background.WithAllowAdhoc(true),
 		background.WithDefaultBudgets(background.Budgets{
 			MaxTurns:     3,
 			MaxWallclock: 15 * time.Second,

@@ -288,6 +288,8 @@ a, _ := agent.New(m, agent.WithTools(reg.Tools))
 
 Replay the captured file with `mock.NewScripted(path, strict)` (or `--provider=scripted --script=path` from the CLI). See [Providers → Scripted](/concepts/providers/#scripted-mock) for the lenient/strict tradeoff and the "tool environment isn't recorded" caveat.
 
+For a **fan-out** — several agents replaying the same transcript at once, e.g. a `background.Manager`'s spawned children — use `mock.NewScriptedPerCall(path, strict)` instead. `NewScripted` hands every `Model` call the same replay, so N concurrent children share one cursor and divide the script between them; `NewScriptedPerCall` builds a fresh replay per call, so each one starts at turn 0. The cursor is mutex-guarded either way, so `-race` will not tell you which you needed.
+
 The recorder lives in `recording/` (not `models/mock/`) because it's production observability, not a test fixture — the package name shouldn't suggest you're only allowed to use it in tests.
 
 ---

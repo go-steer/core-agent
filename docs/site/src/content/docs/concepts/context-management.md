@@ -261,7 +261,7 @@ The modes are a ladder — each one includes everything the mode above it in thi
 | `off` | No observation. |
 | `warn` | Observes the tool-call stream. When a signal trips, logs a structured alert to the operator via the normal status channel (`send()` callback for CLI; future SSE event for attach-mode). Does NOT pause the turn, and does not tell the model anything. |
 | `feedback` | Warn, plus the observation is injected into the **model's** next-turn context as a `[watchdog]` block ([#159](https://github.com/go-steer/core-agent/issues/159)). A correction, not a backstop — nothing halts a model that reads the block and loops anyway. |
-| `enforce` | Feedback, plus a Critical runaway signal (today: `repeated-tool-call` or `alternating-tool-cycle` — *not* the Warn-level `tool-failure-streak`) **halts the agent**: it cancels the turn in flight, emits a `turn-error` (`kind=watchdog`, non-retryable), and refuses new turns until the operator clears it (`/guardrail reset`, `POST /sessions/{id}/guardrails/reset`, or `Agent.ResetWatchdog` when embedding). This is the hard behavioral backstop — an auto-continue re-drive of the interrupted turn is refused at pre-flight instead of re-issuing the looping call. |
+| `enforce` | Feedback, plus a Critical runaway signal (today: `repeated-tool-call`, `alternating-tool-cycle` or `dominant-tool-call` — *not* the Warn-level `tool-failure-streak`) **halts the agent**: it cancels the turn in flight, emits a `turn-error` (`kind=watchdog`, non-retryable), and refuses new turns until the operator clears it (`/guardrail reset`, `POST /sessions/{id}/guardrails/reset`, or `Agent.ResetWatchdog` when embedding). This is the hard behavioral backstop — an auto-continue re-drive of the interrupted turn is refused at pre-flight instead of re-issuing the looping call. |
 
 ### Feedback: telling the model what it is doing
 
@@ -305,21 +305,32 @@ Future modes — `prompt` (pause turn + ask operator via the existing permission
 
 ### Signals
 
-Three signals ship. The two loop detectors are `Critical` — they halt under `enforce` and reach the model under `feedback`. The failure-streak signal is `Warn`: it never halts, in any mode.
+Four signals ship. The three loop detectors are `Critical` — they halt under `enforce` and reach the model under `feedback`. The failure-streak signal is `Warn`: it never halts, in any mode.
 
 | Signal | Severity | Trips when | Catches |
 |---|---|---|---|
 | `repeated-tool-call` | Critical | The same tool is called 5 times in a row with equivalent args | The `read_file` loop from [#144](https://github.com/go-steer/core-agent/issues/144) |
 | `alternating-tool-cycle` | Critical | The same sequence of 2–4 calls repeats 3 times with identical args each lap | The `list_agents → check_agent` loop that survived `stop` *and* `/interrupt` in the [PR #622](https://github.com/go-steer/core-agent/pull/622) GKE UAT |
+| `dominant-tool-call` | Critical | One call accounts for 8 of the last 12 tool calls, without ever forming a run long enough for the repeat detector | A loop with occasional other calls wedged in, which resets the repeat detector's run count and reads to the cycle detector as the repeat detector's job ([#702](https://github.com/go-steer/core-agent/issues/702)) |
 | `tool-failure-streak` | Warn | 3 tool calls in a row all return errors, with none succeeding in between | An agent with no tool-verified evidence about anything — the state it was in when it reported an incident "fully resolved" in the same UAT ([#639](https://github.com/go-steer/core-agent/issues/639)) |
 
-Both were added because the v1 detector documented its own evasions ([#649](https://github.com/go-steer/core-agent/issues/649)): "consecutive" means a run of one call, so wedging a second call into the loop hid it, and literal-string arg comparison meant `main.go` and `/workspace/main.go` read as two different calls.
+The cycle detector was added because the v1 detector documented its own evasions ([#649](https://github.com/go-steer/core-agent/issues/649)): "consecutive" means a run of one call, so wedging a second call into the loop hid it, and literal-string arg comparison meant `main.go` and `/workspace/main.go` read as two different calls.
 
 - **Args are path-canonicalized, narrowly.** Values under path-shaped keys (`path`, `file_path`, `dir`, `target`, …) are cleaned, so `main.go`, `./main.go` and `dir/../main.go` are one call; the consecutive detector additionally treats `/workspace/main.go` and `main.go` as one, since a genuine path suffix on a component boundary is the same file. `a/doc.go` and `b/doc.go` stay distinct — a basename match would false-positive on every repo with repeated filenames. Non-path values (a `grep` pattern, a `bash` command) are never normalized even when they look like paths.
 - **One alert per stuck pattern**, not one per call past the threshold — including across rotations, so `a → b → a → b` doesn't alert twice for presenting as `b → a` on the next call.
-- **A pure repeat only raises one alert.** The cycle detector skips blocks made of a single repeated call, so `a → a → a → a → a → a` is `repeated-tool-call` alone.
+- **One behavior, one alert — across detectors too.** The cycle detector skips blocks made of a single repeated call, and the density detector stands down both for a run long enough to be the repeat detector's (5) and for a window that is a clean 2–4 call cycle. So `a → a → a → a → a → a` is `repeated-tool-call` alone and `a → a → b → a → a → b …` is `alternating-tool-cycle` alone. Under `feedback` a duplicate alert is duplicated prompt text, not just a duplicated log line.
 - **Two laps is not a cycle.** Read-grep-read-grep is ordinary exploration. Three laps with byte-identical arguments each time is not: nothing in the inputs changed, so nothing in the results can have.
 - **The known false positive is a hand-rolled polling loop** written as alternating tool calls. That is what [`wait_and_verify`](/concepts/tools/#wait_and_verify-v29--bounded-poll-until-condition) exists for; an embedder who wants the pattern anyway can construct `watchdog.DefaultWatchdog` with their own signal list.
+
+#### `dominant-tool-call` (v2.9+)
+
+The two loop detectors above divide the space cleanly on paper. The shape that falls between them is *mostly one repeated call, with occasional other calls interleaved*: the repeat detector resets its run length on any non-matching call, so an interleave restarts the count from zero, and the cycle detector sees a nearly-uniform block and hands it back to the repeat detector.
+
+This was a convergence gap rather than a miss, and the distinction is what set the tuning. In one GKE UAT session the backstop did fire — 22 byte-identical `gke_list_clusters` calls over two minutes and twenty seconds, halted by `repeated-tool-call` at call 22 — but the loop was visibly degenerate from about the fourth call, and the interleaves were what stretched a threshold of 5 into 22 calls and a large share of a $0.77 session. Density over a sliding window reaches the same verdict inside the first full window, because it does not care *where* the interleaves fall, only that one call dominates recent activity.
+
+- **8 of the last 12**, with args canonicalized the same way the cycle detector canonicalizes them.
+- **It stands down for the other two detectors** (see the bullet above), so adding it did not turn any existing loop into two alerts.
+- **A legitimate poll is not materially more halt-prone than before.** Fitting 8 identical calls into a 12-call window already trips `repeated-tool-call` at 5 consecutive unless something interleaves. As with the cycle detector, [`wait_and_verify`](/concepts/tools/#wait_and_verify-v29--bounded-poll-until-condition) is the supported way to wait, and an embedder can construct `watchdog.DefaultWatchdog` with their own signal list.
 
 #### `tool-failure-streak` (v2.9+)
 

@@ -285,6 +285,29 @@ type Prompter interface {
 
 The bundled `cmd/core-agent` does not currently ship a Prompter — `ask` mode in the REPL fails closed. To use `ask` mode interactively, embed the library in your own host and supply a Prompter. See [Library API → Prompter](/embed/api/#prompter).
 
+### Naming the approver (v2.9.0-dev)
+
+A prompter that *knows* who answered can say so, by also implementing the optional `AttributingPrompter` ([#830](https://github.com/go-steer/core-agent/issues/830)):
+
+```go
+type AttributingPrompter interface {
+    Prompter
+    AskApprovalAttributed(ctx context.Context, req PromptRequest) (Approval, error)
+}
+
+type Approval struct {
+    Decision Decision
+    By       string // empty when the prompter can't attribute the answer
+}
+```
+
+The gate type-asserts for it and falls back to plain `AskApproval`, so existing Prompters keep compiling and behaving identically. When it is implemented, `By` lands in `ApprovalLog.By` — the gate's answer to "who allowed this", readable via `Gate.Approvals()` and over the daemon's `GET /perms`.
+
+Two rules make that field worth trusting:
+
+- **`By` is only ever an identity the answering host verified.** Never a name lifted from a request body, and never a placeholder for an unknown answerer — a placeholder in an audit line is indistinguishable from a real attribution. The attach daemon follows this: it names the caller its auth middleware verified, and records nothing when it verified nobody. See [Approval attribution](/reference/attach-http/#approval-attribution-protocol-1100).
+- **A wrapper must forward the capability.** `permissions.Serialize` does. If you write your own wrapping Prompter, implement `AskApprovalAttributed` too — otherwise the type assertion fails on the wrapper and every approval through it is recorded anonymous, silently.
+
 ---
 
 ## Headless / CI use

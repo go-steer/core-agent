@@ -384,6 +384,7 @@ func (ad *Adapter) AttachPerms() attach.PermsInfo {
 			Key:      ap.Key,
 			Decision: ap.Decision.String(),
 			At:       ap.At,
+			By:       ap.By,
 		})
 	}
 	return out

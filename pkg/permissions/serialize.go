@@ -50,3 +50,19 @@ func (p *serializingPrompter) AskApproval(ctx context.Context, req PromptRequest
 	defer p.mu.Unlock()
 	return p.inner.AskApproval(ctx, req)
 }
+
+// AskApprovalAttributed forwards the attributed form so wrapping a
+// prompter in Serialize doesn't erase its ability to name the
+// approver. Unconditional rather than conditional on inner: askApproval
+// falls back to plain AskApproval when inner isn't attributing, so this
+// returns an empty By exactly when the wrapped prompter would have.
+//
+// A serializing wrapper that only implemented Prompter would type-assert
+// as non-attributing, and every approval through the attach broker would
+// land in the audit log anonymous — the bug this method exists to not
+// have.
+func (p *serializingPrompter) AskApprovalAttributed(ctx context.Context, req PromptRequest) (Approval, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return askApproval(ctx, p.inner, req)
+}

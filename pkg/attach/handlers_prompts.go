@@ -15,6 +15,7 @@
 package attach
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -114,7 +115,16 @@ func (h *handlers) doPermsRespond(w http.ResponseWriter, r *http.Request, entry 
 		http.Error(w, fmt.Sprintf("perms/respond: unknown decision %q (want deny|allow-once|allow-session|allow-session-verb|allow-session-tool|allow-always)", req.Decision), http.StatusBadRequest)
 		return
 	}
-	if err := broker.Respond(req.ID, decision); err != nil {
+	approver := verifiedApprover(r.Context())
+	if req.Approver != "" && req.Approver != approver {
+		if approver == "" {
+			http.Error(w, fmt.Sprintf("perms/respond: cannot attribute this decision to %q — this daemon verified no identity for the request, so the approval would be recorded on the strength of the body alone. Front the daemon with the asserted-caller header (X-Asserted-Caller) or enable per-caller auth, then omit the field", req.Approver), http.StatusBadRequest)
+			return
+		}
+		http.Error(w, fmt.Sprintf("perms/respond: approver %q does not match the verified caller %q; omit the field and the server attributes the decision itself", req.Approver, approver), http.StatusBadRequest)
+		return
+	}
+	if err := broker.RespondAs(req.ID, decision, approver); err != nil {
 		if errors.Is(err, ErrPromptNotFound) {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
@@ -122,5 +132,26 @@ func (h *handlers) doPermsRespond(w http.ResponseWriter, r *http.Request, entry 
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"acknowledged": true})
+	writeJSON(w, http.StatusOK, PromptRespondResponse{Acknowledged: true, Approver: approver})
+}
+
+// verifiedApprover returns the identity to attribute a permission
+// decision to, or "" when the server has nothing it verified.
+//
+// The identity is the caller-resolution middleware's verdict, the same
+// one /whoami reports — never a header re-read here and never a name
+// from the request body. An anonymous request contributes nothing even
+// though it carries an identity string: the daemon's configured default
+// ("anon") is a placeholder, and writing a placeholder into an audit
+// line makes an unattributed approval indistinguishable from an
+// attributed one, which is the failure the audit line exists to
+// prevent. Empty is the honest answer, and the endpoint still works —
+// it just records what it can prove.
+func verifiedApprover(ctx context.Context) string {
+	source, ok := authSourceFromContext(ctx)
+	if !ok || source == whoAmISourceAnonymous {
+		return ""
+	}
+	c, _ := auth.CallerFromContext(ctx)
+	return c.Identity
 }

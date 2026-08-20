@@ -151,6 +151,58 @@ type Prompter interface {
 	AskApproval(ctx context.Context, req PromptRequest) (Decision, error)
 }
 
+// Approval is the outcome of one interactive prompt: what the
+// operator chose, and — when the prompter is in a position to know —
+// who chose it.
+//
+// A struct rather than a second return value so that a later field
+// (the auth source, a decision timestamp) is an additive change
+// instead of another signature break for every implementation.
+type Approval struct {
+	Decision Decision
+
+	// By is the identity of the principal that answered the prompt,
+	// or empty when the prompter can't attribute the answer.
+	//
+	// Load-bearing invariant: By is only ever a principal the answering
+	// host VERIFIED. It is never a name the responder claimed for
+	// itself — an audit line that repeats an unverified assertion is
+	// worse than one that admits it doesn't know, because it reads
+	// exactly like one that does. So "" is a normal, expected value:
+	// a single operator at a local terminal has no identity to
+	// attribute, and neither does an anonymous daemon.
+	By string
+}
+
+// AttributingPrompter is the optional extension of Prompter for hosts
+// that know which principal answered — a daemon serving
+// POST /perms/respond behind authenticated callers, where the answer
+// may come from a relay acting for a named human rather than from the
+// person at the terminal.
+//
+// Optional rather than folded into Prompter because Prompter is public
+// API and most implementations (stdin, a local TUI) have exactly one
+// possible answerer and nothing to add. The gate type-asserts for it
+// and falls back to plain AskApproval.
+//
+// A Prompter that WRAPS another one (see Serialize) must implement
+// this and forward, or it hides the capability of everything it wraps.
+type AttributingPrompter interface {
+	Prompter
+	AskApprovalAttributed(ctx context.Context, req PromptRequest) (Approval, error)
+}
+
+// askApproval runs a prompt through p, preferring the attributed form
+// when p supports it. Central so no call site can forget the
+// type-assertion and silently lose the approver.
+func askApproval(ctx context.Context, p Prompter, req PromptRequest) (Approval, error) {
+	if ap, ok := p.(AttributingPrompter); ok {
+		return ap.AskApprovalAttributed(ctx, req)
+	}
+	d, err := p.AskApproval(ctx, req)
+	return Approval{Decision: d}, err
+}
+
 // ErrNoPrompter is returned when the gate would prompt but no prompter
 // is configured (e.g. headless mode without an explicit allowlist).
 var ErrNoPrompter = errors.New("permissions: interactive approval required but no prompter is configured")

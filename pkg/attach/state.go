@@ -596,6 +596,11 @@ type ApprovalInfo struct {
 	Key      string    `json:"key,omitempty"`
 	Decision string    `json:"decision"` // "allow-once" | "allow-session" | etc.
 	At       time.Time `json:"at"`
+	// By is the verified identity that approved, when the daemon could
+	// attribute the answer (#830). Omitted — not "unknown", not the
+	// anonymous placeholder — when it could not, so "who allowed this"
+	// is answerable after the fact without the log ever guessing.
+	By string `json:"by,omitempty"`
 }
 
 // PatternsRequest is the POST body for /perms/allow + /perms/deny.

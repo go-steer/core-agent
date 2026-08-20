@@ -60,6 +60,7 @@ type pendingPrompt struct {
 
 type promptResponse struct {
 	decision permissions.Decision
+	by       string
 	err      error
 }
 
@@ -83,6 +84,19 @@ func NewPromptBroker() *PromptBroker {
 // shows up or ctx expires; the gate's typical ctx is the per-tool-
 // call context, so a stuck prompt fails the tool call cleanly.
 func (b *PromptBroker) AskApproval(ctx context.Context, req permissions.PromptRequest) (permissions.Decision, error) {
+	a, err := b.AskApprovalAttributed(ctx, req)
+	return a.Decision, err
+}
+
+// AskApprovalAttributed implements permissions.AttributingPrompter:
+// same round trip as AskApproval, but it also reports which principal
+// answered, so the gate's approval log can name the human behind an
+// approved write rather than the bearer token that carried it (#830).
+//
+// The identity comes from RespondAs, i.e. from the server's own
+// caller-resolution middleware — never from the response body. See
+// permissions.Approval.By for why that distinction is the whole point.
+func (b *PromptBroker) AskApprovalAttributed(ctx context.Context, req permissions.PromptRequest) (permissions.Approval, error) {
 	id := newRequestID()
 	frame := PromptFrame{
 		ID:          id,
@@ -105,7 +119,7 @@ func (b *PromptBroker) AskApproval(ctx context.Context, req permissions.PromptRe
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
-		return permissions.DecisionDeny, errors.New("attach: PromptBroker: closed")
+		return permissions.Approval{Decision: permissions.DecisionDeny}, errors.New("attach: PromptBroker: closed")
 	}
 	b.pending[id] = pending
 	subs := append([]*subscription(nil), b.subs...)
@@ -131,12 +145,12 @@ func (b *PromptBroker) AskApproval(ctx context.Context, req permissions.PromptRe
 		b.mu.Lock()
 		delete(b.pending, id)
 		b.mu.Unlock()
-		return resp.decision, resp.err
+		return permissions.Approval{Decision: resp.decision, By: resp.by}, resp.err
 	case <-ctx.Done():
 		b.mu.Lock()
 		delete(b.pending, id)
 		b.mu.Unlock()
-		return permissions.DecisionDeny, ctx.Err()
+		return permissions.Approval{Decision: permissions.DecisionDeny}, ctx.Err()
 	}
 }
 
@@ -189,10 +203,25 @@ func (b *PromptBroker) unsubscribe(sub *subscription) {
 }
 
 // Respond delivers the operator's decision to the blocked AskApproval
-// call identified by id. Returns ErrPromptNotFound if the id doesn't
-// match a live request (already responded, already cancelled, or
-// never existed).
+// call identified by id, without attributing it. Equivalent to
+// RespondAs with an empty approver — for hosts where the answerer is
+// implicit (one operator, one terminal).
+//
+// Returns ErrPromptNotFound if the id doesn't match a live request
+// (already responded, already cancelled, or never existed).
 func (b *PromptBroker) Respond(id string, decision permissions.Decision) error {
+	return b.RespondAs(id, decision, "")
+}
+
+// RespondAs is Respond with the principal that made the decision, so
+// the gate's approval log can record who approved rather than only
+// what was approved (#830).
+//
+// by must be an identity the CALLER verified — the HTTP handler passes
+// the caller-resolution middleware's verdict, never a name taken from
+// the request body. Pass "" when there is nothing verified to record;
+// see permissions.Approval.By.
+func (b *PromptBroker) RespondAs(id string, decision permissions.Decision, by string) error {
 	b.mu.Lock()
 	pending, ok := b.pending[id]
 	b.mu.Unlock()
@@ -200,7 +229,7 @@ func (b *PromptBroker) Respond(id string, decision permissions.Decision) error {
 		return ErrPromptNotFound
 	}
 	select {
-	case pending.response <- promptResponse{decision: decision}:
+	case pending.response <- promptResponse{decision: decision, by: by}:
 		return nil
 	default:
 		// AskApproval already drained the channel (concurrent

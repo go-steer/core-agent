@@ -170,6 +170,42 @@ func TestConformance_RESTSessionACLV1_EmptyListsAreArrays(t *testing.T) {
 	}
 }
 
+// TestConformance_RESTPermsRespondV1 pins the POST
+// /sessions/{sid}/perms/respond body, which gained `approver`
+// (protocol 1.10.0, #830). The fixture shows the attributed shape
+// because that is the one that pins the field name; the test below
+// pins its absence, which is the case a client meets on any daemon
+// that verified nobody.
+func TestConformance_RESTPermsRespondV1(t *testing.T) {
+	t.Parallel()
+	resp := PromptRespondResponse{
+		Acknowledged: true,
+		Approver:     "oncall@example.com",
+	}
+	assertMatchesConformanceFixture(t,
+		"testdata/conformance/rest-perms-respond-v1.json",
+		resp)
+}
+
+// TestConformance_RESTPermsRespondV1_UnattributedOmitsApprover is the
+// half the fixture can't show. An unauthenticated loopback listener
+// verifies no identity, so the server records no approver — and it
+// must omit the key rather than emit `""`, because a client rendering
+// "approved by <empty>" is the same lie as recording the anonymous
+// placeholder in the first place. It also pins that the pre-#830
+// `{"acknowledged":true}` body still marshals byte-identically, which
+// is what makes the field additive.
+func TestConformance_RESTPermsRespondV1_UnattributedOmitsApprover(t *testing.T) {
+	t.Parallel()
+	raw, err := json.Marshal(PromptRespondResponse{Acknowledged: true})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got, want := string(raw), `{"acknowledged":true}`; got != want {
+		t.Errorf("unattributed respond marshals to %s\nwant                          %s", got, want)
+	}
+}
+
 func TestConformance_RESTWhoAmIV1(t *testing.T) {
 	t.Parallel()
 	// The asserted-proxy variant exercises every field: admin and

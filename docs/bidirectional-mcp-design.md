@@ -715,11 +715,12 @@ The branch taxonomy extends cleanly because:
 
 No, not across the MCP boundary, by design.
 
-In-process, the deferred-from-v1 work item ("cost rollup from
-subagents into the parent's usage.Tracker" — see README's
-Roadmap) is a known gap. Crossing a process boundary makes the
-gap unavoidable: P1's `usage.Tracker` only knows about P1's LLM
-calls. S1's tokens are S1's accounting.
+In-process it does, since #713: a subagent's turns are appended
+to the parent's `usage.Tracker` as they complete (the
+deferred-from-v1 gap this paragraph originally described).
+Crossing a process boundary makes the gap unavoidable, though:
+P1's `usage.Tracker` only knows about P1's LLM calls. S1's
+tokens are S1's accounting.
 
 Mitigation: the MCP `tools/call` response includes an optional
 `_meta` block (spec-reserved metadata field). We populate it with

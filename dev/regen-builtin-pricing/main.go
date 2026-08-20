@@ -138,9 +138,15 @@ type liteLLMEntry struct {
 	OutputCostPerToken          *float64 `json:"output_cost_per_token,omitempty"`
 	CacheReadInputTokenCost     *float64 `json:"cache_read_input_token_cost,omitempty"`
 	CacheCreationInputTokenCost *float64 `json:"cache_creation_input_token_cost,omitempty"`
-	MaxInputTokens              *int     `json:"max_input_tokens,omitempty"`
-	Mode                        string   `json:"mode,omitempty"`
-	LiteLLMProvider             string   `json:"litellm_provider,omitempty"`
+	// CacheCreationInputTokenCostAbove1hr is the write rate at
+	// Anthropic's 1-hour breakpoint TTL (2x base input, against the
+	// 5-minute TTL's 1.25x). LiteLLM's name reads as a threshold; it
+	// is not one — Anthropic offers exactly two TTLs and this is the
+	// longer one's rate (#770).
+	CacheCreationInputTokenCostAbove1hr *float64 `json:"cache_creation_input_token_cost_above_1hr,omitempty"`
+	MaxInputTokens                      *int     `json:"max_input_tokens,omitempty"`
+	Mode                                string   `json:"mode,omitempty"`
+	LiteLLMProvider                     string   `json:"litellm_provider,omitempty"`
 
 	// SupportsFunctionCalling is a POINTER on purpose. It is absent on
 	// roughly 40% of LiteLLM's catalog, and absent must mean "unknown",
@@ -167,13 +173,14 @@ type liteLLMEntry struct {
 // Ordering is stable across regens (alphabetical on name) so diffs
 // stay reviewable.
 type generatedEntry struct {
-	Name                      string
-	InputPerMTok              float64
-	CachedInputPerMTok        float64
-	CacheCreationInputPerMTok float64
-	OutputPerMTok             float64
-	ContextWindowTokens       int
-	Provider                  string
+	Name                        string
+	InputPerMTok                float64
+	CachedInputPerMTok          float64
+	CacheCreationInputPerMTok   float64
+	CacheCreation1hInputPerMTok float64
+	OutputPerMTok               float64
+	ContextWindowTokens         int
+	Provider                    string
 }
 
 func main() {
@@ -534,6 +541,13 @@ func selectModels(all map[string]liteLLMEntry, today time.Time) ([]generatedEntr
 		if e.CacheCreationInputTokenCost != nil && *e.CacheCreationInputTokenCost > 0 {
 			out.CacheCreationInputPerMTok = round6(*e.CacheCreationInputTokenCost * million)
 		}
+		// The 1-hour-TTL write rate, same treatment. Published only
+		// for the Anthropic rows; a model that offers one write rate
+		// and not the other leaves this zero and prices 1h writes at
+		// the 5-minute rate (#770).
+		if e.CacheCreationInputTokenCostAbove1hr != nil && *e.CacheCreationInputTokenCostAbove1hr > 0 {
+			out.CacheCreation1hInputPerMTok = round6(*e.CacheCreationInputTokenCostAbove1hr * million)
+		}
 		kept = append(kept, out)
 	}
 	sort.Slice(kept, func(i, j int) bool { return kept[i].Name < kept[j].Name })
@@ -581,6 +595,9 @@ func renderEntry(e generatedEntry, updatedAt time.Time) string {
 	}
 	if e.CacheCreationInputPerMTok > 0 {
 		fields = append(fields, fmt.Sprintf("CacheCreationInputPerMTok: %v", e.CacheCreationInputPerMTok))
+	}
+	if e.CacheCreation1hInputPerMTok > 0 {
+		fields = append(fields, fmt.Sprintf("CacheCreation1hInputPerMTok: %v", e.CacheCreation1hInputPerMTok))
 	}
 	fields = append(fields,
 		fmt.Sprintf("OutputPerMTok: %v", e.OutputPerMTok),

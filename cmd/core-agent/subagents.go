@@ -303,6 +303,10 @@ type subagentDeps struct {
 	// sees the parent's CLI flags, so it has to be carried here for the
 	// switch to mean "off everywhere" rather than "off for the parent".
 	noPromptCache bool
+	// promptCacheTTL is the parent's --prompt-cache-ttl override, carried
+	// for the same reason as noPromptCache: a subagent with its own model
+	// resolves its own provider and never sees the parent's CLI flags.
+	promptCacheTTL string
 }
 
 // buildDeclaredSubagents turns the config's declarative subagents[] block
@@ -360,7 +364,7 @@ func buildDeclaredSubagents(
 	for i, spec := range cfg.Subagents {
 		// Resolve the provider + model name once; the sync path builds one
 		// LLM from it, the async template a fresh-LLM-per-spawn factory.
-		subProvider, modelName, err := resolveSubagentProvider(cfg, parentProvider, spec, deps.noPromptCache, deps.send)
+		subProvider, modelName, err := resolveSubagentProvider(cfg, parentProvider, spec, deps.noPromptCache, deps.promptCacheTTL, deps.send)
 		if err != nil {
 			return nil, nil, rootedServers, fmt.Errorf("subagents[%d] %q: model: %w", i, spec.Name, err)
 		}
@@ -749,7 +753,7 @@ func resolveSubagentToolsets(ctx context.Context, spec config.SubagentSpec, surf
 // async template path (a factory that builds a fresh LLM per spawn, #626)
 // draw from the same resolution — provider.Model caches auth + transport
 // internally, so per-spawn calls are cheap.
-func resolveSubagentProvider(cfg *config.Config, parentProvider models.Provider, spec config.SubagentSpec, noPromptCache bool, send func(string)) (models.Provider, string, error) {
+func resolveSubagentProvider(cfg *config.Config, parentProvider models.Provider, spec config.SubagentSpec, noPromptCache bool, promptCacheTTL string, send func(string)) (models.Provider, string, error) {
 	if spec.Model == nil {
 		// The parent provider already went through MaybeWirePromptCache.
 		return parentProvider, cfg.Model.Name, nil
@@ -773,7 +777,7 @@ func resolveSubagentProvider(cfg *config.Config, parentProvider models.Provider,
 	// Announce only a deviation: the daemon already printed its own
 	// prompt-cache line, and repeating "enabled" once per declared
 	// subagent is noise on every default run.
-	if status, enabled := compose.MaybeWirePromptCache(p, noPromptCache); status != "" && !enabled && send != nil {
+	if status, enabled := compose.MaybeWirePromptCacheTTL(p, noPromptCache, promptCacheTTL); status != "" && !enabled && send != nil {
 		send(fmt.Sprintf("subagent %q: %s", spec.Name, status))
 	}
 	return p, spec.Model.Name, nil

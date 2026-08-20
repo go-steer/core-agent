@@ -259,12 +259,22 @@ type liteLLMEntry struct {
 	CacheReadInputTokenCost *float64 `json:"cache_read_input_token_cost,omitempty"`
 	// CacheCreationInputTokenCost is Anthropic-specific: the rate for
 	// tokens that CREATE cache entries, billed at a premium over base
-	// input (1.25x on the 5-minute TTL, 2x on the 1-hour TTL). LiteLLM
-	// publishes the 5-minute rate. Feeds Rates.CacheCreationInputPerMTok
-	// so CostUSDWithCacheWrites bills the write bucket at its own rate
+	// input (1.25x on the 5-minute TTL, 2x on the 1-hour TTL). This is
+	// the 5-minute rate. Feeds Rates.CacheCreationInputPerMTok so
+	// CostUSDWithCacheWrites bills the write bucket at its own rate
 	// instead of folding it into uncached input (#263).
 	CacheCreationInputTokenCost *float64 `json:"cache_creation_input_token_cost,omitempty"`
-	Mode                        string   `json:"mode,omitempty"`
+	// CacheCreationInputTokenCostAbove1hr is the same bucket at the
+	// 1-hour breakpoint TTL. LiteLLM publishes it for the Anthropic
+	// rows alongside the 5-minute rate; feeds
+	// Rates.CacheCreation1hInputPerMTok (#770).
+	//
+	// The name is LiteLLM's and reads as a threshold ("above 1hr")
+	// rather than what it is — Anthropic offers exactly two TTLs and
+	// this is the rate for the longer one, not a rate for cache entries
+	// that happen to survive an hour.
+	CacheCreationInputTokenCostAbove1hr *float64 `json:"cache_creation_input_token_cost_above_1hr,omitempty"`
+	Mode                                string   `json:"mode,omitempty"`
 }
 
 // parseLiteLLMBody decodes the LiteLLM JSON and maps it into our
@@ -319,6 +329,9 @@ func parseLiteLLMBody(body []byte) (map[string]ModelRates, error) {
 		// Same zero-means-unsupported treatment as the read rate.
 		if e.CacheCreationInputTokenCost != nil && *e.CacheCreationInputTokenCost > 0 {
 			rates.CacheCreationInputPerMTok = *e.CacheCreationInputTokenCost * million
+		}
+		if e.CacheCreationInputTokenCostAbove1hr != nil && *e.CacheCreationInputTokenCostAbove1hr > 0 {
+			rates.CacheCreation1hInputPerMTok = *e.CacheCreationInputTokenCostAbove1hr * million
 		}
 		out[strings.ToLower(strings.TrimSpace(name))] = rates
 	}

@@ -60,21 +60,26 @@ import (
 //
 // CacheCreationInputPerMTok is the rate for input tokens that WRITE a
 // cache entry — Anthropic's `cache_creation_input_tokens`, billed at a
-// premium over base input rather than a discount. It is a single
-// scalar and therefore holds exactly ONE write rate: the 5-minute-TTL
-// one (1.25x base input), which is also the only one LiteLLM publishes
-// (cache_creation_input_token_cost). Anthropic's 1-hour TTL costs 2x
-// base input, so a caller that starts requesting `ttl: "1h"` at the
-// cache_control site would be undercharged by 37.5% against this field;
-// see the note at pkg/models/anthropic.applyCacheBreakpoints. Adding 1h support
-// means adding a second rate here, not reusing this one. Gemini has no
-// equivalent bucket:
-// its explicit caches bill storage per hour, not per written token, so
-// the field stays zero for Gemini rows. A zero value means the
-// cache-write rate isn't known and callers should bill written tokens
-// at InputPerMTok — that's the pre-#263 behaviour, which UNDERCOUNTS,
-// so keep the builtin table populated (dev/regen-builtin-pricing pulls
-// the rate from LiteLLM's cache_creation_input_token_cost).
+// premium over base input rather than a discount. It holds the
+// 5-minute-TTL rate (1.25x base input), LiteLLM's
+// cache_creation_input_token_cost. Gemini has no equivalent bucket: its
+// explicit caches bill storage per hour, not per written token, so the
+// field stays zero for Gemini rows. A zero value means the cache-write
+// rate isn't known and callers should bill written tokens at
+// InputPerMTok — that's the pre-#263 behaviour, which UNDERCOUNTS, so
+// keep the builtin table populated (dev/regen-builtin-pricing pulls the
+// rate from LiteLLM).
+//
+// CacheCreation1hInputPerMTok is the same bucket at Anthropic's 1-hour
+// breakpoint TTL, which bills 2x base input rather than 1.25x —
+// LiteLLM's cache_creation_input_token_cost_above_1hr. Two rates rather
+// than one because a single request may mix both TTLs and the response
+// reports them separately (`usage.cache_creation.ephemeral_1h_input_tokens`),
+// so there is a right answer to bill and no need to guess. Zero means
+// the model publishes no 1-hour rate, and callers fall back to
+// CacheCreationInputPerMTok — an understatement of up to 37.5% on a
+// turn that really did write at 1h, which is why the fallback is a
+// degradation path and not a design (#770).
 //
 // UpdatedAt records when the rate was last verified against its
 // source (LiteLLM refresh time, generator run time for builtin
@@ -85,11 +90,12 @@ import (
 // baked into the "regenerate builtin from LiteLLM" workflow that
 // followed.
 type Rates struct {
-	InputPerMTok              float64
-	CachedInputPerMTok        float64
-	CacheCreationInputPerMTok float64
-	OutputPerMTok             float64
-	UpdatedAt                 time.Time
+	InputPerMTok                float64
+	CachedInputPerMTok          float64
+	CacheCreationInputPerMTok   float64
+	CacheCreation1hInputPerMTok float64
+	OutputPerMTok               float64
+	UpdatedAt                   time.Time
 }
 
 // IsZero reports whether the rates carry no useful pricing.
@@ -128,7 +134,27 @@ func (r Rates) CostUSDWithCache(uncachedInputTokens, cachedInputTokens, outputTo
 // rates fall back to InputPerMTok for both cache buckets rather than to
 // zero, so a missing catalog entry degrades to the old (understated)
 // number instead of billing cached or written tokens as free.
+//
+// Every write token is billed at the 5-minute rate. Callers that know
+// how the write bucket split across TTLs should use
+// CostUSDWithCacheTTLs; this signature has no bucket for the 1-hour
+// share, so it understates a 1h write by the gap between the two rates
+// (#770).
 func (r Rates) CostUSDWithCacheWrites(uncachedInputTokens, cacheReadTokens, cacheWriteTokens, outputTokens int) float64 {
+	return r.CostUSDWithCacheTTLs(uncachedInputTokens, cacheReadTokens, cacheWriteTokens, 0, outputTokens)
+}
+
+// CostUSDWithCacheTTLs is CostUSDWithCacheWrites with the write bucket
+// split by breakpoint TTL. cacheWrite1hTokens is a SUBSET of
+// cacheWriteTokens — the share Anthropic reports under
+// `usage.cache_creation.ephemeral_1h_input_tokens` — and is billed at
+// CacheCreation1hInputPerMTok; the remainder goes at the 5-minute rate.
+//
+// A 1-hour rate of zero falls back to the 5-minute rate rather than to
+// base input: a model that publishes one write rate and not the other
+// is far likelier to be missing a catalog field than to bill 1h writes
+// at base, so the nearer neighbour is the better estimate.
+func (r Rates) CostUSDWithCacheTTLs(uncachedInputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens, outputTokens int) float64 {
 	const million = 1_000_000.0
 	readRate := r.CachedInputPerMTok
 	if readRate == 0 {
@@ -138,9 +164,20 @@ func (r Rates) CostUSDWithCacheWrites(uncachedInputTokens, cacheReadTokens, cach
 	if writeRate == 0 {
 		writeRate = r.InputPerMTok
 	}
+	write1hRate := r.CacheCreation1hInputPerMTok
+	if write1hRate == 0 {
+		write1hRate = writeRate
+	}
+	if cacheWrite1hTokens < 0 {
+		cacheWrite1hTokens = 0
+	}
+	if cacheWrite1hTokens > cacheWriteTokens {
+		cacheWrite1hTokens = cacheWriteTokens
+	}
 	return (float64(uncachedInputTokens)/million)*r.InputPerMTok +
 		(float64(cacheReadTokens)/million)*readRate +
-		(float64(cacheWriteTokens)/million)*writeRate +
+		(float64(cacheWriteTokens-cacheWrite1hTokens)/million)*writeRate +
+		(float64(cacheWrite1hTokens)/million)*write1hRate +
 		(float64(outputTokens)/million)*r.OutputPerMTok
 }
 

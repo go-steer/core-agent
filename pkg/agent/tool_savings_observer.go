@@ -158,15 +158,17 @@ func extractSavingsRecord(p *genai.Part) (usage.DigestSavingsRecord, bool) {
 	subOut := savingsIntField(raw, "subagent_output_tokens")
 	subCachedIn := savingsIntField(raw, "subagent_cached_input_tokens")
 	subCacheWrite := savingsIntField(raw, "subagent_cache_creation_input_tokens")
+	subCacheWrite1h := savingsIntField(raw, "subagent_cache_creation_1h_input_tokens")
 
 	rec := usage.DigestSavingsRecord{
-		Path:                             path,
-		ParentTokensSaved:                origTokens - digestTokens,
-		SubagentModel:                    subModel,
-		SubagentInputTokens:              subIn,
-		SubagentOutputTokens:             subOut,
-		SubagentCachedInputTokens:        subCachedIn,
-		SubagentCacheCreationInputTokens: subCacheWrite,
+		Path:                               path,
+		ParentTokensSaved:                  origTokens - digestTokens,
+		SubagentModel:                      subModel,
+		SubagentInputTokens:                subIn,
+		SubagentOutputTokens:               subOut,
+		SubagentCachedInputTokens:          subCachedIn,
+		SubagentCacheCreationInputTokens:   subCacheWrite,
+		SubagentCacheCreation1hInputTokens: subCacheWrite1h,
 	}
 	if subModel != "" {
 		// CostUSDForTurn, not CostUSD. CostUSD takes (in, out) and

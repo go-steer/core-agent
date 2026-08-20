@@ -93,8 +93,11 @@ func (cachingLLM) GenerateContent(context.Context, *adkmodel.LLMRequest, bool) i
 				CachedContentTokenCount: 9_000,
 				CandidatesTokenCount:    100,
 			},
-			CustomMetadata: map[string]any{usage.CacheCreationTokensMetadataKey: int64(500)},
-			TurnComplete:   true,
+			CustomMetadata: map[string]any{
+				usage.CacheCreationTokensMetadataKey:   int64(500),
+				usage.CacheCreation1hTokensMetadataKey: int64(300),
+			},
+			TurnComplete: true,
 		}, nil)
 	}
 }
@@ -130,6 +133,13 @@ func TestBuildMCPDigestLLMFallback_ForwardsTheSubagentCacheBuckets(t *testing.T)
 	}
 	if res.SubagentCacheCreationInputTokens != 500 {
 		t.Errorf("SubagentCacheCreationInputTokens = %d, want 500", res.SubagentCacheCreationInputTokens)
+	}
+	// #770: the 1-hour share rides the same path. It is a subset of the
+	// total write bucket, so a link that forwarded it as a fourth bucket
+	// would show up here as a changed total.
+	if res.SubagentCacheCreation1hInputTokens != 300 {
+		t.Errorf("SubagentCacheCreation1hInputTokens = %d, want 300",
+			res.SubagentCacheCreation1hInputTokens)
 	}
 }
 

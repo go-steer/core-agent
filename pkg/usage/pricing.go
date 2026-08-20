@@ -31,16 +31,18 @@ import (
 // that write a cache entry (Anthropic's cache_creation_input_tokens,
 // 1.25x base input); zero for providers that don't bill writes
 // separately. Like pricing.Rates.CacheCreationInputPerMTok it holds the
-// 5-minute-TTL rate only — see that field's doc before adding a 1-hour
-// TTL anywhere. A zero Pricing carries
+// 5-minute-TTL rate; CacheCreation1hInputPerMTok holds the 1-hour one
+// (2x base input), and falls back to the 5-minute rate when zero.
+// A zero Pricing carries
 // no useful pricing — callers should distinguish "rate unknown" from
 // "free" (e.g. echo models). See pricing.Rates / pricing.Catalog for
 // the layered resolution behind PriceFor.
 type Pricing struct {
-	InputPerMTok              float64
-	CachedInputPerMTok        float64
-	CacheCreationInputPerMTok float64
-	OutputPerMTok             float64
+	InputPerMTok                float64
+	CachedInputPerMTok          float64
+	CacheCreationInputPerMTok   float64
+	CacheCreation1hInputPerMTok float64
+	OutputPerMTok               float64
 	// UpdatedAt is when the rate was last verified against its
 	// source. Threads through from pkg/pricing.Rates so /pricing
 	// can surface staleness. Zero when unknown.
@@ -150,12 +152,13 @@ func PriceFor(modelID string, cfg *config.Config) Pricing {
 // aggregation can tell "rate unknown" apart from "genuinely free".
 func ratesToPricing(r pricing.Rates, found bool) Pricing {
 	return Pricing{
-		InputPerMTok:              r.InputPerMTok,
-		CachedInputPerMTok:        r.CachedInputPerMTok,
-		CacheCreationInputPerMTok: r.CacheCreationInputPerMTok,
-		OutputPerMTok:             r.OutputPerMTok,
-		UpdatedAt:                 r.UpdatedAt,
-		Unpriced:                  !found,
+		InputPerMTok:                r.InputPerMTok,
+		CachedInputPerMTok:          r.CachedInputPerMTok,
+		CacheCreationInputPerMTok:   r.CacheCreationInputPerMTok,
+		CacheCreation1hInputPerMTok: r.CacheCreation1hInputPerMTok,
+		OutputPerMTok:               r.OutputPerMTok,
+		UpdatedAt:                   r.UpdatedAt,
+		Unpriced:                    !found,
 	}
 }
 
@@ -168,10 +171,11 @@ func cfgToOverride(cfg *config.Config) map[string]pricing.ModelRates {
 	out := make(map[string]pricing.ModelRates, len(cfg.Model.Pricing))
 	for k, v := range cfg.Model.Pricing {
 		out[k] = pricing.ModelRates{
-			InputPerMTok:              v.InputPerMTok,
-			CachedInputPerMTok:        v.CachedInputPerMTok,
-			CacheCreationInputPerMTok: v.CacheCreationInputPerMTok,
-			OutputPerMTok:             v.OutputPerMTok,
+			InputPerMTok:                v.InputPerMTok,
+			CachedInputPerMTok:          v.CachedInputPerMTok,
+			CacheCreationInputPerMTok:   v.CacheCreationInputPerMTok,
+			CacheCreation1hInputPerMTok: v.CacheCreation1hInputPerMTok,
+			OutputPerMTok:               v.OutputPerMTok,
 		}
 	}
 	return out
@@ -206,8 +210,9 @@ func (p Pricing) CostUSDWithCache(uncachedInputTokens, cachedInputTokens, output
 // ways depending on which call site saw it.
 func (p Pricing) CostUSDForTurn(u TurnUsage) float64 {
 	c := u.Clamped()
-	return p.CostUSDWithCacheWrites(
-		c.UncachedInputTokens(), c.CachedInputTokens, c.CacheCreationInputTokens, c.OutputTokens)
+	return p.CostUSDWithCacheTTLs(
+		c.UncachedInputTokens(), c.CachedInputTokens,
+		c.CacheCreationInputTokens, c.CacheCreation1hInputTokens, c.OutputTokens)
 }
 
 // CostUSDWithCacheWrites is CostUSDWithCache plus the cache-write
@@ -218,7 +223,23 @@ func (p Pricing) CostUSDForTurn(u TurnUsage) float64 {
 // InputPerMTok when unknown, so a model missing from the catalog
 // degrades to the old understated number rather than billing cache
 // traffic as free.
+//
+// Every write token is billed at the 5-minute TTL rate; callers that
+// know the TTL split should use CostUSDWithCacheTTLs (#770).
 func (p Pricing) CostUSDWithCacheWrites(uncachedInputTokens, cacheReadTokens, cacheWriteTokens, outputTokens int) float64 {
+	return p.CostUSDWithCacheTTLs(uncachedInputTokens, cacheReadTokens, cacheWriteTokens, 0, outputTokens)
+}
+
+// CostUSDWithCacheTTLs is CostUSDWithCacheWrites with the write bucket
+// split by breakpoint TTL. cacheWrite1hTokens is a SUBSET of
+// cacheWriteTokens — Anthropic's
+// `usage.cache_creation.ephemeral_1h_input_tokens` — billed at
+// CacheCreation1hInputPerMTok, with the remainder at the 5-minute rate.
+//
+// An unknown 1-hour rate falls back to the 5-minute rate rather than to
+// base input: the nearer neighbour is the better estimate for a catalog
+// row that is missing a field. Mirrors pricing.Rates.CostUSDWithCacheTTLs.
+func (p Pricing) CostUSDWithCacheTTLs(uncachedInputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens, outputTokens int) float64 {
 	const million = 1_000_000.0
 	readRate := p.CachedInputPerMTok
 	if readRate == 0 {
@@ -228,8 +249,19 @@ func (p Pricing) CostUSDWithCacheWrites(uncachedInputTokens, cacheReadTokens, ca
 	if writeRate == 0 {
 		writeRate = p.InputPerMTok
 	}
+	write1hRate := p.CacheCreation1hInputPerMTok
+	if write1hRate == 0 {
+		write1hRate = writeRate
+	}
+	if cacheWrite1hTokens < 0 {
+		cacheWrite1hTokens = 0
+	}
+	if cacheWrite1hTokens > cacheWriteTokens {
+		cacheWrite1hTokens = cacheWriteTokens
+	}
 	return (float64(uncachedInputTokens)/million)*p.InputPerMTok +
 		(float64(cacheReadTokens)/million)*readRate +
-		(float64(cacheWriteTokens)/million)*writeRate +
+		(float64(cacheWriteTokens-cacheWrite1hTokens)/million)*writeRate +
+		(float64(cacheWrite1hTokens)/million)*write1hRate +
 		(float64(outputTokens)/million)*p.OutputPerMTok
 }

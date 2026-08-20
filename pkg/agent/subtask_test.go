@@ -362,6 +362,46 @@ func TestRunSubtask_ReturnsTheCacheBucketsNotJustTheTotals(t *testing.T) {
 	}
 }
 
+// TestRunSubtask_ReturnsTheOneHourWriteShare is #770's link in the same
+// chain. A 1-hour cache write bills at twice base input where a
+// 5-minute one bills at 1.25x, so a SubtaskResult that reports only the
+// combined write bucket leaves every downstream re-pricing 37.5% low
+// for a daemon configured at the 1-hour breakpoint. Summing across
+// turns matters too: the share is accumulated turn by turn, and an
+// assignment rather than a += would report only the last turn's.
+func TestRunSubtask_ReturnsTheOneHourWriteShare(t *testing.T) {
+	t.Parallel()
+	llm := &captureLLM{
+		response:           "ok",
+		inputTokens:        int32(10_000),
+		cachedInputTokens:  int32(9_000),
+		cacheWriteTokens:   int64(500),
+		cacheWrite1hTokens: int64(300),
+		outputTokens:       int32(100),
+	}
+	a, err := New(llm, WithUsageTracker(usage.NewTracker()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := a.RunSubtask(context.Background(), SubtaskSpec{
+		Name:         "cache_ttl_check",
+		SystemPrompt: "x",
+		UserMessage:  "y",
+	})
+	if err != nil {
+		t.Fatalf("RunSubtask: %v", err)
+	}
+
+	if res.CacheCreationInputTokens != 500 {
+		t.Errorf("CacheCreationInputTokens = %d, want 500 — the 1h count is a subset of the "+
+			"write bucket, not a fourth bucket", res.CacheCreationInputTokens)
+	}
+	if res.CacheCreation1hInputTokens != 300 {
+		t.Errorf("CacheCreation1hInputTokens = %d, want 300", res.CacheCreation1hInputTokens)
+	}
+}
+
 // TestRunSubtask_ClampsAnOverReportedCacheBucket. The buckets come off
 // the provider's own usage payload and `TurnTap.Commit` hands them over
 // unchecked, so a counter that exceeds the prompt it is a subset of

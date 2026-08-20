@@ -43,6 +43,7 @@ const sampleLiteLLM = `{
     "output_cost_per_token": 0.000075,
     "cache_read_input_token_cost": 0.0000015,
     "cache_creation_input_token_cost": 0.00001875,
+    "cache_creation_input_token_cost_above_1hr": 0.00003,
     "mode": "chat"
   },
   "dall-e-3": {
@@ -97,15 +98,27 @@ func TestRefresh_HappyPathWritesExternalSection(t *testing.T) {
 	if gemini.CachedInputPerMTok != 0.15 {
 		t.Errorf("gemini-3.5-flash CachedInputPerMTok = %v, want 0.15", gemini.CachedInputPerMTok)
 	}
-	// Anthropic gets a cache-read rate too. Cache-creation is captured
-	// on the LiteLLM entry but not yet plumbed into our Rates schema
-	// (Slice B follow-up).
+	// Anthropic gets a cache-read rate too, plus both cache-WRITE
+	// rates: LiteLLM publishes the 1-hour one under its own key, and
+	// without it every 1h write reprices at the 5-minute rate (#770).
 	claude, ok := uf.External.Models["claude-opus-4-7"]
 	if !ok {
 		t.Fatal("claude-opus-4-7 not written")
 	}
 	if claude.CachedInputPerMTok != 1.50 {
 		t.Errorf("claude-opus-4-7 CachedInputPerMTok = %v, want 1.50 (10%% of $15/M input)", claude.CachedInputPerMTok)
+	}
+	if claude.CacheCreationInputPerMTok != 18.75 {
+		t.Errorf("claude-opus-4-7 CacheCreationInputPerMTok = %v, want 18.75 (1.25x $15/M input)", claude.CacheCreationInputPerMTok)
+	}
+	if claude.CacheCreation1hInputPerMTok != 30 {
+		t.Errorf("claude-opus-4-7 CacheCreation1hInputPerMTok = %v, want 30 (2x $15/M input)", claude.CacheCreation1hInputPerMTok)
+	}
+	// A row with no 1h key must leave the field zero rather than
+	// inherit the 5-minute rate here — the fallback belongs in the
+	// pricing function, where "unknown" stays visible.
+	if gemini.CacheCreation1hInputPerMTok != 0 {
+		t.Errorf("gemini CacheCreation1hInputPerMTok = %v, want 0 for a row that publishes none", gemini.CacheCreation1hInputPerMTok)
 	}
 	if _, ok := uf.External.Models["dall-e-3"]; ok {
 		t.Error("image_generation entry should have been filtered")

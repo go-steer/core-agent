@@ -137,6 +137,12 @@ type Savings struct {
 	// cost is not stored here. It is the input a cost function needs.
 	SubagentCachedInputTokens        int
 	SubagentCacheCreationInputTokens int
+
+	// SubagentCacheCreation1hInputTokens is the share of the write
+	// bucket placed at a 1-hour breakpoint TTL — a SUBSET of
+	// SubagentCacheCreationInputTokens, billed at 2x base input rather
+	// than 1.25x (#770). Zero unless the operator selected that TTL.
+	SubagentCacheCreation1hInputTokens int
 }
 
 // estimateTokens returns a cheap token count from a byte length

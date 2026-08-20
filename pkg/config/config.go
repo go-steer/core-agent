@@ -408,17 +408,66 @@ type AnthropicConfig struct {
 // Enabled is a pointer so "unset" (default ON) is distinguishable from
 // an explicit "off". The --no-prompt-cache CLI flag takes precedence
 // over both.
-//
-// No TTL knob: Anthropic offers a 5-minute and a 1-hour breakpoint TTL,
-// but the 1-hour one bills cache writes at 2x base input where the
-// 5-minute one bills 1.25x, and the rate catalog carries a single write
-// rate (the 5-minute one — see pricing.Rates.CacheCreationInputPerMTok).
-// Exposing the 1h TTL before the second rate exists would understate
-// every cached turn by 37.5%, so it waits for #770.
 type PromptCacheConfig struct {
 	// Enabled defaults to true (nil = ON). Set to false to disable
 	// caching for this provider.
 	Enabled *bool `json:"enabled,omitempty"`
+
+	// TTL is the breakpoint lifetime requested on cache writes:
+	// "5m" (default) or "1h". Empty means 5m.
+	//
+	// The trade is a real one and the reason this is a knob rather
+	// than a default: a 1-hour breakpoint bills writes at 2x base
+	// input where a 5-minute one bills 1.25x, so it pays only when
+	// the gaps between turns routinely exceed five minutes — a
+	// human-paced review session, a cron-driven agent, an operator
+	// approving each tool call. A tight agentic loop refreshes the
+	// 5-minute window on every turn and should stay on the default,
+	// where the extra 0.75x would be pure loss.
+	//
+	// Both TTLs are priced separately and the response reports which
+	// one each write used, so the ledger tells the truth either way
+	// (#770).
+	TTL string `json:"ttl,omitempty"`
+}
+
+// Prompt-cache breakpoint TTLs accepted by PromptCacheConfig.TTL.
+const (
+	PromptCacheTTL5m = "5m"
+	PromptCacheTTL1h = "1h"
+)
+
+// CacheTTL returns the normalized breakpoint TTL — PromptCacheTTL5m or
+// PromptCacheTTL1h. Nil receiver, empty value, and (defensively) any
+// value Validate would have rejected all resolve to 5m: the cheaper
+// TTL is the safe reading of an unclear config.
+func (c *PromptCacheConfig) CacheTTL() string {
+	if c == nil {
+		return PromptCacheTTL5m
+	}
+	if strings.TrimSpace(c.TTL) == PromptCacheTTL1h {
+		return PromptCacheTTL1h
+	}
+	return PromptCacheTTL5m
+}
+
+// validatePromptCacheTTL rejects a TTL that CacheTTL would silently
+// resolve to 5m. Falling back would honour a budget the operator did
+// not ask for — the two TTLs differ by 60% on write cost — and the only
+// place the downgrade would surface is the invoice. path names the
+// config location for the message ("model" or "subagents[N].model"),
+// since a subagent block is validated by the same rule.
+func validatePromptCacheTTL(a *AnthropicConfig, path string) error {
+	if a == nil || a.PromptCache == nil {
+		return nil
+	}
+	switch strings.TrimSpace(a.PromptCache.TTL) {
+	case "", PromptCacheTTL5m, PromptCacheTTL1h:
+		return nil // "" means the 5-minute default.
+	default:
+		return fmt.Errorf("config: %s.anthropic.prompt_cache.ttl %q must be %q or %q",
+			path, a.PromptCache.TTL, PromptCacheTTL5m, PromptCacheTTL1h)
+	}
 }
 
 // IsEnabled reports whether prompt caching should be turned on given
@@ -437,12 +486,15 @@ func (c *PromptCacheConfig) IsEnabled() bool {
 // CacheCreationInputPerMTok is the rate for input tokens that WRITE a
 // cache entry (Anthropic's cache_creation_input_tokens, a premium over
 // base input); when zero, written tokens are billed at InputPerMTok,
-// which understates the real bill.
+// which understates the real bill. It is the 5-minute-TTL rate;
+// CacheCreation1hInputPerMTok overrides the 1-hour one, and falls back
+// to the 5-minute rate when zero rather than to base input.
 type PricingConfig struct {
-	InputPerMTok              float64 `json:"input_per_mtok,omitempty"`
-	CachedInputPerMTok        float64 `json:"cached_input_per_mtok,omitempty"`
-	CacheCreationInputPerMTok float64 `json:"cache_creation_input_per_mtok,omitempty"`
-	OutputPerMTok             float64 `json:"output_per_mtok,omitempty"`
+	InputPerMTok                float64 `json:"input_per_mtok,omitempty"`
+	CachedInputPerMTok          float64 `json:"cached_input_per_mtok,omitempty"`
+	CacheCreationInputPerMTok   float64 `json:"cache_creation_input_per_mtok,omitempty"`
+	CacheCreation1hInputPerMTok float64 `json:"cache_creation_1h_input_per_mtok,omitempty"`
+	OutputPerMTok               float64 `json:"output_per_mtok,omitempty"`
 }
 
 // PermissionsConfig configures the permission gate.
@@ -1316,6 +1368,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config: model.anthropic.vertex.project and model.anthropic.vertex.location are required when provider is %q (or set ANTHROPIC_VERTEX_PROJECT_ID / CLOUD_ML_REGION)", ProviderAnthropicVertex)
 		}
 	}
+	if err := validatePromptCacheTTL(c.Model.Anthropic, "model"); err != nil {
+		return err
+	}
 	switch c.Permissions.Mode {
 	case "", PermissionModeAsk, PermissionModeAllow, PermissionModeYolo, PermissionModePlan, PermissionModeAcceptEdits:
 		// ok
@@ -1578,6 +1633,13 @@ func (c *Config) validateSubagents() error {
 				// ok; "" means inherit the parent's auto-detected provider.
 			default:
 				return fmt.Errorf("config: subagents[%d].model.provider %q is unknown (want one of %q, %q, %q, %q, %q, %q)", i, sa.Model.Provider, ProviderGemini, ProviderVertex, ProviderAnthropic, ProviderAnthropicVertex, ProviderEcho, ProviderScripted)
+			}
+			// A subagent's block reaches the same CacheTTL fallback the
+			// parent's does, so it has to reach the same check — a typo
+			// here would downgrade the delegate silently while the
+			// parent's identical typo stopped the run.
+			if err := validatePromptCacheTTL(sa.Model.Anthropic, fmt.Sprintf("subagents[%d].model", i)); err != nil {
+				return err
 			}
 		}
 		for j, n := range sa.Tools {

@@ -66,21 +66,19 @@ const (
 // the persona, which are identical for every session on the same
 // build. History markers then take whatever is left of the budget.
 //
-// Every marker placed here uses the default (5-minute) ephemeral TTL.
-// The cost meter prices the resulting cache_creation_input_tokens at
-// pricing.Rates.CacheCreationInputPerMTok, which is the 5-minute rate
-// (1.25x base input) and the only write rate the catalog carries.
-// Anthropic's 1-hour TTL bills 2x base input: requesting ttl "1h" from
-// any call site below, without first adding a second rate to the
-// catalog, silently undercharges every cached turn by 37.5%.
+// Every marker carries opts.TTL — 5 minutes unless the operator asked
+// for the 1-hour breakpoint. The two are billed differently (1.25x vs
+// 2x base input) and the response reports the split under
+// usage.cache_creation, which stream.go forwards so the cost meter can
+// price each share at its own rate (#770).
 func applyCacheBreakpoints(params *anthropic.MessageNewParams, opts CacheOptions) int {
 	placed := 0
 	if opts.System && len(params.System) > 0 {
-		params.System[len(params.System)-1].CacheControl = anthropic.NewCacheControlEphemeralParam()
+		params.System[len(params.System)-1].CacheControl = opts.cacheControl()
 		placed++
 	}
 	if opts.History {
-		placed += markHistoryBreakpoints(params.Messages, maxCacheBreakpoints-placed)
+		placed += markHistoryBreakpoints(params.Messages, maxCacheBreakpoints-placed, opts.cacheControl())
 	}
 	return placed
 }
@@ -136,7 +134,7 @@ func clearCacheBreakpoints(params *anthropic.MessageNewParams) {
 // no field for it there) are skipped as marker sites but still counted
 // toward the stride, because the 20-block lookback counts every content
 // block regardless of type.
-func markHistoryBreakpoints(msgs []anthropic.MessageParam, budget int) int {
+func markHistoryBreakpoints(msgs []anthropic.MessageParam, budget int, cc anthropic.CacheControlEphemeralParam) int {
 	if budget <= 0 {
 		return 0
 	}
@@ -145,7 +143,7 @@ func markHistoryBreakpoints(msgs []anthropic.MessageParam, budget int) int {
 	for i := len(msgs) - 1; i >= 0; i-- {
 		blocks := msgs[i].Content
 		for j := len(blocks) - 1; j >= 0; j-- {
-			if want && setCacheControl(blocks[j]) {
+			if want && setCacheControl(blocks[j], cc) {
 				placed++
 				if placed == budget {
 					return placed
@@ -168,11 +166,11 @@ func markHistoryBreakpoints(msgs []anthropic.MessageParam, budget int) int {
 // Safe to call with a copy of the union: every variant is a pointer, so
 // GetCacheControl hands back a pointer into the shared underlying
 // struct rather than into the copy.
-func setCacheControl(block anthropic.ContentBlockParamUnion) bool {
+func setCacheControl(block anthropic.ContentBlockParamUnion, marker anthropic.CacheControlEphemeralParam) bool {
 	cc := block.GetCacheControl()
 	if cc == nil {
 		return false
 	}
-	*cc = anthropic.NewCacheControlEphemeralParam()
+	*cc = marker
 	return true
 }

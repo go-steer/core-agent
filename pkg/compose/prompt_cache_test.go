@@ -18,6 +18,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/models/anthropic"
 )
 
@@ -86,5 +87,61 @@ func TestMaybeWirePromptCache_IgnoresOtherProviders(t *testing.T) {
 	status, enabled := MaybeWirePromptCache(fakeNonGeminiProvider{}, true)
 	if status != "" || enabled {
 		t.Errorf("non-Anthropic provider reported (%q, %v), want silence", status, enabled)
+	}
+}
+
+// The TTL is a launch-time property — the same checkout run
+// interactively wants 5m and run from cron wants 1h — so the flag has
+// to reach the provider, not just the config file.
+func TestMaybeWirePromptCacheTTL_OverridesTheProviderPolicy(t *testing.T) {
+	t.Parallel()
+	p := newTestAnthropicProvider(t)
+	status, enabled := MaybeWirePromptCacheTTL(p, false, config.PromptCacheTTL1h)
+
+	if got := p.PromptCache().TTL; got != config.PromptCacheTTL1h {
+		t.Errorf("provider TTL = %q, want %q", got, config.PromptCacheTTL1h)
+	}
+	if !enabled || !strings.Contains(status, "1h ttl") {
+		t.Errorf("status = %q, enabled = %v, want the effective TTL announced", status, enabled)
+	}
+}
+
+// An empty override leaves whatever the config gate already put on the
+// provider — the flag is an override, not a reset to the default.
+func TestMaybeWirePromptCacheTTL_EmptyKeepsTheConfigValue(t *testing.T) {
+	t.Parallel()
+	p := newTestAnthropicProvider(t)
+	p.SetPromptCache(anthropic.CacheOptions{System: true, History: true, TTL: config.PromptCacheTTL1h})
+
+	status, _ := MaybeWirePromptCacheTTL(p, false, "")
+	if got := p.PromptCache().TTL; got != config.PromptCacheTTL1h {
+		t.Errorf("provider TTL = %q, want the config's %q left alone", got, config.PromptCacheTTL1h)
+	}
+	if !strings.Contains(status, "1h ttl") {
+		t.Errorf("status = %q, want it to report the 1h the provider actually carries", status)
+	}
+}
+
+// The kill switch outranks the TTL: an operator who turned caching off
+// should not have a TTL quietly turn it back on.
+func TestMaybeWirePromptCacheTTL_KillSwitchWinsOverTheTTL(t *testing.T) {
+	t.Parallel()
+	p := newTestAnthropicProvider(t)
+	if _, enabled := MaybeWirePromptCacheTTL(p, true, config.PromptCacheTTL1h); enabled {
+		t.Error("a TTL override re-enabled caching under --no-prompt-cache")
+	}
+	if got := p.PromptCache(); got.Enabled() {
+		t.Errorf("PromptCache() = %+v, want everything off", got)
+	}
+}
+
+// MaybeWirePromptCache is on the stability-promise surface and now
+// delegates; the default it announces must not have moved.
+func TestMaybeWirePromptCache_StillReportsFiveMinutes(t *testing.T) {
+	t.Parallel()
+	p := newTestAnthropicProvider(t)
+	status, enabled := MaybeWirePromptCache(p, false)
+	if !enabled || !strings.Contains(status, "5m ttl") {
+		t.Errorf("status = %q, enabled = %v, want the unchanged 5m default", status, enabled)
 	}
 }

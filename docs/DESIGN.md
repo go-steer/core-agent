@@ -186,6 +186,8 @@ Anthropic's API requires `MaxTokens`; there's no implicit default. If `Config.Ma
 
 Why on: the write premium (1.25× at the 5-minute TTL) breaks even on the second request carrying the same prefix, and the agentic loop issues that request seconds later. The shape that loses is a one-shot whose prefix never recurs, which is the rare one — and core-agent's own one-shots (summarizer, checkpointer, `/btw`, tight-budget subtasks) opt out per request via `models.WithoutPromptCache(ctx)`.
 
+Entry lifetime is `5m` by default; `model.anthropic.prompt_cache.ttl` / `--prompt-cache-ttl` selects `1h` instead (#770). The 1-hour breakpoint writes at 2× base input against the 5-minute one's 1.25×, so it pays only when turns are further than five minutes apart and the prefix recurs within the hour — the `--serve` daemon shape. Both rates are billed separately: the response reports the write split per TTL and `pricing.Rates` carries a rate for each.
+
 Turning it off: `WithPromptCache(CacheOptions{})` for a library consumer, `model.anthropic.prompt_cache.enabled=false` in config, or `--no-prompt-cache` on the CLI. `WithCacheSystem` is deprecated but keeps its original all-or-nothing meaning: `WithCacheSystem(false)` still means no caching at all. Full rationale, including the prefix-stability audit, in `docs/anthropic-prompt-caching-design.md`.
 
 ### Things the adapter explicitly doesn't do (yet)

@@ -824,19 +824,21 @@ func TestDigestingTool_Run_LLMFallback_CarriesTheSubagentCacheBuckets(t *testing
 	t.Parallel()
 
 	const (
-		wantIn         = 10000
-		wantCachedIn   = 9000
-		wantCacheWrite = 500
-		wantOut        = 100
+		wantIn           = 10000
+		wantCachedIn     = 9000
+		wantCacheWrite   = 500
+		wantCacheWrite1h = 300
+		wantOut          = 100
 	)
 	fallback := func(_ context.Context, _ []byte) (LLMFallbackResult, error) {
 		return LLMFallbackResult{
-			Text:                             "digested",
-			SubagentModel:                    "claude-haiku-4-5",
-			SubagentInputTokens:              wantIn,
-			SubagentCachedInputTokens:        wantCachedIn,
-			SubagentCacheCreationInputTokens: wantCacheWrite,
-			SubagentOutputTokens:             wantOut,
+			Text:                               "digested",
+			SubagentModel:                      "claude-haiku-4-5",
+			SubagentInputTokens:                wantIn,
+			SubagentCachedInputTokens:          wantCachedIn,
+			SubagentCacheCreationInputTokens:   wantCacheWrite,
+			SubagentCacheCreation1hInputTokens: wantCacheWrite1h,
+			SubagentOutputTokens:               wantOut,
 		}, nil
 	}
 
@@ -867,6 +869,11 @@ func TestDigestingTool_Run_LLMFallback_CarriesTheSubagentCacheBuckets(t *testing
 	}{
 		{"subagent_cached_input_tokens", wantCachedIn},
 		{"subagent_cache_creation_input_tokens", wantCacheWrite},
+		// #770: the 1-hour share of the write bucket. Anthropic bills a
+		// 1h write at twice base input against 1.25x for a 5m one, so a
+		// sidecar that reports only the total undercharges a
+		// 1h-configured daemon by 37.5% of every digest's writes.
+		{"subagent_cache_creation_1h_input_tokens", wantCacheWrite1h},
 	} {
 		got, ok := sv[tc.key].(int)
 		if !ok {
@@ -912,10 +919,14 @@ func TestDigestingTool_Run_LLMFallback_EmitsZeroCacheBucketsExplicitly(t *testin
 	if !ok {
 		t.Fatalf("savings sidecar missing: %v", res["savings"])
 	}
-	for _, key := range []string{"subagent_cached_input_tokens", "subagent_cache_creation_input_tokens"} {
+	for _, key := range []string{
+		"subagent_cached_input_tokens",
+		"subagent_cache_creation_input_tokens",
+		"subagent_cache_creation_1h_input_tokens",
+	} {
 		got, present := sv[key]
 		if !present {
-			t.Errorf("savings.%s absent; the pair should be written even at zero", key)
+			t.Errorf("savings.%s absent; the set should be written even at zero", key)
 			continue
 		}
 		if n, _ := got.(int); n != 0 {

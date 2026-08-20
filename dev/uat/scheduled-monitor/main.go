@@ -345,6 +345,12 @@ func run(providerName, modelName, goal string, maxWC time.Duration, maxT int, ma
 		// Wake the supervisor on every alert. mgr.OnAlert runs
 		// synchronously in the alert-pushing goroutine; we only need
 		// to call handle.RequestWake (non-blocking, coalesced).
+		//
+		// Redundant since #780 — the manager wakes its own parent on
+		// every pushAlert, and the two coalesce into one wake. Kept as
+		// the worked example of a host wiring an out-of-band wake it
+		// owns (wake.go's RequestWake doc points here), and as the
+		// shape to copy for a source the runtime knows nothing about.
 		onAlertWake = func(_ background.Alert) { handle.RequestWake() }
 
 		// Operator stdin reader. Each non-empty line is injected as

@@ -176,12 +176,16 @@ func (w *wakeSignal) subscribe() (<-chan struct{}, func()) {
 //   - The attach-mode `POST /sessions/<id>/wake` endpoint, when an
 //     operator outside the process wants an immediate rescan. This is
 //     the only caller in cmd/ or pkg/ that a shipped binary reaches.
-//   - autonomous.Handle.RequestWake, the host-facing door. Nothing
-//     in-tree wires it to anything; the intended shape is a driver-side
-//     goroutine on BackgroundAgentManager.Alerts() so a child alert
-//     wakes a sleeping supervisor instead of waiting for its next
-//     scheduled wake. dev/uat/scheduled-monitor does exactly that and
-//     is the worked example.
+//   - BackgroundAgentManager.pushAlert, on every alert a subagent
+//     reports. Background alerts are otherwise PULLED at the top of a
+//     parent turn, so a child that finishes after the parent's last
+//     turn reports into a queue nothing is scheduled to read; the wake
+//     is what makes "result will be pushed" true (#780).
+//   - autonomous.Handle.RequestWake, the host-facing door, for wakes
+//     the host knows about and the runtime doesn't. Nothing in-tree
+//     wires it to anything now that the manager wakes for itself;
+//     dev/uat/scheduled-monitor is the worked example of a host doing
+//     the same thing by hand.
 //   - ResumeWith(mode, "", caller) with no message — reachable from a
 //     library caller only. `POST /resume` never takes it: attachadapter
 //     frames a message for both steer and continue, and a non-empty

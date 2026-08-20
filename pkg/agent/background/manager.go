@@ -128,6 +128,13 @@ type Manager struct {
 	alerts  chan Alert
 	onAlert func(Alert) // optional synchronous hook, set via OnAlert
 	closed  bool
+
+	// droppedAlerts counts alerts pushAlert evicted to make room
+	// since the last PrependPendingAlerts drain. Read-and-cleared
+	// there so the parent's model is told its subagents reported
+	// things it will never see, instead of the drop being a line in
+	// the daemon's stderr nobody reads (#780).
+	droppedAlerts int
 }
 
 // OnAlert installs a synchronous hook called from pushAlert before
@@ -720,9 +727,15 @@ func (m *Manager) Alerts() <-chan Alert { return m.alerts }
 
 // pushAlert enqueues a non-blocking with drop-oldest backpressure.
 // When the channel is full, the oldest pending alert is dropped (and
-// the drop is logged) so a stuck consumer can't deadlock a runaway
-// spawner. Calls any installed OnAlert hook synchronously before the
-// channel send so side-channel display consumers see every alert.
+// the drop is logged and counted for the next drain) so a stuck
+// consumer can't deadlock a runaway spawner. Calls any installed
+// OnAlert hook synchronously before the channel send so side-channel
+// display consumers see every alert.
+//
+// After a successful send it wakes the parent (see wakeParent). The
+// queue is only ever drained at the top of a parent turn, so without
+// that the enqueue is a push into something nothing is scheduled to
+// read.
 func (m *Manager) pushAlert(a Alert) {
 	m.mu.Lock()
 	hook := m.onAlert
@@ -733,11 +746,15 @@ func (m *Manager) pushAlert(a Alert) {
 	for {
 		select {
 		case m.alerts <- a:
+			m.wakeParent()
 			return
 		default:
 			// Drop oldest, retry once.
 			select {
 			case dropped := <-m.alerts:
+				m.mu.Lock()
+				m.droppedAlerts++
+				m.mu.Unlock()
 				log.Printf("Manager: alert buffer full, dropped: from=%q kind=%q",
 					dropped.From, dropped.Kind)
 			default:
@@ -746,6 +763,67 @@ func (m *Manager) pushAlert(a Alert) {
 			}
 		}
 	}
+}
+
+// wakeParent fires the parent agent's wake signal so a driver parked
+// between turns runs one now, which is what gives PrependPendingAlerts
+// something to be called from.
+//
+// This is the delivery half of the promise spawn_agent {wait: true}
+// makes when its wait times out ("still running in background, result
+// will be pushed", tools.go). Before #780 nothing kept it: alerts are
+// PULLED at the top of a parent turn (agent.Run calls
+// PrependPendingAlerts), so a subagent that finished after the parent's
+// last turn reported into a queue with no scheduled reader. Waiting is
+// also self-selecting for the failure — a wait times out precisely
+// because the subagent was slow, which is when the parent has most
+// likely already wrapped up.
+//
+// RequestWake rather than the unexported fire, deliberately: it also
+// publishes a `wake` event, and nothing else this package does reaches
+// the wire at all, so for a remote operator this frame is the only
+// evidence a child report moved the parent (see RequestWake's own
+// doc — it is "for the wakes nothing else on the wire accounts for").
+//
+// Every alert wakes, not just terminal ones. That matches the shape
+// wake.go describes and dev/uat/scheduled-monitor demonstrated by hand
+// before this existed: a supervisor asleep on a 30-minute timer should
+// hear a child's mid-run finding, not sit on it.
+//
+// The cost is real and worth stating plainly. Wakes coalesce (the
+// signal is buffered-1 per subscriber), so a BURST arriving during one
+// parent turn lands as a single wake — but a steady trickle across
+// idle time costs a parent turn apiece, where before it cost nothing
+// until something else started a turn. That is the intended trade (a
+// report the parent doesn't read is a report that didn't happen), and
+// the parent's own cost ceiling and watchdog are the backstop against
+// a child chatty enough to matter. There is no knob: one would be an
+// operator-facing choice between "reports arrive" and "reports are
+// cheap", and nothing has asked for the second.
+//
+// A wake fired in the instant a turn drains the queue can also leave
+// the driver one empty turn to find nothing pending — the window is
+// between this send and the fire below, so it is nanoseconds wide, and
+// the alternative ordering (fire, then send) trades it for the failure
+// that matters: an alert landing with no wake behind it.
+//
+// Safe from any goroutine and while a turn is running: RequestWake
+// takes no agent lock, the wake fan-out is a non-blocking send per
+// subscriber, and emit is non-blocking per attach subscriber.
+func (m *Manager) wakeParent() {
+	if p := m.Parent(); p != nil {
+		p.RequestWake()
+	}
+}
+
+// takeDroppedAlerts returns the number of alerts evicted since the
+// last call and resets the counter.
+func (m *Manager) takeDroppedAlerts() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := m.droppedAlerts
+	m.droppedAlerts = 0
+	return n
 }
 
 // List returns all currently-tracked handles, sorted by start time.

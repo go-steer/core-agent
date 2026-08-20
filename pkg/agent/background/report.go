@@ -15,6 +15,7 @@
 package background
 
 import (
+	"fmt"
 	"time"
 
 	"google.golang.org/adk/tool"
@@ -74,11 +75,18 @@ func newReportAlertTool(mgr *Manager, from string) tool.Tool {
 
 // PrependPendingAlerts drains every pending alert from the manager's
 // channel (non-blocking) and, when non-empty, returns prompt with a
-// "[Background reports]" header prepended. Empty channel returns
-// prompt unchanged.
+// "[Background reports]" header prepended. Nothing pending and nothing
+// dropped returns prompt unchanged.
 //
 // Called by Agent.Run before each turn so the parent's model sees
 // what its subagents have reported since the last turn.
+//
+// Alerts the buffer had to evict are reported too, as a synthetic
+// leading entry. They are the OLDEST reports, so they lead the block
+// for the same reason the rest of it is in arrival order. Before #780
+// an eviction only reached the daemon's stderr, which left the model
+// reading a report list it had no way to know was truncated — the one
+// reader that could have asked a subagent to say it again.
 func (m *Manager) PrependPendingAlerts(prompt string) string {
 	var pending []Alert
 drain:
@@ -90,10 +98,36 @@ drain:
 			break drain
 		}
 	}
+	// Read the counter AFTER the drain: an eviction concurrent with it
+	// is better reported one turn late than not at all.
+	if dropped := m.takeDroppedAlerts(); dropped > 0 {
+		pending = append([]Alert{droppedAlert(dropped)}, pending...)
+	}
 	if len(pending) == 0 {
 		return prompt
 	}
 	return formatAlertsForPrompt(pending) + "\n\n---\n\n" + prompt
+}
+
+// droppedAlert renders n evicted alerts as the synthetic entry that
+// leads the report block. From is the manager rather than a subagent
+// name because no subagent is at fault; the text says what was lost
+// and what the model can do about it, since "some reports are missing"
+// is only actionable if it also says who to ask.
+func droppedAlert(n int) Alert {
+	noun := "reports were"
+	if n == 1 {
+		noun = "report was"
+	}
+	return Alert{
+		From: "background-manager",
+		Kind: "dropped",
+		Text: fmt.Sprintf("%d earlier background %s discarded: the report queue filled up before this turn drained it, "+
+			"and the oldest entries were evicted to make room. They are unrecoverable. "+
+			"If you are waiting on a subagent whose report is not below, check its status "+
+			"(list_agents) or ask it again rather than assuming it has not finished.", n, noun),
+		Timestamp: time.Now(),
+	}
 }
 
 // formatAlertsForPrompt renders a slice of Alerts as a header block

@@ -108,7 +108,14 @@ func (m *Manager) awaitResult(ctx context.Context, h *Handle) spawnAgentResult {
 		return spawnAgentResult{
 			Name:   h.Name,
 			Branch: h.Branch,
-			Status: "running: wait timed out after " + m.syncWaitTimeout.String() + "; still running in background, result will be pushed",
+			// "into your next turn" names the delivery rather than
+			// just promising one: the result arrives as a
+			// "[Background reports]" line, and pushAlert wakes this
+			// agent so that turn happens even if this one was going
+			// to be the last (#780). Saying where it lands is what
+			// lets the model decide to end the turn and read it,
+			// instead of padding the turn out to stay alive.
+			Status: "running: wait timed out after " + m.syncWaitTimeout.String() + "; still running in background, its result will be pushed into your next turn",
 		}
 	case <-ctx.Done():
 		if res, ok := m.abandonWait(h, claimed); !ok {

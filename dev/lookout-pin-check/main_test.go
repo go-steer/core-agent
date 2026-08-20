@@ -161,7 +161,7 @@ func TestVerdict_FrozenOnlyDriftIsNotDrift(t *testing.T) {
 	tr := frozen(testTracked("recipes"), "recipes/frozen")
 	root := writeTree(t, map[string]string{
 		"recipes/frozen/kustomization.yaml": "images:\n" +
-			"  # pin-frozen: #704 — portability case study\n" +
+			"  # pin-frozen: #704 — portability case study (review: 2027-01-01)\n" +
 			"  - name: example.test/widget\n    newTag: \"v1.0.0\"\n",
 		"recipes/live/kustomization.yaml": "images:\n" +
 			"  - name: example.test/widget\n    newTag: \"v2.0.0\"\n",

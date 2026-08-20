@@ -40,8 +40,11 @@ resources:
 images:
   - name: ghcr.io/go-steer/core-agent
     newTag: "2.9.0-dev.1"
-  # pin-frozen: #704 — portability case study, does not track lookout's
-  # latest release. dev/lookout-pin-check leaves this alone.
+  # pin-frozen: #704 — portability case study (review: 2027-02-01)
+  # This recipe does not track lookout's latest release, so
+  # dev/lookout-pin-check leaves the tag alone. The review date is when
+  # someone should ask whether that is still the right answer; the
+  # weekly job reports the lapse, it never bumps a frozen pin.
   - name: ghcr.io/go-steer/lookout
     newTag: "v0.18.0"
   # Immutable tag (or digest), NOT :latest — the initContainer uses

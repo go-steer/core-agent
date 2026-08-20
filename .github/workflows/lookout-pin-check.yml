@@ -30,9 +30,18 @@ name: lookout-pin-check
 # written down is declared in internal/imagepin/lookout.go. Opting a
 # recipe out takes TWO things, and either one alone is a hard error:
 # name the recipe in Tracked.Frozen in that same file (the exemption),
-# AND attach a `pin-frozen: <reason>` comment to each of its pins (the
-# explanation, where an operator editing the manifest will see it).
-# examples/kube-platform-agent has both (#704).
+# AND attach a `pin-frozen: <reason> (review: YYYY-MM-DD)` comment to
+# each of its pins (the explanation and the expiry, where an operator
+# editing the manifest will see them). examples/kube-platform-agent has
+# both (#704).
+#
+# A freeze is a decision with a shelf life, not a permanent exemption
+# (#791). Two steps below enforce that without nagging: every run writes
+# the frozen pins and their review dates to the job summary, so a clean
+# week says something rather than nothing, and the LAST step fails once
+# a review date has passed. It runs last on purpose — an overdue review
+# is a question for a person, and it must never block the bump PR that
+# keeps the pins which do track upstream current.
 #
 # Deliberately NOT merged with the #680 recipe gate in
 # examples/internal/recipecheck. That one asks "can this daemon run
@@ -73,7 +82,10 @@ jobs:
       - uses: ./.github/actions/go-toolchain
 
       # Short-circuit when the pin is current. Most weeks this workflow
-      # exits here.
+      # exits here — which is exactly why --summary is passed here and
+      # not on some later step that a clean week never reaches. The
+      # summary is the only place a frozen pin's skew is visible on a run
+      # that opens no pull request.
       #
       # --check writes nothing and answers on stdout. Drift is NOT
       # signalled by exit status: `go run` collapses every non-zero
@@ -89,7 +101,8 @@ jobs:
         run: |
           set -euo pipefail
           verdict="$(go run ./dev/lookout-pin-check --check \
-            --resolved="${RUNNER_TEMP}/${UPSTREAM_FILE}")"
+            --resolved="${RUNNER_TEMP}/${UPSTREAM_FILE}" \
+            --summary="${GITHUB_STEP_SUMMARY}")"
           case "$verdict" in
             drift=true|drift=false) echo "$verdict" >> "$GITHUB_OUTPUT" ;;
             *) echo "::error::unexpected --check output: ${verdict}"; exit 1 ;;
@@ -213,3 +226,36 @@ jobs:
             dependencies
             automated
           delete-branch: false
+
+      # Last step, deliberately. A frozen recipe is exempt from the bump
+      # forever unless someone revisits the decision, and nothing was
+      # asking them to: on a week with no drift this job used to exit 0
+      # in silence while the frozen pin fell another release behind
+      # (#791). The `review:` date in each `pin-frozen:` marker is the
+      # commitment, and this is what collects on it.
+      #
+      # Placed after the pull-request step so a lapsed review can never
+      # block a real bump. The two are unrelated questions, and coupling
+      # them would let an overdue case study stop the pins that DO track
+      # upstream from moving.
+      #
+      # Failing rather than warning: a warning on a scheduled run is read
+      # by nobody, which is the property this whole step exists to
+      # remove. The fix is one line in a comment — move the date on, or
+      # drop the recipe from Tracked.Frozen — and it cannot fire on a
+      # date nobody chose, so it is not the cry-wolf shape that gets
+      # gates disabled.
+      #
+      # No network: it replays the resolution the drift step captured.
+      - name: Review the frozen pins
+        run: |
+          set -euo pipefail
+          verdict="$(go run ./dev/lookout-pin-check --check-freezes \
+            --releases="${RUNNER_TEMP}/${UPSTREAM_FILE}")"
+          case "$verdict" in
+            freeze-review=ok) ;;
+            freeze-review=overdue)
+              echo "::error::a frozen lookout pin is past its review date — see the job summary"
+              exit 1 ;;
+            *) echo "::error::unexpected --check-freezes output: ${verdict}"; exit 1 ;;
+          esac

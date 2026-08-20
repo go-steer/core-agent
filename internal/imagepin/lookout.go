@@ -106,8 +106,8 @@ var Lookout = &Tracked{
 	// would change what the study demonstrates.
 	//
 	// Naming it here is the exemption. The marker in the manifest is the
-	// explanation, and the two are checked against each other — see
-	// [Tracked.Frozen].
+	// explanation AND the expiry, and the two are checked against each
+	// other — see [Tracked.Frozen].
 	Frozen: []string{"examples/kube-platform-agent"},
 
 	// The frozen opt-out. It must own its comment line and carry a real
@@ -130,9 +130,14 @@ var Lookout = &Tracked{
 	// reference, so it takes the comment-block rule even though the
 	// file it sits in also has newTag entries that do not.
 	//
-	//	# pin-frozen: #704 — portability case study, does not track latest
+	//	# pin-frozen: #704 — portability case study (review: 2027-02-01)
 	//	- name: ghcr.io/go-steer/lookout
 	//	  newTag: "v0.18.0"
+	//
+	// The `review:` clause is required, not decoration — see
+	// [reviewClause]. A freeze is a decision with a shelf life; the date
+	// is when someone should ask whether it still holds, and the weekly
+	// job reports the lapse rather than bumping anything.
 	//
 	// The pattern requires the `#` at the start of the (trimmed) comment
 	// line, so a marker indented inside a larger comment block — which

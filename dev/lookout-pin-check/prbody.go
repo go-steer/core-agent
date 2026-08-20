@@ -73,7 +73,9 @@ func writeSiteSections(b *strings.Builder, r scanResult) {
 		b.WriteString("\n## Left alone (frozen)\n\n")
 		b.WriteString("These belong to a recipe named in `Tracked.Frozen` " +
 			"(`internal/imagepin/lookout.go`) that also carries a `pin-frozen:` marker on the " +
-			"pin itself, so they are not drift and were not touched:\n\n")
+			"pin itself, so they are not drift and were not touched. Each marker names the date " +
+			"the freeze should be revisited; the weekly job reports a lapse, it never bumps a " +
+			"frozen pin:\n\n")
 		for _, s := range r.frozen {
 			fmt.Fprintf(b, "- `%s:%d` — still `%s` (%s)\n", s.Path, s.Line, s.Tag, s.FrozenReason)
 		}

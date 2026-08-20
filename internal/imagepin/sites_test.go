@@ -163,13 +163,13 @@ func TestSites_FrozenMarkerMustBeAttachedToTheLivePin(t *testing.T) {
 		// any node, and freezes nothing.
 		"recipes/loose/deploy/kustomization.yaml": "# To opt out of automated bumps, put this on the entry:\n" +
 			"#\n" +
-			"#   # pin-frozen: #123 — worked example, not a real freeze\n" +
+			"#   # pin-frozen: #123 — worked example (review: 2027-01-01)\n" +
 			"#\n" +
 			"images:\n" +
 			"  - name: example.test/widget\n    newTag: \"v1.0.0\"\n",
 		// Here it is a head comment on the entry itself.
 		"recipes/attached/deploy/kustomization.yaml": "images:\n" +
-			"  # pin-frozen: #456 — deliberately not tracking latest\n" +
+			"  # pin-frozen: #456 — deliberately not tracking latest (review: 2027-01-01)\n" +
 			"  - name: example.test/widget\n    newTag: \"v1.0.0\"\n",
 	})
 
@@ -193,7 +193,7 @@ func TestSites_FrozenMarkerOnAnImageReference(t *testing.T) {
 	tr.Frozen = []string{"recipes/demo"}
 	root := writeTree(t, map[string]string{
 		"recipes/demo/deploy.yaml": "spec:\n" +
-			"  # pin-frozen: #789 — case study, stays put\n" +
+			"  # pin-frozen: #789 — case study, stays put (review: 2027-01-01)\n" +
 			"  image: example.test/widget:v1.0.0\n" +
 			"\n" +
 			"  # an unrelated comment, then a blank line, then a live pin\n" +
@@ -222,7 +222,7 @@ func TestSites_FreezeIsPerRecipeNotPerFile(t *testing.T) {
 	tr.Docs = []string{"recipes/frozen/README.md", "recipes/live/README.md"}
 	root := writeTree(t, map[string]string{
 		"recipes/frozen/deploy/kustomization.yaml": "images:\n" +
-			"  # pin-frozen: #704 — portability case study\n" +
+			"  # pin-frozen: #704 — portability case study (review: 2027-01-01)\n" +
 			"  - name: example.test/widget\n    newTag: \"v1.0.0\"\n",
 		"recipes/frozen/README.md": "This recipe pins `v1.0.0`.\n",
 		"recipes/live/deploy/kustomization.yaml": "images:\n" +
@@ -235,7 +235,7 @@ func TestSites_FreezeIsPerRecipeNotPerFile(t *testing.T) {
 		if s.Frozen != wantFrozen {
 			t.Errorf("%s: Frozen = %v, want %v", s.Path, s.Frozen, wantFrozen)
 		}
-		if wantFrozen && s.FrozenReason != "#704 — portability case study" {
+		if wantFrozen && s.FrozenReason != "#704 — portability case study (review: 2027-01-01)" {
 			t.Errorf("%s: FrozenReason = %q", s.Path, s.FrozenReason)
 		}
 	}
@@ -279,7 +279,7 @@ func TestSites_AMarkerOutsideTheDeclaredSetIsAnError(t *testing.T) {
 	tr := testTracked("recipes") // nothing declared frozen
 	root := writeTree(t, map[string]string{
 		"recipes/demo/kustomization.yaml": "images:\n" +
-			"  # pin-frozen: #123 — a real-looking reason, on a recipe nobody froze\n" +
+			"  # pin-frozen: #123 — a real-looking reason, on a recipe nobody froze (review: 2027-01-01)\n" +
 			"  - name: example.test/widget\n    newTag: \"v1.0.0\"\n",
 	})
 	_, err := tr.Sites(root)
@@ -348,7 +348,7 @@ func TestSites_FreezeDeclarationSpellingIsNormalised(t *testing.T) {
 			tr.Frozen = []string{spelling}
 			root := writeTree(t, map[string]string{
 				"recipes/frozen/kustomization.yaml": "images:\n" +
-					"  # pin-frozen: #704 — portability case study\n" +
+					"  # pin-frozen: #704 — portability case study (review: 2027-01-01)\n" +
 					"  - name: example.test/widget\n    newTag: \"v1.0.0\"\n",
 			})
 			sites := mustSites(t, tr, root)
@@ -408,7 +408,7 @@ func TestSites_AMarkerMustOwnItsCommentLine(t *testing.T) {
 	root := writeTree(t, map[string]string{
 		"recipes/demo/deploy.yaml": "spec:\n" +
 			"  # here is how you would freeze this:\n" +
-			"  #   # pin-frozen: #123 — a perfectly good reason, indented\n" +
+			"  #   # pin-frozen: #123 — a perfectly good reason, indented (review: 2027-01-01)\n" +
 			"  image: example.test/widget:v1.0.0\n",
 	})
 	got := siteKeys(mustSites(t, tr, root))
@@ -424,7 +424,7 @@ func TestSites_AMarkerMustOwnItsCommentLine(t *testing.T) {
 func TestSites_ABlankLineEndsTheCommentBlock(t *testing.T) {
 	tr := testTracked("recipes")
 	root := writeTree(t, map[string]string{
-		"recipes/demo/deploy.yaml": "# pin-frozen: #123 — about something that is no longer here\n" +
+		"recipes/demo/deploy.yaml": "# pin-frozen: #123 — about something that is no longer here (review: 2027-01-01)\n" +
 			"\n" +
 			"image: example.test/widget:v1.0.0\n",
 	})

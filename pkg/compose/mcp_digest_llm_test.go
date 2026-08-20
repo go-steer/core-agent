@@ -72,6 +72,67 @@ func (meteredLLM) GenerateContent(context.Context, *adkmodel.LLMRequest, bool) i
 	}
 }
 
+// cachingLLM answers with a prompt that was mostly served from cache
+// and partly written to it — the shape Anthropic reports once #714's
+// prompt caching is on. CachedContentTokenCount is the read subset;
+// the write bucket rides CustomMetadata, since genai's usage struct
+// has no third input field (#263). Both are subsets of
+// PromptTokenCount.
+type cachingLLM struct{}
+
+func (cachingLLM) Name() string { return "caching" }
+func (cachingLLM) GenerateContent(context.Context, *adkmodel.LLMRequest, bool) iter.Seq2[*adkmodel.LLMResponse, error] {
+	return func(yield func(*adkmodel.LLMResponse, error) bool) {
+		yield(&adkmodel.LLMResponse{
+			Content: &genai.Content{
+				Role:  "model",
+				Parts: []*genai.Part{{Text: "digested"}},
+			},
+			UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:        10_000,
+				CachedContentTokenCount: 9_000,
+				CandidatesTokenCount:    100,
+			},
+			CustomMetadata: map[string]any{usage.CacheCreationTokensMetadataKey: int64(500)},
+			TurnComplete:   true,
+		}, nil)
+	}
+}
+
+// TestBuildMCPDigestLLMFallback_ForwardsTheSubagentCacheBuckets is the
+// middle link of #771. RunSubtask knows how the digest's prompt broke
+// down across the three input buckets; the calling session re-prices
+// the digest from the sidecar. Dropping the buckets in between is what
+// made that re-pricing bill the whole prompt at the uncached rate.
+func TestBuildMCPDigestLLMFallback_ForwardsTheSubagentCacheBuckets(t *testing.T) {
+	t.Parallel()
+
+	a, err := agent.New(cachingLLM{},
+		agent.WithAppName("app"),
+		agent.WithSession("u", "sess-digest-buckets"),
+		agent.WithUsageTracker(usage.NewTracker()),
+	)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	fn := BuildMCPDigestLLMFallback(&a, nil, "small-model")
+
+	res, err := fn(context.Background(), []byte(`{"pods":[{"name":"api-7d9"}]}`))
+	if err != nil {
+		t.Fatalf("fallback: %v", err)
+	}
+	if res.SubagentInputTokens != 10_000 {
+		t.Errorf("SubagentInputTokens = %d, want 10000 (the buckets are subsets, not addends)",
+			res.SubagentInputTokens)
+	}
+	if res.SubagentCachedInputTokens != 9_000 {
+		t.Errorf("SubagentCachedInputTokens = %d, want 9000", res.SubagentCachedInputTokens)
+	}
+	if res.SubagentCacheCreationInputTokens != 500 {
+		t.Errorf("SubagentCacheCreationInputTokens = %d, want 500", res.SubagentCacheCreationInputTokens)
+	}
+}
+
 func TestBuildMCPDigestLLMFallback_UnboundAgent(t *testing.T) {
 	t.Parallel()
 

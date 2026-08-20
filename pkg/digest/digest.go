@@ -126,6 +126,17 @@ type Savings struct {
 	SubagentModel        string
 	SubagentInputTokens  int
 	SubagentOutputTokens int
+
+	// The two cache buckets inside SubagentInputTokens. Carried so
+	// whoever prices this later can price the turn rather than the
+	// token count: billing every input token at the uncached rate is
+	// wrong by up to 25% on a provider with a cache-read discount and
+	// a cache-write premium (#771).
+	//
+	// This is still not a dollar figure — see the note above on why
+	// cost is not stored here. It is the input a cost function needs.
+	SubagentCachedInputTokens        int
+	SubagentCacheCreationInputTokens int
 }
 
 // estimateTokens returns a cheap token count from a byte length

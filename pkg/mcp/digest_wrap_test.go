@@ -806,3 +806,120 @@ func keys(m map[string]any) []string {
 	}
 	return out
 }
+
+// TestDigestingTool_Run_LLMFallback_CarriesTheSubagentCacheBuckets
+// (#771). The sidecar is the ONLY channel by which a digest's spend
+// reaches the calling session's ledger (#717), and the far side prices
+// a turn rather than a token count — on purpose, so a historical
+// digest re-prices when rates change. Dropping the two cache buckets
+// here made that re-pricing bill the whole prompt at the uncached
+// rate, which on Anthropic is wrong by up to 25% and moves the session
+// cost ceiling with it.
+//
+// The keys are written even when zero: an absent bucket and an empty
+// one price the same, but a producer that emits the pair only
+// sometimes makes "no cache activity" indistinguishable from "an older
+// daemon wrote this" to anyone reading a recording later.
+func TestDigestingTool_Run_LLMFallback_CarriesTheSubagentCacheBuckets(t *testing.T) {
+	t.Parallel()
+
+	const (
+		wantIn         = 10000
+		wantCachedIn   = 9000
+		wantCacheWrite = 500
+		wantOut        = 100
+	)
+	fallback := func(_ context.Context, _ []byte) (LLMFallbackResult, error) {
+		return LLMFallbackResult{
+			Text:                             "digested",
+			SubagentModel:                    "claude-haiku-4-5",
+			SubagentInputTokens:              wantIn,
+			SubagentCachedInputTokens:        wantCachedIn,
+			SubagentCacheCreationInputTokens: wantCacheWrite,
+			SubagentOutputTokens:             wantOut,
+		}, nil
+	}
+
+	resp := make(map[string]any, 100)
+	for i := 0; i < 100; i++ {
+		resp[fmt.Sprintf("pod_%02d_id", i)] = fmt.Sprintf("id-%02d", i)
+	}
+	tool := wrapFixedTool(t, "gke_get_pods", resp, &DigestOptions{
+		Threshold:   500,
+		LLMFallback: fallback,
+	})
+
+	callCtx := &stubToolCtx{Context: context.Background(), callID: "call-cache"}
+	res, err := tool.(runnable).Run(callCtx, map[string]any{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got, _ := res["method"].(string); got != digest.MethodLLMFallback {
+		t.Fatalf("method = %q, want %q", got, digest.MethodLLMFallback)
+	}
+	sv, ok := res["savings"].(map[string]any)
+	if !ok {
+		t.Fatalf("savings sidecar missing: %v", res["savings"])
+	}
+	for _, tc := range []struct {
+		key  string
+		want int
+	}{
+		{"subagent_cached_input_tokens", wantCachedIn},
+		{"subagent_cache_creation_input_tokens", wantCacheWrite},
+	} {
+		got, ok := sv[tc.key].(int)
+		if !ok {
+			t.Errorf("savings.%s missing or wrong type: %T %v; the calling session cannot "+
+				"price this turn without it", tc.key, sv[tc.key], sv[tc.key])
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("savings.%s = %d, want %d", tc.key, got, tc.want)
+		}
+	}
+}
+
+// TestDigestingTool_Run_LLMFallback_EmitsZeroCacheBucketsExplicitly:
+// the no-caching case still writes the pair, so a reader can tell a
+// turn that cached nothing from a producer that never knew how.
+func TestDigestingTool_Run_LLMFallback_EmitsZeroCacheBucketsExplicitly(t *testing.T) {
+	t.Parallel()
+
+	fallback := func(_ context.Context, _ []byte) (LLMFallbackResult, error) {
+		return LLMFallbackResult{
+			Text:                 "digested",
+			SubagentModel:        "gemini-2.5-flash",
+			SubagentInputTokens:  400,
+			SubagentOutputTokens: 80,
+		}, nil
+	}
+	resp := make(map[string]any, 100)
+	for i := 0; i < 100; i++ {
+		resp[fmt.Sprintf("pod_%02d_id", i)] = fmt.Sprintf("id-%02d", i)
+	}
+	tool := wrapFixedTool(t, "gke_get_pods", resp, &DigestOptions{
+		Threshold:   500,
+		LLMFallback: fallback,
+	})
+
+	res, err := tool.(runnable).Run(
+		&stubToolCtx{Context: context.Background(), callID: "call-nocache"}, map[string]any{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	sv, ok := res["savings"].(map[string]any)
+	if !ok {
+		t.Fatalf("savings sidecar missing: %v", res["savings"])
+	}
+	for _, key := range []string{"subagent_cached_input_tokens", "subagent_cache_creation_input_tokens"} {
+		got, present := sv[key]
+		if !present {
+			t.Errorf("savings.%s absent; the pair should be written even at zero", key)
+			continue
+		}
+		if n, _ := got.(int); n != 0 {
+			t.Errorf("savings.%s = %v, want 0", key, got)
+		}
+	}
+}

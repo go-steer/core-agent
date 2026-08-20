@@ -319,6 +319,97 @@ func TestRunSubtask_PropagatesCostToParentTracker(t *testing.T) {
 	}
 }
 
+// TestRunSubtask_ReturnsTheCacheBucketsNotJustTheTotals is the
+// upstream half of #771. SubtaskResult used to carry only the raw
+// in/out counts, so everything downstream of it — the digest sidecar,
+// the calling session's ledger, its cost ceiling — had no way to know
+// which fraction of the prompt was served from cache. The buckets are
+// subsets of InputTokens, so the totals must not change alongside.
+func TestRunSubtask_ReturnsTheCacheBucketsNotJustTheTotals(t *testing.T) {
+	t.Parallel()
+	llm := &captureLLM{
+		response:          "ok",
+		inputTokens:       int32(10_000),
+		cachedInputTokens: int32(9_000),
+		cacheWriteTokens:  int64(500),
+		outputTokens:      int32(100),
+	}
+	a, err := New(llm, WithUsageTracker(usage.NewTracker()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := a.RunSubtask(context.Background(), SubtaskSpec{
+		Name:         "cache_bucket_check",
+		SystemPrompt: "x",
+		UserMessage:  "y",
+	})
+	if err != nil {
+		t.Fatalf("RunSubtask: %v", err)
+	}
+
+	if res.InputTokens != 10_000 {
+		t.Errorf("InputTokens = %d, want 10000 (the buckets are subsets, not addends)", res.InputTokens)
+	}
+	if res.OutputTokens != 100 {
+		t.Errorf("OutputTokens = %d, want 100", res.OutputTokens)
+	}
+	if res.CachedInputTokens != 9_000 {
+		t.Errorf("CachedInputTokens = %d, want 9000", res.CachedInputTokens)
+	}
+	if res.CacheCreationInputTokens != 500 {
+		t.Errorf("CacheCreationInputTokens = %d, want 500", res.CacheCreationInputTokens)
+	}
+}
+
+// TestRunSubtask_ClampsAnOverReportedCacheBucket. The buckets come off
+// the provider's own usage payload and `TurnTap.Commit` hands them over
+// unchecked, so a counter that exceeds the prompt it is a subset of
+// reaches this sum verbatim. Clamping here rather than only at the far
+// end matters because SubtaskResult is a public struct: everything that
+// re-derives cost from it (the OTel span attributes, the digest
+// sidecar, a library caller) would otherwise be handed a set of numbers
+// whose uncached remainder is negative.
+func TestRunSubtask_ClampsAnOverReportedCacheBucket(t *testing.T) {
+	t.Parallel()
+	llm := &captureLLM{
+		response:          "ok",
+		inputTokens:       int32(10_000),
+		cachedInputTokens: int32(12_000), // more than the whole prompt
+		cacheWriteTokens:  int64(500),
+		outputTokens:      int32(100),
+	}
+	a, err := New(llm, WithUsageTracker(usage.NewTracker()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := a.RunSubtask(context.Background(), SubtaskSpec{
+		Name:         "cache_clamp_check",
+		SystemPrompt: "x",
+		UserMessage:  "y",
+	})
+	if err != nil {
+		t.Fatalf("RunSubtask: %v", err)
+	}
+
+	if res.CachedInputTokens != 10_000 {
+		t.Errorf("CachedInputTokens = %d, want it clamped to the 10000-token prompt",
+			res.CachedInputTokens)
+	}
+	// Reads clamp first and writes take what's left, so the contradiction
+	// can only shrink the premium-rated write bucket — under-estimating
+	// rather than inventing a charge.
+	if res.CacheCreationInputTokens != 0 {
+		t.Errorf("CacheCreationInputTokens = %d, want 0 — no room left after the read bucket",
+			res.CacheCreationInputTokens)
+	}
+	if got := res.CachedInputTokens + res.CacheCreationInputTokens; got > res.InputTokens {
+		t.Errorf("buckets sum to %d against %d input tokens — the uncached remainder is negative",
+			got, res.InputTokens)
+	}
+}
+
 func TestRunSubtask_NoSessionLeakIntoParent(t *testing.T) {
 	t.Parallel()
 	// After a subtask completes, the parent's session.Get

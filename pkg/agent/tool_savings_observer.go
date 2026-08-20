@@ -114,10 +114,13 @@ func (a *Agent) chargeDigestSubagent(rec usage.DigestSavingsRecord) {
 	if rec.SubagentInputTokens <= 0 && rec.SubagentOutputTokens <= 0 {
 		return
 	}
-	u := usage.TurnUsage{
-		InputTokens:  rec.SubagentInputTokens,
-		OutputTokens: rec.SubagentOutputTokens,
-	}
+	// The full turn, cache buckets included. Building a TurnUsage with
+	// both buckets zeroed billed every input token at the uncached
+	// rate — on Anthropic that is off by up to 25% in whichever
+	// direction the dominant bucket points, and it moved
+	// --max-session-cost-usd by the same margin, because
+	// maybeEnforceCostCeiling reads these totals (#771).
+	u := rec.SubagentTurn()
 	a.tracker.AppendUsage(rec.SubagentModel, u, usage.PriceFor(rec.SubagentModel, nil))
 	a.recordSubtaskUsage(rec.SubagentInputTokens, rec.SubagentOutputTokens, rec.SubagentCostUSD)
 }
@@ -153,20 +156,29 @@ func extractSavingsRecord(p *genai.Part) (usage.DigestSavingsRecord, bool) {
 	subModel, _ := raw["subagent_model"].(string)
 	subIn := savingsIntField(raw, "subagent_input_tokens")
 	subOut := savingsIntField(raw, "subagent_output_tokens")
+	subCachedIn := savingsIntField(raw, "subagent_cached_input_tokens")
+	subCacheWrite := savingsIntField(raw, "subagent_cache_creation_input_tokens")
 
-	var subCost float64
-	if subModel != "" {
-		p := usage.PriceFor(subModel, nil)
-		subCost = p.CostUSD(subIn, subOut)
+	rec := usage.DigestSavingsRecord{
+		Path:                             path,
+		ParentTokensSaved:                origTokens - digestTokens,
+		SubagentModel:                    subModel,
+		SubagentInputTokens:              subIn,
+		SubagentOutputTokens:             subOut,
+		SubagentCachedInputTokens:        subCachedIn,
+		SubagentCacheCreationInputTokens: subCacheWrite,
 	}
-	return usage.DigestSavingsRecord{
-		Path:                 path,
-		ParentTokensSaved:    origTokens - digestTokens,
-		SubagentModel:        subModel,
-		SubagentInputTokens:  subIn,
-		SubagentOutputTokens: subOut,
-		SubagentCostUSD:      subCost,
-	}, true
+	if subModel != "" {
+		// CostUSDForTurn, not CostUSD. CostUSD takes (in, out) and
+		// bills the whole prompt at the base input rate; this path is
+		// the session's ledger and its cost ceiling, so it has to use
+		// the same single definition of turn cost as everything else
+		// (#263, #771). A sidecar from an older producer carries no
+		// buckets, which prices identically to the old behaviour —
+		// correctly, since a turn with no cache activity has none.
+		rec.SubagentCostUSD = usage.PriceFor(subModel, nil).CostUSDForTurn(rec.SubagentTurn())
+	}
+	return rec, true
 }
 
 // savingsIntField pulls an integer out of the sidecar map. Handles

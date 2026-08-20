@@ -63,6 +63,29 @@ The Anthropic SKILL.md spec allows additional fields (`allowed_tools`, `version`
 - Write in second person, addressed to the agent ("When asked X, do Y").
 - Reference sibling files with relative paths — they're loaded lazily when the skill is invoked, so a large bundle doesn't blow up cold-start.
 - Keep frontmatter terse; details belong in the body.
+- Describe **how** to do the work, not **what** work to do. See below.
+
+---
+
+## Skills govern *how*, not *what*
+
+A skill loads at the point of use, so it speaks **last** — after the system instruction, after `AGENTS.md`, and after whatever goal a parent delegated. A skill that opens by re-deriving its own task therefore overrides the task the agent was actually given.
+
+That is not hypothetical. A GKE troubleshooting skill opened with:
+
+> To begin troubleshooting, acquire the following context **from the user or active `SETTINGS.md` config**: Project ID / Cluster Name / Cluster Location / Workload Name … Before running any diagnostics, you **must** fetch GKE credentials: `gcloud container clusters get-credentials …`
+
+The subagent that loaded it had been handed a fully specified goal — one named workload, in one named namespace, on one named cluster — and had no operator to ask, no `SETTINGS.md`, and no shell. So it improvised against its GKE MCP the only way that goes: it enumerated clusters and audited a *different* one, never touching the workload it was asked about. The subagent's own persona said "stay scoped to the cluster you were asked about" and lost too.
+
+To stop that, `core-agent` appends a short framing paragraph to every body served by `load_skill`. It arrives after the skill's own text, where recency works for it rather than against it, and it says three things:
+
+- A skill does not change *what* you were asked to do or *which* subject you were asked to do it on.
+- If a step tells you to obtain parameters — from the user, from a settings file, or by discovery — use the ones the task already supplied and obtain only what is genuinely missing.
+- If a step names a tool or command you don't have, skip it and use the tools you do have. A missing tool is not a reason to change target or widen scope.
+
+This applies to every skill, including those a [declarative subagent](/agent-design/subagents-and-wrappers/) narrows with `subagents[].skills` — the subagent case is the one that was reported. Frontmatter and `references/` files are untouched: the trailer belongs at the end of the instruction body and nowhere else. The exact wording is `skills.InstructionFraming`, exported so an embedder writing its own `skill.Source` can reuse it.
+
+Write skills that don't need it. A skill body should assume its parameters are already in the conversation, and should name only tooling the recipe's config actually registers — `examples/internal/recipecheck` gates the second half of that in CI.
 
 ---
 

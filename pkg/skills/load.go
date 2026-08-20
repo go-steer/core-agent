@@ -205,7 +205,12 @@ func LoadAll(ctx context.Context, projectAgentsDir, userCoreHome string, gate *p
 	}
 	rootFS := newSanitizingFS(composed, lo.interp)
 
-	source := skill.NewFileSystemSource(rootFS)
+	// framedSource is the outermost layer, so every instruction body the
+	// toolset serves ends with InstructionFraming — the statement that a
+	// skill governs HOW, never WHAT or WHERE (#711). It wraps here rather
+	// than at the toolset so Skills.source carries it, which is what keeps
+	// a declarative subagent's Scoped view framed as well.
+	source := &framedSource{inner: skill.NewFileSystemSource(rootFS)}
 	frontmatters, err := source.ListFrontmatters(ctx)
 	if err != nil {
 		return Skills{}, fmt.Errorf("skills: list: %w", err)

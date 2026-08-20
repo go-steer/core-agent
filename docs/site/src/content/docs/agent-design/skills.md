@@ -241,6 +241,7 @@ Output a single message with:
 | No "When NOT to use" section | Skill fires on adjacent requests | Add explicit carve-outs |
 | Description starts with "This skill..." | Wastes the precious first words on meta-content | Lead with what the skill DOES |
 | Skill body imports another skill's procedure | Coupling makes both harder to maintain | Inline the shared content or extract a `references/` file both skills read |
+| Step 0 re-acquires the task ("ask the user for the cluster name / read `SETTINGS.md`") | The skill speaks last, so it overrides the goal the agent was actually given — and unattended there is nobody to ask, so the agent improvises a different target ([#711](https://github.com/go-steer/core-agent/issues/711)) | Assume the parameters are already in the conversation. `core-agent` appends a [framing paragraph](/concepts/skills/#skills-govern-how-not-what) that says so, but a skill that doesn't need it is better than one that has to be overruled |
 
 ---
 

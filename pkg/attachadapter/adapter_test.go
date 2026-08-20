@@ -296,6 +296,44 @@ func TestQueueAsContext(t *testing.T) {
 	}
 }
 
+// Same shape as TestQueueAsContext, for the same reason: the handler
+// asserts IdentifyingInjector against the ADAPTER, so an unforwarded
+// pair would omit `prompt_id` from every response in production while
+// the direct-agent tests stayed green (#840).
+func TestInjectAsContextWithID(t *testing.T) {
+	t.Parallel()
+	ad := New(newEchoAgent(t))
+
+	var injector attach.IdentifyingInjector = ad
+	id, err := injector.InjectAsContextWithID(context.Background(), "what is it doing", auth.Caller{Identity: "op"})
+	if err != nil {
+		t.Fatalf("InjectAsContextWithID: %v", err)
+	}
+	if id == "" {
+		t.Error("prompt id is empty; the adapter must report the id the agent assigned")
+	}
+
+	var queuer attach.IdentifyingDeferredInjector = ad
+	qid, err := queuer.QueueAsContextWithID(context.Background(), "fyi", auth.Caller{Identity: "watcher"})
+	if err != nil {
+		t.Fatalf("QueueAsContextWithID: %v", err)
+	}
+	if qid == "" || qid == id {
+		t.Errorf("deferred prompt id = %q, want a distinct non-empty id (waking was %q)", qid, id)
+	}
+	if n := ad.Agent().PendingInboxCount(); n != 2 {
+		t.Errorf("agent PendingInboxCount = %d, want both messages queued on the agent itself", n)
+	}
+
+	var nilAd *Adapter
+	if _, err := nilAd.InjectAsContextWithID(context.Background(), "x", auth.Caller{}); err == nil {
+		t.Error("InjectAsContextWithID on a nil adapter returned no error")
+	}
+	if _, err := New(nil).QueueAsContextWithID(context.Background(), "x", auth.Caller{}); err == nil {
+		t.Error("QueueAsContextWithID on an adapter over a nil agent returned no error")
+	}
+}
+
 // TestAttachUsage_PerModelWhenMultipleModels covers the mixed-model
 // path (parent frontier + subtask flash). PerModel must be populated
 // and CostUSDUncachedReference must roll up per-model too.

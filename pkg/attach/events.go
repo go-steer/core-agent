@@ -160,6 +160,24 @@ import "time"
 // registrant without the deferral capability answers 501 rather than
 // waking anyway, since a silent upgrade to a wake would hand back the
 // exact preemption the caller asked to avoid.
+//
+// v1.10.0 (#840) also has POST /sessions/{sid}/inject report the
+// `prompt_id` it assigned, on both deliveries, and POST
+// /sessions/{sid}/wake report it when the call carried a prompt. It is
+// the same id that goes out on `inbox`/queued, comes back on
+// `inbox`/dequeued, and names a turn on `turn-complete` — and it is
+// the only handle a client has on the turn its message will land in
+// from the moment it sends. Everything else arrives too late
+// (`turn-complete`), or is not survivable across a reconnect
+// (`inbox` events carry the id but have no `seq`, so a mapping
+// rebuilt from them desynchronises), or breaks under two concurrent
+// injectors (correlating "the frame that just fired" with "the
+// request I just made"). Additive and `omitempty`: absent means the
+// daemon could not name one — a pre-#840 build, or a host whose
+// registrant doesn't implement IdentifyingInjector — so a client must
+// tolerate its absence rather than requiring it. It is NOT a turn id:
+// the inbox coalesces, so N injects can share one `turn-complete` and
+// only one of their ids appears on it.
 const protocolVersion = "1.10.0"
 
 // SSE event-type names per the protocol spec (section 2).

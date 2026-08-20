@@ -564,10 +564,29 @@ type InjectRequest struct {
 // Woke has no `omitempty`: false is the informative value, and a key
 // that disappears exactly when it says something is a key clients read
 // wrong. Its absence means a pre-1.10.0 daemon, which always woke.
+//
+// PromptID does have `omitempty`, for the opposite reason: there is no
+// informative empty id. Absent means the daemon could not name one —
+// an older build, or a registrant that doesn't implement
+// IdentifyingInjector — and a client has to handle that case whatever
+// the encoding, so the field may as well be missing rather than
+// present-and-meaningless.
 type InjectResponse struct {
 	Injected string `json:"injected"`
 	Session  string `json:"session"`
 	Woke     bool   `json:"woke"`
+	// PromptID is the inbox id assigned to this message: the same id
+	// that goes out on the `inbox`/queued event and eventually names a
+	// turn on `turn-complete`. It lets a client key per-turn state
+	// (a placeholder message, a usage footer) from the moment it
+	// injects, instead of guessing which turn an answer belongs to.
+	//
+	// It is NOT a turn id. The inbox coalesces, so several injects can
+	// share one turn and `turn-complete` will name only one of their
+	// ids; a client that sees its id go unmentioned should collapse
+	// its state onto the turn that did get named, not wait for a turn
+	// that will never arrive.
+	PromptID string `json:"prompt_id,omitempty"`
 }
 
 func (h *handlers) doInject(w http.ResponseWriter, r *http.Request, entry *Entry) {
@@ -605,11 +624,14 @@ func (h *handlers) doInject(w http.ResponseWriter, r *http.Request, entry *Entry
 	// span context otelhttp extracted from the inbound `traceparent`,
 	// which is the only handle the eventual turn has on the request
 	// that queued the message. See ContextInjector.
-	var err error
+	var (
+		promptID string
+		err      error
+	)
 	if wake {
-		err = injectWithContext(r.Context(), entry.Agent, req.Message, caller)
+		promptID, err = injectWithContext(r.Context(), entry.Agent, req.Message, caller)
 	} else {
-		err = deferred.QueueAsContext(r.Context(), req.Message, caller)
+		promptID, err = queueWithContext(r.Context(), deferred, req.Message, caller)
 	}
 	if err != nil {
 		http.Error(w, fmt.Sprintf("inject: %v", err), http.StatusInternalServerError)
@@ -619,10 +641,16 @@ func (h *handlers) doInject(w http.ResponseWriter, r *http.Request, entry *Entry
 	// client can confirm which delivery it got instead of inferring it
 	// from a field's absence — and so a pre-1.10.0 daemon, which omits
 	// the key entirely, is distinguishable from one that deferred.
+	//
+	// `prompt_id` likewise comes back on both paths (#840): a deferred
+	// message still drains into a turn, so a client keying state by
+	// turn needs the handle either way. Empty when the registrant
+	// can't name one, in which case the field is omitted.
 	writeJSON(w, http.StatusOK, InjectResponse{
 		Injected: req.Message,
 		Session:  entry.SessionID,
 		Woke:     wake,
+		PromptID: promptID,
 	})
 }
 
@@ -635,6 +663,24 @@ type wakeRequest struct {
 	// wake fires (equivalent to a paired inject + wake from the
 	// operator). Empty just wakes without queuing a message.
 	Prompt string `json:"prompt,omitempty"`
+}
+
+// WakeResponse is the 200 body of POST /sessions/{sid}/wake.
+//
+// Replaces a hand-rolled map literal so the shape has one declaration
+// clients can build against — the same drift that let the in-tree
+// client miss fields on InjectRequest. Woken and Prompt keep their
+// pre-existing encoding exactly, including Prompt's empty-string
+// presence on a bare wake.
+type WakeResponse struct {
+	Woken  string `json:"woken"`
+	Prompt string `json:"prompt"`
+	// PromptID is the inbox id assigned to Prompt, when one was
+	// supplied and the registrant can name one (#840). A wake carrying
+	// a prompt IS an inject, so it reports the id on the same terms
+	// POST /inject does; a bare wake queues nothing and reports
+	// nothing.
+	PromptID string `json:"prompt_id,omitempty"`
 }
 
 func (h *handlers) doWake(w http.ResponseWriter, r *http.Request, entry *Entry) {
@@ -656,19 +702,22 @@ func (h *handlers) doWake(w http.ResponseWriter, r *http.Request, entry *Entry) 
 	if h.rejectDraining(w) {
 		return
 	}
+	var promptID string
 	if req.Prompt != "" {
 		caller, _ := auth.CallerFromContext(r.Context())
 		// Same trace-context handoff as doInject — a wake carrying a
 		// prompt is an inject.
-		if err := injectWithContext(r.Context(), entry.Agent, req.Prompt, caller); err != nil {
+		var err error
+		if promptID, err = injectWithContext(r.Context(), entry.Agent, req.Prompt, caller); err != nil {
 			http.Error(w, fmt.Sprintf("wake: inject prompt: %v", err), http.StatusInternalServerError)
 			return
 		}
 	}
 	entry.Agent.RequestWake()
-	writeJSON(w, http.StatusOK, map[string]any{
-		"woken":  entry.SessionID,
-		"prompt": req.Prompt,
+	writeJSON(w, http.StatusOK, WakeResponse{
+		Woken:    entry.SessionID,
+		Prompt:   req.Prompt,
+		PromptID: promptID,
 	})
 }
 

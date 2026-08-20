@@ -452,6 +452,39 @@ func (a *Agent) InjectAs(message string, caller auth.Caller) error {
 // to the turn span it starts (see turnspan.go). Injects with no trace
 // context are a clean no-op.
 func (a *Agent) InjectAsContext(ctx context.Context, message string, caller auth.Caller) error {
+	_, err := a.InjectAsContextWithID(ctx, message, caller)
+	return err
+}
+
+// InjectAsContextWithID is InjectAsContext returning the prompt_id it
+// assigned to the queued message — the same id that goes out on the
+// `inbox`/queued event, comes back on `inbox`/dequeued when a turn
+// drains it, and names the turn on `turn-complete`.
+//
+// It exists because the id was being computed and thrown away: an
+// attach client that puts a chat thread in front of a session has no
+// other way to key state on the turn its message will produce.
+// `turn-complete.prompt_id` names it, but only at the end, and by then
+// the client needed to have known since the start; the `inbox` events
+// carry it but have no `seq`, so a counter driven off them
+// desynchronises across exactly the reconnect it most needs to survive;
+// and correlating "the queued event that just fired" with "the inject
+// I just sent" holds right up until two goroutines inject on one
+// session, which is the case that needs it (#840).
+//
+// A sibling rather than a changed signature: pkg/agent is inside the
+// stability promise, and InjectAsContext returning (string, error)
+// would be a source break for every out-of-tree caller.
+//
+// The id is NOT one-to-one with a turn, and callers must not treat it
+// as one. The inbox coalesces — several messages queued between turns
+// drain into a single "[Inbox]" block and run as one turn (see
+// docs/multi-session-design.md, "the turn answers the most recent
+// ask") — so N injects can share one turn, and `turn-complete` names
+// only one of the ids. What the id buys is the ability to SEE that
+// fan-in and collapse client state accordingly, which is not possible
+// without it.
+func (a *Agent) InjectAsContextWithID(ctx context.Context, message string, caller auth.Caller) (string, error) {
 	return a.injectAs(ctx, message, caller, injectMode{releaseHold: true, wake: true})
 }
 
@@ -482,6 +515,22 @@ func (a *Agent) InjectAsContext(ctx context.Context, message string, caller auth
 // Zero-value caller and the ctx rules are exactly InjectAsContext's;
 // see there.
 func (a *Agent) QueueAsContext(ctx context.Context, message string, caller auth.Caller) error {
+	_, err := a.QueueAsContextWithID(ctx, message, caller)
+	return err
+}
+
+// QueueAsContextWithID is QueueAsContext returning the prompt_id it
+// assigned — the deferred sibling of InjectAsContextWithID, and see
+// there for why the id is worth having and why it is not a turn
+// identity.
+//
+// Both deliveries report an id because the client-side problem is the
+// same on either: a deferred message still drains into a turn, still
+// produces an `inbox`/queued frame, and still leaves a gateway with
+// nothing to key on. Reporting the id on only the waking path would
+// make the response shape depend on a flag in the request, which is
+// the kind of conditional field clients read wrong.
+func (a *Agent) QueueAsContextWithID(ctx context.Context, message string, caller auth.Caller) (string, error) {
 	return a.injectAs(ctx, message, caller, injectMode{})
 }
 
@@ -502,26 +551,28 @@ type injectMode struct {
 	wake bool
 }
 
-// injectAs is the queue-and-notify core.
+// injectAs is the queue-and-notify core. It returns the prompt_id the
+// inbox assigned, which the *WithID entry points hand back to callers
+// that need to key state on the turn this message will land in (#840).
 //
 // ctx supplies the trace context stamped on the queued message.
 // Reading it is a plain context-value lookup that returns a value
 // type, so the capture allocates nothing and costs nothing extra when
 // tracing is off (the returned SpanContext is simply invalid).
-func (a *Agent) injectAs(ctx context.Context, message string, caller auth.Caller, mode injectMode) error {
+func (a *Agent) injectAs(ctx context.Context, message string, caller auth.Caller, mode injectMode) (string, error) {
 	if a == nil {
-		return errors.New("agent: nil receiver")
+		return "", errors.New("agent: nil receiver")
 	}
 	if a.inbox == nil {
 		// Defensive: callers should always go through agent.New
 		// which constructs a non-nil inbox, but if a consumer
 		// hand-constructed an Agent struct (tests in this package
 		// do, for example) we don't want to panic.
-		return errors.New("agent: inbox not initialised (construct via agent.New)")
+		return "", errors.New("agent: inbox not initialised (construct via agent.New)")
 	}
 	id, err := a.inbox.push(message, caller, trace.SpanContextFromContext(ctx), !mode.wake)
 	if err != nil {
-		return err
+		return "", err
 	}
 	a.Emit(attach.EventInbox, attach.InboxEvent{
 		State:    attach.InboxStateQueued,
@@ -561,7 +612,7 @@ func (a *Agent) injectAs(ctx context.Context, message string, caller auth.Caller
 	if mode.wake {
 		a.wake.fire()
 	}
-	return nil
+	return id, nil
 }
 
 // DrainInbox pulls every currently-queued message off the inbox and

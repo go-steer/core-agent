@@ -122,8 +122,8 @@ All write endpoints cap request bodies at **8 KiB** (`operatorPostMaxBytes`).
 
 | Method | Path suffix | Request | Response |
 |---|---|---|---|
-| `POST` | `/inject` | `{"message":"...", "wake"?:bool}` (empty message → **400**; `wake` defaults to **true**) | `{"injected":..., "session":..., "woke":bool}` ([fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-inject-v1.json)); **501** on `"wake": false` if the agent can't defer — see [Queuing context without a turn](#queuing-context-without-a-turn-protocol-1100); **503** + `Retry-After` during daemon shutdown (message would die with the in-memory inbox — redeliver after restart) |
-| `POST` | `/wake` | `{"target"?:..., "prompt"?:...}` (both optional) | `{"woken":..., "prompt":...}`; **501** if `target` set; **503** + `Retry-After` during daemon shutdown. Emits a `wake` frame to everyone watching `/events` (protocol 1.7.0 — see [Wake notifications](#wake-notifications-protocol-170)) |
+| `POST` | `/inject` | `{"message":"...", "wake"?:bool}` (empty message → **400**; `wake` defaults to **true**) | `{"injected":..., "session":..., "woke":bool, "prompt_id"?:...}` ([fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-inject-v2.json)); `prompt_id` is the handle for [keying state by turn](#keying-state-by-turn-protocol-1100) and is omitted when the agent can't name one; **501** on `"wake": false` if the agent can't defer — see [Queuing context without a turn](#queuing-context-without-a-turn-protocol-1100); **503** + `Retry-After` during daemon shutdown (message would die with the in-memory inbox — redeliver after restart) |
+| `POST` | `/wake` | `{"target"?:..., "prompt"?:...}` (both optional) | `{"woken":..., "prompt":..., "prompt_id"?:...}` ([fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-wake-v1.json)); `prompt_id` only when a `prompt` was queued; **501** if `target` set; **503** + `Retry-After` during daemon shutdown. Emits a `wake` frame to everyone watching `/events` (protocol 1.7.0 — see [Wake notifications](#wake-notifications-protocol-170)) |
 | `POST` | `/interrupt` | `{"hold"?:bool, "stop_subagents"?:bool}` — **body optional**, absent = `{"hold":true}` | `{"interrupted":bool, "paused":bool, "running_subagents":[...], "stopped_subagents":[...], "session":...}`; **412** if agent implements neither `PauseController` nor `InterruptProvider`; `X-Interrupted: nothing-in-flight` header when idle; `X-Hold: unsupported` when the agent can't park; writes audit event `Author=attach/interrupt` |
 | `POST` | `/pause` | `{"reason"?:...}` — **body optional** | `{"paused":bool, "transitioned":bool, "state":"paused", "paused_since":..., "pause_reason":..., "session":...}`; **501** if no `PauseController` |
 | `POST` | `/resume` | `{"mode"?:"steer"\|"continue"\|"abandon", "steer"?:...}` — **body optional** (absent = `continue`) | `{"resumed":bool, "mode":..., "state":..., "session":...}`; **400** on an unknown mode or `mode=steer` with no text; **501** if no `PauseController`; **503** + `Retry-After` during daemon shutdown |
@@ -239,6 +239,28 @@ The message is appended to the inbox, published as the usual `inbox`/queued fram
 **501** means the agent registered no deferral capability. The request is refused rather than quietly upgraded to a waking inject: a silent upgrade would hand back exactly the preemption the caller asked to avoid, behind a 200 that says nothing went wrong.
 
 Omitting `wake`, or sending `true`, is the historical behavior in every respect — the flag is a tristate so no pre-1.10.0 client changes meaning.
+
+### Keying state by turn (protocol 1.10.0)
+
+`POST /inject` returns the `prompt_id` it assigned to the message ([#840](https://github.com/go-steer/core-agent/issues/840)):
+
+```bash
+curl -sS -X POST http://127.0.0.1:7777/sessions/s-4412/inject \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"what is the cluster doing"}'
+# {"injected":"what is the cluster doing","session":"s-4412","woke":true,
+#  "prompt_id":"0199c3a1-6b2e-7f04-9c11-2d8ae4f01b73"}
+```
+
+That is the same id the message carries on its `inbox`/queued frame, on the `inbox`/dequeued frame when a turn drains it, and on the `turn-complete` frame of the turn that answers it. `POST /wake` reports it too when the call carried a `prompt`, since a wake with a prompt *is* an inject.
+
+**Who this is for: anything that renders a turn.** A gateway putting a chat thread in front of a session posts a placeholder while a turn runs and retires it when the answer lands. Without an id from the inject, the placeholder has no turn identity and neither does the answer, so two overlapping questions cross: the first answer retires the second question's placeholder, and the second runs to completion with none. Usage accounting has the same shape — `usage-update` deltas accumulate against "the current turn", which is only well-defined while turns don't overlap.
+
+**Nothing else on the stream substitutes for it.** `turn-complete.prompt_id` is the right handle but arrives at the *end*, by which point the client needed to have known since the start. The `inbox` frames carry the id but have **no `seq`**, so a mapping rebuilt from them desynchronises across exactly the reconnect it most needs to survive — everything else a client depends on across a resume is either seq-deduplicated or idempotent. And correlating "the queued frame that just fired" with "the inject I just sent" holds only until two producers inject on one session, which is the case that needs it.
+
+**It is not a turn id, and a client must not treat it as one.** The inbox coalesces: several messages queued between turns drain into a single `[Inbox]` block and run as **one** turn, and `turn-complete` names only one of their ids. A client whose id goes unmentioned should collapse its state onto the turn that *was* named rather than wait for one that will never arrive. That fan-in is not new — what the id adds is the ability to see it.
+
+**`prompt_id` is omitted, not empty, when the daemon can't name one.** There is no informative empty id. Absence means a pre-#840 daemon or a host whose registrant doesn't implement `attach.IdentifyingInjector` — the in-tree `attachadapter` does, so a stock daemon always reports one. The [v1 fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-inject-v1.json) stays frozen as the shape without it.
 
 ### Interrupt, pause, and resume (protocol 1.5.0)
 

@@ -255,6 +255,24 @@ func (ad *Adapter) QueueAsContext(ctx context.Context, message string, caller au
 	return ad.Agent().QueueAsContext(ctx, message, caller)
 }
 
+// InjectAsContextWithID implements attach.IdentifyingInjector —
+// InjectAsContext returning the prompt_id, so POST /inject can echo
+// the handle a client keys per-turn state on (#840).
+//
+// Here for the same reason QueueAsContext is: the handler's capability
+// assertion runs against this adapter, not the agent it wraps, so an
+// unforwarded method means every response silently omits `prompt_id`
+// while every direct-agent test still passes.
+func (ad *Adapter) InjectAsContextWithID(ctx context.Context, message string, caller auth.Caller) (string, error) {
+	return ad.Agent().InjectAsContextWithID(ctx, message, caller)
+}
+
+// QueueAsContextWithID implements attach.IdentifyingDeferredInjector —
+// the wake:false half of the same forward.
+func (ad *Adapter) QueueAsContextWithID(ctx context.Context, message string, caller auth.Caller) (string, error) {
+	return ad.Agent().QueueAsContextWithID(ctx, message, caller)
+}
+
 // RequestWake implements attach.Registrant.
 func (ad *Adapter) RequestWake() { ad.Agent().RequestWake() }
 
@@ -343,6 +361,9 @@ var (
 	_ attach.OperatorEventTarget = (*Adapter)(nil)
 	_ attach.EmitTarget          = (*Adapter)(nil) //nolint:staticcheck // deprecation-cycle conformance
 	_ attach.CapabilityReporter  = (*Adapter)(nil)
+
+	_ attach.IdentifyingInjector         = (*Adapter)(nil)
+	_ attach.IdentifyingDeferredInjector = (*Adapter)(nil)
 
 	_ attach.ToolsProvider           = (*Adapter)(nil)
 	_ attach.AgentsProvider          = (*Adapter)(nil)

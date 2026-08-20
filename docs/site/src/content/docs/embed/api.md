@@ -573,6 +573,8 @@ How to handle the bundle:
 
 The split is deliberate. A model reading several queued messages with no other instruction defaults to treating each as its own piece of work — which is how two corroborating alerts about an already-resolved incident turned into a 22-call tool loop. When the operator *did* type something, that text is the ask, so the guidance stays out of its way: "treat the bundle as the next request and respond once" would compete with the request sitting right below the separator.
 
+`InjectAsContextWithID` and `QueueAsContextWithID` are the same two deliveries returning the **prompt_id** they assigned — the id that goes out on the `inbox`/queued event and eventually names a turn on `turn-complete`. A host that renders turns (a chat gateway, a web console) needs it from the moment it injects, not at the end; see [Keying state by turn](/reference/attach-http/#keying-state-by-turn-protocol-1100) for what breaks without it. They are siblings rather than changed signatures because `pkg/agent` is inside the stability promise. The id is **not** one-to-one with a turn: the inbox coalesces, so N injects can share one `turn-complete` and only one of their ids is named on it.
+
 The inbox is per-agent (not per-manager) so consumers without a `background.Manager` get it for free. Drop-oldest backpressure at 256 messages keeps a stuck consumer from deadlocking the agent. `Agent.InboxArrived() <-chan struct{}` exposes a 1-buffer notify channel for harnesses that want to wake on input instead of polling:
 
 ```go

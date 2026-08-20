@@ -305,6 +305,34 @@ too large). 5xx for unexpected.
 depth so this is a v1 estimate (insertions since the last drain).
 Treat as informational; do not script on its exact value.
 
+**Update (shipped shape).** The envelope above is the v1 sketch and
+never shipped verbatim. What the handler actually answers is `200 OK`
+with `attach.InjectResponse` — see the [attach HTTP
+reference](site/src/content/docs/reference/attach-http.md) for the
+authoritative table:
+
+```jsonc
+{
+  "injected": "switch to read-only mode — incident response in progress",
+  "session":  "s-4412",
+  "woke":     true,           // #698, protocol 1.10.0
+  "prompt_id": "0199c3a1-…"   // #840, protocol 1.10.0; omitted when unavailable
+}
+```
+
+`queueDepth` was never implemented and is not planned; `prompt_id`
+turned out to be the field clients actually wanted from this response
+and answers a strictly better question. Depth tells a client how
+backed up the inbox is, which it can do nothing about; the id tells it
+*which turn its message will land in*, which is what a surface
+rendering turns needs and could not otherwise obtain — `turn-complete`
+names the id only at the end, `inbox` frames carry it but have no
+`seq` to survive a reconnect, and correlating the frame that just
+fired with the request just made breaks the moment two producers share
+a session. The id is deliberately **not** a turn identity: the inbox
+coalesces N messages into one turn, and `turn-complete` names one of
+them.
+
 ## Server-side architecture
 
 ### Package layout

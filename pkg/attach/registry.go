@@ -173,15 +173,85 @@ type DeferredInjector interface {
 	QueueAsContext(ctx context.Context, message string, caller auth.Caller) error
 }
 
+// IdentifyingInjector is the optional capability a registrant
+// implements when it can report the prompt_id it assigned to a queued
+// message, so POST /inject can echo it (#840).
+//
+// The id is the only handle a client has on the turn its message will
+// land in, from the moment it sends. Everything else arrives too late
+// or not reliably enough: `turn-complete` names the prompt_id but only
+// at the end, `inbox` events carry it but have no `seq` so a counter
+// driven off them desynchronises across a reconnect, and correlating
+// "the queued frame that just fired" with "the inject I just sent"
+// holds only while one goroutine injects.
+//
+// It EMBEDS ContextInjector for the same reason DeferredInjector does:
+// the id comes out of the same call that queues the message, so a
+// registrant that can report one can necessarily carry the context
+// too, and requiring both together means the handler's paths can't
+// disagree about trace linkage.
+//
+// Optional rather than a method on Registrant, again for the reason
+// ContextInjector is: Registrant is exported API. A registrant without
+// it degrades silently and correctly — the message is queued exactly
+// as before and the 200 simply omits `prompt_id`, which is
+// indistinguishable from a pre-#840 daemon and is what a client must
+// already tolerate.
+type IdentifyingInjector interface {
+	ContextInjector
+
+	// InjectAsContextWithID is InjectAsContext returning the assigned
+	// prompt_id. See Agent.InjectAsContextWithID — in particular, the
+	// id is not one-to-one with a turn, because the inbox coalesces.
+	InjectAsContextWithID(ctx context.Context, message string, caller auth.Caller) (string, error)
+}
+
+// IdentifyingDeferredInjector is IdentifyingInjector for the
+// wake:false delivery (#698 + #840).
+//
+// A separate interface rather than a method on IdentifyingInjector
+// because the two capabilities are independent: deferring is a
+// property of the registrant's inbox, reporting an id is a property of
+// its bookkeeping, and a registrant may well have one without the
+// other. Detecting them separately means each path degrades on its own
+// merits instead of one missing method silently costing ids on both.
+type IdentifyingDeferredInjector interface {
+	// QueueAsContextWithID is QueueAsContext returning the assigned
+	// prompt_id. See Agent.QueueAsContextWithID.
+	QueueAsContextWithID(ctx context.Context, message string, caller auth.Caller) (string, error)
+}
+
 // injectWithContext queues message on reg, preferring the
-// context-carrying path when the registrant supports it. Shared by the
-// /inject and /wake handlers so both operator write paths produce the
-// same trace linkage.
-func injectWithContext(ctx context.Context, reg Registrant, message string, caller auth.Caller) error {
-	if ci, ok := reg.(ContextInjector); ok {
-		return ci.InjectAsContext(ctx, message, caller)
+// context-carrying path when the registrant supports it, and reports
+// the assigned prompt_id when the registrant can name one. Shared by
+// the /inject and /wake handlers so both operator write paths produce
+// the same trace linkage and the same id reporting.
+//
+// The returned id is "" for a registrant that implements neither
+// IdentifyingInjector nor ContextInjector-with-ids; that is not an
+// error, and callers must omit the field rather than reporting an
+// empty one.
+func injectWithContext(ctx context.Context, reg Registrant, message string, caller auth.Caller) (string, error) {
+	if ii, ok := reg.(IdentifyingInjector); ok {
+		return ii.InjectAsContextWithID(ctx, message, caller)
 	}
-	return reg.InjectAs(message, caller)
+	if ci, ok := reg.(ContextInjector); ok {
+		return "", ci.InjectAsContext(ctx, message, caller)
+	}
+	return "", reg.InjectAs(message, caller)
+}
+
+// queueWithContext is injectWithContext's deferred counterpart: file
+// the message without waking, reporting the prompt_id when the
+// registrant can name one. The caller has already established that reg
+// implements DeferredInjector (that capability is NOT optional on this
+// path — a registrant that can't defer gets a 501 rather than a
+// silently waking 200), so only the id half is feature-detected here.
+func queueWithContext(ctx context.Context, deferred DeferredInjector, message string, caller auth.Caller) (string, error) {
+	if idi, ok := deferred.(IdentifyingDeferredInjector); ok {
+		return idi.QueueAsContextWithID(ctx, message, caller)
+	}
+	return "", deferred.QueueAsContext(ctx, message, caller)
 }
 
 // SessionRegistry holds every session exposed over attach — hosts

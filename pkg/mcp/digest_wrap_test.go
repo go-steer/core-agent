@@ -100,7 +100,7 @@ func TestWithNamespaceAndDigest_NilOptsFallsBackToPlainNamespace(t *testing.T) {
 	// Nil DigestOptions == pre-#84 behavior. Existing consumers stay
 	// on withNamespace with no digesting.
 	inner := newInMemoryToolset(t)
-	wrapped := withNamespaceAndDigest(inner, "demo", "demo", nil)
+	wrapped := withNamespaceAndDigest(inner, "demo", "demo", nil, false)
 	tools, err := wrapped.Tools(asReadonly(context.Background()))
 	if err != nil {
 		t.Fatal(err)
@@ -123,7 +123,7 @@ func TestWithNamespaceAndDigest_ServerInDenylistFallsThrough(t *testing.T) {
 	opts := &DigestOptions{
 		NeverServers: map[string]bool{"debug-server": true},
 	}
-	wrapped := withNamespaceAndDigest(inner, "debug-server", "debug-server", opts)
+	wrapped := withNamespaceAndDigest(inner, "debug-server", "debug-server", opts, false)
 	tools, err := wrapped.Tools(asReadonly(context.Background()))
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +141,7 @@ func TestWithNamespaceAndDigest_WrapsWhenOptsProvided(t *testing.T) {
 	// come out as digestingTool.
 	inner := newInMemoryToolset(t)
 	opts := &DigestOptions{Threshold: 100}
-	wrapped := withNamespaceAndDigest(inner, "demo", "demo", opts)
+	wrapped := withNamespaceAndDigest(inner, "demo", "demo", opts, false)
 	tools, err := wrapped.Tools(asReadonly(context.Background()))
 	if err != nil {
 		t.Fatal(err)
@@ -490,7 +490,7 @@ func TestDigestingTool_Run_LLMFallback_ErrorDegradesToBoundedPassthrough(t *test
 func runWrappedEcho(t *testing.T, prefix, server string, opts *DigestOptions) []tool.Tool {
 	t.Helper()
 	inner := newInMemoryToolset(t)
-	wrapped := withNamespaceAndDigest(inner, prefix, server, opts)
+	wrapped := withNamespaceAndDigest(inner, prefix, server, opts, false)
 	tools, err := wrapped.Tools(asReadonly(context.Background()))
 	if err != nil {
 		t.Fatalf("Tools: %v", err)
@@ -550,7 +550,7 @@ func (fixedToolset) Close() error { return nil }
 func wrapFixedTool(t *testing.T, name string, resp map[string]any, opts *DigestOptions) tool.Tool {
 	t.Helper()
 	inner := fixedToolset{t: fixedResponseRunnable{name: name, resp: resp}}
-	wrapped := withNamespaceAndDigest(inner, "demo", "demo", opts)
+	wrapped := withNamespaceAndDigest(inner, "demo", "demo", opts, false)
 	tools, err := wrapped.Tools(asReadonly(context.Background()))
 	if err != nil {
 		t.Fatalf("Tools: %v", err)

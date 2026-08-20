@@ -211,7 +211,12 @@ type Gate struct {
 // underlying names for these categories. "mcp" is deliberately NOT
 // exempt: MCP servers expose arbitrary tools including mutating
 // ones, so recipes should judge case-by-case rather than blanket-
-// exempt the namespace.
+// exempt the namespace. The case-by-case answer arrived in #693 and
+// does not live in this table: pkg/tools' gate wrapper classifies
+// each call with tools.IsReadOnlyTool and routes read-only ones to
+// CheckReadOnlyToolCall, which exempts them via planFirstDenial's
+// readOnly parameter. A name table can't express that — the name is
+// "mcp" for every tool from every server.
 //
 // Anything not in this set (write_file/edit_file/delete_file/bash,
 // fetch_url, spawn_agent, spawn_remote_agent, every MCP tool) is
@@ -580,15 +585,22 @@ func (g *Gate) PlanRequired() bool {
 // promptForPath so the pre-check runs BEFORE mode-based logic —
 // even ModeYolo denies until the plan is recorded.
 //
-// Returns nil (allow continuation) in three cases:
+// Returns nil (allow continuation) in four cases:
 //  1. RequirePlanArtifact wasn't set at construction.
 //  2. The tool is in planExemptTools (research tools + record_plan).
-//  3. A plan has already been recorded this session.
-func (g *Gate) planFirstDenial(toolName string) error {
+//  3. The caller classified this call read-only. Plan-first gates
+//     MUTATION; a read is research, and research is what produces the
+//     plan. Built-in reads get this from planExemptTools by name; the
+//     parameter is how a namespaced toolset — where the only name the
+//     gate ever sees is the namespace, "mcp" — says the same thing per
+//     call (#693). Callers pass the tools.IsReadOnlyTool verdict, which
+//     is fail-safe mutating for anything that hasn't declared itself.
+//  4. A plan has already been recorded this session.
+func (g *Gate) planFirstDenial(toolName string, readOnly bool) error {
 	if !g.requirePlanArtifact {
 		return nil
 	}
-	if planExemptTools[toolName] {
+	if readOnly || planExemptTools[toolName] {
 		return nil
 	}
 	g.mu.Lock()
@@ -675,7 +687,7 @@ func (g *Gate) resolveSessionGate(ctx context.Context) *Gate {
 // namespaced toolsets so the grant is scoped per underlying tool.
 func (g *Gate) CheckGeneric(ctx context.Context, toolName, key string) error {
 	g = g.resolveSessionGate(ctx)
-	return g.gateRequest(ctx, PromptKindGeneric, toolName, key, toolName, key, toolName)
+	return g.gateRequest(ctx, PromptKindGeneric, toolName, key, toolName, key, toolName, false)
 }
 
 // CheckToolCall gates a call to a specific tool within a namespaced
@@ -691,8 +703,31 @@ func (g *Gate) CheckGeneric(ctx context.Context, toolName, key string) error {
 // uses namespace, preserving the "mcp:<tool>" / "skill:<tool>"
 // pattern grammar.
 func (g *Gate) CheckToolCall(ctx context.Context, namespace, tool, key string) error {
+	return g.checkToolCall(ctx, namespace, tool, key, false)
+}
+
+// CheckReadOnlyToolCall is CheckToolCall for a call the caller has
+// classified read-only (tools.IsReadOnlyTool). Everything about the
+// check is identical except plan-first gating, which the classification
+// exempts: plan-first is a rule about mutating before there is a plan,
+// and a namespaced toolset is the one place the gate can't tell reads
+// from writes on its own, because the only name it sees is the
+// namespace (#693).
+//
+// It is a sibling rather than a fifth parameter on CheckToolCall
+// because pkg/permissions is inside the stability promise — hosts
+// embedding the gate keep compiling, and a caller that doesn't know
+// about dispatch classes keeps getting the conservative answer.
+//
+// Policy allow/deny, permission mode, and prompting are untouched: a
+// read-only MCP tool in ask mode still prompts.
+func (g *Gate) CheckReadOnlyToolCall(ctx context.Context, namespace, tool, key string) error {
+	return g.checkToolCall(ctx, namespace, tool, key, true)
+}
+
+func (g *Gate) checkToolCall(ctx context.Context, namespace, tool, key string, readOnly bool) error {
 	g = g.resolveSessionGate(ctx)
-	return g.gateRequest(ctx, PromptKindGeneric, namespace, key, namespace, key, sessionToolKey(namespace, tool))
+	return g.gateRequest(ctx, PromptKindGeneric, namespace, key, namespace, key, sessionToolKey(namespace, tool), readOnly)
 }
 
 // sessionToolKey builds the per-underlying-tool session-grant key for
@@ -722,7 +757,7 @@ func (g *Gate) CheckBash(ctx context.Context, command string) error {
 			return fmt.Errorf("bash refused: %s", SearchGateMessage(binary, native))
 		}
 	}
-	return g.gateRequest(ctx, PromptKindBash, "bash", command, "bash", command, "bash")
+	return g.gateRequest(ctx, PromptKindBash, "bash", command, "bash", command, "bash", false)
 }
 
 // BashSearchGate reports the resolved search-gate posture.
@@ -893,7 +928,7 @@ func (g *Gate) CheckFileWrite(ctx context.Context, toolName, path string) error 
 	if g.sessionToolAllowed(toolName) {
 		return nil
 	}
-	return g.gateRequest(ctx, PromptKindFileWrite, toolName, path, toolName, path, toolName)
+	return g.gateRequest(ctx, PromptKindFileWrite, toolName, path, toolName, path, toolName, false)
 }
 
 // checkControlPlaneWrite is the elevated gate for privilege-bearing
@@ -909,7 +944,7 @@ func (g *Gate) CheckFileWrite(ctx context.Context, toolName, path string) error 
 // remembered, so a session-tool/always choice on a control-plane
 // prompt can't install a standing bypass.
 func (g *Gate) checkControlPlaneWrite(ctx context.Context, toolName, path string) error {
-	if err := g.planFirstDenial(toolName); err != nil {
+	if err := g.planFirstDenial(toolName, false); err != nil {
 		return err
 	}
 	if g.policy.Match(toolName, path) == OutcomeDeny {
@@ -941,12 +976,12 @@ func (g *Gate) checkControlPlaneWrite(ctx context.Context, toolName, path string
 	return nil
 }
 
-func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, persistTool, persistKey, sessToolKey string) error {
+func (g *Gate) gateRequest(ctx context.Context, kind PromptKind, toolName, key, persistTool, persistKey, sessToolKey string, readOnly bool) error {
 	// Plan-first pre-check runs before mode/policy logic. Even
 	// ModeYolo respects it — the operator opted into "no actions
 	// before plan" by setting RequirePlanArtifact. Once a plan is
 	// recorded, this returns nil and normal flow resumes.
-	if err := g.planFirstDenial(toolName); err != nil {
+	if err := g.planFirstDenial(toolName, readOnly); err != nil {
 		return err
 	}
 	switch g.policy.Match(toolName, key) {
@@ -1017,7 +1052,7 @@ func (g *Gate) promptForPath(ctx context.Context, toolName, path string, op Acce
 	// the plan-first regime go through the same denial as gated
 	// tools, so a clever bypass via "write to a path outside scope"
 	// doesn't escape the gate.
-	if err := g.planFirstDenial(toolName); err != nil {
+	if err := g.planFirstDenial(toolName, false); err != nil {
 		return err
 	}
 	mode := g.Mode()

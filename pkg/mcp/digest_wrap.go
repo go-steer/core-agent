@@ -149,27 +149,29 @@ func (o *DigestOptions) threshold() int {
 // per-server denylist is applied at Tools() time, not per Run(),
 // so a denylisted tool's Declaration goes to the model unchanged.
 type digestingToolset struct {
-	inner  tool.Toolset
-	prefix string
-	server string // the mcp.json key; used for denylist check
-	opts   *DigestOptions
+	inner    tool.Toolset
+	prefix   string
+	server   string // the mcp.json key; used for denylist check
+	opts     *DigestOptions
+	readOnly bool // ServerSpec.ReadOnly — stamped onto every tool
 }
 
 // withNamespaceAndDigest wraps inner with name-prefixing AND digest
 // routing. Passing nil opts (or an opts pointer with the denylist
 // hit) yields the same behavior as plain withNamespace.
-func withNamespaceAndDigest(inner tool.Toolset, prefix, server string, opts *DigestOptions) tool.Toolset {
+func withNamespaceAndDigest(inner tool.Toolset, prefix, server string, opts *DigestOptions, readOnly bool) tool.Toolset {
 	if inner == nil || prefix == "" {
 		return inner
 	}
 	if opts == nil || opts.NeverServers[server] {
-		return withNamespace(inner, prefix)
+		return withNamespace(inner, prefix, readOnly)
 	}
 	return &digestingToolset{
-		inner:  inner,
-		prefix: sanitizePrefix(prefix),
-		server: server,
-		opts:   opts,
+		inner:    inner,
+		prefix:   sanitizePrefix(prefix),
+		server:   server,
+		opts:     opts,
+		readOnly: readOnly,
 	}
 }
 
@@ -191,7 +193,7 @@ func (d *digestingToolset) Tools(ctx agent.ReadonlyContext) ([]tool.Tool, error)
 		// (which the model sees) carries the prefixed name and the
 		// Run wrapper handles digesting after the upstream call.
 		out = append(out, digestingTool{
-			inner: renamedTool{inner: t, prefix: d.prefix},
+			inner: renamedTool{inner: t, prefix: d.prefix, readOnly: d.readOnly},
 			opts:  d.opts,
 		})
 	}
@@ -210,6 +212,14 @@ func (d digestingTool) Name() string                            { return d.inner
 func (d digestingTool) Description() string                     { return d.inner.Description() }
 func (d digestingTool) IsLongRunning() bool                     { return d.inner.IsLongRunning() }
 func (d digestingTool) Declaration() *genai.FunctionDeclaration { return d.inner.Declaration() }
+
+// ReadOnlyHint forwards the namespaced tool's dispatch class
+// (coretools.ReadOnlyHinter, #460). Without this forward the digest
+// wrap — which is the DEFAULT path for every MCP server — swallows
+// the classification entirely, and a read-only server's tools all
+// come back mutating. That is how #693's declaration would have
+// arrived dead on the shipped path.
+func (d digestingTool) ReadOnlyHint() bool { return d.inner.ReadOnlyHint() }
 
 // Run calls the wrapped tool, marshals the response, runs it through
 // digest.Process, and returns a synthetic map:

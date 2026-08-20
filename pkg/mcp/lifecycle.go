@@ -193,6 +193,37 @@ func Build(ctx context.Context, agentsDir, homeAgentsDir string, send func(strin
 	return out, toolsets, nil
 }
 
+// wrapServerToolset composes the wrapper stack one server's tools go
+// through on their way to the model. Split out of startOne so the
+// composition is testable without a live transport — every field of
+// ServerSpec that changes model-visible behavior is decided here, so
+// "the spec reached the wrap" is a claim worth a test rather than a
+// code read (this is the seam #706 wished main.go had).
+//
+// Inner to outer:
+//
+//   - namespace, so an MCP server's `read_file` doesn't collide with
+//     the built-in one, and — when the server declared itself
+//     ReadOnly — the dispatch class every tool from it carries;
+//   - digest, unless digestOpts is nil, the server is in the
+//     options-level NeverServers denylist, or the spec sets
+//     AgenticNever. Two knobs on purpose: project-wide via
+//     DigestOptions, per-server via mcp.json;
+//   - the permission gate, so MCP calls take the same ask/allow/yolo
+//     path as built-ins. Patterns use the "mcp" namespace, e.g.
+//     "mcp:filesystem_read_file".
+func wrapServerToolset(ts tool.Toolset, name string, spec ServerSpec, digestOpts *DigestOptions, gate *permissions.Gate) tool.Toolset {
+	optsForServer := digestOpts
+	if optsForServer != nil && spec.AgenticNever {
+		optsForServer = nil
+	}
+	wrapped := withNamespaceAndDigest(ts, name, name, optsForServer, spec.ReadOnly)
+	if gate != nil {
+		wrapped = coretools.GateToolset(wrapped, gate, "mcp")
+	}
+	return wrapped
+}
+
 // startOne instantiates one server. Errors are stored on the Server
 // rather than returned so a single broken server doesn't prevent the
 // rest of the registry from coming up.
@@ -220,25 +251,7 @@ func startOne(ctx context.Context, name string, spec ServerSpec, send func(strin
 		srv.Err = fmt.Errorf("toolset: %w", err)
 		return srv
 	}
-	// Wrap with our own namespace so an MCP server's `read_file` (for
-	// example) doesn't collide with a built-in `read_file`. When
-	// digestOpts is wired AND this server isn't in the per-server
-	// denylist AND spec.AgenticNever is false, also compose the
-	// digesting wrapper so responses route through pkg/digest before
-	// reaching the model. Per-spec AgenticNever is layered onto the
-	// options-level denylist so operators have two knobs (project-
-	// wide via DigestOptions.NeverServers, per-server via mcp.json).
-	optsForServer := digestOpts
-	if optsForServer != nil && spec.AgenticNever {
-		optsForServer = nil
-	}
-	wrapped := withNamespaceAndDigest(ts, name, name, optsForServer)
-	// Then wrap with the permission gate so MCP tool calls go through
-	// the same ask/allow/yolo flow as built-in tools. Allowlist
-	// patterns use the "mcp" namespace, e.g. "mcp:filesystem_read_file".
-	if gate != nil {
-		wrapped = coretools.GateToolset(wrapped, gate, "mcp")
-	}
+	wrapped := wrapServerToolset(ts, name, spec, digestOpts, gate)
 	srv.toolset = wrapped
 	srv.Status = StatusOK
 	if tools, err := wrapped.Tools(asReadonly(ctx)); err == nil {

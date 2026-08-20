@@ -17,12 +17,15 @@ is cheaper to catch than a bad diff.
 via `permissions.plan_mode`:
 
 - **`required`** — the permission gate refuses every non-exempt tool
-  (`write_file`, `edit_file`, `delete_file`, `bash`, and the whole
-  `mcp` namespace — reads included, since the gate sees the namespace,
-  not the server's own read/write split) until the model has called
-  `record_plan` for the current turn. The plan is a *precondition*.
-  Reads through the built-in file and search tools stay exempt so the
-  model can gather what it needs to write a plan worth reviewing.
+  (`write_file`, `edit_file`, `delete_file`, `bash`, and the `mcp`
+  namespace) until the model has called `record_plan` for the current
+  turn. The plan is a *precondition*. Reads through the built-in file
+  and search tools stay exempt so the model can gather what it needs
+  to write a plan worth reviewing. MCP reads are exempt too **if** the
+  server is marked [`read_only: true`](/concepts/mcp/#read-only-servers)
+  — the gate only ever sees the namespace, never the underlying tool,
+  so without that declaration it has no way to tell a `list` from a
+  `delete` and gates both.
 - **`advisory`** — `record_plan` is registered and the artifact is
   persisted exactly the same way, but nothing is blocked. The plan is
   an *audit trail*: the agent records what it's about to do and then

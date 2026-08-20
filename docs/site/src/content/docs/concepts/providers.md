@@ -480,6 +480,7 @@ core-agent --provider=scripted --script=/tmp/session.jsonl --script-strict -p "s
 - Strict mode: the incoming request's `Contents` must JSON-equal the recorded request. Catches regressions in prompt construction. `Config` is intentionally not compared — tool decls legitimately drift.
 - Replay reproduces the LLM side faithfully, but tool execution at replay time uses the live environment. If files have changed, the agent feeds different outputs back to the scripted LLM, which still returns the next canned response. See [DESIGN.md → Mock providers and recording](https://github.com/go-steer/core-agent/blob/main/docs/DESIGN.md) for the full caveat.
 - The script must contain at least one turn; an empty file is rejected at startup.
+- One script, one cursor. `--provider=scripted` is a single-agent replay: everything that asks the provider for a model shares that cursor, so a fan-out of background subagents would divide one transcript between them. Embedding callers who need each agent to replay the same script from its own first turn should construct `mock.NewScriptedPerCall` directly — see [Embed → Recording LLM turns](/embed/api/#recording-llm-turns).
 
 ---
 

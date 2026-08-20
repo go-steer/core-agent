@@ -37,16 +37,28 @@ transcripts, no listeners. Exits 0.
 
 | Step | API |
 |---|---|
-| manager | `background.NewManager`, `WithProvider`, `WithDefaultBudgets`, `WithMaxConcurrent` |
+| manager | `background.NewManager`, `WithProvider`, `WithDefaultBudgets`, `WithMaxConcurrent`, `WithAllowAdhoc` |
+| per-spawn replay | `mock.NewScriptedPerCall` (a fresh script cursor per `Model` call) |
 | tools on the parent | `background.NewSpawnTools` (spawn_agent + stop_agent) |
 | wiring | `agent.WithBackgroundManager` (+ construction order in `Manager` docs) |
 | observe | `Manager.OnAlert` (non-consuming), `Manager.List`, `Handle.Done/Status` |
 | drain | `Agent.Run(ctx, "")` → `Manager.PrependPendingAlerts` internally |
 
-One subtlety worth copying: `mock.NewScripted`'s Provider hands out a
-single shared replay cursor, so this example wraps it in a tiny
-`models.Provider` that returns a **fresh cursor per spawn** — three
-concurrent children never race over shared script state.
+Two subtleties worth copying:
+
+- **`mock.NewScriptedPerCall`, not `mock.NewScripted`.** The manager
+  asks its provider for one LLM per spawn, and `NewScripted` hands the
+  same replay — one cursor — to all of them, so three children would
+  divide the two-turn transcript between them. `NewScriptedPerCall`
+  builds a fresh replay per `Model` call, so every child starts at
+  turn 0.
+- **`background.WithAllowAdhoc(true)`.** These children are *ad-hoc*:
+  the parent's model writes each `system_prompt` at spawn time. That
+  is off by default, because an unattended daemon should only spawn
+  operator-vetted specs — a daemon fans out by name instead
+  (`spawn_agent{agent: "recon-logs"}` against a subagent declared in
+  config). The example opts in so the fan-out gesture, rather than the
+  roster wiring, is what you read.
 
 ## What you should see
 

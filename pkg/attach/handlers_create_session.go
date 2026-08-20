@@ -30,7 +30,18 @@ type createSessionResponse struct {
 	AppName   string `json:"app"`
 	UserID    string `json:"user"`
 	SessionID string `json:"sessionID"`
-	URL       string `json:"url"`
+	// URL is normally ABSOLUTE — scheme + host, echoed back from the
+	// Host header of the request that created the session, so a client
+	// behind a proxy or port-forward gets the address it actually used
+	// (see sessionURL). It degrades to a bare "/sessions/app/sid" path
+	// only when the request carried no Host at all.
+	//
+	// So it is neither reliably a path nor reliably absolute, and a
+	// client that concatenates its own base onto it produces
+	// "http://host/http://host/sessions/..." in the common case.
+	// Use it as-is; if you must have a base, parse it and take what
+	// you need rather than prefixing.
+	URL string `json:"url"`
 }
 
 // createSession is the POST /sessions handler. The endpoint is the

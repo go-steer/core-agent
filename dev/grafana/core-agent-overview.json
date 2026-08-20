@@ -1,0 +1,453 @@
+{
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" },
+    { "type": "panel", "id": "timeseries", "name": "Time series", "version": "" },
+    { "type": "panel", "id": "stat", "name": "Stat", "version": "" },
+    { "type": "panel", "id": "table", "name": "Table", "version": "" }
+  ],
+  "title": "core-agent — overview",
+  "uid": "core-agent-overview",
+  "description": "Starter dashboard for a core-agent daemon exporting metrics over the Prometheus scrape endpoint (otel.metrics.exporter = prometheus|both). Panels mirror the queries documented at Concepts -> Metrics.",
+  "tags": ["core-agent", "genai", "otel"],
+  "editable": true,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": { "from": "now-6h", "to": "now" },
+  "timezone": "",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "refresh": 1
+      },
+      {
+        "name": "job",
+        "label": "Job",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(go_goroutine_count, job)",
+        "current": {},
+        "includeAll": true,
+        "multi": true,
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Spend",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Spend rate by model ($/hour)",
+      "description": "rate() over the cumulative USD counter, scaled to an hourly rate. Includes lower-bound series (priced=false); see the panel next to it for the trustworthy-only view.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": { "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"] } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (gen_ai_request_model) (rate(core_agent_session_cost_usd_USD_total{job=~\"$job\"}[5m])) * 3600",
+          "legendFormat": "{{gen_ai_request_model}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Spend, last 24h",
+      "description": "Split by whether every turn had a known catalog rate. priced=false is a LOWER BOUND — at least one turn was billed as $0 because its model had no rate.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 2 }, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(core_agent_session_cost_usd_USD_total{job=~\"$job\",priced=\"true\"}[24h]))",
+          "legendFormat": "exact"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(core_agent_session_cost_usd_USD_total{job=~\"$job\",priced=\"false\"}[24h]))",
+          "legendFormat": "lower bound (unpriced turns)"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Digest subagent spend, last 24h",
+      "description": "What the agentic digest wrap itself costs. Net this against the bytes it saves (row below) to see whether the wrap is paying for itself.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 2 }, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(core_agent_digest_subagent_cost_usd_USD_total{job=~\"$job\"}[24h]))",
+          "legendFormat": "digest subagent"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Tokens",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Token throughput by type",
+      "description": "input / output / cached / cache_write / thoughts / tool_use. Zero-valued types produce no series at all, so a missing dimension means 'never used', not 'broken'.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "fillOpacity": 20, "stacking": { "mode": "normal" }, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"] } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (gen_ai_token_type) (rate(gen_ai_client_token_usage_total{job=~\"$job\"}[5m]))",
+          "legendFormat": "{{gen_ai_token_type}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Prompt-cache ROI (cached reads per cache write)",
+      "description": "cache_write tokens are billed at a premium; cached tokens at a discount. Above ~1 the cache is earning; near 0 it is being written and never read (short sessions, or a prefix that keeps changing).",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 2, "custom": { "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(gen_ai_client_token_usage_total{job=~\"$job\",gen_ai_token_type=\"cached\"}[1h])) / sum(rate(gen_ai_client_token_usage_total{job=~\"$job\",gen_ai_token_type=\"cache_write\"}[1h]))",
+          "legendFormat": "cached / cache_write"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Latency",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Tool execution latency (p50 / p95 / p99)",
+      "description": "Wall-clock across the outermost tool Run — deliberately INCLUDING mutation-lock wait and, for gated tools, permission-prompt wait. Headless daemons have no prompts; on an interactive session the tail includes human think time.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 0, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(gen_ai_tool_execution_duration_seconds_bucket{job=~\"$job\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(gen_ai_tool_execution_duration_seconds_bucket{job=~\"$job\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "C",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(gen_ai_tool_execution_duration_seconds_bucket{job=~\"$job\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Slowest tools (p99 by tool)",
+      "description": "Same histogram, split by gen_ai.tool.name. Usually the fastest way to find which MCP server is driving session wall-clock.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 0, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["max"] } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "topk(10, histogram_quantile(0.99, sum by (le, gen_ai_tool_name) (rate(gen_ai_tool_execution_duration_seconds_bucket{job=~\"$job\"}[5m]))))",
+          "legendFormat": "{{gen_ai_tool_name}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Agent turn latency (p95 by agent)",
+      "description": "One point per turn, prompt to terminal event. Async and background subagents all report under gen_ai.agent.name=background_subagent — a bounded label, so an operator-authored roster cannot grow this series set without limit.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 27 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 0, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"] } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.95, sum by (le, gen_ai_agent_name) (rate(gen_ai_agent_invocation_duration_seconds_bucket{job=~\"$job\"}[5m])))",
+          "legendFormat": "{{gen_ai_agent_name}}"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Context and digest",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 35 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Digest bytes saved, by method",
+      "description": "Cumulative (raw - digest) byte reduction. passthrough contributes 0 by definition, so a flat passthrough line is correct, not a bug.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
+      "fieldConfig": { "defaults": { "unit": "Bps", "custom": { "fillOpacity": 20, "stacking": { "mode": "normal" }, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (digest_method) (rate(core_agent_digest_bytes_saved_total{job=~\"$job\"}[30m]))",
+          "legendFormat": "{{digest_method}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Context events (compactions / checkpoints / subtasks)",
+      "description": "Process-lifetime counters, per session. An evict + lazy resume restarts a session's series at zero — see the caveats on the Metrics page.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "fillOpacity": 60, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(core_agent_agent_compactions_total{job=~\"$job\"}[15m]))",
+          "legendFormat": "compactions"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(core_agent_agent_checkpoints_total{job=~\"$job\"}[15m]))",
+          "legendFormat": "checkpoints"
+        },
+        {
+          "refId": "C",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(core_agent_agent_subtasks_total{job=~\"$job\"}[15m]))",
+          "legendFormat": "subtasks"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Health",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 44 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 11,
+      "type": "table",
+      "title": "MCP servers",
+      "description": "Presence gauge: the value is always 1, and the signal lives entirely in the mcp_status dimension. Status is set once at startup and never transitions, so a server that dies later still reads ok.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 45 },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto" } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "mcp_status" },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  { "type": "value", "options": { "error": { "color": "red", "index": 0, "text": "error" } } },
+                  { "type": "value", "options": { "ok": { "color": "green", "index": 1, "text": "ok" } } }
+                ]
+              },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } }
+            ]
+          }
+        ]
+      },
+      "options": { "showHeader": true },
+      "transformations": [
+        { "id": "labelsToFields", "options": { "mode": "columns" } },
+        { "id": "organize", "options": { "excludeByName": { "Time": true, "Value": true, "job": true, "instance": true } } }
+      ],
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "core_agent_mcp_server_status{job=~\"$job\"}",
+          "format": "table",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Watchdog alerts by signal",
+      "description": "The cheap early signal that an agent is looping. severity is warn|critical; alert on critical and pair it with the spend-rate panel above.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 45 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "fillOpacity": 60, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum"] } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (signal, severity) (increase(core_agent_watchdog_alerts_total{job=~\"$job\"}[15m]))",
+          "legendFormat": "{{signal}} ({{severity}})"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Autonomous runs by stop reason",
+      "description": "Anything other than `completed` is a run that hit a ceiling — turns, tokens, cost, wall-clock — or failed. A rising max_cost_exceeded is the budget cap doing its job; a rising retry_policy_aborted is not.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 45 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "fillOpacity": 60, "stacking": { "mode": "normal" }, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum"] } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (stop_reason) (increase(core_agent_autonomous_runs_total{job=~\"$job\"}[1h]))",
+          "legendFormat": "{{stop_reason}}"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Attach listener",
+      "description": "Active sessions, live SSE subscribers, registered peers, and subscribers dropped for falling behind the broadcaster. A nonzero drop rate means a TUI client is wedged or too slow.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 53 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(core_agent_attach_sessions_active{job=~\"$job\"})",
+          "legendFormat": "sessions"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(core_agent_attach_subscribers{job=~\"$job\"})",
+          "legendFormat": "SSE subscribers"
+        },
+        {
+          "refId": "C",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(core_agent_attach_peers_active{job=~\"$job\"})",
+          "legendFormat": "peers"
+        },
+        {
+          "refId": "D",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(core_agent_attach_subscriber_drops_total{job=~\"$job\"}[5m]))",
+          "legendFormat": "drops / 5m"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Go runtime (liveness check)",
+      "description": "Emitted by contrib/instrumentation/runtime on the same provider. If these move and nothing else does, the metrics pipeline is healthy and the agent simply hasn't run a turn yet.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 53 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "fillOpacity": 10, "showPoints": "never" } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "heap in use" },
+            "properties": [{ "id": "unit", "value": "bytes" }, { "id": "custom.axisPlacement", "value": "right" }]
+          }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(go_goroutine_count{job=~\"$job\"})",
+          "legendFormat": "goroutines"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(go_memory_used_bytes{job=~\"$job\"})",
+          "legendFormat": "heap in use"
+        }
+      ]
+    }
+  ]
+}

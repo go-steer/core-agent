@@ -17,12 +17,20 @@
 #   components:
 #     - ../../components/otel
 #
-# Sets two env vars on BOTH the daemon and watcher containers that
-# GKE Managed OTel's Instrumentation CR does not auto-inject:
+# Sets the exporter + service-name env vars on BOTH the daemon and
+# watcher containers, so the same component works on and off GKE:
 #
 #   - OTEL_TRACES_EXPORTER=otlp — flips pkg/telemetry.Setup from
 #     "no exporter" (config.json default: "none") to OTLP. Load-bearing
 #     off-GKE; harmless-redundant on GKE (CR also injects it).
+#
+#   - OTEL_METRICS_EXPORTER=otlp — daemon only. Metrics are a separate
+#     pipeline with a separate switch (ADK-go has no MeterProvider, so
+#     pkg/telemetry.SetupMetrics builds one), so the traces var alone
+#     buys spans and nothing else. NOT set on the watcher: lookout
+#     publishes its lookout_* series through its own Prometheus
+#     endpoint (--metrics-addr), not through OTLP, and would ignore
+#     the var.
 #
 #   - OTEL_SERVICE_NAME — set to "core-agent" and "lookout-watch"
 #     respectively. GKE Managed OTel's Instrumentation CR explicitly

@@ -12,17 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Strategic-merge patch: adds the two env vars that operators
-# universally need but that GKE Managed OTel's Instrumentation CR
-# does NOT auto-inject. Everything else (endpoint, exporter selection,
-# resource attributes with k8s.pod.uid, sampler config, metric interval)
-# rides the standard OTel SDK env vars the CR does inject on GKE, or
-# gets set operator-side off-GKE.
+# Strategic-merge patch: adds the env vars that operators universally
+# need but that GKE Managed OTel's Instrumentation CR does NOT
+# auto-inject, or that we want pinned rather than inherited.
+# Everything else (endpoint, resource attributes with k8s.pod.uid,
+# sampler config, metric interval) rides the standard OTel SDK env
+# vars the CR does inject on GKE, or gets set operator-side off-GKE.
 #
 #   - OTEL_TRACES_EXPORTER=otlp — load-bearing since PR #315: overrides
 #     cfg.OTEL.Exporter (default "none") without patching config.json.
 #     Redundant on GKE (the CR also injects it) but harmless there, and
 #     required off-GKE where nothing else flips the exporter on.
+#
+#   - OTEL_METRICS_EXPORTER=otlp — the same override for the metrics
+#     pipeline, which is entirely separate from traces: ADK-go has no
+#     MeterProvider, so pkg/telemetry.SetupMetrics builds its own and
+#     reads its OWN switch. Setting only OTEL_TRACES_EXPORTER gives
+#     spans and no metrics, which is the mistake this line exists to
+#     prevent. Same GKE-vs-off-GKE story as the traces var: the
+#     Instrumentation CR also injects it on GKE, nothing does off-GKE.
+#     Cost/token meters, the two ADK-schema latency histograms, the
+#     core_agent.* subsystem meters and Go runtime metrics all ride
+#     this one flip — see docs/site/.../concepts/metrics.md.
 #
 #   - OTEL_SERVICE_NAME=core-agent — GKE Managed OTel's
 #     Instrumentation CR explicitly does NOT inject this (verified
@@ -52,6 +63,8 @@ spec:
         - name: core-agent
           env:
             - name: OTEL_TRACES_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRICS_EXPORTER
               value: "otlp"
             - name: OTEL_SERVICE_NAME
               value: "core-agent"

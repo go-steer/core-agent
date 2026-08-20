@@ -1,14 +1,14 @@
 # `example-otel` overlay
 
-The [`example`](../example/) overlay + OpenTelemetry tracing to [Google Cloud Managed OpenTelemetry for GKE](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/managed-otel-gke). Spans land in [Cloud Trace](https://console.cloud.google.com/traces) — no collector to deploy, no Deployment to maintain.
+The [`example`](../example/) overlay + OpenTelemetry to [Google Cloud Managed OpenTelemetry for GKE](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/managed-otel-gke). Spans land in [Cloud Trace](https://console.cloud.google.com/traces) and metrics in [Cloud Monitoring](https://console.cloud.google.com/monitoring) — no collector to deploy, no Deployment to maintain.
 
 ## How it's assembled
 
 Three composable pieces:
 
 1. **`../example`** — the plain overlay (base + agents ConfigMap + watcher cluster-name patch).
-2. **[`../../components/otel`](../../components/otel/)** — one-env-var component that flips `pkg/telemetry`'s exporter from `none` to `otlp` via `OTEL_TRACES_EXPORTER`. That's the only core-agent-specific knob.
-3. **[`instrumentation.yaml`](instrumentation.yaml)** — a GKE Managed OpenTelemetry `Instrumentation` CR. Empty selector, so it targets all Pods in the `agent-triage` namespace. GKE auto-injects a subset of standard OTel SDK env vars: `OTEL_EXPORTER_OTLP_ENDPOINT` (in-cluster managed collector), `OTEL_TRACES_EXPORTER`, `OTEL_METRIC_EXPORT_INTERVAL`, `K8S_POD_UID`, sampler config, and `OTEL_RESOURCE_ATTRIBUTES` with `k8s.pod.uid` (collector then attaches `k8s.namespace.name` etc. server-side). **`OTEL_SERVICE_NAME` is NOT auto-injected** — the component sets it explicitly on the daemon + watcher deployments.
+2. **[`../../components/otel`](../../components/otel/)** — the component that flips `pkg/telemetry`'s exporters from `none` to `otlp` via `OTEL_TRACES_EXPORTER` and `OTEL_METRICS_EXPORTER`. Those are the only core-agent-specific knobs. Two vars, not one, because traces and metrics are separate pipelines with separate switches — ADK-go has no `MeterProvider`, so the daemon builds its own and reads its own var.
+3. **[`instrumentation.yaml`](instrumentation.yaml)** — a GKE Managed OpenTelemetry `Instrumentation` CR. Empty selector, so it targets all Pods in the `agent-triage` namespace. GKE auto-injects a subset of standard OTel SDK env vars: `OTEL_EXPORTER_OTLP_ENDPOINT` (in-cluster managed collector), `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, `OTEL_METRIC_EXPORT_INTERVAL`, `K8S_POD_UID`, sampler config, and `OTEL_RESOURCE_ATTRIBUTES` with `k8s.pod.uid` (collector then attaches `k8s.namespace.name` etc. server-side). **`OTEL_SERVICE_NAME` is NOT auto-injected** — the component sets it explicitly on the daemon + watcher deployments.
 
 Images are pinned to `2.9.0-dev.1`. That is a floor, not a preference: the recipe's `config.json` uses `alerts` and `tools.wait_and_verify`, and an older daemon does not reject that config — `pkg/config` ignores unknown keys, so it boots clean, drops both blocks, and registers neither tool ([#680](https://github.com/go-steer/core-agent/issues/680)). The `OTEL_TRACES_EXPORTER` env override this overlay relies on first shipped in `2.7.0-dev.4` ([PR #315](https://github.com/go-steer/core-agent/pull/315)); 2.8.0 added the full metrics pipeline + Go runtime instrumentation ([#325](https://github.com/go-steer/core-agent/issues/325) / [#338](https://github.com/go-steer/core-agent/issues/338)).
 
@@ -21,6 +21,7 @@ Managed OpenTelemetry is a cluster-wide toggle, and the CR shipped by this overl
     # 1. Enable the required Google Cloud APIs
     gcloud services enable \
       cloudtrace.googleapis.com \
+      monitoring.googleapis.com \
       telemetry.googleapis.com \
       --project=<PROJECT>
 
@@ -32,15 +33,19 @@ Managed OpenTelemetry is a cluster-wide toggle, and the CR shipped by this overl
       --location=<REGION> \
       --managed-otel-scope=COLLECTION_AND_INSTRUMENTATION_COMPONENTS
 
-    # 3. Grant Cloud Trace user role to the daemon Pod's identity.
+    # 3. Grant the telemetry writer roles to the daemon Pod's identity
+    #    — Cloud Trace for spans, Cloud Monitoring for metrics.
     #    Default Compute Engine SA path:
+    SA="serviceAccount:$(gcloud projects describe <PROJECT> \
+      --format='value(projectNumber)')-compute@developer.gserviceaccount.com"
     gcloud projects add-iam-policy-binding <PROJECT> \
-      --member="serviceAccount:$(gcloud projects describe <PROJECT> \
-        --format='value(projectNumber)')-compute@developer.gserviceaccount.com" \
-      --role="roles/cloudtrace.user"
+      --member="$SA" --role="roles/cloudtrace.user"
+    gcloud projects add-iam-policy-binding <PROJECT> \
+      --member="$SA" --role="roles/monitoring.metricWriter"
 
     # (Workload Identity: grant to the WI-bound Google SA the KSA
-    # `core-agent` in namespace `agent-triage` impersonates instead.)
+    # `core-agent` in namespace `agent-triage` impersonates instead.
+    # `scripts/setup-wif.sh` does all of this for the WIF path.)
 
 Requires GKE control plane `1.34.1-gke.2178000` or later, gcloud `551.0.0` or later.
 
@@ -62,12 +67,22 @@ If the daemon was already running (e.g. migrating from the plain `example` overl
 
 ## Verify
 
-Trigger any tool call (kill a Pod to fire the watcher, or use `core-agent-cli` against the daemon), then open [Cloud Trace Explorer](https://console.cloud.google.com/traces), filter by service `core-agent`. Expected span tree (documented at [`docs/reference/otel.md`](../../../../../docs/site/content/docs/reference/otel.md)):
+### Traces
+
+Trigger any tool call (kill a Pod to fire the watcher, or use `core-agent-cli` against the daemon), then open [Cloud Trace Explorer](https://console.cloud.google.com/traces), filter by service `core-agent`. Expected span tree (documented at [Concepts → OpenTelemetry](https://go-steer.github.io/core-agent/concepts/otel/)):
 
     mcp.tool_call
     ├── mcp.http_call
     └── digest.process
           └── subagent.llm_call    (agentic path only)
+
+### Metrics
+
+⚠️ **Not yet verified against a live cluster.** The Prometheus path is covered by unit tests and local UAT; OTLP metrics landing in Cloud Monitoring from a real GKE cluster has not been observed, so treat this section as the expected shape rather than a confirmed one ([#554](https://github.com/go-steer/core-agent/issues/554)).
+
+After the same trigger, [Metrics Explorer](https://console.cloud.google.com/monitoring/metrics-explorer) should carry the daemon's instruments under the `workload.googleapis.com/` prefix that the managed collector writes OTLP metrics to — start with `gen_ai.client.token.usage` (grouped by `gen_ai.request.model`) and `core_agent.session.cost_usd`, which move on every turn. `go_goroutine_count` and the other `go_*` runtime series are the liveness check: if they appear and nothing else does, the pipeline is healthy and the agent simply hasn't run a turn.
+
+The full inventory, the per-instrument attributes, and PromQL for the pull path are on [Concepts → Metrics](https://go-steer.github.io/core-agent/concepts/metrics/).
 
 ## Customizing
 
@@ -91,3 +106,6 @@ Trigger any tool call (kill a Pod to fire the watcher, or use `core-agent-cli` a
 | Daemon logs `OTLP export failed: dial tcp: ... connection refused` | Managed OTel enabled but the `Instrumentation` CR didn't reach the daemon Pod — check `kubectl describe pod` for injected env vars; if absent, verify the CR is in the same namespace. |
 | Traces show but span tree stops at `mcp.tool_call` | Agentic wrap disabled. Set `--mcp-agentic-wrap-llm=true` on the daemon (or in the base config) to see the `subagent.llm_call` child span. |
 | `k8s.namespace.name` / `k8s.pod.name` missing on spans | Managed OTel's k8s-attributes processor needs Pod-metadata access; usually the default, but restrictive Workload Identity setups can strip it. Check collector logs. |
+| Traces appear but no metrics | The two pipelines have separate switches. `kubectl exec` into the daemon and check `OTEL_METRICS_EXPORTER` is `otlp` — the component sets it, but only for Pods created after the apply. Then check the daemon's boot log for the `telemetry: metrics OTLP HTTP exporter → ...` line: absent means the switch never took. |
+| Metrics rejected: `PermissionDenied` in the collector log | `roles/monitoring.metricWriter` not granted to the Pod identity (prereq 3), or `monitoring.googleapis.com` not enabled (prereq 1). |
+| Metrics rejected: `Resource is missing required attribute "gcp.project_id"` | Same cause and fix as the trace-side row above — `GOOGLE_CLOUD_PROJECT` in the daemon Pod env. The metrics pipeline doesn't go through ADK, so `pkg/telemetry.SetupMetrics` stamps the attribute itself from that same var. |

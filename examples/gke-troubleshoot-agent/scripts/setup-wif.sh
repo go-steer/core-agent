@@ -18,14 +18,16 @@
 #
 # What it does (in order):
 #
-#   1. Enables the four GCP APIs the recipe requires:
+#   1. Enables the five GCP APIs the recipe requires:
 #        - container.googleapis.com   (GKE + GKE MCP)
 #        - aiplatform.googleapis.com  (Vertex AI / Gemini)
 #        - iamcredentials.googleapis.com  (WIF token-exchange path)
 #        - cloudtrace.googleapis.com  (OpenTelemetry → Cloud Trace; harmless
 #                                       if the OTel overlay is never applied)
+#        - monitoring.googleapis.com  (OpenTelemetry → Cloud Monitoring; same
+#                                       overlay, metrics half)
 #
-#   2. Binds five IAM roles the daemon needs:
+#   2. Binds six IAM roles the daemon needs:
 #        - roles/aiplatform.user               (call Gemini via Vertex API)
 #        - roles/mcp.toolUser                  (call GKE MCP tools at all)
 #        - roles/container.viewer              (read cluster/workload state via the
@@ -37,6 +39,9 @@
 #        - roles/cloudtrace.user               (write spans to Cloud Trace when the
 #                                                OTel overlay is applied; harmless
 #                                                permission grant if never used)
+#        - roles/monitoring.metricWriter       (write metrics to Cloud Monitoring —
+#                                                the metrics half of the same
+#                                                overlay; equally inert if unused)
 #
 # All bindings use WIF-for-GKE direct binding — no Google Service Account
 # impersonation for the KSA itself. The `principal://` member string names
@@ -204,6 +209,12 @@ enable_api "iamcredentials.googleapis.com"
 # emitted unless the overlay is applied, so this is harmless for
 # operators who never use OTel.
 enable_api "cloudtrace.googleapis.com"
+# Cloud Monitoring API: the metrics half of the same optional overlay.
+# The daemon's metrics pipeline is a separate switch from traces
+# (OTEL_METRICS_EXPORTER, not OTEL_TRACES_EXPORTER), so enabling one
+# API without the other gives spans and no metrics. Idempotent and
+# free; no metric points are written unless the overlay is applied.
+enable_api "monitoring.googleapis.com"
 echo
 
 # ---- Phase 2: bind IAM roles ----
@@ -234,6 +245,14 @@ bind_sa_role "${NODE_SA}"
 #     spans get emitted, so the permission never gets exercised.
 bind_project_role "roles/cloudtrace.user"
 
+# 2f. Write metrics to Cloud Monitoring. Same conditions as 2e, for the
+#     other signal: load-bearing only when the OTel overlay is applied,
+#     inert otherwise. Separate role because Cloud Trace and Cloud
+#     Monitoring are separate services — cloudtrace.user does not cover
+#     metric writes, so granting only it yields spans in Cloud Trace and
+#     PermissionDenied in the collector log for every metric batch.
+bind_project_role "roles/monitoring.metricWriter"
+
 echo
 
 # ---- Summary ----
@@ -249,6 +268,7 @@ else
     echo "  - Read GKE clusters + workloads (read-only; no mutations)"
     echo "  - Impersonate the node SA (required by GKE MCP)"
     echo "  - Write spans to Cloud Trace (used by the OTel overlay only)"
+    echo "  - Write metrics to Cloud Monitoring (used by the OTel overlay only)"
     echo
     echo "Next step: kubectl apply -k examples/gke-troubleshoot-agent/deploy/overlays/<your-overlay>"
     echo
@@ -257,6 +277,7 @@ else
     echo "  - roles/mcp.toolUser           on projects/${PROJECT_ID}"
     echo "  - roles/container.viewer       on projects/${PROJECT_ID}"
     echo "  - roles/cloudtrace.user        on projects/${PROJECT_ID}"
+    echo "  - roles/monitoring.metricWriter on projects/${PROJECT_ID}"
     echo "  - roles/iam.serviceAccountUser on ${NODE_SA}"
     echo "  All bound to member: ${KSA_PRINCIPAL}"
 fi

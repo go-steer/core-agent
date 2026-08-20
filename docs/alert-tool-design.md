@@ -2,9 +2,9 @@
 
 Design doc for a v2.7 addition to `pkg/tools`: a native, first-class `alert` built-in tool that lets a headless `core-agent` daemon fire escalations to webhooks (Slack Incoming Webhooks, Discord, PagerDuty Events v2, generic JSON endpoints) without shelling out or depending on an external MCP server. Distroless-safe.
 
-**Status:** **partially shipped in v2.9** ([#593](https://github.com/go-steer/core-agent/issues/593), landed as #607) — not v2.7, and not all of it. Originally written as proposed (2026-07-10) against tracking issue [#192](https://github.com/go-steer/core-agent/issues/192).
+**Status:** **shipped in v2.9** ([#593](https://github.com/go-steer/core-agent/issues/593), landed as #607; Phase 2 as [#749](https://github.com/go-steer/core-agent/issues/749)) — not v2.7. Originally written as proposed (2026-07-10) against tracking issue [#192](https://github.com/go-steer/core-agent/issues/192).
 
-> **What actually shipped.** The tool, the config-driven named-target list, `url_env` resolution, per-target rate limiting, permission gating, and **two** templates: `generic` (a JSON POST) and `switchboard` ([#798](https://github.com/go-steer/core-agent/issues/798) — the chat-gateway destination class, see [The `switchboard` template](#the-switchboard-template-798) below). `slack`, `discord` and `pagerduty_events_v2` are designed below and **rejected at config load** — `pkg/config/alerts.go` returns `template=%q is designed but not yet implemented` for all three, so a config naming one fails to boot rather than silently degrading. Everything this doc says about Slack attachment colors, Discord embeds and PagerDuty `dedup_key` / `event_action` is therefore a *specification for unwritten code*, not a description of the binary. To escalate to Slack or PagerDuty today, point a `generic` target at a receiver that fans out — or, for Slack and Google Chat specifically, route through switchboard.
+> **What shipped.** The tool, the config-driven named-target list, `url_env` resolution, per-target rate limiting, permission gating, and **five** templates: the four this doc specifies — `generic`, `slack`, `discord`, `pagerduty_events_v2` — plus one it did not anticipate, `switchboard` ([#798](https://github.com/go-steer/core-agent/issues/798) — the chat-gateway destination class, see [The `switchboard` template](#the-switchboard-template-798) below). Two details of the Phase 2 spec below were settled differently in the implementation and the sections say so: PagerDuty's routing key travels in the body with **no** `Authorization` header, and the Slack template renders Block Kit `blocks` rather than colored attachments (attachments are Slack's legacy surface; color moved to the Discord embed, where it is first-class).
 >
 > The consumer recipe is wired: `examples/gke-troubleshoot-agent/` registers an `oncall` target on `ONCALL_WEBHOOK_URL` with `template: "generic"` under a `rate_limit_per_target: "10/min"` and its router skill calls `alert()` rather than the eventlog-only shape this doc was written against.
 
@@ -139,6 +139,24 @@ Per-`template` body formatting turns the tool's flat args into the target servic
 
 New templates land as small PRs; the built-in registry lives in `pkg/tools/alert/templates/`.
 
+#### What Phase 2 actually built (#749)
+
+The three service templates shipped close to the spec above, with the differences below. They live in `pkg/tools/alert/template_{slack,discord,pagerduty}.go` — one file per template, one package rather than the `templates/` sub-package sketched in the layout, because the shared pieces (sorted detail iteration, character-counted truncation, the `rendered` request struct) are small and only exist for them.
+
+*Every service limit is enforced at render time.* This is the part the spec did not say and the part that decides whether the template works: Slack rejects the entire message with `invalid_blocks` if the header exceeds 150 characters or a section carries more than ten fields; Discord 400s an embed over 6000 characters or 25 fields; PagerDuty caps `payload.summary` at 1024. A model writing a long one-line summary is not an edge case, so each cap is applied here, counted in **characters** rather than bytes (a byte-wise cut can split a rune), and any dropped detail is *named* in the message rather than silently omitted.
+
+*Slack renders `blocks`, not colored attachments.* Colour would require the legacy `attachments` surface, which Slack steers new integrations away from; the level travels in the header text instead. Detail keys and values are entity-escaped (`&`, `<`, `>`) because they are model-supplied data and an unescaped `<` opens a Slack link that swallows the rest of the value — `<none>`, which is what kubectl prints for an empty field, would render as nothing. The header stays unescaped: it is a `plain_text` object, which Slack renders literally.
+
+*Discord is where colour lives*, because an embed has a first-class `color`: blue / amber / red / green for `info` / `warning` / `critical` / `resolved`. A summary too long for the 256-character title is preserved in full in `description` rather than cut.
+
+*PagerDuty's routing key goes in the body and nowhere else.* Events v2 never inspects `Authorization`, so this template suppresses the per-target auth header entirely; sending the key there as well would hand the same secret to whatever sits in front of the URL, mislabelled as a bearer token. It still reads from `auth.bearer_env` rather than a `routing_key_env` field of its own, and that is deliberate: reusing the existing auth surface is what makes an unset key **drop the target at startup** under [Undeliverable targets](#undeliverable-targets-v29). PagerDuty is the last destination that should be advertised to a model and then silently unable to page.
+
+*Two details are promoted to first-class Events v2 fields*: `details.source` → `payload.source` (PagerDuty requires it; default `core-agent`) and `details.dedup_key` → the top-level `dedup_key`. They are ordinary details so the model needs no template-specific argument, and they are removed from `custom_details` once promoted. A `level: "resolved"` with no `dedup_key` is a **tool error naming the field**, not a page PagerDuty rejects: the tool holds no state between calls (the cross-daemon-dedup non-goal), so the correlating key can only come from the caller.
+
+*The timestamp question is closed, as omitted.* The design flagged it as a Phase 2 call. None of the three service templates wants one — Slack and Discord stamp the post, PagerDuty stamps the event and takes an explicit `payload.timestamp` only for backfill — and the eventlog record for the tool call remains the authoritative time. Baking one into `generic` would only make the body nondeterministic.
+
+*The accept-list and the renderer are pinned to each other.* `config.AlertTemplates` is the list the validator accepts, and `TestEveryAcceptedTemplateRenders` ranges over it in `pkg/tools/alert`. A template the config layer admits and the renderer does not know would be a daemon that boots clean and fails at the moment the alert is fired.
+
 ### The `switchboard` template (#798)
 
 **Shipped.** `switchboard` posts to [go-steer/switchboard](https://github.com/go-steer/switchboard)'s outbound message API (`POST /v1/messages`) rather than at a chat platform directly:
@@ -222,7 +240,7 @@ Validation:
 - `template` is one of the known values.
 - If `kind == "webhook"` and no template matches, reject at load time.
 - `conversation` is required by `switchboard` (and must hold no whitespace or control characters, mirroring the gateway's own check) and rejected by every other template.
-- `auth.bearer_env` is required by `switchboard`.
+- `auth.bearer_env` is required by `switchboard` (its ingress token) and by `pagerduty_events_v2` (the integration's routing key).
 - Names unique across the target set.
 - `rate_limit_per_target` parses via `time.ParseDuration` (single duration = 1 alert per that duration) OR `N/duration` for N-per-duration.
 
@@ -391,12 +409,7 @@ Estimate: ~350 LoC prod + ~300 LoC tests. ~2 days.
 
 ### Phase 2 — service-specific templates (PR ε.2 of #192)
 
-- `templates/slack.go` (Block Kit format).
-- `templates/discord.go` (embed format).
-- `templates/pagerduty_events_v2.go` (PD schema + auth-header wiring).
-- Template-specific tests including golden fixtures for each service's expected wire format.
-
-Estimate: ~250 LoC prod + ~200 LoC tests. ~2 days.
+**Done ([#749](https://github.com/go-steer/core-agent/issues/749)).** `template_slack.go`, `template_discord.go` and `template_pagerduty.go` in `pkg/tools/alert`, plus the load-time requirements the three imply (`auth.bearer_env` for PagerDuty) and per-template tests covering each service's documented limits. See [What Phase 2 actually built](#what-phase-2-actually-built-749) for the four places the implementation and this spec differ.
 
 ### Phase 3 — docs + recipe update + CHANGELOG (PR ε.3 of #192)
 

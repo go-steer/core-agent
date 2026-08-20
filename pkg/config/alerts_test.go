@@ -51,6 +51,16 @@ func TestValidateAlerts_Valid(t *testing.T) {
 			{Name: "chat", URLEnv: "SWITCHBOARD_URL", Template: AlertTemplateSwitchboard,
 				Conversation: "C0123:1723742401.001900", Auth: &AlertAuth{BearerEnv: "SWITCHBOARD_TOKEN"}},
 		}},
+		"slack": {Targets: []AlertTarget{
+			{Name: "sre", URLEnv: "SLACK_WEBHOOK_URL", Template: AlertTemplateSlack},
+		}},
+		"discord": {Targets: []AlertTarget{
+			{Name: "ops", URLEnv: "DISCORD_WEBHOOK_URL", Template: AlertTemplateDiscord},
+		}},
+		"pagerduty with a routing key": {Targets: []AlertTarget{
+			{Name: "page", URL: "https://events.pagerduty.com/v2/enqueue", Template: AlertTemplatePagerDutyEventsV2,
+				Auth: &AlertAuth{BearerEnv: "PD_ROUTING_KEY"}},
+		}},
 		"rate limit N/window": {
 			Targets:            []AlertTarget{{Name: "a", URL: "https://a.example.com", Template: AlertTemplateGeneric}},
 			RateLimitPerTarget: "5/min",
@@ -121,9 +131,23 @@ func TestValidateAlerts_Invalid(t *testing.T) {
 			AlertsConfig{Targets: []AlertTarget{{Name: "a", URL: "https://x"}}},
 			"template is required",
 		},
-		"template not yet implemented": {
-			AlertsConfig{Targets: []AlertTarget{{Name: "a", URL: "https://x", Template: AlertTemplateSlack}}},
-			"not yet implemented",
+		"pagerduty without a routing key": {
+			AlertsConfig{Targets: []AlertTarget{
+				{Name: "page", URL: "https://events.pagerduty.com/v2/enqueue", Template: AlertTemplatePagerDutyEventsV2},
+			}},
+			"requires auth.bearer_env",
+		},
+		"pagerduty with basic auth instead of a routing key": {
+			AlertsConfig{Targets: []AlertTarget{
+				{Name: "page", URL: "https://x", Template: AlertTemplatePagerDutyEventsV2, Auth: &AlertAuth{BasicEnvUser: "U", BasicEnvPass: "P"}},
+			}},
+			"requires auth.bearer_env",
+		},
+		"conversation on a slack target": {
+			AlertsConfig{Targets: []AlertTarget{
+				{Name: "sre", URL: "https://x", Template: AlertTemplateSlack, Conversation: "C0123"},
+			}},
+			"conversation is only meaningful",
 		},
 		"template unknown": {
 			AlertsConfig{Targets: []AlertTarget{{Name: "a", URL: "https://x", Template: "carrier-pigeon"}}},
@@ -192,6 +216,33 @@ func TestValidateAlerts_Invalid(t *testing.T) {
 				t.Errorf("validateAlerts() = %q, want substring %q", err.Error(), tc.wantSub)
 			}
 		})
+	}
+}
+
+// TestAlertTemplatesMatchTheValidator keeps the exported list and the
+// switch that error messages are generated from in step. AlertTemplates
+// is what pkg/tools/alert ranges over to prove it can render every
+// template config admits, so a name in the list that the validator calls
+// unknown — or vice versa — would make that proof vacuous.
+func TestAlertTemplatesMatchTheValidator(t *testing.T) {
+	t.Parallel()
+	for _, tpl := range AlertTemplates {
+		c := &Config{Alerts: AlertsConfig{Targets: []AlertTarget{{Name: "a", URL: "https://x", Template: tpl}}}}
+		// A bare target is incomplete for some templates, so an error is
+		// fine — "unknown" is not.
+		if err := c.validateAlerts(); err != nil && strings.Contains(err.Error(), "is unknown") {
+			t.Errorf("AlertTemplates has %q but validateAlerts rejects it as unknown: %v", tpl, err)
+		}
+	}
+	c := &Config{Alerts: AlertsConfig{Targets: []AlertTarget{{Name: "a", URL: "https://x", Template: "carrier-pigeon"}}}}
+	err := c.validateAlerts()
+	if err == nil || !strings.Contains(err.Error(), "is unknown") {
+		t.Errorf("validateAlerts(carrier-pigeon) = %v, want an is-unknown error", err)
+	}
+	for _, tpl := range AlertTemplates {
+		if !strings.Contains(err.Error(), tpl) {
+			t.Errorf("the unknown-template error does not name %q: %s", tpl, err)
+		}
 	}
 }
 

@@ -51,6 +51,7 @@ STEPS=(
   "lint            dev/tools/lint-go"
   "mod-tidy        dev/tools/verify-mod-tidy"
   "test            dev/tools/test-unit"
+  "examples        dev/tools/examples-smoke"
   "vuln            dev/tools/verify-vuln"
 )
 

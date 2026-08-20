@@ -166,7 +166,15 @@ Conventions worth knowing at agent prompt time:
 - **Run presubmits before every push.** `dev/ci/presubmits/*` are the
   same scripts CI runs. A green local run is the same green run as
   remote CI — skipping them ships preventable red builds. Full sweep:
-  `dev/ci/presubmits/{build,lint-go,test-unit,verify-go-format,verify-mod-tidy,vet,verify-vuln,verify-go-toolchain,verify-coretui-guards}`.
+  `dev/ci/presubmits/{build,lint-go,test-unit,verify-go-format,verify-mod-tidy,vet,verify-vuln,verify-go-toolchain,verify-coretui-guards,examples-smoke}`.
+- **An example under `examples/` is either run by CI or excluded with a
+  reason.** `dev/ci/presubmits/examples-smoke` builds and runs every
+  program `examples/internal/smokeset` marks runnable and fails on any
+  non-zero exit; the companion test there requires every
+  `examples/*/main.go` to be in that manifest, so adding an example
+  means adding a line. `--print` dumps the disposition table. It exists
+  because `go build ./...` proved the examples compiled while
+  `parallel-spawn` sat broken for months advertising "Exits 0" (#852).
 - **Bumping the `core-tui` pin is not just a `go.mod` edit.** Every
   exported interface in `github.com/go-steer/core-tui/tui` must be
   accounted for by both TUI hosts — implemented and pinned with a

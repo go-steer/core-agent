@@ -36,6 +36,7 @@ dev/
 │   ├── verify-vuln        # govulncheck ./...
 │   ├── verify-go-toolchain # every named Go version agrees with go.mod
 │   ├── verify-coretui-guards # capability guards vs the pinned core-tui
+│   ├── examples-smoke     # the credential-free examples still run
 │   ├── add-license-headers # bulk-applier for SPDX + copyright headers
 │   ├── common.sh          # shared bash helpers (ensure_tool, run_step)
 │   └── .golangci.yml      # linter config
@@ -49,6 +50,7 @@ dev/
         ├── verify-mod-tidy
         ├── verify-go-toolchain
         ├── verify-coretui-guards
+        ├── examples-smoke
         └── verify-vuln
 ```
 
@@ -72,6 +74,48 @@ convention and is still invoked straight from its own scheduled
 workflow; `verify-coretui-guards` is the wrapped shape.) Go programs
 there are part of the main module, so `go build ./...`, `go vet` and
 `go test` cover them like anything else.
+
+`examples-smoke` is the one exception to "the Go program lives under
+`dev/`": its manifest is `examples/internal/smokeset`, and Go's
+internal rule refuses an import of it from `dev/`, so the runner sits
+at `examples/internal/smokerun` instead. The wrapper is in the usual
+place and behaves like every other check.
+
+## The examples smoke gate
+
+`dev/tools/examples-smoke` (tool: `examples/internal/smokerun`) builds
+and runs every example program marked runnable and fails on any that
+does not exit 0. No arguments and no credentials: every runnable
+example defaults to the scripted mock provider and opts into a real one
+behind a flag the runner never passes, and provider keys are dropped
+from the child environment so the answer doesn't depend on whose
+machine it runs on. The whole set takes about five seconds.
+
+Why it exists (#852): `go build ./...` proves the examples compile, and
+nothing proved they still run. `examples/parallel-spawn` had been
+exiting 1 for some time — every spawn refused after ad-hoc spawns
+became opt-in — while its README advertised "Exits 0"; it was found by
+hand during unrelated work (#476), not by a check.
+
+The runnable set is a list, not a glob, because the examples split
+three ways (runnable, needs a key or an argument or binds a listener,
+covered by its own tests). The list lives in
+`examples/internal/smokeset` with a test that requires every
+`examples/*/main.go` to appear in one column or the other, so a new
+example is either covered or excluded with a written reason — never
+silently uncovered.
+
+```bash
+dev/tools/examples-smoke           # the gate
+dev/tools/examples-smoke --print   # the disposition table
+```
+
+What it does **not** prove: that an example demonstrates what its
+README claims. Only `parallel-spawn` and `compose-multi-session` assert
+on their own results today; the rest exit non-zero only when an
+operation errors. The runner also fails if a run leaves the worktree
+dirty, since an example writing into the checkout is a defect the exit
+code would not catch.
 
 ## The core-tui capability gate
 

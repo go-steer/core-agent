@@ -100,6 +100,14 @@ The second exists because structure-only validation let a recipe ship a `kubectl
 
 It scans skill trees only. `AGENTS.md` is excluded because a hardened persona states its limits by naming them ("no `kubectl`, no `gcloud`"), so scanning it flags correct recipes — which means a promise made *in the persona* is still on you to check. Write skill-content limits without naming a CLI ("there is no shell to fall back to") and the checker stays quiet.
 
+#### Runnable examples
+
+An example *program* under `examples/` — a directory with a `main.go` — is either run by CI or excluded with a written reason. There is no third state.
+
+`dev/ci/presubmits/examples-smoke` builds and runs every program `examples/internal/smokeset` marks runnable, with no arguments and no credentials, and fails on any non-zero exit. If you add an `examples/<name>/main.go`, add a line to `smokeset.Entries`: `Run` if it finishes unattended against the scripted mock provider, or `Skip` with the reason it can't (needs a real key, binds a listener, wants an argument). The test in that package fails on an example it has never heard of, so this is not something you can forget. `dev/tools/examples-smoke --print` shows the current table.
+
+This exists because `go build ./...` proved the examples *compiled* while `examples/parallel-spawn` sat exiting 1 with a README advertising "Exits 0" (#852). Note what the gate does not prove: that the example demonstrates what its README says. If your example can check its own result — "expected 3 spawned subagents, got 0" — make it check, because that is the part an exit code cannot supply.
+
 ## Project layout
 
 - `cmd/core-agent/` — reference CLI binary.

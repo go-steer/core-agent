@@ -464,6 +464,27 @@ type SessionTitleProvider interface {
 	SessionTitle() string
 }
 
+// SessionTitleSetter is the optional capability behind
+// POST /sessions/.../title — the manual rename (#808). An inferred
+// title with no override is a worse deal than no title at all: the
+// operator can see the name is wrong and can do nothing about it.
+//
+// Embeds SessionTitleProvider rather than standing alone so the
+// handler can report what was actually STORED rather than echoing
+// what was asked for. Implementations normalize (trim, strip the
+// model's decorative quoting, cap the length), so the two differ
+// often enough that echoing the request would be a small lie in the
+// one response whose entire content is the stored value.
+//
+// Setting "" clears the title. For *agent.Agent that also re-arms
+// automatic generation, which is what an operator clearing a bad name
+// would expect; a registrant with no generation to re-arm simply ends
+// up untitled, and its rows fall back to the ID.
+type SessionTitleSetter interface {
+	SessionTitleProvider
+	SetSessionTitle(title string)
+}
+
 // MCPProvider is the optional capability for GET /sessions/.../mcp.
 type MCPProvider interface {
 	AttachMCP() MCPInfo

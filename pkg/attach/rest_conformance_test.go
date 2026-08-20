@@ -206,6 +206,38 @@ func TestConformance_RESTPermsRespondV1_UnattributedOmitsApprover(t *testing.T) 
 	}
 }
 
+// TestConformance_RESTSessionTitleV1 pins the POST
+// /sessions/{sid}/title body (protocol 1.10.0, #808).
+func TestConformance_RESTSessionTitleV1(t *testing.T) {
+	t.Parallel()
+	resp := SessionTitleResponse{
+		Session:   "s-incident-4412",
+		Title:     "payments latency incident",
+		Persisted: true,
+	}
+	assertMatchesConformanceFixture(t,
+		"testdata/conformance/rest-session-title-v1.json",
+		resp)
+}
+
+// TestConformance_RESTSessionTitleV1_ClearedAndUnpersisted is the half
+// the fixture can't show, and it is the shape most callers will
+// actually see: `persisted` is NOT omitempty, because false is the
+// normal answer for a daemon with no ACL store and a client has to be
+// able to read it rather than infer it from a missing key. `title` is,
+// so a cleared title reads as absent rather than as `""` — the same
+// "no name" the picker shows for a session that never had one.
+func TestConformance_RESTSessionTitleV1_ClearedAndUnpersisted(t *testing.T) {
+	t.Parallel()
+	raw, err := json.Marshal(SessionTitleResponse{Session: "s-1"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got, want := string(raw), `{"session":"s-1","persisted":false}`; got != want {
+		t.Errorf("cleared+unpersisted title marshals to %s\nwant                                %s", got, want)
+	}
+}
+
 func TestConformance_RESTWhoAmIV1(t *testing.T) {
 	t.Parallel()
 	// The asserted-proxy variant exercises every field: admin and

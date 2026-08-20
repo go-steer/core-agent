@@ -958,6 +958,29 @@ func (r *SessionRegistry) aclStoreForList() (SessionACLStore, bool) {
 	return r.aclStore, true
 }
 
+// PersistTitle writes a session's title through to its durable ACL
+// row, so a rename survives eviction and restart rather than living
+// only as long as the process (#808).
+//
+// Distinct from the eviction write-through, which is best-effort and
+// skips an empty title so an untitled eviction can't wipe a name the
+// operator set by hand. Here "" is the operator SAYING "clear it", so
+// it is written as the explicit value it is.
+//
+// Returns ErrSessionACLNotFound when there is no durable row to write
+// — either no store is wired at all (the single-session
+// --attach-listen daemon, whose sessions are in-memory only) or the
+// triple was registered without an owner. Both are ordinary
+// configurations, not failures: the caller reports the rename as
+// unpersisted rather than as an error.
+func (r *SessionRegistry) PersistTitle(ctx context.Context, appName, userID, sessionID, title string) error {
+	store, ok := r.aclStoreForList()
+	if !ok {
+		return ErrSessionACLNotFound
+	}
+	return store.SetTitle(ctx, appName, userID, sessionID, title)
+}
+
 // TouchEntry marks the entry for (app, sid) as active-right-now.
 // The broadcaster calls this on every event pumped through the
 // session so autonomous agent work (long-running tool calls,

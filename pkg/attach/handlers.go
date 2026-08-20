@@ -335,6 +335,9 @@ func (h *handlers) register(mux *http.ServeMux) {
 	// session (#797); see handlers_acl.go.
 	h.registerSessionACL(mux)
 
+	// POST /title — rename this session (#808); see handlers_title.go.
+	h.registerSessionTitle(mux)
+
 	// Operator-state read endpoints (usage / context / memory /
 	// skills / mcp / pricing); see handlers_operator.go.
 	h.registerOperatorState(mux)

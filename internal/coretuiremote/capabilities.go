@@ -1239,6 +1239,7 @@ func (a *Adapter) SlashCommands() []coretui.SlashCommandSpec {
 		{Name: "reload", Description: "Reload memory + skills + MCP from disk"},
 		{Name: "perms", Description: "Show permission gate state"},
 		{Name: "replan", Description: "Revoke the current plan and force a redraft (plan-first mode only)"},
+		{Name: "title", Description: "Rename this session in the picker (/title --clear restores automatic titling)"},
 		{Name: "new", Description: "Create a fresh daemon session and attach in place (companion to core-tui's /switch)"},
 		{Name: "attach", Description: "Attach to another daemon: /attach <url> lists that daemon's sessions; /attach <url> <sid> direct-jumps in place. Escape hatch when GET /peers is empty (issue #246)."},
 	}
@@ -1320,6 +1321,26 @@ func (a *Adapter) InvokeSlash(ctx context.Context, name, args string) (coretui.S
 			}
 		}
 		return coretui.SlashResult{SystemMessage: msg}, nil
+
+	case "title":
+		// A bare /title does NOT clear. The endpoint distinguishes an
+		// omitted title from an empty one precisely so a request that
+		// says nothing can't wipe a name, and a slash whose bare form
+		// is destructive would put that hazard back one layer up —
+		// operators type a bare command to see what a thing does.
+		// Clearing is spelled out.
+		name := strings.TrimSpace(args)
+		if name == "" {
+			return coretui.SlashResult{SystemMessage: "usage: /title <name>  |  /title --clear (clears the name and re-arms automatic titling)"}, nil
+		}
+		if name == "--clear" {
+			name = ""
+		}
+		resp, err := a.client.SetSessionTitle(ctx, a.sessionPath, name)
+		if err != nil {
+			return coretui.SlashResult{}, err
+		}
+		return coretui.SlashResult{SystemMessage: renderTitleResp(resp)}, nil
 	}
 	return coretui.SlashResult{}, fmt.Errorf("unknown slash: %s", name)
 }
@@ -1593,6 +1614,23 @@ func renderReloadResp(resp attach.ReloadResponse) string {
 		sb.WriteString(strings.Join(resp.Errors, "\n  - "))
 	}
 	return sb.String()
+}
+
+// renderTitleResp reports what was STORED, which is not always what
+// was typed — the daemon normalizes and caps at 60 runes. It says so
+// only when persistence failed for a reason worth acting on: the
+// common "no durable row" case (a single-session daemon) is not a
+// problem the operator can do anything about, and warning about it on
+// every rename would train them to ignore the line that matters.
+func renderTitleResp(resp attach.SessionTitleResponse) string {
+	msg := fmt.Sprintf("Session renamed to %q.", resp.Title)
+	if resp.Title == "" {
+		msg = "Session title cleared; automatic titling re-armed."
+	}
+	if resp.Detail != "" {
+		msg += "\n" + resp.Detail
+	}
+	return msg
 }
 
 func renderPermsInfo(info attach.PermsInfo) string {

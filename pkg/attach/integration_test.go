@@ -226,6 +226,37 @@ func TestIntegration_InjectEndpoint(t *testing.T) {
 	}
 }
 
+// TestIntegration_TitleEndpoint pins the route onto the *real* mux.
+// The handler tests build their own with registerSessionTitle, so
+// deleting the wiring line in handlers.go would leave every one of
+// them green and the endpoint 404 in the daemon.
+func TestIntegration_TitleEndpoint(t *testing.T) {
+	t.Parallel()
+	reg := NewSessionRegistry()
+	ag := &settableRegistrant{stubRegistrant: &stubRegistrant{app: "core-agent", user: "u", sid: "s1"}}
+	if _, err := reg.Register(ag); err != nil {
+		t.Fatal(err)
+	}
+
+	base, cleanupSrv := startTestServer(t, reg)
+	defer cleanupSrv()
+
+	body, _ := json.Marshal(map[string]string{"title": "renamed"})
+	resp, err := http.Post(base+"/sessions/core-agent/s1/title",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST title: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("title status %d: %s", resp.StatusCode, respBody)
+	}
+	if ag.title != "renamed" {
+		t.Errorf("title = %q, want the rename applied", ag.title)
+	}
+}
+
 func TestIntegration_WakeEndpoint(t *testing.T) {
 	t.Parallel()
 	h, cleanupLog := openTestEventLog(t)

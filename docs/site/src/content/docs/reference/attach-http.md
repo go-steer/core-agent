@@ -88,7 +88,7 @@ No cookies — the listener is stateless per request. Identity is re-derived fro
 
 | Method | Path | Action | Request | Response |
 |---|---|---|---|---|
-| `GET` | `/sessions` | `SessionList` (always OK, ACL-filtered) | — | **200** `{"sessions":[{"app":..., "user":..., "sessionID":..., "has_event_log":bool, "status":"active"\|"idle", "last_touched_at":..., "title":...}]}` — union of in-memory (`active`) + persisted-idle rows. Note the field is `sessionID`, not `session_id` — pin against the [conformance fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-sessions-list-v2.json). `last_touched_at` is RFC 3339 with arbitrary precision and zone offset (parse, don't pattern-match); the zero value `0001-01-01T00:00:00Z` means never-touched. `title` (protocol 1.6.0) is a short label derived from the session's first prompt; it is **omitted** for pre-1.6.0 daemons, for sessions whose first turn hasn't landed, and where titling is off — render the session ID when it's absent. |
+| `GET` | `/sessions` | `SessionList` (always OK, ACL-filtered) | — | **200** `{"sessions":[{"app":..., "user":..., "sessionID":..., "has_event_log":bool, "status":"active"\|"idle", "last_touched_at":..., "title":...}]}` — union of in-memory (`active`) + persisted-idle rows. Note the field is `sessionID`, not `session_id` — pin against the [conformance fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-sessions-list-v2.json). `last_touched_at` is RFC 3339 with arbitrary precision and zone offset (parse, don't pattern-match); the zero value `0001-01-01T00:00:00Z` means never-touched. `title` (protocol 1.6.0) is a short label derived from the session's first prompt; it is **omitted** for pre-1.6.0 daemons, for sessions whose first turn hasn't landed, and where titling is off — render the session ID when it's absent. Operators can override an inferred title — see [Renaming a session](#renaming-a-session-protocol-1100). |
 | `POST` | `/sessions` | Authenticated caller | `{"viewers"?:[...], "contributors"?:[...]}` — **body optional** (absent = owner-only ACL, the pre-1.10.0 behavior) | **201** `{"app":..., "user":..., "sessionID":..., "url":...}` ([fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-create-session-v1.json)). **501** when the daemon lacks a `SessionFactory`; **401** anonymous; **409** on `ErrSessionExists`; **400** on a malformed body or an `owner` field. Caller stamped as ACL Owner — `owner` is **rejected**, not honoured, so a caller can't hand a session to someone else (see [Session ACLs](#session-acls-protocol-1100)). The body is parsed *before* the session factory runs, so a rejected one leaves no half-built session behind. Deliberately ungated during daemon shutdown: the ACL row is durable, so a session created in that window resumes normally after the restart — but it is usable only then. |
 | `GET` | `/sessions/{sid}/acl` and `/sessions/{app}/{sid}/acl` | `SessionAdmin` | — | **200** `{"owner":..., "viewers":[...], "contributors":[...]}` ([fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-session-acl-v1.json)). Both lists are **always present** — `[]`, never `null`. **404** on not-found OR auth-deny (masked), so a viewer or contributor cannot read the roster of who else is on the session. |
 | `PATCH` | `/sessions/{sid}/acl` and `/sessions/{app}/{sid}/acl` | `SessionAdmin` | `{"owner"?:..., "viewers"?:[...], "contributors"?:[...]}` | **200** with the same shape as `GET`, reporting the ACL as stored. An **omitted** list is left unchanged; `[]` clears it. **400** on a malformed/absent body or an `owner` that differs from the current one — `""` included (ownership is not transferable here); **404** on not-found OR auth-deny; **500** if persistence fails, in which case the in-memory ACL is rolled back. |
@@ -130,6 +130,7 @@ All write endpoints cap request bodies at **8 KiB** (`operatorPostMaxBytes`).
 | `POST` | `/agents/{name}/stop` | — | `{"agent":..., "stopped":true, "session":...}`; **404** when no subagent by that name is running; **501** if no `AgentStopper` |
 | `POST` | `/perms/allow` / `/perms/deny` | `{"patterns":[...]}` (empty → **400**) | **204**; **501** if no controller |
 | `POST` | `/perms/respond` | `{"id":..., "decision":..., "approver"?:...}` | `{"acknowledged":true, "approver"?:...}`; **404** on unknown id; **400** when `approver` disagrees with the caller the daemon verified, or when it verified nobody to check against. `approver` echoes what was recorded and is omitted when nothing was verified — see [Approval attribution](#approval-attribution-protocol-1100) |
+| `POST` | `/title` | `{"title":"..."}` — the key is **required**; `""` clears | `{"session":..., "title"?:..., "persisted":bool, "detail"?:...}` ([fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-session-title-v1.json)); **400** on an omitted `title`; **501** if the agent can't set one — see [Renaming a session](#renaming-a-session-protocol-1100) |
 | `POST` | `/pricing/refresh` | — | `{"updated":..., "known_models":..., "last_refresh":..., "detail":...}` |
 | `POST` | `/pricing/set` | `{"model":..., "input_usd_per_mtok":..., "output_usd_per_mtok":...}` | **204** |
 | `POST` | `/reload` | — | `{"memory":..., "skills":..., "mcp":..., "errors":[...]}` |
@@ -192,6 +193,29 @@ The request body accepts an optional `approver`, and it is **checked, never beli
 The field exists only so a client whose idea of the approver differs from the server's finds out. Accepting and silently ignoring it would let a relay believe it had attributed a decision it hadn't, which is the same invisible failure #830 reports; trusting it would let any caller that can reach `/perms/respond` sign someone else's name to an approval.
 
 Attribution reaches the embedded permission gate too — `permissions.ApprovalLog` gained a `By` field, so the same identity shows up wherever the approval log is read, not only over HTTP. Embedders extend a `permissions.Prompter` to the optional `permissions.AttributingPrompter` to supply it; a host that wires a plain prompter (an interactive terminal, where the answerer is whoever is at the keyboard) records no approver, exactly as before.
+
+### Renaming a session (protocol 1.10.0)
+
+Sessions carry an inferred title — the agent derives one from the first prompt so the picker stops being a list of opaque IDs. Inference is right often enough to be worth doing and wrong often enough that a name the operator can see is wrong and cannot change is a worse deal than no name at all. `POST /sessions/{sid}/title` is the override ([#808](https://github.com/go-steer/core-agent/issues/808)):
+
+```bash
+curl -sS -X POST http://127.0.0.1:7777/sessions/s-4412/title \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"payments latency incident"}'
+# {"session":"s-4412","title":"payments latency incident","persisted":true}
+```
+
+The remote TUI wraps it as `/title <name>`.
+
+**`title` is required, and `""` is a real request.** Sending `{"title":""}` clears the name and re-arms automatic titling for the next turn; **omitting** the key is a **400**. The two can't collapse into one, because the daemon does not reject unknown fields — a typo'd key would otherwise decode to the zero value and silently wipe the session's name with a 200.
+
+**The response reports what was stored, not what you sent.** Titles are trimmed and capped (60 runes for the built-in agent), so the value the picker shows is the one in the response body, not the one in the request.
+
+**`persisted` is not a success flag.** It reports whether the new name reached the durable session row — i.e. whether it survives eviction and restart. `false` with no `detail` means there was nowhere durable to write, which is the *normal* answer for a single-session `--attach-listen` daemon: the rename is live for the life of the process. `false` **with** a `detail` means a store was wired and the write failed, so the name will revert; the rename is still in effect, which is why this is a 200 rather than a 500.
+
+**501** means the agent registered no title-setting capability. Unlike the 404 that masks an authorization denial, this one is safe to feature-detect on: reaching it means the caller was already authorized for the session.
+
+Renaming needs `SessionWrite`, not `SessionAdmin`. A title is a display label, not an authorization fact — it grants nothing and reveals nothing the row didn't already carry — and the people who should be able to fix a wrong name are the people working in the session. A contributor can already `/inject`, which is a strictly larger power.
 
 ### Interrupt, pause, and resume (protocol 1.5.0)
 
@@ -454,7 +478,7 @@ Consumers MUST tolerate unknown values and MUST NOT crash on missing keys.
 | **201** | Created — `POST /sessions`, `POST /peers`. |
 | **204** | No content — successful DELETEs, `POST /perms/allow` etc. |
 | **301** | Redirect — `/ui` → `/ui/`. |
-| **400** | Bad request — empty required field (message, patterns, ...); unknown `/resume` mode, or `mode=steer` with no text; an `owner` field on `PATCH /acl` or `POST /sessions` that isn't the current owner (`""` included). |
+| **400** | Bad request — empty required field (message, patterns, ...); unknown `/resume` mode, or `mode=steer` with no text; an `owner` field on `PATCH /acl` or `POST /sessions` that isn't the current owner (`""` included); an omitted `title` on `POST /title` (send `{"title":""}` to clear). |
 | **401** | Unauthenticated — missing / wrong bearer token; bad proxy assertion. |
 | **403** | Forbidden — `--attach-readonly` writes; delete of the bootstrap `"default"` session; cross-origin `Origin` header on a write (CSRF protection). |
 | **404** | Not found OR auth-deny (deliberately indistinguishable to avoid SID enumeration); `POST /agents/{name}/stop` for a subagent that isn't running. |
@@ -476,6 +500,7 @@ Consumers MUST tolerate unknown values and MUST NOT crash on missing keys.
 | `POST /peers` | Effectively **yes** — name-based upsert extends the lease of an existing peer. |
 | `PATCH /sessions/{sid}/acl` | **Yes** — the listed fields are replaced, not merged, so replaying the same body lands on the same ACL. |
 | `POST /perms/respond` | **No** — second respond for the same prompt → **404** (`ErrPromptNotFound`). |
+| `POST /sessions/{sid}/title` | **Yes** — the title is replaced, so replaying the same body lands on the same name. |
 | `POST /interrupt` | Idempotent in effect — the loop ends up cancelled and parked either way. Repeat calls while the cancelled turn is still unwinding keep reporting `interrupted: true` (the interrupt did land); once it's idle they set `X-Interrupted: nothing-in-flight`. |
 | `POST /pause` / `POST /resume` | Idempotent — `transitioned` / `resumed` report whether *this* call changed anything, so a redundant press is a quiet `200`. |
 

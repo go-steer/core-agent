@@ -54,6 +54,7 @@ with the old fixture kept frozen.
 | `rest-subagent-events-v1.json` | `GET /sessions/{app}/{sid}/agents/{name}/events` (a truncated page — populates `next_since` + `truncated`) | v1 |
 | `rest-session-acl-v1.json` | `GET` / `PATCH /sessions/{app}/{sid}/acl` → 200 body (protocol 1.10.0, #797) | v1 |
 | `rest-perms-respond-v1.json` | `POST /sessions/{app}/{sid}/perms/respond` → 200 body, attributed variant (populates the `omitempty` `approver`; protocol 1.10.0, #830) | v1 |
+| `rest-session-title-v1.json` | `POST /sessions/{app}/{sid}/title` → 200 body, persisted variant (protocol 1.10.0, #808) | v1 |
 
 Pinned by `rest_conformance_test.go`; add new REST fixtures there
 following the same construct-marshal-diff pattern (plus, where a

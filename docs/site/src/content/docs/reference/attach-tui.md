@@ -144,6 +144,7 @@ Until then, the documented attach path for non-IAM gateways remains a wrapper ar
 | `/allow <pattern>`, `/deny <pattern>` | Add patterns to the live gate (and to `.agents/config.json` if writable on the daemon side). |
 | `/pricing`, `/pricing refresh`, `/pricing set <id> <in> <out>` | Inspect or override the pricing layer. |
 | `/reload` | Re-walk memory + skills + MCP config on the daemon; surfaces per-surface results (`Memory: ✓`, `Skills: ✓`, `MCP: ✗` with errors inline). |
+| `/title <name>` | Rename this session so the picker shows something you chose instead of the title the agent inferred from your first prompt. `/title --clear` drops the name and re-arms automatic titling; a bare `/title` prints usage rather than clearing, since typing a command to see what it does shouldn't destroy anything. POSTs `/sessions/<id>/title`; the reply reports the name as **stored** (the daemon trims and caps it), and warns when it couldn't be persisted durably. |
 | `/compact [focus]`, `/done [note]` | Trigger summarization or task-boundary checkpoints on the remote agent. The TUI shows an in-chat preamble row during the 5–30 s round-trip. |
 | `/btw <question>` | One-shot context-grounded side question. |
 | `/subagent <goal>` | Spawn a background subagent on the remote agent (requires `--no-background-agents=false` daemon side). |
@@ -157,7 +158,7 @@ Until then, the documented attach path for non-IAM gateways remains a wrapper ar
 | `/transcript [path]` | Save the local scrollback to a markdown file (default `/tmp/<sid>.md`). |
 | `/theme dark\|light` | Switch glamour theme; re-renders existing assistant messages. |
 
-Sync slashes (`/context`, `/pricing`, `/reload`, `/perms`) hit the corresponding [attach read/mutation endpoints](/reference/configuration/) directly. Async slashes (`/compact`, `/done`, `/btw`, `/subagent`) flow through synchronous POSTs that block until the underlying agent operation completes; the remote TUI renders an in-chat preamble row at dispatch to bridge the 5–30 s gap.
+Sync slashes (`/context`, `/pricing`, `/reload`, `/perms`, `/title`) hit the corresponding [attach read/mutation endpoints](/reference/configuration/) directly. Async slashes (`/compact`, `/done`, `/btw`, `/subagent`) flow through synchronous POSTs that block until the underlying agent operation completes; the remote TUI renders an in-chat preamble row at dispatch to bridge the 5–30 s gap.
 
 ## Multi-daemon workflow
 
@@ -300,7 +301,7 @@ Copies go out twice: an OSC 52 escape aimed at your terminal emulator, and a nat
 When connected to a listener started with `--attach-readonly`, the TUI still works for everything except writes:
 
 - ✅ Session enumeration, live tail, observer mode, `/tools`, `/stats`, `/context`, `/memory`, `/skills`, `/mcp`, `/perms`, `/transcript`
-- ❌ Sending messages (typing + Enter), `/inject`, `/interrupt`, `/allow`, `/deny`, `/reload`, `/compact`, `/done`, `/subagent`, `/pricing refresh|set`
+- ❌ Sending messages (typing + Enter), `/inject`, `/interrupt`, `/allow`, `/deny`, `/reload`, `/title`, `/compact`, `/done`, `/subagent`, `/pricing refresh|set`
 
 Writes surface as red `✗` error lines in the scrollback (the server returns 403; the TUI shows the error rather than failing silently).
 

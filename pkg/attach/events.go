@@ -130,6 +130,20 @@ import "time"
 // unknown rather than assuming the key is always there. Additive: the
 // pre-existing `{"acknowledged":true}` shape is unchanged, and a
 // client that sends no `approver` sees no new behavior.
+//
+// v1.10.0 (#808) also adds POST /sessions/{sid}/title, the manual
+// override for the session titles v1.6.0 started inferring. The body
+// is `{"title": "..."}` with the key REQUIRED — `""` clears the title
+// (and re-arms automatic generation), while an omitted key is refused
+// with a 400 rather than read as a clear. The 200 answers with what
+// was actually stored after the host's normalization, plus a
+// `persisted` flag reporting whether the new name reached the durable
+// session row: false is not an error and is the norm for a daemon
+// with no ACL store, so a client must not read it as a failed rename.
+// A host that registered no title-setting capability answers 501,
+// which — unlike the 404 an unauthorized caller gets — is safe to
+// feature-detect on, since reaching it means the caller was already
+// authorized for the session.
 const protocolVersion = "1.10.0"
 
 // SSE event-type names per the protocol spec (section 2).

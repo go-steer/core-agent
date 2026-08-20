@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"iter"
 	"log"
+	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	adkmodel "google.golang.org/adk/model"
@@ -159,7 +160,16 @@ func (l *llm) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, str
 			}
 
 			yield(&adkmodel.LLMResponse{
-				Content:       &genai.Content{Role: genai.RoleModel, Parts: parts},
+				Content: &genai.Content{Role: genai.RoleModel, Parts: parts},
+				// Without this the turn reaches pkg/usage unattributed
+				// and RebuildTrackerFromEvents prices it against
+				// defaultModel — so on a multi-tier session every
+				// Anthropic turn, subagent tiers included, is rebuilt
+				// at the primary model's rate and a tier assignment
+				// can't be checked from the record (#756). Only the
+				// terminal response needs it: the partial above carries
+				// no UsageMetadata, so nothing prices it.
+				ModelVersion:  responseModel(&final, params.Model),
 				UsageMetadata: usageMetadata(usage),
 				// Cache-write tokens have no home in genai's
 				// UsageMetadata; they ride the CustomMetadata sidecar
@@ -172,6 +182,39 @@ func (l *llm) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, str
 			return
 		}
 	}
+}
+
+// responseModel reports which model actually served the turn, for
+// LLMResponse.ModelVersion.
+//
+// The server's echo wins over the model we asked for. They normally
+// agree, but an alias resolves server-side to a dated snapshot
+// (`claude-sonnet-4-5-latest` → `claude-sonnet-4-5-20250929`) and the
+// snapshot is the one that was billed — pricing an alias-requested turn
+// against the alias is the same class of mistake as pricing it against
+// defaultModel.
+//
+// Two echoes are rejected in favour of the requested ID, both because
+// what the field feeds is a pricing key:
+//
+//   - Empty. A well-formed Message never is (`model` is required on the
+//     API response), but an unaccumulated one — a stream that died
+//     before message_start — would be.
+//   - A resource path. pricing.Catalog keys on bare model IDs and falls
+//     back to longest-prefix, so `claude-opus-4-5@20251101` resolves
+//     fine but a `projects/.../models/claude-...` would match nothing
+//     and price the turn at $0. The requested ID is what the operator
+//     configured and what the catalog is keyed for, so it is the safer
+//     answer whenever the echo isn't in that shape.
+//
+// anthropic.Model is an alias for string, so both sides are already
+// plain model IDs — no conversion, and the return type is string
+// because that is what LLMResponse.ModelVersion takes.
+func responseModel(final *anthropic.Message, requested anthropic.Model) string {
+	if final != nil && final.Model != "" && !strings.Contains(final.Model, "/") {
+		return final.Model
+	}
+	return requested
 }
 
 // textDelta extracts incremental assistant text from a stream event.

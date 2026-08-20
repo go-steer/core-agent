@@ -1590,6 +1590,22 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			}
 			return out
 		}),
+		attachadapter.WithSkillToolsProvider(func() []attach.ToolInfo {
+			// The TOOLS the skill toolset exposes, not the skills — see
+			// WithSkillsProvider just above for that list. Re-walked for
+			// the same reason: a skills dir that was empty at startup
+			// registers no toolset and therefore no tools (#767).
+			fresh, err := skills.LoadAll(ctx, agentsDir, coreHome, gate, skills.WithHomeAgentsSkillsDir(homeAgentsDir), skills.WithContentRoots(contentRoots))
+			if err != nil {
+				return nil
+			}
+			infos := fresh.ToolInfos()
+			out := make([]attach.ToolInfo, 0, len(infos))
+			for _, t := range infos {
+				out = append(out, attach.ToolInfo{Name: t.Name, Description: t.Description})
+			}
+			return out
+		}),
 		attachadapter.WithPricingProvider(func() attach.PricingInfo {
 			// Re-resolve on every call so a fresh /pricing refresh
 			// during the session is reflected immediately — pricingRate

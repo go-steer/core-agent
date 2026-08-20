@@ -746,6 +746,23 @@ func attachProviderOpts(deps SessionFactoryDeps, modelName string, rate usage.Pr
 			}
 			return out
 		}))
+		opts = append(opts, attachadapter.WithSkillToolsProvider(func() []attach.ToolInfo {
+			// The TOOLS the skill toolset exposes, not the skills — see
+			// WithSkillsProvider just above for that list (#767).
+			fresh, err := skills.LoadAll(deps.DaemonCtx, deps.AgentsDir, deps.UserRoot, deps.Template,
+				skills.WithHomeAgentsSkillsDir(deps.HomeAgentsDir),
+				skills.WithContentRoots(deps.ContentRoots),
+				skills.WithInterpolator(deps.EnvInterp))
+			if err != nil {
+				return nil
+			}
+			infos := fresh.ToolInfos()
+			out := make([]attach.ToolInfo, 0, len(infos))
+			for _, t := range infos {
+				out = append(out, attach.ToolInfo{Name: t.Name, Description: t.Description})
+			}
+			return out
+		}))
 	}
 
 	if deps.Cfg != nil {

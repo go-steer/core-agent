@@ -28,7 +28,7 @@ func TestDeriveForSession_FreshSessionState(t *testing.T) {
 	template.rememberSessionTool("read_file")
 	template.rememberSessionVerb("bash", "ls")
 	template.MarkPlanRecorded()
-	template.recordApproval("write_file", "/tmp/x", DecisionAllowSession)
+	template.recordApproval("write_file", "/tmp/x", DecisionAllowSession, "")
 
 	sub := template.DeriveForSession("sess-1", nil)
 
@@ -113,8 +113,8 @@ func TestDeriveForSession_ApprovalLogIsolated(t *testing.T) {
 	subA := template.DeriveForSession("sess-A", nil)
 	subB := template.DeriveForSession("sess-B", nil)
 
-	subA.recordApproval("write_file", "/x", DecisionAllowOnce)
-	subA.recordApproval("write_file", "/y", DecisionAllowSession)
+	subA.recordApproval("write_file", "/x", DecisionAllowOnce, "")
+	subA.recordApproval("write_file", "/y", DecisionAllowSession, "")
 
 	if got := len(subB.Approvals()); got != 0 {
 		t.Errorf("sub-gate B saw %d approvals from sub-gate A; must be 0", got)

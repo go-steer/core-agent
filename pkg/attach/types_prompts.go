@@ -40,4 +40,21 @@ type PromptFrame struct {
 type PromptResponse struct {
 	ID       string `json:"id"`
 	Decision string `json:"decision"`
+
+	// Approver is accepted only so it can be CHECKED. The server
+	// attributes the decision from its own caller-resolution verdict
+	// (#830), so this field can never widen what gets recorded — it
+	// can only disagree with it, and a disagreement means the client's
+	// idea of who is approving differs from the server's, which is
+	// worth a 400 rather than a shrug. Omit it and nothing is lost.
+	Approver string `json:"approver,omitempty"`
+}
+
+// PromptRespondResponse is the 200 body of /perms/respond. Approver
+// echoes what the server recorded, so a relay can tell "attributed to
+// the human who clicked" from "accepted, but the audit line will be
+// anonymous" without a second call to /whoami.
+type PromptRespondResponse struct {
+	Acknowledged bool   `json:"acknowledged"`
+	Approver     string `json:"approver,omitempty"`
 }

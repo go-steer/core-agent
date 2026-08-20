@@ -113,7 +113,7 @@ Every path suffix below appears under both `/sessions/{sid}/...` and `/sessions/
 | `/skills` | `{"skills":[{"name":..., "description":...}]}`. |
 | `/mcp` | `MCPInfo{servers:[...]}` — configured servers + status. |
 | `/pricing` | `PricingInfo{rate, last_refresh, ...}`. |
-| `/perms` | `PermsInfo{mode, allowed:[...], denied:[...], history:[...]}`. |
+| `/perms` | `PermsInfo{mode, allow:[...], deny:[...], approvals:[...]}` — the live mode plus the session's approval log. Each `approvals` row is `{tool, key?, decision, at, by?}`; `by` names the principal that answered the prompt and is **omitted** when the daemon verified nobody (protocol 1.10.0, [#830](https://github.com/go-steer/core-agent/issues/830)) — see [Approval attribution](#approval-attribution-protocol-1100). |
 | `/guardrails` | `GuardrailInfo{watchdog:{mode,tripped,reason}, cost_ceiling:{max_turn_usd,max_session_usd,session_cost_usd,tripped,reason,would_retrip}, halted}` — why the session is refusing turns, and whether a bare reset would re-trip ([#666](https://github.com/go-steer/core-agent/issues/666)). |
 
 ### Session write (`SessionWrite` — owner + contributor + admin)
@@ -129,7 +129,7 @@ All write endpoints cap request bodies at **8 KiB** (`operatorPostMaxBytes`).
 | `POST` | `/resume` | `{"mode"?:"steer"\|"continue"\|"abandon", "steer"?:...}` — **body optional** (absent = `continue`) | `{"resumed":bool, "mode":..., "state":..., "session":...}`; **400** on an unknown mode or `mode=steer` with no text; **501** if no `PauseController`; **503** + `Retry-After` during daemon shutdown |
 | `POST` | `/agents/{name}/stop` | — | `{"agent":..., "stopped":true, "session":...}`; **404** when no subagent by that name is running; **501** if no `AgentStopper` |
 | `POST` | `/perms/allow` / `/perms/deny` | `{"patterns":[...]}` (empty → **400**) | **204**; **501** if no controller |
-| `POST` | `/perms/respond` | `{"id":..., "decision":...}` | `{"acknowledged":true}`; **404** on unknown id |
+| `POST` | `/perms/respond` | `{"id":..., "decision":..., "approver"?:...}` | `{"acknowledged":true, "approver"?:...}`; **404** on unknown id; **400** when `approver` disagrees with the caller the daemon verified, or when it verified nobody to check against. `approver` echoes what was recorded and is omitted when nothing was verified — see [Approval attribution](#approval-attribution-protocol-1100) |
 | `POST` | `/pricing/refresh` | — | `{"updated":..., "known_models":..., "last_refresh":..., "detail":...}` |
 | `POST` | `/pricing/set` | `{"model":..., "input_usd_per_mtok":..., "output_usd_per_mtok":...}` | **204** |
 | `POST` | `/reload` | — | `{"memory":..., "skills":..., "mcp":..., "errors":[...]}` |
@@ -168,6 +168,30 @@ Concurrent `PATCH`es are safe to interleave: the merge of your body onto the cur
 A `PATCH` on a session with a durable ACL row writes through to it, and a failed write is a **500** with the in-memory ACL rolled back — reporting `200` for an ACL that evaporates at the next restart is worse than failing, because the caller stops retrying. A legacy unowned session (registered without an owner) is amended in memory only: "ACL row exists ⟺ session is resumable" is a load-bearing invariant, and quietly making such a session resumable is a different lifecycle than the operator configured.
 
 A pre-1.10.0 daemon answers both paths with **404** — the same answer it gives an unauthorized caller — so feature-detect on the negotiated `protocol_version`, not by probing.
+
+### Approval attribution (protocol 1.10.0)
+
+An approval is a privileged act — it is the moment a human lets the agent run a command the policy would otherwise have refused. Until protocol 1.10.0 the daemon threw away who performed it: `POST /perms/respond` carried the decision into the broker and nothing else, so the approval log answered "a `bash` call was allowed at 14:02" and could not answer "by whom" ([#830](https://github.com/go-steer/core-agent/issues/830)). On a relay — a chat gateway answering for a named human, a web console behind SSO — that is the one question the log exists to answer.
+
+Now the server attributes the decision **itself**, from the caller it verified for the request:
+
+- `POST /perms/respond` responds `{"acknowledged":true, "approver":"oncall@example.com"}`.
+- `GET /perms` history rows carry `"by":"oncall@example.com"`.
+
+Both fields are **omitted** when the daemon verified nobody — a tokenless loopback listener, or any request whose [`GET /whoami`](#non-session-routes) source is `anonymous`. Empty is deliberate: the daemon's placeholder identity for an unauthenticated caller is a literal string, and writing a placeholder into an audit line makes an unattributed approval read exactly like an attributed one. To get attribution, front the daemon with the asserted-caller header (`X-Asserted-Caller`) or enable bearer/mTLS per-caller auth; a client cannot supply attribution the server didn't verify.
+
+The request body accepts an optional `approver`, and it is **checked, never believed**:
+
+| Body `approver` | Verified caller | Result |
+|---|---|---|
+| omitted | anything | **200** — the server attributes the decision itself |
+| matches the verified caller | same identity | **200** |
+| disagrees with the verified caller | some identity | **400** — the prompt stays pending |
+| any value | nothing verified | **400** — there is nothing to check it against |
+
+The field exists only so a client whose idea of the approver differs from the server's finds out. Accepting and silently ignoring it would let a relay believe it had attributed a decision it hadn't, which is the same invisible failure #830 reports; trusting it would let any caller that can reach `/perms/respond` sign someone else's name to an approval.
+
+Attribution reaches the embedded permission gate too — `permissions.ApprovalLog` gained a `By` field, so the same identity shows up wherever the approval log is read, not only over HTTP. Embedders extend a `permissions.Prompter` to the optional `permissions.AttributingPrompter` to supply it; a host that wires a plain prompter (an interactive terminal, where the answerer is whoever is at the keyboard) records no approver, exactly as before.
 
 ### Interrupt, pause, and resume (protocol 1.5.0)
 

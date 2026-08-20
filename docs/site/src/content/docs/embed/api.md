@@ -1062,6 +1062,21 @@ gate, _ := permissions.FromConfig(cfg, cwd, userHome, &myPrompter{})
 
 When the gate is shared across goroutines (any setup with background subagents), wrap the prompter in `permissions.Serialize(...)` so concurrent `AskApproval` calls run one at a time. Without this, multiple subagents racing for `os.Stdin` deadlock or interleave garbage. The bundled CLI does this automatically when a `background.Manager` is wired; library callers using their own gate construction should do the same.
 
+### Naming the approver (v2.9.0-dev)
+
+A prompter that knows *who* answered — a chat gateway resolving a Slack click to a person, a web console behind SSO — implements the optional `permissions.AttributingPrompter` in addition to `Prompter` ([#830](https://github.com/go-steer/core-agent/issues/830)):
+
+```go
+func (p *myPrompter) AskApprovalAttributed(ctx context.Context, req permissions.PromptRequest) (permissions.Approval, error) {
+    decision, who := p.ask(ctx, req)
+    return permissions.Approval{Decision: decision, By: who}, nil
+}
+```
+
+The gate type-asserts for the richer form and falls back to `AskApproval`, so this is purely additive — a prompter that implements only `Prompter` behaves exactly as before. What it buys is `ApprovalLog.By`: `gate.Approvals()` (and the daemon's `GET /perms`) can then answer *who* allowed a privileged call, not just that it was allowed.
+
+`By` must only ever be an identity your host **verified**. A name copied out of a request body, or a placeholder for an unknown answerer, makes an unattributed approval read exactly like an attributed one — return an empty `By` instead. And if you write a wrapping prompter of your own, forward `AskApprovalAttributed` (as `permissions.Serialize` does), or the assertion fails on the wrapper and every approval through it is silently anonymous.
+
 ---
 
 ## MCP status

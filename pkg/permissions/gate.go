@@ -36,6 +36,13 @@ type ApprovalLog struct {
 	Key      string
 	Decision Decision
 	At       time.Time
+
+	// By names the principal that approved, when the prompter could
+	// attribute the answer (see Approval.By). Empty for the ordinary
+	// single-operator case — a person at a terminal is identified by
+	// being the person at the terminal — and empty is also what an
+	// unattributable answer records, never a guess.
+	By string
 }
 
 // Mode mirrors the permission modes recognized by config.PermissionsConfig.
@@ -911,7 +918,7 @@ func (g *Gate) checkControlPlaneWrite(ctx context.Context, toolName, path string
 	if g.prompter == nil {
 		return fmt.Errorf("%s denied: %q is a privilege-bearing control-plane file (%w); it can only be modified with an explicit interactive approval, which is unavailable in this session. Edit it directly outside the agent if the change is intended", toolName, path, ErrControlPlaneWrite)
 	}
-	d, err := g.prompter.AskApproval(ctx, PromptRequest{
+	approval, err := askApproval(ctx, g.prompter, PromptRequest{
 		Kind:        PromptKindControlPlaneWrite,
 		ToolName:    toolName,
 		Detail:      fmt.Sprintf("modify control-plane file %s", path),
@@ -923,14 +930,14 @@ func (g *Gate) checkControlPlaneWrite(ctx context.Context, toolName, path string
 	if err != nil {
 		return fmt.Errorf("permissions: %w", err)
 	}
-	if d == DecisionDeny {
+	if approval.Decision == DecisionDeny {
 		return fmt.Errorf("%s denied by user: control-plane write to %s", toolName, path)
 	}
 	// Any non-deny decision authorizes exactly this write. We record
 	// the approval for the audit log but intentionally do NOT remember
 	// it (no rememberSession / rememberSessionTool / allowlist persist)
 	// so the elevated gate re-prompts on the next control-plane write.
-	g.recordApproval(toolName, path, DecisionAllowOnce)
+	g.recordApproval(toolName, path, DecisionAllowOnce, approval.By)
 	return nil
 }
 
@@ -1078,17 +1085,18 @@ func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
 	if g.prompter == nil {
 		return fmt.Errorf("%w (tool=%s detail=%q); run with --yolo to bypass the gate, set permissions.mode=\"allow\" with an explicit allowlist for headless use, or attach an interactive stdin", ErrNoPrompter, req.ToolName, req.Detail)
 	}
-	d, err := g.prompter.AskApproval(ctx, req)
+	approval, err := askApproval(ctx, g.prompter, req)
 	if err != nil {
 		return fmt.Errorf("permissions: %w", err)
 	}
+	d := approval.Decision
 	switch d {
 	case DecisionAllowOnce:
-		g.recordApproval(req.ToolName, req.Detail, d)
+		g.recordApproval(req.ToolName, req.Detail, d, approval.By)
 		return nil
 	case DecisionAllowSession:
 		g.rememberSession(req.ToolName, req.Detail)
-		g.recordApproval(req.ToolName, req.Detail, d)
+		g.recordApproval(req.ToolName, req.Detail, d, approval.By)
 		return nil
 	case DecisionAllowSessionVerb:
 		// Verb-scoped trust covers every subsequent command with the
@@ -1107,7 +1115,7 @@ func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
 		if req.Verb != "" {
 			key = req.Verb + " *"
 		}
-		g.recordApproval(req.ToolName, key, d)
+		g.recordApproval(req.ToolName, key, d, approval.By)
 		return nil
 	case DecisionAllowSessionTool:
 		// Key the tool-wide grant by SessionToolKey so namespaced
@@ -1120,7 +1128,7 @@ func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
 		}
 		g.rememberSessionTool(key)
 		g.rememberSession(req.ToolName, req.Detail)
-		g.recordApproval(req.ToolName, req.Detail, d)
+		g.recordApproval(req.ToolName, req.Detail, d, approval.By)
 		return nil
 	case DecisionAllowAlways:
 		g.rememberSession(req.ToolName, req.Detail)
@@ -1178,7 +1186,7 @@ func (g *Gate) prompt(ctx context.Context, req PromptRequest) error {
 				return fmt.Errorf("permissions: persist always-allow grant %q: %w", grant.Pattern, err)
 			}
 		}
-		g.recordApproval(req.ToolName, req.Detail, d)
+		g.recordApproval(req.ToolName, req.Detail, d, approval.By)
 		return nil
 	default:
 		return fmt.Errorf("%s denied by user: %s", req.ToolName, req.Detail)
@@ -1227,7 +1235,7 @@ func (g *Gate) rememberSessionVerb(toolName, verb string) {
 	g.sessionAllowVerbs[toolName+"|"+verb] = struct{}{}
 }
 
-func (g *Gate) recordApproval(toolName, key string, d Decision) {
+func (g *Gate) recordApproval(toolName, key string, d Decision, by string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.approvals = append(g.approvals, ApprovalLog{
@@ -1235,6 +1243,7 @@ func (g *Gate) recordApproval(toolName, key string, d Decision) {
 		Key:      key,
 		Decision: d,
 		At:       time.Now(),
+		By:       by,
 	})
 }
 

@@ -118,6 +118,18 @@ import "time"
 // pre-1.10.0 daemon answers the new paths with 404, which is also
 // what it answers an unauthorized caller, so a client must read the
 // negotiated version rather than probing.
+//
+// v1.10.0 (#830) also attributes approvals: POST
+// /sessions/{sid}/perms/respond answers with an optional `approver`,
+// GET /sessions/{sid}/perms history rows carry an optional `by`, and
+// the request body accepts an optional `approver` that the server
+// CHECKS against the caller it verified (mismatch → 400) rather than
+// believes. Both response fields are omitted when the daemon verified
+// no identity for the responder — an unauthenticated loopback
+// listener, say — so a client must render "who approved this" as
+// unknown rather than assuming the key is always there. Additive: the
+// pre-existing `{"acknowledged":true}` shape is unchanged, and a
+// client that sends no `approver` sees no new behavior.
 const protocolVersion = "1.10.0"
 
 // SSE event-type names per the protocol spec (section 2).

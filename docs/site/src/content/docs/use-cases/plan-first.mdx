@@ -17,11 +17,12 @@ is cheaper to catch than a bad diff.
 via `permissions.plan_mode`:
 
 - **`required`** — the permission gate refuses every non-exempt tool
-  (`write_file`, `edit_file`, `delete_file`, `bash`, and the `mcp`
-  namespace) until the model has called `record_plan` for the current
-  turn. The plan is a *precondition*. Reads through the built-in file
-  and search tools stay exempt so the model can gather what it needs
-  to write a plan worth reviewing. MCP reads are exempt too **if** the
+  (`write_file`, `edit_file`, `delete_file`, `bash`, `fetch_url`,
+  `spawn_agent`/`spawn_remote_agent`, and the `mcp` namespace) until
+  the model has called `record_plan` for the current turn. The plan is
+  a *precondition*. Reads through the built-in file and search tools
+  stay exempt so the model can gather what it needs to write a plan
+  worth reviewing. MCP reads are exempt too **if** the
   server is marked [`read_only: true`](/concepts/mcp/#read-only-servers)
   — the gate only ever sees the namespace, never the underlying tool,
   so without that declaration it has no way to tell a `list` from a
@@ -30,6 +31,14 @@ via `permissions.plan_mode`:
   persisted exactly the same way, but nothing is blocked. The plan is
   an *audit trail*: the agent records what it's about to do and then
   does it in the same turn.
+
+Delegation counts as an action (v2.9+): under `required`, a parent that
+has recorded no plan can't spawn a subagent to do the acting for it.
+Both doors onto a declarative subagent are held — `spawn_agent { agent:
+"cluster" }` and the `cluster(request: …)` parent tool that the same
+roster entry registers. `stop_agent` is the deliberate exception and is
+never gated in any mode: denying a cancel leaves running exactly what
+the model was trying to halt.
 
 Reach for `required` when a human is genuinely going to read the plan
 before the diff lands. Reach for `advisory` for unattended runs where
@@ -49,4 +58,5 @@ in config, `Permissions.PlanMode` in the library API, or
 - **[Configuration → Plan mode](/reference/configuration/#plan-mode-v29--plan_mode)** — the mode table, composition with `permissions.mode`, migration off the deprecated bool.
 - **[Built-in tools → Planning](/concepts/tools/#planning)** — the `record_plan` tool the model calls, its schema, and its mode-aware description.
 - **[Built-in tools → `record_plan`](/concepts/tools/#record_plan--what-the-result-says-and-who-wrote-the-artifact)** — what the result tells the model it unblocked, the artifact's author frontmatter, and how `/replan` picks which plan to revoke.
+- **[Permissions → Background subagents and the gate](/concepts/permissions/#background-subagents-and-the-gate-v120)** — how the spawn gate keys its rules on the subagent being launched, and why one rule closes both doors.
 - **[Agent design → System instructions](/agent-design/system-instructions/)** — how to phrase the `AGENTS.md` so the model reaches for a plan naturally.

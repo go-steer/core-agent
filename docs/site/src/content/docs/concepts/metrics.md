@@ -118,7 +118,7 @@ Tool buckets run `0.01s … 300s` (the SDK default tops out at 10s and would fla
 Attribute value sets:
 
 - `digest.method` — `passthrough` | `structural_json` | `llm_fallback`. Passthrough contributes `0` to `bytes_saved` by definition.
-- `signal` — `repeated-tool-call` | `alternating-tool-cycle` | `dominant-tool-call` | `tool-failure-streak`. `severity` — `warn` | `critical`. See [autonomous operations](/run/autonomous/operations/) for what the watchdog does when it trips.
+- `signal` — `repeated-tool-call` | `alternating-tool-cycle` | `dominant-tool-call` | `repeated-tool-name` | `tool-failure-streak`. `severity` — `warn` | `critical`. See [autonomous operations](/run/autonomous/operations/) for what the watchdog does when it trips.
 - `stop_reason` — `completed`, `max_turns_exceeded`, `max_tokens_exceeded`, `max_cost_exceeded`, `wallclock_exceeded`, `context_cancelled`, `retry_policy_aborted`, `deferred`, plus `error` for failures that never reached a stop reason.
 - `mcp.status` — `ok` | `error`, set once when the server starts and never transitioned. `core_agent.mcp.server.status` is a **presence gauge**: the value is always `1`, and the signal lives entirely in the `mcp.status` dimension.
 

@@ -230,13 +230,23 @@ func truncateForLog(msg string) string {
 //     without the guidance they were read as N independent asks — the
 //     #697 failure, where two corroborating blast-radius alerts about
 //     an already-resolved incident drove a 22-call tool loop.
-func prependInboxMessages(prompt string, messages []string, bundleIsTheTurn bool) string {
+//
+// senders parallels messages: senders[i] is the injecting caller's
+// identity for messages[i], or "" when the message arrived without one.
+// It exists because a multi-session daemon has exactly one write door —
+// POST /sessions/{sid}/inject — so an operator's typed question and a
+// watcher's machine payload land in the same queue and used to render
+// byte-identically. The model then had no way to tell "who are you?"
+// from a k8s-event bundle, and the corroboration branch below is very
+// persuasive when everything looks like a signal. A shorter senders
+// slice (or nil) is legal: missing entries render unlabelled.
+func prependInboxMessages(prompt string, messages, senders []string, bundleIsTheTurn bool) string {
 	if len(messages) == 0 {
 		return prompt
 	}
-	block := formatInboxForPrompt(messages)
+	block := formatInboxForPrompt(messages, senders)
 	if bundleIsTheTurn {
-		block = formatInboxBundle("[Inbox]", messages)
+		block = formatInboxBundle("[Inbox]", messages, senders)
 	}
 	if strings.TrimSpace(prompt) == "" {
 		// Nothing below, so no separator: a trailing "---" with empty
@@ -248,7 +258,7 @@ func prependInboxMessages(prompt string, messages []string, bundleIsTheTurn bool
 
 // formatInboxForPrompt renders one message per line under an
 // "[Inbox]" header. Stable + greppable.
-func formatInboxForPrompt(messages []string) string {
+func formatInboxForPrompt(messages, senders []string) string {
 	var b strings.Builder
 	b.WriteString("[Inbox]\n")
 	for i, m := range messages {
@@ -256,9 +266,39 @@ func formatInboxForPrompt(messages []string) string {
 			b.WriteByte('\n')
 		}
 		b.WriteString("- ")
+		b.WriteString(senderPrefix(senders, i))
 		b.WriteString(m)
 	}
 	return b.String()
+}
+
+// senderPrefix renders the "from <identity>: " label for bullet i, or
+// "" when the identity is unknown. Unknown covers the legacy Inject
+// path, the CLI, and any out-of-band caller — those stay exactly as
+// they rendered before, so single-user deployments see no change.
+//
+// The identity is echoed verbatim rather than classified into
+// human/machine. core-agent has no reliable way to make that call:
+// admin_identities and proxy_identities are authorization config, not
+// a statement about who is typing, and a deployment is free to run a
+// bot as an admin or a person through a proxy. The raw identity is
+// something we actually know, and "sa:lookout-watch" vs
+// "platform-oncall@example.com" is a distinction the model can read
+// without us guessing on its behalf.
+//
+// The one identity that is NOT echoed is auto-continue's own. It is not
+// a correspondent — it is this runtime injecting a "[system note] the
+// turn was interrupted" into its own inbox — and labelling it "from
+// core-agent/auto-continue" would both leak machinery the model has no
+// use for and put a sender in front of a note that already opens with
+// its own bracketed framing. The identity exists so the pause gate and
+// the #624 stand-down can recognise the note; it was never a claim
+// about who sent it.
+func senderPrefix(senders []string, i int) string {
+	if i >= len(senders) || senders[i] == "" || senders[i] == AutoContinueOriginator {
+		return ""
+	}
+	return "from " + senders[i] + ": "
 }
 
 // inboxHandlingGuidance is the branch list appended to a queued bundle
@@ -285,12 +325,26 @@ func formatInboxForPrompt(messages []string) string {
 //     which is the specific shape a watcher produces — a second signal
 //     about something already handled, which reads as new work unless
 //     the model is told otherwise.
+//   - v4: added the new-question branch, FIRST, and the closing line.
+//     Every v3 branch presupposed the message related to work already
+//     in flight — dedup it, fold it in, defer it, or wrap up. There was
+//     no branch for "someone asked you something new", so a plain
+//     operator question fell through to the two branches that say do
+//     not re-open the work, and the model answered by re-summarizing
+//     the last incident instead. Observed live: a session that had just
+//     triaged an OOMKill answered "who are you?", "can you help with
+//     something else?" and "what's the status of my other cluster?"
+//     with three variations of the same closed-incident recap. v3's
+//     corroboration branch is load-bearing and stays; it just needed a
+//     sibling for the case where nothing is being corroborated.
 const inboxHandlingGuidance = "How to handle the bundle:\n" +
+	"- A new question, request, or topic → answer or do it, directly. This is the common case for a message from a person; the branches below are for messages that relate to work already in flight.\n" +
 	"- Variants of the same ask or signal → treat as ONE; don't re-do work per message.\n" +
 	"- Corroborating detail on something you already handled → acknowledge it and move on; do not re-open the work.\n" +
 	"- Mid-task adjustments → adapt your next step.\n" +
 	"- Separate asks during an active task → capture with `todo`, continue what you were doing.\n" +
-	"- After a completed task (the latest message is a checkpoint summary) → treat the bundle as the next request and respond once."
+	"- After a completed task (the latest message is a checkpoint summary) → treat the bundle as the next request and respond once.\n" +
+	"Summarizing work you already reported is not a response to a new question. If a message asks you something, answer that question."
 
 // formatInboxBundle renders messages under header as a bullet list
 // followed by inboxHandlingGuidance. Returns "" for an empty bundle.
@@ -298,15 +352,16 @@ const inboxHandlingGuidance = "How to handle the bundle:\n" +
 // differs by surface: "[Inbox]" is the stable, greppable, documented
 // name of the daemon block, while the TUI's auto-continue turn says
 // where its notes came from.
-func formatInboxBundle(header string, messages []string) string {
+func formatInboxBundle(header string, messages, senders []string) string {
 	if len(messages) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString(header)
 	b.WriteByte('\n')
-	for _, m := range messages {
+	for i, m := range messages {
 		b.WriteString("- ")
+		b.WriteString(senderPrefix(senders, i))
 		b.WriteString(m)
 		b.WriteByte('\n')
 	}
@@ -332,8 +387,11 @@ func formatInboxBundle(header string, messages []string) string {
 //
 // Returns "" when messages is empty (caller should not auto-continue
 // in that case).
+// Senders are not labelled here: this header already says the notes are
+// the operator's, so a per-bullet identity would be redundant on the one
+// surface where provenance was never ambiguous.
 func FormatAutoContinueInbox(messages []string) string {
-	return formatInboxBundle("[Operator notes queued while you were working]", messages)
+	return formatInboxBundle("[Operator notes queued while you were working]", messages, nil)
 }
 
 // FormatInterruptSteer frames the instruction an operator typed in
@@ -649,6 +707,13 @@ func (a *Agent) DrainInbox() []string {
 type inboxDrain struct {
 	// texts are the drained message bodies in arrival order.
 	texts []string
+	// senders parallels texts: the injecting caller's identity per
+	// message, "" where the message carried none. Distinct from
+	// originator, which collapses the batch to a single identity for
+	// attribution — the prompt needs one label per bullet, because a
+	// batch can mix an operator's question with a watcher's signal and
+	// the whole point is to stop those rendering identically.
+	senders []string
 	// originator is the last non-empty caller in the batch — the
 	// turn's originator per docs/multi-session-design.md ("the turn
 	// answers the most recent ask"). Zero when nothing carried an
@@ -694,7 +759,10 @@ func (a *Agent) drainInboxFull() inboxDrain {
 	if len(msgs) == 0 {
 		return inboxDrain{}
 	}
-	d := inboxDrain{texts: make([]string, len(msgs))}
+	d := inboxDrain{
+		texts:   make([]string, len(msgs)),
+		senders: make([]string, len(msgs)),
+	}
 	var deferredCaller auth.Caller
 	for i, m := range msgs {
 		a.Emit(attach.EventInbox, attach.InboxEvent{
@@ -702,6 +770,7 @@ func (a *Agent) drainInboxFull() inboxDrain {
 			PromptID: m.id,
 		})
 		d.texts[i] = m.text
+		d.senders[i] = m.caller.Identity
 		switch {
 		case m.caller.Identity == "":
 		case m.quiet:

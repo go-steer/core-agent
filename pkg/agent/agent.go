@@ -1503,7 +1503,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// subagent report still has no operator asking anything. Whether
 	// the operator typed something is what picks the inbox framing
 	// (#697) — see prependInboxMessages.
-	prompt = prependInboxMessages(prompt, drained.texts, strings.TrimSpace(rawPrompt) == "")
+	prompt = prependInboxMessages(prompt, drained.texts, drained.senders, strings.TrimSpace(rawPrompt) == "")
 	// Name the session off whichever of the two carried the operator's
 	// actual request. A daemon-driven turn arrives as Run("") with the
 	// text in the inbox, so keying only on the prompt argument would

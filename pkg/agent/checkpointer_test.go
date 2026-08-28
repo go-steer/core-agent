@@ -313,6 +313,90 @@ func TestMaybeMarkCheckpointPending_PromotesFlag(t *testing.T) {
 	}
 }
 
+// TestMarkTaskDone_RepeatInOneTurnSaysSo covers the loop the watchdog
+// structurally could not see (session
+// 01a03f1e-e215-7acd-81a9-6e4654d91325): nine consecutive
+// mark_task_done calls in a single invocation, each with a reworded
+// detail about the same finished incident, ended only by an operator
+// interrupt. Every loop detector keys on (name, canonicalArgs) and the
+// rewording changed the hash each time, so watchdog=enforce reported
+// tripped: false throughout.
+//
+// Fails on pre-fix code, which returned "acknowledged" to all nine.
+func TestMarkTaskDone_RepeatInOneTurnSaysSo(t *testing.T) {
+	t.Parallel()
+	llm := &captureLLM{response: "ack"}
+	a, err := New(llm, WithCheckpointer(NewDefaultCheckpointer()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if got := markTaskDone(a, "triaged the OOMKill on api-7d9"); got.Status != "acknowledged" {
+		t.Errorf("first call Status = %q, want acknowledged", got.Status)
+	}
+	for i := 0; i < 8; i++ {
+		got := markTaskDone(a, "the OOMKill work is complete, said another way")
+		if got.Status == "acknowledged" {
+			t.Fatalf("repeat %d was acknowledged again — the reply that kept the live loop running", i+2)
+		}
+		if got.Status != markTaskDoneRepeatStatus {
+			t.Fatalf("repeat %d Status = %q, want the repeat status", i+2, got.Status)
+		}
+	}
+
+	// The repeat must still be a no-op on the flags, not a rollback: the
+	// checkpoint fires once between turns and the newest detail wins.
+	a.mu.Lock()
+	requested := a.checkpointRequested
+	note := a.pendingCheckpointNote
+	a.mu.Unlock()
+	if !requested {
+		t.Errorf("checkpointRequested cleared by a repeat call — the checkpoint would be lost")
+	}
+	if note != "the OOMKill work is complete, said another way" {
+		t.Errorf("pendingCheckpointNote = %q, want the latest detail", note)
+	}
+
+	// And the turn boundary re-arms it. A session that marks two tasks
+	// done in two turns must checkpoint twice.
+	a.maybeMarkCheckpointPending()
+	if got := markTaskDone(a, "second task"); got.Status != "acknowledged" {
+		t.Errorf("next turn's first call Status = %q, want acknowledged — the repeat guard never re-armed", got.Status)
+	}
+}
+
+// The repeat status has three jobs and the model needs all three: say
+// the call did nothing, say why repeating cannot help, and point at the
+// thing it has probably left undone (the observed loop happened while
+// an operator's question sat unanswered). It must not read as an error,
+// which would invite the retry that is the loop again.
+func TestMarkTaskDoneRepeatStatus_TellsTheModelWhatToDoInstead(t *testing.T) {
+	t.Parallel()
+
+	for _, want := range []string{"already recorded", "cannot do anything further", "answer it now"} {
+		if !strings.Contains(markTaskDoneRepeatStatus, want) {
+			t.Errorf("repeat status is missing %q: %q", want, markTaskDoneRepeatStatus)
+		}
+	}
+	for _, forbidden := range []string{"error", "failed", "invalid"} {
+		if strings.Contains(strings.ToLower(markTaskDoneRepeatStatus), forbidden) {
+			t.Errorf("repeat status reads as a failure (%q), which invites a retry: %q", forbidden, markTaskDoneRepeatStatus)
+		}
+	}
+}
+
+// A nil agent is the pre-registration race NewMarkTaskDoneTool
+// documents. It must stay a successful no-op rather than becoming a
+// repeat report.
+func TestMarkTaskDone_NilAgentIsANoOp(t *testing.T) {
+	t.Parallel()
+
+	got := markTaskDone(nil, "anything")
+	if !strings.Contains(got.Status, "acknowledged") {
+		t.Errorf("nil-agent Status = %q, want an acknowledgement", got.Status)
+	}
+}
+
 func TestDefaultCheckpointer_ShouldCheckpointAlwaysFalse(t *testing.T) {
 	t.Parallel()
 	// Heuristic auto-checkpoint is intentionally off in the default

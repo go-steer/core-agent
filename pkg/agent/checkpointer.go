@@ -250,18 +250,7 @@ type markTaskDoneResult struct {
 // wired via WithCheckpointer.
 func NewMarkTaskDoneTool(getter func() *Agent) tool.Tool {
 	handler := func(_ tool.Context, args markTaskDoneArgs) (markTaskDoneResult, error) {
-		a := getter()
-		if a == nil {
-			// Pre-registration race or test stub. Don't error —
-			// the model interpreting the tool's contract should
-			// still see the tool as successful.
-			return markTaskDoneResult{Status: "acknowledged (no-op: agent not yet bound)"}, nil
-		}
-		a.mu.Lock()
-		a.checkpointRequested = true
-		a.pendingCheckpointNote = args.Detail
-		a.mu.Unlock()
-		return markTaskDoneResult{Status: "acknowledged"}, nil
+		return markTaskDone(getter(), args.Detail), nil
 	}
 	t, err := functiontool.New(functiontool.Config{
 		Name:        "mark_task_done",
@@ -271,6 +260,57 @@ func NewMarkTaskDoneTool(getter func() *Agent) tool.Tool {
 		panic("agent: NewMarkTaskDoneTool: " + err.Error())
 	}
 	return t
+}
+
+// markTaskDoneRepeatStatus is what a second (or fifth, or ninth)
+// mark_task_done in one turn gets told. Exported to the test as a
+// constant rather than asserted by substring because the whole value of
+// the string is its content: it has to say the call did nothing, say why
+// repeating cannot help, and point at the thing the model has probably
+// left undone. A reworded version that drops one of those is a
+// regression the test should catch.
+const markTaskDoneRepeatStatus = "already recorded for this turn — the checkpoint fires once, after the turn ends, and your latest detail replaced the previous one. Calling this again cannot do anything further. If you have not yet answered what was asked of you, answer it now; if you are done, end the turn with your reply."
+
+// markTaskDone is the mark_task_done tool body, split out from the
+// closure in NewMarkTaskDoneTool so it can be exercised without
+// standing up an ADK ToolContext.
+//
+// The repeat branch is the fix for a loop the watchdog structurally
+// could not see (session 01a03f1e-e215-7acd-81a9-6e4654d91325): asked a
+// question after an incident was already closed, the agent called
+// mark_task_done nine times in a single invocation, each with a
+// reworded one-paragraph detail about the same finished work, and
+// stopped only when an operator interrupted. Every loop detector keys
+// on (name, canonicalArgs) and the rewording changed the hash every
+// time, so watchdog=enforce reported tripped: false throughout.
+//
+// The flag is idempotent — the checkpoint fires exactly once between
+// turns and the newest detail wins — so the second call genuinely
+// accomplished nothing. What kept the loop alive was being told
+// "acknowledged" anyway, which reads as progress. Saying what actually
+// happened is the fix, and it belongs here rather than in a behavioral
+// detector: a tool that cannot do anything the second time in a turn
+// should be the one to say so.
+//
+// Not an error. The model did nothing illegal, and an error would read
+// as "the task did not get marked" — an invitation to retry, which is
+// the loop again.
+//
+// A nil agent is the pre-registration race NewMarkTaskDoneTool
+// documents; it stays a successful no-op.
+func markTaskDone(a *Agent, detail string) markTaskDoneResult {
+	if a == nil {
+		return markTaskDoneResult{Status: "acknowledged (no-op: agent not yet bound)"}
+	}
+	a.mu.Lock()
+	repeat := a.checkpointRequested
+	a.checkpointRequested = true
+	a.pendingCheckpointNote = detail
+	a.mu.Unlock()
+	if repeat {
+		return markTaskDoneResult{Status: markTaskDoneRepeatStatus}
+	}
+	return markTaskDoneResult{Status: "acknowledged"}
 }
 
 // CheckpointIfRequested is the post-turn hook complement to

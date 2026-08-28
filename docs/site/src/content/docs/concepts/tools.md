@@ -258,6 +258,8 @@ These are registered conditionally based on agent construction. They're not in t
 
 Auto-registered when `WithCheckpointer` is wired. The model calls it at logical task boundaries with a short description; the runtime fires `Agent.Checkpoint(ctx, taskNote)` which writes a six-section completion record to the session event log as `CustomMetadata["compaction"] = "checkpoint"` and slices the prior history out of future model requests. See [Context management](/concepts/context-management/).
 
+**Calling it twice in one turn reports the repeat** (v2.9+). The checkpoint fires exactly once between turns and the newest `detail` wins, so a second call genuinely accomplishes nothing — but until it said so it replied "acknowledged" again, which reads as progress. One live session took that as an invitation and called it nine times in a row with a reworded `detail` each time, defeating every args-keyed [watchdog](/concepts/context-management/#signals) detector, until an operator interrupted. The repeat now returns a plain statement that the checkpoint is already recorded and that repeating cannot do anything further. It is deliberately not an error: an error would read as "the task did not get marked" and invite exactly the retry that is the loop.
+
 ### `ask_user`
 
 Registered when `--ask=stdin` / `--ask=auto` is set, or when a library caller provides `WithPrompter`. Lets the model ask the operator a question and receive a typed answer. In headless contexts (no TTY, `--ask=auto`) it returns a clean refusal rather than blocking forever.

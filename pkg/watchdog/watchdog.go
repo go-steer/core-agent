@@ -213,11 +213,15 @@ const DefaultRepeatThreshold = 5
 //     activity even though interleaves keep breaking its run — the
 //     shape that falls between the two detectors above and that
 //     neither converges on quickly (#702).
+//   - RepeatedToolName (20 in a row): the same tool ground on with
+//     varying arguments, which every detector above misses because
+//     they all key on (name, args) and a model-authored free-text
+//     argument hashes differently each iteration.
 //   - ToolFailureStreak (3 in a row): every call erroring with none
 //     succeeding in between, i.e. an agent with no verified evidence
 //     about anything (#639).
 //
-// The three loop signals are Critical, so all halt under
+// The four loop signals are Critical, so all halt under
 // --watchdog=enforce. The failure streak is Warn: it never halts, and
 // reaches the operator log plus — under --watchdog=feedback — the
 // model's own next turn. Operators wanting different thresholds, or a
@@ -229,6 +233,7 @@ func NewDefaultWatchdog() *DefaultWatchdog {
 			NewAlternatingCycleSignal(DefaultCycleMaxPeriod, DefaultCycleRepeats),
 			NewDominantToolCallSignal(DefaultDominantWindow, DefaultDominantThreshold,
 				DefaultDominantDeferRun, DefaultDominantDeferPeriod),
+			NewRepeatedToolNameSignal(DefaultToolNameRun, DefaultRepeatThreshold),
 			NewToolFailureStreakSignal(DefaultFailureStreak),
 		},
 	}

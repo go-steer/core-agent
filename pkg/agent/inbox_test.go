@@ -155,7 +155,7 @@ func TestPrependInboxMessages_FormatsBlock(t *testing.T) {
 	got := prependInboxMessages("what's next?", []string{
 		"deadline moved up to 14:00",
 		"pause file writes until further notice",
-	}, false)
+	}, nil, false)
 	want := "[Inbox]\n" +
 		"- deadline moved up to 14:00\n" +
 		"- pause file writes until further notice" +
@@ -168,7 +168,7 @@ func TestPrependInboxMessages_FormatsBlock(t *testing.T) {
 
 func TestPrependInboxMessages_EmptyIsPassthrough(t *testing.T) {
 	t.Parallel()
-	got := prependInboxMessages("hello", nil, false)
+	got := prependInboxMessages("hello", nil, nil, false)
 	if got != "hello" {
 		t.Errorf("empty inbox should pass prompt through unchanged; got %q", got)
 	}

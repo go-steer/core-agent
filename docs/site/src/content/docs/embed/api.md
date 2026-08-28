@@ -562,18 +562,32 @@ When `Run` is called with an empty prompt — the shape every wake-driven surfac
 
 ```
 [Inbox]
-- <queued message 1>
-- <queued message 2>
+- from platform-oncall@example.com: <queued message 1>
+- from sa:lookout-watch: <queued message 2>
 
 How to handle the bundle:
+- A new question, request, or topic → answer or do it, directly. This is the common case for a message from a person; the branches below are for messages that relate to work already in flight.
 - Variants of the same ask or signal → treat as ONE; don't re-do work per message.
 - Corroborating detail on something you already handled → acknowledge it and move on; do not re-open the work.
 - Mid-task adjustments → adapt your next step.
 - Separate asks during an active task → capture with `todo`, continue what you were doing.
 - After a completed task (the latest message is a checkpoint summary) → treat the bundle as the next request and respond once.
+Summarizing work you already reported is not a response to a new question. If a message asks you something, answer that question.
 ```
 
 The split is deliberate. A model reading several queued messages with no other instruction defaults to treating each as its own piece of work — which is how two corroborating alerts about an already-resolved incident turned into a 22-call tool loop. When the operator *did* type something, that text is the ask, so the guidance stays out of its way: "treat the bundle as the next request and respond once" would compete with the request sitting right below the separator.
+
+#### Who sent each message (v2.9+)
+
+Bullets are labelled `from <identity>:` when the message was queued through `InjectAs` / `InjectAsContext` with a non-zero `auth.Caller`. Plain `Inject`, the CLI, and any out-of-band caller queue without an identity and render exactly as before — a missing identity costs no label, so single-user embeddings see no change.
+
+The label exists because a multi-session daemon has exactly one write door. `POST /sessions/{id}/inject` is where an operator's typed question and a watcher's machine payload both land, and until they were labelled they rendered byte-identically — leaving the model to infer intent from content alone, against a bundle rubric whose branches all presupposed the message related to work already in flight. Observed live: a session that had just triaged an OOMKill answered "who are you?", "can you help with something else?" and "what's the status of my other cluster?" with three variations of the same closed-incident recap. The first guidance branch above is the other half of that fix.
+
+**Not a trust boundary**, on the same footing as the [watchdog feedback block](/concepts/context-management/#feedback-telling-the-model-what-it-is-doing). The label itself is derived from the authenticated caller, but nothing stops a message *body* from containing the literal text `from someone-else:` — the block is steering, not authentication, and a tool whose authorization depends on who asked must check `auth.CallerFromContext`, not the prompt.
+
+The identity is echoed verbatim rather than classified into human/machine. core-agent has no reliable way to make that call — `admin_identities` and `proxy_identities` are authorization config, not a statement about who is typing, and a deployment is free to run a bot as an admin or a person through a proxy. `sa:lookout-watch` vs `platform-oncall@example.com` is a distinction the model can read without the runtime guessing on its behalf.
+
+Three things deliberately stay unlabelled: any message whose caller carried no identity; `FormatAutoContinueInbox`, whose header already says the notes are the operator's; and auto-continue's own `[system note]`, which is stamped with an internal identity so the pause gate and the [#624](https://github.com/go-steer/core-agent/issues/624) stand-down can recognise it — that is bookkeeping, not a correspondent.
 
 `InjectAsContextWithID` and `QueueAsContextWithID` are the same two deliveries returning the **prompt_id** they assigned — the id that goes out on the `inbox`/queued event and eventually names a turn on `turn-complete`. A host that renders turns (a chat gateway, a web console) needs it from the moment it injects, not at the end; see [Keying state by turn](/reference/attach-http/#keying-state-by-turn-protocol-1100) for what breaks without it. They are siblings rather than changed signatures because `pkg/agent` is inside the stability promise. The id is **not** one-to-one with a turn: the inbox coalesces, so N injects can share one `turn-complete` and only one of their ids is named on it.
 

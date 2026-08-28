@@ -31,7 +31,7 @@ func TestPrependInboxMessages_BundleIsTheTurnCarriesGuidance(t *testing.T) {
 	got := prependInboxMessages("", []string{
 		`{"kind":"family.member","message":"blast-radius join: same Deployment as this session's incident"}`,
 		`{"kind":"family.member","message":"rollout.stall on the same Deployment"}`,
-	}, true)
+	}, []string{"lookout", "lookout"}, true)
 
 	if !strings.HasPrefix(got, "[Inbox]\n") {
 		t.Errorf("the block must keep the stable, greppable [Inbox] header:\n%s", got)
@@ -54,7 +54,7 @@ func TestPrependInboxMessages_BundleIsTheTurnCarriesGuidance(t *testing.T) {
 // respond once") would compete with what the operator actually asked.
 func TestPrependInboxMessages_OperatorPromptKeepsTheBareList(t *testing.T) {
 	t.Parallel()
-	got := prependInboxMessages("what's next?", []string{"deadline moved up"}, false)
+	got := prependInboxMessages("what's next?", []string{"deadline moved up"}, []string{"lookout"}, false)
 
 	if strings.Contains(got, "How to handle the bundle") {
 		t.Errorf("bundle guidance must not compete with the operator's own prompt:\n%s", got)
@@ -72,7 +72,7 @@ func TestPrependInboxMessages_OperatorPromptKeepsTheBareList(t *testing.T) {
 // to survive underneath.
 func TestPrependInboxMessages_AlertsBelowStillGetGuidance(t *testing.T) {
 	t.Parallel()
-	got := prependInboxMessages("[Background reports]\n- subagent finished", []string{"node pool drained"}, true)
+	got := prependInboxMessages("[Background reports]\n- subagent finished", []string{"node pool drained"}, []string{"lookout"}, true)
 
 	if !strings.Contains(got, inboxHandlingGuidance) {
 		t.Errorf("an alert prepend must not cost the turn its guidance:\n%s", got)
@@ -95,7 +95,7 @@ func TestInboxGuidance_IsSharedByBothSurfaces(t *testing.T) {
 	if !strings.Contains(FormatAutoContinueInbox(msgs), inboxHandlingGuidance) {
 		t.Error("auto-continue framing no longer uses the shared guidance")
 	}
-	if !strings.Contains(prependInboxMessages("", msgs, true), inboxHandlingGuidance) {
+	if !strings.Contains(prependInboxMessages("", msgs, nil, true), inboxHandlingGuidance) {
 		t.Error("the daemon/wake framing no longer uses the shared guidance")
 	}
 }

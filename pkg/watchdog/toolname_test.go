@@ -54,8 +54,13 @@ func TestRepeatedToolNameSignal_TripsOnRewordedArguments(t *testing.T) {
 	if got.Signal != "repeated-tool-name" {
 		t.Errorf("Signal = %q, want repeated-tool-name", got.Signal)
 	}
-	if got.Severity != SeverityCritical {
-		t.Errorf("Severity = %q, want critical — the same non-progress the other loop detectors halt on", got.Severity)
+	// Warn, not Critical, and the one place the severity is pinned: a
+	// name-keyed run is a loop or a sweep and this signal cannot tell
+	// which, so it must not halt the agent under --watchdog=enforce.
+	// Raising this to Critical is a decision about false positives, not
+	// a detail — make it here, deliberately, or not at all.
+	if got.Severity != SeverityWarn {
+		t.Errorf("Severity = %q, want warn — this detector cannot prove the calls are redundant, so it must not halt a working agent", got.Severity)
 	}
 	if !strings.Contains(got.Reason, "mark_task_done") {
 		t.Errorf("Reason omits the looping tool, so an operator can't tell what looped: %q", got.Reason)
@@ -78,11 +83,13 @@ func TestRepeatedToolNameSignal_TripsOnRewordedArguments(t *testing.T) {
 }
 
 // TestRepeatedToolNameSignal_ClearsTheShippedFalsePositiveCase is the
-// tuning gate, and the reason DefaultToolNameRun is 20 and not 12.
+// tuning gate, and the reason DefaultToolNameRun is 15 and not 12.
 // TestDominantToolCallSignal_DoesNotTripOnLegitimateWork certifies a
 // window of twelve distinct read_file calls as work; a name-keyed
-// detector that halts that sequence would contradict a shipped
-// contract, and under --watchdog=enforce it would halt real agents.
+// detector that fires on that exact sequence would contradict a shipped
+// contract. At Warn that contradiction costs noise rather than a halt,
+// but a detector whose first act is to disagree with a sibling's
+// false-positive test is not one operators will leave switched on.
 func TestRepeatedToolNameSignal_ClearsTheShippedFalsePositiveCase(t *testing.T) {
 	t.Parallel()
 
@@ -91,7 +98,7 @@ func TestRepeatedToolNameSignal_ClearsTheShippedFalsePositiveCase(t *testing.T) 
 		sweep = append(sweep, call("read_file", `{"path":"`+strconv.Itoa(i)+`.go"}`))
 	}
 	if alerts := feed(defaultToolName(), sweep...); len(alerts) != 0 {
-		t.Errorf("halted a %d-file sweep the density detector's own false-positive test calls legitimate: %+v",
+		t.Errorf("fired on a %d-file sweep the density detector's own false-positive test calls legitimate: %+v",
 			DefaultDominantWindow, alerts)
 	}
 	if DefaultToolNameRun <= DefaultDominantWindow {
@@ -101,9 +108,10 @@ func TestRepeatedToolNameSignal_ClearsTheShippedFalsePositiveCase(t *testing.T) 
 }
 
 // TestRepeatedToolNameSignal_DoesNotTripOnLegitimateWork covers the
-// rest of the false-positive surface. A Critical alert halts the agent
-// under --watchdog=enforce, so anything with a different tool in it has
-// to stay quiet however long it runs.
+// rest of the false-positive surface. Warn means a false positive is
+// noise rather than a halt, but noise is what gets a detector switched
+// off, so anything with a different tool in it has to stay quiet
+// however long it runs.
 func TestRepeatedToolNameSignal_DoesNotTripOnLegitimateWork(t *testing.T) {
 	t.Parallel()
 
@@ -134,7 +142,7 @@ func TestRepeatedToolNameSignal_DoesNotTripOnLegitimateWork(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if alerts := feed(defaultToolName(), tc.calls...); len(alerts) != 0 {
-				t.Errorf("halted legitimate work: %+v", alerts)
+				t.Errorf("fired on legitimate work: %+v", alerts)
 			}
 		})
 	}
@@ -143,8 +151,10 @@ func TestRepeatedToolNameSignal_DoesNotTripOnLegitimateWork(t *testing.T) {
 // TestRepeatedToolNameSignal_DefersToTheRepeatDetector holds the
 // one-behavior-one-alert invariant. A run of byte-identical calls is
 // RepeatedToolCallSignal's, and it alerts at 5 — long before this
-// signal's 20. Under --watchdog=feedback a duplicate alert is
-// duplicated prompt text, not just a duplicated log line.
+// signal's 15. Under --watchdog=feedback a duplicate alert is
+// duplicated prompt text, not just a duplicated log line, and here the
+// duplicate would be the weaker report (Warn, can't prove redundancy)
+// shadowing the stronger one (Critical, can).
 func TestRepeatedToolNameSignal_DefersToTheRepeatDetector(t *testing.T) {
 	t.Parallel()
 
@@ -289,5 +299,47 @@ func TestNewDefaultWatchdog_WiresTheToolNameDetector(t *testing.T) {
 	alerts := w.Check()
 	if len(alerts) != 1 || alerts[0].Signal != "repeated-tool-name" {
 		t.Fatalf("default watchdog alerts = %+v, want exactly one repeated-tool-name", alerts)
+	}
+	// Wiring it into the default set is what makes the severity load-
+	// bearing: this is the alert an operator running --watchdog=enforce
+	// actually gets, and Critical here would halt them.
+	if alerts[0].Severity != SeverityWarn {
+		t.Errorf("the shipped default emits %q for a name-keyed run; enforce mode would halt on it", alerts[0].Severity)
+	}
+}
+
+// TestNewDefaultWatchdog_OnlyProvableLoopsHalt pins the severity split
+// across the whole default set rather than one signal at a time. Under
+// --watchdog=enforce a Critical alert refuses the agent's next turn, so
+// which detectors may halt is a product decision, not a per-file one:
+// only the three that compare arguments can prove the agent is learning
+// nothing. A new signal defaulting to Critical should land here first.
+func TestNewDefaultWatchdog_OnlyProvableLoopsHalt(t *testing.T) {
+	t.Parallel()
+
+	mayHalt := map[string]bool{
+		"repeated-tool-call": true,
+		"alternating-cycle":  true,
+		"dominant-tool-call": true,
+	}
+	for _, s := range NewDefaultWatchdog().signals {
+		name := s.Name()
+		// Drive each signal past its own threshold with the sequence it
+		// is built for; the name-keyed run trips the coarse detectors
+		// too, which is exactly the overlap we want represented.
+		var alerts []Alert
+		alerts = append(alerts, feed(s, reworded(name, DefaultToolNameRun*2)...)...)
+		s.Reset()
+		identical := make([]ToolCall, 0, DefaultToolNameRun*2)
+		for i := 0; i < DefaultToolNameRun*2; i++ {
+			identical = append(identical, call("read_file", `{"path":"a.go"}`))
+		}
+		alerts = append(alerts, feed(s, identical...)...)
+
+		for _, a := range alerts {
+			if a.Severity == SeverityCritical && !mayHalt[a.Signal] {
+				t.Errorf("%s emits Critical, so it halts the agent under --watchdog=enforce; add it to mayHalt deliberately or make it Warn", a.Signal)
+			}
+		}
 	}
 }

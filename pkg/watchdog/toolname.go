@@ -32,8 +32,9 @@
 // Keying on the name alone is what sees that. The cost of dropping args
 // from the key is that legitimate fan-out — a dozen read_file calls over
 // a dozen different files — looks identical to a loop, which is why the
-// threshold here is far above the args-identical detector's and why
-// this signal defers to it. See DefaultToolNameRun for the tuning.
+// threshold here is well above the args-identical detector's, why this
+// signal defers to it, and why it is the one loop detector that reports
+// at Warn rather than Critical. See DefaultToolNameRun for the tuning.
 
 package watchdog
 
@@ -46,30 +47,38 @@ import "fmt"
 // preference. Dropping args from the key means this signal cannot tell
 // a stuck agent from a productive one working through a list, so the
 // threshold has to sit above the longest legitimate single-tool run we
-// are willing to interrupt — and a Critical alert under
-// --watchdog=enforce halts the agent, so "interrupt" is the accurate
-// word.
+// expect to see.
 //
-// Twelve was the first guess, on the reasoning that it matches
-// DefaultDominantWindow. It is wrong, and the package says so already:
+// What the budget costs depends entirely on the severity, and that is
+// why this signal is Warn (see RepeatedToolNameSignal). At Critical the
+// threshold had to clear every plausible sweep, because a false
+// positive under --watchdog=enforce halts a working agent; twenty was
+// the smallest number that did, and twenty is high enough that the
+// signal has no demonstrated catch — a guardrail priced so as never to
+// fire. At Warn a false positive costs one line in the operator log
+// and, under --watchdog=feedback, one paragraph of next-turn context
+// aimed at a model that is free to disregard it. That is cheap enough
+// to buy a threshold low enough to be useful.
+//
+// Fifteen is where those meet. It clears the one legitimate sweep this
+// package actually certifies —
 // TestDominantToolCallSignal_DoesNotTripOnLegitimateWork asserts that
-// twelve read_file calls over twelve distinct paths is work, not a
-// loop. Shipping a name-keyed detector at twelve would halt the exact
-// sequence a sibling detector's false-positive test certifies as fine.
-// Twenty clears that case with margin and still bounds the pathology
-// this exists for, which is unbounded grinding rather than a long list.
+// twelve read_file calls over twelve distinct paths is work, not a loop
+// — with margin, while sitting low enough to catch grinding before it
+// has run for twenty calls. Do not raise it back toward twenty without
+// also raising the severity; the two numbers are one decision.
 //
-// It is emphatically NOT tuned to catch the nine-call mark_task_done
-// loop above — nine is well under twenty, and no threshold low enough
-// to catch it survives the paragraph above. That specific shape is
-// fixed at the tool layer instead (mark_task_done now reports the
-// repeat rather than acknowledging it again), which is the better place
-// for it anyway: a tool that cannot do anything the second time in a
-// turn should say so itself, not wait for a behavioral detector to
-// infer it. This signal is the backstop for the general case — any tool
-// ground on long enough with varying arguments — and it is deliberately
-// the last line of defence, not the first.
-const DefaultToolNameRun = 20
+// It is still NOT tuned to catch the nine-call mark_task_done loop
+// above. Nine is under fifteen, and no threshold low enough to catch it
+// survives the paragraphs above. That specific shape is fixed at the
+// tool layer instead (mark_task_done now reports the repeat rather than
+// acknowledging it again), which is the better place for it anyway: a
+// tool that cannot do anything the second time in a turn should say so
+// itself, not wait for a behavioral detector to infer it. This signal
+// is the backstop for the general case — any tool ground on long enough
+// with varying arguments — and it is deliberately the last line of
+// defence, not the first.
+const DefaultToolNameRun = 15
 
 // RepeatedToolNameSignal trips when the same tool NAME is called
 // Threshold times consecutively, whatever the arguments.
@@ -81,18 +90,32 @@ const DefaultToolNameRun = 20
 // goal, a message, a commit note — because the model rephrases them
 // naturally and each rephrasing defeats an args-keyed comparison.
 //
-// Severity is Critical, matching the other loop detectors, on the same
-// reasoning: twenty consecutive calls to one tool with nothing else
-// interleaved is not exploration, and under --watchdog=enforce the
-// agent should stop rather than keep paying for it.
+// Severity is Warn — the only loop detector that is not Critical, and
+// deliberately so. The other three assert something they can prove: the
+// calls are identical, so the agent is provably learning nothing. This
+// one cannot. A long same-name run is a loop *or* a sweep, and the
+// signal has no way to tell which. Under --watchdog=enforce a Critical
+// alert halts the agent, so being wrong here would stop an agent that
+// was working — the backstop becomes the outage. ToolFailureStreakSignal
+// reached the same conclusion from the same place ("halting three
+// denials into a legitimate RBAC probe"), and this signal has strictly
+// less information than that one does.
 //
-// Known false positive: a genuine sweep longer than Threshold — an
-// agent reading twenty-five files in a row, or issuing twenty-five
-// reads against twenty-five distinct resources. This is the reason the
-// threshold is twenty and not five, and the reason the alert text names
-// the possibility instead of asserting a loop. An operator who runs
-// workloads with long single-tool sweeps should construct
-// DefaultWatchdog with their own signal list, or raise Threshold.
+// Warn still does work. It reaches the operator log in every mode, and
+// under --watchdog=feedback it reaches the model's own next turn as
+// Guidance — which is the party that can actually stop making the call.
+// An unattended daemon gets the feedback path and no halt, which is the
+// right trade for an inference this soft.
+//
+// Known false positive, now survivable: a genuine sweep longer than
+// Threshold — an agent reading twenty files in a row, or issuing twenty
+// reads against twenty distinct resources. It costs a log line and a
+// paragraph of next-turn context, not a halt. This is why the alert
+// text names the possibility instead of asserting a loop, and why
+// Guidance tells a sweeping agent to keep going. An operator who runs
+// workloads with long single-tool sweeps and wants silence should
+// construct DefaultWatchdog with their own signal list, or raise
+// Threshold.
 type RepeatedToolNameSignal struct {
 	// Threshold is the consecutive same-name run length that trips.
 	Threshold int
@@ -101,11 +124,14 @@ type RepeatedToolNameSignal struct {
 	// RepeatedToolCallSignal. When the current run is not just
 	// same-name but same-name-and-same-args, that detector owns it and
 	// has already alerted at its own (lower) threshold; re-reporting
-	// here would put two Critical alerts, and under
-	// --watchdog=feedback two blocks of prompt text, in front of one
-	// behavior. Mirrors DominantToolCallSignal.DeferRun, including the
-	// convention that zero or negative disables the deference for an
-	// operator wiring this signal without the repeat detector.
+	// here would put two alerts, and under --watchdog=feedback two
+	// blocks of prompt text, in front of one behavior. It would also be
+	// the weaker report shadowing the stronger one — that detector's
+	// alert is Critical and can prove the calls are identical, which
+	// this one cannot. Mirrors DominantToolCallSignal.DeferRun,
+	// including the convention that zero or negative disables the
+	// deference for an operator wiring this signal without the repeat
+	// detector.
 	DeferRun int
 
 	name        string // tool name of the current run
@@ -176,9 +202,9 @@ func (s *RepeatedToolNameSignal) ObserveToolCall(tc ToolCall) *Alert {
 
 	return &Alert{
 		Signal:   s.Name(),
-		Severity: SeverityCritical,
+		Severity: SeverityWarn,
 		Reason: fmt.Sprintf(
-			"agent has called %s %d times in a row with nothing else interleaved — possible tool loop with varying arguments, which the args-matching detectors cannot count. If this is a legitimate sweep over %d distinct targets, raise the repeated-tool-name threshold; otherwise consider /interrupt and a different prompt phrasing.",
+			"agent has called %s %d times in a row with nothing else interleaved — possible tool loop with varying arguments, which the args-matching detectors cannot count. This does not halt the agent: a run this long is also what a legitimate sweep over %d distinct targets looks like, and the signal cannot tell them apart. If it is a sweep, raise the repeated-tool-name threshold to stop hearing about it; if it is a loop, /interrupt and try a different prompt phrasing.",
 			tc.Name, s.runLength, s.runLength,
 		),
 		// Model-facing half. Unlike the args-identical detectors we

@@ -18,7 +18,7 @@ For attach-mode (`core-agent-tui` remote client) commands, see [Attach mode TUI]
 | `/clear` | | Clear the local scrollback (session log is untouched) |
 | `/quit` | | Leave the TUI cleanly |
 | `/interrupt` | | Cancel the in-flight model turn (same as pressing Esc during a turn) |
-| `/resume` | | Resume a saved session from `<AgentsDir>/sessions/` |
+| `/transcripts [name]` | `/resume` (deprecated) | List the transcript files the TUI wrote on exit under `<AgentsDir>/sessions/`; with a name, load one into the scrollback. Renamed from `/resume` in core-tui v0.24.0 because "resume" already names the daemon's `POST /resume` — this command reads local files and never touches the host. The old spelling still works and prints a row naming the new one; it goes away at core-tui v1.0 |
 | `/reload` | | Re-walk `AGENTS.md`, skills, and MCP config on disk. Reports per-surface results inline (`Memory: ✓`, `Skills: ✓`, `MCP: ✗` with errors listed) so you can confirm an edit parsed cleanly. Live MCP server restart and system-prompt rebuild still require a daemon restart. |
 
 ### Status + observability
@@ -28,7 +28,7 @@ For attach-mode (`core-agent-tui` remote client) commands, see [Attach mode TUI]
 | `/stats` | | Session token totals, cost, duration, per-model breakdown |
 | `/usage` | | Extended /stats: cached-vs-uncached input tokens, per-turn history, cache-savings vs uncached-reference cost |
 | `/context` | `/boundaries` | Context-management activity: compactions, checkpoints, summarized chars, subtask cost |
-| `/tools` | | List the tools the agent has access to (built-ins + MCP + skills) |
+| `/tools [source]` | | List the tools the agent has access to, grouped by source with a count per group (`Tools (59): builtin 14 · gke 31 · skill 9 · subagent 5`) — `builtin` first, `other` last, and every `skill:<name>` folded under one `skill` heading. Bare names only; the gate annotation still shows, since "this one will stop and ask" changes what you do next. Pass a source (a group key or a full source name, case-insensitive) to get that server's descriptions back. A catalog with a single source renders as a plain flat list |
 | `/skills` | | List loaded skills with their trigger descriptions |
 | `/mcp` | | List configured MCP servers and their status |
 | `/subagents` | | List background subagents spawned this session, with live status |
@@ -77,7 +77,7 @@ Pattern grammar: `<tool>:<glob>` (e.g., `bash:git diff*`, `read_file:internal/**
 |---|---|---|
 | `/theme` | | Open the theme picker — arrows preview each theme live, Enter accepts and writes the choice to `.agents/config.json` (`ui.theme`), Esc restores the theme that was active when the picker opened |
 | `/theme <name>` | | Switch directly to a named theme without opening the picker; persists the same way. `/theme` with no argument lists choices |
-| `/mouse` | | Toggle terminal mouse capture. On (default), the wheel scrolls the chat viewport and click-drag no longer selects text; off hands the mouse back to the terminal for native selection. Unlike `/theme`, this is **not** persisted — set `ui.mouse` in `.agents/config.json`, or pass `--no-mouse` to `core-agent-tui` |
+| `/mouse` | | Toggle terminal mouse capture. On (default), the wheel scrolls the chat viewport and click-drag no longer selects text; off hands the mouse back to the terminal for native selection. Persists like `/theme` — the choice is written to `ui.mouse` in `.agents/config.json` and seeded back on the next launch. In attach mode (`core-agent-tui`) there is no config file to write, so the toggle lasts the session and `--no-mouse` is the durable form |
 | `/keys` | | Print the keybinding cheat sheet |
 
 ---
@@ -133,6 +133,14 @@ For `core-agent-tui` in attach mode the host write is the useful one: that proce
 ### Untrusted tool output is escaped
 
 Tool arguments, tool responses, file content, and bash stdout/stderr are stripped of ANSI escape sequences and have their remaining control bytes rendered as visible `\xNN` before anything reaches your terminal. A file containing `ESC[2J` shows you the bytes instead of clearing your screen. Tab and newline pass through untouched; SGR color in captured command output is dropped rather than shown as literal escape text.
+
+### Why click-drag stopped selecting text
+
+Mouse capture is on by default so the wheel scrolls the chat viewport, and while it is on the terminal never sees a drag — so native text selection is dead for as long as the TUI is running. The failure is silent and gets misattributed: the first drag does nothing and it reads as a broken terminal rather than as something an application switched on.
+
+A one-row hint at the bottom of the viewport says so for the first five seconds of a session, and again after each `/mouse on`. It names `/mouse`, which always works, and it names the bypass modifier only when `TERM_PROGRAM` says which terminal you are in — Shift-drag on the xterm family and tmux, Alt/Option-drag in VS Code's integrated terminal (xterm.js, and there it is conditional on a VS Code setting). An unrecognised terminal gets no claim about a key, because the modifier belongs to the terminal and there is no portable answer.
+
+If you would rather keep selection than wheel-scroll, `/mouse` now sticks: it writes `ui.mouse` to `.agents/config.json`. For `core-agent-tui`, which reads no config file, use `--no-mouse`.
 
 ### Cancellation semantics
 

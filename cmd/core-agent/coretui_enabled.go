@@ -345,6 +345,19 @@ func launchTUIv2(ctx context.Context, deps tuiDeps) (didRun bool, exitCode int, 
 			}
 			return config.PersistThemeChoice(deps.AgentsDir, name)
 		},
+		// PersistMouseChoice makes /mouse durable (#859, core-tui #287).
+		// Until core-tui v0.24.0 there was no hook for it, so the toggle
+		// was session-local and an operator who wanted native text
+		// selection back re-typed /mouse every launch — the one toggle
+		// whose default actively removes a capability they had before
+		// starting the TUI. Writes ui.mouse, which uiMouseToCoreTui
+		// reads back into Options.Mouse on the next launch.
+		PersistMouseChoice: func(on bool) error {
+			if deps.AgentsDir == "" {
+				return nil
+			}
+			return config.PersistMouseChoice(deps.AgentsDir, on)
+		},
 		// ClipboardWriter is the host half of a transcript copy
 		// (`y` / `c`), ADDITIVE to the OSC 52 escape core-tui already
 		// emits — never a replacement. The escape targets the machine
@@ -989,6 +1002,13 @@ func (a *coreAgentAdapter) SessionApprovals() []coretui.ApprovalLog {
 			Tool:     ap.Tool,
 			Key:      ap.Key,
 			Decision: ap.Decision.String(),
+			// Empty here for the ordinary local case, and that is
+			// the right answer rather than a missing one: the gate
+			// records By only when the prompter could attribute the
+			// answer (#830), and at a local terminal the answerer is
+			// whoever is at the keyboard. core-tui renders an empty
+			// By as no suffix at all.
+			By: ap.By,
 		})
 	}
 	return out

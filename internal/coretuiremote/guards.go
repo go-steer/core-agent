@@ -58,6 +58,9 @@ var (
 	_ coretui.RemoteInterrupter = (*Adapter)(nil) // Interrupt
 	_ coretui.WakeRequester     = (*Adapter)(nil) // WakeRequested — fed by `wake` SSE frames (#802)
 
+	// tui/pause.go
+	_ coretui.Pauser = (*Adapter)(nil) // Pause, Resume, PauseState — the operator hold (protocol v1.5.0)
+
 	// tui/capabilities.go
 	_ coretui.SessionSwitcher      = (*Adapter)(nil) // Sessions, SwitchToSession
 	_ coretui.Reloader             = (*Adapter)(nil) // Reload

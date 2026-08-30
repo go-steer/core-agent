@@ -162,3 +162,23 @@ func PersistThemeChoice(agentsDir, themeName string) error {
 		return cfg.Validate()
 	})
 }
+
+// PersistMouseChoice writes the /mouse toggle so it survives across
+// runs (core-agent #859, core-tui #287).
+//
+// Always writes an explicit value, never clears the field back to nil.
+// UI.Mouse is a tristate where nil means "no opinion, use the default"
+// — and the default is on, so clearing it on a toggle-off would persist
+// the opposite of what the operator just asked for. An operator who
+// wants the nil back edits the file.
+//
+// This one matters more than the other two toggles: while capture is on
+// the terminal never sees click-drag, so mouse-on removes native text
+// selection. Without this, an operator who wanted selection back re-typed
+// /mouse every single launch.
+func PersistMouseChoice(agentsDir string, on bool) error {
+	return Mutate(agentsDir, func(cfg *Config) error {
+		cfg.UI.Mouse = &on
+		return cfg.Validate()
+	})
+}

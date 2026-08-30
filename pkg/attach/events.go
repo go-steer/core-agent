@@ -91,10 +91,11 @@ import "time"
 // `watchdog` were: no new event type, no new field, and the spec
 // already requires consumers to treat an unrecognized kind as
 // `unknown`, so an older client has a defined fallback rather than
-// undefined behavior (core-tui v0.22.0, the pinned client, in fact
-// prints the kind verbatim). It is still a behavior change for
-// this one input — a client keying a retry affordance off `retryable`
-// stops offering one after an interrupt, which is the point.
+// undefined behavior (core-tui v0.22.0, the client pinned when this
+// bump landed, in fact prints the kind verbatim). It is still a
+// behavior change for this one input — a client keying a retry
+// affordance off `retryable` stops offering one after an interrupt,
+// which is the point.
 //
 // v1.9.0 (#768): GET /sessions/{sid}/subagents rows carry an optional
 // `tools` — the subagent's configured tool grant, in the same ToolInfo

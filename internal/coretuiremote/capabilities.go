@@ -157,7 +157,15 @@ func (a *Adapter) fetchStatusLocked() {
 	if err != nil {
 		return
 	}
-	a.status.cached = coretui.Status{
+	a.status.cached = statusInfoToCoreTui(info)
+	a.seedPauseFromStatus(info)
+}
+
+// statusInfoToCoreTui projects the /status body into the header fields
+// core-tui renders. Shared by the cold and warm fetch paths so the two
+// cannot drift into reporting different things from the same response.
+func statusInfoToCoreTui(info attach.StatusInfo) coretui.Status {
+	return coretui.Status{
 		ModelName: info.ModelName,
 		State:     info.State,
 	}
@@ -178,10 +186,8 @@ func (a *Adapter) refreshStatus() {
 	if err != nil {
 		return
 	}
-	a.status.cached = coretui.Status{
-		ModelName: info.ModelName,
-		State:     info.State,
-	}
+	a.status.cached = statusInfoToCoreTui(info)
+	a.seedPauseFromStatus(info)
 }
 
 // Tools satisfies coretui.ToolLister. Backs /tools.
@@ -748,6 +754,14 @@ func (a *Adapter) SessionApprovals() []coretui.ApprovalLog {
 			Tool:     ap.Tool,
 			Key:      ap.Key,
 			Decision: ap.Decision,
+			// This is the deployment the field exists for: several
+			// operators attached to one daemon, where "allowed once"
+			// without a name answers half the question /permissions
+			// is asked. The daemon omits By when it verified nobody,
+			// and core-tui renders empty as no suffix (#830, core-tui
+			// #277) — so an unauthenticated listener's row is
+			// unchanged rather than labelled with a guess.
+			By: ap.By,
 		})
 	}
 	return out

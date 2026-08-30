@@ -334,15 +334,17 @@ Three patterns recur:
 
 **Category:** behavior-surprise
 
-**Issue.** Enabling mouse events for wheel scroll (`tea.WithMouseCellMotion`) takes over ALL mouse events, so the terminal no longer sees click-drag and can't perform native text selection. Operators can only select via a modifier bypass (Shift-drag on most terminals) or turn off mouse capture entirely.
+**Issue.** Enabling mouse events for wheel scroll (`tea.WithMouseCellMotion`) takes over ALL mouse events, so the terminal no longer sees click-drag and can't perform native text selection. Operators can only select via a modifier bypass or turn off mouse capture entirely.
 
-**Impact.** A recurring papercut every operator hits on first launch ("I can't copy anything?"). Forces a doc burden (`Shift-drag to select` appears in every operator-facing reference page) and a persistent config surface (`ui.mouse` pointer semantics for nil-vs-false). Discoverability is poor: the toggle is `/mouse` at runtime, but the operator's mental model at that point is "I broke my terminal."
+**The bypass modifier is not ours to document, and it moves.** Shift-drag is the common case, but it is a property of the terminal emulator, not of the escape sequences we emit. VS Code's integrated terminal (xterm.js) uses Alt/Option-drag, gated on `terminal.integrated.macOptionClickForcesSelection`; other terminals let you rebind or disable the bypass outright. This matters more than it sounds: an operator whose bypass silently changed under a terminal update sees "core-agent-tui broke my selection," and every doc page that hardcodes "Shift-drag" sends them looking for a regression that isn't in this repo. Diagnosing one such report cost most of a session before the mode set was measured on a real pty and found unchanged since the app's first release. Name the modifier as terminal-specific, then point at the off switch, which is the only lever we actually control.
 
-**Workaround.** `UIConfig.Mouse *bool` (nil = default on, explicit false disables), `/mouse` slash toggle. PR #44 (`8106de9`).
+**Impact.** A recurring papercut every operator hits on first launch ("I can't copy anything?"). Forces a doc burden on every operator-facing reference page and a persistent config surface (`ui.mouse` pointer semantics for nil-vs-false). Discoverability is poor: the toggle is `/mouse` at runtime, but the operator's mental model at that point is "I broke my terminal."
+
+**Workaround.** `UIConfig.Mouse *bool` (nil = default on, explicit false disables), `/mouse` slash toggle, and `core-agent-tui --no-mouse` for the attach client (which reads no config file, so the flag is its only durable opt-out).
 
 **Recommendation.** Bubbletea should support a mouse-events mode that captures only wheel events (SGR 1006 with report-motion off) so click-drag falls through to the terminal. The current all-or-nothing capture is the mismatch.
 
-**Evidence.** `pkg/config/config.go:143-150`; `cmd/core-agent/coretui_enabled.go:1388-1399`; PR #44; commit `8106de9`.
+**Evidence.** `pkg/config/config.go:225-230` (`UIConfig.Mouse`); `cmd/core-agent/coretui_enabled.go:2025` (`uiMouseToCoreTui`); PR #44; commit `8106de9`. Terminal-specific bypass + `--no-mouse`: [#859](https://github.com/go-steer/core-agent/issues/859).
 
 ### 7. [medium] Glamour re-renders the full buffer on every partial; live per-token markdown is prohibitively expensive
 

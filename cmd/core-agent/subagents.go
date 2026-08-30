@@ -115,6 +115,20 @@ type sessionBackgroundRecipe struct {
 	// startup. Safe to share across managers: each spawn builds a fresh
 	// LLM from the template's ModelFactory, and toolsets are stateless
 	// process-lifetime handles.
+	//
+	// Sharing is safe for the GATE too, which is the part that reads
+	// wrong (#825 was filed on exactly this comment). These tools closed
+	// over the daemon's template gate at startup and nothing rebinds
+	// them — but a tool's gate is only where the check STARTS. Every
+	// Gate.Check* entry point begins with resolveSessionGate(ctx), and
+	// agent.Run stamps the per-session sub-gate onto the turn context;
+	// Spawn carries it into the subagent's goroutine with
+	// context.WithoutCancel, which drops cancellation and keeps values.
+	// So a tenant's declarative subagent asks that tenant's sub-gate for
+	// its mode, approvals, prompter and plan-first state, exactly as its
+	// ad-hoc and catalog siblings do. Pinned by the regression tests in
+	// pkg/agent/background/session_gate_test.go — which reproduce all
+	// four of #825's predicted symptoms the moment that chain is cut.
 	templates []background.SubagentTemplate
 	// live tracks the managers currently handed out, so daemon shutdown
 	// can drain them alongside the daemon's own.

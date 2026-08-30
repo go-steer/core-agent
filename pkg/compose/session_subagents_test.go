@@ -136,6 +136,66 @@ func TestReproduceAgent_WiresPerSessionSubagents(t *testing.T) {
 	}
 }
 
+// TestReproduceAgent_AgentAndSubagentsShareOneSessionGate pins the
+// link that carries per-session permission isolation into every tool
+// call: the sub-gate handed to the session's subagent factory has to
+// be the same object handed to agent.New, because agent.Run stamps
+// THAT gate onto the turn context and resolveSessionGate reads it back
+// off there. Tool wrappers are constructed once at daemon startup
+// against the template gate, so this stamp is the only thing that
+// routes a tenant's call to that tenant's mode, approvals, prompter
+// and plan-first state (#825).
+//
+// Two sessions must also get two distinct sub-gates, or every symptom
+// DeriveForSession exists to prevent comes back with the derivation
+// still nominally in place.
+func TestReproduceAgent_AgentAndSubagentsShareOneSessionGate(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	template := permissions.New(permissions.Options{})
+	var scoped []*permissions.Gate
+	deps := SessionFactoryDeps{
+		DaemonCtx: ctx,
+		Model:     stubLLM{},
+		Template:  template,
+		SessionBackground: func(scope SessionScope) (SessionSubagents, error) {
+			scoped = append(scoped, scope.Gate)
+			return SessionSubagents{Manager: &stubManager{}, Close: func() {}}, nil
+		},
+	}
+
+	adA, cancelA, err := ReproduceAgent(deps, auth.Anonymous, "sid-a", "created")
+	if err != nil {
+		t.Fatalf("ReproduceAgent(sid-a): %v", err)
+	}
+	t.Cleanup(cancelA)
+	adB, cancelB, err := ReproduceAgent(deps, auth.Anonymous, "sid-b", "created")
+	if err != nil {
+		t.Fatalf("ReproduceAgent(sid-b): %v", err)
+	}
+	t.Cleanup(cancelB)
+
+	if len(scoped) != 2 {
+		t.Fatalf("SessionBackground called %d times, want 2", len(scoped))
+	}
+	gateA, gateB := adA.Agent().Gate(), adB.Agent().Gate()
+	if gateA == nil || gateB == nil {
+		t.Fatal("a session agent was wired with no gate — every tool call would fall back to the daemon template")
+	}
+	if gateA != scoped[0] || gateB != scoped[1] {
+		t.Errorf("agent gate / subagent scope gate disagree (%p vs %p, %p vs %p): a subagent would "+
+			"enforce a different session's posture than its parent", gateA, scoped[0], gateB, scoped[1])
+	}
+	if gateA == gateB {
+		t.Error("both sessions share one sub-gate — approvals, mode and plan-first state would cross tenants")
+	}
+	if gateA == template || gateB == template {
+		t.Error("a session was handed the daemon template gate itself, not a derived sub-gate")
+	}
+}
+
 // TestReproduceAgent_SubagentManagersArePerSession pins the scoping
 // decision itself. Two sessions must get two managers, each stamped with
 // its OWN parent — the concrete failure a shared daemon-wide manager

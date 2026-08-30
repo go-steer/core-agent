@@ -508,6 +508,31 @@ on first write so the shared roster is never mutated. Matching by
 name keeps the operator's scoping intact: no template ever gains
 a spawn tool its spec didn't grant.
 
+**Why only the spawn tools get rebound (#825).** The rest of that
+shared roster is gate-bearing too — every built-in in a template's
+`Tools` closed over the daemon's template gate at startup, and
+nothing rebinds it. Read statically that looks like the same bug
+one level further down: a tenant's declarative subagent asking the
+daemon's gate would make `plan_mode: "required"` permanently
+unsatisfiable (the tenant's `record_plan` marks its own sub-gate),
+leak one tenant's approvals to the next, and send `ask`-mode
+prompts to a broker no tenant is subscribed to.
+
+It does not, because a tool's gate is only where the check
+*starts*. Every `Gate.Check*` entry point opens with
+`resolveSessionGate(ctx)`, `agent.Run` stamps the session's
+sub-gate onto the turn context, and `Spawn` carries that context
+into the subagent's goroutine via `context.WithoutCancel` — which
+drops cancellation and keeps values. The binding that matters is
+per-call and comes from the context, so the shared roster is
+correct as-is. Spawn tools are the exception precisely because
+they are *not* gate-bearing in this sense: they hold a `*Manager`,
+and no context lookup can redirect a captured manager pointer.
+
+`pkg/agent/background/session_gate_test.go` pins the whole chain,
+and is written so that cutting any link reproduces all four
+symptoms above rather than surfacing as unrelated permission bugs.
+
 A second follow-up covers the operator's view of the same split.
 `compose.ReproduceAgent` wires a session with the background
 manager but not `agent.WithSubagents`, so a daemon-created session

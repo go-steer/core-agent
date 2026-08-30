@@ -648,14 +648,14 @@ Overrides for the automatic context-window compaction trigger. See [Context mana
 
 ## `ui`
 
-Presentation choices for the in-process TUI (`core-agent`). The `/theme` slash command writes back here when used; `/mouse` does not — it toggles capture for the current session only, so a durable choice has to be set in this block.
+Presentation choices for the in-process TUI (`core-agent`). Both `/theme` and `/mouse` write back here when used, so a choice made at the keyboard survives the next launch; either field can equally be set by hand.
 
 These fields are read by `core-agent` only. The remote attach client (`core-agent-tui`) reads no config file; its equivalent of `mouse: false` is the [`--no-mouse` flag](/reference/core-agent-tui/#flags).
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `theme` | string | `"auto"` | One of the reserved buckets `auto` / `dark` / `light`, or any named theme from core-tui's BuiltinThemes registry (e.g. `gopher`, `google`). `auto` (or empty) lets core-tui detect the terminal background via OSC-11; explicit `dark` / `light` skips that query. Validation accepts any lowercase `[a-z0-9_-]{1,64}`; unknown names fall back to the auto path at launch. |
-| `mouse` | bool | `true` | Terminal mouse capture so the wheel scrolls the chat viewport. When enabled, plain click-drag no longer selects text: the terminal never sees the drag. The bypass modifier is terminal-specific — Shift-drag on most terminals, Alt/Option-drag in VS Code's integrated terminal (xterm.js), and some terminals let you rebind or disable it entirely. Set this to `false` when you would rather keep native selection than wheel-scroll. `/mouse` toggles capture at runtime but does not write back here. |
+| `mouse` | bool | `true` | Terminal mouse capture so the wheel scrolls the chat viewport. When enabled, plain click-drag no longer selects text: the terminal never sees the drag. The bypass modifier is terminal-specific — Shift-drag on most terminals, Alt/Option-drag in VS Code's integrated terminal (xterm.js), and some terminals let you rebind or disable it entirely. Set this to `false` when you would rather keep native selection than wheel-scroll. `/mouse` toggles capture at runtime and writes the new state back here, always as an explicit `true` or `false` — an absent field means "no opinion", and the default is on, so a toggle-off that cleared the field would persist the opposite of what you asked for. |
 
 ---
 

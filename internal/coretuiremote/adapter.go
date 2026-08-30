@@ -84,6 +84,12 @@ type Adapter struct {
 	// loop. See capabilities.go.
 	status statusCache
 
+	// pause holds the last-known state of the session's pause gate,
+	// served to core-tui's PauseState poll without touching the
+	// network. Written by the SSE read loop and by the /pause +
+	// /resume acks; see pause.go.
+	pause pauseCache
+
 	// subagents caches the remote's SubagentReporter roster. core-tui
 	// v0.20.0 folded that roster read into the same once-a-second
 	// hostSnapshot refresh that already drove Status/UsageTracker, so

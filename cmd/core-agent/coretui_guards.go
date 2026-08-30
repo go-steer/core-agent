@@ -121,6 +121,20 @@ var (
 //     over the attach protocol, which is attach mode's surface. The
 //     in-process host owns exactly one session for its lifetime.
 //
+//coretui:declined Pauser
+//   - coretui.Pauser: there is no gate here to open or close. The
+//     operator hold is a pkg/attach concept — PauseController, and the
+//     /pause + /resume routes over it — held by the attach registrant
+//     around a loop that keeps running between operator turns. Local
+//     mode is the per-turn Run path (see the LiveAgent decline above):
+//     nothing starts a turn except the operator pressing Enter, so
+//     "no new turn starts until someone resumes" is already the
+//     unconditional behavior and a gate in front of it would gate
+//     nothing. ESC keeps falling through to the local cancelTurn,
+//     which is the correct meaning of ESC on a host with no loop to
+//     park. If local mode ever grows an autonomous driver, this
+//     decline is what has to be revisited first.
+//
 //coretui:declined PermanentStreamError
 //   - coretui.PermanentStreamError: an error-value interface, not a
 //     host one, and only meaningful for a reconnecting remote stream.

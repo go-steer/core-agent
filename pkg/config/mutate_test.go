@@ -18,6 +18,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -67,5 +68,62 @@ func TestMutate_FnErrorAbortsWithoutSave(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, ConfigFileName)); !os.IsNotExist(err) {
 		t.Fatal("failed Mutate wrote config.json")
+	}
+}
+
+// TestPersistMouseChoice_RoundTrips pins the durable half of /mouse
+// (#859, core-tui #287): the toggle has to survive a restart, which
+// means landing in ui.mouse where uiMouseToCoreTui reads it back.
+func TestPersistMouseChoice_RoundTrips(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	if err := PersistMouseChoice(dir, false); err != nil {
+		t.Fatalf("PersistMouseChoice(false): %v", err)
+	}
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.UI.Mouse == nil {
+		t.Fatal("ui.mouse is nil after persisting false; the opt-out did not survive")
+	}
+	if *cfg.UI.Mouse {
+		t.Error("ui.mouse = true, want false")
+	}
+
+	// Toggling back on must write an explicit true, not clear the field.
+	if err := PersistMouseChoice(dir, true); err != nil {
+		t.Fatalf("PersistMouseChoice(true): %v", err)
+	}
+	cfg, err = Load(dir)
+	if err != nil {
+		t.Fatalf("Load after re-enable: %v", err)
+	}
+	if cfg.UI.Mouse == nil {
+		t.Fatal("ui.mouse is nil after persisting true")
+	}
+	if !*cfg.UI.Mouse {
+		t.Error("ui.mouse = false, want true")
+	}
+}
+
+// The tristate is the whole point: nil means "no opinion, use the
+// default" and the default is ON. Clearing the field on a toggle-off
+// would persist the exact opposite of what the operator asked for, so
+// an explicit false has to be distinguishable from an absent field.
+func TestPersistMouseChoice_OffIsExplicitNotAbsent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	if err := PersistMouseChoice(dir, false); err != nil {
+		t.Fatalf("PersistMouseChoice(false): %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, ConfigFileName))
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(raw), `"mouse"`) {
+		t.Errorf("config.json has no mouse key after persisting false:\n%s", raw)
 	}
 }

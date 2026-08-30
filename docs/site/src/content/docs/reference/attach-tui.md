@@ -149,17 +149,42 @@ Until then, the documented attach path for non-IAM gateways remains a wrapper ar
 | `/compact [focus]`, `/done [note]` | Trigger summarization or task-boundary checkpoints on the remote agent. The TUI shows an in-chat preamble row during the 5–30 s round-trip. |
 | `/btw <question>` | One-shot context-grounded side question. |
 | `/subagent <goal>` | Spawn a background subagent on the remote agent (requires `--no-background-agents=false` daemon side). |
-| `/tools`, `/subagents` | List the daemon's tool palette and the configured subagent roster. `/tools` tags each entry's `source` (declarative subagents wired as parent tools show `subagent`; MCP/skill tools currently show `other`); `/subagents` shows the roster the daemon loaded — name, model, `root`, and `sync`/`async` modes — from `GET /subagents` (distinct from `/agents`, which lists *running* instances). |
-| `/interrupt` | Cancel the in-flight model turn on the remote. |
+| `/tools [source]`, `/subagents` | List the daemon's tool palette and the configured subagent roster. `/tools` groups by `source` with a count per group (declarative subagents wired as parent tools show `subagent`; MCP/skill tools currently show `other`), `builtin` first and `other` last, and pass a source to bring that group's descriptions back — which is the difference between reading your own 14 built-ins and scrolling past 31 rows of somebody's MCP server. `/subagents` shows the roster the daemon loaded — name, model, `root`, and `sync`/`async` modes — from `GET /subagents` (distinct from `/agents`, which lists *running* instances). |
+| `/interrupt` | Cancel the in-flight model turn on the remote **and hold the session** — see [The hold](#the-hold). Both halves run and both are reported, so an interrupt that killed a turn but failed to shut the gate says so. |
+| `/pause` | Shut the gate without interrupting anything: the running turn finishes, and no new one starts until you resume. `POST /pause`. |
+| `/continue` (`/cont`) | Open the gate and carry on where the agent left off. `POST /resume` with an empty body. |
+| `/abandon` | Open the gate and inject nothing — the interrupted work is dropped and the agent stays quiet until something else drives it. `POST /resume {"mode":"abandon"}`. |
 | `/reconnect` | Force-reconnect the SSE stream (resumes from `?since=<lastSeq>` — lossless). |
 | `/sessions` | Pop back to the startup session picker (kills the TUI, re-launches). |
 | `/switch [<sid>]`, `/sess` | Detach + reattach to a different session **in place**. Bare form opens an in-chat picker (local + peer sessions fanned in parallel via `GET /peers` → per-peer `GET /sessions`; peer rows tagged `[peer:<name>]`); `/switch <sid>` direct-jumps to a local session. Chat wipes; local SSE reader closes; the outgoing daemon session keeps running for later re-attach. |
 | `/new` | POST `/sessions` on the current daemon (per-caller bearer auth, ACL-isolated) and detach + reattach to the fresh session in place. Companion to `/switch` for the "I need a clean slate" flow. |
 | `/attach <url>`, `/attach <url> <sid>` | Escape hatch for reaching a daemon that isn't peer-registered on the current one (issue #246). Bare form enumerates that daemon's sessions into a system message; `/attach <url> <sid>` direct-jumps in place. An operator-typed URL is explicit intent, so it inherits the operator's startup `--auth` mode + `--token`. (Hub-advertised **peer** endpoints do NOT — see the credential-forwarding note below.) |
-| `/transcript [path]` | Save the local scrollback to a markdown file (default `/tmp/<sid>.md`). |
+| `/transcripts [name]` | Lists and loads the transcript files core-tui writes under `AgentsDir/sessions`. **Not available in attach mode** — `core-agent-tui` wires no `AgentsDir`, so it answers `no AgentsDir wired`. Listed here because the command appears in `/help`; it is a local-TUI feature. (Renamed from `/resume` in core-tui v0.24.0, since `POST /resume` is the endpoint behind `/continue` and `/abandon`.) |
 | `/theme dark\|light` | Switch glamour theme; re-renders existing assistant messages. |
 
 Sync slashes (`/context`, `/pricing`, `/reload`, `/perms`, `/title`) hit the corresponding [attach read/mutation endpoints](/reference/configuration/) directly. Async slashes (`/compact`, `/done`, `/btw`, `/subagent`) flow through synchronous POSTs that block until the underlying agent operation completes; the remote TUI renders an in-chat preamble row at dispatch to bridge the 5–30 s gap.
+
+## The hold
+
+Esc against a daemon-driven agent used to be a no-op: the local cancel ended this client's subscription while the daemon's own context carried the turn through to the end, and the next thing to reopen the stream replayed the whole abandoned answer under an unrelated prompt. Since core-tui v0.23.0 the remote adapter implements `coretui.Pauser`, so Esc does what the key has always implied — **stop, and wait for me**.
+
+Two things happen, in order: the in-flight turn is cancelled (`POST /interrupt`), and then the session's gate is shut (`POST /pause`). With nothing in flight the cancel is skipped. A failure of either half is reported rather than swallowed, because "was my work killed?" is the question the banner exists to answer.
+
+**Held is not idle.** An idle agent picks up the next queued prompt on its own; a held one starts nothing until you say so. That distinction is invisible from the outside, so the TUI renders a banner above the input while the gate is shut, saying whether your turn was interrupted or the loop is merely parked, the reason the daemon gave, and how many background subagents are still running (those are unaffected — the hold gates the main loop).
+
+Three ways out:
+
+| Action | Effect |
+|---|---|
+| Type and press Enter | **Steer.** The text becomes the new instruction rather than starting a turn that would block on the gate. Sent as `POST /resume {"mode":"steer","steer":"…"}`; the daemon frames it as an interrupt so the model knows its last turn was killed and does not silently redo the abandoned work. |
+| `/continue` (`/cont`) | Carry on where it left off. |
+| `/abandon` | Drop the interrupted work; the agent stays quiet. |
+
+Slash commands typed while held all dispatch — nothing is in flight to refuse against.
+
+The gate's state reaches the TUI two ways, and attach mode uses both deliberately. The [`pause` SSE frame](/reference/attach-http/) (protocol 1.5.0) is the live source and the one that narrates transitions into the scrollback, because the remote adapter is a `LiveAgent` with a standing subscription. `PauseState()` is polled at 1 Hz alongside the status bar and is seeded **once** from `GET /status` at attach time — which is the case the stream cannot cover, since a session that was already held before you connected had its transition before your `?since=` cursor.
+
+Requires a daemon with a `PauseController`; without one, `/pause` and `/resume` answer **501** and the three commands report themselves unavailable the way every other ungranted capability does.
 
 ## Multi-daemon workflow
 
@@ -281,7 +306,7 @@ The strip between the scrollback and the input box renders any operator messages
 |---|---|
 | **Enter** | Submit input (or run slash command). Mid-turn: queue for after current turn finishes. |
 | **Shift+Enter** | Insert a newline in the input |
-| **Esc** | Contextual — backs out of the innermost surface first: a modal, the help sheet, transcript focus, and only then the in-flight turn. |
+| **Esc** | Contextual — backs out of the innermost surface first: a modal, the help sheet, transcript focus, and only then the agent, which it cancels **and holds**. See [The hold](#the-hold). |
 | **Ctrl+C** (once) | Cancel the in-flight turn — unconditional, never absorbed by focus or a modal |
 | **Ctrl+C** (twice within 1s) | Quit the TUI |
 | **Ctrl+D** | EOF — quit the TUI |
@@ -302,7 +327,9 @@ Copies go out twice: an OSC 52 escape aimed at your terminal emulator, and a nat
 When connected to a listener started with `--attach-readonly`, the TUI still works for everything except writes:
 
 - ✅ Session enumeration, live tail, observer mode, `/tools`, `/stats`, `/context`, `/memory`, `/skills`, `/mcp`, `/perms`, `/transcript`
-- ❌ Sending messages (typing + Enter), `/inject`, `/interrupt`, `/allow`, `/deny`, `/reload`, `/title`, `/compact`, `/done`, `/subagent`, `/pricing refresh|set`
+- ❌ Sending messages (typing + Enter), `/inject`, `/interrupt`, `/pause`, `/continue`, `/abandon`, `/allow`, `/deny`, `/reload`, `/title`, `/compact`, `/done`, `/subagent`, `/pricing refresh|set`
+
+The hold is a write (`session:write`), so Esc against a read-only attachment reports the failure rather than showing a banner for a gate that never shut — an observer cannot park somebody else's agent.
 
 Writes surface as red `✗` error lines in the scrollback (the server returns 403; the TUI shows the error rather than failing silently).
 
@@ -310,6 +337,7 @@ Writes surface as red `✗` error lines in the scrollback (the server returns 40
 
 - **Live stream**: SSE over `GET /sessions/<sid>/events`. Lossless replay via `?since=<seq>` so reconnects don't lose history. The adapter exposes [`coretui.LiveAgent`](https://github.com/go-steer/core-tui/blob/main/tui/agent.go) — core-tui's optional capability for hosts whose agent is observed via a continuous event stream rather than driven by per-turn `Run` calls.
 - **Wake notifications**: the adapter exposes [`coretui.WakeRequester`](https://github.com/go-steer/core-tui/blob/main/tui/agent.go), fed by the daemon's [`wake` SSE frame](/reference/attach-http/#wake-notifications-protocol-170) — so another operator's `POST /wake`, or a host that wired `Agent.RequestWake` to a background alert, now reaches an attached TUI the same way it reaches a local one. core-tui answers with a toast **and** a permanent `system` row; see the caution on the HTTP reference for why that row's copy over-claims on a bare `POST /wake`. Requires a daemon speaking attach protocol 1.7.0 or later; older daemons send no frame and nothing appears ([#802](https://github.com/go-steer/core-agent/issues/802)). There is deliberately no `/wake` slash: nothing in the TUI ever needed to *ask* the remote to wake — typing a message does that — and the capability is a notification the daemon pushes, not a command the operator sends.
+- **Operator hold**: the adapter exposes [`coretui.Pauser`](https://github.com/go-steer/core-tui/blob/main/tui/capabilities.go) over `POST /pause` + `POST /resume`, with the gate's state cached from the `pause` SSE frame and seeded once from `GET /status` at attach. See [The hold](#the-hold). The in-process TUI deliberately declines this capability: local mode is the per-turn `Run` path, where nothing starts a turn but the operator pressing Enter, so there is no gate to open.
 - **Hub-and-spoke**: when the launch URL targets a peer-registration hub, the picker fans `GET /sessions` calls in parallel across the hub + every registered peer, with a 5-second per-peer timeout so a slow peer doesn't block the list.
 - **Permissions bridge**: a background goroutine subscribes to `GET /perms/stream` (SSE) for pending prompts; each frame becomes a modal; the operator's decision posts to `POST /perms/respond` and the daemon's blocked `AskApproval` call unblocks.
 - **Usage panel**: feeds from the same `CustomMetadata.input_tokens` / `output_tokens` shape that `usage.Tracker` consumes for headless runs. Updates on every model event.

@@ -55,10 +55,20 @@ import (
 // have exactly one call site per frame and a future side-effecting
 // frame type has an obvious home rather than a second special case
 // inlined in two loops.
+// `pause` is the second, and differs from `wake` in that it does both:
+// the frame updates the adapter's cached gate state AND projects into
+// the transcript. core-tui wants both halves and says why — the event is
+// what makes a transition render immediately, PauseState is what makes a
+// TUI attaching to an already-held session render the banner at all.
 func (a *Adapter) consumeTypedFrame(frame attach.Frame) (coretui.Event, bool) {
 	if frame.Type == attach.EventWake {
 		a.signalWake()
 		return coretui.Event{}, false
+	}
+	if frame.Type == attach.EventPause {
+		if p, ok := frame.TypedData.(*attach.PauseEvent); ok && p != nil {
+			a.applyPauseEvent(p)
+		}
 	}
 	return translateTypedFrame(frame)
 }
@@ -122,6 +132,12 @@ func translateTypedFrame(frame attach.Frame) (coretui.Event, bool) {
 			return coretui.Event{}, false
 		}
 		return coretui.Event{TurnError: turnErrorToCoreTui(p)}, true
+	case attach.EventPause:
+		p, ok := frame.TypedData.(*attach.PauseEvent)
+		if !ok || p == nil {
+			return coretui.Event{}, false
+		}
+		return coretui.Event{Pause: pauseEventToCoreTui(p)}, true
 	case attach.EventCapabilities:
 		// Phase 2 will read this to negotiate poll-vs-push. For now,
 		// acknowledge the frame and drop it so the stream stays

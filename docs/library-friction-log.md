@@ -342,9 +342,11 @@ Three patterns recur:
 
 **Workaround.** `UIConfig.Mouse *bool` (nil = default on, explicit false disables), `/mouse` slash toggle, and `core-agent-tui --no-mouse` for the attach client (which reads no config file, so the flag is its only durable opt-out).
 
-**Recommendation.** Bubbletea should support a mouse-events mode that captures only wheel events (SGR 1006 with report-motion off) so click-drag falls through to the terminal. The current all-or-nothing capture is the mismatch.
+**Discoverability and durability, both closed at core-tui v0.24.0.** The library now emits a one-row hint at the bottom of the viewport for the first five seconds and after each `/mouse on`, naming the bypass modifier only where `TERM_PROGRAM` identifies the terminal and naming `/mouse` unconditionally — which is the right split, since the modifier belongs to the terminal and the toggle belongs to us. And `Options.PersistMouseChoice func(on bool) error` is called on every toggle, mirroring `PersistThemeChoice`, so the host can make the choice durable: `config.PersistMouseChoice` writes `ui.mouse` and `uiMouseToCoreTui` seeds it back on the next launch. Before that hook existed the toggle was session-local, so an operator who wanted selection back re-typed `/mouse` every launch — the papercut's actual sting was less the capture than having to undo it daily. Note the tristate has to be written explicitly on both edges: clearing the field on toggle-off would land on the nil default, which is *on*.
 
-**Evidence.** `pkg/config/config.go:225-230` (`UIConfig.Mouse`); `cmd/core-agent/coretui_enabled.go:2025` (`uiMouseToCoreTui`); PR #44; commit `8106de9`. Terminal-specific bypass + `--no-mouse`: [#859](https://github.com/go-steer/core-agent/issues/859).
+**Recommendation.** Bubbletea should support a mouse-events mode that captures only wheel events (SGR 1006 with report-motion off) so click-drag falls through to the terminal. The current all-or-nothing capture is the mismatch — the hint and the persistence hook make it survivable, not fixed.
+
+**Evidence.** `pkg/config/config.go:225-230` (`UIConfig.Mouse`); `cmd/core-agent/coretui_enabled.go:2025` (`uiMouseToCoreTui`); `pkg/config/mutate.go` (`PersistMouseChoice`); PR #44; commit `8106de9`. Terminal-specific bypass + `--no-mouse`: [#859](https://github.com/go-steer/core-agent/issues/859); upstream hint + persist hook: [core-tui#288](https://github.com/go-steer/core-tui/issues/288), [core-tui#287](https://github.com/go-steer/core-tui/issues/287).
 
 ### 7. [medium] Glamour re-renders the full buffer on every partial; live per-token markdown is prohibitively expensive
 

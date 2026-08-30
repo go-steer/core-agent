@@ -20,16 +20,13 @@ import (
 	"testing"
 )
 
-// buildTestFlagSet mirrors the actual TUI flag set so the permute
-// tests exercise the real arity decisions (bool vs value-taking).
-// Kept in lockstep with main.go's flag definitions.
+// buildTestFlagSet builds the actual TUI flag set so the permute tests
+// exercise the real arity decisions (bool vs value-taking). It calls
+// registerFlags rather than restating the flags, so a flag added to
+// main.go can never be missing here.
 func buildTestFlagSet() *flag.FlagSet {
 	fs := flag.NewFlagSet("core-agent-tui-test", flag.ContinueOnError)
-	fs.String("token", "", "")
-	fs.String("auth", "", "")
-	fs.String("theme", "", "")
-	fs.String("alias", "", "")
-	fs.Bool("new-session", false, "")
+	registerFlags(fs)
 	return fs
 }
 

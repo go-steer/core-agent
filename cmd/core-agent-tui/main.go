@@ -70,12 +70,7 @@ func main() {
 	}
 
 	fs := flag.NewFlagSet("core-agent-tui", flag.ContinueOnError)
-	tokenEnv := fs.String("token", "", "env var holding the bearer token (e.g. ATTACH_TOKEN)")
-	authMode := fs.String("auth", "bearer", "auth strategy for outbound attach requests. 'bearer' (default): send attach token in Authorization: Bearer — the direct-attach path. 'google-id-token' (recommended for Cloud Run IAM / IAP): mint a Google ID token via Application Default Credentials, audience-bound to the connection URL, and stamp Authorization + X-Attach-Token. End-user ADC requires service-account impersonation (gcloud auth application-default login --impersonate-service-account=...). 'google-oauth': uses OAuth access tokens via google.FindDefaultCredentials (matches MCP's pattern for Google APIs) — Cloud Run IAM rejects this in many deployments, prefer 'google-id-token' for the IAM/IAP case.")
-	theme := fs.String("theme", "", "force a theme: 'dark', 'light', or empty for auto (queries the terminal via OSC 11)")
-	alias := fs.String("alias", "", "agent identity label shown in the status banner; default uses the session ID")
-	newSession := fs.Bool("new-session", false, "create a fresh session owned by the authenticated caller (POST /sessions) and attach to it in one shot. Skips the picker. Requires the daemon to have attach.multi_session.enabled with a configured SessionFactory; older daemons return 501 and the TUI exits with a clear error.")
-	trustedPeers := fs.String("trusted-peers", "", "comma-separated hostnames (no port) whose hub-advertised peer endpoints receive your credentials on peer enumeration and /switch. Endpoints on the hub's own host are always trusted; every other peer endpoint is contacted credential-less so a hostile registration on the hub can't capture your token. Explicitly typed /attach <url> targets always use your credentials.")
+	opts := registerFlags(fs)
 	// permuteFlags reorders os.Args so flag order doesn't matter:
 	//   core-agent-tui --token T http://host:7777
 	//   core-agent-tui http://host:7777 --token T
@@ -90,12 +85,13 @@ func main() {
 	args := positionals
 
 	token := ""
-	if *tokenEnv != "" {
-		token = os.Getenv(*tokenEnv)
+	if *opts.tokenEnv != "" {
+		token = os.Getenv(*opts.tokenEnv)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	err := run(ctx, args, token, *authMode, *theme, *alias, *newSession, splitCommaList(*trustedPeers))
+	err := run(ctx, args, token, *opts.authMode, *opts.theme, *opts.alias, *opts.newSession,
+		splitCommaList(*opts.trustedPeers), mouseOptFromFlag(*opts.noMouse))
 	cancel()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent-tui: %v\n", err)
@@ -103,9 +99,63 @@ func main() {
 	}
 }
 
+// cliFlags holds the parsed destinations for every command-line flag.
+type cliFlags struct {
+	tokenEnv     *string
+	authMode     *string
+	theme        *string
+	alias        *string
+	newSession   *bool
+	trustedPeers *string
+	noMouse      *bool
+}
+
+// registerFlags defines the whole flag set on fs.
+//
+// permuteFlags decides whether an argument consumes the next one by asking
+// fs whether the flag is a bool, so its tests are only as truthful as the
+// flag set they are handed. This used to be duplicated by a hand-maintained
+// mirror in the tests, which had already drifted (--trusted-peers was
+// missing from it). Both callers now register through here, so a new flag
+// is covered by the arg-order tests the moment it is defined.
+func registerFlags(fs *flag.FlagSet) *cliFlags {
+	return &cliFlags{
+		tokenEnv:     fs.String("token", "", "env var holding the bearer token (e.g. ATTACH_TOKEN)"),
+		authMode:     fs.String("auth", "bearer", "auth strategy for outbound attach requests. 'bearer' (default): send attach token in Authorization: Bearer — the direct-attach path. 'google-id-token' (recommended for Cloud Run IAM / IAP): mint a Google ID token via Application Default Credentials, audience-bound to the connection URL, and stamp Authorization + X-Attach-Token. End-user ADC requires service-account impersonation (gcloud auth application-default login --impersonate-service-account=...). 'google-oauth': uses OAuth access tokens via google.FindDefaultCredentials (matches MCP's pattern for Google APIs) — Cloud Run IAM rejects this in many deployments, prefer 'google-id-token' for the IAM/IAP case."),
+		theme:        fs.String("theme", "", "force a theme: 'dark', 'light', or empty for auto (queries the terminal via OSC 11)"),
+		alias:        fs.String("alias", "", "agent identity label shown in the status banner; default uses the session ID"),
+		newSession:   fs.Bool("new-session", false, "create a fresh session owned by the authenticated caller (POST /sessions) and attach to it in one shot. Skips the picker. Requires the daemon to have attach.multi_session.enabled with a configured SessionFactory; older daemons return 501 and the TUI exits with a clear error."),
+		trustedPeers: fs.String("trusted-peers", "", "comma-separated hostnames (no port) whose hub-advertised peer endpoints receive your credentials on peer enumeration and /switch. Endpoints on the hub's own host are always trusted; every other peer endpoint is contacted credential-less so a hostile registration on the hub can't capture your token. Explicitly typed /attach <url> targets always use your credentials."),
+		noMouse:      fs.Bool("no-mouse", false, "start with terminal mouse capture off, restoring native click-drag text selection. Capture is on by default so the wheel scrolls the chat viewport; while it is on the terminal never sees click-drag, and the bypass modifier is terminal-specific (Shift on most terminals, Alt/Option in VS Code's integrated terminal). Equivalent to typing /mouse at every launch — unlike core-agent, this client reads no config file, so the flag is the only way to make the choice stick."),
+	}
+}
+
+// mouseOptFromFlag turns --no-mouse into the tristate coretui.Options.Mouse
+// wants: nil means "unset, use core-tui's default" (capture ON, so the wheel
+// scrolls the viewport), and a pointer to false disables capture entirely.
+//
+// Only the opt-out is expressible on purpose. Returning &true for the
+// default case would be indistinguishable to core-tui from today's nil, but
+// it would pin this client against any future change to that default — and
+// an operator who did not pass a mouse flag has expressed no opinion worth
+// pinning. cmd/core-agent's uiMouseToCoreTui feeds the same Options field
+// from ui.mouse and can also return &true, because a config file can say
+// "on" explicitly; a single --no-mouse boolean cannot.
+func mouseOptFromFlag(noMouse bool) *bool {
+	if !noMouse {
+		return nil
+	}
+	off := false
+	return &off
+}
+
 // run resolves a session (parse URL → optional picker), constructs
 // the coretuiremote adapter, and hands off to coretui.Run.
-func run(ctx context.Context, args []string, token, authMode, theme, alias string, newSession bool, trustedPeers []string) error {
+//
+// mouse is the Options.Mouse tristate from mouseOptFromFlag. It is a
+// *bool rather than a bool so it cannot be transposed with the newSession
+// argument beside it without a compile error.
+func run(ctx context.Context, args []string, token, authMode, theme, alias string, newSession bool, trustedPeers []string, mouse *bool) error {
 	rawURL, err := chooseURL(args)
 	if err != nil {
 		return err
@@ -203,9 +253,13 @@ func run(ctx context.Context, args []string, token, authMode, theme, alias strin
 		UsageTracker: a,
 		Prompter:     prompter,
 		ForceTheme:   theme,
-		Memory:       memory,
-		Skills:       skills,
-		MCPServers:   mcpServers,
+		// nil unless --no-mouse was passed; see mouseOptFromFlag. core-tui
+		// reads this every frame, so the runtime /mouse toggle still works
+		// from whichever state the flag chose.
+		Mouse:      mouse,
+		Memory:     memory,
+		Skills:     skills,
+		MCPServers: mcpServers,
 		Branding: coretui.Branding{
 			Wordmark:      wordmark,
 			AgentIdentity: identity,

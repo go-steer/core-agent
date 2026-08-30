@@ -77,7 +77,7 @@ Pattern grammar: `<tool>:<glob>` (e.g., `bash:git diff*`, `read_file:internal/**
 |---|---|---|
 | `/theme` | | Open the theme picker — arrows preview each theme live, Enter accepts and writes the choice to `.agents/config.json` (`ui.theme`), Esc restores the theme that was active when the picker opened |
 | `/theme <name>` | | Switch directly to a named theme without opening the picker; persists the same way. `/theme` with no argument lists choices |
-| `/mouse` | | Toggle terminal mouse capture (off = native shell selection + scroll wheel) |
+| `/mouse` | | Toggle terminal mouse capture. On (default), the wheel scrolls the chat viewport and click-drag no longer selects text; off hands the mouse back to the terminal for native selection. Unlike `/theme`, this is **not** persisted — set `ui.mouse` in `.agents/config.json`, or pass `--no-mouse` to `core-agent-tui` |
 | `/keys` | | Print the keybinding cheat sheet |
 
 ---

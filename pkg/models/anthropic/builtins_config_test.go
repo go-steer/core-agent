@@ -16,6 +16,7 @@ package anthropic
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/go-steer/core-agent/v2/pkg/config"
@@ -74,35 +75,42 @@ func TestBuiltinToolsFromConfig(t *testing.T) {
 // The registry constructors are what the daemon calls, and they also
 // carry the prompt-cache option — appending the built-in options must
 // not displace it.
-func TestRegistryConstructors_HonorBuiltinToolsConfig(t *testing.T) {
+func TestRegistryConstructor_HonorsBuiltinToolsConfig(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "k")
-	t.Setenv("ANTHROPIC_VERTEX_PROJECT_ID", "p")
-	t.Setenv("CLOUD_ML_REGION", "us-east5")
 
-	cfg := builtinsCfg(&config.BuiltinToolsConfig{WebSearch: ptr(true)})
-
-	first, err := newProvider(cfg)
+	p, err := newProvider(builtinsCfg(&config.BuiltinToolsConfig{WebSearch: ptr(true)}))
 	if err != nil {
 		t.Fatalf("newProvider: %v", err)
 	}
-	fp := first.(*Provider)
-	if !fp.builtins.WebSearch {
-		t.Errorf("anthropic: WebSearch off despite web_search=true")
-	}
-	if !fp.cache.Enabled() {
-		t.Errorf("anthropic: prompt cache lost when built-in options were appended")
-	}
+	checkWebSearchAndCache(t, "anthropic", p.(*Provider))
+}
 
-	vx, err := newVertexProvider(cfg)
+// Split from the first-party case rather than folded into it: NewVertex
+// loads ADC and most CI machines have none, so a combined test would
+// report the first-party half as skipped whenever the Vertex half can't
+// run. Same skip rationale as TestResolve_AnthropicVertex_FromConfig —
+// what's under test is option plumbing, not the GCP creds load.
+func TestVertexRegistryConstructor_HonorsBuiltinToolsConfig(t *testing.T) {
+	t.Setenv("ANTHROPIC_VERTEX_PROJECT_ID", "p")
+	t.Setenv("CLOUD_ML_REGION", "us-east5")
+
+	p, err := newVertexProvider(builtinsCfg(&config.BuiltinToolsConfig{WebSearch: ptr(true)}))
 	if err != nil {
+		if strings.Contains(err.Error(), "load default credentials") {
+			t.Skipf("no ADC on this machine: %v", err)
+		}
 		t.Fatalf("newVertexProvider: %v", err)
 	}
-	vp := vx.(*Provider)
-	if !vp.builtins.WebSearch {
-		t.Errorf("anthropic-vertex: WebSearch off despite web_search=true")
+	checkWebSearchAndCache(t, "anthropic-vertex", p.(*Provider))
+}
+
+func checkWebSearchAndCache(t *testing.T, label string, p *Provider) {
+	t.Helper()
+	if !p.builtins.WebSearch {
+		t.Errorf("%s: WebSearch off despite web_search=true", label)
 	}
-	if !vp.cache.Enabled() {
-		t.Errorf("anthropic-vertex: prompt cache lost when built-in options were appended")
+	if !p.cache.Enabled() {
+		t.Errorf("%s: prompt cache lost when built-in options were appended", label)
 	}
 }
 

@@ -65,6 +65,25 @@ func (b BuiltinTools) asAnthropicTools() []anthropic.ToolUnionParam {
 	return out
 }
 
+// Names reports the enabled built-ins under the provider-neutral names
+// the config block uses (see config.BuiltinToolsConfig), so the startup
+// summary reads the same whichever provider is resolved and an operator
+// can match the line against the keys they typed.
+func (b BuiltinTools) Names() []string {
+	var out []string
+	if b.WebSearch {
+		out = append(out, "web_search")
+	}
+	return out
+}
+
+// BuiltinToolNames satisfies models.BuiltinToolsReporter — the effective
+// server-side built-in set this Provider will send, after config and
+// options. Reported from what the Provider actually carries rather than
+// re-derived from config, so the startup line cannot drift from the
+// requests.
+func (p *Provider) BuiltinToolNames() []string { return p.builtins.Names() }
+
 // WithBuiltinTools replaces the Provider's whole BuiltinTools set.
 func WithBuiltinTools(b BuiltinTools) Option {
 	return func(p *Provider) { p.builtins = b }

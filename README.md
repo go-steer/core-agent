@@ -24,6 +24,7 @@ A production-grade Go substrate for multi-turn LLM agents, built on the [Google 
 - Gemini API (`GEMINI_API_KEY` / `GOOGLE_API_KEY`) and Vertex AI (ADC + `GOOGLE_CLOUD_PROJECT`) with server-side `GoogleSearch` and `URLContext` wired up.
 - Anthropic Claude via `api.anthropic.com` (`ANTHROPIC_API_KEY`) and via Vertex AI (ADC + `ANTHROPIC_VERTEX_PROJECT_ID`) as a native `model.LLM` adapter.
 - Mock providers for credential-free testing: `--provider=echo` and `--provider=scripted --script=path.jsonl`; `--record-to=path.jsonl` captures any real session for later replay.
+- `model.builtin_tools` gates each provider's server-side built-ins (`web_search`, `url_context`, `code_execution`) under one provider-neutral, tri-state set of names — the defaults differ per provider, so this is what makes an internet-reachability posture survive a provider switch. Distinct from `--no-builtin-tools` below, which is core-agent's own catalog. The startup summary names the effective set.
 
 **Instructions, tools, MCP, skills**
 - `AGENTS.md` primary + `AGENTS.d/*.md` overlay directory + `@include <path>` directive for composable, multi-file system instructions; three scopes (user `~/.core-agent/`, user-home `~/.agents/`, project) concatenated in order, with `CLAUDE.md` / `GEMINI.md` fallbacks.

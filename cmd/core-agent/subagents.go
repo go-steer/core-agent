@@ -822,9 +822,31 @@ func resolveSubagentProvider(cfg *config.Config, parentProvider models.Provider,
 	// inherit it — unless the subagent's own model block says otherwise,
 	// which is a deliberate per-subagent override.
 	subCfg.Model.Anthropic = inheritPromptCache(cfg.Model.Anthropic, spec.Model.Anthropic)
+	// Same argument for the provider's server-side built-ins, which hang
+	// off model directly: an operator who turned web search off for the
+	// project meant it for the whole process, and declaring a model must
+	// not quietly hand it back. Merged per field rather than per block —
+	// the fields are tri-state, so a subagent that sets code_execution
+	// has said nothing about web_search and should still inherit it.
+	subCfg.Model.BuiltinTools = inheritBuiltinTools(cfg.Model.BuiltinTools, spec.Model.BuiltinTools)
 	p, err := models.Resolve(&subCfg)
 	if err != nil {
 		return nil, "", fmt.Errorf("resolve provider: %w", err)
+	}
+	// Announce a built-in set that differs from the parent's, for the
+	// same reason the parent prints its own: nothing else in the log
+	// mentions these tools. Silence therefore means "same as the parent",
+	// which is the common case and not worth a line per subagent.
+	if send != nil {
+		sub, parent := compose.BuiltinToolsSummary(p), compose.BuiltinToolsSummary(parentProvider)
+		if sub != "" && sub != parent {
+			if parent == "" {
+				// Parent backend has no server-side built-ins at all
+				// (echo, scripted) — there is no set to differ from.
+				parent = "n/a"
+			}
+			send(fmt.Sprintf("subagent %q: builtin-tools=%s (parent: %s)", spec.Name, sub, parent))
+		}
 	}
 	// Announce only a deviation: the daemon already printed its own
 	// prompt-cache line, and repeating "enabled" once per declared
@@ -852,5 +874,36 @@ func inheritPromptCache(parent, sub *config.AnthropicConfig) *config.AnthropicCo
 	}
 	merged := *sub
 	merged.PromptCache = parent.PromptCache
+	return &merged
+}
+
+// inheritBuiltinTools fills each field the subagent left unset from the
+// parent's model.builtin_tools block. Per field, not per block: the
+// fields are independent tri-states, so a subagent that names one has
+// said nothing about the others and must not lose them.
+//
+// Never mutates either input — subCfg is a shallow copy of the real
+// config, so writing through the parent's pointer would corrupt it.
+func inheritBuiltinTools(parent, sub *config.BuiltinToolsConfig) *config.BuiltinToolsConfig {
+	if parent == nil {
+		return sub
+	}
+	if sub == nil {
+		// Copy rather than hand back the parent's pointer: subCfg is a
+		// shallow copy of the real config, and a shared block is one
+		// future in-place edit away from leaking across subagents.
+		inherited := *parent
+		return &inherited
+	}
+	merged := *sub
+	if merged.WebSearch == nil {
+		merged.WebSearch = parent.WebSearch
+	}
+	if merged.URLContext == nil {
+		merged.URLContext = parent.URLContext
+	}
+	if merged.CodeExecution == nil {
+		merged.CodeExecution = parent.CodeExecution
+	}
 	return &merged
 }

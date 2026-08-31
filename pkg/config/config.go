@@ -311,6 +311,8 @@ type PathScopeAllowEntry struct {
 // Vertex: required when Provider="vertex"; project + location.
 // Anthropic: optional credentials for Provider="anthropic"; usually unset and
 // read from ANTHROPIC_API_KEY at runtime.
+// BuiltinTools: optional gate on the provider's server-side built-ins
+// (web search, URL context, code execution).
 type ModelConfig struct {
 	Provider  string           `json:"provider,omitempty"`
 	Name      string           `json:"name"`
@@ -326,6 +328,61 @@ type ModelConfig struct {
 	// only Model.Name; PR core-agent/#NN renamed the JSON key
 	// `pricing` from "{input_per_mtok, output_per_mtok}" to a map.
 	Pricing PricingMap `json:"pricing,omitempty"`
+
+	// BuiltinTools gates the PROVIDER's server-side built-in tools.
+	// Absent (the common case) means every tool keeps its provider
+	// default. See BuiltinToolsConfig — and note this is a different
+	// axis from `tools.disable` / `--no-builtin-tools`, which govern
+	// core-agent's own function tools.
+	BuiltinTools *BuiltinToolsConfig `json:"builtin_tools,omitempty"`
+}
+
+// BuiltinToolsConfig gates the provider's server-side built-in tools —
+// the ones the model invokes inside the provider's own infrastructure
+// and whose results come back folded into the response. core-agent
+// never sees a tool call for them, so nothing in the function-tool
+// layer can reach them: not `tools.disable`, not a subagent's `tools`
+// allowlist, not `--no-builtin-tools` (which is about core-agent's own
+// suite). This block is the only lever.
+//
+// Every field is a tri-state *bool: absent leaves the provider default
+// alone, and only an explicit `true` / `false` moves one. That matters
+// because the defaults are NOT symmetric across providers — Gemini
+// ships web search and URL context on, Anthropic ships web search off
+// — so a deployment that switches providers silently switches the
+// agent's internet reachability with them. Stating the posture here
+// makes it hold across that switch.
+//
+// The names are provider-neutral, not provider-native:
+//
+//	web_search      Gemini google_search; Anthropic web_search
+//	url_context     Gemini url_context; no Anthropic equivalent
+//	code_execution  Gemini code_execution; no Anthropic equivalent
+//
+// A field with no equivalent on the resolved provider is ignored. That
+// only ever fails safe: "no equivalent" means the provider has no such
+// tool to leave on, so a `false` that lands nowhere describes a state
+// that already holds. The startup summary prints the effective set, so
+// an operator can confirm what actually took — worth doing, since a
+// misspelled key is silently discarded (config decoding does not
+// reject unknown fields).
+//
+// A subagent that declares its own `model` block inherits each field it
+// does not set, per field. An operator who turned web search off for
+// the project meant it for the whole process; declaring a model must
+// not quietly hand it back.
+type BuiltinToolsConfig struct {
+	// WebSearch toggles server-side web search grounding.
+	// Provider defaults: Gemini on, Anthropic off.
+	WebSearch *bool `json:"web_search,omitempty"`
+
+	// URLContext toggles fetching and grounding on URLs the model
+	// decides to visit. Gemini only; default on.
+	URLContext *bool `json:"url_context,omitempty"`
+
+	// CodeExecution toggles sandboxed Python execution on the
+	// provider's servers. Gemini only; default off.
+	CodeExecution *bool `json:"code_execution,omitempty"`
 }
 
 // PricingMap is the model-keyed override map used by ModelConfig.

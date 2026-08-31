@@ -59,6 +59,28 @@ type SmallModelDefaulter interface {
 	DefaultSmallModel() string
 }
 
+// BuiltinToolsReporter is an optional Provider extension for backends
+// that inject the provider's own server-side built-in tools (web
+// search, URL context, code execution) into every request. It reports
+// the effective set — after config.ModelConfig.BuiltinTools and any
+// construction options — under the provider-neutral names the config
+// block uses.
+//
+// Purpose is visibility: these tools never surface as a tool call
+// core-agent can see, so without a report there is no way to confirm
+// from the outside whether a `builtin_tools` key took effect or was
+// discarded as a typo. Backends with no server-side tools (echo,
+// scripted) simply don't implement it.
+//
+// The report is provider-level and therefore an upper bound: a backend
+// may still drop a built-in from an individual request (model
+// compatibility, an explicitly suppressed one-shot). Implementations
+// must only ever subtract that way, so an absent name means a tool that
+// cannot be reached at all.
+type BuiltinToolsReporter interface {
+	BuiltinToolNames() []string
+}
+
 // ResolveSmallModel picks the model ID that agentic subtasks should
 // run on. Operator override (a non-empty explicit --agentic-small-model
 // value) always wins. Otherwise: if p implements SmallModelDefaulter,

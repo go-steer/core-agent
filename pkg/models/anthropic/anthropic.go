@@ -238,5 +238,26 @@ func newProvider(cfg *config.Config) (models.Provider, error) {
 	if cfg.Model.Anthropic != nil {
 		key = cfg.Model.Anthropic.APIKey
 	}
-	return New(key, WithPromptCache(cacheOptionsFromConfig(cfg)))
+	return New(key, append(builtinToolsFromConfig(cfg), WithPromptCache(cacheOptionsFromConfig(cfg)))...)
+}
+
+// builtinToolsFromConfig maps the provider-neutral model.builtin_tools
+// block onto this provider's toggles. Tri-state: an absent field yields
+// no option, so DefaultBuiltinTools survives untouched.
+//
+// Only web_search has an Anthropic equivalent surfaced today; the
+// block's url_context and code_execution are Gemini-side and land
+// nowhere here. That is fail-safe by construction — a tool this
+// provider cannot send is a tool it cannot leave on — but it does mean
+// a `code_execution: true` written against an Anthropic model buys
+// nothing. The startup summary prints the effective set so the gap is
+// visible rather than assumed.
+func builtinToolsFromConfig(cfg *config.Config) []Option {
+	if cfg == nil || cfg.Model.BuiltinTools == nil {
+		return nil
+	}
+	if ws := cfg.Model.BuiltinTools.WebSearch; ws != nil {
+		return []Option{WithWebSearch(*ws)}
+	}
+	return nil
 }

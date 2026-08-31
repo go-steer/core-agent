@@ -116,6 +116,7 @@ func TestFormatModelLine(t *testing.T) {
 		name         string
 		cfg          *config.Config
 		providerName string
+		builtinTools string
 		env          map[string]string
 		wantSubstr   []string
 		wantNoSubstr []string
@@ -173,6 +174,46 @@ func TestFormatModelLine(t *testing.T) {
 			env:          map[string]string{"GOOGLE_CLOUD_PROJECT": "p", "GOOGLE_CLOUD_LOCATION": "us-central1"},
 			wantSubstr:   []string{"provider=anthropic-vertex", "project=p", "location=us-central1"},
 		},
+		{
+			// #876: the enabled server-side built-ins are named on the
+			// model line. Nothing else in the daemon log mentions them —
+			// they never produce a tool call — so this is the only place
+			// an operator learns the model can reach the public internet.
+			name: "built-ins enabled are named",
+			cfg: &config.Config{Model: config.ModelConfig{
+				Name: "gemini-3.7-flash", Provider: "gemini",
+			}},
+			providerName: "gemini",
+			builtinTools: "web_search,url_context",
+			wantSubstr:   []string{"builtin-tools=web_search,url_context"},
+		},
+		{
+			// A provider that HAS built-ins with all of them off says so
+			// explicitly. Omitting the segment would be indistinguishable
+			// from a build that never learned to print it, which is the
+			// wrong signal for the operator who just wrote
+			// "web_search": false and wants to confirm it took.
+			name: "all built-ins off still prints the segment",
+			cfg: &config.Config{Model: config.ModelConfig{
+				Name: "gemini-3.7-flash", Provider: "vertex",
+			}},
+			providerName: "vertex",
+			builtinTools: "none",
+			env:          map[string]string{"GOOGLE_CLOUD_PROJECT": "p", "GOOGLE_CLOUD_LOCATION": "global"},
+			wantSubstr:   []string{"builtin-tools=none"},
+		},
+		{
+			// A provider with no server-side built-in concept at all
+			// (echo, scripted) omits the segment rather than asserting
+			// an absence that means nothing there.
+			name: "provider without built-ins omits the segment",
+			cfg: &config.Config{Model: config.ModelConfig{
+				Name: "echo", Provider: "echo",
+			}},
+			providerName: "echo",
+			builtinTools: "",
+			wantNoSubstr: []string{"builtin-tools"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -181,7 +222,7 @@ func TestFormatModelLine(t *testing.T) {
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
-			got := formatModelLine(tc.cfg, tc.providerName)
+			got := formatModelLine(tc.cfg, tc.providerName, tc.builtinTools)
 			for _, s := range tc.wantSubstr {
 				if !strings.Contains(got, s) {
 					t.Errorf("formatModelLine: missing %q; got: %q", s, got)

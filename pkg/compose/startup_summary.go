@@ -24,6 +24,7 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/auth"
 	"github.com/go-steer/core-agent/v2/pkg/config"
 	"github.com/go-steer/core-agent/v2/pkg/mcp"
+	"github.com/go-steer/core-agent/v2/pkg/models"
 	"github.com/go-steer/core-agent/v2/pkg/skills"
 )
 
@@ -48,6 +49,12 @@ type StartupSummaryInputs struct {
 	// (vertex / gemini / anthropic / anthropic-vertex / echo /
 	// scripted). Comes from provider.Name() at the call site.
 	ProviderName string
+	// BuiltinTools is the rendered server-side built-in tool set, from
+	// BuiltinToolsSummary(provider) at the call site. Empty means the
+	// resolved provider has no such concept and the model line omits
+	// the segment entirely; "none" means it has one and everything in
+	// it is off. The distinction is the point — see BuiltinToolsSummary.
+	BuiltinTools string
 	// MCPServers describes every MCP server the daemon successfully
 	// or unsuccessfully started. mcp.Server carries the name +
 	// Status + Err — this summary calls the ones with a nil Err
@@ -78,8 +85,9 @@ func FormatStartupSummary(in StartupSummaryInputs) []string {
 	// 2. agentsDir: resolved absolute path + how we got there.
 	lines = append(lines, formatAgentsDirLine(in.CfgPath, in.AgentsDir))
 
-	// 3. model + provider + project/location (for cloud providers).
-	lines = append(lines, formatModelLine(in.Cfg, in.ProviderName))
+	// 3. model + provider + project/location (for cloud providers) +
+	//    the provider's server-side built-in tools.
+	lines = append(lines, formatModelLine(in.Cfg, in.ProviderName, in.BuiltinTools))
 
 	// 4. mcp: N server(s) loaded — names.
 	lines = append(lines, formatMCPLine(in.MCPServers))
@@ -124,7 +132,35 @@ func formatAgentsDirLine(cfgPath, agentsDir string) string {
 	return fmt.Sprintf("agentsDir: %s (%s)", agentsDir, origin)
 }
 
-func formatModelLine(cfg *config.Config, providerName string) string {
+// BuiltinToolsSummary renders the provider's effective server-side
+// built-in tool set for the startup summary: a comma-joined list of the
+// provider-neutral names, or "none" when the provider supports them and
+// has them all off.
+//
+// Returns "" — not "none" — for a provider with no server-side built-in
+// concept at all (echo, scripted), so the model line can omit the
+// segment rather than assert an absence that means nothing there.
+//
+// Read off the constructed Provider rather than off config, for the
+// same reason MaybeWirePromptCacheTTL reports what the provider carries:
+// a line derived independently of the requests can drift from them. It
+// also makes the line answer the question an operator actually has —
+// `builtin_tools` keys are silently discarded when misspelled (config
+// decoding does not reject unknown fields), so "did my key take" is
+// only answerable from the far side of the constructor.
+func BuiltinToolsSummary(provider models.Provider) string {
+	r, ok := provider.(models.BuiltinToolsReporter)
+	if !ok {
+		return ""
+	}
+	names := r.BuiltinToolNames()
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, ",")
+}
+
+func formatModelLine(cfg *config.Config, providerName, builtinTools string) string {
 	if cfg == nil {
 		return "model: <unknown> (nil cfg)"
 	}
@@ -155,6 +191,15 @@ func formatModelLine(cfg *config.Config, providerName string) string {
 			location = "<unset>"
 		}
 		extras = fmt.Sprintf(" project=%s location=%s", project, location)
+	}
+	// Server-side built-ins are invisible everywhere else: they never
+	// produce a tool call, so no other log line, no permission prompt
+	// and no `tools.disable` entry mentions them. Naming the effective
+	// set here is the only place an operator learns that the model can
+	// reach the public internet — and the only way to confirm a
+	// `builtin_tools` key wasn't quietly dropped as a typo.
+	if builtinTools != "" {
+		extras += " builtin-tools=" + builtinTools
 	}
 	return fmt.Sprintf("model: %s provider=%s%s", model, provider, extras)
 }

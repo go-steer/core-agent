@@ -31,12 +31,42 @@ never reproduces the latency, the proxy, or the pod restarts. Do the local
 pass first anyway; it is five minutes and it catches shape errors before
 you spend a cluster.
 
+The token is never read off disk — both rigs keep it in the environment,
+which is the same rule `dev/uat/attach/run.sh:37` states for the local one.
+
+Local rig (`dev/uat/attach/run.sh`), which defaults `ATTACH_TOKEN` if unset:
+
 ```sh
-export BASE=https://localhost:8443        # or the port-forward / ingress
-export APP=core-agent
-export SID=default                        # a tenant SID for §11
-export TOK="Bearer $(cat /tmp/core-agent-uat/token)"   # never $HOME
+export BASE=http://localhost:7777
+export TOK="Bearer ${ATTACH_TOKEN:-uat-token-$(whoami)}"
+```
+
+GKE rig (`core-agent-demo-3`), after `./attach.sh` has the port-forward up:
+
+```sh
+source ~/projects/core-agent-demo-3/demo-tokens.env   # PLATFORM_TOKEN
+export BASE=http://localhost:7778
+export TOK="Bearer $PLATFORM_TOKEN"
+```
+
+Then, either way — read `APP` and `SID` off the daemon rather than guessing
+them, because on a `multi_session` hub the SID is minted per incident:
+
+```sh
+curl -s -H "Authorization: $TOK" "$BASE/sessions" \
+  | jq '.sessions[] | {app, sessionID, status}'
+export APP=_______ SID=_______            # a tenant SID for §11
 export S="$BASE/sessions/$APP/$SID"
+```
+
+Two helpers, used by every section below. `post` always sends
+`Content-Type: application/json` because `pkg/attach/csrf.go:63` requires it
+on every state-changing method — including a POST with **no body**, which
+otherwise comes back **415** rather than doing anything:
+
+```sh
+post() { curl -s -X POST -H "Authorization: $TOK" -H 'Content-Type: application/json' "$@"; }
+get()  { curl -s -H "Authorization: $TOK" "$@"; }
 ```
 
 A long-running turn to interrupt. Anything that takes >30s and is visibly
@@ -47,13 +77,38 @@ the agent to triage gives a real one with subagent delegation in it.
 
 ## 1 — Capability handshake
 
-- [ ] `GET $BASE/status` (or `$S/status`) reports `protocol` ≥ `1.5.0`
+The handshake is **not** on `/status`. `StatusInfo` (`state.go:138`) carries
+run-state only; the capability report is the first frame of the SSE stream —
+`broadcaster.go:394`, *"Capabilities — required first frame per spec section
+2.1"* — and the version field there is `protocol_version`, not `protocol`.
+
+Two other shapes worth knowing before you start typing:
+
+- There is no daemon-level `$BASE/status`. Everything below `/sessions` is
+  session-scoped (`routeSession`, `handlers.go:205`), registered as
+  `/sessions/{app}/{sid}/X` plus the shortcut `/sessions/{sid}/X`. Only
+  `GET`/`POST /sessions`, `/whoami`, `/ui` and `/peers*` live at the root.
+  `$BASE/X` returns a plain-text 404, which jq reports as `Invalid numeric
+  literal` rather than as a missing route.
+- Reading a *field that does not exist* is the quieter failure: jq prints
+  `null` and exits 0. Two nulls means you are asking the wrong endpoint,
+  not that the feature is off.
+
+- [ ] `protocol_version` ≥ `1.5.0`
 - [ ] `features.pause` is `true`, and `features.interrupt` is `true`
-- [ ] With a daemon that predates the hold, the same probe reports no
+- [ ] With a daemon that predates the hold, the same frame carries no
       `pause` key — clients must read absent as off, not as unknown
 
 ```sh
-curl -sk -H "Authorization: $TOK" "$S/status" | jq '{protocol, features}'
+# First data: frame off the stream, then quit. --max-time is not
+# optional: `sed q` closes the pipe, but curl only notices on its NEXT
+# write, so against an idle session with no further frames it prints the
+# right answer and then hangs forever.
+get "$S/events" --no-buffer --max-time 10 \
+  | sed -n '/^data: /{s/^data: //p;q}' | jq '{protocol_version, features}'
+
+# /status is the right call for run-state, just not for the handshake:
+get "$S/status" | jq
 ```
 
 Notes:
@@ -78,8 +133,13 @@ Start a long turn, then interrupt it.
       un-park
 
 ```sh
-curl -sk -X POST -H "Authorization: $TOK" "$S/interrupt" | jq
-curl -sk -H "Authorization: $TOK" "$S/status" | jq '{state, paused_since, pause_reason, interrupted}'
+# No body: the default is {"hold": true}. The Content-Type is still
+# required — without it this is a 415, not an interrupt.
+post "$S/interrupt" | jq
+get  "$S/status" | jq '{state, paused_since, pause_reason, interrupted}'
+
+# Watch the frames in another terminal for the pause event:
+get "$S/events" --no-buffer | grep --line-buffered -E '^event: pause' -A2
 ```
 
 - [ ] Interrupt while **idle**: `interrupted: false` with header
@@ -112,6 +172,16 @@ From a parked session, one per run; re-park between each.
       empty steer
 - [ ] An unknown mode → **400**
 
+```sh
+post "$S/resume" -d '{"mode":"steer","steer":"drop the rollout, look at the CrashLoop first"}' | jq
+post "$S/resume" -d '{}'                  | jq   # continue (the default mode)
+post "$S/resume" -d '{"mode":"abandon"}'  | jq
+
+# Both of these must be 400, not a silent no-op:
+post "$S/resume" -d '{"mode":"steer"}'    -w '\n%{http_code}\n'
+post "$S/resume" -d '{"mode":"banana"}'   -w '\n%{http_code}\n'
+```
+
 Notes:
 
 ## 4 — `/pause` holds without killing anything
@@ -122,6 +192,11 @@ Notes:
       one", not a freeze. Confirm the final text arrives.
 - [ ] The *next* turn is what waits
 - [ ] `pause_reason` echoes the operator's string, not the default
+
+```sh
+post "$S/pause" -d '{"reason":"reviewing the plan"}' | jq
+get  "$S/status" | jq '{state, pause_reason, interrupted}'
+```
 
 Notes:
 
@@ -136,6 +211,16 @@ Notes:
       cancelled.
 - [ ] The reverse order upgrades: `/pause` while idle, then a turn somehow
       starts and is interrupted → `interrupted` flips to `true`
+
+```sh
+post "$S/pause" -d '{}' | jq '{paused, transitioned}'   # expect transitioned:false the 2nd time
+post "$S/resume" -d '{}' | jq '{resumed}'               # expect resumed:false when not paused
+
+# First-cause-wins: interrupt, then pause on top. reason must NOT change.
+post "$S/interrupt" >/dev/null
+post "$S/pause" -d '{"reason":"should not stick"}' >/dev/null
+get  "$S/status" | jq '{pause_reason, interrupted}'     # operator-interrupt / true
+```
 
 Notes:
 
@@ -163,6 +248,12 @@ respect it.
       and this is the one behaviour the design does not promise. ⚠ if it
       silently resumes work.
 
+```sh
+post "$S/inject" -d '{"message":"queued while parked","wake":false}' | jq
+post "$S/wake"   -d '{}' | jq          # must start no turn
+post "$S/inject" -d '{"message":"this one wakes"}' | jq   # default wake:true → releases
+```
+
 Notes:
 
 ## 7 — Background subagents
@@ -179,6 +270,12 @@ delegation during a triage does it.
 - [ ] The runaway case, which is why this exists: a subagent in a tool
       loop survives a plain parent interrupt, and `stop_subagents` is what
       actually ends it
+
+```sh
+post "$S/interrupt" | jq '{interrupted, paused, running_subagents, stopped_subagents}'
+post "$S/agents/cluster/stop" | jq          # 404 if that one isn't running
+post "$S/interrupt" -d '{"stop_subagents":true}' | jq '{stopped_subagents}'
+```
 
 Notes:
 
@@ -253,6 +350,17 @@ against Gemini/Vertex, so run this one on a Vertex-backed session.
       rate-limit message rather than an opaque status error
 - [ ] No tool calls fire from a side question (tool-less by construction)
 
+```sh
+post "$S/slash/btw" -d '{"question":"what are you doing right now?"}' | jq
+post "$S/slash/btw" -d '{"question":"how much has this cost?"}'      | jq
+
+# Rate limit: 10/min, burst 5. Expect 429s partway through, with
+# Retry-After on them.
+for i in $(seq 1 15); do
+  post "$S/slash/btw" -d '{"question":"ping"}' -o /dev/null -w '%{http_code}\n'
+done
+```
+
 Notes:
 
 ## 11 — Multi-session tenant sessions
@@ -268,25 +376,89 @@ the same footing as the daemon's primary.
 - [ ] A tenant session rebuilt by lazy resume (restart the daemon, then
       touch the session) still reports `features.pause`
 
+```sh
+# The response `url` is already absolute (echoed from your Host header) —
+# use it as-is, do not prefix $BASE onto it.
+T=$(post "$BASE/sessions" -d '{}' | jq -r .url)
+get "$T/events" --no-buffer --max-time 10 \
+  | sed -n '/^data: /{s/^data: //p;q}' | jq '{protocol_version, features}'
+
+# Then re-run §2 and §3 against $T, and check isolation against $S:
+post "$T/interrupt" >/dev/null
+get  "$S/status" | jq '{state}'    # the other session must NOT be paused
+```
+
 Notes:
 
 ---
 
 ## Result
 
+GKE run, 2026-08-31, demo-3 on `simian-test` / ns `kube-platform-native`:
+daemon `ghcr.io/go-steer/core-agent:main-85abf50`, watcher
+`lookout:v0.22.0`, content `v12`, model `gemini-3.7-flash`. Driven over
+the `./attach.sh` port-forward on `localhost:7778`.
+
 | Section | Verdict | Follow-up |
 |---|---|---|
-| 1 Capability handshake | | |
-| 2 Interrupt parks | | |
-| 3 Resume dispositions | | |
-| 4 `/pause` | | |
-| 5 Idempotence | | |
-| 6 What may un-park | | |
-| 7 Subagents | | |
-| 8 Remote TUI | | |
-| 9 Two clients | | |
-| 10 `/btw` | | |
-| 11 Tenant sessions | | |
+| 1 Capability handshake | pass | `protocol_version` 1.10.0; `pause` + `interrupt` both true. Old-daemon box needs a pre-hold binary — not testable here |
+| 2 Interrupt parks | partial | idle-interrupt path exact: `interrupted:false` + `X-Interrupted: nothing-in-flight` + `paused:true`. Running-turn path not yet driven |
+| 3 Resume dispositions | partial | continue + abandon pass, both 400s pass with named causes. Steer needs a real turn to judge |
+| 4 `/pause` | partial | `transitioned:true`, operator string echoed, `interrupted` stays unset. Mid-turn "finishes normally" not yet driven |
+| 5 Idempotence | pass | second pause `transitioned:false`; resume-when-unpaused `resumed:false`; first-cause-wins holds — a pause on top of an interrupt-hold does not overwrite the reason |
+| 6 What may un-park | partial | `inject{wake:false}` and `/wake` both leave the gate shut; `/btw` confirmed inbox depth 1 while parked. Release-consumes-the-queued-message unverified (blocked by F1) |
+| 7 Subagents | not run | needs a live delegation |
+| 8 Remote TUI | not run | operator-driven |
+| 9 Two clients | not run | |
+| 10 `/btw` | **fail — F1** | real answers, live run-state, correct cost, 429 + `Retry-After` all pass; then the endpoint died permanently mid-run |
+| 11 Tenant sessions | partial | create + handshake (`pause:true`) + cross-session isolation all pass. §2/§3 against the tenant, and lazy resume, not run |
+
+### F1 — one empty part permanently bricks `/btw` for a session
+
+After the §2–§6 sequence, every `/btw` call on `default` began returning
+**500**, forever:
+
+```
+agent: AskSideQuestion: generate: failed to call model: Error 400,
+Message: * GenerateContentRequest.contents[8].parts[0].data:
+required oneof field 'data' must have one initialized field
+```
+
+A session created fresh answers `/btw` normally, so this is the
+transcript, not the endpoint. `AskSideQuestion` re-sends the whole
+history on every call, so once one malformed event is committed the
+side-channel never recovers for that session. Restarting the daemon is
+not expected to help either — demo-3 keeps its session DB on a PVC, so
+the bad event is on disk, not in memory. Not directly tested; the only
+recovery verified here is starting a new session.
+
+Both history filters drop a content with *zero* parts and neither drops
+a content whose parts are individually empty:
+
+- `sessionHistory` (`pkg/agent/btw.go:345`) tests
+  `len(ev.Content.Parts) == 0`, so a single empty `&genai.Part{}`
+  survives.
+- `normalizeToolPairs` (`pkg/agent/history_pairing.go:108`) explicitly
+  returns `false` from `drop()` for a nil part, and its contract —
+  *"contents left with zero parts are dropped"* — never contemplated a
+  part that is present but carries no oneof.
+
+Vertex rejects the request outright, so this is not a degraded answer;
+it is a hard 500 on a surface whose whole design goal was that "the
+model declined" and "the daemon is broken" must look different. This
+lands squarely on §10's *"a declined answer is a 200, not a 500"* box.
+
+Not yet established: which write produced the empty part. The run that
+preceded it was interrupt → pause-on-top → abandon → pause → inject
+`wake:false` → wake → resume, so a cancelled turn committing a
+contentless event is the obvious suspect and would make this an
+interaction *between* the two halves of #799 rather than a bug in
+either. Confirming it means reading the session DB in the pod.
+
+Fix shape either way: treat a part with no initialized oneof as absent
+in both filters, then drop contents left empty. That is defensive at the
+read side, which is where it belongs — the history is already on disk
+and no producer-side fix retroactively unbricks an existing session.
 
 #799 closes when §2, §3, §8 and §10 pass on the GKE run. The rest is
-evidence for the follow-ups.
+evidence for the follow-ups. §10 currently does not pass.

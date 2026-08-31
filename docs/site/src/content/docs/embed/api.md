@@ -628,6 +628,42 @@ for {
 }
 ```
 
+### The operator hold (v2.9+)
+
+`Agent.Interrupt() bool` cancels the in-flight turn's context and returns whether there was anything to cancel. On its own that is a one-way door: the driver goes back to waiting for the next wake, so the agent ends up *idle*, not *held*, and the next thing to fire a wake — auto-continue, a queued inbox message, a `POST /inject` — starts a fresh turn against work an operator just killed. The pause gate is the state that was missing.
+
+```go
+// Stop what's running and hold. interrupted reports whether there was
+// a turn to kill; the hold applies either way.
+interrupted, _ := a.InterruptAndHold(agent.PauseReasonOperatorInterrupt)
+showBanner(interrupted)
+
+// ... the operator decides what to do instead ...
+
+// Steer: queue the new instruction, open the gate, wake the loop.
+_, err := a.ResumeWith(
+    attach.ResumeModeSteer,
+    agent.FormatInterruptSteer("check the CrashLoop first, skip the rollout"),
+    auth.Caller{Identity: "platform-oncall@example.com"},
+)
+```
+
+| Method | Effect |
+|---|---|
+| `Pause(reason) bool` | Shut the gate: no **new** turn starts until a resume. A turn already in flight is deliberately left running — there is no safe suspend point inside a model call, and reporting "paused" while tokens keep burning would be a lie. Idempotent; reports whether this call transitioned. |
+| `InterruptAndHold(reason) (interrupted, paused bool)` | Cancel *and* hold, atomically with respect to each other, so a wake racing the interrupt cannot slip a fresh turn in between. `paused` is always true — an operator who hits stop while the agent happens to be idle still meant stop. |
+| `Resume() bool` / `ResumeWithMode(mode) bool` | Open the gate. Does **not** drive a turn by itself; the mode (`steer` / `continue` / `abandon`) is observational, carried on the `pause` event so a second client renders what the operator chose. |
+| `ResumeWith(mode, message, caller) (bool, error)` | The full disposition in one call: inject, open, wake — in that order. Ordering is the point; opening first leaves a window where a blocked driver starts an un-steered turn and the instruction lands a turn late. |
+| `Paused() bool` / `PauseState() PauseState` | The projection every operator surface renders from. `PauseState.Interrupted` distinguishes "a turn was killed" from "the gate just shut", which is what tells the operator whether work was lost. |
+
+The gate is checked as the very first thing `Run` does — before the guardrail restore, the cost preflight, and critically before the inbox drain, so a steer typed while parked stays queued for the turn the resume releases rather than being consumed by a turn that never happens.
+
+Two framing helpers keep the model from silently redoing killed work: `FormatInterruptSteer(text)` and `FormatInterruptContinue()` wrap the operator's disposition so the transcript says a human stopped the previous turn. Pass the result to `ResumeWith` (or inject it yourself).
+
+**Two gates, deliberately mirrored.** `autonomous.Handle.Pause` (below) gates the autonomous driver at its per-turn checkpoint; `Agent.Pause` gates every driver, including the wake loop and the REPL, which do not go through a `Handle` at all. `Handle.Pause` mirrors onto the agent gate and `Handle.Resume` releases both, so the two can never disagree about what a status poll or a TUI banner should show — and an operator who parked the agent over the attach API does not leave the loop stuck behind a second gate the handle cannot see.
+
+Emission happens in `pkg/agent`, not in the attach handler, so every path that parks the loop reaches connected operators identically. The attach surface (`POST /pause`, `POST /resume`, `POST /interrupt`, the `pause` SSE frame, protocol 1.5.0) is a thin shell over these methods — see [Attach HTTP reference](/reference/attach-http/) and [the hold in the TUI](/reference/attach-tui/#the-hold). Full state machine: [`docs/operator-interrupt-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/operator-interrupt-design.md).
+
 ### `autonomous.Start` + `autonomous.Handle`
 
 Programmatic control over an autonomous run. `autonomous.Start` launches the loop in a goroutine and returns a handle:
@@ -673,6 +709,8 @@ Heads-up: `autonomous.Start` appends its own BeforeTurn hook after the caller's 
 ### Pause semantics
 
 The currently-running turn finishes before `Pause` takes effect — clean checkpoint cadence matching the eventlog. If you need immediate mid-turn cancellation, use `Stop()` (which cancels via ctx); a future `Redirect(newGoal)` will combine cancel + restart with a new goal.
+
+For cancel-and-hold rather than cancel-and-exit — the operator case, where the loop should survive the interrupt and wait for a new instruction — use `Agent.InterruptAndHold` and `ResumeWith`; see [The operator hold](#the-operator-hold-v29). `Handle.Pause`/`Resume` mirror that gate, so the two stay consistent.
 
 ### Example
 

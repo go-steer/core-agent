@@ -410,10 +410,13 @@ the `./attach.sh` port-forward on `localhost:7778`.
 | 7 Subagents | not run | needs a live delegation |
 | 8 Remote TUI | not run | operator-driven |
 | 9 Two clients | not run | |
-| 10 `/btw` | **fail — F1** | real answers, live run-state, correct cost, 429 + `Retry-After` all pass; then the endpoint died permanently mid-run |
+| 10 `/btw` | **fail — F1** | real answers, live run-state, correct cost, 429 + `Retry-After` all pass; then the endpoint died permanently mid-run, taking `Compact` and `Checkpoint` with it. #874, fixed by #875 |
 | 11 Tenant sessions | partial | create + handshake (`pause:true`) + cross-session isolation all pass. §2/§3 against the tenant, and lazy resume, not run |
 
 ### F1 — one empty part permanently bricks `/btw` for a session
+
+Filed as [#874](https://github.com/go-steer/core-agent/issues/874),
+fixed by [#875](https://github.com/go-steer/core-agent/pull/875).
 
 After the §2–§6 sequence, every `/btw` call on `default` began returning
 **500**, forever:
@@ -448,6 +451,29 @@ it is a hard 500 on a surface whose whole design goal was that "the
 model declined" and "the daemon is broken" must look different. This
 lands squarely on §10's *"a declined answer is a 200, not a 500"* box.
 
+**Blast radius, established after the first write-up of this finding.**
+It is not only `/btw`. The daemon log carries the same 400 arriving on
+the checkpointer's own schedule:
+
+```
+agent: pending checkpoint failed: agent: Checkpoint: generate:
+failed to call model: Error 400, Message: *
+GenerateContentRequest.contents[8].parts[0].data: ...
+```
+
+`Checkpoint` and `Compact` both run through `runSummarizer` →
+`summarizerHistory` → `normalizeToolPairs`, the same choke point `/btw`
+uses. So one bad part takes out the side-channel, compaction *and*
+checkpointing together.
+
+The agentic loop is **not** affected — it does not build its contents
+through that path. Verified live: injecting a prompt into the poisoned
+session returned 16 `agent` frames, a `turn-complete`, and the correct
+answer. That asymmetry is why this was quiet enough to reach a live
+cluster. A session looks perfectly healthy — it answers, it runs tools —
+while three of its maintenance surfaces are dead and only the log says
+so.
+
 Not yet established: which write produced the empty part. The run that
 preceded it was interrupt → pause-on-top → abandon → pause → inject
 `wake:false` → wake → resume, so a cancelled turn committing a
@@ -455,10 +481,30 @@ contentless event is the obvious suspect and would make this an
 interaction *between* the two halves of #799 rather than a bug in
 either. Confirming it means reading the session DB in the pod.
 
-Fix shape either way: treat a part with no initialized oneof as absent
-in both filters, then drop contents left empty. That is defensive at the
-read side, which is where it belongs — the history is already on disk
-and no producer-side fix retroactively unbricks an existing session.
+Fix shape either way: treat a part with no initialized oneof as absent,
+then drop contents left empty. That is defensive at the read side, which
+is where it belongs — the history is already on disk and no
+producer-side fix retroactively unbricks an existing session. #875 does
+this with one predicate in `normalizeToolPairs`, which turns out to
+cover all three callers; `sessionHistory`'s own filter needed no change.
+
+### F2 — a created-but-never-run tenant session logs an error per tick
+
+Not filed; recorded so the next reader does not chase it. The tenant
+session created in §11 produces, once per auto-continue interval:
+
+```
+core-agent: session <sid>: auto-continue: read session:
+database error while fetching session: record not found
+```
+
+Under `kubectl logs --tail` this reads as a tight loop, which is what it
+looked like at first. It is not: counted over five minutes it fires
+exactly once per interval. A session that exists in memory but has never
+persisted an event has no row to read, and auto-continue says so every
+time it wakes. Harmless, but it is log noise proportional to the number
+of idle tenant sessions, and "record not found" is a poor way to say
+"nothing has happened here yet."
 
 #799 closes when §2, §3, §8 and §10 pass on the GKE run. The rest is
 evidence for the follow-ups. §10 currently does not pass.

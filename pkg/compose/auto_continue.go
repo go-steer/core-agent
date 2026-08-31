@@ -245,12 +245,13 @@ func lockClassifyInject(ctx context.Context, h *eventlog.Handle, ag *agent.Agent
 	}
 	// An operator parked the loop (POST /interrupt holds by default, and
 	// POST /pause holds outright — docs/operator-interrupt-design.md).
-	// Paused means "start nothing until I say so", and auto-continue is
-	// the one caller that would otherwise argue: its note goes in via
-	// InjectAs, which skips the implicit resume for
-	// AutoContinueOriginator but still queues a message that the
-	// operator's eventual resume would then drain alongside their steer.
-	// Stand down entirely — resume synthesizes its own framing.
+	// Paused means "start nothing until I say so". No inject un-parks a
+	// loop any more (#878), so this is no longer the guard that keeps
+	// auto-continue off the gate — but standing down is still right,
+	// because InjectAs would otherwise queue a note the operator's
+	// eventual resume drains alongside their steer, arguing with them
+	// one turn late. Stand down entirely — resume synthesizes its own
+	// framing.
 	if ag.Paused() {
 		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: session is paused; standing down until the operator resumes\n", sid)
 		return acSkippedPaused

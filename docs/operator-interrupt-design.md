@@ -208,8 +208,7 @@ Transitions:
 | paused | `resume{steer:"…"}` | running | inject steer w/ interrupt framing; gate open; wake |
 | paused | `resume` (no steer) | running | inject continue-note; gate open; wake |
 | paused | `resume{mode:"abandon"}` | idle | gate open; **no** inject, **no** wake |
-| paused | `inject` from an operator | running | equivalent to `resume{steer}` (see below) |
-| paused | `inject` from auto-continue | paused | queued, gate stays closed |
+| paused | `inject` from anyone | paused | queued, gate stays closed (#878; see below) |
 | paused | `wake` / scheduler tick | paused | queued, gate stays closed |
 
 ### Where the gate lives
@@ -295,21 +294,53 @@ land in the inbox so the normal drain path carries them:
 - **abandon** — nothing injected, no wake. The interrupt audit row
   stands and auto-continue stays stood down, so the agent goes quiet.
 
-### Inject while paused resumes
+### Inject while paused queues (revised by #878)
 
-This is the compatibility hinge, and it's also the right UX. In Claude
-Code, typing after ESC resumes with your text. Here: an inject from
-anyone other than `AutoContinueOriginator` opens the gate and wakes
-the loop, i.e. it *is* `resume{steer}` with the bare `[Inbox]` framing
-instead of the interrupt framing.
+**As originally shipped (protocol 1.5.0–1.10.0):** an inject from
+anyone other than `AutoContinueOriginator` opened the gate and woke the
+loop, i.e. it *was* `resume{steer}` with the bare `[Inbox]` framing
+instead of the interrupt framing. The argument was compatibility plus
+UX: in Claude Code, typing after ESC resumes with your text, and the
+common API pattern `POST /interrupt` then `POST /inject` kept producing
+the same observable outcome, plus a paused window in between.
 
-That means the common existing API pattern — `POST /interrupt` then
-`POST /inject` — produces the same observable outcome it does today,
-plus a paused window in between. The only behavior change for an
-existing consumer is: **interrupt and then never inject** leaves the
-session in `paused` instead of `idle`. Which is arguably what an
-operator who explicitly interrupted meant, and is now visible in
-`GET /status` instead of implicit.
+**Why that was wrong.** "Typing after ESC" is a human at a keyboard.
+`POST /inject` is not — it is one door serving operators, chat
+gateways, alert watchers and peer daemons alike, and the runtime cannot
+tell them apart. `auth.Caller` carries `Identity`, `Labels`, `Admin`;
+there is no human/machine bit and none could be added honestly, because
+a machine can legitimately act under a person's identity. k8s-lookout's
+watcher does exactly that: it injects as its `--owner`
+(`platform-oncall@example.com` in the demo) asserted through the proxy
+identity `sa:lookout-watch`, which is the same string the on-call
+engineer authenticates as.
+
+The exclusion list gave the shape of the defect away. `caller.Identity
+!= AutoContinueOriginator` is a denylist of one, so what the condition
+actually expressed was "any wake-true inject", not "an operator asked
+to resume". Found live on the #799 smoke run: an agent parked by
+operator interrupt came back with a bare `Resumed.` nobody had asked
+for, and the operator's follow-up `/continue` answered *"agent isn't
+held"*.
+
+Proxying is not a usable discriminator either — a chat gateway proxies
+for a real human whose message *should* release the hold. So the
+authority is stated rather than inferred, and it lives in the verb:
+`inject` queues, `resume` opens the gate.
+
+**Current behavior.** An inject into a parked session queues the
+message, emits `inbox`/queued, fires the wake signal (buffered-1, so it
+latches rather than being spent against a shut gate), and leaves
+`state: "paused"` intact. The operator's `resume` drains it alongside
+their own instruction as one `[Inbox]` block, in arrival order — which
+is strictly better than the old behavior, where an alert both jumped
+the gate *and* was presented to the model as though the operator had
+said it.
+
+Migration for a client that relied on the implicit release: send
+`POST /resume {"mode":"steer","steer":"…"}`. Still one call, and it
+carries the interrupt framing, so the model is told its last turn was
+killed rather than silently redoing the abandoned work.
 
 Auto-continue gets two changes so it can't fight the gate:
 
@@ -622,8 +653,10 @@ Two contract details settled during PR 2:
 - **`Agent.ResumeWith` queues before it opens the gate.** Resuming
   first leaves a window where a driver blocked in `awaitResume` starts
   an un-steered turn and the operator's instruction lands a turn late
-  — against work they'd just redirected. `injectAs(..., releaseHold:
-  false)` is what makes the ordering expressible.
+  — against work they'd just redirected. (`injectAs` had a
+  `releaseHold` axis to make that ordering expressible; since #878
+  nothing releases, so the axis is gone and the ordering is simply what
+  `ResumeWith` does.)
 - **Hold against a pre-1.5.0 registrant degrades, it doesn't 501.** The
   turn is still cancelled and the response carries `X-Hold:
   unsupported` with `paused: false`. A stop that half-lands beats no
@@ -644,7 +677,9 @@ Each PR carries tests that fail on pre-fix code (repo convention):
   against a paused agent injects nothing.
 - **Audit row lands before the resuming turn** — deterministic now
   that the pending flag is set pre-cancel.
-- **Operator inject auto-resumes; auto-continue inject does not.**
+- **No inject resumes, whoever sends it** (#878) — including one under
+  an identity that looks like an operator's, which is the case a
+  caller-identity check would wave through.
 - **Wire round-trips** — `/interrupt` with and without `hold`,
   `/resume` in all three modes, idempotent double-resume, 501 when
   the capability is absent, `pause` event on the SSE stream.
@@ -692,11 +727,13 @@ different next step.
 ## Open questions
 
 1. **Should `hold=true` really be the default on `/interrupt`?**
-   Argued yes above (an interrupt at idle still means "stop"), and the
-   inject-auto-resumes rule keeps the common API pattern behaviorally
-   identical. The alternative — default `false`, opt in per client —
-   is a smaller blast radius but leaves the TUI and mast-web
-   configuring the same thing twice.
+   Argued yes above (an interrupt at idle still means "stop"). The
+   alternative — default `false`, opt in per client — is a smaller
+   blast radius but leaves the TUI and mast-web configuring the same
+   thing twice. *Settled yes;* the second half of the original
+   argument, that inject-auto-resumes keeps the common API pattern
+   behaviorally identical, was retired by #878 — that rule is gone and
+   `POST /resume` is the pattern now.
 2. **Pause persistence across daemon restart.** Currently in-memory:
    a restart resumes everything. Persisting it in the session row
    would be more honest for a long-parked session, at the cost of a

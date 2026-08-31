@@ -538,7 +538,9 @@ Behavior:
 
 ### `Agent.Inject(message)` — queue a message for the next turn
 
-Any caller can queue a message on an agent's inbox. The next `Agent.Run` call drains the queue and prepends the messages as a `[Inbox]` block to the prompt the model sees:
+Any caller can queue a message on an agent's inbox. The next `Agent.Run` call drains the queue and prepends the messages as a `[Inbox]` block to the prompt the model sees.
+
+**Queue is all it does.** Against a paused agent the message waits behind the gate; `Agent.Resume` (or `ResumeWith`, which queues and then opens the gate in that order) is what releases it. Through v2.9.0-dev an inject from any caller but auto-continue called `Resume` for you — see [#878](https://github.com/go-steer/core-agent/issues/878) for why that couldn't be made safe, in short: `auth.Caller` distinguishes identities, not humans from machines.
 
 ```go
 go func() {
@@ -693,7 +695,7 @@ result, err := h.Wait()
 | `Pause()` | Set a flag the loop checks at the next pre-turn checkpoint. Current turn finishes normally; subsequent turns block until `Resume()` fires. Synthetic `paused` event emitted to eventlog. |
 | `Resume()` | Unblock the BeforeTurn hook. Synthetic `resumed` event emitted. |
 | `Stop()` | Hard cancel via the run's `ctx.Cancel`. Current LLM call returns `Canceled`; loop exits. Idempotent; unblocks Pause too. |
-| `Inject(msg)` | Thin wrapper around the underlying `Agent.Inject`. |
+| `Inject(msg)` | Thin wrapper around the underlying `Agent.Inject`. Queues only — it does not release a `Pause()`; call `Resume()` for that. |
 | `Status()` | `Running` / `Paused` / `Stopped` / `Completed` / `Failed`. |
 | `Wait()` | Block until the goroutine exits; returns the same `RunResult` + error pair `autonomous.Run` does. |
 | `Done()` | Channel that closes when the goroutine exits, for select-style integration. |

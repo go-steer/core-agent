@@ -228,17 +228,38 @@ curl -sS -X POST http://127.0.0.1:7777/sessions/s-4412/inject \
 # {"injected":"second alert corroborates the first","session":"s-4412","woke":false}
 ```
 
-The message is appended to the inbox, published as the usual `inbox`/queued frame, and read by the next turn — but nothing here *causes* that turn. It does not pierce a sleep and it does not un-park a paused loop.
+The message is appended to the inbox, published as the usual `inbox`/queued frame, and read by the next turn — but nothing here *causes* that turn. It does not pierce a sleep.
+
+Since protocol 1.11.0 it does not un-park a paused loop either — but neither does an ordinary inject, so against a *parked* agent the two deliveries are now equivalent. The axis `wake` still owns is the *sleeping* agent, which is what it was added for.
 
 **Who this is for: machine producers.** An alert watcher's signals arrive on their own clock, and each one used to drive its own turn. Two corroborating alerts two minutes apart meant two wakes, the second landing while the agent was still working the first. Queued, they drain together as a single `[Inbox]` block on whatever turn happens next — and because a wake-driven turn has no operator prompt of its own, that block carries [bundle-handling guidance](/embed/api/#agentinjectmessage--queue-a-message-for-the-next-turn) telling the model to treat variants as one and to acknowledge, rather than re-open, corroboration on work it already finished. Operator input should keep waking — that is what the default is for.
 
-**There is no promptness guarantee, and that is not a hedge.** An autonomous loop reaches the message on its own sleep timer; an operator-driven session reaches it when the operator next says something; a parked session reaches it when it is resumed. If the message needs to be acted on, send it without `wake: false`.
+**There is no promptness guarantee, and that is not a hedge.** An autonomous loop reaches the message on its own sleep timer; an operator-driven session reaches it when the operator next says something; a parked session reaches it when it is resumed. If the message needs to be acted on, send it without `wake: false` — noting that on a parked session even that waits for the operator.
 
 **`woke` comes back on both paths.** Its absence means a pre-1.10.0 daemon, which always woke — so a client can tell "this daemon deferred" from "this daemon doesn't know how to."
 
 **501** means the agent registered no deferral capability. The request is refused rather than quietly upgraded to a waking inject: a silent upgrade would hand back exactly the preemption the caller asked to avoid, behind a 200 that says nothing went wrong.
 
 Omitting `wake`, or sending `true`, is the historical behavior in every respect — the flag is a tristate so no pre-1.10.0 client changes meaning.
+
+### Injecting into a parked session (protocol 1.11.0)
+
+**An inject queues; it does not un-park** ([#878](https://github.com/go-steer/core-agent/issues/878)). Send one to a session an operator has parked and the message lands on the inbox, publishes its `inbox`/queued frame, and waits. `GET /status` still reports `state: "paused"`. Whatever turn the operator's `POST /resume` releases drains it — coalesced into the same `[Inbox]` block as the operator's own instruction, in arrival order.
+
+Through protocol 1.10.0 an inject from any caller except auto-continue called resume for you, so `POST /interrupt` then `POST /inject` reproduced the pre-1.5.0 world in which interrupt did not park at all. The shim assumed a human at the other end of the socket, and the daemon has no way to check: a caller carries an identity, not a species. A machine producer can legitimately inject under a person's — k8s-lookout's watcher asserts its `--owner` through a proxy identity, which is the same string the on-call engineer authenticates as. So any alert with inject rights could re-open a gate a human had deliberately shut, and on a cluster raising alerts continuously it did, repeatedly, before anyone noticed the session had un-parked itself.
+
+Proxying is not a usable tell either: a chat gateway proxies for a real human whose message *should* release the hold. The authority has to be stated rather than inferred, so it now lives in the verb:
+
+| you want | send |
+|---|---|
+| put this on the queue | `POST /inject` |
+| open the gate, with an instruction | `POST /resume {"mode":"steer","steer":"…"}` |
+| open the gate, carry on as before | `POST /resume` |
+| open the gate, drop the work | `POST /resume {"mode":"abandon"}` |
+
+**Migrating a client that relied on the implicit release:** send `POST /resume` with `mode: "steer"` instead of `POST /inject`. It is still one call, and it frames the message as an interrupt-steer, so the model is told its last turn was killed by an operator rather than silently redoing the abandoned work. A client that injects into sessions it did not park needs no change — the gate was already open.
+
+This is a minor version rather than a major because no frame, field, or status code changes shape; nothing a client *parses* is affected. It is recorded here at length precisely because the additive-minor convention would otherwise imply no behavior changed, and it did.
 
 ### Keying state by turn (protocol 1.10.0)
 
@@ -274,7 +295,7 @@ Three ways out of a park, matching Esc-then-answer in an interactive session:
 | Continue | `POST /resume` (empty body) | Queues a carry-on note, opens the gate, wakes the loop. |
 | Abandon | `POST /resume {"mode":"abandon"}` | Opens the gate and injects nothing; the agent stays quiet until something else drives it. |
 
-`POST /inject` also releases a hold implicitly (auto-continue's own notes excluded — a timer must not un-park a loop a human parked). So the long-standing interrupt-then-inject client pattern behaves exactly as it did before protocol 1.5.0, and a TUI whose send path is `/inject` needs no resume call to steer.
+`POST /inject` does **not** release a hold. A message arriving is queued and left waiting behind the gate; `POST /resume` opens it and nothing else does. See [Injecting into a parked session](#injecting-into-a-parked-session-protocol-1110).
 
 `POST /pause` is the same park **without** killing an in-flight turn — "stop after this one". A turn already running has no safe suspend point inside a model call, and reporting `paused` while tokens keep burning would be a lie, so the running turn finishes and the *next* one is what waits.
 

@@ -239,10 +239,12 @@ respect it.
 - [ ] **`POST $S/wake` starts no turn.** The driver may enter `Run` and
       block in `awaitResume`, which is fine and invisible; what must not
       happen is a turn. Check the event stream, not the process.
-- [ ] **`POST $S/inject` (default, waking) *does* release the hold** — the
-      long-standing interrupt-then-inject client pattern must behave as it
-      did before 1.5.0, so a TUI whose send path is `/inject` needs no
-      resume call
+- [ ] **`POST $S/inject` (default, waking) does *not* release the hold**
+      (#878, protocol 1.11.0). It queues like any other message and the
+      session stays `paused`. This item asserted the opposite when the
+      checklist was written; the run found the old behavior let a
+      k8s-lookout alert un-park a session nobody had resumed, so the
+      rule inverted. Only `POST $S/resume` opens the gate.
 - [ ] A **daemon restart** while parked: does the session come back
       parked, or running? Record whichever it is — the hold is in-memory
       and this is the one behaviour the design does not promise. ⚠ if it
@@ -406,7 +408,7 @@ the `./attach.sh` port-forward on `localhost:7778`.
 | 3 Resume dispositions | partial | continue + abandon pass, both 400s pass with named causes. Steer needs a real turn to judge |
 | 4 `/pause` | partial | `transitioned:true`, operator string echoed, `interrupted` stays unset. Mid-turn "finishes normally" not yet driven |
 | 5 Idempotence | pass | second pause `transitioned:false`; resume-when-unpaused `resumed:false`; first-cause-wins holds — a pause on top of an interrupt-hold does not overwrite the reason |
-| 6 What may un-park | partial | `inject{wake:false}` and `/wake` both leave the gate shut; `/btw` confirmed inbox depth 1 while parked. Release-consumes-the-queued-message unverified (blocked by F1) |
+| 6 What may un-park | **fail — F3** | `inject{wake:false}` and `/wake` both leave the gate shut; `/btw` confirmed inbox depth 1 while parked. But a default waking `/inject` un-parked the session, which the checklist expected and #878 reclassified as the bug. Release-consumes-the-queued-message unverified (blocked by F1) |
 | 7 Subagents | not run | needs a live delegation |
 | 8 Remote TUI | not run | operator-driven |
 | 9 Two clients | not run | |
@@ -506,5 +508,52 @@ time it wakes. Harmless, but it is log noise proportional to the number
 of idle tenant sessions, and "record not found" is a poor way to say
 "nothing has happened here yet."
 
+### F3 — any wake-true inject releases an operator hold (#878)
+
+§6's last box asserted that a default `POST /inject` *should* release
+the hold, on the compatibility argument in
+`docs/operator-interrupt-design.md`. The run inverted that box.
+
+Observed in the TUI: an agent parked by operator interrupt printed a
+bare
+
+```
+ℹ  Resumed.
+```
+
+that no operator had asked for, and the operator's follow-up
+`/continue` answered `/continue: agent isn't held`. Bare "Resumed." is
+`resumedSystemText("")` — a resume with empty mode, i.e. a direct
+`Agent.Resume()`.
+
+Reproduced deterministically against session
+`01a058e6-b752-7cff-aa05-ce2aa38ef07b`:
+
+```
+park:                 {"interrupted":false,"paused":true}
+status after park:    {"state":"paused","pause_reason":"operator-interrupt",
+                       "paused_since":"2026-08-31T19:20:09Z"}
+inject (wake=true):   {"woke":true,...}
+status after inject:  {"state":"idle","paused_since":"0001-01-01T00:00:00Z"}
+```
+
+The guard was `caller.Identity != AutoContinueOriginator` — a denylist
+of one, so the condition meant "any wake-true inject". In this
+deployment that is not hypothetical: the lookout watcher's inject
+envelope is `{"message": ...}` with no `wake` field
+(`pkg/inject/injector.go:177-184`), so it defaults to true and every
+alert it raises re-opened the gate.
+
+Not subagent completion, which was the first suspect: `pushAlert` →
+`wakeParent()` → `RequestWake` is a wake, and wakes never touched the
+hold.
+
+Fixed by #878: an inject queues and only `POST /resume` opens the gate
+(protocol 1.11.0). §6's box is rewritten above to match. The specific
+injector behind the *first* sighting was never identified — the daemon
+logs no pause/resume transitions — but the mechanism is proven and the
+watcher is sufficient to explain it.
+
 #799 closes when §2, §3, §8 and §10 pass on the GKE run. The rest is
-evidence for the follow-ups. §10 currently does not pass.
+evidence for the follow-ups. §10 currently does not pass, and §6 needs
+re-running against a daemon carrying #878.

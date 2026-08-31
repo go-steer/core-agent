@@ -165,9 +165,10 @@ func TestAgent_PausedDoesNotDrainInbox(t *testing.T) {
 	a := newPauseTestAgent(t)
 	a.Pause("")
 
-	// Inject as auto-continue so the implicit operator resume doesn't
-	// fire — we want to observe the paused-with-queued-message state.
-	if err := a.InjectAs("queued while parked", auth.Caller{Identity: AutoContinueOriginator}); err != nil {
+	// A plain operator inject: since #878 no inject opens the gate, so
+	// this no longer has to be disguised as auto-continue to observe
+	// the paused-with-queued-message state.
+	if err := a.InjectAs("queued while parked", auth.Caller{Identity: "operator@example.com"}); err != nil {
 		t.Fatalf("InjectAs: %v", err)
 	}
 
@@ -257,48 +258,88 @@ func TestAgent_Pause_FirstCauseWins(t *testing.T) {
 	}
 }
 
-// TestAgent_InjectResumesForOperatorNotAutoContinue is the
-// compatibility hinge: interrupt-then-inject keeps working exactly as
-// it did before pause existed, while auto-continue can't un-park a loop
-// a human parked.
-func TestAgent_InjectResumesForOperatorNotAutoContinue(t *testing.T) {
+// TestAgent_InjectQueuesWhileParkedAndDoesNotResume pins #878: a
+// message arriving is not an operator asking for the gate.
+//
+// Every identity is exercised because the bug was precisely that the
+// old guard discriminated on one — it excluded AutoContinueOriginator
+// and let everything else through, which made "any wake-true inject"
+// the real condition. A machine producer injecting under a person's
+// identity (k8s-lookout's watcher asserts its --owner via a proxy
+// identity) was therefore indistinguishable from the person, so the
+// table below deliberately includes an identity that LOOKS like an
+// operator and still must not un-park.
+func TestAgent_InjectQueuesWhileParkedAndDoesNotResume(t *testing.T) {
 	t.Parallel()
 
-	t.Run("auto-continue does not resume", func(t *testing.T) {
-		t.Parallel()
-		a := newPauseTestAgent(t)
-		a.Pause("")
-		if err := a.InjectAs("carry on", auth.Caller{Identity: AutoContinueOriginator}); err != nil {
-			t.Fatalf("InjectAs: %v", err)
-		}
-		if !a.Paused() {
-			t.Errorf("auto-continue inject un-parked the agent")
-		}
-	})
+	for _, tc := range []struct {
+		name   string
+		caller auth.Caller
+	}{
+		{"auto-continue", auth.Caller{Identity: AutoContinueOriginator}},
+		{"identified operator", auth.Caller{Identity: "operator@example.com"}},
+		{"machine under an operator identity", auth.Caller{Identity: "platform-oncall@example.com"}},
+		{"admin", auth.Caller{Identity: "root@example.com", Admin: true}},
+		{"legacy zero identity", auth.Caller{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a := newPauseTestAgent(t)
+			a.Pause("")
+			if err := a.InjectAs("do this instead", tc.caller); err != nil {
+				t.Fatalf("InjectAs: %v", err)
+			}
+			if !a.Paused() {
+				t.Errorf("inject from %q un-parked the agent; only a resume may open the gate (#878)", tc.caller.Identity)
+			}
+			// Queued, not dropped: the whole reason not resuming is
+			// safe is that the operator's eventual resume drains this
+			// alongside their own instruction.
+			if got := a.PendingInboxCount(); got != 1 {
+				t.Errorf("PendingInboxCount = %d, want 1 (the message must survive the park, not be refused)", got)
+			}
+		})
+	}
+}
 
-	t.Run("identified operator resumes", func(t *testing.T) {
-		t.Parallel()
-		a := newPauseTestAgent(t)
-		a.Pause("")
-		if err := a.InjectAs("do this instead", auth.Caller{Identity: "operator@example.com"}); err != nil {
-			t.Fatalf("InjectAs: %v", err)
-		}
-		if a.Paused() {
-			t.Errorf("operator inject did not resume the agent")
-		}
-	})
+// TestAgent_ResumeWithDrainsAnInjectQueuedWhileParked is the other half
+// of #878, and the reason dropping the implicit resume doesn't strand
+// anything: the alert that arrived mid-park and the operator's steer
+// come back as ONE turn's inbox, in arrival order.
+func TestAgent_ResumeWithDrainsAnInjectQueuedWhileParked(t *testing.T) {
+	t.Parallel()
 
-	t.Run("anonymous inject resumes", func(t *testing.T) {
-		t.Parallel()
-		a := newPauseTestAgent(t)
-		a.Pause("")
-		if err := a.Inject("do this instead"); err != nil {
-			t.Fatalf("Inject: %v", err)
-		}
-		if a.Paused() {
-			t.Errorf("legacy zero-identity inject did not resume the agent; single-user deployments would park forever")
-		}
-	})
+	a := newPauseTestAgent(t)
+	a.InterruptAndHold("")
+
+	if err := a.InjectAs("watcher: emailservice OOMKilled", auth.Caller{Identity: "sa:lookout-watch"}); err != nil {
+		t.Fatalf("InjectAs: %v", err)
+	}
+	if !a.Paused() {
+		t.Fatalf("agent un-parked by a watcher alert")
+	}
+
+	resumed, err := a.ResumeWith("steer", "look at the memory limit", auth.Caller{Identity: "operator@example.com"})
+	if err != nil {
+		t.Fatalf("ResumeWith: %v", err)
+	}
+	if !resumed {
+		t.Errorf("ResumeWith reported resumed=false against a parked agent")
+	}
+	if a.Paused() {
+		t.Errorf("still parked after ResumeWith")
+	}
+
+	msgs := a.DrainInbox()
+	if len(msgs) != 2 {
+		t.Fatalf("drained %d messages, want 2 (the queued alert AND the operator's steer)", len(msgs))
+	}
+	if !strings.Contains(msgs[0], "OOMKilled") {
+		t.Errorf("first drained message = %q, want the alert that arrived first", msgs[0])
+	}
+	if !strings.Contains(msgs[1], "memory limit") {
+		t.Errorf("second drained message = %q, want the operator's steer", msgs[1])
+	}
 }
 
 func TestFormatInterruptSteer(t *testing.T) {

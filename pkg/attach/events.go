@@ -179,7 +179,37 @@ import "time"
 // tolerate its absence rather than requiring it. It is NOT a turn id:
 // the inbox coalesces, so N injects can share one `turn-complete` and
 // only one of their ids appears on it.
-const protocolVersion = "1.10.0"
+//
+// v1.11.0 (#878) narrows POST /sessions/{sid}/inject: it no longer
+// releases a pause hold. A message arriving is queued, published as the
+// usual `inbox`/queued event, and left waiting behind the gate; the gate
+// is opened by POST /resume and nothing else. Same for POST /wake
+// carrying a `prompt`, which injects through the same path.
+//
+// Through 1.10.0 an inject from any caller but auto-continue called
+// Resume for you, so that `POST /interrupt` then `POST /inject` matched
+// the pre-1.5.0 world where interrupt didn't park at all. That shim
+// assumed a human at the other end of the socket. It cannot check:
+// callers carry an identity, not a species, and a machine producer can
+// legitimately inject under a person's identity (k8s-lookout's watcher
+// asserts its `--owner` through a proxy identity). Any alert with
+// inject rights could therefore un-park a session an operator had
+// deliberately stopped, which is what happened on the #799 smoke run.
+//
+// Migration for a client that relied on it: send POST /resume
+// {"mode":"steer","steer":"..."} instead of POST /inject. That is one
+// call, not two, it frames the message as an interrupt-steer so the
+// model knows its last turn was killed, and it is what the endpoint was
+// added for. A client that injects into a session it did not park sees
+// no change — the gate was already open.
+//
+// A minor rather than a major, deliberately: no frame, field, or status
+// code changes shape, so nothing a client parses is affected and the
+// major-mismatch 409 in negotiateProtocolVersion would lock out working
+// clients over a change most of them can't observe. Recorded here in
+// full because it IS a behavior change and the additive-minor
+// convention would otherwise imply it isn't.
+const protocolVersion = "1.11.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (

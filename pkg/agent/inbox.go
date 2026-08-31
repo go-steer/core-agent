@@ -467,6 +467,10 @@ func FormatInterruptContinue() string {
 // (the attach /inject and /wake handlers, an orchestrator's RPC
 // server) should use InjectAsContext so the turn that answers the
 // inject can be linked back to the injecting span.
+//
+// Injecting into a PAUSED agent queues the message and leaves the gate
+// shut (#878). The turn that eventually drains it is the one an
+// operator releases with Resume/ResumeWith — see InjectAsContext.
 func (a *Agent) Inject(message string) error {
 	return a.InjectAs(message, auth.Caller{})
 }
@@ -509,6 +513,31 @@ func (a *Agent) InjectAs(message string, caller auth.Caller) error {
 // one span LINK per drained inject that carried a valid span context
 // to the turn span it starts (see turnspan.go). Injects with no trace
 // context are a clean no-op.
+//
+// # Injecting into a paused agent
+//
+// An inject QUEUES; it does not un-park (#878). The message lands on
+// the inbox, publishes its `inbox`/queued event, and fires the wake
+// signal — which latches, buffered-1, so nothing is lost — and then
+// waits behind the gate with everything else. Whatever turn the
+// operator's Resume releases drains it, coalesced into the same
+// `[Inbox]` block as the operator's own instruction.
+//
+// Until #878 an inject from anyone but auto-continue called Resume
+// itself, on the theory that injecting while parked IS the operator
+// answering "what should I do instead?". That holds for a human at a
+// keyboard and fails for everything else on the same door: auth.Caller
+// carries no human/machine bit, and the identity a machine injects
+// under can be a person's (k8s-lookout's watcher asserts its
+// --owner via a proxy identity), so the runtime cannot tell them
+// apart. An alert arriving mid-park was therefore enough to open a
+// gate a human had deliberately shut.
+//
+// Releasing a hold is now only ever done by something that says so:
+// Resume, ResumeWithMode, or ResumeWith — reached over the wire as
+// POST /resume. If you want the pre-#878 one-call behavior, that is
+// ResumeWith(mode, message, caller), which queues and then opens the
+// gate in the order that keeps the instruction ahead of the turn.
 func (a *Agent) InjectAsContext(ctx context.Context, message string, caller auth.Caller) error {
 	_, err := a.InjectAsContextWithID(ctx, message, caller)
 	return err
@@ -543,16 +572,22 @@ func (a *Agent) InjectAsContext(ctx context.Context, message string, caller auth
 // fan-in and collapse client state accordingly, which is not possible
 // without it.
 func (a *Agent) InjectAsContextWithID(ctx context.Context, message string, caller auth.Caller) (string, error) {
-	return a.injectAs(ctx, message, caller, injectMode{releaseHold: true, wake: true})
+	return a.injectAs(ctx, message, caller, injectMode{wake: true})
 }
 
 // QueueAsContext files a message for the agent to read on its next
 // turn WITHOUT causing that turn (#698). It is InjectAsContext minus
-// the two things that make an inject preemptive: it does not fire the
-// wake signal, and it does not open a pause gate an operator closed.
-// Everything else is identical — same queue, same prompt_id, same
-// `inbox`/queued event, same caller and trace-context handling, same
-// drain path, same last-caller-wins originator rule.
+// the one thing that makes an inject preemptive: it does not fire the
+// wake signal, so it cannot cut a sleep short. Everything else is
+// identical — same queue, same prompt_id, same `inbox`/queued event,
+// same caller and trace-context handling, same drain path, same
+// last-caller-wins originator rule.
+//
+// It used to differ on a second axis too: an inject opened a pause
+// gate an operator had closed and this did not. Since #878 neither
+// does, so against a PARKED agent the two are equivalent — both leave
+// the message waiting for the operator's resume. The distinction that
+// remains is about a SLEEPING agent, which is the one #698 was for.
 //
 // This is the "file this away" primitive behind POST /inject with
 // {"wake": false}. Its use case is a machine producer — an alert
@@ -592,20 +627,25 @@ func (a *Agent) QueueAsContextWithID(ctx context.Context, message string, caller
 	return a.injectAs(ctx, message, caller, injectMode{})
 }
 
-// injectMode carries the two axes on which the queue-and-notify core
-// varies. Both default to the quiet, non-preemptive setting so a
-// zero value is the QueueAsContext behavior; the ordinary inject
-// path opts into both.
+// injectMode carries the axis on which the queue-and-notify core
+// varies. It defaults to the quiet, non-preemptive setting so a zero
+// value is the QueueAsContext behavior; the ordinary inject path opts
+// in.
+//
+// It carried a second axis, releaseHold, until #878 — whether the
+// message should also open a pause gate. Nothing sets it now: opening
+// the gate is Resume's job, and a message arriving is not an operator
+// asking for one. A struct with one field survives the removal because
+// injectMode{wake: true} at a call site says what a bare true does
+// not.
 type injectMode struct {
-	// releaseHold opens a pause gate the message should un-park.
-	// False for callers that open it themselves afterwards —
-	// ResumeWith needs the message on the queue before the gate
-	// opens, so the turn the resume releases can't start ahead of
-	// the instruction that was meant to shape it — and for
-	// QueueAsContext, where the whole point is not to un-park.
-	releaseHold bool
 	// wake fires the wake signal so the message preempts a sleep.
 	// False for QueueAsContext (#698).
+	//
+	// Firing it against a PARKED agent is not a way around the gate:
+	// the signal is buffered-1 and latches, the loop still blocks in
+	// awaitResume, and the latched wake is what stops the message
+	// being stranded once an operator resumes.
 	wake bool
 }
 
@@ -637,22 +677,35 @@ func (a *Agent) injectAs(ctx context.Context, message string, caller auth.Caller
 		PromptID: id,
 		QueuedAt: time.Now().UTC(),
 	})
-	// Operator input releases a pause hold. Injecting while parked is
-	// how an operator answers the "what do you want me to do instead?"
-	// prompt, so it has to open the gate — otherwise the message sits
-	// in an inbox nothing will drain. This is also what keeps the
-	// long-standing API pattern (POST /interrupt then POST /inject)
-	// behaviorally identical now that interrupt holds by default.
+	// No Resume here, deliberately (#878). A pause gate is opened by
+	// something that asked to open it, never as a side effect of a
+	// message arriving.
 	//
-	// Auto-continue's own notes are excluded: a timer-driven "carry on
-	// with the task" must never un-park a loop a human deliberately
-	// parked. That's the pause-side sibling of the #624 stand-down
-	// (see HasPendingOperatorInput), and pkg/compose additionally has
-	// auto-continue skip the inject entirely while paused.
-	if mode.releaseHold && caller.Identity != AutoContinueOriginator {
-		a.Resume()
-	}
-	// Operator input should also pierce any active sleep — the
+	// This used to call a.Resume() for every caller except
+	// AutoContinueOriginator, so that injecting while parked would
+	// answer the "what do you want me to do instead?" prompt in one
+	// call. The exclusion list gives the shape of the bug away: it is
+	// a denylist of one, so what the condition actually said was "any
+	// wake-true inject", not "an operator asked to resume". A
+	// k8s-lookout alert, a monitoring hook, a peer daemon — anything
+	// with inject rights could open a gate a human had shut, and did,
+	// live, on the #799 smoke run.
+	//
+	// It cannot be repaired by identifying the caller, either.
+	// auth.Caller has no human/machine bit and could not honestly
+	// grow one: the demo watcher injects under
+	// --owner=platform-oncall@example.com via a proxy identity, which
+	// is the same string the human operator authenticates as. Proxying
+	// is not the tell either — a chat gateway proxies for a real human
+	// whose message SHOULD release the hold.
+	//
+	// So the authority is stated rather than inferred: POST /resume,
+	// or ResumeWith for the one-call version. The message queued above
+	// is not lost by any of this — a parked agent doesn't drain its
+	// inbox, so it is still there, and the operator's resume drains it
+	// alongside their own instruction.
+	//
+	// Injects should also pierce any active sleep — the
 	// scheduler selects on WakeRequested() alongside its sleep
 	// timer, so this lands as an immediate wake.
 	//

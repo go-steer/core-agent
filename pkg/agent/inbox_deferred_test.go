@@ -127,28 +127,48 @@ func TestQueueAsContext_MultipleDrainAsOneBlock(t *testing.T) {
 	}
 }
 
-// A deferred message must not un-park a loop an operator deliberately
-// parked. Injecting does (that is how an operator answers the "what
-// now?" prompt); filing context away is not an answer.
+// Neither delivery un-parks a loop an operator deliberately parked.
+//
+// Deferring never did; injecting stopped in #878, when it turned out
+// that "an operator is answering the what-now prompt" was being
+// inferred from "a message arrived" and the two are not the same thing
+// on a door machines also use.
+//
+// What still separates them against a PARKED agent is nothing at all,
+// which is worth pinning: the axis QueueAsContext owns is the wake
+// (#698), and a parked loop isn't sleeping. The difference shows up on
+// a sleeping agent, which TestQueueAsContext_DoesNotWake covers.
 func TestQueueAsContext_DoesNotReleaseAPauseHold(t *testing.T) {
 	t.Parallel()
-	a := newDeferredTestAgent(t)
 
-	if !a.Pause("operator parked the loop") {
-		t.Fatal("Pause did not park the loop")
-	}
-	if err := a.QueueAsContext(context.Background(), "fyi", auth.Caller{Identity: "watcher"}); err != nil {
-		t.Fatalf("QueueAsContext: %v", err)
-	}
-	if !a.Paused() {
-		t.Fatal("a deferred message resumed a paused loop")
-	}
-	// Contrast: an ordinary inject is an operator answering, so it does.
-	if err := a.InjectAs("do this instead", auth.Caller{Identity: "alice"}); err != nil {
-		t.Fatalf("InjectAs: %v", err)
-	}
-	if a.Paused() {
-		t.Error("an ordinary inject must still release the hold")
+	for _, tc := range []struct {
+		name string
+		file func(a *Agent) error
+	}{
+		{"deferred", func(a *Agent) error {
+			return a.QueueAsContext(context.Background(), "fyi", auth.Caller{Identity: "watcher"})
+		}},
+		{"ordinary inject", func(a *Agent) error {
+			return a.InjectAs("do this instead", auth.Caller{Identity: "alice"})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a := newDeferredTestAgent(t)
+
+			if !a.Pause("operator parked the loop") {
+				t.Fatal("Pause did not park the loop")
+			}
+			if err := tc.file(a); err != nil {
+				t.Fatalf("file message: %v", err)
+			}
+			if !a.Paused() {
+				t.Error("a queued message resumed a paused loop; only a resume may open the gate (#878)")
+			}
+			if got := len(a.DrainInbox()); got != 1 {
+				t.Errorf("drained %d messages, want 1 (holding the gate must not drop the message)", got)
+			}
+		})
 	}
 }
 

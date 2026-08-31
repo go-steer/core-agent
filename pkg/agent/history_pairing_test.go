@@ -54,6 +54,10 @@ func shape(contents []*genai.Content) string {
 				s += "+"
 			}
 			switch {
+			case p == nil:
+				// Renders rather than panics: emitting a nil part is a
+				// regression this helper should report, not crash on.
+				s += "<nil>"
 			case p.FunctionCall != nil:
 				s += "c=" + p.FunctionCall.ID
 			case p.FunctionResponse != nil:
@@ -185,6 +189,48 @@ func TestNormalizeToolPairs(t *testing.T) {
 			},
 			want: "c=x r=x+c=y r=y",
 		},
+		{
+			// F1: an annotation-only part carries no `data` oneof
+			// member, so Vertex 400s the whole request over it. Its
+			// text sibling has to survive the drop.
+			name: "thought-only part dropped, sibling text survives",
+			in: []*genai.Content{
+				{Role: genai.RoleModel, Parts: []*genai.Part{
+					{Text: "a"},
+					{Thought: true, ThoughtSignature: []byte("sig")},
+				}},
+			},
+			want: "t=a",
+		},
+		{
+			name: "content of nothing but an empty part is dropped",
+			in: []*genai.Content{
+				textContent(genai.RoleUser, "q"),
+				{Role: genai.RoleModel, Parts: []*genai.Part{{}}},
+				textContent(genai.RoleModel, "a"),
+			},
+			want: "t=q t=a",
+		},
+		{
+			name: "nil part dropped",
+			in: []*genai.Content{
+				{Role: genai.RoleModel, Parts: []*genai.Part{nil, {Text: "a"}}},
+			},
+			want: "t=a",
+		},
+		{
+			// The drop must not disturb pairing: the call still finds
+			// its response and stays adjacent to it.
+			name: "empty part between a call and its response",
+			in: []*genai.Content{
+				{Role: genai.RoleModel, Parts: []*genai.Part{
+					{FunctionCall: &genai.FunctionCall{ID: "1", Name: "tool_1"}},
+					{},
+				}},
+				respContent("1"),
+			},
+			want: "c=1 r=1",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -193,6 +239,59 @@ func TestNormalizeToolPairs(t *testing.T) {
 				t.Errorf("normalizeToolPairs = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// F1 regression, stated as the invariant rather than as a shape: no
+// part normalization emits may be one the API will reject.
+//
+// A single data-less part anywhere in a session's history is not a
+// dropped part — it is a 400 for the entire request:
+//
+//	contents[N].parts[M].data: required oneof field 'data' must have
+//	one initialized field
+//
+// which killed every /btw call and every compaction for the rest of
+// that session's life during the #799 GKE smoke run. Enumerating
+// shapes is not enough here; the property is what matters, because the
+// producer of the bad part was never identified and the next one may
+// look different.
+func TestNormalizeToolPairs_EmitsNoDataLessPart(t *testing.T) {
+	t.Parallel()
+	in := []*genai.Content{
+		textContent(genai.RoleUser, "q"),
+		{Role: genai.RoleModel, Parts: []*genai.Part{{}}},
+		{Role: genai.RoleModel, Parts: []*genai.Part{nil}},
+		{Role: genai.RoleModel, Parts: []*genai.Part{
+			{Thought: true, ThoughtSignature: []byte("sig")},
+			{Text: "thinking out loud"},
+		}},
+		{Role: genai.RoleModel, Parts: []*genai.Part{
+			{VideoMetadata: &genai.VideoMetadata{}},
+			{FunctionCall: &genai.FunctionCall{ID: "1", Name: "tool_1"}},
+		}},
+		respContent("1"),
+		{Role: genai.RoleModel, Parts: []*genai.Part{
+			{FunctionCall: &genai.FunctionCall{ID: "dead", Name: "tool_dead"}},
+		}},
+	}
+	got := normalizeToolPairs(in)
+	if len(got) == 0 {
+		t.Fatal("normalizeToolPairs dropped everything; the good parts must survive")
+	}
+	for i, c := range got {
+		if len(c.Parts) == 0 {
+			t.Errorf("content %d emitted with zero parts", i)
+		}
+		for j, p := range c.Parts {
+			if !partCarriesData(p) {
+				t.Errorf("content %d part %d carries no data oneof member: %#v", i, j, p)
+			}
+		}
+	}
+	// And the surviving content is still the real conversation.
+	if want := "t=q t=thinking out loud c=1 r=1"; shape(got) != want {
+		t.Errorf("shape = %q, want %q", shape(got), want)
 	}
 }
 

@@ -41,6 +41,10 @@ import (
 //     surrounding text parts survive);
 //   - functionResponse parts whose call appears nowhere are dropped
 //     at part level (surrounding text parts survive here too);
+//   - parts carrying no `data` oneof member at all — including nil
+//     parts and annotation-only parts such as a bare thought
+//     signature — are dropped, because Vertex rejects the entire
+//     request over one of them (see partCarriesData);
 //   - contents left with zero parts are dropped.
 //
 // Pairing is by call ID when present. Empty-ID calls and responses —
@@ -56,6 +60,50 @@ import (
 // Known limitation: duplicate non-empty call IDs (impossible in
 // committed ADK histories) pair as a set, so extra instances go
 // unanswered.
+// partCarriesData reports whether p has at least one field set from the
+// `data` oneof that Vertex requires on every part. A part failing this
+// test cannot be sent: the API rejects the whole request with
+//
+//	contents[N].parts[M].data: required oneof field 'data' must have
+//	one initialized field
+//
+// which is a 400 for the entire call, not a dropped part. One such part
+// anywhere in a session's history therefore breaks every caller that
+// rebuilds history from the event log — /btw, Compact, and Checkpoint —
+// for the life of that session, and since the event is persisted the
+// daemon cannot restart its way out of it.
+//
+// Observed on the #799 GKE smoke run: /btw returned 500 on every call
+// and the daemon logged `pending checkpoint failed: ... contents[8]
+// .parts[0].data`, repeatedly, from then on. The agentic loop itself
+// kept running normally — it does not build its contents through here —
+// which is what made this quiet enough to reach a live cluster.
+//
+// Nil counts as carrying nothing: a nil part marshals to a null array
+// element, which the API rejects on the same grounds.
+//
+// The fields deliberately NOT listed are the ones that annotate a part
+// rather than constitute it — Thought, ThoughtSignature, VideoMetadata,
+// MediaResolution, PartMetadata. A part holding only those is exactly
+// the shape that trips the API. Dropping it is safe for both callers
+// here: compaction and /btw are one-shot requests, and a thought
+// signature is only meaningful for continuing the model's own reasoning
+// inside a live turn chain, which neither of these is.
+func partCarriesData(p *genai.Part) bool {
+	if p == nil {
+		return false
+	}
+	return p.Text != "" ||
+		p.InlineData != nil ||
+		p.FileData != nil ||
+		p.FunctionCall != nil ||
+		p.FunctionResponse != nil ||
+		p.ExecutableCode != nil ||
+		p.CodeExecutionResult != nil ||
+		p.ToolCall != nil ||
+		p.ToolResponse != nil
+}
+
 func normalizeToolPairs(contents []*genai.Content) []*genai.Content {
 	// Pass 1: assign each tool part a pairing key. Non-empty IDs key
 	// as "id:<ID>". Empty IDs key as "nk:<name>#<instance>", counting
@@ -104,8 +152,8 @@ func normalizeToolPairs(contents []*genai.Content) []*genai.Content {
 		c := contents[i]
 		drop := func(j int) bool {
 			p := c.Parts[j]
-			if p == nil {
-				return false
+			if !partCarriesData(p) {
+				return true
 			}
 			if p.FunctionCall != nil && !answered(partKeys[i][j]) {
 				return true

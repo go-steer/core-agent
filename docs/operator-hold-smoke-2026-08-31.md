@@ -253,7 +253,11 @@ respect it.
 ```sh
 post "$S/inject" -d '{"message":"queued while parked","wake":false}' | jq
 post "$S/wake"   -d '{}' | jq          # must start no turn
-post "$S/inject" -d '{"message":"this one wakes"}' | jq   # default wake:true → releases
+# Default wake:true. `woke:true` in the response is the WAKE firing, not
+# the gate opening: the signal is buffered-1 and latches. The session
+# must still read `paused`, with the SAME paused_since.
+post "$S/inject" -d '{"message":"this one wakes"}' | jq
+post "$S/resume" -d '{"mode":"steer","steer":"list verbatim every message that was waiting in your inbox"}' | jq
 ```
 
 Notes:
@@ -399,7 +403,8 @@ Notes:
 GKE run, 2026-08-31, demo-3 on `simian-test` / ns `kube-platform-native`:
 daemon `ghcr.io/go-steer/core-agent:main-85abf50`, watcher
 `lookout:v0.22.0`, content `v12`, model `gemini-3.7-flash`. Driven over
-the `./attach.sh` port-forward on `localhost:7778`.
+the `./attach.sh` port-forward on `localhost:7778`. §6 was later re-run
+on `main-b265a03` after #879 landed — see the re-run at the end.
 
 | Section | Verdict | Follow-up |
 |---|---|---|
@@ -408,7 +413,7 @@ the `./attach.sh` port-forward on `localhost:7778`.
 | 3 Resume dispositions | partial | continue + abandon pass, both 400s pass with named causes. Steer needs a real turn to judge |
 | 4 `/pause` | partial | `transitioned:true`, operator string echoed, `interrupted` stays unset. Mid-turn "finishes normally" not yet driven |
 | 5 Idempotence | pass | second pause `transitioned:false`; resume-when-unpaused `resumed:false`; first-cause-wins holds — a pause on top of an interrupt-hold does not overwrite the reason |
-| 6 What may un-park | **fail — F3** | `inject{wake:false}` and `/wake` both leave the gate shut; `/btw` confirmed inbox depth 1 while parked. But a default waking `/inject` un-parked the session, which the checklist expected and #878 reclassified as the bug. Release-consumes-the-queued-message unverified (blocked by F1) |
+| 6 What may un-park | **fail — F3**, then **pass** on the re-run | See F3 and the re-run below |
 | 7 Subagents | not run | needs a live delegation |
 | 8 Remote TUI | not run | operator-driven |
 | 9 Two clients | not run | |
@@ -554,6 +559,58 @@ injector behind the *first* sighting was never identified — the daemon
 logs no pause/resume transitions — but the mechanism is proven and the
 watcher is sufficient to explain it.
 
+### §6 re-run — pass, on `main-b265a03`
+
+Same cluster and namespace, daemon re-pinned to
+`ghcr.io/go-steer/core-agent:main-b265a03` (demo-3 commit `86204fd`;
+watcher and content unchanged at `v0.22.0` / `v12`). Capability frame
+now reports `protocol_version: 1.11.0`.
+
+Parked an idle session, then walked the whole ladder without touching
+`/resume`:
+
+```
+interrupt:                {"interrupted":false,"paused":true}
+inject {wake:false}:      {"woke":false}
+  status → paused, paused_since 2026-08-31T20:35:52.330254549Z
+wake:                     {"woken":"default"}
+  status → paused, paused_since UNCHANGED (no turn on the stream)
+inject (default, wake:true): {"woke":true}
+  status → paused, paused_since UNCHANGED
+```
+
+`woke:true` with the gate still shut is the whole shape of the fix: the
+wake fired and **latched** (buffered-1), and the gate is a separate
+thing that only `/resume` opens. Pre-fix, that third call zeroed
+`paused_since` and the session went `idle`.
+
+Then the half F1 had blocked — that the release consumes what was
+queued. `POST /resume {"mode":"steer","steer":"list verbatim every
+message that was waiting in your inbox…"}` produced one `[Inbox]`
+block, in arrival order, with the operator's steer last:
+
+```
+[Inbox]
+- from platform-oncall@example.com: UAT-A queued with wake false
+- from platform-oncall@example.com: UAT-B default wake-true inject, standing in for a lookout finding
+- from platform-oncall@example.com: [The operator interrupted you] …
+```
+
+Nothing dropped, nothing consumed by a turn that never ran, and the
+wake-false and wake-true messages are indistinguishable once parked —
+which is exactly what the 1.11.0 reference now promises. The model
+answered the steer directly rather than resuming the old work (#857's
+"a new question → answer it" branch).
+
+`/btw` also answers again on this build (`POST /slash/btw` returned
+live run-state), though this session's transcript is short and does not
+reproduce F1's long-history conditions.
+
+Two §6 boxes have no result from either run: auto-continue stand-down
+over two intervals (the effective per-session cadence is the 10m
+breaker window, and this session was interrupted while *idle*, so
+there was nothing for the driver to continue), and
+daemon-restart-while-parked. Neither is affected by #878.
+
 #799 closes when §2, §3, §8 and §10 pass on the GKE run. The rest is
-evidence for the follow-ups. §10 currently does not pass, and §6 needs
-re-running against a daemon carrying #878.
+evidence for the follow-ups. §10's long-session case is still unproven.

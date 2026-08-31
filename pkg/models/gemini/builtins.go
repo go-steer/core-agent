@@ -94,6 +94,41 @@ func (b BuiltinTools) asTools() []*genai.Tool {
 	return out
 }
 
+// Names reports the enabled built-ins under the provider-neutral names
+// the config block uses (see config.BuiltinToolsConfig), so the startup
+// summary reads the same whichever provider is resolved and an operator
+// can match the line against the keys they typed. Order matches asTools
+// so the two never disagree about what is on.
+func (b BuiltinTools) Names() []string {
+	var out []string
+	if b.GoogleSearch {
+		out = append(out, "web_search")
+	}
+	if b.URLContext {
+		out = append(out, "url_context")
+	}
+	if b.CodeExecution {
+		out = append(out, "code_execution")
+	}
+	return out
+}
+
+// BuiltinToolNames satisfies models.BuiltinToolsReporter — the effective
+// server-side built-in set this Provider will inject, after config and
+// options. Reported from what the Provider actually carries rather than
+// re-derived from config, so the startup line cannot drift from the
+// requests.
+//
+// Provider-level, so it is an upper bound rather than a per-request
+// promise: two paths drop these tools from an individual request
+// afterwards — a pre-3.0 model carrying function declarations (see
+// builtinsCompatible, which logs its own line when it skips) and an
+// explicitly suppressed one-shot (models.BuiltinsSuppressed). Both
+// subtract, never add, so a name absent here is a tool that cannot be
+// reached at all, which is the direction that matters for the operator
+// reading this to confirm a `builtin_tools` disable took.
+func (p *Provider) BuiltinToolNames() []string { return p.builtins.Names() }
+
 // Option configures a Gemini Provider at construction time.
 type Option func(*Provider)
 

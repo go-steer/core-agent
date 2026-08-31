@@ -207,7 +207,34 @@ func newGeminiAPI(cfg *config.Config) (models.Provider, error) {
 		// one Gemini's own docs and tutorials use. Accept either.
 		key = firstNonEmpty(os.Getenv("GOOGLE_API_KEY"), os.Getenv("GEMINI_API_KEY"))
 	}
-	return NewAPIKey(key)
+	return NewAPIKey(key, builtinToolsFromConfig(cfg)...)
+}
+
+// builtinToolsFromConfig maps the provider-neutral model.builtin_tools
+// block onto this provider's toggles. Each field is tri-state: absent
+// yields no option at all, so DefaultBuiltinTools survives untouched
+// and only an explicit true/false moves a tool.
+//
+// Neutral name → Gemini tool: web_search is google_search here (and
+// Anthropic's web_search there), url_context and code_execution keep
+// their names. See config.BuiltinToolsConfig for why the config surface
+// doesn't spell the native names.
+func builtinToolsFromConfig(cfg *config.Config) []Option {
+	if cfg == nil || cfg.Model.BuiltinTools == nil {
+		return nil
+	}
+	bt := cfg.Model.BuiltinTools
+	var opts []Option
+	if bt.WebSearch != nil {
+		opts = append(opts, WithGoogleSearch(*bt.WebSearch))
+	}
+	if bt.URLContext != nil {
+		opts = append(opts, WithURLContext(*bt.URLContext))
+	}
+	if bt.CodeExecution != nil {
+		opts = append(opts, WithCodeExecution(*bt.CodeExecution))
+	}
+	return opts
 }
 
 func firstNonEmpty(values ...string) string {
@@ -231,5 +258,5 @@ func newVertexAI(cfg *config.Config) (models.Provider, error) {
 	if location == "" {
 		location = os.Getenv("GOOGLE_CLOUD_LOCATION")
 	}
-	return NewVertex(project, location)
+	return NewVertex(project, location, builtinToolsFromConfig(cfg)...)
 }

@@ -1117,6 +1117,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		Cfg:          cfg,
 		AgentsDir:    agentsDir,
 		ProviderName: provider.Name(),
+		BuiltinTools: compose.BuiltinToolsSummary(provider),
 		MCPServers:   mcpServers,
 		LoadedSkills: loadedSkills,
 	}) {

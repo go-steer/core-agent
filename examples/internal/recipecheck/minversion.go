@@ -202,6 +202,21 @@ var GatedFeatures = []GatedFeature{
 			"subagent uncapped while the config reads as though it were bounded",
 	},
 	{
+		Path: "model.builtin_tools",
+		Min:  "2.9.0-dev.4",
+		Why: "the provider's server-side built-ins — web search, URL fetching, code execution (#876). " +
+			"An older daemon drops the block and runs whatever the provider defaults to, which for " +
+			"Gemini means search and URL fetching stay ON; a recipe that declared `web_search: false` " +
+			"reads as though the agent cannot reach the public internet when it still can",
+	},
+	{
+		Path: "subagents[].model.builtin_tools",
+		Min:  "2.9.0-dev.4",
+		Why: "the same block on a subagent's own model (#876). Same silent-reversal shape, and the " +
+			"one that matters most: a scoped read-only subagent is exactly where an unnoticed " +
+			"search tool turns a bounded investigation into an open-ended one",
+	},
+	{
 		Path: "content_roots",
 		Min:  "2.9.0-dev.1",
 		Why: "extra instruction/skill trees loaded from outside the agents dir (#610). " +

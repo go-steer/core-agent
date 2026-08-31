@@ -4,6 +4,8 @@ title: Built-in tools
 
 The model-facing tool catalog `core-agent` registers by default, plus the optional lifecycle tools the runtime wires when the corresponding feature is enabled (checkpoints, ask, autonomous scheduling). For declaring third-party tools, see [MCP servers](/concepts/mcp/). For writing your own tools from Go, see [Library API](/embed/api/).
 
+Not covered here: the **provider's** server-side built-ins (web search, URL fetching, sandboxed code execution). Those run inside the provider's infrastructure and never appear as a tool call, so nothing on this page reaches them — not `tools.disable`, not a subagent's `tools` allowlist, and not `--no-builtin-tools`, which despite the name governs only the catalog below. They have their own lever: see [Providers → Configuring built-ins](/concepts/providers/#configuring-built-ins).
+
 ## The built-in catalog
 
 Tools are grouped by domain — files, search, shell, data + network, planning, and interactive prompting. Each is configurable via the `BuiltinTools` struct in `pkg/tools` (library callers) or the `--disable-tools` flag / `tools.disable` config field (CLI users). Every call routes through the [permission gate](/concepts/permissions/) under the `tool` namespace — denying a tool by pattern keeps it from running even if it's registered. Three tools are conditionally registered: `fetch_url` only when `url_scope.allow` has at least one entry, `record_plan` only when [`permissions.plan_mode`](/reference/configuration/#plan-mode-v29--plan_mode) is `advisory` or `required`, and `sciontool_status` only when the `sciontool` binary is on `PATH`.

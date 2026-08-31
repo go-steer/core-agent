@@ -19,6 +19,48 @@ If none match, you get a clear error listing the env vars to set. **Anthropic-vi
 
 ---
 
+## Configuring built-ins
+
+Every provider here ships some **server-side built-in tools** — web search, URL fetching, sandboxed code execution. The model invokes them inside the provider's own infrastructure and the results come back folded into the response, so `core-agent` never sees a tool call for them. Nothing in the function-tool layer reaches them: not `tools.disable`, not a subagent's `tools` allowlist, and not `--no-builtin-tools`, which governs `core-agent`'s **own** suite (`read_file`, `bash`, …) and is an unrelated axis despite the shared word.
+
+`model.builtin_tools` is the lever:
+
+```json
+{
+  "model": {
+    "provider": "vertex",
+    "name": "gemini-3.7-flash",
+    "builtin_tools": {
+      "web_search": false,
+      "url_context": false,
+      "code_execution": false
+    }
+  }
+}
+```
+
+The names are deliberately provider-neutral, because **the defaults are not symmetric**: Gemini ships web search and URL context on, Anthropic ships web search off. A deployment that builds one image for both flavors changes whether its agent can reach the public internet just by switching provider. Stating the posture in `builtin_tools` makes it hold across that switch.
+
+| Key | Gemini | Anthropic |
+|---|---|---|
+| `web_search` | `google_search` (default on) | `web_search` (default off) |
+| `url_context` | `url_context` (default on) | — |
+| `code_execution` | `code_execution` (default off) | — |
+
+Each field is a tri-state: omit it to keep the provider's default, and only an explicit `true` / `false` moves one. A key with no equivalent on the resolved provider is ignored — which only ever fails safe, since a tool the provider cannot send is one it cannot leave on.
+
+**Check the startup summary.** The daemon's `model:` line names the effective set:
+
+```
+core-agent: model: gemini-3.7-flash provider=vertex project=p location=global builtin-tools=url_context
+```
+
+`builtin-tools=none` means the provider supports them and they are all off; the segment is absent entirely for backends with no server-side built-ins (`echo`, `scripted`). Worth reading rather than assuming — config decoding does not reject unknown fields, so a misspelled key is silently discarded and this line is the only place the discard shows up.
+
+A [subagent](/agent-design/subagents-and-wrappers/) that declares its own `model` block inherits each `builtin_tools` field it does not set, per field. An operator who turned web search off for the project meant it for the whole process; declaring a model must not quietly hand it back. Subagents whose effective set differs from the parent's get their own boot line.
+
+---
+
 ## Gemini API
 
 The simplest backend — talks directly to `generativelanguage.googleapis.com` with an API key.
@@ -62,7 +104,21 @@ The Gemini Provider injects a small set of Gemini's server-side built-in tools i
 | **URLContext** | on | Fetch + ground on URLs the model decides to visit. No setup. |
 | **CodeExecution** | off | Sandboxed Python on Google's servers. Useful for math, data analysis, file processing. Off by default — opt in once you've decided server-side code execution fits your security and cost posture. |
 
-To override:
+To override from config, use the provider-neutral [`model.builtin_tools`](#configuring-built-ins) block:
+
+```json
+{
+  "model": {
+    "provider": "vertex",
+    "name": "gemini-3.7-flash",
+    "builtin_tools": { "web_search": false }
+  }
+}
+```
+
+`web_search` is Gemini's `google_search`; `url_context` and `code_execution` keep their names. Each field is tri-state — omit it to keep the default above, and only an explicit `true` / `false` moves one.
+
+To override from the library:
 
 ```go
 import "github.com/go-steer/core-agent/v2/pkg/models/gemini"
@@ -352,7 +408,21 @@ The Anthropic provider can inject Claude's server-side built-in tools alongside 
 |---|---|---|
 | **WebSearch** | off | Server-side web search. Per-search billing on top of token cost. Off by default — opt in once you've decided the cost and external-call posture are acceptable. |
 
-To enable:
+To enable from config, use the provider-neutral [`model.builtin_tools`](#configuring-built-ins) block:
+
+```json
+{
+  "model": {
+    "provider": "anthropic",
+    "name": "claude-opus-5",
+    "builtin_tools": { "web_search": true }
+  }
+}
+```
+
+`url_context` and `code_execution` have no Anthropic equivalent surfaced today and are ignored here.
+
+To enable from the library:
 
 ```go
 import "github.com/go-steer/core-agent/v2/pkg/models/anthropic"

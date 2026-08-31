@@ -97,7 +97,8 @@ func newVertexProvider(cfg *config.Config) (models.Provider, error) {
 	// Prompt caching is available on Claude-via-Vertex exactly as it is
 	// first-party (the breakpoints ride the ordinary request; there is
 	// no cache resource to create), so the same config gate applies.
-	return NewVertex(context.Background(), project, region, WithPromptCache(cacheOptionsFromConfig(cfg)))
+	return NewVertex(context.Background(), project, region,
+		append(builtinToolsFromConfig(cfg), WithPromptCache(cacheOptionsFromConfig(cfg)))...)
 }
 
 func firstNonEmpty(values ...string) string {

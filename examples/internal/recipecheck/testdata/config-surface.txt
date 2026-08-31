@@ -80,6 +80,9 @@ model.anthropic.vertex.context_cache.ttl
 model.anthropic.vertex.location
 model.anthropic.vertex.project
 model.api_key
+model.builtin_tools.code_execution
+model.builtin_tools.url_context
+model.builtin_tools.web_search
 model.name
 model.pricing{}.cache_creation_1h_input_per_mtok
 model.pricing{}.cache_creation_input_per_mtok
@@ -129,6 +132,9 @@ subagents[].model.anthropic.vertex.context_cache.ttl
 subagents[].model.anthropic.vertex.location
 subagents[].model.anthropic.vertex.project
 subagents[].model.api_key
+subagents[].model.builtin_tools.code_execution
+subagents[].model.builtin_tools.url_context
+subagents[].model.builtin_tools.web_search
 subagents[].model.name
 subagents[].model.pricing{}.cache_creation_1h_input_per_mtok
 subagents[].model.pricing{}.cache_creation_input_per_mtok

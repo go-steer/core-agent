@@ -329,3 +329,137 @@ func TestReproduceAgent_NoSubagentFactory(t *testing.T) {
 		t.Errorf("Specialists = true with no manager wired")
 	}
 }
+
+// declaredSubagent builds the shared inner *agent.Agent a declarative
+// subagent is, as cmd/core-agent's buildDeclaredSubagents produces it:
+// a name, a model, a persona, and nothing session-shaped. Every
+// per-session value the delegation needs — gate, session triple,
+// eventlog service, usage tracker — is supplied by the PARENT at the
+// point WithSubagents materializes the tool, which is why one inner
+// agent can back every tenant without a second set of MCP servers.
+func declaredSubagent(t *testing.T, name string) *agent.Agent {
+	t.Helper()
+	sa, err := agent.New(stubLLM{}, agent.WithName(name), agent.WithInstruction("triage"))
+	if err != nil {
+		t.Fatalf("agent.New(%q): %v", name, err)
+	}
+	return sa
+}
+
+// subagentTool returns the named tool off an agent's resolved surface.
+func subagentTool(t *testing.T, a *agent.Agent, name string) tool.Tool {
+	t.Helper()
+	for _, tl := range a.Tools() {
+		if tl != nil && tl.Name() == name {
+			return tl
+		}
+	}
+	t.Fatalf("agent has no %q tool; surface = %v", name, toolNames(a.Tools()))
+	return nil
+}
+
+// TestReproduceAgent_WiresTheSynchronousSubagentTool is the regression
+// gate for #741 part 1.
+//
+// A declarative subagent is built into two doors: an asynchronous one
+// (spawn_agent {agent: "cluster"}, via the manager's templates) and a
+// synchronous one (a tool literally named "cluster", via
+// agent.WithSubagents). ReproduceAgent wired only the first, so every
+// POST /sessions session could reach a declarative subagent by
+// reference only while the daemon's own `default` session could call it
+// directly — GET /sessions/default/tools listed `cluster`, GET
+// /sessions/<sid>/tools did not.
+//
+// The fix is not the per-session agent rebuild the issue feared. New()
+// resolves subagent tools AFTER every option has settled, so handing it
+// the shared inner agent yields a tool already bound to this session's
+// gate, triple, service and tracker.
+func TestReproduceAgent_WiresTheSynchronousSubagentTool(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	deps := SessionFactoryDeps{
+		DaemonCtx:    ctx,
+		Model:        stubLLM{},
+		Template:     permissions.New(permissions.Options{}),
+		BuiltinTools: []tool.Tool{stubTool(t, "read_file")},
+		Subagents:    []*agent.Agent{declaredSubagent(t, "cluster")},
+	}
+
+	ad, cancelSess, err := ReproduceAgent(deps, auth.Anonymous, "sid-sync", "created")
+	if err != nil {
+		t.Fatalf("ReproduceAgent: %v", err)
+	}
+	t.Cleanup(cancelSess)
+
+	infos := ad.AttachTools()
+	names := attachToolNames(infos)
+	if !slices.Contains(names, "cluster") {
+		t.Fatalf("session tools = %v, want the synchronous \"cluster\" subagent tool — "+
+			"without it this tenant can only reach the subagent by reference, while the "+
+			"daemon's own session can call it directly", names)
+	}
+	// GET /tools classifies it as a subagent rather than an anonymous
+	// "other", which is what lets an operator tell `cluster` apart from a
+	// built-in of the same name.
+	for _, i := range infos {
+		if i.Name == "cluster" && i.Source != attach.ToolSourceSubagent {
+			t.Errorf("cluster tool source = %q, want %q", i.Source, attach.ToolSourceSubagent)
+		}
+	}
+	// SubagentNames is not decoration: Manager.Catalog's syncSubagentNames
+	// reads it to decide whether GET /sessions/<sid>/subagents may claim
+	// "sync" for a template (#743). Wiring the tool without it would ship
+	// the part-2 disagreement inverted — a callable tool the operator
+	// catalog reports as async-only.
+	if got := ad.Agent().SubagentNames(); !slices.Contains(got, "cluster") {
+		t.Errorf("SubagentNames() = %v, want [cluster] — /subagents would under-report the "+
+			"sync door that /tools now carries", got)
+	}
+}
+
+// TestReproduceAgent_SubagentToolIsBoundPerSession pins the property
+// that makes sharing one inner agent across tenants safe. The inner
+// *agent.Agent is shared deliberately — rebuilding it per session would
+// multiply MCP server processes by session count, which is why #741
+// read as an architectural change. What must NOT be shared is the tool
+// wrapping it: it captures the parent's gate, session triple, service
+// and tracker at construction, so two sessions handed one tool instance
+// would file both tenants' delegated events under one session row and
+// bill both to one ledger.
+func TestReproduceAgent_SubagentToolIsBoundPerSession(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	shared := declaredSubagent(t, "cluster")
+	deps := SessionFactoryDeps{
+		DaemonCtx: ctx,
+		Model:     stubLLM{},
+		Template:  permissions.New(permissions.Options{}),
+		Subagents: []*agent.Agent{shared},
+	}
+
+	adA, cancelA, err := ReproduceAgent(deps, auth.Anonymous, "sid-a", "created")
+	if err != nil {
+		t.Fatalf("ReproduceAgent(sid-a): %v", err)
+	}
+	t.Cleanup(cancelA)
+	adB, cancelB, err := ReproduceAgent(deps, auth.Anonymous, "sid-b", "created")
+	if err != nil {
+		t.Fatalf("ReproduceAgent(sid-b): %v", err)
+	}
+	t.Cleanup(cancelB)
+
+	toolA, toolB := subagentTool(t, adA.Agent(), "cluster"), subagentTool(t, adB.Agent(), "cluster")
+	if toolA == toolB {
+		t.Error("both sessions share one subagent tool instance: it carries the parent's gate, " +
+			"session triple and tracker, so one tenant's delegation would run under the other's")
+	}
+	// Both sessions must still reach the SAME inner agent — the whole
+	// point of doing this at the tool layer instead of rebuilding.
+	if len(deps.Subagents) != 1 || deps.Subagents[0] != shared {
+		t.Error("ReproduceAgent mutated deps.Subagents; the inner agent must be shared, not rebuilt")
+	}
+}

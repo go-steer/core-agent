@@ -2173,17 +2173,26 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 				}
 			}()
 			factoryDeps := compose.SessionFactoryDeps{
-				DaemonCtx:             wakeCtx,
-				WakeLoops:             wakeLoops,
-				Model:                 m,
-				TitleModel:            titleModel,
-				Template:              template,
-				PricingRate:           pricingRate,
-				AgentsDir:             agentsDir,
-				Cfg:                   cfg,
-				MCPServers:            mcpServers,
-				BuiltinTools:          builtinTools,
-				Toolsets:              allToolsets,
+				DaemonCtx:    wakeCtx,
+				WakeLoops:    wakeLoops,
+				Model:        m,
+				TitleModel:   titleModel,
+				Template:     template,
+				PricingRate:  pricingRate,
+				AgentsDir:    agentsDir,
+				Cfg:          cfg,
+				MCPServers:   mcpServers,
+				BuiltinTools: builtinTools,
+				Toolsets:     allToolsets,
+				// The same declarative subagents the primary agent got via
+				// agent.WithSubagents above, so a POST /sessions tenant can
+				// call one directly instead of only reaching it by reference
+				// through spawn_agent (#741). Shared, not rebuilt: the
+				// per-session binding happens when agent.New materializes
+				// each into a tool. bgRecipe.templates (set above) is the
+				// asynchronous twin of this line — one roster, two doors,
+				// wired the same way for every session.
+				Subagents:             declaredSubagents,
 				EventlogHandle:        eventlogHandle,
 				ProjectRoot:           projectRoot,
 				UserRoot:              coreHome,

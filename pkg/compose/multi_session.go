@@ -124,10 +124,36 @@ type SessionFactoryDeps struct {
 	// derived from the head of their first prompt, with no LLM call.
 	// Multi-session daemons are where titles earn their keep — this is
 	// the deployment whose picker has more than one row in it.
-	TitleModel     adkmodel.LLM
-	Template       *permissions.Gate
-	BuiltinTools   []adktool.Tool
-	Toolsets       []adktool.Toolset
+	TitleModel   adkmodel.LLM
+	Template     *permissions.Gate
+	BuiltinTools []adktool.Tool
+	Toolsets     []adktool.Toolset
+	// Subagents are the declarative subagents (config `subagents[]`,
+	// built once at startup) exposed to every session as SYNCHRONOUS
+	// tools the model can call by name — the door
+	// agent.WithSubagents opens. Optional; nil leaves sessions with
+	// the asynchronous door alone.
+	//
+	// They are shared, not rebuilt per session, and both halves of
+	// that matter (#741):
+	//
+	//   - Shared, because a rooted subagent stands up its OWN MCP
+	//     servers. Rebuilding one per session would multiply server
+	//     processes by session count, which is why this looked like an
+	//     architectural change rather than a wiring gap.
+	//   - Safe to share, because nothing session-shaped is baked into
+	//     the inner agent. agent.New resolves each subagent into a tool
+	//     AFTER every option below has settled, so the wrapper captures
+	//     THIS session's gate, session triple, eventlog service and
+	//     usage tracker. Two sessions get two wrappers over one inner
+	//     agent.
+	//   - The inner agent's own tools were resolved at startup against
+	//     the daemon template gate, and stay correct for the same
+	//     reason the asynchronous door does: NewSubagentTool drives the
+	//     inner ADK runner directly rather than through *Agent.Run, so
+	//     the session-gate stamp agent.Run put on the parent's turn
+	//     context is still the one resolveSessionGate reads (#825).
+	Subagents      []*agent.Agent
 	EventlogHandle *eventlog.Handle
 	PricingRate    usage.Pricing
 	ProjectRoot    string
@@ -441,6 +467,15 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 		agent.WithUserInstruction(instr.Instruction), // layer 4 since #459 — memory AFTER the core, the intended precedence flip
 		agent.WithGate(sessionGate),
 		agent.WithSession(caller.Identity, sid),
+	}
+	// The synchronous half of the declarative-subagent surface (#741).
+	// Placed in the option list rather than assembled by hand so the
+	// tools pick up the gate, triple, service and tracker set above and
+	// below — New() materializes them last, once every option has been
+	// applied — and so Agent.SubagentNames reports them, which is what
+	// lets GET /sessions/<sid>/subagents claim "sync" honestly (#743).
+	if len(deps.Subagents) > 0 {
+		opts = append(opts, agent.WithSubagents(deps.Subagents))
 	}
 	opts = append(opts, bgOpts...)
 	// Session titling (#808). Config wins over a wired model, so an

@@ -166,6 +166,7 @@ When multi-session is enabled, each session gets a derived sub-gate with its own
 - **Permission mode** — alice toggling to `yolo` via TUI chip doesn't change bob's session's mode.
 - **Prompter** — each session's UI hooks (TUI broker, HTTP prompt stream) are independent.
 - **Background subagents** — each session gets its own subagent manager, so a subagent spawned from alice's session runs behind alice's sub-gate, branches off alice's session in the eventlog, and reports back into alice's turn. `GET /sessions/{sid}/subagents` returns that session's roster, and evicting the session tears its subagents down. (Before v2.9 a daemon-created session had no manager at all: `spawn_agent` was present but bound to the daemon's, so the roster read empty and spawns ran under the daemon-wide gate.)
+- **Declarative subagents, both doors** — a subagent declared in `subagents[]` is callable two ways: asynchronously as `spawn_agent {agent: "cluster"}`, and synchronously as a tool literally named `cluster`. A daemon-created session gets both, the same as the daemon's own session. The subagent itself is built once at startup and shared — a rooted subagent's MCP servers are not stood up again per tenant — but the tool wrapping it is per-session, so a delegation runs behind the delegating tenant's sub-gate and lands in that tenant's branch of the eventlog. (Before v2.9 tenant sessions got the asynchronous door only.)
 
 **What's still daemon-wide** (by design — operator model is "one config, many users"):
 - `permissions.allow` / `permissions.deny` patterns from config

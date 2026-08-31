@@ -534,17 +534,42 @@ and is written so that cutting any link reproduces all four
 symptoms above rather than surfacing as unrelated permission bugs.
 
 A second follow-up covers the operator's view of the same split.
-`compose.ReproduceAgent` wires a session with the background
+`compose.ReproduceAgent` wired a session with the background
 manager but not `agent.WithSubagents`, so a daemon-created session
-can reach a declarative subagent only by reference — while
+could reach a declarative subagent only by reference — while
 `Manager.Catalog` reported a hardcoded `["sync","async"]` for
 every template, on every manager. `GET /subagents` therefore
 advertised a synchronous tool that the session's `/tools` listing
 did not carry and its model was never offered. `Catalog` now
 derives the modes from the attached parent's `SubagentNames()`,
 so "sync" is a claim about THIS session's tool surface rather
-than about the template. Making `ReproduceAgent` wire the sync
-subagents is the separate half, still open.
+than about the template.
+
+The other half is now closed too. `SessionFactoryDeps.Subagents`
+carries the declarative roster into `ReproduceAgent`, which adds
+`agent.WithSubagents` to the per-session option list, so a
+daemon-created session gets the same two doors the daemon's own
+session has and `Catalog` reports `["sync","async"]` for both.
+
+It is a wiring change and not the architectural one it looked
+like. The fear was that a session-scoped sync tool needs a
+session-scoped subagent — and a rooted subagent stands up its own
+MCP servers, so rebuilding one per session would multiply server
+processes by session count. It does not: the inner `*Agent` is
+shared, and `New` resolves each into a tool *after* every option
+has settled, so the wrapper — not the agent — captures this
+session's gate, session triple, `session.Service` and usage
+tracker. Two tenants get two wrappers over one inner agent.
+
+Sharing is safe for the gate for the same reason the asynchronous
+door's shared template tools are: `NewSubagentTool` drives the
+inner ADK runner directly rather than through `*Agent.Run`, so
+the inner agent's own (daemon-wide) gate never overwrites the
+stamp the delegating tenant's turn put on the context.
+`pkg/agent/subagent_shared_inner_test.go` runs two tenants
+through one inner agent — sequentially and concurrently under
+`-race` — and asserts each delegation carried its own tenant's
+sub-gate and derived session row.
 
 ### Eventlog + session.Service
 

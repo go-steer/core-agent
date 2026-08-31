@@ -375,7 +375,7 @@ Putting these in the library means there's one correct implementation and one pl
 
 ### What's deferred (and why)
 
-- **Pause / resume mid-run.** The right shape isn't obvious without a real consumer ask. Pause-between-turns is doable today (consumer cancels context, then re-runs with stored history); pause-mid-turn would need ADK to expose recoverable interruption points it doesn't today.
+- **Pause / resume mid-turn.** The between-turns half is no longer deferred — it shipped in v2.9 as a gate on `*agent.Agent` (`Pause` / `Resume` / `ResumeWith` / `InterruptAndHold` / `PauseState`), driven by the operator hold in [`operator-interrupt-design.md`](operator-interrupt-design.md). The consumer ask this was waiting for arrived: an operator watching an autonomous loop go wrong had no state in which the agent was deliberately parked, so a cancel was always followed by the loop walking straight into the next turn. Mid-*turn* suspend is still deferred and still for the original reason — there is no safe suspend point inside a model call, and ADK exposes no recoverable interruption points — so `InterruptAndHold` cancels the turn rather than freezing it, and a plain `Pause` lets the in-flight turn finish rather than reporting "paused" while tokens keep burning.
 - **Crash-resume.** Tracked under the eventlog plan (`docs/eventlog-plan.md`) Phase 3. Phase 1 (plug-in `session.Service`) and Phase 2 (`eventlog/` package + durable backend) have shipped; Phase 3 wires `RunAutonomous` to checkpoint events and adds `ResumeAutonomous`.
 - **`--autonomous` CLI flag.** Bundled `cmd/core-agent` is REPL / one-shot. Long-running autonomous use is a library / script concern. Add the flag if a consumer asks; until then it's just a wrapper with no value-add.
 

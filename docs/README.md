@@ -87,6 +87,7 @@ research + friction logs, or handover notes.
 - [`attach-tui-design.md`](attach-tui-design.md) — bubble-tea TUI consumer for attach-mode (`cmd/core-agent-tui/`)
 - [`core-tui-adapter-design.md`](core-tui-adapter-design.md) — adapter onto `go-steer/core-tui` for the remote TUI client
 - [`operator-input-design.md`](operator-input-design.md) — operator input during turns: queue panel, auto-continue, `/btw`, `/subagent`
+- [`operator-interrupt-design.md`](operator-interrupt-design.md) — the operator hold: interrupt/pause/resume as a state machine rather than a one-way cancel, plus the `/btw` repair (#799)
 - [`remote-tui-observer-mode.md`](remote-tui-observer-mode.md) — read-only observer mode for the remote TUI (PR E, v2.2 target)
 - [`embedded-tui-design-v2.md`](embedded-tui-design-v2.md) — **current** embedded-TUI design: `core-agent-tui --local` spawn-and-attach (single TUI codebase serves local + remote); the code cites this doc
 - [`embedded-tui-design.md`](embedded-tui-design.md) — *superseded* by `embedded-tui-design-v2.md`; kept for history
@@ -123,6 +124,7 @@ research + friction logs, or handover notes.
 - [`core-tui-smoke-2026-05-26.md`](core-tui-smoke-2026-05-26.md) — core-tui adapter smoke sweep
 - [`remote-tui-smoketest.md`](remote-tui-smoketest.md), [`remote-tui-smoketest-v2.2.md`](remote-tui-smoketest-v2.2.md) — remote-TUI smoke tests
 - [`v2.3-smoketest.md`](v2.3-smoketest.md) — v2.3 smoke test
+- [`operator-hold-smoke-2026-08-31.md`](operator-hold-smoke-2026-08-31.md) — operator hold + `/btw` sweep across HTTP, both TUIs, and tenant sessions (#799 definition of done)
 
 ## Release
 

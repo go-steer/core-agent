@@ -483,6 +483,19 @@ Two SSE endpoints:
 
 The `since` cursor is monotonic per-session — the TUI's `/reconnect` slash sends `?since=<lastSeq>` to resume without missing events across reconnects.
 
+### Frame ordering
+
+A turn's terminal frame — `turn-complete` or `turn-error` — is the last thing that turn puts on the stream. Everything the turn produced, including the `agent` frame carrying its final model text, arrives **before** it. A client may finalize its render there: stop the spinner, close the assistant block, print the footer.
+
+That holds because the daemon waits for it, and the wait is why it's worth stating. The two frame shapes travel by different routes: `agent` frames are written to the eventlog and fanned out when the broadcaster's watch next polls, while typed frames are published straight into each subscriber's channel. A turn emits its terminal frame the moment its model stream drains, which says nothing about whether the log tail has caught up — so before [#864](https://github.com/go-steer/core-agent/issues/864) the terminal frame could beat the turn's own answer to the wire by anything from 20ms to a poll interval, and a client that finalized on it dropped the reply. The daemon now holds the terminal frame until every subscriber has been sent the log through its current head.
+
+Two limits a client should know:
+
+- **The wait is bounded** (2s). A wedged pump or a subscriber replaying a long backlog degrades to the old unordered delivery rather than stalling the turn — the daemon logs a line naming the seq it gave up on. Ordering is the strong default, not a wire guarantee a client can assume without a fallback.
+- **It does not delay the answer.** Only the terminal frame is held; the `agent` frames themselves are neither slowed nor reordered, so what an operator sees appears exactly as soon as it did before.
+
+`status-update` (idle) and the cumulative `usage-update` follow the terminal frame, in that order.
+
 ### `capabilities` frame
 
 The first frame on every `/events` stream is `event: capabilities` — the client advertises the wire contract before any state flows. The full field list lives in [the SSE spec](https://github.com/go-steer/core-tui/blob/main/docs/sse-event-stream-protocol.md#21-capabilities); the current additions are:
@@ -512,11 +525,20 @@ A failed turn ends with `event: turn-error` carrying `{kind, code?, message, ret
 
 **`canceled` (protocol 1.8.0, [#816](https://github.com/go-steer/core-agent/issues/816)).** Every cancel is a deliberate stop: `POST /interrupt`, the TUI's Esc, a parent-context cancel at daemon shutdown, or a guardrail cutting the turn short in flight. Re-running the work is the opposite of what was asked for, so `retryable` is false and a client that wires a retry prompt off the flag must not offer one. Before 1.8.0 these arrived as `transient_network` / `retryable: true` — self-contradicting next to their own `code: "CANCELED"`, and enough to make a retry-offering client undo an operator's stop. A client built against a pre-1.8.0 daemon is required by the spec to treat the value it doesn't recognise as `unknown`; core-tui (the pinned client) maps only an *empty* kind to `unknown` and otherwise prints the string it was given, so it renders the new value correctly with no client change. It no longer renders anything off `retryable`: through v0.23.0 a true flag drew a `↻ retryable` line, which read as an offer against a retry action core-tui has never had — worst on an Esc-hold, where an operator's own stop came back apparently offering to undo itself. The label is gone as of v0.24.0; the field is still parsed and still readable by hosts that want to act on the classification.
 
-Two consequences worth knowing. A cancel and a **timeout** are now on opposite sides of the flag: `context.DeadlineExceeded` stays `transient_network` / retryable, because nobody asked for it. And an in-flight guardrail halt produces **two** `turn-error` frames — the guardrail's own (`cost_ceiling` or `watchdog`, carrying the operator-facing reason) followed by the `canceled` for the cut turn — so read the first one for *why*; that pairing predates 1.8.0 and only the second frame's `kind` changes.
+One consequence worth knowing: a cancel and a **timeout** are now on opposite sides of the flag. `context.DeadlineExceeded` stays `transient_network` / retryable, because nobody asked for it.
+
+**Guardrail halts emit one terminal frame (v2.9.0-dev.4, [#818](https://github.com/go-steer/core-agent/issues/818)).** A guardrail that trips *during* a turn emits its own `turn-error` (`cost_ceiling` / `watchdog`, carrying the operator-facing reason) and then cancels the turn. That cancellation used to be classified like any other, so the turn produced a **second** terminal frame — a contentless `canceled` behind the one that explained the halt. Two terminal frames for one turn breaks the exactly-one rule above, double-counts every halt for a client tallying outcomes, and delivers a frame to a client that finalized on the first. The cancel a guardrail causes is now suppressed, and the guardrail's own frame is the turn's terminal frame. Only that cancel: an operator `POST /interrupt`, an Esc, a daemon shutdown, or a halted turn that ends in some *other* error all still report normally — nothing else explains those, so suppressing them would lose the outcome entirely.
+
+A guardrail can also trip at the turn **boundary**, from the post-turn hook, after the turn has produced its answer. That shape is unchanged and emits both frames: the guardrail's `turn-error`, then this turn's `turn-complete`. Nothing there is redundant — the turn did finish, and dropping either frame would lose either the answer's completion or the reason the agent is about to start refusing turns. So the rule for consumers is:
+
+- Read a `cost_ceiling` / `watchdog` frame as **"the session has halted, here is why"**, not necessarily as this turn's outcome.
+- Use `status-update` with `turn_state: "idle"` as the end-of-turn marker. It fires exactly once per turn in both shapes.
+
+Modelling a trip as what it is — a non-terminal notification rather than a turn outcome — is [#891](https://github.com/go-steer/core-agent/issues/891), a future protocol minor that lands with its core-tui row.
 
 The same value rides `error.type` on the `gen_ai.agent.invocation.duration` metric where metrics are enabled, so a dashboard keyed on a `transient_network` rate stops counting deliberate stops as network failures on a daemon carrying this change.
 
-**Guardrail-refused turns are labelled (v2.9.0-dev, [#818](https://github.com/go-steer/core-agent/issues/818)).** A turn refused at the top by an already-tripped guardrail emits no frame of its own — it points back at the `cost_ceiling` / `watchdog` frame from the trip that halted the session — but it *is* recorded on `gen_ai.agent.invocation.duration`. Before this change that record carried `error.type: unknown`: the classifier is substring-based and a guardrail reason matches none of its patterns, so `cost_ceiling` and `watchdog` were the only kinds in the table above that no classifier path could produce, and the spend-cap and runaway series went dark during exactly the incidents they exist for. Refusals now carry their own kind. Nothing on the wire changes.
+**Guardrail-refused turns are labelled (v2.9.0-dev, [#818](https://github.com/go-steer/core-agent/issues/818)).** A turn refused at the top by an already-tripped guardrail emits no frame of its own — it points back at the `cost_ceiling` / `watchdog` frame from the trip that halted the session — but it *is* recorded on `gen_ai.agent.invocation.duration`. Before this change that record carried `error.type: unknown`: the classifier is substring-based and a guardrail reason matches none of its patterns, so `cost_ceiling` and `watchdog` were the only kinds in the table above that no classifier path could produce, and the spend-cap and runaway series went dark during exactly the incidents they exist for. Refusals now carry their own kind, and so does the turn a guardrail *halted* — labelling that one by the `canceled` its cancellation classifies as would leave the same series dark for the same reason, one turn earlier. Nothing on the wire changes.
 
 ### Protocol version negotiation
 

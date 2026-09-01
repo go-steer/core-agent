@@ -178,12 +178,28 @@ func RegisterMetrics(mp metric.MeterProvider, src AgentSource) (metric.Registrat
 // histogram and degrade to a no-op, matching the rest of Run's
 // nil-field posture.
 func (a *Agent) recordInvocation(seconds float64, turnErr error) {
+	kind := ""
+	if turnErr != nil {
+		kind = attach.ClassifyTurnError(turnErr).Kind
+	}
+	a.recordInvocationKind(seconds, kind)
+}
+
+// recordInvocationKind is recordInvocation with error.type stated
+// rather than classified. One caller: a turn a guardrail cut short
+// (#818). Its error is a bare context.Canceled — the classifier can
+// only ever call that `canceled`, which would put the metric at odds
+// with the `cost_ceiling` / `watchdog` frame the operator's client got
+// for the same turn, and would leave the two series that exist for
+// runaway incidents dark during one. Empty kind records no error.type
+// at all (a successful turn).
+func (a *Agent) recordInvocationKind(seconds float64, errorType string) {
 	if a.invocationHist == nil {
 		return
 	}
 	attrs := []attribute.KeyValue{attribute.String(AttrGenAIAgentName, a.metricAgentName)}
-	if turnErr != nil {
-		attrs = append(attrs, attribute.String(AttrErrorType, attach.ClassifyTurnError(turnErr).Kind))
+	if errorType != "" {
+		attrs = append(attrs, attribute.String(AttrErrorType, errorType))
 	}
 	a.invocationHist.Record(context.Background(), seconds, metric.WithAttributes(attrs...))
 }

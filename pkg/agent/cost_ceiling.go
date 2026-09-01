@@ -353,6 +353,8 @@ func (a *Agent) maybeEnforceCostCeiling() {
 // A trip cancels the turn in flight via Interrupt, which only cancels
 // the per-turn context — it does not mark an operator-interrupt audit,
 // so the halt is recorded as a cost-ceiling trip and not mislabeled.
+// The cancellation it causes is likewise not re-reported as a `canceled`
+// turn-error: the trip's own frame is the turn's terminal one (#818).
 //
 // Cheap when unarmed: one uncontended lock read decides it, so a
 // session with no ceiling configured (the default) pays nothing per
@@ -369,6 +371,10 @@ func (a *Agent) enforceCostCeilingInTurn() {
 	}
 	a.maybeEnforceCostCeiling()
 	if exceeded, _ := a.CostCeilingTripped(); exceeded {
+		// The emit above is this turn's terminal frame; mark before
+		// cutting the turn so the cancellation doesn't produce a
+		// second one (#818, see guardrail_halt.go).
+		a.markGuardrailHalt(attach.TurnErrorCostCeiling)
 		a.Interrupt()
 	}
 }

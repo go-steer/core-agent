@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"google.golang.org/adk/session"
 
@@ -76,11 +77,14 @@ const subscriberBufferSize = 256
 // code never mutates it.
 var maxReplayEvents int64 = 5000
 
-// replayFloorStream is the optional eventlog.Stream extension the
-// replay cap needs (implemented by the production gormStream).
-// Streams without it — test fakes, exotic embeddings — skip the cap
-// and keep the uncapped pre-#385 behavior.
-type replayFloorStream interface {
+// seqIndexStream is the optional eventlog.Stream extension that lets
+// the broadcaster ask where a session sits in the log without reading
+// rows (implemented by the production gormStream). Two callers:
+// clampReplaySince, for the replay floor (#385), and the terminal-frame
+// ordering barrier, for the session's head seq (#864). Streams without
+// it — test fakes, exotic embeddings — skip both and keep the uncapped,
+// unbarriered pre-#385 behavior.
+type seqIndexStream interface {
 	NthNewestSeq(ctx context.Context, offset int64, opts ...eventlog.QueryOption) (int64, error)
 }
 
@@ -100,7 +104,7 @@ type replayFloorStream interface {
 // would push a quiet session's entire history under the floor and a
 // reconnecting client would silently lose its conversation (#481).
 func (b *broadcaster) clampReplaySince(ctx context.Context, since int64) int64 {
-	fs, ok := b.stream.(replayFloorStream)
+	fs, ok := b.stream.(seqIndexStream)
 	if !ok {
 		return since
 	}
@@ -138,7 +142,7 @@ type broadcaster struct {
 	closed    bool               // set by Close under mu; Subscribe refuses to register after
 	cancel    context.CancelFunc // cancels the pump goroutine
 	pumpGen   uint64             // bumped per pump start; lets a dying pump's sweep recognize a successor (#485)
-	startedAt int64              // last seq the pump has yielded
+	startedAt int64              // seq the pump's Watch was started from (a cursor, NOT a delivery watermark)
 
 	// drops points at the owning pool's cumulative dropped-subscriber
 	// counter (#338 metrics); nil on broadcasters constructed outside
@@ -155,6 +159,15 @@ type broadcaster struct {
 	// (which manifested as a flaky "TempDir: directory not empty" on
 	// the SQLite -wal/-shm sidecar files).
 	wg sync.WaitGroup
+
+	// barrierWake is the wake latch for Emit's terminal-frame ordering
+	// barrier (#864): closed and nilled by notifyBarrierLocked whenever
+	// a delivery path advances some subscriber's lastSent, so a waiting
+	// Emit re-checks. Created lazily by the waiter, and only signalled
+	// while barrierWaiters > 0 — the frame hot path pays one integer
+	// comparison when nobody is blocked, which is almost always.
+	barrierWaiters int
+	barrierWake    chan struct{}
 
 	// closing is closed exactly once by Close to wake replayThenTail
 	// goroutines parked on the post-replay live-tail wait, so shutdown
@@ -358,10 +371,17 @@ func (b *broadcaster) register(sub *subscriber, since int64) (registered, firstS
 // mutations, inbox queue/dequeue, and the usage tracker all call
 // here when something happens that needs to reach the operator.
 //
+// A terminal frame (turn-complete / turn-error) is held until every
+// subscriber has been sent the session's log through its current head
+// — see awaitTerminalBarrier for why, and for what bounds the wait.
+//
 // Safe to call concurrently from any goroutine.
 func (b *broadcaster) Emit(eventType string, payload any) {
 	if eventType == "" {
 		return // Defensive: callers should always pass a non-empty type.
+	}
+	if isTerminalEvent(eventType) {
+		b.awaitTerminalBarrier(eventType)
 	}
 	frame := Frame{Type: eventType, TypedData: payload}
 	b.mu.Lock()
@@ -369,6 +389,144 @@ func (b *broadcaster) Emit(eventType string, payload any) {
 	for sub := range b.subs {
 		b.sendTyped(sub, frame)
 	}
+}
+
+// terminalBarrierTimeout bounds Emit's wait for the delivery paths to
+// catch up before a terminal frame goes out. A pump that is wedged, or
+// a subscriber replaying a long backlog, must degrade to the old
+// out-of-order delivery rather than stall the turn that is trying to
+// finish — the turn's own goroutine is what blocks here.
+//
+// Sized against the mechanism, not guesswork: the gap being closed is
+// one eventlog watch-poll interval (200ms by default, see
+// eventlog.WithWatchInterval), so a few multiples of it covers a slow
+// poll and a slow query while staying far under any human's sense of a
+// hung turn. Package-level var (not const) purely as a test seam.
+var terminalBarrierTimeout = 2 * time.Second
+
+// isTerminalEvent reports whether an event type is a turn's terminal
+// frame — the two the spec promises fire after everything else the
+// turn produced (§2.5/§2.6, and TurnComplete's doc comment).
+func isTerminalEvent(eventType string) bool {
+	return eventType == EventTurnComplete || eventType == EventTurnError
+}
+
+// awaitTerminalBarrier blocks until every attached subscriber has been
+// sent the session's log up to its current head, so the terminal frame
+// that follows lands after the turn's last `agent` frame rather than
+// racing ahead of it (#864).
+//
+// The race it closes: `agent` frames reach subscribers through the
+// eventlog — the turn writes a row, the pump's Watch picks it up on its
+// next poll, and only then is it fanned out. Typed frames skip all of
+// that and are published straight into every subscriber's channel. The
+// turn's cleanup emits turn-complete once the ADK event stream has
+// drained, which says nothing about whether the pump has caught up, so
+// the terminal frame could beat the turn's own final text by anything
+// from 20ms to a poll interval. A consumer that finalizes its render on
+// turn-complete then has nowhere to put the text and silently drops the
+// agent's answer.
+//
+// The wait is on each subscriber's lastSent rather than on a pump-level
+// watermark, because the pump is not the only delivery path: a client
+// that subscribed mid-turn is being fed by its own replayThenTail, and
+// a pump-only barrier would leave exactly that client with the bug.
+// Both paths advance lastSent under b.mu, which is also the wake site.
+//
+// Degradation is deliberate and one-directional — every early return
+// yields today's behavior, never a hang:
+//   - no subscribers, or no pump: nobody to order frames for.
+//   - stream without NthNewestSeq: no head to aim at.
+//   - head query fails: the log is the authority and it didn't answer.
+//   - timeout: logged, then the frame goes out unordered.
+//
+// It cannot over-wait either: head is the session's newest row at the
+// moment of the call, so a row written afterwards (the next turn, a
+// sibling branch) is not part of the target.
+func (b *broadcaster) awaitTerminalBarrier(eventType string) {
+	fs, ok := b.stream.(seqIndexStream)
+	if !ok {
+		return
+	}
+	b.mu.Lock()
+	idle := len(b.subs) == 0
+	b.mu.Unlock()
+	if idle {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), terminalBarrierTimeout)
+	defer cancel()
+	// Offset 0 is the session's newest row — the same query the pump
+	// tails, so this is precisely the last seq it will yield.
+	head, err := fs.NthNewestSeq(ctx, 0, b.query...)
+	if err != nil || head == 0 {
+		if err != nil {
+			debugf("broadcaster %s/%s terminal barrier: head query failed (%s sent unordered): %v", b.entry.AppName, b.entry.SessionID, eventType, err)
+		}
+		return
+	}
+
+	b.mu.Lock()
+	b.barrierWaiters++
+	for !b.deliveredThroughLocked(head) {
+		if b.barrierWake == nil {
+			b.barrierWake = make(chan struct{})
+		}
+		wake := b.barrierWake
+		b.mu.Unlock()
+		select {
+		case <-wake:
+			b.mu.Lock()
+			continue
+		case <-b.closing:
+			// Shutdown: stop waiting on a broadcaster whose
+			// subscribers are being hung up anyway.
+		case <-ctx.Done():
+			log.Printf("attach: broadcaster %s/%s terminal barrier timed out after %s waiting for seq %d; %s may arrive before the turn's last event", //nolint:gosec // AppName/SessionID are server-managed identifiers; eventType is a protocol constant
+				b.entry.AppName, b.entry.SessionID, terminalBarrierTimeout, head, eventType)
+		}
+		b.mu.Lock()
+		break
+	}
+	b.barrierWaiters--
+	b.mu.Unlock()
+}
+
+// deliveredThroughLocked reports whether every live subscriber has been
+// sent every frame up to head. Called with b.mu held.
+//
+// A subscriber already closed is skipped rather than blocking the
+// barrier: its channel is gone, so there is no ordering left to
+// protect. Empty set counts as delivered — the waiter loop can observe
+// the last subscriber leaving mid-wait, and holding the frame for an
+// audience of nobody would just spend the timeout.
+func (b *broadcaster) deliveredThroughLocked(head int64) bool {
+	for sub := range b.subs {
+		if sub.closed {
+			continue
+		}
+		sub.dedupMu.Lock()
+		last := sub.lastSent
+		sub.dedupMu.Unlock()
+		if last < head {
+			return false
+		}
+	}
+	return true
+}
+
+// notifyBarrierLocked wakes an Emit parked in awaitTerminalBarrier.
+// Called with b.mu held from both delivery paths, after a batch of
+// sends may have advanced lastSent. The waiter count keeps this off the
+// hot path: with nobody blocked (the overwhelming majority of frames)
+// it is a single comparison.
+func (b *broadcaster) notifyBarrierLocked() {
+	if b.barrierWaiters == 0 || b.barrierWake == nil {
+		return
+	}
+	close(b.barrierWake)
+	b.barrierWake = nil
 }
 
 // deliverBootFrames pushes the spec-required opening frames into a
@@ -533,6 +691,7 @@ func (b *broadcaster) replayThenTail(ctx context.Context, sub *subscriber, since
 		// here can't stall the pump.
 		b.mu.Lock()
 		ok := b.send(sub, Frame{Seq: entry.Seq, Event: entry.Event})
+		b.notifyBarrierLocked()
 		b.mu.Unlock()
 		if !ok {
 			return // dropped or ctx cancelled
@@ -615,6 +774,7 @@ func (b *broadcaster) pump(ctx context.Context, gen uint64) {
 		for sub := range b.subs {
 			b.send(sub, frame)
 		}
+		b.notifyBarrierLocked()
 		debugf("broadcaster pump %s/%s seq=%d author=%q → %d subs", b.entry.AppName, b.entry.SessionID, entry.Seq, author, nSubs)
 		// If no subscribers left, shut down the pump.
 		if len(b.subs) == 0 {
@@ -710,6 +870,10 @@ func (b *broadcaster) detachLocked(sub *subscriber) {
 	sub.closed = true
 	close(sub.ch)
 	delete(b.subs, sub)
+	// A departing subscriber can be the one an Emit is blocked on: it
+	// is no longer owed ordering, so re-check rather than let the
+	// barrier spend its full timeout on a channel that's gone.
+	b.notifyBarrierLocked()
 	if len(b.subs) == 0 && b.cancel != nil {
 		b.cancel()
 		b.cancel = nil

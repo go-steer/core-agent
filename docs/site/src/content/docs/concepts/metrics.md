@@ -95,6 +95,8 @@ One invocation point per agent turn, **including subagent turns**. Async and bac
 
 `error.type` is present only on failures, matching the semconv convention that success series stay clean. For tools it is a closed enum — `canceled`, `timeout`, `_OTHER` — never a raw error string.
 
+For turns it is the [`turn-error` kind](/reference/attach-http/#turn-error-kinds), so a dashboard and an attached client describe the same turn the same way. Turns a guardrail halted are labelled `cost_ceiling` / `watchdog` rather than `canceled` ([#818](https://github.com/go-steer/core-agent/issues/818)) — the cancel is *how* the halt was carried out, and labelling by it left the two series that exist for spend-cap and runaway incidents dark during exactly those incidents.
+
 Tool buckets run `0.01s … 300s` (the SDK default tops out at 10s and would flatten exactly the long tail this histogram exists to show).
 
 ### Subsystems

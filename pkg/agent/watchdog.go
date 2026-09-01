@@ -351,7 +351,9 @@ func (a *Agent) drainWatchdogAlerts() {
 // Check() already emptied the buffer and maybeTripWatchdog is
 // idempotent. It does NOT set pendingInterruptAudit — that flag is
 // only raised by MarkInterruptPending from the attach handler — so a
-// watchdog halt is never mislabeled as an operator interrupt.
+// watchdog halt is never mislabeled as an operator interrupt. Nor does
+// the cleanup re-report the cancellation as a `canceled` turn-error: the
+// trip's own frame is the turn's terminal one (#818).
 func (a *Agent) enforceWatchdogInTurn() {
 	if a == nil || a.watchdog == nil || !a.watchdogEnforce {
 		return
@@ -365,6 +367,10 @@ func (a *Agent) enforceWatchdogInTurn() {
 	}
 	a.drainWatchdogAlerts()
 	if tripped, _ := a.WatchdogTripped(); tripped {
+		// The trip's turn-error is this turn's terminal frame; mark
+		// before cutting the turn so the cancellation doesn't produce
+		// a second one (#818, see guardrail_halt.go).
+		a.markGuardrailHalt(attach.TurnErrorWatchdog)
 		a.Interrupt()
 	}
 }

@@ -391,6 +391,15 @@ type Agent struct {
 	pendingGuardrailEvents []*session.Event
 	guardrailRestored      bool
 
+	// guardrailHaltKind names the guardrail that cut the turn now in
+	// flight (a turn-error kind; empty = none), so Run's cleanup
+	// doesn't emit a second, contentless `canceled` terminal frame
+	// behind the guardrail's own, and labels the turn's metric point
+	// with the halt rather than the cancel (#818). Per-turn: cleared
+	// at turn start and consumed at the terminal emit. See
+	// guardrail_halt.go.
+	guardrailHaltKind string
+
 	// Watchdog (#123 PR 2). Optional behavioral observer; nil when
 	// not wired. onWatchdogAlert is called for each alert returned by
 	// watchdog.Check in the post-turn hook; default nil = collect-only
@@ -1527,6 +1536,10 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// to whatever (operator prompt, inbox message) triggered the turn.
 	promptID := newPromptID()
 	started := time.Now()
+	// Fresh per-turn guardrail-halt marker (#818): whether a guardrail
+	// cut the PREVIOUS turn says nothing about this one, and a stale
+	// flag would swallow this turn's legitimate `canceled`.
+	a.clearGuardrailHalt()
 
 	// Announce the turn entering the streaming state. Only fields
 	// that change since the last emission need to be present
@@ -1697,7 +1710,14 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		}
 
 		// Terminal event per spec: exactly one turn-complete OR
-		// turn-error fires per turn. usage-update fires separately
+		// turn-error fires per turn — including when a guardrail
+		// halted the turn in flight, in which case the guardrail
+		// already emitted it and the cancellation it caused must not
+		// add a second (#818; see guardrail_halt.go for why the
+		// marker, and not the error, is what decides — and why the
+		// metric below is labelled from it too).
+		//
+		// usage-update fires separately
 		// from the tracker.Append callback wired in SetAttachEmitter,
 		// which lands AFTER turn-complete (matching the spec's
 		// "turn-complete → status-update idle → usage-update" order
@@ -1709,11 +1729,20 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		// here — exemplar linkage is lost for this instrument;
 		// acceptable, the terminal SSE event carries prompt_id for
 		// correlation.
-		a.recordInvocation(time.Since(started).Seconds(), turnErr)
-
-		if turnErr != nil {
-			a.emit(attach.EventTurnError, attach.ClassifyTurnError(turnErr))
+		guardrailHalt := a.consumeGuardrailHalt(turnErr)
+		if guardrailHalt != "" {
+			// error.type says which guardrail, not `canceled`: the
+			// cancel is how the halt was carried out, not what
+			// happened to the turn (#818).
+			a.recordInvocationKind(time.Since(started).Seconds(), guardrailHalt)
 		} else {
+			a.recordInvocation(time.Since(started).Seconds(), turnErr)
+		}
+
+		switch {
+		case turnErr != nil && guardrailHalt == "":
+			a.emit(attach.EventTurnError, attach.ClassifyTurnError(turnErr))
+		case turnErr == nil:
 			a.emit(attach.EventTurnComplete, attach.TurnComplete{
 				PromptID:  promptID,
 				Model:     a.modelName,

@@ -556,6 +556,15 @@ const (
 // TurnComplete fires once per turn after the last stream-chunk for
 // that turn and before the next turn's events.
 //
+// That ordering is enforced, not assumed (#864). `agent` frames reach
+// a subscriber through the eventlog pump while typed frames are
+// published directly, so the terminal frame used to be able to overtake
+// the turn's own final text — and a consumer that finalizes its render
+// here then had nowhere to put what followed. The broadcaster holds a
+// terminal frame until every subscriber has been sent the log through
+// its head; see awaitTerminalBarrier, including the bounded wait that
+// degrades to unordered delivery rather than stalling a turn.
+//
 // CostUSD is *float64 (optional) per spec v1.1.0 §2.5 — servers
 // whose model layer doesn't know pricing (this server, since
 // agent.* deliberately has no pricing reference) leave it nil and

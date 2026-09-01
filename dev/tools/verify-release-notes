@@ -1,0 +1,234 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Regression tests for dev/release/compose-release-notes.sh.
+#
+# Exists because v2.9.0-dev.4 shipped with an EMPTY release body: the
+# composed notes came to 158,486 characters, GitHub rejects a body over
+# 125,000 with a 422, and the workflow's populate step turned that into
+# a published release carrying nothing. Tag, binaries and images were
+# all fine, which is what made it easy to miss.
+#
+# Every case runs against a throwaway git repo under $TMPDIR rather than
+# this checkout, so the assertions don't move when the real CHANGELOG or
+# tag history does, and CI's shallow tagless checkout can't skew them.
+# git-cliff is not required — the script degrades to a placeholder when
+# it's absent, and none of these cases assert on the PR list's contents.
+
+set -euo pipefail
+
+COMPOSE="$(cd "$(dirname "$0")/../release" && pwd)/compose-release-notes.sh"
+FOOTER="$(cd "$(dirname "$0")/../release" && pwd)/install-verify-footer.md.tmpl"
+
+FAILURES=0
+CASE=""
+
+fail() {
+  echo "  FAIL: $*" >&2
+  FAILURES=$((FAILURES + 1))
+}
+
+start_case() {
+  CASE="$1"
+  echo "• ${CASE}"
+}
+
+assert_contains() {
+  local file="$1" needle="$2"
+  if ! grep -qF -- "$needle" "$file"; then
+    fail "expected to find '${needle}' in the body"
+  fi
+}
+
+assert_absent() {
+  local file="$1" needle="$2"
+  if grep -qF -- "$needle" "$file"; then
+    fail "expected NOT to find '${needle}' in the body"
+  fi
+}
+
+assert_within() {
+  local file="$1" limit="$2" size
+  size="$(wc -c < "$file" | tr -d '[:space:]')"
+  if [[ "$size" -gt "$limit" ]]; then
+    fail "body is ${size} characters, over the ${limit} limit"
+  fi
+}
+
+# A throwaway repo with two commits and two tags: v1.0.0 (stable, the
+# range anchor) and v1.1.0-dev.1 (the pre-release under test).
+REPO="$(mktemp -d)"
+trap 'rm -rf "$REPO"' EXIT
+git init -q "$REPO"
+git -C "$REPO" config user.email release-test@example.com
+git -C "$REPO" config user.name 'Release Test'
+git -C "$REPO" config commit.gpgsign false
+git -C "$REPO" config tag.gpgsign false
+: > "$REPO/f"
+git -C "$REPO" add f
+git -C "$REPO" commit -qm 'feat: the first thing'
+git -C "$REPO" tag v1.0.0
+echo x > "$REPO/f"
+git -C "$REPO" commit -qam 'fix: the second thing'
+git -C "$REPO" tag v1.1.0-dev.1
+
+# Marker strings. BREAKING and FILLER let each case say which sections
+# survived degradation; FILLER stands in for `### Changes by Kind`, the
+# 150,244-character bulk that actually blew the limit.
+BREAKING='BREAKING_ENTRY_MARKER'
+FILLER='FILLER_ENTRY_MARKER'
+LINKOUT='the full detail stays in the CHANGELOG'
+INSTALL='## Install'
+
+# $1 = destination path, $2 = how many filler lines to pad with.
+write_changelog() {
+  local dest="$1" filler_lines="$2" i
+  {
+    printf '# Changelog\n\n'
+    printf '## [1.1.0-dev.1]\n\n'
+    printf '### Breaking Changes\n\n'
+    printf -- '- **%s.** A short breaking note.\n\n' "$BREAKING"
+    printf '### Changes by Kind\n\n'
+    for ((i = 0; i < filler_lines; i++)); do
+      printf -- '- %s %04d: %s\n' "$FILLER" "$i" \
+        'padding that stands in for this repo long per-change prose.'
+    done
+    printf '\n## [1.0.0] — 2026-01-01\n\n- the first thing\n'
+  } > "$dest"
+}
+
+compose() {
+  local changelog="$1" notes="$2"
+  ( cd "$REPO" && "$COMPOSE" v1.1.0-dev.1 "$notes" "$changelog" "$FOOTER" ) \
+    2>"${notes}.err"
+}
+
+# ── 1. under the limit: nothing is shed ──────────────────────────────
+start_case 'under the limit — full notes pass through untouched'
+CL="$REPO/cl-small.md"; NOTES="$REPO/n1.md"
+write_changelog "$CL" 5
+compose "$CL" "$NOTES"
+assert_contains "$NOTES" "$BREAKING"
+assert_contains "$NOTES" "$FILLER"
+assert_contains "$NOTES" "$INSTALL"
+assert_absent "$NOTES" "$LINKOUT"
+
+# ── 2. over the DEFAULT limit: this is the dev.4 failure ─────────────
+# Deliberately not driven by MAX_BODY. The 125,000 default is the number
+# GitHub actually enforces, and a case that only ever runs with an
+# overridden limit would not have caught the release that prompted this.
+start_case 'over the default 125,000 limit — degrades instead of 422-ing'
+CL="$REPO/cl-huge.md"; NOTES="$REPO/n2.md"
+write_changelog "$CL" 2000
+compose "$CL" "$NOTES"
+assert_within "$NOTES" 125000
+assert_contains "$NOTES" "$LINKOUT"
+assert_contains "$NOTES" "$BREAKING"
+assert_absent "$NOTES" "$FILLER"
+assert_contains "$NOTES" "$INSTALL"
+
+# ── 3. Breaking Changes alone still overflows: shed it too ───────────
+# A GA's notes are cumulative across every dev.N before it, so this is
+# reachable without an override — hence a fixture that overflows on the
+# real 125,000 rather than a lowered MAX_BODY.
+start_case 'Breaking Changes alone too big — shed it, keep the link'
+CL="$REPO/cl-huge-breaking.md"; NOTES="$REPO/n3.md"
+{
+  printf '# Changelog\n\n## [1.1.0-dev.1]\n\n### Breaking Changes\n\n'
+  for ((i = 0; i < 2000; i++)); do
+    printf -- '- **%s %04d.** %s\n' "$BREAKING" "$i" \
+      'padding that stands in for this repo long per-change prose.'
+  done
+  printf '\n### Changes by Kind\n\n- %s 0000: padding.\n' "$FILLER"
+  printf '\n## [1.0.0] — 2026-01-01\n\n- the first thing\n'
+} > "$CL"
+compose "$CL" "$NOTES"
+assert_within "$NOTES" 125000
+assert_contains "$NOTES" "$LINKOUT"
+assert_absent "$NOTES" "$BREAKING"
+assert_contains "$NOTES" "$INSTALL"
+
+# ── 4. the floor: link plus footer, and it always fits ───────────────
+# MAX_BODY=1 is unsatisfiable by construction, so this drives the guard
+# all the way down and then off the end. Two things to prove: the body
+# left on disk is the link-only form with the install footer intact, and
+# that form is nowhere near the limit GitHub actually enforces — which
+# is why the hard failure below it is unreachable in a real release.
+start_case 'floor tier — link plus install footer, comfortably under 125,000'
+NOTES="$REPO/n4.md"
+if MAX_BODY=1 compose "$CL" "$NOTES"; then
+  fail "expected a non-zero exit when the limit is unsatisfiable"
+fi
+assert_within "$NOTES" 125000
+assert_contains "$NOTES" "$LINKOUT"
+assert_contains "$NOTES" "$INSTALL"
+assert_absent "$NOTES" '## Commits'
+assert_absent "$NOTES" "$BREAKING"
+
+# ── 5. a fenced `# comment` must not truncate Breaking Changes ───────
+# The first cut of the subsection extractor exited on any line starting
+# with `#`, which a shell snippet inside a ``` block satisfies. That
+# silently dropped every breaking entry after the snippet.
+start_case 'fenced hash comment does not truncate Breaking Changes'
+CL="$REPO/cl-fence.md"; NOTES="$REPO/n5.md"
+{
+  printf '# Changelog\n\n## [1.1.0-dev.1]\n\n### Breaking Changes\n\n'
+  printf -- '- **First entry.** Migration:\n\n'
+  printf '```bash\n# a hash at column 0, inside a fence\ncore-agent --new-flag\n```\n\n'
+  printf -- '- **%s.** Only survives if the fence was tracked.\n\n' "$BREAKING"
+  printf '### Changes by Kind\n\n'
+  for ((i = 0; i < 2000; i++)); do
+    printf -- '- %s %04d: %s\n' "$FILLER" "$i" \
+      'padding that stands in for this repo long per-change prose.'
+  done
+  printf '\n## [1.0.0] — 2026-01-01\n\n- the first thing\n'
+} > "$CL"
+compose "$CL" "$NOTES"
+assert_contains "$NOTES" "$LINKOUT"
+assert_contains "$NOTES" "$BREAKING"
+assert_contains "$NOTES" 'core-agent --new-flag'
+assert_absent "$NOTES" "$FILLER"
+
+# ── 6. no promoted section: fall back to [Unreleased], keep Breaking ─
+# A dev tag cut without promoting the CHANGELOG narrates from
+# `## [Unreleased]`. The compact body has to re-read that same section,
+# not `## [1.1.0-dev.1]`, or the degraded body loses Breaking Changes
+# precisely when the operator most needs it.
+start_case 'unpromoted CHANGELOG — compact body reads [Unreleased]'
+CL="$REPO/cl-unreleased.md"; NOTES="$REPO/n6.md"
+write_changelog "$CL" 2000
+sed -i 's/^## \[1\.1\.0-dev\.1\]$/## [Unreleased]/' "$CL"
+compose "$CL" "$NOTES"
+assert_within "$NOTES" 125000
+assert_contains "$NOTES" "$LINKOUT"
+assert_contains "$NOTES" "$BREAKING"
+assert_absent "$NOTES" "$FILLER"
+
+# ── 7. the stable path still hard-fails on a missing section ─────────
+# The guard must not have turned a genuine authoring mistake into a
+# quietly-degraded body.
+start_case 'stable tag with no CHANGELOG section still hard-fails'
+CL="$REPO/cl-no-stable.md"; NOTES="$REPO/n7.md"
+printf '# Changelog\n\n## [1.1.0-dev.1]\n\n- only a pre-release section\n' > "$CL"
+if ( cd "$REPO" && "$COMPOSE" v1.0.0 "$NOTES" "$CL" "$FOOTER" ) >/dev/null 2>&1
+then
+  fail "expected a non-zero exit for a missing stable section"
+fi
+
+if [[ "$FAILURES" -ne 0 ]]; then
+  echo "verify-release-notes: ${FAILURES} assertion(s) failed" >&2
+  exit 1
+fi
+echo "verify-release-notes: all cases passed"

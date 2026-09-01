@@ -16,6 +16,10 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
+_No unreleased changes since [2.9.0-dev.4]._
+
+## [2.9.0-dev.4] — 2026-09-01
+
 ### Breaking Changes
 
 - **`attach.SessionACLStore` gains a `SetTitle` method.** Adding a method to an exported interface breaks any out-of-tree implementation, and there is no way to add one that doesn't — an optional-capability type assertion would have meant the store silently dropping titles on a wrapper that predates the method, which is the failure mode where a feature looks broken and nothing says why. `pkg/attach` is not in the stability promise above, every in-tree implementation (the GORM store and the test fakes) is updated, and the fix for a downstream implementation is one method that writes a column. Related: `SessionACLStore.Put` now treats an empty `Title` as "leave the stored one alone" rather than "clear it" — see the feature entry for why a whole-row upsert had to stop being one. ([#808](https://github.com/go-steer/core-agent/issues/808))

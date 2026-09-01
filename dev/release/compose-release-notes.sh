@@ -62,6 +62,25 @@ extract_section() {
   '
 }
 
+# Extract a `### NAME` subsection from a single CHANGELOG section on
+# stdin. Stops at the next ATX heading, so `### Breaking Changes` ends
+# where `### Changes by Kind` begins.
+#
+# Fence-aware: a ``` block's contents are passed through verbatim, so a
+# shell snippet whose `# comment` line would otherwise read as a heading
+# can't truncate the subsection. CHANGELOG.md has no fenced blocks today
+# — this is so that adding one later doesn't silently shorten a release
+# body months after the fact.
+extract_subsection() {
+  local name="$1"
+  awk -v name="$name" '
+    /^[[:space:]]*```/         { fence = !fence }
+    !fence && $0 == "### " name { in_sub=1; print; next }
+    in_sub && !fence && /^#+ / { exit }
+    in_sub                     { print }
+  '
+}
+
 # Find the newest stable tag (no `-pre` suffix) that is an ancestor
 # of the given ref. Returns empty if none found.
 last_stable_before() {
@@ -132,6 +151,12 @@ render_contributors() {
   echo
 }
 
+# Which CHANGELOG section actually supplied the narrative — `$VERSION`
+# normally, `Unreleased` when a dev tag is cut without promoting first.
+# The overflow guard below re-reads the same section, and reading the
+# wrong one would silently drop Breaking Changes from the compact body.
+SECTION_NAME="$VERSION"
+
 # ────────── stable path ──────────
 if [[ "$IS_PRERELEASE" -eq 0 ]]; then
   extract_section "$VERSION" < "$CHANGELOG" > "$NOTES"
@@ -147,6 +172,7 @@ else
   # it with an auto-generated PR list produced by git-cliff.
   extract_section "$VERSION" < "$CHANGELOG" > "$NOTES"
   if [[ ! -s "$NOTES" ]]; then
+    SECTION_NAME="Unreleased"
     UNRELEASED="$(extract_section "Unreleased" < "$CHANGELOG" || true)"
     LAST_STABLE="$(last_stable_before "$TAG" || true)"
     {
@@ -186,12 +212,107 @@ LAST_STABLE="${LAST_STABLE:-$(last_stable_before "$TAG" || true)}"
 } >> "$NOTES"
 
 # Append the install/verify footer with placeholders substituted.
-if [[ -f "$FOOTER" ]]; then
-  sed \
-    -e "s|@TAG@|${TAG}|g" \
-    -e "s|@VERSION@|${VERSION}|g" \
-    "$FOOTER" \
-    >> "$NOTES"
+append_footer() {
+  if [[ -f "$FOOTER" ]]; then
+    sed \
+      -e "s|@TAG@|${TAG}|g" \
+      -e "s|@VERSION@|${VERSION}|g" \
+      "$FOOTER" \
+      >> "$1"
+  fi
+}
+append_footer "$NOTES"
+
+# ────────── overflow guard ──────────
+#
+# GitHub rejects a release body over 125,000 characters with a 422, and
+# the workflow's populate step turns that into the worst possible
+# outcome: the tag, the binaries and the images all publish fine, and
+# the release ships with an EMPTY body.
+#
+# v2.9.0-dev.4 is why this exists. It carried 57 commits, this repo
+# writes a long prose bullet per change, and the composed notes came to
+# 158,486 characters. The 6,522-character `### Breaking Changes`
+# subsection was not the problem — `### Changes by Kind` was 150,244 of
+# it. A GA tag, whose notes are cumulative across every dev.N, will hit
+# this sooner than a dev tag does.
+#
+# So the degradation keeps what an operator must read and links out for
+# the rest, shedding one section at a time until it fits:
+#
+#   1. full notes                      (normal releases never leave here)
+#   2. CHANGELOG link + Breaking Changes + commit list
+#   3. CHANGELOG link + commit list
+#   4. CHANGELOG link only
+#
+# Breaking Changes outranks the commit list because it is the part you
+# have to read BEFORE upgrading; the exhaustive per-change prose is
+# already canonical in CHANGELOG.md and loses nothing by living one
+# click away. The install/verify footer survives every tier — it is the
+# only part of the body anyone acts on. Tier 4 is a couple of KB, so the
+# hard failure below is unreachable in practice; it exists so that a
+# future edit which makes the floor unbounded fails loudly rather than
+# handing GitHub another 422.
+MAX_BODY="${MAX_BODY:-125000}"
+
+# Bytes, not characters. This repo's prose is full of multi-byte em
+# dashes, arrows and `§`, so a byte count over-reads a UTF-8 body and
+# the guard errs toward degrading a release that would just barely have
+# fit. That is the safe direction: the cost is a CHANGELOG link, and the
+# alternative (`wc -m`) reports bytes anyway under CI's C locale.
+body_chars() { wc -c < "$1" | tr -d '[:space:]'; }
+
+# Write the compact body. $1 is the destination; $2 selects how much to
+# keep: "with-breaking", "no-breaking", or "link-only".
+write_compact_notes() {
+  local dest="$1" keep="${2:-with-breaking}"
+  local section breaking=""
+  if [[ "$keep" == "with-breaking" ]]; then
+    section="$(extract_section "$SECTION_NAME" < "$CHANGELOG" || true)"
+    breaking="$(printf '%s\n' "$section" | extract_subsection 'Breaking Changes' || true)"
+  fi
+
+  {
+    if [[ "$IS_PRERELEASE" -eq 1 ]]; then
+      printf '## Pre-release [%s]\n\n' "$VERSION"
+    else
+      printf '## [%s]\n\n' "$VERSION"
+    fi
+    printf 'The per-change notes for this release run past GitHub'\''s %s-character\n' "$MAX_BODY"
+    printf 'release-body limit, so the full detail stays in the CHANGELOG:\n\n'
+    printf '**→ [CHANGELOG.md § %s](%s/blob/%s/CHANGELOG.md)**\n\n' \
+      "$VERSION" "$REPO_URL" "$TAG"
+    if [[ -n "$breaking" ]]; then
+      printf '%s\n\n' "$breaking"
+    fi
+    if [[ "$keep" != "link-only" ]]; then
+      if [[ -n "$LAST_STABLE" ]]; then
+        printf '## Commits since %s\n\n' "$LAST_STABLE"
+      else
+        printf '## Commits in this release\n\n'
+      fi
+      render_range_with_cliff "$LAST_STABLE" "$TAG"
+      echo
+      render_contributors "$LAST_STABLE" "$TAG"
+    fi
+  } > "$dest"
+  append_footer "$dest"
+}
+
+if [[ "$(body_chars "$NOTES")" -gt "$MAX_BODY" ]]; then
+  echo "::warning::composed notes for ${TAG} are $(body_chars "$NOTES") characters, over GitHub's ${MAX_BODY} limit — falling back to the compact body" >&2
+  for keep in with-breaking no-breaking link-only; do
+    write_compact_notes "$NOTES" "$keep"
+    if [[ "$(body_chars "$NOTES")" -le "$MAX_BODY" ]]; then
+      break
+    fi
+    echo "::warning::compact notes for ${TAG} still $(body_chars "$NOTES") characters at '${keep}'" >&2
+  done
+
+  if [[ "$(body_chars "$NOTES")" -gt "$MAX_BODY" ]]; then
+    echo "::error::notes for ${TAG} are $(body_chars "$NOTES") characters with nothing left to shed" >&2
+    exit 1
+  fi
 fi
 
-echo "wrote release notes for ${TAG} to ${NOTES}" >&2
+echo "wrote release notes for ${TAG} to ${NOTES} ($(body_chars "$NOTES") characters)" >&2

@@ -112,6 +112,15 @@ jobs:
       # build, so it does not need a paths filter of its own.
       - name: Examples smoke
         run: dev/ci/presubmits/examples-smoke
+      # The release-notes composer degrades an over-long body instead of
+      # handing GitHub one it will 422 into an empty release (#894). A
+      # step in `test` for the same reasons as the two above, plus one
+      # of its own: the release workflow is the only other caller, and
+      # by the time it runs the tag is already pushed. It builds its own
+      # throwaway git repo under $TMPDIR, so it needs neither the module
+      # cache nor this checkout's tag history — a few seconds of bash.
+      - name: Release notes
+        run: dev/ci/presubmits/verify-release-notes
       - name: Coverage summary
         run: |
           echo "## Coverage" >> "$GITHUB_STEP_SUMMARY"

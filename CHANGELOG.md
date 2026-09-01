@@ -16,7 +16,11 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
-_No unreleased changes since [2.9.0-dev.4]._
+### Changes by Kind
+
+#### Bug or Regression
+
+- **Release notes that ran past GitHub's 125,000-character body limit published an *empty* release.** `v2.9.0-dev.4` is the one that found it: the composer produced 158,486 characters, the API answered the populate step with `422 body is too long`, and because the tag, all eleven GoReleaser assets and the three GHCR images had already published successfully, the release looked healthy right up until you read it. The bulk was never the part an operator needs — `### Breaking Changes` was 6,522 characters of it and `### Changes by Kind` the remaining 150,244, which is the exhaustive per-change prose that is already canonical in this file. `dev/release/compose-release-notes.sh` now measures the body it composed and, if it is over the limit, sheds one section at a time until it fits: first the per-change prose, replaced by a link to the tagged `CHANGELOG.md`; then Breaking Changes; then the commit list. Breaking Changes outranks the commit list because it is the part you have to read *before* upgrading, and the install/verify footer survives every tier because it is the only part of the body anyone acts on. The floor is a couple of kilobytes, so the composer can no longer hand GitHub a body it will reject. A normal release is untouched — `v2.9.0-dev.3` recomposes byte-identical, and the guard does not fire below the limit. This was overdue rather than unlucky: a GA's notes are cumulative across every `dev.N` before it, so v2.9.0 would have overflowed by more than dev.4 did. `dev/release/` had no test coverage of any kind and the failure is only observable at tag time, when the tag is already pushed, so the fix ships with `dev/ci/presubmits/verify-release-notes` — seven cases against a throwaway git repo, wired into the existing required `test` job. ([#894](https://github.com/go-steer/core-agent/issues/894))
 
 ## [2.9.0-dev.4] — 2026-09-01
 

@@ -4,11 +4,11 @@ Design doc for turning "what happened in this session" into an artifact an opera
 
 **Status:** proposed. Nothing here is built. Filed out of the question "how do we fix `/transcripts` in attach mode?", whose honest answer turned out to be "mostly by not doing that" — see §"What is already solved".
 
-**Tracking issue:** [#887](https://github.com/go-steer/core-agent/issues/887). Work items: [#881](https://github.com/go-steer/core-agent/issues/881) export endpoint, [#882](https://github.com/go-steer/core-agent/issues/882) `sessions` CLI, [#883](https://github.com/go-steer/core-agent/issues/883) retention, [#884](https://github.com/go-steer/core-agent/issues/884) replay ceiling, [#885](https://github.com/go-steer/core-agent/issues/885) the `.agents/sessions/` collision, [#886](https://github.com/go-steer/core-agent/issues/886) attach-client state dir, and [core-tui#301](https://github.com/go-steer/core-tui/issues/301) upstream.
+**Tracking issue:** [#887](https://github.com/go-steer/core-agent/issues/887), milestoned v3.0. Work items: [#881](https://github.com/go-steer/core-agent/issues/881) export endpoint, [#882](https://github.com/go-steer/core-agent/issues/882) `sessions` CLI, [#883](https://github.com/go-steer/core-agent/issues/883) retention, [#884](https://github.com/go-steer/core-agent/issues/884) replay ceiling, [#885](https://github.com/go-steer/core-agent/issues/885) the `.agents/sessions/` collision, and [core-tui#301](https://github.com/go-steer/core-tui/issues/301) upstream. [#889](https://github.com/go-steer/core-agent/issues/889) documents the unbounded database in v2.9, ahead of any of this. [#886](https://github.com/go-steer/core-agent/issues/886) — the attach-client state directory — was **declined**; see §"The state directory, declined".
 
 ## Motivation
 
-`core-agent-tui` sets no `coretui.Options.AgentsDir`, so in attach mode `/transcripts` lists nothing and saves nothing. The obvious fix — give the attach client a state directory — is cheap and worth doing for unrelated reasons (§"The state-directory fix"), but it does not answer the question underneath: the daemon is the process that holds the complete record, and it currently has no way to hand any of it to anyone.
+`core-agent-tui` sets no `coretui.Options.AgentsDir`, so in attach mode `/transcripts` lists nothing and saves nothing. The obvious fix — give the attach client a state directory — was examined and declined (§"The state directory, declined"), because it does not answer the question underneath: the daemon is the process that holds the complete record, and it currently has no way to hand any of it to anyone.
 
 Investigating that surfaced four gaps, only one of which is about the TUI.
 
@@ -113,21 +113,28 @@ Deliberately a separate phase behind export, and deliberately under-specified he
 | **C** | `core-agent sessions ls` / `export` | A | #882 |
 | **D** | Soft-delete + retention sweep | B or C | #883 |
 | **E** | Reconcile `pkg/transcript` v1 with the canonical type; stop two writers sharing one directory | A | #885 |
-| **—** | `--state-dir` for `core-agent-tui` | nothing (independent) | #886 |
 
 A/B/C are the useful unit. D is where the operational pressure is but it must not land first. E is cleanup that becomes obvious once A exists.
 
-### The state-directory fix
+### The state directory, declined
 
-Independent of everything above, and worth doing on its own: `core-agent-tui` has no local state directory, and that single absence disables transcript save/list/load **and** theme persistence **and** mouse persistence. An XDG state dir keyed by the daemon URL turns on all three. Notably it is also what would make the `PersistMouseChoice` that shipped in #863 apply to the attach client — which is the client #859 was actually filed about, and which currently still depends on the `--no-mouse` flag from #862.
+`core-agent-tui` writes nothing to the operator's disk. It was tempting to give it an XDG state directory keyed by the daemon URL, on the theory that one absence disables three things at once: transcript save/list/load, theme persistence, and mouse persistence. That was filed as #886 and closed `NOT_PLANNED`.
 
-This does not fix `/transcripts` in any interesting sense — the transcripts would still be per-terminal projections of what one client saw. It fixes the toggles.
+The premise was wrong on the mechanics. `coretui.Options.AgentsDir` drives only the on-exit transcript write; `PersistThemeChoice` and `PersistMouseChoice` are independent function fields that a host can supply with any backing it likes. There is no single switch, so there is no bundle discount.
+
+And the two toggles already have durable answers. `--theme` and `--no-mouse` are flags on the client, and the latter's help text already says out loud that this client reads no config file and the flag is how the choice sticks. A shell alias or a systemd unit persists that fine.
+
+What remained was the transcripts third — and that is the part this design argues against anyway. It would add a **third** producer of partial, per-terminal scrollback writing into the same convention, making the collision in #885 worse rather than better, in exchange for a projection of what one client happened to witness.
+
+Against that, statelessness has real value: `core-agent-tui` is often run from a jump host, a shared box, or a container, and "this client leaves nothing behind" is a property worth keeping until something needs it.
+
+**Reopen trigger:** the session picker growing recent-daemons or recent-sessions memory. That is a genuine need for client-side state, and if it lands, the state directory arrives justified and the toggles ride along for free.
 
 ## Alternatives considered
 
 **Port `/transcripts` to attach mode as-is** (host interface upstream, remote adapter backs it with HTTP). Rejected as the primary move: it duplicates the picker and the `since=0` replay, and it puts the archive's shape in core-tui's hands, where core-agent cannot evolve it. It becomes reasonable *after* the document format exists, as a thin client of it.
 
-**Client-side only** (`--state-dir` and stop there). Rejected as insufficient: it cannot see past what one terminal witnessed, cannot be scripted, does not reach the pre-5000-event history, and does nothing for retention. Worth doing, not worth calling done.
+**Client-side only** (`--state-dir` and stop there). Rejected as insufficient — it cannot see past what one terminal witnessed, cannot be scripted, does not reach the pre-5000-event history, and does nothing for retention — and subsequently declined on its own merits too; see §"The state directory, declined".
 
 **Write the archive from the daemon on session end.** Rejected: there is no reliable "session end" (sessions are evicted, resumed, and outlive processes), and it requires exactly the storage backend this design refuses to own.
 

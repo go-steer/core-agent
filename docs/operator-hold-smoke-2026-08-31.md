@@ -614,3 +614,198 @@ daemon-restart-while-parked. Neither is affected by #878.
 
 #799 closes when §2, §3, §8 and §10 pass on the GKE run. The rest is
 evidence for the follow-ups. §10's long-session case is still unproven.
+
+---
+
+## Result — 2026-09-02 re-run on `2.9.0-dev.4`
+
+Same cluster and namespace, demo-3 on `simian-test` / ns
+`kube-platform-native`: daemon `ghcr.io/go-steer/core-agent:2.9.0-dev.4`,
+watcher `lookout:v0.23.0`, content `v12`, model `gemini-3.7-flash`.
+Driven over the `./attach.sh` port-forward on `localhost:7878`; §8 driven
+by the operator in `core-agent-tui`, everything else over `curl` with a
+live SSE tap on `/events`.
+
+This run was seeded by a real incident (`./break-workload.sh bad-image`
+against `emailservice`), so the sessions are watcher-minted and
+per-incident, not `default`.
+
+| Section | Verdict | Follow-up |
+|---|---|---|
+| 2 Interrupt parks | pass | running-turn path now driven, which the first run could not do |
+| 3 Resume dispositions | pass | continue, abandon and steer all fired against real turns |
+| 4 `/pause` | pass | mid-turn "finishes normally" now proven — see the timings under §8 below |
+| 7 Subagents | pass, bar one box | stop-already-stopped returns 200, not 404 — **F5**, filed as [#897](https://github.com/go-steer/core-agent/issues/897) |
+| 8 Remote TUI | **fail — F4** | 9 of 12 boxes pass, 1 not run; the headline box fails. Filed as [core-tui#302](https://github.com/go-steer/core-tui/issues/302) + [#896](https://github.com/go-steer/core-agent/issues/896) |
+| 9 Two clients agree | pass | |
+| 10 `/btw` | pass | **F1 confirmed fixed.** Survived the full §2–§7 sequence *and* a 15-way concurrent hammer; returned live run-state (`State: Paused (paused (operator-interrupt))`, `Turn Cancellation: Yes`, `Turns Completed: 12`, `Cost So Far: $0.07`), rate-limited exactly (5×200 then 10×429 with `Retry-After: 6`), and persisted nothing |
+
+§8 box by box: pass on Esc-while-idle-still-holds, type+Enter-steers,
+`/continue`, `/abandon`, `/pause`-holds-without-cancelling,
+slashes-dispatch-mid-turn, Esc-peels-innermost-surface-first, and
+attach-to-an-already-parked-session. Fail on
+Esc-during-a-turn-cancels-and-holds and on
+banner-distinguishes-cancelled-from-gate-shut (F4).
+
+The local in-process TUI box passes **by construction**, not by an
+interactive run: `Pauser` is declined at
+`cmd/core-agent/coretui_guards.go:124`, so `tui/update.go:1590` cannot
+take the hold branch and Esc falls through to `cancelTurn` — no banner
+to render and no call to 501 on. `go test ./cmd/core-agent/` covers the
+decline. Not run at all: read-only attachment, which needs a viewer
+identity not provisioned on this cluster.
+
+### F4 — Esc mid-turn holds but never cancels
+
+Filed as [core-tui#302](https://github.com/go-steer/core-tui/issues/302)
+(client, and where the cheap fix lives) and
+[#896](https://github.com/go-steer/core-agent/issues/896) (daemon).
+
+The `## 8` headline box. Two runs against the same prompt, one keystroke
+apart in intent, are indistinguishable on the wire except for a string.
+
+The prompt is a delegation — *"delegate this to the cluster specialist
+and wait for its findings before replying"* — which parks the parent in
+`spawn_agent{wait: true}` for minutes. That is the widest possible
+window and the case operator hold exists to serve.
+
+`/pause`, injected 11:46:31.7:
+
+```
+11:46:42.1   pause  reason="operator-pause"    ← 10.4s into the turn
+seq 135      functionCall record_plan          ← after the pause
+seq 137      functionCall spawn_agent {cluster}
+turn-complete  latency_ms: 140623
+status         state: paused, paused_since 11:46:42
+```
+
+Correct, and exactly what §8's `/pause` box asks for: the gate shuts, the
+in-flight turn finishes normally, no new turn starts.
+
+**Esc**, injected 11:50:47.0:
+
+```
+11:50:59.2   pause  reason="operator interrupt"  ← 12.2s into the turn
+seq 155      functionCall spawn_agent {cluster}  ← after the Esc
+turn-complete  latency_ms: 238223
+status         state: paused, paused_since 11:50:59
+```
+
+The operator pressed Esc 12 seconds in. The turn ran a further **226
+seconds**, spawned the subagent, and delivered a 1,690-token report —
+with the hold banner up the whole time. No `interrupted` flag on the
+`PauseEvent` in either run.
+
+The reason string is the only surviving trace of intent.
+`operator interrupt` with a space is client-minted
+(`core-tui tui/slash_builtin.go:299,310`); the daemon's own constant is
+`operator-interrupt` with a hyphen (`pkg/agent/pause.go:33`) and a bare
+`/pause` yields `operator-pause`. So the keystroke did reach
+`holdCmd` — it just took the wrong branch.
+
+Three links, each confirmed by reading the code and then by the run:
+
+1. `AttachStatus()` never returns `AgentStateRunning`
+   (`pkg/attachadapter/capabilities.go:193`, admitted in its own
+   comment: *"running / deferred still need run-loop instrumentation
+   that hasn't been wired"*). So `/status` and the SSE seed always say
+   `idle`. **core-agent.**
+2. core-tui receives `turn_state` and discards it — `tui/update.go:472`
+   says so explicitly: *"Reserved for follow-up work that unifies push +
+   in-band turn state."* **core-tui.**
+3. so `spinnerActive` — set only by `beginLiveStretch()`, i.e. the
+   operator's own inject from that client or an arriving partial chunk —
+   stays false while the parent blocks on a subagent. `turnInFlight()`
+   (`tui/view.go:712`) reads false, and `holdCmd` (`tui/pause.go:283`)
+   picks `pauseCmd` over `interruptThenPauseCmd`. **core-tui.**
+
+Blast radius is not a narrow race. `endLiveStretch` fires on every
+commit (`Partial=false`), so the exposure is *both* the window before
+the first token — every watcher incident, since a per-incident session
+and its first turn are born together and no operator can be attached
+before it — and every window after any commit while the turn continues.
+The `spawn_agent{wait: true}` case above is the second window, and it is
+the runaway-subagent scenario the feature was built for.
+
+Cheapest correct fix is link 3: `holdCmd` guards on `turnInFlight()` for
+no benefit. Interrupt-while-idle is already a defined safe no-op — the
+daemon answers `X-Interrupted: nothing-in-flight` — so the client can
+always take `interruptThenPauseCmd` and stop needing to know something
+it structurally cannot know. Links 1 and 2 are still worth closing:
+until `Interrupted` can be set truthfully, the banner cannot honour
+§8's *"distinguishes a turn was cancelled from the gate just shut"* box
+no matter what the client does.
+
+### F5 — stopping an already-stopped subagent returns 200, not 404
+
+Filed as [#897](https://github.com/go-steer/core-agent/issues/897).
+§7's last box. Three places specify a 404 and the implementation
+disagrees with all three:
+
+- `pkg/attach/handlers_pause.go:142-144` — *"404 when no running
+  subagent by that name is found … a 200 here would read as
+  'stopped'"*.
+- `pkg/attachadapter/pause.go:107-110` — *"reports false when the
+  manager has no live subagent under that name (including one that
+  already finished)"*.
+- the §7 checklist item itself.
+
+`pkg/agent/background/manager.go:1059-1082` instead documents the
+opposite as deliberate: *"Stopping an already-stopped subagent is a
+no-op that still reports true: the handle is still registered, so the
+operator's intent was satisfied."* Observed: 200 with
+`stopped: true`.
+
+Either reading is defensible; shipping both is not. The operator-facing
+question is whether "I stopped it" and "it had already finished" should
+look the same, and the two comments answer it differently.
+
+### F6 — a transient provider 400 is classified as a non-retryable config error
+
+Filed as [#898](https://github.com/go-steer/core-agent/issues/898).
+One sample, low severity, recorded so it is not mistaken for F1's shape.
+During a window in which Vertex was also returning 429s, one turn failed
+immediately after a `functionResponse` with:
+
+```
+{"kind":"config_error","code":"400","retryable":false,
+ "hint":"Check the model provider config (model.vertex.location,
+ model.name, GOOGLE_CLOUD_PROJECT ...)"}
+```
+
+Not poisoned history, which was the first suspect given F1: a plain-text
+turn on the same session immediately returned `ack`, and a
+single-tool-call turn then ran a full
+`functionCall → functionResponse → text` cycle clean against the same
+transcript. Vertex was returning `INVALID_ARGUMENT` transiently under
+the same load producing the 429s.
+
+The cost of the misclassification is that `retryable: false` forecloses
+the retry that would have worked, and the hint sends the operator to
+debug a configuration that is correct.
+
+### Out of scope — `break-workload.sh restore` exits 0 on a failed undo
+
+demo-3's, not core-agent's, but it cost time here. `restore` ran
+`rollout undo`, timed out (*"1 old replicas are pending termination"*),
+rewound to a revision that was itself broken, and **exited 0** leaving
+`does-not-exist:v0-demo-break` deployed. Recovered with an explicit
+`kubectl set image`. The failed-restore window also minted two junk
+incident sessions. `restore` should verify the landed image and exit
+non-zero if it is not the expected one.
+
+### Verdict on #799
+
+§2, §3 and §10 now pass on GKE. §8 does not: 9 of its 12 boxes pass and
+1 is not run, but the headline box — *"Esc during a turn cancels **and** holds"* —
+fails, and the `Interrupted` box fails structurally. By this document's
+own closing criterion **#799 does not close on this run**; it closes
+when core-tui#302 is fixed and §8's two failing boxes are re-driven.
+
+The re-drive is cheap now that there is a reliable wide window: a prompt
+that tells the parent to delegate and wait parks it in
+`spawn_agent{wait: true}` for 140–240s, against turns that otherwise run
+9–18s here because the persona reports after each tool cycle. Three
+earlier attempts to widen the window with long-generation prompts all
+died on Vertex 429s; the delegation shape costs a fraction of the tokens
+for ten times the wall clock.

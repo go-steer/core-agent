@@ -56,36 +56,59 @@ func (p *perCallLLM) GenerateContent(_ context.Context, req *adkmodel.LLMRequest
 	return seqOf(s)
 }
 
-// TestIsCachedContentNotFound pins the classifier that decides which
-// error text signals TTL-eviction of a Vertex explicit cache. Two
-// false negatives here would send the wrong recovery path — a
-// generic NOT_FOUND (missing model, wrong region) would trigger a
-// pointless invalidate + retry; a real cache eviction would surface
-// as a hard turn error the operator has to restart around.
-func TestIsCachedContentNotFound(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{"nil error", nil, false},
-		{"real TTL eviction (verbatim Vertex text)",
-			errors.New("Error 404, Message: Not found: cached content metadata for 6116704758662168576., Status: NOT_FOUND, Details: []"),
-			true},
-		{"NOT_FOUND on missing model", errors.New("Error 404, Message: publisher model not found, Status: NOT_FOUND"), false},
-		{"NOT_FOUND on wrong region", errors.New("resource not found: NOT_FOUND"), false},
-		{"cached content but not NOT_FOUND", errors.New("cached content quota exceeded"), false},
-		{"case-insensitive cached content match",
-			errors.New("Error 404, Message: Cached Content missing, Status: NOT_FOUND"),
-			true},
+// The predicate's own table moved to internal/vertexcache with the
+// predicate (gone_test.go). What belongs here is that the WRAPPER
+// fires on the shape a live daemon actually receives, which is the
+// half #902 got wrong: the predicate was tested against the shape
+// somebody wrote down, and the shape Vertex sends on the generate
+// path is a different status with a different noun.
+//
+// Not folded into the table in the test below it: this one is about
+// the recognition, and it is the case that regressed. Pre-fix it
+// fails on both counts — no invalidate, one inner call, and the raw
+// 400 handed straight back to the caller.
+func TestBuiltinsLLM_CacheEviction_ExpiredIsRecognisedNotJustNotFound(t *testing.T) {
+	captureLogf(t)
+
+	// Verbatim from core-agent-5c55d8954c-ht8xf, ns kube-platform-native,
+	// 2026-09-02, 27h uptime. Note "Cache content", no d, and
+	// INVALID_ARGUMENT rather than NOT_FOUND.
+	expiredErr := errors.New("Error 400, Message: Cache content 7016131366404227072 is expired., Status: INVALID_ARGUMENT, Details: []")
+	fake := &perCallLLM{
+		perCall: [][]pair{
+			{{err: expiredErr}},
+			{{resp: mkResponse("recovered")}},
+		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := isCachedContentNotFound(tc.err); got != tc.want {
-				t.Errorf("isCachedContentNotFound(%v) = %v, want %v", tc.err, got, tc.want)
-			}
-		})
+	invalidated := 0
+	wrapped := &builtinsLLM{
+		inner:           fake,
+		cacheName:       func(_ context.Context) string { return "projects/p/locations/l/cachedContents/expired" },
+		cacheInvalidate: func(string) { invalidated++ },
+	}
+	req := &adkmodel.LLMRequest{
+		Config: &genai.GenerateContentConfig{
+			SystemInstruction: &genai.Content{Parts: []*genai.Part{{Text: "system prompt"}}},
+			Tools:             []*genai.Tool{{FunctionDeclarations: []*genai.FunctionDeclaration{{Name: "my_func"}}}},
+		},
+	}
+	out := collect(wrapped.GenerateContent(context.Background(), req, false))
+
+	if invalidated != 1 {
+		t.Errorf("cacheInvalidate calls = %d, want 1 — an expiry 400 is an eviction, and not calling this is what left the manager stamping a dead handle onto every later turn", invalidated)
+	}
+	if fake.calls.Load() != 2 {
+		t.Fatalf("inner GenerateContent calls = %d, want 2 (initial + uncached retry)", fake.calls.Load())
+	}
+	if len(out) != 1 || out[0].err != nil {
+		t.Fatalf("caller should see only the retry's success, got %+v", out)
+	}
+	if out[0].resp.Content.Parts[0].Text != "recovered" {
+		t.Errorf("retry response text = %q, want %q", out[0].resp.Content.Parts[0].Text, "recovered")
+	}
+	// The retry must be genuinely uncached, or it fails identically.
+	if got := fake.lastReqs[1].Config.CachedContent; got != "" {
+		t.Errorf("retry still carries CachedContent %q", got)
 	}
 }
 

@@ -344,12 +344,35 @@ func (m *Manager) doRefresh(ctx context.Context, name string) {
 		TTL: m.opts.ttl(),
 	})
 	if err != nil {
+		// A not-found from Update is not a failed refresh, it is the
+		// answer: Vertex has already reaped this cache, and no later
+		// call against the same name can succeed. Acting on it here is
+		// the earliest the daemon can know, and it recovers without a
+		// single turn failing (#902).
+		//
+		// This used to log and return, on the reasoning that "the
+		// cache is still valid until it expires" and that degradation
+		// would be automatic on the next cache-not-found from
+		// GenerateContent. Both halves were wrong for this case: the
+		// cache is gone, not expiring, and GenerateContent reports it
+		// with a *different* status and spelling (400 INVALID_ARGUMENT
+		// "Cache content <id> is expired.") that the caller's detector
+		// did not match. So the manager held the one piece of evidence
+		// that would have fixed everything, discarded it, and went on
+		// stamping a dead handle onto every subsequent request for the
+		// life of the process.
+		if IsCacheGone(err) {
+			// MarkEvicted does the logging, and it names the cache and
+			// says what happens next. Quote the error into the reason
+			// rather than asserting a status: this fires on an expiry
+			// as readily as on a not-found.
+			m.MarkEvicted(fmt.Sprintf("Caches.Update on refresh: %v", err))
+			return
+		}
 		m.opts.logger().Printf("core-agent-vertexcache: Caches.Update failed (cache will expire; agent falls back to uncached): %v", err)
-		// Don't flip to stateFailed on refresh error — the cache is
-		// still valid until it expires. Let Name() return the name
-		// until Vertex actually reaps it, then degradation is
-		// automatic on the next cache-not-found response from
-		// GenerateContent (handled by the caller's retry-once path).
+		// A transient Update failure is genuinely worth riding out —
+		// the cache is still live until its TTL elapses, and the next
+		// Name() inside the refresh window tries again.
 		return
 	}
 	m.mu.Lock()

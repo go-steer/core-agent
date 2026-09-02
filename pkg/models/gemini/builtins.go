@@ -27,6 +27,7 @@ import (
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/genai"
 
+	"github.com/go-steer/core-agent/v2/internal/vertexcache"
 	"github.com/go-steer/core-agent/v2/pkg/models"
 )
 
@@ -455,11 +456,12 @@ func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequ
 }
 
 // wrapCachedContentEvictionRetry retries the GenerateContent call
-// once, uncached, when the first attempt fails with the Vertex
-// NOT_FOUND-on-cached-content signature — the shape Vertex returns
-// when it has reaped our cache server-side while the manager still
-// thought it was valid (TTL elapsed on a long-lived daemon holding
-// a resumed session's cache handle).
+// once, uncached, when the first attempt fails because Vertex will
+// not honour the cache reference we stamped — it has reaped the cache
+// server-side while the manager still thought it was valid (TTL
+// elapsed on a long-lived daemon holding a resumed session's cache
+// handle). vertexcache.IsCacheGone owns which errors those are; there
+// is more than one shape, and getting that wrong is #902.
 //
 // Non-cached turns pass through unchanged: nothing to detect, nothing
 // to restore.
@@ -475,8 +477,9 @@ func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequ
 //  3. Re-invokes inner.GenerateContent on the same context with the
 //     restored request.
 //
-// One retry only — persistent NOT_FOUND after retry surfaces to the
-// caller unchanged (indicates a config problem, not TTL eviction).
+// One retry only, and the retry is uncached, so it cannot fail the
+// same way twice. An error on the retry surfaces to the caller
+// unchanged — at that point the cache is not the problem.
 func (l *builtinsLLM) wrapCachedContentEvictionRetry(
 	ctx context.Context,
 	req *adkmodel.LLMRequest,
@@ -502,14 +505,19 @@ func (l *builtinsLLM) wrapCachedContentEvictionRetry(
 				}
 				continue
 			}
-			if isCachedContentNotFound(err) {
+			if vertexcache.IsCacheGone(err) {
 				// Cache is gone server-side. Invalidate the manager
 				// so this-turn retry + next-turn Init both do the
 				// right thing.
 				if l.cacheInvalidate != nil {
-					l.cacheInvalidate("Vertex 404 on cached content reference")
+					// Quote the error rather than asserting a status:
+					// this fires on an expiry 400 as readily as on a
+					// not-found 404, and a reason line that names the
+					// wrong one sends the next reader down the wrong
+					// path (#902).
+					l.cacheInvalidate("GenerateContent rejected the cached content reference: " + err.Error())
 				}
-				logf("cached content evicted server-side, retrying uncached")
+				logf("cached content unusable server-side (%v), retrying uncached", err)
 				// Restore the stripped fields on req.Config so the
 				// retry has the full system instruction + tools.
 				if req.Config == nil {
@@ -521,7 +529,8 @@ func (l *builtinsLLM) wrapCachedContentEvictionRetry(
 				req.Config.ToolConfig = savedToolConfig
 				// Any buffered chunks are dropped by returning without
 				// flushing — Vertex may have emitted partial content
-				// before the NOT_FOUND, which the retry supersedes.
+				// before rejecting the cache, which the retry
+				// supersedes.
 				for r2, e2 := range l.inner.GenerateContent(ctx, req, stream) {
 					if !yield(r2, e2) {
 						return
@@ -562,29 +571,12 @@ func (l *builtinsLLM) wrapCachedContentEvictionRetry(
 	}
 }
 
-// isCachedContentNotFound reports whether err carries the specific
-// Vertex signature for "the cached content ID you stamped no longer
-// exists" — the shape observed when a long-lived daemon holds a cache
-// handle whose server-side TTL has elapsed. Matched via substring
-// because the genai SDK doesn't expose a typed error for this case;
-// the "cached content" clause is specific enough to avoid false
-// positives on generic NOT_FOUND errors (missing model, wrong region,
-// etc.).
-//
-// The exact string Vertex returns:
-//
-//	Error 404, Message: Not found: cached content metadata for <id>.,
-//	Status: NOT_FOUND
-//
-// so we look for the "cached content" substring plus NOT_FOUND.
-func isCachedContentNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return strings.Contains(s, "NOT_FOUND") &&
-		strings.Contains(strings.ToLower(s), "cached content")
-}
+// The predicate that used to live here — isCachedContentNotFound —
+// matched NOT_FOUND plus "cached content", which is one of the three
+// ways Vertex describes a reaped cache and not the one the generate
+// path actually returns. It is now vertexcache.IsCacheGone, shared
+// with the manager's refresh path, with all three shapes and the
+// reasoning in its doc comment. See #902.
 
 // builtinsCompatible reports whether injecting the server-side
 // built-ins into this request is legal for the target model.

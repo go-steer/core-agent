@@ -294,6 +294,14 @@ Once the budget is spent the manager gives up for good — a genuinely misconfig
 core-agent-vertexcache: Caches.Create failed 6 times (giving up; agent will run uncached for its lifetime): ...
 ```
 
+**A cache that dies server-side is dropped, not ridden out.** Vertex reaps a cache on its own schedule — TTL elapses, the resource is deleted out of band, a project moves — and the handle the daemon holds is then dead for the life of the process unless something invalidates it. Two paths now recognise that and both reach the same conclusion. A refresh that comes back not-found stops treating it as a failed RPC and invalidates immediately, which is the earliest the daemon can know and costs no turn at all; a `GenerateContent` that rejects the cache reference invalidates and retries the same turn uncached, so the operator sees a slightly slower answer rather than an error. The next turn creates a replacement cache. Look for:
+
+```
+core-agent-vertexcache: cache projects/.../cachedContents/123 marked evicted (Caches.Update on refresh: Error 404, Message: Cached content 123 is not found., Status: NOT_FOUND); next turn will attempt fresh Init
+```
+
+The reason both paths are needed is that Vertex describes one dead cache three different ways, and before [#902](https://github.com/go-steer/core-agent/issues/902) each path carried its own guess at the wording. `Caches.Update` answers `404 NOT_FOUND / Cached content <id> is not found.`; `GenerateContent` answers either `404 NOT_FOUND / Not found: cached content metadata for <id>.` or `400 INVALID_ARGUMENT / Cache content <id> is expired.` — note the missing `d`, and note that an expiry is reported as a *bad argument* rather than a missing resource. A daemon 27 hours into its life hit exactly that third shape and failed every cached turn in every session, in both cases surfacing as a `config_error` pointing at `model.vertex.location`, until it was restarted. One exported predicate, `vertexcache.IsCacheGone`, now answers for both call sites.
+
 ---
 
 ## Anthropic (first-party)

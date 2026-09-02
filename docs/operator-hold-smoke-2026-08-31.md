@@ -768,9 +768,28 @@ worse — no gate to shut, so Esc through a silent turn did nothing at all.
 Link 1 is still open and still ours: [#896](https://github.com/go-steer/core-agent/issues/896).
 It is now the *whole* remaining hole in this box — a client attaching
 mid-turn is seeded `idle`, so Esc before the first frame still degrades
-to a hold. **Re-run §8 attaching before the turn starts** (`./attach.sh
---new`, then send the delegation prompt) until that lands; otherwise the
-headline box tests #896 rather than F4.
+to a hold. Until it lands, **the turn you Esc into has to be one that
+started while you were already attached**, which is not the same thing
+as owning the session:
+
+1. `./break-workload.sh bad-image` and let the watcher mint its
+   per-incident session and *finish* its first turn. That turn belongs
+   to #896 and is not the one to test.
+2. Attach to that session — `./attach.sh` and pick it, or
+   `./attach.sh <app> <sid>`. **Not `--new`**: a fresh operator-owned
+   session has no incident, and the 226-second window came from the
+   `cluster` subagent having something real to investigate.
+3. Type the delegation prompt yourself. Your own inject starts a turn
+   the client is present for, so its opening `turn_state: streaming`
+   frame lands and `turnRunning` is armed for the whole turn — including
+   after the first commit, which is where `spinnerActive` drops out and
+   the old gate went blind.
+4. Esc ~10-15 s in, once it is past the first tool cycle and into
+   `spawn_agent{wait: true}`.
+
+That is how the 2026-09-02 run measured F4 in the first place, so the
+before/after is like-for-like. Skipping to step 3 in a session you just
+walked into tests #896 rather than F4.
 
 Correction posted on core-tui#302 and #896, since both carried the
 drop-the-guard recommendation from this section.

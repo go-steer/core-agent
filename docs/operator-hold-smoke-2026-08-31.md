@@ -852,7 +852,7 @@ rewound to a revision that was itself broken, and **exited 0** leaving
 incident sessions. `restore` should verify the landed image and exit
 non-zero if it is not the expected one.
 
-### Verdict on #799
+### Verdict on #799 (superseded — see the §8 re-drive below)
 
 §2, §3 and §10 now pass on GKE. §8 does not: 9 of its 12 boxes pass and
 1 is not run, but the headline box — *"Esc during a turn cancels **and** holds"* —
@@ -867,3 +867,152 @@ that tells the parent to delegate and wait parks it in
 earlier attempts to widen the window with long-generation prompts all
 died on Vertex 429s; the delegation shape costs a fraction of the tokens
 for ten times the wall clock.
+
+## §8 re-drive — 2026-09-02, `core-agent-tui` on core-tui v0.24.1
+
+Same cluster, same daemon image (`2.9.0-dev.4`), watcher `lookout:v0.23.0`,
+content `v12`, model `gemini-3.7-flash`. The only thing that changed is
+the client: `core-agent-tui` rebuilt against **core-tui v0.24.1** (the pin
+bump in [#900](https://github.com/go-steer/core-agent/pull/900)), which
+carries the core-tui#302 fix. Operator drove the TUI on `localhost:7778`;
+a second, read-only observer polled `GET /status` at 1 Hz on `localhost:7878`
+so the pause state is recorded rather than recalled.
+
+**F4 is fixed.** Both of its boxes pass:
+
+| Box | Verdict |
+|---|---|
+| Esc during a turn cancels **and** holds | pass |
+| Banner distinguishes cancelled from gate-shut | pass — *"Agent held — no new turn will start (operator-interrupt)"* |
+
+The observer caught the transition exactly:
+
+```
+19:34:46 {"state":"idle", ...}
+19:41:28 {"state":"paused", "paused_since":"2026-09-02T19:41:27.821382832Z",
+          "pause_reason":"operator-interrupt", "interrupted":true}
+```
+
+All three fields are load-bearing, and each rules out a different false
+pass. `pause_reason` is `operator-interrupt` with a **hyphen** — the
+daemon's own constant, minted server-side by `AttachInterruptHold("")`;
+the plain-hold path mints `operator interrupt` with a space, so the
+interrupt arm demonstrably ran rather than the downgrade. `interrupted:
+true` comes from `a.cancelInFlight != nil`, so there was a real turn to
+cancel — the one thing a bare pause landing on a quiet agent cannot
+fake. And the TUI printed `canceled · CANCELED / turn canceled`.
+
+The window was **not** the delegate-and-wait shape the previous verdict
+recommended. Two attempts at that failed for reasons worth recording
+(see F7 below), and what actually produced it was better: the agent went
+into a `mark_task_done` loop on its own. A runaway emitting tool calls
+and no content is the exact condition the old `turnInFlight()` render
+gate read as "nothing in flight", and it is the case the hold exists
+for, so the re-drive landed on a more faithful window than the scripted
+one.
+
+Also cleared, the two boxes [#900](https://github.com/go-steer/core-agent/pull/900)
+added to §8 after the first run:
+
+| Box | Verdict |
+|---|---|
+| `/usage` pins the tail | pass — core-tui#303's fix confirmed, on the very command it was reported against |
+| Slashes dispatch while *held* | **half — F8.** `/mouse` dispatches and stays parked; `/usage` is treated as prose |
+
+Still not run: read-only attachment, which needs a viewer identity not
+provisioned on this cluster. Unchanged from the previous run.
+
+### F7 — a follow-up prompt is absorbed as "already handled"
+
+Not a hold bug; a persona/inbox one, found while trying to manufacture a
+wide turn window. Twice, a new instruction typed into a session whose
+incident was already closed came back as a summary of the closed work
+instead of an answer.
+
+The inbox preamble offers a *"Corroborating detail on something you
+already handled → acknowledge it and move on; do not re-open the work"*
+branch, and the model routed a fresh instruction down it. The preamble's
+own last line is the guard against exactly this — *"Summarizing work you
+already reported is not a response to a new question"* — and it did not
+hold. The reply enumerated the closed incident and ended *"I remain on
+standby for the next task"*, having taken no action on what was asked.
+
+Worth filing against the recipe rather than core-agent: the branch list
+is demo-3 content. It matters here only because it is the second time
+this UAT has been slowed by the agent answering a question other than
+the one asked, and because it is adjacent to
+[#639](https://github.com/go-steer/core-agent/issues/639).
+
+### F8 — a held agent treats host-registered slash commands as prose
+
+Filed as [core-tui#311](https://github.com/go-steer/core-tui/issues/311).
+
+`/mouse` typed at a parked agent toggled capture and left it parked —
+core-tui#299's fix working. `/usage` typed at the same parked agent
+opened the gate and reached the model as its steer instruction:
+
+```
+❯ /usage
+
+ℹ  Resumed with your instruction.
+
+  [Inbox]
+  • from platform-oncall@example.com: [The operator interrupted you]
+    You were stopped mid-task by a human operator, who then said:
+    • /usage
+```
+
+`/mouse` is a core-tui built-in; `/usage` comes from the host's
+`SlashCommands()` at runtime. The held-input gate is
+
+```go
+if m.pause.paused() && (namesABuiltinSlash(text) || midTurnSlashDisposition(text) != midTurnQueue) {
+```
+
+and both recognisers are **static** maps. The host catalog is fetched,
+but only for the palette and `/help`, and `slashCommandsMsg` drops the
+specs when the palette closes — so the Enter handler has nothing to
+consult. That looks deliberate rather than careless: for a remote host
+`SlashCommands()` is an HTTP call, and making one inside a keypress is
+the event-loop block behind core-tui#69 / #630.
+
+`/usage` works normally at idle, including pinning the tail, which
+isolates the defect to the held-input recogniser.
+
+Of core-agent's 13 host commands, four fall through (`/perms`
+canonicalises to `permissions`): `/usage`, `/title`, `/new`, `/attach`.
+`/usage` is the harmless one. `/new` and `/attach` are how an operator
+*leaves* a misbehaving agent — `/attach` is described in core-agent's own
+catalog as the escape hatch when `GET /peers` is empty — so parking a
+runaway and typing either resumes it and hands it the command text. That
+is the same inversion `/quit` had in core-tui#299.
+
+### Verdict on #799 — closes
+
+The closing criterion set by the previous run was *"core-tui#302 is fixed
+and §8's two failing boxes are re-driven"*. Both are done: #302 shipped in
+core-tui v0.24.1, the pin landed in #900, and both boxes now pass against
+a real runaway on the live cluster.
+
+§2, §3, §8 and §10 pass; §1, §4–§7, §9 and §11 were already recorded.
+Two boxes across the whole document remain un-run, both for want of a
+provisioned viewer identity rather than a defect: read-only attachment,
+and the old-daemon handshake box which needs a pre-hold binary.
+
+Open follow-ups, none of which gate this issue:
+[#896](https://github.com/go-steer/core-agent/issues/896) (mid-turn
+attach is seeded `idle` — see below),
+[#897](https://github.com/go-steer/core-agent/issues/897) (F5),
+[#898](https://github.com/go-steer/core-agent/issues/898) (F6),
+[core-tui#311](https://github.com/go-steer/core-tui/issues/311) (F8), and
+F7 against the demo-3 recipe.
+
+**#896 got a live trace on this run, and it is worse than the issue
+reads.** Across seven minutes the 1 Hz status poller logged exactly two
+lines: the initial `idle`, and the `paused` that Esc caused. Between them
+were two complete turns and a `mark_task_done` runaway, and the endpoint
+reported none of it. `AttachStatus()` does not merely fail to seed a
+mid-turn attach — it never reports a running turn at all, so an operator
+polling `GET /status` to ask *"is it doing anything?"* is told no, right
+through a runaway. That is why `interrupted` rather than `state` is the
+oracle used throughout this section.

@@ -23,7 +23,8 @@ follow-up issue; anything ⚠ is "works but rough."
 
 - Daemon build: `_______` (want ≥ `v2.9.0-dev.3`; the hold landed in dev.1,
   `Pauser` on the remote adapter in #863)
-- `core-agent-tui` build: `_______` (core-tui pin must be **v0.24.0**)
+- `core-agent-tui` build: `_______` (core-tui pin must be **v0.24.1** — F4 and
+  the §8 slash boxes are client fixes and v0.24.0 does not have them)
 - Environment: ☐ local `--attach` daemon  ☐ GKE demo cluster (`core-agent-demo-3`)
 
 The GKE run is the one that matters — a local daemon on a loopback socket
@@ -300,6 +301,18 @@ Notes:
 - [ ] `/pause` holds without cancelling
 - [ ] **Slashes dispatch mid-turn** — pre-core-tui#260 every slash typed
       during a stream was swallowed by the enqueue branch
+- [ ] **Slashes dispatch while *held* too.** Type `/mouse` at a parked
+      agent: it toggles capture and the agent stays parked. Through
+      v0.24.0 the held input box treated any name outside the mid-turn
+      allowlist as prose, so this resumed the agent and handed it the
+      literal text — worst with `/quit`, which is the command an
+      operator reaches for at exactly that moment (core-tui#299).
+      Then confirm prose still steers: `/tmp is full, look at it`.
+- [ ] **`/usage` scrolls its answer into view.** Scroll up into the
+      backlog first, then run it: the table must pin the tail rather
+      than append twenty lines below the fold and leave the window
+      where it was (core-tui#303, reported against this daemon's
+      `/usage`). Same for `/context` and the async preambles.
 - [ ] Esc **backs out of the innermost surface first**: a modal, then the
       help sheet, then transcript focus, and only then the agent. Tab into
       the transcript mid-turn: the first Esc returns focus, the second
@@ -735,6 +748,32 @@ it structurally cannot know. Links 1 and 2 are still worth closing:
 until `Interrupted` can be set truthfully, the banner cannot honour
 §8's *"distinguishes a turn was cancelled from the gate just shut"* box
 no matter what the client does.
+
+**Fixed in core-tui v0.24.1 (core-tui#305), and not by the fix this
+section recommended.** Dropping the guard would have made every Esc an
+unconditional `POST /interrupt`, which reads as a contract change:
+`RemoteInterrupter` says nothing about the nothing-in-flight case, so
+the client would be relying on a daemon behaviour no interface promises.
+Link 2 turned out to be the better lever — the daemon is already sending
+the truth on every status-update frame and the client was discarding it.
+core-tui now keeps `turn_state` and both of Esc's arms ask a new
+`turnRunning` (the render gate **or** a non-idle host `turn_state`)
+instead of `turnInFlight`, which is unchanged. Non-idle rather than
+`streaming` alone, because `awaiting_permission` / `awaiting_elicit` are
+a live turn blocked on an answer that, in observer mode, was put to a
+different client. Two arms, not one: the same guard sat on the
+`RemoteInterrupter`-without-`Pauser` fallback, where the symptom was
+worse — no gate to shut, so Esc through a silent turn did nothing at all.
+
+Link 1 is still open and still ours: [#896](https://github.com/go-steer/core-agent/issues/896).
+It is now the *whole* remaining hole in this box — a client attaching
+mid-turn is seeded `idle`, so Esc before the first frame still degrades
+to a hold. **Re-run §8 attaching before the turn starts** (`./attach.sh
+--new`, then send the delegation prompt) until that lands; otherwise the
+headline box tests #896 rather than F4.
+
+Correction posted on core-tui#302 and #896, since both carried the
+drop-the-guard recommendation from this section.
 
 ### F5 — stopping an already-stopped subagent returns 200, not 404
 

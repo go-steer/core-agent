@@ -170,6 +170,10 @@ Esc against a daemon-driven agent used to be a no-op: the local cancel ended thi
 
 Two things happen, in order: the in-flight turn is cancelled (`POST /interrupt`), and then the session's gate is shut (`POST /pause`). With nothing in flight the cancel is skipped. A failure of either half is reported rather than swallowed, because "was my work killed?" is the question the banner exists to answer.
 
+**"In flight" is the daemon's answer, not the client's guess** (core-tui v0.24.1). The turn a hold most needs to stop is a turn producing no output — a parent blocked in `spawn_agent{wait: true}`, or the gap before a turn's first token — and until v0.24.1 the client decided from what it had recently rendered, so through exactly those stretches Esc silently degraded to a bare `/pause`: banner up, turn running on underneath. It now reads the `turn_state` on the [status-update frame](/reference/attach-http/), which the daemon has always emitted truthfully — `streaming` before a turn's first content, `idle` when it commits — and any non-idle state arms the cancel, including `awaiting_permission` and `awaiting_elicit`, since in observer mode that question went to a different client and this operator has no modal to escape.
+
+One gap is left and it is on the daemon side: `GET /status` and the SSE seed still report `idle` for a session that is mid-turn, so a client that attaches *into* a running turn and presses Esc before the first frame arrives gets a hold rather than a cancel ([#896](https://github.com/go-steer/core-agent/issues/896)). Attach before the turn starts, or wait for one frame.
+
 **Held is not idle.** An idle agent picks up the next queued prompt on its own; a held one starts nothing until you say so. That distinction is invisible from the outside, so the TUI renders a banner above the input while the gate is shut, saying whether your turn was interrupted or the loop is merely parked, the reason the daemon gave, and how many background subagents are still running (those are unaffected — the hold gates the main loop).
 
 Three ways out:

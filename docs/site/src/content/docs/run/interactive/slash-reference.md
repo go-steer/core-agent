@@ -166,7 +166,7 @@ Narrowing the picker does **not** narrow what you can run. Anything the provider
 
 ### Slash visibility gating
 
-`/done` and `/checkpoint` only appear in `/help` when `WithCheckpointer` was wired (default-on; disable with `--no-checkpoint`). Same for `/compact` + `--no-compact`. Operators who disable a mechanism don't see commands that would only error out.
+`/done` and `/checkpoint` only appear in `/help` when `WithCheckpointer` was wired (default-on; disable with `--checkpoint=off`). `--checkpoint=operator` keeps them — it withholds only the model's `mark_task_done` tool. Same for `/compact` + `--no-compact`. Operators who disable a mechanism don't see commands that would only error out.
 
 ---
 

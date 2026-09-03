@@ -12,7 +12,7 @@ Long agent sessions hit two failure modes the model can't recover from on its ow
 | Mechanism | Default | CLI flag to disable | Slash command |
 |---|---|---|---|
 | Compaction | on | `--no-compact` | `/compact [focus]` (alias `/summarize`) |
-| Task-boundary checkpoints | on | `--no-checkpoint` | `/done [note]` (alias `/checkpoint`) |
+| Task-boundary checkpoints | on | `--checkpoint=off` | `/done [note]` (alias `/checkpoint`) |
 | Agentic tool wrappers (subtasks) | on | `--agentic-tools=false` | (model-driven via `agentic_*` tools) |
 
 A fourth — `/context` (alias `/boundaries`) — is an observation surface, not a mechanism: it reports the shape of what the others have done this session.
@@ -472,9 +472,31 @@ Status framed as "what the operator and I both know right now."
 
 Compaction triggers on token pressure — it might fire mid-task and the summary will reflect mid-task state. Checkpoints fire on natural boundaries the model recognizes, so the summary is *task-complete-state* rather than *whatever-state-we-happened-to-be-in*. Both write the same kind of slicing boundary event under the hood (`session.Event.CustomMetadata["compaction"] = "checkpoint"` vs `"summary"`); the differences are the trigger condition and the prompt that shapes the summary.
 
-### When to disable
+### Choosing who declares a boundary
 
-Pass `--no-checkpoint` for runs where the model shouldn't self-signal task completion, or when debugging where auto-slicing complicates reproduction. Both `/done` and the `mark_task_done` model-facing tool are removed when this flag is set; `/help` and `/tools` reflect that.
+Three parties can declare one: the model (via the `mark_task_done` tool), the operator (via `/done`), and the runtime (via the `Checkpointer` heuristic, off in the default implementation). `--checkpoint` picks which of them are live — config-file equivalent `checkpoint.mode`, so a recipe can ship its posture instead of relying on every invocation and deploy manifest remembering a flag.
+
+| Mode | `mark_task_done` | `/done` | Heuristic | Use when |
+|---|---|---|---|---|
+| `model` (default) | ✅ | ✅ | ✅ | Interactive sessions with recognizable task boundaries |
+| `operator` | ❌ | ✅ | ✅ | Long-lived services — see below |
+| `off` | ❌ | ❌ | ❌ | Debugging, where auto-slicing complicates reproduction |
+
+```json
+{ "checkpoint": { "mode": "operator" } }
+```
+
+**Why `operator` exists.** `mark_task_done` is a model-facing tool, and its description is prompt text the model reads at the moment it decides what to call. That description used to instruct the model to use the tool "generously at natural task boundaries", and its `detail` argument asked for a completion summary. Both were written for an interactive coding session.
+
+A daemon consuming machine signals has no conversation about to shift to a new task, so it sees a boundary everywhere: one live deployment produced sixteen `mark_task_done` calls in a single session, thirteen of them rejected as no-ops, and answered unrelated operator questions with completion reports instead of answers. The recipe's own instructions forbade exactly that and lost — a tool description outranks the persona at the point of decision, and a recipe author cannot edit it. `operator` mode removes the affordance instead of arguing with it.
+
+The description and arg schema were also rewritten, so `model` mode is better behaved than it was; `operator` is the posture for a deployment where the model should never declare its own boundary at all.
+
+**Checkpointing off is not context reduction off.** Compaction is a separate mechanism that fires on context-window utilization with no model involvement, and none of these modes touch it. Use `--no-compact` for that.
+
+`--no-checkpoint` still works as a deprecated alias for `--checkpoint=off`. Its old help text promised only that the model would stop self-signalling completion, but it also removed `/done` and the heuristic — which is exactly the split `operator` mode now makes available. Passing it prints a deprecation notice; passing it alongside a contradicting `--checkpoint` is a config error rather than a silent precedence rule.
+
+`/help` and `/tools` reflect whichever mode is active.
 
 ---
 

@@ -481,6 +481,7 @@ type options struct {
 	tracker          *usage.Tracker
 	compactor        Compactor
 	checkpointer     Checkpointer
+	noMarkTaskDone   bool
 	costCeiling      CostCeiling
 	watchdog         watchdog.Watchdog
 	onWatchdogAlert  func(watchdog.Alert)
@@ -790,8 +791,40 @@ func WithCompactor(c Compactor) Option {
 //
 // Optional. When nil, Agent.Checkpoint returns ErrNoCheckpointer
 // and the mark_task_done tool is not registered.
+//
+// To keep checkpointing but withhold the model's trigger, pair this
+// with WithoutMarkTaskDoneTool.
 func WithCheckpointer(c Checkpointer) Option {
 	return func(o *options) { o.checkpointer = c }
+}
+
+// WithoutMarkTaskDoneTool keeps the checkpointer wired but does not
+// register the model-facing mark_task_done tool. /done, the heuristic,
+// and Agent.Checkpoint all keep working; only the model's ability to
+// declare its own task boundary goes away.
+//
+// This is for long-lived services (#905). mark_task_done's description
+// instructs the model to call it "generously at natural task
+// boundaries", and its detail arg asks for a one-paragraph completion
+// summary — framing that assumes an interactive coding session with a
+// conversation about to shift to a new task. A daemon consuming machine
+// signals has no such boundary, so it sees one everywhere: a live
+// deployment produced sixteen mark_task_done calls in one session,
+// thirteen of them rejected as no-ops, and answered an unrelated
+// operator question with a completion report rather than an answer.
+// A tool description outranks the persona at the point of decision.
+//
+// No-op without WithCheckpointer — there is no tool to suppress.
+//
+// Scoped to the parent's checkpoint tool only. Subagents never get a
+// checkpointer, and the "mark_task_done" name they answer to is an
+// alias for return_result wired by pkg/agent/background (#728) — a
+// different tool that happens to share a name, and one this option
+// must not and does not touch.
+//
+// The CLI spells this --checkpoint=operator (config: checkpoint.mode).
+func WithoutMarkTaskDoneTool() Option {
+	return func(o *options) { o.noMarkTaskDone = true }
 }
 
 // WithPostConstruct registers a callback invoked once the *Agent
@@ -894,8 +927,13 @@ func New(model adkmodel.LLM, opts ...Option) (*Agent, error) {
 	// binding (declared here, populated after the struct is
 	// built below). See NewMarkTaskDoneTool docs for the
 	// late-binding contract.
+	//
+	// WithoutMarkTaskDoneTool suppresses the registration without
+	// unwiring the checkpointer, so /done and the heuristic survive
+	// on a deployment where the model shouldn't self-declare
+	// completion (#905).
 	var agentRef *Agent
-	if o.checkpointer != nil {
+	if o.checkpointer != nil && !o.noMarkTaskDone {
 		o.tools = append(o.tools, NewMarkTaskDoneTool(func() *Agent { return agentRef }))
 	}
 

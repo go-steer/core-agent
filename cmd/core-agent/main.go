@@ -191,7 +191,8 @@ func main() {
 	systemPromptFile := flag.String("system-prompt-file", "", "path to a file whose contents REPLACE the assembled system prompt wholesale. You lose the harness contract (compaction summaries arrive unexplained; tool-use degradation is on you) — prefer --append-system-prompt. Beats config agent.system_prompt_file. (#459)")
 	noCompact := flag.Bool("no-compact", false, "disable automatic context-window compaction. /compact slash still works for manual summarization, but the post-turn threshold trigger is off. Use when running headless against a model whose window is huge enough that compaction would never fire anyway, or when debugging an issue where you don't want history rewrites in play.")
 	compactionThreshold := flag.Float64("compaction-threshold", 0, "context-window utilization (0,1) at which automatic compaction fires, overriding cfg.compaction.threshold and any task-profile value. 0 (default) = unset; the per-tier substrate defaults apply. Ignored when --no-compact is set.")
-	noCheckpoint := flag.Bool("no-checkpoint", false, "disable task-boundary checkpoints. /done slash + the model-facing mark_task_done tool are both removed. Use when running headless where the model shouldn't self-signal task completion, or when debugging an issue where you don't want auto-slicing in play.")
+	checkpointMode := flag.String("checkpoint", "", "which parties may declare a task boundary (#905). 'model' (default) registers the model-facing mark_task_done tool alongside the operator's /done and the post-turn heuristic. 'operator' keeps /done and the heuristic but does NOT register mark_task_done, so the model cannot self-declare completion — the posture for a long-lived service: mark_task_done's description tells the model to use it 'generously at natural task boundaries' and its detail arg asks for a completion summary, framing written for an interactive coding session, and a daemon consuming machine signals sees a boundary everywhere. 'off' disables checkpointing entirely; /done then reports no checkpointer. Automatic context-window compaction is a separate mechanism and is unaffected by any of these — use --no-compact for that. Config-file equivalent: checkpoint.mode.")
+	noCheckpoint := flag.Bool("no-checkpoint", false, "DEPRECATED alias for --checkpoint=off. Removes the /done slash and the post-turn heuristic as well as the model-facing mark_task_done tool — broader than this flag's original description implied. Prefer --checkpoint=off, or --checkpoint=operator to withhold only the model's trigger.")
 	taskClass := flag.String("task", "", "operator-declared task class — picks a bundle of defaults (model tier, compaction threshold, agentic-tools posture, ask mode) tuned for the kind of work being done. One of: debug, implement, chat, research, review. Empty = no task class applied (substrate defaults). Explicit flags (--model, --ask, etc.) always win over the task profile. Per docs/model-selection-design.md / issue #123. Config-file equivalent: session.task_class.")
 	maxTurnCostUSD := flag.Float64("max-turn-cost-usd", 0, "per-turn spend ceiling in USD. When a single conversation turn's cumulative cost (across all model calls + subtask costs) meets or exceeds this value, the agent emits a structured turn-error (kind=cost_ceiling) and refuses new turns until the operator resets it (/guardrail reset in the TUI, or POST /sessions/{id}/guardrails/reset over attach). 0 = disabled (default). Defense against runaway tool-loops within one turn (e.g. issue #144). Pairs with --max-session-cost-usd; either or both can be set. Overrides config.agent.max_turn_cost_usd when set.")
 	maxSessionCostUSD := flag.Float64("max-session-cost-usd", 0, fmt.Sprintf("session-level spend ceiling in USD. Cumulative across every turn including subtasks; same trip + refuse behavior as --max-turn-cost-usd. Useful for long-running autonomous deploys where per-turn cost is reasonable but the session total adds up. Overrides config.agent.max_session_cost_usd when set, including an explicit 0. When neither is set, unattended runs (-p, --no-repl, or a non-TTY stdin) default to $%.2f and interactive runs default to disabled (#642); pass --max-session-cost-usd=0 to opt an unattended run back out.", DefaultUnattendedSessionCostUSD))
@@ -237,7 +238,15 @@ func main() {
 		os.Exit(runner.ExitConfigError)
 	}
 
-	code := run(*prompt, *initialPrompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, contentDirEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *noCheckpoint, *compactionThreshold,
+	code := run(*prompt, *initialPrompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, contentDirEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *compactionThreshold,
+		checkpointOpts{
+			mode:         *checkpointMode,
+			noCheckpoint: *noCheckpoint,
+			// --no-checkpoint=false is how a script overrides a
+			// wrapper that passed the flag, so presence matters,
+			// not value.
+			noCheckpointSet: flagWasSet(flag.CommandLine, "no-checkpoint"),
+		},
 		subagentOpts{syncWait: *subagentSyncWait},
 		guardrailOpts{
 			watchdogMode:      *watchdogMode,
@@ -449,7 +458,7 @@ func validatePromptCacheTTL(ttl string) error {
 // comment at the otelShutdown defer (#538).
 const teardownStepTimeout = 3 * time.Second
 
-func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, contentDirEntries []string, noREPL, noTUI, noPricingRefresh, noCompact, noCheckpoint bool, compactionThreshold float64, subagentCfg subagentOpts, guardrails guardrailOpts, toolProfile toolProfileOpts, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache, noPromptCache bool, promptCacheTTL string, promptCfg promptOpts, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
+func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, contentDirEntries []string, noREPL, noTUI, noPricingRefresh, noCompact bool, compactionThreshold float64, checkpointCfg checkpointOpts, subagentCfg subagentOpts, guardrails guardrailOpts, toolProfile toolProfileOpts, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache, noPromptCache bool, promptCacheTTL string, promptCfg promptOpts, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -1783,12 +1792,6 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	if !noCompact {
 		opts = append(opts, agent.WithCompactor(compose.BuildCompactor(cfg.Compaction)))
 	}
-	// Task-boundary checkpoints (docs/context-management-design.md
-	// Mechanism C). Default-on; disable via --no-checkpoint.
-	// Registers the mark_task_done model-facing tool + enables the
-	// /done slash; the model can self-signal task completion at
-	// natural boundaries, and the next Run drains the pending
-	// checkpoint by writing a richer handover record.
 	// Runaway backstops: the behavioral watchdog (#123/#623) and the
 	// cost ceilings (#145). Resolution is a pure function so the
 	// per-mode default posture is table-tested — see guardrails.go.
@@ -1888,9 +1891,33 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			send(fmt.Sprintf("bash search gate: enforce (bash %s refused; use the native %s. --bash-search-gate=allow to disable)", gated, natives))
 		}
 	}
-	if !noCheckpoint {
-		opts = append(opts, agent.WithCheckpointer(agent.NewDefaultCheckpointer()))
+	// Task-boundary checkpoints (docs/context-management-design.md
+	// Mechanism C). Three postures rather than the old on/off, because
+	// --no-checkpoint conflated three separate triggers — the model's
+	// mark_task_done, the operator's /done, and the post-turn heuristic
+	// — and a long-lived service wants the first gone and the other two
+	// kept (#905). Resolution is a pure function so the precedence
+	// chain is table-tested; see checkpoint.go.
+	if checkpointCfg.noCheckpointSet && checkpointCfg.noCheckpoint {
+		send(checkpointDeprecationNotice)
 	}
+	ckpt, err := resolveCheckpoint(checkpointInputs{
+		ModeFlag:            checkpointCfg.mode,
+		NoCheckpointFlag:    checkpointCfg.noCheckpoint,
+		NoCheckpointFlagSet: checkpointCfg.noCheckpointSet,
+		ModeConfig:          cfg.Checkpoint.Mode,
+	})
+	if err != nil {
+		log.Printf("core-agent: %v", err)
+		return runner.ExitConfigError
+	}
+	if ckpt.Mode != config.CheckpointModeOff {
+		opts = append(opts, agent.WithCheckpointer(agent.NewDefaultCheckpointer()))
+		if ckpt.Mode == config.CheckpointModeOperator {
+			opts = append(opts, agent.WithoutMarkTaskDoneTool())
+		}
+	}
+	send(checkpointBootLine(ckpt))
 	// Config-driven hook dispatch (pkg/hooks). Fires operator-configured
 	// shell commands on tool/model/turn boundaries. Most consumers won't
 	// set cfg.Hooks — the dispatcher becomes a no-op and we skip wiring
@@ -2204,7 +2231,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 				Registry:              attachReg,
 				ACLStore:              aclStore,
 				NoCompact:             noCompact,
-				NoCheckpoint:          noCheckpoint,
+				CheckpointMode:        ckpt.Mode,
 				WatchdogMode:          guard.Watchdog,
 				AutoContinueEnabled:   autoContinueEnabled,
 				AutoContinueFreshness: autoContinueFreshness,

@@ -206,15 +206,27 @@ type SessionFactoryDeps struct {
 	// attempt accounting honest (#575). The lazy-touch resume path
 	// leaves this false and injects inline as before.
 	AutoContinueDeferInject bool
-	// NoCompact / NoCheckpoint mirror the --no-compact /
-	// --no-checkpoint CLI flags. When false (the default),
-	// ReproduceAgent wires WithCompactor / WithCheckpointer so
-	// /compact and /done work against session-created agents; when
-	// true, the corresponding option is skipped so the disable flag
-	// applies uniformly to the main agent AND every session-created
-	// agent under it.
-	NoCompact    bool
-	NoCheckpoint bool
+	// NoCompact mirrors the --no-compact CLI flag. When false (the
+	// default), ReproduceAgent wires WithCompactor so /compact works
+	// against session-created agents; when true the option is skipped,
+	// so the disable flag applies uniformly to the main agent AND every
+	// session-created agent under it.
+	NoCompact bool
+
+	// CheckpointMode is the resolved task-boundary-checkpoint posture
+	// for every session this factory creates — one of
+	// config.CheckpointModeModel / CheckpointModeOperator /
+	// CheckpointModeOff. Empty is Model, which is both the substrate
+	// default and the behavior a caller that predates this field
+	// already had.
+	//
+	// It travels here for the same reason WatchdogMode does: a
+	// multi-session daemon is the paradigm long-lived deployment, and
+	// #905 is a long-lived-deployment failure. Resolving the posture
+	// for the primary session and leaving every POST /sessions agent on
+	// the default would put mark_task_done back in front of exactly the
+	// tenants the setting exists to protect.
+	CheckpointMode string
 
 	// WatchdogMode is the resolved behavioral-watchdog posture for
 	// every session this factory creates — one of config.WatchdogOff /
@@ -557,12 +569,15 @@ func ReproduceAgent(deps SessionFactoryDeps, caller auth.Caller, sid string, ori
 		}
 		opts = append(opts, agent.WithCompactor(BuildCompactor(compactionCfg)))
 	}
-	// Task-boundary checkpoints (Mechanism C). Default-on unless
-	// --no-checkpoint was passed. Without this wiring, /done and
-	// the model-facing mark_task_done tool were unavailable on
-	// session-created agents.
-	if !deps.NoCheckpoint {
+	// Task-boundary checkpoints (Mechanism C). Default-on. Without
+	// this wiring, /done and the model-facing mark_task_done tool
+	// were unavailable on session-created agents. CheckpointMode
+	// picks which triggers are live — see SessionFactoryDeps and #905.
+	if deps.CheckpointMode != config.CheckpointModeOff {
 		opts = append(opts, agent.WithCheckpointer(agent.NewDefaultCheckpointer()))
+		if deps.CheckpointMode == config.CheckpointModeOperator {
+			opts = append(opts, agent.WithoutMarkTaskDoneTool())
+		}
 	}
 	// Cost-ceiling kill switch (#145). The zero-value CostCeiling is
 	// a no-op, so this is safe to always append; enforcement runs

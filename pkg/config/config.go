@@ -54,6 +54,7 @@ type Config struct {
 	Pricing     PricingFileConfig `json:"pricing,omitempty"`
 	UI          UIConfig          `json:"ui,omitempty"`
 	Compaction  CompactionConfig  `json:"compaction,omitempty"`
+	Checkpoint  CheckpointConfig  `json:"checkpoint,omitempty"`
 	Session     SessionConfig     `json:"session,omitempty"`
 	Safety      SafetyConfig      `json:"safety,omitempty"`
 
@@ -202,6 +203,50 @@ type CompactionConfig struct {
 	//     "threshold_by_tier": { "small": 0.30 }
 	//   }
 	ThresholdByTier map[string]float64 `json:"threshold_by_tier,omitempty"`
+}
+
+// CheckpointConfig configures task-boundary checkpointing — Mechanism
+// C of docs/context-management-design.md. Distinct from compaction:
+// compaction fires on context-window utilization with no model
+// involvement, while a checkpoint slices at a *task boundary* and
+// frames the handover record as "this task is now done". Turning
+// checkpointing off does not turn off context reduction.
+type CheckpointConfig struct {
+	// Mode selects which parties can declare a task boundary.
+	//
+	// Values, strongest to weakest:
+	//   - "model"    (default) — the model-facing mark_task_done tool,
+	//     the operator's /done, and the Checkpointer heuristic are all
+	//     live. Today's behavior.
+	//   - "operator" — /done and the heuristic stay; mark_task_done is
+	//     not registered, so the model cannot self-declare completion.
+	//   - "off"      — no checkpointing at all. /done reports that the
+	//     agent was built without a checkpointer.
+	//
+	// Empty == "model".
+	//
+	// "operator" exists for long-lived services (#905). mark_task_done's
+	// description tells the model to use it "generously at natural task
+	// boundaries", and its detail arg asks for a completion summary —
+	// framing written for an interactive coding session. A daemon
+	// consuming machine signals has no conversation about to shift to a
+	// new task, so every inbox bundle after a closed incident looks like
+	// a boundary; a live deployment produced sixteen mark_task_done
+	// calls in one session and answered an unrelated operator question
+	// with a completion report instead. A tool description outranks the
+	// persona at the point of decision, and a recipe author cannot edit
+	// it, so the lever has to be here.
+	//
+	// This field exists so a recipe can ship its posture instead of
+	// relying on every invocation and deploy manifest remembering a
+	// flag — same argument as SafetyConfig.Watchdog (#660). It also
+	// splits what --no-checkpoint conflated: that flag removes the
+	// model's trigger, the operator's /done, and the heuristic
+	// together, which is not what its help text promised.
+	//
+	// CLI override: --checkpoint=model|operator|off. The older
+	// --no-checkpoint is retained as an alias for "off".
+	Mode string `json:"mode,omitempty"`
 }
 
 // UIConfig holds presentation choices for the in-process TUI
@@ -1508,6 +1553,13 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config: compaction.threshold_by_tier[%q]=%v must be in (0, 1) exclusive", tier, v)
 		}
 	}
+	switch c.Checkpoint.Mode {
+	case "", CheckpointModeModel, CheckpointModeOperator, CheckpointModeOff:
+		// ok; "" defaults to model (see CheckpointConfig.Mode).
+	default:
+		return fmt.Errorf("config: unknown checkpoint.mode %q (want one of %q, %q, %q)",
+			c.Checkpoint.Mode, CheckpointModeModel, CheckpointModeOperator, CheckpointModeOff)
+	}
 	if wv := c.Tools.WaitAndVerify; wv.MaxTimeoutSeconds < 0 || wv.MaxAttempts < 0 {
 		return fmt.Errorf("config: tools.wait_and_verify: max_timeout_seconds (%d) and max_attempts (%d) must be >= 0 (0 = built-in default)", wv.MaxTimeoutSeconds, wv.MaxAttempts)
 	}
@@ -1638,6 +1690,15 @@ const (
 	WatchdogWarn     = "warn"
 	WatchdogFeedback = "feedback"
 	WatchdogEnforce  = "enforce"
+)
+
+// Checkpoint mode constants. See CheckpointConfig.Mode for behavior.
+// Listed strongest to weakest; each mode is a subset of the one
+// before it.
+const (
+	CheckpointModeModel    = "model"
+	CheckpointModeOperator = "operator"
+	CheckpointModeOff      = "off"
 )
 
 // Bash search-gate mode constants. See SafetyConfig.BashSearchGate.

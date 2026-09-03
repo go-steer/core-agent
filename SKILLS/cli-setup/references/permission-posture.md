@@ -156,7 +156,7 @@ The write tools are removed from the agent's tool list entirely — it can't eve
 ### "CI run — fully automated, known-safe tool surface"
 
 ```bash
-core-agent --yolo --no-checkpoint --no-compact -p "..."
+core-agent --yolo --checkpoint=off --no-compact -p "..."
 ```
 
 Or in config:

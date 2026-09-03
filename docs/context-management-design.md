@@ -534,6 +534,37 @@ consumers that don't get the default "no checkpointer" behavior
 where `mark_task_done` is not registered as a tool and `/done`
 isn't recognized.
 
+**Implementation note (#905, 2026-09-03).** The design above treats
+the three triggers as one bundle, and the shipped `--no-checkpoint`
+inherited that: it removed all three. That turned out to be the wrong
+seam. Mechanism C's model-initiated trigger assumes an interactive
+session — "when you've completed a coherent task, call
+`mark_task_done`" presupposes a conversation about to shift to a new
+task. A long-lived daemon consuming machine signals has no such
+boundary, so it reads one into every inbox bundle; a live deployment
+produced sixteen `mark_task_done` calls in one session and answered
+unrelated operator questions with completion reports.
+
+Shipped resolution: the triggers are now independently selectable via
+`checkpoint.mode` (`--checkpoint=model|operator|off`, library option
+`agent.WithoutMarkTaskDoneTool`). `operator` keeps triggers 2 and 3 and
+drops trigger 1. `--no-checkpoint` remains as a deprecated alias for
+`off`.
+
+Two things this incident settled that the design did not anticipate:
+
+- **Trigger 1's prompt text is the mechanism, not decoration.** The
+  quoted instruction above became the shipped tool description and the
+  `detail` arg schema, and those strings outranked two layers of recipe
+  persona that explicitly forbade the resulting behavior. A recipe
+  author cannot edit them, so the lever had to be registration. See
+  #909 for the audit this generalizes to.
+- **Mechanisms A and C must be separable in the operator's mind too.**
+  Most of the resistance to `--no-checkpoint` was the belief that it
+  disabled context reduction. It never did — that is Mechanism A,
+  which fires on utilization with no model involvement. The docs and
+  the boot line now say so explicitly.
+
 ## Mechanism D — persistent memory
 
 ### Problem

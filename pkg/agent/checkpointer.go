@@ -219,13 +219,28 @@ func (a *Agent) Checkpoint(ctx context.Context, taskNote string) (CheckpointResu
 // mark_task_done. Single arg — no task_name — because the model
 // is bad at picking stable task identifiers and the detail string
 // is what the checkpoint preamble actually needs.
+//
+// The schema names a content obligation (what the next turn needs)
+// rather than a genre (#905/#909). It used to ask for a "one-paragraph
+// completion summary", and that phrase, not the description, is what
+// shaped the visible failure: a live daemon answered unrelated operator
+// questions with completion reports because a tool schema had asked it
+// for one. An arg description is a writing prompt — the model writes
+// the genre it is handed.
 type markTaskDoneArgs struct {
-	Detail string `json:"detail" jsonschema:"one-paragraph completion summary: what was the task and what's the outcome. The checkpointer will fold this into a richer handover record on the next turn."`
+	Detail string `json:"detail" jsonschema:"the facts a future turn needs in order to pick up from here: the concrete outcome, the state things are now in, and anything left unresolved. A few sentences at most. The runtime folds this into a handover record; a short form may also appear in the operator's UI as a label. This is not a report to the operator and not a recap of the session."`
 }
 
 type markTaskDoneResult struct {
 	Status string `json:"status"`
 }
+
+// markTaskDoneDescription is the model-facing description. A named
+// constant rather than an inline literal so the prose regression guard
+// in checkpointer_test.go asserts against the exact string the model
+// sees — see NewMarkTaskDoneTool for what the rewrite fixed and why the
+// banned shapes are banned.
+const markTaskDoneDescription = "Signal that a task you were given is finished, so the runtime can slice its conversation history out of future turns and the next task starts with a clean context window. This is a context-management signal, not a way to report to the operator: calling it does not answer a question and does not deliver work — anything the operator needs to read belongs in your reply. Call it only when a task is finished AND you have already delivered what it asked for, and only for work that finished in THIS turn. Do NOT call it mid-task, for partial progress, for work you already reported in an earlier turn, or in place of answering what you were just asked. When in doubt, do not call it: a boundary you missed can still be declared later, but one declared too early throws away context that is still in use."
 
 // NewMarkTaskDoneTool returns the model-facing tool that signals
 // task completion. The handler doesn't fire the checkpoint
@@ -247,14 +262,34 @@ type markTaskDoneResult struct {
 // tool before agent.New returns).
 //
 // Registered automatically in agent.New when a Checkpointer is
-// wired via WithCheckpointer.
+// wired via WithCheckpointer, unless WithoutMarkTaskDoneTool asks
+// for the operator-only posture (#905).
+//
+// The description is prompt text and was rewritten as such (#905/#909).
+// The original told the model to "use this generously at natural task
+// boundaries (after shipping a feature, finishing a code review,
+// completing a debugging session)" — three examples from an
+// interactive coding session, plus a frequency instruction. A daemon
+// consuming machine signals has no conversation about to shift to a new
+// task, so every inbox bundle after a closed incident reads as a
+// boundary; one live deployment produced sixteen calls in a single
+// session and answered unrelated operator questions with completion
+// reports. Two prose layers in the recipe forbade exactly that
+// behavior and lost, because a tool description outranks the persona at
+// the point of decision and a recipe author cannot edit it.
+//
+// So: no frequency instruction, no workload examples, and the negations
+// name the observed failure rather than only the obvious one
+// ("mid-task"). Skipping a boundary is stated as costless because it
+// is — compaction reduces context on its own, and the model has no way
+// to know that otherwise.
 func NewMarkTaskDoneTool(getter func() *Agent) tool.Tool {
 	handler := func(_ tool.Context, args markTaskDoneArgs) (markTaskDoneResult, error) {
 		return markTaskDone(getter(), args.Detail), nil
 	}
 	t, err := functiontool.New(functiontool.Config{
 		Name:        "mark_task_done",
-		Description: "Call this when you have completed a coherent task and the conversation is about to shift to a new task (or end). The detail argument is your one-paragraph summary of what was done. After this turn finishes, the runtime will fold this detail into a richer handover record and slice the prior conversation from future turns — so the next task starts with a clean context window. Use this generously at natural task boundaries (after shipping a feature, finishing a code review, completing a debugging session). Do NOT call this mid-task or for partial progress.",
+		Description: markTaskDoneDescription,
 	}, handler)
 	if err != nil {
 		panic("agent: NewMarkTaskDoneTool: " + err.Error())

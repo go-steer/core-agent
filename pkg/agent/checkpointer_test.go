@@ -17,6 +17,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -183,10 +184,133 @@ func TestMarkTaskDoneTool_NotRegisteredWithoutCheckpointer(t *testing.T) {
 	}
 }
 
+// TestWithoutMarkTaskDoneTool_KeepsCheckpointerDropsTool is the #905
+// contract: the operator-only posture withholds the model's trigger
+// WITHOUT unwiring checkpointing. Both halves matter. Dropping the tool
+// is the fix; keeping the checkpointer is what distinguishes this from
+// --no-checkpoint, which took /done and the heuristic with it and so
+// was too blunt to run on the deployment that needed it.
+func TestWithoutMarkTaskDoneTool_KeepsCheckpointerDropsTool(t *testing.T) {
+	t.Parallel()
+	llm := &captureLLM{response: "ack"}
+	a, err := New(llm, WithCheckpointer(NewDefaultCheckpointer()), WithoutMarkTaskDoneTool())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if toolNameRegistered(a, "mark_task_done") {
+		t.Errorf("mark_task_done registered with WithoutMarkTaskDoneTool; want it withheld")
+	}
+	if !a.HasCheckpointer() {
+		t.Errorf("HasCheckpointer() = false; want true (/done must still work)")
+	}
+	// The operator path has to reach the same machinery, not just
+	// report that it exists.
+	if _, err := a.Checkpoint(context.Background(), "operator note"); errors.Is(err, ErrNoCheckpointer) {
+		t.Errorf("Checkpoint returned ErrNoCheckpointer; the checkpointer must stay wired")
+	}
+}
+
+// TestWithoutMarkTaskDoneTool_NoOpWithoutCheckpointer guards the
+// documented "no tool to suppress" case, so the option can be passed
+// unconditionally by a caller that resolves the checkpointer later.
+func TestWithoutMarkTaskDoneTool_NoOpWithoutCheckpointer(t *testing.T) {
+	t.Parallel()
+	llm := &captureLLM{response: "ack"}
+	a, err := New(llm, WithoutMarkTaskDoneTool())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if toolNameRegistered(a, "mark_task_done") {
+		t.Errorf("mark_task_done registered without a checkpointer")
+	}
+	if a.HasCheckpointer() {
+		t.Errorf("HasCheckpointer() = true; the option must not wire one")
+	}
+}
+
+// TestMarkTaskDonePromptText is a prose regression guard, not a style
+// check. Tool descriptions and arg schemas are system-prompt-weight
+// text that nothing else reviews (#909), and the two phrases banned
+// here are the ones that caused #905: "use this generously" set a
+// call-frequency policy the persona could not countermand, and asking
+// the `detail` arg for a "completion summary" is what put completion
+// reports where operator answers belonged. A reword that reintroduces
+// either shape should fail here rather than on a live deployment.
+func TestMarkTaskDonePromptText(t *testing.T) {
+	t.Parallel()
+
+	// Read it off the constructed tool, not off the constant, so a
+	// future edit that leaves markTaskDoneDescription in place but
+	// hands functiontool.Config a different string still fails here.
+	desc := NewMarkTaskDoneTool(func() *Agent { return nil }).Description()
+	if desc == "" {
+		t.Fatal("mark_task_done has no description")
+	}
+	if desc != markTaskDoneDescription {
+		t.Errorf("tool description has drifted from markTaskDoneDescription;\n got: %s\nwant: %s", desc, markTaskDoneDescription)
+	}
+	lowered := strings.ToLower(desc)
+	for _, banned := range []string{
+		// Frequency instructions. The persona cannot countermand one,
+		// so the tool must not set a rate at all — #905 was "generously"
+		// specifically, but any of these reproduces it.
+		"generously",
+		"freely",
+		"liberally",
+		"whenever you",
+		"as often as",
+		// Interactive-coding-session examples. They tell a cluster
+		// operator's agent it is in the wrong kind of session.
+		"shipping a feature",
+		"code review",
+		"debugging session",
+	} {
+		if strings.Contains(lowered, banned) {
+			t.Errorf("description contains %q; it must not assume a coding session or set a call frequency:\n%s", banned, desc)
+		}
+	}
+	// The observed failure was answering an operator's question with
+	// this tool. The description has to rule that out by name.
+	for _, want := range []string{"does not answer a question", "in place of answering"} {
+		if !strings.Contains(lowered, want) {
+			t.Errorf("description does not say %q; that negation is the fix:\n%s", want, desc)
+		}
+	}
+
+	// Read the tag off the struct the model's schema is generated
+	// from, so the guard cannot drift from the shipped text.
+	field, ok := reflect.TypeOf(markTaskDoneArgs{}).FieldByName("Detail")
+	if !ok {
+		t.Fatal("markTaskDoneArgs has no Detail field")
+	}
+	schema := field.Tag.Get("jsonschema")
+	if schema == "" {
+		t.Fatal("mark_task_done detail arg has no jsonschema description")
+	}
+	loweredSchema := strings.ToLower(schema)
+	// A string arg description is a writing prompt: it must name a
+	// content obligation, never a genre.
+	for _, banned := range []string{"completion summary", "one-paragraph summary", "summary of what", "summarize"} {
+		if strings.Contains(loweredSchema, banned) {
+			t.Errorf("detail schema asks for %q; name what the next turn needs, not a genre:\n%s", banned, schema)
+		}
+	}
+	// The genre words are only safe here as negations, which is why
+	// they cannot simply be banned outright. Requiring the negations
+	// is what makes the bans above hard to route around: a reword that
+	// asks for a report or a recap has to delete one of these to read
+	// coherently.
+	for _, want := range []string{"not a report to the operator", "not a recap"} {
+		if !strings.Contains(loweredSchema, want) {
+			t.Errorf("detail schema does not say %q; the genre it is NOT is load-bearing:\n%s", want, schema)
+		}
+	}
+}
+
 // TestHasCompactorAndCheckpointer pins the surface-gating predicates
 // hosts use to decide whether to list /compact and /done in
 // /help. Stale predicate values would surface dead slashes to
-// operators who passed --no-compact / --no-checkpoint.
+// operators who passed --no-compact / --checkpoint=off.
 func TestHasCompactorAndCheckpointer(t *testing.T) {
 	t.Parallel()
 	llm := &captureLLM{response: "ack"}

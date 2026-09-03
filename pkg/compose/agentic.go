@@ -154,7 +154,11 @@ func RenderContextStats(s agent.ContextStats, parentInputRate float64) string {
 
 	// Checkpoints section.
 	if s.CheckpointCount == 0 {
-		b.WriteString("  Checkpoints:  none yet (fired by /done or the model calling mark_task_done)\n")
+		// Deliberately does not name mark_task_done: under
+		// --checkpoint=operator the model has no such tool, and an
+		// operator hunting for why it never fires one it was never
+		// given is a support question this line would have caused.
+		b.WriteString("  Checkpoints:  none yet (fired by /done, or by the model at a task boundary)\n")
 	} else {
 		fmt.Fprintf(&b, "  Checkpoints:  %d", s.CheckpointCount)
 		if !s.LastCheckpointTime.IsZero() {

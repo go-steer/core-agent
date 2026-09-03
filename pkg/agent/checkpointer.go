@@ -235,6 +235,13 @@ type markTaskDoneArgs struct {
 
 type markTaskDoneResult struct {
 	Status string `json:"status"`
+
+	// NoOp marks a call that accomplished nothing, for
+	// watchdog.NoOpStreakSignal to count (#907). Machine-readable on
+	// purpose: Status already says the same thing in English, and the
+	// English is what gets reworded. Omitted when false so the ordinary
+	// result keeps its one-field shape in the model's context.
+	NoOp bool `json:"no_op,omitempty"`
 }
 
 // markTaskDoneDescription is the model-facing description. A named
@@ -337,7 +344,12 @@ const markTaskDoneRepeatStatus = "already recorded for this turn — the checkpo
 // documents; it stays a successful no-op.
 func markTaskDone(a *Agent, detail string) markTaskDoneResult {
 	if a == nil {
-		return markTaskDoneResult{Status: "acknowledged (no-op: agent not yet bound)"}
+		// Genuinely inert, and the one no-op here that is the runtime's
+		// fault rather than the model's — but a model that keeps
+		// calling into an unbound agent is still looping, and the
+		// alert's guidance ("stop calling them") is still the right
+		// advice.
+		return markTaskDoneResult{Status: "acknowledged (no-op: agent not yet bound)", NoOp: true}
 	}
 	a.mu.Lock()
 	repeat := a.checkpointRequested
@@ -345,7 +357,7 @@ func markTaskDone(a *Agent, detail string) markTaskDoneResult {
 	a.pendingCheckpointNote = detail
 	a.mu.Unlock()
 	if repeat {
-		return markTaskDoneResult{Status: markTaskDoneRepeatStatus}
+		return markTaskDoneResult{Status: markTaskDoneRepeatStatus, NoOp: true}
 	}
 	return markTaskDoneResult{Status: "acknowledged"}
 }

@@ -240,6 +240,7 @@ func NewDefaultWatchdog() *DefaultWatchdog {
 				DefaultDominantDeferRun, DefaultDominantDeferPeriod),
 			NewRepeatedToolNameSignal(DefaultToolNameRun, DefaultRepeatThreshold),
 			NewToolFailureStreakSignal(DefaultFailureStreak),
+			NewNoOpStreakSignal(DefaultNoOpStreak),
 		},
 	}
 }

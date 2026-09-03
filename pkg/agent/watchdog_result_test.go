@@ -177,3 +177,60 @@ func TestToolResponseError_ReadsTheADKConvention(t *testing.T) {
 		})
 	}
 }
+
+// TestObserveToolResultsForWatchdog_CarriesNoOp: the reserved "no_op"
+// key has to survive the flatten, or NoOpStreakSignal never sees the
+// only evidence it reads (#907).
+func TestObserveToolResultsForWatchdog_CarriesNoOp(t *testing.T) {
+	t.Parallel()
+	w := &resultWatchdog{}
+	a := &Agent{watchdog: w}
+
+	a.observeToolResultsForWatchdog(wdResultEvent(
+		wdResultPart("1", "mark_task_done", map[string]any{"status": "acknowledged"}),
+		wdResultPart("2", "mark_task_done", map[string]any{"status": "already recorded", "no_op": true}),
+	), map[string]struct{}{})
+
+	if got := len(w.results); got != 2 {
+		t.Fatalf("observed %d results, want 2", got)
+	}
+	if w.results[0].NoOp {
+		t.Errorf("[0] = %+v, want NoOp false — the first call armed the checkpoint", w.results[0])
+	}
+	if !w.results[1].NoOp {
+		t.Errorf("[1] = %+v, want NoOp true", w.results[1])
+	}
+}
+
+// TestToolResponseNoOp: fail-OPEN on an unrecognized value, which is
+// the opposite of toolResponseError's fail-safe reading of "error".
+// NoOpStreakSignal is Critical and halts the agent under
+// --watchdog=enforce, so a garbled value must not be able to
+// manufacture a halt.
+func TestToolResponseNoOp(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		resp map[string]any
+		want bool
+	}{
+		{"absent", map[string]any{"status": "ok"}, false},
+		{"nil resp", nil, false},
+		{"explicit nil", map[string]any{"no_op": nil}, false},
+		{"bool true", map[string]any{"no_op": true}, true},
+		{"bool false", map[string]any{"no_op": false}, false},
+		{"string true", map[string]any{"no_op": "true"}, true},
+		{"string false", map[string]any{"no_op": "false"}, false},
+		{"garbled string", map[string]any{"no_op": "yes"}, false},
+		{"number", map[string]any{"no_op": 1}, false},
+		{"object", map[string]any{"no_op": map[string]any{"why": "repeat"}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := toolResponseNoOp(tc.resp); got != tc.want {
+				t.Errorf("toolResponseNoOp(%v) = %v, want %v", tc.resp, got, tc.want)
+			}
+		})
+	}
+}

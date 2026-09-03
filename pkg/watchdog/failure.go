@@ -53,6 +53,18 @@ const DefaultFailureStreak = 3
 type ToolResult struct {
 	Name  string
 	Error string
+
+	// NoOp is the tool's own assertion that this invocation changed
+	// nothing — the reserved "no_op" key in the response, opted into
+	// per tool. It is deliberately not inferred: a signal that guessed
+	// inertness from repetition would be the thing every other detector
+	// in this package already does, and #905 is the proof that guessing
+	// is what fails. See noop.go.
+	//
+	// A failed call is not a no-op. The two are independent claims and
+	// a tool that sets both is reporting an error, which
+	// ToolFailureStreakSignal already covers.
+	NoOp bool
 }
 
 // Failed reports whether the call errored.

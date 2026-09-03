@@ -455,8 +455,14 @@ func TestMarkTaskDone_RepeatInOneTurnSaysSo(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	if got := markTaskDone(a, "triaged the OOMKill on api-7d9"); got.Status != "acknowledged" {
-		t.Errorf("first call Status = %q, want acknowledged", got.Status)
+	first := markTaskDone(a, "triaged the OOMKill on api-7d9")
+	if first.Status != "acknowledged" {
+		t.Errorf("first call Status = %q, want acknowledged", first.Status)
+	}
+	// The call that armed the checkpoint did something, so counting it
+	// toward a no-op streak would shorten every streak by one.
+	if first.NoOp {
+		t.Errorf("first call reported NoOp; it armed the checkpoint")
 	}
 	for i := 0; i < 8; i++ {
 		got := markTaskDone(a, "the OOMKill work is complete, said another way")
@@ -465,6 +471,12 @@ func TestMarkTaskDone_RepeatInOneTurnSaysSo(t *testing.T) {
 		}
 		if got.Status != markTaskDoneRepeatStatus {
 			t.Fatalf("repeat %d Status = %q, want the repeat status", i+2, got.Status)
+		}
+		// The machine-readable half (#907). The Status above says the
+		// same thing in English, and English is what gets reworded;
+		// watchdog.NoOpStreakSignal reads only this.
+		if !got.NoOp {
+			t.Fatalf("repeat %d did not set NoOp — the watchdog cannot see the loop", i+2)
 		}
 	}
 

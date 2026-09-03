@@ -236,6 +236,7 @@ func (a *Agent) observeToolResultsForWatchdog(ev *session.Event, seen map[string
 		obs.ObserveToolResult(watchdog.ToolResult{
 			Name:  p.FunctionResponse.Name,
 			Error: errText,
+			NoOp:  toolResponseNoOp(p.FunctionResponse.Response),
 		})
 	}
 	return observed
@@ -264,6 +265,50 @@ func toolResponseError(resp map[string]any) string {
 		return e.Error()
 	default:
 		return fmt.Sprintf("%v", e)
+	}
+}
+
+// ToolResultNoOpKey is the reserved response key a tool sets to declare
+// that an invocation changed nothing (#907). It sits alongside ADK's
+// reserved "error" key and is read by exactly one consumer,
+// watchdog.NoOpStreakSignal.
+//
+// A tool opts in. The alternative — a registry of (tool, status) pairs
+// the runtime knows to mean no-op, or matching the status prose — puts
+// the knowledge somewhere that goes stale the first time a status
+// string is reworded, and mark_task_done's repeat status carries a doc
+// comment actively inviting that rewording.
+//
+// The value is a claim about THIS call, not about the tool. A tool that
+// sometimes does work and sometimes does not sets it per invocation;
+// that is the whole shape the signal reads.
+const ToolResultNoOpKey = "no_op"
+
+// toolResponseNoOp reports whether a tool declared its own call inert.
+//
+// Only a literal true counts. Unlike toolResponseError, which treats an
+// unrecognized shape under "error" as a failure, an unrecognized shape
+// here is NOT read as a no-op: the failure path is fail-safe (an
+// unreadable error still gets counted as an error), while this one is
+// fail-open by necessity. NoOpStreakSignal raises Critical alerts,
+// which halt the agent under --watchdog=enforce, so a garbled value
+// must never be able to manufacture a halt.
+//
+// JSON round-trips through ADK as bool, but a response that has been
+// through a generic map may carry the string "true"; both are accepted
+// because both are unambiguous, and nothing else is.
+func toolResponseNoOp(resp map[string]any) bool {
+	v, ok := resp[ToolResultNoOpKey]
+	if !ok || v == nil {
+		return false
+	}
+	switch b := v.(type) {
+	case bool:
+		return b
+	case string:
+		return b == "true"
+	default:
+		return false
 	}
 }
 

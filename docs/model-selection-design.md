@@ -200,10 +200,11 @@ Default behavior (configurable):
 1b. **Enforce mode** (`--watchdog=enforce`) — **SHIPPED (#623)**. The
    halt variant, shipped ahead of the escalation modes below as the
    interim behavioral backstop: a Critical signal (today
-   `repeated-tool-call`, `alternating-tool-cycle` or
+   `repeated-tool-call`, `alternating-tool-cycle`,
    `dominant-tool-call` — the three that compare arguments and can
-   therefore prove the calls were redundant; the name-keyed
-   `repeated-tool-name` is Warn) emits a
+   therefore prove the calls were redundant — plus `no-op-streak`,
+   which needs no comparison because the tools said it themselves
+   (#907); the name-keyed `repeated-tool-name` is Warn) emits a
    `turn-error` (`kind=watchdog`) and
    refuses subsequent turns until the operator resets it (`/guardrail
    reset`, or `POST /sessions/{id}/guardrails/reset` — #666). It does

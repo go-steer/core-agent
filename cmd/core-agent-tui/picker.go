@@ -88,6 +88,7 @@ func (m pickerModel) refreshCmd() tea.Cmd {
 				Endpoint:      client.URL.BaseURL,
 				Origin:        "local",
 				LastTouchedAt: s.LastTouchedAt,
+				Title:         s.Title,
 			})
 		}
 		// Peers: best-effort. 404 (no peer-registration) is fine.
@@ -133,6 +134,7 @@ func fetchPeerSessions(parent context.Context, peers []attachclient.PeerDescript
 					Endpoint:      p.Endpoint,
 					Origin:        p.Name,
 					LastTouchedAt: s.LastTouchedAt,
+					Title:         s.Title,
 				})
 			}
 			results <- result{out}

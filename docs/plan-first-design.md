@@ -642,3 +642,80 @@ The table row above still describes `wait_and_verify` correctly: an
 MCP poll re-enters the polled tool's own gate check, so it is
 plan-gated exactly as a direct call is — which now means exempt on a
 `read_only` server and gated everywhere else.
+
+## Implementation notes (2026-09-03, #906)
+
+The sketch above says `record_plan` writes to a path whose sequence
+is "a monotonically increasing counter (so revisions don't overwrite
+earlier drafts)". Read as *per call* rather than *per plan*, which is
+how it was implemented, that is a tool a runaway can use to write
+unbounded files into the plans directory — and one did. On a live GKE
+run (`2.9.0-dev.4`) an agent in completion-reporting mode called
+`record_plan` eight times in one turn, seven of them consecutively,
+minting `plan-5` through `plan-11`, each with a reworded body and each
+answered "Plan recorded" plus a re-announcement of the unblock list
+that had already been announced.
+
+The counter is now allocated per plan. A repeat by the same author —
+`(agent, session)`, the pair the frontmatter already records — within
+the same turn overwrites the artifact it wrote rather than filing a
+sibling; an identical body writes nothing at all; a genuinely new plan
+in a later turn still takes the next sequence number, so the
+cross-turn audit trail is unchanged. `/replan` stays the
+revoke-and-redraft path, and because the guard verifies the remembered
+artifact is still on disk, a redraft after revocation gets a fresh
+sequence instead of resurrecting the archived one.
+
+Three notes for anyone revisiting this:
+
+- **The behaviour is the fix; the wording is not.** #857 answered the
+  same loop shape on `mark_task_done` with an honest "this did
+  nothing" status and the model re-called thirteen times. The message
+  changes here (`recorded` / `updated` / `unchanged`, and the unblock
+  list only on an actual gate transition) are worth having, but the
+  load-bearing part is that call two does not produce a file. The
+  `outcome` field exists so a detector can key on the no-op without
+  parsing prose (#907).
+
+- **The turn boundary comes from ADK's invocation ID.** `pkg/agent`'s
+  checkpointer keys its in-turn repeat flag off an `Agent` field that
+  a post-turn hook clears; `pkg/tools` has neither an `Agent` nor a
+  turn hook, but `tool.Context.InvocationID()` is the same signal
+  already threaded through every tool call in a turn, and state keyed
+  by it expires on its own instead of needing a reset callback a
+  library caller could forget to wire.
+
+- **State is per author, not per turn.** Keying the map by turn would
+  lose the ability to notice that the *current* artifact already holds
+  this exact plan; keying it by author and storing the invocation
+  inside the entry gets both, and keeps a parent and its declarative
+  subagent (the #747 case) on separate plans when they interleave
+  inside one turn. The map is bounded at 64 authors, least-recently-used
+  evicted first; an evicted author degrades to the old behaviour — one
+  needless plan file, never a wrong one. LRU rather than insertion
+  order is load-bearing, not a detail: the synchronous subagent door
+  derives a session ID per delegation, so a fan-out parent produces a
+  stream of single-use keys, and under insertion order the primary
+  session — inserted once and thereafter only re-read — would be the
+  first key that churn evicted, switching the guard off for exactly the
+  session it exists to protect.
+
+Two limits worth stating plainly, since both are things the guard
+deliberately does not do:
+
+- **The unit is one delegated run, not one incident.** Because a
+  synchronous subagent's session ID is derived per delegation,
+  delegating twice to the same subagent yields two plan artifacts. That
+  is the right reading — two pieces of work — but it means the
+  directory still grows with delegation count, and only a loop *inside*
+  a run is collapsed.
+
+- **The overwritten in-turn draft is not archived.** Plan artifacts are
+  the current plan, not a version history; a draft the model revised
+  seconds later is not an operator decision worth preserving, and the
+  audit trail that does matter — a plan the operator rejected — is what
+  `/replan`'s `-revoked.md` rename keeps. Both `record_plan` and
+  `/replan` now mutate the plans directory under one process-wide lock,
+  which closes the window where a revoke landing between the guard's
+  existence check and its write could have put a live plan back at a
+  path the operator had just retired.

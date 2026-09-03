@@ -48,7 +48,7 @@ Tools are grouped by domain — files, search, shell, data + network, planning, 
 | Tool | Purpose | Key parameters |
 |---|---|---|
 | `todo` | In-process plan tracker. Actions: `list`, `add`, `set_status`, `clear`. Underlying `TodoStore` is exposed via `Registry.Todo` so a TUI can render plan progress (the in-process TUI's `/todo` slash command uses this). | `action`, `id?`, `text?`, `status?` |
-| `record_plan` | Writes the turn's plan to `.agents/plans/plan-<seq>.md` for the operator's audit trail. Registered only under [`plan_mode`](/reference/configuration/#plan-mode-v29--plan_mode) `advisory` or `required`; under `required` it also satisfies the gate's plan pre-check. Its **description is mode-aware** — under `required` it tells the model that mutating calls are denied until the plan is on file; under `advisory` it says the opposite, so the model records and proceeds instead of stalling for an approval nobody will send. Since v2.9 its **result** is mode-aware too, and names the tools this build actually gates — see below. | `plan` |
+| `record_plan` | Writes the turn's plan to `.agents/plans/plan-<seq>.md` for the operator's audit trail. Registered only under [`plan_mode`](/reference/configuration/#plan-mode-v29--plan_mode) `advisory` or `required`; under `required` it also satisfies the gate's plan pre-check. Its **description is mode-aware** — under `required` it tells the model that mutating calls are denied until the plan is on file; under `advisory` it says the opposite, so the model records and proceeds instead of stalling for an approval nobody will send. Since v2.9 its **result** is mode-aware too, and names the tools this build actually gates; a repeat call within the same turn revises that plan in place instead of minting `plan-<seq+1>.md` — see below. | `plan` |
 
 ### Verification
 
@@ -158,6 +158,26 @@ session: "s-8f21"
 A parent and its [declarative subagent](/agent-design/subagents-and-wrappers/) write into one `.agents/plans/` directory and share one sequence, and in [multi-session](/concepts/multi-session/) mode the gate flag is per-session while the directory is process-global — so before this, concurrent tenants produced a pile of anonymous markdown. Keys are omitted rather than emitted empty, so "no attribution recorded" is distinguishable from "recorded as empty".
 
 **`/replan` archives the operator's own plan.** The [`/replan`](/run/interactive/slash-reference/#permissions) command used to archive whichever artifact had the highest sequence number, which after a subagent recorded plan-2 meant the operator revoked the subagent's plan and left the parent's in place. It is now scoped to the agent and session it was issued from, falling back to the newest artifact when no plan carries attribution (pre-v2.9 directories). If the newest plan belongs to someone else, the command says so and leaves it alone — and the gate flag clears either way, so the safety contract holds even when there was nothing to file. Sessions created by a [multi-session](/concepts/multi-session/) daemon get the same command against their own sub-gate; before v2.9 those sessions answered `501` and a recipe running `plan_mode: required` under the hub could arm the gate with no way to revoke it.
+
+### `record_plan` repeats don't mint plan files
+
+A sequence number is allocated per *plan*, not per *call* (v2.9, [#906](https://github.com/go-steer/core-agent/issues/906)). What a repeat call does depends on who is calling, when, and whether the plan actually changed:
+
+| Call | Effect on disk | `outcome` |
+| --- | --- | --- |
+| First plan of a turn, or a new plan in a later turn | new `plan-<seq>.md` | `recorded` |
+| Same author, same turn, revised text | the artifact it already wrote is **overwritten in place** | `updated` |
+| Same author, identical text | **nothing is written** | `unchanged` |
+| A different agent or session, same turn | its own `plan-<seq>.md` | `recorded` |
+| After `/replan` archived the artifact | new `plan-<seq>.md` — a revoked sequence is never resurrected | `recorded` |
+
+"Same author" is the `(agent, session)` pair the artifact's frontmatter records, so a parent and a [subagent](/agent-design/subagents-and-wrappers/) planning in the same incident each get their own plan, as do two concurrent [multi-session](/concepts/multi-session/) tenants — the guard never makes one author's plan suppress another's.
+
+One consequence worth knowing: a synchronous subagent runs under a session ID derived per delegation, so the unit the guard collapses repeats within is *one delegated run*, not "that subagent across the whole incident". Delegate to the same subagent twice and you get two plan files, one per run. That is the intended reading — they are two separate pieces of work — but it means the plans directory still grows with delegation count, and only a loop *inside* a single run is deduplicated.
+
+This exists because a model that had drifted into completion-reporting mode called `record_plan` eight times in a single turn on a live cluster, seven of them consecutively, and minted `plan-5` through `plan-11` — each with a reworded plan, so [loop detection](/concepts/context-management/#watchdog-behavioral-observer--since-v25) saw eight distinct calls and nothing to trip on. The prose fix alone was already known not to work: the same shape on `mark_task_done` was answered with an honest "this did nothing" status and the model re-called thirteen times anyway. So the defence is the behaviour — no new file — and the message is secondary. The `outcome` field is there so a detector can key on the no-op without parsing English.
+
+The unblock announcement follows the same rule. `Now unblocked for this session: …` is a report of a state *change*, so it appears only on the call that actually opens the gate; a repeat, or a plan recorded later in a session that already has one, is told the gate was already satisfied instead.
 
 Full rationale: [`docs/plan-first-design.md`](https://github.com/go-steer/core-agent/blob/main/docs/plan-first-design.md).
 

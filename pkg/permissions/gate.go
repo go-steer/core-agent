@@ -547,9 +547,26 @@ func (g *Gate) SessionID() string {
 // plan-first pre-check and resume the configured Mode's normal
 // gating semantics.
 func (g *Gate) MarkPlanRecorded() {
+	g.MarkPlanRecordedOnce()
+}
+
+// MarkPlanRecordedOnce is MarkPlanRecorded plus the answer to "did
+// this call open the gate?" — true only for the transition, false if a
+// plan was already recorded.
+//
+// It exists because reading IsPlanRecorded and then marking is two
+// operations, and ADK dispatches a turn's function calls concurrently:
+// two record_plan calls in one turn could both observe an unset flag
+// and both announce an unblock that only happened once. record_plan
+// uses the answer to decide whether to announce at all (#906) — a
+// re-announcement of a transition that didn't happen is what a loop
+// reads as progress.
+func (g *Gate) MarkPlanRecordedOnce() bool {
 	g.mu.Lock()
+	defer g.mu.Unlock()
+	opened := !g.planRecorded
 	g.planRecorded = true
-	g.mu.Unlock()
+	return opened
 }
 
 // ClearPlanRecorded resets the per-gate planRecorded flag. Called

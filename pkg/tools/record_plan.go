@@ -16,6 +16,7 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -24,6 +25,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
@@ -50,6 +52,14 @@ type recordPlanResult struct {
 	Path     string `json:"path"`
 	Sequence int    `json:"sequence"`
 	Message  string `json:"message"`
+	// Outcome is the machine-readable form of what the call did:
+	// planOutcomeRecorded (a new plan-<seq>.md), planOutcomeUpdated
+	// (the plan this author already recorded this turn, overwritten in
+	// place) or planOutcomeUnchanged (nothing written — the artifact
+	// already holds this exact plan). A typed field rather than prose
+	// only, because #857 established that prose alone does not stop a
+	// loop: the field is what a behavioral detector can key on (#907).
+	Outcome string `json:"outcome"`
 	// Agent and Session echo the attribution written into the
 	// artifact's frontmatter, so the model's own transcript records
 	// which plan is its own. Empty when the host ran the handler
@@ -64,7 +74,13 @@ type recordPlanResult struct {
 // stalling for an approval that isn't coming — which is the same
 // state-a-property-the-runtime-doesn't-enforce bug in reverse.
 const (
-	recordPlanDescCommon = "Plan is free-form markdown — typical shape: goal, files to change, approach, risks, test plan, out of scope. The plan is persisted to .agents/plans/plan-<seq>.md and visible to the operator in chat. To revise an existing plan, just call record_plan again — each call writes a new plan file with the next sequence number."
+	// The revision sentence is deliberately precise about what a repeat
+	// call does (#906). It used to promise "each call writes a new plan
+	// file with the next sequence number", which was both true and an
+	// invitation: a model in completion-reporting mode called record_plan
+	// eight times in one turn and minted plan-5 through plan-11, and the
+	// description told it that was the intended way to revise.
+	recordPlanDescCommon = "Plan is free-form markdown — typical shape: goal, files to change, approach, risks, test plan, out of scope. The plan is persisted to .agents/plans/plan-<seq>.md and visible to the operator in chat. Call this ONCE per plan: revising within the same turn updates that same artifact in place rather than filing a new one, and re-sending an unchanged plan writes nothing at all. The operator's /replan is the way to withdraw a plan and start over."
 
 	recordPlanDescAdvisory = "Record the agent's implementation plan as a markdown artifact for the operator's audit trail. Plan-first gating is OFF — no tool call is blocked on this, so record the plan and then carry it out in the same turn rather than stopping to wait for approval. " + recordPlanDescCommon
 )
@@ -135,6 +151,12 @@ func RecordPlan(gate *permissions.Gate, agentsDir string) (tool.Tool, error) {
 }
 
 func recordPlanFunc(gate *permissions.Gate, agentsDir string) functiontool.Func[recordPlanArgs, recordPlanResult] {
+	// One memory per built tool. RecordPlan is called once per process
+	// (tools.Build), so this closure spans every session the daemon
+	// serves — which is why entries are keyed by author rather than
+	// living in a single field. A host that rebuilds the tool per turn
+	// degrades to the pre-#906 behavior rather than misfiring.
+	turns := newPlanTurnMemory()
 	return func(ctx tool.Context, in recordPlanArgs) (recordPlanResult, error) {
 		body := strings.TrimSpace(in.Plan)
 		if body == "" {
@@ -144,34 +166,313 @@ func recordPlanFunc(gate *permissions.Gate, agentsDir string) functiontool.Func[
 		if err := os.MkdirAll(plansDir, 0o755); err != nil {
 			return recordPlanResult{}, fmt.Errorf("record_plan: create plans dir: %w", err)
 		}
-		seq, err := nextPlanSeq(plansDir)
-		if err != nil {
-			return recordPlanResult{}, fmt.Errorf("record_plan: compute next seq: %w", err)
-		}
-		name := fmt.Sprintf("plan-%d.md", seq)
-		path := filepath.Join(plansDir, name)
 		// Ensure trailing newline so the artifact is POSIX-clean.
 		if !strings.HasSuffix(body, "\n") {
 			body += "\n"
 		}
 		owner := planOwnerFromContext(ctx)
-		artifact := planFrontmatter(seq, owner) + body
-		if err := atomicWriteFile(path, []byte(artifact), 0o644); err != nil {
-			return recordPlanResult{}, fmt.Errorf("record_plan: write %s: %w", path, err)
+		out, err := turns.record(planTurn{
+			owner:      owner,
+			invocation: planInvocationID(ctx),
+			plansDir:   plansDir,
+			body:       body,
+		})
+		if err != nil {
+			return recordPlanResult{}, err
 		}
-		markPlanRecorded(ctx, gate)
+		opened := markPlanRecorded(ctx, gate)
 		return recordPlanResult{
-			Path:     path,
-			Sequence: seq,
-			Message:  planRecordedMessage(gate, path),
+			Path:     out.path,
+			Sequence: out.seq,
+			Outcome:  out.outcome,
+			Message:  planResultMessage(gate, out, opened),
 			Agent:    owner.Agent,
 			Session:  owner.Session,
 		}, nil
 	}
 }
 
-// planRecordedMessage renders what record_plan tells the model it just
-// did. Three things it must not do, all learned the hard way (#747):
+// Outcomes reported by planTurnMemory.record and echoed to the model in
+// recordPlanResult.Outcome.
+const (
+	// planOutcomeRecorded: a new plan-<seq>.md was allocated and written.
+	planOutcomeRecorded = "recorded"
+	// planOutcomeUpdated: the author's current plan artifact was
+	// overwritten in place because they already recorded one this turn.
+	planOutcomeUpdated = "updated"
+	// planOutcomeUnchanged: nothing was written — the current artifact
+	// already holds this exact plan.
+	planOutcomeUnchanged = "unchanged"
+)
+
+// planTurnMemoryLimit caps how many authors planTurnMemory remembers.
+// One entry per (agent, session) pair, least-recently-used evicted
+// first, so a long-lived multi-session daemon cannot grow this without
+// bound. The cost of eviction is a false "recorded" — the pre-#906
+// behavior — not a wrong file.
+//
+// LRU rather than insert-order matters more than it looks: the
+// synchronous subagent door derives a fresh session ID per delegation
+// (pkg/agent/subagent.go), so a parent that fans out produces a stream
+// of single-use keys. Under insert-order eviction the busiest author —
+// the primary session, first inserted and never re-inserted — would be
+// the first thing that churn evicted, turning the guard off for
+// exactly the session it was written for.
+const planTurnMemoryLimit = 64
+
+// planDirMu serializes every mutation of an agent's plans directory in
+// this process: record_plan's allocate-then-write, its in-place update,
+// and /replan's find-then-rename. Two things need it.
+//
+// nextPlanSeq-then-write is read-modify-write over a shared directory,
+// and ADK dispatches a turn's function calls concurrently, so two
+// authors could compute the same sequence number and clobber each
+// other. And the repeat guard's "is the remembered artifact still on
+// disk?" check would otherwise be a TOCTOU against /replan running on
+// the operator's goroutine: revoke archives plan-N.md between the check
+// and the write, and the update lands a live plan back at a path the
+// operator just retired, leaving plan-N.md and plan-N-revoked.md both
+// on disk. Pre-#906 that interleaving produced a harmless extra
+// sequence, so closing it is not optional — the guard introduced it.
+//
+// Package-level rather than per-tool because the directory is
+// process-global while nothing guarantees one tool instance per
+// agentsDir. It does NOT reach across processes: two daemons sharing a
+// plans volume still race, which is the pre-existing situation and out
+// of scope here.
+var planDirMu sync.Mutex
+
+// planTurn is one record_plan call reduced to what the repeat guard
+// needs: who is writing, which turn they are in, and what they wrote.
+type planTurn struct {
+	owner      PlanOwner
+	invocation string
+	plansDir   string
+	body       string
+}
+
+// key identifies the author. Deliberately NOT keyed by invocation:
+// the entry has to outlive the turn so a later turn can compare its
+// plan against the one already on disk. The invocation is stored
+// inside the entry and compared, not hashed into the key.
+//
+// Agent and session both participate because <agentsDir>/plans/ is
+// process-global while the plan gate is per-session (#747): a parent
+// and its declarative subagent, or two concurrent tenants, must each
+// get their own plan file even when they interleave inside one turn.
+func (t planTurn) key() string {
+	return t.owner.Agent + "\x00" + t.owner.Session
+}
+
+type planTurnEntry struct {
+	invocation string
+	path       string
+	seq        int
+	// digest is sha256(body), not the body. The entry outlives the turn,
+	// and holding every author's last plan text for the life of the
+	// process buys nothing a comparison can't do with 32 bytes.
+	digest [sha256.Size]byte
+}
+
+// planWriteOutcome is what record did: which artifact is now current,
+// and whether writing it allocated a sequence number.
+type planWriteOutcome struct {
+	path    string
+	seq     int
+	outcome string
+}
+
+// planTurnMemory is the repeat guard for record_plan (#906).
+//
+// The problem it solves is not tidiness. Before it, every call ran
+// nextPlanSeq and wrote a fresh file, so a model that called record_plan
+// eight times in one turn got eight artifacts and eight cheerful
+// successes — observed live on 2026-09-02, minting plan-5 through
+// plan-11. #857 tried to stop the same shape of loop on mark_task_done
+// with an honest status string alone and the model ignored it thirteen
+// times, so the load-bearing part here is the behavior: the second call
+// does not get a new file.
+//
+// Why the state lives here and not on the Agent: pkg/agent's
+// checkpointer keys its in-turn repeat flag off an Agent field cleared
+// by the post-turn hook, but pkg/tools has no Agent and no turn hook.
+// What it does have is the invocation ID on tool.Context, which ADK
+// mints per invocation and threads through every tool call in that
+// turn — the same signal, read where the code already stands, and
+// self-expiring (a new turn simply brings a new ID) rather than needing
+// a reset callback that a library caller could forget to wire.
+type planTurnMemory struct {
+	mu      sync.Mutex
+	entries map[string]planTurnEntry
+	order   []string // least-recently-used first, for bounded eviction
+}
+
+func newPlanTurnMemory() *planTurnMemory {
+	return &planTurnMemory{entries: make(map[string]planTurnEntry)}
+}
+
+// record persists t's plan and reports what that took.
+//
+// Three cases, in the order they are checked:
+//
+//   - The author's remembered artifact still exists and holds this exact
+//     plan → write nothing. True whether or not it is the same turn: an
+//     identical plan never earns a second file.
+//   - It exists, the plan changed, and we are still in the same turn →
+//     overwrite it. Minting a sibling would make the model's own
+//     revision look like a second plan to every reader of the directory;
+//     /replan is the explicit revoke-and-redraft path. The overwritten
+//     draft is not archived: plan artifacts are the current plan, not a
+//     version history, and an in-turn draft the model immediately
+//     revised is not an operator decision worth preserving. The audit
+//     trail that does matter — a plan the operator rejected — is what
+//     /replan's -revoked.md rename keeps.
+//   - Anything else — a new turn with a changed plan, an author we have
+//     not seen, or a remembered path that is no longer on disk — →
+//     allocate the next sequence number.
+//
+// That third clause is what keeps /replan honest: it renames the
+// artifact to plan-<seq>-revoked.md, so the existence check fails and
+// the redraft gets a fresh file instead of resurrecting a revoked
+// sequence number.
+//
+// The whole body holds both m.mu (the author table) and planDirMu (the
+// directory), file I/O included, and always in that order. See planDirMu
+// for why the directory lock has to span the exists-check and the write
+// rather than just the write.
+func (m *planTurnMemory) record(t planTurn) (planWriteOutcome, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	planDirMu.Lock()
+	defer planDirMu.Unlock()
+
+	key := t.key()
+	digest := sha256.Sum256([]byte(t.body))
+	if prev, ok := m.entries[key]; ok && planArtifactExists(prev.path) {
+		if prev.digest == digest {
+			m.touch(key)
+			return planWriteOutcome{path: prev.path, seq: prev.seq, outcome: planOutcomeUnchanged}, nil
+		}
+		if prev.invocation == t.invocation {
+			if err := writePlanArtifact(prev.path, prev.seq, t.owner, t.body); err != nil {
+				return planWriteOutcome{}, err
+			}
+			prev.digest = digest
+			m.entries[key] = prev
+			m.touch(key)
+			return planWriteOutcome{path: prev.path, seq: prev.seq, outcome: planOutcomeUpdated}, nil
+		}
+	}
+
+	seq, err := nextPlanSeq(t.plansDir)
+	if err != nil {
+		return planWriteOutcome{}, fmt.Errorf("record_plan: compute next seq: %w", err)
+	}
+	path := filepath.Join(t.plansDir, fmt.Sprintf("plan-%d.md", seq))
+	if err := writePlanArtifact(path, seq, t.owner, t.body); err != nil {
+		return planWriteOutcome{}, err
+	}
+	m.remember(key, planTurnEntry{invocation: t.invocation, path: path, seq: seq, digest: digest})
+	return planWriteOutcome{path: path, seq: seq, outcome: planOutcomeRecorded}, nil
+}
+
+// remember stores an entry under key and marks it most-recently-used,
+// evicting the least-recently-used entries past planTurnMemoryLimit.
+// Caller holds m.mu.
+func (m *planTurnMemory) remember(key string, e planTurnEntry) {
+	m.entries[key] = e
+	m.touch(key)
+	for len(m.order) > planTurnMemoryLimit {
+		delete(m.entries, m.order[0])
+		m.order = m.order[1:]
+	}
+}
+
+// touch moves key to the most-recently-used end of the eviction order.
+// Caller holds m.mu.
+func (m *planTurnMemory) touch(key string) {
+	for i, k := range m.order {
+		if k == key {
+			m.order = append(m.order[:i], m.order[i+1:]...)
+			break
+		}
+	}
+	m.order = append(m.order, key)
+}
+
+// planArtifactExists reports whether the remembered plan is still on
+// disk. False after /replan archived it, or after an operator deleted
+// it by hand — both of which mean the next plan is a new plan.
+func planArtifactExists(path string) bool {
+	if path == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// writePlanArtifact renders frontmatter + body and lands it atomically.
+func writePlanArtifact(path string, seq int, owner PlanOwner, body string) error {
+	artifact := planFrontmatter(seq, owner) + body
+	if err := atomicWriteFile(path, []byte(artifact), 0o644); err != nil {
+		return fmt.Errorf("record_plan: write %s: %w", path, err)
+	}
+	return nil
+}
+
+// planInvocationID reads the per-turn identifier off the invocation
+// context. ADK mints one ("e-<uuid>") per invocation and every tool
+// call in that turn sees the same value, which is what makes it a
+// usable turn boundary here.
+//
+// Empty for a nil ctx (library callers, unit tests driving the handler
+// directly). An empty ID compares equal to the next empty ID, so such a
+// caller is treated as one long turn: repeats update in place instead of
+// minting siblings. That is the conservative direction for a guard whose
+// entire job is to stop unbounded writes, and it costs a host that
+// declines to identify its turns nothing it can't get from /replan.
+func planInvocationID(ctx tool.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	return ctx.InvocationID()
+}
+
+// planResultMessage is what record_plan tells the model it just did:
+// one clause for the artifact, one for the gate. They are separate
+// because they became independent in #906 — a repeat call can change
+// the artifact without touching the gate, and a first call in a later
+// turn can change the artifact when the gate is already open.
+func planResultMessage(gate *permissions.Gate, out planWriteOutcome, opened bool) string {
+	return planArtifactClause(out) + " " + planGateClause(gate, opened)
+}
+
+// planArtifactClause says what happened on disk, and for a repeat says
+// plainly that no new file exists. The wording is not the defence —
+// #857 proved prose alone does not stop a loop, and the defence here is
+// that the file genuinely was not created — but a model told "recorded"
+// eight times has no way to notice it is looping, so the message has to
+// stop asserting a fresh artifact that isn't there.
+//
+// The unchanged clause is careful to describe what this tool did rather
+// than what the file contains. The guard compares against the digest of
+// the plan we last wrote, not against the bytes on disk, so an operator
+// who hand-edits plan-N.md between calls would make any claim about the
+// file's current contents a lie. "You already recorded this" stays true
+// either way.
+func planArtifactClause(out planWriteOutcome) string {
+	switch out.outcome {
+	case planOutcomeUnchanged:
+		return fmt.Sprintf("No plan file was written: you already recorded this exact plan this session, and it is filed at %s. Recording an identical plan again cannot do anything further — get on with carrying it out, or ask the operator for /replan if it needs to be withdrawn.", out.path)
+	case planOutcomeUpdated:
+		return fmt.Sprintf("Plan updated in place at %s: you had already recorded a plan this turn, so this revision replaced it rather than filing a second plan file — the earlier draft is not kept. There is still exactly one plan (plan %d) for this task.", out.path, out.seq)
+	default:
+		return fmt.Sprintf("Plan recorded at %s.", out.path)
+	}
+}
+
+// planGateClause reports the permission effect, and only when there was
+// one. Three things it must not do, all learned the hard way (#747):
 //
 //   - Claim an unblock in advisory mode. Nothing was ever blocked, and
 //     a model that believes a gate exists behaves as though it does.
@@ -186,19 +487,28 @@ func recordPlanFunc(gate *permissions.Gate, agentsDir string) functiontool.Func[
 //     never calls RegisterPlanGatedTools, and inventing "nothing is
 //     gated" for it would be the same unenforceable claim pointed the
 //     other way. Unknown gets prose that doesn't enumerate.
-func planRecordedMessage(gate *permissions.Gate, path string) string {
+//
+// And since #906, a fourth: don't announce a transition that didn't
+// happen. `opened` is false when the gate was already satisfied — every
+// repeat, and every plan after the first in a session — and re-reading
+// "Now unblocked for this session: mcp, spawn_agent, wait_and_verify"
+// seven times was the loop telling itself it was making progress.
+func planGateClause(gate *permissions.Gate, opened bool) string {
 	const revoke = "The operator can revoke via /replan, which archives the artifact"
 	if !gate.PlanRequired() {
-		return fmt.Sprintf("Plan recorded at %s. plan_mode is advisory: no tool call was ever blocked on this plan and none becomes callable because of it — the artifact is the operator's audit trail, so carry the plan out in this turn rather than waiting for approval. %s and asks for a redraft.", path, revoke)
+		return fmt.Sprintf("plan_mode is advisory: no tool call was ever blocked on this plan and none becomes callable because of it — the artifact is the operator's audit trail, so carry the plan out in this turn rather than waiting for approval. %s and asks for a redraft.", revoke)
+	}
+	if !opened {
+		return fmt.Sprintf("Plan-first gating is on and was already satisfied for this session before this call — no tool became callable that wasn't already. %s, clears the gate flag, and forces a redraft.", revoke)
 	}
 	gated, known := gate.PlanGatedTools()
 	switch {
 	case !known:
-		return fmt.Sprintf("Plan recorded at %s. Plan-first gating is on: the tool calls it was denying are now unblocked for this session. %s, clears the gate flag, and forces a redraft.", path, revoke)
+		return fmt.Sprintf("Plan-first gating is on: the tool calls it was denying are now unblocked for this session. %s, clears the gate flag, and forces a redraft.", revoke)
 	case len(gated) == 0:
-		return fmt.Sprintf("Plan recorded at %s. Plan-first gating is on, but this build registered no plan-gated tools — nothing was blocked and nothing is unblocked; the artifact is the only effect. %s, clears the gate flag, and forces a redraft.", path, revoke)
+		return fmt.Sprintf("Plan-first gating is on, but this build registered no plan-gated tools — nothing was blocked and nothing is unblocked; the artifact is the only effect. %s, clears the gate flag, and forces a redraft.", revoke)
 	default:
-		return fmt.Sprintf("Plan recorded at %s. Now unblocked for this session: %s. %s, clears the gate flag, and forces a redraft.", path, strings.Join(gated, ", "), revoke)
+		return fmt.Sprintf("Now unblocked for this session: %s. %s, clears the gate flag, and forces a redraft.", strings.Join(gated, ", "), revoke)
 	}
 }
 
@@ -261,14 +571,21 @@ func planOwnerFromContext(ctx tool.Context) PlanOwner {
 //
 // Extracted as its own helper so unit tests can exercise both paths
 // without stubbing the full tool.Context interface.
-func markPlanRecorded(ctx context.Context, template *permissions.Gate) {
+//
+// Returns whether this call actually opened the gate. False means the
+// flag was already set — which is every repeat within a turn and every
+// plan after the first in a session — and the caller must not then
+// announce an unblock that already happened (#906). Read on the same
+// gate it marks, so the answer is about the gate the model's next call
+// will be checked against, not the template it may not be using.
+func markPlanRecorded(ctx context.Context, template *permissions.Gate) bool {
 	if sg, ok := permissions.SessionGateFromContext(ctx); ok {
-		sg.MarkPlanRecorded()
-		return
+		return sg.MarkPlanRecordedOnce()
 	}
 	if template != nil {
-		template.MarkPlanRecorded()
+		return template.MarkPlanRecordedOnce()
 	}
+	return false
 }
 
 // nextPlanSeq returns max(seq)+1 over every `plan-<seq>.md` and
@@ -503,8 +820,13 @@ func RevokeLatestPlan(gate *permissions.Gate, agentsDir string) (string, error) 
 // gate flag is cleared either way — /replan's contract is "the next
 // mutating call needs a fresh plan", and that must hold whether or not
 // there was an artifact to file.
+//
+// Holds planDirMu across the find-then-rename so it cannot interleave
+// with a concurrent record_plan; see planDirMu (#906).
 func RevokePlanBy(gate *permissions.Gate, agentsDir string, owner PlanOwner) (string, error) {
 	defer gate.ClearPlanRecorded()
+	planDirMu.Lock()
+	defer planDirMu.Unlock()
 	latest := LatestPlanBy(agentsDir, owner)
 	if latest == "" {
 		return "", nil

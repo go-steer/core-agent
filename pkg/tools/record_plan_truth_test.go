@@ -45,10 +45,19 @@ type planToolCtx struct {
 	context.Context
 	agent   string
 	session string
+	// invocation is the per-turn ID the repeat guard keys off (#906).
+	// Empty means "the one turn these tests don't care about", which
+	// keeps every pre-#906 fixture reading the same.
+	invocation string
 }
 
-func (c *planToolCtx) UserContent() *genai.Content          { return nil }
-func (c *planToolCtx) InvocationID() string                 { return "test-invocation" }
+func (c *planToolCtx) UserContent() *genai.Content { return nil }
+func (c *planToolCtx) InvocationID() string {
+	if c.invocation == "" {
+		return "test-invocation"
+	}
+	return c.invocation
+}
 func (c *planToolCtx) AgentName() string                    { return c.agent }
 func (c *planToolCtx) ReadonlyState() session.ReadonlyState { return nil }
 func (c *planToolCtx) UserID() string                       { return "test-user" }

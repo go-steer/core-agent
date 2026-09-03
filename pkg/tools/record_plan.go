@@ -58,8 +58,31 @@ type recordPlanResult struct {
 	// place) or planOutcomeUnchanged (nothing written — the artifact
 	// already holds this exact plan). A typed field rather than prose
 	// only, because #857 established that prose alone does not stop a
-	// loop: the field is what a behavioral detector can key on (#907).
+	// loop.
+	//
+	// This is NOT the field the watchdog keys on — that is NoOp, below.
+	// It used to say it was, and nothing read it (#918): a three-value
+	// vocabulary owned by this tool is the right thing for the model and
+	// the host UI to see, and the wrong thing for a detector to parse.
 	Outcome string `json:"outcome"`
+	// NoOp marks a call that wrote nothing, for
+	// watchdog.NoOpStreakSignal to count (#907, wired in #918).
+	// Outcome already carries the same fact in a richer vocabulary, but
+	// the signal reads exactly one reserved key and parses nothing else
+	// — deliberately, so that a tool's own status vocabulary can evolve
+	// without the detector going stale. #906 shipped Outcome saying it
+	// was "what a behavioral detector can key on" and #907 shipped a
+	// detector that keys on `no_op`; this is the wire between them.
+	//
+	// Only planOutcomeUnchanged sets it. planOutcomeUpdated overwrites
+	// an artifact, which is work, and reporting that as inert would let
+	// a genuinely-revising agent accumulate a streak toward a Critical
+	// halt.
+	//
+	// The key must stay in step with agent.ToolResultNoOpKey, which
+	// pkg/tools cannot import (pkg/agent imports pkg/tools).
+	// TestRecordPlanNoOpKeyMatchesReservedKey in pkg/agent pins them.
+	NoOp bool `json:"no_op,omitempty"`
 	// Agent and Session echo the attribution written into the
 	// artifact's frontmatter, so the model's own transcript records
 	// which plan is its own. Empty when the host ran the handler
@@ -194,6 +217,7 @@ func recordPlanFunc(gate *permissions.Gate, agentsDir string) functiontool.Func[
 			Path:     out.path,
 			Sequence: out.seq,
 			Outcome:  out.outcome,
+			NoOp:     out.outcome == planOutcomeUnchanged,
 			Message:  planResultMessage(gate, out, opened),
 			Agent:    owner.Agent,
 			Session:  owner.Session,

@@ -329,6 +329,15 @@ func deleteFileFunc(gate *permissions.Gate) functiontool.Func[deleteFileArgs, de
 				// Idempotent: deleting a missing file is a no-op
 				// success so the model can drive cleanup without
 				// pre-existence checks.
+				//
+				// Deliberately does NOT set agent.ToolResultNoOpKey the
+				// way record_plan's unchanged outcome does (#918).
+				// NoOpStreakSignal counts consecutive inert results
+				// without looking at their arguments, and sweeping three
+				// already-absent scratch files in a row — the exact
+				// batch this tool's own description advertises — is a
+				// productive cleanup, not a loop. Opting in here would
+				// buy a Critical halt on a documented workload.
 				return deleteFileResult{Status: "no-op (not found): " + path}, nil
 			}
 			return deleteFileResult{}, fmt.Errorf("delete_file: lstat: %w", err)

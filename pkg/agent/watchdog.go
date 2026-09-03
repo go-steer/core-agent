@@ -203,13 +203,33 @@ func (a *Agent) observeToolCallsForWatchdog(ev *session.Event, seen map[string]s
 // response shape, and one place decides what "failed" means.
 //
 // Shares the per-turn dedup set with call observation, under a
-// distinct key prefix — the same streaming aggregator that re-emits a
-// FunctionCall part re-emits its FunctionResponse, and a double-
-// counted failure would trip the streak signal at half its threshold.
-// A response with no ID falls back to name+error, which collapses
-// same-error parallel calls within one turn; that is the safe
-// direction to be wrong in, since undercounting delays an advisory
-// alert while overcounting fires it on work that was fine.
+// distinct key prefix, so a re-emitted FunctionResponse cannot trip a
+// streak signal at half its threshold.
+//
+// A response with NO ID is observed unconditionally, and that is a
+// deliberate reversal of what this function used to do (#907). It
+// previously fell back to name+error, on the reasoning that
+// undercounting is the safe direction to be wrong in. It is not, and
+// the collapse was total rather than partial: ADK never synthesizes
+// call IDs (base_flow copies FunctionCall.ID straight through) and
+// real Gemini functionCall parts carry none, so on every Gemini
+// deployment EVERY response in a turn took the fallback — and since a
+// rejection is not an error, thirteen consecutive "already recorded
+// for this turn" no-ops all hashed to one key and arrived at the
+// watchdog as a single observation. The runaway this file exists to
+// see is one that repeats WITHIN a turn, so a per-turn key that
+// collapses repeats within a turn cannot see it.
+//
+// Dropping the fallback is safe because the duplication it guarded
+// against is a FunctionCall phenomenon, not a FunctionResponse one:
+// responses are emitted once, by handleFunctionCalls, and never go
+// through the streaming aggregator that re-emits an intermediate
+// aggregate plus a final (pkg/runner/events.go says the same, and
+// dedups them only symmetrically-in-case). Responses that DO carry an
+// ID keep exact ID dedup, so if a future ADK change starts re-emitting
+// them, the path where that is detectable is still guarded. Counting
+// ID-less parts positionally also matches how history_pairing.go
+// handles the identical empty-ID Gemini shape (#367).
 func (a *Agent) observeToolResultsForWatchdog(ev *session.Event, seen map[string]struct{}) bool {
 	if ev == nil || ev.Content == nil {
 		return false
@@ -224,14 +244,13 @@ func (a *Agent) observeToolResultsForWatchdog(ev *session.Event, seen map[string
 			continue
 		}
 		errText := toolResponseError(p.FunctionResponse.Response)
-		key := "result\x00" + p.FunctionResponse.ID
-		if p.FunctionResponse.ID == "" {
-			key = "result\x00" + p.FunctionResponse.Name + "\x00" + errText
+		if id := p.FunctionResponse.ID; id != "" {
+			key := "result\x00" + id
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
 		}
-		if _, dup := seen[key]; dup {
-			continue
-		}
-		seen[key] = struct{}{}
 		observed = true
 		obs.ObserveToolResult(watchdog.ToolResult{
 			Name:  p.FunctionResponse.Name,

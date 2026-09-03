@@ -55,16 +55,6 @@ func TestNoOpStreakSignal(t *testing.T) {
 			want:    true,
 		},
 		{
-			// The point of reading the tool's own claim rather than
-			// the call: RepeatedToolCallSignal hashes (name, args) and
-			// a reworded arg resets it. This signal never sees args.
-			name: "reworded args are irrelevant",
-			results: []watchdog.ToolResult{
-				noOp("mark_task_done"), noOp("mark_task_done"), noOp("mark_task_done"),
-			},
-			want: true,
-		},
-		{
 			name: "a productive call resets the run",
 			results: []watchdog.ToolResult{
 				noOp("mark_task_done"), noOp("mark_task_done"),
@@ -210,11 +200,24 @@ func TestNoOpStreakSignal_ReplaysTheObservedLoop(t *testing.T) {
 // signal reads — with `detail` reworded each time, exactly as the live
 // model did, and asserts the whole default set stays silent.
 //
-// If a future change makes this trip on calls alone, that is not a
-// broken test: it means someone lowered a threshold, and toolname.go's
-// false-positive argument needs re-litigating before this file's does.
+// Scoped to the four args- and name-keyed detectors on purpose, rather
+// than to whatever NewDefaultWatchdog happens to contain. If one of
+// those four starts tripping on this trace, someone lowered a
+// threshold, and toolname.go's false-positive argument needs
+// re-litigating before this file's does. A NEW call-reading signal
+// tripping is a different event entirely and should not be reported as
+// this one: `tools-without-text` is designed and deferred (see the
+// package doc), and this trace is 14 consecutive tool calls with no
+// assistant text, so it will trip on it by construction and correctly.
 func TestObservedLoopIsInvisibleFromCallsAlone(t *testing.T) {
 	t.Parallel()
+
+	blind := map[string]bool{
+		"repeated-tool-call":     true,
+		"alternating-tool-cycle": true,
+		"dominant-tool-call":     true,
+		"repeated-tool-name":     true,
+	}
 
 	w := watchdog.NewDefaultWatchdog()
 	call := func(name, args string) {
@@ -230,9 +233,12 @@ func TestObservedLoopIsInvisibleFromCallsAlone(t *testing.T) {
 		call("mark_task_done", fmt.Sprintf(`{"detail":"work on api-7d9 finished, phrasing %d"}`, i+7))
 	}
 
-	if alerts := w.Check(); len(alerts) != 0 {
-		t.Fatalf("a call-only reading of the observed loop raised %d alerts, want 0 — "+
-			"the premise of #907 is that this trace is invisible from calls: %+v", len(alerts), alerts)
+	for _, a := range w.Check() {
+		if blind[a.Signal] {
+			t.Errorf("%s tripped on a call-only reading of the observed loop — "+
+				"the premise of #907 is that this trace is invisible to the call-keyed "+
+				"detectors: %+v", a.Signal, a)
+		}
 	}
 }
 
@@ -249,9 +255,10 @@ func TestNoOpStreakSignal_ThresholdFloor(t *testing.T) {
 	}
 }
 
-// TestNoOpStreakSignal_ResetClearsTrip: /clear starts a new logical
-// session, so a loop from before it must not suppress the alert for a
-// loop after it.
+// TestNoOpStreakSignal_ResetClearsTrip: Reset is what /guardrail reset
+// runs (Agent.ResetWatchdog), and the operator clearing a halt is
+// asking for a fresh start — a loop from before the reset must not
+// suppress the alert for a loop after it.
 func TestNoOpStreakSignal_ResetClearsTrip(t *testing.T) {
 	t.Parallel()
 	s := watchdog.NewNoOpStreakSignal(watchdog.DefaultNoOpStreak)

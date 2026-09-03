@@ -341,15 +341,17 @@ const markTaskDoneRepeatStatus = "already recorded for this turn — the checkpo
 // the loop again.
 //
 // A nil agent is the pre-registration race NewMarkTaskDoneTool
-// documents; it stays a successful no-op.
+// documents; it stays a successful no-op, and deliberately does NOT
+// set no_op (#907). The two look alike and are opposites: the repeat
+// branch means "nothing needed doing", while an unbound agent means
+// something needed doing and silently did not get done. Routing a
+// runtime wiring fault into a Critical loop signal would halt the
+// agent for the runtime's mistake, and hand the model guidance
+// ("stop calling them") that is exactly backwards — no checkpoint was
+// ever recorded, and the model is the only party still trying.
 func markTaskDone(a *Agent, detail string) markTaskDoneResult {
 	if a == nil {
-		// Genuinely inert, and the one no-op here that is the runtime's
-		// fault rather than the model's — but a model that keeps
-		// calling into an unbound agent is still looping, and the
-		// alert's guidance ("stop calling them") is still the right
-		// advice.
-		return markTaskDoneResult{Status: "acknowledged (no-op: agent not yet bound)", NoOp: true}
+		return markTaskDoneResult{Status: "acknowledged (no-op: agent not yet bound)"}
 	}
 	a.mu.Lock()
 	repeat := a.checkpointRequested

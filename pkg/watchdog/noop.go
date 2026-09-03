@@ -45,6 +45,17 @@
 // parsed and no status prose is matched, deliberately: the string is
 // the part most likely to be reworded, and markTaskDoneRepeatStatus's
 // own doc comment invites exactly that rewording.
+//
+// A no-op is not a failure and a failure is not a no-op. The two are
+// independent claims about one result, and the branch a tool picks
+// decides which streak it feeds — see markTaskDone, where the repeat
+// is a no-op and an unbound agent deliberately is not.
+//
+// "In a row" means "with no productive result in between", which is
+// the same thing except under parallel tool calls, where three
+// simultaneous no-ops read as three sequential ones. That is the
+// intended reading: three inert calls is three inert calls whether the
+// model issued them one after another or all at once.
 
 package watchdog
 
@@ -81,6 +92,18 @@ const DefaultNoOpStreak = 3
 // is the runaway itself: the runtime has already established that the
 // calls accomplished nothing, so under --watchdog=enforce there is
 // nothing being interrupted that was going anywhere.
+//
+// That is a real availability trade and it was taken deliberately.
+// enforce is the unattended default (#642) and mark_task_done is
+// registered by default, so on a headless daemon three redundant
+// checkpoints now cost an operator reset — and a turn cancelled at the
+// third one loses whatever the model was about to say. The reason it
+// is priced this way anyway is that the failure it replaces is
+// unbounded: #905's loop ended when a human hit interrupt, and Warn
+// would not have ended it any sooner. Deployments that would rather
+// absorb the loop have two levers that predate this signal —
+// --watchdog=feedback, which still reaches the only party that can
+// stop calling, and --checkpoint=operator, which withholds the tool.
 type NoOpStreakSignal struct {
 	Threshold int
 

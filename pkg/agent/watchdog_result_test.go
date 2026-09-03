@@ -202,6 +202,106 @@ func TestObserveToolResultsForWatchdog_CarriesNoOp(t *testing.T) {
 	}
 }
 
+// TestObserveToolResultsForWatchdog_IDLessResultsAreNotCollapsed is the
+// regression for the bug that made #907 inert on the exact deployment
+// it was written for. The per-turn dedup set used to key an ID-less
+// response on name+error. Gemini functionCall parts carry no ID (ADK
+// copies FunctionCall.ID straight through and never synthesizes one),
+// and a rejection is not an error, so every "already recorded for this
+// turn" no-op in a turn hashed to one key and thirteen of them reached
+// the watchdog as a single observation — three short of the threshold,
+// forever.
+//
+// Each part here arrives in a separate event, which is how
+// handleFunctionCalls actually emits them: one call, one response.
+func TestObserveToolResultsForWatchdog_IDLessResultsAreNotCollapsed(t *testing.T) {
+	t.Parallel()
+	w := &resultWatchdog{}
+	a := &Agent{watchdog: w}
+	seen := map[string]struct{}{}
+
+	noOpResp := map[string]any{"status": markTaskDoneRepeatStatus, "no_op": true}
+	for range 5 {
+		a.observeToolResultsForWatchdog(
+			wdResultEvent(wdResultPart("", "mark_task_done", noOpResp)), seen)
+	}
+
+	if got := len(w.results); got != 5 {
+		t.Fatalf("observed %d ID-less no-op results, want 5 — the dedup set is "+
+			"collapsing distinct results, and NoOpStreakSignal can never reach its "+
+			"threshold on a Gemini deployment", got)
+	}
+	for i, r := range w.results {
+		if !r.NoOp {
+			t.Errorf("[%d] = %+v, want NoOp true", i, r)
+		}
+	}
+}
+
+// TestObserveToolResultsForWatchdog_TripsTheObservedLoopEndToEnd drives
+// the #905 trace through the real bridge into a real DefaultWatchdog,
+// with the empty IDs a Gemini session actually produces. The sibling
+// tests in pkg/watchdog exercise the signal in isolation; the bug above
+// lived in the seam between them, which is why it survived seven green
+// signal-level tests.
+func TestObserveToolResultsForWatchdog_TripsTheObservedLoopEndToEnd(t *testing.T) {
+	t.Parallel()
+	w := watchdog.NewDefaultWatchdog()
+	a := &Agent{watchdog: w}
+	seen := map[string]struct{}{}
+
+	emit := func(name string, resp map[string]any) {
+		a.observeToolResultsForWatchdog(wdResultEvent(wdResultPart("", name, resp)), seen)
+	}
+	noOpResp := map[string]any{"status": markTaskDoneRepeatStatus, "no_op": true}
+
+	// The first call armed the checkpoint; seven rejections; one real
+	// read that split the run; six more rejections.
+	emit("mark_task_done", map[string]any{"status": "acknowledged"})
+	for range 7 {
+		emit("mark_task_done", noOpResp)
+	}
+	emit("gke_get_k8s_resource", map[string]any{"kind": "Deployment"})
+	for range 6 {
+		emit("mark_task_done", noOpResp)
+	}
+
+	var noOpAlerts int
+	for _, al := range w.Check() {
+		if al.Signal != "no-op-streak" {
+			continue
+		}
+		noOpAlerts++
+		if al.Severity != watchdog.SeverityCritical {
+			t.Errorf("Severity = %v, want Critical", al.Severity)
+		}
+	}
+	if noOpAlerts != 2 {
+		t.Fatalf("the observed loop raised %d no-op-streak alerts through the bridge, "+
+			"want 2 (one per half of the 7+6 split)", noOpAlerts)
+	}
+}
+
+// TestObserveToolResultsForWatchdog_DedupsRepeatedIDs: dropping the
+// ID-less fallback must not drop dedup for responses that DO carry an
+// ID. That is the path where a future ADK change re-emitting responses
+// would be observable, and a double-counted result trips a streak
+// signal at half its threshold.
+func TestObserveToolResultsForWatchdog_DedupsRepeatedIDs(t *testing.T) {
+	t.Parallel()
+	w := &resultWatchdog{}
+	a := &Agent{watchdog: w}
+	seen := map[string]struct{}{}
+
+	part := wdResultPart("call-1", "mark_task_done", map[string]any{"no_op": true})
+	a.observeToolResultsForWatchdog(wdResultEvent(part), seen)
+	a.observeToolResultsForWatchdog(wdResultEvent(part), seen)
+
+	if got := len(w.results); got != 1 {
+		t.Fatalf("a re-emitted response with the same ID was observed %d times, want 1", got)
+	}
+}
+
 // TestToolResponseNoOp: fail-OPEN on an unrecognized value, which is
 // the opposite of toolResponseError's fail-safe reading of "error".
 // NoOpStreakSignal is Critical and halts the agent under

@@ -531,6 +531,16 @@ func TestMarkTaskDone_NilAgentIsANoOp(t *testing.T) {
 	if !strings.Contains(got.Status, "acknowledged") {
 		t.Errorf("nil-agent Status = %q, want an acknowledgement", got.Status)
 	}
+	// Inert, but NOT a no-op in the #907 sense. The repeat branch means
+	// "nothing needed doing"; an unbound agent means the checkpoint
+	// needed doing and silently did not happen. Feeding the second one
+	// into a Critical loop signal would halt the agent for a runtime
+	// wiring fault and tell the model to stop doing the only thing that
+	// could still record it.
+	if got.NoOp {
+		t.Errorf("nil-agent result = %+v, want NoOp false — a runtime fault "+
+			"must not feed NoOpStreakSignal", got)
+	}
 }
 
 func TestDefaultCheckpointer_ShouldCheckpointAlwaysFalse(t *testing.T) {

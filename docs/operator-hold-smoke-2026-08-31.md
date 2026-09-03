@@ -858,6 +858,17 @@ The cost of the misclassification is that `retryable: false` forecloses
 the retry that would have worked, and the hint sends the operator to
 debug a configuration that is correct.
 
+**Partly resolved (v2.9.0-dev.5):** the hint half. `INVALID_ARGUMENT`
+genuinely is ambiguous — the same body means both things — so the fix
+is not to pick a side but to stop the hint picking one: it now names
+both readings and says that a real config error reproduces on every
+attempt. Structural failures in the same kind (a URL that won't parse,
+`FAILED_PRECONDITION`) keep the flat hint, because they are wrong on
+every attempt. `retryable` stays false and the classification is
+unchanged; having the runtime retry once and settle the ambiguity
+itself — across Anthropic and the other providers, not just Vertex — is
+[#935](https://github.com/go-steer/core-agent/issues/935).
+
 ### Out of scope — `break-workload.sh restore` exits 0 on a failed undo
 
 demo-3's, not core-agent's, but it cost time here. `restore` ran

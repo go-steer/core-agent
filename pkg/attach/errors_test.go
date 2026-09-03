@@ -98,6 +98,13 @@ func TestClassifyTurnError_Kinds(t *testing.T) {
 			wantRetry: false,
 		},
 		{
+			name:        "config_error from FAILED_PRECONDITION",
+			err:         errors.New("Error 400, Message: Vertex AI API has not been used in project 12345 before or it is disabled., Status: FAILED_PRECONDITION"),
+			wantKind:    TurnErrorConfig,
+			wantRetry:   false,
+			wantHintHas: "GOOGLE_CLOUD_PROJECT",
+		},
+		{
 			name:      "transient_network from context deadline",
 			err:       context.DeadlineExceeded,
 			wantKind:  TurnErrorTransientNet,
@@ -140,6 +147,62 @@ func TestClassifyTurnError_Kinds(t *testing.T) {
 				t.Errorf("Message should be non-empty for classified errors; got %+v", got)
 			}
 		})
+	}
+}
+
+// TestClassifyTurnError_BareInvalidArgumentHintNamesBothReadings is the
+// #898 regression pin.
+//
+// A bare 400 INVALID_ARGUMENT is the most overloaded answer Vertex
+// gives. During the #799 UAT one arrived in a window where the same
+// session was also getting 429s, and the hint told the operator to go
+// check model.vertex.location — a config that was correct, and that
+// two probes on the same session and transcript proved correct
+// seconds later. The classification is defensible; the hint asserting
+// which of the two readings applies was not.
+//
+// Structural failures in the same arm keep the unhedged hint: a URL
+// that will not parse is wrong on every attempt, and telling that
+// operator the provider might just be busy would be the same defect
+// pointed the other way.
+func TestClassifyTurnError_BareInvalidArgumentHintNamesBothReadings(t *testing.T) {
+	t.Parallel()
+
+	// Verbatim from the #898 report, not a paraphrase — a hint keyed
+	// on a remembered shape is how #902 got written twice.
+	observed := errors.New("Error 400, Message: Request contains an invalid argument., Status: INVALID_ARGUMENT, Details: []")
+	got := ClassifyTurnError(observed)
+
+	if got.Kind != TurnErrorConfig {
+		t.Errorf("Kind = %q, want %q — the classification is unchanged by this fix", got.Kind, TurnErrorConfig)
+	}
+	if got.Retryable {
+		t.Error("Retryable = true; the runtime does not retry this yet (#935) and must not claim it does")
+	}
+	for _, want := range []string{"ambiguous", "transiently", "reproduces on every attempt"} {
+		if !strings.Contains(got.Hint, want) {
+			t.Errorf("Hint = %q, want substring %q — it must name the transient reading too", got.Hint, want)
+		}
+	}
+	if !strings.Contains(got.Hint, "model.vertex.location") {
+		t.Errorf("Hint = %q, still needs to name the config to check", got.Hint)
+	}
+
+	// Structural failures keep the flat "your config is wrong" hint,
+	// including the ones that also carry a 400 and so match both arms.
+	// Ordering is what decides those, so pin one.
+	for _, structural := range []error{
+		errors.New(`createAPIURL: error parsing base URL: parse "https://${GOOGLE_CLOUD_LOCATION}-aiplatform.googleapis.com/": invalid character "{" in host name`),
+		errors.New("Error 400, Message: Vertex AI API has not been used in project 12345 before or it is disabled., Status: FAILED_PRECONDITION"),
+		errors.New(`Error 400: could not parse request body, Status: INVALID_ARGUMENT`),
+	} {
+		h := ClassifyTurnError(structural).Hint
+		if strings.Contains(h, "ambiguous") {
+			t.Errorf("Hint = %q for %v; a structural failure is not ambiguous and hedging it is noise", h, structural)
+		}
+		if !strings.Contains(h, "model.vertex.location") {
+			t.Errorf("Hint = %q for %v, want the provider-config hint", h, structural)
+		}
 	}
 }
 

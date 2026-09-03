@@ -87,13 +87,21 @@ func streamTurn(ctx context.Context, a *agent.Agent, m adkmodel.LLM, prompt stri
 // tracker exactly once per TurnComplete. Events pass through unchanged
 // so WriteEvents (an opaque consumer) sees the raw stream. A nil
 // tracker makes the wrapper a straight passthrough.
+//
+// The rate is re-resolved per turn rather than taken from the pricing
+// argument, so a `/pricing refresh` mid-session bills at the new rate
+// instead of the one captured at startup (#930). This tap serves the
+// REPL as well as one-shot headless — replCore drives every turn
+// through streamTurn — so the stale window was the whole life of an
+// interactive session, not a single prompt. pricing stays the fallback
+// for callers with no installed catalog; see usage.PriceForRefreshed.
 func tapTracker(events iter.Seq2[*session.Event, error], tracker *usage.Tracker, modelName string, pricing usage.Pricing) iter.Seq2[*session.Event, error] {
 	return func(yield func(*session.Event, error) bool) {
 		var tap usage.TurnTap
 		for ev, err := range events {
 			tap.Observe(ev)
 			if u, ok := tap.Commit(ev); ok && tracker != nil {
-				tracker.AppendUsage(modelName, u, pricing)
+				tracker.AppendUsage(modelName, u, usage.PriceForRefreshed(modelName, pricing))
 			}
 			if !yield(ev, err) {
 				return

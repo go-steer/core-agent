@@ -97,7 +97,12 @@ func WakeLoop(ctx context.Context, a *agent.Agent, opts WakeLoopOptions) {
 				evCount++
 				tap.Observe(ev)
 				if u, ok := tap.Commit(ev); ok && opts.Tracker != nil {
-					opts.Tracker.AppendUsage(opts.Model, u, opts.Pricing)
+					// Re-resolved per turn, not taken from
+					// opts.Pricing: a wake loop outlives any number of
+					// /pricing refreshes, and in multi-session mode
+					// opts.Pricing was resolved once when the session
+					// was constructed (#930).
+					opts.Tracker.AppendUsage(opts.Model, u, usage.PriceForRefreshed(opts.Model, opts.Pricing))
 				}
 				if runErr != nil {
 					onErr(runErr)

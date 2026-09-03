@@ -900,6 +900,8 @@ From the in-process TUI, two slash commands give operators direct control withou
 - `/pricing refresh` — force an out-of-cycle fetch from `pricing.source` (ignores the 24h cadence). Useful right after a provider price change. Result lands in the chat scrollback: "Refresh: updated 247 models from upstream" / "Refresh: upstream unchanged" / "Refresh failed; using N-day-old cache".
 - `/pricing set <model> <input_per_mtok> <output_per_mtok>` — write a per-model rate to `~/.core-agent/pricing.json`'s `manual` section atomically + rebuild the live catalog so it takes effect immediately. Example: `/pricing set gemini-3.5-flash 0.075 0.30`. The manual section round-trips intact across the daily refresh (the auto-fetcher only rewrites `external`).
 
+Either command takes effect on the **next turn** — both the rate `/pricing` reports and the rate the running session's ledger bills at. Turns already recorded keep the price they were billed at; a refresh is not a re-pricing of history. Before v2.9 the long-lived billing paths (the REPL, the wake loop, autonomous runs, and per-session pricing under `--multi-session`) captured their rate once at startup, so a mid-session refresh moved the reported number while the bill stayed on the old rate ([#930](https://github.com/go-steer/core-agent/issues/930)).
+
 ## `url_scope`
 
 Governs which URLs the `fetch_url` built-in is allowed to reach. Same Allow/Deny grammar as [`path_scope`](//#path_scope) but for HTTP hosts instead of filesystem paths. `Deny` always wins over `Allow`. An **empty `allow` is default-deny** — `fetch_url` is not registered as a tool at all when no allowlist is configured, so the model can't even attempt a network call without an operator-declared scope.

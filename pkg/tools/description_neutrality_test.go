@@ -27,11 +27,11 @@ import (
 
 // The rationale for the ban list lives with the list itself, in
 // internal/testutil.ModelFacingBans (#909). This is the sweep over the
-// built-in catalog — the largest of the four model-facing tool
-// surfaces, and the only one whose descriptions are composed at
-// registration time (bashDescription, recordPlanDescRequired,
-// alert.buildDescription), which is why it has to read the built
-// registry rather than the source constants.
+// built-in catalog — the largest model-facing tool surface, and the
+// only one whose descriptions are composed at registration time
+// (bashDescription, recordPlanDescRequired, alert.buildDescription),
+// which is why it has to read the built registry rather than the source
+// constants.
 func neutralityRegistry(t *testing.T) *Registry {
 	t.Helper()
 	cfg := config.DefaultConfig()
@@ -40,6 +40,14 @@ func neutralityRegistry(t *testing.T) *Registry {
 	// own config, and record_plan on plan mode.
 	cfg.URLScope.Allow = []string{"example.com"}
 	cfg.Permissions.PlanMode = config.PlanModeRequired
+	// alert is gated on HasLiveTarget, not on a bare toggle, so the
+	// allowlist above is not enough — this comment claimed alert was
+	// swept from the day it was written and it was not (#919). A target
+	// with a literal URL is live without touching the environment, and
+	// alert.buildDescription names the registered targets, so the
+	// registry has to have one for the composed description to exist at
+	// all.
+	cfg.Alerts.Targets = []config.AlertTarget{{Name: "oncall", URL: "https://example.com/hook"}}
 	gate := permissions.New(permissions.Options{
 		Mode:                permissions.ModeYolo,
 		RequirePlanArtifact: cfg.Permissions.PlanGateArmed(),
@@ -52,6 +60,66 @@ func neutralityRegistry(t *testing.T) *Registry {
 		t.Fatal("no tools registered: the sweep would pass vacuously")
 	}
 	return reg
+}
+
+// The registry sweep is only as wide as the config that builds it, and
+// a conditionally-registered tool that quietly stops being registered
+// takes its text out of the sweep without failing anything. alert did
+// exactly that (#919): the helper's comment said it was covered from
+// the day it was written, and HasLiveTarget meant it never was.
+//
+// Named explicitly rather than counted, because a count says nothing
+// about WHICH tool went missing.
+func TestNeutralityRegistryCoversTheGatedTools(t *testing.T) {
+	t.Parallel()
+	have := map[string]bool{}
+	for _, tl := range neutralityRegistry(t).Tools {
+		have[tl.Name()] = true
+	}
+	for _, name := range []string{"alert", "fetch_url", "record_plan"} {
+		if !have[name] {
+			t.Errorf("%q is gated on config the sweep helper does not set, so its text is unswept", name)
+		}
+	}
+}
+
+// The two built-ins no config can turn on in a hermetic test:
+// sciontool_status is gated on a binary being on PATH, and ask_user is
+// never registered by Build at all (cmd/core-agent wires it when --ask
+// supplies a prompter). Built directly here so their text is swept
+// anyway — an unregisterable tool is still a tool the model reads.
+func TestOffRegistryToolTextIsDeploymentNeutral(t *testing.T) {
+	t.Parallel()
+	ask, err := NewAskUserTool(AskUserOptions{Prompter: StaticPrompter("ok")})
+	if err != nil {
+		t.Fatalf("NewAskUserTool: %v", err)
+	}
+	scion, err := NewSciontoolStatusTool()
+	if err != nil {
+		t.Fatalf("NewSciontoolStatusTool: %v", err)
+	}
+	built := []tool.Tool{ask, scion}
+	if len(built) < 2 {
+		t.Fatalf("swept %d tools, want 2: the sweep would pass vacuously", len(built))
+	}
+	for _, tl := range built {
+		texts, scanned := testutil.ModelFacingText(tl)
+		if !scanned {
+			t.Errorf("tool %q exposes no arg schema to scan", tl.Name())
+		}
+		for _, text := range texts {
+			for _, bad := range testutil.ModelFacingBanViolations(text) {
+				t.Errorf("tool %q: %s\n  %s", tl.Name(), bad, text)
+			}
+		}
+		refs, checked := testutil.UndeclaredArgRefs(tl)
+		if !checked {
+			t.Errorf("tool %q exposes no arg schema to cross-check its description against", tl.Name())
+		}
+		for _, ref := range refs {
+			t.Errorf("tool %q description tells the model to set %q, which it does not declare:\n  %s", tl.Name(), ref, tl.Description())
+		}
+	}
 }
 
 func TestToolDescriptionsAreDeploymentNeutral(t *testing.T) {

@@ -144,8 +144,19 @@ needs no network and no API keys.
 
   `internal/testutil.ModelFacingBans` is the enforcement: a sweep runs
   over every registered tool's description *and* arg schema in
-  `pkg/tools`, `pkg/tools/agentic`, `pkg/agent/background` and
-  `pkg/agent/autonomous`. Add a phrase there when you find the next one.
+  `pkg/tools`, `pkg/tools/agentic`, `pkg/tools/alert`, `pkg/tools/peer`,
+  `pkg/agent`, `pkg/agent/background` and `pkg/agent/autonomous`. Add a
+  phrase there when you find the next one.
+
+  Registering a tool in a package with no sweep fails
+  `TestEveryToolRegisteringPackageHasASweep`
+  (`internal/testutil/modelfacing_coverage_test.go`) — it walks the tree
+  for `functiontool.New(` and requires a matching sweep beside it. The
+  list above used to be maintained by hand and was wrong within one
+  release (#919): `mark_task_done`, the tool the whole thread started
+  from, was the one tool nothing checked. A sweep also has to cover its
+  own package's *conditionally* registered tools — `alert` is gated on a
+  live target and sat outside a sweep that believed it was inside one.
 
 ## Pitfalls & gotchas (real ones we've hit)
 

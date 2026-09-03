@@ -831,11 +831,29 @@ func translateEvent(ev *session.Event) coretui.Event {
 			if p.Text != "" {
 				sb.WriteString(p.Text)
 			}
-			if p.FunctionCall != nil {
-				out.ToolCalls = append(out.ToolCalls, toolCallFromPart(p))
-			}
-			if p.FunctionResponse != nil {
-				out.ToolResults = append(out.ToolResults, toolResultFromPart(p))
+			// Tool traffic is read off non-partial events only, matching
+			// the local path (internal/coretuievent) and the watchdog
+			// (#915). ADK's streaming aggregator emits a streamed call
+			// twice — once on the chunk, once on the rebuilt aggregate —
+			// under two different synthesized IDs when the args stream
+			// incrementally, which defeats core-tui's ID dedup in
+			// applyToolCall and paints the row twice, the first time with
+			// no args. The aggregate carries every part, so skipping the
+			// chunk drops nothing (#926).
+			//
+			// Today this is belt-and-braces: attach-mode frames come out
+			// of the eventlog, and ADK's runner commits only non-partial
+			// events to the session service, so a partial never reaches
+			// this translation. The guard is here so the two adapters
+			// state the same rule rather than one of them relying on an
+			// upstream filter.
+			if !ev.Partial {
+				if p.FunctionCall != nil {
+					out.ToolCalls = append(out.ToolCalls, toolCallFromPart(p))
+				}
+				if p.FunctionResponse != nil {
+					out.ToolResults = append(out.ToolResults, toolResultFromPart(p))
+				}
 			}
 		}
 		out.Text = sb.String()

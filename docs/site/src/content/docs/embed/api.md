@@ -249,7 +249,7 @@ This file is a small HTTP server…    ← stdout (streams as the model emits pa
 
 Routing:
 - **Partial text** streams to `out` with no prefix, so a model's reply renders character-by-character.
-- **Tool calls / responses** render as `→ name(key=value, ...)` / `← name(key=value, ...)` to `info`. Args are JSON-encoded and truncated at 80 chars per value so a single big payload doesn't dominate the display.
+- **Tool calls / responses** render as `→ name(key=value, ...)` / `← name(key=value, ...)` to `info`. Args are JSON-encoded and truncated at 80 chars per value so a single big payload doesn't dominate the display. One line per call, including under streaming — and one line per *repeat*, so an agent calling the same tool with the same args five times in a row prints five lines. That is what a runaway loop looks like on the way to the [watchdog](/concepts/context-management/) tripping, and collapsing it would hide the thing worth seeing.
 
 Pass the same writer for both `out` and `info` (e.g., `os.Stdout`) when you want one combined stream — useful for tmux capture (`tmux pipe-pane`) or piping to a file.
 

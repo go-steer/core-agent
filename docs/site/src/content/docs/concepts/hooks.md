@@ -35,12 +35,14 @@ If a handler exits non-zero, the failure is logged to `core-agent`'s stderr and 
 
 | Event | When it fires | Envelope fields (in addition to `hook_event_name`) |
 |---|---|---|
-| `tool-start` | When the model calls a tool. Fires once per `FunctionCall` part in an event. | `tool_name`, `tool_input` |
+| `tool-start` | When the model calls a tool. Fires once per `FunctionCall` part on a completed (non-partial) event. | `tool_name`, `tool_input` |
 | `tool-end` | When a tool returns its result. Fires once per `FunctionResponse` part. | `tool_name`, `tool_output` |
 | `model-start` | When the model begins producing text — at turn start, and again after each tool boundary within a turn. Fires at most once per "thinking window." | — |
 | `agent-end` | Once per turn, from the post-turn cleanup. | — |
 
 Names deliberately match Scion's canonical event vocabulary so a `dialect.yaml` in a Scion integration is a trivial identity mapping. Consumers who don't care about Scion just get the same names.
+
+**Tool events fire exactly once per call, even under streaming.** A streaming model emits a tool call in pieces, and the runtime hands the tap both the in-progress chunks and the completed call. Tool hooks only run on the completed one, so a `tool-start` handler that logs, pages, or shells out runs once per call and always sees the full `tool_input`. (`model-start` is the deliberate exception — streaming text is exactly what it announces, so it reads the in-progress events.)
 
 Unknown event names in the config are rejected at startup — typos fail loudly.
 

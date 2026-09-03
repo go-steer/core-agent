@@ -117,13 +117,32 @@ func (d *Dispatcher) Empty() bool {
 //   - FunctionResponse part → "tool-end"
 //   - First Text+Partial after turn-start or tool-end → "model-start"
 //
-// Nil or empty events are no-ops.
+// Nil or empty events are no-ops, and so are the two tool arms on a
+// partial event. ADK's streaming aggregator yields one partial event
+// per chunk and then one aggregated event carrying the whole model
+// call, so a streamed tool call reaches this callback twice — and
+// when the model streams a call's arguments incrementally the
+// aggregate is rebuilt from the accumulated args rather than
+// forwarding the chunk's part, so the two copies carry different
+// ADK-synthesized IDs and different args: the chunk's are empty.
+// Firing on both runs an operator's hook twice per call, the first
+// time with tool_input: {}. The aggregate carries every part of the
+// call and is the event the runtime actually executes the tool from
+// (base_flow skips partial responses before handleFunctionCalls), so
+// acting on it alone is both complete and exactly once (#926, the
+// same reasoning the watchdog took in #915).
+//
+// The model-start arm keeps reading partials on purpose — streaming
+// text is precisely what it announces.
 func (d *Dispatcher) OnEvent(ev *session.Event) {
 	if ev == nil || ev.Content == nil {
 		return
 	}
 	for _, p := range ev.Content.Parts {
 		if p == nil {
+			continue
+		}
+		if ev.Partial && (p.FunctionCall != nil || p.FunctionResponse != nil) {
 			continue
 		}
 		switch {

@@ -80,6 +80,29 @@ func TestObserveToolSavings_StructuralPathIncrementsTracker(t *testing.T) {
 	}
 }
 
+// TestObserveToolSavings_PartialEventSkipped pins the guard that keeps
+// a re-emitted part from being billed twice. Tool results ride
+// non-partial events today (handleFunctionCalls never runs on a
+// partial response), so this asserts the rule rather than reproducing
+// a live double-bill — the observers on this tap now all read the same
+// flag the same way (#915, #926).
+func TestObserveToolSavings_PartialEventSkipped(t *testing.T) {
+	t.Parallel()
+	a := &Agent{tracker: usage.NewTracker()}
+	ev := mkFuncResponseEvent("gke_get_k8s_resource", map[string]any{
+		"path":                "structural_json",
+		"original_tokens_est": float64(4250),
+		"digest_tokens_est":   float64(30),
+	})
+	ev.Partial = true
+
+	a.observeToolSavings(ev)
+
+	if got := a.tracker.DigestSavings(); got.StructuralCalls != 0 {
+		t.Errorf("partial event should not be billed; DigestSavings = %+v", got)
+	}
+}
+
 // TestObserveToolSavings_AgenticPathCapturesSubagent pins that
 // LLM-fallback path pulls in Subagent* fields including a computed
 // SubagentCostUSD (the tracker itself stays pricing-agnostic per

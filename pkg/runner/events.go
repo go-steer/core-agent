@@ -89,13 +89,22 @@ func (s seenLines) add(line string) (newLine bool) {
 //   - Final TurnComplete events are skipped (they repeat the text
 //     already streamed via Partial events).
 //
-// Identical → / ← / ↪ lines are deduplicated within one WriteEvents
-// call. ADK's streaming response aggregator can yield the same
-// FunctionCall part across more than one event (an intermediate
-// aggregate plus a final); Vertex's grounding metadata had the same
-// shape of multi-emission. Two genuinely different tool calls (same
-// name, different args) render separately because the formatted
-// line differs.
+// Tool → / ← lines render off non-partial events only. ADK's
+// streaming aggregator yields one partial event per chunk and then
+// one aggregated event carrying the whole model call, so a streamed
+// tool call reaches WriteEvents twice; the aggregate carries every
+// part and is the event the runtime executes the tool from, so
+// rendering that one is both complete and exactly once (#926).
+// Repeated → / ← lines are NOT deduplicated: an agent calling the
+// same tool with the same args five times in a row is a runaway
+// loop, and the whole value of watching the stream is seeing it
+// happen (a content key cannot tell "the same part twice" from "the
+// same call twice" — the distinction #915 turned on).
+//
+// Identical ↪ lines ARE still deduplicated within one WriteEvents
+// call: Vertex re-emits the same grounding metadata across events,
+// and unlike a tool call there is no operator signal in seeing the
+// same search evidence twice.
 //
 // out and info may point at the same writer (e.g. both os.Stdout) when
 // you want a single combined stream — useful for tmux capture or
@@ -143,19 +152,17 @@ func WriteEvents(events iter.Seq2[*session.Event, error], out, info io.Writer, o
 				if p == nil {
 					continue
 				}
+				// Tool traffic renders off the aggregated event only. A
+				// streamed call reaches this loop twice — once on the
+				// aggregator's chunk event, once on the aggregate — and
+				// the aggregate is the one the runtime executes the tool
+				// from. See the note on WriteEvents.
+				if event.Partial && (p.FunctionCall != nil || p.FunctionResponse != nil) {
+					continue
+				}
 				switch {
 				case p.FunctionCall != nil:
-					// Dedup: ADK's streaming response aggregator can yield
-					// the same FunctionCall part across more than one event
-					// (an intermediate aggregate plus a final). Persistence
-					// only writes the final, but WriteEvents sees both. The
-					// same `seenLines` set used for grounding metadata below
-					// suppresses the visual duplicate without dropping a
-					// legitimate second call with different args.
 					line := formatCall("→", p.FunctionCall.Name, p.FunctionCall.Args)
-					if !seen.add(line) {
-						continue
-					}
 					// Close the current asst speaking block so the next
 					// partial text after this tool call gets a fresh
 					// `asst › ` prefix.
@@ -165,15 +172,7 @@ func WriteEvents(events iter.Seq2[*session.Event, error], out, info io.Writer, o
 					}
 					_, _ = fmt.Fprintln(info, paint(line, ansiCyan, cfg.color))
 				case p.FunctionResponse != nil:
-					// FunctionResponse is emitted exactly once today (by
-					// handleFunctionCalls, not via the streaming aggregator),
-					// but apply the same dedup symmetrically so a future ADK
-					// change can't re-introduce the asymmetry that surfaced
-					// the FunctionCall bug in the first place.
 					line := formatCall("←", p.FunctionResponse.Name, p.FunctionResponse.Response)
-					if !seen.add(line) {
-						continue
-					}
 					if asstStarted {
 						_, _ = fmt.Fprintln(out)
 						asstStarted = false

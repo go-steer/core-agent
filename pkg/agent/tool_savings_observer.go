@@ -72,8 +72,16 @@ const toolSavingsResponseKey = "savings"
 // tracker uniformly. Replaces the per-process
 // `DigestOptions.OnResult` wiring from PR #290 which only worked in
 // single-session mode.
+// Partial events are skipped for the same reason the watchdog skips
+// them (#915) and the hook dispatcher does (#926): the streaming
+// aggregator can hand the tap the same part twice, and a double append
+// here is a double *bill*. Today it cannot happen — tool results are
+// emitted by handleFunctionCalls, which never runs on a partial
+// response, so no FunctionResponse rides one — which is precisely why
+// the guard belongs here rather than in a test nobody will write when
+// that stops being true.
 func (a *Agent) observeToolSavings(ev *session.Event) {
-	if a == nil || a.tracker == nil || ev == nil || ev.Content == nil {
+	if a == nil || a.tracker == nil || ev == nil || ev.Content == nil || ev.Partial {
 		return
 	}
 	for _, p := range ev.Content.Parts {

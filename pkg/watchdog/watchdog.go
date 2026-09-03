@@ -57,6 +57,13 @@
 //     ToolResultObserver extension — see failure.go. Kept optional
 //     rather than folded into Watchdog so a third-party
 //     implementation doesn't break to gain one signal.
+//   - A no-op streak detector (#907), the second consumer of that
+//     outcome stream: three results in a row that each declare the
+//     call changed nothing. Every detector above infers redundancy
+//     from arguments and pays for the inference in precision, which
+//     is what pins RepeatedToolName at Warn; a no-op is a claim the
+//     tool makes about its own result, so this one infers nothing
+//     and is Critical. See noop.go.
 //
 // Future scope (deferred — see design doc §"Piece 2"):
 //
@@ -220,17 +227,26 @@ const DefaultRepeatThreshold = 5
 //   - ToolFailureStreak (3 in a row): every call erroring with none
 //     succeeding in between, i.e. an agent with no verified evidence
 //     about anything (#639).
+//   - NoOpStreak (3 in a row): three tool RESULTS each declaring the
+//     call changed nothing. The only signal that needs no inference —
+//     the tools said it themselves — and the one that reaches the
+//     free-text loop the four above structurally cannot (#907).
 //
-// The first three loop signals are Critical, so they halt under
-// --watchdog=enforce: each can prove the calls are identical, so the
-// agent is provably learning nothing. RepeatedToolName is Warn despite
-// being a loop signal, because keying on the name alone cannot
-// distinguish a loop from a sweep and halting a working agent is worse
-// than missing a slow one — see RepeatedToolNameSignal. The failure
-// streak is Warn for the same family of reason. A Warn never halts; it
-// reaches the operator log plus — under --watchdog=feedback — the
-// model's own next turn. Operators wanting different thresholds, or a
-// subset, construct DefaultWatchdog directly with a custom signal list.
+// Four of the six are Critical, so they halt under --watchdog=enforce.
+// The three args-keyed loop detectors qualify because each can prove
+// the calls are identical, so the agent is provably learning nothing;
+// NoOpStreak qualifies for the opposite reason — it proves nothing and
+// infers nothing, because a no-op is a claim the tool made about its
+// own result. RepeatedToolName is Warn despite being a loop signal,
+// because keying on the name alone cannot distinguish a loop from a
+// sweep and halting a working agent is worse than missing a slow one —
+// see RepeatedToolNameSignal. ToolFailureStreak is Warn for a related
+// reason: a run of denials may be a legitimate RBAC probe, and see
+// NoOpStreakSignal for why that argument does not carry across to it.
+// A Warn never halts; it reaches the operator log plus — under
+// --watchdog=feedback — the model's own next turn. Operators wanting
+// different thresholds, or a subset, construct DefaultWatchdog
+// directly with a custom signal list.
 func NewDefaultWatchdog() *DefaultWatchdog {
 	return &DefaultWatchdog{
 		signals: []Signal{
@@ -240,6 +256,7 @@ func NewDefaultWatchdog() *DefaultWatchdog {
 				DefaultDominantDeferRun, DefaultDominantDeferPeriod),
 			NewRepeatedToolNameSignal(DefaultToolNameRun, DefaultRepeatThreshold),
 			NewToolFailureStreakSignal(DefaultFailureStreak),
+			NewNoOpStreakSignal(DefaultNoOpStreak),
 		},
 	}
 }

@@ -203,13 +203,33 @@ func (a *Agent) observeToolCallsForWatchdog(ev *session.Event, seen map[string]s
 // response shape, and one place decides what "failed" means.
 //
 // Shares the per-turn dedup set with call observation, under a
-// distinct key prefix — the same streaming aggregator that re-emits a
-// FunctionCall part re-emits its FunctionResponse, and a double-
-// counted failure would trip the streak signal at half its threshold.
-// A response with no ID falls back to name+error, which collapses
-// same-error parallel calls within one turn; that is the safe
-// direction to be wrong in, since undercounting delays an advisory
-// alert while overcounting fires it on work that was fine.
+// distinct key prefix, so a re-emitted FunctionResponse cannot trip a
+// streak signal at half its threshold.
+//
+// A response with NO ID is observed unconditionally, and that is a
+// deliberate reversal of what this function used to do (#907). It
+// previously fell back to name+error, on the reasoning that
+// undercounting is the safe direction to be wrong in. It is not, and
+// the collapse was total rather than partial: ADK never synthesizes
+// call IDs (base_flow copies FunctionCall.ID straight through) and
+// real Gemini functionCall parts carry none, so on every Gemini
+// deployment EVERY response in a turn took the fallback — and since a
+// rejection is not an error, thirteen consecutive "already recorded
+// for this turn" no-ops all hashed to one key and arrived at the
+// watchdog as a single observation. The runaway this file exists to
+// see is one that repeats WITHIN a turn, so a per-turn key that
+// collapses repeats within a turn cannot see it.
+//
+// Dropping the fallback is safe because the duplication it guarded
+// against is a FunctionCall phenomenon, not a FunctionResponse one:
+// responses are emitted once, by handleFunctionCalls, and never go
+// through the streaming aggregator that re-emits an intermediate
+// aggregate plus a final (pkg/runner/events.go says the same, and
+// dedups them only symmetrically-in-case). Responses that DO carry an
+// ID keep exact ID dedup, so if a future ADK change starts re-emitting
+// them, the path where that is detectable is still guarded. Counting
+// ID-less parts positionally also matches how history_pairing.go
+// handles the identical empty-ID Gemini shape (#367).
 func (a *Agent) observeToolResultsForWatchdog(ev *session.Event, seen map[string]struct{}) bool {
 	if ev == nil || ev.Content == nil {
 		return false
@@ -224,18 +244,18 @@ func (a *Agent) observeToolResultsForWatchdog(ev *session.Event, seen map[string
 			continue
 		}
 		errText := toolResponseError(p.FunctionResponse.Response)
-		key := "result\x00" + p.FunctionResponse.ID
-		if p.FunctionResponse.ID == "" {
-			key = "result\x00" + p.FunctionResponse.Name + "\x00" + errText
+		if id := p.FunctionResponse.ID; id != "" {
+			key := "result\x00" + id
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
 		}
-		if _, dup := seen[key]; dup {
-			continue
-		}
-		seen[key] = struct{}{}
 		observed = true
 		obs.ObserveToolResult(watchdog.ToolResult{
 			Name:  p.FunctionResponse.Name,
 			Error: errText,
+			NoOp:  toolResponseNoOp(p.FunctionResponse.Response),
 		})
 	}
 	return observed
@@ -264,6 +284,50 @@ func toolResponseError(resp map[string]any) string {
 		return e.Error()
 	default:
 		return fmt.Sprintf("%v", e)
+	}
+}
+
+// ToolResultNoOpKey is the reserved response key a tool sets to declare
+// that an invocation changed nothing (#907). It sits alongside ADK's
+// reserved "error" key and is read by exactly one consumer,
+// watchdog.NoOpStreakSignal.
+//
+// A tool opts in. The alternative — a registry of (tool, status) pairs
+// the runtime knows to mean no-op, or matching the status prose — puts
+// the knowledge somewhere that goes stale the first time a status
+// string is reworded, and mark_task_done's repeat status carries a doc
+// comment actively inviting that rewording.
+//
+// The value is a claim about THIS call, not about the tool. A tool that
+// sometimes does work and sometimes does not sets it per invocation;
+// that is the whole shape the signal reads.
+const ToolResultNoOpKey = "no_op"
+
+// toolResponseNoOp reports whether a tool declared its own call inert.
+//
+// Only a literal true counts. Unlike toolResponseError, which treats an
+// unrecognized shape under "error" as a failure, an unrecognized shape
+// here is NOT read as a no-op: the failure path is fail-safe (an
+// unreadable error still gets counted as an error), while this one is
+// fail-open by necessity. NoOpStreakSignal raises Critical alerts,
+// which halt the agent under --watchdog=enforce, so a garbled value
+// must never be able to manufacture a halt.
+//
+// JSON round-trips through ADK as bool, but a response that has been
+// through a generic map may carry the string "true"; both are accepted
+// because both are unambiguous, and nothing else is.
+func toolResponseNoOp(resp map[string]any) bool {
+	v, ok := resp[ToolResultNoOpKey]
+	if !ok || v == nil {
+		return false
+	}
+	switch b := v.(type) {
+	case bool:
+		return b
+	case string:
+		return b == "true"
+	default:
+		return false
 	}
 }
 

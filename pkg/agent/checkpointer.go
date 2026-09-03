@@ -235,6 +235,13 @@ type markTaskDoneArgs struct {
 
 type markTaskDoneResult struct {
 	Status string `json:"status"`
+
+	// NoOp marks a call that accomplished nothing, for
+	// watchdog.NoOpStreakSignal to count (#907). Machine-readable on
+	// purpose: Status already says the same thing in English, and the
+	// English is what gets reworded. Omitted when false so the ordinary
+	// result keeps its one-field shape in the model's context.
+	NoOp bool `json:"no_op,omitempty"`
 }
 
 // markTaskDoneDescription is the model-facing description. A named
@@ -334,7 +341,14 @@ const markTaskDoneRepeatStatus = "already recorded for this turn — the checkpo
 // the loop again.
 //
 // A nil agent is the pre-registration race NewMarkTaskDoneTool
-// documents; it stays a successful no-op.
+// documents; it stays a successful no-op, and deliberately does NOT
+// set no_op (#907). The two look alike and are opposites: the repeat
+// branch means "nothing needed doing", while an unbound agent means
+// something needed doing and silently did not get done. Routing a
+// runtime wiring fault into a Critical loop signal would halt the
+// agent for the runtime's mistake, and hand the model guidance
+// ("stop calling them") that is exactly backwards — no checkpoint was
+// ever recorded, and the model is the only party still trying.
 func markTaskDone(a *Agent, detail string) markTaskDoneResult {
 	if a == nil {
 		return markTaskDoneResult{Status: "acknowledged (no-op: agent not yet bound)"}
@@ -345,7 +359,7 @@ func markTaskDone(a *Agent, detail string) markTaskDoneResult {
 	a.pendingCheckpointNote = detail
 	a.mu.Unlock()
 	if repeat {
-		return markTaskDoneResult{Status: markTaskDoneRepeatStatus}
+		return markTaskDoneResult{Status: markTaskDoneRepeatStatus, NoOp: true}
 	}
 	return markTaskDoneResult{Status: "acknowledged"}
 }

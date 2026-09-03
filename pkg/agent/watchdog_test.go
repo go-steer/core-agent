@@ -191,14 +191,15 @@ func TestWithWatchdog_SetsBothFields(t *testing.T) {
 }
 
 // TestObserveToolCallsForWatchdog_DedupsAggregatorReEmission is the
-// #363 regression gate. ADK's streaming aggregator can re-emit the
-// same FunctionCall part across more than one event (intermediate
-// aggregate + final); without per-turn dedup each real call counted
-// up to twice and the repeated-tool-call signal tripped at ~half the
-// configured threshold. Same-ID re-emission dedups; a legitimate
-// parallel call with identical args but a distinct ID still counts;
-// and a fresh turn (fresh seen set) counts again — cross-turn
-// repetition IS the watchdog's signal.
+// #363 regression gate, now covering the ID backstop rather than the
+// primary guard: re-emission is kept out of the count by skipping
+// partial events (#915), and this pins what happens if the same part
+// reaches the tap twice at non-partial level anyway. Without dedup
+// each real call counted up to twice and the repeated-tool-call
+// signal tripped at ~half the configured threshold. Same-ID
+// re-emission dedups; a legitimate parallel call with identical args
+// but a distinct ID still counts; and a fresh Run (fresh seen set)
+// counts again — repetition IS the watchdog's signal.
 func TestObserveToolCallsForWatchdog_DedupsAggregatorReEmission(t *testing.T) {
 	t.Parallel()
 	w := &fakeWatchdog{}
@@ -238,26 +239,65 @@ func TestObserveToolCallsForWatchdog_DedupsAggregatorReEmission(t *testing.T) {
 	}
 }
 
-// TestObserveToolCallsForWatchdog_IDLessDedupsByNameArgs covers the
-// ID-less provider path: within one turn, identical name+args dedup
-// (aggregator artifact); different args still count.
-func TestObserveToolCallsForWatchdog_IDLessDedupsByNameArgs(t *testing.T) {
+// TestObserveToolCallsForWatchdog_IDLessCallsEachCount is #915's
+// regression gate, driven into a REAL watchdog rather than the fake:
+// the assertion is not "n observations arrived" but "the signal the
+// observations exist to feed actually fires".
+//
+// An ID-less call used to dedup on name+args, which is the key every
+// args-sensitive detector is looking for a repeat of — so five
+// identical calls arrived as one and `repeated-tool-call` could not
+// reach its threshold from any number of them. Pre-fix this observes
+// one call and raises nothing.
+func TestObserveToolCallsForWatchdog_IDLessCallsEachCount(t *testing.T) {
+	t.Parallel()
+	w := watchdog.NewDefaultWatchdog()
+	a := &Agent{watchdog: w}
+
+	ev := &session.Event{LLMResponse: model.LLMResponse{Content: &genai.Content{
+		Parts: []*genai.Part{{FunctionCall: &genai.FunctionCall{
+			Name: "grep", Args: map[string]any{"pattern": "foo"},
+		}}},
+	}}}
+	seen := map[string]struct{}{}
+	for range watchdog.DefaultRepeatThreshold {
+		a.observeToolCallsForWatchdog(ev, seen)
+	}
+
+	var found bool
+	for _, al := range w.Check() {
+		if al.Signal != "repeated-tool-call" {
+			continue
+		}
+		found = true
+		if al.Severity != watchdog.SeverityCritical {
+			t.Errorf("repeated-tool-call severity = %v, want Critical", al.Severity)
+		}
+	}
+	if !found {
+		t.Errorf("%d identical ID-less calls raised no repeated-tool-call alert", watchdog.DefaultRepeatThreshold)
+	}
+}
+
+// TestObserveToolCallsForWatchdog_SkipsPartialEvents pins the
+// mechanism that replaced the content key (#915). A partial event's
+// parts are re-delivered on the aggregated event that follows, and it
+// is the aggregated one ADK executes the tool from, so observing the
+// partial can only double-count.
+func TestObserveToolCallsForWatchdog_SkipsPartialEvents(t *testing.T) {
 	t.Parallel()
 	w := &fakeWatchdog{}
 	a := &Agent{watchdog: w}
 
-	mk := func(pattern string) *session.Event {
-		return &session.Event{LLMResponse: model.LLMResponse{Content: &genai.Content{
-			Parts: []*genai.Part{{FunctionCall: &genai.FunctionCall{
-				Name: "grep", Args: map[string]any{"pattern": pattern},
-			}}},
-		}}}
+	call := &genai.FunctionCall{Name: "grep", Args: map[string]any{"pattern": "foo"}}
+	partial := &session.Event{LLMResponse: model.LLMResponse{
+		Content: &genai.Content{Parts: []*genai.Part{{FunctionCall: call}}},
+		Partial: true,
+	}}
+	if observed := a.observeToolCallsForWatchdog(partial, map[string]struct{}{}); observed {
+		t.Errorf("a partial event reported an observation; the aggregate that follows is the one to count")
 	}
-	seen := map[string]struct{}{}
-	a.observeToolCallsForWatchdog(mk("foo"), seen)
-	a.observeToolCallsForWatchdog(mk("foo"), seen) // re-emission
-	a.observeToolCallsForWatchdog(mk("bar"), seen) // different args
-	if got := len(w.observed); got != 2 {
-		t.Fatalf("observed %d, want 2 (foo once, bar once)", got)
+	if got := len(w.observed); got != 0 {
+		t.Fatalf("partial event fed %d calls to the watchdog, want 0", got)
 	}
 }

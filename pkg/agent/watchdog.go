@@ -145,28 +145,56 @@ func IsWatchdogTripped(err error) bool {
 }
 
 // observeToolCallsForWatchdog walks ev's content parts and feeds
-// any function-call parts to the wired watchdog. Args are JSON-
-// serialized so the watchdog's literal-string-compare detector
-// has stable input — Go's map iteration order would otherwise
-// make logically-identical calls compare unequal.
+// any function-call parts to the wired watchdog.
 //
-// seen is the per-turn dedup set (#363): ADK's streaming aggregator
-// can re-emit the same FunctionCall part across more than one event
-// (an intermediate aggregate plus the final — the same duplication
-// runner/events.go dedups for display). Calls carrying an ID dedup
-// on it (a re-emitted part keeps its ID; a legitimate parallel call
-// with identical args gets a fresh one); ID-less calls fall back to
-// name+args, which also collapses same-args parallel calls within
-// ONE turn — acceptable, since the watchdog's runaway signal is
-// repetition ACROSS turns and the set resets each turn.
+// Partial events are skipped, and that is what keeps the aggregator's
+// re-emission (#363) out of the count without a content key (#915).
+// In streaming mode ADK yields one event per chunk with Partial set,
+// then one aggregated event with it clear, and the aggregated event
+// carries every part of the model call — so a call reaches the
+// watchdog exactly once, on the same event ADK itself executes the
+// tool from (base_flow: `if resp.Partial { continue }` guards
+// handleFunctionCalls). Counting what the runtime runs is the whole
+// definition the loop detectors want. It is also what the rest of the
+// tree already does with partials: subagent.go, autonomous.go,
+// compactor.go and the TUI adapter all gate on ev.Partial.
 //
+// seen then only has to guard a genuine duplicate emission of the
+// same part at non-partial level, so calls dedup on ID alone and an
+// ID-LESS call is observed unconditionally — the same reversal #907
+// made on the response side, for the same reason: a name+args key
+// cannot tell "the same part twice" from "the same call twice", and
+// the second is precisely the runaway signal. `repeated-tool-call`
+// (5 consecutive identical calls), `alternating-tool-cycle` and
+// `dominant-tool-call` all count repetition WITHIN a Run, which is
+// the window `seen` spans — it is allocated once per Run, not per
+// model turn (agent.go), so a key that collapses repeats inside it
+// silences the detectors outright.
+//
+// Note that ADK does synthesize IDs for providers that omit them
+// (finalizeModelResponseEvent → utils.PopulateClientFunctionCallID,
+// an `adk-`-prefixed UUID stamped on the part before the event is
+// yielded), so ID-less calls are the exception here rather than the
+// Gemini norm. That synthesis is also why the partial filter is
+// needed and ID dedup alone is not: when the aggregator rebuilds a
+// part from streamed PartialArgs instead of forwarding the chunk's
+// own pointer, the chunk and the aggregate are two distinct parts and
+// get two distinct synthesized IDs. Each real call then arrives twice
+// under different args — once with the chunk's empty args, once
+// complete — which cannot reach five consecutive identical calls and
+// reads to the cycle detector as an a→b→a→b alternation that the
+// model never made.
+//
+// Args are JSON-serialized so the watchdog's literal-string-compare
+// detector has stable input — Go's map iteration order would
+// otherwise make logically-identical calls compare unequal.
 // Best-effort: if a part's args don't JSON-marshal cleanly we
 // fall back to a recognizable placeholder; the alternative would
 // be skipping the observation entirely, which silently weakens
 // the signal. Better to compare on the placeholder than miss
 // observations.
 func (a *Agent) observeToolCallsForWatchdog(ev *session.Event, seen map[string]struct{}) bool {
-	if a.watchdog == nil || ev == nil || ev.Content == nil {
+	if a.watchdog == nil || ev == nil || ev.Content == nil || ev.Partial {
 		return false
 	}
 	observed := false
@@ -175,14 +203,12 @@ func (a *Agent) observeToolCallsForWatchdog(ev *session.Event, seen map[string]s
 			continue
 		}
 		args := serializeArgsForWatchdog(p.FunctionCall.Args)
-		key := p.FunctionCall.ID
-		if key == "" {
-			key = p.FunctionCall.Name + "\x00" + args
+		if id := p.FunctionCall.ID; id != "" {
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
 		}
-		if _, dup := seen[key]; dup {
-			continue
-		}
-		seen[key] = struct{}{}
 		observed = true
 		a.watchdog.ObserveToolCall(watchdog.ToolCall{
 			Name: p.FunctionCall.Name,
@@ -202,23 +228,31 @@ func (a *Agent) observeToolCallsForWatchdog(ev *session.Event, seen map[string]s
 // Flattening it here means the watchdog never has to know a provider's
 // response shape, and one place decides what "failed" means.
 //
-// Shares the per-turn dedup set with call observation, under a
+// Shares the per-Run dedup set with call observation, under a
 // distinct key prefix, so a re-emitted FunctionResponse cannot trip a
 // streak signal at half its threshold.
 //
 // A response with NO ID is observed unconditionally, and that is a
 // deliberate reversal of what this function used to do (#907). It
 // previously fell back to name+error, on the reasoning that
-// undercounting is the safe direction to be wrong in. It is not, and
-// the collapse was total rather than partial: ADK never synthesizes
-// call IDs (base_flow copies FunctionCall.ID straight through) and
-// real Gemini functionCall parts carry none, so on every Gemini
-// deployment EVERY response in a turn took the fallback — and since a
-// rejection is not an error, thirteen consecutive "already recorded
+// undercounting is the safe direction to be wrong in. It is not: since
+// a rejection is not an error, thirteen consecutive "already recorded
 // for this turn" no-ops all hashed to one key and arrived at the
 // watchdog as a single observation. The runaway this file exists to
-// see is one that repeats WITHIN a turn, so a per-turn key that
-// collapses repeats within a turn cannot see it.
+// see is one that repeats WITHIN a Run, so a key that collapses
+// repeats within a Run cannot see it.
+//
+// #907 argued that from "ADK never synthesizes call IDs, so on every
+// Gemini deployment EVERY response takes the fallback". That premise
+// is wrong and is corrected here (#915): finalizeModelResponseEvent
+// calls utils.PopulateClientFunctionCallID, which stamps an
+// `adk-`-prefixed UUID on every ID-less call before the event is
+// yielded, and handleFunctionCalls copies that ID onto the response.
+// The empty-ID shape is real in REPLAYED histories — the ID is
+// stripped again on the way back to the model — but not on the live
+// event stream this tap reads. The fix stands on its own reasoning:
+// an ID-less part is a part nothing can tell apart from a genuine
+// repeat, and a repeat is the signal.
 //
 // Dropping the fallback is safe because the duplication it guarded
 // against is a FunctionCall phenomenon, not a FunctionResponse one:

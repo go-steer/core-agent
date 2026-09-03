@@ -95,7 +95,7 @@ func contextWindowSizeFor(model string) int {
 	switch {
 	case containsAny(model, "gemini-3.1-pro", "gemini-3-pro"):
 		return 1_000_000
-	case containsAny(model, "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash", "gemini-3.1-flash"):
+	case containsAny(model, "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash", "gemini-3.1-flash"):
 		return 1_000_000
 	case containsAny(model, "gemini-2.5-pro"):
 		// 1,048,576, not the 2,000,000 this said until #774. Two

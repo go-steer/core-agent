@@ -68,6 +68,7 @@ var builtin = map[string]Rates{
 	"gemini-3.5-flash-lite":                 {InputPerMTok: 0.3, CachedInputPerMTok: 0.03, OutputPerMTok: 2.5, UpdatedAt: time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)},                                                                 // vertex_ai-language-models
 	"gemini-3.6-flash":                      {InputPerMTok: 0.75, CachedInputPerMTok: 0.075, OutputPerMTok: 3.75, UpdatedAt: time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)},                                                              // vertex_ai-language-models
 	"gemini-3.7-flash":                      {InputPerMTok: 0.75, CachedInputPerMTok: 0.075, OutputPerMTok: 3.75, UpdatedAt: time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)},                                                              // vertex_ai-language-models
+	"gemini-3.8-flash":                      {InputPerMTok: 0.75, CachedInputPerMTok: 0.075, OutputPerMTok: 3.75, UpdatedAt: time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)},                                                              // vertex_ai-language-models
 }
 
 // builtinContextWindows is the max INPUT window per model, in tokens,
@@ -115,6 +116,7 @@ var builtinContextWindows = map[string]int{
 	"gemini-3.5-flash-lite":                 1048576,
 	"gemini-3.6-flash":                      1048576,
 	"gemini-3.7-flash":                      1048576,
+	"gemini-3.8-flash":                      1048576,
 }
 
 // Builtin returns a defensive copy of the compiled-in table. Used

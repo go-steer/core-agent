@@ -29,6 +29,15 @@ func TestContextWindowSizeFor(t *testing.T) {
 	}{
 		// Fallback tier: ids LiteLLM does not publish.
 		{"gemini-3.5-flash-customtools", 1_000_000},
+		// The only shape the 3.8 fallback entry can ever answer: the
+		// bare id is catalogued, so it resolves in the generated tier
+		// below and never reaches the switch. Without this row nothing
+		// in the suite fails if that case is deleted. Note the round
+		// 1,000,000 against the real 1,048,576 — every sibling flash
+		// entry is the same conservative approximation, so an
+		// un-catalogued variant compacts slightly early rather than
+		// overshooting a window the provider hard-fails on.
+		{"gemini-3.8-flash-customtools", 1_000_000},
 		// Vertex publication name — one of the two shapes the fallback
 		// exists for. Deliberately not a bare catalog id: an id LiteLLM
 		// does publish would land in the generated table at 2^20 the
@@ -37,6 +46,7 @@ func TestContextWindowSizeFor(t *testing.T) {
 		{"publishers/google/models/gemini-3-pro", 1_000_000},
 		// Generated tier: exact 2^20, not the fallback's round number.
 		{"gemini-3.5-flash", 1_048_576},
+		{"gemini-3.8-flash", 1_048_576},      // priced, not yet the default (#936)
 		{"gemini-3.7-flash", 1_048_576},      // taskclass frontier default
 		{"gemini-3.6-flash", 1_048_576},      // previous frontier default (#530)
 		{"gemini-3.5-flash-lite", 1_048_576}, // taskclass small default

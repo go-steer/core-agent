@@ -41,7 +41,20 @@ type deferredPromotion struct {
 // Empty is the healthy state: it means every tier default is the newest
 // model in its line. The gemini-3.6-flash → gemini-3.7-flash entry that
 // lived here was resolved by promotion, not by expiry.
-var deferredPromotions = map[string]deferredPromotion{}
+var deferredPromotions = map[string]deferredPromotion{
+	"gemini-3.7-flash": {
+		Newer: "gemini-3.8-flash",
+		Why: "gemini-3.8-flash entered the catalog on 2026-09-03 at rates and a " +
+			"window identical to 3.7-flash ($0.75/$3.75 per MTok, cached input " +
+			"$0.075, 1,048,576 input tokens), so the promotion costs nothing and " +
+			"shifts no cost ceiling or compaction threshold — but it has not been " +
+			"run against a live GKE session. #579/#580 are the precedent: an " +
+			"un-UAT'd frontier bump reached operators and had to be reverted. " +
+			"3.8-flash is priced, classified, sized and picker-selectable in the " +
+			"meantime; pin it with --model gemini-3.8-flash to do the UAT. Promote " +
+			"and drop this entry once that passes — go-steer/core-agent#936.",
+	},
+}
 
 // TestModelForTier_ReturnsLatestInLine enforces the policy documented on
 // ModelForTier: a tier default names the LATEST model in its line.

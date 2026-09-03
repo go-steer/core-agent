@@ -100,8 +100,8 @@ func TestContextReductionFailedEvent_SurvivesJSON(t *testing.T) {
 func TestContextReductionFailedEvent_CarriesNoModelContent(t *testing.T) {
 	t.Parallel()
 	ev := NewContextReductionFailedEvent(ContextReductionCompaction, "boom", 1, 2)
-	if ev.LLMResponse.Content != nil {
-		t.Errorf("row carries model content %+v; it would be replayed into the next prompt", ev.LLMResponse.Content)
+	if ev.Content != nil {
+		t.Errorf("row carries model content %+v; it would be replayed into the next prompt", ev.Content)
 	}
 }
 

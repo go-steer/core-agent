@@ -190,7 +190,12 @@ func TestRecordPlan_RejectsEmptyPlan(t *testing.T) {
 	}
 }
 
-func TestRecordPlan_RevisionsIncrementSeq(t *testing.T) {
+// A handler rebuilt between calls — a restarted process, or a host that
+// wires the tool per turn — carries no memory of the previous plan, so
+// it picks the sequence back up from what is on disk. The in-turn repeat
+// guard (#906) is exercised against a single long-lived handler in
+// record_plan_repeat_test.go, which is the shape tools.Build produces.
+func TestRecordPlan_RebuiltHandlerContinuesTheSequence(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	gate := permissions.New(permissions.Options{RequirePlanArtifact: true})

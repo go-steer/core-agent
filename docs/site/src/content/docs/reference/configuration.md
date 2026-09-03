@@ -375,6 +375,8 @@ The third row is the "we just want to know the plan, then go" case — no new mo
 
 Plans persist to `<project-root>/.agents/plans/plan-<seq>.md` with monotonically increasing sequence numbers. When the operator runs `/replan`, the active plan is renamed to `plan-<seq>-revoked.md` (audit trail preserved), the gate flag clears, and the model is forced back through `record_plan` before any further mutating tool will succeed. Sequence numbers continue across revocations so revisions are always identifiable.
 
+A sequence number is allocated per *plan*, not per *call*. Within one turn a second `record_plan` from the same author revises the artifact it already wrote instead of filing a sibling, and re-sending an unchanged plan writes nothing at all — see [`record_plan` repeats don't mint plan files](/concepts/tools/#record_plan-repeats-dont-mint-plan-files).
+
 | Path | Content |
 |---|---|
 | `.agents/plans/plan-1.md` | first plan |

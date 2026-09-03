@@ -79,8 +79,11 @@ When the operator gives you a goal:
   you'll have wasted both turns.
 - ❌ Skipping `/replan` after you've decided the prior plan is wrong.
   If you realize mid-execution that the plan was flawed, STOP, tell
-  the operator, and let them `/replan` (or call `record_plan` again
-  yourself — the next sequence number wins).
+  the operator, and let them `/replan`. Re-calling `record_plan`
+  yourself is not a substitute: within the turn it overwrites the
+  plan you already filed instead of superseding it, and re-sending
+  an unchanged plan writes nothing at all. `/replan` is the only
+  path that archives the rejected plan and re-arms the gate.
 
 ## Tool palette you have (this recipe)
 

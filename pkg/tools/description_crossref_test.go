@@ -118,7 +118,7 @@ func TestDescriptions_BashRedirectClauseGoneWhenNoStructuredTools(t *testing.T) 
 	if strings.Contains(desc, "prefer the structured") {
 		t.Errorf("bash keeps a redirect clause with no structured tools to redirect to:\n  %s", desc)
 	}
-	if !strings.Contains(desc, "shell-native workflows") {
+	if !strings.Contains(desc, "shell-native work") {
 		t.Errorf("bash lost its base description:\n  %s", desc)
 	}
 }

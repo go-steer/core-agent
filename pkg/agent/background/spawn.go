@@ -36,10 +36,12 @@ import (
 // done-tool prose for spawned subagents (#641, restated for the
 // result-style return tool in #728).
 //
-// The default asks for "a one-sentence detail explaining what you
-// accomplished", which is right for a top-level autonomous run whose
-// output a human reads directly. A subagent's caller is another MODEL:
-// its completion report is handed back as the spawn_agent tool result,
+// The default used to ask for "a one-sentence detail explaining what
+// you accomplished". #909 brought it into line with this one — both now
+// ask for findings and both forbid the status line — so what this
+// override still carries is the part specific to delegation, below. A
+// subagent's caller is another MODEL: its completion report is handed
+// back as the spawn_agent tool result,
 // and a one-sentence status line leaves the parent with no findings, so
 // it redoes the work it delegated. Stating that the report is the
 // deliverable makes the useful content arrive by construction rather
@@ -396,9 +398,10 @@ func (m *Manager) launch(ctx context.Context, parentBranch string, rs resolvedSp
 
 		// A subagent's completion report is a deliverable handed to
 		// another agent, not a status line for a human scanning a log.
-		// The driver's default prose asks for "a one-sentence detail",
-		// which is what produced the content-free "successfully diagnosed
-		// the issue" reports the parent then had to re-derive (#641).
+		// The driver's default prose used to ask for "a one-sentence
+		// detail", which is what produced the content-free "successfully
+		// diagnosed the issue" reports the parent then had to re-derive
+		// (#641; the default was fixed in #909, the override predates it).
 		//
 		// A bounded delegation adds the other termination rule on top
 		// (#730): it also ends when the model stops calling tools, so

@@ -833,9 +833,27 @@ type autoConfig struct {
 // without a budget still stops in finite time.
 func defaultAutoConfig() autoConfig {
 	return autoConfig{
-		maxTurns:            50,
-		doneToolName:        "report_done",
-		doneToolDescription: "Signal that the user's goal is complete or that you cannot proceed any further. Call this with state=\"done\" and a one-sentence detail explaining what you accomplished or why you stopped.",
+		maxTurns:     50,
+		doneToolName: "report_done",
+		// Rewritten for the content obligation only (#909). The old text
+		// asked for "a one-sentence detail explaining what you
+		// accomplished" — an accomplishment summary, which is the exact
+		// genre the sibling return tool one package over forbids
+		// (background/spawn.go:47-52), and a length the caller has no
+		// reason to want.
+		//
+		// The argument names are NOT interchangeable with the result-path
+		// tool's and must stay as they are. This branch builds a
+		// coretools.NewLifecycleTool, whose args are {state, detail} —
+		// there is no `result` here, and ADK validates with
+		// additionalProperties:false, so pointing the model at one is a
+		// hard validation error rather than a mislabelled field. `state`
+		// is required and restricted to {"done"}, and the " Allowed
+		// states: ..." clause NewLifecycleTool appends is only reachable
+		// when the description is empty (lifecycle.go:100-106), which
+		// this one is not — so this string is the model's only source for
+		// the required value.
+		doneToolDescription: "End the loop and return your result: call this with state=\"done\" and your actual findings in detail — the answer, analysis, or proposed change, with the evidence behind it — or, if you cannot proceed, what blocked you and what you established before it did. Do not write a status line: whoever reads this cannot see your work, so a description of what you did forces them to redo it.",
 		continuationPrompt:  "continue",
 	}
 }

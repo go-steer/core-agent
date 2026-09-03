@@ -134,17 +134,47 @@ func (h *handlers) doResume(w http.ResponseWriter, r *http.Request, entry *Entry
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// doStopAgent stops one running background subagent. Until v1.5.0 the
+// StopAgentResponse is the 200 body of POST
+// /sessions/{sid}/agents/{name}/stop.
+//
+// Stopped has no `omitempty`: false is the informative value here — it
+// is the whole point of the field — and a key that disappears exactly
+// when it says something is a key clients read wrong (the `woke`
+// precedent from #840).
+//
+// Status does have `omitempty`: a registrant that only implements the
+// pre-1.12.0 AgentStopper cannot name one, and there is no informative
+// empty status.
+type StopAgentResponse struct {
+	Session string `json:"session"`
+	Agent   string `json:"agent"`
+	// Stopped reports whether THIS call halted a running subagent.
+	Stopped bool `json:"stopped"`
+	// Status is the subagent's status after the call: "stopped" when
+	// this call did it, otherwise what it had already terminated as.
+	Status string `json:"status,omitempty"`
+}
+
+// doStopAgent stops one background subagent. Until v1.5.0 the
 // manager's Stop had no operator-facing route at all: a runaway loop
 // inside a subagent survived every /interrupt an operator could send,
 // because interrupting the parent only cancels the parent's turn.
 //
-// 404 when no running subagent by that name is found — an operator
-// aiming at a specific runaway needs to know they missed, and a 200
-// here would read as "stopped".
+// 404 is reserved for a name the manager has never registered — the
+// operator aimed at something that does not exist, so they missed, and
+// the same request will miss again. It is NOT the answer for a
+// subagent that finished on its own: that one existed, the operator
+// aimed correctly, and there is nothing to retry. Through v1.11.0 the
+// route could not tell those apart and answered 200 `stopped: true` to
+// both, telling an operator they had halted something that had
+// completed thirty seconds earlier (#897). Since 1.12.0 the already-
+// finished case is a 200 with `stopped: false` and the terminal
+// `status` — which is what the stop_agent tool has always told the
+// model, and the two doors should not disagree about the same event.
 func (h *handlers) doStopAgent(w http.ResponseWriter, r *http.Request, entry *Entry) {
-	st, ok := entry.Agent.(AgentStopper)
-	if !ok {
+	reporter, hasReporter := entry.Agent.(AgentStopReporter)
+	legacy, hasLegacy := entry.Agent.(AgentStopper)
+	if !hasReporter && !hasLegacy {
 		http.Error(w, "stop: this agent does not implement AgentStopper (older runtime?)", http.StatusNotImplemented)
 		return
 	}
@@ -153,19 +183,34 @@ func (h *handlers) doStopAgent(w http.ResponseWriter, r *http.Request, entry *En
 		http.Error(w, "stop: subagent name is required", http.StatusBadRequest)
 		return
 	}
-	stopped, err := st.AttachStopAgent(name)
+	var (
+		out StopAgentOutcome
+		err error
+	)
+	if hasReporter {
+		out, err = reporter.AttachStopAgentOutcome(name)
+	} else {
+		// Pre-1.12.0 registrant: its bool conflates the two cases, so
+		// the best available answer is the old one. Reporting
+		// Stopped=found here keeps that registrant's behavior exactly
+		// as it shipped rather than inventing a status it never said.
+		var found bool
+		found, err = legacy.AttachStopAgent(name)
+		out = StopAgentOutcome{Found: found, Stopped: found}
+	}
 	if err != nil {
 		http.Error(w, fmt.Sprintf("stop: %v", err), http.StatusInternalServerError)
 		return
 	}
-	if !stopped {
-		http.Error(w, fmt.Sprintf("stop: no running subagent named %q", name), http.StatusNotFound)
+	if !out.Found {
+		http.Error(w, fmt.Sprintf("stop: no subagent named %q", name), http.StatusNotFound)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"session": entry.SessionID,
-		"agent":   name,
-		"stopped": true,
+	writeJSON(w, http.StatusOK, StopAgentResponse{
+		Session: entry.SessionID,
+		Agent:   name,
+		Stopped: out.Stopped,
+		Status:  out.Status,
 	})
 }
 

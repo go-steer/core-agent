@@ -680,9 +680,18 @@ func (c *Client) Resume(ctx context.Context, sessionPath string, req attach.Resu
 // StopAgent calls POST <base>/sessions/<sid>/agents/<name>/stop —
 // stop one runaway background subagent, which interrupting the parent
 // can't reach.
-func (c *Client) StopAgent(ctx context.Context, sessionPath, name string) error {
-	return c.doJSON(ctx, http.MethodPost,
-		sessionPath+"/agents/"+url.PathEscape(name)+"/stop", map[string]string{}, nil)
+//
+// The response distinguishes "this call halted it" (Stopped) from "it
+// had already finished" (Stopped=false with a terminal Status); a 404
+// means only that no subagent by that name was ever registered. A
+// pre-1.12.0 daemon reports Stopped=true for both, and no Status.
+func (c *Client) StopAgent(ctx context.Context, sessionPath, name string) (attach.StopAgentResponse, error) {
+	var out attach.StopAgentResponse
+	if err := c.doJSON(ctx, http.MethodPost,
+		sessionPath+"/agents/"+url.PathEscape(name)+"/stop", map[string]string{}, &out); err != nil {
+		return attach.StopAgentResponse{}, err
+	}
+	return out, nil
 }
 
 // ---- SSE stream ----

@@ -44,6 +44,10 @@ type pausingRegistrant struct {
 	resumes  []ResumeRequest
 	callers  []auth.Caller
 	resumeAt string // mode the fake resolved
+	// raceToFinish names a subagent whose goroutine exits just before
+	// the stop takes the handle's lock — the "finished between the
+	// list and the stop" window /interrupt used to claim credit for.
+	raceToFinish string
 
 	canInterrupt  atomic.Bool // "there is a turn in flight"
 	plainCancels  atomic.Int32
@@ -129,18 +133,28 @@ func (p *pausingRegistrant) AttachAgents() []AgentInfo {
 	return out
 }
 
-func (p *pausingRegistrant) AttachStopAgent(name string) (bool, error) {
+// AttachStopAgentOutcome models the real manager: a handle stays
+// registered after it terminates, so a name in `live` is Found
+// whatever its status, and only a running one is Stopped by the call.
+func (p *pausingRegistrant) AttachStopAgentOutcome(name string) (StopAgentOutcome, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for i, a := range p.live {
-		if a.Name != name || a.Status != AgentStatusRunning {
+		if a.Name != name {
 			continue
+		}
+		if a.Status == AgentStatusRunning && name == p.raceToFinish {
+			p.live[i].Status = AgentStatusCompleted
+			return StopAgentOutcome{Found: true, Status: AgentStatusCompleted}, nil
+		}
+		if a.Status != AgentStatusRunning {
+			return StopAgentOutcome{Found: true, Status: a.Status}, nil
 		}
 		p.live[i].Status = AgentStatusStopped
 		p.stops = append(p.stops, name)
-		return true, nil
+		return StopAgentOutcome{Found: true, Stopped: true, Status: AgentStatusStopped}, nil
 	}
-	return false, nil
+	return StopAgentOutcome{}, nil
 }
 
 // newPauseHarness registers reg and starts a server, returning the base URL.
@@ -176,6 +190,13 @@ func decodeInterrupt(t *testing.T, resp *http.Response) InterruptResponse {
 		t.Fatalf("decode: %v", err)
 	}
 	return out
+}
+
+func decodeStop(t *testing.T, resp *http.Response, out *StopAgentResponse) {
+	t.Helper()
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 }
 
 // The v1.5.0 default: a bodyless POST /interrupt holds. This is the
@@ -337,6 +358,26 @@ func TestInterrupt_ReportsAndOptionallyStopsSubagents(t *testing.T) {
 		}
 		if len(got.RunningSubagents) != 0 {
 			t.Errorf("RunningSubagents = %+v, want none after the stop", got.RunningSubagents)
+		}
+	})
+
+	// stopped_subagents is a claim about what the interrupt did. A
+	// subagent whose goroutine exits in the window between the listing
+	// and the stop was not stopped by the operator, and saying it was
+	// is the same false credit #897 found on the single-agent route —
+	// the handler's own comment already promised it was skipped.
+	t.Run("does not claim one that finished between the list and the stop", func(t *testing.T) {
+		t.Parallel()
+		ag := newAgent()
+		ag.raceToFinish = "cluster"
+		base := newPauseHarness(t, ag)
+		got := decodeInterrupt(t, postJSON(t,
+			base+"/sessions/core-agent/s1/interrupt", `{"stop_subagents":true}`))
+		if len(got.StoppedSubagents) != 0 {
+			t.Errorf("StoppedSubagents = %+v, want none — it finished on its own", got.StoppedSubagents)
+		}
+		if len(ag.stops) != 0 {
+			t.Errorf("stops = %v, want none", ag.stops)
 		}
 	})
 }
@@ -510,9 +551,120 @@ func TestStopAgent_StopsOneRunawaySubagent(t *testing.T) {
 	if len(ag.stops) != 1 || ag.stops[0] != "cluster" {
 		t.Errorf("stops = %v, want [cluster]", ag.stops)
 	}
+	var got StopAgentResponse
+	decodeStop(t, resp, &got)
+	if !got.Stopped {
+		t.Errorf("stopped = false for a subagent this call halted")
+	}
+	if got.Status != AgentStatusStopped {
+		t.Errorf("status = %q, want %q", got.Status, AgentStatusStopped)
+	}
 
-	// Second stop finds nothing running under that name → 404.
-	if again := postJSON(t, base+"/sessions/core-agent/s1/agents/cluster/stop", ""); again.StatusCode != http.StatusNotFound {
-		t.Errorf("repeat stop: status %d, want 404", again.StatusCode)
+	// Second stop: the handle is still registered, now terminal. 200
+	// with stopped:false — the operator aimed correctly and there is
+	// nothing to retry, but they did not do it (#897).
+	again := postJSON(t, base+"/sessions/core-agent/s1/agents/cluster/stop", "")
+	if again.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(again.Body)
+		t.Fatalf("repeat stop: status %d, want 200: %s", again.StatusCode, body)
+	}
+	var repeat StopAgentResponse
+	decodeStop(t, again, &repeat)
+	if repeat.Stopped {
+		t.Errorf("repeat stop: stopped = true, want false — this call halted nothing")
+	}
+	if repeat.Status != AgentStatusStopped {
+		t.Errorf("repeat stop: status = %q, want %q", repeat.Status, AgentStatusStopped)
+	}
+	if len(ag.stops) != 1 {
+		t.Errorf("stops = %v after a repeat stop, want the one real stop", ag.stops)
+	}
+}
+
+// TestStopAgent_AlreadyFinishedIsNotAStop is the #897 case proper: a
+// subagent that completed on its own before the operator's request
+// arrived. It is registered, so it is not a 404; it was not halted by
+// this call, so it is not `stopped: true`. Through v1.11.0 it was
+// both-wrong — 200 claiming a stop the operator never performed.
+func TestStopAgent_AlreadyFinishedIsNotAStop(t *testing.T) {
+	t.Parallel()
+	ag := &pausingRegistrant{
+		stubRegistrant: stubRegistrant{app: "core-agent", user: "u", sid: "s1"},
+		live:           []AgentInfo{{Name: "cluster", ID: "cluster", Status: AgentStatusCompleted}},
+	}
+	base := newPauseHarness(t, ag)
+
+	resp := postJSON(t, base+"/sessions/core-agent/s1/agents/cluster/stop", "")
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d, want 200 (the name exists): %s", resp.StatusCode, body)
+	}
+	var got StopAgentResponse
+	decodeStop(t, resp, &got)
+	if got.Stopped {
+		t.Errorf("stopped = true for a subagent that had already completed")
+	}
+	if got.Status != AgentStatusCompleted {
+		t.Errorf("status = %q, want %q — the operator needs to see it finished on its own", got.Status, AgentStatusCompleted)
+	}
+	if len(ag.stops) != 0 {
+		t.Errorf("stops = %v, want none", ag.stops)
+	}
+}
+
+// TestStopAgent_UnknownNameIs404 pins what 404 is reserved for: a name
+// the manager has never registered. That is the only case where the
+// operator missed and a retry would miss too.
+func TestStopAgent_UnknownNameIs404(t *testing.T) {
+	t.Parallel()
+	ag := &pausingRegistrant{
+		stubRegistrant: stubRegistrant{app: "core-agent", user: "u", sid: "s1"},
+		live:           []AgentInfo{{Name: "cluster", ID: "cluster", Status: AgentStatusRunning}},
+	}
+	base := newPauseHarness(t, ag)
+
+	resp := postJSON(t, base+"/sessions/core-agent/s1/agents/ghost/stop", "")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status %d, want 404 for a name that was never registered", resp.StatusCode)
+	}
+}
+
+// legacyOnly presents a registrant that carries the pre-1.12.0
+// AgentStopper and nothing newer — an embedder pinned to an older
+// core-agent, as the handler sees it. It embeds the Registrant
+// INTERFACE rather than the concrete type precisely so that
+// AttachStopAgentOutcome is not promoted along with everything else.
+type legacyOnly struct {
+	Registrant
+	inner *pausingRegistrant
+}
+
+func (l legacyOnly) AttachStopAgent(name string) (bool, error) {
+	out, err := l.inner.AttachStopAgentOutcome(name)
+	return out.Found, err
+}
+
+// TestStopAgent_LegacyStopperKeepsItsOldAnswer pins the fallback arm:
+// a registrant that can only answer "is this name registered" gets the
+// answer it always gave, rather than a status the handler invented.
+func TestStopAgent_LegacyStopperKeepsItsOldAnswer(t *testing.T) {
+	t.Parallel()
+	inner := &pausingRegistrant{
+		stubRegistrant: stubRegistrant{app: "core-agent", user: "u", sid: "s1"},
+		live:           []AgentInfo{{Name: "cluster", ID: "cluster", Status: AgentStatusCompleted}},
+	}
+	base := newPauseHarness(t, legacyOnly{Registrant: inner, inner: inner})
+
+	resp := postJSON(t, base+"/sessions/core-agent/s1/agents/cluster/stop", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, want 200", resp.StatusCode)
+	}
+	var got StopAgentResponse
+	decodeStop(t, resp, &got)
+	if !got.Stopped {
+		t.Errorf("stopped = false; a pre-1.12.0 registrant's bool can only mean found, and the handler must not pretend otherwise")
+	}
+	if got.Status != "" {
+		t.Errorf("status = %q, want empty — the old interface cannot name one", got.Status)
 	}
 }

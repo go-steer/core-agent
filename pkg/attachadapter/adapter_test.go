@@ -699,6 +699,10 @@ type fakeSubagentManager struct {
 	catalog []attach.SubagentCatalogInfo
 	live    []attach.AgentInfo
 	stopped []string
+	// terminal names subagents that are registered but already
+	// finished, mapped to the status they finished with — the case
+	// the route used to report as a successful stop (#897).
+	terminal map[string]string
 }
 
 func (f *fakeSubagentManager) AttachParent(*agent.Agent)            {}
@@ -711,17 +715,21 @@ func (f *fakeSubagentManager) SpawnSubagent(context.Context, attach.SubagentSpec
 	return attach.SubagentSpawnResponse{}, nil
 }
 
-// StopSubagent reports success only for a name in `live`, mirroring
-// the real manager's "no such subagent" (false, nil) answer.
-func (f *fakeSubagentManager) StopSubagent(name string) (bool, error) {
+// StopSubagent mirrors the real manager's three answers: unknown name
+// (zero outcome), a live subagent this call halts, and a registered
+// but already-terminal one that reports its own status instead.
+func (f *fakeSubagentManager) StopSubagent(name string) (attach.StopAgentOutcome, error) {
+	if st, ok := f.terminal[name]; ok {
+		return attach.StopAgentOutcome{Found: true, Status: st}, nil
+	}
 	for _, a := range f.live {
 		if a.Name != name {
 			continue
 		}
 		f.stopped = append(f.stopped, name)
-		return true, nil
+		return attach.StopAgentOutcome{Found: true, Stopped: true, Status: "stopped"}, nil
 	}
-	return false, nil
+	return attach.StopAgentOutcome{}, nil
 }
 
 func TestAttachSubagentCatalog_NoManager_Empty(t *testing.T) {
@@ -741,6 +749,63 @@ func TestAttachSubagentCatalog_Wired_Delegates(t *testing.T) {
 	got := ad.AttachSubagentCatalog()
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("AttachSubagentCatalog() = %+v, want %+v", got, want)
+	}
+}
+
+// TestAttachStopAgentOutcome_Delegates covers the seam between the
+// attach handler and the background manager. The interesting row is
+// the already-finished one: Found without Stopped is what keeps the
+// handler off a 404 while still refusing to credit the operator with a
+// stop they did not perform (#897).
+func TestAttachStopAgentOutcome_Delegates(t *testing.T) {
+	t.Parallel()
+	mgr := &fakeSubagentManager{
+		live:     []attach.AgentInfo{{Name: "cluster", ID: "cluster"}},
+		terminal: map[string]string{"scribe": "completed"},
+	}
+	ad := New(newEchoAgent(t, agent.WithBackgroundManager(mgr)))
+
+	cases := []struct {
+		name string
+		want attach.StopAgentOutcome
+	}{
+		{"cluster", attach.StopAgentOutcome{Found: true, Stopped: true, Status: "stopped"}},
+		{"scribe", attach.StopAgentOutcome{Found: true, Status: "completed"}},
+		{"ghost", attach.StopAgentOutcome{}},
+	}
+	for _, tc := range cases {
+		got, err := ad.AttachStopAgentOutcome(tc.name)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got != tc.want {
+			t.Errorf("AttachStopAgentOutcome(%q) = %+v, want %+v", tc.name, got, tc.want)
+		}
+	}
+
+	// The pre-1.12.0 spelling still answers, and answers what it
+	// always did — "is this name registered" — so a caller holding
+	// only AgentStopper is unaffected.
+	if found, err := ad.AttachStopAgent("scribe"); err != nil || !found {
+		t.Errorf("AttachStopAgent(scribe) = (%v, %v), want (true, nil)", found, err)
+	}
+	if found, err := ad.AttachStopAgent("ghost"); err != nil || found {
+		t.Errorf("AttachStopAgent(ghost) = (%v, %v), want (false, nil)", found, err)
+	}
+}
+
+// TestAttachStopAgentOutcome_NoManager — an agent with no background
+// surface reports not-found rather than erroring, which the handler
+// turns into the same 404 an unknown name gets.
+func TestAttachStopAgentOutcome_NoManager(t *testing.T) {
+	t.Parallel()
+	ad := New(newEchoAgent(t))
+	got, err := ad.AttachStopAgentOutcome("cluster")
+	if err != nil {
+		t.Fatalf("AttachStopAgentOutcome: %v", err)
+	}
+	if got != (attach.StopAgentOutcome{}) {
+		t.Errorf("got %+v, want a zero outcome", got)
 	}
 }
 

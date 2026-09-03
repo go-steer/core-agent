@@ -723,7 +723,7 @@ func TestClientStopAgent_NoSuchSubagent(t *testing.T) {
 	t.Parallel()
 	h := newRPCHarness(t, harnessConfig{})
 
-	err := h.client.StopAgent(context.Background(), h.sessionPath(), "ghost")
+	_, err := h.client.StopAgent(context.Background(), h.sessionPath(), "ghost")
 	var se *httpStatusError
 	if !errors.As(err, &se) {
 		t.Fatalf("err = %v (%T), want *httpStatusError", err, err)

@@ -57,6 +57,7 @@ with the old fixture kept frozen.
 | `rest-session-title-v1.json` | `POST /sessions/{app}/{sid}/title` → 200 body, persisted variant (protocol 1.10.0, #808) | v1 |
 | `rest-inject-v1.json` | `POST /sessions/{app}/{sid}/inject` → 200 body, deferred variant (pins `woke: false`; protocol 1.10.0, #698) | v1 |
 | `rest-status-v1.json` | `GET /sessions/{app}/{sid}/status` → 200 body, parked-mid-turn variant (protocol 1.12.0, #896) | v1 |
+| `rest-stop-agent-v1.json` | `POST /sessions/{app}/{sid}/agents/{name}/stop` → 200 body, already-finished variant (pins `stopped: false`; protocol 1.12.0, #897) | v1 |
 
 Pinned by `rest_conformance_test.go`; add new REST fixtures there
 following the same construct-marshal-diff pattern (plus, where a
@@ -91,6 +92,12 @@ on a session that is not deferred. `encoding/json`'s `omitempty` does
 not apply to a struct, so both `time.Time` fields on this endpoint are
 always on the wire regardless of their tags. Read them for the zero
 value; do not treat presence as meaning the field applies.
+
+`stopped` on the stop-agent fixture is a claim about the *call*, not
+about the subagent: false means it had already reached a terminal
+status when the request arrived. The 200 is what says it is no longer
+running. 404 on that route means only that no subagent by that name was
+ever registered — a finished one keeps its handle, so it answers 200.
 
 Timestamp fields (`last_touched_at`) are RFC 3339 with arbitrary
 sub-second precision and zone offset — active rows carry the

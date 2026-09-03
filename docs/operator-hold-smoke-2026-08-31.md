@@ -270,17 +270,23 @@ delegation during a triage does it.
 
 - [ ] Interrupting the **parent does not stop subagents** — the
       `/interrupt` response lists them in `running_subagents`
-- [ ] `POST $S/agents/{name}/stop` stops one by name → `{"stopped": true}`
-- [ ] The same call for a subagent that is not running → **404**
+- [ ] `POST $S/agents/{name}/stop` stops one by name →
+      `{"stopped": true, "status": "stopped"}`
+- [ ] The same call again → **200** with `{"stopped": false, "status":
+      "stopped"}`. The name still resolves, so it is not a 404; this call
+      halted nothing, so it must not claim it did (#897)
+- [ ] A name the session never spawned → **404**. That is the only 404
+      on this route
 - [ ] `POST $S/interrupt {"stop_subagents": true}` stops all of them and
-      reports them in `stopped_subagents`
+      reports in `stopped_subagents` only the ones it actually halted
 - [ ] The runaway case, which is why this exists: a subagent in a tool
       loop survives a plain parent interrupt, and `stop_subagents` is what
       actually ends it
 
 ```sh
 post "$S/interrupt" | jq '{interrupted, paused, running_subagents, stopped_subagents}'
-post "$S/agents/cluster/stop" | jq          # 404 if that one isn't running
+post "$S/agents/cluster/stop" | jq          # again → stopped:false + status
+post "$S/agents/nosuchname/stop" | jq       # 404 — never spawned
 post "$S/interrupt" -d '{"stop_subagents":true}' | jq '{stopped_subagents}'
 ```
 
@@ -648,7 +654,7 @@ per-incident, not `default`.
 | 2 Interrupt parks | pass | running-turn path now driven, which the first run could not do |
 | 3 Resume dispositions | pass | continue, abandon and steer all fired against real turns |
 | 4 `/pause` | pass | mid-turn "finishes normally" now proven — see the timings under §8 below |
-| 7 Subagents | pass, bar one box | stop-already-stopped returns 200, not 404 — **F5**, filed as [#897](https://github.com/go-steer/core-agent/issues/897) |
+| 7 Subagents | pass, bar one box | stop-already-stopped returns 200, not 404 — **F5**, filed as [#897](https://github.com/go-steer/core-agent/issues/897), fixed in protocol 1.12.0 (the boxes are rewritten; re-drive on dev.5) |
 | 8 Remote TUI | **fail — F4** | 9 of 12 boxes pass, 1 not run; the headline box fails. Filed as [core-tui#302](https://github.com/go-steer/core-tui/issues/302) + [#896](https://github.com/go-steer/core-agent/issues/896) |
 | 9 Two clients agree | pass | |
 | 10 `/btw` | pass | **F1 confirmed fixed.** Survived the full §2–§7 sequence *and* a 15-way concurrent hammer; returned live run-state (`State: Paused (paused (operator-interrupt))`, `Turn Cancellation: Yes`, `Turns Completed: 12`, `Cost So Far: $0.07`), rate-limited exactly (5×200 then 10×429 with `Retry-After: 6`), and persisted nothing |
@@ -817,6 +823,16 @@ operator's intent was satisfied."* Observed: 200 with
 Either reading is defensible; shipping both is not. The operator-facing
 question is whether "I stopped it" and "it had already finished" should
 look the same, and the two comments answer it differently.
+
+**Resolved (protocol 1.12.0):** neither, as it turned out. Both readings
+were trying to squeeze three answers into a bool. The route now mirrors
+what the `stop_agent` tool has always told the model — the handle's real
+status — so the already-finished case is a **200** with
+`{"stopped": false, "status": "completed"}`, and 404 keeps the meaning
+it always had in code: no subagent by that name was ever registered.
+`/interrupt`'s `stopped_subagents` stopped claiming credit for
+subagents that finished on their own in the same change. §7's boxes are
+rewritten to the new contract; re-drive them on dev.5.
 
 ### F6 — a transient provider 400 is classified as a non-retryable config error
 

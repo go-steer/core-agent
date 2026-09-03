@@ -322,6 +322,33 @@ func TestConformance_RESTStatusV1(t *testing.T) {
 		resp)
 }
 
+// TestConformance_RESTStopAgentV1 pins POST
+// /sessions/{app}/{sid}/agents/{name}/stop (protocol 1.12.0, #897).
+// The fixture is the already-finished variant, because that is the case
+// the shape exists to express and the case the route got wrong for its
+// whole life: the subagent is registered (so not a 404), it is no
+// longer running (so the 200 is right), and this call is not what
+// stopped it (so `stopped` is false and `status` names what it
+// terminated as).
+//
+// `stopped: false` in a fixture is deliberate. It is the value most at
+// risk from an omitempty added in passing, and a key that disappears
+// exactly when it says something is a key clients read wrong — a
+// client seeing no `stopped` would fall back to "the 200 means I
+// stopped it", which is the pre-1.12.0 answer this replaced.
+func TestConformance_RESTStopAgentV1(t *testing.T) {
+	t.Parallel()
+	resp := StopAgentResponse{
+		Session: "s-incident-4412",
+		Agent:   "cluster",
+		Stopped: false,
+		Status:  AgentStatusCompleted,
+	}
+	assertMatchesConformanceFixture(t,
+		"testdata/conformance/rest-stop-agent-v1.json",
+		resp)
+}
+
 // TestConformance_RESTWakeV1 pins POST /sessions/{sid}/wake, whose
 // body was a hand-rolled map literal until #840 gave it a type. The
 // fixture is what makes that retyping provably wire-identical: `woken`

@@ -1640,12 +1640,14 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		promptTokens, completionTokens int
 		turnErr                        error
 	)
-	// Per-turn dedup for watchdog observations (#363): ADK's streaming
-	// aggregator can re-emit the same FunctionCall part on an
-	// intermediate aggregate plus the final event, which double-counted
-	// each real call and tripped the repeated-tool-call signal at ~half
-	// the configured threshold. Scoped to this turn — cross-turn
-	// repeats are exactly the signal the watchdog exists to count.
+	// Per-Run dedup for watchdog observations (#363), keyed on call and
+	// response IDs. It is a backstop only: what actually keeps ADK's
+	// streaming aggregator from double-counting a re-emitted part is
+	// the Partial filter in observeToolCallsForWatchdog (#915).
+	//
+	// Scoped to this Run, and the loop detectors count repetition
+	// within exactly that window — a Run under the agentic loop spans
+	// many model turns, which is where a runaway lives.
 	watchdogSeen := map[string]struct{}{}
 	tapped := func(yield func(*session.Event, error) bool) {
 		for ev, err := range inner {

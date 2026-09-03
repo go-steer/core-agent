@@ -29,8 +29,9 @@ import (
 
 // Compile-time checks that the adapter carries the v1.5.0 surface.
 var (
-	_ attach.PauseController = (*Adapter)(nil)
-	_ attach.AgentStopper    = (*Adapter)(nil)
+	_ attach.PauseController   = (*Adapter)(nil)
+	_ attach.AgentStopper      = (*Adapter)(nil)
+	_ attach.AgentStopReporter = (*Adapter)(nil)
 )
 
 // AttachPause implements attach.PauseController. Parks the loop
@@ -104,18 +105,28 @@ func (ad *Adapter) AttachResume(req attach.ResumeRequest, caller auth.Caller) (a
 	}, nil
 }
 
-// AttachStopAgent implements attach.AgentStopper. Stops one running
-// background subagent by name; reports false when the manager has no
-// live subagent under that name (including one that already finished),
-// which the handler turns into a 404.
-func (ad *Adapter) AttachStopAgent(name string) (bool, error) {
+// AttachStopAgentOutcome implements attach.AgentStopReporter. Stops
+// one background subagent by name and reports what the attempt did:
+// Found=false only when the manager has never registered that name
+// (which the handler turns into a 404), Stopped=false with a terminal
+// Status when the subagent had already finished on its own.
+func (ad *Adapter) AttachStopAgentOutcome(name string) (attach.StopAgentOutcome, error) {
 	a := ad.Agent()
 	if a == nil {
-		return false, nil
+		return attach.StopAgentOutcome{}, nil
 	}
 	mgr := a.BackgroundManager()
 	if mgr == nil {
-		return false, nil
+		return attach.StopAgentOutcome{}, nil
 	}
 	return mgr.StopSubagent(name)
+}
+
+// AttachStopAgent implements attach.AgentStopper, the pre-1.12.0
+// spelling. Kept so a client or embedder holding the older interface
+// still resolves; the handler prefers AttachStopAgentOutcome and only
+// falls back here for registrants that don't have it.
+func (ad *Adapter) AttachStopAgent(name string) (bool, error) {
+	out, err := ad.AttachStopAgentOutcome(name)
+	return out.Found, err
 }

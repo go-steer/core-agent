@@ -845,14 +845,32 @@ func (h *handlers) doInterrupt(w http.ResponseWriter, r *http.Request, entry *En
 // rather than failing the whole interrupt — the parent cancel has
 // already landed and the response's running_subagents shows whatever
 // survived.
+//
+// "Finished between the list and the stop is skipped" only became true
+// in 1.12.0. Before it, AttachStopAgent's bool meant "the name is
+// registered", which a completed subagent satisfies, so stopped_subagents
+// claimed credit for every subagent that raced the operator to the
+// finish (#897). A registrant still on the old interface keeps the old
+// answer — there is nothing better to derive from a bool.
 func stopAllSubagents(entry *Entry) []RunningSubagent {
-	st, ok := entry.Agent.(AgentStopper)
-	if !ok {
+	reporter, hasReporter := entry.Agent.(AgentStopReporter)
+	legacy, hasLegacy := entry.Agent.(AgentStopper)
+	if !hasReporter && !hasLegacy {
 		return nil
 	}
 	var out []RunningSubagent
 	for _, sa := range runningSubagents(entry) {
-		stopped, err := st.AttachStopAgent(sa.Name)
+		var (
+			stopped bool
+			err     error
+		)
+		if hasReporter {
+			var o StopAgentOutcome
+			o, err = reporter.AttachStopAgentOutcome(sa.Name)
+			stopped = o.Stopped
+		} else {
+			stopped, err = legacy.AttachStopAgent(sa.Name)
+		}
 		if err != nil || !stopped {
 			continue
 		}

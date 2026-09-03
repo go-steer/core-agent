@@ -856,22 +856,44 @@ func (m *Manager) Get(name string) (*Handle, bool) {
 // even when the subagent is already terminal; surfaces "not found"
 // when the name isn't registered.
 func (m *Manager) Stop(name string) error {
+	_, err := m.StopAndReport(name)
+	return err
+}
+
+// StopAndReport is Stop, additionally reporting whether THIS call was
+// the one that halted a live subagent. False with a nil error means
+// the subagent was already terminal — it completed, failed, or was
+// stopped by an earlier call — and this call changed nothing but the
+// (already cancelled) context.
+//
+// The distinction can only be drawn under the handle's own lock, which
+// is why it lives here rather than in a read-status-then-Stop at the
+// caller: a subagent that finishes in the window between those two
+// reads would otherwise be reported as stopped by an operator who
+// merely arrived late ([#897]). Everything above this line — the
+// stop_agent tool, the attach route, /interrupt's stop_subagents —
+// wants to tell the truth about what the operator's action did, and
+// none of them can reconstruct it after the fact.
+//
+// [#897]: https://github.com/go-steer/core-agent/issues/897
+func (m *Manager) StopAndReport(name string) (bool, error) {
 	m.mu.Lock()
 	h, ok := m.agents[name]
 	m.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("background: no subagent named %q", name)
+		return false, fmt.Errorf("background: no subagent named %q", name)
 	}
 	h.mu.Lock()
 	cancel := h.cancel
-	if h.status == StatusRunning {
+	stopped := h.status == StatusRunning
+	if stopped {
 		h.status = StatusStopped
 	}
 	h.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
-	return nil
+	return stopped, nil
 }
 
 // closeDrainTimeout bounds how long Close waits for cancelled
@@ -1057,28 +1079,38 @@ func (m *Manager) ListSubagents() []attach.AgentInfo {
 }
 
 // StopSubagent implements agent.SubagentManager. Thin wrapper over
-// Stop that separates "no such subagent" (false, nil — a 404 for the
-// operator, who aimed at a name that isn't running) from a real
-// failure (an error). Stopping an already-stopped subagent is a no-op
-// that still reports true: the handle is still registered, so the
-// operator's intent was satisfied.
-func (m *Manager) StopSubagent(name string) (bool, error) {
+// StopAndReport that reports the three answers an operator route has
+// to tell apart: the name isn't registered (Found=false — a 404, they
+// aimed at something that doesn't exist), this call halted a live
+// subagent (Stopped=true), or the subagent had already finished on its
+// own (Found=true, Stopped=false, Status naming what it finished as).
+//
+// The last of those used to be indistinguishable from the middle one,
+// so an operator who stopped a subagent thirty seconds after it
+// completed was told they had stopped it (#897). Handles stay
+// registered after they terminate — that is what makes the completed
+// case reachable at all, and also what makes it answerable.
+//
+// A real failure is an error; there are none today, since not-found is
+// the only thing StopAndReport can fail with and it is a Found=false
+// answer rather than a fault.
+func (m *Manager) StopSubagent(name string) (attach.StopAgentOutcome, error) {
 	if m == nil {
-		return false, nil
+		return attach.StopAgentOutcome{}, nil
 	}
-	m.mu.Lock()
-	_, ok := m.agents[name]
-	m.mu.Unlock()
-	if !ok {
-		return false, nil
+	// Small window between the stop and the status read: if the handle
+	// is unregistered in between, StopAndReport's not-found error is
+	// the same "nothing to stop" answer, so report it as such rather
+	// than a 500.
+	stopped, err := m.StopAndReport(name)
+	if err != nil {
+		return attach.StopAgentOutcome{}, nil //nolint:nilerr // not-found is the only failure StopAndReport returns
 	}
-	// Small window between the lookup and the stop: if the handle is
-	// unregistered in between, Stop's not-found error is the same
-	// "nothing to stop" answer, so report it as such rather than a 500.
-	if err := m.Stop(name); err != nil {
-		return false, nil //nolint:nilerr // not-found is the only failure Stop returns
+	out := attach.StopAgentOutcome{Found: true, Stopped: stopped}
+	if h, ok := m.Get(name); ok {
+		out.Status = h.Status().String()
 	}
-	return true, nil
+	return out, nil
 }
 
 // SpawnSubagent implements agent.SubagentManager. Translates an attach

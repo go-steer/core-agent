@@ -222,6 +222,31 @@ import "time"
 // executing. Additive and omitempty: a client that ignores it reads
 // the same `state` values it always did, except that "running" now
 // actually occurs where "idle" used to be wrong.
+//
+// v1.12.0 (#897) also makes POST /sessions/{sid}/agents/{name}/stop
+// answer for what the call did rather than for what was asked. Its
+// 200 gains `stopped` (false when the subagent had already reached a
+// terminal status before the request arrived) and `status` (what it
+// terminated as). 404's trigger set does not move — it was already
+// exactly "the manager has never registered this name", whatever the
+// handler and the docs said about finished subagents — and the docs
+// are corrected to it. Through 1.11.0 both cases answered
+// `stopped: true`,
+// because the capability's bool meant "the name is registered" and a
+// finished subagent keeps its handle — so an operator stopping a
+// subagent that completed thirty seconds earlier was told they had
+// stopped it, and /interrupt's `stopped_subagents` listed every
+// subagent that raced them to the finish. The stop_agent tool has
+// always reported the handle's real status to the model; this is the
+// operator's door catching up to the model's.
+//
+// Additive in shape — `stopped` was already there and keeps its type,
+// `status` is new and omitempty — but the VALUE of `stopped` changes
+// for the already-finished case. A client that reads `stopped: true`
+// as "it is no longer running" must switch to reading the 200 itself
+// as that claim, and `stopped` only as whether it was the one who did
+// it. A minor rather than a major for the same reason as 1.11.0:
+// nothing a client parses changes shape.
 const protocolVersion = "1.12.0"
 
 // SSE event-type names per the protocol spec (section 2).

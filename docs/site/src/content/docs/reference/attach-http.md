@@ -127,7 +127,7 @@ All write endpoints cap request bodies at **8 KiB** (`operatorPostMaxBytes`).
 | `POST` | `/interrupt` | `{"hold"?:bool, "stop_subagents"?:bool}` — **body optional**, absent = `{"hold":true}` | `{"interrupted":bool, "paused":bool, "running_subagents":[...], "stopped_subagents":[...], "session":...}`; **412** if agent implements neither `PauseController` nor `InterruptProvider`; `X-Interrupted: nothing-in-flight` header when idle; `X-Hold: unsupported` when the agent can't park; writes audit event `Author=attach/interrupt` |
 | `POST` | `/pause` | `{"reason"?:...}` — **body optional** | `{"paused":bool, "transitioned":bool, "state":"paused", "paused_since":..., "pause_reason":..., "session":...}`; **501** if no `PauseController` |
 | `POST` | `/resume` | `{"mode"?:"steer"\|"continue"\|"abandon", "steer"?:...}` — **body optional** (absent = `continue`) | `{"resumed":bool, "mode":..., "state":..., "session":...}`; **400** on an unknown mode or `mode=steer` with no text; **501** if no `PauseController`; **503** + `Retry-After` during daemon shutdown |
-| `POST` | `/agents/{name}/stop` | — | `{"agent":..., "stopped":true, "session":...}`; **404** when no subagent by that name is running; **501** if no `AgentStopper` |
+| `POST` | `/agents/{name}/stop` | — | `{"agent":..., "stopped":bool, "status"?:..., "session":...}` ([fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-stop-agent-v1.json)); `stopped: false` when the subagent had already finished; **404** only when no subagent by that name was ever registered; **501** if no `AgentStopper` — see [Stopping one subagent](#stopping-one-subagent-protocol-1120) |
 | `POST` | `/perms/allow` / `/perms/deny` | `{"patterns":[...]}` (empty → **400**) | **204**; **501** if no controller |
 | `POST` | `/perms/respond` | `{"id":..., "decision":..., "approver"?:...}` | `{"acknowledged":true, "approver"?:...}`; **404** on unknown id; **400** when `approver` disagrees with the caller the daemon verified, or when it verified nobody to check against. `approver` echoes what was recorded and is omitted when nothing was verified — see [Approval attribution](#approval-attribution-protocol-1100) |
 | `POST` | `/title` | `{"title":"..."}` — the key is **required**; `""` clears | `{"session":..., "title"?:..., "persisted":bool, "detail"?:...}` ([fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-session-title-v1.json)); **400** on an omitted `title`; **501** if the agent can't set one — see [Renaming a session](#renaming-a-session-protocol-1100) |
@@ -323,6 +323,22 @@ The same signal drives the SSE seed: the `status-update` frame sent on stream op
 Before 1.12.0 `state` never took the value `running` at all: it was declared, and consumed by the SSE mapping, but the sole provider had no run-loop signal to produce it. A mid-turn `/status` answered `idle`. Feature-detect on `protocol_version`; a pre-1.12.0 daemon also omits `turn_in_flight` entirely, which is indistinguishable from `false`.
 
 `deferred` and `current_tool` remain declared and unproduced.
+
+### Stopping one subagent (protocol 1.12.0)
+
+`POST /agents/{name}/stop` answers for **what the call did**, not for what was asked ([#897](https://github.com/go-steer/core-agent/issues/897)):
+
+| Situation | Status | Body |
+|---|---|---|
+| The subagent was running; this call cancelled it | **200** | `{"stopped": true, "status": "stopped"}` |
+| The subagent had already finished on its own | **200** | `{"stopped": false, "status": "completed" \| "failed" \| "stopped" \| "deferred"}` |
+| No subagent by that name was ever spawned in this session | **404** | — |
+
+The 200 is what says the subagent is no longer running. `stopped` says only whether *you* were the one who stopped it — and the answer is often no, because the subagents an operator notices are the long-running ones, which are also the ones most likely to finish while the operator is reaching for the stop. A subagent's handle stays registered after it terminates, so its name keeps resolving; 404 means the name resolves to nothing at all, which is the one case where retrying the same request is pointless.
+
+`/interrupt` with `{"stop_subagents": true}` follows the same rule: `stopped_subagents` lists only the ones the interrupt actually halted, not every one that happened to be listed a moment earlier.
+
+Before 1.12.0 both 200 cases answered `stopped: true`, so an operator who stopped a subagent that had completed thirty seconds earlier was told they had stopped it. A pre-1.12.0 daemon also omits `status`. Feature-detect on `protocol_version`, or treat the 200 itself as the claim.
 
 ### Wake notifications (protocol 1.7.0)
 
@@ -602,7 +618,7 @@ Consumers MUST tolerate unknown values and MUST NOT crash on missing keys.
 | **400** | Bad request — empty required field (message, patterns, ...); unknown `/resume` mode, or `mode=steer` with no text; an `owner` field on `PATCH /acl` or `POST /sessions` that isn't the current owner (`""` included); an omitted `title` on `POST /title` (send `{"title":""}` to clear). |
 | **401** | Unauthenticated — missing / wrong bearer token; bad proxy assertion. |
 | **403** | Forbidden — `--attach-readonly` writes; delete of the bootstrap `"default"` session; cross-origin `Origin` header on a write (CSRF protection). |
-| **404** | Not found OR auth-deny (deliberately indistinguishable to avoid SID enumeration); `POST /agents/{name}/stop` for a subagent that isn't running. |
+| **404** | Not found OR auth-deny (deliberately indistinguishable to avoid SID enumeration); `POST /agents/{name}/stop` for a name the session has never spawned. |
 | **405** | Method not allowed — e.g. `POST /.well-known/agent-card.json`. |
 | **409** | Conflict — shortcut SID ambiguous across apps; `POST /sessions` on `ErrSessionExists`; `POST /guardrails/reset` when the reset would immediately re-trip. |
 | **412** | Precondition failed — session has no eventlog (SSE reader); neither `PauseController` nor `InterruptProvider` (interrupt). |

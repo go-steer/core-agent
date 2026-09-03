@@ -52,12 +52,20 @@ import (
 // markTaskDoneRepeatStatus is already a constant asserted by a test
 // because the content IS the contract.
 //
-// It lives here rather than beside any one catalog because the four
+// It lives here rather than beside any one catalog because the five
 // packages that register model-facing tools — pkg/tools,
-// pkg/tools/agentic, pkg/agent/background and pkg/agent/autonomous —
-// must not drift from each other. Two return tools disagreeing about
-// whether a status line is acceptable is exactly the defect the audit
-// found.
+// pkg/tools/agentic, pkg/agent/background, pkg/agent/autonomous and
+// pkg/agent — must not drift from each other. Two return tools
+// disagreeing about whether a status line is acceptable is exactly the
+// defect the audit found.
+//
+// #909 shipped saying four, and pkg/agent was the missing one (#919) —
+// which meant mark_task_done, the tool whose description started this
+// whole thread, was the single tool with no re-drift guard. If you add
+// a package that registers a tool a model can call, it gets a
+// description_neutrality_test.go and this sentence gets a new name in
+// it. The count is load-bearing: it is the only record of what "every
+// registered tool" is being claimed over.
 //
 // Matching is on lowercased text, so entries here must be lowercase.
 var ModelFacingBans = []struct {

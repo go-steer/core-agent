@@ -286,6 +286,42 @@ func TestConformance_RESTInjectV2(t *testing.T) {
 		resp)
 }
 
+// TestConformance_RESTStatusV1 pins GET /sessions/{app}/{sid}/status
+// (protocol 1.12.0, #896). The fixture is the parked-mid-turn variant
+// because that is the one combination the shape exists to express:
+// `state` says "paused" — pause outranks running in a single field, so
+// every client rendering a hold banner off it keeps working — while
+// `turn_in_flight` says the turn the park interrupted is still
+// executing. A fixture carrying only one of the two would let a mock
+// (or a re-derived client) fold them back into one field, which is the
+// state of affairs #896 was filed against.
+//
+// It also populates the three pause fields, so their names are pinned
+// on the endpoint that reports them rather than only on the pause frame.
+//
+// The fixture carries `next_wake_at: "0001-01-01T00:00:00Z"` even
+// though the field is tagged omitempty and this session is not
+// deferred. That is not a fixture error: encoding/json's omitempty has
+// never applied to a struct, so both time.Time fields here are always
+// on the wire, contradicting the "populated when State=deferred" doc
+// comment. Pinned as-is because it is what a client receives today;
+// switching the tags to omitzero is a wire change of its own and is
+// filed separately rather than smuggled into a status-state PR.
+func TestConformance_RESTStatusV1(t *testing.T) {
+	t.Parallel()
+	resp := StatusInfo{
+		State:        AgentStatePaused,
+		ModelName:    "gemini-3.7-flash",
+		TurnInFlight: true,
+		PausedSince:  time.Date(2026, 9, 3, 14, 21, 7, 481332000, time.UTC),
+		PauseReason:  "operator interrupt",
+		Interrupted:  true,
+	}
+	assertMatchesConformanceFixture(t,
+		"testdata/conformance/rest-status-v1.json",
+		resp)
+}
+
 // TestConformance_RESTWakeV1 pins POST /sessions/{sid}/wake, whose
 // body was a hand-rolled map literal until #840 gave it a type. The
 // fixture is what makes that retyping provably wire-identical: `woken`

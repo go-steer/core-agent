@@ -209,7 +209,20 @@ import "time"
 // clients over a change most of them can't observe. Recorded here in
 // full because it IS a behavior change and the additive-minor
 // convention would otherwise imply it isn't.
-const protocolVersion = "1.11.0"
+//
+// v1.12.0 (#896) makes `state:"running"` reachable on GET
+// /sessions/{sid}/status and adds `turn_in_flight` beside it. The
+// state was declared from the start and never produced: the sole
+// StatusProvider had no run-loop signal to read, so a mid-turn
+// /status answered "idle" and the SSE status seed answered
+// turn_state:"idle". `turn_in_flight` exists because `state` is one
+// field and pause outranks running in it — a session parked mid-turn
+// still reports "paused" so hold banners keep working, and the bool
+// is how a client learns the interrupted turn is nonetheless still
+// executing. Additive and omitempty: a client that ignores it reads
+// the same `state` values it always did, except that "running" now
+// actually occurs where "idle" used to be wrong.
+const protocolVersion = "1.12.0"
 
 // SSE event-type names per the protocol spec (section 2).
 const (

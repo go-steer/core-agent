@@ -115,8 +115,11 @@ func (s *swrState) fetched(ok bool) {
 // completes shows the zero Status ("—" / "(model not set)"), which
 // self-heals within a refresh cycle.
 //
-// State is "idle" by default; the attach status endpoint doesn't yet
-// distinguish "running" / "deferred" (see pkg/agent's AttachStatus).
+// State is "idle" by default. A daemon on protocol 1.12.0 or later
+// reports "running" for a session mid-turn (#896); "deferred" is still
+// unproduced. Note that the chip is a cached snapshot on a TTL, so it
+// lags the turn it describes — the live signal is the `turn_state` on
+// the status-update frame, not this.
 //
 // A failed cold fetch is not treated as data (#781): the zero Status is
 // a placeholder, not a report that the daemon has no model, so the cache

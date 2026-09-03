@@ -145,6 +145,43 @@ func PriceFor(modelID string, cfg *config.Config) Pricing {
 	return ratesToPricing(r, found)
 }
 
+// PriceForRefreshed re-resolves modelID against the process-wide
+// catalog, falling back to the caller's captured rate when no catalog
+// is installed.
+//
+// It exists for billing sites that hold a Pricing *value* resolved
+// once and then bill many turns against it (#930). `POST
+// /pricing/refresh` and `/pricing/set` rebuild the catalog and install
+// it with SetCatalog, which swaps what the value was derived FROM and
+// cannot reach the copy — so `GET /pricing` reported the new rate
+// while the ledger, WriteSummary, and the --max-session-cost-usd
+// ceiling all kept charging the old one. Reporting right and billing
+// wrong is the worst of the two: an operator who refreshes because
+// they believe the rates are stale gets told they are now correct.
+//
+// The catalog wins over the fallback whenever one is installed, and
+// that is the point rather than a caveat: cmd/core-agent installs one
+// at boot, and from then on the catalog IS the definition of the
+// rate — including the operator's cfg.Model.Pricing override, which
+// SetCatalog folds in as the CfgOverride layer (see PriceFor, which
+// likewise ignores its cfg argument once a catalog is present).
+//
+// The fallback covers library and test use that never calls
+// SetCatalog. Those callers keep the value they passed in, so an
+// embedder supplying an explicit rate is not quietly overruled by a
+// builtin table they never opted into. It is a no-catalog fallback
+// and not a lookup-miss one: under an installed catalog an unknown
+// model resolves unpriced rather than to the captured value, matching
+// what GET /pricing has always reported for it (cmd/core-agent's
+// single-session provider re-resolves with no fallback at all) and
+// keeping the card and the ledger on one answer.
+func PriceForRefreshed(modelID string, fallback Pricing) Pricing {
+	if globalCatalog.Load() == nil {
+		return fallback
+	}
+	return PriceFor(modelID, nil)
+}
+
 // ratesToPricing projects pkg/pricing.Rates into the public
 // Pricing shape. Split out so PriceFor's two code paths stay in
 // lockstep as new rate fields land. found is the catalog lookup's

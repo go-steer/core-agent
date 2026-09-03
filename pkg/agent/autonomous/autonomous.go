@@ -540,22 +540,36 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 		if turnUsage, ok := tap.Commit(ev); ok {
 			out.inputTokens += turnUsage.InputTokens
 			out.outputTokens += turnUsage.OutputTokens
+			// Tag by the LLM model name (matches subtask.go +
+			// internal_llm_usage.go). Falls back to the agent
+			// name only when the model isn't wired (defensive —
+			// New always sets modelName from model.Name()).
+			// Resolved for both arms: the rate lookup is keyed by
+			// this name, so the tracker-less arm asking a different
+			// (possibly empty) one would price the same turn
+			// differently from the tracked arm.
+			modelName := a.ModelName()
+			if modelName == "" && a.Inner() != nil {
+				modelName = a.Inner().Name()
+			}
+			// Re-resolved per turn. An autonomous loop is the
+			// longest-lived billing path there is — it runs for as
+			// long as events keep arriving — so cfg.pricing, fixed
+			// when the loop was configured, is the most stale copy a
+			// /pricing refresh leaves behind (#930).
+			rate := usage.PriceForRefreshed(modelName, cfg.pricing)
 			if cfg.tracker != nil {
-				// Tag by the LLM model name (matches subtask.go +
-				// internal_llm_usage.go). Falls back to the agent
-				// name only when the model isn't wired (defensive —
-				// New always sets modelName from model.Name()).
-				modelName := a.ModelName()
-				if modelName == "" && a.Inner() != nil {
-					modelName = a.Inner().Name()
-				}
-				rec := cfg.tracker.AppendUsage(modelName, turnUsage, cfg.pricing)
+				rec := cfg.tracker.AppendUsage(modelName, turnUsage, rate)
 				out.costUSD += rec.CostUSD
 			} else if !cfg.pricing.IsZero() {
 				// Same pricing function the tracker applies, so a
 				// cache-warming turn costs the same whether or not a
-				// tracker happens to be wired.
-				out.costUSD += cfg.pricing.CostUSDForTurn(turnUsage)
+				// tracker happens to be wired. IsZero is still asked
+				// of cfg.pricing rather than of the refreshed rate:
+				// it is the caller's "I wired no pricing" signal, and
+				// a catalog hit must not start billing a loop whose
+				// host deliberately left cost accounting off.
+				out.costUSD += rate.CostUSDForTurn(turnUsage)
 			}
 		}
 		// Text collection follows the same discipline as

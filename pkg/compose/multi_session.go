@@ -821,11 +821,20 @@ func attachProviderOpts(deps SessionFactoryDeps, modelName string, rate usage.Pr
 		// deps.PricingRate, and /pricing must agree with what /status
 		// reports and what the tracker bills (#505).
 		opts = append(opts, attachadapter.WithPricingProvider(func() attach.PricingInfo {
+			// Re-resolved per call, for the same reason the wake loop
+			// re-resolves per turn (#930): `rate` was fixed when this
+			// session was constructed, and a /pricing refresh swaps
+			// the catalog underneath it. Reporting the captured value
+			// while the tracker bills the refreshed one would break
+			// the agreement this block exists to keep — and would
+			// invert #930 rather than fix it, since here it is the
+			// report that goes stale.
+			current := usage.PriceForRefreshed(modelName, rate)
 			info := attach.PricingInfo{CurrentModel: modelName}
-			if !rate.IsZero() {
+			if !current.IsZero() {
 				info.Current = &attach.ModelPricing{
-					InputUSDPerMTok:  rate.InputPerMTok,
-					OutputUSDPerMTok: rate.OutputPerMTok,
+					InputUSDPerMTok:  current.InputPerMTok,
+					OutputUSDPerMTok: current.OutputPerMTok,
 				}
 			}
 			return info

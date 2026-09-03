@@ -155,17 +155,55 @@ func ClassifyTurnError(err error) TurnError {
 			Retryable: true,
 		}
 
-	// Config — URL parse failures, missing required values, malformed
-	// inputs caught client-side before any RPC fires. These don't
-	// retry on their own.
-	case containsAny(lower, "invalid_argument", "invalidargument", "failed_precondition",
-		"failedprecondition", "invalid character", "parse", "createapiurl") || code == "400":
+	// Config, structural — URL parse failures, missing required
+	// values, malformed inputs caught client-side before any RPC
+	// fires, plus FAILED_PRECONDITION (billing or API not enabled).
+	// These are the same on every attempt, so the hint can point
+	// straight at the config without hedging.
+	//
+	// Ordered ahead of the INVALID_ARGUMENT arm below deliberately.
+	// The arms overlap: the ambiguous one also fires on a bare 400,
+	// and a structural failure can carry one — a parse error quoting
+	// a URL or a response, or a provider 400 whose body names what it
+	// could not parse. When both match, the specific reading wins,
+	// because it is the one that knows the answer.
+	case containsAny(lower, "failed_precondition", "failedprecondition",
+		"invalid character", "parse", "createapiurl"):
 		return TurnError{
 			Kind:      TurnErrorConfig,
 			Code:      coalesce(code, "INVALID_ARGUMENT"),
 			Message:   firstSentence(msg),
 			Retryable: false,
 			Hint:      "Check the model provider config (model.vertex.location, model.name, GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION).",
+		}
+
+	// Config, ambiguous — a bare INVALID_ARGUMENT or 400 from the
+	// provider. This is the most overloaded answer Vertex gives: it is
+	// the correct code for a genuine misconfiguration, and it is also
+	// what the service returns transiently under the same load that
+	// produces 429s, with an identical body (#898). The classification
+	// stays config_error because a misconfiguration is the more
+	// actionable of the two readings and the only one an operator can
+	// fix, but the hint must not assert the config is wrong — during
+	// the #799 UAT it sent an operator to debug a config that was
+	// correct, while the very next turn on the same session succeeded.
+	//
+	// Retryable stays false: this classification does not itself drive
+	// a retry, and flipping it would make the runtime replay turns it
+	// has no evidence are replayable. Retrying such a turn once, so
+	// the runtime distinguishes the two readings instead of the
+	// operator, is #935.
+	case containsAny(lower, "invalid_argument", "invalidargument") || code == "400":
+		return TurnError{
+			Kind:      TurnErrorConfig,
+			Code:      coalesce(code, "INVALID_ARGUMENT"),
+			Message:   firstSentence(msg),
+			Retryable: false,
+			Hint: "INVALID_ARGUMENT is ambiguous: it is the right code for a bad provider config, " +
+				"and also what the provider returns transiently under the load that produces 429s. " +
+				"A real config error reproduces on every attempt — if the next turn on this session " +
+				"succeeds, it was the provider; if it fails the same way, check model.vertex.location, " +
+				"model.name, GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION.",
 		}
 	}
 

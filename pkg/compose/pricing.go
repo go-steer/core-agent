@@ -62,7 +62,12 @@ func DescribeRefresh(w io.Writer, out pricing.RefreshOutcome) {
 // catalog has been installed (tests + library consumers). A field
 // carried by one and dropped by the other means the same config
 // prices a turn differently under test than it does in the daemon.
-// TestCfgOverride_MatchesTheNoCatalogPath enforces the agreement.
+// TestCfgOverride_MatchesTheNoCatalogPath enforces the agreement — but
+// only over fields its fixture sets to a non-zero value, which is how
+// CacheCreation1hInputPerMTok was dropped here and stayed green: both
+// translations returned the zero rate for a field neither carried, and
+// two zeroes compare equal. New rate fields must be added to that
+// fixture in the same change that adds them to config.PricingConfig.
 func CfgToCatalogOverride(m config.PricingMap) map[string]pricing.ModelRates {
 	if len(m) == 0 {
 		return nil
@@ -70,10 +75,11 @@ func CfgToCatalogOverride(m config.PricingMap) map[string]pricing.ModelRates {
 	out := make(map[string]pricing.ModelRates, len(m))
 	for k, v := range m {
 		out[k] = pricing.ModelRates{
-			InputPerMTok:              v.InputPerMTok,
-			CachedInputPerMTok:        v.CachedInputPerMTok,
-			CacheCreationInputPerMTok: v.CacheCreationInputPerMTok,
-			OutputPerMTok:             v.OutputPerMTok,
+			InputPerMTok:                v.InputPerMTok,
+			CachedInputPerMTok:          v.CachedInputPerMTok,
+			CacheCreationInputPerMTok:   v.CacheCreationInputPerMTok,
+			CacheCreation1hInputPerMTok: v.CacheCreation1hInputPerMTok,
+			OutputPerMTok:               v.OutputPerMTok,
 		}
 	}
 	return out

@@ -18,6 +18,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -67,15 +68,31 @@ func TestCfgToCatalogOverride(t *testing.T) {
 	// Every rate field config exposes must survive the translation.
 	// A dropped field here is invisible at every call site: the
 	// catalog builds, the model resolves, and only the cost is wrong.
+	// The fixture therefore sets every field of config.PricingConfig,
+	// each to a distinct non-zero value — a fixture that leaves one at
+	// its zero value asserts nothing about it, which is exactly how
+	// CacheCreation1hInputPerMTok went missing here for a release.
 	in := config.PricingMap{
-		"Model-With-Caps": {InputPerMTok: 3, CachedInputPerMTok: 0.75, OutputPerMTok: 12},
+		"Model-With-Caps": {
+			InputPerMTok:                3,
+			CachedInputPerMTok:          0.75,
+			CacheCreationInputPerMTok:   3.75,
+			CacheCreation1hInputPerMTok: 6,
+			OutputPerMTok:               12,
+		},
 	}
 	out := CfgToCatalogOverride(in)
 	got, ok := out["Model-With-Caps"]
 	if !ok {
 		t.Fatalf("key not carried through: %v", out)
 	}
-	want := pricing.ModelRates{InputPerMTok: 3, CachedInputPerMTok: 0.75, OutputPerMTok: 12}
+	want := pricing.ModelRates{
+		InputPerMTok:                3,
+		CachedInputPerMTok:          0.75,
+		CacheCreationInputPerMTok:   3.75,
+		CacheCreation1hInputPerMTok: 6,
+		OutputPerMTok:               12,
+	}
 	if got != want {
 		t.Errorf("rates: got %+v, want %+v", got, want)
 	}
@@ -92,12 +109,25 @@ func TestCfgOverride_MatchesTheNoCatalogPath(t *testing.T) {
 	// pre-fix, the no-catalog path honoured the operator's cache rate
 	// and the daemon path silently billed cache hits at the full
 	// input rate.
+	//
+	// The fixture sets every field config exposes, at a distinct
+	// non-zero value, because agreement on a field neither side carries
+	// is not agreement: both translations returned 0 for
+	// CacheCreation1hInputPerMTok, compared equal, and the guard passed
+	// green through the whole release in which the daemon path dropped
+	// an operator's 1-hour cache-write rate.
 	installCatalogGuard(t)
 
 	const model = "lockstep-probe-model"
 	cfg := &config.Config{}
 	cfg.Model.Pricing = config.PricingMap{
-		model: {InputPerMTok: 3, CachedInputPerMTok: 0.75, OutputPerMTok: 12},
+		model: {
+			InputPerMTok:                3,
+			CachedInputPerMTok:          0.75,
+			CacheCreationInputPerMTok:   3.75,
+			CacheCreation1hInputPerMTok: 6,
+			OutputPerMTok:               12,
+		},
 	}
 
 	usage.SetCatalog(nil)
@@ -113,6 +143,105 @@ func TestCfgOverride_MatchesTheNoCatalogPath(t *testing.T) {
 	}
 	if viaCatalog.CachedInputPerMTok != 0.75 {
 		t.Errorf("cached_input_per_mtok = %v, want 0.75 — the operator's cache-hit rate was dropped, so cached tokens bill at the full input rate", viaCatalog.CachedInputPerMTok)
+	}
+	if viaCatalog.CacheCreation1hInputPerMTok != 6 {
+		t.Errorf("cache_creation_1h_input_per_mtok = %v, want 6 — the operator's 1-hour write rate was dropped, so 1h breakpoint writes bill at the 5-minute rate", viaCatalog.CacheCreation1hInputPerMTok)
+	}
+}
+
+// distinctRates fills every float64 field of config.PricingConfig with
+// its own non-zero value and returns the value plus a value->field-name
+// index. Built by reflection on purpose: the two tests below exist
+// because a hand-written fixture that forgets a field asserts nothing
+// about it, and the fix for that cannot itself be a hand-written
+// fixture — the next field added would be forgotten the same way.
+func distinctRates(t *testing.T) (config.PricingConfig, map[float64]string) {
+	t.Helper()
+	var out config.PricingConfig
+	rv := reflect.ValueOf(&out).Elem()
+	names := make(map[float64]string)
+	for i := range rv.NumField() {
+		f := rv.Field(i)
+		if f.Kind() != reflect.Float64 || !f.CanSet() {
+			continue
+		}
+		// Distinct, non-zero, and not a round number any translation
+		// might coincidentally produce.
+		v := 1.5 + float64(i)*0.875
+		f.SetFloat(v)
+		names[v] = rv.Type().Field(i).Name
+	}
+	if len(names) == 0 {
+		t.Fatal("config.PricingConfig exposes no float64 rate fields; this guard has stopped guarding")
+	}
+	return out, names
+}
+
+// floatsOf returns every float64 field value of a struct, by reflection.
+func floatsOf(v any) map[float64]bool {
+	rv := reflect.ValueOf(v)
+	out := make(map[float64]bool)
+	for i := range rv.NumField() {
+		if f := rv.Field(i); f.Kind() == reflect.Float64 {
+			out[f.Float()] = true
+		}
+	}
+	return out
+}
+
+// TestCfgToCatalogOverride_CarriesEveryFieldConfigExposes is the
+// mechanical form of the fixture in TestCfgToCatalogOverride. That one
+// documents its own limitation — "new rate fields must be added to the
+// fixture in the same change" — which is the exact mechanism by which
+// CacheCreation1hInputPerMTok went missing for a release: the field
+// landed, the fixture kept its five literals, both sides returned zero,
+// and the guard stayed green. Enumerating the source struct instead
+// makes the next field fail here before anyone thinks about it.
+func TestCfgToCatalogOverride_CarriesEveryFieldConfigExposes(t *testing.T) {
+	t.Parallel()
+
+	rates, names := distinctRates(t)
+	out := CfgToCatalogOverride(config.PricingMap{"probe": rates})
+	got, ok := out["probe"]
+	if !ok {
+		t.Fatalf("key not carried through: %v", out)
+	}
+	seen := floatsOf(got)
+	for v, name := range names {
+		if !seen[v] {
+			t.Errorf("config.PricingConfig.%s (%v) never reaches pricing.ModelRates; the daemon silently ignores that rate", name, v)
+		}
+	}
+}
+
+// The same enumeration across the lockstep seam. pkg/usage keeps its
+// own translation of the config map for the no-catalog path, and the
+// failure this catches is the one that already happened: both copies
+// dropping the SAME field, which the equality check in
+// TestCfgOverride_MatchesTheNoCatalogPath cannot see because two zeros
+// compare equal.
+func TestCfgOverride_BothTranslationsCarryEveryField(t *testing.T) {
+	installCatalogGuard(t)
+
+	rates, names := distinctRates(t)
+	const model = "lockstep-probe-model-reflective"
+	cfg := &config.Config{}
+	cfg.Model.Pricing = config.PricingMap{model: rates}
+
+	usage.SetCatalog(nil)
+	viaFallback := usage.PriceFor(model, cfg)
+	if err := RebuildPricingCatalog(cfg, t.TempDir(), t.TempDir()); err != nil {
+		t.Fatalf("RebuildPricingCatalog: %v", err)
+	}
+	viaCatalog := usage.PriceFor(model, cfg)
+
+	for label, p := range map[string]usage.Pricing{"no catalog": viaFallback, "catalog": viaCatalog} {
+		seen := floatsOf(p)
+		for v, name := range names {
+			if !seen[v] {
+				t.Errorf("%s path: config.PricingConfig.%s (%v) is not honoured", label, name, v)
+			}
+		}
 	}
 }
 

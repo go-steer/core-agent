@@ -88,6 +88,14 @@ type LLMFallbackResult struct {
 	// the write bucket — a SUBSET of the field above, priced at 2x
 	// base input instead of 1.25x (#770).
 	SubagentCacheCreation1hInputTokens int
+
+	// SubagentThoughtsTokens is the reasoning bucket, ADDITIVE to
+	// SubagentOutputTokens and billed at the output rate (#927). Same
+	// obligation as the cache buckets and for a sharper reason: on a
+	// small-tier thinking model the digest subagent's reasoning can
+	// outweigh its answer, so a fallback that omits it hands the paying
+	// session a bill for the visible fraction of the turn.
+	SubagentThoughtsTokens int
 }
 
 // DigestOptions configures how Build wraps MCP tool responses through
@@ -323,6 +331,7 @@ func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 		fbCacheWrite   int
 		fbCacheWrite1h int
 		fbOut          int
+		fbThoughts     int
 	)
 	var digestLLM func(context.Context, []byte) (string, error)
 	if d.opts.LLMFallback != nil {
@@ -337,6 +346,7 @@ func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 			fbCacheWrite = r.SubagentCacheCreationInputTokens
 			fbCacheWrite1h = r.SubagentCacheCreation1hInputTokens
 			fbOut = r.SubagentOutputTokens
+			fbThoughts = r.SubagentThoughtsTokens
 			return r.Text, nil
 		}
 	}
@@ -367,6 +377,7 @@ func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 		res.Savings.SubagentCacheCreationInputTokens = fbCacheWrite
 		res.Savings.SubagentCacheCreation1hInputTokens = fbCacheWrite1h
 		res.Savings.SubagentOutputTokens = fbOut
+		res.Savings.SubagentThoughtsTokens = fbThoughts
 	}
 
 	// Fire the aggregator callback (best-effort — a nil callback is
@@ -414,6 +425,7 @@ func (d digestingTool) Run(ctx tool.Context, args any) (map[string]any, error) {
 			sv["subagent_cached_input_tokens"] = res.Savings.SubagentCachedInputTokens
 			sv["subagent_cache_creation_input_tokens"] = res.Savings.SubagentCacheCreationInputTokens
 			sv["subagent_cache_creation_1h_input_tokens"] = res.Savings.SubagentCacheCreation1hInputTokens
+			sv["subagent_thoughts_tokens"] = res.Savings.SubagentThoughtsTokens
 		}
 		out["savings"] = sv
 	}

@@ -412,12 +412,21 @@ type PricingInfo struct {
 // charging: without it an operator who sees an unexpected cost, runs
 // /pricing to check, and finds only in/out/cache-read has no way to
 // confirm a configured `cache_creation_input_per_mtok` took effect.
+//
+// CacheWrite1hUSDPerMTok is the same rate at the 1-hour breakpoint TTL
+// — a distinct, dearer rate rather than a variant of the field above
+// (Anthropic charges 2x base input against the 5-minute TTL's 1.25x),
+// and it is separately configurable as
+// `cache_creation_1h_input_per_mtok` (#770, #929). Omitted when unset,
+// for the same reason as the others: a rendered $0.0000 reads as "free"
+// rather than "this provider bills one TTL".
 type ModelPricing struct {
-	InputUSDPerMTok      float64   `json:"input_usd_per_mtok"`
-	OutputUSDPerMTok     float64   `json:"output_usd_per_mtok"`
-	CachedUSDPerMTok     float64   `json:"cached_usd_per_mtok,omitempty"`
-	CacheWriteUSDPerMTok float64   `json:"cache_write_usd_per_mtok,omitempty"`
-	UpdatedAt            time.Time `json:"updated_at,omitempty"`
+	InputUSDPerMTok        float64   `json:"input_usd_per_mtok"`
+	OutputUSDPerMTok       float64   `json:"output_usd_per_mtok"`
+	CachedUSDPerMTok       float64   `json:"cached_usd_per_mtok,omitempty"`
+	CacheWriteUSDPerMTok   float64   `json:"cache_write_usd_per_mtok,omitempty"`
+	CacheWrite1hUSDPerMTok float64   `json:"cache_write_1h_usd_per_mtok,omitempty"`
+	UpdatedAt              time.Time `json:"updated_at,omitempty"`
 }
 
 // UsageProvider is the optional capability for GET /sessions/.../usage.

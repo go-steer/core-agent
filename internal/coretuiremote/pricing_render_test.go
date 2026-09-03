@@ -34,13 +34,14 @@ func TestRenderPricingInfo_ShowsEveryRateThatCharges(t *testing.T) {
 		KnownModels:  12,
 		CurrentModel: "claude-opus-5",
 		Current: &attach.ModelPricing{
-			InputUSDPerMTok:      5,
-			OutputUSDPerMTok:     25,
-			CachedUSDPerMTok:     0.5,
-			CacheWriteUSDPerMTok: 6.25,
+			InputUSDPerMTok:        5,
+			OutputUSDPerMTok:       25,
+			CachedUSDPerMTok:       0.5,
+			CacheWriteUSDPerMTok:   6.25,
+			CacheWrite1hUSDPerMTok: 10,
 		},
 	})
-	for _, want := range []string{"$5.00 in", "$25.00 out", "$0.5000 cache-read", "$6.2500 cache-write"} {
+	for _, want := range []string{"$5.00 in", "$25.00 out", "$0.5000 cache-read", "$6.2500 cache-write", "$10.0000 cache-write-1h"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("rate card missing %q:\n%s", want, got)
 		}

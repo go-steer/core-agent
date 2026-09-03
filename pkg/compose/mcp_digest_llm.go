@@ -172,6 +172,7 @@ func BuildMCPDigestLLMFallback(
 			SubagentCachedInputTokens:          res.CachedInputTokens,
 			SubagentCacheCreationInputTokens:   res.CacheCreationInputTokens,
 			SubagentCacheCreation1hInputTokens: res.CacheCreation1hInputTokens,
+			SubagentThoughtsTokens:             res.ThoughtsTokens,
 		}, nil
 	}
 }

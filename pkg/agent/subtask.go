@@ -194,7 +194,7 @@ type SubtaskResult struct {
 	// far side; without the buckets that re-pricing bills the whole
 	// prompt at the uncached rate, which on Anthropic is wrong by up
 	// to 25% and moves the session cost ceiling with it (#771).
-	// Anything re-deriving cost from this struct should feed all five
+	// Anything re-deriving cost from this struct should feed all six
 	// numbers to [usage.Pricing.CostUSDForTurn] rather than reach for
 	// CostUSD's two-argument sibling.
 	//
@@ -206,6 +206,17 @@ type SubtaskResult struct {
 	CachedInputTokens          int
 	CacheCreationInputTokens   int
 	CacheCreation1hInputTokens int
+
+	// ThoughtsTokens is the reasoning bucket, reported ADDITIVE to
+	// OutputTokens and billed at the output rate (#927). Zero on
+	// providers that fold thinking into their output count.
+	//
+	// It is the sixth number, and it is here for the same reason the
+	// cache buckets are: on a small-tier thinking model a digest
+	// subtask can spend more of it than it spends on candidates, so a
+	// far side that re-prices from this struct without it charges the
+	// calling session a fraction of what the subtask cost.
+	ThoughtsTokens int
 
 	// Duration is wall-clock time spent in the subtask. Useful
 	// for the "fresh-context is fast" claim — typical subtask
@@ -419,6 +430,7 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 		totalCacheWrite   int
 		totalCacheWrite1h int
 		totalOut          int
+		totalThoughts     int
 		totalCostUSD      float64
 		turnsUsed         int
 		turnComplete      bool
@@ -472,6 +484,7 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 			totalCacheWrite += c.CacheCreationInputTokens
 			totalCacheWrite1h += c.CacheCreation1hInputTokens
 			totalOut += c.OutputTokens
+			totalThoughts += c.ThoughtsTokens
 			// Cost is computed either way so SubtaskResult (and the
 			// OTel span attributes built from it) stay populated;
 			// SkipParentUsage only suppresses the roll-up into THIS
@@ -516,6 +529,7 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 			CacheCreationInputTokens:   totalCacheWrite,
 			CacheCreation1hInputTokens: totalCacheWrite1h,
 			OutputTokens:               totalOut,
+			ThoughtsTokens:             totalThoughts,
 			CostUSD:                    totalCostUSD,
 			Duration:                   elapsed,
 			TurnsUsed:                  turnsUsed,
@@ -543,6 +557,7 @@ func (a *Agent) RunSubtask(ctx context.Context, spec SubtaskSpec) (SubtaskResult
 		CacheCreationInputTokens:   totalCacheWrite,
 		CacheCreation1hInputTokens: totalCacheWrite1h,
 		OutputTokens:               totalOut,
+		ThoughtsTokens:             totalThoughts,
 		CostUSD:                    totalCostUSD,
 		Duration:                   elapsed,
 		TurnsUsed:                  turnsUsed,

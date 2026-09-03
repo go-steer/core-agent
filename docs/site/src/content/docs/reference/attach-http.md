@@ -435,11 +435,11 @@ A *manual* `/slash/compact` or `/slash/done` writes no row: the failure is alrea
 
 Field notes:
 
-- **`overall` / `per_model`** — cumulative totals + per-model breakdown. `_cached` / `_uncached` split lets you compute the cache-savings percentage as `1 - cost_usd / cost_usd_uncached_reference`.
+- **`overall` / `per_model`** — cumulative totals + per-model breakdown. `_cached` / `_uncached` split lets you compute the cache-savings percentage as `1 - cost_usd / cost_usd_uncached_reference`. The reference is the same traffic with the cache switched off — same output and thinking tokens, every input token billed fresh — so it is never below `cost_usd`, and the percentage is `0` rather than negative on a session that cached nothing.
 - **`input_tokens_cached` / `input_tokens_cache_write` / `input_tokens_uncached`** — three **disjoint** subsets of `input_tokens`; they sum to it. `_cache_write` is tokens billed at a premium for *establishing* a cache entry (Anthropic's `cache_creation_input_tokens`: 1.25× the base input rate), as opposed to `_cached`, which is the discounted *read* of an existing entry. Providers that don't bill writes per token (Gemini/Vertex charge cache storage per hour instead) report `0`, and the key is omitted (v2.9+, [#263](https://github.com/go-steer/core-agent/issues/263)).
 - **`per_turn`** — the v2.7-dev.3 addition. Submission-ordered list, `turn` is 1-based. `total_tokens` matches Google's `UsageMetadata.TotalTokenCount` convention.
 - **`ts`** — RFC3339. Marks the model call, not the operator submission.
-- **`tool_use_tokens`** — Anthropic-specific; 0 for Gemini providers.
+- **`tool_use_tokens`** — the reverse of what this line used to claim: it is sourced from genai's `tool_use_prompt_token_count`, so it is populated by Gemini/Vertex and always `0` on the Anthropic adapter, which never sets the field. Note that it is **not** priced — genai documents it as an additive component of `total_token_count`, i.e. billable input the ledger does not yet charge for ([#934](https://github.com/go-steer/core-agent/issues/934)).
 - **`digest_methods`** — MCP pruner attribution ([Digest & MCP wrap](/concepts/mcp/#agentic-wrap)). `counts` is calls per strategy; `bytes_saved` is aggregate response-size reduction.
 
 `omitempty` on secondary fields — a JSON consumer should treat missing keys as `0` / absent.

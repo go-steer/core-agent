@@ -1689,7 +1689,11 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 					OutputUSDPerMTok:     currentRate.OutputPerMTok,
 					CachedUSDPerMTok:     currentRate.CachedInputPerMTok,
 					CacheWriteUSDPerMTok: currentRate.CacheCreationInputPerMTok,
-					UpdatedAt:            currentRate.UpdatedAt,
+					// The 1-hour TTL's own rate, so an operator who
+					// configured cache_creation_1h_input_per_mtok can see
+					// on the card that it took (#929).
+					CacheWrite1hUSDPerMTok: currentRate.CacheCreation1hInputPerMTok,
+					UpdatedAt:              currentRate.UpdatedAt,
 				}
 			}
 			return info

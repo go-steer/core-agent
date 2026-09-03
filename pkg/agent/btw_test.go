@@ -61,6 +61,10 @@ type captureLLM struct {
 	// noBuiltins records, per request, whether the caller marked its
 	// context as tool-less (models.WithoutBuiltins). Parallel to reqs.
 	noBuiltins []bool
+	// thoughtsTokens, when > 0, is the reasoning bucket, reported where
+	// Gemini reports it: genai's ThoughtsTokenCount. ADDITIVE to
+	// outputTokens rather than a subset of it (#927).
+	thoughtsTokens int32
 	// finishReason, when set, is stamped on the response — the shape a
 	// provider uses to explain a text-less answer.
 	finishReason genai.FinishReason
@@ -80,6 +84,7 @@ func (l *captureLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMReque
 	cached := l.cachedInputTokens
 	writes := l.cacheWriteTokens
 	writes1h := l.cacheWrite1hTokens
+	thoughts := l.thoughtsTokens
 	finish := l.finishReason
 	l.mu.Unlock()
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
@@ -92,12 +97,13 @@ func (l *captureLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMReque
 			TurnComplete: true,
 			FinishReason: finish,
 		}
-		if in > 0 || out > 0 {
+		if in > 0 || out > 0 || thoughts > 0 {
 			r.UsageMetadata = &genai.GenerateContentResponseUsageMetadata{
 				PromptTokenCount:        in,
 				CachedContentTokenCount: cached,
 				CandidatesTokenCount:    out,
-				TotalTokenCount:         in + out,
+				ThoughtsTokenCount:      thoughts,
+				TotalTokenCount:         in + out + thoughts,
 			}
 		}
 		if writes > 0 {

@@ -80,8 +80,15 @@ type TurnUsage struct {
 	// prices exactly as it did before.
 	CacheCreation1hInputTokens int
 	OutputTokens               int
-	ThoughtsTokens             int
-	ToolUseTokens              int
+	// ThoughtsTokens is the turn's reasoning tokens, reported by
+	// providers that meter them separately (Gemini's
+	// thoughtsTokenCount). ADDITIVE to OutputTokens, not a subset of
+	// it — the provider's own total is prompt + candidates + thoughts —
+	// and billed at the output rate, which CostUSDForTurn does. Zero
+	// for providers that fold thinking into their output count, which
+	// is why adding it there can't double-charge them.
+	ThoughtsTokens int
+	ToolUseTokens  int
 }
 
 // Clamped returns u with the two cache buckets forced inside
@@ -97,9 +104,30 @@ type TurnUsage struct {
 // to what the write bucket can hold rather than billing tokens the turn
 // never wrote.
 //
+// The three top-line counts — InputTokens, OutputTokens,
+// ThoughtsTokens — are floored at zero first, so a provider (or a JSON
+// sidecar) reporting a negative can neither subtract from the bill nor
+// push a monotonic OTel counter backwards. That mattered less when
+// nothing but cost read these; ThoughtsTokens is now billed at the
+// output rate (#927) and every one of the three is summed into Totals
+// and observed on gen_ai.client.token.usage, which is an
+// Int64ObservableCounter and rejects a negative observation outright.
+// Flooring input before the cache buckets is deliberate: the cache
+// clamps below are all relative to InputTokens, so a negative prompt
+// count has to become zero before they can mean anything.
+//
 // Applied by Tracker.AppendUsage and by Pricing.CostUSDForTurn, so
 // tracker-backed and tracker-less call sites agree on what a turn cost.
 func (u TurnUsage) Clamped() TurnUsage {
+	if u.InputTokens < 0 {
+		u.InputTokens = 0
+	}
+	if u.OutputTokens < 0 {
+		u.OutputTokens = 0
+	}
+	if u.ThoughtsTokens < 0 {
+		u.ThoughtsTokens = 0
+	}
 	if u.CachedInputTokens > u.InputTokens {
 		u.CachedInputTokens = u.InputTokens
 	}
@@ -223,6 +251,12 @@ type DigestSavingsRecord struct {
 	// the write bucket — a SUBSET of the field above, priced at 2x
 	// base input rather than 1.25x (#770).
 	SubagentCacheCreation1hInputTokens int
+
+	// SubagentThoughtsTokens is the reasoning bucket, ADDITIVE to
+	// SubagentOutputTokens and billed at the output rate (#927). A
+	// sidecar from a producer predating that field carries zero, which
+	// prices as it always did.
+	SubagentThoughtsTokens int
 }
 
 // SubagentTurn rebuilds the [TurnUsage] the digest subagent spent, for
@@ -236,6 +270,7 @@ func (r DigestSavingsRecord) SubagentTurn() TurnUsage {
 		CacheCreationInputTokens:   r.SubagentCacheCreationInputTokens,
 		CacheCreation1hInputTokens: r.SubagentCacheCreation1hInputTokens,
 		OutputTokens:               r.SubagentOutputTokens,
+		ThoughtsTokens:             r.SubagentThoughtsTokens,
 	}.Clamped()
 }
 
@@ -292,9 +327,9 @@ func (t *Tracker) Append(model string, inputTokens, outputTokens int, p Pricing)
 }
 
 // AppendUsage records one turn's usage with the full per-field
-// breakdown. Cost applies CostUSDWithCacheWrites so all three input
+// breakdown. Cost goes through CostUSDForTurn so all three input
 // buckets — uncached, cache-read, cache-write — are billed at their own
-// rates in the stored Turn.
+// rates in the stored Turn, and thinking tokens at the output rate.
 //
 // The cache buckets are clamped into InputTokens — see
 // TurnUsage.Clamped for why and in what order.

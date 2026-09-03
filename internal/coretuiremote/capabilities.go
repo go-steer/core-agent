@@ -1601,6 +1601,11 @@ func renderPricingInfo(info attach.PricingInfo) string {
 		if info.Current.CacheWriteUSDPerMTok > 0 {
 			fmt.Fprintf(&sb, " / $%.4f cache-write", info.Current.CacheWriteUSDPerMTok)
 		}
+		// And the dearer TTL beside it, labelled, so the two write rates
+		// are told apart rather than one standing in for both (#770).
+		if info.Current.CacheWrite1hUSDPerMTok > 0 {
+			fmt.Fprintf(&sb, " / $%.4f cache-write-1h", info.Current.CacheWrite1hUSDPerMTok)
+		}
 		if !info.Current.UpdatedAt.IsZero() {
 			fmt.Fprintf(&sb, " (updated %s)", info.Current.UpdatedAt.Format("2006-01-02"))
 		}

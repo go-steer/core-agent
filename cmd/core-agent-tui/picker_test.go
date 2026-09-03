@@ -15,6 +15,9 @@
 package main
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"slices"
 	"strings"
@@ -169,6 +172,54 @@ func TestPickerSessionCreated(t *testing.T) {
 	}
 	if m2.error == "" {
 		t.Fatalf("create error not surfaced")
+	}
+}
+
+// TestRefreshCmdCarriesTitle is the other half of the startup-picker
+// regression: the listener has reported a title on every GET /sessions
+// row since protocol 1.6.0, and refreshCmd used to drop it on the floor
+// — so the table had nothing to render even once it had a column.
+func TestRefreshCmdCarriesTitle(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sessions" {
+			http.NotFound(w, r) // no /peers on this listener
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"sessions":[
+			{"app":"core-agent","user":"u","sessionID":"sid-titled","title":"Drain the west cluster"},
+			{"app":"core-agent","user":"u","sessionID":"sid-bare"}
+		]}`)
+	}))
+	defer srv.Close()
+
+	parsed, err := attachclient.ParseURL(srv.URL)
+	if err != nil {
+		t.Fatalf("ParseURL: %v", err)
+	}
+	m := newPickerModel(attachclient.New(parsed, "", 5*time.Second))
+	raw := m.refreshCmd()()
+	msg, ok := raw.(pickerSessionsLoadedMsg)
+	if !ok {
+		t.Fatalf("refreshCmd emitted %T, want pickerSessionsLoadedMsg", raw)
+	}
+	if msg.err != nil {
+		t.Fatalf("refresh: %v", msg.err)
+	}
+	got := map[string]string{}
+	for _, e := range msg.sessions {
+		if e.Kind != kindCreate {
+			got[e.SessionID] = e.Title
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d session rows (%v), want both of the listener's", len(got), got)
+	}
+	if got["sid-titled"] != "Drain the west cluster" {
+		t.Errorf("titled row Title = %q, want the listener's title", got["sid-titled"])
+	}
+	if got["sid-bare"] != "" {
+		t.Errorf("untitled row Title = %q, want empty", got["sid-bare"])
 	}
 }
 

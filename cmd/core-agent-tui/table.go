@@ -20,6 +20,8 @@ import (
 	"time"
 
 	lipgloss "charm.land/lipgloss/v2"
+
+	"github.com/go-steer/core-agent/v2/internal/coretuiremote"
 )
 
 // Column layout for the session picker's table.
@@ -54,11 +56,28 @@ type pickerColumn struct {
 	// every column at its minimum: highest rank goes first. Rank 0 is
 	// never dropped.
 	dropRank int
+	// hasContent reports whether a row has anything real for this
+	// column, as distinct from the placeholder value() renders. When
+	// it's set and no row on screen answers true, the column is left
+	// out of the layout entirely — see emptyColumnsRemoved.
+	hasContent func(pickerEntry) bool
 }
 
 // pickerColumns is the table's schema, left to right.
 func pickerColumns() []pickerColumn {
 	return []pickerColumn{
+		{
+			// First column because it's the one an operator reads to
+			// recognise a row: they know the session by what they asked
+			// it to do, not by the tail of a UUID. Outlives every other
+			// descriptive column, but goes before AGE (the evidence for
+			// the row order) and before SESSION (the identity).
+			header:     "TITLE",
+			min:        12,
+			dropRank:   2,
+			value:      func(e pickerEntry, _ time.Time) string { return titleLabel(e.Title) },
+			hasContent: func(e pickerEntry) bool { return titleLabel(e.Title) != noTitle },
+		},
 		{
 			header:      "SESSION",
 			min:         14,
@@ -70,24 +89,29 @@ func pickerColumns() []pickerColumn {
 			// thing to go when the terminal is narrow.
 			header:   "APP",
 			min:      6,
-			dropRank: 4,
+			dropRank: 5,
 			value:    func(e pickerEntry, _ time.Time) string { return e.App },
 		},
 		{
 			header:   "USER",
 			min:      8,
-			dropRank: 3,
+			dropRank: 4,
 			value:    func(e pickerEntry, _ time.Time) string { return e.User },
 		},
 		{
 			header:   "ORIGIN",
 			min:      6,
-			dropRank: 2,
+			dropRank: 3,
 			value:    func(e pickerEntry, _ time.Time) string { return e.Origin },
 		},
 		{
 			// Three columns wide and it's the evidence for the row
-			// order, so it survives longest.
+			// order, so it survives longest. Cheap enough that giving
+			// its space to the title buys a few more characters of one
+			// cell and costs the whole column: at the widths where the
+			// choice arises the title doesn't fit either, and dropping
+			// AGE first left SESSION alone on a row that used to carry
+			// both.
 			header:     "AGE",
 			min:        3,
 			rightAlign: true,
@@ -97,13 +121,31 @@ func pickerColumns() []pickerColumn {
 	}
 }
 
+// noTitle is what the TITLE cell shows for a session that has none.
+const noTitle = "—"
+
+// titleLabel renders a session's title cell. The raw wire string is
+// sanitized with the same helper the /switch dialog uses — a title can
+// arrive from a peer daemon this process didn't write, and a newline or
+// a CSI sequence in it would break far more than one cell.
+//
+// An untitled session gets a dash rather than blank space: the column
+// keeps its shape, and "no title yet" reads as a fact instead of a
+// render that failed. The identity is in SESSION either way.
+func titleLabel(title string) string {
+	if t := coretuiremote.SessionTitleForDisplay(title); t != "" {
+		return t
+	}
+	return noTitle
+}
+
 // fitColumns picks the visible columns and their widths for the given
-// rows and available width. Three stages, in order: measure the
-// content, squeeze the widest columns down toward their minimums, and
-// only then drop columns by rank.
+// rows and available width. Four stages, in order: drop the columns
+// with nothing in them, measure the content, squeeze the widest
+// columns down toward their minimums, and only then drop columns by
+// rank.
 func fitColumns(cols []pickerColumn, rows []pickerEntry, now time.Time, avail int) ([]pickerColumn, []int) {
-	visible := make([]pickerColumn, len(cols))
-	copy(visible, cols)
+	visible := emptyColumnsRemoved(cols, rows)
 	for {
 		widths := naturalWidths(visible, rows, now)
 		squeeze(visible, widths, avail)
@@ -112,6 +154,42 @@ func fitColumns(cols []pickerColumn, rows []pickerEntry, now time.Time, avail in
 		}
 		visible = dropColumn(visible)
 	}
+}
+
+// emptyColumnsRemoved drops any column declaring a hasContent probe
+// that no row on screen satisfies.
+//
+// This runs before the width fit rather than falling out of it,
+// because a column of placeholders is not merely narrow — it is
+// *immune* to the squeeze. TITLE against a fleet where nothing is
+// titled measures 5 (its own header; the cells are one dash), which is
+// under its 12-column minimum, so it has negative slack and squeeze
+// never picks it as a victim. It would then sit there outranking
+// ORIGIN and AGE for space while carrying no information at all: an
+// operator on a narrow pane against a pre-1.6.0 listener would lose the
+// column telling them which peer a session is on and get a stack of
+// dashes for it.
+func emptyColumnsRemoved(cols []pickerColumn, rows []pickerEntry) []pickerColumn {
+	out := make([]pickerColumn, 0, len(cols))
+	for _, c := range cols {
+		if c.hasContent != nil && !anyRowHasContent(c, rows) {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+func anyRowHasContent(c pickerColumn, rows []pickerEntry) bool {
+	for _, r := range rows {
+		if r.Kind == kindCreate {
+			continue // the sentinel spans the whole row, it fills nothing
+		}
+		if c.hasContent(r) {
+			return true
+		}
+	}
+	return false
 }
 
 // naturalWidths measures each column against its header and every cell
@@ -162,7 +240,12 @@ func dropColumn(cols []pickerColumn) []pickerColumn {
 		}
 	}
 	if victim < 0 {
-		return cols[:1] // nothing droppable left; keep the first column
+		// Nothing droppable left, so keep the first column. Reachable
+		// only with two or more rank-0 columns — SESSION is the sole
+		// one today, and fitColumns returns before calling here once
+		// it's alone. A second would have to be one that may lead the
+		// table, because this picks the leftmost survivor.
+		return cols[:1]
 	}
 	out := make([]pickerColumn, 0, len(cols)-1)
 	out = append(out, cols[:victim]...)

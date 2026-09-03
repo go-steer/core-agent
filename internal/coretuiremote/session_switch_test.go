@@ -191,12 +191,13 @@ func TestSessions_TitleFromTheWireIsSanitized(t *testing.T) {
 		{App: "core-agent", SessionID: "one", Title: "Debug\r\nthe \x1b[2Jretries"},
 		{App: "core-agent", SessionID: "two", Title: strings.Repeat("x", 400)},
 		{App: "core-agent", SessionID: "three", Title: "\x00\x01\x02"},
+		{App: "core-agent", SessionID: "four", Title: "\u0301\u0301\u0301"},
 	}
 	a := newTestAdapter(t, fs, "/sessions/core-agent/one")
 
 	got := a.Sessions()
-	if len(got) != 3 {
-		t.Fatalf("Sessions() len = %d, want 3", len(got))
+	if len(got) != 4 {
+		t.Fatalf("Sessions() len = %d, want 4", len(got))
 	}
 	if got[0].Display != "Debug the [2Jretries" {
 		t.Errorf("Display = %q, want the newlines collapsed and the escape byte gone", got[0].Display)
@@ -214,6 +215,12 @@ func TestSessions_TitleFromTheWireIsSanitized(t *testing.T) {
 	}
 	if got[2].Description != "" {
 		t.Errorf("all-control Description = %q, want empty", got[2].Description)
+	}
+	// Combining marks pass the printable test and the whitespace test
+	// and still draw nothing of their own — they attach to whatever
+	// glyph the picker happens to render beside them.
+	if got[3].Display != "core-agent/four" {
+		t.Errorf("all-marks Display = %q, want the identity fallback", got[3].Display)
 	}
 }
 

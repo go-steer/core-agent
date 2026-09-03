@@ -47,6 +47,23 @@ Any unrecognized flag surfaces the standard `flag provided but not defined` erro
 
 Same grammar as `core-agent attach` (the in-process attach subcommand); URLs are portable between both.
 
+## Session picker
+
+The hub form opens a table of every session the authenticated caller can see — the daemon's own plus, when it is a peer-registration hub, each peer's — newest first, with a `+ New session` row pinned to the top.
+
+| Column | Contents |
+|---|---|
+| `TITLE` | The session's short label, as reported by `GET /sessions` — inferred from its first prompt, or set by hand with [`/title`](/reference/attach-tui/). `—` when the session has none: the listener predates attach protocol 1.6.0, the first turn hasn't landed, or the host has [`session_title`](/reference/configuration/) off. |
+| `SESSION` | Session ID. Middle-elided when squeezed, because UUIDv7s differ in the tail. |
+| `APP` | App name the session is registered under. |
+| `USER` | Owning user ID. |
+| `ORIGIN` | `local`, or the peer name the session was discovered on. |
+| `AGE` | How long ago the session was created, decoded from a UUIDv7 session ID. `—` for an ID that carries no timestamp (a hand-picked one like `default`). Row *ordering* additionally falls back to the listener's last-activity stamp; the column doesn't. |
+
+Columns are measured against the rows actually on screen and squeezed to the terminal; a terminal too narrow for all of them drops `APP` first, then `USER`, `ORIGIN`, `TITLE`, and `AGE`, in that order. `SESSION` is never dropped — it is what identifies the row. A `TITLE` column that would be nothing but dashes (no session on screen has a title) isn't shown at all, so a fleet on an older listener gets exactly the layout it had before titles existed.
+
+Keys: `↑`/`↓` (or `k`/`j`) navigate, `Enter` attaches, `r` refreshes, `q` quits.
+
 ## Environment variables
 
 | Name | Consumed by | Purpose |

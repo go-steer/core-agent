@@ -69,6 +69,13 @@ type pickerEntry struct {
 	Endpoint    string // listener URL (peer endpoint or "")
 	Origin      string // "local" | peer name
 
+	// Title is the listener's short label for the session (attach
+	// protocol 1.6.0). Empty against an older listener, against a
+	// session whose first turn hasn't landed, and against a host with
+	// titling turned off — the TITLE column falls back to a dash, and
+	// the SESSION column is the identity either way.
+	Title string
+
 	// CreatedAt is decoded from a UUIDv7 SessionID by orderEntries;
 	// zero when the ID isn't a v7 UUID (hand-picked IDs like
 	// "default", or a listener on the uuid.NewString fallback).

@@ -888,7 +888,7 @@ func (a *Adapter) Sessions() []coretui.SessionInfo {
 	for _, d := range descs {
 		identity := sessionIdentity(d)
 		display, desc := identity, ""
-		if title := sessionTitleForDisplay(d.Title); title != "" {
+		if title := SessionTitleForDisplay(d.Title); title != "" {
 			// The title takes the primary line and the identity moves
 			// to the secondary one: an operator picking a session
 			// recognises it by what it is doing, but still needs the
@@ -942,7 +942,7 @@ func sessionIdentity(d attachclient.SessionDescriptor) string {
 // process and the cap here is the one that protects this picker.
 const sessionTitleDisplayMax = 80
 
-// sessionTitleForDisplay makes a wire-supplied title safe to put in a
+// SessionTitleForDisplay makes a wire-supplied title safe to put in a
 // one-line picker cell. The producing daemon normalizes what it
 // generates, but a title arriving over HTTP — from a peer daemon in
 // multi-daemon mode above all — is text this process did not write and
@@ -951,9 +951,13 @@ const sessionTitleDisplayMax = 80
 // dialog, and neither needs anything more hostile than an old producer
 // or an operator who pasted something odd into a rename.
 //
+// Exported because core-agent-tui's startup session picker renders the
+// same wire field into its own table (cmd/core-agent-tui/table.go) and
+// has the same untrusted-text problem; one sanitizer, two pickers.
+//
 // Returns "" for a title with nothing legible left, which puts the row
 // back on the identity fallback.
-func sessionTitleForDisplay(title string) string {
+func SessionTitleForDisplay(title string) string {
 	if title == "" {
 		return ""
 	}
@@ -974,10 +978,31 @@ func sessionTitleForDisplay(title string) string {
 		return r
 	}, title)
 	title = strings.Join(strings.Fields(title), " ")
+	if !hasVisibleRune(title) {
+		// Fields() answers "is there non-whitespace left", which is not
+		// the same question. A title of nothing but combining marks
+		// survives it — the marks are printable — and then renders as a
+		// blank-looking cell whose accents graft onto whatever glyph
+		// precedes it, which in this picker is the selection cursor.
+		return ""
+	}
 	if r := []rune(title); len(r) > sessionTitleDisplayMax {
 		title = strings.TrimRight(string(r[:sessionTitleDisplayMax-1]), " ") + "…"
 	}
 	return title
+}
+
+// hasVisibleRune reports whether s has at least one rune that draws
+// something of its own. Nonspacing and enclosing marks don't: they
+// attach to the preceding character, so a string of only marks has no
+// glyph to attach to and occupies no columns.
+func hasVisibleRune(s string) bool {
+	for _, r := range s {
+		if !unicode.In(r, unicode.Mn, unicode.Me) {
+			return true
+		}
+	}
+	return false
 }
 
 // peerRow is one enumerated peer session plus the endpoint that
@@ -1025,7 +1050,7 @@ func (a *Adapter) enumeratePeers(peers []attachclient.PeerDescriptor) []peerRow 
 			for _, d := range descs {
 				identity := sessionIdentity(d)
 				display, desc := identity, p.Endpoint
-				if title := sessionTitleForDisplay(d.Title); title != "" {
+				if title := SessionTitleForDisplay(d.Title); title != "" {
 					// Same trade as the local rows, except the
 					// secondary line is already spoken for by the
 					// endpoint — so the identity joins it there

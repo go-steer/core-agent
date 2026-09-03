@@ -675,7 +675,16 @@ Three notes for anyone revisiting this:
   list only on an actual gate transition) are worth having, but the
   load-bearing part is that call two does not produce a file. The
   `outcome` field exists so a detector can key on the no-op without
-  parsing prose (#907).
+  parsing prose (#907) — though the detector does not read `outcome`
+  itself. #918 found that gap: #907's `no-op-streak` reads exactly one
+  reserved response key, `no_op`, and this result did not set it, so
+  the two halves shipped a month apart and never met. The `unchanged`
+  branch now sets `no_op`; `updated` deliberately does not, because
+  overwriting the artifact is work and a revising agent must not
+  accumulate a streak toward a Critical halt. Keeping the two fields
+  separate is the point rather than an accident: `outcome` is this
+  tool's own vocabulary and may be reworded, `no_op` is the runtime's
+  and may not.
 
 - **The turn boundary comes from ADK's invocation ID.** `pkg/agent`'s
   checkpointer keys its in-turn repeat flag off an `Agent` field that

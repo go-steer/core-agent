@@ -326,7 +326,7 @@ func (a *Agent) maybeEnforceCostCeiling() {
 
 	// Durable halt (#643): the trip outlives this process, so a crash
 	// or pod roll can't hand the runaway a fresh budget.
-	a.queueGuardrailEvent(attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, reason))
+	a.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, reason))
 
 	a.emit(attach.EventTurnError, costCeilingTurnError(reason))
 }

@@ -298,7 +298,7 @@ func TestNewGuardrailResetAuditEvent(t *testing.T) {
 // written, so the one caller with a motive to hide a budget bump — the
 // caller making it — must not be able to erase the record by hanging
 // up. The write now happens agent-side on a background context
-// (pkg/agent.drainGuardrailEvents), so nothing the request context does
+// (pkg/agent.drainOutOfBandEvents), so nothing the request context does
 // can reach it; what remains testable here is that the handler still
 // runs the reset to completion for a peer that has already gone away.
 func TestGuardrailsReset_CompletesAfterClientDisconnect(t *testing.T) {

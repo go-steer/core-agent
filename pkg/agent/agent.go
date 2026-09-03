@@ -381,14 +381,14 @@ type Agent struct {
 	// for a turn that hasn't cost anything yet.
 	turnStartCostSet bool
 
-	// Durable guardrail state (#643). pendingGuardrailEvents queues
+	// Durable guardrail state (#643). pendingOutOfBandEvents queues
 	// trip/reset rows for a window with no turn in flight;
 	// guardrailRestored latches the eventlog fold so it applies at
 	// most once — on SUCCESS, deliberately not a sync.Once, so a
 	// transient read failure retries on the next turn instead of
 	// disarming the backstop for the rest of the process's life.
 	// See guardrail_persist.go.
-	pendingGuardrailEvents []*session.Event
+	pendingOutOfBandEvents []*session.Event
 	guardrailRestored      bool
 
 	// guardrailHaltKind names the guardrail that cut the turn now in
@@ -1470,7 +1470,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 	// must happen before the pre-flights below, which return early and
 	// would otherwise leave the trip unrecorded until some later turn
 	// that pre-flight will never allow to start.
-	a.drainGuardrailEvents()
+	a.drainOutOfBandEvents()
 	// Cost-ceiling pre-flight (#145). If a prior turn tripped the
 	// configured per-turn / per-session spend cap, refuse this turn
 	// at the very top — before any tracker writes, model calls, or
@@ -1742,7 +1742,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) iter.Seq2[*session.Event
 		// above just tripped. Same window and same reasoning as the
 		// interrupt audit: the stream has drained and runCtx is
 		// cancelled, so this write can't race the runner.
-		a.drainGuardrailEvents()
+		a.drainOutOfBandEvents()
 		if a.onTurnEnd != nil {
 			a.onTurnEnd()
 		}

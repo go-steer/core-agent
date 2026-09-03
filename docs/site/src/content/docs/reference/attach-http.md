@@ -371,6 +371,24 @@ not its ordinary RPC timeout. The bundled clients allow 5 minutes for
 `/slash/*` (and keep the shorter deadline for everything else); cancel
 the request context to abandon one early.
 
+### Failed automatic context reduction (v2.9.0-dev)
+
+Automatic compaction and task-boundary checkpointing run between turns and are logged-and-swallowed on failure — they must not fail the operator's turn. Until [#908](https://github.com/go-steer/core-agent/issues/908) the only trace was a line on the daemon's stderr, which nobody attached can read, and a compaction that silently stops happening surfaces much later as a session wedged against its context wall.
+
+A failed automatic run now also appends a durable `context-reduction-failed` event (`Author=agent/context-reduction`) with metadata:
+
+| Key | Value |
+|---|---|
+| `source` | `agent` |
+| `operation` | `compaction` or `checkpoint` |
+| `reason` | the error text, verbatim — e.g. `agent: compaction: model returned no summary text (finish_reason=MAX_TOKENS) after 2 attempts` |
+| `consecutive_failures` | compaction's backoff counter; **omitted** when zero (the checkpoint path has no backoff) |
+| `cooldown_turns` | turns until the next attempt; **omitted** when zero |
+
+Like the guardrail rows this is an ordinary event, so it reaches every client over the existing back-compat `agent` frame on `/events` and stays readable from `GET /sessions/{app}/{sid}/events` after a reconnect. **No protocol change** — there is no typed frame for it, because the protocol has no non-terminal notification event and `turn-error` is reserved for turn outcomes (exactly one terminal frame per turn). A client that wants to surface this to a human should match on the author and render the row itself.
+
+A *manual* `/slash/compact` or `/slash/done` writes no row: the failure is already the caller's response.
+
 ## UsageMetadata schema
 
 `GET /sessions/{sid}/usage` (v2.7.0-dev.3+, [#222](https://github.com/go-steer/core-agent/issues/222)). Response type `attach.UsageInfo`:

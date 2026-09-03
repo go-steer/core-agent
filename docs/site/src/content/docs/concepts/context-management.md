@@ -80,6 +80,18 @@ A concrete numbered list of the next developer-style actions.
 
 Pass `--no-compact` for short headless one-shots where compaction would never fire anyway, or when debugging issues where you don't want history rewrites in play. `/compact` remains available as a manual command regardless of the flag.
 
+### When the summarizer comes back empty (since v2.9)
+
+Compaction and task-boundary checkpoints share one summarizer call, so they fail the same way, and one of those ways is the model returning **no text at all** — a safety block, a `MAX_TOKENS` cutoff, a candidate carrying only a thought signature ([#908](https://github.com/go-steer/core-agent/issues/908)).
+
+Three things happen:
+
+- **The reason is reported.** The provider's own explanation is carried into the error in the same vocabulary `/slash/btw` uses: `agent: compaction: model returned no summary text (finish_reason=MAX_TOKENS) after 2 attempts`. When the provider offered none, the message says so — that absence is itself the signal.
+- **It is retried once, but only when a retry could help.** An empty response the provider *explained* with a terminal reason (the safety family, `MAX_TOKENS`, a malformed tool call) is a property of the input: an identical retry produces an identical answer, so none is made. An unexplained empty response — or one carrying a reason this version doesn't recognise — is retried exactly once. The retry is capped inside the single call, so nothing loops.
+- **A failed *automatic* run is visible to attached clients**, not just in the daemon log. It appends a durable `context-reduction-failed` event (`Author=agent/context-reduction`) carrying `operation` (`compaction` or `checkpoint`), the verbatim `reason`, and, for compaction, `consecutive_failures` and `cooldown_turns`. Tail `GET /sessions/{app}/{sid}/events` or the attach event stream to see it. A manual `/compact` or `/done` reports the failure to you directly and writes no row.
+
+A failed automatic compaction still clears its pending flag and backs off exponentially rather than re-attempting every turn. That is deliberate — a summarizer that is persistently empty would otherwise burn the most expensive call in the session on every turn — but it does mean **context is no longer being reduced**, and the session is on a path to its context wall. That is what the event exists to tell you. Cutting a manual `/compact` (optionally with a `focus` to shrink the ask) is usually the fastest recovery; a `MAX_TOKENS` reason specifically points at the summarizer's own output cap.
+
 ---
 
 ## Task class (since v2.5)
@@ -443,6 +455,8 @@ Each subtask sees ONLY its `SystemPrompt` + `UserMessage`. The parent's history 
 
 - **Model-driven:** at natural task boundaries the model calls the built-in `mark_task_done(detail)` tool. The handler stashes the detail and flips a pending flag; the next `Run` drains it by writing the checkpoint.
 - **Operator-driven:** `/done [note]` slash (alias `/checkpoint`) does the same thing manually — useful when the model didn't notice the boundary or when you want to force one before switching topics.
+
+Checkpoints run the same summarizer compaction does, so a model-driven one that comes back empty behaves the same way — see [When the summarizer comes back empty](#when-the-summarizer-comes-back-empty-since-v29). A lost checkpoint is the cheaper of the two failures: re-cut it with `/done`.
 
 ### What the checkpoint contains
 

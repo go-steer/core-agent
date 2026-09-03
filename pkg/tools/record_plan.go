@@ -80,9 +80,18 @@ const (
 	// invitation: a model in completion-reporting mode called record_plan
 	// eight times in one turn and minted plan-5 through plan-11, and the
 	// description told it that was the intended way to revise.
-	recordPlanDescCommon = "Plan is free-form markdown — typical shape: goal, files to change, approach, risks, test plan, out of scope. The plan is persisted to .agents/plans/plan-<seq>.md and visible to the operator in chat. Call this ONCE per plan: revising within the same turn updates that same artifact in place rather than filing a new one, and re-sending an unchanged plan writes nothing at all. The operator's /replan is the way to withdraw a plan and start over."
+	// The shape sentence is deliberately empty of slots (#909). It used
+	// to read "typical shape: goal, files to change, approach, risks,
+	// test plan, out of scope", which is a document template: a model
+	// reads a slot list and fills the slots. An agent proposing an RBAC
+	// change has no "files to change" and no "test plan", so it either
+	// fabricates them or pads them by restating the incident. Worse, the
+	// list contradicted this tool's own arg schema one screen up, which
+	// already defers the shape to the recipe author — the description
+	// was overriding the very person it defers to.
+	recordPlanDescCommon = "Plan is free-form markdown — the operator's AGENTS.md picks the shape. The plan is persisted to .agents/plans/plan-<seq>.md and surfaced to any attached operator. Call this ONCE per plan: revising within the same turn updates that same artifact in place rather than filing a new one, and re-sending an unchanged plan writes nothing at all. The operator's /replan is the way to withdraw a plan and start over."
 
-	recordPlanDescAdvisory = "Record the agent's implementation plan as a markdown artifact for the operator's audit trail. Plan-first gating is OFF — no tool call is blocked on this, so record the plan and then carry it out in the same turn rather than stopping to wait for approval. " + recordPlanDescCommon
+	recordPlanDescAdvisory = "Record your proposed course of action as a markdown artifact for the operator's audit trail. Plan-first gating is OFF — no tool call is blocked on this, so record the plan and then carry it out in the same turn rather than stopping to wait for approval. " + recordPlanDescCommon
 )
 
 // recordPlanDescRequired names the tools the gate will actually deny.
@@ -113,7 +122,7 @@ func recordPlanDescRequired(gate *permissions.Gate) string {
 		}
 	}
 	gated = append(gated, "spawn_agent")
-	return "Record the agent's implementation plan as a markdown artifact and unblock mutating tools. " +
+	return "Record your proposed course of action as a markdown artifact and unblock mutating tools. " +
 		"Plan-first gating is ON: call this BEFORE any " + strings.Join(gated, " / ") +
 		" call, or those calls are denied with a 'plan required' error. " + recordPlanDescCommon
 }

@@ -115,6 +115,37 @@ needs no network and no API keys.
   tool calls all pass through `permissions.Gate` so the same
   `ask` / `allow` / `yolo` semantics apply uniformly. Consumers that
   add their own tools should wrap them with `tools.GateToolset`.
+- **Tool descriptions and `jsonschema:` tags are prompt text, not
+  code comments.** They are system-prompt-weight, they outrank the
+  persona at the moment the model picks a tool, and a recipe author
+  can neither see nor override them. Review them as prose. Three
+  rules, learned the expensive way (#905, #909):
+  - **A string-typed argument is a writing prompt.** Name what the
+    text must *contain* — findings, evidence, the proposed change —
+    never what *genre* of document it is. A genre name drags a whole
+    rhetorical mode with it ("summary" implies retrospection,
+    "status" implies a state machine), and the model honours that
+    mode over the persona, because satisfying the schema is a
+    precondition for the call succeeding at all.
+    `mark_task_done`'s `"one-paragraph completion summary"` — the arg
+    tag, not the description — is what shaped the visible output in
+    the deployment it broke.
+  - **Write one neutral string; don't write interactive and headless
+    variants.** There is no mode bit to branch on: the session that
+    motivated #909 was a headless daemon with an operator attached
+    over the TUI, i.e. both at once. Branch when the branch changes
+    what is TRUE about this build (`whenTool`, `gate.HasTool`,
+    `sciontoolOnPath`); when it only changes what is TYPICAL, delete
+    the example instead. Where a deployment genuinely wants a tool
+    gone, change *registration* — an absent tool is unambiguous and
+    testable, a mode-varying string is invisible to the recipe author.
+  - **Never state frequency.** "Use this generously" sets a policy the
+    persona cannot see or countermand.
+
+  `internal/testutil.ModelFacingBans` is the enforcement: a sweep runs
+  over every registered tool's description *and* arg schema in
+  `pkg/tools`, `pkg/tools/agentic`, `pkg/agent/background` and
+  `pkg/agent/autonomous`. Add a phrase there when you find the next one.
 
 ## Pitfalls & gotchas (real ones we've hit)
 

@@ -25,7 +25,7 @@ import (
 // reportArgs is the JSON shape the spawned subagent's model sees when
 // it calls report_alert. A single message string.
 type reportArgs struct {
-	Text string `json:"text" jsonschema:"a one-paragraph message describing the alert or completion"`
+	Text string `json:"text" jsonschema:"the finding and the evidence behind it"`
 }
 
 type reportResult struct {
@@ -44,7 +44,7 @@ type reportResult struct {
 func newReportAlertTool(mgr *Manager, from string) tool.Tool {
 	t, err := functiontool.New(functiontool.Config{
 		Name:        "report_alert",
-		Description: "Send an alert back to the parent agent. The text becomes a user-visible report the parent agent reads before its next turn. Use for noteworthy findings, status updates, or things the parent should react to.",
+		Description: "Send an alert back to the parent agent. The text is delivered to the parent agent before its next turn. Use for noteworthy findings or things the parent should react to.",
 	}, func(_ tool.Context, args reportArgs) (reportResult, error) {
 		mgr.pushAlert(Alert{
 			From:      from,
@@ -114,6 +114,13 @@ drain:
 // name because no subagent is at fault; the text says what was lost
 // and what the model can do about it, since "some reports are missing"
 // is only actionable if it also says who to ask.
+//
+// It used to say "check its status (list_agents)". #625 removed
+// list_agents as a model tool — its content is served by the pre-turn
+// push digest (docs/unified-subagent-invocation-design.md:197) — so
+// this was the #215/#758 defect in a third form: a tool the model
+// wrongly believes it has, named inside the one message it reads
+// precisely when it is confused about a subagent's state (#909).
 func droppedAlert(n int) Alert {
 	noun := "reports were"
 	if n == 1 {
@@ -124,8 +131,8 @@ func droppedAlert(n int) Alert {
 		Kind: "dropped",
 		Text: fmt.Sprintf("%d earlier background %s discarded: the report queue filled up before this turn drained it, "+
 			"and the oldest entries were evicted to make room. They are unrecoverable. "+
-			"If you are waiting on a subagent whose report is not below, check its status "+
-			"(list_agents) or ask it again rather than assuming it has not finished.", n, noun),
+			"If you are waiting on a subagent whose report is not below, ask it again "+
+			"rather than assuming it has not finished.", n, noun),
 		Timestamp: time.Now(),
 	}
 }

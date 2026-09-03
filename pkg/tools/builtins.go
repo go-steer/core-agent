@@ -274,12 +274,12 @@ func Build(cfg *config.Config, gate *permissions.Gate, agentsDir string, b Built
 		{b.ReadFile, "read_file", "Read a file from disk and return its contents.", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{
 				Name: "read_file", Description: "Read a file from disk. Honors offset/limit for large files, output truncation, and the permission gate." +
-					whenTool(gate.HasTool("bash"), " PREFERRED over `bash cat`/`bash head`/`bash tail` for reading source files."),
+					whenTool(gate.HasTool("bash"), " PREFERRED over `bash cat`/`bash head`/`bash tail` for reading files."),
 			}, readFileFunc(gate, cfg))
 		}},
 		{b.ReadManyFiles, "read_many_files", "Read multiple files in a single call (explicit paths and/or glob pattern).", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{
-				Name: "read_many_files", Description: "Read multiple files in a single call. Pass `paths` (explicit list) and/or `pattern` (basename glob, walked from `path` root; defaults to '.'). The canonical way to fan out reads when you already know the set of files you need — saves turns. Useful when investigating a feature spread across several files, comparing implementations, or pulling context for an edit. Gate denials, missing files, and directories surface as entries with `skipped: \"<reason>\"` so the batch never aborts on one bad path." +
+				Name: "read_many_files", Description: "Read multiple files in a single call. Pass `paths` (explicit list) and/or `pattern` (basename glob, walked from `path` root; defaults to '.'). The canonical way to fan out reads when you already know the set of files you need — saves turns. Gate denials, missing files, and directories surface as entries with `skipped: \"<reason>\"` so the batch never aborts on one bad path." +
 					whenTool(gate.HasTool("read_file"), " PREFERRED over multiple parallel `read_file` calls."),
 			}, readManyFilesFunc(gate, cfg))
 		}},
@@ -323,7 +323,7 @@ func Build(cfg *config.Config, gate *permissions.Gate, agentsDir string, b Built
 		{b.Grep, "grep", "Search file contents for a regex.", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{
 				Name: "grep", Description: "Walk path (default '.') and return matching lines for the supplied RE2 regex. Recursive on directories; single-file mode when path points at a file. Skips hidden / vendored directories. Honors the permission gate and per-tool output caps, and returns structured `{path, line, text}` matches you can pipe into follow-up tool calls without re-parsing." +
-					whenTool(gate.HasTool("bash"), " PREFERRED over `bash grep`/`bash rg`/`bash find` for code search."),
+					whenTool(gate.HasTool("bash"), " PREFERRED over `bash grep`/`bash rg`/`bash find` for searching file contents."),
 			}, grepFunc(gate, cfg))
 		}},
 		{b.JSONQuery, "json_query", "Run a jq expression against JSON loaded from a file or supplied inline.", func() (tool.Tool, error) {
@@ -365,7 +365,7 @@ func Build(cfg *config.Config, gate *permissions.Gate, agentsDir string, b Built
 		}},
 		{b.Todo, "todo", "Maintain an agent-facing todo list (list/add/set_status/clear).", func() (tool.Tool, error) {
 			return functiontool.New(functiontool.Config{
-				Name: "todo", Description: "Maintain a short todo list visible to the user. Actions: list, add, set_status, clear.",
+				Name: "todo", Description: "Maintain a short todo list. It persists across turns and is surfaced to any attached operator. Actions: list, add, set_status, clear.",
 			}, todoFunc(store))
 		}},
 		// record_plan is registered only when (a) the operator asked

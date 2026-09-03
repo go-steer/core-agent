@@ -26,6 +26,7 @@ import (
 	"google.golang.org/adk/tool/functiontool"
 	"google.golang.org/genai"
 
+	"github.com/go-steer/core-agent/v2/internal/testutil"
 	"github.com/go-steer/core-agent/v2/pkg/agent"
 )
 
@@ -183,6 +184,65 @@ func TestAgenticTools_DescriptionsDiscourageBareToolVerify(t *testing.T) {
 				if !strings.Contains(desc, phrase) {
 					t.Errorf("description missing required phrase %q:\n%s", phrase, desc)
 				}
+			}
+		})
+	}
+}
+
+// The rationale for the ban list lives with the list itself, in
+// internal/testutil.ModelFacingBans (#909). These four are the fourth
+// model-facing tool surface, and the one most steeped in the
+// interactive-coding frame it was written for: agentic_grep opened
+// "Search the codebase for a pattern" and agentic_research offered
+// "what's the convention for Y in this codebase" as an exemplar, on a
+// deployment whose only files are YAML manifests.
+//
+// This runs over the same table as the test above deliberately: the two
+// pull in opposite directions — that one requires phrases, this one
+// forbids them — and a rewrite that satisfies only one is the drift
+// worth catching.
+func TestAgenticTools_DescriptionsAreDeploymentNeutral(t *testing.T) {
+	t.Parallel()
+	opts := okOpts(t)
+	cases := []struct {
+		name string
+		tool tool.Tool
+	}{
+		{"agentic_read_file", AgenticReadFile(opts)},
+		{"agentic_fetch_url", AgenticFetchURL(AgenticToolOpts{
+			AgentGetter: opts.AgentGetter,
+			InnerTools:  []tool.Tool{stubTool{name: "fetch_url"}},
+		})},
+		{"agentic_grep", AgenticGrep(AgenticToolOpts{
+			AgentGetter: opts.AgentGetter,
+			InnerTools:  []tool.Tool{stubTool{name: "grep"}, stubTool{name: "read_file"}},
+		})},
+		{"agentic_research", AgenticResearch(AgenticToolOpts{
+			AgentGetter: opts.AgentGetter,
+			InnerTools: []tool.Tool{
+				stubTool{name: "read_file"}, stubTool{name: "grep"},
+				stubTool{name: "list_dir"}, stubTool{name: "glob"},
+			},
+		})},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			texts, scanned := testutil.ModelFacingText(tc.tool)
+			if !scanned {
+				t.Errorf("tool %q exposes no arg schema to scan", tc.name)
+			}
+			for _, text := range texts {
+				for _, bad := range testutil.ModelFacingBanViolations(text) {
+					t.Errorf("tool %q: %s\n  %s", tc.name, bad, text)
+				}
+			}
+			refs, checked := testutil.UndeclaredArgRefs(tc.tool)
+			if !checked {
+				t.Errorf("tool %q exposes no arg schema to cross-check its description against", tc.name)
+			}
+			for _, ref := range refs {
+				t.Errorf("tool %q description tells the model to set %q, which it does not declare:\n  %s", tc.name, ref, tc.tool.Description())
 			}
 		})
 	}

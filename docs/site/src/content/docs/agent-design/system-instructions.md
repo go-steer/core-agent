@@ -122,9 +122,11 @@ The unattended agent needs an `AGENTS.md` that's *more* explicit than an interac
 
 Tell the agent what "done" looks like:
 
-> Use `report_done` with a one-paragraph summary when ALL of the following are true: (1) every Pod is `Running`, (2) `kubectl rollout status` returned 0, (3) the SLO error budget hasn't decreased in the last 10 minutes.
+> Use `report_done` when ALL of the following are true: (1) every Pod is `Running`, (2) `kubectl rollout status` returned 0, (3) the SLO error budget hasn't decreased in the last 10 minutes. Put the evidence for each in the result — the values you actually read, not the fact that you checked.
 
 Without an explicit completion signal, you're relying on budget caps alone to stop the run — the model will happily keep going indefinitely against a vague goal.
+
+Say what the result must **contain**, never what genre of document it is. "A one-paragraph summary" reads as an instruction to write *about* the work, and you get "monitored the deployment and everything looks healthy" — a sentence that forces whoever reads it to go and check for themselves. Naming the content obligation ("the values you actually read") gets you the values. This is the same rule core-agent's own tool descriptions follow; see `AGENTS.md` under Conventions.
 
 ### Explicit don't-do list
 

@@ -53,8 +53,8 @@ type bashResult struct {
 // rule from a refusal has already spent a turn learning it (#158).
 func bashDescription(gate *permissions.Gate) string {
 	const opening = "Execute a shell command via /bin/sh -c with a timeout."
-	const closing = " Use this tool for actions the structured tools cannot perform: builds, " +
-		"tests, git, formatters, package managers, and other shell-native workflows."
+	const closing = " Use this tool for actions the structured tools cannot perform — " +
+		"running an executable, and other shell-native work."
 
 	// Name only the structured tools this build registered. The
 	// redirect is the whole point of the sentence, so pointing at a
@@ -69,7 +69,7 @@ func bashDescription(gate *permissions.Gate) string {
 	}
 	base := opening
 	if len(structured) > 0 {
-		base += " For code investigation (reading files, searching source, listing directories), " +
+		base += " For reading files, searching their contents, and listing directories, " +
 			"prefer the structured " + strings.Join(structured, ", ") +
 			" tools — they honor the permission gate and per-tool output caps."
 	}

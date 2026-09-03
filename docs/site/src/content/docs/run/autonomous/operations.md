@@ -30,7 +30,9 @@ build := func(extras []adktool.Tool) (*agent.Agent, error) {
         agent.WithInstruction(
             "You are an autonomous worker. Complete the user's goal end-to-end "+
                 "without asking clarifying questions. When finished, call "+
-                "report_done with state=\"done\" and a one-sentence detail.",
+                "report_done with state=\"done\" and put your findings in "+
+                "detail — the answer and the evidence behind it, not a "+
+                "description of what you did.",
         ),
         agent.WithTools(append(extras, myTools...)),
     )

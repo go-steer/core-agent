@@ -196,9 +196,10 @@ func TestAwaitResult_NoDuplicateFinalText(t *testing.T) {
 
 // TestSpawnedSubagent_DoneToolAsksForTheDeliverable is the durable half
 // of #641: the fix that makes the completion report carry findings by
-// construction rather than by persona luck. The driver's stock prose asks
-// for "a one-sentence detail", which is what produced the content-free
-// reports the parent had to re-derive.
+// construction rather than by persona luck. The driver's stock prose
+// asked for "a one-sentence detail", which is what produced the
+// content-free reports the parent had to re-derive (#909 fixed the stock
+// prose too; this override still carries the delegation-specific half).
 //
 // Fails on pre-fix code: spawn.go passed no WithDoneToolDescription, so
 // spawned subagents saw the generic single-sentence instruction.

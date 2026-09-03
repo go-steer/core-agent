@@ -49,6 +49,14 @@ const (
 // parked by an operator (POST /pause, or POST /interrupt, which holds
 // by default as of v1.5.0) and will start no new turn until a resume;
 // "idle" means the agent is alive but not currently turning.
+//
+// These are mutually exclusive because State is one field, and
+// "paused" outranks "running" when both apply. Read
+// StatusInfo.TurnInFlight, not State, to answer "is a turn executing
+// right now" — see the note on that field.
+//
+// "deferred" is declared but not yet produced: nothing on the agent
+// exposes a scheduled wake time for the adapter to read.
 const (
 	AgentStateRunning  = "running"
 	AgentStateDeferred = "deferred"
@@ -134,11 +142,28 @@ type SubagentCatalogInfo struct {
 // Interrupted is the one an operator actually reads first: it says
 // whether a turn was killed on the way into this pause, or whether the
 // loop simply isn't allowed to start one.
+//
+// TurnInFlight (v1.12.0) is separate from State on purpose. State is
+// one field and pause wins it — both here and in the /status handler's
+// central pause projection — so a session that is parked AND still
+// finishing the turn the park interrupted reports "paused", and every
+// client that renders a hold banner off State keeps working. But
+// "parked and still running" is precisely the window an operator needs
+// to see (#896, #799 F4: a hold banner while the turn ran on for 226
+// more seconds), and it is unrepresentable in a single field. The bool
+// carries it without overloading State.
 type StatusInfo struct {
 	State       string    `json:"state"` // running | deferred | paused | idle
 	ModelName   string    `json:"model_name,omitempty"`
 	NextWakeAt  time.Time `json:"next_wake_at,omitempty"` // populated when State=deferred
 	CurrentTool string    `json:"current_tool,omitempty"` // populated when State=running and a tool is in flight
+
+	// TurnInFlight reports whether a turn is executing right now,
+	// independent of State. Always meaningful: true with State=running
+	// is the ordinary case, true with State=paused is the parked-but-
+	// still-finishing window above, and false with State=paused is a
+	// quiet hold.
+	TurnInFlight bool `json:"turn_in_flight,omitempty"`
 
 	PausedSince time.Time `json:"paused_since,omitempty"` // populated when State=paused
 	PauseReason string    `json:"pause_reason,omitempty"` // populated when State=paused

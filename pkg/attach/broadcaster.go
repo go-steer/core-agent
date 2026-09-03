@@ -616,8 +616,14 @@ func (b *broadcaster) statusSnapshot() StatusUpdate {
 	}
 	info := p.AttachStatus()
 	out.Model = info.ModelName
-	switch info.State {
-	case AgentStateRunning:
+	switch {
+	case info.State == AgentStateRunning || info.TurnInFlight:
+		// TurnInFlight is checked alongside State, not folded into
+		// it, because pause outranks running in a one-field State:
+		// a session parked mid-turn reports "paused" while the turn
+		// it interrupted is still executing, and seeding that client
+		// with turn_state:"idle" is the exact lie #896 was filed on
+		// (#799 F4 — a hold banner over 226 more seconds of turn).
 		out.TurnState = TurnStateStreaming
 	default:
 		// deferred / paused / idle / unknown all map to idle from

@@ -188,21 +188,37 @@ func (ad *Adapter) AttachSubagentCatalog() []attach.SubagentCatalogInfo {
 
 // AttachStatus implements attach.StatusProvider. Returns the agent's
 // model name plus its coarse state: "paused" when an operator has
-// parked the loop (v1.5.0), "idle" otherwise. "running" / "deferred"
-// still need run-loop instrumentation that hasn't been wired.
+// parked the loop (v1.5.0), "running" while a turn is executing
+// (v1.12.0), "idle" otherwise. "deferred" is still unproduced —
+// nothing on the agent exposes a scheduled wake time to read.
+//
+// TurnInFlight is set from the same signal that decides "running" and
+// is reported independently of State, because pause outranks running
+// in a one-field State and "parked while the interrupted turn is still
+// finishing" is exactly the state an operator needs to see (#896).
+// Before this, a mid-turn GET /status answered "idle" and the SSE
+// status seed answered turn_state:"idle" — on a per-incident watcher
+// session the seed is the only thing an operator ever gets, since the
+// session and its first turn are born together.
 func (ad *Adapter) AttachStatus() attach.StatusInfo {
 	a := ad.Agent()
 	if a == nil {
 		return attach.StatusInfo{}
 	}
 	out := attach.StatusInfo{
-		State:     attach.AgentStateIdle,
-		ModelName: a.ModelName(),
+		State:        attach.AgentStateIdle,
+		ModelName:    a.ModelName(),
+		TurnInFlight: a.TurnInFlight(),
+	}
+	if out.TurnInFlight {
+		out.State = attach.AgentStateRunning
 	}
 	// Reported from the adapter as well as centrally in the /status
 	// handler: in-process consumers (the embedded TUI holds the adapter
 	// directly, no HTTP hop) would otherwise be told "idle" about a
-	// parked loop.
+	// parked loop. Overwrites "running" for the same reason the handler
+	// does — the pause banner is what a client renders off State, and
+	// TurnInFlight keeps the turn's liveness available alongside it.
 	if st := a.PauseState(); st.Paused {
 		out.State = attach.AgentStatePaused
 		out.PausedSince = st.Since

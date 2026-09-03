@@ -102,7 +102,7 @@ Every path suffix below appears under both `/sessions/{sid}/...` and `/sessions/
 |---|---|
 | `/events` | SSE, `text/event-stream`. Query `?since=<int64>` cursor for lossless replay. **412** when the session has no eventlog. **409** when the client declares an incompatible protocol major (`?protocol=` / `X-Attach-Protocol-Version`); **400** when the declared version is malformed. Frames typed via `event: <type>` (or legacy `event: agent`). |
 | `/perms/stream` | SSE, `event: prompt`. **501** without `PromptBrokerProvider`. |
-| `/status` | `{"state":..., "model_name":..., "next_wake_at":..., "current_tool":...}` — never empty `state`. |
+| `/status` | `{"state":..., "model_name":..., "turn_in_flight":bool, "next_wake_at":..., "current_tool":...}` — never empty `state`. See [Turn state](#turn-state-protocol-1120). |
 | `/usage` | `UsageInfo` — see [UsageMetadata schema](#usagemetadata-schema) below. |
 | `/tools` | `{"tools":[{"name":..., "description":..., "source":..., "server":...}]}`. Empty when no provider. `source` vocabulary is `builtin \| mcp \| skill \| subagent \| other`; declarative subagents wired as parent tools report `subagent`, and `server` names the owning MCP server when `source` is `mcp` ([#767](https://github.com/go-steer/core-agent/issues/767)). MCP and skill tools reach the agent as *toolsets*, so they are folded in from the host's MCP + skill providers rather than from the agent's own tool list; a host that wires neither simply reports no rows for them. The MCP rows are the same startup snapshot `/mcp` serves, so the two endpoints cannot disagree about which server owns what. |
 | `/agents` | `{"agents":[{"name":..., "description":...}]}` — **live** spawned instances ("what's running"). |
@@ -308,6 +308,21 @@ Clients watching `/events` see a `pause` frame on every transition (`{"state":"p
 The cancelled turn ends with a `turn-error` frame of `kind: "canceled"`, `retryable: false` (protocol 1.8.0 — see [`turn-error` kinds](#turn-error-kinds)). A pre-1.8.0 daemon reports the same cancel as `transient_network` / `retryable: true`, so a client that offers a retry off that flag will offer to re-run the work the operator just stopped — check `protocol_version` before wiring one.
 
 The `/interrupt` audit event (`Author=attach/interrupt`) is written by the agent from inside its own turn loop, *after* the interrupted turn finishes unwinding — so it lands on the `/events` stream shortly after the `200` response, not synchronously before it. This avoids racing the runner's in-flight session write, which otherwise surfaced the operator's clean cancel as a spurious stale-session turn error. A consumer that needs to confirm the audit row should tail `/events` rather than assume it is present the instant `/interrupt` returns.
+
+### Turn state (protocol 1.12.0)
+
+`GET /status` carries two answers to "what is this session doing", and they are not the same question ([#896](https://github.com/go-steer/core-agent/issues/896)):
+
+- **`state`** — one of `running | deferred | paused | idle`, mutually exclusive. `paused` outranks `running`: a session parked mid-turn reports `paused`, so a client rendering a hold banner off `state` behaves the same as it always did.
+- **`turn_in_flight`** — a bool, independent of `state`, true whenever a turn is executing.
+
+Read `turn_in_flight`, not `state`, to decide whether work is happening. The combination that matters is `state: "paused"` with `turn_in_flight: true`: the operator has hit the gate and the turn the gate interrupted is *still running*. That window can be long — a parent blocked on `spawn_agent{wait: true}` was observed running for 226 seconds past the keystroke — and it produces no output chunks, so a client inferring turn state from arriving partials sees a silence it cannot distinguish from an idle hold.
+
+The same signal drives the SSE seed: the `status-update` frame sent on stream open reports `turn_state: "streaming"` whenever a turn is in flight, whether or not the session is also parked. This is the only turn-state information available to a client attaching to an already-running session — typed frames are live fan-out with no replay, and on a per-incident session created by a watcher there is no window in which to attach before the first turn starts.
+
+Before 1.12.0 `state` never took the value `running` at all: it was declared, and consumed by the SSE mapping, but the sole provider had no run-loop signal to produce it. A mid-turn `/status` answered `idle`. Feature-detect on `protocol_version`; a pre-1.12.0 daemon also omits `turn_in_flight` entirely, which is indistinguishable from `false`.
+
+`deferred` and `current_tool` remain declared and unproduced.
 
 ### Wake notifications (protocol 1.7.0)
 

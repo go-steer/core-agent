@@ -56,6 +56,7 @@ with the old fixture kept frozen.
 | `rest-perms-respond-v1.json` | `POST /sessions/{app}/{sid}/perms/respond` → 200 body, attributed variant (populates the `omitempty` `approver`; protocol 1.10.0, #830) | v1 |
 | `rest-session-title-v1.json` | `POST /sessions/{app}/{sid}/title` → 200 body, persisted variant (protocol 1.10.0, #808) | v1 |
 | `rest-inject-v1.json` | `POST /sessions/{app}/{sid}/inject` → 200 body, deferred variant (pins `woke: false`; protocol 1.10.0, #698) | v1 |
+| `rest-status-v1.json` | `GET /sessions/{app}/{sid}/status` → 200 body, parked-mid-turn variant (protocol 1.12.0, #896) | v1 |
 
 Pinned by `rest_conformance_test.go`; add new REST fixtures there
 following the same construct-marshal-diff pattern (plus, where a
@@ -76,6 +77,20 @@ with — is the common case, not an edge, so a client should not need a
 nil check to walk it. The request body of `PATCH` is a different shape
 and deliberately unpinned: there, an *omitted* list means "leave this
 one alone" and `[]` means "clear it", which is what makes it a PATCH.
+
+`state` and `turn_in_flight` on the status fixture answer different
+questions and a client needs both. `state` is one of
+`running | deferred | paused | idle`, mutually exclusive, with pause
+outranking running; `turn_in_flight` is true whenever a turn is
+executing, including while the session is parked. The fixture pins the
+combination that only exists because they are separate — parked, with
+the interrupted turn still running.
+
+That fixture also shows `next_wake_at` present as `0001-01-01T00:00:00Z`
+on a session that is not deferred. `encoding/json`'s `omitempty` does
+not apply to a struct, so both `time.Time` fields on this endpoint are
+always on the wire regardless of their tags. Read them for the zero
+value; do not treat presence as meaning the field applies.
 
 Timestamp fields (`last_touched_at`) are RFC 3339 with arbitrary
 sub-second precision and zone offset — active rows carry the

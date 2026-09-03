@@ -1,0 +1,9 @@
+{
+  "state": "paused",
+  "model_name": "gemini-3.7-flash",
+  "next_wake_at": "0001-01-01T00:00:00Z",
+  "turn_in_flight": true,
+  "paused_since": "2026-09-03T14:21:07.481332Z",
+  "pause_reason": "operator interrupt",
+  "interrupted": true
+}

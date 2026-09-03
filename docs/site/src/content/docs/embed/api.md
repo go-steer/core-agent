@@ -122,12 +122,13 @@ agent.WithToolsets(ts []tool.Toolset)  // register groups (MCP, skills, ...)
 agent.WithUsageTracker(t)              // share a usage.Tracker so /stats sees per-turn cost (v2.0+)
 agent.WithCompactor(c Compactor)       // automatic context-window compaction (v2.0+)
 agent.WithCheckpointer(c Checkpointer) // task-boundary checkpoints + mark_task_done tool (v2.0+)
+agent.WithoutMarkTaskDoneTool()        // keep checkpointing, withhold the model's trigger (v2.9+)
 agent.WithPostConstruct(f)             // late-binding callback for tools that need the *Agent (v2.0+)
 ```
 
 Options are applied in the order they're passed. Tools and toolsets accumulate across multiple calls.
 
-`WithCompactor`, `WithCheckpointer`, and the `tools/agentic` wrapper family are documented in detail under [Context management](/concepts/context-management/). `WithPostConstruct` is the late-binding hook external tools use when their handler needs to call back into the constructed agent — same pattern the in-tree `mark_task_done` tool uses, exposed publicly so consumers can build similar agent-aware tools without forking the agent package.
+`WithCompactor`, `WithCheckpointer`, and the `tools/agentic` wrapper family are documented in detail under [Context management](/concepts/context-management/). `WithoutMarkTaskDoneTool` pairs with `WithCheckpointer` for long-lived services: `Agent.Checkpoint` and the heuristic keep working while the model-facing tool is not registered, so the model cannot declare its own task boundary. It is a no-op without a checkpointer, and it does not touch the unrelated `mark_task_done` alias that `pkg/agent/background` wires onto subagents. `WithPostConstruct` is the late-binding hook external tools use when their handler needs to call back into the constructed agent — same pattern the in-tree `mark_task_done` tool uses, exposed publicly so consumers can build similar agent-aware tools without forking the agent package.
 
 ### System prompt layers (v2.8)
 

@@ -1403,7 +1403,7 @@ func (b *coreUsageBridge) SessionDuration() time.Duration { return b.inner.Durat
 // /subagent, /compact, and /done to the palette + /help. The
 // context-management commands (/compact, /done) are gated on
 // whether their respective machinery was wired — relaunching with
-// --no-compact / --no-checkpoint removes them from /help and the
+// --no-compact / --checkpoint=off removes them from /help and the
 // palette so operators don't see commands that would only error
 // out. Same gate the InvokeSlash handlers below use; the gate is
 // surface-level only, the agent's HasCompactor / HasCheckpointer
@@ -1517,7 +1517,7 @@ func (a *coreAgentAdapter) InvokeSlash(ctx context.Context, name, args string) (
 		switch {
 		case errors.Is(err, agent.ErrNoCheckpointer):
 			return coretui.SlashResult{
-				SystemMessage: "/done unavailable: this agent was constructed without WithCheckpointer. Relaunch without --no-checkpoint, or wire agent.WithCheckpointer(agent.NewDefaultCheckpointer()) on the agent.",
+				SystemMessage: "/done unavailable: this agent was constructed without WithCheckpointer. Relaunch with --checkpoint=operator (keeps /done, withholds the model's mark_task_done tool) or --checkpoint=model, or wire agent.WithCheckpointer(agent.NewDefaultCheckpointer()) on the agent.",
 			}, nil
 		case err != nil:
 			return coretui.SlashResult{

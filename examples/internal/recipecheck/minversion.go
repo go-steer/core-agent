@@ -228,6 +228,14 @@ var GatedFeatures = []GatedFeature{
 		Why:  "plan_mode selects whether `record_plan` is registered at all; an older daemon ignores the setting",
 	},
 	{
+		Path: "checkpoint.mode",
+		Min:  "2.9.0-dev.5",
+		Why: "which parties may declare a task boundary (#905). `operator` withholds the " +
+			"`mark_task_done` tool while keeping /done and the heuristic; an older daemon drops " +
+			"the block and registers the tool anyway, so a recipe that took the model's trigger " +
+			"away still has a model that can end its own task",
+	},
+	{
 		Path: "safety.watchdog",
 		Min:  "2.9.0-dev.1",
 		Why:  "the runaway-loop watchdog's enforce/warn selection (#623); an older daemon runs without the backstop the config asked for",

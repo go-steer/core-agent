@@ -63,6 +63,7 @@ attach.tls_cert
 attach.tls_key
 attach.token_env
 attach.unix_socket
+checkpoint.mode
 compaction.threshold
 compaction.threshold_by_tier
 content_roots

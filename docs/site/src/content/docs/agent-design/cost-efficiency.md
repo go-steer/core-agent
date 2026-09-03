@@ -102,7 +102,9 @@ All three were cost-instrumented in v2.0 ([fix #61](https://github.com/go-steer/
 
 ### Disable when they wouldn't fire
 
-For short headless one-shots (`core-agent -p "..."`) compaction and checkpoints would never fire — the session ends before either threshold is crossed. The flags `--no-compact` and `--no-checkpoint` skip the wiring entirely; saves a few KB of context budget that's otherwise spent on the auto-wired `mark_task_done` tool description.
+For short headless one-shots (`core-agent -p "..."`) compaction and checkpoints would never fire — the session ends before either threshold is crossed. The flags `--no-compact` and `--checkpoint=off` skip the wiring entirely; saves a few KB of context budget that's otherwise spent on the auto-wired `mark_task_done` tool description.
+
+Long-lived daemons want `--checkpoint=operator` instead: it drops the same tool description from every turn's prompt but keeps `/done` and the runtime heuristic, and it stops the model reaching for a completion report where an answer belonged. See [Context management → Choosing who declares a boundary](/concepts/context-management/).
 
 ### MCP digest wrap
 

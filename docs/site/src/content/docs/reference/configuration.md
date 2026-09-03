@@ -650,6 +650,22 @@ Overrides for the automatic context-window compaction trigger. See [Context mana
 
 ---
 
+## `checkpoint` (v2.9+)
+
+Which parties may declare a task boundary. Distinct from `compaction`: compaction fires on context-window utilization with no model involvement, so turning checkpointing off does **not** turn off context reduction. See [Context management → Choosing who declares a boundary](/concepts/context-management/).
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `mode` | string | `"model"` | `model` registers the model-facing `mark_task_done` tool alongside the operator's `/done` and the post-turn heuristic. `operator` keeps `/done` and the heuristic but withholds `mark_task_done`, so the model cannot self-declare completion — the posture for a long-lived service, where `mark_task_done`'s completion-report framing produced sixteen calls in one session and answers that restated closed work. `off` disables checkpointing entirely; `/done` then reports no checkpointer. CLI: `--checkpoint` (overrides this field). The older `--no-checkpoint` is a deprecated alias for `off`. |
+
+Set it here rather than on the command line so a recipe ships its posture with its content, instead of relying on every invocation and deploy manifest remembering a flag — same argument as `safety.watchdog`.
+
+```json
+{ "checkpoint": { "mode": "operator" } }
+```
+
+---
+
 ## `ui`
 
 Presentation choices for the in-process TUI (`core-agent`). Both `/theme` and `/mouse` write back here when used, so a choice made at the keyboard survives the next launch; either field can equally be set by hand.
@@ -1293,7 +1309,7 @@ A handful of features are CLI-flag-only, with no `config.json` field today (cons
 | `--no-tui` | [Getting started → Multi-turn TUI](/run/getting-started/) — skip the Bubble Tea TUI even on a TTY (slim build / scripts / unusual terminals) |
 | `--log-file=PATH` | Mirror daemon stderr diagnostics to `PATH` in addition to the terminal. Empty or `-` keeps today's stderr-only behavior. Recommended: `/tmp/core-agent.log` so startup errors (MCP init, model resolution, watchdog notices) survive the TUI's screen takeover. Opened in append mode with `0600` perms. |
 | `--no-compact` | [Context management → Compaction](/concepts/context-management/) — disable automatic compaction (`/compact` slash still works) |
-| `--no-checkpoint` | [Context management → Task-boundary checkpoints](/concepts/context-management/) — disable `/done` slash + `mark_task_done` tool |
+| `--no-checkpoint` | Deprecated alias for `--checkpoint=off` (which **is** config-backed — see [`checkpoint`](#checkpoint-v29) above). Removes `/done` and the heuristic as well as `mark_task_done`, broader than its original description implied |
 | `--agentic-tools` | [Context management → Agentic tool wrappers](/concepts/context-management/) — register the `agentic_*` tool family |
 | `--agentic-small-model=ID` | [Context management → Agentic tool wrappers](/concepts/context-management/) — route agentic subtasks to a cheaper model |
 

@@ -139,21 +139,21 @@ func TestReproduceAgent_WiresCompactorAndCheckpointer(t *testing.T) {
 	}
 }
 
-// TestReproduceAgent_HonorsDisableFlags asserts that the
-// NoCompact / NoCheckpoint fields on SessionFactoryDeps (fed from
-// the --no-compact / --no-checkpoint CLI flags) suppress the
-// corresponding option, so the disable flags apply uniformly to
-// per-session agents and not just the main-loop agent.
+// TestReproduceAgent_HonorsDisableFlags asserts that the NoCompact
+// field and CheckpointMode=off on SessionFactoryDeps (fed from the
+// --no-compact / --checkpoint CLI flags) suppress the corresponding
+// option, so the disable flags apply uniformly to per-session agents
+// and not just the main-loop agent.
 func TestReproduceAgent_HonorsDisableFlags(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
 	deps := SessionFactoryDeps{
-		DaemonCtx:    ctx,
-		Model:        stubLLM{},
-		Template:     permissions.New(permissions.Options{}),
-		NoCompact:    true,
-		NoCheckpoint: true,
+		DaemonCtx:      ctx,
+		Model:          stubLLM{},
+		Template:       permissions.New(permissions.Options{}),
+		NoCompact:      true,
+		CheckpointMode: config.CheckpointModeOff,
 	}
 
 	ag, cancelAg, err := ReproduceAgent(deps, auth.Anonymous, "sid-disabled", "created")
@@ -166,7 +166,41 @@ func TestReproduceAgent_HonorsDisableFlags(t *testing.T) {
 		t.Errorf("HasCompactor() = true with NoCompact=true, want false")
 	}
 	if ag.Agent().HasCheckpointer() {
-		t.Errorf("HasCheckpointer() = true with NoCheckpoint=true, want false")
+		t.Errorf("HasCheckpointer() = true with CheckpointMode=off, want false")
+	}
+}
+
+// TestReproduceAgent_CheckpointModeOperator is the #905 wiring guard
+// for the surface that matters most: a multi-session daemon's POST
+// /sessions agents. "operator" has to keep the checkpointer (so /done
+// and Agent.Checkpoint still work) while withholding mark_task_done —
+// wiring it as plain on/off on this path would hand the model its
+// trigger back on exactly the long-lived deployment the mode exists
+// for.
+func TestReproduceAgent_CheckpointModeOperator(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	deps := SessionFactoryDeps{
+		DaemonCtx:      ctx,
+		Model:          stubLLM{},
+		Template:       permissions.New(permissions.Options{}),
+		CheckpointMode: config.CheckpointModeOperator,
+	}
+
+	ag, cancelAg, err := ReproduceAgent(deps, auth.Anonymous, "sid-operator", "created")
+	if err != nil {
+		t.Fatalf("ReproduceAgent: %v", err)
+	}
+	t.Cleanup(cancelAg)
+
+	if !ag.Agent().HasCheckpointer() {
+		t.Errorf("HasCheckpointer() = false with CheckpointMode=operator, want true (/done must survive)")
+	}
+	for _, tl := range ag.Agent().Tools() {
+		if tl.Name() == "mark_task_done" {
+			t.Errorf("mark_task_done is registered with CheckpointMode=operator; want it withheld")
+		}
 	}
 }
 

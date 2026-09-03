@@ -334,10 +334,18 @@ func TestAutonomousHandle_StopUnblocksPause(t *testing.T) {
 func TestAutonomousHandle_InjectReachesNextTurn(t *testing.T) {
 	t.Parallel()
 	// Record the prompt of every LLM call so we can assert the
-	// inbox block lands on the post-inject turn. Turn 1 sleeps
-	// briefly so the test goroutine has a clean window to call
-	// Inject after the agent is constructed but before turn 2's
-	// pre-turn drain runs.
+	// inbox block lands on the post-inject turn.
+	//
+	// The ordering this test asserts — inject lands BEFORE turn 2's
+	// pre-turn drain — is made a fact by handshake, not raced for
+	// (#916). Turn 1 announces it has started and then blocks until the
+	// test has injected, so turn 2 cannot begin until the message is
+	// queued. The previous shape slept 50ms into a 200ms stub delay and
+	// retried Inject for 2s, which guaranteed the inject SUCCEEDED but
+	// not that it beat the drain: under whole-suite load turn 1 could
+	// finish first, and an inject arriving mid-turn-2 is correctly
+	// deferred to turn 3 (#878/#879). The test then failed on correct
+	// behaviour.
 	var prompts []string
 	var promptsMu sync.Mutex
 	recordPrompt := func(req *adkmodel.LLMRequest) {
@@ -345,15 +353,26 @@ func TestAutonomousHandle_InjectReachesNextTurn(t *testing.T) {
 		prompts = append(prompts, lastUserPrompt(req))
 		promptsMu.Unlock()
 	}
+	turn1Started := make(chan struct{}, 1)
+	turn1Release := make(chan struct{})
 	llm := &stubLLM{scenarios: []scenarioFn{
-		// Turn 1: record + small delay so the test can Inject
-		// between turns 1 and 2.
-		func(_ context.Context, req *adkmodel.LLMRequest) []stubResp {
+		// Turn 1: record, hand the test its window, and hold the turn
+		// open until the inject is queued. Same started/release seam as
+		// gatedTextTurn above, spelled out inline because this one also
+		// has to see the request to record its prompt.
+		func(ctx context.Context, req *adkmodel.LLMRequest) []stubResp {
 			recordPrompt(req)
+			select {
+			case turn1Started <- struct{}{}:
+			default:
+			}
+			select {
+			case <-turn1Release:
+			case <-ctx.Done():
+			}
 			content := &genai.Content{Role: genai.RoleModel, Parts: []*genai.Part{{Text: "t1"}}}
 			return []stubResp{
-				{delay: 200 * time.Millisecond,
-					resp: &adkmodel.LLMResponse{Content: content, FinishReason: genai.FinishReasonStop, TurnComplete: true}},
+				{resp: &adkmodel.LLMResponse{Content: content, FinishReason: genai.FinishReasonStop, TurnComplete: true}},
 			}
 		},
 		// Turn 2: record + signal done.
@@ -372,15 +391,21 @@ func TestAutonomousHandle_InjectReachesNextTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	// Inject during turn 1's delay so the message is queued in
-	// time for turn 2's pre-turn drain.
-	time.Sleep(50 * time.Millisecond) // let turn 1 start
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if err := h.Inject("priority changed!"); err == nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	// Turn 1 is provably in flight and cannot return until we release
+	// it, so the agent is constructed (Inject's only failure mode is a
+	// nil agent, handle.go:319) and turn 2's pre-turn drain has not run
+	// yet. No retry loop and no sleep: both were standing in for this
+	// handshake. Release before asserting, so a failed Inject unblocks
+	// the run rather than parking it until the stub's context dies.
+	select {
+	case <-turn1Started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("turn 1 never started")
+	}
+	injectErr := h.Inject("priority changed!")
+	close(turn1Release)
+	if injectErr != nil {
+		t.Fatalf("Inject: %v", injectErr)
 	}
 	res, err := h.Wait()
 	if err != nil {

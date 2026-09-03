@@ -34,7 +34,7 @@ A single 0.85 threshold worked for frontier-tier models (Opus, Pro) but fired fa
 
 | Tier | Default trigger | Examples |
 |---|---|---|
-| `frontier` | `0.85` (unchanged) | `claude-opus-4-*`, `gemini-3.x-pro`, `gemini-3.7-flash`, `gemini-3.6-flash` |
+| `frontier` | `0.85` (unchanged) | `claude-opus-4-*`, `gemini-3.x-pro`, `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash` |
 | `mid` | `0.65` | `claude-sonnet-4-*`, `gemini-3.5-flash`, `gemini-2.5-pro` |
 | `small` | `0.35` | `claude-haiku-4-*`, `gemini-3.5-flash-lite`, `gemini-3.1-flash`, `gemini-2.5-flash` |
 

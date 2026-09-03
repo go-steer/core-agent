@@ -52,6 +52,8 @@ func TestClassify(t *testing.T) {
 		// agentic-strong.
 		{"gemini-3.1-pro-preview-customtools", modeltier.TierFrontier},
 		{"gemini-3-pro-preview", modeltier.TierFrontier},
+		{"gemini-3.8-flash", modeltier.TierFrontier},         // priced, not yet the default (#936)
+		{"gemini-3.8-flash-09-2026", modeltier.TierFrontier}, // dated snapshot
 		{"gemini-3.7-flash", modeltier.TierFrontier},         // taskclass frontier default
 		{"gemini-3.7-flash-08-2026", modeltier.TierFrontier}, // dated snapshot
 		{"gemini-3.6-flash", modeltier.TierFrontier},         // previous frontier default
@@ -68,6 +70,7 @@ func TestClassify(t *testing.T) {
 		{"gemini-3.1-flash-lite", modeltier.TierSmall},
 		{"gemini-3.6-flash-lite", modeltier.TierSmall}, // future lite of the frontier base
 		{"gemini-3.7-flash-lite", modeltier.TierSmall}, // ditto for the 3.7 base
+		{"gemini-3.8-flash-lite", modeltier.TierSmall}, // and for the 3.8 base
 
 		// Gemini 2.x.
 		{"gemini-2.5-pro", modeltier.TierMid},

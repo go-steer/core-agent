@@ -252,12 +252,17 @@ func ModelForTier(provider, tier string) string {
 	case "gemini", "vertex":
 		switch tier {
 		case TierFrontier:
-			// gemini-3.7-flash: the current top of the flash-first
-			// agentic line, and cheaper than the 3.6-flash it replaces
-			// ($0.75/$3.75 vs $1.50/$7.50 per MTok) on the same 1M
-			// window. The table used to say gemini-3.5-pro — a model
-			// id that never shipped (3.5 went flash-first); caught by
-			// mast's first live-credential run (#530).
+			// gemini-3.7-flash, and cheaper than the 3.6-flash it
+			// replaced ($0.75/$3.75 vs $1.50/$7.50 per MTok) on the
+			// same 1M window. The table used to say gemini-3.5-pro —
+			// a model id that never shipped (3.5 went flash-first);
+			// caught by mast's first live-credential run (#530).
+			//
+			// NOT the top of the flash line any more: gemini-3.8-flash
+			// is priced, at identical rates on the same window, and is
+			// held off this slot by a deferredPromotions entry in
+			// latest_in_line_test.go pending a live UAT (#936). Read
+			// that entry before bumping this line.
 			return "gemini-3.7-flash"
 		case TierMid:
 			// gemini-3.5-flash, not the older 2.5-pro: mid-tier

@@ -252,7 +252,16 @@ func (ad *Adapter) AttachUsage() attach.UsageInfo {
 	perModelUncachedRef := make(map[string]float64, len(byModel))
 	for i, t := range turns {
 		p := usage.PriceFor(t.Model, nil)
-		uncachedRef := p.CostUSD(t.InputTokens, t.OutputTokens)
+		// Thoughts go in the output argument, because the reference is
+		// the same turn with the cache turned off and not a cheaper turn:
+		// CostUSDForTurn bills them at the output rate (#927), so leaving
+		// them out here makes cost_usd exceed its own uncached reference
+		// on a thinking turn. The documented savings percentage is
+		// 1 - cost_usd / cost_usd_uncached_reference, which then reads as
+		// a negative saving on a session that used no cache at all, and
+		// the renderer's ref > cost guard hides the line entirely on one
+		// that did.
+		uncachedRef := p.CostUSD(t.InputTokens, t.OutputTokens+t.ThoughtsTokens)
 		perTurn = append(perTurn, turnToAttach(i+1, t, uncachedRef))
 		overallUncachedRef += uncachedRef
 		perModelUncachedRef[t.Model] += uncachedRef

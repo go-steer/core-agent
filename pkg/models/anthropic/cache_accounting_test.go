@@ -247,3 +247,31 @@ func TestCacheCreationMetadata_Shape(t *testing.T) {
 			m[usage.CacheCreationTokensMetadataKey])
 	}
 }
+
+// The thoughts bucket is a Gemini/Vertex concept and the Anthropic
+// adapter must never populate it. Anthropic bills thinking INSIDE
+// Usage.OutputTokens, which usageMetadata maps to
+// CandidatesTokenCount; pkg/usage now bills ThoughtsTokenCount at the
+// output rate on top of that (#927), so setting both would charge every
+// Claude thinking turn for its reasoning twice.
+//
+// Pinned here rather than in pkg/usage because that is where the
+// mistake would be made: a later change mapping an Anthropic thinking
+// split into ThoughtsTokenCount without also subtracting it from
+// candidates is a plausible improvement that looks right in isolation.
+// The output-tokens assertion is half the test — the invariant is not
+// "thoughts is zero" but "thinking is inside candidates and nowhere
+// else".
+func TestUsageMetadata_NeverReportsAThoughtsBucket(t *testing.T) {
+	t.Parallel()
+	// output_tokens on a thinking turn: text plus the thinking blocks,
+	// as Anthropic bills it.
+	got := usageMetadata(sdk.Usage{InputTokens: 1_000, OutputTokens: 3_000})
+	if got.ThoughtsTokenCount != 0 {
+		t.Errorf("ThoughtsTokenCount = %d, want 0: Anthropic's thinking is already inside output_tokens, so a non-zero bucket bills it twice",
+			got.ThoughtsTokenCount)
+	}
+	if got.CandidatesTokenCount != 3_000 {
+		t.Errorf("CandidatesTokenCount = %d, want 3000 (the whole of output_tokens)", got.CandidatesTokenCount)
+	}
+}

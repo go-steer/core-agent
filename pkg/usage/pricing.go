@@ -208,11 +208,37 @@ func (p Pricing) CostUSDWithCache(uncachedInputTokens, cachedInputTokens, output
 // AppendUsage and the tracker-less fallbacks in pkg/agent all route
 // through it so a cache-warming turn can't be priced two different
 // ways depending on which call site saw it.
+//
+// ThoughtsTokens is billed at the output rate, on top of OutputTokens.
+// Gemini reports thoughts as a bucket ADDITIVE to candidates rather
+// than a subset of it — live metadata reads promptTokenCount 12455 +
+// candidatesTokenCount 85 + thoughtsTokenCount 570 = totalTokenCount
+// 13110 — and Google charges for them as output. Tracked since the
+// first tap but never priced, which is not a rounding error on a
+// thinking model: a measured agentic turn spent 6,449 thought tokens
+// against 1,180 candidate tokens, so 85% of the billable output was
+// invisible to the ledger, to /usage, and to the --max-session-cost-usd
+// ceiling that reads it.
+//
+// Adding the bucket unconditionally is provider-safe rather than an
+// Anthropic double-count: Anthropic bills thinking inside
+// Usage.OutputTokens, and pkg/models/anthropic's usageMetadata maps
+// that field to CandidatesTokenCount and never populates
+// ThoughtsTokenCount — so on that path this term is zero and the turn
+// prices exactly as it did before. Only providers that report thoughts
+// out of band (Gemini/Vertex, via ThoughtsTokenCount) move.
+//
+// A negative count cannot subtract from the bill, because Clamped
+// floors the three top-line buckets. That belongs there rather than
+// here: pricing was never the only reader of these numbers, and a
+// thoughts term guarded locally would have kept the negative out of the
+// invoice while leaving it in Totals and in the monotonic OTel counter.
 func (p Pricing) CostUSDForTurn(u TurnUsage) float64 {
 	c := u.Clamped()
 	return p.CostUSDWithCacheTTLs(
 		c.UncachedInputTokens(), c.CachedInputTokens,
-		c.CacheCreationInputTokens, c.CacheCreation1hInputTokens, c.OutputTokens)
+		c.CacheCreationInputTokens, c.CacheCreation1hInputTokens,
+		c.OutputTokens+c.ThoughtsTokens)
 }
 
 // CostUSDWithCacheWrites is CostUSDWithCache plus the cache-write

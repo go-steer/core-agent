@@ -766,3 +766,61 @@ func TestAttachTools_ClassifiesSubagentSource(t *testing.T) {
 		t.Errorf("cluster tool source = %q, want %q", clusterSource, attach.ToolSourceSubagent)
 	}
 }
+
+// TestAttachUsage_TheUncachedReferenceCountsThinkingToo. The reference
+// is the SAME turn with the cache switched off, not a cheaper turn.
+// Once thoughts are billed at the output rate (#927) a reference that
+// omits them can land BELOW the actual cost, which inverts the
+// documented savings percentage (1 - cost / reference) into a negative
+// "saving" on a session that used no cache at all — and, on one that
+// did, silently hides the savings line, because the renderer only
+// prints it when reference > cost.
+func TestAttachUsage_TheUncachedReferenceCountsThinkingToo(t *testing.T) {
+	t.Parallel()
+	tr := usage.NewTracker()
+	p := usage.PriceFor("gemini-3.5-flash", nil)
+	if p.IsZero() {
+		t.Skip("gemini-3.5-flash carries no builtin rate")
+	}
+	// A thinking turn with no cache activity whatsoever: reference and
+	// actual must come out identical, because there is nothing to save.
+	tr.AppendUsage("gemini-3.5-flash", usage.TurnUsage{
+		InputTokens:    100_000,
+		OutputTokens:   1_180,
+		ThoughtsTokens: 6_449,
+	}, p)
+
+	info := New(newEchoAgent(t, agent.WithUsageTracker(tr))).AttachUsage()
+	if math.Abs(info.Overall.CostUSDUncachedReference-info.Overall.CostUSD) > 1e-9 {
+		t.Errorf("reference %v != cost %v on a turn that used no cache; the savings percentage reads %.1f%%",
+			info.Overall.CostUSDUncachedReference, info.Overall.CostUSD,
+			100*(1-info.Overall.CostUSD/info.Overall.CostUSDUncachedReference))
+	}
+	if info.Overall.CostUSDUncachedReference < info.Overall.CostUSD {
+		t.Errorf("reference %v is BELOW cost %v: the reference is the same turn uncached, so it can never be cheaper",
+			info.Overall.CostUSDUncachedReference, info.Overall.CostUSD)
+	}
+}
+
+// The same field on a turn that DID read cache: the reference has to
+// stay above cost, so the savings line renders at all.
+func TestAttachUsage_AThinkingCachedTurnStillShowsASaving(t *testing.T) {
+	t.Parallel()
+	tr := usage.NewTracker()
+	p := usage.PriceFor("gemini-3.5-flash", nil)
+	if p.IsZero() {
+		t.Skip("gemini-3.5-flash carries no builtin rate")
+	}
+	tr.AppendUsage("gemini-3.5-flash", usage.TurnUsage{
+		InputTokens:       100_000,
+		CachedInputTokens: 90_000,
+		OutputTokens:      1_180,
+		ThoughtsTokens:    6_449,
+	}, p)
+
+	info := New(newEchoAgent(t, agent.WithUsageTracker(tr))).AttachUsage()
+	if info.Overall.CostUSDUncachedReference <= info.Overall.CostUSD {
+		t.Errorf("reference %v <= cost %v; a 90%%-cached turn's saving would not render",
+			info.Overall.CostUSDUncachedReference, info.Overall.CostUSD)
+	}
+}

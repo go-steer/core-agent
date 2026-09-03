@@ -601,3 +601,43 @@ func TestRunSubtask_DoesNotSeeSiblingHistory(t *testing.T) {
 		t.Errorf("second subtask's own user message missing from request: %q", combined)
 	}
 }
+
+// TestRunSubtask_ReturnsTheThoughtsBucket is #927's link in the same
+// chain the two tests above walk. A digest subtask on a small-tier
+// thinking model can spend more on reasoning than on its answer, and
+// SubtaskResult is what the MCP digest sidecar is built from — so a
+// result that reports only candidates hands the paying session a bill
+// for the visible fraction of the turn. Thoughts are ADDITIVE to
+// output, so unlike the cache buckets they must NOT be a subset of it.
+func TestRunSubtask_ReturnsTheThoughtsBucket(t *testing.T) {
+	t.Parallel()
+	llm := &captureLLM{
+		response:       "ok",
+		inputTokens:    int32(4_000),
+		outputTokens:   int32(120),
+		thoughtsTokens: int32(5_000),
+	}
+	a, err := New(llm, WithUsageTracker(usage.NewTracker()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := a.RunSubtask(context.Background(), SubtaskSpec{
+		Name:         "thoughts_bucket_check",
+		SystemPrompt: "x",
+		UserMessage:  "y",
+	})
+	if err != nil {
+		t.Fatalf("RunSubtask: %v", err)
+	}
+
+	if res.ThoughtsTokens != 5_000 {
+		t.Errorf("ThoughtsTokens = %d, want 5000", res.ThoughtsTokens)
+	}
+	if res.OutputTokens != 120 {
+		t.Errorf("OutputTokens = %d, want 120 — thoughts are additive, not folded in", res.OutputTokens)
+	}
+	if res.InputTokens != 4_000 {
+		t.Errorf("InputTokens = %d, want 4000", res.InputTokens)
+	}
+}

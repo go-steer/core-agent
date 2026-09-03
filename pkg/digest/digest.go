@@ -143,6 +143,13 @@ type Savings struct {
 	// SubagentCacheCreationInputTokens, billed at 2x base input rather
 	// than 1.25x (#770). Zero unless the operator selected that TTL.
 	SubagentCacheCreation1hInputTokens int
+
+	// SubagentThoughtsTokens is the reasoning bucket, reported ADDITIVE
+	// to SubagentOutputTokens and billed at the output rate (#927).
+	// Carried for the same reason as the cache buckets: this struct is
+	// the input to a cost function, and on a thinking model the
+	// reasoning is frequently the larger half of the output bill.
+	SubagentThoughtsTokens int
 }
 
 // estimateTokens returns a cheap token count from a byte length

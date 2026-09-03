@@ -317,9 +317,12 @@ func TestTracker_AppendUsage_CachedFields(t *testing.T) {
 	if tot.ThoughtsTokens != 10_000 || tot.ToolUseTokens != 5_000 {
 		t.Errorf("thoughts/tool-use rollup wrong: %+v", tot)
 	}
-	// Warm turn: 800k uncached * 1.25 + 200k cached * 0.3125 + 50k * 5 = 1.3125
+	// Warm turn: 800k uncached * 1.25 + 200k cached * 0.3125 + (50k
+	// output + 10k thinking) * 5 = 1.3625. Thinking bills at the output
+	// rate — see CostUSDForTurn — so it is inside this figure even
+	// though the rollup above keeps it in its own bucket.
 	// Cold turn: 500k * 1.25 + 20k * 5 = 0.725
-	wantCost := (0.8*1.25 + 0.2*0.3125 + 0.05*5.00) + (0.5*1.25 + 0.02*5.00)
+	wantCost := (0.8*1.25 + 0.2*0.3125 + 0.06*5.00) + (0.5*1.25 + 0.02*5.00)
 	if math.Abs(tot.CostUSD-wantCost) > 1e-9 {
 		t.Errorf("CostUSD = %f, want %f", tot.CostUSD, wantCost)
 	}

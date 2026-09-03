@@ -205,6 +205,51 @@ func TestOnEvent_FunctionResponseFiresToolEnd(t *testing.T) {
 	}
 }
 
+func TestOnEvent_StreamedToolCallFiresToolStartOnce(t *testing.T) {
+	d, rec := newDispatcher(t, allEventsCfg())
+	// ADK's streaming aggregator hands the same model call to OnEvent
+	// twice: once on the chunk (Partial), once on the aggregate. When
+	// the model streams a call's arguments incrementally the aggregate
+	// is rebuilt rather than forwarded, so the chunk carries no args
+	// at all. Firing on both runs an operator's tool-start hook twice
+	// per call — and the first run's tool_input is empty, so a hook
+	// that gates on arguments sees a call it cannot recognise (#926).
+	call := func(args map[string]any, partial bool) *session.Event {
+		return &session.Event{LLMResponse: adkmodel.LLMResponse{
+			Content: &genai.Content{Parts: []*genai.Part{{
+				FunctionCall: &genai.FunctionCall{Name: "read_file", Args: args},
+			}}},
+			Partial: partial,
+		}}
+	}
+	d.OnEvent(call(nil, true)) // aggregator chunk: args not yet accumulated
+	d.OnEvent(call(map[string]any{"path": "/tmp/x"}, false))
+	if got := rec.events(); len(got) != 1 || got[0] != "tool-start" {
+		t.Fatalf("events = %v, want a single tool-start", got)
+	}
+	input, ok := rec.entries[0].envelope["tool_input"].(map[string]any)
+	if !ok || input["path"] != "/tmp/x" {
+		t.Errorf("tool_input = %v, want the aggregate's {path: /tmp/x}", rec.entries[0].envelope["tool_input"])
+	}
+}
+
+func TestOnEvent_PartialFunctionResponseIsSilent(t *testing.T) {
+	d, rec := newDispatcher(t, allEventsCfg())
+	// Tool results ride non-partial events today (handleFunctionCalls
+	// emits them directly, not through the aggregator). Guard the arm
+	// symmetrically anyway so a future ADK change can't re-introduce
+	// the doubling on the tool-end side alone.
+	d.OnEvent(&session.Event{LLMResponse: adkmodel.LLMResponse{
+		Content: &genai.Content{Parts: []*genai.Part{{
+			FunctionResponse: &genai.FunctionResponse{Name: "read_file"},
+		}}},
+		Partial: true,
+	}})
+	if got := rec.events(); len(got) != 0 {
+		t.Fatalf("events = %v, want none for a partial tool result", got)
+	}
+}
+
 func TestOnEvent_ModelStartFiresOncePerWindow(t *testing.T) {
 	d, rec := newDispatcher(t, allEventsCfg())
 	textEv := func(s string) *session.Event {

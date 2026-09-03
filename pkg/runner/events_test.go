@@ -166,14 +166,16 @@ func partialToolCall(name string, args map[string]any) *session.Event {
 	return ev
 }
 
-func TestWriteEvents_DedupsRepeatedFunctionCall(t *testing.T) {
+func TestWriteEvents_StreamedCallRendersOnce(t *testing.T) {
 	t.Parallel()
 	// Regression for the visual duplicate the GKE MCP smoke surfaced
 	// (dev/smoke/07-mcp-google-oauth.sh): the eventlog showed exactly
 	// one FunctionCall persisted but stdout printed two `→` lines.
-	// Root cause was ADK's streaming aggregator yielding the same
-	// FunctionCall on both a Partial and a non-Partial event; the
-	// renderer rendered both. After the dedup it renders one.
+	// Root cause is ADK's streaming aggregator yielding the same call
+	// on both a Partial and a non-Partial event. The renderer takes
+	// the aggregate and skips the chunk (#926); it used to key on the
+	// formatted line instead, which also suppressed genuine repeats
+	// (see TestWriteEvents_RepeatedIdenticalCallRendersEachTime).
 	var out, info bytes.Buffer
 	args := map[string]any{"parent": "projects/x/locations/-"}
 	err := WriteEvents(eventSeq([]*session.Event{
@@ -193,12 +195,42 @@ func TestWriteEvents_DedupsRepeatedFunctionCall(t *testing.T) {
 	}
 }
 
+func TestWriteEvents_RepeatedIdenticalCallRendersEachTime(t *testing.T) {
+	t.Parallel()
+	// The same tool, the same args, five times in a row is what a
+	// runaway loop looks like — and the point of watching the stream
+	// is seeing it happen. The old formatted-line dedup collapsed all
+	// five into one `→` line, so the operator saw a single call and a
+	// long silence. A content key cannot tell "the same part twice"
+	// from "the same call twice"; the Partial flag can, which is the
+	// distinction #915 turned on.
+	var out, info bytes.Buffer
+	args := map[string]any{"q": "same"}
+	var evs []*session.Event
+	for range 5 {
+		evs = append(evs,
+			partialToolCall("probe", args),
+			toolCall("probe", args),
+			toolResult("probe", map[string]any{"output": "{}"}),
+		)
+	}
+	if err := WriteEvents(eventSeq(evs, nil), &out, &info); err != nil {
+		t.Fatalf("WriteEvents: %v", err)
+	}
+	got := info.String()
+	if n := strings.Count(got, "→ probe("); n != 5 {
+		t.Errorf("expected five `→ probe(` lines for five identical calls, got %d:\n%s", n, got)
+	}
+	if n := strings.Count(got, "← probe("); n != 5 {
+		t.Errorf("expected five `← probe(` lines for five identical results, got %d:\n%s", n, got)
+	}
+}
+
 func TestWriteEvents_DifferentArgsBothRender(t *testing.T) {
 	t.Parallel()
-	// Dedup must NOT swallow a legitimate second call that happens
-	// to share a name but has different args (e.g. two read_file
-	// calls in one parallel batch). Same name + different formatted
-	// line text = different `seen` keys = both render.
+	// Two calls to the same tool with different args (e.g. two
+	// read_file calls in one parallel batch) each render, and each
+	// renders its own arg values.
 	var out, info bytes.Buffer
 	err := WriteEvents(eventSeq([]*session.Event{
 		toolCall("read_file", map[string]any{"path": "a.go"}),
@@ -216,22 +248,31 @@ func TestWriteEvents_DifferentArgsBothRender(t *testing.T) {
 	}
 }
 
-func TestWriteEvents_DedupIsPerInvocation(t *testing.T) {
+func TestWriteEvents_GroundingDedupIsPerInvocation(t *testing.T) {
 	t.Parallel()
-	// The seen set is per-WriteEvents invocation (per-turn in the
-	// REPL). Two separate WriteEvents calls with the same line must
-	// each render — otherwise a tool called identically across
-	// consecutive turns would silently vanish from the second turn.
-	var info1, info2 bytes.Buffer
-	var out bytes.Buffer
-	args := map[string]any{"k": "v"}
-	_ = WriteEvents(eventSeq([]*session.Event{toolCall("t", args)}, nil), &out, &info1)
-	_ = WriteEvents(eventSeq([]*session.Event{toolCall("t", args)}, nil), &out, &info2)
-	if !strings.Contains(info1.String(), "→ t(") {
-		t.Errorf("turn 1 should render the call: %q", info1.String())
+	// The `seen` set survives only for ↪ lines, and it is scoped to
+	// one WriteEvents invocation (one turn in the REPL). Within a
+	// turn, Vertex re-emitting the same grounding evidence renders
+	// once; across turns the same evidence renders again, because a
+	// second turn that searched the same thing really did search it.
+	var out, info bytes.Buffer
+	err := WriteEvents(eventSeq([]*session.Event{
+		groundedEvent("first", []string{"q"}, nil),
+		groundedEvent("again", []string{"q"}, nil),
+	}, nil), &out, &info)
+	if err != nil {
+		t.Fatalf("WriteEvents: %v", err)
 	}
-	if !strings.Contains(info2.String(), "→ t(") {
-		t.Errorf("turn 2 should also render the same call (per-turn scope): %q", info2.String())
+	if n := strings.Count(info.String(), "↪ google_search: query: q"); n != 1 {
+		t.Errorf("re-emitted grounding should render once within a turn, got %d:\n%s", n, info.String())
+	}
+
+	var info2 bytes.Buffer
+	_ = WriteEvents(eventSeq([]*session.Event{
+		groundedEvent("next turn", []string{"q"}, nil),
+	}, nil), &out, &info2)
+	if !strings.Contains(info2.String(), "↪ google_search: query: q") {
+		t.Errorf("turn 2 should render the same evidence again (per-turn scope): %q", info2.String())
 	}
 }
 

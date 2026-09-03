@@ -259,6 +259,33 @@ func TestAdapter_TranslateEvent_ToolCallAndResult(t *testing.T) {
 	}
 }
 
+func TestAdapter_TranslateEvent_PartialCarriesNoToolTraffic(t *testing.T) {
+	t.Parallel()
+	// A streamed tool call reaches a translator twice — once on the
+	// aggregator's chunk, once on the rebuilt aggregate — under two
+	// different ADK-synthesized IDs when the args stream incrementally,
+	// which defeats core-tui's ID dedup and paints the row twice, the
+	// first time with no args. Text still comes through, because that
+	// is what partials are for (#926). The local path
+	// (internal/coretuievent) has always done this; the two adapters
+	// now state the same rule.
+	ev := &session.Event{LLMResponse: model.LLMResponse{
+		Content: &genai.Content{Parts: []*genai.Part{
+			{FunctionCall: &genai.FunctionCall{ID: "adk-chunk", Name: "read_file"}},
+			{FunctionResponse: &genai.FunctionResponse{ID: "adk-chunk", Name: "read_file"}},
+			{Text: "thinking"},
+		}},
+		Partial: true,
+	}}
+	out := translateEvent(ev)
+	if len(out.ToolCalls) != 0 || len(out.ToolResults) != 0 {
+		t.Errorf("partial event should carry no tool traffic; calls = %+v results = %+v", out.ToolCalls, out.ToolResults)
+	}
+	if out.Text != "thinking" || !out.Partial {
+		t.Errorf("partial text must still stream; text = %q partial = %v", out.Text, out.Partial)
+	}
+}
+
 func TestAdapter_TranslateEvent_UsageFromMetadata(t *testing.T) {
 	t.Parallel()
 	ev := &session.Event{LLMResponse: model.LLMResponse{

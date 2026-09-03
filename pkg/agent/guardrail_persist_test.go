@@ -472,8 +472,8 @@ func TestGuardrailPersist_SurvivesAReopenedDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("agent.New: %v", err)
 	}
-	a.queueGuardrailEvent(attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, "blew the budget"))
-	a.queueGuardrailEvent(attach.NewGuardrailTripEvent(attach.GuardrailWatchdog, "looping"))
+	a.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, "blew the budget"))
+	a.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailWatchdog, "looping"))
 	a.RecordGuardrailReset([]string{attach.GuardrailWatchdog}, 5, "alice@example.com")
 	if err := first.Close(); err != nil {
 		t.Fatalf("close: %v", err)
@@ -536,7 +536,7 @@ func TestRestoreGuardrails_RetriesAfterAFailedRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("agent.New: %v", err)
 	}
-	writer.queueGuardrailEvent(attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, "blew the budget"))
+	writer.queueOutOfBandEvent(attach.NewGuardrailTripEvent(attach.GuardrailCostCeiling, "blew the budget"))
 
 	// The restart, with a first read that cannot succeed: the session
 	// ID it looks for does not exist yet.

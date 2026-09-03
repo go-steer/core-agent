@@ -28,6 +28,7 @@ import (
 	adkmodel "google.golang.org/adk/model"
 	"google.golang.org/adk/session"
 
+	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/models"
 	"github.com/go-steer/core-agent/v2/pkg/modeltier"
 )
@@ -380,42 +381,15 @@ func (a *Agent) runSummarizer(ctx context.Context, spec summarizerSpec) (summari
 	// models.WithoutPromptCache.
 	ctx = models.WithoutPromptCache(ctx)
 
+	// One call, retried once when it comes back with no text and no
+	// terminal explanation. Usage accounting for every attempt lives
+	// inside — see summarizer_empty.go for the classification and for
+	// what the empty-text branch actually means.
 	start := time.Now()
-	var b strings.Builder
-	// Capture usage from the streamed response. The summarizer is a
-	// single LLM call (one TurnComplete), so we just overwrite as
-	// events arrive and commit once after the loop — same shape as
-	// the subtask tracker.Append in subtask.go's Run loop. Without
-	// this, summarizer turns escape /stats accounting (issue #61) and
-	// therefore also escape the --max-turn-cost-usd / --max-session-
-	// cost-usd ceilings from #145.
-	var lastIn, lastOut int
-	var lastMeta *genai.GenerateContentResponseUsageMetadata
-	var lastCustom map[string]any
-	for resp, err := range a.model.GenerateContent(ctx, req, false) {
-		if err != nil {
-			return summarizerOutcome{}, fmt.Errorf("agent: %s: generate: %w", spec.operation, err)
-		}
-		if resp != nil && resp.UsageMetadata != nil {
-			lastIn = int(resp.UsageMetadata.PromptTokenCount)
-			lastOut = int(resp.UsageMetadata.CandidatesTokenCount)
-			lastMeta = resp.UsageMetadata
-			lastCustom = resp.CustomMetadata
-		}
-		if resp == nil || resp.Content == nil || resp.Partial {
-			continue
-		}
-		for _, p := range resp.Content.Parts {
-			if p != nil && p.Text != "" {
-				b.WriteString(p.Text)
-			}
-		}
-	}
+	summary, err := a.summarizeWithRetry(ctx, spec.operation, req)
 	elapsed := time.Since(start)
-	a.recordInternalLLMUsage(lastIn, lastOut, lastMeta, lastCustom)
-	summary := strings.TrimSpace(b.String())
-	if summary == "" {
-		return summarizerOutcome{}, fmt.Errorf("agent: %s: model returned no summary text", spec.operation)
+	if err != nil {
+		return summarizerOutcome{}, err
 	}
 
 	id, err := a.appendBoundaryEvent(ctx, summary, spec)
@@ -507,6 +481,11 @@ func (a *Agent) runPendingCompaction(ctx context.Context) {
 		a.mu.Unlock()
 		log.Printf("agent: auto-compaction failed (consecutive failures=%d, backing off %d turns): %v",
 			failures, cooldown, err)
+		// …and to anyone attached, not just to whoever can read the
+		// daemon's stderr (#908). A compaction that silently stops
+		// happening is the failure an operator most needs told about,
+		// because the symptom arrives much later as a context wall.
+		a.recordContextReductionFailure(attach.ContextReductionCompaction, err, failures, cooldown)
 		return
 	}
 	// Success — clear the backoff state.

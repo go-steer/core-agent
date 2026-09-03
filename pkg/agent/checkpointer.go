@@ -46,6 +46,8 @@ import (
 
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
+
+	"github.com/go-steer/core-agent/v2/pkg/attach"
 )
 
 // CheckpointEventTag is the value stored under
@@ -404,5 +406,10 @@ func (a *Agent) runPendingCheckpoint(ctx context.Context) {
 		// a checkpoint drops a task boundary the operator expected,
 		// so a swallowed failure is materially misleading.
 		log.Printf("agent: pending checkpoint failed: %v", err)
+		// The daemon log reaches nobody who is attached, so also write
+		// the durable row (#908). No backoff counters to report here —
+		// the checkpoint path has none; the cleared flag is what stops
+		// it looping.
+		a.recordContextReductionFailure(attach.ContextReductionCheckpoint, err, 0, 0)
 	}
 }

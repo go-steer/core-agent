@@ -25,7 +25,7 @@
 //
 // Three moving parts:
 //
-//   - Writes. Trip and reset sites queue a row; drainGuardrailEvents
+//   - Writes. Trip and reset sites queue a row; drainOutOfBandEvents
 //     flushes it. Queuing rather than writing inline is the #565 lesson:
 //     an out-of-band Get-then-AppendEvent while the runner holds the
 //     session bumps last_update_time and trips ADK's optimistic-
@@ -63,26 +63,33 @@ import (
 	"github.com/go-steer/core-agent/v2/pkg/watchdog"
 )
 
-// queueGuardrailEvent enqueues a durable guardrail row and flushes
-// immediately when no turn is in flight — which is the common case for
-// both writers: trips fire from the post-turn cleanup (after the stream
+// queueOutOfBandEvent enqueues a durable row the agent writes ABOUT a
+// session rather than as part of a turn, and flushes it immediately when
+// no turn is in flight — which is the common case for every writer:
+// guardrail trips fire from the post-turn cleanup (after the stream
 // drained and the run context was cancelled) or from the top-of-Run
-// enforcement pass, and resets arrive from an operator while the
-// session is halted. The queue is the fallback for the one racy window,
-// a pre-emptive budget raise landing mid-turn.
-func (a *Agent) queueGuardrailEvent(ev *session.Event) {
+// enforcement pass, resets arrive from an operator while the session is
+// halted, and context-reduction failures (#908) come from the pre-turn
+// drains, which run before the turn's cancel is registered. The queue is
+// the fallback for the racy windows, such as a pre-emptive budget raise
+// landing mid-turn.
+//
+// Named for the write window rather than for guardrails: the mechanism
+// is "append a row without racing the runner's session handle", and the
+// guardrail rows were only its first callers.
+func (a *Agent) queueOutOfBandEvent(ev *session.Event) {
 	if a == nil || ev == nil || a.eventLog == nil {
 		return
 	}
 	a.mu.Lock()
-	a.pendingGuardrailEvents = append(a.pendingGuardrailEvents, ev)
+	a.pendingOutOfBandEvents = append(a.pendingOutOfBandEvents, ev)
 	a.mu.Unlock()
 	if !a.turnInFlight() {
-		a.drainGuardrailEvents()
+		a.drainOutOfBandEvents()
 	}
 }
 
-// drainGuardrailEvents writes every queued guardrail row. Best-effort,
+// drainOutOfBandEvents writes every queued row. Best-effort,
 // mirroring drainInterruptAudit: a Get/Append failure is swallowed
 // because the state change already happened in the agent, and failing
 // the operator's turn over a missed audit row helps nobody.
@@ -92,13 +99,13 @@ func (a *Agent) queueGuardrailEvent(ev *session.Event) {
 // HTTP request context whose client may hang up before the write lands.
 // A row this one is written FOR must not be droppable by the caller it
 // records.
-func (a *Agent) drainGuardrailEvents() {
+func (a *Agent) drainOutOfBandEvents() {
 	if a == nil || a.eventLog == nil {
 		return
 	}
 	a.mu.Lock()
-	pending := a.pendingGuardrailEvents
-	a.pendingGuardrailEvents = nil
+	pending := a.pendingOutOfBandEvents
+	a.pendingOutOfBandEvents = nil
 	a.mu.Unlock()
 	if len(pending) == 0 {
 		return
@@ -130,7 +137,7 @@ func (a *Agent) RecordGuardrailReset(reset []string, budgetUSD float64, caller s
 	if a == nil || (len(reset) == 0 && budgetUSD <= 0) {
 		return
 	}
-	a.queueGuardrailEvent(attach.NewGuardrailResetAuditEvent(caller, reset, budgetUSD))
+	a.queueOutOfBandEvent(attach.NewGuardrailResetAuditEvent(caller, reset, budgetUSD))
 }
 
 // RestoreGuardrails folds this session's durable guardrail rows and

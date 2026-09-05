@@ -92,6 +92,20 @@ DRILL_IDLE_SECS="${DRILL_IDLE_SECS:-90}"
 # Hard cap on one scenario's capture, whatever the stream is doing.
 DRILL_MAX_SECS="${DRILL_MAX_SECS:-1200}"
 
+# How long to let the cluster settle after the break has landed, and
+# again after the restore, before reading a baseline off it. Ten seconds
+# is what a Deployment needs for the API server to have observed the
+# spec write and for the first replacement pod to have been created; a
+# baseline taken sooner attributes the drill's own damage to the agent.
+DRILL_SETTLE_SECS="${DRILL_SETTLE_SECS:-10}"
+
+# How often the capture re-measures the growing stream, and how often
+# the session poll re-lists. Five seconds is a compromise: shorter costs
+# nothing but noise on a twenty-minute capture, longer coarsens the
+# idle timer. Both are here rather than inline so dryrun.sh can drive a
+# whole scenario in seconds; live runs should leave them alone.
+DRILL_POLL_SECS="${DRILL_POLL_SECS:-5}"
+
 # Artifacts. Under TMPDIR by convention — a drill run captures a live
 # transcript and a live bearer token's worth of context, and neither
 # belongs in $HOME or in the checkout. The SCORECARD is the only thing
@@ -266,7 +280,7 @@ drill_wait_new_session() {
                      | sort_by(.last_touched_at) | last | .sessionID'
             return 0
         fi
-        sleep 5
+        sleep "${DRILL_POLL_SECS}"
     done
     return 1
 }
@@ -302,7 +316,7 @@ drill_capture_parent() {
 
     local started=${SECONDS} last_size=-1 quiet_since=${SECONDS} size
     while true; do
-        sleep 5
+        sleep "${DRILL_POLL_SECS}"
         size=$(wc -c < "${raw}")
         if [[ "${size}" != "${last_size}" ]]; then
             last_size="${size}"

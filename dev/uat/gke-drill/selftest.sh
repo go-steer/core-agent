@@ -13,9 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Offline checks for the drill. Touches no cluster, needs no credentials.
+# Offline checks on the drill's PARTS. Touches no cluster, needs no
+# credentials.
 #
 #     ./selftest.sh
+#
+# Its counterpart is ./dryrun.sh, which executes drill.sh end to end
+# against a fake kubectl, curl and gcloud. Nothing here runs the
+# driver's control flow; everything here runs in a second.
 #
 # Live cluster time is the scarcest resource this project has, and a
 # drill run costs a broken workload plus twenty minutes of waiting.

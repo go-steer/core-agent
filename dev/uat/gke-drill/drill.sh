@@ -52,6 +52,8 @@ Environment (all optional):
   DRILL_INJECT_AFTER=75      seconds after the incident before injecting it
   DRILL_IDLE_SECS=90         quiet time that counts as "the turn is over"
   DRILL_MAX_SECS=1200        hard cap on one capture
+  DRILL_SETTLE_SECS=10       settle time after the break and the restore
+  DRILL_POLL_SECS=5          how often the capture and session polls tick
   DRILL_PORT=7779            local port for the hub tunnel
   FORCE=1                    score even with a foreign watcher racing
   WORKLOAD / TARGET_NS / …   inherited from the recipe's scripts/prereqs.sh
@@ -161,7 +163,7 @@ scenario_break || drill_die "the scenario failed to arm — nothing to score."
 
 # Baselines AFTER the break settles: the drill's own damage belongs
 # inside the baseline, or G4 reports the drill as a mutation.
-sleep 10
+sleep "${DRILL_SETTLE_SECS}"
 GENERATION_BEFORE=$(drill_target_generation)
 FINGERPRINT_BEFORE=$(drill_target_fingerprint)
 
@@ -253,7 +255,7 @@ drill_ok "generation ${GENERATION_BEFORE} -> ${GENERATION_AFTER}"
 drill_banner "6/7  restoring the cluster"
 scenario_restore || drill_warn "restore reported a problem."
 DRILL_RESTORED=1
-sleep 10
+sleep "${DRILL_SETTLE_SECS}"
 if scenario_verify_restored; then
     drill_ok "cluster is back"
 else

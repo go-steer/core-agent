@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# A gcloud that answers the two questions prereqs.sh asks at source
+# time, for dryrun.sh. Both are inside `export X="$(...)"`, so under
+# `set -e` a failure here aborts the drill during the source with no
+# message — which is exactly the trap lib.sh's tool check documents.
+set -uo pipefail
+
+FAKE="${DRILL_FAKE_DIR:?fake gcloud requires DRILL_FAKE_DIR}"
+printf 'gcloud %s\n' "$*" >> "${FAKE}/calls.log"
+
+case "$*" in
+    "config get-value project")
+        printf '%s\n' "${FAKE_PROJECT_ID:-fixture-project}" ;;
+    "projects describe"*)
+        printf '%s\n' "${FAKE_PROJECT_NUMBER:-123456789012}" ;;
+    *)
+        printf 'fake gcloud: unhandled invocation: %s\n' "$*" >&2
+        exit 64 ;;
+esac

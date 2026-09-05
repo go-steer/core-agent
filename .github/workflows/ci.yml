@@ -112,6 +112,8 @@ jobs:
       # build, so it does not need a paths filter of its own.
       - name: Examples smoke
         run: dev/ci/presubmits/examples-smoke
+      - name: GKE drill (offline)
+        run: dev/ci/presubmits/verify-gke-drill
       # The release-notes composer degrades an over-long body instead of
       # handing GitHub one it will 422 into an empty release (#894). A
       # step in `test` for the same reasons as the two above, plus one

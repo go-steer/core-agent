@@ -147,8 +147,8 @@ func main() {
 	// from an explicit --ask=off. A task profile's ask mode only applies to
 	// the former; "" is treated as "off" everywhere downstream.
 	ask := flag.String("ask", "", "register an ask_user tool the model can call when its instructions tell it to ask: off|stdin|auto (auto = stdin if interactive, refuse otherwise). Empty (default) behaves as off.")
-	sessionDB := flag.Bool("session-db", false, "persist sessions + audit log to a durable database (default off; in-memory)")
-	sessionDBPath := flag.String("session-db-path", "", "override the database path used when --session-db is set (default: ~/.<binary>/sessions.db)")
+	sessionDB := flag.Bool("session-db", false, "persist sessions + audit log to a durable database (default off; in-memory. attach mode turns this on by itself)")
+	sessionDBPath := flag.String("session-db-path", "", "override the database path used when --session-db is set or implied by attach mode (default: ~/.<binary>/sessions.db)")
 	yolo := flag.Bool("yolo", false, "bypass the permissions gate entirely (every tool call runs without approval). Equivalent to permissions.mode=\"yolo\" in config.")
 	noBackgroundAgents := flag.Bool("no-background-agents", false, "disable the spawn_agent / stop_agent tools (model can't spawn background subagents). Default: enabled.")
 	subagentSyncWait := flag.String("subagent-sync-wait", "", "how long spawn_agent {wait: true} holds the parent's turn open, as a duration (\"10m\"). Default 5m. The cap is on the wait, not the subagent: past it the tool returns and the subagent's result arrives later as a pushed report. Raise it for deep diagnostics, where a parent that gets a timeout tends to redo the work itself. \"0s\" removes the cap and leaves the subagent's own turn/wallclock budgets as the only bound. Config-file equivalent: tools.spawn_agent.sync_wait_timeout.")
@@ -1990,6 +1990,14 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			fmt.Fprintf(os.Stderr, "core-agent: mcp digest store: bound EventlogStore for session %s (retrieve_raw enabled)\n", a.SessionID())
 		}
 	}))
+	sessionDB, impliedSessionDB, sessionDBConflict := resolveSessionDB(
+		sessionDB, flagWasSet(flag.CommandLine, "session-db"),
+		sessionDBPath, attachCfg.Listen, attachCfg.UnixSocket)
+	if sessionDBConflict {
+		fmt.Fprintln(os.Stderr, "core-agent: --session-db=false cannot be combined with attach mode: the live-tail broadcaster, /events replay and subagent history all read the event log")
+		fmt.Fprintln(os.Stderr, "core-agent:   drop --session-db=false, or pass --session-db-path=PATH to choose where it lands")
+		return runner.ExitConfigError
+	}
 	if sessionDB || sessionDBPath != "" {
 		path, err := resolveSessionDBPath(sessionDBPath)
 		if err != nil {
@@ -1997,6 +2005,16 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			return runner.ExitConfigError
 		}
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			// The implied case needs its own message. An operator who
+			// never asked for a session DB should not have to work out
+			// why one is being created in a home directory a container
+			// may not even have — the fix (name a writable path) has
+			// to be in the error.
+			if impliedSessionDB {
+				fmt.Fprintf(os.Stderr, "core-agent: attach mode needs a durable session db, and %s is not writable: %v\n", filepath.Dir(path), err)
+				fmt.Fprintln(os.Stderr, "core-agent:   pass --session-db-path=/some/writable/path/sessions.db")
+				return runner.ExitConfigError
+			}
 			fmt.Fprintf(os.Stderr, "core-agent: session db dir: %v\n", err)
 			return runner.ExitConfigError
 		}
@@ -2026,12 +2044,30 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 		}
 		opts = append(opts, agent.WithEventLog(handle))
 		eventlogHandle = handle
-		fmt.Fprintf(os.Stderr, "core-agent: session db: %s\n", path)
+		if impliedSessionDB {
+			fmt.Fprintf(os.Stderr, "core-agent: session db: %s [implied by attach mode; --session-db-path to relocate]\n", path)
+		} else {
+			fmt.Fprintf(os.Stderr, "core-agent: session db: %s\n", path)
+		}
 
 		// digestStore is bound below, after agent.New — the
 		// EventlogStore constructor rejects empty session identity
 		// and the session ID isn't known until ADK assigns one
 		// inside agent.New. Deferred to the post-construct hook.
+	} else if prompt == "" && scriptPath == "" {
+		// Say what is off, by name (#973). Durability failing is
+		// invisible until the process dies, and at that point the
+		// session it would have saved is already gone — so the only
+		// moment this is worth saying is startup. Naming the features
+		// rather than the flag is the point: "no --session-db" means
+		// nothing to an operator who never knew resume was a thing.
+		//
+		// Not for one-shot -p or --script runs. Those are ephemeral by
+		// definition, there is no session to lose beyond the turn, and
+		// a line on every CLI invocation is the kind of noise that
+		// teaches people to stop reading startup output — which would
+		// cost more than this warning buys.
+		fmt.Fprintln(os.Stderr, "core-agent: session db: off (in-memory) — no resume, no auto-continue, no guardrail state across restart; this session is gone when the process exits. --session-db to persist.")
 	}
 
 	// Auto-continue config (#539, #558, #559): resolved once here,
@@ -2075,10 +2111,10 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// REPL branches (which run after the block) can see it.
 	var attachRegistry *attach.SessionRegistry
 	if attachCfg.Listen != "" || attachCfg.UnixSocket != "" {
-		if !sessionDB && sessionDBPath == "" {
-			fmt.Fprintln(os.Stderr, "core-agent: --attach-listen / --attach-unix-socket requires --session-db (broadcaster pumps from the event log)")
-			return runner.ExitConfigError
-		}
+		// No "requires --session-db" gate here any more: the eventlog
+		// block above implies one for attach mode (#973). This branch
+		// is unreachable without eventlogHandle, and the belt-and-
+		// braces check is the nil-guard on aclStore just below.
 		// Session ACL persistence (Phase 1 of session-resume,
 		// docs/session-resume-design.md). Backed by the eventlog's
 		// GORM connection — no separate DB. When multi-session
@@ -2677,6 +2713,42 @@ func resolveSessionDBPath(override string) (string, error) {
 		return "", fmt.Errorf("user home: %w", err)
 	}
 	return filepath.Join(home, "."+binaryName(), "sessions.db"), nil
+}
+
+// resolveSessionDB decides whether this run gets a durable session
+// database, and reports whether that decision was the operator's or
+// ours. Attach mode implies one (#973): it is not a preference there,
+// it is a precondition. The broadcaster pumps from the event log,
+// /events replays from it, subagent history reads it, and guardrail
+// state and auto-continue restore from it. Attach without it could
+// never have worked, so requiring the operator to say so was a flag
+// that existed only to be mandatory — and it was enforced at the END
+// of boot, after provider detection, MCP loading and skill discovery.
+//
+// The implication only fires when NEITHER flag was given. An operator
+// who passes --session-db-path keeps their path; nobody's database
+// moves. Outside attach mode nothing is implied — a one-shot run that
+// wanted durability would have asked for it.
+//
+// conflict reports the one case the implication must not swallow:
+// --session-db=false on an attach shape. A plain bool cannot tell
+// "unset" from "explicitly off", so sessionDBSet (flag.Visit) carries
+// that, and an operator who said no gets told why the answer cannot
+// be no rather than watching a database appear anyway. It is not a
+// conflict alongside --session-db-path, which is itself a request for
+// a durable log at a named location.
+func resolveSessionDB(sessionDB, sessionDBSet bool, sessionDBPath, attachListen, attachUnixSocket string) (enabled, implied, conflict bool) {
+	attaching := attachListen != "" || attachUnixSocket != ""
+	if attaching && sessionDBSet && !sessionDB && sessionDBPath == "" {
+		return false, false, true
+	}
+	if sessionDB || sessionDBPath != "" {
+		return sessionDB, false, false
+	}
+	if !attaching {
+		return false, false, false
+	}
+	return true, true, false
 }
 
 // binaryName returns the name of the running executable (without

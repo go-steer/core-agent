@@ -354,3 +354,20 @@ func WithLimit(n int) QueryOption {
 
 // ErrClosed is returned by Stream methods invoked after Close.
 var ErrClosed = errors.New("eventlog: stream is closed")
+
+// IsSessionNotFound reports whether err means "that session is not in
+// the log", as opposed to a real failure to read it.
+//
+// ADK's database session service wraps GORM's ErrRecordNotFound with
+// %w behind the text "database error while fetching session", which
+// reads like a database fault and is not one — a session that has
+// never been written is the ordinary state of every session before its
+// first event. Callers that treat any non-nil error as a problem log a
+// scary line on a healthy cold boot; this is the check that tells the
+// two apart without matching on message text.
+//
+// It lives here rather than in the callers because the GORM coupling
+// is this package's to own.
+func IsSessionNotFound(err error) bool {
+	return err != nil && errors.Is(err, gorm.ErrRecordNotFound)
+}

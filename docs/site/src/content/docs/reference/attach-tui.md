@@ -32,13 +32,13 @@ core-agent-tui
 
 # 2. Remote — point at a running agent's --attach-listen.
 ATTACH_TOKEN=$(openssl rand -hex 32) \
-  core-agent --no-repl --session-db --attach-listen=:7777 \
+  core-agent --no-repl --attach-listen=:7777 \
   --attach-token=ATTACH_TOKEN
 
 core-agent-tui http://localhost:7777 --token=ATTACH_TOKEN
 ```
 
-`--no-repl` runs `core-agent` as an attach-only daemon (no stdin REPL, no in-process TUI). Pair with `--session-db` so the eventlog persists — attach mode requires it for the live-tail broadcaster.
+`--no-repl` runs `core-agent` as an attach-only daemon (no stdin REPL, no in-process TUI). A durable eventlog comes with it — attach mode turns `--session-db` on by itself, because the live-tail broadcaster has nothing to pump from without one. Pass `--session-db-path=PATH` to choose where it lands; see [Sessions](/concepts/sessions/#attach-mode-implies-durability).
 
 URL forms (same grammar as `core-agent attach`):
 

@@ -30,7 +30,7 @@ Persistence is **per-event, during the turn** — not at turn end and not at shu
 
 Two preconditions:
 
-- **`--session-db` must be on.** The default session store is in-memory; without the flag, a restart loses everything. See [Sessions and event log](/concepts/sessions/).
+- **`--session-db` must be on.** The default session store is in-memory; without the flag, a restart loses everything. Attach-mode daemons (`--attach-listen` / `--attach-unix-socket`) get it implicitly and cannot run without one; every other shape has to ask. See [Sessions and event log](/concepts/sessions/).
 - **The DB must be on storage that survives the pod** — a PVC in K8s. Sessions, the event log, ACL rows, run locks, and digest state all live in that one SQLite file (or Postgres/MySQL for multi-writer deployments).
 
 If a restart catches a turn between a persisted tool call and its result, the history is [repaired automatically on the next turn](/concepts/sessions/#interrupted-tool-calls-are-repaired-automatically) — no operator action.

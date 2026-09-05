@@ -48,6 +48,25 @@ The bundled CLI (`core-agent`) and any consumer fork opts into durable sessions 
 
 Either flag enables. The default path is derived from `os.Executable()`, so `core-agent` and forks each get their own directory automatically — no per-binary configuration needed.
 
+### Attach mode implies durability
+
+`--attach-listen` or `--attach-unix-socket` turns durable sessions on by itself. It is a precondition there, not a preference: the live-tail broadcaster pumps from the event log, `/events` replays from it, subagent history reads it, and guardrail state and auto-continue restore from it. A daemon without one has nothing to serve.
+
+The implication only fires when neither flag was given — pass `--session-db-path` and the daemon uses your path. `--session-db=false` on an attach shape is a config error rather than a silent override: the implication is allowed to answer a question you did not ask, not to overrule an answer you gave. Startup says which happened:
+
+```
+core-agent: session db: /home/you/.core-agent/sessions.db [implied by attach mode; --session-db-path to relocate]
+```
+
+Interactive runs are unchanged: nothing is implied, and a run without a durable database now names what it is giving up rather than staying quiet about it.
+
+```
+core-agent: session db: off (in-memory) — no resume, no auto-continue, no guardrail
+state across restart; this session is gone when the process exits. --session-db to persist.
+```
+
+One-shot `-p` and `--script` runs stay silent — they are ephemeral by definition, and there is no session to lose beyond the turn.
+
 ---
 
 ## Multi-driver

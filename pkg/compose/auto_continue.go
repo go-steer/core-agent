@@ -286,7 +286,13 @@ func classifyTail(ctx context.Context, h *eventlog.Handle, app, user, sid string
 		NumRecentEvents: autoContinueScanWindow,
 	})
 	if err != nil || resp == nil || resp.Session == nil {
-		if err != nil {
+		// A session that is not in the log yet is the normal state of
+		// a cold boot, not a read failure — and since #973 made a
+		// durable eventlog the default for attach mode, this path runs
+		// on every daemon's first start. Logging it would make
+		// "database error while fetching session" the first thing a
+		// new operator sees from a perfectly healthy daemon.
+		if err != nil && !eventlog.IsSessionNotFound(err) {
 			fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: read session: %v\n", sid, err)
 		}
 		return agent.TailVerdict{}

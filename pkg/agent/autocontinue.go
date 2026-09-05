@@ -22,6 +22,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -29,6 +30,7 @@ import (
 	"google.golang.org/adk/session"
 	"google.golang.org/genai"
 
+	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/eventlog"
 	"github.com/go-steer/core-agent/v2/pkg/tools"
 )
@@ -193,17 +195,17 @@ func allReadOnlyCalls(names []string) bool {
 // found this.
 //
 // Additional terminal shapes (never continued): an operator
-// interrupt-audit row anywhere after the tail (deliberate kill), an
-// ErrorCode final (the turn ended with an error the user already
-// saw), an empty-parts agent-authored final (Gemini streaming can
-// close a completed turn with an empty aggregate), a turn parked on
-// ADK's tool-confirmation flow, a SkipSummarization response final,
-// and a tail that IS a prior committed continuation note (one
+// interrupt-audit row anywhere after the tail (deliberate kill), a
+// TERMINAL ErrorCode final (see the ErrorCode arm and
+// transientTurnError), an empty-parts agent-authored final (Gemini
+// streaming can close a completed turn with an empty aggregate), a turn
+// parked on ADK's tool-confirmation flow, a SkipSummarization response
+// final, and a tail that IS a prior committed continuation note (one
 // automatic attempt per interruption — the lazy-path crash-loop
 // bound).
 func ClassifyInterruptedTail(events []*session.Event) (interruptedAt time.Time, interrupted bool) {
-	at, interrupted, _ := classifyInterruptedTail(events)
-	return at, interrupted
+	v := classifyInterruptedTail(events)
+	return v.InterruptedAt, v.Interrupted
 }
 
 // ClassifyInterruptedTailWithCalls is ClassifyInterruptedTail plus the
@@ -216,10 +218,67 @@ func ClassifyInterruptedTail(events []*session.Event) (interruptedAt time.Time, 
 // when the tail is not interrupted. Callers scope the continuation note
 // by classifying these names (see AutoContinueNoteFor).
 func ClassifyInterruptedTailWithCalls(events []*session.Event) (interruptedAt time.Time, interrupted bool, interruptedCalls []string) {
+	v := classifyInterruptedTail(events)
+	return v.InterruptedAt, v.Interrupted, v.InterruptedCalls
+}
+
+// TailVerdict is the full result of tail classification: what the two
+// narrower wrappers above return, plus the operator-facing reason for
+// the one decline that is a JUDGEMENT rather than a reading of shape
+// (see DeclineReason). Callers that log — pkg/compose's triggers — take
+// this form; callers that only branch can keep using the wrappers.
+type TailVerdict struct {
+	// InterruptedAt is the timestamp of the last committed event of the
+	// broken turn. Zero when Interrupted is false.
+	InterruptedAt time.Time
+
+	// Interrupted reports whether the tail should be re-driven.
+	Interrupted bool
+
+	// InterruptedCalls lists the tool-call names of a mid-tool
+	// interruption; nil for every other shape. See
+	// ClassifyInterruptedTailWithCalls.
+	InterruptedCalls []string
+
+	// DeclineReason names why a tail that WOULD have been re-driven was
+	// not, in a form fit for one stderr line. It is populated only for
+	// the transient-error budget (#969) — every other terminal shape is
+	// a completed or deliberately-killed turn, where declining is the
+	// unremarkable answer and a log line would be noise. Empty when
+	// Interrupted is true.
+	//
+	// It exists because the budget is the one stand-down an operator
+	// cannot infer from the transcript: the session simply goes quiet,
+	// which is indistinguishable from the agent having decided it was
+	// done.
+	DeclineReason string
+}
+
+// maxTransientRedrives bounds how many times one interruption sequence
+// is automatically re-driven after a TRANSIENT model error, counted as
+// committed continuation notes since the last human message (#969).
+//
+// Three, matching pkg/compose's maxAttemptsPerSession, and for the same
+// reason: past three the "it was the provider" reading stops being the
+// likely one. The two bounds are complements rather than duplicates —
+// compose's is derived from the boot log, spans an hour, and is not
+// applied by the lazy-resume trigger at all; this one is derived from
+// committed history, so it travels with the session across daemons and
+// reboots and covers every trigger.
+//
+// The interval between re-drives is the retry driver's own cadence
+// (auto_continue.retry_interval, 5m, floored per session by compose's
+// 10m breakerWindow). That is the backoff; a second timer here would
+// only be a less-visible copy of it.
+const maxTransientRedrives = 3
+
+// ClassifyInterruptedTailVerdict is ClassifyInterruptedTail returning
+// the full TailVerdict.
+func ClassifyInterruptedTailVerdict(events []*session.Event) TailVerdict {
 	return classifyInterruptedTail(events)
 }
 
-func classifyInterruptedTail(events []*session.Event) (interruptedAt time.Time, interrupted bool, interruptedCalls []string) {
+func classifyInterruptedTail(events []*session.Event) TailVerdict {
 	for i := len(events) - 1; i >= 0; i-- {
 		ev := events[i]
 		if ev == nil || ev.Branch != "" || ev.Partial {
@@ -229,13 +288,33 @@ func classifyInterruptedTail(events []*session.Event) (interruptedAt time.Time, 
 		// the cancelled turn left. The operator deliberately killed
 		// that work — resurrecting it would be exactly wrong.
 		if ev.Author == interruptAuditAuthor {
-			return time.Time{}, false, nil
+			return TailVerdict{}
 		}
-		// In-band model error final (safety block, quota, provider
-		// error surfaced as ErrorCode): the turn ENDED and the error
-		// was already delivered; there is nothing to continue.
+		// In-band model error final: the turn ENDED and the error was
+		// already delivered. Whether there is anything to CONTINUE
+		// depends on which error it was (#969).
+		//
+		// A safety block, an auth failure or a malformed request will
+		// produce the identical error on the identical input, so
+		// re-driving is a loop with extra steps. A 503 under load will
+		// not — and for an unattended session, declining there is not a
+		// degraded turn but a permanent stop: the daemon stays up, the
+		// session stays "running", and nothing ever drives it again. A
+		// single provider blip ends an overnight run.
+		//
+		// Re-driving is bounded by maxTransientRedrives so this cannot
+		// become its own runaway, and the budget is spent per
+		// interruption sequence: a human message resets it.
 		if ev.ErrorCode != "" {
-			return time.Time{}, false, nil
+			if !transientTurnError(ev.ErrorCode) {
+				return TailVerdict{}
+			}
+			if n := autoContinueNotesBefore(events, i); n >= maxTransientRedrives {
+				return TailVerdict{DeclineReason: fmt.Sprintf(
+					"%d consecutive transient model errors (last: %s) — not re-driving again until a human message arrives",
+					n, ev.ErrorCode)}
+			}
+			return TailVerdict{InterruptedAt: ev.Timestamp, Interrupted: true}
 		}
 		if ev.Content == nil || ev.Content.Role == "" {
 			continue // annotation events (checkpoints, notes, audit rows)
@@ -250,7 +329,7 @@ func classifyInterruptedTail(events []*session.Event) (interruptedAt time.Time, 
 			// would misread the preceding tool-response event as an
 			// interrupted tail. Agent-authored → terminal.
 			if ev.Author != "user" {
-				return time.Time{}, false, nil
+				return TailVerdict{}
 			}
 			continue
 		}
@@ -288,34 +367,33 @@ func classifyInterruptedTail(events []*session.Event) (interruptedAt time.Time, 
 		// couldn't proceed anyway (tail repair deliberately leaves
 		// the parked original call unanswered).
 		if hasConfirmation {
-			return time.Time{}, false, nil
+			return TailVerdict{}
 		}
 		// SkipSummarization response = the turn's final event per
 		// ADK's Event.IsFinalResponse — a completed turn for library
 		// consumers using that flow.
 		if hasResp && ev.Actions.SkipSummarization {
-			return time.Time{}, false, nil
+			return TailVerdict{}
 		}
 
 		switch {
 		case hasResp:
-			return ev.Timestamp, true, nil
+			return TailVerdict{InterruptedAt: ev.Timestamp, Interrupted: true}
 		case hasCall:
 			if allCallsLongRunning {
-				return time.Time{}, false, nil
+				return TailVerdict{}
 			}
-			return ev.Timestamp, true, callNames
+			return TailVerdict{InterruptedAt: ev.Timestamp, Interrupted: true, InterruptedCalls: callNames}
 		case ev.Author == "user":
 			// A prior continuation note that committed and then died:
 			// do NOT loop — one automatic attempt per interruption;
 			// a real human message resets this. Recognize the legacy
 			// marker too so a note committed by a pre-#615 binary and
 			// still in flight across an upgrade isn't re-continued.
-			t := text.String()
-			if strings.Contains(t, autoContinueMarker) || strings.Contains(t, legacyAutoContinueMarker) {
-				return time.Time{}, false, nil
+			if isAutoContinueNoteText(text.String()) {
+				return TailVerdict{}
 			}
-			return ev.Timestamp, true, nil
+			return TailVerdict{InterruptedAt: ev.Timestamp, Interrupted: true}
 		case hasText:
 			// Normally a completed model turn — UNLESS the persisted
 			// finish reason says the turn stopped WITHOUT finishing (a
@@ -324,16 +402,92 @@ func classifyInterruptedTail(events []*session.Event) (interruptedAt time.Time, 
 			// the eventlog overlay stamps into CustomMetadata (#582). STOP
 			// and unset (legacy/unstamped) preserve the completed default.
 			if r, ok := ev.CustomMetadata[eventlog.FinishReasonMetadataKey].(string); ok && incompleteFinish(r) {
-				return ev.Timestamp, true, nil
+				return TailVerdict{InterruptedAt: ev.Timestamp, Interrupted: true}
 			}
-			return time.Time{}, false, nil // completed model turn
+			return TailVerdict{} // completed model turn
 		default:
 			// Agent-authored content with neither text nor tool parts
 			// (inline data only) — terminal model output.
-			return time.Time{}, false, nil
+			return TailVerdict{}
 		}
 	}
-	return time.Time{}, false, nil
+	return TailVerdict{}
+}
+
+// isAutoContinueNoteText reports whether committed user text is a
+// continuation note this runtime synthesized. The legacy marker is
+// recognized (never emitted) so a note committed by a pre-#615 binary
+// and still in flight across an upgrade isn't mistaken for a human
+// message.
+func isAutoContinueNoteText(t string) bool {
+	return strings.Contains(t, autoContinueMarker) || strings.Contains(t, legacyAutoContinueMarker)
+}
+
+// autoContinueNotesBefore counts the continuation notes committed
+// immediately before events[i], stopping at the first genuine human
+// message — the transient-error budget is spent per interruption
+// sequence, and a human typing anything means the operator is back and
+// the sequence is over (#969).
+//
+// Counting committed notes rather than error events is deliberate. An
+// error event proves a turn failed; a note proves THIS runtime chose to
+// re-drive, which is the thing being bounded. It also makes the budget
+// durable: it is reconstructed from history on every pass, so it
+// survives a daemon restart and is shared by every trigger, where an
+// in-memory counter would be reset by the exact crash it exists to
+// bound.
+func autoContinueNotesBefore(events []*session.Event, i int) int {
+	n := 0
+	for j := i - 1; j >= 0; j-- {
+		ev := events[j]
+		if ev == nil || ev.Branch != "" || ev.Partial {
+			continue
+		}
+		if ev.Author != "user" || ev.Content == nil || ev.Content.Role == "" {
+			continue // model turns, tool rows, annotations — not our marker
+		}
+		if _, isSummary := ev.CustomMetadata[CompactionMetadataKey]; isSummary {
+			continue
+		}
+		var text strings.Builder
+		for _, p := range ev.Content.Parts {
+			if p != nil && p.Text != "" {
+				text.WriteString(p.Text)
+			}
+		}
+		if !isAutoContinueNoteText(text.String()) {
+			return n // a human message: budget reset
+		}
+		n++
+	}
+	return n
+}
+
+// transientTurnError reports whether a committed event's ErrorCode
+// names a failure worth another attempt (#969).
+//
+// The classification is delegated to attach.ClassifyTurnError so the
+// runtime has ONE error vocabulary: the codes an operator reads on the
+// wire as `transient_net` / `rate_limited` are exactly the ones the
+// autonomous driver re-drives, and a new provider code is taught to
+// both at once.
+//
+// It classifies the CODE only, never the accompanying ErrorMessage.
+// ClassifyTurnError is a substring scan built for provider error prose,
+// and pointing it at free-form model output is how a safety block whose
+// message happens to quote the words "rate limit" would be re-driven
+// forever. The code is the structured field; anything a provider does
+// not put there reads as terminal, which is the direction that is safe
+// to be wrong in.
+//
+// Numeric codes are prefixed so ClassifyTurnError's status-code regex
+// (which expects "code: 429"-shaped prose, not a bare number) sees them.
+func transientTurnError(code string) bool {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return false
+	}
+	return attach.ClassifyTurnError(errors.New("code: " + code)).Retryable
 }
 
 // incompleteFinish reports whether a persisted genai FinishReason string
@@ -344,8 +498,9 @@ func classifyInterruptedTail(events []*session.Event) (interruptedAt time.Time, 
 // STOP and unset (legacy/unstamped) → completed. The terminal-block
 // reasons (SAFETY, RECITATION, BLOCKLIST, PROHIBITED_CONTENT, SPII,
 // MALFORMED_FUNCTION_CALL) are deliberately NOT continued — a retry would
-// re-trigger the same block; they belong with ErrorCode as outcomes the
-// user already saw. Revisit per-reason if a concrete consumer appears.
+// re-trigger the same block, the same reasoning transientTurnError applies
+// to the terminal ErrorCodes. Revisit per-reason if a concrete consumer
+// appears.
 func incompleteFinish(reason string) bool {
 	return reason == string(genai.FinishReasonMaxTokens)
 }

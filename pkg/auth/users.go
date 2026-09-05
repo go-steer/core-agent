@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"runtime"
 )
 
 // UsersFileSchemaVersion is the schema version this loader understands.
@@ -53,11 +52,12 @@ type User struct {
 // LoadUsersFile reads + validates a users.json file from disk.
 //
 // Validation:
-//   - File mode must be 0600 or stricter on POSIX (group/other bits
-//     must be zero). The file holds bearer secrets; world- or
-//     group-readable permissions are a configuration error, not a
-//     tolerable laxity. Skipped on Windows where Unix mode bits
-//     don't map cleanly.
+//   - File mode must be 0600 on POSIX, or 0640 when the owning group
+//     is one this process belongs to — the shape a Kubernetes Secret
+//     volume with fsGroup produces. Every other group or other bit is
+//     a configuration error, not a tolerable laxity. See
+//     validateUsersFileMode for the argument. Skipped on Windows where
+//     Unix mode bits don't map cleanly.
 //   - Schema version must match UsersFileSchemaVersion.
 //   - Every row must carry both identity and token.
 //   - Token values must be unique across rows (duplicate tokens would
@@ -68,10 +68,8 @@ func LoadUsersFile(path string) (*UsersFile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("auth: stat users file %q: %w", path, err)
 	}
-	if runtime.GOOS != "windows" {
-		if mode := info.Mode().Perm(); mode&0o077 != 0 {
-			return nil, fmt.Errorf("auth: users file %q has mode %#o; must be 0600 or stricter (group/other bits must be unset)", path, mode)
-		}
+	if err := checkUsersFileMode(path, info); err != nil {
+		return nil, err
 	}
 
 	data, err := os.ReadFile(path) //nolint:gosec // path is operator-supplied config, not user input

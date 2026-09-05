@@ -75,21 +75,48 @@ func TestLoadUsersFile_RejectsWorldReadable(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on world-readable users file; got nil")
 	}
-	if !strings.Contains(err.Error(), "0600 or stricter") {
+	if !strings.Contains(err.Error(), "world-accessible") {
 		t.Errorf("error should explain file-mode requirement, got: %v", err)
 	}
 }
 
-func TestLoadUsersFile_RejectsGroupReadable(t *testing.T) {
+// TestLoadUsersFile_AcceptsGroupReadableOwnGroup is the #944 gate, and
+// it fails against pre-#944 code, where any group bit was rejected.
+//
+// A file written into t.TempDir() is group-owned by the test process's
+// own gid, which is exactly the shape a Kubernetes Secret volume with
+// fsGroup produces: mode 0640, group == the identity doing the reading.
+// Rejecting it forced every recipe to stage the file through an
+// initContainer purely to re-chmod it.
+func TestLoadUsersFile_AcceptsGroupReadableOwnGroup(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("file-mode check skipped on Windows")
 	}
 	t.Parallel()
 	path := writeUsersFile(t, `{"version": 1, "users": []}`, 0o640)
 
+	if _, err := auth.LoadUsersFile(path); err != nil {
+		t.Errorf("0640 owned by our own group should be accepted, got: %v", err)
+	}
+}
+
+// TestLoadUsersFile_RejectsGroupWritable pins the half of the old check
+// that did not move. Group-write is not needed to read a credential,
+// and a co-member who can write the file can swap the daemon's entire
+// user table.
+func TestLoadUsersFile_RejectsGroupWritable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file-mode check skipped on Windows")
+	}
+	t.Parallel()
+	path := writeUsersFile(t, `{"version": 1, "users": []}`, 0o660)
+
 	_, err := auth.LoadUsersFile(path)
 	if err == nil {
-		t.Fatal("expected error on group-readable users file; got nil")
+		t.Fatal("expected error on group-writable users file; got nil")
+	}
+	if !strings.Contains(err.Error(), "group write/execute") {
+		t.Errorf("error should name the group write bit, got: %v", err)
 	}
 }
 

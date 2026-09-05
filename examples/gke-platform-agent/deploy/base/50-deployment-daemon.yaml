@@ -67,12 +67,20 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
       # Stage users.json out of the Secret volume into an emptyDir with
-      # user-only mode. Required because pkg/auth/users.go rejects any
-      # group/other mode bits, and pod-level fsGroup=65532 adds group-read
-      # to Secret-volume files — so a Secret mounted at defaultMode=0400
-      # arrives as 0440 and the daemon aborts at multi-session auth init:
+      # user-only mode. Required because the PINNED daemon image below
+      # rejects any group/other mode bits, and pod-level fsGroup=65532
+      # adds group-read to Secret-volume files — so a Secret mounted at
+      # defaultMode=0400 arrives as 0440 and the daemon aborts at
+      # multi-session auth init:
       #   auth: users file ".../users.json" has mode 0440;
       #        must be 0600 or stricter (group/other bits must be unset)
+      #
+      # core-agent#944 accepts 0440 when the owning group is one the
+      # process belongs to, which is what fsGroup produces. Delete this
+      # initContainer, the users-src volume and the users emptyDir, and
+      # mount the Secret at /etc/core-agent directly — but only in the
+      # same change that bumps the image tag past the fix. Doing it
+      # sooner breaks the deploy against the tag pinned here.
       initContainers:
         - name: install-users-json
           image: busybox:1.38.0

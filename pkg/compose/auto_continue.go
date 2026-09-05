@@ -186,10 +186,19 @@ func lockClassifyInject(ctx context.Context, h *eventlog.Handle, ag *agent.Agent
 	}
 	defer func() { _ = lock.Release() }()
 
-	interruptedAt, interrupted, interruptedCalls := classifyTail(ctx, h, app, user, sid)
-	if !interrupted {
+	verdict := classifyTail(ctx, h, app, user, sid)
+	if !verdict.Interrupted {
+		// Most declines are a completed or deliberately-killed turn and
+		// say nothing worth a line. The classifier populates a reason
+		// only for the stand-down an operator cannot see in the
+		// transcript — the transient-error budget (#969), where the
+		// session just goes quiet.
+		if verdict.DeclineReason != "" {
+			fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: standing down: %s\n", sid, verdict.DeclineReason)
+		}
 		return acSkippedNotInterrupted
 	}
+	interruptedAt := verdict.InterruptedAt
 	if freshness > 0 && time.Since(interruptedAt) > freshness {
 		fmt.Fprintf(os.Stderr, "core-agent: session %s: interrupted turn is %s old (> freshness %s); waiting for the next message\n",
 			sid, time.Since(interruptedAt).Round(time.Second), freshness)
@@ -256,7 +265,7 @@ func lockClassifyInject(ctx context.Context, h *eventlog.Handle, ag *agent.Agent
 		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: session is paused; standing down until the operator resumes\n", sid)
 		return acSkippedPaused
 	}
-	if err := ag.InjectAs(agent.AutoContinueNoteFor(interruptedAt, interruptedCalls), auth.Caller{Identity: agent.AutoContinueOriginator}); err != nil {
+	if err := ag.InjectAs(agent.AutoContinueNoteFor(interruptedAt, verdict.InterruptedCalls), auth.Caller{Identity: agent.AutoContinueOriginator}); err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: inject: %v\n", sid, err)
 		return acSkippedInjectErr
 	}
@@ -269,7 +278,7 @@ func lockClassifyInject(ctx context.Context, h *eventlog.Handle, ag *agent.Agent
 // because this runs synchronously on resume/startup paths — a
 // full-session scan on a 100k-event session would break the "resume
 // stays fast" promise.
-func classifyTail(ctx context.Context, h *eventlog.Handle, app, user, sid string) (time.Time, bool, []string) {
+func classifyTail(ctx context.Context, h *eventlog.Handle, app, user, sid string) agent.TailVerdict {
 	resp, err := h.Service.Get(ctx, &session.GetRequest{
 		AppName:         app,
 		UserID:          user,
@@ -280,13 +289,13 @@ func classifyTail(ctx context.Context, h *eventlog.Handle, app, user, sid string
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: session %s: auto-continue: read session: %v\n", sid, err)
 		}
-		return time.Time{}, false, nil
+		return agent.TailVerdict{}
 	}
 	var events []*session.Event
 	for ev := range resp.Session.Events().All() {
 		events = append(events, ev)
 	}
-	return agent.ClassifyInterruptedTailWithCalls(events)
+	return agent.ClassifyInterruptedTailVerdict(events)
 }
 
 // attemptGuards aggregates the boot-log-derived skip rules shared by
@@ -363,11 +372,14 @@ func AutoContinueStartupSession(ctx context.Context, h *eventlog.Handle, ag *age
 	// boot, and recording an "attempt" for a clean tail would burn
 	// the cumulative cap on healthy restarts, blocking a real
 	// interruption later.
-	interruptedAt, interrupted, _ := classifyTail(ctx, h, app, user, sid)
-	if !interrupted {
+	// Silent on a decline: lockClassifyInject re-classifies under the run
+	// lock and logs any reason there, so speaking here would double every
+	// line.
+	verdict := classifyTail(ctx, h, app, user, sid)
+	if !verdict.Interrupted {
 		return
 	}
-	if freshness > 0 && time.Since(interruptedAt) > freshness {
+	if freshness > 0 && time.Since(verdict.InterruptedAt) > freshness {
 		return
 	}
 	bootID, err := h.RecordBoot(ctx, time.Now(), []string{sid})
@@ -500,14 +512,16 @@ func AutoContinueBootScan(deps SessionFactoryDeps, maxPerBoot int) {
 		if !guards.allow(row.SessionID) {
 			continue
 		}
-		interruptedAt, interrupted, _ := classifyTail(ctx, h, row.AppName, row.UserID, row.SessionID)
-		if !interrupted {
+		// Silent on a decline: the per-candidate lockClassifyInject below
+		// re-classifies under the run lock and logs any reason there.
+		verdict := classifyTail(ctx, h, row.AppName, row.UserID, row.SessionID)
+		if !verdict.Interrupted {
 			continue
 		}
-		if deps.AutoContinueFreshness > 0 && time.Since(interruptedAt) > deps.AutoContinueFreshness {
+		if deps.AutoContinueFreshness > 0 && time.Since(verdict.InterruptedAt) > deps.AutoContinueFreshness {
 			continue
 		}
-		candidates = append(candidates, candidate{app: row.AppName, user: row.UserID, sid: row.SessionID, interruptedAt: interruptedAt})
+		candidates = append(candidates, candidate{app: row.AppName, user: row.UserID, sid: row.SessionID, interruptedAt: verdict.InterruptedAt})
 	}
 	if len(candidates) == 0 {
 		if _, err := h.RecordBoot(ctx, time.Now(), nil); err != nil {

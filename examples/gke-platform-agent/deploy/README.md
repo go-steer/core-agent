@@ -57,11 +57,20 @@ cannot hold one. A TCP probe proves the listener is up, which is what a
 probe can honestly prove here.
 
 **An initContainer stages `users.json` rather than mounting the Secret
-directly.** `pkg/auth/users.go` rejects a bearer table with any group or
+directly.** `pkg/auth/users.go` rejected a bearer table with any group or
 other mode bits set, and the pod's `fsGroup: 65532` makes a `0400` Secret
 arrive as `0440`. The init container copies it to `0400` owned by 65532
 in an emptyDir. Mounting the Secret straight in looks correct and fails
 at boot with a permissions error about a file nobody wrote.
+
+**This becomes removable once the pinned daemon image carries
+[#944](https://github.com/go-steer/core-agent/issues/944)**, which accepts
+`0440` when the owning group is one the process belongs to — which is
+exactly what `fsGroup` produces. It is still here because the manifest
+pins a released tag, and that tag predates the fix. Drop the
+`install-users-json` initContainer, the `users-src` volume and the `users`
+emptyDir, and mount the Secret at `/etc/core-agent` directly, in the same
+change that bumps the image.
 
 ## `content.Dockerfile`
 

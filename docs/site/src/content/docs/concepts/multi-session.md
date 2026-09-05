@@ -64,7 +64,15 @@ The static user table is the v2.4-shipped Authenticator. OIDC / JWT / mTLS / K8s
 }
 ```
 
-**File-mode requirement:** the loader rejects `users.json` with group- or world-readable bits set. Mode `0600` or stricter (`0400`). Failing this is a startup error, not a warning — bearer tokens deserve the same posture as a private SSH key.
+**File-mode requirement:** mode `0600` or stricter (`0400`), or `0640`/`0440` when the owning group is one the daemon process belongs to. Any other-bit, and group **write** or **execute** in every case, is rejected. Failing this is a startup error, not a warning — bearer tokens deserve the same posture as a private SSH key.
+
+The group-read carve-out exists because Kubernetes leaves no alternative. `fsGroup` is the standard way to give a non-root pod read access to a Secret volume, and it unconditionally sets group-read on every file in that volume — so a Secret mounted at `defaultMode: 0400` arrives as `0440` and a blanket rejection fails by construction. The membership test is the whole security argument: group-read widens access to members of the owning group and to nobody else, so when the daemon is already one of those members the bit grants no read it did not already hold. Supplementary groups count, because `fsGroup` without `runAsGroup` lands the gid there rather than on the primary. When the daemon is *not* a member, the load still fails, and the error names the gid on both sides:
+
+```
+auth: users file "/etc/core-agent/users.json" has mode 0440 and is group-owned by
+gid 2000, which this process (gid 65532) is not a member of; use 0600, or set the
+Kubernetes fsGroup to a group the container runs as
+```
 
 Generate tokens with whatever your secret manager uses; the loader has no opinion. A simple bootstrap:
 

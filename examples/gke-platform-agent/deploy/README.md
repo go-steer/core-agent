@@ -51,32 +51,34 @@ enrichment source quietly missing from every incident.
 Two deployments of this recipe on one cluster would otherwise fight over
 one ClusterRoleBinding, and tearing down either would break the other.
 
-**The probes are bare TCP connects on `:7777`.** Every route used to
-require a bearer token, and a probe cannot hold one — an HTTP probe got
-a 401, which kubelet reads as failure.
+**Both probes are `httpGet /healthz`, not TCP connects.** They used to be
+bare TCP on `:7777`, because every route required a bearer token and a
+probe cannot hold one — an HTTP probe got a 401, which kubelet reads as
+failure. [#946](https://github.com/go-steer/core-agent/issues/946) added
+an unauthenticated `GET /healthz`, served ahead of auth, that reports
+whether the session store is actually queryable. TCP cannot: a socket
+keeps accepting connections long after the database behind it has stopped
+answering, so a hub that could not serve a single inject still looked
+Ready. This needs an image carrying #946 — against an older tag `/healthz`
+404s and the pod never goes Ready.
 
-[#946](https://github.com/go-steer/core-agent/issues/946) adds an
-unauthenticated `GET /healthz` that also reports whether the session
-store is queryable, which TCP cannot: a socket keeps accepting
-connections long after the database behind it has stopped answering.
-Swap both probes for `httpGet: {path: /healthz, port: attach}` once the
-pinned tag carries it ([#986](https://github.com/go-steer/core-agent/issues/986)).
+**The `users.json` Secret is mounted directly, with no initContainer.**
+There used to be one. `pkg/auth` rejected a bearer table with any group or
+other mode bits set, and the pod's `fsGroup: 65532` turns a `0400` Secret
+into `0440` on disk, so mounting the Secret straight in looked correct and
+failed at boot with a permissions error about a file nobody wrote. The
+workaround was an `install-users-json` initContainer that copied it into
+an emptyDir at `0400` — about 20 lines of YAML and, more to the point, a
+`runAsUser: 0` container in an otherwise non-root pod, present only to
+run one `chmod`.
 
-**An initContainer stages `users.json` rather than mounting the Secret
-directly.** `pkg/auth/users.go` rejected a bearer table with any group or
-other mode bits set, and the pod's `fsGroup: 65532` makes a `0400` Secret
-arrive as `0440`. The init container copies it to `0400` owned by 65532
-in an emptyDir. Mounting the Secret straight in looks correct and fails
-at boot with a permissions error about a file nobody wrote.
-
-**This becomes removable once the pinned daemon image carries
-[#944](https://github.com/go-steer/core-agent/issues/944)**, which accepts
-`0440` when the owning group is one the process belongs to — which is
-exactly what `fsGroup` produces. It is still here because the manifest
-pins a released tag, and that tag predates the fix. Drop the
-`install-users-json` initContainer, the `users-src` volume and the `users`
-emptyDir, and mount the Secret at `/etc/core-agent` directly, in the same
-change that bumps the image ([#986](https://github.com/go-steer/core-agent/issues/986)).
+[#944](https://github.com/go-steer/core-agent/issues/944) accepts `0440`
+when the file's owning group is one the process belongs to — exactly what
+`fsGroup` produces — and still fails closed on any other group, so this is
+the check learning what `fsGroup` means rather than a relaxation of it.
+Both changes landed together in
+[#986](https://github.com/go-steer/core-agent/issues/986), with the image
+bump they required.
 
 ## `content.Dockerfile`
 

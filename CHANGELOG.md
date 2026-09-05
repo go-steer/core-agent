@@ -16,7 +16,11 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
-_No unreleased changes since [2.9.0-dev.6]._
+### Changes by Kind
+
+#### Feature
+
+- **The GKE recipes collect the payoffs of two fixes that only pay off in a manifest.** [#944](https://github.com/go-steer/core-agent/issues/944) taught the bearer-table loader that mode `0440` is fine when the file's owning group is one the process belongs to — which is exactly what a Kubernetes `fsGroup` produces — and [#946](https://github.com/go-steer/core-agent/issues/946) added an unauthenticated `GET /healthz`. Neither could be collected in the PR that shipped it, because every recipe pinned a released image that predated the fix and flipping the manifest against that tag breaks the deploy. Both are collected now, in `examples/gke-platform-agent` and `examples/gke-troubleshoot-agent`, against a `2.9.0-dev.6` pin. The `install-users-json` initContainer is gone from both: it was ~20 lines of YAML and, more to the point, a `runAsUser: 0` container in an otherwise non-root pod whose entire job was one `chmod`, and the Secret is now mounted straight into the daemon. Both probes moved from `tcpSocket` to `httpGet /healthz`, which reports a daemon whose session store has stopped answering — a state TCP calls healthy, because a socket keeps accepting connections long after the database behind it has gone. `examples/gke-deploy` is deliberately **not** included: it pins the 2.8.0 GA, and moving a stable example onto a pre-release to get a better probe is a bad trade — it collects the same fix at the next GA. ([#986](https://github.com/go-steer/core-agent/issues/986))
 
 ## [2.9.0-dev.6] — 2026-09-05
 

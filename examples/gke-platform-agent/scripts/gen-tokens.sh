@@ -41,7 +41,7 @@ export WATCHER_TOKEN="${WATCHER_TOKEN}"
 EOF
 chmod 0600 "${RIG_STATE_DIR}/demo-tokens.env"
 
-# users.json bearer table for the daemon (mounted via the initContainer).
+# users.json bearer table for the daemon (mounted straight off the Secret).
 cat > "${RIG_STATE_DIR}/users.json" <<EOF
 {
   "version": 1,
@@ -70,10 +70,11 @@ kubectl --context "${KUBE_CONTEXT}" -n "${DEMO_NS}" create secret generic lookou
 rm -f "${RIG_STATE_DIR}/users.json"
 
 # ── Restart whatever is already consuming these Secrets ──────────────
-# BOTH pods read their credential exactly once, at pod start: the daemon's
-# initContainer stages users.json into an emptyDir, and the watcher
-# resolves WATCHER_TOKEN from a secretKeyRef into its env. Neither picks
-# up a rewritten Secret while running.
+# BOTH pods read their credential exactly once, at pod start: the daemon
+# parses users.json at auth init and has no reloader, and the watcher
+# resolves WATCHER_TOKEN from a secretKeyRef into its env. kubelet does
+# refresh the daemon's mounted file in place, but nothing re-reads it, so
+# neither picks up a rotated Secret while running.
 #
 # That matters because re-running this script rotates both tokens, and
 # `set-up-demo.sh` only restarts a Deployment whose POD SPEC changed. A

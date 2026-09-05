@@ -66,41 +66,20 @@ spec:
         fsGroup: 65532
         runAsNonRoot: true
         runAsUser: 65532
-      # Stage users.json out of the Secret volume into an emptyDir with
-      # user-only mode. Required because the PINNED daemon image below
-      # rejects any group/other mode bits, and pod-level fsGroup=65532
-      # adds group-read to Secret-volume files — so a Secret mounted at
-      # defaultMode=0400 arrives as 0440 and the daemon aborts at
-      # multi-session auth init:
-      #   auth: users file ".../users.json" has mode 0440;
-      #        must be 0600 or stricter (group/other bits must be unset)
+      # No initContainer. The Secret is mounted straight into the daemon.
       #
-      # core-agent#944 accepts 0440 when the owning group is one the
-      # process belongs to, which is what fsGroup produces. Delete this
-      # initContainer, the users-src volume and the users emptyDir, and
-      # mount the Secret at /etc/core-agent directly — but only in the
-      # same change that bumps the image tag past the fix. Doing it
-      # sooner breaks the deploy against the tag pinned here.
-      initContainers:
-        - name: install-users-json
-          image: busybox:1.38.0
-          command:
-            - sh
-            - -c
-            - |
-              set -eu
-              cp /secret-src/users.json /shared/users.json
-              chmod 0400 /shared/users.json
-              chown 65532:65532 /shared/users.json
-          securityContext:
-            runAsUser: 0
-            runAsNonRoot: false
-          volumeMounts:
-            - name: users-src
-              mountPath: /secret-src
-              readOnly: true
-            - name: users
-              mountPath: /shared
+      # It used to need one: pod-level fsGroup=65532 adds group-read to
+      # Secret-volume files, so a Secret at defaultMode=0400 arrives as
+      # 0440, and the daemon rejected any group bit at multi-session auth
+      # init. Staging it through an emptyDir cost ~20 lines of YAML and,
+      # worse, a runAsUser: 0 container in an otherwise non-root pod — a
+      # root container whose entire job was one chmod.
+      #
+      # core-agent#944 accepts 0440 when the file's owning group is one
+      # this process belongs to, which is exactly what fsGroup produces
+      # (pkg/auth/users_mode.go). Any OTHER group still fails closed. So
+      # the Secret mount below is not a relaxation of the check, it is
+      # the check learning what fsGroup means.
       containers:
         - name: core-agent
           # Pinned, not :latest. With imagePullPolicy IfNotPresent a node
@@ -108,7 +87,7 @@ spec:
           # silently runs stale code after a rebuild — the same trap the
           # overlays call out for the content image. Both overlays override
           # this tag; bump all three together.
-          image: ghcr.io/go-steer/core-agent:2.9.0-dev.5
+          image: ghcr.io/go-steer/core-agent:2.9.0-dev.6
           imagePullPolicy: IfNotPresent
           args:
             # -c points into the content mount. The daemon derives
@@ -176,39 +155,49 @@ spec:
             # gke-troubleshoot uses over a ConfigMap projection.
             - name: plans
               mountPath: /opt/gke-platform-agent/.agents/plans
-            # users.json bearer table, staged by the initContainer above.
+            # users.json bearer table, straight off the Secret. Mounted
+            # as a DIRECTORY rather than subPath: a subPath file is
+            # projected once and kubelet never refreshes it, so a rotated
+            # Secret would not reach this path even across a container
+            # restart. The daemon still only reads the table at boot
+            # (pkg/auth has no reloader), so rotation means a rolling
+            # restart either way — but with the directory mount that is
+            # sufficient, and with subPath it is not.
+            #
             # /etc/core-agent is a normal kubelet-managed dir here (the
-            # content lives under /opt/...), so this file mount collides
-            # with nothing.
+            # content lives under /opt/...), so taking the whole
+            # directory collides with nothing.
             - name: users
-              mountPath: /etc/core-agent/users.json
-              subPath: users.json
+              mountPath: /etc/core-agent
               readOnly: true
             - name: session-db
               mountPath: /var/lib/core-agent
           readinessProbe:
-            # TCP probe: passes when :7777 accepts a connection, i.e.
-            # when the attach listener is up. That proves only that
-            # something is listening — not that the session store is
-            # queryable.
+            # GET /healthz — unauthenticated by construction (core-agent
+            # #946; pkg/attach/server.go serves it ahead of auth), 200
+            # when every registered subsystem check passes and 503 when
+            # one is degraded.
             #
-            # core-agent#946 adds an unauthenticated GET /healthz that
-            # 503s when a subsystem is degraded, which is a strictly
-            # better readiness signal. Switch to:
-            #
-            #   httpGet:
-            #     path: /healthz
-            #     port: attach
-            #
-            # in the same change that bumps the image tag past the fix
-            # (core-agent#986). The tag pinned above predates it and
-            # answers 404 there, which kubelet reads as not-ready.
-            tcpSocket:
+            # This replaces a tcpSocket probe, which passed as soon as
+            # :7777 accepted a connection. That is the wrong question: a
+            # daemon whose session store has gone unreadable still
+            # accepts TCP, so kubelet kept routing inject POSTs at a hub
+            # that could not serve them. Requires an image carrying #946
+            # — the tag pinned above does, older ones answer 404 and
+            # kubelet reads that as not-ready.
+            httpGet:
+              path: /healthz
               port: attach
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
-            tcpSocket:
+            # Same endpoint, longer period. Liveness restarts the pod, so
+            # it deliberately shares readiness's definition of healthy
+            # rather than inventing a weaker one — a subsystem that stays
+            # degraded through several readiness failures is a restart
+            # candidate, and that is what the 15s/20s spacing encodes.
+            httpGet:
+              path: /healthz
               port: attach
             initialDelaySeconds: 15
             periodSeconds: 20
@@ -220,17 +209,15 @@ spec:
           image:
             reference: ghcr.io/go-steer/gke-platform-agent-content:latest
             pullPolicy: IfNotPresent
-        # users.json Secret — mounted ONLY by the initContainer, which
-        # copies it into the users emptyDir with owner 65532:65532 mode
-        # 0400. The daemon mounts the emptyDir, never the Secret directly.
-        - name: users-src
+        # users.json Secret, mounted directly by the daemon. fsGroup
+        # 65532 turns defaultMode 0400 into 0440 owned by gid 65532 on
+        # disk, which is the shape core-agent#944 accepts. Do not "fix"
+        # this to 0600: kubelet applies fsGroup after defaultMode, so the
+        # group bit comes back regardless.
+        - name: users
           secret:
             secretName: core-agent-users
             defaultMode: 0400
-        - name: users
-          emptyDir:
-            medium: Memory
-            sizeLimit: 1Mi
         # Writable scratch for record_plan artifacts (nested at
         # /opt/gke-platform-agent/.agents/plans). Ephemeral — plans are
         # per-session and needn't survive restarts.

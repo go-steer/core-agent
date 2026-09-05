@@ -1,0 +1,48 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Same shape as daemon-env.yaml, for the watcher. Note the Deployment is
+# named `lookout-watch` but its CONTAINER is named `watcher` — patching
+# the wrong one silently no-ops, so both names matter here.
+#
+#   - OTEL_TRACES_EXPORTER=otlp — the watcher's --otel-exporter defaults
+#     to "none", so without this it exports nothing.
+#
+#   - OTEL_SERVICE_NAME=lookout-watch — since lookout v0.21.0 the
+#     watcher's spans already default to service.name=lookout rather
+#     than the SDK's "unknown_service:" placeholder, so this is not
+#     fixing a broken name. It is a deliberate override so the string an
+#     operator filters Cloud Trace by matches the Deployment they grep
+#     for. OTEL_SERVICE_NAME still wins over the binary's own default.
+#
+# The endpoint is deliberately NOT set: on GKE the Instrumentation CR
+# injects OTEL_EXPORTER_OTLP_ENDPOINT. Off-GKE, lookout v0.21.0 falls
+# back to the OTel spec default (http://localhost:4318) rather than
+# silently building no exporter at all, which is what it did through
+# v0.20.0 — a boot line claiming OTLP and then zero spans. This recipe
+# pins v0.22.0, so that trap is behind us.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lookout-watch
+spec:
+  template:
+    spec:
+      containers:
+        - name: watcher
+          env:
+            - name: OTEL_TRACES_EXPORTER
+              value: "otlp"
+            - name: OTEL_SERVICE_NAME
+              value: "lookout-watch"

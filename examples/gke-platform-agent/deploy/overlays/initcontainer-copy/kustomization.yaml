@@ -1,0 +1,108 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Fallback overlay for clusters BELOW the OCI image-volume floor
+# (k8s < 1.33 / GKE < 1.35). Delivers the SAME content image as an
+# initContainer copy into a shared emptyDir instead of an image volume.
+# See docs/agent-content-distribution-design.md.
+#
+# Build the content image's busybox flavor for this overlay:
+#   docker build -f deploy/content.Dockerfile \
+#     --build-arg BASE=cgr.dev/chainguard/busybox \
+#     -t ghcr.io/go-steer/gke-platform-agent-content:<tag>-copy .
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# Pin images. The content image here must be the BUSYBOX-flavor build
+# (it needs `cp`); a FROM-scratch image has no cp and the initContainer
+# would fail. The default images transformer covers the initContainer's
+# `.image`, so no custom fieldSpec is needed for this overlay.
+#
+# Keep these three in lockstep with ../example/kustomization.yaml and
+# with prereqs.sh, which is the declared source of truth. The 2.8.0 GA
+# predates the roster (#668), sync-spawn output (#667), safety.watchdog
+# (#665) and plan_mode/wait_and_verify (#215/#648) this recipe needs; the
+# config's declared floor is 2.9.0-dev.1.
+images:
+  - name: ghcr.io/go-steer/core-agent
+    newTag: "2.9.0-dev.5"
+  - name: ghcr.io/go-steer/lookout
+    newTag: "v0.23.0"
+  # Immutable tag (or digest), NOT :latest — the initContainer uses
+  # pullPolicy: IfNotPresent, so a cached :latest-copy would never
+  # re-pull and the daemon would serve stale content. Bump on every
+  # content change.
+  #
+  # There is no published copy of this image — YOU build and push it — so
+  # the newName below is deliberately an obvious placeholder rather than
+  # a plausible-looking default. set-up-demo.sh supplies both name and tag
+  # from ${CONTENT_IMAGE}:${CONTENT_TAG}-copy before applying.
+  #
+  # Spelled with `your-` on purpose: that is the string set-up-demo.sh
+  # greps the RENDERED manifest for before it applies anything, so an
+  # unfilled content ref fails at the point of deploy rather than as an
+  # ImagePullBackOff a few minutes later. Leaving the bare ghcr.io name
+  # here would also not pull, but nothing would notice first.
+  - name: ghcr.io/go-steer/gke-platform-agent-content
+    newName: us-central1-docker.pkg.dev/your-project-id/your-repo/gke-platform-agent-content
+    newTag: "v1-copy"
+
+# The same four coordinates ../example sets, and for the same reasons —
+# see that file. Restated rather than shared because a `components:` entry
+# holding them would be one more indirection between an operator and the
+# four strings they have to change.
+#
+# GOOGLE_CLOUD_LOCATION is the VERTEX endpoint ("global"), not the
+# cluster's region. Setting it to a GCP region here is the exact fold the
+# base warns about, and it fails asymmetrically: the daemon still boots,
+# `gke` still works, and only the model call 404s — on this overlay and
+# not on ../example, which is the hardest kind of difference to see.
+configMapGenerator:
+  - name: core-agent-gcp-env
+    behavior: merge
+    literals:
+      - GOOGLE_CLOUD_PROJECT=your-project-id
+      - GOOGLE_CLOUD_LOCATION=global
+      # Keep in sync with --cluster-name in patch-watcher-args.yaml.
+      - GKE_CLUSTER=your-cluster
+      - GKE_LOCATION=us-central1
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+patches:
+  # Swap the image volume for the initContainer-copy delivery.
+  - path: patch-content-via-initcontainer.yaml
+    target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: core-agent
+  # Set the watcher's --cluster-name.
+  - path: patch-watcher-args.yaml
+    target:
+      kind: Deployment
+      name: lookout-watch
+  # Select the model flavor (gemini | anthropic) by pointing the daemon's
+  # -c at the matching config file. Written by set-up-demo.sh from
+  # ${MODEL_FLAVOR}; see the patch file for why this isn't a --model flag.
+  - path: patch-agent-config.yaml
+    target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: core-agent

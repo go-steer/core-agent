@@ -1,0 +1,49 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Strategic-merge patch adding the daemon's two OTel env vars.
+#
+#   - OTEL_TRACES_EXPORTER=otlp — overrides cfg.OTEL.Exporter (default
+#     "none") without editing a config file. That matters here more than
+#     usual: this recipe's config travels inside the content OCI image,
+#     so turning tracing on via config would mean a content rebuild and
+#     a CONTENT_TAG bump. As an env var it is a redeploy.
+#
+#   - OTEL_SERVICE_NAME=core-agent — the Instrumentation CR does not
+#     inject this, and without it spans arrive as
+#     "unknown_service:core-agent".
+#
+# Container-list merge is BY NAME, so this reaches the `core-agent`
+# container without disturbing the base's args / envFrom / volumeMounts.
+# Note the base also has an initContainer (install-users-json); naming
+# the container is what keeps this patch off it.
+#
+# The env LIST itself merges by name too, so these two are added to
+# whatever the base declares rather than replacing it. The base daemon
+# container currently sets no `env:` at all (only `envFrom:`), so this
+# is additive either way.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: core-agent
+spec:
+  template:
+    spec:
+      containers:
+        - name: core-agent
+          env:
+            - name: OTEL_TRACES_EXPORTER
+              value: "otlp"
+            - name: OTEL_SERVICE_NAME
+              value: "core-agent"

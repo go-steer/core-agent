@@ -1,0 +1,36 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Binds the watcher's ServiceAccount (lookout-watch in gke-platform-agent)
+# to the kube-system capacity Role (14-role-watcher-capacity.yaml). Only
+# needed with --sources=…,capacity. Vendored from go-steer/k8s-lookout
+# deploy/15-rolebinding-watcher-capacity.yaml @ v0.22.0 (v0.22.0 added
+# only the app.kubernetes.io labels here, which this recipe does not
+# carry — see 12-clusterrole-watcher.yaml); changed from
+# upstream: metadata.name + roleRef.name (suffixed "-gke-platform-agent" to
+# match the Role) and the subject namespace (gke-platform-agent, this recipe's
+# namespace, not upstream's agent-triage).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: lookout-watch-capacity-gke-platform-agent
+  namespace: kube-system
+subjects:
+  - kind: ServiceAccount
+    name: lookout-watch
+    namespace: gke-platform-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: lookout-watch-capacity-gke-platform-agent

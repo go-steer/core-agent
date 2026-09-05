@@ -1,0 +1,225 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The event-watcher (`lookout watch` from go-steer/k8s-lookout). Watches
+# Kubernetes Events via the local kube-apiserver, filters + dedupes, and
+# POSTs matched events to the core-agent daemon's session inject
+# endpoint — turning cluster incidents into Platform Agent sessions.
+#
+# Runs as a SEPARATE Deployment (not a sidecar) so the two scale and
+# restart independently, and so additional watchers in remote clusters
+# follow the same template: copy this manifest, change --cluster-name +
+# --daemon-url, deploy into the remote cluster pointing at this daemon's
+# externally-reachable endpoint.
+#
+# AUTH: the watcher POSTs with a bearer token (WATCHER_TOKEN) whose
+# identity is "sa:lookout-watch" — listed in config.hub.json's
+# multi_session.proxy_identities, so it may assert X-Asserted-Caller:
+# platform-oncall@example.com (an admin_identity) when creating incident
+# sessions. See deploy/base/20-secrets-placeholder.md.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lookout-watch
+  namespace: gke-platform-agent
+  labels:
+    app.kubernetes.io/name: lookout-watch
+    app.kubernetes.io/component: watcher
+spec:
+  replicas: 1
+  # Recreate, not the default RollingUpdate: with replicas: 1 a rolling
+  # update starts the new pod before terminating the old one, so every
+  # rollout briefly runs two sentinels watching the same cluster and
+  # double-emitting every signal. Recreate trades a few seconds of
+  # downtime for that, which is the right way round for a watcher —
+  # a gap in coverage is recoverable, duplicate incidents are noise
+  # someone has to triage. Vendored from lookout v0.22.0.
+  #
+  # This matters more here than upstream: break-workload.sh restores and
+  # re-breaks in a loop, and each content/image bump rolls the watcher.
+  #
+  # This fixes the rollout case only. A node failure, an eviction, or a
+  # manual scale-up still produces two sentinels; leader election is the
+  # real answer and is tracked separately.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lookout-watch
+      app.kubernetes.io/component: watcher
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lookout-watch
+        app.kubernetes.io/component: watcher
+    spec:
+      serviceAccountName: lookout-watch
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: watcher
+          # ENTRYPOINT is `lookout watch`. This recipe tracks the current
+          # lookout release, v0.23.0. Naming came from v0.17.0, which
+          # retired the k8s-event-watcher transition naming
+          # (lookout#205/#206) — every resource here is named
+          # `lookout-watch` to match. Capability floors that still
+          # matter: v0.14.0 first carried per-resource-Forbidden tolerance
+          # (k8s-lookout#192), so if an operator narrows the ClusterRole
+          # (12-clusterrole-watcher.yaml), enrichment degrades to a
+          # documented `skipped=` partial instead of hard-failing the whole
+          # LoadCluster pass; v0.11.0 remains the hard floor for the CSRF
+          # Content-Type fix — earlier releases don't send Content-Type on
+          # the bodyless POST /sessions, which the daemon's CSRF guard
+          # rejects with 415.
+          #
+          # No --sources / --storm pinned: the args below ride the binary
+          # defaults (--sources=auto --storm=auto), which probe this
+          # deployment's RBAC at startup and enable every source it
+          # supports — with the enrichment-complete ClusterRole applied
+          # (12/14), that lights up enrichment + storm correlation without
+          # pinning (and stays portable across platforms that deny a grant,
+          # e.g. GKE Autopilot vs nodes/proxy). For strict fail-fast, pin
+          # an explicit --sources list per upstream's shipped manifest; for
+          # post-mortem history add --store on a volume (see k8s-lookout
+          # deploy/51-deployment-watcher.yaml).
+          #
+          # v0.18.0 added two behaviors this recipe gets for free, both on
+          # by default and neither needing a flag or an RBAC grant:
+          #   - image-pull failures are classified by the kubelet's error
+          #     rather than by reason, and the RETRYABLE ones (registry
+          #     429/quota, 5xx, timeout, reset) must reach
+          #     --imagepull-transient-min-count (3) before firing
+          #     (lookout#213/#216). Terminal causes — bad tag, denied, no
+          #     space — and unrecognized ones still fire on the first
+          #     event, so a genuinely broken image is as loud as before.
+          #   - watchboard warnings reattach to a live incident sharing
+          #     their ancestor (lookout#220) instead of accumulating in a
+          #     parallel digest, so the symptoms of an open incident land
+          #     in the session already working it.
+          # Its third feature, multi-cluster (--clusters/--clusters-from,
+          # lookout#208), is opt-in and NOT used here: one sentinel per
+          # cluster stays the recommended shape, and the multi-cluster
+          # path needs a Fleet-capable build plus cloud IAM this
+          # deployment's k8s RBAC does not cover.
+          #
+          # v0.19.0 → v0.21.0 add nothing this deployment must set. All of
+          # it is opt-in CLI surface: --storm-mine, --exemptions, the
+          # `lookout findings diff|ack` pair (which needs --store), and
+          # the `audit` command group — sixteen workload/posture/cluster
+          # detectors, none of which the sentinel runs and none of which
+          # needs a grant beyond what 12-clusterrole-watcher.yaml already
+          # carries. v0.21.0 also makes --otel-exporter=otlp actually
+          # export against the spec default endpoint instead of silently
+          # no-op'ing; irrelevant here (no OTel on the watcher) but it
+          # would bite an overlay that turns it on.
+          #
+          # v0.21.0 → v0.22.0 is the first lookout bump in this recipe
+          # that is NOT a pure image swap. Three things in the manifests
+          # above came with it, and v0.22.0 is now a HARD FLOOR for this
+          # file because of the second one:
+          #   - the ClusterRole gains networking.k8s.io/ingressclasses
+          #     and storage.k8s.io/storageclasses (list, names only), for
+          #     two failures that produce no event: an Ingress naming a
+          #     class no controller serves, and volumeClaimTemplates
+          #     naming a StorageClass that no longer exists. Without the
+          #     grant the sentinel does not crash — v0.14.0's
+          #     per-resource-Forbidden tolerance keeps it running — it
+          #     just silently stops running those checks, which is the
+          #     starved-enrichment failure #618 was about.
+          #   - readinessProbe moves to /readyz, which only exists from
+          #     v0.22.0. Pin an older image against this base and the
+          #     probe 404s forever and the pod never goes Ready.
+          #   - strategy: Recreate, so a rollout stops double-emitting.
+          # Two fixes matter to this demo without needing anything set:
+          # the sentinel no longer replays the whole Event backlog as
+          # fresh findings on every restart (break-workload.sh restarts
+          # it), and three inject-ceiling bugs on large payloads are
+          # fixed. `lookout scan` is new and opt-in; the sentinel does
+          # not run it.
+          #
+          # v0.22.0 → v0.23.0 IS a pure image swap: the only change in
+          # lookout's whole shipped deploy/ tree is this tag, so the
+          # vendored RBAC above is still byte-current and the `@ v0.22.0`
+          # provenance on 12/14/15/16 is accurate, not stale. Everything
+          # in v0.23.0 is CLI and MCP surface the sentinel does not
+          # touch — `scan`'s edge sweep, `state edges` from a Service,
+          # two `findings diff` fixes, and `target` accepted as an alias
+          # for `workload` across the MCP tools. That last one becomes
+          # interesting only if this recipe ever grows the lookout MCP
+          # sidecar (core-agent #620); today nothing here speaks MCP to
+          # the sentinel.
+          image: ghcr.io/go-steer/lookout:v0.23.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--daemon-url=http://core-agent.gke-platform-agent.svc.cluster.local:7777"
+            - "--token-env=WATCHER_TOKEN"
+            - "--mode=per-incident"
+            # The identity that owns incident sessions — an admin_identity
+            # in config.hub.json. The watcher asserts this via its proxy
+            # identity (sa:lookout-watch).
+            - "--owner=platform-oncall@example.com"
+            # Overridden per cluster by deploy/overlays/example/.
+            - "--cluster-name=local"
+            - "--dedup-window=5m"
+            # Don't let the agent triage its own control plane. Without
+            # this, a rollout restart of the daemon raises a
+            # progress_deadline on the core-agent Deployment itself, the
+            # watcher fires it back at the agent, and the agent spends a
+            # full session diagnosing the pod it is running inside — a
+            # self-referential incident whose "fault" has already healed
+            # by the time it looks. Observed 2026-08-13: 37 tool calls
+            # and 2.1M input tokens before the per-turn cost ceiling
+            # stopped it.
+            - "--exclude-namespace=gke-platform-agent"
+            - "--in-cluster"
+            - "--metrics-addr=:9090"
+            - "--log-level=info"
+          env:
+            - name: WATCHER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: lookout-watch-token
+                  key: token
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          # /readyz, not /healthz: liveness asks whether the process is
+          # up, readiness asks whether it has established its watches.
+          # The sentinel spends its first seconds listing every
+          # informer's world and is blind until they sync, which is
+          # exactly the window a rollout must not cut over into.
+          # Vendored from lookout v0.22.0; /readyz also gained a fix
+          # there for reporting a lifecycle phase in the field meant
+          # for a cluster name.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10

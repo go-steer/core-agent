@@ -1,0 +1,14 @@
+# Deliberately committed (and deliberately empty).
+#
+# The image-volume deployment nests a writable `plans` emptyDir at
+# .agents/plans INSIDE the read-only content mount. A read-only image
+# layer cannot have that mount point created at mount time, so the
+# directory must already exist in the content image — which means it must
+# exist here, in the source tree the image is built from.
+#
+# See deploy/content.Dockerfile and deploy/base/50-deployment-daemon.yaml,
+# which arrive with this recipe's deploy/ tree.
+#
+# record_plan derives plansDir = agentsDir + "/plans" (pkg/tools/record_plan.go).
+# Locally the dir is created on demand; in the read-only image volume it
+# must be pre-baked.

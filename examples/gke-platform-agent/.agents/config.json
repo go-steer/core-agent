@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "model": {
+    "provider": "vertex",
+    "name": "gemini-3.7-flash"
+  },
+  "permissions": {
+    "mode": "yolo",
+    "plan_mode": "required"
+  },
+  "tools": {
+    "disable": [
+      "bash",
+      "write_file",
+      "edit_file",
+      "delete_file",
+      "glob",
+      "grep",
+      "list_dir"
+    ],
+    "wait_and_verify": {
+      "poll_allow": [
+        "gke_get_k8s_resource",
+        "gke_describe_k8s_resource",
+        "gke_get_k8s_rollout_status",
+        "gke_list_k8s_events",
+        "gke_get_k8s_logs"
+      ],
+      "max_timeout_seconds": 120,
+      "max_attempts": 20
+    }
+  },
+  "safety": {
+    "small_tier_parent": "allow",
+    "watchdog": "enforce"
+  },
+  "agent": {
+    "display_name": "platform-agent-native",
+    "max_steps": 250,
+    "max_turn_cost_usd": 0.5,
+    "max_session_cost_usd": 5.0
+  },
+  "alerts": {
+    "rate_limit_per_target": "5/min",
+    "targets": [
+      {
+        "name": "oncall",
+        "kind": "webhook",
+        "template": "generic",
+        "url_env": "PLATFORM_AGENT_ALERT_WEBHOOK",
+        "description": "Page the on-call platform engineer. Use for an incident you could not resolve or that needs a human to apply a proposed change. Include the cluster, the workload, and your proposal."
+      }
+    ]
+  },
+  "subagents": [
+    {
+      "name": "cluster",
+      "description": "Read-only diagnostician scoped to exactly one named GKE cluster. Delegate a single cluster's live runtime debugging here: crash/restart loops, OOMKills, pending/unschedulable pods, image-pull and mount errors, connectivity/DNS timeouts, autoscaling (HPA/VPA/cluster-autoscaler) behavior, PVC/storage binding, and observability gaps. It performs read-only diagnostics and returns a grounded root-cause analysis plus a proposed manifest patch; it never mutates cluster state and never opens PRs. Do NOT route fleet-wide work, provisioning/lifecycle, RBAC/multi-tenancy, or GitOps changes here.",
+      "root": "../cluster",
+      "model": { "provider": "vertex", "name": "gemini-3.7-flash" },
+      "tools": ["read_file", "read_many_files", "json_query", "retrieve_raw", "todo", "record_plan"]
+    }
+  ]
+}

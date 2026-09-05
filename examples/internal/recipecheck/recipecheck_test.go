@@ -21,6 +21,8 @@ import (
 	"testing"
 
 	"github.com/go-steer/core-agent/v2/examples/internal/recipecheck"
+	"github.com/go-steer/core-agent/v2/pkg/digest"
+	"github.com/go-steer/core-agent/v2/pkg/tools"
 )
 
 // fixture writes a synthetic recipe: a config.json, an optional mcp.json,
@@ -646,6 +648,41 @@ func TestSubagentScopeRefusesWhatTheRuntimeRefuses(t *testing.T) {
 			t.Fatal("Check accepted a subagent root that does not exist")
 		}
 	})
+
+	// The counterpart, and the reason this subtest exists: the check must
+	// refuse only what the runtime refuses. retrieve_raw is a real built-in
+	// that cmd/core-agent appends OUTSIDE tools.Build (main.go:1392, gated
+	// on the digest store, which is on unless --no-mcp-digest), so a
+	// registry reconstructed from config alone does not contain it. Before
+	// the fix, every subagent allowlist naming it was rejected with "the
+	// parent registry does not hold it, so cmd/core-agent refuses this
+	// config at boot" — about a config that boots.
+	t.Run("retrieve_raw is a real builtin the config cannot see", func(t *testing.T) {
+		cfg := `{
+		  "version": 1,
+		  "subagents": [{"name": "cluster", "root": "../cluster", "tools": ["read_file", "retrieve_raw"]}]
+		}`
+		r := rootedFixture(t, cfg, "", "", "", "Anything.\n")
+		if _, err := recipecheck.Check(r, recipecheck.Policy{}); err != nil {
+			t.Fatalf("Check rejected a subagent allowlist naming retrieve_raw, which boots fine: %v", err)
+		}
+	})
+}
+
+// TestRetrieveRawNameMatchesTheBuiltin pins the one string recipecheck
+// hardcodes. pkg/tools keeps the name unexported (defaultRetrieveRawName,
+// retrieve.go:28), so the registry patch above cannot import it; this
+// asserts the copy against the real tool instead. Renaming the built-in
+// without touching recipecheck fails here rather than silently restoring
+// the false positive.
+func TestRetrieveRawNameMatchesTheBuiltin(t *testing.T) {
+	tl, err := tools.NewRetrieveRawTool(tools.RetrieveRawOptions{Store: &digest.LazyStore{}})
+	if err != nil {
+		t.Fatalf("NewRetrieveRawTool: %v", err)
+	}
+	if got := tl.Name(); got != "retrieve_raw" {
+		t.Errorf("built-in name = %q; recipecheck.retrieveRawToolName still says %q", got, "retrieve_raw")
+	}
 }
 
 // TestWaiverFloorCatchesATreeGoingDark is the guard #766 itself needed. A

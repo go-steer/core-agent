@@ -602,8 +602,27 @@ func registeredBuiltins(cfg *config.Config, agentsDir string) (map[string]bool, 
 	if b.Alert && len(cfg.Alerts.Targets) > 0 {
 		out["alert"] = true
 	}
+	// Second deliberate divergence, for the opposite reason: tools.Build
+	// does not assemble the WHOLE boot registry. cmd/core-agent appends
+	// retrieve_raw separately at main.go:1392, gated on the digest store
+	// existing — which is `!noMCPDigest`, a FLAG that defaults to on, not
+	// anything reachable from config. So a config-only reconstruction of
+	// the registry cannot see it, and every recipe naming retrieve_raw in
+	// a subagent allowlist was reported as a boot-refusing config while
+	// booting fine. Registering it here mirrors the default posture the
+	// flag's own help text describes ("Also registers retrieve_raw as a
+	// built-in tool"). A deployment that passes --no-mcp-digest turns it
+	// off, but that is a runtime choice this check cannot read, and the
+	// same is true of the digest layer the tool exists to escape.
+	out[retrieveRawToolName] = true
 	return out, nil
 }
+
+// retrieveRawToolName is the built-in cmd/core-agent registers outside
+// tools.Build. Spelled here rather than imported because pkg/tools keeps
+// the constant unexported (defaultRetrieveRawName, retrieve.go:28); if the
+// name ever moves, TestRetrieveRawNameMatchesTheBuiltin fails.
+const retrieveRawToolName = "retrieve_raw"
 
 // unreachableToolName decides whether a name used in a tool position can
 // resolve at runtime. Returns ("", true) when it can.

@@ -441,6 +441,13 @@ else
 fi
 ```
 
+**Shipped as `dev/tools/focus` (#979) with two corrections; run that, not this.** The
+`--grep='live-uat:'` above matches any commit that *mentions* the trailer — the drill's
+own PR body did — so it reported "0 days since live UAT" before a drill had ever run;
+the shipped version reads `%(trailers:key=live-uat)` instead. And `[ "$T" -gt 0 ] &&
+printf …` aborts under `set -e` on a window with no Go changes, before the second
+number is printed. This listing is left as filed.
+
 Everything not in the `META` list counts as capability, so the two buckets always sum
 to the total — no silent third bucket where drift can hide.
 

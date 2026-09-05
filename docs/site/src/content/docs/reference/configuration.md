@@ -1274,13 +1274,35 @@ Nested under `attach`, enables the multi-tenant surface where distinct callers e
 
 Override discovery with the CLI's `-c <path>` flag, which reads the file directly and treats its parent directory as the agentsDir for MCP / skills resolution.
 
+### Where `agentsDir` comes from (v2.9.0-dev, #945)
+
+The **agentsDir** is the directory MCP servers, skills, plans, `env.yaml` and relative [`content_roots`](#content_roots-v29) and subagent `root` paths resolve from. It is decided independently of the config's own location, in this order:
+
+| Precedence | Source | Startup-summary label |
+| --- | --- | --- |
+| 1 | `--agents-dir <dir>` | `via --agents-dir` |
+| 2 | `filepath.Dir(-c)` — the directory holding the file `-c` named | `derived from filepath.Dir(-c)` |
+| 3 | The `.agents/` directory discovery walked up to from the cwd | `via .agents/ discovery` |
+
+Before `--agents-dir` existed, rule 2 was unconditional: pointing `-c` at a config outside your content tree silently moved the whole tree with it, and the only workarounds were symlinks or a `cd`. Use `--agents-dir` when the two genuinely live apart — a read-only mounted config next to a writable content volume, for example:
+
+```bash
+core-agent -c /etc/core-agent/config.json --agents-dir /var/lib/core-agent/.agents --attach
+```
+
+A `--agents-dir` that does not exist, or that names a file rather than a directory, is a **fatal startup error** (exit `2`), not a warning. Everything downstream of the value fails *silently* when it points nowhere — no MCP servers, no skills, no `env.yaml`, nowhere for `record_plan` to write — so a typo would otherwise produce a daemon that starts cleanly and knows nothing.
+
+Passing `--agents-dir` **without** `-c` while a `config.json` is discovered in a different tree is legal but prints a warning: settings then come from one tree and content from another, and the symptom (settings apply, content does not) looks like content that failed to load rather than content that was never looked for. Pass `-c` as well to say you meant it.
+
+There is no `config.json` equivalent — the flag decides where content is read from, so it cannot itself be read from that content.
+
 ### Startup summary
 
 Every invocation prints a compact one-line-per-item summary to stderr right after config resolution — the exact model + provider, the source of the config (`.agents/` discovery vs. `-c <path>` vs. built-in defaults), the resolved `agentsDir`, and follow-up notices for MCP servers, skills, and multi-session auth. Use this to confirm at a glance which config actually loaded when a deployment behaves unexpectedly.
 
 ```
 core-agent: config: source=/home/me/proj/.agents/config.json (via .agents/ discovery)
-core-agent: agentsDir: /home/me/proj/.agents
+core-agent: agentsDir: /home/me/proj/.agents (via .agents/ discovery)
 core-agent: model: claude-opus-5 provider=anthropic-vertex
 core-agent: mcp: 2 server(s) loaded — github(ok), grafana(ok)
 core-agent: skills: 3 loaded — code-review, security-review, incident-triage
@@ -1306,6 +1328,7 @@ A handful of features are CLI-flag-only, with no `config.json` field today (cons
 |---|---|
 | `-i` / `--interactive-prompt=TEXT` | [Interactive quickstart → Seed the first turn](/run/interactive/quickstart/) — submit an initial turn on startup and stay in the REPL/TUI. Mutually exclusive with `-p`; incompatible with `--no-repl`. |
 | `--allow-path=PATH:MODE` | [Permissions → Path scope](/concepts/permissions/) — grant `r` / `w` / `rw` access to a tree outside project + user-home roots (repeatable). |
+| `--agents-dir=DIR` | [Where `agentsDir` comes from](#where-agentsdir-comes-from-v290-dev-945) — point MCP / skills / plans / content roots at a tree the config does not live in. Deliberately not config-backed. |
 | `--ask=stdin\|auto\|off` | [Library API → Prompter](/embed/api/#prompter) |
 | `--session-db`, `--session-db-path` | [Sessions and event log](/concepts/sessions/#cli-flags) |
 | `--color=auto\|always\|never` | [Library API → Color](/embed/api/#color) |

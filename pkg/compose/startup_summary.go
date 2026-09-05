@@ -45,6 +45,25 @@ type StartupSummaryInputs struct {
 	// still runs; MCP + skills + record_plan just have nowhere to
 	// live.
 	AgentsDir string
+	// AgentsDirOrigin is the human-readable reason AgentsDir has the
+	// value it does — "derived from filepath.Dir(-c)", "via
+	// --agents-dir", "via .agents/ discovery". The value alone is not
+	// enough to debug a wrong one: the three routes to it are fixed in
+	// three different places, and knowing which applied is the
+	// difference between "fix your flag" and "you are running from the
+	// wrong directory" (#945).
+	//
+	// Empty falls back to inferring the origin from CfgPath, which is
+	// correct for every caller that predates --agents-dir.
+	AgentsDirOrigin string
+	// DiscoveredConfigDir is the directory config discovery actually
+	// landed on, which is where config.json was read from when CfgPath
+	// is empty. It is NOT the same thing as AgentsDir once --agents-dir
+	// is in play: the flag moves AgentsDir without moving the config,
+	// and inferring the config's location from AgentsDir would then name
+	// a file that does not exist (#945). Empty falls back to AgentsDir,
+	// which is correct for every caller that predates --agents-dir.
+	DiscoveredConfigDir string
 	// ProviderName is the concrete provider name after resolution
 	// (vertex / gemini / anthropic / anthropic-vertex / echo /
 	// scripted). Comes from provider.Name() at the call site.
@@ -80,10 +99,10 @@ func FormatStartupSummary(in StartupSummaryInputs) []string {
 	lines := make([]string, 0, 7)
 
 	// 1. config: source + resolution path.
-	lines = append(lines, formatConfigLine(in.CfgPath, in.AgentsDir))
+	lines = append(lines, formatConfigLine(in.CfgPath, in.DiscoveredConfigDir, in.AgentsDir))
 
 	// 2. agentsDir: resolved absolute path + how we got there.
-	lines = append(lines, formatAgentsDirLine(in.CfgPath, in.AgentsDir))
+	lines = append(lines, formatAgentsDirLine(in.CfgPath, in.AgentsDir, in.AgentsDirOrigin))
 
 	// 3. model + provider + project/location (for cloud providers) +
 	//    the provider's server-side built-in tools.
@@ -109,25 +128,33 @@ func FormatStartupSummary(in StartupSummaryInputs) []string {
 	return lines
 }
 
-func formatConfigLine(cfgPath, agentsDir string) string {
+func formatConfigLine(cfgPath, discoveredConfigDir, agentsDir string) string {
+	if discoveredConfigDir == "" {
+		// Pre-#945 callers pass only AgentsDir, which was the directory
+		// discovery landed on back when nothing could move it.
+		discoveredConfigDir = agentsDir
+	}
 	switch {
 	case cfgPath != "":
 		return fmt.Sprintf("config: source=%s (via -c)", cfgPath)
-	case agentsDir != "":
+	case discoveredConfigDir != "":
 		// Discovery walked up from cwd and landed on .agents/.
-		return fmt.Sprintf("config: source=%s (via .agents/ discovery)", filepath.Join(agentsDir, "config.json"))
+		return fmt.Sprintf("config: source=%s (via .agents/ discovery)", filepath.Join(discoveredConfigDir, "config.json"))
 	default:
 		return "config: source=<none> (pure defaults; no -c and no .agents/ discovered)"
 	}
 }
 
-func formatAgentsDirLine(cfgPath, agentsDir string) string {
+func formatAgentsDirLine(cfgPath, agentsDir, origin string) string {
 	if agentsDir == "" {
 		return "agentsDir: <none> (record_plan / MCP / skills have no place to live)"
 	}
-	origin := "via .agents/ discovery"
-	if cfgPath != "" {
-		origin = "derived from filepath.Dir(-c)"
+	if origin == "" {
+		// Pre-#945 inference, for callers that do not set the field.
+		origin = "via .agents/ discovery"
+		if cfgPath != "" {
+			origin = "derived from filepath.Dir(-c)"
+		}
 	}
 	return fmt.Sprintf("agentsDir: %s (%s)", agentsDir, origin)
 }

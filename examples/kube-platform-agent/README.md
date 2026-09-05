@@ -3,6 +3,9 @@
 > [!IMPORTANT]
 > **This recipe is frozen as a portability case study — it is not the recommended
 > starting point for a new agent.** ([#704](https://github.com/go-steer/core-agent/issues/704))
+> Start from [`../gke-platform-agent`](../gke-platform-agent/) instead: the same job
+> — watcher-driven triage, propose-only remediation, a single-cluster specialist
+> subagent — with an identity authored for this runtime rather than inherited.
 >
 > It set out to prove that core-agent's v2 loader can run an *unmodified* snapshot
 > of a third-party (Hermes) agent's content. **It proved that**: content roots,

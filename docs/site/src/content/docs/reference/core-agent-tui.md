@@ -89,7 +89,7 @@ Basic remote attach with bearer auth:
 
 ```bash
 ATTACH_TOKEN=$(openssl rand -hex 32) \
-  core-agent --no-repl --session-db --attach-listen=:7777 \
+  core-agent --no-repl --attach-listen=:7777 \
   --attach-token=ATTACH_TOKEN &
 
 core-agent-tui http://localhost:7777 --token=ATTACH_TOKEN

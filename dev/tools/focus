@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# dev/tools/focus — weekly focus check. Two numbers. Never CI-wire this.
+#
+#     dev/tools/focus                 # the last 7 days
+#     dev/tools/focus '21 days ago'   # any git --since expression
+#
+# META SHARE is production Go landing in the harness as a fraction of
+# all production Go. Everything outside the META list counts as
+# capability, so the buckets sum to the total and drift has no third
+# bucket to hide in. Alarm above 20%: quiet for the healthy window (13%
+# since 2026-07-25), firing for the one that prompted this (30% over the
+# 21 days before 2026-09-05).
+#
+# DAYS SINCE LIVE UAT reads the `live-uat: <cluster> <verdict>` trailer
+# a drill run records (dev/uat/gke-drill/README.md). Alarm above 10.
+# `fail` is an ordinary verdict — this counts runs, not wins.
+#
+# NEVER CI-WIRE THIS, and never give it a test, a package or a gate.
+# #790 + #844 spent 6,146 lines on a drift detector that detected fine
+# and changed nothing: attention was the bottleneck, not detection. If
+# this ever needs a fix, deleting it is a correct response.
+set -euo pipefail
+SINCE="${1:-7 days ago}"
+META='^(dev/|internal/imagepin/|examples/internal/|[.]github/)'
+
+read -r M C < <(git log --since="$SINCE" --numstat --pretty=tformat: \
+  | awk -v meta="$META" '
+      $3 ~ /[.]go$/ && $3 !~ /_test[.]go$/ { if ($3 ~ meta) m+=$1+$2; else c+=$1+$2 }
+      END { print m+0, c+0 }')
+
+T=$((M + C))
+printf 'meta Go %d / capability Go %d\n' "$M" "$C"
+if [ "$T" -gt 0 ]; then
+  printf 'META SHARE: %d%%   (alarm > 20%%)\n' $((100 * M / T))
+fi
+
+# Read the TRAILER, not the message. `--grep='live-uat:'` matches any
+# commit that merely mentions it — the drill's own PR body did, which
+# made this read "0 days" before a single drill had run. A metric whose
+# alarm cannot fire is worse than no metric.
+last=$(git log --all --date-order \
+  --format='%cI%x09%(trailers:key=live-uat,valueonly,separator=%x2C)' \
+  | awk -F'\t' 'NF > 1 && $2 != "" { print $1; exit }')
+if [ -z "$last" ]; then
+  echo 'LIVE UAT: never recorded — add a `live-uat:` commit trailer'
+else
+  printf 'DAYS SINCE LIVE UAT: %d   (alarm > 10)\n' \
+    $(( ($(date +%s) - $(date -d "$last" +%s)) / 86400 ))
+fi

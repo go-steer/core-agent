@@ -32,10 +32,12 @@ import (
 func TestFormatConfigLine(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name       string
-		cfgPath    string
-		agentsDir  string
-		wantSubstr []string
+		name          string
+		cfgPath       string
+		discoveredDir string
+		agentsDir     string
+		wantSubstr    []string
+		notSubstr     []string
 	}{
 		{
 			name:       "explicit -c wins",
@@ -55,14 +57,31 @@ func TestFormatConfigLine(t *testing.T) {
 			agentsDir:  "",
 			wantSubstr: []string{"config: source=<none>", "pure defaults"},
 		},
+		{
+			// #945: --agents-dir moves agentsDir but not the config.
+			// Inferring the config's location from agentsDir here names
+			// a config.json that does not exist, on the one line whose
+			// job is to say where the config came from.
+			name:          "--agents-dir must not relocate the discovered config",
+			cfgPath:       "",
+			discoveredDir: "/proj/.agents",
+			agentsDir:     "/opt/recipe/.agents",
+			wantSubstr:    []string{"/proj/.agents/config.json", "(via .agents/ discovery)"},
+			notSubstr:     []string{"/opt/recipe"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := formatConfigLine(tc.cfgPath, tc.agentsDir)
+			got := formatConfigLine(tc.cfgPath, tc.discoveredDir, tc.agentsDir)
 			for _, s := range tc.wantSubstr {
 				if !strings.Contains(got, s) {
-					t.Errorf("formatConfigLine(%q, %q) missing %q; got: %q", tc.cfgPath, tc.agentsDir, s, got)
+					t.Errorf("formatConfigLine(%q, %q, %q) missing %q; got: %q", tc.cfgPath, tc.discoveredDir, tc.agentsDir, s, got)
+				}
+			}
+			for _, s := range tc.notSubstr {
+				if strings.Contains(got, s) {
+					t.Errorf("formatConfigLine(%q, %q, %q) should not name %q; got: %q", tc.cfgPath, tc.discoveredDir, tc.agentsDir, s, got)
 				}
 			}
 		})
@@ -75,7 +94,9 @@ func TestFormatAgentsDirLine(t *testing.T) {
 		name       string
 		cfgPath    string
 		agentsDir  string
+		origin     string
 		wantSubstr []string
+		notSubstr  []string
 	}{
 		{
 			name:       "derived from -c",
@@ -95,14 +116,40 @@ func TestFormatAgentsDirLine(t *testing.T) {
 			agentsDir:  "",
 			wantSubstr: []string{"agentsDir: <none>", "record_plan / MCP / skills"},
 		},
+		{
+			// #945: --agents-dir with -c also set. Inferring the
+			// origin from cfgPath would report "derived from
+			// filepath.Dir(-c)" here, which is the one line an
+			// operator debugging a wrong agentsDir would read, and
+			// it would be a lie.
+			name:       "explicit flag beats the -c inference",
+			cfgPath:    "/etc/core-agent/config.json",
+			agentsDir:  "/opt/recipe/.agents",
+			origin:     "via --agents-dir",
+			wantSubstr: []string{"agentsDir:", "/opt/recipe/.agents", "via --agents-dir"},
+			notSubstr:  []string{"filepath.Dir(-c)"},
+		},
+		{
+			name:       "explicit flag with no -c",
+			cfgPath:    "",
+			agentsDir:  "/opt/recipe/.agents",
+			origin:     "via --agents-dir",
+			wantSubstr: []string{"/opt/recipe/.agents", "via --agents-dir"},
+			notSubstr:  []string{"discovery"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := formatAgentsDirLine(tc.cfgPath, tc.agentsDir)
+			got := formatAgentsDirLine(tc.cfgPath, tc.agentsDir, tc.origin)
 			for _, s := range tc.wantSubstr {
 				if !strings.Contains(got, s) {
-					t.Errorf("formatAgentsDirLine(%q, %q) missing %q; got: %q", tc.cfgPath, tc.agentsDir, s, got)
+					t.Errorf("formatAgentsDirLine(%q, %q, %q) missing %q; got: %q", tc.cfgPath, tc.agentsDir, tc.origin, s, got)
+				}
+			}
+			for _, s := range tc.notSubstr {
+				if strings.Contains(got, s) {
+					t.Errorf("formatAgentsDirLine(%q, %q, %q) should not claim %q; got: %q", tc.cfgPath, tc.agentsDir, tc.origin, s, got)
 				}
 			}
 		})

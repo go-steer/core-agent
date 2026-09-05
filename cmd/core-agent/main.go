@@ -122,9 +122,18 @@ func main() {
 	// go-steer/core-agent#209). If both are given, the last on argv
 	// wins (Go flag package semantics).
 	var cfgPathVal string
-	flag.StringVar(&cfgPathVal, "c", "", "config file path (default: discover .agents/config.json)")
+	flag.StringVar(&cfgPathVal, "c", "", "config file path (default: discover .agents/config.json). Its directory also becomes the agentsDir unless --agents-dir says otherwise")
 	flag.StringVar(&cfgPathVal, "config", "", "long-form alias for -c — same behavior")
 	cfgPath := &cfgPathVal
+	// --agents-dir (#945). The agentsDir is where MCP servers, skills,
+	// the env manifest, the grant store, recorded plans and content
+	// roots all resolve from, and until now it could only be set
+	// indirectly, by choosing where -c lives. That coupling was
+	// undiscoverable — a recipe was written against an --agents-dir
+	// flag that did not exist — and it forced config.json to sit in
+	// the same directory as the tree it configures.
+	agentsDirFlag := flag.String("agents-dir", "",
+		"directory MCP / skills / plans / content roots resolve from (default: the directory containing -c, else .agents/ discovered from cwd)")
 	// -m / --model bind to the same var (same alias pattern as -c/--config,
 	// issue #209). Several operator-facing messages suggest `--model ...`
 	// (e.g. the small-tier-parent warning), so the long form must exist or
@@ -238,7 +247,7 @@ func main() {
 		os.Exit(runner.ExitConfigError)
 	}
 
-	code := run(*prompt, *initialPrompt, *cfgPath, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, contentDirEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *compactionThreshold,
+	code := run(*prompt, *initialPrompt, *cfgPath, *agentsDirFlag, *modelOverride, *providerOverride, *taskClass, *noBuiltinTools, *disableTools, *scriptPath, *scriptStrict, *recordTo, *color, *ask, *sessionDB, *sessionDBPath, *yolo, *noBackgroundAgents, *allowURLHost, allowPathEntries, contentDirEntries, *noREPL, *noTUI, *noPricingRefresh, *noCompact, *compactionThreshold,
 		checkpointOpts{
 			mode:         *checkpointMode,
 			noCheckpoint: *noCheckpoint,
@@ -458,7 +467,7 @@ func validatePromptCacheTTL(ttl string) error {
 // comment at the otelShutdown defer (#538).
 const teardownStepTimeout = 3 * time.Second
 
-func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, contentDirEntries []string, noREPL, noTUI, noPricingRefresh, noCompact bool, compactionThreshold float64, checkpointCfg checkpointOpts, subagentCfg subagentOpts, guardrails guardrailOpts, toolProfile toolProfileOpts, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache, noPromptCache bool, promptCacheTTL string, promptCfg promptOpts, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
+func run(prompt, initialPrompt, cfgPath, agentsDirFlag, modelOverride, providerOverride, taskClass string, noBuiltinTools bool, disableTools string, scriptPath string, scriptStrict bool, recordTo string, color string, ask string, sessionDB bool, sessionDBPath string, yolo, noBackgroundAgents bool, allowURLHost string, allowPathEntries []config.PathScopeAllowEntry, contentDirEntries []string, noREPL, noTUI, noPricingRefresh, noCompact bool, compactionThreshold float64, checkpointCfg checkpointOpts, subagentCfg subagentOpts, guardrails guardrailOpts, toolProfile toolProfileOpts, smallTierParent string, agenticTools bool, agenticSmallModel string, noMCPDigest, mcpAgenticWrapLLM bool, mcpAgenticWrapModel string, noContextCache, noPromptCache bool, promptCacheTTL string, promptCfg promptOpts, attachCfg attachOpts, cardCfg agentCardOpts, metricsCfg metricsOpts) int {
 	// SIGTERM still cancels the whole process via ctx. SIGINT
 	// (Ctrl+C) is NOT in this list anymore — the REPL takes over
 	// SIGINT for its own double-Ctrl+C-exits state machine, and
@@ -498,6 +507,18 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
 		return runner.ExitConfigError
+	}
+	// --agents-dir overrides the derivation (#945). Keep what
+	// loadConfig found so splitTreeWarning can tell the operator when
+	// the two disagree.
+	discoveredAgentsDir := agentsDir
+	agentsDir, agentsDirFrom, err := resolveAgentsDir(agentsDirFlag, cfgPath, agentsDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "core-agent: %v\n", err)
+		return runner.ExitConfigError
+	}
+	if w := splitTreeWarning(agentsDirFrom, cfgPath, agentsDir, discoveredAgentsDir); w != "" {
+		fmt.Fprintln(os.Stderr, w)
 	}
 
 	// #322: load the optional env manifest (.agents/env.yaml or
@@ -1122,13 +1143,15 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 	// Fires unconditionally at this point (both single-shot -p and
 	// attach modes), independent of the attach branch further down.
 	for _, line := range compose.FormatStartupSummary(compose.StartupSummaryInputs{
-		CfgPath:      cfgPath,
-		Cfg:          cfg,
-		AgentsDir:    agentsDir,
-		ProviderName: provider.Name(),
-		BuiltinTools: compose.BuiltinToolsSummary(provider),
-		MCPServers:   mcpServers,
-		LoadedSkills: loadedSkills,
+		CfgPath:             cfgPath,
+		Cfg:                 cfg,
+		AgentsDir:           agentsDir,
+		AgentsDirOrigin:     agentsDirFrom.String(),
+		DiscoveredConfigDir: discoveredAgentsDir,
+		ProviderName:        provider.Name(),
+		BuiltinTools:        compose.BuiltinToolsSummary(provider),
+		MCPServers:          mcpServers,
+		LoadedSkills:        loadedSkills,
 	}) {
 		send(line)
 	}

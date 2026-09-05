@@ -31,7 +31,7 @@ configurations:
 # operators get reproducible deploys.
 #
 # (A) TAG PINNING — the default. Repo images drop the leading `v`
-#     (GHCR tag "2.9.0-dev.5", not "v2.9.0-dev.5"); lookout keeps it
+#     (GHCR tag "2.9.0-dev.6", not "v2.9.0-dev.6"); lookout keeps it
 #     ("v0.23.0").
 # (B) DIGEST PINNING — set `digest:` instead of `newTag:` for
 #     reproducibility-critical deploys (SBOM, cosign). Look up via
@@ -57,7 +57,7 @@ configurations:
 images:
 - name: ghcr.io/go-steer/core-agent
   newName: ghcr.io/go-steer/core-agent
-  newTag: 2.9.0-dev.5
+  newTag: 2.9.0-dev.6
 - name: ghcr.io/go-steer/lookout
   newName: ghcr.io/go-steer/lookout
   newTag: v0.23.0

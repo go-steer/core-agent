@@ -22,8 +22,16 @@
 # copies the recipe tree in before the daemon starts.
 #
 # Index-based ops: /volumes/0 is recipe-content (first volume in
-# 50-deployment-daemon.yaml); initContainers/- appends after
-# install-users-json.
+# 50-deployment-daemon.yaml).
+#
+# The initContainer op CREATES the list rather than appending to it
+# (`/initContainers`, not `/initContainers/-`). The base has no
+# initContainers since #986 dropped install-users-json, and RFC 6902
+# `add` to `/initContainers/-` fails outright when the parent array is
+# absent — "add operation does not apply: doc is missing path" at
+# `kustomize build` time, i.e. this overlay stops rendering at all. If
+# the base ever grows an initContainer again, this becomes a `/-` append
+# and the base's own entry has to be ordered ahead of the copy.
 
 # Turn recipe-content into a writable, then daemon-read-only, emptyDir.
 - op: replace
@@ -46,20 +54,20 @@
 # ref here is rewritten by the overlay's `images:` block
 # (initContainers[].image is covered by the default images transformer).
 - op: add
-  path: /spec/template/spec/initContainers/-
+  path: /spec/template/spec/initContainers
   value:
-    name: install-content
-    image: ghcr.io/go-steer/gke-platform-agent-content:latest
-    command:
-      - cp
-      - -a
-      - /.agents
-      - /AGENTS.md
-      - /cluster
-      - /content/
-    securityContext:
-      runAsNonRoot: true
-      runAsUser: 65532
-    volumeMounts:
-      - name: recipe-content
-        mountPath: /content
+    - name: install-content
+      image: ghcr.io/go-steer/gke-platform-agent-content:latest
+      command:
+        - cp
+        - -a
+        - /.agents
+        - /AGENTS.md
+        - /cluster
+        - /content/
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      volumeMounts:
+        - name: recipe-content
+          mountPath: /content

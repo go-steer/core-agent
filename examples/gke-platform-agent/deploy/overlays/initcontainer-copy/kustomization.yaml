@@ -39,7 +39,7 @@ resources:
 # config's declared floor is 2.9.0-dev.1.
 images:
   - name: ghcr.io/go-steer/core-agent
-    newTag: "2.9.0-dev.5"
+    newTag: "2.9.0-dev.6"
   - name: ghcr.io/go-steer/lookout
     newTag: "v0.23.0"
   # Immutable tag (or digest), NOT :latest — the initContainer uses

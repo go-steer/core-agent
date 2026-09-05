@@ -162,14 +162,20 @@ Budget exhaustion escalates the same way.
   aiplatform.googleapis.com`).
 - The GKE MCP server accessible from your cluster (usually is by
   default: `mcp.googleapis.com`).
-- **A core-agent daemon image ≥ `2.9.0-dev.1`.** The example overlays
-  pin it; if you repin, do not go below it. `config.json` uses `alerts`
-  and `tools.wait_and_verify`, and an older daemon does **not** reject
-  that config — `pkg/config` ignores unknown keys, so it boots clean,
-  drops both blocks, registers neither the `alert` nor the
-  `wait_and_verify` tool, and then runs a triage skill that tells the
-  model to call them. The failure looks like a confused agent, not a
-  version error ([#680](https://github.com/go-steer/core-agent/issues/680)).
+- **A core-agent daemon image ≥ `2.9.0-dev.6`.** The example overlays
+  pin it; if you repin, do not go below it. Two floors stack. From
+  `2.9.0-dev.1`, `config.json` uses `alerts` and `tools.wait_and_verify`,
+  and an older daemon does **not** reject that config — `pkg/config`
+  ignores unknown keys, so it boots clean, drops both blocks, registers
+  neither the `alert` nor the `wait_and_verify` tool, and then runs a
+  triage skill that tells the model to call them. The failure looks like
+  a confused agent, not a version error
+  ([#680](https://github.com/go-steer/core-agent/issues/680)). From
+  `2.9.0-dev.6`, the manifests mount the `users.json` Secret directly
+  ([#944](https://github.com/go-steer/core-agent/issues/944)) and probe
+  `GET /healthz` ([#946](https://github.com/go-steer/core-agent/issues/946));
+  that floor fails loudly rather than silently — the daemon aborts at auth
+  init on mode 0440, and the pod never goes Ready.
 
 ## Setup
 

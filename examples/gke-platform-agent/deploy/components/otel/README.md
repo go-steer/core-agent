@@ -87,11 +87,12 @@ patches:
         value: {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-collector.observability.svc:4318"}
 ```
 
-Mind the container index: the daemon Pod has an `install-users-json`
-initContainer, but JSON-patch paths into `containers` are indexed separately
-from `initContainers`, so `containers/0` is `core-agent`. Prefer a strategic
-merge patch keyed by container *name* (which is what `otel/daemon-env.yaml`
-does) over an index, exactly to avoid this.
+Mind the container index. `containers/0` is `core-agent` in the base, but the
+`initcontainer-copy` overlay adds an `install-content` initContainer and a
+sidecar would shift the index again. Prefer a strategic merge patch keyed by
+container *name* (which is what `otel/daemon-env.yaml` does) over an index,
+exactly to avoid this — an index-based patch that silently lands on the wrong
+container renders clean and misbehaves at runtime.
 
 ## GKE prereqs
 

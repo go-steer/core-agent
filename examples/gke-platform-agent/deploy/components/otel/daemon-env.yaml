@@ -26,8 +26,9 @@
 #
 # Container-list merge is BY NAME, so this reaches the `core-agent`
 # container without disturbing the base's args / envFrom / volumeMounts.
-# Note the base also has an initContainer (install-users-json); naming
-# the container is what keeps this patch off it.
+# Naming the container is also what keeps this patch off any
+# initContainer — the base has none since #986, but the
+# initcontainer-copy overlay adds one and composes with this component.
 #
 # The env LIST itself merges by name too, so these two are added to
 # whatever the base declares rather than replacing it. The base daemon

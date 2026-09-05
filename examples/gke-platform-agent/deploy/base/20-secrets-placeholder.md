@@ -6,9 +6,9 @@ operator (never checked in). Namespace: `gke-platform-agent`.
 
 ## 1. `core-agent-users` (Opaque)
 
-Holds the `users.json` bearer-token table. Referenced by the daemon
-Deployment, staged by an initContainer into an emptyDir at
-`/etc/core-agent/users.json` (mode 0400). The identities must match
+Holds the `users.json` bearer-token table. Mounted by the daemon
+Deployment at `/etc/core-agent`, arriving as mode 0440 owned by gid 65532
+once the pod's `fsGroup` is applied. The identities must match
 `attach.multi_session` in `.agents/config.hub.json`:
 `admin_identities: ["platform-oncall@example.com"]` and
 `proxy_identities: ["sa:lookout-watch"]`.

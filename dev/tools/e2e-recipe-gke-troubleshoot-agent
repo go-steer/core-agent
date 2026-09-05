@@ -202,9 +202,12 @@ fi
 # no Vertex/Anthropic access. Real provider integration is validated
 # separately by the live-cluster smoke.
 #
-# Also add a container image override for reproducibility — the base
-# ships with :latest by default; overlays/example pins to a specific
-# tag but a future recipe change might drop that. Explicit here.
+# Also add a container image override for reproducibility. The base now
+# pins a released tag (#986) and overlays/example pins one too, but this
+# keyed-by-name override is what makes the test exercise HEAD rather than
+# whatever the manifest happens to point at — which is the whole reason
+# the initContainer removal and the httpGet /healthz probe are checked
+# here at all.
 cat >> "$OVERLAY_DIR/kustomization.yaml" <<EOF
 
 # --- e2e-only overlays (appended by dev/tools/e2e-recipe-gke-troubleshoot-agent) ---

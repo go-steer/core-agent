@@ -260,10 +260,17 @@ spec:
           # listener is accepting connections, the agent is up.
           # core-agent#946 adds an unauthenticated GET /healthz to the
           # attach listener that also reports whether the session
-          # store is queryable. Once the pinned tag above carries it,
-          # `httpGet: {path: /healthz, port: attach}` replaces both
-          # probes and reports a degraded daemon that TCP calls
-          # healthy (core-agent#986).
+          # store is queryable, and `httpGet: {path: /healthz, port:
+          # attach}` replaces both probes once the pinned tag carries
+          # it.
+          #
+          # #986 collected that payoff in the two GKE recipes that pin a
+          # v2.9 pre-release and DELIBERATELY LEFT THIS ONE. The pin
+          # above is the 2.8.0 GA, and moving a stable example onto a
+          # pre-release to get a better probe is a bad trade: the probe
+          # is an improvement, the pin is a stability promise. This
+          # collects the fix at the next GA, in the same change that
+          # moves the pin — not before.
           livenessProbe:
             tcpSocket:
               port: attach

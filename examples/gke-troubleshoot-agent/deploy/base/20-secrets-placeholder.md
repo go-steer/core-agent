@@ -6,9 +6,9 @@ operator with real values (never checked in to the repo):
 
 ## 1. `core-agent-users` (Opaque) — namespace `agent-triage`
 
-Holds the `users.json` bearer-token table. Referenced by the
-daemon's Deployment as a projected volume mounted at
-`/etc/core-agent/users.json` (mode 0400).
+Holds the `users.json` bearer-token table. Mounted by the daemon's
+Deployment as a subPath file at `/etc/core-agent/users.json`, arriving
+as mode 0440 owned by gid 65532 once the pod's `fsGroup` is applied.
 
 ```bash
 # Generate three tokens (edit the identity list to suit your team):

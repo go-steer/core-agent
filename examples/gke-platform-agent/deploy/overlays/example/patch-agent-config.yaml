@@ -1,0 +1,50 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The MODEL_FLAVOR switch: which config file the daemon loads.
+#
+#   config.hub.json            gemini    — parent gemini-3.7-flash,
+#                                          specialist gemini-3.7-flash
+#   config.hub.anthropic.json  anthropic — parent claude-opus-5,
+#                                          specialist claude-sonnet-5
+#
+# Only config.hub.json is committed to the recipe. The anthropic one is
+# DERIVED at image-build time: build-content-image.sh rewrites four
+# values (both models, both cost ceilings) with jq and stages the result
+# alongside the original, so an image built by that script carries both
+# and flipping flavors is a redeploy rather than a rebuild. An image
+# built any other way carries only the gemini config, and pointing -c at
+# the anthropic path would crash-loop the daemon on a missing file —
+# which is why scripts/debug-pod.sh asserts the selected config exists in
+# the mount. set-up-demo.sh rewrites the `value:` below from
+# ${MODEL_FLAVOR} and then asserts the rendered manifest carries the
+# expected path.
+#
+# WHY A CONFIG FILE AND NOT --provider/--model FLAGS. The flags exist and
+# would cover the parent, but they cannot reach a subagent that pins its
+# own model: resolveSubagentProvider (cmd/core-agent/subagents.go) only
+# falls back to the parent's provider when spec.Model is nil, and this
+# recipe's `cluster` deliberately pins its own. A flag-based switch would
+# silently leave the specialist on Gemini while the parent moved to
+# Claude. It also matches the rule in 50-deployment-daemon.yaml: config
+# is the artifact that travels with the content image, so anyone running
+# the same image locally gets the same behavior.
+#
+# JSON 6902 by index: args[1] is the value after "-c". If you ever
+# reorder the daemon's args in the base Deployment, this index moves —
+# hence the post-render assertion in set-up-demo.sh, which fails loudly
+# rather than quietly patching the wrong argument.
+- op: replace
+  path: /spec/template/spec/containers/0/args/1
+  value: /opt/gke-platform-agent/.agents/config.hub.json

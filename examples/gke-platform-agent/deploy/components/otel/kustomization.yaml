@@ -1,0 +1,60 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# OTel enablement component — the PORTABLE half. Compose into any
+# overlay via:
+#
+#   components:
+#     - ../../components/otel
+#
+# Sets two env vars on BOTH the daemon and the watcher, and nothing
+# else. These are exactly the two that GKE Managed OpenTelemetry's
+# Instrumentation CR does NOT auto-inject:
+#
+#   - OTEL_TRACES_EXPORTER=otlp — flips the exporter on. For the daemon
+#     this overrides cfg.OTEL.Exporter, whose default is "none"
+#     (core-agent pkg/telemetry/otel.go); for the watcher it overrides
+#     --otel-exporter, also defaulting to "none". Load-bearing off-GKE;
+#     harmless-redundant on GKE, where the CR injects it too.
+#
+#   - OTEL_SERVICE_NAME — "core-agent" and "lookout-watch". The CR
+#     explicitly does not inject this, so without it the daemon's spans
+#     land in Cloud Trace as "unknown_service:<binary>".
+#
+# Everything else — endpoint, resource attributes, sampling, metric
+# interval — rides the standard OTel SDK env vars: injected by the CR on
+# GKE, set operator-side off-GKE. See README.md.
+#
+# WHY THIS IS SPLIT FROM ../otel-gke: the two env vars are portable and
+# work against any OTLP collector. The Instrumentation CR is GKE-only
+# and needs a CRD that does not exist on a cluster without managed OTel
+# enabled. Keeping them apart means an off-GKE operator can compose this
+# component alone and point it at their own collector, without kustomize
+# emitting a resource their cluster will reject.
+#
+# GOOGLE_CLOUD_PROJECT (for the gcp.project_id resource attribute Cloud
+# Trace requires) is already wired via the base's envFrom on the
+# core-agent-gcp-env ConfigMap.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  - path: daemon-env.yaml
+    target:
+      kind: Deployment
+      name: core-agent
+  - path: watcher-env.yaml
+    target:
+      kind: Deployment
+      name: lookout-watch

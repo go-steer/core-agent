@@ -1,0 +1,123 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Example overlay. Copy this directory, edit these values for your
+# environment, and `kubectl apply -k <your-overlay-dir>`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- ../../base
+
+# Teach the images transformer to also rewrite the OCI image VOLUME
+# reference (spec.template.spec.volumes[].image.reference), which its
+# default field list does not cover. With this, the `images:` block below
+# pins all three images — daemon, watcher, and content — uniformly.
+configurations:
+- kustomizeconfig/images.yaml
+
+# Image pinning. Prefer a released semver (or a digest) over :latest so
+# operators get reproducible deploys.
+#
+# (A) TAG PINNING — the default. Repo images drop the leading `v`
+#     (GHCR tag "2.9.0-dev.5", not "v2.9.0-dev.5"); lookout keeps it
+#     ("v0.23.0").
+# (B) DIGEST PINNING — set `digest:` instead of `newTag:` for
+#     reproducibility-critical deploys (SBOM, cosign). Look up via
+#     `crane digest <ref>`.
+# (C) REGISTRY REMAPPING — set newName + newTag for private mirrors.
+#
+# core-agent is on the v2.9 dev tag, not the 2.8.0 GA. The recipe depends
+# on seven things that are not in GA — the spawn_agent roster (#668),
+# sync-spawn returning the subagent's actual output (#667), the
+# safety.watchdog config field (#665), durable guardrail trip state
+# (#671), per-subagent content roots (#619), tool parameter schemas
+# actually reaching Claude (#754 — REQUIRED by the anthropic flavor:
+# without it every tool is advertised with an empty input_schema and the
+# model guesses argument names), and permissions.plan_mode +
+# tools.wait_and_verify (#215/#648, which the config now sets).
+#
+# core-agent version-gates the config surface, and this config's declared
+# floor is 2.9.0-dev.1 (subagents[].root, alerts, safety.watchdog,
+# permissions.plan_mode). An OLDER daemon does not fail on a newer
+# recipe — pkg/config has no DisallowUnknownFields, so it boots clean,
+# drops the blocks it doesn't know, and runs a persona that instructs the
+# model to call tools it never registered. Pin at or above the floor.
+images:
+- name: ghcr.io/go-steer/core-agent
+  newName: ghcr.io/go-steer/core-agent
+  newTag: 2.9.0-dev.5
+- name: ghcr.io/go-steer/lookout
+  newName: ghcr.io/go-steer/lookout
+  newTag: v0.23.0
+# The content image is built + pushed by YOU from
+# deploy/content.Dockerfile (see deploy/README.md); there is no published
+# copy to fall back on, which is why this entry carries a newName that is
+# obviously a placeholder rather than a plausible-looking default.
+#
+# It MUST be an immutable tag or (better) a digest — NOT :latest. The
+# image volume uses pullPolicy: IfNotPresent, so a node that has cached
+# an older :latest never re-pulls and the daemon silently serves stale
+# recipe content after a rebuild. Bump this tag (or the digest) on every
+# content change; use `digest:` for SBOM/cosign-critical deploys.
+- name: ghcr.io/go-steer/gke-platform-agent-content
+  newName: us-central1-docker.pkg.dev/your-project-id/your-repo/gke-platform-agent-content
+  newTag: v1
+
+# GCP project + location for Vertex (Gemini).
+#
+# To exercise the `alert` escalation path, append
+#   - PLATFORM_AGENT_ALERT_WEBHOOK=https://…
+# here (config.hub.json's alert target reads it by env name). Leaving it
+# unset is safe — the daemon still boots — but the `oncall` target is
+# dropped at startup and, since it is the only one, the `alert` tool is
+# never registered. The agent then has no escalation path; AGENTS.md tells
+# it to record "Escalation: not sent" rather than stall.
+#
+# GKE_CLUSTER / GKE_LOCATION are the cluster this deployment triages, and
+# they are NOT the Vertex settings: GOOGLE_CLOUD_LOCATION is the Gemini
+# endpoint region ("global"), GKE_LOCATION is where the cluster actually
+# lives. AGENTS.md reads all four via ${env:} so the agent never has to
+# discover its own coordinates — without them it opens with a wildcard
+# `projects/-/locations/-` call, eats a 403, and then spends turns
+# reading its own config tree to work out where it is. Keep GKE_CLUSTER
+# in sync with the watcher's --cluster-name in
+# patch-watcher-args.yaml.
+configMapGenerator:
+- behavior: merge
+  literals:
+  - GOOGLE_CLOUD_PROJECT=your-project-id
+  - GOOGLE_CLOUD_LOCATION=global
+  - GKE_CLUSTER=your-cluster
+  - GKE_LOCATION=us-central1
+  name: core-agent-gcp-env
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+patches:
+# Set the watcher's --cluster-name (and any other watcher args) for this
+# cluster.
+- path: patch-watcher-args.yaml
+  target:
+    kind: Deployment
+    name: lookout-watch
+# Point the daemon's -c at the config file it should load. See the patch
+# file for why the model choice is a config file and not a --model flag.
+- path: patch-agent-config.yaml
+  target:
+    group: apps
+    kind: Deployment
+    name: core-agent
+    version: v1

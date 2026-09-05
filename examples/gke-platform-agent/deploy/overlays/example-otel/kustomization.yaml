@@ -1,0 +1,48 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The image-volume overlay PLUS OpenTelemetry to GKE Managed OTel.
+# This is the DEFAULT target of set-up-demo.sh on a cluster that has
+# managed OTel enabled (it falls back to ../example otherwise).
+#
+# A superset of ../example, not a fork: it composes that overlay
+# verbatim and adds the otel-gke component (two env vars per binary +
+# the Instrumentation CR). Spans land in Cloud Trace with no
+# self-managed collector to run.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../example
+
+components:
+  - ../../components/otel-gke
+
+# NO `images:` BLOCK HERE, DELIBERATELY — and this is the one place this
+# recipe diverges from examples/gke-troubleshoot-agent's example-otel,
+# which restates its pins.
+#
+# set-up-demo.sh owns the pins, and it writes them with `kustomize edit
+# set image` into the DELIVERY overlay (../example), because that is
+# where the custom fieldSpec lives that also rewrites the image-VOLUME
+# reference (../example/kustomizeconfig/images.yaml). An `images:` block
+# here would be an outer transformer running over the already-pinned
+# output of ../example, so it would win — and it would win with whatever
+# tag was hand-typed here, silently overriding the tag the operator
+# actually configured in prereqs.sh. Leaving it out is what keeps
+# prereqs.sh the single source of truth.
+#
+# Same reasoning for the per-cluster values (GOOGLE_CLOUD_PROJECT,
+# --cluster-name, the -c model-flavor path): set-up-demo.sh patches them
+# into ../example and they flow through this composition untouched.

@@ -1,0 +1,45 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# OTel on GKE Managed OpenTelemetry — the full opt-in. Compose into an
+# overlay via:
+#
+#   components:
+#     - ../../components/otel-gke
+#
+# This is ../otel (the two portable env vars) PLUS the Instrumentation
+# CR that makes GKE inject the endpoint and the k8s.* resource
+# attributes. Both OTel overlays compose this one rather than each
+# carrying their own copy of the CR.
+#
+# REQUIRES a cluster with managed OTel enabled. Without it the CRD is
+# absent and `kubectl apply -k` fails with:
+#
+#   no matches for kind "Instrumentation" in version
+#   "telemetry.googleapis.com/v1alpha1"
+#
+# which is why this is a separate component from ../otel and why
+# set-up-demo.sh probes for the CRD before selecting an OTel overlay.
+# Enable it with:
+#
+#   gcloud container clusters update <CLUSTER> --location=<REGION> \
+#     --managed-otel-scope=COLLECTION_AND_INSTRUMENTATION_COMPONENTS
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+components:
+  - ../otel
+
+resources:
+  - instrumentation.yaml

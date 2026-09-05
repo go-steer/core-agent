@@ -1,0 +1,312 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Enrichment-complete ClusterRole for the lookout-watch (`lookout
+# watch`), VENDORED VERBATIM from go-steer/k8s-lookout
+# deploy/12-clusterrole-watcher.yaml @ v0.22.0 — the canonical,
+# guardian-tested (pkg/checks/state/rbac_test.go) rule set. The ONLY
+# change from upstream is metadata.name (suffixed "-gke-platform-agent" so
+# this recipe's cluster-scoped objects don't collide with a bare upstream
+# lookout install's "lookout-watch" ClusterRole in the same cluster; see
+# 13-clusterrolebinding-watcher.yaml). Re-sync this file when lookout's
+# shipped role changes.
+#
+# Also deliberately NOT carried from v0.22.0: the app.kubernetes.io
+# name/component labels it added to this object and to 11/13/14. They
+# exist for v0.22.0's new ServiceMonitor selector
+# (deploy/prometheus-operator/), which this recipe does not deploy, and
+# nothing here selects on them.
+#
+# WHY the full set (issue #618): the recipe's earlier minimal role
+# (events + pods:get only) starved lookout enrichment — every incident
+# inject carried `enrichment_error stage=resolve` instead of a warm
+# bundle, because the scoped-list fallback's first `list` returned
+# Forbidden. These grants are what enrichment (DESIGN.md §7.6) and the
+# `--sources=auto --storm=auto` probe (which 51-deployment-watcher.yaml
+# relies on) read.
+#
+# The watcher only OBSERVES cluster state — never modifies it. In THIS
+# recipe the daemon's GKE MCP is itself read-only (propose-only by
+# construction), so proposed changes land as GitOps pull requests, not
+# direct cluster writes by any identity here.
+#
+# What the sentinel needs:
+#   - list/watch events — the primary informer target
+#   - list/watch pods — the recovery clearance observer (DESIGN.md
+#                       §7.4): watches bound incidents' pods for
+#                       Ready + restart-stable, so fixed incidents
+#                       get a kind=resolved inject. Without this
+#                       grant the sentinel still runs, but recovery
+#                       tracking is disabled (logged loudly).
+#   - get pods       — status enrichment for inject payloads (owner
+#                       ref, container statuses)
+#   - list/watch nodes, deployments, endpointslices,
+#     poddisruptionbudgets — the object-state source (nodes also
+#     serve the capacity source's bin-packing forecast — see the
+#     capacity note below) (DESIGN.md §7.2,
+#                       enabled via --sources=k8s-events,object-state):
+#                       leading indicators from state transitions.
+#                       Harmless when the source is disabled;
+#                       required when enabled — the §11
+#                       startup probe fails loudly naming the missing
+#                       grant. A namespace-scoped deployment (Role,
+#                       not ClusterRole) cannot satisfy these and gets
+#                       the same loud per-source failure instead of a
+#                       silently empty watch.
+#   - list/watch statefulsets — the rollout source (DESIGN.md §7.2
+#                       row 3, enabled via --sources=...,rollout):
+#                       evidence-based stall detection for Deployment
+#                       and StatefulSet rollouts (its pods /
+#                       deployments / replicasets informers ride the
+#                       grants above and below — one shared informer
+#                       set). Harmless when the source is disabled;
+#                       required when enabled — verified loudly by
+#                       the §11 startup probe.
+#   - get/list pods.metrics.k8s.io + get nodes/proxy — the saturation
+#                       source (DESIGN.md §7.2 row 4, enabled via
+#                       --sources=...,saturation): container CPU/mem
+#                       usage sampled from the metrics API, PVC usage
+#                       from each kubelet's stats summary
+#                       (/api/v1/nodes/<node>/proxy/stats/summary).
+#                       nodes/proxy is read-only GET here; when the
+#                       endpoint is unreachable at runtime the source
+#                       logs once and skips the PVC dimension.
+#                       Harmless when the source is disabled;
+#                       required when enabled — verified loudly at
+#                       startup.
+#   - list/watch replicasets — the storm-correlation topology graph
+#                       (DESIGN.md §6.3 + §7.5, --storm): a
+#                       ReplicaSet's ownerReferences extend the
+#                       blast-radius owner chain to the Deployment,
+#                       the ancestor operators recognize. The graph's
+#                       pods/nodes informers ride the grants above
+#                       (one shared informer set). Harmless when
+#                       --storm=off; --storm=auto (the default)
+#                       resolves ON when this grant is present and
+#                       off (loudly) when it is not; --storm=on makes
+#                       the gap a fatal startup error instead.
+#   - list/watch horizontalpodautoscalers — the autoscaling source
+#                       (DESIGN.md §7.2, enabled via
+#                       --sources=…,autoscaling): HPA pinned-at-max
+#                       and metrics-pipeline-dead detection from
+#                       autoscaling/v2 status conditions. Harmless
+#                       when the source is disabled; verified loudly
+#                       by the §11 startup probe when enabled.
+#   - list secrets, serviceaccounts; list webhook configurations;
+#     list cert-manager certificates — the expiry source (DESIGN.md
+#                       §7.2 row 6, enabled via --sources=…,expiry):
+#                       expiry countdowns over TLS certs, webhook CA
+#                       bundles, SA token expiries, and cert-manager
+#                       renewal state. Harmless when the source is
+#                       disabled; verified loudly at startup when
+#                       enabled. See the §11 tradeoff
+#                       note on the secrets rule below.
+#
+# The capacity source (--sources=…,capacity, DESIGN.md §10.1) rides
+# the events, pods, and nodes grants above (nodes list/watch feeds
+# the cluster bin-packing forecast's allocatable sums — the same rule
+# the object-state source already needs); its one extra read — `get`
+# on the cluster-autoscaler-status ConfigMap — is a
+# kube-system-namespaced Role instead (14-role-watcher-capacity.yaml),
+# pinned by resourceNames rather than widening this ClusterRole.
+#
+# The ingress source (--sources=…,ingress, issue #135) rides the same
+# events grant with no new rule: its own Event informer filters the
+# ingress-gce controller's Warning failure events (Sync/Translate on
+# Ingresses, NEG sync/attach failures on Services).
+#
+#   - the enrichment read paths (DESIGN.md §7.6) — enrichment is
+#                       best-effort by design (failures become
+#                       enrichment_error trailers, never crashes),
+#                       but the SHIPPED role must let it succeed on
+#                       both paths (M4 drill observation 2 — the
+#                       scoped-list path failed on every incident):
+#                       * scoped-list fallback (--storm off, or the
+#                         object not in the live topology): one
+#                         namespace-scoped state.LoadCluster pass —
+#                         `list` on every kind that pass pages
+#                         through. The requirement list is
+#                         state.LoadClusterListRequirements(). Since
+#                         issue #192 that pass is TOLERANT: a per-kind
+#                         Forbidden/NotFound is skipped (recorded as a
+#                         skipped= note on the bundle head), so a
+#                         narrower operator copy of this role degrades
+#                         to a partial, secret-free bundle instead of
+#                         failing. pkg/checks/state's RBAC test now
+#                         asserts this file grants no MORE list/watch
+#                         than the codebase reads (no privilege creep),
+#                         not that it covers every requirement.
+#                       * live path (--storm on): one API `get` of
+#                         the incident's top owner — any of the
+#                         workload kinds (deployments, replicasets,
+#                         statefulsets, daemonsets, jobs, cronjobs).
+#
+# What the sentinel deliberately does NOT get:
+#   - patch/update/delete on anything — the sentinel is read-only
+#   - watch/get on secrets — the expiry source's `list` (below) is the
+#     ONLY secret access, periodic and paged, never an informer cache
+#     of secret material resident in memory
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lookout-watch-gke-platform-agent
+rules:
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    # Enrichment (§7.6) distills the target pods' logs into the warm
+    # bundle attached to the initial inject.
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["apps"]
+    # "get" beyond list/watch: the enrichment live path GETs the
+    # workload object behind an incident (§7.6) rather than caching
+    # every Deployment in the informer set.
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    # "get" for the enrichment live path's workload GET, like
+    # deployments above.
+    resources: ["statefulsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    # Enrichment (§7.6, M4 observation 2): the scoped-list fallback
+    # LISTs every workload kind in the incident namespace (it is one
+    # state.LoadCluster pass — the same read `lookout bundle` does),
+    # and the live path GETs the top owner whatever its kind. No
+    # watch: these are one-shot reads per enrichment, not informers.
+    resources: ["daemonsets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    # "get"/"list" for enrichment (above); "watch" for the workload
+    # source's Job + CronJob informers (workload.job_failed /
+    # workload.cron_missed, issue #129).
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    # Enrichment scoped-list continued: services + configmaps feed
+    # the bundle's edges section (reference-integrity checks). List
+    # only — ConfigMap VALUES never leave pkg/emit unsanitized, and
+    # the graph ingests metadata + content hashes only (§6.5).
+    resources: ["services", "configmaps"]
+    verbs: ["list"]
+  - apiGroups: ["networking.k8s.io"]
+    # ingressclasses answers "is any controller configured to serve
+    # this Ingress" — an Ingress naming an absent class, or naming
+    # none where the cluster has no default, is accepted by the API
+    # server and then served by nothing, with no event to find.
+    # Cluster-scoped and tiny: names and the is-default-class
+    # annotation, nothing else is read.
+    resources: ["ingresses", "ingressclasses"]
+    verbs: ["list"]
+  - apiGroups: ["storage.k8s.io"]
+    # storageclasses, likewise name-only: a StatefulSet's
+    # volumeClaimTemplates naming a class that no longer exists leaves
+    # every replica after the first one Pending forever.
+    resources: ["storageclasses"]
+    verbs: ["list"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    # Enrichment scoped-list continued: the edges section's RBAC
+    # reference checks (subject/roleRef existence — names only).
+    resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+    verbs: ["list"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    # Read-only GET of each kubelet's stats summary for the
+    # saturation source's PVC dimension; the sentinel never writes
+    # through the node proxy.
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
+  - apiGroups: ["autoscaling"]
+    # The autoscaling source's HPA informer (autoscaling.hpa_pinned /
+    # autoscaling.hpa_metrics_dead, issue #131). Condition-based on
+    # purpose: no events grant beyond the core one above is needed to
+    # watch the HPA controller's verdicts.
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["list", "watch"]
+  # ---- secrets: expiry source + enrichment edges (#87) ----
+  # §11 TRADEOFF — the broadest grant in this file: `list` on Secrets
+  # cluster-wide returns VALUES, so a compromise of this pod reads
+  # every Secret in the cluster. It is deliberately `list` only (no
+  # watch, no get, no informer) and serves exactly two readers:
+  #   1. the expiry source (--sources=…,expiry): periodic paged scan
+  #      parsing tls.crt notAfter / token exp, retaining only
+  #      (identity, notAfter, subject CN, issuer CN);
+  #   2. enrichment's scoped-list fallback (state edges secret-KEY
+  #      verification, M4 observation 2). Since issue #192 this reader
+  #      DEGRADES GRACEFULLY: if the rule is dropped from an operator's
+  #      copy, the LoadCluster pass skips Secrets and enrichment/bundle
+  #      render a secret-free partial (skipped=secrets on the head)
+  #      instead of failing. The rule stays in THIS SHIPPED FILE for
+  #      reader #1 (the expiry source, on by default under
+  #      --sources=auto); rbac_test.go no longer forces it for
+  #      enrichment, only forbids write verbs and non-list secret
+  #      access.
+  # No secret byte can reach a signal (the §6.5 sanitizer is the
+  # second net, not the mechanism), and deploy/16's default-deny
+  # NetworkPolicy removes co-tenant network access to the pod.
+  # Deployments that cannot accept the cluster-wide grant have two
+  # outs (both validated on a live cluster — the Autopilot first-run
+  # report behind issues #144-#146):
+  #   - the §11 namespace tier: --namespace scoping with a namespaced
+  #     Role binding this same rule set per namespace, and
+  #     --expiry-namespaces so the startup probe verifies exactly the
+  #     scoped namespaces; or
+  #   - delete the secrets + serviceaccounts rules from YOUR copy and
+  #     run --enrich=off — under --sources=auto the expiry source
+  #     then skips itself on the missing grant with one loud line,
+  #     and the remaining sources run clean.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["list"]
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["validatingwebhookconfigurations", "mutatingwebhookconfigurations"]
+    verbs: ["list"]
+  # cert-manager Certificates: discovery-gated at runtime — the rule
+  # is inert on clusters without the CRD (RBAC rules for absent groups
+  # are legal and ignored), and the expiry source logs one startup
+  # line when it skips the target.
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["list"]
+  # Gateway API (gateway source, #168): the Gateway-API sibling of the
+  # ingress source. Discovery-gated at runtime — these rules are inert
+  # on clusters without the Gateway API CRDs (RBAC for an absent group
+  # is legal and ignored), so under --sources=auto the source skips
+  # itself with one loud line where the CRDs are absent. The source
+  # only reads status conditions, so list+watch is the whole surface.
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["gateways", "httproutes"]
+    verbs: ["list", "watch"]

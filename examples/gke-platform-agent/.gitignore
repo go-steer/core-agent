@@ -1,0 +1,19 @@
+# Local run state from exercising this recipe with
+# `core-agent -c .agents/config.json` in this directory.
+#
+# The live credentials are deliberately NOT listed here. gen-tokens.sh
+# writes the bearer table and the token stash under RIG_STATE_DIR
+# (${TMPDIR:-/tmp}/gke-platform-agent), outside the repository, because a
+# .gitignore entry is a weaker guarantee than a path that was never in
+# the checkout: one `git add -f`, one `cp -r` of this directory, one
+# archive of the worktree, and an ignored secret has travelled anyway.
+.agents/sessions/
+.agents/config.hub.local.json
+*.db
+*.db-shm
+*.db-wal
+
+# Plans are written at runtime into the pod's emptyDir; the .gitkeep is
+# tracked so the read-only image volume has a mount point for it.
+.agents/plans/*
+!.agents/plans/.gitkeep

@@ -1,0 +1,67 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The watcher's argv. THIS PATCH REPLACES THE BASE ARGS WHOLESALE — a
+# strategic merge on a list of scalars is a replace, not a union — so
+# every flag the watcher needs has to appear here, including the ones
+# this overlay has no opinion about. Dropping one from this list is
+# silent: the watcher starts, and simply behaves as if you had never set
+# it. Keep it in sync with deploy/base/51-deployment-watcher.yaml.
+#
+# scripts/set-up-demo.sh rewrites two of these in place before applying,
+# and asserts each rewrite landed:
+#
+#   --cluster-name  stamps the source cluster onto every inject. This
+#                   value and the overlay's GKE_CLUSTER must name the
+#                   SAME cluster: they are read by different halves of
+#                   the same conversation — the watcher stamps this
+#                   string onto the incident, while the agent aims its
+#                   gke_* reads at ${env:GKE_CLUSTER}. Let them drift and
+#                   the agent investigates one cluster while reporting on
+#                   the name of another, with nothing in either
+#                   component's logs to say so, because each is
+#                   individually doing what it was told.
+#
+#   --owner         is the identity every incident session belongs to,
+#                   and must be a key in the users.json bearer table that
+#                   scripts/gen-tokens.sh writes from ADMIN_IDENTITY. If
+#                   it is not, each inject still creates a session, but
+#                   it is owned by someone who cannot attach — the
+#                   operator opens the picker and sees nothing on a hub
+#                   that is busy working.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lookout-watch
+  namespace: gke-platform-agent
+spec:
+  template:
+    spec:
+      containers:
+        - name: watcher
+          args:
+            - "--daemon-url=http://core-agent.gke-platform-agent.svc.cluster.local:7777"
+            - "--token-env=WATCHER_TOKEN"
+            - "--mode=per-incident"
+            - "--owner=platform-oncall@example.com"
+            - "--cluster-name=your-cluster"
+            - "--dedup-window=5m"
+            # Keep the agent from triaging its own control plane — see the
+            # rationale in deploy/base/51-deployment-watcher.yaml. Without
+            # it the daemon's own restarts become incidents about the
+            # daemon, which the daemon then investigates.
+            - "--exclude-namespace=gke-platform-agent"
+            - "--in-cluster"
+            - "--metrics-addr=:9090"
+            - "--log-level=info"

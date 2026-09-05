@@ -35,7 +35,7 @@
     "watchdog": "enforce"
   },
   "agent": {
-    "display_name": "platform-agent-native",
+    "display_name": "gke-platform-agent",
     "max_steps": 250,
     "max_turn_cost_usd": 0.5,
     "max_session_cost_usd": 5.0

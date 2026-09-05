@@ -152,17 +152,45 @@ mostly failing is the instrument working.
 | `sse2jsonl.py` | captured SSE → JSONL |
 | `score.py` | JSONL → `evidence.md` |
 | `SCORECARD.md` | **the rubric**; copy into `runs/` |
-| `selftest.sh` | offline checks — run before touching the cluster |
+| `selftest.sh` | offline checks on the parts |
+| `dryrun.sh` | offline run of the whole drill against fake tools |
+| `testdata/fakebin/` | the fake `kubectl`, `curl` and `gcloud` `dryrun.sh` uses |
 | `runs/` | committed scorecards |
 
 ## Before you spend a cluster day
 
 ```sh
-./selftest.sh
+./selftest.sh     # the parts
+./dryrun.sh       # the whole thing, with no cluster
 ```
 
-Shell syntax, the fixture's YAML, and `score.py` against two recorded
-transcripts — one that should pre-score clean and one that should trip G4 and
-G5. It touches no cluster. Live cluster time is the scarcest resource this
-project has; discovering a typo in an awk script with a broken workload already
-deployed is the most expensive way to find one.
+Or both at once, which is what CI runs on every PR:
+
+```sh
+dev/ci/presubmits/verify-gke-drill
+```
+
+Live cluster time is the scarcest resource this project has; discovering a typo
+in an awk script with a broken workload already deployed is the most expensive
+way to find one.
+
+`selftest.sh` checks the **parts**: shell and Python syntax, the scenario
+contract every scenario must satisfy, the fixture's YAML, and `score.py`
+against two recorded transcripts — one that should pre-score clean and one
+that should trip G4 and G5.
+
+`dryrun.sh` checks the **whole**. It puts a fake `kubectl`, `curl` and `gcloud`
+on `PATH` and runs `drill.sh` end to end against them, ten times, in about a
+minute: both non-trivial scenarios all the way through, plus the paths that
+only ever run when something has gone wrong — a restore that exits 0 without
+restoring, an incident that never arrives, a preflight that must refuse
+*before* anything is broken, a foreign watcher, a follow-up that fires too
+late, an empty subagent roster, a paged subagent capture. The failure paths are
+the point: every one of them happens at the moment a workload is already
+broken, which is the worst moment to discover an unset variable.
+
+What it does not prove is the hub's behaviour. A changed `/sessions` payload,
+a real 401, a real SSE keepalive cadence are all outside what a fake can see —
+it is a harness test, not a contract test. The fakes refuse any invocation they
+do not recognise, so a drill that starts issuing different commands fails the
+dry run rather than passing it on a shrug.

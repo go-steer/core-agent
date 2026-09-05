@@ -375,7 +375,14 @@ def render(run: pathlib.Path) -> str:
     a(f"| daemon image | `{meta.get('daemon_image')}` |")
     a(f"| content image | `{meta.get('content_image')}` |")
     a(f"| session | `{meta.get('session_id')}` |")
-    a(f"| capture | {meta.get('frame_count', '?')} parent frames, "
+    # Both counts come from the frames actually parsed, not from
+    # meta.frame_count. meta's figure is `wc -l transcript.jsonl`, which
+    # includes typed frames the scorer does not treat as turn content —
+    # so a run with no subagents used to render as "8 parent frames, 7
+    # total incl. subagents", which reads as if counting the subagents
+    # had lost two.
+    parent_frames = sum(1 for f in frames if f.agent == "parent")
+    a(f"| capture | {parent_frames} parent frames, "
       f"{len(frames)} total incl. subagents |")
     a("")
     a("---")

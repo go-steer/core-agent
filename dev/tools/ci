@@ -52,6 +52,7 @@ STEPS=(
   "mod-tidy        dev/tools/verify-mod-tidy"
   "test            dev/tools/test-unit"
   "examples        dev/tools/examples-smoke"
+  "gke-drill       dev/tools/verify-gke-drill"
   "vuln            dev/tools/verify-vuln"
 )
 

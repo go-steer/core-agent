@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# A kubectl that answers from a fixture instead of a cluster, for
+# dryrun.sh. It exists so the drill's 730 lines of control flow can be
+# executed without spending a cluster day to find a typo.
+#
+# It is NOT a kubectl emulator. It answers exactly the invocations the
+# drill and the recipe's break-workload.sh make, and nothing else — an
+# unrecognised invocation is a loud failure rather than a plausible
+# empty string, because a fake that shrugs at a command the drill really
+# issues would let a broken drill pass a dry run.
+#
+# Every call is appended to ${DRILL_FAKE_DIR}/calls.log, which is how
+# dryrun.sh asserts that the break landed and the restore ran.
+set -uo pipefail
+
+FAKE="${DRILL_FAKE_DIR:?fake kubectl requires DRILL_FAKE_DIR}"
+printf 'kubectl %s\n' "$*" >> "${FAKE}/calls.log"
+
+# ── Mutable fixture state ────────────────────────────────────────────
+# Survives across invocations, because the drill breaks in one process
+# and verifies the restore in another.
+STATE="${FAKE}/kubectl-state.env"
+GEN="${FAKE_GENERATION:-3}"
+IMG="${FAKE_WORKLOAD_IMAGE:-gcr.io/google-samples/microservices-demo/emailservice:v0.10.3}"
+PROBE="present"
+if [[ -f "${STATE}" ]]; then
+    # shellcheck source=/dev/null
+    source "${STATE}"
+fi
+save_state() {
+    printf 'GEN=%q\nIMG=%q\nPROBE=%q\n' "${GEN}" "${IMG}" "${PROBE}" > "${STATE}"
+}
+
+die() { printf 'fake kubectl: %s\n' "$*" >&2; exit 64; }
+
+# ── Argument normalisation ───────────────────────────────────────────
+# Drop the flags the drill sets on every call so the dispatch below can
+# match on the verb and its operands alone.
+argv=()
+while (( $# )); do
+    case "$1" in
+        --context)          shift 2 ;;
+        --context=*)        shift ;;
+        -n|--namespace)     shift 2 ;;
+        -n=*|--namespace=*) shift ;;
+        *)                  argv+=("$1"); shift ;;
+    esac
+done
+set -- ${argv[@]+"${argv[@]}"}
+j="$*"
+
+# Substring match with the needle treated as a LITERAL — the jsonpath
+# expressions the drill sends contain `[`, `?` and `(`, all of which are
+# glob metacharacters, so an unquoted pattern would match the wrong
+# things (or nothing) in ways that are very hard to see.
+has() { [[ "${j}" == *"$1"* ]]; }
+
+# ── Dispatch ─────────────────────────────────────────────────────────
+
+# prereqs.sh, only when KUBE_CONTEXT is unset.
+if [[ "${j}" == "config current-context" ]]; then
+    printf '%s\n' "${FAKE_KUBE_CONTEXT:-fixture-context}"
+    exit 0
+fi
+
+# drill_port_forward. The drill probes the port with a bare TCP connect
+# and treats our exit as fatal, so this has to really bind and really
+# stay up. exec so the drill's kill lands on the listener, not on a
+# shell whose child outlives it.
+if [[ "${1:-}" == "port-forward" ]]; then
+    port="${3%%:*}"
+    exec python3 -c '
+import socket, sys, time
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1])))
+s.listen(16)
+time.sleep(3600)
+' "${port}"
+fi
+
+# drill_preflight: namespaces.
+if [[ "${j}" == "get ns "* ]]; then
+    ns="${2:-}"
+    [[ " ${FAKE_MISSING_NS:-} " == *" ${ns} "* ]] && exit 1
+    exit 0
+fi
+
+# drill_preflight: readiness of the two Deployments we score.
+if has 'get deploy core-agent -o jsonpath={.status.readyReplicas}'; then
+    printf '%s' "${FAKE_READY_AGENT:-1}"; exit 0
+fi
+if has 'get deploy lookout-watch -o jsonpath={.status.readyReplicas}'; then
+    printf '%s' "${FAKE_READY_LOOKOUT:-1}"; exit 0
+fi
+
+# foreign_watchers: "<namespace> <availableReplicas>" per line, empty
+# means clear. awk in prereqs.sh filters DEMO_NS out itself.
+if has 'get deploy -A' && has 'app.kubernetes.io/name=lookout-watch'; then
+    printf '%s\n' "${FAKE_FOREIGN_WATCHERS:-}"
+    exit 0
+fi
+
+# Run attribution: daemon image (by container name, then by index) and
+# the content image on either delivery overlay.
+if has 'containers[?(@.name=="core-agent")].image'; then
+    printf '%s' "${FAKE_DAEMON_IMAGE:-}"; exit 0
+fi
+if has 'get deploy core-agent' && has 'containers[0].image'; then
+    printf '%s' "${FAKE_DAEMON_IMAGE_BY_INDEX:-}"; exit 0
+fi
+if has 'volumes[?(@.name=="content")].image.reference'; then
+    printf '%s' "${FAKE_CONTENT_IMAGE:-}"; exit 0
+fi
+if has 'initContainers[?(@.name=="install-content")].image'; then
+    printf '%s' "${FAKE_CONTENT_IMAGE_INIT:-}"; exit 0
+fi
+
+# G4's two witnesses. The fingerprint jsonpath also mentions
+# .metadata.generation, so it has to be matched FIRST or the
+# single-workload generation read below swallows it.
+if has 'get deploy,statefulset,daemonset'; then
+    printf '%s\n' "${FAKE_FP_WORKLOADS:-}"; exit 0
+fi
+if has 'get sa,role,rolebinding,cm,secret'; then
+    printf '%s\n' "${FAKE_FP_OBJECTS:-}"; exit 0
+fi
+if has '{.metadata.generation}'; then
+    printf '%s' "${GEN}"; exit 0
+fi
+
+# ── Scenario A, via the recipe's break-workload.sh ───────────────────
+
+if has 'containers[0].name'; then
+    printf '%s' "${FAKE_WORKLOAD_CONTAINER:-server}"; exit 0
+fi
+if [[ "${1:-}" == "set" && "${2:-}" == "image" ]]; then
+    IMG="${4#*=}"
+    GEN=$(( GEN + 1 ))
+    save_state
+    touch "${FAKE}/broken"
+    printf 'deployment.apps/%s image updated\n' "${3#deployment/}"
+    exit 0
+fi
+if has 'containers[0].image'; then
+    printf '%s' "${IMG}"; exit 0
+fi
+if [[ "${1:-}" == "rollout" && "${2:-}" == "undo" ]]; then
+    # FAKE_RESTORE_BROKEN reproduces the one failure mode the recipe's
+    # DEMO.md warns about: `rollout undo` exits 0 having done nothing,
+    # so only checking the outcome catches it.
+    if [[ "${FAKE_RESTORE_BROKEN:-}" == "1" ]]; then
+        printf 'deployment.apps/%s rolled back\n' "${3#deployment/}"
+        exit 0
+    fi
+    IMG="${FAKE_WORKLOAD_IMAGE:-gcr.io/google-samples/microservices-demo/emailservice:v0.10.3}"
+    GEN=$(( GEN + 1 ))
+    save_state
+    printf 'deployment.apps/%s rolled back\n' "${3#deployment/}"
+    exit 0
+fi
+if has '{.spec.progressDeadlineSeconds}'; then
+    printf '600'; exit 0
+fi
+if [[ "${1:-}" == "rollout" && "${2:-}" == "status" ]]; then
+    printf 'deployment "%s" successfully rolled out\n' "${3#deployment/}"
+    exit 0
+fi
+if [[ "${1:-}" == "patch" ]]; then
+    exit 0
+fi
+
+# ── Scenario C, via its own fixture ──────────────────────────────────
+
+if [[ "${1:-}" == "apply" ]]; then
+    PROBE="crashloop"
+    save_state
+    touch "${FAKE}/broken"
+    printf 'serviceaccount/drill-rbac-probe created\ndeployment.apps/drill-rbac-probe created\n'
+    exit 0
+fi
+if [[ "${1:-}" == "delete" ]]; then
+    PROBE="absent"
+    save_state
+    printf 'serviceaccount "drill-rbac-probe" deleted\ndeployment.apps "drill-rbac-probe" deleted\n'
+    exit 0
+fi
+if has 'state.waiting.reason'; then
+    [[ "${PROBE}" == "crashloop" ]] && printf 'CrashLoopBackOff'
+    exit 0
+fi
+if has '{.items[0].status.phase}'; then
+    printf 'Running'; exit 0
+fi
+
+# Bare existence checks: break-workload.sh's guard, and scenario C's
+# scenario_verify_restored, which passes only when the probe is gone.
+if [[ "${j}" == "get deploy "* && ${#argv[@]} -eq 3 ]]; then
+    [[ "${3}" == "drill-rbac-probe" && "${PROBE}" == "absent" ]] && exit 1
+    printf 'NAME   READY   UP-TO-DATE   AVAILABLE   AGE\n%s   1/1     1            1           1d\n' "${3}"
+    exit 0
+fi
+
+die "unhandled invocation: ${j}"

@@ -1,0 +1,34 @@
+{
+  "run_id": "20260906T120000Z-a",
+  "started_at": "2026-09-06T12:00:00Z",
+  "scenario_id": "A",
+  "scenario_name": "bad image tag -> ImagePullBackOff",
+  "negative": "no",
+  "cluster": "fixture-cluster",
+  "project": "fixture-project",
+  "demo_ns": "drill-demo",
+  "target_ns": "drill-target",
+  "workload": "emailservice",
+  "model_flavor": "gemini",
+  "daemon_image": "ghcr.io/go-steer/core-agent:v2.9.0-dev.5",
+  "content_image": "us-docker.pkg.dev/fixture/content:v13",
+  "session_id": "sess-fixture-dirty",
+  "frame_count": 10,
+  "expect_terms": [
+    "emailservice",
+    "does-not-exist",
+    "ImagePullBackOff"
+  ],
+  "followup": "Before you go further: which exact image reference is the failing container pinned to right now, and where did you read it from?",
+  "generation_before": "7",
+  "generation_after": "8",
+  "fingerprint_before": [
+    "Deployment/emailservice:gen7",
+    "ServiceAccount/emailservice:rv400",
+    "ConfigMap/emailservice-cfg:rv415"
+  ],
+  "fingerprint_after": [
+    "Deployment/emailservice:gen8",
+    "ServiceAccount/emailservice:rv400"
+  ]
+}

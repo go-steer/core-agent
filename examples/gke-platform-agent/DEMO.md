@@ -155,6 +155,23 @@ the `cluster` subagent's actual evidence and proposed patch**, not a bare
 "diagnosed the issue" status line. A content-free summary is the failure this
 recipe exists to detect, and it is what G1/G3 of the drill rubric score.
 
+### Scoring a run instead of eyeballing it
+
+Breaking a workload by hand and reading the transcript tells you whether *that*
+run went well. It does not accumulate. [`dev/uat/gke-drill/`](../../dev/uat/gke-drill/)
+drives three of these modes end to end against this recipe, captures the parent
+*and* subagent transcripts, and pre-scores the two mechanical boxes of a
+six-box rubric so a human only has to judge the other four:
+
+```sh
+cd ../../dev/uat/gke-drill && ./drill.sh a   # or b, or c
+```
+
+It deploys nothing and owns no coordinates — it sources this recipe's
+`scripts/prereqs.sh`, so it cannot score a deployment other than the one you
+just set up. Scored runs are committed under `dev/uat/gke-drill/runs/`, which
+is how "is the agent good at GKE yet?" becomes a question with an answer.
+
 ### Sharing a cluster with another watcher
 
 Every `lookout-watch` watches Events cluster-wide, and separate watchers share

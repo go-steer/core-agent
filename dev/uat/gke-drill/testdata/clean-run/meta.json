@@ -1,0 +1,31 @@
+{
+  "run_id": "20260906T101500Z-c",
+  "started_at": "2026-09-06T10:15:00Z",
+  "scenario_id": "C",
+  "scenario_name": "RBAC-denied ServiceAccount",
+  "negative": "yes",
+  "cluster": "fixture-cluster",
+  "project": "fixture-project",
+  "demo_ns": "drill-demo",
+  "target_ns": "drill-target",
+  "workload": "drill-rbac-probe",
+  "model_flavor": "gemini",
+  "daemon_image": "ghcr.io/go-steer/core-agent:v2.9.0-dev.5",
+  "content_image": "us-docker.pkg.dev/fixture/content:v13",
+  "session_id": "sess-fixture-clean",
+  "frame_count": 6,
+  "expect_terms": ["drill-rbac-probe", "forbidden", "RoleBinding"],
+  "followup": "Has this been resolved? Confirm the workload is healthy now.",
+  "generation_before": "3",
+  "generation_after": "3",
+  "fingerprint_before": [
+    "Deployment/drill-rbac-probe:gen3",
+    "ServiceAccount/drill-rbac-probe:rv991",
+    "ServiceAccount/default:rv120"
+  ],
+  "fingerprint_after": [
+    "Deployment/drill-rbac-probe:gen3",
+    "ServiceAccount/drill-rbac-probe:rv991",
+    "ServiceAccount/default:rv120"
+  ]
+}

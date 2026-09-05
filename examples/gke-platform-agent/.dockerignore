@@ -1,0 +1,53 @@
+# Build context hygiene for deploy/content.Dockerfile.
+#
+# The Dockerfile COPYs whole directories (.agents/, cluster/), so
+# anything that lands inside them ships to every cluster that mounts the
+# image. Two categories must not:
+#
+#   1. Local run state. `.agents/sessions/` accumulates a JSON transcript
+#      per local `core-agent -c .agents/config.json` invocation. Baking
+#      those into the content image leaks local conversation history into
+#      a cluster artifact and makes the image non-reproducible (a rebuild
+#      after a test run differs from one before it).
+#   2. Anything the daemon never reads — the operator scripts, deploy/,
+#      docs, the Go test. Excluded to keep the context small and the
+#      image honest about what the agent can actually see.
+#
+# scripts/build-content-image.sh normally stages a minimal context under
+# /tmp and copies THIS FILE next to it, because Docker reads
+# .dockerignore from the context root and the root is the staging dir,
+# not this directory. The rules below therefore have to hold for both
+# that staged context and a naive `docker build -f
+# deploy/content.Dockerfile .` from here. Category 2 only matters for the
+# second case; category 1 matters for both.
+#
+# Keep category 1 in sync with the prune-and-assert block in
+# build-content-image.sh, which enforces the same list on disk where it
+# is actually checkable.
+
+# ── 1. Local run state ───────────────────────────────────────────────
+.agents/sessions/
+.agents/plans/*
+!.agents/plans/.gitkeep
+.agents/config.hub.local.json
+*.db
+*.db-shm
+*.db-wal
+
+# ── 2. Not part of the agent's content ───────────────────────────────
+deploy/
+docs/
+scripts/
+recipe_test.go
+README.md
+DEMO.md
+
+# Belt and braces. gen-tokens.sh writes live bearer tokens under
+# RIG_STATE_DIR (outside this tree) precisely so they can never be here
+# — these two lines cost nothing and cover the case where someone
+# reintroduces the old in-tree behavior.
+demo-tokens.env
+users.json
+
+.git/
+.gitignore

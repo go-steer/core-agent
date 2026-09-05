@@ -1,0 +1,223 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The core-agent daemon Deployment running the kube-agents Platform
+# Agent. Long-lived, single-replica, multi-session hub. Accepts inject
+# POSTs from the lookout-watch (in this cluster) and attach sessions
+# from operators + companions (e.g. a chat gateway).
+#
+# CONTENT DELIVERY. The recipe's content (config + AGENTS.md + the
+# cluster subagent's own root with 6 GKE skills) ships as
+# an **OCI image volume** rather than a ConfigMap — a ConfigMap can't
+# express the nested directory tree the subagent root needs (no "/" in
+# keys) and would hit the 1 MiB ceiling as skills accumulate:
+# a FROM-scratch content image mounted read-only at the project root.
+# The daemon takes -c pointing into it and discovers everything relative
+# to that mount, exactly as on a laptop. See
+# docs/agent-content-distribution-design.md and deploy/content.Dockerfile.
+#
+# Image volumes are beta since k8s 1.33 and available on GKE 1.35+. On
+# older clusters use deploy/overlays/initcontainer-copy/, which delivers
+# the SAME content image via an initContainer copy instead.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: core-agent
+  namespace: gke-platform-agent
+  labels:
+    app.kubernetes.io/name: core-agent
+    app.kubernetes.io/component: daemon
+  annotations:
+    apphub.cloud.google.com/functional-type: "AGENT"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: core-agent
+      app.kubernetes.io/component: daemon
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: core-agent
+        app.kubernetes.io/component: daemon
+    spec:
+      serviceAccountName: core-agent-daemon
+      # Standard clusters only — uncomment to pin onto metadata-server
+      # nodes so Workload Identity Federation works. Autopilot REJECTS
+      # this selector (metadata server is universal there), so the
+      # commented default is Autopilot-safe.
+      #
+      # nodeSelector:
+      #   iam.gke.io/gke-metadata-server-enabled: "true"
+      securityContext:
+        fsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+      # Stage users.json out of the Secret volume into an emptyDir with
+      # user-only mode. Required because pkg/auth/users.go rejects any
+      # group/other mode bits, and pod-level fsGroup=65532 adds group-read
+      # to Secret-volume files — so a Secret mounted at defaultMode=0400
+      # arrives as 0440 and the daemon aborts at multi-session auth init:
+      #   auth: users file ".../users.json" has mode 0440;
+      #        must be 0600 or stricter (group/other bits must be unset)
+      initContainers:
+        - name: install-users-json
+          image: busybox:1.38.0
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              cp /secret-src/users.json /shared/users.json
+              chmod 0400 /shared/users.json
+              chown 65532:65532 /shared/users.json
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+          volumeMounts:
+            - name: users-src
+              mountPath: /secret-src
+              readOnly: true
+            - name: users
+              mountPath: /shared
+      containers:
+        - name: core-agent
+          # Pinned, not :latest. With imagePullPolicy IfNotPresent a node
+          # that has cached an older :latest never re-pulls, so the daemon
+          # silently runs stale code after a rebuild — the same trap the
+          # overlays call out for the content image. Both overlays override
+          # this tag; bump all three together.
+          image: ghcr.io/go-steer/core-agent:2.9.0-dev.5
+          imagePullPolicy: IfNotPresent
+          args:
+            # -c points into the content mount. The daemon derives
+            # agentsDir = dir(-c) = /opt/gke-platform-agent/.agents and
+            # projectRoot = /opt/gke-platform-agent, so the cluster
+            # subagent's root ("../cluster") resolves within the mounted
+            # tree.
+            #
+            # config.hub.json carries attach.listen (0.0.0.0:7777) +
+            # multi_session (bearer table at /etc/core-agent/users.json),
+            # so --no-repl has a listener and the daemon serves the hub.
+            #
+            # Deliberately FEWER flags than examples/kube-platform-agent:
+            # small-tier-parent and the runaway-loop watchdog are declared
+            # in config.hub.json (safety.small_tier_parent / safety.watchdog,
+            # the latter shipped by core-agent#665), not on the command
+            # line. Config is the artifact that travels with the content
+            # image; a flag only lives in this manifest, so anyone running
+            # the same content locally gets different safety behavior.
+            #
+            # --session-db is NOT optional here: guardrail trip state
+            # (watchdog + cost ceilings) persists via eventlog rows
+            # (core-agent#671), so without a session DB a tripped guardrail
+            # resets on every restart.
+            - "-c"
+            - "/opt/gke-platform-agent/.agents/config.hub.json"
+            - "--no-repl"
+            - "--session-db"
+            - "--session-db-path=/var/lib/core-agent/session.db"
+          envFrom:
+            # GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION for the Vertex
+            # AI client. Generated by the base kustomization; override in
+            # your overlay via 'behavior: merge'. Without these the daemon
+            # exits at Vertex init with:
+            #   core-agent: vertex: project and location are required
+            - configMapRef:
+                name: core-agent-gcp-env
+          ports:
+            - name: attach
+              containerPort: 7777
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+          volumeMounts:
+            # The whole recipe directory, read-only, from the OCI image
+            # volume. Mounted at /opt/gke-platform-agent (deliberately
+            # NOT /etc/core-agent, so the users.json path below stays
+            # free of this mount).
+            - name: recipe-content
+              mountPath: /opt/gke-platform-agent
+              readOnly: true
+            # Writable subdir nested INSIDE the read-only content mount
+            # for record_plan artifacts. record_plan derives plansDir =
+            # agentsDir + "/plans" and MkdirAll's it
+            # (pkg/tools/record_plan.go); without this the read-only
+            # image volume makes that path unwritable and plan-first
+            # (permissions.plan_mode: "required") fails. kubelet overlays this
+            # emptyDir at the specific /plans path while the rest of the
+            # content mount stays read-only — the same nesting technique
+            # gke-troubleshoot uses over a ConfigMap projection.
+            - name: plans
+              mountPath: /opt/gke-platform-agent/.agents/plans
+            # users.json bearer table, staged by the initContainer above.
+            # /etc/core-agent is a normal kubelet-managed dir here (the
+            # content lives under /opt/...), so this file mount collides
+            # with nothing.
+            - name: users
+              mountPath: /etc/core-agent/users.json
+              subPath: users.json
+              readOnly: true
+            - name: session-db
+              mountPath: /var/lib/core-agent
+          readinessProbe:
+            # TCP probe: passes when :7777 accepts a connection, i.e.
+            # when the attach listener is up. HTTP probes won't work —
+            # the daemon has no unauthenticated endpoint to GET (a 401
+            # counts as failure), so TCP is correct until a /healthz
+            # endpoint exists.
+            tcpSocket:
+              port: attach
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: attach
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        # The recipe directory as an OCI image volume — read-only, no
+        # running container, no size limit. Pin by digest in production
+        # (see deploy/overlays/example/). Built from deploy/content.Dockerfile.
+        - name: recipe-content
+          image:
+            reference: ghcr.io/go-steer/gke-platform-agent-content:latest
+            pullPolicy: IfNotPresent
+        # users.json Secret — mounted ONLY by the initContainer, which
+        # copies it into the users emptyDir with owner 65532:65532 mode
+        # 0400. The daemon mounts the emptyDir, never the Secret directly.
+        - name: users-src
+          secret:
+            secretName: core-agent-users
+            defaultMode: 0400
+        - name: users
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        # Writable scratch for record_plan artifacts (nested at
+        # /opt/gke-platform-agent/.agents/plans). Ephemeral — plans are
+        # per-session and needn't survive restarts.
+        - name: plans
+          emptyDir:
+            sizeLimit: 10Mi
+        - name: session-db
+          persistentVolumeClaim:
+            claimName: core-agent-session-db

@@ -75,6 +75,9 @@ cluster/               # the `cluster` subagent's OWN content root
   mcp.json             # read-only gke
   env.yaml             # env manifest — REQUIRED for ${env:} to interpolate
   plans/.gitkeep       # pre-baked mount point for the nested writable emptyDir
+deploy/                # kustomize base + 4 overlays; the content image Dockerfile
+scripts/               # the operator rig — build, deploy, break, attach, teardown
+DEMO.md                # the live-cluster walkthrough
 recipe_test.go         # credential-free loader + content validation
 ```
 
@@ -218,6 +221,33 @@ Try, in order:
    plan first, then delegate to `cluster` with `wait: true`.
 3. **"apply that fix"** — should refuse and explain that the proposal *is* the
    deliverable, without going looking for a repo to edit.
+
+## Deploy it to a cluster
+
+The recipe ships its own deployment: [`deploy/`](deploy/) is a kustomize
+base plus four overlays, and [`scripts/`](scripts/) is the operator rig that
+drives them. Full walkthrough in [`DEMO.md`](DEMO.md).
+
+```sh
+./scripts/build-content-image.sh   # push the recipe content as an OCI image
+./scripts/gen-tokens.sh            # bearer tokens -> Secrets
+./scripts/set-up-demo.sh           # deploy hub + watcher, verify the mount
+./scripts/break-workload.sh        # break a workload -> incident -> session
+./scripts/attach.sh                # operator TUI
+./scripts/teardown.sh
+```
+
+Deployed, the recipe is a **hub**: `config.hub.json` adds `attach.listen`
+plus `multi_session` with a bearer table, and a [lookout](https://github.com/go-steer/lookout)
+watcher injects one session per incident. The agent is the same in both
+modes — `config.hub.json` is `config.json` plus exactly one `attach` block,
+and `recipe_test.go` asserts nothing else has drifted between them.
+
+Two decisions get made for you by probing the cluster, because both are
+forced rather than preferred: content arrives as an **OCI image volume** on
+GKE 1.35+ and via an **initContainer copy** below it, and **tracing** to
+Cloud Trace turns on if the cluster serves GKE Managed OpenTelemetry. That
+is the 2 × 2 of overlays. See [`deploy/README.md`](deploy/README.md).
 
 ## What CI proves, and what it does not
 

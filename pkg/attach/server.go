@@ -19,6 +19,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -202,6 +203,28 @@ type Options struct {
 	// stops. See docs/session-resume-design.md §"Lifecycle
 	// primitive".
 	SessionIdleTimeout time.Duration
+
+	// HealthChecks are the subsystem probes run on every
+	// GET /healthz (#946), which is served ahead of the auth
+	// middleware and is therefore reachable by an unauthenticated
+	// caller such as kubelet.
+	//
+	// Empty (the default) still serves the endpoint, reporting only
+	// {"ok":true} — the same thing a tcpSocket probe proves, and no
+	// more. Every registered check makes the probe strictly more
+	// informative than TCP; a check that cannot fail makes it a green
+	// light that measures nothing, so do not register one.
+	//
+	// Each check's Name is echoed verbatim in the unauthenticated
+	// response body: see HealthCheck.
+	HealthChecks []HealthCheck
+
+	// HealthLog receives one line per health *transition* (a check
+	// starting to fail, or recovering). The response body withholds
+	// error text because the caller is unauthenticated; this is where
+	// the detail goes instead. Nil defaults to os.Stderr, matching
+	// where the daemon writes its other operational lines.
+	HealthLog io.Writer
 }
 
 // listenerAuthenticated reports whether the configured Options put
@@ -268,10 +291,9 @@ type Server struct {
 	mux  *http.ServeMux
 	srv  *http.Server
 
-	// cardHandler is the always-unauthenticated handler for
-	// GET /.well-known/agent-card.json. nil when AgentCard is
-	// disabled (the path then 404s through the regular mux).
-	cardHandler http.Handler
+	// public holds the exact paths served ahead of the auth
+	// middleware, keyed by path. See publicBypass.
+	public map[string]http.Handler
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -384,17 +406,25 @@ func NewServer(opts Options) (*Server, error) {
 			http.Redirect(w, r, "/ui/", http.StatusMovedPermanently)
 		})
 	}
-	var cardHandler http.Handler
+	// Routes served ahead of the auth middleware. Both are public by
+	// design and for the same reason: a credential gate on them
+	// defeats the only thing they exist to do.
+	public := map[string]http.Handler{}
 	if opts.AgentCard.Enabled() {
-		cardHandler = agentCardHandler(opts.AgentCard, opts.Registry, opts.Auth)
+		public[agentCardPath] = agentCardHandler(opts.AgentCard, opts.Registry, opts.Auth)
 	}
+	healthLog := opts.HealthLog
+	if healthLog == nil {
+		healthLog = os.Stderr
+	}
+	public[HealthzPath] = healthzHandler(opts.HealthChecks, newHealthLogger(healthLog))
 
 	return &Server{
-		opts:        opts,
-		pool:        pool,
-		h:           h,
-		mux:         mux,
-		cardHandler: cardHandler,
+		opts:   opts,
+		pool:   pool,
+		h:      h,
+		mux:    mux,
+		public: public,
 	}, nil
 }
 
@@ -482,7 +512,7 @@ func (s *Server) Bind() error {
 	// SpanNameFormatter uses the route's method+path pattern for
 	// grep-friendly span names in the collector (e.g. "POST /inject").
 	tracedHandler := otelhttp.NewHandler(
-		cardBypass(s.cardHandler, s.opts.Auth.Middleware(handler)),
+		publicBypass(s.public, s.opts.Auth.Middleware(handler)),
 		"daemon.attach",
 		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
 			return r.Method + " " + r.URL.Path
@@ -526,14 +556,32 @@ func (s *Server) Bind() error {
 	return nil
 }
 
-// cardBypass routes the well-known agent-card path directly to the
-// (unauthenticated) card handler, falling through to the auth-
-// protected mux for everything else. The card is a public discovery
-// document by A2A convention — auth on the card defeats discovery.
+// agentCardPath is the A2A well-known discovery document.
+const agentCardPath = "/.well-known/agent-card.json"
+
+// publicBypass routes an exact set of paths straight to their
+// (unauthenticated) handlers, falling through to the auth-protected
+// mux for everything else.
 //
-// When card is nil (AgentCard disabled), every request goes to the
-// protected handler and /.well-known/agent-card.json returns 404
-// from the mux as expected.
+// Two routes use it, for the same structural reason. The agent card is
+// a public discovery document by A2A convention — auth on the card
+// defeats discovery. /healthz is a readiness probe — auth on it defeats
+// the probe, which is exactly the failure the endpoint exists to undo:
+// an HTTP readiness probe that sends no credentials, gets a 401, and
+// is read by kubelet as "not ready" while the daemon is perfectly fine
+// (#946).
+//
+// Both are *exempted from* the middleware rather than special-cased
+// inside it. The distinction is the point: a path listed here provably
+// never reaches auth code, so "is /healthz accidentally authenticated
+// in some configuration?" is answered by reading one map instead of
+// auditing every branch of the middleware chain. It also means these
+// handlers get no caller identity, no ACL enforcement and no CSRF
+// guard, which is why the map takes exact paths only — no prefixes, no
+// patterns, nothing that could be widened by a crafted URL.
+//
+// When the card is disabled the map simply does not contain its path,
+// and /.well-known/agent-card.json 404s from the mux as expected.
 // pollingReadRe matches the read endpoints the remote TUI polls every
 // 1-2s for status-bar rendering. Filter used by otelhttp.WithFilter to
 // suppress span creation on these paths — otherwise Cloud Trace fills
@@ -543,7 +591,12 @@ func (s *Server) Bind() error {
 // /slash/*), SSE streams (/events, /perms/stream), and admin ops
 // (DELETE /sessions) all continue to trace.
 //
-// Three alternations:
+// Four alternations:
+//   - `/healthz` — kubelet re-probes on a fixed period for the life of
+//     the pod, so this is the highest-volume path on the listener and
+//     the least interesting: a span per readiness probe is pure
+//     billing. The transition log (newHealthLogger) is where a probe
+//     failure actually surfaces.
 //   - `/sessions` bare — the session-picker enumeration hit on every
 //     TUI startup + on every fleet-view refresh.
 //   - `/peers` bare — analogous peer enumeration for the multi-daemon
@@ -551,7 +604,8 @@ func (s *Server) Bind() error {
 //   - `/sessions/{app?}/{sid}/{leaf}` — the per-session hydration reads
 //     the status bar polls every 1-2s.
 var pollingReadRe = regexp.MustCompile(
-	`^/sessions$` +
+	`^/healthz$` +
+		`|^/sessions$` +
 		`|^/peers$` +
 		`|^/sessions/(?:[^/]+/)?[^/]+/(?:status|usage|tools|agents|context|memory|skills|mcp|pricing|perms)$`,
 )
@@ -563,13 +617,13 @@ func shouldTraceRequest(r *http.Request) bool {
 	return !pollingReadRe.MatchString(r.URL.Path)
 }
 
-func cardBypass(card http.Handler, protected http.Handler) http.Handler {
-	if card == nil {
+func publicBypass(public map[string]http.Handler, protected http.Handler) http.Handler {
+	if len(public) == 0 {
 		return protected
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/.well-known/agent-card.json" {
-			card.ServeHTTP(w, r)
+		if h, ok := public[r.URL.Path]; ok {
+			h.ServeHTTP(w, r)
 			return
 		}
 		protected.ServeHTTP(w, r)

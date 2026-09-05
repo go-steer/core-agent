@@ -51,10 +51,16 @@ enrichment source quietly missing from every incident.
 Two deployments of this recipe on one cluster would otherwise fight over
 one ClusterRoleBinding, and tearing down either would break the other.
 
-**The daemon has no HTTP health endpoint, so the probes are bare TCP
-connects on `:7777`.** Every route requires a bearer token, and a probe
-cannot hold one. A TCP probe proves the listener is up, which is what a
-probe can honestly prove here.
+**The probes are bare TCP connects on `:7777`.** Every route used to
+require a bearer token, and a probe cannot hold one — an HTTP probe got
+a 401, which kubelet reads as failure.
+
+[#946](https://github.com/go-steer/core-agent/issues/946) adds an
+unauthenticated `GET /healthz` that also reports whether the session
+store is queryable, which TCP cannot: a socket keeps accepting
+connections long after the database behind it has stopped answering.
+Swap both probes for `httpGet: {path: /healthz, port: attach}` once the
+pinned tag carries it ([#986](https://github.com/go-steer/core-agent/issues/986)).
 
 **An initContainer stages `users.json` rather than mounting the Secret
 directly.** `pkg/auth/users.go` rejected a bearer table with any group or
@@ -70,7 +76,7 @@ exactly what `fsGroup` produces. It is still here because the manifest
 pins a released tag, and that tag predates the fix. Drop the
 `install-users-json` initContainer, the `users-src` volume and the `users`
 emptyDir, and mount the Secret at `/etc/core-agent` directly, in the same
-change that bumps the image.
+change that bumps the image ([#986](https://github.com/go-steer/core-agent/issues/986)).
 
 ## `content.Dockerfile`
 

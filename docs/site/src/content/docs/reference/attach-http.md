@@ -13,7 +13,7 @@ This page is the wire-level reference: paths, request/response shapes, auth requ
 
 **Default bind + startup policy** (v2.8+, [#376](https://github.com/go-steer/core-agent/issues/376)): the default listen address is loopback-only (`127.0.0.1:7777`). Binding a **non-loopback** address (`:7777`, `0.0.0.0:7777`, `[::]:7777`, any non-loopback IP/hostname) without an authentication gate — bearer token, mTLS client CA, or multi-session auth with `allow_anonymous: false` — is a startup **error**: the daemon refuses to start rather than exposing transcript reads (`/events`), message injection (`/inject`), and permission approvals (`/perms/respond`) to the network. Tokenless **loopback** listeners still start, but log a loud warning that any local process can drive the agent.
 
-Two orthogonal layers run on every request:
+Two orthogonal layers run on every request, with two deliberate exceptions: `/healthz` and `/.well-known/agent-card.json` are routed *ahead* of both, on the exact path only. See [Non-session routes](#non-session-routes).
 
 **Transport layer** ([`pkg/attach/auth.go`](https://github.com/go-steer/core-agent/blob/main/pkg/attach/auth.go)):
 
@@ -517,9 +517,57 @@ Authentication uses the peer's transport auth — a bearer token read from `toke
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
+| `GET` | `/healthz` | **none** (bypasses transport auth) | Readiness probe. **200** `{"ok":true,"checks":{"session_db":"ready"}}` when every subsystem check passes, **503** with the same shape when one does not. Always present. 405 on non-GET/HEAD. See below. |
 | `GET` | `/.well-known/agent-card.json` | **none** (bypasses transport auth) | Public agent-card discovery. Enabled when `AgentCard.Description` + `ExternalURL` are both non-empty in the daemon config. 405 on non-GET/HEAD. |
 | `GET` | `/whoami` | Transport auth (no per-session ACL) | Returns `{"identity":..., "admin":bool, "source":..., "proxy_by":...}` for the current caller. `source ∈ {"bearer","mtls","iap","asserted","anonymous"}` (consumers tolerate unknowns). `proxy_by` populated only when `source="asserted"` (X-Asserted-Caller path). Companion to the SSE `capabilities.caller_id` display hint. Wire shape pinned by the [conformance fixture](https://github.com/go-steer/core-agent/blob/main/pkg/attach/testdata/conformance/rest-whoami-v1.json). |
 | `GET` | `/ui/*` | Transport auth | Optional SPA passthrough — only when `Options.UI` is non-null. `/ui` (no trailing slash) → **301** → `/ui/`. |
+
+### `GET /healthz` (v2.9.0-dev, [#946](https://github.com/go-steer/core-agent/issues/946))
+
+An unauthenticated readiness endpoint, for Kubernetes `httpGet` probes and anything else that needs to ask "is this daemon serving?" without holding a credential.
+
+```console
+$ curl -s http://localhost:7777/healthz
+{"ok":true,"checks":{"session_db":"ready"}}
+```
+
+**Read the status code, not the body.** 200 when every check passes, **503** when any fails. kubelet only looks at the code; the body is for the human reading `curl` output during an incident.
+
+| Field | Meaning |
+|---|---|
+| `ok` | `true` iff every registered check passed. |
+| `checks` | Per-subsystem status: `ready`, `failed`, or `timeout`. Omitted entirely when no checks are registered. |
+
+**What it checks.** One subsystem today: `session_db`, a real bounded read against the event log's table — not a connection-pool ping, which on SQLite stays green against a file that has been deleted or a volume that has gone read-only. Every attach shape has an event log since [#973](https://github.com/go-steer/core-agent/issues/973), so a daemon always reports it.
+
+**What it deliberately does not check**, because a probe that cannot fail is worse than no probe:
+
+- **The model provider.** No outbound calls. Otherwise a provider outage would roll your pods instead of reporting the outage, and readiness would depend on a third party's uptime.
+- **Auth.** The bearer table is read once at startup and a failure there exits before the listener binds, so an `"auth":"loaded"` field could only ever say `loaded`.
+
+**What it deliberately does not report.** No session IDs, no session counts, no caller identities, no version string. The caller is unauthenticated, and none of that is what a readiness probe is asking. Error text is withheld too — a database error routinely carries a filesystem path or a DSN. The detail goes to the daemon's log instead, one line per *transition* rather than one per probe:
+
+```
+core-agent: healthz: session_db is not ready: eventlog: ping: database is locked
+core-agent: healthz: session_db recovered
+```
+
+**Exempt from auth, not special-cased inside it.** `/healthz` is routed ahead of the auth middleware alongside the agent card, so it is unreachable by any authenticated code path rather than authenticated-then-waved-through. The match is on the exact path: `/healthz/`, `/healthz/sessions` and `/healthzz` all fall through to the protected mux and 401 as usual.
+
+**mTLS caveat.** The bypass is application-layer. With `attach.client_ca` set, the TLS handshake demands a client certificate before any HTTP is spoken, and kubelet's `httpGet` probe does not present one. Those deployments still need `tcpSocket`, or a probe run from a sidecar that holds a cert.
+
+**Kubernetes:**
+
+```yaml
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: attach
+  initialDelaySeconds: 5
+  periodSeconds: 10
+```
+
+Prefer this to `tcpSocket` where the image supports it: TCP proves only that something is accepting connections, and cannot tell that apart from a daemon whose session store has gone away.
 
 ## Streaming endpoints (summary)
 
@@ -621,13 +669,14 @@ Consumers MUST tolerate unknown values and MUST NOT crash on missing keys.
 | **401** | Unauthenticated — missing / wrong bearer token; bad proxy assertion. |
 | **403** | Forbidden — `--attach-readonly` writes; delete of the bootstrap `"default"` session; cross-origin `Origin` header on a write (CSRF protection). |
 | **404** | Not found OR auth-deny (deliberately indistinguishable to avoid SID enumeration); `POST /agents/{name}/stop` for a name the session has never spawned. |
-| **405** | Method not allowed — e.g. `POST /.well-known/agent-card.json`. |
+| **405** | Method not allowed — e.g. `POST /.well-known/agent-card.json`, `POST /healthz`. |
 | **409** | Conflict — shortcut SID ambiguous across apps; `POST /sessions` on `ErrSessionExists`; `POST /guardrails/reset` when the reset would immediately re-trip. |
 | **412** | Precondition failed — session has no eventlog (SSE reader); neither `PauseController` nor `InterruptProvider` (interrupt). |
 | **415** | Unsupported media type — state-changing request without `Content-Type: application/json` (CSRF protection). |
 | **429** | Rate limited — the per-caller cost limiter on `/slash/*` (10/min, burst 5). Carries `Retry-After` and `{"error":"rate limited","retry_after_seconds":N}`; retryable. |
 | **500** | Internal error — factory failure on `POST /sessions`; second `DELETE` of a gone session; a `PATCH /acl` whose persistence failed (the in-memory ACL is rolled back, so a retry is safe). |
 | **501** | Not implemented — capability provider absent (`SessionFactory`, `InterruptProvider`, `PromptBrokerProvider`, wake `target`, etc.). |
+| **503** | Not ready — `GET /healthz` with a failing subsystem check. The only route that returns it. |
 
 ## Idempotency
 

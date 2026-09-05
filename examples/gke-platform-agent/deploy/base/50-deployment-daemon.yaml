@@ -188,10 +188,21 @@ spec:
               mountPath: /var/lib/core-agent
           readinessProbe:
             # TCP probe: passes when :7777 accepts a connection, i.e.
-            # when the attach listener is up. HTTP probes won't work —
-            # the daemon has no unauthenticated endpoint to GET (a 401
-            # counts as failure), so TCP is correct until a /healthz
-            # endpoint exists.
+            # when the attach listener is up. That proves only that
+            # something is listening — not that the session store is
+            # queryable.
+            #
+            # core-agent#946 adds an unauthenticated GET /healthz that
+            # 503s when a subsystem is degraded, which is a strictly
+            # better readiness signal. Switch to:
+            #
+            #   httpGet:
+            #     path: /healthz
+            #     port: attach
+            #
+            # in the same change that bumps the image tag past the fix
+            # (core-agent#986). The tag pinned above predates it and
+            # answers 404 there, which kubelet reads as not-ready.
             tcpSocket:
               port: attach
             initialDelaySeconds: 5

@@ -232,9 +232,13 @@ spec:
             # An earlier revision used an HTTP GET /sessions probe with
             # a deliberately-invalid Bearer token, on the (incorrect)
             # assumption that kubelet treats 401 as healthy. It doesn't
-            # — HTTP probes count only 2xx/3xx as success. Until the
-            # daemon exposes an unauthenticated /healthz endpoint we
-            # can probe, TCP is the correct choice.
+            # — HTTP probes count only 2xx/3xx as success.
+            #
+            # core-agent#946 adds an unauthenticated GET /healthz for
+            # exactly this. Switching to `httpGet: {path: /healthz,
+            # port: attach}` also catches a degraded session store,
+            # which TCP cannot — but only once the image this recipe
+            # runs carries the fix (core-agent#986).
             tcpSocket:
               port: attach
             initialDelaySeconds: 5

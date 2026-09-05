@@ -258,10 +258,12 @@ spec:
           # bearer token, so an HTTP probe without it would 401 and
           # mark the pod unhealthy. TCP is sufficient: if the
           # listener is accepting connections, the agent is up.
-          # Operators with stricter health requirements can wire a
-          # sidecar that does an authed HTTP probe and exposes a
-          # simple /healthz; for the default recipe TCP is the
-          # right trade-off.
+          # core-agent#946 adds an unauthenticated GET /healthz to the
+          # attach listener that also reports whether the session
+          # store is queryable. Once the pinned tag above carries it,
+          # `httpGet: {path: /healthz, port: attach}` replaces both
+          # probes and reports a degraded daemon that TCP calls
+          # healthy (core-agent#986).
           livenessProbe:
             tcpSocket:
               port: attach

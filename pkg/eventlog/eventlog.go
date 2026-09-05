@@ -35,6 +35,7 @@ package eventlog
 import (
 	"context"
 	"errors"
+	"fmt"
 	"iter"
 	"time"
 
@@ -370,4 +371,34 @@ var ErrClosed = errors.New("eventlog: stream is closed")
 // is this package's to own.
 func IsSessionNotFound(err error) bool {
 	return err != nil && errors.Is(err, gorm.ErrRecordNotFound)
+}
+
+// Ping reports whether the event log is still readable, for use by a
+// readiness probe (#946).
+//
+// It issues a real bounded read against the overlay table rather than
+// pinging the connection pool. On SQLite a pool ping proves almost
+// nothing: the pool hands back a live *sql.DB whose file may since
+// have been deleted, replaced, or locked by another writer, and
+// database/sql only discovers that on a statement. One indexed row
+// read is the cheapest query that actually touches the file.
+//
+// A closed Handle reports ErrClosed rather than panicking, so a probe
+// racing shutdown fails cleanly instead of taking the process with it.
+func (h *Handle) Ping(ctx context.Context) error {
+	if h == nil || h.DB == nil {
+		return ErrClosed
+	}
+	var seq int64
+	// Scan (not First) so an empty log is success, not
+	// ErrRecordNotFound — a daemon that has served no events yet is
+	// ready, and the probe must not say otherwise on a cold boot.
+	if err := h.DB.WithContext(ctx).
+		Model(&agentEventRow{}).
+		Select("seq").
+		Limit(1).
+		Scan(&seq).Error; err != nil {
+		return fmt.Errorf("eventlog: ping: %w", err)
+	}
+	return nil
 }

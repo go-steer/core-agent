@@ -2402,6 +2402,7 @@ func run(prompt, initialPrompt, cfgPath, modelOverride, providerOverride, taskCl
 			SessionFactory:      sessionFactory,
 			Resumer:             sessionResumer,
 			SessionIdleTimeout:  sessionIdleTimeout,
+			HealthChecks:        daemonHealthChecks(eventlogHandle),
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "core-agent: attach server: %v\n", err)

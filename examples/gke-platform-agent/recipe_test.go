@@ -199,6 +199,19 @@ func TestMCPSurfaceIsReadOnly(t *testing.T) {
 					"/mcp endpoint serves the mutating verbs this recipe promises the agent does not have",
 					dir, gke.URL, readOnlyEndpoint)
 			}
+			// The URL alone is an operator's private knowledge. `read_only`
+			// is the same fact stated where the runtime can act on it: it
+			// classifies every tool the server exposes, which is what lets
+			// `wait_and_verify` poll a gke read without a hand-maintained
+			// `poll_allow` list drifting out of date behind it (#693/#971).
+			// Declaring the flag while pointing at the read-write /mcp
+			// endpoint would be a lie the runtime believes, so this only
+			// makes sense guarded by the URL assertion above.
+			if !gke.ReadOnly {
+				t.Errorf("%s: gke server does not declare read_only:true; without it every tool "+
+					"it exposes classifies as mutating and each pollable one has to be named by "+
+					"hand in tools.wait_and_verify.poll_allow", dir)
+			}
 			if gke.Auth == nil || gke.Auth.GoogleOAuth == nil {
 				t.Fatalf("%s: gke server has no google_oauth auth block", dir)
 			}

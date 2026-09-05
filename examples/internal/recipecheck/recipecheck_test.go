@@ -187,6 +187,33 @@ func TestToolPositionMustResolve(t *testing.T) {
 		r := fixture(t, plainConfig, "", "wait_and_verify(tool: \"stat\", ...)\n")
 		wantNames(t, check(t, r, recipecheck.Policy{}))
 	})
+
+	// #693's flag is the per-SERVER form of the same operator assertion, and
+	// a recipe that declares it is meant to drop poll_allow entirely. Rule F
+	// only knew the per-tool form, so it would have reported the correct
+	// shape as a defect — a green check demanding the workaround the flag
+	// exists to retire.
+	t.Run("namespaced onto a read_only server, no poll_allow", func(t *testing.T) {
+		const readOnlyMCP = `{"version": 1, "servers": {"gke": {"transport": "http", ` +
+			`"url": "https://container.googleapis.com/mcp/read-only", "read_only": true}}}`
+		r := fixture(t, plainConfig, readOnlyMCP, "wait_and_verify(tool: \"gke_get_pod\", ...)\n")
+		wantNames(t, check(t, r, recipecheck.Policy{}))
+	})
+
+	// The flag is scoped to the server that declares it: a second, mutating
+	// server on the same recipe must still need its assertion, or one
+	// read_only endpoint would launder every tool in the config.
+	t.Run("read_only does not cover a sibling server", func(t *testing.T) {
+		const mixedMCP = `{"version": 1, "servers": {` +
+			`"gke": {"transport": "http", "url": "https://container.googleapis.com/mcp/read-only", "read_only": true},` +
+			`"jira": {"transport": "http", "url": "https://example.invalid/mcp"}}}`
+		r := fixture(t, plainConfig, mixedMCP, "wait_and_verify(tool: \"jira_get_issue\", ...)\n")
+		got := check(t, r, recipecheck.Policy{})
+		wantNames(t, got, "jira_get_issue")
+		if !strings.Contains(got[0].Reason, "poll_allow") {
+			t.Errorf("reason %q should still name poll_allow", got[0].Reason)
+		}
+	})
 }
 
 // TestFlagsPollAllowEntryThatMatchesNothing is the config-side twin: a

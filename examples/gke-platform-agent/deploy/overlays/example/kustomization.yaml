@@ -73,7 +73,7 @@ images:
 # content change; use `digest:` for SBOM/cosign-critical deploys.
 - name: ghcr.io/go-steer/gke-platform-agent-content
   newName: us-central1-docker.pkg.dev/your-project-id/your-repo/gke-platform-agent-content
-  newTag: v1
+  newTag: v2
 
 # GCP project + location for Vertex (Gemini).
 #

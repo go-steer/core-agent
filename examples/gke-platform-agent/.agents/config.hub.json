@@ -19,13 +19,6 @@
       "list_dir"
     ],
     "wait_and_verify": {
-      "poll_allow": [
-        "gke_get_k8s_resource",
-        "gke_describe_k8s_resource",
-        "gke_get_k8s_rollout_status",
-        "gke_list_k8s_events",
-        "gke_get_k8s_logs"
-      ],
       "max_timeout_seconds": 120,
       "max_attempts": 20
     }

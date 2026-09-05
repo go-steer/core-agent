@@ -109,7 +109,7 @@ through. Here the config is the enforcement and the persona only *describes* it.
 | Bounded spend | `max_turn_cost_usd` / `max_session_cost_usd` — halts the agent on trip |
 | Runaway loops get halted | `safety.watchdog: "enforce"` — a `kind=watchdog` turn error, refusing new turns until reset |
 | Delegation routes by description | the `spawn_agent` schema carries the configured roster, so the persona names no specialist |
-| Re-checking is bounded, never a poll loop | `tools.wait_and_verify` — `poll_allow` lists five read-only `gke_*` tools and nothing else, capped at 20 attempts / 120s |
+| Re-checking is bounded, never a poll loop | `tools.wait_and_verify`, capped at 20 attempts / 120s; what it may poll comes from `read_only: true` on the `gke` server rather than a hand-listed set of tool names |
 
 Three things worth knowing about that table:
 

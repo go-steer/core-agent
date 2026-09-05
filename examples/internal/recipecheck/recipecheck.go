@@ -647,6 +647,20 @@ func unreachableToolName(name string, registered map[string]bool, servers mcp.Se
 		serverNames(servers)), false
 }
 
+// onReadOnlyServer reports whether a namespaced MCP name is sourced from a
+// server the operator declared `read_only` (#693). Those tools classify
+// read-only on every call, so `wait_and_verify` polls them without a
+// `poll_allow` entry — and a recipe that declares the flag and drops the
+// hand-maintained list is the CORRECT shape, not a finding.
+func onReadOnlyServer(name string, servers mcp.Servers) bool {
+	for server, spec := range servers.Servers {
+		if spec.ReadOnly && strings.HasPrefix(name, server+"_") {
+			return true
+		}
+	}
+	return false
+}
+
 func isBuiltinName(name string) bool {
 	for _, n := range tools.BuiltinToolNames() {
 		if n == name {
@@ -946,10 +960,11 @@ func ruleToolPosition(l lineRef, sc scope, pollAllow map[string]bool, add func(F
 			add(Finding{File: l.file, Line: l.no, Name: name, Reason: reason})
 			continue
 		}
-		if !sc.registered[name] && !pollAllow[name] {
+		if !sc.registered[name] && !pollAllow[name] && !onReadOnlyServer(name, sc.servers) {
 			add(Finding{File: l.file, Line: l.no, Name: name,
-				Reason: "wait_and_verify polls it but it is not in tools.wait_and_verify.poll_allow; " +
-					"MCP tools never self-classify read-only, so the call is refused"})
+				Reason: "wait_and_verify polls it but it is neither in tools.wait_and_verify.poll_allow " +
+					"nor sourced from a read_only MCP server; MCP tools never self-classify read-only, " +
+					"so the call is refused"})
 		}
 	}
 }

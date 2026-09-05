@@ -197,9 +197,10 @@ that, the `initcontainer-copy` overlay pulls the same content as an ordinary
 image and an init container copies it into an `emptyDir`. `set-up-demo.sh`
 reads the cluster's version and picks; `OVERLAY=example|copy` forces one.
 
-`build-content-image.sh` pushes **two tags** for this reason — `:v1` built
-`FROM scratch` for the image-volume path, and `:v1-copy` built `FROM
-chainguard/busybox` (the copy path needs a `cp`). The content is byte-identical.
+`build-content-image.sh` pushes **two tags** for this reason — `:${CONTENT_TAG}`
+built `FROM scratch` for the image-volume path, and `:${CONTENT_TAG}-copy` built
+`FROM chainguard/busybox` (the copy path needs a `cp`). The content is
+byte-identical.
 
 **A pushed tag is spent.** `imagePullPolicy: IfNotPresent` means re-pushing a
 live tag reaches only nodes that have not cached the layer, which turns a

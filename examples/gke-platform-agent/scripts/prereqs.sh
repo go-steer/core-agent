@@ -161,7 +161,7 @@ export CONTENT_IMAGE="${CONTENT_IMAGE:-${REGION}-docker.pkg.dev/${PROJECT_ID}/${
 #
 # The registry is the only oracle for what is spent. This comment is not:
 #   gcloud artifacts docker tags list "${CONTENT_IMAGE}" --project="${PROJECT_ID}"
-export CONTENT_TAG="${CONTENT_TAG:-v1}"
+export CONTENT_TAG="${CONTENT_TAG:-v2}"
 
 # ── Published images: NOT set here ───────────────────────────────────
 # The daemon and watcher pins live in the overlays' `images:` blocks

@@ -763,3 +763,72 @@ func TestMaybeAutoContinue_SkipsCompletedAndStaleAndLocked(t *testing.T) {
 		}
 	})
 }
+
+// acErrorEvent is a turn that ended with an in-band model error: an
+// LLMResponse carrying an ErrorCode and no content, the shape ADK's
+// converter produces for a candidate the provider refused or dropped.
+func acErrorEvent(code string, ts time.Time) *session.Event {
+	ev := session.NewEvent("inv-err")
+	ev.Author = "core_agent"
+	ev.Timestamp = ts
+	ev.LLMResponse = adkmodel.LLMResponse{ErrorCode: code}
+	return ev
+}
+
+// #969, end to end through the real trigger: a session parked by a
+// transient provider error gets a continuation note, and one parked by a
+// safety block does not. Fails on pre-fix code, where every ErrorCode
+// tail leaves the inbox empty and the session silent forever.
+func TestMaybeAutoContinue_TransientModelErrorIsReDriven(t *testing.T) {
+	t.Parallel()
+	h := seedAC(t,
+		acUserEvent("what is wrong with the payments deployment?", time.Now().Add(-5*time.Minute)),
+		acErrorEvent("UNAVAILABLE", time.Now().Add(-1*time.Minute)),
+	)
+	ag := acAgent(t, h)
+	maybeAutoContinue(acDeps(h, time.Hour), auth.Caller{Identity: acUser}, acSID, ag)
+
+	msgs := ag.DrainInbox()
+	if len(msgs) != 1 {
+		t.Fatalf("inbox has %d messages, want 1 continuation note — a 503 must not park the session forever", len(msgs))
+	}
+	if !strings.Contains(msgs[0], "previous turn did not complete") {
+		t.Errorf("inbox message = %q, want the continuation system note", msgs[0])
+	}
+}
+
+func TestMaybeAutoContinue_TerminalModelErrorIsNotReDriven(t *testing.T) {
+	t.Parallel()
+	h := seedAC(t,
+		acUserEvent("write me something the provider will refuse", time.Now().Add(-5*time.Minute)),
+		acErrorEvent("SAFETY", time.Now().Add(-1*time.Minute)),
+	)
+	ag := acAgent(t, h)
+	maybeAutoContinue(acDeps(h, time.Hour), auth.Caller{Identity: acUser}, acSID, ag)
+
+	if msgs := ag.DrainInbox(); len(msgs) != 0 {
+		t.Fatalf("inbox = %v, want empty — re-driving a safety block only re-triggers it", msgs)
+	}
+}
+
+// The bound, through the real trigger: once the transient budget is
+// spent, the session stops re-driving on its own rather than looping
+// until the freshness window closes.
+func TestMaybeAutoContinue_TransientBudgetStopsReDriving(t *testing.T) {
+	t.Parallel()
+	base := time.Now().Add(-30 * time.Minute)
+	events := []*session.Event{acUserEvent("what is wrong with the cluster?", base)}
+	for i := 0; i < 3; i++ {
+		events = append(events,
+			acUserEvent(agent.AutoContinueNote(base), base.Add(time.Duration(2*i+1)*time.Minute)),
+			acErrorEvent("UNAVAILABLE", base.Add(time.Duration(2*i+2)*time.Minute)),
+		)
+	}
+	h := seedAC(t, events...)
+	ag := acAgent(t, h)
+	maybeAutoContinue(acDeps(h, time.Hour), auth.Caller{Identity: acUser}, acSID, ag)
+
+	if msgs := ag.DrainInbox(); len(msgs) != 0 {
+		t.Fatalf("inbox = %v, want empty — the transient re-drive budget is not bounding anything", msgs)
+	}
+}

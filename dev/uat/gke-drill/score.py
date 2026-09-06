@@ -419,11 +419,24 @@ def render(run: pathlib.Path) -> str:
     ] + [f for f in frames if guard_re.search(f.text)]
     errors = [f for f in frames if f.event.get("ErrorCode")]
 
-    # A `turn-error` frame is the daemon saying the turn died — an auth
-    # failure, a provider outage, a non-retryable 4xx. Distinct from
-    # ErrorCode above, which rides an agent event inside a turn that is
-    # still running.
-    turn_errors = [r for r in typed if r.get("sse") == "turn-error"]
+    # A `turn-error` frame is the daemon saying a turn died — an auth
+    # failure, a provider outage, a 4xx. Distinct from ErrorCode above,
+    # which rides an agent event inside a turn that is still running.
+    #
+    # Whether that sinks the RUN depends on what happened next, which the
+    # frame does not say and the first version of this check never asked.
+    # A retryable 429 that auto-continue re-drove, followed by three clean
+    # turns and a full answer, is not the same event as two turns dying on
+    # a Vertex 403 with nothing after them — and on 2026-09-06 the drill
+    # called them both NOT SCOREABLE and told the operator to bin the run
+    # that had worked. An error is TERMINAL only if no turn completed
+    # after it.
+    err_idx = [i for i, r in enumerate(typed) if r.get("sse") == "turn-error"]
+    done_idx = [i for i, r in enumerate(typed) if r.get("sse") == "turn-complete"]
+    last_done = done_idx[-1] if done_idx else -1
+    terminal_errors = [typed[i] for i in err_idx if i > last_done]
+    recovered_errors = [typed[i] for i in err_idx if i < last_done]
+    turn_errors = [typed[i] for i in err_idx]
 
     followup = meta.get("followup") or ""
     inject_frame = None
@@ -521,29 +534,69 @@ def render(run: pathlib.Path) -> str:
     # left staring at empty boxes with no way to tell why. A run in this
     # state must be re-run, not scored, and saying so is the whole job of
     # this section.
-    if turn_errors:
-        a("## ⚠ This run is NOT SCOREABLE")
-        a("")
-        a(f"**{len(turn_errors)} turn(s) ended in an error.** The agent did not")
-        a("complete a turn, so G1, G2, G3 and G6 have nothing to judge and the")
-        a("empty sections below are an absence of evidence, not evidence of")
-        a("absence. Fix the cause and re-run; do not file this as a scorecard.")
-        a("")
-        for e in turn_errors:
+    #
+    # But only a run in THAT state. Later the same day a run took one
+    # retryable 429, recovered, completed three turns and answered the
+    # follow-up — and got the same banner, which told the operator to
+    # discard the drill's first good result. The banner's own sentence is
+    # the test: "the agent did not complete a turn". So that is what is
+    # checked, rather than the presence of an error frame.
+    def err_lines(errs: list[Any]) -> None:
+        for e in errs:
             d = e.get("data") or {}
             kind = d.get("kind") or "error"
             code = d.get("code") or "?"
-            a(f"- **{kind} {code}** — {str(d.get('message') or '').strip()[:300]}")
+            retry = " *(retryable)*" if d.get("retryable") else ""
+            a(f"- **{kind} {code}**{retry} — {str(d.get('message') or '').strip()[:300]}")
             if d.get("hint"):
                 a(f"  - hint: {str(d['hint']).strip()[:300]}")
+
+    unscoreable = bool(terminal_errors) and not final_text.strip()
+
+    if unscoreable:
+        a("## ⚠ This run is NOT SCOREABLE")
+        a("")
+        a(f"**{len(terminal_errors)} turn(s) ended in an error.** Nothing completed")
+        a("after them, so the agent never produced a final answer: G1, G2, G3 and")
+        a("G6 have nothing to judge and the empty sections below are")
+        a("an absence of evidence, not evidence of absence. Fix the cause and")
+        a("re-run; do not file this as a scorecard.")
+        a("")
+        err_lines(terminal_errors)
+        a("")
+        a("---")
+        a("")
+    elif terminal_errors:
+        a("## ⚠ This run ended on an error, after it had answered")
+        a("")
+        a(f"**{len(terminal_errors)} turn(s) died with no turn completing after.**")
+        a("There IS a final answer below, so G1, G2 and G3 are judgeable on what")
+        a("was produced. **G6 is the one to distrust**: if the error landed after")
+        a("the follow-up was injected, the answer below may predate it. Check the")
+        a("G6 section's sequence numbers before scoring that box.")
+        a("")
+        err_lines(terminal_errors)
+        a("")
+        a("---")
+        a("")
+    elif recovered_errors:
+        a("## Note: the run recovered from an error")
+        a("")
+        a(f"**{len(recovered_errors)} turn(s) errored and a later turn completed.**")
+        a("The run is scoreable and the boxes below stand. Recorded because a")
+        a("re-driven turn can repeat tool calls it had already made, which spends")
+        a("G5's ceiling on retries rather than on work — check G5's count against")
+        a("the call table if it is anywhere near the limit.")
+        a("")
+        err_lines(recovered_errors)
         a("")
         a("---")
         a("")
 
     a("## The six boxes")
     a("")
-    if turn_errors:
-        a("_Recorded for completeness. The run errored — see above._")
+    if unscoreable:
+        a("_Recorded for completeness. The run never answered — see above._")
         a("")
     a("| box | verdict | how it was reached |")
     a("|---|---|---|")

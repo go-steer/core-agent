@@ -229,6 +229,7 @@ base plus four overlays, and [`scripts/`](scripts/) is the operator rig that
 drives them. Full walkthrough in [`DEMO.md`](DEMO.md).
 
 ```sh
+./scripts/grant-iam.sh             # Workload Identity bindings for DEMO_NS
 ./scripts/build-content-image.sh   # push the recipe content as an OCI image
 ./scripts/gen-tokens.sh            # bearer tokens -> Secrets
 ./scripts/set-up-demo.sh           # deploy hub + watcher, verify the mount
@@ -236,6 +237,14 @@ drives them. Full walkthrough in [`DEMO.md`](DEMO.md).
 ./scripts/attach.sh                # operator TUI
 ./scripts/teardown.sh
 ```
+
+**Run `grant-iam.sh` first if `DEMO_NS` is a namespace you have not used
+before.** Workload Identity principals are per-namespace, so a fresh
+namespace starts with no bindings, and nothing about that is visible from
+the cluster: both Deployments go Ready, the watcher raises an incident, a
+session opens, and the first model call 403s inside a turn, minutes later.
+`set-up-demo.sh` re-checks the same bindings at the end of a deploy and
+prints what is missing, but by then you have already waited for a rollout.
 
 Deployed, the recipe is a **hub**: `config.hub.json` adds `attach.listen`
 plus `multi_session` with a bearer table, and a [lookout](https://github.com/go-steer/lookout)

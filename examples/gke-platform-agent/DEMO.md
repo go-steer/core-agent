@@ -43,9 +43,11 @@ rather than a request in the persona. See [the enforcement table in
 - `gcloud`, `kubectl`, `kustomize`, `docker`, `jq`, `python3`, `openssl`.
 - `core-agent-tui` on your `PATH` for the attach step:
   `go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@latest`.
-- Workload Identity Federation enabled on the cluster, and the daemon KSA bound
-  to `roles/aiplatform.user`. The agent authenticates to Vertex as
-  `core-agent-daemon` in the deployment namespace.
+- Workload Identity Federation enabled on the cluster, and permission to bind
+  project IAM roles (`resourcemanager.projects.setIamPolicy`) — or a project
+  admin who will run `./scripts/grant-iam.sh` for you. The agent authenticates
+  to Vertex as `core-agent-daemon` **in the deployment namespace**, and that
+  namespace is part of the principal.
 
 ## Set your coordinates
 
@@ -73,6 +75,7 @@ value that still looks like `your-cluster`, and `set-up-demo.sh` re-checks the
 All commands are from the recipe directory.
 
 ```sh
+./scripts/grant-iam.sh             # Workload Identity bindings for DEMO_NS
 ./scripts/build-content-image.sh   # build + push the content image to Artifact Registry
 ./scripts/gen-tokens.sh            # bearer tokens -> users.json Secret + watcher Secret
 ./scripts/set-up-demo.sh           # deploy hub + watcher; verify the content mount
@@ -81,6 +84,27 @@ All commands are from the recipe directory.
 ./scripts/attach.sh                # hub picker; open the incident session
 ./scripts/teardown.sh              # namespace + cluster-scoped RBAC + local token stash
 ```
+
+`grant-iam.sh` is first because **Workload Identity principals are
+per-namespace**, and this is the failure the whole sequence is most exposed to.
+Deploy into a namespace you have used before and it inherits that namespace's
+bindings; deploy into a fresh one — which is what you should do, to avoid
+colliding with an older demo — and it starts with none. Nothing about that is
+visible from the cluster. Both Deployments go Ready, `debug-pod.sh check`
+passes, the watcher raises an incident, a session opens, and *then* the first
+model call 403s inside a turn, several minutes and one broken workload later:
+
+```
+Permission 'aiplatform.endpoints.predict' denied on resource
+'.../publishers/google/models/gemini-3.7-flash' (or it may not exist)
+```
+
+The trailing "(or it may not exist)" is Vertex being unhelpful — it sends you
+off checking model availability, which is the wrong hypothesis. The script is
+idempotent and reads before it writes, so running it against an
+already-bound namespace costs one API call per role and changes nothing.
+`set-up-demo.sh` runs the same check at the end of a deploy, but by then you
+have already waited for a rollout.
 
 Live bearer tokens are written to `${TMPDIR:-/tmp}/gke-platform-agent/`, never
 into the checkout. `attach.sh` reads them from there and passes the token to
@@ -237,7 +261,8 @@ spans server-side, so the only symptom is an empty trace list.
 `lookout-watch` holds no other GCP role, so it is the one that gets forgotten —
 and the result looks fine: a trace with the turn, the tool calls and the
 subagent delegation all present, missing only the inject span that started it.
-Nothing errors. `set-up-demo.sh` checks both and prints the missing command.
+Nothing errors. `./scripts/grant-iam.sh` grants both; `set-up-demo.sh` calls it
+with `--check` at the end of a deploy and prints what is missing.
 
 One gotcha when you go looking: Cloud Trace's `+service_name:` filter does
 **not** match the OTel `service.name` attribute and returns nothing. Filter on
@@ -324,7 +349,7 @@ than its exit status.
 | Symptom | Cause |
 | --- | --- |
 | Daemon `CrashLoopBackOff`, no useful log | Content mount is wrong. Run `./scripts/debug-pod.sh check`. |
-| Daemon boots, first model call 403s | `GOOGLE_CLOUD_PROJECT` is a placeholder, or the KSA lacks `roles/aiplatform.user`. |
+| Daemon boots, first model call 403s | `GOOGLE_CLOUD_PROJECT` is a placeholder, or the KSA lacks `roles/aiplatform.user` in **this namespace** — WI principals are per-namespace. Run `./scripts/grant-iam.sh`. |
 | Daemon boots, first model call 404s | `GOOGLE_CLOUD_LOCATION` is a region. It is the *Vertex endpoint* and wants `global`; `GKE_LOCATION` is where the cluster lives. |
 | Watcher logs `status 401: unauthorized: no valid credential` | Token rotation without a watcher restart. Re-run `./scripts/gen-tokens.sh`, which restarts both Deployments. |
 | Watcher logs `asserted-caller header rejected` | Proxy identity mismatch — the watcher's token is valid but its identity is not the configured `proxy_identity`. |

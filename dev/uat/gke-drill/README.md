@@ -35,10 +35,17 @@ set up.
 ```sh
 cd examples/gke-platform-agent
 source ~/.gke-platform-agent.env      # your PROJECT_ID / CLUSTER_NAME / …
+./scripts/grant-iam.sh                # per-NAMESPACE Workload Identity bindings
 ./scripts/build-content-image.sh
 ./scripts/gen-tokens.sh
 ./scripts/set-up-demo.sh
 ```
+
+`grant-iam.sh` is not optional on a namespace you have not deployed into
+before, and skipping it costs a drill run rather than a deploy: WI principals
+are per-namespace, the deploy is healthy without the bindings, and the 403
+arrives inside the first turn — after the workload is broken and the incident
+has fired. That is exactly how the 2026-09-06 run was lost.
 
 Then, from this directory:
 

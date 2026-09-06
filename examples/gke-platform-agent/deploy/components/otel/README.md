@@ -116,6 +116,11 @@ Needs GKE control plane `1.34.1-gke.2178000` or later and gcloud `551.0.0` or
 later. `set-up-demo.sh` prints these commands verbatim when it finds the CRD
 missing, so you do not have to come back here.
 
+The IAM loop is the only part of that you should not run by hand:
+`./scripts/grant-iam.sh` does the same two bindings against **your** `DEMO_NS`
+rather than the hardcoded `gke-platform-agent` above, reads the policy before it
+writes, and covers `roles/aiplatform.user` in the same pass.
+
 The IAM member above is a Workload Identity Federation **direct binding** on
 the KSA principal, matching how this recipe grants every other role — see
 `deploy/base/10-serviceaccount-daemon.yaml`. There is no Google Service Account

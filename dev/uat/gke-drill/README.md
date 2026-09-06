@@ -113,6 +113,16 @@ and a turn that died never produced one: without that banner the sheet renders
 "Final answer: _(empty)_" and "0 tool calls", which reads as an agent that said
 nothing rather than one that never ran. Re-run it; do not file it.
 
+The tool-call tally is split into calls that **left the process** and calls that
+did not. `record_plan`, `spawn_agent`, `list_skills`, `return_result` and the
+rest of core-agent's builtins always succeed and read nothing, so counting them
+alongside cluster reads produces the sheet's most misleading number: the
+2026-09-06 run read "12 tool calls, 5 returned cleanly", and all five of the
+clean ones were builtins while every read that reached the cluster was denied.
+If the sheet says no cluster read succeeded, stop and run
+`grant-iam.sh --check` — nothing after that line can be grounded, whatever the
+final answer says.
+
 ## The six boxes
 
 Defined in [`SCORECARD.md`](SCORECARD.md), which is the normative rubric and the

@@ -117,13 +117,19 @@ fi
 
 # Run attribution: daemon image (by container name, then by index) and
 # the content image on either delivery overlay.
+#
+# The volume name below is load-bearing. deploy/base names it
+# "recipe-content"; this fake answered to "content" for as long as
+# drill.sh asked for "content", so 119 green assertions said nothing
+# about whether either matched the manifest. Both now name what the
+# manifest names, and a run that resolves no content image warns.
 if has 'containers[?(@.name=="core-agent")].image'; then
     printf '%s' "${FAKE_DAEMON_IMAGE:-}"; exit 0
 fi
 if has 'get deploy core-agent' && has 'containers[0].image'; then
     printf '%s' "${FAKE_DAEMON_IMAGE_BY_INDEX:-}"; exit 0
 fi
-if has 'volumes[?(@.name=="content")].image.reference'; then
+if has 'volumes[?(@.name=="recipe-content")].image.reference'; then
     printf '%s' "${FAKE_CONTENT_IMAGE:-}"; exit 0
 fi
 if has 'initContainers[?(@.name=="install-content")].image'; then

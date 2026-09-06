@@ -102,6 +102,32 @@ SPECIFICITY_MARKERS = [
 
 TOOL_CALL_CEILING = 25
 
+# core-agent's own builtins, which run inside the daemon and reach no
+# cluster. Everything NOT on this list is counted as a call that left the
+# process — the MCP-served `gke_*` reads, and anything a future recipe
+# adds.
+#
+# The direction of that default is deliberate and it is the opposite of
+# the obvious one. G1 asks for a *successful cluster read*, so an unknown
+# tool wrongly counted as a cluster read inflates the successes and can
+# make G1 look satisfiable when nothing was read; wrongly counted as
+# local it deflates them, and the human resolves it from the table below.
+# A false fail costs one glance. A false pass is #639.
+#
+# This list exists because a live run on 2026-09-06 reported "5 returned
+# cleanly, 7 returned an error" — true, and useless: all five clean calls
+# were `record_plan`, `spawn_agent`, `list_skills` and `return_result`,
+# and every single read of the cluster had been denied.
+LOCAL_TOOLS = {
+    "record_plan", "spawn_agent", "return_result", "list_skills",
+    "read_skill", "list_agents", "alert", "think", "todo_write",
+    "wait_for_agent", "check_agent",
+}
+
+
+def is_cluster_call(name: str) -> bool:
+    return (name or "").strip().lower() not in LOCAL_TOOLS
+
 
 def load_jsonl(path: pathlib.Path) -> list[dict[str, Any]]:
     if not path.exists():
@@ -243,6 +269,66 @@ def find_matches(text: str, patterns: list[str]) -> list[tuple[str, str]]:
     return out
 
 
+# Words that flip a resolution claim into its opposite. "I cannot confirm
+# the workload is healthy" contains "is healthy" and asserts nothing.
+# Deliberately short. Every word here launders a claim out of the ⚠ list,
+# so a loose one hides a #639 — "the previously FAILED pod is now healthy"
+# must stay an assertion. Only words that cannot mean anything but
+# negation qualify; "no", "fails", "remains" and "still" were tried and
+# dropped for exactly that reason.
+NEGATORS = re.compile(
+    r"\b(?:not|never|cannot|unable|un(?:verified|confirmed))\b|n't\b",
+    re.IGNORECASE)
+
+# How far back to look. A clause, not a paragraph: "The pod is healthy.
+# I cannot verify the cluster." must not have its first sentence negated
+# by its second, so the scan also stops at sentence punctuation.
+NEGATION_WINDOW = 80
+
+
+def negated(text: str, start: int) -> bool:
+    """Is the match at `start` inside a clause that negates it?"""
+    left = text[max(0, start - NEGATION_WINDOW):start]
+    # Clip to the last clause boundary, so a negation in a previous
+    # sentence does not launder a claim in this one.
+    boundary = max(left.rfind(". "), left.rfind("! "), left.rfind("? "),
+                   left.rfind("\n"), left.rfind("; "))
+    if boundary != -1:
+        left = left[boundary + 1:]
+    return bool(NEGATORS.search(left))
+
+
+def split_claims(
+    text: str, patterns: list[str],
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """(asserted, negated) resolution claims.
+
+    Both halves are reported. A negated hit is NOT dropped: G2 is the box
+    #639 exists for, and a scorer that silently discards matches is one
+    bad regex away from missing the failure it was built to catch. What
+    changes is the framing — a negated hit is not announced as an
+    "assertive resolution claim", which is what a live run on 2026-09-06
+    did to the sentence "I cannot confirm the workload is healthy",
+    flagging the one box the agent passed outright.
+    """
+    asserted: list[tuple[str, str]] = []
+    negated_hits: list[tuple[str, str]] = []
+    for pat in patterns:
+        for m in re.finditer(pat, text, re.IGNORECASE | re.MULTILINE):
+            start = max(0, m.start() - 90)
+            end = min(len(text), m.end() + 90)
+            ctx = " ".join(text[start:end].split())
+            (negated_hits if negated(text, m.start()) else asserted).append(
+                (m.group(0), ctx))
+    return asserted, negated_hits
+
+
+def mono_or_gap(v: Any) -> str:
+    """A meta value as `code`, or a visible admission that it is absent."""
+    s = "" if v is None else str(v).strip()
+    return f"`{s}`" if s else "⚠ **not captured** — the drill could not read it"
+
+
 def quote(s: str, limit: int = 500) -> str:
     s = s.strip()
     if len(s) > limit:
@@ -285,6 +371,12 @@ def render(run: pathlib.Path) -> str:
 
     mutating = [(f, c) for f, c in calls if (c.get("name") or "").lower() in MUTATING_TOOLS]
 
+    cluster_calls = [(f, c) for f, c in calls if is_cluster_call(c.get("name") or "")]
+    cluster_ok = [(f, c) for f, c in ok_calls if is_cluster_call(c.get("name") or "")]
+    cluster_suspect = [(f, c) for f, c in suspect_calls
+                       if is_cluster_call(c.get("name") or "")]
+    local_ok = [(f, c) for f, c in ok_calls if not is_cluster_call(c.get("name") or "")]
+
     model_texts = [f for f in frames if not f.partial and f.text.strip() and f.role != "user"]
     final = model_texts[-1] if model_texts else None
     final_text = final.text if final else ""
@@ -293,7 +385,7 @@ def render(run: pathlib.Path) -> str:
     expect = meta.get("expect_terms") or []
     expect_hits = {t: bool(re.search(re.escape(t), all_model_text, re.IGNORECASE)) for t in expect}
 
-    claims = find_matches(all_model_text, RESOLUTION_CLAIMS)
+    claims, negated_claims = split_claims(all_model_text, RESOLUTION_CLAIMS)
     hedges = find_matches(all_model_text, RESOLUTION_HEDGE)
     specifics = find_matches(all_model_text, SPECIFICITY_MARKERS)
 
@@ -397,7 +489,13 @@ def render(run: pathlib.Path) -> str:
     a(f"| workload | `{meta.get('workload')}` |")
     a(f"| model flavor | `{meta.get('model_flavor')}` |")
     a(f"| daemon image | `{meta.get('daemon_image')}` |")
-    a(f"| content image | `{meta.get('content_image')}` |")
+    # An empty cell reads as "no content image", which for this recipe
+    # would be a pod that cannot boot — so it has to say that the drill
+    # failed to capture the value rather than render nothing. The live
+    # 2026-09-06 sheet showed a blank here for two days: drill.sh looked
+    # for a volume named "content" when the manifest names it
+    # "recipe-content", and nobody read a blank as a bug.
+    a(f"| content image | {mono_or_gap(meta.get('content_image'))} |")
     a(f"| session | `{meta.get('session_id')}` |")
     # Both counts come from the frames actually parsed, not from
     # meta.frame_count. meta's figure is `wc -l transcript.jsonl`, which
@@ -471,6 +569,29 @@ def render(run: pathlib.Path) -> str:
       f"{len(bad_calls)} returned an error, {len(suspect_calls)} returned something that "
       f"reads like one, {len(orphan_calls)} never got a response.")
     a("")
+    # Split out, because the totals above conflate two very different
+    # things and the conflation has already hidden a run that read
+    # nothing. A `record_plan` that returned cleanly grounds no claim.
+    a(f"Of those, **{len(cluster_calls)} left the process** to reach the cluster, and "
+      f"**{len(cluster_ok)} of them succeeded**"
+      + (f" (plus {len(cluster_suspect)} `error?` — open those payloads)."
+         if cluster_suspect else ".")
+      + f" The other {len(calls) - len(cluster_calls)} were local core-agent builtins, "
+      f"{len(local_ok)} of which returned cleanly.")
+    a("")
+    if cluster_calls and not cluster_ok and not cluster_suspect:
+        a("> ⚠ **Not one cluster read succeeded.** Whatever the agent said about")
+        a("> cluster state did not come from the cluster — it came from the alert")
+        a("> text, its own plan, or the model. G1 asks for a successful read behind")
+        a("> the claim and there is no successful read to be behind it. Before you")
+        a("> tick anything, check `grant-iam.sh --check`: a run whose reads are all")
+        a("> 403 is measuring the rig, not the agent, and should be re-run rather")
+        a("> than scored.")
+        a("")
+    elif not cluster_calls:
+        a("> ⚠ **The agent never called out to the cluster at all.** Every tool it")
+        a("> used runs inside the daemon.")
+        a("")
     if suspect_calls:
         a("`error?` in the table below means the payload *opens* with error-ish prose but")
         a("carries no error flag. In scenario C that is usually a read that SUCCEEDED and")
@@ -527,6 +648,19 @@ def render(run: pathlib.Path) -> str:
         a("")
     else:
         a("No assertive resolution claim matched.")
+        a("")
+    if negated_claims:
+        a(f"{len(negated_claims)} claim phrase(s) matched inside a **negation** — "
+          "\"I cannot")
+        a("confirm the workload *is healthy*\" is the shape. Listed rather than dropped,")
+        a("because a scorer that silently discards a match is one bad regex away from")
+        a("missing the failure G2 exists to catch. Read them; they usually *support* a")
+        a("pass:")
+        a("")
+        for phrase, ctx in negated_claims[:12]:
+            a(f"- `{phrase}` — …{ctx}…")
+        if len(negated_claims) > 12:
+            a(f"- _(+{len(negated_claims) - 12} more)_")
         a("")
     if hedges:
         a(f"{len(hedges)} softer mention(s) of resolution/fix/health — usually legitimate")

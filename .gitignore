@@ -63,3 +63,9 @@ profile.cov
 # Personal working notes — kept on disk but not in version control.
 TODO.md
 /persona-probe
+
+# The drill's scorer is the repo's only Python that gets imported rather
+# than only executed (selftest.sh imports score for the negation cases),
+# so it leaves a __pycache__ behind. One .pyc reached main this way.
+__pycache__/
+*.pyc

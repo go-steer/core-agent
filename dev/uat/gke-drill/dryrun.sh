@@ -170,6 +170,7 @@ reset_env() {
     export DRILL_SESSION_TIMEOUT=20
     export DRILL_MAX_SECS=60
     export DRILL_INJECT_AFTER=1
+    export DRILL_ARM_SECS=3
     export DRILL_PORT=7859
 
     # Fixture answers.
@@ -512,6 +513,77 @@ if want 10; then
         ok "the merged capture equals the unpaged one"
     else
         bad "paging changed the captured events"
+    fi
+fi
+
+# ── 11-13. Scenario C fails to arm, three different ways ─────────────
+#
+# The arming path had exactly one test — the happy one — and the first
+# live attempt died on it. A pod that had not started was reported as
+# "phase=Running, waiting=none" followed by the cluster-grants-pod-list
+# hypothesis, which is the one cause that had not been tested; and the
+# `kubectl logs` command the console told the operator to run had
+# already been made impossible by the restore that runs immediately
+# after. Each case below is one of those, and each asserts BOTH that
+# the drill gave up and that it left something behind to read.
+
+if want 11; then
+    head_ "11. the probe never starts"
+    reset_env
+    export FAKE_PROBE_STATE=pending
+    run_case c
+
+    eq "exits 1" "${RC}" "1"
+    grep_ "reports the state it actually saw" "${OUT}" 'phase=Pending'
+    grep_ "names scheduling, not RBAC"        "${OUT}" 'never started'
+    grep_ "offers a bigger budget"            "${OUT}" 'DRILL_ARM_SECS=600'
+    if grep -q 'grants pod-list' "${OUT}"; then
+        bad "blamed RBAC for a pod that never ran"
+    else
+        ok "does not blame RBAC"
+    fi
+    # The point of the whole fix: the evidence outlives the cleanup.
+    if [[ -s "${RUN_DIR}/pod-forensics.txt" ]]; then
+        ok "forensics survived the restore"
+    else
+        bad "no pod-forensics.txt — the evidence was deleted again"
+    fi
+    grep_ "and it captured the describe" "${RUN_DIR}/pod-forensics.txt" 'FailedScheduling'
+    grep_ "restore still ran"            "${OUT}" 'deleting the RBAC-denied probe fixture'
+fi
+
+if want 12; then
+    head_ "12. the probe comes up healthy — scenario C is invalid here"
+    reset_env
+    export FAKE_PROBE_STATE=healthy
+    run_case c
+
+    eq "exits 1" "${RC}" "1"
+    grep_ "names the permissive-cluster case" "${OUT}" 'grants pod-list'
+    grep_ "and how to decide it without the pod" "${OUT}" 'auth can-i list pods'
+    if [[ -s "${RUN_DIR}/pod-forensics.txt" ]]; then
+        ok "forensics survived the restore"
+    else
+        bad "no pod-forensics.txt"
+    fi
+fi
+
+if want 13; then
+    head_ "13. the fixture's own image is wrong — fail fast, do not wait"
+    reset_env
+    export FAKE_PROBE_STATE=imagepull
+    export DRILL_ARM_SECS=60          # must NOT be spent
+    START=${SECONDS}
+    run_case c
+    ELAPSED=$(( SECONDS - START ))
+
+    eq "exits 1" "${RC}" "1"
+    grep_ "names the image failure" "${OUT}" 'ImagePullBackOff'
+    grep_ "says it is not RBAC"     "${OUT}" 'not the cluster'
+    if (( ELAPSED < 30 )); then
+        ok "gave up early (${ELAPSED}s of a 60s budget)"
+    else
+        bad "burned the whole budget on a terminal state (${ELAPSED}s)"
     fi
 fi
 

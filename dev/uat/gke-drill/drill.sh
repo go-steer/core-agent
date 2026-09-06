@@ -229,8 +229,12 @@ if [[ -z "${DAEMON_IMAGE}" ]]; then
         "no container named core-agent; attributing the run to containers[0]: ${DAEMON_IMAGE}"
 fi
 DAEMON_IMAGE="${DAEMON_IMAGE:-?}"
+# The volume is `recipe-content`, not `content`. This asked for the wrong
+# name for two cluster days: the image-volume overlay always missed, the
+# initContainer fallback below only matches the other overlay, and the
+# evidence sheet rendered an empty cell that nobody read as a bug.
 CONTENT_IMAGE_DEPLOYED=$(kubectl --context "${KUBE_CONTEXT}" -n "${DEMO_NS}" \
-    get deploy core-agent -o jsonpath='{.spec.template.spec.volumes[?(@.name=="content")].image.reference}' 2>/dev/null || true)
+    get deploy core-agent -o jsonpath='{.spec.template.spec.volumes[?(@.name=="recipe-content")].image.reference}' 2>/dev/null || true)
 if [[ -z "${CONTENT_IMAGE_DEPLOYED}" ]]; then
     # initContainer-copy overlay: the content ref is on the init
     # container instead of on an image volume.
@@ -238,7 +242,17 @@ if [[ -z "${CONTENT_IMAGE_DEPLOYED}" ]]; then
         get deploy core-agent -o jsonpath='{.spec.template.spec.initContainers[?(@.name=="install-content")].image}' 2>/dev/null || true)
 fi
 drill_ok "daemon  ${DAEMON_IMAGE}"
-drill_ok "content ${CONTENT_IMAGE_DEPLOYED:-<not resolved>}"
+if [[ -n "${CONTENT_IMAGE_DEPLOYED}" ]]; then
+    drill_ok "content ${CONTENT_IMAGE_DEPLOYED}"
+else
+    # Warn rather than tick. Both overlays carry a content ref, so not
+    # finding one means this resolver is out of step with the manifests —
+    # and the run is about to be attributed to an unknown content build.
+    drill_warn "content image not resolved on either overlay path — the run will
+  be scored without knowing which content it ran. Neither
+  volumes[recipe-content].image.reference nor
+  initContainers[install-content].image matched; check the manifests."
+fi
 
 SESSIONS_BEFORE=$(drill_session_ids) || drill_die \
     "could not list sessions on the hub. The tunnel is up, so this is almost

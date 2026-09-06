@@ -96,35 +96,39 @@ container renders clean and misbehaves at runtime.
 
 ## GKE prereqs
 
-One-time, before the overlay applies:
+One-time, before the overlay applies. Two cluster-level opt-ins, then the
+identity:
 
-    gcloud services enable cloudtrace.googleapis.com telemetry.googleapis.com \
-      --project="${PROJECT_ID}"
+    gcloud services enable telemetry.googleapis.com --project="${PROJECT_ID}"
 
     gcloud container clusters update "${CLUSTER_NAME}" --region="${REGION}" \
       --managed-otel-scope=COLLECTION_AND_INSTRUMENTATION_COMPONENTS \
       --project="${PROJECT_ID}"
 
-    # BOTH service accounts — see "Bind both service accounts" below.
-    for ksa in core-agent-daemon lookout-watch; do
-      gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-        --role="roles/cloudtrace.user" \
-        --member="principal://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${PROJECT_ID}.svc.id.goog/subject/ns/gke-platform-agent/sa/${ksa}"
-    done
+    ./scripts/grant-iam.sh
 
 Needs GKE control plane `1.34.1-gke.2178000` or later and gcloud `551.0.0` or
 later. `set-up-demo.sh` prints these commands verbatim when it finds the CRD
 missing, so you do not have to come back here.
 
-The IAM loop is the only part of that you should not run by hand:
-`./scripts/grant-iam.sh` does the same two bindings against **your** `DEMO_NS`
-rather than the hardcoded `gke-platform-agent` above, reads the policy before it
-writes, and covers `roles/aiplatform.user` in the same pass.
+`grant-iam.sh` covers the whole telemetry half: `cloudtrace.googleapis.com` and
+`monitoring.googleapis.com`, `roles/cloudtrace.user` on **both** KSAs, and
+`roles/monitoring.metricWriter` on the daemon — against **your** `DEMO_NS`,
+reading the policy before it writes. `telemetry.googleapis.com` is deliberately
+not in there: it serves the Instrumentation CRD, which is a decision about the
+cluster rather than about this workload's identity.
 
-The IAM member above is a Workload Identity Federation **direct binding** on
-the KSA principal, matching how this recipe grants every other role — see
+Cloud Trace and Cloud Monitoring are separate services, so
+`roles/cloudtrace.user` does not cover metrics. Grant only that one and you get
+a complete-looking trace list and no metrics at all — the same shape of silence
+as the missing watcher binding below, one signal down instead of one span.
+
+Every binding is a Workload Identity Federation **direct binding** on the KSA
+principal, matching how this recipe grants every other role — see
 `deploy/base/10-serviceaccount-daemon.yaml`. There is no Google Service Account
-to impersonate.
+for the KSA to impersonate. (`roles/iam.serviceAccountUser` on the *node* SA is
+not a counter-example: that is GKE MCP's own server-side chain, not this KSA's
+identity model.)
 
 ## Bind both service accounts
 
@@ -140,8 +144,10 @@ breaks to tip you off. `deploy/base/11-serviceaccount-watcher.yaml` says so at
 the point where someone would go looking, and `set-up-demo.sh` checks both
 principals on the tracing path and prints the missing command.
 
-This is the house pattern, not a quirk of this recipe: `gke-troubleshoot-agent`'s
-`scripts/setup-wif.sh` binds its watcher the same way.
+`gke-troubleshoot-agent`'s `scripts/setup-wif.sh` is the closest sibling and it
+does **not** do this — it takes a single `KSA_NAME` and binds one principal,
+because that recipe has no watcher to forget. Do not read its role list as
+complete for this one.
 
 `roles/cloudtrace.user` remains the *only* GCP role the watcher KSA needs.
 Everything else it does — reading the k8s API, posting to the daemon over pod

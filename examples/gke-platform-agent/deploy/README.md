@@ -23,7 +23,7 @@ thing that references it.
 | | |
 | --- | --- |
 | `00-namespace.yaml` | `gke-platform-agent` |
-| `10-serviceaccount-daemon.yaml` | `core-agent-daemon` — the Vertex identity. Needs `roles/aiplatform.user` via Workload Identity; the file documents the binding. |
+| `10-serviceaccount-daemon.yaml` | `core-agent-daemon` — the Vertex **and** MCP identity, and where six Workload Identity bindings have to land: talk to the model, call the `gke` MCP surface, read what it returns, impersonate the node SA, and export the two telemetry signals. Run `../scripts/grant-iam.sh`; the file documents each one and how it fails. |
 | `11-serviceaccount-watcher.yaml` | `lookout-watch` — needs no GCP role at all, except `roles/cloudtrace.user` on the traced path. |
 | `12/13-clusterrole*-watcher.yaml` | Cluster-wide **read** for the watcher's enrichment sources. Vendored from lookout; note it includes `secrets: list`, which is why 16 exists. |
 | `14/15-*-watcher-capacity.yaml` | A Role/RoleBinding in **`kube-system`**, for the `cluster-autoscaler-status` ConfigMap the `capacity` source reads. |

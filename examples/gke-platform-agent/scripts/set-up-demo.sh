@@ -366,49 +366,49 @@ if [[ "${OTEL}" == "1" ]]; then
         fi
     fi
 
-    # The IAM half, checked separately because it fails DIFFERENTLY: with
-    # the binding missing, everything above still passes. The CR injects,
-    # the SDK exports, neither binary logs anything unusual — and Cloud
-    # Trace rejects the spans server-side. A healthy-looking deploy with
-    # an empty trace list is the worst outcome this script can hand over,
-    # so spend one read to rule it out.
-    #
-    # BOTH service accounts, because the tracing overlays instrument both
-    # Deployments. The watcher is the one that gets forgotten: unlike the
-    # daemon it holds no other GCP role, so there is no existing binding
-    # to amend and nothing else breaks to tip you off. A half-bound
-    # project yields traces that start at the daemon and lose the
-    # watcher's inject span — a partial trace reads as a complete one.
-    #
-    # Best-effort: an operator without resourcemanager.projects.getIamPolicy
-    # gets a skip, not a failure. Deploy has already succeeded by here.
-    ksa_principal() {
-        echo "principal://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${PROJECT_ID}.svc.id.goog/subject/ns/${DEMO_NS}/sa/$1"
-    }
-    trace_members=$(gcloud projects get-iam-policy "${PROJECT_ID}" \
-        --flatten="bindings[].members" \
-        --filter="bindings.role=roles/cloudtrace.user" \
-        --format='value(bindings.members)' 2>/dev/null || true)
-    if [[ -z "${trace_members}" || -z "${PROJECT_NUMBER}" ]]; then
-        # Empty PROJECT_NUMBER would build a principal with an empty
-        # project segment, which matches nothing — a guaranteed false
-        # warning. Skip rather than cry wolf.
-        echo "    ⓘ could not read the project IAM policy — skipping the roles/cloudtrace.user check."
-    else
-        for ksa in core-agent-daemon lookout-watch; do
-            principal=$(ksa_principal "${ksa}")
-            if grep -qxF "${principal}" <<<"${trace_members}"; then
-                echo "    roles/cloudtrace.user on ${ksa}: granted ✓"
-            else
-                echo "    ⚠ ${ksa} is NOT bound to roles/cloudtrace.user — its spans are"
-                echo "      exported but Cloud Trace will reject them. Grant it with:"
-                echo "        gcloud projects add-iam-policy-binding ${PROJECT_ID} \\"
-                echo "          --role=roles/cloudtrace.user \\"
-                echo "          --member=${principal}"
-                echo "      (no restart needed — the binding takes effect within a minute.)"
-            fi
-        done
-    fi
+fi
+
+# Workload Identity, checked LAST and OUTSIDE the tracing block, because
+# it fails differently from everything above and one of its two roles is
+# not about tracing at all.
+#
+# Every check before this one reads something the deploy produced. This
+# one reads something the deploy never touches: WI principals are
+# per-NAMESPACE, so a recipe deployed into a fresh namespace — the normal
+# thing to do, to avoid colliding with an older demo — starts with no
+# bindings and nothing about that is visible from the cluster. Both
+# Deployments go Ready, the watcher raises an incident, a session opens,
+# and the first model call 403s inside a turn, minutes later. That is
+# what happened on 2026-09-06 and it cost a drill run.
+#
+# The two roles are silent in different ways:
+#
+#   roles/aiplatform.user   the agent cannot answer at all
+#   roles/cloudtrace.user   spans exported, rejected server-side — a
+#                           healthy deploy with an empty trace list
+#
+# grant-iam.sh owns the list, so there is exactly one definition of what
+# this recipe needs; --check reads and changes nothing. It is passed the
+# RESOLVED OTEL value rather than the requested one, so a deploy that
+# ended up without tracing is not warned about a role it will not use.
+#
+# Best-effort by design: an operator without getIamPolicy gets the
+# advice, not a failure. The deploy has already succeeded by here, and
+# failing it now would leave a working cluster behind an error.
+echo "→ Workload Identity bindings (per-namespace: ${DEMO_NS})"
+# PIPESTATUS rather than the pipeline's own status: the indent filter is
+# the last command, sed always succeeds, and a plain `if ... | sed` would
+# report every namespace as fully bound. It happens to work under the
+# `set -o pipefail` at the top of this file, which is precisely the kind
+# of dependency that survives until someone moves the line.
+set +e
+OTEL="${OTEL}" "${SCRIPT_DIR}/grant-iam.sh" --check 2>&1 | sed 's/^/  /'
+iam_rc=${PIPESTATUS[0]}
+set -e
+if (( iam_rc != 0 )); then
+    echo "  Grant the missing ones with:"
+    echo "    ./scripts/grant-iam.sh"
+    echo "  (no restart needed — IAM takes up to a minute to propagate.)"
 fi
 
 # On the image-volume path, explicitly verify the mount mechanics the

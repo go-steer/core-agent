@@ -87,6 +87,19 @@ Artifacts land in `${TMPDIR}/gke-drill/<stamp>-<scenario>/` — under TMPDIR
 because a capture holds a live transcript and it does not belong in `$HOME` or
 in the checkout. Nothing there survives a reboot; copy what a finding cites.
 
+**`evidence.md` is the file you read.** Not `transcript.jsonl`, which is raw SSE
+frames. The evidence sheet quotes the final answer, tabulates every tool call
+with its result, and decides G4 and G5 for you. Scoring also runs on the way out
+of a *failed* run, so a run that died still leaves one — the drill's first two
+live attempts both died before the old happy-path-only scoring step, which meant
+it had never once produced the artifact it exists to produce.
+
+A run whose turns errored is marked **NOT SCOREABLE** at the top, with the
+provider's message. Four of the six boxes are judgements about a final answer,
+and a turn that died never produced one: without that banner the sheet renders
+"Final answer: _(empty)_" and "0 tool calls", which reads as an agent that said
+nothing rather than one that never ran. Re-run it; do not file it.
+
 ## The six boxes
 
 Defined in [`SCORECARD.md`](SCORECARD.md), which is the normative rubric and the
@@ -181,6 +194,7 @@ mostly failing is the instrument working.
 | `SCORECARD.md` | **the rubric**; copy into `runs/` |
 | `selftest.sh` | offline checks on the parts |
 | `dryrun.sh` | offline run of the whole drill against fake tools |
+| `testdata/*-run/` | recorded transcripts `selftest.sh` scores: clean, dirty, errored |
 | `testdata/fakebin/` | the fake `kubectl`, `curl` and `gcloud` `dryrun.sh` uses |
 | `runs/` | committed scorecards |
 
@@ -203,8 +217,13 @@ way to find one.
 
 `selftest.sh` checks the **parts**: shell and Python syntax, the scenario
 contract every scenario must satisfy, the fixture's YAML, and `score.py`
-against two recorded transcripts — one that should pre-score clean and one
-that should trip G4 and G5.
+against three recorded transcripts — one that should pre-score clean, one that
+should trip G4 and G5, and one whose turns both died on a provider 403 and
+which must therefore come out marked NOT SCOREABLE rather than as six empty
+boxes. The third is a real capture, sanitised. Two hand-written fixtures agreed
+with each other for weeks about a `capabilities` frame neither of them
+contained, and the box they were silently wrong about was one of the two
+`score.py` decides on its own.
 
 `dryrun.sh` checks the **whole**. It puts a fake `kubectl`, `curl` and `gcloud`
 on `PATH` and runs `drill.sh` end to end against them, thirteen times, in about

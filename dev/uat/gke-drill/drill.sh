@@ -92,6 +92,50 @@ source "${DRILL_SELF_DIR}/scenarios/${SCENARIO_FILE}"
 drill_banner "GKE drill — scenario ${SCENARIO_ID}: ${SCENARIO_NAME}"
 drill_log "run dir: ${DRILL_RUN_DIR}"
 
+# meta.json — everything score.py needs that is not in the transcript.
+#
+# This is called from TWO places: the happy path, where every value is
+# set, and the cleanup trap, where a run that died mid-way has only some
+# of them. Everything a *step* assigns — the session id, the follow-up,
+# the two generations, the fingerprints — is therefore `:-`-defaulted, so
+# a half-populated meta.json still yields a readable evidence sheet.
+# Refusing to write one because SESSION_ID is unset yields nothing, which
+# is what the drill used to do.
+#
+# The coordinates (RUN_ID, CLUSTER_NAME, PROJECT_ID, the namespaces, the
+# scenario fields) are deliberately NOT defaulted: they are set before
+# the first step runs, so an unset one is a bug in the rig rather than a
+# run that stopped early, and `set -u` should say so rather than write a
+# sheet describing a cluster it cannot name.
+drill_write_meta() {
+    local frames=0
+    [[ -s "${DRILL_RUN_DIR}/transcript.jsonl" ]] &&
+        frames=$(wc -l < "${DRILL_RUN_DIR}/transcript.jsonl" | tr -d ' ')
+    jq -n \
+        --arg run_id "${RUN_ID}" \
+        --arg started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg scenario_id "${SCENARIO_ID}" \
+        --arg scenario_name "${SCENARIO_NAME}" \
+        --arg negative "${SCENARIO_NEGATIVE}" \
+        --arg cluster "${CLUSTER_NAME}" \
+        --arg project "${PROJECT_ID}" \
+        --arg demo_ns "${DEMO_NS}" \
+        --arg target_ns "${TARGET_NS}" \
+        --arg workload "${WORKLOAD:-}" \
+        --arg model_flavor "${MODEL_FLAVOR}" \
+        --arg daemon_image "${DAEMON_IMAGE:-}" \
+        --arg content_image "${CONTENT_IMAGE_DEPLOYED:-}" \
+        --arg session_id "${SESSION_ID:-}" \
+        --arg followup "${FOLLOWUP_SENT:-}" \
+        --arg generation_before "${GENERATION_BEFORE:-}" \
+        --arg generation_after "${GENERATION_AFTER:-}" \
+        --argjson frame_count "${frames}" \
+        --argjson expect_terms "$(printf '%s\n' "${SCENARIO_EXPECT_TERMS[@]}" | jq -R . | jq -s .)" \
+        --argjson fingerprint_before "$(printf '%s\n' "${FINGERPRINT_BEFORE:-}" | grep . | jq -R . | jq -s . || echo '[]')" \
+        --argjson fingerprint_after "$(printf '%s\n' "${FINGERPRINT_AFTER:-}" | grep . | jq -R . | jq -s . || echo '[]')" \
+        '$ARGS.named' > "${DRILL_RUN_DIR}/meta.json"
+}
+
 # ── Cleanup ──────────────────────────────────────────────────────────
 #
 # Restoring the cluster matters more than finishing the drill: a run
@@ -111,6 +155,53 @@ drill_cleanup() {
     if [[ -z "${DRILL_RESTORED}" && -n "${DRILL_BROKEN:-}" ]]; then
         drill_warn "restoring the cluster on the way out (exit ${rc})"
         scenario_restore || drill_warn "restore FAILED — check the cluster by hand."
+    fi
+
+    # Score whatever was captured, even on the way out. Scoring used to
+    # be the last step of the happy path only, so a run that died after
+    # the capture threw the capture away: the operator was left with a
+    # transcript.jsonl of SSE frames and no readable artifact, which is
+    # indistinguishable from having got nothing at all.
+    #
+    # Both live runs to date died before this point — one failed to arm,
+    # one lost both turns to a Vertex 403 — so in practice the drill had
+    # never once produced the evidence sheet it exists to produce. A
+    # failed run is still worth reading, and the 403 sheet is what
+    # identified the 403.
+    #
+    # transcript.jsonl is written only once the capture finishes, so an
+    # interrupt DURING the capture leaves raw events.sse and nothing
+    # else. Convert it here rather than treat the run as empty: the
+    # frames are already on disk and the conversion is pure.
+    if [[ -n "${DRILL_RUN_DIR:-}" && -s "${DRILL_RUN_DIR}/events.sse" \
+          && ! -s "${DRILL_RUN_DIR}/transcript.jsonl" ]]; then
+        python3 "${DRILL_SELF_DIR}/sse2jsonl.py" \
+            < "${DRILL_RUN_DIR}/events.sse" \
+            > "${DRILL_RUN_DIR}/transcript.jsonl" 2>/dev/null || true
+    fi
+
+    # Guarded on evidence.md not already existing so the happy path,
+    # which scores with the full meta.json, is never re-scored over.
+    if [[ -n "${DRILL_RUN_DIR:-}" && -s "${DRILL_RUN_DIR}/transcript.jsonl" \
+          && ! -f "${DRILL_RUN_DIR}/evidence.md" ]]; then
+        # Scoring's own failure is never silenced. Swallowing stderr here
+        # would reproduce the bug this block exists to fix one level down:
+        # the operator gets no sheet and no reason, which is the same
+        # dead end as having no scoring step at all.
+        drill_write_meta 2>>"${DRILL_RUN_DIR}/score.err" || true
+        if python3 "${DRILL_SELF_DIR}/score.py" --run-dir "${DRILL_RUN_DIR}" \
+                >>"${DRILL_RUN_DIR}/score.err" 2>&1; then
+            drill_warn "scored what was captured: ${DRILL_RUN_DIR}/evidence.md"
+        else
+            drill_warn "scoring failed too — why, in ${DRILL_RUN_DIR}/score.err"
+        fi
+    fi
+
+    # Only on the way out of a FAILED run. The happy path already prints
+    # the run directory in its summary, and a ⚠ on a clean run is how an
+    # operator learns to stop reading ⚠.
+    if [[ ${rc} -ne 0 && -n "${DRILL_RUN_DIR:-}" ]]; then
+        drill_warn "artifacts: ${DRILL_RUN_DIR}"
     fi
     exit "${rc}"
 }
@@ -272,30 +363,7 @@ fi
 
 drill_banner "7/7  scoring"
 
-jq -n \
-    --arg run_id "${RUN_ID}" \
-    --arg started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --arg scenario_id "${SCENARIO_ID}" \
-    --arg scenario_name "${SCENARIO_NAME}" \
-    --arg negative "${SCENARIO_NEGATIVE}" \
-    --arg cluster "${CLUSTER_NAME}" \
-    --arg project "${PROJECT_ID}" \
-    --arg demo_ns "${DEMO_NS}" \
-    --arg target_ns "${TARGET_NS}" \
-    --arg workload "${WORKLOAD}" \
-    --arg model_flavor "${MODEL_FLAVOR}" \
-    --arg daemon_image "${DAEMON_IMAGE}" \
-    --arg content_image "${CONTENT_IMAGE_DEPLOYED:-}" \
-    --arg session_id "${SESSION_ID}" \
-    --arg followup "${FOLLOWUP_SENT}" \
-    --arg generation_before "${GENERATION_BEFORE}" \
-    --arg generation_after "${GENERATION_AFTER}" \
-    --argjson frame_count "$(wc -l < "${DRILL_RUN_DIR}/transcript.jsonl" | tr -d ' ')" \
-    --argjson expect_terms "$(printf '%s\n' "${SCENARIO_EXPECT_TERMS[@]}" | jq -R . | jq -s .)" \
-    --argjson fingerprint_before "$(printf '%s\n' "${FINGERPRINT_BEFORE}" | grep . | jq -R . | jq -s . || echo '[]')" \
-    --argjson fingerprint_after "$(printf '%s\n' "${FINGERPRINT_AFTER}" | grep . | jq -R . | jq -s . || echo '[]')" \
-    '$ARGS.named' > "${DRILL_RUN_DIR}/meta.json"
-
+drill_write_meta
 python3 "${DRILL_SELF_DIR}/score.py" --run-dir "${DRILL_RUN_DIR}"
 
 drill_banner "done — scenario ${SCENARIO_ID}"

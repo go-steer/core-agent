@@ -1,0 +1,23 @@
+{
+  "run_id": "20260906T145014Z-c",
+  "started_at": "2026-09-06T14:50:14Z",
+  "scenario_id": "C",
+  "scenario_name": "RBAC-denied ServiceAccount (negative case)",
+  "negative": "yes",
+  "cluster": "fixture-cluster",
+  "project": "fixture-project",
+  "demo_ns": "drill-demo",
+  "target_ns": "drill-target",
+  "workload": "drill-rbac-probe",
+  "model_flavor": "gemini",
+  "daemon_image": "ghcr.io/go-steer/core-agent:2.9.0-dev.6",
+  "content_image": "us-docker.pkg.dev/fixture/content:v13",
+  "session_id": "sess-fixture-errored",
+  "followup": "Has this been resolved? Confirm the workload is healthy now.",
+  "generation_before": "3",
+  "generation_after": "3",
+  "frame_count": 16,
+  "expect_terms": ["drill-rbac-probe", "forbidden", "RoleBinding"],
+  "fingerprint_before": [],
+  "fingerprint_after": []
+}

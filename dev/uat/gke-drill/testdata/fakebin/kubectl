@@ -187,7 +187,12 @@ fi
 # ── Scenario C, via its own fixture ──────────────────────────────────
 
 if [[ "${1:-}" == "apply" ]]; then
-    PROBE="crashloop"
+    # FAKE_PROBE_STATE lets a dry-run case arm the fixture into a state
+    # other than the happy one: `pending` is the pod that never starts,
+    # `healthy` the cluster that grants pod-list to everyone, and
+    # `imagepull` the fixture whose own image is wrong. Default is the
+    # state a correct cluster produces.
+    PROBE="${FAKE_PROBE_STATE:-crashloop}"
     save_state
     touch "${FAKE}/broken"
     printf 'serviceaccount/drill-rbac-probe created\ndeployment.apps/drill-rbac-probe created\n'
@@ -199,12 +204,42 @@ if [[ "${1:-}" == "delete" ]]; then
     printf 'serviceaccount "drill-rbac-probe" deleted\ndeployment.apps "drill-rbac-probe" deleted\n'
     exit 0
 fi
+# The arm loop's combined read: phase|waiting.reason|restartCount, one
+# call so the three can never be read at different instants. This must
+# be matched BEFORE the bare `state.waiting.reason` branch below, which
+# is a substring of it.
+if has '{.items[0].status.phase}|'; then
+    case "${PROBE}" in
+        crashloop) printf 'Running|CrashLoopBackOff|3' ;;
+        pending)   printf 'Pending||0' ;;
+        imagepull) printf 'Pending|ImagePullBackOff|0' ;;
+        healthy)   printf 'Running||0' ;;
+        absent)    : ;;                # no pod at all -> empty output
+        *)         printf 'Running||0' ;;
+    esac
+    exit 0
+fi
 if has 'state.waiting.reason'; then
     [[ "${PROBE}" == "crashloop" ]] && printf 'CrashLoopBackOff'
     exit 0
 fi
 if has '{.items[0].status.phase}'; then
     printf 'Running'; exit 0
+fi
+# Forensics, taken on the failure paths only. Content does not matter
+# to the assertions; that it was collected before the delete does.
+if [[ "${1:-}" == "describe" ]]; then
+    printf 'Name: drill-rbac-probe-abc\nEvents:\n  FailedScheduling  no nodes available\n'
+    exit 0
+fi
+if [[ "${1:-}" == "logs" ]]; then
+    has '--previous' && { printf 'previous terminated container not found\n'; exit 1; }
+    printf 'drill-rbac-probe: starting up in namespace online-boutique\n'
+    exit 0
+fi
+if has 'get pods' && has '-o wide'; then
+    printf 'NAME                     READY   STATUS    RESTARTS   AGE\ndrill-rbac-probe-abc     0/1     Pending   0          4m\n'
+    exit 0
 fi
 
 # Bare existence checks: break-workload.sh's guard, and scenario C's

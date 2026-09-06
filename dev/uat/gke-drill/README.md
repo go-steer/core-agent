@@ -52,6 +52,13 @@ Budget about 20 minutes per scenario, most of it waiting: the watcher batches
 events, and the drill treats 90 seconds of silence on the event stream as "the
 turn is over".
 
+Scenario C gives its probe pod `DRILL_ARM_SECS` (default 240) to get from
+`kubectl apply` to a crash loop. Scheduling, a node scale-up and an image pull
+all happen before the container has run once, and a namespace with a default
+compute class can force a node to be provisioned first — on a cluster like that,
+raise it (`DRILL_ARM_SECS=600 ./drill.sh c`) rather than reading the timeout as
+a finding.
+
 ## What one run does
 
 1. **Preflight.** Coordinates resolved, both Deployments Ready, no foreign
@@ -124,7 +131,27 @@ observed live —
 If the probe comes up *healthy* instead of crash-looping, the scenario is
 invalid on that cluster: something grants pod-list to every ServiceAccount in
 the target namespace. The scenario detects this and says so rather than hanging
-for a session that is never coming. Pick a namespace without that binding.
+for a session that is never coming. Pick a namespace without that binding, or
+settle it without a pod at all:
+
+```sh
+kubectl auth can-i list pods \
+    --as="system:serviceaccount:${TARGET_NS}:drill-rbac-probe" -n "${TARGET_NS}"
+```
+
+**A probe that fails to arm is not automatically that case**, and the arming
+loop used to imply it was. It waited only for `CrashLoopBackOff`, so a pod that
+was still `Pending` — scheduling, pulling, waiting on a node — burned the whole
+budget and was then reported under the one hypothesis nothing had tested. The
+loop now names the state it is waiting on as it goes, gives up immediately on
+states that never resolve (`ImagePullBackOff` and friends), and picks its
+diagnosis from what it actually observed.
+
+Whichever way it fails, it writes `pod-forensics.txt` — `get pods -o wide`,
+`describe pod`, and the log both current and `--previous` — into the run
+directory **before** the restore deletes the pod. The console used to print a
+`kubectl logs` command that the cleanup running immediately after made
+impossible to run.
 
 ## Recording a run
 
@@ -180,14 +207,21 @@ against two recorded transcripts — one that should pre-score clean and one
 that should trip G4 and G5.
 
 `dryrun.sh` checks the **whole**. It puts a fake `kubectl`, `curl` and `gcloud`
-on `PATH` and runs `drill.sh` end to end against them, ten times, in about a
-minute: both non-trivial scenarios all the way through, plus the paths that
+on `PATH` and runs `drill.sh` end to end against them, thirteen times, in about
+a minute: both non-trivial scenarios all the way through, plus the paths that
 only ever run when something has gone wrong — a restore that exits 0 without
 restoring, an incident that never arrives, a preflight that must refuse
 *before* anything is broken, a foreign watcher, a follow-up that fires too
-late, an empty subagent roster, a paged subagent capture. The failure paths are
-the point: every one of them happens at the moment a workload is already
-broken, which is the worst moment to discover an unset variable.
+late, an empty subagent roster, a paged subagent capture, and the three ways
+scenario C can fail to arm (a probe that never starts, one that comes up
+healthy, one whose own image is wrong). The failure paths are the point: every
+one of them happens at the moment a workload is already broken, which is the
+worst moment to discover an unset variable.
+
+The arming cases were added after the first live attempt, which is also the
+reason to distrust a suite whose only covered path is the happy one. Scenario C
+had exactly one test, it passed, and the drill still spent a cluster day
+reporting the wrong cause and deleting the evidence for the right one.
 
 What it does not prove is the hub's behaviour. A changed `/sessions` payload,
 a real 401, a real SSE keepalive cadence are all outside what a fake can see —

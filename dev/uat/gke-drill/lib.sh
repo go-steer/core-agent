@@ -99,6 +99,16 @@ DRILL_MAX_SECS="${DRILL_MAX_SECS:-1200}"
 # baseline taken sooner attributes the drill's own damage to the agent.
 DRILL_SETTLE_SECS="${DRILL_SETTLE_SECS:-10}"
 
+# How long a scenario may take to ARM — for C, to get its probe pod
+# from `kubectl apply` to CrashLoopBackOff. This was 120s hard-coded and
+# it is not enough on a real cluster: scheduling, a node scale-up, and
+# an image pull all happen before the container has run once. The first
+# live attempt (std-simian-test, 2026-09-06) timed out with the pod
+# still coming up, in a namespace whose default compute class can force
+# a node to be provisioned first. Four minutes covers that; a cluster
+# that needs longer should raise this rather than have the drill guess.
+DRILL_ARM_SECS="${DRILL_ARM_SECS:-240}"
+
 # How often the capture re-measures the growing stream, and how often
 # the session poll re-lists. Five seconds is a compromise: shorter costs
 # nothing but noise on a twenty-minute capture, longer coarsens the
@@ -124,6 +134,43 @@ drill_banner() {
     printf '════════════════════════════════════════════════════════════════\n'
     printf '  %s\n' "$*"
     printf '════════════════════════════════════════════════════════════════\n'
+}
+
+# Dump everything that explains why a pod is in the state it is in,
+# into the run directory, BEFORE anything deletes it.
+#
+# This exists because the first live attempt hit the one path where the
+# drill destroyed its own evidence: scenario C failed to arm, printed
+# "Read its log before scoring anything" with the exact `kubectl logs`
+# command to run — and then `drill_die` fired the EXIT trap, which
+# restored the cluster, which deleted the pod holding the log. The
+# recommended diagnostic could not succeed, and the operator was left
+# with a cluster day, a failed run and no way to tell scheduling from
+# RBAC. Capturing is cheap; the pod is already gone by the time anyone
+# reads the console.
+#
+# `logs --previous` is the one that matters for a crash-loop (the
+# current container is a fresh attempt), so both are taken and a
+# failure of either is written into the file rather than swallowed —
+# "no previous container" is itself the answer to "has this ever run?".
+drill_capture_pod_forensics() {
+    local selector="$1" ns="${2:-${TARGET_NS}}" out="${DRILL_RUN_DIR:-}"
+    [[ -n "${out}" ]] || return 0
+    mkdir -p "${out}"
+    out="${out}/pod-forensics.txt"
+    {
+        printf '# selector: %s\n# namespace: %s\n# captured: %s\n\n' \
+            "${selector}" "${ns}" "$(date -Is)"
+        printf '## kubectl get pods -o wide\n'
+        kubectl --context "${KUBE_CONTEXT}" -n "${ns}" get pods -l "${selector}" -o wide 2>&1
+        printf '\n## kubectl describe pod\n'
+        kubectl --context "${KUBE_CONTEXT}" -n "${ns}" describe pod -l "${selector}" 2>&1
+        printf '\n## kubectl logs --tail=50\n'
+        kubectl --context "${KUBE_CONTEXT}" -n "${ns}" logs -l "${selector}" --tail=50 2>&1
+        printf '\n## kubectl logs --previous --tail=50\n'
+        kubectl --context "${KUBE_CONTEXT}" -n "${ns}" logs -l "${selector}" --previous --tail=50 2>&1
+    } > "${out}" 2>&1 || true
+    drill_warn "pod forensics captured: ${out}"
 }
 
 # ── Preflight ────────────────────────────────────────────────────────

@@ -100,18 +100,22 @@ otel_crd_present() {
 }
 
 # Printed by both the soft-fallback and the hard-fail path, so an
-# operator never has to go find the docs. The IAM grant is the one that
-# gets forgotten: the CRD can be present and the spans still rejected.
-# Needs a GKE control plane at 1.34.1-gke.2178000 or later.
+# operator never has to go find the docs. The IAM grants are the ones
+# that get forgotten: the CRD can be present and the spans still
+# rejected. Needs a GKE control plane at 1.34.1-gke.2178000 or later.
+#
+# Only the two CLUSTER-level steps are spelled out here. The telemetry
+# API and --managed-otel-scope are cluster opt-ins that grant-iam.sh has
+# no business making; the four telemetry IAM bindings — cloudtrace on
+# BOTH KSAs plus monitoring.metricWriter, and the two APIs behind them —
+# are its job, and hand-typing a subset of them is how the watcher's span
+# went missing the first time.
 print_otel_enable_commands() {
-    echo "    gcloud services enable cloudtrace.googleapis.com telemetry.googleapis.com \\"
-    echo "      --project=${PROJECT_ID}"
+    echo "    gcloud services enable telemetry.googleapis.com --project=${PROJECT_ID}"
     echo "    gcloud container clusters update ${CLUSTER_NAME} --location=${REGION} \\"
     echo "      --managed-otel-scope=COLLECTION_AND_INSTRUMENTATION_COMPONENTS \\"
     echo "      --project=${PROJECT_ID}"
-    echo "    gcloud projects add-iam-policy-binding ${PROJECT_ID} \\"
-    echo "      --role=roles/cloudtrace.user \\"
-    echo "      --member=principal://iam.googleapis.com/projects/${PROJECT_NUMBER:-<PROJECT_NUMBER>}/locations/global/workloadIdentityPools/${PROJECT_ID}.svc.id.goog/subject/ns/${DEMO_NS}/sa/core-agent-daemon"
+    echo "    ./scripts/grant-iam.sh      # the telemetry APIs and bindings"
 }
 
 if [[ "${OTEL}" == "auto" ]]; then
@@ -381,11 +385,12 @@ fi
 # and the first model call 403s inside a turn, minutes later. That is
 # what happened on 2026-09-06 and it cost a drill run.
 #
-# The two roles are silent in different ways:
+# Six roles, silent in six different ways. The two extremes:
 #
 #   roles/aiplatform.user   the agent cannot answer at all
-#   roles/cloudtrace.user   spans exported, rejected server-side — a
-#                           healthy deploy with an empty trace list
+#   roles/mcp.toolUser      the agent answers fluently and confidently
+#                           from the alert text, having had every single
+#                           cluster read denied
 #
 # grant-iam.sh owns the list, so there is exactly one definition of what
 # this recipe needs; --check reads and changes nothing. It is passed the

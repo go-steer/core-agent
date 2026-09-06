@@ -35,7 +35,7 @@ set up.
 ```sh
 cd examples/gke-platform-agent
 source ~/.gke-platform-agent.env      # your PROJECT_ID / CLUSTER_NAME / …
-./scripts/grant-iam.sh                # per-NAMESPACE Workload Identity bindings
+./scripts/grant-iam.sh                # APIs + per-NAMESPACE Workload Identity bindings
 ./scripts/build-content-image.sh
 ./scripts/gen-tokens.sh
 ./scripts/set-up-demo.sh
@@ -45,7 +45,13 @@ source ~/.gke-platform-agent.env      # your PROJECT_ID / CLUSTER_NAME / …
 before, and skipping it costs a drill run rather than a deploy: WI principals
 are per-namespace, the deploy is healthy without the bindings, and the 403
 arrives inside the first turn — after the workload is broken and the incident
-has fired. That is exactly how the 2026-09-06 run was lost.
+has fired. That is how **both** runs on 2026-09-06 were lost, and they failed
+differently. The first lost `roles/aiplatform.user` and simply died. The second
+lost `roles/mcp.toolUser` and **produced a complete-looking incident report**
+with all twelve of its cluster reads denied — the run finished, the sheet
+scored, and only G1 (grounded) caught it. Run `grant-iam.sh --check` before
+`./drill.sh`; it changes nothing and takes about ten seconds. A drill whose
+reads are all 403 is measuring the rig, not the agent.
 
 Then, from this directory:
 

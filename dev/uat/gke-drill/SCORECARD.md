@@ -7,6 +7,12 @@ the run directory with the transcript already pulled apart and the two
 mechanical boxes decided — that is an appendix. Where the two disagree about
 what a box *means*, this one wins.
 
+You fill this in by reading that `evidence.md`, not the raw transcript. It
+quotes the final answer, lists every tool call with its result and the order
+they happened in, and carries the G4/G5 verdicts across. If the sheet says
+**NOT SCOREABLE** at the top, stop: the run's turns errored, there is no answer
+to judge, and it needs re-running rather than filing.
+
 ---
 
 |  |  |

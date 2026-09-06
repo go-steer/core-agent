@@ -294,6 +294,12 @@ if want 1; then
         "$(jq -r .message "${DRILL_FAKE_DIR}/inject-body.json")" \
         "Has this been resolved? Confirm the workload is healthy now."
 
+    # The cleanup trap also scores, but only when the happy path did not
+    # get there. On a run that finished, re-scoring would overwrite the
+    # sheet written from the full meta.json with one written from the
+    # trap's, and the ⚠ would train the operator to ignore ⚠.
+    ungrep "no warning on a run that succeeded" "${OUT}" '⚠'
+
     # And the tunnel is gone.
     if (exec 3<>"/dev/tcp/127.0.0.1/${DRILL_PORT}") 2>/dev/null; then
         bad "the port-forward is still listening on ${DRILL_PORT}"
@@ -381,6 +387,16 @@ if want 4; then
     grep_ "names the timeout"            "${OUT}" 'no new session appeared within 5s'
     grep_ "restores on the way out"      "${OUT}" 'restoring the cluster on the way out'
     grep_ "the restore really ran"       "${CALLS}" '^kubectl .*rollout undo deployment/emailservice'
+    # The trap scores whatever was captured, but nothing WAS captured
+    # here — no session ever opened. An evidence sheet built from an
+    # empty transcript would be six blank boxes over no run at all,
+    # which is worse than no sheet: it looks like something to fill in.
+    if [[ -f "${RUN_DIR}/evidence.md" ]]; then
+        bad "scored a run that captured nothing"
+    else
+        ok "no evidence sheet for a run that captured nothing"
+    fi
+    grep_ "still points at the artifacts" "${OUT}" 'artifacts: '
     if (exec 3<>"/dev/tcp/127.0.0.1/${DRILL_PORT}") 2>/dev/null; then
         bad "the port-forward outlived the failed run"
     else

@@ -300,14 +300,38 @@ def render(run: pathlib.Path) -> str:
     # A watchdog or cost-ceiling trip does not arrive under an obliging
     # `event: watchdog` name — it rides a status-update, so match on the
     # payload of every typed frame rather than on the frame's name.
+    #
+    # EXCEPT the capabilities handshake, which is the first frame of every
+    # real session and advertises what the daemon SUPPORTS:
+    #
+    #     "features": {"cost_ceiling": true, "guardrails": true, ...}
+    #
+    # A blanket payload match reads `cost_ceiling` there and stamps G5
+    # FAIL on every live run before the agent has done anything. That is
+    # not a cosmetic bug: G5 is one of only two boxes this script claims
+    # to DECIDE, so it was mechanically wrong every time, in the direction
+    # that manufactures a finding. It went unnoticed because both recorded
+    # fixtures were written by hand and neither contains a capabilities
+    # frame — the fixtures did not look like a real capture, so the suite
+    # passed 44/44 while the box was broken.
+    #
+    # A capability advertisement can never be a trip, so drop the frame
+    # rather than trying to out-clever the regex.
     guard_re = re.compile(
         r"watchdog|cost ceiling|cost_ceiling|max_turn_cost|budget exceeded|max_cost",
         re.IGNORECASE,
     )
     guardrail: list[Any] = [
-        r for r in typed if guard_re.search(json.dumps(r, default=str))
+        r for r in typed
+        if r.get("sse") != "capabilities" and guard_re.search(json.dumps(r, default=str))
     ] + [f for f in frames if guard_re.search(f.text)]
     errors = [f for f in frames if f.event.get("ErrorCode")]
+
+    # A `turn-error` frame is the daemon saying the turn died — an auth
+    # failure, a provider outage, a non-retryable 4xx. Distinct from
+    # ErrorCode above, which rides an agent event inside a turn that is
+    # still running.
+    turn_errors = [r for r in typed if r.get("sse") == "turn-error"]
 
     followup = meta.get("followup") or ""
     inject_frame = None
@@ -387,8 +411,42 @@ def render(run: pathlib.Path) -> str:
     a("")
     a("---")
     a("")
+
+    # Run health, BEFORE the boxes. A turn that died never produced the
+    # thing four of the six boxes are judgements about, and the box
+    # sections below cannot tell the difference: they render "Final
+    # answer: _(empty)_" and "0 tool calls", which reads as an agent that
+    # said nothing rather than one that never ran.
+    #
+    # Observed live on 2026-09-06: two turn-error frames carrying a Vertex
+    # 403, and an evidence sheet that mentioned neither. The scorer was
+    # left staring at empty boxes with no way to tell why. A run in this
+    # state must be re-run, not scored, and saying so is the whole job of
+    # this section.
+    if turn_errors:
+        a("## ⚠ This run is NOT SCOREABLE")
+        a("")
+        a(f"**{len(turn_errors)} turn(s) ended in an error.** The agent did not")
+        a("complete a turn, so G1, G2, G3 and G6 have nothing to judge and the")
+        a("empty sections below are an absence of evidence, not evidence of")
+        a("absence. Fix the cause and re-run; do not file this as a scorecard.")
+        a("")
+        for e in turn_errors:
+            d = e.get("data") or {}
+            kind = d.get("kind") or "error"
+            code = d.get("code") or "?"
+            a(f"- **{kind} {code}** — {str(d.get('message') or '').strip()[:300]}")
+            if d.get("hint"):
+                a(f"  - hint: {str(d['hint']).strip()[:300]}")
+        a("")
+        a("---")
+        a("")
+
     a("## The six boxes")
     a("")
+    if turn_errors:
+        a("_Recorded for completeness. The run errored — see above._")
+        a("")
     a("| box | verdict | how it was reached |")
     a("|---|---|---|")
     a("| **G1** grounded | ☐ pass ☐ fail | JUDGEMENT — evidence below |")

@@ -85,7 +85,7 @@ images:
   # Newer lookout releases work; see the recipe README before bumping,
   # since the watcher's ClusterRole travels with it.
   - name: ghcr.io/go-steer/lookout
-    newTag: "v0.21.0"
+    newTag: "v0.23.0"
 
   # (B) example — digest pinning (uncomment + comment out (A) above).
   # The core-agent-version marker below belongs to the entry directly

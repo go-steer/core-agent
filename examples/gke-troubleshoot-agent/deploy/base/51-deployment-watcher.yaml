@@ -71,7 +71,7 @@ spec:
           # `k8s_event_watcher_*` metric prefix — none of which these
           # manifests, the users.json identity, or the e2e's metric
           # assertion speak any more.
-          image: ghcr.io/go-steer/lookout:v0.21.0
+          image: ghcr.io/go-steer/lookout:v0.23.0
           imagePullPolicy: IfNotPresent
           args:
             - "--daemon-url=http://core-agent.agent-triage.svc.cluster.local:7777"

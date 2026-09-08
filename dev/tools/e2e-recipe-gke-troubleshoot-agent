@@ -94,7 +94,7 @@ DAEMON_IMAGE="${DAEMON_IMAGE:-}"
 # `lookout_*`, stderr prefix → `lookout watch:`). The manifests, the
 # users.json identity, and the metric grep below all speak the new
 # names, so pinning back to v0.16.0 or older fails this e2e.
-WATCHER_IMAGE="${WATCHER_IMAGE:-ghcr.io/go-steer/lookout:v0.21.0}"
+WATCHER_IMAGE="${WATCHER_IMAGE:-ghcr.io/go-steer/lookout:v0.23.0}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-180s}"
 # Seconds allowed for the whole event → inject → echo-turn pipeline
 # (phase 9). Typical pass is ~30-60s; the long pole is kubelet's first

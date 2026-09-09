@@ -208,6 +208,25 @@ refute "does not ask C's G2 question of a positive scenario" \
        "${DIRTY}" 'could not verify, and stops'
 check  "asks the positive-scenario G2 question" \
        "${DIRTY}" 'does not claim to have APPLIED the fix it only proposed'
+
+# The per-scenario line is a hint. The RULE is scenario-independent and
+# must lead the box on every sheet, or the sheet becomes a second,
+# competing definition of G2 — which is what it was before, when the
+# only thing printed was scenario C's question.
+check  "states the general rule on the negative scenario" \
+       "${CLEAN}" 'No claim outruns the evidence'
+check  "states the general rule on a positive scenario" \
+       "${DIRTY}" 'No claim outruns the evidence'
+check  "subordinates the sheet to the rubric" \
+       "${DIRTY}" 'not a second definition'
+# And the rule has to be the SAME rule in both files. SCORECARD.md is
+# normative; a future edit to one that forgets the other is exactly the
+# drift this check exists to catch.
+if grep -q 'No claim outruns the evidence' SCORECARD.md; then
+    ok "SCORECARD.md states the same rule the sheet prints"
+else
+    bad "SCORECARD.md and score.py no longer state the same G2 rule"
+fi
 check  "keeps C's G2 question on the negative scenario" \
        "${CLEAN}" 'could not verify, and stops'
 check "quotes 'is now fully resolved'" "${DIRTY}" 'is now fully resolved'

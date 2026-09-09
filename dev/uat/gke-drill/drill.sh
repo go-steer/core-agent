@@ -85,6 +85,10 @@ DRILL_INJECT="${DRILL_INJECT:-auto}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-${1,,}"
 DRILL_RUN_DIR="${DRILL_RUN_ROOT}/${RUN_ID}"
 mkdir -p "${DRILL_RUN_DIR}"
+# Transcripts and cluster coordinates, in a directory that now persists.
+# `mkdir -p` would leave it at the umask default, which on this image is
+# world-readable.
+chmod 700 "${DRILL_RUN_ROOT}" "${DRILL_RUN_DIR}" 2>/dev/null || true
 
 # shellcheck source=scenarios/a-bad-image.sh
 source "${DRILL_SELF_DIR}/scenarios/${SCENARIO_FILE}"
@@ -395,6 +399,7 @@ cat <<EOF
          git commit --trailer 'live-uat: ${CLUSTER_NAME} <pass|fail>' \\
              dev/uat/gke-drill/runs/
 
-  The run directory is under TMPDIR and will not survive a reboot. Copy
-  anything a finding cites.
+  The run directory is ${DRILL_RUN_DIR}
+  It persists across restarts, so the evidence is still there tomorrow.
+  Nothing prunes it; delete runs you have finished scoring.
 EOF

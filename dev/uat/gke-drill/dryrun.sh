@@ -235,6 +235,13 @@ if want 1; then
     have "evidence.md written"      "${RUN_DIR}/evidence.md"
     have "inject-response.json"     "${RUN_DIR}/inject-response.json"
 
+    # Runs persist now, so the directory holding a live transcript and
+    # the cluster's coordinates must not inherit a world-readable
+    # umask. run_case pre-creates DRILL_RUN_ROOT at the default mode,
+    # so this is drill.sh's chmod doing the work and not the harness's.
+    eq "run root is mode 700" "$(stat -c '%a' "${DRILL_RUN_ROOT}")" "700"
+    eq "run dir is mode 700"  "$(stat -c '%a' "${RUN_DIR}")"        "700"
+
     # The capture must end on the idle timer, not because the stream
     # died. Only the idle path is what a live run takes.
     grep_ "capture ended on quiescence" "${OUT}" 'stream quiet for 2s'

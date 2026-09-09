@@ -867,7 +867,7 @@ def render(run: pathlib.Path) -> str:
     a("## Raw artifacts")
     a("")
     a(f"`{run}` — `events.sse`, `transcript.jsonl`, `subagents.json`, `meta.json`.")
-    a("Under TMPDIR, so it will not survive a reboot. Copy anything a finding cites.")
+    a("Kept under `~/.gke-drill/runs/`, which survives a restart. Nothing prunes it.")
     a("")
     return "\n".join(L) + "\n"
 

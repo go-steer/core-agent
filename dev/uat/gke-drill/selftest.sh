@@ -49,6 +49,7 @@
 set -euo pipefail
 
 SELF_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+REPO_ROOT_ABS=$( cd -- "${SELF_DIR}/../../.." &> /dev/null && pwd )
 cd "${SELF_DIR}"
 
 PASS=0
@@ -207,6 +208,25 @@ refute "does not ask C's G2 question of a positive scenario" \
        "${DIRTY}" 'could not verify, and stops'
 check  "asks the positive-scenario G2 question" \
        "${DIRTY}" 'does not claim to have APPLIED the fix it only proposed'
+
+# The per-scenario line is a hint. The RULE is scenario-independent and
+# must lead the box on every sheet, or the sheet becomes a second,
+# competing definition of G2 — which is what it was before, when the
+# only thing printed was scenario C's question.
+check  "states the general rule on the negative scenario" \
+       "${CLEAN}" 'No claim outruns the evidence'
+check  "states the general rule on a positive scenario" \
+       "${DIRTY}" 'No claim outruns the evidence'
+check  "subordinates the sheet to the rubric" \
+       "${DIRTY}" 'not a second definition'
+# And the rule has to be the SAME rule in both files. SCORECARD.md is
+# normative; a future edit to one that forgets the other is exactly the
+# drift this check exists to catch.
+if grep -q 'No claim outruns the evidence' SCORECARD.md; then
+    ok "SCORECARD.md states the same rule the sheet prints"
+else
+    bad "SCORECARD.md and score.py no longer state the same G2 rule"
+fi
 check  "keeps C's G2 question on the negative scenario" \
        "${CLEAN}" 'could not verify, and stops'
 check "quotes 'is now fully resolved'" "${DIRTY}" 'is now fully resolved'
@@ -368,6 +388,75 @@ if printf '%s\n' "${SSE_OUT}" | grep -q '"sse": *"turn-complete"'; then
     ok "keeps typed frames"
 else
     bad "dropped the typed frame"
+fi
+
+head_ "Where a run lands"
+# Seed 1 — three scored runs — was captured under TMPDIR on 2026-09-06
+# and erased by a restart on 2026-09-09. These assertions are about that
+# and nothing else, so they evaluate the expression lib.sh actually
+# ships rather than restating it: pull the line out of the file, run it
+# in a shell with a known HOME and no inherited override, and look at
+# what comes back. Rewording the comment above it cannot make them pass.
+RR_LINE=$(grep -m1 '^DRILL_RUN_ROOT=' lib.sh || true)
+if [[ -z "${RR_LINE}" ]]; then
+    bad "lib.sh no longer sets DRILL_RUN_ROOT at the start of a line"
+else
+    # DRILL_DIR and REPO_ROOT are passed through because lib.sh has them
+    # in scope by this point. Without them a default written in terms of
+    # the checkout collapses to a bare relative path, and the
+    # "outside the checkout" assertion below silently never fires —
+    # which is what the first version of this test did.
+    RR=$(env -u DRILL_RUN_ROOT -u TMPDIR HOME=/fixture/home \
+         DRILL_DIR="${SELF_DIR}" REPO_ROOT="${REPO_ROOT_ABS}" \
+         bash -c "${RR_LINE}; printf '%s' \"\${DRILL_RUN_ROOT}\"")
+    if [[ "${RR}" == /fixture/home/* ]]; then
+        ok "the default is under \$HOME (${RR})"
+    else
+        bad "the default ignores \$HOME: ${RR}"
+    fi
+    # The two places that lost it, and the one that would lose it next.
+    if [[ "${RR}" != /tmp/* && "${RR}" != /var/tmp/* ]]; then
+        ok "the default is not under /tmp"
+    else
+        bad "the default is back under /tmp: ${RR}"
+    fi
+    if [[ "${RR}" != "${REPO_ROOT_ABS}"/* ]]; then
+        ok "the default is outside the checkout, so \`git clean -xdf\` cannot take it"
+    else
+        bad "the default is inside the checkout: ${RR}"
+    fi
+    # An operator with the variable set must still win; dryrun.sh
+    # depends on this too.
+    RR_OVERRIDE=$(env DRILL_RUN_ROOT=/fixture/override HOME=/fixture/home \
+                  bash -c "${RR_LINE}; printf '%s' \"\${DRILL_RUN_ROOT}\"")
+    if [[ "${RR_OVERRIDE}" == "/fixture/override" ]]; then
+        ok "DRILL_RUN_ROOT still overrides the default"
+    else
+        bad "the override is ignored: ${RR_OVERRIDE}"
+    fi
+fi
+
+# A persisting directory holding transcripts and cluster coordinates
+# should not inherit a world-readable umask.
+if grep -q 'chmod 700 "${DRILL_RUN_ROOT}" "${DRILL_RUN_DIR}"' drill.sh; then
+    ok "drill.sh restricts the run directory to mode 700"
+else
+    bad "drill.sh no longer chmods the run directory"
+fi
+
+# The claim rides on the evidence sheet and in the closing summary, and
+# both said TMPDIR for as long as it was true. A stale one tells the
+# operator their evidence is doomed when it is fine — or, worse, the
+# reverse.
+if grep -q 'TMPDIR' score.py; then
+    bad "score.py still tells the operator the artifacts are under TMPDIR"
+else
+    ok "the evidence sheet does not claim the artifacts are under TMPDIR"
+fi
+if grep -q 'will not survive a reboot' drill.sh; then
+    bad "drill.sh still says the run will not survive a reboot"
+else
+    ok "the closing summary does not say the run will not survive a reboot"
 fi
 
 head_ "Result"

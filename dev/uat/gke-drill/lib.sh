@@ -116,11 +116,34 @@ DRILL_ARM_SECS="${DRILL_ARM_SECS:-240}"
 # whole scenario in seconds; live runs should leave them alone.
 DRILL_POLL_SECS="${DRILL_POLL_SECS:-5}"
 
-# Artifacts. Under TMPDIR by convention — a drill run captures a live
-# transcript and a live bearer token's worth of context, and neither
-# belongs in $HOME or in the checkout. The SCORECARD is the only thing
-# that gets copied into the repo, by hand, by the operator.
-DRILL_RUN_ROOT="${DRILL_RUN_ROOT:-${TMPDIR:-/tmp}/gke-drill}"
+# Artifacts. Under $HOME, deliberately, and this is worth explaining
+# because two obvious alternatives are both wrong.
+#
+# It used to be TMPDIR. On 2026-09-06 three scored runs — A, B and C,
+# the whole of seed 1 — were captured there; the workstation restarted
+# on 2026-09-09 and every transcript went with it. The closing summary
+# had warned "will not survive a reboot. Copy anything a finding
+# cites", which is a warning, not a fix: it asks the operator to
+# remember a manual copy at the end of a twenty-minute run, and the one
+# time it mattered nobody did. A drill run costs a cluster sitting to
+# produce and is the evidence behind a milestone verdict. It is not
+# throwaway state, so the "UAT files under TMPDIR" convention does not
+# reach it.
+#
+# Nor does it belong in the checkout, gitignored: `git clean -xdf`
+# deletes ignored files, and the drill is routinely run from a worktree
+# that later gets `git worktree remove`d. Both would lose the evidence
+# while feeling like unrelated housekeeping.
+#
+# What lands here is transcripts, cluster coordinates and service
+# account names — sensitive enough for mode 700, which is also stricter
+# than the world-readable directory TMPDIR gave us. No credential
+# reaches it: the bearer token is written to RIG_STATE_DIR under
+# `umask 077` by drill_load_token, and never into a run directory.
+#
+# The SCORECARD is still the only thing that gets copied into the repo,
+# by hand, by the operator.
+DRILL_RUN_ROOT="${DRILL_RUN_ROOT:-${HOME}/.gke-drill/runs}"
 
 # ── Output helpers ───────────────────────────────────────────────────
 

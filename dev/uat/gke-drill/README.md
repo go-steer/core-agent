@@ -189,6 +189,35 @@ directory **before** the restore deletes the pod. The console used to print a
 `kubectl logs` command that the cleanup running immediately after made
 impossible to run.
 
+## Where a run lands
+
+```
+~/.gke-drill/runs/<UTC timestamp>-<scenario>/
+```
+
+Override with `DRILL_RUN_ROOT`. Mode 700, because a run holds transcripts,
+cluster coordinates and service account names — no credential goes there; the
+bearer token is written to the recipe's state dir under `umask 077`.
+
+**It is `$HOME` on purpose.** This used to be `TMPDIR`, and on 2026-09-06 all
+three scored runs of seed 1 were captured there and lost to a restart three days
+later. The closing summary had said "will not survive a reboot, copy anything a
+finding cites" — a warning is not a fix. The repo, gitignored, is no better:
+`git clean -xdf` removes ignored files, and the drill is routinely run from a
+worktree that later gets removed. A run costs a cluster sitting and is the
+evidence behind a milestone verdict, so the "UAT files under `TMPDIR`"
+convention does not reach it.
+
+Nothing prunes old runs. They are about 200 KB each; delete them once the
+scorecard is filed.
+
+Two directories are called `runs`, and they hold different things:
+
+| | |
+|---|---|
+| `~/.gke-drill/runs/` | raw artifacts — transcripts, `evidence.md`. Local, never committed |
+| `dev/uat/gke-drill/runs/` | filled scorecards. Committed, and the thing the milestone counts |
+
 ## Recording a run
 
 The focus metric (`dev/tools/focus`, #979) reads a commit trailer. A run that is
@@ -219,7 +248,7 @@ mostly failing is the instrument working.
 | `dryrun.sh` | offline run of the whole drill against fake tools |
 | `testdata/*-run/` | recorded transcripts `selftest.sh` scores: clean, dirty, errored |
 | `testdata/fakebin/` | the fake `kubectl`, `curl` and `gcloud` `dryrun.sh` uses |
-| `runs/` | committed scorecards |
+| `runs/` | committed scorecards (the artifacts live in `~/.gke-drill/runs/`) |
 
 ## Before you spend a cluster day
 

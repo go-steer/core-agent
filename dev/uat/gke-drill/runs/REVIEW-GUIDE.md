@@ -328,7 +328,7 @@ Ranked by what I think they are worth.
    property, and no prompt guidance will remove it. Either the parent gets
    addressable access to subagent reads, or the drill should stop asking a
    question the parent structurally cannot answer from cache. This is the
-   highest-value thing the sitting produced and it is not filed.
+   highest-value thing the sitting produced, and it is filed as #1014.
 
 2. **#1010 did not cause the improvement it was written for** (see above). The
    B answers improved because the agents found `last-applied-configuration`, not

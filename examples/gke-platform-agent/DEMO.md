@@ -365,7 +365,7 @@ than its exit status.
 | Daemon `CrashLoopBackOff`, no useful log | Content mount is wrong. Run `./scripts/debug-pod.sh check`. |
 | Daemon boots, first model call 403s | `GOOGLE_CLOUD_PROJECT` is a placeholder, or the KSA lacks `roles/aiplatform.user` in **this namespace** — WI principals are per-namespace. Run `./scripts/grant-iam.sh`. |
 | The agent answers, but every `gke_*` call 403s on `mcp.googleapis.com/tools.call` | Missing `roles/mcp.toolUser`. Read the answer carefully first: it will be fluent and sourced entirely from the alert text. Run `./scripts/grant-iam.sh`. |
-| Every `gke_*` call 403s and `mcp.toolUser` **is** granted | Either `roles/container.viewer` (permission to see what the tool returns) or `roles/iam.serviceAccountUser` on the **node** SA (GKE MCP's server-side impersonation, and a project-scoped grant of it does not count). `grant-iam.sh --check` distinguishes them. |
+| Every `gke_*` call 403s and `mcp.toolUser` **is** granted | Either `gkeAgentClusterViewer` (permission to see what the tool returns) or `roles/iam.serviceAccountUser` on the **node** SA (GKE MCP's server-side impersonation, and a project-scoped grant of it does not count). `grant-iam.sh --check` distinguishes them. |
 | Daemon boots, first model call 404s | `GOOGLE_CLOUD_LOCATION` is a region. It is the *Vertex endpoint* and wants `global`; `GKE_LOCATION` is where the cluster lives. |
 | Watcher logs `status 401: unauthorized: no valid credential` | Token rotation without a watcher restart. Re-run `./scripts/gen-tokens.sh`, which restarts both Deployments. |
 | Watcher logs `asserted-caller header rejected` | Proxy identity mismatch — the watcher's token is valid but its identity is not the configured `proxy_identity`. |

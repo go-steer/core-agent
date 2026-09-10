@@ -10,7 +10,8 @@ using structured triage skills backed by the GKE MCP server.
 mutates your cluster** — and that isn't a persona instruction, it's
 the configuration: the only MCP server wired in is the *read-only*
 GKE endpoint, `bash`/`write_file`/`edit_file`/`delete_file`/`fetch_url`
-are in `tools.disable`, and the KSA is bound to `roles/container.viewer`.
+are in `tools.disable`, and the KSA is bound to a read-only custom role
+(`container.viewer` plus `container.pods.getLogs`, nothing more).
 There is no mutating verb anywhere in the daemon's tool catalog for a
 persona to talk itself into using. Remediation lands in the incident
 summary as a proposal, and a human applies it.
@@ -305,18 +306,30 @@ recipe needs and binds the IAM roles that let the daemon:
 
 - Call Gemini via Vertex AI (`roles/aiplatform.user`)
 - Call GKE MCP tools (`roles/mcp.toolUser`)
-- **Read** GKE clusters + workloads via the MCP (`roles/container.viewer`)
+- **Read** GKE clusters + workloads via the MCP, pod logs included
+  (`gkeAgentClusterViewer`, a custom role the script creates)
 - Impersonate the node service account, which the GKE MCP's server-side
   chain requires (`roles/iam.serviceAccountUser` on the node SA)
 
-`container.viewer` — not `container.admin` — is the least-privilege
-grant that matches the read-only MCP endpoint this recipe wires. It is
-the outermost of the three layers that make "propose-only" true:
-IAM can't authorize a mutation, the read-only endpoint doesn't expose
-one, and `tools.disable` removes the local escape hatches. If you
-re-point `config/mcp.json` at the full-access `/mcp` endpoint, you must
-upgrade this binding to `roles/container.admin` — and you're back to
-trusting the persona.
+`gkeAgentClusterViewer` is `roles/container.viewer` plus exactly one
+permission, `container.pods.getLogs`. Least privilege, not
+`container.admin` — it matches the read-only MCP endpoint this recipe
+wires, and it is the outermost of the three layers that make
+"propose-only" true: IAM can't authorize a mutation, the read-only
+endpoint doesn't expose one, and `tools.disable` removes the local
+escape hatches. If you re-point `config/mcp.json` at the full-access
+`/mcp` endpoint, you must upgrade this binding to
+`roles/container.admin` — and you're back to trusting the persona.
+
+**Why a custom role rather than a predefined one.** The k8s-triage
+references send the agent to `gke_get_k8s_logs` on every crash path, and
+`container.pods.getLogs` is in no predefined read-only container role —
+not `container.viewer`, not `container.clusterViewer`. Bind viewer alone
+and that single tool 403s while every other read succeeds, so the agent
+diagnoses a `CrashLoopBackOff` without ever reading the crash message
+and reports what it could reach. Least privilege that is one permission
+short is not least privilege; it is a recipe that can't do what its own
+content tells it to do.
 
 ```bash
 # Simplest — reads PROJECT_ID from your active gcloud config, uses recipe defaults.
@@ -335,8 +348,8 @@ DRY_RUN=true ./scripts/setup-wif.sh
 **Missing any one of the four roles gives a 403 at runtime with no
 clear indication of which is missing** — that's why the script binds
 all four together. `mcp.toolUser` alone doesn't work without
-`container.viewer`; either project role alone doesn't work without the
-`iam.serviceAccountUser`-on-node-SA binding.
+`gkeAgentClusterViewer`; either project role alone doesn't work without
+the `iam.serviceAccountUser`-on-node-SA binding.
 
 <details>
 <summary><b>What the script does (inline gcloud commands)</b></summary>
@@ -356,8 +369,20 @@ KSA_PRINCIPAL="principal://iam.googleapis.com/projects/${PROJECT_NUMBER}/locatio
 gcloud services enable container.googleapis.com aiplatform.googleapis.com iamcredentials.googleapis.com \
     --project="${PROJECT_ID}"
 
+# The custom viewer role: container.viewer plus container.pods.getLogs.
+# `copy` prompts about permissions custom roles cannot hold, so --quiet.
+# Both commands fail on a re-run; the script checks first, this does not.
+gcloud --quiet iam roles copy \
+    --source="roles/container.viewer" \
+    --destination="gkeAgentClusterViewer" \
+    --dest-project="${PROJECT_ID}"
+gcloud --quiet iam roles update gkeAgentClusterViewer \
+    --project="${PROJECT_ID}" \
+    --add-permissions="container.pods.getLogs"
+
 # Project-scoped role bindings
-for role in roles/aiplatform.user roles/mcp.toolUser roles/container.viewer; do
+for role in roles/aiplatform.user roles/mcp.toolUser \
+            "projects/${PROJECT_ID}/roles/gkeAgentClusterViewer"; do
   gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
       --member="${KSA_PRINCIPAL}" \
       --role="${role}" \

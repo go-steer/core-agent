@@ -232,6 +232,54 @@ func TestMCPSurfaceIsReadOnly(t *testing.T) {
 	}
 }
 
+// TestIAMCoversTheLogsToolTheSkillsCall is the counterweight to
+// TestMCPSurfaceIsReadOnly. That test proves the recipe cannot do more
+// than it says; this one proves it can do what it says.
+//
+// The gke-observability skill sends the agent to gke_get_k8s_logs, which
+// the read-only endpoint serves. roles/container.viewer does not carry
+// container.pods.getLogs and no predefined read-only container role does,
+// so under plain viewer that one tool 403s while every other read
+// succeeds — the agent investigates a crash without ever reading the
+// crash message and reports what it could reach. Every scenario of the
+// 2026-09-09 drill sitting hit it.
+//
+// Both halves are asserted, in both directions: the skill that needs the
+// permission, and the script that grants it. Dropping either alone is the
+// state that looks fine and is not.
+func TestIAMCoversTheLogsToolTheSkillsCall(t *testing.T) {
+	grantIAM, err := os.ReadFile(filepath.Join("scripts", "grant-iam.sh"))
+	if err != nil {
+		t.Fatalf("read grant-iam.sh: %v", err)
+	}
+	grantsLogs := strings.Contains(string(grantIAM), "container.pods.getLogs")
+
+	var callsLogs bool
+	root := filepath.Join(clusterRoot, "skills")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("read %s: %v", root, err)
+	}
+	for _, e := range entries {
+		b, readErr := os.ReadFile(filepath.Join(root, e.Name(), "SKILL.md"))
+		if readErr != nil {
+			continue
+		}
+		if strings.Contains(string(b), "gke_get_k8s_logs") {
+			callsLogs = true
+		}
+	}
+
+	switch {
+	case callsLogs && !grantsLogs:
+		t.Error("a cluster skill calls gke_get_k8s_logs but grant-iam.sh never grants " +
+			"container.pods.getLogs; the daemon will 403 on that tool alone")
+	case grantsLogs && !callsLogs:
+		t.Error("grant-iam.sh grants container.pods.getLogs but no cluster skill calls " +
+			"gke_get_k8s_logs; drop the permission or restore the content that needs it")
+	}
+}
+
 // TestClusterSubagentIsRootedAndScoped pins the delegation shape the
 // persona describes. The parent's AGENTS.md tells the model to route
 // single-cluster diagnosis to `cluster` with `wait: true` and to read the

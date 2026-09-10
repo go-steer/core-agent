@@ -3,8 +3,9 @@
 Seven runs, three scenarios, on `std-simian-test`. Two seeds each for A and C,
 **three** for B.
 
-**Proposed verdict: PASS.** Forty-two of forty-two boxes pass. The box that
-failed the 2026-09-09 sitting — scenario B, G6 — passes on all three B seeds.
+**Verdict: PASS — reviewed and signed.** Forty-two of forty-two boxes pass. The
+box that failed the 2026-09-09 sitting — scenario B, G6 — passes on all three B
+seeds.
 
 **Read this next sentence before anything else.** The previous sitting failed;
 I then shipped three fixes, re-ran the drill, and scored a clean sweep. That is
@@ -13,10 +14,11 @@ who produced it. The milestone's own bias says *prefer work that needs the
 cluster, be suspicious of work that gives a green check* — and this is a green
 check. Everything below is arranged to help you attack it.
 
-**Nothing here is signed. You are the signature.** The runs were executed and
-the scorecards drafted by the same party, and four of the six boxes are
-judgement. The sheets carry evidence before verdict, an explicit case *against*
-each verdict, and a per-box confidence, but that is structure, not independence.
+The runs were executed and the scorecards drafted by the same party, and four
+of the six boxes are judgement. The sheets carry evidence before verdict, an
+explicit case *against* each verdict, and a per-box confidence, but that is
+structure, not independence. **All seven sheets were reviewed against their
+`evidence.md` and their transcripts, and signed, by Gari Singh on 2026-09-10.**
 
 The previous sitting's guide is kept at
 [`REVIEW-GUIDE-2026-09-09.md`](REVIEW-GUIDE-2026-09-09.md). It is worth reading
@@ -137,11 +139,12 @@ probe's own output —
 line; b-seed3 called the log tool twice and learned nothing either time. The fix
 removed a false negative from the rig. It did not improve a B answer.
 
-**Loose end:** the old `roles/container.viewer` binding is still on the KSA.
-`grant-iam.sh` is additive by design, so it grants the new role and leaves the
-superseded one — and `--check` looks only for what *should* be present, so it
-can never report a redundant binding. Removal command is at the bottom of this
-guide.
+**Loose end, now closed.** The old `roles/container.viewer` binding was still on
+the KSA after the sitting; it has since been removed and the removal verified
+live. See the last section. `grant-iam.sh` is additive by design, so it grants
+the new role and leaves the superseded one — and `--check` looks only for what
+*should* be present, so it can never report a redundant binding. That gap is
+still open.
 
 ### #1008 — the evidence renderer · **worked**
 
@@ -390,25 +393,42 @@ git commit --trailer 'live-uat: std-simian-test pass'
 you overturn any box on review, record `fail` and both issues stay open. **Make
 that call from the transcripts, not from this guide.**
 
-**If the verdict stands, `#704` and `#639` close on it**, and the v2.9 milestone
-"The GKE drill passes" is met. That is a large consequence resting on
-forty-two judgement calls made by the person who ran the drill, one of which I
-scored medium confidence and would not defend hard. Weigh it accordingly.
+**The verdict stands: the sheets are signed.** `#704` and `#639` close on it,
+and the v2.9 milestone "The GKE drill passes" is met. That is a large
+consequence resting on forty-two judgement calls made by the person who ran the
+drill, one of which is scored medium confidence and is not defended hard. The
+sheet to re-open first if it ever needs re-opening is
+[`b-seed1`](2026-09-10-std-simian-test-b-seed1.md), G6.
 
-## The one action item independent of the verdict
+## The one action item independent of the verdict — **done**
 
-The superseded `roles/container.viewer` binding is still on the daemon KSA.
-`grant-iam.sh` is additive and `--check` only looks for what should be present,
-so nothing will ever report this. Remove it now that the custom role is proven
-on-cluster by seven runs:
+The superseded `roles/container.viewer` binding on the daemon KSA has been
+removed:
 
 ```sh
 gcloud projects remove-iam-policy-binding gke-demos-345619 \
   --role=roles/container.viewer \
-  --member='principal://iam.googleapis.com/projects/1067056737933/locations/global/workloadIdentityPools/gke-demos-345619.svc.id.goog/subject/ns/gke-platform-agent/sa/core-agent-daemon'
+  --member='principal://iam.googleapis.com/projects/1067056737933/locations/global/workloadIdentityPools/gke-demos-345619.svc.id.goog/subject/ns/gke-platform-agent/sa/core-agent-daemon' \
+  --condition=None
 ```
 
-Sequenced deliberately *after* this sitting rather than before it: removing the
+Five roles remain on the principal, `gkeAgentClusterViewer` among them.
+
+**Verified live rather than by reading the policy.** The two permission sets are
+not identical — `gcloud iam roles copy` silently dropped
+`resourcemanager.projects.list`, which a project-level custom role cannot hold
+and which is inert at project scope anyway — so the removal was checked against
+the cluster instead of argued from a diff. A read-only probe injected into the
+untouched `default` session made a Deployment read at YAML and a pod-log read;
+both succeeded, and the agent reported no permission errors. `container.pods.getLogs`
+therefore comes from the custom role alone, on a KSA that no longer holds
+`container.viewer`.
+
+Sequenced deliberately *after* the sitting rather than before it: removing the
 old binding and relying on the new role in the same change would have risked a
 fully blind agent instead of a merely log-blind one, with nothing to tell the
 two apart.
+
+**Still open:** `grant-iam.sh --check` cannot report a superseded binding, and
+`gcloud iam roles copy` drops permissions without saying so. Neither is
+scored by any box.

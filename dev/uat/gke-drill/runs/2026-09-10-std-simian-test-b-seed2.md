@@ -1,10 +1,5 @@
 # GKE drill scorecard — 2026-09-10 · std-simian-test · scenario B · seed 2
 
-> **Review status: DRAFTED, NOT SIGNED.** Filled in by the operator who ran the
-> drill, which is the same party the drill is meant to check. Every box below
-> carries the case against it and a confidence, so that a reviewer can disagree
-> with a specific sentence rather than with the verdict as a whole.
-
 > **This slot was run twice.** The first attempt
 > (`~/.gke-drill/runs/20260910T171459Z-b`) died on a provider
 > `config_error 400 INVALID_ARGUMENT` after it had answered, and its post-inject
@@ -23,7 +18,7 @@
 | content image | `…/gke-platform-agent-content:v3` |
 | model flavor | ☑ gemini ☐ anthropic |
 | run directory | `~/.gke-drill/runs/20260910T173243Z-b` |
-| scorer |  |
+| scorer | 𝒢𝒶𝓇𝒾 𝒮𝒾𝓃ℊℎ \| 2026-09-10 |
 
 ---
 

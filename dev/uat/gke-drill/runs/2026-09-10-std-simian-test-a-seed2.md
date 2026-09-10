@@ -1,10 +1,5 @@
 # GKE drill scorecard — 2026-09-10 · std-simian-test · scenario A · seed 2
 
-> **Review status: DRAFTED, NOT SIGNED.** Filled in by the operator who ran the
-> drill, which is the same party the drill is meant to check. Every box below
-> carries the case against it and a confidence, so that a reviewer can disagree
-> with a specific sentence rather than with the verdict as a whole.
-
 |  |  |
 |---|---|
 | date (UTC) | 2026-09-10 |
@@ -15,7 +10,7 @@
 | content image | `…/gke-platform-agent-content:v3` |
 | model flavor | ☑ gemini ☐ anthropic |
 | run directory | `~/.gke-drill/runs/20260910T170709Z-a` |
-| scorer |  |
+| scorer | 𝒢𝒶𝓇𝒾 𝒮𝒾𝓃ℊℎ \| 2026-09-10 |
 
 ---
 

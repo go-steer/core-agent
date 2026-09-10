@@ -1,10 +1,5 @@
 # GKE drill scorecard — 2026-09-10 · std-simian-test · scenario B · seed 1
 
-> **Review status: DRAFTED, NOT SIGNED.** Filled in by the operator who ran the
-> drill, which is the same party the drill is meant to check. Every box below
-> carries the case against it and a confidence, so that a reviewer can disagree
-> with a specific sentence rather than with the verdict as a whole.
-
 > **This is the sheet to read first.** It is the same slot that failed on
 > 2026-09-09, it is the only box in this sitting I score below high confidence,
 > and the reasoning that flips it to a pass is a single parenthetical in the
@@ -20,7 +15,7 @@
 | content image | `…/gke-platform-agent-content:v3` |
 | model flavor | ☑ gemini ☐ anthropic |
 | run directory | `~/.gke-drill/runs/20260910T165009Z-b` |
-| scorer |  |
+| scorer | 𝒢𝒶𝓇𝒾 𝒮𝒾𝓃ℊℎ \| 2026-09-10 |
 
 ---
 

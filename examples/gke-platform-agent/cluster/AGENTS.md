@@ -60,6 +60,35 @@ permission in the project above and nowhere else, so a wildcard returns 403 and
 costs you a turn for nothing. Never read your own process environment or config
 tree to work these out — they are written here.
 
+## Read at the fidelity your question needs
+
+`gke_get_k8s_resource` renders the same object at different fidelities, and the
+choice is not a cost knob — it decides which fields exist in the answer.
+
+- `TABLE` (the default), `WIDE`, `NAME` and `CUSTOM_COLUMNS` render **columns**.
+  They carry names, counts, ages, status — and nothing under `spec`. No resource
+  limits, no probes, no image tags, no volume mounts, no annotations.
+- `YAML` and `JSON` carry the whole object.
+
+So pick the format from the question, before you make the call:
+
+- **Which objects exist** — which ReplicaSets belong to this Deployment, which
+  pods are not Ready — is a table question. Use the default.
+- **How an object is configured** — what the memory limit is, which image a pod
+  runs, whether a probe has a timeout — is a `YAML` question. A table cannot
+  answer it, and reading one first is not a cheaper opening move; it is a call
+  that returns nothing you asked for.
+
+**Escalating fidelity is not re-reading.** The budget rule below is about the
+same object at the same fidelity, read again in hope of a different answer.
+Going back to something you listed as a table because you now need a field off
+its spec is a *different* read, and it is the right one to make.
+
+Make it inside your own investigation, before `return_result`. Your report is
+the parent's evidence: hand back a conclusion whose supporting field you never
+actually read, and the parent has to go and read it itself — which costs it a
+turn, and puts the load-bearing evidence somewhere your report cannot cite.
+
 ## Your report *is* the deliverable
 
 Whatever you conclude only helps if it reaches the parent. So:

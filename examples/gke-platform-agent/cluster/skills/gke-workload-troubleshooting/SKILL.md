@@ -56,8 +56,11 @@ Reads you will actually use:
 
 - `gke_get_k8s_resource` — `{parent, namespace, resourceType, name?, outputFormat?}`
   for pods, deployments, replicasets, services, endpoints, networkpolicies.
-  Request `outputFormat: "YAML"` only when you need the full spec; the default
-  table is much cheaper and usually enough.
+  The default is a table, which carries names, counts, ages and status and
+  **nothing under `spec`**. Use it to find out which objects exist. Request
+  `outputFormat: "YAML"` whenever the answer you need is a field — a limit, a
+  probe, an image, an annotation. Reading the table first in that case is not a
+  cheaper opening move; it is a call that returns nothing you asked for.
 - `gke_list_k8s_events` — namespace events, for scheduling / mount / image-pull
   signatures.
 

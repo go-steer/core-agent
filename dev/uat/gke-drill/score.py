@@ -336,6 +336,73 @@ def quote(s: str, limit: int = 500) -> str:
     return "\n".join("> " + line for line in s.splitlines()) or "> _(empty)_"
 
 
+# The fields that say what a read actually read. They print first and are
+# never the ones truncated away.
+#
+# This is not cosmetic. Dumping args as JSON sorts `resourceType` and
+# `outputFormat` to the end of the line, which is exactly where a length
+# cap removes them — so two rows that fetched different resources at
+# different fidelities rendered identically. G6 asks the scorer to judge
+# repeated reads off this table, and on 2026-09-09 the table could not
+# support the judgement: a `replicaset` fetch in YAML was scored as a
+# repeat of a pods read, and the box was passed on it.
+READ_IDENTITY_KEYS = (
+    "resourceType", "name", "namespace", "labelSelector",
+    "containerName", "outputFormat",
+)
+
+# Output formats that render a table and carry no `spec`. Re-reading the
+# same object from one of these into a structured format fetches a
+# fidelity the earlier read did not have — it does not repeat it. The
+# distinction decides G6 and nothing in the sheet used to show it.
+TABLE_FORMATS = {"TABLE", "WIDE", "NAME", "CUSTOM_COLUMNS"}
+
+
+def read_identity(call: dict[str, Any]) -> dict[str, str]:
+    """The args that identify *what* a read read, in display order."""
+    args = call.get("args") or {}
+    return {k: str(args[k]) for k in READ_IDENTITY_KEYS
+            if args.get(k) not in (None, "")}
+
+
+def read_label(call: dict[str, Any]) -> str:
+    """Args with the identifying fields first, then whatever is left."""
+    args = call.get("args") or {}
+    ident = read_identity(call)
+    rest = {k: v for k, v in args.items() if k not in ident}
+    parts = [f"{k}={v}" for k, v in ident.items()]
+    if rest:
+        blob = json.dumps(rest, default=str)
+        parts.append(blob if len(blob) <= 80 else blob[:80] + "…")
+    return " ".join(parts) or "{}"
+
+
+def fidelity(call: dict[str, Any]) -> str:
+    return str((call.get("args") or {}).get("outputFormat") or "").upper()
+
+
+def compare_reads(later: dict[str, Any], earlier: dict[str, Any]) -> str | None:
+    """How `later` relates to `earlier`, or None if they are unrelated.
+
+    "repeat"     — same tool, same object, same fidelity. Wasteful.
+    "escalation" — same object, but `earlier` was a table format that
+                   could not carry the field `later` went back for.
+    "refetch"    — same object, fidelity changed in some other direction.
+    """
+    if (later.get("name") or "").lower() != (earlier.get("name") or "").lower():
+        return None
+    a, b = read_identity(later), read_identity(earlier)
+    if ({k: v for k, v in a.items() if k != "outputFormat"}
+            != {k: v for k, v in b.items() if k != "outputFormat"}):
+        return None
+    fa, fb = fidelity(later), fidelity(earlier)
+    if fa == fb:
+        return "repeat"
+    if fb in TABLE_FORMATS and fa not in TABLE_FORMATS:
+        return "escalation"
+    return "refetch"
+
+
 def render(run: pathlib.Path) -> str:
     meta = json.loads((run / "meta.json").read_text(encoding="utf-8"))
     frames = collect_frames(run)
@@ -647,9 +714,18 @@ def render(run: pathlib.Path) -> str:
         a("")
     if suspect_calls:
         a("`error?` in the table below means the payload *opens* with error-ish prose but")
-        a("carries no error flag. In scenario C that is usually a read that SUCCEEDED and")
-        a("returned the probe's own \"forbidden\" log line — which grounds G1 rather than")
-        a("undermining it. Open the payload before treating one as a failed read.")
+        a("carries no error flag. It is one of two opposite things and this sheet cannot")
+        a("tell them apart:")
+        a("")
+        a("- a read that **SUCCEEDED** and returned the workload's own \"forbidden\" text")
+        a("  — which grounds G1; or")
+        a("- the **daemon itself** being refused by IAM — which grounds nothing.")
+        a("")
+        a("**Open the payload.** If it names a `serviceAccount:` principal and says")
+        a("`cannot get resource`, it is the daemon's own denial: fix the recipe's IAM")
+        a("grants rather than scoring it as a read. Do not assume the scenario decides")
+        a("which one it is — on a rig missing `container.pods.getLogs` every scenario-C")
+        a("log call looks like the first and is the second.")
         a("")
     if expect:
         a("Terms a grounded diagnosis should name (presence only — a term can appear")
@@ -668,9 +744,9 @@ def render(run: pathlib.Path) -> str:
         status = "—" if hit is None else {
             "ok": "ok", "error": "error", "suspect": "error?",
         }[response_status(hit[1])]
-        args = json.dumps(c.get("args") or {}, default=str)
-        if len(args) > 120:
-            args = args[:120] + "…"
+        args = read_label(c)
+        if len(args) > 160:
+            args = args[:160] + "…"
         args = args.replace("|", "\\|")
         a(f"| {f.seq} | {f.agent} | `{c.get('name', '?')}` | {status} | `{args}` |")
     if not calls:
@@ -859,13 +935,54 @@ def render(run: pathlib.Path) -> str:
         a(f"Landed at seq {inject_frame.seq}. After it: "
           f"**{len(after_inject_calls)}** further tool calls.")
         a("")
-        a("The question to answer from the text below: did it answer from what it had")
-        a("already read, or did it go and re-read the cluster from scratch? A high")
-        a("count of further calls repeating earlier reads is the latter.")
+        # Score the box, not the call count. The box asks whether the
+        # answer references the earlier evidence; "few or no calls" is a
+        # spotting aid for one way of failing it. On 2026-09-09 this
+        # section printed the tool name alone — three identical lines for
+        # three different reads — and the box was scored twice off the
+        # aid before anyone looked at what the answer cited.
+        a("**Score the box, not the count.** The box asks whether the answer")
+        a("*references the earlier evidence*. Read the answer below and check what it")
+        a("cites: if every citation postdates the inject, the answer did not reference")
+        a("the earlier evidence however few calls it took to build.")
         a("")
+        prior = [(pf, pc) for pf, pc in calls if pf.seq < inject_frame.seq]
+        rows = []
         for f, c in after_inject_calls[:15]:
-            a(f"- seq {f.seq} ({f.agent}): `{c.get('name')}`")
+            kind, against = "new", None
+            for pf, pc in prior:
+                rel = compare_reads(c, pc)
+                if rel == "repeat":
+                    kind, against = "repeat", pf
+                    break
+                if rel and kind == "new":
+                    kind, against = rel, pf
+            rows.append((f, c, kind, against))
+        a("The calls it made, against everything read before the inject:")
         a("")
+        a("| seq | agent | tool | what it read | vs. earlier |")
+        a("|---|---|---|---|---|")
+        for f, c, kind, against in rows:
+            label = read_label(c).replace("|", "\\|")
+            if kind == "repeat":
+                verdict = f"**repeat** of seq {against.seq}, same fidelity"
+            elif kind == "escalation":
+                verdict = (f"**escalation** — seq {against.seq} read it as a table, "
+                           "which carries no `spec`")
+            elif kind == "refetch":
+                verdict = f"re-fetch of seq {against.seq} at a different fidelity"
+            else:
+                verdict = "new — nothing earlier covered it"
+            a(f"| {f.seq} | {f.agent} | `{c.get('name', '?')}` | `{label}` | {verdict} |")
+        if not rows:
+            a("| — | — | _none_ | — | — |")
+        a("")
+        if rows:
+            repeats = sum(1 for _, _, k, _ in rows if k == "repeat")
+            a(f"**{repeats} of {len(rows)}** repeated an earlier read at the same "
+              "fidelity. An `escalation` is not a repeat: the earlier read was a table "
+              "and the field the follow-up asked about was not in it.")
+            a("")
         a("Answer after the follow-up:")
         a("")
         a(quote(after_inject_text, 1500))

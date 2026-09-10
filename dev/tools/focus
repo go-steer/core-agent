@@ -38,9 +38,15 @@ fi
 # commit that merely mentions it — the drill's own PR body did, which
 # made this read "0 days" before a single drill had run. A metric whose
 # alarm cannot fire is worse than no metric.
+#
+# awk must NOT `exit` on the first match. Under `set -o pipefail` an early
+# exit kills `git log` with SIGPIPE, the pipeline returns 141, and `set -e`
+# ends the script here — silently, before either branch below prints. That
+# only happens once a trailer exists to match, so the bug stayed invisible
+# for exactly as long as the metric read "never recorded".
 last=$(git log --all --date-order \
   --format='%cI%x09%(trailers:key=live-uat,valueonly,separator=%x2C)' \
-  | awk -F'\t' 'NF > 1 && $2 != "" { print $1; exit }')
+  | awk -F'\t' 'NF > 1 && $2 != "" && !seen { print $1; seen = 1 }')
 if [ -z "$last" ]; then
   echo 'LIVE UAT: never recorded — add a `live-uat:` commit trailer'
 else

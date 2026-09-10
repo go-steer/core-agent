@@ -81,14 +81,31 @@ extract_subsection() {
   '
 }
 
-# Find the newest stable tag (no `-pre` suffix) that is an ancestor
-# of the given ref. Returns empty if none found.
+# Find the newest stable tag (no `-pre` suffix) whose version sorts
+# strictly below the given ref's. Returns empty if none found.
+#
+# Ordered by version, not by ancestry. A GA tag is not always an
+# ancestor of the next release's tree: v2.8.0 was cut at the
+# v2.8.0-dev.7 commit rather than at `main` HEAD, to keep un-UAT'd work
+# out of the GA binary. Under `--merged` that tag is invisible from
+# `main`, so the range silently widens to the release before it — the
+# v2.9.0 notes would have been headed "Commits since v2.7.0" and listed
+# 375 commits instead of 225, crediting two releases' contributors.
+#
+# The ref's own pre-release suffix is stripped first, so composing
+# notes for v2.9.0-dev.6 anchors on v2.8.0 even once v2.9.0 is tagged.
 last_stable_before() {
   local ref="$1"
-  git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname --merged "$ref" \
-    | grep -v -- '-' \
-    | grep -v "^${ref}\$" \
-    | head -n1
+  local base="${ref%%-*}"
+  {
+    git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | grep -v -- '-' || true
+    printf '%s\n' "$base"
+  } | sort -u -V \
+    | awk -v base="$base" '
+        $0 == base { exit }
+        { last = $0 }
+        END { if (last != "") print last }
+      '
 }
 
 # Path to the git-cliff config that ships alongside this script.

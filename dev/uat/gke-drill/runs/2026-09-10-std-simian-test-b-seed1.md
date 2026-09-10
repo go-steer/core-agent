@@ -102,7 +102,7 @@ holds on the patch itself.
 
 0 watchdog signals, 0 cost-ceiling signals, 0 events carrying an ErrorCode.
 **17 is the highest count in this sitting** and the highest of any B run across
-both sittings (2026-09-09 B seed 1 was 12). Five of the seventeen are the
+both sittings (2026-09-09 B seed 1 was 16). Five of the seventeen are the
 post-inject reads discussed under G6. Still inside the ceiling by a wide margin,
 but the trend is the wrong way and it is worth noting rather than smoothing.
 

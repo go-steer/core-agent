@@ -118,6 +118,7 @@ git -C "$REPO2" tag v1.2.0-dev.1
 # 150,244-character bulk that actually blew the limit.
 BREAKING='BREAKING_ENTRY_MARKER'
 FILLER='FILLER_ENTRY_MARKER'
+LEAD='LEAD_NARRATIVE_MARKER'
 LINKOUT='the full detail stays in the CHANGELOG'
 INSTALL='## Install'
 
@@ -271,6 +272,59 @@ assert_contains "$NOTES" '## Commits since v1.1.0'
 assert_absent "$NOTES" '## Commits since v1.0.0'
 # The off-mainline GA's own commit is outside the range it anchors.
 assert_absent "$NOTES" 'the tree the GA was cut at'
+
+# ── 9. the section's lead narrative survives the first shed ──────────
+# The v2.9.0 dry run is what added the lead to tier 2. Before it, a GA
+# whose per-change notes overflowed opened cold on "the notes run past
+# the limit, here is a link" — throwing away the hand-written paragraph
+# that says what the release is *about*, to save 1,196 characters on an
+# 18,000-character body against a 125,000 limit. Nothing failed; the
+# page was just worse, which is exactly the kind of regression a reader
+# waves through.
+start_case 'compact body keeps the section lead alongside Breaking Changes'
+CL="$REPO/cl-lead.md"; NOTES="$REPO/n9.md"
+write_changelog "$CL" 2000
+sed -i "s|^## \[1\.1\.0-dev\.1\]\$|## [1.1.0-dev.1]\n\n${LEAD} — what this release is about.|" "$CL"
+compose "$CL" "$NOTES"
+assert_within "$NOTES" 125000
+assert_contains "$NOTES" "$LEAD"
+assert_contains "$NOTES" "$BREAKING"
+assert_absent "$NOTES" "$FILLER"
+# …and it is shed with everything else at the floor, so the lead can
+# never be the reason an unsatisfiable limit stays unsatisfied.
+NOTES="$REPO/n9-floor.md"
+if MAX_BODY=1 compose "$CL" "$NOTES"; then
+  fail "expected a non-zero exit when the limit is unsatisfiable"
+fi
+assert_contains "$NOTES" "$LINKOUT"
+assert_absent "$NOTES" "$LEAD"
+
+# ── 10. an oversized lead is dropped, not trusted ────────────────────
+# The lead is whatever an author wrote above the first `###`, so it is
+# unbounded input to a body with a hard limit. Capped rather than
+# trusted: a section that opens with an essay must not displace Breaking
+# Changes or push the tier-2 floor over the limit.
+start_case 'lead over MAX_LEAD is omitted with a warning, Breaking Changes kept'
+CL="$REPO/cl-lead-huge.md"; NOTES="$REPO/n10.md"
+{
+  printf '# Changelog\n\n## [1.1.0-dev.1]\n\n'
+  for ((i = 0; i < 200; i++)); do
+    printf '%s %04d: an essay where a summary belongs.\n' "$LEAD" "$i"
+  done
+  printf '\n### Breaking Changes\n\n'
+  printf -- '- **%s.** A short breaking note.\n\n' "$BREAKING"
+  printf '### Changes by Kind\n\n'
+  for ((i = 0; i < 2000; i++)); do
+    printf -- '- %s %04d: %s\n' "$FILLER" "$i" \
+      'padding that stands in for this repo long per-change prose.'
+  done
+  printf '\n## [1.0.0] — 2026-01-01\n\n- the first thing\n'
+} > "$CL"
+compose "$CL" "$NOTES"
+assert_within "$NOTES" 125000
+assert_absent "$NOTES" "$LEAD"
+assert_contains "$NOTES" "$BREAKING"
+assert_contains "${NOTES}.err" 'over MAX_LEAD'
 
 if [[ "$FAILURES" -ne 0 ]]; then
   echo "verify-release-notes: ${FAILURES} assertion(s) failed" >&2

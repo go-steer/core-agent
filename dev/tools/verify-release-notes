@@ -70,12 +70,20 @@ assert_within() {
 # A throwaway repo with two commits and two tags: v1.0.0 (stable, the
 # range anchor) and v1.1.0-dev.1 (the pre-release under test).
 REPO="$(mktemp -d)"
-trap 'rm -rf "$REPO"' EXIT
-git init -q "$REPO"
-git -C "$REPO" config user.email release-test@example.com
-git -C "$REPO" config user.name 'Release Test'
-git -C "$REPO" config commit.gpgsign false
-git -C "$REPO" config tag.gpgsign false
+# A second repo whose most recent GA sits off the mainline — see case 8.
+REPO2="$(mktemp -d)"
+trap 'rm -rf "$REPO" "$REPO2"' EXIT
+
+init_repo() {
+  local dir="$1"
+  git init -q "$dir"
+  git -C "$dir" config user.email release-test@example.com
+  git -C "$dir" config user.name 'Release Test'
+  git -C "$dir" config commit.gpgsign false
+  git -C "$dir" config tag.gpgsign false
+}
+
+init_repo "$REPO"
 : > "$REPO/f"
 git -C "$REPO" add f
 git -C "$REPO" commit -qm 'feat: the first thing'
@@ -83,6 +91,27 @@ git -C "$REPO" tag v1.0.0
 echo x > "$REPO/f"
 git -C "$REPO" commit -qam 'fix: the second thing'
 git -C "$REPO" tag v1.1.0-dev.1
+
+# $REPO2 reproduces this repo's real release topology: v1.1.0 is cut at
+# the last dev tree rather than at the branch tip, the way v2.8.0 was cut
+# at v2.8.0-dev.7 to keep un-UAT'd work out of the GA binary. The GA tag
+# is therefore NOT an ancestor of the branch the next release is cut
+# from, and any range anchor chosen by ancestry skips past it to v1.0.0.
+init_repo "$REPO2"
+: > "$REPO2/f"
+git -C "$REPO2" add f
+git -C "$REPO2" commit -qm 'feat: the first thing'
+git -C "$REPO2" tag v1.0.0
+echo x > "$REPO2/f"
+git -C "$REPO2" commit -qam 'fix: the second thing'
+git -C "$REPO2" checkout -q -b ga-tree
+echo ga > "$REPO2/f"
+git -C "$REPO2" commit -qam 'chore: the tree the GA was cut at'
+git -C "$REPO2" tag v1.1.0
+git -C "$REPO2" checkout -q -
+echo y > "$REPO2/f"
+git -C "$REPO2" commit -qam 'feat: the third thing'
+git -C "$REPO2" tag v1.2.0-dev.1
 
 # Marker strings. BREAKING and FILLER let each case say which sections
 # survived degradation; FILLER stands in for `### Changes by Kind`, the
@@ -226,6 +255,22 @@ if ( cd "$REPO" && "$COMPOSE" v1.0.0 "$NOTES" "$CL" "$FOOTER" ) >/dev/null 2>&1
 then
   fail "expected a non-zero exit for a missing stable section"
 fi
+
+# ── 8. the range anchor is the previous version, not the previous ────
+#      ancestor
+# Caught by dry-running the v2.9.0 GA body: it came out headed "Commits
+# since v2.7.0" and listed 375 commits instead of 225, because v2.8.0 was
+# cut off-mainline and so failed `git tag --merged main`. Nothing about
+# the body looked broken — it named a real tag and listed real commits —
+# which is why an assertion has to hold the anchor rather than a reader.
+start_case 'anchor is the newest stable version, even when it is not an ancestor'
+CL="$REPO2/cl.md"; NOTES="$REPO2/n8.md"
+printf '# Changelog\n\n## [Unreleased]\n\n### Changes by Kind\n\n- the third thing\n' > "$CL"
+( cd "$REPO2" && "$COMPOSE" v1.2.0-dev.1 "$NOTES" "$CL" "$FOOTER" ) 2>"${NOTES}.err"
+assert_contains "$NOTES" '## Commits since v1.1.0'
+assert_absent "$NOTES" '## Commits since v1.0.0'
+# The off-mainline GA's own commit is outside the range it anchors.
+assert_absent "$NOTES" 'the tree the GA was cut at'
 
 if [[ "$FAILURES" -ne 0 ]]; then
   echo "verify-release-notes: ${FAILURES} assertion(s) failed" >&2

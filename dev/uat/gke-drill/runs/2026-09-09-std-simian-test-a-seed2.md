@@ -137,7 +137,7 @@ Seed 2 of 2 for scenario A. Together with
 boxes on two different workloads.
 
 **The sitting as a whole is a FAIL** — scenario B seed 1 fails G6. Scenario A
-clearing the bar does not clear it for the milestone; see `REVIEW-GUIDE.md`.
+clearing the bar does not clear it for the milestone; see `REVIEW-GUIDE-2026-09-09.md`.
 
 ## What the rubric missed
 

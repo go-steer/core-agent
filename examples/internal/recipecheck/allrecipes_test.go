@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -215,22 +216,28 @@ func TestOverlayPinsSurviveTheGAFold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %s: %v", changelogPath, err)
 	}
+	tag, devSection, ok := pendingGAFold(string(original))
+	if !ok {
+		t.Skip("no pre-release section in the CHANGELOG, so there is nothing for the " +
+			"GA fold to delete — the tree is sitting on a freshly cut GA. " +
+			"TestOverlayPinsSatisfyRecipeConfig covers the pins until the next dev tag.")
+	}
 	if err := os.WriteFile(folded, original, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(python, "-", folded, "v2.9.0", "2026-09-01")
+	cmd := exec.Command(python, "-", folded, tag, "2026-09-01")
 	cmd.Stdin = strings.NewReader(fold)
 	if out, runErr := cmd.CombinedOutput(); runErr != nil {
-		t.Fatalf("running cut-ga-tag.sh's fold: %v\n%s", runErr, out)
+		t.Fatalf("running cut-ga-tag.sh's fold to %s: %v\n%s", tag, runErr, out)
 	}
 
 	body, err := os.ReadFile(folded)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(body), "## [2.9.0-dev.1]") {
-		t.Fatal("the fold left the pre-release section in place; this test is no longer " +
-			"exercising the case it was written for")
+	if strings.Contains(string(body), devSection) {
+		t.Fatalf("the fold left %s in place; this test is no longer exercising the "+
+			"case it was written for", devSection)
 	}
 
 	released, err := recipecheck.ReleasedVersions(folded)
@@ -247,9 +254,36 @@ func TestOverlayPinsSurviveTheGAFold(t *testing.T) {
 			t.Fatalf("%s: CheckDeployPins: %v", r.Name, err)
 		}
 		for _, f := range findings {
-			t.Errorf("after the v2.9.0 GA fold, %s", f)
+			t.Errorf("after the %s GA fold, %s", tag, f)
 		}
 	}
+}
+
+// preReleaseHeading matches a `## [X.Y.Z-something]` changelog section.
+var preReleaseHeading = regexp.MustCompile(`(?m)^## \[([0-9]+\.[0-9]+\.[0-9]+)-[^\]]+\]`)
+
+// pendingGAFold reads the fold target out of the changelog rather than
+// taking it as a constant, and returns it with the newest pre-release
+// heading the fold is expected to delete.
+//
+// The version was hardcoded as v2.9.0 when this test was written, which
+// made the test fail on the one commit it exists to protect: cutting
+// v2.9.0 puts `## [2.9.0]` in the changelog, and the fold refuses to
+// write a section that already exists. It failed in the required `test`
+// job, on the release commit, on main — the exact shape of breakage the
+// comment above describes, arriving from the assertion instead of from
+// the thing asserted.
+//
+// Sections are newest-first, so the first pre-release heading names the
+// GA those sections will fold into. Returns false when there is no
+// pre-release section at all, which is the state right after a GA and
+// until the next dev tag is cut.
+func pendingGAFold(changelog string) (tag, devSection string, ok bool) {
+	m := preReleaseHeading.FindStringSubmatch(changelog)
+	if m == nil {
+		return "", "", false
+	}
+	return "v" + m[1], m[0], true
 }
 
 // foldScript lifts the python3 heredoc out of cut-ga-tag.sh. The

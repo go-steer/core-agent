@@ -27,12 +27,18 @@
 #        - monitoring.googleapis.com  (OpenTelemetry → Cloud Monitoring; same
 #                                       overlay, metrics half)
 #
-#   2. Binds six IAM roles the daemon needs:
+#   2. Creates one custom role, gkeAgentClusterViewer: a copy of
+#      roles/container.viewer plus container.pods.getLogs. The k8s-triage
+#      skill's references call gke_get_k8s_logs on every crash path, and
+#      no predefined read-only container role carries that permission.
+#
+#   3. Binds six IAM roles the daemon needs:
 #        - roles/aiplatform.user               (call Gemini via Vertex API)
 #        - roles/mcp.toolUser                  (call GKE MCP tools at all)
-#        - roles/container.viewer              (read cluster/workload state via the
-#                                                read-only GKE MCP endpoint; the agent
-#                                                is propose-only and never mutates)
+#        - gkeAgentClusterViewer               (read cluster/workload state AND pod
+#                                                logs via the read-only GKE MCP
+#                                                endpoint; the agent is propose-only
+#                                                and never mutates)
 #        - roles/iam.serviceAccountUser        (impersonate node SA — required by
 #                                                GKE MCP's server-side chain; missing
 #                                                this gives 403 with no clear hint)
@@ -65,7 +71,9 @@
 # Idempotent: re-runs are safe. Existing bindings are left in place.
 #
 # Prereqs on the operator: roles/container.admin + roles/iam.serviceAccountAdmin
-# on the project (needed to grant the bindings this script creates).
+# on the project (to grant the bindings this script creates), plus
+# roles/iam.roleAdmin (to define the custom role in step 2 — an operator who
+# can grant every predefined role still cannot create one).
 
 set -euo pipefail
 
@@ -133,6 +141,10 @@ echo "  Project Number:   ${PROJECT_NUMBER}"
 NODE_SA="${NODE_SA:-${PROJECT_NUMBER}-compute@developer.gserviceaccount.com}"
 echo "  Node SA:          ${NODE_SA}"
 
+# 5b. The recipe's own custom role. Project-scoped, created by this script.
+CUSTOM_ROLE_ID="${CUSTOM_ROLE_ID:-gkeAgentClusterViewer}"
+echo "  Custom role:      projects/${PROJECT_ID}/roles/${CUSTOM_ROLE_ID}"
+
 # 6. Construct the WIF direct-binding member string. Note the two-part
 #    identifier convention: PROJECT_NUMBER in the pool path, PROJECT_ID in
 #    the pool name.
@@ -177,6 +189,55 @@ bind_project_role() {
         eval "${cmd}" >/dev/null
         log_success "Bound: ${role}"
     fi
+}
+
+# Create (or repair) the recipe's custom role. Idempotent the hard way,
+# because none of the three gcloud verbs involved is: `copy` fails with
+# ALREADY_EXISTS on a second run, a soft-deleted role still answers
+# `describe` for 7 days and blocks re-creation under the same ID, and
+# `update --add-permissions` is only worth running when the permission is
+# actually absent. So: list, describe, then write only what is missing.
+ensure_custom_role() {
+    local role_id="$1" source_role="$2" extra="$3"
+    local qualified="projects/${PROJECT_ID}/roles/${role_id}"
+    log_info "Ensuring custom role: ${role_id} (${source_role} + ${extra})"
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        echo "  [DRY RUN] Would run: gcloud iam roles copy --source=${source_role} \
+--destination=${role_id} --dest-project=${PROJECT_ID}"
+        echo "  [DRY RUN] Would run: gcloud iam roles update ${role_id} \
+--project=${PROJECT_ID} --add-permissions=${extra}"
+        return
+    fi
+
+    local existing description=""
+    existing=$(gcloud iam roles list --project="${PROJECT_ID}" --show-deleted \
+        --format='value(name)' 2>/dev/null || true)
+
+    if grep -qxF "${qualified}" <<<"${existing}"; then
+        description=$(gcloud iam roles describe "${role_id}" \
+            --project="${PROJECT_ID}" --format=json)
+        if grep -q '"deleted": *true' <<<"${description}"; then
+            log_warn "  ${role_id} exists but is soft-deleted — undeleting"
+            gcloud --quiet iam roles undelete "${role_id}" \
+                --project="${PROJECT_ID}" >/dev/null
+        fi
+    else
+        # --quiet: container.viewer carries permissions that are not
+        # grantable in a custom role, and copy PROMPTS before dropping
+        # them. This script is run unattended from DEMO.md's setup block.
+        gcloud --quiet iam roles copy \
+            --source="${source_role}" \
+            --destination="${role_id}" \
+            --dest-project="${PROJECT_ID}" >/dev/null
+    fi
+
+    if ! grep -q "\"${extra}\"" <<<"${description}"; then
+        gcloud --quiet iam roles update "${role_id}" \
+            --project="${PROJECT_ID}" \
+            --add-permissions="${extra}" >/dev/null
+    fi
+    log_success "Custom role ready: ${qualified}"
 }
 
 # Bind iam.serviceAccountUser on a specific service account (not project-scoped).
@@ -228,12 +289,24 @@ bind_project_role "roles/aiplatform.user"
 #     on the MCP call with no useful error hint about what's wrong.
 bind_project_role "roles/mcp.toolUser"
 
-# 2c. Read GKE clusters + workloads. The recipe wires the read-only GKE
-#     MCP endpoint (`/mcp/read-only`), so the agent only ever issues
-#     get/list/describe/logs calls — `container.viewer` covers all of
-#     them. If you re-point `config/mcp.json` at the full-access `/mcp`
+# 2c. Read GKE clusters + workloads, INCLUDING pod logs. The recipe wires
+#     the read-only GKE MCP endpoint (`/mcp/read-only`), so the agent only
+#     ever issues get/list/describe/logs calls — but `container.viewer`
+#     does not cover the last of those. `container.pods.getLogs` is in no
+#     predefined read-only container role, so the recipe defines its own:
+#     viewer plus that one permission, no more.
+#
+#     This is not a corner case for this recipe. The k8s-triage skill's
+#     CrashLoopBackOff, OOMKilled, BackOff, Unhealthy and NetworkNotReady
+#     references all direct the agent to `gke_get_k8s_logs`, and under
+#     plain viewer every one of those calls 403s while the rest of the
+#     investigation succeeds — so the agent diagnoses a crash without
+#     ever reading the crash message, and says so with confidence.
+#
+#     If you re-point `config/mcp.json` at the full-access `/mcp`
 #     endpoint, upgrade this to `roles/container.admin`.
-bind_project_role "roles/container.viewer"
+ensure_custom_role "${CUSTOM_ROLE_ID}" "roles/container.viewer" "container.pods.getLogs"
+bind_project_role "projects/${PROJECT_ID}/roles/${CUSTOM_ROLE_ID}"
 
 # 2d. Impersonate the node service account. Required by the GKE MCP's
 #     server-side chain. Bound on the SA resource, not the project.
@@ -265,7 +338,7 @@ else
     echo "The core-agent daemon's KSA can now:"
     echo "  - Call Gemini via the Vertex AI API"
     echo "  - Call the GKE MCP server + its tools"
-    echo "  - Read GKE clusters + workloads (read-only; no mutations)"
+    echo "  - Read GKE clusters + workloads, including pod logs (read-only)"
     echo "  - Impersonate the node SA (required by GKE MCP)"
     echo "  - Write spans to Cloud Trace (used by the OTel overlay only)"
     echo "  - Write metrics to Cloud Monitoring (used by the OTel overlay only)"
@@ -275,7 +348,7 @@ else
     echo "Bindings applied:"
     echo "  - roles/aiplatform.user        on projects/${PROJECT_ID}"
     echo "  - roles/mcp.toolUser           on projects/${PROJECT_ID}"
-    echo "  - roles/container.viewer       on projects/${PROJECT_ID}"
+    echo "  - ${CUSTOM_ROLE_ID} (custom)   on projects/${PROJECT_ID}"
     echo "  - roles/cloudtrace.user        on projects/${PROJECT_ID}"
     echo "  - roles/monitoring.metricWriter on projects/${PROJECT_ID}"
     echo "  - roles/iam.serviceAccountUser on ${NODE_SA}"

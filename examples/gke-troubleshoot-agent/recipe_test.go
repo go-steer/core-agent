@@ -30,6 +30,7 @@ package gketroubleshootagent_test
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -165,7 +166,7 @@ func TestMCPSurfaceIsReadOnly(t *testing.T) {
 		}
 		if s == "https://www.googleapis.com/auth/cloud-platform" {
 			t.Errorf("gke oauth requests the read-write scope %q; the recipe's IAM story "+
-				"(roles/container.viewer) assumes the read-only scope", s)
+				"(a copy of roles/container.viewer) assumes the read-only scope", s)
 		}
 	}
 	if !sawScope {
@@ -460,13 +461,66 @@ func TestSetupWIFGrantsLeastPrivilege(t *testing.T) {
 		t.Fatalf("read setup-wif.sh: %v", err)
 	}
 	script := string(body)
-	if !strings.Contains(script, `bind_project_role "roles/container.viewer"`) {
-		t.Error("setup-wif.sh does not bind roles/container.viewer")
+	if !strings.Contains(script, `ensure_custom_role "${CUSTOM_ROLE_ID}" "roles/container.viewer" "container.pods.getLogs"`) {
+		t.Error("setup-wif.sh does not define the custom viewer role as " +
+			"container.viewer + container.pods.getLogs")
+	}
+	if !strings.Contains(script, `bind_project_role "projects/${PROJECT_ID}/roles/${CUSTOM_ROLE_ID}"`) {
+		t.Error("setup-wif.sh does not bind the custom viewer role it creates")
 	}
 	if strings.Contains(script, `bind_project_role "roles/container.admin"`) {
 		t.Error("setup-wif.sh binds roles/container.admin; the recipe is propose-only and " +
-			"reads through the read-only MCP endpoint, so container.viewer is sufficient " +
-			"and container.admin re-opens the mutation path")
+			"reads through the read-only MCP endpoint, so a copy of container.viewer is " +
+			"sufficient and container.admin re-opens the mutation path")
+	}
+}
+
+// TestSetupWIFGrantsLogReads is the other half of least privilege, and the
+// one the 2026-09-09 GKE drill sitting found missing: least privilege that
+// is one permission short is not least privilege, it is a broken recipe.
+//
+// The k8s-triage references send the agent to gke_get_k8s_logs on every
+// crash path. roles/container.viewer does not carry container.pods.getLogs
+// and no predefined read-only container role does, so that one tool 403s
+// while every other read succeeds — the agent diagnoses a CrashLoopBackOff
+// without ever reading the crash message and reports what it could reach.
+//
+// Asserting on the permission string rather than on the role name, because
+// renaming the custom role is fine and dropping the permission is not.
+func TestSetupWIFGrantsLogReads(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("scripts", "setup-wif.sh"))
+	if err != nil {
+		t.Fatalf("read setup-wif.sh: %v", err)
+	}
+	if !strings.Contains(string(body), "container.pods.getLogs") {
+		t.Error("setup-wif.sh never grants container.pods.getLogs; the k8s-triage " +
+			"references call gke_get_k8s_logs, which will 403 for the daemon")
+	}
+
+	// The reason the permission is needed, pinned to the content that
+	// needs it — so deleting the last log-reading reference and leaving a
+	// now-pointless custom role behind is visible, and so is the reverse.
+	var usesLogs bool
+	err = filepath.WalkDir(filepath.Join("deploy", "base", "config"),
+		func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+				return err
+			}
+			b, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			if strings.Contains(string(b), "gke_get_k8s_logs") {
+				usesLogs = true
+			}
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("walk config content: %v", err)
+	}
+	if !usesLogs {
+		t.Error("no shipped content calls gke_get_k8s_logs, but setup-wif.sh grants " +
+			"container.pods.getLogs for it — drop one or restore the other")
 	}
 }
 

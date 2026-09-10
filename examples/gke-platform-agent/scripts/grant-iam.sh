@@ -28,11 +28,13 @@
 # watcher raises an incident, a session opens, and the failure lands
 # inside a turn, minutes later, as a 403 on something else's behalf.
 #
-# THE ROLES. Six, and every one of them is silent at deploy time. The list
-# is the same one `examples/gke-troubleshoot-agent/scripts/setup-wif.sh`
-# has carried since that recipe shipped; this script exists because it
-# reads the recipe's own coordinates, reports before it writes, and can be
-# called with --check from set-up-demo.sh.
+# THE ROLES. Six, and every one of them is silent at deploy time. Five are
+# predefined and one — gkeAgentClusterViewer — this script creates, so
+# there is a phase here that writes a role definition and not just a
+# binding. The list is the same one
+# `examples/gke-troubleshoot-agent/scripts/setup-wif.sh` carries; this
+# script exists because it reads the recipe's own coordinates, reports
+# before it writes, and can be called with --check from set-up-demo.sh.
 #
 #   roles/aiplatform.user       core-agent-daemon. Without it the agent
 #                               cannot answer at all — the first model
@@ -55,15 +57,31 @@
 #                               (grounded) was the only box that caught
 #                               it, and it cost the second run.
 #
-#   roles/container.viewer      core-agent-daemon. mcp.toolUser buys the
-#                               right to call a tool; this buys the right
-#                               to see the answer. The recipe points at
-#                               the read-only endpoint
-#                               (container.googleapis.com/mcp/read-only),
-#                               so viewer covers every call it can make.
+#   gkeAgentClusterViewer       core-agent-daemon, and the only CUSTOM
+#                               role here — this script creates it.
+#                               mcp.toolUser buys the right to call a
+#                               tool; this buys the right to see the
+#                               answer. It is `roles/container.viewer`
+#                               plus exactly one permission,
+#                               container.pods.getLogs, which viewer does
+#                               not carry and no predefined read-only
+#                               container role does either.
+#
+#                               WHY A CUSTOM ROLE. The read-only endpoint
+#                               (container.googleapis.com/mcp/read-only)
+#                               serves gke_get_k8s_logs, and the cluster
+#                               subagent's gke-observability skill tells
+#                               the agent to call it. Under plain viewer
+#                               that one tool 403s while every other read
+#                               succeeds, so the agent investigates a
+#                               crash without ever seeing the crash
+#                               message and reports what it could reach.
+#                               Observed on the 2026-09-09 drill sitting,
+#                               in all three scenarios.
+#
 #                               Re-point mcp.json at the full-access
 #                               endpoint and this needs to be
-#                               roles/container.admin.
+#                               roles/container.admin instead.
 #
 #   roles/iam.serviceAccountUser  core-agent-daemon, and the odd one out:
 #                               bound on the NODE SERVICE ACCOUNT, not on
@@ -178,11 +196,21 @@ if [[ "${OTEL}" != "0" ]]; then
     apis+=(cloudtrace.googleapis.com monitoring.googleapis.com)
 fi
 
+# The custom role, defined here and granted below. `copy` reads
+# container.viewer at the moment it runs, so the definition tracks
+# whatever Google ships in viewer on the day the project was set up —
+# which is the point of copying rather than enumerating permissions by
+# hand, and also the reason this script never re-syncs an existing role
+# beyond the one permission it knows it needs.
+CUSTOM_ROLE_ID="gkeAgentClusterViewer"
+CUSTOM_ROLE="projects/${PROJECT_ID}/roles/${CUSTOM_ROLE_ID}"
+CUSTOM_ROLE_EXTRA="container.pods.getLogs"
+
 # Project-scoped (role, ksa) pairs.
 grants=()
 grants+=("roles/aiplatform.user core-agent-daemon")
 grants+=("roles/mcp.toolUser core-agent-daemon")
-grants+=("roles/container.viewer core-agent-daemon")
+grants+=("${CUSTOM_ROLE} core-agent-daemon")
 if [[ "${OTEL}" != "0" ]]; then
     grants+=("roles/cloudtrace.user core-agent-daemon")
     grants+=("roles/cloudtrace.user lookout-watch")
@@ -198,9 +226,10 @@ if [[ "${OTEL}" == "0" ]]; then
     echo "  (OTEL=0 — cloudtrace/monitoring roles and APIs skipped)"
 fi
 
-# mcp.toolUser and container.viewer are unconditional, so the list can no
-# longer be empty — but an empty one would mean this script silently did
-# nothing, which is the failure mode it exists to prevent. Assert.
+# mcp.toolUser and the custom viewer role are unconditional, so the list
+# can no longer be empty — but an empty one would mean this script
+# silently did nothing, which is the failure mode it exists to prevent.
+# Assert.
 if [[ ${#grants[@]} -eq 0 ]]; then
     echo "✗ internal error: no grants selected. mcp.toolUser is unconditional, so this cannot happen." >&2
     exit 3
@@ -257,6 +286,127 @@ for api in "${apis[@]}"; do
         failed=$(( failed + 1 ))
     fi
 done
+
+# --- The custom role definition ---------------------------------------
+# Runs before the bindings, because you cannot bind a role that does not
+# exist. Three states, not two: absent, present, and present-but-deleted
+# — a custom role that has been deleted lingers for 7 days, still answers
+# `describe`, and cannot be re-created under the same ID until it is
+# undeleted. `copy` against that ID fails with ALREADY_EXISTS, which
+# reads as "nothing to do" to anyone skimming.
+echo
+echo "  Custom role ${CUSTOM_ROLE_ID}:"
+
+# --show-deleted, so a soft-deleted role reports as present rather than
+# sending the create path into an ALREADY_EXISTS it cannot fix.
+role_read_ok=1
+if ! custom_roles=$(gcloud iam roles list --project "${PROJECT_ID}" \
+        --show-deleted --format='value(name)' 2>"${ERR_LOG}"); then
+    role_read_ok=0
+fi
+
+role_missing_perm=0
+role_deleted=0
+if (( ! role_read_ok )); then
+    # Same reasoning as the API list: unreadable is not absent. Creating
+    # the role blind would either duplicate work or fail on a role that
+    # is already there and already correct.
+    echo "    ✗ could not list custom roles on ${PROJECT_ID}:"
+    sed 's/^/      /' "${ERR_LOG}" >&2 || true
+    echo "      needs iam.roles.list — role state UNKNOWN, not absent."
+    failed=$(( failed + 1 ))
+elif grep -qxF "${CUSTOM_ROLE}" <<<"${custom_roles}"; then
+    # Present. Two more things can still be wrong with it.
+    if ! role_json=$(gcloud iam roles describe "${CUSTOM_ROLE_ID}" \
+            --project "${PROJECT_ID}" --format=json 2>"${ERR_LOG}"); then
+        echo "    ✗ could not describe ${CUSTOM_ROLE_ID}:"
+        sed 's/^/      /' "${ERR_LOG}" >&2 || true
+        failed=$(( failed + 1 ))
+    else
+        # Plain `if`s, not `grep && var=1`: a failing grep at the end of
+        # an && list is a failing command, and under `set -e` the first
+        # role that is NOT deleted would abort the script here.
+        if grep -q '"deleted": *true' <<<"${role_json}"; then
+            role_deleted=1
+        fi
+        if ! grep -q "\"${CUSTOM_ROLE_EXTRA}\"" <<<"${role_json}"; then
+            role_missing_perm=1
+        fi
+
+        if (( role_deleted )); then
+            missing=$(( missing + 1 ))
+            if (( CHECK_ONLY )); then
+                echo "    exists but is DELETED (soft, 7-day window)"
+            else
+                echo "    exists but is deleted — undeleting"
+                if gcloud --quiet iam roles undelete "${CUSTOM_ROLE_ID}" \
+                    --project "${PROJECT_ID}" >/dev/null 2>"${ERR_LOG}"; then
+                    echo "      undeleted ✓"
+                    changed=$(( changed + 1 ))
+                else
+                    echo "    ✗ could not undelete ${CUSTOM_ROLE_ID}:"
+                    sed 's/^/      /' "${ERR_LOG}" >&2 || true
+                    failed=$(( failed + 1 ))
+                fi
+            fi
+        fi
+
+        if (( role_missing_perm )); then
+            missing=$(( missing + 1 ))
+            if (( CHECK_ONLY )); then
+                echo "    exists but does NOT carry ${CUSTOM_ROLE_EXTRA}"
+            else
+                echo "    exists without ${CUSTOM_ROLE_EXTRA} — adding it"
+                if gcloud --quiet iam roles update "${CUSTOM_ROLE_ID}" \
+                    --project "${PROJECT_ID}" \
+                    --add-permissions="${CUSTOM_ROLE_EXTRA}" \
+                    >/dev/null 2>"${ERR_LOG}"; then
+                    echo "      added ✓"
+                    changed=$(( changed + 1 ))
+                else
+                    echo "    ✗ could not add ${CUSTOM_ROLE_EXTRA}:"
+                    sed 's/^/      /' "${ERR_LOG}" >&2 || true
+                    failed=$(( failed + 1 ))
+                fi
+            fi
+        elif (( ! role_deleted )); then
+            echo "    exists, carries ${CUSTOM_ROLE_EXTRA} ✓"
+        fi
+    fi
+elif (( CHECK_ONLY )); then
+    missing=$(( missing + 1 ))
+    echo "    MISSING"
+else
+    missing=$(( missing + 1 ))
+    echo "    missing — copying roles/container.viewer, then adding ${CUSTOM_ROLE_EXTRA}"
+    # --quiet, because copy PROMPTS. container.viewer carries permissions
+    # that are not grantable in a custom role, and gcloud asks whether to
+    # drop them before it writes. Under set-up-demo.sh there is nobody to
+    # answer. If gcloud declines to pick a default for that prompt the
+    # copy fails loudly with the reason below and can be re-run by hand,
+    # which is recoverable; a hang in an unattended setup is not.
+    if ! gcloud --quiet iam roles copy \
+        --source="roles/container.viewer" \
+        --destination="${CUSTOM_ROLE_ID}" \
+        --dest-project="${PROJECT_ID}" >/dev/null 2>"${ERR_LOG}"; then
+        echo "    ✗ could not create ${CUSTOM_ROLE_ID}:"
+        sed 's/^/      /' "${ERR_LOG}" >&2 || true
+        failed=$(( failed + 1 ))
+    elif gcloud --quiet iam roles update "${CUSTOM_ROLE_ID}" \
+        --project "${PROJECT_ID}" \
+        --add-permissions="${CUSTOM_ROLE_EXTRA}" >/dev/null 2>"${ERR_LOG}"; then
+        echo "      created ✓"
+        changed=$(( changed + 1 ))
+    else
+        # The role now exists as a plain copy of viewer, which is the one
+        # state that looks fixed and is not: every read works and only
+        # logs 403. Say so, rather than leaving it to the next drill run.
+        echo "    ✗ created ${CUSTOM_ROLE_ID} but could not add ${CUSTOM_ROLE_EXTRA}:"
+        sed 's/^/      /' "${ERR_LOG}" >&2 || true
+        echo "      the role is currently a plain copy of container.viewer — logs will 403."
+        failed=$(( failed + 1 ))
+    fi
+fi
 
 # --- Project-scoped roles ---------------------------------------------
 echo
@@ -373,7 +523,8 @@ fi
 if (( failed )); then
     echo "✗ ${failed} step(s) failed — you likely lack"
     echo "  resourcemanager.projects.setIamPolicy (roles), serviceusage.services.enable"
-    echo "  (APIs), or iam.serviceAccounts.setIamPolicy (the node SA binding) on"
+    echo "  (APIs), iam.roles.create / iam.roles.update (the custom role), or"
+    echo "  iam.serviceAccounts.setIamPolicy (the node SA binding) on"
     echo "  ${PROJECT_ID}. Ask a project admin to run this script."
     exit 1
 fi

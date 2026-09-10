@@ -4,7 +4,7 @@ title: Kubernetes troubleshooting agent
 
 Propose-only Kubernetes triage running as `core-agent` inside your cluster. An event-watcher sidecar ([k8s-lookout](https://github.com/go-steer/k8s-lookout)'s `lookout watch`, deployed under the `lookout-watch` name) streams filtered Events into per-incident sessions on the daemon; a router skill (`k8s-triage`) loads reason-specific references and drives a **diagnose → verify → propose → escalate** loop. Every incident closes with a structured summary in the eventlog and, when it did not clear on its own, a page to the configured `oncall` alert target.
 
-The agent does not mutate the cluster, and that is a property of the configuration rather than of the prompt: the only MCP server wired in is GKE's **read-only** endpoint, `bash`/`write_file`/`edit_file`/`delete_file`/`fetch_url` are in `tools.disable`, and the daemon's KSA holds `roles/container.viewer`. There is no mutating verb in the catalog for a persona to reach for. Remediation is written into the incident summary as a proposal; a human applies it.
+The agent does not mutate the cluster, and that is a property of the configuration rather than of the prompt: the only MCP server wired in is GKE's **read-only** endpoint, `bash`/`write_file`/`edit_file`/`delete_file`/`fetch_url` are in `tools.disable`, and the daemon's KSA holds a read-only custom role — `roles/container.viewer` plus `container.pods.getLogs`, nothing else. There is no mutating verb in the catalog for a persona to reach for. Remediation is written into the incident summary as a proposal; a human applies it.
 
 Shipped in **v2.6**, re-scoped to propose-only in **v2.9**. Requires v2.4's multi-session substrate + v2.5's session-resume (both on by default in the recipe).
 
@@ -154,7 +154,7 @@ The recipe's config is where the propose-only claim is actually made true:
 - **`session_idle_timeout: "6h"`** — resolved incidents evict from memory after 6h idle; sessions still resumable from disk if operators want to review.
 - **`proxy_identities`** — allows the sidecar to assert the on-call team's identity as session owner.
 
-The MCP side is one server, `gke`, pointed at `https://container.googleapis.com/mcp/read-only` with the `cloud-platform.read-only` OAuth scope, and `scripts/setup-wif.sh` binds `roles/container.viewer` rather than `roles/container.admin`. Re-pointing `mcp.json` at the full-access `/mcp` endpoint requires upgrading that IAM binding too — and puts you back to trusting the persona.
+The MCP side is one server, `gke`, pointed at `https://container.googleapis.com/mcp/read-only` with the `cloud-platform.read-only` OAuth scope, and `scripts/setup-wif.sh` binds a custom `gkeAgentClusterViewer` role rather than `roles/container.admin`. That role is `roles/container.viewer` plus exactly one permission, `container.pods.getLogs` — which no predefined read-only container role carries, and without which `gke_get_k8s_logs` 403s on its own while every other read succeeds, so the agent diagnoses a crash it never read the crash message for. Re-pointing `mcp.json` at the full-access `/mcp` endpoint requires upgrading that IAM binding too — and puts you back to trusting the persona.
 
 ## Multi-cluster fleet
 

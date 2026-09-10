@@ -139,7 +139,7 @@ Seed 2 of 2 for scenario C — with the seed caveat in the header.
 the sitting is 5 runs of 6 and the bar — six boxes, three scenarios, two seeds
 — is not met. Scenario C itself passes twice, subject to finding 1 below: its
 two runs are two runs, not two seeds, so even C's half of the bar is weaker
-than A's and B's. The review guide at `runs/REVIEW-GUIDE.md` has the full
+than A's and B's. The review guide at `runs/REVIEW-GUIDE-2026-09-09.md` has the full
 disposition and the proposed sequence for a re-run.
 
 ## What the rubric missed

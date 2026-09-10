@@ -214,7 +214,7 @@ seed 1's stopped at a WIDE table. That is a coin flip on the behaviour G6
 tests, which means **seed 2's pass is as much luck as seed 1's failure** — two
 runs cannot establish the reliability of a 50/50 behaviour. The fix belongs in
 the cluster subagent's instructions, not in the rubric. See
-`REVIEW-GUIDE.md` for the proposed sequence.
+`REVIEW-GUIDE-2026-09-09.md` for the proposed sequence.
 
 ## What the rubric missed
 

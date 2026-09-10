@@ -140,7 +140,7 @@ one place this answer is looser than the question.
 different scenario seeds**. One clean run is an anecdote. This is seed 1 of 2.
 
 **The sitting as a whole is a FAIL** — scenario B seed 1 fails G6. This run
-passing does not clear the bar; see `REVIEW-GUIDE.md`.
+passing does not clear the bar; see `REVIEW-GUIDE-2026-09-09.md`.
 
 ## What the rubric missed
 

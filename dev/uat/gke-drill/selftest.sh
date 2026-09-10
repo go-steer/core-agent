@@ -187,6 +187,52 @@ check  "locates the follow-up"       "${CLEAN}" 'Landed at seq 10'
 check  "flags the forbidden log as suspect, not failed" "${CLEAN}" '`get_pod_logs` \| error\? \|'
 refute "leaves G1/G2/G3/G6 undecided" "${CLEAN}" '\*\*G(1|2|3|6)\*\* [a-z]+ \| \*\*(PASS|FAIL)\*\*'
 
+# The `error?` payload is one of two opposite things and the sheet cannot
+# tell them apart. It used to assert that in scenario C it was "usually"
+# the successful read — on a rig whose daemon lacks container.pods.getLogs
+# it is always the IAM denial, and the hint argued for passing G1 on a
+# read that never happened.
+check  "does not guess which kind of error? this is" \
+       "${CLEAN}" 'one of two opposite things'
+check  "names the daemon's own IAM denial as the other kind" \
+       "${CLEAN}" 'daemon itself\*\* being refused by IAM'
+refute "no longer claims scenario C decides it" \
+       "${CLEAN}" 'In scenario C that is usually a read that SUCCEEDED'
+
+# G6 asks the scorer to judge repeated reads. Until 2026-09-09 the sheet
+# gave them nothing to judge with: the args column dumped JSON and cut it
+# at 120 chars, which always removed `resourceType` and `outputFormat`
+# (they sort last), and the G6 list printed the tool name alone. Two reads
+# of different resources at different fidelities rendered identically, and
+# scenario B seed 1's G6 was scored wrong twice off exactly that.
+head_ "score.py — a re-read is not always a repeat"
+python3 ./score.py --run-dir testdata/fidelity-run >/dev/null
+FID=testdata/fidelity-run/evidence.md
+
+check  "puts resourceType first in the args column, not last" \
+       "${FID}" '`resourceType=deployment name=emailservice'
+check  "keeps outputFormat visible" \
+       "${FID}" 'outputFormat=YAML'
+check  "shows the subagent's lower-fidelity read" \
+       "${FID}" 'labelSelector=app=emailservice outputFormat=WIDE'
+check  "calls a same-fidelity re-read a repeat" \
+       "${FID}" '\| \*\*repeat\*\* of seq 4, same fidelity \|'
+check  "calls a table-to-YAML re-read an escalation, not a repeat" \
+       "${FID}" '\| \*\*escalation\*\* — seq 6 read it as a table'
+check  "calls an unseen object new" \
+       "${FID}" 'new — nothing earlier covered it'
+check  "counts only the true repeats" \
+       "${FID}" '\*\*1 of 3\*\* repeated an earlier read'
+check  "points the scorer at the box, not the call count" \
+       "${FID}" '\*\*Score the box, not the count\.\*\*'
+check  "tells the scorer to check what the answer cites" \
+       "${FID}" 'if every citation postdates the inject'
+# Match a fragment that sits on one rendered line: the old prose wrapped
+# after "A high", so a refute anchored on the full sentence passes against
+# the very code it exists to catch.
+refute "no longer frames G6 as a count of further calls" \
+       "${FID}" 'count of further calls repeating earlier reads'
+
 head_ "score.py — #639's failure mode"
 python3 ./score.py --run-dir testdata/dirty-run >/dev/null
 DIRTY=testdata/dirty-run/evidence.md

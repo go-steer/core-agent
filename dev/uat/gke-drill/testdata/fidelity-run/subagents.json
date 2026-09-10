@@ -1,0 +1,60 @@
+{
+  "cluster": [
+    {
+      "seq": 4,
+      "event": {
+        "Author": "cluster",
+        "Timestamp": "2026-09-09T23:22:02Z",
+        "Branch": "cluster",
+        "Content": {
+          "role": "model",
+          "parts": [
+            {"functionCall": {"id": "c1", "name": "gke_get_k8s_resource", "args": {"projectId": "fixture-project", "namespace": "drill-target", "resourceType": "deployment", "name": "emailservice", "outputFormat": "YAML"}}}
+          ]
+        }
+      }
+    },
+    {
+      "seq": 5,
+      "event": {
+        "Author": "cluster",
+        "Timestamp": "2026-09-09T23:22:09Z",
+        "Branch": "cluster",
+        "Content": {
+          "role": "user",
+          "parts": [
+            {"functionResponse": {"id": "c1", "name": "gke_get_k8s_resource", "response": {"yaml": "spec:\n  template:\n    spec:\n      containers:\n      - name: server\n        resources:\n          limits:\n            memory: 8Mi\n"}}}
+          ]
+        }
+      }
+    },
+    {
+      "seq": 6,
+      "event": {
+        "Author": "cluster",
+        "Timestamp": "2026-09-09T23:22:18Z",
+        "Branch": "cluster",
+        "Content": {
+          "role": "model",
+          "parts": [
+            {"functionCall": {"id": "c2", "name": "gke_get_k8s_resource", "args": {"projectId": "fixture-project", "namespace": "drill-target", "resourceType": "replicaset", "labelSelector": "app=emailservice", "outputFormat": "WIDE"}}}
+          ]
+        }
+      }
+    },
+    {
+      "seq": 7,
+      "event": {
+        "Author": "cluster",
+        "Timestamp": "2026-09-09T23:22:25Z",
+        "Branch": "cluster",
+        "Content": {
+          "role": "user",
+          "parts": [
+            {"functionResponse": {"id": "c2", "name": "gke_get_k8s_resource", "response": {"table": "NAME                     DESIRED   CURRENT   READY   AGE\nemailservice-6d87f8cdf8   0         0         0       3d\nemailservice-757699675c   1         1         0       4m\n"}}}
+          ]
+        }
+      }
+    }
+  ]
+}

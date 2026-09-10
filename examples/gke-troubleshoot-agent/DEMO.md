@@ -109,7 +109,7 @@ kubectl config current-context | grep -q "${CLUSTER_NAME}" \
 # go-steer/k8s-lookout as ghcr.io/go-steer/lookout (its ENTRYPOINT is
 # `lookout watch`).
 #
-# Watcher floor is v0.17.0, and the recipe pins v0.21.0. Two separate
+# Watcher floor is v0.17.0, and the recipe pins v0.23.0. Two separate
 # floors stack here: v0.11.0 is where the watcher started sending
 # Content-Type on the bodyless POST /sessions, which daemons ≥
 # 2.8.0-dev.1 reject with 415 without it (#383's CSRF guard); v0.17.0
@@ -121,9 +121,9 @@ for img in core-agent core-agent-slim core-agent-tui; do
       && echo "✓ ghcr.io/go-steer/${img}:2.9.0-dev.6 exists" \
       || echo "✗ ghcr.io/go-steer/${img}:2.9.0-dev.6 NOT found — check the release-images workflow ran"
 done
-crane digest "ghcr.io/go-steer/lookout:v0.21.0" >/dev/null 2>&1 \
-    && echo "✓ ghcr.io/go-steer/lookout:v0.21.0 exists" \
-    || echo "✗ ghcr.io/go-steer/lookout:v0.21.0 NOT found — check the k8s-lookout release"
+crane digest "ghcr.io/go-steer/lookout:v0.23.0" >/dev/null 2>&1 \
+    && echo "✓ ghcr.io/go-steer/lookout:v0.23.0 exists" \
+    || echo "✗ ghcr.io/go-steer/lookout:v0.23.0 NOT found — check the k8s-lookout release"
 ```
 
 (If `crane` isn't installed, skip this — the deploy will fail loudly if an image is missing.)

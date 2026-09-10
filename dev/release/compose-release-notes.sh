@@ -81,6 +81,29 @@ extract_subsection() {
   '
 }
 
+# Extract a section's lead narrative from a single CHANGELOG section on
+# stdin: everything between the `## [VERSION]` heading and the first
+# `###` subsection, with the blank line under the heading dropped.
+#
+# For a GA that is the hand-written operator summary cut-ga-tag.sh
+# leaves a placeholder for — the only prose on the release page that
+# says what the release is about. Most pre-releases have none, and the
+# result is empty.
+#
+# Fence-aware for the same reason extract_subsection is.
+extract_lead() {
+  awk '
+    /^[[:space:]]*```/          { fence = !fence }
+    !fence && /^## \[/          { in_lead=1; next }
+    in_lead && !fence && /^#+ / { exit }
+    in_lead {
+      if (!started && $0 ~ /^[[:space:]]*$/) next
+      started = 1
+      print
+    }
+  '
+}
+
 # Find the newest stable tag (no `-pre` suffix) whose version sorts
 # strictly below the given ref's. Returns empty if none found.
 #
@@ -258,8 +281,8 @@ append_footer "$NOTES"
 # the rest, shedding one section at a time until it fits:
 #
 #   1. full notes                      (normal releases never leave here)
-#   2. CHANGELOG link + Breaking Changes + commit list
-#   3. CHANGELOG link + commit list
+#   2. lead + CHANGELOG link + Breaking Changes + commit list
+#   3. lead + CHANGELOG link + commit list
 #   4. CHANGELOG link only
 #
 # Breaking Changes outranks the commit list because it is the part you
@@ -270,7 +293,17 @@ append_footer "$NOTES"
 # hard failure below is unreachable in practice; it exists so that a
 # future edit which makes the floor unbounded fails loudly rather than
 # handing GitHub another 422.
+#
+# The lead is the section's own opening narrative, and it survives the
+# first shed because it is the only sentence on the page that says what
+# the release is *about*. The v2.9.0 dry run is what added it: a GA body
+# that opened cold on "the notes run past the limit, here is a link"
+# threw away a 1,196-character summary to save nothing, on an 18,000-
+# character body against a 125,000 limit. It is capped rather than
+# trusted, so a section that opens with an essay can never displace
+# Breaking Changes or push the floor over the limit.
 MAX_BODY="${MAX_BODY:-125000}"
+MAX_LEAD="${MAX_LEAD:-4000}"
 
 # Bytes, not characters. This repo's prose is full of multi-byte em
 # dashes, arrows and `§`, so a byte count over-reads a UTF-8 body and
@@ -283,9 +316,16 @@ body_chars() { wc -c < "$1" | tr -d '[:space:]'; }
 # keep: "with-breaking", "no-breaking", or "link-only".
 write_compact_notes() {
   local dest="$1" keep="${2:-with-breaking}"
-  local section breaking=""
-  if [[ "$keep" == "with-breaking" ]]; then
+  local section="" lead="" breaking=""
+  if [[ "$keep" != "link-only" ]]; then
     section="$(extract_section "$SECTION_NAME" < "$CHANGELOG" || true)"
+    lead="$(printf '%s\n' "$section" | extract_lead || true)"
+    if [[ "${#lead}" -gt "$MAX_LEAD" ]]; then
+      echo "::warning::${TAG}'s CHANGELOG lead is ${#lead} characters, over MAX_LEAD=${MAX_LEAD} — omitting it from the compact body" >&2
+      lead=""
+    fi
+  fi
+  if [[ "$keep" == "with-breaking" ]]; then
     breaking="$(printf '%s\n' "$section" | extract_subsection 'Breaking Changes' || true)"
   fi
 
@@ -294,6 +334,9 @@ write_compact_notes() {
       printf '## Pre-release [%s]\n\n' "$VERSION"
     else
       printf '## [%s]\n\n' "$VERSION"
+    fi
+    if [[ -n "$lead" ]]; then
+      printf '%s\n\n' "$lead"
     fi
     printf 'The per-change notes for this release run past GitHub'\''s %s-character\n' "$MAX_BODY"
     printf 'release-body limit, so the full detail stays in the CHANGELOG:\n\n'

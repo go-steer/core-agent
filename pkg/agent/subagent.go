@@ -30,6 +30,7 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent/internal/subsession"
+	"github.com/go-steer/core-agent/v2/pkg/agent/internal/toolcalls"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
 )
@@ -202,9 +203,40 @@ type subagentArgs struct {
 
 // subagentResult is what comes back to the parent's model: the
 // joined final text from the subagent's run, plus any error
-// surfaced from the subagent runner.
+// surfaced from the subagent runner, plus what the subagent did to
+// arrive at it.
 type subagentResult struct {
 	Result string `json:"result"`
+	// Calls is the provenance half of the return contract: every tool
+	// call the subagent made, in order, as the runtime observed them.
+	//
+	// Result is prose and prose cannot be cited, so a parent required
+	// to ground its claims re-issues the reads its child already made
+	// (#1014). This door gets the same treatment as spawn_agent's
+	// because a declarative subagent has two of them and a fix on one
+	// is a fix a recipe can miss by wiring the other — the shape #758
+	// had to gate twice for the same reason.
+	Calls []toolcalls.Call `json:"calls,omitempty"`
+	// CallsTruncated counts calls past the cap, so a shortened record
+	// cannot be misread as a complete one.
+	CallsTruncated int `json:"calls_truncated,omitempty"`
+	// CallsNote tells the parent, in language, what Calls is for. A
+	// bare array invites being ignored; see #710 and
+	// [subagentPartial], which exists for the same reason.
+	CallsNote string `json:"calls_note,omitempty"`
+}
+
+// withCalls attaches the observed provenance to a result.
+//
+// Applied at both return sites through one helper rather than
+// assembled twice: the partial path is the one where provenance
+// matters most (a budget-capped subagent hands back the least prose
+// and the parent has the most reason to go looking), and it is also
+// the path a second copy of this logic would be likeliest to miss.
+func (r subagentResult) withCalls(rec *toolcalls.Recorder) subagentResult {
+	r.Calls, r.CallsTruncated = rec.Calls(), rec.Dropped()
+	r.CallsNote = toolcalls.Note(len(r.Calls), r.CallsTruncated)
+	return r
 }
 
 // NewSubagentTool wraps an *agent.Agent as a tool the parent's
@@ -411,6 +443,13 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 			runCtx, cancel = context.WithTimeout(childCtx, opts.Budgets.MaxWallclock)
 			defer cancel()
 		}
+		// Provenance for the parent (#1014). No Skip list: unlike the
+		// autonomous door this runner injects no control tools of its
+		// own — there is no done tool here, the delegation ends when
+		// the runner's iteration does — so everything observed is a
+		// look at the world and belongs in the record.
+		var calls toolcalls.Recorder
+
 		var (
 			turns    int
 			spentUSD float64
@@ -437,6 +476,7 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 				return subagentResult{}, turnErr
 			}
 			collectFinalText(&sb, ev)
+			calls.Observe(ev)
 			tap.Observe(ev)
 			u, ok := tap.Commit(ev)
 			if !ok {
@@ -474,9 +514,9 @@ func NewSubagentTool(opts SubagentOptions) (tool.Tool, error) {
 			stopReason = fmt.Sprintf("wall-clock budget of %s", opts.Budgets.MaxWallclock)
 		}
 		if stopReason != "" {
-			return subagentResult{Result: subagentPartial(sb.String(), name, stopReason)}, nil
+			return subagentResult{Result: subagentPartial(sb.String(), name, stopReason)}.withCalls(&calls), nil
 		}
-		return subagentResult{Result: sb.String()}, nil
+		return subagentResult{Result: sb.String()}.withCalls(&calls), nil
 	}
 
 	return functiontool.New(functiontool.Config{

@@ -30,6 +30,7 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent"
+	"github.com/go-steer/core-agent/v2/pkg/agent/internal/toolcalls"
 	"github.com/go-steer/core-agent/v2/pkg/permissions"
 	coretools "github.com/go-steer/core-agent/v2/pkg/tools"
 	"github.com/go-steer/core-agent/v2/pkg/usage"
@@ -227,6 +228,18 @@ func Run(ctx context.Context, build BuildFunc, goal string, opts ...Option) (Run
 		result.OutputTokens += turnRes.outputTokens
 		result.CostUSD += turnRes.costUSD
 		result.Turns++
+		// Provenance rolls up here, before the turnErr branch below
+		// returns early: a turn that failed still made the calls it
+		// made, and those are exactly the ones a parent asking "what
+		// did you manage before you died" needs.
+		//
+		// The cap is re-applied across the run rather than left to the
+		// per-turn recorders. A standing worker runs for hundreds of
+		// turns, and a bound that only holds within one of them is not
+		// a bound on what the result carries.
+		var dropped int
+		result.Calls, dropped = toolcalls.Append(result.Calls, turnRes.calls, toolcalls.DefaultMaxCalls)
+		result.CallsDropped += turnRes.callsDropped + dropped
 		if keepFinalText(turnRes.text, turnRes.usedTools, haveSubstantive) {
 			result.FinalText = turnRes.text
 			haveSubstantive = haveSubstantive || turnRes.usedTools
@@ -460,6 +473,19 @@ type turnResult struct {
 	// letting the turn spend past the bound. See the enforcement site
 	// in runOneTurn and #729.
 	costCapped bool
+	// calls are the tool calls this turn made, as the runtime saw them
+	// rather than as the model described them. They roll up into
+	// RunResult.Calls so a synchronous delegation can hand its parent
+	// citable provenance instead of prose (#1014).
+	//
+	// The driver's own tools are excluded — see driverTools, and note
+	// the done tool in particular: its argument IS the delegation's
+	// output, so recording it would ship the same text twice.
+	calls []toolcalls.Call
+	// callsDropped counts calls this turn made past the recorder's cap.
+	// Carried rather than discarded so a truncated provenance record
+	// can say it is truncated.
+	callsDropped int
 }
 
 // runOneTurn drives one turn of the agent loop. priorCostUSD is the
@@ -467,9 +493,8 @@ type turnResult struct {
 // the baseline the in-turn WithMaxCost check adds this turn's spend
 // to, so the bound covers the run as a whole rather than each turn
 // independently.
-func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan string, scheduleCh <-chan coretools.ScheduleEvent, cfg *autoConfig, turnNo int, priorCostUSD float64) (turnResult, error) {
+func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan string, scheduleCh <-chan coretools.ScheduleEvent, cfg *autoConfig, turnNo int, priorCostUSD float64) (out turnResult, err error) {
 	var (
-		out       turnResult
 		buf       strings.Builder
 		partials  strings.Builder
 		sawFinals bool
@@ -484,6 +509,21 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 		// population that keeps the re-drive loop.
 		driverTools = append(append([]string(nil), doneToolNames...), coretools.ScheduleToolName(cfg.scheduleToolName))
 	)
+
+	// Provenance for the delegation boundary (#1014). Skipping
+	// driverTools is the same judgement usedTools makes above — a
+	// control-plane gesture is not a look at the world — plus one
+	// stronger reason for the done tool: its argument is what becomes
+	// the delegation's `output`, and echoing it into `calls` would put
+	// the same prose in the result twice.
+	//
+	// Harvested through a defer rather than at each `return out`
+	// because this function has three exits and gains them faster than
+	// anyone remembers to update them all; a provenance record that is
+	// complete on the happy path and empty on an error is worse than
+	// no record, since nothing on the wire distinguishes the two.
+	calls := toolcalls.Recorder{Skip: driverTools}
+	defer func() { out.calls, out.callsDropped = calls.Calls(), calls.Dropped() }()
 
 	// Drain any stale done signal from a previous turn (defensive —
 	// only one turn is in flight at a time, but a previous turn
@@ -536,6 +576,7 @@ func runOneTurn(ctx context.Context, a *agent.Agent, prompt string, doneCh chan 
 			default:
 			}
 		}
+		calls.Observe(ev)
 		tap.Observe(ev)
 		if turnUsage, ok := tap.Commit(ev); ok {
 			out.inputTokens += turnUsage.InputTokens
@@ -1149,6 +1190,22 @@ type RunResult struct {
 	// Duration is the wall-clock time from Run entry to
 	// loop exit.
 	Duration time.Duration
+	// Calls are the tool calls the run made, in order, as the runtime
+	// observed them — not as the model reported them. The driver's own
+	// control tools (done/return, schedule_next_turn) are excluded.
+	//
+	// This is what lets a synchronous delegation hand its parent
+	// something citable. FinalText and DoneDetail are prose, a parent
+	// graded on grounding cannot cite prose, and so it re-issues the
+	// reads its child already made: 48% of the parent's post-handoff
+	// reads across the archived GKE drill corpus (#1014). Provenance is
+	// the missing half, it is metadata the loop already sees, and it
+	// costs about a hundred bytes a call.
+	Calls []toolcalls.Call
+	// CallsDropped counts calls made past the cap on Calls. Non-zero
+	// means Calls is an incomplete record and a reader must not treat
+	// "not in the list" as "did not happen".
+	CallsDropped int
 	// DoneDetail is the result the model handed back through the done
 	// or return tool. Under WithStopOnNaturalEnd it is ALSO set from a
 	// turn that simply stopped calling tools, which is a different

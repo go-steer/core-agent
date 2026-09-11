@@ -23,6 +23,7 @@ import (
 	"google.golang.org/adk/tool/functiontool"
 
 	"github.com/go-steer/core-agent/v2/pkg/agent/autonomous"
+	"github.com/go-steer/core-agent/v2/pkg/agent/internal/toolcalls"
 )
 
 // budgetsFromArgs reads the per-spawn budget caps off the tool args.
@@ -256,6 +257,17 @@ func completionResult(h *Handle) spawnAgentResult {
 		res.StopReason = stopClass(status, reason, runErr, returned)
 		res.Guidance = stopGuidance(res.StopReason)
 	}
+	if r != nil {
+		// Assigned before the runErr branch below returns: a run that
+		// died still made the calls it made, and "what did you manage
+		// before you failed" is the question a parent most needs
+		// answered on that path. The 2026-09-11 drill run is the case
+		// — a 429 killed the delegation after one call, and that one
+		// call is the only thing about the child worth citing.
+		res.Calls = r.Calls
+		res.CallsTruncated = r.CallsDropped
+		res.CallsNote = toolcalls.Note(len(res.Calls), res.CallsTruncated)
+	}
 	if runErr != nil {
 		res.Output = runErr.Error()
 		return res
@@ -392,6 +404,48 @@ type spawnAgentResult struct {
 	// model; the field that changes its behavior is the one written in
 	// language.
 	Guidance string `json:"guidance,omitempty"`
+	// Calls is what the subagent DID: every tool call it made, in
+	// order, with its arguments and whether it succeeded, as the
+	// runtime observed them rather than as the subagent described them.
+	//
+	// Output and FinalText are prose, and prose cannot be cited. A
+	// parent required to ground its claims in evidence therefore
+	// re-issues the reads its child already made — 48% of everything
+	// the parent read after the handoff across the fifteen archived GKE
+	// drill runs, 61% of the bytes, two runs at 100% (#1014). Calls is
+	// the missing half of the contract: the parent can say "the cluster
+	// subagent read deployment/emailservice and it returned cleanly"
+	// without spending a second read to earn the right to say it.
+	//
+	// The subagent is not consulted about this. It cannot omit a call
+	// it would rather not mention, or claim one it never made, because
+	// the record is the event stream and not a self-report.
+	//
+	// Empty for a fire-and-continue spawn and for a wait that timed
+	// out, matching Output: neither has an outcome yet.
+	Calls []toolcalls.Call `json:"calls,omitempty"`
+	// CallsTruncated counts calls made past the cap on Calls.
+	//
+	// Present so a shortened record cannot be read as a complete one.
+	// Without it a parent could correctly conclude "the child never
+	// read the ConfigMap" from a list that simply stops early, which is
+	// a worse failure than the re-read this whole field set prevents.
+	CallsTruncated int `json:"calls_truncated,omitempty"`
+	// CallsNote is one line telling the parent what Calls is for.
+	//
+	// It exists for the same reason Guidance does (#710), learned the
+	// same way: a structured field the model has to infer a use for
+	// gets ignored, and the thing that changes behaviour is the
+	// instruction written in language, next to the data, at the moment
+	// of the decision. Shipping `calls` without this would be shipping
+	// the enum without the sentence.
+	//
+	// It is careful to license the re-read that is actually warranted.
+	// A parent re-running a call to see whether state CHANGED is doing
+	// its job; a parent re-running one to obtain something it is
+	// allowed to cite is paying twice for the same fact, and only the
+	// second is what #1014 measures.
+	CallsNote string `json:"calls_note,omitempty"`
 }
 
 // stopGuidance is the parent-facing instruction for a stop class,
@@ -520,7 +574,8 @@ const spawnAgentDescription = "Spawn an in-process background subagent that runs
 	"Authoring an ad-hoc subagent inline (system_prompt + tools) is only possible when the operator enabled ad-hoc spawns. " +
 	"The subagent runs autonomously; you'll receive its updates as '[Background reports]' lines prepended to your next turn when it calls report_alert or finishes. " +
 	"Use this for tasks that should run continuously (monitoring) or in parallel (independent fan-out work). " +
-	"Do NOT list 'schedule_next_turn', 'report_alert', 'return_result', or its aliases 'report_done' / 'report_completed' / 'mark_task_done' in the tools field — those are auto-wired into every subagent by the runtime; listing them is a no-op (silently skipped)."
+	"Do NOT list 'schedule_next_turn', 'report_alert', 'return_result', or its aliases 'report_done' / 'report_completed' / 'mark_task_done' in the tools field — those are auto-wired into every subagent by the runtime; listing them is a no-op (silently skipped). " +
+	"A synchronous spawn (wait: true) returns a 'calls' list: every tool call the subagent made, with its arguments and whether it succeeded, observed by the runtime rather than self-reported. Treat it as evidence you may cite directly — you do not need to repeat a read your subagent already did in order to ground a claim about it."
 
 type stopAgentArgs struct {
 	Name string `json:"name" jsonschema:"the name of the subagent to stop"`

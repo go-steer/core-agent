@@ -30,6 +30,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/adk/session"
 
+	"github.com/go-steer/core-agent/v2/pkg/agent/internal/toolcalls"
 	"github.com/go-steer/core-agent/v2/pkg/attach"
 	"github.com/go-steer/core-agent/v2/pkg/watchdog"
 )
@@ -299,26 +300,13 @@ func (a *Agent) observeToolResultsForWatchdog(ev *session.Event, seen map[string
 // response, returning "" for a successful call. Mirrors the split the
 // TUI adapter does for rendering; both read the same reserved key.
 //
-// A non-string, non-error value under "error" still counts as a
-// failure — a tool that returns a structured error object is failing,
-// and treating an unrecognized shape as success would silently drop
-// exactly the observations this signal exists to make.
+// Delegates so the watchdog's reading of a failed tool call and the
+// delegation record's reading of one cannot diverge: two copies of
+// "what counts as an error" would eventually disagree, and the pair
+// that disagreed would be a watchdog that counts a failure against the
+// streak beside a `calls` entry that reports the same call as clean.
 func toolResponseError(resp map[string]any) string {
-	v, ok := resp["error"]
-	if !ok || v == nil {
-		return ""
-	}
-	switch e := v.(type) {
-	case string:
-		if e == "" {
-			return ""
-		}
-		return e
-	case error:
-		return e.Error()
-	default:
-		return fmt.Sprintf("%v", e)
-	}
+	return toolcalls.ResponseError(resp)
 }
 
 // ToolResultNoOpKey is the reserved response key a tool sets to declare

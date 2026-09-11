@@ -1,0 +1,100 @@
+{
+  "cluster": [
+    {
+      "seq": 6,
+      "event": {
+        "Author": "cluster",
+        "Timestamp": "2026-09-11T09:00:30Z",
+        "Branch": "cluster",
+        "Content": {
+          "role": "model",
+          "parts": [
+            {
+              "functionCall": {
+                "id": "c1",
+                "name": "gke_get_k8s_resource",
+                "args": {
+                  "projectId": "fixture-project",
+                  "namespace": "drill-target",
+                  "resourceType": "deployment",
+                  "name": "emailservice",
+                  "outputFormat": "YAML"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "seq": 7,
+      "event": {
+        "Author": "cluster",
+        "Timestamp": "2026-09-11T09:00:36Z",
+        "Branch": "cluster",
+        "Content": {
+          "role": "user",
+          "parts": [
+            {
+              "functionResponse": {
+                "id": "c1",
+                "name": "gke_get_k8s_resource",
+                "response": {
+                  "yaml": "spec:\n  template:\n    spec:\n      containers:\n      - name: server\n        resources:\n          limits:\n            memory: 8Mi\n"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "seq": 8,
+      "event": {
+        "Author": "cluster",
+        "Timestamp": "2026-09-11T09:00:44Z",
+        "Branch": "cluster",
+        "Content": {
+          "role": "model",
+          "parts": [
+            {
+              "functionCall": {
+                "id": "c2",
+                "name": "gke_get_k8s_resource",
+                "args": {
+                  "projectId": "fixture-project",
+                  "namespace": "drill-target",
+                  "resourceType": "replicaset",
+                  "labelSelector": "app=emailservice",
+                  "outputFormat": "WIDE"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "seq": 9,
+      "event": {
+        "Author": "cluster",
+        "Timestamp": "2026-09-11T09:00:50Z",
+        "Branch": "cluster",
+        "Content": {
+          "role": "user",
+          "parts": [
+            {
+              "functionResponse": {
+                "id": "c2",
+                "name": "gke_get_k8s_resource",
+                "response": {
+                  "table": "NAME                      DESIRED   CURRENT   READY   AGE\nemailservice-6d87f8cdf8   0         0         0       3d\nemailservice-757699675c   1         1         0       12m\n"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

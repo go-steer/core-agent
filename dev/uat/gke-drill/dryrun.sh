@@ -288,6 +288,14 @@ if want 1; then
     grep_ "G5 bounded PASS"      "${RUN_DIR}/evidence.md" '\*\*G5\*\* bounded \| \*\*PASS\*\*'
     grep_ "counts the subagent"  "${RUN_DIR}/evidence.md" '\| 4 \| cluster \| `get_pod`'
     grep_ "locates the G6 inject" "${RUN_DIR}/evidence.md" 'Landed at seq 10'
+    # The delegation section needs the child's frames, which arrive on a
+    # different path from the parent's: subagents.json, fetched per
+    # branch after the run. selftest.sh hands score.py both files
+    # already joined, so only here does the join itself get tested.
+    grep_ "reports the delegation" "${RUN_DIR}/evidence.md" \
+          '^### `cluster` — spawned at seq 3'
+    grep_ "reports what the child read" "${RUN_DIR}/evidence.md" \
+          'cluster reads the child made \| 2'
     grep_ "all three terms found" "${RUN_DIR}/evidence.md" '✓ `RoleBinding`'
 
     # The fixture was applied and then deleted, and the drill verified

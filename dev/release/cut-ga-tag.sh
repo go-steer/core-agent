@@ -308,7 +308,31 @@ echo ""
 echo "── diff (head) ──────────────────────────────────────────"
 git --no-pager diff --stat -- "$CHANGELOG"
 echo ""
-git --no-pager diff -- "$CHANGELOG" | head -60
+# Capture first, truncate second. Do NOT "simplify" this back into
+# `git diff … | head -60`: head closes the pipe at line 60, git dies on
+# SIGPIPE, `set -o pipefail` makes 141 the pipeline's status and `set -e`
+# exits the script on it. The fold is already written to disk at this
+# point, so the script "fails" having succeeded, and everything below —
+# the EDITORIAL PASS notice and the next-steps block, which are the only
+# instructions the operator gets for the one step this script
+# deliberately does not perform — never prints.
+#
+# The precondition is the PIPE BUFFER, not the 60-line window: head does
+# not close the pipe until it has read its 60 lines and exited, so a diff
+# small enough to sit in the buffer (64 KiB) is written whole and git is
+# already gone by then. This repo's CHANGELOG entries are paragraphs on
+# one line, and a GA fold moves enough of them to clear 64 KiB every
+# time, which is why it fired on every GA fold until #1024 — and why
+# `verify-release-notes` case 11 pads its fixture bullets to that length
+# rather than merely writing more of them.
+#
+# A herestring has no writer for head to kill.
+#
+# `|| true` would also mask the 141, but it masks a real git failure with
+# it, and this is the last point where a broken CHANGELOG is cheap to
+# notice.
+changelog_diff="$(git --no-pager diff -- "$CHANGELOG")"
+head -60 <<<"$changelog_diff"
 echo "..."
 echo ""
 echo "── EDITORIAL PASS REQUIRED ──────────────────────────────"

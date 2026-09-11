@@ -31,6 +31,7 @@ set -euo pipefail
 
 COMPOSE="$(cd "$(dirname "$0")/../release" && pwd)/compose-release-notes.sh"
 FOOTER="$(cd "$(dirname "$0")/../release" && pwd)/install-verify-footer.md.tmpl"
+CUTGA="$(cd "$(dirname "$0")/../release" && pwd)/cut-ga-tag.sh"
 
 FAILURES=0
 CASE=""
@@ -72,7 +73,10 @@ assert_within() {
 REPO="$(mktemp -d)"
 # A second repo whose most recent GA sits off the mainline — see case 8.
 REPO2="$(mktemp -d)"
-trap 'rm -rf "$REPO" "$REPO2"' EXIT
+# A third for cut-ga-tag.sh, which edits CHANGELOG.md in place and needs
+# it committed to have something to diff against — see case 11.
+REPO3="$(mktemp -d)"
+trap 'rm -rf "$REPO" "$REPO2" "$REPO3"' EXIT
 
 init_repo() {
   local dir="$1"
@@ -325,6 +329,80 @@ assert_within "$NOTES" 125000
 assert_absent "$NOTES" "$LEAD"
 assert_contains "$NOTES" "$BREAKING"
 assert_contains "${NOTES}.err" 'over MAX_LEAD'
+
+# ── 11. the GA fold exits 0 and prints what to do next ───────────────
+# The other ten cases are compose-release-notes.sh's. This one is
+# cut-ga-tag.sh's, and it lives here because the two scripts are one
+# pipeline: cut-ga-tag.sh writes the CHANGELOG section that
+# compose-release-notes.sh later turns into a release body, and a second
+# harness would be a second CI job for one assertion.
+#
+# v2.9.0 was cut twice through a script that exited 141. `git diff |
+# head -60` under `set -o pipefail`: head closes the pipe, git takes
+# SIGPIPE, and `set -e` ends the script — after the fold is on disk but
+# before the EDITORIAL PASS notice and the next-steps block print. Those
+# are the only instructions the operator gets for writing the headline
+# the script deliberately leaves as a placeholder, so the failure mode is
+# a CHANGELOG that publishes `<HEADLINE — replace this paragraph…>` as
+# the release page's opening line. See #1024.
+#
+# Two things about the fixture, both learned by watching a smaller one
+# pass against the unfixed script.
+#
+# It needs TWO pre-release sections, each carrying both kinds. One
+# section of one kind leaves the bullets textually where they are and
+# only rewrites the headings around them, so the diff is a dozen lines.
+# Merging by kind across two sections is what makes dev.2's Bug bullets
+# travel down past dev.1's Feature bullets.
+#
+# And the diff has to outrun the PIPE BUFFER, which is not the same
+# thing as outrunning `head`'s 60-line window. head does not close the
+# pipe until it has read its 60 lines and exited, and a diff under 64 KiB
+# is already sitting in the buffer by then with git finished and gone —
+# there is no writer left to signal. A 216-line diff of short bullets
+# exits 0. The same 216 lines of paragraph-length bullets is 80 KiB, git
+# blocks mid-write, head exits, and git takes the SIGPIPE. So the bullets
+# below are padded to the length this repo's CHANGELOG entries actually
+# run to; that length is the reproducer, and it is why the real thing hit
+# this on every single GA fold.
+BULLET_PAD='A bullet whose body is a paragraph, because that is what this repo actually writes: every entry states what changed, then why it was wrong before, then what an operator has to do differently, and it does all of that on one physical line. That length is not decoration here — it is the precondition for the bug this case exists to catch, because a fold diff only overruns the pipe buffer when the lines going through it are this size.'
+start_case 'the GA fold exits 0 and still prints the next-steps block'
+init_repo "$REPO3"
+{
+  printf '# Changelog\n\n## [Unreleased]\n\n_No unreleased changes since [1.1.0-dev.2]._\n\n'
+  for rel in 2 1; do
+    printf '## [1.1.0-dev.%d]\n\n### Changes by Kind\n\n#### Feature\n\n' "$rel"
+    for ((i = 0; i < 80; i++)); do
+      printf -- '- **Feature %d-%04d.** %s\n' "$rel" "$i" "$BULLET_PAD"
+    done
+    printf '\n#### Bug or Regression\n\n'
+    for ((i = 0; i < 80; i++)); do
+      printf -- '- **Fix %d-%04d.** %s\n' "$rel" "$i" "$BULLET_PAD"
+    done
+    printf '\n'
+  done
+  printf '## [1.0.0] — 2026-01-01\n\n- the first thing\n'
+} > "$REPO3/CHANGELOG.md"
+git -C "$REPO3" add CHANGELOG.md
+git -C "$REPO3" commit -qm 'docs: changelog'
+git -C "$REPO3" tag v1.0.0
+FOLD_OUT="$REPO3/fold.out"
+if ( cd "$REPO3" && "$CUTGA" v1.1.0 ) >"$FOLD_OUT" 2>"${FOLD_OUT}.err"; then
+  :
+else
+  fail "cut-ga-tag.sh exited $? on a successful fold (141 means the SIGPIPE is back)"
+fi
+assert_contains "$FOLD_OUT" 'EDITORIAL PASS REQUIRED'
+assert_contains "$FOLD_OUT" 'next steps'
+# The truncation itself must survive the fix — the point was never to
+# print the whole diff, only to stop dying of it.
+assert_contains "$FOLD_OUT" '── diff (head) ─'
+if [[ "$(grep -c . "$FOLD_OUT")" -gt 200 ]]; then
+  fail "the diff preview is no longer truncated"
+fi
+# And the fold it was in the middle of is still correct.
+assert_contains "$REPO3/CHANGELOG.md" '## [1.1.0]'
+assert_absent "$REPO3/CHANGELOG.md" '## [1.1.0-dev.1]'
 
 if [[ "$FAILURES" -ne 0 ]]; then
   echo "verify-release-notes: ${FAILURES} assertion(s) failed" >&2

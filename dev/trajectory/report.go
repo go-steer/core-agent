@@ -77,6 +77,43 @@ func WriteSteps(w io.Writer, t *Trajectory) error {
 	return writeString(w, b.String())
 }
 
+// WriteObservations renders what the measures found, under the step
+// table they refer to.
+//
+// Every line carries the step it anchors to, because an observation you
+// cannot walk back to a row is a claim. Nothing here is coloured, ranked
+// or counted as a problem: see [Observation].
+//
+// When nothing was found it names the measures that found nothing.
+// "observations: none" on its own invites the reading "this run was
+// clean", and the true statement is narrower — these measures, and only
+// these, looked and did not see anything. The gap between the two is the
+// whole limitation of the instrument, so it is printed every time rather
+// than documented once.
+func WriteObservations(w io.Writer, obs []Observation) error {
+	b := &strings.Builder{}
+	if len(obs) == 0 {
+		names := make([]string, 0, len(Measures))
+		for _, m := range Measures {
+			names = append(names, m.Name())
+		}
+		fmt.Fprintf(b, "\n  observations: none (measures run: %s)\n", strings.Join(names, ", "))
+		return writeString(w, b.String())
+	}
+	fmt.Fprintf(b, "\n  observations (%d)\n", len(obs))
+	for _, o := range obs {
+		anchor := "  —"
+		if o.Step >= 0 {
+			anchor = fmt.Sprintf("#%3d", o.Step)
+		}
+		fmt.Fprintf(b, "    %s  %-26s %s\n", anchor, o.Kind, o.Summary)
+		for _, e := range o.Evidence {
+			fmt.Fprintf(b, "          %s\n", truncate(e, 150))
+		}
+	}
+	return writeString(w, b.String())
+}
+
 // writeToolTally prints call counts per (agent, tool) with their
 // non-ok results, which is the cheapest way to see a loop.
 func writeToolTally(b *strings.Builder, t *Trajectory) {

@@ -28,10 +28,12 @@
 //   - The list_agents runaway behind the #623–#627 guardrail train was
 //     a shape failure: the same call, forever, with a fine end state.
 //   - On 2026-09-11 a drill run scored six boxes out of six while its
-//     `cluster` subagent was dead of a Vertex 429. The parent absorbed
-//     the failure, re-did the reads itself, and never said so. Nothing
-//     in the rubric can see that, and it had to be written onto the
-//     scorecard by hand.
+//     `cluster` subagent was dead of a Vertex 429. The parent re-did the
+//     reads itself and still produced a grounded answer. Nothing in the
+//     rubric can see any of that: the run's evidence.md never mentions
+//     the delegation, the 429, or the subagent at all, so a run where
+//     half the plan did not execute is indistinguishable on the sheet
+//     from one where it did.
 //
 // # What the first backfill showed
 //
@@ -43,19 +45,52 @@
 //     with 9-10 of them in the `cluster` subagent. The 2026-09-11 run
 //     that scored 6/6 makes 6 steps with 1 in `cluster`. The column
 //     says what the scorecard had to be told by hand.
-//   - #1014 is a ROW ORDER. In run 20260909T232522Z-c the child returns
-//     its analysis at step 11 and the parent immediately re-issues two
-//     of the same reads at steps 12 and 13. "A parent cannot cite its
-//     subagent's reads, so it re-does them" stops being an anecdote and
-//     becomes a shape you can point at.
+//   - #1014 is a ROW ORDER. In run 20260909T232522Z-c the child reads a
+//     resource and the parent, right after the handoff, reads it again.
+//     "A parent cannot cite its subagent's reads, so it re-does them"
+//     stops being an anecdote and becomes a shape you can point at.
 //   - `return_result` is present in every healthy delegation and absent
 //     from the broken one. A single column tells you whether the
 //     handoff completed, which is cheaper than any prose scan.
 //
-// What it did NOT show is a loop or a redundant-call problem: no run in
-// the archive has one. That matters for what gets built next — a
-// redundancy measure would report zero across the entire corpus and
+// What it did NOT show is a loop or a redundant-call problem WITHIN one
+// agent: no run in the archive has one. That matters for what gets built
+// next — such a measure would report zero across the entire corpus and
 // would therefore be untested. Delegation shape fires today.
+//
+// # What the first measure showed
+//
+// [Delegation], run over the same 15 runs, puts numbers on all three
+// bullets above:
+//
+//   - 10 repeated reads across 8 of the 15 runs. That is #1014's headline
+//     finding as a rate rather than an anecdote: in more than half the
+//     archive the parent re-issues a read its child already made.
+//   - 1 failed delegation, in 20260911T110503Z-a, and the parent
+//     DISCLOSED it — unprompted, in the second line of its answer. See
+//     the correction below.
+//   - 0 undisclosed failures. On this corpus the agent is not the thing
+//     hiding the failure.
+//
+// Three design decisions in [Delegation] came from the corpus refusing to
+// agree with what had been written about it, and each is worth more than
+// the code it changed:
+//
+//   - A "result dropped" measure was planned around #641 (`wait:true`
+//     returns a summary, not findings). #641 is CLOSED, and the archive
+//     confirms the fix: spawn_agent's `output` equals the child's
+//     return_result `result` byte-for-byte in all 14 healthy runs. The
+//     measure would have reported a defect that no longer exists.
+//   - The repeated-read signature originally matched arguments exactly
+//     and found 5 repeats in 5 runs — and MISSED the case that motivated
+//     it, where the child read a resource as YAML and the parent re-read
+//     it unformatted. Ignoring presentational arguments moved it to 10
+//     across 8. See presentationalArgs.
+//   - The 2026-09-11 run's parent was described here, and in a signed
+//     evidence sheet, as having absorbed the 429 silently. It did not:
+//     it said so in its own answer. What was actually silent was
+//     evidence.md, and the rubric's blindness got read as the agent's.
+//     The bullet above is the corrected version.
 //
 // # What it is not
 //

@@ -74,10 +74,15 @@ func run() error {
 		return fmt.Errorf("no runs under %s (a run directory is one containing transcript.jsonl)", dir)
 	}
 
+	obs := make([][]trajectory.Observation, len(runs))
+	for i, t := range runs {
+		obs[i] = trajectory.Observe(t)
+	}
+
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		return enc.Encode(runs)
+		return enc.Encode(withObservations(runs, obs))
 	}
 
 	for i, t := range runs {
@@ -87,21 +92,44 @@ func run() error {
 		if err := trajectory.WriteSteps(os.Stdout, t); err != nil {
 			return err
 		}
+		if err := trajectory.WriteObservations(os.Stdout, obs[i]); err != nil {
+			return err
+		}
 	}
 	if len(runs) > 1 {
 		fmt.Println(strings.Repeat("─", 72))
-		writeCorpus(runs)
+		writeCorpus(runs, obs)
+		writeObservationTally(runs, obs)
 	}
 	return nil
 }
 
+// reported is a trajectory with its observations attached, for --json.
+//
+// The embedded pointer flattens, so the JSON is the trajectory's own
+// shape plus one added key. Observations are kept off [trajectory.
+// Trajectory] itself because loading a run and measuring it are separate
+// operations, and a field that LoadRun never fills is a trap.
+type reported struct {
+	*trajectory.Trajectory
+	Observations []trajectory.Observation `json:"observations"`
+}
+
+func withObservations(runs []*trajectory.Trajectory, obs [][]trajectory.Observation) []reported {
+	out := make([]reported, len(runs))
+	for i, t := range runs {
+		out[i] = reported{Trajectory: t, Observations: obs[i]}
+	}
+	return out
+}
+
 // writeCorpus prints one line per run so a backfill over the whole
 // archive can be read at a glance.
-func writeCorpus(runs []*trajectory.Trajectory) {
+func writeCorpus(runs []*trajectory.Trajectory, obs [][]trajectory.Observation) {
 	fmt.Printf("\n%d runs\n\n", len(runs))
-	fmt.Printf("  %-26s %-3s %6s %6s %6s %8s  %s\n",
-		"run", "scn", "frames", "steps", "notok", "cost", "agents")
-	for _, t := range runs {
+	fmt.Printf("  %-26s %-3s %6s %6s %6s %4s %8s  %s\n",
+		"run", "scn", "frames", "steps", "notok", "obs", "cost", "agents")
+	for i, t := range runs {
 		notOK := 0
 		agents := map[string]int{}
 		for _, s := range t.Steps {
@@ -118,9 +146,52 @@ func writeCorpus(runs []*trajectory.Trajectory) {
 		for i, a := range names {
 			names[i] = fmt.Sprintf("%s:%d", a, agents[a])
 		}
-		fmt.Printf("  %-26s %-3s %6d %6d %6d %8.4f  %s\n",
+		fmt.Printf("  %-26s %-3s %6d %6d %6d %4d %8.4f  %s\n",
 			shorten(t.Meta.RunID), t.Meta.ScenarioID, len(t.Frames), len(t.Steps),
-			notOK, t.Usage.CostUSD, strings.Join(names, " "))
+			notOK, len(obs[i]), t.Usage.CostUSD, strings.Join(names, " "))
+	}
+}
+
+// writeObservationTally groups the whole backfill's observations by kind
+// and names the runs each fired on.
+//
+// This is the view that decides whether a measure earns its place. A
+// kind that appears here with no runs beside it has never been shown to
+// work; a kind that appears beside every run is probably describing the
+// drill rather than the agent.
+func writeObservationTally(runs []*trajectory.Trajectory, obs [][]trajectory.Observation) {
+	hits := map[string][]string{}
+	counts := map[string]int{}
+	for i, list := range obs {
+		seen := map[string]bool{}
+		for _, o := range list {
+			counts[o.Kind]++
+			if !seen[o.Kind] {
+				seen[o.Kind] = true
+				hits[o.Kind] = append(hits[o.Kind], shorten(runs[i].Meta.RunID))
+			}
+		}
+	}
+	if len(counts) == 0 {
+		names := make([]string, 0, len(trajectory.Measures))
+		for _, m := range trajectory.Measures {
+			names = append(names, m.Name())
+		}
+		fmt.Printf("\nobservations: none across %d runs (measures run: %s)\n",
+			len(runs), strings.Join(names, ", "))
+		return
+	}
+	kinds := make([]string, 0, len(counts))
+	for k := range counts {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+
+	fmt.Printf("\nobservations by kind\n\n")
+	fmt.Printf("  %-26s %5s %6s  %s\n", "kind", "total", "runs", "seen on")
+	for _, k := range kinds {
+		fmt.Printf("  %-26s %5d %5d/%-2d  %s\n",
+			k, counts[k], len(hits[k]), len(runs), strings.Join(hits[k], " "))
 	}
 }
 

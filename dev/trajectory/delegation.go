@@ -132,7 +132,7 @@ func (d Delegation) observeOutcome(t *Trajectory, spawn Step, child string) []Ob
 		Evidence: evidence,
 	}}
 
-	quote, marker := disclosure(t, spawn, child)
+	quote, marker := disclosure(t, spawn)
 	if quote == "" {
 		return append(obs, Observation{
 			Kind:    KindDelegationUndisclosed,
@@ -256,7 +256,13 @@ var delegationWords = []string{
 // disclosure looks for parent text, authored after the failure came
 // back, that mentions the delegation. It returns the sentence and the
 // word that matched, or "" for neither.
-func disclosure(t *Trajectory, spawn Step, child string) (quote, marker string) {
+//
+// It does NOT take the child's name, and that absence is the design
+// rather than an oversight: see [delegationWords] for why matching on it
+// would make the check a rubber stamp. Passing it in and ignoring it
+// would leave the next reader wondering whether the omission was
+// deliberate.
+func disclosure(t *Trajectory, spawn Step) (quote, marker string) {
 	for _, f := range t.Frames {
 		if f.Agent != Parent || f.Partial() || f.Role() != "model" || f.Seq <= spawn.RespSeq {
 			continue

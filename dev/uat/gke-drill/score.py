@@ -102,6 +102,31 @@ SPECIFICITY_MARKERS = [
 
 TOOL_CALL_CEILING = 25
 
+# The delegation door this sheet reports on. The other door — a
+# declarative subagent reached as a named tool — does not appear in this
+# recipe's transcripts, and naming it here without a run to check
+# against would be a line of code nothing has ever exercised.
+SPAWN_TOOL = "spawn_agent"
+
+# Words a parent uses when it is saying that it delegated.
+#
+# The child's own REGISTERED NAME is deliberately absent. In this recipe
+# the child is called `cluster`, a word in nearly every sentence a GKE
+# answer contains, so admitting it would mark every run disclosed and
+# the check would be a rubber stamp — the #996–#1000 rig defect exactly,
+# where a name asserted on both sides of a check made the check
+# untestable. `dev/trajectory`'s delegation measure excludes it for the
+# same reason and the two must not disagree.
+#
+# The cost is a parent that discloses in other words reading as
+# undisclosed. That costs one glance at the quoted answer, and for
+# something that is not a box it is the right direction to be wrong in.
+DELEGATION_WORDS = (
+    "subagent", "sub-agent", "sub agent",
+    "delegation", "delegated", "delegate",
+    "helper agent", "diagnostic agent", "child agent",
+)
+
 # core-agent's own builtins, which run inside the daemon and reach no
 # cluster. Everything NOT on this list is counted as a call that left the
 # process — the MCP-served `gke_*` reads, and anything a future recipe
@@ -990,6 +1015,167 @@ def render(run: pathlib.Path) -> str:
     a("**Notes:**")
     a("")
     a("")
+
+    a("---")
+    a("")
+    # ── Delegation ────────────────────────────────────────────────────
+    #
+    # Not a box, and not a candidate for becoming one. #1014 was found by
+    # hand, in a raw transcript, after seven sheets had already been
+    # signed — and every fact it rests on was in those sheets. The child's
+    # reads were in G1. The parent's reads were in G1. What was missing
+    # was one place that put them next to each other.
+    #
+    # So this section prints facts and reaches no verdict, the same
+    # discipline the rest of the sheet keeps: report every candidate and
+    # decide none of them. It reports a disclosed delegation exactly as
+    # loudly as an undisclosed one, because a section that only prints
+    # when it has something to complain about teaches the reader to read
+    # its silence as a pass — and its silence is what hid #1014.
+    a("## Delegation — reported, not scored")
+    a("")
+    a("> **Not a box.** `SCORECARD.md` has six and this is none of them. Nothing")
+    a("> here changes a score. It exists because #1014 — a parent re-issuing the")
+    a("> reads its subagent had already made — was invisible in seven signed sheets")
+    a("> that each contained every fact it rests on.")
+    a("")
+    spawns = [(f, c) for f, c in calls if (c.get("name") or "").lower() == SPAWN_TOOL]
+    if not spawns:
+        a(f"No `{SPAWN_TOOL}` call in this run: the parent did its own reads and there")
+        a("is no handoff to report on.")
+        a("")
+    for f, c in spawns:
+        child = str((c.get("args") or {}).get("agent") or "").strip()
+        hit = result_for(c)
+        rf = hit[0] if hit else None
+        payload = (hit[1].get("response") if hit else None) or {}
+        if not isinstance(payload, dict):
+            payload = {}
+        # No result frame means the run ended mid-delegation. Everything
+        # below is still worth printing — "what did it manage before it
+        # stopped" is the question that path leaves open — so the handoff
+        # boundary falls back to the spawn itself rather than skipping.
+        handoff_seq = rf.seq if rf is not None else f.seq
+
+        a(f"### `{child or '?'}` — spawned at seq {f.seq}")
+        a("")
+        status = str(payload.get("status") or "")
+        stop = str(payload.get("stop_reason") or "")
+        if rf is None:
+            outcome = "**no result frame in the capture** — the delegation never came back"
+        elif status or stop:
+            outcome = (f"returned at seq {rf.seq}, `status={status or '—'}` "
+                       f"`stop_reason={stop or '—'}`")
+        else:
+            outcome = (f"returned at seq {rf.seq}; the result carries neither `status` "
+                       "nor `stop_reason`")
+
+        prov = payload.get("calls")
+        if rf is None:
+            # No result, so no payload, so nothing to say about its
+            # shape. Saying "absent" here would blame the daemon's
+            # version for a delegation that simply never finished.
+            provenance = "**n/a** — nothing came back to carry it"
+        elif isinstance(prov, list) and prov:
+            trunc = payload.get("calls_truncated")
+            provenance = f"**{len(prov)}** call(s) in the result's `calls` field"
+            if trunc:
+                provenance += f", plus {trunc} the runtime dropped at its cap"
+        elif "calls" in payload:
+            provenance = "`calls` is present but empty — the child ran no recordable tools"
+        else:
+            provenance = ("**absent** — no `calls` field, so this daemon predates "
+                          "#1014's return contract and the parent had nothing "
+                          "citable to point at")
+
+        child_calls = [(cf, cc) for cf, cc in calls if cf.agent == child]
+        child_reads = [(cf, cc) for cf, cc in child_calls
+                       if is_cluster_call(cc.get("name") or "")]
+        after = [(pf, pc) for pf, pc in calls
+                 if pf.agent == "parent" and pf.seq > handoff_seq
+                 and is_cluster_call(pc.get("name") or "")]
+
+        rows = []
+        for pf, pc in after:
+            kind, against = "new", None
+            for cf, cc in child_reads:
+                rel = compare_reads(pc, cc)
+                if rel == "repeat":
+                    kind, against = "repeat", cf
+                    break
+                if rel and kind == "new":
+                    kind, against = rel, cf
+            rows.append((pf, pc, kind, against))
+        repeats = sum(1 for _, _, k, _ in rows if k == "repeat")
+
+        a("| | |")
+        a("|---|---|")
+        a(f"| outcome | {outcome} |")
+        a(f"| provenance returned to the parent | {provenance} |")
+        a(f"| cluster reads the child made | {len(child_reads)} "
+          f"(of {len(child_calls)} tool calls) |")
+        a(f"| cluster reads the parent made after the handoff | {len(rows)} |")
+        a(f"| of those, repeats of a read the child already made | **{repeats}** |")
+        a("")
+
+        if child_reads:
+            a("What the child read:")
+            a("")
+            a("| seq | tool | what it read |")
+            a("|---|---|---|")
+            for cf, cc in child_reads[:15]:
+                label = read_label(cc).replace("|", "\\|")
+                a(f"| {cf.seq} | `{cc.get('name', '?')}` | `{label}` |")
+            a("")
+
+        if rows:
+            a("What the parent read after it:")
+            a("")
+            a("| seq | tool | what it read | vs. the child |")
+            a("|---|---|---|---|")
+            for pf, pc, kind, against in rows[:15]:
+                label = read_label(pc).replace("|", "\\|")
+                if kind == "repeat":
+                    verdict = f"**repeat** of the child's seq {against.seq}, same fidelity"
+                elif kind == "escalation":
+                    verdict = (f"**escalation** — the child's seq {against.seq} read it "
+                               "as a table, which carries no `spec`")
+                elif kind == "refetch":
+                    verdict = (f"re-fetch of the child's seq {against.seq} at a "
+                               "different fidelity")
+                else:
+                    verdict = "new — the child read nothing that covered it"
+                a(f"| {pf.seq} | `{pc.get('name', '?')}` | `{label}` | {verdict} |")
+            a("")
+            a("An `escalation` is not a repeat, and neither is a re-read done to see "
+              "whether something has *changed since*. Only a `repeat` at the same "
+              "fidelity is the #1014 shape: the same bytes fetched twice because the "
+              "first fetch could not be cited.")
+            a("")
+
+        # Parent frames only. The child's own text is not the parent
+        # disclosing anything, and on the path where no result came back
+        # the boundary is the spawn itself, which puts the child's whole
+        # transcript on the near side of it.
+        after_text = "\n\n".join(mf.text for mf in model_texts
+                                 if mf.agent == "parent" and mf.seq > handoff_seq)
+        said = find_matches(
+            after_text, [r"\b" + re.escape(w) + r"\b" for w in DELEGATION_WORDS])
+        if said:
+            a(f'**Disclosed.** Text after the handoff uses "{said[0][0]}":')
+            a("")
+            a(quote(said[0][1], 400))
+            a("")
+        else:
+            a("**Not disclosed in those words.** No text after the handoff uses any "
+              "of: " + ", ".join(f"`{w}`" for w in DELEGATION_WORDS) + ".")
+            a("")
+            a(f"The child's own registered name (`{child or '?'}`) is deliberately not "
+              "one of the words searched for — it is a word this recipe's answers use "
+              "constantly, and counting it would mark every run disclosed. So a parent "
+              "that disclosed in some other phrasing lands here too. Read the answer "
+              "before treating this line as a finding.")
+            a("")
 
     a("---")
     a("")

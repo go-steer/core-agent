@@ -1,0 +1,29 @@
+{
+  "run_id": "20260911T090000Z-b",
+  "started_at": "2026-09-11T09:00:00Z",
+  "scenario_id": "B",
+  "scenario_name": "OOMKilled by a squeezed memory limit",
+  "negative": "no",
+  "cluster": "fixture-cluster",
+  "project": "fixture-project",
+  "demo_ns": "drill-demo",
+  "target_ns": "drill-target",
+  "workload": "emailservice",
+  "model_flavor": "gemini",
+  "daemon_image": "ghcr.io/go-steer/core-agent:v2.10.0-dev.1",
+  "content_image": "us-docker.pkg.dev/fixture/content:v2",
+  "session_id": "sess-fixture-provenance",
+  "frame_count": 5,
+  "expect_terms": ["emailservice", "OOMKilled", "8Mi"],
+  "followup": "What memory limit is set on that container right now? Cite the read that told you.",
+  "generation_before": "92",
+  "generation_after": "92",
+  "fingerprint_before": [
+    "Deployment/emailservice:gen92",
+    "ReplicaSet/emailservice-6d87f8cdf8:rv4410"
+  ],
+  "fingerprint_after": [
+    "Deployment/emailservice:gen92",
+    "ReplicaSet/emailservice-6d87f8cdf8:rv4410"
+  ]
+}

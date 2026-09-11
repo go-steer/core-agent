@@ -123,6 +123,17 @@ If the sheet says no cluster read succeeded, stop and run
 `grant-iam.sh --check` — nothing after that line can be grounded, whatever the
 final answer says.
 
+The last section, **Delegation**, is explicitly *not a box* and changes no
+score. It prints, for each `spawn_agent`, what the child read, what the result
+handed back, how many of the parent's post-handoff reads repeat a read the
+child had already made, and whether the answer mentions having delegated at
+all. Every one of those facts was in the seven sheets signed on 2026-09-10;
+none of them were next to each other, and #1014 — a parent re-issuing its
+child's reads because prose cannot be cited — was found by hand in a raw
+transcript afterwards. The section reports a clean delegation exactly as
+loudly as a repeated one, because a section that only speaks up when it has a
+complaint teaches you to read its silence as a pass.
+
 ## The six boxes
 
 Defined in [`SCORECARD.md`](SCORECARD.md), which is the normative rubric and the
@@ -246,7 +257,7 @@ mostly failing is the instrument working.
 | `SCORECARD.md` | **the rubric**; copy into `runs/` |
 | `selftest.sh` | offline checks on the parts |
 | `dryrun.sh` | offline run of the whole drill against fake tools |
-| `testdata/*-run/` | recorded transcripts `selftest.sh` scores: clean, dirty, errored |
+| `testdata/*-run/` | transcripts `selftest.sh` scores: clean, dirty, errored, denied, recovered, fidelity, provenance, orphan-delegation |
 | `testdata/fakebin/` | the fake `kubectl`, `curl` and `gcloud` `dryrun.sh` uses |
 | `runs/` | committed scorecards (the artifacts live in `~/.gke-drill/runs/`) |
 

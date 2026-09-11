@@ -24,15 +24,18 @@
 # Dockerfile a week apart produce different daemons with no record of
 # which, so it is the wrong default for a recipe people copy.
 #
-# 2.8.0 clears everything this recipe relies on. v2.3.1 did not:
+# v2.3.1 is the real floor, and it is a long way below this pin. It
+# predates both of the things this recipe relies on:
 #   - agent-card endpoint at /.well-known/agent-card.json (cef0d1b)
 #   - X-Attach-Token side-channel header for gateway-fronted auth (#141)
 #     — required so the TUI can use --auth=google-id-token without
 #     fighting Cloud Run for the Authorization header.
-# This recipe's config uses nothing that needs a v2.9 daemon, so the
-# newest GA is the right floor; the recipes that pin higher do so
-# because their configs force it. Multi-arch (amd64 + arm64) and
-# Sigstore-signed from the go-steer/core-agent repo's release workflow.
+# This recipe's config uses nothing that needs a v2.9 daemon — it tracks
+# the newest GA because that is what a recipe people copy should show,
+# not because the config forces it. The GKE recipes pin the same release
+# for the opposite reason: their configs cannot run below it. Multi-arch
+# (amd64 + arm64) and Sigstore-signed from the go-steer/core-agent
+# repo's release workflow.
 #
 # TestOverlayPinsSatisfyRecipeConfig (examples/internal/recipecheck)
 # reads this FROM, and scripts/deploy-from-prebuilt-image.sh's default
@@ -43,7 +46,7 @@
 # `:main`, which is what sat here for five releases, fails on the second
 # rule whether or not the config needs a specific daemon. Keep the two
 # defaults in step when bumping.
-FROM ghcr.io/go-steer/core-agent:2.8.0
+FROM ghcr.io/go-steer/core-agent:2.9.0
 
 # Bake the .agents/ bundle into the image. config.json sets the
 # model provider and permissions; AGENTS.md primes the agent's

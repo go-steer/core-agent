@@ -84,17 +84,18 @@ spec:
       # "eventual fix" the TBD here used to point at is that issue.
       containers:
         - name: core-agent
-          # Pinned, not :latest. Two reasons. (1) :latest is only
-          # pushed on a RELEASED semver tag (see
-          # .github/workflows/release-images.yml), so it currently means
-          # 2.8.0 GA — which predates the #944 and #946 fixes this
-          # manifest now depends on. (2) With imagePullPolicy
-          # IfNotPresent a node that has cached an older :latest never
-          # re-pulls, so the daemon silently runs stale code.
+          # Pinned, not :latest. Two reasons. (1) :latest tracks the
+          # newest RELEASED semver tag (see
+          # .github/workflows/release-images.yml), so it moves under you
+          # at the next GA — and this manifest depends on #944 and #946,
+          # which a roll backwards would take away. (2) With
+          # imagePullPolicy IfNotPresent a node that has cached an older
+          # :latest never re-pulls, so the daemon silently runs stale
+          # code.
           #
           # The kind E2E overrides this with a build from HEAD, so CI
           # exercises the manifest rather than the pin.
-          image: ghcr.io/go-steer/core-agent:2.9.0-dev.6
+          image: ghcr.io/go-steer/core-agent:2.9.0
           imagePullPolicy: IfNotPresent
           args:
             # -c points at the config file. The daemon derives its

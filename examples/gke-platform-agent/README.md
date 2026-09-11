@@ -193,7 +193,9 @@ the honest move is not to ship them.
 
 The recipe's floor is **v2.9.0-dev.1** — `content_roots` and a rooted subagent do
 not exist before v2.9, and an older daemon boots without either rather than
-failing ([#680](https://github.com/go-steer/core-agent/issues/680)).
+failing ([#680](https://github.com/go-steer/core-agent/issues/680)). The deploy
+overlays pin **2.9.0**, the first GA at or over that floor; the floor itself
+stays written as the pre-release the fields landed in.
 
 Every `${env:}` reference in the content is declared in `.agents/env.yaml`, and
 all four coordinates are `required: true`, so the daemon refuses to start rather

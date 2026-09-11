@@ -44,13 +44,13 @@ resources:
 components:
   - ../../components/otel
 
-# Pin the composed example's daemon image to 2.9.0-dev.6 — the same
-# floor ../example carries, and for the same reasons: the recipe's
-# config.json uses `alerts` and `tools.wait_and_verify`, which the
-# 2.8.0 GA daemon silently drops rather than rejects, and since #986
-# the base mounts the users.json Secret directly (#944) and probes GET
-# /healthz (#946), neither of which works below dev.6 (see the long
-# note in ../example/kustomization.yaml, and #680). It also carries
+# Pin the composed example's daemon image to 2.9.0 — the same GA
+# ../example carries, and for the same reasons: the recipe's
+# config.json uses `alerts` and `tools.wait_and_verify`, which a 2.8
+# daemon silently drops rather than rejects, and since #986 the base
+# mounts the users.json Secret directly (#944) and probes GET /healthz
+# (#946), neither of which works below 2.9.0-dev.6 (see the long note
+# in ../example/kustomization.yaml, and #680). It also carries
 # everything the OTel path needs: the OTEL_TRACES_EXPORTER env
 # override (PR #315, first shipped in v2.7.0-dev.4), the OTel
 # span-duplication and Cloud Trace resource fixes from #333–#340, and
@@ -75,6 +75,6 @@ components:
 # OTEL_EXPORTER_OTLP_ENDPOINT.
 images:
   - name: ghcr.io/go-steer/core-agent
-    newTag: "2.9.0-dev.6"
+    newTag: "2.9.0"
   - name: ghcr.io/go-steer/lookout
     newTag: "v0.23.0"

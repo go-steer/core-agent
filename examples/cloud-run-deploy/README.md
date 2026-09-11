@@ -211,7 +211,7 @@ The script is idempotent and shows what it's doing as it goes. It:
 
 1. Enables APIs
 2. Creates the Artifact Registry repo (if missing)
-3. Pulls `ghcr.io/go-steer/core-agent:2.8.0` (override via `IMAGE_REF=...` for a newer tag or a digest), retags, pushes to AR
+3. Pulls `ghcr.io/go-steer/core-agent:2.9.0` (override via `IMAGE_REF=...` for a newer tag or a digest), retags, pushes to AR
 4. Creates the runtime service account + grants `roles/aiplatform.user`
 5. Uploads `.agents/config.json` and `.agents/AGENTS.md` to Secret
    Manager as `core-agent-config-json` and `core-agent-agents-md`
@@ -314,7 +314,7 @@ at startup — same env-var-name-indirection pattern as the daemon's
 release since, so a released tag is enough — no main build needed:
 
 ```bash
-go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@v2.8.0
+go install github.com/go-steer/core-agent/v2/cmd/core-agent-tui@v2.9.0
 ```
 
 Note the `/v2` in the module path: it became mandatory in v2.7.0 (Go's SIVE rule
@@ -449,7 +449,7 @@ If you don't need the in-process TUI (you only attach via remote
 or change `IMAGE_TAG` to a slim variant in Path A's script:
 
 ```dockerfile
-ARG CORE_AGENT_VERSION=2.8.0
+ARG CORE_AGENT_VERSION=2.9.0
 FROM ghcr.io/go-steer/core-agent-slim:${CORE_AGENT_VERSION}
 ```
 
@@ -620,11 +620,11 @@ Verify the image you're running (applies to both paths — Path A
 mirrors the published image bit-for-bit; Path B layers on top of it):
 
 ```bash
-docker pull ghcr.io/go-steer/core-agent:2.8.0
-docker run --rm ghcr.io/go-steer/core-agent:2.8.0 --version
-# expect: core-agent v2.8.0 (commit ..., built ...)
+docker pull ghcr.io/go-steer/core-agent:2.9.0
+docker run --rm ghcr.io/go-steer/core-agent:2.9.0 --version
+# expect: core-agent v2.9.0 (commit ..., built ...)
 
-cosign verify ghcr.io/go-steer/core-agent:2.8.0 \
+cosign verify ghcr.io/go-steer/core-agent:2.9.0 \
   --certificate-identity-regexp '^https://github.com/go-steer/core-agent' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
@@ -634,7 +634,7 @@ deploys:
 
 ```bash
 docker buildx imagetools inspect \
-  ${REGION}-docker.pkg.dev/${PROJECT_ID}/core-agent/core-agent:2.8.0 \
+  ${REGION}-docker.pkg.dev/${PROJECT_ID}/core-agent/core-agent:2.9.0 \
   | grep Digest
 # Use the digest as IMAGE_TAG in the script for fully-pinned deploys.
 ```

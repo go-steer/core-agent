@@ -23,11 +23,13 @@ resources:
   - ../../base
 
 # MINIMUM DAEMON VERSION: 2.9.0-dev.6. Two floors stack here, and they
-# fail in opposite ways.
+# fail in opposite ways. Both are pre-release tags because that is where
+# the thing each one needs landed; the pin below is 2.9.0, the first GA
+# at or over the higher of them.
 #
 # CONFIG FLOOR — 2.9.0-dev.1. config/config.json uses `alerts` and
-# `tools.wait_and_verify`, neither of which exists in the 2.8.0 GA
-# daemon. pkg/config ignores unknown keys, so an older image does not
+# `tools.wait_and_verify`, neither of which exists in a 2.8 daemon.
+# pkg/config ignores unknown keys, so an older image does not
 # fail on this config: it boots clean, drops both blocks, registers
 # neither `alert` nor `wait_and_verify`, and then runs skills that tell
 # the model to call them. Silent, and only visible in a transcript.
@@ -45,15 +47,15 @@ resources:
 #
 # (A) TAG PINNING — the default. Uses tags published by
 #     .github/workflows/release-images.yml (docker/metadata-action
-#     strips the leading `v`, so the GHCR tag is "2.9.0-dev.6", not
-#     "v2.9.0-dev.6"). Dev drops publish as e.g. "2.9.0-dev.6"; RCs as
+#     strips the leading `v`, so the GHCR tag is "2.9.0", not
+#     "v2.9.0"). Dev drops publish as e.g. "2.9.0-dev.6"; RCs as
 #     "2.9.0-rc.1". For the recipe's shipped default, prefer a released
 #     semver over :latest so operators get reproducible deploys.
 #
 # (B) DIGEST PINNING — for reproducibility-critical deployments
 #     (SBOM tracking, cosign verification, immutable revs). Mutually
 #     exclusive with newTag under kustomize semantics. Look up the
-#     digest via `crane digest ghcr.io/go-steer/core-agent:2.9.0-dev.6`
+#     digest via `crane digest ghcr.io/go-steer/core-agent:2.9.0`
 #     or `docker buildx imagetools inspect ...`. Because a digest
 #     carries no version, record the release it came from in a
 #     `# core-agent-version: <release>` comment ON the entry — the #680
@@ -67,13 +69,13 @@ resources:
 images:
   # (A) tag pinning — recipe default
   - name: ghcr.io/go-steer/core-agent
-    newTag: "2.9.0-dev.6"
+    newTag: "2.9.0"
   # The watcher ships from go-steer/k8s-lookout; its tags keep the
   # leading `v` (e.g. "v0.21.0"), unlike this repo's images.
   #
   # Two floors stack under this pin, and the SECOND one is hard:
   #   - v0.11.0 is the interop floor for every daemon from 2.8.0-dev.1
-  #     onwards, this overlay's 2.9.0-dev.6 included: earlier lookout
+  #     onwards, this overlay's 2.9.0 included: earlier lookout
   #     releases don't send Content-Type on the bodyless POST /sessions,
   #     which the daemon's #383 CSRF guard rejects with 415.
   #   - v0.17.0 is where lookout retired the `k8s-event-watcher`
@@ -91,7 +93,7 @@ images:
   # The core-agent-version marker below belongs to the entry directly
   # under it; the #680 check reads comments attached to a live images
   # entry, so it does not credit this example to the pin in (A).
-  # core-agent-version: 2.9.0-dev.6
+  # core-agent-version: 2.9.0
   # - name: ghcr.io/go-steer/core-agent
   #   digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
   # - name: ghcr.io/go-steer/lookout
@@ -100,7 +102,7 @@ images:
   # (C) example — private mirror
   # - name: ghcr.io/go-steer/core-agent
   #   newName: my-registry.internal/mirrors/core-agent
-  #   newTag: "2.9.0-dev.6"
+  #   newTag: "2.9.0"
 
 # Uncomment to add your organization's namespace prefix or
 # per-cluster labels:

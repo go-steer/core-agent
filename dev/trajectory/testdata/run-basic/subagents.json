@@ -1,0 +1,34 @@
+{
+  "cluster": [
+    {
+      "seq": 6,
+      "event": {
+        "InvocationID": "inv-1",
+        "Timestamp": "2026-01-01T00:00:03Z",
+        "Author": "cluster",
+        "Branch": "core-agent.cluster",
+        "Content": {
+          "role": "model",
+          "parts": [
+            {"functionCall": {"id": "s1", "name": "gke_get_k8s_logs", "args": {"name": "drill-rbac-probe-0"}}}
+          ]
+        }
+      }
+    },
+    {
+      "seq": 7,
+      "event": {
+        "InvocationID": "inv-1",
+        "Timestamp": "2026-01-01T00:00:04Z",
+        "Author": "cluster",
+        "Branch": "core-agent.cluster",
+        "Content": {
+          "role": "user",
+          "parts": [
+            {"functionResponse": {"id": "s1", "name": "gke_get_k8s_logs", "response": {"logs": "Error from server (Forbidden): pods is forbidden"}}}
+          ]
+        }
+      }
+    }
+  ]
+}

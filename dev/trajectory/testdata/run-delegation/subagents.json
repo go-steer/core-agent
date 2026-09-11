@@ -1,0 +1,64 @@
+{
+  "cluster": [
+    {
+      "seq": 4,
+      "event": {
+        "InvocationID": "inv-c",
+        "Timestamp": "2026-02-02T00:00:03Z",
+        "Author": "cluster",
+        "Branch": "core-agent.cluster",
+        "Content": {
+          "role": "model",
+          "parts": [
+            {"functionCall": {"id": "s1", "name": "record_plan", "args": {"plan": "read the deployment, then the logs"}}}
+          ]
+        }
+      }
+    },
+    {
+      "seq": 5,
+      "event": {
+        "InvocationID": "inv-c",
+        "Timestamp": "2026-02-02T00:00:03.100Z",
+        "Author": "cluster",
+        "Branch": "core-agent.cluster",
+        "Content": {
+          "role": "user",
+          "parts": [
+            {"functionResponse": {"id": "s1", "name": "record_plan", "response": {"result": "recorded"}}}
+          ]
+        }
+      }
+    },
+    {
+      "seq": 6,
+      "event": {
+        "InvocationID": "inv-c",
+        "Timestamp": "2026-02-02T00:00:04Z",
+        "Author": "cluster",
+        "Branch": "core-agent.cluster",
+        "Content": {
+          "role": "model",
+          "parts": [
+            {"functionCall": {"id": "s2", "name": "gke_get_k8s_resource", "args": {"name": "emailservice", "namespace": "online-boutique", "resourceType": "deployment", "outputFormat": "YAML"}}}
+          ]
+        }
+      }
+    },
+    {
+      "seq": 7,
+      "event": {
+        "InvocationID": "inv-c",
+        "Timestamp": "2026-02-02T00:00:04.500Z",
+        "Author": "cluster",
+        "Branch": "core-agent.cluster",
+        "Content": {
+          "role": "user",
+          "parts": [
+            {"functionResponse": {"id": "s2", "name": "gke_get_k8s_resource", "response": {"kind": "Deployment", "image": "gcr.io/example/does-not-exist:v0"}}}
+          ]
+        }
+      }
+    }
+  ]
+}

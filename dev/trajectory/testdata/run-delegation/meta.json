@@ -1,0 +1,10 @@
+{
+  "run_id": "20260202T000000Z-a",
+  "started_at": "2026-02-02T00:00:00Z",
+  "scenario_id": "a",
+  "scenario_name": "synthetic delegation fixture",
+  "cluster": "fixture-cluster",
+  "model_flavor": "gemini",
+  "daemon_image": "ghcr.io/go-steer/core-agent:0.0.0-fixture",
+  "session_id": "sess-delegation"
+}

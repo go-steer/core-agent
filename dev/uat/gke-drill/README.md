@@ -277,6 +277,34 @@ claim against the tally on every scored sheet you have locally. If the
 two ever disagree, one of them is wrong and it matters which; see
 `dev/trajectory/doc.go`.
 
+### Observations
+
+Under each table it prints *observations* — things a measure noticed,
+with the step and the evidence, and no severity or score attached. With
+`--all` it also prints a tally by kind and the runs each kind was seen
+on. The first measure is `delegation`, and on the archive as of
+2026-09-11 it reports:
+
+| kind | what it means | archive |
+| --- | --- | --- |
+| `delegation-repeated-read` | after the handoff, the parent re-issued a read its child already made — #1014 | 10, across 8 of 15 runs |
+| `delegation-failed` | the child did not finish | 1 |
+| `delegation-disclosed` | the parent told the operator the delegation failed | 1 |
+| `delegation-undisclosed` | it did not | 0 |
+
+Two of those are worth reading carefully. `delegation-repeated-read`
+ignores arguments that only change rendering (`outputFormat`), because
+the case that motivated the measure is a child reading a resource as YAML
+and the parent re-reading it unformatted; with exact matching the count
+is 5, not 10. And `delegation-disclosed` deliberately does **not** count
+the child's own registered name as a disclosure — `cluster` appears in
+nearly every answer this drill produces, so admitting it would mark every
+run disclosed. That is the #996–#1000 rig defect in miniature: a name
+asserted on both sides of a check makes the check untestable.
+
+`TestDelegationMatchesTheArchive` pins all four numbers per run,
+including the six runs that must report nothing.
+
 ## Before you spend a cluster day
 
 ```sh

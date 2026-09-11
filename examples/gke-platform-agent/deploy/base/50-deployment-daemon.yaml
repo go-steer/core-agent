@@ -87,7 +87,7 @@ spec:
           # silently runs stale code after a rebuild — the same trap the
           # overlays call out for the content image. Both overlays override
           # this tag; bump all three together.
-          image: ghcr.io/go-steer/core-agent:2.9.0-dev.6
+          image: ghcr.io/go-steer/core-agent:2.9.0
           imagePullPolicy: IfNotPresent
           args:
             # -c points into the content mount. The daemon derives

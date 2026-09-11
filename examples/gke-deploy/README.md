@@ -8,7 +8,7 @@ credential-free auth to Vertex AI + the GKE read-only MCP server,
 and registered with Google Cloud's Agent Registry.
 
 **No Dockerfile in this recipe** — uses the published
-`ghcr.io/go-steer/core-agent:2.8.0` image (multi-arch amd64+arm64,
+`ghcr.io/go-steer/core-agent:2.9.0` image (multi-arch amd64+arm64,
 distroless static, Sigstore signed). The recipe is YAML + a
 `.agents/` config bundle; deploy time is ~5 minutes after the
 prereqs are in place.
@@ -209,7 +209,7 @@ gcloud container clusters get-credentials core-agent-host \
   ```
   or pull the container image:
   ```bash
-  docker pull ghcr.io/go-steer/core-agent-tui:2.8.0
+  docker pull ghcr.io/go-steer/core-agent-tui:2.9.0
   ```
 
 ## Setup
@@ -365,7 +365,7 @@ See `examples/plan-first/` for the full plan-first recipe (this variant is one c
 If the in-process TUI is dead weight (you only attach via remote `core-agent-tui`), swap the image for the slim variant:
 
 ```yaml
-image: ghcr.io/go-steer/core-agent-slim:2.8.0
+image: ghcr.io/go-steer/core-agent-slim:2.9.0
 ```
 
 ~5MB smaller binary; same runtime behavior for the attach API.
@@ -438,11 +438,11 @@ done
 Verify the image you're running:
 
 ```bash
-docker pull ghcr.io/go-steer/core-agent:2.8.0
-docker run --rm ghcr.io/go-steer/core-agent:2.8.0 --version
-# expect: core-agent v2.8.0 (commit ..., built ...)
+docker pull ghcr.io/go-steer/core-agent:2.9.0
+docker run --rm ghcr.io/go-steer/core-agent:2.9.0 --version
+# expect: core-agent v2.9.0 (commit ..., built ...)
 
-cosign verify ghcr.io/go-steer/core-agent:2.8.0 \
+cosign verify ghcr.io/go-steer/core-agent:2.9.0 \
   --certificate-identity-regexp '^https://github.com/go-steer/core-agent' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
@@ -451,6 +451,6 @@ The image is published from this repo's GitHub Actions workflow + signed via Sig
 
 ```bash
 # Resolve once, pin forever in your manifest
-docker buildx imagetools inspect ghcr.io/go-steer/core-agent:2.8.0 | grep Digest
+docker buildx imagetools inspect ghcr.io/go-steer/core-agent:2.9.0 | grep Digest
 # → image: ghcr.io/go-steer/core-agent@sha256:...
 ```

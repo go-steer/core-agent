@@ -164,8 +164,9 @@ Budget exhaustion escalates the same way.
 - The GKE MCP server accessible from your cluster (usually is by
   default: `mcp.googleapis.com`).
 - **A core-agent daemon image ≥ `2.9.0-dev.6`.** The example overlays
-  pin it; if you repin, do not go below it. Two floors stack. From
-  `2.9.0-dev.1`, `config.json` uses `alerts` and `tools.wait_and_verify`,
+  pin `2.9.0`, the first GA at or over that floor; if you repin, do not
+  go below the floor. Two floors stack. From `2.9.0-dev.1`,
+  `config.json` uses `alerts` and `tools.wait_and_verify`,
   and an older daemon does **not** reject that config — `pkg/config`
   ignores unknown keys, so it boots clean, drops both blocks, registers
   neither the `alert` nor the `wait_and_verify` tool, and then runs a

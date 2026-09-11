@@ -177,7 +177,7 @@ export CONTENT_TAG="${CONTENT_TAG:-v3}"
 # only that one is built by you and has no published copy.
 #
 # Two things worth knowing if you go and edit those blocks. The GHCR tag
-# for this repo's own images has NO leading `v` ("2.9.0-dev.6"); lookout's
+# for this repo's own images has NO leading `v` ("2.9.0"); lookout's
 # does ("v0.23.0"). And an OLDER daemon does not fail on a newer recipe —
 # pkg/config has no DisallowUnknownFields, so it boots clean, drops the
 # blocks it does not know, and runs a persona instructing the model to

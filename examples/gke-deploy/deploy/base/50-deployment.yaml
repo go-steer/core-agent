@@ -124,38 +124,41 @@ spec:
           # next release is cut" — five releases came and went, and an
           # untraceable main digest is exactly the drift #680 is about.
           #
-          # 2.8.0 is the floor that matters here for a concrete reason:
-          # v2.3.1 predates the agent-card endpoint (cef0d1b), so this
+          # v2.3.1 is the floor that matters here for a concrete reason:
+          # it predates the agent-card endpoint (cef0d1b), so this
           # Deployment's discovery wiring (the a2a-protocol.org/agent-card
           # annotation + agent.description in config.json) would be a
           # no-op against :2.3.1 — /.well-known/agent-card.json wouldn't
           # register and would 404.
           #
-          # This recipe's config uses nothing that needs a v2.9 daemon, so
-          # the newest GA is the right default; the gke-troubleshoot and
-          # kube-platform recipes pin higher because their configs force
-          # it. Multi-arch (amd64 + arm64) so node-pool architecture is
-          # automatic.
+          # This recipe's config uses nothing that needs a v2.9 daemon —
+          # it tracks the newest GA because that is what a stable example
+          # should show an operator, not because the config forces it.
+          # The gke-troubleshoot and gke-platform recipes pin the same
+          # release for the opposite reason: their configs cannot run
+          # below it. Multi-arch (amd64 + arm64) so node-pool
+          # architecture is automatic.
           #
           # Why a tag and not a digest, given that a digest is the
-          # stronger pin: the digest that used to be here was not 2.8.0's
-          # — it was a main build from before v2.4.0, which is why it had
-          # a sweep-back note attached. Replacing it with 2.8.0's digest
-          # means resolving the tag against ghcr.io, which the tree
-          # cannot do for you, and writing down a hash nobody reviewing
-          # the diff can check. A released tag is honest about what it is.
-          # For SBOM/cosign-critical deploys, do the resolution yourself:
+          # stronger pin: the digest that used to be here was not a
+          # release's — it was a main build from before v2.4.0, which is
+          # why it had a sweep-back note attached. Replacing it with the
+          # GA's digest means resolving the tag against ghcr.io, which the
+          # tree cannot do for you, and writing down a hash nobody
+          # reviewing the diff can check. A released tag is honest about
+          # what it is. For SBOM/cosign-critical deploys, do the
+          # resolution yourself:
           #
-          #   crane digest ghcr.io/go-steer/core-agent:2.8.0
+          #   crane digest ghcr.io/go-steer/core-agent:2.9.0
           #   cosign verify ghcr.io/go-steer/core-agent@sha256:...
           #
           # and when you swap the digest in, keep a
-          # `# core-agent-version: 2.8.0` comment on the line above it.
+          # `# core-agent-version: 2.9.0` comment on the line above it.
           # The #680 pin check reads this `image:` field (the overlay
           # ships no `images:` transformer entry, so this IS the pin) and
           # that comment is the only way it can tell which release a
           # digest resolved from.
-          image: ghcr.io/go-steer/core-agent:2.8.0
+          image: ghcr.io/go-steer/core-agent:2.9.0
           imagePullPolicy: IfNotPresent
 
           args:
@@ -253,32 +256,48 @@ spec:
             - name: mwlid-certificate
               mountPath: /var/run/secrets/workload-spiffe-credentials
               readOnly: true
-          # Liveness + readiness: TCP probe against the attach
-          # listener. Every endpoint under /sessions requires the
-          # bearer token, so an HTTP probe without it would 401 and
-          # mark the pod unhealthy. TCP is sufficient: if the
-          # listener is accepting connections, the agent is up.
-          # core-agent#946 adds an unauthenticated GET /healthz to the
-          # attach listener that also reports whether the session
-          # store is queryable, and `httpGet: {path: /healthz, port:
-          # attach}` replaces both probes once the pinned tag carries
-          # it.
+          # Liveness + readiness: GET /healthz — unauthenticated by
+          # construction (core-agent#946), 200 when every registered
+          # subsystem check passes and 503 when one is degraded. It
+          # reports whether the session store is queryable, which is the
+          # thing a bare TCP connect cannot see.
           #
-          # #986 collected that payoff in the two GKE recipes that pin a
-          # v2.9 pre-release and DELIBERATELY LEFT THIS ONE. The pin
-          # above is the 2.8.0 GA, and moving a stable example onto a
-          # pre-release to get a better probe is a bad trade: the probe
-          # is an improvement, the pin is a stability promise. This
-          # collects the fix at the next GA, in the same change that
-          # moves the pin — not before.
+          # Both probes were `tcpSocket` until the 2.9.0 pin above.
+          # #986 moved the two v2.9-pinned GKE recipes onto /healthz and
+          # deliberately left this one behind, because trading a
+          # stability promise for a better probe is the wrong way round:
+          # this recipe is the stable example, and it does not follow a
+          # pre-release to collect an improvement. The note left in this
+          # slot said to collect it "at the next GA, in the same change
+          # that moves the pin". This is that change.
+          #
+          # Two earlier revisions of the probe got it wrong in opposite
+          # directions, and the reasons still apply here. The first
+          # probed GET /sessions with a deliberately-invalid Bearer
+          # token, assuming kubelet treats 401 as healthy; it does not,
+          # only 2xx/3xx count. The second retreated to a bare TCP
+          # connect, which passes as soon as :7777 accepts — including
+          # when the session store behind it has stopped answering.
+          #
+          # Two situations need `tcpSocket: {port: attach}` back.
+          # Rolling BACK to a pre-2.9 daemon: those images have no
+          # /healthz, so the path falls through to the auth middleware
+          # and every probe 401s until the pod is killed as unhealthy.
+          # And setting `attach.client_ca` (mTLS): the handshake then
+          # demands a client certificate kubelet does not present, so
+          # the probe never reaches the handler at all. This listener is
+          # plain HTTP — the SPIFFE SVID mounted below is for outbound
+          # mTLS to other agents, not for the attach port.
           livenessProbe:
-            tcpSocket:
+            httpGet:
+              path: /healthz
               port: attach
             initialDelaySeconds: 10
             periodSeconds: 30
             failureThreshold: 3
           readinessProbe:
-            tcpSocket:
+            httpGet:
+              path: /healthz
               port: attach
             initialDelaySeconds: 3
             periodSeconds: 5

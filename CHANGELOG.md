@@ -16,7 +16,11 @@ The `extras/` adapters (`extras/scion-agent/`, `extras/ax-agent/`) and the `inte
 
 ## [Unreleased]
 
-_No unreleased changes since [2.9.0]._
+### Changes by Kind
+
+#### Feature
+
+- **The deployable recipes move onto the 2.9.0 GA, and `examples/gke-deploy` finally gets the health probe it was made to wait for.** `gke-platform-agent` and `gke-troubleshoot-agent` were pinned to `2.9.0-dev.6`, the pre-release the drill ran against; `gke-deploy` and `cloud-run-deploy` were on the 2.8.0 GA under comments saying they track the newest one. All four now pin `2.9.0`. Nothing in CI forced this — `cut-ga-tag.sh` folds a pre-release section into the GA entry but leaves a trailer behind, and the pin gate reads that trailer, so a `-dev.6` pin stays valid forever. It is wrong anyway: the recipes are what an operator copies, and copying a pre-release when its GA exists is a worse deploy for no reason. `examples/gke-deploy` also moves both probes from `tcpSocket` to `httpGet /healthz`. [#993](https://github.com/go-steer/core-agent/issues/993) deliberately left it behind — it pinned a GA, and trading a stability promise for a better probe is the wrong way round — with a note saying to collect the fix at the next GA in the same change that moves the pin. This is that change. A bare TCP connect passes as soon as `:7777` accepts, including when the session store behind it has stopped answering; `/healthz` reports that. Two deploys still need `tcpSocket` back, and the manifest says so where the probe is: rolling back to a pre-2.9 daemon, whose images have no `/healthz` and will 401 every probe, and setting `attach.client_ca`, whose handshake demands a client certificate kubelet does not present. Separately, `gke-platform-agent`'s two overlays were still pinning the `v2` content image after [#1010](https://github.com/go-steer/core-agent/issues/1010) moved `prereqs.sh` to `v3`; `set-up-demo.sh` substitutes that tag at apply time so no scripted deploy was affected, but a plain `kubectl apply -k` — which the README invites — would have run the v3 recipe against v2 content. ([#1025](https://github.com/go-steer/core-agent/issues/1025))
 
 ## [2.9.0] — 2026-09-10
 

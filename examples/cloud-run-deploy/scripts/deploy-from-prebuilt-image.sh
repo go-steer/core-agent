@@ -28,8 +28,8 @@
 #
 # Optional env vars (defaults shown):
 #   SERVICE_NAME       — Cloud Run service name (default: core-agent)
-#   IMAGE_REF          — full daemon image ref (default: ghcr.io/go-steer/core-agent:2.8.0)
-#   IMAGE_TAG          — published core-agent tag (default: 2.8.0)
+#   IMAGE_REF          — full daemon image ref (default: ghcr.io/go-steer/core-agent:2.9.0)
+#   IMAGE_TAG          — published core-agent tag (default: 2.9.0)
 #   AR_REPO            — Artifact Registry repository (default: core-agent)
 #   AGENTS_DIR         — local .agents/ bundle to upload (default: ../.agents)
 #   RUNNER_SA          — service account name (default: core-agent-runner)
@@ -61,8 +61,8 @@ SERVICE_NAME="${SERVICE_NAME:-core-agent}"
 # floating tag fails. An override supplied at run time is by definition
 # invisible to a static check; the default is what the repo ships and
 # what most people who run this script deploy.
-IMAGE_REF="${IMAGE_REF:-ghcr.io/go-steer/core-agent:2.8.0}"
-IMAGE_TAG="${IMAGE_TAG:-2.8.0}"
+IMAGE_REF="${IMAGE_REF:-ghcr.io/go-steer/core-agent:2.9.0}"
+IMAGE_TAG="${IMAGE_TAG:-2.9.0}"
 AR_REPO="${AR_REPO:-core-agent}"
 AGENTS_DIR="${AGENTS_DIR:-$(cd "$(dirname "$0")/.." && pwd)/.agents}"
 RUNNER_SA="${RUNNER_SA:-core-agent-runner}"

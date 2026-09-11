@@ -250,6 +250,33 @@ mostly failing is the instrument working.
 | `testdata/fakebin/` | the fake `kubectl`, `curl` and `gcloud` `dryrun.sh` uses |
 | `runs/` | committed scorecards (the artifacts live in `~/.gke-drill/runs/`) |
 
+## Reading a run as a trajectory
+
+`evidence.md` grades the answer. To see what the agent *did* — every tool
+call the parent and its subagents made, in one interleaved order, with
+results and timings joined on:
+
+```sh
+go run ./dev/trajectory/cmd/trajectory ~/.gke-drill/runs/<run-id>
+go run ./dev/trajectory/cmd/trajectory --all ~/.gke-drill/runs   # the whole archive
+```
+
+It renders no verdict and it is not a gate — it prints a table and exits
+0 whatever it finds, so a non-zero exit means the tool itself broke. What
+it is for is the class of failure the six boxes structurally cannot see.
+The clearest example is in the archive: the 2026-09-11 scenario A run
+scored 6/6 while its `cluster` subagent was dead of a Vertex 429. On the
+sheet that is invisible. In the table it is a count — 6 steps with 1 in
+the child, where every other scenario A makes 11–12 with 9–10 in the
+child — plus a `spawn_agent` row that says `error` and a missing
+`return_result`.
+
+It reads the same transcript `score.py` does and classifies tool results
+by the same rule, and `TestAgreesWithScorePyOnTheArchive` checks that
+claim against the tally on every scored sheet you have locally. If the
+two ever disagree, one of them is wrong and it matters which; see
+`dev/trajectory/doc.go`.
+
 ## Before you spend a cluster day
 
 ```sh

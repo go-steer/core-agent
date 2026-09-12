@@ -134,6 +134,14 @@ func ClassifyTurnError(err error) TurnError {
 		}
 
 	// Rate-limit / quota — retryable with backoff.
+	//
+	// Retryable here means "the auto-continue gate may re-drive this
+	// failed turn", not "the adapter should re-issue the request". The
+	// second question is gemini.IsTransient's, and it is narrower on
+	// purpose (#935): this classifier runs on a turn that has already
+	// failed, where breadth is cheap, while that one runs on an
+	// in-flight call whose error text can contain the model's own
+	// prose. Keep them separate.
 	case containsAny(lower, "resource_exhausted", "resourceexhausted", "rate exceeded",
 		"rate limit", "quota exceeded", "too many requests") || code == "429":
 		return TurnError{

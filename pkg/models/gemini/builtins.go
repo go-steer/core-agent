@@ -447,12 +447,42 @@ func (l *builtinsLLM) GenerateContent(ctx context.Context, req *adkmodel.LLMRequ
 	// miss followed by an empty response gets both safety nets. The
 	// two conditions are orthogonal — empty response is a Vertex
 	// silent-STOP shape, cache eviction is a TTL server-state issue.
-	return retryOnceOnEmpty(func() iter.Seq2[*adkmodel.LLMResponse, error] {
-		return wrapEmptyTailDetection(
-			l.wrapCachedContentEvictionRetry(ctx, req, stream, cachedTurn, savedSystemInstruction, savedTools, savedToolConfig),
-			stream, l.tolerateEmptyChunks,
-		)
+	//
+	// A fifth wrapper sits outside all of them: transientRetry, which
+	// retries once on 429 / 503 (#935). Outermost because a transient
+	// rejection can come from any layer below, and this way there is
+	// one place that handles it rather than three. The nesting means a
+	// pathological turn can reach four requests — two transient
+	// attempts × two empty-response attempts — which is bounded, has
+	// never been observed, and is further capped by the policy's
+	// process-wide cooldown.
+	return transientRetry.Wrap(ctx, func() iter.Seq2[*adkmodel.LLMResponse, error] {
+		return retryOnceOnEmpty(func() iter.Seq2[*adkmodel.LLMResponse, error] {
+			return wrapEmptyTailDetection(
+				l.wrapCachedContentEvictionRetry(ctx, req, stream, cachedTurn, savedSystemInstruction, savedTools, savedToolConfig),
+				stream, l.tolerateEmptyChunks,
+			)
+		})
 	})
+}
+
+// transientRetry is the process-wide retry-once policy for Vertex
+// rejecting a call transiently (#935).
+//
+// Package-level rather than a builtinsLLM field, and that is the
+// load-bearing choice: the cooldown only limits added load if every
+// call shares it. Vertex quota is enforced per project and region, not
+// per model handle, so a daemon running a parent and three subagents
+// against four builtinsLLM instances must not be able to fire four
+// retries into the same shed. One policy, one cooldown, one extra
+// request per window for the whole process.
+//
+// A var so tests can substitute a policy with a short backoff.
+var transientRetry = &models.RetryPolicy{
+	IsTransient: IsTransient,
+	// Indirect through logf rather than taking its value, so a test
+	// that swaps logf still sees these lines.
+	Log: func(format string, args ...any) { logf(format, args...) },
 }
 
 // wrapCachedContentEvictionRetry retries the GenerateContent call

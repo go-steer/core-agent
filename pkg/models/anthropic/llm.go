@@ -59,6 +59,29 @@ func (l *llm) Name() string { return l.modelID }
 // flag only controls what the caller sees, so non-streaming consumers
 // (ADK's StreamingModeNone) aren't handed one runner event per text
 // fragment (#533). Errors are yielded inline and stop the iteration.
+//
+// # No transient-error retry here, deliberately (#935)
+//
+// The Gemini adapter wraps its calls in a models.RetryPolicy because
+// google.golang.org/genai has no retry of any kind: a 429 there kills
+// the call outright, which is how four GKE drill runs lost a subagent
+// delegation. This adapter needs no such wrapper, and adding one would
+// make things worse.
+//
+// anthropic-sdk-go retries internally, twice by default, on 408, 409,
+// 429 and every 5xx (including 529 overloaded) — see requestconfig's
+// shouldRetry. It also honours retry-after / anthropic-ratelimit-*
+// headers, so its backoff is the server's own number rather than a
+// constant we picked. Stacking a second retry on top would multiply to
+// six requests for one turn and would fire only after the SDK had
+// already backed off twice, which is the strongest available evidence
+// that the rejection is NOT momentary.
+//
+// So the asymmetry #935 set out to close is in the two SDKs, not in
+// this repo, and the way to close it is to leave this path alone. If
+// the SDK default is ever overridden with option.WithMaxRetries(0),
+// revisit — that is the condition under which this comment stops being
+// true.
 func (l *llm) GenerateContent(ctx context.Context, req *adkmodel.LLMRequest, stream bool) iter.Seq2[*adkmodel.LLMResponse, error] {
 	return func(yield func(*adkmodel.LLMResponse, error) bool) {
 		// One llm serves both the agentic loop and the one-shot side

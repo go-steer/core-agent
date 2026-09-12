@@ -243,6 +243,32 @@ GOOGLE_GENAI_USE_VERTEXAI=true \
 - ADC resolution follows the standard Google chain: `GOOGLE_APPLICATION_CREDENTIALS`, `gcloud auth application-default login`, then workload identity in production environments.
 - Project/region in config takes precedence over env vars.
 
+### Transient rate limits (v2.10.0+)
+
+`google.golang.org/genai` has no retry of any kind, so before v2.10.0 a momentary `429 RESOURCE_EXHAUSTED` ended the call. On a subagent delegation that was worse than an error: across 38 archived GKE drill runs, four lost a delegation this way, three of them died on the child's *first* model call, and the runs still produced an answer because the parent quietly did the work itself. You lose the context isolation you delegated for, pay full parent-context price, and nothing says so.
+
+A 429 or 503 that delivers **no usable content** is now retried once, after a short backoff. Two bounds keep that from making a bad moment worse:
+
+- **One retry, never two.** A rejection that survives the retry surfaces to the caller.
+- **A process-wide cooldown** (30s). The retry budget is shared by every model handle in the daemon — parent and subagents alike — because Vertex quota is enforced per project and region, not per model. Under a sustained shed the first call retries and every later one passes straight through, so the extra load is one request per window no matter how many calls are failing.
+
+Once any content has reached the caller the stream is pass-through: a later error surfaces unchanged rather than replaying a turn you have already partly seen.
+
+The predicate is deliberately narrow — only `429`/`RESOURCE_EXHAUSTED` and `503`/`UNAVAILABLE`, matched on the status code *and* its status word. A `400 INVALID_ARGUMENT` is never retried, including the shape tracked in [#898](https://github.com/go-steer/core-agent/issues/898): its cause is unknown, and re-sending a request the server has already said it cannot parse spends a second request to be told the same thing.
+
+Retries are logged, so a recovered failure is visible rather than silent:
+
+```
+core-agent: gemini: transient provider error (Error 429, …, Status: RESOURCE_EXHAUSTED, Details: []) — retrying once after 2s
+core-agent: gemini: transient provider error recovered on retry (attempt 2/2)
+```
+
+and so is a retry the cooldown suppressed:
+
+```
+core-agent: gemini: transient provider error (…) NOT retried: another retry fired within the 30s cooldown
+```
+
 ### Context caching
 
 Vertex explicit context caching is **on by default** for the stable request prefix (system instruction + tools). On turn 1 the daemon captures the fully-assembled request and creates a `CachedContent` resource; every subsequent turn stamps that cache handle onto the request so the prefix bills at ~10% of the input rate. Typical GKE-triage session prefix is 4–8k tokens — savings compound across every turn.
@@ -339,6 +365,7 @@ ANTHROPIC_API_KEY=... core-agent --provider anthropic --model claude-opus-5 -p "
 - **`MaxTokens`** defaults to 16,384 if not set on the request. Override with `Config.MaxOutputTokens`.
 - **Stop reasons** map to genai `FinishReason` as: `end_turn`/`stop_sequence`/`tool_use` → `STOP`, `max_tokens` → `MAX_TOKENS`, `refusal` → `SAFETY`.
 - **Prompt caching** is **on by default** on both `anthropic` and `anthropic-vertex` ([#714](https://github.com/go-steer/core-agent/issues/714)). See [Prompt caching](#prompt-caching) below.
+- **Transient rate limits are retried by the SDK, not by core-agent.** `anthropic-sdk-go` retries twice by default on 408, 409, 429 and every 5xx (including 529 `overloaded_error`), and honours `retry-after` — so the backoff is the server's own number rather than a constant core-agent picked. That is strictly better than the wrapper the [Vertex Gemini path](#transient-rate-limits-v2100) needs, so this adapter deliberately has no retry of its own: stacking one on top would reach six requests for a single turn, and it would fire only after the SDK had already backed off twice, which is the strongest available evidence that the rejection is not momentary. If you override this with `option.WithMaxRetries(0)` you are on your own — there is no core-agent-side net behind it.
 - **Cache accounting** works regardless of the above, because Anthropic also caches *automatically* on the first-party and Claude Platform on AWS endpoints. All three input buckets are reported: total prompt as `PromptTokenCount`, cache reads as `CachedContentTokenCount`, and cache **writes** on `LLMResponse.CustomMetadata` under `cache_creation_input_tokens` — genai's usage struct has only two input fields, and writes bill at a premium (1.25× input) rather than a discount, so folding them into either existing bucket would misprice the turn. `pkg/usage` reads the sidecar and surfaces it as `input_tokens_cache_write` ([#263](https://github.com/go-steer/core-agent/issues/263)).
 
 ### Prompt caching

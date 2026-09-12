@@ -18,10 +18,16 @@
 // It exists for the delegation boundary. A subagent hands its parent
 // prose — `return_result`'s text, or its last assistant turn. Prose
 // cannot be cited, and a parent that is graded on grounding its claims
-// therefore re-issues the reads its child already made. Across the
-// fifteen archived GKE drill runs that was 48% of everything the parent
-// read after the handoff and 61% of the bytes it pulled back into its
-// context, with two runs at 100% (#1014).
+// therefore re-issues the reads its child already made. Measured on the
+// GKE drill's OOMKill scenario, whose follow-up asks for a value the
+// child already established AND for the read behind it: 4 of 6 runs
+// re-issued one, and 66% of the bytes the parent read after the handoff
+// were bytes it already had. Afterwards, 0 of 11 (#1014).
+//
+// Do not read that as a corpus-wide rate. The drill's RBAC scenario
+// asks instead whether the workload is healthy NOW, which no metadata
+// can answer, and it re-reads at the same rate before and after — it
+// should (#1034).
 //
 // The fix is not a bigger or better-compressed payload. What the parent
 // lacks is PROVENANCE — "the child ran this, with these arguments, and

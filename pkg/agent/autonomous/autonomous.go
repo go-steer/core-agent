@@ -1197,8 +1197,10 @@ type RunResult struct {
 	// This is what lets a synchronous delegation hand its parent
 	// something citable. FinalText and DoneDetail are prose, a parent
 	// graded on grounding cannot cite prose, and so it re-issues the
-	// reads its child already made: 48% of the parent's post-handoff
-	// reads across the archived GKE drill corpus (#1014). Provenance is
+	// reads its child already made: 4 of 6 GKE drill OOMKill runs did
+	// so before this, 0 of 11 after (#1014; the corpus-wide figure this
+	// once quoted pooled scenarios that measure opposite things, #1034).
+	// Provenance is
 	// the missing half, it is metadata the loop already sees, and it
 	// costs about a hundred bytes a call.
 	Calls []toolcalls.Call

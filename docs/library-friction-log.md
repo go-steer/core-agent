@@ -630,6 +630,20 @@ Three patterns recur:
 
 **Evidence.** `pkg/models/anthropic/stream.go:64-73`; PR #264; Issue #263.
 
+### 8. [high] No retry of any kind — a momentary 429 ends the call, and there is no knob to change that
+
+**Category:** api-friction
+
+**Issue.** `google.golang.org/genai` has no retry, no backoff and no option to enable either: there is no `WithMaxRetries`, no `shouldRetry`, nothing in the module that matches either name. A `429 RESOURCE_EXHAUSTED` or a `503 UNAVAILABLE` is handed straight to the caller as a terminal error. This is a notable outlier — `anthropic-sdk-go`, the other model SDK in this tree, retries twice by default and honours `retry-after`, and both Google's own `google-cloud-go` clients and `google.golang.org/api` ship configurable retry policies. Compounding it, there is no typed error for the transient cases either; `genai.APIError` exists and carries `Code`/`Status`, but whether it survives the trip up through ADK's model layer is a property of ADK, so a predicate has to keep a substring fallback.
+
+**Impact.** Directly measured, not theoretical. Across 38 archived GKE drill runs, **four lost a subagent delegation to a single momentary 429**, three of them inside one 20-run batch. Three of the four children died on their *very first* model call. The runs still scored, because the parent silently did the work itself — so the observable cost was not an error but a run that quietly loses context isolation at full parent-context price, and in one case never told the operator (#1036). In 4 of 4 the parent's next call 3–4 seconds later succeeded, so a single retry was all any of them needed.
+
+**Workaround.** `pkg/models/retry.go` — a provider-agnostic `RetryPolicy` (retry once, buffer-until-usable, drop partials on retry, process-wide cooldown so the added load is one request per window however many calls are failing), wired outermost in `pkg/models/gemini/builtins.go`. The predicate is `pkg/models/gemini/transient.go`: typed `genai.APIError` first, substring fallback pairing each code with its status word, following `internal/vertexcache.IsCacheGone`'s convention. This is now the **fourth** retry/detection wrapper this package carries for genai silent-failure shapes, alongside `retryOnceOnEmpty`, `wrapEmptyTailDetection` and `wrapCachedContentEvictionRetry` — see the "no typed errors" theme in the section overview.
+
+**Recommendation.** Upstream (`googleapis/go-genai`): ship a configurable retry policy on `ClientConfig` with a sane 429/503 default, the way every neighbouring Google Go client already does. Failing that, at minimum guarantee that `genai.APIError` is returned wrapped such that `errors.As` works through the stack, so consumers can write a predicate without string matching.
+
+**Evidence.** Issue #935; PR #1037; `pkg/models/retry.go`, `pkg/models/gemini/transient.go`.
+
 ---
 
 ## Second-tier dependencies
@@ -639,6 +653,8 @@ These libraries work reliably in production, but almost every one required a bes
 ### anthropic-sdk-go (`github.com/anthropics/anthropic-sdk-go v1.43.0`)
 
 **[low] `vertex.WithGoogleAuth` panics on missing ADC — bypassed with `FindDefaultCredentials` + `WithCredentials`.** The Vertex constructor panics at startup when ADC isn't resolvable — the wrong failure mode for a daemon. We load credentials ourselves via `google.FindDefaultCredentials` and pass them to `vertex.WithCredentials`. Workaround at `pkg/models/anthropic/vertex.go:53-70`. **Recommendation:** upstream should return an error, not panic.
+
+**[none — recorded because it stopped us shipping a wrong fix] Retries 429 and 5xx twice by default, honouring `retry-after`.** `requestconfig.shouldRetry` covers 408, 409, 429 and every 5xx (including Anthropic's 529 `overloaded_error`), and the backoff comes from the server's `retry-after` / `anthropic-ratelimit-*` headers rather than a constant. #935 was scoped to add a transient-error retry to **both** shipped providers on the premise that this adapter had none — a premise arrived at by grepping `pkg/models/anthropic` and not the dependency. It is true of our code and false of the stack. Wrapping it anyway would have multiplied to six requests for one turn and fired only after the SDK had already backed off twice, which is the strongest available evidence that a rejection is *not* momentary, so the Anthropic wiring was written and then backed out. **The asymmetry was between the two SDKs, not between our two adapters** — see the [genai no-retry entry](#8-high-no-retry-of-any-kind--a-momentary-429-ends-the-call-and-there-is-no-knob-to-change-that). Three tests in `pkg/models/anthropic/transient_retry_test.go` drive the real SDK against an `httptest` server so the claim breaks loudly if anyone passes `option.WithMaxRetries(0)`. **Lesson for this log:** "our adapter has no X" is not the same finding as "X is missing", and the difference decided the shape of a whole PR. **Evidence:** PR #1037; `requestconfig.go:248-273` in `anthropic-sdk-go@v1.43.0`.
 
 _(The cache_creation cost-accounting gap lives in the [Gemini section](#7-low-no-place-to-carry-cache_creation-tokens-across-the-genaiadk-bridge--anthropic-via-genai-cost-undercount) since the root cause is genai's `UsageMetadata` shape.)_
 
